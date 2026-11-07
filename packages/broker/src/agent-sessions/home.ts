@@ -6,7 +6,7 @@ import { createHash } from "node:crypto";
 import { PutCommand, QueryCommand } from "@aws-sdk/lib-dynamodb";
 import {
   HOME_CARDS_MAX, HOME_DISMISSIBLE_KINDS, HOME_DISMISS_DAYS, HOME_FAILURE_DAYS, HOME_NOT_DISMISSIBLE, HOME_REASON_MAX, HomeCardIdSchema, HomeCardSchema, INDEX_EXPIRY_ATTRIBUTE,
-  OrgRoleSchema, SessionIdSchema, agentSessionKey, agentXError, homeDismissedKey, mySessionsKey, openSpendRequestsKey, orgMemberKey, projectAllows, sessionLink,
+  OrgRoleSchema, SessionIdSchema, TASK_STATUS_WORDS, TaskStatusSchema, agentSessionKey, budgetPauseNext, budgetScopeName, sessionTaskStatus, taskStatusText, agentXError, homeDismissedKey, mySessionsKey, openSpendRequestsKey, orgMemberKey, projectAllows, sessionLink,
   type AgentSessionRecord, type HomeCard, type HomeCardKind, type HomeDismissResponse, type HomeResponse, type OrgRole,
 } from "@agentx/contracts";
 import { changeTitleOf } from "../agents/approval-decide-kind.js";
@@ -35,14 +35,21 @@ export interface HomeDependencies extends SessionReadDependencies {
   retiredKinds?: readonly HomeCardKind[] | undefined;
   /** How long one source may take before it is skipped (default `HOME_SOURCE_TIMEOUT_MS`). */
   homeSourceTimeoutMs?: number | undefined;
+  /**
+   * UX2 slice 2 item 2: the caller's pending decision cards (only what THEY may decide now, from the card sources), for the one "needs you" count. Absent (cards off) or failing: the count is Home's own
+   * cards. A Home card whose decision a pending card holds is left out, so nothing is counted or shown twice.
+   */
+  pendingDecisions?: ((caller: HomeCaller) => Promise<readonly PendingDecisionRef[]>) | undefined;
 }
+/** A pending decision card as Home counts it: its id, its kind and the task it is about (when it is about one). */
+export interface PendingDecisionRef { cardId: string; kind: string; taskId?: string | undefined }
 export type HomeCaller = SessionReadCaller;
 
 /**
  * A card a source answers. `blocksRunningSession` ranks an approval or a budget request above the rest; `occurrence` says which happening of the card this is (a failure's end or summary revision;
  * default: `at`), so a dismissal hides that happening and not a new one. Home takes both off before answering.
  */
-export type HomeSourceCard = HomeCard & { blocksRunningSession?: true; occurrence?: string };
+export type HomeSourceCard = HomeCard & { blocksRunningSession?: true; occurrence?: string; /** The task a card about one of the caller's own sessions is about (UX2 slice 2: a decision card for it replaces a plan or merge card). */ taskId?: string };
 
 /** What one request already learned, shared by the sources so the caller's sessions are read once. */
 export interface HomeContext {
@@ -163,7 +170,8 @@ function candidateOf(session: AgentSessionRecord, nowMs: number): boolean {
   const { summary } = session;
   const ended = session.endedAt !== undefined;
   const failure = ended ? summary.status === "failed" && withinDays(session.endedAt, nowMs, HOME_FAILURE_DAYS) : summary.lastRunFailed === true && withinDays(session.updatedAt, nowMs, HOME_FAILURE_DAYS);
-  const waits = !ended && session.kind === "task" && (summary.status === "needs_person" || summary.status === "waiting");
+  // UX2 slice 2: a task stopped or paused for budget needs its owner too (Home's blocked and paused cards).
+  const waits = !ended && session.kind === "task" && (summary.status === "needs_person" || summary.status === "waiting" || summary.status === "stopped" || summary.status === "paused");
   return failure || waits;
 }
 
@@ -333,6 +341,7 @@ const planSource: HomeCardSource = {
       const { session } = own;
       return [{
         cardId: `plan:${session.sessionId}`, kind: "plan", title: session.title, reason: fit(`Your plan for ${quoted(session.title)} is ready to review`, ""), sessionId: session.sessionId, at: session.updatedAt,
+        ...(session.subject.kind === "task" ? { taskId: session.subject.taskId } : {}),
         buttons: [openSession(deps, session.sessionId, "Review plan")],
       }];
     });
@@ -368,6 +377,7 @@ const pullRequestSource: HomeCardSource = {
       const url = requests.filter((request) => request.state === "OPEN" || request.state === "UNKNOWN").map((request) => githubUrl(request.url)).find((address) => address !== undefined);
       const waiting = await waitsForReview(deps, own, workflow);
       return [{
+        ...(session.subject.kind === "task" ? { taskId: session.subject.taskId } : {}),
         cardId: `pull_request:${session.sessionId}`, kind: "pull_request", title: session.title, reason: fit(`Your pull request for ${quoted(session.title)} ${waiting ? "is waiting for review" : "is ready for review"}`, ""), sessionId: session.sessionId, at: session.updatedAt,
         buttons: [url === undefined ? openSession(deps, session.sessionId) : { label: "Open pull request", action: "open" as const, href: url, method: "GET" as const }],
       }];
@@ -437,8 +447,12 @@ const failureSource: HomeCardSource = {
     return (await context.ownSessions()).flatMap((own): HomeSourceCard[] => {
       const { session } = own;
       const failed = session.endedAt !== undefined ? session.summary.status === "failed" : session.summary.lastRunFailed === true;
-      if (!failed) return [];
-      const said = cut(shownText((session.summary.step ?? "").replace(/^Failed:\s*/u, ""), 300), FAILURE_WORDS_MAX) || "it did not finish";
+      // UX2 slice 2 item 6: a task its owner closed is Closed, not Failed: no failure card (and no Retry) for it, whatever its last run did.
+      // Only a summary that carries the status model's words says what failed in them; an older one keeps the step's words.
+      const stored = TaskStatusSchema.safeParse((session.summary as { display?: unknown }).display);
+      const display = stored.success ? stored.data : undefined;
+      if (!failed || display?.state === "closed" || display?.state === "merged" || own.task?.["closedAt"] !== undefined) return [];
+      const said = display?.state === "failed" && display.reason !== undefined ? cut(display.reason, FAILURE_WORDS_MAX) : cut(shownText((session.summary.step ?? "").replace(/^Failed:\s*/u, ""), 300), FAILURE_WORDS_MAX) || "it did not finish";
       const cardId = `failure:${session.sessionId}`;
       const occurrence = session.endedAt !== undefined ? `ended:${session.endedAt}` : `rev:${String(session.summaryRevision)}`;
       return [{
@@ -453,7 +467,65 @@ const failureSource: HomeCardSource = {
   },
 };
 
-for (const source of [approvalSource, spendSource, planSource, pullRequestSource, reviewerSource, failureSource]) registerHomeCardSource(source);
+/** The stages whose wait has a card of its own (a plan to review, Understand's questions, a pull request to merge): a blocked card would say it twice. */
+const OWN_CARD_WAITS = new Set(["PLAN_REVIEW/WAITING", "UNDERSTAND/WAITING", "WAIT_FOR_MERGE/WAITING"]);
+
+/** "Needs you: <reason>. Next: <next step>", within a card's reason; the next step is left out when both don't fit. */
+function needsYouReason(text: string, next: string | undefined): string {
+  const full = next === undefined ? text : `${text}. Next: ${next}`;
+  return [...full].length <= HOME_REASON_MAX ? full : fit(text, "");
+}
+
+/**
+ * UX2 slice 2 item 2: the caller's own blocked tasks (checks failed, reviews found problems, CI failing, a branch conflict, a run limit waiting, coding stopped, a stop before it finished): why it stopped and
+ * the next step, from the one status model, with the task's page. Header, Live and the sidebar already said it needs them; now Home does too.
+ */
+const blockedSource: HomeCardSource = {
+  kind: "blocked",
+  async list(deps, _caller, context) {
+    return (await context.ownSessions()).flatMap((own): HomeSourceCard[] => {
+      const { session } = own;
+      // Review I4: never a plain "waiting" (a run that finished and waits for its owner's next request, a pull request, a failure: each has its own card or none).
+      if (session.endedAt !== undefined || session.summary.status === "paused" || session.summary.status === "waiting" || session.summary.lastRunFailed === true) return [];
+      // The summary's own status-model words when it has them; an older summary counts only when it reads as needing a person or stopped (never a plain "waiting", which a pull request or a failure card covers).
+      const stored = TaskStatusSchema.safeParse((session.summary as { display?: unknown }).display);
+      if (stored.success ? stored.data.state !== "needs_you" : session.summary.status !== "needs_person" && session.summary.status !== "stopped") return [];
+      const display = stored.success ? stored.data : sessionTaskStatus(session.summary);
+      const workflow = workflowOf(own);
+      if (typeof workflow?.stage === "string" && typeof workflow.state === "string" && OWN_CARD_WAITS.has(`${workflow.stage}/${workflow.state}`)) return [];
+      return [{
+        cardId: `blocked:${session.sessionId}`, kind: "blocked", title: session.title, reason: needsYouReason(taskStatusText(display), display.next), sessionId: session.sessionId, at: session.updatedAt,
+        ...(session.subject.kind === "task" ? { taskId: session.subject.taskId } : {}),
+        buttons: [openSession(deps, session.sessionId, "Open task")],
+      }];
+    });
+  },
+};
+
+/**
+ * UX2 slice 2 item 2: the caller's own tasks paused for budget: what limit it reached and who can raise it (the people who may decide the budget request get its own card). Fixed words, never the request's text.
+ */
+const pausedSource: HomeCardSource = {
+  kind: "paused",
+  async list(deps, _caller, context) {
+    return (await context.ownSessions()).flatMap((own): HomeSourceCard[] => {
+      const { session, task } = own;
+      if (session.endedAt !== undefined || session.summary.status !== "paused") return [];
+      const pause = task?.["budgetPause"] as { scope?: { kind?: unknown } } | undefined;
+      const scopeKind = typeof pause?.scope?.kind === "string" ? pause.scope.kind : undefined;
+      const text = `${TASK_STATUS_WORDS.paused_budget}. It reached ${budgetScopeName(scopeKind)}`;
+      // Review M3: an org owner or admin may raise any limit (`budgetRaisers`), so the owner who is one is told they can raise it themselves.
+      const mayRaise = context.orgRole === "owner" || context.orgRole === "admin";
+      return [{
+        cardId: `paused:${session.sessionId}`, kind: "paused", title: session.title, reason: needsYouReason(text, budgetPauseNext(scopeKind, mayRaise, session.summary.pendingApprovals > 0)), sessionId: session.sessionId, at: session.updatedAt,
+        ...(session.subject.kind === "task" ? { taskId: session.subject.taskId } : {}),
+        buttons: [openSession(deps, session.sessionId, "Open task")],
+      }];
+    });
+  },
+};
+
+for (const source of [approvalSource, spendSource, planSource, pullRequestSource, reviewerSource, failureSource, blockedSource, pausedSource]) registerHomeCardSource(source);
 
 // ---- reading the cards
 
@@ -491,7 +563,7 @@ async function collect(deps: HomeDependencies, caller: HomeCaller): Promise<Coll
     if (retired.has(source.kind)) continue;
     if (answered.length > HOME_SOURCE_CARDS_MAX) log({ event: "home.source_truncated", source: source.kind });
     for (const card of answered.slice(0, HOME_SOURCE_CARDS_MAX)) {
-      const { blocksRunningSession, occurrence, ...shown } = card;
+      const { blocksRunningSession, occurrence, taskId, ...shown } = card;
       const checked = HomeCardSchema.safeParse(shown);
       if (!checked.success || checked.data.kind !== source.kind || !checked.data.cardId.startsWith(`${source.kind}:`)) {
         log({ event: "home.card_invalid", source: source.kind, problem: checked.success ? "kind" : checked.error.issues[0]?.path.join(".") ?? "card" });
@@ -500,7 +572,7 @@ async function collect(deps: HomeDependencies, caller: HomeCaller): Promise<Coll
       if (seen.has(checked.data.cardId)) continue;
       seen.add(checked.data.cardId);
       const kept = occurrence !== undefined && OCCURRENCE_PATTERN.test(occurrence) ? occurrence : undefined;
-      cards.push({ ...checked.data, ...(blocksRunningSession === true ? { blocksRunningSession } : {}), ...(kept === undefined ? {} : { occurrence: kept }) });
+      cards.push({ ...checked.data, ...(blocksRunningSession === true ? { blocksRunningSession } : {}), ...(kept === undefined ? {} : { occurrence: kept }), ...(typeof taskId === "string" ? { taskId } : {}) });
     }
   }
   return { cards, dismissed: await dismissedBy(deps, caller) };
@@ -542,6 +614,7 @@ function tierOf(card: HomeSourceCard): number {
   if (blocking) return 0;
   switch (card.kind) {
     case "question": return 1;
+    case "blocked": case "paused": return 1;
     case "plan": return 2;
     case "pull_request": return 3;
     case "approval":
@@ -557,9 +630,56 @@ const ranked = (cards: readonly HomeSourceCard[]): HomeSourceCard[] => [...cards
  * in the org has none.
  */
 export async function homeCards(deps: HomeDependencies, caller: HomeCaller): Promise<HomeResponse> {
-  const { cards, dismissed } = await collect(deps, caller);
-  const shown = ranked(cards.filter((card) => !(isDismissible(card.kind) && dismissed.get(card.cardId) === occurrenceOf(card))));
-  return { cards: shown.slice(0, HOME_CARDS_MAX).map(({ blocksRunningSession: _blocks, occurrence: _occurrence, ...card }) => card), total: shown.length }; // eslint-disable-line @typescript-eslint/no-unused-vars -- the ranking hint and the occurrence are not part of the answer
+  const [{ cards, dismissed }, decisions] = await Promise.all([collect(deps, caller), pendingDecisionsOf(deps, caller)]);
+  const shown = ranked(withoutRestating(withoutDecided(cards.filter((card) => !(isDismissible(card.kind) && dismissed.get(card.cardId) === occurrenceOf(card))), decisions ?? []), decisions ?? []));
+  const answer = shown.slice(0, HOME_CARDS_MAX).map(({ blocksRunningSession: _blocks, occurrence: _occurrence, taskId: _taskId, ...card }) => card); // eslint-disable-line @typescript-eslint/no-unused-vars -- the ranking hint, the occurrence and the task are not part of the answer
+  // Without the decision cards wired (cards off, or an older wiring) the one count is Home's own: `needsYou` is left out and readers use `total`.
+  return { cards: answer, total: shown.length, ...(deps.pendingDecisions === undefined ? {} : { needsYou: shown.length + (decisions?.length ?? 0) }) };
+}
+
+/** The caller's pending decision cards, or undefined when there are none to read (cards off) or they could not be read (logged; Home's own cards still count). */
+async function pendingDecisionsOf(deps: HomeDependencies, caller: HomeCaller): Promise<readonly PendingDecisionRef[] | undefined> {
+  if (deps.pendingDecisions === undefined) return undefined;
+  try {
+    return await deps.pendingDecisions(caller);
+  } catch (error) {
+    logOf(deps)({ event: "home.decisions_unreadable", error: error instanceof Error ? error.name : "unknown" });
+    return undefined;
+  }
+}
+
+/**
+ * Review M2: a blocked or paused card only says what another card already asks when the same task has a pending decision card (a run-limit approval, a merge, a spec choice, a budget request on
+ * its own card) or another Home card the caller decides (an approval, a budget request, a plan, a pull request, a question). Then it is left out, of the list and of the count, so one task never
+ * reads as two things that need you.
+ */
+export function withoutRestating(cards: readonly HomeSourceCard[], decisions: readonly PendingDecisionRef[]): HomeSourceCard[] {
+  const decidedTasks = new Set(decisions.flatMap((decision) => (decision.taskId === undefined ? [] : [decision.taskId])));
+  const askedSessions = new Set(cards.filter((card) => card.kind !== "blocked" && card.kind !== "paused" && card.kind !== "failure").flatMap((card) => (card.sessionId === undefined ? [] : [card.sessionId])));
+  return cards.filter((card) => {
+    if (card.kind !== "blocked" && card.kind !== "paused") return true;
+    if (card.taskId !== undefined && decidedTasks.has(card.taskId)) return false;
+    return card.sessionId === undefined || !askedSessions.has(card.sessionId);
+  });
+}
+
+/** The decision card kinds that hold the decision each older Home card kind asks for (the web app's `one-card.ts` rule, on the server). */
+const REPLACED_BY: Readonly<Record<string, readonly string[]>> = { plan: ["approve_plan", "approve_requirements", "approve_design"], pull_request: ["merge"] };
+
+/** Home's cards less those whose decision a pending decision card holds: a plan or the owner's own pull request for the same task, an approval or a budget request that has its own card. */
+export function withoutDecided(cards: readonly HomeSourceCard[], decisions: readonly PendingDecisionRef[]): HomeSourceCard[] {
+  if (decisions.length === 0) return [...cards];
+  const byTask = new Map<string, Set<string>>();
+  for (const decision of decisions) if (decision.taskId !== undefined) byTask.set(decision.taskId, (byTask.get(decision.taskId) ?? new Set()).add(decision.kind));
+  const outside = new Set(decisions.filter((decision) => decision.kind === "approve_request").map((decision) => decision.cardId.slice(decision.cardId.indexOf(":") + 1)));
+  return cards.filter((card) => {
+    if ((card.kind === "approval" || card.kind === "spend_request") && outside.has(card.cardId.slice(card.cardId.indexOf(":") + 1))) return false;
+    const replacing = REPLACED_BY[card.kind];
+    if (replacing === undefined || card.taskId === undefined) return true;
+    if (card.kind === "pull_request" && card.cardId !== `pull_request:${card.sessionId ?? ""}`) return true;
+    const pending = byTask.get(card.taskId);
+    return pending === undefined || !replacing.some((kind) => pending.has(kind));
+  });
 }
 
 /**

@@ -30,6 +30,7 @@ import {
   type SessionStatus,
   type SessionTile,
   type SessionView,
+  budgetPauseNext, budgetScopeName, sessionTaskStatus, taskStatusNext, type TaskStatus,
 } from "@agentx/contracts";
 import { taskKey, type DeveloperTaskRecord } from "../developer/task-records.js";
 import { safeDisplayName } from "../developer/person-name.js";
@@ -243,6 +244,11 @@ export async function sessionView(deps: SessionReadDependencies, caller: Session
     };
   }
 
+  // UX2 slice 2: the one status, for this reader: the task view's own (its next step for the owner or for anyone else), and a budget pause says who can raise the limit.
+  const baseDisplay = taskShown?.statusView ?? sessionTaskStatus(summary);
+  const display: TaskStatus = baseDisplay.state === "paused_budget"
+    ? { state: "paused_budget", reason: `it reached ${budgetScopeName(pausedView?.scope["kind"])}`, next: budgetPauseNext(pausedView?.scope["kind"], paused?.confirmUrl !== undefined, paused?.spendRequestId !== undefined) }
+    : (() => { const next = taskStatusNext(baseDisplay, access.owner); const { nextOthers: _others, ...rest } = baseDisplay; void _others; return { ...rest, ...(next === undefined ? {} : { next }) }; })();
   // Release 0.4.18: the owner's chosen name, read by the stored owner's id (a session started before the rename stores the name the person had then).
   const ownerNames = await chosenOwnerNames(deps, [access.effectiveOwner.developerId, session.owner.developerId]);
   const followerItem = await getItem(deps, agentSessionKey(session.orgId, session.sessionId, `FOLLOWER#${caller.developerId}`));
@@ -267,6 +273,7 @@ export async function sessionView(deps: SessionReadDependencies, caller: Session
     ...(step === undefined ? {} : { step: wordsFor(access.owner)(step) }),
     ...(summary.peek === undefined ? {} : { peek: wordsFor(access.owner)(summary.peek) }),
     ...(summary.lastRunFailed === undefined ? {} : { lastRunFailed: summary.lastRunFailed }),
+    display,
     // Live interaction F1: the task's own reference, read from the very view shown (a session whose task shows no error has none).
     ...(taskShown?.errorRef === undefined ? {} : { errorRef: taskShown.errorRef }),
     cost: {
@@ -279,7 +286,7 @@ export async function sessionView(deps: SessionReadDependencies, caller: Session
     approvals: mine.map((entry) => ({ approvalId: entry.approvalId, title: entry.title, confirmUrl: approveLink(deps, entry.approvalId) })),
     followers: session.followerCount,
     viewingNow: await viewingNow(deps, session, deps.now()),
-    you: { level: levelOf(access), owner: access.owner, following: access.owner || followerItem !== undefined, actions: [...sessionActionsFor(access, { status, workflowBlocked, closable: closableSession(session), ...(task?.closedAt === undefined ? {} : { closed: true as const }) }), ...(canMakeAgent ? ["make_agent" as const] : [])],
+    you: { level: levelOf(access), owner: access.owner, following: access.owner || followerItem !== undefined, actions: [...sessionActionsFor(access, { status, workflowBlocked, closable: closableSession(session), display: taskShown?.statusView ?? summary.display, ...(task?.closedAt === undefined ? {} : { closed: true as const }) }), ...(canMakeAgent ? ["make_agent" as const] : [])],
       // Merge's rule (pressMerge): the effective owner, a maintainer of the project (granted or inherited) or an org admin. A reader at `view` who is one of the last two still presses it (C59).
       ...(session.subject.kind === "task" && levelOf(access) === "view" && (access.projectRole === "maintainer" || access.orgAdmin) ? { mayMerge: true as const } : {}),
       ...(live === undefined ? {} : { live }) },

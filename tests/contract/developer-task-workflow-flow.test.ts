@@ -31,7 +31,7 @@ import { recordThreadNoteThroughBroker } from "../../packages/broker/src/aws/sla
 import { finishPlanningWithMarkdown, planAnswer, planDocument, type RawChecksInput } from "../support/plan-documents.js";
 import { attachEvidence, planEvidenceJobItem } from "../../packages/broker/src/developer/plan-evidence-jobs.js";
 import { noticesFromStream } from "../../packages/broker/src/developer/notifications.js";
-import { DEV_ISSUER, MAYA, OMAR, createSingleAnswerPlanBroker, markThreadPosted, recordStream, teammate } from "../support/developer-task-broker.js";
+import { DEV_ISSUER, MAYA, OMAR, createSingleAnswerPlanBroker, markThreadPosted, recordStream, seedMembership, teammate } from "../support/developer-task-broker.js";
 import type { Developer } from "../support/developer-task-broker.js";
 import { SLACK_SEND_BACK_INSTRUCTIONS } from "../../packages/broker/src/aws/developer-tasks.js";
 import { registerHumanSendBackListener } from "../../packages/broker/src/lessons/send-back-events.js";
@@ -39,7 +39,7 @@ import { fakeModelAccess } from "../support/fake-model-access.js";
 import { call, registerSlackProject } from "../support/slack-broker.js";
 import { SLACK_CHANNEL, SLACK_TEAM } from "../support/slack-broker.js";
 import { TEST_ORG } from "../support/orgs.js";
-import { projectPk, projectRevisionKey } from "../../packages/contracts/src/org-scoped-keys.js";
+import { projectMemberKey, projectPk, projectRevisionKey } from "../../packages/contracts/src/org-scoped-keys.js";
 
 /** A prepare result as the worker sends it: where preparation checked out each repository. */
 const PREPARED = { result: { preparedBase: [{ repositoryId: "demo", baseCommitSha: "e".repeat(40) }] } };
@@ -4791,6 +4791,49 @@ describe("the owner resolves each blocking review finding (Task 5)", () => {
     expect((await t.harness.dev(MAYA, "POST", t.route, request)).status).toBe(200);
     expect(taskWorkflow(t.harness, t.taskId).revision).toBe(after.revision);
     expect(operations(t.harness, t.workspaceId).filter((item) => item.kind === "publish")).toHaveLength(1);
+  });
+
+  // UX2 slice 2 item 3 (review: missing tests): the task page's Resolve findings and Send back to coding routes under /v1/app call the same functions as /v1/dev and Slack, so the same people may use them.
+  it("the app's Resolve findings and Send back routes refuse a stranger, another org and a stale page, and work for the owner", async () => {
+    const t = await blockedOnFindings();
+    // The way the web app sends it: a browser session cookie, the origin and the CSRF header.
+    const browser = async (who: { developerId: string; sessionId: string }, path: string, body: unknown) => {
+      const id = randomUUID();
+      t.harness.db.set({ pk: `SESSION#${id}`, sk: "META", sessionId: id, developerId: who.developerId, amr: "oidc", startedAt: new Date(Date.now() - 60_000).toISOString(), endsAt: Math.floor(Date.now() / 1000) + 3600, reviewExpiresAt: Math.floor(Date.now() / 1000) + 3600, authTime: new Date().toISOString() });
+      const response = await t.harness.handler({
+        rawPath: path.replace("/v1/app/", "/v1/web/"), rawQueryString: "", routeKey: "ANY /v1/web/{proxy+}",
+        headers: { cookie: `__Host-agentx_review_session=${id}`, "sec-fetch-site": "same-origin", origin: new URL(DEV_ISSUER).origin, [APP_CSRF_HEADER]: appCsrfTokenFor(id) },
+        body: JSON.stringify(body), requestContext: { requestId: "r", http: { method: "POST" } },
+      });
+      return { status: response.statusCode, body: JSON.parse(response.body) as Record<string, unknown> };
+    };
+    const findings = `/v1/app/tasks/${t.taskId}/workflow/review-findings`, sendBack = `/v1/app/tasks/${t.taskId}/workflow/send-back`;
+    const fixAll = [{ findingId: id("CRITIC", PARSER), action: "FIX" as const, note: "" }, { findingId: id("SECURITY", TOKEN), action: "FIX" as const, note: "" }];
+    const back = (extra: Record<string, unknown> = {}) => ({ requestId: randomUUID(), instructions: "Fix the problems listed above, then report what changed.", expectedRevision: t.blocked.revision, ...extra });
+    // Omar is in the org but has no role on the task: as if it did not exist.
+    expect((await browser(OMAR, findings, t.body(fixAll))).status).toBe(404);
+    expect((await browser(OMAR, sendBack, back())).status).toBe(404);
+    // A project viewer may read the task but changes nothing (refused, never a decision).
+    t.harness.db.set({ ...projectMemberKey(TEST_ORG, OMAR.developerId, "payments"), entityType: "MEMBERSHIP", ownerKey: OMAR.developerId, projectName: "payments", role: "viewer" });
+    expect([403, 404]).toContain((await browser(OMAR, findings, t.body(fixAll))).status);
+    expect([403, 404]).toContain((await browser(OMAR, sendBack, back())).status);
+    expect(taskWorkflow(t.harness, t.taskId)).toMatchObject({ stage: "REVIEW", state: "BLOCKED", revision: t.blocked.revision });
+    // A person of another org gets the same NOT_FOUND.
+    const stranger = { developerId: "f".repeat(64), sessionId: "s-stranger" };
+    seedMembership(t.harness.db, stranger.developerId, { orgId: "org_zzzzzzzzzzzzzzzzzzzz", role: "owner" });
+    t.harness.db.set({ pk: `DEVELOPER#${stranger.developerId}`, sk: "META", developerId: stranger.developerId, provider: "oidc", displayName: "Stranger", firstSignInAt: "x", lastSignInAt: "x", revoked: false });
+    expect((await browser(stranger, findings, t.body(fixAll))).status).toBe(404);
+    expect((await browser(stranger, sendBack, back())).status).toBe(404);
+    // The owner's page that is out of date is refused, and nothing changes.
+    const staleFindings = await browser(MAYA, findings, t.body(fixAll, { expectedRevision: t.blocked.revision + 1 }));
+    expect(staleFindings.status, JSON.stringify(staleFindings.body)).toBe(409);
+    expect((await browser(MAYA, sendBack, back({ expectedRevision: t.blocked.revision + 1 }))).status).toBe(409);
+    expect(taskWorkflow(t.harness, t.taskId)).toMatchObject({ stage: "REVIEW", state: "BLOCKED", revision: t.blocked.revision });
+    // The owner's current press works, through the app route.
+    const sent = await browser(MAYA, sendBack, back());
+    expect(sent.status, JSON.stringify(sent.body)).toBe(200);
+    expect(taskWorkflow(t.harness, t.taskId).stage).toBe("IMPLEMENT");
+    expect(taskWorkflow(t.harness, t.taskId).revision).toBeGreaterThan(t.blocked.revision);
   });
 
   it("sending the findings to fix back to coding does not skip a pause the owner may not decide (final fix wave, the coding queue's own gate)", async () => {

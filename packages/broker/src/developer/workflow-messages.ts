@@ -370,7 +370,16 @@ const CLAIM_MIN_VISIBLE = 24;
 /** The page's address for a document: the task page at that document and version. Never a link to a version alone. */
 export function planReviewLink(taskPageUrl: string, workflow: Pick<WorkflowSnapshot, "path" | "reviewPhase">, version: number): string {
   const anchor = workflowDocumentName(workflow).replace(" ", "-");
-  return `${taskPageUrl}?doc=${anchor}&from=${version}#${anchor}`;
+  return pageDocumentLink(taskPageUrl, `doc=${anchor}&from=${version}`, anchor);
+}
+
+/**
+ * UX2 slice 2 item 4: a link to one document on the task's page. On the app's task page (`/app/sessions/<id>`) it opens the document's tab (`#design` or `#plan`); the legacy page (a task with no session)
+ * keeps its `?doc=` address.
+ */
+export function pageDocumentLink(page: string, query: string, anchor: string, documentName: string = anchor): string {
+  if (page.includes("/app/sessions/")) return `${page}#${documentName.startsWith("design") ? "design" : "plan"}`;
+  return `${page}?${query}#${anchor}`;
 }
 
 /** One claim as a quoted line, its indent kept (two spaces a level); escaped, one line, cut to `limit` characters. */
@@ -507,7 +516,7 @@ function planReview(context: WorkflowMessageContext, exits: ReturnType<typeof ex
       const { document: approved, commentId, allOwners } = answered.approvedOn;
       const comments = `${allOwners ? "your " : ""}${plural(answered.total, "comment")}`;
       const line = `AgentX replied to ${answered.answered === answered.total ? "" : `${answered.answered} of `}${comments} on the ${approved}.`;
-      tail.push(context.taskPageUrl === undefined || commentId === undefined ? line : link(`${context.taskPageUrl}?doc=${approved.replace(" ", "-")}#comment-${commentId}`, line));
+      tail.push(context.taskPageUrl === undefined || commentId === undefined ? line : link(pageDocumentLink(context.taskPageUrl, `doc=${approved.replace(" ", "-")}`, `comment-${commentId}`, approved), line));
     }
   } else if (answered !== undefined && answered.total > 0) tail.push(`AgentX answered ${answered.answered} of ${plural(answered.total, "comment")} from v${answered.fromVersion}.`);
   if (context.runEstimate !== undefined && workflowDocumentType(workflow) === "plan") tail.push(...runEstimateLines(context.runEstimate, context.agentName ?? "Rovara Code", workflow));
@@ -989,7 +998,9 @@ function copyOf(context: WorkflowMessageContext): { text: string; buttons: Butto
     // The owner can close the task while its pull request is open (the pull request stays on GitHub).
     case "WAIT_FOR_MERGE/WAITING": {
       const text = context.pullRequestReopened !== undefined ? pullRequestReopened(workflow, context.pullRequestReopened) : waitingForMerge(workflow);
-      return text === undefined ? undefined : { text, buttons: [exits.close] };
+      // UX2 slice 2: "press Merge in Rovara" carries the link to the task's page, where Merge is.
+      const merge = workflow.definitionVersion === "1.1.0" && context.taskPageUrl !== undefined ? `\n${link(context.taskPageUrl, "Open the task in Rovara to merge")}` : "";
+      return text === undefined ? undefined : { text: `${text}${merge}`, buttons: [exits.close] };
     }
     // The feedback review runs before anything is proposed; no button, as nothing is waiting on the owner yet.
     // Plan 6 Task 17: while the base branch is merged into the pull request's branch nothing is said (nothing the owner can act on, and a merge that changes nothing must not leave a message the thread never takes back).
@@ -998,7 +1009,10 @@ function copyOf(context: WorkflowMessageContext): { text: string; buttons: Butto
     // pull request ends the following; a failed feedback review or push leaves the merge still tracked.
     // Plan 6 Task 15: CI failing and a person needed (Rovara is set to suggest, three fixes did not help, or a fix changed nothing): the reason says it (its check name and log line are GitHub's words, escaped); Retry the fix is in the app.
     // Plan 6 Task 17: the branch still conflicts after the conflict rounds, or the base changed CI workflow files, which Rovara can't push: a person updates the branch on GitHub.
-    case "WAIT_FOR_MERGE/BLOCKED": if (isCiFixBlockReason(workflow.blockReason) || isBranchSyncBlockReason(workflow.blockReason)) return { text: slackText(workflow.blockReason!), buttons: [exits.close] };
+    case "WAIT_FOR_MERGE/BLOCKED": if (isCiFixBlockReason(workflow.blockReason) || isBranchSyncBlockReason(workflow.blockReason)) {
+      // UX2 slice 2: "Retry the fix" is in the app: the line carries the link to the task's page.
+      return { text: `${slackText(workflow.blockReason!)}${context.taskPageUrl === undefined ? "" : `\n${link(context.taskPageUrl, "Open the task in Rovara to retry")}`}`, buttons: [exits.close] };
+    }
       return { text: workflow.blockReason === WORKFLOW_BLOCK_REASONS.pullRequestChanged
       ? `I stopped following the pull request. ${plainBlockReason(workflow.blockReason)}`
       : workflow.blockReason === WORKFLOW_BLOCK_REASONS.pullRequestClosed ? plainBlockReason(workflow.blockReason)

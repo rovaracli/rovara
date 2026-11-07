@@ -1,10 +1,12 @@
 import { HomeScreen } from "./screens/home/HomeScreen.js";
-import { Navigate, type RouteObject } from "react-router";
+import { Navigate, useLocation, useParams, type RouteObject } from "react-router";
 import { type AppNav } from "@agentx/contracts/web";
 import { AppShell } from "./shell/AppShell.js";
 import { NotFound } from "./shell/NotFound.js";
 import { Unavailable } from "./shell/Unavailable.js";
 import { RouteError } from "./shell/ErrorBoundary.js";
+/** UX2 slice 2 item 4: ONE task address. `/s/<id>` (older links) goes to `/app/sessions/<id>`, keeping the query and the tab. */
+function OldSessionAddress() { const { id = "" } = useParams(), location = useLocation();return <Navigate replace to={{ pathname: "/app/sessions/" + encodeURIComponent(id), search: location.search, hash: location.hash }} />; }
 function Page({ title }: { title: string }) { return <section><h1 tabIndex={-1}>{title}</h1></section>; }
 export function appRoutes(features: AppNav["features"]): RouteObject[] {
  const children: RouteObject[] = [
@@ -15,6 +17,8 @@ export function appRoutes(features: AppNav["features"]): RouteObject[] {
  { path: "onboard", lazy: async () => ({ Component: (await import("./screens/onboarding/OnboardScreen.js")).OnboardScreen }) },
  // Decision journey slice 3b: one decision on its own page (an outside approver's card).
  { path: "decisions/:kind/:subject", lazy: async () => ({ Component: (await import("./screens/decisions/DecisionScreen.js")).DecisionScreen }) },
+ // UX2 slice 2 item 5: your account page (how you're notified; the task emails' "change" and "stop" links open it).
+ { path: "account", lazy: async () => ({ Component: (await import("./screens/account/AccountScreen.js")).AccountScreen }) },
  ];
  // Lane C: waiting is caller-scoped, independent of the company-admin navigation flag.
  children.push({ path: "admin/waiting", handle: { webOnly: true }, lazy: async () => ({ Component: (await import("./screens/admin/AdminLayout.js")).AdminLayout }), children: [{ index: true, lazy: async () => ({ Component: (await import("./screens/admin/waiting/WaitingScreen.js")).WaitingScreen }) }] });
@@ -43,5 +47,5 @@ export function appRoutes(features: AppNav["features"]): RouteObject[] {
  children.push({ path: "chains/*", element: <Unavailable /> }, { path: "triggers/*", element: <Unavailable /> });
  if (features.describe) children.push({ path: "describe", element: <Page title="Describe an agent" /> });
  children.push({ path: "*", element: <NotFound /> });
- return [{ path: "/s/:id", element: <AppShell />, errorElement: <RouteError />, children: [{ index: true, lazy: async () => ({ Component: (await import("./screens/session/SessionScreen.js")).SessionScreen }) }] }, { path: "/app/signup", lazy: async () => ({ Component: (await import("./screens/onboarding/SignupScreen.js")).SignupScreen }), errorElement: <RouteError /> }, { path: "/app/welcome", lazy: async () => ({ Component: (await import("./screens/onboarding/WelcomeScreen.js")).WelcomeScreen }), errorElement: <RouteError /> }, { path: "/app/signed-out", lazy: async () => ({ Component: (await import("./screens/signed-out/SignedOutScreen.js")).SignedOutRoute }), errorElement: <RouteError /> }, { path: "/app", element: <AppShell />, errorElement: <RouteError />, children }, { path: "*", element: <NotFound /> }];
+ return [{ path: "/s/:id", element: <OldSessionAddress />, errorElement: <RouteError /> }, { path: "/app/signup", lazy: async () => ({ Component: (await import("./screens/onboarding/SignupScreen.js")).SignupScreen }), errorElement: <RouteError /> }, { path: "/app/welcome", lazy: async () => ({ Component: (await import("./screens/onboarding/WelcomeScreen.js")).WelcomeScreen }), errorElement: <RouteError /> }, { path: "/app/signed-out", lazy: async () => ({ Component: (await import("./screens/signed-out/SignedOutScreen.js")).SignedOutRoute }), errorElement: <RouteError /> }, { path: "/app", element: <AppShell />, errorElement: <RouteError />, children }, { path: "*", element: <NotFound /> }];
 }

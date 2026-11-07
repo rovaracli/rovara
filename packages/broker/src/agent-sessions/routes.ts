@@ -54,6 +54,8 @@ export interface SessionRouteDependencies extends SessionReadDependencies, Pick<
   homeSourceTimeoutMs?: number | undefined;
   /** The Home card kinds that decision cards carry now (see `HomeDependencies.retiredKinds`); set by the wiring that mounts the decision routes. */
   retiredHomeKinds?: HomeDependencies["retiredKinds"];
+  /** UX2 slice 2: the caller's pending decision cards, for Home's one "needs you" count (see `HomeDependencies.pendingDecisions`). */
+  pendingDecisions?: HomeDependencies["pendingDecisions"];
   /** Task 19 (Plan 6's `HandoffRuntime`, H1): moving a session between a Mac and the cloud. Without it the move route answers `RUNTIME_UNAVAILABLE`. */
   handoff?: HandoffRuntime | undefined;
   /** Task 16: the project's card (repositories, setup, channels) for a person who already has a role in it. Without it the project page answers `NOT_FOUND`. */
@@ -210,7 +212,7 @@ export async function routeAgentSessionRequest(deps: SessionRouteDependencies, c
   }
   if (url.pathname === HOME_PATH || url.pathname.startsWith(`${HOME_PATH}/`)) {
     // Task 15: Home's cards, and a dismissal of one of them.
-    const home: HomeDependencies = { ...read, ...(approvals === undefined ? {} : { approvals }), ...(deps.retiredHomeKinds === undefined ? {} : { retiredKinds: deps.retiredHomeKinds }), ...(deps.homeSourceTimeoutMs === undefined ? {} : { homeSourceTimeoutMs: deps.homeSourceTimeoutMs }) };
+    const home: HomeDependencies = { ...read, ...(approvals === undefined ? {} : { approvals }), ...(deps.retiredHomeKinds === undefined ? {} : { retiredKinds: deps.retiredHomeKinds }), ...(deps.homeSourceTimeoutMs === undefined ? {} : { homeSourceTimeoutMs: deps.homeSourceTimeoutMs }), ...(deps.pendingDecisions === undefined ? {} : { pendingDecisions: deps.pendingDecisions }) };
     if (url.pathname === HOME_PATH) {
       if (request.method !== "GET") throw notFound();
       return homeCards(home, caller);

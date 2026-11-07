@@ -11,4 +11,4 @@ export function visibleAnchor(session: ReadSession, target: SessionAnchorRef["ta
  const found = session.anchors?.find(anchor => anchor.target === target && anchor.targetId === targetId);
  const parsed = SessionAnchorRefSchema.safeParse(found);return parsed.success ? parsed.data : undefined;
 }
-export const workflowStateWords = (state: string): string => ({ READY: "Ready", RUNNING: "Working", WAITING: "Waiting for a decision", BLOCKED: "Stopped", COMPLETE: "Complete" } as Record<string, string>)[state] ?? "Status unavailable";
+export const workflowStateWords = (state: string): string => ({ READY: "Ready", RUNNING: "Working", WAITING: "Waiting", BLOCKED: "Needs you", COMPLETE: "Complete" } as Record<string, string>)[state] ?? "Status unavailable";

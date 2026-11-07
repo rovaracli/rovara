@@ -313,6 +313,8 @@ describe("the health route's grants (A13)", () => {
       "packages/broker/src/ticket-updates/handler.ts",
       // 2026-11-07, 0.5.10 (ux4c, SEED-RISK-1): a look's seed lock row (TEST_ENV_LOOK_LOCK) expires with the look it locks; it is a working row of one proposal, and only seed-lock.ts writes and reads it.
       "packages/broker/src/test-env/seed-lock.ts",
+      // UX2 slice 2: a task notification waiting for the sweep (3 days), the per-person batching marker (1 day) and a Slack direct message row the notifier posts (2 days); each is a working row, none a durable record.
+      "packages/broker/src/notifications/attention.ts",
     ]);
     const found = execFileSync("grep", ["-rl", "indexExpiresAt\\|INDEX_EXPIRY_ATTRIBUTE", "packages", "infra/lib", "--include=*.ts", "--exclude-dir=dist", "--exclude-dir=node_modules"], { encoding: "utf8" }).trim().split("\n").filter((file) => file !== "");
     expect(found.filter((file) => !allowed.has(file))).toEqual([]);

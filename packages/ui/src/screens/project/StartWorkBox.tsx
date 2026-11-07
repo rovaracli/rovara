@@ -52,7 +52,7 @@ export function StartWorkBox({ project, agents }: { project: string; agents: rea
    setAccepted(true);
    // A legacy answer can lack its session id: never guess one, and never send the work a second time.
    const session = SessionIdSchema.safeParse(result.value.sessionId);
-   if (session.success) host.navigate("/s/" + session.data);
+   if (session.success) host.navigate("/app/sessions/" + session.data);
   } catch (failure) {
    // Too many open tasks: the broker's words name an AI-tool command, so the page says it in its own and offers the tasks to close.
    if (failure instanceof ApiError && failure.code === "WORKSPACE_LIMIT") { setFull(true);setError("You have too many open tasks to start more work. Close one of these, then start again.");}

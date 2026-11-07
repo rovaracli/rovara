@@ -40,7 +40,7 @@ import {
   SESSION_ENDED_MESSAGE,
   SESSION_LEGS_MAX,
   SESSION_RETENTION_DAYS,
-  SESSION_STATUS_WORDS,
+  sessionTaskStatus, taskStatusText,
   agentSessionKey,
   agentXError,
   canonicalJson,
@@ -171,7 +171,7 @@ const logOf = (deps: Pick<SessionReadDependencies, "log">) => deps.log ?? ((entr
 
 /** Where the work stands, in words, for the Mac: the title, the status and what the session last showed, cut to `HANDOFF_SUMMARY_MAX_BYTES`. */
 function summaryOf(session: AgentSessionRecord): string {
-  const lines = [`Session: ${session.title}`, `Status: ${SESSION_STATUS_WORDS[session.summary.status]}`];
+  const lines = [`Session: ${session.title}`, `Status: ${taskStatusText(sessionTaskStatus(session.summary))}`];
   if (session.summary.step !== undefined) lines.push(`Step: ${session.summary.step}`);
   if (session.summary.peek !== undefined) lines.push(`Latest: ${session.summary.peek}`);
   let text = lines.join("\n");

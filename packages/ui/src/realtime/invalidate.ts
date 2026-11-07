@@ -3,9 +3,10 @@ import type { QueryClient } from "@tanstack/react-query";
 import type { RealtimeNotice } from "@agentx/contracts/web";
 export function queryKeysFor(notice: RealtimeNotice): unknown[][] {
  switch (notice.type) {
- case "session.updated": return [["session", notice.sessionId], ["live"]];
+ // UX2 slice 2: a session that changed may have moved on Home's one "needs you" list (a decision card, a blocked or paused card), so Home and the cards are read again too.
+ case "session.updated": return [["session", notice.sessionId], ["live"], ["home"], ["decisions"]];
  case "session.event": return [["session", notice.sessionId, "events"], ["session", notice.sessionId, "messages"]];
- case "home.changed": return [["home"]];
+ case "home.changed": return [["home"], ["decisions"]];
  default: return [];
  }
 }

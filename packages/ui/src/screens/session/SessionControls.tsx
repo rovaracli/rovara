@@ -31,7 +31,7 @@ export function SessionControls({ id, agent, actions, following, onChanged, resp
    } else {
     const result = await (action === "stop" ? api.stop(id) : action === "retry" ? api.retry(id) : api.takeOver(id));
     if (result.kind !== "done") { if (action === "take_over") { setPending(result);return; }throw new ApiError(409, "PENDING", "This action is waiting for confirmation. Open the session to continue."); }
-    if (action === "retry") { await onChanged();host.navigate("/s/" + SessionIdSchema.parse(result.value.session.sessionId));return; }
+    if (action === "retry") { await onChanged();host.navigate("/app/sessions/" + SessionIdSchema.parse(result.value.session.sessionId));return; }
     if (action === "stop") { setStopOpen(false);{ const answer = result.value as { stop?: string; message?: string };setMessage(answer.stop === "NOTHING_RUNNING" ? (answer.message ?? "Nothing was running to stop.") : "Stop requested."); } }
    }
    await query.invalidateQueries({ queryKey: key });await onChanged();

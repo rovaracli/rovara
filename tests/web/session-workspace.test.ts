@@ -68,7 +68,7 @@ it("shows the time to a pull request beside the cost, and says when the plan che
  expect(screen.queryByText(/Estimated time/u)).toBeNull();expect(screen.queryByText(/Plan check unavailable/u)).toBeNull();plain.close();
 });
 it("marks only the server's current pipeline stage", () => {
- const f = setup();const current = f.container.querySelectorAll('[aria-current="step"]');expect(current).toHaveLength(1);expect(current[0]?.textContent).toContain("Plan check");expect(screen.getByText("Understand")).toBeTruthy();expect(screen.getByText("Build")).toBeTruthy();f.close();
+ const f = setup();const current = f.container.querySelectorAll('[aria-current="step"]');expect(current).toHaveLength(1);expect(current[0]?.textContent).toContain("Approval");expect(screen.getByText("Understand")).toBeTruthy();expect(screen.getByText("Build")).toBeTruthy();f.close();
 });
 it("shows agent-step reports as text and no Plan tab without a plan", () => {
  const task = taskFixture({ run: { state: "RUNNING", currentStep: { id: "investigate", name: "Investigate" }, steps: [{ id: "investigate", name: "Investigate", status: "running", report: "<img src=x onerror=alert(1)>" }], pendingApprovals: [] } });
@@ -169,4 +169,12 @@ it("says the agent wrote no conclusion when the findings have none, and only tha
  expect(screen.getByText("No code changes were needed.")).toBeTruthy();expect(screen.queryByText(/didn't write a conclusion/u)).toBeNull();older.close();
  const other = setup(fixture({ body: { kind: "task", task: taskFixture({ workflow: noCodeWorkflow({ blockReason: "Coding stopped before it finished.", noChangeFindings: { commands: [], conclusion: "left over" } }) }) } }));
  expect(screen.queryByText(/left over/u)).toBeNull();expect(screen.queryByText("No code changes were needed.")).toBeNull();other.close();
+});
+it("marks the automated plan check as its own stage and a design's approval as Design review, with the status model's words under the strip (UX2 slice 2)", () => {
+ const check = setup(fixture({ display: { state: "planning" } } as never, { workflow: { ...workflow(), definitionVersion: "1.1.0", stage: "PLAN_CRITIQUE", state: "RUNNING" } }));
+ let current = check.container.querySelectorAll('[aria-current="step"]');expect(current).toHaveLength(1);expect(current[0]?.textContent).toBe("Plan check");
+ expect(screen.getByText("Planning")).toBeTruthy();expect(screen.queryByText("Waiting for a decision")).toBeNull();check.close();
+ const design = setup(fixture({ display: { state: "needs_you", reason: "the design is waiting for approval" } } as never, { workflow: { ...workflow(), path: "FULL", reviewPhase: "DESIGN" } }));
+ current = design.container.querySelectorAll('[aria-current="step"]');expect(current[0]?.textContent).toBe("Design review");
+ expect(screen.getByText("Needs you: the design is waiting for approval")).toBeTruthy();design.close();
 });

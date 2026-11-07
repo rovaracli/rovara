@@ -7,6 +7,7 @@
 // The service names an Ask by its org, session and id; it can name only an Ask the broker queued itself, and everything that decides what the turn may know or cost (the audience, the asker, the
 // task) comes from the broker's own record of that Ask, never from the request. The switch is OFF by default: with it off (`LIVE_ASK_ENABLED` not exactly "1") nothing is built, every route
 // answers NOT_FOUND, and a queued Ask cannot exist.
+import { sessionPageUrl } from "../../decisions/open-path.js";
 import { LambdaClient } from "@aws-sdk/client-lambda";
 import { GetCommand, PutCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
 import { createHmac } from "node:crypto";
@@ -286,7 +287,7 @@ export function linearCommentIntakeOf(dependencies: AwsBrokerDependencies, taskP
   if (ask === undefined || dependencies.linearReply === undefined) return undefined;
   // The link a refusal sends a person to is the task's own page, on this install's issuer (none where there is no issuer).
   const issuer = dependencies.developer?.issuer;
-  const link = taskPageLink ?? (issuer === undefined ? undefined : (_orgId: OrgId, _sessionId: string, taskId: string): string | undefined => { try { return taskPageUrl(issuer, taskId); } catch { return undefined; } });
+  const link = taskPageLink ?? (issuer === undefined ? undefined : (_orgId: OrgId, sessionId: string, taskId: string): string | undefined => { try { return sessionPageUrl(issuer, sessionId) ?? taskPageUrl(issuer, taskId); } catch { return undefined; } });
   // An older binding (made before bindings named their Linear workspace) asks the org's Linear connections which workspaces they have checked as.
   const connections = dependencies.orgConnections;
   const workspacesOfOrg = connections === undefined ? undefined : async (orgId: OrgId): Promise<string[]> => [...await connectionWorkspaceKeys(connections, orgId)].sort();

@@ -24,7 +24,7 @@ describe("agentx session start", () => {
     expect(await h.run(["session", "start", "--project", "payments", "--workflow", "full", "Do it"])).toBe(0);
     expect(h.calls[0]!.body).toMatchObject({ workflow: true, workflowPath: "FULL" });
     // No link from the server: the link is built from the session id on the control plane's own origin.
-    expect(h.stdout()).toContain(`${CELL}/s/${SES}`);
+    expect(h.stdout()).toContain(`${CELL}/app/sessions/${SES}`);
   });
 
   it("never prints a link to another host", async () => {

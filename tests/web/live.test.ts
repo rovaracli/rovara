@@ -35,7 +35,7 @@ function setup(options: { tile?: ReturnType<typeof liveFixture>; path?: string; 
  return { ...f, ...ui, query, router, changed, answer(next: typeof tiles, nextStatus = 200) { tiles = next;status = nextStatus; }, owned() { owner = true; }, close() { ui.unmount();router.dispose();query.clear(); } };
 }
 it("shows only Arjun's permitted Follow, with status words and a stable session link", async () => {
- const f = setup();expect(screen.getByRole("button", { name: "Follow" })).toBeTruthy();expect(screen.queryByRole("button", { name: "Take over" })).toBeNull();expect(screen.queryByRole("button", { name: "Stop" })).toBeNull();expect(screen.getByText("Running")).toBeTruthy();expect(screen.getByRole("link", { name: "Fix duplicate refunds" }).getAttribute("href")).toBe("/s/" + SESSION_FIXTURE_ID);fireEvent.click(screen.getByRole("button", { name: "Follow" }));await waitFor(() => expect(f.changed).toHaveBeenCalledTimes(1));expect(f.request.mock.calls[0]?.[0]).toMatchObject({ method: "POST", path: "/v1/app/sessions/" + SESSION_FIXTURE_ID + "/follow" });f.close();
+ const f = setup();expect(screen.getByRole("button", { name: "Follow" })).toBeTruthy();expect(screen.queryByRole("button", { name: "Take over" })).toBeNull();expect(screen.queryByRole("button", { name: "Stop" })).toBeNull();expect(screen.getByText("Running")).toBeTruthy();expect(screen.getByRole("link", { name: "Fix duplicate refunds" }).getAttribute("href")).toBe("/app/sessions/" + SESSION_FIXTURE_ID);fireEvent.click(screen.getByRole("button", { name: "Follow" }));await waitFor(() => expect(f.changed).toHaveBeenCalledTimes(1));expect(f.request.mock.calls[0]?.[0]).toMatchObject({ method: "POST", path: "/v1/app/sessions/" + SESSION_FIXTURE_ID + "/follow" });f.close();
 });
 it("shows Max's permitted actions and confirms Stop before posting it", async () => {
  const f = setup({ tile: liveFixture({ actions: ["watch", "take_over", "stop", "retry"] }), send: async () => ({ status: 200, body: { session: sessionFixture() } }) });
@@ -98,7 +98,7 @@ it("shows a refused Stop without claiming it stopped or closing the confirmation
 });
 it("retries once and opens the actual returned session rather than assuming the old id", async () => {
  const returned = "ses_bbbbbbbbbbbbbbbbbbbb", send = vi.fn(async () => ({ status: 200, body: { session: sessionFixture({ sessionId: returned }) } }));
- const f = setup({ tile: liveFixture({ actions: ["retry"] }), send }), navigate = vi.spyOn(f.host, "navigate"), button = screen.getByRole("button", { name: "Retry" });fireEvent.click(button);fireEvent.click(button);await waitFor(() => expect(navigate).toHaveBeenCalledWith("/s/" + returned));expect(send).toHaveBeenCalledTimes(1);expect(f.changed).toHaveBeenCalledTimes(1);f.close();
+ const f = setup({ tile: liveFixture({ actions: ["retry"] }), send }), navigate = vi.spyOn(f.host, "navigate"), button = screen.getByRole("button", { name: "Retry" });fireEvent.click(button);fireEvent.click(button);await waitFor(() => expect(navigate).toHaveBeenCalledWith("/app/sessions/" + returned));expect(send).toHaveBeenCalledTimes(1);expect(f.changed).toHaveBeenCalledTimes(1);f.close();
 });
 it("offers no action without a capability and uses DELETE for Following", async () => {
  const none = setup({ tile: liveFixture({ actions: [] }) });for (const name of ["Follow", "Take over", "Stop", "Retry"]) expect(screen.queryByRole("button", { name })).toBeNull();none.close();

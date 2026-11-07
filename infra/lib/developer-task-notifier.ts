@@ -173,7 +173,8 @@ export class DeveloperTaskNotifier extends Construct {
         // final report, ready to post to its project's channel. Wire lane D: a task's spec changed or could not be made.
         // TE-4: a project's settings-proof item (commands a person saved in a browser failed their check: the saver is told).
         // DR10: a design review that waits on people has a reminder, its park or its close to say (the broker's wait sweep writes the row).
-        lambda.FilterCriteria.filter({ dynamodb: { NewImage: { entityType: { S: oneOf(["WORKFLOW_ACTION_REFUSAL", "TASK_COMMENT_NUDGE", "TASK_PEOPLE_NOTIFICATION", "AGENT_REPORT_POST", "SPEC_STATE", "PROJECT_SETTINGS_PROOF", "DESIGN_WAIT_NOTIFY"]) } } } }),
+        // UX2 slice 2: a batch of task notifications for one person, sent as a Slack direct message (the broker's session sweep writes the row).
+        lambda.FilterCriteria.filter({ dynamodb: { NewImage: { entityType: { S: oneOf(["WORKFLOW_ACTION_REFUSAL", "TASK_COMMENT_NUDGE", "TASK_PEOPLE_NOTIFICATION", "AGENT_REPORT_POST", "SPEC_STATE", "PROJECT_SETTINGS_PROOF", "DESIGN_WAIT_NOTIFY", "TASK_ATTENTION_DM"]) } } } }),
       ],
     });
     new lambda.EventSourceMapping(this, "NoticeQueueMapping", {

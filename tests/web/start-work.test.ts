@@ -44,21 +44,21 @@ const box = () => screen.findByRole("textbox", { name: "What do you need?" });
 it("posts the text to the project's code route and opens the returned session", async () => {
  const f = setup(), navigate = vi.spyOn(f.host, "navigate");
  fireEvent.change(await box(), { target: { value: "Fix the duplicate refunds" } });fireEvent.click(screen.getByRole("button", { name: "Start" }));
- await waitFor(() => expect(navigate).toHaveBeenCalledWith("/s/" + id));
+ await waitFor(() => expect(navigate).toHaveBeenCalledWith("/app/sessions/" + id));
  expect(posts(f)).toHaveLength(1);expect(posts(f)[0]).toMatchObject({ path: CODE, body: { input: { text: "Fix the duplicate refunds" }, requestId: expect.stringMatching(/^[0-9a-f-]{36}$/u) as unknown } });
  expect(Object.keys(posts(f)[0]!.body as object).sort()).toEqual(["input", "requestId"]);f.close();
 });
 for (const modifier of ["metaKey", "ctrlKey"] as const) it("submits with " + modifier + "+Enter but not with a bare Enter", async () => {
  const f = setup(), navigate = vi.spyOn(f.host, "navigate"), input = await box();
  fireEvent.change(input, { target: { value: "Add a retry" } });fireEvent.keyDown(input, { key: "Enter" });expect(posts(f)).toHaveLength(0);
- fireEvent.keyDown(input, { key: "Enter", [modifier]: true });await waitFor(() => expect(navigate).toHaveBeenCalledWith("/s/" + id));expect(posts(f)).toHaveLength(1);f.close();
+ fireEvent.keyDown(input, { key: "Enter", [modifier]: true });await waitFor(() => expect(navigate).toHaveBeenCalledWith("/app/sessions/" + id));expect(posts(f)).toHaveLength(1);f.close();
 });
 it("sends once while a start is in flight and disables the box", async () => {
  let finish: ((value: ApiResponse) => void) | undefined;const send = vi.fn(async () => new Promise<ApiResponse>(resolve => { finish = resolve; }));
  const f = setup(undefined, { send }), navigate = vi.spyOn(f.host, "navigate"), input = await box();fireEvent.change(input, { target: { value: "Add a retry" } });
  const start = screen.getByRole<HTMLButtonElement>("button", { name: "Start" });fireEvent.click(start);fireEvent.click(start);fireEvent.keyDown(input, { key: "Enter", metaKey: true });
  expect(send).toHaveBeenCalledTimes(1);expect((input as HTMLTextAreaElement).disabled).toBe(true);expect(start.disabled).toBe(true);
- finish?.(started());await waitFor(() => expect(navigate).toHaveBeenCalledWith("/s/" + id));f.close();
+ finish?.(started());await waitFor(() => expect(navigate).toHaveBeenCalledWith("/app/sessions/" + id));f.close();
 });
 it("counts characters and cannot submit text over 4,000 characters or blank text", async () => {
  const f = setup(), input = await box(), start = screen.getByRole<HTMLButtonElement>("button", { name: "Start" });
@@ -95,7 +95,7 @@ it("lists Rovara Code first in New session and starts it through the code route"
  const dialog = screen.getByRole("dialog"), choices = within(dialog).getAllByRole("button").filter(button => button.closest(".rv-project-choices") !== null);
  expect(choices[0]!.textContent).toBe("Describe the work (Rovara Code)");expect(choices[1]!.textContent).toBe("Payments expert");expect(within(dialog).queryByRole("button", { name: "Rovara Code" })).toBeNull();
  fireEvent.click(choices[0]!);fireEvent.change(await screen.findByRole("textbox", { name: /^What should/u }), { target: { value: "Fix the refunds" } });fireEvent.click(screen.getByRole("button", { name: "Start session" }));
- await waitFor(() => expect(navigate).toHaveBeenCalledWith("/s/" + id));expect(posts(f).map(request => request.path)).toEqual([CODE]);f.close();
+ await waitFor(() => expect(navigate).toHaveBeenCalledWith("/app/sessions/" + id));expect(posts(f).map(request => request.path)).toEqual([CODE]);f.close();
 });
 it("routes every Rovara Code call of the runs API to the code route", async () => {
  const f = gatewayHost(async () => started()), api = createRunApi(f.host);
@@ -126,7 +126,7 @@ it("answers a full workspace limit with the person's open tasks as links with a 
  expect((await screen.findByRole("alert")).textContent).toBe("You have too many open tasks to start more work. Close one of these, then start again.");
  expect(document.body.textContent).not.toContain("agentx_close_task");
  const list = await screen.findByRole("list", { name: "Your open tasks" });
- expect(within(list).getAllByRole("link").map(link => [link.textContent, link.getAttribute("href")])).toEqual([["Open task 1", "/s/" + first], ["Open task 2", "/s/" + second]]);
+ expect(within(list).getAllByRole("link").map(link => [link.textContent, link.getAttribute("href")])).toEqual([["Open task 1", "/app/sessions/" + first], ["Open task 2", "/app/sessions/" + second]]);
  // Close the first: the dialog asks, and only its button closes.
  fireEvent.click(within(list).getAllByRole("button", { name: "Close" })[0]!);
  expect(await screen.findByRole("dialog", { name: "Close this task?" })).toBeTruthy();
@@ -137,7 +137,7 @@ it("answers a full workspace limit with the person's open tasks as links with a 
  expect(send.mock.calls.find(([request]) => request.path.endsWith("/close"))![0]).toMatchObject({ method: "POST", body: { requestId: expect.stringMatching(/^[0-9a-f-]{36}$/u) as unknown } });
  // The refusal is gone, so the same text can be started again.
  await waitFor(() => expect(screen.queryByRole("alert")).toBeNull());
- fireEvent.click(screen.getByRole("button", { name: "Start" }));await waitFor(() => expect(navigate).toHaveBeenCalledWith("/s/" + id));f.close();
+ fireEvent.click(screen.getByRole("button", { name: "Start" }));await waitFor(() => expect(navigate).toHaveBeenCalledWith("/app/sessions/" + id));f.close();
 });
 it("offers no Close for a task the person does not own, and says so when none can be closed from here", async () => {
  const f = setup(undefined, { send: async () => LIMIT, get: request => request.path.startsWith("/v1/app/live") ? { status: 200, body: { tiles: [liveFixture({ actions: ["watch"] })] } } : undefined });
@@ -185,7 +185,7 @@ describe("Design first in the start box", () => {
  it("sends the flag only when ticked, and an unticked start has exactly the old body", async () => {
   const f = setup(undefined, { get: withPlaybook(playbookAnswer(true)) }), navigate = vi.spyOn(f.host, "navigate");
   fireEvent.change(await box(), { target: { value: "Add a retry" } });fireEvent.click(await screen.findByRole("checkbox", { name: DESIGN_FIRST }));fireEvent.click(screen.getByRole("button", { name: "Start" }));
-  await waitFor(() => expect(navigate).toHaveBeenCalledWith("/s/" + id));
+  await waitFor(() => expect(navigate).toHaveBeenCalledWith("/app/sessions/" + id));
   expect(posts(f)[0]).toMatchObject({ path: CODE, body: { input: { text: "Add a retry" }, designFirst: true } });f.close();
   const plain = setup(undefined, { get: withPlaybook(playbookAnswer(true)) });
   fireEvent.change(await box(), { target: { value: "Add a retry" } });await screen.findByRole("checkbox", { name: DESIGN_FIRST });fireEvent.click(screen.getByRole("button", { name: "Start" }));

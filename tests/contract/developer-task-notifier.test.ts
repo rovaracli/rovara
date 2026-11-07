@@ -1556,7 +1556,7 @@ describe("the shared thread (FR-032, US3 scenario 1)", () => {
     expect(posts[0]).not.toHaveProperty("threadTs");
     expect(posts[0]!.channel).toBe(SLACK_CHANNEL);
     expect(posts[0]!.text).toContain(`<@${MAYA.slackUserId}> started a task from Claude Code: *Fix the flaky retry test*`);
-    expect(posts[0]!.text).toContain("Status: STARTING");
+    expect(posts[0]!.text).toContain("Status: Understanding the request.");
     expect(posts[0]!.text).toContain("may mention AgentX in this thread");
     const task = db.get(`DEVTASK#${taskId}`, "META") as { share: { threadTs: string } };
     expect(task.share.threadTs).toMatch(/^\d{10}\.\d{6}$/);
@@ -1625,7 +1625,7 @@ describe("the shared thread (FR-032, US3 scenario 1)", () => {
     await h.pump();
     await h.pump();
     expect(h.posts).toHaveLength(1);
-    expect(h.posts[0]!.text).toContain("Status: RUNNING");
+    expect(h.posts[0]!.text).toContain("Status: Building.");
     expect(h.logs).toContainEqual(expect.objectContaining({ event: "developer_notifier.notice", kind: "ready", noticeId: `${prepareId}:ready`, outcome: "before_share" }));
   });
 

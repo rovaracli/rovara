@@ -15,7 +15,7 @@ const HOME_HREF_MAX = 2048;
  * loop) is one card per project with suggested rules to review, for the project's maintainers; an older client reads it as "unknown". Slice 5: `waiting_ticket` is a ticket that waits for a
  * member (Start, or "Not this one"), for the people who may start tasks in its project; `intake_source` is a watched tracker source that keeps failing, for the project's maintainers.
  */
-export const HOME_CARD_KINDS = ["approval", "spend_request", "question", "plan", "pull_request", "failure", "offer", "rule_suggestion", "waiting_ticket", "intake_source"] as const;
+export const HOME_CARD_KINDS = ["approval", "spend_request", "question", "plan", "pull_request", "failure", "offer", "rule_suggestion", "waiting_ticket", "intake_source", "blocked", "paused"] as const;
 export type HomeCardKind = (typeof HOME_CARD_KINDS)[number];
 /** The kinds a person may dismiss; every other card goes away when it is done. */
 export const HOME_DISMISSIBLE_KINDS = ["failure", "offer"] as const;
@@ -29,7 +29,7 @@ export const HOME_DISMISS_DAYS = 30;
 export const HOME_NOT_DISMISSIBLE = "This card goes away when it's done.";
 
 /** `<kind>:<id>`: the kind, a colon and the id that kind uses (an approval id, a session id, …), nothing else. */
-export const HOME_CARD_ID_PATTERN = /^(approval|spend_request|question|plan|pull_request|failure|offer|rule_suggestion|waiting_ticket|intake_source):[A-Za-z0-9_-]{1,150}$/u;
+export const HOME_CARD_ID_PATTERN = /^(approval|spend_request|question|plan|pull_request|failure|offer|rule_suggestion|waiting_ticket|intake_source|blocked|paused):[A-Za-z0-9_-]{1,150}$/u;
 export const HomeCardIdSchema = z.string().regex(HOME_CARD_ID_PATTERN);
 
 const HrefSchema = z.string().url().max(HOME_HREF_MAX).refine((value) => /^https?:\/\//iu.test(value), "href: a web address");
@@ -60,8 +60,11 @@ export const HomeCardSchema = z
 export type HomeCard = z.infer<typeof HomeCardSchema>;
 export const HomeCardReaderSchema = forwardReader(HomeCardSchema);
 
-/** The first `HOME_CARDS_MAX` cards in ranking order, and `total`: how many cards the person has now (read at most a fixed number from each source). */
-export const HomeResponseSchema = z.object({ cards: z.array(HomeCardSchema).max(HOME_CARDS_MAX), total: z.number().int().min(0) }).strict();
+/**
+ * The first `HOME_CARDS_MAX` cards in ranking order, and `total`: how many cards the person has now (read at most a fixed number from each source). UX2 slice 2: `needsYou` is the ONE "needs you" count,
+ * the same on Home and in the sidebar: these cards (less any whose decision a pending decision card holds) plus the pending decision cards. Absent from older servers (read `total` then).
+ */
+export const HomeResponseSchema = z.object({ cards: z.array(HomeCardSchema).max(HOME_CARDS_MAX), total: z.number().int().min(0), needsYou: z.number().int().min(0).optional() }).strict();
 export type HomeResponse = z.infer<typeof HomeResponseSchema>;
 export const HomeResponseReaderSchema = forwardReader(HomeResponseSchema);
 

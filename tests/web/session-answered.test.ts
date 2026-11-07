@@ -80,7 +80,7 @@ it("starts the change once however many times it is pressed, through change-anyw
   const sent = request.body as { requestId: string };
   expect(request.body).toEqual({ requestId: sent.requestId });
   expect(sent.requestId).toMatch(/^[0-9a-f-]{36}$/u);
-  await waitFor(() => expect(f.navigate).toHaveBeenCalledWith("/s/" + NEW_SESSION));
+  await waitFor(() => expect(f.navigate).toHaveBeenCalledWith("/app/sessions/" + NEW_SESSION));
   expect(f.posts()).toHaveLength(1);
   f.close();
 });
@@ -136,7 +136,7 @@ it("shows no button when the session runs on a Mac now", async () => {
 
 it("shows nothing new for a task that was not answered", async () => {
   const f = setup(answeredSession({ answered: false }));
-  await screen.findByText("Working");
+  expect((await screen.findAllByText("Building")).length).toBeGreaterThan(0);
   expect(screen.queryByRole("region", { name: "Rovara's answer" })).toBeNull();
   expect(screen.queryByText(/Rovara answered this/u)).toBeNull();
   expect(screen.queryByRole("button", { name: "Make a change anyway" })).toBeNull();

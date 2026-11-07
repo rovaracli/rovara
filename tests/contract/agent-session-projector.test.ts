@@ -118,7 +118,7 @@ describe("what a session shows while its work goes on", () => {
     expect(session.summary).toMatchObject({ status: "paused", costUsd: 2.5, runLimitUsd: 5, stopAtUsd: 3, needsPeople: [ARJUN] });
     expect(session.summary.lastRunFailed).toBeUndefined();
     expect(session.endedAt).toBeUndefined();
-    expect(p.events(s.sessionId).map((event) => event.text)).toEqual(["Paused for budget"]);
+    expect(p.events(s.sessionId).map((event) => event.text)).toEqual(["Paused: needs more budget"]);
     expect(p.w.db.get(openAgentSessionKey(ORG_A, s.sessionId))).toBeDefined();
   });
 
@@ -154,7 +154,8 @@ describe("when a session ends", () => {
     expect(p.w.db.get(endedSessionWorkKey("2026-10-22", ORG_A, s.sessionId))).toMatchObject({ orgId: ORG_A, sessionId: s.sessionId });
     expect(p.tile(s.sessionId)).toMatchObject({ endedAt: closedAt, indexExpiresAt: Math.floor(Date.parse(closedAt) / 1000) + LIVE_ENDED_KEEP_HOURS * 3600 });
     expect(p.events(s.sessionId).map((event) => event.type)).toEqual(["status"]);
-    expect(p.events(s.sessionId)[0]!.text).toContain("succeeded");
+    // UX2 slice 2: a task its owner closed reads Closed on its timeline too, whatever its last run did.
+    expect(p.events(s.sessionId)[0]!.text).toBe("Closed");
   });
 
   it("is failed for a task whose creator was removed and for one closed after a failed run, and cancelled for one closed with no run", async () => {

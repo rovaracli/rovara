@@ -18,7 +18,7 @@ import {
   LiveTileSchema,
   MEMBER_GRANT_SK_PREFIX,
   OrgRoleSchema,
-  SESSION_STATUS_WORDS,
+  sessionTaskStatus, statusNeedsSomeone, taskStatusText,
   SessionIdSchema,
   SessionLevelSchema,
   agentSessionKey,
@@ -128,6 +128,21 @@ const withinWindow = (endedAt: unknown, now: number): boolean => typeof endedAt 
  * What the index item says that cannot be right for the filter, so the session is not even read. A tile written at the start has only its id, project, owner and time, so a fact it
  * lacks never drops a session the filter might keep: only Needs me and Failed (whose sessions always have the summary that says so) are narrowed by the summary.
  */
+/**
+ * UX2 slice 2 item 2: the ONE "needs you" rule, the same as Home's list: a person named as needed (an approver, a budget request's decider, the owner of a waiting plan), or the session's owner while it
+ * stands in a state that asks someone to act (Needs you, Paused: needs more budget, Ready to merge, Failed). Live's Needs me, a tile's `needsYou` and the sidebar's per-agent dots all read it.
+ */
+export function needsYouOf(session: Pick<AgentSessionRecord, "endedAt" | "summary">, developerId: string, owner: boolean): boolean {
+  if (session.endedAt !== undefined) return false;
+  return session.summary.needsPeople.includes(developerId) || (owner && statusNeedsSomeone(sessionTaskStatus(session.summary)));
+}
+
+/** Whether a stored summary may stand for a session that needs its owner (the index's narrowing; the owner is judged after the session's access is read). */
+const mayNeedOwner = (summary: unknown): boolean => {
+  const read = summary as { status?: unknown; display?: unknown; lastRunFailed?: true } | undefined;
+  return typeof read?.status === "string" && statusNeedsSomeone(sessionTaskStatus({ status: read.status, display: read.display, ...(read.lastRunFailed === true ? { lastRunFailed: true as const } : {}) }));
+};
+
 function tileMayMatch(tile: Item, filter: LiveFilter, project: string | undefined, developerId: string, now: number): boolean {
   if (project !== undefined && tile["project"] !== project) return false;
   const ended = typeof tile["endedAt"] === "string";
@@ -136,7 +151,7 @@ function tileMayMatch(tile: Item, filter: LiveFilter, project: string | undefine
     case "failed":
       return ended ? tile["status"] === "failed" && withinWindow(tile["endedAt"], now) : summary?.lastRunFailed === true;
     case "needs_me":
-      return !ended && Array.isArray(summary?.needsPeople) && (summary.needsPeople as unknown[]).includes(developerId);
+      return !ended && ((Array.isArray(summary?.needsPeople) && (summary.needsPeople as unknown[]).includes(developerId)) || mayNeedOwner(summary));
     default:
       return !ended;
   }
@@ -150,7 +165,7 @@ function sessionMatches(session: AgentSessionRecord, filter: LiveFilter, project
     case "failed":
       return ended ? session.summary.status === "failed" && withinWindow(session.endedAt, now) : session.summary.lastRunFailed === true;
     case "needs_me":
-      return !ended && session.summary.needsPeople.includes(developerId);
+      return !ended && (session.summary.needsPeople.includes(developerId) || mayNeedOwner(session.summary));
     default:
       return !ended;
   }
@@ -316,6 +331,7 @@ async function readLive(deps: LiveDependencies, caller: SessionReadCaller, query
       if (access === undefined) continue;
       if (filter === "mine" && !(access.owner || (session.startedBy.kind === "member" && session.startedBy.developerId === caller.developerId))) continue;
       if (filter === "team" && !(session.kind === "local" ? !access.owner : shareRole !== undefined)) continue;
+      if (filter === "needs_me" && !needsYouOf(session, caller.developerId, access.owner)) continue;
       judgedAll.push({ session, access, key: candidates[at]!.key });
       if (read.has(keyText(agentSessionKey(orgId, session.sessionId, `FOLLOWER#${caller.developerId}`)))) followers.add(session.sessionId);
     }
@@ -358,14 +374,14 @@ async function readLive(deps: LiveDependencies, caller: SessionReadCaller, query
       owner: withChosenOwnerName(access.effectiveOwner, ownerNames),
       where: session.where.kind === "cloud" ? { kind: "cloud" } : { kind: "mac", label: session.where.label, offline: summary.offline === true },
       status: summary.status,
-      statusWords: SESSION_STATUS_WORDS[summary.status],
+      statusWords: taskStatusText(sessionTaskStatus(summary)),
       ...(summary.step === undefined ? {} : { step: access.owner ? summary.step : hideEmailAddresses(summary.step) }),
       ...(summary.peek === undefined ? {} : { peek: access.owner ? summary.peek : hideEmailAddresses(summary.peek) }),
       ...(summary.lastRunFailed === undefined ? {} : { lastRunFailed: summary.lastRunFailed }),
       costUsd: summary.costUsd,
       viewingNow: looking.slice(0, LIVE_VIEWING_MAX),
       viewingNowCount: looking.length,
-      needsYou: summary.needsPeople.includes(caller.developerId),
+      needsYou: needsYouOf(session, caller.developerId, access.owner),
       following: access.owner || followers.has(session.sessionId),
       actions: sessionActionsFor(access, { ...summary, closable: closableSession(session) }),
       ...(approvalUrl === undefined ? {} : { approvalUrl }),

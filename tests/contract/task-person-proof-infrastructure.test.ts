@@ -379,18 +379,20 @@ describe("the named TEST proof-only installation gate", () => {
     // 2026-11-07 (UX5b script tokens): the named and foreign digests were retaken from the values the test reports, after one intended change: the `pt` entry of the broker's packed AGENTX_SETTINGS
     // (the ScriptTokensEnabled parameter itself is taken out of the remainder like the other switches). Legacy did not move.
     // Retaken again from the test's own values after the rebase onto integ/0510 at 44030261c (ux1, ux6a, ux5, ux4a merged); the named-templates snapshot differs from that head only by `pt`. Legacy did not move.
+    // 2026-11-07 (UX2 slice 2 notifications): the named and foreign digests were retaken from the values the test reports, after one intended change: the DeveloperTaskNotifier's stream filter also passes
+    // TASK_ATTENTION_DM rows (the named-templates snapshot shows exactly that string). Legacy did not move.
     const digestCases = [
       {
         label: "named",
         template: named,
-        withRoute: "b3413f0699a80ec583d404e5484bb3fb1685ab4e7ff45152f9948b304198ec8c",
-        withoutRoute: "a25101d33efef316d9df082fc05ef17d68844939e0dc219ebaf7f4efd3ebc034",
+        withRoute: "0929e8be480acd17349bbf9b104b96ac3e2bcb1f149cb5cebb6a392ca329c422",
+        withoutRoute: "3f1d3d18aea99cd8905d3cc18b396ac3b0c014ac3686d6cf7b1f4d214fe5d5a8",
       },
       {
         label: "foreign",
         template: foreign,
-        withRoute: "b0c4a3b7c45f8668b353475b9bbef21beafa8d7d992e3baaefbebc28b8c3f967",
-        withoutRoute: "4dbf2b73be7dd0dd98db9bc58a518e06e41447a606b1a9cc06a0e3c1efe83059",
+        withRoute: "cd5935bfbab07d1dfb17fa8736faee8d04c52622702a903b611f6870c75c451a",
+        withoutRoute: "4cce66dbb9c24ba8af2c095c18c0ff97f38bc30fae59f9beb66512ce66b35617",
       },
       {
         label: "legacy",

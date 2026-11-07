@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { TaskStatusSchema } from "./task-status.js";
 import {ModelFallbacksSchema} from "./stage-model-shared.js";
 import { DeveloperShareModeSchema } from "./project.js";
 import { AGENT_RUN_STATES, AGENT_RUN_STEP_STATUSES, AgentStepToolsSchema } from "./agent-run.js";
@@ -107,6 +108,17 @@ export const DeveloperTaskViewSchema = z.object({
   title: z.string(),
   project: z.string(),
   status: DeveloperTaskStatusSchema,
+  /** UX2 slice 2: where the task stands in the one status model (state, reason, next step), the words every surface shows instead of `status`. Absent from older servers. */
+  statusView: TaskStatusSchema.optional(),
+  /**
+   * UX2 slice 2 item 3: a blocked task's review findings and the two ways on that the task page offers (Resolve findings, Send back to coding), as Slack and the MCP tools offer them. The findings are the
+   * blocking ones of the current code not yet accepted (reviewer words, redacted and capped; plain text every reader escapes). The routes re-check who may. Absent unless the task is blocked with one to offer.
+   */
+  reviewFindings: z.object({
+    findings: z.array(z.object({ findingId: z.string().regex(/^[a-f0-9]{64}$/), role: z.enum(["CRITIC", "SECURITY"]), text: z.string().min(1).max(1000), file: z.string().max(500).optional(), line: z.number().int().positive().optional() }).strict()).max(50),
+    resolve: z.boolean(),
+    sendBack: z.boolean(),
+  }).strict().optional(),
   workflow: WorkflowSnapshotViewSchema.extend({
     planContent: z.string().max(WORKFLOW_PLAN_MAX_BYTES).optional(),
     workBreakdownDigest: z.string().regex(/^[a-f0-9]{64}$/).optional(),

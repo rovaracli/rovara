@@ -34,6 +34,7 @@ import {
   type SessionAction,
   type SessionLevel,
   type SessionStatus,
+  TaskStatusSchema,
 } from "@agentx/contracts";
 import type { ProjectMembers } from "../agents/access.js";
 import { grantRoleOf } from "../developer/project-roles.js";
@@ -410,8 +411,12 @@ export const OFFER_HANDOFF = false as boolean;
  * What the person may do, for the session's header: `view` watches and comments, `use` also steers, `edit` also stops, takes over (not the owner: they already own it) and shares, and retries a session that failed or was
  * cancelled, or whose workflow is blocked (`state` is the session's summary now). Handing off is the owner's.
  */
-export function sessionActionsFor(access: Pick<SessionAccess, "level" | "owner" | "orgAdmin"> & { projectRole?: ProjectRole | undefined }, state: { status: SessionStatus; workflowBlocked?: true | undefined; closable?: true | undefined; /** The task was closed by its owner: nothing can be steered, stopped, retried, taken over, handed off or closed again (it can still be watched, commented on and, at edit level, shared). */ closed?: true | undefined }): SessionAction[] {
+export function sessionActionsFor(access: Pick<SessionAccess, "level" | "owner" | "orgAdmin"> & { projectRole?: ProjectRole | undefined }, state: { status: SessionStatus; workflowBlocked?: true | undefined; closable?: true | undefined; /** The task was closed by its owner: nothing can be steered, stopped, retried, taken over, handed off or closed again (it can still be watched, commented on and, at edit level, shared). */ closed?: true | undefined;
+  /** UX2 slice 2 item 6: the summary's status in the one status model. Merged or Closed reads as closed here too: Stop, Retry and steering are not offered where they don't apply. */ display?: unknown }): SessionAction[] {
   if (access.level === "none") return [];
+  const shown = TaskStatusSchema.safeParse(state.display);
+  // A run that ended by itself (cancelled) reads Closed but can still be retried (`retryable`); a merge or a task its owner closed cannot.
+  if (shown.success && (shown.data.state === "merged" || (shown.data.state === "closed" && shown.data.retryable !== true))) state = { ...state, closed: true };
   // Share stays for an edit-level person: a closed task is still a record worth showing someone, and sharing it starts no work (the share route has its own checks).
   if (state.closed === true) return !access.owner && access.projectRole === "viewer" ? ["watch"] : ["watch", "comment", ...(atLeast(access.level, "edit") ? ["share" as const] : [])];
   if (!access.owner && access.projectRole === "viewer") return ["watch"];

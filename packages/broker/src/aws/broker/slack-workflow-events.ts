@@ -303,7 +303,7 @@ export async function startSlackWorkflow(dependencies: AwsBrokerDependencies, ta
   });
   // `design first:` (DR11): recorded on the task for the Understand step's mode resolution, which only turns it on while the switch is on for the project.
   if (first.designFirst) await markDesignFirst(dependencies, started.task.taskId, caller.developerId);
-  return { task: started.task };
+  return { task: started.task, sessionUrl: started.sessionUrl };
 }
 
 const randomUUIDSchema = { parse(value: string): string { if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value)) throw agentXError("CONFIG_INVALID", "workflow request ID is invalid"); return value; } };

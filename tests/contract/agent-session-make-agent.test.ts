@@ -85,7 +85,7 @@ describe("the contract", () => {
     for (const bad of [{ ...origin, extra: 1 }, { ...origin, kind: "chain" }, { ...origin, sessionId: "agt_00000000000000000001" }, { ...origin, createdBy: "x" }, { kind: "session", visible: false }]) {
       expect(AgentOriginSchema.safeParse(bad).success, JSON.stringify(bad)).toBe(false);
     }
-    const visible = { ...origin, visible: true, title: "Bump the Stripe SDK", link: `${CELL}/s/ses_00000000000000000001` };
+    const visible = { ...origin, visible: true, title: "Bump the Stripe SDK", link: `${CELL}/app/sessions/ses_00000000000000000001` };
     expect(AgentOriginViewSchema.parse(visible)).toEqual(visible);
     expect(AgentOriginViewSchema.parse({ kind: "session", visible: false })).toEqual({ kind: "session", visible: false });
     for (const bad of [{ kind: "session", visible: false, sessionId: origin.sessionId }, { kind: "session", visible: false, title: "x" }, { ...visible, visible: false }, { kind: "session" }]) {
@@ -273,7 +273,7 @@ describe("making an agent from a session", () => {
     expect(agent).toMatchObject({ name: "Stripe bumper", owner: { kind: "project", project: "web" }, accountable: { developerId: MAX }, builtin: false, draftRevision: 1 });
     const draft = reply["draft"] as Record<string, unknown>;
     expect(draft).toMatchObject({ extends: { agentId: "rovara-code" }, revision: 1, overlay: { instructions: GOAL } });
-    expect(originOf(draft)).toEqual({ kind: "session", visible: true, sessionId: t.sid, taskId: t.made.taskId, createdBy: MAX, createdAt: new Date(T0).toISOString(), title: "Bump the Stripe SDK", link: `${CELL}/s/${t.sid}` });
+    expect(originOf(draft)).toEqual({ kind: "session", visible: true, sessionId: t.sid, taskId: t.made.taskId, createdBy: MAX, createdAt: new Date(T0).toISOString(), title: "Bump the Stripe SDK", link: `${CELL}/app/sessions/${t.sid}` });
     // As stored: the origin without the view's words, on the draft, written in the transaction that makes the agent.
     const stored = await t.store.getDraft(ORG_A, agent["agentId"] as AgentId);
     expect(stored?.origin).toEqual({ kind: "session", sessionId: t.sid, taskId: t.made.taskId, createdBy: MAX, createdAt: new Date(T0).toISOString() });
@@ -604,6 +604,7 @@ describe("who sees the origin", () => {
     expect(sent).not.toContain("Bump the Stripe SDK");
     expect(sent).not.toContain(t.made.taskId);
     expect(sent).not.toContain(`/s/`);
+    expect(sent).not.toContain(`/app/sessions/`);
     // Ola, an org admin, may read the session (view) and so sees it.
     expect(originOf(await t.draftOf(OLA, id))).toMatchObject({ visible: true, sessionId: t.sid });
   });

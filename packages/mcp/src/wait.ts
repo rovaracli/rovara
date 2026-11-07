@@ -1,5 +1,5 @@
 // Spec 025 US2, D10, R21: waiting on a task. Ending first is not an error; a cancelled call stops at once.
-import { ENDED_TASK_STATUSES, type DeveloperTaskClientView } from "@agentx/contracts";
+import { ENDED_TASK_STATUSES, taskStatusText, type DeveloperTaskClientView } from "@agentx/contracts";
 import type { ControlPlaneClient } from "./client.js";
 
 const FIRST_INTERVAL_MS = 2_000;
@@ -18,7 +18,7 @@ export interface WaitResult {
   failure?: unknown;
 }
 
-const messageOf = (task: DeveloperTaskClientView) => `${task.status}: ${task.events.at(-1)?.text ?? "working"}`;
+const messageOf = (task: DeveloperTaskClientView) => `${task.statusView === undefined ? "Working" : taskStatusText(task.statusView)}: ${task.events.at(-1)?.text ?? "working"}`;
 
 /**
  * Polls the task every 2 seconds, growing to 5, until it ends, the wait ends, or the call is

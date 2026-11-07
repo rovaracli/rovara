@@ -179,7 +179,7 @@ describe("the shapes", () => {
     expect(HomeDismissResponseSchema.safeParse({ cardId: "failure:ses_00000000000000000001", dismissed: false }).success).toBe(false);
     expect(HomeDismissResponseReaderSchema.parse({ cardId: "failure:ses_00000000000000000001", dismissed: true, later: 1 })).toMatchObject({ later: 1 });
     expect([...HOME_DISMISSIBLE_KINDS]).toEqual(["failure", "offer"]);
-    expect([...HOME_CARD_KINDS]).toEqual(["approval", "spend_request", "question", "plan", "pull_request", "failure", "offer", "rule_suggestion", "waiting_ticket", "intake_source"]);
+    expect([...HOME_CARD_KINDS]).toEqual(["approval", "spend_request", "question", "plan", "pull_request", "failure", "offer", "rule_suggestion", "waiting_ticket", "intake_source", "blocked", "paused"]);
     // The suggested-rules card goes away when its suggestions are decided; it is never dismissed.
     expect((HOME_DISMISSIBLE_KINDS as readonly string[]).includes("rule_suggestion")).toBe(false);
     expect(HomeCardSchema.safeParse({ ...card, cardId: "rule_suggestion:ph_0123456789abcdef01234567", kind: "rule_suggestion" }).success).toBe(true);
@@ -322,7 +322,7 @@ describe("approval cards", () => {
     expect(arjun[0]).toMatchObject({ cardId: "approval:apr_forarjunaaaaaaaaaaaa", sessionId: session.sessionId });
     expect(arjun[0]!.buttons).toEqual([
       { label: "Open", action: "confirm", href: `${CELL}/v1/app/approve/apr_forarjunaaaaaaaaaaaa`, method: "GET" },
-      { label: "Open session", action: "open", href: `${CELL}/s/${session.sessionId}`, method: "GET" },
+      { label: "Open session", action: "open", href: `${CELL}/app/sessions/${session.sessionId}`, method: "GET" },
     ]);
     // Mia is named, but a viewer of the project may not decide: no card, and no confirm link. Priya, Max (the run's owner), Ola (an org admin) and Zed are not approvers.
     for (const who of [MIA, PRIYA, MAX, OLA, ZED]) expect(await w.ids(who), who).toEqual([]);
@@ -446,7 +446,7 @@ describe("plan, pull request and failure cards", () => {
     const plan = w.plan({ title: "Bump the Stripe SDK" });
     const [card] = (await w.home(PRIYA)).cards;
     expect(card).toMatchObject({ cardId: `plan:${plan.sessionId}`, kind: "plan", title: "Bump the Stripe SDK", sessionId: plan.sessionId, reason: "Your plan for \"Bump the Stripe SDK\" is ready to review" });
-    expect(card!.buttons).toEqual([{ label: "Review plan", action: "open", href: `${CELL}/s/${plan.sessionId}`, method: "GET" }]);
+    expect(card!.buttons).toEqual([{ label: "Review plan", action: "open", href: `${CELL}/app/sessions/${plan.sessionId}`, method: "GET" }]);
   });
 
   it("shows a pull request ready for review with a button to the pull request on GitHub", async () => {
@@ -462,7 +462,7 @@ describe("plan, pull request and failure cards", () => {
       const w = world();
       const pr = w.pullRequest({ pullRequests: [{ repositoryId: "r1", number: 7, url, candidateDigest: sha("c"), required: true, state: "OPEN" }] });
       const [card] = (await w.home(PRIYA)).cards;
-      expect(card!.buttons, url).toEqual([{ label: "Open session", action: "open", href: `${CELL}/s/${pr.sessionId}`, method: "GET" }]);
+      expect(card!.buttons, url).toEqual([{ label: "Open session", action: "open", href: `${CELL}/app/sessions/${pr.sessionId}`, method: "GET" }]);
     }
   });
 
@@ -477,12 +477,13 @@ describe("plan, pull request and failure cards", () => {
 
   it("shows a plan or pull request only while the workflow waits at that stage", async () => {
     const w = world();
-    w.own({ status: "needs_person", stage: "PLAN_REVIEW", state: "RUNNING" });
-    w.own({ status: "needs_person", stage: "IMPLEMENT", state: "BLOCKED", workflowBlocked: true });
+    const odd = w.own({ status: "needs_person", stage: "PLAN_REVIEW", state: "RUNNING" });
+    const blocked = w.own({ status: "needs_person", stage: "IMPLEMENT", state: "BLOCKED", workflowBlocked: true });
     w.own({ status: "waiting", stage: "WAIT_FOR_MERGE", state: "RUNNING" });
     w.own({ status: "running" });
     w.own({ status: "succeeded", endedAgoDays: 0, stage: "MERGED", state: "COMPLETE" });
-    expect(await w.ids(PRIYA)).toEqual([]);
+    // No plan or pull request card. UX2 slice 2: a session that needs its owner outside those waits gets a blocked card (Home is the one needs-you list).
+    expect((await w.ids(PRIYA)).sort()).toEqual([`blocked:${odd.sessionId}`, `blocked:${blocked.sessionId}`].sort());
   });
 
   it("shows a failure with the words of what failed, and Open session, Retry and Dismiss with their destinations", async () => {
@@ -491,7 +492,7 @@ describe("plan, pull request and failure cards", () => {
     const [card] = (await w.home(PRIYA)).cards;
     expect(card).toMatchObject({ cardId: `failure:${session.sessionId}`, kind: "failure", title: "Fix the flaky test", sessionId: session.sessionId, reason: "\"Fix the flaky test\" failed: runtime_unavailable" });
     expect(card!.buttons).toEqual([
-      { label: "Open session", action: "open", href: `${CELL}/s/${session.sessionId}`, method: "GET" },
+      { label: "Open session", action: "open", href: `${CELL}/app/sessions/${session.sessionId}`, method: "GET" },
       { label: "Retry", action: "retry", href: `${CELL}/v1/app/sessions/${session.sessionId}/retry`, method: "POST" },
       { label: "Dismiss", action: "dismiss", href: `${CELL}/v1/app/home/cards/${encodeURIComponent(`failure:${session.sessionId}`)}/dismiss?occurrence=${encodeURIComponent(`ended:${(w.db.get(agentSessionKey(ORG_A, session.sessionId, "META")) as Item)["endedAt"] as string}`)}`, method: "POST" },
     ]);
@@ -920,5 +921,111 @@ describe("S3 (C59): no email address in the words of a card", () => {
     w.plan({ title: "Bump the SDK" });
     const [card] = (await w.home(PRIYA)).cards;
     expect(card).toMatchObject({ kind: "plan", title: "Bump the SDK", reason: 'Your plan for "Bump the SDK" is ready to review' });
+  });
+});
+
+describe("UX2 slice 2: Home is the ONE needs-you list with ONE count", () => {
+  const withDisplay = (w: World, sessionId: string, display: Record<string, unknown>) => {
+    const meta = w.db.get(agentSessionKey(ORG_A, sessionId, "META")) as Item & { summary: Item };
+    w.db.set({ ...meta, summary: { ...meta.summary, display } });
+  };
+
+  it("gives a blocked task's owner a card that says why it stopped and the next step, with the task's one address; nobody else gets it", async () => {
+    const w = world();
+    const blocked = w.own({ status: "needs_person", stage: "VERIFY", state: "BLOCKED", workflowBlocked: true, title: "Fix refunds" });
+    withDisplay(w, blocked.sessionId, { state: "needs_you", reason: "The checks didn't pass or couldn't run", next: "Send it back to coding, retry the checks, or close the task in Rovara." });
+    const answer = await w.home(PRIYA);
+    const card = answer.cards.find((entry) => entry.cardId === `blocked:${blocked.sessionId}`);
+    expect(card).toMatchObject({
+      kind: "blocked", title: "Fix refunds", sessionId: blocked.sessionId,
+      reason: "Needs you: the checks didn't pass or couldn't run. Next: Send it back to coding, retry the checks, or close the task in Rovara.",
+      buttons: [{ label: "Open task", action: "open", href: `${CELL}/app/sessions/${blocked.sessionId}`, method: "GET" }],
+    });
+    // Without the decision cards wired, the one count is Home's own total (needsYou is left out).
+    expect(answer.needsYou).toBeUndefined();
+    expect((await w.home(ARJUN)).cards.some((entry) => entry.kind === "blocked")).toBe(false);
+  });
+
+  it("gives a plan under review its plan card only (no blocked card twice), and a stopped task a blocked card too", async () => {
+    const w = world();
+    const waiting = w.plan({ title: "Plan it" });
+    const stopped = w.own({ status: "stopped", title: "Stopped one" });
+    const ids = await w.ids(PRIYA);
+    expect(ids).toContain(`plan:${waiting.sessionId}`);
+    expect(ids).not.toContain(`blocked:${waiting.sessionId}`);
+    expect(ids).toContain(`blocked:${stopped.sessionId}`);
+  });
+
+  it("gives a task paused for budget a card that says which limit and who can raise it", async () => {
+    const w = world();
+    const paused = w.own({ status: "paused", title: "Big refactor" });
+    const task = w.db.get(taskKey(paused.taskId)) as Item;
+    w.db.set({ ...task, budgetPause: { scope: { kind: "project", project: "web" }, at: T0 } });
+    const card = (await w.home(PRIYA)).cards.find((entry) => entry.cardId === `paused:${paused.sessionId}`);
+    expect(card?.reason).toBe("Paused: needs more budget. It reached the project's budget. Next: Only a project maintainer or an org admin can raise the limit; the work goes on once they do.");
+    expect(card?.buttons.map((button) => button.label)).toEqual(["Open task"]);
+  });
+
+  it("offers no failure card (and no Retry) for a task its owner closed, whatever its last run did", async () => {
+    const w = world();
+    const closed = w.failed({ title: "Closed after a failure" });
+    withDisplay(w, closed.sessionId, { state: "closed" });
+    const failedOpen = w.failed({ title: "Really failed" });
+    withDisplay(w, failedOpen.sessionId, { state: "failed", reason: "the run stopped with an error" });
+    const cards = (await w.home(PRIYA)).cards;
+    expect(cards.some((card) => card.cardId === `failure:${closed.sessionId}`)).toBe(false);
+    expect(cards.find((card) => card.cardId === `failure:${failedOpen.sessionId}`)?.reason).toBe('"Really failed" failed: the run stopped with an error');
+  });
+
+  it("counts the pending decision cards once with Home's cards: a plan card whose decision card is pending is left out, and the count is the sidebar's", async () => {
+    const w = world();
+    const waiting = w.plan({ title: "Plan with a card" });
+    const other = w.plan({ title: "Plan without a card" });
+    const decisions = async () => [{ cardId: `approve_plan:${waiting.taskId}`, kind: "approve_plan", taskId: waiting.taskId }, { cardId: "merge:x", kind: "merge", taskId: "11111111-1111-4111-8111-999999999999" }];
+    const answer = await w.home(PRIYA, ORG_A, { pendingDecisions: decisions });
+    const ids = answer.cards.map((card) => card.cardId);
+    expect(ids).not.toContain(`plan:${waiting.sessionId}`);
+    expect(ids).toContain(`plan:${other.sessionId}`);
+    expect(answer.total).toBe(answer.cards.length);
+    expect(answer.needsYou).toBe(answer.cards.length + 2);
+    // A failure to read the cards never hides Home's own cards: the count is then Home's.
+    const failing = await w.home(PRIYA, ORG_A, { pendingDecisions: async () => { throw new Error("boom"); } });
+    expect(failing.cards.map((card) => card.cardId)).toContain(`plan:${waiting.sessionId}`);
+    expect(failing.needsYou).toBe(failing.total);
+    expect(w.logs.some((entry) => entry["event"] === "home.decisions_unreadable" && !JSON.stringify(entry).includes("boom"))).toBe(true);
+  });
+
+  it("review I4: a plain task whose run finished (waiting for its owner's next request) is not a blocked card", async () => {
+    const w = world();
+    const finished = w.own({ status: "waiting", title: "Finished run" });
+    withDisplay(w, finished.sessionId, { state: "finished_run", next: "Send more work, or close the task." });
+    // Even a summary that (wrongly) says needs_you for a plain waiting session gets no blocked card: "never a plain waiting".
+    const odd = w.own({ status: "waiting", title: "Odd one" });
+    withDisplay(w, odd.sessionId, { state: "needs_you", reason: "it is waiting" });
+    const ids = await w.ids(PRIYA);
+    expect(ids).not.toContain(`blocked:${finished.sessionId}`);
+    expect(ids).not.toContain(`blocked:${odd.sessionId}`);
+  });
+
+  it("review M3: an owner who is an org admin is told they can raise the paused limit themselves", async () => {
+    const w = world();
+    w.member(ORG_A, PRIYA, "admin");
+    const paused = w.own({ status: "paused", title: "Big refactor" });
+    const task = w.db.get(taskKey(paused.taskId)) as Item;
+    w.db.set({ ...task, budgetPause: { scope: { kind: "project", project: "web" }, at: T0 } });
+    const card = (await w.home(PRIYA)).cards.find((entry) => entry.cardId === `paused:${paused.sessionId}`);
+    expect(card?.reason).toBe("Paused: needs more budget. It reached the project's budget. Next: You can raise the limit: open the budget request and decide.");
+  });
+
+  it("review M2: a blocked or paused card is left out (list and count) when the same task's decision is already on another card", async () => {
+    const w = world();
+    const blocked = w.own({ status: "needs_person", stage: "IMPLEMENT", state: "BLOCKED", workflowBlocked: true, title: "Run limit" });
+    const other = w.own({ status: "needs_person", stage: "VERIFY", state: "BLOCKED", workflowBlocked: true, title: "Checks" });
+    const decisions = async () => [{ cardId: `approve_request:spr_x`, kind: "approve_request", taskId: blocked.taskId }];
+    const answer = await w.home(PRIYA, ORG_A, { pendingDecisions: decisions });
+    const ids = answer.cards.map((card) => card.cardId);
+    expect(ids).not.toContain(`blocked:${blocked.sessionId}`);
+    expect(ids).toContain(`blocked:${other.sessionId}`);
+    expect(answer.needsYou).toBe(answer.cards.length + 1);
   });
 });

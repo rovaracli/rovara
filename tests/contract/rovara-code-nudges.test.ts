@@ -561,7 +561,7 @@ describe("Home", () => {
     expect(cards[0]!.cardId).toMatch(/^pull_request:[A-Za-z0-9_-]+$/u);
     expect(cards[0]!.buttons).toEqual([
       { label: "Open pull request", action: "open", href: PR_URL, method: "GET" },
-      { label: "Open session", action: "open", href: `${CELL}/s/${h.seeded.sessionId}`, method: "GET" },
+      { label: "Open session", action: "open", href: `${CELL}/app/sessions/${h.seeded.sessionId}`, method: "GET" },
     ]);
   });
 

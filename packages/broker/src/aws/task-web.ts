@@ -534,7 +534,8 @@ async function page(view: TaskDocumentView, nonce: string, request: TaskPageRequ
   return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><title>Rovara task · ${escapeHtml(view.title)}</title>${SERVER_PAGE_ICON}`
     + `<style nonce="${nonce}">${TASK_PAGE_STYLE}</style></head><body>${movedOn}`
     // Decision journey slice 3: the task page, where every decision is a card, comes first.
-    + (SessionIdSchema.safeParse(view.sessionId).success ? `<p class="task-page-link"><strong><a href="/s/${escapeHtml(view.sessionId!)}">Open this task in Rovara: its decisions are on cards there</a></strong></p>` : "")
+    // UX2 slice 2 item 4: the task's one address comes first, where its decisions, findings and next step are (OWNER DECISION 7: this page goes read-only once the cards carry everything it decides).
+    + (SessionIdSchema.safeParse(view.sessionId).success ? `<p class="task-page-link"><strong><a href="/app/sessions/${escapeHtml(view.sessionId!)}">Decide on the task</a></strong>: the task's page in Rovara has its decisions, findings and next step.</p>` : "")
     + `<header><h1>${escapeHtml(view.title)}</h1><p class="muted">${role}</p>${progressStrip(view, { checks: checks !== undefined && checks !== "" })}`
     + `<p><strong>${escapeHtml(view.status)}</strong></p><p>Next: ${escapeHtml(view.nextStep)}</p>${slackOnly}</header>`
     + `<main>${unverified}${documents}${noDocuments}`

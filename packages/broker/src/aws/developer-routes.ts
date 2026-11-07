@@ -1,4 +1,6 @@
 import { previewTaskStartStop } from "../org/task-stop-start-preview.js";
+import { routeNotificationPrefs } from "../notifications/prefs-routes.js";
+import { routeTaskFindings } from "./developer-routes/task-findings.js";
 import { DECIDE_COOKIE, cookieOf } from "../developer/decide-session.js";
 import { getTaskStopEnrollment, reviewTaskStopEnrollment, writeTaskStopEnrollment } from "../org/task-stop-enrollment.js";
 // The code now lives in ./developer-routes/ (split by scripts/split/split-developer.ts); this file composes it and keeps the original export list.
@@ -584,6 +586,10 @@ export async function routeDeveloperRequest(deps: DeveloperRouteDependencies, re
   // SR-1: the task owner acknowledges that an `on` second review did not run (the merge gate). Owner only, in a browser session, audited.
   const secondReviewAck = /^\/v1\/app\/tasks\/([0-9a-f-]{36})\/second-review-acknowledge$/iu.exec(url.pathname);
   if (secondReviewAck !== null && request.method === "POST") return new StatusReply(200, await acknowledgeSecondReview(developerTaskRouteDependencies(deps, caller), caller, secondReviewAck[1]!, jsonBody(request)));
+  const notifyReply = await routeNotificationPrefs(deps, caller, request, url);
+  if (notifyReply !== undefined) return notifyReply;
+  const findingsReply = await routeTaskFindings(deps, caller, request, url);
+  if (findingsReply !== undefined) return findingsReply;
   const secondReviewReply = await routeSecondReview(deps, caller, request, url);
   if (secondReviewReply !== undefined) return secondReviewReply;
   const trackerPeopleReply = await routeTrackerPeople(deps, caller, request, url);

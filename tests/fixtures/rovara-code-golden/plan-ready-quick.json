@@ -97,7 +97,7 @@
   "notifications": [
     {
       "channel": "C0123456789",
-      "text": "<@U0MAYA001> started a task from an AI tool: *Fix the retry bug*\nProject: `payments`. Status: STARTING.\nView only: follow-ups happen in <@U0MAYA001>'s AI tool, and I post each update here."
+      "text": "<@U0MAYA001> started a task from an AI tool: *Fix the retry bug*\nProject: `payments`. Status: Planning.\nView only: follow-ups happen in <@U0MAYA001>'s AI tool, and I post each update here."
     },
     {
       "channel": "C0123456789",

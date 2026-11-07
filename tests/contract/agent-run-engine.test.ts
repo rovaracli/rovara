@@ -35,7 +35,6 @@ import { approvalKey, approverIndexKey, projectAgentKey, slackBindingKey } from 
 import { orgMemberKey, orgRemovedKey } from "../../packages/contracts/src/org-node.js";
 import type { AgentId } from "../../packages/contracts/src/agent-node.js";
 import { DEV_ISSUER, MAYA, OMAR, bindChannel, createDeveloperTaskBroker, grantProject, recordStream, unbindChannel, type Developer } from "../support/developer-task-broker.js";
-import { taskPageUrl } from "../../packages/broker/src/aws/developer-tasks.js";
 import { agentRunDispatchItem, operationEndDispatchItem } from "../../packages/broker/src/aws/broker-shared.js";
 import { fakeModelAccess } from "../support/fake-model-access.js";
 import { TEST_ORG } from "../support/orgs.js";
@@ -1010,7 +1009,8 @@ describe("the final report in Slack", () => {
     await handler({ Records: stream.take().map((record) => ({ ...record, eventSource: "aws:dynamodb" })) });
     await deliver(handler, queued.find((entry) => entry.kind === "agent_report")!, "m1");
     const posted = (post.mock.calls[0] as unknown as [{ text: string }])[0];
-    expect(posted.text).toBe(`Report available in Rovara: ${taskPageUrl(DEV_ISSUER, run.taskId)}`);
+    // UX2 slice 2: the link is the task's one address, its session page, on the same origin.
+    expect(posted.text).toMatch(new RegExp(`^Report available in Rovara: ${new URL(DEV_ISSUER).origin.replace(/[.]/gu, "\\.")}/app/sessions/ses_[0-9a-z]{20}$`, "u"));
     // The whole report stays on the task page.
     expect(t.runItem(run.taskId)!.finalReport).toBe("Cause found.\nrollback the release");
   });

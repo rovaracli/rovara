@@ -120,7 +120,7 @@ describe("the shapes", () => {
   it("has a strict tile and response, and readers that keep what a newer server adds", () => {
     const tile = {
       contractVersion: 1, sessionId: "ses_00000000000000000001", kind: "task", title: "Bump the Stripe SDK", project: "web", owner: { developerId: PRIYA, name: "Priya" }, where: { kind: "cloud" }, status: "running",
-      statusWords: "Running", costUsd: 0, viewingNow: [], viewingNowCount: 0, needsYou: false, following: false, actions: ["watch", "comment"], updatedAt: "2026-10-22T09:00:00.000Z",
+      statusWords: "Building", costUsd: 0, viewingNow: [], viewingNowCount: 0, needsYou: false, following: false, actions: ["watch", "comment"], updatedAt: "2026-10-22T09:00:00.000Z",
     };
     expect(LiveTileSchema.parse(tile)).toEqual(tile);
     expect(LiveResponseSchema.parse({ tiles: [tile] })).toEqual({ tiles: [tile] });
@@ -151,23 +151,24 @@ describe("who sees what on the wall (the plan's company)", () => {
     expect(answer.tiles.map((tile) => tile.sessionId)).toEqual([s6.sessionId, s5.sessionId, s1.sessionId]);
     expect(answer.next).toBeUndefined();
     const stopped = answer.tiles[0]!;
-    expect(stopped).toMatchObject({ status: "stopped", statusWords: "Stopped" });
+    expect(stopped).toMatchObject({ status: "stopped", statusWords: "Needs you: it was stopped before it finished" });
     expect(LiveResponseSchema.parse(answer)).toEqual(answer);
     expect(LiveResponseReaderSchema.parse(answer)).toEqual(answer);
     expect(answer.tiles[2]).toEqual({
-      contractVersion: 1, sessionId: s1.sessionId, kind: "task", title: "Bump the Stripe SDK", project: "web", owner: { developerId: PRIYA, name: "Priya" }, where: { kind: "cloud" }, status: "running", statusWords: "Running",
+      contractVersion: 1, sessionId: s1.sessionId, kind: "task", title: "Bump the Stripe SDK", project: "web", owner: { developerId: PRIYA, name: "Priya" }, where: { kind: "cloud" }, status: "running", statusWords: "Building",
       step: "Planning", peek: "reading the plan", costUsd: 1.25, viewingNow: [], viewingNowCount: 0, needsYou: false, following: false, actions: ["watch", "comment"], updatedAt: s1.updatedAt,
     });
   });
 
   it("gives Needs me exactly the session waiting on the caller, with a bare approval link", async () => {
-    const { w, s5 } = company();
+    const { w, s5, s6 } = company();
     w.decisions.set(`${ARJUN}|${s5.sessionId}`, [{ approvalId: "apr_aaaaaaaaaaaaaaaaaaaa", title: "Create a Linear issue" }, { approvalId: "apr_bbbbbbbbbbbbbbbbbbbb", title: "Other" }]);
     const answer = await w.live(ARJUN, { filter: "needs_me" });
     expect(answer.tiles).toHaveLength(1);
-    expect(answer.tiles[0]).toMatchObject({ sessionId: s5.sessionId, needsYou: true, status: "needs_person", statusWords: "Needs a person", approvalUrl: `${CELL}/v1/app/approve/apr_aaaaaaaaaaaaaaaaaaaa` });
+    expect(answer.tiles[0]).toMatchObject({ sessionId: s5.sessionId, needsYou: true, status: "needs_person", statusWords: "Needs you: a person needs to decide what happens next", approvalUrl: `${CELL}/v1/app/approve/apr_aaaaaaaaaaaaaaaaaaaa` });
     expect(answer.tiles[0]!.approvalUrl).not.toMatch(/ticket|\?/u);
-    expect(await w.ids(PRIYA, { filter: "needs_me" })).toEqual([]);
+    // UX2 slice 2: Needs me reads Home's one rule, so the owner sees her own sessions that need her (s5 waits on approvers, s6 was stopped), the same ones Home lists.
+    expect((await w.ids(PRIYA, { filter: "needs_me" })).sort()).toEqual([s5.sessionId, s6.sessionId].sort());
   });
 
   it("gives Failed the session that ended failed two hours ago and not the one from thirty hours ago", async () => {
@@ -588,7 +589,7 @@ describe("realtime: the Task 8 notices are what tells the wall to read again", (
     // The same table: Arjun reads Priya's session on the world the projector wrote.
     const deps = { documentClient: pw.w.db, tableName: "state", now: () => pw.w.clock.now, projectMembers: pw.w.members, signInStore: pw.w.signInStore, origin: CELL, cursorKey: "k".repeat(64), taskView: async () => ({}) as never };
     const wall = async () => (await liveSessions(deps, pw.w.caller(ARJUN), {})).tiles;
-    expect(await wall()).toMatchObject([{ sessionId, status: "running", statusWords: "Running", needsYou: false }]);
+    expect(await wall()).toMatchObject([{ sessionId, status: "running", statusWords: "Building", needsYou: false }]);
     // The plan is ready for its owner to review.
     pw.patchTask(taskId, { workflow: workflow("PLAN_REVIEW", "WAITING") });
     pw.w.clock.now += 5_000;
@@ -599,7 +600,7 @@ describe("realtime: the Task 8 notices are what tells the wall to read again", (
     expect(published.filter((entry) => entry.channel === projectChannel(ORG_A, "web")).flatMap((entry) => entry.events.map((event) => JSON.parse(event) as { type: string; sessionId: string }))).toContainEqual(expect.objectContaining({ type: "session.updated", sessionId }));
     // ...and the next read of the wall shows the new state, newer than the one before.
     const [after] = await wall();
-    expect(after).toMatchObject({ sessionId, status: "needs_person", statusWords: "Needs a person", needsYou: false });
+    expect(after).toMatchObject({ sessionId, status: "needs_person", statusWords: "Needs you: the coding plan is waiting for approval", needsYou: false });
     expect((await liveSessions(deps, pw.w.caller(PRIYA), { filter: "needs_me" })).tiles.map((tile) => tile.sessionId)).toEqual([sessionId]);
     expect(Date.parse(after!.updatedAt)).toBeGreaterThan(T0);
   });
@@ -791,7 +792,7 @@ describe("through the real broker", () => {
     };
     const mine = await read(MAYA, "?filter=mine");
     expect(mine.tiles).toHaveLength(1);
-    expect(mine.tiles[0]).toMatchObject({ sessionId, kind: "task", project: "payments", owner: { developerId: MAYA.developerId }, status: "starting", statusWords: "Starting", following: true, needsYou: false });
+    expect(mine.tiles[0]).toMatchObject({ sessionId, kind: "task", project: "payments", owner: { developerId: MAYA.developerId }, status: "starting", statusWords: "Understanding the request", following: true, needsYou: false });
     expect(mine.tiles[0]!.actions).toEqual(expect.arrayContaining(["watch", "comment", "stop"]));
     expect(mine.tiles[0]!.actions).not.toContain("handoff");
     expect((await read(OMAR)).tiles).toEqual([]);

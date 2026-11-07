@@ -51,7 +51,7 @@ export function AnsweredSection({ session, task }: { session: ReadSession; task:
    setAccepted(true);
    // A legacy answer can lack its session id: never guess one, and never send the work a second time.
    const next = SessionIdSchema.safeParse(result.value.sessionId);
-   if (next.success) host.navigate("/s/" + next.data); else setNoSession(true);
+   if (next.success) host.navigate("/app/sessions/" + next.data); else setNoSession(true);
   } catch (failure) { setError(failure instanceof ApiError ? REFUSALS[failure.code] ?? (failure.code === "NETWORK_ERROR" ? failure.message : GENERAL_REFUSAL) : GENERAL_REFUSAL); }
   finally { sending.current = false;setBusy(false); }
  }

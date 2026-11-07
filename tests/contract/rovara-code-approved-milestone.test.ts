@@ -43,7 +43,7 @@ describe("the approved milestone", () => {
     const list = heard();
     const { w, deps } = await approvedWorld();
     await trackPullRequest(deps, TASK_ID);
-    expect(list).toEqual([`Approved by arjun-gh. Ready to merge: ${ORIGIN}/s/${SESSION_ID}`]);
+    expect(list).toEqual([`Approved by arjun-gh. Ready to merge: ${ORIGIN}/app/sessions/${SESSION_ID}`]);
     expect(milestones(w)).toHaveLength(1);
     expect(milestones(w)[0]).toMatchObject({ kind: "approved", sessionId: SESSION_ID, pullRequests: [{ repository: "payments", number: 7 }] });
     // Nothing new on GitHub: nothing more is said.
@@ -99,7 +99,7 @@ describe("the approved milestone", () => {
     const list = heard();
     const { deps } = await approvedWorld({ reviews: [approval("priya-gh", "1001")], selfApproval: true });
     await trackPullRequest(deps, TASK_ID);
-    expect(list).toEqual([`Approved by priya-gh. Ready to merge: ${ORIGIN}/s/${SESSION_ID}`]);
+    expect(list).toEqual([`Approved by priya-gh. Ready to merge: ${ORIGIN}/app/sessions/${SESSION_ID}`]);
   });
 
   it("announces a standing approval once the org allows self-approval, and only once", async () => {
@@ -109,7 +109,7 @@ describe("the approved milestone", () => {
     expect(list).toEqual([]);
     w.db.set({ ...codeSettingsKey(TEST_ORG, "web"), allowSelfApproval: true, mergeMethod: "squash", codeReviewers: [], revision: 1 });
     await trackPullRequest(deps, TASK_ID);
-    expect(list).toEqual([`Approved by priya-gh. Ready to merge: ${ORIGIN}/s/${SESSION_ID}`]);
+    expect(list).toEqual([`Approved by priya-gh. Ready to merge: ${ORIGIN}/app/sessions/${SESSION_ID}`]);
     await trackPullRequest(deps, TASK_ID);
     expect(list).toHaveLength(1);
     expect(milestones(w)).toHaveLength(1);

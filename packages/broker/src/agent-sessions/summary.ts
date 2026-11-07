@@ -24,7 +24,6 @@ import {
   SESSION_TITLE_MAX,
   SessionStatusSchema,
   SessionSummarySchema,
-  STATUS_WORDS,
   agentSessionKey,
   canonicalJson,
   endedSessionWorkKey,
@@ -45,6 +44,10 @@ import {
   type SessionId,
   type SessionStatus,
   type SessionSummary,
+  type TaskStatus,
+  failureCause,
+  sessionTaskStatus,
+  taskStatusText,
 } from "@agentx/contracts";
 import { getAnyApproval } from "../agents/approvals-store.js";
 import { agentRunView } from "../agents/run-engine.js";
@@ -53,6 +56,8 @@ import { monthSlots, taskPageStep } from "../aws/developer-tasks.js";
 import { localSessionSource } from "../devices/local-facts.js";
 import { deriveTaskStatus, recentTaskEvents, taskKey, taskPointerKey, tryEffectiveTaskOwner, type DeveloperTaskRecord, type OperationFacts, type StoredEvent } from "../developer/task-records.js";
 import { notifySessionChange } from "./notice-sink.js";
+import { taskStatusOf } from "./task-status.js";
+import { queueAttention } from "../notifications/attention.js";
 import { settleSteerDeliveriesFor } from "./steer.js";
 import { AgentSessionStore, sessionEventItem } from "./store.js";
 
@@ -205,6 +210,7 @@ interface Parts {
   needsPeople?: readonly string[];
   pendingApprovals?: number;
   offline?: true | undefined;
+  display?: TaskStatus | undefined;
 }
 
 function assemble(parts: Parts, now: number): SessionSummary {
@@ -221,6 +227,7 @@ function assemble(parts: Parts, now: number): SessionSummary {
     needsPeople,
     pendingApprovals: parts.pendingApprovals ?? 0,
     ...(parts.offline === undefined ? {} : { offline: parts.offline }),
+    ...(parts.display === undefined ? {} : { display: parts.display }),
   };
   return { ...base, digest: sessionSummaryDigest(base), computedAt: iso(now) };
 }
@@ -344,9 +351,15 @@ async function taskState(deps: SummaryDependencies, session: AgentSessionRecord,
   else if (workflow?.stage === "CLOSED") ended = { status: "cancelled", at };
   // A task the owner closed before its work was merged or answered did not finish and did not fail: it was closed, however its last step ended (QA6-07). A plain task (no workflow) keeps the end of its last run (the projector's existing rule: failed after a failed run, cancelled with no run).
   else if (task.closedAt !== undefined) ended = { status: workflow === undefined ? closedStatus : "cancelled", at };
+  const removedReason = task.outcome === "creator_removed" ? "the task's creator left the organization" : undefined;
   if (ended !== undefined) {
     const step = workflow === undefined ? undefined : stepText(taskPageStep(workflow, task.closedAt !== undefined));
-    return { ended, summary: assemble({ status: ended.status, step, ...costs }, now) };
+    // One status (UX2 slice 2): a task its owner closed reads Closed on every surface, whatever its last run ended as (the session's own status keeps the projector's rule).
+    const display = taskStatusOf({
+      workflow, closed: task.closedAt !== undefined, removedReason, failedPrepare: workflow !== undefined && derived.failedPrepare !== undefined, sessionStatus: ended.status,
+      failureCategory: derived.failure?.category,
+    });
+    return { ended, summary: assemble({ status: ended.status, step, display, ...costs }, now) };
   }
 
   // Open: the workflow stage decides first, then a run, then the last operation.
@@ -390,7 +403,7 @@ async function taskState(deps: SummaryDependencies, session: AgentSessionRecord,
       case "INTERRUPTED":
         status = "waiting";
         lastRunFailed = true;
-        step = `Failed: ${derived.failure?.category ?? "task_failed"}`;
+        step = `Failed: ${failureCause(derived.failure?.category)}`;
         break;
       default: status = "waiting";
     }
@@ -412,7 +425,10 @@ async function taskState(deps: SummaryDependencies, session: AgentSessionRecord,
     log(deps, { event: "agent_session.peek_unreadable", sessionId: session.sessionId, error: error instanceof Error ? error.name : "unknown" });
     return session.summary.peek;
   });
-  return { summary: assemble({ status, step: step === undefined ? undefined : stepText(step), peek, lastRunFailed, workflowBlocked, needsPeople, pendingApprovals: waitingOn.count, ...costs }, now) };
+  const display = taskStatusOf({
+    workflow, closed: false, budgetPaused: task.budgetPause !== undefined, sessionStatus: status, lastRunFailed, failureCategory: derived.failure?.category,
+  });
+  return { summary: assemble({ status, step: step === undefined ? undefined : stepText(step), peek, lastRunFailed, workflowBlocked, needsPeople, pendingApprovals: waitingOn.count, display, ...costs }, now) };
 }
 
 /** Checks what a seam returned: its shape, and that it is this session's org's. Anything else is logged and read as "nothing to say" (the summary stays as it was). */
@@ -479,15 +495,15 @@ export async function computeSessionSummary(deps: SummaryDependencies, session: 
 
 // ---- the refresh
 
-const STATUS_TEXT: Record<SessionStatus, string> = {
-  starting: "Starting", running: "Running", needs_person: STATUS_WORDS.needs_person, paused: STATUS_WORDS.paused, waiting: STATUS_WORDS.waiting, stopped: STATUS_WORDS.stopped,
-  succeeded: "Finished: succeeded", failed: "Finished: failed", cancelled: "Finished: cancelled",
-};
+/** What an ended session with no status-model words (a chain or a Mac session) says on its timeline. */
+const ENDED_WORDS: Partial<Record<SessionStatus, string>> = { succeeded: "Finished", failed: "Failed: the run stopped with an error", cancelled: "Closed" };
 
 function changeEvent(session: AgentSessionRecord, next: SessionSummary, revision: number, statusChanged: boolean, stepChanged: boolean, ending: boolean): SessionEvent | undefined {
   if (!statusChanged && !stepChanged) return undefined;
   const type = stepChanged && !ending && next.step !== undefined ? "step" as const : "status" as const;
-  const text = type === "step" ? `${statusChanged ? `${STATUS_TEXT[next.status]}. ` : ""}Step: ${next.step ?? ""}` : STATUS_TEXT[next.status];
+  // The one status model's words (UX2 slice 2); a summary written before it reads its plain status the same way.
+  const said = next.display === undefined && ENDED_WORDS[next.status] !== undefined ? ENDED_WORDS[next.status]! : taskStatusText(sessionTaskStatus(next));
+  const text = type === "step" ? `${statusChanged ? `${said}. ` : ""}Step: ${next.step ?? ""}` : said;
   return { eventId: sessionEventId(type, `${session.sessionId}:${String(revision)}`), at: next.computedAt, type, actor: { kind: "system" }, text };
 }
 
@@ -601,11 +617,14 @@ async function refreshSummaryOnly(deps: SummaryDependencies, orgId: OrgId, sessi
       log(deps, { event: "agent_session.notice_record_invalid", orgId, sessionId, error: error instanceof Error ? error.name : "unknown" });
       return "updated";
     }
-    await notifySessionChange(deps, {
+    const change = {
       orgId, sessionId, session: written,
       previous: session.summary, summary, summaryRevision: revision, statusChanged, stepChanged, ended: ending, at: summary.computedAt,
       ...(deps.quiet === true ? { quiet: true as const } : {}),
-    });
+    };
+    await notifySessionChange(deps, change);
+    // UX2 slice 2 item 5: a change someone must hear about (Needs you, paused, ready to merge, failed, done) is queued for them; the sweep delivers it, batched. Never throws.
+    await queueAttention(deps, change, deps.now());
     return "updated";
   }
   return "unchanged";

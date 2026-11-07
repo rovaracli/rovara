@@ -10,7 +10,7 @@ afterEach(cleanHarnessDirs);
 const SES = "ses_aaaaaaaaaaaaaaaaaaaa";
 const SES2 = "ses_bbbbbbbbbbbbbbbbbbbb";
 const DEV = "d".repeat(64);
-const LINK = `${CELL}/s/${SES}`;
+const LINK = `${CELL}/app/sessions/${SES}`;
 const CONFIRM = `${CELL}/v1/app/approve/apr_cccccccccccccccccccc?ticket=tkt_abc123`;
 const members = Response.json({ members: [{ developerId: DEV, name: "Mia", email: "mia@acme.dev", role: "member", joinedAt: "2026-10-01T00:00:00.000Z", identities: ["cloud"] }] });
 
@@ -89,7 +89,7 @@ describe("agentx session show, follow and unfollow", () => {
     const approval = { approvalId: "apr_cccccccccccccccccccc", title: "Approve the plan", confirmUrl: `${CELL}/v1/app/approve/apr_cccccccccccccccccccc` };
     const h = await agentsCli({ [`GET /v1/app/sessions/${SES}`]: Response.json(view({ approvals: [approval] })) });
     expect(await h.run(["session", "show", SES])).toBe(0);
-    for (const part of [LINK, "Fix the login bug", "payments", "Priya", "Running", "Writing the change", "Approve the plan", approval.confirmUrl, "can edit"]) expect(h.stdout()).toContain(part);
+    for (const part of [LINK, "Fix the login bug", "payments", "Priya", "Building", "Writing the change", "Approve the plan", approval.confirmUrl, "can edit"]) expect(h.stdout()).toContain(part);
     expect(sent(h)).toEqual([`GET /v1/app/sessions/${SES}`]);
   });
 
@@ -175,7 +175,7 @@ describe("agentx session stop and retry", () => {
   });
 
   it("retries a session and prints the link of the new one when a new run started", async () => {
-    const fresh = `${CELL}/s/${SES2}`;
+    const fresh = `${CELL}/app/sessions/${SES2}`;
     const h = await agentsCli({ [`POST /v1/app/sessions/${SES}/retry`]: Response.json(view({ sessionId: SES2, link: fresh, retryOf: SES })) });
     expect(await h.run(["session", "retry", SES])).toBe(0);
     expect(h.calls[0]).toMatchObject({ method: "POST", path: `/v1/app/sessions/${SES}/retry`, body: { requestId: expect.stringMatching(UUID) as string } });
@@ -336,7 +336,7 @@ describe("agentx home", () => {
 describe("what the server wrote is made safe before it is printed", () => {
   it("neutralises control, bidi and token-shaped text in a session's title, step, peek and owner", async () => {
     const evil = `\u001b[31mred\u202e\u200b agxr_${"b".repeat(43)}`;
-    const h = await agentsCli({ [`GET /v1/app/sessions/${SES}`]: Response.json(view({ title: evil, step: evil, peek: evil, owner: { developerId: DEV, name: evil }, link: `${CELL}/s/${SES}\u001b[2J` })) });
+    const h = await agentsCli({ [`GET /v1/app/sessions/${SES}`]: Response.json(view({ title: evil, step: evil, peek: evil, owner: { developerId: DEV, name: evil }, link: `${CELL}/app/sessions/${SES}\u001b[2J` })) });
     expect(await h.run(["session", "show", SES])).toBe(0);
     for (const bad of ["\u001b", "\u202e", "\u200b", "agxr_"]) expect(h.stdout(), JSON.stringify(bad)).not.toContain(bad);
     expect(h.stdout()).toContain("[U+202E]");

@@ -2,23 +2,29 @@ import { Suspense, lazy } from "react";
 import { errorRefKey, type ErrorRef } from "@agentx/contracts/web";
 import { Button } from "../../design/Button.js";
 import { VisibleText, visibleText } from "../../design/VisibleText.js";
-import { isClosedTask, type ReadSession } from "./SessionHeader.js";
+import { isClosedTask, sessionDisplay, type ReadSession } from "./SessionHeader.js";
 import { ChainSections } from "./ChainSections.js";
 import { UnderstandQuestions } from "./UnderstandQuestions.js";
 import { NoChangeSection } from "./NoChangeSection.js";
+import { FindingsActions } from "./FindingsActions.js";
 import { AnsweredSection } from "./AnsweredSection.js";
 import { ModelFallbackNotes } from "./ModelFallbackNotes.js";
 import { LoadedKnowledgePanel } from "./LoadedKnowledgePanel.js";
-import { visibleAnchor, workflowStateWords, type ReadTask, type CommentOnPart } from "./workspace-types.js";
+import { visibleAnchor, type ReadTask, type CommentOnPart } from "./workspace-types.js";
 // Fix with agent is its own chunk: it is fetched only where the session view offers it.
 const FixWithAgentPanel = lazy(async () => ({ default: (await import("./FixWithAgentPanel.js")).FixWithAgentPanel }));
-const STAGES = ["Understand", "Plan", "Plan check", "Build", "Check", "Review", "Pull request", "Merge"];
-const STAGE_WORDS: Record<string, string> = { UNDERSTAND: "Understand", PLAN: "Plan", PLAN_REVIEW: "Plan check", IMPLEMENT: "Build", VERIFY: "Check", REVIEW: "Review", PULL_REQUEST: "Pull request", WAIT_FOR_MERGE: "Merge", MERGED: "Merge" };
+// UX2 slice 2: one strip with the stages the task really passes through. PLAN_CRITIQUE is the automated plan check; PLAN_REVIEW is the person approving it (or the design, on a Design first task).
+const STAGES = ["Understand", "Plan", "Plan check", "Approval", "Build", "Check", "Review", "Pull request", "Merge"];
+const STAGE_WORDS: Record<string, string> = { UNDERSTAND: "Understand", PLAN: "Plan", PLAN_CRITIQUE: "Plan check", PLAN_REVIEW: "Approval", IMPLEMENT: "Build", VERIFY: "Check", REVIEW: "Review", PULL_REQUEST: "Pull request", WAIT_FOR_MERGE: "Merge", MERGED: "Merge" };
+/** A Design first task's approval stage is the design's review. */
+const stagesOf = (workflow: { path?: unknown; reviewPhase?: unknown }): string[] => (workflow.path === "FULL" && workflow.reviewPhase === "DESIGN" ? STAGES.map(stage => stage === "Approval" ? "Design review" : stage) : STAGES);
+const stageWord = (workflow: { stage: string; path?: unknown; reviewPhase?: unknown }): string | undefined => { const word = STAGE_WORDS[workflow.stage];return word === "Approval" && workflow.path === "FULL" && workflow.reviewPhase === "DESIGN" ? "Design review" : word; };
 const stepWords: Record<string, string> = { pending: "Not started", running: "Working", waiting: "Waiting", done: "Finished", failed: "Failed" };
 export function PipelineTab({ session, task, onComment }: { session: ReadSession; task?: ReadTask | undefined; onComment?: CommentOnPart | undefined }) {
  if (session.body.kind === "chain") return <ChainSections session={session} />;
  const closed = isClosedTask(session);
- return <section aria-label="Work progress">{task?.workflow && <><ol className="rv-pipeline" aria-label="Task stages">{STAGES.map(stage => <li key={stage} {...(!closed && STAGE_WORDS[task.workflow!.stage] === stage ? { "aria-current": "step" as const } : {})}>{stage}</li>)}</ol><p className="rv-muted">{closed ? "Closed" : workflowStateWords(task.workflow.state)}</p></>}
+ return <section aria-label="Work progress">{task?.workflow && <><ol className="rv-pipeline" aria-label="Task stages">{stagesOf(task.workflow).map(stage => <li key={stage} {...(!closed && stageWord(task.workflow!) === stage ? { "aria-current": "step" as const } : {})}>{stage}</li>)}</ol><p className="rv-muted"><VisibleText text={sessionDisplay(session).text} /></p></>}
+ {task?.reviewFindings !== undefined && <FindingsActions task={task} sessionId={session.sessionId} mayAct={session.you.owner || session.you.level === "edit"} />}
  {task && <ModelFallbackNotes task={task} />}
  {task && <NoChangeSection task={task} />}
  {task?.workflow && <LoadedKnowledgePanel taskId={task.taskId} />}
