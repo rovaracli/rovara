@@ -3,7 +3,10 @@
 import { describe, expect, it } from "vitest";
 import { TestEnvironmentBodySchema, projectMetaKey, projectPk, projectRevisionKey, seedScriptLockOf, testEnvApprovalRisk, testEnvLessSafeChanges, type OrgId, type TestEnvironmentBody } from "@agentx/contracts";
 import { approveTestEnvironment, proposalSeedTrust, proposeTestEnvironment, recordTestEnvProveReport, type TestEnvDeps } from "../../packages/broker/src/org/test-environment.js";
-import { lockLookSeeds, seedRisksOf, seedTrustOf, type SeedRepoSources } from "../../packages/broker/src/test-env/seed-lock.js";
+import { lockLookSeeds, seedCardLinesOf, seedRisksOf, seedTrustOf, type SeedRepoSources } from "../../packages/broker/src/test-env/seed-lock.js";
+import { taskDependencyPlansOf } from "../../packages/broker/src/test-env/dependency-plan.js";
+import { TaskDependencyPlanSchema } from "@agentx/contracts";
+import { pinnedCatalog, verifiedCatalog } from "../support/catalog-pinning.js";
 import { treeReader } from "../../packages/broker/src/aws/broker/seed-lock-wiring.js";
 import { capturingAuditDeps, AUDIT_CAPTURE_TABLE } from "../support/audit-capture.js";
 import { FakeDynamoDb } from "../support/fake-dynamodb.js";
@@ -32,7 +35,7 @@ function sources(files: Record<string, string> = FILES, options: { failRead?: bo
   const entries = Object.keys(files).map((path) => ({ path, mode: "100644", type: "blob" }));
   const fn = (async () => {
     if (options.failAll === true) throw new Error("GitHub is down");
-    return [{ path: "repo/web", readerAt: (directory: string) => treeReader(entries, directory, async (path) => { reads.push(path); if (options.failRead === true) throw new Error("HTTP 502"); return files[path]; }) }];
+    return [{ path: "repo/web", branch: "main", commit: "c".repeat(40), readerAt: (directory: string) => treeReader(entries, directory, async (path) => { reads.push(path); if (options.failRead === true) throw new Error("HTTP 502"); return files[path]; }) }];
   }) as SeedRepoSources & { reads: string[] };
   fn.reads = reads;
   return fn;
@@ -62,13 +65,19 @@ describe("a detected seed command, unchanged from the repository, on the sealed 
     const seed = locked.body.dependencies![0]!.seeds[0]!;
     expect("command" in seed && seed.lock?.from).toEqual(["db/seed.js", "package.json"]);
     expect(source.reads).toEqual(["package.json", "db/seed.js"]);
-    expect(locked.checks).toEqual([expect.objectContaining({ verdict: "locked", dependencyId: "postgres" })]);
+    // M4: the check keeps the branch and the commit the broker hashed.
+    expect(locked.checks).toEqual([expect.objectContaining({ verdict: "locked", dependencyId: "postgres", branch: "main", commit: "c".repeat(40) })]);
     const h = bench();
     const proposed = await proposeAndProve(h, locked.body, locked.checks);
     expect(proposed).toMatchObject({ risk: "medium", lessSafe: [] });
     // No second person and no fresh sign-in: the approval itself reads the broker's checks again from the proposal item.
     expect(await approveOnePress(h, proposed.digest)).toMatchObject({ revision: 1, lessSafe: [] });
-    expect(seedRisksOf(locked.checks, locked.body)[0]).toEqual({ dependencyId: "postgres", risk: "medium", reason: "Seed detected unchanged from db/seed.js, package.json, runs only on the test database." });
+    // I3: the reason says who approves and what reach it has; it never claims the seed is isolated.
+    const reason = seedRisksOf(locked.checks, locked.body)[0]!;
+    expect(reason).toMatchObject({ dependencyId: "postgres", risk: "medium" });
+    expect(reason.reason).toBe(`Medium: the seed runs the repository's own script, unchanged on main at ${"c".repeat(12)} (db/seed.js, package.json). Rovara checks those files again before every run. It runs against Rovara's throwaway test database, with the same access as your setup commands (in the working phase it can reach the internet). One maintainer can approve it.`);
+    expect(reason.reason).not.toMatch(/only on the test database|second person/u);
+    expect(seedCardLinesOf([reason], locked.checks, locked.body)).toEqual(["Seed: the repository's own script, unchanged on main (db/seed.js, package.json).", "One maintainer approves; it has the same access as setup and is rechecked each run."]);
   });
 
   it("positive control: the same locked body stored WITHOUT the broker's checks (an edit) is HIGH and the one-press approval is refused", async () => {
@@ -141,5 +150,42 @@ describe("everything else stays HIGH", () => {
     h.db.set({ ...item, seedChecks: [{ verdict: "locked", dependencyId: "postgres" }] });
     expect((await proposalSeedTrust(h.deps, ORG, PROJECT, proposed.digest, locked.body)).verifiedSeeds?.size ?? 0).toBe(0);
     await expect(approveOnePress(h, proposed.digest)).rejects.toThrow(/sign in again|second person/u);
+  });
+
+  it("M2: a seed in a repository that could not be read never falls through to the repository above it", async () => {
+    const nested = body([dep({ seeds: [{ command: cmd("npm", ["run", "seed"], "repo/web/packages/db") }] })]);
+    const entries = [{ path: "packages/db/package.json", mode: "100644", type: "blob" }, { path: "packages/db/db/seed.js", mode: "100644", type: "blob" }];
+    const files: Record<string, string> = { "packages/db/package.json": FILES["package.json"]!, "packages/db/db/seed.js": FILES["db/seed.js"]! };
+    const both: SeedRepoSources = async () => [
+      { path: "repo/web", branch: "main", commit: "c".repeat(40), readerAt: (directory: string) => treeReader(entries, directory, async (path) => files[path]) },
+      { path: "repo/web/packages/db", refusal: "no_reader" },
+    ];
+    const locked = await lockLookSeeds(nested, [{ command: cmd("npm", ["run", "seed"], "repo/web/packages/db"), source: { path: "package.json", line: 4 } }], both, scope);
+    expect(locked.checks).toEqual([expect.objectContaining({ verdict: "high", reason: "no_reader" })]);
+    const branch: SeedRepoSources = async () => [{ path: "repo/web", refusal: "not_default_branch" }];
+    expect((await lockLookSeeds(body(), detected, branch, scope)).checks).toEqual([expect.objectContaining({ verdict: "high", reason: "not_default_branch" })]);
+  });
+
+  it("an identical body proposed again by an edit loses the broker's checks, and a setup run's mark keeps the one-press approval refused", async () => {
+    const locked = await lockLookSeeds(body(), detected, sources(), scope);
+    const h = bench();
+    const first = await proposeAndProve(h, locked.body, locked.checks);
+    expect(first.risk).toBe("medium");
+    const again = await proposeAndProve(h, locked.body);
+    expect(again).toMatchObject({ digest: first.digest, risk: "high", lessSafe: ["dependency_seed"] });
+    const run = bench();
+    const marked = await proposeTestEnvironment(run.deps, { orgId: ORG, project: PROJECT, proposedBy: "dev_a", role: "maintainer", body: locked.body, seedChecks: locked.checks, origin: "setup_run" });
+    await recordTestEnvProveReport(run.deps, { orgId: ORG, project: PROJECT, report: { schemaVersion: 1, proposalDigest: marked.digest, steps: [{ step: "setup", status: "passed", durationMs: 0 }, { step: "full_suite", status: "passed", durationMs: 0 }, { step: "dependencies", status: "passed", durationMs: 0 }, { step: "dependency_usage", status: "passed", durationMs: 0 }], services: [], finishedAt: new Date(run.clock.now).toISOString() } });
+    await expect(approveOnePress(run, marked.digest)).rejects.toThrow(/sign in again/u);
+  });
+
+  it("the approved environment's dispatched plan still carries the lock", async () => {
+    const locked = await lockLookSeeds(body(), detected, sources(), scope);
+    const result = taskDependencyPlansOf({ body: locked.body, catalog: verifiedCatalog(pinnedCatalog()), edition: "public", approvedSeedFiles: [] });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    const plan = TaskDependencyPlanSchema.parse(result.dependencies.find((entry) => entry.id === "postgres"));
+    const seed = locked.body.dependencies![0]!.seeds[0]!;
+    expect(plan.seeds).toEqual([{ command: SEED, lock: "command" in seed ? seed.lock : undefined }]);
   });
 });

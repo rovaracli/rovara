@@ -1,13 +1,15 @@
-// Test services, SEED-RISK-1 (owner decision 2026-11-07, "Yes, after security review"): a seed command DETECTED UNCHANGED from the repository's own seed script, that runs ONLY against Rovara's disposable sealed test
-// database, is a MEDIUM change (one maintainer approves it on the card). Everything else about a seed command stays HIGH (a second person). This file is the broker's half:
+// Test services, SEED-RISK-1 (owner decision 2026-11-07, "Yes, after security review"): a seed command DETECTED UNCHANGED from the repository's own seed script, whose every dependency is Rovara's own throwaway test
+// software, is a MEDIUM change (one maintainer approves it on the card). Owner decision 15: such a seed has the same reach as the project's setup commands (in the working phase it can reach the internet), and that
+// is accepted. Everything else about a seed command stays HIGH (a second person). This file is the broker's half:
 //
 //   - `lockLookSeeds`: when a maintainer proposes what the look found, the BROKER resolves each seed command itself, against the repository at the head of its default branch as the code host gives it
-//     (`SeedRepoSource`), never from the worker's report or the model: the command must be one the detectors found (its source a file and line or a detector; `model` or a setup run's source is HIGH), every target
+//     (`SeedRepoSource`; the branch must be GitHub's own default branch, and the commit it hashed is kept), never from the worker's report or the model: the command must be one the detectors found (its source a file and line or a detector; `model` or a setup run's source is HIGH), every target
 //     must be the sealed test database (`seedTargetsOnlySealedTestDb`), and the contract's resolver (seed-script-lock.ts) must lock it. A lock the body already carried is dropped first and made again, so a lock
 //     written by anyone else is never kept. The result for EVERY seed command (locked, or why not) is the proposal's `seedChecks`, written with the proposal by the broker alone.
 //   - `seedTrustOf`: the seeds that count as verified for one body: a check that says `locked` for exactly that seed's signature (command and lock hash). A proposal stored without checks (an edit, the seed field, a setup
 //     run, a proposal from before this change) verifies nothing: every seed command in it is HIGH. A damaged record verifies nothing.
-//   - the worker re-hashes the lock from its checkout before every run of the seed and refuses on a difference (worker service-reset.ts), so a seed approved as MEDIUM never runs changed.
+//   - the worker re-hashes the lock from its checkout before every run of the seed and refuses on a difference (worker service-reset.ts), so a MEDIUM seed never runs with changed ENTRY files. What those files
+//     load through packages, aliases or `.env` is not pinned (seed-script-lock.ts says exactly what is).
 // Fail closed everywhere: no code host, a read that fails, a host other than GitHub, a source that is not a detector's: no lock, HIGH.
 import { GetCommand, PutCommand } from "@aws-sdk/lib-dynamodb";
 import { z } from "zod";
@@ -17,12 +19,15 @@ import {
 } from "@agentx/contracts";
 import { sameCommand } from "./seed-routing.js";
 
-/** One repository of the project as the broker reads it for a seed's lock: its folder in the workspace, and a reader rooted at a folder inside it, at ONE commit the broker chose. */
-export interface SeedRepoSource { path: string; readerAt(directory: string): SeedSourceReader }
+/**
+ * One repository of the project as the broker reads it for a seed's lock: its folder in the workspace, the default branch and the ONE commit read, and a reader rooted at a folder inside it at that commit. A repository
+ * that cannot be read this way (another host, a tree cut short, a configured branch that is not GitHub's default) is still listed, with why, so a seed in its folder is HIGH and never falls through to a parent repository.
+ */
+export type SeedRepoSource = { path: string; branch: string; commit: string; readerAt(directory: string): SeedSourceReader } | { path: string; refusal: "no_reader" | "not_default_branch" };
 /** The project's repositories for seed locks, or a throw when they cannot be read (then nothing is locked). */
 export type SeedRepoSources = (orgId: OrgId, project: string) => Promise<SeedRepoSource[]>;
 
-export const SEED_CHECK_REASONS = [...SEED_LOCK_REFUSALS, "not_detected", "not_sealed", "no_repository", "no_reader"] as const;
+export const SEED_CHECK_REASONS = [...SEED_LOCK_REFUSALS, "not_detected", "not_sealed", "no_repository", "no_reader", "not_default_branch"] as const;
 export type SeedCheckReason = (typeof SEED_CHECK_REASONS)[number];
 const REASON_WORDS: Record<SeedCheckReason, string> = {
   ...SEED_LOCK_REFUSAL_WORDS,
@@ -30,11 +35,13 @@ const REASON_WORDS: Record<SeedCheckReason, string> = {
   not_sealed: "the test environment can reach something other than Rovara's own test database",
   no_repository: "it does not run in one of the project's repositories",
   no_reader: "the repository could not be read to check it",
+  not_default_branch: "the project's branch is not the repository's default branch on GitHub",
 };
 
 const SignatureSchema = z.string().min(1).max(20_000);
 export const SeedCheckSchema = z.discriminatedUnion("verdict", [
-  z.object({ verdict: z.literal("locked"), dependencyId: z.string().min(1).max(80), signature: SignatureSchema, from: z.array(z.string().min(1).max(300)).min(1).max(32) }).strict(),
+  // The branch and the commit the broker hashed (M4): what the approval is of.
+  z.object({ verdict: z.literal("locked"), dependencyId: z.string().min(1).max(80), signature: SignatureSchema, from: z.array(z.string().min(1).max(300)).min(1).max(32), branch: z.string().min(1).max(255), commit: z.string().regex(/^[a-f0-9]{40}$/u) }).strict(),
   z.object({ verdict: z.literal("high"), dependencyId: z.string().min(1).max(80), signature: SignatureSchema, reason: z.enum(SEED_CHECK_REASONS) }).strict(),
 ]);
 export type SeedCheck = z.infer<typeof SeedCheckSchema>;
@@ -80,11 +87,13 @@ export async function lockLookSeeds(body: TestEnvironmentBody, detected: TestEnv
       if (repositories === undefined) { high("no_reader"); continue; }
       const where = repositoryOf(repositories, seed.command.cwd);
       if (where === undefined) { high("no_repository"); continue; }
-      const resolved = await seedScriptLockOf(seed.command, where.source.readerAt(where.directory));
+      const source = where.source;
+      if ("refusal" in source) { high(source.refusal); continue; }
+      const resolved = await seedScriptLockOf(seed.command, source.readerAt(where.directory));
       if (!resolved.ok) { high(resolved.refusal); continue; }
       const locked = { command: seed.command, lock: resolved.lock };
       seeds.push(locked);
-      checks.push({ verdict: "locked", dependencyId: dependency.id, signature: testEnvSeedSignature(dependency.id, locked), from: resolved.lock.from });
+      checks.push({ verdict: "locked", dependencyId: dependency.id, signature: testEnvSeedSignature(dependency.id, locked), from: resolved.lock.from, branch: source.branch, commit: source.commit });
     }
     next.push({ ...dependency, seeds });
   }
@@ -117,7 +126,24 @@ export function seedTrustOf(checks: readonly SeedCheck[], body: TestEnvironmentB
   return { verifiedSeeds };
 }
 
-/** Each seed command's risk and why, in fixed words, for the card and the setup page (short: a card shows a reason in at most 100 characters). */
+/** The medium reason, in full, for the setup page (I3: who approves, what is pinned, and that it has the reach of setup). */
+const mediumReason = (check: Extract<SeedCheck, { verdict: "locked" }>): string =>
+  `Medium: the seed runs the repository's own script, unchanged on ${check.branch} at ${check.commit.slice(0, 12)} (${check.from.join(", ")}). Rovara checks those files again before every run. It runs against Rovara's throwaway test database, with the same access as your setup commands (in the working phase it can reach the internet). One maintainer can approve it.`;
+
+/** The card's short lines (a card shows at most 100 characters of each reason). */
+export function seedCardLinesOf(risks: ReadonlyArray<{ risk: "medium" | "high"; reason: string }>, checks: readonly SeedCheck[], body: TestEnvironmentBody): string[] {
+  const lines: string[] = [];
+  const trust = seedTrustOf(checks, body).verifiedSeeds ?? new Set<string>();
+  for (const check of checks) {
+    if (check.verdict !== "locked" || !trust.has(check.signature)) continue;
+    lines.push(`Seed: the repository's own script, unchanged on ${check.branch} (${check.from.join(", ")}).`, "One maintainer approves; it has the same access as setup and is rechecked each run.");
+    break;
+  }
+  for (const entry of risks) if (entry.risk === "high") lines.push(entry.reason);
+  return [...new Set(lines)];
+}
+
+/** Each seed command's risk and why, in fixed words, for the card and the setup page. */
 export function seedRisksOf(checks: readonly SeedCheck[], body: TestEnvironmentBody): Array<{ dependencyId: string; risk: "medium" | "high"; reason: string }> {
   const trust = seedTrustOf(checks, body).verifiedSeeds ?? new Set<string>();
   const bySignature = new Map(checks.map((check) => [check.signature, check] as const));
@@ -128,7 +154,7 @@ export function seedRisksOf(checks: readonly SeedCheck[], body: TestEnvironmentB
       const signature = testEnvSeedSignature(dependency.id, seed);
       const check = bySignature.get(signature);
       if (check?.verdict === "locked" && trust.has(signature) && seedTargetsOnlySealedTestDb(body, dependency.id)) {
-        out.push({ dependencyId: dependency.id, risk: "medium", reason: `Seed detected unchanged from ${check.from.join(", ")}, runs only on the test database.`.slice(0, 400) });
+        out.push({ dependencyId: dependency.id, risk: "medium", reason: mediumReason(check).slice(0, 400) });
       } else {
         const why = check?.verdict === "high" ? REASON_WORDS[check.reason] : check?.verdict === "locked" ? REASON_WORDS.not_sealed : "it was set or changed by a person, not detected unchanged from the repository";
         out.push({ dependencyId: dependency.id, risk: "high", reason: `Seed is high risk: ${why}.`.slice(0, 400) });

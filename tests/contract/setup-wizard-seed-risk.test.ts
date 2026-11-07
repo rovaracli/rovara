@@ -12,12 +12,17 @@ const SEED = command("npm", ["run", "seed"], 900);
 const FILES: Record<string, string> = { "package.json": JSON.stringify({ scripts: { seed: "node db/seed.js" } }), "db/seed.js": "const { Client } = require('pg');\n" };
 const postgres = { family: "postgres", kind: "database", evidence: [{ path: "src/db.ts", line: 2 }], strength: "used", hints: { envNames: ["DATABASE_URL"] } };
 const draftWith = (source: unknown): TestEnvDraft => ({ ...draftOf(draftBody()), dependencies: [postgres], seedCommands: [{ command: SEED, source }] } as unknown as TestEnvDraft);
-function bench(options: { down?: boolean } = {}) {
+function bench(options: { down?: boolean; truncated?: boolean; mode?: string; type?: string; defaultBranch?: string } = {}) {
   const reads: string[] = [];
   const github = {
-    reconcilePullRequest: vi.fn(), getPullRequest: vi.fn(), updatePullRequest: vi.fn(), getRepositoryIdentity: vi.fn(),
+    reconcilePullRequest: vi.fn(), getPullRequest: vi.fn(), updatePullRequest: vi.fn(),
+    // M1: GitHub's own default branch, compared with the project's.
+    getRepositoryIdentity: vi.fn(async () => ({ defaultBranch: options.defaultBranch ?? "main" })),
     getDefaultBranchHead: vi.fn(async () => "c".repeat(40)),
-    listTreeAtCommit: vi.fn(async () => { if (options.down === true) throw new Error("GitHub returned 502"); return { truncated: false, entries: Object.keys(FILES).map((path) => ({ path, mode: "100644", type: "blob", sha: "a".repeat(40) })) }; }),
+    listTreeAtCommit: vi.fn(async () => {
+      if (options.down === true) throw new Error("GitHub returned 502");
+      return { truncated: options.truncated === true, entries: Object.keys(FILES).map((path) => ({ path, mode: path === "db/seed.js" ? options.mode ?? "100644" : "100644", type: path === "db/seed.js" ? options.type ?? "blob" : "blob", sha: "a".repeat(40) })) };
+    }),
     getFileAtCommit: vi.fn(async (_url: string, path: string) => { reads.push(path); return FILES[path]; }),
   };
   return { reads, t: setupWizardBench({ brokerExtra: { serviceCatalog: async () => verifiedCatalog(pinnedCatalog()), githubPullRequests: github } }) };
@@ -41,7 +46,8 @@ describe("a detected seed command through the setup routes", () => {
       expect(reads).toEqual(["package.json", "db/seed.js"]);
       const shown = (await t.state()).proposal as unknown as Shown;
       expect(shown).toMatchObject({ risk: "medium", lessSafe: [], needs: { secondPerson: false, freshSignIn: false } });
-      expect(shown.seedRisks).toEqual([{ dependencyId: "postgres", risk: "medium", reason: "Seed detected unchanged from db/seed.js, package.json, runs only on the test database." }]);
+      expect(shown.seedRisks.map((entry) => [entry.dependencyId, entry.risk])).toEqual([["postgres", "medium"]]);
+      expect(shown.seedRisks[0]!.reason).toMatch(/^Medium: the seed runs the repository's own script, unchanged on main at c{12} \(db\/seed\.js, package\.json\)\..*One maintainer can approve it\.$/u);
       checked(t, shown.digest);
       const proved = await t.dev(OMAR, "POST", `${ENV}/prove`, { digest: shown.digest });
       expect(proved.status, JSON.stringify(proved.body)).toBe(200);
@@ -51,7 +57,7 @@ describe("a detected seed command through the setup routes", () => {
       const { requestId: _gateway, ...own } = listed.body; void _gateway;
       const card = DecisionCardsViewSchema.parse(own).cards.find((item) => item.kind === "approve_test_env")!;
       expect(card).toMatchObject({ risk: "medium" });
-      expect(card.riskReasons.join(" ")).toContain("detected unchanged from db/seed.js, package.json, runs only on the test database");
+      expect(card.riskReasons.slice(1, 3)).toEqual(["Seed: the repository's own script, unchanged on main (db/seed.js, package.json).", "One maintainer approves; it has the same access as setup and is rechecked each run."]);
       expect(card.actions.map((action) => action.kind)).toContain("approve");
       const approved = await t.dev(OMAR, "POST", `${ENV}/approve`, { digest: shown.digest, expectedRevision: 0 });
       expect(approved.status, JSON.stringify(approved.body)).toBe(200);
@@ -59,9 +65,17 @@ describe("a detected seed command through the setup routes", () => {
     });
   });
 
-  it.each([["the model proposed it", "model", false], ["GitHub could not be read", { path: "package.json", line: 4 }, true]])("stays HIGH with a second person when %s", async (_name, source, down) => {
+  const FOUND = { path: "package.json", line: 4 };
+  it.each([
+    ["the model proposed it", "model", {}],
+    ["GitHub could not be read", FOUND, { down: true }],
+    ["GitHub cut the tree listing short", FOUND, { truncated: true }],
+    ["the seed file is a link", FOUND, { mode: "120000" }],
+    ["the seed file is a submodule", FOUND, { mode: "160000", type: "commit" }],
+    ["the project's branch is not GitHub's default branch", FOUND, { defaultBranch: "trunk" }],
+  ] as const)("stays HIGH with a second person when %s", async (_name, source, options) => {
     process.env.TEST_SERVICES_ENABLED = "1";
-    const { t: started } = bench({ down });
+    const { t: started } = bench(options);
     const t = await started;
     await withSwitch("1", async () => {
       await t.drafted(draftWith(source));

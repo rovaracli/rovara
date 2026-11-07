@@ -14,7 +14,7 @@ import { projectPk, testEnvApprovalRisk, testEnvDigest, testEnvIsProved, testEnv
 import { tryEffectiveTaskOwner, type DeveloperTaskRecord } from "../developer/task-records.js";
 import { testEnvChangeLines } from "../org/test-env-diff.js";
 import { proposalIsSetupRun, proposalSeedTrust, readApprovedTestEnvironment, readProposal, readProposalSources, readTestEnvProveReport, type TestEnvDeps } from "../org/test-environment.js";
-import { seedRisksOf } from "../test-env/seed-lock.js";
+import { seedCardLinesOf, seedRisksOf } from "../test-env/seed-lock.js";
 import { dependencyCardLines } from "../test-env/dependency-card-lines.js";
 import { approvedFixturesOf, type FixtureReadPort } from "../test-env/fixture-lookup.js";
 import { environmentUnusedReason, readTestEnvPin } from "../test-env/usable.js";
@@ -79,7 +79,8 @@ export async function approveTestEnvItemsFor(ports: TestEnvCardPorts, caller: Wh
       // SEED-RISK-1: a seed the broker verified itself (the proposal item's own checks) is not less safe, and the card says why each seed command is medium or high.
       const trust = await proposalSeedTrust(ports.store, orgId, project, newest.digest, body);
       const lessSafe = testEnvLessSafeChanges(approved?.environment, body, trust);
-      const seedReasons = seedRisksOf((await readProposalSources(ports.store, orgId, project, newest.digest)).seedChecks, body).map((entry) => entry.reason);
+      const { seedChecks } = await readProposalSources(ports.store, orgId, project, newest.digest);
+      const seedReasons = seedCardLinesOf(seedRisksOf(seedChecks, body), seedChecks, body);
       // TE-2: a proposal a setup RUN made is approved only with the approver's fresh sign-in, which a one-press card cannot ask for: it is a high card that opens the setup page.
       const setupRun = await proposalIsSetupRun(ports.store, orgId, project, newest.digest);
       const risk = lessSafe.length > 0 || setupRun ? "high" as const : testEnvApprovalRisk(body, trust);
