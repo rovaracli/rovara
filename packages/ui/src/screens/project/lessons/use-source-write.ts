@@ -9,12 +9,12 @@ import { sourceChangeIsStale, sourceFailureText } from "./lessons-text.js";
 
 export function useSourceWrite(project: string) {
  const host = useAppHost(), query = useQueryClient(), sending = useRef(false);
- const [busy, setBusy] = useState(false), [error, setError] = useState<string>();
+ const [busy, setBusy] = useState(false), [error, setError] = useState<string>(), [code, setCode] = useState<string>();
  const reload = async () => { await Promise.all([query.invalidateQueries({ queryKey: sourcesAdminKey(project) }), query.invalidateQueries({ queryKey: sourcesReadKey(project) })]); };
  /** `raw` is the body without a request id; every send gets a fresh one. Resolves to the reply, or undefined after a failure (the sentence is in `error`). */
  async function send(raw: Record<string, unknown>): Promise<SourceWriteResult | undefined> {
   if (sending.current) return undefined;
-  sending.current = true;setBusy(true);setError(undefined);
+  sending.current = true;setBusy(true);setError(undefined);setCode(undefined);
   try {
    const parsed = SourceWriteBodySchema.safeParse({ ...raw, requestId: crypto.randomUUID() });
    if (!parsed.success) throw new ApiError(0, "CONFIG_INVALID", "invalid");
@@ -22,10 +22,11 @@ export function useSourceWrite(project: string) {
    await reload();
    return reply;
   } catch (failure) {
-   setError(sourceFailureText(failure));
+   setError(sourceFailureText(failure));setCode(failure instanceof ApiError ? failure.code : undefined);
    if (sourceChangeIsStale(failure)) await reload();
    return undefined;
   } finally { sending.current = false;setBusy(false); }
  }
- return { busy, error, send, clear: () => { setError(undefined); } };
+ // `code`: the refusal's fixed code, for a screen that offers the next step in place (UX-4b: link Slack, add Rovara to the channel).
+ return { busy, error, code, send, clear: () => { setError(undefined);setCode(undefined); } };
 }

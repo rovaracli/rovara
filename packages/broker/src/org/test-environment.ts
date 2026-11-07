@@ -221,7 +221,10 @@ export type TestEnvChangeFlag = TestEnvLessSafeField;
 const changeFlags = (previous: TestEnvironmentBody | undefined, next: TestEnvironmentBody, trust?: TestEnvSeedTrust): TestEnvChangeFlag[] => testEnvLessSafeChanges(previous, next, trust);
 
 
-export type ProposalOrigin = "setup_run";
+/** `setup_run`: the setup helper's "Use this setup" (it ran commands; its check is pinned to the run's commits). `setup_draft` (owner direction, UX-4b): a setup draft's "Check and apply" (it only read the
+ * repositories, so no commit pin). Both are approved only after the approver's fresh sign-in: approval rules depend on the proposal, never on which screen made it. */
+export type ProposalOrigin = "setup_run" | "setup_draft";
+const originOf = (value: unknown): ProposalOrigin | undefined => (value === "setup_run" || value === "setup_draft" ? value : undefined);
 
 export interface ProposedTestEnvironment { digest: string; risk: DecisionRisk; lessSafe: TestEnvChangeFlag[] }
 
@@ -233,7 +236,9 @@ export async function proposeTestEnvironment(
   deps: TestEnvDeps,
   input: { orgId: OrgId; project: string; proposedBy: string; role: ProjectRole | undefined; body: unknown; valueSources?: unknown; /** Where the proposal came from: `setup_run` marks it as a setup run's. The mark stays on the record (proposing the same body again does not take it away). */ origin?: ProposalOrigin;
     /** SEED-RISK-1: the BROKER's own check of each seed command (`lockLookSeeds`), given only by the look's propose. Absent: every seed command of the proposal is HIGH. */
-    seedChecks?: readonly SeedCheck[] },
+    seedChecks?: readonly SeedCheck[];
+    /** UX-4b review I2: the proposal's commands REPLACE the settings' lists (a person's typed commands), so its check runs exactly them and its approval writes exactly them. */
+    replaceLists?: boolean },
 ): Promise<ProposedTestEnvironment> {
   if (input.role === undefined || !projectAllows(input.role, "edit_settings")) throw agentXError("FORBIDDEN", "only a project maintainer can propose a test environment");
   const body = parseBody(input.body);
@@ -244,7 +249,7 @@ export async function proposeTestEnvironment(
   const digest = testEnvDigest(body);
   const now = deps.now();
   // A mark that was set stays: a later proposal of the same body (the detectors', a repeat) cannot make a setup run's proposal look like an ordinary one.
-  const origin = input.origin ?? ((await read(deps, proposalKey(input.orgId, input.project, digest)))?.origin === "setup_run" ? "setup_run" as const : undefined);
+  const origin = input.origin ?? originOf((await read(deps, proposalKey(input.orgId, input.project, digest)))?.origin);
   await deps.documentClient.send(new TransactWriteCommand({
     TransactItems: [{
       Put: {
@@ -252,7 +257,7 @@ export async function proposeTestEnvironment(
         Item: {
           ...proposalKey(input.orgId, input.project, digest), entityType: "TEST_ENV_PROPOSAL", orgId: input.orgId, project: input.project, digest, proposedBy: input.proposedBy,
           proposedAt: new Date(now).toISOString(), environment: body, ...(input.valueSources === undefined ? {} : { valueSources: input.valueSources }), ...(origin === undefined ? {} : { origin }),
-          ...(input.seedChecks === undefined || input.seedChecks.length === 0 ? {} : { seedChecks: input.seedChecks }),
+          ...(input.seedChecks === undefined || input.seedChecks.length === 0 ? {} : { seedChecks: input.seedChecks }), ...(input.replaceLists === true ? { replaceLists: true } : {}),
           [INDEX_EXPIRY_ATTRIBUTE]: Math.floor((now + TEST_ENV_PROPOSAL_TTL_MS) / 1000),
         },
       },
@@ -279,7 +284,7 @@ export async function readProposalSources(deps: TestEnvDeps, orgId: OrgId, proje
   const item = await read(deps, proposalKey(orgId, project, digest));
   const sources = item?.valueSources;
   const valueSources = Array.isArray(sources) ? sources.filter((entry): entry is { field: string; source: unknown } => typeof entry === "object" && entry !== null && typeof (entry as { field?: unknown }).field === "string") : [];
-  return { valueSources, proposedBy: typeof item?.proposedBy === "string" ? item.proposedBy : undefined, origin: item?.origin === "setup_run" ? "setup_run" : undefined, seedChecks: item?.digest === digest && item?.orgId === orgId && item?.project === project ? parseSeedChecks(item?.seedChecks) : [] };
+  return { valueSources, proposedBy: typeof item?.proposedBy === "string" ? item.proposedBy : undefined, origin: originOf(item?.origin), seedChecks: item?.digest === digest && item?.orgId === orgId && item?.project === project ? parseSeedChecks(item?.seedChecks) : [] };
 }
 
 /**
@@ -305,6 +310,17 @@ export function isSetupRunProposal(valueSources: ReadonlyArray<{ source: unknown
 export async function proposalIsSetupRun(deps: TestEnvDeps, orgId: OrgId, project: string, digest: string): Promise<boolean> {
   const { origin, valueSources } = await readProposalSources(deps, orgId, project, digest);
   return origin === "setup_run" || isSetupRunProposal(valueSources);
+}
+
+/** UX-4b review I2: whether a stored proposal replaces the settings' lists (a person's typed commands). Unreadable: false (the lists are added to, as every other proposal). */
+export async function proposalReplacesLists(deps: TestEnvDeps, orgId: OrgId, project: string, digest: string): Promise<boolean> {
+  try { return (await read(deps, proposalKey(orgId, project, digest)))?.replaceLists === true; } catch { return false; }
+}
+
+/** Whether approving a proposal needs the approver's fresh sign-in because of where it came from: a setup run's, or a setup draft's (UX-4b). Only a setup run's is pinned to commits (`proposalIsSetupRun`). */
+export async function proposalNeedsFreshSignIn(deps: TestEnvDeps, orgId: OrgId, project: string, digest: string): Promise<boolean> {
+  const { origin, valueSources } = await readProposalSources(deps, orgId, project, digest);
+  return origin === "setup_run" || origin === "setup_draft" || isSetupRunProposal(valueSources);
 }
 
 const editedKey = (orgId: OrgId, project: string) => keyOf(orgId, project, "TESTENV#EDITED");
@@ -444,7 +460,7 @@ export async function approveTestEnvironment(
   const fresh = (at: number | undefined): boolean => at !== undefined && Number.isFinite(at) && at <= now && now - at <= TEST_ENV_FRESH_SIGN_IN_MS;
   // A high-risk card (anything less safe, or a tier above the sandbox) needs the person pressing approve to have signed in just now too.
   // A proposal a setup RUN made counts the same: its commands were worked out by running things, so the approver signs in just now (defence in depth: the route asks for it too).
-  const setupRun = input.setupRun === true || await proposalIsSetupRun(deps, input.orgId, input.project, input.digest);
+  const setupRun = input.setupRun === true || await proposalNeedsFreshSignIn(deps, input.orgId, input.project, input.digest);
   if ((lessSafe.length > 0 || setupRun || testEnvApprovalRisk(body, trust) === "high") && !fresh(input.approvedBySignedInAtMs)) throw agentXError("REAUTH_REQUIRED", "sign in again to approve this change");
   let second: { check: SecondPersonCheck; approverId: string; signedInAtMs: number; sessionRef: string } | undefined;
   if (lessSafe.length > 0) {

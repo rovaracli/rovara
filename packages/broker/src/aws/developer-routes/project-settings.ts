@@ -14,7 +14,7 @@ import { egressDepsOf, getAppProject } from "./project-archive-setup.js";
  */
 export async function listGithubRepositories(deps: DeveloperRouteDependencies, caller: DeveloperCaller, installation: string | null): Promise<{ repositories: Array<{ fullName: string; githubRepositoryId: number; private: boolean; defaultBranch: string; project?: string }> }> {
   if (deps.githubConnect === undefined) throw agentXError("NOT_FOUND", "connecting GitHub is not set up in this deployment");
-  if (installation === null || !/^[1-9][0-9]{0,14}$/.test(installation)) throw agentXError("CONFIG_INVALID", "installation: give the installation's id, from agentx github list");
+  if (installation === null || !/^[1-9][0-9]{0,14}$/.test(installation)) throw agentXError("CONFIG_INVALID", "installation: choose one of your company's GitHub connections");
   const { repositories } = await deps.githubConnect.listRepositories(caller, Number(installation));
   // Only the caller's own visible projects are named: another project's name is not theirs to learn.
   const roles = await visibleProjectRoles(deps, caller);

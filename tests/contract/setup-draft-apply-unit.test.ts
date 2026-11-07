@@ -4,7 +4,7 @@ import { randomUUID } from "node:crypto";
 import { describe, expect, it, vi, type Mock } from "vitest";
 import { StoredProjectDefinitionSchema, agentXError, setupDraftKey, setupItemsOf as itemsOf, type AppProjectDetail, type SetupProposal, sanitizeSetupProposal } from "@agentx/contracts";
 import { ManagedByFileError } from "../../packages/broker/src/org/project-settings.js";
-import { applySetupDraft, type SetupDraftDependencies } from "../../packages/broker/src/rovara-code/setup-draft.js";
+import { DRAFT_PROPOSE_WORDS, applySetupDraft, type SetupDraftDependencies } from "../../packages/broker/src/rovara-code/setup-draft.js";
 import { DRAFT_CHECK_WORDS, draftCommandLists, draftCommandsDigest, type SetupDraftCandidatePort } from "../../packages/broker/src/rovara-code/setup-draft-check.js";
 import { changeTitleOf } from "../../packages/broker/src/agents/approval-decide-kind.js";
 import { getApprovalSubjectHandler } from "../../packages/broker/src/agents/approvals.js";
@@ -24,6 +24,7 @@ const read = sanitizeSetupProposal({
   setup: [{ repo: "web", commands: ["npm ci"], from: [cite("package.json")] }],
   tests: [{ repo: "web", commands: ["npm test"], from: [cite("package.json")] }],
   repositories: [{ name: "lib", url: "https://github.com/acme/lib", from: [cite("README.md")] }],
+  devcontainer: { repository: "web", configPath: ".devcontainer/devcontainer.json", exists: true, from: [cite("package.json")] },
 }, { basedOnRevision: 1, repositories: [{ name: "web" }] });
 if (!read.ok) throw new Error("fixture");
 const proposal: SetupProposal = read.proposal;
@@ -325,5 +326,57 @@ describe("the follow-up check after a save (TE-3)", () => {
     await applySetupDraft(second.deps, caller, "web", body([{ id: "setup-web", useSuggestion: true }]));
     expect(refused.adopt).toHaveBeenCalledTimes(1);
     expect(second.startSetupCheck).toHaveBeenCalledTimes(1);
+  });
+});
+
+// Owner decision 11 (one apply path), where the test environment is ON: a draft's commands are proposed to it, exactly as the setup run's "Use this setup" proposes them, and never saved to the
+// settings here. Where it is off (review I3) TE-3's check-then-save above still holds.
+describe("commands go to the test environment's proposal (owner decision 11)", () => {
+  const both = [{ id: "setup-web", useSuggestion: true }, { id: "tests-web", useSuggestion: true }];
+  const environmentPort = (on = true) => {
+    const proposed: unknown[] = [];
+    return { proposed, port: { on, merge: vi.fn(async (_who: unknown, _project: string, environment: unknown) => environment as never), propose: vi.fn(async (_who: unknown, _project: string, role: string, environment: unknown) => { proposed.push({ role, environment });return { digest: "d".repeat(64) }; }), edit: vi.fn(async () => ({ digest: "e".repeat(64) })) } };
+  };
+
+  it("proposes the ticked commands as the maintainer, saves no setting, and starts no check", async () => {
+    const env = environmentPort();
+    const candidate = passingCandidate();
+    const { deps, updateSettings, startSetupCheck } = stubDeps({ testEnvironment: env.port, candidate });
+    const reply = await applySetupDraft(deps, caller, "web", body(both));
+    expect(outcomes(reply).map((entry) => entry.outcome)).toEqual(["proposed", "proposed"]);
+    expect(updateSettings).not.toHaveBeenCalled();
+    expect(startSetupCheck).not.toHaveBeenCalled();
+    expect(candidate.start).not.toHaveBeenCalled();
+    expect(env.proposed).toHaveLength(1);
+    expect(JSON.stringify(env.proposed[0])).toContain("npm");
+    expect(env.proposed[0]).toMatchObject({ role: "maintainer" });
+  });
+
+  it("review I3: where the test environment is off (or not wired) the commands are saved as before, behind the check of exactly those commands, and never said to be unavailable", async () => {
+    for (const port of [environmentPort(false).port, undefined]) {
+      const { deps, updateSettings } = stubDeps(port === undefined ? {} : { testEnvironment: port });
+      const reply = await applySetupDraft(deps, caller, "web", body(both));
+      expect(outcomes(reply).map((entry) => entry.outcome)).toEqual(["applied", "applied"]);
+      expect(updateSettings).toHaveBeenCalledTimes(1);
+      expect(JSON.stringify(updateSettings.mock.calls[0])).toContain("npm ci");
+      expect(port === undefined ? [] : (port.propose as Mock).mock.calls).toEqual([]);
+    }
+  });
+
+  it("needs a test command to prove: setup commands alone are not proposed", async () => {
+    const env = environmentPort();
+    const { deps } = stubDeps({ testEnvironment: env.port });
+    const reply = await applySetupDraft(deps, caller, "web", body([{ id: "setup-web", useSuggestion: true }]));
+    expect(outcomes(reply)).toEqual([expect.objectContaining({ outcome: "not_available", message: DRAFT_PROPOSE_WORDS.noTest })]);
+    expect(env.proposed).toEqual([]);
+  });
+
+  it("still saves a dev container as a setting beside the proposal", async () => {
+    const env = environmentPort();
+    const { deps, updateSettings } = stubDeps({ testEnvironment: env.port });
+    const reply = await applySetupDraft(deps, caller, "web", body([...both, { id: "devcontainer" }]));
+    expect(outcomes(reply).map((entry) => [entry.id, entry.outcome])).toEqual([["setup-web", "proposed"], ["tests-web", "proposed"], ["devcontainer", "applied"]]);
+    expect(updateSettings).toHaveBeenCalledTimes(1);
+    expect(JSON.stringify(updateSettings.mock.calls[0])).not.toContain("npm");
   });
 });

@@ -8,11 +8,21 @@ import { Skeleton } from "../../../design/Skeleton.js";
 import { TextField } from "../../../design/TextField.js";
 import { VisibleText } from "../../../design/VisibleText.js";
 import { ActiveLesson } from "./ActiveLesson.js";
+import { LearningModeControl } from "./LearningModeControl.js";
+import { useLearningMode } from "../../../api/learning-mode.js";
 import { Digest } from "./Digest.js";
 import { LessonCard, type Decided } from "./LessonCard.js";
 import { Rollback } from "./Rollback.js";
 import { T, agoWords, dateWords, scopeWords, typeWords } from "./lessons-text.js";
 import "./lessons.css";
+
+/** Why there are no lessons here: the record paused (its own read says so), or lessons not set up in this installation. */
+function LessonsGone({ project }: { project: string }) {
+ const mode = useLearningMode(project);
+ if (mode.isPending) return <p className="rv-muted" role="status">{T.LOADING}</p>;
+ const paused = mode.error instanceof ApiError && mode.error.code === "TEAM_RECORD_PAUSED";
+ return <p role="alert">{paused ? T.LESSONS_PAUSED : T.LESSONS_UNAVAILABLE}</p>;
+}
 
 /** "Lessons": what Rovara learned from this team's work. Maintainers approve, reject, remove and go back; everyone who can see the project reads the active lessons. */
 export function LessonsTab({ project }: { project: string }) {
@@ -20,8 +30,13 @@ export function LessonsTab({ project }: { project: string }) {
  const [notice, setNotice] = useState<string>(), [search, setSearch] = useState(""), [now] = useState(() => Date.now()), [show, setShow] = useState({ removed: false, rollback: false });
  if (read.isPending) return <section className="rv-lessons" aria-label={T.TITLE}><Skeleton label={T.LOADING} /></section>;
  if (read.isError || read.data === undefined) {
+  // UX-4b: learning Off (or the company's lock) has its own code, so the tab says so and offers to turn it on; a plain not found is an installation without the team record or lessons.
+  const off = read.error instanceof ApiError && (read.error.code === "LEARNING_OFF" || read.error.code === "LEARNING_LOCKED");
   const gone = read.error instanceof ApiError && read.error.code === "NOT_FOUND";
-  return <section className="rv-lessons" aria-label={T.TITLE}><p role="alert">{gone ? "Lessons aren't set up for this project yet." : T.LOAD_FAILED}</p>{!gone && <Button onClick={() => { void read.refetch(); }}>{T.TRY_AGAIN}</Button>}</section>;
+  if (off) return <section className="rv-lessons" aria-label={T.TITLE}><p role="status">{read.error instanceof ApiError && read.error.code === "LEARNING_LOCKED" ? T.SOURCES_LEARNING_LOCKED : T.OFF}</p><LearningModeControl project={project} /></section>;
+  // UX-4b review M3: a paused record has no lessons routes either; the record's own read says it is paused, and the tab says so.
+  if (gone) return <section className="rv-lessons" aria-label={T.TITLE}><LessonsGone project={project} /></section>;
+  return <section className="rv-lessons" aria-label={T.TITLE}><p role="alert">{gone ? T.LESSONS_UNAVAILABLE : T.LOAD_FAILED}</p>{!gone && <Button onClick={() => { void read.refetch(); }}>{T.TRY_AGAIN}</Button>}</section>;
  }
  const view = read.data;
  async function done(result: Decided) {
@@ -37,6 +52,7 @@ export function LessonsTab({ project }: { project: string }) {
   {collecting && <Banner title={T.COLLECT} tone="info" />}
   {view.lockedByCompany && <p className="rv-muted">{T.LOCKED}</p>}
   {!view.canDecide && <p className="rv-muted">{T.READ_ONLY}</p>}
+  {view.canDecide && <LearningModeControl project={project} compact />}
   {notice !== undefined && <p role="status">{notice}</p>}
 
   {view.canDecide && <section aria-label={T.WAITING} className="rv-lessons-section">

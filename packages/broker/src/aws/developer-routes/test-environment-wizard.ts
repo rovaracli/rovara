@@ -31,12 +31,12 @@ import {
 } from "@agentx/contracts";
 import { isFreshSignIn, type SessionRecord } from "../../developer/store.js";
 import type { TestEnvDeps } from "../../org/test-environment.js";
-import { setEditedProposal, proposeTestEnvironment, readApprovedTestEnvironment } from "../../org/test-environment.js";
+import { proposalReplacesLists, setEditedProposal, proposeTestEnvironment, readApprovedTestEnvironment } from "../../org/test-environment.js";
 import { shownLine } from "../../org/shown-line.js";
 import { derivedRequestId } from "../../rovara-code/setup-draft.js";
 import { refusedCommand } from "../../test-env/draft.js";
 import { SEED_COMMAND_PROBLEM_WORDS, dependencySeedCommands, seedCommandProblem } from "../../test-env/refused-command.js";
-import { commandsToApply } from "../../test-env/candidate-commands.js";
+import { commandsToApply, sameCommands } from "../../test-env/candidate-commands.js";
 import { ownWriteOf, recordOwnSettingsWrite } from "../../test-env/own-settings-write.js";
 import { TEST_ENV_REFUSAL_WORDS, selectionFieldsAreSafe } from "../../test-env/prove-from-setup-check.js";
 import { getSignIn } from "./authentication.js";
@@ -171,7 +171,7 @@ export function refuseUnsafeEdit(body: TestEnvironmentBody): void {
 
 /** Stores a maintainer's edited body as a proposal and makes it the one the wizard shows. The body is re-parsed here: a request body is never trusted to be what the schema already saw. */
 export async function editTestEnvironment(
-  store: TestEnvDeps, input: { orgId: OrgId; project: string; developerId: string; role: ProjectRole | undefined; environment: unknown },
+  store: TestEnvDeps, input: { orgId: OrgId; project: string; developerId: string; role: ProjectRole | undefined; environment: unknown; /** UX-4b review I2: typed commands replace the lists. */ replaceLists?: boolean },
 ): Promise<{ digest: string }> {
   if (input.role === undefined || !projectAllows(input.role, "edit_settings")) throw agentXError("FORBIDDEN", "only a project maintainer can edit a test environment");
   const parsed = TestEnvironmentBodySchema.safeParse(input.environment);
@@ -183,7 +183,7 @@ export async function editTestEnvironment(
   refuseUnsafeEdit(body);
   const approved = await readApprovedTestEnvironment(store, input.orgId, input.project);
   if (approved !== undefined && testEnvDigest(approved.environment) === testEnvDigest(body)) throw agentXError("CONFIG_INVALID", TEST_ENV_EDIT_WORDS.unchanged);
-  const proposed = await proposeTestEnvironment(store, { orgId: input.orgId, project: input.project, proposedBy: input.developerId, role: input.role, body });
+  const proposed = await proposeTestEnvironment(store, { orgId: input.orgId, project: input.project, proposedBy: input.developerId, role: input.role, body, ...(input.replaceLists === true ? { replaceLists: true } : {}) });
   await setEditedProposal(store, { orgId: input.orgId, project: input.project, digest: proposed.digest, editedBy: input.developerId });
   return { digest: proposed.digest };
 }
@@ -223,16 +223,21 @@ export async function applyProposalCommands(
   if (first === undefined) throw agentXError("CONFIG_INVALID", TEST_ENV_EDIT_WORDS.oneDirectory);
   // The settings save writes every command with the first repository's directory: commands that already run elsewhere would be moved by it.
   if ([...definition.setup, ...definition.readiness].some((command) => command.cwd !== first)) throw agentXError("CONFIG_INVALID", TEST_ENV_EDIT_WORDS.oneDirectory);
-  const plan = commandsToApply(input.body, definition, first);
+  // UX-4b review I2: a replacing proposal writes exactly its lists (a removed or fixed command is gone); every other proposal adds what is missing.
+  const replace = await proposalReplacesLists({ documentClient: deps.documentClient, tableName: deps.tableName, now: deps.now }, caller.orgId, input.name, testEnvDigest(input.body));
+  const plan = commandsToApply(input.body, definition, first, replace);
   const added = [...plan.setup, ...plan.readiness];
-  if (added.length === 0) return { added: [], skipped: plan.skipped, settingsRevision: definition.revision, setupCheck: "not_needed" };
+  const unchanged = replace && sameCommands(plan.setup, definition.setup) && sameCommands(plan.readiness, definition.readiness);
+  if (unchanged || (!replace && added.length === 0)) return { added: [], skipped: plan.skipped, settingsRevision: definition.revision, setupCheck: "not_needed" };
   // What is written is what a candidate check ran, at this settings revision: the Prove is read again here, and the lists must be the check's own.
   const proven = await deriveCandidateProve(deps, caller.orgId, input.name, input.body, definition);
   if (!proven.ok) throw agentXError("CONFIG_INVALID", TEST_ENV_REFUSAL_WORDS[proven.refusal]);
   const saved = await putProjectSettings(deps, caller, encodeURIComponent(input.name), {
     requestId: input.requestId, expectedRevision: input.expectedRevision,
-    ...(plan.setup.length === 0 ? {} : { setupCommands: [...definition.setup, ...plan.setup].map(formatCommandLine) }),
-    ...(plan.readiness.length === 0 ? {} : { testCommands: [...definition.readiness, ...plan.readiness].map(formatCommandLine) }),
+    ...(replace ? { setupCommands: plan.setup.map(formatCommandLine), testCommands: plan.readiness.map(formatCommandLine) } : {
+      ...(plan.setup.length === 0 ? {} : { setupCommands: [...definition.setup, ...plan.setup].map(formatCommandLine) }),
+      ...(plan.readiness.length === 0 ? {} : { testCommands: [...definition.readiness, ...plan.readiness].map(formatCommandLine) }),
+    }),
   }, { origin: originOfSave(input.definition, plan, input.edited) });
   // TS-UX-1 item 5: this write is the test environment's own, so it does not make the look it was drafted from stale.
   // Review M3: only the one revision this save made: when the revision read back is not exactly the next one, someone else saved in between, and their change must still make the look stale.

@@ -12,7 +12,7 @@ import {
   egressDomainsKey, githubInstallationKey, orgGithubInstallationKey, orgProjectCatalogKey, projectMemberKey, projectMetaKey, projectRevisionKey, redactText,
   setupDraftKey, setupItemsOf, type GithubInstallationRecord, type SetupProposal,
 } from "../../packages/contracts/src/index.js";
-import { SETUP_APPLY_WORDS, SETUP_DRAFT_BUSY, SETUP_DRAFT_FAILURES, SETUP_DRAFT_NONE_TO_APPLY, SETUP_DRAFT_OLD, SETUP_DRAFT_PULL_REQUEST_ONCE, derivedRequestId, registerBuiltinSetupAppliers } from "../../packages/broker/src/rovara-code/setup-draft.js";
+import { DRAFT_PROPOSE_WORDS, SETUP_APPLY_WORDS, SETUP_DRAFT_BUSY, SETUP_DRAFT_FAILURES, SETUP_DRAFT_NONE_TO_APPLY, SETUP_DRAFT_OLD, SETUP_DRAFT_PULL_REQUEST_ONCE, derivedRequestId, registerBuiltinSetupAppliers } from "../../packages/broker/src/rovara-code/setup-draft.js";
 import { DRAFT_CHECK_WORDS } from "../../packages/broker/src/rovara-code/setup-draft-check.js";
 import { SETUP_ITEM_WORDS, itemDigest, registerSetupItemApplier, unregisterSetupItemApplier } from "../../packages/broker/src/rovara-code/setup-items.js";
 import { createEc2Delivery } from "../../packages/broker/src/aws/ec2-delivery.js";
@@ -195,7 +195,7 @@ const view = (reply: Reply) => {
   return SetupDraftResponseSchema.parse(rest);
 };
 const itemId = (proposal: SetupProposal, kind: string, match: (item: { id: string }) => boolean = () => true) => setupItemsOf(proposal).find((item) => item.kind === kind && match(item))!.id;
-const outcomeOf = (reply: Reply, id: string) => (reply.body.results as Array<{ id: string; outcome: string; message?: string; approval?: { approvalId: string; confirmUrl: string }; domains?: string[] }>).find((entry) => entry.id === id);
+const outcomeOf = (reply: Reply, id: string) => (reply.body.results as Array<{ id: string; outcome: string; message?: string; proposalDigest?: string; approval?: { approvalId: string; confirmUrl: string }; domains?: string[] }>).find((entry) => entry.id === id);
 
 // ---- starting (unchanged by the setup agent)
 
@@ -1662,6 +1662,42 @@ describe("POST /v1/app/projects/{name}/setup-draft/apply: the commands are prove
 });
 
 // ---- round trip: what the broker really answers, read by the schema a client reads it with
+
+// ---- Owner decision 11 (one apply path), where the test environment is ON: a draft's commands are never written to the settings. They become the test environment's PROPOSAL, as the setup run's
+// "Use this setup" does, and its check, Prove and approval write them. Where it is off (review I3) the TE-3 suite above still holds: check first, then save.
+
+describe("POST /v1/app/projects/{name}/setup-draft/apply: commands go to the test environment's proposal (owner decision 11)", () => {
+  const BOTH = [{ id: "setup-web", useSuggestion: true }, { id: "tests-web", useSuggestion: true }];
+  afterEach(() => { vi.unstubAllEnvs(); });
+
+  it("proposes exactly the ticked commands, shown as Rovara's, and saves nothing to the settings and starts no check", async () => {
+    vi.stubEnv("TEST_ENVIRONMENT_ENABLED", "1");
+    const t = await setup();
+    await t.drafted();
+    const reply = await t.applyOnce(BOTH);
+    expect(reply.status, JSON.stringify(reply.body)).toBe(200);
+    expect(["setup-web", "tests-web"].map((id) => outcomeOf(reply, id)?.outcome)).toEqual(["proposed", "proposed"]);
+    expect(outcomeOf(reply, "setup-web")?.message).toBe(DRAFT_PROPOSE_WORDS.proposed);
+    expect(t.latestSettings().revision).toBe(1);
+    expect(t.latestSettings().setup.map((entry) => [entry.executable, ...entry.args])).toEqual([["make", "old-setup"]]);
+    expect(t.meta()?.setupCheck).toBeUndefined();
+    expect(reply.body.setupCheck).toBe("not_needed");
+    // The proposal is stored and the wizard's marker names it (shown as Rovara's), with the digest the answer carries.
+    const digest = outcomeOf(reply, "setup-web")?.proposalDigest;
+    expect(digest).toMatch(/^[a-f0-9]{64}$/u);
+    expect(t.db.find((item) => item.entityType === "TEST_ENV_SETUP_RUN")).toEqual([expect.objectContaining({ digest })]);
+    expect(JSON.stringify(t.db.find((item) => typeof item.sk === "string" && item.sk === `TESTENV#PROPOSAL#${digest!}`))).toContain("npm");
+  });
+
+  it("still keeps a value a person typed unless that item is ticked, before anything is proposed", async () => {
+    vi.stubEnv("TEST_ENVIRONMENT_ENABLED", "1");
+    const t = await setup();
+    await t.drafted();
+    const reply = await t.applyOnce([{ id: "setup-web" }]);
+    expect(outcomeOf(reply, "setup-web")).toMatchObject({ outcome: "kept_yours" });
+    expect(t.db.find((item) => item.entityType === "TEST_ENV_SETUP_RUN")).toEqual([]);
+  });
+});
 
 describe("round trip: the setup-draft answers, as the broker sends them", () => {
   it("GET, POST …/setup-draft and …/apply answer a body the clients' reader reads with the gateway's requestId in it, and the strict contract reads without it", async () => {

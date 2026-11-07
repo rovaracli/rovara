@@ -177,6 +177,9 @@ export const BROKER_SETTINGS = {
   // Team record (wire-team-record). Present ONLY when the install is synthesised with `agentxTeamRecord=enabled`; absent otherwise, and the broker reads absence as OFF. The broker treats the record as
   // on only when TEAM_RECORD_ENABLED is exactly "1". The embedding model id and the lake flag are install parameters of the storage (infra/lib/team-record-edition.ts).
   teamRecord: { code: "tn", variable: "TEAM_RECORD_ENABLED" },
+  // UX-4b review fix 1: the record paused (stack parameter TeamRecordEnabled = 0, `agentx config set teamRecord.enabled 0`). Present only with the record built. "0" is paused: nothing new is captured,
+  // read, searched or learned, while person and project erasure, source removals, Slack deletes, expiry and the archiver keep running on the retained data. Anything else (absent, "1") is active.
+  teamRecordActive: { code: "tz", variable: "TEAM_RECORD_ACTIVE" },
   // Passed only when it is not the default (amazon.titan-embed-text-v2:0): the broker reads an unset model as the default (team-record/runtime.ts), so the usual install passes nothing (ENV-ROOM).
   teamRecordEmbeddingModel: { code: "te", variable: "TEAM_RECORD_EMBEDDING_MODEL_ID" },
   teamRecordLake: { code: "tl", variable: "TEAM_RECORD_LAKE_ENABLED" },

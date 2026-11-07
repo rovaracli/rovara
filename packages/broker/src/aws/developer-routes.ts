@@ -211,7 +211,7 @@ import { isDeviceRoute, routeDeviceRequest } from "../devices/routes.js";
 import { CODE_INTENT_PATH, routeCodeIntentStart } from "../rovara-code/routes.js";
 import { getCodeSettings, putCodeSettings } from "../rovara-code/code-settings.js";
 import { HOW_WE_WORK_PATH, PLAYBOOK_PATH, PLAYBOOK_PROCESS_PATH, getProjectHowWeWork, routeProjectPlaybook, routeProjectProcess } from "../playbook/routes.js";
-import { applySetupDraft, getSetupDraft, startSetupDraft } from "../rovara-code/setup-draft.js";
+import { applySetupDraft, getSetupDraft, proposeTypedCommands, startSetupDraft } from "../rovara-code/setup-draft.js";
 import { createFeedbackReviewWeb } from "./feedback-review-web.js";
 import { TASK_PAGE, TASK_PEOPLE_CONFIRMATION, TASK_STATUS, createTaskWeb } from "./task-web.js";
 import { TASK_PAGE_API_PREFIX, createTaskWebApi } from "./task-web-api.js";
@@ -704,11 +704,12 @@ export async function routeDeveloperRequest(deps: DeveloperRouteDependencies, re
   // SH14 (switch `su`, off by default): the setup run that runs commands. With the switch off this answers undefined and the path falls through as any unknown path.
   const setupAgentReply = await routeSetupAgent(deps, caller, request, url);
   if (setupAgentReply !== undefined) return setupAgentReply;
-  const setupDraftRoute = /^\/v1\/app\/projects\/([^/]+)\/setup-draft(\/apply)?$/.exec(url.pathname);
+  const setupDraftRoute = /^\/v1\/app\/projects\/([^/]+)\/setup-draft(\/apply|\/typed)?$/.exec(url.pathname);
   if (setupDraftRoute !== null) {
     const drafting = setupDraftDepsOf(deps);
     if (request.method === "POST" && setupDraftRoute[2] === undefined) return startSetupDraft(drafting, caller, setupDraftRoute[1]!, jsonBody(request));
     if (request.method === "GET" && setupDraftRoute[2] === undefined) return getSetupDraft(drafting, caller, setupDraftRoute[1]!);
+    if (request.method === "POST" && setupDraftRoute[2] === "/typed") return proposeTypedCommands(drafting, caller, setupDraftRoute[1]!, jsonBody(request));
     if (request.method === "POST" && setupDraftRoute[2] !== undefined) return applySetupDraft(drafting, caller, setupDraftRoute[1]!, jsonBody(request));
   }
   const projectSetupCheckRoute = /^\/v1\/app\/projects\/([^/]+)\/setup-check$/.exec(url.pathname);

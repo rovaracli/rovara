@@ -6,6 +6,7 @@ import { Button } from "../../../design/Button.js";
 import { TextField } from "../../../design/TextField.js";
 import { visibleText } from "../../../design/VisibleText.js";
 import { T } from "./lessons-text.js";
+import { AddRovaraSteps, LinkSlackButton } from "./SlackChannelHelp.js";
 
 const WORDS: Readonly<Record<Exclude<SourcePickerKind, "slack-private">, { pick: string; find: string; none: string; partial: string; cut: string; typed: string; hint: string }>> = {
  slack: { pick: T.SRC_PICK_SLACK, find: T.SRC_FIND_SLACK, none: T.SRC_NO_MATCH_SLACK, partial: T.SRC_PARTIAL_SLACK, cut: T.SRC_CUT_SLACK, typed: T.SRC_PLACE_SLACK, hint: T.SRC_HINT_SLACK },
@@ -37,8 +38,9 @@ function PrivateChannels({ project, group, value, onChange, unavailable, needle 
   return all;
  }, [query.data]);
  if (query.data === undefined) return query.isError ? <p className="rv-muted">{T.SRC_PRIVATE_FAIL}</p> : null;
- if (query.data.pages[0]?.notLinked === true) return <p className="rv-muted">{T.SRC_PRIVATE_NOT_LINKED}</p>;
- if (options.length === 0 && !hasNextPage) return <p className="rv-muted">{T.SRC_PRIVATE_EMPTY}</p>;
+ // UX-4b: the next step is offered in place: link the Slack account here, or add Rovara to the channel and read the list again (or use the Slack-side shortcut).
+ if (query.data.pages[0]?.notLinked === true) return <div className="rv-lessons-picker"><p className="rv-muted">{T.SRC_PRIVATE_NOT_LINKED}</p><LinkSlackButton /></div>;
+ if (options.length === 0 && !hasNextPage) return <div className="rv-lessons-picker"><p className="rv-muted">{T.SRC_PRIVATE_EMPTY}</p><AddRovaraSteps onRefresh={() => { void query.refetch(); }} /></div>;
  const matching = needle === "" ? options : options.filter(option => option.name.toLowerCase().includes(needle) || option.scope.toLowerCase().includes(needle));
  const cut = query.data.pages.at(-1)?.truncated === true || isFetchNextPageError, more = hasNextPage && !cut;
  return <fieldset className="rv-lessons-picker"><legend>{T.SRC_PRIVATE_LEGEND}</legend>
@@ -47,6 +49,7 @@ function PrivateChannels({ project, group, value, onChange, unavailable, needle 
   {matching.length > SHOWN_MAX && <p className="rv-muted">{T.SRC_LIST_MORE}</p>}
   {cut && <p className="rv-muted">{T.SRC_CUT_SLACK}</p>}
   {more && <div className="rv-lessons-actions"><Button variant="secondary" busy={isFetchingNextPage} onClick={() => { void fetchNextPage(); }}>{T.SRC_SHOW_MORE}</Button></div>}
+  <details><summary>{T.SRC_PRIVATE_MISSING}</summary><AddRovaraSteps onRefresh={() => { void query.refetch(); }} /></details>
  </fieldset>;
 }
 

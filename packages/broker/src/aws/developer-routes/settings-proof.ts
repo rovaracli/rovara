@@ -18,7 +18,7 @@ import { flushAuditEvents } from "../../audit/flush.js";
 import { auditOccurrence, auditProjectSetupRestored } from "../../audit/events.js";
 import { readProjectMeta } from "../../developer/project-roles.js";
 import { logDeveloperEvent } from "../../developer/log.js";
-import { ManagedByFileError, SETTINGS_STALE_MESSAGE, latestRevision, type LatestRevision } from "../../org/project-settings.js";
+import { ManagedByFileError, PROJECT_SETTINGS_ADMIN_MANAGED, SETTINGS_STALE_MESSAGE, latestRevision, type LatestRevision } from "../../org/project-settings.js";
 import { adoptCandidateAsProjectCheck, setupCheckRecordKey, setupStateOfCheck } from "../../org/project-setup-check.js";
 import { readCandidateCheck, type CandidateCheck } from "../../org/test-env-candidate.js";
 import {
@@ -27,6 +27,7 @@ import {
 } from "../../org/settings-proof.js";
 import { draftCommandLists, draftCommandsDigest, type DraftCommandLists } from "../../rovara-code/setup-draft-check.js";
 import { SETUP_CHECK_MAX_AGE_MS } from "../../test-env/prove-from-setup-check.js";
+import { testEnvironmentEnabled } from "../../test-env/switch.js";
 import { PROJECT_NOT_FOUND_IN_APP, signInStoreOf } from "./common.js";
 import { authenticateSession } from "./authentication.js";
 import { freshSignInOf } from "./test-environment-wizard.js";
@@ -383,6 +384,13 @@ export async function putProjectSettingsChecked(deps: DeveloperRouteDependencies
     if (sameProofLists(before, after)) return plain();
     return heldSave(deps, caller, rawName, name, body, fields, latest);
   }
+  // UX-4b review I1 (owner decision 11): where the test environment is on, setup and test commands are proved in its sandbox before they are used, so a browser save that changes them is refused
+  // here, the server's own rule, whatever the page is. The commands go to `POST .../setup-draft/typed` (the person's edited proposal: check, Prove, Approve). A body whose commands are what is there goes on.
+  if (testEnvironmentEnabled() && (body.setupCommands !== undefined || body.testCommands !== undefined)) {
+    const lists = draftCommandLists(current, body);
+    const before = listsOfDefinition(current);
+    if (!sameProofLists({ setup: before.setup, readiness: before.readiness }, { setup: lists.setup, readiness: lists.readiness })) throw agentXError("CONFIG_INVALID", PROOF_WORDS.provedInTestEnvironment);
+  }
   // A browser saves what it sent; what was saved is compared with what was there, after the save (a repository change can move where commands run).
   return browserSave(deps, caller, rawName, name, rawBody, options);
 }
@@ -516,7 +524,7 @@ export async function undoToProvenSetup(deps: DeveloperRouteDependencies, caller
   if (latest === undefined) throw agentXError("PROJECT_NOT_FOUND", PROJECT_NOT_FOUND_IN_APP);
   const current = latest.definition;
   if (current.revision !== body.expectedRevision) throw agentXError("PROJECT_REVISION_MISMATCH", SETTINGS_STALE_MESSAGE);
-  if (current.e2e !== undefined || latest.setupApproval !== undefined) throw agentXError("FORBIDDEN", "this project carries an end-to-end policy or a setup approval that only an administrator can change; ask an administrator to change it with agentx admin project register");
+  if (current.e2e !== undefined || latest.setupApproval !== undefined) throw agentXError("FORBIDDEN", PROJECT_SETTINGS_ADMIN_MANAGED);
   const proven = proof.proven;
   if (sameProofLists(proven, listsOfDefinition(current))) return { project: await getAppProjectWithProof(deps, caller, rawName), warnings: [] };
   const fieldsBack: ProjectOriginField[] = ["setup", "readiness", "devcontainer"];

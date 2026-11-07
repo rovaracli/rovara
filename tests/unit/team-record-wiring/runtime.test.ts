@@ -1684,3 +1684,91 @@ describe("per-editor rows: Priya creates LIN-42, Sam edits it, Priya moves it to
     expect(everything(db)).not.toContain(SAM_WORDS);
   });
 });
+
+// ---- UX-4b review fix 1: the record PAUSED (TEAM_RECORD_ACTIVE "0"): nothing new is captured, read or learned, while erasure, Slack deletes and expiry keep running over the retained data.
+describe("the record paused", () => {
+  const PAUSED = { ...ON, ROVARA_EDITION: "enterprise", TEAM_RECORD_ACTIVE: "0" } as const;
+  const SCOPE = "slack:T0123456789/C0123456789";
+  const channel = { teamId: "T0123456789", channelId: "C0123456789", info: { kind: "public" as const, extShared: false } };
+  const message = (text: string) => ({ type: "event_callback", team_id: "T0123456789", api_app_id: "A0123456789", event: { type: "message", channel: "C0123456789", user: SLACK_LINKED, text, ts: "1761818400.000100", channel_type: "channel" } });
+  const person = { sourceId: "123", developerId: "dev-1", trust: "member" as const };
+
+  it("is still built, and stores nothing new: a put is refused, a Slack message is not recorded, the routes and the agent's tools answer paused, and every project reads as Off", async () => {
+    const db = dbOf();
+    db.set({ ...slackTeamOrgKey("T0123456789"), orgId: ORG_A });
+    const runtime = build(db, PAUSED);
+    expect(runtime.paused).toBe(true);
+    await addSource(db, "enterprise", { orgId: ORG_A, source: "github", scope: "github:repo/9", retention: "C" });
+    await addSource(db, "enterprise", { orgId: ORG_A, source: "slack", scope: SCOPE, retention: "C" });
+    expect(await runtime.sink.put(githubDraft({ workspaceId: ORG_A, retention: "C", audience: { kind: "project" }, scope: "github:repo/9", actor: person, text: `paused ${MARKER}` }))).toEqual({ status: "refused", reason: "paused" });
+    await runtime.taps.slack({ payload: message(`paused ${MARKER}`), channel });
+    expect(everything(db)).not.toContain(MARKER);
+    const search = await runtime.routes({ method: "GET", path: "/v1/app/projects/web/record/search", query: { query: "x" }, caller: { orgId: ORG_A, developerId: "d".repeat(64), projectRole: "maintainer" } });
+    expect(search).toMatchObject({ status: 503, body: { code: "TEAM_RECORD_PAUSED" } });
+    expect(runtime.tools.list({ memory: { mode: "live" } } as never)).toEqual([]);
+    expect(await runtime.modes.effectiveMode(ORG_A, "web")).toBe("off");
+    // Positive control: the same calls on an active record store and read.
+    const active = build(dbOf(), { ...ON, ROVARA_EDITION: "enterprise" });
+    expect(active.paused).toBe(false);
+  });
+
+  it("an erasure while paused removes the person's rows", async () => {
+    const db = dbOf();
+    const active = build(db, { ...ON, ROVARA_EDITION: "enterprise" });
+    await addSource(db, "enterprise", { orgId: ORG_A, source: "github", scope: "github:repo/9", retention: "C" });
+    expect(await active.sink.put(githubDraft({ workspaceId: ORG_A, retention: "C", audience: { kind: "project" }, scope: "github:repo/9", actor: person, text: `kept ${MARKER}` }))).toMatchObject({ status: "stored" });
+    expect(everything(db)).toContain(MARKER);
+    const paused = build(db, PAUSED);
+    await paused.erase.person(ORG_A, "dev-1");
+    expect(everything(db)).not.toContain(MARKER);
+  });
+
+  it("a Slack delete while paused is applied", async () => {
+    const db = dbOf();
+    db.set({ ...slackTeamOrgKey("T0123456789"), orgId: ORG_A });
+    const active = build(db, { ...ON, ROVARA_EDITION: "enterprise" });
+    await addSource(db, "enterprise", { orgId: ORG_A, source: "slack", scope: SCOPE, retention: "C" });
+    await active.taps.slack({ payload: message(`please ${MARKER} always`), channel });
+    expect(everything(db)).toContain(MARKER);
+    const paused = build(db, PAUSED);
+    const deleted = { type: "event_callback", team_id: "T0123456789", event: { type: "message", subtype: "message_deleted", channel: "C0123456789", deleted_ts: "1761818400.000100", ts: "1761818500.000100" } };
+    expect(await paused.taps.slack({ payload: deleted, channel })).toMatchObject({ outcome: "deleted" });
+    await paused.jobs.run("hourly");
+    expect(everything(db)).not.toContain(MARKER);
+  });
+
+  it("the nightly expiry and archiver run while paused: a row past its raw-text days loses its text", async () => {
+    const db = dbOf();
+    const active = build(db, { ...ON, ROVARA_EDITION: "enterprise" });
+    for (const orgId of [ORG_A, ORG_B]) await addSource(db, "enterprise", { orgId, source: "github", scope: "github:repo/9", retention: "C" });
+    for (const orgId of [ORG_A, ORG_B]) expect(await active.sink.put(githubDraft({ workspaceId: orgId, retention: "C", audience: { kind: "project" }, scope: "github:repo/9", actor: person, text: `${orgId} ${MARKER}` }))).toMatchObject({ status: "stored" });
+    expect(everything(db)).toContain(MARKER);
+    // Paused, and later than the raw text's days (retention C keeps raw text for 30 days).
+    const summary = await build(db, PAUSED, { now: () => T0 + 40 * 86_400_000 }).jobs.run("nightly");
+    expect(summary.orgs).toBe(2);
+    expect(summary.skippedOrgs).toBe(0);
+    expect(everything(db)).not.toContain(MARKER);
+  });
+
+  it("a source removal still runs while paused (it deletes); adding one does not", async () => {
+    const db = dbOf();
+    const runtime = build(db, PAUSED);
+    const caller = { orgId: ORG_A, developerId: "d".repeat(64), projectRole: "maintainer" as const };
+    const write = (body: unknown) => ({ orgRole: "owner", browserSession: true, body: () => body });
+    const add = await runtime.routes({ method: "POST", path: "/v1/app/projects/web/record/sources", query: {}, caller, write: write({ action: "add" }) });
+    expect(add).toMatchObject({ status: 503, body: { code: "TEAM_RECORD_PAUSED" } });
+    const remove = await runtime.routes({ method: "POST", path: "/v1/app/projects/web/record/sources", query: {}, caller, write: write({ action: "remove", requestId: "x" }) });
+    expect((remove as { body: { code?: string } }).body.code).not.toBe("TEAM_RECORD_PAUSED");
+  });
+});
+
+describe("review fix 6: the learning mode of an archived project", () => {
+  it("is not changed: the write answers PROJECT_ARCHIVED and stores nothing", async () => {
+    const db = dbOf();
+    const runtime = build(db, { ...ON, ROVARA_EDITION: "enterprise" });
+    db.set({ ...projectMetaKey(ORG_A, "web"), entityType: "PROJECT_META", name: "web", status: "archived", createdAt: "2026-10-01T00:00:00.000Z" });
+    const reply = await runtime.routes({ method: "POST", path: "/v1/app/projects/web/record/learning-mode", query: {}, caller: { orgId: ORG_A, developerId: "d".repeat(64), projectRole: "maintainer" }, write: { orgRole: "owner", browserSession: true, body: () => ({ requestId: "11111111-1111-4111-8111-111111111111", mode: "off", expectedMode: "suggest" }) } });
+    expect(reply).toMatchObject({ status: 409, body: { code: "PROJECT_ARCHIVED" } });
+    expect(everything(db)).not.toContain("LEARNING_MODE");
+  });
+});

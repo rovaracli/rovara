@@ -153,7 +153,7 @@ describe("PUT /v1/app/projects/{name}/settings: who and which revision", () => {
     const h = await install({ cloud: false });
     const refused = await h.put(OMAR, { setupCommands: ["npm run setup"] });
     expect(refused.status).toBe(403);
-    expect(refused.body.error).toMatchObject({ code: "FORBIDDEN", message: "ask an administrator to change this project with agentx admin project register" });
+    expect(refused.body.error).toMatchObject({ code: "FORBIDDEN", message: "This installation keeps project settings in its own configuration, so they can't be changed in the web app. A company administrator changes them for you." });
     expect(h.revisions()).toHaveLength(1);
   });
 
@@ -537,7 +537,7 @@ describe("a project with an E2E policy", () => {
     seedProject(h.db, TEST_ORG, "web", {}, { setupApproval: { proposalRef: "project-setup-proposals/x/y.json", proposalSha256: "a".repeat(64), candidateDigest: "b".repeat(64), decision: "decline" } });
     const refused = await h.put(OMAR, { testCommands: ["npm run check"] });
     expect(refused.status).toBe(403);
-    expect(refused.body.error).toMatchObject({ code: "FORBIDDEN", message: "this project carries an end-to-end policy or a setup approval that only an administrator can change; ask an administrator to change it with agentx admin project register" });
+    expect(refused.body.error).toMatchObject({ code: "FORBIDDEN", message: "This project has an end-to-end policy or a setup approval, so only a company administrator can change its settings. Ask one of them to make this change." });
     expect(h.revisions()).toHaveLength(1);
   });
 });

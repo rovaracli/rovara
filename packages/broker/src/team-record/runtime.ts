@@ -69,6 +69,18 @@ type DocClient = TeamRecordTable["documentClient"];
 
 /** Exactly the word the CDK writes. Anything else, including "true", "on" and a missing variable, is OFF. */
 export const teamRecordIsOn = (env: Record<string, string | undefined>): boolean => env.TEAM_RECORD_ENABLED === "1";
+/**
+ * UX-4b review fix 1: the record PAUSED (`agentx config set teamRecord.enabled 0`, TEAM_RECORD_ACTIVE exactly "0"). The runtime is still built, so person and project erasure, source removals,
+ * Slack deletes, the queue, expiry and the archiver keep running over the retained data. What stops: every new row (each put is refused as `paused`), the record's reads and search (the routes
+ * answer TEAM_RECORD_PAUSED, except a source removal, which deletes), the agent's record tools, and learning (the mode reads Off, so nothing is captured or loaded; lessons are not built).
+ */
+export const teamRecordIsPaused = (env: Record<string, string | undefined>): boolean => env.TEAM_RECORD_ACTIVE === "0";
+const PAUSED_REPLY = { status: 503, body: { code: "TEAM_RECORD_PAUSED", message: "The team record is paused in this installation." } } as const;
+/** Whether a request may run while the record is paused: a source removal (it deletes data), and nothing else. */
+function allowedWhilePaused(method: string, path: string, write: { body(): unknown } | undefined): boolean {
+  if (method !== "POST" || !/\/record\/sources$/u.test(path) || write === undefined) return false;
+  try { const body = write.body() as { action?: unknown } | null;return body?.action === "remove"; } catch { return false; }
+}
 
 export interface TeamRecordRuntimeInput {
   env: Record<string, string | undefined>;
@@ -165,6 +177,8 @@ export interface TeamRecordRuntime {
   taskVisibility(orgId: string, taskId: string): Promise<TaskVisibility | undefined>;
   readonly actors: ActorResolverPort;
   readonly modes: LearningModeReader;
+  /** UX-4b review fix 1: the record is paused (`teamRecordIsPaused`): erasure, removals and expiry run, nothing new is captured, read or learned. */
+  readonly paused: boolean;
   /** `/v1/app/projects/{project}/record/...` (the caller's project role already found by the broker). `undefined` for any other path. */
   routes(request: { method: string; path: string; query: Readonly<Record<string, string | undefined>>; caller: TeamRecordCallerInput; /** What a source write needs from the broker's request (`source-write.ts`); absent: reads only. */ write?: SourceWriteContext }): Promise<RecordRouteReply | undefined>;
   /** Start from inside Slack (task 12): the private "Add to project" prompt and its Add press, through the same source route as the web (`slack-add.ts`). The Slack reads it needs are handed in per call. */
@@ -227,7 +241,9 @@ export function createTeamRecordRuntime(input: TeamRecordRuntimeInput): TeamReco
   const table: TeamRecordTable = { documentClient: input.documentClient, tableName };
   const state = { documentClient: input.documentClient, tableName: input.stateTableName };
   const edition = readEdition(env);
-  const modes = tableModeReader(table);
+  const paused = teamRecordIsPaused(env);
+  // Paused: every project reads as Off, so the taps capture nothing and no lesson is made or loaded (erasure and removals do not read the mode).
+  const modes: LearningModeReader = paused ? { effectiveMode: async () => "off" } : tableModeReader(table);
   const region = env.AWS_REGION;
   const sdkOptions = { region, ...(input.sdk === undefined ? {} : { load: input.sdk }) };
 
@@ -361,6 +377,7 @@ export function createTeamRecordRuntime(input: TeamRecordRuntimeInput): TeamReco
   }
   const guardedPut = (fresh: boolean) => async (draft: Parameters<RecordSink["put"]>[0]) => {
     const orgId = OrgIdSchema.parse(draft.workspaceId);
+    if (paused) { log("record.put_refused", { why: "paused" }); return { status: "refused", reason: "paused" } as never; }
     const reason = await whyClosed(orgId, draft.project, fresh);
     if (reason !== undefined) { log("record.put_refused", { why: reason }); return { status: "refused", reason } as never; }
     return (await sinkFor(draft.workspaceId)).put(draft);
@@ -567,10 +584,18 @@ export function createTeamRecordRuntime(input: TeamRecordRuntimeInput): TeamReco
   };
 
   const routes: TeamRecordRuntime["routes"] = async ({ method, path, query, caller, write }) => {
+    if (paused && /^\/v1\/app\/projects\/[^/]+\/record\//u.test(path) && !allowedWhilePaused(method, path, write)) return PAUSED_REPLY;
     // The org is the caller's session's. The route handler never reads one from the path or the query.
     const orgId = OrgIdSchema.parse(caller.orgId);
     const identities = { identitiesOf: async (org: OrgId, developerId: string) => identitiesOf(org, developerId) };
     const built = await buildRecordCaller(identities, { orgId, developerId: caller.developerId, projectRole: caller.projectRole });
+    // Review fix 6: an archived project's (or a closing company's) learning mode is not changed: it is as it was when it was archived.
+    const modeWrite = method === "POST" ? /^\/v1\/app\/projects\/([^/]+)\/record\/learning-mode$/u.exec(path) : null;
+    if (modeWrite !== null && caller.projectRole !== undefined) {
+      let project: string | undefined;
+      try { project = decodeURIComponent(modeWrite[1]!); } catch { project = undefined; }
+      if (project !== undefined && (await whyClosed(orgId, project, true)) !== undefined) return { status: 409, body: { code: "PROJECT_ARCHIVED", message: "This project is archived, so how it learns can't be changed. Restore it first." } };
+    }
     try {
       return await handleRecordRoute({ ...(await queryFor(orgId)), sources: sourceRoutes }, { method, path, query, caller: built, ...(write === undefined ? {} : { write }) });
     } catch (error) {
@@ -588,8 +613,8 @@ export function createTeamRecordRuntime(input: TeamRecordRuntimeInput): TeamReco
   }
 
   const tools: TeamRecordRuntime["tools"] = {
-    list: (context) => recordToolsFor(context),
-    call: async (context, call) => callRecordTool(await queryFor(OrgIdSchema.parse(context.orgId)), context, call),
+    list: (context) => (paused ? [] : recordToolsFor(context)),
+    call: async (context, call) => paused ? { status: "FAILED" as const, text: "This tool is not available." } : callRecordTool(await queryFor(OrgIdSchema.parse(context.orgId)), context, call),
     async ownerAudience(task, developerId) {
       const orgId = OrgIdSchema.parse(task.orgId);
       const projectRole = await readProjectRole(state, orgId, developerId, task.project);
@@ -1035,5 +1060,5 @@ export function createTeamRecordRuntime(input: TeamRecordRuntimeInput): TeamReco
     orgOfSlackTeam: (teamId) => new OrgStore({ documentClient: input.documentClient, tableName: state.tableName, now }).orgForSlackTeam(teamId),
     developerOfSlackUser: async (slackUserId) => (input.developerOfSlackUser === undefined ? undefined : await input.developerOfSlackUser(slackUserId)),
   });
-  return { edition, table, sink, drain, removal, links, trackerPeople, emitter, slackAdd, taskVisibility: (orgId, taskId) => resolveTaskVisibility({ documentClient: input.documentClient, tableName: state.tableName, now }, orgId, taskId), actors, modes, routes, tools, taps: { github, hook, slack, slackStrict }, erase, jobs, opsFailures: (orgId) => readOpsFailures(table, orgId, now()) };
+  return { edition, table, sink, drain, removal, links, trackerPeople, emitter, slackAdd, taskVisibility: (orgId, taskId) => resolveTaskVisibility({ documentClient: input.documentClient, tableName: state.tableName, now }, orgId, taskId), actors, modes, paused, routes, tools, taps: { github, hook, slack, slackStrict }, erase, jobs, opsFailures: (orgId) => readOpsFailures(table, orgId, now()) };
 }

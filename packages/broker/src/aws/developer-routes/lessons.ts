@@ -5,7 +5,7 @@ import { agentXError, orgScoped } from "@agentx/contracts";
 import { LOADED_KNOWLEDGE_PATH, routeLoadedKnowledge } from "../../developer/loaded-knowledge.js";
 import { takeRateAt } from "../../developer/page-comments.js";
 import { resolveTaskAccess } from "../../developer/task-access.js";
-import { resolveLearning } from "../../lessons/policy.js";
+import { resolveLearning, whyLearningOff } from "../../lessons/policy.js";
 import { LESSONS_PATH, TASK_LESSONS_PATH, routeLessons, type LessonRouteDependencies } from "../../lessons/routes.js";
 import { developerTaskRouteDependencies } from "./dependencies.js";
 import { latestDefinition } from "./project-list.js";
@@ -57,7 +57,12 @@ export async function routeLoadedKnowledgeFor(deps: DeveloperRouteDependencies, 
   const task = developerTaskRouteDependencies(deps, caller), knowledge = deps.loadedKnowledge;
   // The task's project, by the task page's own access check; a task the caller cannot read is refused by the route below exactly as it is today.
   const project = await resolveTaskAccess(task, caller, matched[1]!, "read").then((access) => access.task.project, () => undefined);
-  if (project !== undefined && (await resolveLearning(deps.lessons.settings, caller.orgId, project)).mode === "Off") return undefined;
+  // UX-4b: learning Off says so in a fixed code (the same 404 status as before), so the task page can explain it and offer to turn it on rather than show a dead end.
+  if (project !== undefined && (await resolveLearning(deps.lessons.settings, caller.orgId, project)).mode === "Off") {
+    const why = await whyLearningOff(deps.lessons.settings, caller.orgId, project).catch(() => "unreadable" as const);
+    if (why === "locked") throw agentXError("LEARNING_LOCKED", "Learning is off for this project because of a company setting.");
+    throw agentXError("LEARNING_OFF", "Learning is off for this project.");
+  }
   return routeLoadedKnowledge({
     documentClient: deps.documentClient, tableName: deps.tableName, now: deps.now, log: (entry) => { task.log?.(entry); }, access: task,
     ...(knowledge?.canReadRepository === undefined ? {} : { canReadRepository: (who, input) => knowledge.canReadRepository!(who, input) }),

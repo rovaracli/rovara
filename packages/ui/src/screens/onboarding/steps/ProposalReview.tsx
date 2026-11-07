@@ -2,7 +2,6 @@ import { useState } from "react";
 import { Link } from "react-router";
 import { setupItemsOf, type SetupApplyResponse, type SetupApplyResultItem, type SetupDraftResponse, type SetupItem, type SetupReviewEntry } from "@agentx/contracts/web";
 import { useAppHost } from "../../../host.js";
-import { paths } from "../../../paths.js";
 import { isConfirmUrl } from "../../../text/links.js";
 import { Button } from "../../../design/Button.js";
 import { VisibleText } from "../../../design/VisibleText.js";
@@ -68,8 +67,22 @@ export function resultWords(result: SetupApplyResultItem): string {
     case "failed": return "Rovara couldn't apply this item.";
     case "checking": return result.message ?? "Checking these commands on a fresh machine. Nothing is saved until they pass.";
     case "check_failed": return result.message ?? "These commands did not pass the check, so nothing was saved.";
+    // Owner decision 11: the commands went to the test environment as its proposal; its check, Prove and approval write them.
+    case "proposed": return result.message ?? "Sent to the test environment as its proposal. Run its check, prove it, then approve it there: nothing is saved until it is approved.";
     default: return result.message ?? "Rovara can't set this up from here yet.";
   }
+}
+
+/**
+ * UX-4b: where an item that can't be applied here does apply, with a link: the test environment (checks, the environment itself, commands for another repository, a dev container while test services are on),
+ * the team's knowledge on the project's Sources tab, or the meta repo's own config file. Nothing for an item that has no place yet.
+ */
+function WhereItApplies({ project, item }: { project: string; item: SetupItem }) {
+  const projectPage = `/app/projects/${encodeURIComponent(project)}`;
+  if (item.kind === "check" || item.kind === "test_environment" || item.kind === "setup" || item.kind === "tests" || item.kind === "devcontainer") return <p className="rv-proposal-where">This applies in the test environment. <a href="#test-environment">Go to the test environment</a>.</p>;
+  if (item.kind === "knowledge" || item.kind === "spec_target" || item.kind === "source") return <p className="rv-proposal-where">The team's knowledge is set on the project page. <Link to={projectPage + "?tab=sources"}>Open the project's sources</Link>.</p>;
+  if (item.kind === "intake") return <p className="rv-proposal-where">Where work comes from is set on the project page. <Link to={projectPage}>Open the project</Link>.</p>;
+  return null;
 }
 
 export function ProposalReview({ project, response, busy, results, onApply }: {
@@ -103,7 +116,8 @@ export function ProposalReview({ project, response, busy, results, onApply }: {
       {differs && <div role="note" className="rv-proposal-conflict"><p>{entry?.current?.setBy === "agent" ? "Rovara suggested this earlier: " : "You have: "}<VisibleText text={(entry?.current?.yours ?? []).join(" and ")} /></p><p>Rovara suggests: <VisibleText text={valueLines(item).slice(item.kind === "setup" || item.kind === "tests" ? 1 : 0).join(" and ")} /></p>
         {entry?.current?.setBy !== "agent" && <label className="rv-onboarding-choice"><input type="checkbox" checked={replace[item.id] === true} onChange={(event) => { setReplace({ ...replace, [item.id]: event.target.checked }); if (event.target.checked) setTicked({ ...ticked, [item.id]: true }); }} aria-label={`Use Rovara's for ${label}`} /><span>Use Rovara's</span></label>}</div>}
       {entry?.unavailable !== undefined && <p className="rv-proposal-unavailable"><VisibleText text={entry.unavailable} /></p>}
-      {handling === "website_proposal" && <p>Websites are widened only through a proposal. <Link to={`${paths.admin.home}/projects/${encodeURIComponent(project)}`}>Open website access</Link> and add <VisibleText text={String(item.proposed.value)} />.</p>}
+      {(handling === "info" || entry?.unavailable !== undefined) && entry?.current?.state !== "managed_by_file" && <WhereItApplies project={project} item={item} />}
+      {handling === "website_proposal" && <p>Websites are widened only through a proposal. <Link to={`/app/projects/${encodeURIComponent(project)}#allowed-websites`}>Open Allowed websites on the project page</Link> and add <VisibleText text={String(item.proposed.value)} />.</p>}
       {handling === "approval" && entry?.unavailable === undefined && <div className="rv-proposal-card" role="group" aria-label={`Approval for ${label}`}>
         <p>This needs an administrator's approval before it changes anything.</p>
         {(card === undefined || card.state === "declined" || card.state === "expired") && <Button busy={busy} onClick={() => onApply([{ id: item.id }])}>{card === undefined ? "Ask for approval" : "Ask again"}</Button>}
@@ -111,6 +125,7 @@ export function ProposalReview({ project, response, busy, results, onApply }: {
         {card?.state === "approved" && <><p role="status">Approved.</p><Button variant="primary" busy={busy} onClick={() => onApply([{ id: item.id }])}>Apply now</Button></>}
       </div>}
       {result !== undefined && <p role="status" className="rv-proposal-result"><VisibleText text={resultWords(result)} /></p>}
+      {result?.outcome === "proposed" && <p className="rv-proposal-where"><a href="#test-environment">Go to the test environment</a> to check, prove and approve it.</p>}
       {result?.reason !== undefined && <p role="alert" className="rv-proposal-result"><VisibleText text={result.reason} /></p>}
     </li>;
   }

@@ -8,6 +8,7 @@ import { Select } from "../../../design/Select.js";
 import { Switch } from "../../../design/Switch.js";
 import { visibleText } from "../../../design/VisibleText.js";
 import { PlacePicker } from "./PlacePicker.js";
+import { AddRovaraSteps, LinkSlackButton } from "./SlackChannelHelp.js";
 import { AUDIENCE_OPTIONS, NotesSwitch, offeredFor } from "./SourceRow.js";
 import { T, retentionWords } from "./lessons-text.js";
 import { useSourceWrite } from "./use-source-write.js";
@@ -80,5 +81,7 @@ export function SourceAdd({ project, view, notify }: { project: string; view: So
    <div className="rv-lessons-actions"><Button variant="primary" busy={writer.busy} disabled={!ready} onClick={() => { void add(); }}>{T.SRC_ADD_SEND}</Button></div>
   </fieldset>
   {writer.error !== undefined && <div role="alert"><p>{writer.error}</p></div>}
+  {writer.code === "SLACK_NOT_LINKED" && <LinkSlackButton />}
+  {writer.code === "SLACK_INVITE_NEEDED" && <AddRovaraSteps onRefresh={() => { void query.invalidateQueries({ queryKey: sourceOptionsRoot(project) });writer.clear(); }} />}
  </section>;
 }

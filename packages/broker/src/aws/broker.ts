@@ -70,6 +70,7 @@ import "../audit/export-wiring.js";
 import "../learning/cleanup.js";
 import "../learning/home-source.js";
 import "../intake/home-source.js";
+import "../lessons/home-source.js";
 import "../learning/settle.js";
 import "../audit/admin-routes.js";
 import "../audit/view-page.js";

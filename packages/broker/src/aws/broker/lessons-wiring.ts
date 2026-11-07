@@ -7,6 +7,9 @@ import { dynamoAttributionReader } from "../../attribution/resolve.js";
 import { DeveloperSignInStore } from "../../developer/store.js";
 import type { CodeFactsReader } from "../../lessons/code-facts.js";
 import { createLessonsRuntime, type LessonsRuntime } from "../../lessons/runtime.js";
+import { setLessonsHomeReader } from "../../lessons/home-source.js";
+import { resolveLearning } from "../../lessons/policy.js";
+import { buildLessonsView } from "../../lessons/view.js";
 import { recordAuditSinkOf } from "./team-record-wiring.js";
 import { readProjectRole } from "../../learning/standing.js";
 import { requireLatestProject } from "./records.js";
@@ -38,6 +41,8 @@ export function lessonsRuntimeFor(dependencies: AwsBrokerDependencies): LessonsR
   const signInTableName = dependencies.developer?.signInTableName;
   // A record runtime without its table (a partial one, as in some test harnesses) gives no lessons: lessons are off, never a crash at handler start.
   if (teamRecord === undefined || (teamRecord as { table?: unknown }).table === undefined || signInTableName === undefined || signInTableName === "") return undefined;
+  // UX-4b review fix 1: a paused record learns nothing: no lesson is stored, loaded, shown or decided while it is paused (its stored lessons are kept; erasure still reaches them through the record).
+  if ((teamRecord as { paused?: unknown }).paused === true) return undefined;
   const orgOf = (workspaceId: string): OrgId => OrgIdSchema.parse(workspaceId);
   const repositoriesOf = async (workspaceId: string, project: string): Promise<string[]> => {
     const record = await requireLatestProject(dependencies, orgOf(workspaceId), project);
@@ -65,6 +70,14 @@ export function installLessons(dependencies: AwsBrokerDependencies): void {
   if (dependencies.lessons !== undefined) return;
   const built = lessonsRuntimeFor(dependencies);
   if (built !== undefined) dependencies.lessons = built;
+  // UX-4b: Home's "Lessons waiting" card counts what the Lessons tab would show this person to decide (learning Off: none).
+  const routes = dependencies.lessons?.routes;
+  setLessonsHomeReader(routes === undefined ? undefined : async (orgId, developerId, project) => {
+    if ((await resolveLearning(routes.settings, orgId, project)).mode === "Off") return { waiting: 0 };
+    const view = await buildLessonsView(routes, { orgId, developerId }, project);
+    if (!view.canDecide || view.waiting.length === 0) return { waiting: 0 };
+    return { waiting: view.waiting.length, at: new Date(Math.max(...view.waiting.map((lesson) => lesson.updatedAt))).toISOString() };
+  });
 }
 
 /**

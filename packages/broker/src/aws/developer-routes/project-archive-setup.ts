@@ -1,6 +1,6 @@
 import { candidateDependencyPlan } from "../../test-env/candidate-plan.js";
 import { testEnvironmentEnabled } from "../../test-env/switch.js";
-import { readApprovedSeedFiles, readApprovedTestEnvironment } from "../../org/test-environment.js";
+import { proposalReplacesLists, readApprovedSeedFiles, readApprovedTestEnvironment } from "../../org/test-environment.js";
 import { WorkingBranchNameSchema } from "@agentx/contracts";
 import { logDeveloperEvent } from "../../developer/log.js";
 import { randomUUID } from "node:crypto";
@@ -258,7 +258,8 @@ async function runSetupCheck(deps: DeveloperRouteDependencies, caller: Developer
     const meta = await readProjectMeta(deps, caller.orgId, name);
     // A candidate check is prepared from the lists the proposal would make; the project's own check from the settings as they are.
     if (candidate !== undefined && "expectedRevision" in candidate && project.definition.revision !== candidate.expectedRevision) throw agentXError("PROJECT_REVISION_MISMATCH", "someone changed this project's settings; reload and try again");
-    const lists = candidate === undefined ? undefined : "lists" in candidate ? candidate.lists : candidateListsChecked(candidate.body, project.definition);
+    const lists = candidate === undefined ? undefined : "lists" in candidate ? candidate.lists
+      : candidateListsChecked(candidate.body, project.definition, await proposalReplacesLists({ documentClient: deps.documentClient, tableName: deps.tableName, now: deps.now }, caller.orgId, name, candidate.digest));
     // SU-1 addendum 3: a setup run's proposal is checked at the commits the run used, never at a head read now. With no complete record of them (the marker names another proposal, the run kept no base) the
     // check is not started: a re-run is asked for.
     const runCommits = candidate?.origin === "setup_run" && "body" in candidate

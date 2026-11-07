@@ -201,7 +201,9 @@ describe("approving", () => {
     const s = setup({ value: { mode: "Off" } });
     await seed(s.store, pending());
     expect((await refused(approve(s, "ann"))).code).toBe("NOT_FOUND");
-    expect((await refused(s.call(callerOf("ann"), "GET", base))).code).toBe("NOT_FOUND");
+    // UX-4b: the tab's own read says why (LEARNING_OFF, still a 404), so the tab can offer to turn learning on; the other routes keep answering not found.
+    expect((await refused(s.call(callerOf("ann"), "GET", base))).code).toBe("LEARNING_OFF");
+    expect((await refused(s.call(callerOf("ann"), "GET", `${base}/digest`))).code).toBe("NOT_FOUND");
     expect((await s.store.get(KEY, "les_pend0001"))!.status).toBe("pending");
   });
 
@@ -236,9 +238,10 @@ describe("approving", () => {
     const error = await refused(routeLessons(broken.deps, callerOf("ann"), "GET", url(`${base}/sources`), () => ({})));
     expect([error.code, error.statusCode]).toEqual(["RUNTIME_UNAVAILABLE", 503]);
     expect(error.message).not.toContain("secret detail");
-    // The other routes keep answering plain not found whatever the reason.
+    // The other routes keep answering plain not found whatever the reason; the tab's own read says it is the lock (UX-4b).
     const locked = setup({ value: { mode: "On", companyLock: "Off" } });
-    expect((await refused(locked.call(callerOf("ann"), "GET", base))).code).toBe("NOT_FOUND");
+    expect((await refused(locked.call(callerOf("ann"), "GET", base))).code).toBe("LEARNING_LOCKED");
+    expect((await refused(locked.call(callerOf("ann"), "GET", `${base}/digest`))).code).toBe("NOT_FOUND");
     // Positive controls: learning on reads.
     expect(await setup({ value: { mode: "On", companyLock: "Collect" } }).call(callerOf("ann"), "GET", `${base}/sources`)).toMatchObject({ sources: expect.any(Array) as unknown });
   });
@@ -439,6 +442,52 @@ describe("the Sources tab", () => {
     expect(JSON.stringify(member)).not.toContain("CPRIV");
     expect(member.sources.find((r) => r.kind === "github")).toMatchObject({ scope: "github:repo/9" });
     expect(member.otherPaused).toBe(0);
+  });
+
+  it("UX-4b: a maintainer resumes a paused source; the held lessons wait for people again (none goes live) and only that source's pause is lifted", async () => {
+    const s = setup();
+    await addSource(s.w, { project: PROJECT, source: "slack", scope: "slack:T1/CPRIV", retention: "C" });
+    await s.store.setFlags(KEY, { pausedSources: { "slack:CPRIV": { at: 1, reason: "spike" }, "ci": { at: 1, reason: "spike" } } });
+    await seed(s.store, lessonRecord({ id: "les_held0001", status: "candidate", provenance: { ...lessonRecord().provenance, sources: ["slack:CPRIV"] } }));
+    const answer = await s.call(callerOf("ann"), "POST", `${base}/sources/resume`, { source: "slack", scope: "slack:T1/CPRIV" });
+    expect(answer).toMatchObject({ resumed: true });
+    expect(Object.keys((await s.store.flags(KEY)).pausedSources ?? {})).toEqual(["ci"]);
+    expect((await s.store.get(KEY, "les_held0001"))!.status).not.toBe("active");
+    // Again: nothing paused any more.
+    expect(await s.call(callerOf("ann"), "POST", `${base}/sources/resume`, { source: "slack", scope: "slack:T1/CPRIV" })).toEqual({ resumed: false, settled: 0 });
+  });
+
+  it("UX-4b: resuming is a maintainer's write: a non-maintainer, a token and a body it does not take are refused, and the pause stays", async () => {
+    const s = setup();
+    await s.store.setFlags(KEY, { pausedSources: { "slack:CPRIV": { at: 1, reason: "spike" } } });
+    const asContributor = { ...s.deps, projectFor: async (_who: unknown, raw: string) => ({ name: decodeURIComponent(raw), role: "contributor" as const }) } as unknown as LessonRouteDependencies;
+    expect((await refused(routeLessons(asContributor, callerOf("ann"), "POST", url(`${base}/sources/resume`), () => ({ source: "slack", scope: "slack:T1/CPRIV" })))).code).toBe("FORBIDDEN");
+    expect((await refused(s.call(callerOf("ann", { browserSession: false }), "POST", `${base}/sources/resume`, { source: "slack", scope: "slack:T1/CPRIV" }))).code).toBe("FORBIDDEN");
+    expect((await refused(s.call(callerOf("ann"), "POST", `${base}/sources/resume`, { source: "slack", scope: "slack:T1/CPRIV", extra: 1 }))).code).toBe("CONFIG_INVALID");
+    expect(Object.keys((await s.store.flags(KEY)).pausedSources ?? {})).toEqual(["slack:CPRIV"]);
+    expect(webRouteAllowed("POST", `/v1/web/projects/${PROJECT}/lessons/sources/resume`)).toBe(true);
+  });
+
+  it("re-check fix 4: a visible paused source is resumed; the visibility check comes before any budget is taken; an admin may resume a paused key that no source row holds", async () => {
+    const s = setup();
+    await addSource(s.w, { project: PROJECT, source: "slack", scope: "slack:T1/CPRIV", retention: "C" });
+    await s.store.setFlags(KEY, { pausedSources: { "slack:CPRIV": { at: 1, reason: "spike" }, "linear:TEAMX": { at: 1, reason: "spike" } } });
+    expect(await s.call(callerOf("ann"), "POST", `${base}/sources/resume`, { source: "slack", scope: "slack:T1/CPRIV" })).toMatchObject({ resumed: true });
+    // A refusal for an unseen source takes no budget.
+    const before = [...s.taken.values()].reduce((sum, n) => sum + n, 0);
+    expect((await refused(s.call(callerOf("ann"), "POST", `${base}/sources/resume`, { source: "linear", scope: "TEAMX" }))).code).toBe("NOT_FOUND");
+    expect([...s.taken.values()].reduce((sum, n) => sum + n, 0)).toBe(before);
+    expect(Object.keys((await s.store.flags(KEY)).pausedSources ?? {})).toEqual(["linear:TEAMX"]);
+    // The company admin resumes the orphaned key.
+    expect(await s.call(callerOf("owner", { orgRole: "admin" }), "POST", `${base}/sources/resume`, { source: "linear", scope: "TEAMX" })).toMatchObject({ resumed: true });
+    expect(Object.keys((await s.store.flags(KEY)).pausedSources ?? {})).toEqual([]);
+  });
+
+  it("review fix 6: a source that is not one this person can see in the Sources tab answers as one that is not there, and its pause stays", async () => {
+    const s = setup();
+    await s.store.setFlags(KEY, { pausedSources: { "slack:CPRIV": { at: 1, reason: "spike" } } });
+    expect((await refused(s.call(callerOf("ann"), "POST", `${base}/sources/resume`, { source: "slack", scope: "slack:T1/CPRIV" }))).code).toBe("NOT_FOUND");
+    expect(Object.keys((await s.store.flags(KEY)).pausedSources ?? {})).toEqual(["slack:CPRIV"]);
   });
 
   it("answers not found where the team record is not set up", async () => {

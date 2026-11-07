@@ -1,4 +1,7 @@
 import { useState } from "react";
+import { useQueryClient } from "@tanstack/react-query";
+import { ApiError } from "../../../api/errors.js";
+import { lessonsKey, useLessonsApi } from "../../../api/lessons.js";
 import type { SourcesAdminViewData } from "../../../api/record-sources.js";
 import { Banner } from "../../../design/Banner.js";
 import { Button } from "../../../design/Button.js";
@@ -37,13 +40,28 @@ export function SourceRow({ project, row, offered, skipped, notesSwitch, notify 
  return <li><section className="rv-lessons-source" aria-labelledby={id}>
   <h3 id={id}>{kindWords(row.kind)} <span className="rv-muted"><VisibleText text={row.scope} /></span></h3>
   <p>{T.STATUS}: {row.enabled ? T.SOURCE_ON : T.SOURCE_OFF} · {healthWords(row.health)}</p>
-  {row.paused && <Banner title={T.SOURCE_PAUSED} tone="warning" />}
+  {row.paused && <><Banner title={T.SOURCE_PAUSED} tone="warning" /><ResumeSource project={project} row={row} notify={notify} /></>}
   {skipped > 0 && <p className="rv-muted">{String(skipped)} {T.SRC_SKIPPED}</p>}
   <RowControls key={String(row.revision)} row={row} offered={offered} notesSwitch={notesSwitch} writer={writer} notify={notify} />
   {confirming ? <div role="group" aria-label={T.SRC_REMOVE} className="rv-lessons-actions"><p>{T.SRC_REMOVE_ASK}</p><Button variant="danger" busy={writer.busy} onClick={() => { void remove(); }}>{T.SRC_REMOVE_YES}</Button><Button disabled={writer.busy} onClick={() => { setConfirming(false); }}>{T.SRC_REMOVE_NO}</Button></div>
    : <div className="rv-lessons-actions"><Button variant="quiet" onClick={() => { writer.clear();setConfirming(true); }}>{T.SRC_REMOVE}</Button></div>}
   {writer.error !== undefined && <div role="alert"><p>{writer.error}</p></div>}
  </section></li>;
+}
+
+/** UX-4b: Resume, for a source the learning loop paused. The lessons it held are settled again and wait for a maintainer; nothing goes live from here. */
+function ResumeSource({ project, row, notify }: { project: string; row: Row; notify: (text: string) => void }) {
+ const api = useLessonsApi(), query = useQueryClient(), [busy, setBusy] = useState(false), [problem, setProblem] = useState<string>();
+ const resume = async () => {
+  setBusy(true);setProblem(undefined);
+  try {
+   const result = await api.resume(project, row.kind, row.scope);
+   notify(result.resumed ? T.SRC_RESUMED + (result.settled > 0 ? " " + String(result.settled) + " " + T.SRC_RESUMED_HELD : "") : T.SRC_RESUME_GONE);
+   await query.invalidateQueries({ queryKey: lessonsKey(project) });
+  } catch (error) { setProblem(error instanceof ApiError && error.code === "FORBIDDEN" ? T.SRC_RESUME_FORBIDDEN : T.SRC_RESUME_FAILED); }
+  finally { setBusy(false); }
+ };
+ return <div className="rv-lessons-actions"><Button variant="primary" busy={busy} onClick={() => { void resume(); }}>{T.SRC_RESUME}</Button>{problem !== undefined && <p role="alert">{problem}</p>}</div>;
 }
 
 function RowControls({ row, offered, notesSwitch, writer, notify }: { row: Row; offered: SourcesAdminViewData["offered"]; notesSwitch: boolean; writer: ReturnType<typeof useSourceWrite>; notify: (text: string) => void }) {

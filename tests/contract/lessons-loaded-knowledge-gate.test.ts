@@ -23,9 +23,9 @@ describe("loaded knowledge is behind learning", () => {
   it("an install with no lesson ports does not mount it", async () => {
     expect(await routeLoadedKnowledgeFor(deps({ lessons: false }), caller, "GET", url)).toBeUndefined();
   });
-  it("a project whose learning is Off does not mount it", async () => {
-    expect(await routeLoadedKnowledgeFor(deps({ settings: { mode: "Off" } }), caller, "GET", url)).toBeUndefined();
-    expect(await routeLoadedKnowledgeFor(deps({ settings: { mode: "On", companyLock: "Off" } }), caller, "GET", url)).toBeUndefined();
+  it("a project whose learning is Off does not serve it, and says why in a fixed code (still a 404) so the task page can offer to turn learning on (UX-4b)", async () => {
+    await expect(routeLoadedKnowledgeFor(deps({ settings: { mode: "Off" } }), caller, "GET", url)).rejects.toMatchObject({ code: "LEARNING_OFF", statusCode: 404 });
+    await expect(routeLoadedKnowledgeFor(deps({ settings: { mode: "On", companyLock: "Off" } }), caller, "GET", url)).rejects.toMatchObject({ code: "LEARNING_LOCKED", statusCode: 404 });
   });
   it("a project whose learning is on answers the records", async () => {
     expect(await routeLoadedKnowledgeFor(deps({ settings: { mode: "Suggest" } }), caller, "GET", url)).toEqual({ stages: [] });

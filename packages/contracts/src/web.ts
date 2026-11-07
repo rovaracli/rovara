@@ -151,6 +151,10 @@ export { SetupDraftResponseSchema, type SetupDraftResponse, SetupDraftResponseRe
 export * from "./app-lessons.js";
 // Team record source rows (learning v2): the Sources tab editor's bodies and views.
 export * from "./team-record-sources.js";
+// UX-4b: the project's learning mode, read and set on the project page.
+export { LEARNING_MODES, LearningModeSchema, LearningModeViewSchema, LearningModeWriteBodySchema, type LearningMode, type LearningModeView, type LearningModeWriteBody } from "./team-record.js";
+// UX-4b (owner decision 3): the team record search on the project page reads the record's own search and past-work routes.
+export { PastWorkResponseSchema, RecordSearchResponseSchema, type PastWorkResponse, type RecordSearchResponse } from "./team-record.js";
 
 export * from "./company-domains-web.js";
 export { JiraOrgAdminMutationBodySchema, JiraOrgAdminResultReaderSchema, type JiraOrgAdminMutationBody } from "./jira-org-admin-web.js";

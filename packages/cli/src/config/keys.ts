@@ -12,7 +12,7 @@ export type { ModelRole } from "../init/prerequisites.js";
 export type ConfigTarget =
   /** `also`: the same value goes to these stacks' parameters too, one after the other (models.fallback: the runtime and the Slack stack both need it). */
   | { kind: "stack-parameter"; part: DeployPart; parameter: string; also?: ReadonlyArray<{ part: DeployPart; parameter: string }> }
-  | { kind: "settings"; field: "alertAddress" }
+  | { kind: "settings"; field: "alertAddress" | "teamRecordOptions" }
   | { kind: "control-plane-setting"; field: "perPerson" | "perOrganization"; installDefault: { part: DeployPart; parameter: string } }
   // #343: Sign in with ChatGPT's settings, held by the control plane alone (no stack parameter).
   | { kind: "chatgpt-setting"; field: "enabled" | "preferredModel" };
@@ -29,6 +29,8 @@ export interface ConfigKey {
   fallbackModel?: true;
   /** Model keys pass a one-token test call before anything changes (FR-049). */
   model?: ModelRole;
+  /** UX-4b: the Team record. Its storage is built at synth time, so turning it on records the choice for every later cdk command (team-record-switch.ts) and the next upgrade builds it; once built, the stack parameter pauses or resumes it and keeps its data. */
+  teamRecord?: true;
   /** The value to store, or CONFIG_INVALID saying what is allowed. */
   parse(value: string): string;
 }
@@ -120,6 +122,8 @@ export const CONFIG_KEYS: readonly ConfigKey[] = [
   { key: "proofEvidence.enabled", description: "1: the evidence of a task's checks is gathered, kept and shown (a summary and a link on the pull request, an Evidence tab and a download behind sign-in; turn on only after the worker image that carries task.evidenceCapture.v1 is deployed); 0: nothing new is gathered, posted or served", target: parameter("control-plane", "ProofEvidenceEnabled"), defaultValue: "0", parse: oneOf("proofEvidence.enabled", ["0", "1"]) },
   { key: "decisionCards.enabled", description: "1: decision cards are on (the card routes and the Slack card press; medium and high-risk plans are approved in the app; high-risk plans, designs, design review Skips and cost choices and merges are decided on their card after a recent sign-in with the email code (never GitHub); new installs default to 1); 0: the emergency off, no card route exists and the medium and high-risk rules do not apply", target: parameter("control-plane", "DecisionCardsEnabled"), defaultValue: "1", parse: oneOf("decisionCards.enabled", ["0", "1"]) },
   { key: "testEnvironment.enabled", description: "1: the project test environment is on (Rovara proposes it from the default branch, a maintainer proves and approves it, and tasks use it; turn on only after the worker image that carries task.testEnvDetect.v1 and task.testEnvironment.v1 is deployed); 0: nothing about test environments changes", target: parameter("control-plane", "TestEnvironmentEnabled"), defaultValue: "0", parse: oneOf("testEnvironment.enabled", ["0", "1"]) },
+  { key: "teamRecord.enabled", description: "1: the Team record is on (sources a project learns from, lessons and search; the first time, this records the choice and the next agentx upgrade builds its storage, which every later upgrade keeps); 0: paused, nothing is read or recorded and the stored record is kept", target: parameter("control-plane", "TeamRecordEnabled"), defaultValue: "0", teamRecord: true, parse: oneOf("teamRecord.enabled", ["0", "1"]) },
+  { key: "teamRecord.options", description: "the Team record's storage options, confirmed before it is built and passed to every upgrade: default (Rovara's), or embeddingModelId=<id>;kmsKeyArn=<arn>;lake=true|false;athenaUsers=<arn,arn>;enterpriseWorkspaceId=<id> (Enterprise needs enterpriseWorkspaceId); refused once the record is built", target: { kind: "settings", field: "teamRecordOptions" }, parse: (value) => value.trim() },
   { key: "learnedLessons.enabled", description: "1: approved lessons are loaded into an agent's prompt as advice (needs the Team record; turn on only after the worker image that carries task.learnedContext.v1 is deployed); 0: no lesson is loaded or sent to an agent, even where the Team record is on", target: parameter("control-plane", "LearnedLessonsEnabled"), defaultValue: "0", parse: oneOf("learnedLessons.enabled", ["0", "1"]) },
   { key: "designReview.enabled", description: "1: fresh-context reviewers check the design of a Full task before a person approves it, but only where a company admin has allowed it and the project's mode is not Off (both are set in How we work); 0: no task has a design review, and a review already under way ends at its next step as not run", target: parameter("control-plane", "DesignReviewEnabled"), defaultValue: "0", parse: oneOf("designReview.enabled", ["0", "1"]) },
   { key: "savedEnv.enabled", description: "1: a project's proven setup can be built into a saved image and used by tasks (turn on only after the registry roles and the worker image are deployed); 0: nothing is built, pushed, pulled or sent to a worker", target: parameter("control-plane", "SavedEnvEnabled"), defaultValue: "0", parse: oneOf("savedEnv.enabled", ["0", "1"]) },
@@ -145,7 +149,7 @@ export function whereText(target: ConfigTarget, env: string): string {
     case "stack-parameter":
       return `stack parameter ${target.parameter} on ${[target, ...(target.also ?? [])].map((each) => environmentStackName(env, each.part)).join(" and ")}`;
     case "settings":
-      return `SSM ${environmentSettingsPrefix(env)}settings (${target.field})`;
+      return target.field === "teamRecordOptions" ? `SSM ${environmentSettingsPrefix(env)}team-record (options)` : `SSM ${environmentSettingsPrefix(env)}settings (${target.field})`;
     case "control-plane-setting":
       return `control-plane setting WORKSPACE_LIMITS.${target.field} (install-time default ${target.installDefault.parameter})`;
     case "chatgpt-setting":

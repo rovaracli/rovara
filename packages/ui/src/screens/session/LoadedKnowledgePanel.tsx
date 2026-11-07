@@ -1,5 +1,6 @@
 import { Suspense, lazy, useState } from "react";
 import type { LoadedKnowledgeItem } from "@agentx/contracts/web";
+import { Link } from "react-router";
 import { Button } from "../../design/Button.js";
 import { VisibleText } from "../../design/VisibleText.js";
 import { useLoadedKnowledge, useLoadedKnowledgeText } from "../../api/loaded-knowledge.js";
@@ -10,22 +11,28 @@ import { SKILL_SKIP, STAGE_TITLES, budgetWords, itemWords, kilobytes, modeWords,
 const LoadedLessons = lazy(async () => ({ default: (await import("./LoadedLessons.js")).LoadedLessons }));
 
 /** "What the agent loaded": one closed section on the Pipeline tab. It reads nothing until it is opened, and shows references; rule text is fetched per file on request. */
-export function LoadedKnowledgePanel({ taskId }: { taskId: string }) {
+export function LoadedKnowledgePanel({ taskId, project }: { taskId: string; project?: string }) {
  const [open, setOpen] = useState(false);
- return <details className="rv-loaded-knowledge" onToggle={event => { setOpen(event.currentTarget.open); }}><summary>What the agent loaded</summary>{open && <LoadedKnowledgeBody taskId={taskId} />}</details>;
+ return <details className="rv-loaded-knowledge" onToggle={event => { setOpen(event.currentTarget.open); }}><summary>What the agent loaded</summary>{open && <LoadedKnowledgeBody taskId={taskId} project={project} />}</details>;
 }
 
-function LoadedKnowledgeBody({ taskId }: { taskId: string }) {
- return <><RulesBody taskId={taskId} /><Suspense fallback={null}><LoadedLessons taskId={taskId} /></Suspense></>;
+function LoadedKnowledgeBody({ taskId, project }: { taskId: string; project: string | undefined }) {
+ return <><RulesBody taskId={taskId} project={project} /><Suspense fallback={null}><LoadedLessons taskId={taskId} /></Suspense></>;
 }
 
-function RulesBody({ taskId }: { taskId: string }) {
+/** UX-4b: learning Off for the task's project is said in its own code; the panel explains it and offers to turn it on in the project's Lessons tab, where a maintainer can. */
+export function LearningOffNote({ project, locked }: { project: string | undefined; locked: boolean }) {
+ return <div role="status"><p className="rv-muted">{locked ? "What the agent loaded isn't recorded for this task: your company keeps learning off for this project." : "What the agent loaded isn't recorded for this task because learning is off for its project. Turn learning on to record what each task loads from now on."}</p>{!locked && project !== undefined && <Link to={"/app/projects/" + encodeURIComponent(project) + "?tab=lessons"}>Turn learning on for this project</Link>}</div>;
+}
+
+function RulesBody({ taskId, project }: { taskId: string; project: string | undefined }) {
  const query = useLoadedKnowledge(taskId, true);
  const [target, setTarget] = useState<{ operationId: string; stage: string; index: number } | undefined>();
  if (query.isPending) return <p className="rv-muted" role="status">Loading</p>;
  // 404: the record is not served for this task (the project's learning is off, or the install does not keep it). That is not a failed load, so it is not shown as one.
+ if (query.isError && query.error instanceof ApiError && (query.error.code === "LEARNING_OFF" || query.error.code === "LEARNING_LOCKED")) return <LearningOffNote project={project} locked={query.error.code === "LEARNING_LOCKED"} />;
  if (query.isError) return query.error instanceof ApiError && query.error.status === 404
-  ? <p className="rv-muted" role="status">{"What the agent loaded is not recorded for this task. Loading is only recorded where the learning feature is on for the project, and learning is off here or was off when this task ran."}</p>
+  ? <p className="rv-muted" role="status">{"What the agent loaded is not recorded for this task: this installation doesn't keep it, or learning was off when this task ran."}</p>
   : <p className="rv-muted" role="alert">This could not be loaded right now.</p>;
  const stages = query.data.stages;
  if (stages.length === 0) return <p className="rv-muted">Nothing was recorded for this task. Tasks that ran before loading was recorded, or while it was off, have no record.</p>;

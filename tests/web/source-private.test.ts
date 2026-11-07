@@ -29,9 +29,9 @@ const group = (form: HTMLElement) => within(form).findByRole("group", { name: "Y
 const radio = (scope: HTMLElement, name: RegExp | string) => within(scope).getByRole<HTMLInputElement>("radio", { name });
 const INVITE_LINE = "Rovara can only read channels it's in. For a private channel, first type /invite @Rovara in that channel.";
 const ONLY_YOU = "Only you see this list: these are private channels you're in.";
-const NOT_LINKED = "Link your Slack account to see your private channels here. You can still paste a channel link below.";
+const NOT_LINKED = "Link your Slack account to see your private channels here: the ones you and Rovara are both in.";
 const HELP = "To get a link: in Slack, right-click the channel and choose Copy link. To find the ID: open the channel, click its name at the top, and the Channel ID is at the bottom of the About tab.";
-const INVITE_NEEDED = "Rovara isn't in that channel yet. Type /invite @Rovara in the channel, then try again. You must be in the channel yourself, with your Slack account linked to Rovara.";
+const INVITE_NEEDED = "Rovara can't use that channel yet. Check the link is for a channel in your company's Slack, that you're in the channel, and that Rovara is in it. For a private channel Rovara never says which, so the channel stays private.";
 const WRONG_WORKSPACE = "That link is for a different Slack workspace.";
 
 describe("A: your private channels", () => {
@@ -81,12 +81,19 @@ describe("A: your private channels", () => {
     expect(within(form).queryByText(ONLY_YOU)).toBeNull();
     expect(within(form).queryByRole("group", { name: "Your private channels" })).toBeNull();
     expect(await within(form).findByRole("radio", { name: /general/u })).toBeTruthy();
+    // UX-4b: the next step is in place, not in the account menu.
+    expect(within(form).getByRole("button", { name: "Link your Slack account" })).toBeTruthy();
   });
 
   it("a person who is in no private channel with Rovara sees a fixed line, not a claim about any channel", async () => {
-    const { form } = await open({ privateOptions: () => list("slack-private", []) });
+    const { f, form } = await open({ privateOptions: () => list("slack-private", []) });
     pick("What to add", "slack");
     expect(await within(form).findByText("None yet. A private channel shows here once you and Rovara are both in it.")).toBeTruthy();
+    // UX-4b: how to add Rovara to a channel, and reading the list again, right there.
+    expect(within(form).getByText("In Slack, open the channel and type /invite @Rovara.")).toBeTruthy();
+    const before = f.privateReads.length;
+    fireEvent.click(within(form).getByRole("button", { name: "Read the list again" }));
+    await waitFor(() => { expect(f.privateReads.length).toBeGreaterThan(before); });
   });
 
   it("the same states apply: already a source, used by another project (not named), Slack Connect and still clearing are disabled with their reasons", async () => {
@@ -247,6 +254,29 @@ describe("C: invite Rovara first", () => {
     expect(document.body.textContent).not.toContain("server text that must not show");
     expect(f.posts).toHaveLength(1);
     expect(within(form).getByLabelText<HTMLInputElement>("Slack channel").value).toBe("C0NOTIN001");
+  });
+
+  it("UX-4b: after 'Rovara can't use that channel' it shows how to add Rovara to the channel and the Slack-side shortcut, in place", async () => {
+    const { form } = await open({ write: () => flat("SLACK_INVITE_NEEDED", "x", 422) });
+    pick("What to add", "slack");
+    fireEvent.click(await within(form).findByRole("button", { name: "Enter an ID or link instead" }));
+    fireEvent.change(within(form).getByLabelText("Slack channel"), { target: { value: "C0NOTIN001" } });
+    pick("How long Rovara keeps it", "B", form);
+    fireEvent.click(within(form).getByRole("button", { name: "Add source" }));
+    await screen.findByText(INVITE_NEEDED);
+    expect(screen.getAllByText("In Slack, open the channel and type /invite @Rovara.").length).toBeGreaterThan(0);
+    expect(screen.getAllByText(/type @Rovara learn from this channel and press Add to project/u).length).toBeGreaterThan(0);
+  });
+
+  it("UX-4b: an editor with no linked Slack account is told so and can link it in place", async () => {
+    const { form } = await open({ write: () => flat("SLACK_NOT_LINKED", "x", 422) });
+    pick("What to add", "slack");
+    fireEvent.click(await within(form).findByRole("button", { name: "Enter an ID or link instead" }));
+    fireEvent.change(within(form).getByLabelText("Slack channel"), { target: { value: "C0NOTIN001" } });
+    pick("How long Rovara keeps it", "B", form);
+    fireEvent.click(within(form).getByRole("button", { name: "Add source" }));
+    expect(await screen.findByText("Rovara needs your linked Slack account to check you're in that channel. Link it, then try again.")).toBeTruthy();
+    expect(screen.getAllByRole("button", { name: "Link your Slack account" }).length).toBeGreaterThan(0);
   });
 
   it("a link for another workspace shows its fixed sentence", async () => {

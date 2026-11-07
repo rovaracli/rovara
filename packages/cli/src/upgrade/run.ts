@@ -1,6 +1,7 @@
 // agentx upgrade (FR-042 to FR-044): read the environment's version and engine from SSM, show the
 // target release's notes and every change, deploy in upgrade order (stopping at the first failure,
 // which leaves earlier stacks upgraded and is safe to re-run), then run doctor.
+import { teamRecordRecordedOrUnknown, teamRecordRefusalHint } from "../deploy/team-record-switch.js";
 import { GetTemplateCommand } from "@aws-sdk/client-cloudformation";
 import { agentXError, environmentStackName, isRovaraOperatorArn } from "@agentx/contracts";
 import { CONFIG_KEYS } from "../config/keys.js";
@@ -340,7 +341,11 @@ async function runVerifiedUpgrade(options: UpgradeOptions, deps: UpgradeDependen
         const risks = cdkDiffRisks(await deps.cdkDiff(request, settings, options.source ?? "", options.reservedConcurrency, release.manifest.version));
         if (risks.iam) deps.write(`${request.stackName} changes IAM; the changes are in the diff above.`);
         const refusal = await guardData({ stackName: request.stackName, data: risks.data, allowReplace, yes: options.yes, ask: deps.ask });
-        if (refusal !== undefined) throw agentXError("CONFIG_INVALID", refusal);
+        if (refusal !== undefined) {
+          // A record that can't be read is unknown, not "unrecorded": no hint then (re-check fix 4).
+          const hint = teamRecordRefusalHint(env, risks.data.map((entry) => entry.logicalId), await teamRecordRecordedOrUnknown(deps.store, env));
+          throw agentXError("CONFIG_INVALID", hint === undefined ? refusal : `${refusal} ${hint}`);
+        }
         if (!options.yes && !/^y(es)?$/i.test((await deps.ask(`Deploy ${request.stackName}? [y/N] `)).trim())) {
           throw agentXError("CONFIG_INVALID", `upgrade stopped before ${request.stackName}: nothing in it changed. Stacks upgraded before it keep the new release; run agentx upgrade again to continue`);
         }

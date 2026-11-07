@@ -104,8 +104,18 @@ it("says it is not recorded for this task (not a failed load) when the record is
  const details = (await screen.findByText("What the agent loaded")).closest("details")!;
  details.open = true; fireEvent(details, new Event("toggle"));
  await waitFor(() => { expect(screen.getByRole("status").textContent).toContain("not recorded for this task"); }, { timeout: 8000 });
- expect(screen.getByRole("status").textContent).toContain("learning is off");
+ expect(screen.getByRole("status").textContent).toContain("learning was off");
  expect(screen.queryByText(/could not be loaded/u)).toBeNull();
+ s.close();
+});
+
+it("UX-4b: with learning off for the project it explains why and links to turning learning on, not a dead end", async () => {
+ const s = setup(async () => ({ status: 404, body: { error: { code: "LEARNING_OFF", message: "Learning is off for this project." } } }));
+ const details = (await screen.findByText("What the agent loaded")).closest("details")!;
+ details.open = true; fireEvent(details, new Event("toggle"));
+ await waitFor(() => { expect(screen.getByRole("status").textContent).toContain("because learning is off for its project"); }, { timeout: 8000 });
+ const link = screen.getByRole("link", { name: "Turn learning on for this project" });
+ expect(link.getAttribute("href")).toMatch(/^\/app\/projects\/[^/?]+\?tab=lessons$/u);
  s.close();
 });
 

@@ -844,20 +844,23 @@ describe("Slack: the editor must be in a private channel to add it from the web"
     expect(second.memberAsks).toEqual([`U0ALTID001@${CH.priv}`, `U0MAINT001@${CH.priv}`]);
   });
 
-  it("a non-member, an editor with no linked Slack id, a channel Rovara is not in and a channel that does not exist all get the identical reply, and nothing is written", async () => {
+  it("a non-member, a channel Rovara is not in and a channel that does not exist all get the identical reply; an editor with no linked Slack id gets its own next step for every one of them (UX-4b), and nothing is written", async () => {
     const nonMember = harness();
     nonMember.members.set(CH.priv, new Set(["U0OWNER001"]));
     const unlinked = harness();
     unlinked.linked.delete(MAINT);
+    unlinked.channels.set("C0NOSUCH01", "none");
     const botNotIn = harness();
     botNotIn.channels.set("C0NOSUCH01", "none");
     const replies = [
       await post(nonMember, WHO.maint, add({ scope: slackScope(CH.priv) })),
-      await post(unlinked, WHO.maint, add({ scope: slackScope(CH.priv) })),
       await post(botNotIn, WHO.maint, add({ scope: slackScope(CH.gone) })),
       await post(botNotIn, WHO.maint, add({ scope: slackScope("C0NOSUCH01") })),
     ];
     for (const reply of replies) expect(reply).toEqual(INVITE_NEEDED);
+    // UX-4b: the cause that is about the caller alone has its own code. It is the same for a private channel, one Rovara is not in and one that does not exist, so it tells nothing about the channel.
+    const NOT_LINKED = { status: 422, body: { code: "SLACK_NOT_LINKED", message: "Link your Slack account to Rovara so it can check you're in that channel, then try again." } };
+    for (const scope of [CH.priv, CH.gone, "C0NOSUCH01"]) expect(await post(unlinked, WHO.maint, add({ scope: slackScope(scope) })), scope).toEqual(NOT_LINKED);
     nothingWritten(nonMember); nothingWritten(unlinked); nothingWritten(botNotIn);
     // an editor with no linked id is never asked about membership: there is nobody to ask for
     expect(unlinked.memberAsks).toEqual([]);

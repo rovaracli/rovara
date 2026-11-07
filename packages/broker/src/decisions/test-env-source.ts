@@ -13,7 +13,7 @@ import { QueryCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
 import { projectPk, testEnvApprovalRisk, testEnvDigest, testEnvIsProved, testEnvLessSafeChanges, type OrgId, type TestEnvironmentBody } from "@agentx/contracts";
 import { tryEffectiveTaskOwner, type DeveloperTaskRecord } from "../developer/task-records.js";
 import { testEnvChangeLines } from "../org/test-env-diff.js";
-import { proposalIsSetupRun, proposalSeedTrust, readApprovedTestEnvironment, readProposal, readProposalSources, readTestEnvProveReport, type TestEnvDeps } from "../org/test-environment.js";
+import { proposalNeedsFreshSignIn, proposalSeedTrust, readApprovedTestEnvironment, readProposal, readProposalSources, readTestEnvProveReport, type TestEnvDeps } from "../org/test-environment.js";
 import { seedCardLinesOf, seedRisksOf } from "../test-env/seed-lock.js";
 import { dependencyCardLines } from "../test-env/dependency-card-lines.js";
 import { approvedFixturesOf, type FixtureReadPort } from "../test-env/fixture-lookup.js";
@@ -82,14 +82,15 @@ export async function approveTestEnvItemsFor(ports: TestEnvCardPorts, caller: Wh
       const { seedChecks } = await readProposalSources(ports.store, orgId, project, newest.digest);
       const seedReasons = seedCardLinesOf(seedRisksOf(seedChecks, body), seedChecks, body);
       // TE-2: a proposal a setup RUN made is approved only with the approver's fresh sign-in, which a one-press card cannot ask for: it is a high card that opens the setup page.
-      const setupRun = await proposalIsSetupRun(ports.store, orgId, project, newest.digest);
+      // A setup draft's proposal ("Check and apply", UX-4b) needs the same fresh sign-in, so it is a high card that opens the setup page too.
+      const setupRun = await proposalNeedsFreshSignIn(ports.store, orgId, project, newest.digest);
       const risk = lessSafe.length > 0 || setupRun ? "high" as const : testEnvApprovalRisk(body, trust);
       const dependencies = body.dependencies ?? [];
       const confirmPath = lessSafe.length > 0 ? await ports.confirmPathOf(caller, { project, digest: newest.digest, expectedRevision }) : undefined;
       found.push({
         kind: "approve_test_env", subjectId: newest.digest, project, title: `Test environment for ${project}`, createdAt: newest.proposedAt,
         openPath: `/app/onboard?project=${encodeURIComponent(project)}&step=setup`, ...(confirmPath === undefined ? {} : { confirmPath }),
-        contentVersion: sha(`${newest.digest}:${String(expectedRevision)}`), risk, riskReasons: [...seedReasons, ...lessSafe.map(flagWords), ...(setupRun ? ["Made by a setup run that ran commands: approve it on the setup page after signing in again."] : []), ...(dependencies.length > 0 ? [dependencyReason(dependencies.length)] : [])], tier: body.tier, expectedRevision,
+        contentVersion: sha(`${newest.digest}:${String(expectedRevision)}`), risk, riskReasons: [...seedReasons, ...lessSafe.map(flagWords), ...(setupRun ? ["Made by Rovara on the setup page (a setup run or a setup draft): approve it there after signing in again."] : []), ...(dependencies.length > 0 ? [dependencyReason(dependencies.length)] : [])], tier: body.tier, expectedRevision,
         // Test services: the plain Dependencies section. Absent for an environment without any, so such a card is what it was.
         ...(dependencies.length > 0 ? { details: [{ title: "Dependencies", lines: dependencyCardLines(dependencies, await approvedFixturesOf(ports.fixtureStore, orgId, project, body)) }] } : {}),
       });

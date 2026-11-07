@@ -86,6 +86,25 @@ export const LearningModeSchema = z.enum(LEARNING_MODES);
 export type LearningMode = z.infer<typeof LearningModeSchema>;
 export const LEARNING_MODE_DEFAULT: LearningMode = "suggest";
 
+/**
+ * UX-4b: the project's learning mode, read and set from the project page (`GET|POST /v1/app/projects/{p}/record/learning-mode`). `mode` is the project's own value (the default when none is stored);
+ * `lock` the company's, when one is set; `effective` the stricter of the two, which is what runs. `canChange`: the reader may set it here (a maintainer of the project, or a company admin, on a live browser session).
+ */
+export const LearningModeViewSchema = z.object({
+  mode: LearningModeSchema,
+  lock: LearningModeSchema.optional(),
+  effective: LearningModeSchema,
+  canChange: z.boolean(),
+}).strict();
+export type LearningModeView = z.infer<typeof LearningModeViewSchema>;
+/** A change names the value it read (`expectedMode`), so it loses cleanly to another writer; `requestId` makes a repeat answer the same and a late repeat change nothing. */
+export const LearningModeWriteBodySchema = z.object({
+  requestId: z.uuid(),
+  mode: LearningModeSchema,
+  expectedMode: LearningModeSchema,
+}).strict();
+export type LearningModeWriteBody = z.infer<typeof LearningModeWriteBodySchema>;
+
 // ---------------------------------------------------------------------------------------------------------------------------
 // Record events
 

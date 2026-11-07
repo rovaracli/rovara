@@ -114,7 +114,9 @@ describe("the Same correction given twice block", () => {
   const f = setup(undefined);
   await screen.findByRole("heading", { name: /^Budget, / });
   expect(screen.queryByText("Same correction given twice")).toBeNull();
-  expect(f.calls()).not.toContain("GET /v1/app/projects/payments/how-we-work");
+  // UX-4b: the project setup checklist reads How we work once for its own row; the metric block adds no read of its own.
+  await screen.findByRole("region", { name: "Project setup" });
+  expect(f.calls().filter(call => call === "GET /v1/app/projects/payments/how-we-work").length).toBeLessThanOrEqual(1);
  });
 
  for (const theme of ["light", "dark"] as const) it("has no accessibility violations in " + theme, async () => {

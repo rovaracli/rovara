@@ -95,6 +95,11 @@ import { diagnosisEnabled, diagnosisTagKeyOf } from "../../diagnosis/switch.js";
 import type { DiagnosisRouteDependencies } from "../../diagnosis/routes.js";
 import { putProjectSettingsChecked } from "./settings-proof.js";
 import { routedSeedsOf } from "../../test-env/routed-seeds.js";
+import { testEnvironmentEnabled } from "../../test-env/switch.js";
+import { clearEditedProposal, proposeTestEnvironment, readApprovedTestEnvironment } from "../../org/test-environment.js";
+import { readSetupRunProposal, writeSetupRunProposal } from "../../rovara-code/setup-run-proposal.js";
+import { editTestEnvironment } from "./test-environment-wizard.js";
+import { mergeDraftWithApproved, testEnvStoreOf } from "./test-environment.js";
 import { personOwnerOf } from "../../developer/system-owner.js";
 import { effectiveTaskOwner } from "../../developer/task-records.js";
 
@@ -131,6 +136,26 @@ export function setupDraftDepsOf(deps: DeveloperRouteDependencies): SetupDraftDe
     ...(deps.setupCitationReader === undefined ? {} : { readFile: deps.setupCitationReader }),
     // TS-UX-1: a seed or migration leaves the setup proposal only when the test environment's draft gave it to a database dependency.
     routedSeeds: (orgId, project, taskId) => routedSeedsOf(deps, orgId, project, taskId),
+    // Owner decision 11 (one apply path): a draft's commands go to the test environment as its proposal, as the setup run's "Use this setup" does (`setup-agent.ts` confirmDepsOf).
+    testEnvironment: {
+      on: testEnvironmentEnabled(process.env),
+      merge: async (who, project, environment) => mergeDraftWithApproved(environment, (await readApprovedTestEnvironment(testEnvStoreOf(deps), who.orgId, project))?.environment),
+      // As the setup run's "Use this setup" does (`confirmSetupAgent`): the proposal, then the marker the wizard reads (after a person's edit) to show it as Rovara's. A newer press replaces an older edit pointer, so the
+      // wizard shows the proposal just made.
+      propose: async (who, project, role, environment, valueSources, marker) => {
+        const store = testEnvStoreOf(deps);
+        // Review M2: a repeat of the same press (its apply record was not kept) finds its own marker and changes nothing: an edit made in the wizard since stays the one shown.
+        const mine = await readSetupRunProposal(store, who.orgId, project);
+        if (mine !== undefined && mine.requestId === marker.requestId && mine.by === who.developerId) return { digest: mine.digest };
+        // Marked `setup_draft`: approved only after a fresh sign-in, like a setup run's (owner direction: the rule follows the proposal, not the screen), but not pinned to a run's commits (a draft ran nothing).
+        const { digest } = await proposeTestEnvironment(store, { orgId: who.orgId, project, proposedBy: who.developerId, role, body: environment, valueSources, origin: "setup_draft" });
+        await clearEditedProposal(store, who.orgId, project);
+        await writeSetupRunProposal(store, who.orgId, project, { digest, taskId: marker.taskId, requestId: marker.requestId, by: who.developerId, reply: { ...marker.reply, digest } });
+        return { digest };
+      },
+      // Review I2: what a person typed is exactly the proposed lists (a fix or a removal takes effect), not commands added to the settings'.
+      edit: (who, project, role, environment) => editTestEnvironment(testEnvStoreOf(deps), { orgId: who.orgId, project, developerId: who.developerId, role, environment, replaceLists: true }),
+    },
   };
 }
 

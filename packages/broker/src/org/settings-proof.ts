@@ -143,6 +143,8 @@ export const PROOF_WORDS = {
   apiOnly: "Change setup commands in the Rovara app, in a browser, or send them again after the running check.",
   noCheck: "Checking commands on a fresh machine is not set up here, so commands cannot be changed with an API key.",
   needsOwnRequest: "Send repository changes and commands in separate requests.",
+  /** UX-4b review I1: with the test environment on, commands are proved there first. */
+  provedInTestEnvironment: "With the test environment on, setup and test commands are proved in it before they are used: send them to the test environment (POST /v1/app/projects/{name}/setup-draft/typed), then check, prove and approve them there.",
   undoBrowser: "Go back to the last proved setup in the Rovara app, in a browser.",
   undoSignIn: "Sign in again to go back to the last proved setup.",
   undoNone: "No setup was ever proved for this project, so there is nothing to go back to.",

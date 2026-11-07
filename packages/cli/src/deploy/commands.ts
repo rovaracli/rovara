@@ -3,6 +3,7 @@
 // `agentx init --export`. Everything that would otherwise touch AWS is overridable through
 // `DeployCliDependencies` (main.ts's `CliDependencies.deploy`), the same seam the `env` commands use
 // (`CliDependencies.environments`), so tests exercise the real wiring against fakes, never AWS.
+import { readTeamRecordSwitch } from "./team-record-switch.js";
 import { spawn } from "node:child_process";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -764,6 +765,8 @@ export async function prepareDeployment(input: {
     await assertSourceAtRelease({ runner, source, version: release.manifest.version });
     await assertCdkBootstrapped({ store, region });
     edition = await resolveEdition();
+    // UX-4b: the Team record the install records as on is synthesized every time, so an upgrade never builds it away.
+    const teamRecord = await readTeamRecordSwitch(store, input.env);
     // After the cheap checks, before any cdk deploy: infra/dist is gitignored, so only a fresh
     // install and build guarantees `cdk deploy` synthesizes the tagged source.
     // The catalog flavor of what is built: staging only for env "staging" in the staging account (the account STS says the credentials in use belong to), release in every other case.
@@ -773,7 +776,7 @@ export async function prepareDeployment(input: {
       // parameters each stack declares; the release's templates may not exist (a source-built agentx).
       const cloud = {
         ...(input.cloud === true ? { cloud: true } : {}), ...(input.reservedConcurrency === false ? { reservedConcurrency: false as const } : {}),
-        ...(edition === undefined ? {} : { edition }), ...(input.newInstall === true ? { newInstall: true } : {}),
+        ...(edition === undefined ? {} : { edition }), ...(input.newInstall === true ? { newInstall: true } : {}), ...(teamRecord === undefined ? {} : { teamRecord }),
         releaseVersion: release.manifest.version,
       };
       declaredParameters = await synthDeclaredParameters({ runner, source, env: input.env, region, identityMode: input.identityMode, ...cloud });

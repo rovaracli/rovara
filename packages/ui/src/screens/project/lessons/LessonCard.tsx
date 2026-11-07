@@ -43,7 +43,7 @@ export function LessonCard({ project, lesson, now, onDone }: Props) {
   <p className="rv-muted">{typeWords(lesson.type)} · <VisibleText text={scopeWords(lesson.scope)} /> · {stagesWords(lesson.stages)}</p>
   <p className="rv-lessons-text"><VisibleText text={lesson.body} /></p>
   {lesson.description !== "" && <p className="rv-muted"><VisibleText text={lesson.description} /></p>}
-  <p><strong>{two ? T.TWO_PEOPLE : T.ONE_PERSON}</strong></p>
+  {needs !== undefined && <p><strong>{two ? T.TWO_PEOPLE : T.ONE_PERSON}</strong> <span className="rv-muted">{T.APPROVAL_RULE}</span></p>}
   <ReasonList lesson={lesson} />
   {needs?.first !== undefined && <p>{T.FIRST_APPROVED} <strong><VisibleText text={needs.first.name} /></strong>{needs.firstAt !== undefined && <span className="rv-muted"> · {agoWords(needs.firstAt, now)}</span>}. {T.STILL_NEEDS}</p>}
   {needs !== undefined && needs.groups.length > 0 && <p className="rv-muted">{T.GROUP_NEEDS} <VisibleText text={needs.groups.join(", ")} />.</p>}

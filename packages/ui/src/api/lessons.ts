@@ -4,7 +4,7 @@ import { useMemo } from "react";
 import { useQuery } from "@tanstack/react-query";
 import {
   DeveloperTaskViewSchema, LessonApproveAnswerReaderSchema, LessonApproveBodySchema, LessonDoneAnswerReaderSchema, LessonFeedbackBodySchema, LessonHistoryReaderSchema, LessonRejectBodySchema,
-  LessonRetireBodySchema, LessonRollbackAnswerReaderSchema, LessonRollbackBodySchema, LessonSourcesReaderSchema, LessonsDigestReaderSchema, LessonsViewReaderSchema, LoadedLessonsReaderSchema,
+  LessonResumeAnswerReaderSchema, LessonResumeSourceBodySchema, LessonRetireBodySchema, LessonRollbackAnswerReaderSchema, LessonRollbackBodySchema, LessonSourcesReaderSchema, LessonsDigestReaderSchema, LessonsViewReaderSchema, LoadedLessonsReaderSchema,
   ProjectOverviewProjectSchema,
 } from "@agentx/contracts/web";
 import type { z } from "zod";
@@ -39,6 +39,8 @@ export function createLessonsApi(host: AppHost) {
   async reject(project: string, id: string, input: RejectInput) { return settled(await api.send("POST", base(project) + "/" + one(id) + "/reject", LessonRejectBodySchema.parse(input), LessonDoneAnswerReaderSchema, NEVER)); },
   async retire(project: string, id: string, reason?: string) { return settled(await api.send("POST", base(project) + "/" + one(id) + "/retire", LessonRetireBodySchema.parse(reason === undefined ? {} : { reason }), LessonDoneAnswerReaderSchema, NEVER)); },
   async rollback(project: string, input: z.input<typeof LessonRollbackBodySchema>) { return settled(await api.send("POST", base(project) + "/rollback", LessonRollbackBodySchema.parse(input), LessonRollbackAnswerReaderSchema, NEVER)); },
+  /** UX-4b: a maintainer resumes a paused source; the lessons held while it was paused wait for people again (none goes live from here). */
+  async resume(project: string, source: string, scope: string) { return settled(await api.send("POST", base(project) + "/sources/resume", LessonResumeSourceBodySchema.parse({ source, scope }), LessonResumeAnswerReaderSchema, NEVER)); },
   loaded: (taskId: string) => api.get(taskBase(taskId), LoadedLessonsReaderSchema),
   async mark(taskId: string, lessonId: string, kind: "helpful" | "wrong_here") { return settled(await api.send("POST", taskBase(taskId) + "/" + one(lessonId) + "/feedback", LessonFeedbackBodySchema.parse({ kind }), LessonDoneAnswerReaderSchema, NEVER)); },
  };

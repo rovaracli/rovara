@@ -14,7 +14,7 @@
 //   - Athena workgroup: $5 per TB scanned, only when a query runs; the workgroup itself is free.
 //   - EventBridge Scheduler schedules (three): free at this volume; each invoke is one Lambda run of the broker (a few milliseconds when nothing is due).
 // Model calls (embeddings, the distiller) are NOT created here: they are billed on the org's spend when a feature uses them.
-import { Duration, Token, aws_lambda_event_sources as eventSources, aws_scheduler as scheduler, aws_sqs as sqs, type Stack, aws_iam as iam } from "aws-cdk-lib";
+import { CfnParameter, Duration, Token, aws_lambda_event_sources as eventSources, aws_scheduler as scheduler, aws_sqs as sqs, type Stack, aws_iam as iam } from "aws-cdk-lib";
 import type { aws_lambda as lambda } from "aws-cdk-lib";
 import { TEAM_RECORD_OPS_MAX_RECEIVES, teamRecordNamePrefix, teamRecordOpsDeadLetterName, teamRecordOpsQueueName, teamRecordTableName } from "@agentx/contracts";
 import { BrokerNames, BrokerSettings } from "./broker-names.js";
@@ -105,7 +105,11 @@ export function attachTeamRecord(stack: Stack, props: TeamRecordWiringProps): Te
 
   // The switch and the two install parameters the broker cannot derive from the environment's name. The names of the resources are derived (derived-names.ts).
   const settings = BrokerSettings.of(broker);
+  // UX-4b: once built, the record stays switched on for the broker (erasure, removals, Slack deletes, expiry and the archiver must keep running over the retained data); the stack parameter
+  // (`agentx config set teamRecord.enabled 0|1`) is a PAUSE on top of it: 0 stops capture, reads, search and learning (TEAM_RECORD_ACTIVE, team-record/runtime.ts) and keeps every stored item.
+  const enabled = new CfnParameter(stack, "TeamRecordEnabled", { type: "String", default: "1", allowedValues: ["0", "1"], description: "1: the Team record is on; 0: paused, nothing new is captured, read or learned, while erasure, removals and expiry keep running on the stored record (agentx config set teamRecord.enabled 1)" });
   settings.add("teamRecord", "1");
+  settings.add("teamRecordActive", enabled.valueAsString);
   // The default model is not passed: the broker reads an unset model as the default (team-record/runtime.ts), which keeps 36 bytes of the broker's 4 KB environment.
   if (storage.parameters.embeddingModelId !== DEFAULT_EMBEDDING_MODEL_ID) settings.add("teamRecordEmbeddingModel", storage.parameters.embeddingModelId);
   settings.add("teamRecordLake", storage.lake === undefined ? "0" : "1");

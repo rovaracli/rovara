@@ -118,6 +118,12 @@ class NotAllowed extends Error {}
  * answer for all of them, so a channel's existence is never told. Its own route-local code and one fixed sentence (task 11, C; final review 3, I1).
  */
 class InviteNeeded extends Error {}
+/**
+ * UX-4b: the editor has no linked Slack account, so Rovara can't check they are in the channel. Its own code and next step (link the account), because it is about the caller alone. It is answered only where the
+ * other answer would be "Rovara can't use that channel" (no such channel, Rovara not in it, or a channel that isn't public), so it tells nothing more about a channel than that answer did.
+ */
+class NotLinked extends Error {}
+const notLinkedReply = (): RecordRouteReply => ({ status: 422, body: { code: "SLACK_NOT_LINKED", message: "Link your Slack account to Rovara so it can check you're in that channel, then try again." } });
 /** A pasted link (or place) for a Slack workspace other than this install's: its own route-local code and one fixed sentence (task 11, B). */
 class WrongWorkspace extends Error {}
 const wrongWorkspaceReply = (): RecordRouteReply => ({ status: 422, body: { code: "SLACK_WRONG_WORKSPACE", message: "That link is for a different Slack workspace." } });
@@ -195,6 +201,7 @@ export async function handleSourceWrite(deps: RecordQueryDependencies, request: 
     if (error instanceof ClearingElsewhere) return clearingElsewhereReply();
     if (error instanceof RemovalBusy) return removalBusyReply();
     if (error instanceof NotAllowed) return notAllowedReply(error);
+    if (error instanceof NotLinked) return notLinkedReply();
     if (error instanceof InviteNeeded) return inviteNeededReply();
     if (error instanceof WrongWorkspace) return wrongWorkspaceReply();
     throw error;
@@ -256,7 +263,7 @@ async function checkSlackPlace(run: Run, scope: string, editorInChannel: boolean
   try { facts = await run.ctx.slackChannel(parsed.teamId, parsed.channelId); } catch { facts = undefined; }
   if (facts === undefined) throw unavailable();
   // Slack does not show the bot this channel: it is not in it, or there is no such channel. Never said which.
-  if (facts === "none") throw new InviteNeeded();
+  if (facts === "none") throw (await unlinkedEditor(run, editorInChannel)) ? new NotLinked() : new InviteNeeded();
   // Adding a channel that is not public from the web: the editor must be in it, by one of their own linked Slack ids (as the Slack-side Add checks), BEFORE anything else is said about the channel (Slack Connect, a DM). The Slack
   // interaction has already checked the person who pressed. A person not in it, with no linked id, answers exactly as "Rovara is not in that channel": the channel's existence is never told.
   if (editorInChannel && run.ctx.actor !== "slack_interaction" && facts.kind !== "public") await requireEditorIn(run, parsed.channelId);
@@ -266,6 +273,11 @@ async function checkSlackPlace(run: Run, scope: string, editorInChannel: boolean
 }
 
 const SLACK_USER_ID = /^[UW][A-Z0-9]{2,31}$/u;
+/** Whether a web editor adding a Slack place has no linked Slack account (read by the server). A read that is absent or fails is not "unlinked": the answer stays the merged one. */
+async function unlinkedEditor(run: Run, editorInChannel: boolean): Promise<boolean> {
+  if (!editorInChannel || run.ctx.actor === "slack_interaction" || run.sources.slackUserIdsOf === undefined) return false;
+  try { return (await run.sources.slackUserIdsOf(run.me)).filter((id) => SLACK_USER_ID.test(id)).length === 0; } catch { return false; }
+}
 const LINKED_IDS_MAX = 5;
 /** The editor's own linked Slack ids (the sign-in store's, read by the server from the session's developer, never from the request) and whether one of them is in the channel. Unreadable fails closed as unavailable. */
 async function requireEditorIn(run: Run, channelId: string): Promise<void> {
@@ -273,7 +285,7 @@ async function requireEditorIn(run: Run, channelId: string): Promise<void> {
   if (linksOf === undefined || memberOf === undefined) throw unavailable();
   let ids: string[];
   try { ids = [...new Set(await linksOf(run.me))].filter((id) => SLACK_USER_ID.test(id)).sort().slice(0, LINKED_IDS_MAX); } catch { throw unavailable(); }
-  if (ids.length === 0) throw new InviteNeeded();
+  if (ids.length === 0) throw new NotLinked();
   let unreadable = false;
   for (const id of ids) {
     let answer: boolean | undefined;

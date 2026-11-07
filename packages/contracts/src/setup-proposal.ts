@@ -250,7 +250,8 @@ export const SetupApplyBodySchema = z.object({
 export type SetupApplyBody = z.infer<typeof SetupApplyBodySchema>;
 
 /** `checking`: the commands are being run on a fresh machine and nothing is saved yet; `check_failed`: they did not pass, so nothing was saved. */
-export const SETUP_APPLY_OUTCOMES = ["applied", "already_set", "kept_yours", "approval_needed", "website_proposal", "not_available", "managed_by_file", "unknown_item", "failed", "checking", "check_failed"] as const;
+/** `proposed` (owner decision 11, one apply path): setup and test commands went to the test environment as its proposal, to be checked, proved and approved there; nothing was saved. */
+export const SETUP_APPLY_OUTCOMES = ["applied", "already_set", "kept_yours", "approval_needed", "website_proposal", "not_available", "managed_by_file", "unknown_item", "failed", "checking", "check_failed", "proposed"] as const;
 export type SetupApplyOutcome = (typeof SETUP_APPLY_OUTCOMES)[number];
 
 export const SetupApplyResultItemSchema = z.object({
@@ -263,6 +264,8 @@ export const SetupApplyResultItemSchema = z.object({
   reason: z.string().max(400).optional(),
   /** `approval_needed`: the card for this one item. */
   approval: z.object({ approvalId: z.string().min(1).max(200), confirmUrl: z.string().max(2_048) }).strict().optional(),
+  /** `proposed` (owner decision 11): the test environment proposal the commands went to, so the page can open it. */
+  proposalDigest: z.string().regex(/^[a-f0-9]{64}$/u).optional(),
   /** `website_proposal`: the domains to carry to the website proposal flow. */
   domains: z.array(z.string().max(253)).max(50).optional(),
   /** `applied` for a dev container pull request: the task that opens it. */

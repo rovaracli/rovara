@@ -57,9 +57,10 @@ describe("the switch is off by default and changes nothing", () => {
     expect(Object.keys(resources).filter((id) => /TeamRecord/.test(id))).toStrictEqual([]);
     expect(Object.values(resources).filter((resource) => resource.Type === "AWS::DynamoDB::Table" && String(JSON.stringify(resource.Properties)).includes("team-record"))).toStrictEqual([]);
     const settings = brokerSettingsIn(functionVariables(plain, /^Broker[0-9A-F]{8}$/));
-    for (const key of ["teamRecord", "teamRecordEmbeddingModel", "teamRecordLake"] as const) expect(Object.keys(settings), key).not.toContain(key);
+    for (const key of ["teamRecord", "teamRecordActive", "teamRecordEmbeddingModel", "teamRecordLake"] as const) expect(Object.keys(settings), key).not.toContain(key);
     expect(Object.keys(brokerNamesIn(functionVariables(plain, /^Broker[0-9A-F]{8}$/)))).not.toContain("teamRecordVectorsRole");
     expect(functionVariables(plain, /^SlackIngress[0-9A-F]{8}$/)).not.toHaveProperty("TEAM_RECORD_ENABLED");
+    expect((plain.toJSON() as { Parameters?: Record<string, unknown> }).Parameters).not.toHaveProperty("TeamRecordEnabled");
     expect(JSON.stringify(plain.toJSON())).not.toMatch(/s3vectors|s3tables|team-record/i);
   }, 180_000);
 
@@ -115,7 +116,10 @@ describe("the switch on: Public cloud", () => {
   it("gives the broker the switch and the install parameters in its packed settings, and the vector role in its packed names, and no variable of its own", () => {
     const variables = functionVariables(on, /^Broker[0-9A-F]{8}$/);
     const settings = brokerSettingsIn(variables);
+    // UX-4b review fix 1: the record stays on for the broker (erasure, removals, Slack deletes and expiry keep running); TeamRecordEnabled (default 1) is the pause, as TEAM_RECORD_ACTIVE.
     expect(settings.teamRecord).toBe("1");
+    expect(settings.teamRecordActive).toEqual({ Ref: "TeamRecordEnabled" });
+    expect((on.toJSON() as { Parameters?: Record<string, unknown> }).Parameters?.TeamRecordEnabled).toMatchObject({ Type: "String", Default: "1", AllowedValues: ["0", "1"] });
     // ENV-ROOM: the default embedding model is not passed (the broker reads an unset model as the default), and the record's dead-letter queue has a fixed name the broker derives.
     expect(settings).not.toHaveProperty("teamRecordEmbeddingModel");
     expect(settings.teamRecordLake).toBe("1");

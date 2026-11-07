@@ -14,8 +14,9 @@ const HOME_HREF_MAX = 2048;
  * The kinds of card. Plan 5 fills `approval`, `spend_request`, `plan`, `pull_request` and `failure`; `question` and `offer` are for sources later plans register. `rule_suggestion` (v1.2 learning
  * loop) is one card per project with suggested rules to review, for the project's maintainers; an older client reads it as "unknown". Slice 5: `waiting_ticket` is a ticket that waits for a
  * member (Start, or "Not this one"), for the people who may start tasks in its project; `intake_source` is a watched tracker source that keeps failing, for the project's maintainers.
+ * `lesson_waiting` (UX-4b) is one card per project with lessons waiting for the caller's OK, for the people who decide that project's lessons.
  */
-export const HOME_CARD_KINDS = ["approval", "spend_request", "question", "plan", "pull_request", "failure", "offer", "rule_suggestion", "waiting_ticket", "intake_source", "blocked", "paused"] as const;
+export const HOME_CARD_KINDS = ["approval", "spend_request", "question", "plan", "pull_request", "failure", "offer", "rule_suggestion", "waiting_ticket", "intake_source", "blocked", "paused", "lesson_waiting"] as const;
 export type HomeCardKind = (typeof HOME_CARD_KINDS)[number];
 /** The kinds a person may dismiss; every other card goes away when it is done. */
 export const HOME_DISMISSIBLE_KINDS = ["failure", "offer"] as const;
@@ -29,7 +30,7 @@ export const HOME_DISMISS_DAYS = 30;
 export const HOME_NOT_DISMISSIBLE = "This card goes away when it's done.";
 
 /** `<kind>:<id>`: the kind, a colon and the id that kind uses (an approval id, a session id, …), nothing else. */
-export const HOME_CARD_ID_PATTERN = /^(approval|spend_request|question|plan|pull_request|failure|offer|rule_suggestion|waiting_ticket|intake_source|blocked|paused):[A-Za-z0-9_-]{1,150}$/u;
+export const HOME_CARD_ID_PATTERN = /^(approval|spend_request|question|plan|pull_request|failure|offer|rule_suggestion|waiting_ticket|intake_source|blocked|paused|lesson_waiting):[A-Za-z0-9_-]{1,150}$/u;
 export const HomeCardIdSchema = z.string().regex(HOME_CARD_ID_PATTERN);
 
 const HrefSchema = z.string().url().max(HOME_HREF_MAX).refine((value) => /^https?:\/\//iu.test(value), "href: a web address");

@@ -1,4 +1,5 @@
 // The `agentx upgrade` command (FR-042 to FR-044, FR-026's upgrade --export), kept out of main.ts.
+import { readTeamRecordSwitch } from "../deploy/team-record-switch.js";
 import { CloudFormationClient, GetTemplateCommand } from "@aws-sdk/client-cloudformation";
 import { SecretsManagerClient } from "@aws-sdk/client-secrets-manager";
 import { ECRClient } from "@aws-sdk/client-ecr";
@@ -175,7 +176,8 @@ export function registerUpgradeCommand(program: Command, context: UpgradeCommand
         // Enterprise foundations E2: the diff is synthesized with the install's recorded edition, as the deploy is, so it does not show the edition stamp as removed.
         cdkDiff: overrides.cdkDiff ?? (async (request, settings, source, reservedConcurrency, releaseVersion) => {
           const edition = await resolveDeployEdition({ store, env: settings.env, engine: settings.engine, cloud: settings.cloud === true });
-          return cdkDiff({ runner, source, env: settings.env, region: settings.region, identityMode: settings.identity.mode, ...(settings.cloud === true ? { cloud: true } : {}), ...(reservedConcurrency === false ? { reservedConcurrency: false as const } : {}), ...(edition === undefined ? {} : { edition }), ...(releaseVersion === undefined ? {} : { releaseVersion }), request });
+          const teamRecord = await readTeamRecordSwitch(store, settings.env);
+          return cdkDiff({ runner, source, env: settings.env, region: settings.region, identityMode: settings.identity.mode, ...(settings.cloud === true ? { cloud: true } : {}), ...(reservedConcurrency === false ? { reservedConcurrency: false as const } : {}), ...(edition === undefined ? {} : { edition }), ...(teamRecord === undefined ? {} : { teamRecord }), ...(releaseVersion === undefined ? {} : { releaseVersion }), request });
         }),
         ask: overrides.ask ?? readlineAsk(),
         isInteractive: overrides.isInteractive ?? (() => process.stdin.isTTY === true),

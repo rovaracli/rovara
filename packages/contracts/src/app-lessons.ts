@@ -162,6 +162,10 @@ export const LessonApproveBodySchema = z.object({ expectedVersion: z.number().in
 export const LessonRejectBodySchema = z.object({ expectedVersion: z.number().int().min(1), reason: Reason }).strict();
 export const LessonRetireBodySchema = z.object({ reason: Reason.optional() }).strict();
 export const LessonRollbackBodySchema = z.object({ targetSetVersion: z.number().int().min(0), expectedSetVersion: z.number().int().min(0) }).strict();
+/** UX-4b: a maintainer resumes a source the learning loop paused (the source row's kind and place, as the Sources tab lists it). The lessons held while it was paused are settled again; none goes live from here. */
+export const LessonResumeSourceBodySchema = z.object({ source: z.string().min(1).max(40), scope: z.string().min(1).max(300) }).strict();
+export const LessonResumeAnswerSchema = z.object({ resumed: z.boolean(), settled: z.number().int().min(0) }).strict();
+export const LessonResumeAnswerReaderSchema = forwardReader(LessonResumeAnswerSchema);
 export const LessonFeedbackBodySchema = z.object({ kind: z.enum(["helpful", "wrong_here"]) }).strict();
 
 export const LessonApproveAnswerSchema = z.object({ status: z.enum(["active", "pending"]), needs: z.enum(["nothing", "second_person", "group_member"]) }).strict();

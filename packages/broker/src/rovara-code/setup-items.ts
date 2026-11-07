@@ -18,6 +18,8 @@ export const SETUP_ITEM_WORDS = {
   info: "Nothing in the project settings holds this yet. It is shown so you can see where it came from.",
   notGithub: "Only repositories on github.com can be added from here yet.",
   managedByFile: "The meta repo's config file manages this setting. Change it there.",
+  /** UX-4b: with test services on, a task's checks run in the project's test environment with its dependencies; a dev container is not offered beside it. */
+  devcontainerWithServices: "Test services are on here, so tasks run in the project's test environment with their dependencies, not in a dev container. Set the test environment up instead.",
 } as const;
 
 /** The digest an approval card is bound to: the kind and value as the person saw them. A proposal whose item changed no longer matches a card made for the old one. */
@@ -101,9 +103,10 @@ export function currentOf(definition: StoredProjectDefinition, item: SetupItem):
   return undefined;
 }
 
-/** Why an item cannot be applied from here, in fixed words; undefined when it can. `cards`: whether approval cards are set up. */
-export function unavailableReason(definition: StoredProjectDefinition, item: SetupItem, options: { cards: boolean }): string | undefined {
+/** Why an item cannot be applied from here, in fixed words; undefined when it can. `cards`: whether approval cards are set up. `testServices`: whether the install's test services are on (UX-4b). */
+export function unavailableReason(definition: StoredProjectDefinition, item: SetupItem, options: { cards: boolean; testServices?: boolean }): string | undefined {
   const handling = setupItemHandling(item.kind, item.proposed.value);
+  if (item.kind === "devcontainer" && options.testServices === true) return SETUP_ITEM_WORDS.devcontainerWithServices;
   if (handling === "info") return SETUP_ITEM_WORDS.info;
   if (currentOf(definition, item)?.state === "managed_by_file") return SETUP_ITEM_WORDS.managedByFile;
   if (item.kind === "setup" || item.kind === "tests") {

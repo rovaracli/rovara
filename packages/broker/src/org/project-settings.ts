@@ -43,6 +43,13 @@ import { cloudRepositoryEntry } from "./cloud-projects.js";
 import { egressStatusWarnings, putEgressDomains, readEgressDomains, type EgressDomainsDependencies } from "./egress-domains.js";
 
 /** Who changes the settings, and in which org. */
+/**
+ * UX-4b: the two refusals that used to end in a command line. They say who changes the setting and where, in words a maintainer can act on; the setup page names the company's administrators beside them.
+ * (The administrator's own tool is `agentx admin project register`, which the operator docs describe.)
+ */
+export const PROJECT_SETTINGS_INSTALL_MANAGED = "This installation keeps project settings in its own configuration, so they can't be changed in the web app. A company administrator changes them for you.";
+export const PROJECT_SETTINGS_ADMIN_MANAGED = "This project has an end-to-end policy or a setup approval, so only a company administrator can change its settings. Ask one of them to make this change.";
+
 export interface ProjectSettingsCaller { developerId: string; orgId: OrgId; orgRole: OrgRole }
 
 /** The repository GitHub's App sees, as `getRepositoryIdentity` describes it. */
@@ -270,7 +277,7 @@ export async function updateProjectSettings<Caller extends ProjectSettingsCaller
   const role = await deps.effectiveRole(caller, name);
   if (role === undefined) throw agentXError("PROJECT_NOT_FOUND", "project not found");
   if (!projectAllows(role, "edit_settings")) throw agentXError("FORBIDDEN", "only a project maintainer can change its settings");
-  if (!deps.cloud) throw agentXError("FORBIDDEN", "ask an administrator to change this project with agentx admin project register");
+  if (!deps.cloud) throw agentXError("FORBIDDEN", PROJECT_SETTINGS_INSTALL_MANAGED);
   // An archived project's settings are as they were when it was archived; restoring it is how they change again (Task 20).
   if ((await readProjectMeta(deps, caller.orgId, name))?.status === "archived") throw agentXError("PROJECT_ARCHIVED", projectArchivedMessage(name));
   const body = parseProjectSettingsBody(rawBody);
@@ -295,7 +302,7 @@ export async function updateProjectSettings<Caller extends ProjectSettingsCaller
   if (current.revision !== body.expectedRevision) throw agentXError("PROJECT_REVISION_MISMATCH", SETTINGS_STALE_MESSAGE);
   if (deps.cloud && body.allowedDomains !== undefined && isAllowedDomainWidening(current.network?.allowedDomains ?? [], body.allowedDomains)) refuseAllowedDomainWidening();
   if (current.e2e !== undefined || latest.setupApproval !== undefined) {
-    throw agentXError("FORBIDDEN", "this project carries an end-to-end policy or a setup approval that only an administrator can change; ask an administrator to change it with agentx admin project register");
+    throw agentXError("FORBIDDEN", PROJECT_SETTINGS_ADMIN_MANAGED);
   }
 
   // Meta repo lane A: a setting the meta repo's config file manages is changed by changing the file, so a save that touches one is refused before anything is read from GitHub.

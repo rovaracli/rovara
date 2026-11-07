@@ -27,7 +27,7 @@ export function PipelineTab({ session, task, onComment }: { session: ReadSession
  {task?.reviewFindings !== undefined && <FindingsActions task={task} sessionId={session.sessionId} mayAct={session.you.owner || session.you.level === "edit"} />}
  {task && <ModelFallbackNotes task={task} />}
  {task && <NoChangeSection task={task} />}
- {task?.workflow && <LoadedKnowledgePanel taskId={task.taskId} />}
+ {task?.workflow && <LoadedKnowledgePanel taskId={task.taskId} project={task.project} />}
  {task && <AnsweredSection session={session} task={task} />}
  {task?.run && <ol className="rv-run-steps">{task.run.steps.map(step => { const anchor = visibleAnchor(session, "step", step.id);return <li key={step.id}><details open={task.run?.currentStep?.id === step.id}><summary><VisibleText text={step.name} /> <span className="rv-muted">{stepWords[step.status] ?? "Status unavailable"}</span></summary>{step.report !== undefined && <p className="rv-evidence-text"><VisibleText text={step.report} /></p>}{anchor && onComment && <Button variant="quiet" aria-label={"Comment on " + visibleText(step.name)} onClick={event => onComment(anchor, event.currentTarget)}>Comment on this step</Button>}</details></li>; })}</ol>}
  {session.you.live?.fix === true && session.errorRef !== undefined && <Suspense fallback={null}><FixWithAgentPanel key={errorRefKey(session.errorRef as ErrorRef)} errorRef={session.errorRef} /></Suspense>}

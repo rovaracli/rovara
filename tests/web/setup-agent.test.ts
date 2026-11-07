@@ -225,8 +225,9 @@ it("opens an approval link only when it is this cell's confirmation page, and of
 it("sends a website to website access instead of widening it, shows what cannot be set up from here without a control, and lists what it will not propose", async () => {
   const f = setup(h(OnboardScreen), { draft: READY });
   await screen.findByText("npm ci");
-  const link = screen.getByRole("link", { name: "Open website access" });
-  expect(link.getAttribute("href")).toBe("/app/admin/projects/web");
+  // UX-4b: websites go to the project page's own Allowed websites (a maintainer can open it), not an admin page.
+  const link = screen.getByRole("link", { name: "Open Allowed websites on the project page" });
+  expect(link.getAttribute("href")).toBe("/app/projects/web#allowed-websites");
   expect(screen.queryByRole("checkbox", { name: /allowed domain/ })).toBeNull();
   expect(screen.getByText("Rovara can't set this up from here yet.")).toBeTruthy();
   expect(screen.queryByRole("group", { name: /^Approval for secret/ })).toBeNull();
@@ -311,3 +312,50 @@ for (const theme of ["light", "dark"] as const) it("keeps the proposal page acce
 });
 
 vi.setConfig({ testTimeout: 20_000 });
+
+// UX-4b: a proposal written for an earlier version of the settings is said to be old before anything is pressed, with "Look again"; and an item that can't be applied here says where it does.
+it("says a proposal is stale before the press and offers Look again, which asks for a new one", async () => {
+  const f = setup(h(OnboardScreen), { draft: { ...READY, basedOnRevision: 1, proposal: { ...PROPOSAL, basedOnRevision: 1 } } });
+  expect(await screen.findByText(/Rovara wrote this proposal for an earlier version of the project's settings/u)).toBeTruthy();
+  expect(screen.queryByRole("button", { name: "Check and apply" })).toBeNull();
+  fireEvent.click(screen.getByRole("button", { name: "Look again" }));
+  await waitFor(() => { expect(posts(f, "/setup-draft")).toHaveLength(1); });
+  f.close();
+});
+
+it("an applied proposal at the current revision is not called stale", async () => {
+  const f = setup(h(OnboardScreen), { draft: { ...READY, basedOnRevision: 1, appliedRevision: 2, proposal: { ...PROPOSAL, basedOnRevision: 1 } } });
+  await screen.findByText("npm ci");
+  expect(screen.queryByText(/earlier version of the project's settings/u)).toBeNull();
+  f.close();
+});
+
+it("says where an item that can't be applied here does apply, with a link", async () => {
+  const f = setup(h(OnboardScreen), { draft: READY });
+  await screen.findByText("npm ci");
+  // The knowledge Rovara found is set on the project's Sources tab.
+  expect(screen.getByRole("link", { name: "Open the project's sources" }).getAttribute("href")).toBe("/app/projects/web?tab=sources");
+  f.close();
+});
+
+it("points commands for another repository to the test environment", async () => {
+  const review = REVIEW.map((entry) => entry.id === "setup-web" ? { ...entry, unavailable: "Project settings run setup and test commands in the project's first repository. Commands for another repository can't be saved there yet." } : entry);
+  const f = setup(h(OnboardScreen), { draft: { ...READY, review } });
+  await screen.findByText("npm ci");
+  expect(screen.getAllByRole("link", { name: "Go to the test environment" })[0]!.getAttribute("href")).toBe("#test-environment");
+  f.close();
+});
+
+// Owner decision 11 (one apply path): "Check and apply" sends the commands to the test environment as its proposal; the page says so and points there, and nothing reads as saved.
+it("says the commands went to the test environment for their check, Prove and approval, and points there", async () => {
+  const proposed = (id: string, kind: string) => ({ id, kind, outcome: "proposed", message: "Sent to the test environment as its proposal. Run its check, prove it, then approve it there: nothing is saved until it is approved." });
+  const f = setup(h(OnboardScreen), { draft: READY, applied: { results: [proposed("setup-web", "setup")], project: project({}, 2), setupCheck: "not_needed" } });
+  await screen.findByText("npm ci");
+  fireEvent.click(screen.getByRole("button", { name: "Check and apply" }));
+  expect(await screen.findByText(/Sent to the test environment as its proposal/u)).toBeTruthy();
+  expect(screen.getAllByRole("link", { name: "Go to the test environment" }).some((link) => link.getAttribute("href") === "#test-environment")).toBe(true);
+  expect(screen.queryByText("Applied.")).toBeNull();
+  // The anchor lands on the test environment section of this same page.
+  expect(document.getElementById("test-environment")).not.toBeNull();
+  f.close();
+});

@@ -7,6 +7,7 @@
 //   POST /v1/app/projects/{p}/lessons/{id}/reject
 //   POST /v1/app/projects/{p}/lessons/{id}/retire
 //   POST /v1/app/projects/{p}/lessons/rollback
+//   POST /v1/app/projects/{p}/lessons/sources/resume       a maintainer resumes a paused source (UX-4b; `resumeAndResettle`)
 //   GET  /v1/app/tasks/{task}/lessons                      the lessons the agent loaded
 //   POST /v1/app/tasks/{task}/lessons/{id}/feedback        "Helpful" / "Wrong here"
 //
@@ -14,7 +15,7 @@
 // cannot see answer the same way); who may decide is the lesson library's own check (`ApproverDirectory`, the second-person rule, the access records); a write needs a live browser
 // session and a writer role (the Auditor is refused); a refusal is a fixed sentence, never text from a lesson, a row or an error.
 import {
-  LessonApproveBodySchema, LessonFeedbackBodySchema, LessonRejectBodySchema, LessonRetireBodySchema, LessonRollbackBodySchema, agentXError,
+  LessonApproveBodySchema, LessonFeedbackBodySchema, LessonResumeSourceBodySchema, LessonRejectBodySchema, LessonRetireBodySchema, LessonRollbackBodySchema, agentXError,
   type AgentXErrorCode, type ProjectRole,
 } from "@agentx/contracts";
 import type { ZodType } from "zod";
@@ -24,11 +25,11 @@ import { approveLesson, rejectLesson, retireByPerson, type ApprovalFailure, type
 import { recordFeedback, type CounterDeps } from "./counters.js";
 import { resolveLearning, whyLearningOff } from "./policy.js";
 import { rollbackLessonSetSettled } from "./rollback.js";
-import type { ProcessDeps } from "./process.js";
-import { buildLessonHistory, buildLessonSources, buildLessonsDigest, buildLessonsView, buildLoadedLessons, SNAPSHOTS_MAX, type LessonViewDeps } from "./view.js";
+import { resumeAndResettle, type ProcessDeps } from "./process.js";
+import { buildLessonHistory, pauseMatches, buildLessonSources, buildLessonsDigest, buildLessonsView, buildLoadedLessons, SNAPSHOTS_MAX, type LessonViewDeps } from "./view.js";
 import type { ScopeKey } from "./store.js";
 
-export const LESSONS_PATH = /^\/v1\/app\/projects\/([^/]+)\/lessons(?:\/([A-Za-z0-9_-]{1,64})(?:\/(approve|reject|retire|history))?)?$/u;
+export const LESSONS_PATH = /^\/v1\/app\/projects\/([^/]+)\/lessons(?:\/([A-Za-z0-9_-]{1,64})(?:\/(approve|reject|retire|history|resume))?)?$/u;
 export const TASK_LESSONS_PATH = /^\/v1\/app\/tasks\/([0-9a-f-]{36})\/lessons(?:\/([A-Za-z0-9_-]{4,64})\/feedback)?$/u;
 
 export interface LessonRouteDependencies {
@@ -118,7 +119,8 @@ export async function routeLessons(deps: LessonRouteDependencies, caller: Develo
     const known = id === undefined || (action === undefined && (id === "digest" || id === "sources")) || action === "history";
     if (!known) return undefined;
     const { name } = await deps.projectFor(caller, rawProject!);
-    await requireLearningOn(deps, caller, name, action === undefined && id === "sources");
+    // UX-4b: the tab's own read says why too (LEARNING_OFF / LEARNING_LOCKED), so the Lessons tab explains it and offers to turn learning on instead of "not set up".
+    await requireLearningOn(deps, caller, name, id === undefined || (action === undefined && id === "sources"));
     if (id === undefined) return buildLessonsView(deps.lessons, who, name);
     await takeBudget(deps, caller, "read");
     if (action === undefined && id === "digest") return buildLessonsDigest(deps.lessons, who, name);
@@ -142,7 +144,31 @@ export async function routeLessons(deps: LessonRouteDependencies, caller: Develo
     if (!result.ok) return refuse(result.code);
     return { setVersion: result.setVersion, restored: result.restored.length };
   }
-  if (id === undefined || action === undefined || action === "history") return undefined;
+  if (id === "sources" && action === "resume") {
+    requireWrite(caller);
+    const { name, role } = await deps.projectFor(caller, rawProject!);
+    await requireLearningOn(deps, caller, name);
+    // The pause says "a maintainer has to resume it": the project's maintainers (company admins count as maintainers there), nobody else.
+    if (role !== "maintainer") throw agentXError("FORBIDDEN", "Only a maintainer of this project can resume a source.");
+    const input = strictBody(LessonResumeSourceBodySchema, body());
+    const key: ScopeKey = { workspaceId: caller.orgId, project: name };
+    const paused = Object.keys((await deps.lessons.store.flags(key)).pausedSources ?? {}).filter((pauseKey) => pauseMatches(pauseKey, input.source, input.scope));
+    // Review fix 6 (and its re-check): only a source this person can see in the Sources tab (named, and this project's own) is resumed or even answered about, checked before any budget is taken; any
+    // other answers as one that is not there. A company owner or admin may also resume a paused key that no source row holds any more (the tab's "other paused sources"), and only that.
+    const listed = (await buildLessonSources(deps.lessons, who, name)).sources;
+    const visible = listed.some((row) => row.kind === input.source && "scope" in row && row.scope === input.scope);
+    const orphan = (caller.orgRole === "owner" || caller.orgRole === "admin") && paused.length > 0 && !listed.some((row) => row.kind === input.source && (!("scope" in row) || row.scope === input.scope));
+    if (!visible && !orphan) throw agentXError("NOT_FOUND", "No such source.");
+    await takeBudget(deps, caller, "decision");
+    let settled = 0, resumed = false;
+    for (const pauseKey of paused) {
+      const result = await resumeAndResettle(deps.lessons, key, pauseKey, caller.developerId);
+      resumed ||= result.resumed;
+      settled += result.settled.length;
+    }
+    return { resumed, settled };
+  }
+  if (id === undefined || action === undefined || action === "history" || action === "resume") return undefined;
 
   requireWrite(caller);
   const { name } = await deps.projectFor(caller, rawProject!);

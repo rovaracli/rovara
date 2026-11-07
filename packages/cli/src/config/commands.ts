@@ -20,6 +20,8 @@ import { secretFromSource, type Prompter, type SecretSource } from "../init/prom
 import { alertsTopicArn, ensureSubscribed, type AlertsApi } from "../setup/alerts.js";
 import { CLI_VERSION } from "../version.js";
 import type { DeployPart } from "../deploy/parameters.js";
+import { TEAM_RECORD_PARAMETER, parseTeamRecordOptions, readTeamRecordRecord, writeTeamRecordRecord } from "../deploy/team-record-switch.js";
+import { resolveDeployEdition } from "../deploy/edition.js";
 import { CONFIG_KEYS, configKey, whereText, type ConfigKey, type ModelRole } from "./keys.js";
 import { KEYED_MODEL_PROVIDERS, MODEL_FALLBACK_NONE, eligibleE2EAgentModel, isKeyedModelProvider, type ModelProvider } from "@agentx/contracts";
 
@@ -73,6 +75,10 @@ async function recordedAlertAddress(services: ConfigServices, env: string, setti
 
 async function currentValue(services: ConfigServices, env: string, settings: EnvironmentSettings, entry: ConfigKey): Promise<string> {
   const { target } = entry;
+  if (target.kind === "settings" && target.field === "teamRecordOptions") {
+    const options = (await readTeamRecordRecord(services.store, env))?.options;
+    return options === undefined ? "not confirmed" : Object.keys(options).length === 0 ? "default" : Object.entries(options).map(([name, value]) => `${name}=${value}`).join(";");
+  }
   if (target.kind === "settings") {
     const address = await recordedAlertAddress(services, env, settings);
     if (address === undefined) return "none";
@@ -83,6 +89,7 @@ async function currentValue(services: ConfigServices, env: string, settings: Env
   const part = target.kind === "stack-parameter" ? target.part : target.installDefault.part;
   const name = target.kind === "stack-parameter" ? target.parameter : target.installDefault.parameter;
   const stack = await services.stacks.describe(environmentStackName(env, part));
+  if (entry.teamRecord === true && stack?.parameters[name] === undefined) return (await readTeamRecordRecord(services.store, env))?.enabled === true ? `1 (recorded; agentx --env ${env} upgrade builds it)` : "0 (not built)";
   const value = stack?.parameters[name] ?? entry.defaultValue ?? "unknown";
   if (target.kind === "stack-parameter" && target.also !== undefined) {
     // One value on several stacks: when they differ, say so (a set finishes the stacks that are behind).
@@ -297,6 +304,51 @@ async function finishRecording(services: ConfigServices, entry: ConfigKey, recor
   }
 }
 
+/**
+ * UX-4b: the Team record before its storage is built. On: the choice is recorded (team-record-switch.ts) so the next upgrade, and every one after it, synthesizes the storage with the options a
+ * person confirmed; it is never built here, because a build is a release deploy with its own review. Review fix 2: the same edition checks the synth makes run first, so a recorded choice can never
+ * stop a later upgrade. Off: there is nothing built to pause, so a recorded choice is withdrawn. Both run under the environment's lock (review fix 5).
+ */
+async function recordTeamRecord(services: ConfigServices, env: string, settings: EnvironmentSettings, value: string): Promise<{ changed: boolean }> {
+  const holder = (await services.identity.get()).arn;
+  return withEnvironmentLock({ store: services.store, env, holder, command: "config set teamRecord.enabled", now: services.now }, async () => {
+    const recorded = await readTeamRecordRecord(services.store, env);
+    if (value === "0") {
+      if (recorded?.enabled !== true) { services.write("teamRecord.enabled is already 0; nothing to change"); return { changed: false }; }
+      await writeTeamRecordRecord(services.store, env, { enabled: false, ...(recorded.options === undefined ? {} : { options: recorded.options }) });
+      services.write("teamRecord.enabled: the recorded choice is withdrawn; nothing was built, so nothing else changed");
+      return { changed: true };
+    }
+    if (settings.engine !== "cdk") throw agentXError("CONFIG_INVALID", `teamRecord.enabled needs an install deployed from source (agentx upgrade --source); ${env} uses the prebuilt templates; nothing changed`);
+    // The synth's own rule (infra team-record-wiring.ts parseTeamRecordSwitch): a named environment with an edition, Public only in the hosted cloud.
+    const edition = await resolveDeployEdition({ store: services.store, env, engine: settings.engine, cloud: settings.cloud === true });
+    const effective = edition ?? (settings.cloud === true ? "public" : undefined);
+    if (effective === undefined) throw agentXError("CONFIG_INVALID", `teamRecord.enabled needs an install with an edition (Enterprise, or the hosted cloud); ${env} has none; nothing changed`);
+    if (effective === "public" && settings.cloud !== true) throw agentXError("CONFIG_INVALID", `teamRecord.enabled: a Public edition install is the hosted cloud, and ${env} is not; nothing changed`);
+    if (recorded?.options === undefined) throw agentXError("CONFIG_INVALID", `teamRecord.enabled: first confirm the Team record's storage options with agentx --env ${env} config set teamRecord.options default (or name them); nothing changed`);
+    if (effective === "enterprise" && recorded.options.enterpriseWorkspaceId === undefined) throw agentXError("CONFIG_INVALID", `teamRecord.enabled: an Enterprise install needs enterpriseWorkspaceId in teamRecord.options; nothing changed`);
+    if (effective === "public" && (recorded.options.enterpriseWorkspaceId !== undefined || recorded.options.athenaUsers !== undefined)) throw agentXError("CONFIG_INVALID", `teamRecord.enabled: enterpriseWorkspaceId and athenaUsers are for Enterprise only; change teamRecord.options; nothing changed`);
+    if (recorded.enabled) { services.write(`teamRecord.enabled is already recorded as 1; run agentx --env ${env} upgrade to build it`); return { changed: false }; }
+    await writeTeamRecordRecord(services.store, env, { enabled: true, options: recorded.options });
+    services.write(`teamRecord.enabled: recorded as 1. The next agentx --env ${env} upgrade builds the Team record's storage, and every upgrade after it keeps it.`);
+    return { changed: true };
+  });
+}
+
+/** Review fix 3: the Team record's storage options, recorded beside the choice and passed back on every cdk command. Changing them on a built record is a release deploy's business, so it is refused here. */
+async function recordTeamRecordOptions(services: ConfigServices, env: string, value: string): Promise<{ changed: boolean }> {
+  const options = parseTeamRecordOptions(value, env);
+  const built = (await services.stacks.describe(environmentStackName(env, "control-plane")))?.parameters[TEAM_RECORD_PARAMETER] !== undefined;
+  const holder = (await services.identity.get()).arn;
+  return withEnvironmentLock({ store: services.store, env, holder, command: "config set teamRecord.options", now: services.now }, async () => {
+    const recorded = await readTeamRecordRecord(services.store, env);
+    if (built && recorded?.options !== undefined) throw agentXError("CONFIG_INVALID", `teamRecord.options: the Team record is built with its recorded options; changing them could replace its storage, so nothing changed`);
+    await writeTeamRecordRecord(services.store, env, { enabled: recorded?.enabled === true, options });
+    services.write(`teamRecord.options: recorded (${Object.keys(options).length === 0 ? "Rovara's defaults" : Object.keys(options).join(", ")}).`);
+    return { changed: true };
+  });
+}
+
 export async function runConfigSet(services: ConfigServices, env: string, input: { key: string; value?: string; valueSource?: SecretSource; yes: boolean }): Promise<{ changed: boolean }> {
   const entry = configKey(input.key);
   const { target } = entry;
@@ -311,10 +363,19 @@ export async function runConfigSet(services: ConfigServices, env: string, input:
     return setThroughChange(services, env, entry, target.field === "enabled" ? { kind: "set_chatgpt", enabled: value === "true" } : { kind: "set_chatgpt", preferredModel: value },
       "Sign in with ChatGPT needs an environment installed with agentx init", input);
   }
+  if (target.kind === "settings" && target.field === "teamRecordOptions") {
+    if (input.value === undefined) throw agentXError("CONFIG_INVALID", `give the new value: agentx config set ${entry.key} <value>`);
+    await installed(services, env);
+    return recordTeamRecordOptions(services, env, input.value);
+  }
   if (target.kind === "settings") return setAlertAddress(services, env, input);
   if (input.value === undefined) throw agentXError("CONFIG_INVALID", `give the new value: agentx config set ${entry.key} <value>`);
   const value = entry.parse(input.value);
   const settings = await installed(services, env);
+  if (entry.teamRecord === true) {
+    const built = (await services.stacks.describe(environmentStackName(env, target.part)))?.parameters[target.parameter] !== undefined;
+    if (!built) return await recordTeamRecord(services, env, settings, value);
+  }
   const role = entry.model;
   if (entry.e2eAgentModel === true) checkE2eAgentChoice(env, settings, value);
   const targets = [{ part: target.part, parameter: target.parameter }, ...(target.also ?? [])];

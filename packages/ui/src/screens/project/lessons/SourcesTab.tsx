@@ -7,6 +7,7 @@ import { Banner } from "../../../design/Banner.js";
 import { Button } from "../../../design/Button.js";
 import { Skeleton } from "../../../design/Skeleton.js";
 import { VisibleText } from "../../../design/VisibleText.js";
+import { LearningModeControl } from "./LearningModeControl.js";
 import { T, healthWords, kindWords, retentionWords } from "./lessons-text.js";
 import "./lessons.css";
 
@@ -27,7 +28,7 @@ export function SourcesTab({ project }: { project: string }) {
   // The company's lock has its own code; a setting that could not be read is a 503 and gets the retry line below.
   const locked = read.error instanceof ApiError && read.error.code === "LEARNING_LOCKED";
   const gone = learningOff || locked || (read.error instanceof ApiError && read.error.code === "NOT_FOUND");
-  return <section className="rv-lessons" aria-label={T.SOURCES_TITLE}><p role="alert">{learningOff ? T.SOURCES_LEARNING_OFF : locked ? T.SOURCES_LEARNING_LOCKED : gone ? T.SOURCES_UNAVAILABLE : "Couldn't load the sources. Try again."}</p>{!gone && <Button onClick={() => { void read.refetch(); }}>{T.TRY_AGAIN}</Button>}</section>;
+  return <section className="rv-lessons" aria-label={T.SOURCES_TITLE}><p role="alert">{learningOff ? T.SOURCES_LEARNING_OFF : locked ? T.SOURCES_LEARNING_LOCKED : gone ? T.SOURCES_UNAVAILABLE : "Couldn't load the sources. Try again."}</p>{(learningOff || locked) && <LearningModeControl project={project} />}{!gone && <Button onClick={() => { void read.refetch(); }}>{T.TRY_AGAIN}</Button>}</section>;
  }
  const data = read.data;
  return <section className="rv-lessons" aria-label={T.SOURCES_TITLE}>

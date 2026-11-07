@@ -13,7 +13,10 @@ export const SETTINGS_COMMANDS_MAX = 16;
 /** What a proposal adds to a project's commands, and what it leaves out and why. Pure: the project's settings save does the rest. */
 export function commandsToApply(
   body: TestEnvironmentBody, current: { setup: readonly ProjectCommand[]; readiness: readonly ProjectCommand[] }, firstRepositoryPath: string,
+  /** UX-4b review I2: a proposal that REPLACES the lists (a person's typed commands): its commands are the whole lists, so nothing of the settings' is kept and a removal or a fix takes effect. */
+  replace = false,
 ): { setup: ProjectCommand[]; readiness: ProjectCommand[]; skipped: Skipped[] } {
+  if (replace) current = { setup: [], readiness: [] };
   const skipped = new Map<Skipped["reason"], number>();
   const skip = (reason: Skipped["reason"]) => skipped.set(reason, (skipped.get(reason) ?? 0) + 1);
   const wanted = (command: ProjectCommand, have: ProjectCommand[]): boolean => {
@@ -49,8 +52,10 @@ export const asSaved = (command: ProjectCommand, timeoutSeconds: number): Projec
  * The lists the settings would hold once the proposal's commands are added: what the candidate check runs, and what an approval writes. The save rewrites a list only when the proposal adds to it (every command of
  * that list comes back in the saved form); a list it adds nothing to is left exactly as stored, env and timeout included, so the check runs what stays in the settings.
  */
-export function candidateLists(body: TestEnvironmentBody, current: { setup: readonly ProjectCommand[]; readiness: readonly ProjectCommand[] }, firstRepositoryPath: string): { setup: ProjectCommand[]; readiness: ProjectCommand[] } {
-  const plan = commandsToApply(body, current, firstRepositoryPath);
+export function candidateLists(body: TestEnvironmentBody, current: { setup: readonly ProjectCommand[]; readiness: readonly ProjectCommand[] }, firstRepositoryPath: string, replace = false): { setup: ProjectCommand[]; readiness: ProjectCommand[] } {
+  const plan = commandsToApply(body, current, firstRepositoryPath, replace);
+  // A replacing proposal: exactly its own commands, in the saved form (an empty list stays empty).
+  if (replace) return { setup: plan.setup.map((command) => asSaved(command, SETUP_TIMEOUT)), readiness: plan.readiness.map((command) => asSaved(command, TEST_TIMEOUT)) };
   const list = (stored: readonly ProjectCommand[], added: readonly ProjectCommand[], timeoutSeconds: number): ProjectCommand[] =>
     added.length === 0 ? [...stored] : [...stored, ...added].map((command) => asSaved(command, timeoutSeconds));
   return { setup: list(current.setup, plan.setup, SETUP_TIMEOUT), readiness: list(current.readiness, plan.readiness, TEST_TIMEOUT) };
@@ -77,11 +82,11 @@ export const ONE_DIRECTORY_WORDS = "The project's commands run in more than one 
  * run elsewhere (or that has no repository) is refused, as the apply refuses it.
  */
 export function candidateListsChecked(
-  body: TestEnvironmentBody, definition: { repositories: ReadonlyArray<{ path: string }>; setup: readonly ProjectCommand[]; readiness: readonly ProjectCommand[] },
+  body: TestEnvironmentBody, definition: { repositories: ReadonlyArray<{ path: string }>; setup: readonly ProjectCommand[]; readiness: readonly ProjectCommand[] }, replace = false,
 ): { setup: ProjectCommand[]; readiness: ProjectCommand[] } {
   const first = definition.repositories[0]?.path;
   if (first === undefined || [...definition.setup, ...definition.readiness].some((command) => command.cwd !== first)) throw agentXError("CONFIG_INVALID", ONE_DIRECTORY_WORDS);
-  return candidateLists(body, definition, first);
+  return candidateLists(body, definition, first, replace);
 }
 
 

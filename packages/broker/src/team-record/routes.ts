@@ -12,6 +12,7 @@ import {
   type OrgId,
   type ProjectRole,
 } from "@agentx/contracts";
+import { learningModeRead, learningModeWrite } from "./learning-mode-write.js";
 import { recordFacts, pastWork, recordSearch, recordStats, type RecordQueryDependencies } from "./query.js";
 import { sourceOptions } from "./source-options.js";
 import { handleSourceWrite, mayEditSources, sourcesAdminView, type SourceWriteContext } from "./source-write.js";
@@ -44,7 +45,7 @@ export interface RecordRouteRequest {
 }
 export interface RecordRouteReply { status: number; body: unknown }
 
-const ROUTE = /^\/v1\/app\/projects\/([^/]+)\/record\/(search|facts|past-work|sources|sources\/options|stats\/[a-z_]+)$/;
+const ROUTE = /^\/v1\/app\/projects\/([^/]+)\/record\/(search|facts|past-work|sources|sources\/options|learning-mode|stats\/[a-z_]+)$/;
 
 function numberOf(value: string | undefined): number | undefined {
   if (value === undefined || value === "") return undefined;
@@ -57,13 +58,17 @@ export async function handleRecordRoute(deps: RecordQueryDependencies, request: 
   if (match === null) return undefined;
   // The one write: `POST .../record/sources`, only where the install wired the source routes and the caller passed what a write needs.
   const sourceWrite = request.method === "POST" && match[2] === "sources" && deps.sources !== undefined && request.write !== undefined;
-  if (request.method !== "GET" && !sourceWrite) return { status: 405, body: { code: "CONFIG_INVALID", message: "That method is not allowed here." } };
+  // UX-4b: the project's learning mode, set from the project page (`learning-mode-write.ts`).
+  const modeWrite = request.method === "POST" && match[2] === "learning-mode" && request.write !== undefined;
+  if (request.method !== "GET" && !sourceWrite && !modeWrite) return { status: 405, body: { code: "CONFIG_INVALID", message: "That method is not allowed here." } };
   const project = RecordProjectSchema.safeParse(decodeURIComponent(match[1] ?? ""));
   if (!project.success) return { status: 404, body: { code: "PROJECT_NOT_FOUND", message: "No such project." } };
   const audience = { kind: "caller" as const, caller: request.caller };
   const route = match[2] as string;
   try {
     if (sourceWrite) return await handleSourceWrite(deps, request, project.data);
+    if (modeWrite) return await learningModeWrite(deps, request, project.data);
+    if (route === "learning-mode") return await learningModeRead(deps, request, project.data);
     if (route === "search") {
       const parsed = RecordSearchQuerySchema.safeParse({
         query: request.query.query, limit: numberOf(request.query.limit), ...(request.query.since === undefined ? {} : { since: request.query.since }), ...(request.query.until === undefined ? {} : { until: request.query.until }),

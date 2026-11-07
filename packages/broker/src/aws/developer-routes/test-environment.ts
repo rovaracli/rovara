@@ -46,7 +46,7 @@ import { logDeveloperEvent } from "../../developer/log.js";
 import { confirmationReply } from "../../agent-sessions/shares.js";
 import { latestRevision } from "../../org/project-settings.js";
 import {
-  approveTestEnvironment, clearEditedProposal, isSetupRunProposal, proposalIsSetupRun, proposalSeedTrust, proposeTestEnvironment, TEST_ENV_PROPOSAL_TTL_MS, readApprovedTestEnvironment, readEditedProposal, readProposal, readProposalSources, readTestEnvProveReport, recordTestEnvProveReport,
+  approveTestEnvironment, clearEditedProposal, isSetupRunProposal, proposalIsSetupRun, proposalNeedsFreshSignIn, proposalSeedTrust, proposeTestEnvironment, TEST_ENV_PROPOSAL_TTL_MS, readApprovedTestEnvironment, readEditedProposal, readProposal, readProposalSources, readTestEnvProveReport, recordTestEnvProveReport,
   secondPersonFromRecords, testEnvRequestId, type TestEnvDeps,
 } from "../../org/test-environment.js";
 import { testEnvChangeLines } from "../../org/test-env-diff.js";
@@ -223,7 +223,7 @@ async function stateOf(deps: DeveloperRouteDependencies, project: ProjectView): 
       digest: shown.digest, source: shown.source, risk, lessSafe, summary: testEnvSummaryOf(shown.body), environment: shown.body, runs: runsOf(shown.body),
       valueSources: valueSources.flatMap((entry) => { const parsed = valueSourceOf(entry); return parsed === undefined ? [] : [parsed]; }),
       proved: testEnvIsProved(shownReport, shown.digest, shown.body), proveSteps: (shownReport?.steps ?? []).map((step) => ({ step: step.step, status: step.status })),
-      needs: { freshSignIn: lessSafe.length > 0 || risk === "high" || origin === "setup_run" || candidate.check?.origin === "setup_run" || isSetupRunProposal(valueSources), secondPerson: lessSafe.length > 0 },
+      needs: { freshSignIn: lessSafe.length > 0 || risk === "high" || origin === "setup_run" || origin === "setup_draft" || candidate.check?.origin === "setup_run" || isSetupRunProposal(valueSources), secondPerson: lessSafe.length > 0 },
       approval,
       dependencySeeds: dependencySeedsOf(shown.body),
       seedRisks: seedRisksOf(seedChecks, shown.body),
@@ -460,7 +460,8 @@ export async function approveChecked(
       const trust = await proposalSeedTrust(store, caller.orgId, name, input.digest, proposal);
       const lessSafe = testEnvLessSafeChanges(current?.environment, proposal, trust);
       // A proposal a setup RUN made (the agent ran commands) is approved only by a person who signed in just now, in a browser, as a less-safe change is.
-      const setupRun = again.candidate?.origin === "setup_run" || await proposalIsSetupRun(store, caller.orgId, name, input.digest);
+      // UX-4b: a setup draft's proposal ("Check and apply") needs the same fresh sign-in, without the run's commit pin.
+      const setupRun = again.candidate?.origin === "setup_run" || await proposalNeedsFreshSignIn(store, caller.orgId, name, input.digest);
       setupRunMark = setupRun;
       if (lessSafe.length > 0 || testEnvApprovalRisk(proposal, trust) === "high" || setupRun) approvedBySignedInAtMs = await requireFreshSignIn(deps, caller);
       if (lessSafe.length > 0 && deps.agents !== undefined) {

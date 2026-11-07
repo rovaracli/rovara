@@ -12,7 +12,8 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { CATALOG_STAGING_ACCOUNT_ID, parseBundlePublicKey } from "@agentx/contracts";
 import { FLAVOR_FILE, STAGING_KEYS_FILE, STAGING_KEY_DATA_FILE, setCatalogFlavor } from "../../packages/contracts/tools/catalog-flavor.js";
-import { CATALOG_FLAVOR_TOOL, CDK_CONSTRUCT_IDS, type CommandRunner } from "../../packages/cli/src/deploy/cdk-engine.js";
+import { CATALOG_FLAVOR_TOOL, CDK_CONSTRUCT_IDS, cdkDiff, type CommandRunner } from "../../packages/cli/src/deploy/cdk-engine.js";
+import { writeTeamRecordRecord } from "../../packages/cli/src/deploy/team-record-switch.js";
 import { prepareDeployment } from "../../packages/cli/src/deploy/commands.js";
 import { fakeRelease } from "../support/init-fakes.js";
 import { MemoryParameterStore } from "../support/memory-parameter-store.js";
@@ -145,5 +146,40 @@ describe("agentx upgrade: prepareDeployment and the catalog flavor, driven end t
     })).rejects.toThrow(/belong to account 111122223333/u);
     expect(calls).toEqual([]);
     expect(await flavorOf(root)).toBe("release");
+  });
+});
+
+// UX-4b re-check fix 4: the Team record recorded as on, with its storage options, reaches every cdk command prepareDeployment makes (the declared-parameter synth and the deployer), and the diff.
+describe("the Team record's options reach the synth, the deploy and the diff", () => {
+  const CONTEXT = ["-c agentxTeamRecord=enabled", "-c agentxTeamRecordLake=false", "-c agentxTeamRecordEmbeddingModelId=amazon.titan-embed-text-v2:0"];
+  it("passes them to the synth and the deploy when the install records them, and never otherwise", async () => {
+    const root = await checkout();
+    const { runner, calls } = harness(root);
+    const store = new MemoryParameterStore();
+    store.values.set("/cdk-bootstrap/hnb659fds/version", "21");
+    await writeTeamRecordRecord(store, "prod", { enabled: true, options: { lake: "false", embeddingModelId: "amazon.titan-embed-text-v2:0" } });
+    const prepared = await prepareDeployment({
+      env: "prod", region: REGION, account: "111122223333", identityMode: "cognito", engine: "cdk", source: root, release: fakeRelease("1.2.3"), stderr: { write: () => undefined },
+      deps: { identity: { get: async () => ({ account: "111122223333", arn: "arn:aws:sts::111122223333:assumed-role/Admin/upgrade" }) }, store, secrets: { get: async () => undefined, create: async () => undefined }, commandRunner: runner, stackOutputs: async () => ({}) },
+    });
+    for (const context of CONTEXT) expect(calls.find((call) => call.includes(" synth "))).toContain(context);
+    await prepared.deployer.deploy({ part: "control-plane", stackName: "agentx-prod-control-plane", parameters: {} } as never).catch(() => undefined);
+    const deploy = calls.find((call) => call.includes(" deploy "));
+    expect(deploy).toBeDefined();
+    for (const context of CONTEXT) expect(deploy).toContain(context);
+    await prepared.cleanup();
+    // Not recorded: nothing about the record is passed.
+    const otherRoot = await checkout();
+    const other = harness(otherRoot);
+    const plain = await prepare(otherRoot, other.runner, { env: "prod", account: "111122223333" });
+    expect(other.calls.find((call) => call.includes(" synth "))).not.toContain("agentxTeamRecord");
+    await plain.cleanup();
+  });
+
+  it("passes them to the diff", async () => {
+    const calls: string[] = [];
+    const runner: CommandRunner = { async run(command, args) { calls.push(`${command} ${args.join(" ")}`);return { stdout: "There were no differences" }; } };
+    await cdkDiff({ runner, source: "/src", env: "prod", region: REGION, identityMode: "cognito", teamRecord: { lake: "false", embeddingModelId: "amazon.titan-embed-text-v2:0" }, request: { part: "control-plane", stackName: "agentx-prod-control-plane", parameters: {} } as never });
+    for (const context of CONTEXT) expect(calls[0]).toContain(context);
   });
 });

@@ -18,7 +18,9 @@
 //   `SETUP_DRAFT#<project>` / USED#<approvalId>   the consent of one card that has been used (setup-consent.ts).
 // The status is never stored: `setupDraftState` derives it from the pointer, the task and its workspace on every read. A draft stored by the version 1 setup draft reads as
 // failed with a fixed sentence (ask again): it is never applied.
-import { GetCommand, TransactWriteCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
+import { z } from "zod";
+import { testServicesEnabled } from "../test-env/test-services-switch.js";
+import { GetCommand, PutCommand, TransactWriteCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
 import { createHash } from "node:crypto";
 import {
   AgentXError,
@@ -49,7 +51,9 @@ import {
   type SetupReviewEntry,
   type SetupVerification,
   type StoredProjectDefinition,
+  type TestEnvironmentBody,
 } from "@agentx/contracts";
+import { environmentFromProposal, type SetupConfirmEnvironment } from "./setup-confirm.js";
 import { ManagedByFileError, SETTINGS_STALE_MESSAGE, type UpdateProjectSettingsOptions } from "../org/project-settings.js";
 import { startAgentRun, type AgentRunStarter } from "../agents/runs.js";
 import { approvalIdFor, getApproval, registerApprovalSubjectHandler, type ApprovalDependencies } from "../agents/approvals.js";
@@ -61,7 +65,7 @@ import type { DeveloperCaller } from "../aws/developer-routes.js";
 import { StatusReply } from "../aws/status-reply.js";
 import { taskKey, taskPointerKey, type DeveloperTaskRecord } from "../developer/task-records.js";
 import {
-  SETUP_ITEM_WORDS, citationWords, currentOf, getSetupItemApplier, githubFullNameOf, isCardKind, itemDigest, registerSetupItemApplier, unavailableReason, type SetupItemApplier,
+  SETUP_ITEM_WORDS, citationWords, commandRepositoryOf, currentOf, getSetupItemApplier, githubFullNameOf, isCardKind, itemDigest, registerSetupItemApplier, unavailableReason, type SetupItemApplier,
 } from "./setup-items.js";
 import { verifyProposalDetailed, type CitationFileReader } from "./setup-proposal-verify.js";
 import { withoutRoutedSeeds, type RoutedSeed } from "../test-env/seed-routing.js";
@@ -301,6 +305,18 @@ export interface SetupDraftDependencies {
    * the dependency did not take (test services off, no database to hold it, refused) stays a setup command. Absent where test environments are not set up: nothing is taken out.
    */
   routedSeeds?: ((orgId: OrgId, project: string, taskId: string) => Promise<readonly RoutedSeed[]>) | undefined;
+  /**
+   * Owner decision 11 (one apply path): a draft's setup and test commands are never written to the settings here. They go to the test environment as its PROPOSAL, exactly as the setup run's
+   * "Use this setup" does (`setup-confirm.ts`): its check, then Prove, then an approval with a fresh sign-in write them. Absent, or `on` false: commands can't be used from a draft here.
+   */
+  testEnvironment?: {
+    on: boolean;
+    merge(caller: DeveloperCaller, project: string, environment: TestEnvironmentBody): Promise<TestEnvironmentBody | undefined>;
+    /** Stores the proposal and makes it the one the wizard shows, marked as Rovara's (the setup run's marker, `writeSetupRunProposal`), for this draft task and request. */
+    propose(caller: DeveloperCaller, project: string, role: ProjectRole, environment: TestEnvironmentBody, valueSources: SetupConfirmEnvironment["valueSources"], marker: { taskId: string; requestId: string; reply: Record<string, unknown> }): Promise<{ digest: string }>;
+    /** A person's typed commands: stored as their EDITED proposal (`editTestEnvironment`), which the wizard shows as theirs. */
+    edit(caller: DeveloperCaller, project: string, role: ProjectRole, environment: TestEnvironmentBody): Promise<{ digest: string }>; // typed commands REPLACE the lists (review I2)
+  } | undefined;
 }
 
 /** The state with the seeds a dependency took left out of its setup proposal, so the page shows, and an apply saves, the same commands. A read that fails leaves the proposal as it was. */
@@ -549,7 +565,7 @@ async function reviewOf(
   for (const item of setupItemsOf(proposal)) {
     const handling = setupItemHandling(item.kind, item.proposed.value);
     const current = currentOf(definition, item);
-    const unavailable = unavailableReason(definition, item, { cards: deps.approvals !== undefined });
+    const unavailable = unavailableReason(definition, item, { cards: deps.approvals !== undefined, testServices: testServicesEnabled() });
     let approval: SetupReviewEntry["approval"];
     if (handling === "approval" && unavailable === undefined && deps.approvals !== undefined) {
       const { card } = await liveCardOf(deps, deps.approvals, caller, project, pointer.taskId, item);
@@ -611,6 +627,40 @@ async function releasePullRequestClaim(deps: SetupDraftDependencies, orgId: OrgI
 /** A refusal because the meta repo's config file manages a setting (a typed error: nothing reads the words). */
 const isManagedByFile = (error: unknown): boolean => error instanceof ManagedByFileError;
 
+/** Owner decision 11's words: where a draft's commands go, and why they can't when the test environment is off. */
+export const DRAFT_PROPOSE_WORDS = {
+  proposed: "Sent to the test environment as its proposal. Run its check, prove it, then approve it there: nothing is saved until it is approved.",
+  off: "Commands are proved in the test environment before they are used, and the test environment is not turned on in this deployment.",
+  nothing: "None of these commands can be used: each one failed its check, or is a command Rovara does not carry into a test environment.",
+  noTest: "There is no test command among these, so there is nothing to prove yet. Tick the test commands too.",
+  invalid: "These commands could not be made into a test environment.",
+} as const;
+
+/**
+ * Owner decision 11 (one apply path): the ticked setup and test commands become the test environment's PROPOSAL (marked as Rovara's, like a setup run's), never settings. The wizard's check, Prove
+ * and approval (with a fresh sign-in) then write them. The same builder as "Use this setup" (`environmentFromProposal`): an item whose citation failed, a flagged command and one that does not parse
+ * are left out, each said.
+ */
+async function proposeCommands(
+  deps: SetupDraftDependencies, caller: DeveloperCaller, name: string, role: ProjectRole, definition: StoredProjectDefinition, pointer: SetupDraftPointer, proposal: SetupProposal,
+  items: readonly SetupItem[], result: (item: SetupItem, outcome: SetupApplyResultItem["outcome"], extra?: Partial<SetupApplyResultItem>) => void, requestId: string,
+): Promise<void> {
+  const env = deps.testEnvironment;
+  if (env === undefined || !env.on) { for (const item of items) result(item, "not_available", { message: DRAFT_PROPOSE_WORDS.off }); return; }
+  const verification = await verificationOf(deps, caller, definition, pointer, proposal);
+  const made = environmentFromProposal(proposal, verification, definition, new Set(items.map((item) => item.id)));
+  if ("error" in made) {
+    const message = made.error === "no_test" ? DRAFT_PROPOSE_WORDS.noTest : made.error === "nothing" ? DRAFT_PROPOSE_WORDS.nothing : DRAFT_PROPOSE_WORDS.invalid;
+    for (const item of items) result(item, "not_available", { message });
+    return;
+  }
+  const merged = await env.merge(caller, name, made.environment);
+  if (merged === undefined) { for (const item of items) result(item, "not_available", { message: DRAFT_PROPOSE_WORDS.invalid }); return; }
+  const stored = await env.propose(caller, name, role, merged, made.valueSources, { taskId: pointer.taskId, requestId, reply: { used: made.used, left: made.left, unchecked: made.unchecked, proved: false, next: "check" } });
+  const left = new Map(made.left.map((entry) => [entry.id, entry.reason] as const));
+  for (const item of items) result(item, left.has(item.id) ? "not_available" : "proposed", left.has(item.id) ? { message: DRAFT_PROPOSE_WORDS.nothing } : { message: DRAFT_PROPOSE_WORDS.proposed, proposalDigest: stored.digest });
+}
+
 /**
  * `POST /v1/app/projects/{name}/setup-draft/apply`: applies the items the person ticked, each by id, and says what happened to each.
  *   - A setting (setup or test commands, an existing dev container) is saved through Plan 2's `updateProjectSettings` (so the role, the revision the person saw and the
@@ -624,7 +674,7 @@ const isManagedByFile = (error: unknown): boolean => error instanceof ManagedByF
  *   - A flagged command is never an item, so nothing here applies one.
  */
 export async function applySetupDraft(deps: SetupDraftDependencies, caller: DeveloperCaller, rawName: string, rawBody: unknown): Promise<StatusReply> {
-  const { name } = await maintainerOf(deps, caller, rawName);
+  const { name, role } = await maintainerOf(deps, caller, rawName);
   const parsed = SetupDraftApplyBodySchema.safeParse(rawBody);
   if (!parsed.success) throw bodyError(parsed.error);
   const body = parsed.data;
@@ -663,6 +713,7 @@ export async function applySetupDraft(deps: SetupDraftDependencies, caller: Deve
   // 1. Settings: one save for every setting the person asked for and may have.
   const settings: Record<string, unknown> = {};
   const settingItems: SetupItem[] = [];
+  const commandItems: SetupItem[] = [];
   for (const { item, useSuggestion } of requested) {
     const handling = setupItemHandling(item.kind, item.proposed.value);
     if (handling === "info") { result(item, "not_available", { message: SETUP_ITEM_WORDS.info }); continue; }
@@ -671,17 +722,21 @@ export async function applySetupDraft(deps: SetupDraftDependencies, caller: Deve
     // A setting the meta repo's config file manages is changed by changing the file: said before any save is tried.
     const current = currentOf(latest.definition, item);
     if (current?.state === "managed_by_file") { result(item, "managed_by_file", { message: SETUP_ITEM_WORDS.managedByFile }); continue; }
-    const unavailable = unavailableReason(latest.definition, item, { cards: deps.approvals !== undefined });
+    const unavailable = unavailableReason(latest.definition, item, { cards: deps.approvals !== undefined, testServices: testServicesEnabled() });
     if (unavailable !== undefined) { result(item, "not_available", { message: unavailable }); continue; }
     if (current?.state === "same") { result(item, "already_set", { message: SETUP_APPLY_WORDS.alreadySet }); continue; }
     // A value a person typed is replaced only on that item's own tick; one an earlier Rovara proposal set may be replaced by a newer one.
     if (current?.state === "differs" && current.setBy !== "agent" && !useSuggestion) { result(item, "kept_yours", { message: SETUP_APPLY_WORDS.keptYours }); continue; }
     const value = item.proposed.value as Record<string, unknown>;
+    // Owner decision 11: where the test environment is on, commands are proved in its sandbox first, through its proposal (below), never saved here. Where it is off (UX-4b review I3) they are
+    // saved as before, behind TE-3's candidate check of exactly those commands (the gate below): proved first either way.
+    if ((item.kind === "setup" || item.kind === "tests") && deps.testEnvironment?.on === true) { commandItems.push(item); continue; }
     if (item.kind === "setup") settings["setupCommands"] = value["commands"];
     else if (item.kind === "tests") settings["testCommands"] = value["commands"];
     else if (item.kind === "devcontainer") settings["devcontainer"] = { repository: value["repository"], configPath: value["configPath"] };
     settingItems.push(item);
   }
+  if (commandItems.length > 0) await proposeCommands(deps, caller, name, role, latest.definition, pointer, proposal, commandItems, result, body.requestId);
   // TE-3: a batch that changes setup or test commands is saved only when a candidate check of exactly those commands passed at this settings revision; otherwise the check is started (or its failure
   // shown) and nothing is saved, for any item of the batch (they are one save).
   const gate = settingItems.length === 0 ? { kind: "not_needed" as const } : await gateDraftCommands({
@@ -737,7 +792,7 @@ export async function applySetupDraft(deps: SetupDraftDependencies, caller: Deve
     if (waiting) { result(item, "not_available", { message: DRAFT_CHECK_WORDS.notTried }); continue; }
     const currently = currentOf(latest.definition, item);
     if (currently?.state === "managed_by_file") { result(item, "managed_by_file", { message: SETUP_ITEM_WORDS.managedByFile }); continue; }
-    const unavailable = unavailableReason(latest.definition, item, { cards: deps.approvals !== undefined });
+    const unavailable = unavailableReason(latest.definition, item, { cards: deps.approvals !== undefined, testServices: testServicesEnabled() });
     if (unavailable !== undefined) { result(item, "not_available", { message: unavailable }); continue; }
     if (currently?.state === "same") { result(item, "already_set", { message: SETUP_APPLY_WORDS.alreadySet }); continue; }
     const approvals = deps.approvals!;
@@ -822,3 +877,72 @@ async function replayOf(deps: SetupDraftDependencies, caller: DeveloperCaller, p
   return { ...stored, results, project: await deps.readProject(caller, project) };
 }
 
+
+// ---- Owner decision 11, typed commands: onboarding's own "Check setup" proves first too.
+
+export const SetupTypedCommandsBodySchema = z.object({
+  requestId: z.string().uuid(),
+  expectedRevision: z.number().int().min(0),
+  setupCommands: z.array(z.string().min(1).max(2_000)).max(20),
+  testCommands: z.array(z.string().min(1).max(2_000)).max(32),
+}).strict();
+
+export const TYPED_COMMANDS_WORDS = {
+  off: "The test environment is not turned on in this deployment.",
+  noTest: "Add at least one test command: it is what the test environment proves.",
+  invalid: "These commands could not be made into a test environment.",
+  sent: "Sent to the test environment as your edited proposal. Run its check, prove it, then approve it there: nothing is saved until it is approved.",
+} as const;
+
+/**
+ * `POST /v1/app/projects/{name}/setup-draft/typed`: the commands a maintainer typed on the setup page become their EDITED test environment proposal (the wizard shows it as theirs, and its tier is what the
+ * test environment gives that content), never a direct settings save. Built by the same builder as a draft's (`environmentFromProposal`), in the project's first code repository, merged with the approved
+ * environment. A repeat of the request id answers the first reply and stores nothing again; another person's use of it is refused. Where the test environment is off it answers
+ * not found (404), and the page saves the settings as before (their own check runs on the save).
+ */
+export async function proposeTypedCommands(deps: SetupDraftDependencies, caller: DeveloperCaller, rawName: string, rawBody: unknown): Promise<StatusReply> {
+  const { name, role } = await maintainerOf(deps, caller, rawName);
+  const parsed = SetupTypedCommandsBodySchema.safeParse(rawBody);
+  if (!parsed.success) throw bodyError(parsed.error);
+  const body = parsed.data;
+  const env = deps.testEnvironment;
+  if (env === undefined || !env.on) throw agentXError("NOT_FOUND", TYPED_COMMANDS_WORDS.off);
+  const key = { pk: setupDraftKey(caller.orgId, name).pk, sk: `TYPED#${body.requestId}` };
+  const stored = await getItem(deps.documentClient, deps.tableName, key);
+  if (stored !== undefined && !(typeof stored[INDEX_EXPIRY_ATTRIBUTE] === "number" && stored[INDEX_EXPIRY_ATTRIBUTE] <= Math.floor(deps.now() / 1000))) {
+    if (stored["by"] !== caller.developerId) throw agentXError("IDEMPOTENCY_CONFLICT", "that request id was already used for a different request; use a new one");
+    return new StatusReply(200, stored["reply"] as object);
+  }
+  const latest = await deps.latest(caller.orgId, name);
+  if (latest === undefined) throw agentXError("PROJECT_NOT_FOUND", "project not found");
+  if (latest.revision !== body.expectedRevision) throw agentXError("PROJECT_REVISION_MISMATCH", SETTINGS_STALE_MESSAGE);
+  const repo = commandRepositoryOf(latest.definition);
+  if (repo === undefined) throw agentXError("CONFIG_INVALID", TYPED_COMMANDS_WORDS.invalid);
+  const typedItem = (kind: "setup" | "tests", commands: readonly string[]) => ({ id: `${kind}-typed`, value: { repo, commands: [...commands] }, from: [], confidence: "high", risk: "safe" });
+  const synthetic = {
+    repositories: [], setup: body.setupCommands.length === 0 ? [] : [typedItem("setup", body.setupCommands)], tests: body.testCommands.length === 0 ? [] : [typedItem("tests", body.testCommands)], checks: [], testEnvironment: [],
+    knowledge: [], sources: [], intake: [], allowedDomains: [], secretsNeeded: [],
+  } as unknown as SetupProposal;
+  const ids = new Set([...(body.setupCommands.length === 0 ? [] : ["setup-typed"]), ...(body.testCommands.length === 0 ? [] : ["tests-typed"])]);
+  // Typed by the maintainer, so nothing is checked against a file: their choice is the source (as an edit is).
+  const made = environmentFromProposal(synthetic, { "setup-typed": "verified", "tests-typed": "verified" }, latest.definition, ids);
+  if ("error" in made) throw agentXError("CONFIG_INVALID", made.error === "no_test" ? TYPED_COMMANDS_WORDS.noTest : TYPED_COMMANDS_WORDS.invalid);
+  if (made.left.length > 0) throw agentXError("CONFIG_INVALID", TYPED_COMMANDS_WORDS.invalid);
+  const merged = await env.merge(caller, name, made.environment);
+  if (merged === undefined) throw agentXError("CONFIG_INVALID", TYPED_COMMANDS_WORDS.invalid);
+  const proposed = await env.edit(caller, name, role, merged);
+  const reply = { proposalDigest: proposed.digest, source: "edited" as const, message: TYPED_COMMANDS_WORDS.sent };
+  // Review M1: the request record is written only where none stands (or it expired): of two presses at once one record stays, and another person's reuse of the id is refused, never written over.
+  try {
+    await deps.documentClient.send(new PutCommand({
+      TableName: deps.tableName, Item: { ...key, entityType: "SETUP_TYPED_COMMANDS", orgId: caller.orgId, project: name, by: caller.developerId, reply, [INDEX_EXPIRY_ATTRIBUTE]: Math.floor(deps.now() / 1000) + 86_400 },
+      ConditionExpression: "attribute_not_exists(pk) OR #e <= :now", ExpressionAttributeNames: { "#e": INDEX_EXPIRY_ATTRIBUTE }, ExpressionAttributeValues: { ":now": Math.floor(deps.now() / 1000) },
+    }));
+  } catch (error) {
+    if ((error as { name?: unknown } | null)?.name !== "ConditionalCheckFailedException") throw error;
+    const standing = await getItem(deps.documentClient, deps.tableName, key);
+    if (standing === undefined || standing["by"] !== caller.developerId) throw agentXError("IDEMPOTENCY_CONFLICT", "that request id was already used for a different request; use a new one");
+    return new StatusReply(200, standing["reply"] as object);
+  }
+  return new StatusReply(200, reply);
+}
