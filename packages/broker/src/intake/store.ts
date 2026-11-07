@@ -16,7 +16,8 @@ export interface IntakeTable {
   now: () => number;
 }
 
-export type StoredIntakeState = "waiting" | "starting" | "started";
+/** `dismissed` (slice 5): a member said "Not this one". The item stays (without the ticket's words) until it expires, so a poll that sees the ticket again does not ask again. */
+export type StoredIntakeState = "waiting" | "starting" | "started" | "dismissed";
 
 /** Whether a ticket's item may be started now: it waits, or a start began and its lease ran out (the process died), which another may take over. */
 export const intakeItemIsTakeable = (record: Pick<IntakeItemRecord, "state" | "leaseUntil">, now: number): boolean =>
@@ -75,7 +76,7 @@ async function readRaw(table: IntakeTable, key: { pk: string; sk: string }): Pro
 function recordOf(raw: Record<string, unknown> | undefined, orgId: OrgId, project: string): IntakeItemRecord | undefined {
   if (raw === undefined || raw["orgId"] !== orgId || raw["project"] !== project || raw["entityType"] !== "INTAKE_ITEM") return undefined;
   const state = raw["state"];
-  if (state !== "waiting" && state !== "starting" && state !== "started") return undefined;
+  if (state !== "waiting" && state !== "starting" && state !== "started" && state !== "dismissed") return undefined;
   const requester = raw["requester"] as IntakeItemRecord["requester"] | undefined;
   if (typeof raw["itemId"] !== "string" || typeof raw["system"] !== "string" || typeof raw["id"] !== "string" || typeof raw["url"] !== "string" || requester === undefined) return undefined;
   const record: Record<string, unknown> = { ...raw };
@@ -293,6 +294,36 @@ export async function reopenIntakeItem(
       ConditionExpression: "attribute_exists(pk) AND orgId = :org AND #project = :project AND #state = :started AND #gen = :gen",
       ExpressionAttributeNames: names,
       ExpressionAttributeValues: values,
+    }));
+    return true;
+  } catch (error) {
+    if (isConditional(error)) return false;
+    throw error;
+  }
+}
+
+/** How long a dismissed ticket is remembered: as long as a waiting one would have been. */
+export const INTAKE_DISMISSED_KEPT_DAYS = INTAKE_WAITING_KEPT_DAYS;
+
+/**
+ * A member says "Not this one" for a waiting ticket: one conditional update from `waiting` to `dismissed`, which drops the ticket's words (title, body, writer, the requester's name) and keeps ids,
+ * who dismissed it and when. false when the ticket does not wait (it was started, is being started, or was dismissed already).
+ */
+export async function dismissIntakeItem(table: IntakeTable, orgId: OrgId, project: string, itemId: string, by: string): Promise<boolean> {
+  try {
+    await table.documentClient.send(new UpdateCommand({
+      TableName: table.tableName,
+      Key: intakeItemKey(orgId, project, itemId),
+      UpdateExpression: "SET #state = :dismissed, #by = :by, #updated = :at, #expires = :expires, #requester = :requester REMOVE #title, #body, #writer, #reason, #refusal",
+      ConditionExpression: "attribute_exists(pk) AND orgId = :org AND #project = :project AND #state = :waiting",
+      ExpressionAttributeNames: {
+        "#project": "project", "#state": "state", "#by": "dismissedBy", "#updated": "updatedAt", "#expires": INDEX_EXPIRY_ATTRIBUTE, "#requester": "requester",
+        "#title": "title", "#body": "body", "#writer": "writer", "#reason": "reason", "#refusal": "lastRefusal",
+      },
+      ExpressionAttributeValues: {
+        ":dismissed": "dismissed", ":waiting": "waiting", ":by": by, ":at": iso(table), ":expires": expiryAfter(table, INTAKE_DISMISSED_KEPT_DAYS), ":org": orgId, ":project": project,
+        ":requester": { display: "", standing: "outsider" },
+      },
     }));
     return true;
   } catch (error) {

@@ -113,8 +113,17 @@ export interface PollReport {
 const isConditional = (error: unknown): boolean => error instanceof Error && error.name === "ConditionalCheckFailedException";
 const hourOf = (now: number): string => new Date(now).toISOString().slice(0, 13);
 
+/** A search's own failure, with one of the fixed codes a maintainer is shown (`INTAKE_SOURCE_ERROR_WORDS`). An adapter throws it; the code is all that is kept. */
+export class IntakeSearchError extends Error {
+  constructor(readonly code: "CONNECTION_MISSING" | "CONNECTION_AMBIGUOUS" | "CONNECTION_REFUSED" | "RATE_LIMITED" | "SEARCH_FAILED") {
+    super(code);
+    this.name = "IntakeSearchError";
+  }
+}
+
 /** The code a failure is recorded under: an allow-list, never the error's words. */
 function failureCode(error: unknown): string {
+  if (error instanceof IntakeSearchError) return error.code;
   if (error instanceof AgentXError) return error.code;
   if (error instanceof Error && error.name === "AbortError") return "TIMEOUT";
   if (error instanceof Error && error.message === "intake_timeout") return "TIMEOUT";

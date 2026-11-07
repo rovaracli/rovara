@@ -5,7 +5,9 @@ import {
   DEVELOPER_TASK_LIST_DEFAULT,
   DEVELOPER_TASK_LIST_MAX,
   DeveloperTaskStatusSchema,
+  SessionIdSchema,
   agentXError,
+  sessionLink,
   type DeveloperTaskListItem,
   type DeveloperTaskStatus,
   type DeveloperTaskView,
@@ -109,9 +111,11 @@ export async function listTasks(deps: DeveloperTaskRouteDependencies, caller: De
       if (row.orgId !== caller.orgId) continue;
       let current: DeveloperTaskStatus = row.status;
       let updatedAt = row.updatedAt;
+      let read: DeveloperTaskRecord | undefined;
       // A closed task never changes again, so only open rows are derived afresh.
       if (row.status !== "CLOSED") {
         const task = await get<DeveloperTaskRecord>(deps, taskKey(row.taskId));
+        read = task;
         if (task !== undefined && tryEffectiveTaskOwner(task)?.developerId === caller.developerId) {
           const view = await taskView(deps, task, { events: 0, details: false });
           current = view.status;
@@ -124,7 +128,13 @@ export async function listTasks(deps: DeveloperTaskRouteDependencies, caller: De
       const more = position < rows.length - 1 || response.LastEvaluatedKey !== undefined;
       const matches = (project === null || row.project === project) && (status === undefined || !status.success || current === status.data);
       if (matches) {
-        tasks.push({ taskId: row.taskId, title: row.title, project: row.project, status: current, shared: row.shared, createdAt: row.createdAt, updatedAt });
+        // Slice 5: the row's session and its web link (one more read only for a closed row that is listed; at most `limit` of them).
+        const record = read ?? (await get<DeveloperTaskRecord>(deps, taskKey(row.taskId)));
+        const sessionId = record !== undefined && record.orgId === caller.orgId && SessionIdSchema.safeParse(record.sessionId).success ? SessionIdSchema.parse(record.sessionId) : undefined;
+        tasks.push({
+          taskId: row.taskId, title: row.title, project: row.project, status: current, shared: row.shared, createdAt: row.createdAt, updatedAt,
+          ...(sessionId === undefined ? {} : { sessionId, ...(deps.issuer === undefined ? {} : { sessionUrl: sessionLink(new URL(deps.issuer).origin, sessionId) }) }),
+        });
         if (tasks.length >= limit) return more ? { tasks, nextCursor: encodeCursor(row.sk) } : { tasks };
       }
       // One page of the list reads at most LIST_SCAN_MAX index rows; the cursor carries on from there.

@@ -947,6 +947,28 @@ export class GitHubAppCredentialProvider {
     return "replied";
   }
 
+  /**
+   * Slice 5 (ticket updates): posts one comment on an issue (`POST issues/{n}/comments`), with a token that asks for `issues: write` on this one repository only. `requirePrivate`: the
+   * repository must say it is private, or nothing is posted and the answer is `public` (a task only its owner sees never writes to a public issue). An issue that is gone (404, 410) is
+   * `not_found`; an App that may not write issues there is GitHub's refusal of the token (`GITHUB_NOT_CONNECTED`), thrown for the caller to report. Other faults throw `RUNTIME_UNAVAILABLE`.
+   */
+  async commentOnIssue(repositoryUrl: string, number: number, body: string, scope: GitHubTokenScope, options: { requirePrivate: boolean }): Promise<"posted" | "public" | "not_found"> {
+    if (!Number.isInteger(number) || number < 1 || body.length === 0 || body.length > 2_000 || /[\p{Cc}@]/u.test(body.replace(/\n/gu, ""))) throw agentXError("CONFIG_INVALID", "the comment is not Rovara's fixed text");
+    const provider = this.trackingProvider(undefined);
+    const repository = await provider.installed(parseGitHubRepository(repositoryUrl), scope);
+    const token = await provider.createInstallationToken(repository, { issues: "write", metadata: "read" }, scope);
+    if (options.requirePrivate) {
+      const repo = await provider.trackingJson(`https://api.github.com/repos/${encodeURIComponent(repository.owner)}/${encodeURIComponent(repository.name)}`, token);
+      if (repo.status !== 200) throw agentXError("RUNTIME_UNAVAILABLE", `GitHub repository lookup failed with HTTP ${repo.status}`);
+      if (statusRecord(repo.body).private !== true) return "public";
+    }
+    const answered = await provider.trackingJson(`https://api.github.com/repos/${encodeURIComponent(repository.owner)}/${encodeURIComponent(repository.name)}/issues/${String(number)}/comments`, token, { method: "POST", body: { body } });
+    if (answered.status === 404 || answered.status === 410) return "not_found";
+    if (answered.status === 403) throw agentXError("GITHUB_NOT_CONNECTED", "GitHub refused the comment");
+    if (answered.status !== 201 && answered.status !== 200) throw agentXError("RUNTIME_UNAVAILABLE", `GitHub comment failed with HTTP ${answered.status}`);
+    return "posted";
+  }
+
   /** Takes a draft pull request out of draft (GraphQL `markPullRequestReadyForReview`); one that is ready already is left alone. */
   async markPullRequestReady(repositoryUrl: string, number: number, scope: GitHubTokenScope, budget?: GithubMergeReadBudget): Promise<"ready" | "already_ready"> {
     const provider = this.trackingProvider(budget);

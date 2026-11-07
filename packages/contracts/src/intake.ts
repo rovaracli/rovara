@@ -138,10 +138,21 @@ export type IntakeItemState = (typeof INTAKE_ITEM_STATES)[number];
  *   outsider: the person who asked is not a member Rovara can tell (outside the company, or an account no member is linked to);
  *   bot: an automation asked; no_authority: a member asked but cannot start work on the project;
  *   unverified: the act looks like a member's, but Rovara itself had just changed the ticket (or the tracker could not confirm who did it), so it is not taken for theirs;
- *   start_refused: a member's act tried to start it and the start was refused (the budget, the project); `lastRefusal` says the code.
+ *   start_refused: a member's act tried to start it and the start was refused (the budget, the project); `lastRefusal` says the code;
+ *   unlinked (slice 5): a person on the tracker asked, but no member of the company is linked to that tracker account (a verified email or a link an admin made). Rovara never guesses.
  */
-export const INTAKE_WAIT_REASONS = ["outsider", "bot", "no_authority", "start_refused", "unverified"] as const;
+export const INTAKE_WAIT_REASONS = ["outsider", "bot", "no_authority", "start_refused", "unverified", "unlinked"] as const;
 export type IntakeWaitReason = (typeof INTAKE_WAIT_REASONS)[number];
+
+/** Why a ticket waits, in the words a person reads (Home and the project's settings). Fixed words: never the tracker's. */
+export const INTAKE_WAIT_REASON_WORDS: Readonly<Record<IntakeWaitReason, string>> = {
+  outsider: "Someone outside your company asked for it.",
+  bot: "An automation asked for it.",
+  no_authority: "The person who asked can't start tasks in this project.",
+  start_refused: "Rovara tried to start it and the start was refused.",
+  unverified: "Rovara couldn't confirm who asked for it.",
+  unlinked: "Nobody in your company is linked to the tracker account that asked. A company admin can link them in Tracker people.",
+};
 
 /** One item that waits for a member to say "Start". The title is the ticket's own words (untrusted, shown as text only). */
 export const IntakeWaitingItemSchema = z.object({
@@ -162,8 +173,28 @@ export type IntakeWaitingItem = z.infer<typeof IntakeWaitingItemSchema>;
 /** The most waiting tickets a project holds (more are not stored, and the list never holds more). */
 export const INTAKE_MAX_WAITING_PER_PROJECT = 200;
 
-/** One source as a maintainer sees it: its id, the settings it was given, and whether the poll is failing on it now. */
-export const IntakeSourceViewSchema = z.object({ sourceId: z.string().regex(/^[a-f0-9]{24}$/), ref: IntakeChannelRefSchema, failing: z.boolean() }).strict();
+/** The fixed codes a failing source's last read is recorded under (never the tracker's words). */
+export const IntakeSourceErrorSchema = z.string().regex(/^[A-Z][A-Z0-9_]{0,63}$/);
+
+/**
+ * One source as a maintainer sees it: its id, the settings it was given, and whether the poll is failing on it now. Slice 5: a failing source also says since when and the code of its last failure,
+ * so a source never fails silently.
+ */
+export const IntakeSourceViewSchema = z.object({
+  sourceId: z.string().regex(/^[a-f0-9]{24}$/), ref: IntakeChannelRefSchema, failing: z.boolean(),
+  failingSince: z.string().datetime().optional(), lastError: IntakeSourceErrorSchema.optional(),
+}).strict();
+
+/** What a failing source's code means, in a person's words. An unknown code reads as the last line. */
+export const INTAKE_SOURCE_ERROR_WORDS: Readonly<Record<string, string>> = {
+  TIMEOUT: "The tracker took too long to answer.",
+  NOT_FOUND: "Rovara can't read this kind of tracker yet.",
+  CONNECTION_MISSING: "No connection for this tracker is set up for your company.",
+  CONNECTION_AMBIGUOUS: "Your company has more than one connection for this tracker: name the one to use.",
+  CONNECTION_REFUSED: "The tracker refused the connection's key. Check the connection in Connections.",
+  RATE_LIMITED: "The tracker asked Rovara to slow down.",
+  SEARCH_FAILED: "Reading the tickets failed.",
+};
 export type IntakeSourceView = z.infer<typeof IntakeSourceViewSchema>;
 
 export const IntakeWaitingListSchema = z.object({ items: z.array(IntakeWaitingItemSchema).max(INTAKE_MAX_WAITING_PER_PROJECT), sources: z.array(IntakeSourceViewSchema).max(16) }).strict();
@@ -175,3 +206,7 @@ export type IntakeWaitingList = z.infer<typeof IntakeWaitingListSchema>;
  */
 export const IntakeStartBodySchema = z.object({ requestId: z.string().uuid() }).strict();
 export type IntakeStartBody = z.infer<typeof IntakeStartBodySchema>;
+
+/** `POST /v1/app/projects/{project}/intake/{itemId}/dismiss`: a member says "Not this one". The ticket stops waiting and is not asked about again until its item expires. */
+export const IntakeDismissBodySchema = z.object({ requestId: z.string().uuid() }).strict();
+export type IntakeDismissBody = z.infer<typeof IntakeDismissBodySchema>;

@@ -197,6 +197,38 @@ export async function sessionShare(deps: DeveloperSessionDeps, env: string | und
   return result(answer, answer.body, `Shared with ${who} (${LEVEL_WORDS[level]}).\n${linkOf(answer.url, id)}\n`);
 }
 
+// ---- starting work (slice 5)
+
+/** The longest instructions one start carries (the control plane's limit is checked there again). */
+const INSTRUCTIONS_MAX_BYTES = 65_536;
+
+/**
+ * `session start --project <name> <instructions>` starts Rovara Code on a project, as the signed-in person (the control plane decides whether they may, and at whose cost), and prints the task and
+ * the link to its page. `--workflow quick|full` asks for the plan-first workflow. The request id is new for each call; the control plane answers a repeat of one start with the same task.
+ */
+export async function sessionStart(deps: DeveloperSessionDeps, env: string | undefined, input: { project?: string | undefined; instructions: string; title?: string | undefined; workflow?: string | undefined }): Promise<AppResult> {
+  const project = input.project?.trim();
+  if (project === undefined || project === "" || project.length > 200) throw agentXError("CONFIG_INVALID", "name the project with --project <name>");
+  const instructions = input.instructions.trim();
+  if (instructions === "" || Buffer.byteLength(instructions, "utf8") > INSTRUCTIONS_MAX_BYTES) throw agentXError("CONFIG_INVALID", "give the instructions, at most 65,536 bytes");
+  if (input.title !== undefined && input.title.length > 120) throw agentXError("CONFIG_INVALID", "--title is at most 120 characters");
+  if (input.workflow !== undefined && input.workflow !== "quick" && input.workflow !== "full") throw agentXError("CONFIG_INVALID", "--workflow is quick or full");
+  const answer = await appRequest(deps, env, "/v1/dev/tasks", {
+    method: "POST",
+    body: {
+      requestId: randomUUID(), project, instructions, client: "agentx-cli",
+      ...(input.title === undefined ? {} : { title: input.title }),
+      ...(input.workflow === undefined ? {} : { workflow: true, workflowPath: input.workflow === "full" ? "FULL" : "QUICK" }),
+    },
+  });
+  const task = answer.body.task as Body | undefined;
+  if (task === undefined || typeof task.taskId !== "string") throw agentXError("RUNTIME_UNAVAILABLE", UNEXPECTED);
+  const sessionId = typeof task.sessionId === "string" && SessionIdSchema.safeParse(task.sessionId).success ? task.sessionId : undefined;
+  const link = sessionId === undefined ? undefined : linkOf(answer.url, sessionId, task.sessionUrl);
+  return result(answer, { taskId: task.taskId, ...(sessionId === undefined ? {} : { sessionId }), ...(link === undefined ? {} : { link }) },
+    `Started task ${str(task.taskId)} on ${clean(project)}.\n${link === undefined ? "Follow it with agentx sessions." : `Follow it here: ${link}`}\n`);
+}
+
 // ---- linking a session to a Linear issue
 
 const LINEAR_KEY = /^[A-Za-z][A-Za-z0-9]{0,9}-[1-9][0-9]{0,8}$/u;
@@ -211,7 +243,7 @@ async function sessionOfRef(deps: DeveloperSessionDeps, env: string | undefined,
   if (!TASK_ID.test(ref)) throw agentXError("CONFIG_INVALID", "give a session ID (ses_...) from agentx sessions, or a task ID");
   const answer = await appRequest(deps, env, `/v1/dev/tasks/${seg(ref)}`);
   const sessionId = (answer.body.task as Body | undefined)?.sessionId;
-  if (typeof sessionId !== "string" || !SessionIdSchema.safeParse(sessionId).success) throw agentXError("CONFIG_INVALID", "that task has no session, so there is nothing to link; start the work from the app or the CLI to get a session");
+  if (typeof sessionId !== "string" || !SessionIdSchema.safeParse(sessionId).success) throw agentXError("CONFIG_INVALID", "that task has no session, so there is nothing to link; start the work from the app or with agentx session start to get a session");
   return sessionId;
 }
 

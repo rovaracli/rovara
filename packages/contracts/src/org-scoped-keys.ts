@@ -1350,6 +1350,22 @@ export function intakeNoticeKey(orgId: OrgId, developerId: string, at: string, s
   return { pk: orgScoped(orgId, `INTAKE_NOTICES#${keyPart(developerId, "a developer id")}`), sk: `${canonicalInstant(at)}#${keyPart(sourceId, "a source id")}` };
 }
 
+/** Slice 5: the project's ticket updates settings (comments on the ticket that started a task, and the opt-in status changes). One item per project. */
+export function ticketUpdatesSettingsKey(orgId: OrgId, project: string): OrgKey {
+  return { pk: orgScoped(orgId, "TICKET_UPDATES"), sk: keyPart(project, "a project name") };
+}
+
+/** Slice 5: how many ticket updates the org sent to one tracker (`system`: linear, jira or github) in one hour (`YYYY-MM-DDTHH`): the rate limit is a conditional count on this item. */
+export function ticketUpdateCallsKey(orgId: OrgId, system: string, hour: string): OrgKey {
+  if (!/^\d{4}-\d{2}-\d{2}T\d{2}$/u.test(hour)) throw new Error("an hour is YYYY-MM-DDTHH");
+  return { pk: orgScoped(orgId, "TICKET_UPDATE_CALLS"), sk: `${keyPart(system, "a tracker")}#${hour}` };
+}
+
+/** Slice 5: the last time a ticket update was skipped because the org's connection to a tracker may not write (or the tracker refused it). Ids and a code only. */
+export function ticketWriteAccessKey(orgId: OrgId, system: string): OrgKey {
+  return { pk: orgScoped(orgId, "TICKET_WRITE_ACCESS"), sk: keyPart(system, "a tracker") };
+}
+
 /**
  * A ticket's label event that intake has taken in (one item per event), so a webhook that is delivered again, or replayed, is the same event and starts nothing more. `eventId` is the
  * event's own key (the label added, the change, the time); it is hashed here, so nothing a person typed is a key.

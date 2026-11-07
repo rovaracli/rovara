@@ -20,6 +20,7 @@ import type { RequestMark } from "../agents/table-writes.js";
 import type { AdaptedHttpRequest } from "../aws/lambda.js";
 import { StatusReply } from "../aws/status-reply.js";
 import { cloudwatchTrustPolicy } from "../connectors/native/cloudwatch.js";
+import { readWriteAccess } from "../ticket-updates/settings.js";
 import type { OrgConnectionRecord, OrgConnectionStore } from "./store.js";
 
 /** What the connection routes need: the store, and the State table the request items are read from. */
@@ -213,7 +214,12 @@ export async function routeConnectionRequest(deps: ConnectionRouteDependencies, 
   const [, rawId, sub] = matched;
   const method = request.method;
   if (rawId === undefined) {
-    if (method === "GET") return { connections: (await deps.store.list(caller.orgId)).map(view) };
+    if (method === "GET") {
+      // Slice 5: a Linear or Jira connection whose last ticket update was skipped for want of write access says so (the ticket updates' note, read once for the org).
+      const access = await readWriteAccess(deps, caller.orgId).catch(() => []);
+      const missing = new Set(access.filter((entry) => entry.state === "needs_write_access").map((entry) => entry.tracker as string));
+      return { connections: (await deps.store.list(caller.orgId)).map((record) => ({ ...view(record), ...((record.type === "linear" || record.type === "jira") && missing.has(record.type) ? { ticketUpdates: "needs_write_access" as const } : {}) })) };
+    }
     if (method === "POST") return createConnection(deps, caller, jsonBody(request));
     throw agentXError("NOT_FOUND", "route not found");
   }

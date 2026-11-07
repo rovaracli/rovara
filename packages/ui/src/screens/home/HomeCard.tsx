@@ -15,9 +15,18 @@ export function HomeCard({ card }: { card: ReadHomeCard }) {
  async function run(action: HomeAction) {
   if (sending.current) return;
   if (action.kind === "external" || action.kind === "confirm") { host.openExternal(action.href);return; }
-  if (action.kind !== "dismiss" && action.kind !== "retry") return;
+  if (action.kind !== "dismiss" && action.kind !== "retry" && action.kind !== "ticket_start" && action.kind !== "ticket_dismiss") return;
   sending.current = true;setBusy(true);setError(undefined);
   try {
+   if (action.kind === "ticket_start" || action.kind === "ticket_dismiss") {
+    // A waiting ticket's Start or Not this one: the intake client loads only when one is pressed.
+    const { createIntakeApi } = await import("../../api/intake.js");
+    const answer = await createIntakeApi(host).act(action.href, action.kind === "ticket_start" ? "start" : "dismiss");
+    await query.invalidateQueries({ queryKey: ["home"] });
+    if ("started" in answer && answer.started && SessionIdSchema.safeParse(answer.sessionId).success) { host.navigate("/s/" + answer.sessionId);return; }
+    if ("started" in answer && !answer.started) throw new ApiError(409, "PENDING", answer.state === "started" ? "Someone already started this ticket." : "Rovara couldn't start this ticket yet. Try again later.");
+    return;
+   }
    if (action.kind === "dismiss") {
     const result = await api.dismissCard(card, action);
     if (result.kind !== "done" || result.value.cardId !== card.cardId) throw new ApiError(409, "PENDING", "This item hasn't been dismissed. Refresh to check its status.");

@@ -7,7 +7,9 @@ import { ApiError } from "./errors.js";
 import { isConfirmUrl, safeAppPath, safeExternalUrl } from "../text/links.js";
 export type ReadHomeCard = ReturnType<typeof HomeCardReaderSchema.parse>;
 type ReadButton = ReadHomeCard["buttons"][number];
-export type HomeAction = { kind: "internal" | "external" | "confirm" | "retry" | "dismiss"; href: string; label: string };
+export type HomeAction = { kind: "internal" | "external" | "confirm" | "retry" | "dismiss" | "ticket_start" | "ticket_dismiss"; href: string; label: string };
+/** Slice 5: a waiting ticket's Start and Not this one (the intake routes, same origin, no query). */
+const TICKET_ACTION_PATH = /^\/v1\/app\/projects\/[^/?#]+\/intake\/[a-f0-9]{32}\/(start|dismiss)$/u;
 export function homeAction(card: ReadHomeCard, button: ReadButton, origin: string): HomeAction | undefined {
  const { href, method, action, label } = button;
  if (href === undefined || method === undefined || safeExternalUrl(href) === undefined) return undefined;
@@ -27,6 +29,7 @@ export function homeAction(card: ReadHomeCard, button: ReadButton, origin: strin
   const entries = [...url.searchParams];if (entries.length > 1 || entries.some(([key, value]) => key !== "occurrence" || value.length === 0)) return undefined;
   return { kind: "dismiss", href: url.pathname + url.search, label };
  }
+ if ((action === "start" || action === "dismiss") && card.kind === "waiting_ticket" && !url.search && href === url.origin + url.pathname && TICKET_ACTION_PATH.test(url.pathname) && url.pathname.endsWith("/" + action)) return { kind: action === "start" ? "ticket_start" : "ticket_dismiss", href: url.pathname, label };
  // RULING Q39 / PLAN6: no start request until its owning route, body and response are defined.
  return undefined;
 }

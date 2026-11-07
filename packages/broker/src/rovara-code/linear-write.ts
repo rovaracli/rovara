@@ -73,7 +73,7 @@ function waitOf(header: string | null): number {
 const notSetUp = () => agentXError("CONFIG_INVALID", LINEAR_NOT_SET_UP_MESSAGE);
 
 /** The workspace url key in an issue's link on linear.app (`https://linear.app/acme/issue/ENG-1/...`), or undefined. */
-function workspaceOfIssueUrl(link: string): string | undefined {
+export function workspaceOfIssueUrl(link: string): string | undefined {
   try {
     const url = new URL(link);
     if (url.protocol !== "https:" || url.hostname !== "linear.app" || url.username !== "" || url.password !== "" || url.port !== "") return undefined;

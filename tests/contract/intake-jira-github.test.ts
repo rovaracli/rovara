@@ -258,24 +258,57 @@ const LABELED: TriggerEvent = {
 const CODE = { kind: "agent" as const, agentId: "rovara-code" as const };
 const SPEC = { kind: "event" as const, source: "github" as const, type: "issues.labeled", filter: { label: ["Rovara"] } };
 
-function dispatchWorld(options: { members?: Record<string, string> } = {}) {
+function dispatchWorld(options: { members?: Record<string, string>; jiraMembers?: Record<string, string>; confirm?: () => Promise<"person" | "rovara" | "unverified"> } = {}) {
   const v = setupTriggerWorld();
   const started: Array<{ developerId: string; source: string; binding: unknown }> = [];
   const ingested: IntakeCandidate[] = [];
   const members = new Map(Object.entries(options.members ?? { "12345": MEMBER }));
+  const confirm = options.confirm;
   const ports: IntakePorts = {
     table: { documentClient: v.db, tableName: "T", now: () => v.clock.now },
     log: () => undefined,
-    memberOfAccount: async (_org, system, accountId) => (system === "github" ? members.get(accountId) : undefined),
+    memberOfAccount: async (_org, system, accountId) => (system === "github" ? members.get(accountId) : system === "jira" ? options.jiraMembers?.[accountId] : undefined),
     mayStart: async () => true,
     start: async (_org, developerId, request) => { started.push({ developerId, source: request.source, binding: request.binding }); return { task: { taskId: `task-${String(started.length)}` }, sessionId: `ses_${String(started.length).padStart(20, "0")}` }; },
     sessionOfTicket: async () => undefined,
   };
-  const intake = { ingest: async (candidate: IntakeCandidate, options?: { admit?: () => Promise<boolean> }): Promise<IntakeOutcome> => { ingested.push(candidate); return ingestIntake(ports, candidate, options?.admit === undefined ? {} : { admit: options.admit }); } };
+  const intake = { ingest: async (candidate: IntakeCandidate, options?: { admit?: () => Promise<boolean> }): Promise<IntakeOutcome> => { ingested.push(candidate); return ingestIntake(ports, candidate, { ...(options?.admit === undefined ? {} : { admit: options.admit }), ...(confirm === undefined ? {} : { confirmActor: confirm }) }); } };
   const dispatch = (event: TriggerEvent, withIntake = true) => dispatchTriggerEvent({ ...v.routeDeps, ...(withIntake ? { intake } : {}) } as Parameters<typeof dispatchTriggerEvent>[0], ORG_A, event);
   const trigger = (over: Record<string, unknown> = {}) => v.seed({ target: CODE, spec: SPEC, createdBy: DANA, ...over });
   return { v, started, ingested, ports, dispatch, trigger };
 }
+
+describe("a Jira webhook is believed only on Jira's own word (review I1)", () => {
+  const jiraEvent = (hookId: string) => ({
+    source: "jira", type: "issue.labeled", eventKey: "jira:forged", occurredAt: new Date(Date.now() - 60_000).toISOString(), project: "web", hookId,
+    subject: { kind: "issue", id: "PAY-12", title: "Refunds fail", url: "https://acme.atlassian.net/browse/PAY-12" }, fields: { label: ["rovara"] },
+    // The body names a linked member (an org admin's Jira account), and is correctly signed with the hook's secret.
+    actor: { kind: "external", id: "acct-admin", accountId: "acct-admin" },
+  }) as never;
+  async function seeded(w: ReturnType<typeof dispatchWorld>) {
+    const jira = await w.v.seed({ target: CODE, spec: { kind: "event", source: "jira", type: "issue.labeled", filter: { label: ["rovara"] } }, createdBy: DANA, hookId: `hk_${"b".repeat(26)}` } as never);
+    w.v.hook("jira", jira.hookId);
+    w.v.connection("jira", "acct-rovara");
+    return jira.hookId as string;
+  }
+
+  it("waits and starts nothing when no one asked Jira (a forged, correctly signed body naming a linked member)", async () => {
+    const w = dispatchWorld({ jiraMembers: { "acct-admin": MEMBER } });
+    const [outcome] = await w.dispatch(jiraEvent(await seeded(w)));
+    expect(outcome).toMatchObject({ outcome: "skipped", reason: "intake_unverified" });
+    expect(w.started).toEqual([]);
+    expect(await listWaitingIntakeItems(w.ports.table, ORG_A, "web")).toMatchObject([{ id: "PAY-12", reason: "unverified" }]);
+  });
+
+  it("waits when Jira's change log names someone else, and starts as the member only when Jira confirms them", async () => {
+    const forged = dispatchWorld({ jiraMembers: { "acct-admin": MEMBER }, confirm: async () => "unverified" });
+    expect((await forged.dispatch(jiraEvent(await seeded(forged))))[0]).toMatchObject({ outcome: "skipped", reason: "intake_unverified" });
+    expect(forged.started).toEqual([]);
+    const real = dispatchWorld({ jiraMembers: { "acct-admin": MEMBER }, confirm: async () => "person" });
+    expect((await real.dispatch(jiraEvent(await seeded(real))))[0]).toMatchObject({ outcome: "started" });
+    expect(real.started).toMatchObject([{ developerId: MEMBER }]);
+  });
+});
 
 describe("a Rovara Code trigger on a label", () => {
   it("starts Rovara Code as the member who added the label, bound to the issue, through the intake engine", async () => {
@@ -296,7 +329,7 @@ describe("a Rovara Code trigger on a label", () => {
     const w = dispatchWorld({ members: {} });
     const trigger = await w.trigger();
     const [outcome] = await w.dispatch(LABELED);
-    expect(outcome).toMatchObject({ triggerId: trigger.triggerId, outcome: "skipped", reason: "intake_outsider" });
+    expect(outcome).toMatchObject({ triggerId: trigger.triggerId, outcome: "skipped", reason: "intake_unlinked" });
     expect(w.started).toEqual([]);
     expect(await listWaitingIntakeItems(w.ports.table, ORG_A, "web")).toHaveLength(1);
   });
@@ -382,7 +415,8 @@ describe("a Rovara Code trigger on a label", () => {
   });
 
   it("never starts work for a Jira customer or app even when a resolver would map every account to a member", async () => {
-    const w = dispatchWorld();
+    // Jira confirms whoever it is asked about: only the atlassian person's act is ever asked about, and only it starts.
+    const w = dispatchWorld({ confirm: async () => "person" });
     const jira = await w.v.seed({ target: CODE, spec: { kind: "event", source: "jira", type: "issue.labeled", filter: { label: ["rovara"] } }, createdBy: DANA, hookId: `hk_${"a".repeat(26)}` } as never);
     w.v.hook("jira", jira.hookId);
     w.v.connection("jira", "acct-rovara");
@@ -421,7 +455,7 @@ describe("a Rovara Code trigger on a label", () => {
       source: "jira", type: "issue.labeled", eventKey: "jira:k", occurredAt: new Date(NOW - 60_000).toISOString(), project: "web", hookId: jira.hookId!,
       subject: { kind: "issue", id: "PAY-12", title: "Refunds fail", url: "https://acme.atlassian.net/browse/PAY-12" }, fields: { label: ["rovara"] }, actor: { kind: "external", id: "acct-dana", accountId: "acct-dana" },
     });
-    expect(outcome).toMatchObject({ outcome: "skipped", reason: "intake_outsider" });
+    expect(outcome).toMatchObject({ outcome: "skipped", reason: "intake_unverified" });
     expect(w.started).toEqual([]);
   });
 });
@@ -463,7 +497,7 @@ describe("a re-label after the task ended, through dispatch", () => {
     await w.dispatch(LABELED);
     expect((await w.dispatch(again("running")))[0]).toMatchObject({ outcome: "duplicate" });
     for (const id of bound.values()) ended.add(id);
-    expect((await w.dispatch({ ...again("by-eve"), actor: { kind: "external", id: "eve", accountId: "999" } }))[0]).toMatchObject({ outcome: "skipped", reason: "intake_outsider" });
+    expect((await w.dispatch({ ...again("by-eve"), actor: { kind: "external", id: "eve", accountId: "999" } }))[0]).toMatchObject({ outcome: "skipped", reason: "intake_unlinked" });
     expect(w.started).toHaveLength(1);
   });
 });
@@ -479,7 +513,7 @@ describe("the allowances (review I2): only a start that really starts work uses 
   it("uses neither the trigger's hour nor the org's day for tickets that only wait (a flood of outsiders' labels)", async () => {
     const w = dispatchWorld();
     const trigger = await w.trigger({ maxRunsPerHour: 2 });
-    for (let n = 1; n <= 10; n += 1) expect((await w.dispatch(ticketEvent(n, { actor: outsider })))[0]).toMatchObject({ outcome: "skipped", reason: "intake_outsider" });
+    for (let n = 1; n <= 10; n += 1) expect((await w.dispatch(ticketEvent(n, { actor: outsider })))[0]).toMatchObject({ outcome: "skipped", reason: "intake_unlinked" });
     expect(w.v.db.get(hourKey(w, trigger.triggerId))).toBeUndefined();
     expect(w.v.db.get(dayKey(w))).toBeUndefined();
     expect(await listWaitingIntakeItems(w.ports.table, ORG_A, "web")).toHaveLength(10);

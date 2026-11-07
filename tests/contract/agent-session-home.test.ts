@@ -179,7 +179,7 @@ describe("the shapes", () => {
     expect(HomeDismissResponseSchema.safeParse({ cardId: "failure:ses_00000000000000000001", dismissed: false }).success).toBe(false);
     expect(HomeDismissResponseReaderSchema.parse({ cardId: "failure:ses_00000000000000000001", dismissed: true, later: 1 })).toMatchObject({ later: 1 });
     expect([...HOME_DISMISSIBLE_KINDS]).toEqual(["failure", "offer"]);
-    expect([...HOME_CARD_KINDS]).toEqual(["approval", "spend_request", "question", "plan", "pull_request", "failure", "offer", "rule_suggestion"]);
+    expect([...HOME_CARD_KINDS]).toEqual(["approval", "spend_request", "question", "plan", "pull_request", "failure", "offer", "rule_suggestion", "waiting_ticket", "intake_source"]);
     // The suggested-rules card goes away when its suggestions are decided; it is never dismissed.
     expect((HOME_DISMISSIBLE_KINDS as readonly string[]).includes("rule_suggestion")).toBe(false);
     expect(HomeCardSchema.safeParse({ ...card, cardId: "rule_suggestion:ph_0123456789abcdef01234567", kind: "rule_suggestion" }).success).toBe(true);

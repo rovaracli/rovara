@@ -47,7 +47,7 @@ describe("the tool list (FR-027, FR-028, SC-010)", () => {
     const { tools } = await (await connect({})).listTools();
     expect(tools.map((tool) => tool.name)).toEqual(DEVELOPER_TOOLS.map((tool) => tool.name));
     expect(tools.map((tool) => tool.name)).toEqual([
-      "agentx_whoami", "agentx_list_projects", "agentx_start_task", "agentx_start_workflow", "agentx_get_task", "agentx_get_plan", "agentx_wait_for_task",
+      "agentx_whoami", "agentx_list_projects", "agentx_start", "agentx_start_task", "agentx_start_workflow", "agentx_get_task", "agentx_get_plan", "agentx_wait_for_task",
       "agentx_list_tasks", "agentx_continue_task", "agentx_decide_workflow", "agentx_answer_task_questions", "agentx_review_workflow_candidate", "agentx_retry_workflow",
       "agentx_send_workflow_back", "agentx_resolve_review_findings", "agentx_retry_workflow_publish", "agentx_keep_pull_request", "agentx_get_pr_feedback", "agentx_decide_pr_feedback", "agentx_cancel_task", "agentx_close_task", "agentx_share_task", "agentx_open_pull_request", "agentx_get_task_people", "agentx_get_task_people_request", "agentx_set_task_person", "agentx_take_task_ownership", "agentx_audit_status",
       "agentx_list_agents", "agentx_run_agent", "agentx_list_approvals", "agentx_open_approval",
@@ -946,5 +946,71 @@ describe("agentx_get_plan (PLANFULLDOC)", () => {
     const result = await (await connect({ getTaskPlan })).callTool({ name: "agentx_get_plan", arguments: { task_id: TASK, document: "design" } });
     expect(getTaskPlan).toHaveBeenCalledWith(TASK, { document: "design" });
     expect(toolError(result)).toMatchObject({ code: "TASK_NOT_FOUND" });
+  });
+});
+
+describe("slice 5: one start, and the web link on every task", () => {
+  const SESSION = "ses_aaaaaaaaaaaaaaaaaaaa";
+  const counter = () => { let next = 0; return () => `00000000-0000-4000-8000-${String(++next).padStart(12, "0")}`; };
+  const linked = (status: DeveloperTaskView["status"]) => view(status, { sessionId: SESSION, sessionUrl: `https://app.rovara.test/s/${SESSION}` });
+
+  it("agentx_start starts a task, the plan-first workflow, or an agent run, and answers the session link", async () => {
+    const startTask = vi.fn(async () => linked("STARTING"));
+    const runAgent = vi.fn(async () => linked("STARTING"));
+    const mcp = await connect({ startTask, runAgent, getTask: async () => linked("STARTING") }, { newRequestId: counter() });
+    const plain = await mcp.callTool({ name: "agentx_start", arguments: { project: "payments", instructions: "Fix retry handling" } });
+    expect(startTask).toHaveBeenNthCalledWith(1, expect.not.objectContaining({ workflow: true }));
+    expect(plain.structuredContent).toMatchObject({ task_id: TASK, session: SESSION, session_url: `https://app.rovara.test/s/${SESSION}` });
+    expect(text(plain)).toContain(`Open it in Rovara: https://app.rovara.test/s/${SESSION}`);
+    await mcp.callTool({ name: "agentx_start", arguments: { project: "payments", instructions: "Full scope", workflow_path: "full" } });
+    expect(startTask).toHaveBeenNthCalledWith(2, expect.objectContaining({ workflow: true, workflowPath: "FULL" }));
+    await mcp.callTool({ name: "agentx_start", arguments: { project: "payments", instructions: "Look at the build", agent: { agent_id: "code-reviewer", version: "draft" }, run_agent: true } });
+    expect(runAgent).toHaveBeenCalledWith("code-reviewer", expect.objectContaining({ project: "payments", version: "draft", input: { text: "Look at the build" } }));
+  });
+
+  it("refuses an agent run with no agent, or with a task's options, without calling Rovara", async () => {
+    const runAgent = vi.fn();
+    const mcp = await connect({ runAgent });
+    expect((await mcp.callTool({ name: "agentx_start", arguments: { project: "payments", instructions: "x", run_agent: true } })).isError).toBe(true);
+    expect((await mcp.callTool({ name: "agentx_start", arguments: { project: "payments", instructions: "x", run_agent: true, agent: { agent_id: "a" }, workflow_path: "quick" } })).isError).toBe(true);
+    expect(runAgent).not.toHaveBeenCalled();
+  });
+
+  it("is the same start under any of its names: a retry through an alias sends the same request id (review M9)", async () => {
+    const startTask = vi.fn(async () => linked("STARTING"));
+    const runAgent = vi.fn(async () => linked("STARTING"));
+    const mcp = await connect({ startTask, runAgent }, { newRequestId: counter() });
+    await mcp.callTool({ name: "agentx_start_task", arguments: { project: "payments", instructions: "Fix retry handling" } });
+    await mcp.callTool({ name: "agentx_start", arguments: { project: "payments", instructions: "Fix retry handling" } });
+    await mcp.callTool({ name: "agentx_start_workflow", arguments: { project: "payments", instructions: "Plan it", workflow_path: "full" } });
+    await mcp.callTool({ name: "agentx_start", arguments: { project: "payments", instructions: "Plan it", workflow_path: "full" } });
+    const ids = (startTask.mock.calls as unknown as Array<[{ requestId: string }]>).map(([request]) => request.requestId);
+    expect(ids[1]).toBe(ids[0]);
+    expect(ids[3]).toBe(ids[2]);
+    expect(ids[2]).not.toBe(ids[0]);
+    await mcp.callTool({ name: "agentx_run_agent", arguments: { agent_id: "code-reviewer", project: "payments", input: "Look at the build" } });
+    await mcp.callTool({ name: "agentx_start", arguments: { project: "payments", instructions: "Look at the build", agent: { agent_id: "code-reviewer" }, run_agent: true } });
+    const runs = (runAgent.mock.calls as unknown as Array<[string, { requestId: string }]>).map(([, request]) => request.requestId);
+    expect(runs[1]).toBe(runs[0]);
+  });
+
+  it("keeps the old start tools as aliases that say so", async () => {
+    const { tools } = await (await connect({})).listTools();
+    for (const name of ["agentx_start_task", "agentx_start_workflow", "agentx_run_agent"]) expect(tools.find((tool) => tool.name === name)?.description, name).toMatch(/^Alias of agentx_start/u);
+  });
+
+  it("agentx_get_task and agentx_list_tasks give the session and its link; a link that is not plain https is left out", async () => {
+    const mcp = await connect({
+      getTask: async () => linked("RUNNING"),
+      listTasks: async () => [
+        { taskId: TASK, title: "A", project: "payments", status: "RUNNING", shared: false, createdAt: "2026-09-27T12:00:00.000Z", updatedAt: "2026-09-27T12:00:00.000Z", sessionId: SESSION, sessionUrl: `https://app.rovara.test/s/${SESSION}` },
+        { taskId: TASK, title: "B", project: "payments", status: "RUNNING", shared: false, createdAt: "2026-09-27T12:00:00.000Z", updatedAt: "2026-09-27T12:00:00.000Z", sessionId: SESSION, sessionUrl: "javascript:alert(1)" },
+      ] as never,
+    });
+    expect((await mcp.callTool({ name: "agentx_get_task", arguments: { task_id: TASK } })).structuredContent).toMatchObject({ session: SESSION, session_url: `https://app.rovara.test/s/${SESSION}` });
+    const listed = (await mcp.callTool({ name: "agentx_list_tasks", arguments: {} })).structuredContent as { tasks: Array<Record<string, unknown>> };
+    expect(listed.tasks[0]).toMatchObject({ session: SESSION, session_url: `https://app.rovara.test/s/${SESSION}` });
+    expect(listed.tasks[1]).toMatchObject({ session: SESSION });
+    expect(listed.tasks[1]!["session_url"]).toBeUndefined();
   });
 });

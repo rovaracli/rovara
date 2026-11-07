@@ -56,6 +56,7 @@ import { ingestIntake, type IntakePorts } from "../../intake/engine.js";
 import { writeIntakeNotice } from "../../intake/notices.js";
 import { noteOwnWrite, registerOwnWriteRecorder } from "../../intake/own-writes.js";
 import { intakePortsOf } from "../../intake/wiring.js";
+import { intakeSearchesOf, jiraActorConfirmer } from "../../triggers/intake-searches.js";
 import { listProjectMembers } from "../../org/project-members.js";
 import type { IntakePollDependencies } from "../../triggers/poll-intake.js";
 import { chainTriggerHooksFor, triggerHooksFor } from "../../triggers/lifecycle.js";
@@ -744,10 +745,15 @@ export function eventDispatchOf(dependencies: AwsBrokerDependencies, tasks: Deve
   const chainDependencies = chainRunnerDependenciesOf(dependencies, tasks, agents);
   const githubApp = dependencies.githubPullRequests;
   const intake = intakePortsFrom(dependencies, tasks, agents);
+  const confirmJira = jiraActorConfirmer({ deps: dependencies.orgConnections });
   return chainDependencies === undefined ? undefined : (orgId, event, context) => dispatchTriggerEvent({
     ...chainDependencies, ...(githubApp.appSlug === undefined ? {} : { githubAppSlug: () => githubApp.appSlug!() }),
     // Meta repo lane F: a label or an assignment on an issue asks Rovara Code for work through the intake engine.
-    ...(intake === undefined ? {} : { intake: { ingest: (candidate, options) => ingestIntake(intake, candidate, options?.admit === undefined ? {} : { admit: options.admit }) } }),
+    // Slice 5 review I1: a Jira act is a member's only on Jira's own word, read again through the company's connection.
+    ...(intake === undefined ? {} : { intake: { ingest: (candidate, options) => ingestIntake(intake, candidate, {
+      ...(options?.admit === undefined ? {} : { admit: options.admit }),
+      ...(candidate.externalRef.system === "jira" ? { confirmActor: () => confirmJira(candidate) } : {}),
+    }) } }),
   }, orgId, event, context);
 }
 
@@ -762,6 +768,7 @@ export function intakePortsFrom(dependencies: AwsBrokerDependencies, tasks: Deve
   return intakePortsOf({
     documentClient: dependencies.documentClient, tableName: dependencies.tableName, now: Date.now, starter,
     intentDependenciesFor: (caller) => codeIntentDependenciesOf(routeDependencies, caller),
+    ...(dependencies.teamRecord === undefined ? {} : { trackerLinks: dependencies.teamRecord.table }),
   });
 }
 
@@ -772,6 +779,8 @@ export function intakePollDependenciesFrom(dependencies: AwsBrokerDependencies, 
   if (ports === undefined || routeDependencies === undefined) return undefined;
   return {
     ports,
+    // Slice 5: Jira and Linear sources are read through the company's own connections; any other system through a search an adapter registered.
+    searchFor: intakeSearchesOf({ deps: dependencies.orgConnections }),
     notify: async (notice) => {
       const people = await listProjectMembers(projectMembersDepsOf(routeDependencies), notice.orgId, notice.project);
       await writeIntakeNotice(ports.table, people.filter((person) => person.role === "maintainer").map((person) => person.developerId), notice);

@@ -103,11 +103,11 @@ describe("a ticket an outsider files waits for a member", () => {
   it("waits when the person who asked is not linked to a member, and starts nothing", async () => {
     const w = world();
     const outcome = await ingestIntake(w.ports, candidate({ actor: { kind: "person", accountId: "acct-stranger", display: "Eve" } }));
-    expect(outcome).toEqual({ outcome: "waiting", reason: "outsider" });
+    expect(outcome).toEqual({ outcome: "waiting", reason: "unlinked" });
     expect(w.started).toEqual([]);
     const waiting = await listWaitingIntakeItems(w.ports.table, ORG, PROJECT);
     expect(waiting).toHaveLength(1);
-    expect(waiting[0]).toMatchObject({ system: "jira", id: "PAY-12", reason: "outsider", requester: { standing: "outsider" } });
+    expect(waiting[0]).toMatchObject({ system: "jira", id: "PAY-12", reason: "unlinked", requester: { standing: "outsider" } });
   });
 
   it("waits when the poll cannot say who asked", async () => {

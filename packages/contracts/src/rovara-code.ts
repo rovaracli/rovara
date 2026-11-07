@@ -638,7 +638,8 @@ export type SetupDraftApplyBody = z.infer<typeof SetupDraftApplyBodySchema>;
 
 // ---- milestones
 
-export const CODE_MILESTONE_KINDS = ["questions", "answered", "plan_ready", "pr_ready", "review_nudge", "fixing", "stuck", "approved", "merged"] as const;
+/** `started` and `closed` (slice 5): the task began from a ticket, and the task ended without a merge; ticket updates are told them like any other milestone. */
+export const CODE_MILESTONE_KINDS = ["questions", "answered", "plan_ready", "pr_ready", "review_nudge", "fixing", "stuck", "approved", "merged", "started", "closed"] as const;
 export const CodeMilestoneKindSchema = z.enum(CODE_MILESTONE_KINDS);
 export type CodeMilestoneKind = z.infer<typeof CodeMilestoneKindSchema>;
 /** The milestones that come before the pull request: written only for 1.1.0 tasks, so version 1 records stay as they were. */

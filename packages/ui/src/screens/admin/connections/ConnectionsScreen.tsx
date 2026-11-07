@@ -11,7 +11,7 @@ import { SlackWorkspaceEvidence } from "./SlackWorkspaceEvidence.js";
 import { McpServers } from "./McpServers.js";
 import { JiraOrgAdminKey } from "./JiraOrgAdminKey.js";
 import { checkedTime, ReadSection, useAdminRead } from "../models/read.js";
-const connectionsSchema = z.object({ connections: z.array(z.object({ connectionId: z.string().max(100), type: z.string().max(64), label: z.string().max(200), hasCredential: z.boolean(), identity: z.enum(["service", "personal"]).optional(), updatedAt: z.string().max(40), lastCheck: z.object({ ok: z.boolean(), at: z.string().max(40) }).optional() })).max(1000) });
+const connectionsSchema = z.object({ connections: z.array(z.object({ connectionId: z.string().max(100), type: z.string().max(64), label: z.string().max(200), hasCredential: z.boolean(), identity: z.enum(["service", "personal"]).optional(), updatedAt: z.string().max(40), lastCheck: z.object({ ok: z.boolean(), at: z.string().max(40) }).optional(), ticketUpdates: z.string().max(40).optional() })).max(1000) });
 const githubSchema = z.object({ installations: z.array(z.object({ installationId: z.number().int().positive(), accountLogin: z.string().max(100), status: z.enum(["active", "suspended", "removed"]) })).max(1000) });
 const requestsSchema = z.object({ requests: z.array(z.object({ accountLogin: z.string().max(100).optional(), status: z.string().max(64), requestedAt: z.string().max(40) })).max(1000) });
 type ConnectionInfo = z.infer<typeof connectionsSchema>["connections"][number];
@@ -45,7 +45,7 @@ function RegisteredConnections({ connections }: { connections: ConnectionInfo[] 
  { key: "credential", title: "Credential", render: c => c.type === "cloudwatch" ? "External setup" : c.hasCredential ? "Configured" : "Not configured" },
  { key: "association", title: "Account association", render: c => c.identity === "service" ? "Service account (declared)" : c.identity === "personal" ? "Personal account (declared)" : "Not returned" },
  { key: "check", title: "Stored check", render: c => c.lastCheck === undefined ? "Unknown" : c.lastCheck.ok ? "Previously passed · current health unknown" : "Needs action" },
- { key: "checked", title: "Last check", render: c => checkedTime(c.lastCheck?.at) }, { key: "changed", title: "Changed", render: c => checkedTime(c.updatedAt) },
+ { key: "checked", title: "Last check", render: c => checkedTime(c.lastCheck?.at) }, { key: "tickets", title: "Ticket updates", render: c => c.type !== "linear" && c.type !== "jira" ? "Not used" : c.ticketUpdates === "needs_write_access" ? "Can't write: give it read and write access" : "Not reported" }, { key: "changed", title: "Changed", render: c => checkedTime(c.updatedAt) },
  ]} />}
  {shown.length > 0 && <><h3>Connection guidance</h3>{shown.map(c => <ConnectionGuidance key={c.connectionId} connection={c} />)}</>}
  <p>Fix connection: ask a company admin to review the vendor integration's account, credential configuration and required permissions. Linear needs an authorized account and workspace access. No credential entry or permission expansion is performed here.</p>

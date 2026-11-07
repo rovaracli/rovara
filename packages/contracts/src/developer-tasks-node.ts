@@ -287,7 +287,8 @@ export type DeveloperTaskRunView = z.infer<typeof DeveloperTaskRunViewSchema>;
 
 export type DeveloperTaskView = z.infer<typeof DeveloperTaskViewSchema>;
 
-export const DeveloperTaskListItemSchema = DeveloperTaskViewSchema.pick({ taskId: true, title: true, project: true, status: true, shared: true, createdAt: true, updatedAt: true });
+/** Slice 5: a row also carries the task's session and its web link when it has one, so a list (MCP, the CLI) can hand a person the page without guessing. */
+export const DeveloperTaskListItemSchema = DeveloperTaskViewSchema.pick({ taskId: true, title: true, project: true, status: true, shared: true, createdAt: true, updatedAt: true, sessionId: true, sessionUrl: true });
 
 export type DeveloperTaskListItem = z.infer<typeof DeveloperTaskListItemSchema>;
 

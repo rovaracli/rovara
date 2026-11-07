@@ -26,6 +26,7 @@ import { retrySession } from "./retry.js";
 import { answerIntentOnSession } from "../rovara-code/questions.js";
 // v1.2 learning loop: registers the suggested-rules card source with Home (the module registers itself when it loads).
 import "../learning/home-source.js";
+import "../intake/home-source.js";
 import { changeAnywayOnSession } from "../rovara-code/change-anyway.js";
 import { pressMerge, registerMergeApprovals } from "../rovara-code/merge.js";
 import { registerCodeSettingsApprovals } from "../rovara-code/code-settings.js";

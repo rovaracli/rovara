@@ -90,7 +90,7 @@ import {
 import { hooksCreate, hooksDelete, hooksList, hooksRotate } from "./developer/hooks.js";
 import { triggersActivity, triggersList, triggersRemove, triggersSet, type TriggerOwnerKind } from "./developer/triggers.js";
 import { chainsArchive, chainsCreate, chainsDraftGet, chainsDraftSet, chainsList, chainsPublish, chainsRollback, chainsShare, chainsShow, chainsVersions } from "./developer/chains.js";
-import { homeCards, sessionAnswer, sessionControl, sessionFollow, sessionLinkIssue, sessionMerge, sessionSay, sessionShare, sessionShow, sessionTakeOver, sessionsList } from "./developer/sessions.js";
+import { homeCards, sessionAnswer, sessionControl, sessionFollow, sessionLinkIssue, sessionMerge, sessionSay, sessionShare, sessionShow, sessionStart, sessionTakeOver, sessionsList } from "./developer/sessions.js";
 import { agentsBudget, agentsSpend, orgSpend, projectAiSet, spendRequestsList, taskAskRunLimit, taskContinueAsTask } from "./developer/spend.js";
 import { parseConnectorsFlag } from "./init/finish-steps.js";
 import { runEnvAdopt, runEnvList, runEnvUse } from "./environments/commands.js";
@@ -814,7 +814,16 @@ export function createCliProgram(dependencies: CliDependencies = {}): Command {
         mine: options.mine, shared: options.shared, ...(project === undefined ? {} : { project }), ...(options.live === undefined ? {} : { live: options.live }), ...(options.cursor === undefined ? {} : { cursor: options.cursor }),
       }));
     });
-  const session = program.command("session").description("look at one session, comment on it, tell its agent, answer its questions, stop it, retry it, take it over, share it, link it to a Linear issue or press Merge on its pull request");
+  const session = program.command("session").description("start work, look at one session, comment on it, tell its agent, answer its questions, stop it, retry it, take it over, share it, link it to a Linear issue or press Merge on its pull request");
+  session
+    .command("start")
+    .description("start Rovara Code on a project with your instructions, and print the link to its page")
+    .argument("<instructions>", "complete instructions for Rovara; the worker gets them exactly as written")
+    .option("--project <name>", "the project's exact name")
+    .option("--title <title>", "a short title, at most 120 characters")
+    .option("--workflow <path>", "quick or full: the plan-first workflow, where you approve the plan before any code is written")
+    .action(async (instructions: string, options: { project?: string; title?: string; workflow?: string }, command: Command) =>
+      printResult(command, await sessionStart(developerSession(), developerEnv(command), { project: options.project ?? globalOptions(command).project, instructions, ...(options.title === undefined ? {} : { title: options.title }), ...(options.workflow === undefined ? {} : { workflow: options.workflow }) })));
   session
     .command("show")
     .description("show a session: its link, status, owner, cost and what waits for you")

@@ -113,11 +113,11 @@ describe("a re-label by a member after the task ended", () => {
 describe("a re-label by someone who is not a member after the task ended", () => {
   it("makes the ticket wait for a member to say Start, and starts nothing", async () => {
     const w = await firstTaskEnded();
-    expect(await ingestIntake(w.ports, label("e2", { actor: { kind: "person", accountId: "999" } }))).toEqual({ outcome: "waiting", reason: "outsider" });
+    expect(await ingestIntake(w.ports, label("e2", { actor: { kind: "person", accountId: "999" } }))).toEqual({ outcome: "waiting", reason: "unlinked" });
     expect(w.started).toHaveLength(1);
     const waiting = await listWaitingIntakeItems(w.ports.table, ORG, PROJECT);
     expect(waiting).toHaveLength(1);
-    expect(waiting[0]).toMatchObject({ id: "acme/web/7", reason: "outsider" });
+    expect(waiting[0]).toMatchObject({ id: "acme/web/7", reason: "unlinked" });
   });
 
   it("starts, linked to the old task, when a member then presses Start", async () => {

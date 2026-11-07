@@ -135,6 +135,8 @@ export { TestEnvironmentStateSchema, TestEnvSummarySchema, TestEnvRunsSchema, Te
 export * from "./knowledge-skills.js";
 // Meta repo lane F: task intake (browser-safe).
 export * from "./intake.js";
+// Slice 5: ticket updates (browser-safe).
+export * from "./ticket-updates.js";
 export * from "./loaded-knowledge.js";
 
 // Meta repo lane B: the setup agent's proposal, its review rows and the per-item apply, and the contracts they cite (provenance, the meta project body).
