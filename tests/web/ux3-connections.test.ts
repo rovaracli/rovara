@@ -9,7 +9,7 @@ import { appRoutes } from "../../packages/ui/src/routes.js";
 import { AppHostProvider } from "../../packages/ui/src/host.js";
 import { createQueryClient } from "../../packages/ui/src/api/query.js";
 import { ThemeProvider } from "../../packages/ui/src/theme.js";
-import { causeText, connectionSummary, githubSummary, groupSummary, providerSummary, slackSummary, whoWhen } from "../../packages/ui/src/screens/admin/connections/connection-state.js";
+import { type RegistryConnection, causeText, connectionSummary, githubSummary, groupSummary, providerSummary, slackSummary, whoWhen } from "../../packages/ui/src/screens/admin/connections/connection-state.js";
 import { readOnlyReason, SETTINGS_AREAS } from "../../packages/ui/src/screens/admin/settings-text.js";
 import { fakeHost } from "./support/fake-host.js";
 import { renderUi } from "./support/render.js";
@@ -18,7 +18,7 @@ import type { ApiRequest, ApiResponse } from "../../packages/ui/src/host.js";
 
 const OWNER = "a".repeat(64), MAYA = "b".repeat(64), ORG = "org_aaaaaaaaaaaaaaaaaaaa";
 const features = { localAgents: false, admin: true, usage: false, chains: false, describe: false, notices: false };
-const linear = { connectionId: "con_aaaaaaaaaaaaaaaaaaaa", type: "linear", label: "Team Linear", hasCredential: true, access: "read", identity: "service", createdBy: MAYA, createdAt: "2026-10-01T00:00:00Z", updatedAt: "2026-10-02T00:00:00Z", lastCheck: { ok: true, at: "2026-10-02T00:00:00Z" } };
+const linear: RegistryConnection = { connectionId: "con_aaaaaaaaaaaaaaaaaaaa", type: "linear", label: "Team Linear", hasCredential: true, access: "read", identity: "service", createdBy: MAYA, createdAt: "2026-10-01T00:00:00Z", updatedAt: "2026-10-02T00:00:00Z", lastCheck: { ok: true, at: "2026-10-02T00:00:00Z" } };
 function mount(options: { path?: string; role?: "owner" | "admin"; connections?: unknown[]; respond?: (r: ApiRequest) => Promise<ApiResponse | undefined> } = {}) {
  const role = options.role ?? "owner", nav = AppNavSchema.parse({ me: { developerId: OWNER, name: "Priya", orgRole: role }, org: { name: "Acme" }, homeCount: 0, projects: [], shared: { agents: [], sessions: [] }, features });
  const me = AppMeResponseSchema.parse({ developer: { id: OWNER, name: "Priya", orgRole: role }, org: { orgId: ORG, name: "Acme", plan: "team" }, identities: [{ provider: "github", login: "priya", linkedAt: "x", lastSignInAt: "x" }] });

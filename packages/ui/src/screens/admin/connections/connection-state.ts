@@ -65,7 +65,7 @@ export function slackSummary(read: { status: "loading" } | { status: "unavailabl
 
 /** The cause shown for a failed add or check: a server message is the vendor's or Rovara's own sentence, so it is shown inert and capped. */
 export function causeText(message: string | undefined): string {
-  const text = (message ?? "").replace(/[\u0000-\u001f\u007f]/g, " ").trim().replace(/[.\s]+$/, "");
+  const text = (message ?? "").replace(/\p{Cc}/gu, " ").trim().replace(/[.\s]+$/, "");
   return text === "" ? "the check didn't give a reason" : text.length > 300 ? `${text.slice(0, 297)}...` : text;
 }
 
