@@ -9,11 +9,13 @@ import { PageHeader } from "../../design/PageHeader.js";
 import { Skeleton } from "../../design/Skeleton.js";
 import { SECOND_REVIEW_PATH } from "../../api/second-review.js";
 import { VisibleText } from "../../design/VisibleText.js";
+import { AdminNav } from "./AdminNav.js";
 import "./admin.css";
 /** Whether the second opinion page exists on this install, asked once per session and kept, and asked again when the scope (company, person, role) changes. */
 const secondReviewProbeKey = ["second-review-probe"] as const;
 interface AdminContext { orgId: string; company: string; developerId: string; role: "owner" | "admin" | "member"; checking: boolean }
 export function useAdminContext() { return useOutletContext<AdminContext>(); }
+// UX3: company settings work on a phone. A narrow screen only changes how the menu and the tables are laid out; it never hides a setting.
 const narrowViewport = () => false;
 function OwnRoleReceipt({ initial }: { initial: boolean }) {
  const [show] = useState(initial), location = useLocation(), navigate = useNavigate();
@@ -61,6 +63,5 @@ export function AdminLayout() {
  }, [allowed, query]);
  if (supported && identity.isPending) return <section aria-label="Administration access" aria-busy="true"><Skeleton label="Checking administration access" /></section>;
  if (!allowed || identity.data === undefined) return <section><PageHeader focusOnMount title="Administration unavailable" /><p>Administration is available to company owners and admins in the web app.</p>{identity.isSuccess && role === "member" && <OwnRoleReceipt key={`${location.pathname}:${identity.data.org.orgId}:${identity.data.developer.id}`} initial={ownReceipt} />}<NavLink to="/app">Go to Home</NavLink>{supported && identity.isError && <><p role="alert">{identity.dataUpdatedAt > 0 ? "Couldn't re-check your administration access. Try again." : "Couldn't verify your administration access. Try again."}</p><Button onClick={() => { void identity.refetch(); }}>Try again</Button></>}</section>;
- if (!largeScreen) return <section><PageHeader focusOnMount title="Administration" /><p>Open this on a larger screen to use it. <NavLink to="/app">Go to Home</NavLink></p></section>;
- return <div className="rv-admin" aria-busy={identity.isFetching}><p className="rv-admin-context">Administration · <VisibleText text={identity.data.org.name} /></p><div className="rv-admin-content"><nav aria-label="Administration" className="rv-admin-nav">{companyAdmin && <><NavLink to="/app/admin" end>Overview</NavLink><NavLink to="/app/admin/people">People</NavLink><NavLink to="/app/admin/invites">Invites</NavLink><NavLink to="/app/admin/money/budgets">Spending</NavLink>{/* Lane B: project settings; Agents screens stay held (no nav, no route). */}<NavLink to="/app/admin/projects">Projects</NavLink><NavLink to="/app/admin/how-we-work">How we work</NavLink>{/* Lane C: read-only areas. */}<NavLink to="/app/admin/models/sources">AI models</NavLink><NavLink to="/app/admin/connections">Connections</NavLink><NavLink to="/app/admin/tracker-people">Tracker people</NavLink>{!secondReviewOff && <NavLink to="/app/admin/second-review">Second opinion</NavLink>}{/* Lane C2: company audit, owner/admin gate retained. */}<NavLink to="/app/admin/audit">Audit</NavLink><NavLink to="/app/admin/health">Health</NavLink>{/* Company domain verification: owner only (the page and the routes refuse an admin). */}{role === "owner" && <NavLink to="/app/admin/domains">Company domains</NavLink>}</>}<NavLink to="/app/admin/waiting">Waiting for people</NavLink></nav><div className="rv-admin-surface"><Outlet context={{ orgId: identity.data.org.orgId, company: identity.data.org.name, developerId: identity.data.developer.id, role, checking: identity.isFetching } satisfies AdminContext} /></div></div></div>;
+ return <div className="rv-admin" aria-busy={identity.isFetching}><p className="rv-admin-context">Company settings · <VisibleText text={identity.data.org.name} /></p><div className="rv-admin-content"><AdminNav role={role} secondReviewOff={secondReviewOff} companyAdmin={companyAdmin} compact={!largeScreen} /><div className="rv-admin-surface"><Outlet context={{ orgId: identity.data.org.orgId, company: identity.data.org.name, developerId: identity.data.developer.id, role, checking: identity.isFetching } satisfies AdminContext} /></div></div></div>;
 }

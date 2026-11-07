@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import { SettingsNote } from "../SettingsNote.js";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useAppHost } from "../../../host.js";
 import { ApiError } from "../../../api/errors.js";
@@ -24,7 +25,7 @@ const problem = (error: unknown): { message: string; reauth: boolean } => error 
 
 export function CompanyDomainsScreen() {
  const { orgId, developerId, role } = useAdminContext();
- if (role !== "owner") return <section><PageHeader focusOnMount title="Company domains" /><p role="alert">Only a company owner can see or change company domains.</p></section>;
+ if (role !== "owner") return <section><PageHeader focusOnMount title="Company domains" /><SettingsNote area="domains" /><p role="alert">Only a company owner can see or change company domains.</p></section>;
  return <Domains key={`${orgId}:${developerId}`} orgId={orgId} developerId={developerId} />;
 }
 
@@ -48,7 +49,7 @@ function Domains({ orgId, developerId }: { orgId: string; developerId: string })
  const remove = (domain: string) => run("remove:" + domain, async () => { await api.remove(domain);setRemoving(undefined); });
 
  return <section aria-busy={read.isFetching}>
-  <PageHeader focusOnMount title="Company domains" description="Prove which email domains your company owns. Rovara uses a verified domain to tell which email addresses are your company's." />
+  <PageHeader focusOnMount title="Company domains" description="Prove which email domains your company owns. Rovara uses a verified domain to tell which email addresses are your company's." /><SettingsNote area="domains" />
   <p className="rv-admin-note">Add a domain, then publish the DNS record shown for it at your DNS provider. Rovara checks for the record when you press Check now and once a day. If the record is gone for 3 days in a row, the domain is lost and stops counting. A domain belongs to one company only.</p>
   <form onSubmit={event => { event.preventDefault();if (typed.trim() !== "") void add(); }}>
    <TextField label="Domain" hint="For example example.com, without https:// or a path." value={typed} onChange={event => { setTyped(event.target.value); }} autoComplete="off" spellCheck={false} maxLength={300} />

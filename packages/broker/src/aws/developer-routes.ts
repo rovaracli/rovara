@@ -709,7 +709,10 @@ export async function routeDeveloperRequest(deps: DeveloperRouteDependencies, re
   if (request.method === "POST" && projectSetupCheckRoute !== null) return startProjectSetupCheck(deps, caller, projectSetupCheckRoute[1]!, jsonBody(request));
   if (request.method === "POST" && url.pathname === "/v1/app/github/connect") {
     if (deps.githubConnect === undefined) throw agentXError("NOT_FOUND", "connecting GitHub is not set up in this deployment");
-    return deps.githubConnect.start(caller);
+    const asked = jsonBody(request), returnTo = typeof asked === "object" && asked !== null ? (asked as { returnTo?: unknown }).returnTo : undefined;
+    // A fixed choice of where to come back to; anything else is refused, never used as an address.
+    if (returnTo !== undefined && returnTo !== "/app/onboard" && returnTo !== "/app/admin/connections") throw agentXError("CONFIG_INVALID", "returnTo: not a place Rovara can return to");
+    return deps.githubConnect.start(caller, returnTo === undefined ? {} : { returnTo });
   }
   if (request.method === "GET" && url.pathname === "/v1/app/github/requests") {
     if (deps.githubConnect === undefined) throw agentXError("NOT_FOUND", "connecting GitHub is not set up in this deployment");

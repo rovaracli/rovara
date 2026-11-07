@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
+import { SettingsNote } from "../SettingsNote.js";
 import { Link, useParams } from "react-router";
 import type { OrgServiceStatus } from "@agentx/contracts/web";
 import { useAppHost } from "../../../host.js";
@@ -22,7 +23,7 @@ export function ServiceStatusContent({ orgId, kind, enabled }: { orgId: string; 
  }, [api, enabled, orgId, revision]);
  const current = enabled && result?.orgId === orgId && result.revision === revision ? result : undefined, pending = enabled && current === undefined;
  const data = current?.data, row = kind === undefined ? undefined : data?.checks.find(check => check.kind === kind);
- return <section aria-label="Rovara service status"><PageHeader focusOnMount title={kind ? `Rovara service status: ${name(kind)}` : "Rovara service status"} actions={<button type="button" className="rv-button rv-button-secondary" aria-disabled={!enabled || pending} onClick={() => { if (enabled && !pending) setRevision(value => value + 1); }}>Refresh stored status</button>} />
+ return <section aria-label="Rovara service status"><PageHeader focusOnMount title={kind ? `Rovara service status: ${name(kind)}` : "Rovara service status"} actions={<button type="button" className="rv-button rv-button-secondary" aria-disabled={!enabled || pending} onClick={() => { if (enabled && !pending) setRevision(value => value + 1); }}>Refresh stored status</button>} /><SettingsNote area="health" />
   <p>These deployment-wide runtime facts are shared with every company's admins. This is stored qualification evidence, not a live availability check or proof that this project can run checks. No probe or renewal runs here.</p>
   <Link to={kind ? "/app/admin/health" : "/app/admin"}>{kind ? "Back to service status" : "Back to Administration"}</Link>
   {!enabled && <p role="alert">Service status is unavailable while company access is being checked.</p>}

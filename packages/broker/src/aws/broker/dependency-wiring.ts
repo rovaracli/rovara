@@ -330,7 +330,7 @@ export function githubConnectRoute(dependencies: AwsBrokerDependencies): { githu
   const connection = githubConnectionOf(dependencies);
   return connection === undefined ? {} : {
     githubConnect: {
-      start: (caller) => startGithubConnect(connection, caller),
+      start: (caller, options) => startGithubConnect(connection, caller, options),
       listRequests: (caller) => listInstallRequests(connection, caller.orgId),
       cancelRequest: (caller, githubUserId) => cancelInstallRequest(connection, caller, githubUserId),
       listInstallations: (caller) => listGithubInstallations(connection, caller.orgId),

@@ -252,7 +252,7 @@ export interface DeveloperRouteDependencies {
   projectMembers?: ProjectMembers;
   /** Plan 2, Task 13: starts connecting GitHub to the caller's org (the broker's `startGithubConnect`). Without it the route answers NOT_FOUND. */
   githubConnect?: {
-    start(caller: DeveloperCaller): Promise<{ installUrl: string; expiresAt: string; orgName?: string; ownerName?: string }>;
+    start(caller: DeveloperCaller, options?: { returnTo?: "/app/onboard" | "/app/admin/connections" }): Promise<{ installUrl: string; expiresAt: string; orgName?: string; ownerName?: string }>;
     /** Plan 2, Task 14: the org's requests to a GitHub admin (any member), and the cancelling of one that is waiting. */
     listRequests(caller: DeveloperCaller): Promise<{ requests: unknown[] }>;
     cancelRequest(caller: DeveloperCaller, githubUserId: string): Promise<{ githubUserId: string; status: "cancelled" }>;

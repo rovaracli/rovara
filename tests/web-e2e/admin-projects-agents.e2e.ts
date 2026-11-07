@@ -6,16 +6,16 @@ test("inspects real persisted projects and versions using only reads",async({pag
  await page.goto("/app/admin/projects");await expect(page.getByRole("table",{name:"Projects",exact:true})).toBeVisible();await expect(page.getByText("foreign-project")).toHaveCount(0);
  const project=page.getByRole("table").getByRole("link",{name:"payments",exact:true});await project.focus();await page.keyboard.press("Enter");await expect(page.getByRole("heading",{name:"payments",exact:true})).toBeFocused();await expect(page.getByText("Using GitHub default branch")).toBeVisible();await expect(page.getByRole("table",{name:"Project people"})).toBeVisible();
  await page.getByRole("link",{name:"Back to projects"}).click();await page.getByRole("combobox",{name:"Project status"}).selectOption("archived");await expect(page.getByRole("table").getByRole("link",{name:"old",exact:true})).toBeVisible();
- await expect(page.getByRole("link",{name:"Agents",exact:true})).toHaveCount(0);
- for(const hidden of ["agents","agents/rovara-code/versions"]){await page.goto("/app/admin/"+hidden);await expect(page.getByRole("heading",{name:"Not found",exact:true})).toBeVisible();await expect(page.getByRole("table")).toHaveCount(0);}
+ await expect(page.getByRole("link",{name:"Agents",exact:true})).toBeVisible();
+ for(const [shown,title] of [["agents","Agents"],["agents/rovara-code/versions","Agent versions"]] as const){await page.goto("/app/admin/"+shown);await expect(page.getByRole("heading",{name:title,exact:true})).toBeVisible();}
  const reads=await(await request.get("/__mock/requests")).json() as Array<{method:string;path:string}>;expect(reads.filter(r=>r.path.startsWith("/v1/web/")).every(r=>r.method==="GET")).toBe(true);
 });
 for(const theme of ["light","dark"] as const)test(`checks B1 pages in ${theme}`,async({page})=>{
  for(const [path,table] of [["projects","Projects"],["projects/payments","Project people"]]){await page.goto("/app/admin/"+path);await expect(page.getByRole("table",{name:table!,exact:true})).toBeVisible();await checkA11y(page,{theme});}
 
 });
-test("refuses revoked and narrow-screen B1 routes",async({page,request})=>{
- await page.setViewportSize({width:390,height:844});await page.goto("/app/admin/projects");await expect(page.getByText("Open this on a larger screen to use it.",{exact:false})).toBeVisible();await expect(page.getByRole("table")).toHaveCount(0);
+test("shows projects as a list on a phone and refuses revoked routes",async({page,request})=>{
+ await page.setViewportSize({width:390,height:844});await page.goto("/app/admin/projects");await expect(page.getByRole("table",{name:"Projects",exact:true})).toBeVisible();expect(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth)).toBe(true);
  await page.setViewportSize({width:1440,height:1000});await page.goto("/app/admin/projects");await expect(page.getByRole("table")).toBeVisible();await request.post("/__mock/admin-role");await page.reload();await expect(page.getByRole("heading",{name:"Administration unavailable"})).toBeVisible();await expect(page.getByRole("table")).toHaveCount(0);
 });
 

@@ -4,7 +4,7 @@ import { ApiError } from "../../../api/errors.js";
 import { companySettingsKey, useCompanySuggestionsSettings, useLearningApi } from "../../../api/learning.js";
 import { Button } from "../../../design/Button.js";
 import { VisibleText } from "../../../design/VisibleText.js";
-import { SUGGESTIONS as T } from "./company-text.js";
+import { APPLIES_AT_ONCE, SUGGESTIONS as T } from "./company-text.js";
 import "./how-we-work.css";
 
 /** A status line belongs to the revision it reported; once the setting is read at another revision it is no longer true and goes. An alert stays until the next action. */
@@ -37,6 +37,7 @@ export function LearningSuggestionsRow() {
  return <section aria-label={T.HEADING} className="rv-hww-company-card rv-hww-suggestions" aria-busy={busy}><h2>{T.HEADING}</h2>
   <p>Suggestions: <strong>{suggestions === "on" ? "On" : suggestions === "off" ? "Off" : "Unknown"}</strong>{source === "install_default" && <> <span className="rv-muted">{T.INSTALL_DEFAULT}</span></>}</p>
   <p className="rv-muted">{T.HELP}</p>
+  <p className="rv-muted">{APPLIES_AT_ONCE}</p>
   {!canChange ? <p className="rv-muted">{T.READ_ONLY}</p> : known && <div ref={actions}>{confirming ? <div><p>{T.CONFIRM}</p><div className="rv-hww-company-actions"><Button variant="primary" busy={busy} onClick={() => { void change("on"); }}>{T.TURN_ON}</Button><Button disabled={busy} onClick={() => { refocus.current = true;setConfirming(false); }}>{T.CANCEL}</Button></div></div>
    : <Button busy={busy} onClick={() => { if (suggestions === "on") void change("off"); else { setMessage(undefined);setConfirming(true); } }}>{suggestions === "on" ? T.TURN_OFF : T.TURN_ON}</Button>}</div>}
   <p role="status">{message?.kind === "status" && message.revision === revision ? message.text : ""}</p>

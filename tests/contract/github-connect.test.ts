@@ -631,6 +631,35 @@ describe("through the broker", () => {
     expect((await b.publicCall("POST", "/v1/github/install/confirm", {}, "connect=x&decision=connect")).statusCode).toBe(404);
   });
 
+  it("UX3: a connect started from the Connections page ends there; one started the old way, or with an unknown place, ends in onboarding, and no place is ever taken from a request", async () => {
+    const b = await broker();
+    b.linkGithub();
+    const confirmFor = async (state: string) => {
+      const callback = await b.publicCall("GET", `/v1/github/install/callback?code=code1&installation_id=501&setup_action=install&state=${state}`);
+      const token = cookieOf(callback.headers["set-cookie"])![2]!;
+      return b.publicCall("POST", "/v1/github/install/confirm", { origin: CELL, cookie: `__Host-rovara_gh_connect=${token}`, "content-type": "application/x-www-form-urlencoded" }, `connect=${sha(state)}&decision=connect`);
+    };
+    // A place that is not one of the two fixed ones is refused when the connect starts.
+    for (const returnTo of ["https://evil.example/", "/app/admin/people", "//evil.example", 7]) expect((await b.dev(OMAR, "POST", "/v1/app/github/connect", { returnTo })).status).toBe(400);
+    const fromConnections = (await b.dev(OMAR, "POST", "/v1/app/github/connect", { returnTo: "/app/admin/connections" })).body as { installUrl: string };
+    const state = new URL(fromConnections.installUrl).searchParams.get("state")!;
+    expect(b.db.get(githubConnectStateKey(sha(state)))).toMatchObject({ returnTo: "/app/admin/connections" });
+    // A callback page that ends without a confirm (the request path) also goes back to Connections.
+    const requested = await b.publicCall("GET", `/v1/github/install/callback?code=code1&installation_id=501&setup_action=request&state=${state}`);
+    expect(requested.body).toContain('href="/app/admin/connections?open=github"');expect(requested.body).not.toContain("/app/onboard");
+    const second = new URL(((await b.dev(OMAR, "POST", "/v1/app/github/connect", { returnTo: "/app/admin/connections" })).body as { installUrl: string }).installUrl).searchParams.get("state")!;
+    const confirmed = await confirmFor(second);
+    expect(confirmed.body).toContain("<h1>GitHub connected</h1>");expect(confirmed.body).toContain('<a class="rv-next" href="/app/admin/connections?open=github">Continue in Rovara</a>');expect(confirmed.body).not.toContain("/app/onboard");
+    // The old way (an empty body, as the command line sends it) and an explicit onboarding both end in onboarding.
+    const plain = (await b.dev(OMAR, "POST", "/v1/app/github/connect")).body as { installUrl: string };
+    expect(b.db.get(githubConnectStateKey(sha(new URL(plain.installUrl).searchParams.get("state")!)))?.returnTo).toBeUndefined();
+    const onboard = (await b.dev(OMAR, "POST", "/v1/app/github/connect", { returnTo: "/app/onboard" })).body as { installUrl: string };
+    const cancelled = await b.publicCall("GET", `/v1/github/install/callback?code=code1&installation_id=501&setup_action=install&state=${new URL(onboard.installUrl).searchParams.get("state")!}`);
+    expect(cancelled.body).toContain("Connect acme");
+    // A state nobody knows ends in onboarding.
+    expect((await b.publicCall("GET", "/v1/github/install/callback?state=" + "A".repeat(43))).body).toContain('href="/app/onboard">Back to Rovara</a>');
+  });
+
   it("the whole flow: link, callback page with the cookie, confirmation page, both keys, cookie cleared", async () => {
     const b = await broker();
     b.linkGithub();

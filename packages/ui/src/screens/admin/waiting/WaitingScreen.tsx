@@ -1,4 +1,5 @@
 import "./waiting.css";
+import { SettingsNote } from "../SettingsNote.js";
 import { useMemo, useState } from "react";
 import { z } from "zod";
 import { Button } from "../../../design/Button.js";
@@ -36,7 +37,7 @@ function ScopedWaiting() {
  { key: "time", title: "Created", render: r => checkedTime(r.createdAt) }, { key: "amount", title: "Requested amount", render: r => r.amount === undefined ? "Not provided" : `$${r.amount.toFixed(2)}` },
  { key: "open", title: "Action", render: r => r.confirmUrl === undefined ? "Confirmation link unavailable" : <Button onClick={() => { if (r.confirmUrl !== undefined && !r.confirmUrl.includes("?") && isConfirmUrl(r.confirmUrl, host.origin)) host.openExternal(r.confirmUrl); }}>Open confirmation</Button> },
  ]} />}</>; }
- return <section className="rv-admin-waiting"><PageHeader focusOnMount title="Waiting for people" description="Only work returned for your existing permissions. This queue gives no extra access to private content." />
+ return <section className="rv-admin-waiting"><PageHeader focusOnMount title="Waiting for people" description="Only work returned for your existing permissions. This queue gives no extra access to private content." /><SettingsNote area="waiting" />
  <p>Partial coverage: approvals and spending requests only. Questions, plan reviews, merge readiness and handoff blockers are not included yet. No company-wide total is available.</p>
  <div className="rv-field"><label htmlFor="waiting-kind">Kind</label><select id="waiting-kind" value={kind} onChange={event => setKind(event.target.value)}><option value="all">All kinds</option><option value="approval">Approvals</option><option value="spend">Spending requests</option></select></div>
  <div className="rv-field"><label htmlFor="waiting-age">Age at list read</label><select id="waiting-age" aria-describedby="waiting-age-help" value={age} onChange={event => setAge(event.target.value)}><option value="all">All ages</option><option value="recent">Under 1 day</option><option value="week">1 to under 7 days</option><option value="older">7 days or more</option><option value="unknown">Age unavailable</option></select><p id="waiting-age-help">Age uses this device's clock when each list was read. An incorrect clock can affect these ages; unusable or future dates have unavailable age.</p></div>

@@ -1,81 +1,122 @@
+// UX3: the one Connections page of company settings. Every connection a company gives Rovara is a row here: GitHub, AI provider, Slack, email, Linear, Jira, cloud and
+// monitoring tools, and test services. Each row says its state (a tick, or "Needs attention" with why and the fix), who connected it and which projects use it, and
+// opens its setup in place: plain fields, one "Check it works", nothing elsewhere. Other places that used to set a connection up now link here (`?open=<row>`).
+// Who may connect or change anything is unchanged: owners and admins. A member sees the state and why they can't change it.
 import { z } from "zod";
-import { useState } from "react";
+import { useMemo, useState } from "react";
+import { Link, useSearchParams } from "react-router";
+import { AppProjectsResponseSchema, GithubInstallationsResponseReaderSchema } from "@agentx/contracts/web";
+import { useAppHost } from "../../../host.js";
+import { ApiError } from "../../../api/errors.js";
 import { Button } from "../../../design/Button.js";
 import { PageHeader } from "../../../design/PageHeader.js";
-import { DataTable } from "../../../design/DataTable.js";
-import { TextField } from "../../../design/TextField.js";
-import { VisibleText, visibleText } from "../../../design/VisibleText.js";
+import { VisibleText } from "../../../design/VisibleText.js";
 import { useAdminContext } from "../AdminLayout.js";
+import { SettingsNote } from "../SettingsNote.js";
+import { ProviderSetup } from "../models/ProviderSetup.js";
+import { modelSourcesSnapshot } from "../models/source-order.js";
+import { ReadSection, useAdminRead } from "../models/read.js";
+import { GithubConnectPanel } from "../../onboarding/steps/GithubConnectPanel.js";
 import "./connections.css";
-import { SlackWorkspaceEvidence } from "./SlackWorkspaceEvidence.js";
+import { SlackWorkspaceEvidence, useSlackEvidence } from "./SlackWorkspaceEvidence.js";
 import { McpServers } from "./McpServers.js";
 import { JiraOrgAdminKey } from "./JiraOrgAdminKey.js";
-import { checkedTime, ReadSection, useAdminRead } from "../models/read.js";
-const connectionsSchema = z.object({ connections: z.array(z.object({ connectionId: z.string().max(100), type: z.string().max(64), label: z.string().max(200), hasCredential: z.boolean(), identity: z.enum(["service", "personal"]).optional(), updatedAt: z.string().max(40), lastCheck: z.object({ ok: z.boolean(), at: z.string().max(40) }).optional(), ticketUpdates: z.string().max(40).optional() })).max(1000) });
-const githubSchema = z.object({ installations: z.array(z.object({ installationId: z.number().int().positive(), accountLogin: z.string().max(100), status: z.enum(["active", "suspended", "removed"]) })).max(1000) });
+import { ConnectionCard } from "./ConnectionCard.js";
+import { AddTracker, RegistryItems, runCheck, type CheckResult } from "./RegistryItems.js";
+import { githubSummary, groupSummary, providerSummary, slackSummary, type CardSummary, type GithubInstall, type RegistryConnection, whoWhen } from "./connection-state.js";
+const connectionsSchema = z.object({ connections: z.array(z.object({ connectionId: z.string().max(100), type: z.string().max(64), label: z.string().max(200), hasCredential: z.boolean(), access: z.string().max(20).optional(), identity: z.enum(["service", "personal"]).optional(), createdBy: z.string().max(100).optional(), createdAt: z.string().max(40).optional(), updatedAt: z.string().max(40), lastCheck: z.object({ ok: z.boolean(), at: z.string().max(40) }).optional(), ticketUpdates: z.string().max(40).optional() })).max(1000) });
+const githubSchema = { parse(value: unknown) { return { installations: GithubInstallationsResponseReaderSchema.parse(value).installations.map(i => ({ installationId: i.installationId, accountLogin: i.accountLogin, status: i.status, connectedBy: i.connectedBy, connectedAt: i.connectedAt })) }; } };
 const requestsSchema = z.object({ requests: z.array(z.object({ accountLogin: z.string().max(100).optional(), status: z.string().max(64), requestedAt: z.string().max(40) })).max(1000) });
-type ConnectionInfo = z.infer<typeof connectionsSchema>["connections"][number];
-type GitHubInfo = z.infer<typeof githubSchema>["installations"][number];
-function ConnectionGuidance({ connection: c }: { connection: ConnectionInfo }) {
- const evidence = c.lastCheck === undefined ? "No stored check result was returned." : c.lastCheck.ok ? "The stored check previously passed." : "The stored check failed; its cause is not returned in this view.";
- return <details className="rv-connection-guidance"><summary>Guidance for <VisibleText text={c.label} /></summary>
- <p>{evidence} Current health is unknown.</p>
- <dl><dt>Configuration</dt><dd>{c.type === "cloudwatch" ? "Externally managed setup" : c.hasCredential ? "Credential configured (stored flag)" : "Credential not configured (stored flag)"}</dd>
- <dt>Declared association</dt><dd>{c.identity === "service" ? "Declared service account; vendor authorization is unverified." : c.identity === "personal" ? "Declared personal account; vendor authorization is unverified." : "Account association was not returned."}</dd>
- <dt>Stored check time</dt><dd>{checkedTime(c.lastCheck?.at)}</dd><dt>Configuration changed</dt><dd>{checkedTime(c.updatedAt)}</dd></dl>
- <p>Missing permissions, affected projects and last event delivery: Not returned.</p>
- <ol><li>{c.type === "linear" ? "Ask the workspace administrator to confirm the configured account has the intended workspace and team access." : c.type === "cloudwatch" ? "Ask the installation administrator to review the externally managed setup through the approved operator process." : "Ask a company administrator to review the integration account and vendor permissions through the approved setup process."}</li>
- <li>Review account and credential configuration through the approved setup workflow. A configured flag does not prove validity; do not paste credentials into this page.</li>
- <li>Verify delivery through your team's usual review process before relying on this connection. This page does not perform that check.</li></ol>
- <p>Opening this guidance does not run a vendor check or change configuration.</p>
- </details>;
-}
-function connectionMatchText(value: string) { return value.normalize("NFKC").toLowerCase(); }
-function RegisteredConnections({ connections }: { connections: ConnectionInfo[] }) {
- const [filter, setFilter] = useState("");
- const term = connectionMatchText(filter.trim());
- const shown = connections.filter(c => connectionMatchText(visibleText(c.label)).includes(term) || connectionMatchText(visibleText(c.type)).includes(term));
- return <>
- <TextField type="search" maxLength={200} label="Find registered connections" hint="Filters only names and types in this returned list. It does not check connection health." value={filter} onChange={event => setFilter(event.target.value)} />
- <Button onClick={() => setFilter("")}>Clear connection filter</Button>
- <p role="status" aria-live="polite" aria-atomic="true">{shown.length} of {connections.length} registered connections shown in this returned list.</p>
- {!connections.some(c => c.type === "linear") && <p>Linear: Not configured.</p>}
- {connections.length === 0 ? <p>No registered connections were returned.</p> : shown.length === 0 ? <p>No registered connections match this filter in the returned list.</p> : <DataTable caption="Registered company connections" rows={shown} rowKey={c => c.connectionId} columns={[
- { key: "label", title: "Connection", render: c => <VisibleText text={c.label} /> }, { key: "type", title: "Type", render: c => <VisibleText text={c.type} /> },
- { key: "credential", title: "Credential", render: c => c.type === "cloudwatch" ? "External setup" : c.hasCredential ? "Configured" : "Not configured" },
- { key: "association", title: "Account association", render: c => c.identity === "service" ? "Service account (declared)" : c.identity === "personal" ? "Personal account (declared)" : "Not returned" },
- { key: "check", title: "Stored check", render: c => c.lastCheck === undefined ? "Unknown" : c.lastCheck.ok ? "Previously passed · current health unknown" : "Needs action" },
- { key: "checked", title: "Last check", render: c => checkedTime(c.lastCheck?.at) }, { key: "tickets", title: "Ticket updates", render: c => c.type !== "linear" && c.type !== "jira" ? "Not used" : c.ticketUpdates === "needs_write_access" ? "Can't write: give it read and write access" : "Not reported" }, { key: "changed", title: "Changed", render: c => checkedTime(c.updatedAt) },
- ]} />}
- {shown.length > 0 && <><h3>Connection guidance</h3>{shown.map(c => <ConnectionGuidance key={c.connectionId} connection={c} />)}</>}
- <p>Fix connection: ask a company admin to review the vendor integration's account, credential configuration and required permissions. Linear needs an authorized account and workspace access. No credential entry or permission expansion is performed here.</p>
- </>;
-}
-function GitHubGuidance({ installation: i }: { installation: GitHubInfo }) {
- return <details className="rv-connection-guidance"><summary>GitHub guidance for <VisibleText text={i.accountLogin} /></summary>
- <p>Stored installation state: {i.status === "active" ? "Active" : i.status === "suspended" ? "Suspended" : "Removed"}.</p><p>Current delivery and repository access have not been verified in this view.</p>
- <ol><li>{i.status === "suspended" ? "Ask the GitHub organization owner to review why this installation is suspended before arranging supported reconnection." : i.status === "removed" ? "Ask a company administrator and GitHub organization owner to arrange the approved connection setup again." : "Ask the GitHub organization owner to review this installation's repository selection and permissions."}</li>
- <li>Review access to the intended repositories with the GitHub organization owner. A connected installation request does not verify permissions or delivery.</li></ol>
- <p>Missing permissions, affected projects and last event delivery: Not returned.</p><p>Opening this guidance does not contact GitHub or change an installation.</p>
- </details>;
-}
-function SlackGuidance() {
- return <details className="rv-connection-guidance"><summary>Slack setup guidance</summary>
- <p>No company-scoped Slack installation, permission or event data is available to this page.</p><p>Installation-wide configuration is not proof of association with this company.</p>
- <ol><li>First, the Slack workspace must be connected to this company. A Rovara operator handles workspace connection; <code>connect-team</code> is operator work.</li>
- <li>On installations with company Slack channel binding support, a company owner or admin binds each channel to a project using the CLI <code>rovara slack bind</code>. This page has no bind control and cannot confirm that support is installed.</li>
- <li>Invite the Rovara bot into that channel with <code>/invite</code>.</li></ol>
- <p>This page cannot see the workspace connection, channel binding or delivery. Permissions and current health remain unknown.</p><p>Opening this guidance makes no Slack request and changes no configuration.</p></details>;
-}
+const membersSchema = { parse(value: unknown) { const data = z.object({ members: z.array(z.object({ developerId: z.string().max(100), name: z.string().max(200) })).max(10000) }).parse(value);return { members: data.members.map(member => ({ developerId: member.developerId, name: member.name })) }; } };
+const projectsSchema = { parse(value: unknown) { return { projects: AppProjectsResponseSchema.parse(value).projects.filter(p => p.status !== "archived").map(p => ({ name: p.name, repositories: p.repositories.map(r => r.fullName) })) }; } };
+const OBSERVABILITY = ["sentry", "datadog", "cloudwatch", "grafana", "vercel", "pagerduty"];
+const CARDS = ["github", "ai-provider", "slack", "email", "linear", "jira", "cloud", "test-services", "tools"] as const;
+type CardId = (typeof CARDS)[number];
+const READ_ONLY_WHY = "Only a company owner or admin can connect or change this. You can see its state.";
+const projectWords = (names: readonly string[], none: string) => names.length === 0 ? none : names.length > 6 ? `${names.slice(0, 6).join(", ")} and ${String(names.length - 6)} more` : names.join(", ");
 export function ConnectionsScreen() {
- const context = useAdminContext();return <ConnectionsView key={`${context.orgId}:${context.developerId}:${context.role}`} canEdit={context.role === "owner" || context.role === "admin"} />;
+  const context = useAdminContext();
+  return <ConnectionsView key={`${context.orgId}:${context.developerId}:${context.role}`} canEdit={context.role === "owner" || context.role === "admin"} />;
 }
 function ConnectionsView({ canEdit }: { canEdit: boolean }) {
- const requests = useAdminRead("github-requests", "/v1/app/github/requests", requestsSchema);
- const registry = useAdminRead("connections", "/v1/app/connections", connectionsSchema), github = useAdminRead("github", "/v1/app/github/installations", githubSchema);
- return <section><PageHeader focusOnMount title="Connections" description="Company configuration and stored checks. No live checks run when you open this page." />
- <h2>GitHub</h2><ReadSection read={github} label="GitHub installations">{data => data.installations.length === 0 ? <p>Not configured. Ask a company admin to arrange the GitHub App connection using a linked GitHub identity.</p> : <><DataTable caption="Company GitHub installations" rows={data.installations} rowKey={i => String(i.installationId)} columns={[{ key: "account", title: "Account", render: i => <VisibleText text={i.accountLogin} /> }, { key: "status", title: "Status", render: i => i.status === "active" ? "Installed · current health unknown" : "Needs action" }]} /><p>Fix connection: a company admin must review the GitHub App installation, suspension and repository permissions with the GitHub organization owner. Stored installation status does not verify delivery.</p><h3>Installation guidance</h3>{data.installations.map(i => <GitHubGuidance key={i.installationId} installation={i} />)}</>}</ReadSection>
- <h3>GitHub installation requests</h3><ReadSection read={requests} label="GitHub installation requests">{data => data.requests.length === 0 ? <p>No installation requests returned.</p> : <ul>{data.requests.map((r, i) => <li key={i}><VisibleText text={r.accountLogin ?? "GitHub organization not yet returned"} />: {r.status === "waiting" ? "Waiting for GitHub admin" : r.status === "connected" ? "Connected request · see installation status" : r.status === "expired" ? "Expired" : r.status === "cancelled" ? "Cancelled" : "Needs action"}. Requested {checkedTime(r.requestedAt)}.</li>)}</ul>}</ReadSection>
- <h2>Slack</h2><p>Unknown. Company-scoped Slack installation, permissions and event health are not available here. Ask an installation administrator to check Slack delivery for this company.</p><SlackWorkspaceEvidence /><SlackGuidance />
- <h2>Registered connections</h2><ReadSection read={registry} label="Registered connections">{data => <><RegisteredConnections connections={data.connections} />{canEdit && <JiraOrgAdminKey connections={data.connections.filter(c => c.type === "jira")} />}</>}</ReadSection><p>Coverage: affected projects, missing permissions and last event delivery are unavailable in this view. A stored successful check is not live validity.</p><McpServers /></section>;
+  const host = useAppHost(), context = useAdminContext();
+  const [params, setParams] = useSearchParams(), asked = params.get("open"), initial = CARDS.find(card => card === asked) ?? (params.has("github_link") ? "github" : undefined);
+  const [open, setOpen] = useState<CardId | undefined>(initial), [checks, setChecks] = useState<Record<string, CheckResult>>({});
+  const requests = useAdminRead("github-requests", "/v1/app/github/requests", requestsSchema);
+  const registry = useAdminRead("connections", "/v1/app/connections", connectionsSchema), github = useAdminRead("github", "/v1/app/github/installations", githubSchema);
+  const sources = useAdminRead("sources", "/v1/app/org/model-sources", modelSourcesSnapshot.extend({ orgId: z.literal(context.orgId).optional(), developerId: z.literal(context.developerId).optional(), revision: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER).optional(), available: z.array(z.enum(["anthropic", "openai", "openrouter", "bedrock", "endpoint"])).max(5).optional() }));
+  const members = useAdminRead("member-names", "/v1/app/org/members", membersSchema), projects = useAdminRead("connection-projects", "/v1/app/projects", projectsSchema);
+  const slack = useSlackEvidence();
+  // Names only once the members list has been read: before that (or if it can't be read) who connected a thing is not shown, never guessed.
+  const names = useMemo(() => members.isSuccess ? new Map(members.data.members.map(member => [member.developerId, member.name] as const)) : undefined, [members.isSuccess, members.data]);
+  const projectList = projects.data?.projects ?? [];
+  const toggle = (card: CardId) => { setOpen(current => current === card ? undefined : card);if (asked !== null) setParams({}, { replace: true }); };
+  const connections: RegistryConnection[] = registry.data?.connections ?? [];
+  const messages: Record<string, string> = {};
+  for (const [id, result] of Object.entries(checks)) if (result.state === "failed") messages[id] = result.message;
+  async function check(connectionId: string) {
+    setChecks(current => ({ ...current, [connectionId]: { state: "busy" } }));
+    const result = await runCheck(host, connectionId);
+    setChecks(current => ({ ...current, [connectionId]: result }));
+    void registry.refetch();
+  }
+  const refresh = () => { void registry.refetch(); };
+  const ofType = (...types: string[]) => connections.filter(connection => types.includes(connection.type));
+  const installs: GithubInstall[] = github.data?.installations ?? [];
+  const githubCard = githubSummary(installs, requests.data?.requests ?? []);
+  const slackRefused = slack.error instanceof ApiError && ([401, 403, 404, 503].includes(slack.error.status) || slack.error.code === "INVALID_RESPONSE");
+  const slackRead = slack.isPending ? { status: "loading" as const } : slackRefused ? { status: "refused" as const } : slack.data === undefined || slack.isError ? { status: "unavailable" as const } : { status: "ok" as const, associations: slack.data.associationCount };
+  const failedSources = new Set(Object.entries(checks).filter(([, result]) => result.state === "failed").map(([id]) => id));
+  const providerCard = providerSummary(sources.data?.sources ?? [], sources.data?.available, failedSources);
+  const linearCard = groupSummary(ofType("linear"), messages, "Linear"), jiraCard = groupSummary(ofType("jira"), messages, "Jira");
+  const cloudItems = ofType(...OBSERVABILITY);
+  const cloudCard: CardSummary = cloudItems.length === 0 ? { state: "not_connected", why: "Rovara can't see your cloud and monitoring tools. This is optional." } : groupSummary(cloudItems, messages, "your cloud tools");
+  const toolItems = ofType("mcp");
+  const githubBy = installs.filter(install => install.status === "active").map(install => `${whoWhen(install.connectedBy, install.connectedAt, names)}${installs.filter(other => other.status === "active").length > 1 ? ` (${install.accountLogin})` : ""}`).join("; ");
+  const githubUsers = projectList.filter(project => project.repositories.some(repo => installs.some(install => repo.toLowerCase().startsWith(`${install.accountLogin.toLowerCase()}/`)))).map(project => project.name);
+  const byOf = (list: readonly RegistryConnection[]) => list.length === 0 ? undefined : [...new Set(list.map(connection => whoWhen(connection.createdBy, connection.createdAt, names)))].join("; ");
+  const common = { canChange: canEdit, readOnlyReason: READ_ONLY_WHY };
+  return <section className="rv-conn-page"><PageHeader focusOnMount title="Connections" description="Everything your company has connected to Rovara, in one place. Open a row to set it up or fix it here." />
+    <SettingsNote area="connections" />
+    <ul className="rv-conn-list">
+      <ConnectionCard {...common} id="github" name="GitHub" summary={githubCard} by={installs.some(install => install.status === "active") ? githubBy : undefined} usedBy={githubUsers.length === 0 ? "No project yet. Projects work on repositories from the connected GitHub." : projectWords(githubUsers, "")} open={open === "github"} onToggle={() => { toggle("github"); }} actionWords={githubCard.state === "connected" ? "Manage GitHub" : githubCard.state === "attention" ? "Fix GitHub" : "Connect GitHub"}>
+        <ReadSection read={github} label="GitHub installations">{data => data.installations.length === 0 ? <p>No GitHub account is connected yet.</p> : <ul>{data.installations.map(install => <li key={install.installationId}><VisibleText text={install.accountLogin} />: {install.status === "active" ? "Installed" : install.status === "suspended" ? "Suspended on GitHub" : "Removed from GitHub"}</li>)}</ul>}</ReadSection>
+        <ReadSection read={requests} label="GitHub installation requests">{data => data.requests.length === 0 ? <p>No installation requests waiting.</p> : <ul>{data.requests.map((request, index) => <li key={index}><VisibleText text={request.accountLogin ?? "A GitHub organization"} />: {request.status === "waiting" ? "waiting for your GitHub admin" : request.status === "connected" ? "approved" : request.status === "expired" ? "expired" : request.status === "cancelled" ? "cancelled" : "needs attention"}</li>)}</ul>}</ReadSection>
+        {canEdit && <GithubConnectPanel requested={(requests.data?.requests ?? []).some(request => request.status === "waiting")} returnTo="/app/admin/connections" refresh={() => { void github.refetch();void requests.refetch(); }} />}
+      </ConnectionCard>
+      <ConnectionCard {...common} id="ai-provider" name="AI provider" summary={providerCard} usedBy="Every project (company-wide). Your own provider's key pays for the work that uses it." open={open === "ai-provider"} onToggle={() => { toggle("ai-provider"); }} actionWords={providerCard.state === "connected" ? "Manage AI provider" : providerCard.state === "attention" ? "Fix AI provider" : "Add an AI provider"}>
+        <ReadSection read={sources} label="AI providers">{data => <><ProviderSetup available={data.available} sources={data.sources} revision={data.orgId === context.orgId && data.developerId === context.developerId ? data.revision : undefined} canEdit={canEdit} onChanged={() => { void sources.refetch(); }} onChecked={(id, ok) => { setChecks(current => ({ ...current, [id]: ok ? { state: "ok" } : { state: "failed", message: "its last check failed" } })); }} /><p><Link to="/app/admin/models/sources">Choose which provider is tried first</Link></p></>}</ReadSection>
+      </ConnectionCard>
+      <ConnectionCard {...common} id="slack" name="Slack" summary={slackSummary(slackRead)} usedBy="Projects with a linked Slack channel. Link a channel from a project's Slack channels." open={open === "slack"} onToggle={() => { toggle("slack"); }} actionWords="Set up Slack">
+        <SlackWorkspaceEvidence />
+        <ol><li>Your Slack workspace is connected to the company once, by a Rovara operator (<code>rovara admin slack connect-team</code>). That step is not something a company admin can do here.</li>
+          <li>Link a channel to a project from <Link to="/app/admin/projects">Projects</Link>, open the project, then Slack channels.</li>
+          <li>In Slack, invite the Rovara bot to that channel with <code>/invite @Rovara</code>.</li></ol>
+      </ConnectionCard>
+      <ConnectionCard {...common} id="email" name="Email" summary={{ state: "built_in", why: "Rovara sends invitations and sign-in codes from its own address. There is nothing to connect." }} usedBy="Everyone in the company." open={open === "email"} onToggle={() => { toggle("email"); }} actionWords="See how email works">
+        <p>Invitations go to the address you type, and the invite link also works if you share it yourself. Sign-in codes go to the person signing in.</p>
+        <p>To let people with your company's email addresses join, verify your domain under <Link to="/app/admin/domains">Company domains</Link> (owners only).</p>
+      </ConnectionCard>
+      <ConnectionCard {...common} id="linear" name="Linear" summary={linearCard} by={byOf(ofType("linear"))} usedBy="Every project that uses Linear tickets (company-wide connection)." open={open === "linear"} onToggle={() => { toggle("linear"); }} actionWords={linearCard.state === "not_connected" ? "Connect Linear" : linearCard.state === "attention" ? "Fix Linear" : "Manage Linear"}>
+        <RegistryItems connections={ofType("linear")} names={names} canChange={canEdit} checks={checks} onCheck={id => { void check(id); }} onChanged={refresh} />
+        {canEdit && <AddTracker kind="linear" onAdded={id => { refresh();void check(id); }} />}
+      </ConnectionCard>
+      <ConnectionCard {...common} id="jira" name="Jira" summary={jiraCard} by={byOf(ofType("jira"))} usedBy="Every project that uses Jira tickets (company-wide connection)." open={open === "jira"} onToggle={() => { toggle("jira"); }} actionWords={jiraCard.state === "not_connected" ? "Connect Jira" : jiraCard.state === "attention" ? "Fix Jira" : "Manage Jira"}>
+        <RegistryItems connections={ofType("jira")} names={names} canChange={canEdit} checks={checks} onCheck={id => { void check(id); }} onChanged={refresh} />
+        {canEdit && <AddTracker kind="jira" onAdded={id => { refresh();void check(id); }} />}
+        {canEdit && <JiraOrgAdminKey connections={ofType("jira")} />}
+      </ConnectionCard>
+      <ConnectionCard {...common} id="cloud" name="Cloud and monitoring" summary={cloudCard} by={byOf(cloudItems)} usedBy="Projects that look at errors and metrics (company-wide connection)." open={open === "cloud"} onToggle={() => { toggle("cloud"); }} actionWords={cloudCard.state === "not_connected" ? "See cloud tools" : "Manage cloud tools"}>
+        {cloudItems.length === 0 ? <p>No cloud or monitoring tool is connected. Amazon CloudWatch, Sentry, Datadog, Grafana, Vercel and PagerDuty are supported; they are read only.</p> : <RegistryItems connections={cloudItems} names={names} canChange={canEdit} checks={checks} onCheck={id => { void check(id); }} onChanged={refresh} />}
+      </ConnectionCard>
+      <ConnectionCard {...common} id="test-services" name="Test services" summary={{ state: "per_project", why: "Each project sets up its own test environment and test services, because they depend on the project's code." }} usedBy={projectWords(projectList.map(project => project.name), "No projects yet.")} open={open === "test-services"} onToggle={() => { toggle("test-services"); }} actionWords="Open a project's test setup">
+        {projectList.length === 0 ? <p>Create a project first, then set up its test environment.</p> : <ul>{projectList.map(project => <li key={project.name}><Link to={`/app/onboard?project=${encodeURIComponent(project.name)}&step=setup`}>Test setup for <VisibleText text={project.name} /></Link></li>)}</ul>}
+      </ConnectionCard>
+      <ConnectionCard {...common} id="tools" name="Other tools" summary={toolItems.length === 0 ? { state: "not_connected", why: "No other tool is connected. This is optional." } : groupSummary(toolItems, messages, "your tools")} by={byOf(toolItems)} usedBy="Projects that add one of these as a source of context." open={open === "tools"} onToggle={() => { toggle("tools"); }} actionWords="See other tools">
+        <RegistryItems connections={toolItems} names={names} canChange={canEdit} checks={checks} onCheck={id => { void check(id); }} onChanged={refresh} />
+        <McpServers />
+      </ConnectionCard>
+    </ul>
+    {registry.isError && <p role="alert">Couldn't read your saved connections. <Button onClick={refresh}>Try again</Button></p>}
+  </section>;
 }

@@ -82,3 +82,12 @@ button:disabled{cursor:default;opacity:.65}
 .rv-decision-reason{display:grid;gap:var(--rv-space-2);min-width:0;flex:1 1 100%}.rv-decision-reason input{width:100%}.rv-decision-design{display:flex;flex-wrap:wrap;align-items:center;gap:var(--rv-space-3)}.rv-decision-design .rv-design-hint{margin:0;padding:var(--rv-space-1) var(--rv-space-3);border:1px solid var(--rv-border);border-radius:var(--rv-radius-sm);font-size:var(--rv-font-sm)}
 /* UX5b: the script tokens screen, one column at every width. */
 .rv-token-list{list-style:none;padding:0;margin:var(--rv-space-4) 0;display:grid;gap:var(--rv-space-4)}.rv-token-list>li{border:1px solid var(--rv-border-strong);border-radius:var(--rv-radius-sm);padding:var(--rv-space-4);overflow-wrap:anywhere}.rv-token-list dl{display:grid;grid-template-columns:max-content 1fr;gap:var(--rv-space-1) var(--rv-space-3);margin:var(--rv-space-2) 0}.rv-token-list dd{margin:0}.rv-token-secret{font-family:var(--rv-font-mono,monospace);width:100%}.rv-token-example{white-space:pre-wrap;overflow-wrap:anywhere;max-width:100%}.rv-script-tokens fieldset{border:0;padding:0;margin:var(--rv-space-3) 0}
+/* UX3: on a phone a table is a list. Each row becomes a card; each cell is "Heading: value" (the heading is the cell's data-label). No sideways scrolling. */
+@media (max-width:640px){
+ .rv-table-wrap{overflow:visible}
+ .rv-table,.rv-table tbody,.rv-table tr,.rv-table td,.rv-table caption{display:block;width:100%;box-sizing:border-box}
+ .rv-table thead{position:absolute;width:1px;height:1px;overflow:hidden;clip-path:inset(50%)}
+ .rv-table tr{border:1px solid var(--rv-border);border-radius:var(--rv-radius-sm);margin-bottom:var(--rv-space-3);padding:var(--rv-space-2)}
+ .rv-table td{border-bottom:0;padding:var(--rv-space-2);overflow-wrap:anywhere;min-width:0}
+ .rv-table td[data-label]::before{content:attr(data-label) ": ";font-weight:600}
+}

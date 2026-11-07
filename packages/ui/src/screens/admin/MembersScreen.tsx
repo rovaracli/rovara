@@ -1,4 +1,5 @@
 import { useEffect, useId, useMemo, useRef, useState } from "react";
+import { SettingsNote } from "./SettingsNote.js";
 import { Link, useNavigate, useSearchParams } from "react-router";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { AppOrgMembersResponseReaderSchema } from "@agentx/contracts/web";
@@ -59,7 +60,7 @@ export function MembersScreen() {
  return <section aria-busy={read.isFetching}>
   {!fatal && removalReceipt !== undefined && <p role="status">{removalReceipt}</p>}
   {!fatal && receipt?.scope === scope && <p ref={receiptElement} tabIndex={-1} role="status">{receipt.kind === "denied" ? "Role change refused. Company access was checked again." : <><VisibleText text={`${receipt.person}: company role verified: ${roleNames[receipt.role]}.`} /> Checked at <time dateTime={receipt.checkedAt}>{new Date(receipt.checkedAt).toLocaleString("en-US", { timeZone: "UTC" })}</time> UTC.</>}</p>}
-  <PageHeader focusOnMount title="People" description="Company membership and sign-in methods. Project access also depends on project roles." actions={<Link to={"/app/admin/people/roles" + (search ? "?q=" + encodeURIComponent(search) : "")}>Roles explained</Link>} />
+  <PageHeader focusOnMount title="People" description="Company membership and sign-in methods. Project access also depends on project roles." actions={<Link to={"/app/admin/people/roles" + (search ? "?q=" + encodeURIComponent(search) : "")}>Roles explained</Link>} /><SettingsNote area="people" />
   {read.isPending ? <Skeleton label="Loading company members" /> : fatal ? <div><p role="alert">{read.error instanceof ApiError && read.error.status === 403 ? "You don't have permission to view company members." : "Couldn't load company members. Try again."}</p><Button onClick={() => { void read.refetch(); }}>Try again</Button></div> : <>
    {read.data !== undefined && (accessChecking || dataStale) && <p id={reasonId} role={dataStale ? "alert" : "status"}>{dataStale ? "Member list is stale. Changes are disabled until a successful check." : "Checking company access..."}</p>}
    {dataStale && <Button disabled={read.isFetching} onClick={() => { void read.refetch(); }}>Retry member list</Button>}

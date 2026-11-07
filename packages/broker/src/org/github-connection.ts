@@ -29,12 +29,19 @@ import { parseGitHubRepository, type GitHubAppCredentialProviderOptions, type Gi
 import { ownerKeyForSubject } from "../aws/lambda.js";
 import {
   GITHUB_ISSUER, conditionFailed, consumeState, errorName, exchangeCode, expectedTrialResult, failedIndexes, isOwnerOrAdmin, log, readState, revokeUserToken, sha256Hex, userGet,
-  type ConnectStateItem, type GithubConnectApp, type GithubConnectionDependencies, type PendingBinding,
+  type ConnectReturnTo, type ConnectStateItem, type GithubConnectApp, type GithubConnectionDependencies, type PendingBinding,
 } from "./github-connect-support.js";
 import { DELIVERY_RETENTION_MS, auditItem, ownerNameOf, recordInstallRequest } from "./github-install-requests.js";
 import { githubNotConnectedMessage } from "./project-settings.js";
 
-export type { GithubConnectApp, GithubConnectionDependencies };
+export type { ConnectReturnTo, GithubConnectApp, GithubConnectionDependencies };
+
+/** Where the end pages of a connect send the person back to: the place they started, read from the stored state (by the state itself, or by the hash the confirm form posts). Anything unreadable is onboarding. */
+export async function connectReturnTo(deps: GithubConnectionDependencies, key: { state?: string | null | undefined; hash?: string | null | undefined }): Promise<ConnectReturnTo> {
+  const hash = typeof key.hash === "string" && HASH_PATTERN.test(key.hash) ? key.hash : typeof key.state === "string" && STATE_PATTERN.test(key.state) ? sha256Hex(key.state) : undefined;
+  if (hash === undefined) return "/app/onboard";
+  try { return (await readState(deps, hash))?.returnTo === "/app/admin/connections" ? "/app/admin/connections" : "/app/onboard"; } catch { return "/app/onboard"; }
+}
 
 export type ConnectOutcomeName = "confirm" | "requested" | "not_linked" | "not_yours" | "not_allowed" | "unattributed" | "taken" | "expired";
 export interface ConnectOutcome {
@@ -78,6 +85,7 @@ export const clearedConnectCookie = () => `${GITHUB_CONNECT_COOKIE}=; Secure; Ht
 export async function startGithubConnect(
   deps: GithubConnectionDependencies,
   caller: { developerId: string; orgId: OrgId; orgRole: OrgRole },
+  options: { returnTo?: ConnectReturnTo } = {},
 ): Promise<{ installUrl: string; expiresAt: string; orgName?: string; ownerName?: string }> {
   if (!deps.cloud) throw agentXError("FORBIDDEN", "on this install, GitHub is connected by the administrator during agentx init");
   if (!isOwnerOrAdmin(caller.orgRole)) throw agentXError("FORBIDDEN", "only an owner or admin can connect GitHub");
@@ -93,6 +101,7 @@ export async function startGithubConnect(
     Item: {
       ...githubConnectStateKey(sha256Hex(state)), entityType: "GITHUB_CONNECT", orgId: caller.orgId, developerId: caller.developerId,
       createdAt: new Date(now).toISOString(), expiresAt, indexExpiresAt: Math.floor(expiresAt / 1000) + STATE_RETENTION_SECONDS,
+      ...(options.returnTo === "/app/admin/connections" ? { returnTo: options.returnTo } : {}),
     },
     ConditionExpression: "attribute_not_exists(pk)",
   }));
@@ -374,6 +383,9 @@ export interface InstallationView {
   accountType: "User" | "Organization";
   repositorySelection: "all" | "selected";
   status: GithubInstallationRecord["status"];
+  /** UX3: who connected it and when (the person's id, as the members list shows it; the web app turns it into a name). Left out for an older record that lacks either. */
+  connectedBy?: string;
+  connectedAt?: string;
 }
 
 /** `GET /v1/app/github/installations`: the org's installations (any member may read them), ordered by account. */
@@ -392,7 +404,11 @@ export async function listGithubInstallations(deps: Pick<GithubConnectionDepende
   const installations = items.flatMap((item): InstallationView[] => {
     if (typeof item.installationId !== "number" || typeof item.accountLogin !== "string" || (item.accountType !== "User" && item.accountType !== "Organization")
       || (item.repositorySelection !== "all" && item.repositorySelection !== "selected") || (item.status !== "active" && item.status !== "suspended" && item.status !== "removed")) return [];
-    return [{ installationId: item.installationId, accountLogin: item.accountLogin, accountType: item.accountType, repositorySelection: item.repositorySelection, status: item.status }];
+    return [{
+      installationId: item.installationId, accountLogin: item.accountLogin, accountType: item.accountType, repositorySelection: item.repositorySelection, status: item.status,
+      ...(typeof item.boundByDeveloperId === "string" && /^[a-f0-9]{64}$/.test(item.boundByDeveloperId) ? { connectedBy: item.boundByDeveloperId } : {}),
+      ...(typeof item.boundAt === "string" && item.boundAt.length <= 40 ? { connectedAt: item.boundAt } : {}),
+    }];
   });
   return { installations: installations.sort((left, right) => left.accountLogin.toLowerCase().localeCompare(right.accountLogin.toLowerCase()) || left.installationId - right.installationId) };
 }

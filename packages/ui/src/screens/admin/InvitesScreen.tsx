@@ -1,4 +1,5 @@
 import { InviteCreateDialog } from "./InviteCreateDialog.js";
+import { SettingsNote } from "./SettingsNote.js";
 import { InviteRevokeDialog, type InviteRevokeTarget } from "./InviteRevokeDialog.js";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
@@ -50,7 +51,7 @@ function InviteDirectory({ orgId, developerId, role }: { orgId: string; develope
  const locked = checking || read.isFetching || read.isError, nextCursor = read.data?.nextCursor;
  const errorCopy = read.error instanceof ApiError && read.error.status === 403 ? "You don't have permission to view company invites." : read.error instanceof ApiError && read.error.status === 429 ? "Too many invite checks. Wait a minute before retrying." : "Couldn't check invites. Try again. If this keeps happening, ask an installation administrator to check the invite directory.";
  return <section ref={region} aria-busy={read.isFetching}>
-  <PageHeader focusOnMount title="Invites" description="Pending invites in this directory. Destinations are masked." actions={<><Button ref={createTrigger} variant="primary" aria-disabled={locked} onClick={() => { if (locked) return;if (!resumeCreate) setCreateKey(value => value + 1);setCreateSession(true);setCreateOpen(true); }}>{resumeCreate ? "Resume invite" : "Create invite"}</Button><Button aria-disabled={locked} onClick={() => { if (!locked) void read.refetch(); }}>Refresh invites</Button></>} />
+  <PageHeader focusOnMount title="Invites" description="Pending invites in this directory. Destinations are masked." actions={<><Button ref={createTrigger} variant="primary" aria-disabled={locked} onClick={() => { if (locked) return;if (!resumeCreate) setCreateKey(value => value + 1);setCreateSession(true);setCreateOpen(true); }}>{resumeCreate ? "Resume invite" : "Create invite"}</Button><Button aria-disabled={locked} onClick={() => { if (!locked) void read.refetch(); }}>Refresh invites</Button></>} /><SettingsNote area="invites" />
   <p className="rv-admin-note">Older invite links may still exist outside this directory. An empty page does not mean there are no pending invites.</p>
   <p className="rv-muted">Create a private invite link, then share it yourself. Revoking a link does not remove anyone who already joined.</p>
   {checking && <p role="status">Checking company access...</p>}{!checking && read.isFetching && read.data !== undefined && <p role="status">Checking invites...</p>}

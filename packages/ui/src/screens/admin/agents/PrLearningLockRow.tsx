@@ -8,6 +8,7 @@ import { Button } from "../../../design/Button.js";
 import { VisibleText } from "../../../design/VisibleText.js";
 import { useAdminContext } from "../AdminLayout.js";
 import { useAdminRead } from "../projects/read.js";
+import { APPLIES_AT_ONCE } from "../how-we-work/company-text.js";
 
 const PATH = "/v1/app/org/agent-guardrails";
 /** The document is kept whole: the write sends back every field as the server gave it, so a field this build does not list (the screen's own reader drops them) is never lost. */
@@ -35,6 +36,7 @@ export function PrLearningLockRow() {
  }
  return <div>
   <p>Learning from PR review comments: {locked ? "Locked off" : "Allowed"}</p>
+  <p className="rv-muted">{APPLIES_AT_ONCE}</p>
   {(role === "owner" || role === "admin") && <Button busy={busy} onClick={() => { void send(); }}>{locked ? "Allow again" : "Lock off"}</Button>}
   {waiting !== undefined && <div role="status"><p>{waiting.text}</p>{waiting.changes.length > 0 && <ul>{waiting.changes.map((change, index) => <li key={index}><VisibleText text={change} /></li>)}</ul>}{waiting.confirmUrl !== undefined && <p><Button onClick={() => host.openExternal(waiting.confirmUrl!)}>Open confirmation</Button></p>}</div>}
   {failure !== undefined && <p role="alert"><VisibleText text={failure} /></p>}

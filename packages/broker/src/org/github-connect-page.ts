@@ -17,6 +17,8 @@ export interface ConnectPageData {
   connectId?: string;
   /** An owner of the Rovara organization, named in the message to give the GitHub admin (the waiting page). */
   ownerName?: string;
+  /** Where the person started connecting; the buttons go back there. Fixed values; onboarding when absent. */
+  returnTo?: "/app/onboard" | "/app/admin/connections";
 }
 
 /** The form's address: the same origin as the page, which the policy's `form-action 'self'` also requires. */
@@ -25,8 +27,10 @@ export const GITHUB_CONFIRM_PATH = "/v1/github/install/confirm";
 /** `links`: buttons to the next step, always same-origin app pages (UX1: a browser page shows buttons and next steps, never a terminal command). */
 interface PageCopy { status: number; title: string; body: string[]; form?: boolean; links?: Array<{ href: string; label: string }> }
 
-const BACK = { href: "/app/onboard", label: "Back to Rovara" };
-const CHOOSE_REPOSITORIES = (status: string) => ({ href: `/app/onboard?github=${status}`, label: "Continue in Rovara" });
+// UX3: the buttons go back to where the person started: the Connections page, or onboarding. Two fixed places; nothing from a request is ever an address.
+const fromConnections = (data: ConnectPageData) => data.returnTo === "/app/admin/connections";
+const BACK = (data: ConnectPageData) => ({ href: fromConnections(data) ? "/app/admin/connections?open=github" : "/app/onboard", label: "Back to Rovara" });
+const CHOOSE_REPOSITORIES = (data: ConnectPageData, status: string) => ({ href: fromConnections(data) ? "/app/admin/connections?open=github" : `/app/onboard?github=${status}`, label: "Continue in Rovara" });
 
 function copyFor(kind: ConnectPageKind, data: ConnectPageData): PageCopy {
   const account = data.accountLogin ?? "this GitHub account";
@@ -38,32 +42,32 @@ function copyFor(kind: ConnectPageKind, data: ConnectPageData): PageCopy {
         body: [`Rovara will be able to read and write the repositories you gave it access to in ${account}, for everyone in ${org}.`],
       };
     case "connected":
-      return { status: 200, title: "GitHub connected", body: [`${account} is now connected to ${org}.`, "Next, choose the repositories this workspace works on."], links: [CHOOSE_REPOSITORIES("connected")] };
+      return { status: 200, title: "GitHub connected", body: [`${account} is now connected to ${org}.`, fromConnections(data) ? "Next, check the connection in Rovara." : "Next, choose the repositories this workspace works on."], links: [CHOOSE_REPOSITORIES(data, "connected")] };
     case "connected_trial_used":
       return {
         status: 200, title: "GitHub connected",
         body: [`${account} is now connected to ${org}.`, "Your free trial stays locked: this GitHub account already started a trial for another organization."],
-        links: [CHOOSE_REPOSITORIES("trial_used")],
+        links: [CHOOSE_REPOSITORIES(data, "trial_used")],
       };
     case "cancelled":
-      return { status: 200, title: "Nothing was connected", body: ["You can connect GitHub again from Rovara whenever you're ready."], links: [BACK] };
+      return { status: 200, title: "Nothing was connected", body: ["You can connect GitHub again from Rovara whenever you're ready."], links: [BACK(data)] };
     case "requested": {
       const waiting = githubInstallRequestCopy("waiting", { orgName: data.orgName, ownerName: data.ownerName });
-      return { status: 200, title: waiting.title, body: waiting.lines, links: [CHOOSE_REPOSITORIES("requested")] };
+      return { status: 200, title: waiting.title, body: waiting.lines, links: [CHOOSE_REPOSITORIES(data, "requested")] };
     }
     case "not_linked":
       return {
         status: 403, title: "Link this GitHub account to your Rovara account first",
         body: ["This connect link was started by someone else in Rovara, or your GitHub account isn't linked to your Rovara account yet. In Rovara, choose Link your GitHub account, then connect GitHub again."],
-        links: [{ href: "/app/onboard?github=not_linked", label: "Link your GitHub account" }],
+        links: [{ href: fromConnections(data) ? "/app/admin/connections?open=github" : "/app/onboard?github=not_linked", label: "Link your GitHub account" }],
       };
     case "taken":
-      return { status: 409, title: GITHUB_INSTALLATION_TAKEN_MESSAGE, body: [], links: [BACK] };
+      return { status: 409, title: GITHUB_INSTALLATION_TAKEN_MESSAGE, body: [], links: [BACK(data)] };
     case "not_yours":
       return {
         status: 403, title: "Only the account's owner or an admin of the GitHub organization can connect it",
         body: [`Choose a GitHub account you own, or ask an admin of ${account} on GitHub to approve Rovara's request.`],
-        links: [BACK],
+        links: [BACK(data)],
       };
     case "not_allowed":
       return {
@@ -76,10 +80,10 @@ function copyFor(kind: ConnectPageKind, data: ConnectPageData): PageCopy {
       return {
         status: 403, title: "Rovara couldn't confirm who asked",
         body: ["GitHub did not tell Rovara who sent the request, so Rovara recorded nothing and will not connect anything when it is approved. Connect GitHub again from Rovara and send the request from there."],
-        links: [BACK],
+        links: [BACK(data)],
       };
     case "expired":
-      return { status: 410, title: "This connect link has expired", body: ["Connect links last 15 minutes. Start again from Rovara."], links: [BACK] };
+      return { status: 410, title: "This connect link has expired", body: ["Connect links last 15 minutes. Start again from Rovara."], links: [BACK(data)] };
   }
 }
 

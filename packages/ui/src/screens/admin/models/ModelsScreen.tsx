@@ -1,4 +1,5 @@
 import { NavLink, useLocation } from "react-router";
+import { SettingsNote } from "../SettingsNote.js";
 import { z } from "zod";
 // Keep the source contract warning verbatim without importing its Node-only barrel.
 const BEDROCK_NOT_TESTED_NOTE = "NOT TESTED: Bedrock in your own AWS account hasn't been tested yet.";
@@ -10,7 +11,6 @@ import { modelProvider, modelSourcesSnapshot } from "./source-order.js";
 import { ModelSourceGuidance } from "./ModelSourceGuidance.js";
 import { SourceOrderEditor } from "./SourceOrderEditor.js";
 import { ReadSection, useAdminRead } from "./read.js";
-import { ProviderSetup } from "./ProviderSetup.js";
 const providers = { anthropic: "Anthropic", openai: "OpenAI", openrouter: "OpenRouter", bedrock: "Amazon Bedrock", endpoint: "Gateway endpoint" };
 const servingSchema = z.object({ models: z.array(z.object({ provider: modelProvider, modelId: z.string().max(256), sources: z.array(z.string().max(100)).max(12) })).max(1000) });
 function ServingCatalog() {
@@ -23,13 +23,13 @@ function ServingCatalog() {
 }
 export function ModelsScreen() {
  const context = useAdminContext();
- const location = useLocation(), tab = location.pathname.endsWith("/available") ? "available" : location.pathname.endsWith("/steps") ? "steps" : "sources";
+ const location = useLocation(), tab = location.pathname.endsWith("/available") ? "available" : "sources";
  const read = useAdminRead("sources", "/v1/app/org/model-sources", modelSourcesSnapshot.extend({orgId:z.literal(context.orgId).optional(),developerId:z.literal(context.developerId).optional(),revision:z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER).optional(),available:z.array(z.enum(["anthropic","openai","openrouter","bedrock","endpoint"])).max(5).optional()}));
- return <section><PageHeader focusOnMount title={tab === "sources" ? "AI models" : tab === "available" ? "Available models" : "Code step models"} description="Company source configuration does not verify access to a model." />
- <nav aria-label="AI models"><NavLink to="/app/admin/models/sources">Model sources</NavLink>{" · "}<NavLink to="/app/admin/models/available">Available models</NavLink>{" · "}<NavLink to="/app/admin/models/steps">Code step models</NavLink></nav>
+ return <section><PageHeader focusOnMount title={tab === "sources" ? "AI models" : "Available models"} description="Company source configuration does not verify access to a model." /><SettingsNote area="models" />
+ <nav aria-label="AI models"><NavLink to="/app/admin/models/sources">Model sources</NavLink>{" · "}<NavLink to="/app/admin/models/available">Available models</NavLink>{" · "}<NavLink to="/app/admin/how-we-work">Step models (in How we work)</NavLink></nav>
  <ReadSection read={read} label="Model sources">{data => <>
  {tab === "sources" && <>
- <ProviderSetup available={data.available} sources={data.sources} revision={data.orgId===context.orgId&&data.developerId===context.developerId?data.revision:undefined} canEdit={context.role==="owner"||context.role==="admin"} onChanged={() => { void read.refetch(); }} />
+ <p>To add, check or remove an AI provider, use <NavLink to="/app/admin/connections?open=ai-provider">Connections</NavLink>. Here you choose the order they are tried in.</p>
  <h2>Company providers</h2>
  {data.sources.length === 0 ? <p>No company providers are added. Work runs on Rovara's own models.</p> : <DataTable caption="Company sources" rows={data.sources} rowKey={s => s.sourceId} columns={[
  { key: "label", title: "Source", render: s => <VisibleText text={s.label} /> }, { key: "provider", title: "Provider", render: s => providers[s.kind] },
@@ -46,7 +46,6 @@ export function ModelsScreen() {
  { key: "model", title: "Model", render: m => <VisibleText text={m.model} /> }, { key: "source", title: "Source", render: m => <VisibleText text={m.label} /> }, { key: "provider", title: "Provider", render: m => <VisibleText text={m.provider === "bedrock" ? "Amazon Bedrock" : m.provider} /> }, { key: "state", title: "Access", render: () => "Unverified" },
  ]} />}
  <p>Cost unavailable. Stronger-model suggestions require approved rankings, verified access and prices for the same workload. Ask an admin to arrange supported setup, then verify access before selecting a model.</p></>}
- {tab === "steps" && <><h2>Rovara Code choices</h2><p><NavLink to="/app/admin/how-we-work">Set company defaults and locks in How we work</NavLink></p><p>Effective step choices, policy scope, selection reasons and approved fallbacks cannot be verified in this view yet.</p><DataTable caption="Code step model coverage" rows={["Plan", "Plan check", "Code", "Review"]} rowKey={s => s} columns={[{ key: "step", title: "Step", render: s => s }, { key: "model", title: "Effective model", render: () => "Effective model unavailable" }, { key: "cost", title: "Estimate", render: () => "Cost unavailable" }]} /><p>Quality within budget is the company policy. No provider is enabled here; running task models stay pinned. Verify model access before starting new paid work.</p></>}
  {data.sources.some(s => s.kind === "bedrock") && <p>{BEDROCK_NOT_TESTED_NOTE} Guided external setup only; model access is unverified.</p>}
  </>}</ReadSection>{tab === "available" && <ServingCatalog />}</section>;
 }

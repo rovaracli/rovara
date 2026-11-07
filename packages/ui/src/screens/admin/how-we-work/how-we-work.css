@@ -5,3 +5,4 @@
 .rv-hww-company-review{display:grid;gap:var(--rv-space-3);max-width:76ch;margin:var(--rv-space-5) 0}.rv-hww-company-review p,.rv-hww-company-review h2{margin:0}
 .rv-hww-company-projects{display:grid;gap:var(--rv-space-3);padding-left:var(--rv-space-5);margin:0;overflow-wrap:anywhere}
 .rv-hww-suggestions{max-width:48rem;margin:var(--rv-space-4) 0}
+.rv-hww-unsaved{position:sticky;top:0;z-index:2;margin:var(--rv-space-3) 0;padding:var(--rv-space-3) var(--rv-space-4);border:1px solid var(--rv-accent-text);border-radius:var(--rv-radius-sm);background:var(--rv-bg-raised);overflow-wrap:anywhere}

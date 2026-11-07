@@ -488,8 +488,8 @@ describe("GET and DELETE /v1/app/github/installations", () => {
     const listed = await w.dev(MAYA, "GET", "/v1/app/github/installations");
     expect(listed.status).toBe(200);
     expect(listed.body.installations).toEqual([
-      { installationId: 55, accountLogin: "example", accountType: "Organization", repositorySelection: "selected", status: "active" },
-      { installationId: 66, accountLogin: "example", accountType: "Organization", repositorySelection: "all", status: "suspended" },
+      { installationId: 55, accountLogin: "example", accountType: "Organization", repositorySelection: "selected", status: "active", connectedBy: OMAR.developerId, connectedAt: "2026-10-01T00:00:00.000Z" },
+      { installationId: 66, accountLogin: "example", accountType: "Organization", repositorySelection: "all", status: "suspended", connectedBy: OMAR.developerId, connectedAt: "2026-10-01T00:00:00.000Z" },
     ]);
     expect(await listGithubInstallations({ documentClient: w.db, tableName: "state" }, ORG_B)).toEqual({ installations: [expect.objectContaining({ installationId: 77, accountLogin: "beta" })] });
   });
@@ -763,7 +763,7 @@ describe("agentx github list | disconnect", () => {
     const w = await world();
     const listed = await w.dev(MAYA, "GET", "/v1/app/github/installations");
     const entry = (listed.body.installations as Array<Record<string, unknown>>)[0]!;
-    expect(Object.keys(entry).sort()).toEqual(["accountLogin", "accountType", "installationId", "repositorySelection", "status"]);
+    expect(Object.keys(entry).sort()).toEqual(["accountLogin", "accountType", "connectedAt", "connectedBy", "installationId", "repositorySelection", "status"]);
     expect(typeof entry.installationId).toBe("number");
   });
 });

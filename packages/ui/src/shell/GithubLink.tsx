@@ -25,7 +25,7 @@ export function githubLinkOutcome(path: string): string | undefined {
  return value !== null && Object.hasOwn(GITHUB_LINK_MESSAGES, value) ? value : undefined;
 }
 const Reader = { parse: (value: unknown) => { const url = (value as { authorizeUrl?: unknown } | null)?.authorizeUrl;if (typeof url !== "string") throw new Error("unreadable");return { authorizeUrl: url }; } };
-export function GithubLink({ outcome, returnTo = "/app", primary = false }: { outcome?: string | undefined; returnTo?: "/app" | "/app/onboard"; primary?: boolean }) {
+export function GithubLink({ outcome, returnTo = "/app", primary = false }: { outcome?: string | undefined; returnTo?: "/app" | "/app/onboard" | "/app/admin/connections"; primary?: boolean }) {
  const host = useAppHost();
  const me = useQuery({ queryKey: ["me"], queryFn: () => createApiClient(host).get("/v1/app/me", AppMeResponseReaderSchema), refetchOnMount: "always" });
  const [busy, setBusy] = useState(false), [error, setError] = useState<string>(), [reauth, setReauth] = useState(outcome === "reauth"), [notice] = useState(outcome === undefined ? undefined : GITHUB_LINK_MESSAGES[outcome]);

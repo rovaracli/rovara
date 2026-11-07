@@ -1,7 +1,10 @@
+// UX3: the front page of company settings. It lists every settings page once, in the groups the navigation uses, with a line on what is there.
 import { Link } from "react-router";
 import { PageHeader } from "../../design/PageHeader.js";
 import { useAdminContext } from "./AdminLayout.js";
+import { visibleSections } from "./admin-sections.js";
+import { SettingsNote } from "./SettingsNote.js";
 export function AdminOverview() {
- const { company } = useAdminContext();
- return <section><PageHeader focusOnMount title="Administration" description={`Review company access and monthly base budget settings for ${company}.`} /><section className="rv-admin-section"><h2>People and access</h2><p>See company members and understand their roles before making access decisions.</p><Link to="/app/admin/people">Review company members</Link></section><section className="rv-admin-section"><h2>Invites</h2><p>Check masked pending invites. Older invite links may still exist outside this directory.</p><Link to="/app/admin/invites">Review pending invites</Link></section><section className="rv-admin-section"><h2>Spending</h2><p>View company and default-member monthly base budgets (read only), with explicit coverage.</p><Link to="/app/admin/money/budgets">Review monthly base budgets</Link></section><section className="rv-admin-section"><h2>Health</h2><p>Review stored, shared runtime qualification. No active checks run here.</p><Link to="/app/admin/health">Review Rovara service status</Link></section></section>;
+ const { company, role } = useAdminContext();
+ return <section><PageHeader focusOnMount title="Company settings" description={`Everything about how ${company} uses Rovara, in one place: people, connections, money, rules and security.`} /><SettingsNote area="overview" />{visibleSections(role, false).map(section => <section key={section.id} className="rv-admin-section" aria-labelledby={`overview-${section.id}`}><h2 id={`overview-${section.id}`}>{section.title}</h2><ul className="rv-admin-overview-list">{section.items.map(item => <li key={item.to}><h3>{item.label}</h3><p>{item.blurb}</p><Link to={item.to}>{item.action}</Link></li>)}</ul></section>)}</section>;
 }

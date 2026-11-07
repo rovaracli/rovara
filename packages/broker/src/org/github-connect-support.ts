@@ -89,6 +89,9 @@ export interface PendingBinding {
   githubUserId: string;
 }
 
+/** The two places a person can start connecting GitHub from, and so the two places the end pages send them back to. Fixed values only: never an address from a request. */
+export type ConnectReturnTo = "/app/onboard" | "/app/admin/connections";
+export const CONNECT_RETURN_TOS: readonly ConnectReturnTo[] = ["/app/onboard", "/app/admin/connections"];
 export interface ConnectStateItem {
   orgId: OrgId;
   developerId: string;
@@ -97,6 +100,8 @@ export interface ConnectStateItem {
   callbackAt?: number;
   confirmHash?: string;
   pending?: PendingBinding;
+  /** UX3: where the person started (a fixed choice); the pages at the end of the flow take them back there. Absent means onboarding. */
+  returnTo?: ConnectReturnTo;
 }
 
 export function log(deps: GithubConnectionDependencies, entry: Record<string, unknown>): void {

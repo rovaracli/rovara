@@ -1,5 +1,5 @@
 import { HomeScreen } from "./screens/home/HomeScreen.js";
-import { type RouteObject } from "react-router";
+import { Navigate, type RouteObject } from "react-router";
 import { type AppNav } from "@agentx/contracts/web";
 import { AppShell } from "./shell/AppShell.js";
 import { NotFound } from "./shell/NotFound.js";
@@ -22,7 +22,11 @@ export function appRoutes(features: AppNav["features"]): RouteObject[] {
  // UX5b: script tokens, only where the install's switch is on (absent otherwise, direct URLs included). A browser session manages them, so the desktop app has no route.
  if (features.scriptTokens === true) children.push({ path: "settings/script-tokens", handle: { webOnly: true }, lazy: async () => ({ Component: (await import("./screens/settings/ScriptTokensScreen.js")).ScriptTokensScreen }) });
  if (features.usage) children.push({ path: "usage", element: <Page title="Usage" /> });
- if (features.admin) children.push({ path: "admin/*", handle: { webOnly: true }, lazy: async () => { const { AdminLayout } = await import("./screens/admin/AdminLayout.js");return { Component: AdminLayout }; }, children: [{ index: true, lazy: async () => ({ Component: (await import("./screens/admin/AdminOverview.js")).AdminOverview }) }, { path: "money/budgets", lazy: async () => ({ Component: (await import("./screens/admin/BudgetsScreen.js")).BudgetsScreen }) }, { path: "invites", lazy: async () => ({ Component: (await import("./screens/admin/InvitesScreen.js")).InvitesScreen }) }, { path: "people", lazy: async () => ({ Component: (await import("./screens/admin/MembersScreen.js")).MembersScreen }) }, { path: "people/roles", lazy: async () => ({ Component: (await import("./screens/admin/RolesScreen.js")).RolesScreen }) }, // Lane B: projects and working branches (Agents screens stay held: no route, deep link falls to NotFound).
+ if (features.admin) children.push({ path: "admin/*", handle: { webOnly: true }, lazy: async () => { const { AdminLayout } = await import("./screens/admin/AdminLayout.js");return { Component: AdminLayout }; }, children: [{ index: true, lazy: async () => ({ Component: (await import("./screens/admin/AdminOverview.js")).AdminOverview }) }, { path: "money/budgets", lazy: async () => ({ Component: (await import("./screens/admin/BudgetsScreen.js")).BudgetsScreen }) }, { path: "invites", lazy: async () => ({ Component: (await import("./screens/admin/InvitesScreen.js")).InvitesScreen }) }, { path: "people", lazy: async () => ({ Component: (await import("./screens/admin/MembersScreen.js")).MembersScreen }) }, { path: "people/roles", lazy: async () => ({ Component: (await import("./screens/admin/RolesScreen.js")).RolesScreen }) }, // Lane B: projects and working branches. UX3: the Agents screens are part of company settings.
+  { path: "agents", lazy: async () => ({ Component: (await import("./screens/admin/agents/AgentsScreen.js")).AgentsScreen }) },
+  { path: "agents/:id/versions", lazy: async () => ({ Component: (await import("./screens/admin/agents/AgentVersionsScreen.js")).AgentVersionsScreen }) },
+  // UX3: the old "Code step models" tab only pointed at How we work; the address now goes there.
+  { path: "models/steps", element: <Navigate to="/app/admin/how-we-work" replace /> },
   { path: "health", lazy: async () => ({ Component: (await import("./screens/admin/health/ServiceStatusScreen.js")).ServiceStatusScreen }) },
   { path: "health/runtime/:kind", lazy: async () => ({ Component: (await import("./screens/admin/health/ServiceStatusScreen.js")).ServiceStatusScreen }) },
   { path: "domains", lazy: async () => ({ Component: (await import("./screens/admin/domains/CompanyDomainsScreen.js")).CompanyDomainsScreen }) },

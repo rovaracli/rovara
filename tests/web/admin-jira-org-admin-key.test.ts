@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 // DV-1: the Jira organization admin key form on the Connections page. Write-only, both fields together, owner or admin, one request per press, never shown back.
 import { expect, it } from "vitest";
-import { screen, waitFor, fireEvent } from "@testing-library/react";
+import { screen, waitFor, fireEvent, within } from "@testing-library/react";
 import { createMemoryRouter, RouterProvider } from "react-router";
 import { QueryClientProvider } from "@tanstack/react-query";
 import { AppNavSchema, AppMeResponseSchema } from "@agentx/contracts/web";
@@ -28,7 +28,7 @@ function mount(options: { role?: "owner" | "admin" | "member"; connections?: unk
   f.host.viewport = { width: () => 1280, subscribe: () => () => undefined };
   const query = createQueryClient();
   query.setQueryData(["nav"], nav);
-  const router = createMemoryRouter(appRoutes(nav.features), { initialEntries: ["/app/admin/connections"] });
+  const router = createMemoryRouter(appRoutes(nav.features), { initialEntries: ["/app/admin/connections?open=jira"] });
   const view = renderUi(h(AppHostProvider, { host: f.host, children: h(QueryClientProvider, { client: query, children: h(ThemeProvider, { host: f.host, children: h(RouterProvider, { router }) }) }) }));
   return { ...f, ...view, close: () => { view.unmount();router.dispose();query.clear(); } };
 }
@@ -52,7 +52,8 @@ it("shows the form to an owner with a Jira connection: a password field, both fi
 
 it("is not on the page for a company with no Jira connection, nor for a member", async () => {
   const noJira = mount({ connections: [row("con_aaaaaaaaaaaaaaaaaaaa", "linear", "Tracker")] });
-  await screen.findByText("Tracker");
+  await screen.findByRole("heading", { name: "Jira" });
+  expect(within(document.querySelector('[data-card="jira"]') as HTMLElement).getByText("Not connected")).toBeTruthy();
   expect(screen.queryByRole("heading", { name: "Jira organization admin key" })).toBeNull();
   noJira.close();
   const admin = mount({ role: "admin" });

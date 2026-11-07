@@ -13,8 +13,8 @@ const sent = async (request: APIRequestContext) => await (await request.get("/__
 
 test("an admin follows the link from AI models, reviews a change page by page, saves it, and sees the answer", async ({ page, request }) => {
  await page.setViewportSize({ width: 1280, height: 900 });
- await page.goto("/app/admin/models/steps");
- await page.getByRole("link", { name: "Set company defaults and locks in How we work" }).click();
+ await page.goto("/app/admin/models/sources");
+ await page.getByRole("link", { name: "Step models (in How we work)" }).click();
  await expect(page.getByRole("heading", { name: "How we work (company)", exact: true })).toBeFocused();
  const build = page.getByRole("region", { name: "Build" }), review = page.getByRole("region", { name: "Review (code and security)" });
  await expect(build.getByText("anthropic/claude-sonnet-4-6")).toBeVisible();
@@ -31,7 +31,7 @@ test("an admin follows the link from AI models, reviews a change page by page, s
  await expect(panel.getByText("billing", { exact: true })).toBeVisible();
  await expect(panel.getByRole("button", { name: "Show more" })).toHaveCount(0);
  await checkA11y(page, { theme: "dark" });
- await panel.getByRole("button", { name: "Save company defaults" }).click();
+ await page.getByRole("button", { name: "Save company defaults", exact: true }).click();
  await expect(page.getByText("Saved. New tasks use these defaults; running tasks keep theirs.")).toBeVisible();
  await expect(build.getByRole("combobox", { name: "Effort" })).toHaveValue("high");
  const put = (await sent(request)).find(item => item.method === "PUT" && item.path === "/v1/web/org/model-selection-policy");
@@ -47,7 +47,7 @@ test("a save refused 403 MODEL_NOT_ALLOWED shows the server's own words, not the
  await open(page);
  await page.getByRole("region", { name: "Build" }).getByRole("combobox", { name: "Effort" }).selectOption({ label: "High" });
  await page.getByRole("button", { name: "Review changes" }).click();
- await page.getByRole("region", { name: "Review of company changes" }).getByRole("button", { name: "Save company defaults" }).click();
+ await page.getByRole("button", { name: "Save company defaults", exact: true }).click();
  await expect(page.getByRole("alert").filter({ hasText: message })).toBeVisible();
  await expect(page.getByText("You don't have permission to change the company defaults.")).toHaveCount(0);
 });
@@ -94,10 +94,10 @@ test("a stale revision found while reviewing asks for a reload", async ({ page, 
  await expect(page.getByRole("region", { name: "Build" }).getByRole("combobox", { name: "Effort" })).toHaveValue("medium");
 });
 
-test("a phone gets the larger-screen message, like the other admin pages", async ({ page }) => {
+test("a phone gets the same page, with the settings menu behind a button", async ({ page }) => {
  await page.setViewportSize({ width: 360, height: 800 });
  await page.goto("/app/admin/how-we-work");
- await expect(page.getByText(/Open this on a larger screen/)).toBeVisible();
+ await expect(page.getByRole("button", { name: "Settings menu" })).toBeVisible();await expect(page.getByRole("heading", { name: "How we work (company)", exact: true })).toBeVisible();
  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
  await checkA11y(page, { theme: "light" });
 });

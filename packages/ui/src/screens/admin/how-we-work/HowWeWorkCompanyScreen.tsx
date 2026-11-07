@@ -1,4 +1,5 @@
 import { Suspense, lazy, useEffect, useMemo, useRef, useState } from "react";
+import { SettingsNote } from "../SettingsNote.js";
 import { Link } from "react-router";
 import { useAppHost } from "../../../host.js";
 import { ApiError } from "../../../api/errors.js";
@@ -20,6 +21,7 @@ import * as T from "./company-text.js";
 import { LearningSuggestionsRow } from "./LearningSuggestionsRow.js";
 import { KnownFailingPolicyRow } from "./KnownFailingPolicyRow.js";
 import { SetupRecipesLink } from "./SetupRecipesScreen.js";
+import { UnsavedChanges, useReportUnsaved } from "./unsaved.js";
 import "./how-we-work.css";
 
 // SU-1: the company's setup locks. Its own chunk; it shows nothing while the setup agent is off.
@@ -36,8 +38,8 @@ export function HowWeWorkCompanyScreen() {
  const read = useAdminRead("company-how-we-work", COMPANY_POLICY_PATH, CompanyPolicyReader, { stable: true });
  const [notice, setNotice] = useState<Notice>(), { role } = useAdminContext();
  const reread = async (): Promise<boolean> => !(await read.refetch()).isError;
- return <section><PageHeader focusOnMount title={T.PAGE_TITLE} description={T.PAGE_NOTE} />
-  <p><Link to="/app/admin/models/steps">Back to AI models</Link></p>
+ return <UnsavedChanges><section><PageHeader focusOnMount title={T.PAGE_TITLE} description={T.PAGE_NOTE} /><SettingsNote area="how-we-work" /><p className="rv-muted">{T.SAVE_MODEL_NOTE}</p>
+  <p><Link to="/app/admin/models/sources">Back to AI models</Link></p>
   <LearningSuggestionsRow />
   <KnownFailingPolicyRow />
   <SetupRecipesLink />
@@ -47,7 +49,7 @@ export function HowWeWorkCompanyScreen() {
   {notice?.kind === "saved_reload_failed" && <p role="alert">{T.SAVED_RELOAD_FAILED} <Button onClick={() => { setNotice(undefined);void read.refetch(); }}>Reload</Button></p>}
   <ReadSection read={read} label="Company model defaults">{policy => <Editor key={read.dataUpdatedAt} policy={policy} notice={notice} setNotice={setNotice} reread={reread} reload={() => { setNotice(undefined);void read.refetch(); }} />}</ReadSection>
   <PrLearningLockRow />
- </section>;
+ </section></UnsavedChanges>;
 }
 
 /** The models a row can offer: the first stage's list, kept to the models every stage of the row lists. Undefined when the read gives no list for any stage of the row (the list is unavailable: the row shows its model read only). An empty list is an answer: no candidates. */
@@ -84,6 +86,7 @@ function Editor({ policy, notice, setNotice, reload, reread }: { policy: Company
  const alive = useRef(true), attempt = useRef<{ key: string; id: string } | undefined>(undefined), ticket = useRef(0);
  useEffect(() => { alive.current = true;return () => { alive.current = false; }; }, []);
  const dirty = useMemo(() => !sameOverrides(policy.stepOverrides, draft), [policy.stepOverrides, draft]);
+ useReportUnsaved("models", "Company model defaults", dirty);
  const allowed = (context.role === "owner" || context.role === "admin") && !context.checking;
  const busy = saving || reviewing, outOfDate = notice?.kind === "stale" || notice?.kind === "saved_reload_failed";
  function edit(next: CompanyOverrides) { ticket.current += 1;setDraft(next);setReview(undefined);setReviewing(false);setBlocked(undefined);setNotice(undefined); }
@@ -122,7 +125,7 @@ function Editor({ policy, notice, setNotice, reload, reread }: { policy: Company
  return <div aria-busy={busy}>
   {COMPANY_ROWS.some(row => rowCandidates(policy, row) === undefined) && <p className="rv-muted">{T.MODEL_NOTE}</p>}
   <div className="rv-hww-company-cards">{COMPANY_ROWS.map(row => <RowCard key={row.id} row={row} overrides={draft} saved={rowEntry(policy.stepOverrides, row)} serverDefault={policy.reviewDefaults?.[row.base] === "different_company"} candidates={rowCandidates(policy, row)} disabled={!allowed || busy} onChange={edit} />)}</div>
-  <div className="rv-hww-company-actions"><Button variant="primary" disabled={!allowed || busy || !dirty || outOfDate} onClick={() => { void openReview(); }}>Review changes</Button></div>
+  <div className="rv-hww-company-actions"><Button variant="primary" busy={saving} disabled={!allowed || busy || !dirty || outOfDate} onClick={() => { void save(); }}>Save company defaults</Button><Button disabled={!allowed || busy || !dirty || outOfDate} onClick={() => { void openReview(); }}>Review changes</Button>{dirty && <span className="rv-muted">{T.UNSAVED_MODELS}</span>}</div>
   {blocked !== undefined && <p role="alert">{blocked}</p>}
   {review !== undefined && <section aria-label="Review of company changes" className="rv-hww-company-review"><h2>Projects affected</h2>
    {review.state === "loading" && <p role="status">Checking projects...</p>}
@@ -132,7 +135,6 @@ function Editor({ policy, notice, setNotice, reload, reread }: { policy: Company
     {review.projects.length === 0 ? <p>No projects were listed.</p> : <ul className="rv-hww-company-projects">{review.projects.map(item => <li key={item.project}><strong><VisibleText text={item.project} /></strong>: {T.IMPACT_TEXT[item.impact]}{item.reasonCodes.length > 0 && <ul>{[...new Set(item.reasonCodes.map(T.reasonText))].map(text => <li key={text}>{text}</li>)}</ul>}</li>)}</ul>}
     {review.next !== undefined && <Button busy={reviewing} onClick={() => { void showMore(); }}>Show more</Button>}
    </>}
-   {review.state !== "loading" && <div className="rv-hww-company-actions"><Button variant="primary" busy={saving} disabled={!allowed || reviewing || outOfDate} onClick={() => { void save(); }}>Save company defaults</Button></div>}
   </section>}
   {notice?.kind === "stale" && <p role="alert">{T.STALE} <Button onClick={reload}>Reload</Button></p>}
   {notice?.kind === "failed" && <p role="alert">{notice.text}</p>}

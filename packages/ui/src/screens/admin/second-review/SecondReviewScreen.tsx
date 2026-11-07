@@ -1,4 +1,5 @@
 import { useRef, useState } from "react";
+import { SettingsNote } from "../SettingsNote.js";
 import { useQueryClient } from "@tanstack/react-query";
 import type { SecondReviewState } from "@agentx/contracts/web";
 import { ApiError } from "../../../api/errors.js";
@@ -92,9 +93,9 @@ function ReviewerSection({ state }: { state: SecondReviewState }) {
   {state.models.length === 0 ? <p>{T.NO_MODELS}</p> : <table className="rv-table"><thead><tr><th scope="col">{T.COL_MODEL}</th><th scope="col">{T.COL_MAKER}</th><th scope="col">{T.COL_COST}</th><th scope="col">{T.COL_FIT}</th><th scope="col">{T.COL_NOTES}</th></tr></thead>
    <tbody>{state.models.map(entry => <tr key={refKey(entry.model)} className={entry.eligible ? undefined : "rv-muted"}>
     <th scope="row"><VisibleText text={entry.model.modelId} /><br /><span className="rv-muted"><VisibleText text={entry.model.provider} /></span>{entry.suggested && <><br /><strong>{T.SUGGESTED}</strong>{entry.suggestionReason !== undefined && <>: <VisibleText text={entry.suggestionReason} /></>}</>}</th>
-    <td><VisibleText text={entry.company} /></td><td>{cost(entry.costUsd)}</td>
-    <td>{entry.eligible ? T.FITS : T.NOT_USED + ": " + (entry.ineligibleWhy === undefined ? "" : T.WHY[entry.ineligibleWhy] ?? entry.ineligibleWhy)}</td>
-    <td>{[...entry.notes, ...(entry.trackRecord === undefined ? [] : [entry.trackRecord])].map((note, index) => <span key={index}><VisibleText text={note} /><br /></span>)}</td></tr>)}</tbody></table>}
+    <td data-label={T.COL_MAKER}><VisibleText text={entry.company} /></td><td data-label={T.COL_COST}>{cost(entry.costUsd)}</td>
+    <td data-label={T.COL_FIT}>{entry.eligible ? T.FITS : T.NOT_USED + ": " + (entry.ineligibleWhy === undefined ? "" : T.WHY[entry.ineligibleWhy] ?? entry.ineligibleWhy)}</td>
+    <td data-label={T.COL_NOTES}>{[...entry.notes, ...(entry.trackRecord === undefined ? [] : [entry.trackRecord])].map((note, index) => <span key={index}><VisibleText text={note} /><br /></span>)}</td></tr>)}</tbody></table>}
   {usable.length > 0 && <>
    <Select label={T.PRIMARY} value={primaryKey} options={options} placeholder="Choose a model" onValueChange={setPrimary} />
    <Select label={T.BACKUP} value={backupKey} options={[{ value: "", label: T.NONE }, ...options.filter(option => option.value !== primaryKey)]} onValueChange={setBackup} />
@@ -148,7 +149,7 @@ export function SecondReviewScreen() {
  if (read.error instanceof ApiError && read.error.code === "NOT_FOUND") return <section><PageHeader focusOnMount title={T.TITLE} /><p>{T.UNAVAILABLE}</p></section>;
  if (read.data === undefined) return <section><PageHeader focusOnMount title={T.TITLE} /><p role="alert">{T.LOAD_FAILED}</p><div><Button onClick={() => { void read.refetch(); }}>{T.RETRY}</Button></div></section>;
  const state = read.data as unknown as SecondReviewState;
- return <section aria-label={T.TITLE}><PageHeader focusOnMount title={T.TITLE} description={T.INTRO} />
+ return <section aria-label={T.TITLE}><PageHeader focusOnMount title={T.TITLE} description={T.INTRO} /><SettingsNote area="second-review" />
   <NoticeSection state={state} /><ModeSection state={state} /><ReviewerSection state={state} /><ContextSection state={state} /><TrackSection state={state} />
  </section>;
 }
