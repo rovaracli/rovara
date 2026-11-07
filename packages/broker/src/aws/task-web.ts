@@ -4,7 +4,7 @@ import { SERVER_PAGE_ICON, serverPageCss } from "@agentx/design-tokens";
 // requests and its history. GET only, no forms, and one small script (by nonce) that opens and scrolls to a deep
 // link and, while the page is open, asks this origin's `/task/status` whether the task moved on. Every value is escaped; model and reviewer text is plain text in the page, so a link in it is never a link.
 import { randomBytes } from "node:crypto";
-import { NO_CHANGE_COMMANDS_HEADER, NO_CHANGE_FOUND_HEADER, NO_CHANGE_NEEDED_LINE, NO_CHANGE_NO_CONCLUSION_LEAD, noChangeFindingsFrom, type NoChangeFindings, SessionIdSchema, containsEmailAddress, redactText, withoutEmailAddresses, taskGraphDigest, type E2EScenarioResults, type PlanDocument, type PlanEvidenceBundle, type TaskComment, type TaskPeopleChangeResult, type TaskPeopleProposal, type TaskSuggestion, type WorkItemProgressV1 } from "@agentx/contracts";
+import { NO_CHANGE_COMMANDS_HEADER, NO_CHANGE_FOUND_HEADER, NO_CHANGE_NEEDED_LINE, NO_CHANGE_NO_CONCLUSION_LEAD, noChangeFindingsFrom, type NoChangeFindings, SessionIdSchema, containsEmailAddress, redactText, withoutEmailAddresses, type E2EScenarioResults, type PlanDocument, type PlanEvidenceBundle, type TaskComment, type TaskPeopleChangeResult, type TaskPeopleProposal, type TaskSuggestion, type WorkItemProgressV1 } from "@agentx/contracts";
 import { renderE2EScenarioRowsHtml } from "../e2e-presentation.js";
 import type { TaskRole } from "../developer/task-access.js";
 import type { TaskPeopleView } from "../developer/task-people.js";
@@ -345,7 +345,6 @@ const scriptJson = (value: unknown): string => JSON.stringify(value).replace(/[<
   "<": "\\u003c", ">": "\\u003e", "&": "\\u0026", "\u2028": "\\u2028", "\u2029": "\\u2029",
 })[character]!);
 
-const KIND_ANCHOR: Record<TaskDocumentKind, PlanAnchor> = { requirements: "requirements", design: "design", "coding plan": "coding-plan" };
 const KIND_LABEL: Record<TaskDocumentKind, string> = { requirements: "Requirements", design: "Design", "coding plan": "Coding plan" };
 
 /** The task's page in Rovara, where everything this page used to decide is decided now (OWNER DECISION 7); undefined for a task with no session. */

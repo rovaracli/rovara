@@ -807,7 +807,7 @@ describe("approving the plan", () => {
     await expect(decideTaskWorkflow(deps as never, browser, taskId, request())).rejects.toMatchObject({ code: "CONFIG_INVALID", message: expect.stringContaining("raises the run limit") as unknown });
     expect(t.meta(taskId).workflow.decisions).toEqual([]);
     expect(t.meta(taskId).budgetUsd).toBe(before.budgetUsd);
-    await decideTaskWorkflow(deps as never, browser, taskId, request({ acknowledgedRunLimitUsd: before.runEstimate.runLimitUsd }));
+    await decideTaskWorkflow(deps, browser, taskId, request({ acknowledgedRunLimitUsd: before.runEstimate.runLimitUsd }));
     expect(t.meta(taskId).workflow.decisions).toHaveLength(1);
   });
 

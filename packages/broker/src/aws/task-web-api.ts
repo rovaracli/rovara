@@ -9,9 +9,7 @@ import { randomBytes } from "node:crypto";
 import { z } from "zod";
 import {
   CommentDocumentSchema, CommentTargetSchema, DECISION_COMMENTS_MAX, PAGE_API_BODY_MAX_BYTES, PAGE_NOTE_MAX_CHARS,
-  LearningTaskPageBodySchema, TaskPeopleRoleRequestSchema, TaskPeopleTakeOwnershipRequestSchema,
-  type LearningForgetAnswerSchema, type LearningRememberAnswerSchema,
-  type TaskPeopleChangeResult, type TaskPeopleRoleRequest, type TaskPeopleTakeOwnershipRequest, type TaskPeopleView,
+  type TaskPeopleChangeResult, type TaskPeopleView,
 } from "@agentx/contracts";
 import type { DeveloperTaskView } from "@agentx/contracts";
 import { REVISE_PLAN_REFUSALS } from "../agent-sessions/live-steer-revise.js";
@@ -218,7 +216,6 @@ export function createTaskWebApi(deps: TaskWebApiDependencies): (request: Adapte
     // `comments/<ID>/edit` and `comments/<ID>/delete` are the comments endpoint, for that comment.
     const artifactSha256 = route[7];
     const endpoint = artifactSha256 !== undefined ? "e2e/artifacts" : commentId === undefined ? route[2]!.toLowerCase() : "comments";
-    const action = route[4]?.toLowerCase();
     const peopleConfirm = route[6] !== undefined;
     const method = request.method.toUpperCase();
     // `state` is read, `comments` is read (GET) and written (POST), everything else is written.
@@ -280,13 +277,12 @@ export function createTaskWebApi(deps: TaskWebApiDependencies): (request: Adapte
         return invalid();
       }
       // The only write left (OWNER DECISION 7): a People request's confirmation, from the confirmation page Slack's People flow links to.
-      const receiptOf = deps.getPeopleRequest, confirm = deps.confirmPeopleRequest;
-      if (receiptOf === undefined || confirm === undefined || peopleRequestId === undefined) return json(404, { error: "not_found" });
+      if (deps.getPeopleRequest === undefined || deps.confirmPeopleRequest === undefined || peopleRequestId === undefined) return json(404, { error: "not_found" });
       const parsed = z.object({ requestId: z.string().uuid() }).strict().safeParse(value);
       if (!parsed.success || parsed.data.requestId.toLowerCase() !== peopleRequestId) return invalid();
-      const receipt = await receiptOf(caller, taskId, peopleRequestId);
+      const receipt = await deps.getPeopleRequest(caller, taskId, peopleRequestId);
       if (receipt.status === "COMMITTED") return json(200, receipt);
-      const result = await confirm(caller, taskId, peopleRequestId);
+      const result = await deps.confirmPeopleRequest(caller, taskId, peopleRequestId);
       return json(result.status === "PENDING" ? 202 : 200, result);
     } catch (error) {
       const refused = refusalResponse(error);

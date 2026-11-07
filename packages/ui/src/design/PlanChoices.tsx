@@ -11,7 +11,7 @@ export interface PlanFields {
 }
 
 /** The note keeps its line breaks; other control and hidden characters are dropped (the broker refuses them). */
-const cleanNote = (text: string): string => text.replace(/[\p{Cf}\u0000-\u0009\u000b-\u001f\u007f-\u009f]+/gu, " ").trim().slice(0, 500);
+const cleanNote = (text: string): string => text.replace(/(?:(?!\n)[\p{Cc}\p{Cf}])+/gu, " ").trim().slice(0, 500);
 
 /**
  * The document's choices on its card, as the old review page offered them: each question with AgentX's answer chosen until the person picks another (and the names of who suggested what), the coding

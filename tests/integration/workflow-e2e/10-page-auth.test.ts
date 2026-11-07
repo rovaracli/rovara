@@ -9,19 +9,16 @@
 // 10.7 (review sessions on the PR feedback page) is covered by feedback-review-web.test.ts.
 import { randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
-import { SLACK_OIDC_ISSUER, SlackPageCommentMessageSchema, slackThreadSubject, type ChannelMembersRequest, type ChannelMembersResponse, type PlanDocument, type TaskPeopleDisplayReadRequest, type TaskPersonProofRequest } from "@agentx/contracts";
-import { createWorkflowE2E, SLACK_MAYA, type WorkflowE2E } from "../../support/workflow-e2e.js";
-import { MAYA, OMAR, grantProject, type Developer } from "../../support/developer-task-broker.js";
+import type { ChannelMembersRequest, ChannelMembersResponse } from "@agentx/contracts";
+import { createWorkflowE2E, type WorkflowE2E } from "../../support/workflow-e2e.js";
+import { MAYA, OMAR, type Developer } from "../../support/developer-task-broker.js";
 import { SLACK_CHANNEL } from "../../support/slack-broker.js";
-import { PAGE_ORIGIN, openTaskPage, readable, signInToReview, type PageReader, type TaskPageTab } from "../../support/page-browser.js";
+import { PAGE_ORIGIN, openTaskPage, readable, signInToReview, type PageReader } from "../../support/page-browser.js";
 import { cardDecision, reviewPagePost } from "../../support/card-decision.js";
 import { planAnswer, planDocument } from "../../support/plan-documents.js";
 import { feedbackCriticReply } from "../../support/faux-scripts.js";
 import { reviewerFindings } from "../../support/model-fixtures.js";
-import { visibleSlackText } from "../../support/strict-slack.js";
 import { developerIdForSlackUser } from "../../../packages/broker/src/aws/admin-actions.js";
-import { taskOwnerKey } from "../../../packages/broker/src/developer/task-records.js";
-import type { DeveloperTaskRecord } from "../../../packages/broker/src/developer/task-records.js";
 import type { SlackRequestQueue } from "../../../packages/broker/src/developer/page-comments.js";
 import { EDITS as GREET_EDITS, PLAN as GREET_PLAN, editsOrFix, journeySuite, openDraftPr } from "../../support/workflow-e2e-journeys.js";
 
@@ -29,8 +26,6 @@ import { EDITS as GREET_EDITS, PLAN as GREET_PLAN, editsOrFix, journeySuite, ope
 const OWNER: PageReader = { developerId: developerIdForSlackUser(MAYA.slackUserId!), name: MAYA.name, slackUserId: MAYA.slackUserId! };
 /** A teammate in the project's Slack channel. */
 const SAM: PageReader = { developerId: "7".repeat(64), name: "Sam Lee", slackUserId: "U0SAMLEE01" };
-const NATIVE_SAM: PageReader = { ...SAM, developerId: developerIdForSlackUser(SAM.slackUserId!) };
-const SLACK_SAM: Developer = { ...NATIVE_SAM, provider: "slack", sessionId: "s-sam-native" };
 /** Someone signed in with company sign-in: no Slack identity, not in the channel. */
 const OMAR_OIDC: PageReader = { developerId: OMAR.developerId, name: OMAR.name, provider: "oidc" };
 
@@ -49,7 +44,6 @@ const PLAN = planDocument({
 });
 const V2 = planDocument({ ...PLAN, claims: [{ id: "1", text: "Add a retry banner to greeting.ts, above the form." }, PLAN.claims[1]!] });
 const EDITS = [{ path: "repo/demo/greeting.ts", content: "export const banner = 'Retry';\n" }];
-const NO_ACCESS = "You don't have access to this task.";
 const DAY = 24 * 60 * 60 * 1000;
 
 /** Maya and Sam are in the project's channel; nobody else is. */
@@ -286,7 +280,7 @@ describe("Suite 10: page and auth", () => {
     const cards = process.env.DECISION_CARDS_ENABLED;
     const withCards = async (work: () => Promise<void>) => { process.env.DECISION_CARDS_ENABLED = "1"; try { await work(); } finally { if (cards === undefined) delete process.env.DECISION_CARDS_ENABLED; else process.env.DECISION_CARDS_ENABLED = cards; } };
     const asDeveloper = (who: PageReader): Developer => ({ developerId: who.developerId, name: who.name, provider: "slack", sessionId: `s-${who.developerId.slice(0, 8)}`, slackUserId: who.slackUserId });
-    const shim = (e2e: WorkflowE2E) => ({ db: e2e.db, handler: e2e.handler as never, orgOf: async () => undefined });
+    const shim = (e2e: WorkflowE2E) => ({ db: e2e.db, handler: e2e.handler, orgOf: async () => undefined });
 
     it("10.1 a revoked sign-in reads nothing and writes nothing: the page asks to sign in again and its API answers 401", async () => {
       const e2e = await waitingPlan();

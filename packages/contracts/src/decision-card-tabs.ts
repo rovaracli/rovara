@@ -137,7 +137,7 @@ export const DecisionApproveBodySchema = z.object({
   /** OWNER DECISION 7: the open comments sent with the approval. Absent: the open comments, oldest first, as Slack's Approve takes them. */
   includedCommentIds: commentIds.optional(),
   /** OWNER DECISION 7: a free note for AgentX, sent with the approval. */
-  note: z.string().trim().min(1).max(DECISION_PLAN_NOTE_MAX).regex(/^[^\p{Cf}\u0000-\u0009\u000b-\u001f\u007f-\u009f]*$/u, "plain text (line breaks are kept)").optional(),
+  note: z.string().trim().min(1).max(DECISION_PLAN_NOTE_MAX).refine((text) => /^[^\p{Cc}\p{Cf}]*$/u.test(text.replaceAll("\n", "")), "plain text (line breaks are kept)").optional(),
 }).strict();
 export type DecisionApproveBody = z.infer<typeof DecisionApproveBodySchema>;
 /** The card kinds that take `acknowledgedRunLimitUsd` on approve; every other kind refuses it. */

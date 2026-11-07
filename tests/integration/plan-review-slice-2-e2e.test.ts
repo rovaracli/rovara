@@ -78,9 +78,9 @@ function seedComment(e2e: WorkflowE2E, who: PageReader, text: string, target: Re
 }
 const asDeveloper = (who: PageReader): Developer => ({ developerId: who.developerId, name: who.name, provider: "slack", sessionId: `s-${who.developerId.slice(0, 8)}`, slackUserId: who.slackUserId });
 /** The plan's decision card on the task page, pressed by `who`'s browser (OWNER DECISION 7: the review page is read-only). */
-const onCard = (e2e: WorkflowE2E, who: PageReader, body: Parameters<typeof cardDecision>[3] = {}) => cardDecision({ db: e2e.db, handler: e2e.handler as never, orgOf: async () => undefined }, asDeveloper(who), e2e.taskId(), body);
+const onCard = (e2e: WorkflowE2E, who: PageReader, body: Parameters<typeof cardDecision>[3] = {}) => cardDecision({ db: e2e.db, handler: e2e.handler, orgOf: async () => undefined }, asDeveloper(who), e2e.taskId(), body);
 /** A write to the old review page's API from `who`'s browser. */
-const toPage = (e2e: WorkflowE2E, who: PageReader, endpoint: string, body: Record<string, unknown> = {}) => reviewPagePost({ db: e2e.db, handler: e2e.handler as never, orgOf: async () => undefined }, asDeveloper(who), e2e.taskId(), endpoint, body);
+const toPage = (e2e: WorkflowE2E, who: PageReader, endpoint: string, body: Record<string, unknown> = {}) => reviewPagePost({ db: e2e.db, handler: e2e.handler, orgOf: async () => undefined }, asDeveloper(who), e2e.taskId(), endpoint, body);
 
 describe("deciding on the task page's card, end to end (OWNER DECISION 7)", () => {
   let log: MockInstance<typeof console.log>;
@@ -137,7 +137,7 @@ describe("deciding on the task page's card, end to end (OWNER DECISION 7)", () =
     expect(v2Card.text).toContain("AgentX answered 2 of 2 comments from v1.");
     expect(e2e.slack.updates.some((update) => JSON.stringify(update.blocks).includes(`Changes requested by <@${MAYA.slackUserId}> · 2 comments included`))).toBe(true);
     // v2's card offers the comment left out, still open; the sent ones are locked to the decision.
-    const list = await (await import("../support/browser-session.js")).browserRequests({ db: e2e.db, handler: e2e.handler as never, orgOf: async () => undefined })(asDeveloper(OWNER), "GET", "/v1/app/decisions");
+    const list = await (await import("../support/browser-session.js")).browserRequests({ db: e2e.db, handler: e2e.handler, orgOf: async () => undefined })(asDeveloper(OWNER), "GET", "/v1/app/decisions");
     const choices = ((list.body.choices ?? {}) as Record<string, { openComments: Array<{ id: string }> }>)[`approve_plan:${e2e.taskId()}`];
     expect(choices?.openComments.map((comment) => comment.id)).toEqual([tries]);
   }, 120_000);
