@@ -17,12 +17,14 @@
 //   - NOT HERE, a TS30 wiring item: the seeding of a Prove run. `seedRun` (seeds, then `seeded`) must be called once after the helpers start, by whoever wires Prove's boot step; Prove's own ports (service-runner.ts) only start and probe.
 //   - A reset kind with no hook, or a hook that fails, is a refusal, never a silent skip (`ServiceRunnerError`).
 import { randomBytes } from "node:crypto";
-import type { ProjectCommand, TestEnvDependency } from "@agentx/contracts";
+import type { ProjectCommand, TaskDependencyPlan } from "@agentx/contracts";
 import { HELPER_CREDENTIAL_PATTERNS, controlCallArgs, type HelperFiles } from "./service-helpers.js";
 import type { ResetContext, ResetHook, ResetHooks, ResetOutcome, ServiceSession } from "./service-runner.js";
 
-export type SeedRef = TestEnvDependency["seeds"][number];
-export type SeedFailure = "seed_failed" | "seed_timeout" | "stopped";
+/** A seed as a plan carries it: a command, or a repository file with (from an approved environment) the sha256 its approval bound. */
+export type SeedRef = TaskDependencyPlan["seeds"][number];
+export type FileSeedRef = Extract<SeedRef, { fixturePath: string }>;
+export type SeedFailure = "seed_failed" | "seed_timeout" | "stopped" | "seed_changed" | "seed_meta_command" | "seed_program" | "seed_not_allowed";
 
 /** The one error of the seeds. `message` is a fixed sentence; a command's output and a file's path never go in it. */
 export class SeedError extends Error {
@@ -35,12 +37,19 @@ const SEED_SENTENCES: Record<SeedFailure, string> = {
   seed_failed: "A test service's seed did not complete",
   seed_timeout: "A test service's seed ran out of time",
   stopped: "The test services' seeds were stopped",
+  seed_changed: "A test service's seed file changed since the test environment was approved; check it works and approve it again",
+  seed_meta_command: "A test service's seed file holds a psql command (a backslash, as in \\copy, \\! or a pg_dump COPY FROM stdin block); a seed file is plain SQL only",
+  seed_program: "A test service's seed file uses COPY ... PROGRAM, which a seed file may not run",
+  seed_not_allowed: "A test service's seed file runs a statement the seed role may not run: it has no superuser rights (no file reads, server programs or extensions)",
 };
+/** The seed failure a file seed's refusal is told as (review: one message per reason; anything else is the generic one). */
+const FILE_SEED_FAILURES: Readonly<Record<string, SeedFailure>> = { changed: "seed_changed", meta_command: "seed_meta_command", program: "seed_program", not_allowed: "seed_not_allowed" };
 
 /** What the sandbox does for the seeds: the project's own commands run there, and a repository fixture file is applied to the dependency that reads it. */
 export interface SeedPorts {
   runCommand(command: ProjectCommand, signal: AbortSignal): Promise<{ exitCode: number | null; timedOut: boolean }>;
-  applyFixture(dependencyId: string, path: string, signal: AbortSignal): Promise<void>;
+  /** Loads a file seed; a file whose content differs from the one its approval bound throws an error whose `reason` is `changed`. */
+  applyFixture(dependencyId: string, seed: FileSeedRef, signal: AbortSignal): Promise<void>;
 }
 
 /** The most seeds one dependency holds (the contract's own limit, checked again here). */
@@ -57,9 +66,15 @@ export async function runSeeds(dependencyId: string, seeds: readonly SeedRef[], 
       if (result.timedOut) throw new SeedError("seed_timeout");
       if (result.exitCode !== 0) throw new SeedError("seed_failed");
     } else {
-      await ports.applyFixture(dependencyId, seed.fixturePath, signal).catch(() => { throw new SeedError(signal.aborted ? "stopped" : "seed_failed"); });
+      await ports.applyFixture(dependencyId, seed, signal).catch((error: unknown) => { throw new SeedError(signal.aborted ? "stopped" : fileSeedFailureOf(error)); });
     }
   }
+}
+
+/** The seed failure of a file seed's error: its own reason's message, or the generic one. */
+function fileSeedFailureOf(error: unknown): SeedFailure {
+  const reason = (error as { reason?: unknown } | null)?.reason;
+  return typeof reason === "string" && Object.hasOwn(FILE_SEED_FAILURES, reason) ? FILE_SEED_FAILURES[reason]! : "seed_failed";
 }
 
 /** Runs a dependency's `prepare` step, if it has one. A failure is the fixed `seed_failed` (what failed is the emulator's business; its words never go on). */

@@ -5,7 +5,7 @@ import { continueRedirectAfterStop } from "../../agent-sessions/redirect-hook.js
 import { clearLiveDeliveredSince } from "../../agent-sessions/steer.js";
 import { posix as posixPath } from "node:path";
 import { PutCommand, TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
-import { TEST_ENV_DRAFT_RESULT_KEY, TEST_SERVICES_USAGE_RESULT_KEY, checksForSection, StandingFailuresSchema, nextStandingFailures, type StandingFailure, WORKFLOW_REGRESSED_CHECK_MAX, WORKFLOW_REGRESSED_CHECKS_MAX, WORKFLOW_NO_CODE_CHANGE_MESSAGE, noChangeFindingsFrom, BUDGET_EXHAUSTED_FAILURE_MESSAGE, taskResultChecks, type CheckEntry, type LatestChecks, PullRequestResultSchema, WorkspaceClosePreflightResultSchema, agentXError, type OperationStatus, type WorkspaceInstance, redactAndCap, redactText } from "@agentx/contracts";
+import { TEST_ENV_DRAFT_NONE_KEY, TEST_ENV_DRAFT_RESULT_KEY, TEST_SERVICES_USAGE_RESULT_KEY, checksForSection, StandingFailuresSchema, nextStandingFailures, type StandingFailure, WORKFLOW_REGRESSED_CHECK_MAX, WORKFLOW_REGRESSED_CHECKS_MAX, WORKFLOW_NO_CODE_CHANGE_MESSAGE, noChangeFindingsFrom, BUDGET_EXHAUSTED_FAILURE_MESSAGE, taskResultChecks, type CheckEntry, type LatestChecks, PullRequestResultSchema, WorkspaceClosePreflightResultSchema, agentXError, type OperationStatus, type WorkspaceInstance, redactAndCap, redactText } from "@agentx/contracts";
 import { keepCandidateUsage } from "../../org/test-env-candidate.js";
 import { recordPrepareFailureEvent } from "../operation-events.js";
 import { releaseFailedPreparation } from "../failed-preparation.js";
@@ -238,10 +238,11 @@ function withSafeNoChangeFindings(result: unknown): unknown {
  * transaction, the setup draft's own result with it. The full result still goes to the end items that read the draft.
  */
 function withoutTestEnvDraft(result: unknown): unknown {
-  if (result === null || typeof result !== "object" || Array.isArray(result) || !(TEST_ENV_DRAFT_RESULT_KEY in result || TEST_SERVICES_USAGE_RESULT_KEY in result)) return result;
+  if (result === null || typeof result !== "object" || Array.isArray(result) || !(TEST_ENV_DRAFT_RESULT_KEY in result || TEST_SERVICES_USAGE_RESULT_KEY in result || TEST_ENV_DRAFT_NONE_KEY in result)) return result;
   // Test services: a candidate check's usage record has its own home (`keepCandidateUsage`), so the operation's stored result never carries it.
-  const { [TEST_ENV_DRAFT_RESULT_KEY]: _draft, [TEST_SERVICES_USAGE_RESULT_KEY]: _usage, ...rest } = result as Record<string, unknown>;
+  const { [TEST_ENV_DRAFT_RESULT_KEY]: _draft, [TEST_SERVICES_USAGE_RESULT_KEY]: _usage, [TEST_ENV_DRAFT_NONE_KEY]: _none, ...rest } = result as Record<string, unknown>;
   void _draft;
+  void _none;
   void _usage;
   return rest;
 }

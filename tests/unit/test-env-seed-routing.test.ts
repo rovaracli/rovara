@@ -158,3 +158,33 @@ describe("withoutRoutedSeeds (the setup proposal)", () => {
     expect(withoutRoutedSeeds(proposal(["npx prisma migrate deploy"], ["npm ci"]), taken).setup.map((item) => item.value.commands)).toEqual([["npm ci"]]);
   });
 });
+
+// TS-UX-1 item 9: a detected seed FILE is offered, preferred over a command (SQL run by the database's own client, never the project's code). Its risk is what the existing rules give a file seed.
+describe("seed files in a draft", () => {
+  const withFiles = (candidates: unknown[], seeds: unknown[] | undefined, files: unknown[]) => ({ ...draftOf(candidates, seeds), seedFiles: files });
+  const file = (path: string) => ({ path, source: { path: path.replace(/^service\//u, ""), line: 1 } });
+  it("become the Postgres dependency's file seed; a seed command found too is not attached and leaves setup, said in the note", async () => {
+    const { SEED_FILE_OFFERED_NOTE } = await import("../../packages/broker/src/test-env/seed-routing.js");
+    const raw = { ...withFiles([postgres], [seed("npm", ["run", "seed"])], [file("service/db/seeds/users.sql")]), environment: { ...body(), repos: [{ ...body().repos[0]!, setupCommands: [cmd("npm", ["ci"]), cmd("npm", ["run", "seed"])] }] } };
+    const draft = sanitizeTestEnvDraft(raw, options)!;
+    const dependency = draft.environment.dependencies!.find((item) => item.family === "postgres")!;
+    expect(dependency.seeds).toEqual([{ fixturePath: "service/db/seeds/users.sql" }]);
+    expect(draft.environment.repos[0]!.setupCommands.map(formatCommandLine)).toEqual(["npm ci"]);
+    expect(draft.notes).toContain(SEED_FILE_OFFERED_NOTE);
+    // A file seed is not the less-safe `dependency_seed` (the contract's existing rule, unchanged).
+    expect(testEnvLessSafeChanges(undefined, draft.environment)).not.toContain("dependency_seed");
+  });
+  it("with no database to take them, the commands are routed as before (positive control: the same draft with Postgres takes the file)", () => {
+    const draft = sanitizeTestEnvDraft(withFiles([redis], [seed("npm", ["run", "seed"])], [file("service/db/seeds/users.sql")]), options)!;
+    expect(draft.environment.dependencies!.every((item) => item.seeds.length === 0)).toBe(true);
+    expect(draft.notes).toContain(SEED_NO_DATABASE_NOTE);
+  });
+  it("a file path that is not a plain relative workspace path is refused with the draft (the contract's own check)", () => {
+    expect(sanitizeTestEnvDraft(withFiles([postgres], undefined, [file("../outside.sql")]), options)).toBeUndefined();
+    expect(sanitizeTestEnvDraft(withFiles([postgres], undefined, [file("/etc/passwd")]), options)).toBeUndefined();
+  });
+  it("are dropped with the candidates while test services are off", () => {
+    const off = sanitizeTestEnvDraft(withFiles([postgres], undefined, [file("service/db/seeds/users.sql")]), { env: { TEST_ENVIRONMENT_ENABLED: "1" } })!;
+    expect(off.seedFiles).toBeUndefined();
+  });
+});

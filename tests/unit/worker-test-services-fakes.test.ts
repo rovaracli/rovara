@@ -358,7 +358,7 @@ describe("the feature the worker lists", () => {
     expect(testServicesAdvertisedFeatures({}, shipped(real.pathname))).toEqual([]);
     expect(fakeServerBaked(shipped(real.pathname))).toBe(true);
     // 2026-11-04 (0.5.5 integration): the shipped catalog now pins local-aws@r1 (revision 2, staging pin), so the baked image also lists the emulated-AWS feature.
-    expect(testServicesAdvertisedFeatures(configured, shipped(real.pathname))).toEqual(["task.testServices.v1", "task.testServices.aws.v1", "task.testServices.fake.v1"]);
+    expect(testServicesAdvertisedFeatures(configured, shipped(real.pathname))).toEqual(["task.testServices.v1", "task.testServices.fileSeed.v1", "task.testServices.aws.v1", "task.testServices.fake.v1"]);
     // Root withheld test services (NOT_PULLED=all, also when the IPv6 wall failed and the images ARE here): no configuration, so neither feature is listed, though the fake server is baked and needs no image.
     expect(testServicesAdvertisedFeatures({ ...configured, AGENTX_TEST_SERVICES_NOT_PULLED: "all" }, shipped(real.pathname))).toEqual([]);
     // a catalog baked without the fake server (an older image) does not list it, and a catalog that cannot be read does not either
@@ -368,7 +368,7 @@ describe("the feature the worker lists", () => {
     const { writeFile } = await import("node:fs/promises");
     await writeFile(join(dir, "catalog.json"), JSON.stringify(without));
     expect(fakeServerBaked(shipped(join(dir, "catalog.json")))).toBe(false);
-    expect(testServicesAdvertisedFeatures(configured, shipped(join(dir, "catalog.json")))).toEqual(["task.testServices.v1", "task.testServices.aws.v1"]);
+    expect(testServicesAdvertisedFeatures(configured, shipped(join(dir, "catalog.json")))).toEqual(["task.testServices.v1", "task.testServices.fileSeed.v1", "task.testServices.aws.v1"]);
     expect(fakeServerBaked(shipped(join(dir, "missing.json")))).toBe(false);
   });
 });

@@ -1,7 +1,7 @@
 // Service-call detector: the outside services the code calls, from the code itself. A SageMaker Runtime client and its endpoint name (boto3 or the JS SDK), and HTTP hosts named in configuration files.
 // Hosts that are always local, reserved or just a namespace (localhost, example.*, w3.org) are not services.
 import { mergeCandidates, urlLiteralCandidates } from "./dependency-candidates.js";
-import { codeEnvReferences, codeReferenceFindings } from "./env-config.js";
+import { codeEnvReferences, codeReferenceFindings, ormConfigCandidates } from "./env-config.js";
 import { goCodeCandidates } from "./go.js";
 import { javaCodeCandidates } from "./java.js";
 import { nodeCodeCandidates, nodeManifestCandidates } from "./node.js";
@@ -74,7 +74,7 @@ export const detectSdkCalls: Detector = async ({ repo }) => {
     found.push(...urlLiteralCandidates(path, text));
   }
   // A bare database setting goes to the one database the drivers (in code and in the manifests) name; the manifests are read (cached) only when a reference needs them.
-  const fromCode = references.length === 0 ? undefined : codeReferenceFindings(references, [...found, ...await nodeManifestCandidates(repo), ...await pythonManifestCandidates(repo)]);
+  const fromCode = references.length === 0 ? undefined : codeReferenceFindings(references, [...found, ...await nodeManifestCandidates(repo), ...await pythonManifestCandidates(repo), ...await ormConfigCandidates(repo)]);
   if (fromCode !== undefined) found.push(...fromCode.dependencies);
   const dependencies = mergeCandidates(found);
   const hardCoded = dependencies.filter((item) => item.hints.explicitEndpoint === true);

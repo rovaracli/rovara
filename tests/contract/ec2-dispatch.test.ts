@@ -551,6 +551,21 @@ describe("ec2-ebs delivery", () => {
       expect(await taskCapable.deliver(task, task.invocation)).toBe("DELIVERED");
     });
 
+    it("refuses a plan with a seed FILE to a worker that does not list task.testServices.fileSeed.v1, and sends it to one that does (TS-UX-1 item 9)", async () => {
+      const postgres = { id: "postgres", name: "Postgres", kind: "database", family: "postgres", backing: "local", catalogId: "postgres@16", repository: "svc/postgres", digest: "b".repeat(64), config: {}, aliases: ["postgres"], connect: [], seeds: [{ fixturePath: "repo/demo/db/seeds/users.sql" }], reset: "fresh_per_round" };
+      const plan = { revision: 1, digest: "d".repeat(64), roundBudgetMin: 30, selection: { method: "full", alwaysRun: [], fullSuiteOn: [] }, checks: [{ id: "unit", kind: "test" }], dependencies: [postgres] };
+      const base = ["task.workflowMode", "task.workflowChecks", "task.readiness", "task.testEnvironment.v1", "task.testServices.v1"];
+      const record = taskRecord({ workflowMode: "CHECKS", readiness: [{ cwd: "repo/demo", executable: "npm", args: ["test"], timeoutSeconds: 30 }], testEnvironment: plan });
+      const older = delivery({ workerFeatures: async () => base });
+      await expect(older.deliver(record, record.invocation)).rejects.toThrow(/out of date|upgrade/iu);
+      expect(older.post).not.toHaveBeenCalled();
+      const capable = delivery({ workerFeatures: async () => [...base, "task.testServices.fileSeed.v1"] });
+      expect(await capable.deliver(record, record.invocation)).toBe("DELIVERED");
+      // A command seed needs no such feature (positive control: the same plan without the file is delivered to the older worker).
+      const commandOnly = taskRecord({ workflowMode: "CHECKS", readiness: [{ cwd: "repo/demo", executable: "npm", args: ["test"], timeoutSeconds: 30 }], testEnvironment: { ...plan, dependencies: [{ ...postgres, seeds: [] }] } });
+      expect(await delivery({ workerFeatures: async () => base }).deliver(commandOnly, commandOnly.invocation)).toBe("DELIVERED");
+    });
+
     it("refuses a plan that starts Rovara local AWS to a worker that does not list task.testServices.aws.v1, and sends it to one that does (slice 2)", async () => {
       const postgres = { id: "postgres", name: "Postgres", kind: "database", family: "postgres", backing: "local", catalogId: "postgres@16", repository: "svc/postgres", digest: "b".repeat(64), config: {}, aliases: ["postgres"], connect: [], seeds: [], reset: "fresh_per_round" };
       const s3 = { id: "aws-s3", name: "S3", kind: "object_store", family: "aws:s3", backing: "emulated", catalogId: "local-aws@r1", repository: "svc/local-aws", digest: "c".repeat(64), config: {}, aliases: ["aws"], connect: [], seeds: [], reset: "fresh_per_round", aws: { services: ["s3"], region: "us-east-1" } };

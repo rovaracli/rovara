@@ -13,6 +13,7 @@ import { detectJava } from "./java.js";
 import { detectNode } from "./node.js";
 import { detectPython } from "./python.js";
 import { detectSdkCalls, detectServices } from "./services.js";
+import { detectSeedFiles } from "./seed-files.js";
 import { emptyDetection, type DependencyCandidate, type Detection, type Detector, type RepositoryReader } from "./types.js";
 
 export const DETECTORS: ReadonlyArray<{ name: string; run: Detector }> = [
@@ -29,10 +30,11 @@ export const DETECTORS: ReadonlyArray<{ name: string; run: Detector }> = [
   { name: "sdk", run: detectSdkCalls },
   { name: "test-fakes", run: detectTestFakes },
   { name: "iac-resources", run: detectIacResources },
+  { name: "seed-files", run: detectSeedFiles },
 ];
 
 /** The detectors that only report dependency candidates (test services D1-D7). The language detectors also report their manifests' drivers, which `legacyOnly` drops. */
-export const DEPENDENCY_DETECTOR_NAMES: ReadonlySet<string> = new Set(["compose", "ci", "env", "sdk", "test-fakes", "iac-resources"]);
+export const DEPENDENCY_DETECTOR_NAMES: ReadonlySet<string> = new Set(["compose", "ci", "env", "sdk", "test-fakes", "iac-resources", "seed-files"]);
 
 export const ENV_DETECT_MAX_PATHS = 5_000;
 export const ENV_DETECT_MAX_FILE_BYTES = 256 * 1_024;
@@ -106,6 +108,8 @@ export async function runDetectors(reader: RepositoryReader, cwd: string, option
     try { part = await detector.run({ repo: reader, cwd }); } catch { merged.notes.push(`The ${detector.name} detector could not finish.`); continue; }
     merged.setupCommands.push(...(part.setupCommands ?? []));
     if (part.seedCommands !== undefined && part.seedCommands.length > 0) merged.seedCommands = [...(merged.seedCommands ?? []), ...part.seedCommands];
+    if (part.databaseScripts !== undefined && part.databaseScripts.length > 0) merged.databaseScripts = [...(merged.databaseScripts ?? []), ...part.databaseScripts];
+    if (options.legacyOnly !== true && part.seedFiles !== undefined && part.seedFiles.length > 0) merged.seedFiles = [...(merged.seedFiles ?? []), ...part.seedFiles];
     for (const check of part.checks ?? []) {
       if (merged.checks.some((existing) => sameCommand(existing.value.command, check.value.command))) continue;
       if (merged.checks.length >= ENV_DETECT_MAX_CHECKS) { cutChecks = true; continue; }

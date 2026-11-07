@@ -151,21 +151,18 @@ describe("with the switch on", () => {
       const unproved = await t.dev(OMAR, "POST", `${ENV}/approve`, { digest, expectedRevision: 0 });
       expect(unproved.status).toBe(400);
       expect(errorOf(unproved).message).toContain("check of this test environment");
-      // With a passing candidate check but no recorded proof, the store itself still refuses.
+      // TS-UX-1 item 2: with a passing candidate check the proposal reads as proved with no Prove press; the read keeps nothing, and Approve keeps the report it derives from the check.
       t.candidateCheckPassed(digest);
-      const notRecorded = await t.dev(OMAR, "POST", `${ENV}/approve`, { digest, expectedRevision: 0 });
-      expect(notRecorded.status).toBe(400);
-      expect(errorOf(notRecorded).message).toContain("prove");
-
-      const proved = await t.dev(OMAR, "POST", `${ENV}/prove`, { digest });
-      expect(proved.status, JSON.stringify(proved.body)).toBe(200);
-      expect(proved.body).toMatchObject({ proposal: { digest, proved: true } });
+      const shown = await t.dev(OMAR, "GET", ENV);
+      expect(shown.body).toMatchObject({ proposal: { digest, proved: true } });
+      expect(t.db.find((item) => item.entityType === "TEST_ENV_PROVE")).toEqual([]);
 
       const requestId = randomUUID();
       const approved = await t.dev(OMAR, "POST", `${ENV}/approve`, { digest, expectedRevision: 0, requestId });
       expect(approved.status, JSON.stringify(approved.body)).toBe(200);
       expect(approved.body).toMatchObject({ revision: 1, digest, replayed: false });
       expect((approved.body.state as { approved?: { revision: number; digest: string } }).approved).toMatchObject({ revision: 1, digest });
+      expect(t.db.find((item) => item.entityType === "TEST_ENV_PROVE")).toHaveLength(1);
       // SH28: the project then needs repair (three tasks blocked by the same cause). A REPLAY of the approval that already stood proves nothing new: it leaves "Setup needs repair" as it is.
       process.env.NIGHTLY_HEALTH_ENABLED = "1";
       try {

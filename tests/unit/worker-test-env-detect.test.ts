@@ -106,8 +106,9 @@ describe("the draft", () => {
   it("a repository with nothing recognisable gives no draft, and a result helper that never throws", async () => {
     await write("svc/README.md", "hello");
     expect(await detectTestEnvironment({ rootPath: root, repositories: [repo("svc")] })).toBeUndefined();
-    expect(await testEnvDraftResult({ rootPath: root, repositories: [repo("svc")] })).toEqual({});
-    expect(await testEnvDraftResult({ rootPath: join(root, "missing"), repositories: [repo("svc")] })).toEqual({});
+    // TS-UX-1 item 6: no draft says why, in a fixed word (never the files' words).
+    expect(await testEnvDraftResult({ rootPath: root, repositories: [repo("svc")] })).toEqual({ testEnvironmentDraftNone: "no_test_command" });
+    expect(await testEnvDraftResult({ rootPath: join(root, "missing"), repositories: [repo("svc")] })).toEqual({ testEnvironmentDraftNone: "no_test_command" });
     await write("ok/pyproject.toml", PYTEST);
     expect(Object.keys(await testEnvDraftResult({ rootPath: root, repositories: [repo("ok")] }))).toEqual(["testEnvironmentDraft"]);
   });

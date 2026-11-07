@@ -1,6 +1,8 @@
 // Node detector: package.json scripts (test, lint, typecheck, build), the package manager's install command, and lockfiles.
 import { awsClientCandidate, callArguments, candidate, hardcodedEndpoint, isOwnedElsewhere, mergeCandidates, normalizeAwsService, scanDrivers, type DriverRule } from "./dependency-candidates.js";
-import { type DependencyCandidate, type Detection, type Detector, type DetectorContext, findLine } from "./types.js";
+import type { ProjectCommand } from "@agentx/contracts";
+import { readsDatabaseSetting } from "./env-config.js";
+import { type DependencyCandidate, type Detection, type Detector, type DetectorContext, type Located, findLine } from "./types.js";
 
 const LOCKS: ReadonlyArray<{ file: string; setup: [string, string[]] }> = [
   { file: "package-lock.json", setup: ["npm", ["ci"]] },
@@ -19,8 +21,10 @@ const detectNodeBuild: Detector = async ({ repo, cwd }) => {
   const text = await repo.read("package.json");
   if (text === undefined) return {};
   let scripts: Record<string, unknown> = {};
+  let manifest: Record<string, unknown> = {};
   try {
     const parsed = JSON.parse(text) as { scripts?: unknown };
+    if (parsed !== null && typeof parsed === "object" && !Array.isArray(parsed)) manifest = parsed;
     if (parsed.scripts !== null && typeof parsed.scripts === "object" && !Array.isArray(parsed.scripts)) scripts = parsed.scripts as Record<string, unknown>;
   } catch {
     return { notes: ["package.json could not be read as JSON."] };
@@ -47,9 +51,61 @@ const detectNodeBuild: Detector = async ({ repo, cwd }) => {
     const line = findLine(text, new RegExp(`"${seedName.replace(/[:]/gu, "\\:")}"\\s{0,40}:`, "u")) ?? 1;
     found.seedCommands = [{ value: { cwd, executable: manager, args: manager === "npm" ? ["run", seedName] : [seedName], timeoutSeconds: 900 }, source: { path: "package.json", line } }];
   }
+  // The seed the database tools themselves know of (TS-UX-1 item 8), when no script names one: Prisma's `prisma.seed` config, a knex `seeds/` folder, sequelize's `seeders/` folder.
+  if (found.seedCommands === undefined) {
+    const tool = toolSeedCommand(manifest, repo.paths, text, cwd);
+    if (tool !== undefined) found.seedCommands = [tool];
+  }
+  const databaseScripts = await databaseScriptsOf(scripts, repo);
+  if (databaseScripts.length > 0) found.databaseScripts = databaseScripts;
   if (found.checks!.some((check) => check.value.kind === "test")) found.notes!.push("The test script writes no report file Rovara knows of; counts come from the exit code unless the maintainer sets a report path.");
   return found;
 };
+
+/** Programs that run one source file given as their first word that is not an option: the file is what the script does. */
+const FILE_RUNNERS = new Set(["node", "tsx", "ts-node", "bun", "python", "python3"]);
+const DATABASE_SCRIPTS_MAX = 16;
+
+/**
+ * TS-UX-1 item 7: the scripts whose program file reads a database setting. A script body is read as words; the first must be a file runner (`node`, `tsx`, `ts-node`, `bun`, `python`), and its first word that is not an
+ * option must be a file in the repository, which is read (bounded by the reader) for a database setting. Anything else (a shell line, a runner of a tool, a file outside the list) is no evidence. Nothing is run.
+ */
+async function databaseScriptsOf(scripts: Record<string, unknown>, repo: DetectorContext["repo"]): Promise<Array<Located<string>>> {
+  const out: Array<Located<string>> = [];
+  for (const [name, body] of Object.entries(scripts).slice(0, 200)) {
+    if (typeof body !== "string" || out.length >= DATABASE_SCRIPTS_MAX || /[|;&<>`$]/u.test(body)) continue;
+    const words = body.trim().split(/\s+/u);
+    if (!FILE_RUNNERS.has(words[0] ?? "")) continue;
+    const file = words.slice(1).find((word) => !word.startsWith("-"))?.replace(/^\.\//u, "");
+    if (file === undefined || !repo.paths.includes(file)) continue;
+    const text = await repo.read(file);
+    const reference = text === undefined ? undefined : readsDatabaseSetting(file, text);
+    if (reference !== undefined) out.push({ value: name, source: { path: file, line: reference.line } });
+  }
+  return out;
+}
+
+/** Whether package.json lists a package among its dependencies of any kind. */
+function lists(manifest: Record<string, unknown>, name: string): boolean {
+  return ["dependencies", "devDependencies", "optionalDependencies"].some((key) => { const table = manifest[key]; return table !== null && typeof table === "object" && !Array.isArray(table) && Object.hasOwn(table, name); });
+}
+
+/**
+ * The seed command a database tool runs, from its own config, cited at the line that names it: `npx prisma db seed` when package.json has `prisma.seed`, `npx knex seed:run` when knex is a dependency and a `seeds/`
+ * folder holds a script, `npx sequelize-cli db:seed:all` when sequelize-cli is one and a `seeders/` folder holds a script. Undefined otherwise. Nothing is run.
+ */
+export function toolSeedCommand(manifest: Record<string, unknown>, paths: readonly string[], text: string, cwd: string): Located<ProjectCommand> | undefined {
+  const prisma = manifest["prisma"];
+  if (prisma !== null && typeof prisma === "object" && !Array.isArray(prisma) && typeof (prisma as Record<string, unknown>)["seed"] === "string") {
+    return { value: { cwd, executable: "npx", args: ["prisma", "db", "seed"], timeoutSeconds: 900 }, source: { path: "package.json", line: findLine(text, /"prisma"\s{0,40}:/u) ?? 1 } };
+  }
+  const script = (folder: string) => paths.find((path) => new RegExp(`^(?:[^/]+/){0,2}${folder}/[^/]+\\.(?:[cm]?js|ts)$`, "u").test(path));
+  const knex = lists(manifest, "knex") ? script("seeds") : undefined;
+  if (knex !== undefined) return { value: { cwd, executable: "npx", args: ["knex", "seed:run"], timeoutSeconds: 900 }, source: { path: knex, line: 1 } };
+  const sequelize = lists(manifest, "sequelize-cli") ? script("seeders") : undefined;
+  if (sequelize !== undefined) return { value: { cwd, executable: "npx", args: ["sequelize-cli", "db:seed:all"], timeoutSeconds: 900 }, source: { path: sequelize, line: 1 } };
+  return undefined;
+}
 
 // ---- dependencies (test services D4 manifests, D5 code)
 

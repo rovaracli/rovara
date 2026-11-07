@@ -11,7 +11,7 @@ import { CoverageMapSchema } from "./test-env-nightly.js";
 import { CheckKindSchema } from "./evidence.js";
 import { ProjectCommandSchema, RelativeWorkspacePathSchema } from "./project.js";
 import {
-  CatalogConfigSchema, CatalogIdSchema, ConnectTemplateSchema, DnsLabelSchema, EnvNameSchema, FamilyIdSchema, SeedRefSchema, TEST_ENV_DEPENDENCY_LIMITS, TEST_ENV_DEPENDENCY_RESETS, TEST_ENV_HELPER_CATALOG_NAMES, TEST_ENV_RESERVED_ALIASES,
+  CatalogConfigSchema, CatalogIdSchema, ConnectTemplateSchema, DnsLabelSchema, EnvNameSchema, FamilyIdSchema, TEST_ENV_DEPENDENCY_LIMITS, TEST_ENV_DEPENDENCY_RESETS, TEST_ENV_HELPER_CATALOG_NAMES, TEST_ENV_RESERVED_ALIASES,
   IacSeedRefSchema, TestEnvDependencyIdSchema, TestEnvDependencyKindSchema, TestEnvRegionSchema, catalogIdName, testEnvStartedCount,
 } from "./test-env-dependency.js";
 import { reservedDependencyEnvName } from "./test-services-shared.js";
@@ -37,6 +37,11 @@ export const TEST_SERVICES_AWS_PLAN_FEATURE = "task.testServices.aws.v1";
  * (`ec2-delivery.ts`). In `WORKER_INVOCATION_FEATURES`.
  */
 export const TEST_SERVICES_FAKE_PLAN_FEATURE = "task.testServices.fake.v1";
+/**
+ * TS-UX-1 item 9: a worker that lists this loads a dependency's seed FILE (`seeds[].fixturePath`) into its test database. An older worker failed such a seed ("not available yet"); the broker never sends it a plan with a
+ * file seed (`ec2-delivery.ts`). In `WORKER_INVOCATION_FEATURES`.
+ */
+export const TEST_SERVICES_FILE_SEED_FEATURE = "task.testServices.fileSeed.v1";
 /** The AWS services a plan may ask Rovara local AWS for in slice 2. The broker's rule and the worker's contract are this one list. */
 export const TEST_SERVICES_AWS_PLAN_SERVICES = ["s3", "sqs", "dynamodb"] as const;
 
@@ -119,6 +124,11 @@ export const TestEnvDraftSchema = z
      * offers them as the seed of the database dependency it proposes (`sanitizeTestEnvDraft`); a person approves it, as a seed command is always a less-safe change. Absent when none.
      */
     seedCommands: z.array(z.object({ command: ProjectCommandSchema, source: TestEnvValueSourceSchema }).strict()).max(TEST_ENV_SEED_COMMANDS_MAX).optional(),
+    /**
+     * TS-UX-1 item 9: SQL files of test data found in the repository (workspace-relative, as a seed's `fixturePath`). The broker offers them as the database dependency's FILE seed, preferred over a seed command (a file
+     * is SQL the database's own client runs as a role with no superuser rights, in the sealed test database; it cannot reach the network or a secret). Absent when none.
+     */
+    seedFiles: z.array(z.object({ path: RelativeWorkspacePathSchema, source: TestEnvValueSourceSchema }).strict()).max(TEST_ENV_SEED_COMMANDS_MAX).optional(),
     /** Fixed statements for the maintainer (what was found that the proposal cannot use, and what is not known). */
     notes: z.array(line(400)).max(60),
     questions: z.array(line(400)).max(60),
@@ -135,6 +145,13 @@ export const TEST_ENV_DRAFT_MAX_BYTES = 200 * 1_024;
 
 /** The key under which a draft rides in a SETUP_DRAFT run's result. */
 export const TEST_ENV_DRAFT_RESULT_KEY = "testEnvironmentDraft";
+/**
+ * TS-UX-1 item 6: why a SETUP_DRAFT run that ran the detectors reports no draft (`no_test_command`: the detectors found no command that runs the tests, or nothing they found could be put together; `failed`: the
+ * detection itself failed). Present only when detection ran and made no draft, so a result with neither key is a worker that did not run detection (an older one, or the field was not sent).
+ */
+export const TEST_ENV_DRAFT_NONE_KEY = "testEnvironmentDraftNone";
+export const TEST_ENV_DRAFT_NONE_REASONS = ["no_test_command", "failed"] as const;
+export type TestEnvDraftNoneReason = (typeof TEST_ENV_DRAFT_NONE_REASONS)[number];
 
 /**
  * Test services: one dependency of a task's run as the worker starts it. Everything is a pin or a name, never a secret: the catalog entry and image digest the broker chose (the worker checks its own signed catalog agrees
@@ -167,7 +184,11 @@ export const TaskDependencyPlanSchema = z
     config: CatalogConfigSchema,
     aliases: z.array(DnsLabelSchema).max(TEST_ENV_DEPENDENCY_LIMITS.hostAliases),
     connect: z.array(z.object({ name: EnvNameSchema, template: ConnectTemplateSchema }).strict()).max(TEST_ENV_DEPENDENCY_LIMITS.connectEnv),
-    seeds: z.array(SeedRefSchema).max(TEST_ENV_DEPENDENCY_LIMITS.seeds),
+    /**
+     * The dependency's seeds. Review I3 (owner decision 12, SEED-FILE-LOCK): a file seed of a plan made from an APPROVED environment names the sha256 the approval bound, and the worker refuses a file whose content
+     * differs. A candidate check's plan names none (it loads the file and reports the sha256 it loaded, which the approval binds).
+     */
+    seeds: z.array(z.union([z.object({ command: ProjectCommandSchema }).strict(), z.object({ fixturePath: RelativeWorkspacePathSchema, sha256: Sha256.optional() }).strict()])).max(TEST_ENV_DEPENDENCY_LIMITS.seeds),
     reset: z.enum(TEST_ENV_DEPENDENCY_RESETS),
     /** Only on an `emulated` entry: the AWS services this dependency needs from Rovara local AWS, the region the code is told, and where the project declares its resources (a file, never read by the broker). */
     aws: z.object({ services: z.array(z.enum(TEST_SERVICES_AWS_PLAN_SERVICES)).min(1).max(TEST_SERVICES_AWS_PLAN_SERVICES.length), region: TestEnvRegionSchema, resources: IacSeedRefSchema.optional() }).strict().optional(),
@@ -338,7 +359,17 @@ export const TestEnvironmentStateSchema = z
          */
         needs: z.object({ freshSignIn: z.boolean(), secondPerson: z.boolean() }).strict().default({ freshSignIn: false, secondPerson: false }),
         /** The confirmation card the CALLER asked for, for a change that needs a second person. `approved`: it was confirmed and the caller can finish the approval. */
-        approval: z.object({ status: z.enum(["none", "pending", "approved", "expired"]) }).strict().default({ status: "none" }),
+        approval: z.object({
+          status: z.enum(["none", "pending", "approved", "expired"]),
+          /** TS-UX-1 item 1: the viewer asked for the card (they finish the approval once it is confirmed). */
+          askedByYou: z.boolean().optional(),
+          /** The card waits and the viewer may confirm it now: the page shows the card itself, decided with the email-code sign-in. */
+          youConfirm: z.boolean().optional(),
+          /** The card, for the asker and for a viewer who may confirm it (`approve_request:<id>` on the decision cards). */
+          approvalId: z.string().regex(/^apr_[0-9a-z]{20}$/u).optional(),
+          /** Who a waiting card waits for, for the asker: a second person, or the asker themselves as the company's only owner (the sole-owner exception, with the company switch on). */
+          waitingFor: z.enum(["second_person", "you_sole_owner"]).optional(),
+        }).strict().default({ status: "none" }),
         /** TS-UX-1: the dependencies the proposal starts that can hold a seed, each with EVERY command that fills it with test data (as the broker formats them, in the order they run). */
         dependencySeeds: z.array(z.object({ id: TestEnvDependencyIdSchema, name: line(80), commands: z.array(line(600)).max(TEST_ENV_SEED_COMMANDS_MAX).default([]) }).strict()).max(TEST_ENV_DEPENDENCY_LIMITS.dependencies).default([]),
         /** The project's commands that the proposal's commands are not among: approving writes them into the settings, after the check ran them. */
@@ -354,8 +385,11 @@ export type TestEnvironmentState = z.infer<typeof TestEnvironmentStateSchema>;
 
 export const TestEnvProposeBodySchema = z.object({}).strict();
 export const TestEnvProveBodySchema = z.object({ digest: Sha256 }).strict();
-/** Run the candidate check of a proposal: a request id, so a retry is one check. */
-export const TestEnvCheckBodySchema = z.object({ digest: Sha256, requestId: z.string().uuid() }).strict();
+/**
+ * Run the candidate check of a proposal: a request id, so a retry is one check. TS-UX-1 item 2 ("Check it works", one press): with no digest, the broker first proposes what the latest look found (as `propose`
+ * does), then checks that proposal; the Prove is read from the check when it passes, with no press of its own.
+ */
+export const TestEnvCheckBodySchema = z.object({ digest: Sha256.optional(), requestId: z.string().uuid() }).strict();
 export type TestEnvCheckBody = z.infer<typeof TestEnvCheckBodySchema>;
 export const TestEnvApproveBodySchema = z.object({ digest: Sha256, expectedRevision: z.number().int().min(0), requestId: z.string().min(8).max(100).optional() }).strict();
 

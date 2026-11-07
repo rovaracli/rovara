@@ -13,6 +13,7 @@ import type { ConfirmView, DecideInspection, DecideKind, DecideOutcome, DecideTa
 import { orgRoleOf, type AgentCaller } from "./access.js";
 import { approverRefusalFor } from "./approvals-store.js";
 import { recordApprovalViewed } from "./approval-viewed.js";
+import { decisionCardsEnabled } from "../proof/switch.js";
 import { decideApproval, getAnyApproval, mayDecideApproval, runOfApproval, shownPersonName, shownText, type AgentChangeSubject, type AnyApprovalRecord, type ApprovalDependencies } from "./approvals.js";
 import { WRITE_APPROVER_RULE } from "./write-gate.js";
 import { resolveRecipe } from "./changes.js";
@@ -298,10 +299,25 @@ export function approvalDecideKind(deps: ApprovalDependencies): DecideKind {
     if (record !== undefined && record.status === "PENDING") await recordApprovalViewed(deps, record, target.developerId);
   }
 
+  /** Whether the target may decide the record now, read with their live caller (the same read `inspect` makes). */
+  async function mayDeciderOf(target: DecideTarget, record: AnyApprovalRecord): Promise<boolean> {
+    try {
+      const caller = await callerOf(deps, target);
+      return caller !== undefined && await mayDecideApproval(deps, caller, record);
+    } catch {
+      return false;
+    }
+  }
+
   // A card's decide-grade sign-in (`card_decision`) comes back to the card on its task page, for the person who pressed it; any other approval is decided on its own card.
   async function returnPath(target: DecideTarget): Promise<string | undefined> {
     const id = ApprovalIdSchema.safeParse(target.approvalId);
     const record = id.success ? await getAnyApproval(deps, target.orgId, id.data) : undefined;
+    // TS-UX-1 item 1: a test environment's confirmation card is decided on the setup page it was asked from (where the person who confirms sees it inline), while the decision cards are on. Only while it waits and
+    // only for a person who may decide it now; the path is built here from the stored project name, never taken from a request.
+    if (record?.kind === "change" && record.subject.kind === "test_env" && decisionCardsEnabled() && record.status === "PENDING" && await mayDeciderOf(target, record)) {
+      return `/app/onboard?project=${encodeURIComponent(record.subject.project)}&step=setup`;
+    }
     if (record?.kind !== "change" || record.subject.kind !== "card_decision" || record.requestedBy !== target.developerId) return undefined;
     const path = record.subject.returnPath;
     return decisionTaskSessionOf(path) !== undefined && path.startsWith("/app/sessions/") && !path.includes("//") ? path : undefined;

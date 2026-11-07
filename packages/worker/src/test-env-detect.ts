@@ -14,7 +14,7 @@
 import { constants } from "node:fs";
 import { lstat, open, readdir, realpath } from "node:fs/promises";
 import { join, sep } from "node:path";
-import { TEST_ENV_CANDIDATE_MAX, TEST_ENV_DRAFT_MAX_BYTES, TEST_ENV_SEED_COMMANDS_MAX, TestEnvDependencyCandidateSchema, TestEnvDraftSchema, type SetupDraft, type SetupProposal, type TestEnvDependencyCandidate, type TestEnvDraft, type TestEnvironmentBody } from "@agentx/contracts";
+import { TEST_ENV_CANDIDATE_MAX, TEST_ENV_DRAFT_MAX_BYTES, TEST_ENV_DRAFT_NONE_KEY, type TestEnvDraftNoneReason, TEST_ENV_SEED_COMMANDS_MAX, TestEnvDependencyCandidateSchema, TestEnvDraftSchema, type SetupDraft, type SetupProposal, type TestEnvDependencyCandidate, type TestEnvDraft, type TestEnvironmentBody } from "@agentx/contracts";
 import { ENV_DETECT_MAX_FILE_BYTES, ENV_DETECT_MAX_PATHS, boundedReader, buildEnvironmentDraft, proposalFromDraft } from "./env-detect/index.js";
 import { runDetectorsGuarded } from "./env-detect/guarded.js";
 import type { WorkerLogSink } from "./worker-log.js";
@@ -109,6 +109,7 @@ export async function detectTestEnvironment(input: { rootPath: string; repositor
   const takenIds = new Set<string>();
   const found: DependencyCandidate[] = [];
   const seeds: NonNullable<TestEnvDraft["seedCommands"]> = [];
+  const seedFiles: NonNullable<TestEnvDraft["seedFiles"]> = [];
   let notPlaced = 0;
   for (const repository of input.repositories) {
     if (repository.checkedOut !== undefined) { notes.push(`A pull request's files were checked out in ${repository.name}; only the default branch is read, so it was left out.`); continue; }
@@ -127,6 +128,8 @@ export async function detectTestEnvironment(input: { rootPath: string; repositor
     // The setup agent fills only the gaps: its commands go through the same schema, and a flagged one is dropped.
     const filled = proposalFromDraft(draft, agentDraftFor(input.setupProposal, repository.name), { cwd: repository.path });
     for (const seed of filled.ok ? filled.seedCommands : draft.seedCommands) if (seeds.length < TEST_ENV_SEED_COMMANDS_MAX) seeds.push(seed);
+    // TS-UX-1 item 9: SQL seed files, offered (with a database) as the database's file seed, workspace-relative like a seed's fixturePath.
+    if (draft.routesSeeds) for (const file of detection.seedFiles ?? []) if (seedFiles.length < TEST_ENV_SEED_COMMANDS_MAX) seedFiles.push({ path: `${repository.path}/${file.value}`, source: typeof file.source === "string" ? "detector:seed-files" : file.source });
     const environment = filled.ok ? filled.proposal.environment : draft.environment;
     const sources = filled.ok ? filled.proposal.valueSources : draft.valueSources;
     const index = environments.length;
@@ -162,6 +165,7 @@ export async function detectTestEnvironment(input: { rootPath: string; repositor
     notes: [...new Set(notes)].map(plainLine).filter((line) => line !== "").slice(0, 60),
     questions: [...new Set(questions)].map(plainLine).filter((line) => line !== "").slice(0, 60),
     ...(seeds.length === 0 ? {} : { seedCommands: seeds }),
+    ...(seedFiles.length === 0 ? {} : { seedFiles }),
   };
   // The dependencies are tried on top of today's draft; if they do not fit or do not parse, today's draft stands.
   const listed = listableDependencies(found, notPlaced);
@@ -236,11 +240,12 @@ function dedupe<T>(list: readonly T[], key: (item: T) => string): T[] {
  * What a SETUP_DRAFT run adds to its result when it was asked to detect (`testEnvDetect`): the draft environment under `testEnvironmentDraft`, or nothing. NEVER throws and never fails the run: the setup proposal is
  * the run's product, the environment draft is an addition.
  */
-export async function testEnvDraftResult(input: { rootPath: string; repositories: readonly DetectRepository[]; setupProposal?: SetupProposal | undefined; recipes?: readonly RecipeOffer[] | undefined }): Promise<{ testEnvironmentDraft?: TestEnvDraft }> {
+export async function testEnvDraftResult(input: { rootPath: string; repositories: readonly DetectRepository[]; setupProposal?: SetupProposal | undefined; recipes?: readonly RecipeOffer[] | undefined }): Promise<{ testEnvironmentDraft?: TestEnvDraft; testEnvironmentDraftNone?: TestEnvDraftNoneReason }> {
   try {
     const draft = await detectTestEnvironment(input);
-    return draft === undefined ? {} : { testEnvironmentDraft: draft };
+    // TS-UX-1 item 6: detection ran and made nothing, said with a fixed reason so the page can tell it from a worker that never ran it.
+    return draft === undefined ? { [TEST_ENV_DRAFT_NONE_KEY]: "no_test_command" } : { testEnvironmentDraft: draft };
   } catch {
-    return {};
+    return { [TEST_ENV_DRAFT_NONE_KEY]: "failed" };
   }
 }

@@ -15,6 +15,7 @@ import {
   SetupRecipeIdSchema,
   parseSetupRecipeSource,
   TEST_ENV_DRAFT_MAX_BYTES,
+  TEST_ENV_DRAFT_NONE_KEY,
   TEST_ENV_DRAFT_RESULT_KEY,
   TEST_ENV_ROUND_BUDGET_MIN,
   TestEnvDraftSchema,
@@ -40,6 +41,27 @@ type Send = { send(command: unknown): Promise<unknown> };
 export const DRAFT_SELECTION_NOTE = "A way of narrowing the tests that Rovara does not accept was left out; that check runs in full.";
 export const DRAFT_TOO_LARGE_NOTE = "The environment Rovara found was too large to keep, so none is proposed.";
 export const DRAFT_LEFT_OUT_NOTE = "A command that downloads and runs code, or that holds a secret, was left out of the proposal.";
+
+/**
+ * TS-UX-1 item 6: why a look at the repositories left no test environment draft, one fixed note each (recorded at the end of the setup draft, `TEST_ENV_DRAFT_REFUSED`). Never the worker's words.
+ *   no_test_command  the detectors ran and found no command that runs the tests
+ *   detect_failed    the detectors ran and failed
+ *   no_detection     the worker that ran the look does not run the detectors (an older worker)
+ *   too_large / unreadable / not_safest / no_checks_left   the draft was refused when it was stored, for that reason
+ */
+export const DRAFT_ABSENCE_REASONS = ["no_test_command", "detect_failed", "no_detection", "too_large", "unreadable", "not_safest", "no_checks_left"] as const;
+export type DraftAbsence = (typeof DRAFT_ABSENCE_REASONS)[number];
+export const DRAFT_ABSENCE_NOTES: Record<DraftAbsence, string> = {
+  no_test_command: "Rovara looked at your default branch and found no command that runs your tests (a test script in package.json, pytest, and the like), so it could not draft a test environment. Add the test command in the setup above, then look again.",
+  detect_failed: "Rovara looked at your default branch, but reading it for a test environment failed part way, so nothing was drafted. Look again; if it fails again, set the test command in the setup above.",
+  no_detection: "The machine that looked at your repositories runs an older Rovara that does not draft a test environment, so none was drafted. Look again once the machines are updated (an administrator can tell you when).",
+  too_large: DRAFT_TOO_LARGE_NOTE,
+  unreadable: "Rovara drafted a test environment but it could not be read when it was kept, so it was refused and none is proposed. Look again.",
+  not_safest: "Rovara drafted a test environment that asked for more than the sandbox (a service, an account, a recording or a nightly run), so it was refused: a draft only ever proposes the safest setup. Look again; a person adds anything more.",
+  no_checks_left: "Every command Rovara found to run your tests downloads and runs code or holds something secret, so all were left out and no test environment is proposed. Add a plain test command in the setup above, then look again.",
+};
+/** The note when a look left no draft and no reason was recorded (a look made before the reasons were kept). */
+export const DRAFT_ABSENCE_UNKNOWN_NOTE = "Rovara looked at your repositories but kept no test environment from that look, and this look did not record why. Look again to find out.";
 
 const RecordedOffersSchema = z.array(z.object({ recipeId: SetupRecipeIdSchema, revision: z.number().int().min(1) }).strict()).max(SETUP_RECIPE_OFFERS_MAX);
 const draftKey = (orgId: OrgId, project: string, taskId: string) => ({ pk: projectPk(orgId, project), sk: `TESTENV#DRAFT#${taskId}` });
@@ -80,17 +102,29 @@ export function sanitizeTestEnvDraft(raw: unknown, options?: DraftDependencyOpti
 
 /** `sanitizeTestEnvDraft`, and the seed commands the database dependency actually took (empty when it took none: test services off, no database to hold them, or refused). Those, and only those, are not setup commands. */
 export function sanitizeWithRouting(raw: unknown, options?: DraftDependencyOptions): { draft: TestEnvDraft; routed: RoutedSeed[] } | undefined {
+  const outcome = sanitizeOrRefuse(raw, options);
+  return "refused" in outcome ? undefined : outcome;
+}
+
+/** Why the sanitizer refuses a worker's draft (TS-UX-1 item 6), or undefined when it keeps it. */
+export function draftRefusalOf(raw: unknown, options?: DraftDependencyOptions): Extract<DraftAbsence, "too_large" | "unreadable" | "not_safest" | "no_checks_left"> | undefined {
+  const outcome = sanitizeOrRefuse(raw, options);
+  return "refused" in outcome ? outcome.refused : undefined;
+}
+
+function sanitizeOrRefuse(raw: unknown, options?: DraftDependencyOptions): { draft: TestEnvDraft; routed: RoutedSeed[] } | { refused: "too_large" | "unreadable" | "not_safest" | "no_checks_left" } {
+  if (Buffer.byteLength(JSON.stringify(raw) ?? "", "utf8") > TEST_ENV_DRAFT_MAX_BYTES) return { refused: "too_large" };
   const parsed = TestEnvDraftSchema.safeParse(raw);
-  if (!parsed.success) return undefined;
+  if (!parsed.success) return { refused: "unreadable" };
   const servicesOn = testServicesEnabled(options?.env);
   // An empty list is the same as none; no key is kept.
   const { dependencies: _empty, ...withoutDependencies } = parsed.data.environment;
   void _empty;
-  if (!isSafestEnvironment(withoutDependencies)) return undefined;
-  const { dependencies: candidates, seedCommands, ...rest } = parsed.data;
-  // TS-UX-1: the seed commands travel with the candidates (test services on) and are attached to the database dependency when the draft is read with the catalog.
-  const draft: TestEnvDraft = { ...rest, environment: withoutDependencies, ...(servicesOn && candidates !== undefined ? { dependencies: candidates } : {}), ...(servicesOn && seedCommands !== undefined && seedCommands.length > 0 ? { seedCommands } : {}) };
-  if (Buffer.byteLength(JSON.stringify(draft), "utf8") > TEST_ENV_DRAFT_MAX_BYTES) return undefined;
+  if (!isSafestEnvironment(withoutDependencies)) return { refused: "not_safest" };
+  const { dependencies: candidates, seedCommands, seedFiles, ...rest } = parsed.data;
+  // TS-UX-1: the seed commands (and item 9: the seed files) travel with the candidates (test services on) and are attached to the database dependency when the draft is read with the catalog.
+  const draft: TestEnvDraft = { ...rest, environment: withoutDependencies, ...(servicesOn && candidates !== undefined ? { dependencies: candidates } : {}), ...(servicesOn && seedCommands !== undefined && seedCommands.length > 0 ? { seedCommands } : {}), ...(servicesOn && seedFiles !== undefined && seedFiles.length > 0 ? { seedFiles } : {}) };
+  if (Buffer.byteLength(JSON.stringify(draft), "utf8") > TEST_ENV_DRAFT_MAX_BYTES) return { refused: "too_large" };
   let leftOut = false;
   let narrowingDropped = false;
   const kept = new Set<string>();
@@ -101,7 +135,7 @@ export function sanitizeWithRouting(raw: unknown, options?: DraftDependencyOptio
       .map((check) => { if (checkSelectionIsSafe(check)) return check; narrowingDropped = true; const { selectArgs: _dropped, ...whole } = check; void _dropped; return whole; });
     return { ...repo, setupCommands, checks };
   });
-  if (repos.every((repo) => repo.checks.length === 0)) return undefined;
+  if (repos.every((repo) => repo.checks.length === 0)) return { refused: "no_checks_left" };
   const environment: TestEnvironmentBody = {
     ...draft.environment,
     repos,
@@ -113,7 +147,7 @@ export function sanitizeWithRouting(raw: unknown, options?: DraftDependencyOptio
   let routed: RoutedSeed[] = [];
   if (servicesOn && options?.propose !== undefined && draft.dependencies !== undefined && draft.dependencies.length > 0) {
     const proposed = proposeDependencies(draft.dependencies, { catalog: options.propose.catalog, edition: options.propose.edition, projectId: options.propose.projectId, prodDeny: environment.prodDeny });
-    const seeded = attachDraftSeeds(proposed.dependencies, draft.seedCommands);
+    const seeded = attachDraftSeeds(proposed.dependencies, draft.seedCommands, draft.seedFiles);
     if (seeded.dependencies.length > 0) environment.dependencies = seeded.dependencies;
     dependencyNotes = [...proposed.notes, ...seeded.notes];
     // Each routed command belongs to the repository whose setup holds it, or else whose commands run in its directory.
@@ -147,6 +181,7 @@ export function sanitizeWithRouting(raw: unknown, options?: DraftDependencyOptio
     pendingServices: draft.pendingServices.map((service) => ({ kind: service.kind, target: plain(service.target) })).filter((service) => service.target !== ""),
     ...(servicesOn && draft.dependencies !== undefined ? { dependencies: draft.dependencies } : {}),
     ...(draft.seedCommands === undefined ? {} : { seedCommands: draft.seedCommands }),
+    ...(draft.seedFiles === undefined ? {} : { seedFiles: draft.seedFiles }),
     notes: [...draft.notes.map(plain), ...(leftOut ? [DRAFT_LEFT_OUT_NOTE] : []), ...(narrowingDropped ? [DRAFT_SELECTION_NOTE] : []), ...dependencyNotes].filter((line) => line !== "").slice(0, 60),
     questions: draft.questions.map(plain).filter((line) => line !== "").slice(0, 60),
   };
@@ -179,16 +214,18 @@ export function testEnvDraftEndItems(
 ): TransactItem[] {
   if (!testEnvironmentEnabled(env) || task.purpose !== "setup_draft" || task.orgId === undefined) return [];
   if (operation.kind !== "task" || operation.workflowMode !== "SETUP_DRAFT" || outcome.status !== "SUCCEEDED") return [];
-  const reported = typeof outcome.result === "object" && outcome.result !== null ? (outcome.result as Record<string, unknown>)[TEST_ENV_DRAFT_RESULT_KEY] : undefined;
-  if (reported === undefined) return [];
+  const result = typeof outcome.result === "object" && outcome.result !== null ? outcome.result as Record<string, unknown> : {};
+  const reported = result[TEST_ENV_DRAFT_RESULT_KEY];
+  // TS-UX-1 item 6: no draft, and why, as a small marker the page reads back as one fixed note (the setup draft's own write is never put at risk by a big item). The worker's reason is read from a fixed list only.
+  const marker = (reason: DraftAbsence): TransactItem[] => [{ Put: { TableName: tableName, Item: { ...draftKey(task.orgId!, task.project, task.taskId), entityType: "TEST_ENV_DRAFT_REFUSED", orgId: task.orgId, project: task.project, taskId: task.taskId, reason, at: nowIso, [INDEX_EXPIRY_ATTRIBUTE]: Math.floor((Date.parse(nowIso) + TEST_ENV_PROPOSAL_TTL_MS) / 1000) } } }];
+  if (reported === undefined) {
+    const none = result[TEST_ENV_DRAFT_NONE_KEY];
+    return marker(none === "no_test_command" ? "no_test_command" : none === "failed" ? "detect_failed" : "no_detection");
+  }
   // Test services: the validated candidates are kept with the draft (the dependencies are proposed when the draft is read, with the catalog).
   const sanitized = sanitizeTestEnvDraft(reported, { env });
   const draft = sanitized === undefined ? undefined : { ...sanitized, valueSources: onlyOfferedRecipeSources(sanitized.valueSources, operation.setupRecipeOffers) };
-  if (draft === undefined) {
-    // Too large to keep: a small marker says so (the setup draft's own write is never put at risk by a big item), and the state shows the fixed note. Any other refusal leaves nothing.
-    const size = Buffer.byteLength(JSON.stringify(reported) ?? "", "utf8");
-    return size > TEST_ENV_DRAFT_MAX_BYTES ? [{ Put: { TableName: tableName, Item: { ...draftKey(task.orgId, task.project, task.taskId), entityType: "TEST_ENV_DRAFT_REFUSED", orgId: task.orgId, project: task.project, taskId: task.taskId, reason: "too_large", at: nowIso, [INDEX_EXPIRY_ATTRIBUTE]: Math.floor((Date.parse(nowIso) + TEST_ENV_PROPOSAL_TTL_MS) / 1000) } } }] : [];
-  }
+  if (draft === undefined) return marker(draftRefusalOf(reported, { env }) ?? "unreadable");
   return [{ Put: {
     TableName: tableName,
     Item: { ...draftKey(task.orgId, task.project, task.taskId), entityType: "TEST_ENV_DRAFT", orgId: task.orgId, project: task.project, taskId: task.taskId, draft, at: nowIso,
@@ -210,11 +247,18 @@ export async function readTestEnvDraft(client: Send, tableName: string, orgId: O
   return { draft: sanitized.draft, routedSeeds: sanitized.routed, at: stored["at"], recipeOffers: offers.success ? offers.data : [] };
 }
 
-/** The fixed note when the task's draft was too large to keep (a marker item), else undefined. */
-export async function readTestEnvDraftNote(client: Send, tableName: string, orgId: OrgId, project: string, taskId: string, nowMs: number): Promise<string | undefined> {
+/**
+ * The fixed note for why the task's look left no draft (TS-UX-1 item 6): the recorded reason's note; for a kept draft that can no longer be read (for example test services were switched since), the "unreadable" note;
+ * for nothing recorded at all (a look made before the reasons were kept), the unknown note. A marker written before the reasons existed holds `too_large`, which still reads.
+ */
+export async function readTestEnvDraftNote(client: Send, tableName: string, orgId: OrgId, project: string, taskId: string, nowMs: number): Promise<string> {
   const item = (await client.send(new GetCommand({ TableName: tableName, Key: draftKey(orgId, project, taskId), ConsistentRead: true }))) as { Item?: Record<string, unknown> };
   const stored = item.Item;
-  if (stored === undefined || stored["entityType"] !== "TEST_ENV_DRAFT_REFUSED" || stored["orgId"] !== orgId || stored["project"] !== project || stored["taskId"] !== taskId) return undefined;
+  if (stored === undefined || stored["orgId"] !== orgId || stored["project"] !== project || stored["taskId"] !== taskId) return DRAFT_ABSENCE_UNKNOWN_NOTE;
   const expires = stored[INDEX_EXPIRY_ATTRIBUTE];
-  return typeof expires === "number" && expires * 1000 <= nowMs ? undefined : DRAFT_TOO_LARGE_NOTE;
+  if (typeof expires === "number" && expires * 1000 <= nowMs) return DRAFT_ABSENCE_UNKNOWN_NOTE;
+  if (stored["entityType"] === "TEST_ENV_DRAFT") return DRAFT_ABSENCE_NOTES.unreadable;
+  if (stored["entityType"] !== "TEST_ENV_DRAFT_REFUSED") return DRAFT_ABSENCE_UNKNOWN_NOTE;
+  const reason = stored["reason"];
+  return typeof reason === "string" && (DRAFT_ABSENCE_REASONS as readonly string[]).includes(reason) ? DRAFT_ABSENCE_NOTES[reason as DraftAbsence] : DRAFT_ABSENCE_UNKNOWN_NOTE;
 }
