@@ -1,6 +1,6 @@
 // SEED-RISK-1, the worker's half: a LOCKED seed command runs only while its script, hashed again from the checkout right before the run, is what was approved. A difference, a link, or a worker without the check refuses
 // it, and the command never runs.
-import { mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -22,14 +22,14 @@ async function checkout(files: Record<string, string> = { "package.json": JSON.s
   return root;
 }
 async function lockOf(root: string): Promise<SeedScriptLock> {
-  const resolved = await seedScriptLockOf(SEED, checkoutSeedReader(root, SEED.cwd));
+  const resolved = await seedScriptLockOf(SEED, checkoutSeedReader(root, SEED.cwd, [join(root, "repo/web")]));
   if (!resolved.ok) throw new Error(`no lock: ${resolved.refusal}`);
   return resolved.lock;
 }
 /** The seed ports, and the spy of the command runner (kept apart from the ports so it is never read as an unbound method). */
 function ports(root: string | undefined): SeedPorts & { ran: ReturnType<typeof vi.fn> } {
   const ran = vi.fn(async () => ({ exitCode: 0, timedOut: false }));
-  const lockHolds: SeedPorts["lockHolds"] = root === undefined ? undefined : (command, lock) => seedLockHoldsInCheckout(root, command, lock);
+  const lockHolds: SeedPorts["lockHolds"] = root === undefined ? undefined : (command, lock) => seedLockHoldsInCheckout(root, [join(root, "repo/web")], command, lock);
   return { ran, runCommand: ran, applyFixture: async () => undefined, ...(lockHolds === undefined ? {} : { lockHolds }) };
 }
 const signal = () => new AbortController().signal;
@@ -69,7 +69,7 @@ describe("a locked seed at run time", () => {
     await writeFile(join(root, "repo/web/db/copy.js"), "require('pg');\n");
     await rm(join(root, "repo/web/db/seed.js"));
     await symlink(join(root, "repo/web/db/copy.js"), join(root, "repo/web/db/seed.js"));
-    expect(await seedLockHoldsInCheckout(root, SEED, lock)).toBe(false);
+    expect(await seedLockHoldsInCheckout(root, [join(root, "repo/web")], SEED, lock)).toBe(false);
   });
 
   it("is refused by a worker that has no lock check at all (fail closed); an unlocked seed runs as before", async () => {
@@ -80,5 +80,22 @@ describe("a locked seed at run time", () => {
     expect(without.ran).not.toHaveBeenCalled();
     await runSeeds("postgres", [{ command: SEED }], without, signal());
     expect(without.ran).toHaveBeenCalledTimes(1);
+  });
+
+  it("is refused when the candidate tree adds a package manager settings file (.npmrc) beside it or at the repository root", async () => {
+    for (const where of ["repo/web/.npmrc", "repo/web/.yarnrc.yml"]) {
+      const root = await checkout();
+      const lock = await lockOf(root);
+      await writeFile(join(root, where), "script-shell=./x.sh\n");
+      expect(await seedLockHoldsInCheckout(root, [join(root, "repo/web")], SEED, lock)).toBe(false);
+    }
+  });
+
+  it("is wired with the workspace and its repositories in all three places a seed runs (working phase, sealed round, reseed)", async () => {
+    const source = await readFile(new URL("../../packages/worker/src/test-services-run.ts", import.meta.url), "utf8");
+    const calls = source.split("seedPorts(").slice(1, -1).map((part) => part.slice(0, part.indexOf(";")));
+    expect(calls).toHaveLength(3);
+    for (const call of calls) expect(call).toMatch(/, root, input\.repositoryPaths\)/u);
+    expect(source).toMatch(/lockHolds: \(command, lock\) => seedLockHoldsInCheckout\(rootPath, repositoryPaths, command, lock\)/u);
   });
 });

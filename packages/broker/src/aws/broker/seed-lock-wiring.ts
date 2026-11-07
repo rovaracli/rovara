@@ -16,7 +16,12 @@ const READ_TIMEOUT_MS = 8_000;
 export function treeReader(entries: ReadonlyArray<{ path: string; mode: string; type: string }>, directory: string, readFile: (path: string) => Promise<string | undefined>): SeedSourceReader {
   const byPath = new Map(entries.map((entry) => [entry.path, entry] as const));
   const prefix = directory === "" ? "" : `${directory}/`;
+  // The command's folder and every folder above it inside the repository: "web/api" -> ["web/api/", "web/", ""].
+  const folders = directory === "" ? [""] : directory.split("/").map((_, at, parts) => `${parts.slice(0, parts.length - at).join("/")}/`).concat([""]);
   return {
+    async anyAbove(paths) {
+      return folders.some((folder) => paths.some((path) => byPath.has(`${folder}${path}`)));
+    },
     async read(path) {
       const entry = byPath.get(`${prefix}${path}`);
       if (entry === undefined || entry.type === "tree") return undefined;

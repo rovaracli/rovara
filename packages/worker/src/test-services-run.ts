@@ -906,7 +906,7 @@ export async function startTestServicesRun(config: TestServicesConfig, input: St
       // The seeds, in the working sandbox (attached, with the run's variables), one dependency at a time so a failure names its dependency.
       const seedSignal = AbortSignal.any([AbortSignal.timeout(SEED_LIMIT_MS), ...(input.signal === undefined ? [] : [input.signal])]);
       const workingSeeds: SeedPorts = seedPorts((command, signal) => executionFor(SANDBOX_TARGET, { sandbox: input.sandbox }).runCommand(command, signal),
-        seedFileApplier({ docker, rootPath: root, repositoryPaths: input.repositoryPaths, items: working, helpers: workSession.helpers, log, onLoaded: noteSeedFile }), root);
+        seedFileApplier({ docker, rootPath: root, repositoryPaths: input.repositoryPaths, items: working, helpers: workSession.helpers, log, onLoaded: noteSeedFile }), root, input.repositoryPaths);
       for (const item of working) {
         try {
           await seedRun(countResets(workSession).session, [dependencyOf(item, workSession, files, runId)], workingSeeds, seedSignal);
@@ -1013,7 +1013,7 @@ export async function startTestServicesRun(config: TestServicesConfig, input: St
 
       // The seeds run INSIDE the round, in the sealed sandbox, from the candidate code: the agent's own migrations are applied, and the helpers hold nothing but what the seeds made.
       const seedSignal = AbortSignal.any([AbortSignal.timeout(SEED_LIMIT_MS), signal]);
-      const roundSeeds = seedPorts((command, seedsSignal) => runners.runProjectCommand(command, seedsSignal), applyFixture, root);
+      const roundSeeds = seedPorts((command, seedsSignal) => runners.runProjectCommand(command, seedsSignal), applyFixture, root, input.repositoryPaths);
       for (const item of resolved) {
         try {
           await seedRun(state.counted, state.resetDeps.filter((dependency) => dependency.id === item.plan.id), roundSeeds, seedSignal);
@@ -1096,7 +1096,7 @@ export async function startTestServicesRun(config: TestServicesConfig, input: St
           if (open === undefined || open.runners === undefined) throw agentXError("RUNTIME_UNAVAILABLE", "the sealed check round is not open, so no check was run");
           const runners = open.runners;
           try {
-            await resetForNextCheck(open.counted, open.resetDeps, seedPorts((command, seedsSignal) => runners.runProjectCommand(command, seedsSignal), open.applyFixture, root), signal);
+            await resetForNextCheck(open.counted, open.resetDeps, seedPorts((command, seedsSignal) => runners.runProjectCommand(command, seedsSignal), open.applyFixture, root, input.repositoryPaths), signal);
           } catch (error) {
             for (const id of ids) failures.set(id, "reset_failed");
             throw error;
@@ -1126,7 +1126,7 @@ function seedStartFailureOf(error: unknown): "seed_failed" | "seed_changed" | "s
 }
 
 /** The seeds' ports: a command runs where the caller says; a seed FILE is loaded by `applyFixture` (TS-UX-1 item 9, `service-seed-file.ts`), which the caller binds to the phase's own helpers. */
-function seedPorts(runCommand: (command: Parameters<SeedPorts["runCommand"]>[0], signal: AbortSignal) => Promise<{ exitCode: number | null; timedOut?: boolean | undefined }>, applyFixture: SeedPorts["applyFixture"], rootPath: string): SeedPorts {
+function seedPorts(runCommand: (command: Parameters<SeedPorts["runCommand"]>[0], signal: AbortSignal) => Promise<{ exitCode: number | null; timedOut?: boolean | undefined }>, applyFixture: SeedPorts["applyFixture"], rootPath: string, repositoryPaths: readonly string[]): SeedPorts {
   return {
     runCommand: async (command, signal) => {
       const result = await runCommand(command, signal);
@@ -1134,7 +1134,7 @@ function seedPorts(runCommand: (command: Parameters<SeedPorts["runCommand"]>[0],
     },
     applyFixture,
     // SEED-RISK-1: a locked seed's script is hashed again from the workspace (the candidate tree as it is now) before each run; a difference refuses it.
-    lockHolds: (command, lock) => seedLockHoldsInCheckout(rootPath, command, lock),
+    lockHolds: (command, lock) => seedLockHoldsInCheckout(rootPath, repositoryPaths, command, lock),
   };
 }
 
