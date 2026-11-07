@@ -789,6 +789,22 @@ describe("approving the plan", () => {
     } finally { delete process.env.DECISION_CARDS_ENABLED; }
   });
 
+  it("OWNER DECISION 7: the tick is the server's rule for a signed-in browser even with the cards off: a raise sent without it is refused, and the same approval with the limit goes on", async () => {
+    const t = await world();
+    seedCosts(t.h.db, "QUICK", [10, 10, 10, 10, 10]);
+    const { taskId, plan } = await t.planned("QUICK");
+    const before = t.meta(taskId) as unknown as { budgetUsd?: number; runEstimate: { runLimitUsd: number } };
+    expect(process.env.DECISION_CARDS_ENABLED, "the cards are off").toBeUndefined();
+    expect(before.runEstimate.runLimitUsd, "positive control: approving raises the limit").toBeGreaterThan(before.budgetUsd ?? 0);
+    // A browser's approval that leaves the limit out (a page script that skipped the tick): refused with the words, and nothing is decided or written.
+    const refused = await pageDecision(t.h, MAYA, taskId, { expectedRevision: plan.revision, decision: "APPROVE", artifactDigest: plan.digest, answers: [{ decisionId: "d1", optionId: "three", opened: true }] });
+    expect(refused.status, JSON.stringify(refused.body)).toBeGreaterThanOrEqual(400);
+    expect(t.meta(taskId).workflow.decisions).toEqual([]);
+    expect(t.meta(taskId).budgetUsd).toBe(before.budgetUsd);
+    const approved = await pageDecision(t.h, MAYA, taskId, { expectedRevision: plan.revision, decision: "APPROVE", artifactDigest: plan.digest, acknowledgedRunLimitUsd: before.runEstimate.runLimitUsd, answers: [{ decisionId: "d1", optionId: "three", opened: true }] });
+    expect(approved.status, JSON.stringify(approved.body)).toBe(200);
+  });
+
   it("slice 2: with the cards off, a raise is approved through Slack and tools as before (there is no card to send anyone to)", async () => {
     const t = await world();
     seedCosts(t.h.db, "QUICK", [10, 10, 10, 10, 10]);
