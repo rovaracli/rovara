@@ -307,6 +307,10 @@ describe("the health route's grants (A13)", () => {
       "packages/broker/src/org/task-stop-enrollment.ts", "packages/broker/src/team-record/source-store.ts", "packages/broker/src/team-record/source-options.ts", "packages/broker/src/team-record/erase.ts",
       // 0.5.7 (SRL-6): the Health page's failure counters (one item per company, kind and hour) expire two days after the last failure; each is a count, none a durable record, and only ops-failures.ts writes them.
       "packages/broker/src/team-record/ops-failures.ts",
+      // 2026-11-07, 0.5.10 (ux5): a ticket write-back's send claim (TICKET_UPDATE, one per task and moment) and its hourly write counters expire after KEPT_SECONDS; each is a marker or a count, none a durable record, and only handler.ts writes them.
+      "packages/broker/src/ticket-updates/handler.ts",
+      // 2026-11-07, 0.5.10 (ux4c, SEED-RISK-1): a look's seed lock row (TEST_ENV_LOOK_LOCK) expires with the look it locks; it is a working row of one proposal, and only seed-lock.ts writes and reads it.
+      "packages/broker/src/test-env/seed-lock.ts",
     ]);
     const found = execFileSync("grep", ["-rl", "indexExpiresAt\\|INDEX_EXPIRY_ATTRIBUTE", "packages", "infra/lib", "--include=*.ts", "--exclude-dir=dist", "--exclude-dir=node_modules"], { encoding: "utf8" }).trim().split("\n").filter((file) => file !== "");
     expect(found.filter((file) => !allowed.has(file))).toEqual([]);

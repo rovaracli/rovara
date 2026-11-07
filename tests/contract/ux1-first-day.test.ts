@@ -24,6 +24,14 @@ import { FakeDynamoDb } from "../support/fake-dynamodb.js";
 import { capturingAuditDeps } from "../support/audit-capture.js";
 import { API, ISSUER, OIDC_ISSUER, T0, httpEvent, identityHarness, type FakeGithubUser, type FakeOidcUser } from "../support/developer-fakes.js";
 
+/** The same dependencies with no notice sender at all (exactOptionalPropertyTypes: the key is absent, not undefined). */
+function withoutOwnerNotice(deps: DeveloperRouteDependencies): DeveloperRouteDependencies {
+  const copy = { ...deps };
+  delete copy.ownerNotice;
+  return copy;
+}
+
+
 const token43 = () => randomUUID().replaceAll("-", "").padEnd(43, "x").slice(0, 43);
 const GITHUB_ISSUER = "https://github.com";
 const SESSION_COOKIE = "__Host-agentx_review_session";
@@ -87,7 +95,9 @@ describe("the sign-in server moves an invite opened on the API's own address to 
     expect([bare.statusCode, bare.headers.location]).toEqual([302, `${CUSTOM}/v1/auth/join`]);
     for (const method of ["HEAD", "POST"]) {
       const base = httpEvent("GET", `/v1/auth/join?invite=${token}`, undefined, { host: new URL(API).host, accept: "text/html" });
-      const kept = await handler({ ...base, requestContext: { ...base.requestContext, http: { ...base.requestContext.http, method } } }) as HttpResult;
+      const context = base.requestContext;
+      if (context === undefined) throw new Error("httpEvent built no requestContext");
+      const kept = await handler({ ...base, requestContext: { ...context, http: { ...context.http, method } } }) as HttpResult;
       expect(kept.headers.location ?? "", method).not.toContain(CUSTOM);
     }
     const json = await onLegacy(`/v1/auth/join?invite=${token}`, { accept: "application/json" });
@@ -133,7 +143,7 @@ describe("invites can be emailed through the existing notice sender only", () =>
 
   it("stays copy-only where no sender is configured, and a failed send never loses the link", async () => {
     const none = fixture();
-    const noSender = await createReviewedOrganizationInvite({ ...none.deps, ownerNotice: undefined } as DeveloperRouteDependencies, none.caller, { requestId: randomUUID(), role: "member", email: "bea@example.test", sendEmail: true }) as { inviteUrl: string; email: string };
+    const noSender = await createReviewedOrganizationInvite(withoutOwnerNotice(none.deps), none.caller, { requestId: randomUUID(), role: "member", email: "bea@example.test", sendEmail: true }) as { inviteUrl: string; email: string };
     expect(noSender.email).toBe("not_set_up");expect(noSender.inviteUrl).toContain("/join#invite=");
     const emptyFrom = fixture({ from: "" });
     expect((await createReviewedOrganizationInvite(emptyFrom.deps, emptyFrom.caller, { requestId: randomUUID(), role: "member", email: "bea@example.test", sendEmail: true }) as { email: string }).email).toBe("not_set_up");
@@ -229,7 +239,7 @@ describe("invites can be emailed through the existing notice sender only", () =>
   it("tells the invites screen whether email is set up here", async () => {
     for (const [notice, expected] of [[undefined, false], [{}, true]] as const) {
       const f = fixture(notice);
-      const listed = await listOrganizationInvites(notice === undefined ? { ...f.deps, ownerNotice: undefined } : f.deps, f.caller, new URL("https://cell.example/v1/app/org/invites?limit=25"));
+      const listed = await listOrganizationInvites(notice === undefined ? withoutOwnerNotice(f.deps) : f.deps, f.caller, new URL("https://cell.example/v1/app/org/invites?limit=25"));
       expect(listed.emailDelivery).toBe(expected);
     }
   });
