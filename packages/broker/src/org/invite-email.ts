@@ -12,16 +12,22 @@ export type InviteEmailOutcome = "sent" | "not_set_up" | "failed" | "limited";
 
 /**
  * UX1 review I2: the shared notice sender must not become an open mailer for a self-serve company. Each company may email at most this many invites a
- * UTC day, and any one address at most once a day; past either the invite is still made and its link returned (copy it), and nothing is sent.
+ * UTC day, the whole install at most INVITE_EMAILS_PER_INSTALL_PER_DAY, and any one address at most once a day across every company. Past any of them the
+ * invite is still made and its link returned (copy it), and nothing is sent.
  */
 export const INVITE_EMAILS_PER_ORG_PER_DAY = 50;
+export const INVITE_EMAILS_PER_INSTALL_PER_DAY = 500;
 const DAY_MS = 86_400_000;
 
-/** Takes one email from the address's daily slot, then one from the company's. Counters are keyed by the address's hash, never the address. */
+/**
+ * Takes one email from the company's daily allowance, then the install's, and only then the address's install-wide daily slot, so a company or install
+ * denial never uses up the address's slot. Counters are keyed by the address's SHA-256, never the address.
+ */
 export async function takeInviteEmailAllowance(deps: Parameters<typeof takeRateAt>[0], orgId: OrgId, to: string): Promise<boolean> {
+  if (!await takeRateAt(deps, { pk: orgScoped(orgId, "INVITE_EMAIL_DAY"), sk: "company" }, INVITE_EMAILS_PER_ORG_PER_DAY, DAY_MS)) return false;
+  if (!await takeRateAt(deps, { pk: "INVITE_EMAIL_INSTALL_DAY", sk: "install" }, INVITE_EMAILS_PER_INSTALL_PER_DAY, DAY_MS)) return false;
   const recipient = createHash("sha256").update(to.trim().toLowerCase()).digest("hex");
-  if (!await takeRateAt(deps, { pk: orgScoped(orgId, "INVITE_EMAIL_RECIPIENT_DAY"), sk: recipient }, 1, DAY_MS)) return false;
-  return takeRateAt(deps, { pk: orgScoped(orgId, "INVITE_EMAIL_DAY"), sk: "company" }, INVITE_EMAILS_PER_ORG_PER_DAY, DAY_MS);
+  return takeRateAt(deps, { pk: "INVITE_EMAIL_RECIPIENT_DAY", sk: recipient }, 1, DAY_MS);
 }
 
 /** Whether this install can email an invite: its sign-in notice sender is configured. */

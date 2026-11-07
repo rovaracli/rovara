@@ -10,7 +10,7 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } 
 import { AgentXError, FRESH_SIGN_IN_SECONDS, ReviewedInviteCreateBodySchema, developerOrgKey, orgMemberKey, orgMetaKey } from "@agentx/contracts";
 import { OrgStore } from "../../packages/broker/src/org/store.js";
 import { createReviewedOrganizationInvite, inviteCreateBodyHash } from "../../packages/broker/src/org/invite-creation.js";
-import { INVITE_EMAILS_PER_ORG_PER_DAY, inviteEmailText, sendInviteEmail } from "../../packages/broker/src/org/invite-email.js";
+import { INVITE_EMAILS_PER_INSTALL_PER_DAY, INVITE_EMAILS_PER_ORG_PER_DAY, inviteEmailText, sendInviteEmail } from "../../packages/broker/src/org/invite-email.js";
 import { listOrganizationInvites } from "../../packages/broker/src/org/invite-directory.js";
 import { createDeveloperIdentityHandler, type HttpResult } from "../../packages/broker/src/developer/server.js";
 import { GITHUB_LINK_HAS_ONE, signInIdentityKey } from "../../packages/broker/src/developer/store.js";
@@ -98,8 +98,8 @@ describe("the sign-in server moves an invite opened on the API's own address to 
 
 describe("invites can be emailed through the existing notice sender only", () => {
   const A = "org_aaaaaaaaaaaaaaaaaaaa", who = "a".repeat(64);
-  function fixture(notice?: { fail?: boolean; from?: string }) {
-    const db = new FakeDynamoDb();let nowMs = Date.parse("2026-11-07T12:00:00Z");const now = () => nowMs;
+  function fixture(notice?: { fail?: boolean; from?: string }, shared?: FakeDynamoDb) {
+    const db = shared ?? new FakeDynamoDb();let nowMs = Date.parse("2026-11-07T12:00:00Z");const now = () => nowMs;
     db.set({ ...orgMemberKey(A, who), orgId: A, developerId: who, role: "owner" });db.set({ ...developerOrgKey(who), orgId: A, role: "owner" });db.set({ ...orgMetaKey(A), orgId: A, name: "Acme", plan: "team" });
     const capture = capturingAuditDeps({ db, now }), store = new OrgStore({ documentClient: db, tableName: "state", now, audit: capture.audit });
     const send = vi.fn(async () => { if (notice?.fail === true) throw Object.assign(new Error("refused"), { name: "MessageRejected" });return {}; });
@@ -173,16 +173,48 @@ describe("invites can be emailed through the existing notice sender only", () =>
     const again = await make("BEA@example.test");
     expect(again.email).toBe("limited");expect(again.inviteUrl).toContain("/join#invite=");
     expect(f.send).toHaveBeenCalledTimes(1);
-    for (let index = 1; index < INVITE_EMAILS_PER_ORG_PER_DAY; index += 1) expect((await make(`person${index}@example.test`)).email).toBe("sent");
-    expect(f.send).toHaveBeenCalledTimes(INVITE_EMAILS_PER_ORG_PER_DAY);
+    // The repeat above used one of the company's 50 (only the address's own slot is protected from denials), so 48 more fill the day.
+    for (let index = 1; index < INVITE_EMAILS_PER_ORG_PER_DAY - 1; index += 1) expect((await make(`person${index}@example.test`)).email).toBe("sent");
+    expect(f.send).toHaveBeenCalledTimes(INVITE_EMAILS_PER_ORG_PER_DAY - 1);
     const over = await make("one-more@example.test");
     expect(over.email).toBe("limited");expect(over.inviteUrl).toContain("/join#invite=");
-    expect(f.send).toHaveBeenCalledTimes(INVITE_EMAILS_PER_ORG_PER_DAY);
+    expect(f.send).toHaveBeenCalledTimes(INVITE_EMAILS_PER_ORG_PER_DAY - 1);
     // The next UTC day the address may be emailed again.
     f.advance(86_400_000);
     expect((await make("bea@example.test")).email).toBe("sent");
     // The counters never hold an address.
+    expect(JSON.stringify(f.db.find((row) => String(row.pk).includes("INVITE_EMAIL")))).not.toContain("bea@");
     expect(JSON.stringify(f.db.find((row) => String(row.pk).includes("INVITE_EMAIL")))).not.toContain("@example.test");
+  });
+
+  it("emails an address once a day across every company: a second company's invite to it the same day is limited", async () => {
+    const db = new FakeDynamoDb(), first = fixture({}, db), second = fixture({}, db);
+    const B = "org_bbbbbbbbbbbbbbbbbbbb", other = "d".repeat(64);
+    db.set({ ...orgMemberKey(B, other), orgId: B, developerId: other, role: "owner" });db.set({ ...developerOrgKey(other), orgId: B, role: "owner" });db.set({ ...orgMetaKey(B), orgId: B, name: "Other Co", plan: "team" });
+    const make = (f: ReturnType<typeof fixture>, caller: DeveloperCaller) => createReviewedOrganizationInvite(f.deps, caller, { requestId: randomUUID(), role: "member", email: "bea@example.test", sendEmail: true }) as Promise<{ inviteUrl: string; email: string }>;
+    expect((await make(first, first.caller)).email).toBe("sent");
+    const fromB = await make(second, { ...second.caller, orgId: B, developerId: other });
+    expect(fromB.email).toBe("limited");expect(fromB.inviteUrl).toContain("/join#invite=");
+    expect(first.send.mock.calls.length + second.send.mock.calls.length).toBe(1);
+  });
+
+  it("stops at the install-wide daily ceiling, and a company or install denial does not spend the address's slot", async () => {
+    const f = fixture({});
+    const make = (email: string) => { f.advance(4_000);return createReviewedOrganizationInvite(f.deps, f.caller, { requestId: randomUUID(), role: "member", email, sendEmail: true }) as Promise<{ inviteUrl: string; email: string }>; };
+    // The install has sent all but one of today's emails; this company has sent all of its own.
+    const window = Math.floor(Date.parse("2026-11-07T12:00:00Z") / 86_400_000) * 86_400_000;
+    const counter = (pk: string, sk: string, count: number) => f.db.set({ pk, sk, windowStart: window, count, expiresAt: Math.floor(window / 1000) + 172_800 });
+    counter(`ORG#${A}#INVITE_EMAIL_DAY`, "company", INVITE_EMAILS_PER_ORG_PER_DAY);
+    expect((await make("fresh@example.test")).email).toBe("limited");
+    expect(f.send).not.toHaveBeenCalled();
+    // The company denial left the address's slot unspent: with room again, the same address is emailed.
+    counter(`ORG#${A}#INVITE_EMAIL_DAY`, "company", 0);
+    counter("INVITE_EMAIL_INSTALL_DAY", "install", INVITE_EMAILS_PER_INSTALL_PER_DAY);
+    expect((await make("fresh@example.test")).email).toBe("limited");
+    counter("INVITE_EMAIL_INSTALL_DAY", "install", INVITE_EMAILS_PER_INSTALL_PER_DAY - 1);
+    expect((await make("fresh@example.test")).email).toBe("sent");
+    expect((await make("another@example.test")).email).toBe("limited");
+    expect(f.send).toHaveBeenCalledTimes(1);
   });
 
   it("keeps a company name that carries a link in quotes in the body and out of the subject", async () => {
