@@ -75,10 +75,10 @@ describe("the fake tracker starts a task", () => {
   it("an act by someone no member is linked to, or by no one the tracker names, starts nothing and waits for a member to say Start", async () => {
     const w = world();
     const outsider = await start(w, fakeTrackerDelivery({ delivery: "d-4", event: "labelled", item: "ENG-1", label: "rovara", labelledBy: "acct-stranger" }));
-    expect(outsider[0]?.outcome).toMatchObject({ outcome: "waiting", reason: "outsider" });
+    expect(outsider[0]?.outcome).toMatchObject({ outcome: "waiting", reason: "unlinked" }); // intake lane 5d0486742: a person the tracker names whom no member is linked to waits as "unlinked" (Home says why)
     const w2 = world();
     const unnamed = await start(w2, fakeTrackerDelivery({ delivery: "d-5", event: "assigned", item: "ENG-1" }));
-    expect(unnamed[0]?.outcome).toMatchObject({ outcome: "waiting" });
+    expect(unnamed[0]?.outcome).toMatchObject({ outcome: "waiting", reason: "outsider" });
     expect(w.started).toEqual([]);
     expect(w2.started).toEqual([]);
   });

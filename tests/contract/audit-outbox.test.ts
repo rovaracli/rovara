@@ -867,6 +867,10 @@ describe("I4: the builders", () => {
     // Send-back access gate (S2), 2026-11-04 integration: a refused person-pressed path
     ["auditTaskWorkRefused", (occurrence) => builders.auditTaskWorkRefused({ ...base, occurrence, details, taskId: "task_1", path: "retry", reason: "owner_no_access" })],
     ["auditProjectSetupRestored", (occurrence) => builders.auditProjectSetupRestored({ ...base, occurrence, details, projectName: "Secret Project", revision: 4, fromRevision: 3, provenRevision: 2 })],
+    // Script tokens (UX5b, 7703452a2), 2026-11-07 integration: counts and fixed words only; the token, its hash and its name never go in
+    ["auditScriptTokenCreated", (occurrence) => builders.auditScriptTokenCreated({ ...base, occurrence, details, tokenId: "stk_" + "1".repeat(20), days: 30, projects: 2, permissions: "read" })],
+    ["auditScriptTokenRevoked", (occurrence) => builders.auditScriptTokenRevoked({ ...base, occurrence, details, tokenId: "stk_" + "1".repeat(20), by: "creator" })],
+    ["auditScriptTokenUsed", (occurrence) => builders.auditScriptTokenUsed({ ...base, occurrence, details, tokenId: "stk_" + "1".repeat(20), day: "2026-11-07", permission: "read" })],
   ];
 
   it("covers every builder the module exports (a new builder needs a case here)", () => {

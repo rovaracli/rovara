@@ -18,6 +18,6 @@ export function understandSession(options: { waiting?: boolean; level?: "view" |
     intent: { rounds: 1, pathFrom: "understand", answers: [], ...(waiting ? { assessment: { kind: "questions", restatement: "Fix refunds", questions: QUESTIONS } } : {}) },
   };
   const task = taskFixture({ workflow });
-  return sessionFixture({ kind: "task", status: waiting ? "needs_person" : "running", step: "Understanding", where: { kind: "cloud" }, body: { kind: "task", task }, you: { level, owner: level === "edit", following: false, actions: ["watch", "comment"] }, revision: options.revision ?? 4 });
+  return sessionFixture({ kind: "task", status: waiting ? "needs_person" : "running", step: "Understanding", display: waiting ? { state: "needs_you", reason: "Rovara needs answers to its questions" } : { state: "understanding" }, where: { kind: "cloud" }, body: { kind: "task", task }, you: { level, owner: level === "edit", following: false, actions: ["watch", "comment"] }, revision: options.revision ?? 4 });
 }
 

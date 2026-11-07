@@ -146,11 +146,13 @@ it("navigates only app paths or the validated GitHub installation handoff",()=>{
  host.navigate(url);expect(b.assign).toHaveBeenCalledWith(url);
  for(const bad of ["https://evil.example/apps/rovara/installations/new","https://github.com.evil.example/apps/rovara/installations/new","https://github.com/acme/repo","https://github.com/apps/rovara/installations/new?redirect_uri=https://evil.example","https://github.com/apps/rovara/installations/new?next=valid","https://user@github.com/apps/rovara/installations/new","https://github.com/apps/rovara/installations/new#secret"]){expect(()=>host.navigate(bad)).toThrow("Invalid app destination.");}
 });
-it("navigates in the same tab to the sign-in server's Slack link only, never to another address",()=>{
+// UX1 (24c5b71dd) added the GitHub account-link hand-off (method=github): it is a second allowed same-tab address, so it is no longer in the refused list; tests/web/ux1-first-day.test.ts covers it.
+it("navigates in the same tab to the sign-in server's Slack or GitHub link only, never to another address",()=>{
  const b=browser(async()=>json(empty)),host=createBrowserHost(b.win),request="r".repeat(43),good=ORIGIN+"/v1/auth/authorize?request="+request+"&method=slack";
  host.navigate(good);expect(b.assign).toHaveBeenCalledWith(good);
- for(const bad of ["https://evil.example/v1/auth/authorize?request="+request+"&method=slack",ORIGIN+"/v1/auth/authorize?request="+request+"&method=github",ORIGIN+"/v1/auth/authorize?request="+request+"&method=slack&return=x",ORIGIN+"/v1/auth/callback/slack?request="+request+"&method=slack",good+"#x"]){expect(()=>host.navigate(bad)).toThrow("Invalid app destination.");}
- expect(b.assign).toHaveBeenCalledTimes(1);
+ const github=ORIGIN+"/v1/auth/authorize?request="+request+"&method=github";host.navigate(github);expect(b.assign).toHaveBeenLastCalledWith(github);
+ for(const bad of ["https://evil.example/v1/auth/authorize?request="+request+"&method=slack","https://evil.example/v1/auth/authorize?request="+request+"&method=github",ORIGIN+"/v1/auth/authorize?request="+request+"&method=gitlab",ORIGIN+"/v1/auth/authorize?request="+request+"&method=slack&return=x",ORIGIN+"/v1/auth/callback/slack?request="+request+"&method=slack",good+"#x"]){expect(()=>host.navigate(bad)).toThrow("Invalid app destination.");}
+ expect(b.assign).toHaveBeenCalledTimes(2);
 });
 it("copies a private link only on explicit host bridge invocation without persisting or navigating",async()=>{const b=browser(async()=>json(empty));let copied="";const clipboard={async writeText(value:string){if(this!==clipboard)throw new Error("unbound clipboard");copied=value;}};Object.assign(b.win,{navigator:{clipboard}});const host=createBrowserHost(b.win);expect(copied).toBe("");await host.copyText?.("test-only private link");expect(copied==="test-only private link").toBe(true);expect(b.fetch.mock.calls.length).toBe(0);expect(b.assign.mock.calls.length).toBe(0);expect(b.local.size+b.session.size).toBe(0);});
 it("fails copying closed with fixed text when the browser clipboard is unavailable",async()=>{const b=browser(async()=>json(empty)),host=createBrowserHost(b.win);let failed=false;try{await host.copyText?.("test-only private link");}catch(e){failed=e instanceof Error&&!e.message.includes("test-only private link");}expect(failed).toBe(true);expect(b.local.size+b.session.size).toBe(0);});

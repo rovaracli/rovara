@@ -8,7 +8,7 @@ import { taskRecipeKey } from "../../../packages/broker/src/developer/task-recor
 import { TEST_ORG } from "../../support/orgs.js";
 import { mergeTrackingKey } from "../../../packages/contracts/src/org-scoped-keys.js";
 import { createWorkflowE2E, type WorkflowE2E } from "../../support/workflow-e2e.js";
-import { EDITS, FIXED, PLAN, atPlanReview, journeySuite, said } from "../../support/workflow-e2e-journeys.js";
+import { EDITS, FIXED, PLAN, TASK_LINK_MERGE, TASK_LINK_RETRY, atPlanReview, journeySuite, said } from "../../support/workflow-e2e-journeys.js";
 
 const PROGRAM: WorkflowProgram = { steps: [
   { id: "plan", kind: "plan" }, { id: "plan_critic", kind: "plan_critic" }, { id: "build", kind: "build" }, { id: "check", kind: "check" },
@@ -123,7 +123,7 @@ describe("Suite 15: keeping the branch up to date", () => {
     expect(after.fixRounds).toBeUndefined();
     expect(milestones(e2e, "stuck")).toEqual([]);
     // The thread says so once, in its own words (a merge of the base is not a fix).
-    expect(said(e2e).at(-1)).toBe(`Brought PR #${pullRequest.number} up to date with its base branch. Approve the PR on GitHub, then press Merge in Rovara; I'll finish this task when it's merged.`);
+    expect(said(e2e).at(-1)).toBe(`Brought PR #${pullRequest.number} up to date with its base branch. Approve the PR on GitHub, then press Merge in Rovara; I'll finish this task when it's merged.${TASK_LINK_MERGE}`);
     // The workspace is on the merge, with the base's file.
     expect(await e2e.repoFile("upstream.ts")).toBe("export const upstream = 1;\n");
     // It does not merge again: the next pass reads a branch that has the base, on a head that is Rovara's.
@@ -282,7 +282,7 @@ describe("Suite 15: keeping the branch up to date", () => {
     const asked = e2e.workflow();
     expect(asked).toMatchObject({ stage: "WAIT_FOR_MERGE", state: "BLOCKED", blockReason: branchConflictAskMessage("main") });
     expect(e2e.invocations).toHaveLength(invocationsBefore);
-    expect(said(e2e).at(-1)).toBe(asked.blockReason);
+    expect(said(e2e).at(-1)).toBe(asked.blockReason + TASK_LINK_RETRY);
     expect(milestones(e2e, "stuck")).toHaveLength(1);
     expect((await e2e.mcp("agentx_get_task", { task_id: e2e.taskId() })).text ?? "").toContain("agentx_retry_workflow");
 
