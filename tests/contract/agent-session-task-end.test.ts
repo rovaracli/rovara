@@ -3,6 +3,7 @@
 // chain's) at once, so the session no longer waits for the stream or the sweep. `isEnded` stays the rule: a handler only moves the refresh earlier, so an
 // end event for a task that is still open (a plain task between turns) leaves its session open, and a pause is a pause (never an end).
 // A handler never fails Plan 3's telling: what it could not do the stream and the sweep do.
+// UX2 slice 2: the timeline says the one status model's words (`taskStatusFromSession`): a run that succeeded and ended reads "Closed", a budget pause "Paused: needs more budget".
 import { DeleteCommand } from "@aws-sdk/lib-dynamodb";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { agentSessionKey, openAgentSessionKey, type PauseScope } from "../../packages/contracts/src/index.js";
@@ -59,7 +60,7 @@ describe("a task's end reaches its session at once", () => {
     expect(isOpen(p, s.sessionId)).toBe(false);
     expect(p.tile(s.sessionId)).toMatchObject({ status: "succeeded", endedAt: iso(T0) });
     expect(workItems(p)).toHaveLength(1);
-    expect(eventTexts(p, s.sessionId)).toEqual(["Finished: succeeded"]);
+    expect(eventTexts(p, s.sessionId)).toEqual(["Closed"]);
   });
 
   it.each([["FAILED", "failed", "failed"], ["CANCELLED", "cancelled", "cancelled"]] as const)("an agent run that ended %s ends its session %s", async (state, status, outcome) => {
@@ -107,7 +108,7 @@ describe("a task's end reaches its session at once", () => {
     expect(later).toHaveBeenCalledTimes(2);
     const session = p.sessionOf(s.sessionId);
     expect(session.summaryRevision).toBe(2);
-    expect(eventTexts(p, s.sessionId)).toEqual(["Finished: succeeded"]);
+    expect(eventTexts(p, s.sessionId)).toEqual(["Closed"]);
     expect(workItems(p)).toHaveLength(1);
     expect(p.w.db.get(taskEndKey(s.taskId))).toMatchObject({ done: true });
   });
@@ -123,7 +124,7 @@ describe("a task's end reaches its session at once", () => {
     await p.w.db.send(new DeleteCommand({ TableName: "state", Key: taskEndKey(s.taskId) }));
     await t.end(s.taskId);
     expect(p.w.db.transactions().length).toBe(before);
-    expect(eventTexts(p, s.sessionId)).toEqual(["Finished: succeeded"]);
+    expect(eventTexts(p, s.sessionId)).toEqual(["Closed"]);
   });
 
   it("leaves a plain task's session open when its first turn ends: isEnded stays the rule", async () => {
@@ -174,7 +175,7 @@ describe("a budget pause is a pause", () => {
     expect(session.endedAt).toBeUndefined();
     expect(isOpen(p, s.sessionId)).toBe(true);
     expect(workItems(p)).toHaveLength(0);
-    expect(eventTexts(p, s.sessionId)).toEqual(["Paused for budget"]);
+    expect(eventTexts(p, s.sessionId)).toEqual(["Paused: needs more budget"]);
   });
 
   it("a pause heard twice writes one event, and a task resumed after it is running again, never ended", async () => {
@@ -183,7 +184,7 @@ describe("a budget pause is a pause", () => {
     const t = plan3(p);
     await t.pause(s.taskId);
     await t.pause(s.taskId);
-    expect(eventTexts(p, s.sessionId)).toEqual(["Paused for budget"]);
+    expect(eventTexts(p, s.sessionId)).toEqual(["Paused: needs more budget"]);
     // Task 32's approval removed the pause and started the next operation.
     p.patchTask(s.taskId, { budgetPause: undefined });
     p.operation(s.workspaceId, "task", "RUNNING", 60_000);

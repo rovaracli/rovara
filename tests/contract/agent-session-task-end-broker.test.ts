@@ -67,7 +67,8 @@ describe("a broker with agents follows its runs", () => {
     expect(ended.record.summary.status).toBe("succeeded");
     expect(ended.record.endedAt).toBeDefined();
     expect(ended.open).toBe(false);
-    expect(t.sessionEvents(ended.sessionId).filter((text) => text === "Finished: succeeded")).toHaveLength(1);
+    // UX2 slice 2: the timeline says the one status model's words; a run that succeeded and ended its session reads Closed (`taskStatusFromSession`).
+    expect(t.sessionEvents(ended.sessionId).filter((text) => text === "Closed")).toHaveLength(1);
     // Plan 3 told the end once, and a repeat of the worker's last callback tells nothing more.
     expect(t.db.get(`DEVTASK#${run.taskId}`, "TASK_END")).toMatchObject({ done: true });
   });
@@ -85,7 +86,7 @@ describe("a broker with agents follows its runs", () => {
     expect(paused.record.summary.status).toBe("paused");
     expect(paused.record.endedAt).toBeUndefined();
     expect(paused.open).toBe(true);
-    expect(t.sessionEvents(paused.sessionId).some((text) => String(text).includes("Paused for budget"))).toBe(true);
+    expect(t.sessionEvents(paused.sessionId).some((text) => String(text).includes("Paused: needs more budget"))).toBe(true);
     expect(t.db.get(`DEVTASK#${run.taskId}`, "TASK_END")).toBeUndefined();
   });
 
