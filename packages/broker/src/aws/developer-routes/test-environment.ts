@@ -21,6 +21,7 @@ import {
   TestEnvApproveBodySchema,
   TestEnvCheckBodySchema,
   TestEnvEditBodySchema,
+  TestEnvSeedBodySchema,
   TestEnvProposeBodySchema,
   TestEnvProveBodySchema,
   TestEnvRequestApprovalBodySchema,
@@ -63,10 +64,10 @@ import { projectRoleForRoute } from "./project-members.js";
 import { jsonBody } from "./organization.js";
 import { startCandidateSetupCheck } from "./project-archive-setup.js";
 import { candidateStateOf, deriveCandidateProve } from "./test-environment-candidate.js";
-import { TEST_ENV_EDIT_WORDS, applyProposalCommands, editTestEnvironment, requireFreshSignIn, runsOf } from "./test-environment-wizard.js";
+import { TEST_ENV_EDIT_WORDS, applyProposalCommands, dependencySeedsOf, editTestEnvironment, requireFreshSignIn, runsOf, setDependencySeed } from "./test-environment-wizard.js";
 import type { DeveloperCaller, DeveloperRouteDependencies } from "./types.js";
 
-export const TEST_ENV_PATH = /^\/v1\/app\/projects\/([^/]+)\/test-environment(?:\/(propose|prove|approve|edit|apply-commands|request-approval|check))?$/u;
+export const TEST_ENV_PATH = /^\/v1\/app\/projects\/([^/]+)\/test-environment(?:\/(propose|prove|approve|edit|seed|apply-commands|request-approval|check))?$/u;
 export const isTestEnvironmentPath = (pathname: string): boolean => TEST_ENV_PATH.test(pathname);
 
 /** What the routes do after an approval (the nightly schedule follows the approved environment). A failure here never undoes the approval. */
@@ -92,6 +93,7 @@ const refuse = (refusal: TestEnvRefusal): AgentXError => agentXError(refusal ===
  * set (tier, services, accounts, the production deny list, the nightly run, capture, the round budget). Without an approved environment the draft is the proposal. Undefined when the merge is not a valid environment.
  */
 /** The note when a dependency the detectors found clashes with the approved ones and is left out of the proposal. */
+export const LOOK_FOUND_NOTHING_NOTE = "Rovara looked at your default branch and found no command that runs your tests (a test script in package.json, pytest, and the like), so it could not draft a test environment. Add the test command in the setup above, then look again.";
 export const DEPENDENCY_CLASH_NOTE = "A dependency that was found clashes with one already approved (the same name, address or setting), so it is not part of the proposal.";
 
 export function mergeDraftWithApproved(draft: TestEnvironmentBody, approved: TestEnvironmentBody | undefined, notes?: string[]): TestEnvironmentBody | undefined {
@@ -131,17 +133,18 @@ async function latestOf(deps: DeveloperRouteDependencies, orgId: OrgId, name: st
 }
 
 /** The latest setup draft's environment draft when it is ready and was written for the project's current settings; otherwise why not. */
-async function currentDraft(deps: DeveloperRouteDependencies, orgId: OrgId, name: string, revision: number): Promise<{ status: "ready"; draft: TestEnvDraft } | { status: "none" | "stale"; note?: string }> {
+async function currentDraft(deps: DeveloperRouteDependencies, orgId: OrgId, name: string, revision: number): Promise<{ status: "ready"; draft: TestEnvDraft; looked: true } | { status: "none" | "stale"; note?: string; looked: boolean }> {
   const state = await setupDraftState({ documentClient: deps.documentClient, tableName: deps.tableName, now: deps.now }, orgId, name, revision);
-  if (state.status !== "ready" || state.pointer === undefined) return { status: "none" };
+  if (state.status !== "ready" || state.pointer === undefined) return { status: "none", looked: false };
   // Test services: the dependencies the detectors found become proposed ones here, from the signed catalog (none without it, or with the switch off).
   const catalog = testServicesEnabled() ? await Promise.resolve(deps.serviceCatalog?.()).catch(() => undefined) : undefined;
   const stored = await readTestEnvDraft(deps.documentClient, deps.tableName, orgId, name, state.pointer.taskId, deps.now(), { propose: { catalog, edition: process.env[EDITION_ENV_VAR] === "enterprise" ? "enterprise" : "public", projectId: name } });
   if (stored === undefined) {
     const note = await readTestEnvDraftNote(deps.documentClient, deps.tableName, orgId, name, state.pointer.taskId, deps.now());
-    return note === undefined ? { status: "none" } : { status: "none", note };
+    // The look ran and no test environment came of it: the detectors found no test command to build one on. Said plainly, with what to do (TS-UX-1).
+    return { status: "none", note: note ?? LOOK_FOUND_NOTHING_NOTE, looked: true };
   }
-  return state.basedOnRevision < revision ? { status: "stale" } : { status: "ready", draft: stored.draft };
+  return state.basedOnRevision < revision ? { status: "stale", looked: true } : { status: "ready", draft: stored.draft, looked: true };
 }
 
 /** The stored proposal of a digest, or (after its 7 days) the approved environment it became. */
@@ -200,6 +203,7 @@ async function stateOf(deps: DeveloperRouteDependencies, project: ProjectView): 
       proved: testEnvIsProved(report, shown.digest, shown.body), proveSteps: (report?.steps ?? []).map((step) => ({ step: step.step, status: step.status })),
       needs: { freshSignIn: lessSafe.length > 0 || risk === "high" || origin === "setup_run" || candidate.check?.origin === "setup_run" || isSetupRunProposal(valueSources), secondPerson: lessSafe.length > 0 },
       approval: { status: approval },
+      dependencySeeds: dependencySeedsOf(shown.body),
       commandsNotInSettings: commandsNotRun(shown.body, latest.definition),
       check: checkOf(candidate.setup),
     };
@@ -207,8 +211,8 @@ async function stateOf(deps: DeveloperRouteDependencies, project: ProjectView): 
   return {
     ...(approved === undefined ? {} : { approved: { revision: approved.revision, approvedAt: approved.approvedAt, digest: testEnvDigest(approved.environment), summary: testEnvSummaryOf(approved.environment), ...await approvedGapOf(deps, project, approved.environment, latest.definition) } }),
     draft: draft.status === "ready"
-      ? { status: "ready", notes: [...draft.draft.notes, ...mergeNotesOf(draft.draft.environment, approved?.environment)], questions: draft.draft.questions, pendingServices: draft.draft.pendingServices }
-      : { status: draft.status, notes: draft.note === undefined ? [] : [draft.note], questions: [], pendingServices: [] },
+      ? { looked: true, status: "ready", notes: [...draft.draft.notes, ...mergeNotesOf(draft.draft.environment, approved?.environment)], questions: draft.draft.questions, pendingServices: draft.draft.pendingServices }
+      : { looked: draft.looked, status: draft.status, notes: draft.note === undefined ? [] : [draft.note], questions: [], pendingServices: [] },
     ...(proposal === undefined ? {} : { proposal }),
   };
 }
@@ -286,6 +290,16 @@ export async function routeTestEnvironment(
     if (!parsed.success) throw bodyError(parsed.error);
     const edited = await editTestEnvironment(store, { orgId: caller.orgId, developerId: caller.developerId, project: name, role, environment: parsed.data.environment });
     logDeveloperEvent({ event: "developer.test_env_edited", orgId: caller.orgId, project: name, digest: edited.digest });
+    return new StatusReply(200, await stateOf(deps, project));
+  }
+
+  if (action === "seed") {
+    const parsed = TestEnvSeedBodySchema.safeParse(body);
+    if (!parsed.success) throw bodyError(parsed.error);
+    const proposal = await proposalOrApproved(store, caller.orgId, name, parsed.data.digest);
+    if (proposal === undefined) throw refuse("no_proposal");
+    const edited = await setDependencySeed(store, { orgId: caller.orgId, developerId: caller.developerId, project: name, role, body: proposal, dependencyId: parsed.data.dependencyId, line: parsed.data.command });
+    logDeveloperEvent({ event: "developer.test_env_seed_set", orgId: caller.orgId, project: name, digest: edited.digest });
     return new StatusReply(200, await stateOf(deps, project));
   }
 

@@ -14,6 +14,7 @@ import {
   TestEnvironmentBodySchema,
   agentXError,
   formatCommandLine,
+  parseCommandLine,
   projectAllows,
   settingOriginOf,
   type ProjectOrigins,
@@ -22,6 +23,8 @@ import {
   type ProjectCommand,
   type ProjectRole,
   type TestEnvApplyAnswer,
+  type TestEnvironmentState,
+  type TestEnvDependency,
   type TestEnvRuns,
   type TestEnvironmentBody,
 } from "@agentx/contracts";
@@ -64,6 +67,50 @@ export function runsOf(body: TestEnvironmentBody): TestEnvRuns[] {
     setup: repo.setupCommands.map((command) => shownLine(formatCommandLine(command), LINE_MAX)),
     checks: repo.checks.map((check) => ({ id: check.id, label: shownLine(check.label, 80), kind: check.kind, command: shownLine(formatCommandLine(check.command), LINE_MAX), ...(check.selectArgs === undefined ? {} : { selectArgs: [...check.selectArgs] }) })),
   }));
+}
+
+// ---- the seed of a dependency, as a plain field (TS-UX-1)
+
+type ProposalView = NonNullable<TestEnvironmentState["proposal"]>;
+/** The dependencies a seed can be set on (real software or Rovara local AWS: a fake is never seeded), each with the command that fills it as the broker formats it. */
+export function dependencySeedsOf(body: TestEnvironmentBody): ProposalView["dependencySeeds"] {
+  return (body.dependencies ?? []).filter((dependency) => dependency.backing.kind === "local" || dependency.backing.kind === "emulated").map((dependency) => {
+    const seed = dependency.seeds.find((item) => "command" in item);
+    return { id: dependency.id, name: shownLine(dependency.name, 80), ...(seed !== undefined && "command" in seed ? { command: shownLine(formatCommandLine(seed.command), LINE_MAX) } : {}) };
+  });
+}
+
+export const TEST_ENV_SEED_WORDS = {
+  noDependency: "This test environment has no such dependency to fill with test data.",
+  cannotRead: "That isn't one command. A command runs one program: put steps joined by && , | or ; in a script and call the script.",
+  noDirectory: "This test environment has no command to take the directory from, so a seed command can't be placed.",
+} as const;
+
+/**
+ * Sets (or, with an empty line, clears) the command that fills one dependency with test data, as a maintainer's edit of the proposal. The line is read here, by the same rule as a setup command (one program), and runs in
+ * the directory of the environment's own commands. Every refusal of a seed command applies (`refuseUnsafeEdit` through `editTestEnvironment`); a command seed is a less-safe change, and the approval still says so.
+ */
+export async function setDependencySeed(
+  store: TestEnvDeps, input: { orgId: OrgId; project: string; developerId: string; role: ProjectRole | undefined; body: TestEnvironmentBody; dependencyId: string; line: string },
+): Promise<{ digest: string }> {
+  const dependencies = input.body.dependencies ?? [];
+  const index = dependencies.findIndex((dependency) => dependency.id === input.dependencyId && (dependency.backing.kind === "local" || dependency.backing.kind === "emulated"));
+  if (index < 0) throw agentXError("CONFIG_INVALID", TEST_ENV_SEED_WORDS.noDependency);
+  const target = dependencies[index]!;
+  const kept = target.seeds.filter((seed) => !("command" in seed));
+  const line = input.line.trim();
+  let seeds: TestEnvDependency["seeds"] = kept;
+  if (line !== "") {
+    const first = input.body.repos.flatMap((repo) => [...repo.checks.map((check) => check.command), ...repo.setupCommands])[0];
+    if (first === undefined) throw agentXError("CONFIG_INVALID", TEST_ENV_SEED_WORDS.noDirectory);
+    let command: ProjectCommand;
+    try { command = parseCommandLine(line, first.cwd, 900); } catch { throw agentXError("CONFIG_INVALID", TEST_ENV_SEED_WORDS.cannotRead); }
+    const problem = seedCommandProblem(command);
+    if (problem !== undefined) throw agentXError("CONFIG_INVALID", SEED_COMMAND_PROBLEM_WORDS[problem]);
+    seeds = [...kept, { command }];
+  }
+  const next = { ...input.body, dependencies: dependencies.map((dependency, at) => (at === index ? { ...dependency, seeds } : dependency)) };
+  return editTestEnvironment(store, { orgId: input.orgId, project: input.project, developerId: input.developerId, role: input.role, environment: next });
 }
 
 // ---- a fresh sign-in

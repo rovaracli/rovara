@@ -33,6 +33,7 @@ import { testEnvironmentEnabled } from "./switch.js";
 import { refusedCommand } from "./refused-command.js";
 import { testServicesEnabled } from "./test-services-switch.js";
 import { proposeDependencies, type DependencyProposalContext } from "./dependency-proposal.js";
+import { attachDraftSeeds } from "./seed-routing.js";
 
 type Send = { send(command: unknown): Promise<unknown> };
 
@@ -81,8 +82,9 @@ export function sanitizeTestEnvDraft(raw: unknown, options?: DraftDependencyOpti
   const { dependencies: _empty, ...withoutDependencies } = parsed.data.environment;
   void _empty;
   if (!isSafestEnvironment(withoutDependencies)) return undefined;
-  const { dependencies: candidates, ...rest } = parsed.data;
-  const draft: TestEnvDraft = { ...rest, environment: withoutDependencies, ...(servicesOn && candidates !== undefined ? { dependencies: candidates } : {}) };
+  const { dependencies: candidates, seedCommands, ...rest } = parsed.data;
+  // TS-UX-1: the seed commands travel with the candidates (test services on) and are attached to the database dependency when the draft is read with the catalog.
+  const draft: TestEnvDraft = { ...rest, environment: withoutDependencies, ...(servicesOn && candidates !== undefined ? { dependencies: candidates } : {}), ...(servicesOn && seedCommands !== undefined && seedCommands.length > 0 ? { seedCommands } : {}) };
   if (Buffer.byteLength(JSON.stringify(draft), "utf8") > TEST_ENV_DRAFT_MAX_BYTES) return undefined;
   let leftOut = false;
   let narrowingDropped = false;
@@ -105,8 +107,9 @@ export function sanitizeTestEnvDraft(raw: unknown, options?: DraftDependencyOpti
   let dependencyNotes: string[] = [];
   if (servicesOn && options?.propose !== undefined && draft.dependencies !== undefined && draft.dependencies.length > 0) {
     const proposed = proposeDependencies(draft.dependencies, { catalog: options.propose.catalog, edition: options.propose.edition, projectId: options.propose.projectId, prodDeny: environment.prodDeny });
-    if (proposed.dependencies.length > 0) environment.dependencies = proposed.dependencies;
-    dependencyNotes = proposed.notes;
+    const seeded = attachDraftSeeds(proposed.dependencies, draft.seedCommands);
+    if (seeded.dependencies.length > 0) environment.dependencies = seeded.dependencies;
+    dependencyNotes = [...proposed.notes, ...seeded.notes];
   }
   // A value source names a field by position: those of a dropped command would now point at another value, so the sources of a draft that lost something are kept only where they still line up (none).
   const valueSources = leftOut || narrowingDropped ? [] : draft.valueSources;
@@ -114,6 +117,7 @@ export function sanitizeTestEnvDraft(raw: unknown, options?: DraftDependencyOpti
     environment, valueSources,
     pendingServices: draft.pendingServices.map((service) => ({ kind: service.kind, target: plain(service.target) })).filter((service) => service.target !== ""),
     ...(servicesOn && draft.dependencies !== undefined ? { dependencies: draft.dependencies } : {}),
+    ...(draft.seedCommands === undefined ? {} : { seedCommands: draft.seedCommands }),
     notes: [...draft.notes.map(plain), ...(leftOut ? [DRAFT_LEFT_OUT_NOTE] : []), ...(narrowingDropped ? [DRAFT_SELECTION_NOTE] : []), ...dependencyNotes].filter((line) => line !== "").slice(0, 60),
     questions: draft.questions.map(plain).filter((line) => line !== "").slice(0, 60),
   };

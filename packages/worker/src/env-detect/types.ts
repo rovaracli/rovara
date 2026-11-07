@@ -95,6 +95,8 @@ export interface DependencyCandidate {
 
 export interface Detection {
   setupCommands: Array<Located<ProjectCommand>>;
+  /** Commands that fill a database (a `seed` script in package.json). Never setup: the draft routes them to the database dependency's seed when one is found (TS-UX-1). Absent when none. */
+  seedCommands?: Array<Located<ProjectCommand>>;
   checks: Array<Located<DetectedCheck>>;
   services: Array<Located<DetectedService>>;
   iac: Array<Located<DetectedIac>>;

@@ -41,6 +41,12 @@ const detectNodeBuild: Detector = async ({ repo, cwd }) => {
     const line = findLine(text, new RegExp(`"${name.replace(/[:]/gu, "\\:")}"\\s{0,40}:`, "u")) ?? 1;
     found.checks!.push({ value: { id: entry.id, label: entry.label, kind: entry.kind, command: { cwd, executable: manager, args: manager === "npm" ? ["run", name] : [name], timeoutSeconds: entry.timeout } }, source: { path: "package.json", line } });
   }
+  // A script that fills the database (`seed`, `db:seed`, `seed:test`): not a check and never setup. The draft offers it as the database dependency's seed when a database is found (TS-UX-1).
+  const seedName = Object.keys(scripts).find((name) => /^(?:db[:-])?seed(?:[:-]test)?$|^test[:-]seed$/u.test(name) && typeof scripts[name] === "string" && (scripts[name] as string).trim() !== "");
+  if (seedName !== undefined) {
+    const line = findLine(text, new RegExp(`"${seedName.replace(/[:]/gu, "\\:")}"\\s{0,40}:`, "u")) ?? 1;
+    found.seedCommands = [{ value: { cwd, executable: manager, args: manager === "npm" ? ["run", seedName] : [seedName], timeoutSeconds: 900 }, source: { path: "package.json", line } }];
+  }
   if (found.checks!.some((check) => check.value.kind === "test")) found.notes!.push("The test script writes no report file Rovara knows of; counts come from the exit code unless the maintainer sets a report path.");
   return found;
 };

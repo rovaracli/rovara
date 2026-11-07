@@ -14,13 +14,14 @@
 import { constants } from "node:fs";
 import { lstat, open, readdir, realpath } from "node:fs/promises";
 import { join, sep } from "node:path";
-import { TEST_ENV_CANDIDATE_MAX, TEST_ENV_DRAFT_MAX_BYTES, TestEnvDependencyCandidateSchema, TestEnvDraftSchema, type SetupDraft, type SetupProposal, type TestEnvDependencyCandidate, type TestEnvDraft, type TestEnvironmentBody } from "@agentx/contracts";
+import { TEST_ENV_CANDIDATE_MAX, TEST_ENV_DRAFT_MAX_BYTES, TEST_ENV_SEED_COMMANDS_MAX, TestEnvDependencyCandidateSchema, TestEnvDraftSchema, type SetupDraft, type SetupProposal, type TestEnvDependencyCandidate, type TestEnvDraft, type TestEnvironmentBody } from "@agentx/contracts";
 import { ENV_DETECT_MAX_FILE_BYTES, ENV_DETECT_MAX_PATHS, boundedReader, buildEnvironmentDraft, proposalFromDraft } from "./env-detect/index.js";
 import { runDetectorsGuarded } from "./env-detect/guarded.js";
 import type { WorkerLogSink } from "./worker-log.js";
 import { applyRecipe, type RecipeOffer } from "./env-detect/recipes.js";
 import { joinInside, mergeCandidates } from "./env-detect/dependency-candidates.js";
 import type { DependencyCandidate } from "./env-detect/types.js";
+import { isDatabaseSeedCommand, parseCommandLine } from "@agentx/contracts";
 
 export interface DetectRepository { name: string; path: string; defaultBranch: string; checkedOut?: unknown }
 
@@ -108,6 +109,7 @@ export async function detectTestEnvironment(input: { rootPath: string; repositor
   const questions: string[] = [];
   const takenIds = new Set<string>();
   const found: DependencyCandidate[] = [];
+  const seeds: NonNullable<TestEnvDraft["seedCommands"]> = [];
   let notPlaced = 0;
   for (const repository of input.repositories) {
     if (repository.checkedOut !== undefined) { notes.push(`A pull request's files were checked out in ${repository.name}; only the default branch is read, so it was left out.`); continue; }
@@ -125,6 +127,7 @@ export async function detectTestEnvironment(input: { rootPath: string; repositor
     if ("ok" in draft) { notes.push(`The setup of ${repository.name} could not be put together from what was found.`); continue; }
     // The setup agent fills only the gaps: its commands go through the same schema, and a flagged one is dropped.
     const filled = proposalFromDraft(draft, agentDraftFor(input.setupProposal, repository.name), { cwd: repository.path });
+    for (const seed of filled.ok ? filled.seedCommands : draft.seedCommands) if (seeds.length < TEST_ENV_SEED_COMMANDS_MAX) seeds.push(seed);
     const environment = filled.ok ? filled.proposal.environment : draft.environment;
     const sources = filled.ok ? filled.proposal.valueSources : draft.valueSources;
     const index = environments.length;
@@ -159,6 +162,7 @@ export async function detectTestEnvironment(input: { rootPath: string; repositor
     pendingServices: dedupe(pending, (service) => `${service.kind}:${service.target}`).slice(0, 32),
     notes: [...new Set(notes)].map(plainLine).filter((line) => line !== "").slice(0, 60),
     questions: [...new Set(questions)].map(plainLine).filter((line) => line !== "").slice(0, 60),
+    ...(seeds.length === 0 ? {} : { seedCommands: seeds }),
   };
   // The dependencies are tried on top of today's draft; if they do not fit or do not parse, today's draft stands.
   const listed = listableDependencies(found, notPlaced);
@@ -240,4 +244,23 @@ export async function testEnvDraftResult(input: { rootPath: string; repositories
   } catch {
     return {};
   }
+}
+
+export const SEED_LEFT_OUT_OF_SETUP_NOTE = "A command that fills the database was left out of the setup commands: the database exists only inside the test environment, so the command would fail in setup. It is offered as the test environment's seed instead.";
+
+/**
+ * TS-UX-1: the setup proposal without the seed and migration commands the test-environment draft routed to a database's seed. Setup runs on a fresh machine with no database, so such a command is bound to fail there, and
+ * "Check and apply" would save it. Done only when the draft found a database and took a seed (so a project with no database dependency keeps every command it had). An item left with no command is removed; a note says so once.
+ */
+export function withoutRoutedSeeds(proposal: SetupProposal, draft: TestEnvDraft | undefined): SetupProposal {
+  if (draft === undefined || (draft.seedCommands ?? []).length === 0) return proposal;
+  const isSeed = (line: string): boolean => { try { return isDatabaseSeedCommand(parseCommandLine(line, ".", 900)); } catch { return false; } };
+  let removed = false;
+  const setup = proposal.setup.flatMap((item) => {
+    const commands = item.value.commands.filter((line) => { const seed = isSeed(line); removed ||= seed; return !seed; });
+    return commands.length === 0 ? [] : [{ ...item, value: { ...item.value, commands } }];
+  });
+  if (!removed) return proposal;
+  const notes = proposal.notes.includes(SEED_LEFT_OUT_OF_SETUP_NOTE) ? proposal.notes : [proposal.notes, SEED_LEFT_OUT_OF_SETUP_NOTE].filter((part) => part !== "").join(" ").slice(0, 2000);
+  return { ...proposal, setup, notes };
 }
