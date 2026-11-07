@@ -81,6 +81,8 @@ const TOKEN_FORMATS: ReadonlyArray<RegExp> = [
   /\bglpat-[A-Za-z0-9_-]{20,255}\b/u,
   /\bAIza[0-9A-Za-z_-]{35}\b/u,
   /\bya29\.[0-9A-Za-z_-]{60,}\b/u,
+  // Rovara script tokens (UX5b).
+  /\brvst_[0-9a-z]{20}_[0-9a-z]{20}_[A-Za-z0-9_-]{43}/u,
 ];
 
 const PRIVATE_KEY_BLOCK = /-----BEGIN (?:[A-Z0-9]+ )*PRIVATE KEY(?: BLOCK)?-----/u;
