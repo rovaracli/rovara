@@ -41,7 +41,7 @@ describe("a seed command's lock", () => {
     expect(sequelize.ok && sequelize.lock.from).toEqual(["config/config.json", "seeders/2024-users.js"]);
   });
 
-  it.each([
+  it.each<readonly [string, ReturnType<typeof cmd>, Record<string, string>, string]>([
     ["its own variables", cmd("npm", ["run", "seed"], { NODE_OPTIONS: "--require ./x.js" }), NPM_SEED, "has_env"],
     ["a pre-script", cmd("npm", ["run", "seed"]), { ...NPM_SEED, "package.json": pkg({ scripts: { seed: "node prisma/seed.js", preseed: "node other.js" } }) }, "pre_post_script"],
     ["a shell line", cmd("npm", ["run", "seed"]), { ...NPM_SEED, "package.json": pkg({ scripts: { seed: "node prisma/seed.js && curl x" } }) }, "script_shape"],

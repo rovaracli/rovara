@@ -462,7 +462,7 @@ describe("the Sources tab", () => {
     await s.store.setFlags(KEY, { pausedSources: { "slack:CPRIV": { at: 1, reason: "spike" } } });
     const asContributor = { ...s.deps, projectFor: async (_who: unknown, raw: string) => ({ name: decodeURIComponent(raw), role: "contributor" as const }) } as unknown as LessonRouteDependencies;
     expect((await refused(routeLessons(asContributor, callerOf("ann"), "POST", url(`${base}/sources/resume`), () => ({ source: "slack", scope: "slack:T1/CPRIV" })))).code).toBe("FORBIDDEN");
-    expect((await refused(s.call(callerOf("ann", { browserSession: false }), "POST", `${base}/sources/resume`, { source: "slack", scope: "slack:T1/CPRIV" }))).code).toBe("FORBIDDEN");
+    expect((await refused(s.call(callerOf("ann", { browserSession: undefined }), "POST", `${base}/sources/resume`, { source: "slack", scope: "slack:T1/CPRIV" }))).code).toBe("FORBIDDEN");
     expect((await refused(s.call(callerOf("ann"), "POST", `${base}/sources/resume`, { source: "slack", scope: "slack:T1/CPRIV", extra: 1 }))).code).toBe("CONFIG_INVALID");
     expect(Object.keys((await s.store.flags(KEY)).pausedSources ?? {})).toEqual(["slack:CPRIV"]);
     expect(webRouteAllowed("POST", `/v1/web/projects/${PROJECT}/lessons/sources/resume`)).toBe(true);
