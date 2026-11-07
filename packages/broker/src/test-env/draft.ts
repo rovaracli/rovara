@@ -121,9 +121,9 @@ function sanitizeOrRefuse(raw: unknown, options?: DraftDependencyOptions): { dra
   const { dependencies: _empty, ...withoutDependencies } = parsed.data.environment;
   void _empty;
   if (!isSafestEnvironment(withoutDependencies)) return { refused: "not_safest" };
-  const { dependencies: candidates, seedCommands, ...rest } = parsed.data;
-  // TS-UX-1: the seed commands travel with the candidates (test services on) and are attached to the database dependency when the draft is read with the catalog.
-  const draft: TestEnvDraft = { ...rest, environment: withoutDependencies, ...(servicesOn && candidates !== undefined ? { dependencies: candidates } : {}), ...(servicesOn && seedCommands !== undefined && seedCommands.length > 0 ? { seedCommands } : {}) };
+  const { dependencies: candidates, seedCommands, seedFiles, ...rest } = parsed.data;
+  // TS-UX-1: the seed commands (and item 9: the seed files) travel with the candidates (test services on) and are attached to the database dependency when the draft is read with the catalog.
+  const draft: TestEnvDraft = { ...rest, environment: withoutDependencies, ...(servicesOn && candidates !== undefined ? { dependencies: candidates } : {}), ...(servicesOn && seedCommands !== undefined && seedCommands.length > 0 ? { seedCommands } : {}), ...(servicesOn && seedFiles !== undefined && seedFiles.length > 0 ? { seedFiles } : {}) };
   if (Buffer.byteLength(JSON.stringify(draft), "utf8") > TEST_ENV_DRAFT_MAX_BYTES) return { refused: "too_large" };
   let leftOut = false;
   let narrowingDropped = false;
@@ -147,7 +147,7 @@ function sanitizeOrRefuse(raw: unknown, options?: DraftDependencyOptions): { dra
   let routed: RoutedSeed[] = [];
   if (servicesOn && options?.propose !== undefined && draft.dependencies !== undefined && draft.dependencies.length > 0) {
     const proposed = proposeDependencies(draft.dependencies, { catalog: options.propose.catalog, edition: options.propose.edition, projectId: options.propose.projectId, prodDeny: environment.prodDeny });
-    const seeded = attachDraftSeeds(proposed.dependencies, draft.seedCommands);
+    const seeded = attachDraftSeeds(proposed.dependencies, draft.seedCommands, draft.seedFiles);
     if (seeded.dependencies.length > 0) environment.dependencies = seeded.dependencies;
     dependencyNotes = [...proposed.notes, ...seeded.notes];
     // Each routed command belongs to the repository whose setup holds it, or else whose commands run in its directory.
@@ -181,6 +181,7 @@ function sanitizeOrRefuse(raw: unknown, options?: DraftDependencyOptions): { dra
     pendingServices: draft.pendingServices.map((service) => ({ kind: service.kind, target: plain(service.target) })).filter((service) => service.target !== ""),
     ...(servicesOn && draft.dependencies !== undefined ? { dependencies: draft.dependencies } : {}),
     ...(draft.seedCommands === undefined ? {} : { seedCommands: draft.seedCommands }),
+    ...(draft.seedFiles === undefined ? {} : { seedFiles: draft.seedFiles }),
     notes: [...draft.notes.map(plain), ...(leftOut ? [DRAFT_LEFT_OUT_NOTE] : []), ...(narrowingDropped ? [DRAFT_SELECTION_NOTE] : []), ...dependencyNotes].filter((line) => line !== "").slice(0, 60),
     questions: draft.questions.map(plain).filter((line) => line !== "").slice(0, 60),
   };

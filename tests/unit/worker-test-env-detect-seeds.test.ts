@@ -91,3 +91,17 @@ describe("runsScriptOf", () => {
     expect([cmd("npm", ["plant"]), cmd("bun", ["plant"]), cmd("node", ["plant"]), cmd("npm", ["run", "plants"])].some((item) => runsScriptOf(item, names))).toBe(false);
   });
 });
+
+// TS-UX-1 item 9: a SQL seed file is offered in the draft, workspace-relative, only when a database was found.
+describe("seed files in the draft", () => {
+  it("carries the repository's SQL seed files as workspace paths when a database is found, and none without one", async () => {
+    await write("svc/package.json", JSON.stringify({ scripts: { test: "vitest run" } }));
+    await write("svc/db/seeds/users.sql", "insert into users values (1);\n");
+    const without = await detectTestEnvironment({ rootPath: root, repositories: [repo] });
+    expect(without!.seedFiles).toBeUndefined();
+    await write("svc/src/db.ts", DB_CODE);
+    const draft = await detectTestEnvironment({ rootPath: root, repositories: [repo] });
+    expect(TestEnvDraftSchema.safeParse(draft).success).toBe(true);
+    expect(draft!.seedFiles).toEqual([{ path: "svc/db/seeds/users.sql", source: { path: "db/seeds/users.sql", line: 1 } }]);
+  });
+});

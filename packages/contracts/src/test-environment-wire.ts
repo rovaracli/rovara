@@ -37,6 +37,11 @@ export const TEST_SERVICES_AWS_PLAN_FEATURE = "task.testServices.aws.v1";
  * (`ec2-delivery.ts`). In `WORKER_INVOCATION_FEATURES`.
  */
 export const TEST_SERVICES_FAKE_PLAN_FEATURE = "task.testServices.fake.v1";
+/**
+ * TS-UX-1 item 9: a worker that lists this loads a dependency's seed FILE (`seeds[].fixturePath`) into its test database. An older worker failed such a seed ("not available yet"); the broker never sends it a plan with a
+ * file seed (`ec2-delivery.ts`). In `WORKER_INVOCATION_FEATURES`.
+ */
+export const TEST_SERVICES_FILE_SEED_FEATURE = "task.testServices.fileSeed.v1";
 /** The AWS services a plan may ask Rovara local AWS for in slice 2. The broker's rule and the worker's contract are this one list. */
 export const TEST_SERVICES_AWS_PLAN_SERVICES = ["s3", "sqs", "dynamodb"] as const;
 
@@ -119,6 +124,11 @@ export const TestEnvDraftSchema = z
      * offers them as the seed of the database dependency it proposes (`sanitizeTestEnvDraft`); a person approves it, as a seed command is always a less-safe change. Absent when none.
      */
     seedCommands: z.array(z.object({ command: ProjectCommandSchema, source: TestEnvValueSourceSchema }).strict()).max(TEST_ENV_SEED_COMMANDS_MAX).optional(),
+    /**
+     * TS-UX-1 item 9: SQL files of test data found in the repository (workspace-relative, as a seed's `fixturePath`). The broker offers them as the database dependency's FILE seed, preferred over a seed command (a file
+     * loads data and runs no code). Absent when none.
+     */
+    seedFiles: z.array(z.object({ path: RelativeWorkspacePathSchema, source: TestEnvValueSourceSchema }).strict()).max(TEST_ENV_SEED_COMMANDS_MAX).optional(),
     /** Fixed statements for the maintainer (what was found that the proposal cannot use, and what is not known). */
     notes: z.array(line(400)).max(60),
     questions: z.array(line(400)).max(60),

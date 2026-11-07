@@ -907,7 +907,7 @@ describe("what the worker advertises", () => {
     expect(testServicesAdvertisedFeatures({ AGENTX_SANDBOX_IMAGE: IMAGE, AGENTX_WORKER_IMAGE: IMAGE })).toEqual([]);
     expect(testServicesAdvertisedFeatures({
       AGENTX_SANDBOX_IMAGE: IMAGE, AGENTX_WORKER_IMAGE: IMAGE, AGENTX_TEST_SERVICES_REGISTRY: REGISTRY, AGENTX_TEST_SERVICES_ENV: "staging", AGENTX_TEST_SERVICES_RUN_DIR: "/run/rovara", AGENTX_TEST_SERVICES_CATALOG_DIR: "/opt/catalog",
-    })).toEqual(["task.testServices.v1"]);
+    })).toEqual(["task.testServices.v1", "task.testServices.fileSeed.v1"]); // TS-UX-1 item 9: every worker with test services loads a seed file
   });
 });
 

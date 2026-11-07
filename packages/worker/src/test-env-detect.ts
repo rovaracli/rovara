@@ -109,6 +109,7 @@ export async function detectTestEnvironment(input: { rootPath: string; repositor
   const takenIds = new Set<string>();
   const found: DependencyCandidate[] = [];
   const seeds: NonNullable<TestEnvDraft["seedCommands"]> = [];
+  const seedFiles: NonNullable<TestEnvDraft["seedFiles"]> = [];
   let notPlaced = 0;
   for (const repository of input.repositories) {
     if (repository.checkedOut !== undefined) { notes.push(`A pull request's files were checked out in ${repository.name}; only the default branch is read, so it was left out.`); continue; }
@@ -127,6 +128,8 @@ export async function detectTestEnvironment(input: { rootPath: string; repositor
     // The setup agent fills only the gaps: its commands go through the same schema, and a flagged one is dropped.
     const filled = proposalFromDraft(draft, agentDraftFor(input.setupProposal, repository.name), { cwd: repository.path });
     for (const seed of filled.ok ? filled.seedCommands : draft.seedCommands) if (seeds.length < TEST_ENV_SEED_COMMANDS_MAX) seeds.push(seed);
+    // TS-UX-1 item 9: SQL seed files, offered (with a database) as the database's file seed, workspace-relative like a seed's fixturePath.
+    if (draft.routesSeeds) for (const file of detection.seedFiles ?? []) if (seedFiles.length < TEST_ENV_SEED_COMMANDS_MAX) seedFiles.push({ path: `${repository.path}/${file.value}`, source: typeof file.source === "string" ? "detector:seed-files" : file.source });
     const environment = filled.ok ? filled.proposal.environment : draft.environment;
     const sources = filled.ok ? filled.proposal.valueSources : draft.valueSources;
     const index = environments.length;
@@ -162,6 +165,7 @@ export async function detectTestEnvironment(input: { rootPath: string; repositor
     notes: [...new Set(notes)].map(plainLine).filter((line) => line !== "").slice(0, 60),
     questions: [...new Set(questions)].map(plainLine).filter((line) => line !== "").slice(0, 60),
     ...(seeds.length === 0 ? {} : { seedCommands: seeds }),
+    ...(seedFiles.length === 0 ? {} : { seedFiles }),
   };
   // The dependencies are tried on top of today's draft; if they do not fit or do not parse, today's draft stands.
   const listed = listableDependencies(found, notPlaced);
