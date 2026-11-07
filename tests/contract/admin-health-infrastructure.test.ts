@@ -198,6 +198,8 @@ describe("the health route's grants (A13)", () => {
       "packages/broker/src/agent-sessions/lifecycle.ts",
       // Plan 5, Task 17: a removed device keeps its record, and its row in the member's list, for a year (`revokedAt`), then the TTL deletes both.
       "packages/broker/src/devices/store.ts",
+      // UX5b: a script token's record and its row in the company's list expire a month after the token ends (or is revoked).
+      "packages/broker/src/script-tokens/store.ts",
       // Plan 5, Task 18: a local session's state, its turns, its device entry and a device's commands (and the counter beside them) expire on it (local-sessions.ts writes them; a command past its time is left out of a poll).
       "packages/broker/src/devices/local-sessions.ts",
       // Plan 5, Task 19: a move to a Mac starts the Mac's state and entry for the session with the same expiry (handoff.ts writes them), and the move's request item expires like a stop's.

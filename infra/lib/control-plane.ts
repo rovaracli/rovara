@@ -1376,6 +1376,8 @@ export class ControlPlaneStack extends Stack {
       brokerSettings.add("setupRecipes", signInParameters.setupRecipesEnabled.valueAsString);
       // Saved environments (SH25): one switch, a packed setting. Off ("0") unless the operator sets the parameter to "1".
       brokerSettings.add("savedEnv", signInParameters.savedEnvEnabled.valueAsString);
+      // Script tokens (UX5b): one switch, a packed setting. Off ("0") unless the operator sets the parameter to "1".
+      brokerSettings.add("scriptTokens", signInParameters.scriptTokensEnabled.valueAsString);
       // Design review stage (DR7): the operator switch, a packed setting. Off ("0") unless the operator sets the parameter; each project is then turned on in How we work.
       brokerSettings.add("designReview", signInParameters.designReviewEnabled.valueAsString);
       // Nightly health (SH28): a packed setting. Off ("0") unless the operator sets the parameter to "1".

@@ -202,6 +202,8 @@ export const BROKER_SETTINGS = {
   setupAgent: { code: "su", variable: "SETUP_AGENT_ENABLED" },
   // Saved environments (setup-test-health SH25, switch `sv`): a project's proven setup is built into an image, kept in the registry and used by tasks. Stack parameter SavedEnvEnabled, "0" by default: the broker reads it as SAVED_ENV_ENABLED and it is on only when exactly "1". With it off nothing is built, pushed, pulled or sent to a worker. Packed setting, not a Lambda variable (ENV-ROOM).
   savedEnv: { code: "sv", variable: "SAVED_ENV_ENABLED" },
+  // Script tokens (UX5b, switch `pt`): people make tokens in the app so their scripts and CI can read and start their own tasks. Stack parameter ScriptTokensEnabled, "0" by default: the broker reads it as SCRIPT_TOKENS_ENABLED and it is on only when exactly "1". Off: the settings routes are not found and every script token is refused. Packed setting, not a Lambda variable (ENV-ROOM).
+  scriptTokens: { code: "pt", variable: "SCRIPT_TOKENS_ENABLED" },
   // Test services (test-services.md TS37, switches `tx`, `ta` and `pj`): each is a stack parameter, "0" by default, that reaches the broker as the variable named here, and is on only when it is exactly "1". Nothing reads them yet; while they are off nothing new is reachable and every refusal stays as it is. `tx`: dependencies get a backing (real software, Rovara local AWS, fakes) on a sealed per-run network. Hard-gated at deploy by the Linux checks TS-L1 to TS-L6 (scripts/linux-check-test-services.sh). Packed settings, not Lambda variables (ENV-ROOM).
   testServices: { code: "tx", variable: "TEST_SERVICES_ENABLED" },
   // `ta`: a project may use the customer's own test accounts (a second admin approves each). Needs `tx`.

@@ -357,6 +357,10 @@ export const AUDIT_ACTIONS = [
   "test_account.deleting",
   "test_account.rotation_failed",
   "test_account.used",
+  // Script tokens (UX5b, switch `pt`): ids, counts and fixed words only. A token, its hash and its name never go in a fact.
+  "script_token.created",
+  "script_token.revoked",
+  "script_token.used",
 ] as const;
 
 export const AuditActionSchema = z.enum(AUDIT_ACTIONS);
@@ -391,6 +395,7 @@ export const AUDIT_TARGET_KINDS = [
   "mcp_server",
   "diagnosis",
   "test_account",
+  "script_token",
 ] as const;
 
 export const AuditTargetKindSchema = z.enum(AUDIT_TARGET_KINDS);
@@ -689,6 +694,9 @@ export const AUDIT_FACT_KEYS: Record<AuditAction, readonly string[]> = {
   "test_account.deleting": ["kind", "cause"],
   "test_account.rotation_failed": ["cause"],
   "test_account.used": ["day", "rounds", "connections", "bytes"],
+  "script_token.created": ["days", "projects", "permissions"],
+  "script_token.revoked": ["by"],
+  "script_token.used": ["day", "permission"],
 };
 
 /** `op_` plus the first 24 hex of `sha256(issuer + "\n" + subject)`: a staff member's id in the chain, never their identity. */

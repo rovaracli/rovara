@@ -106,6 +106,7 @@ instead: give it a one-line header comment when you next edit it.
 | Agent sessions (live, stop, redirect, ask) | `packages/broker/src/agent-sessions/`. Sessions on a Mac (devices, local sessions, the Mac move) are unfinished and kept: `packages/broker/src/devices/`, `packages/broker/src/agent-sessions/handoff.ts`. Nothing offers them: no client pairs a Mac, and `packages/broker/src/agent-sessions/access.ts#OFFER_HANDOFF` (off) keeps "handoff" out of a session's actions. Existing local sessions still read. |
 | Plug-ins: code hosts and check runners | `packages/broker/src/plugins/`, registered in `packages/broker/src/aws/broker/plugin-wiring.ts#createBrokerPlugins` |
 | Audit | `packages/broker/src/audit/` |
+| Script tokens (switch `pt`): tokens people make for their scripts and CI | `packages/broker/src/script-tokens/` (the token check and its closed route list: `packages/broker/src/script-tokens/authenticate.ts#authenticateScriptToken`, called from `packages/broker/src/aws/developer-routes.ts#routeDeveloperRequest`; settings routes: `packages/broker/src/script-tokens/routes.ts#routeScriptTokens`; screen: `packages/ui/src/screens/settings/ScriptTokensScreen.tsx`; user docs: `docs/script-tokens.md`) |
 
 ## Worker
 

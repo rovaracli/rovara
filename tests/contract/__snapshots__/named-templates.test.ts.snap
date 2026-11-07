@@ -3246,6 +3246,15 @@ exports[`named environment templates > agentx-staging-control-plane is unchanged
       "Description": "1: a project's proven setup can be built into a saved image and used by tasks (deploy the worker image and the registry roles first); 0: nothing is built, pushed, pulled or sent to a worker (agentx config set savedEnv.enabled 1)",
       "Type": "String",
     },
+    "ScriptTokensEnabled": {
+      "AllowedValues": [
+        "0",
+        "1",
+      ],
+      "Default": "0",
+      "Description": "1: people can make script tokens in the app settings so their scripts and CI can read and start their own tasks; 0: no token can be made and every script token is refused (agentx config set scriptTokens.enabled 1)",
+      "Type": "String",
+    },
     "SecondReviewEnabled": {
       "AllowedValues": [
         "0",
@@ -3861,6 +3870,10 @@ exports[`named environment templates > agentx-staging-control-plane is unchanged
                   ",pj=",
                   {
                     "Ref": "ProjectImagesEnabled",
+                  },
+                  ",pt=",
+                  {
+                    "Ref": "ScriptTokensEnabled",
                   },
                   ",rd=",
                   {

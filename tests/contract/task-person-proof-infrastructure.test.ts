@@ -112,6 +112,7 @@ function parentRemainderDigest(template: TemplateJson): string {
   // Setup agent (sh-setup-wire): its own switch, a parameter and a packed setting, no part of the proof-only addition.
   delete remainder.Parameters?.SetupAgentEnabled;
   delete remainder.Parameters?.SavedEnvEnabled;
+  delete remainder.Parameters?.ScriptTokensEnabled;
   // Test services (TS37): three switches, parameters and packed settings, no part of the proof-only addition.
   delete remainder.Parameters?.TestServicesEnabled;
   delete remainder.Parameters?.TestAccountsEnabled;
@@ -375,18 +376,20 @@ describe("the named TEST proof-only installation gate", () => {
     // 2026-11-05, 0.5.7 integration (integ/057): the named and foreign digests were retaken from the values the digest test itself reports, after ONE intended change (the legacy digests did not move; the optional custom domain adds
     // nothing to a template that sets none): DR-FU4 part 2 removed the retired design review project list, so the DesignReviewProjects parameter and the `dp` entry of the broker's packed AGENTX_SETTINGS are gone. The named-templates
     // snapshot (the whole staging control-plane template, which the foreign case is) shows exactly those two removals and nothing else.
+    // 2026-11-07 (UX5b script tokens): the named and foreign digests were retaken from the values the test reports, after one intended change: the `pt` entry of the broker's packed AGENTX_SETTINGS
+    // (the ScriptTokensEnabled parameter itself is taken out of the remainder like the other switches). Legacy did not move.
     const digestCases = [
       {
         label: "named",
         template: named,
-        withRoute: "6096ea88ab68a7aa1baa54c15fb87ba98c2afc3abce820a02ec36ef0fc8a944b",
-        withoutRoute: "d67cbeae6be025fb7bd2ddafac35c63b6164c9b251eea5eef99be0ba565a0b48",
+        withRoute: "bb251d6f86cbdc9d631923206a12e37f0d18389780cd34e84921b9d45e7c9cf8",
+        withoutRoute: "e7c9322e1daa40c7ea6b097bec44f5f328914f06bde61b5391bd350086da0e41",
       },
       {
         label: "foreign",
         template: foreign,
-        withRoute: "071122f4b25429dd6996663d87ad13e00ec20c3a9b690356294a1603c7e56ce0",
-        withoutRoute: "a9a3ff2c9f27177e7c83348b47aa622caf49ec8a89724f1c6c92969c256b5bc6",
+        withRoute: "df0e4330628131a9d47f02e39d7e1fac59884f913791e3e7769ca7783c7cfd12",
+        withoutRoute: "d73427a961ec7fee22c6e468c4c7a5c877eb615625f3d9a0e6f3c9fdeec1fc7a",
       },
       {
         label: "legacy",

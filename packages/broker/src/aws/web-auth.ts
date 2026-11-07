@@ -16,6 +16,8 @@ export function webRouteAllowed(method: string, pathname: string): boolean {
  if (family === "decisions") return (method === "GET" && relative === "decisions") || (method === "POST" && /^decisions\/[a-z_]+\/[A-Za-z0-9_-]{1,150}\/(?:approve|reject|evidence-opened|request-changes)$/u.test(relative));
  // Fix with agent (switch `fd`): the browser may ask for a diagnosis and read one, and nothing else under diagnoses/ (the deep tier and "Apply this change" stay on the token API). Exact shapes, mirroring routes.ts in diagnosis/.
  if (family === "diagnoses") return (method === "POST" && relative === "diagnoses") || (method === "GET" && /^diagnoses\/dgn_[0-9a-z]{20}$/u.test(relative));
+ // UX5b: the settings screen for script tokens. Exact shapes, mirroring script-tokens/routes.ts: list, make, revoke one.
+ if (family === "script-tokens") return ((method === "GET" || method === "POST") && relative === "script-tokens") || (method === "DELETE" && /^script-tokens\/stk_[0-9a-z]{20}$/u.test(relative));
  if (!(WEB_ROUTE_FAMILIES as readonly string[]).includes(family)) return false;
  // Lane B: legacy lifecycle writes remain on the token API for compatibility.
  // Cookie callers must use reviewed paths; legacy Slack writes remain held until B34 exposure ships.

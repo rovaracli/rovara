@@ -303,6 +303,10 @@ import { REVIEW_DEFAULT_NOTICE_PATH, dismissReviewDefaultNotice, readReviewDefau
 import { clearArchivedProjectLearning } from "./developer-routes/project-archive-setup.js";
 import { forgetTaskComment, rememberTaskComment } from "../learning/capture-comment.js";
 import { getTaskStopEditing, writeTaskStopEditing } from "../org/task-stop-editing.js";
+import { SCRIPT_TOKENS_BROWSER_MESSAGE, isScriptTokensPath, routeScriptTokens } from "../script-tokens/routes.js";
+import { authenticateScriptToken } from "../script-tokens/authenticate.js";
+import { isScriptTokenHeader } from "../script-tokens/token-format.js";
+import { scriptTokensEnabled } from "../script-tokens/switch.js";
 export { projectMembersOf, projectsWithPolicy } from "./developer-routes/project-list.js";
 export { checkProjectAccess } from "./developer-routes/project-access.js";
 export { agentRunStarterOf, codeIntentDependenciesOf, developerTaskRouteDependencies } from "./developer-routes/dependencies.js";
@@ -343,6 +347,8 @@ export async function routeDeveloperRequest(deps: DeveloperRouteDependencies, re
   if (isSetupRecipesPath(url.pathname) && setupRecipesEnabled() && authenticated?.caller.browserSession !== true) throw agentXError("FORBIDDEN", SETUP_RECIPES_BROWSER_MESSAGE);
   // The project's saved environment panel (switch `sv`): browser-only for reads and writes, whatever the method (off: the path is not found).
   if (isSavedEnvImagePath(url.pathname) && savedEnvEnabled() && authenticated?.caller.browserSession !== true) throw agentXError("FORBIDDEN", SAVED_ENV_IMAGE_BROWSER_MESSAGE);
+  // UX5b: script tokens are made, listed and revoked from a live browser session only (off: the path is not found).
+  if (isScriptTokensPath(url.pathname) && scriptTokensEnabled() && authenticated?.caller.browserSession !== true) throw agentXError("FORBIDDEN", SCRIPT_TOKENS_BROWSER_MESSAGE);
   // B34 reviewed reads/unbind are cookie-only; existing token Slack routes remain separate.
   if (/^\/v1\/app\/projects\/[^/]+\/slack-channel\/(links|review|requests|unbind|proposals|decisions)(?:\/|$)/.test(url.pathname) && authenticated?.caller.browserSession !== true) {
     throw agentXError("FORBIDDEN", "Use a live browser session for Slack linking.");
@@ -414,11 +420,13 @@ export async function routeDeveloperRequest(deps: DeveloperRouteDependencies, re
     return web(request, url);
   }
   // Never request.jwtClaims: no API Gateway authorizer runs on /v1/dev/* (D17).
-  const caller = authenticated?.caller ?? await authenticateDeveloper(deps, await deps.developer.verifyAccessToken(request.headers.authorization));
+  // UX5b: a script token (`Bearer rvst_…`) is checked, with its closed list of routes, by its own module; every other bearer is a sign-in token.
+  const caller = authenticated?.caller ?? (isScriptTokenHeader(request.headers.authorization) ? await authenticateScriptToken(deps, request, url) : await authenticateDeveloper(deps, await deps.developer.verifyAccessToken(request.headers.authorization)));
   // I2: before any route is matched, an Auditor is held to its allow-list (the audit log, its exports, its own identity). Nothing below this line runs for it otherwise.
   requireAuditorRoute(caller, request.method, url.pathname);
   // Lane C6: only the trusted cookie adapter supplies authenticated; source guards share the handlers' paths.
   if (authenticated !== undefined) requireReviewedModelSourceWebWrite(request, url);
+  if (isScriptTokensPath(url.pathname)) return routeScriptTokens(deps, caller, request, url);
   // Plan 3's paths, project sub-paths included, are matched before Plan 2's `/v1/app/projects/{name}*` handlers (PF24).
   if (request.method === "GET" && url.pathname === "/v1/app/models") {
     if (deps.agents === undefined) throw agentXError("NOT_FOUND", "agents are not set up in this deployment");
