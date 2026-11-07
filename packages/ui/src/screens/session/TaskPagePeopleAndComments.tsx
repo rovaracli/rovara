@@ -64,8 +64,10 @@ export function TaskPagePeopleAndComments({ taskId }: { taskId: string }) {
   await query.invalidateQueries({ queryKey: ["task-comments", taskId] });
  }, action === "remember" ? "Remembered for this project." : "Forgotten.");
  const list = comments.data?.comments ?? [], view = people.data;
- if (list.length === 0 && view === undefined) return null;
+ // OWNER DECISION 17: comments, replies, suggestions and Ask stay on the review page until the next release; the task page links straight to its comments.
+ const commentLink = <p className="rv-task-comment-link"><a href={"/review/" + encodeURIComponent(taskId) + "/task?doc=coding-plan"}>Comment on the plan</a> <span className="rv-muted">Comments, replies, suggestions and questions for Rovara are on the plan's review page.</span></p>;
  return <section className="rv-task-people-comments" aria-label="People and comments">
+  {commentLink}
   {view !== undefined && <div><h2>People</h2><ul>{view.people.map(person => <li key={person.personId}><VisibleText text={person.name + (person.you ? " (you)" : "") + ": " + (ROLE_WORDS[person.role] ?? "Role unknown")} />
    {view.canManage && <span><label htmlFor={"role-" + person.personId}>Access for {person.name}</label> <select id={"role-" + person.personId} value={roles[person.personId] ?? person.role} onChange={event => { const role = event.target.value;setRoles(current => ({ ...current, [person.personId]: role })); }}>{Object.entries(ROLE_WORDS).map(([role, words]) => <option key={role} value={role}>{words}</option>)}</select>
     <Button busy={busy} disabled={(roles[person.personId] ?? person.role) === person.role} onClick={() => { void run(() => propose("/people/role", { expectedPeopleRevision: view.revision, personId: person.personId, role: roles[person.personId] }), "Confirm the change on the next page."); }}>Review role change</Button></span>}
