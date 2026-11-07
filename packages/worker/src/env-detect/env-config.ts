@@ -297,6 +297,15 @@ export function codeEnvReferences(path: string, text: string): CodeEnvReference[
 /** A setting that names a database without saying which software: `DATABASE_URL`, `DB_HOST`. */
 const GENERIC_DATABASE_NAME = /^(?:DATABASE|DB)_(?:URL|URI|HOST|PORT|NAME|USER|PASSWORD|CONNECTION(?:_STRING)?)$/u;
 
+/** Whether a source file reads a setting that names a database (`DATABASE_URL`, `PGHOST`, `MYSQL_HOST`, `MONGO_URI`): a command that runs it needs the database (TS-UX-1 item 7). */
+export function readsDatabaseSetting(path: string, text: string): CodeEnvReference | undefined {
+  return codeEnvReferences(path, text).find((reference) => {
+    if (GENERIC_DATABASE_NAME.test(reference.name)) return true;
+    const family = familyOfName(reference.name);
+    return family !== undefined && kindOfFamily(family) === "database";
+  });
+}
+
 export const ASSUMED_POSTGRES_NOTE = "The code reads a database setting (such as DATABASE_URL) and no database driver was found, so Rovara assumed Postgres. Check that it is right before you approve.";
 export const WHICH_DATABASE_QUESTION = "The code reads a database setting (such as DATABASE_URL), and more than one kind of database is in use, so Rovara can't tell which one it points at.";
 

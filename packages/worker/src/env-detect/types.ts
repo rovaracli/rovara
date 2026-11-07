@@ -97,6 +97,11 @@ export interface Detection {
   setupCommands: Array<Located<ProjectCommand>>;
   /** Commands that fill a database (a `seed` script in package.json). Never setup: the draft routes them to the database dependency's seed when one is found (TS-UX-1). Absent when none. */
   seedCommands?: Array<Located<ProjectCommand>>;
+  /**
+   * TS-UX-1 item 7: the package.json scripts whose program file reads a database setting (`plant` -> `node tools/plant.js`, which reads `process.env.DATABASE_URL`), cited at that read. A command that runs one needs the
+   * database, so it is routed like a seed even when its words say nothing of seeding. Absent when none.
+   */
+  databaseScripts?: Array<Located<string>>;
   /** SQL files of test data (seed-files.ts), repository-relative. Offered as the database dependency's file seed, preferred over a command (TS-UX-1 item 9). Absent when none. */
   seedFiles?: Array<Located<string>>;
   checks: Array<Located<DetectedCheck>>;

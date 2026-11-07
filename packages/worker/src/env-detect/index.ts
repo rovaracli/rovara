@@ -108,6 +108,7 @@ export async function runDetectors(reader: RepositoryReader, cwd: string, option
     try { part = await detector.run({ repo: reader, cwd }); } catch { merged.notes.push(`The ${detector.name} detector could not finish.`); continue; }
     merged.setupCommands.push(...(part.setupCommands ?? []));
     if (part.seedCommands !== undefined && part.seedCommands.length > 0) merged.seedCommands = [...(merged.seedCommands ?? []), ...part.seedCommands];
+    if (part.databaseScripts !== undefined && part.databaseScripts.length > 0) merged.databaseScripts = [...(merged.databaseScripts ?? []), ...part.databaseScripts];
     if (options.legacyOnly !== true && part.seedFiles !== undefined && part.seedFiles.length > 0) merged.seedFiles = [...(merged.seedFiles ?? []), ...part.seedFiles];
     for (const check of part.checks ?? []) {
       if (merged.checks.some((existing) => sameCommand(existing.value.command, check.value.command))) continue;

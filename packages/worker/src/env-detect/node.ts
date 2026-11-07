@@ -1,6 +1,7 @@
 // Node detector: package.json scripts (test, lint, typecheck, build), the package manager's install command, and lockfiles.
 import { awsClientCandidate, callArguments, candidate, hardcodedEndpoint, isOwnedElsewhere, mergeCandidates, normalizeAwsService, scanDrivers, type DriverRule } from "./dependency-candidates.js";
 import type { ProjectCommand } from "@agentx/contracts";
+import { readsDatabaseSetting } from "./env-config.js";
 import { type DependencyCandidate, type Detection, type Detector, type DetectorContext, type Located, findLine } from "./types.js";
 
 const LOCKS: ReadonlyArray<{ file: string; setup: [string, string[]] }> = [
@@ -55,9 +56,34 @@ const detectNodeBuild: Detector = async ({ repo, cwd }) => {
     const tool = toolSeedCommand(manifest, repo.paths, text, cwd);
     if (tool !== undefined) found.seedCommands = [tool];
   }
+  const databaseScripts = await databaseScriptsOf(scripts, repo);
+  if (databaseScripts.length > 0) found.databaseScripts = databaseScripts;
   if (found.checks!.some((check) => check.value.kind === "test")) found.notes!.push("The test script writes no report file Rovara knows of; counts come from the exit code unless the maintainer sets a report path.");
   return found;
 };
+
+/** Programs that run one source file given as their first word that is not an option: the file is what the script does. */
+const FILE_RUNNERS = new Set(["node", "tsx", "ts-node", "bun", "python", "python3"]);
+const DATABASE_SCRIPTS_MAX = 16;
+
+/**
+ * TS-UX-1 item 7: the scripts whose program file reads a database setting. A script body is read as words; the first must be a file runner (`node`, `tsx`, `ts-node`, `bun`, `python`), and its first word that is not an
+ * option must be a file in the repository, which is read (bounded by the reader) for a database setting. Anything else (a shell line, a runner of a tool, a file outside the list) is no evidence. Nothing is run.
+ */
+async function databaseScriptsOf(scripts: Record<string, unknown>, repo: DetectorContext["repo"]): Promise<Array<Located<string>>> {
+  const out: Array<Located<string>> = [];
+  for (const [name, body] of Object.entries(scripts).slice(0, 200)) {
+    if (typeof body !== "string" || out.length >= DATABASE_SCRIPTS_MAX || /[|;&<>`$]/u.test(body)) continue;
+    const words = body.trim().split(/\s+/u);
+    if (!FILE_RUNNERS.has(words[0] ?? "")) continue;
+    const file = words.slice(1).find((word) => !word.startsWith("-"))?.replace(/^\.\//u, "");
+    if (file === undefined || !repo.paths.includes(file)) continue;
+    const text = await repo.read(file);
+    const reference = text === undefined ? undefined : readsDatabaseSetting(file, text);
+    if (reference !== undefined) out.push({ value: name, source: { path: file, line: reference.line } });
+  }
+  return out;
+}
 
 /** Whether package.json lists a package among its dependencies of any kind. */
 function lists(manifest: Record<string, unknown>, name: string): boolean {

@@ -32,6 +32,8 @@ export interface EnvironmentDraft {
   seedCommands: Array<{ command: ProjectCommand; source: TestEnvValueSource }>;
   /** A database dependency was found, so a seed or migration command is routed (also for the setup agent's own commands). */
   routesSeeds: boolean;
+  /** TS-UX-1 item 7: the package.json scripts whose program reads a database setting (`detection.databaseScripts`): a command that runs one is routed like a seed (the setup agent's too, kept as the agent's). */
+  databaseScripts: string[];
   iac: Detection["iac"];
   notes: string[];
   questions: string[];
@@ -41,11 +43,22 @@ const sourceOf = (source: DetectedSource): TestEnvValueSource => source;
 const COMMON_FULL_SUITE = [".github/**", ".gitlab-ci.yml", "Makefile"];
 const sameProgram = (left: ProjectCommand, right: ProjectCommand): boolean => left.executable === right.executable && JSON.stringify(left.args) === JSON.stringify(right.args);
 
+/** Whether a command runs one of the named package.json scripts: `npm run <name>`, `npm run-script <name>`, `pnpm|yarn|bun run <name>`, or `pnpm|yarn <name>`. */
+export function runsScriptOf(command: Pick<ProjectCommand, "executable" | "args">, names: ReadonlySet<string>): boolean {
+  if (names.size === 0) return false;
+  const program = command.executable.split("/").pop() ?? command.executable;
+  const [first, second] = command.args;
+  if (program === "npm") return (first === "run" || first === "run-script") && second !== undefined && names.has(second);
+  if (program === "pnpm" || program === "yarn" || program === "bun") return first === "run" ? second !== undefined && names.has(second) : first !== undefined && program !== "bun" && names.has(first);
+  return false;
+}
+
 export function buildEnvironmentDraft(detection: Detection, input: { repositoryId: string; nightlyBranch?: string }): EnvironmentDraft | { ok: false; reason: "invalid_environment" } {
   const valueSources: EnvironmentDraft["valueSources"] = [];
   const checks = detection.checks.slice(0, 32);
   const routesSeeds = Array.isArray(detection.dependencies) && detection.dependencies.some((item) => item.kind === "database");
-  const isSeed = (item: Located<ProjectCommand>): boolean => routesSeeds && isDatabaseSeedCommand(item.value);
+  const databaseScripts = new Set((detection.databaseScripts ?? []).map((item) => item.value));
+  const isSeed = (item: Located<ProjectCommand>): boolean => routesSeeds && (isDatabaseSeedCommand(item.value) || runsScriptOf(item.value, databaseScripts));
   // A seed or migration found among the setup commands stays one here and is ALSO reported as a seed: the worker cannot know whether the broker will propose a database to hold it (services off, no catalog, nothing to
   // run on), and a command that lands nowhere must not vanish from setup. The broker takes it out of setup once a dependency has taken it.
   const setup = detection.setupCommands.slice(0, 20);
@@ -87,6 +100,7 @@ export function buildEnvironmentDraft(detection: Detection, input: { repositoryI
     valueSources,
     seedCommands,
     routesSeeds,
+    databaseScripts: [...databaseScripts],
     pendingServices: detection.services.map((item) => ({ kind: item.value.kind, target: item.value.target, source: sourceOf(item.source) })),
     iac: detection.iac,
     notes: [...detection.notes, ...unnamedCoverageNotes(detection)],
@@ -132,7 +146,7 @@ export function proposalFromDraft(draft: EnvironmentDraft, setupDraft: SetupDraf
     const command = take(line, "setup");
     if (command === undefined || repo.setupCommands.some((existing) => sameProgram(existing, command)) || repo.setupCommands.length >= 20) continue;
     // A seed or migration needs the database, which exists only inside the test environment: it is offered as the dependency's seed too, and the broker takes it out of setup once a dependency has taken it.
-    if (draft.routesSeeds && isDatabaseSeedCommand(command) && seedCommands.length < 8 && !seedCommands.some((existing) => sameProgram(existing.command, command))) seedCommands.push({ command, source: "model" });
+    if (draft.routesSeeds && (isDatabaseSeedCommand(command) || runsScriptOf(command, new Set(draft.databaseScripts))) && seedCommands.length < 8 && !seedCommands.some((existing) => sameProgram(existing.command, command))) seedCommands.push({ command, source: "model" });
     sources.push({ field: `repos[0].setupCommands[${String(repo.setupCommands.length)}]`, source: "model" });
     repo.setupCommands.push(command);
   }
