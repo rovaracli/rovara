@@ -17,7 +17,7 @@ export const SETTINGS_AREAS = {
   audit: { title: "Audit", affects: "This page shows what happened and who did it. It changes nothing.", who: "Owners and admins can read it.", changers: [], readOnly: true },
   health: { title: "Health", affects: "This page shows whether Rovara's services are ready. It changes nothing.", who: "Owners and admins can read it. The people who run your Rovara install fix what it shows.", changers: [], readOnly: true },
   domains: { title: "Company domains", affects: "Whose email counts as the company's. That decides who can be linked to a tracker account.", who: "Only company owners can add or remove a domain.", changers: ["owner"] },
-  agents: { title: "Agents", affects: "This page shows agent versions and company guardrails. Change an agent from its own page.", who: "Owners and admins can read it. Guardrails are changed by the people who run your Rovara install.", changers: [], readOnly: true },
+  agents: { title: "Agents", affects: "This page shows agent versions and company guardrails. Change an agent from its own page.", who: "Owners and admins can read this page. Owners and admins can also change the company guardrails, but not from this page yet.", changers: [], readOnly: true },
   waiting: { title: "Waiting for people", affects: "These are requests that need a person to decide. Deciding one applies that change.", who: "You see the requests you are allowed to decide.", changers: ["owner", "admin", "member"] },
 } as const satisfies Record<string, SettingsArea>;
 export type SettingsAreaId = keyof typeof SETTINGS_AREAS;

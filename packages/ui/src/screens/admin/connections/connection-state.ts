@@ -1,10 +1,10 @@
 // UX3: what each connection card says about itself. Pure functions: the screen reads stored state and these turn it into a plain state word, the reason and the fix.
 // Nothing here checks a vendor. A tick means a check that passed (or a GitHub App Rovara can see installed); "Needs attention" always says why and what to do.
-export type CardState = "connected" | "attention" | "not_connected" | "per_project" | "built_in";
-export const STATE_WORDS: Readonly<Record<CardState, string>> = { connected: "✓ Connected", attention: "Needs attention", not_connected: "Not connected", per_project: "Set up per project", built_in: "✓ Built in" };
+export type CardState = "connected" | "attention" | "not_connected" | "per_project" | "built_in" | "unavailable";
+export const STATE_WORDS: Readonly<Record<CardState, string>> = { connected: "✓ Connected", attention: "Needs attention", not_connected: "Not connected", per_project: "Set up per project", built_in: "✓ Built in", unavailable: "Not available here" };
 export interface CardSummary { state: CardState; why: string; fix?: string }
 
-export interface GithubInstall { installationId: number; accountLogin: string; status: "active" | "suspended" | "removed"; connectedBy?: string | undefined; connectedAt?: string | undefined }
+export interface GithubInstall { installationId: number; accountLogin: string; status: "active" | "suspended" | "removed" | "unknown"; connectedBy?: string | undefined; connectedAt?: string | undefined }
 export interface GithubRequest { accountLogin?: string | undefined; status: string }
 
 export function githubSummary(installs: readonly GithubInstall[], requests: readonly GithubRequest[]): CardSummary {
@@ -18,6 +18,7 @@ export function githubSummary(installs: readonly GithubInstall[], requests: read
   }
   const suspended = installs.find(install => install.status === "suspended");
   if (suspended !== undefined) return { state: "attention", why: `The Rovara app on ${suspended.accountLogin} is suspended on GitHub, so Rovara can't read your code.`, fix: "Ask the owner of that GitHub organization to unsuspend it, then press Check connection." };
+  if (installs.length > 0 && installs.every(install => install.status === "unknown")) return { state: "attention", why: "Rovara can't tell what state its GitHub app is in.", fix: "Press Check connection, or connect GitHub again." };
   if (installs.length > 0) return { state: "attention", why: "The Rovara app was removed from GitHub, so Rovara can't read your code.", fix: "Connect GitHub again." };
   const waiting = requests.find(request => request.status === "waiting");
   if (waiting !== undefined) return { state: "attention", why: `Waiting for your GitHub admin to approve Rovara${waiting.accountLogin === undefined ? "" : ` on ${waiting.accountLogin}`}.`, fix: "Ask them to approve it on GitHub, then press Check connection." };
@@ -55,8 +56,10 @@ export function groupSummary(connections: readonly RegistryConnection[], message
   return { state: "attention", why: `${connections[broken]!.label}: ${parts[broken]!.why}`, ...(parts[broken]!.fix === undefined ? {} : { fix: parts[broken]!.fix }) };
 }
 
-export function slackSummary(read: { status: "loading" } | { status: "unavailable" } | { status: "ok"; associations: number }): CardSummary {
+export function slackSummary(read: { status: "loading" } | { status: "unavailable" } | { status: "refused" } | { status: "ok"; associations: number }): CardSummary {
   if (read.status === "loading") return { state: "not_connected", why: "Checking what Rovara has stored about your Slack workspace." };
+  // A refusal (not signed in, not allowed, not set up on this install, or the service answering 503) is the same "not available here yet" the evidence panel says; it is not a connection that needs attention.
+  if (read.status === "refused") return { state: "unavailable", why: "Slack workspace details aren't available here yet." };
   if (read.status === "unavailable") return { state: "attention", why: "Rovara couldn't read your Slack workspace details just now.", fix: "Reload this page to try again." };
   return read.associations > 0
     ? { state: "connected", why: "Your Slack workspace is connected to this company. Channels are linked project by project." }
@@ -70,14 +73,15 @@ export function causeText(message: string | undefined): string {
 }
 
 /** Who connected it and when, for the card: a name when the members list has one, otherwise the plain fact. */
-export function whoWhen(by: string | undefined, at: string | undefined, names: ReadonlyMap<string, string>): string {
+/** `names` is undefined while the members list has not been read (or could not be): then who it was is not shown, rather than guessed at. */
+export function whoWhen(by: string | undefined, at: string | undefined, names: ReadonlyMap<string, string> | undefined): string {
   const when = at === undefined ? undefined : new Date(at);
   const day = when !== undefined && Number.isFinite(when.getTime()) ? ` on ${when.toLocaleDateString("en-US", { year: "numeric", month: "short", day: "numeric", timeZone: "UTC" })}` : "";
-  if (by === undefined) return day === "" ? "Not recorded" : `Date recorded${day}`;
+  if (by === undefined || names === undefined) return by === undefined && day !== "" ? `Date recorded${day}` : "Not recorded";
   const name = names.get(by);
   return `${name ?? "A former member or an admin"}${day}`;
 }
-export function connectedByWords(by: string | undefined, at: string | undefined, names: ReadonlyMap<string, string>): string {
+export function connectedByWords(by: string | undefined, at: string | undefined, names: ReadonlyMap<string, string> | undefined): string {
   const text = whoWhen(by, at, names);
   return text === "Not recorded" ? "Who connected it was not recorded" : by === undefined ? `Connected${text.replace(/^Date recorded/, "")}` : `Connected by ${text}`;
 }

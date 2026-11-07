@@ -24,7 +24,7 @@ export async function runCheck(host: ReturnType<typeof useAppHost>, connectionId
   } catch (failure) { return { state: "failed", message: failure instanceof ApiError ? causeText(failure.message) : "the check didn't finish. Try again" }; }
 }
 export function RegistryItems({ connections, names, canChange, checks, onCheck, onChanged }: {
-  connections: readonly RegistryConnection[]; names: ReadonlyMap<string, string>; canChange: boolean; checks: Readonly<Record<string, CheckResult>>; onCheck: (connectionId: string) => void; onChanged: () => void;
+  connections: readonly RegistryConnection[]; names: ReadonlyMap<string, string> | undefined; canChange: boolean; checks: Readonly<Record<string, CheckResult>>; onCheck: (connectionId: string) => void; onChanged: () => void;
 }) {
   const host = useAppHost();
   const [removing, setRemoving] = useState<RegistryConnection>(), [busy, setBusy] = useState(false), [error, setError] = useState<string>();

@@ -155,3 +155,32 @@ it("says a Slack workspace is not connected, and who connects it, when none is s
   expect(within(card("slack")).getByText("Not connected")).toBeTruthy();
  } finally { f.close(); }
 });
+
+it("UX3 review: Connect GitHub says it was started from Connections, and the card opens on a GitHub link result", async () => {
+ const f = mount({ path: "/app/admin/connections?github_link=taken", respond: async r => r.method === "POST" && r.path === "/v1/app/github/connect" ? { status: 200, body: { installUrl: "https://github.com/apps/rovara-cloud/installations/new?state=" + "s".repeat(43), expiresAt: "2026-11-07T00:00:00Z" } } : undefined });
+ try {
+  const connect = await screen.findByRole("button", { name: "Connect GitHub" });
+  expect(screen.getByText(/already belongs to another Rovara account/)).toBeTruthy();
+  fireEvent.click(connect);
+  await waitFor(() => expect(f.request.mock.calls.some(([r]) => r.method === "POST" && r.path === "/v1/app/github/connect")).toBe(true));
+  expect(f.request.mock.calls.map(([r]) => r).find(r => r.method === "POST" && r.path === "/v1/app/github/connect")!.body).toEqual({ returnTo: "/app/admin/connections" });
+ } finally { f.close(); }
+});
+it("UX3 review: Slack that cannot be read says it is not available here, not that it needs attention; and nobody is named before the members list is read", async () => {
+ for (const status of [401, 403, 404, 503]) {
+  const f = mount({ respond: async r => r.path === "/v1/app/org/slack-workspace-evidence" || r.path === "/v1/app/org/members" ? { status, body: { error: { code: "NOT_FOUND", message: "x" } } } : undefined });
+  try {
+   await waitFor(() => expect(within(card("slack")).getByText("Not available here")).toBeTruthy());
+   expect(within(card("slack")).queryByText("Needs attention")).toBeNull();
+  } finally { f.close(); }
+ }
+ const names = mount({ respond: async r => r.path === "/v1/app/org/members" ? { status: 403, body: { error: { code: "FORBIDDEN", message: "x" } } } : undefined });
+ try {
+  await waitFor(() => expect(within(card("github")).getByText("Connected by")).toBeTruthy());
+  expect(card("github").textContent).not.toContain("former member");
+  expect(card("github").textContent).toContain("Not recorded");
+ } finally { names.close(); }
+ expect(slackSummary({ status: "refused" }).state).toBe("unavailable");
+ expect(slackSummary({ status: "unavailable" }).state).toBe("attention");
+ expect(whoWhen(MAYA, "2026-10-01T00:00:00Z", undefined)).toBe("Not recorded");
+});

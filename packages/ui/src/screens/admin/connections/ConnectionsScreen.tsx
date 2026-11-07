@@ -5,8 +5,9 @@
 import { z } from "zod";
 import { useMemo, useState } from "react";
 import { Link, useSearchParams } from "react-router";
-import { AppProjectsResponseSchema } from "@agentx/contracts/web";
+import { AppProjectsResponseSchema, GithubInstallationsResponseReaderSchema } from "@agentx/contracts/web";
 import { useAppHost } from "../../../host.js";
+import { ApiError } from "../../../api/errors.js";
 import { Button } from "../../../design/Button.js";
 import { PageHeader } from "../../../design/PageHeader.js";
 import { VisibleText } from "../../../design/VisibleText.js";
@@ -23,8 +24,8 @@ import { JiraOrgAdminKey } from "./JiraOrgAdminKey.js";
 import { ConnectionCard } from "./ConnectionCard.js";
 import { AddTracker, RegistryItems, runCheck, type CheckResult } from "./RegistryItems.js";
 import { githubSummary, groupSummary, providerSummary, slackSummary, type CardSummary, type GithubInstall, type RegistryConnection, whoWhen } from "./connection-state.js";
-const connectionsSchema = z.object({ connections: z.array(z.object({ connectionId: z.string().max(100), type: z.string().max(64), label: z.string().max(200), hasCredential: z.boolean(), access: z.string().max(20).optional(), identity: z.enum(["service", "personal"]).optional(), createdBy: z.string().max(100).optional(), createdAt: z.string().max(40).optional(), updatedAt: z.string().max(40), lastCheck: z.object({ ok: z.boolean(), at: z.string().max(40) }).optional(), ticketUpdates: z.string().max(40).optional() })).max(1000) });
-const githubSchema = z.object({ installations: z.array(z.object({ installationId: z.number().int().positive(), accountLogin: z.string().max(100), status: z.enum(["active", "suspended", "removed"]), connectedBy: z.string().max(100).optional(), connectedAt: z.string().max(40).optional() })).max(1000) });
+const connectionsSchema = z.object({ connections: z.array(z.object({ connectionId: z.string().max(100), type: z.string().max(64), label: z.string().max(200), hasCredential: z.boolean(), access: z.string().max(20).optional(), identity: z.enum(["service", "personal"]).optional(), createdBy: z.string().max(100).optional(), createdAt: z.string().max(40).optional(), updatedAt: z.string().max(40), lastCheck: z.object({ ok: z.boolean(), at: z.string().max(40) }).optional() })).max(1000) });
+const githubSchema = { parse(value: unknown) { return { installations: GithubInstallationsResponseReaderSchema.parse(value).installations.map(i => ({ installationId: i.installationId, accountLogin: i.accountLogin, status: i.status, connectedBy: i.connectedBy, connectedAt: i.connectedAt })) }; } };
 const requestsSchema = z.object({ requests: z.array(z.object({ accountLogin: z.string().max(100).optional(), status: z.string().max(64), requestedAt: z.string().max(40) })).max(1000) });
 const membersSchema = { parse(value: unknown) { const data = z.object({ members: z.array(z.object({ developerId: z.string().max(100), name: z.string().max(200) })).max(10000) }).parse(value);return { members: data.members.map(member => ({ developerId: member.developerId, name: member.name })) }; } };
 const projectsSchema = { parse(value: unknown) { return { projects: AppProjectsResponseSchema.parse(value).projects.filter(p => p.status !== "archived").map(p => ({ name: p.name, repositories: p.repositories.map(r => r.fullName) })) }; } };
@@ -39,14 +40,15 @@ export function ConnectionsScreen() {
 }
 function ConnectionsView({ canEdit }: { canEdit: boolean }) {
   const host = useAppHost(), context = useAdminContext();
-  const [params, setParams] = useSearchParams(), asked = params.get("open"), initial = CARDS.find(card => card === asked);
+  const [params, setParams] = useSearchParams(), asked = params.get("open"), initial = CARDS.find(card => card === asked) ?? (params.has("github_link") ? "github" : undefined);
   const [open, setOpen] = useState<CardId | undefined>(initial), [checks, setChecks] = useState<Record<string, CheckResult>>({});
   const requests = useAdminRead("github-requests", "/v1/app/github/requests", requestsSchema);
   const registry = useAdminRead("connections", "/v1/app/connections", connectionsSchema), github = useAdminRead("github", "/v1/app/github/installations", githubSchema);
   const sources = useAdminRead("sources", "/v1/app/org/model-sources", modelSourcesSnapshot.extend({ orgId: z.literal(context.orgId).optional(), developerId: z.literal(context.developerId).optional(), revision: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER).optional(), available: z.array(z.enum(["anthropic", "openai", "openrouter", "bedrock", "endpoint"])).max(5).optional() }));
   const members = useAdminRead("member-names", "/v1/app/org/members", membersSchema), projects = useAdminRead("connection-projects", "/v1/app/projects", projectsSchema);
   const slack = useSlackEvidence();
-  const names = useMemo(() => new Map((members.data?.members ?? []).map(member => [member.developerId, member.name] as const)), [members.data]);
+  // Names only once the members list has been read: before that (or if it can't be read) who connected a thing is not shown, never guessed.
+  const names = useMemo(() => members.isSuccess ? new Map(members.data.members.map(member => [member.developerId, member.name] as const)) : undefined, [members.isSuccess, members.data]);
   const projectList = projects.data?.projects ?? [];
   const toggle = (card: CardId) => { setOpen(current => current === card ? undefined : card);if (asked !== null) setParams({}, { replace: true }); };
   const connections: RegistryConnection[] = registry.data?.connections ?? [];
@@ -62,7 +64,8 @@ function ConnectionsView({ canEdit }: { canEdit: boolean }) {
   const ofType = (...types: string[]) => connections.filter(connection => types.includes(connection.type));
   const installs: GithubInstall[] = github.data?.installations ?? [];
   const githubCard = githubSummary(installs, requests.data?.requests ?? []);
-  const slackRead = slack.isPending ? { status: "loading" as const } : slack.data === undefined || slack.isError ? { status: "unavailable" as const } : { status: "ok" as const, associations: slack.data.associationCount };
+  const slackRefused = slack.error instanceof ApiError && ([401, 403, 404, 503].includes(slack.error.status) || slack.error.code === "INVALID_RESPONSE");
+  const slackRead = slack.isPending ? { status: "loading" as const } : slackRefused ? { status: "refused" as const } : slack.data === undefined || slack.isError ? { status: "unavailable" as const } : { status: "ok" as const, associations: slack.data.associationCount };
   const failedSources = new Set(Object.entries(checks).filter(([, result]) => result.state === "failed").map(([id]) => id));
   const providerCard = providerSummary(sources.data?.sources ?? [], sources.data?.available, failedSources);
   const linearCard = groupSummary(ofType("linear"), messages, "Linear"), jiraCard = groupSummary(ofType("jira"), messages, "Jira");
