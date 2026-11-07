@@ -1,13 +1,7 @@
 {
   "extends": "./base-referenced.json",
   "include": [
-    "../tests/contract/t*.ts",
-    "../tests/contract/u*.ts",
-    "../tests/contract/v*.ts",
-    "../tests/contract/w*.ts",
-    "../tests/contract/x*.ts",
-    "../tests/contract/y*.ts",
-    "../tests/contract/z*.ts"
+    "../tests/contract/t*.ts"
   ],
   "references": [
     {
