@@ -6,6 +6,7 @@
 // Nothing here is a secret, a host the project named, a command's text or an error message. Browser-safe: nothing here imports a Node module.
 import { z } from "zod";
 import { TestEnvDependencyIdSchema } from "./test-env-dependency.js";
+import { RelativeWorkspacePathSchema } from "./project.js";
 import { TestServiceHostSchema, looksLikeSecretValue } from "./test-services-shared.js";
 
 export const TEST_SERVICES_USAGE_SCHEMA_VERSION = 1;
@@ -124,6 +125,8 @@ export const TestServicesUsageRecordSchema = z
     aws: TestServicesAwsUsageSchema.optional(),
     /** Slice 3: one row for every fake server the run started, from its ledger. Absent when no fake ran, so a record without one is the earlier slices' record byte for byte. */
     fakes: z.array(TestServicesFakeUsageSchema).max(TEST_SERVICES_USAGE_LIMITS.dependencies).optional(),
+    /** Review I3: the seed files the run loaded, with the sha256 of the bytes it loaded (what an approval of a candidate check binds). Absent when none was loaded. */
+    seedFiles: z.array(z.object({ id: TestEnvDependencyIdSchema, path: RelativeWorkspacePathSchema, sha256: z.string().regex(/^[a-f0-9]{64}$/u) }).strict()).max(16).optional(),
   })
   .strict()
   .superRefine((record, context) => {

@@ -59,8 +59,8 @@ import {
 import { EmulatorControlError, type EmulatorControlTarget } from "./emulator-control.js";
 import { emulatorLedgerPort, type EmulatorLedgerPort } from "./emulator-ledger.js";
 import { EmulatorSeedError, SEEDED_AWS_SERVICES, readAwsResourcesFromIac, seedEmulator } from "./service-seed-aws.js";
-import { createResetHooks, resetForNextCheck, seedRun, type ResetDependency, type SeedPorts } from "./service-reset.js";
-import { SeedFileError, loadSeedFile, readSeedFile } from "./service-seed-file.js";
+import { SeedError, createResetHooks, resetForNextCheck, seedRun, type ResetDependency, type SeedPorts } from "./service-reset.js";
+import { SeedFileError, loadSeedFile, readSeedFile, seedFileDigest } from "./service-seed-file.js";
 import { createFixtureDelivery, type FixtureDelivery, type FixtureSetCallback } from "./fixture-delivery.js";
 import { fakeUsagePort, type FakeUsagePort } from "./fake-usage.js";
 import {
@@ -94,7 +94,7 @@ const MODES_WITH_SERVICES: ReadonlySet<string | undefined> = new Set([undefined,
 // ---- errors
 
 export type TestServicesFailureReason =
-  | "not_configured" | "unsupported" | "nightly" | "init_file" | "catalog" | "mismatch" | "sealed_unavailable" | "pull_failed" | "start_failed" | "not_healthy" | "seed_failed" | "setup_failed" | "fixtures";
+  | "not_configured" | "unsupported" | "nightly" | "init_file" | "catalog" | "mismatch" | "sealed_unavailable" | "pull_failed" | "start_failed" | "not_healthy" | "seed_failed" | "seed_changed" | "setup_failed" | "fixtures";
 
 /** The one sentence for an image the worker cannot use: it is not one of the digests pinned INSIDE this worker image, or it was not pre-pulled onto this worker at boot. The worker never pulls. */
 export const PULL_FAILED_SENTENCE = "Dependency image not available on this worker";
@@ -111,6 +111,7 @@ const SENTENCES: Record<TestServicesFailureReason, string> = {
   start_failed: "The test services could not be started",
   not_healthy: "A test service did not become healthy",
   seed_failed: "A test service's seeds did not complete",
+  seed_changed: "A test service's seed file changed since the test environment was approved; check it works and approve it again",
   setup_failed: "The sealed check round's name server could not be set up",
   fixtures: "The approved answers a test service needs could not be fetched",
 };
@@ -895,13 +896,13 @@ export async function startTestServicesRun(config: TestServicesConfig, input: St
       // The seeds, in the working sandbox (attached, with the run's variables), one dependency at a time so a failure names its dependency.
       const seedSignal = AbortSignal.any([AbortSignal.timeout(SEED_LIMIT_MS), ...(input.signal === undefined ? [] : [input.signal])]);
       const workingSeeds: SeedPorts = seedPorts((command, signal) => executionFor(SANDBOX_TARGET, { sandbox: input.sandbox }).runCommand(command, signal),
-        seedFileApplier({ docker, rootPath: root, repositoryPaths: input.repositoryPaths, items: working, helpers: workSession.helpers, log }));
+        seedFileApplier({ docker, rootPath: root, repositoryPaths: input.repositoryPaths, items: working, helpers: workSession.helpers, log, onLoaded: noteSeedFile }));
       for (const item of working) {
         try {
           await seedRun(countResets(workSession).session, [dependencyOf(item, workSession, files, runId)], workingSeeds, seedSignal);
-        } catch {
+        } catch (error) {
           for (const id of item.emulator?.ids ?? [item.plan.id]) failures.set(id, "seed_failed");
-          throw new TestServicesError("seed_failed", failures);
+          throw new TestServicesError(error instanceof SeedError && error.reason === "seed_changed" ? "seed_changed" : "seed_failed", failures);
         }
       }
     }
@@ -993,7 +994,7 @@ export async function startTestServicesRun(config: TestServicesConfig, input: St
       const roundLedger = emulatorItem === undefined ? undefined : emulatorLedgerPort(controlTargetOf(emulatorItem, session, roundFiles, roundRunId));
       const countedRound = countResets(session);
       const roundFakes = resolved.flatMap((item) => (item.fake === undefined ? [] : [{ id: item.plan.id, digest: item.fake.digest }]));
-      const applyFixture = seedFileApplier({ docker, rootPath: root, repositoryPaths: input.repositoryPaths, items: resolved, helpers: session.helpers, log });
+      const applyFixture = seedFileApplier({ docker, rootPath: root, repositoryPaths: input.repositoryPaths, items: resolved, helpers: session.helpers, log, onLoaded: noteSeedFile });
       const state: RoundState = {
         applyFixture, number, session, counted: countedRound.session, resets: countedRound.resets, plan, files: roundFiles, redactor: roundRedactor, startMs, dnsStarted, runners, sealedClose: closeSealed,
         resetDeps: roundDeps, ledger: roundLedger, fakes: roundFakes.length === 0 ? undefined : fakeUsagePort(docker, session, roundFakes),
@@ -1006,15 +1007,15 @@ export async function startTestServicesRun(config: TestServicesConfig, input: St
       for (const item of resolved) {
         try {
           await seedRun(state.counted, state.resetDeps.filter((dependency) => dependency.id === item.plan.id), roundSeeds, seedSignal);
-        } catch {
+        } catch (error) {
           for (const id of item.emulator?.ids ?? [item.plan.id]) failures.set(id, "seed_failed");
-          throw new TestServicesError("seed_failed", failures);
+          throw new TestServicesError(error instanceof SeedError && error.reason === "seed_changed" ? "seed_changed" : "seed_failed", failures);
         }
       }
       return state;
     } catch (error) {
       const failure = failureOf(error);
-      if (failure.reason !== "seed_failed") for (const id of ids) failures.set(id, failure.failures.get(id) ?? (failure.reason === "not_healthy" ? "not_healthy" : "start_failed"));
+      if (failure.reason !== "seed_failed" && failure.reason !== "seed_changed") for (const id of ids) failures.set(id, failure.failures.get(id) ?? (failure.reason === "not_healthy" ? "not_healthy" : "start_failed"));
       if (round === undefined || round.session !== session) {
         // Not yet recorded as the open round: this attempt's own parts are removed here.
         await step("sealed-round", async () => { await closeSealed?.(); });
@@ -1034,7 +1035,18 @@ export async function startTestServicesRun(config: TestServicesConfig, input: St
     return runners;
   };
 
+  /** Review I3: the seed files this run loaded, with the sha256 of what it loaded (the approval of a candidate check binds them). */
+  const loadedSeedFiles: Array<{ id: string; path: string; sha256: string }> = [];
+  function noteSeedFile(entry: { id: string; path: string; sha256: string }): void {
+    if (loadedSeedFiles.length < 16 && !loadedSeedFiles.some((seen) => seen.id === entry.id && seen.path === entry.path && seen.sha256 === entry.sha256)) loadedSeedFiles.push(entry);
+  }
   const usageRecord = async (): Promise<TestServicesUsageRecord | undefined> => {
+    const record = await baseUsageRecord();
+    if (record === undefined || loadedSeedFiles.length === 0) return record;
+    const parsed = TestServicesUsageRecordSchema.safeParse({ ...record, seedFiles: [...loadedSeedFiles] });
+    return parsed.success ? parsed.data : record;
+  };
+  const baseUsageRecord = async (): Promise<TestServicesUsageRecord | undefined> => {
     if (!active) return undefined;
     if (round !== undefined) {
       if (recordLost) return cumulative;
@@ -1116,14 +1128,24 @@ function seedPorts(runCommand: (command: Parameters<SeedPorts["runCommand"]>[0],
  * containment and size rule of `readSeedFile`, and loaded by the database's own client inside its container (`loadSeedFile`). A dependency this phase does not have, or one with no started helper, is refused.
  * A refusal is logged as its fixed reason only (never a path or a name); the run sees the seeds' fixed sentence.
  */
-export function seedFileApplier(input: { docker: Pick<DockerCli, "execBytes">; rootPath: string; repositoryPaths: readonly string[]; items: ReadonlyArray<Pick<Resolved, "plan" | "request">>; helpers: ReadonlyArray<{ id: string; container: string }>; log?: (entry: { event: string; reason: string }) => void }): SeedPorts["applyFixture"] {
-  return async (dependencyId, path, signal) => {
+export function seedFileApplier(input: {
+  docker: Pick<DockerCli, "execBytes" | "run">; rootPath: string; repositoryPaths: readonly string[]; items: ReadonlyArray<Pick<Resolved, "plan" | "request">>; helpers: ReadonlyArray<{ id: string; container: string }>;
+  log?: (entry: { event: string; reason: string }) => void;
+  /** Review I3: told the sha256 of each file loaded (the usage record carries it, so an approval can bind it). */
+  onLoaded?: (entry: { id: string; path: string; sha256: string }) => void;
+  fdPath?: (fd: number) => Promise<string | undefined>;
+}): SeedPorts["applyFixture"] {
+  return async (dependencyId, seed, signal) => {
     try {
       const item = input.items.find((candidate) => candidate.plan.id === dependencyId);
       const helper = input.helpers.find((candidate) => candidate.id === dependencyId);
       if (item === undefined || helper === undefined) throw new SeedFileError("unsupported");
-      const bytes = await readSeedFile({ rootPath: input.rootPath, repositoryPaths: input.repositoryPaths, hiddenPaths: await hiddenWorkspaceDirectories(input.rootPath), fixturePath: path, family: item.plan.family });
+      const bytes = await readSeedFile({ rootPath: input.rootPath, repositoryPaths: input.repositoryPaths, hiddenPaths: await hiddenWorkspaceDirectories(input.rootPath), fixturePath: seed.fixturePath, family: item.plan.family, ...(input.fdPath === undefined ? {} : { fdPath: input.fdPath }) });
+      // Review I3 (SEED-FILE-LOCK): a plan of an approved environment names the content its approval bound; a file that differs (in the checkout or the candidate tree) is not loaded, and the run asks for a new approval.
+      const sha256 = seedFileDigest(bytes);
+      if (seed.sha256 !== undefined && seed.sha256 !== sha256) throw new SeedFileError("changed");
       await loadSeedFile(input.docker, { container: helper.container, family: item.plan.family, user: item.request.credentials?.user, database: item.request.credentials?.database }, bytes, signal);
+      input.onLoaded?.({ id: dependencyId, path: seed.fixturePath, sha256 });
     } catch (error) {
       input.log?.({ event: "test-services.seed-file.refused", reason: error instanceof SeedFileError ? error.reason : "load_failed" });
       throw error;

@@ -34,7 +34,7 @@ function seedPorts(options: { fail?: string; timeout?: string; throwFixture?: bo
   const events: string[] = [];
   const ports: SeedPorts = {
     runCommand: (c) => { events.push(`cmd:${c.executable}`); return Promise.resolve({ exitCode: options.fail === c.executable ? 1 : 0, timedOut: options.timeout === c.executable }); },
-    applyFixture: (id, path) => { events.push(`fixture:${id}:${path}`); return options.throwFixture === true ? Promise.reject(new Error(`secret ${PASSWORD} in ${path}`)) : Promise.resolve(); },
+    applyFixture: (id, seed) => { events.push(`fixture:${id}:${seed.fixturePath}`); return options.throwFixture === true ? Promise.reject(new Error(`secret ${PASSWORD} in ${seed.fixturePath}`)) : Promise.resolve(); },
   };
   return { ports, events };
 }
