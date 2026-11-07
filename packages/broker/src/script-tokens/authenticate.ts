@@ -5,19 +5,19 @@
 // the method turned off (or off and on again), the method unlinked from the account, a SAML cut-off, the edition's session cap. A token refused for a change in its creator's place
 // is revoked at once (review M3), so it never comes back.
 import { GetCommand } from "@aws-sdk/lib-dynamodb";
-import { SCRIPT_TOKEN_NOT_ALLOWED_MESSAGE, agentXError, singleOrgIdForEnv } from "@agentx/contracts";
+import { SCRIPT_TOKEN_CLIENT_NAME, SCRIPT_TOKEN_NOT_ALLOWED_MESSAGE, agentXError, singleOrgIdForEnv } from "@agentx/contracts";
 import { methodAllowedByEdition, sessionWithinEditionCap } from "../developer/edition-methods.js";
 import { readChosenName } from "../developer/chosen-name.js";
 import { safeDisplayName } from "../developer/person-name.js";
 import { endedByAdmin, endedByUnlink, samlSessionEnded, startedBeforeMethodOn, type DeveloperMarks, type DeveloperRecord } from "../developer/store.js";
-import { taskKey } from "../developer/task-records.js";
+import { startIdempotencyKey, taskKey } from "../developer/task-records.js";
 import { takeRateAt } from "../developer/page-comments.js";
 import type { AdaptedHttpRequest } from "../aws/lambda.js";
 import { getSignIn } from "../aws/developer-routes/authentication.js";
 import type { DeveloperCaller, DeveloperRouteDependencies } from "../aws/developer-routes/types.js";
 import { scriptTokensEnabled } from "./switch.js";
 import { auditScriptTokenStart, noteScriptTokenUse, readScriptToken, revokeForAccessChange, scriptTokenStatus, type ScriptTokenDependencies, type ScriptTokenRecord } from "./store.js";
-import { parseScriptTokenHeader, scriptTokenClientName, scriptTokenMatches } from "./token-format.js";
+import { parseScriptTokenHeader, scriptTokenMatches } from "./token-format.js";
 
 /** Requests one token may make a minute, and task starts an hour. */
 export const SCRIPT_TOKEN_REQUESTS_PER_MINUTE = 60;
@@ -55,6 +55,22 @@ function bodyProject(request: AdaptedHttpRequest): string | undefined {
   try {
     const value = JSON.parse(request.body) as unknown;
     return typeof value === "object" && value !== null && typeof (value as { project?: unknown }).project === "string" ? (value as { project: string }).project : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/** Whether this person's start with this request id was already made: its idempotency item is there (the same check `startTask` makes). */
+async function startAlreadyMade(deps: Pick<DeveloperRouteDependencies, "documentClient" | "tableName">, developerId: string, requestId: string): Promise<boolean> {
+  const response = await deps.documentClient.send(new GetCommand({ TableName: deps.tableName, Key: startIdempotencyKey(developerId, requestId), ConsistentRead: true })) as { Item?: unknown };
+  return response.Item !== undefined;
+}
+
+/** The start's request id, when the body has a well-formed one (the start route checks it fully). */
+function bodyRequestId(request: AdaptedHttpRequest): string | undefined {
+  try {
+    const value = JSON.parse(request.body ?? "") as { requestId?: unknown };
+    return typeof value.requestId === "string" && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/iu.test(value.requestId) ? value.requestId : undefined;
   } catch {
     return undefined;
   }
@@ -107,12 +123,12 @@ async function withinRate(deps: DeveloperRouteDependencies, name: string, sk: st
 }
 
 /**
- * Review I3: a token's start always names the token as its client, whatever the body says: the body is rewritten with the token's own client field before the start reads it
+ * Review I3/N1: a token's start always has the fixed client "Script token", whatever the body says: the body is rewritten with the token's own client field before the start reads it
  * (and with the one `project` the scope check read, so a body with two `project` keys starts where it was checked).
  */
 function bodyAsToken(request: AdaptedHttpRequest, record: ScriptTokenRecord, project: string): void {
   const value = JSON.parse(request.body!) as Record<string, unknown>;
-  request.body = JSON.stringify({ ...value, project, client: scriptTokenClientName(record.name) });
+  request.body = JSON.stringify({ ...value, project, client: SCRIPT_TOKEN_CLIENT_NAME });
 }
 
 /**
@@ -149,8 +165,12 @@ export async function authenticateScriptToken(deps: DeveloperRouteDependencies, 
     if (scope === undefined || scope.orgId !== record.orgId || !record.projects.includes(scope.project)) throw agentXError("NOT_FOUND", "task not found");
   }
   if (route.permission === "start") {
-    await withinRate(deps, "SCRIPT_TOKEN_START_RATE", record.tokenId, SCRIPT_TOKEN_STARTS_PER_HOUR, 3_600_000, "This script token started too many tasks in the last hour. Try again later.", record.orgId);
-    await withinRate(deps, "SCRIPT_TOKEN_CREATOR_START_RATE", record.developerId, SCRIPT_TOKEN_CREATOR_STARTS_PER_HOUR, 3_600_000, "Your script tokens started too many tasks in the last hour. Try again later.", record.orgId);
+    // Review N2: a retry of a start already made (same request id, after a 503) starts nothing new, so it is not charged to the start limits again.
+    const requestId = bodyRequestId(request);
+    if (requestId === undefined || !await startAlreadyMade(deps, record.developerId, requestId)) {
+      await withinRate(deps, "SCRIPT_TOKEN_START_RATE", record.tokenId, SCRIPT_TOKEN_STARTS_PER_HOUR, 3_600_000, "This script token started too many tasks in the last hour. Try again later.", record.orgId);
+      await withinRate(deps, "SCRIPT_TOKEN_CREATOR_START_RATE", record.developerId, SCRIPT_TOKEN_CREATOR_STARTS_PER_HOUR, 3_600_000, "Your script tokens started too many tasks in the last hour. Try again later.", record.orgId);
+    }
     bodyAsToken(request, record, project!);
   }
   await noteScriptTokenUse(storeOf(deps), record, route.permission);

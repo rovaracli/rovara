@@ -834,8 +834,8 @@ export function taskOwnerLabel(name: string): string {
 }
 
 /**
- * FR-023. The client is one of the fixed names cleanClientName gives, or "Slack" for a task the Slack workflow
- * started, so it needs no escaping. A task stored before Slack was kept as a client is told by its Slack-ID name.
+ * FR-023. The client is one of the fixed names cleanClientName gives, "Slack" for a task the Slack workflow
+ * started, or "Script token" for a script token's task (never the token's name), so it needs no escaping. A task stored before Slack was kept as a client is told by its Slack-ID name.
  */
 export function developerFooter(name: string, client: string, product: "AgentX" | "Rovara" = "AgentX", githubLogin?: string): string {
   // C55: text on GitHub never carries an email address, which is what a provider that has no name for a person uses as the display name: the name without it, else the GitHub login, else "the task owner".

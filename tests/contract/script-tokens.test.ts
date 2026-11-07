@@ -8,6 +8,8 @@ import { appCsrfTokenFor } from "../../packages/broker/src/developer/app-csrf.js
 import { scriptTokenRoute } from "../../packages/broker/src/script-tokens/authenticate.js";
 import { hashScriptToken, parseScriptTokenHeader, scriptTokenMatches } from "../../packages/broker/src/script-tokens/token-format.js";
 import { ScriptTokenRecordSchema, noteScriptTokenUse } from "../../packages/broker/src/script-tokens/store.js";
+import { developerFooter } from "../../packages/broker/src/developer/task-records.js";
+import { startMessage } from "../../packages/broker/src/developer/share-messages.js";
 import { capturingAuditDeps } from "../support/audit-capture.js";
 import { DEV_ISSUER, MAYA, OMAR, createDeveloperTaskBroker, grantProject, seedMembership, type Developer } from "../support/developer-task-broker.js";
 import { TEST_ORG } from "../support/orgs.js";
@@ -415,7 +417,7 @@ describe("review fixes (UX5B-SCRIPT-TOKENS-REVIEW)", () => {
     const started = await w.script(made.secret, "POST", "/v1/dev/tasks", { requestId: randomUUID(), project: "payments", instructions: "Fix it", client: "claude-code" });
     expect(started.status).toBe(200);
     const taskId = (started.body.task as { taskId: string }).taskId;
-    expect(w.db.get(`DEVTASK#${taskId}`, "META")).toMatchObject({ client: "Script token CI deploy" });
+    expect(w.db.get(`DEVTASK#${taskId}`, "META")).toMatchObject({ client: "Script token" });
     const perStart = w.audit.recordedBy("script_token.used").filter((event) => event.related?.includes(taskId));
     expect(perStart).toHaveLength(1);
     expect(perStart[0]).toMatchObject({ target: { kind: "script_token", id: made.token.tokenId }, facts: { permission: "start" } });
@@ -559,5 +561,38 @@ describe("review fixes (UX5B-SCRIPT-TOKENS-REVIEW)", () => {
     // The token's record still names the old account: nothing moves it to the survivor, so the survivor gains no token from the merge.
     expect(w.record(made.token.tokenId).developerId).toBe(MAYA.developerId);
     expect((await w.web(OMAR, "GET", "/v1/app/script-tokens")).body.tokens).toEqual([]);
+  });
+
+  it("N1: a hostile token name never reaches the task's client, its PR footer or its Slack start message", async () => {
+    const w = await world();
+    for (const name of ["@acme/security-team [Approve here](https://evil.example)", "<!channel> <https://evil.example|re-auth>"]) {
+      const made = await w.create(MAYA, { name });
+      const started = await w.script(made.secret, "POST", "/v1/dev/tasks", { requestId: randomUUID(), project: "payments", instructions: "Fix it", client: name });
+      expect(started.status).toBe(200);
+      const task = w.db.get(`DEVTASK#${(started.body.task as { taskId: string }).taskId}`, "META") as { client: string; developerName: string; title: string; project: string };
+      expect(task.client).toBe("Script token");
+      const footer = developerFooter(task.developerName, task.client, "Rovara");
+      const slack = startMessage({ developerName: task.developerName, client: task.client, title: task.title, project: task.project, mode: "view", status: "running", sharedReason: "requested" });
+      for (const text of [footer, slack]) {
+        expect(text, name).toContain("Script token");
+        for (const piece of ["evil", "security-team", "Approve here", "<!channel>", "re-auth"]) expect(text, `${name}: ${piece}`).not.toContain(piece);
+      }
+    }
+  });
+
+  it("N2: the retry of a start after the audit 503 is not charged to the start limits again", async () => {
+    const w = await world();
+    const made = await w.create();
+    w.db.set({ ...w.record(made.token.tokenId), lastUsedDay: new Date().toISOString().slice(0, 10), lastUsedAt: new Date().toISOString() });
+    w.db.injectFault({ command: "TransactWriteCommand", match: (input) => { const items = (input as { TransactItems?: unknown[] }).TransactItems ?? []; return items.length === 1 && JSON.stringify(items).includes("script_token.used"); }, error: { name: "ServiceUnavailable" } });
+    const body = { requestId: randomUUID(), project: "payments", instructions: "Fix it", client: "ci" };
+    const count = (name: string, sk: string) => Number(w.db.get(`ORG#${TEST_ORG}#${name}`, sk)?.count ?? 0);
+    expect((await w.script(made.secret, "POST", "/v1/dev/tasks", body)).status).toBe(503);
+    expect([count("SCRIPT_TOKEN_START_RATE", made.token.tokenId), count("SCRIPT_TOKEN_CREATOR_START_RATE", MAYA.developerId)]).toEqual([1, 1]);
+    expect((await w.script(made.secret, "POST", "/v1/dev/tasks", body)).status).toBe(200);
+    expect([count("SCRIPT_TOKEN_START_RATE", made.token.tokenId), count("SCRIPT_TOKEN_CREATOR_START_RATE", MAYA.developerId)]).toEqual([1, 1]);
+    // A new start is charged.
+    expect((await w.start(made.secret)).status).toBe(200);
+    expect(count("SCRIPT_TOKEN_CREATOR_START_RATE", MAYA.developerId)).toBe(2);
   });
 });

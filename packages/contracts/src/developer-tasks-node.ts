@@ -27,6 +27,8 @@ export const DEVELOPER_TASK_LIST_DEFAULT = 20;
 export const DEVELOPER_WAIT_MAX_SECONDS = 600;
 
 export const UNKNOWN_CLIENT_NAME = "an AI tool";
+/** UX5b: the client of every task a script token starts. Fixed text: the token's own name never reaches a PR footer, a Slack message or a turn record (the audit names the token). */
+export const SCRIPT_TOKEN_CLIENT_NAME = "Script token";
 
 /** Spec 025 phase 25c: sharing a task to its Slack channel (FR-031 to FR-035, FR-054). */
 export const DEVELOPER_SHARE_SUMMARY_MAX = 1_500;
@@ -327,8 +329,8 @@ const KNOWN_CLIENTS: ReadonlyArray<readonly [RegExp, string]> = [
 
 /**
  * FR-033: the MCP client's clientInfo.name, cleaned like a Slack display name, then mapped to
- * "Claude Code", "Codex" or "Cursor", and otherwise "an AI tool". Only these four strings ever
- * reach a PR footer or a turn record, so a client cannot choose that text (R25).
+ * "Claude Code", "Codex" or "Cursor", and otherwise "an AI tool". Only these four strings, "Slack" for the Slack workflow
+ * and "Script token" for a script token (`SCRIPT_TOKEN_CLIENT_NAME`) ever reach a PR footer or a turn record, so a client cannot choose that text (R25).
  */
 export function cleanClientName(value: string | undefined): string {
   const cleaned = value === undefined ? undefined : cleanDisplayName(value);

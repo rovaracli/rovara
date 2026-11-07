@@ -27,7 +27,7 @@ A token starts with `rvst_`. Keep it in your CI's secret store, never in code or
   anything that needs a person. Those need the app.
 - A token makes at most 60 requests a minute and starts at most 20 tasks an hour; all of your tokens together make
   at most 120 requests a minute and start at most 20 tasks an hour. You can have 10 live tokens.
-- A task a token starts shows "Script token <its name>" as the tool that started it.
+- A task a token starts shows "Script token" as the tool that started it (the audit log names the token).
 - Rovara's audit log records when a token is made, its first use each day, every task it starts, and when it is
   revoked. If Rovara can't record a use, the request is refused with `503`; send it again.
 
