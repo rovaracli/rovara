@@ -141,6 +141,13 @@ describe("the project's Setup limits", () => {
   await waitFor(() => expect((screen.getByLabelText<HTMLInputElement>("Commands a run may run")).value).toBe("10"));
  });
 
+ it("where ticket intake isn't served (its routes answer 404), the Tickets section says so once and raises no alert", async () => {
+  mountProject({ view: projectView({ revision: 1 }) });
+  await limitsRegion();
+  expect(await screen.findByText("Tickets from outside tools aren't available here.")).toBeTruthy();
+  expect(screen.queryAllByRole("alert")).toHaveLength(0);
+ });
+
  it("shows a refusal through VisibleText: a hidden control character is shown, never obeyed", async () => {
   mountProject({ put: () => refuse(400, "CONFIG_INVALID", "commands: too‮many") });
   const section = await limitsRegion();
