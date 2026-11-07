@@ -122,7 +122,6 @@ const SECRET_SHARED = "source.keyRef: another source already uses this secret; e
 
 const RequestId = z.string().uuid();
 const WriteBodySchema = z.object({ requestId: RequestId, source: z.unknown(), apiKey: z.string().optional() }).strict();
-const RequestOnlySchema = z.object({ requestId: RequestId }).strict();
 /** UX1: a removal may name the record revision the person reviewed (the web app always does). */
 const RemoveBodySchema = z.object({ requestId: RequestId, expectedRevision: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER).optional() }).strict();
 const OrderBodySchema = z.object({ requestId: RequestId, order: z.array(ModelSourceIdSchema).max(20) }).strict();

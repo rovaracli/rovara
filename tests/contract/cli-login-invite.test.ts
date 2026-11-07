@@ -233,7 +233,8 @@ describe("agentx login --invite", () => {
 
   it("refuses a link that is not a Rovara invite before reaching anyone", async () => {
     const w = await world();
-    expect(await w.run(["login", "--invite", `https://evil.example/join#invite=${TOKEN}`])).not.toBe(0);
+    // UX1: another host's /join is now read as that cell (it is asked before any browser opens); a path that is no join page is refused outright.
+    expect(await w.run(["login", "--invite", `https://evil.example/other#invite=${TOKEN}`])).not.toBe(0);
     expect(w.err.join("")).toContain("[CONFIG_INVALID]: that is not a Rovara invite link");
     expect(w.requests).toEqual([]);
   });

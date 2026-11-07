@@ -80,7 +80,7 @@ it("adds an allowed provider with a write-only key, checks it at once, and shows
  expect(add?.body).toMatchObject({ source: { kind: "anthropic", label: "Acme Anthropic", models: [{ catalog: { provider: "anthropic", modelId: "sample-model" } }] }, apiKey: key });
  expect(changed).toHaveBeenCalled();
  // The key is cleared from the form and never shown back.
- await waitFor(() => expect((screen.getByLabelText("API key") as HTMLInputElement).value).toBe(""));expect(document.body.innerHTML).not.toContain(key);f.close();
+ await waitFor(() => expect(screen.getByLabelText<HTMLInputElement>("API key").value).toBe(""));expect(document.body.innerHTML).not.toContain(key);f.close();
 });
 
 it("Check it works shows exactly what failed, and Remove sends the reviewed revision", async () => {

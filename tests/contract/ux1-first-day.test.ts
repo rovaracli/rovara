@@ -149,7 +149,7 @@ describe("invites can be emailed through the existing notice sender only", () =>
 
   it("refuses a member, and an email to a different address than the invite's is impossible by construction", async () => {
     const f = fixture();
-    await expect(createReviewedOrganizationInvite(f.deps, { ...f.caller, developerId: "c".repeat(64) } as DeveloperCaller, { requestId: randomUUID(), role: "member", email: "bea@example.test", sendEmail: true })).rejects.toBeInstanceOf(AgentXError);
+    await expect(createReviewedOrganizationInvite(f.deps, { ...f.caller, developerId: "c".repeat(64) }, { requestId: randomUUID(), role: "member", email: "bea@example.test", sendEmail: true })).rejects.toBeInstanceOf(AgentXError);
     expect(f.send).not.toHaveBeenCalled();
     expect(inviteEmailText({ to: "x", orgName: "Acme\nBcc: evil", inviterName: "Maya\r\n", role: "admin", inviteUrl: "https://cell.example/join#invite=t", expiresAt: "2026-11-14T12:00:00Z" })).toMatch(/^Maya invited you to join Acme Bcc: evil on Rovara as an admin\./);
     expect(await sendInviteEmail(undefined, { to: "x@example.test", orgName: "A", inviterName: "B", role: "member", inviteUrl: "u", expiresAt: "2026-11-14T12:00:00Z" })).toBe("not_set_up");
@@ -319,8 +319,8 @@ describe("the broker side of linking from the web", () => {
     const startIdentityLink = vi.fn(async () => ({ ok: true as const, authorizeUrl: "https://cell.example/v1/auth/authorize?request=r&method=github" }));
     const deps = { developer: { startIdentityLink } } as unknown as DeveloperRouteDependencies;
     const caller = { developerId: "a".repeat(64), sessionId: "11111111-1111-4111-8111-111111111111" } as DeveloperCaller;
-    await startAppIdentityLink(deps, { ...caller, browserSession: true } as DeveloperCaller, "github", { returnTo: "/app/onboard" });
-    await startAppIdentityLink(deps, { ...caller, browserSession: true } as DeveloperCaller, "github", { returnTo: "https://evil.example" });
+    await startAppIdentityLink(deps, { ...caller, browserSession: true }, "github", { returnTo: "/app/onboard" });
+    await startAppIdentityLink(deps, { ...caller, browserSession: true }, "github", { returnTo: "https://evil.example" });
     await startAppIdentityLink(deps, caller, "github", { returnTo: "/app/onboard" });
     expect(startIdentityLink.mock.calls.map((call) => (call as unknown as [Record<string, unknown>])[0])).toEqual([
       expect.objectContaining({ provider: "github", browser: true, returnTo: "/app/onboard" }),
