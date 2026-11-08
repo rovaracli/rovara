@@ -160,10 +160,15 @@ function mergeInto(target: Lesson, draft: LessonDraft, version: number, now: num
   const checkedKeys = new Map((target.citationChecks ?? []).map((check) => [citationKey(target.citations[check.index]!), check] as const));
   const citationChecks = citations.flatMap((c, index) => { const found = checkedKeys.get(citationKey(c)); return found === undefined ? [] : [{ ...found, index }]; });
   const people = unionPeople(target, draft);
+  // The three trust flags are set apart from the spread below: a flag the draft does not have must not survive on the target's say alone (AND, not "the target's value").
+  const targetProvenance = { ...target.provenance };
+  delete targetProvenance.memberCorrection;
+  delete targetProvenance.claimsSupported;
+  delete targetProvenance.fromSharedTask;
   return {
     ...target, version, citations, ...(citationChecks.length === 0 ? {} : { citationChecks }), updatedAt: now,
     provenance: {
-      ...target.provenance,
+      ...targetProvenance,
       sourceEvents: union(target.provenance.sourceEvents, draft.provenance.sourceEvents, 50), sourceKinds: union(target.provenance.sourceKinds, draft.provenance.sourceKinds, 20),
       authors: distinctIds([...target.provenance.authors, ...draft.provenance.authors]), sources: union(target.provenance.sources, draft.provenance.sources, 20), inputSources: unionPinned(target.provenance.inputSources, draft.provenance.inputSources, 100, paused), measured: target.provenance.measured || draft.provenance.measured, supportTasks: union(target.provenance.supportTasks, draft.provenance.supportTasks, 50),
       ...(target.provenance.inheritedTasks === undefined && draft.provenance.inheritedTasks === undefined ? {} : { inheritedTasks: union(target.provenance.inheritedTasks ?? [], draft.provenance.inheritedTasks ?? [], 50) }),
@@ -207,6 +212,22 @@ const mergeAllowed = (target: Lesson, draft: LessonDraft): boolean =>
   mergeFits(target, draft) && (target.status !== "active" || ((target.trial === undefined || (draft.provenance.memberCorrection === true && draft.provenance.claimsSupported === true)) && trustAtLeast(draft.provenance.minTrust, target.provenance.minTrust)
     && JSON.stringify(narrowestAudience([target.provenance.audience, draft.provenance.audience])) === JSON.stringify(target.provenance.audience)));
 
+/** What the structural test is given when the shortlist did not rank a lesson (the test ignores it; equal words are as close as two texts get). */
+const NO_RANK = { bodyMutual: 0, sharedFile: false, bothUncited: false } as const;
+
+/**
+ * A PERSON merges a lesson kept apart as a possible duplicate into the lesson it may duplicate (the card's "Merge into the existing lesson"). It is the same fold a code or judge merge makes (`mergeInto`) under the same
+ * limits: the people and task lists must fit their caps (`mergeFits`, `peopleFit`), an active lesson's trust and audience may not be lowered, and the trust flags are AND-merged (a merged lesson stays a member correction,
+ * supported by claims, from a shared task only if both sides are). Returns the two writes (the target with the duplicate folded in, and the duplicate retired), or undefined when the pair may not merge.
+ */
+export async function foldDuplicate(deps: { store: LessonStore; now: () => number }, key: ScopeKey, target: Lesson, duplicate: Lesson): Promise<Lesson[] | undefined> {
+  if (target.id === duplicate.id || (target.status !== "candidate" && target.status !== "pending" && target.status !== "active") || !mergeAllowed(target, duplicate)) return undefined;
+  const paused = new Set(Object.keys((await deps.store.flags(key)).pausedSources ?? {}).map(normSource));
+  const now = deps.now();
+  const merged = mergeInto(target, duplicate, nextVersion(target, await deps.store.versions(key, target.id)), now, paused);
+  return [merged, { ...duplicate, version: nextVersion(duplicate, await deps.store.versions(key, duplicate.id)), status: "retired", updatedAt: now }];
+}
+
 export async function curateDraft(deps: CurateDeps, key: ScopeKey, draft: LessonDraft): Promise<CurateOutcome> {
   const drop = (reason: Extract<CurateOutcome, { outcome: "dropped" }>["reason"]): CurateOutcome => ({ outcome: "dropped", reason });
   if (draft.provenance.minTrust === "outsider") return drop("outsider");
@@ -246,6 +267,8 @@ export async function curateDraft(deps: CurateDeps, key: ScopeKey, draft: Lesson
   let judgeEscalate = false;
   const verbatim = live.find((c) => isVerbatim(c.ranked, body, c.lesson.body) && mergeAllowed(c.lesson, draft));
   let rejectedJudged = new Set<string>();
+  /** A rejected lesson the judge called "same" that is not the same advice by structure: the draft goes to a person, never dropped. */
+  let unconfirmedRejected: Lesson | undefined;
   if (verbatim !== undefined) verdicts.set(verbatim.lesson.id, "same");
   else {
     // The lexical matches first, then the best of the other gate-passing rejected lessons by fused rank: a reworded rejected lesson that the word test misses is still shown to the judge (round 2, N1).
@@ -257,8 +280,11 @@ export async function curateDraft(deps: CurateDeps, key: ScopeKey, draft: Lesson
       judgeEscalate = judged.escalate;
       top.forEach((lesson, i) => { verdicts.set(lesson.id, judged.verdicts[i]!); judgedBy.add(lesson.id); });
       rejectedJudged = new Set(reserved.map((l) => l.id));
-      // A person already turned this advice down.
-      if (reserved.some((l) => verdicts.get(l.id) === "same")) return drop("previously_rejected");
+      // A person already turned this advice down. A judge's "same" drops the draft only when the two are the same advice BY STRUCTURE (a verbatim or near copy), exactly the test that lets a judge's "same" merge two live
+      // lessons. A paraphrase, or an opposite the word lists do not know (pause / resume), is never dropped on a judge's word: it becomes a pending card for a person ("matches a rejected lesson").
+      const calledSame = reserved.filter((l) => verdicts.get(l.id) === "same");
+      if (calledSame.some((l) => closeEnoughForSame(rankedById.get(l.id) ?? NO_RANK, body, l.body))) return drop("previously_rejected");
+      unconfirmedRejected = calledSame[0];
     } else if (rejectedHits.some((l) => relate(body, l.body).near)) return drop("previously_rejected");
   }
   // Whatever the judge said, the ordered word test has the last word: a pair that is flipped goes to a person as a contradiction, and a "same" is acted on only when the two are close in words as well (a draft cannot
@@ -342,7 +368,7 @@ export async function curateDraft(deps: CurateDeps, key: ScopeKey, draft: Lesson
   }
 
   // Resembles advice a person rejected and no judge cleared it (none ran, or it was not shown that lesson): a person decides. It is never a plain candidate that could be applied by itself.
-  const unjudged = rejectedHits.find((l) => !rejectedJudged.has(l.id));
+  const unjudged = unconfirmedRejected ?? rejectedHits.find((l) => !rejectedJudged.has(l.id));
   if (unjudged !== undefined) return toPerson(unjudged, true);
 
   const created = newLesson(deps, key, draft, "candidate", {});

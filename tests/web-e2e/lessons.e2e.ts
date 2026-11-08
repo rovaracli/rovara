@@ -121,6 +121,27 @@ test("when learning cannot run the Lessons tab says why in one line, and says no
  await page.reload();
  await expect(page.getByTestId("lessons-paused-line")).toHaveText("Lessons paused: every available model is forbidden");
 });
+test("a possible duplicate offers one tap to merge it into the existing lesson, which leaves the waiting list and the existing lesson stays active", async ({ page, context, request, baseURL }) => {
+ await openTab(page, context, request, baseURL);
+ await request.post("/__mock/duplicate-lesson");await page.reload();
+ await expect(page.getByRole("heading", { name: "Waiting for you (4)" })).toBeVisible();
+ const card = page.getByRole("region", { name: "Keep pull requests small" });
+ await expect(card.getByText(/Possible duplicate/u)).toBeVisible();
+ // Only the possible duplicate offers a merge.
+ await expect(page.getByRole("button", { name: "Merge into the existing lesson" })).toHaveCount(1);
+ await checkA11y(page, { theme: "light" });
+ await card.getByRole("button", { name: "Merge into the existing lesson" }).click();
+ await expect(page.getByRole("status").filter({ hasText: "Merged into the existing lesson." })).toBeVisible();
+ await expect(page.getByRole("heading", { name: "Waiting for you (3)" })).toBeVisible();
+ await expect(page.getByRole("region", { name: "Keep pull requests small" })).toHaveCount(0);
+ await expect(page.getByRole("heading", { name: "Active lessons (1)" })).toBeVisible();
+ const sent = await writes(request);
+ expect(sent.map(item => item.method + " " + item.path.replace(BASE, ""))).toEqual(["POST /les_dup00001/merge"]);
+ expect(sent[0]!.body).toEqual({ expectedVersion: 1 });
+ await checkA11y(page, { theme: "dark" });
+ await page.setViewportSize({ width: 390, height: 900 });
+ expect(await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth)).toBeLessThanOrEqual(0);
+});
 test("approve by exception: a lesson on trial and a stable one are marked, the preset is explained and a maintainer can require a person, and a capability ask says why it needs two people", async ({ page, context, request, baseURL }) => {
  await openTab(page, context, request, baseURL);
  // The scenario above reset the lessons; add the trial ones and read the tab again.

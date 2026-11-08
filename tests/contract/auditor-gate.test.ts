@@ -31,7 +31,7 @@ const WRITE_ROUTES: ReadonlyArray<[string, string]> = [
   ["PUT", "/v1/app/org/audit/exports"], ["DELETE", "/v1/app/org/audit/exports/e1"], ["POST", "/v1/app/org/audit/records"], ["POST", "/v1/app/org/audit/status"], ["POST", "/v1/app/org/audit/exports/e1"],
   ["POST", "/v1/app/org/audit/admin/records"],
   // Learning v2 L3b: reading lessons is open to the Auditor; deciding, rolling back and marking are not.
-  ["POST", "/v1/app/projects/payments/lessons/les_abc12345/approve"], ["POST", "/v1/app/projects/payments/lessons/les_abc12345/reject"], ["POST", "/v1/app/projects/payments/lessons/les_abc12345/retire"],
+  ["POST", "/v1/app/projects/payments/lessons/les_abc12345/approve"], ["POST", "/v1/app/projects/payments/lessons/les_abc12345/reject"], ["POST", "/v1/app/projects/payments/lessons/les_abc12345/merge"], ["POST", "/v1/app/projects/payments/lessons/les_abc12345/retire"],
   ["POST", "/v1/app/projects/payments/lessons/rollback"], ["POST", "/v1/app/projects/payments/lessons"], ["PUT", "/v1/app/projects/payments/lessons"], ["DELETE", "/v1/app/projects/payments/lessons/sources"],
   ["POST", "/v1/app/tasks/11111111-1111-4111-8111-111111111111/lessons/les_abc12345/feedback"],
 ];

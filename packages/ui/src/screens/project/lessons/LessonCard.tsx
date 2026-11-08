@@ -38,6 +38,7 @@ export function LessonCard({ project, lesson, now, onDone }: Props) {
   return { message: answer.status === "active" ? T.APPROVED_ACTIVE : T.APPROVED_WAITING, reload: true };
  });
  const reject = () => run(async () => { await api.reject(project, lesson.id, { expectedVersion: lesson.version, reason });return { message: T.REJECTED, reload: true }; });
+ const merge = () => run(async () => { await api.merge(project, lesson.id, lesson.version);return { message: T.MERGED, reload: true }; });
  return <Card className="rv-lessons-card" aria-labelledby={"lesson-" + lesson.id}>
   <h3 id={"lesson-" + lesson.id}><VisibleText text={lesson.title} /></h3>
   <p className="rv-muted">{typeWords(lesson.type)} · <VisibleText text={scopeWords(lesson.scope)} /> · {stagesWords(lesson.stages)}</p>
@@ -69,6 +70,7 @@ export function LessonCard({ project, lesson, now, onDone }: Props) {
    <div className="rv-lessons-actions"><Button variant="danger" busy={busy} disabled={reason.trim() === ""} onClick={() => { void reject(); }}>{T.REJECT_SEND}</Button><Button onClick={() => setMode("none")}>{T.CANCEL}</Button></div>
   </fieldset>}
   {mode === "none" && (lesson.canApprove || lesson.canReject) && <div className="rv-lessons-actions">
+   {lesson.canReject && lesson.possibleDuplicate !== undefined && <Button busy={busy} onClick={() => { void merge(); }}>{T.MERGE}</Button>}
    {lesson.canApprove && <Button variant="primary" busy={busy} onClick={() => { void approve(false); }}>{T.APPROVE}</Button>}
    {lesson.canApprove && <Button disabled={busy} onClick={() => setMode("edit")}>{T.APPROVE_EDIT}</Button>}
    {lesson.canReject && <Button disabled={busy} onClick={() => setMode("reject")}>{T.REJECT}</Button>}

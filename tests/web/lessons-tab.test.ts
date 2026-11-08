@@ -5,7 +5,7 @@ import { describe, expect, it } from "vitest";
 import { screen, fireEvent, waitFor, within } from "@testing-library/react";
 import { MemoryRouter, Routes, Route } from "react-router";
 import { QueryClientProvider } from "@tanstack/react-query";
-import { LessonApproveBodySchema, LessonRejectBodySchema, LessonRollbackBodySchema } from "@agentx/contracts/web";
+import { LessonApproveBodySchema, LessonMergeBodySchema, LessonRejectBodySchema, LessonRollbackBodySchema } from "@agentx/contracts/web";
 import { ProjectScreen } from "../../packages/ui/src/screens/project/ProjectScreen.js";
 import { AppHostProvider } from "../../packages/ui/src/host.js";
 import { Announcer } from "../../packages/ui/src/design/Announcer.js";
@@ -186,6 +186,31 @@ describe("deciding", () => {
   expect(writes[0]).toMatchObject({ method: "POST", path: LESSONS_PATH + "/les_pend0001/approve", retry: "never" });
   expect(LessonApproveBodySchema.parse(writes[0]!.body)).toEqual({ expectedVersion: 1 });
   await waitFor(() => expect(f.lessonReads().filter(request => request.path === LESSONS_PATH).length).toBeGreaterThanOrEqual(2));
+ });
+
+ it("a possible duplicate offers Merge into the existing lesson: one tap sends the version that was read, once, says it merged and reads the list again; a card with no link has no such button", async () => {
+  const f = await openLessons({ state: { view: view({ waiting: [waiting({ possibleDuplicate: "les_aaaa1111", tierReasons: ["possible_duplicate"] }), waiting({ id: "les_pend0002", title: "Prefer small pull requests" })] }) }, lessons: (_request, url) => url.pathname === LESSONS_PATH + "/les_pend0001/merge" ? ok({ done: true }) : undefined });
+  expect(within(cards()[1]!).queryByRole("button", { name: "Merge into the existing lesson" })).toBeNull();
+  expect(within(cards()[0]!).getByText(/Possible duplicate/u)).toBeTruthy();
+  fireEvent.click(within(cards()[0]!).getByRole("button", { name: "Merge into the existing lesson" }));
+  expect(await screen.findByText("Merged into the existing lesson.")).toBeTruthy();
+  const writes = f.lessonWrites();
+  expect(writes).toHaveLength(1);
+  expect(writes[0]).toMatchObject({ method: "POST", path: LESSONS_PATH + "/les_pend0001/merge", retry: "never" });
+  expect(LessonMergeBodySchema.parse(writes[0]!.body)).toEqual({ expectedVersion: 1 });
+  await waitFor(() => expect(f.lessonReads().filter(request => request.path === LESSONS_PATH).length).toBeGreaterThanOrEqual(2));
+ });
+
+ it("a person who cannot decide gets no Merge button on a possible duplicate", async () => {
+  await openLessons({ state: { view: view({ waiting: [waiting({ possibleDuplicate: "les_aaaa1111", canApprove: false, canReject: false })] }) } });
+  expect(within(cards()[0]!).queryByRole("button", { name: "Merge into the existing lesson" })).toBeNull();
+ });
+
+ it("a merge the server refuses shows its own sentence and does not claim it worked", async () => {
+  await openLessons({ state: { view: view({ waiting: [waiting({ possibleDuplicate: "les_aaaa1111" })] }) }, lessons: (_request, url) => url.pathname.endsWith("/merge") ? refusal("CHANGE_STALE", "These two lessons can't be merged. Keep both, or reject this one.", 409) : undefined });
+  fireEvent.click(within(cards()[0]!).getByRole("button", { name: "Merge into the existing lesson" }));
+  expect(await screen.findByText(/can't be merged/u)).toBeTruthy();
+  expect(screen.queryByText("Merged into the existing lesson.")).toBeNull();
  });
 
  it("a first approval of a two-person lesson says it now waits for a second person", async () => {

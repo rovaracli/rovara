@@ -3,7 +3,7 @@
 import { useMemo } from "react";
 import { useQuery } from "@tanstack/react-query";
 import {
-  DeveloperTaskViewSchema, LessonApproveAnswerReaderSchema, LessonApproveBodySchema, LessonDoneAnswerReaderSchema, LessonFeedbackBodySchema, LessonHistoryReaderSchema, LessonPresetAnswerReaderSchema, LessonPresetBodySchema, LessonRejectBodySchema,
+  DeveloperTaskViewSchema, LessonApproveAnswerReaderSchema, LessonApproveBodySchema, LessonDoneAnswerReaderSchema, LessonFeedbackBodySchema, LessonHistoryReaderSchema, LessonMergeBodySchema, LessonPresetAnswerReaderSchema, LessonPresetBodySchema, LessonRejectBodySchema,
   LessonResumeAnswerReaderSchema, LessonResumeSourceBodySchema, LessonRetireBodySchema, LessonRollbackAnswerReaderSchema, LessonRollbackBodySchema, LessonSourcesReaderSchema, LessonsDigestReaderSchema, LessonsViewReaderSchema, LoadedLessonsReaderSchema,
   ProjectOverviewProjectSchema,
 } from "@agentx/contracts/web";
@@ -37,6 +37,8 @@ export function createLessonsApi(host: AppHost) {
   history: (project: string, id: string) => api.get(base(project) + "/" + one(id) + "/history", LessonHistoryReaderSchema),
   async approve(project: string, id: string, input: ApproveInput) { return settled(await api.send("POST", base(project) + "/" + one(id) + "/approve", LessonApproveBodySchema.parse(input), LessonApproveAnswerReaderSchema, NEVER)); },
   async reject(project: string, id: string, input: RejectInput) { return settled(await api.send("POST", base(project) + "/" + one(id) + "/reject", LessonRejectBodySchema.parse(input), LessonDoneAnswerReaderSchema, NEVER)); },
+  /** A person merges a possible duplicate into the lesson it may duplicate; the server checks they may read both. */
+  async merge(project: string, id: string, expectedVersion: number) { return settled(await api.send("POST", base(project) + "/" + one(id) + "/merge", LessonMergeBodySchema.parse({ expectedVersion }), LessonDoneAnswerReaderSchema, NEVER)); },
   async retire(project: string, id: string, reason?: string) { return settled(await api.send("POST", base(project) + "/" + one(id) + "/retire", LessonRetireBodySchema.parse(reason === undefined ? {} : { reason }), LessonDoneAnswerReaderSchema, NEVER)); },
   async rollback(project: string, input: z.input<typeof LessonRollbackBodySchema>) { return settled(await api.send("POST", base(project) + "/rollback", LessonRollbackBodySchema.parse(input), LessonRollbackAnswerReaderSchema, NEVER)); },
   /** UX-4b: a maintainer resumes a paused source; the lessons held while it was paused wait for people again (none goes live from here). */

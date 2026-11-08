@@ -5,6 +5,7 @@
 //   GET  /v1/app/projects/{p}/lessons/{id}/history         versions and who approved each (people who decide)
 //   POST /v1/app/projects/{p}/lessons/{id}/approve         one-tap approval, or edit and approve
 //   POST /v1/app/projects/{p}/lessons/{id}/reject
+//   POST /v1/app/projects/{p}/lessons/{id}/merge           a person merges a possible duplicate into the lesson it may duplicate (audited lesson.merged, judged by the person)
 //   POST /v1/app/projects/{p}/lessons/{id}/retire
 //   POST /v1/app/projects/{p}/lessons/preset               a maintainer sets the preset: Regulated at once; Standard opens a proposal a different person approves (.../preset/approve, .../preset/cancel)
 //   POST /v1/app/org/lessons/preset                        a company owner or admin sets the company's preset the same way (a floor for every project)
@@ -17,13 +18,13 @@
 // cannot see answer the same way); who may decide is the lesson library's own check (`ApproverDirectory`, the second-person rule, the access records); a write needs a live browser
 // session and a writer role (the Auditor is refused); a refusal is a fixed sentence, never text from a lesson, a row or an error.
 import {
-  LessonApproveBodySchema, LessonFeedbackBodySchema, LessonPresetBodySchema, LessonPresetChangeBodySchema, LessonResumeSourceBodySchema, LessonRejectBodySchema, LessonRetireBodySchema, LessonRollbackBodySchema, agentXError,
+  LessonApproveBodySchema, LessonFeedbackBodySchema, LessonMergeBodySchema, LessonPresetBodySchema, LessonPresetChangeBodySchema, LessonResumeSourceBodySchema, LessonRejectBodySchema, LessonRetireBodySchema, LessonRollbackBodySchema, agentXError,
   type AgentXErrorCode, type ProjectRole,
 } from "@agentx/contracts";
 import type { ZodType } from "zod";
 import type { DeveloperCaller } from "../aws/developer-routes.js";
 import { requireWriterCaller } from "../org/auditor.js";
-import { approveLesson, rejectLesson, retireByPerson, type ApprovalFailure, type ApproveDeps } from "./approve.js";
+import { approveLesson, mergeDuplicate, rejectLesson, retireByPerson, type ApprovalFailure, type ApproveDeps } from "./approve.js";
 import { recordFeedback, type CounterDeps } from "./counters.js";
 import { resolveLearning, whyLearningOff } from "./policy.js";
 import { approvePresetChange, cancelPresetChange, setLearningPreset, type PresetDeps, type PresetFailure, type PresetResult, type PresetScope } from "./preset-setting.js";
@@ -32,7 +33,7 @@ import { resumeAndResettle, type ProcessDeps } from "./process.js";
 import { buildLessonHistory, pauseMatches, buildLessonSources, buildLessonsDigest, buildLessonsView, buildLoadedLessons, SNAPSHOTS_MAX, type LessonViewDeps } from "./view.js";
 import type { ScopeKey } from "./store.js";
 
-export const LESSONS_PATH = /^\/v1\/app\/projects\/([^/]+)\/lessons(?:\/([A-Za-z0-9_-]{1,64})(?:\/(approve|reject|retire|history|resume|cancel))?)?$/u;
+export const LESSONS_PATH = /^\/v1\/app\/projects\/([^/]+)\/lessons(?:\/([A-Za-z0-9_-]{1,64})(?:\/(approve|reject|merge|retire|history|resume|cancel))?)?$/u;
 /** The company's preset (an owner or admin): `POST` sets it, `POST .../approve` and `.../cancel` decide a proposal to loosen it. */
 export const COMPANY_PRESET_PATH = /^\/v1\/app\/org\/lessons\/preset(?:\/(approve|cancel))?$/u;
 export const TASK_LESSONS_PATH = /^\/v1\/app\/tasks\/([0-9a-f-]{36})\/lessons(?:\/([A-Za-z0-9_-]{4,64})\/feedback)?$/u;
@@ -101,6 +102,7 @@ const REFUSALS: Record<ApprovalFailure, readonly [AgentXErrorCode, string]> = {
   tier_never: ["CONFIG_INVALID", "A lesson can't say that."],
   conflict: ["CHANGE_STALE", "This lesson changed while you were looking at it. Reload and check it again."],
   audit_unavailable: ["RUNTIME_UNAVAILABLE", "That couldn't be recorded, so nothing changed. Try again."],
+  cannot_merge: ["CHANGE_STALE", "These two lessons can't be merged. Keep both, or reject this one."],
 };
 const refuse = (code: ApprovalFailure): never => { const [errorCode, message] = REFUSALS[code]; throw agentXError(errorCode, message); };
 
@@ -247,6 +249,12 @@ export async function routeLessons(deps: LessonRouteDependencies, caller: Develo
   if (action === "reject") {
     const input = strictBody(LessonRejectBodySchema, body());
     const result = await rejectLesson(deps.lessons, { ...common, approverId: caller.developerId, reason: input.reason, expectedVersion: input.expectedVersion });
+    if (!result.ok) return refuse(result.code);
+    return { done: true as const };
+  }
+  if (action === "merge") {
+    const input = strictBody(LessonMergeBodySchema, body());
+    const result = await mergeDuplicate(deps.lessons, { ...common, actorId: caller.developerId, expectedVersion: input.expectedVersion });
     if (!result.ok) return refuse(result.code);
     return { done: true as const };
   }

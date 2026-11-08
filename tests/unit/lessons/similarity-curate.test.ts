@@ -111,10 +111,10 @@ describe.each([["no embedder", false], ["a fake embedder", true]] as const)("the
     expect(out).toMatchObject({ outcome: "contradiction" });
   });
 
-  it("a candidate a person REJECTED that the judge calls the same drops the draft; any other verdict about a rejected lesson changes nothing", async () => {
+  it("a candidate a person REJECTED that the judge calls the same: a structural copy drops the draft, a reworded one goes to a person; any other verdict about a rejected lesson changes nothing", async () => {
     const s = make({ model: new Quoting([answer("same")]) });
     await seed(s.store, lessonRecord({ id: "les_rej00001", title: "Retries", description: "", body: A, status: "rejected" }));
-    expect(await curateDraft(s.deps, KEY, text("Retries", B))).toEqual({ outcome: "dropped", reason: "previously_rejected" });
+    expect(await curateDraft(s.deps, KEY, text("Retries", B))).toMatchObject({ outcome: "contradiction", matchesRejected: true, other: "les_rej00001", lesson: { status: "pending" } });
     expect(String(s.model.calls[0]!.user)).toContain("previously_rejected");
     const t = make({ model: new Quoting([answer("refines")]) });
     await seed(t.store, lessonRecord({ id: "les_rej00001", title: "Retries", description: "", body: A, status: "rejected" }));

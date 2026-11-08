@@ -132,7 +132,7 @@ describe("H2: a rejected lesson does not come back", () => {
     expect((await curateDraft(s.deps, KEY, textOf("Money amounts are stored as integer cents in the billing table.", { citations: [], scope: {} }))).outcome).toBe("added");
   });
 
-  it("a draft padded with the words of five live neighbours still meets the judge's reserved place for the rejected lesson, and the judge's \"same\" drops it", async () => {
+  it("a draft padded with the words of five live neighbours still meets the judge's reserved place for the rejected lesson, and the judge's \"same\" on the padded (not structurally the same) draft sends it to a person", async () => {
     const model = new ScriptedModel([answer("different", "different", "different", "different", "different", "same")]);
     const s = setup({ model });
     await seed(s.store, rejected());
@@ -143,7 +143,8 @@ describe("H2: a rejected lesson does not come back", () => {
       await seed(s.store, lessonRecord({ id: `les_live${i}000`, title: "Advice", description: "", body, status: "candidate", citations: [], citationChecks: [], approvals: [], tier: 1, tierReasons: [], scope: {} }));
     }
     const out = await curateDraft(s.deps, KEY, textOf(`${REJECTED_BODY} ${padding.slice(0, 5).join(" ")}`, { citations: [], scope: {} }));
-    expect(out).toEqual({ outcome: "dropped", reason: "previously_rejected" });
+    // Not dropped: the padded draft reaches a person (here as the contradiction the word test finds with a live neighbour, which comes before the rejected-lesson card).
+    expect(out).toMatchObject({ outcome: "contradiction", lesson: { status: "pending" } });
     expect(model.calls).toHaveLength(1);
     const prompt = String(model.calls[0]!.user);
     expect(prompt.match(/^\d\. state=/gmu)).toHaveLength(6);

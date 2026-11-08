@@ -194,6 +194,8 @@ const Text = z.object({ title: z.string().trim().min(1).max(80), description: z.
 /** `expectedVersion` is the version the person read: an approval of text that changed since is refused. */
 export const LessonApproveBodySchema = z.object({ expectedVersion: z.number().int().min(1), edit: Text.optional() }).strict();
 export const LessonRejectBodySchema = z.object({ expectedVersion: z.number().int().min(1), reason: Reason }).strict();
+/** A person merges a lesson kept apart as a possible duplicate into the lesson it may duplicate: `expectedVersion` is the duplicate's version they read. */
+export const LessonMergeBodySchema = z.object({ expectedVersion: z.number().int().min(1) }).strict();
 export const LessonRetireBodySchema = z.object({ reason: Reason.optional() }).strict();
 export const LessonRollbackBodySchema = z.object({ targetSetVersion: z.number().int().min(0), expectedSetVersion: z.number().int().min(0) }).strict();
 /** UX-4b: a maintainer resumes a source the learning loop paused (the source row's kind and place, as the Sources tab lists it). The lessons held while it was paused are settled again; none goes live from here. */

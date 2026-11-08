@@ -28,7 +28,7 @@ import { homeFixture } from "../../web/support/fixtures.js";
 import { FIXTURE_ORG, FIXTURE_DEVELOPER, FIXTURE_SESSION } from "../../web/support/fixtures.js";
 import { scenario } from "./scenarios.js";
 import { howWeWorkMock, resetHowWeWork } from "./how-we-work-mock.js";
-import { lessonsMock, resetLessons, resetTaskLessons, setLessonsPaused, setSourceEditing, setTrialLessons, taskLessonsMock } from "./lessons-mock.js";
+import { lessonsMock, resetLessons, resetTaskLessons, setLessonsPaused, setDuplicateLesson, setSourceEditing, setTrialLessons, taskLessonsMock } from "./lessons-mock.js";
 import { intakeHomeCards, intakeMock, resetIntake, showTicketOnHome } from "./intake-mock.js";
 import { resetTestEnvironment, testEnvironmentMock } from "./test-environment-mock.js";
 import { learningMock, learningSettingsMock, lockLearning, resetLearning, overviewLearning, homeSuggestionCards } from "./learning-mock.js";
@@ -74,6 +74,7 @@ async function handleRequest(request: IncomingMessage, response: ServerResponse)
  if (url.pathname === "/__mock/lessons-paused" && method === "POST") { let body = "";for await (const chunk of request) body += String(chunk);const input = JSON.parse(body) as { code?: unknown };setLessonsPaused(typeof input.code === "string" ? input.code : undefined);json(200, { ok: true });return; }
  if (url.pathname === "/__mock/source-editing" && method === "POST") { setSourceEditing(true);json(200, { ok: true });return; }
  if (url.pathname === "/__mock/trial-lessons" && method === "POST") { setTrialLessons();json(200, { ok: true });return; }
+ if (url.pathname === "/__mock/duplicate-lesson" && method === "POST") { setDuplicateLesson();json(200, { ok: true });return; }
  if (url.pathname === "/__mock/ticket-on-home" && method === "POST") { showTicketOnHome();json(200, { ok: true });return; }
  if (url.pathname === "/__mock/scenario" && method === "POST") { let body = "";for await (const chunk of request) { body += String(chunk);if (body.length > 4096) throw new Error("Mock body limit."); }const input = JSON.parse(body) as { name?: unknown };if (typeof input.name !== "string") throw new Error("Invalid mock scenario.");current = scenario(input.name);adminMemberName = "Maya";adminDirectory = createAdminDirectory();if (current.name === "admin") adminDirectory.seedLaneB();adminLoseCreateAck = false;adminFailAfterWrite = false;adminReadFailures = 0;resetHowWeWork();resetLearning();resetLessons();resetTaskLessons();resetIntake();resetCompanyPolicy();taskPage.reset();onboardingConnected=false;onboardingProject=undefined;onboardingDraft="none";resetTestEnvironment();revoked = false;expired = false;refusedSignIn = false;requests.length = 0;json(200, { ok: true });return; }
  if (url.pathname === "/__mock/learning-lock" && method === "POST") { lockLearning();json(200, { ok: true });return; }

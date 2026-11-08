@@ -8,11 +8,18 @@ import { InMemoryLessonStore } from "../../packages/broker/src/lessons/store.js"
 import { lessonRouteDependenciesOf } from "../../packages/broker/src/aws/developer-routes/lessons.js";
 import { LESSON_RATES } from "../../packages/broker/src/lessons/routes.js";
 import { FakeDynamoDb } from "../support/fake-dynamodb.js";
-import { Alerts, Audit, Clock, MemoryVectors, ScriptedModel, Spend, allowAllAccess, directory, embedder, facts, Judge, lessonRecord, seed, settings, verifier } from "../unit/lessons/lesson-helpers.js";
+import { withLessonAudiences } from "../../packages/broker/src/lessons/task-audience.js";
+import type { AccessCheckPort } from "../../packages/broker/src/team-record/access-port.js";
+import { Alerts, Audit, Clock, MemoryVectors, ScriptedModel, Spend, directory, embedder, facts, Judge, lessonRecord, seed, settings, verifier, wideAudience } from "../unit/lessons/lesson-helpers.js";
 
 const A = "org_aaaaaaaaaaaaaaaaaaaa" as OrgId, me = "a".repeat(64), other = "b".repeat(64), auditorId = "c".repeat(64);
 const BASE = "/v1/app/projects/demo/lessons";
 const names = { memberName: async () => "Priya", isErased: async () => false };
+// Every task is open to the whole project "demo" (the shared fake in lesson-helpers.ts answers for its own project, so the live check of a lesson's source tasks would withhold every lesson here).
+const allowAllAccess: AccessCheckPort = {
+  mayRead: async (_org, _viewer, places) => places.map(() => true),
+  taskVisibility: withLessonAudiences({ read: async (_org, ids) => new Map(ids.map((id) => [id, { kind: "shared" as const }])) }, { read: async (_org, ids) => new Map(ids.map((id) => [id, wideAudience({ project: "demo" })])) }),
+};
 
 function fixture(over: { wired?: boolean; settings?: Parameters<typeof settings>[0] } = {}) {
   const db = new FakeDynamoDb();
@@ -63,7 +70,7 @@ describe("off unless wired and on", () => {
   it("with the project's learning Off every lessons route answers not found and changes nothing", async () => {
     const f = fixture({ settings: { mode: "Off" } });
     await seed(f.store, pending());
-    for (const [method, path, body] of [["GET", BASE], ["GET", BASE + "/digest"], ["GET", BASE + "/sources"], ["GET", BASE + "/les_pend0001/history"], ["POST", BASE + "/les_pend0001/approve", { expectedVersion: 1 }], ["POST", BASE + "/les_pend0001/reject", { expectedVersion: 1, reason: "no" }], ["POST", BASE + "/les_pend0001/retire", {}], ["POST", BASE + "/rollback", { targetSetVersion: 0, expectedSetVersion: 1 }]] as const) {
+    for (const [method, path, body] of [["GET", BASE], ["GET", BASE + "/digest"], ["GET", BASE + "/sources"], ["GET", BASE + "/les_pend0001/history"], ["POST", BASE + "/les_pend0001/approve", { expectedVersion: 1 }], ["POST", BASE + "/les_pend0001/reject", { expectedVersion: 1, reason: "no" }], ["POST", BASE + "/les_pend0001/merge", { expectedVersion: 1 }], ["POST", BASE + "/les_pend0001/retire", {}], ["POST", BASE + "/rollback", { targetSetVersion: 0, expectedSetVersion: 1 }]] as const) {
       const answer = await f.request(method, path, body);
       expect(answer.status, `${method} ${path}`).toBe(404);
     }
@@ -99,7 +106,7 @@ describe("the Auditor", () => {
     expect(await f.request("GET", BASE + "/sources", undefined, auditor)).toMatchObject({ status: 200, body: { sources: [], otherPaused: 0 } });
     for (const [method, path, body] of [
       ["GET", BASE + "/digest"], ["GET", BASE + "/les_act00001/history"],
-      ["POST", BASE + "/les_pend0001/approve", { expectedVersion: 1 }], ["POST", BASE + "/les_pend0001/reject", { expectedVersion: 1, reason: "no" }], ["POST", BASE + "/les_act00001/retire", {}],
+      ["POST", BASE + "/les_pend0001/approve", { expectedVersion: 1 }], ["POST", BASE + "/les_pend0001/reject", { expectedVersion: 1, reason: "no" }], ["POST", BASE + "/les_pend0001/merge", { expectedVersion: 1 }], ["POST", BASE + "/les_act00001/retire", {}],
       ["POST", BASE + "/rollback", { targetSetVersion: 0, expectedSetVersion: 1 }], ["POST", "/v1/app/tasks/11111111-1111-4111-8111-111111111111/lessons/les_act00001/feedback", { kind: "helpful" }],
       ["GET", "/v1/app/tasks/11111111-1111-4111-8111-111111111111/lessons"],
     ] as const) expect(codeOf(await f.request(method, path, body, auditor)), `${method} ${path}`).toBe("FORBIDDEN");

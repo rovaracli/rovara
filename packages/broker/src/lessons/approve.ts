@@ -12,7 +12,7 @@ import { expiryWindowMs } from "./expiry.js";
 import { approversRequired, emitAudit, modeAllows, requireAudit, resolveLearning, type LearningSettingsReader } from "./policy.js";
 import { lessonValue } from "./value.js";
 import type { ApproverDirectory, LessonDeps, LessonVectors } from "./ports.js";
-import { retireLesson } from "./curate.js";
+import { foldDuplicate, retireLesson } from "./curate.js";
 import { dropVector } from "./similarity.js";
 import { nextVersion, type LessonStore, type ScopeKey } from "./store.js";
 import { classifyTier } from "./tier.js";
@@ -32,7 +32,7 @@ export interface ApproveDeps extends LessonDeps {
 
 export type ApprovalFailure =
   | "not_found" | "not_pending" | "mode_off" | "not_eligible" | "already_approved" | "author_cannot_approve_alone"
-  | "second_person_required" | "sole_owner_cool_off" | "eligibility_unavailable" | "capability_request" | "conflict" | "tier_never" | "not_permitted" | "audit_unavailable";
+  | "second_person_required" | "sole_owner_cool_off" | "eligibility_unavailable" | "capability_request" | "conflict" | "tier_never" | "not_permitted" | "audit_unavailable" | "cannot_merge";
 export type ApprovalResult =
   | { ok: true; status: "active" | "pending"; lesson: Lesson; needs: "nothing" | "second_person" | "group_member" }
   | { ok: false; code: ApprovalFailure };
@@ -271,6 +271,41 @@ async function decideOnce(deps: ApproveDeps, input: { workspaceId: string; proje
 /** A maintainer rejects a pending lesson. The reason is kept (cleaned), and a similar lesson is not proposed again. */
 export const rejectLesson = (deps: ApproveDeps, input: { workspaceId: string; project: string; lessonId: string; approverId: string; reason: string; expectedVersion?: number }) =>
   decideOnce(deps, { ...input, actorId: input.approverId, allowed: ["pending"], to: "rejected", reason: input.reason, action: "lesson.rejected" });
+
+/**
+ * A maintainer merges a pending lesson that is linked as a possible duplicate into the lesson it may duplicate. The person must be eligible to decide lessons here and able to read BOTH lessons (the access records,
+ * now). The merge is `foldDuplicate` (all caps, AND-merged trust flags, no lowering of an active lesson's trust or audience): one conditional commit writes the merged lesson and retires the duplicate, so the pair
+ * is never half merged. Audited `lesson.merged` on the surviving lesson, by the person (`judged: "person"`).
+ */
+export async function mergeDuplicate(deps: ApproveDeps, input: { workspaceId: string; project: string; lessonId: string; actorId: string; expectedVersion?: number }): Promise<{ ok: true; lesson: Lesson } | { ok: false; code: ApprovalFailure }> {
+  const key: ScopeKey = { workspaceId: input.workspaceId, project: input.project };
+  const group = await deps.directory.eligibility(key.workspaceId, key.project).catch(() => undefined);
+  if (group === undefined || !group.complete) return { ok: false, code: "eligibility_unavailable" };
+  if (!idIn(group.eligibleIds, input.actorId)) return { ok: false, code: "not_eligible" };
+  for (let attempt = 0; attempt < MAX_TRIES; attempt += 1) {
+    // The set version first, then the lessons: a decision made on what was read can never be written over something newer.
+    const setVersion = await deps.store.setVersion(key);
+    const duplicate = await deps.store.get(key, input.lessonId);
+    if (duplicate === undefined) return { ok: false, code: "not_found" };
+    if (duplicate.status !== "pending") return { ok: false, code: "not_pending" };
+    if (!(await mayHandle(deps, key, duplicate, input.actorId))) return { ok: false, code: "not_permitted" };
+    if (input.expectedVersion !== undefined && duplicate.version !== input.expectedVersion) return { ok: false, code: "conflict" };
+    if (duplicate.possibleDuplicateOf === undefined) return { ok: false, code: "cannot_merge" };
+    const target = await deps.store.get(key, duplicate.possibleDuplicateOf);
+    if (target === undefined) return { ok: false, code: "cannot_merge" };
+    // Reading the other lesson is part of deciding about it.
+    if (!(await mayHandle(deps, key, target, input.actorId))) return { ok: false, code: "not_permitted" };
+    const writes = await foldDuplicate(deps, key, target, duplicate);
+    if (writes === undefined) return { ok: false, code: "cannot_merge" };
+    const result = await deps.store.commit(key, setVersion, writes, deps.now());
+    if (result.ok) {
+      await dropVector(deps.vectors, key, duplicate.id);
+      await emitAudit(deps.audit, { action: "lesson.merged", workspaceId: key.workspaceId, project: key.project, lessonId: target.id, actor: input.actorId, facts: { tier: target.tier, judged: "person", duplicate: duplicate.id } });
+      return { ok: true, lesson: writes[0]! };
+    }
+  }
+  return { ok: false, code: "conflict" };
+}
 
 /** A maintainer retires a lesson (active, stale or pending). Always possible for an eligible person: this is the kill switch (C14). */
 export const retireByPerson = (deps: ApproveDeps, input: { workspaceId: string; project: string; lessonId: string; actorId: string; reason: string }) =>

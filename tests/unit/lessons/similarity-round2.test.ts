@@ -42,11 +42,11 @@ const REWORDED: Array<[string, string, string]> = [
 ];
 
 describe("N1: a reworded rejected lesson reaches the judge, and without a judge a person", () => {
-  it.each(REWORDED)("%s: the judge is shown the rejected lesson and its \"same\" drops the draft", async (_name, rejected, reworded) => {
+  it.each(REWORDED)("%s: the judge is shown the rejected lesson and its \"same\" on a reworded draft sends it to a person (never dropped: the words are not the same advice by structure)", async (_name, rejected, reworded) => {
     const s = setup({ model: new ScriptedModel([answer("same")]) });
     await seed(s.store, rejectedLesson(rejected));
     const out = await curateDraft(s.deps, KEY, textOf(reworded));
-    expect(out).toEqual({ outcome: "dropped", reason: "previously_rejected" });
+    expect(out).toMatchObject({ outcome: "contradiction", other: "les_rej00001", matchesRejected: true, lesson: { status: "pending", tierReasons: ["contradiction", "matches_rejected"] } });
     expect(s.model.calls).toHaveLength(1);
     expect(String(s.model.calls[0]!.user)).toContain("state=previously_rejected");
   });
@@ -73,8 +73,8 @@ describe("N1: a reworded rejected lesson reaches the judge, and without a judge 
     const prompt = String(s.model.calls[0]!.user);
     expect(prompt.match(/^\d\. state=/gmu)).toHaveLength(6);
     expect(prompt).toContain("state=previously_rejected");
-    // Five places go to live lessons; the judge's "same" on the last one is the rejected lesson's.
-    expect(out).toEqual({ outcome: "dropped", reason: "previously_rejected" });
+    // Five places go to live lessons; the judge's "same" on the last one is the rejected lesson's. The draft is reworded, so a person sees it.
+    expect(out).toMatchObject({ outcome: "contradiction", matchesRejected: true });
   });
 
   it("controls: the opposite of the rejected advice is still an ordinary candidate with a close vector and no judge (the stance differs); an unrelated draft is too", async () => {
