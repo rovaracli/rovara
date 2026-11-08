@@ -193,7 +193,7 @@ describe("LP-13 C3 side effects: a retry does not repeat what the failed try alr
   it("L7: a fault in the very first count (the project's volume) leaves it to the retry: the volume is counted once, not zero times", async () => {
     const control = await clean();
     const w = trialSetup();
-    const counted = w.store.recordSourceEvent;
+    const counted = w.store.recordSourceEvent.bind(w.store);
     let first = true;
     w.store.recordSourceEvent = async (...args: Parameters<typeof counted>) => { if (first) { first = false; throw throttled(); } return counted(...args); };
     await processDraftRetrying(w.deps, KEY, memberDraft(), noWait);
@@ -204,7 +204,7 @@ describe("LP-13 C3 side effects: a retry does not repeat what the failed try alr
     const control = await clean();
     expect(control.sourceEvents.length).toBeGreaterThan(1);
     const w = trialSetup();
-    const counted = w.store.recordSourceEvent;
+    const counted = w.store.recordSourceEvent.bind(w.store);
     let calls = 0;
     w.store.recordSourceEvent = async (...args: Parameters<typeof counted>) => { calls += 1; if (calls === 2) throw throttled(); return counted(...args); };
     await processDraftRetrying(w.deps, KEY, memberDraft(), noWait);

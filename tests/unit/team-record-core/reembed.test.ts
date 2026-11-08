@@ -514,8 +514,8 @@ describe("a turn that starts no call, and a workspace that is closing (N4, N5)",
       await sweepReembedStateRun(w.table, async () => false, { now: () => w.clock.ms, maxChecks: 3 });
       expect(w.db.get(REEMBED_SWEEP_CURSOR_KEY)).toMatchObject({ after: orgs[2] });
       // a slow earlier run (it began an hour before) ends now and tries to save its own, older place
-      const late = { ...w.table, documentClient: { send: async (command: unknown) => w.table.documentClient.send(command as never) } };
-      await sweepReembedStateRun(late as never, async () => false, { now: () => start, maxChecks: 5 });
+      const late = { ...w.table, documentClient: { send: async (command: unknown) => w.table.documentClient.send(command) } };
+      await sweepReembedStateRun(late, async () => false, { now: () => start, maxChecks: 5 });
       expect(w.db.get(REEMBED_SWEEP_CURSOR_KEY)).toMatchObject({ after: orgs[2] });
       // a later run moves it on
       w.clock.ms = start + 2 * HOUR;
