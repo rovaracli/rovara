@@ -1212,7 +1212,8 @@ describe("slice C: the design review's routes", () => {
     // approve control, no header that could send a web-started task to Slack).
     const sessionId = (w.task() as { sessionId?: string }).sessionId;
     expect(sessionId, "positive control: the started task has a session").toMatch(/^ses_[0-9a-z]{20}$/u);
-    expect([response.statusCode, response.headers?.["location"]]).toEqual([302, `/app/sessions/${sessionId}?doc=plan`]);
+    const { headers } = response as { headers?: Record<string, string> };
+    expect([response.statusCode, headers?.["location"]]).toEqual([302, `/app/sessions/${sessionId}?doc=plan`]);
     expect(String(response.body)).toBe("");
     // The guard is unchanged: a plain approval is still refused and nothing is decided.
     const before = w.task().workflow;
