@@ -129,7 +129,7 @@ export interface QueryOptions {
  * The rate items that name a person (register SRL-9): `RATE#<what>|person:<developerId>#<window>` for the four record reads and the source picker. A task's key, a project's shared key and the company's own
  * counters hold no person. Person erase removes these (`erase.ts`, config step); add a `what` here when a new read is rationed per person.
  */
-export const PERSON_RATE_KINDS = ["search", "facts", "past_work", "stats", "source-options"] as const;
+export const PERSON_RATE_KINDS = ["search", "facts", "past_work", "stats", "source-options", "slack-add-web"] as const;
 /**
  * Unkeyed hashes of enumerable ids are personal data, so erase finds the items that carry them (SRL-9): a picker session's `person` (`SRCOPT#`) and the slack-add rate item's key. One definition for the
  * writers (`source-options.ts`, `slack-add.ts`) and for erase.

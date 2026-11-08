@@ -156,7 +156,7 @@ const claims = (h: Harness) => h.w.db.find((item) => item.entityType === "TEAM_R
 const requests = (h: Harness) => h.w.db.find((item) => item.entityType === "TEAM_RECORD_SOURCE_REQUEST");
 const nothingWritten = (h: Harness) => { expect(sourceRows(h)).toHaveLength(0); expect(proposals(h)).toHaveLength(0); expect(claims(h)).toHaveLength(0); expect(requests(h)).toHaveLength(0); };
 const flushed = async (h: Harness) => { await new Promise((resolve) => setTimeout(resolve, 0)); return h.audit.recorded(); };
-const INVITE_NEEDED = { status: 422, body: { code: "SLACK_INVITE_NEEDED", message: "Rovara isn't in that channel yet. Type /invite @Rovara in the channel, then try again. You must be in the channel yourself, with your Slack account linked to Rovara." } };
+const INVITE_NEEDED = { status: 422, body: { code: "SLACK_INVITE_NEEDED", message: "Rovara isn't in that channel yet. Type /invite @Rovara in the channel, then try again. You must be in the channel yourself, with your Slack account linked to Rovara. If Rovara and you are both in it already, wait a minute and try again." } };
 const DIFFERENT_WORKSPACE = { status: 422, body: { code: "SLACK_WRONG_WORKSPACE", message: "That link is for a different Slack workspace." } };
 const NOT_ALLOWED = (message: string) => ({ status: 422, body: { code: "SOURCE_NOT_ALLOWED", message } });
 const CONNECT_WORDS = "Slack Connect channels can't be used as a source.";
@@ -877,16 +877,17 @@ describe("Slack: the editor must be in a private channel to add it from the web"
     nothingWritten(h);
   });
 
-  it("a membership that cannot be read fails closed as 'unavailable', and so does a missing way to read it or the sign-in store's links; nothing is written", async () => {
-    for (const make of [
-      (h: Harness) => { h.memberRead = "unreadable"; },
-      (h: Harness) => { h.memberRead = "throws"; },
-      (h: Harness) => { h.memberOn = false; },
-      (h: Harness) => { h.linksOn = false; },
-    ]) {
+  // SRL-14 replaces the earlier "an unreadable membership is 503": a failing membership read on an existing private channel (a missing groups:read scope, a Slack error) must not answer differently from a channel that does not exist.
+  it("a membership that cannot be read fails closed as the same neutral reply (SRL-14: it counts as 'not in'); a missing way to read it or the sign-in store's links is 'unavailable'; nothing is written", async () => {
+    for (const [make, expected] of [
+      [(h: Harness) => { h.memberRead = "unreadable"; }, INVITE_NEEDED],
+      [(h: Harness) => { h.memberRead = "throws"; }, INVITE_NEEDED],
+      [(h: Harness) => { h.memberOn = false; }, { status: 503, body: { code: "RUNTIME_UNAVAILABLE" } }],
+      [(h: Harness) => { h.linksOn = false; }, { status: 503, body: { code: "RUNTIME_UNAVAILABLE" } }],
+    ] as const) {
       const h = harness();
       make(h);
-      expect(await post(h, WHO.maint, add({ scope: slackScope(CH.priv) }))).toMatchObject({ status: 503, body: { code: "RUNTIME_UNAVAILABLE" } });
+      expect(await post(h, WHO.maint, add({ scope: slackScope(CH.priv) }))).toMatchObject(expected);
       nothingWritten(h);
     }
   });
