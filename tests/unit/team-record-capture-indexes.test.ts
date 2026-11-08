@@ -50,9 +50,9 @@ describe("push index", () => {
     const spy = { resolve: async (input: { system: string; sourceId: string }) => { seen.push(input.system); return { trust: "outsider" as const }; }, resolveDeveloper: async () => ({ trust: "outsider" as const }) };
     const w = world();
     const index = tablePushIndex(w.table, spy);
-    await index.record({ workspaceId: ORG_A, host: "gitfarm", push: push(), ttlSeconds: 3600 });
+    await index.record({ workspaceId: ORG_A, host: "examplehost", push: push(), ttlSeconds: 3600 });
     await index.record({ workspaceId: ORG_A, host: "github", push: push({ after: sha(5) }), ttlSeconds: 3600 });
-    expect(seen).toEqual(["codehost:gitfarm", "github"]);
+    expect(seen).toEqual(["codehost:examplehost", "github"]);
   });
 
   it("another workspace or repository finds nothing", async () => {

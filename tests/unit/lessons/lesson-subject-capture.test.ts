@@ -204,10 +204,10 @@ describe("a reviewer's comments on the task's pull requests", () => {
   });
 
   it("a pull request on a host the record cannot name is skipped; a plug-in host names its own", async () => {
-    const other = setup({ comments, feedback, workflow: { pullRequests: [{ repositoryId: "api", number: 7, url: "https://gitfarm.example/cr/7", candidateDigest: "b".repeat(64), required: true, state: "MERGED" }] } });
+    const other = setup({ comments, feedback, workflow: { pullRequests: [{ repositoryId: "api", number: 7, url: "https://codehost.example/cr/7", candidateDigest: "b".repeat(64), required: true, state: "MERGED" }] } });
     expect((await spansOf(other.source)).some((s) => s.kind === "pr_comment")).toBe(false);
-    const named = setup({ comments, feedback, workflow: { pullRequests: [{ repositoryId: "api", number: 7, url: "https://gitfarm.example/cr/7", candidateDigest: "b".repeat(64), required: true, state: "MERGED" }] } },
-      { pullRequestAddress: () => ({ host: "codehost:gitfarm", repository: "acme/api", number: 7 }) });
+    const named = setup({ comments, feedback, workflow: { pullRequests: [{ repositoryId: "api", number: 7, url: "https://codehost.example/cr/7", candidateDigest: "b".repeat(64), required: true, state: "MERGED" }] } },
+      { pullRequestAddress: () => ({ host: "codehost:examplehost", repository: "acme/api", number: 7 }) });
     await spansOf(named.source);
     expect(named.asked).toHaveLength(4);
   });

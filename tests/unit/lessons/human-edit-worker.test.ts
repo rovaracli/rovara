@@ -165,7 +165,9 @@ describe("the worker runs a human edit under the reflection's lease", () => {
     await runReflectMessage(w.deps, bodyOf());
     await runReflectMessage(w.deps, bodyOf(job(), "req-2"));
     await runReflectMessage(w.deps, JSON.stringify({ orgId: TEST_ORG, taskId: TASK, outcome: "merged", requestId: "r" }));
-    await runReflectMessage({ ...w.deps, humanEdit: undefined }, bodyOf(job({ headSha: hex(9) })));
+    const unwired: ReflectWorkerDeps = { ...w.deps };
+    delete unwired.humanEdit;
+    await runReflectMessage(unwired, bodyOf(job({ headSha: hex(9) })));
     expect(kinds()).toEqual(["human_edit:reflected", "human_edit:already", "reflection:reflected", "human_edit:human_edit_unavailable"]);
     // The kind carries no person or text: only the two words.
     expect(JSON.stringify(w.logs)).not.toContain("withRetry");

@@ -1,4 +1,4 @@
-// Lessons capture lane: ONE interface for what learning needs from a code host, so a host added later (a GitFarm-style Enterprise plug-in) adds itself and nothing else changes.
+// Lessons capture lane: ONE interface for what learning needs from a code host, so a host added later (an Enterprise code-host plug-in) adds itself and nothing else changes.
 //
 // What learning reads from a host (all of it live, nothing kept but lessons and a link):
 //   1. pull request comments: which comments a pull request has now, and whether an inline comment still points at a line (it does not once a later commit changed those lines). The words and the

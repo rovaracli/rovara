@@ -145,32 +145,32 @@ describe("what a person's own commits changed (for a comment that led to a chang
 });
 
 describe("another code host", () => {
-  const gitfarm: CodeHostCaptureAdapter = {
-    host: "gitfarm", supports: { pullRequestComments: true, commentOutdated: true, humanEdits: false, authorship: "none", mergeCommit: true },
+  const examplehost: CodeHostCaptureAdapter = {
+    host: "examplehost", supports: { pullRequestComments: true, commentOutdated: true, humanEdits: false, authorship: "none", mergeCommit: true },
     pullRequestAddress: () => undefined, repositoryAddress: (fullName) => `https://git.example.test/${fullName}`,
   };
-  const addGitfarmRow = (w: ReturnType<typeof setup>) => putSourceConfig({ documentClient: w.db, tableName: "TeamRecord" }, {
-    workspaceId: ORG_A, project: "web", source: "codehost:gitfarm", scope: "codehost:gitfarm:repo/7", enabled: true, retention: "C", exclude: [], audienceDefault: "project", health: "unknown", addedBy: "dev-1", updatedAt: "2026-10-30T10:00:00.000Z",
+  const addExamplehostRow = (w: ReturnType<typeof setup>) => putSourceConfig({ documentClient: w.db, tableName: "TeamRecord" }, {
+    workspaceId: ORG_A, project: "web", source: "codehost:examplehost", scope: "codehost:examplehost:repo/7", enabled: true, retention: "C", exclude: [], audienceDefault: "project", health: "unknown", addedBy: "dev-1", updatedAt: "2026-10-30T10:00:00.000Z",
   }, { edition: "enterprise" });
   const comment = (repo: Record<string, unknown>, authorId: string) => ({ type: "comment" as const, repo: repo as never, prNumber: 3, id: "9", url: "https://git.example.test/pkg/api/cr/3#9", action: "created" as const, surface: "review_comment" as const, body: "Use withRetry", author: { id: authorId, login: "maya", isBot: false }, path: "src/a.ts", at: "2026-10-30T10:00:00.000Z", version: "created:1" });
   const ci = (repo: Record<string, unknown>) => ({ type: "ci" as const, repo: repo as never, id: "run1", name: "build", conclusion: "success", headSha: hex(3), prNumbers: [3], at: "2026-10-30T10:00:00.000Z" });
   const binding = { workspaceId: ORG_A, project: "web" };
 
   it("registers by the same interface and its events go to the host-neutral tap", async () => {
-    const w = setup([gitfarm]);
-    expect(w.runtime.captureAdapters.support()["gitfarm"]).toMatchObject({ humanEdits: false });
-    await addGitfarmRow(w);
-    const repo = { host: "gitfarm", id: "7", fullName: "pkg/api", isPrivate: false, workspaceId: ORG_A, project: "web" };
+    const w = setup([examplehost]);
+    expect(w.runtime.captureAdapters.support()["examplehost"]).toMatchObject({ humanEdits: false });
+    await addExamplehostRow(w);
+    const repo = { host: "examplehost", id: "7", fullName: "pkg/api", isPrivate: false, workspaceId: ORG_A, project: "web" };
     const result = await w.runtime.taps.codeHost(ci(repo), binding);
     expect(result).toMatchObject({ written: 1 });
-    expect(w.db.find((item) => item.entityType === "TEAM_RECORD_EVENT")[0]).toMatchObject({ source: "codehost:gitfarm", kind: "github.ci" });
+    expect(w.db.find((item) => item.entityType === "TEAM_RECORD_EVENT")[0]).toMatchObject({ source: "codehost:examplehost", kind: "github.ci" });
   });
 
   it("H3: a plug-in account whose id equals a linked member's GITHUB id is an outsider (GitHub links are not plug-in links), never that member", async () => {
-    const w = setup([gitfarm]);
-    await addGitfarmRow(w);
-    const repo = { host: "gitfarm", id: "7", fullName: "pkg/api", isPrivate: false, workspaceId: ORG_A, project: "web" };
-    // "123" is dev-1's GitHub account id; on gitfarm it is somebody else.
+    const w = setup([examplehost]);
+    await addExamplehostRow(w);
+    const repo = { host: "examplehost", id: "7", fullName: "pkg/api", isPrivate: false, workspaceId: ORG_A, project: "web" };
+    // "123" is dev-1's GitHub account id; on examplehost it is somebody else.
     const result = await w.runtime.taps.codeHost(comment(repo, "123"), binding);
     // Nothing is stored for an account that is not linked (and none is linked for a plug-in yet), and nothing is stored as dev-1's.
     expect(result).toMatchObject({ written: 0 });
@@ -179,13 +179,13 @@ describe("another code host", () => {
     expect(rows).toEqual([]);
     // The same id on GitHub itself still resolves to the member.
     expect(await w.runtime.actors.resolve({ workspaceId: ORG_A, project: "web", system: "github", sourceId: "123" })).toMatchObject({ developerId: "dev-1", trust: "member" });
-    expect(await w.runtime.actors.resolve({ workspaceId: ORG_A, project: "web", system: "codehost:gitfarm", sourceId: "123" })).toEqual({ trust: "outsider" });
+    expect(await w.runtime.actors.resolve({ workspaceId: ORG_A, project: "web", system: "codehost:examplehost", sourceId: "123" })).toEqual({ trust: "outsider" });
   });
 
   it("L6: the plug-in's server-side binding overwrites the workspace and project the event claims", async () => {
-    const w = setup([gitfarm]);
-    await addGitfarmRow(w);
-    const lying = { host: "gitfarm", id: "7", fullName: "pkg/api", isPrivate: false, workspaceId: "org-victim-0000", project: "other" };
+    const w = setup([examplehost]);
+    await addExamplehostRow(w);
+    const lying = { host: "examplehost", id: "7", fullName: "pkg/api", isPrivate: false, workspaceId: "org-victim-0000", project: "other" };
     const result = await w.runtime.taps.codeHost(ci(lying), binding);
     expect(result).toMatchObject({ written: 1 });
     const rows = w.db.find((item) => item.entityType === "TEAM_RECORD_EVENT");
