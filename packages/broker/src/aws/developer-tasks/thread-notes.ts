@@ -29,6 +29,7 @@ import {
   taskKey,
   taskOwnerKey,
   ownerDisplayName,
+  ownerNameWrittenAt,
   tryEffectiveTaskOwner,
   type DeveloperTaskRecord,
   type TaskOwnerSource,
@@ -53,7 +54,7 @@ import { PLANNER_WHY_AUTHOR, WHY_NOTES_MAX, WHY_NOTE_MAX_CHARS, creatorGuard, cu
  */
 export async function planWhyEntries(
   deps: Pick<DeveloperTaskRouteDependencies, "documentClient" | "tableName">,
-  task: Pick<DeveloperTaskRecord, "taskId" | "orgId" | "developerName" | "requestText" | "threadNotesFedFrom" | "threadNotesFedThrough"> & TaskOwnerSource,
+  task: Pick<DeveloperTaskRecord, "taskId" | "orgId" | "developerName" | "requestText" | "threadNotesFedFrom" | "threadNotesFedThrough" | "createdAt"> & TaskOwnerSource,
   plannerEntries: PlanDocument["why"],
   /** The GitHub login a person linked, for a name that is only an email address (C60); asked only then. */
   loginOf?: (developerId: string) => Promise<string | undefined>,
@@ -64,8 +65,8 @@ export async function planWhyEntries(
   // ERASE-NAME-2: the names the task stored are replaced for an erased person ("A former member") and a removed one (never the chosen name), as everywhere (developer/name-resolver.ts).
   const ownerId = tryEffectiveTaskOwner(task)?.developerId;
   const replaced = await replacementNames(nameResolverOf(deps, task.orgId), [task.developerId, ...(ownerId === undefined ? [] : [ownerId])]);
-  const requesterName = shownNameOf(task.developerName, task.developerId, replaced);
-  const ownerName = ownerId === undefined ? ownerDisplayName(task) : shownNameOf(ownerDisplayName(task), ownerId, replaced);
+  const requesterName = shownNameOf(task.developerName, task.developerId, replaced, task.createdAt);
+  const ownerName = ownerId === undefined ? ownerDisplayName(task) : shownNameOf(ownerDisplayName(task), ownerId, replaced, ownerNameWrittenAt(task));
   const requester = ownerLabel(requesterName, await loginIfAddress(requesterName, task.developerId));
   const owner = ownerLabel(ownerName, await loginIfAddress(ownerName, ownerId));
   const through = task.threadNotesFedThrough;

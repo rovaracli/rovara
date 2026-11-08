@@ -42,7 +42,7 @@ import {
   isBranchSyncBlockReason,
 } from "@agentx/contracts";
 import { isE2EPlanCorrectionBlockReason, ownerNameOfActor, taskKey, taskOwnerKey, tryEffectiveTaskOwner, type DeveloperTaskRecord } from "../../developer/task-records.js";
-import { nameResolverOf, replacementNames } from "../../developer/name-resolver.js";
+import { nameResolverOf, replacementNames, shownNameOf, type NameReplacements } from "../../developer/name-resolver.js";
 import { planEvidencePointerKey, type PlanEvidencePointer } from "../../developer/plan-evidence-jobs.js";
 import { loadPlanEvidence, loadWorkflowDocument } from "../../developer/plan-artifacts.js";
 import type { DeveloperCaller } from "../developer-routes.js";
@@ -555,13 +555,12 @@ async function coherentPageAccess(deps: DeveloperTaskRouteDependencies, caller: 
 }
 
 /** ERASE-NAME-1/2: actor id (`taskOwnerKey`) to the name that replaces the one stored for the task's people (its creator, its current owner, the Task People list): "A former member" for an erased person, never the chosen name for a removed one. */
-async function replacedActorNames(deps: Pick<DeveloperTaskRouteDependencies, "documentClient" | "tableName">, task: DeveloperTaskRecord, presentation: ReadonlyArray<{ developerId: string }>): Promise<Map<string, string>> {
+async function replacedActorNames(deps: Pick<DeveloperTaskRouteDependencies, "documentClient" | "tableName">, task: DeveloperTaskRecord, presentation: ReadonlyArray<{ developerId: string }>): Promise<{ replaced: NameReplacements; developers: ReadonlyMap<string, string> }> {
   const actorDevelopers = new Map<string, string>(presentation.map((person) => [taskOwnerKey(person.developerId, task.taskId), person.developerId]));
   actorDevelopers.set(taskOwnerKey(task.developerId, task.taskId), task.developerId);
   const currentOwner = tryEffectiveTaskOwner(task);
   if (currentOwner !== undefined) actorDevelopers.set(taskOwnerKey(currentOwner.developerId, task.taskId), currentOwner.developerId);
-  const replaced = await replacementNames(nameResolverOf(deps, task.orgId), actorDevelopers.values());
-  return new Map([...actorDevelopers].flatMap(([actorId, developerId]) => (replaced.has(developerId) ? [[actorId, replaced.get(developerId)!] as const] : [])));
+  return { replaced: await replacementNames(nameResolverOf(deps, task.orgId), actorDevelopers.values()), developers: actorDevelopers };
 }
 
 /**
@@ -681,8 +680,10 @@ export async function getTaskDocumentView(deps: DeveloperTaskRouteDependencies, 
   // ERASE-NAME-1: the names above were stored with the task (its owners', its people's). A person who was erased reads "A former member" in the history, whatever was stored.
   const replacedActors = await replacedActorNames(deps, task, presentation);
   // A decision reads under the name of the owner it was made by: the creator's for the creator's actor id, the taker's for theirs (Plan 5 Task 12a).
-  const personName = (actorId: string | undefined): string => {
-    if (actorId !== undefined && replacedActors.has(actorId)) return replacedActors.get(actorId)!;
+  // ERASED-REJOIN-NAME: `at` is when the thing the name is read for happened; a person who was erased and came back reads "A former member" for what happened before the new membership began.
+  const personName = (actorId: string | undefined, at?: string): string => {
+    const actorDeveloper = actorId === undefined ? undefined : replacedActors.developers.get(actorId);
+    if (actorDeveloper !== undefined && replacedActors.replaced.has(actorDeveloper)) return shownNameOf("", actorDeveloper, replacedActors.replaced, at);
     const named = actorId === undefined ? undefined : ownerNameOfActor(task, actorId);
     if (named !== undefined) {
       const label = redactText(ownerLabel(named));
@@ -692,7 +693,7 @@ export async function getTaskDocumentView(deps: DeveloperTaskRouteDependencies, 
   };
   const acceptedFindings = [...new Map((workflow?.acceptedFindings ?? []).filter((accepted) => accepted.candidateDigest === current)
     .map((accepted) => [`${accepted.role}:${accepted.fingerprint}`, accepted] as const)).values()]
-    .map((accepted) => ({ role: accepted.role === "SECURITY" ? "security" as const : "code" as const, text: redactText(accepted.text), reason: redactText(accepted.reason), owner: personName(accepted.actorId), at: accepted.at }));
+    .map((accepted) => ({ role: accepted.role === "SECURITY" ? "security" as const : "code" as const, text: redactText(accepted.text), reason: redactText(accepted.reason), owner: personName(accepted.actorId, accepted.at), at: accepted.at }));
   // What happened to the documents, newest first. A decision names the owner (or a project admin) and the version decided on.
   const documentOf = (artifact: { type: string; version: number }) => {
     const found = TASK_PAGE_DOCUMENTS.find((item) => item.type === artifact.type);
@@ -704,7 +705,7 @@ export async function getTaskDocumentView(deps: DeveloperTaskRouteDependencies, 
     if (found !== undefined) history.push({ at: artifact.createdAt, text: `${found.name} was written`, link: found.link });
   }
   for (const decision of workflow?.decisions ?? []) {
-    const who = decision.actorRole === "AGENTX" ? "Rovara" : decision.actorRole === "PROJECT_ADMIN" ? "A project admin" : personName(decision.actorId);
+    const who = decision.actorRole === "AGENTX" ? "Rovara" : decision.actorRole === "PROJECT_ADMIN" ? "A project admin" : personName(decision.actorId, decision.at);
     const artifact = decision.artifactDigest === undefined ? undefined : workflow?.artifacts.find((item) => item.sha256 === decision.artifactDigest);
     const found = artifact === undefined ? undefined : documentOf(artifact);
     const name = found?.name ?? "the document";
@@ -734,8 +735,8 @@ export async function getTaskDocumentView(deps: DeveloperTaskRouteDependencies, 
       if (event.entityType !== "TASK_PEOPLE_EVENT" || event.schemaVersion !== 1 || typeof event.actorDeveloperId !== "string"
         || typeof event.targetDeveloperId !== "string" || typeof event.createdAt !== "string" || !Number.isFinite(Date.parse(event.createdAt))
         || typeof event.afterRole !== "string" || !roles.has(event.afterRole)) throw agentXError("RUNTIME_UNAVAILABLE", "Task People history is invalid");
-      const actor = personName(taskOwnerKey(event.actorDeveloperId, taskId));
-      const target = personName(taskOwnerKey(event.targetDeveloperId, taskId));
+      const actor = personName(taskOwnerKey(event.actorDeveloperId, taskId), event.createdAt);
+      const target = personName(taskOwnerKey(event.targetDeveloperId, taskId), event.createdAt);
       const label = event.afterRole === "denied" ? "removed access for" : `made ${target} ${event.afterRole}`;
       history.push({ at: event.createdAt, text: event.afterRole === "denied" ? `${actor} ${label} ${target}` : `${actor} ${label}` });
     }

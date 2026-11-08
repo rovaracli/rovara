@@ -38,7 +38,7 @@ import { anchorTargetsOf } from "./anchors.js";
 import { closableSession, newSessionRoleMemo, requireSessionLevel, sessionActionsFor, type SessionAccess, type SessionCaller } from "./access.js";
 import { sessionLiveFlags } from "./live-flags.js";
 import { viewingNow } from "./followers.js";
-import { chosenOwnerNames, withChosenOwnerName } from "./owner-names.js";
+import { ownerNameOverlay, ownerNamedAt } from "./owner-names.js";
 import type { AuditRuntime } from "../audit/outbox.js";
 import type { ChainControl, SessionControlHost } from "./stop.js";
 import type { SessionTakeOverDependencies } from "./take-over.js";
@@ -250,7 +250,7 @@ export async function sessionView(deps: SessionReadDependencies, caller: Session
     ? { state: "paused_budget", reason: `it reached ${budgetScopeName(pausedView?.scope["kind"])}`, next: budgetPauseNext(pausedView?.scope["kind"], paused?.confirmUrl !== undefined, paused?.spendRequestId !== undefined) }
     : (() => { const next = taskStatusNext(baseDisplay, access.owner); const { nextOthers: _others, ...rest } = baseDisplay; void _others; return { ...rest, ...(next === undefined ? {} : { next }) }; })();
   // Release 0.4.18: the owner's chosen name, read by the stored owner's id (a session started before the rename stores the name the person had then).
-  const ownerNames = await chosenOwnerNames(deps, [access.effectiveOwner.developerId, session.owner.developerId], session.orgId);
+  const ownerNames = await ownerNameOverlay(deps, [access.effectiveOwner.developerId, session.owner.developerId], session.orgId);
   const followerItem = await getItem(deps, agentSessionKey(session.orgId, session.sessionId, `FOLLOWER#${caller.developerId}`));
   // Make this an agent (Task 10c): offered to a person who may create agents in the session's project, asked of the same check the route makes, with the org role read from their record. A task session only.
   const canMakeAgent = deps.mayMakeAgent !== undefined && session.kind === "task" && session.project !== undefined && await deps.mayMakeAgent({ orgId: caller.orgId, developerId: caller.developerId, orgRole: access.orgRole }, session.project);
@@ -266,7 +266,7 @@ export async function sessionView(deps: SessionReadDependencies, caller: Session
     title: wordsFor(access.owner)(session.title),
     ...(session.project === undefined ? {} : { project: session.project }),
     ...(session.agent === undefined ? {} : { agent: session.agent }),
-    owner: withChosenOwnerName(access.effectiveOwner, ownerNames),
+    owner: ownerNamedAt(access.effectiveOwner, ownerNames, access.effectiveOwnerWrittenAt),
     startedBy: session.startedBy,
     where: session.where.kind === "cloud" ? { kind: "cloud" } : { kind: "mac", label: session.where.label, offline: summary.offline === true },
     status,
@@ -280,7 +280,7 @@ export async function sessionView(deps: SessionReadDependencies, caller: Session
       spentUsd: summary.costUsd,
       ...(runLimitUsd === undefined ? {} : { runLimitUsd }),
       ...(stopAtUsd === undefined ? {} : { stopAtUsd }),
-      payer: await payerOf(deps, session, withChosenOwnerName({ developerId: session.owner.developerId, name: safeDisplayName(session.owner.name, session.owner.developerId) }, ownerNames).name),
+      payer: await payerOf(deps, session, ownerNamedAt({ developerId: session.owner.developerId, name: safeDisplayName(session.owner.name, session.owner.developerId) }, ownerNames, session.createdAt).name),
       ...(paused === undefined ? {} : { paused }),
     },
     approvals: mine.map((entry) => ({ approvalId: entry.approvalId, title: entry.title, confirmUrl: approveLink(deps, entry.approvalId) })),
@@ -418,8 +418,8 @@ export function openCursor(deps: Pick<SessionReadDependencies, "cursorKey">, cal
 export async function listSessions(deps: SessionReadDependencies, caller: SessionReadCaller, query: SessionListQuery): Promise<SessionList> {
   const list = await listSessionTiles(deps, caller, query);
   // Release 0.4.18: the owners' chosen names, one BatchGetItem for the page.
-  const names = await chosenOwnerNames(deps, list.sessions.map((tile) => tile.owner.developerId), caller.orgId);
-  return names.size === 0 ? list : { ...list, sessions: list.sessions.map((tile) => ({ ...tile, owner: withChosenOwnerName(tile.owner, names) })) };
+  const overlay = await ownerNameOverlay(deps, list.sessions.map((tile) => tile.owner.developerId), caller.orgId);
+  return overlay.chosen.size === 0 && overlay.replaced.size === 0 ? list : { ...list, sessions: list.sessions.map((tile) => ({ ...tile, owner: ownerNamedAt(tile.owner, overlay, tile.createdAt) })) };
 }
 
 async function listSessionTiles(deps: SessionReadDependencies, caller: SessionReadCaller, query: SessionListQuery): Promise<SessionList> {

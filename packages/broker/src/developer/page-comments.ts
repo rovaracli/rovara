@@ -147,7 +147,7 @@ export async function listTaskComments(deps: TableDependencies & Pick<DeveloperT
   // ERASE-NAME-2: the author's name was stored with the comment; an erased person reads "A former member", a removed one never the name they chose (developer/name-resolver.ts).
   const replaced = await replacementNames(nameResolverOf(deps, orgId), comments.flatMap((comment) => (comment.author.kind === "person" ? [comment.author.developerId] : [])));
   return comments.map((comment) => (comment.author.kind === "person" && replaced.has(comment.author.developerId)
-    ? { ...comment, author: { ...comment.author, name: shownNameOf(comment.author.name, comment.author.developerId, replaced) } } : comment)).sort(byTime);
+    ? { ...comment, author: { ...comment.author, name: shownNameOf(comment.author.name, comment.author.developerId, replaced, comment.createdAt) } } : comment)).sort(byTime);
 }
 
 /** Comments a decision on `document` may include: people's, not deleted, not already sent, on any version up to `uptoVersion`; oldest first. */
@@ -521,7 +521,7 @@ export async function listSuggestions(deps: TableDependencies & Pick<DeveloperTa
   }
   // ERASE-NAME-2: as the comments' authors.
   const replaced = await replacementNames(nameResolverOf(deps, orgId), suggestions.map((suggestion) => suggestion.developerId));
-  return suggestions.map((suggestion) => (replaced.has(suggestion.developerId) ? { ...suggestion, name: shownNameOf(suggestion.name, suggestion.developerId, replaced) } : suggestion))
+  return suggestions.map((suggestion) => (replaced.has(suggestion.developerId) ? { ...suggestion, name: shownNameOf(suggestion.name, suggestion.developerId, replaced, suggestion.at) } : suggestion))
     .sort((left, right) => left.at.localeCompare(right.at) || left.developerId.localeCompare(right.developerId));
 }
 

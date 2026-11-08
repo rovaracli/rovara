@@ -15,7 +15,7 @@ import {
 } from "../../packages/broker/src/developer/chosen-name.js";
 import { nameEraserOf } from "../../packages/broker/src/developer/erase-name.js";
 import { placeholderDisplayName } from "../../packages/broker/src/developer/person-name.js";
-import { DeveloperSignInStore, NAME_ERASED_MESSAGE } from "../../packages/broker/src/developer/store.js";
+import { DeveloperSignInStore } from "../../packages/broker/src/developer/store.js";
 import { erasePerson } from "../../packages/broker/src/team-record/erase.js";
 import { ARJUN, CELL, ORG_A, PRIYA, sessionWorld } from "../support/agent-session-world.js";
 import { FakeDynamoDb } from "../support/fake-dynamodb.js";
@@ -42,7 +42,7 @@ describe("the name item", () => {
     expect(stored).not.toHaveProperty("name");
     expect(await readChosenName(db, "state", PRIYA)).toBe(FORMER_MEMBER_NAME);
     expect([...(await readChosenNames(db, "state", [PRIYA, ARJUN])).entries()]).toEqual([[PRIYA, FORMER_MEMBER_NAME]]);
-    expect((await readChosenNameStates(db, "state", [PRIYA])).get(PRIYA)).toEqual({ name: FORMER_MEMBER_NAME, erased: true });
+    expect((await readChosenNameStates(db, "state", [PRIYA])).get(PRIYA)).toEqual({ name: FORMER_MEMBER_NAME, erased: true, erasedEver: true });
     // The erase's own reads (the Asks' alias hashing) never take the label for one of the person's names.
     expect(await readOwnChosenName(db, "state", PRIYA)).toBeUndefined();
   });
@@ -108,15 +108,17 @@ describe("the sign-in record and the erase of the name", () => {
     expect(tombstoneOf(db, ARJUN)).toMatchObject({ erased: true });
   });
 
-  it("shows 'A former member' in member lists and for one person, and refuses a name chosen over the tombstone", async () => {
+  it("shows 'A former member' in member lists and for one person; a name chosen after the erase is the name of a new membership and the tombstone stays (ERASED-REJOIN-NAME)", async () => {
     const { db, signIn, broker } = stores();
     await signIn.upsertDeveloper(profile(REAL));
     expect([...(await broker.getDevelopers([PRIYA])).values()].map((record) => record.displayName)).toEqual([REAL]);
     await eraseChosenName(db, "state", PRIYA, AT);
     expect([...(await broker.getDevelopers([PRIYA])).values()].map((record) => record.displayName)).toEqual([FORMER_MEMBER_NAME]);
     expect((await broker.getDeveloper(PRIYA))?.displayName).toBe(FORMER_MEMBER_NAME);
-    await expect(broker.setChosenDisplayName({ developerId: PRIYA, orgId: TEST_ORG, name: "Back Again" })).rejects.toMatchObject({ code: "FORBIDDEN", message: expect.stringContaining(NAME_ERASED_MESSAGE) as string });
-    expect(tombstoneOf(db, PRIYA)).toMatchObject({ erased: true });
+    expect((await broker.setChosenDisplayName({ developerId: PRIYA, orgId: TEST_ORG, name: "Back Again" })).displayName).toBe("Back Again");
+    expect(tombstoneOf(db, PRIYA)).toMatchObject({ erased: true, erasedAt: AT, name: "Back Again", chosenAt: new Date(NOW).toISOString() });
+    expect((await broker.getDeveloper(PRIYA))?.displayName).toBe("Back Again");
+    expect([...(await broker.getDevelopers([PRIYA])).values()].map((record) => record.displayName)).toEqual(["Back Again"]);
   });
 });
 

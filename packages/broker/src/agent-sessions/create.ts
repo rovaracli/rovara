@@ -350,7 +350,7 @@ export async function ensureTaskSession(
   try {
     if (task.sessionId !== undefined) return task.sessionId;
     // ERASE-NAME-2: a session made after the person was erased (or removed) does not store a fresh copy of the name they had (developer/name-resolver.ts).
-    const ownerName = await resolveStoredName({ documentClient: table.documentClient, tableName: table.tableName, orgId: task.orgId }, task.developerId, input.ownerName);
+    const ownerName = await resolveStoredName({ documentClient: table.documentClient, tableName: table.tableName, orgId: task.orgId }, task.developerId, input.ownerName, task.createdAt);
     const sessionInput = lazyTaskSessionInput(task, { ...input, ownerName });
     if (sessionInput === undefined || task.orgId === undefined) return undefined;
     const sessionId = sessionInput.sessionId;

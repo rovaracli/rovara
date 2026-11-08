@@ -1,5 +1,6 @@
 import { logDeveloperEvent } from "../../developer/log.js";
 import { deleteChosenNameOfRemoved } from "../../developer/chosen-name.js";
+import { erasedNameIsChosenAgain } from "../../agent-sessions/ask-erased-aliases.js";
 import { changeReviewedMemberRole } from "../../org/role-changes.js";
 import { type RemovalHelpers } from "../../org/member-removal/routes.js";
 import { requireAuditorEdition } from "../../org/auditor.js";
@@ -136,7 +137,10 @@ export async function getAppMe(deps: DeveloperRouteDependencies, caller: Develop
 export async function setMyName(deps: DeveloperRouteDependencies, caller: DeveloperCaller, body: unknown): Promise<SetMyNameResponse> {
   const parsed = SetMyNameBodySchema.safeParse(body);
   if (!parsed.success) throw bodyError(parsed.error);
-  const store = new DeveloperSignInStore({ documentClient: deps.documentClient, tableName: deps.developer.signInTableName, nameTableName: deps.tableName, now: deps.now, ...(deps.audit === undefined ? {} : { audit: deps.audit }) });
+  // ERASED-REJOIN-NAME: a person who was erased and came back may choose a new name, but not the one they were erased under (checked against the Ask step's keyed hashes of it).
+  const erasedNameKey = deps.developer.erasedNameKey;
+  const erasedNameCheck = erasedNameKey === undefined ? undefined : (developerId: string, name: string) => erasedNameIsChosenAgain({ documentClient: deps.documentClient, tableName: deps.tableName }, caller.orgId, developerId, name, deps.now(), erasedNameKey);
+  const store = new DeveloperSignInStore({ documentClient: deps.documentClient, tableName: deps.developer.signInTableName, nameTableName: deps.tableName, now: deps.now, ...(deps.audit === undefined ? {} : { audit: deps.audit }), ...(erasedNameCheck === undefined ? {} : { erasedNameCheck }) });
   const record = await store.setChosenDisplayName({ developerId: caller.developerId, orgId: caller.orgId, name: parsed.data.name });
   logDeveloperEvent({ event: "developer.name_chosen" });
   return { name: record.displayName, nameChosen: true };

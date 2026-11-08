@@ -576,6 +576,6 @@ export async function listSessionMessages(deps: SessionMessageDependencies, call
   const presented = await presentMessages(deps, session, access, [...repeated, ...fresh].map((entry) => entry.message), targets);
   // ERASE-NAME-2: the author's name was stored with the message; an erased person reads "A former member", a removed one never the name they chose (developer/name-resolver.ts).
   const replaced = await replacementNames({ documentClient: deps.documentClient, tableName: deps.tableName, orgId: session.orgId }, presented.map((message) => message.author.developerId));
-  const shown = replaced.size === 0 ? presented : presented.map((message) => (replaced.has(message.author.developerId) ? { ...message, author: { ...message.author, name: shownNameOf(message.author.name, message.author.developerId, replaced) } } : message));
+  const shown = replaced.size === 0 ? presented : presented.map((message) => (replaced.has(message.author.developerId) ? { ...message, author: { ...message.author, name: shownNameOf(message.author.name, message.author.developerId, replaced, message.createdAt) } } : message));
   return { messages: shown, ...(next === undefined ? {} : { next }) };
 }

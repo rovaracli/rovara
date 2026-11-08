@@ -139,3 +139,20 @@ export async function sweepErasedAliases(table: AskStoreTable, orgId: OrgId, now
   }
   return deleted;
 }
+
+/**
+ * ERASED-REJOIN-NAME: whether `name` is a name the erased person was known by, from the keyed hashes this module keeps (nothing readable is stored or compared). A name of two or more words is the same name when
+ * its joined hash, in either word order, is kept (so case, accents, look-alike letters, spacing and word order do not get around it). A one-word name is refused when that word is kept as one of the person's words
+ * (the safer side: a person who was "Priya Rao" cannot come back as "Priya"). False when the hashes are not there: no key, the entry expired (it is kept `ERASED_ALIAS_RETENTION_DAYS` days), or the erase kept
+ * none (the Team record's switch was off, so no Ask step ran). Throws when the entry cannot be read.
+ */
+export async function erasedNameIsChosenAgain(table: AskStoreTable, orgId: OrgId, developerId: string, name: string, nowMs: number, key: string | undefined): Promise<boolean> {
+  if (key === undefined) return false;
+  const response = await table.documentClient.send(new GetCommand({ TableName: table.tableName, Key: askErasedAliasKey(orgId, askPersonTag(developerId)), ConsistentRead: true })) as { Item?: Record<string, unknown> };
+  const expires = response.Item?.[INDEX_EXPIRY_ATTRIBUTE];
+  if (response.Item === undefined || typeof expires !== "number" || expires * 1000 <= nowMs) return false;
+  const kept = { names: new Set(strings(response.Item["nameHashes"])), mentions: new Set(strings(response.Item["mentionHashes"])) };
+  const words = wordsOf(skeletonOf(normaliseWords(name.slice(0, ALIAS_MAX_CHARS))));
+  if (words.length > 1) return [words.join(""), [...words].reverse().join("")].some((joined) => kept.names.has(hash(key, "n", joined)));
+  return words.length === 1 && words[0]!.length >= 2 && kept.mentions.has(hash(key, "m", words[0]!));
+}

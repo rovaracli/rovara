@@ -13,8 +13,13 @@ export interface ChosenNameItem { pk: string; sk: string; entityType?: string; d
  * reads the chosen name reads the erased state in the same request, and a stored copy of the name it missed (an event's actor, a task's owner) is still replaced by this.
  */
 export const FORMER_MEMBER_NAME = "A former member";
-/** One person's state in the name item: the name to show (the chosen one, or `FORMER_MEMBER_NAME` for an erased person) and whether they were erased. */
-export interface ChosenNameState { name: string; erased: boolean }
+/**
+ * One person's state in the name item: the name to show (the chosen one, or `FORMER_MEMBER_NAME` for an erased person) and whether they are erased now.
+ * ERASED-REJOIN-NAME: a person who was erased and came back may choose a NEW name for the new membership. The item then holds both: the erasure tombstone (`erased`, `erasedAt`, kept) and the new name
+ * (`name`, `chosenAt`). Such a person reads `{ name: <the new name>, erased: false, erasedEver: true, rejoinedAt: <when the new name was chosen> }`: the name to show for the person NOW, while `erasedEver`
+ * tells a reader that everything written before `rejoinedAt` belongs to the old membership and stays "A former member". `erasedEver` is true for every person who was ever erased.
+ */
+export interface ChosenNameState { name: string; erased: boolean; erasedEver?: boolean; rejoinedAt?: string }
 
 const CHOSEN_NAME_SORT_KEY = "NAME";
 /** BatchGetItem takes 100 keys at most. */
@@ -31,12 +36,22 @@ function shownName(item: ChosenNameItem | undefined, developerId: string): strin
   return safeDisplayName(item.name, developerId);
 }
 
-/** The state an item stands for: an erase tombstone, a usable chosen name, or nothing. */
+/** The state an item stands for: an erase tombstone, a name chosen after an erase (a new membership), a usable chosen name, or nothing. */
 function stateOf(item: ChosenNameItem | undefined, developerId: string): ChosenNameState | undefined {
   if (item === undefined) return undefined;
-  if (item.erased === true) return { name: FORMER_MEMBER_NAME, erased: true };
+  if (item.erased === true) {
+    const rejoined = rejoinedOf(item, developerId);
+    return rejoined !== undefined ? { name: rejoined.name, erased: false, erasedEver: true, rejoinedAt: rejoined.at } : { name: FORMER_MEMBER_NAME, erased: true, erasedEver: true };
+  }
   const name = shownName(item, developerId);
   return name === undefined ? undefined : { name, erased: false };
+}
+
+/** The new membership of a person who was erased and came back: the name they chose for it (made safe to show) and when. Only an item that holds both the erasure tombstone and a name chosen after it. */
+export function rejoinedOf(item: ChosenNameItem | undefined, developerId: string): { name: string; at: string } | undefined {
+  if (item?.erased !== true || typeof item.chosenAt !== "string" || !Number.isFinite(Date.parse(item.chosenAt))) return undefined;
+  const name = shownName(item, developerId);
+  return name === undefined ? undefined : { name, at: item.chosenAt };
 }
 
 /** The person's state from the State table, strongly consistent: their chosen name, "A former member" for an erased person, or undefined when they never chose a name. */
@@ -104,20 +119,56 @@ export function withChosenName<T extends { displayName: string; displayNameChose
 }
 
 /**
- * ERASE-NAME-1, erasure: the name item becomes a tombstone (`erased: true`, no name, no chosen time), so the chosen name is gone from storage and every reader of the item reads "erased". Written
- * unconditionally and repeatable. A name chosen later is refused (`setChosenDisplayName` conditions its write on there being no tombstone).
+ * ERASE-NAME-1, erasure: the name item becomes a tombstone (`erased: true`, no name, no chosen time), so the chosen name is gone from storage and every reader of the item reads "erased". Repeatable: an
+ * item that is already a tombstone with no name after it stays as it is (the first `erasedAt` stands, which the time-scoped readers rely on). A person who came back and chose a new name is erased again:
+ * the tombstone then carries the new time and the new name is gone too. A name chosen later is allowed only as the name of a new membership (`chosenNameWrite`); the tombstone stays.
  */
 export async function eraseChosenName(client: ChosenNameClient, tableName: string, developerId: string, at: string): Promise<void> {
-  await client.send(new PutCommand({ TableName: tableName, Item: { ...chosenNameKey(developerId), entityType: "DEVELOPER_NAME", developerId, erased: true, erasedAt: at } }));
+  try {
+    await client.send(new PutCommand({
+      TableName: tableName,
+      Item: { ...chosenNameKey(developerId), entityType: "DEVELOPER_NAME", developerId, erased: true, erasedAt: at },
+      ConditionExpression: "attribute_not_exists(pk) OR attribute_not_exists(erased) OR attribute_exists(#name)",
+      ExpressionAttributeNames: { "#name": "name" },
+    }));
+  } catch (error) {
+    if ((error as { name?: string } | undefined)?.name !== "ConditionalCheckFailedException") throw error;
+  }
+}
+
+/**
+ * ERASED-REJOIN-NAME: the write that makes `name` the person's chosen name, given the item as read just before. A person who was never erased gets the plain item (conditioned on there still being no tombstone).
+ * A person who was erased keeps the tombstone (`erased`, `erasedAt`) in the same item and gets the new name beside it; the condition is that the tombstone is still the one that was read (a new erase in between
+ * fails the write). The caller has already refused a name that is the erased one (`../agent-sessions/ask-erased-aliases.ts`, `erasedNameIsChosenAgain`).
+ */
+export function chosenNameWrite(existing: ChosenNameItem | undefined, developerId: string, name: string, at: string): { item: Record<string, unknown>; condition: string; values?: Record<string, unknown> } {
+  const base = { ...chosenNameKey(developerId), entityType: "DEVELOPER_NAME", developerId, name, chosenAt: at };
+  if (existing?.erased === true && typeof existing.erasedAt === "string") {
+    return { item: { ...base, erased: true, erasedAt: existing.erasedAt }, condition: "erased = :erased AND erasedAt = :erasedAt", values: { ":erased": true, ":erasedAt": existing.erasedAt } };
+  }
+  return { item: base, condition: "attribute_not_exists(erased)" };
 }
 
 /**
  * ERASE-NAME-1, removal: replaces the chosen name of a person removed from the company at `removedAt` with a removal marker (`removed: true`, no name): the name is gone from storage, and a reader that
  * finds the marker (name-resolver.ts) shows the sign-in record's name or the placeholder, never the chosen name, wherever a copy of it was stored. Only a name chosen at or before the removal goes (one chosen
- * after it, by a person who came back, stays), a tombstone is never replaced, and a person with no name item gets no marker. Repeatable.
+ * after it, by a person who came back, stays), a tombstone is never replaced by the marker (a person who was erased and chose a new name loses that name, the tombstone stays), and a person with no name item gets no marker. Repeatable.
  */
 export async function deleteChosenNameOfRemoved(client: ChosenNameClient, tableName: string, developerId: string, removedAt: string): Promise<void> {
   try {
+    const found = await client.send(new GetCommand({ TableName: tableName, Key: chosenNameKey(developerId), ConsistentRead: true })) as { Item?: ChosenNameItem };
+    const item = found.Item;
+    // A person who was erased, came back, chose a new name and is removed again: the new name goes (the tombstone stays, as a tombstone with no name), when it was chosen at or before the removal.
+    if (item?.erased === true) {
+      if (rejoinedOf(item, developerId) === undefined || typeof item.erasedAt !== "string" || (item.chosenAt ?? "") > removedAt) return;
+      await client.send(new PutCommand({
+        TableName: tableName,
+        Item: { ...chosenNameKey(developerId), entityType: "DEVELOPER_NAME", developerId, erased: true, erasedAt: item.erasedAt },
+        ConditionExpression: "erased = :erased AND chosenAt = :chosenAt",
+        ExpressionAttributeValues: { ":erased": true, ":chosenAt": item.chosenAt },
+      }));
+      return;
+    }
     await client.send(new PutCommand({
       TableName: tableName,
       Item: { ...chosenNameKey(developerId), entityType: "DEVELOPER_NAME", developerId, removed: true, removedAt },

@@ -20,7 +20,7 @@ import {
 import { auditIdentityLinked, auditIdentityUnlinked, auditMemberRenamed, auditOccurrence } from "../audit/events.js";
 import { flushAuditEvents } from "../audit/flush.js";
 import { auditPending, tryAuditEvents, type AuditRuntime, type TransactItem } from "../audit/outbox.js";
-import { chosenNameKey, chosenNameStatesOf, readChosenName, readNameItems, withChosenName, type ChosenNameItem } from "./chosen-name.js";
+import { chosenNameStatesOf, chosenNameWrite, readChosenName, readNameItems, withChosenName, type ChosenNameItem } from "./chosen-name.js";
 import { placeholderDisplayName, readableDeveloper, safeDisplayName } from "./person-name.js";
 import { ownerKeyForSubject } from "../aws/lambda.js";
 import { pkceChallengeMatches, randomToken, sha256Hex } from "./tokens.js";
@@ -220,8 +220,10 @@ const safeChosenName = (name: string): string | undefined => {
   return parsed.success ? parsed.data.name : undefined;
 };
 
-/** ERASE-NAME-1: why a name can't be chosen over the tombstone an erase leaves. Final: signing in again does not help, and no administrator can undo an erase. */
-export const NAME_ERASED_MESSAGE = "your name was erased with your details and can't be set again; you show as \"A former member\"";
+/** A name chosen while an erase was being written: the person's details were just erased, and the name was not saved. */
+export const NAME_ERASED_MESSAGE = "your details were just erased, so this name was not saved; choose a name again";
+/** ERASED-REJOIN-NAME: the name a person tries to choose is the one they were erased under. Their old history stays anonymous, so it can't be linked to them again by that name. */
+export const NAME_WAS_ERASED_MESSAGE = "that is the name you had before your details were erased; choose a different name (your earlier work stays under \"A former member\")";
 
 const conditionFailed = (error: unknown) =>
   error instanceof Error && (error.name === "ConditionalCheckFailedException" || error.name === "TransactionCanceledException");
@@ -258,6 +260,11 @@ export class DeveloperSignInStore {
      * name, and `setChosenDisplayName` writes it. The sign-in function leaves it out (it has no grant on that item) and reads the sign-in record's name.
      */
     nameTableName?: string;
+    /**
+     * ERASED-REJOIN-NAME: whether `name` is the name an erased person was known by (compared as keyed hashes, so nothing readable is kept; ask-erased-aliases.ts `erasedNameIsChosenAgain`). Asked only
+     * when the person has an erase tombstone. Absent (or it answers false): the new name is accepted. A throw refuses the choice: when it cannot be settled, the old name is not let back in.
+     */
+    erasedNameCheck?: (developerId: string, name: string) => Promise<boolean>;
   }) {}
 
   private seconds(): number { return Math.floor(this.input.now() / 1000); }
@@ -438,10 +445,14 @@ export class DeveloperSignInStore {
     })]);
     const signInCheck = 1;
     const nameCheck = 0;
+    // ERASED-REJOIN-NAME: a person who was erased may choose a name for the new membership. The tombstone stays in the item (the write keeps it); the name they were erased under is refused.
+    const existing = (await readNameItems(this.input.documentClient, nameTable, [input.developerId])).get(input.developerId);
+    if (existing?.erased === true && this.input.erasedNameCheck !== undefined && await this.input.erasedNameCheck(input.developerId, name)) throw agentXError("FORBIDDEN", NAME_WAS_ERASED_MESSAGE);
+    const write = chosenNameWrite(existing, input.developerId, name, at);
     try {
       await this.input.documentClient.send(new TransactWriteCommand({ TransactItems: [
-        // ERASE-NAME-1: a person who was erased has a tombstone here, and no name is chosen over it.
-        { Put: { TableName: nameTable, Item: { ...chosenNameKey(input.developerId), entityType: "DEVELOPER_NAME", developerId: input.developerId, name, chosenAt: at }, ConditionExpression: "attribute_not_exists(erased)" } },
+        // ERASE-NAME-1: the condition keeps an erase that lands in between (a new tombstone) from being overwritten by this name.
+        { Put: { TableName: nameTable, Item: write.item, ConditionExpression: write.condition, ...(write.values === undefined ? {} : { ExpressionAttributeValues: write.values }) } },
         // A person whose sign-in was turned off, or who was merged into another developer, cannot rename (a revocation landing after the session check is caught here).
         // The check is on the sign-in record, which this transaction only reads.
         { ConditionCheck: {

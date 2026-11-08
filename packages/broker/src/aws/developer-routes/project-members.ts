@@ -58,7 +58,7 @@ async function buildProjectMembersResponse(deps: DeveloperRouteDependencies, org
   const ids = [...new Set(rows.flatMap((row) => [row.developerId, ...(row.grantedBy !== undefined && "developerId" in row.grantedBy ? [row.grantedBy.developerId] : [])]))];
   const { records, nameItems } = await store.getDevelopersWithNameItems(ids);
   // ERASE-NAME-2: a person erased (also before the name item had a tombstone) is not shown by the name stored for them.
-  const replaced = await replacementNamesFrom(nameResolverOf(deps, orgId), ids, nameItems);
+  const replaced = (await replacementNamesFrom(nameResolverOf(deps, orgId), ids, nameItems)).currentOnly();
   await mapLimit(ids, REVISION_READS_AT_ONCE, async (id) => {
     const record = records.get(id);
     const identities = await store.identitiesOf(id);

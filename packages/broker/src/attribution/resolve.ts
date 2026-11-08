@@ -120,7 +120,9 @@ export function dynamoAttributionReader(input: { documentClient: DocumentClient;
     },
     async isErased(orgId, developerId) {
       // ERASE-NAME-1: the erase leaves a tombstone in the name item (State table), which exists whether or not the Team record is on; the record's own marker is checked only where there is a record table.
-      if ((await readChosenNameState(input.documentClient, input.stateTable, developerId))?.erased === true) return true;
+      // ERASED-REJOIN-NAME: ever erased counts, also for a person who came back and chose a new name: the description of work does not name them (their old work stays anonymous).
+      const state = await readChosenNameState(input.documentClient, input.stateTable, developerId);
+      if (state?.erased === true || state?.erasedEver === true) return true;
       return input.teamRecordTable !== "" && (await get(input.teamRecordTable, erasedPersonKey(orgId, { developerId }))) !== undefined;
     },
   };

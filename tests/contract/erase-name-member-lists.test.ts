@@ -60,6 +60,19 @@ describe("the company's member list", () => {
   });
 });
 
+describe("a member who was erased and came back (ERASED-REJOIN-NAME)", () => {
+  it("shows the new name in the member list, and 'A former member' until they have chosen one", async () => {
+    const h = await org();
+    const bea = person(h, REAL, "member");
+    h.db.set({ ...chosenNameKey(bea.developerId), entityType: "DEVELOPER_NAME", developerId: bea.developerId, erased: true, erasedAt: "2026-11-01T00:00:00.000Z" });
+    expect(nameIn((await h.dev(OMAR, "GET", "/v1/app/org/members")).body, bea)).toBe(FORMER_MEMBER_NAME);
+    h.db.set({ ...chosenNameKey(bea.developerId), entityType: "DEVELOPER_NAME", developerId: bea.developerId, erased: true, erasedAt: "2026-11-01T00:00:00.000Z", name: CHOSEN, chosenAt: "2026-11-02T00:00:00.000Z" });
+    const after = await h.dev(OMAR, "GET", "/v1/app/org/members");
+    expect(nameIn(after.body, bea)).toBe(CHOSEN);
+    expect(JSON.stringify(after.body)).not.toContain(REAL);
+  });
+});
+
 describe("the removal preview and status", () => {
   it("name an erased member and an erased successor 'A former member'", async () => {
     const h = await org();

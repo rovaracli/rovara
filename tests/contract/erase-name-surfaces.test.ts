@@ -112,7 +112,7 @@ describe("the resolver", () => {
     const lines: string[] = [];
     const log = vi.spyOn(console, "log").mockImplementation((line: unknown) => { lines.push(String(line)); });
     try {
-      expect(await replacementNames({ ...deps(db), documentClient: failing }, [ids.erased])).toEqual(new Map([[ids.erased, UNAVAILABLE_NAME]]));
+      expect([...await replacementNames({ ...deps(db), documentClient: failing }, [ids.erased])]).toEqual([[ids.erased, UNAVAILABLE_NAME]]);
       expect(await resolveStoredName({ ...deps(db), documentClient: failing }, ids.erased, REAL)).toBe(UNAVAILABLE_NAME);
     } finally {
       log.mockRestore();
@@ -410,9 +410,8 @@ describe("session events written by other people", () => {
 });
 
 describe("the message for a name that was erased", () => {
-  it("says plainly that the name was erased and shows as 'A former member', and sends no one to an administrator", () => {
+  it("says plainly that the details were just erased (a name chosen while the erase landed), and sends no one to an administrator", () => {
     expect(NAME_ERASED_MESSAGE).toContain("erased");
-    expect(NAME_ERASED_MESSAGE).toContain(FORMER_MEMBER_NAME);
     expect(NAME_ERASED_MESSAGE.toLowerCase()).not.toContain("administrator");
     expect(NAME_ERASED_MESSAGE.toLowerCase()).not.toContain("admin");
   });

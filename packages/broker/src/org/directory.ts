@@ -21,7 +21,7 @@ export async function listOrganizationMembers(deps: Deps, caller: DeveloperCalle
  const records = await deps.orgs.listMembers(caller.orgId), store = storeOf(deps);
  const { records: developerRecords, nameItems } = await store.getDevelopersWithNameItems(records.map(member => member.developerId));
  // ERASE-NAME-2: a person erased (also before the name item had a tombstone) or removed is not shown by the name stored for them.
- const replaced = await replacementNamesFrom(nameResolverOf(deps, caller.orgId), [...new Set(records.map(member => member.developerId))], nameItems);
+ const replaced = (await replacementNamesFrom(nameResolverOf(deps, caller.orgId), [...new Set(records.map(member => member.developerId))], nameItems)).currentOnly();
  records.sort((a, b) => a.joinedAt.localeCompare(b.joinedAt) || a.developerId.localeCompare(b.developerId));
  const listed: Array<{ developerId: string; name: string; role: OrgRole | "unknown"; email?: string; joinedAt?: string; identities?: string[] }> = [];
  // Bound concurrent reads. Restricted requests never read sign-in identity rows.
@@ -53,5 +53,5 @@ export async function lookupOrganizationMember(deps: Deps, caller: DeveloperCall
  const store = storeOf(deps), record = await store.getDeveloper(candidate);if (record === undefined || record.revoked) return none;
  const identities = await store.identitiesOf(candidate), emails = [record.email, ...identities.map(identity => identity.email)];
  if (!emails.some(email => email !== undefined && normalizeEmail(email).ascii && normalizeEmail(email).email === normalized.email)) return none;
- return { match: { developerId: candidate, name: (await replacementNames(nameResolverOf(deps, caller.orgId), [candidate])).get(candidate) ?? record.displayName } };
+ return { match: { developerId: candidate, name: (await replacementNames(nameResolverOf(deps, caller.orgId), [candidate])).currentOnly().get(candidate) ?? record.displayName } };
 }

@@ -40,7 +40,7 @@ async function peopleOf(deps: Deps, caller: DeveloperCaller, ids: readonly strin
   const store = new DeveloperSignInStore({ documentClient: deps.documentClient, tableName: deps.developer.signInTableName, nameTableName: deps.tableName, now: deps.now });
   const foundIds = found.map((member) => member.developerId);
   const { records, nameItems } = await store.getDevelopersWithNameItems(foundIds);
-  const replaced = await replacementNamesFrom(nameResolverOf(deps, caller.orgId), foundIds, nameItems);
+  const replaced = (await replacementNamesFrom(nameResolverOf(deps, caller.orgId), foundIds, nameItems)).currentOnly();
   return new Map(found.map((member) => {
     const role = OrgRoleSchema.safeParse(member.role);
     return [member.developerId, { name: replaced.get(member.developerId) ?? records.get(member.developerId)?.displayName ?? "Unknown", role: role.success ? role.data : undefined }];
@@ -120,7 +120,7 @@ export async function getMemberRemoval(deps: Deps, caller: DeveloperCaller, remo
   const ids = [record.leaverId, ...(record.successorId === undefined ? [] : [record.successorId])];
   const { records: people, nameItems } = await store.getDevelopersWithNameItems(ids);
   // ERASE-NAME-2: a person erased (also before the name item had a tombstone) is not shown by the name stored for them.
-  const replaced = await replacementNamesFrom(nameResolverOf(deps, caller.orgId), ids, nameItems);
+  const replaced = (await replacementNamesFrom(nameResolverOf(deps, caller.orgId), ids, nameItems)).currentOnly();
   const invites = await invitesCreatedBy(deps, caller, record.leaverId);
   const nameOf = (id: string) => replaced.get(id) ?? people.get(id)?.displayName ?? "Unknown";
   return MemberRemovalStatusSchema.parse({

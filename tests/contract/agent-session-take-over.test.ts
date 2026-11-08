@@ -23,6 +23,7 @@ import { effectiveTaskOwner, taskIndexKey, taskKey, taskOwnerKey, type Developer
 import { mintTagsFor, paymentOfTask } from "../../packages/broker/src/spend/payer.js";
 import { NeedsConfirmationSchema, SessionEventSchema } from "../../packages/contracts/src/index.js";
 import { FORMER_MEMBER_NAME, chosenNameKey, eraseChosenName } from "../../packages/broker/src/developer/chosen-name.js";
+import { forgetResolvedNames } from "../../packages/broker/src/developer/name-resolver.js";
 import { placeholderDisplayName } from "../../packages/broker/src/developer/person-name.js";
 import { capturingAuditDeps } from "../support/audit-capture.js";
 import { ARJUN, BO, CELL, MAX, MIA, OLA, ORG_A, PRIYA, ZED, sessionWorld } from "../support/agent-session-world.js";
@@ -1011,6 +1012,23 @@ describe("a previous owner who was erased or removed (ERASE-NAME-2)", () => {
     // Someone who is not the owner and may not take it over is told whom to ask by the same name.
     const refused = await code(w.ask(ZED, sessionId));
     expect(JSON.stringify(refused)).not.toContain("Priya");
+  });
+
+  it("names an erased owner who came back 'A former member' for a session from before the new membership (ERASED-REJOIN-NAME), and a session of the new membership by the new name", async () => {
+    const w = world();
+    const { sessionId } = sessionSeed(w);
+    // The session began at CREATED_AT, before the erase; the person came back and chose a new name afterwards.
+    w.db.set({ ...chosenNameKey(PRIYA), entityType: "DEVELOPER_NAME", developerId: PRIYA, erased: true, erasedAt: CREATED_AT, name: "Pri Newname", chosenAt: new Date(Date.parse(CREATED_AT) + 86_400_000).toISOString() });
+    const { approvalId, confirmation } = await w.asked(MAX, sessionId);
+    expect(confirmation.changes.at(-1)).toBe(`${FORMER_MEMBER_NAME} keeps "can edit".`);
+    expect(JSON.stringify(await w.approvalOf(approvalId))).not.toContain("Priya");
+    expect(JSON.stringify(await w.approvalOf(approvalId))).not.toContain("Pri Newname");
+    // A session that began after the new name was chosen shows the new name.
+    const meta = w.db.get(agentSessionKey(ORG_A, sessionId, "META"))!;
+    w.db.set({ ...meta, createdAt: new Date(Date.parse(CREATED_AT) + 2 * 86_400_000).toISOString() });
+    forgetResolvedNames();
+    const later = await w.asked(MAX, sessionId);
+    expect(later.confirmation.changes.at(-1)).toBe('Pri Newname keeps "can edit".');
   });
 
   it("names a removed owner by the placeholder, never the name stored with the session", async () => {
