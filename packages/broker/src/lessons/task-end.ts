@@ -7,12 +7,14 @@
 //    was not, nothing is registered and the end of a task is exactly what it was.
 //  - Never in the way: the hook never throws and never delays an end beyond its own awaited work; a failure is a fixed log line and the task has ended all the same.
 //  - The task-side facts come from a `TaskSubjectSource` (intent, plan and review spans, trusts, links, the commits, the start fields). Where it gives nothing the hook does nothing.
+import { randomUUID } from "node:crypto";
 import { registerTaskEndHandler, type TaskEndHandler, type TaskEndOutcome } from "../agents/task-end.js";
 import { modeAllows, resolveLearning, type LearningSettingsReader } from "./policy.js";
 import { processDraft, type ProcessDeps } from "./process.js";
 import { reflectSubject, type ReflectDeps } from "./reflect.js";
 import type { ReflectSubject } from "./reflect-input.js";
 import type { RovaraEmitter } from "../team-record/sources/rovara.js";
+import type { ReflectQueue } from "./reflect-queue.js";
 import type { OutcomeRowReader } from "./task-outcome-rows.js";
 import { buildTaskReflectSubject, type SendBackFact, type TaskSubjectFacts } from "./task-subject.js";
 
@@ -22,7 +24,14 @@ export interface TaskSubjectBase {
   /** The request ids of the task's human send-backs (the task's own decision history); each one's row is read for who and what. */
   sendBackRequestIds: readonly string[];
 }
-export interface TaskSubjectSource { read(input: { workspaceId: string; taskId: string }): Promise<TaskSubjectBase | undefined> }
+export interface TaskSubjectSource {
+  read(input: { workspaceId: string; taskId: string }): Promise<TaskSubjectBase | undefined>;
+  /**
+   * L4: the task's project from the task record alone (one read), so the learning mode can be checked BEFORE `read` fetches plans, standing and erasure state. Undefined: no such task in the workspace, or one that
+   * teaches nothing. A source without it is read first (the old order); the production source has it.
+   */
+  projectOf?(input: { workspaceId: string; taskId: string }): Promise<string | undefined>;
+}
 
 export interface TaskLearningDeps {
   source: TaskSubjectSource;
@@ -72,9 +81,15 @@ export type LearnStatus = "off" | "no_facts" | "not_reflected" | "reflected";
 /** Reflects on one finished task. Never throws. */
 export async function learnFromEndedTask(deps: TaskLearningDeps, input: { workspaceId: string; taskId: string; outcome?: ReflectSubject["outcome"] }): Promise<LearnStatus> {
   try {
+    // L4: the switch comes first, from the task's project alone. A project whose learning is Off or Collect never has its plan text, standing or erasure state read.
+    if (deps.source.projectOf !== undefined) {
+      const project = await deps.source.projectOf({ workspaceId: input.workspaceId, taskId: input.taskId });
+      if (project === undefined) return "no_facts";
+      if (!modeAllows((await resolveLearning(deps.settings, input.workspaceId, project)).mode, "reflect")) return "off";
+    }
     const base = await deps.source.read({ workspaceId: input.workspaceId, taskId: input.taskId });
     if (base === undefined || base.facts.workspaceId !== input.workspaceId) return "no_facts";
-    // The switch, before anything else is read: Off and Collect stop here.
+    // The switch again on the project the facts name (the only check for a source that cannot name the project alone; for the others it only repeats the same answer).
     const learning = await resolveLearning(deps.settings, input.workspaceId, base.facts.project);
     if (!modeAllows(learning.mode, "reflect")) return "off";
     const subject = await subjectFrom(deps, base, input.workspaceId, input.outcome);
@@ -93,21 +108,32 @@ export async function learnFromEndedTask(deps: TaskLearningDeps, input: { worksp
 }
 
 /**
- * WB-4 (open until lane 2 of lessons in production): the handler runs the reflector, a model call, INLINE while the task ends. The broker builds the dependencies (`aws/broker/lessons-wiring.ts#learningDepsFor`)
- * but does NOT register this handler (`aws/broker/learning-wiring.ts`, `INLINE_LEARNING_TASK_END_ENABLED` is false). Lane 2 replaces the inline call with a queue (enqueue `{ orgId, taskId, outcome, requestId }`, a worker
- * runs `learnFromEndedTask` under its own time and spend limits) so an end is never held up by a model and a model outage or retry storm cannot slow or fail task ends.
+ * WB-4 (lessons in production, lane 2): the end of a task never runs the reflector. The handler sends ONE message of ids only (`{ orgId, taskId, outcome, requestId }`) to the LessonsReflect queue and returns; a
+ * worker (`reflect-worker.ts`, its own Lambda) runs `learnFromEndedTask` under its own time and spend limits. A queue that did not take the message is one fixed log line: the task has ended all the same and is never
+ * held up (the nightly re-reflection and the next task's own end are the only other chances to learn from it; a lost message is a lost reflection, never a lost task).
  */
-/** The handler for `registerTaskEndHandler`. It reads the dependencies when a task ends, so a later broker's dependencies are the ones it uses; none means it does nothing. */
-export function learningTaskEndHandler(get: () => TaskLearningDeps | undefined): TaskEndHandler {
+export interface TaskEndEnqueue {
+  queue: ReflectQueue;
+  newRequestId?: () => string;
+  log?: (event: string, fields: Record<string, string | number>) => void;
+}
+
+/** The handler for `registerTaskEndHandler`. It reads the queue when a task ends, so a later broker's queue is the one it uses; none means it does nothing. */
+export function learningTaskEndHandler(get: () => TaskEndEnqueue | undefined): TaskEndHandler {
   return async (_endDeps, event) => {
-    const deps = get();
+    const target = get();
     const outcome = reflectOutcomeOf(event.outcome);
-    if (deps === undefined || outcome === undefined) return;
-    await learnFromEndedTask(deps, { workspaceId: event.orgId, taskId: event.taskId, outcome });
+    if (target === undefined || outcome === undefined) return;
+    try {
+      await target.queue.send({ orgId: event.orgId, taskId: event.taskId, outcome, requestId: (target.newRequestId ?? randomUUID)() });
+    } catch {
+      // One fixed line (never the error's text): the end goes on.
+      (target.log ?? ((name, fields) => console.log(JSON.stringify({ component: "lessons", event: name, ...fields }))))("learning.enqueue_failed", { taskId: event.taskId });
+    }
   };
 }
 
 /** Registers the hook once at broker start. Returns the function that takes it off again. */
-export function registerLearningTaskEnd(get: () => TaskLearningDeps | undefined): () => void {
+export function registerLearningTaskEnd(get: () => TaskEndEnqueue | undefined): () => void {
   return registerTaskEndHandler(learningTaskEndHandler(get));
 }

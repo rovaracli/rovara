@@ -15,8 +15,14 @@
 //   - EventBridge Scheduler schedules (three): free at this volume; each invoke is one Lambda run of the broker (a few milliseconds when nothing is due).
 // Model calls (embeddings, the distiller) are NOT created here: they are billed on the org's spend when a feature uses them.
 import { CfnParameter, Duration, Token, aws_lambda_event_sources as eventSources, aws_scheduler as scheduler, aws_sqs as sqs, type Stack, aws_iam as iam } from "aws-cdk-lib";
+import type { aws_dynamodb as dynamodb, aws_s3 as s3 } from "aws-cdk-lib";
 import type { aws_lambda as lambda } from "aws-cdk-lib";
-import { TEAM_RECORD_OPS_MAX_RECEIVES, teamRecordNamePrefix, teamRecordOpsDeadLetterName, teamRecordOpsQueueName, teamRecordTableName } from "@agentx/contracts";
+import { aws_lambda as lambdaValues } from "aws-cdk-lib";
+import {
+  LESSONS_REFLECT_MAX_RECEIVES, LESSONS_REFLECT_VISIBILITY_SECONDS, LESSONS_WORKER_RESERVED_CONCURRENCY, LESSONS_WORKER_TIMEOUT_SECONDS, TEAM_RECORD_OPS_MAX_RECEIVES,
+  lessonsReflectDeadLetterName, lessonsReflectQueueName, teamRecordNamePrefix, teamRecordOpsDeadLetterName, teamRecordOpsQueueName, teamRecordTableName,
+} from "@agentx/contracts";
+import { packagedFunction } from "./control-plane.js";
 import { BrokerNames, BrokerSettings } from "./broker-names.js";
 import { DEFAULT_EMBEDDING_MODEL_ID, type TeamRecordContext } from "./team-record-edition.js";
 import { TeamRecordStorage } from "./team-record-storage.js";
@@ -159,4 +165,70 @@ export function attachTeamRecord(stack: Stack, props: TeamRecordWiringProps): Te
     });
   }
   return { table, storage };
+}
+
+export interface LessonsWorkerProps {
+  readonly env: string;
+  readonly context: TeamRecordContext;
+  readonly broker: lambda.Function;
+  readonly resources: TeamRecordResources;
+  /** The State table and the artifacts bucket (plan text), the developer sign-in table (people's names and merges), the in-VPC model function and the GitHub App's key secret. */
+  readonly state: dynamodb.Table;
+  readonly artifacts: s3.Bucket;
+  readonly signInTable: dynamodb.Table;
+  readonly modelAccessFunction: lambda.IFunction;
+  readonly githubAppPrivateKeySecretArn: string;
+  /** Whether the worker reserves Lambda concurrency (default true; the same `agentxReservedConcurrency` context as the audit ledger's functions). */
+  readonly reservedConcurrency?: boolean;
+}
+
+/**
+ * Lessons in production, lane 2 (WB-4): the LessonsReflect queue, its dead-letter queue and the LessonsWorker Lambda. Behind the Team record switch like everything in this file (the caller runs it only with
+ * `agentxTeamRecord=enabled`); with the switch off none of this exists and the templates are what they were.
+ *
+ *  - The queue: SQS-managed encryption, 4 days of retention, a dead-letter queue after 3 receives (14 days; the messages are ids only). The broker (and only the broker) may send; its URL is derived from the
+ *    environment's name (nothing is passed). The visibility timeout is six times the worker's timeout (`LESSONS_REFLECT_VISIBILITY_SECONDS`), so SQS never hands a message to a second worker while the first may
+ *    still be running.
+ *  - The worker: the broker's own bundle with its own entry (`lessonsWorkerHandler`), outside the VPC like the broker, and with the broker's environment (it builds the same dependencies). Timeout 300 s: it outlives the
+ *    130 s the broker waits for the in-VPC model function, the key-block step after it, and the work around it (the worker itself stops starting model calls 240 s in). Batch size 1, concurrency 2 (reserved, and
+ *    on the event source, so a burst waits in the queue and is not thrown back at SQS), partial-batch answers.
+ *  - Its role is its own and holds only what the reflection touches: the Team record table, the State table (the claim, the project and task records, the spend ledger), the sign-in table (read), the artifacts
+ *    bucket (read, the plan documents), `lambda:InvokeFunction` on the model-access function and nothing else on Lambda, the queue (consume), the GitHub App's key secret (read; citations are checked against the
+ *    code host) and, in Enterprise, the customer's table key through DynamoDB only. It has no EC2, no Bedrock, no scheduler and no other queue; audit events are written as pending items in the State table and sent by
+ *    the broker's drain.
+ */
+export function attachLessonsWorker(stack: Stack, props: LessonsWorkerProps): { queue: sqs.Queue; deadLetters: sqs.Queue; worker: lambda.Function } {
+  const deadLetters = new sqs.Queue(stack, "LessonsReflectDeadLetters", { queueName: lessonsReflectDeadLetterName(props.env), encryption: sqs.QueueEncryption.SQS_MANAGED, retentionPeriod: Duration.days(14) });
+  const queue = new sqs.Queue(stack, "LessonsReflect", {
+    queueName: lessonsReflectQueueName(props.env), encryption: sqs.QueueEncryption.SQS_MANAGED, retentionPeriod: Duration.days(4), visibilityTimeout: Duration.seconds(LESSONS_REFLECT_VISIBILITY_SECONDS),
+    deadLetterQueue: { queue: deadLetters, maxReceiveCount: LESSONS_REFLECT_MAX_RECEIVES },
+  });
+  queue.grantSendMessages(props.broker);
+
+  const worker = packagedFunction(stack, "LessonsWorker", "packages/broker/src/aws/broker.ts", {}, Duration.seconds(LESSONS_WORKER_TIMEOUT_SECONDS), [], 512, [], lambdaValues.Tracing.ACTIVE, "lessonsWorkerHandler");
+  // The same environment as the broker, by sharing its rendered variables (it is one bundle and builds the same dependencies from the same names and settings). Anything the broker is given later is given here too.
+  (worker.node.defaultChild as lambda.CfnFunction).environment = (props.broker.node.defaultChild as lambda.CfnFunction).environment;
+  if (props.reservedConcurrency !== false) (worker.node.defaultChild as lambda.CfnFunction).reservedConcurrentExecutions = LESSONS_WORKER_RESERVED_CONCURRENCY;
+  worker.addEventSource(new eventSources.SqsEventSource(queue, { batchSize: 1, maxConcurrency: LESSONS_WORKER_RESERVED_CONCURRENCY, reportBatchItemFailures: true }));
+
+  // The State table by the item actions the reflection uses, no Scan (the claim, the task and project records, the spend ledger's counters and keys, pending audit items).
+  worker.addToRolePolicy(new iam.PolicyStatement({
+    sid: "LessonsStateTable", actions: ["dynamodb:GetItem", "dynamodb:BatchGetItem", "dynamodb:Query", "dynamodb:PutItem", "dynamodb:UpdateItem", "dynamodb:DeleteItem", "dynamodb:ConditionCheckItem"],
+    resources: [props.state.tableArn, `${props.state.tableArn}/index/*`],
+  }));
+  for (const statement of props.resources.table.brokerStatements()) worker.addToRolePolicy(statement);
+  worker.addToRolePolicy(new iam.PolicyStatement({
+    sid: "LessonsSignInTableReads", actions: ["dynamodb:GetItem", "dynamodb:BatchGetItem", "dynamodb:Query"], resources: [props.signInTable.tableArn, `${props.signInTable.tableArn}/index/*`],
+  }));
+  props.artifacts.grantRead(worker, "private/*");
+  props.modelAccessFunction.grantInvoke(worker);
+  worker.addToRolePolicy(new iam.PolicyStatement({ sid: "ReadGithubAppKey", actions: ["secretsmanager:GetSecretValue"], resources: [props.githubAppPrivateKeySecretArn] }));
+  if (typeof props.context.kmsKeyArn === "string") {
+    worker.addToRolePolicy(new iam.PolicyStatement({
+      sid: "TeamRecordTableKms", actions: ["kms:Decrypt", "kms:GenerateDataKey", "kms:DescribeKey"], resources: [props.context.kmsKeyArn],
+      // Only through DynamoDB: the worker cannot use the customer's key for anything else.
+      conditions: { StringEquals: { "kms:ViaService": `dynamodb.${stack.region}.amazonaws.com` } },
+    }));
+  }
+  return { queue, deadLetters, worker };
 }

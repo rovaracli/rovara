@@ -104,6 +104,15 @@ async function namedPeopleErased(
 
 export function lessonSubjectSource(deps: LessonSubjectSourceDeps): TaskSubjectSource {
   return {
+    // L4: the project of a task from its record alone (one read), so the learning mode is checked before the plan, standing and erasure state are read. Same rules as `read` for whose task it is.
+    async projectOf(input) {
+      const orgParsed = OrgIdSchema.safeParse(input.workspaceId);
+      if (!orgParsed.success) return undefined;
+      const task = ((await deps.documentClient.send(new GetCommand({ TableName: deps.tableName, Key: taskKey(input.taskId), ConsistentRead: true }))) as { Item?: DeveloperTaskRecord }).Item;
+      if (task === undefined || task.taskId !== input.taskId || task.orgId !== orgParsed.data) return undefined;
+      if (task.automatic !== undefined || task.purpose !== undefined) return undefined;
+      return task.project;
+    },
     async read(input) {
       const orgParsed = OrgIdSchema.safeParse(input.workspaceId);
       if (!orgParsed.success) return undefined;

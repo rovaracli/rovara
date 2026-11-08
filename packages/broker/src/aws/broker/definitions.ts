@@ -5,6 +5,7 @@ import type { LinearReplyPort } from "../../rovara-code/linear-comments.js";
 import type { SlackAskDependencies } from "./ask-service.js";
 import type { DiagnosisCoreDependencies } from "../../diagnosis/light.js";
 import type { AskContextDependencies, AskContextReaders } from "../../agent-sessions/ask-context.js";
+import type { ReflectQueue } from "../../lessons/reflect-queue.js";
 import type { TaskLearningDeps } from "../../lessons/task-end.js";
 import type { TeamRecordRuntime } from "../../team-record/runtime.js";
 import type { LessonsRuntime } from "../../lessons/runtime.js";
@@ -376,6 +377,8 @@ export interface AwsBrokerDependencies {
   contextSources?: ContextSourcesRuntime;
   /** Learning v2 wiring (WA-2): the terminal-task hook's dependencies. Absent (the pilot default): no hook is registered and learning reads and writes nothing at a task's end. */
   learning?: TaskLearningDeps;
+  /** Lessons in production (lane 2, WB-4): where a finished task's reflection is sent (the LessonsReflect queue). Absent: no hook is registered and a task's end sends nothing. */
+  lessonsReflectQueue?: ReflectQueue;
   /** Team record (wire-team-record): the record's runtime. Absent (the default: the switch is off) means NOTHING of the record reads, writes, schedules or answers. */
   teamRecord?: TeamRecordRuntime;
   /** Learning v2 wiring (LS-3): the lessons library's ports, built only where the Team record is on. Absent (the default) means no lesson is loaded, sent, shown or decided. */

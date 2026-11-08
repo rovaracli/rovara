@@ -27,7 +27,7 @@
 //   - Bounded: a set holds at most MAX_SET_MEMBERS lessons and a commit at most MAX_COMMIT_WRITES lessons; beyond that the call throws (fail closed), it never writes part of a commit.
 import { createHash, randomUUID } from "node:crypto";
 import { BatchGetCommand, DeleteCommand, GetCommand, PutCommand, QueryCommand, TransactWriteCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
-import { INDEX_EXPIRY_ATTRIBUTE, agentXError, lessonKey, lessonSetKey, lessonVersionKey, loadManifestKey, type OrgId } from "@agentx/contracts";
+import { AgentXError, INDEX_EXPIRY_ATTRIBUTE, agentXError, lessonKey, lessonSetKey, lessonVersionKey, loadManifestKey, type OrgId } from "@agentx/contracts";
 import { NOT_EXISTS, errorName, failedIndexes, isTransactionConflict, type Item, type TransactItem } from "../agents/table-writes.js";
 import type { TeamRecordTable } from "../team-record/types.js";
 import type { CommitResult, DeletionIntent, LessonStore, LoadManifest, PendingOutcome, ProjectFlags, ScopeKey, SetSnapshot } from "./store.js";
@@ -278,7 +278,7 @@ export class DynamoLessonStore implements LessonStore {
       parsed.push(lesson);
     }
     for (let attempt = 0; attempt < RETRIES; attempt += 1) {
-      await this.heal(key);
+      await this.healBeforeWrite(key);
       const set = await this.readSet(key);
       if (set.setVersion !== expectedSetVersion) return { ok: false, reason: "conflict" };
       const fenceVer = await this.fenceVersion(key);
@@ -316,7 +316,7 @@ export class DynamoLessonStore implements LessonStore {
   async rollback(key: ScopeKey, targetSetVersion: number, expectedSetVersion: number, at: number): Promise<CommitResult> {
     for (let attempt = 0; attempt < RETRIES; attempt += 1) {
       // A staged rollback that never finished is put back before anything else is decided.
-      await this.heal(key);
+      await this.healBeforeWrite(key);
       const set = await this.readSet(key);
       if (set.setVersion !== expectedSetVersion || targetSetVersion >= expectedSetVersion || targetSetVersion < 0) return { ok: false, reason: "conflict" };
       let target: ReadonlyArray<{ id: string; version: number }> = [];
@@ -380,6 +380,20 @@ export class DynamoLessonStore implements LessonStore {
   private intentRbKey(key: ScopeKey) { return this.k(key, "LESSONSET#RBINTENT"); }
   private rbIntentOpen(key: ScopeKey, nonce: string): TransactItem {
     return { ConditionCheck: { TableName: this.table.tableName, Key: this.intentRbKey(key), ConditionExpression: "#n = :n AND #s = :open", ExpressionAttributeNames: { "#n": "nonce", "#s": "state" }, ExpressionAttributeValues: { ":n": nonce, ":open": "open" } } };
+  }
+
+  /**
+   * WB-7: a write that meets an unfinished earlier change (a stuck intent) resumes it first (`heal`), and once more if that did not finish. Still stuck is a fixed LESSON_BUSY refusal ("try again"), never the
+   * RUNTIME_UNAVAILABLE `heal` throws, which a route would show as the service being down. A fault of the table itself (anything but the intent's own refusal) is not hidden by this.
+   */
+  private async healBeforeWrite(key: ScopeKey): Promise<void> {
+    for (let attempt = 0; ; attempt += 1) {
+      try { return await this.heal(key); }
+      catch (error) {
+        if (!(error instanceof AgentXError) || error.code !== "RUNTIME_UNAVAILABLE") throw error;
+        if (attempt >= 1) throw agentXError("LESSON_BUSY", "These lessons are being tidied up from an earlier change. Try again in a moment.");
+      }
+    }
   }
 
   /**

@@ -437,6 +437,32 @@ describe("the scheduled jobs reach only the orgs that have written, and finish a
     expect(summary.orgs).toBe(2);
     expect(summary.skippedOrgs).toBe(0);
   });
+
+  it("lessons in production: work added with jobs.extend runs once per org in the named job only, with that org's projects; its counts join the summary; a failure is counted and stops nobody", async () => {
+    const db = dbOf();
+    const runtime = build(db, { ...ON, ROVARA_EDITION: "enterprise" });
+    for (const orgId of [ORG_A, ORG_B]) {
+      await addSource(db, "enterprise", { orgId, source: "github", scope: "github:repo/9", retention: "C" });
+      await runtime.sink.put(githubDraft({ workspaceId: orgId, retention: "C", audience: { kind: "project" }, scope: "github:repo/9", text: `${orgId} note` }));
+    }
+    const calls: string[] = [];
+    const remove = runtime.jobs.extend("nightly", async (orgId, projects) => { calls.push(`${orgId}:${projects.join(",")}`); if (orgId === ORG_A) throw new Error("secret text"); return { extra: 2 }; });
+    runtime.jobs.extend("hourly", async () => { calls.push("hourly"); return { hourlyExtra: 1 }; });
+    const nightly = await runtime.jobs.run("nightly");
+    expect(calls.filter((call) => call !== "hourly")).toHaveLength(2);
+    expect(calls.find((call) => call.startsWith(ORG_B))).toMatch(/^org_b\w+:/u);
+    expect(nightly.details.extra).toBe(2);
+    expect(nightly.details.extensionFailures).toBe(1);
+    expect(nightly.orgs).toBe(2);
+    expect(nightly.details.hourlyExtra).toBeUndefined();
+    expect(JSON.stringify(nightly)).not.toContain("secret");
+    const hourly = await runtime.jobs.run("hourly");
+    expect(hourly.details.hourlyExtra).toBe(2);
+    remove();
+    calls.length = 0;
+    await runtime.jobs.run("nightly");
+    expect(calls).toEqual([]);
+  });
 });
 
 void vi;

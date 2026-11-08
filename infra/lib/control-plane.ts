@@ -6,7 +6,7 @@ import { checkedBrokerEnvironment } from "./private-mcp.js";
 import { grantProviderKeySecrets } from "./model-keys.js";
 import { mergeRoleStatementsOnSynth } from "./merge-role-statements.js";
 import { EgressAlarms } from "./egress-alarms.js";
-import { attachTeamRecord } from "./team-record-wiring.js";
+import { attachLessonsWorker, attachTeamRecord } from "./team-record-wiring.js";
 import { attachSavedEnvImages } from "./saved-env-images.js";
 import { attachServiceCatalogImages } from "./service-catalog-images.js";
 import { attachProjectRegistries } from "./registry-wiring.js";
@@ -1172,7 +1172,7 @@ export class ControlPlaneStack extends Stack {
       });
     }
     // Team record (wire-team-record): the whole record, behind the switch `agentxTeamRecord=enabled` (off by default: this block does not run and nothing changes).
-    if (props?.teamRecord !== undefined && naming.env !== undefined) attachTeamRecord(this, { env: naming.env, context: props.teamRecord, broker, slackIngress, dispatcher, scheduleRole: githubRecoveryRole });
+    const teamRecordResources = props?.teamRecord !== undefined && naming.env !== undefined ? attachTeamRecord(this, { env: naming.env, context: props.teamRecord, broker, slackIngress, dispatcher, scheduleRole: githubRecoveryRole }) : undefined;
     // Saved environment images (SH22): the registry side (KMS, creation template, push/pull/manage roles). Nothing pushes until the broker's `sv` setting is on.
     if (naming.env !== undefined) BrokerNames.of(broker).add("savedEnvKey", attachSavedEnvImages(this, { env: naming.env, brokerRole: broker.role!, cloudFormationRoleName: naming.cloudFormationRoleName, ...(props?.savedEnv?.kmsKeyArn === undefined ? {} : { kmsKeyArn: props.savedEnv.kmsKeyArn }), ...(props?.savedEnv?.registryScan === true ? { registryScanning: "basic" as const } : {}) }).kmsKeyId);
     // Test services (TS19): the catalog's image repositories and their key. NOT behind `TestServicesEnabled` (switch `tx`): the repositories have fixed names and are retained, so a condition would break turning the switch on, off and on again.
@@ -1300,6 +1300,7 @@ export class ControlPlaneStack extends Stack {
 
     // Spec 025 phase 25a: developer sign-in, named environments only (R3).
     let signInFunction: DeveloperSignIn["signInFunction"] | undefined;
+    let developerSignInTable: DeveloperSignIn["table"] | undefined;
     // 0.5.7: an optional custom domain in front of the same API (hosted cloud installs only; both parameters empty = nothing is created, nothing changes).
     const customDomain = props?.cloud === true && naming.env !== undefined && signInParameters !== undefined ? new CustomDomain(this, "CustomDomain", { env: naming.env, api, stage: defaultStage }) : undefined;
     if (naming.env !== undefined && signInParameters !== undefined) {
@@ -1315,6 +1316,7 @@ export class ControlPlaneStack extends Stack {
         ...(props?.cloud === true ? { cloud: true } : {}),
       });
       signInFunction = developerSignIn.signInFunction;
+      developerSignInTable = developerSignIn.table;
       // Plan 5, Task 8: change notices over an AppSync Events API. The broker and the outbox publisher publish to its one namespace; clients subscribe with a short-lived token
       // the authorizer checks (it may read the token key's public half and nothing more). The broker gets the DNS prefix of the API's hosts (not its id: that host does not exist) in its names and builds the endpoint from it
       // (its variables are held to 4 KB); the outbox publisher gets the endpoint whole.
@@ -1580,6 +1582,13 @@ export class ControlPlaneStack extends Stack {
         ...(props?.customModelEndpoints === true ? { customModelEndpoints: true, customModelEndpointEnvironment: props.customModelEndpointEnvironment ?? {} } : {}),
       });
       modelAccessFunction.grantInvoke(broker);
+      // Lessons in production (lane 2, WB-4): behind the Team record switch, the reflection queue and the LessonsWorker that runs it (it calls the model through the same in-VPC function, so it may invoke it).
+      if (props?.teamRecord !== undefined && teamRecordResources !== undefined && developerSignInTable !== undefined) {
+        attachLessonsWorker(this, {
+          env: naming.env, context: props.teamRecord, broker, resources: teamRecordResources, state, artifacts, signInTable: developerSignInTable, modelAccessFunction,
+          githubAppPrivateKeySecretArn: githubAppPrivateKeySecretArn.valueAsString, ...(props.reservedConcurrency === false ? { reservedConcurrency: false } : {}),
+        });
+      }
       BrokerNames.of(broker).add("modelAccessFunction", modelAccessFunction.functionName);
       // Ruling R29: the proxy's address, which the broker hands a task's worker together with its key.
       // The load balancer's name, in the broker's names: the host is <name>.<region>.elb.amazonaws.com and the port is MODEL_PROXY_INFERENCE_PORT, so the broker builds the URL.
@@ -1828,11 +1837,13 @@ export function packagedFunction(
   /** Directories copied beside the handler, as [absolute source, name in the bundle]. */
   extraDirectories: ReadonlyArray<readonly [string, string]> = [],
   tracing = lambda.Tracing.ACTIVE,
+  /** The exported handler of the entry module (default `handler`); a second Lambda can use another export of the same bundle. */
+  handler = "handler",
 ): lambdaNodejs.NodejsFunction {
   return new lambdaNodejs.NodejsFunction(scope, id, {
     runtime: lambda.Runtime.NODEJS_22_X,
     entry: resolve(process.cwd(), entry),
-    handler: "handler",
+    handler,
     timeout,
     memorySize,
     tracing,

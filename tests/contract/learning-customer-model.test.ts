@@ -3,7 +3,7 @@
 // has flushed it. These tests drive the model on a fake table, a fake proxy that reports spend late, and the real mint, ledger and sweep.
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
-  DEFAULT_AGENT_GUARDRAILS, FINALIZE_DELAY_MS, KEY_EXPIRY_GRACE_MS, ModelSourceSchema, agentGuardrailsKey, editionPolicy, modelKeyKey, modelCounter, originCounter, scopeKey, sourceAlias, sourceCounter, spendCounterKey, spendOriginKind,
+  DEFAULT_AGENT_GUARDRAILS, FINALIZE_DELAY_MS, LESSONS_BROKER_MODEL_WAIT_SECONDS, LESSONS_REFLECT_VISIBILITY_SECONDS, LESSONS_WORKER_DEADLINE_SECONDS, LESSONS_WORKER_TIMEOUT_SECONDS, KEY_EXPIRY_GRACE_MS, ModelSourceSchema, agentGuardrailsKey, editionPolicy, modelKeyKey, modelCounter, originCounter, scopeKey, sourceAlias, sourceCounter, spendCounterKey, spendOriginKind,
   egressDomainsKey, type Edition, type ModelIdentifier, type ModelSource,
 } from "../../packages/contracts/src/index.js";
 import { listPricesPerMillion } from "@agentx/model-runtime/catalog";
@@ -18,9 +18,12 @@ import { FakeDynamoDb } from "../support/fake-dynamodb.js";
 import { fakeModelAccess } from "../support/fake-model-access.js";
 import { TEST_ORG } from "../support/orgs.js";
 import {
-  LEARNING_CALL_BUDGET_USD, LEARNING_HOLD_MARGIN, LEARNING_MONTH_FULL, LEARNING_NO_BUDGET, LEARNING_ALL_FORBIDDEN, LEARNING_NO_PROVIDER, LEARNING_TOO_DEAR, customerLearningModel, worstCaseTokens,
+  LEARNING_BROKER_WAIT_MS, LEARNING_CALL_BUDGET_USD, LEARNING_DEADLINE, LEARNING_HOLD_MARGIN, LEARNING_MONTH_FULL, LEARNING_NO_BUDGET, LEARNING_ALL_FORBIDDEN, LEARNING_NO_PROVIDER, LEARNING_TOO_DEAR, customerLearningModel, worstCaseTokens,
 } from "../../packages/broker/src/aws/broker/learning-model.js";
 import { LEARNING_COUNTER } from "../../packages/broker/src/aws/broker/learning-spend.js";
+import { runReflectMessage } from "../../packages/broker/src/lessons/reflect-worker.js";
+import { withLearningDeadline } from "../../packages/broker/src/lessons/learning-deadline.js";
+import { LEARNING_INVOKE_TIMEOUT_MS } from "../../packages/broker/src/model-proxy/invoker.js";
 import { ledgerOf } from "../../packages/broker/src/aws/broker/sweeps-and-readiness.js";
 import type { AwsBrokerDependencies } from "../../packages/broker/src/aws/broker/definitions.js";
 
@@ -687,3 +690,62 @@ describe("no Rovara-paid route", () => {
 });
 
 void scopeKey;
+
+// Lessons in production, lane 2 (LP-3): the same ledger reservations, seen from the WORKER. A worker that dies (or is given up on) between the key's reservation and its settling never leaks the month's cap
+// or charges twice, and a call that could not finish before the worker's deadline is not started at all.
+describe("the worker's side of the money (LP-3)", () => {
+  const claimsOf = () => { const taken = new Set<string>(); return { claim: async (m: { taskId: string; outcome: string }) => { const k = `${m.taskId}#${m.outcome}`; if (taken.has(k)) return "already" as const; taken.add(k); return "claimed" as const; } }; };
+  const body = JSON.stringify({ orgId: TEST_ORG, taskId: "task-1", outcome: "merged", requestId: "r1" });
+
+  it("a worker given up on while the model call is in flight leaves the key reserved; the ordinary sweep finalizes the expired key and releases the month's cap; the redelivery is claimed and reserves nothing more", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
+    try {
+      const t = install();
+      await t.ready();
+      // The call never answers: the worker dies (or its deadline passes) with the key reserved and not blocked.
+      t.learningCompletion.mockImplementation(() => new Promise(() => undefined));
+      const claims = claimsOf();
+      const worker = { claims, learn: async () => { await t.model.complete(t.request); return "reflected" as const; }, now: () => Date.now(), deadlineMs: 240_000, log: () => undefined };
+      const running = runReflectMessage(worker, body);
+      await vi.advanceTimersByTimeAsync(240_000);
+      expect(await running).toBe("timed_out");
+      expect(t.keyIds()).toHaveLength(1);
+      expect(t.proxy.blockKey).not.toHaveBeenCalled();
+      for (const sk of ["ORG", "PROJECT#web", LEARNING_COUNTER]) near(t.counter(sk)?.committedUsd, 0.15);
+      // SQS hands the same message to a second worker: the claim stops it, so there is no second key and no second hold.
+      expect(await runReflectMessage(worker, body)).toBe("already");
+      expect(t.keyIds()).toHaveLength(1);
+      for (const sk of ["ORG", "PROJECT#web", LEARNING_COUNTER]) near(t.counter(sk)?.committedUsd, 0.15);
+      // The key's expiry plus its grace: the sweep finalizes it and releases the hold on every counter (nothing was spent: the proxy never saw a request).
+      await t.sweepLater(300_000 + KEY_EXPIRY_GRACE_MS + 60_000);
+      for (const sk of ["ORG", "PROJECT#web", LEARNING_COUNTER]) { near(t.counter(sk)?.committedUsd, 0); near(t.counter(sk)?.spentUsd, 0); }
+      expect(t.record(t.keyIds()[0]!)?.finalized).toBe(true);
+    } finally { vi.useRealTimers(); }
+  });
+
+  it("a call that could still be running at the worker's deadline is refused before any key exists: nothing is reserved or charged", async () => {
+    const t = install();
+    await t.ready();
+    const deadlineAt = Date.now() + 60_000;
+    await expect(withLearningDeadline(deadlineAt, () => t.model.complete(t.request))).rejects.toThrow(LEARNING_DEADLINE);
+    expect(t.proxy.mintKey).not.toHaveBeenCalled();
+    for (const sk of ["ORG", "PROJECT#web", LEARNING_COUNTER]) near(t.counter(sk)?.committedUsd, 0);
+    // With the broker's whole wait available the same call goes ahead (the positive control), and outside a worker there is no deadline at all.
+    await withLearningDeadline(Date.now() + LEARNING_BROKER_WAIT_MS + 1_000, () => t.model.complete(t.request));
+    expect(t.proxy.mintKey).toHaveBeenCalledTimes(1);
+    await t.model.complete(t.request);
+    expect(t.proxy.mintKey).toHaveBeenCalledTimes(2);
+  });
+
+  it("the worker's numbers fit together: the model step (100 s) is inside the function (120 s), which is inside the broker's wait (130 s), which fits before the worker's deadline (240 s) and timeout (300 s), under the queue's visibility", () => {
+    expect(LEARNING_INVOKE_TIMEOUT_MS).toBe(LESSONS_BROKER_MODEL_WAIT_SECONDS * 1000);
+    expect(LEARNING_BROKER_WAIT_MS).toBe(LEARNING_INVOKE_TIMEOUT_MS);
+    expect(LESSONS_WORKER_DEADLINE_SECONDS).toBeGreaterThan(LESSONS_BROKER_MODEL_WAIT_SECONDS);
+    // The worker outlives its own deadline by the key-block step and the work around it.
+    expect(LESSONS_WORKER_TIMEOUT_SECONDS).toBeGreaterThanOrEqual(LESSONS_WORKER_DEADLINE_SECONDS + 30);
+    expect(LESSONS_WORKER_TIMEOUT_SECONDS).toBeGreaterThan(LESSONS_BROKER_MODEL_WAIT_SECONDS + 60);
+    expect(LESSONS_REFLECT_VISIBILITY_SECONDS).toBeGreaterThan(LESSONS_WORKER_TIMEOUT_SECONDS);
+    expect(LESSONS_WORKER_TIMEOUT_SECONDS).toBe(300);
+    expect(LESSONS_REFLECT_VISIBILITY_SECONDS).toBe(1800);
+  });
+});

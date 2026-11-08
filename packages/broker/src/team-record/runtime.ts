@@ -226,7 +226,14 @@ export interface TeamRecordRuntime {
     project(orgId: OrgId, project: string, cause: "project_archived" | "org_closed"): Promise<void>;
     workspace(orgId: OrgId): Promise<void>;
   };
-  jobs: { run(job: "hourly" | "nightly"): Promise<TeamRecordJobSummary> };
+  jobs: {
+    run(job: "hourly" | "nightly"): Promise<TeamRecordJobSummary>;
+    /**
+     * Lessons in production (lane 2): other work for the same schedules. `work` runs once per company inside the hourly or the nightly run, after the record's own work, with the company's projects and what is
+     * left of its time; its counts join the run's summary, and a failure is counted and never stops the others (or the record's own work). Returns the function that takes it away again.
+     */
+    extend(job: "hourly" | "nightly", work: (orgId: OrgId, projects: string[], budgetMs: number) => Promise<Record<string, number>>): () => void;
+  };
   /** SRL-6: the company's erase and delete failures of the last 24 hours (counts and a time), for the admin Health data. Throws when the table cannot be read. */
   opsFailures(orgId: OrgId): Promise<OpsFailures>;
 }
@@ -1002,7 +1009,31 @@ export function createTeamRecordRuntime(input: TeamRecordRuntimeInput): TeamReco
 
   /** Filled in below, where the tracker pieces are built (they need the links, which are defined after the jobs). */
   const trackerSync: { run: (orgId: OrgId, budgetMs: number) => Promise<number> } = { run: async () => 0 };
+  const extensions: Record<"hourly" | "nightly", Array<(orgId: OrgId, projects: string[], budgetMs: number) => Promise<Record<string, number>>>> = { hourly: [], nightly: [] };
+  /** The work added by `jobs.extend`, for one company: each piece is bounded by what is left of the company's time, and a failing piece is counted. */
+  async function runExtensions(job: "hourly" | "nightly", orgId: OrgId, budgetMs: number): Promise<Record<string, number>> {
+    const out: Record<string, number> = {};
+    if (extensions[job].length === 0) return out;
+    const started = now();
+    const projects = await projectsOf(orgId).catch(() => undefined);
+    if (projects === undefined) { out.extensionFailures = 1; return out; }
+    for (const work of [...extensions[job]]) {
+      const left = budgetMs - (now() - started);
+      if (left < 500) { out.extensionsSkipped = (out.extensionsSkipped ?? 0) + 1; continue; }
+      try {
+        for (const [key, value] of Object.entries(await work(orgId, projects, left))) out[key] = (out[key] ?? 0) + value;
+      } catch {
+        out.extensionFailures = (out.extensionFailures ?? 0) + 1;
+        log("record.job_extension_failed", {});
+      }
+    }
+    return out;
+  }
   const jobs: TeamRecordRuntime["jobs"] = {
+    extend(job, work) {
+      extensions[job].push(work);
+      return () => { const at = extensions[job].indexOf(work); if (at >= 0) extensions[job].splice(at, 1); };
+    },
     async run(job) {
       if (job === "hourly") {
         // TRW-5 S1: text that reached the dead-letter queue anyway is deleted from it, first, so an org's slow work cannot starve it.
@@ -1022,7 +1053,8 @@ export function createTeamRecordRuntime(input: TeamRecordRuntimeInput): TeamReco
           const projectsSwept = await sweepArchivedProjects(orgId, Math.max(1_000, budgetMs / 4));
           // Lane team-record-links: the org's connected Linear and Jira users, read again once a day.
           const trackersSynced = await trackerSync.run(orgId, Math.max(1_000, budgetMs / 4)).catch(() => 0);
-          return { requests: done.requests, finished: done.finished, stillHidden: done.stillHidden, sweepFailed: done.sweepFailed, lakeStatements: lakeDeletes?.statements ?? 0, erasesFinished: erased, projectsSwept, trackersSynced };
+          const extra = await runExtensions("hourly", orgId, Math.max(1_000, budgetMs / 4));
+          return { requests: done.requests, finished: done.finished, stillHidden: done.stillHidden, sweepFailed: done.sweepFailed, lakeStatements: lakeDeletes?.statements ?? 0, erasesFinished: erased, projectsSwept, trackersSynced, ...extra };
         }, (input.jobBudgetMs ?? JOB_BUDGET_MS) - (now() - startedAt));
         summary.details.deadLetterTextDeleted = swept;
         for (const [key, value] of Object.entries(redelivery)) summary.details[key] = value;
@@ -1034,11 +1066,13 @@ export function createTeamRecordRuntime(input: TeamRecordRuntimeInput): TeamReco
         const vectors = await indexFor(orgId);
         const expired = await expireRawText({ table, now, log, ...(vectors === undefined ? {} : { vectors: vectors }) }, orgId, { maxItems: 2_000, maxMs: budgetMs });
         const lakeNow = lakeClient();
-        if (lakeNow === undefined || vectors === undefined) return { expired: Object.values(expired).filter((value): value is number => typeof value === "number").reduce((total, value) => total + value, 0) };
+        // Lessons in production: the nightly re-reflection of reverted tasks runs with the expiry (it only sends ids to a queue), before the archive's longer work.
+        const extra = await runExtensions("nightly", orgId, Math.max(1_000, budgetMs / 4));
+        if (lakeNow === undefined || vectors === undefined) return { expired: Object.values(expired).filter((value): value is number => typeof value === "number").reduce((total, value) => total + value, 0), ...extra };
         const archived = await runArchive({
           source: tableHotArchiveSource(table, { projects: projectsOf }, lakeQueue, now), lake: lakeNow, tableBucket, vectors, lakeDeletes: lakeQueue, edition,
         }, { workspaceId: orgId, budget: { maxRows: 500, maxMs: Math.max(1_000, budgetMs / 2) } });
-        return { expired: Object.values(expired).filter((value): value is number => typeof value === "number").reduce((total, value) => total + value, 0), archived: archived.archived };
+        return { expired: Object.values(expired).filter((value): value is number => typeof value === "number").reduce((total, value) => total + value, 0), archived: archived.archived, ...extra };
       });
     },
   };

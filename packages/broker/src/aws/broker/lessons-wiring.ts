@@ -1,5 +1,6 @@
 // Part of the broker: builds the lessons library's ports from the broker's own dependencies (learning v2, LS-3) and puts them on `dependencies.lessons`. Called once at handler start. Where the Team
 // record is off (`dependencies.teamRecord` is undefined, the default), or the install has no developer sign-in table, nothing is built: no lesson is stored, loaded, sent, shown or decided.
+import { randomUUID } from "node:crypto";
 import { GetCommand } from "@aws-sdk/lib-dynamodb";
 import { OrgIdSchema, codeRepositoriesOf, memberGithubKey, type AuditEventInput, type LessonsPauseCode, type OrgId } from "@agentx/contracts";
 import { followMerges } from "../../agents/access.js";
@@ -8,6 +9,8 @@ import { DeveloperSignInStore } from "../../developer/store.js";
 import type { CodeFactsReader } from "../../lessons/code-facts.js";
 import { NO_EMBEDDER, NO_VECTORS, createLessonsRuntime, type LessonsRuntime } from "../../lessons/runtime.js";
 import type { Embedder, LearningSpend, LessonVectors, PipelineModel } from "../../lessons/ports.js";
+import { lessonDeletionPort } from "../../lessons/deletion.js";
+import { lessonsResumeJob, lessonsRevertJob, type LessonsJobDeps } from "../../lessons/jobs.js";
 import type { TaskLearningDeps } from "../../lessons/task-end.js";
 import { tableOutcomeRows } from "../../lessons/task-outcome-rows.js";
 import { readObjectText } from "../../developer/plan-artifacts.js";
@@ -43,6 +46,16 @@ export function codeFileReader(dependencies: AwsBrokerDependencies, maxBytes = M
       const repository = codeRepositoriesOf(record.definition).find((candidate) => candidate.name === input.repo);
       if (repository === undefined) return undefined;
       return hostOfRepository(dependencies, repository).fileAtRevision({ url: repository.url }, input.path, input.commit, githubScope(dependencies, orgId), { timeoutMs: input.timeoutMs, maxBytes });
+    },
+    // WB-7: a directory, or a glob's literal directory prefix, is checked through the host's `pathKind` where the host has one; a host without it answers undefined ("cannot tell"), and only a readable file counts.
+    async kind(input) {
+      const orgId = OrgIdSchema.parse(input.workspaceId);
+      const record = await requireLatestProject(dependencies, orgId, input.project);
+      const repository = codeRepositoriesOf(record.definition).find((candidate) => candidate.name === input.repo);
+      if (repository === undefined) return undefined;
+      const host = hostOfRepository(dependencies, repository);
+      if (host.pathKind === undefined) return undefined;
+      return host.pathKind({ url: repository.url }, input.path, input.commit, githubScope(dependencies, orgId), { timeoutMs: input.timeoutMs });
     },
   };
 }
@@ -168,6 +181,8 @@ export function installLessons(dependencies: AwsBrokerDependencies): void {
     const learning = learningDepsFor(dependencies, built);
     if (learning !== undefined) dependencies.learning = learning;
   }
+  // Lessons in production (lane 2, WB-7): the lessons' two jobs ride the Team record's schedules (the hourly deletion resumer, the nightly re-reflection of reverted tasks).
+  if (built !== undefined) installLessonsJobs(dependencies, built);
   // UX-4b: Home's "Lessons waiting" card counts what the Lessons tab would show this person to decide (learning Off: none).
   const routes = dependencies.lessons?.routes;
   // Approve by exception: the pull request description lists the lessons the task used (`lessons/used-in-pr.ts`).
@@ -182,6 +197,19 @@ export function installLessons(dependencies: AwsBrokerDependencies): void {
     if (!view.canDecide || view.waiting.length === 0) return { waiting: 0, ...(paused === undefined ? {} : { paused }) };
     return { waiting: view.waiting.length, at: new Date(Math.max(...view.waiting.map((lesson) => lesson.updatedAt))).toISOString(), ...(paused === undefined ? {} : { paused }) };
   });
+}
+
+/** The hourly `lessons-resume` job and the nightly `lessons-reverts` job (`lessons/jobs.ts`), added to the record's schedules. Nothing is added where the record has no job runner (a partial harness). */
+export function installLessonsJobs(dependencies: AwsBrokerDependencies, runtime: LessonsRuntime): void {
+  const teamRecord = dependencies.teamRecord;
+  if (teamRecord?.jobs?.extend === undefined) return;
+  const deletion = lessonDeletionPort({ store: runtime.store, vectors: lessonSimilarityFor(dependencies).vectors, audit: runtime.routes.audit, now: Date.now });
+  const jobs: LessonsJobDeps = {
+    table: teamRecord.table, settings: runtime.settings, queue: dependencies.lessonsReflectQueue, resumePending: (orgId, project) => deletion.resumePending(orgId, project),
+    now: Date.now, newRequestId: () => `nightly-${randomUUID()}`, log: (event, fields) => console.log(JSON.stringify({ component: "lessons", event, ...fields })),
+  };
+  teamRecord.jobs.extend("hourly", (orgId, projects, budgetMs) => lessonsResumeJob(jobs, orgId, projects, budgetMs));
+  teamRecord.jobs.extend("nightly", (orgId, projects, budgetMs) => lessonsRevertJob(jobs, orgId, projects, budgetMs));
 }
 
 /**

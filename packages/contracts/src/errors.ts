@@ -108,6 +108,8 @@ export const AgentXErrorCodeSchema = z.enum([
   "LEARNING_OFF",
   // The same read when the company's lock is what keeps learning off for the project.
   "LEARNING_LOCKED",
+  // Lessons in production: a lesson change met an unfinished earlier change to the project's lessons that could not be finished just now (409, try again).
+  "LESSON_BUSY",
 ]);
 
 export const CSRF_STALE_MESSAGE = "Your sign-in changed in another tab. Trying again.";

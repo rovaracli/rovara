@@ -4945,6 +4945,36 @@ describe("the owner resolves each blocking review finding (Task 5)", () => {
     expect(operations(t.harness, t.workspaceId).filter((item) => item.kind === "publish")).toHaveLength(1);
   });
 
+  it("a finding the owner has FIXED is announced as a human send-back through the same listener as the plain send-back (WB-7); accepting every finding announces nothing, and a replay announces nothing more", async () => {
+    const t = await blockedOnFindings([PARSER], [TOKEN]);
+    const seen: Array<{ taskId: string; requestId: string; actorDeveloperId: string; instructions: string; round: number; ownerDeveloperId: string }> = [];
+    const remove = registerHumanSendBackListener(async (event) => { seen.push(event); });
+    try {
+      const request = t.body([
+        { findingId: id("CRITIC", PARSER), action: "FIX", note: "Keep the footer." },
+        { findingId: id("SECURITY", TOKEN), action: "ACCEPT", note: "Test token only." },
+      ]);
+      // A refused press (the wrong person) announces nothing.
+      expect((await t.harness.dev(OMAR, "POST", t.route, request)).status).toBe(404);
+      expect(seen).toEqual([]);
+      expect((await t.harness.dev(MAYA, "POST", t.route, request)).status).toBe(200);
+      // The pressing person, the request that sent it, their own note (never the reviewer's finding text), and the round.
+      expect(seen).toEqual([expect.objectContaining({ taskId: t.taskId, requestId: request.requestId, actorDeveloperId: MAYA.developerId, instructions: "1. Keep the footer.", round: 1, ownerDeveloperId: MAYA.developerId })]);
+      expect(JSON.stringify(seen)).not.toContain(PARSER.text);
+      expect((await t.harness.dev(MAYA, "POST", t.route, request)).status).toBe(200);
+      expect(seen).toHaveLength(1);
+    } finally { remove(); }
+    // Accepting every finding is not a send-back.
+    const accepted = await blockedOnFindings([PARSER], [TOKEN]);
+    const heard: unknown[] = [];
+    const stop = registerHumanSendBackListener(async (event) => { heard.push(event); });
+    try {
+      const acceptAll = accepted.body([{ findingId: id("CRITIC", PARSER), action: "ACCEPT", note: "Fine." }, { findingId: id("SECURITY", TOKEN), action: "ACCEPT", note: "Test token only." }]);
+      expect((await accepted.harness.dev(MAYA, "POST", accepted.route, acceptAll)).status).toBe(200);
+      expect(heard).toEqual([]);
+    } finally { stop(); }
+  });
+
   it("sends only the findings to fix back to coding, with their instructions, and keeps the accepted one out of the prompt", async () => {
     const t = await blockedOnFindings([PARSER], [TOKEN]);
     const request = t.body([

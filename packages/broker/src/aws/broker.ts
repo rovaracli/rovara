@@ -338,6 +338,9 @@ import { swebenchDeploymentFromParameters } from "./swebench-settings.js";
 import { positiveInteger } from "./broker/admin-and-helpers.js";
 import { orgStoreOf } from "./broker/dependency-wiring.js";
 import { createAwsBrokerHandler } from "./broker/handler.js";
+import { createLessonsWorkerHandler } from "./broker/lessons-worker.js";
+import { reflectQueueUrlOf, sqsReflectQueue } from "../lessons/reflect-queue.js";
+import type { AwsBrokerInput } from "./broker/definitions.js";
 import { registryTokenSource } from "./broker/registry-tokens-wiring.js";
 import { createEditionGuard, editionBackupName, editionRecordName, installEditionPolicy, ssmEditionRecordReader } from "./broker/edition-wiring.js";
 import { createBrokerPlugins } from "./broker/plugin-wiring.js";
@@ -576,9 +579,11 @@ const egressDomainsSync = projectAllowListId === undefined || projectAllowListId
 // Enterprise foundations I1: the group mapping and break-glass stores, built once (only where the edition has company sign-in).
 const ssoStores = ssoStoresFor({ documentClient, tableName: requiredEnvironment("STATE_TABLE_NAME"), policy: editionPolicy, ...(audit === undefined ? {} : { audit }) });
 
-export const handler = createAwsBrokerHandler({
+const brokerInput: AwsBrokerInput = {
   documentClient,
   ...(teamRecord === undefined ? {} : { teamRecord }),
+  // Lessons in production (lane 2, WB-4): a finished task's reflection goes to this queue (its URL is derived from the environment's name; nothing is passed).
+  ...(teamRecord === undefined || reflectQueueUrlOf(process.env) === undefined ? {} : { lessonsReflectQueue: sqsReflectQueue(sqs, reflectQueueUrlOf(process.env)!) }),
   ...(audit === undefined ? {} : { audit }),
   ...(auditLedger === undefined ? {} : { auditLedger }),
   ...(auditErase === undefined ? {} : { auditErase }),
@@ -729,4 +734,7 @@ export const handler = createAwsBrokerHandler({
         },
       }
     : {}),
-});
+};
+export const handler = createAwsBrokerHandler(brokerInput);
+// Lessons in production (lane 2): the LessonsWorker Lambda is this same bundle with this entry (infra/lib/team-record-wiring.ts). It is built on its first message, so the broker never builds it.
+export const lessonsWorkerHandler = createLessonsWorkerHandler(brokerInput);

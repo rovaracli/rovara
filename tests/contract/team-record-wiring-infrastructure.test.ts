@@ -7,7 +7,7 @@ import { readFileSync, writeFileSync } from "node:fs";
 import { Stack } from "aws-cdk-lib";
 import { Template } from "aws-cdk-lib/assertions";
 import { describe, expect, it } from "vitest";
-import { BROKER_NAMES, BROKER_SETTINGS, TEAM_RECORD_OPS_MAX_RECEIVES, teamRecordTableName } from "@agentx/contracts";
+import { BROKER_NAMES, BROKER_SETTINGS, LESSONS_BROKER_MODEL_WAIT_SECONDS, LESSONS_REFLECT_MAX_RECEIVES, LESSONS_REFLECT_VISIBILITY_SECONDS, LESSONS_WORKER_RESERVED_CONCURRENCY, LESSONS_WORKER_TIMEOUT_SECONDS, TEAM_RECORD_OPS_MAX_RECEIVES, teamRecordTableName } from "@agentx/contracts";
 import { buildAgentXApp } from "../../infra/lib/app.js";
 import { parseTeamRecordSwitch, TEAM_RECORD_JOB_SOURCE } from "../../infra/lib/team-record-wiring.js";
 import { brokerNamesIn, brokerSettingsIn } from "../support/broker-names-template.js";
@@ -96,6 +96,11 @@ describe("the switch is off by default and changes nothing", () => {
     expect(on.Timeout).toBe(120);
     expect(on.Environment?.Variables?.LEARNING_COMPLETION_ENABLED).toBe("1");
   }, 360_000);
+
+  it("lessons in production: off, there is no reflection queue and no worker", () => {
+    expect(Object.keys(resourcesOf(plain)).filter((id) => /Lessons(Worker|Reflect)/.test(id))).toStrictEqual([]);
+    expect(JSON.stringify(plain.toJSON())).not.toMatch(/lessons-reflect|lessonsWorkerHandler/u);
+  }, 180_000);
 
   it("is off in the legacy install and in a self-hosted install with no edition, and a wrong value stops the synth", () => {
     expect(JSON.stringify(controlPlane({}).toJSON())).not.toMatch(/s3vectors|s3tables|team-record/i);
@@ -315,4 +320,92 @@ describe("the broker's environment still fits Lambda's 4 KB with the record on",
     expect(CEILING - broker.bytes, `the broker's environment is ${broker.bytes} bytes`).toBeGreaterThanOrEqual(HEADROOM);
     for (const entry of found) expect(entry.bytes, entry.logicalId).toBeLessThan(CEILING);
   }, 240_000);
+});
+
+// Lessons in production, lane 2 (WB-4): the reflection queue and the LessonsWorker, behind the same switch.
+describe("the lessons worker (switch on)", () => {
+  const on = controlPlane({ ...PUBLIC, agentxTeamRecord: "enabled" });
+  const resources = resourcesOf(on);
+  const byId = (pattern: RegExp, type: string) => Object.entries(resources).filter(([id, resource]) => resource.Type === type && pattern.test(id));
+  const worker = () => { const found = byId(/^LessonsWorker[0-9A-F]{8}$/, "AWS::Lambda::Function"); expect(found).toHaveLength(1); return found[0]![1].Properties as Record<string, unknown> & { Timeout: number; Handler: string; ReservedConcurrentExecutions?: number; VpcConfig?: unknown; Environment?: { Variables: Record<string, unknown> } }; };
+  const queue = (id: RegExp) => { const found = byId(id, "AWS::SQS::Queue"); expect(found).toHaveLength(1); return found[0]![1].Properties; };
+  const statementsOf = (rolePattern: RegExp): Array<{ Sid?: string; Action: string | string[]; Resource: unknown; Condition?: unknown }> => Object.entries(resources)
+    .filter(([id, resource]) => (resource.Type === "AWS::IAM::Policy" || resource.Type === "AWS::IAM::ManagedPolicy") && rolePattern.test(id))
+    .flatMap(([, resource]) => (resource.Properties.PolicyDocument as { Statement: Array<{ Sid?: string; Action: string | string[]; Resource: unknown; Condition?: unknown }> }).Statement);
+
+  it("the queue holds ids for four days, encrypted, with a dead-letter queue after three receives; its visibility timeout is above the worker's timeout, and the worker outlives the broker's 130 s model wait (R5)", () => {
+    const main = queue(/^LessonsReflect[0-9A-F]{8}$/);
+    expect(main).toMatchObject({ QueueName: "agentx-staging-lessons-reflect", MessageRetentionPeriod: 345600, SqsManagedSseEnabled: true, RedrivePolicy: { maxReceiveCount: LESSONS_REFLECT_MAX_RECEIVES } });
+    expect(JSON.stringify((main.RedrivePolicy as { deadLetterTargetArn: unknown }).deadLetterTargetArn)).toContain("LessonsReflectDeadLetters");
+    expect(LESSONS_REFLECT_MAX_RECEIVES).toBe(3);
+    const dead = queue(/^LessonsReflectDeadLetters[0-9A-F]{8}$/);
+    expect(dead).toMatchObject({ QueueName: "agentx-staging-lessons-reflect-dead", SqsManagedSseEnabled: true });
+    // The numbers, pinned from the template itself: timeout 300 s, visibility 1800 s, the model wait 130 s.
+    expect(worker().Timeout).toBe(300);
+    expect(main["VisibilityTimeout"]).toBe(1800);
+    expect(worker().Timeout).toBeGreaterThan(LESSONS_BROKER_MODEL_WAIT_SECONDS + 60);
+    expect(main["VisibilityTimeout"] as number).toBeGreaterThan(worker().Timeout);
+    expect(worker().Timeout).toBe(LESSONS_WORKER_TIMEOUT_SECONDS);
+    expect(main["VisibilityTimeout"]).toBe(LESSONS_REFLECT_VISIBILITY_SECONDS);
+  }, 360_000);
+
+  it("the worker is the broker's bundle with its own handler, outside the VPC, reserved to two, fed one message at a time with partial-batch answers", () => {
+    const fn = worker();
+    expect(fn.Handler).toBe("index.lessonsWorkerHandler");
+    expect(fn.ReservedConcurrentExecutions).toBe(LESSONS_WORKER_RESERVED_CONCURRENCY);
+    expect(fn.VpcConfig).toBeUndefined();
+    const mapping = Object.values(resources).find((resource) => resource.Type === "AWS::Lambda::EventSourceMapping" && JSON.stringify(resource.Properties).includes("LessonsWorker"));
+    expect(mapping?.Properties).toMatchObject({ FunctionResponseTypes: ["ReportBatchItemFailures"], BatchSize: 1, ScalingConfig: { MaximumConcurrency: LESSONS_WORKER_RESERVED_CONCURRENCY } });
+    expect(JSON.stringify(mapping?.Properties)).toContain("LessonsReflect");
+    // It builds what the broker builds, from the broker's own variables.
+    const broker = functionVariables(on, /^Broker[0-9A-F]{8}$/);
+    expect(fn.Environment?.Variables).toStrictEqual(broker);
+  }, 360_000);
+
+  it("the worker's role holds only what a reflection touches: the tables, the plan documents, the model function, the queue and the GitHub key; the broker may send to the queue and not receive", () => {
+    const statements = statementsOf(/^LessonsWorkerServiceRole/);
+    const actions = new Set(statements.flatMap((statement) => [statement.Action].flat()));
+    for (const forbidden of ["ec2:", "bedrock:", "scheduler:", "iam:", "lambda:InvokeAsync", "sqs:SendMessage", "s3:Put", "s3:Delete", "dynamodb:Scan", "dynamodb:DeleteTable", "secretsmanager:Put"]) {
+      expect([...actions].filter((action) => action.startsWith(forbidden)), forbidden).toEqual([]);
+    }
+    // Lambda: invoke, on the model access function alone.
+    const invokes = statements.filter((statement) => [statement.Action].flat().some((action) => action.startsWith("lambda:")));
+    expect(invokes).toHaveLength(1);
+    expect([invokes[0]!.Action].flat()).toEqual(["lambda:InvokeFunction"]);
+    expect(JSON.stringify(invokes[0]!.Resource)).toContain("ModelAccessFunction");
+    expect(JSON.stringify(invokes[0]!.Resource)).not.toContain("Broker");
+    // The queue: consume only, on the one queue.
+    const consume = statements.filter((statement) => [statement.Action].flat().includes("sqs:ReceiveMessage"));
+    expect(consume).toHaveLength(1);
+    expect(JSON.stringify(consume[0]!.Resource)).toContain("LessonsReflect");
+    expect(JSON.stringify(consume[0]!.Resource)).not.toContain("DeadLetters");
+    // The record table and the State table, named; the secret by its exact ARN; the artifacts by prefix.
+    expect(statements.some((statement) => statement.Sid === "TeamRecordTable")).toBe(true);
+    const secret = statements.find((statement) => statement.Sid === "ReadGithubAppKey")!;
+    expect([secret.Action].flat()).toEqual(["secretsmanager:GetSecretValue"]);
+    expect(JSON.stringify(secret.Resource)).not.toContain("*");
+    const s3Reads = statements.filter((statement) => [statement.Action].flat().some((action) => action.startsWith("s3:GetObject")));
+    expect(JSON.stringify(s3Reads.map((statement) => statement.Resource))).toContain("/private/*");
+    // Wildcard resources: only the generated ones (X-Ray, which CDK gives every traced function) and the table indexes.
+    const open = statements.filter((statement) => JSON.stringify(statement.Resource) === '"*"');
+    expect(open.flatMap((statement) => [statement.Action].flat()).sort()).toEqual(["xray:PutTelemetryRecords", "xray:PutTraceSegments"]);
+    // The broker: send to the queue, and nothing that takes a message out.
+    const brokerStatements = Object.entries(resources).filter(([id, resource]) => /Broker/.test(id) && (resource.Type === "AWS::IAM::Policy" || resource.Type === "AWS::IAM::ManagedPolicy"))
+      .flatMap(([, resource]) => (resource.Properties.PolicyDocument as { Statement: Array<{ Action: string | string[]; Resource: unknown }> }).Statement);
+    const toQueue = brokerStatements.filter((statement) => JSON.stringify(statement.Resource).includes("LessonsReflect[0-9A-F]") || /"LessonsReflect[0-9A-F]{8}"/.test(JSON.stringify(statement.Resource)));
+    expect(toQueue.flatMap((statement) => [statement.Action].flat())).toContain("sqs:SendMessage");
+    expect(toQueue.flatMap((statement) => [statement.Action].flat()).filter((action) => /Receive|Delete/.test(action))).toEqual([]);
+  }, 360_000);
+
+  it("Enterprise: the worker may use the customer's table key through DynamoDB only", () => {
+    const enterprise = resourcesOf(controlPlane({ ...ENTERPRISE, agentxTeamRecord: "enabled", agentxTeamRecordKmsKeyArn: KMS, agentxTeamRecordEnterpriseWorkspaceId: "org_aaaaaaaaaaaaaaaaaaaa" }));
+    const statements = Object.entries(enterprise).filter(([id, resource]) => /^LessonsWorkerServiceRole/.test(id) && resource.Type === "AWS::IAM::Policy")
+      .flatMap(([, resource]) => (resource.Properties.PolicyDocument as { Statement: Array<{ Sid?: string; Action: string | string[]; Resource: unknown; Condition?: unknown }> }).Statement);
+    const key = statements.find((statement) => statement.Sid === "TeamRecordTableKms");
+    expect(key).toBeDefined();
+    expect(key!.Resource).toBe(KMS);
+    expect(JSON.stringify(key!.Condition)).toContain("kms:ViaService");
+    // Public has no customer key, so no key statement.
+    expect(statementsOf(/^LessonsWorkerServiceRole/).some((statement) => statement.Sid === "TeamRecordTableKms")).toBe(false);
+  }, 360_000);
 });

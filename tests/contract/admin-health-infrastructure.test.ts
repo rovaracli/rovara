@@ -317,6 +317,8 @@ describe("the health route's grants (A13)", () => {
       "packages/broker/src/notifications/attention.ts",
       // SRL-3 (owner decision 24b): the merge-commit index row (GITHUB_WORKFLOW_MERGE, pk ORG#<org>#GITHUB_MERGE) maps a pull request's merge commit to its Rovara task so a revert can be matched; it is an index row that holds no person and expires after 400 days, and only merge-commit-index.ts builds it.
       "packages/broker/src/rovara-code/merge-commit-index.ts",
+      // 2026-11-08, lessons in production (lane 2): the once-claim of a reflection (`LEARN#<task>#<outcome>`, 30 days) is a marker so a redelivered queue message never reflects or charges twice; none is a durable record, and only reflect-claims.ts writes it.
+      "packages/broker/src/lessons/reflect-claims.ts",
     ]);
     const found = execFileSync("grep", ["-rl", "indexExpiresAt\\|INDEX_EXPIRY_ATTRIBUTE", "packages", "infra/lib", "--include=*.ts", "--exclude-dir=dist", "--exclude-dir=node_modules"], { encoding: "utf8" }).trim().split("\n").filter((file) => file !== "");
     expect(found.filter((file) => !allowed.has(file))).toEqual([]);

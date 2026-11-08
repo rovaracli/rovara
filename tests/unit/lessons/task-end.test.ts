@@ -115,27 +115,79 @@ describe("learnFromEndedTask: the facts", () => {
 
 const endEvent = (over: Partial<TaskEndEvent> = {}): TaskEndEvent => ({ orgId: WS, taskId: "task-1", outcome: "merged", runLimitUsd: 1, spentUsd: 0, ...over });
 
-describe("the task-end handler and its installation", () => {
-  it("does nothing without dependencies, and for an end that teaches nothing", async () => {
-    const none = learningTaskEndHandler(() => undefined);
-    await none({} as never, endEvent());
-    const w = setup();
-    await learningTaskEndHandler(() => w.deps)({} as never, endEvent({ outcome: "succeeded" }));
-    expect(w.reads).toEqual([]);
-    await learningTaskEndHandler(() => w.deps)({} as never, endEvent({ outcome: "merged" }));
-    expect(w.reads).toEqual(["task-1"]);
+describe("the task-end handler and its installation (lessons in production, lane 2: a task's end sends ids to a queue and never calls the model)", () => {
+  const queueOf = () => { const sent: unknown[] = []; return { sent, queue: { send: async (m: unknown) => { sent.push(m); } } as never }; };
+  it("sends one message of ids only for an end that teaches something, and nothing for one that does not or where there is no queue", async () => {
+    await learningTaskEndHandler(() => undefined)({} as never, endEvent());
+    const q = queueOf();
+    const handler = learningTaskEndHandler(() => ({ queue: q.queue, newRequestId: () => "req-1" }));
+    await handler({} as never, endEvent({ outcome: "succeeded" }));
+    await handler({} as never, endEvent({ outcome: "answered" }));
+    expect(q.sent).toEqual([]);
+    await handler({} as never, endEvent({ outcome: "merged", finalReport: "a person's words", branch: "feat/x" }));
+    await handler({} as never, endEvent({ outcome: "cancelled" }));
+    expect(q.sent).toEqual([{ orgId: WS, taskId: "task-1", outcome: "merged", requestId: "req-1" }, { orgId: WS, taskId: "task-1", outcome: "abandoned", requestId: "req-1" }]);
+    expect(JSON.stringify(q.sent)).not.toMatch(/person|feat\/x/u);
   });
-  it("is registered only when the broker is given learning dependencies, once, and can be removed", () => {
+  it("never runs the reflector, reads the task or touches the model: the handler's whole dependency is the queue", async () => {
+    const w = setup();
+    const q = queueOf();
+    await learningTaskEndHandler(() => ({ queue: q.queue }))({} as never, endEvent());
+    expect(w.reads).toEqual([]);
+    expect(w.model.calls).toEqual([]);
+    expect(q.sent).toHaveLength(1);
+  });
+  it("a queue that fails is one fixed log line: the task end is never held up and no error text is logged", async () => {
+    const logs: Array<[string, Record<string, unknown>]> = [];
+    const handler = learningTaskEndHandler(() => ({ queue: { send: async () => { throw new Error("secret queue failure text"); } }, log: (event, fields) => logs.push([event, fields]) }));
+    await expect(handler({} as never, endEvent())).resolves.toBeUndefined();
+    expect(logs).toEqual([["learning.enqueue_failed", { taskId: "task-1" }]]);
+    expect(JSON.stringify(logs)).not.toContain("secret");
+  });
+  it("is registered only when the broker has the learning dependencies AND a queue, once, and can be removed", () => {
     uninstallLearningTaskEnd();
     const before = hasTaskEndHandlers();
     installLearningTaskEnd({});
-    expect(hasTaskEndHandlers()).toBe(before);
     const w = setup();
-    installLearningTaskEnd({ learning: w.deps }, { inline: true });
-    installLearningTaskEnd({ learning: w.deps }, { inline: true });
+    installLearningTaskEnd({ learning: w.deps });
+    expect(hasTaskEndHandlers()).toBe(before);
+    installLearningTaskEnd({ learning: w.deps, lessonsReflectQueue: queueOf().queue });
+    installLearningTaskEnd({ learning: w.deps, lessonsReflectQueue: queueOf().queue });
     expect(hasTaskEndHandlers()).toBe(true);
     uninstallLearningTaskEnd();
     expect(hasTaskEndHandlers()).toBe(before);
+  });
+});
+
+describe("L4: the learning mode is checked before the task's subject is read", () => {
+  it("a project whose learning is Off or Collect never has its subject read (no plan text, standing or erasure state), when the source can name the project alone", async () => {
+    for (const mode of ["Off", "Collect"] as const) {
+      const w = setup({ settings: settings({ mode }) });
+      const projectReads: string[] = [];
+      w.deps.source = { ...w.deps.source, projectOf: async (input) => { projectReads.push(input.taskId); return PROJECT; } };
+      expect(await learnFromEndedTask(w.deps, { workspaceId: WS, taskId: "task-1" })).toBe("off");
+      expect(projectReads).toEqual(["task-1"]);
+      expect(w.reads).toEqual([]);
+      expect(w.rows.asked).toEqual([]);
+      expect(w.model.calls).toEqual([]);
+    }
+  });
+  it("a mode that allows reflection reads the subject after it; a task with no project (not this workspace's, or one that teaches nothing) reads nothing", async () => {
+    const w = setup();
+    const order: string[] = [];
+    w.deps.source = { read: async () => { order.push("read"); return { facts: baseFacts(), sendBackRequestIds: [] }; }, projectOf: async () => { order.push("projectOf"); return PROJECT; } };
+    expect(await learnFromEndedTask(w.deps, { workspaceId: WS, taskId: "task-1" })).toBe("reflected");
+    expect(order).toEqual(["projectOf", "read"]);
+    const none = setup();
+    none.deps.source = { ...none.deps.source, projectOf: async () => undefined };
+    expect(await learnFromEndedTask(none.deps, { workspaceId: WS, taskId: "task-1" })).toBe("no_facts");
+    expect(none.reads).toEqual([]);
+  });
+  it("a settings reader that fails on the first look is Off before anything is read", async () => {
+    const w = setup({ settings: { read: async () => { throw new Error("down"); } } });
+    w.deps.source = { ...w.deps.source, projectOf: async () => PROJECT };
+    expect(await learnFromEndedTask(w.deps, { workspaceId: WS, taskId: "task-1" })).toBe("off");
+    expect(w.reads).toEqual([]);
   });
 });
 
@@ -151,7 +203,7 @@ describe("a human send-back names who sent it", () => {
 
   it("reaches the emitter with the pressing person's developer id, the round and the owner's private audience", async () => {
     const { sent, deps } = emitterSetup();
-    installLearningTaskEnd({ learning: deps }, { inline: true });
+    const remove = registerHumanSendBackListener(sendBackToRecord(deps.rovara));
     try {
       await announce();
       expect(sent).toEqual([{
@@ -168,7 +220,7 @@ describe("a human send-back names who sent it", () => {
         workspaceId: WS, project: PROJECT, taskId: "task-1", requestId: "req-11", actorDeveloperId: "dev-sam", instructions: "again", round: 3, shared: true, ownerDeveloperId: "owner-1", at: "2026-10-31T10:00:00.000Z",
       });
       expect(read[0]).toMatchObject({ visibility: { kind: "shared" }, sendBackId: "req-11", round: 3 });
-    } finally { uninstallLearningTaskEnd(); }
+    } finally { remove(); }
   });
   it("tells nobody where learning is not wired, and a task without an org has nowhere to write", async () => {
     const seen: unknown[] = [];
@@ -189,16 +241,15 @@ describe("a human send-back names who sent it", () => {
       await expect(announce()).resolves.toBeUndefined();
       await expect(announceHumanSendBack({} as never)).resolves.toBeUndefined();
     } finally { remove(); }
-    const { deps } = emitterSetup();
-    installLearningTaskEnd({ learning: { ...deps, rovara: { sendBack: async () => { throw new Error("down"); } } } }, { inline: true });
-    try { await expect(announce()).resolves.toBeUndefined(); } finally { uninstallLearningTaskEnd(); }
+    const removeThrowing = registerHumanSendBackListener(sendBackToRecord({ sendBack: async () => { throw new Error("down"); } }));
+    try { await expect(announce()).resolves.toBeUndefined(); } finally { removeThrowing(); }
   });
   it("an unreadable owner falls back to the creator, so the row stays private to a person", async () => {
     const { sent, deps } = emitterSetup();
-    installLearningTaskEnd({ learning: deps }, { inline: true });
+    const remove = registerHumanSendBackListener(sendBackToRecord(deps.rovara));
     try {
       await announce({ task: task({ currentOwner: { broken: true } as never }) });
       expect(sent[0]).toMatchObject({ visibility: { kind: "private", ownerDeveloperId: "owner-1" } });
-    } finally { uninstallLearningTaskEnd(); }
+    } finally { remove(); }
   });
 });

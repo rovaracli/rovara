@@ -21,6 +21,8 @@ const CODEOWNERS_MAX_CHARS = 262_144;
 /** The pages of changed files (100 each) the code-owner check reads. */
 const CHANGED_PATH_PAGES = 10;
 const FILE_AT_COMMIT_TIMEOUT_MS = 8_000;
+/** The most of a contents answer read to tell a file from a directory (a listing holds at most 1,000 entries). */
+const PATH_KIND_MAX_BYTES = 2 * 1024 * 1024;
 const READ_TOKEN_REUSE_MS = 5 * 60_000;
 /** GitHub makes an App's slug from its name: letters, digits and hyphens. It goes into the install address. */
 const GITHUB_REPOSITORY_NAME = /^[A-Za-z0-9._-]{1,100}$/;
@@ -1520,6 +1522,37 @@ export class GitHubAppCredentialProvider {
       if (reached) { await reader.cancel().catch(() => undefined); break; }
     }
     return new TextDecoder().decode(Buffer.concat(chunks));
+  }
+
+  /**
+   * What a path is at a commit: "file", "dir" (a directory or a submodule) or "none" (GitHub's 404). The contents API answers a file with one object and a directory with a list. Throws when GitHub cannot answer
+   * (never "none" for an error). Same commit and path rules as `getFileAtCommit`.
+   */
+  async getPathKindAtCommit(repositoryUrl: string, path: string, commitSha: string, scope: GitHubTokenScope, options?: { timeoutMs?: number }): Promise<"file" | "dir" | "none"> {
+    if (!/^[a-f0-9]{40}$/u.test(commitSha)) throw agentXError("CONFIG_INVALID", "commit identity is invalid");
+    const segments = path.split("/");
+    if (path.length === 0 || path.length > 512 || path.includes("\\") || segments.some((segment) => segment === "" || segment === "." || segment === "..")) {
+      throw agentXError("CONFIG_INVALID", "file path is invalid");
+    }
+    const repository = await this.installed(parseGitHubRepository(repositoryUrl), scope);
+    const token = await this.readTokenFor(repository, scope);
+    const response = await this.fetchImplementation(
+      `https://api.github.com/repos/${encodeURIComponent(repository.owner)}/${encodeURIComponent(repository.name)}/contents/${segments.map(encodeURIComponent).join("/")}?ref=${commitSha}`,
+      { headers: githubHeaders(token), signal: AbortSignal.timeout(options?.timeoutMs ?? FILE_AT_COMMIT_TIMEOUT_MS), redirect: "error" },
+    );
+    if (response.status === 404) { await response.body?.cancel(); return "none"; }
+    if (!response.ok) {
+      await response.body?.cancel();
+      throw agentXError("RUNTIME_UNAVAILABLE", `GitHub path lookup failed with HTTP ${response.status}`);
+    }
+    // A directory is a JSON list; a file (or a symlink) is one object. An answer over the cap is not read (it cannot be told cheaply): the caller treats a throw as "not verified".
+    if (Number(response.headers.get("content-length")) > PATH_KIND_MAX_BYTES) { await response.body?.cancel(); throw agentXError("RUNTIME_UNAVAILABLE", "GitHub's path answer is too large to read"); }
+    const body: unknown = await response.json();
+    if (Array.isArray(body)) return "dir";
+    const type = typeof body === "object" && body !== null ? (body as { type?: unknown }).type : undefined;
+    if (type === "submodule") return "dir";
+    if (type === "file" || type === "symlink") return "file";
+    throw agentXError("RUNTIME_UNAVAILABLE", "GitHub returned an unexpected path answer");
   }
 
   /**

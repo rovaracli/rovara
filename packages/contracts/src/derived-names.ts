@@ -40,6 +40,24 @@ export const TEAM_RECORD_OPS_MAX_RECEIVES = 5;
 /** A queued put (it holds text) is dropped unapplied once it is older than this, so its text does not wait for a consumer past a day. */
 export const TEAM_RECORD_QUEUED_PUT_MAX_AGE_MS = 24 * 60 * 60 * 1000;
 export const teamRecordOpsDeadLetterName = (env: string): string => `agentx-${env}-team-record-ops-dead`;
+/**
+ * Lessons in production (lane 2, WB-4): the queue a finished task's reflection waits in (ids only: org, task, outcome, request), its dead-letter queue, and the worker that runs it. CDK names the queue and
+ * the worker with these (infra/lib/team-record-wiring.ts) and the broker builds the queue's URL from the same function, so no environment variable is passed.
+ */
+export const lessonsReflectQueueName = (env: string): string => `agentx-${env}-lessons-reflect`;
+export const lessonsReflectDeadLetterName = (env: string): string => `agentx-${env}-lessons-reflect-dead`;
+/** A reflection that fails three times lands in the dead-letter queue (ids only, so nothing there holds a person's words). */
+export const LESSONS_REFLECT_MAX_RECEIVES = 3;
+/**
+ * The worker's time, pinned together (R5 of the lane 1 re-check): the model step is bounded at 100 s inside the in-VPC function (timeout 120 s) and the broker waits 130 s for it; the worker has to outlive that wait,
+ * the key-block step after it and the work around it, so its timeout is 300 s and the work stops starting model calls 240 s in. SQS must not hand the message to a second worker while the first can still be running:
+ * the visibility timeout is six times the worker's timeout (AWS's own advice for a Lambda source).
+ */
+export const LESSONS_BROKER_MODEL_WAIT_SECONDS = 130;
+export const LESSONS_WORKER_TIMEOUT_SECONDS = 300;
+export const LESSONS_WORKER_DEADLINE_SECONDS = 240;
+export const LESSONS_REFLECT_VISIBILITY_SECONDS = 6 * LESSONS_WORKER_TIMEOUT_SECONDS;
+export const LESSONS_WORKER_RESERVED_CONCURRENCY = 2;
 export const teamRecordVectorBucketName = (env: string): string => `${teamRecordNamePrefix(env)}-record-vectors`;
 export const teamRecordTableBucketName = (env: string): string => `${teamRecordNamePrefix(env)}-record-lake`;
 export const teamRecordWorkGroupName = (env: string): string => `${teamRecordNamePrefix(env)}-record`;

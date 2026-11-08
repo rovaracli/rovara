@@ -34,7 +34,7 @@ export interface CodeFactsDeps {
 
 /** A `CodeFactsReader` over the code-host port. `resolve` gives the repository and scope for a project's repository name; no answer means no read. */
 export function codeHostFactsReader(
-  host: Pick<CodeHost, "fileAtRevision">,
+  host: Pick<CodeHost, "fileAtRevision" | "pathKind">,
   resolve: (workspaceId: string, project: string, repo: string) => Promise<{ repository: RepositoryRef; scope: HostScope } | undefined>,
 ): CodeFactsReader {
   return {
@@ -43,6 +43,14 @@ export function codeHostFactsReader(
       if (target === undefined) return undefined;
       return host.fileAtRevision(target.repository, input.path, input.commit, target.scope, { timeoutMs: input.timeoutMs });
     },
+    // WB-7: only where the host can tell a directory from nothing; a host without `pathKind` leaves the reader without `kind`, and then only a readable file counts.
+    ...(host.pathKind === undefined ? {} : {
+      async kind(input) {
+        const target = await resolve(input.workspaceId, input.project, input.repo);
+        if (target === undefined) return undefined;
+        return host.pathKind!(target.repository, input.path, input.commit, target.scope, { timeoutMs: input.timeoutMs });
+      },
+    }),
   };
 }
 

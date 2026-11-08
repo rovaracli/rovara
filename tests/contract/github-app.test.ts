@@ -317,6 +317,44 @@ describe("GitHub App repository credentials", () => {
     await expect(provider.getFileAtCommit(url, "big.txt", sha, { system: "private-install" })).rejects.toThrow(/file too large/);
   });
 
+  it("tells a file from a directory from nothing at a commit (lessons in production: pathKind), and never calls an error 'none'", async () => {
+    const { privateKey } = generateKeyPairSync("rsa", { modulusLength: 2048 });
+    const pem = privateKey.export({ type: "pkcs8", format: "pem" }).toString();
+    const sha = "e".repeat(40);
+    const requests: Array<{ url: string; init: RequestInit | undefined }> = [];
+    const provider = appProvider({
+      credentialRef: "github-agentx-sdlc", appId: "5002502", getPrivateKey: async () => pem,
+      fetchImplementation: async (url, init) => {
+        const requestUrl = typeof url === "string" ? url : url instanceof URL ? url.href : url.url;
+        requests.push({ url: requestUrl, init });
+        if (requestUrl.endsWith("/access_tokens")) return new Response(JSON.stringify({ token: "lookup-token" }), { status: 201 });
+        if (requestUrl.includes("/contents/src/a.ts?")) return new Response(JSON.stringify({ type: "file", name: "a.ts", content: "eA==" }), { status: 200 });
+        if (requestUrl.includes("/contents/src?")) return new Response(JSON.stringify([{ type: "file", name: "a.ts" }]), { status: 200 });
+        if (requestUrl.includes("/contents/vendor/lib?")) return new Response(JSON.stringify({ type: "submodule", name: "lib" }), { status: 200 });
+        if (requestUrl.includes("/contents/link?")) return new Response(JSON.stringify({ type: "symlink", name: "link" }), { status: 200 });
+        if (requestUrl.includes("/contents/weird?")) return new Response(JSON.stringify({ type: "mystery" }), { status: 200 });
+        if (requestUrl.includes("/contents/huge?")) return new Response("[]", { status: 200, headers: { "content-length": String(3 * 1024 * 1024) } });
+        if (requestUrl.includes("/contents/broken?")) return new Response("oops", { status: 500 });
+        return new Response("not found", { status: 404 });
+      },
+    });
+    const url = "https://github.com/ps06756/personal-website-test.git";
+    const kind = (path: string) => provider.getPathKindAtCommit(url, path, sha, { system: "private-install" });
+    expect(await kind("src/a.ts")).toBe("file");
+    expect(await kind("src")).toBe("dir");
+    expect(await kind("vendor/lib")).toBe("dir");
+    expect(await kind("link")).toBe("file");
+    expect(await kind("missing")).toBe("none");
+    for (const path of ["weird", "huge", "broken"]) await expect(kind(path), path).rejects.toMatchObject({ code: "RUNTIME_UNAVAILABLE" });
+    // The same rules as a file read: a full commit id and a clean repository-relative path, with the contents-read token and the ordinary (JSON) media type.
+    await expect(provider.getPathKindAtCommit(url, "src", "main", { system: "private-install" })).rejects.toMatchObject({ code: "CONFIG_INVALID" });
+    await expect(kind("../etc")).rejects.toMatchObject({ code: "CONFIG_INVALID" });
+    await expect(kind("a//b")).rejects.toMatchObject({ code: "CONFIG_INVALID" });
+    expect(requests.find((request) => request.url.includes("/contents/src?"))?.url).toBe(`https://api.github.com/repos/ps06756/personal-website-test/contents/src?ref=${sha}`);
+    expect((requests.find((request) => request.url.includes("/contents/src?"))?.init?.headers as Record<string, string>).accept).not.toBe("application/vnd.github.raw+json");
+    expect((JSON.parse(requests[0]?.init?.body as string) as { permissions: unknown }).permissions).toEqual({ contents: "read" });
+  });
+
   it("lists a commit's whole tree with a contents-read token, and says when GitHub cut the listing", async () => {
     const { privateKey } = generateKeyPairSync("rsa", { modulusLength: 2048 });
     const pem = privateKey.export({ type: "pkcs8", format: "pem" }).toString();

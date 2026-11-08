@@ -18,8 +18,9 @@
 //      for money that may have been spent, and nothing leaks a month's cap.
 // `costUsd` of the answer is therefore an upper bound, the cap the key held.
 import { randomUUID } from "node:crypto";
-import { OrgIdSchema, ROVARA_CODE_AGENT_ID, forbiddenModelMatcher, type ModelIdentifier, type OrgId } from "@agentx/contracts";
+import { LESSONS_BROKER_MODEL_WAIT_SECONDS, OrgIdSchema, ROVARA_CODE_AGENT_ID, forbiddenModelMatcher, type ModelIdentifier, type OrgId } from "@agentx/contracts";
 import { readGuardrails } from "../../agents/guardrails.js";
+import { learningCallMayStart } from "../../lessons/learning-deadline.js";
 import { LearningRefusal } from "../../lessons/pause.js";
 import type { Edition } from "../../lessons/policy.js";
 import type { PipelineModel } from "../../lessons/ports.js";
@@ -42,6 +43,9 @@ export const LEARNING_MAX_CALL_BUDGET_USD = 5;
 export const LEARNING_NO_PROVIDER = "learning has no usable AI provider for this project";
 export const LEARNING_NO_BUDGET = "learning has no budget left";
 export const LEARNING_MONTH_FULL = "learning's monthly limit is used up";
+export const LEARNING_DEADLINE = "the reflection ran out of time before this call could finish";
+/** The longest the broker waits for the in-VPC function's one call (lane 1): what a call must be able to finish inside before the worker's deadline. */
+export const LEARNING_BROKER_WAIT_MS = LESSONS_BROKER_MODEL_WAIT_SECONDS * 1000;
 export const LEARNING_TOO_DEAR = "the model's price could take a call past what learning holds for it";
 export const LEARNING_ALL_FORBIDDEN = "every model learning could use is forbidden";
 export const LEARNING_NO_SUITABLE_MODEL = "no available model can take this learning call";
@@ -148,6 +152,8 @@ export function customerLearningModel(dependencies: AwsBrokerDependencies, optio
       const modelAccess = dependencies.modelAccess;
       const completion = modelAccess?.access.learningCompletion?.bind(modelAccess.access);
       if (modelAccess === undefined || completion === undefined) throw new Error("learning has no model path in this install");
+      // Lane 2: inside the worker, a call that could still be running at the reflection's deadline is not started (nothing is reserved or charged).
+      if (!learningCallMayStart(Date.now(), LEARNING_BROKER_WAIT_MS)) throw new Error(LEARNING_DEADLINE);
       // The ledger is the money's home: an install without one cannot hold a cap, so it makes no call (fail closed).
       const ledger = ledgerOf(dependencies);
       if (ledger === undefined) throw new Error("learning has no spend ledger in this install");
