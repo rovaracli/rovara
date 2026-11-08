@@ -127,6 +127,8 @@ export const SERVICE_ROLE_SERVICES: readonly string[] = [
  * They are in the boundary as wildcards, as a ceiling, because the boundary has no room to name the resources (see BOUNDARY_SERVICES).
  */
 export const TEAM_RECORD_BOUNDARY_SERVICES: readonly string[] = ["athena", "s3tables", "s3vectors"];
+/** The boundary's Deny on sharing the record's stores (see DenyRecordStoreSharing): policy and replication writes on S3 Tables and S3 Vectors. */
+export const TEAM_RECORD_BOUNDARY_DENIED_ACTIONS: readonly string[] = ["s3tables:Put*Policy", "s3tables:Put*Replication", "s3vectors:Put*Policy"];
 
 /**
  * Services the default permission boundary allows by wildcard: the service role's own, plus what
@@ -377,7 +379,8 @@ const BUDGET_ACTIONS = ["budgets:ModifyBudget", "budgets:ViewBudget", "budgets:T
  * of S3 Vectors, S3 Tables or Athena. Each is on this environment's own resource names (`agentx-<env>-record-vectors|record-lake|record`), never on another bucket or workgroup of the account.
  * The `kms:*` and `s3:*` the handlers also call are already in the service role's Services statement, and the Athena results bucket is an ordinary S3 bucket.
  * Not granted, on purpose (the record sets none of these properties, so the handlers do not call them): `iam:PassRole` and `iam:CreateServiceLinkedRole` that the table bucket and workgroup handlers list (the record passes
- * no role to either), and `s3tables:PutTableBucketReplication` / `s3tables:DeleteTableBucketReplication` (they would let a deploy copy the lake to another bucket).
+ * no role to either), and `s3tables:PutTableBucketReplication` (it would let a deploy copy the lake to another bucket). `s3tables:DeleteTableBucketReplication` IS granted (IAM review F1): removing a
+ * replication cannot copy data anywhere, and the TableBucket update and delete handlers may call it unconditionally, so withholding it could fail an update or the rollback of a failed switch-on.
  *
  * The service role's inline policy is capped at 10,240 characters, so the actions are IAM name patterns, each chosen to match exactly the handler actions and no other action of the service (the coverage test checks the
  * match set against AWS's full action list for each service, pinned in tests/fixtures/team-record-service-actions-2026-11-08.json): `*VectorBucket` is Create/Get/DeleteVectorBucket and not the *Policy actions, `*Tag*` is
@@ -385,8 +388,8 @@ const BUDGET_ACTIONS = ["budgets:ModifyBudget", "budgets:ViewBudget", "budgets:T
  */
 export const TEAM_RECORD_VECTORS_DEPLOY_ACTIONS: readonly string[] = ["s3vectors:*VectorBucket", "s3vectors:*Index", "s3vectors:ListIndexes", "s3vectors:*Tag*"];
 export const TEAM_RECORD_LAKE_DEPLOY_ACTIONS: readonly string[] = [
-  // the table bucket: create/get/delete, its encryption, its maintenance and metrics configuration, its storage class, a read of its replication
-  "s3tables:*TableBucket", "s3tables:*TableBucketEncryption", "s3tables:*TableBucket*Configuration", "s3tables:*Table*StorageClass", "s3tables:GetTableBucketReplication",
+  // the table bucket: create/get/delete, its encryption, its maintenance and metrics configuration, its storage class, a read of its replication and the removal of one (explicit, on the lake table bucket; see below)
+  "s3tables:*TableBucket", "s3tables:*TableBucketEncryption", "s3tables:*TableBucket*Configuration", "s3tables:*Table*StorageClass", "s3tables:GetTableBucketReplication", "s3tables:DeleteTableBucketReplication",
   // the namespace and the tables: create, list, get, rename, delete, the data write CreateTable makes, a table's maintenance configuration
   "s3tables:*Namespace*", "s3tables:CreateTable", "s3tables:ListTables", "s3tables:GetTable", "s3tables:DeleteTable", "s3tables:RenameTable", "s3tables:PutTableData", "s3tables:*TableMaintenanceConfiguration",
   "s3tables:*Tag*",
@@ -765,6 +768,9 @@ export function defaultBoundaryStatements(scope: Pick<PolicyScope, "env" | "part
       NotResource: agentxManagedPolicies(scope),
     },
     { Sid: "DenyBoundaryChanges", Effect: "Deny", Action: ["iam:*Policy*"], Resource: defaultBoundaryArn(scope) },
+    // TR-SWITCH review F3: no bounded role may set a resource policy on, or a replication of, the Team record's stores (or any vector bucket or table bucket), whatever a later grant says: that is how a lake or its vectors
+    // would be opened or copied to another account. Nothing in the record needs it (the deploy role withholds all three; the broker and the vector role never held them). tests/contract/team-record-iam-coverage.test.ts pins the match set.
+    { Sid: "DenyRecordStoreSharing", Effect: "Deny", Action: [...TEAM_RECORD_BOUNDARY_DENIED_ACTIONS], Resource: "*" },
   ];
 }
 

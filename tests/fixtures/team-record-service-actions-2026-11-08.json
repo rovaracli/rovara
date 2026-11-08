@@ -1,5 +1,5 @@
 {
- "_note": "Every action of S3 Vectors, S3 Tables and Athena, from AWS's service authorization reference (servicereference.us-east-1.amazonaws.com/v1/<service>/<service>.json), read 2026-11-08. tests/contract/team-record-iam-coverage.test.ts matches the access stack's action patterns against it so a pattern cannot quietly allow more than the handlers need. Refresh when a service adds actions; the test then shows what the new ones match.",
+ "_note": "Every action of S3 Vectors, S3 Tables and Athena, from AWS's service authorization reference (servicereference.us-east-1.amazonaws.com/v1/<service>/<service>.json), read 2026-11-08. tests/contract/team-record-iam-coverage.test.ts matches the access stack's action patterns against it so a pattern cannot quietly allow more than the handlers need. Refresh this file whenever the AWS SDK or the CDK is upgraded, and whenever a service adds actions: the access stack grants name patterns (for example `*TableBucket*Configuration`), and a pattern quietly picks up any action AWS adds later that matches it. The exact-match test then shows what the new ones match.",
  "actions": {
   "s3vectors": [
    "s3vectors:CreateIndex",

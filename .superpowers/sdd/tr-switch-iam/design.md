@@ -55,3 +55,9 @@ Boundary 5,585 -> 5,898 of 6,144 (test limit 6,054). Service role 7,907 -> 9,158
 
 ## Release ordering
 Access stack first (it already deploys first in every upgrade, so one upgrade can carry this plus the switch-on). The control-plane switch-on fails without it. See DEFERRED-CHECKS TR-SWITCH-B1/B2 fix.
+
+## Review round 1 (Opus IAM review, SHIP AFTER FIXES)
+- F1: `s3tables:DeleteTableBucketReplication` is now granted explicitly on the lake table bucket (removing a replication copies nothing; the update and rollback handlers may call it). `PutTableBucketReplication` and `iam:PassRole` stay withheld.
+- F3: boundary Deny `DenyRecordStoreSharing` on `s3tables:Put*Policy`, `s3tables:Put*Replication`, `s3vectors:Put*Policy` (matches exactly PutTableBucketPolicy, PutTablePolicy, PutTableBucketReplication, PutTableReplication, PutVectorBucketPolicy; no record role holds any). Boundary worst case 6,014 of 6,144 (test limit 6,054); service role 9,198 (limit 9,240).
+- F7: the coverage test also synthesizes the Enterprise shape (customer key + pinned workspace index), so S3Vectors::Index and the key statements pass through the same checks.
+- F2/F4/F5/F6: DEFERRED-CHECKS.

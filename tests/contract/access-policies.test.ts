@@ -538,6 +538,8 @@ describe("default permission boundary", () => {
       // iam:SetDefaultPolicyVersion is matched by iam:*PolicyVersion* (checked below), so it is not listed again.
       { Action: ["iam:CreatePolicy*", "iam:*PolicyVersion*", "iam:DeletePolicy"], Resource: { NotResource: "arn:aws:iam::123456789012:policy/agentx/staging/agentx-staging-broker-*" } },
       { Action: ["iam:*Policy*"], Resource: "arn:aws:iam::123456789012:policy/agentx/staging/agentx-staging-boundary" },
+      // TR-SWITCH review F3: no bounded role may share or replicate the Team record's stores (pinned in team-record-iam-coverage.test.ts).
+      { Action: ["s3tables:Put*Policy", "s3tables:Put*Replication", "s3vectors:Put*Policy"], Resource: "*" },
     ]);
     expect(denies.every((s) => s.Condition === undefined)).toBe(true);
   });
@@ -660,6 +662,8 @@ describe("CloudFront permissions (web app deploy)", () => {
         // 2026-11-03 (tightened, nothing new allowed): the stale 6,046 above was really 6,048. Merging statements with the same Effect and Resource (CallerIdentity and Quotas into Services, the two Denies on "*",
         // PassRoles into IamRoles), dropping iam:SetDefaultPolicyVersion (matched by iam:*PolicyVersion*) and naming the instance profile actions with iam:*InstanceProfile brought the same worst case (20-character environment, organization id) from 6,048 to 5,585 of 6,144, so 559 characters are free.
         // tests/contract/default-boundary-equivalence.test.ts proves it permits what v0.5.2's did. The limit below is unchanged (6144 - 90).
+        // TR-SWITCH-B1/B2 (2026-11-08): the Team record's three services, Glue reads, GetDataAccess, the vector role and the sharing Deny took the boundary's worst case from 5,585 to 6,014 (limit below 6,054: 40 left) and the service role's
+        // from 7,864 to 9,198 (limit 9,240: 42 left; IAM's real cap is 10,240, so about 1,040 remain). The next addition to either policy needs a compression pass, or a deliberate decision to lower the margin, first.
         const boundary = size(withoutSids(defaultBoundaryStatements(longest)));
         worst = Math.max(worst, boundary);
         expect(boundary, `boundary, ${env}, ${rovaraOrganizationId ?? "no org id"}`).toBeLessThanOrEqual(6144 - 90);

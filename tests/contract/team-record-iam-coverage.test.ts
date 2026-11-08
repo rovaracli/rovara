@@ -96,14 +96,13 @@ function allowedBy(statements: Statement[], action: string, resource: string, fl
 /** The CloudFormation registry's handler permissions for the types the record creates (read 2026-11-08), by type. */
 const HANDLER_PERMISSIONS = (JSON.parse(readFileSync(new URL("../fixtures/cfn-handler-permissions-team-record-2026-11-08.json", import.meta.url), "utf8")) as { types: Record<string, string[]> }).types;
 /**
- * Handler permissions the deploy role does not hold on purpose, with the reason: the record sets none of these properties, so CloudFormation does not call them. iam:* and the kms:/s3: entries are not in the access
+ * Handler permissions the deploy role does not hold on purpose (s3tables:DeleteTableBucketReplication is NOT one: IAM review F1 granted it, removing a replication copies nothing and the update and rollback may call it), with the reason: the record sets none of these properties, so CloudFormation does not call them. iam:* and the kms:/s3: entries are not in the access
  * stack's record statements: the service role has kms:* and s3:* by service, and IAM by name.
  */
 const EXCLUDED_ON_PURPOSE: Readonly<Record<string, string>> = {
   "iam:PassRole": "the table bucket's replication role and the workgroup's execution role: the record passes none",
   "iam:CreateServiceLinkedRole": "Athena Spark workgroups only; the record's workgroup is SQL (engine version 3)",
   "s3tables:PutTableBucketReplication": "would let a deploy copy the lake to another bucket; the record sets no replication",
-  "s3tables:DeleteTableBucketReplication": "see PutTableBucketReplication",
 };
 /** Every action of the three services, by service (AWS's service authorization reference, pinned). */
 const SERVICE_ACTIONS = (JSON.parse(readFileSync(new URL("../fixtures/team-record-service-actions-2026-11-08.json", import.meta.url), "utf8")) as { actions: Record<string, string[]> }).actions;
@@ -134,24 +133,24 @@ beforeAll(() => {
   off = synthOf(buildAgentXApp({ agentxEnv: ENV, agentxCloud: true }));
 }, 600_000);
 
-const deployRole = (access: Resources) => {
-  const role = Object.values(access).find((resource) => resource.Type === "AWS::IAM::Role" && resource.Properties.RoleName === `agentx-${ENV}-cloudformation`)!;
+const deployRole = (access: Resources, env = ENV) => {
+  const role = Object.values(access).find((resource) => resource.Type === "AWS::IAM::Role" && resource.Properties.RoleName === `agentx-${env}-cloudformation`)!;
   const policy = (role.Properties.Policies as Array<{ PolicyName: string; PolicyDocument: { Statement: Statement[] } }>).find((candidate) => candidate.PolicyName === "deploy")!;
   const flat = resolver(access);
   return { statements: policy.PolicyDocument.Statement.map((raw) => ("Fn::If" in (raw as object) ? (raw as unknown as { "Fn::If": [string, Statement, unknown] })["Fn::If"][1] : raw)), flat };
 };
-const boundary = (access: Resources) => {
-  const policy = Object.values(access).find((resource) => resource.Type === "AWS::IAM::ManagedPolicy" && resource.Properties.ManagedPolicyName === `agentx-${ENV}-boundary`)!;
+const boundary = (access: Resources, env = ENV) => {
+  const policy = Object.values(access).find((resource) => resource.Type === "AWS::IAM::ManagedPolicy" && resource.Properties.ManagedPolicyName === `agentx-${env}-boundary`)!;
   return { statements: (policy.Properties.PolicyDocument as { Statement: Statement[] }).Statement, flat: resolver(access) };
 };
 /** The record's own statements: those in the switch-on control plane that the switch-off one does not have. */
-const addedStatements = () => {
-  const before = new Set(roleStatements(off.controlPlane).map(({ statement }) => JSON.stringify(statement)));
-  return roleStatements(on.controlPlane).filter(({ statement }) => statement.Effect === "Allow" && !before.has(JSON.stringify(statement)));
+const addedStatements = (withSwitch = on, without = off) => {
+  const before = new Set(roleStatements(without.controlPlane).map(({ statement }) => JSON.stringify(statement)));
+  return roleStatements(withSwitch.controlPlane).filter(({ statement }) => statement.Effect === "Allow" && !before.has(JSON.stringify(statement)));
 };
-const addedTypes = () => {
-  const before = new Set(Object.keys(off.controlPlane));
-  return Object.entries(on.controlPlane).filter(([id]) => !before.has(id)).map(([, resource]) => resource.Type);
+const addedTypes = (withSwitch = on, without = off) => {
+  const before = new Set(Object.keys(without.controlPlane));
+  return Object.entries(withSwitch.controlPlane).filter(([id]) => !before.has(id)).map(([, resource]) => resource.Type);
 };
 
 describe("the switch adds what this test expects (positive controls)", () => {
@@ -365,5 +364,69 @@ describe("4. the vector data role has a fixed name the boundary and the deploy r
       for (const action of ["iam:CreateRole", "iam:PutRolePolicy", "iam:PassRole"]) expect(allowedBy(set.statements, action, pathless, set.flat), `${label} refuses ${action} at the root`).toBe(false);
       expect(allowedBy(set.statements, "iam:CreateRole", roleArn, set.flat), `${label} creates it under the path`).toBe(true);
     }
+  });
+});
+
+describe("review F1: the deploy role may remove a table bucket's replication, never set one", () => {
+  it("allows s3tables:DeleteTableBucketReplication on the lake table bucket only, and refuses the Put and iam:PassRole", () => {
+    const { statements, flat } = deployRole(on.access);
+    const lake = `arn:aws:s3tables:${REGION}:${ACCOUNT}:bucket/${teamRecordTableBucketName(ENV)}`;
+    expect(allowedBy(statements, "s3tables:DeleteTableBucketReplication", lake, flat)).toBe(true);
+    expect(allowedBy(statements, "s3tables:DeleteTableBucketReplication", `arn:aws:s3tables:${REGION}:${ACCOUNT}:bucket/another-lake`, flat)).toBe(false);
+    expect(allowedBy(statements, "s3tables:PutTableBucketReplication", lake, flat)).toBe(false);
+    expect(allowedBy(statements, "iam:PassRole", `arn:aws:iam::${ACCOUNT}:role/anything`, flat)).toBe(false);
+    expect(Object.keys(EXCLUDED_ON_PURPOSE)).not.toContain("s3tables:DeleteTableBucketReplication");
+  });
+});
+
+describe("review F3: the boundary denies sharing the record's stores", () => {
+  it("denies exactly the policy and replication writes of S3 Tables and S3 Vectors, on every resource, and no record role needs one", () => {
+    const { statements, flat } = boundary(on.access);
+    const universe = [...SERVICE_ACTIONS.s3tables!, ...SERVICE_ACTIONS.s3vectors!];
+    const denied = universe.filter((action) => allowedBy([{ Effect: "Allow", Action: "*", Resource: "*" }, ...statements.filter((statement) => statement.Effect === "Deny")], action, "*", flat) === false);
+    expect(denied.sort()).toEqual(["s3tables:PutTableBucketPolicy", "s3tables:PutTableBucketReplication", "s3tables:PutTablePolicy", "s3tables:PutTableReplication", "s3vectors:PutVectorBucketPolicy"]);
+    // Positive control for the grid: an ordinary action of each service is not denied.
+    for (const action of ["s3tables:GetTable", "s3tables:DeleteTableBucketReplication", "s3vectors:QueryVectors"]) expect(denied).not.toContain(action);
+    // Section 2 (every added statement allowed by the boundary, Denies included) already proves no record role holds one; say it directly too.
+    const held = addedStatements().flatMap(({ statement }) => asList(statement.Action)).filter((action) => denied.includes(action));
+    expect(held).toEqual([]);
+    const deploy = deployRole(on.access).statements.flatMap((statement) => asList(statement.Action));
+    expect(deploy.some((pattern) => denied.some((action) => glob(pattern, action, "i")))).toBe(false);
+  });
+});
+
+// Review F7: the Enterprise shape (customer key, pinned workspace index) adds an S3Vectors::Index and key statements the Public synth does not.
+describe("Enterprise: customer key and a pinned workspace index", () => {
+  const EENV = "ent";
+  const KMS = "arn:aws:kms:us-west-2:111122223333:key/11111111-2222-3333-4444-555555555555";
+  const base = { agentxEnv: EENV, rovaraEdition: "enterprise", rovaraEnterpriseEgressCidrs: "10.99.0.0/16", agentxAuditTsa: "off" } as const;
+  let eon: ReturnType<typeof synthOf>;
+  let eoff: ReturnType<typeof synthOf>;
+  beforeAll(() => {
+    eon = synthOf(buildAgentXApp({ ...base, agentxTeamRecord: "enabled", agentxTeamRecordKmsKeyArn: KMS, agentxTeamRecordEnterpriseWorkspaceId: "org_aaaaaaaaaaaaaaaaaaaa" }));
+    eoff = synthOf(buildAgentXApp({ ...base }));
+  }, 600_000);
+
+  it("adds the Index type, covered by the deploy role through the pinned handler permissions", () => {
+    const types = addedTypes(eon, eoff);
+    expect(types).toContain("AWS::S3Vectors::Index");
+    expect(uncoveredTypes(types, SERVICE_ROLE_SERVICES, HANDLER_PERMISSIONS)).toEqual([]);
+    const { statements, flat } = deployRole(eon.access, EENV);
+    const index = `arn:aws:s3vectors:${REGION}:${ACCOUNT}:bucket/${teamRecordVectorBucketName(EENV)}/index/ws-x`;
+    for (const permission of HANDLER_PERMISSIONS["AWS::S3Vectors::Index"]!.filter((candidate) => candidate.startsWith("s3vectors:"))) {
+      expect(allowedBy(statements, permission, permission === "s3vectors:ListIndexes" ? `arn:aws:s3vectors:${REGION}:${ACCOUNT}:bucket/${teamRecordVectorBucketName(EENV)}` : index, flat), permission).toBe(true);
+    }
+  });
+
+  it("every statement it adds, the key statements included, is inside the boundary, and the vector role is named", () => {
+    const { statements, flat } = boundary(eon.access, EENV);
+    const outside: string[] = [];
+    const added = addedStatements(eon, eoff);
+    expect(added.flatMap(({ statement }) => asList(statement.Action)).some((action) => action.startsWith("kms:"))).toBe(true);
+    for (const { owner, statement, resources } of added) {
+      for (const action of asList(statement.Action)) for (const resource of resources.length === 0 ? ["*"] : resources) if (!allowedBy(statements, action, resource, flat)) outside.push(`${owner}: ${action} on ${resource}`);
+    }
+    expect(outside).toEqual([]);
+    expect(Object.values(eon.controlPlane).some((resource) => resource.Type === "AWS::IAM::Role" && resource.Properties.RoleName === teamRecordVectorsRoleName(EENV))).toBe(true);
   });
 });
