@@ -2,7 +2,7 @@
 // record is off (`dependencies.teamRecord` is undefined, the default), or the install has no developer sign-in table, nothing is built: no lesson is stored, loaded, sent, shown or decided.
 import { randomUUID } from "node:crypto";
 import { GetCommand } from "@aws-sdk/lib-dynamodb";
-import { OrgIdSchema, codeRepositoriesOf, memberGithubKey, type AuditEventInput, type LessonsPauseCode, type OrgId } from "@agentx/contracts";
+import { OrgIdSchema, cleanLessonText, codeRepositoriesOf, memberGithubKey, type AuditEventInput, type LessonsPauseCode, type OrgId } from "@agentx/contracts";
 import { followMerges } from "../../agents/access.js";
 import { dynamoAttributionReader } from "../../attribution/resolve.js";
 import { DeveloperSignInStore } from "../../developer/store.js";
@@ -21,7 +21,9 @@ import { tableCapturedRows } from "../../lessons/captured-rows.js";
 import { createHumanEditExtractor } from "../../lessons/human-edit.js";
 import { listTaskComments } from "../../developer/page-comments.js";
 import { commentSourceKey, correctionIdOf } from "../../learning/capture-comment.js";
-import { readObjectText } from "../../developer/plan-artifacts.js";
+import { loadWorkflowDocument, readObjectText } from "../../developer/plan-artifacts.js";
+import type { DeveloperTaskRecord } from "../../developer/task-records.js";
+import { PLAN_FACTS_SUMMARY_MAX, planLoadFacts } from "../../lessons/plan-facts.js";
 import { customerLearningModel } from "./learning-model.js";
 import { readLessonsModel } from "../../lessons/model-setting.js";
 import { dynamoPauseStore, spendLook } from "../../lessons/pause.js";
@@ -190,11 +192,30 @@ export function learningDepsFor(dependencies: LessonsHostDependencies, runtime: 
   };
 }
 
+/**
+ * What the dispatch tells the loader about a task besides its title: the latest plan document's summary and the files it names (`lessons/plan-facts.ts`), read from the artifact store. A task with no plan
+ * yet, a plan that cannot be read or whose copy does not match its digest gives nothing; a plan written as Markdown (an older task) gives its first lines and no files.
+ */
+export function planFactsFor(dependencies: Pick<AwsBrokerDependencies, "s3" | "artifactBucketName">): NonNullable<LessonsRuntime["planFacts"]> {
+  return async (task) => {
+    const workflow = (task as { workflow?: DeveloperTaskRecord["workflow"] }).workflow;
+    const plan = (workflow?.artifacts ?? []).filter((artifact) => artifact.type === "plan").sort((a, b) => a.version - b.version).at(-1);
+    if (plan === undefined) return undefined;
+    const loaded = await loadWorkflowDocument((key, max) => readObjectText(dependencies.s3, dependencies.artifactBucketName, key, max).catch(() => undefined), plan, {});
+    if (loaded === undefined) return undefined;
+    if (loaded.format === "structured") return planLoadFacts(loaded.plan);
+    return { summary: cleanLessonText(loaded.markdown, PLAN_FACTS_SUMMARY_MAX), files: [] };
+  };
+}
+
 /** At handler start (`broker/handler.ts`): sets `dependencies.lessons` unless the caller gave one (tests). */
 export function installLessons(dependencies: LessonsHostDependencies): void {
   if (dependencies.lessons !== undefined) return;
   const built = lessonsRuntimeFor(dependencies);
-  if (built !== undefined) dependencies.lessons = built;
+  if (built !== undefined) {
+    dependencies.lessons = built;
+    built.planFacts = planFactsFor(dependencies);
+  }
   // Learning at the end of a task: only where the lessons runtime AND the model path exist (and a caller did not give its own).
   if (built !== undefined && dependencies.learning === undefined) {
     const learning = learningDepsFor(dependencies, built);

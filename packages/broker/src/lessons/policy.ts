@@ -77,6 +77,24 @@ export const MAX_EXPIRY_DAYS = 365;
 export const DEFAULT_EXPIRY_DAYS = 90;
 export const PREFERENCE_EXPIRY_DAYS = 180;
 
+/**
+ * How much a stage may be told (owner 2026-11-08, from the evidence that long context files cost more and help little): by default at most 5 lessons and 2 KB per stage. A project may ask for more or less within
+ * the existing caps (`LEARNED_CONTEXT_MAX_LESSONS`, `LEARNED_CONTEXT_MAX_BYTES`); a value outside them, or one that is not a whole number, is ignored and the default stands.
+ */
+export const LOAD_DEFAULT_LESSONS = 5;
+export const LOAD_DEFAULT_BYTES = 2 * 1024;
+export interface LoadBudget { lessons: number; bytes: number }
+export const LOAD_BUDGET_MIN: LoadBudget = { lessons: 1, bytes: 512 };
+export interface LoadBudgetSetting { lessons?: number; bytes?: number }
+/** The budget a stage loads with: the default, with each part replaced by the project's own value when it is a whole number inside the caps. */
+export function resolveLoadBudget(setting: LoadBudgetSetting | undefined, caps: LoadBudget): LoadBudget {
+  const pick = (value: unknown, fallback: number, min: number, max: number): number => (typeof value === "number" && Number.isInteger(value) && value >= min && value <= max ? value : fallback);
+  return {
+    lessons: pick(setting?.lessons, Math.min(LOAD_DEFAULT_LESSONS, caps.lessons), LOAD_BUDGET_MIN.lessons, caps.lessons),
+    bytes: pick(setting?.bytes, Math.min(LOAD_DEFAULT_BYTES, caps.bytes), LOAD_BUDGET_MIN.bytes, caps.bytes),
+  };
+}
+
 export interface LearningSettings {
   /** The project's own choice; absent means the default. */
   mode?: LearningMode;
@@ -92,6 +110,8 @@ export interface LearningSettings {
   /** The company's preset floor: the effective preset is the stricter of this and the project's own. */
   companyPreset?: LearningPreset;
   expiryDays?: number;
+  /** The project's own load budget, within the caps. Absent: the default (5 lessons, 2 KB). */
+  loadBudget?: LoadBudgetSetting;
 }
 export interface LearningSettingsReader { read(workspaceId: string, project: string): Promise<LearningSettings> }
 
@@ -105,6 +125,8 @@ export interface ResolvedLearning {
    * requirement for tier 0 or tier 1). Every one of those means "a person decides", so a trial lesson, which has no person, would go around it. False when the settings do not read.
    */
   trialAllowed: boolean;
+  /** The project's own load budget (how many lessons and bytes a stage may be told), within the caps. */
+  loadBudget?: LoadBudgetSetting | undefined;
 }
 const MODE_ORDER: readonly LearningMode[] = ["Off", "Collect", "Suggest", "On"];
 /** The more restrictive mode: Off is the strictest, On the loosest. */
@@ -162,7 +184,7 @@ export async function resolveLearning(reader: LearningSettingsReader, workspaceI
   // no required group, and no two-person requirement.
   const trialAllowed = preset === "standard" && modeAllows(mode.data, "auto_apply") && settings.companyApproval === undefined && requiredGroups.length === 0
     && approval.data.tier0 !== "two" && approval.data.tier1 !== "two";
-  return { mode: mode.data, approval: approval.data, requiredGroups, expiryDays: days, preset, trialAllowed };
+  return { mode: mode.data, approval: approval.data, requiredGroups, expiryDays: days, preset, trialAllowed, ...(settings.loadBudget === undefined ? {} : { loadBudget: settings.loadBudget }) };
 }
 
 /**
