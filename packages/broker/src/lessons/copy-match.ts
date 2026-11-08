@@ -46,12 +46,16 @@ const FOREIGN_NON = /(?<![\p{L}-])non(?![\p{L}-])/iu;
 const QUALIFIERS: ReadonlySet<string> = new Set("except unless only but when whenever if for without otherwise besides excluding including".split(" "));
 
 const NUMBER = /^-?\d/u;
-const WORD = /-?\d+(?:[.,]\d+)*[\p{L}%]*|[\p{L}_][\p{L}\p{N}_]*|!=|[<>=≤≥≠]/gu;
+/** Operator tokens that carry meaning in code advice (round 4, R3-1). */
+const SIGNS: ReadonlySet<string> = new Set(["!=", "!==", "===", "==", "<=", ">=", "&&", "||", "<>"]);
+// Round 4 (R3-1): code operators are tokens. `!` right before an identifier, a call or a bracket is a NOT (it becomes the "not" token); `&&`, `||`, `==`, `===`, `!=`, `!==`, `<`, `>`, `<=`, `>=` and the like are sign tokens.
+// A `!` after a letter, digit or closing bracket (`value!`, `a[0]!`) is TypeScript's non-null assertion or ordinary punctuation, not a negation.
+const WORD = /-?\d+(?:[.,]\d+)*[\p{L}%]*|[\p{L}_][\p{L}\p{N}_]*|!==|===|!=|<=|>=|==|&&|\|\||<>|[<>=≤≥≠]|(?<![\p{L}\p{N}_)\]!])!(?=[\p{L}_(\[])/gu;
 
-/** The words of a text, in order, lower case, punctuation and whitespace gone. Digits, negations and comparison signs are kept; an apostrophe inside a word is dropped (don't -> dont). */
+/** The words of a text, in order, lower case, punctuation and whitespace gone. Digits, negations and code operators are kept (`!x` is "not x"); an apostrophe inside a word is dropped (don't -> dont). */
 export function wordsOf(text: string): string[] {
   const folded = text.normalize("NFKC").toLowerCase().replace(/['’`]/gu, "").replace(/[\p{Cf}\p{Cc}]/gu, " ");
-  return folded.match(WORD) ?? [];
+  return (folded.match(WORD) ?? []).map((w) => (w === "!" ? "not" : w));
 }
 
 /** A text normalised for equality: its words joined by one space. */
@@ -84,7 +88,7 @@ function listedForm(word: string): string | undefined {
 const forOrder = (words: readonly string[]): string[] => words.filter((w) => !FILLER.has(w)).map((w) => (isCritical(w) ? canon(w) : stem(w)));
 
 const isNumber = (word: string): boolean => NUMBER.test(word);
-const isSign = (word: string): boolean => word === "!=" || /^[<>=≤≥≠]$/u.test(word);
+const isSign = (word: string): boolean => SIGNS.has(word) || /^[<>=≤≥≠]$/u.test(word);
 const isPolarity = (word: string): boolean => NEGATORS.has(word) || POLARITY.has(word) || isNumber(word) || isSign(word);
 const isQualifier = (word: string): boolean => QUALIFIERS.has(word);
 /** Every kind of word whose presence or place changes what the advice says. */
@@ -181,6 +185,23 @@ export function relate(draft: string, other: string, options: RelateOptions = {}
   const narrows = !near && !flipped && y.length >= 4 && common === y.length && x.length > y.length;
   const opposed = !near && (reordered || antonym || isProhibition(x) !== isProhibition(y) || !sameSequence(directionSequence(x), directionSequence(y)));
   return { verbatim, near, flipped, narrows, opposed, polaritySame, criticalSame, ordered };
+}
+
+/**
+ * Round 4: the only test that lets a judge's "same" merge two lessons. The two texts are the same advice BY STRUCTURE, whatever a judge says: after case, punctuation, plural and -ing/-ed folding of listed words
+ * and filler are normalised, they hold the SAME multiset of words (so an added, removed or swapped word of any kind, benign or not, is a difference), the same signs and operators, and their negation, direction,
+ * qualifier, number and operator tokens come in the same order. Words that are only reordered are refused as before (`flipped`). It uses no antonym list: an unlisted opposite (pause / resume, show / hide) is
+ * a swapped word, so it never merges. What it covers is narrow on purpose: in practice a verbatim or near copy (the same words in the same order once filler, case and plurals are set aside). It does NOT recognise a
+ * paraphrase: two lessons that say the same thing in other words are never "the same" here, and go to a person as a possible duplicate (a cost in time, not in safety). Text with a negation this module cannot classify
+ * (any non-ASCII word) is excluded by the caller, `closeEnoughForSame`.
+ */
+export function sameByStructure(a: string, b: string): boolean {
+  const relation = relate(a, b);
+  if (relation.verbatim || relation.near) return true;
+  const x = forOrder(wordsOf(a));
+  const y = forOrder(wordsOf(b));
+  if (x.length === 0 || y.length === 0 || x.length > MAX_WORDS || y.length > MAX_WORDS) return false;
+  return !relation.flipped && sortedKey(x) === sortedKey(y) && sameSequence(criticalSequence(x), criticalSequence(y));
 }
 
 /**

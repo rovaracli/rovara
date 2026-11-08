@@ -17,7 +17,7 @@ export const T = {
  YOU_APPROVED: "You approved this. It waits for a second maintainer or admin.", CANNOT_APPROVE: "You can't approve this one. Another maintainer or admin has to.",
  ONE_PERSON: "Needs one maintainer's OK", APPROVAL_RULE: "(Rovara's rule for this kind of lesson.)", TWO_PEOPLE: "Needs two people: a maintainer, then a second maintainer or admin",
  FIRST_APPROVED: "Approved first by", STILL_NEEDS: "Still needs a second maintainer or admin.", GROUP_NEEDS: "Must also be approved by someone in",
- SENT_BACK: "Sent back for a person to look at again, so it can't go live on its own.", CONTRADICTS: "This lesson says the opposite of another one.", RETIRE_PROPOSED: "Rovara suggests removing this lesson because people marked it wrong more than helpful.", REPLACES: "This lesson replaces an earlier one.",
+ SENT_BACK: "Sent back for a person to look at again, so it can't go live on its own.", CONTRADICTS: "This lesson says the opposite of another one.", POSSIBLE_DUPLICATE: "Possible duplicate: this may say the same as another lesson. Rovara kept the two apart. Reject it if it is a copy, or approve it to keep both.", RETIRE_PROPOSED: "Rovara suggests removing this lesson because people marked it wrong more than helpful.", REPLACES: "This lesson replaces an earlier one.",
  WHERE_FROM: "Where it comes from", CITES: "Code it cites", NO_CITES: "It doesn't cite code.", FROM_PEOPLE: "Said or edited by", MEASURED: "Backed by a measured outcome (a send-back, revert or failed check).", TASKS_BACK: "tasks back it.",
  HELPFUL: "Helpful", WRONG: "Wrong here", USED: "used", EXPIRES: "Expires", LAST_HELPED: "Last helped",
  STALE: "Its code references no longer hold. Rovara has stopped using it until a person looks.",
@@ -82,6 +82,7 @@ const REASON_WORDS: Readonly<Record<(typeof LESSON_TIER_REASONS)[number], string
  not_plain_declarative: "Its wording isn't a plain statement of fact.", source_not_trusted: "It rests on a source Rovara doesn't fully trust.", scope_not_one_repo: "It covers more than one repository (a broad lesson).",
  stage_not_allowed: "It would reach steps beyond building.", contradiction: "It contradicts another lesson.", restricted_source: "It comes from a source only some people can see.",
  supersedes_higher_tier: "It replaces a lesson that needed more care.", cited_fact: "A checked fact about the code.",
+ possible_duplicate: "It may say the same as another lesson, so a person decides.",
  capability_request: "It asks Rovara to change tools, access, checks, approvals or limits. A lesson can't do that, so two people decide whether to keep it.",
 };
 /** The words for a tier reason. A reason this build does not know has none: the raw code is never shown. */

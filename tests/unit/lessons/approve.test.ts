@@ -229,6 +229,19 @@ describe("edit and approve, reject, retire, rollback", () => {
     expect((await store.get(KEY, "les_pend0001"))!.status).toBe("active");
   });
 
+  it("round 4: a possible duplicate is decided by a person: approving keeps BOTH lessons (the other is untouched), rejecting drops only the draft", async () => {
+    const keep = setup();
+    await seed(keep.store, lessonRecord({ id: "les_old00001" }), base({ possibleDuplicateOf: "les_old00001", tierReasons: ["possible_duplicate"] }));
+    expect(await approveLesson(keep.deps, input("ann"))).toMatchObject({ ok: true, status: "active" });
+    expect((await keep.store.get(KEY, "les_old00001"))).toMatchObject({ status: "active", version: 1 });
+    expect((await keep.store.get(KEY, "les_pend0001"))!.status).toBe("active");
+    const drop = setup();
+    await seed(drop.store, lessonRecord({ id: "les_old00001" }), base({ possibleDuplicateOf: "les_old00001", tierReasons: ["possible_duplicate"] }));
+    expect(await rejectLesson(drop.deps, { ...KEY, lessonId: "les_pend0001", approverId: "ann", reason: "a copy" })).toEqual({ ok: true });
+    expect((await drop.store.get(KEY, "les_old00001"))).toMatchObject({ status: "active", version: 1 });
+    expect((await drop.store.get(KEY, "les_pend0001"))!.status).toBe("rejected");
+  });
+
   it("reject keeps a cleaned reason; retire works on an active lesson; both need an eligible person", async () => {
     const { deps, store, audit } = setup();
     await seed(store, base(), lessonRecord({ id: "les_live0001" }));

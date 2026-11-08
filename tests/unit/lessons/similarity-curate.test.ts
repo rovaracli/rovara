@@ -49,6 +49,8 @@ beforeEach(() => { embedder.fail = false; embedder.calls = 0; resetNoEmbedderNot
 // Three existing lessons about the retry helper, and a new draft that is the same as one, narrows another and has nothing to do with the third.
 const A = "Use withRetry from src/retry/index.ts for HTTP retries in the api service client calls";
 const B = "Wrap outbound HTTP calls in the api service with withRetry from src/retry/index.ts";
+/** A copy of A that differs by filler and a plural only: the same advice BY STRUCTURE (round 4), so a judge's "same" may merge it. B is reworded, which is not. */
+const A_FILLER = "Use the withRetry from src/retry/index.ts for the HTTP retry in the api service client call";
 
 describe.each([["no embedder", false], ["a fake embedder", true]] as const)("the curator's listwise judge (%s)", (_name, withEmbedder) => {
   const make = (over: Parameters<typeof setup>[0] = {}) => setup({ ...over, embedder: withEmbedder });
@@ -85,14 +87,16 @@ describe.each([["no embedder", false], ["a fake embedder", true]] as const)("the
   });
 
   it("every outcome: same merges, refines supersedes after approval, contradicts goes to a person, different adds", async () => {
-    for (const [verdict, outcome] of [["same", "merged"], ["refines", "updated"], ["contradicts", "contradiction"], ["different", "added"]] as const) {
+    // Round 4: a judge's "same" merges only a pair that is the same advice by structure (A_FILLER); the reworded B is kept apart as a possible duplicate for a person.
+    for (const [verdict, outcome, reply] of [["same", "merged", A_FILLER], ["same", "possible_duplicate", B], ["refines", "updated", B], ["contradicts", "contradiction", B], ["different", "added", B]] as const) {
       const s = make({ model: new Quoting([answer(verdict)]) });
       // A judge's "same" needs close vectors as well as close words (round 2, N3); with an embedder here, it says the pair is as close as can be.
       if (s.deps.embedder !== undefined) s.deps.embedder = closeEmbedder;
       const first = await curateDraft(s.deps, KEY, text("Retries", A));
       if (first.outcome !== "added") throw new Error("expected add");
-      const out = await curateDraft(s.deps, KEY, text("Retries", B));
-      expect(out.outcome, verdict).toBe(outcome);
+      const out = await curateDraft(s.deps, KEY, text("Retries", reply));
+      expect(out.outcome, `${verdict} ${outcome}`).toBe(outcome);
+      if (out.outcome === "possible_duplicate") expect(out).toMatchObject({ duplicateOf: first.lesson.id, lesson: { status: "pending", possibleDuplicateOf: first.lesson.id, tierReasons: ["possible_duplicate"] } });
       if (out.outcome === "updated") expect(out).toMatchObject({ supersedes: first.lesson.id, lesson: { status: "candidate" } });
       if (out.outcome === "contradiction") expect(out).toMatchObject({ other: first.lesson.id, lesson: { status: "pending", contradictsWith: first.lesson.id } });
       expect(s.model.calls, verdict).toHaveLength(1);
@@ -242,7 +246,7 @@ describe("vectors with the lessons", () => {
     const s = setup({ model: new Quoting([answer("same")]) });
     await curateDraft(s.deps, KEY, text("Retries", A));
     embedder.fail = true;
-    const out = await curateDraft(s.deps, KEY, text("Retries", B));
+    const out = await curateDraft(s.deps, KEY, text("Retries", A_FILLER));
     expect(out.outcome).toBe("merged");
     expect(s.logged).toContain("lessons.similarity_embedder_unavailable");
   });

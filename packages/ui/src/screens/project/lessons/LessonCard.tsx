@@ -49,6 +49,7 @@ export function LessonCard({ project, lesson, now, onDone }: Props) {
   {needs !== undefined && needs.groups.length > 0 && <p className="rv-muted">{T.GROUP_NEEDS} <VisibleText text={needs.groups.join(", ")} />.</p>}
   {lesson.reviewRequired === true && <Banner title={T.SENT_BACK} tone="warning" />}
   {lesson.contradicts !== undefined && <Banner title={T.CONTRADICTS} tone="warning" />}
+  {lesson.possibleDuplicate !== undefined && <Banner title={T.POSSIBLE_DUPLICATE} tone="warning" />}
   {lesson.supersedes !== undefined && <p className="rv-muted">{T.REPLACES}</p>}
   <section aria-label={T.WHERE_FROM} className="rv-lessons-from">
    <h4>{T.WHERE_FROM}</h4>

@@ -101,19 +101,20 @@ describe("curator decisions (design §4.5.2)", () => {
     expect(own.provenance.supportTasks).toEqual(["task-narrowed"]);
   });
 
-  it("ONE judge call decides the draft against its candidate; 'different' adds, 'same' merges", async () => {
+  it("ONE judge call decides the draft against its candidate; 'different' adds, 'same' merges a copy that differs by filler and a plural, and keeps a reworded pair apart as a possible duplicate", async () => {
     const a = "Use withRetry from src/retry/index.ts for HTTP retries in the api service client calls";
-    const b = "Wrap outbound HTTP calls in the api service with withRetry from src/retry/index.ts";
-    for (const [verdict, expected] of [["different", "added"], ["same", "merged"]] as const) {
+    const reworded = "Wrap outbound HTTP calls in the api service with withRetry from src/retry/index.ts";
+    const copy = "Use the withRetry from src/retry/index.ts for the HTTP retry in the api service client call";
+    for (const [verdict, draftBody, expected, lessons] of [["different", reworded, "added", 2], ["same", copy, "merged", 1], ["same", reworded, "possible_duplicate", 2]] as const) {
       const { deps, store, judgeModel } = setup({ model: new ScriptedModel([one(verdict)]) });
-      // A judge's "same" is acted on only when the vectors are close (0.92) as well as the words (round 2, N3): this embedder says the reworded pair is as close as can be.
+      // A judge's "same" is acted on only when the two are the same advice by structure (round 4): the embedder's closeness does not change that.
       deps.embedder = closeEmbedder;
       await curateDraft(deps, KEY, text("Retries", a));
-      const out = await curateDraft(deps, KEY, text("Retries", b));
+      const out = await curateDraft(deps, KEY, text("Retries", draftBody));
       expect(out.outcome).toBe(expected);
       expect(judgeModel.calls).toHaveLength(1);
       expect(judgeModel.calls[0]!.purpose).toBe("judge");
-      expect((await store.list(KEY)).length).toBe(expected === "added" ? 2 : 1);
+      expect((await store.list(KEY)).length).toBe(lessons);
     }
   });
 

@@ -7,12 +7,12 @@
 //   fusion            reciprocal-rank fusion of the lists that exist, so no list's raw scale (model-specific cosines, BM25 sums) matters
 //
 // A score cannot tell "the same advice" from "the opposite advice" (the research found contradictions score as high as duplicates), so this module only SHORTLISTS. What a shortlisted lesson means for a draft is
-// decided by one listwise judge call in curate.ts; with no judge, only a near-exact copy may merge two lessons by code. Every copy test compares the bodies word by word, in order, keeping negations, directions, qualifiers and numbers (copy-match.ts).
+// decided by one listwise judge call in curate.ts; with no judge, only a pair that is the same advice by structure merges by code (a verbatim or near copy: the same words in the same order), and with a judge only such a pair does too (closeEnoughForSame). Every copy test compares the bodies word by word, in order, keeping negations, directions, qualifiers and numbers (copy-match.ts).
 //
 // Nothing here calls a paid model, writes a lesson or reads the lesson store: callers pass the lessons in. The embedder is our own compute; if it is absent or fails the ranking falls back to keywords and paths (one
 // fixed log code), and nothing here ever throws into a caller.
 import { createHash } from "node:crypto";
-import { covers, hasUnclassifiedNegation, relate } from "./copy-match.js";
+import { covers, hasUnclassifiedNegation, relate, sameByStructure } from "./copy-match.js";
 import type { EmbedderCall, LessonEmbedder, LessonVectors, StoredLessonVector } from "./ports.js";
 import type { ScopeKey } from "./store.js";
 import type { Lesson } from "./types.js";
@@ -262,8 +262,9 @@ export function fuse(query: SimDoc, corpus: readonly SimDoc[], cosines?: Readonl
  * and numbers: a changed digit, "on" for "off", "instead of" turned round, a clause such as "except the billing service" added, or two words swapped is NOT a copy. The set measures of the shortlist (containment, Jaccard)
  * never decide a copy; they only choose what a judge or a person looks at.
  *
- *   verbatim   the bodies are equal after case, whitespace and punctuation are normalised; the same cited file, or neither cites one. The only thing that skips an available judge.
- *   near       with NO judge: the same cited file and the same words in the same order, differing by filler only (equal word sequences once filler is removed and plurals are stemmed: no content word differs, at any length).
+ *   verbatim   the bodies are equal after case, whitespace and punctuation are normalised (code operators kept as tokens); the same cited file, or neither cites one. Merges with no judge call at all.
+ *   near       the same cited file and the same words in the same order, differing by filler only (equal word sequences once filler is removed and plurals are stemmed: no content word differs, at any length). With NO
+ *              judge it merges, because it is the same advice by structure (a tier-0 lesson is stored in a template's wording, so its corroborating drafts are near copies, not verbatim ones).
  *   flipped    the same words with a polarity, direction or number changed (or in another order), the same cited file or none: a person decides, as a contradiction. Never merged.
  *   narrows    the draft holds the lesson's words in order and more: a refinement for a person.
  */
@@ -273,23 +274,18 @@ export const isFlippedCopy = (ranked: Pick<Ranked, "sharedFile" | "bothUncited">
 export const isNarrowing = (ranked: Pick<Ranked, "sharedFile" | "bothUncited">, a: string, b: string): boolean => (ranked.sharedFile || ranked.bothUncited) && relate(a, b).narrows;
 
 /**
- * A judge's "same" is acted on only when the two bodies are this close as well (review H3, N3): the judge alone cannot choose which lesson a draft is credited to. With an embedder BOTH the cosine and the word share
- * are needed (a cosine alone is not enough: unrelated same-topic text scores 0.6 and a small model scores "enable" and "disable" alike); with none the word share is held to the higher bar.
- * Text with a negation this module cannot classify (any non-ASCII word: German, French, Cyrillic, CJK ...) is never "same" by a judge's word: it goes to a person (documented, DEFERRED-CHECKS LS-2). Verbatim copies
- * and near copies (equal words) are still the same.
+ * Round 4: a judge's "same" merges two lessons only when they are the same advice BY STRUCTURE (copy-match.ts `sameByStructure`): the same words once case, punctuation, plurals and filler are normalised (the same
+ * multiset of words, so no word added, dropped or swapped), the same signs and operators, and the negation, direction, number and operator tokens in the same order. Anything else, however alike it reads and
+ * whatever the judge or the embedder says, is NOT merged: the curator keeps the draft as its own candidate linked as a possible duplicate, and a person decides. Safety does not depend on a word list: an antonym
+ * nobody listed (pause / resume) is a swapped word. The first argument (how close the shortlist found the two) is kept for callers and no longer matters: equal words are as close as two texts get.
+ * Text with a negation this module cannot classify (any non-ASCII word, a known ASCII negation of another language) merges only as a verbatim or near copy (DEFERRED-CHECKS LS-2).
+ * What this does NOT do: it does not recognise a paraphrase as a duplicate. Two lessons that say the same thing in different words are shown to a person as a possible duplicate, never merged.
  */
-export const JUDGE_SAME_FLOOR = { mutual: 0.7, cosineMutual: 0.5, cosine: 0.92 } as const;
-export const closeEnoughForSame = (ranked: Pick<Ranked, "bodyMutual" | "cosine" | "sharedFile" | "bothUncited">, a: string, b: string): boolean => {
+export const closeEnoughForSame = (_ranked: Pick<Ranked, "bodyMutual" | "cosine" | "sharedFile" | "bothUncited">, a: string, b: string): boolean => {
   const relation = relate(a, b);
   if (relation.verbatim || relation.near) return true;
-  // Never when a polarity, direction, unit, qualifier or number differs, a word is the other's antonym, or the words are reordered.
-  if (relation.flipped || !relation.criticalSame || !relation.polaritySame) return false;
-  // Round 3 (R2-1): and never when one text is the other with more words in it, in either direction. A pure insertion is a refinement (a negation this module does not know, "refrain from", an added clause),
-  // whatever the word lists say; this holds for every language.
-  if (relation.narrows || relate(b, a).narrows) return false;
-  if (hasUnclassifiedNegation(a) || hasUnclassifiedNegation(b)) return false;
-  if (ranked.cosine === undefined) return ranked.bodyMutual >= JUDGE_SAME_FLOOR.mutual;
-  return ranked.cosine >= JUDGE_SAME_FLOOR.cosine && ranked.bodyMutual >= JUDGE_SAME_FLOOR.cosineMutual;
+  if (relation.flipped || hasUnclassifiedNegation(a) || hasUnclassifiedNegation(b)) return false;
+  return sameByStructure(a, b);
 };
 
 /**
@@ -400,10 +396,19 @@ export async function rankLessons(deps: SimilarityDeps, key: ScopeKey, corpus: R
   }
   const embedder = deps.embedder;
   // The SDK client is loaded BEFORE the budget starts (round 3, R2-4): a container's first call used to spend part of its 300 ms loading modules. Not ready in time: keywords and paths, no pause (nothing was asked of the function).
-  if (embedder.warm !== undefined && !(await embedder.warm(options.warmMs ?? EMBED_WARM_MS.curate).catch(() => false))) {
-    deps.log?.(SIMILARITY_LOG.embedderLoading, {});
-    deps.metrics?.count("learning.similarity_embedder_loading");
-    return keyword;
+  if (embedder.warm !== undefined) {
+    let ready: boolean;
+    // A client whose SDK failed to load is "unavailable" (round 4, R3-4), not "still loading": the line and the count must not say "loading" for ever.
+    try { ready = await embedder.warm(options.warmMs ?? EMBED_WARM_MS.curate); } catch {
+      deps.log?.(SIMILARITY_LOG.embedderDown, {});
+      deps.metrics?.count("learning.similarity_embedder_unavailable");
+      return keyword;
+    }
+    if (!ready) {
+      deps.log?.(SIMILARITY_LOG.embedderLoading, {});
+      deps.metrics?.count("learning.similarity_embedder_loading");
+      return keyword;
+    }
   }
   try {
     // The race is also the embedder call's DEADLINE (round 2, N4): a call still running when the race ends is aborted by the client at that moment, and no later call of this run is started. The abandoned

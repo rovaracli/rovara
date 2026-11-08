@@ -164,17 +164,20 @@ describe("N3: a judge's \"same\" is refused for antonyms, units and weak closene
     expect(out.outcome).not.toBe("merged");
     expect((await s.store.get(KEY, "les_target01"))!.version).toBe(1);
   });
-  it("positive control: a reworded pair with the same critical words is close enough", () => {
-    expect(closeEnoughForSame(SAFE, "Use withRetry from src/retry/index.ts for HTTP retries in the api service client calls", "Wrap outbound HTTP calls in the api service with withRetry from src/retry/index.ts")).toBe(true);
-    expect(closeEnoughForSame({ bodyMutual: 0.8, sharedFile: true, bothUncited: false }, "Use withRetry from src/retry/index.ts for HTTP retries in the api service client calls", "Wrap outbound HTTP calls in the api service with withRetry from src/retry/index.ts")).toBe(true);
+  it("positive control: a copy that differs by filler and a plural is the same by structure; a reworded pair with the same critical words is NOT (round 4: it is a possible duplicate for a person)", () => {
+    const a = "Use withRetry from src/retry/index.ts for HTTP retries in the api service client calls";
+    expect(closeEnoughForSame(SAFE, a, "Use the withRetry from src/retry/index.ts for the HTTP retry in the api service client call")).toBe(true);
+    expect(closeEnoughForSame(SAFE, a, "Wrap outbound HTTP calls in the api service with withRetry from src/retry/index.ts")).toBe(false);
+    expect(closeEnoughForSame({ bodyMutual: 0.8, sharedFile: true, bothUncited: false }, a, "Wrap outbound HTTP calls in the api service with withRetry from src/retry/index.ts")).toBe(false);
   });
-  it("with an embedder both the cosine (0.92) and the word share (0.5) are needed; with none the word share alone (0.7)", () => {
+  it("round 4: the closeness figures no longer matter (equal words are as close as two texts get, and anything else is never the same however close the cosine)", () => {
     const a = "Use withRetry from src/retry/index.ts for HTTP retries in the api service client calls";
     const b = "Wrap outbound HTTP calls in the api service with withRetry from src/retry/index.ts";
-    expect(closeEnoughForSame({ bodyMutual: 0.95, cosine: 0.88, sharedFile: true, bothUncited: false }, a, b)).toBe(false);
-    expect(closeEnoughForSame({ bodyMutual: 0.4, cosine: 0.97, sharedFile: true, bothUncited: false }, a, b)).toBe(false);
-    expect(closeEnoughForSame({ bodyMutual: 0.6, cosine: 0.93, sharedFile: true, bothUncited: false }, a, b)).toBe(true);
-    expect(closeEnoughForSame({ bodyMutual: 0.6, sharedFile: true, bothUncited: false }, a, b)).toBe(false);
+    const copy = "Use the withRetry from src/retry/index.ts for the HTTP retry in the api service client call";
+    for (const ranked of [{ bodyMutual: 0.95, cosine: 0.99, sharedFile: true, bothUncited: false }, { bodyMutual: 0.1, cosine: 0.2, sharedFile: false, bothUncited: false }, { bodyMutual: 0.95, sharedFile: true, bothUncited: false }]) {
+      expect(closeEnoughForSame(ranked, a, b)).toBe(false);
+      expect(closeEnoughForSame(ranked, a, copy)).toBe(true);
+    }
   });
   it("text with negation markers we cannot classify (German, French, CJK, any non-ASCII word) is never \"same\" by a judge's word, only verbatim", () => {
     const pairs: Array<[string, string]> = [

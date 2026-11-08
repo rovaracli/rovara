@@ -43,7 +43,7 @@ export interface EmbedderCallLimit { timeoutMs?: number }
 
 /**
  * Sends one request to the function and returns its parsed JSON answer. Throws an error whose `code` is the AWS error name (never its message). An invoke MAY carry `warm` (round 3, R2-4): it loads the SDK client
- * (starting the load if need be) and says whether it is ready now or within `waitMs`, so a caller can keep that load out of a time budget it is about to start.
+ * (starting the load if need be) and says whether it is ready now or within `waitMs`, so a caller can keep that load out of a time budget it is about to start. It rejects when the load FAILED (round 4, R3-4): that is "unavailable", not "still loading".
  */
 export type EmbedderInvoke = ((request: EmbedderRequest, limit?: EmbedderCallLimit) => Promise<unknown>) & { warm?: (waitMs: number) => Promise<boolean> };
 
@@ -59,7 +59,7 @@ export interface EmbeddedText { vector: number[]; truncated: boolean }
 export interface EmbedderClient {
   readonly spec: EmbedderModelSpec;
   readonly dimension: number;
-  /** Whether the SDK client is loaded now or within `waitMs` (it is loaded in the background otherwise). Absent where the invoke has nothing to load. Never throws. */
+  /** Whether the SDK client is loaded now or within `waitMs` (it is loaded in the background otherwise). Absent where the invoke has nothing to load. Rejects only when the client's SDK failed to load (round 4, R3-4). */
   warm?(waitMs: number): Promise<boolean>;
   embed(text: string, kind: EmbedderKind, call?: EmbedderCall): Promise<number[]>;
   /** Any number of texts: split into requests inside the function's limits, in order. */
@@ -208,7 +208,7 @@ export function createEmbedderClient(options: EmbedderClientOptions): EmbedderCl
   return {
     spec,
     dimension: spec.dimension,
-    ...(warm === undefined ? {} : { warm: (waitMs: number) => warm(waitMs).catch(() => false) }),
+    ...(warm === undefined ? {} : { warm: (waitMs: number) => warm(waitMs) }),
     embedManyDetailed,
     embedDetailed,
     async embedMany(texts, kind, call) {

@@ -1,6 +1,6 @@
 // Learning v2 L2: the curator (design §4.5.2), in the ACE pattern. It finds a draft's neighbours (a shortlist fused from code-aware keywords, cited paths and, where the install has one, the small open embedder:
 // lessons/similarity.ts), asks ONE tool-less listwise judge call what the draft is to each of the top few, and applies the result as delta operations (ADD, MERGE, UPDATE, RETIRE) by code in one conditional
-// write. A model never rewrites the lesson set. With no judge (no provider, the month's cap, a refusal, a failed call) only a near-exact copy merges; everything else stays its own candidate (DECISIONS 23).
+// write. A model never rewrites the lesson set. With no judge (no provider, the month's cap, a refusal, a failed call) only a copy merges (the same words in the same order); everything else stays its own candidate (DECISIONS 23). A judge's "same" merges only a pair that is the same advice by structure (round 4); any other "same" is kept as a possible duplicate for a person.
 import { randomUUID } from "node:crypto";
 import { z } from "zod";
 import { expiryWindowMs } from "./expiry.js";
@@ -50,6 +50,7 @@ export type CurateOutcome =
   | { outcome: "merged"; lesson: Lesson }
   | { outcome: "updated"; lesson: Lesson; supersedes: string; judgeEscalate: boolean }
   | { outcome: "contradiction"; lesson: Lesson; /** The lesson it contradicts. Absent for a rejected lesson the draft's audience cannot read: the card then names nothing (round 2, N5). */ other?: string; /** The draft is not the opposite of `other`: it resembles advice a person REJECTED and no judge could clear it, so a person decides. */ matchesRejected?: true }
+  | { outcome: "possible_duplicate"; lesson: Lesson; /** The lesson it may duplicate: kept apart from it (never merged), and a person decides: merge, keep both or reject. */ duplicateOf: string; judgeEscalate: boolean }
   | { outcome: "dropped"; reason: "outsider" | "invalid" | "previously_rejected" | "conflict" };
 
 const JUDGE_SYSTEM = [
@@ -224,7 +225,8 @@ export async function curateDraft(deps: CurateDeps, key: ScopeKey, draft: Lesson
   // What each neighbour is to the draft. A VERBATIM copy (the bodies are equal after case, space and punctuation; the same cited file, or neither cites one) merges by code: no judge could say more. Everything else is
   // the judge's call: ONE call for the draft's best few (and a reserved place for rejected matches). With no judge (no provider, the month's cap, a refusal, a failed call) the ordered word test decides: a near-exact copy
   // merges, the same words with a polarity, direction or number changed (or reordered) go to a person as a contradiction, a narrowing goes to a person as a refinement, and the rest stays its own candidate.
-  const verdicts = new Map<string, Verdict>();
+  // "duplicate" (round 4) is the curator's own verdict, never a judge's: a judge said "same" but the two are not the same advice BY STRUCTURE, so they are not merged.
+  const verdicts = new Map<string, Verdict | "duplicate">();
   const judgedBy = new Set<string>();
   let judgeEscalate = false;
   const verbatim = live.find((c) => isVerbatim(c.ranked, body, c.lesson.body) && mergeAllowed(c.lesson, draft));
@@ -250,8 +252,10 @@ export async function curateDraft(deps: CurateDeps, key: ScopeKey, draft: Lesson
     const verdict = verdicts.get(c.lesson.id);
     const lessonBody = c.lesson.body;
     if (isFlippedCopy(c.ranked, body, lessonBody)) verdicts.set(c.lesson.id, "contradicts");
-    else if (verdict === "same" && judgedBy.has(c.lesson.id) && !closeEnoughForSame(c.ranked, body, lessonBody)) verdicts.set(c.lesson.id, "refines");
+    else if (verdict === "same" && judgedBy.has(c.lesson.id) && !closeEnoughForSame(c.ranked, body, lessonBody)) verdicts.set(c.lesson.id, "duplicate");
     else if (verdict === undefined) {
+      // No judge verdict: a verbatim copy merged above, and a near copy (the same words in the same order once filler and plurals are set aside: a tier-0 lesson is stored in a template's wording, so this is how a second
+      // task corroborates it) merges here. Both are the same advice by structure. A narrowing is a refinement for a person.
       if (isNearExact(c.ranked, body, lessonBody)) verdicts.set(c.lesson.id, "same");
       else if (isNarrowing(c.ranked, body, lessonBody)) verdicts.set(c.lesson.id, "refines");
     }
@@ -259,7 +263,7 @@ export async function curateDraft(deps: CurateDeps, key: ScopeKey, draft: Lesson
   // A refinement or a contradiction names the other lesson: it is acted on only when that lesson's audience is at least as broad as the draft's (review M4).
   const broadEnough = (other: Lesson): boolean => JSON.stringify(narrowestAudience([other.provenance.audience, draft.provenance.audience])) === JSON.stringify(draft.provenance.audience);
   const acting = live.flatMap((c) => { const verdict = verdicts.get(c.lesson.id); return verdict === undefined || verdict === "different" || ((verdict === "refines" || verdict === "contradicts") && !broadEnough(c.lesson)) ? [] : [{ ...c, verdict }]; });
-  const chosen = acting.find((c) => c.verdict === "contradicts") ?? acting.find((c) => c.verdict === "same" && mergeAllowed(c.lesson, draft)) ?? acting.find((c) => c.verdict === "refines");
+  const chosen = acting.find((c) => c.verdict === "contradicts") ?? acting.find((c) => c.verdict === "same" && mergeAllowed(c.lesson, draft)) ?? acting.find((c) => c.verdict === "refines") ?? acting.find((c) => c.verdict === "duplicate");
 
   /**
    * The draft goes to a person with the lesson it contradicts (or, for a rejected lesson, resembles). A rejected lesson the draft's audience cannot read is not named (round 2, N5): the card carries the reason
@@ -291,6 +295,15 @@ export async function curateDraft(deps: CurateDeps, key: ScopeKey, draft: Lesson
       return { outcome: "merged", lesson: merged[0]! };
     }
     if (chosen.verdict === "contradicts") return toPerson(other, false);
+    // A possible duplicate (round 4): the draft is its own lesson, linked to the one it may duplicate. It goes to a person (merge, keep both or reject) and is never started on trial or applied by itself while the link stands.
+    if (chosen.verdict === "duplicate") {
+      const created = newLesson(deps, key, draft, "pending", { possibleDuplicateOf: other.id, tierReasons: ["possible_duplicate"] });
+      const written = await commitWith(deps, key, async () => [created]);
+      if (written === undefined) return drop("conflict");
+      await keepVector(sim, key, created, queryVector);
+      await emitAudit(deps.audit, { action: "lesson.candidate_created", workspaceId: key.workspaceId, project: key.project, lessonId: created.id, facts: { type: created.type, possibleDuplicateOf: other.id, judged: judgedBy.has(other.id) } });
+      return { outcome: "possible_duplicate", lesson: created, duplicateOf: other.id, judgeEscalate };
+    }
     // UPDATE: the refinement is a new lesson that supersedes the old one once a person approves it. The old one stays live until then.
     const created = newLesson(deps, key, draft, "candidate", { supersedes: other.id });
     const written = await commitWith(deps, key, async () => [created]);

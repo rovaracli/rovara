@@ -33,7 +33,7 @@ export interface LessonEmbedder extends Embedder {
   readonly dimension: number;
   readonly spec: string;
   embedMany(texts: readonly string[], kind?: "query" | "document", call?: EmbedderCall): Promise<number[][]>;
-  /** Whether the embedder's client is ready now or within `waitMs` (SDK loading is not part of a ranking's time budget). Absent: always ready. Never throws. */
+  /** Whether the embedder's client is ready now or within `waitMs` (SDK loading is not part of a ranking's time budget). Absent: always ready. Rejects only when the embedder can never be ready (its SDK failed to load, round 4, R3-4): that is "unavailable", not "loading". */
   warm?(waitMs: number): Promise<boolean>;
 }
 

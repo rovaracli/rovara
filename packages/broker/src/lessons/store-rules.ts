@@ -88,6 +88,7 @@ export function planRollback(target: ReadonlyArray<{ id: string; version: number
       restored.tier = Math.max(restored.tier, head.tier) as Lesson["tier"];
       restored.tierReasons = [...new Set([...restored.tierReasons, ...head.tierReasons])].slice(0, 12);
       if (head.contradictsWith !== undefined) restored.contradictsWith = head.contradictsWith;
+      if (head.possibleDuplicateOf !== undefined) restored.possibleDuplicateOf = head.possibleDuplicateOf;
       // Approval given for a lower tier does not carry to a higher one.
       if (restored.tier > content.tier) restored.approvals = [];
     }

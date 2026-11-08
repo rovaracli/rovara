@@ -69,29 +69,32 @@ export interface SdkOptions { region: string | undefined; load?: SdkLoader }
  * (a crash, a timeout inside the function) is a failure of the call. The wait is bounded here: when it runs out the call is abandoned, the function carries on and is warm for the next.
  * Errors keep only their NAME as `code` (the retry rules read it), never their message.
  */
-/** A call the caller's deadline cut off after less than this in flight says nothing about the function (it had no time to answer): it is not a timeout of the function and starts no pause (round 3, R2-4). */
+/** A call the caller's deadline cut off after less than this in flight says nothing about the function (it had no time to answer): it is not a timeout of the function and starts no pause (round 3, R2-4). Round 4 (R3-2): and a call with less than this left is not sent at all. */
 export const MIN_PAUSE_FLIGHT_MS = 200;
 
 export function lambdaEmbedderInvoke(options: SdkOptions & { functionName: string; timeoutMs: number }): EmbedderInvoke {
   const load = options.load ?? loadSdkPackage;
   let client: Promise<{ module: Record<string, unknown>; client: AnyClient & { send(command: unknown, options?: { abortSignal?: AbortSignal }): Promise<unknown> } }> | undefined;
   let loaded = false;
+  // Round 4 (R3-4): a load that failed is remembered, so `warm` can say "unavailable" instead of "still loading" for ever.
+  let failed = false;
   const open = () => client ??= load("@aws-sdk/client-lambda").then((module) => {
     const Client = module.LambdaClient as (new (config: Record<string, unknown>) => AnyClient) | undefined;
     if (typeof Client !== "function") throw new SdkUnavailableError();
     loaded = true;
     return { module, client: new Client(options.region === undefined ? {} : { region: options.region }) as never };
-  });
+  }).catch((error: unknown) => { failed = true; throw error; });
   const invoke: EmbedderInvoke = async (request, limit) => {
     // The caller's budget counts from here, so the SDK load below is part of it (a first call cannot overrun its deadline by the load time).
     const startedAt = Date.now();
     const { module, client: lambda } = await open();
     const left = limit?.timeoutMs === undefined ? Number.POSITIVE_INFINITY : limit.timeoutMs - (Date.now() - startedAt);
-    // The caller's run was over by the time the SDK was ready: nothing is sent (a call now would start a cold container for an answer nobody waits for), and it says nothing about the function.
-    if (left < 1) throw Object.assign(new Error("DeadlineElapsed"), { code: "DeadlineElapsed" });
-    const abort = new AbortController();
     // The configured wait, or less when the caller's own run has less left (EmbedderCall.deadline).
     const callerBound = left < options.timeoutMs;
+    // Round 4 (R3-2): nothing is sent when the caller's run is over, or when less than MIN_PAUSE_FLIGHT_MS of it is left. Lambda keeps running a call that is abandoned, so a send with no time to be answered could only start another
+    // cold container for an answer nobody waits for (and take a slot the Team record's search and ingest share). It says nothing about the function, so no pause starts.
+    if (left < 1 || (callerBound && left < MIN_PAUSE_FLIGHT_MS)) throw Object.assign(new Error("DeadlineElapsed"), { code: "DeadlineElapsed" });
+    const abort = new AbortController();
     const sentAt = Date.now();
     const timer = setTimeout(() => abort.abort(), Math.max(1, Math.min(options.timeoutMs, left)));
     try {
@@ -108,10 +111,12 @@ export function lambdaEmbedderInvoke(options: SdkOptions & { functionName: strin
       clearTimeout(timer);
     }
   };
+  // Resolves true when the client is loaded within `waitMs`, false when it is still loading, and REJECTS when the SDK failed to load (SdkUnavailableError): the caller reports it as unavailable, not as loading.
   invoke.warm = async (waitMs) => {
     if (loaded) return true;
-    const opening = open().then(() => true, () => false);
-    if (waitMs <= 0) return false;
+    if (failed) throw new SdkUnavailableError();
+    const opening = open().then(() => true);
+    if (waitMs <= 0) { opening.catch(() => undefined); return false; }
     let timer: ReturnType<typeof setTimeout> | undefined;
     const gone = new Promise<boolean>((resolve) => { timer = setTimeout(() => resolve(false), waitMs); timer.unref?.(); });
     try { return await Promise.race([opening, gone]); } finally { if (timer !== undefined) clearTimeout(timer); }

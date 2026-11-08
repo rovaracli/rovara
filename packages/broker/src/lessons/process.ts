@@ -29,6 +29,8 @@ const VERIFY_TIMEOUT_MS = 3000;
  */
 export function earnedAttention(lesson: Lesson, tier: Lesson["tier"], reasons: readonly string[] = []): boolean {
   if (lesson.contradictsWith !== undefined) return true;
+  // A possible duplicate (round 4) is in front of people at once: they decide whether it merges, stays beside the other lesson or is rejected.
+  if (lesson.possibleDuplicateOf !== undefined) return true;
   // A draft that resembles advice a person rejected is in front of people at once, with or without a link to the rejected lesson (it has none when the draft's audience cannot read that lesson).
   if (reasons.includes("matches_rejected")) return true;
   // A lesson that asks for a capability change is in front of people at once: the guard that used to drop it now only sends it to them.
@@ -148,7 +150,7 @@ export async function settleLesson(deps: ProcessDeps, key: ScopeKey, lessonId: s
     }
 
     // Auto-apply: tier 0, corroborated, not held, not a refinement of an existing lesson, and the policy and mode allow it.
-    if (next.status === "pending" && next.tier === 0 && next.supersedes === undefined && isCorroborated(next.provenance) && !held
+    if (next.status === "pending" && next.tier === 0 && next.supersedes === undefined && isCorroborated(next.provenance) && !held && next.possibleDuplicateOf === undefined
       && options.noAutoApply !== true && next.reviewRequired !== true && approversRequired(0, resolved.approval) === 0 && modeAllows(resolved.mode, "auto_apply")) {
       // The policy is read AGAIN at the moment of go-live: a setting tightened while this settle ran wins.
       const now = await resolveLearning(deps.settings, key.workspaceId, key.project);
@@ -176,7 +178,7 @@ export interface ProcessResult { outcome: CurateOutcome; lesson?: Lesson }
 export async function processDraft(deps: ProcessDeps, key: ScopeKey, draft: LessonDraft): Promise<ProcessResult> {
   const outcome = await curateDraft(deps, key, draft);
   if (outcome.outcome === "dropped") return { outcome };
-  const options: SettleOptions = outcome.outcome === "contradiction" ? { contradiction: true } : outcome.outcome === "added" || outcome.outcome === "updated" ? { judgeEscalate: outcome.judgeEscalate } : {};
+  const options: SettleOptions = outcome.outcome === "contradiction" ? { contradiction: true } : outcome.outcome === "added" || outcome.outcome === "updated" || outcome.outcome === "possible_duplicate" ? { judgeEscalate: outcome.judgeEscalate } : {};
   const lesson = await settleLesson(deps, key, outcome.lesson.id, options);
   return lesson === undefined ? { outcome } : { outcome, lesson };
 }

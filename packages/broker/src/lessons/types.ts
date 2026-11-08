@@ -187,6 +187,8 @@ export const LessonSchema = z.object({
   reviewRequired: z.boolean().optional(),
   /** The lesson this one contradicts, when both go to a person on one card. */
   contradictsWith: z.string().max(64).optional(),
+  /** The lesson this one may duplicate (round 4): a judge or the word test took the two for the same advice but they are not the same by structure, so they were NOT merged. A person decides; nothing starts it on trial or applies it while this stands. */
+  possibleDuplicateOf: z.string().max(64).optional(),
   /** Set when harmful marks call for a retire and a person has to decide (tier 1 and 2 lessons). */
   retireProposedAt: z.number().optional(),
   rejectedReason: z.string().max(200).optional(),

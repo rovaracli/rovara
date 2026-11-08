@@ -242,16 +242,19 @@ describe("R2-4: the pause starts only when the function was really given time; t
   }
   const lessonsOver = (sdk: ReturnType<typeof hangingSdk>) => lessonEmbedderFrom({ EMBEDDER_FUNCTION_NAME: "agentx-test-embedder" }, { region: "us-west-2", load: sdk.load }, EMBEDDER_LESSON_WAIT_MS, 10_000)!;
 
-  it("a call the caller's own short deadline aborted does not start the pause: the next dispatch may call again", async () => {
+  it("a caller's deadline with under 200 ms left sends NOTHING (round 4, R3-2) and starts no pause: the next dispatch with time left may call", async () => {
     const sdk = hangingSdk();
     const deps = { embedder: lessonsOver(sdk), vectors: new MemoryVectors() };
     // Warm the client first (the load path will not wait for the SDK).
     await deps.embedder.warm!(1_000);
     for (let i = 0; i < 3; i += 1) expect((await rankLessons(deps, KEY, pool, query(), { queryKind: "query", timeoutMs: 40 })).mode).toBe("keyword");
     await wait(30);
-    // Each call was sent (the function had under 200 ms to answer, which says nothing about it): no pause.
-    expect(sdk.state.sends).toBe(3);
-    expect(sdk.state.aborted).toBe(3);
+    // The function would have had under 200 ms to answer: it is not asked at all (a Lambda call that is abandoned keeps running, and a cold one takes another container).
+    expect(sdk.state.sends).toBe(0);
+    expect(sdk.state.aborted).toBe(0);
+    // No pause started (positive control): a dispatch with a real wait left does send.
+    expect((await rankLessons(deps, KEY, pool, query(), { queryKind: "query", timeoutMs: 400 })).mode).toBe("keyword");
+    expect(sdk.state.sends).toBe(1);
   });
 
   it("a call that was in flight for a real wait and got no answer starts the pause", async () => {
@@ -285,7 +288,7 @@ describe("R2-4: the pause starts only when the function was really given time; t
     expect(sdk.state.sends).toBe(0);
     expect(logs).toContain(SIMILARITY_LOG.embedderLoading);
     await wait(160);
-    await rankLessons(deps, KEY, pool, query(), { queryKind: "query", timeoutMs: 40, warmMs: 0 });
+    await rankLessons(deps, KEY, pool, query(), { queryKind: "query", timeoutMs: 400, warmMs: 0 });
     expect(sdk.state.sends).toBe(1);
     expect(sdk.state.loads).toBe(1);
   });
@@ -294,9 +297,9 @@ describe("R2-4: the pause starts only when the function was really given time; t
     const sdk = hangingSdk(120);
     const deps = { embedder: lessonsOver(sdk), vectors: new MemoryVectors() };
     const started = Date.now();
-    const result = await rankLessons(deps, KEY, pool, query(), { queryKind: "query", timeoutMs: 100, warmMs: 1_000 });
+    const result = await rankLessons(deps, KEY, pool, query(), { queryKind: "query", timeoutMs: 400, warmMs: 1_000 });
     expect(result.mode).toBe("keyword");
-    // The SDK load (120 ms) was waited for before the 100 ms race began, and the call was sent in it.
+    // The SDK load (120 ms) was waited for before the 400 ms race began, and the call was sent in it.
     expect(sdk.state.sends).toBe(1);
     expect(Date.now() - started).toBeGreaterThanOrEqual(200);
   });

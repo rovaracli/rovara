@@ -15,7 +15,7 @@ export const LessonViewStatusSchema = z.enum(LESSON_VIEW_STATUSES);
 /** The reasons for a tier, as the classifier writes them. A reason this build does not know is shown with no words (never the raw code). */
 export const LESSON_TIER_REASONS = [
   "reviewer_stage", "review_check", "escalation_words", "command_or_url", "encoded_content", "risky_path", "judge_escalate", "not_a_fact", "citations_not_verified",
-  "not_plain_declarative", "source_not_trusted", "scope_not_one_repo", "stage_not_allowed", "contradiction", "restricted_source", "supersedes_higher_tier", "cited_fact", "capability_request",
+  "not_plain_declarative", "source_not_trusted", "scope_not_one_repo", "stage_not_allowed", "contradiction", "restricted_source", "supersedes_higher_tier", "cited_fact", "capability_request", "possible_duplicate",
 ] as const;
 
 /**
@@ -90,6 +90,8 @@ export const LessonViewSchema = z.object({
   trial: z.enum(["trial", "stable"]).optional(),
   /** Sent back to a person (for example kept on code alone after its sources were deleted), or the lesson it contradicts, or a retire that waits for a person. */
   reviewRequired: z.literal(true).optional(), contradicts: z.string().max(64).optional(), retireProposed: z.literal(true).optional(), supersedes: z.string().max(64).optional(),
+  /** The lesson this one may duplicate (kept apart from it, never merged): a person decides to merge, keep both or reject. */
+  possibleDuplicate: z.string().max(64).optional(),
   rejectedReason: z.string().max(200).optional(),
   /** What this viewer may do with it, worked out by the server (the routes check again when asked). */
   canApprove: z.boolean(), canReject: z.boolean(), canRetire: z.boolean(),

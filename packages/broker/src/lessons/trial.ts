@@ -200,6 +200,8 @@ export function trialBlockers(lesson: Lesson, tier: Lesson["tier"], context: Tri
   if (hasRiskyTrialWording(lesson.title, lesson.description, lesson.body)) why.push("risky_wording");
   if (context.contradiction) why.push("contradiction");
   if (context.refinement) why.push("refinement");
+  // Round 4: a lesson linked as a possible duplicate of another is never started on trial while the link stands; a person decides (merge, keep both, reject). Read from the lesson itself, so the second check sees it too.
+  if (lesson.possibleDuplicateOf !== undefined) why.push("possible_duplicate");
   if (context.reviewRequired) why.push("review_required");
   if (context.held) why.push("source_held");
   if (context.braked) why.push("project_brake");

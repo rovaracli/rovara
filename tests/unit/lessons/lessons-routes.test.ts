@@ -84,6 +84,14 @@ describe("the Lessons tab says why learning is paused (lessons in production, la
 });
 
 describe("the Lessons tab read", () => {
+  it("round 4: a lesson kept apart as a possible duplicate is shown with the link (the card says Possible duplicate) and its fixed reason; a lesson with no link shows neither", async () => {
+    const { store, call } = setup();
+    await seed(store, pending({ id: "les_dup00001", possibleDuplicateOf: "les_pend0001", tierReasons: ["possible_duplicate"] }), pending({ id: "les_pend0001" }));
+    const view = LessonsViewReaderSchema.parse(await call(callerOf("bob"), "GET", base));
+    expect(view.waiting.find((l) => l.id === "les_dup00001")).toMatchObject({ possibleDuplicate: "les_pend0001", tierReasons: ["possible_duplicate"], canApprove: true, canReject: true });
+    expect(view.waiting.find((l) => l.id === "les_pend0001")!.possibleDuplicate).toBeUndefined();
+  });
+
   it("shows a maintainer what waits, with who approved first and how many people are needed, and shows the active list with counts and expiry", async () => {
     const { store, call } = setup();
     await seed(store, pending({ id: "les_tier2001", tier: 2, tierReasons: ["reviewer_stage"], stages: ["REVIEW"], type: "review_check", approvals: [{ approvalId: "a1", by: "ann", at: 5, mode: "one" }] }), pending(), lessonRecord({ id: "les_act00001", counters: { loaded: 4, helpful: 3, harmful: 1, citationStale: 0 } }));
