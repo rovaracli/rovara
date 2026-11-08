@@ -100,7 +100,6 @@ export async function processDraftRetrying(deps: ProcessDeps, key: ScopeKey, dra
     };
     if (step === "curate") {
       outcome = await curateDraft(again, key, draft);
-      step = "settle";
     }
     return settle(again);
   }

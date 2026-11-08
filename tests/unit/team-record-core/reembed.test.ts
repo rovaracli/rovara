@@ -509,14 +509,14 @@ describe("a turn that starts no call, and a workspace that is closing (N4, N5)",
       const w = await setup();
       const live = orgNames(2_500);
       directory(w, live);
-      const gone = ["org_gone00000000000000a1", "org_gone00000000000000a2"].map((id) => id.slice(0, 24) as typeof ORG_A);
+      const gone = ["org_gone00000000000000a1", "org_gone00000000000000a2"].map((id) => id.slice(0, 24));
       for (const orgId of [live[0]!, live[1]!, ...gone]) w.db.set({ pk: "TEAM_RECORD_ORGS", sk: `REEMBED#${orgId}`, entityType: "TEAM_RECORD_REEMBED_STATE", orgId, servedAt: 5, idleUntil: 0, passWork: 0 });
       const slow = { ...w.table, documentClient: { send: async (command: unknown) => {
         const input = (command as { input?: { KeyConditionExpression?: string; Limit?: number } }).input;
         if (command?.constructor?.name === "QueryCommand" && input?.Limit === 50) w.clock.ms += 60;
-        return w.table.documentClient.send(command as never);
+        return w.table.documentClient.send(command);
       } } };
-      const run = await sweepReembedStateRun(slow as never, async () => false, { now: () => w.clock.ms, deadline: w.clock.ms + 2_000 });
+      const run = await sweepReembedStateRun(slow, async () => false, { now: () => w.clock.ms, deadline: w.clock.ms + 2_000 });
       expect(run.deleted).toBe(2);
       expect(run.stopped).toBe(false);
       expect([...(await readReembedStates(w.table)).keys()].sort()).toEqual([live[0]!, live[1]!].sort());

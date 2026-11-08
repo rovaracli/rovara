@@ -370,8 +370,8 @@ export async function sweepReembedStateRun(table: TeamRecordTable, isClosing?: (
     after = typeof saved === "string" ? saved : undefined;
   } catch { /* from the top: still correct, only slower to reach the far ones */ }
   // The first state after the saved workspace (ids are sorted); none after it: the walk wraps to the top.
-  const first = after === undefined ? 0 : Math.max(0, ids.findIndex((orgId) => orgId > after!));
-  const order = after !== undefined && !ids.some((orgId) => orgId > after!) ? ids : [...ids.slice(first), ...ids.slice(0, first)];
+  const first = after === undefined ? 0 : Math.max(0, ids.findIndex((orgId) => orgId > after));
+  const order = after !== undefined && !ids.some((orgId) => orgId > after) ? ids : [...ids.slice(first), ...ids.slice(0, first)];
   let last: string | undefined;
   for (const orgId of order) {
     if (result.checked >= maxChecks || outOfTime()) { result.stopped = true; break; }
