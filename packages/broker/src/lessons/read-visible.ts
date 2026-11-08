@@ -10,11 +10,11 @@ import { lessonPlaces, satisfiesAcl, type IdentitySet, type Lesson } from "./typ
 
 export type LessonLog = (event: string, fields: Record<string, unknown>) => void;
 
-export interface ReadVisibleInput { access: AccessCheckPort; key: ScopeKey; viewer: IdentitySet | undefined; lessons: readonly Lesson[]; where: string; log?: LessonLog | undefined; /** One reader for a whole request (LV-1 M1): the tasks it has looked up are remembered across calls. Absent: a fresh one for this call. */ live?: LessonLiveReader | undefined; /** The running task the lessons are for (an agent): its audience, as a set, must lie within every source task's (decision 31). Used only when `live` is not given. */ runningTaskId?: string | undefined }
+export interface ReadVisibleInput { access: AccessCheckPort; key: ScopeKey; viewer: IdentitySet | undefined; lessons: readonly Lesson[]; where: string; log?: LessonLog | undefined; /** One reader for a whole request (LV-1 M1): the tasks it has looked up are remembered across calls. Absent: a fresh one for this call. */ live?: LessonLiveReader | undefined; /** The running task the lessons are for (an agent): its audience, as a set, must lie within every source task's (decision 31); `taskId` undefined keeps nothing that names a task. Used only when `live` is not given. */ running?: { taskId: string | undefined } | undefined }
 
 /**
- * The lessons of `lessons` that `viewer` may read now. A viewer of `undefined` is nobody in particular (a project-wide running task, or a path whose readers are everyone): it reads only unrestricted lessons whose places no record
- * restricts and whose source tasks are all project-wide. An unreadable record throws RUNTIME_UNAVAILABLE (the caller decides what that means; none of them treats it as "visible"). `where` names the caller in the log line.
+ * The lessons of `lessons` that `viewer` may read now. A viewer of `undefined` is nobody in particular (a path whose readers are everyone, or an agent, whose reader is the running task): it reads only unrestricted lessons whose places no record
+ * restricts and, with no running task, whose source tasks are all open to the whole project (decision 32). A person with a developer id reads what that person can open (decision 31). An unreadable record throws RUNTIME_UNAVAILABLE (the caller decides what that means; none of them treats it as "visible"). `where` names the caller in the log line.
  */
 export async function readVisible(input: ReadVisibleInput): Promise<Lesson[]> {
   if ((input.access as AccessCheckPort | undefined) === undefined) {
@@ -23,7 +23,7 @@ export async function readVisible(input: ReadVisibleInput): Promise<Lesson[]> {
   }
   const frozen = input.lessons.filter((lesson) => lesson.provenance.audience.kind !== "restricted" || (input.viewer !== undefined && satisfiesAcl(input.viewer, lesson.provenance.audience.acl)));
   const placed = frozen.filter((lesson) => lessonPlaces(lesson).scopes.length > 0);
-  const live = input.live ?? createLessonLiveReader({ port: input.access.taskVisibility, key: input.key, where: input.where, log: input.log, runningTaskId: input.runningTaskId });
+  const live = input.live ?? createLessonLiveReader({ port: input.access.taskVisibility, key: input.key, where: input.where, log: input.log, running: input.running });
   const keep = (lessons: Lesson[]): Promise<Lesson[]> => live.keep(input.viewer, lessons);
   if (placed.length === 0) return keep(frozen);
   const answers = await input.access.mayRead(OrgIdSchema.parse(input.key.workspaceId), input.viewer, placed.map((lesson) => lessonPlaces(lesson)));
@@ -37,7 +37,7 @@ export async function readVisible(input: ReadVisibleInput): Promise<Lesson[]> {
  */
 export async function readVisibleRanked(input: Omit<ReadVisibleInput, "lessons"> & { ranked: readonly Lesson[]; pageSize: number; enough: (kept: readonly Lesson[]) => boolean; deadlineAt?: number | undefined }): Promise<{ kept: Lesson[]; checked: number; complete: boolean }> {
   const kept: Lesson[] = [];
-  const live = input.live ?? createLessonLiveReader({ port: input.access?.taskVisibility, key: input.key, where: input.where, log: input.log, runningTaskId: input.runningTaskId });
+  const live = input.live ?? createLessonLiveReader({ port: input.access?.taskVisibility, key: input.key, where: input.where, log: input.log, running: input.running });
   let checked = 0;
   while (checked < input.ranked.length) {
     if (input.enough(kept)) return { kept, checked, complete: true };

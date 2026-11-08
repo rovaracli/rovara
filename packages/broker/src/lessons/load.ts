@@ -28,7 +28,8 @@ const CHECK_PAGE = 3 * LOAD_MAX_LESSONS;
 /** The whole visibility work of one load must end inside the dispatcher's 2.5 s deadline (`lessons-dispatch.ts`): what is not checked by then is not offered, and each batched task read is cut at the same time. */
 export const LOAD_VISIBILITY_BUDGET_MS = 1_800;
 
-export type TaskAudience = { kind: "shared" } | { kind: "private"; identity: IdentitySet };
+/** Who reads what a stage produces. Only "shared": the reader is the running task's audience, read live (decision 31), never one named person (a "private" reader would let a lesson only some people may read reach an agent several people can see). */
+export type TaskAudience = { kind: "shared" };
 export interface LoadRequest {
   workspaceId: string; project: string; taskId: string; stage: LessonStage | "CHECKS"; round: number;
   /** The task's intent and, from PLAN on, the plan summary: both are text the project already holds. */
@@ -168,7 +169,8 @@ export async function loadLessonsForStage(deps: LoadDeps, request: LoadRequest):
   }
   // Every candidate goes through the one read path: the frozen snapshot AND the access records AND the source tasks' live visibility. The candidates are scored and scope-matched FIRST (cheap, no reads), then the
   // best ones are checked a page at a time until enough survive (LV-1 M1), with one reader for the whole load so no task is read twice.
-  const viewer = request.taskAudience.kind === "private" ? { principals: request.taskAudience.identity.principals, groups: request.taskAudience.identity.groups, developerId: request.taskAudience.identity.developerId } : undefined;
+  // No single person is the reader: restricted lessons and restricted places are checked as for nobody in particular, and the source tasks against the running task's audience.
+  const viewer: IdentitySet | undefined = undefined;
   const scored: Array<{ lesson: Lesson; score: number; why: LoadManifestEntry["why"] }> = [];
   for (const lesson of active) {
     if (!stageAllows(lesson, stage, member)) continue;
@@ -188,7 +190,7 @@ export async function loadLessonsForStage(deps: LoadDeps, request: LoadRequest):
   };
   const deadlineAt = Date.now() + LOAD_VISIBILITY_BUDGET_MS;
   // Each batched task read gets only the time that is left, so the whole load stays inside the dispatcher's deadline whatever the State table does.
-  const live = createLessonLiveReader({ port: deps.access.taskVisibility, key, where: "load", log, runningTaskId: request.taskId, timeoutMs: () => Math.max(1, deadlineAt - Date.now()) });
+  const live = createLessonLiveReader({ port: deps.access.taskVisibility, key, where: "load", log, running: { taskId: request.taskId }, timeoutMs: () => Math.max(1, deadlineAt - Date.now()) });
   const chosen: LearnedLesson[] = [];
   const entries: LoadManifestEntry[] = [];
   let bytes = 0;

@@ -4,7 +4,8 @@ import { approveLesson, listWaiting, rejectLesson, retireByPerson, rollbackLesso
 import { buildWeeklyDigest } from "../../../packages/broker/src/lessons/digest.js";
 import { promoteToRule, ruleParagraph, type PromoteDeps } from "../../../packages/broker/src/lessons/promote.js";
 import { InMemoryLessonStore } from "../../../packages/broker/src/lessons/store.js";
-import { Audit, Clock, KEY, Publisher, directory, lessonRecord, seed, settings, allSharedTasks, allowAllAccess } from "./lesson-helpers.js";
+import { withLessonAudiences } from "../../../packages/broker/src/lessons/task-audience.js";
+import { Audit, Clock, KEY, Publisher, directory, lessonRecord, seed, settings, allSharedTasks, allowAllAccess, wideAudience } from "./lesson-helpers.js";
 
 const base = (over: Parameters<typeof lessonRecord>[0] = {}) => lessonRecord({ id: "les_pend0001", status: "pending", tier: 1, tierReasons: ["not_a_fact"], approvals: [], type: "convention", pendingExpiresAt: 9e15, provenance: { ...lessonRecord().provenance, authors: ["carl"] }, ...over });
 const input = (approverId: string, id = "les_pend0001") => ({ ...KEY, lessonId: id, approverId });
@@ -290,11 +291,12 @@ describe("promote to a How we work rule (v1.2 rule I6: exactly one paragraph)", 
     expect(publisher.published).toHaveLength(0);
   });
 
-  it("LV-1: a lesson learned from a task that is not project-wide is refused (a rule is a copy of the text); with no task reader it is refused too", async () => {
+  it("LV-1 / decision 32: a lesson learned from a task with a People denial is refused (a rule is a copy of the text); with no task reader it is refused too", async () => {
     const { deps, store, publisher } = promoteSetup();
     const from = (id: string, task: string) => lessonRecord({ id, provenance: { ...lessonRecord().provenance, supportTasks: [task] } });
     await seed(store, from("les_wide0001", "t-wide"), from("les_narrow01", "t-narrow"), from("les_list0001", "t-list"), from("les_inherit1", "t-wide"));
-    const tasks = { read: async (_o: unknown, ids: readonly string[]) => new Map(ids.map((id) => [id, id === "t-narrow" ? { kind: "private" as const, ownerDeveloperId: "ann" } : id === "t-list" ? { kind: "shared_with" as const, developerIds: ["ann", "bob"] } : { kind: "shared" as const }])) };
+    const audiences = { read: async (_o: unknown, ids: readonly string[]) => new Map(ids.map((id) => [id, id === "t-narrow" ? wideAudience({ denied: new Set(["bob"]) }) : id === "t-list" ? wideAudience({ denied: new Set(["bob", "carl"]) }) : wideAudience()])) };
+    const tasks = withLessonAudiences({ read: async () => new Map() }, audiences as never);
     const withTasks = { ...deps, taskVisibility: tasks } as PromoteDeps;
     expect(await promoteToRule(withTasks, { ...KEY, lessonId: "les_narrow01", approverId: "ann" })).toEqual({ ok: false, code: "task_not_shared" });
     expect(await promoteToRule(withTasks, { ...KEY, lessonId: "les_list0001", approverId: "ann" })).toEqual({ ok: false, code: "task_not_shared" });

@@ -9,21 +9,24 @@ import { InMemoryLessonStore } from "../../../packages/broker/src/lessons/store.
 import { buildLessonsView, type LessonViewDeps } from "../../../packages/broker/src/lessons/view.js";
 import type { AccessCheckPort } from "../../../packages/broker/src/team-record/access-port.js";
 import type { TaskVisibilityPort } from "../../../packages/broker/src/team-record/live-audience.js";
-import type { TaskVisibility } from "../../../packages/broker/src/team-record/sources/rovara.js";
+import { withLessonAudiences, type LessonAudiencePort, type LessonTaskAudience } from "../../../packages/broker/src/lessons/task-audience.js";
 import type { Lesson } from "../../../packages/broker/src/lessons/types.js";
-import { Audit, Clock, KEY, PROJECT, WS, directory, lessonRecord, seed, settings } from "./lesson-helpers.js";
+import { Audit, Clock, KEY, PROJECT, WS, directory, lessonRecord, seed, settings, wideAudience } from "./lesson-helpers.js";
 
-const SHARED: TaskVisibility = { kind: "shared" };
-const NARROWED: TaskVisibility = { kind: "shared_with", developerIds: ["x", "y"] };
-function port(table: Record<string, TaskVisibility | undefined>, delayMs = 0) {
+const SHARED = wideAudience({ extras: new Set(["x"]) });
+/** A task whose People list denies the tab's reader ("owner"). */
+const NARROWED = wideAudience({ denied: new Set(["owner"]) });
+/** The lessons' ports over a table of live audiences (decision 31); a task missing from it is unreadable. `delayMs` makes each batched read slow. */
+function port(table: Record<string, LessonTaskAudience | undefined>, delayMs = 0) {
   const reads: string[][] = [];
-  const value: TaskVisibilityPort = {
+  const audiences: LessonAudiencePort = {
     async read(_org, ids, options) {
       reads.push([...ids]);
       if (delayMs > 0) await new Promise((resolve) => setTimeout(resolve, delayMs));
       return new Map(ids.map((id) => [id, options?.signal?.aborted === true ? undefined : table[id]]));
     },
   };
+  const value: TaskVisibilityPort = withLessonAudiences({ read: async () => new Map() }, audiences);
   return { value, reads };
 }
 const accessOf = (tasks: TaskVisibilityPort): AccessCheckPort => ({ mayRead: async (_o, _v, places) => places.map(() => true), taskVisibility: tasks });
@@ -50,7 +53,7 @@ describe("R2: the digest checks only the statuses it can show", () => {
 describe("R2: one reader across the pages of readVisibleRanked when none is passed", () => {
   it("a task shared by lessons on different pages is read once", async () => {
     const lessons = Array.from({ length: 12 }, (_, n) => fromTasks(`les_pages${String(n).padStart(4, "0")}`, ["t-shared", `t-own-${String(n)}`]));
-    const table: Record<string, TaskVisibility> = { "t-shared": SHARED };
+    const table: Record<string, LessonTaskAudience> = { "t-shared": SHARED };
     for (let n = 0; n < 12; n += 1) table[`t-own-${String(n)}`] = SHARED;
     const p = port(table);
     const result = await readVisibleRanked({ access: accessOf(p.value), key: KEY, viewer: undefined, where: "t", ranked: lessons, pageSize: 4, enough: () => false });
@@ -66,7 +69,7 @@ describe("R3: the load record keeps each loaded lesson's task ids", () => {
     const store = new InMemoryLessonStore();
     const clock = new Clock();
     await seed(store, fromTasks("les_stayopen1", ["to"], { citations: [{ kind: "task", taskId: "t-cited" }] }));
-    const deps: LoadDeps = { access: accessOf(port({ to: SHARED, "t-cited": SHARED }).value), store, embedder: NO_EMBEDDER, vectors: NO_VECTORS, settings: settings(), audit: new Audit(), now: clock.now };
+    const deps: LoadDeps = { access: accessOf(port({ to: SHARED, "t-cited": SHARED, "task-9": SHARED }).value), store, embedder: NO_EMBEDDER, vectors: NO_VECTORS, settings: settings(), audit: new Audit(), now: clock.now };
     const request: LoadRequest = { workspaceId: WS, project: PROJECT, taskId: "task-9", stage: "IMPLEMENT", round: 1, intent: "x", repos: ["api"], files: [], languages: [], taskAudience: { kind: "shared" } };
     const result = await loadLessonsForStage(deps, request);
     expect(result.context?.lessons.map((l) => l.id)).toEqual(["les_stayopen1"]);
@@ -86,7 +89,7 @@ describe("R4: the Lessons tab", () => {
   it("a long active list that is all withheld cannot use up the bound the waiting list, the queue count and the removed list need", async () => {
     const clock = new Clock();
     const store = new InMemoryLessonStore();
-    const table: Record<string, TaskVisibility> = {};
+    const table: Record<string, LessonTaskAudience> = {};
     const narrowedActive = Array.from({ length: 400 }, (_, n) => { table[`ta${String(n)}`] = NARROWED; return fromTasks(`les_act${String(n).padStart(6, "0")}`, [`ta${String(n)}`]); });
     table["tp"] = SHARED; table["tr"] = SHARED; table["tc"] = SHARED;
     await seed(store, ...narrowedActive, fromTasks("les_pending001", ["tp"], { status: "pending", approvals: [] }), fromTasks("les_retired001", ["tr"], { status: "retired" }), fromTasks("les_candidate1", ["tc"], { status: "candidate", approvals: [] }));
@@ -104,7 +107,7 @@ describe("R4: the Lessons tab", () => {
   it("the whole tab stops reading at its deadline: a slow State table returns in time with what was checked, and says the lists were cut", async () => {
     const clock = new Clock();
     const store = new InMemoryLessonStore();
-    const table: Record<string, TaskVisibility> = {};
+    const table: Record<string, LessonTaskAudience> = {};
     const lessons = Array.from({ length: 300 }, (_, n) => { table[`ta${String(n)}`] = NARROWED; return fromTasks(`les_act${String(n).padStart(6, "0")}`, [`ta${String(n)}`]); });
     await seed(store, ...lessons, fromTasks("les_pending001", ["tp"], { status: "pending", approvals: [] }));
     table["tp"] = SHARED;

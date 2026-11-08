@@ -1,6 +1,7 @@
 // Shared fakes for the learning v2 lane tests (L1-L5). No AWS, no network: every port of packages/broker/src/lessons/ports.ts has an in-memory stand-in.
 import type { AccessCheckPort } from "../../../packages/broker/src/team-record/access-port.js";
 import type { TaskVisibilityPort } from "../../../packages/broker/src/team-record/live-audience.js";
+import { withLessonAudiences, type LessonTaskAudience } from "../../../packages/broker/src/lessons/task-audience.js";
 import type { CounterDeps } from "../../../packages/broker/src/lessons/counters.js";
 import type { LessonDraft } from "../../../packages/broker/src/lessons/reflect.js";
 import type {
@@ -192,8 +193,13 @@ export function classifyTier(input: TierInput, context?: TierContext, floor?: { 
 /** An access-check port that lets every place through: for the tests that exercise the lessons themselves, not the access records. */
 /** What `recordFeedback` takes: the counter ports plus the record core's access check. */
 export type FeedbackDeps = CounterDeps & { access: AccessCheckPort };
-/** Every task project-wide: the live check of a lesson's source tasks (`live-visibility.ts`) lets every lesson through. */
-export const allSharedTasks: TaskVisibilityPort = { read: async (_org, ids) => new Map(ids.map((id) => [id, { kind: "shared" as const }])) };
+/** A task open to the whole project (decision 31/32): nobody denied, nobody named, every person asked about is on the roster. `over` changes any part of it. */
+export const wideAudience = (over: Partial<LessonTaskAudience> = {}): LessonTaskAudience => ({ project: PROJECT, denied: new Set(), extras: new Set(), orgWide: false, otherProjects: new Set(), onRoster: async () => true, ...over });
+/** Every task project-wide: the live check of a lesson's source tasks (`live-visibility.ts`) lets every lesson through, whoever the reader is. */
+export const allSharedTasks: TaskVisibilityPort = withLessonAudiences(
+  { read: async (_org, ids) => new Map(ids.map((id) => [id, { kind: "shared" as const }])) } satisfies TaskVisibilityPort,
+  { read: async (_org, ids) => new Map(ids.map((id) => [id, wideAudience()])) },
+);
 export const allowAllAccess: AccessCheckPort = { mayRead: async (_org, _viewer, places) => places.map(() => true), taskVisibility: allSharedTasks };
 
 /**

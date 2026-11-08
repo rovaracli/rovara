@@ -9,7 +9,8 @@ import { rovaraPullRequestBody, ROVARA_STATUS_END, ROVARA_STATUS_START, PULL_REQ
 import { repositoryVisibilityOf } from "../../../packages/broker/src/aws/broker/lessons-wiring.js";
 import { lessonsUsedForTask, lessonsUsedReaderOver, lessonsUsedSection, notHelpfulUrl, setLessonsUsedReader, visibilityOfRepositories } from "../../../packages/broker/src/lessons/used-in-pr.js";
 import { InMemoryLessonStore, type LoadManifest } from "../../../packages/broker/src/lessons/store.js";
-import { PROJECT, WS, allowAllAccess, draft, lessonRecord, seed, settings } from "./lesson-helpers.js";
+import { withLessonAudiences, type LessonAudiencePort, type LessonTaskAudience } from "../../../packages/broker/src/lessons/task-audience.js";
+import { PROJECT, WS, allowAllAccess, draft, lessonRecord, seed, settings, wideAudience } from "./lesson-helpers.js";
 
 const now = "2026-10-25T12:00:00.000Z";
 const code = createCandidateManifest([{ repositoryId: "payments", commitSha: "1".repeat(40), treeSha: "1".repeat(40), baseCommitSha: "e".repeat(40) }]);
@@ -166,21 +167,42 @@ describe("the reader behind it", () => {
     expect(blind.items).toEqual([]);
   });
 
-  it("LV-1: a lesson learned from a task that is no longer project-wide is neither counted nor named in a description everyone with repository access reads", async () => {
+  it("LV-1 / decisions 31 and 32: a lesson from a task that hides someone the pull request's task shows it to is neither counted nor named; one the task may still be given is counted, and NAMED only if every source task is open to the whole project", async () => {
     const store = await seeded([{ id: "les_narrow001", title: "Narrowed lesson", tier: 1, provenance: { ...draft().provenance, supportTasks: ["t-narrow"] } }, { id: "les_wide00001", title: "Wide lesson", tier: 1, provenance: { ...draft().provenance, supportTasks: ["t-wide"] } }]);
     await store.putManifest({ ...manifest([["les_narrow001", "valid"], ["les_wide00001", "valid"]]), round: 2 });
     const reads: string[][] = [];
-    const table: Record<string, { kind: "shared" } | { kind: "private"; ownerDeveloperId: string }> = { "t-narrow": { kind: "private", ownerDeveloperId: "ann" }, "t-wide": { kind: "shared" } };
-    const access = { ...allowAllAccess, taskVisibility: { read: async (_o: unknown, ids: readonly string[]) => { reads.push([...ids]); return new Map(ids.map((id) => [id, table[id] ?? { kind: "shared" as const }])); } } };
-    const out = (await lessonsUsedReaderOver({ store, settings: settings(), access, names, visibility: async () => "private" })(input))!;
+    const table: Record<string, LessonTaskAudience> = { "task-1": wideAudience(), "t-narrow": wideAudience({ denied: new Set(["bob"]) }), "t-wide": wideAudience() };
+    const gone = new Set<string>();
+    // Every other task (the open lesson's) is open to the whole project.
+    const audiences: LessonAudiencePort = { read: async (_o, ids) => { reads.push([...ids]); return new Map(ids.map((id) => [id, gone.has(id) ? undefined : table[id] ?? wideAudience()])); } };
+    const access = { ...allowAllAccess, taskVisibility: withLessonAudiences({ read: async () => new Map() }, audiences) };
+    const read = () => lessonsUsedReaderOver({ store, settings: settings(), access, names, visibility: async () => "private" })(input);
+    // bob can open the pull request's task but not t-narrow: the lesson may not be given to this task, so it is not counted, and not named.
+    const out = (await read())!;
     expect(out.items.map((i) => i.id).sort()).toEqual(["les_open0001", "les_wide00001"]);
     expect(out.count).toBe(2);
     expect(JSON.stringify(out)).not.toContain("Narrowed lesson");
-    // Positive control: the narrowed task WAS asked about, so the exclusion came from its live visibility; and each task once for the whole description.
+    // Positive control: the narrowed task WAS asked about, so the exclusion came from its live audience; each reader asks each task once (the count reader, then the naming reader for what was counted).
     expect(reads.flat()).toEqual(expect.arrayContaining(["t-narrow", "t-wide"]));
-    expect(new Set(reads.flat()).size).toBe(reads.flat().length);
-    table["t-narrow"] = { kind: "shared" };
-    expect((await lessonsUsedReaderOver({ store, settings: settings(), access, names, visibility: async () => "private" })(input))!.count).toBe(3);
+    expect(reads.flat().filter((id) => id === "t-narrow")).toHaveLength(1);
+    expect(reads.flat().filter((id) => id === "t-wide")).toHaveLength(2);
+    // The task itself also hides bob: the lesson may be given to it, so it IS counted, but it is still not NAMED (a source task with a People denial is not open to the whole project): count and link only.
+    table["task-1"] = wideAudience({ denied: new Set(["bob"]) });
+    const counted = (await read())!;
+    expect(counted.count).toBe(3);
+    // (The open lesson was learned from this very task, which now has a People denial, so it is counted and not named either.)
+    expect(counted.items.map((i) => i.id)).toEqual(["les_wide00001"]);
+    expect(JSON.stringify(counted)).not.toContain("Narrowed lesson");
+    // Once no source task denies anyone, all three are named.
+    table["task-1"] = wideAudience();
+    table["t-narrow"] = wideAudience();
+    expect((await read())!.items.map((i) => i.id).sort()).toEqual(["les_narrow001", "les_open0001", "les_wide00001"]);
+    // Decision 32 is checked LIVE: nothing is named when the audiences cannot be read (the lessons are not even counted).
+    gone.add("t-wide");
+    expect((await read())!.items.map((i) => i.id)).not.toContain("les_wide00001");
+    // And a pull request's task whose own audience cannot be read counts nothing at all.
+    gone.add("task-1");
+    expect(await read()).toBeUndefined();
   });
 
   it("the broker call never throws and is empty without a reader", async () => {

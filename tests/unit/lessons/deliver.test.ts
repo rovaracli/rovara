@@ -16,12 +16,11 @@ const restrictedTo = (principals: string[]) => ({ kind: "restricted" as const, a
 /** A lesson whose source place the access records must be asked about. */
 const placed = (id: string, over: Partial<Lesson> = {}): Lesson => conv(id, { provenance: { ...lessonRecord().provenance, sourceScopes: ["slack:T/C9"] }, ...over });
 const refs = (ids: Array<[string, number?]>, over: Partial<LearnedRefs> = {}): LearnedRefs => ({
-  v: 1, orgId: WS, project: PROJECT, setVersion: 5, stage: "IMPLEMENT", audience: { kind: "shared" }, lessons: ids.map(([id, version]) => ({ id, version: version ?? 1 })), ...over,
+  v: 1, orgId: WS, project: PROJECT, setVersion: 5, stage: "IMPLEMENT", audience: { kind: "shared" }, taskId: "task-run", lessons: ids.map(([id, version]) => ({ id, version: version ?? 1 })), ...over,
 });
 
-/** The running task `task-run` is private to its owner (LV-1 H1: delivery reads the running task's LIVE visibility to name the reader); every other task is project-wide. */
+/** The running task is `task-run`, and every task is project-wide (`allSharedTasks`); delivery reads the running task's LIVE audience (decision 31). */
 const OWNER = "d".repeat(64);
-const ownerOnlyTasks: DeliveryDeps["access"]["taskVisibility"] = { read: async (_org, ids) => new Map(ids.map((id) => [id, id === "task-run" ? { kind: "private" as const, ownerDeveloperId: OWNER } : { kind: "shared" as const }])) };
 
 function world(over: Partial<DeliveryDeps> = {}) {
   const store = new InMemoryLessonStore();
@@ -107,7 +106,7 @@ describe("learnedContextFromRefs", () => {
 
     it("a restricted lesson is never delivered to an agent (decision 31: the reader is everyone who can open the task, not one owner), and nobody's identity is looked up", async () => {
       const restricted = conv("les_restrict1", { provenance: { ...lessonRecord().provenance, audience: restrictedTo(["gh-1"]) } });
-      const access = (allowed: boolean) => ({ mayRead: async (_org: unknown, _viewer: unknown, places: readonly unknown[]) => places.map(() => allowed), taskVisibility: ownerOnlyTasks });
+      const access = (allowed: boolean) => ({ mayRead: async (_org: unknown, _viewer: unknown, places: readonly unknown[]) => places.map(() => allowed), taskVisibility: allSharedTasks });
       const privateRefs = refs([["les_restrict1"]], { audience: { kind: "private", developerId: OWNER }, taskId: "task-run" });
       const calls: string[] = [];
       for (const allowed of [true, false]) {

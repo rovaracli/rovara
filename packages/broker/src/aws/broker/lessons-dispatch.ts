@@ -39,8 +39,8 @@ export async function learnedContextForOperation(
   let timer: ReturnType<typeof setTimeout> | undefined;
   try {
     // Decision 31: who reads what this stage produces is the people who can open the RUNNING task's session (its project's members minus anyone its People list denies, or the narrower list), read live by the loader
-    // (`readVisible` with `runningTaskId`). A lesson loads only if all of them can see every task it was learned from. No reader is named here: the loader's audience is "nobody in particular" for restricted
-    // places, and a task whose audience can't be read loads only lessons whose source tasks are all project-wide.
+    // (`readVisible` with `running`). A lesson loads only if all of them can see every task it was learned from. No reader is named here: the loader's audience is "nobody in particular" for restricted
+    // places, and a task whose audience can't be read loads NO lesson that names a task (there is no weaker rule to fall back to).
     const audience: TaskAudience = { kind: "shared" };
     const round = task.workflow?.revision ?? 0;
     const run = learnedContextForDispatch(lessons.load, {

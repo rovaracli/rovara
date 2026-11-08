@@ -38,10 +38,10 @@ export async function learnedContextFromRefs(deps: DeliveryDeps, refs: LearnedRe
     if (!modeAllows(resolved.mode, "load")) return undefined;
     const now = deps.now();
     // Decision 31: the reader is the running task's audience, asked again now (the people who can open its session now, not the audience the load saw, and not `task.shared`). A lesson is delivered only if everyone who
-    // can see the task can see every source task of the lesson. A stage queued before the task id was carried, or a task whose audience can't be read, reads as nobody in particular. Restricted places and
+    // can see the task can see every source task of the lesson. A stage queued before the task id was carried, or a task whose audience can't be read, gets no lesson that names a task (there is no weaker rule to fall back to). Restricted places and
     // the lesson's own frozen audience are checked as for nobody in particular (`viewer` undefined): a lesson only some people may read never reaches an agent that several people can see.
     const viewer = undefined;
-    const liveReader = createLessonLiveReader({ port: deps.access.taskVisibility, key, where: "deliver", runningTaskId: refs.taskId, ...(deps.log === undefined ? {} : { log: deps.log }) });
+    const liveReader = createLessonLiveReader({ port: deps.access.taskVisibility, key, where: "deliver", running: { taskId: refs.taskId }, ...(deps.log === undefined ? {} : { log: deps.log }) });
 
     const fetched: Lesson[] = [];
     for (const ref of refs.lessons) {

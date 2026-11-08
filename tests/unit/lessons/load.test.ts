@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import { LearnedContextSchema } from "../../../packages/contracts/src/index.js";
 import { applyLoadReport } from "../../../packages/broker/src/lessons/counters.js";
 import { LOAD_MAX_BYTES, LOAD_MAX_LESSONS, learnedContextForDispatch, loadLessonsForStage, scopeMatch, wilsonLower, type LoadDeps, type LoadRequest } from "../../../packages/broker/src/lessons/load.js";
+import { readVisible } from "../../../packages/broker/src/lessons/read-visible.js";
 import { InMemoryLessonStore } from "../../../packages/broker/src/lessons/store.js";
 import type { Lesson } from "../../../packages/broker/src/lessons/types.js";
 import { Audit, Clock, KEY, MemoryVectors, PROJECT, WS, embedder, lessonRecord, seed, settings, allowAllAccess } from "./lesson-helpers.js";
@@ -165,13 +166,14 @@ describe("fail closed", () => {
 });
 
 describe("audience and isolation", () => {
-  it("P10: a lesson from a restricted source is not loaded into a shared task, nor a private task whose owner cannot see the source", async () => {
-    const { deps, add } = setup();
+  it("P10: a lesson from a restricted source is never loaded into a task (several people can see a task, decision 31); a person it names reads it through the read path, a stranger does not", async () => {
+    const { deps, add, store } = setup();
     const provenance = { ...lessonRecord().provenance, audience: restrictedAudience };
     await add(conv("les_rest0001", { provenance }), conv("les_open0001"));
     expect(ids(await loadLessonsForStage(deps, request({ taskAudience: { kind: "shared" } })))).toEqual(["les_open0001"]);
-    expect(ids(await loadLessonsForStage(deps, request({ taskId: "t2", taskAudience: { kind: "private", identity: { principals: ["U-stranger"], groups: [] } } })))).toEqual(["les_open0001"]);
-    expect(ids(await loadLessonsForStage(deps, request({ taskId: "t3", taskAudience: { kind: "private", identity: { principals: ["U-member"], groups: [] } } }))).sort()).toEqual(["les_open0001", "les_rest0001"]);
+    const seenBy = async (principals: string[]) => (await readVisible({ access: deps.access, key: KEY, viewer: { principals, groups: [] }, lessons: [(await store.get(KEY, "les_rest0001"))!, (await store.get(KEY, "les_open0001"))!], where: "test" })).map((l) => l.id).sort();
+    expect(await seenBy(["U-stranger"])).toEqual(["les_open0001"]);
+    expect(await seenBy(["U-member"])).toEqual(["les_open0001", "les_rest0001"]);
   });
 
   it("P9: a lesson of another workspace, or another project, is never loaded", async () => {
