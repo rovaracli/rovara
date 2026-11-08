@@ -9,6 +9,7 @@ import {
   type InstanceView,
   type ReconcilerDependencies,
   type VolumeView,
+  MAX_INSTANCE_LOOKUPS_PER_RUN,
 } from "../../packages/broker/src/aws/session-reconciler.js";
 import { STUCK_CANCEL_LOST_MESSAGE, sweepStuckCancels, type StuckCancelDependencies } from "../../packages/broker/src/aws/stuck-cancels.js";
 import { FakeDynamoDb } from "../support/fake-dynamodb.js";
@@ -650,6 +651,27 @@ describe("reconciler: stuck cancels (issue 195)", () => {
       expect((await reconcile()).lostInstances).toEqual([worker.instanceId]);
       expect(sessionOf(db, workspaceId)).toMatchObject({ state: "STOPPED" });
       expect(terminate).not.toHaveBeenCalled();
+    });
+
+    it("caps the lookups per run: sessions past the cap stay READY with compute unknown, are logged as skipped, and are looked up on the next run", async () => {
+      const logs: Array<Record<string, unknown>> = [];
+      const looked: string[] = [];
+      const sweep = vi.fn<NonNullable<ReconcilerDependencies["sweepStuckCancels"]>>(async () => ({ retried: [], ended: [], interrupted: [], unretried: [], failed: [] }));
+      const { db, reconcile } = setup({ describeInstance: async (instanceId) => { looked.push(instanceId); return { instanceId, state: "running", launchedAt: minutesAgo(60) }; }, sweepStuckCancels: sweep, log: (entry) => { logs.push(entry); } });
+      const total = MAX_INSTANCE_LOOKUPS_PER_RUN + 3;
+      const workspaces = Array.from({ length: total }, () => seedSession(db, "READY", ready()));
+      const report = await reconcile();
+      expect(looked).toHaveLength(MAX_INSTANCE_LOOKUPS_PER_RUN);
+      expect(logs).toContainEqual({ event: "reconciler.instance_lookups_capped", skipped: 3, cap: MAX_INSTANCE_LOOKUPS_PER_RUN });
+      expect(report.lostInstances).toEqual([]);
+      for (const workspaceId of workspaces) expect(sessionOf(db, workspaceId)).toMatchObject({ state: "READY" });
+      const computes = [...sweep.mock.calls[0]![0]].map((candidate) => candidate.compute);
+      expect(computes.filter((compute) => compute === "unknown")).toHaveLength(3);
+      expect(computes.filter((compute) => compute === "alive")).toHaveLength(MAX_INSTANCE_LOOKUPS_PER_RUN);
+      // Next run: the ones already judged are listed-by-lookup again (the listing is still empty), so the lookups go to the rest as well.
+      looked.length = 0;
+      await reconcile();
+      expect(looked).toHaveLength(MAX_INSTANCE_LOOKUPS_PER_RUN);
     });
 
     it("a listed instance needs no lookup (a listed stopped one is terminated, then marked lost, as before)", async () => {

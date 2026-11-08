@@ -119,14 +119,18 @@ describe("a task left INTERRUPTED and holding its workspace (a stop that did not
   it("the not-confirmed answers promise nothing they cannot keep: no 'within N minutes', and they say a busy worker keeps the workspace held and that nothing is deleted", async () => {
     const { close, dev, db, taskId } = await orphaned("alive");
     const closeAnswer = JSON.stringify((await close()).body);
-    expect(closeAnswer).toContain("still busy it stays held until the worker finishes");
+    expect(closeAnswer).toContain("close the task again then");
+    expect(closeAnswer).toContain("about every 10 minutes");
+    expect(closeAnswer).toContain("still busy, the workspace stays reserved until it finishes");
     expect(closeAnswer).toContain("nothing is deleted");
     expect(closeAnswer).not.toMatch(/within (about )?\d+ minutes/u);
     const meta = db.get(`DEVTASK#${taskId}`, "META") as { sessionId?: string; agent?: unknown };
     delete meta.agent;
     const stopAnswer = JSON.stringify((await dev(MAYA, "POST", `/v1/app/sessions/${String(meta.sessionId)}/stop`, { requestId: randomUUID() })).body);
-    expect(stopAnswer).toContain("until it finishes");
-    expect(stopAnswer).toContain("nothing is deleted");
+    expect(stopAnswer).toContain("after about 10 minutes (about 30 if the stop was retried)");
+    expect(stopAnswer).toContain("Pressing Close task asks for a faster release");
+    expect(stopAnswer).toContain("stays reserved until it finishes");
+    expect(stopAnswer).toContain("Nothing is deleted");
     expect(stopAnswer).not.toMatch(/within (about )?\d+ minutes/u);
   });
 
