@@ -3,6 +3,7 @@ import { Link } from "react-router";
 import { useQueryClient } from "@tanstack/react-query";
 import { SessionIdSchema } from "@agentx/contracts/web";
 import { useAppHost } from "../../host.js";
+import { paths } from "../../paths.js";
 import { createHomeApi, homeAction, type HomeAction, type ReadHomeCard } from "../../api/home.js";
 import { ApiError } from "../../api/errors.js";
 import { Button } from "../../design/Button.js";
@@ -23,7 +24,8 @@ export function HomeCard({ card }: { card: ReadHomeCard }) {
     const { createIntakeApi } = await import("../../api/intake.js");
     const answer = await createIntakeApi(host).act(action.href, action.kind === "ticket_start" ? "start" : "dismiss");
     await query.invalidateQueries({ queryKey: ["home"] });
-    if ("started" in answer && answer.started && SessionIdSchema.safeParse(answer.sessionId).success) { host.navigate("/s/" + answer.sessionId);return; }
+    const started = "started" in answer && answer.started ? SessionIdSchema.safeParse(answer.sessionId) : undefined;
+    if (started?.success === true) { host.navigate(paths.session(started.data));return; }
     if ("started" in answer && !answer.started) throw new ApiError(409, "PENDING", answer.state === "started" ? "Someone already started this ticket." : "Rovara couldn't start this ticket yet. Try again later.");
     return;
    }
