@@ -121,6 +121,8 @@ export function s3VectorsPortFromCredentials(options: SdkOptions, credentials: V
     },
     async deleteVectors(request) { await call("DeleteVectorsCommand", request); },
     async createIndex(request) { await call("CreateIndexCommand", request); },
+    async getIndex(request) { await call("GetIndexCommand", request); },
+    async deleteIndex(request) { await call("DeleteIndexCommand", request); },
   };
 }
 

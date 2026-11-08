@@ -88,7 +88,7 @@ export function teamRecordParameters(context: TeamRecordContext): TeamRecordPara
   const edition: TeamRecordEditionName = editionValue;
 
   // Bedrock embedding models (Titan, Cohere) are gone: the Team record embeds with the self-hosted embedder in both editions (DECISIONS 27). A leftover value must not be ignored in silence.
-  if (text(context.embeddingModelId, "embeddingModelId") !== undefined) throw new Error("team record: embeddingModelId is retired; the Team record uses the built-in self-hosted embedder (remove the option: agentx config set teamRecord.options default)");
+  if (text(context.embeddingModelId, "embeddingModelId") !== undefined) throw new Error("team record: embeddingModelId (the context value agentxTeamRecordEmbeddingModelId) is retired; the Team record uses the built-in self-hosted embedder. Leave the context value out of the synth command (agentx never passes it; a stored option of that name is dropped)");
 
   const kmsKeyArn = text(context.kmsKeyArn, "kmsKeyArn");
   if (kmsKeyArn !== undefined && !KMS_KEY_ARN.test(kmsKeyArn)) throw new Error("team record: kmsKeyArn must be a KMS key ARN (a key id, not an alias)");

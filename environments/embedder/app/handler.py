@@ -15,6 +15,9 @@ from embedder_core import Embedder
 
 MODELS_ROOT = Path(os.environ.get("EMBEDDER_MODELS_DIR", "/opt/models"))
 _embedder = Embedder(MODELS_ROOT)
+# The init phase of a cold start loads the Team record's model (the one the search path needs), so the first request does not also pay for it. The lessons' model loads on its first
+# request. A model that cannot be loaded here is left to that request, which answers MODEL_UNAVAILABLE. EMBEDDER_PRELOAD (a comma-separated list, empty for none) changes the list.
+_embedder.preload([name for name in os.environ.get("EMBEDDER_PRELOAD", "record").split(",") if name in ("record", "lesson")])
 
 
 def _summary(event: Any) -> dict[str, Any]:

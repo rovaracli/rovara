@@ -20,9 +20,9 @@ import type { AwsBrokerDependencies } from "./definitions.js";
 export type HasTeamRecord = { teamRecord?: AwsBrokerDependencies["teamRecord"] | undefined };
 
 export const TEAM_RECORD_JOB_SOURCE = "agentx.team-record";
-const JOBS = new Set(["hourly", "nightly"]);
+const JOBS = new Set(["hourly", "nightly", "reembed"]);
 
-export function isTeamRecordJobEvent(event: unknown): event is { source: typeof TEAM_RECORD_JOB_SOURCE; job: "hourly" | "nightly" } {
+export function isTeamRecordJobEvent(event: unknown): event is { source: typeof TEAM_RECORD_JOB_SOURCE; job: "hourly" | "nightly" | "reembed" } {
   return event !== null && typeof event === "object" && !("requestContext" in event)
     && (event as { source?: unknown }).source === TEAM_RECORD_JOB_SOURCE && JOBS.has((event as { job?: unknown }).job as string);
 }
@@ -60,7 +60,7 @@ export async function answerSlackAdd(dependencies: HasTeamRecord & { developer?:
 export type TeamRecordJobAnswer = { skipped: true; reason: "off" } | { skipped?: undefined; job: string; summary: TeamRecordJobSummary };
 
 /** A scheduled job. Answers `skipped` and does nothing where the record is off. */
-export async function runTeamRecordJob(dependencies: HasTeamRecord, event: { job: "hourly" | "nightly" }): Promise<TeamRecordJobAnswer> {
+export async function runTeamRecordJob(dependencies: HasTeamRecord, event: { job: "hourly" | "nightly" | "reembed" }): Promise<TeamRecordJobAnswer> {
   if (dependencies.teamRecord === undefined) return { skipped: true, reason: "off" };
   return { job: event.job, summary: await dependencies.teamRecord.jobs.run(event.job) };
 }

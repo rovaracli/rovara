@@ -72,7 +72,7 @@ export async function expireRawText(deps: TextExpiryDependencies, orgId: OrgId, 
         await deps.table.documentClient.send(new UpdateCommand({
           TableName: deps.table.tableName,
           Key: { pk: item.pk, sk: item.sk },
-          UpdateExpression: `REMOVE ${["text", "textExpiresAt", "embeddingRef", "embedPending", TEAM_RECORD_GSI5.partition, TEAM_RECORD_GSI5.sort].map((name) => aliases.name(name)).join(", ")}`,
+          UpdateExpression: `REMOVE ${["text", "textExpiresAt", "embeddingRef", "embeddingSpec", "embeddingTruncated", "embedPending", TEAM_RECORD_GSI5.partition, TEAM_RECORD_GSI5.sort].map((name) => aliases.name(name)).join(", ")}`,
           ConditionExpression: `attribute_exists(${aliases.name("text")})`,
           ExpressionAttributeNames: aliases.names,
         }));

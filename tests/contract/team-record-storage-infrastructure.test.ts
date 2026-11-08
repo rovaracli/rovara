@@ -23,7 +23,7 @@ describe("team record install parameters", () => {
     expect(teamRecordParameters({ edition: "enterprise", kmsKeyArn: KMS, enterpriseWorkspaceId: "acme", athenaUsers: `${ROLE}` }).athenaUsers).toEqual([ROLE]);
   });
   it("refuses the retired embedding model option (Bedrock Titan and Cohere are gone), a key alias, a non-role principal, and analysts without a lake", () => {
-    for (const retired of ["anthropic.claude", "cohere.embed-english-v3", "amazon.titan-embed-text-v2:0", "global.cohere.embed-v4:0"]) expect(() => teamRecordParameters({ embeddingModelId: retired })).toThrow(/embeddingModelId is retired/);
+    for (const retired of ["anthropic.claude", "cohere.embed-english-v3", "amazon.titan-embed-text-v2:0", "global.cohere.embed-v4:0"]) expect(() => teamRecordParameters({ embeddingModelId: retired })).toThrow(/embeddingModelId .*is retired/);
     expect(teamRecordParameters({ embeddingModelId: "" }).dimension).toBe(1024);
     expect(() => teamRecordParameters({ kmsKeyArn: "arn:aws:kms:us-west-2:111122223333:alias/x" })).toThrow(/KMS key ARN/);
     const enterprise = { edition: "enterprise", kmsKeyArn: KMS, enterpriseWorkspaceId: "acme" };

@@ -97,7 +97,23 @@ describe("recordSearch", () => {
     // a vector hit that names a row of org B is looked up in org A's partition: nothing is found
     const vectorSearch: RecordVectorSearchPort = { async query() { return [{ key: `event:${b.id}`, distance: 0.01, metadata: { ref: eventVectorRef(b), kind: "event", project: "web", trust: "member", audience_kind: "project", scope: "x" } }]; } };
     const viaVector = await recordSearch(deps(w, { embedder: w.embedder, vectorSearch }), person(), "web", { query: "billing retry" });
-    expect(viaVector.hits).toEqual([]);
+    // the vector hit of org B finds nothing in org A's partition; what remains are org A's own rows, found by the keyword merge (the vector search came back short)
+    expect(viaVector.hits.map((hit) => hit.id)).not.toContain(b.id);
+    expect(JSON.stringify(viaVector)).not.toContain("workspace B");
+  });
+
+  it("merges keyword results when the vector search comes back short (rows without a vector yet, or of an earlier model), the vector hits ranked first", async () => {
+    const w = world();
+    await seed(w);
+    const ticket = eventFromItem(rows(w, "TEAM_RECORD_EVENT").find((item) => (item.sourceRef as { id: string }).id === "ENG-7"))!;
+    const vectorSearch: RecordVectorSearchPort = { async query() { return [{ key: `event:${ticket.id}`, distance: 0.2, metadata: { ref: eventVectorRef(ticket), kind: "event", project: "web", trust: ticket.trust, audience_kind: ticket.audience.kind, scope: "x" } }]; } };
+    const result = await recordSearch(deps(w, { embedder: w.embedder, vectorSearch }), person(), "web", { query: "billing retry", limit: 5 });
+    expect(result.hits[0]!.id).toBe(ticket.id);
+    expect(result.hits.length).toBeGreaterThan(1);
+    expect(new Set(result.hits.map((hit) => hit.id)).size).toBe(result.hits.length);
+    // when the vector search already fills the page, the keyword scan is not added
+    const full: RecordVectorSearchPort = { async query() { return [{ key: `event:${ticket.id}`, distance: 0.2, metadata: { ref: eventVectorRef(ticket), kind: "event", project: "web", trust: ticket.trust, audience_kind: ticket.audience.kind, scope: "x" } }]; } };
+    expect((await recordSearch(deps(w, { embedder: w.embedder, vectorSearch: full }), person(), "web", { query: "billing retry", limit: 1 })).hits.map((hit) => hit.id)).toEqual([ticket.id]);
   });
 
   it("uses the vector index when present, asks it for the project only (and project rows only for a shared task), checks every hit, and hides a tombstoned one", async () => {

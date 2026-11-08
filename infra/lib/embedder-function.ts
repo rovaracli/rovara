@@ -2,25 +2,41 @@
 // 384-d) in ONE container-image Lambda, on our own compute, in both editions. Part of the Team record switch (`agentxTeamRecord=enabled`): with the switch off, nothing here exists
 // and the synthesised templates are what they were (tests/contract/team-record-wiring-infrastructure.test.ts pins that).
 //
-// The image is built by environments/embedder (weights baked in at build time from pinned Hugging Face revisions, every file checked by sha256; no network at run time) and is named to the
-// stack as a private-ECR image PINNED BY DIGEST: the stack parameter `EmbedderImageUri`, default `none`. With `none` the function is not created and the broker's embedding calls fail closed
-// (rows are stored without a vector and found by keyword; search falls back to keyword). Public gets the digest from the release job; an Enterprise install loads the image from its signed
-// bundle into its own ECR and names that digest (nothing is pulled from a public registry at run time). Neither release path is wired yet: see the lane report.
+// The image is built by environments/embedder (weights baked in at build time from pinned Hugging Face revisions, every file checked by sha256; every Python package installed by hash;
+// no network at run time) and is named to the stack as a private-ECR image PINNED BY DIGEST: the stack parameter `EmbedderImageUri`. The release names the image (release.json
+// `images.embedder`); the CLI passes it (packages/cli/src/deploy/parameters.ts): from the pull-through cache in a Public install, from the install's own `rovara-bundle/<env>/embedder`
+// repository in an Enterprise one (loaded from the signed bundle). A Team record with no embedder image is refused (decision 27: no keyword-only interim): the template carries a rule that
+// fails the stack operation with a message, and the CLI refuses earlier.
 //
-// The function takes {model, kind, texts[]} and returns normalized vectors or a fixed error code (environments/embedder/app/embedder_core.py). Only the broker may invoke it (its role gets
-// `lambda:InvokeFunction` on this one function); the function itself can reach no AWS service: its role holds log writes only, and it has no environment variable.
-import { ArnFormat, CfnCondition, CfnParameter, Duration, Fn, RemovalPolicy, type Stack, aws_iam as iam, aws_lambda as lambda, aws_logs as logs } from "aws-cdk-lib";
+// NO NETWORK, ENFORCED: the function runs in a small VPC of its own (below) whose subnets have no route out (no internet gateway, no NAT, no endpoint) and a security group with no
+// egress rule, so even a compromised dependency has nowhere to send a text. Lambda needs none of that to be invoked (the broker calls the Lambda API, not the VPC) or to write logs.
+// Only the broker may invoke it (its role gets `lambda:InvokeFunction` on this one function); the function itself can reach no AWS service: its role holds log writes and the network-interface
+// rights Lambda needs for a VPC, and it has no environment variable.
+//
+// [verify] on the first Enterprise deploy: a KMS-encrypted ECR repository (the bundle repositories use ECR's default encryption today) may need the deploying role or Lambda to be allowed
+// kms:Decrypt on the key; the image pull by CreateFunction was not tested against a customer-managed key (needs a staging run with an image in such a repository).
+import { ArnFormat, Aws, CfnParameter, CfnRule, Duration, Fn, RemovalPolicy, type Stack, aws_ec2 as ec2, aws_iam as iam, aws_lambda as lambda, aws_logs as logs } from "aws-cdk-lib";
 import { embedderFunctionName } from "@agentx/contracts";
 
-/** 6 GB gives about 3.5 vCPUs; the int8 Qwen model measured about 0.14 to 0.26 s per text on a laptop CPU, and the model is 1.1 GB on disk. */
-export const EMBEDDER_MEMORY_MB = 6144;
-/** A cold start loads the model (seconds); a batch is at most 16 texts. The broker waits far less (EMBEDDER_WAIT_MS), and the function carries on and warms. */
-export const EMBEDDER_TIMEOUT_SECONDS = 90;
+/**
+ * The most Lambda gives (10 GB, about 5.8 vCPUs): the models run in fp32 (the Qwen weights are 2.4 GB on disk and in memory), and a long text is real compute (the record model reads up
+ * to 2,048 tokens). Nothing is billed while idle. Not measured on a real arm64 Lambda yet (see the lane report): the memory is the one knob that buys speed.
+ */
+export const EMBEDDER_MEMORY_MB = 10240;
+/** A cold start loads the model (seconds); one text of 2,048 tokens takes seconds more; a batch is at most 16 texts. The broker waits for less (EMBEDDER_WAIT_MS), and the function carries on and warms. */
+export const EMBEDDER_TIMEOUT_SECONDS = 180;
 /** Modest on purpose: a burst of ingest cannot take the account's concurrency. The broker retries the rows it could not embed. */
 export const EMBEDDER_RESERVED_CONCURRENCY = 4;
 
-/** A private ECR image reference pinned by digest, or `none`. */
+/** A private ECR image reference pinned by digest, or `none` (the default, which the template's rule refuses: the Team record has no keyword-only mode). */
 export const EMBEDDER_IMAGE_PATTERN = "^(none|[0-9]{12}\\.dkr\\.ecr\\.[a-z0-9-]+\\.amazonaws\\.com(\\.cn)?/[a-z0-9][a-z0-9._/-]{1,255}@sha256:[a-f0-9]{64})$";
+
+/** The message CloudFormation shows when the Team record is asked for with no embedder image. */
+export const EMBEDDER_IMAGE_REQUIRED_MESSAGE = "The Team record needs the embedder image: name an image pinned by digest in EmbedderImageUri (agentx upgrade passes the release's own embedder image; agentx config set teamRecord.embedderImage <image> names one by hand). There is no search without it.";
+
+/** The embedder's own network: two subnets with no route to anywhere, in a VPC with no gateway. */
+const NETWORK_CIDR = "10.251.0.0/24";
+const SUBNET_CIDRS = ["10.251.0.0/26", "10.251.0.64/26"] as const;
 
 export interface EmbedderProps {
   readonly env: string;
@@ -32,10 +48,12 @@ export interface EmbedderProps {
 
 export interface EmbedderResources {
   readonly imageUri: CfnParameter;
-  readonly hasImage: CfnCondition;
   readonly role: iam.Role;
   readonly logGroup: logs.LogGroup;
   readonly function: lambda.CfnFunction;
+  readonly vpc: ec2.CfnVPC;
+  readonly securityGroup: ec2.CfnSecurityGroup;
+  readonly subnets: readonly ec2.CfnSubnet[];
 }
 
 export function attachEmbedder(stack: Stack, props: EmbedderProps): EmbedderResources {
@@ -44,16 +62,39 @@ export function attachEmbedder(stack: Stack, props: EmbedderProps): EmbedderReso
     type: "String",
     default: "none",
     allowedPattern: EMBEDDER_IMAGE_PATTERN,
-    description: "Immutable private ECR linux/arm64 image of the self-hosted embedder (environments/embedder) pinned by digest, or none (no embedder: the Team record stores rows without vectors and searches by keyword)",
+    description: "Immutable private ECR linux/arm64 image of the self-hosted embedder (environments/embedder) pinned by digest, in this account and region. The release names it and agentx upgrade passes it; it is required while the Team record exists",
   });
-  const hasImage = new CfnCondition(stack, "HasEmbedderImage", { expression: Fn.conditionNot(Fn.conditionEquals(imageUri.valueAsString, "none")) });
+  new CfnRule(stack, "TeamRecordNeedsEmbedderImage", { assertions: [{ assert: Fn.conditionNot(Fn.conditionEquals(imageUri.valueAsString, "none")), assertDescription: EMBEDDER_IMAGE_REQUIRED_MESSAGE }] });
+
+  // The function's own network. No internet gateway, no NAT gateway, no endpoint, and the subnets use the VPC's main route table (the local route only); the security group has no egress rule.
+  const vpc = new ec2.CfnVPC(stack, "EmbedderNetwork", { cidrBlock: NETWORK_CIDR, enableDnsSupport: true, enableDnsHostnames: false, tags: [{ key: "Name", value: `${functionName}-no-egress` }] });
+  const subnets = SUBNET_CIDRS.map((cidrBlock, index) => new ec2.CfnSubnet(stack, `EmbedderSubnet${index + 1}`, {
+    vpcId: vpc.ref, cidrBlock, availabilityZone: Fn.select(index, Fn.getAzs(Aws.REGION)), mapPublicIpOnLaunch: false, tags: [{ key: "Name", value: `${functionName}-no-egress-${index + 1}` }],
+  }));
+  const securityGroup = new ec2.CfnSecurityGroup(stack, "EmbedderSecurityGroup", {
+    vpcId: vpc.ref,
+    groupDescription: "Rovara embedder: no inbound and no outbound traffic",
+    // CloudFormation adds an allow-all egress rule when none is given; this one is the documented way to say "none" (no packet can match it).
+    securityGroupEgress: [{ ipProtocol: "icmp", cidrIp: "255.255.255.255/32", fromPort: 252, toPort: 86, description: "Disallow all traffic" }],
+  });
 
   const logGroup = new logs.LogGroup(stack, "EmbedderLogs", { logGroupName: `/aws/lambda/${functionName}`, retention: logs.RetentionDays.ONE_MONTH, removalPolicy: RemovalPolicy.DESTROY });
   const role = new iam.Role(stack, "EmbedderRole", {
     assumedBy: new iam.ServicePrincipal("lambda.amazonaws.com"),
-    description: "The Rovara embedder function: writes its own logs and nothing else",
+    description: "The Rovara embedder function: writes its own logs and manages its own network interfaces, nothing else",
   });
   logGroup.grantWrite(role);
+  // What Lambda needs to put a function in a VPC (the AWS-managed policy for it also grants logging on every group, which this role must not have): create the network interface in these two
+  // subnets with this security group, and manage the interfaces of this account and region.
+  const networkInterfaces = stack.formatArn({ service: "ec2", resource: "network-interface", resourceName: "*", arnFormat: ArnFormat.SLASH_RESOURCE_NAME });
+  role.addToPolicy(new iam.PolicyStatement({
+    sid: "CreateOwnNetworkInterface",
+    actions: ["ec2:CreateNetworkInterface"],
+    resources: [networkInterfaces, ...subnets.map((subnet) => stack.formatArn({ service: "ec2", resource: "subnet", resourceName: subnet.ref, arnFormat: ArnFormat.SLASH_RESOURCE_NAME })), stack.formatArn({ service: "ec2", resource: "security-group", resourceName: securityGroup.attrGroupId, arnFormat: ArnFormat.SLASH_RESOURCE_NAME })],
+  }));
+  role.addToPolicy(new iam.PolicyStatement({ sid: "ManageOwnNetworkInterfaces", actions: ["ec2:DeleteNetworkInterface", "ec2:AssignPrivateIpAddresses", "ec2:UnassignPrivateIpAddresses"], resources: [networkInterfaces] }));
+  // Describe calls take no resource.
+  role.addToPolicy(new iam.PolicyStatement({ sid: "DescribeNetwork", actions: ["ec2:DescribeNetworkInterfaces", "ec2:DescribeSubnets", "ec2:DescribeSecurityGroups", "ec2:DescribeVpcs"], resources: ["*"] }));
 
   const fn = new lambda.CfnFunction(stack, "Embedder", {
     functionName,
@@ -64,18 +105,19 @@ export function attachEmbedder(stack: Stack, props: EmbedderProps): EmbedderReso
     memorySize: EMBEDDER_MEMORY_MB,
     timeout: Duration.seconds(EMBEDDER_TIMEOUT_SECONDS).toSeconds(),
     role: role.roleArn,
+    vpcConfig: { securityGroupIds: [securityGroup.attrGroupId], subnetIds: subnets.map((subnet) => subnet.ref) },
     ...(props.reservedConcurrency === false ? {} : { reservedConcurrentExecutions: EMBEDDER_RESERVED_CONCURRENCY }),
     loggingConfig: { logGroup: logGroup.logGroupName },
   });
-  fn.cfnOptions.condition = hasImage;
   fn.node.addDependency(logGroup);
+  // The role's policy (the network-interface rights) must exist before the function is created.
   fn.node.addDependency(role);
 
-  // The broker, and only the broker, calls the function: one action on one function. (The grant exists with or without the image: an invoke of a function that is not there fails closed.)
+  // The broker, and only the broker, calls the function: one action on one function.
   props.broker.addToRolePolicy(new iam.PolicyStatement({
     sid: "InvokeEmbedder",
     actions: ["lambda:InvokeFunction"],
     resources: [stack.formatArn({ service: "lambda", resource: "function", resourceName: functionName, arnFormat: ArnFormat.COLON_RESOURCE_NAME })],
   }));
-  return { imageUri, hasImage, role, logGroup, function: fn };
+  return { imageUri, role, logGroup, function: fn, vpc, securityGroup, subnets };
 }

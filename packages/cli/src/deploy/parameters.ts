@@ -4,7 +4,7 @@
 // init`/`agentx upgrade`) reads secrets and calls CloudFormation; this file only computes values.
 import { customDomainParameters, type CustomDomain } from "../environments/custom-domain.js";
 import type { Edition } from "@agentx/contracts";
-import { CLOUD_PROJECT_FOUNDATION_PARAMETERS, CONTROL_PLANE_FOUNDATION_PARAMETERS, ImageDigest, MODEL_PROXY_FOUNDATION_PARAMETERS, KEYED_MODEL_PROVIDERS, KEYED_PROVIDER_IDS, environmentStackName } from "@agentx/contracts";
+import { BUNDLE_IMAGE_REPOSITORY_PREFIX, CLOUD_PROJECT_FOUNDATION_PARAMETERS, CONTROL_PLANE_FOUNDATION_PARAMETERS, ImageDigest, MODEL_PROXY_FOUNDATION_PARAMETERS, KEYED_MODEL_PROVIDERS, KEYED_PROVIDER_IDS, environmentPullThroughPrefix, environmentStackName } from "@agentx/contracts";
 import type { ReleaseManifest, StackPart } from "@agentx/contracts";
 import { signInStackParameters, type StoredDeveloperSignIn } from "../signin/settings.js";
 
@@ -150,6 +150,26 @@ export function privateImageUri(publicRef: string, target: { account: string; re
   }
   const hostSuffix = ecrHostSuffix(target.partition ?? "aws");
   return `${target.account}.dkr.ecr.${target.region}.${hostSuffix}/${target.prefix}/${rest}`;
+}
+
+/** Repository name of the embedder image in an Enterprise install's own ECR (loaded from the signed bundle): `rovara-bundle/<env>/embedder`. */
+const enterpriseEmbedderRepository = (env: string): string => `${BUNDLE_IMAGE_REPOSITORY_PREFIX}/${env}/embedder`;
+
+/**
+ * The control plane's EmbedderImageUri for a release (the self-hosted embedder the Team record needs): in an Enterprise install the image in the install's own `rovara-bundle/<env>/embedder`
+ * repository (`rovara upgrade --bundle` loaded it there, digest preserved), otherwise the release's public image through the account's pull-through cache, like the worker image. Always in
+ * this install's account and region. Throws when the release carries no embedder image: there is no Team record without one.
+ */
+export function embedderImageUri(input: { release: ReleaseManifest; edition: Edition | undefined; env: string; account: string; region: string; partition?: string }): string {
+  const reference = input.release.images.embedder;
+  if (reference === undefined) throw new Error(`release ${input.release.version} carries no embedder image, and the Team record needs one (the self-hosted embedder); use a release that has it`);
+  const target = { account: input.account, region: input.region, prefix: environmentPullThroughPrefix(input.env), ...(input.partition === undefined ? {} : { partition: input.partition }) };
+  if (input.edition === "enterprise") {
+    const digest = /@(sha256:[a-f0-9]{64})$/.exec(reference)?.[1];
+    if (digest === undefined) throw new Error(`image ${reference} is not pinned to a digest`);
+    return `${input.account}.dkr.ecr.${input.region}.${ecrHostSuffix(input.partition ?? "aws")}/${enterpriseEmbedderRepository(input.env)}@${digest}`;
+  }
+  return privateImageUri(reference, target);
 }
 
 /** A stack output a later stack's parameters need is missing: typed, so upgrade --export can say what to do instead. */

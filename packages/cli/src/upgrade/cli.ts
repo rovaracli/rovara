@@ -29,12 +29,18 @@ import { approveEnterpriseBundle, installIsEnterprise } from "./bundle/approve-e
 import { nodeSynthRunner, type SynthRunner } from "./bundle/synth-run.js";
 import { recordSynthSettings } from "./bundle/synth-settings.js";
 import { startApprovedDeployment, type DeployerInvoker } from "./bundle/deployer-client.js";
-import { loadBundleImages } from "./bundle/load-images.js";
+import { EMBEDDER_BUNDLE_IMAGE_NAME, loadBundleImages } from "./bundle/load-images.js";
+import { teamRecordRecordedOrUnknown } from "../deploy/team-record-switch.js";
 import { resetDeployment } from "./bundle/reset-deployment.js";
 import { PINNED_BUNDLE_SIGNING_KEYS } from "./bundle/trusted-keys.js";
 import { verifyBundle, type VerifiedBundle } from "./bundle/verify.js";
 import { runUpgrade, type UpgradeDependencies } from "./run.js";
 import { releaseNotes } from "./target.js";
+
+/** The embedder image has no repository in an install without the Team record (the access stack makes it only with the record): skipped there, an error where the record is on or cannot be read. */
+async function embedderMaySkip(store: ParameterStore, env: string): Promise<readonly string[]> {
+  return (await teamRecordRecordedOrUnknown(store, env)) ? [] : [EMBEDDER_BUNDLE_IMAGE_NAME];
+}
 
 export interface UpgradeCommandContext {
   overrides?: Partial<UpgradeDependencies>;
@@ -153,7 +159,7 @@ export function registerUpgradeCommand(program: Command, context: UpgradeCommand
           }
           return verifyBundle({ ...input, trustedKeys: [...PINNED_BUNDLE_SIGNING_KEYS, ...installed, ...extra] });
         }),
-        loadBundleImages: overrides.loadBundleImages ?? (async ({ bundle, settings }) => loadBundleImages({ bundle, env: settings.env, account: settings.account, region: settings.region, ecr: new ECRClient({ region: settings.region }), runner })),
+        loadBundleImages: overrides.loadBundleImages ?? (async ({ bundle, settings }) => loadBundleImages({ bundle, env: settings.env, account: settings.account, region: settings.region, ecr: new ECRClient({ region: settings.region }), runner, skipWhenNoRepository: await embedderMaySkip(store, settings.env) })),
         approveAndDeploy: overrides.approveAndDeploy ?? (async ({ bundle, settings, yes }) => {
           // The same path `bundle approve` and the operator's deployment take: build at approval from the recorded settings, pin it, then the customer-owned deployer installs those bytes.
           const bucket = (await cloudFormationStackReader(new CloudFormationClient(aws)).describe(settings.stacks.access ?? `agentx-${settings.env}-access`))?.outputs.ApprovedBundlesBucketName;
@@ -161,7 +167,7 @@ export function registerUpgradeCommand(program: Command, context: UpgradeCommand
           const caller = await stsCallerIdentity(new STSClient(aws)).get();
           const record = await enterpriseApproval(context, {
             bundle, install: settings, store, aws, caller: caller.arn, parameters: {}, rollback: false, yes, approvalStore: context.approvalStore?.(bucket, settings.region) ?? s3ApprovalStore(new S3Client({ region: settings.region }), bucket), confirmFlag: "--approve-build",
-            beforeApproval: async () => { if (bundle.manifest.images.length > 0) await loadBundleImages({ bundle, env: settings.env, account: settings.account, region: settings.region, ecr: new ECRClient({ region: settings.region }), runner }); },
+            beforeApproval: async () => { if (bundle.manifest.images.length > 0) await loadBundleImages({ bundle, env: settings.env, account: settings.account, region: settings.region, ecr: new ECRClient({ region: settings.region }), runner, skipWhenNoRepository: await embedderMaySkip(store, settings.env) }); },
           });
           const result = await startApprovedDeployment({ env: settings.env, bundleId: record.bundleId, invoker: context.deployerInvoker ?? lambdaInvoker(new LambdaClient(aws)), write });
           return { status: result.status, done: result.done ?? [] };
@@ -238,7 +244,7 @@ export function registerUpgradeCommand(program: Command, context: UpgradeCommand
       try {
         const runner = realCommandRunner(context.stderr);
         const loadImages = async (): Promise<void> => {
-          if (bundle.manifest.images.length > 0) await loadBundleImages({ bundle, env: settings.env, account: settings.account, region: settings.region, ecr: new ECRClient({ region: settings.region }), runner });
+          if (bundle.manifest.images.length > 0) await loadBundleImages({ bundle, env: settings.env, account: settings.account, region: settings.region, ecr: new ECRClient({ region: settings.region }), runner, skipWhenNoRepository: await embedderMaySkip(store, settings.env) });
         };
         const caller = await stsCallerIdentity(new STSClient(aws)).get();
         let parameters: unknown = {};

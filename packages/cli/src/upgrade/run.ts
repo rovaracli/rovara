@@ -30,6 +30,12 @@ import { FORCED_OPERATOR_VALUES, forcedOperatorValues, forcedValueLines } from "
 import { cdkDiffRisks, cdkReviewedDeployer, guardData, upgradeConfirm } from "./review.js";
 import { notesText, refusePrereleaseTarget, upgradeDirection, type ReleaseNotes } from "./target.js";
 
+/** The release's embedder image, sent over the deployed value of the control plane's EmbedderImageUri (only where the Team record is built, see prepareDeployment). */
+function withEmbedderImage(forced: ReturnType<typeof forcedOperatorValues>, image: string | undefined): ReturnType<typeof forcedOperatorValues> {
+  if (image === undefined) return forced;
+  return { ...forced, "control-plane": { ...forced["control-plane"], EmbedderImageUri: image } };
+}
+
 export interface UpgradeOptions { env: string; /** With `--bundle` on a cdk install: the build made at approval is approved without asking. `--yes` never does this. */ approveBuild?: boolean; /** N3: a signed release bundle directory; verified (signature, approved id, every hash) before anything is read or changed. */ bundleDir?: string; /** N3: the bundle id (SHA-256 of bundle.json) the customer approved; any other bundle is refused. */ approvedBundleSha256?: string; to?: string; releaseDir?: string; source?: string; yes: boolean; allowReplace: string[]; exportDir?: string; /** --no-reserved-concurrency: the cdk app leaves Lambda reserved concurrency off (cdk engine only). */ reservedConcurrency?: false; images?: { worker?: string; slack?: string; bootStage2Sha256?: string } }
 
 export interface UpgradeDependencies {
@@ -358,7 +364,7 @@ async function runVerifiedUpgrade(options: UpgradeOptions, deps: UpgradeDependen
           onEvent: (event) => deps.write(progressLine(event)),
           ...(settings.engine === "templates" ? { confirm: review.confirm } : {}),
           deployedParameters: async (stackName) => (await deps.stacks.describe(stackName))?.parameters,
-          forcedParameters: forcedOperatorValues(settings.version, target),
+          forcedParameters: withEmbedderImage(forcedOperatorValues(settings.version, target), prepared.embedderImageUri),
           ...(declaredBy === undefined ? {} : { declaredParameters: declaredBy }),
           ...(settings.engine === "cdk" && prepared.ensurePassRole !== undefined ? { ensurePassRole: prepared.ensurePassRole } : {}),
           now: deps.now,

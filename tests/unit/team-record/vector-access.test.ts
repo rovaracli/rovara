@@ -1,4 +1,4 @@
-import { teamRecordVectorIndexName } from "@agentx/contracts";
+import { retiredTeamRecordVectorIndexName, teamRecordVectorIndexName } from "@agentx/contracts";
 import { describe, expect, it } from "vitest";
 import { S3VectorsIndex, type S3VectorsPort } from "../../../packages/broker/src/team-record/s3-vectors-index.js";
 import { WorkspaceVectorPorts, createAssume, createStsAssumePort, openWorkspaceIndex, workspaceVectorSessionPolicy, type SessionPolicyInput } from "../../../packages/broker/src/team-record/vector-access.js";
@@ -7,14 +7,20 @@ const base = { region: "us-west-2", account: "111122223333", bucket: "rovara-rec
 const KMS = "arn:aws:kms:us-west-2:111122223333:key/11111111-2222-3333-4444-555555555555";
 
 describe("session policy per workspace", () => {
-  it("reaches the one index of one workspace, with no wildcard on the index and no delete-index or bucket right", () => {
+  it("reaches the one index of one workspace, with no wildcard on the index and no bucket right; the only delete-index right is for that workspace's retired index", () => {
     const policy = workspaceVectorSessionPolicy({ ...base, workspaceId: "ws-a" });
     const text = JSON.stringify(policy);
     expect(text).toContain(`bucket/rovara-record-vectors/index/${teamRecordVectorIndexName("ws-a")}"`);
     expect(text).not.toContain("index/*");
     expect(text).not.toContain(teamRecordVectorIndexName("ws-b"));
-    expect(text).not.toMatch(/DeleteIndex|CreateIndex|DeleteVectorBucket|ListIndexes/);
+    expect(text).not.toContain(retiredTeamRecordVectorIndexName("ws-b"));
+    expect(text).not.toMatch(/CreateIndex|DeleteVectorBucket|ListIndexes/);
+    const deletes = policy.Statement.filter((statement) => JSON.stringify(statement.Action).includes("DeleteIndex"));
+    expect(deletes).toEqual([{ Effect: "Allow", Action: ["s3vectors:DeleteIndex"], Resource: `arn:aws:s3vectors:us-west-2:111122223333:bucket/rovara-record-vectors/index/${retiredTeamRecordVectorIndexName("ws-a")}` }]);
+    expect(retiredTeamRecordVectorIndexName("ws-a")).not.toBe(teamRecordVectorIndexName("ws-a"));
     expect(text.length).toBeLessThan(2048);
+    // even with index creation and a key the policy stays inside the 2,048 characters STS allows
+    expect(JSON.stringify(workspaceVectorSessionPolicy({ ...base, workspaceId: "ws-a", allowCreateIndex: true, kmsKeyArn: KMS })).length).toBeLessThan(2048);
   });
   it("adds index creation only when asked, and the key only when there is one", () => {
     expect(JSON.stringify(workspaceVectorSessionPolicy({ ...base, workspaceId: "ws-a", allowCreateIndex: true }))).toContain("s3vectors:CreateIndex");
@@ -87,6 +93,8 @@ describe("STS adapter (I-8)", () => {
     expect(sent[0]!.RoleSessionName).toMatch(/^team-record-[0-9a-f]{24}$/);
     expect(sent[0]!.Policy).toContain(teamRecordVectorIndexName("ws-a"));
     expect(sent[0]!.Policy).not.toContain("index/*");
+    // the session carries both tags the data role's rights name: the current index and the retired one
+    expect((sent[0] as { Tags?: Array<{ Key: string; Value: string }> }).Tags).toEqual([{ Key: "rovara-index", Value: teamRecordVectorIndexName("ws-a") }, { Key: "rovara-retired-index", Value: retiredTeamRecordVectorIndexName("ws-a") }]);
     expect(used).toEqual(["AKIA-test"]);
     await openWorkspaceIndex({ ports, workspaceId: "ws-a", bucket: "rovara-record-vectors", dimension: 4 });
     expect(sent).toHaveLength(1);
@@ -106,5 +114,37 @@ describe("STS adapter (I-8)", () => {
     await expect(failing.assumeRole({ roleArn: "r", sessionName: "s", policy: "{}", durationSeconds: 3600 })).rejects.toThrow("team-record: could not assume the vector data role");
     const empty = createStsAssumePort({ send: async () => ({}) } as never);
     await expect(empty.assumeRole({ roleArn: "r", sessionName: "s", policy: "{}", durationSeconds: 3600 })).rejects.toThrow(/no credentials/);
+  });
+});
+
+describe("retiring the index of the embedding generation before the current one (review H1)", () => {
+  type Call = { op: string; indexName: string };
+  const portWith = (state: { current: boolean; retired: boolean }, calls: Call[], fail?: string): S3VectorsPort => ({
+    async getIndex({ indexName }: { indexName: string }) { calls.push({ op: "get", indexName }); if (!state.current) throw Object.assign(new Error("x"), { code: "NotFoundException" }); },
+    async deleteIndex({ indexName }: { indexName: string }) {
+      calls.push({ op: "delete", indexName });
+      if (fail !== undefined) throw Object.assign(new Error("x"), { code: fail });
+      if (!state.retired) throw Object.assign(new Error("x"), { code: "NotFoundException" });
+      state.retired = false;
+    },
+  } as unknown as S3VectorsPort);
+  const indexOver = (port: S3VectorsPort) => new S3VectorsIndex({ port, bucket: "rovara-record-vectors", workspaceId: "ws-a", dimension: 4, retry: { attempts: 1, baseDelayMs: 0, sleep: async () => undefined } });
+
+  it("deletes the retired index once the current one exists, and says nothing is left the next time", async () => {
+    const calls: Call[] = [];
+    const state = { current: true, retired: true };
+    const index = indexOver(portWith(state, calls));
+    expect(await index.retireOldIndex()).toBe("deleted");
+    expect(await index.retireOldIndex()).toBe("absent");
+    expect(calls.filter((call) => call.op === "delete").map((call) => call.indexName)).toEqual([retiredTeamRecordVectorIndexName("ws-a"), retiredTeamRecordVectorIndexName("ws-a")]);
+    expect(calls.filter((call) => call.op === "get").every((call) => call.indexName === teamRecordVectorIndexName("ws-a"))).toBe(true);
+  });
+  it("deletes nothing while the current index does not exist yet", async () => {
+    const calls: Call[] = [];
+    expect(await indexOver(portWith({ current: false, retired: true }, calls)).retireOldIndex()).toBe("current_missing");
+    expect(calls.some((call) => call.op === "delete")).toBe(false);
+  });
+  it("lets any other failure through, so the caller keeps treating the old index as present", async () => {
+    await expect(indexOver(portWith({ current: true, retired: true }, [], "AccessDeniedException")).retireOldIndex()).rejects.toMatchObject({ code: "AccessDeniedException" });
   });
 });

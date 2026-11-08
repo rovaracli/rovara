@@ -4,7 +4,7 @@ import { EmbedderError, createEmbedderClient, type EmbedderClient } from "../../
 import { EmbedUnavailableError, createEmbedder } from "../../../packages/broker/src/team-record/embed.js";
 
 const unit = (dimension: number): number[] => Array.from({ length: dimension }, () => 1 / Math.sqrt(dimension));
-const reply = (spec: typeof TEAM_RECORD_EMBEDDER, count: number, over: Record<string, unknown> = {}) => ({ ok: true, model: spec.model, modelId: spec.modelId, revision: spec.revision, spec: spec.spec, dimension: spec.dimension, vectors: Array.from({ length: count }, () => unit(spec.dimension)), ...over });
+const reply = (spec: typeof TEAM_RECORD_EMBEDDER, count: number, over: Record<string, unknown> = {}) => ({ ok: true, model: spec.model, modelId: spec.modelId, revision: spec.revision, spec: spec.spec, dimension: spec.dimension, vectors: Array.from({ length: count }, () => unit(spec.dimension)), truncated: Array.from({ length: count }, () => false), ...over });
 const clientOver = (invoke: Parameters<typeof createEmbedderClient>[0]["invoke"]): EmbedderClient => createEmbedderClient({ spec: TEAM_RECORD_EMBEDDER, invoke, sleep: async () => undefined, baseDelayMs: 1 });
 
 describe("the Team record's embedding model", () => {
@@ -47,6 +47,13 @@ describe("the Team record's embedder", () => {
     await expect(embedder.embed("   ")).rejects.toThrow(/nothing to embed/);
     expect(calls).toBe(0);
   });
+  it("says whether the text was cut: by the model's token budget, or by this embedder's own character limit", async () => {
+    const tokens = createEmbedder({ client: clientOver(async () => reply(TEAM_RECORD_EMBEDDER, 1, { truncated: [true] })) });
+    expect(await tokens.embedWithInfo("a long record")).toMatchObject({ truncated: true });
+    const chars = createEmbedder({ maxChars: 50, client: clientOver(async () => reply(TEAM_RECORD_EMBEDDER, 1)) });
+    expect((await chars.embedWithInfo("x".repeat(500))).truncated).toBe(true);
+    expect((await chars.embedWithInfo("x".repeat(50))).truncated).toBe(false);
+  });
   it("turns every failure into the one fixed outcome, with the embedder's code as the only detail and no request text", async () => {
     const failures: Array<[string, () => Promise<unknown>]> = [
       ["UNREACHABLE", async () => { throw Object.assign(new Error("secret detail"), { code: "AccessDeniedException" }); }],
@@ -64,7 +71,7 @@ describe("the Team record's embedder", () => {
     }
   });
   it("lets a different error through as the same fixed outcome without a reason", async () => {
-    const stray: EmbedderClient = { ...clientOver(async () => ({})), embed: async () => { throw new TypeError("secret"); } };
+    const stray: EmbedderClient = { ...clientOver(async () => ({})), embedDetailed: async () => { throw new TypeError("secret"); } };
     await expect(createEmbedder({ client: stray }).embed("a")).rejects.toMatchObject({ name: "EmbedUnavailableError", reason: undefined });
     expect(EmbedderError).toBeDefined();
   });

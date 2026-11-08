@@ -9,6 +9,8 @@ import { NON_FILTERABLE_VECTOR_KEYS, VECTOR_DIMENSION_DEFAULT, teamRecordVectorI
 
 /** The IAM policy variable that holds the session's index name. The broker tags every AssumeRole with `rovara-index` = the workspace's index name (team-record/vector-access.ts). */
 export const SESSION_INDEX_VARIABLE = "${aws:PrincipalTag/rovara-index}";
+/** The session's second tag: the name of the workspace's index of the embedding generation before the current one, which the only extra right (DeleteIndex) names. */
+export const SESSION_RETIRED_INDEX_VARIABLE = "${aws:PrincipalTag/rovara-retired-index}";
 const BUCKET_NAME = /^[a-z0-9][a-z0-9-]{1,61}[a-z0-9]$/;
 
 export interface TeamRecordVectorsProps {
@@ -95,10 +97,14 @@ export class TeamRecordVectors extends Construct {
       // Fix round 1, S2: the role's own rights name the index through the session TAG, `index/${aws:PrincipalTag/rovara-index}`. A session that was not tagged has no value for the variable and matches
       // no resource (IAM: "a resource that includes a policy variable with no value will not match any resource"), so an AssumeRole made without the per-workspace policy and tag reaches nothing. The
       // session policy stays too: the two layers are independent. The trust policy lets the broker role tag a session only with an index name (`ws-...`).
-      for (const statement of [...this.dataStatements(true), ...(props.enterpriseWorkspaceId === undefined ? this.creationStatements(true) : [])]) this.dataRole.addToPolicy(statement);
+      for (const statement of [...this.dataStatements(true), ...this.retireStatements(), ...(props.enterpriseWorkspaceId === undefined ? this.creationStatements(true) : [])]) this.dataRole.addToPolicy(statement);
       this.dataRole.assumeRolePolicy?.addStatements(new iam.PolicyStatement({
         sid: "TagSessionWithTheIndex", actions: ["sts:TagSession"], principals: [props.brokerPrincipal],
-        conditions: { StringLike: { "aws:RequestTag/rovara-index": "ws-*" }, "ForAllValues:StringEquals": { "aws:TagKeys": ["rovara-index"] } },
+        conditions: {
+          StringLike: { "aws:RequestTag/rovara-index": "ws-*" },
+          StringLikeIfExists: { "aws:RequestTag/rovara-retired-index": "ws-*" },
+          "ForAllValues:StringEquals": { "aws:TagKeys": ["rovara-index", "rovara-retired-index"] },
+        },
       }));
       if (props.kmsKeyArn !== undefined) {
         this.dataRole.addToPolicy(new iam.PolicyStatement({ sid: "TeamRecordVectorsKms", actions: ["kms:Decrypt", "kms:GenerateDataKey", "kms:DescribeKey"], resources: [props.kmsKeyArn] }));
@@ -128,6 +134,18 @@ export class TeamRecordVectors extends Construct {
       }),
     ];
     return statements;
+  }
+
+  /**
+   * The one extra right of the data role: delete the workspace's index of the embedding generation before the current one, named by the session's second tag (an untagged session has no value for the
+   * variable and matches nothing). Deleting an index deletes every vector in it, so this is also how an erase reaches vectors left in the old index.
+   */
+  private retireStatements(): iam.PolicyStatement[] {
+    return [new iam.PolicyStatement({
+      sid: "TeamRecordVectorsRetireOldIndex",
+      actions: ["s3vectors:DeleteIndex"],
+      resources: this.buckets.map((bucket) => `${bucket.attrVectorBucketArn}/index/${SESSION_RETIRED_INDEX_VARIABLE}`),
+    })];
   }
 
   /** Public cells create one index per workspace at run time. Enterprise creates it in the stack, so it does not get this right. */

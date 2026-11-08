@@ -23,6 +23,7 @@ const RECORD_STORAGE_MODULES: Record<string, string> = {
   "team-record/purge.ts": "reads the rows and links a purge removes",
   "team-record/hot-source.ts": "the hot archive source and deleted-at-source marks",
   "team-record/text-expiry.ts": "the raw-text expiry walk",
+  "team-record/reembed.ts": "the re-embed job: reads the text-due index for rows that need a vector",
   "team-record/mode.ts": "the capture mode and its lock",
   "lessons/model-setting.ts": "the company's chosen lessons model (an org-scoped key; a model id and a time, no person (the setter is only in the audit ledger); nothing erasable), read as stored so the setting is written conditionally on exactly that value (lessons-prod-1b)",
   "lessons/pause.ts": "the current lessons-paused reason per project or company (org-scoped keys; a fixed code, a start time and a failure count; nothing erasable) (lessons-prod-1b)",

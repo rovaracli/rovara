@@ -2,7 +2,7 @@
 // both editions; Bedrock embeddings (Amazon Titan, Cohere) are gone. The model, its pinned revision and its spec are `TEAM_RECORD_EMBEDDER` in contracts, and the client
 // refuses any answer that is not that spec, so a changed model can never put vectors beside the ones already stored (the index name carries the spec too).
 import { TEAM_RECORD_EMBEDDER, VECTOR_DIMENSION_DEFAULT } from "@agentx/contracts";
-import { EmbedderError, type EmbedderClient, type EmbedderErrorCode } from "../embedder/client.js";
+import { EmbedderError, trimEmbedderText, type EmbedderClient, type EmbedderErrorCode } from "../embedder/client.js";
 import { assertVector } from "./vectors.js";
 
 export interface EmbedConfig {
@@ -24,6 +24,12 @@ export class EmbedUnavailableError extends Error {
   }
 }
 
+export interface EmbeddedVector {
+  vector: number[];
+  /** True when the text was longer than the model's token budget (or the character limit) and the vector stands for the part that fit. */
+  truncated: boolean;
+}
+
 export interface Embedder {
   readonly dimension: number;
   /** The Hugging Face model the vectors come from. */
@@ -31,6 +37,8 @@ export interface Embedder {
   readonly revision: string;
   readonly spec: string;
   embed(text: string, purpose?: EmbedPurpose): Promise<number[]>;
+  /** Like `embed`, saying whether the text was cut to fit. */
+  embedWithInfo(text: string, purpose?: EmbedPurpose): Promise<EmbeddedVector>;
 }
 
 export function createEmbedder(config: EmbedConfig): Embedder {
@@ -38,23 +46,28 @@ export function createEmbedder(config: EmbedConfig): Embedder {
   // The record's index is 1,024-d and holds this model's vectors only: a client for another model is a wiring mistake, caught here and not at the first write.
   if (client.spec.spec !== TEAM_RECORD_EMBEDDER.spec || client.dimension !== VECTOR_DIMENSION_DEFAULT) throw new Error("team-record: the embedder client is not the Team record's model");
   const maxChars = config.maxChars ?? 24_000;
+  async function embedWithInfo(text: string, purpose: EmbedPurpose = "document"): Promise<EmbeddedVector> {
+    const trimmed = trimEmbedderText(text);
+    const input = trimmed.slice(0, maxChars);
+    if (input.length === 0) throw new Error("team-record: nothing to embed");
+    try {
+      const { vector, truncated } = await client.embedDetailed(input, purpose);
+      // A wrong-size or non-numeric answer is a contract failure, never stored: the index would reject or mis-rank it.
+      assertVector(vector, client.dimension);
+      return { vector, truncated: truncated || trimmed.length > input.length };
+    } catch (error) {
+      // Every failure (the function, the network, a different model) is one fixed outcome; no text from the error leaves.
+      throw new EmbedUnavailableError(error instanceof EmbedderError ? error.code : undefined);
+    }
+  }
   return {
     dimension: client.dimension,
     modelId: client.spec.modelId,
     revision: client.spec.revision,
     spec: client.spec.spec,
+    embedWithInfo,
     async embed(text, purpose = "document") {
-      const input = text.trim().slice(0, maxChars);
-      if (input.length === 0) throw new Error("team-record: nothing to embed");
-      try {
-        const vector = await client.embed(input, purpose);
-        // A wrong-size or non-numeric answer is a contract failure, never stored: the index would reject or mis-rank it.
-        assertVector(vector, client.dimension);
-        return vector;
-      } catch (error) {
-        // Every failure (the function, the network, a different model) is one fixed outcome; no text from the error leaves.
-        throw new EmbedUnavailableError(error instanceof EmbedderError ? error.code : undefined);
-      }
+      return (await embedWithInfo(text, purpose)).vector;
     },
   };
 }

@@ -25,9 +25,9 @@ export interface EmbedderModelSpec {
 }
 
 /** The Team record's embedder. Replaces Amazon Titan Text Embeddings V2 (Bedrock) in both editions. */
-export const TEAM_RECORD_EMBEDDER: EmbedderModelSpec = { model: "record", modelId: "Qwen/Qwen3-Embedding-0.6B", revision: "97b0c614be4d77ee51c0cef4e5f07c00f9eb65b3", spec: "238ef4a4643a9e7a", dimension: VECTOR_DIMENSION_DEFAULT };
+export const TEAM_RECORD_EMBEDDER: EmbedderModelSpec = { model: "record", modelId: "Qwen/Qwen3-Embedding-0.6B", revision: "97b0c614be4d77ee51c0cef4e5f07c00f9eb65b3", spec: "0b0a5b868995d4ee", dimension: VECTOR_DIMENSION_DEFAULT };
 /** The lessons' embedder (lane lessons-prod; bge-small, 384 dimensions). Its vectors are kept with the lessons and never go into the Team record's index. */
-export const LESSON_EMBEDDER: EmbedderModelSpec = { model: "lesson", modelId: "BAAI/bge-small-en-v1.5", revision: "5c38ec7c405ec4b44b94cc5a9bb96e735b38267a", spec: "e3f9ad3695876ba9", dimension: 384 };
+export const LESSON_EMBEDDER: EmbedderModelSpec = { model: "lesson", modelId: "BAAI/bge-small-en-v1.5", revision: "5c38ec7c405ec4b44b94cc5a9bb96e735b38267a", spec: "9ae98ff9968d4905", dimension: 384 };
 
 const SAFE_WORKSPACE_ID = /^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$/;
 
@@ -40,6 +40,17 @@ export function teamRecordVectorIndexName(workspaceId: string, spec: string = TE
   if (!SAFE_WORKSPACE_ID.test(workspaceId)) throw new Error("team-record: workspace id is not a safe id");
   if (!/^[0-9a-f]{16}$/.test(spec)) throw new Error("team-record: embedding spec is not valid");
   return `ws-${createHash("sha256").update(`team-record-vectors\u0000${workspaceId}\u0000${spec}`).digest("hex").slice(0, 32)}`;
+}
+
+/**
+ * The index name of the embedding generation BEFORE the self-hosted embedder: `ws-` plus the hash of the workspace alone (no spec), the name every Team record used while it embedded with
+ * Amazon Titan. Its vectors are in another model's space and can never be searched with a Qwen query. It is deleted for every workspace as soon as the current index exists (the broker does it
+ * the first time it opens a workspace's index, team-record/runtime.ts), and a person, project or workspace erase deletes it first: erasure must not leave a person's vectors behind in an
+ * index nobody addresses. When the spec changes again, point this at the then-current spec's name (`teamRecordVectorIndexName(workspaceId, <that spec>)`) and the same retire step applies.
+ */
+export function retiredTeamRecordVectorIndexName(workspaceId: string): string {
+  if (!SAFE_WORKSPACE_ID.test(workspaceId)) throw new Error("team-record: workspace id is not a safe id");
+  return `ws-${createHash("sha256").update(`team-record-vectors\u0000${workspaceId}`).digest("hex").slice(0, 32)}`;
 }
 
 // The Iceberg schema of the Team-record lake (design learning-v2-team-record.md 4.9.1).

@@ -12,8 +12,8 @@
 //   - S3 Vectors bucket and per-workspace indexes: storage $0.06 per GB-month; an empty bucket costs nothing.
 //   - S3 Tables bucket and four tables (lake): storage $0.0265 per GB-month plus per-object monitoring and compaction; empty is about zero.
 //   - Athena workgroup: $5 per TB scanned, only when a query runs; the workgroup itself is free.
-//   - EventBridge Scheduler schedules (three): free at this volume; each invoke is one Lambda run of the broker (a few milliseconds when nothing is due).
-// The embedder Lambda costs nothing idle (arm64, on demand); a call is about 0.2 to 1 s of 6 GB. The distiller's model calls are NOT created here: they are billed on the org's spend when a feature uses them.
+//   - EventBridge Scheduler schedules (hourly, nightly, re-embed): free at this volume; each invoke is one Lambda run of the broker (a few milliseconds when nothing is due).
+// The embedder Lambda costs nothing idle (arm64, on demand, 10 GB; its call time is not measured on a real Lambda yet); its own small network (a VPC with no gateway, no NAT and no endpoint) costs nothing. The re-embed schedule (every 15 minutes) is one broker invoke that reads one index page per workspace when nothing is due. The distiller's model calls are NOT created here: they are billed on the org's spend when a feature uses them.
 import { CfnParameter, Duration, Token, aws_cloudwatch as cloudwatch, aws_lambda_event_sources as eventSources, aws_scheduler as scheduler, aws_sqs as sqs, type Stack, aws_iam as iam } from "aws-cdk-lib";
 import type { aws_dynamodb as dynamodb, aws_s3 as s3 } from "aws-cdk-lib";
 import type { aws_lambda as lambda } from "aws-cdk-lib";
@@ -82,6 +82,8 @@ export const TEAM_RECORD_JOBS = [
   { id: "Hourly", job: "hourly", expression: "rate(1 hour)" },
   // 03:17 UTC: the archiver, the raw-text expiry and the nightly work. Off the hour on purpose.
   { id: "Nightly", job: "nightly", expression: "cron(17 3 * * ? *)" },
+  // Gives a vector to the rows that lack one (written while the embedder was away, or made with an earlier model). A run with nothing to do reads one index page per workspace.
+  { id: "Reembed", job: "reembed", expression: "rate(15 minutes)" },
 ] as const;
 
 export interface TeamRecordResources {

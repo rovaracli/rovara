@@ -1,13 +1,13 @@
 // The broker's port to the self-hosted embedder: limits, batching, retries, error mapping, and the answer checks that keep a different model's vectors out of the record.
 import { describe, expect, it } from "vitest";
 import { LESSON_EMBEDDER, TEAM_RECORD_EMBEDDER } from "@agentx/contracts";
-import { EMBEDDER_ERROR_CODES, EMBEDDER_LIMITS, EmbedderError, checkEmbedderReply, createEmbedderClient, embedderBatches, type EmbedderInvoke, type EmbedderRequest } from "../../../packages/broker/src/embedder/client.js";
-import { lessonEmbedderFrom, lessonEmbedderOver, recordEmbedderClientFrom } from "../../../packages/broker/src/embedder/wiring.js";
+import { EMBEDDER_BLANK_CODE_POINTS, EMBEDDER_ERROR_CODES, EMBEDDER_LIMITS, EmbedderError, checkEmbedderReply, createEmbedderClient, embedderBatches, trimEmbedderText, type EmbedderInvoke, type EmbedderRequest } from "../../../packages/broker/src/embedder/client.js";
+import { EMBEDDER_INGEST_WAIT_MS, EMBEDDER_JOB_WAIT_MS, EMBEDDER_SEARCH_WAIT_MS, lessonEmbedderFrom, lessonEmbedderOver, recordEmbedderClientFrom, recordJobEmbedderClientFrom, recordSearchEmbedderClientFrom } from "../../../packages/broker/src/embedder/wiring.js";
 import { lambdaEmbedderInvoke } from "../../../packages/broker/src/team-record/aws-adapters.js";
 
 const unit = (dimension: number): number[] => Array.from({ length: dimension }, () => 1 / Math.sqrt(dimension));
 const replyFor = (spec = TEAM_RECORD_EMBEDDER, count = 1, over: Record<string, unknown> = {}): unknown => ({
-  ok: true, model: spec.model, modelId: spec.modelId, revision: spec.revision, spec: spec.spec, dimension: spec.dimension, vectors: Array.from({ length: count }, () => unit(spec.dimension)), ...over,
+  ok: true, model: spec.model, modelId: spec.modelId, revision: spec.revision, spec: spec.spec, dimension: spec.dimension, vectors: Array.from({ length: count }, () => unit(spec.dimension)), truncated: Array.from({ length: count }, () => false), ...over,
 });
 const awsError = (code: string) => Object.assign(new Error("secret request text"), { code });
 const codeOf = async (run: () => Promise<unknown>): Promise<string> => { try { await run(); return "no error"; } catch (error) { return error instanceof EmbedderError ? error.code : `other: ${String(error)}`; } };
@@ -36,6 +36,29 @@ describe("the embedder client", () => {
     expect(await codeOf(() => client.embed("a", "search" as never))).toBe("UNKNOWN_KIND");
     expect(await codeOf(() => client.embedMany([3 as never], "document"))).toBe("BAD_REQUEST");
     expect(calls).toBe(0);
+  });
+
+  it("says when a text was cut: the function's token flag, and this port's own character cut", async () => {
+    const flags = [true, false];
+    const client = createEmbedderClient({ ...fast, spec: TEAM_RECORD_EMBEDDER, invoke: async (request) => replyFor(TEAM_RECORD_EMBEDDER, request.texts.length, { truncated: flags.slice(0, request.texts.length) }) });
+    expect((await client.embedManyDetailed(["long text", "short"], "document")).map((entry) => entry.truncated)).toEqual([true, false]);
+    const plain = createEmbedderClient({ ...fast, spec: TEAM_RECORD_EMBEDDER, invoke: async (request) => replyFor(TEAM_RECORD_EMBEDDER, request.texts.length) });
+    expect((await plain.embedDetailed("x".repeat(EMBEDDER_LIMITS.maxTextChars + 1), "document")).truncated).toBe(true);
+    expect((await plain.embedDetailed("x".repeat(EMBEDDER_LIMITS.maxTextChars), "document")).truncated).toBe(false);
+    // The vector-only forms still work and return the vectors.
+    expect(await plain.embedMany(["a", "b"], "document")).toHaveLength(2);
+  });
+
+  it("treats exactly the characters the function treats as blank (JavaScript's trim() and Python's strip() disagree on some)", async () => {
+    const calls: string[][] = [];
+    const client = createEmbedderClient({ ...fast, spec: TEAM_RECORD_EMBEDDER, invoke: async (request) => { calls.push(request.texts); return replyFor(TEAM_RECORD_EMBEDDER, request.texts.length); } });
+    // U+001C to U+001F and U+0085 are blank for Python only; U+FEFF for JavaScript only. A text made of them is refused here, before any call, as the function would refuse it.
+    for (const blank of ["\u001c\u001f", "\u0085", "\ufeff", " \u00a0\u3000\n"]) expect(await codeOf(() => client.embed(blank, "document")), JSON.stringify(blank)).toBe("EMPTY_TEXT");
+    expect(calls).toEqual([]);
+    expect(trimEmbedderText("\u001c a b \ufeff\u0085")).toBe("a b");
+    await client.embed("\u001ctext\u0085", "document");
+    expect(calls).toEqual([["text"]]);
+    for (const code of EMBEDDER_BLANK_CODE_POINTS) expect(trimEmbedderText(`x${String.fromCodePoint(code)}`)).toBe("x");
   });
 
   it("splits many texts into requests inside the count and size limits, in order", async () => {
@@ -79,6 +102,17 @@ describe("the embedder client", () => {
     }
   });
 
+  it("tries once more after a timeout when asked to (the search path), and only once", async () => {
+    let calls = 0;
+    const warm = createEmbedderClient({ ...fast, spec: TEAM_RECORD_EMBEDDER, retryOnTimeout: true, invoke: async () => { calls += 1; if (calls === 1) throw awsError("AbortError"); return replyFor(); } });
+    expect(await warm.embed("a", "query")).toHaveLength(1024);
+    expect(calls).toBe(2);
+    calls = 0;
+    const stuck = createEmbedderClient({ ...fast, spec: TEAM_RECORD_EMBEDDER, retryOnTimeout: true, attempts: 2, invoke: async () => { calls += 1; throw awsError("AbortError"); } });
+    expect(await codeOf(() => stuck.embed("a", "query"))).toBe("UNREACHABLE");
+    expect(calls).toBe(2);
+  });
+
   it("maps the function's own refusal codes, and anything it does not know is a bad response", async () => {
     for (const code of ["MODEL_UNAVAILABLE", "INTERNAL", "TOO_MANY_TEXTS", "TEXT_TOO_LONG"]) {
       const client = createEmbedderClient({ ...fast, spec: TEAM_RECORD_EMBEDDER, invoke: async () => ({ ok: false, code }) });
@@ -113,6 +147,9 @@ describe("the embedder client", () => {
       ["string", replyFor(spec, 2, { vectors: [unit(1024), [...unit(1023), "0.1"]] })],
       ["vectors not a list", replyFor(spec, 2, { vectors: "x" })],
       ["wrong model", replyFor(spec, 2, { model: "lesson" })],
+      ["no truncation flags", replyFor(spec, 2, { truncated: undefined })],
+      ["too few flags", replyFor(spec, 2, { truncated: [false] })],
+      ["a flag that is not a boolean", replyFor(spec, 2, { truncated: [false, "no"] })],
     ];
     for (const [label, reply] of bad) expect(() => checkEmbedderReply(reply, spec, 2), label).toThrow(EmbedderError);
   });
@@ -136,6 +173,16 @@ describe("the lessons' embedder (for lane lessons-prod)", () => {
     expect(recordEmbedderClientFrom({}, { region: "us-west-2" })).toBeUndefined();
     expect(recordEmbedderClientFrom({ EMBEDDER_FUNCTION_NAME: "agentx-staging-embedder" }, { region: "us-west-2" })?.spec).toBe(TEAM_RECORD_EMBEDDER);
     expect(lessonEmbedderFrom({ EMBEDDER_FUNCTION_NAME: "agentx-staging-embedder" }, { region: "us-west-2" })?.dimension).toBe(384);
+  });
+
+  it("has three clients of the one function that differ in how long they wait: search short with a retry, ingest unchanged, the re-embed job longest", () => {
+    expect([EMBEDDER_SEARCH_WAIT_MS, EMBEDDER_INGEST_WAIT_MS, EMBEDDER_JOB_WAIT_MS]).toEqual([9_000, 15_000, 20_000]);
+    // two search waits stay inside the broker's 30 s with room for the vector query and the keyword fallback
+    expect(EMBEDDER_SEARCH_WAIT_MS * 2).toBeLessThan(20_000);
+    const env = { EMBEDDER_FUNCTION_NAME: "agentx-staging-embedder" };
+    for (const client of [recordSearchEmbedderClientFrom(env, { region: "us-west-2" }), recordEmbedderClientFrom(env, { region: "us-west-2" }), recordJobEmbedderClientFrom(env, { region: "us-west-2" })]) expect(client?.spec).toBe(TEAM_RECORD_EMBEDDER);
+    expect(recordSearchEmbedderClientFrom({}, { region: "us-west-2" })).toBeUndefined();
+    expect(recordJobEmbedderClientFrom({}, { region: "us-west-2" })).toBeUndefined();
   });
 });
 
