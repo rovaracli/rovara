@@ -269,10 +269,20 @@ describe("the Lambda invoke port", () => {
 
   it("a call's own limit shortens the wait and never lengthens it (review R3)", async () => {
     const hang: Send = (_command, options) => new Promise((_resolve, reject) => { options?.abortSignal?.addEventListener("abort", () => reject(Object.assign(new Error("aborted"), { name: "AbortError" }))); });
-    // configured wait 60 s, the run has 30 ms left: gives up at once. It is the CALLER's deadline that ended the call after less than 200 ms in flight, so the code is `DeadlineAbort` (no pause), not `AbortError` (round 3, R2-4).
+    // configured wait 60 s, the run has 30 ms left: NOTHING is sent (round 4, R3-2: under 200 ms left a call could only start a cold container for an answer nobody waits for). It says nothing about the function, so the code is
+    // `DeadlineElapsed` (no pause), not `AbortError`.
+    let sends = 0;
+    const counting: Send = (command, options) => { sends += 1; return hang(command, options); };
     const startedShort = Date.now();
-    await expect(portWith(hang, 60_000)(request, { timeoutMs: 30 })).rejects.toMatchObject({ code: "DeadlineAbort" });
+    await expect(portWith(counting, 60_000)(request, { timeoutMs: 30 })).rejects.toMatchObject({ code: "DeadlineElapsed" });
+    await expect(portWith(counting, 60_000)(request, { timeoutMs: 199 })).rejects.toMatchObject({ code: "DeadlineElapsed" });
+    expect(sends).toBe(0);
     expect(Date.now() - startedShort).toBeLessThan(5_000);
+    // configured wait 60 s, the run has 250 ms left: the call is sent (positive control) and the caller's deadline shortens its wait to about 250 ms; it was in flight for a real wait, so it is an `AbortError`.
+    const startedMid = Date.now();
+    await expect(portWith(counting, 60_000)(request, { timeoutMs: 250 })).rejects.toMatchObject({ code: "AbortError" });
+    expect(sends).toBe(1);
+    expect(Date.now() - startedMid).toBeLessThan(5_000);
     // configured wait 30 ms, the run has 60 s left: still gives up at the configured wait
     const startedLong = Date.now();
     await expect(portWith(hang, 30)(request, { timeoutMs: 60_000 })).rejects.toMatchObject({ code: "AbortError" });
