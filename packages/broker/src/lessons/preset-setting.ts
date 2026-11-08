@@ -1,6 +1,6 @@
 // Learning v2: the learning preset (Standard / Regulated, DECISIONS 24) as a company or project setting.
 //   Standard (the default, in both editions): a low-risk lesson from a project member's own correction goes live on trial. Regulated: no trial, every lesson needs a person first.
-// Stricter-only, like the mode lock and the tier-0 approval setting (`tier0-setting.ts`, whose rules this follows):
+// Stricter-only, like the mode lock and the tier-0 approval setting (`sole-owner-switch.ts`, whose rules this follows):
 //  - Regulated (stricter) applies at once for an eligible maintainer or admin (a company's: an eligible company admin), audited, never blocked by an audit outage.
 //  - Standard (a loosening) never applies as a direct write. It opens a proposal that a DIFFERENT eligible person approves; the one exception is the shared sole-owner exception
 //    (`org/second-person-approval.ts`, owner decision 2026-11-01 "One-admin companies"): the proposer is the ONLY eligible person and nobody eligible left or was removed in the last 24 hours, and the
@@ -12,7 +12,7 @@ import { randomUUID } from "node:crypto";
 import { trySecondPersonTimed } from "./approve.js";
 import { DEFAULT_LEARNING_PRESET, LearningPresetSchema, emitAudit, requireAudit, type LearningPreset } from "./policy.js";
 import type { LessonAuditSink } from "./ports.js";
-import type { Tier0Authority, Tier0Failure, Tier0Fence, Tier0Group } from "./tier0-setting.js";
+import type { Tier0Authority, Tier0Failure, Tier0Fence, Tier0Group } from "./sole-owner-switch.js";
 import { idIn, sameId } from "./types.js";
 
 export type PresetScope = { kind: "project"; workspaceId: string; project: string } | { kind: "company"; workspaceId: string };

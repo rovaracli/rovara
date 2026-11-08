@@ -14,7 +14,7 @@ import type { Embedder, LearningSpend, LessonVectors, PipelineModel } from "../.
 import { lessonAuditSink } from "../../lessons/audit-sink.js";
 import { lessonDeletionPort } from "../../lessons/deletion.js";
 import { DynamoLessonStore } from "../../lessons/dynamo-store.js";
-import { lessonsResumeJob, lessonsRevertJob, type LessonsJobDeps } from "../../lessons/jobs.js";
+import { lessonsNightlyJob, lessonsResumeJob, type LessonsJobDeps } from "../../lessons/jobs.js";
 import type { TaskLearningDeps } from "../../lessons/task-end.js";
 import { tableOutcomeRows } from "../../lessons/task-outcome-rows.js";
 import { tableCapturedRows } from "../../lessons/captured-rows.js";
@@ -24,6 +24,8 @@ import { liveRememberedNoteIds } from "../../learning/capture-comment.js";
 import { loadWorkflowDocument, readObjectText } from "../../developer/plan-artifacts.js";
 import type { DeveloperTaskRecord } from "../../developer/task-records.js";
 import { PLAN_FACTS_SUMMARY_MAX, planLoadFacts } from "../../lessons/plan-facts.js";
+import { resolveTaskVisibility } from "../../lessons/task-visibility.js";
+import { resolveTaskProjectWide } from "../../lessons/task-project-wide.js";
 import { customerLearningModel } from "./learning-model.js";
 import { readLessonsModel } from "../../lessons/model-setting.js";
 import { dynamoPauseStore, spendLook } from "../../lessons/pause.js";
@@ -172,6 +174,11 @@ export function learningDepsFor(dependencies: LessonsHostDependencies, runtime: 
   const source = lessonSubjectSource({
     ...state, repositoriesOf, standing, isErased,
     visibility: (orgId, taskId) => teamRecord.taskVisibility(orgId, taskId),
+    // Lessons connect: the strict reader (any unreadable part throws) decides `sharedTask`, the mark repository publishing needs.
+    strictVisibility: (orgId, taskId) => resolveTaskVisibility({ ...state, now: Date.now }, orgId, taskId, { strict: true }),
+    // Owner decision 32: an ordinary task nobody shared counts as project-wide when no People entry denies anyone (the Team record's own resolver above is unchanged).
+    projectWide: (orgId, taskId) => resolveTaskProjectWide({ ...state, now: Date.now }, orgId, taskId),
+    log,
     readObject: (key, maxBytes) => readObjectText(dependencies.s3, dependencies.artifactBucketName, key, maxBytes),
     now: Date.now,
     // The corrections people already make, from the Team record: "remember this" notes (the notes of the task's comments) and reviewers' comments on its pull requests (listed by the code host through
@@ -198,6 +205,8 @@ export function learningDepsFor(dependencies: LessonsHostDependencies, runtime: 
     reflect: { model: routes.judgeModel, spend: routes.spend, ...(routes.pause === undefined ? {} : { pause: routes.pause }), audit: routes.audit, settings: runtime.settings, edition: teamRecord.edition, now: Date.now },
     process: routes,
     rovara: teamRecord.emitter,
+    // Lessons connect (fix 1, H1): the end of a task counts its outcome for the lessons it loaded, with the runtime's judge (today the refusing one: no model call).
+    counters: runtime.counters,
     log,
     humanEdit: { standing, isErased },
   };
@@ -293,10 +302,10 @@ export function installLessonsJobs(dependencies: LessonsHostDependencies, runtim
   teamRecord.jobs.extend("hourly", (orgId, projects, budgetMs) => lessonsResumeJob({ resume: (org, project) => deletion.resumeAll(org, project), now: Date.now, log }, orgId, projects, budgetMs));
   if (runtime === undefined) return;
   const jobs: LessonsJobDeps = {
-    table: teamRecord.table, settings: runtime.settings, queue: dependencies.lessonsReflectQueue, resume: (orgId, project) => deletion.resumeAll(orgId, project),
+    table: teamRecord.table, settings: runtime.settings, queue: dependencies.lessonsReflectQueue, maintain: runtime.counters, counters: runtime.counters, resume: (orgId, project) => deletion.resumeAll(orgId, project),
     now: Date.now, newRequestId: () => `nightly-${randomUUID()}`, log,
   };
-  teamRecord.jobs.extend("nightly", (orgId, projects, budgetMs) => lessonsRevertJob(jobs, orgId, projects, budgetMs));
+  teamRecord.jobs.extend("nightly", (orgId, projects, budgetMs) => lessonsNightlyJob(jobs, orgId, projects, budgetMs));
 }
 
 /**

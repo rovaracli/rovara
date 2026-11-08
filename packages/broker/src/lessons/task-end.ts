@@ -11,6 +11,8 @@ import { randomUUID } from "node:crypto";
 import { registerTaskEndHandler, type TaskEndHandler, type TaskEndOutcome } from "../agents/task-end.js";
 import { modeAllows, resolveLearning, type LearningSettingsReader } from "./policy.js";
 import { currentLearningAttempt } from "./learning-deadline.js";
+import { logRef } from "./log-ref.js";
+import { recordTaskOutcome, type CounterDeps, type TaskCorrection } from "./counters.js";
 import { processDraft, type ProcessDeps } from "./process.js";
 import { reflectSubject, type ReflectDeps } from "./reflect.js";
 import type { ReflectSubject } from "./reflect-input.js";
@@ -45,6 +47,11 @@ export interface TaskLearningDeps {
   process: ProcessDeps;
   /** Writes the human send-backs of tasks to the Team record, naming who sent them back. Without it send-backs are not recorded here (and so never counted). */
   rovara?: Pick<RovaraEmitter, "sendBack">;
+  /**
+   * Lessons connect (fix 1, H1): what counts a finished task's outcome for the lessons it loaded (`recordTaskOutcome`: a helpful mark for a clean merge, taken back by a revert). Its judge is whatever the runtime holds
+   * (today the refusing one: no model call, so any correction in a lesson's scope leaves it unjudged and no harmful mark is made). Absent: nothing is counted.
+   */
+  counters?: CounterDeps;
   log?: (event: string, fields: Record<string, string | number>) => void;
   /** The checks a human-edit read makes on its authors now (the same readers the subject source uses). Absent: human edits are not learned from. */
   humanEdit?: { standing: (orgId: string, developerId: string, project: string) => Promise<"member" | "outsider">; isErased: (orgId: string, developerId: string, project: string) => Promise<boolean> };
@@ -106,6 +113,32 @@ export async function subjectForTask(deps: TaskLearningDeps, input: { workspaceI
   return base === undefined ? undefined : subjectFrom(deps, base, input.workspaceId, input.outcome);
 }
 
+/** The fixed text of a correction whose words the record does not give (an erased sender's send-back, a revert): it is counted, never read. */
+const NO_TEXT = "The task was corrected.";
+
+/**
+ * Lessons connect (fix 1, H1; fix 2, R2): counts the finished task for the lessons it loaded. Runs inside the worker's lease before the reflection, on every attempt (the counters are idempotent per task and
+ * lesson, so a retry or a redelivery never counts twice). Never throws: a fault is one fixed log line and the reflection's result stands. Corrections are the task's human send-backs (counted from the task's own decision list, so an erased sender's still
+ * counts) and, for a revert, the revert; `recordTaskOutcome` leaves any lesson with a correction in its scope unjudged when the judge refuses.
+ */
+async function countOutcome(deps: TaskLearningDeps, base: TaskSubjectBase, subject: ReflectSubject, input: { taskId: string }): Promise<void> {
+  if (deps.counters === undefined || subject.outcome === undefined) return;
+  try {
+    if (currentLearningAttempt()?.signal?.aborted === true) return;
+    const at = deps.reflect.now();
+    const sendBacks = subject.spans.filter((span) => span.kind === "send_back");
+    const total = Math.max(sendBacks.length, base.sendBackRequestIds.length);
+    const corrections: TaskCorrection[] = Array.from({ length: total }, (_, index) => ({ kind: "send_back" as const, paths: [], text: sendBacks[index]?.text ?? NO_TEXT, at }));
+    if (subject.outcome === "reverted") corrections.push({ kind: "revert", paths: [], text: NO_TEXT, at });
+    await recordTaskOutcome(deps.counters, {
+      workspaceId: subject.workspaceId, project: subject.project, taskId: input.taskId, outcome: subject.outcome, sendBacks: total,
+      ...(subject.outcome === "merged" ? { mergedAt: at } : {}), corrections, ...(subject.evalRun === true ? { evalRun: true } : {}),
+    });
+  } catch {
+    deps.log?.("learning.outcome_failed", { task: logRef(subject.workspaceId, input.taskId) });
+  }
+}
+
 export type LearnStatus = "off" | "no_facts" | "not_reflected" | "reflected";
 /**
  * H1: what a reflection came to, typed. `retry` is true only for a fault that is known to have spent nothing at the moment it happened and may pass: a read of the task, the project's settings or the record failed, the
@@ -136,6 +169,9 @@ export async function learnFromEndedTaskTyped(deps: TaskLearningDeps, input: { w
     if (!modeAllows(learning.mode, "reflect")) return final("off");
     const subject = await subjectFrom(deps, base, input.workspaceId, input.outcome);
     if (subject === undefined) return final("no_facts");
+    // The outcome is counted BEFORE the reflection: counting needs no model and is idempotent (a once-key per task and lesson, a queued mark that is only replaced or removed), so it happens on every attempt, whatever
+    // the reflection comes to (a refusal, a model that failed, an attempt that will be retried, a deadline that cut it). A revert's re-reflection takes the merge's queued helpful mark back here, even if it never reflects.
+    await countOutcome(deps, base, subject, input);
     const result = await reflectSubject(deps.reflect, subject);
     if (result.status !== "ok") {
       // Lane 1b: "learning_paused" is a refusal (no provider, every model forbidden, a price or budget that cannot fit, the month's limit): the reason is already recorded as the project's pause, and trying again changes
@@ -149,12 +185,12 @@ export async function learnFromEndedTaskTyped(deps: TaskLearningDeps, input: { w
     const signal = currentLearningAttempt()?.signal;
     for (const draft of result.drafts) {
       // M4: at the deadline no new draft is started (the store's writes are refused too, `deadline-guard.ts`). The model has been paid for; what is cut is lost, not repeated.
-      if (signal?.aborted === true) { deps.log?.("learning.drafts_cut_at_deadline", { taskId: input.taskId }); break; }
-      try { await processDraft(deps.process, key, draft); } catch { deps.log?.("learning.draft_failed", { taskId: input.taskId }); }
+      if (signal?.aborted === true) { deps.log?.("learning.drafts_cut_at_deadline", { task: logRef(input.workspaceId, input.taskId) }); break; }
+      try { await processDraft(deps.process, key, draft); } catch { deps.log?.("learning.draft_failed", { task: logRef(input.workspaceId, input.taskId) }); }
     }
     return final("reflected");
   } catch {
-    deps.log?.("learning.task_end_failed", { taskId: input.taskId });
+    deps.log?.("learning.task_end_failed", { task: logRef(input.workspaceId, input.taskId) });
     // Outside a worker nothing is retried. Inside one, a fault here is a read that failed, before any model key was minted by this call (or one the model path marked itself).
     return { status: "not_reflected", retry: currentLearningAttempt() !== undefined && currentLearningAttempt()?.fault !== "final" };
   }
@@ -186,7 +222,7 @@ export function learningTaskEndHandler(get: () => TaskEndEnqueue | undefined): T
       await target.queue.send({ orgId: event.orgId, taskId: event.taskId, outcome, requestId: (target.newRequestId ?? randomUUID)() });
     } catch {
       // One fixed line (never the error's text): the end goes on.
-      (target.log ?? ((name, fields) => console.log(JSON.stringify({ component: "lessons", event: name, ...fields }))))("learning.enqueue_failed", { taskId: event.taskId });
+      (target.log ?? ((name, fields) => console.log(JSON.stringify({ component: "lessons", event: name, ...fields }))))("learning.enqueue_failed", { task: logRef(event.orgId, event.taskId) });
     }
   };
 }

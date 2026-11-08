@@ -7,7 +7,7 @@ import {
 import { globToRegExp } from "./guards.js";
 import { safeScopeLabel } from "./render.js";
 import { approversRequired, modeAllows, resolveLearning, resolveLoadBudget, type ApprovalPolicy, type LearningSettingsReader } from "./policy.js";
-import { isTrialLesson } from "./trial.js";
+import { hasStaleCitation, isTrialLesson } from "./trial.js";
 import type { Embedder, LessonDeps, LessonVectors } from "./ports.js";
 import type { LessonStore, LoadManifest, LoadManifestEntry, ScopeKey } from "./store.js";
 import type { AccessCheckPort } from "../team-record/access-port.js";
@@ -97,7 +97,7 @@ export function approvedForUse(lesson: Lesson, policy: ApprovalPolicy, member: M
 }
 
 /** A code citation the broker's own check found stale keeps its lesson out; the worker checks again at the base commit. */
-export const hasStaleCitation = (lesson: Lesson): boolean => (lesson.citationChecks ?? []).some((check) => check.result === "stale");
+export { hasStaleCitation };
 
 /**
  * A tier-2 lesson loads after two different people approved it. The audited sole-owner exception stands in for the second person EXCEPT for a lesson that asks for a capability change (more tools,

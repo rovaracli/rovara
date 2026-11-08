@@ -241,6 +241,19 @@ export class DynamoLessonStore implements LessonStore {
     return out;
   }
 
+  async listPage(key: ScopeKey, filter: { statuses?: readonly LessonStatus[]; after?: string; limit: number }): Promise<{ lessons: Lesson[]; next?: string }> {
+    const { members } = await this.readSet(key);
+    const ids = Object.keys(members).sort().filter((id) => filter.after === undefined || id > filter.after);
+    const page = ids.slice(0, Math.max(1, filter.limit));
+    const found = await this.batchGet(page.map((id) => this.headKey(key, id)));
+    const lessons: Lesson[] = [];
+    for (const id of page) {
+      const head = this.headOf(this.pick(found, this.headKey(key, id)));
+      if (head !== undefined && (filter.statuses === undefined || filter.statuses.includes(head.lesson.status))) lessons.push(head.lesson);
+    }
+    return { lessons, ...(ids.length > page.length ? { next: page[page.length - 1]! } : {}) };
+  }
+
   async listAllHeads(key: ScopeKey): Promise<Lesson[]> {
     const items = await this.queryPrefix(key, "LESSON#", { entityType: "LESSON" });
     return items.map((item) => {
@@ -685,6 +698,17 @@ export class DynamoLessonStore implements LessonStore {
       if (failedIndexes(error) !== undefined || isTransactionConflict(error)) throw unavailable("the once-key write was interrupted");
       throw error;
     }
+  }
+
+  async seenOnce(key: ScopeKey, name: string): Promise<boolean> { return (await this.getItem(this.k(key, `LESSONSET#ONCE#${sha(name)}`))) !== undefined; }
+
+  async hasPending(key: ScopeKey, lessonId: string): Promise<boolean> {
+    // A yes/no answer: ask for one reference and stop (no paging, no full read).
+    const response = await this.send<{ Items?: Item[] }>(new QueryCommand({
+      TableName: this.table.tableName, KeyConditionExpression: "pk = :pk AND begins_with(sk, :p)", ConsistentRead: true, Limit: 1,
+      ExpressionAttributeValues: { ":pk": this.pk(key), ":p": `${this.headKey(key, lessonId).sk}#PEND#` },
+    }));
+    return (response.Items ?? []).length > 0;
   }
 
   async addPending(entry: PendingOutcome): Promise<void> {

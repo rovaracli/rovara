@@ -1,5 +1,5 @@
 // Setup and test health SH17 (owner decision F4, option D): the company setting "always two people" for "Mark as known failing". OFF by default. With it ON, every mark needs a second, different maintainer or admin, with
-// the same sole-owner exception rule as every other second-person approval. It is the SAME shape as the company's sole-owner switch (lessons/tier0-setting.ts `setSoleOwnerSwitch` / `approveSoleOwnerSwitch`), reused
+// the same sole-owner exception rule as every other second-person approval. It is the SAME shape as the company's sole-owner switch (lessons/sole-owner-switch.ts `setSoleOwnerSwitch` / `approveSoleOwnerSwitch`), reused
 // as it is rather than built again:
 //   - turning it ON is the STRICTER direction: it applies at once, by an eligible admin, audited (an audit outage never blocks the stricter side);
 //   - turning it OFF is a LOOSENING: it opens a proposal that a DIFFERENT eligible admin approves, and the sole-owner exception does not apply to loosening it (the one-admin rule: a company of one that turned it on keeps it on
@@ -10,7 +10,7 @@ import { GetCommand, PutCommand, QueryCommand, TransactWriteCommand, UpdateComma
 import { orgMetaKey, type AuditEventInput } from "@agentx/contracts";
 import { auditEventId } from "@agentx/contracts";
 import { secondPersonTier0Authority } from "../lessons/tier0-authority.js";
-import { approveSoleOwnerSwitch, setSoleOwnerSwitch, type SoleOwnerSwitchChange, type SoleOwnerSwitchDeps, type SoleOwnerSwitchStore, type Tier0Authority, type Tier0Failure, type Tier0Fence } from "../lessons/tier0-setting.js";
+import { approveSoleOwnerSwitch, setSoleOwnerSwitch, type SoleOwnerSwitchChange, type SoleOwnerSwitchDeps, type SoleOwnerSwitchStore, type Tier0Authority, type Tier0Failure, type Tier0Fence } from "../lessons/sole-owner-switch.js";
 import type { LessonAuditEvent, LessonAuditSink } from "../lessons/ports.js";
 import type { TransactItem } from "../audit/outbox.js";
 import type { SecondPersonEvidenceDependencies } from "./second-person-evidence.js";

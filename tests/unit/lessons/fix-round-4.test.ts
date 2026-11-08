@@ -3,7 +3,7 @@
 import { describe, expect, it } from "vitest";
 import { lessonDeletionPort } from "../../../packages/broker/src/lessons/deletion.js";
 import { buildWeeklyDigest } from "../../../packages/broker/src/lessons/digest.js";
-import { isPlainDeclarative, isPlainTitle, touchesRiskyPath } from "../../../packages/broker/src/lessons/guards.js";
+import { touchesRiskyPath } from "../../../packages/broker/src/lessons/guards.js";
 import { processDraft, resumeAndResettle, type ProcessDeps } from "../../../packages/broker/src/lessons/process.js";
 import { reflectSubject } from "../../../packages/broker/src/lessons/reflect.js";
 import type { EvidenceSpan } from "../../../packages/broker/src/lessons/reflect-input.js";
@@ -82,12 +82,7 @@ describe("title, description, the thing slot and body paths", () => {
     }
   });
   it("plain titles, descriptions and bodies still are", () => {
-    const vocab = new Set(["withretry", "with", "retry"]);
-    expect(isPlainTitle("Retries use withRetry", vocab)).toBe(true);
-    expect(isPlainTitle("Retries use withRetry")).toBe(false);
-    expect(isPlainTitle("Before building")).toBe(false);
-    expect(isPlainDeclarative("The retry helper is called withRetry.")).toBe(true);
-    expect(isPlainDeclarative("The first thing to call before every build is at src/prep.ts.")).toBe(false);
+    expect(tierOf({ body: "The first thing to call before every build is at src/prep.ts." }).tier).toBeGreaterThanOrEqual(1);
     expect(tierOf({ title: "Retry helper", description: "The retry helper is called withRetry." }).tier).toBe(0);
   });
 });

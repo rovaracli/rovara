@@ -75,7 +75,6 @@ export const AUTO_APPLY_GUARDS = { brakeMs: 86_400_000, coldStartLessons: 9 } as
 export const MIN_EXPIRY_DAYS = 14;
 export const MAX_EXPIRY_DAYS = 365;
 export const DEFAULT_EXPIRY_DAYS = 90;
-export const PREFERENCE_EXPIRY_DAYS = 180;
 
 /**
  * How much a stage may be told (owner 2026-11-08, from the evidence that long context files cost more and help little): by default at most 5 lessons and 2 KB per stage. A project may ask for more or less within
@@ -143,7 +142,7 @@ function stricterApproval(project: ApprovalPolicy, floor: ApprovalPolicy, hasFlo
 /**
  * THE gate on automatic go-live (review item 6, tidy round 2). While it says no (the default, and the state for the whole pilot) a tier-0 "auto" is never honoured, whatever wrote it
  * (an old row, a hand edit, a bug, a future reader): `resolveLearning`, which every consumer of the settings goes through, reads it as "one". The broker sets the gate once at start-up
- * (`setAutoApplyGate`) with the same function it gives `Tier0Deps.autoApplyEnabled`; it is asked at every resolve, so turning it off takes effect at once.
+ * (`setAutoApplyGate`) with the broker's auto-apply switch; it is asked at every resolve, so turning it off takes effect at once.
  */
 let autoApplyGate: () => boolean = () => false;
 export function setAutoApplyGate(gate: () => boolean): void { autoApplyGate = gate; }

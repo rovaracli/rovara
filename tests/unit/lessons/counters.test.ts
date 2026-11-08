@@ -237,9 +237,10 @@ describe("load report from the worker (design §4.6)", () => {
 });
 
 describe("expiry (decision Q7)", () => {
-  it("default 90 days, preference 180, configurable 14 to 365 (out of range falls back)", () => {
+  it("default 90 days for every type, preferences included (decision 37), configurable 14 to 365 (out of range falls back)", () => {
     expect(expiryWindowMs("fact", undefined)).toBe(90 * DAY);
-    expect(expiryWindowMs("preference", undefined)).toBe(180 * DAY);
+    expect(expiryWindowMs("preference", undefined)).toBe(90 * DAY);
+    for (const type of ["fact", "convention", "preference", "pitfall", "procedure"] as const) expect(expiryWindowMs(type as never, undefined), type).toBe(90 * DAY);
     expect(expiryWindowMs("fact", 30)).toBe(30 * DAY);
     expect(expiryWindowMs("preference", 30)).toBe(30 * DAY);
     expect(expiryWindowMs("fact", 5)).toBe(90 * DAY);

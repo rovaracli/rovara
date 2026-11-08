@@ -9,10 +9,10 @@
 // risky wording families and non-fact/convention/pitfall types never trial (`hasRiskyTrialWording`, `TRIAL_TYPES`), and a trial lesson is live only while every setting in force allows it
 // (`ResolvedLearning.trialAllowed`: Standard, mode On, no company approval floor, no required group, no two-person requirement).
 import { foldForMatching, isMeaningfulAnchor } from "@agentx/contracts";
-import { modeAllows, requireAudit, type LearningPreset, type LearningMode } from "./policy.js";
+import { emitAudit, modeAllows, requireAudit, type LearningPreset, type LearningMode } from "./policy.js";
 import type { LessonDeps } from "./ports.js";
 import { nextVersion, type LessonStore, type ScopeKey } from "./store.js";
-import type { Lesson } from "./types.js";
+import { peopleOf, type Lesson } from "./types.js";
 
 export const TRIAL_STABLE_AFTER_DAYS = 14;
 export const TRIAL_STABLE_MIN_LOADS = 3;
@@ -211,36 +211,62 @@ export const isTrialLesson = (lesson: Pick<Lesson, "trial" | "approvals">): bool
 
 export interface StableDeps extends LessonDeps { store: LessonStore }
 
-/** Whether a trial lesson has earned stable: 14 days live, at least 3 loads, no thumbs-down (a thumbs-down retires it) and no "wrong here" mark or retire proposal waiting. */
+/** A code citation the broker's own check found stale: the loader withholds the lesson, so it also neither becomes stable nor is published (`load.ts` re-exports this). */
+export const hasStaleCitation = (lesson: Pick<Lesson, "citationChecks">): boolean => (lesson.citationChecks ?? []).some((check) => check.result === "stale");
+
+/** Whether a trial lesson has earned stable: 14 days live, at least 3 loads, no thumbs-down (a thumbs-down retires it), no "wrong here" mark or retire proposal waiting, and no stale citation. */
 export function trialIsStable(lesson: Lesson, now: number): boolean {
   const t = lesson.trial;
   return t !== undefined && t.state === "trial" && lesson.status === "active" && now - t.startedAt >= TRIAL_STABLE_AFTER_DAYS * DAY
-    && lesson.counters.loaded >= TRIAL_STABLE_MIN_LOADS && lesson.counters.harmful === 0 && lesson.retireProposedAt === undefined;
+    && lesson.counters.loaded >= TRIAL_STABLE_MIN_LOADS && lesson.counters.harmful === 0 && lesson.retireProposedAt === undefined && !hasStaleCitation(lesson);
 }
 
-/** Moves one trial lesson to stable if it has earned it. Idempotent; true when this call moved it. */
+/**
+ * Moves one trial lesson to stable if it has earned it. Idempotent; true when this call moved it.
+ * Stable is what makes a lesson publishable to a repository, so it is a grant: the ledger entry is written first (ONCE per call, not once per try), and a promotion that cannot be recorded does not happen (it is tried
+ * again later). A lesson that names an erased person is not tried at all (the store's erasure fence would refuse the commit, and the ledger would hold a grant that never happened), and a commit the fence refuses
+ * ("erased", "fenced") is final: only a lost race ("conflict") is tried again. A commit that fails after the entry was written is followed by a `lesson.promote_failed` bookkeeping line.
+ */
 export async function promoteIfStable(deps: StableDeps, key: ScopeKey, lessonId: string): Promise<boolean> {
   const now = deps.now();
+  let audited = false;
+  const failed = async (): Promise<false> => {
+    if (audited) await emitAudit(deps.audit, { action: "lesson.promote_failed", workspaceId: key.workspaceId, project: key.project, lessonId, facts: {} });
+    return false;
+  };
   for (let attempt = 0; attempt < 3; attempt += 1) {
     const fresh = await deps.store.get(key, lessonId);
-    if (fresh === undefined || !trialIsStable(fresh, now)) return false;
-    // Stable is what makes a lesson publishable to a repository, so it is a grant: the ledger entry is written first, and a promotion that cannot be recorded does not happen (it is tried again later).
-    if (!(await requireAudit(deps.audit, { action: "lesson.trial_stable", workspaceId: key.workspaceId, project: key.project, lessonId: fresh.id, facts: { tier: fresh.tier } }))) return false;
+    if (fresh === undefined || !trialIsStable(fresh, now)) return failed();
+    for (const person of peopleOf(fresh)) if (await deps.store.isErased(key, person)) return failed();
+    if (!audited) {
+      if (!(await requireAudit(deps.audit, { action: "lesson.trial_stable", workspaceId: key.workspaceId, project: key.project, lessonId: fresh.id, facts: { tier: fresh.tier } }))) return false;
+      audited = true;
+    }
     const setVersion = await deps.store.setVersion(key);
     const result = await deps.store.commit(key, setVersion, [{ ...fresh, trial: { ...fresh.trial!, state: "stable", stableAt: now }, version: nextVersion(fresh, await deps.store.versions(key, fresh.id)), updatedAt: now }], now);
     if (result.ok) return true;
+    if (result.reason !== "conflict") break;
   }
-  return false;
+  return failed();
 }
 
-/** Moves every trial lesson that earned it to stable. Idempotent and bounded; returns the ids moved. For the nightly pass (a lesson that is not loaded again would otherwise wait for a load). */
-export async function promoteStableTrials(deps: StableDeps, key: ScopeKey, limit = 200): Promise<string[]> {
+/**
+ * Moves every trial lesson that earned it to stable. Idempotent and bounded; returns the ids moved. For the nightly pass (a lesson that is not loaded again would otherwise wait for a load). `stop` is asked before
+ * each lesson (the caller's time budget). The lessons are read a page at a time (`PROMOTE_PAGE`), so a large project is never read whole.
+ */
+export const PROMOTE_PAGE = 100;
+export async function promoteStableTrials(deps: StableDeps, key: ScopeKey, limit = 200, stop?: () => boolean): Promise<string[]> {
   const moved: string[] = [];
   const now = deps.now();
-  for (const lesson of await deps.store.list(key, { statuses: ["active"] })) {
-    if (moved.length >= limit) break;
-    if (trialIsStable(lesson, now) && (await promoteIfStable(deps, key, lesson.id))) moved.push(lesson.id);
-  }
+  let after: string | undefined;
+  do {
+    const page = await deps.store.listPage(key, { statuses: ["active"], limit: PROMOTE_PAGE, ...(after === undefined ? {} : { after }) });
+    for (const lesson of page.lessons) {
+      if (moved.length >= limit || stop?.() === true) return moved;
+      if (trialIsStable(lesson, now) && (await promoteIfStable(deps, key, lesson.id))) moved.push(lesson.id);
+    }
+    after = page.next;
+  } while (after !== undefined);
   return moved;
 }
 
@@ -252,7 +278,7 @@ export async function promoteStableTrials(deps: StableDeps, key: ScopeKey, limit
  */
 export function isPublishable(lesson: Lesson, names: readonly string[]): boolean {
   if (lesson.trial?.state !== "stable" || lesson.status !== "active" || lesson.provenance.fromSharedTask !== true || lesson.provenance.audience.kind !== "project") return false;
-  if (lesson.tier >= 2 || lesson.reviewRequired === true || lesson.retireProposedAt !== undefined || lesson.counters.harmful > 0) return false;
+  if (lesson.tier >= 2 || lesson.reviewRequired === true || lesson.retireProposedAt !== undefined || lesson.counters.harmful > 0 || hasStaleCitation(lesson)) return false;
   return !namesAPerson([lesson.title, lesson.description, lesson.body].join("\n"), names);
 }
 /** Whether a text names a person: an @handle, an e-mail address, or any of the given display names as a whole word (case and look-alikes folded). */

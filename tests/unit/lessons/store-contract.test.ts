@@ -47,6 +47,24 @@ describe.each(factories)("the lesson store contract (%s)", (_name, make) => {
     expect((await store.versions(KEY, "les_a0000001")).map((v) => v.title)).toEqual(["Retries use withRetry", "Second"]);
     expect((await store.snapshots(KEY)).map((s) => [s.setVersion, s.members.length])).toEqual([[0, 0], [1, 1], [2, 1]]);
   });
+  it("listPage walks the set in id order a page at a time, filtered by status, and says where the next page starts (lessons connect fix 1, L6)", async () => {
+    const { store } = make();
+    for (let i = 1; i <= 5; i += 1) await commit(store, mk(`les_a000000${i}`, i === 3 ? { status: "retired" } : {}));
+    const seen: string[] = [];
+    let after: string | undefined;
+    let pages = 0;
+    do {
+      const page = await store.listPage(KEY, { statuses: ["active"], limit: 2, ...(after === undefined ? {} : { after }) });
+      seen.push(...page.lessons.map((l) => l.id));
+      after = page.next;
+      pages += 1;
+    } while (after !== undefined);
+    expect(seen).toEqual(["les_a0000001", "les_a0000002", "les_a0000004", "les_a0000005"]);
+    expect(pages).toBe(3);
+    expect(await store.listPage(OTHER, { limit: 2 })).toEqual({ lessons: [] });
+    expect((await store.listPage(KEY, { limit: 10 })).lessons).toHaveLength(5);
+    expect((await store.listPage(KEY, { limit: 10 })).next).toBeUndefined();
+  });
   it("one commit writes a lesson once, and refuses a lesson of another scope", async () => {
     const { store } = make();
     await expect(commit(store, mk("les_a0000001"), mk("les_a0000001"))).rejects.toThrow();
@@ -200,6 +218,25 @@ describe.each(factories)("the lesson store contract (%s)", (_name, make) => {
     await store.removePending(KEY, "missing");
     expect((await store.duePending(KEY, 100, 10)).map((p) => p.key)).toEqual(["c", "a"]);
   });
+  it("hasPending: true for a lesson with a queued outcome, due or not; false for another lesson, after removal and after a purge. seenOnce reads a once-key without taking it", async () => {
+    const { store } = make();
+    await commit(store, mk("les_a0000001"), mk("les_b0000001"));
+    expect(await store.hasPending(KEY, "les_a0000001")).toBe(false);
+    await store.addPending({ key: "helpful:t:les_a0000001", ...KEY, lessonId: "les_a0000001", taskId: "t", dueAt: 10 * DAY });
+    expect(await store.hasPending(KEY, "les_a0000001")).toBe(true);
+    expect(await store.hasPending(KEY, "les_b0000001")).toBe(false);
+    expect(await store.hasPending(OTHER, "les_a0000001")).toBe(false);
+    await store.removePending(KEY, "helpful:t:les_a0000001");
+    expect(await store.hasPending(KEY, "les_a0000001")).toBe(false);
+    await store.addPending({ key: "helpful:u:les_a0000001", ...KEY, lessonId: "les_a0000001", taskId: "u", dueAt: 10 * DAY });
+    await store.purge(KEY, "les_a0000001");
+    expect(await store.hasPending(KEY, "les_a0000001")).toBe(false);
+    expect(await store.seenOnce(KEY, "helpful-final:t:les_b0000001")).toBe(false);
+    expect(await store.seenOnce(KEY, "helpful-final:t:les_b0000001")).toBe(false);
+    expect(await store.markOnce(KEY, "helpful-final:t:les_b0000001")).toBe(true);
+    expect(await store.seenOnce(KEY, "helpful-final:t:les_b0000001")).toBe(true);
+    expect(await store.seenOnce(OTHER, "helpful-final:t:les_b0000001")).toBe(false);
+  });
   it("source events: counted per day back from now, every spelling of a person is one source, and forgetting removes the counts and the pause", async () => {
     const { store } = make();
     const now = 100 * DAY;
@@ -241,6 +278,23 @@ describe("the DynamoDB lesson store only", () => {
     expect(w.db.find((item) => String(item.pk).includes("#P#web"))).toEqual([]);
   });
 
+  it("hasPending asks DynamoDB for one pending reference and stops (Limit 1), never reading them all (lessons connect fix 4, F1)", async () => {
+    const db = new FakeDynamoDb();
+    const queries: Array<Record<string, unknown>> = [];
+    const store = new DynamoLessonStore({ documentClient: { send: async (command: unknown) => {
+      if ((command as { constructor: { name: string } }).constructor.name === "QueryCommand") queries.push((command as { input: Record<string, unknown> }).input);
+      return db.send(command as never);
+    } }, tableName: "TeamRecord" });
+    await commit(store, mk("les_a0000001"));
+    for (const t of ["t1", "t2", "t3"]) await store.addPending({ key: `helpful:${t}:les_a0000001`, ...KEY, lessonId: "les_a0000001", taskId: t, dueAt: 10 * DAY });
+    queries.length = 0;
+    expect(await store.hasPending(KEY, "les_a0000001")).toBe(true);
+    expect(queries).toHaveLength(1);
+    expect(queries[0]!.Limit).toBe(1);
+    queries.length = 0;
+    expect(await store.hasPending(KEY, "les_b0000001")).toBe(false);
+    expect(queries).toHaveLength(1);
+  });
   it("a commit that read before an erase fenced fails its transaction and then sees the fence", async () => {
     const db = new FakeDynamoDb();
     const store = new DynamoLessonStore({ documentClient: db, tableName: "TeamRecord" });

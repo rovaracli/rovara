@@ -12,6 +12,7 @@
 // receives out; the message is then in the dead-letter queue and can be redriven. The metric is the `lessons_worker.result` line, one per message, with a fixed class and a fixed kind (`reflection` or `human_edit`).
 import { LESSONS_REFLECT_MAX_ATTEMPTS, LESSONS_REFLECT_RETRY_BACKOFF_SECONDS } from "@agentx/contracts";
 import { withLearningAttempt, type LearningAttempt } from "./learning-deadline.js";
+import { logRef } from "./log-ref.js";
 import type { HumanEditJob } from "../team-record/sources/codehost.js";
 import { CLAIM_TTL_SECONDS, type ClaimStore, type LeaseTarget } from "./reflect-claims.js";
 import { humanEditJobOf, humanEditLeaseOutcome, parseHumanEditMessage, parseReflectMessage, type ReflectMessage, type ReflectVisibility } from "./reflect-queue.js";
@@ -60,7 +61,7 @@ export async function runReflectMessage(deps: ReflectWorkerDeps, body: string, c
   // What the lease is on (a reflection: the task's end; a human edit: the task's head commit) and the work it guards.
   const message: LeaseTarget = edit !== undefined ? { orgId: edit.orgId, taskId: edit.taskId, outcome: humanEditLeaseOutcome(edit) } : { orgId: reflection!.orgId, taskId: reflection!.taskId, outcome: reflection!.outcome };
   if (edit !== undefined && deps.humanEdit === undefined) {
-    deps.log("lessons_worker.result", { class: "human_edit_unavailable", kind, taskId: edit.taskId });
+    deps.log("lessons_worker.result", { class: "human_edit_unavailable", kind, task: logRef(edit.orgId, edit.taskId) });
     return { result: "failed", retry: true };
   }
   const remaining = context?.getRemainingTimeInMillis?.();
@@ -71,7 +72,7 @@ export async function runReflectMessage(deps: ReflectWorkerDeps, body: string, c
   }
   const taken = await deps.claims.take(message, deps.now());
   if (taken.kind !== "taken") {
-    deps.log("lessons_worker.result", { class: taken.kind, kind, taskId: message.taskId });
+    deps.log("lessons_worker.result", { class: taken.kind, kind, task: logRef(message.orgId, message.taskId) });
     return taken.kind === "already" ? { result: "already", retry: false } : { result: taken.kind, retry: true };
   }
   const { lease } = taken;
@@ -108,7 +109,7 @@ export async function runReflectMessage(deps: ReflectWorkerDeps, body: string, c
     const first = await Promise.race([done, timedOut]);
     if (first === "timed_out") {
       // The last guard: the work did not stop by itself. A fault, not a normal end (the lesson store refuses its writes once the signal is aborted).
-      deps.log("lessons_worker.deadline", { taskId: message.taskId });
+      deps.log("lessons_worker.deadline", { task: logRef(message.orgId, message.taskId) });
       outcome = { status: "not_reflected", retry: true };
       result = "timed_out";
     } else {
@@ -116,7 +117,7 @@ export async function runReflectMessage(deps: ReflectWorkerDeps, body: string, c
       result = first.status;
     }
   } catch {
-    deps.log("lessons_worker.failed", { taskId: message.taskId });
+    deps.log("lessons_worker.failed", { task: logRef(message.orgId, message.taskId) });
     outcome = { status: "not_reflected", retry: true };
     result = "failed";
   } finally {
@@ -129,9 +130,9 @@ export async function runReflectMessage(deps: ReflectWorkerDeps, body: string, c
     await deps.claims.finish(lease, outcome.retry ? "retry" : "done", deps.now());
   } catch {
     // The lease stays `running`; once it lapses the next take decides by the model keys (nothing spent: tried again; spent: never).
-    deps.log("lessons_worker.finish_failed", { taskId: message.taskId });
+    deps.log("lessons_worker.finish_failed", { task: logRef(message.orgId, message.taskId) });
   }
-  deps.log("lessons_worker.result", { class: outcome.retry ? "retry" : result === "timed_out" || result === "failed" ? result : outcome.status, kind, taskId: message.taskId, attempt: lease.attempt });
+  deps.log("lessons_worker.result", { class: outcome.retry ? "retry" : result === "timed_out" || result === "failed" ? result : outcome.status, kind, task: logRef(message.orgId, message.taskId), attempt: lease.attempt });
   return { result, retry: outcome.retry, ...(outcome.retry && outcome.retryAt !== undefined ? { retryAt: outcome.retryAt } : {}) };
 }
 

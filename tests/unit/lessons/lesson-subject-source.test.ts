@@ -171,6 +171,54 @@ describe("workspace and kind of task", () => {
   });
 });
 
+describe("sharedTask: the mark repository publishing needs (lessons connect)", () => {
+  const sharedNow = { visibility: async () => ({ kind: "shared" as const }), strictVisibility: async () => ({ kind: "shared" as const }) };
+  const sharedOf = async (deps: Partial<LessonSubjectSourceDeps>): Promise<unknown> => (await read(setup({}, {}, deps).source))!.facts.rest.sharedTask;
+
+  it("a task that is project-wide with no People denial is a shared task, and the subject carries it to the reflector", async () => {
+    const { source } = setup({}, {}, sharedNow);
+    const base = (await read(source))!;
+    expect(base.facts.rest.sharedTask).toBe(true);
+    expect(buildTaskReflectSubject({ ...base.facts, sendBacks: [] }).sharedTask).toBe(true);
+  });
+  it("a narrowed task (shared with named people), a private one, and a live read that turns up narrower than the first are KNOWN not project-wide: the mark is false, not unset", async () => {
+    expect(await sharedOf({ visibility: async () => ({ kind: "shared_with", developerIds: [CREATOR, "dev-x"] }), strictVisibility: async () => ({ kind: "shared_with", developerIds: [CREATOR, "dev-x"] }) })).toBe(false);
+    expect(await sharedOf({ visibility: async () => ({ kind: "private", ownerDeveloperId: CREATOR }), strictVisibility: async () => ({ kind: "private", ownerDeveloperId: CREATOR }) })).toBe(false);
+    // The strict reader is what decides: a task the first read called shared but the strict read finds narrowed (a People denial) is not shared.
+    expect(await sharedOf({ visibility: async () => ({ kind: "shared" }), strictVisibility: async () => ({ kind: "shared_with", developerIds: [CREATOR] }) })).toBe(false);
+    expect(await sharedOf({ visibility: async () => ({ kind: "shared" }), strictVisibility: async () => undefined })).toBe(false);
+  });
+  it("owner decision 32 (M4): an ordinary task nobody shared counts as project-wide when no People entry denies anyone, whatever the Team record's audience for it is; a denial makes it not", async () => {
+    const owner = { visibility: async () => ({ kind: "private" as const, ownerDeveloperId: CREATOR }), strictVisibility: async () => ({ kind: "private" as const, ownerDeveloperId: CREATOR }) };
+    const asked: string[][] = [];
+    const wide = setup({}, {}, { ...owner, projectWide: async (org, task) => { asked.push([org, task]); return true; } });
+    const base = (await read(wide.source))!;
+    expect(base.facts.rest.sharedTask).toBe(true);
+    expect(asked).toEqual([[WS, TASK]]);
+    // The Team record's own audience is unchanged: the unshared task's rows are still the owner's alone.
+    expect(base.facts.rest.audience).toMatchObject({ kind: "restricted" });
+    expect(await sharedOf({ ...owner, projectWide: async () => false })).toBe(false);
+    // Positive control: the same ordinary task without the project-wide reader is not shared.
+    expect(await sharedOf(owner)).toBe(false);
+  });
+  it("L1: a read that fails is read again once, and a second failure leaves the mark UNSET (unknown), with one fixed count-only line", async () => {
+    const logs: Array<[string, Record<string, string | number>]> = [];
+    let calls = 0;
+    const flaky = { ...sharedNow, strictVisibility: async () => { calls += 1; if (calls === 1) throw new Error("People list can't be read"); return { kind: "shared" as const }; }, log: (event: string, fields: Record<string, string | number>) => logs.push([event, fields]) };
+    expect(await sharedOf(flaky)).toBe(true);
+    expect(logs).toEqual([]);
+    const down = { ...sharedNow, strictVisibility: async () => { throw new Error("secret table text"); }, projectWide: async () => { throw new Error("secret table text"); }, log: flaky.log };
+    expect(await sharedOf(down)).toBeUndefined();
+    expect(logs).toEqual([["learning.shared_task_unreadable", { task: createHash("sha256").update(`${WS}\u0000${TASK}`).digest("hex").slice(0, 12) }]]);
+    expect(JSON.stringify(logs)).not.toContain(TASK);
+  });
+  it("positive control: the strict reader is asked for this company's task", async () => {
+    const asked: string[][] = [];
+    expect(await sharedOf({ ...sharedNow, strictVisibility: async (org, task) => { asked.push([org, task]); return { kind: "shared" }; } })).toBe(true);
+    expect(asked).toEqual([[WS, TASK]]);
+  });
+});
+
 describe("erasure at read time", () => {
   const erasing = (...ids: string[]) => ({ isErased: async (_org: string, who: string) => ids.includes(who) });
 

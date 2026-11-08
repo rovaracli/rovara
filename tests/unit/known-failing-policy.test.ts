@@ -3,7 +3,7 @@
 import { describe, expect, it } from "vitest";
 import type { AuditEventInput } from "@agentx/contracts";
 import { KnownFailingPolicyStore, alwaysTwoPeople, approveAlwaysTwoPeopleOff, knownFailingPolicyAuditSink, setAlwaysTwoPeople, type KnownFailingPolicyDeps } from "../../packages/broker/src/org/known-failing-policy.js";
-import type { Tier0Authority } from "../../packages/broker/src/lessons/tier0-setting.js";
+import type { Tier0Authority } from "../../packages/broker/src/lessons/sole-owner-switch.js";
 import { FakeDynamoDb } from "../support/fake-dynamodb.js";
 
 const ORG = `org_${"d".repeat(20)}`;

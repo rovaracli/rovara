@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import { curateDraft, type CurateDeps } from "../../../packages/broker/src/lessons/curate.js";
 import { InMemoryLessonStore, nextVersion, type CommitResult, type ScopeKey } from "../../../packages/broker/src/lessons/store.js";
 import type { LessonDraft } from "../../../packages/broker/src/lessons/reflect.js";
+import { trialBlockers } from "../../../packages/broker/src/lessons/trial.js";
 import type { Lesson } from "../../../packages/broker/src/lessons/types.js";
 import { Alerts, Audit, Clock, KEY, MemoryVectors, PROJECT, ScriptedModel, Spend, WS, draft, embedder, lessonRecord, seed, settings, verifier } from "./lesson-helpers.js";
 
@@ -215,6 +216,67 @@ describe("curator decisions (design §4.5.2)", () => {
     const out = await curateDraft(deps, KEY, lower);
     expect(out.outcome).toBe("added");
     expect((await store.get(KEY, "les_act1"))!.version).toBe(1);
+  });
+
+  it("lessons connect: a merge keeps fromSharedTask: true only when every source was known project-wide: a known-not clears it, an unreadable (unset) source makes it unset (fix 2, R3, replacing fix 1)", async () => {
+    const shared = (fromSharedTask: boolean | undefined): LessonDraft => draft({ provenance: { ...draft().provenance, ...(fromSharedTask === undefined ? {} : { fromSharedTask }) } });
+    for (const [first, second, expected] of [
+      [true, true, true], [true, undefined, undefined], [undefined, true, undefined], [true, false, false], [false, true, false], [undefined, false, false], [undefined, undefined, undefined], [false, undefined, false],
+    ] as const) {
+      const { deps, store } = setup();
+      await curateDraft(deps, KEY, shared(first));
+      expect((await curateDraft(deps, KEY, shared(second))).outcome).toBe("merged");
+      const [only] = await store.list(KEY);
+      expect(only!.provenance.fromSharedTask, `${String(first)} + ${String(second)}`).toBe(expected);
+    }
+  });
+
+  it("N1: a merge clears memberCorrection and claimsSupported unless both sides have them, so a lesson merged with a draft that lacks them is refused for trial (not_member_correction, claims_not_supported)", async () => {
+    const marked = (member: boolean | undefined, claims: boolean | undefined): LessonDraft => {
+      const { memberCorrection: _m, claimsSupported: _c, ...rest } = draft().provenance;
+      void _m; void _c;
+      return draft({ provenance: { ...rest, ...(member === undefined ? {} : { memberCorrection: member }), ...(claims === undefined ? {} : { claimsSupported: claims }) } });
+    };
+    const context = { preset: "standard" as const, mode: "On" as const, trialAllowed: true, contradiction: false, refinement: false, reviewRequired: false, held: false, braked: false };
+    for (const [first, second, kept] of [[true, true, true], [true, undefined, false], [undefined, true, false], [true, false, false], [undefined, undefined, false]] as const) {
+      const { deps, store } = setup();
+      await curateDraft(deps, KEY, marked(first, first));
+      expect((await curateDraft(deps, KEY, marked(second, second))).outcome).toBe("merged");
+      const [only] = await store.list(KEY);
+      const label = `${String(first)} + ${String(second)}`;
+      expect(only!.provenance.memberCorrection === true, label).toBe(kept);
+      expect(only!.provenance.claimsSupported === true, label).toBe(kept);
+      const blockers = trialBlockers(only!, 1, context);
+      expect(blockers.includes("not_member_correction"), label).toBe(!kept);
+      expect(blockers.includes("claims_not_supported"), label).toBe(!kept);
+    }
+  });
+
+  it("R3: a merge never drops a supporting task: with the list full the merge is refused and the draft becomes its own lesson", async () => {
+    const { deps, store } = setup();
+    const many = Array.from({ length: 50 }, (_, i) => `task-${i}`);
+    const fullOut = await curateDraft(deps, KEY, draft({ provenance: { ...draft().provenance, supportTasks: many, fromSharedTask: true } }));
+    if (!("lesson" in fullOut)) throw new Error("the first draft should have been stored");
+    const full = fullOut.lesson;
+    const fresh = await curateDraft(deps, KEY, draft({ provenance: { ...draft().provenance, supportTasks: ["task-new"], sourceEvents: ["ev-n"], fromSharedTask: false } }));
+    expect(fresh.outcome).not.toBe("merged");
+    const all = await store.list(KEY);
+    expect(all).toHaveLength(2);
+    // The full lesson is untouched: still true, still all fifty tasks.
+    const before = all.find((l) => l.id === full.id)!;
+    expect(before.provenance.supportTasks).toEqual(many);
+    expect(before.provenance.fromSharedTask).toBe(true);
+  });
+  it("R3 positive control: with the list full, a draft whose only task is one the list already holds loses nothing and merges", async () => {
+    const { deps, store } = setup();
+    const many = Array.from({ length: 50 }, (_, i) => `task-${i}`);
+    const fullOut = await curateDraft(deps, KEY, draft({ provenance: { ...draft().provenance, supportTasks: many, fromSharedTask: true } }));
+    if (!("lesson" in fullOut)) throw new Error("the first draft should have been stored");
+    const full = fullOut.lesson;
+    const again = await curateDraft(deps, KEY, draft({ provenance: { ...draft().provenance, supportTasks: ["task-3"], sourceEvents: ["ev-m"], fromSharedTask: true } }));
+    expect(again.outcome).toBe("merged");
+    expect(await store.list(KEY)).toHaveLength(1);
+    expect((await store.get(KEY, full.id))!.provenance.supportTasks).toEqual(many);
   });
 
   it("embedding failure drops the draft without writing anything", async () => {

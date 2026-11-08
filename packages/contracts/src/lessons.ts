@@ -30,7 +30,6 @@ export const LESSONS_PER_STAGE_BYTES_MAX = 6_144;
 export const LESSON_EXPIRY_DAYS_DEFAULT = 90;
 export const LESSON_EXPIRY_DAYS_MIN = 14;
 export const LESSON_EXPIRY_DAYS_MAX = 365;
-export const LESSON_PREFERENCE_EXPIRY_DAYS = 180;
 export const LESSON_CITATION_STALE_LIMIT = 3;
 export const LESSON_CITATION_STALE_WINDOW_DAYS = 14;
 export const LESSON_REVERT_WINDOW_DAYS = 14;
@@ -115,7 +114,7 @@ const LessonBaseSchema = z.object({
   counters: LessonCountersSchema,
   lastValidatedAt: z.string().datetime().optional(),
   lastHelpfulAt: z.string().datetime().optional(),
-  /** Epoch seconds. 90 days by default, renewed on a validated helpful use. */
+  /** Epoch seconds. When the lesson fades: its trial period plus N days (90 by default) without helping; a validated helpful use resets it. */
   expiresAt: z.number().int().nonnegative(),
   approvals: z.array(LessonApprovalSchema).max(10),
   /** Set when a sole owner approved a tier-2 lesson alone (audited): one approval is then enough. */
