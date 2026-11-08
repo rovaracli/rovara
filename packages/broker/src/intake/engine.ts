@@ -29,7 +29,7 @@ import {
 import { ticketRunInput, inertTitle, inertTicketLine, inertWriter, prepareTicketBody, WAITING_BODY_MAX_BYTES } from "./ticket-text.js";
 import { intakeRequestId } from "./ids.js";
 import { ownWriteVerdictOf } from "./own-writes.js";
-import { claimIntakeEvent, claimIntakeItem, claimIntakeStart, giveBackIntakeItem, intakeItemIsTakeable, listWaitingIntakeItems, markIntakeStarted, readIntakeItem, releaseIntakeEvent, releaseIntakeItem, reopenIntakeItem, INTAKE_MAX_WAITING_PER_PROJECT, type IntakeItemRecord, type IntakeTable } from "./store.js";
+import { claimIntakeChange, claimIntakeEvent, claimIntakeItem, claimIntakeStart, giveBackIntakeItem, intakeItemIsTakeable, listWaitingIntakeItems, markIntakeStarted, readIntakeItem, releaseIntakeChange, releaseIntakeEvent, releaseIntakeItem, reopenIntakeItem, INTAKE_MAX_WAITING_PER_PROJECT, type IntakeItemRecord, type IntakeTable } from "./store.js";
 
 /** Who made the act that asks for work, as the tracker's adapter knows them. Only `accountId` can ever make them a member, and only through a link the org holds. */
 export interface IntakeActor {
@@ -68,7 +68,7 @@ export type IntakeOutcome =
   | { outcome: "started"; taskId: string; sessionId?: string | undefined }
   | { outcome: "waiting"; reason: IntakeWaitReason }
   | { outcome: "duplicate"; state: IntakeItemRecord["state"] }
-  | { outcome: "skipped"; reason: "caused_by_rovara" | "invalid" | "waiting_full" };
+  | { outcome: "skipped"; reason: "caused_by_rovara" | "invalid" | "waiting_full" | "change_replayed" };
 
 /** What the engine reads and does outside itself. Each is the broker's own function in production; the tests supply others. */
 export interface IntakePorts {
@@ -223,34 +223,65 @@ export async function ingestIntake(ports: IntakePorts, candidate: IntakeCandidat
   // Slice 5 review I1: a Jira webhook's body is signed only with the hook's secret, which the people who made the hook have seen, so the person it names is believed only on Jira's own word
   // (`confirmActor`, read through the company's connection). Without one, the act is not taken for a member's: the ticket waits.
   if (!unattributed && WORD_REQUIRED.has(ref.data.system) && eventId !== undefined && eventId !== "" && context.confirmActor === undefined && candidate.actor?.kind === "person") unattributed = true;
-  // The tracker's own word on who did it, where it has one: asked only when the act looks like a person's and would start work.
-  if (!unattributed && context.confirmActor !== undefined && candidate.actor?.kind === "person" && candidate.actor.accountId !== undefined && await wouldStart(ports, candidate)) {
+  // The tracker's own word on who did it, where it has one: asked for an act that looks like a person's and is a linked member's (so that every real act a member could be replayed from is
+  // seen, whichever project it first reached, and an outsider's act costs no read).
+  let change: ChangeClaim | undefined;
+  if (!unattributed && context.confirmActor !== undefined && candidate.actor?.kind === "person" && candidate.actor.accountId !== undefined && await isLinkedMember(ports, candidate)) {
     const word = await context.confirmActor().catch(() => "unverified" as const);
     if (word === "rovara") {
       ports.log("intake.own_write", { orgId, project, system: ref.data.system, by: "tracker" });
       return { outcome: "skipped", reason: "caused_by_rovara" };
     }
     unattributed = word !== "person";
+    // A change the tracker CONFIRMED as real is used once per company: the claim is written only now, after the confirmation, so a made-up change id (which the tracker would not confirm)
+    // never reaches it and cannot use up a real one. A second delivery of the same change through another project's hook (a replay by someone who holds that hook's secret) finds it taken
+    // and starts nothing. The same project and ticket again (a retry, or a second label of one change) passes; the per-event claim below keeps that idempotent.
+    // (Jira's confirmation already requires a numeric change id, so a confirmed Jira act always has one here.)
+    const changeId = word === "person" && WORD_REQUIRED.has(ref.data.system) ? changeIdOf(eventId) : undefined;
+    if (changeId !== undefined) {
+      change = { orgId, system: ref.data.system, site: siteOf(ref.data.url), changeId, project, itemId: intakeItemIdOf(ref.data.system, ref.data.id) };
+      const taken = await claimIntakeChange(ports.table, change);
+      if (taken === "taken") {
+        ports.log("intake.change_replayed", { orgId, project, system: ref.data.system });
+        return { outcome: "skipped", reason: "change_replayed" };
+      }
+      if (taken === "same") change = undefined;
+    }
   }
   if (eventId === undefined || eventId === "") return ingestOnce(ports, candidate, context, unattributed);
   // Each label event counts once: an event handed over again (a webhook delivered twice, a replay) is the same event. A fault that may pass gives the event back, so the redelivery is handled.
   const itemId = intakeItemIdOf(ref.data.system, ref.data.id);
-  if (!await claimIntakeEvent(ports.table, orgId, project, itemId, eventId)) {
-    const seen = await readIntakeItem(ports.table, orgId, project, itemId);
-    return { outcome: "duplicate", state: seen?.state ?? "started" };
+  try {
+    if (!await claimIntakeEvent(ports.table, orgId, project, itemId, eventId)) {
+      const seen = await readIntakeItem(ports.table, orgId, project, itemId);
+      return { outcome: "duplicate", state: seen?.state ?? "started" };
+    }
+  } catch (error) {
+    if (change !== undefined) await releaseIntakeChange(ports.table, change);
+    throw error;
   }
   try {
     return await ingestOnce(ports, candidate, context, unattributed);
   } catch (error) {
     await releaseIntakeEvent(ports.table, orgId, project, itemId, eventId);
+    if (change !== undefined) await releaseIntakeChange(ports.table, change);
     throw error;
   }
 }
 
-/** Whether the act, taken at its word, is a linked member's who may start tasks on the project (so that it is worth asking the tracker to confirm it). */
-async function wouldStart(ports: IntakePorts, candidate: IntakeCandidate): Promise<boolean> {
-  const resolved = await resolveStanding(ports, candidate, false);
-  return resolved.reason === undefined && resolved.developerId !== undefined;
+interface ChangeClaim { orgId: OrgId; system: string; site: string; changeId: string; project: string; itemId: string }
+/** The tracker's id of the change an event came from: the last part of its key (a Jira changelog id). Nothing for a key that does not end in one. */
+const changeIdOf = (eventId: string | undefined): string | undefined => {
+  const last = eventId?.split(":").at(-1);
+  return last !== undefined && /^[1-9][0-9]{0,18}$/u.test(last) ? last : undefined;
+};
+/** The tracker's host, from the ticket's link (the same host the tracker's confirmation read). */
+const siteOf = (url: string): string => { try { return new URL(url).hostname.toLowerCase(); } catch { return url; } };
+
+/** Whether the act, taken at its word, is a linked member's (so that it is worth asking the tracker to confirm it). */
+async function isLinkedMember(ports: IntakePorts, candidate: IntakeCandidate): Promise<boolean> {
+  const accountId = candidate.actor?.accountId;
+  return accountId !== undefined && await ports.memberOfAccount(candidate.orgId, candidate.externalRef.system, accountId, candidate.externalRef.url) !== undefined;
 }
 
 async function ingestOnce(ports: IntakePorts, candidate: IntakeCandidate, context: IngestContext, unattributed: boolean): Promise<IntakeOutcome> {

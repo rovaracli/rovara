@@ -1387,6 +1387,16 @@ export function intakeEventKey(orgId: OrgId, project: string, itemId: string, ev
 }
 
 /**
+ * A tracker change (a Jira changelog id) that intake has acted on for a company, one item per company, site and change, whichever project's hook it came through. It is how a real act
+ * that a person made is started from once: the same change handed to a second project's hook (a replay by someone who holds that hook's secret) finds it taken. `site` is the tracker's
+ * host and `changeId` the tracker's own id for the change; both are hashed together here, so nothing a sender typed is a key.
+ */
+export function intakeChangeKey(orgId: OrgId, system: string, site: string, changeId: string): OrgKey {
+  if (site.length === 0 || changeId.length === 0) throw new Error("a tracker site and a change id can't be empty");
+  return { pk: orgScoped(orgId, `INTAKE_CHANGE#${keyPart(system, "a tracker system")}`), sk: createHash("sha256").update(`${site.toLowerCase()}\0${changeId}`, "utf8").digest("hex").slice(0, 40) };
+}
+
+/**
  * A note that Rovara itself wrote to a ticket (a label, an assignment, or any other change), so that the event the tracker sends back for it is told apart from a member's act whatever
  * account the write went through (a member's own key, an app acting as them). `kind` is what was written: `label` or `assignee` (with the value, hashed here) or `touch` (some other
  * change to the ticket; no value). `ticketId` is the ticket's intake item id, or for a write that made a new ticket, the id of its scope (the repository).
