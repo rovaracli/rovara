@@ -54,14 +54,6 @@ async function waitingPlan(options: { plan?: string | ((latestUserText: string) 
   return e2e;
 }
 
-/** Approve in Slack, as the owner presses it (and submits the form, when one opens). */
-async function approveInSlack(e2e: WorkflowE2E): Promise<void> {
-  const views = e2e.slack.views.length;
-  await e2e.click("agentx_workflow_approve");
-  if (e2e.slack.views.length > views) await e2e.submitView();
-}
-
-
 /** The Slack service's request queue as the broker sends to it: what the page's Ask would have queued. */
 function recordingQueue(): SlackRequestQueue & { sent: unknown[] } {
   const sent: unknown[] = [];
@@ -90,7 +82,9 @@ describe("deciding on the task page's card, end to end (OWNER DECISION 7)", () =
 
   it("the owner answers a decision on the card and approves with two comments; the Slack card says who decided and what went with it", async () => {
     const e2e = await waitingPlan();
-    const card = e2e.slack.lastPostWithAction("agentx_workflow_approve");
+    // p1-slack-decide-card: a medium plan's Slack message carries no Approve; its one decide button is the "Decide in Rovara" link.
+    const card = e2e.slack.lastPostWithAction("agentx_open_decision");
+    expect(JSON.stringify(card.blocks)).not.toContain("agentx_workflow_approve");
     seedComment(e2e, SAM, "Above reads better on a phone.", { kind: "claim", id: "2.1" });
     seedComment(e2e, OWNER, "Keep the banner copy short.");
     expect(codingRuns(e2e)).toEqual([]);
@@ -132,7 +126,7 @@ describe("deciding on the task page's card, end to end (OWNER DECISION 7)", () =
     expect(planning).toMatch(/<page_comment id="[0-9a-f]+" ref="c1" author="teammate" on="claim 2\.1">Above reads better on a phone\.<\/page_comment>/);
     expect(planning).toMatch(/<page_comment id="[0-9a-f]+" ref="c2" author="owner" on="the whole document">Keep the banner copy short\.<\/page_comment>/);
     expect(planning).not.toContain("how many tries");
-    const v2Card = e2e.slack.lastPostWithAction("agentx_workflow_approve");
+    const v2Card = e2e.slack.lastPostWithAction("agentx_open_decision");
     expect(v2Card.text).toContain("*Coding plan v2 is ready for your approval.*");
     expect(v2Card.text).toContain("AgentX answered 2 of 2 comments from v1.");
     expect(e2e.slack.updates.some((update) => JSON.stringify(update.blocks).includes(`Changes requested by <@${MAYA.slackUserId}> · 2 comments included`))).toBe(true);
@@ -174,10 +168,18 @@ describe("deciding on the task page's card, end to end (OWNER DECISION 7)", () =
     expect(codingRuns(e2e)).toHaveLength(1);
   }, 120_000);
 
-  it("with the cards on, Slack's Approve of a medium plan sends the owner to the card, and the card decides it once", async () => {
+  it("with the cards on, Slack offers a medium plan no Approve, only Decide in Rovara; a stale Approve is refused, and the card decides it once", async () => {
     const e2e = await waitingPlan();
-    await approveInSlack(e2e);
+    const card = e2e.slack.lastPostWithAction("agentx_open_decision");
+    const blocks = JSON.stringify(card.blocks);
+    expect(blocks).toContain("Decide in Rovara");
+    expect(blocks).not.toContain("agentx_workflow_approve");
+    // An Approve from an older message (what it carried: this task, this revision, this plan) is still refused, and decides nothing.
+    const workflow = e2e.workflow();
+    const staleApprove = JSON.stringify({ taskId: e2e.taskId(), revision: workflow.revision, digest: workflow.artifacts.at(-1)!.sha256, decision: "APPROVE" });
+    await e2e.click("agentx_workflow_approve", { messageTs: card.ts, staleValue: staleApprove });
     await e2e.settle();
+    expect(e2e.slack.ephemerals.some((entry) => /medium risk|in Rovara/i.test(entry.text))).toBe(true);
     expect(e2e.workflow().decisions.filter((entry) => entry.decision === "APPROVE")).toHaveLength(0);
     expect(codingRuns(e2e)).toEqual([]);
     expect((await onCard(e2e, OWNER)).status).toBe(200);

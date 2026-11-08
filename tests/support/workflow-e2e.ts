@@ -1482,9 +1482,12 @@ export async function createWorkflowE2E(options: {
      * Presses the button `actionId` on the latest message that carries it (or on the message `messageTs`, an older card),
      * as `user`; `deliver: "twice"` sends the same press twice, as a double click or Slack's retry does.
      */
-    async click(actionId: string, clickOptions: { user?: string; messageTs?: string; deliver?: "once" | "twice" } = {}): Promise<void> {
-      const post = clickOptions.messageTs === undefined ? slack.lastPostWithAction(actionId) : slack.postWithAction(actionId, clickOptions.messageTs);
-      const value = actionElement(post.blocks, actionId)?.value ?? "";
+    async click(actionId: string, clickOptions: { user?: string; messageTs?: string; deliver?: "once" | "twice"; staleValue?: string } = {}): Promise<void> {
+      // `staleValue` presses a button the message no longer carries (an older message's Approve, whose value is the one given) on the post `messageTs`.
+      const stale = clickOptions.staleValue !== undefined && clickOptions.messageTs !== undefined ? slack.posts.find((candidate) => candidate.ts === clickOptions.messageTs) : undefined;
+      if (clickOptions.staleValue !== undefined && stale === undefined) throw new Error("click: staleValue needs the messageTs of a post");
+      const post = stale ?? (clickOptions.messageTs === undefined ? slack.lastPostWithAction(actionId) : slack.postWithAction(actionId, clickOptions.messageTs));
+      const value = clickOptions.staleValue ?? actionElement(post.blocks, actionId)?.value ?? "";
       interactionSequence += 1;
       const actionTs = `1695500100.${String(interactionSequence).padStart(6, "0")}`;
       const payload = {
