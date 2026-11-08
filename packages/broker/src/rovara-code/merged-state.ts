@@ -7,11 +7,12 @@ import { SessionIdSchema, mergeTrackingDecisionDigest, sessionEventId, type Merg
 import { sessionEventItem } from "../agent-sessions/store.js";
 import type { TransactItem } from "../agents/table-writes.js";
 import { readMergeTracking, trackingWriteItem } from "./merge-tracking.js";
+import { githubPullRequestAddress, mergeCommitIndexItem } from "./merge-commit-index.js";
 
 export interface MergedStateTable { documentClient: { send(command: unknown): Promise<unknown> }; tableName: string }
 export interface MergedStateTask { taskId: string; orgId?: OrgId | undefined; sessionId?: string | undefined; workspaceId?: string | undefined }
 /** What GitHub said of a pull request this save finds merged. */
-export interface MergedObservation { repositoryId: string; number: number; mergedBy?: string | undefined }
+export interface MergedObservation { repositoryId: string; number: number; mergedBy?: string | undefined; /** The commit the host says the pull request was merged as (SRL-3: indexed so a revert of it can be matched). */ mergeCommit?: string | undefined }
 /**
  * A pull request record the caller already updates in the same transaction, and whose update already sets its state to "merged" (the pushed fix's save, which records the head a push that landed
  * without its callback left and GitHub's state in one update). DynamoDB refuses a transaction with two operations on one item, so the record is updated once, by the caller (C59).
@@ -64,6 +65,13 @@ export async function mergedStateItems(
         console.log(JSON.stringify({ component: "broker", event: "merged_state.record_unreadable", taskId: task.taskId, error: error instanceof Error ? error.name : "unknown" }));
       }
     }
+    // SRL-3: the index from the merge commit to this task, in the same transaction, so a revert of the commit is matched to the pull request. No commit, or an address that is not GitHub's: no row (logged).
+    const mergeCommit = observed.find((entry) => entry.repositoryId === pullRequest.repositoryId && entry.number === pullRequest.number)?.mergeCommit;
+    const address = githubPullRequestAddress(pullRequest.url);
+    const indexed = mergeCommit === undefined || address === undefined ? undefined
+      : mergeCommitIndexItem(table.tableName, { orgId, repositoryFullName: address.repositoryFullName, repositoryId: pullRequest.repositoryId, number: pullRequest.number, url: pullRequest.url, taskId: task.taskId, mergeCommit, now });
+    if (indexed !== undefined) items.push(indexed);
+    else if (address !== undefined) console.log(JSON.stringify({ component: "broker", event: "merge_commit_index.skipped", taskId: task.taskId, reason: mergeCommit === undefined ? "no_merge_commit" : "bad_merge_commit" }));
     // Merged on GitHub (not by Rovara's Merge, which claims the pull request first) with no approval that counts: a fact for the timeline, not an error.
     if (prior !== undefined && prior.mergeClaim === undefined && prior.approval === undefined && session.success) {
       const by = observed.find((entry) => entry.repositoryId === pullRequest.repositoryId && entry.number === pullRequest.number)?.mergedBy;

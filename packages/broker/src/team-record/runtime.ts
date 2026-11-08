@@ -19,8 +19,8 @@ import { latestRevision } from "../org/project-settings.js";
 import { OrgStore } from "../org/store.js";
 import { resolveSlackOrg } from "../org/resolve.js";
 import { orgOfInstallation, projectsOf as projectsOfRepository } from "../triggers/github-events.js";
-import { findLinkedChangeRequest } from "../rovara-code/linked-change-requests.js";
-import { taskKey, type DeveloperTaskRecord } from "../developer/task-records.js";
+import { createRovaraPullRequestIndex } from "../rovara-code/rovara-pull-request-index.js";
+import type { DeveloperTaskRecord } from "../developer/task-records.js";
 import { athenaPort, bedrockInvokeModelPort, s3VectorsPortFromCredentials, type SdkLoader } from "./aws-adapters.js";
 import { DynamoLessonStore } from "../lessons/dynamo-store.js";
 import { lessonDeletionPort } from "../lessons/deletion.js";
@@ -516,21 +516,8 @@ export function createTeamRecordRuntime(input: TeamRecordRuntimeInput): TeamReco
     if (projects.length === 0) return undefined;
     return projects.length === 1 ? { workspaceId: orgId, project: projects[0]! } : { workspaceId: orgId };
   };
-  const rovaraPrs = {
-    async byNumber({ workspaceId, host, repo, number }: { workspaceId: string; host: string; repo: string; number: number }) {
-      if (host !== "github") return undefined;
-      const linked = await findLinkedChangeRequest(state, { hostKind: "github", repositoryAddress: `https://github.com/${repo}`, id: String(number) });
-      // The link must belong to THIS workspace: a pull request number is only unique inside a repository, and a repository belongs to one org's installation.
-      if (linked === undefined || linked.workspaceId === undefined) return undefined;
-      const task = ((await input.documentClient.send(new GetCommand({ TableName: state.tableName, Key: taskKey(linked.taskId), ConsistentRead: true }))) as { Item?: DeveloperTaskRecord }).Item;
-      if (task === undefined || task.orgId !== workspaceId) return undefined;
-      const entry = task.workflow?.pullRequests?.find((pullRequest) => pullRequest.number === number && pullRequest.url === linked.url);
-      if (entry?.headSha === undefined) return undefined;
-      return { taskId: task.taskId, project: task.project, number, url: linked.url, candidateHeadSha: entry.headSha };
-    },
-    // The merge commit of a Rovara pull request is not kept anywhere yet, so a revert named by commit cannot be matched to a task (see the lane report).
-    async byMergeCommit() { return undefined; },
-  };
+  // Rovara's own pull requests, by number (the task's reverse link) and by merge commit (the index written when the merge is recorded, SRL-3): `rovara-code/rovara-pull-request-index.ts`.
+  const rovaraPrs = createRovaraPullRequestIndex({ documentClient: input.documentClient, tableName: state.tableName });
   const priorEdits = priorEditsPort(table, now);
   // Per-editor rows: every change is its own row under the person who made it, and the sink counts a change whose person is not linked (`author_not_linked`).
   // A repository deleted or transferred also marks its source row `failing` (health only: no new revision, see `markSourceFailing`).
