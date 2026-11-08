@@ -193,6 +193,14 @@ describe("CI runs its checks side by side (a Markdown-only change skips them all
     expect(timeoutFor(jobs.test!["timeout-minutes"], CLOUD_REPOSITORY)).toBeGreaterThanOrEqual(60);
   });
 
+  it("gives the public CI copy of Cloud (owner decision 33, org rovaracli) the same time limits as Cloud", async () => {
+    const { jobs } = await workflow();
+    for (const [name, job] of Object.entries(jobs)) {
+      if (name === "live-aws") continue;
+      expect(timeoutFor(job["timeout-minutes"], "rovaracli/rovara"), name).toBe(timeoutFor(job["timeout-minutes"], CLOUD_REPOSITORY));
+    }
+  });
+
   // The public copy of this file runs on pull requests and by hand. The Cloud copy is manual-only (owner decision 2026-10-27, to protect the Actions budget), and
   // narrows what a stray event can start inside `scope` and `local`, because a trigger cannot carry an `if`.
   it("runs on pull requests and by hand only, never on a push to mainline, and skips a draft until it is ready; the Cloud copy runs by hand only", async () => {

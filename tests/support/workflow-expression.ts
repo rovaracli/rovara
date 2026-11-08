@@ -6,7 +6,7 @@
  * workflow's `if` or `timeout-minutes` reads it with `forRepository(text, PUBLIC_REPOSITORY)` to get exactly what the public copy says, or with
  * CLOUD_REPOSITORY to get what Cloud runs. On a file with no repository guard the text comes back unchanged, so one test serves both copies.
  *
- * Only `github.repository` comparisons are decided; every other term is kept as written and the result is simplified around them: `true && x` is `x`,
+ * Only `github.repository` and `github.repository_owner` comparisons are decided; every other term is kept as written and the result is simplified around them: `true && x` is `x`,
  * `false && x` is `false`, and `a && 40 || 25` is the number it evaluates to. Parentheses are kept only where precedence needs them. `x || false` and `x && true` are read as `x` (the file's conditions are booleans).
  */
 export const PUBLIC_REPOSITORY = "PrepLabsAI/Rovara";
@@ -47,6 +47,7 @@ function parse(tokens: string[], repository: string): Node {
     }
     if (token === "!") return { kind: "not", operand: atom() };
     if (token === "github.repository") return { kind: "const", value: repository };
+    if (token === "github.repository_owner") return { kind: "const", value: repository.slice(0, repository.indexOf("/")) };
     if (token === "true" || token === "false") return { kind: "const", value: token === "true" };
     if (/^-?\d+(\.\d+)?$/.test(token)) return { kind: "const", value: Number(token) };
     if (token.startsWith("'")) return { kind: "const", value: token.slice(1, -1).replace(/''/g, "'") };

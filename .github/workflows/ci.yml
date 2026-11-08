@@ -108,7 +108,7 @@ jobs:
     if: needs.scope.outputs.docs_only != 'true'
     runs-on: ubuntu-latest
     # Cloud runs on private 2 vCPU / 8 GB runners, about 1.6x slower than the public 4 vCPU ones. Without the lint (its own job below) this took about 11 minutes there.
-    timeout-minutes: ${{ github.repository == 'PrepLabsAI/Rovara-cloud' && 30 || 15 }}
+    timeout-minutes: ${{ (github.repository == 'PrepLabsAI/Rovara-cloud' || github.repository_owner == 'rovaracli') && 30 || 15 }}
     steps:
       - uses: actions/checkout@v5
         with:
@@ -147,7 +147,7 @@ jobs:
     needs: [scope, checks]
     if: needs.scope.outputs.docs_only != 'true'
     runs-on: ubuntu-latest
-    timeout-minutes: ${{ github.repository == 'PrepLabsAI/Rovara-cloud' && 45 || 15 }}
+    timeout-minutes: ${{ (github.repository == 'PrepLabsAI/Rovara-cloud' || github.repository_owner == 'rovaracli') && 45 || 15 }}
     steps:
       - uses: actions/checkout@v5
         with:
@@ -173,7 +173,7 @@ jobs:
     if: needs.scope.outputs.docs_only != 'true'
     name: test (${{ matrix.shard }}/${{ strategy.job-total }})
     runs-on: ubuntu-latest
-    timeout-minutes: ${{ github.repository == 'PrepLabsAI/Rovara-cloud' && 80 || 25 }}
+    timeout-minutes: ${{ (github.repository == 'PrepLabsAI/Rovara-cloud' || github.repository_owner == 'rovaracli') && 80 || 25 }}
     strategy:
       fail-fast: false
       matrix:
@@ -205,7 +205,7 @@ jobs:
     needs: [scope, checks]
     if: needs.scope.outputs.docs_only != 'true'
     runs-on: ubuntu-latest
-    timeout-minutes: ${{ github.repository == 'PrepLabsAI/Rovara-cloud' && 25 || 15 }}
+    timeout-minutes: ${{ (github.repository == 'PrepLabsAI/Rovara-cloud' || github.repository_owner == 'rovaracli') && 25 || 15 }}
     steps:
       - uses: actions/checkout@v5
         with:
@@ -493,7 +493,7 @@ jobs:
     needs: [scope, checks]
     if: needs.scope.outputs.docs_only != 'true'
     runs-on: ubuntu-latest
-    timeout-minutes: ${{ github.repository == 'PrepLabsAI/Rovara-cloud' && 30 || 15 }}
+    timeout-minutes: ${{ (github.repository == 'PrepLabsAI/Rovara-cloud' || github.repository_owner == 'rovaracli') && 30 || 15 }}
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-node@v5
@@ -530,7 +530,7 @@ jobs:
     needs: [scope, checks, web-e2e-build]
     if: needs.scope.outputs.docs_only != 'true'
     runs-on: ubuntu-latest
-    timeout-minutes: ${{ github.repository == 'PrepLabsAI/Rovara-cloud' && 45 || 20 }}
+    timeout-minutes: ${{ (github.repository == 'PrepLabsAI/Rovara-cloud' || github.repository_owner == 'rovaracli') && 45 || 20 }}
     strategy:
       # A failure in one browser must not cancel the others: each one's result is evidence.
       fail-fast: false
