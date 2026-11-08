@@ -159,6 +159,19 @@ it("SV-1l: a viewer opens the row to read the setting and who can change it, wit
 it("SV-1l: reads the saved environment row's state", () => {
  expect(savedEnvRowOf({ enabled: false, health: "healthy" })).toMatchObject({ state: "neutral", why: "Off for this project. Every new task sets up fresh." });
  expect(savedEnvRowOf({ enabled: true, health: "healthy" })).toMatchObject({ state: "done" });
- expect(savedEnvRowOf({ enabled: true, health: "needs_repair" })).toMatchObject({ state: "attention" });
+ expect(savedEnvRowOf({ enabled: true, health: "needs_repair" })).toMatchObject({ state: "attention", why: "On, but the saved copy needs repair. New tasks set up fresh until the next build works." });
  expect(savedEnvRowOf({ enabled: true, health: "never_proved" })).toMatchObject({ state: "neutral" });
+});
+
+it("SV-1l: an older server that sends no setting offers nothing to open, and a 403 read is not called 'not turned on'", async () => {
+ const old = setup({ route: (request, path) => path === SAVED_ENV && request.method === "GET" ? { status: 200, body: { health: "healthy", canReset: true } } : undefined });
+ await screen.findByRole("region", { name: "Project setup" });
+ await waitFor(() => { expect(within(row("Saved environment")).getByText("On. New tasks start from the saved copy.")).toBeTruthy(); });
+ expect(within(row("Saved environment")).queryByRole("button", { name: "Open" })).toBeNull();
+ old.close();
+ const refused = setup({ route: (request, path) => path === SAVED_ENV && request.method === "GET" ? { status: 403, body: { code: "FORBIDDEN", message: "x" } } : undefined });
+ await screen.findByRole("region", { name: "Project setup" });
+ await waitFor(() => { expect(within(row("Saved environment")).getByText("The saved environment isn't shown for this sign-in.")).toBeTruthy(); });
+ expect(within(row("Saved environment")).queryByRole("button", { name: "Open" })).toBeNull();
+ refused.close();
 });

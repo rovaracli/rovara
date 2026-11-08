@@ -200,7 +200,7 @@ it("turns it back on from off", async () => {
  const section = await region();
  fireEvent.click(await section.findByRole("switch", { name: SWITCH }));
  fireEvent.click(section.getByRole("button", { name: "Save" }));
- expect(await section.findByText("Saved. New tasks start from the saved copy.")).toBeTruthy();
+ expect(await section.findByText("Saved. New tasks start from the saved copy once one is ready.")).toBeTruthy();
  expect(f.puts()[0]!.body).toEqual({ enabled: true });
 });
 
@@ -221,13 +221,17 @@ it("an older server that sends no setting gets no control", async () => {
  expect(section.queryByText(/New tasks in this project only\./u)).toBeNull();
 });
 
-it("a refusal and a lost race are fixed sentences; the choice stays after a failure, and a lost race reads the panel again", async () => {
+it("a refusal and a lost race are fixed sentences, each sent once, and both read the panel again", async () => {
  const refused = setup({ panel: panel({ enabled: true, canChangeSetting: true }), put: () => ({ status: 403, body: { error: { code: "FORBIDDEN", message: "server words <b>x</b>" } } }) });
  fireEvent.click(await (await region()).findByRole("switch", { name: SWITCH }));
- fireEvent.click(screen.getByRole("button", { name: "Save" }));
+ const refusedReads = () => refused.request.mock.calls.filter(([request]) => request.path === PATH && request.method === "GET").length;
+ const readsBefore = refusedReads();
+ const save = screen.getByRole("button", { name: "Save" });
+ act(() => { save.click();save.click(); });
  expect((await screen.findByRole("alert")).textContent).toBe("Only a maintainer of this project can change this setting.");
  expect(document.querySelector("b")).toBeNull();
- expect(screen.getByRole("switch", { name: SWITCH }).getAttribute("aria-checked")).toBe("false");
+ expect(refused.puts()).toHaveLength(1);
+ await waitFor(() => expect(refusedReads()).toBeGreaterThan(readsBefore));
  refused.unmount();
  const stale = setup({ panel: panel({ enabled: true, canChangeSetting: true }), put: () => ({ status: 409, body: { error: { code: "CHANGE_STALE", message: "x" } } }) });
  fireEvent.click(await (await region()).findByRole("switch", { name: SWITCH }));
@@ -246,4 +250,11 @@ it("the setting has no accessibility violations, for a maintainer and for a view
   await expectNoAxeViolations(f.container);
   f.unmount();
  }
+});
+
+it("while off, a waiting or running rebuild is not described as building", async () => {
+ setup({ panel: panel({ enabled: false, canChangeSetting: true, rebuild: { state: "running", reason: "stale" } }) });
+ const section = await region();
+ expect(await section.findByText("Off for this project. Every new task sets up fresh, and no saved copy is built.")).toBeTruthy();
+ expect(section.queryByText(/Building a new saved copy now/u)).toBeNull();
 });

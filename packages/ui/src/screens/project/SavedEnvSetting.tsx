@@ -21,7 +21,7 @@ export interface SavedEnvSettingView { enabled?: boolean | undefined; canChangeS
  * affects and who can change it. The control is offered when the server says the caller may change it (`canChangeSetting`); the server checks the maintainer role again on the write, so this only decides
  * what to show. A person who can't change it reads the value and is told who can. An older server that sends no `enabled` gets no control.
  */
-export function SavedEnvSetting({ project, panel }: { project: string; panel: SavedEnvSettingView }) {
+export function SavedEnvSetting({ project, panel, place = "section" }: { project: string; panel: SavedEnvSettingView; place?: "section" | "checklist" }) {
  const api = useSavedEnvApi(), query = useQueryClient(), sending = useRef(false);
  const [choice, setChoice] = useState<boolean>(), [busy, setBusy] = useState(false), [error, setError] = useState<string>(), [saved, setSaved] = useState<boolean>();
  if (panel.enabled === undefined) return null;
@@ -36,11 +36,12 @@ export function SavedEnvSetting({ project, panel }: { project: string; panel: Sa
    void query.invalidateQueries({ queryKey: savedEnvKey(project) });
   } catch (caught) {
    setError(refusal(caught));
-   if (caught instanceof ApiError && caught.code === "CHANGE_STALE") { setChoice(undefined);void query.invalidateQueries({ queryKey: savedEnvKey(project) }); }
+   // A lost race or a refusal reads the panel again: the value, or whether this person may change it, may be different now.
+   if (caught instanceof ApiError && (caught.code === "CHANGE_STALE" || caught.status === 403)) { setChoice(undefined);void query.invalidateQueries({ queryKey: savedEnvKey(project) }); }
   } finally { sending.current = false;setBusy(false); }
  }
  return <div className="rv-saved-env-setting" aria-busy={busy}>
-  <aside className="rv-saved-env-note" aria-label="About the saved environment setting">
+  <aside className="rv-saved-env-note" aria-label={place === "checklist" ? "About the saved environment setting, in the setup checklist" : "About the saved environment setting"}>
    <p><strong>What a change affects.</strong> {S.AFFECTS}</p>
    <p><strong>Who can change it.</strong> {S.WHO}</p>
    {!canChange && <p role="note">{S.WHY_NOT}</p>}

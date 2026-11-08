@@ -36,7 +36,7 @@ export function EnvironmentPanel({ project }: { project: string }) {
   <p className="rv-muted">{T.HELP}</p>
   <p><strong>{off ? T.OFF : healthText(panel.health)}</strong></p>
   <p>{panel.image === undefined ? T.NO_IMAGE : imageText(panel.image)}</p>
-  {panel.rebuild !== undefined && <p>{rebuildText(panel.rebuild)}</p>}
+  {panel.rebuild !== undefined && !off && <p>{rebuildText(panel.rebuild)}</p>}
   {panel.lastRebuildReason !== undefined && <p className="rv-muted">{lastReasonText(panel.lastRebuildReason)}</p>}
   {panel.lastFailure !== undefined && <p className="rv-muted">{failureText(panel.lastFailure)}</p>}
   {!panel.canReset ? <p className="rv-muted">{T.ONLY_MAINTAINER}</p> : off ? <p className="rv-muted">{T.RESET_OFF}</p> : <><p className="rv-muted">{T.RESET_HELP}</p><Button busy={busy} disabled={busy} onClick={() => { void reset(); }}>{T.RESET}</Button></>}

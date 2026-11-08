@@ -22,7 +22,7 @@ export const SETTING = {
  AFFECTS: "New tasks in this project only. On: a new task starts from the saved copy of the proven setup, and Rovara keeps that copy up to date. Off: every new task installs everything again, so it starts more slowly, and no new saved copy is built. Nothing is blocked either way: a task that can't use the saved copy sets up fresh.",
  WHO: "A maintainer of this project.",
  WHY_NOT: "You can see this setting but not change it. Ask a maintainer of this project.",
- SAVE: "Save", SAVED_ON: "Saved. New tasks start from the saved copy.", SAVED_OFF: "Saved. New tasks set up fresh.",
+ SAVE: "Save", SAVED_ON: "Saved. New tasks start from the saved copy once one is ready.", SAVED_OFF: "Saved. New tasks set up fresh.",
  REFUSED: "Only a maintainer of this project can change this setting.",
  STALE: "Someone changed the saved environment meanwhile. It was read again; check it and save again.",
  FAILED: "Couldn't save the setting. Your choice is still here; try again.",
