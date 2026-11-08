@@ -24,7 +24,8 @@ import { taskStartActor } from "../../lessons/task-subject.js";
 import type { Audience, TrustClass } from "../../lessons/types.js";
 import type { TaskVisibility } from "../../team-record/sources/rovara.js";
 import { cleanForLearning } from "../../lessons/guards.js";
-import type { CapturedRowReader, PullRequestSurface } from "../../lessons/captured-rows.js";
+import type { CapturedRowReader } from "../../lessons/captured-rows.js";
+import { githubPullRequestAddress, type PullRequestAddress, type PullRequestFeedbackView, type PullRequestSurface } from "../../team-record/sources/capture-adapters.js";
 
 /** At most this many human send-backs of a task are looked up (the hook reads one row for each). */
 export const MAX_SEND_BACK_IDS = 50;
@@ -40,19 +41,8 @@ export const MAX_PULL_REQUESTS = 5;
 export const MAX_PULL_REQUEST_COMMENTS = 40;
 const COMMENT_PATH_MAX = 200;
 
-/** What the code host lists of a pull request's comments now: which exist (their ids), and whether an inline comment still points at a line. Never the words or the people: those come from the record. */
-export interface PullRequestFeedbackView {
-  comments: ReadonlyArray<{ kind: PullRequestSurface; id: string; line?: number | undefined }>;
-}
-/** A pull request as the record names it: the host, the repository's full name as the tap lower-cased it, and the number. */
-export interface PullRequestAddress { host: string; repository: string; number: number }
-
-const GITHUB_PULL = /^https:\/\/github\.com\/([\w.-]+)\/([\w.-]+)\/pull\/([1-9][0-9]{0,9})$/u;
-/** The default: GitHub, the one code host this install ships. A plug-in host supplies its own through `pullRequestAddress`. */
-export function githubPullRequestAddress(url: string): PullRequestAddress | undefined {
-  const match = GITHUB_PULL.exec(url);
-  return match === null ? undefined : { host: "github", repository: `${match[1]}/${match[2]}`.toLowerCase(), number: Number(match[3]) };
-}
+export type { PullRequestAddress, PullRequestFeedbackView, PullRequestSurface };
+export { githubPullRequestAddress };
 
 export interface LessonSubjectSourceDeps {
   documentClient: { send(command: unknown): Promise<unknown> };

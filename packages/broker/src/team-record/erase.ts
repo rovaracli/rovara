@@ -3,6 +3,7 @@
 // budget allows and says whether it is complete, and the walk calls again until it is. Hot rows, vectors, facts, lessons and the lake queue follow the same
 // privacy order as a source delete (`purgeItems`): the lake first, a row only after its vector.
 import { markUnstoredChange } from "./prior-edits.js";
+import { MERGE_INDEX_SK_PREFIX, PUSH_INDEX_ENTITY, PUSH_INDEX_SK_PREFIX } from "./capture-indexes.js";
 import { GetCommand, PutCommand } from "@aws-sdk/lib-dynamodb";
 import { dropScopeClaim, SLACK_ADD_SK_PREFIX, SOURCE_OPTIONS_SK_PREFIX, SOURCE_REQUEST_SK_PREFIX, SOURCE_REVISION_SK_PREFIX, SOURCE_SCOPE_SK_PREFIX } from "./source-store.js";
 import { LESSON_SK_PREFIX, RECORD_EVENT_SK_PREFIX, RECORD_FACT_SK_PREFIX, recordActorSourceHash, recordDeveloperHash, teamRecordPk, type OrgId } from "@agentx/contracts";
@@ -89,6 +90,10 @@ export async function erasePerson(deps: PurgeDependencies, orgId: OrgId, who: Er
     found.truncated ||= more.truncated;
   }
   const at = new Date(now()).toISOString();
+  // The pushes the person made are kept by their developer id for the authorship proof of a human edit (capture-indexes.ts); they go with the person.
+  for (const item of found.items.filter((entry) => entry.entityType === PUSH_INDEX_ENTITY)) {
+    if (typeof item.pk === "string" && typeof item.sk === "string") await deleteItem(deps.table, { pk: item.pk, sk: item.sk });
+  }
   const distinct = (items: Item[]): Item[] => [...new Map(items.map((item) => [`${item.pk as string}|${item.sk as string}`, item])).values()];
   const rows = distinct(found.items.filter((item) => item.entityType === "TEAM_RECORD_EVENT"));
   // The person's links: those the index names directly (the actor is on each link, so this works with no row left: retention B keeps none, and a row's TTL removes it),
@@ -401,7 +406,7 @@ async function scrubAccessUnits(deps: PurgeDependencies, orgId: OrgId, ids: read
 const LEARNING_PREFIXES = [LESSON_SK_PREFIX, "SKILL#", "LOAD#", "EVALLOAD#", "SNAPSHOT#", "LESSONSET", "MODE", SOURCE_REQUEST_SK_PREFIX, SOURCE_REVISION_SK_PREFIX] as const;
 const ALL_PREFIXES = ["SOURCE#", RECORD_EVENT_SK_PREFIX, "DERIV#", RECORD_FACT_SK_PREFIX, ...LEARNING_PREFIXES] as const;
 /** The workspace's own items: the delete queue, rate counters, failure counters (`OPSFAIL#`), deleted-at-source markers and the company mode lock. (`LAKEDEL#` stays until the lake job has run.) `EDITED#` marks were the freeze-on-edit rule's (replaced by per-editor rows): nothing writes or reads them any more, and a company erase still removes any left over. */
-const WORKSPACE_PREFIXES = ["DELQ#", "RATE#", "DELETED#", "MODE_LOCK", "VECBUCKET", "ITEM#", "SCOPEDEL#", "ACCESS#", "ACCESSP#", "ERASED#", "ERASESWEEP#", "ERASEPROG#", "TRLINK#", "TRLINKDEV#", "TRUNMATCHED#", "TRUNMAP#", "TRSYNC#", "TRREQ#", "PRIOREDIT#", "TRAUTOLINK", "SKIPPED#", "EDITED#", SOURCE_SCOPE_SK_PREFIX, SOURCE_OPTIONS_SK_PREFIX, SLACK_ADD_SK_PREFIX, OPS_FAILURE_SK_PREFIX] as const;
+const WORKSPACE_PREFIXES = ["DELQ#", "RATE#", "DELETED#", "MODE_LOCK", "VECBUCKET", "ITEM#", "SCOPEDEL#", "ACCESS#", "ACCESSP#", "ERASED#", "ERASESWEEP#", "ERASEPROG#", "TRLINK#", "TRLINKDEV#", "TRUNMATCHED#", "TRUNMAP#", "TRSYNC#", "TRREQ#", "PRIOREDIT#", PUSH_INDEX_SK_PREFIX, MERGE_INDEX_SK_PREFIX, "TRAUTOLINK", "SKIPPED#", "EDITED#", SOURCE_SCOPE_SK_PREFIX, SOURCE_OPTIONS_SK_PREFIX, SLACK_ADD_SK_PREFIX, OPS_FAILURE_SK_PREFIX] as const;
 
 /**
  * A project is archived or a workspace closed: the project's partition is emptied. Its source rows go first, so no tap writes into it again; then rows and facts

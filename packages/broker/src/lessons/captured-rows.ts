@@ -9,6 +9,7 @@
 import type { RecordEvent } from "@agentx/contracts";
 import { bySource, eventFromItem } from "../team-record/store.js";
 import type { TeamRecordTable } from "../team-record/types.js";
+import type { PullRequestSurface } from "../team-record/sources/capture-adapters.js";
 import type { Audience } from "./types.js";
 
 /** What the caller needs of one captured row of a person's words. */
@@ -27,7 +28,7 @@ export interface CapturedWords {
   commitId?: string | undefined;
 }
 
-export type PullRequestSurface = "review_comment" | "discussion" | "review";
+export type { PullRequestSurface };
 
 export interface CapturedRowReader {
   /** The "remember this" note of one correction (the note id is the correction's id). */
