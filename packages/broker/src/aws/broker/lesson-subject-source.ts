@@ -324,8 +324,7 @@ export function lessonSubjectSource(deps: LessonSubjectSourceDeps): TaskSubjectS
       // task is already unnamed: the answer cannot change.
       const feedbackFlowUsed = usedPullRequestComments(workflow) || (workflow?.feedbackDecisions ?? []).some((decision) => decision.selectedCommentIds.length > 0);
       if (feedbackFlowUsed && !unnamed) {
-        let proved = false;
-        try { proved = await provedShownComments(); } catch { proved = false; }
+        const proved = await provedShownComments().catch(() => false);
         if (proved) steerers.add("member"); else unnamed = true;
       }
       const steeringTrust: TrustClass[] = [...steerers, ...(unnamed ? ["outsider" as const] : [])];

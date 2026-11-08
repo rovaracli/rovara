@@ -49,7 +49,6 @@ import { createCaptureModePort, createRecordSink, createSourceConfigPort, NOTES_
 import { createOpConsumer, type QueueRecord } from "./sources/queue.js";
 import { createCaptureAdapters, type CaptureAdapters, type CodeHostCaptureAdapter } from "./sources/capture-adapters.js";
 import { createCodeHostTap, provenRangeFiles, runHumanEdit, type CodeHostDiff, type CodeHostRepo, type HumanEditExtractorPort, type HumanEditJob } from "./sources/codehost.js";
-import type { SourceSystem } from "./sources/ports.js";
 import { tableMergeIndex, tableOnceClaims, tablePushIndex, type MergeIndex } from "./capture-indexes.js";
 import { TEAM_RECORD_REMOVAL_SOURCE, type DeadLetterPort, type OpsQueue, type RemovalFallback, type RemovalFallbackEvent } from "./ops-queue.js";
 import { developerOfTrackerAuthor, isTrackerSystem, linkTrackerByVerifiedEmail, linkTrackerIdentity, listLinkedTrackerUsers, listUnmatchedTrackerUsers, mapTrackerUser, removeTrackerLinks, trackerLinksOf, unmapTrackerUser, UNMATCHED_PREFIX, type LinkedTrackerUser, type TrackerLink, type TrackerLinkVia, type UnmatchedTrackerUser } from "./identity-links.js";
@@ -1383,5 +1382,5 @@ export function createTeamRecordRuntime(input: TeamRecordRuntimeInput): TeamReco
     orgOfSlackTeam: (teamId) => new OrgStore({ documentClient: input.documentClient, tableName: state.tableName, now }).orgForSlackTeam(teamId),
     developerOfSlackUser: async (slackUserId) => (input.developerOfSlackUser === undefined ? undefined : await input.developerOfSlackUser(slackUserId)),
   });
-  return { edition, table, sink, drain, removal, links, trackerPeople, emitter, slackAdd, taskVisibility: (orgId, taskId) => resolveTaskVisibility({ documentClient: input.documentClient, tableName: state.tableName, now }, orgId, taskId), actors, modes, paused, routes, tools, taps: { github, hook, slack, slackStrict, codeHost: (event, binding) => codeHost.handle(bound(event, binding)) }, erase, jobs, captureAdapters, mergeIndex, humanEdit, sourceExcluded: async ({ workspaceId, source, scope, accountId }) => { const row = await config.get(workspaceId, source as SourceSystem, scope); return row === undefined || row.exclude.includes(accountId); }, opsFailures: (orgId) => readOpsFailures(table, orgId, now()) };
+  return { edition, table, sink, drain, removal, links, trackerPeople, emitter, slackAdd, taskVisibility: (orgId, taskId) => resolveTaskVisibility({ documentClient: input.documentClient, tableName: state.tableName, now }, orgId, taskId), actors, modes, paused, routes, tools, taps: { github, hook, slack, slackStrict, codeHost: (event, binding) => codeHost.handle(bound(event, binding)) }, erase, jobs, captureAdapters, mergeIndex, humanEdit, sourceExcluded: async ({ workspaceId, source, scope, accountId }) => { const row = await config.get(workspaceId, source, scope); return row === undefined || row.exclude.includes(accountId); }, opsFailures: (orgId) => readOpsFailures(table, orgId, now()) };
 }

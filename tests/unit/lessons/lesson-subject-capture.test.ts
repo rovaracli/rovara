@@ -142,7 +142,7 @@ describe("a reviewer's comments on the task's pull requests", () => {
     });
     it("reads each commit's range once, however many comments were made on it", async () => {
       const asked: unknown[] = [];
-      const many = { "review_comment:11": one["review_comment:11"]!, "review_comment:12": words("acme/api#pr7:review_comment12", "rae", "And here", { path: "src/a.ts", line: 40, commitId: COMMIT }) };
+      const many = { "review_comment:11": one["review_comment:11"], "review_comment:12": words("acme/api#pr7:review_comment12", "rae", "And here", { path: "src/a.ts", line: 40, commitId: COMMIT }) };
       const { source } = setup({ comments: many, feedback: view({ comments: [{ kind: "review_comment", id: "11" }, { kind: "review_comment", id: "12" }] }) }, { humanChangedFiles: async (input) => { asked.push(input); return [{ path: "src/a.ts", patch }]; } });
       const spans = (await spansOf(source)).filter((s) => s.kind === "pr_comment");
       expect(spans.map((s) => s.ledToChange)).toEqual([true, undefined]);

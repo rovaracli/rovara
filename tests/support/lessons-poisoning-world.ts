@@ -167,7 +167,7 @@ export function spanOfRow(row: StoredEvent, kind: SpanKind, authorId?: string): 
   return {
     kind, text: row.text ?? "", trust: row.trust, eventId: row.id,
     ...(authorId === undefined ? {} : { authorId }),
-    audience: row.audience as NonNullable<EvidenceSpan["audience"]>, scopes: [row.scope],
+    audience: row.audience, scopes: [row.scope],
   };
 }
 
