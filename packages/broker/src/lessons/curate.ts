@@ -4,6 +4,7 @@
 import { randomUUID } from "node:crypto";
 import { z } from "zod";
 import { firstExpiry } from "./expiry.js";
+import { logRef } from "./log-ref.js";
 import { emitAudit, learningCaps, type Edition } from "./policy.js";
 import { isLearningRefusal, noteJudgeRecovered, noteModelFailure, notePause, pauseOfLook, spendLook, type LessonsPauseStore } from "./pause.js";
 import type { AlertSink, LearningSpend, LessonDeps, LessonEmbedder, LessonVectors, PipelineModel } from "./ports.js";
@@ -348,7 +349,7 @@ export async function curateDraft(deps: CurateDeps, key: ScopeKey, draft: Lesson
     // The card is already committed, so a fault here never reaches the caller (a retry would curate the draft a second time and make a second card): the trial lesson stays live, one fixed line says so, and the
     // person who decides the card (or the lesson's own fade) settles it.
     if (!matchesRejectedLesson && isTrialLesson(other) && other.status === "active" && draft.provenance.memberCorrection === true) {
-      try { await retireLesson(deps, key, other.id, "contradicted", undefined, "lesson.trial_retired"); } catch { deps.log?.("lessons.trial_retire_deferred", {}); }
+      try { await retireLesson(deps, key, other.id, "contradicted", undefined, "lesson.trial_retired"); } catch { deps.log?.("lessons.trial_retire_deferred", { lesson: logRef(key.workspaceId, other.id) }); }
     }
     try { await deps.alerts?.alert(key.workspaceId, key.project, "lesson_contradiction"); } catch { /* the card is already in the queue */ }
     return { outcome: "contradiction", lesson: created, ...(named ? { other: other.id } : {}), ...(matchesRejectedLesson ? { matchesRejected: true as const } : {}) };

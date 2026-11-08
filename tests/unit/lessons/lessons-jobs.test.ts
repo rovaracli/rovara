@@ -1,7 +1,7 @@
 // Lessons in production, lane 2: the hourly resume of unfinished lesson deletions (WB-7) and the nightly re-reflection of reverted tasks, from the record's `rovara.reverted_by` link rows of the last 72 hours.
 import { describe, expect, it, vi } from "vitest";
 import type { CounterDeps } from "../../../packages/broker/src/lessons/counters.js";
-import { REVERT_WINDOW_MS, lessonsExpireJob, lessonsNightlyJob, lessonsPromoteJob, lessonsResumeJob, lessonsRevertJob, type LessonsJobDeps } from "../../../packages/broker/src/lessons/jobs.js";
+import { REVERT_WINDOW_MS, lessonsExpireJob, lessonsNightlyJob, lessonsPromoteJob, lessonsResumeJob, lessonsRevertJob, lessonsTrialRepairJob, type LessonsJobDeps } from "../../../packages/broker/src/lessons/jobs.js";
 import { PENDING_GRACE_MS, projectHash, tableNightlyState, type NightlyPass, type NightlyPassState, type NightlyStateStore } from "../../../packages/broker/src/lessons/nightly-state.js";
 import { REFUSING_JUDGE } from "../../../packages/broker/src/lessons/runtime.js";
 import { sweepExpired } from "../../../packages/broker/src/lessons/expiry.js";
@@ -238,6 +238,76 @@ describe("LP-13 C2: the hourly job lists stuck rollback intents (count only)", (
     const w = await setup();
     const { deps } = jobDeps(w);
     expect(await lessonsResumeJob(deps, ORG_A, ["web"], 10_000)).toEqual({ lessonDeletionsResumed: 0, lessonResumeFailures: 0, lessonResumeSkipped: 0 });
+  });
+});
+
+describe("LP-13 review L12: a trial lesson a member's card contradicts is retired by the nightly repair", () => {
+  const KEYW = { workspaceId: ORG_A, project: "web" };
+  const trialOld = (over: Partial<Lesson> = {}): Lesson => lessonRecord({
+    id: "les_old1", workspaceId: ORG_A, project: "web", tier: 1, status: "active", approvals: [{ approvalId: "t1", by: TRIAL_APPROVER, at: 1, mode: "trial" }], trial: { state: "trial", startedAt: NOW - DAY }, ...over,
+  });
+  const card = (over: Partial<Lesson> = {}, member = true): Lesson => lessonRecord({
+    id: "les_card1", workspaceId: ORG_A, project: "web", status: "pending", contradictsWith: "les_old1", tierReasons: ["contradiction"],
+    provenance: { ...lessonRecord().provenance, memberCorrection: member }, ...over,
+  });
+  async function repair(lessons: Lesson[], over: Partial<LessonsJobDeps> = {}) {
+    const w = await setup();
+    const store = new InMemoryLessonStore();
+    await seed(store, ...lessons);
+    const audit = new Audit();
+    const { deps, logs } = jobDeps(w, { settings: settings({ mode: "On", preset: "standard" }), queue: undefined, maintain: { store, audit, now: () => NOW }, ...over });
+    return { deps, store, audit, logs };
+  }
+  const DAY = 86_400_000;
+
+  it("retires the live trial lesson (audited as the contradicted trial retire) and leaves the card for the person; a second night changes nothing", async () => {
+    const { deps, store, audit } = await repair([trialOld(), card()]);
+    expect(await lessonsTrialRepairJob(deps, ORG_A, ["web"], 10_000)).toMatchObject({ trialsRetiredByCard: 1, trialRepairFailures: 0 });
+    expect((await store.get(KEYW, "les_old1"))!.status).toBe("retired");
+    expect((await store.get(KEYW, "les_card1"))!.status).toBe("pending");
+    expect(audit.events.find((event) => event.action === "lesson.trial_retired")).toMatchObject({ lessonId: "les_old1", facts: { reason: "contradicted" } });
+    expect(await lessonsTrialRepairJob(deps, ORG_A, ["web"], 10_000)).toMatchObject({ trialsRetiredByCard: 0 });
+    expect(audit.events.filter((event) => event.action === "lesson.trial_retired")).toHaveLength(1);
+  });
+  it("only the rule curate applies: a card that is not from a member's correction, a lesson that is not live on trial, a card that is not pending, or a card naming nothing leaves everything as it was", async () => {
+    for (const lessons of [
+      [trialOld(), card({}, false)],
+      [trialOld({ status: "retired" }), card()],
+      [trialOld({ trial: undefined, approvals: [{ approvalId: "p1", by: "ann", at: 1, mode: "one" }] }), card()],
+      [trialOld(), card({ status: "rejected" })],
+      [trialOld(), card({ contradictsWith: undefined })],
+    ] as Lesson[][]) {
+      const { deps, store, audit } = await repair(lessons);
+      expect(await lessonsTrialRepairJob(deps, ORG_A, ["web"], 10_000)).toMatchObject({ trialsRetiredByCard: 0 });
+      expect((await store.get(KEYW, "les_old1"))!.status).toBe(lessons[0]!.status);
+      expect(audit.events.filter((event) => event.action === "lesson.trial_retired")).toEqual([]);
+    }
+  });
+  it("runs only where learning is on, runs before the promotion in the nightly run (a contradicted lesson is not made stable first), and is bounded per project", async () => {
+    const off = await repair([trialOld(), card()], { settings: settings({ mode: "Off" }) });
+    expect(await lessonsTrialRepairJob(off.deps, ORG_A, ["web"], 10_000)).toMatchObject({ trialsRetiredByCard: 0 });
+    expect((await off.store.get(KEYW, "les_old1"))!.status).toBe("active");
+    // ripe for stable (14 days, 3 loads) AND contradicted by a card: the nightly run retires it, it is not promoted
+    const ripe = await repair([trialOld({ trial: { state: "trial", startedAt: NOW - 15 * DAY }, counters: { loaded: 5, helpful: 0, harmful: 0, citationStale: 0 } }), card()]);
+    expect(await lessonsNightlyJob(ripe.deps, ORG_A, ["web"], 10_000)).toMatchObject({ trialsRetiredByCard: 1, trialsPromoted: 0 });
+    expect((await ripe.store.get(KEYW, "les_old1"))!.status).toBe("retired");
+    const many = await repair([...Array.from({ length: 25 }, (_, i) => trialOld({ id: `les_t${String(i).padStart(2, "0")}` })), ...Array.from({ length: 25 }, (_, i) => card({ id: `les_c${String(i).padStart(2, "0")}`, contradictsWith: `les_t${String(i).padStart(2, "0")}` }))]);
+    const first = await lessonsTrialRepairJob(many.deps, ORG_A, ["web"], 10_000);
+    expect(first.trialsRetiredByCard).toBeGreaterThan(0);
+    expect(first.trialsRetiredByCard).toBeLessThan(25);
+    // the rest go on the next nights
+    let total = first.trialsRetiredByCard!;
+    for (let night = 0; night < 5 && total < 25; night += 1) total += (await lessonsTrialRepairJob(many.deps, ORG_A, ["web"], 10_000)).trialsRetiredByCard!;
+    expect(total).toBe(25);
+  });
+  it("a retire that fails is counted and the rest go on; nothing a person wrote or an id leaves the job", async () => {
+    const w = await repair([trialOld(), trialOld({ id: "les_old2" }), card(), card({ id: "les_card2", contradictsWith: "les_old2" })]);
+    const real = w.deps.maintain!.store.commit.bind(w.deps.maintain!.store);
+    let failed = false;
+    w.deps.maintain!.store.commit = async (...args: Parameters<typeof real>) => { if (!failed) { failed = true; throw new Error("table text"); } return real(...args); };
+    const result = await lessonsTrialRepairJob(w.deps, ORG_A, ["web"], 10_000);
+    expect(result).toMatchObject({ trialsRetiredByCard: 1, trialRepairFailures: 1 });
+    expect(w.logs).toEqual(["lessons_job.trial_repair_failed"]);
   });
 });
 

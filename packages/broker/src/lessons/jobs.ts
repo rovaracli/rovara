@@ -15,7 +15,8 @@ import type { ReflectQueue } from "./reflect-queue.js";
 import type { TeamRecordTable } from "../team-record/types.js";
 import { revertedTasksSince } from "./task-outcome-rows.js";
 import { sweepExpired } from "./expiry.js";
-import { promoteStableTrials, type StableDeps } from "./trial.js";
+import { retireLesson } from "./curate.js";
+import { isTrialLesson, promoteStableTrials, type StableDeps } from "./trial.js";
 
 /** LP-13: 72 hours. The rows are found by their event time, and a revert can reach the record late (GitHub redelivers for three days); the worker's once-claim on `LEARN#<task>#reverted` makes a repeat free. */
 export const REVERT_WINDOW_MS = 72 * 60 * 60 * 1000;
@@ -159,6 +160,43 @@ export async function lessonsPromoteJob(deps: Pick<LessonsJobDeps, "table" | "se
   return { trialsPromoted: promoted, promoteFailures: failed };
 }
 
+/** The most trial lessons one project's repair retires in a night; the rest go on the next nights. */
+export const MAX_TRIAL_REPAIRS_PER_PROJECT = 20;
+
+/**
+ * Nightly (LP-13 review L12). A member's correction that contradicts a lesson live on trial makes a card for people and retires that lesson (`curate.ts`, `toPerson`). The retire comes after the card is committed, and a
+ * store fault in it is not allowed to undo the card, so it can be left undone. This repairs it by the same rule: each pending card that names a lesson, from a member's correction, whose named lesson is still
+ * live on trial is retired (audited as the contradicted trial retire). It runs before the promotion so a contradicted lesson is not made stable first. Where learning is not Off; bounded in time and in lessons
+ * per project; a failure is counted and logged in one fixed line, and the others go on. Returns counts only.
+ */
+export async function lessonsTrialRepairJob(deps: Pick<LessonsJobDeps, "settings" | "maintain" | "now" | "log">, orgId: string, projects: readonly string[], budgetMs: number): Promise<Record<string, number>> {
+  const org = OrgIdSchema.safeParse(orgId);
+  if (!org.success || deps.maintain === undefined) return { trialsRetiredByCard: 0 };
+  const started = deps.now();
+  const outOfTime = (): boolean => deps.now() - started > budgetMs;
+  let retired = 0, failed = 0;
+  for (const project of [...new Set(projects)].sort().slice(0, MAX_PROJECTS_PER_JOB)) {
+    if (outOfTime()) break;
+    try {
+      if ((await resolveLearning(deps.settings, org.data, project)).mode === "Off") continue;
+      const key = { workspaceId: org.data, project };
+      const cards = (await deps.maintain.store.list(key, { statuses: ["pending"] })).filter((card) => card.contradictsWith !== undefined && card.provenance.memberCorrection === true).sort((a, b) => a.id.localeCompare(b.id));
+      let tried = 0;
+      for (const card of cards) {
+        if (tried >= MAX_TRIAL_REPAIRS_PER_PROJECT || outOfTime()) break;
+        const other = await deps.maintain.store.get(key, card.contradictsWith!);
+        if (other === undefined || !isTrialLesson(other) || other.status !== "active") continue;
+        tried += 1;
+        try { if (await retireLesson(deps.maintain, key, other.id, "contradicted", undefined, "lesson.trial_retired")) retired += 1; } catch { failed += 1; deps.log("lessons_job.trial_repair_failed", {}); }
+      }
+    } catch {
+      failed += 1;
+      deps.log("lessons_job.trial_repair_failed", {});
+    }
+  }
+  return { trialsRetiredByCard: retired, trialRepairFailures: failed };
+}
+
 /**
  * Nightly. Per project where learning is not Off: first settles the helpful marks that fell due (`settleHelpful`: each applies the mark and renews the lesson), THEN marks lessons past their expiry (active) and
  * pending lessons nobody decided in time as `expired` (`sweepExpired`: audited, committed through the store's erasure fence, the rule checked again on the fresh copy). So a lesson people use is renewed before the
@@ -212,11 +250,13 @@ export async function lessonsExpireJob(deps: Pick<LessonsJobDeps, "table" | "set
   return { lessonsExpired: expired, expireFailures: failed, helpfulSettled: settled };
 }
 
-/** The nightly run: the revert re-reflection with the first half of the budget, then the expiry sweep and the trial promotion with what is left, so neither can starve the other. */
+/** The nightly run: the revert re-reflection with the first half of the budget, then the expiry sweep, the trial repair and the trial promotion with what is left, so neither can starve the other. */
 export async function lessonsNightlyJob(deps: LessonsJobDeps, orgId: string, projects: readonly string[], budgetMs: number): Promise<Record<string, number>> {
   const started = deps.now();
   const reverts = await lessonsRevertJob(deps, orgId, projects, budgetMs / 2);
   const expiries = await lessonsExpireJob(deps, orgId, projects, Math.max(0, (budgetMs - (deps.now() - started)) / 2));
+  // The repair of a trial lesson a card contradicts comes before the promotion: a contradicted lesson is not made stable first.
+  const repairs = await lessonsTrialRepairJob(deps, orgId, projects, Math.max(0, (budgetMs - (deps.now() - started)) / 4));
   const promotions = await lessonsPromoteJob(deps, orgId, projects, Math.max(0, budgetMs - (deps.now() - started)));
-  return { ...reverts, ...expiries, ...promotions };
+  return { ...reverts, ...expiries, ...repairs, ...promotions };
 }

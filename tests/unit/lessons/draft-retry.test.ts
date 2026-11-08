@@ -2,6 +2,7 @@
 // (the customer pays for each call, so a retry must not double-charge), after a fault that is not a passing one, or when the deadline is near or past.
 import { describe, expect, it } from "vitest";
 import { DRAFT_RETRY_MIN_LEFT_MS, processDraftRetrying } from "../../../packages/broker/src/lessons/draft-retry.js";
+import { logRef } from "../../../packages/broker/src/lessons/log-ref.js";
 import { withLearningAttempt } from "../../../packages/broker/src/lessons/learning-deadline.js";
 import { InMemoryLessonStore } from "../../../packages/broker/src/lessons/store.js";
 import type { ProcessDeps } from "../../../packages/broker/src/lessons/process.js";
@@ -221,9 +222,10 @@ describe("LP-13 review M2: the trial lesson a card contradicts", () => {
     spend.admitted = false;
     let n = 0;
     const logs: string[] = [];
+    const fields: Array<Record<string, unknown>> = [];
     const deps = {
       store, embedder, vectors: new MemoryVectors(), judgeModel: new ScriptedModel(), spend, audit, alerts: new Alerts(), now: clock.now, verifier: verifier("valid"), facts: facts(), settings: settings({ preset: "standard" }),
-      newId: () => `les_${String(++n).padStart(4, "0")}`, judge: { rate: async () => "unrelated" }, directory: directory({ eligibleIds: ["owner", "ann", "bob"] }), access: allowAllAccess, log: (event: string) => { logs.push(event); },
+      newId: () => `les_${String(++n).padStart(4, "0")}`, judge: { rate: async () => "unrelated" }, directory: directory({ eligibleIds: ["owner", "ann", "bob"] }), access: allowAllAccess, log: (event: string, logged: Record<string, unknown>) => { logs.push(event); if (event === "lessons.trial_retire_deferred") fields.push(logged); },
     } as unknown as ProcessDeps;
     const member = (title: string, body: string): LessonDraft => draft({ title, description: "", body, provenance: { ...draft().provenance, sourceKinds: ["send_back"], memberCorrection: true, claimsSupported: true, fromSharedTask: true } });
     const first = (await processDraftRetrying(deps, KEY, member("Use withRetry", "Always use withRetry for HTTP retries in the api service client calls"), noWait)).lesson!;
@@ -237,6 +239,9 @@ describe("LP-13 review M2: the trial lesson a card contradicts", () => {
     expect(out.outcome.outcome).toBe("contradiction");
     expect(retried).toEqual([]);
     expect(logs).toContain("lessons.trial_retire_deferred");
+    // the lesson is named only by a hash (like every learning log line), so the left-over can be found without an id in the log
+    expect(fields).toEqual([{ lesson: logRef(KEY.workspaceId, first.id) }]);
+    expect(JSON.stringify(fields)).not.toContain(first.id);
     expect((await store.list(KEY)).filter((lesson) => lesson.status === "pending" && lesson.contradictsWith !== undefined)).toHaveLength(1);
     expect((await store.get(KEY, first.id))!.status).toBe("active");
     expect(audit.actions().filter((action) => action === "lesson.contradiction")).toHaveLength(1);
