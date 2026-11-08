@@ -3,13 +3,16 @@
 // can't see is never counted. Bounded: at most LESSON_HOME_PROJECTS_MAX projects the person maintains, read at once inside Home's source time. Nothing is written. The reader is plugged in at
 // handler start where the team record and lessons are on (`setLessonsHomeReader`); without it the source makes no card.
 import { createHash } from "node:crypto";
-import { projectAllows, type OrgId } from "@agentx/contracts";
+import { lessonsPauseLine, projectAllows, type OrgId } from "@agentx/contracts";
 import { fit, quoted, registerHomeCardSource, type HomeCardSource, type HomeSourceCard } from "../agent-sessions/home.js";
 
 export const LESSON_HOME_PROJECTS_MAX = 10;
 
-/** How many lessons of a project wait for this person's OK (0 when none, when they can't decide there, or when learning is off), and since when. */
-export type LessonsHomeReader = (orgId: OrgId, developerId: string, project: string) => Promise<{ waiting: number; at?: string | undefined }>;
+/**
+ * How many lessons of a project wait for this person's OK (0 when none, when they can't decide there, or when learning is off), and since when; and, for a person who decides there, why learning is paused
+ * for the project (lane 1b: never silent), as a fixed code and a time.
+ */
+export type LessonsHomeReader = (orgId: OrgId, developerId: string, project: string) => Promise<{ waiting: number; at?: string | undefined; paused?: { code: string; at: number; scope?: string | undefined } | undefined }>;
 
 let reader: LessonsHomeReader | undefined;
 export function setLessonsHomeReader(next: LessonsHomeReader | undefined): void { reader = next; }
@@ -25,12 +28,18 @@ export const lessonsHomeSource: HomeCardSource = {
     const maintained = (await members.projectsOf(orgId, { developerId: caller.developerId, orgRole: caller.orgRole }))
       .filter((entry) => projectAllows(entry.role, "edit_settings")).map((entry) => entry.project).sort().slice(0, LESSON_HOME_PROJECTS_MAX);
     const origin = deps.origin.replace(/\/+$/u, "");
-    const counted = await Promise.all(maintained.map(async (project) => ({ project, ...(await read(orgId, caller.developerId, project).catch((): { waiting: number; at?: string } => ({ waiting: 0 }))) })));
-    return counted.filter((entry) => entry.waiting > 0).map(({ project, waiting, at }) => ({
-      cardId: `lesson_waiting:${hashOf(orgId, project)}`, kind: "lesson_waiting", title: `Lessons waiting in ${quoted(project)}`,
-      reason: fit(`${String(waiting)} ${waiting === 1 ? "lesson waits" : "lessons wait"} for a maintainer's OK in ${quoted(project)}`, ""), at: at ?? new Date(deps.now()).toISOString(),
-      buttons: [{ label: "Review", action: "open" as const, href: `${origin}/app/projects/${encodeURIComponent(project)}?tab=lessons`, method: "GET" as const }],
-    }));
+    const counted = await Promise.all(maintained.map(async (project) => ({ project, ...(await read(orgId, caller.developerId, project).catch((): { waiting: number; at?: string; paused?: { code: string; at: number; scope?: string } } => ({ waiting: 0 }))) })));
+    return counted.filter((entry) => entry.waiting > 0 || entry.paused !== undefined).map(({ project, waiting, at, paused }) => {
+      const pausedLine = paused === undefined ? undefined : lessonsPauseLine(paused);
+      const waitingLine = waiting > 0 ? `${String(waiting)} ${waiting === 1 ? "lesson waits" : "lessons wait"} for a maintainer's OK in ${quoted(project)}` : undefined;
+      return {
+        cardId: `lesson_waiting:${hashOf(orgId, project)}`, kind: "lesson_waiting" as const,
+        title: waitingLine === undefined ? `Lessons paused in ${quoted(project)}` : `Lessons waiting in ${quoted(project)}`,
+        reason: fit([waitingLine, pausedLine].filter((line): line is string => line !== undefined).join(". "), ""),
+        at: at ?? (paused === undefined ? new Date(deps.now()).toISOString() : new Date(paused.at).toISOString()),
+        buttons: [{ label: waitingLine === undefined ? "Open" : "Review", action: "open" as const, href: `${origin}/app/projects/${encodeURIComponent(project)}?tab=lessons`, method: "GET" as const }],
+      };
+    });
   },
 };
 

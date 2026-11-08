@@ -2,6 +2,7 @@
 // code turns into lesson drafts; the model never writes to a store. Any parse failure drops the whole output, with no retry loop.
 import { randomUUID } from "node:crypto";
 import { cleanForLearning, requestsCapabilityChange } from "./guards.js";
+import { isLearningRefusal, noteModelFailure, notePause, noteRecovered, pauseOfLook, spendLook, type LessonsPauseStore } from "./pause.js";
 import { emitAudit, learningCaps, modeAllows, resolveLearning, type Edition, type LearningSettingsReader } from "./policy.js";
 import type { Clock, LearningSpend, LessonAuditSink, Metrics, PipelineModel } from "./ports.js";
 import { buildReflectorInput, type MarkedSpan, type ReflectSubject } from "./reflect-input.js";
@@ -32,7 +33,7 @@ export interface LessonDraft {
 export type ReflectStatus = "ok" | "skipped" | "ineligible" | "dropped";
 export interface ReflectResult {
   status: ReflectStatus;
-  /** A fixed code: mode_off, spend_refused, night_cap, model_error, over_cap, parse_error, no_candidates, or an ineligible reason. */
+  /** A fixed code: mode_off, spend_refused, learning_paused, night_cap, model_error, over_cap, parse_error, no_candidates, or an ineligible reason. */
   reason: string;
   drafts: LessonDraft[];
   costUsd: number;
@@ -44,9 +45,13 @@ export interface ReflectDeps {
   now: Clock; metrics?: Metrics; newId?: () => string;
   /** Overrides the edition's default caps (tests, and a Public workspace's own limits). */
   capsOverride?: { perTaskUsd?: number; perNightUsd?: number };
+  /** Where "lessons paused" is recorded when learning cannot run, and cleared when a call succeeds. Absent: nothing is recorded. */
+  pause?: LessonsPauseStore;
 }
 
 const MAX_OUTPUT_TOKENS = 1800;
+/** The source key of CI failures, as the subject source writes it. */
+const CI_SOURCE_KEY = "ci";
 /** Kinds a person writes. Plans are agent text, and outcomes, CI output and loaded lessons are not people. */
 const PERSON_KINDS: ReadonlySet<string> = new Set(["send_back", "remembered", "human_edit", "close_reason", "review_finding", "intent"]);
 
@@ -72,34 +77,60 @@ export async function reflectSubject(deps: ReflectDeps, subject: ReflectSubject,
   }
 
   const caps = learningCaps(deps.edition, deps.capsOverride);
-  const estimate = caps.perTaskUsd ?? 0.15;
+  const request = { purpose: "reflect" as const, system: input.system, user: input.user, maxOutputTokens: MAX_OUTPUT_TOKENS, workspaceId: subject.workspaceId, project: subject.project };
+  // The hold is sized to the call by the model itself (the cheapest suitable model's worst-case price for this prompt). A model that cannot quote keeps the edition's fixed per-task figure.
+  let estimate: number;
+  const perTaskCap = caps.perTaskUsd;
+  if (deps.model.quote !== undefined) {
+    let quoted: Awaited<ReturnType<NonNullable<PipelineModel["quote"]>>>;
+    try { quoted = await deps.model.quote(request); } catch { deps.metrics?.count("learning.reflect_failed", { reason: "model_error" }); await noteModelFailure(deps.pause, subject.workspaceId, subject.project); return none("dropped", "model_error"); }
+    if (!quoted.ok) { await notePause(deps.pause, subject.workspaceId, subject.project, quoted.code); return none("skipped", "learning_paused"); }
+    estimate = quoted.usd;
+    // Public keeps its per-task cap whatever the quote (owner rule "Public keeps the caps"): a call whose sized hold is above it is refused. Enterprise has none of its own (`learningCaps`).
+    if (perTaskCap !== undefined && estimate > perTaskCap) { await notePause(deps.pause, subject.workspaceId, subject.project, "cost_too_high"); return none("skipped", "learning_paused"); }
+  } else estimate = caps.perTaskUsd ?? 0.15;
   if (budget?.capUsd !== undefined && budget.spentUsd + estimate > budget.capUsd) return none("skipped", "night_cap");
-  let admitted: boolean;
-  try { admitted = await deps.spend.admit(subject.workspaceId, estimate); } catch { admitted = false; }
-  if (!admitted) return none("skipped", "spend_refused");
+  const look = await spendLook(deps.spend, subject.workspaceId, estimate);
+  if (look !== "ok") {
+    // The month is full (the company's), the call is larger than the month's whole cap (a cost problem), or the counter could not be read (a fault: nothing is recorded as a reason).
+    const code = pauseOfLook(look);
+    if (code !== undefined) await notePause(deps.pause, subject.workspaceId, subject.project, code);
+    return none("skipped", "spend_refused");
+  }
 
   let reply: { text: string; costUsd: number; model: string };
   try {
     // The request has no field for tools: a pipeline model can only return text.
-    reply = await deps.model.complete({ purpose: "reflect", system: input.system, user: input.user, maxOutputTokens: MAX_OUTPUT_TOKENS, workspaceId: subject.workspaceId, project: subject.project, budgetUsd: estimate });
-  } catch {
-    // The model's key held its cap in the company's spend ledger; whatever the failed call cost is settled from there. Nothing to give back here.
+    reply = await deps.model.complete({ ...request, budgetUsd: estimate });
+  } catch (error) {
+    if (isLearningRefusal(error)) {
+      // Refused before the call: nothing was spent.
+      await notePause(deps.pause, subject.workspaceId, subject.project, error.code);
+      return none("skipped", "learning_paused");
+    }
+    // The model's key held its cap in the company's spend ledger; whatever the failed call cost is settled from there. A failed call may have spent money, so it counts toward the nightly budget (R6).
+    if (budget !== undefined) budget.spentUsd += estimate;
     deps.metrics?.count("learning.reflect_failed", { reason: "model_error" });
+    await noteModelFailure(deps.pause, subject.workspaceId, subject.project);
     return none("dropped", "model_error");
   }
   const cost = Number.isFinite(reply.costUsd) && reply.costUsd > 0 ? reply.costUsd : 0;
   // `cost` is the cap the call's key held (an upper bound): the nightly budget counts that, and the ledger books the real figure when the proxy has flushed it.
   if (budget !== undefined) budget.spentUsd += cost;
-  if (caps.perTaskUsd !== undefined && cost > caps.perTaskUsd) {
+  if (perTaskCap !== undefined && cost > perTaskCap) {
     deps.metrics?.count("learning.reflect_failed", { reason: "over_cap" });
     return none("dropped", "over_cap", cost);
   }
 
   let output: { candidates: unknown[] };
   try { output = ReflectorOutputSchema.parse(parseJson(reply.text)); } catch {
+    // R3: a reply that cannot be used is a failed call (it was billed): it counts toward the project's model_failed pause, and clears nothing.
     deps.metrics?.count("learning.reflect_failed", { reason: "parse_error" });
+    await noteModelFailure(deps.pause, subject.workspaceId, subject.project);
     return none("dropped", "parse_error", cost);
   }
+  // Only a reply that parsed is a success: it clears the pause and the failure count.
+  await noteRecovered(deps.pause, subject.workspaceId, subject.project);
 
   const runId = (deps.newId ?? randomUUID)();
   const drafts: LessonDraft[] = [];
@@ -179,7 +210,10 @@ async function toDraft(
     events: [
       ...(subject.outcome === "reverted" ? [{ kind: "revert" as const, actor: subject.revertedBy }] : []),
       ...everything.filter((s) => s.kind === "send_back" && s.trust === "member").map((s) => ({ kind: "send_back" as const, actor: s.authorId })),
-      ...everything.filter((s) => s.kind === "ci_failure" && s.trust === "rovara").map((s) => ({ kind: "ci_failure" as const, actor: s.authorId })),
+      // A CI failure is a structured fact: it came through the source's CI path (`sourceKey` "ci", set by the broker's subject source, never by span text) whatever trust its text carries (worker-written text is
+      // `system`); the older `rovara` trust still counts. It is a MEASURED outcome only when the failing revision was pushed by a person: the span's author is that known member, compared as for any outcome (not one of
+      // the lesson's authors, not the task's initiator). A failure on a revision the agent pushed names no person, so it stays evidence in the prompt and measures nothing: the agent cannot corroborate its own lesson.
+      ...everything.filter((s) => s.kind === "ci_failure" && (s.sourceKey === CI_SOURCE_KEY || s.trust === "rovara")).map((s) => ({ kind: "ci_failure" as const, actor: s.authorId })),
     ],
   });
   return {

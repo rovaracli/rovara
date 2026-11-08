@@ -1,7 +1,7 @@
 // Learning v2 L3b: what the Lessons tab, the Sources tab and the task page's lessons list read (design 1.2). Everything a viewer is told goes through `readVisible` (the frozen
 // snapshot AND the access records now), so a lesson from a source the viewer cannot see is counted for a person who decides and otherwise not mentioned. People are named the way the
 // rest of Rovara names them (`attributionNameOf`; an erased or unreadable person is "a former member"). Nothing here writes: the writes are in routes.ts, through the lesson library.
-import { agentXError, type LessonPerson, type LessonView, type LessonsViewAnswer, type OrgId } from "@agentx/contracts";
+import { agentXError, type LessonPerson, type LessonsPauseCode, type LessonView, type LessonsViewAnswer, type OrgId } from "@agentx/contracts";
 import { attributionNameOf, type AttributionReader } from "../attribution/resolve.js";
 import type { TeamRecordTable } from "../team-record/types.js";
 import { listSourceConfigs } from "../team-record/store.js";
@@ -11,6 +11,7 @@ import { buildWeeklyDigest } from "./digest.js";
 import { lessonPanelRows } from "./panel.js";
 import { readVisible, type LessonLog } from "./read-visible.js";
 import type { ApproverDirectory } from "./ports.js";
+import type { LessonsPauseStore } from "./pause.js";
 import type { LessonStore, ScopeKey } from "./store.js";
 import { ERASED_MARK, idIn, normId, normSource, sameId, type IdentitySet, type Lesson } from "./types.js";
 import { lessonValue } from "./value.js";
@@ -23,6 +24,10 @@ export interface LessonViewDeps {
   log?: LessonLog;
   /** The Team record table, for the Sources tab. Absent: the sources route answers "not set up". */
   sources?: { table: TeamRecordTable };
+  /** Why learning cannot run for the project right now (lessons in production, lane 1b). Absent: the tab says nothing about it. */
+  pause?: LessonsPauseStore;
+  /** Whether a recorded reason still holds (true), or its cause is gone (false: a provider was connected, the budget was raised). A reason whose cause is gone is cleared when it is read. Absent: every reason is shown until a learning call succeeds. */
+  pauseStillApplies?: (workspaceId: string, project: string, code: LessonsPauseCode) => Promise<boolean>;
 }
 export interface LessonCaller { orgId: OrgId; developerId: string }
 
@@ -145,6 +150,13 @@ export async function buildLessonsView(deps: LessonViewDeps, caller: LessonCalle
   // The lock is "the reason" only when it made the mode stricter than the project's own choice.
   const lockedByCompany = lock.success && own.success && stricterMode(own.data, lock.data) !== own.data;
 
+  // Why learning is paused is for the people who decide here (the same rule as Home): it names the company's budget state, which a reader has no use for. A reason whose cause has gone is cleared, not shown.
+  let paused = resolved.mode === "Off" || !state.canDecide ? undefined : await deps.pause?.read(key.workspaceId, key.project).catch(() => undefined);
+  if (paused !== undefined && deps.pauseStillApplies !== undefined && !(await deps.pauseStillApplies(key.workspaceId, key.project, paused.code).catch(() => true))) {
+    // Only the reason that was shown: one a learning call recorded since is not deleted.
+    await deps.pause?.clear(key.workspaceId, key.project, paused.scope, paused.code).catch(() => undefined);
+    paused = undefined;
+  }
   const all = await deps.store.list(key);
   const shown = await readVisible({ access: deps.access, key, viewer: state.viewer, lessons: all, where: "view", log: deps.log });
   const byValue = (a: Lesson, b: Lesson): number => lessonValue(b) - lessonValue(a) || b.createdAt - a.createdAt || a.id.localeCompare(b.id);
@@ -171,6 +183,7 @@ export async function buildLessonsView(deps: LessonViewDeps, caller: LessonCalle
     queued: state.canDecide ? shown.filter((l) => l.status === "candidate").length : 0,
     hidden: state.canDecide ? all.filter((l) => l.status !== "candidate").length - shown.filter((l) => l.status !== "candidate").length : 0,
     truncated, setVersion, snapshots,
+    ...(paused === undefined ? {} : { paused: { code: paused.code, at: paused.at, scope: paused.scope } }),
   };
 }
 

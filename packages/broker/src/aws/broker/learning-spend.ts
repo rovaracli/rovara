@@ -39,24 +39,23 @@ export const learningMonthOf = (epochMs: number): string => new Date(epochMs).to
 
 export function companyLearningSpend(deps: CompanyLearningSpendDependencies): LearningSpend {
   const cap = learningMonthlyCapUsd(deps.edition, deps.monthlyCapUsd);
-  return {
-    async admit(workspaceId, estimateUsd) {
-      const org = OrgIdSchema.safeParse(workspaceId);
-      if (!org.success || !Number.isFinite(estimateUsd) || estimateUsd < 0) return false;
-      // Enterprise: no cap of its own, nothing to look at.
-      if (cap === undefined) return true;
-      const estimate = cleanUsd(estimateUsd);
-      // A call that cannot fit the month's whole cap fits nowhere.
-      if (estimate > cap) return false;
-      try {
-        const item = ((await deps.documentClient.send(new GetCommand({ TableName: deps.tableName, Key: spendCounterKey(org.data, learningMonthOf(deps.now()), LEARNING_COUNTER), ConsistentRead: true }))) as { Item?: { committedUsd?: unknown } }).Item;
-        const committed = typeof item?.committedUsd === "number" && Number.isFinite(item.committedUsd) ? item.committedUsd : 0;
-        // A millionth of slack keeps float dust from refusing a call that fits exactly (the reservation uses the same).
-        return committed <= cleanUsd(cap - estimate + 0.000001);
-      } catch {
-        deps.log?.("learning.spend_admit_failed", { orgId: org.data });
-        return false;
-      }
-    },
+  const look = async (workspaceId: string, estimateUsd: number): Promise<"ok" | "month_full" | "too_large" | "unreadable"> => {
+    const org = OrgIdSchema.safeParse(workspaceId);
+    if (!org.success || !Number.isFinite(estimateUsd) || estimateUsd < 0) return "unreadable";
+    // Enterprise: no cap of its own, nothing to look at.
+    if (cap === undefined) return "ok";
+    const estimate = cleanUsd(estimateUsd);
+    // A call that cannot fit the month's whole cap fits nowhere.
+    if (estimate > cap) return "too_large";
+    try {
+      const item = ((await deps.documentClient.send(new GetCommand({ TableName: deps.tableName, Key: spendCounterKey(org.data, learningMonthOf(deps.now()), LEARNING_COUNTER), ConsistentRead: true }))) as { Item?: { committedUsd?: unknown } }).Item;
+      const committed = typeof item?.committedUsd === "number" && Number.isFinite(item.committedUsd) ? item.committedUsd : 0;
+      // A millionth of slack keeps float dust from refusing a call that fits exactly (the reservation uses the same).
+      return committed <= cleanUsd(cap - estimate + 0.000001) ? "ok" : "month_full";
+    } catch {
+      deps.log?.("learning.spend_admit_failed", { orgId: org.data });
+      return "unreadable";
+    }
   };
+  return { look, async admit(workspaceId, estimateUsd) { return (await look(workspaceId, estimateUsd)) === "ok"; } };
 }

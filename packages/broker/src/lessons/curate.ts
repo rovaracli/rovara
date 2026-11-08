@@ -5,6 +5,7 @@ import { z } from "zod";
 import { oppositePolarity, requestsCapabilityChange } from "./guards.js";
 import { expiryWindowMs } from "./expiry.js";
 import { emitAudit } from "./policy.js";
+import { isLearningRefusal, noteModelFailure, notePause, noteRecovered, pauseOfLook, spendLook, type LessonsPauseStore } from "./pause.js";
 import type { AlertSink, Embedder, LearningSpend, LessonDeps, LessonVectors, PipelineModel } from "./ports.js";
 import { attributableSources, noteCandidateSources } from "./sources.js";
 import type { LessonDraft } from "./reflect.js";
@@ -19,7 +20,7 @@ export const NEIGHBOURS = 8;
 const MAX_COMMIT_TRIES = 3;
 
 export interface CurateDeps extends LessonDeps {
-  store: LessonStore; embedder: Embedder; vectors: LessonVectors; judgeModel: PipelineModel; spend: LearningSpend; alerts?: AlertSink;
+  store: LessonStore; embedder: Embedder; vectors: LessonVectors; judgeModel: PipelineModel; spend: LearningSpend; alerts?: AlertSink; pause?: LessonsPauseStore;
   /** The project's configured expiry window in days (14-365), if any. */
   expiryDays?: number;
 }
@@ -60,16 +61,34 @@ const unionPinned = (a: readonly string[], b: readonly string[], max: number, pi
 };
 const union = <T,>(a: readonly T[], b: readonly T[], max: number): T[] => [...new Set([...a, ...b])].slice(0, max);
 
-/** What one judge call may cost: what the spend look is asked about and the cap the model's key holds. */
+/** What one judge call holds on a model that cannot quote its own price: what the spend look is asked about and the cap the model's key holds. */
 const JUDGE_ESTIMATE_USD = 0.01;
 
 async function judge(deps: CurateDeps, key: ScopeKey, mine: LessonDraft, other: Lesson): Promise<{ verdict: Verdict; escalate: boolean } | undefined> {
   const user = `First lesson (existing):\n${lessonText(other)}\n\nSecond lesson (new):\n${lessonText(mine)}`;
   try {
-    if (!(await deps.spend.admit(key.workspaceId, JUDGE_ESTIMATE_USD))) return undefined;
+    const request = { purpose: "judge" as const, system: JUDGE_SYSTEM, user, maxOutputTokens: 120, workspaceId: key.workspaceId, project: key.project };
+    // The hold is sized to the call by the model itself (the cheapest suitable model's worst-case price); a model that cannot quote keeps the fixed judge estimate.
+    let estimate = JUDGE_ESTIMATE_USD;
+    if (deps.judgeModel.quote !== undefined) {
+      let quoted: Awaited<ReturnType<NonNullable<PipelineModel["quote"]>>>;
+      try { quoted = await deps.judgeModel.quote(request); } catch { await noteModelFailure(deps.pause, key.workspaceId, key.project); return undefined; }
+      if (!quoted.ok) { await notePause(deps.pause, key.workspaceId, key.project, quoted.code); return undefined; }
+      estimate = quoted.usd;
+    }
+    const look = await spendLook(deps.spend, key.workspaceId, estimate);
+    if (look !== "ok") { const code = pauseOfLook(look); if (code !== undefined) await notePause(deps.pause, key.workspaceId, key.project, code); return undefined; }
     // The model's key holds the estimate in the company's spend ledger and is settled there; a failed call needs nothing given back here.
-    const reply = await deps.judgeModel.complete({ purpose: "judge", system: JUDGE_SYSTEM, user, maxOutputTokens: 120, workspaceId: key.workspaceId, project: key.project, budgetUsd: JUDGE_ESTIMATE_USD });
-    const parsed = JudgeReplySchema.parse(JSON.parse(reply.text.trim().replace(/^```(?:json)?\s*/iu, "").replace(/\s*```$/u, "")));
+    let reply: Awaited<ReturnType<PipelineModel["complete"]>>;
+    try { reply = await deps.judgeModel.complete({ ...request, budgetUsd: estimate }); } catch (error) {
+      if (isLearningRefusal(error)) await notePause(deps.pause, key.workspaceId, key.project, error.code);
+      else await noteModelFailure(deps.pause, key.workspaceId, key.project);
+      return undefined;
+    }
+    let parsed: ReturnType<typeof JudgeReplySchema.parse>;
+    // R3: a reply that cannot be used is a failed call, not a success: it counts toward model_failed and clears nothing.
+    try { parsed = JudgeReplySchema.parse(JSON.parse(reply.text.trim().replace(/^```(?:json)?\s*/iu, "").replace(/\s*```$/u, ""))); } catch { await noteModelFailure(deps.pause, key.workspaceId, key.project); return undefined; }
+    await noteRecovered(deps.pause, key.workspaceId, key.project);
     return { verdict: parsed.verdict, escalate: parsed.escalate === true };
   } catch { return undefined; }
 }

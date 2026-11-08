@@ -4,7 +4,7 @@ import { describe, expect, it } from "vitest";
 import type { ModelAccess } from "../../packages/broker/src/model-proxy/access.js";
 import { ModelProxyClient } from "../../packages/broker/src/model-proxy/client.js";
 import { createModelAccessHandler } from "../../packages/broker/src/model-proxy/handler.js";
-import { ModelAccessInvoker, type ModelAccessInvokerInput } from "../../packages/broker/src/model-proxy/invoker.js";
+import { ModelAccessInvoker, singleAttemptLambda, type ModelAccessInvokerInput } from "../../packages/broker/src/model-proxy/invoker.js";
 import { routeFetch } from "../support/developer-fakes.js";
 
 const ORG = "org_abcdefghij0123456789";
@@ -129,5 +129,30 @@ describe("ModelAccessInvoker", () => {
     expect((await failure(invoker.mintKey(mint))).code).toBe("NOT_FOUND");
     status = 503;
     expect((await failure(invoker.mintKey(mint))).code).toBe("MODEL_PROXY_UNAVAILABLE");
+  });
+});
+
+describe("R4: a learning call is sent to the function once, never retried by the SDK", () => {
+  it("the client made for it sends each command once (maxAttempts 1); the ordinary client keeps the SDK's default retries", async () => {
+    expect(await singleAttemptLambda({ region: "us-west-2" }).config.maxAttempts()).toBe(1);
+    expect(await new LambdaClient({ region: "us-west-2" }).config.maxAttempts()).toBeGreaterThan(1);
+  });
+
+  it("H2: a reasoning effort reaches the function, and an absent one adds no field", async () => {
+    const { invoker, sent } = invokerWith(async () => answer({ ok: true, result: { text: "{}", model: "m" } }));
+    const base = { key: "k".repeat(24), purpose: "reflect" as const, system: "s", user: "u", maxOutputTokens: 10, model: "alias", api: "openai-responses" as const };
+    await invoker.learningCompletion({ ...base, reasoningEffort: "minimal" });
+    await invoker.learningCompletion(base);
+    expect((payloadOf(sent[0]!) as { args: Record<string, unknown> }).args.reasoningEffort).toBe("minimal");
+    expect(Object.keys((payloadOf(sent[1]!) as { args: Record<string, unknown> }).args)).not.toContain("reasoningEffort");
+  });
+
+  it("learningCompletion goes through the single-attempt client; every other operation goes through the ordinary one", async () => {
+    const used: string[] = [];
+    const lambda = (name: string, body: unknown): ModelAccessInvokerInput["lambda"] => ({ send: async () => { used.push(name); return answer(body); } });
+    const invoker = new ModelAccessInvoker({ functionName: FUNCTION_NAME, lambda: lambda("ordinary", { ok: true, result: null }), learningLambda: lambda("single", { ok: true, result: { text: "{}", model: "m" } }) });
+    await invoker.learningCompletion({ key: "k".repeat(24), purpose: "reflect", system: "s", user: "u", maxOutputTokens: 10, model: "alias", api: "anthropic-messages" });
+    await invoker.revokeKey("sk-virtual");
+    expect(used).toEqual(["single", "ordinary"]);
   });
 });

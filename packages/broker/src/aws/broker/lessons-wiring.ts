@@ -1,23 +1,27 @@
 // Part of the broker: builds the lessons library's ports from the broker's own dependencies (learning v2, LS-3) and puts them on `dependencies.lessons`. Called once at handler start. Where the Team
 // record is off (`dependencies.teamRecord` is undefined, the default), or the install has no developer sign-in table, nothing is built: no lesson is stored, loaded, sent, shown or decided.
 import { GetCommand } from "@aws-sdk/lib-dynamodb";
-import { OrgIdSchema, codeRepositoriesOf, memberGithubKey, type OrgId } from "@agentx/contracts";
+import { OrgIdSchema, codeRepositoriesOf, memberGithubKey, type AuditEventInput, type LessonsPauseCode, type OrgId } from "@agentx/contracts";
 import { followMerges } from "../../agents/access.js";
 import { dynamoAttributionReader } from "../../attribution/resolve.js";
 import { DeveloperSignInStore } from "../../developer/store.js";
 import type { CodeFactsReader } from "../../lessons/code-facts.js";
 import { NO_EMBEDDER, NO_VECTORS, createLessonsRuntime, type LessonsRuntime } from "../../lessons/runtime.js";
-import type { Embedder, LessonVectors } from "../../lessons/ports.js";
+import type { Embedder, LearningSpend, LessonVectors, PipelineModel } from "../../lessons/ports.js";
 import type { TaskLearningDeps } from "../../lessons/task-end.js";
 import { tableOutcomeRows } from "../../lessons/task-outcome-rows.js";
 import { readObjectText } from "../../developer/plan-artifacts.js";
 import { customerLearningModel } from "./learning-model.js";
+import { readLessonsModel } from "../../lessons/model-setting.js";
+import { dynamoPauseStore, spendLook } from "../../lessons/pause.js";
 import { companyLearningSpend } from "./learning-spend.js";
 import { lessonSubjectSource } from "./lesson-subject-source.js";
 import { setLessonsHomeReader } from "../../lessons/home-source.js";
 import { resolveLearning } from "../../lessons/policy.js";
 import { buildLessonsView } from "../../lessons/view.js";
 import { recordAuditSinkOf } from "./team-record-wiring.js";
+import { auditPending } from "../../audit/outbox.js";
+import { flushAuditEvents } from "../../audit/flush.js";
 import { readProjectRole, readStanding } from "../../learning/standing.js";
 import { requireLatestProject } from "./records.js";
 import { hostOfRepository } from "./repository-hosts.js";
@@ -52,6 +56,20 @@ export function lessonSimilarityFor(dependencies: Pick<AwsBrokerDependencies, "t
   return { embedder: NO_EMBEDDER, vectors: NO_VECTORS };
 }
 
+/**
+ * Whether a recorded "lessons paused" reason still holds, asked only when a person who decides reads it. A probe call of the reflector's kind is quoted (nothing is held or made): when it would be accepted now, the cause of
+ * a provider, model or budget reason is gone (a provider was connected, a model allowed, the budget raised) and the reason is cleared. The monthly limit is looked at on its own; a reason that depends on the size of the
+ * call (`cost_too_high`) or on what the provider did (`model_failed`) is left for the next learning call to clear. A probe that fails keeps the reason.
+ */
+export function pauseStillAppliesFor(model: PipelineModel, spend: LearningSpend): (workspaceId: string, project: string, code: LessonsPauseCode) => Promise<boolean> {
+  return async (workspaceId, project, code) => {
+    if (code === "model_failed" || code === "cost_too_high") return true;
+    if (code === "monthly_limit") return (await spendLook(spend, workspaceId, PUBLIC_PER_TASK_PROBE_USD)) !== "ok";
+    try { return !(await model.quote?.({ purpose: "reflect", system: "probe", user: "probe", maxOutputTokens: 1800, workspaceId, project }))?.ok; } catch { return true; }
+  };
+}
+const PUBLIC_PER_TASK_PROBE_USD = 0.15;
+
 /** The lessons runtime for this install, or undefined where the Team record is off. */
 export function lessonsRuntimeFor(dependencies: AwsBrokerDependencies): LessonsRuntime | undefined {
   const teamRecord = dependencies.teamRecord;
@@ -70,14 +88,17 @@ export function lessonsRuntimeFor(dependencies: AwsBrokerDependencies): LessonsR
   const merges = new DeveloperSignInStore({ documentClient: dependencies.documentClient, tableName: signInTableName, now: Date.now });
   const audit = recordAuditSinkOf(dependencies.audit, dependencies.documentClient);
   // The company's own model path, where this install has one (the model proxy): the curator's judge and the payer path. Without a proxy they stay the refusing stand-ins.
-  const modelPath = dependencies.modelAccess === undefined ? {} : {
-    model: customerLearningModel(dependencies, { edition: teamRecord.edition }),
-    spend: companyLearningSpend({ documentClient: dependencies.documentClient, tableName: dependencies.tableName, edition: teamRecord.edition, now: Date.now, log: (event, fields) => console.log(JSON.stringify({ component: "lessons", event, ...fields })) }),
-  };
+  const modelPath = dependencies.modelAccess === undefined ? {} : (() => {
+    const model = customerLearningModel(dependencies, { edition: teamRecord.edition, lessonsModel: (orgId) => readLessonsModel(teamRecord.table, orgId) });
+    const spend = companyLearningSpend({ documentClient: dependencies.documentClient, tableName: dependencies.tableName, edition: teamRecord.edition, now: Date.now, log: (event, fields) => console.log(JSON.stringify({ component: "lessons", event, ...fields })) });
+    return { model, spend, pauseStillApplies: pauseStillAppliesFor(model, spend) };
+  })();
   return createLessonsRuntime({
-    ...modelPath, similarity: lessonSimilarityFor(dependencies),
+    ...modelPath, pause: dynamoPauseStore(teamRecord.table, Date.now, (event, fields) => console.log(JSON.stringify({ component: "lessons", event, ...fields }))), similarity: lessonSimilarityFor(dependencies),
     table: teamRecord.table, now: Date.now, log: (event, fields) => console.log(JSON.stringify({ component: "lessons", event, ...fields })),
-    ...(audit === undefined ? {} : { audit }), reader, repositoriesOf,
+    ...(audit === undefined ? {} : { audit }),
+    ...(dependencies.audit === undefined ? {} : (() => { const ledger = dependencies.audit; return { auditOutbox: { pending: (event: AuditEventInput) => auditPending({ audit: ledger }, event), flush: (event: AuditEventInput) => flushAuditEvents({ audit: ledger }, [event]) } }; })()),
+    reader, repositoriesOf,
     evidence: { documentClient: dependencies.documentClient, tableName: dependencies.tableName, signInTableName, now: Date.now },
     resolveMember: (_orgId, developerId) => followMerges(merges, developerId),
     linkedAccounts: async (orgId, developerId) => {
@@ -115,7 +136,7 @@ export function learningDepsFor(dependencies: AwsBrokerDependencies, runtime: Le
     }),
     rows: tableOutcomeRows(teamRecord.table),
     settings: runtime.settings,
-    reflect: { model: routes.judgeModel, spend: routes.spend, audit: routes.audit, settings: runtime.settings, edition: teamRecord.edition, now: Date.now },
+    reflect: { model: routes.judgeModel, spend: routes.spend, ...(routes.pause === undefined ? {} : { pause: routes.pause }), audit: routes.audit, settings: runtime.settings, edition: teamRecord.edition, now: Date.now },
     process: routes,
     rovara: teamRecord.emitter,
     log,
@@ -137,8 +158,10 @@ export function installLessons(dependencies: AwsBrokerDependencies): void {
   setLessonsHomeReader(routes === undefined ? undefined : async (orgId, developerId, project) => {
     if ((await resolveLearning(routes.settings, orgId, project)).mode === "Off") return { waiting: 0 };
     const view = await buildLessonsView(routes, { orgId, developerId }, project);
-    if (!view.canDecide || view.waiting.length === 0) return { waiting: 0 };
-    return { waiting: view.waiting.length, at: new Date(Math.max(...view.waiting.map((lesson) => lesson.updatedAt))).toISOString() };
+    // Lane 1b: a person who decides here also hears why learning is paused (never silent).
+    const paused = view.canDecide ? view.paused : undefined;
+    if (!view.canDecide || view.waiting.length === 0) return { waiting: 0, ...(paused === undefined ? {} : { paused }) };
+    return { waiting: view.waiting.length, at: new Date(Math.max(...view.waiting.map((lesson) => lesson.updatedAt))).toISOString(), ...(paused === undefined ? {} : { paused }) };
   });
 }
 

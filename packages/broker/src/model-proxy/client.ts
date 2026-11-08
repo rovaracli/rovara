@@ -182,8 +182,8 @@ export const LEARNING_CALL_TIMEOUT_MS = 100_000;
 function learningRequestOf(input: LearningCompletionInput): [string, Json] {
   switch (input.api) {
     case "anthropic-messages": return ["/v1/messages", { model: input.model, max_tokens: input.maxOutputTokens, system: input.system, messages: [{ role: "user", content: input.user }] }];
-    case "openai-responses": return ["/v1/responses", { model: input.model, max_output_tokens: input.maxOutputTokens, instructions: input.system, input: input.user }];
-    case "openai-completions": return ["/chat/completions", { model: input.model, max_tokens: input.maxOutputTokens, messages: [{ role: "system", content: input.system }, { role: "user", content: input.user }] }];
+    case "openai-responses": return ["/v1/responses", { model: input.model, max_output_tokens: input.maxOutputTokens, instructions: input.system, input: input.user, ...(input.reasoningEffort === undefined ? {} : { reasoning: { effort: input.reasoningEffort } }) }];
+    case "openai-completions": return ["/chat/completions", { model: input.model, max_tokens: input.maxOutputTokens, messages: [{ role: "system", content: input.system }, { role: "user", content: input.user }], ...(input.reasoningEffort === undefined ? {} : { reasoning_effort: input.reasoningEffort }) }];
   }
 }
 

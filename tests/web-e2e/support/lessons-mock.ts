@@ -12,7 +12,10 @@ function fresh() { return { lessons: [
  { id: "les_thr00001", version: 1, title: "Skip flaky integration tests on branches", body: "Branch builds may skip the flaky integration suite.", tier: 2, status: "pending" },
  { id: "les_act00001", version: 3, title: "Prefer small pull requests", body: "Keep pull requests under 400 lines.", tier: 1, status: "active" },
 ] as Mock[] }; }
-export function resetLessons(): void { state = fresh();sources = freshSources(); }
+/** Lanes 1b: why learning is paused for the project (a fixed code), or nothing. */
+let paused: string | undefined;
+export function setLessonsPaused(code: string | undefined): void { paused = code; }
+export function resetLessons(): void { state = fresh();sources = freshSources();paused = undefined; }
 
 // The Team record's source rows (source-row lane T5): the editors' view and the writes of `/record/sources`. Off until a test switches editing on; until then the route is absent (404) and the Sources tab is the read-only list.
 interface SourceMock { kind: string; scope: string; retention: string; audience: string; enabled: boolean; revision: number; exclude: string[] }
@@ -55,6 +58,7 @@ const view = () => LessonsViewSchema.parse({
  project: "payments", mode: "Suggest", lockedByCompany: false, approval: { tier0: "one", tier1: "one", requiredGroups: [] }, canDecide: true,
  waiting: state.lessons.filter(item => item.status === "pending").map(lesson), active: state.lessons.filter(item => item.status === "active").map(lesson),
  removed: state.lessons.filter(item => item.status === "retired" || item.status === "rejected").map(lesson), queued: 2, hidden: 0, truncated: [], setVersion: 4, snapshots: [],
+ ...(paused === undefined ? {} : { paused: { code: paused, at: NOW, scope: paused === "monthly_limit" ? "company" : "project" } }),
 });
 const stale = { error: { code: "CHANGE_STALE", message: "This lesson changed while you were looking at it. Reload and check it again." } };
 

@@ -13,7 +13,7 @@ import { createAccessCheckPort, type AccessCheckPort } from "../team-record/acce
 import type { RecordAuditSink } from "../team-record/audit.js";
 import type { TeamRecordTable } from "../team-record/types.js";
 import type { ApproveDeps } from "./approve.js";
-import { lessonAuditSink } from "./audit-sink.js";
+import { lessonAuditSink, type LessonAuditOutbox } from "./audit-sink.js";
 import { createCitationVerifier } from "./citation-verifier.js";
 import { createCodeFacts, type CodeFactsReader } from "./code-facts.js";
 import type { CounterDeps } from "./counters.js";
@@ -21,6 +21,7 @@ import { createApproverDirectory } from "./directory.js";
 import { dynamoLearningSettings, DynamoTier0Settings } from "./dynamo-settings.js";
 import { DynamoLessonStore } from "./dynamo-store.js";
 import type { LoadDeps } from "./load.js";
+import type { LessonsPauseStore } from "./pause.js";
 import type { ApproverDirectory, CorrectionJudge, Embedder, LearningSpend, LessonVectors, PipelineModel } from "./ports.js";
 import type { ProcessDeps } from "./process.js";
 import type { LearningSettingsReader } from "./policy.js";
@@ -33,6 +34,8 @@ export interface LessonsRuntimeInput {
   log?: (event: string, fields: Record<string, unknown>) => void;
   /** The broker's audit ledger writer. Absent: nothing that needs an audit record can be decided (fail closed). */
   audit?: RecordAuditSink | undefined;
+  /** How an audit event rides in a caller's own transaction (a setting and its audit line commit together). Absent: such a change is refused. */
+  auditOutbox?: LessonAuditOutbox | undefined;
   /** The code host's file reads at a commit, for citations and code facts. */
   reader: CodeFactsReader;
   repositoriesOf: (workspaceId: string, project: string) => Promise<readonly string[]>;
@@ -47,6 +50,10 @@ export interface LessonsRuntimeInput {
    */
   model?: PipelineModel;
   spend?: LearningSpend;
+  /** Where "lessons paused" is recorded and read (lane 1b). Absent: learning never records why it stopped, and the tab and Home say nothing about it. */
+  pause?: LessonsPauseStore;
+  /** Whether a recorded pause reason still holds (`LessonViewDeps.pauseStillApplies`). */
+  pauseStillApplies?: LessonViewDeps["pauseStillApplies"];
   /** The one seam for lesson similarity (`lessonSimilarityFor`): the embedder and the lesson vectors. Absent: none (the loader ranks by scope, helpfulness and recency; curate finds no neighbours). */
   similarity?: { embedder: Embedder; vectors: LessonVectors };
 }
@@ -83,7 +90,7 @@ export function createLessonsRuntime(input: LessonsRuntimeInput): LessonsRuntime
   const access = createAccessCheckPort(input.table, input.log === undefined ? {} : { log: input.log });
   const directory = createApproverDirectory({ evidence: input.evidence, linkedAccounts: input.linkedAccounts, ...(input.resolveMember === undefined ? {} : { resolveMember: input.resolveMember }) });
   const unwritable: RecordAuditSink = async () => { throw new Error("no audit ledger"); };
-  const audit = lessonAuditSink(input.audit ?? unwritable, input.now);
+  const audit = lessonAuditSink(input.audit ?? unwritable, input.now, input.auditOutbox);
   const base = { now: input.now, audit, ...(input.log === undefined ? {} : { log: input.log }) };
   const facts = createCodeFacts({ reader: input.reader, repositoriesOf: async (workspaceId, project) => input.repositoriesOf(workspaceId, project) });
   const verifier = createCitationVerifier({ reader: input.reader, repositoriesOf: input.repositoriesOf });
@@ -92,7 +99,7 @@ export function createLessonsRuntime(input: LessonsRuntimeInput): LessonsRuntime
   const counters: CounterDeps = { ...base, store, judge: REFUSING_JUDGE, settings };
   const routes: LessonRouteDeps = {
     ...base, store, directory, settings, access, names: input.names, sources: { table: input.table },
-    embedder: similarity.embedder, vectors: similarity.vectors, judgeModel: input.model ?? REFUSING_MODEL, spend: input.spend ?? DENYING_SPEND, verifier, facts, judge: REFUSING_JUDGE,
+    embedder: similarity.embedder, vectors: similarity.vectors, judgeModel: input.model ?? REFUSING_MODEL, spend: input.spend ?? DENYING_SPEND, ...(input.pause === undefined ? {} : { pause: input.pause }), ...(input.pauseStillApplies === undefined ? {} : { pauseStillApplies: input.pauseStillApplies }), verifier, facts, judge: REFUSING_JUDGE,
   };
   return { store, settings, access, directory, load, counters, routes };
 }
