@@ -74,7 +74,7 @@ it("lets the shell's refetch of the sidebar data run even when Home's start box 
  await screen.findByLabelText("Project");
  // Only the start box re-renders, so its observer sets the query's options last.
  fireEvent.change(screen.getByLabelText("Project"), { target: { value: "web" } });
- await screen.findByText("You can't start work in this project. Ask one of its maintainers.").catch(() => undefined);
+ await waitFor(() => expect(screen.getByLabelText<HTMLSelectElement>("Project").value).toBe("web"));
  name = "Priya R";
  await query.invalidateQueries({ queryKey: ["nav"] });
  await waitFor(() => expect(screen.getByLabelText("name").textContent).toBe("Priya R"));

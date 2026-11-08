@@ -66,7 +66,7 @@ const ALL_BODIES = { ...BODIES, ...KEYWORD_BODIES };
 // fixed amount of plain JavaScript work. The stretch is capped (MAX_SLOWDOWN), so the failures this test exists for, which took 26 s to minutes against a 1 s limit, still fail on any machine.
 const CALIBRATION_STEPS = 5_000_000;
 const CALIBRATION_BASELINE_MS = 20; // what CALIBRATION_STEPS takes on the owner's Mac
-const MAX_SLOWDOWN = 8;
+const MAX_SLOWDOWN = 4;
 const calibrationSink: number[] = []; // keeps the loop from being optimised away
 function machineSlowdown(): number {
   let best = Number.POSITIVE_INFINITY;
@@ -93,7 +93,9 @@ describe("no detector is slow on a hostile file of the largest size the reader a
         const files = { ...COMPANIONS, [name]: body };
         let took = await timed(files);
         const limit = limitFor(label);
-        if (took > limit) {
+        if (took > limit * MAX_SLOWDOWN) {
+          slow.push(`${label}: ${String(Math.round(took))} ms (limit ${String(Math.round(limit * MAX_SLOWDOWN))} ms at most)`);
+        } else if (took > limit) {
           // Over the limit: time it once more and judge the faster run against the limit for this machine's speed right now.
           const stretch = machineSlowdown();
           took = Math.min(took, await timed(files));
