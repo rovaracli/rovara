@@ -25,6 +25,7 @@ import { athenaPort, s3VectorsPortFromCredentials, type SdkLoader } from "./aws-
 import { DynamoLessonStore } from "../lessons/dynamo-store.js";
 import { lessonDeletionPort } from "../lessons/deletion.js";
 import type { LessonVectors } from "../lessons/ports.js";
+import { dynamoLessonVectors } from "../lessons/dynamo-vectors.js";
 import { runArchive } from "./archiver.js";
 import type { RecordAuditSink } from "./audit.js";
 import { callRecordTool, recordToolsFor, type RecordToolContext } from "./agent-tools.js";
@@ -532,15 +533,15 @@ export function createTeamRecordRuntime(input: TeamRecordRuntimeInput): TeamReco
   const tapLog = (event: string, fields: Readonly<Record<string, string | number | boolean>>): void => log(event, fields);
 
   // ---- purge (delete worker, erase): per workspace, with that workspace's vectors
-  // Lessons live in the same table. Their vectors do not exist yet (no lesson is made until the learning pipeline is connected), so removing one is a no-op; the learning lane replaces `lessonVectors`
-  // with its vector store when it connects the pipeline (the lane report lists this).
-  const lessonVectors: LessonVectors = { async upsert() {}, async query() { return []; }, async remove() {} };
+  // Lessons live in the same table, and so do their vectors (one item beside each lesson head, lessons/dynamo-vectors.ts): a withdrawal or purge removes the lesson's vector, and a project or workspace erase
+  // removes them with the lesson rows (after confirming through `removeAll` below).
+  const lessonVectors: LessonVectors = dynamoLessonVectors(table);
   const lessons = lessonDeletionPort({ store: new DynamoLessonStore(table, now), vectors: lessonVectors, audit: { emit: async (event) => { log("record.lesson_event", { action: event.action }); } }, now });
   async function purgeFor(orgId: OrgId): Promise<PurgeDependencies> {
     // Strict: an erase never runs without the workspace's old-generation index being gone (review H1); without vectors the rows stay blocked and the hourly job tries again.
     const vectors = await indexFor(orgId, { strict: true });
     return {
-      table, lakeQueue, now, log, lessons: lessons as never, ...(input.audit === undefined ? {} : { audit: input.audit }),
+      table, lakeQueue, now, log, lessons: lessons as never, lessonVectors: { removeAll: async (org, project, ids) => { for (const id of ids) await lessonVectors.remove(org, project, id); } }, ...(input.audit === undefined ? {} : { audit: input.audit }),
       ...(vectors === undefined ? {} : { vectors: vectors as unknown as RecordVectorPort }), projects: { projects: projectsOf },
       ...(input.askAliasKey === undefined ? {} : { askAliasKey: input.askAliasKey }),
       ...(input.nameErasure === undefined ? {} : { names: input.nameErasure }),

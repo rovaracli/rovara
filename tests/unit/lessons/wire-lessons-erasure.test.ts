@@ -5,7 +5,7 @@ import { markDeliveredCommand } from "../../../packages/broker/src/aws/dispatche
 import { lessonDeletionPort } from "../../../packages/broker/src/lessons/deletion.js";
 import { loadLessonsForStage, type LoadDeps } from "../../../packages/broker/src/lessons/load.js";
 import { lessonPanelRows } from "../../../packages/broker/src/lessons/panel.js";
-import { NO_EMBEDDER, NO_VECTORS } from "../../../packages/broker/src/lessons/runtime.js";
+import { NO_VECTORS } from "../../../packages/broker/src/lessons/runtime.js";
 import { InMemoryLessonStore } from "../../../packages/broker/src/lessons/store.js";
 import { FakeDynamoDb } from "../../support/fake-dynamodb.js";
 import { Audit, Clock, KEY, PROJECT, WS, allowAllAccess, lessonRecord, seed, settings } from "./lesson-helpers.js";
@@ -22,7 +22,7 @@ describe("a loaded lesson of an erased person", () => {
       provenance: { ...lessonRecord().provenance, authors: ["mallory"], sources: ["member:mallory"], inputSources: ["member:mallory"] },
     });
     await seed(store, lesson);
-    const deps: LoadDeps = { store, embedder: NO_EMBEDDER, vectors: NO_VECTORS, settings: settings(), access: allowAllAccess, audit: new Audit(), now: clock.now };
+    const deps: LoadDeps = { store, vectors: NO_VECTORS, settings: settings(), access: allowAllAccess, audit: new Audit(), now: clock.now };
     const request = { workspaceId: WS, project: PROJECT, taskId: "task-1", stage: "IMPLEMENT" as const, round: 1, intent: "x", repos: ["api"], files: [], languages: [], taskAudience: { kind: "shared" as const } };
     return { store, deps, request, port: lessonDeletionPort({ store, vectors: NO_VECTORS, audit: new Audit(), now: clock.now }) };
   }

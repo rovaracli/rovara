@@ -6,7 +6,7 @@ import { developerTaskIdentity, type DeveloperTaskRecord } from "../../packages/
 import { createDispatcherHandler } from "../../packages/broker/src/aws/dispatcher.js";
 import { createEc2Delivery, type Ec2DeliveryDependencies } from "../../packages/broker/src/aws/ec2-delivery.js";
 import type { Ec2OutboxRecord } from "../../packages/broker/src/aws/lambda.js";
-import { NO_EMBEDDER, NO_VECTORS } from "../../packages/broker/src/lessons/runtime.js";
+import { NO_VECTORS } from "../../packages/broker/src/lessons/runtime.js";
 import { InMemoryLessonStore } from "../../packages/broker/src/lessons/store.js";
 import type { LoadDeps } from "../../packages/broker/src/lessons/load.js";
 import { LEARNED_CONTEXT_FEATURE, LEARNED_LOAD_REPORT_FIELD } from "../../packages/contracts/src/index.js";
@@ -27,7 +27,7 @@ afterAll(() => { delete process.env[SWITCH]; });
 async function setup(options: { mode?: "On" | "Off"; withLessons?: boolean; switch?: "on" | "off" } = {}) {
   if (options.switch === "off") delete process.env[SWITCH]; else process.env[SWITCH] = "1";
   const store = new InMemoryLessonStore();
-  const load: LoadDeps = { store, embedder: NO_EMBEDDER, vectors: NO_VECTORS, settings: settings(options.mode === undefined ? {} : { mode: options.mode }), access: allowAllAccess, audit: new Audit(), now: new Clock().now };
+  const load: LoadDeps = { store, vectors: NO_VECTORS, settings: settings(options.mode === undefined ? {} : { mode: options.mode }), access: allowAllAccess, audit: new Audit(), now: new Clock().now };
   const lessons = options.withLessons === false ? {} : { lessons: { load, access: allowAllAccess, directory: { identity: async () => ({ principals: [], groups: [] }), eligibility: async () => { throw new Error("n/a"); } }, settings: load.settings, counters: { store, judge: { rate: async () => { throw new Error("no"); } }, settings: load.settings, audit: load.audit, now: load.now } } };
   const h = await createSingleAnswerPlanBroker({ brokerExtra: lessons });
   const approved = lessonRecord({ id: "les_approved1", workspaceId: TEST_ORG, project: PROJECT, type: "convention", tier: 1, stages: ["UNDERSTAND", "PLAN", "IMPLEMENT"], approvals: [{ approvalId: "ap", by: "ann", at: 1, mode: "one" }], scope: {} });

@@ -354,7 +354,7 @@ describe("R8-1 learning v2 asks the access records at read time", () => {
   it("a project-wide lesson learned from a channel that later turned private is not shown to a shared task or a non-member", async () => {
     const { w, deps, store } = await setup();
     await seedLessons(store, lessonFor({ id: "les_proj0001", provenance: { audience: { kind: "project" }, sourceScopes: ["slack:T1/CPUB"] } }));
-    await deps.vectors.upsert(WS, PROJECT, "les_proj0001", await embedder.embed("x"), { status: "active" });
+    await deps.vectors.put(WS, PROJECT, embedder.spec, "les_proj0001", { hash: "stale", vector: await embedder.embed("x") });
     await addSource(w, { source: "slack", scope: "slack:T1/CPUB" });
     await w.sink.put(slackRow("p1", "slack:T1/CPUB", ["U-other"]));
     const idsFor = (identity: { principals: string[]; groups: string[] } | undefined) => seenBy(deps, identity, "les_proj0001");

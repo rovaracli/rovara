@@ -8,7 +8,8 @@ import { globToRegExp } from "./guards.js";
 import { safeScopeLabel } from "./render.js";
 import { approversRequired, modeAllows, resolveLearning, type ApprovalPolicy, type LearningSettingsReader } from "./policy.js";
 import { isTrialLesson } from "./trial.js";
-import type { Embedder, LessonDeps, LessonVectors } from "./ports.js";
+import type { LessonDeps, LessonEmbedder, LessonVectors } from "./ports.js";
+import { docOfText, rankLessons } from "./similarity.js";
 import type { LessonStore, LoadManifest, LoadManifestEntry, ScopeKey } from "./store.js";
 import type { AccessCheckPort } from "../team-record/access-port.js";
 import { createLessonLiveReader, lessonTaskRefs } from "./live-visibility.js";
@@ -18,8 +19,6 @@ import { isRestricted, normId, type IdentitySet, type Lesson } from "./types.js"
 
 export const LOAD_MAX_LESSONS = LEARNED_CONTEXT_MAX_LESSONS;
 export const LOAD_MAX_BYTES = LEARNED_CONTEXT_MAX_BYTES;
-/** Over-fetch so recall survives the scope and audience filters. */
-const VECTOR_FETCH = 60;
 const DAY = 86_400_000;
 /** The reviewer's list of what earlier stages loaded is kept short (about 1 KB of titles), so it cannot crowd the lessons budget. */
 const PRIOR_LOADED_MAX = 12;
@@ -43,7 +42,11 @@ export type LoadSkip = "mode" | "stage" | "memory_off" | "index_unreachable" | "
 export interface LoadResult { context?: LearnedContext; manifest: LoadManifest; skipped?: LoadSkip }
 
 export interface LoadDeps extends LessonDeps {
-  store: LessonStore; embedder: Embedder; vectors: LessonVectors; settings: LearningSettingsReader;
+  store: LessonStore; settings: LearningSettingsReader;
+  /** The small open embedder, where the install has one. Absent: lessons are ranked against the task by code-aware keywords and cited paths alone. */
+  embedder?: LessonEmbedder | undefined;
+  /** Where the lessons' vectors are kept (read only here: the loader embeds the task, never a lesson). */
+  vectors: LessonVectors;
   /**
    * The record core's access check. Each lesson's source places are checked against the access records at load time (not only against the snapshot the lesson froze), so a person
    * removed from a channel stops getting its lessons. REQUIRED: a caller that cannot supply it gets no lessons (fail closed, with a log line), never the frozen snapshot alone.
@@ -139,16 +142,12 @@ export async function loadLessonsForStage(deps: LoadDeps, request: LoadRequest):
   if (!modeAllows(resolved.mode, "load")) return empty("mode");
 
   let setVersion = 0;
-  let similarity: Map<string, number>;
   let active: Lesson[];
   try {
     setVersion = await deps.store.setVersion(key);
     active = (await deps.store.list(key, { statuses: ["active"] })).filter((l) => l.expiresAt > now && !hasStaleCitation(l));
-    const text = cleanLessonText(`${request.intent}\n${request.planSummary ?? ""}`, 2000);
-    const hits = await deps.vectors.query(key.workspaceId, key.project, await deps.embedder.embed(text), VECTOR_FETCH);
-    similarity = new Map(hits.map((h) => [h.id, Math.max(0, Math.min(1, h.score))]));
   } catch {
-    // Fail closed: with the index or the store unreachable the task runs as it would without memory.
+    // Fail closed: with the store unreachable the task runs as it would without memory.
     deps.metrics?.count("learning_load_skipped", { reason: "index_unreachable" });
     return empty("index_unreachable", setVersion);
   }
@@ -171,11 +170,18 @@ export async function loadLessonsForStage(deps: LoadDeps, request: LoadRequest):
   // best ones are checked a page at a time until enough survive (LV-1 M1), with one reader for the whole load so no task is read twice.
   // No single person is the reader: restricted lessons and restricted places are checked as for nobody in particular, and the source tasks against the running task's audience.
   const viewer: IdentitySet | undefined = undefined;
+  // Which of the lessons that fit the stage and scope fit THIS task best: the fused score (code-aware keywords, the files the task touches and, where there is an embedder, the cosine) against the task's intent, plan summary
+  // and touched files. It is a ranking only (it reads no access record and returns scores, never text): the visibility pages below still decide what may load, and an embedder that is down is keywords and paths.
+  const eligible = active.filter((lesson) => stageAllows(lesson, stage, member) && scopeMatch(lesson, request).matches);
+  let similarity = new Map<string, number>();
+  try {
+    const task = docOfText(cleanLessonText(`${request.intent}\n${request.planSummary ?? ""}`, 2000), request.files);
+    similarity = new Map((await rankLessons({ embedder: deps.embedder, vectors: deps.vectors, log: deps.log, metrics: deps.metrics }, key, eligible, task, { queryKind: "query" })).ranked.map((r) => [r.id, Math.max(0, Math.min(1, r.fused))]));
+  } catch { deps.metrics?.count("learning_load_similarity_failed"); }
+
   const scored: Array<{ lesson: Lesson; score: number; why: LoadManifestEntry["why"] }> = [];
-  for (const lesson of active) {
-    if (!stageAllows(lesson, stage, member)) continue;
+  for (const lesson of eligible) {
     const match = scopeMatch(lesson, request);
-    if (!match.matches) continue;
     const sim = similarity.get(lesson.id) ?? 0;
     const recency = Math.exp(-Math.max(0, now - (lesson.lastValidatedAt ?? lesson.updatedAt)) / (90 * DAY));
     const score = 0.6 * sim + 0.3 * wilsonLower(lesson.counters.helpful, lesson.counters.loaded) + 0.1 * recency;

@@ -158,14 +158,15 @@ describe("the lessons runtime the broker builds", () => {
     });
   };
 
-  it("makes no model call: the judge, the correction rating and the spend gate refuse, and there are no lesson vectors or embeddings", async () => {
+  it("makes no model call: the judge, the correction rating and the spend gate refuse, and there is no embedder", async () => {
     const runtime = input();
     await expect(runtime.routes.judgeModel.complete({ purpose: "judge", system: "s", user: "u", maxOutputTokens: 10, workspaceId: A })).rejects.toThrow();
     await expect(runtime.routes.judge.rate({ lesson: { id: "x", title: "t", description: "", body: "b", type: "fact" }, correctionKind: "send_back", correctionText: "t" })).rejects.toThrow();
     expect(await runtime.routes.spend.admit(A, 0.01)).toBe(false);
-    expect(await runtime.routes.embedder.embed("anything")).toEqual([]);
-    expect(await runtime.routes.vectors.query(A, "demo", [], 10)).toEqual([]);
-    expect(runtime.load.embedder).toBe(runtime.routes.embedder);
+    // No embedder (it is optional and none is given here): similarity is keywords and paths, and no vector is kept or read.
+    expect(runtime.routes.embedder).toBeUndefined();
+    expect(runtime.load.embedder).toBeUndefined();
+    expect((await runtime.routes.vectors.get(A, "demo", "any-spec", ["les_aaaa1111"])).size).toBe(0);
   });
 
   it("without an audit ledger nothing that needs an audit record can be decided", async () => {

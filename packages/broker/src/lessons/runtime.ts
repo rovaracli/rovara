@@ -4,8 +4,8 @@
 // What is real: the Dynamo lesson store, the settings reader (the project's mode, the company lock, the tier-0 setting), the access check, the approver directory (the live roster), the
 // citation verifier and the code facts (the code host's file reads at a commit), the audit sink (the broker's ledger) and the names reader.
 // The model and the payer path are given by the broker's wiring where the company's own model path exists (`customerLearningModel`, `companyLearningSpend`); without them `judgeModel` and `spend` refuse
-// (a curator judgement fails closed: a contradiction goes to a person). The correction judge (`judge`) still refuses: a correction rating is not wired yet. Lesson similarity (the embedder and the
-// vectors) is one open owner decision, plugged in through the one seam `lessonSimilarityFor`; until it is decided there is none, the loader ranks by scope, helpfulness and recency.
+// (a curator judgement fails closed: a contradiction goes to a person). The correction judge (`judge`) still refuses: a correction rating is not wired yet. Lesson similarity (DECISIONS 23: keywords,
+// cited paths and the optional small embedder, fused; the vectors kept with the lessons) plugs in through the one seam `lessonSimilarityFor`.
 import type { OrgId } from "@agentx/contracts";
 import type { AttributionReader } from "../attribution/resolve.js";
 import type { SecondPersonEvidenceDependencies } from "../org/second-person-evidence.js";
@@ -25,7 +25,7 @@ import type { PresetDeps } from "./preset-setting.js";
 import { DynamoLessonStore } from "./dynamo-store.js";
 import type { LoadDeps } from "./load.js";
 import type { LessonsPauseStore } from "./pause.js";
-import type { ApproverDirectory, CorrectionJudge, Embedder, LearningSpend, LessonVectors, PipelineModel } from "./ports.js";
+import type { ApproverDirectory, CorrectionJudge, LearningSpend, LessonEmbedder, LessonVectors, PipelineModel } from "./ports.js";
 import type { ProcessDeps } from "./process.js";
 import type { LearningSettingsReader } from "./policy.js";
 import type { LessonStore } from "./store.js";
@@ -59,8 +59,11 @@ export interface LessonsRuntimeInput {
   pause?: LessonsPauseStore;
   /** Whether a recorded pause reason still holds (`LessonViewDeps.pauseStillApplies`). */
   pauseStillApplies?: LessonViewDeps["pauseStillApplies"];
-  /** The one seam for lesson similarity (`lessonSimilarityFor`): the embedder and the lesson vectors. Absent: none (the loader ranks by scope, helpfulness and recency; curate finds no neighbours). */
-  similarity?: { embedder: Embedder; vectors: LessonVectors };
+  /**
+   * The one seam for lesson similarity (`lessonSimilarityFor`): the lesson vectors and the OPTIONAL small open embedder. Without an embedder the shortlist is code-aware keywords and cited paths alone (lessons/similarity.ts).
+   * Absent: no vectors are kept either, which is the same ranking.
+   */
+  similarity?: { embedder?: LessonEmbedder | undefined; vectors: LessonVectors };
 }
 
 /** The route-side lesson dependencies (`DeveloperRouteDependencies.lessons`). */
@@ -85,9 +88,8 @@ export const REFUSING_MODEL: PipelineModel = { complete: async () => noModel() }
 export const REFUSING_JUDGE: CorrectionJudge = { rate: async () => noModel() };
 /** No payer path: nothing is admitted and nothing is charged. */
 export const DENYING_SPEND: LearningSpend = { admit: async () => false };
-/** No lesson vectors and no embeddings: the loader ranks by scope, helpfulness and recency. No Bedrock call is made. */
-export const NO_EMBEDDER: Embedder = { embed: async () => [] };
-export const NO_VECTORS: LessonVectors = { upsert: async () => undefined, query: async () => [], remove: async () => undefined };
+/** No lesson vectors are kept: the ranking is keywords and cited paths alone. */
+export const NO_VECTORS: LessonVectors = { get: async () => new Map(), put: async () => undefined, remove: async () => undefined };
 
 export function createLessonsRuntime(input: LessonsRuntimeInput): LessonsRuntime {
   const store = new DynamoLessonStore(input.table, input.now);
@@ -99,7 +101,7 @@ export function createLessonsRuntime(input: LessonsRuntimeInput): LessonsRuntime
   const base = { now: input.now, audit, ...(input.log === undefined ? {} : { log: input.log }) };
   const facts = createCodeFacts({ reader: input.reader, repositoriesOf: async (workspaceId, project) => input.repositoriesOf(workspaceId, project) });
   const verifier = createCitationVerifier({ reader: input.reader, repositoriesOf: input.repositoriesOf });
-  const similarity = input.similarity ?? { embedder: NO_EMBEDDER, vectors: NO_VECTORS };
+  const similarity = input.similarity ?? { vectors: NO_VECTORS };
   const load: LoadDeps = { ...base, store, embedder: similarity.embedder, vectors: similarity.vectors, settings, access, ...(directory.resolveMember === undefined ? {} : { resolveMember: (workspaceId: string, developerId: string) => directory.resolveMember!(workspaceId, developerId) }) };
   const counters: CounterDeps = { ...base, store, judge: REFUSING_JUDGE, settings };
   const presetStore = new DynamoPresetStore(input.table);

@@ -2,15 +2,16 @@
 //   - `v12CorrectionSource`: the v1.2 loop's corrections (`CORRECTION#` items): who gave them (standing), on which task, when, and the repeat the grouping step already found. Its text may
 //     already be gone (it is removed once a correction's rule is accepted), so what is compared is the salted word signature, which stays.
 //   - `signatureMatcher`: a matcher that needs no model and no text: two corrections, or a correction and a lesson, are the same when their signatures are similar and neither says "never"
-//     where the other does not (the v1.2 rule). It is a floor, and the curator's embedding matcher can replace it behind the same port.
+//     where the other does not (the v1.2 rule). It is a floor: `fusedMatcher` (below) is the matcher for corrections whose text is still there, and falls back to this one for those whose text is gone.
 // Nothing here writes. A correction that has no signature cannot be compared, so the matcher throws and the metric reports it as unjudged rather than guessing.
 import { LearningCorrectionSchema } from "@agentx/contracts";
 import { learningSalt } from "../learning/standing.js";
 import { NEGATED, compareSignatures, signatureOf, type Signature } from "../learning/similarity.js";
 import { readLearningPartition, type LearningDeps, type LearningScope } from "../learning/store.js";
-import { cleanForLearning } from "./guards.js";
+import { cleanForLearning, oppositePolarity } from "./guards.js";
 import type { CorrectionKind, Embedder } from "./ports.js";
-import type { CorrectionMatcher, CorrectionRecord, CorrectionSource, EmbeddingBudget } from "./metric.js";
+import type { CorrectionMatcher, CorrectionRecord, CorrectionSource, EmbeddingBudget, LessonFacts } from "./metric.js";
+import { cosine, lessonTextOf, overlapOf, tokenSetOf } from "./similarity.js";
 
 const KIND: Record<string, CorrectionKind> = { send_back: "send_back", comment: "review_comment", pr_comment: "review_comment" };
 const PAGE = 200;
@@ -63,28 +64,32 @@ export function signatureMatcher(scope: Pick<LearningScope, "orgId" | "project" 
   };
 }
 
-const cosine = (a: readonly number[], b: readonly number[]): number => {
-  if (a.length === 0 || a.length !== b.length) return 0;
-  let dot = 0, na = 0, nb = 0;
-  for (let i = 0; i < a.length; i += 1) { dot += a[i]! * b[i]!; na += a[i]! * a[i]!; nb += b[i]! * b[i]!; }
-  return na === 0 || nb === 0 ? 0 : dot / Math.sqrt(na * nb);
-};
+/** Two corrections are the same advice when this share of their words is common; a correction is in a lesson when this share of the correction's words is in the lesson. */
+export const FUSED_SAME = { jaccard: 0.75, inLesson: 0.8, /** with the embedder: the cosine at which two texts are the same advice (bge-small scores unrelated text near 0.6) */ cosine: 0.9 } as const;
 
 /**
- * The curator's kind of matcher: two corrections, or a correction and a lesson, are the same advice when their embeddings are at least `threshold` alike and neither says "never" where the other
- * does not. Every vector comes through the measurement's `EmbeddingBudget` (each distinct text once, a hard cap on calls). A correction whose text is gone cannot be embedded: it throws and the
- * metric reports it as unjudged.
+ * The same fused matcher the curator and the loader use (lessons/similarity.ts), for the measure: two corrections, or a correction and a lesson, are the same advice when they say it in nearly the same words
+ * (code-aware tokens: identifiers whole and split), or, where there is an embedder, when their vectors are at least `threshold` alike; and neither says "never" where the other does
+ * not. Every vector comes through the measurement's `EmbeddingBudget` (each distinct text once, a hard cap on calls; no embedder: no calls). A failed embedding makes the correction unjudged, never "different".
+ * A correction whose text is gone cannot be compared by words: it falls to `signature` (the v1.2 matcher) when it still has its signature, else it throws and the metric reports it as unjudged.
  */
-export function embeddingMatcher(budget: EmbeddingBudget, embedder: Embedder, options: { threshold: number }): CorrectionMatcher {
+export function fusedMatcher(budget: EmbeddingBudget, embedder: Embedder | undefined, options: { threshold?: number; signature?: CorrectionMatcher } = {}): CorrectionMatcher {
+  const threshold = options.threshold ?? FUSED_SAME.cosine;
+  const hasText = (c: CorrectionRecord): boolean => c.text !== undefined && c.text.trim() !== "";
   const textOf = (c: CorrectionRecord): string => {
-    if (c.text === undefined || c.text.trim() === "") throw new Error("no text");
-    return cleanForLearning(c.text, 1000);
+    if (!hasText(c)) throw new Error("no text");
+    return cleanForLearning(c.text!, 1000);
   };
-  const negated = (text: string): boolean => /\b(never|don'?t|do not|must not|avoid)\b/iu.test(text);
-  const same = async (a: string, b: string): Promise<boolean> =>
-    negated(a) === negated(b) && cosine(await budget.embed(embedder, a), await budget.embed(embedder, b)) >= options.threshold;
+  const decide = async (a: string, b: string, lexicalSame: (o: { containment: number; jaccard: number }) => boolean): Promise<boolean> => {
+    if (oppositePolarity(a, b)) return false;
+    const overlap = overlapOf(tokenSetOf(a), tokenSetOf(b));
+    if (lexicalSame(overlap)) return true;
+    if (embedder === undefined) return false;
+    return cosine(await budget.embed(embedder, a), await budget.embed(embedder, b)) >= threshold;
+  };
+  const lessonText = (lesson: LessonFacts): string => cleanForLearning(lessonTextOf(lesson), 1000);
   return {
-    sameAsCorrection: (earlier, later) => same(textOf(earlier), textOf(later)),
-    sameAsLesson: (correction, lesson) => same(textOf(correction), cleanForLearning(`${lesson.title}\n${lesson.description}\n${lesson.body}`, 1000)),
+    sameAsCorrection: async (earlier, later) => (!hasText(earlier) || !hasText(later)) && options.signature !== undefined ? options.signature.sameAsCorrection(earlier, later) : decide(textOf(earlier), textOf(later), (o) => o.jaccard >= FUSED_SAME.jaccard),
+    sameAsLesson: async (correction, lesson) => (!hasText(correction) && options.signature !== undefined ? options.signature.sameAsLesson(correction, lesson) : decide(textOf(correction), lessonText(lesson), (o) => o.containment >= FUSED_SAME.inLesson && o.jaccard > 0)),
   };
 }

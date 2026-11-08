@@ -9,8 +9,9 @@ import { DeveloperSignInStore } from "../../developer/store.js";
 import type { CodeFactsReader } from "../../lessons/code-facts.js";
 import { tableTaskVisibilityPort } from "../../team-record/live-audience-port.js";
 import { tableLessonAudiencePort, withLessonAudiences } from "../../lessons/task-audience.js";
-import { NO_EMBEDDER, NO_VECTORS, createLessonsRuntime, type LessonsRuntime } from "../../lessons/runtime.js";
-import type { Embedder, LearningSpend, LessonVectors, PipelineModel } from "../../lessons/ports.js";
+import { NO_VECTORS, createLessonsRuntime, type LessonsRuntime } from "../../lessons/runtime.js";
+import { dynamoLessonVectors } from "../../lessons/dynamo-vectors.js";
+import type { LearningSpend, LessonEmbedder, LessonVectors, PipelineModel } from "../../lessons/ports.js";
 import { lessonAuditSink } from "../../lessons/audit-sink.js";
 import { lessonDeletionPort } from "../../lessons/deletion.js";
 import { DynamoLessonStore } from "../../lessons/dynamo-store.js";
@@ -79,13 +80,13 @@ export async function repositoryVisibilityOf(dependencies: LessonsHostDependenci
 }
 
 /**
- * THE seam for lesson similarity (merging duplicates, finding contradictions, ranking at load, matching outcomes). It is an open owner decision (2026-11-08: Titan is not good enough; research first), so
- * today there is none: no embedder and no lesson vectors. Whatever is chosen plugs in HERE and nowhere else (the runtime's load and route dependencies and the learning dependencies all take it from this
- * function). Without an embedder curate finds no neighbours, so duplicates never merge and corroboration never builds: lessons must not be switched on before this is decided.
+ * THE seam for lesson similarity (DECISIONS 23: merging duplicates, finding contradictions, ranking at load, matching corrections). The vectors are kept WITH the lessons in the Team record table
+ * (`lessons/dynamo-vectors.ts`; no vector index, no Bedrock call). The embedder is OPTIONAL: `dependencies.lessonEmbedder` is the small open model served by the self-hosted embedder (our own compute, never a
+ * Rovara-paid model); an install that has none ranks by code-aware keywords and cited paths alone, and says so once in one fixed log line (`lessons.similarity_no_embedder`). Nothing blocks on it.
  */
-export function lessonSimilarityFor(dependencies: Pick<AwsBrokerDependencies, "teamRecord">): { embedder: Embedder; vectors: LessonVectors } {
-  void dependencies;
-  return { embedder: NO_EMBEDDER, vectors: NO_VECTORS };
+export function lessonSimilarityFor(dependencies: Pick<AwsBrokerDependencies, "teamRecord" | "lessonEmbedder">): { embedder: LessonEmbedder | undefined; vectors: LessonVectors } {
+  const table = (dependencies.teamRecord as { table?: Parameters<typeof dynamoLessonVectors>[0] } | undefined)?.table;
+  return { embedder: dependencies.lessonEmbedder, vectors: table === undefined ? NO_VECTORS : dynamoLessonVectors(table) };
 }
 
 /**

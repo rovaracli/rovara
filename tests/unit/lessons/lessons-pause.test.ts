@@ -518,12 +518,12 @@ describe("the curator's judge is sized by the same quote and pauses the same way
   }
 
   it("asks the model for the hold of the judge call, looks at the month with it, and clears an old reason when the judge answers", async () => {
-    const model = new QuotingModel([JSON.stringify({ verdict: "different" })], { ok: true, usd: 0.004 });
+    const model = new QuotingModel([JSON.stringify({ verdicts: [{ n: 1, verdict: "different" }] })], { ok: true, usd: 0.004 });
     const { d, pause, spend } = curation(model);
     await pause.record(WS, PROJECT, "no_provider");
     await curateDraft(d, KEY, text("Retries", a));
     await curateDraft(d, KEY, text("Retries", b));
-    expect(model.quotes[0]).toMatchObject({ purpose: "judge", project: PROJECT, maxOutputTokens: 120 });
+    expect(model.quotes[0]).toMatchObject({ purpose: "judge", project: PROJECT, maxOutputTokens: 90 });
     expect(spend.asked).toEqual([0.004]);
     expect(model.calls[0]).toMatchObject({ budgetUsd: 0.004 });
     expect(await pause.read(WS, PROJECT)).toBeUndefined();

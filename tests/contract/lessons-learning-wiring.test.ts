@@ -10,7 +10,8 @@ import { createLessonsWorkerHandler } from "../../packages/broker/src/aws/broker
 import { installLessons, lessonSimilarityFor, pauseStillAppliesFor } from "../../packages/broker/src/aws/broker/lessons-wiring.js";
 import { installTeamRecordEmitter, uninstallTeamRecordEmitter } from "../../packages/broker/src/aws/broker/team-record-wiring.js";
 import { announceHumanSendBack } from "../../packages/broker/src/lessons/send-back-events.js";
-import { DENYING_SPEND, NO_EMBEDDER, NO_VECTORS, REFUSING_MODEL } from "../../packages/broker/src/lessons/runtime.js";
+import type { LessonEmbedder } from "../../packages/broker/src/lessons/ports.js";
+import { DENYING_SPEND, NO_VECTORS, REFUSING_MODEL } from "../../packages/broker/src/lessons/runtime.js";
 import { FakeDynamoDb } from "../support/fake-dynamodb.js";
 import { TEST_ORG } from "../support/orgs.js";
 
@@ -125,19 +126,35 @@ describe("the learning dependencies", () => {
     expect(await runtime.routes.spend.admit(TEST_ORG, 0.15)).toBe(false);
   });
 
-  it("similarity is one seam: the load and route dependencies and the learning pieces take the embedder and the vectors from lessonSimilarityFor, which has none today", async () => {
+  it("similarity is one seam: the load and route dependencies and the learning pieces take the vectors (kept with the lessons in the record table) and the OPTIONAL embedder from lessonSimilarityFor; with no embedder the ranking is keywords and paths", async () => {
     const { dependencies } = install();
     installLessons(dependencies as never);
     const runtime = dependencies.lessons as NonNullable<ReturnType<typeof lessonsRuntimeFor>>;
     const seam = lessonSimilarityFor(dependencies);
-    expect(seam.embedder).toBe(NO_EMBEDDER);
-    expect(seam.vectors).toBe(NO_VECTORS);
-    expect(runtime.load.embedder).toBe(seam.embedder);
-    expect(runtime.routes.embedder).toBe(seam.embedder);
-    expect(runtime.routes.vectors).toBe(seam.vectors);
+    // On an install with no embedder function there is none, and no vector index either: the vectors are the table's own items.
+    expect(seam.embedder).toBeUndefined();
+    expect(seam.vectors).not.toBe(NO_VECTORS);
+    expect(runtime.load.embedder).toBeUndefined();
+    expect(runtime.routes.embedder).toBeUndefined();
+    expect(runtime.routes.vectors).toBe(runtime.load.vectors);
     const learning = dependencies.learning as NonNullable<ReturnType<typeof learningDepsFor>>;
-    expect(learning.process.embedder).toBe(seam.embedder);
-    expect(learning.process.vectors).toBe(seam.vectors);
+    expect(learning.process.embedder).toBeUndefined();
+    expect(learning.process.vectors).toBe(runtime.routes.vectors);
+  });
+
+  it("an embedder the install provides (dependencies.lessonEmbedder) reaches the load, route and learning dependencies, and the vectors it makes are stored in the record table beside the lessons", async () => {
+    const { dependencies } = install();
+    const embedder: LessonEmbedder = { dimension: 2, spec: "fake-2", embed: async () => [1, 0], embedMany: async (texts) => texts.map(() => [1, 0]) };
+    (dependencies as { lessonEmbedder?: LessonEmbedder }).lessonEmbedder = embedder;
+    installLessons(dependencies as never);
+    const runtime = dependencies.lessons as NonNullable<ReturnType<typeof lessonsRuntimeFor>>;
+    expect(runtime.load.embedder).toBe(embedder);
+    expect(runtime.routes.embedder).toBe(embedder);
+    expect((dependencies.learning as NonNullable<ReturnType<typeof learningDepsFor>>).process.embedder).toBe(embedder);
+    await runtime.routes.vectors.put(TEST_ORG, "demo", "fake-2", "les_aaaa1111", { hash: "h", vector: [1, 0] });
+    const table = (dependencies.teamRecord as { table: { documentClient: FakeDynamoDb } }).table.documentClient;
+    expect(table.find((item) => String(item.sk) === "LESSON#les_aaaa1111#VEC")).toHaveLength(1);
+    expect([...(await runtime.routes.vectors.get(TEST_ORG, "demo", "fake-2", ["les_aaaa1111"])).keys()]).toEqual(["les_aaaa1111"]);
   });
 });
 

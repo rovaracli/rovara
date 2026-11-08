@@ -178,7 +178,7 @@ describe("minors", () => {
     const many = Array.from({ length: 100 }, (_, i) => `slack:C${i}`);
     const existing = lessonRecord({ id: "les_full0001", status: "pending", approvals: [], provenance: { ...lessonRecord().provenance, inputSources: many, sources: ["member:ann"], authors: ["ann"], supportTasks: ["t1"] } });
     await seed(store, existing);
-    await deps.vectors.upsert(KEY.workspaceId, KEY.project, existing.id, await embedder.embed(`${existing.title}\n${existing.description}\n${existing.body}`), { status: "pending" });
+    await deps.vectors.put(KEY.workspaceId, KEY.project, embedder.spec, existing.id, { hash: "stale", vector: await embedder.embed(`${existing.title}\n${existing.description}\n${existing.body}`) });
     await store.setFlags(KEY, { pausedSources: { "slack:PAUSED": { at: 1, reason: "spike" } } });
     const out = await processDraft(deps, KEY, draft({ provenance: { ...draft().provenance, sources: ["member:bob"], authors: ["bob"], supportTasks: ["t2"], inputSources: ["slack:PAUSED", "member:bob"], measured: true } }));
     expect(out.outcome.outcome).toBe("merged");

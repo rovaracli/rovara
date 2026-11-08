@@ -154,14 +154,16 @@ describe("fail closed", () => {
     expect(result).toMatchObject({ skipped: "memory_off", manifest: { memory: "off", lessons: [] } });
   });
 
-  it("an unreachable index or a failing embedder loads nothing and never throws", async () => {
-    const { deps, add, vectors } = setup();
+  it("an unreachable vector store or a failing embedder never stops a load: the lessons are ranked by keywords and paths; an unreadable lesson store loads nothing", async () => {
+    const { deps, add, vectors, store } = setup();
     await add(conv("les_ok000001"));
     vectors.fail = true;
-    expect(await loadLessonsForStage(deps, request())).toMatchObject({ skipped: "index_unreachable" });
+    expect(ids(await loadLessonsForStage(deps, request()))).toEqual(["les_ok000001"]);
     vectors.fail = false;
     embedder.fail = true;
-    try { expect(await loadLessonsForStage(deps, request())).toMatchObject({ skipped: "index_unreachable" }); } finally { embedder.fail = false; }
+    try { expect(ids(await loadLessonsForStage(deps, request({ taskId: "task-2" })))).toEqual(["les_ok000001"]); } finally { embedder.fail = false; }
+    const broken: LoadDeps = { ...deps, store: Object.assign(Object.create(store) as InMemoryLessonStore, { list: async () => { throw new Error("down"); } }) };
+    expect(await loadLessonsForStage(broken, request({ taskId: "task-3" }))).toMatchObject({ skipped: "index_unreachable" });
   });
 });
 
@@ -199,5 +201,80 @@ describe("the dispatch call", () => {
   it("never throws: a store that fails gives an empty result", async () => {
     const { deps } = setup();
     expect(await learnedContextForDispatch({ ...deps, store: new Proxy({}, { get: () => async () => { throw new Error("db down"); } }) as never }, request(), ["task.learnedContext.v1"])).toEqual({});
+  });
+});
+
+describe("lane 5: lessons are ranked against the task by the fused score (DECISIONS 23)", () => {
+  const retry = (id: string, over: Partial<Lesson> = {}) => conv(id, { title: "Retries use withRetry", description: "", body: "HTTP retries in the api service use withRetry from src/retry/index.ts.", scope: { repos: ["api"] }, ...over });
+  const billing = (id: string, over: Partial<Lesson> = {}) => conv(id, { title: "Money is integer cents", description: "", body: "Money amounts in the billing table are stored as integer cents, never floats.", scope: { repos: ["api"] }, ...over });
+
+  for (const mode of ["no embedder", "a fake embedder"] as const) {
+    describe(mode, () => {
+      const make = () => { const s = setup(); return mode === "no embedder" ? { ...s, deps: { ...s.deps, embedder: undefined } as LoadDeps } : s; };
+
+      it("the lesson that fits the task's intent and plan comes first, and one that does not is last; the similar one says why", async () => {
+        const { deps, add } = make();
+        await add(billing("les_bill0001"), retry("les_retr0001"));
+        const result = await loadLessonsForStage(deps, request({ intent: "Retry failed HTTP calls with withRetry in the api service", planSummary: "Wrap the client in withRetry from src/retry/index.ts", files: ["src/retry/client.ts"] }));
+        expect(ids(result)).toEqual(["les_retr0001", "les_bill0001"]);
+        const [first, second] = result.manifest.lessons;
+        expect(first!.score).toBeGreaterThan(second!.score);
+        expect(first!.why).toBe("similar");
+        expect(second!.why).not.toBe("similar");
+      });
+
+      it("the files the task touches count: of two lessons about the same words, the one scoped to those files wins", async () => {
+        const { deps, add } = make();
+        await add(retry("les_far00001", { scope: { repos: ["api"], paths: ["src/legacy/**"] } }), retry("les_near0001", { scope: { repos: ["api"], paths: ["src/retry/**"] } }));
+        const result = await loadLessonsForStage(deps, request({ intent: "Fix retries", files: ["src/retry/client.ts", "src/legacy/old.ts"] }));
+        expect(ids(result)).toHaveLength(2);
+        const none = await loadLessonsForStage(deps, request({ intent: "Fix retries", files: ["src/retry/client.ts"], taskId: "task-2" }));
+        expect(ids(none)).toEqual(["les_near0001"]);
+      });
+
+      it("similarity ranks only: a lesson that is not live, out of scope or not readable is never loaded however well it fits", async () => {
+        const { deps, add } = make();
+        const perfect = { title: "Retries use withRetry", description: "", body: "Retry failed HTTP calls with withRetry in the api service." };
+        await add(
+          conv("les_pend0001", { ...perfect, status: "pending" }), conv("les_scop0001", { ...perfect, scope: { repos: ["web"] } }),
+          conv("les_priv0001", { ...perfect, provenance: { ...lessonRecord().provenance, audience: restrictedAudience } }),
+          billing("les_bill0001"),
+        );
+        const result = await loadLessonsForStage(deps, request({ intent: "Retry failed HTTP calls with withRetry in the api service" }));
+        expect(ids(result)).toEqual(["les_bill0001"]);
+      });
+
+      it("the ranking changes with the task: the same two lessons come in the other order for a billing task", async () => {
+        const { deps, add } = make();
+        await add(retry("les_retr0001"), billing("les_bill0001"));
+        const result = await loadLessonsForStage(deps, request({ intent: "Amounts in the billing table are floats; store money as integer cents", files: [] }));
+        expect(ids(result)[0]).toBe("les_bill0001");
+      });
+    });
+  }
+
+  it("a perfectly similar lesson nobody approved does not load (the approval gate is not a ranking matter)", async () => {
+    const { deps, store } = setup();
+    await seed(store, retry("les_noap0001", { approvals: [] }));
+    expect(ids(await loadLessonsForStage(deps, request({ intent: "Retry failed HTTP calls with withRetry in the api service" })))).toEqual([]);
+  });
+
+  it("with an embedder the loader embeds the task only (never a lesson): stored vectors are read, missing ones are skipped", async () => {
+    const { deps, add, vectors } = setup();
+    await add(retry("les_retr0001"));
+    vectors.rows.clear();
+    embedder.calls = 0;
+    await loadLessonsForStage(deps, request({ intent: "Retry failed HTTP calls" }));
+    expect(embedder.calls).toBe(1);
+    expect(vectors.rows.size).toBe(0);
+  });
+
+  it("an unreachable embedder or vector store does not change which lessons load, only how they are ranked", async () => {
+    const { deps, add, vectors } = setup();
+    await add(retry("les_retr0001"), billing("les_bill0001"));
+    const healthy = ids(await loadLessonsForStage(deps, request({ intent: "Retry failed HTTP calls with withRetry" })));
+    embedder.fail = true;
+    vectors.fail = true;
+    try { expect(ids(await loadLessonsForStage(deps, request({ intent: "Retry failed HTTP calls with withRetry", taskId: "task-2" }))).sort()).toEqual([...healthy].sort()); } finally { embedder.fail = false; }
   });
 });

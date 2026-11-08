@@ -21,10 +21,29 @@ export interface PipelineModel {
 
 export interface Embedder { embed(text: string): Promise<number[]> }
 
-/** Per-workspace, per-project lesson vectors (S3 Vectors behind the R3 `VectorIndex`). Every call carries the workspace; a hit from another workspace is impossible. */
+/**
+ * The lessons' embedder (DECISIONS 23): the small open model served by the self-hosted embedder, 384 dimensions. It is OPTIONAL: where an install has none, similarity runs on keywords and cited paths alone.
+ * The shape is the one the embedder lane exports as `lessonEmbedderOver`. `spec` names the model and revision the vectors come from: a vector is only compared with, or stored beside, vectors of the same spec,
+ * and a changed spec makes every stored lesson vector stale (it is made again, a few at a time).
+ */
+export interface LessonEmbedder extends Embedder {
+  readonly dimension: number;
+  readonly spec: string;
+  embedMany(texts: readonly string[], kind?: "query" | "document"): Promise<number[][]>;
+}
+
+/** A lesson's stored vector: the hash of the text it was made from (an edited lesson is embedded again) and the vector. */
+export interface StoredLessonVector { hash: string; vector: readonly number[] }
+
+/**
+ * The lesson vectors, kept WITH the lessons (one item beside each lesson in the project's partition, so every deletion of the lesson or the project reaches it). There is no vector index: a project holds at most
+ * about 2,000 lessons, so the search is a brute-force cosine in memory over the vectors read for one call. Every call carries the workspace and project; a vector of another workspace is impossible.
+ */
 export interface LessonVectors {
-  upsert(workspaceId: string, project: string, id: string, vector: readonly number[], meta: { status: string }): Promise<void>;
-  query(workspaceId: string, project: string, vector: readonly number[], k: number): Promise<Array<{ id: string; score: number }>>;
+  /** The stored vectors of these lessons that were made by this embedder spec (a lesson with none, or with another spec's, is simply absent). */
+  get(workspaceId: string, project: string, spec: string, ids: readonly string[]): Promise<Map<string, StoredLessonVector>>;
+  put(workspaceId: string, project: string, spec: string, id: string, vector: StoredLessonVector): Promise<void>;
+  /** Deletes the lesson's vector, whatever its spec. Idempotent. */
   remove(workspaceId: string, project: string, id: string): Promise<void>;
 }
 

@@ -4,7 +4,7 @@ import { OrgIdSchema } from "../../../packages/contracts/src/index.js";
 import { buildWeeklyDigest } from "../../../packages/broker/src/lessons/digest.js";
 import { loadLessonsForStage, type LoadDeps, type LoadRequest } from "../../../packages/broker/src/lessons/load.js";
 import { readVisibleRanked } from "../../../packages/broker/src/lessons/read-visible.js";
-import { NO_EMBEDDER, NO_VECTORS } from "../../../packages/broker/src/lessons/runtime.js";
+import { NO_VECTORS } from "../../../packages/broker/src/lessons/runtime.js";
 import { InMemoryLessonStore } from "../../../packages/broker/src/lessons/store.js";
 import { buildLessonsView, type LessonViewDeps } from "../../../packages/broker/src/lessons/view.js";
 import type { AccessCheckPort } from "../../../packages/broker/src/team-record/access-port.js";
@@ -69,7 +69,7 @@ describe("R3: the load record keeps each loaded lesson's task ids", () => {
     const store = new InMemoryLessonStore();
     const clock = new Clock();
     await seed(store, fromTasks("les_stayopen1", ["to"], { citations: [{ kind: "task", taskId: "t-cited" }] }));
-    const deps: LoadDeps = { access: accessOf(port({ to: SHARED, "t-cited": SHARED, "task-9": SHARED }).value), store, embedder: NO_EMBEDDER, vectors: NO_VECTORS, settings: settings(), audit: new Audit(), now: clock.now };
+    const deps: LoadDeps = { access: accessOf(port({ to: SHARED, "t-cited": SHARED, "task-9": SHARED }).value), store, vectors: NO_VECTORS, settings: settings(), audit: new Audit(), now: clock.now };
     const request: LoadRequest = { workspaceId: WS, project: PROJECT, taskId: "task-9", stage: "IMPLEMENT", round: 1, intent: "x", repos: ["api"], files: [], languages: [], taskAudience: { kind: "shared" } };
     const result = await loadLessonsForStage(deps, request);
     expect(result.context?.lessons.map((l) => l.id)).toEqual(["les_stayopen1"]);

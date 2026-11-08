@@ -15,7 +15,7 @@ import type { AccessCheckPort } from "../../../packages/broker/src/team-record/a
 import type { TaskVisibilityPort } from "../../../packages/broker/src/team-record/live-audience.js";
 import type { Lesson } from "../../../packages/broker/src/lessons/types.js";
 import { Audit, Clock, KEY, MemoryVectors, PROJECT, WS, directory, embedder, lessonRecord, seed, settings, wideAudience } from "./lesson-helpers.js";
-import { NO_EMBEDDER, NO_VECTORS } from "../../../packages/broker/src/lessons/runtime.js";
+import { NO_VECTORS } from "../../../packages/broker/src/lessons/runtime.js";
 
 /** Decision 31: a lesson-audience port over a table (a task missing from the table, or mapped to undefined, is unknown; "throw" throws). Counts its batched reads. */
 function audiencePort(table: Record<string, LessonTaskAudience | undefined | "throw">) {
@@ -247,7 +247,7 @@ describe("decision 31 (R1): the reader of an agent's lessons is the audience of 
     const clock = new Clock();
     const access = accessOf(options.bare === true ? team : withLessonAudiences(team, a.value));
     const identityCalls: string[] = [];
-    const load: LoadDeps = { store, embedder: NO_EMBEDDER, vectors: NO_VECTORS, settings: settings(), access, audit: new Audit(), now: clock.now };
+    const load: LoadDeps = { store, vectors: NO_VECTORS, settings: settings(), access, audit: new Audit(), now: clock.now };
     const host = { lessons: { access, load, directory: { identity: async (_w: string, developer: string) => { identityCalls.push(developer); return { principals: [], groups: [], developerId: developer }; }, eligibility: async () => { throw new Error("not used"); } } } } as never;
     const task = { taskId: "task-run", orgId: WS, project: PROJECT, title: "Retry failed HTTP calls", shared: false, developerId: "d".repeat(64), developerName: "Maya", provider: "slack", workflow: { revision: 1 }, ...({} as Record<string, unknown>) } as never;
     const ask = () => learnedContextForOperation(host, { orgId: WS, task, workflowMode: "IMPLEMENT", definition: { repositories: [{ name: "api", url: "https://github.com/acme/api" }] } as never }, { LEARNED_LESSONS_ENABLED: "1" });
@@ -407,7 +407,7 @@ describe("M1: rank and filter first, check in pages, one reader per request", ()
     const clock = new Clock();
     await seed(store, ...lessons);
     const started = Date.now();
-    const result = await loadLessonsForStage({ access: accessOf(p.value), store, embedder: NO_EMBEDDER, vectors: NO_VECTORS, settings: settings(), audit: new Audit(), now: clock.now }, request);
+    const result = await loadLessonsForStage({ access: accessOf(p.value), store, vectors: NO_VECTORS, settings: settings(), audit: new Audit(), now: clock.now }, request);
     expect(Date.now() - started).toBeLessThan(2_500);
     // The 100 narrowed lessons rank first and are withheld; the twelve best open ones follow.
     expect(result.context?.lessons.map((l) => l.id)).toEqual(lessons.slice(100, 112).map((l) => l.id));
@@ -424,7 +424,7 @@ describe("M1: rank and filter first, check in pages, one reader per request", ()
     const store = new InMemoryLessonStore();
     await seed(store, ...lessons);
     const started = Date.now();
-    const result = await loadLessonsForStage({ access: accessOf(withLessonAudiences({ read: async () => new Map() }, slow)), store, embedder: NO_EMBEDDER, vectors: NO_VECTORS, settings: settings(), audit: new Audit(), now: new Clock().now }, request);
+    const result = await loadLessonsForStage({ access: accessOf(withLessonAudiences({ read: async () => new Map() }, slow)), store, vectors: NO_VECTORS, settings: settings(), audit: new Audit(), now: new Clock().now }, request);
     expect(Date.now() - started).toBeLessThan(2_500);
     expect(result.context).toBeUndefined();
   });
@@ -435,7 +435,7 @@ describe("M1: rank and filter first, check in pages, one reader per request", ()
     const p = lessonPorts({ ...table, "t-retired": aud() });
     const store = new InMemoryLessonStore();
     await seed(store, ...lessons, old);
-    await loadLessonsForStage({ access: accessOf(p.value), store, embedder: NO_EMBEDDER, vectors: NO_VECTORS, settings: settings(), audit: new Audit(), now: new Clock().now }, request);
+    await loadLessonsForStage({ access: accessOf(p.value), store, vectors: NO_VECTORS, settings: settings(), audit: new Audit(), now: new Clock().now }, request);
     expect(p.reads.flat()).not.toContain("t-retired");
   });
 

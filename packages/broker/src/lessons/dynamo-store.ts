@@ -553,6 +553,8 @@ export class DynamoLessonStore implements LessonStore {
     }
     // Every version, then the head.
     for (const item of await this.queryPrefix(key, `${this.headKey(key, id).sk}#V#`)) await this.del({ pk: String(item.pk), sk: String(item.sk) });
+    // The lesson's vector (lessons/dynamo-vectors.ts) sits beside the head and goes with it.
+    await this.del(this.sub(key, id, "VEC"));
     await this.del(this.headKey(key, id));
   }
 

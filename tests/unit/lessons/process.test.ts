@@ -214,7 +214,7 @@ describe("promotion to pending (design §4.5.2 step 5) and tier-0 routing", () =
   it("the judge's escalate flag persists: settling again cannot lower a tier", async () => {
     const a = "Use withRetry from src/retry/index.ts for HTTP retries in the api service client calls";
     const b = "Use withRetry from src/retry/index.ts for HTTP retries in the api service wrapper";
-    const { deps } = setup({ model: new ScriptedModel([JSON.stringify({ verdict: "different", escalate: true })]) });
+    const { deps } = setup({ model: new ScriptedModel([JSON.stringify({ verdicts: [{ n: 1, verdict: "different" }], escalate: true })]) });
     await processDraft(deps, KEY, text("Retries", a, { provenance: { ...draft().provenance, memberSignal: true } }));
     const out = await processDraft(deps, KEY, text("Retries", b, { provenance: { ...draft().provenance, memberSignal: true } }));
     expect(out.lesson).toMatchObject({ tier: 2 });

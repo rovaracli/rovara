@@ -834,7 +834,7 @@ describe("P12 a contradicting lesson pair", () => {
         if (world !== "pilot") openAutoApply();
         const p = pipeline(world === "pilot" ? {} : { settings: { tier0Approval: "auto" } });
         const old = await activeOld(p);
-        if (judge === "the judge says contradicts") p.judgeModel.replies.push(JSON.stringify({ verdict: "contradicts", escalate: false }));
+        if (judge === "the judge says contradicts") p.judgeModel.replies.push(JSON.stringify({ verdicts: [{ n: 1, verdict: "contradicts" }], escalate: false }));
         await p.endTask({ taskId: "p12-new", spans: [memberSpan("Never use withRetry for HTTP retries in api.", { kind: "human_edit", authorId: "bob", eventId: "ev-12b" })] }, modelSays(candidate(NEW)));
         const lessons = await p.lessons();
         expect(lessons).toHaveLength(2);
@@ -1074,9 +1074,12 @@ describe("the loader never loads a lesson that is not live, current and in this 
     const lesson = byPerson(lessonRecord({ id: "les_live0002", type: "convention", tier: 1, stages: ["IMPLEMENT"], scope: { repos: ["api"] } }));
     await seed(p.store, lesson);
     await p.vectors.upsert(WS, PROJECT, lesson.id, await embedder.embed(`${lesson.title}\n${lesson.description}\n${lesson.body}`), { status: "active" });
+    // The vector store is only a ranking aid: down, the lesson still loads (by keywords and paths) through every gate; it is not a way around one.
     (p.loadDeps.vectors as MemoryVectors).fail = true;
-    expect((await p.load()).result.skipped).toBe("index_unreachable");
+    expect((await p.load()).ids).toEqual([lesson.id]);
     (p.loadDeps.vectors as MemoryVectors).fail = false;
+    const brokenStore = { ...p.loadDeps, store: Object.assign(Object.create(p.store) as typeof p.store, { list: async () => { throw new Error("down"); } }) };
+    expect((await loadLessonsForStage(brokenStore, p.loadRequest())).skipped).toBe("index_unreachable");
     const noAccess = { ...p.loadDeps, access: undefined as unknown as AccessCheckPort };
     expect((await loadLessonsForStage(noAccess, p.loadRequest())).context).toBeUndefined();
     const down: AccessCheckPort = { mayRead: async () => { throw new Error("record down"); }, taskVisibility: allowAllAccess.taskVisibility };

@@ -3,7 +3,8 @@
 // code citations still validate renews whenever they validate.
 import { CHANGE_APPROVAL_TTL_DAYS } from "@agentx/contracts";
 import { DEFAULT_EXPIRY_DAYS, MAX_EXPIRY_DAYS, MIN_EXPIRY_DAYS, PREFERENCE_EXPIRY_DAYS, emitAudit } from "./policy.js";
-import type { LessonDeps } from "./ports.js";
+import type { LessonDeps, LessonVectors } from "./ports.js";
+import { dropVector } from "./similarity.js";
 import type { LessonStore, ScopeKey } from "./store.js";
 import type { Lesson, LessonType } from "./types.js";
 import { nextVersion } from "./store.js";
@@ -31,7 +32,7 @@ export async function renewLesson(store: LessonStore, key: ScopeKey, id: string,
  * Moves active lessons past their expiry to `expired`, and pending lessons nobody decided in time to `expired`. A lesson in `pinned` (referenced by a
  * frozen eval snapshot) is left alone. Bounded: at most `limit` lessons per run.
  */
-export async function sweepExpired(deps: LessonDeps, store: LessonStore, key: ScopeKey, options: { pinned?: ReadonlySet<string>; limit?: number } = {}): Promise<{ expired: string[] }> {
+export async function sweepExpired(deps: LessonDeps & { vectors?: LessonVectors }, store: LessonStore, key: ScopeKey, options: { pinned?: ReadonlySet<string>; limit?: number } = {}): Promise<{ expired: string[] }> {
   const now = deps.now();
   const expired: string[] = [];
   const due = (await store.list(key, { statuses: ["active", "pending"] })).filter((l) => (l.status === "active" ? l.expiresAt <= now : (l.pendingExpiresAt ?? Infinity) <= now) && options.pinned?.has(l.id) !== true);
@@ -43,6 +44,7 @@ export async function sweepExpired(deps: LessonDeps, store: LessonStore, key: Sc
       const result = await store.commit(key, setVersion, [{ ...fresh, version: nextVersion(fresh, await store.versions(key, fresh.id)), status: "expired", updatedAt: now }], now);
       if (result.ok) {
         expired.push(lesson.id);
+        await dropVector(deps.vectors, key, lesson.id);
         await emitAudit(deps.audit, { action: "lesson.expired", workspaceId: key.workspaceId, project: key.project, lessonId: lesson.id, facts: { was: fresh.status } });
         break;
       }

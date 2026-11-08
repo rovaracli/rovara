@@ -10,7 +10,7 @@ import { createCitationVerifier } from "../../../packages/broker/src/lessons/cit
 import { lessonAuditSink } from "../../../packages/broker/src/lessons/audit-sink.js";
 import { approvedForUse, type LoadDeps } from "../../../packages/broker/src/lessons/load.js";
 import { DEFAULT_APPROVAL_POLICY } from "../../../packages/broker/src/lessons/policy.js";
-import { NO_EMBEDDER, NO_VECTORS } from "../../../packages/broker/src/lessons/runtime.js";
+import { NO_VECTORS } from "../../../packages/broker/src/lessons/runtime.js";
 import { InMemoryLessonStore } from "../../../packages/broker/src/lessons/store.js";
 import type { Lesson } from "../../../packages/broker/src/lessons/types.js";
 import type { TaskVisibility } from "../../../packages/broker/src/team-record/sources/rovara.js";
@@ -52,7 +52,7 @@ describe("only approved lessons are used", () => {
 function world(over: { settings?: ReturnType<typeof settings>; store?: InMemoryLessonStore; identity?: { principals: string[]; groups: string[] }; /** The running task's live visibility (default: project-wide). */ visibility?: TaskVisibility } = {}) {
   const store = over.store ?? new InMemoryLessonStore();
   const clock = new Clock();
-  const load: LoadDeps = { store, embedder: NO_EMBEDDER, vectors: NO_VECTORS, settings: over.settings ?? settings(), access: allowAllAccess, audit: new Audit(), now: clock.now };
+  const load: LoadDeps = { store, vectors: NO_VECTORS, settings: over.settings ?? settings(), access: allowAllAccess, audit: new Audit(), now: clock.now };
   const identityCalls: string[] = [];
   const access = { ...allowAllAccess, taskVisibility: { read: async (_org: unknown, ids: readonly string[]) => new Map(ids.map((id) => [id, over.visibility ?? { kind: "shared" as const }])) } };
   const lessons = { load, access, directory: { identity: async (_w: string, developer: string) => { identityCalls.push(developer); return over.identity ?? { principals: [], groups: [] }; }, eligibility: async () => { throw new Error("not used"); } } };

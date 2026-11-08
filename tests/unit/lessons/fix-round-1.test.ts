@@ -170,7 +170,7 @@ describe("I1: a refinement is never lower than what it replaces, and never appli
     const store = new InMemoryLessonStore();
     const vectors = new MemoryVectors();
     let n = 0;
-    const deps: ProcessDeps = { store, embedder, vectors, judgeModel: new ScriptedModel([JSON.stringify({ verdict: "refines" })]), spend: new Spend(), audit: new Audit(), now: new Clock().now, verifier: verifier("valid"), facts: facts(), settings: autoSettings(), newId: () => `les_new${++n}000` };
+    const deps: ProcessDeps = { store, embedder, vectors, judgeModel: new ScriptedModel([JSON.stringify({ verdicts: [{ n: 1, verdict: "refines" }] })]), spend: new Spend(), audit: new Audit(), now: new Clock().now, verifier: verifier("valid"), facts: facts(), settings: autoSettings(), newId: () => `les_new${++n}000` };
     const old = lessonRecord({ id: "les_old00001", tier: 2, tierReasons: ["reviewer_stage"], title: "Retries", description: "", body: a, approvals: [{ approvalId: "x", by: "ann", at: 1, mode: "one" }, { approvalId: "y", by: "bob", at: 2, mode: "second_person" }] });
     await seed(store, old);
     await vectors.upsert(WS, PROJECT, old.id, await embedder.embed(`${old.title}\n${old.description}\n${old.body}`), { status: "active" });

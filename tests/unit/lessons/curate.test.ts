@@ -4,7 +4,7 @@ import { curateDraft, type CurateDeps } from "../../../packages/broker/src/lesso
 import { InMemoryLessonStore, nextVersion, type CommitResult, type ScopeKey } from "../../../packages/broker/src/lessons/store.js";
 import type { LessonDraft } from "../../../packages/broker/src/lessons/reflect.js";
 import type { Lesson } from "../../../packages/broker/src/lessons/types.js";
-import { Alerts, Audit, Clock, KEY, MemoryVectors, PROJECT, ScriptedModel, Spend, WS, draft, embedder, lessonRecord, seed, settings, verifier } from "./lesson-helpers.js";
+import { Alerts, Audit, Clock, KEY, MemoryVectors, PROJECT, ScriptedModel, Spend, WS, codeCite, draft, embedder, lessonRecord, seed, settings, verifier } from "./lesson-helpers.js";
 
 class FlakyStore extends InMemoryLessonStore {
   failures = 0;
@@ -31,6 +31,8 @@ function setup(over: { store?: InMemoryLessonStore; model?: ScriptedModel; setti
 }
 
 const text = (title: string, body: string, over: Partial<LessonDraft> = {}): LessonDraft => draft({ title, description: "", body, ...over });
+/** A listwise answer for a draft with ONE candidate. */
+const one = (verdict: string): string => JSON.stringify({ verdicts: [{ n: 1, verdict }] });
 const similar = async (a: string, b: string): Promise<number> => { const x = await embedder.embed(a); const y = await embedder.embed(b); return x.reduce((s, v, i) => s + v * y[i]!, 0); };
 
 describe("curator decisions (design §4.5.2)", () => {
@@ -45,10 +47,10 @@ describe("curator decisions (design §4.5.2)", () => {
     expect(audit.actions()).toContain("lesson.candidate_created");
   });
 
-  it("MERGE at similarity >= 0.92 by code, with no model call: citations, sources and support union; one new version", async () => {
+  it("MERGE of a near-exact copy (same cited file, same polarity, nearly the same words) by code, with no model call: citations, sources and support union; one new version", async () => {
     const { deps, store, judgeModel } = setup();
     await curateDraft(deps, KEY, draft());
-    const second = draft({ provenance: { ...draft().provenance, supportTasks: ["task-2"], sourceEvents: ["ev-2"], authors: ["bob"] }, citations: [{ kind: "pr", url: "https://github.com/acme/api/pull/9" }] });
+    const second = draft({ provenance: { ...draft().provenance, supportTasks: ["task-2"], sourceEvents: ["ev-2"], authors: ["bob"] }, citations: [codeCite(), { kind: "pr", url: "https://github.com/acme/api/pull/9" }] });
     const out = await curateDraft(deps, KEY, second);
     expect(out.outcome).toBe("merged");
     expect(judgeModel.calls).toHaveLength(0);
@@ -99,14 +101,11 @@ describe("curator decisions (design §4.5.2)", () => {
     expect(own.provenance.supportTasks).toEqual(["task-narrowed"]);
   });
 
-  it("calls the judge between 0.75 and 0.92; 'different' adds, 'same' merges", async () => {
+  it("ONE judge call decides the draft against its candidate; 'different' adds, 'same' merges", async () => {
     const a = "Use withRetry from src/retry/index.ts for HTTP retries in the api service client calls";
-    const b = "Use withRetry from src/retry/index.ts for HTTP retries in the api service wrapper";
-    const score = await similar(`Retries\n\n${a}`, `Retries\n\n${b}`);
-    expect(score).toBeGreaterThan(0.75);
-    expect(score).toBeLessThan(0.92);
+    const b = "Wrap outbound HTTP calls in the api service with withRetry from src/retry/index.ts";
     for (const [verdict, expected] of [["different", "added"], ["same", "merged"]] as const) {
-      const { deps, store, judgeModel } = setup({ model: new ScriptedModel([JSON.stringify({ verdict })]) });
+      const { deps, store, judgeModel } = setup({ model: new ScriptedModel([one(verdict)]) });
       await curateDraft(deps, KEY, text("Retries", a));
       const out = await curateDraft(deps, KEY, text("Retries", b));
       expect(out.outcome).toBe(expected);
@@ -118,8 +117,8 @@ describe("curator decisions (design §4.5.2)", () => {
 
   it("the judge call names the project and carries the amount `admit` was asked about as its budget; a judge that fails leaves the contradiction to a person", async () => {
     const a = "Use withRetry from src/retry/index.ts for HTTP retries in the api service client calls";
-    const b = "Use withRetry from src/retry/index.ts for HTTP retries in the api service wrapper";
-    const ok = setup({ model: new ScriptedModel([JSON.stringify({ verdict: "different" })]) });
+    const b = "Wrap outbound HTTP calls in the api service with withRetry from src/retry/index.ts";
+    const ok = setup({ model: new ScriptedModel([one("different")]) });
     await curateDraft(ok.deps, KEY, text("Retries", a));
     await curateDraft(ok.deps, KEY, text("Retries", b));
     expect(ok.judgeModel.calls[0]!.project).toBe(PROJECT);
@@ -133,8 +132,8 @@ describe("curator decisions (design §4.5.2)", () => {
 
   it("UPDATE: 'refines' makes a new lesson that supersedes the old one; the old one is untouched", async () => {
     const a = "Use withRetry from src/retry/index.ts for HTTP retries in the api service client calls";
-    const b = "Use withRetry from src/retry/index.ts for HTTP retries in the api service wrapper";
-    const { deps, store } = setup({ model: new ScriptedModel([JSON.stringify({ verdict: "refines" })]) });
+    const b = "Wrap outbound HTTP calls in the api service with withRetry from src/retry/index.ts";
+    const { deps, store } = setup({ model: new ScriptedModel([one("refines")]) });
     const first = await curateDraft(deps, KEY, text("Retries", a));
     if (first.outcome !== "added") throw new Error("expected add");
     const out = await curateDraft(deps, KEY, text("Retries", b));
@@ -146,7 +145,7 @@ describe("curator decisions (design §4.5.2)", () => {
   it("P12: a contradicting pair goes to a person as one card, with both lessons kept; nothing is merged or retired", async () => {
     const pos = "Always use withRetry for HTTP calls in the api service";
     const neg = "Never use withRetry for HTTP calls in the api service";
-    const { deps, store, alerts, audit } = setup({ model: new ScriptedModel([JSON.stringify({ verdict: "contradicts" })]) });
+    const { deps, store, alerts, audit } = setup({ model: new ScriptedModel([one("contradicts")]) });
     const first = await curateDraft(deps, KEY, text("Retries", pos));
     if (first.outcome !== "added") throw new Error("expected add");
     const out = await curateDraft(deps, KEY, text("Retries", neg));
@@ -172,7 +171,7 @@ describe("curator decisions (design §4.5.2)", () => {
     const pos = `Always use withRetry ${tail}`;
     const neg = `Never use withRetry ${tail}`;
     expect(await similar(`Retries\n\n${pos}`, `Retries\n\n${neg}`)).toBeGreaterThanOrEqual(0.92);
-    const { deps, store, judgeModel } = setup({ model: new ScriptedModel([JSON.stringify({ verdict: "contradicts" })]) });
+    const { deps, store, judgeModel } = setup({ model: new ScriptedModel([one("contradicts")]) });
     await curateDraft(deps, KEY, text("Retries", pos));
     const out = await curateDraft(deps, KEY, text("Retries", neg));
     expect(out.outcome).toBe("contradiction");
@@ -182,7 +181,7 @@ describe("curator decisions (design §4.5.2)", () => {
 
   it("a failing judge on a same-polarity near-duplicate adds rather than merging (a person sees both)", async () => {
     const a = "Use withRetry from src/retry/index.ts for HTTP retries in the api service client calls";
-    const b = "Use withRetry from src/retry/index.ts for HTTP retries in the api service wrapper";
+    const b = "Wrap outbound HTTP calls in the api service with withRetry from src/retry/index.ts";
     const { deps, store } = setup({ model: new ScriptedModel([new Error("down")]) });
     await curateDraft(deps, KEY, text("Retries", a));
     expect((await curateDraft(deps, KEY, text("Retries", b))).outcome).toBe("added");
@@ -217,11 +216,15 @@ describe("curator decisions (design §4.5.2)", () => {
     expect((await store.get(KEY, "les_act1"))!.version).toBe(1);
   });
 
-  it("embedding failure drops the draft without writing anything", async () => {
+  it("an embedder that is down never drops a draft: the shortlist is keywords and paths, and the draft is curated as usual", async () => {
     const { deps, store } = setup();
+    await curateDraft(deps, KEY, draft());
     embedder.fail = true;
-    try { expect(await curateDraft(deps, KEY, draft())).toEqual({ outcome: "dropped", reason: "embed_failed" }); } finally { embedder.fail = false; }
-    expect(await store.list(KEY)).toHaveLength(0);
+    try {
+      const out = await curateDraft(deps, KEY, draft({ provenance: { ...draft().provenance, supportTasks: ["task-2"], sourceEvents: ["ev-2"] } }));
+      expect(out.outcome).toBe("merged");
+    } finally { embedder.fail = false; }
+    expect(await store.list(KEY)).toHaveLength(1);
   });
 
   it("keeps a capability request as a candidate for a person (it is not dropped); an outsider-trust draft is still dropped", async () => {

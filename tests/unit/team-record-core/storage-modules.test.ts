@@ -38,6 +38,7 @@ const RECORD_STORAGE_MODULES: Record<string, string> = {
 const OUTSIDE_STORAGE_MODULES: Record<string, string> = {
   "agents/approvals-store.ts": "approval items kept in the record partition",
   "lessons/dynamo-store.ts": "the lessons store",
+  "lessons/dynamo-vectors.ts": "the lesson vectors (lane 5, DECISIONS 23): one item beside each lesson head, read by the ids the caller names (a consistent BatchGet, never a scan); a derived vector, a spec and a text hash, no person and no text; removed with the lesson, the project and the workspace",
   "lessons/dynamo-settings.ts": "the learning settings",
   "lessons/delivery-wiring.ts": "lesson delivery reads",
   "org/test-environment.ts": "the test-environment row",

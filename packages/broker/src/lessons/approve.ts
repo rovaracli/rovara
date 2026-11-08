@@ -11,8 +11,9 @@ import { cleanForLearning, requestsCapabilityChange } from "./guards.js";
 import { expiryWindowMs } from "./expiry.js";
 import { approversRequired, emitAudit, modeAllows, requireAudit, resolveLearning, type LearningSettingsReader } from "./policy.js";
 import { lessonValue } from "./value.js";
-import type { ApproverDirectory, LessonDeps } from "./ports.js";
+import type { ApproverDirectory, LessonDeps, LessonVectors } from "./ports.js";
 import { retireLesson } from "./curate.js";
+import { dropVector } from "./similarity.js";
 import { nextVersion, type LessonStore, type ScopeKey } from "./store.js";
 import { classifyTier } from "./tier.js";
 import type { AccessCheckPort } from "../team-record/access-port.js";
@@ -22,6 +23,8 @@ import { distinctIds, idIn, normId, sameId, type IdentitySet, type Lesson, type 
 
 export interface ApproveDeps extends LessonDeps {
   store: LessonStore; directory: ApproverDirectory; settings: LearningSettingsReader;
+  /** Where lesson vectors are kept: a lesson an approval retires (the one a refinement supersedes) loses its vector. */
+  vectors?: LessonVectors;
   /** The record core's access check: who may see and decide a lesson is asked of the access records NOW, not only of the snapshot the lesson froze. Required (no port, no decisions). */
   access: AccessCheckPort;
   log?: LessonLog;
@@ -56,7 +59,7 @@ export interface ActivationPin { version: number; setVersion: number; fence?: re
  * exactly `pin.version` and the set is still at `pin.setVersion`. Approvals are given for a version and its text, so a lesson that moved on (an edit, a rollback, another person's
  * decision) is never made live under them; the caller re-reads and decides again. Returns undefined when it did not go live.
  */
-export async function activateLesson(deps: LessonDeps & { store: LessonStore }, key: ScopeKey, lesson: Lesson, approvals: Lesson["approvals"], expiryDays: number | undefined, action: "lesson.activated" | "lesson.auto_applied" | "lesson.trial_started", pin: ActivationPin): Promise<Lesson | undefined> {
+export async function activateLesson(deps: LessonDeps & { store: LessonStore; vectors?: LessonVectors }, key: ScopeKey, lesson: Lesson, approvals: Lesson["approvals"], expiryDays: number | undefined, action: "lesson.activated" | "lesson.auto_applied" | "lesson.trial_started", pin: ActivationPin): Promise<Lesson | undefined> {
   const now = deps.now();
   // A refinement is never applied without a person: the judge that called it a refinement can be steered by the text it read.
   if (action !== "lesson.activated" && lesson.supersedes !== undefined) return undefined;
@@ -81,6 +84,7 @@ export async function activateLesson(deps: LessonDeps & { store: LessonStore }, 
   }
   // The set version is the one the decision was made on, never one read now: if anything was committed since, this write is refused.
   const result = await deps.store.commit(key, pin.setVersion, writes, now, pin.fence);
+  if (result.ok && fresh.supersedes !== undefined) await dropVector(deps.vectors, key, fresh.supersedes);
   return result.ok ? next : undefined;
 }
 

@@ -1,13 +1,13 @@
 // L7: the "same mistake twice" measure (lessons/metric.ts). Counts, per project and over a window, how often a correction given once had to be given again on a later task, split into
 // "the lesson was loaded", "the lesson existed but was not loaded" and "there was no lesson". Read-only.
 import { describe, expect, it } from "vitest";
-import { embeddingMatcher } from "../../../packages/broker/src/lessons/metric-source.js";
+import { fusedMatcher } from "../../../packages/broker/src/lessons/metric-source.js";
 import {
   METRIC_MAX_EMBEDDING_CALLS, METRIC_MIN_CORRECTIONS, REPEAT_LOOKBACK_DAYS, sameMistakeTwice, type EmbeddingBudget, type CorrectionMatcher, type CorrectionRecord, type CorrectionSource, type MetricDeps, type MetricStore,
 } from "../../../packages/broker/src/lessons/metric.js";
 import { InMemoryLessonStore, type LoadManifestEntry } from "../../../packages/broker/src/lessons/store.js";
 import type { Lesson } from "../../../packages/broker/src/lessons/types.js";
-import { KEY, PROJECT, WS, lessonRecord, seed } from "./lesson-helpers.js";
+import { KEY, PROJECT, WS, embedder, lessonRecord, seed } from "./lesson-helpers.js";
 
 const DAY = 86_400_000;
 const NOW = 1_800_000_000_000;
@@ -326,7 +326,7 @@ describe("L7-2: the embedding calls are budgeted (a hard cap, and the count is r
     n = 0;
     const list = Array.from({ length: 39 }, (_, i) => correction(`distinct advice number ${i}`));
     const embedder = counting();
-    const { deps } = setup(list, { matcher: (budget: EmbeddingBudget) => embeddingMatcher(budget, embedder, { threshold: 0.99999 }) });
+    const { deps } = setup(list, { matcher: (budget: EmbeddingBudget) => fusedMatcher(budget, embedder, { threshold: 0.99999 }) });
     const result = await run(deps);
     expect(result.corrections).toBe(39);
     expect(embedder.seen.length).toBe(new Set(embedder.seen).size);
@@ -340,7 +340,7 @@ describe("L7-2: the embedding calls are budgeted (a hard cap, and the count is r
     n = 0;
     const list = Array.from({ length: 30 }, (_, i) => correction(`distinct advice number ${i}`));
     const embedder = counting();
-    const { deps } = setup(list, { matcher: (budget: EmbeddingBudget) => embeddingMatcher(budget, embedder, { threshold: 0.99999 }) });
+    const { deps } = setup(list, { matcher: (budget: EmbeddingBudget) => fusedMatcher(budget, embedder, { threshold: 0.99999 }) });
     const result = await run(deps, WINDOW, { maxEmbeddingCalls: 5 });
     expect(embedder.seen.length).toBe(5);
     expect(result.embeddingCalls).toBe(5);
@@ -354,7 +354,7 @@ describe("L7-2: the embedding calls are budgeted (a hard cap, and the count is r
     const list = [correction("a"), correction("b"), correction("c")];
     let calls = 0;
     const embedder = { embed: async () => { calls += 1; throw new Error("down"); } };
-    const { deps } = setup(list, { matcher: (budget: EmbeddingBudget) => embeddingMatcher(budget, embedder, { threshold: 0.9 }) });
+    const { deps } = setup(list, { matcher: (budget: EmbeddingBudget) => fusedMatcher(budget, embedder, { threshold: 0.9 }) });
     const result = await run(deps);
     // The first correction has nothing earlier to be compared with; the other two each try to embed and fail.
     expect(result.unjudged).toBe(2);
@@ -373,8 +373,60 @@ describe("L7-2: the embedding calls are budgeted (a hard cap, and the count is r
     n = 0;
     const embedder = counting();
     const list = [{ ...correction("t"), text: undefined } as unknown as CorrectionRecord, correction("u")];
-    const { deps } = setup(list, { matcher: (budget: EmbeddingBudget) => embeddingMatcher(budget, embedder, { threshold: 0.9 }) });
+    const { deps } = setup(list, { matcher: (budget: EmbeddingBudget) => fusedMatcher(budget, embedder, { threshold: 0.9 }) });
     const result = await run(deps);
     expect(result.unjudged).toBeGreaterThanOrEqual(1);
+  });
+});
+
+describe("lane 5: the fused matcher (DECISIONS 23): the same words matcher as the curator and the loader, with the embedder where there is one", () => {
+  const counting = () => { const seen: string[] = []; return { seen, embed: async (t: string) => { seen.push(t); return embedder.embed(t); } }; };
+  const budget = () => new (class { used = 0; exhausted = false; max = 100; private cache = new Map<string, number[]>(); async embed(e: { embed(t: string): Promise<number[]> }, t: string) { const k = this.cache.get(t); if (k !== undefined) return k; this.used += 1; const v = await e.embed(t); this.cache.set(t, v); return v; } })() as unknown as EmbeddingBudget;
+  const rec = (text: string | undefined, over: Partial<CorrectionRecord> = {}): CorrectionRecord => ({ id: "c", taskId: "t", at: 1, kind: "send_back", member: true, ...(text === undefined ? {} : { text }), ...over });
+
+  it("no embedder: two corrections in nearly the same words are the same and make no embedding call; different advice is not; a flipped polarity is not", async () => {
+    const m = fusedMatcher(budget(), undefined);
+    expect(await m.sameAsCorrection(rec("Use the shared withRetry helper in src/retry/index.ts"), rec("Use the shared withRetry helper from src/retry/index.ts"))).toBe(true);
+    expect(await m.sameAsCorrection(rec("Use the shared withRetry helper in src/retry/index.ts"), rec("Money is stored as integer cents"))).toBe(false);
+    expect(await m.sameAsCorrection(rec("Use the shared withRetry helper in src/retry/index.ts"), rec("Never use the shared withRetry helper in src/retry/index.ts"))).toBe(false);
+  });
+
+  it("a correction is in a lesson when the lesson says what the correction says (its words are in the lesson's)", async () => {
+    const m = fusedMatcher(budget(), undefined);
+    const lesson = { id: "l", type: "convention" as const, title: "Retries", description: "", body: "HTTP retries in the api service use withRetry from src/retry/index.ts.", scope: {} };
+    expect(await m.sameAsLesson(rec("retries use withRetry in the api service"), lesson)).toBe(true);
+    expect(await m.sameAsLesson(rec("integer cents for money"), lesson)).toBe(false);
+  });
+
+  it("with an embedder: words that differ but vectors that agree are the same, through the budget (each text once)", async () => {
+    const e = counting();
+    const m = fusedMatcher(budget(), e, { threshold: 0.5 });
+    expect(await m.sameAsCorrection(rec("alpha beta gamma delta"), rec("alpha beta gamma epsilon zeta"))).toBe(true);
+    expect(e.seen.length).toBe(2);
+    await m.sameAsCorrection(rec("alpha beta gamma delta"), rec("something else entirely"));
+    expect(e.seen.length).toBe(3);
+  });
+
+  it("a correction whose text is gone: the v1.2 signature matcher when given one and the correction has its signature, else it throws (unjudged)", async () => {
+    const signature: CorrectionMatcher = { sameAsCorrection: async () => true, sameAsLesson: async () => true };
+    const lesson = { id: "l", type: "convention" as const, title: "t", description: "", body: "b", scope: {} };
+    await expect(fusedMatcher(budget(), undefined).sameAsCorrection(rec(undefined), rec("x y"))).rejects.toThrow();
+    const m = fusedMatcher(budget(), undefined, { signature });
+    expect(await m.sameAsCorrection(rec(undefined), rec("x y"))).toBe(true);
+    expect(await m.sameAsLesson(rec(undefined), lesson)).toBe(true);
+  });
+
+  it("end to end in the measure: a repeat in other words is found by the matcher, and the embedding budget is reported", async () => {
+    n = 0;
+    const list = [
+      correction("Use the shared withRetry helper in src/retry/index.ts"),
+      correction("Use the shared withRetry helper from src/retry/index.ts"),
+      ...padding(METRIC_MIN_CORRECTIONS),
+    ];
+    const { deps } = setup(list, { matcher: (b: EmbeddingBudget) => fusedMatcher(b, undefined) });
+    const result = await run(deps);
+    expect(result.repeats).toBe(1);
+    expect(result.split.noLesson).toBe(1);
+    expect(result.embeddingCalls).toBe(0);
   });
 });

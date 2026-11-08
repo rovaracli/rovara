@@ -5,7 +5,7 @@ import { withLessonAudiences, type LessonTaskAudience } from "../../../packages/
 import type { CounterDeps } from "../../../packages/broker/src/lessons/counters.js";
 import type { LessonDraft } from "../../../packages/broker/src/lessons/reflect.js";
 import type {
-  AlertSink, ApproverDirectory, CitationVerifier, CorrectionJudge, Embedder, LearningSpend, LessonAuditEvent, LessonAuditSink, LessonVectors, PipelineModel, RulePublisher,
+  AlertSink, ApproverDirectory, CitationVerifier, CorrectionJudge, LearningSpend, LessonAuditEvent, LessonAuditSink, LessonEmbedder, LessonVectors, PipelineModel, RulePublisher, StoredLessonVector,
 } from "../../../packages/broker/src/lessons/ports.js";
 import type { LearningSettings, LearningSettingsReader } from "../../../packages/broker/src/lessons/policy.js";
 import type { ReflectSubject, EvidenceSpan } from "../../../packages/broker/src/lessons/reflect-input.js";
@@ -28,10 +28,14 @@ export const MERGED = "1234567890abcdef1234567890abcdef12345678";
 
 export class Clock { constructor(public t = 1_800_000_000_000) {} now = (): number => this.t; advance(ms: number): void { this.t += ms; } }
 
-/** A bag-of-words embedder: the same words give the same direction, so cosine similarity tracks word overlap. */
-export const embedder: Embedder & { fail: boolean } = {
+/** A bag-of-words embedder: the same words give the same direction, so cosine similarity tracks word overlap. It has the shape of the lessons' embedder (spec, dimension, embedMany). */
+export const embedder: LessonEmbedder & { fail: boolean; calls: number; spec: string } = {
   fail: false,
+  calls: 0,
+  spec: "test-bow-256",
+  dimension: 256,
   async embed(text: string): Promise<number[]> {
+    this.calls += 1;
     if (this.fail) throw new Error("embed down");
     const v = new Array<number>(256).fill(0);
     for (const word of text.toLowerCase().match(/[a-z0-9_]+/gu) ?? []) {
@@ -42,20 +46,27 @@ export const embedder: Embedder & { fail: boolean } = {
     const norm = Math.sqrt(v.reduce((s, x) => s + x * x, 0)) || 1;
     return v.map((x) => x / norm);
   },
+  async embedMany(texts: readonly string[]): Promise<number[][]> { return Promise.all(texts.map((t) => this.embed(t))); },
 };
 
+/** In-memory lesson vectors with the port's semantics: a vector of another spec is a miss, a removal takes every spec. */
 export class MemoryVectors implements LessonVectors {
-  rows = new Map<string, { id: string; vector: readonly number[] }>();
+  rows = new Map<string, { id: string; spec: string; hash: string; vector: readonly number[] }>();
   fail = false;
   private k(ws: string, p: string, id: string): string { return `${ws}\u0001${p}\u0001${id}`; }
-  async upsert(ws: string, p: string, id: string, vector: readonly number[], _meta?: { status: string }): Promise<void> {
-    void _meta; this.rows.set(this.k(ws, p, id), { id, vector }); }
-  async query(ws: string, p: string, vector: readonly number[], k: number): Promise<Array<{ id: string; score: number }>> {
-    if (this.fail) throw new Error("index down");
-    const prefix = `${ws}\u0001${p}\u0001`;
-    return [...this.rows.entries()].filter(([key]) => key.startsWith(prefix)).map(([, row]) => ({ id: row.id, score: row.vector.reduce((s, x, i) => s + x * (vector[i] ?? 0), 0) })).sort((a, b) => b.score - a.score).slice(0, k);
+  async get(ws: string, p: string, spec: string, ids: readonly string[]): Promise<Map<string, StoredLessonVector>> {
+    if (this.fail) throw new Error("vectors down");
+    const out = new Map<string, StoredLessonVector>();
+    for (const id of ids) { const row = this.rows.get(this.k(ws, p, id)); if (row !== undefined && row.spec === spec) out.set(id, { hash: row.hash, vector: row.vector }); }
+    return out;
+  }
+  async put(ws: string, p: string, spec: string, id: string, stored: StoredLessonVector): Promise<void> {
+    if (this.fail) throw new Error("vectors down");
+    this.rows.set(this.k(ws, p, id), { id, spec, hash: stored.hash, vector: stored.vector });
   }
   async remove(ws: string, p: string, id: string): Promise<void> { this.rows.delete(this.k(ws, p, id)); }
+  /** Older tests count vectors by id only: a vector of the test spec whose text hash matches nothing (the ranking treats it as stale and embeds the lesson again). */
+  async upsert(ws: string, p: string, id: string, vector: readonly number[], _meta?: { status: string }): Promise<void> { void _meta; await this.put(ws, p, embedder.spec, id, { hash: "stale", vector }); }
 }
 
 export class ScriptedModel implements PipelineModel {
