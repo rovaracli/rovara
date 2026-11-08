@@ -1,7 +1,7 @@
 // Lessons in production, lane 2: the lessons' two scheduled jobs, run for one company inside the Team record's own schedules (aws/broker/lessons-wiring.ts hooks them to `jobs.extend`):
 //   - hourly (job id "lessons-resume"): finishes every deletion that was started and not finished in the company's projects (`resumePending`, WB-7), whatever the learning mode (an erase must finish);
-//   - nightly (job id "lessons-reverts"): re-reflects tasks whose change was reverted in the last 26 hours. One message per task to the same queue as a task's end, with the outcome `reverted`; the worker's
-//     once-claim on `LEARN#<task>#reverted` makes a revert reflected once however many nights see the row (26 hours covers the daily run with a margin for a late one). The same nightly run then moves every
+//   - nightly (job id "lessons-reverts"): re-reflects tasks whose change was reverted in the last 72 hours (LP-13). One message per task to the same queue as a task's end, with the outcome `reverted`; the worker's
+//     once-claim on `LEARN#<task>#reverted` makes a revert reflected once however many nights see the row (72 hours covers the daily run, a late one and a late-arriving row). The same nightly run then moves every
 //     trial lesson that earned it to stable (`lessonsPromoteJob`, DECISIONS 24: 14 days live, 3 loads, no thumbs-down), because a lesson that is never loaded again would otherwise wait for a load that never comes.
 //     Before that it moves lessons past their expiry (and pending ones nobody decided in time) to `expired` (`lessonsExpireJob`), so an expired lesson is never promoted or published.
 // Both are bounded (projects, tasks, time) and a failure of one project never stops the others.
@@ -16,7 +16,8 @@ import { revertedTasksSince } from "./task-outcome-rows.js";
 import { sweepExpired } from "./expiry.js";
 import { promoteStableTrials, type StableDeps } from "./trial.js";
 
-export const REVERT_WINDOW_MS = 26 * 60 * 60 * 1000;
+/** LP-13: 72 hours. The rows are found by their event time, and a revert can reach the record late (GitHub redelivers for three days); the worker's once-claim on `LEARN#<task>#reverted` makes a repeat free. */
+export const REVERT_WINDOW_MS = 72 * 60 * 60 * 1000;
 export const MAX_PROJECTS_PER_JOB = 200;
 export const MAX_REVERTS_PER_PROJECT = 100;
 

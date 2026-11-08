@@ -44,7 +44,7 @@ const OUTSIDE_STORAGE_MODULES: Record<string, string> = {
   "lessons/delivery-wiring.ts": "lesson delivery reads",
   "org/test-environment.ts": "the test-environment row",
   "lessons/nightly-state.ts": "where the nightly lessons passes start tomorrow and which projects they last swept (one item per company and pass in the company's own partition; project hashes and times only, nothing erasable) (lessons connect fix 1)",
-  "lessons/task-outcome-rows.ts": "the nightly re-reflection's look at one project's `rovara.reverted_by` link rows of the last 26 h (a record query by time, never a scan; ids only; erased, tombstoned and expired rows are skipped by `eventFromItem`) (lessons-prod-2)",
+  "lessons/task-outcome-rows.ts": "the nightly re-reflection's look at one project's `rovara.reverted_by` link rows of the last 72 h (a record query by time, never a scan; ids only; erased, tombstoned and expired rows are skipped by `eventFromItem`) (lessons-prod-2)",
 };
 
 function sourceFiles(dir: string): string[] {

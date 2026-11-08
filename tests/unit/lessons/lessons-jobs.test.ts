@@ -1,4 +1,4 @@
-// Lessons in production, lane 2: the hourly resume of unfinished lesson deletions (WB-7) and the nightly re-reflection of reverted tasks, from the record's `rovara.reverted_by` link rows of the last 26 hours.
+// Lessons in production, lane 2: the hourly resume of unfinished lesson deletions (WB-7) and the nightly re-reflection of reverted tasks, from the record's `rovara.reverted_by` link rows of the last 72 hours.
 import { describe, expect, it, vi } from "vitest";
 import type { CounterDeps } from "../../../packages/broker/src/lessons/counters.js";
 import { REVERT_WINDOW_MS, lessonsExpireJob, lessonsNightlyJob, lessonsPromoteJob, lessonsResumeJob, lessonsRevertJob, type LessonsJobDeps } from "../../../packages/broker/src/lessons/jobs.js";
@@ -36,8 +36,8 @@ describe("revertedTasksSince", () => {
   it("lists the tasks of the project's reverted_by rows of the window, once each, newest window only", async () => {
     const w = await setup();
     await w.sink.put(link("task-new", hoursAgo(2)));
-    await w.sink.put(link("task-edge", hoursAgo(25.5)));
-    await w.sink.put(link("task-old", hoursAgo(30)));
+    await w.sink.put(link("task-edge", hoursAgo(71.5)));
+    await w.sink.put(link("task-old", hoursAgo(80)));
     await w.sink.put(link("task-new", hoursAgo(1), { sourceRef: { system: "rovara", id: "task:task-new:reverted_by", version: "2" } }));
     // Another kind of row in the window is not a revert link.
     await w.sink.put(link("task-other", hoursAgo(1), { kind: "rovara.send_back", sourceRef: { system: "rovara", id: "task:task-other:sendback:r1", version: "1" } }));
@@ -87,6 +87,15 @@ describe("the nightly re-reflection", () => {
       { orgId: ORG_A, taskId: "task-a", outcome: "reverted", requestId: "nightly-1" },
       { orgId: ORG_A, taskId: "task-b", outcome: "reverted", requestId: "nightly-1" },
     ]);
+  });
+  it("LP-13: the window is 72 hours (a row ingested late, up to GitHub's three days of redelivery, is still found; the worker's once-claim makes a repeat free), so a 60-hour-old revert is sent and an 80-hour-old one is not", async () => {
+    expect(REVERT_WINDOW_MS).toBe(72 * 3_600_000);
+    const w = await setup();
+    await w.sink.put(link("task-late", hoursAgo(60)));
+    await w.sink.put(link("task-stale", hoursAgo(80)));
+    const { deps, sent } = jobDeps(w);
+    expect(await lessonsRevertJob(deps, ORG_A, ["web"], 10_000)).toMatchObject({ revertsEnqueued: 1 });
+    expect((sent as Array<{ taskId: string }>).map((m) => m.taskId)).toEqual(["task-late"]);
   });
   it("a project whose learning is Off or Collect sends nothing; no queue sends nothing; one enqueue failure is counted and the rest go on", async () => {
     const w = await setup();
