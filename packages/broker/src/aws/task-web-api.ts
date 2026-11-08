@@ -220,6 +220,14 @@ async function e2eArtifactResponse(deps: TaskWebApiDependencies, caller: Develop
       "content-security-policy": "default-src 'none'; sandbox; frame-ancestors 'none'" } };
 }
 
+/** The task page in Rovara (`/app/sessions/<id>`, the shape the forwards accept) for a reader who may read the task, or undefined: no session, no access, or the lookup failed. */
+async function taskPageOf(deps: TaskWebApiDependencies, caller: DeveloperCaller, taskId: string): Promise<string | undefined> {
+  try {
+    const path = await deps.taskPagePath?.(caller, taskId);
+    return path !== undefined && /^\/app\/sessions\/ses_[0-9a-z]{20}$/u.test(path) ? path : undefined;
+  } catch { return undefined; }
+}
+
 /** Whether the body is JSON by its declared type: `application/json`, with or without parameters. */
 const isJson = (contentType: string | undefined) => contentType !== undefined && /^application\/json\s*(;|$)/i.test(contentType.trim());
 
@@ -254,10 +262,11 @@ export function createTaskWebApi(deps: TaskWebApiDependencies): (request: Adapte
     // OWNER DECISION 17: read-only for DECISIONS only (a document's decision, the checks retry, Revise the plan, a held spec's choice); comments, replies, suggestions, Ask, Remember and People keep working.
     // OWNER DECISION 18 (review M1): one place means one place: with the cards on, EVERY write here is refused (comments, Ask, edits, deletes, suggestions, Remember, People proposals), each with
     // where it is done now; only a People request's confirmation (the page Slack's People flow links to) still writes.
-    if (deps.readOnly === true && method === "POST" && !(peopleRequestId !== undefined && peopleConfirm)) {
-      let taskPage: string | undefined;
-      try { taskPage = await deps.taskPagePath?.(caller, taskId); } catch { taskPage = undefined; }
-      const refused = json(410, { error: "read_only", message: TASK_PAGE_READ_ONLY_MESSAGE, ...(taskPage === undefined ? {} : { taskPage }) });
+    // Follow-up R1: only when there IS a task page to do it on (the task has a session, and this reader may read it: the forwards' own check). A task with no task page keeps this page's
+    // writes, through the same functions and checks, so nobody is left without a browser path; someone who may not read the task is answered by those functions as before.
+    const taskPage = deps.readOnly === true ? await taskPageOf(deps, caller, taskId) : undefined;
+    if (taskPage !== undefined && method === "POST" && !(peopleRequestId !== undefined && peopleConfirm)) {
+      const refused = json(410, { error: "read_only", message: TASK_PAGE_READ_ONLY_MESSAGE, taskPage });
       refusalLog(deps, endpoint, taskId, refused, { code: "READ_ONLY" });
       return refused;
     }
@@ -277,7 +286,7 @@ export function createTaskWebApi(deps: TaskWebApiDependencies): (request: Adapte
         if (endpoint === "comments") {
           const listed = await deps.listComments(caller, taskId);
           // OWNER DECISION 18 (review M1): with the cards on Remember and Forget are the task page's, so the page is not told it may.
-          return json(200, { comments: listed.comments, suggestions: listed.suggestions ?? [], ...(listed.canRemember === undefined || deps.readOnly === true ? {} : { canRemember: listed.canRemember }) });
+          return json(200, { comments: listed.comments, suggestions: listed.suggestions ?? [], ...(listed.canRemember === undefined || taskPage !== undefined ? {} : { canRemember: listed.canRemember }) });
         }
         const state = await deps.taskState(caller, taskId);
         const current = parseCookie(request.headers, CSRF_COOKIE);
@@ -287,7 +296,7 @@ export function createTaskWebApi(deps: TaskWebApiDependencies): (request: Adapte
           ...(state.peopleRevision === undefined ? {} : { peopleRevision: state.peopleRevision }),
           canRead: state.canRead, canComment: state.canComment, canSuggest: state.canSuggest, canDecide: state.canDecide,
           canAsk: state.canAsk, canManagePeople: state.canManagePeople, canTakeOwnership: state.canTakeOwnership, csrf,
-          ...(state.canRemember === undefined || deps.readOnly === true ? {} : { canRemember: state.canRemember }),
+          ...(state.canRemember === undefined || taskPage !== undefined ? {} : { canRemember: state.canRemember }),
           ...(state.e2ePresentation === undefined ? {} : { e2ePresentation: state.e2ePresentation }),
         });
         response.headers["set-cookie"] = csrfCookie(csrf);

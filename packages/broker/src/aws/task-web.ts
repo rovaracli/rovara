@@ -738,7 +738,8 @@ export function createTaskWeb(deps: TaskWebDependencies): (request: AdaptedHttpR
       const acts = view.access !== undefined;
       const current = parseCookie(request.headers, CSRF_COOKIE);
       const csrf = !acts ? undefined : isCsrfToken(current) ? current : randomBytes(32).toString("base64url");
-      const response = htmlResponse(200, await page(view, nonce, pageRequest(url), csrf, deps.readOnly === true), nonce);
+      // Follow-up R1: reaching here with the forwards on means the task has no task page to send the reader to; it keeps this page's controls (the API takes them for such a task).
+      const response = htmlResponse(200, await page(view, nonce, pageRequest(url), csrf, deps.readOnly === true && deps.taskPagePath === undefined), nonce);
       if (csrf !== undefined) response.headers["set-cookie"] = csrfCookie(csrf);
       return response;
     } catch (error) {

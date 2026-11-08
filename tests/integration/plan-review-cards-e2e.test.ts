@@ -80,7 +80,7 @@ const asDeveloper = (who: PageReader): Developer => ({ developerId: who.develope
 /** The plan's decision card on the task page, pressed by `who`'s browser (OWNER DECISION 7: the review page is read-only). */
 const onCard = (e2e: WorkflowE2E, who: PageReader, body: Parameters<typeof cardDecision>[3] = {}) => cardDecision({ db: e2e.db, handler: e2e.handler, orgOf: async () => undefined }, asDeveloper(who), e2e.taskId(), body);
 /** A write to the old review page's API from `who`'s browser. */
-const toPage = (e2e: WorkflowE2E, who: PageReader, endpoint: string, body: Record<string, unknown> = {}) => reviewPagePost({ db: e2e.db, handler: e2e.handler, orgOf: async () => undefined }, asDeveloper(who), e2e.taskId(), endpoint, body);
+const toPage = (e2e: WorkflowE2E, who: PageReader, endpoint: string, body: Record<string, unknown> = {}, taskId = e2e.taskId()) => reviewPagePost({ db: e2e.db, handler: e2e.handler, orgOf: async () => undefined }, asDeveloper(who), taskId, endpoint, body);
 
 describe("deciding on the task page's card, end to end (OWNER DECISION 7)", () => {
   let log: MockInstance<typeof console.log>;
@@ -154,8 +154,11 @@ describe("deciding on the task page's card, end to end (OWNER DECISION 7)", () =
     const outside = await openTaskPage(e2e, OMAR_OUTSIDE, { search: "?doc=coding-plan", scripts: false });
     expect(outside.status).toBe(404);
     expect(outside.html).not.toContain("Show a retry banner");
+    // Follow-up R1: someone outside has no task page to be pointed to, so the decision reaches its function, which answers as for a missing task (never a 410 that says where).
     const refused = await toPage(e2e, OMAR_OUTSIDE, "decision", decision);
-    expect(refused).toEqual({ status: 410, body: { error: "read_only", message: "This page is read only. Decide on the task's page in Rovara." } });
+    const missing = await toPage(e2e, OMAR_OUTSIDE, "decision", decision, crypto.randomUUID());
+    expect(refused.status).toBe(404);
+    expect(refused.body).toEqual(missing.body);
     expect((await onCard(e2e, OMAR_OUTSIDE)).status).toBe(404);
     expect(e2e.workflow().revision).toBe(workflow.revision);
     expect(e2e.workflow().decisions).toEqual(workflow.decisions);

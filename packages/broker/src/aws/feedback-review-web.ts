@@ -174,11 +174,12 @@ export function createFeedbackReviewWeb(deps: FeedbackReviewWebDependencies) {
     if (caller === undefined) return safeResponse(401, { error: "sign_in_required" });
     if (endpoint === "api/decision") {
       if (request.method !== "POST") return safeResponse(405, { error: "method_not_allowed" });
-      // OWNER DECISION 18 (review M1): with the cards on, the review is decided in the task page's feedback view only; this answers where (for a reader who may read the task), deciding nothing.
+      // OWNER DECISION 18 (review M1): with the cards on, the review is decided in the task page's feedback view only; this answers where, deciding nothing. Follow-up R1: only when there IS
+      // such a page for this reader (a session of the fixed shape); a task with no task page keeps this decision, through the same function and checks.
       if (deps.taskPagePath !== undefined) {
         let taskPage: string | undefined;
         try { taskPage = await deps.taskPagePath(caller, taskId.toLowerCase()); } catch { taskPage = undefined; }
-        return safeResponse(410, { error: "read_only", message: FEEDBACK_PAGE_READ_ONLY_MESSAGE, ...(taskPage !== undefined && TASK_PAGE_PATH.test(taskPage) ? { taskPage: `${taskPage}?view=feedback` } : {}) });
+        if (taskPage !== undefined && TASK_PAGE_PATH.test(taskPage)) return safeResponse(410, { error: "read_only", message: FEEDBACK_PAGE_READ_ONLY_MESSAGE, taskPage: `${taskPage}?view=feedback` });
       }
       const csrfCookie = parseCookie(request.headers, CSRF_COOKIE);
       if (request.headers.origin !== origin || !isCsrf(csrfCookie) || request.headers["x-agentx-csrf"] !== csrfCookie) return safeResponse(403, { error: "request_refused" });

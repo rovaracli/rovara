@@ -109,11 +109,11 @@ describe("Suite 10b: the read-only page, decision cards on", () => {
       expect(outsider.html).not.toContain("Show a retry banner");
       const workflow = e2e.workflow();
       const decision = { expectedRevision: workflow.revision, artifactDigest: workflow.artifacts.at(-1)!.sha256, decision: "APPROVE", answers: [], includedCommentIds: [] };
-      for (const who of [OWNER, SAM, OMAR_OIDC]) {
+      for (const who of [OWNER, SAM]) {
         const real = await reviewPagePost(shim(e2e), asDeveloper(who), e2e.taskId(), "decision", decision);
         expect(real.status, who.name).toBe(410);
       }
-      // An outsider's refusal says nothing about the task: the same words a missing task gets.
+      // An outsider has no task page to be pointed to (follow-up R1): the decision reaches its function, which answers exactly as for a missing task.
       const missing = await reviewPagePost(shim(e2e), asDeveloper(OMAR_OIDC), randomUUID(), "decision", decision);
       expect((await reviewPagePost(shim(e2e), asDeveloper(OMAR_OIDC), e2e.taskId(), "decision", decision)).body).toEqual(missing.body);
       expect(e2e.workflow().decisions).toEqual(workflow.decisions);
