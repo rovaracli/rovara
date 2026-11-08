@@ -691,6 +691,22 @@ exports[`named environment templates > agentx-staging-access is unchanged 1`] = 
                         ],
                       ],
                     },
+                    {
+                      "Fn::Join": [
+                        "",
+                        [
+                          "arn:",
+                          {
+                            "Ref": "AWS::Partition",
+                          },
+                          ":iam::",
+                          {
+                            "Ref": "AWS::AccountId",
+                          },
+                          ":role/agentx-staging-record-vectors-data",
+                        ],
+                      ],
+                    },
                   ],
                   "Sid": "IamFixedNameRolesNotYetCreated",
                 },
@@ -1037,6 +1053,145 @@ exports[`named environment templates > agentx-staging-access is unchanged 1`] = 
                   },
                   "Sid": "Budget",
                 },
+                {
+                  "Action": [
+                    "s3vectors:*VectorBucket",
+                    "s3vectors:*Index",
+                    "s3vectors:ListIndexes",
+                    "s3vectors:*Tag*",
+                    "s3tables:*TableBucket",
+                    "s3tables:*TableBucketEncryption",
+                    "s3tables:*TableBucket*Configuration",
+                    "s3tables:*Table*StorageClass",
+                    "s3tables:GetTableBucketReplication",
+                    "s3tables:DeleteTableBucketReplication",
+                    "s3tables:*Namespace*",
+                    "s3tables:CreateTable",
+                    "s3tables:ListTables",
+                    "s3tables:GetTable",
+                    "s3tables:DeleteTable",
+                    "s3tables:RenameTable",
+                    "s3tables:PutTableData",
+                    "s3tables:*TableMaintenanceConfiguration",
+                    "s3tables:*Tag*",
+                    "athena:*WorkGroup",
+                    "athena:*Tag*",
+                  ],
+                  "Effect": "Allow",
+                  "Resource": [
+                    {
+                      "Fn::Join": [
+                        "",
+                        [
+                          "arn:",
+                          {
+                            "Ref": "AWS::Partition",
+                          },
+                          ":s3vectors:",
+                          {
+                            "Ref": "AWS::Region",
+                          },
+                          ":",
+                          {
+                            "Ref": "AWS::AccountId",
+                          },
+                          ":bucket/agentx-staging-record-vectors",
+                        ],
+                      ],
+                    },
+                    {
+                      "Fn::Join": [
+                        "",
+                        [
+                          "arn:",
+                          {
+                            "Ref": "AWS::Partition",
+                          },
+                          ":s3vectors:",
+                          {
+                            "Ref": "AWS::Region",
+                          },
+                          ":",
+                          {
+                            "Ref": "AWS::AccountId",
+                          },
+                          ":bucket/agentx-staging-record-vectors/index/*",
+                        ],
+                      ],
+                    },
+                    {
+                      "Fn::Join": [
+                        "",
+                        [
+                          "arn:",
+                          {
+                            "Ref": "AWS::Partition",
+                          },
+                          ":s3tables:",
+                          {
+                            "Ref": "AWS::Region",
+                          },
+                          ":",
+                          {
+                            "Ref": "AWS::AccountId",
+                          },
+                          ":bucket/agentx-staging-record-lake",
+                        ],
+                      ],
+                    },
+                    {
+                      "Fn::Join": [
+                        "",
+                        [
+                          "arn:",
+                          {
+                            "Ref": "AWS::Partition",
+                          },
+                          ":s3tables:",
+                          {
+                            "Ref": "AWS::Region",
+                          },
+                          ":",
+                          {
+                            "Ref": "AWS::AccountId",
+                          },
+                          ":bucket/agentx-staging-record-lake/table/*",
+                        ],
+                      ],
+                    },
+                    {
+                      "Fn::Join": [
+                        "",
+                        [
+                          "arn:",
+                          {
+                            "Ref": "AWS::Partition",
+                          },
+                          ":athena:",
+                          {
+                            "Ref": "AWS::Region",
+                          },
+                          ":",
+                          {
+                            "Ref": "AWS::AccountId",
+                          },
+                          ":workgroup/agentx-staging-record",
+                        ],
+                      ],
+                    },
+                  ],
+                  "Sid": "TeamRecordStorage",
+                },
+                {
+                  "Action": [
+                    "s3vectors:ListVectorBuckets",
+                    "s3tables:ListTableBuckets",
+                    "athena:ListWorkGroups",
+                  ],
+                  "Effect": "Allow",
+                  "Resource": "*",
+                  "Sid": "TeamRecordLists",
+                },
               ],
               "Version": "2012-10-17",
             },
@@ -1089,12 +1244,19 @@ exports[`named environment templates > agentx-staging-access is unchanged 1`] = 
                 "codebuild:*",
                 "execute-api:*",
                 "xray:*",
+                "athena:*",
+                "s3tables:*",
+                "s3vectors:*",
                 "cloudfront:*Distribution*",
                 "cloudfront:*OriginAccessControl*",
                 "cloudfront:*Polic*",
                 "cloudfront:*Tag*",
                 "sts:GetCallerIdentity",
                 "servicequotas:GetServiceQuota",
+                "lakeformation:GetDataAccess",
+                "glue:GetCatalog",
+                "glue:GetDatabase*",
+                "glue:GetTable*",
               ],
               "Effect": "Allow",
               "Resource": "*",
@@ -1242,6 +1404,22 @@ exports[`named environment templates > agentx-staging-access is unchanged 1`] = 
                         "Ref": "AWS::AccountId",
                       },
                       ":role/agentx/staging/agentx-staging-img-*",
+                    ],
+                  ],
+                },
+                {
+                  "Fn::Join": [
+                    "",
+                    [
+                      "arn:",
+                      {
+                        "Ref": "AWS::Partition",
+                      },
+                      ":iam::",
+                      {
+                        "Ref": "AWS::AccountId",
+                      },
+                      ":role/agentx/staging/agentx-staging-record-vectors-data",
                     ],
                   ],
                 },
@@ -1519,6 +1697,22 @@ exports[`named environment templates > agentx-staging-access is unchanged 1`] = 
                       {
                         "Ref": "AWS::AccountId",
                       },
+                      ":role/agentx-staging-record-vectors-data",
+                    ],
+                  ],
+                },
+                {
+                  "Fn::Join": [
+                    "",
+                    [
+                      "arn:",
+                      {
+                        "Ref": "AWS::Partition",
+                      },
+                      ":iam::",
+                      {
+                        "Ref": "AWS::AccountId",
+                      },
                       ":role/agentx-staging-connector-secrets*",
                     ],
                   ],
@@ -1754,6 +1948,15 @@ exports[`named environment templates > agentx-staging-access is unchanged 1`] = 
                   ],
                 ],
               },
+            },
+            {
+              "Action": [
+                "s3tables:Put*Policy",
+                "s3tables:Put*Replication",
+                "s3vectors:Put*Policy",
+              ],
+              "Effect": "Deny",
+              "Resource": "*",
             },
           ],
           "Version": "2012-10-17",
