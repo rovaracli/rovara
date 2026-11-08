@@ -29,6 +29,8 @@ export interface DeletionIntent {
 export interface LoadManifestEntry {
   id: string; version: number; score: number; why: "scope" | "similar" | "path";
   citation: "unchecked" | "valid" | "moved" | "stale_dropped" | "unchecked_dropped" | "none";
+  /** LV-1 R3: the tasks the lesson was learned from, as they were when it was loaded (`lessonTaskRefs`). The task's own lessons inherit these even if the lesson is later edited, scrubbed or gone. Absent on older records. */
+  taskIds?: string[];
 }
 export interface LoadManifest {
   taskId: string; workspaceId: string; project: string; stage: LessonStage; round: number; setVersion: number;

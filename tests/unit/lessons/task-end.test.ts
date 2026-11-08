@@ -350,6 +350,30 @@ describe("LV-1 M2: a lesson learned from a task also names the tasks behind the 
     expect(await learnFromEndedTask(many.deps, { workspaceId: WS, taskId: "task-1" })).toBe("not_reflected");
     expect(many.model.calls).toEqual([]);
   });
+  it("R3: the load record keeps the lesson's tasks as they were at load time, so a lesson edited, scrubbed of its task refs or purged afterwards still passes them on", async () => {
+    const store = new InMemoryLessonStore();
+    const key = { workspaceId: WS, project: PROJECT };
+    const scrubbed = lessonRecord({ id: "les_scrubbed01", provenance: { ...lessonRecord().provenance, supportTasks: [], sourceEvents: [] } });
+    await store.commit(key, await store.setVersion(key), [scrubbed], 1);
+    const manifest = { taskId: "task-1", workspaceId: WS, project: PROJECT, stage: "PLAN" as const, round: 0, setVersion: 1, memory: "live" as const, at: 1, bytes: 1 };
+    await store.putManifest({ ...manifest, lessons: [{ id: "les_scrubbed01", version: 1, score: 0.5, why: "scope" as const, citation: "valid" as const, taskIds: ["task-p", "task-q"] }, { id: "les_purged0001", version: 1, score: 0.5, why: "scope" as const, citation: "valid" as const, taskIds: ["task-r", "task-1"] }] });
+    expect((await inheritedTasksOf(store, key, "task-1")).sort()).toEqual(["task-p", "task-q", "task-r"]);
+    // An older record without the field falls back to the lesson's current tasks (the M2 behaviour).
+    const old = new InMemoryLessonStore();
+    await old.commit(key, await old.setVersion(key), [lessonRecord({ id: "les_loaded001", provenance: { ...lessonRecord().provenance, supportTasks: ["task-p"] } })], 1);
+    await old.putManifest({ ...manifest, lessons: [{ id: "les_loaded001", version: 1, score: 0.5, why: "scope", citation: "valid" }] });
+    expect(await inheritedTasksOf(old, key, "task-1")).toEqual(["task-p"]);
+  });
+  it("LV-3: the nightly re-reflection of a reverted task goes through the same subject path, so its draft carries inheritedTasks too", async () => {
+    const w = setup({ base: { facts: baseFacts({ outcome: "reverted" }), sendBackRequestIds: [] } });
+    await loadedInto(w);
+    w.rows.reverter = { actorDeveloperId: "reverter" };
+    expect(await learnFromEndedTask(w.deps, { workspaceId: WS, taskId: "task-1", outcome: "reverted" })).toBe("reflected");
+    const created = (await w.store.list({ workspaceId: WS, project: PROJECT })).find((l) => l.id !== "les_loaded001")!;
+    expect(created.provenance.inheritedTasks).toEqual(["task-p"]);
+    // The subject itself (what the nightly worker builds) names them.
+    expect((await subjectForTask(w.deps, { workspaceId: WS, taskId: "task-1", outcome: "reverted" }))?.inheritedTasks).toEqual(["task-p"]);
+  });
   it("inheritedTasksOf follows each loaded lesson once, skips one that is gone, and throws on a lesson that names an unreadable task", async () => {
     const store = new InMemoryLessonStore();
     const key = { workspaceId: WS, project: PROJECT };

@@ -147,19 +147,15 @@ describe("learnedContextForOperation", () => {
     expect(await ask(w.host, { task: task({ orgId: "org_bbbbbbbbbbbbbbbbbbbb" }) })).toEqual({});
   });
 
-  it("a private task reads what its owner may read: a restricted lesson reaches the owner who passes its ACL and nobody else", async () => {
+  it("a restricted lesson reaches no agent, whoever owns the task (decision 31: the reader is everyone who can open the task, so no single person's access can stand in for it)", async () => {
     const restricted = (principals: string[]) => ({ kind: "restricted" as const, acl: { source: "slack" as const, scope: "slack:T/C9", principals, capturedAt: "x", liveCheck: "none" as const } });
     const base = conv("les_restricted");
     const secret = { ...base, provenance: { ...base.provenance, audience: restricted(["U-owner"]) } };
     const ownerOnly = { kind: "private" as const, ownerDeveloperId: "d".repeat(64) };
     const member = world({ identity: { principals: ["U-owner"], groups: [] }, visibility: ownerOnly });
     await seed(member.store, secret);
-    expect((await ask(member.host, { task: task({ shared: false }) })).learnedRefs?.lessons.map((l) => l.id)).toEqual(["les_restricted"]);
-    expect(member.identityCalls).toEqual(["d".repeat(64)]);
-    const stranger = world({ identity: { principals: ["U-other"], groups: [] }, visibility: ownerOnly });
-    await seed(stranger.store, secret);
-    expect(await ask(stranger.host, { task: task({ shared: false }) })).toEqual({});
-    // A shared task is nobody in particular: it reads no restricted lesson.
+    expect(await ask(member.host, { task: task({ shared: false }) })).toEqual({});
+    expect(member.identityCalls).toEqual([]);
     const shared = world();
     await seed(shared.store, secret);
     expect(await ask(shared.host)).toEqual({});

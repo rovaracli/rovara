@@ -11,7 +11,7 @@ import { isTrialLesson } from "./trial.js";
 import type { Embedder, LessonDeps, LessonVectors } from "./ports.js";
 import type { LessonStore, LoadManifest, LoadManifestEntry, ScopeKey } from "./store.js";
 import type { AccessCheckPort } from "../team-record/access-port.js";
-import { createLessonLiveReader } from "./live-visibility.js";
+import { createLessonLiveReader, lessonTaskRefs } from "./live-visibility.js";
 import { readVisible, readVisibleRanked } from "./read-visible.js";
 import { memberView, type MemberOf, type MemberResolver } from "./members.js";
 import { isRestricted, normId, type IdentitySet, type Lesson } from "./types.js";
@@ -188,7 +188,7 @@ export async function loadLessonsForStage(deps: LoadDeps, request: LoadRequest):
   };
   const deadlineAt = Date.now() + LOAD_VISIBILITY_BUDGET_MS;
   // Each batched task read gets only the time that is left, so the whole load stays inside the dispatcher's deadline whatever the State table does.
-  const live = createLessonLiveReader({ port: deps.access.taskVisibility, key, where: "load", log, timeoutMs: () => Math.max(1, deadlineAt - Date.now()) });
+  const live = createLessonLiveReader({ port: deps.access.taskVisibility, key, where: "load", log, runningTaskId: request.taskId, timeoutMs: () => Math.max(1, deadlineAt - Date.now()) });
   const chosen: LearnedLesson[] = [];
   const entries: LoadManifestEntry[] = [];
   let bytes = 0;
@@ -201,7 +201,7 @@ export async function loadLessonsForStage(deps: LoadDeps, request: LoadRequest):
       const size = sizeOf(learned);
       if (bytes + size > LOAD_MAX_BYTES) continue;
       chosen.push(learned);
-      entries.push({ id: lesson.id, version: lesson.version, score: Math.round(picked.score * 1000) / 1000, why: picked.why, citation: "unchecked" });
+      entries.push({ id: lesson.id, version: lesson.version, score: Math.round(picked.score * 1000) / 1000, why: picked.why, citation: "unchecked", taskIds: lessonTaskRefs(lesson).taskIds });
       bytes += size;
     }
   };

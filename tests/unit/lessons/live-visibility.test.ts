@@ -5,10 +5,11 @@ import { OrgIdSchema } from "../../../packages/contracts/src/index.js";
 import { buildWeeklyDigest } from "../../../packages/broker/src/lessons/digest.js";
 import { learnedContextFromRefs, type DeliveryDeps } from "../../../packages/broker/src/lessons/deliver.js";
 import { learnedContextForOperation } from "../../../packages/broker/src/aws/broker/lessons-dispatch.js";
-import { createLessonLiveReader, liveVisible, lessonTaskRefs, readerOfRunningTask } from "../../../packages/broker/src/lessons/live-visibility.js";
+import { createLessonLiveReader, liveVisible, lessonTaskRefs } from "../../../packages/broker/src/lessons/live-visibility.js";
 import { loadLessonsForStage, type LoadDeps, type LoadRequest } from "../../../packages/broker/src/lessons/load.js";
 import { readVisible, readVisibleRanked } from "../../../packages/broker/src/lessons/read-visible.js";
 import { InMemoryLessonStore } from "../../../packages/broker/src/lessons/store.js";
+import { withLessonAudiences, type LessonAudiencePort, type LessonTaskAudience } from "../../../packages/broker/src/lessons/task-audience.js";
 import { buildLessonsView, type LessonViewDeps } from "../../../packages/broker/src/lessons/view.js";
 import type { AccessCheckPort } from "../../../packages/broker/src/team-record/access-port.js";
 import type { TaskVisibilityPort } from "../../../packages/broker/src/team-record/live-audience.js";
@@ -38,6 +39,27 @@ function port(table: Record<string, TaskVisibility | undefined | "throw">) {
   return { value, reads };
 }
 const accessOf = (tasks: TaskVisibilityPort): AccessCheckPort => ({ mayRead: async (_o, _v, places) => places.map(() => true), taskVisibility: tasks });
+/** Decision 31: a lesson-audience port over a table (a task missing from the table, or mapped to undefined, is unknown; "throw" throws). Counts its batched reads. */
+function audiencePort(table: Record<string, LessonTaskAudience | undefined | "throw">) {
+  const reads: string[][] = [];
+  const value: LessonAudiencePort = {
+    async read(_org, ids) {
+      reads.push([...ids]);
+      const out = new Map<string, LessonTaskAudience | undefined>();
+      for (const id of ids) {
+        const v = table[id];
+        if (v === "throw") throw new Error("down");
+        out.set(id, v);
+      }
+      return out;
+    },
+  };
+  return { value, reads };
+}
+/** A project task's audience: the project's roster (x, y, z, ann) minus the denied, plus its owner and the people named. */
+const aud = (over: Partial<LessonTaskAudience> = {}): LessonTaskAudience => ({ project: PROJECT, roster: new Set(["x", "y", "z", "ann"]), denied: new Set(), extras: new Set(["x"]), orgWide: false, otherProjects: new Set(), ...over });
+/** An access port whose task-visibility port also carries the lesson audiences. */
+const accessWithAudiences = (visibility: TaskVisibilityPort, audiences: LessonAudiencePort): AccessCheckPort => accessOf(withLessonAudiences(visibility, audiences));
 const fromTasks = (id: string, tasks: string[], over: Partial<Lesson> = {}): Lesson =>
   lessonRecord({ id, type: "convention", tier: 1, approvals: [{ approvalId: "ap", by: "ann", at: 1, mode: "one" }], provenance: { ...lessonRecord().provenance, supportTasks: tasks }, ...over });
 const asReader = (developerId: string | undefined) => (developerId === undefined ? undefined : { principals: [], groups: [], developerId });
@@ -156,29 +178,31 @@ describe("every read path", () => {
     const result = await loadLessonsForStage(deps, request);
     expect(result.context?.lessons.map((l) => l.id)).toEqual(["les_stayopen1"]);
     expect(w.p.reads.length).toBe(1);
-    // The owner's private task still gets the lesson of their own private task (the loader carries the owner's developer id).
+    // The old owner shortcut is gone (decision 31): a loader that names an owner but has no audience for the running task reads as nobody in particular.
     const owner = await loadLessonsForStage(deps, { ...request, taskAudience: { kind: "private", identity: { principals: [], groups: [], developerId: "ann" } } });
-    expect(owner.context?.lessons.map((l) => l.id).sort()).toEqual(["les_narrowed1", "les_stayopen1"]);
+    expect(owner.context?.lessons.map((l) => l.id)).toEqual(["les_stayopen1"]);
   });
 
-  it("delivery: the reader is the running task's LIVE visibility; the lesson of a narrowed task is not delivered to a project-wide task, an owner-only task reads as its owner", async () => {
-    const w = world({ ...tasks, "run-owner": PRIVATE_ANN, "run-wide": SHARED, "run-list": { kind: "shared_with", developerIds: ["ann", "bob"] } });
+  it("delivery: the reader is the running task's LIVE audience; a lesson whose source task hides someone who can see the running task is not delivered", async () => {
+    // tn hides z; to hides nobody. Running tasks: run-wide (nobody hidden), run-hides-z (z hidden too), run-gone (unknown).
+    const audiences = audiencePort({ tn: aud({ denied: new Set(["z"]), extras: new Set(["ann"]) }), to: aud(), "run-wide": aud(), "run-hides-z": aud({ denied: new Set(["z"]) }), "run-gone": undefined });
+    const w = { ...world(tasks), access: accessWithAudiences(port(tasks).value, audiences.value) };
     await seed(w.store, narrowed, open);
     const deps: DeliveryDeps = { store: w.store, settings: settings(), access: w.access, identity: async () => ({ principals: [], groups: [] }), now: w.clock.now };
     const refs = (taskId: string | undefined, audience: { kind: "shared" } | { kind: "private"; developerId: string } = { kind: "shared" }) => ({ v: 1 as const, orgId: WS, project: PROJECT, setVersion: 5, stage: "IMPLEMENT" as const, audience, ...(taskId === undefined ? {} : { taskId }), lessons: [{ id: "les_narrowed1", version: 1 }, { id: "les_stayopen1", version: 1 }] });
-    // Positive control: the owner-only task reads as its owner, who may read the narrowed task.
-    expect((await learnedContextFromRefs(deps, refs("run-owner")))?.lessons.map((l) => l.id)).toEqual(["les_narrowed1", "les_stayopen1"]);
-    // A project-wide task, a list task and a task nobody can read read as nobody in particular.
+    // Positive control: a running task that hides z as well as tn does can only be seen by people who may see tn, so it gets both lessons.
+    expect((await learnedContextFromRefs(deps, refs("run-hides-z")))?.lessons.map((l) => l.id)).toEqual(["les_narrowed1", "les_stayopen1"]);
+    // z can see run-wide but not tn: the lesson of tn is not delivered.
     expect((await learnedContextFromRefs(deps, refs("run-wide")))?.lessons.map((l) => l.id)).toEqual(["les_stayopen1"]);
-    expect((await learnedContextFromRefs(deps, refs("run-list")))?.lessons.map((l) => l.id)).toEqual(["les_stayopen1"]);
+    // An unknown running task (and a stage queued before the task id was carried) reads as nobody in particular: only lessons whose source tasks are project-wide.
     expect((await learnedContextFromRefs(deps, refs("run-gone")))?.lessons.map((l) => l.id)).toEqual(["les_stayopen1"]);
-    // The stored audience is NOT trusted: a stage whose load saw an owner but whose task is project-wide now reads as nobody; a stage queued before the task id was carried reads as nobody.
+    // The stored audience is NOT trusted: a stage whose load saw an owner reads as the running task's audience now.
     expect((await learnedContextFromRefs(deps, refs("run-wide", { kind: "private", developerId: "ann" })))?.lessons.map((l) => l.id)).toEqual(["les_stayopen1"]);
     expect((await learnedContextFromRefs(deps, refs(undefined, { kind: "private", developerId: "ann" })))?.lessons.map((l) => l.id)).toEqual(["les_stayopen1"]);
     // A task whose visibility cannot be read delivers nothing from it.
     const down = world({ tn: undefined, to: undefined });
     await seed(down.store, narrowed, open);
-    expect(await learnedContextFromRefs({ ...deps, store: down.store, access: down.access }, refs("run-owner"))).toBeUndefined();
+    expect(await learnedContextFromRefs({ ...deps, store: down.store, access: accessWithAudiences(down.p.value, audiencePort({}).value) }, refs("run-hides-z"))).toBeUndefined();
   });
 
   it("digest, the Lessons tab and the Home count: the lesson of a narrowed task is not listed or counted", async () => {
@@ -204,68 +228,114 @@ describe("every read path", () => {
 
 // ---- LV-1 fix round 1
 
-describe("H1: the reader of an agent's lessons is the running task's live Plan 5 visibility (not task.shared, not the owner by default)", () => {
+describe("decision 31 (R1): the reader of an agent's lessons is the audience of the RUNNING task, compared as sets with every source task's", () => {
   const P = "task-p";
-  // The reviewer's scenario: lesson L from task P (project-wide when reflected, audience project); P is then narrowed to the list [X, Y].
   const lessonL = fromTasks("les_fromtaskp", [P]);
-  const stage = (table: Record<string, TaskVisibility | undefined>, over: Record<string, unknown> = {}) => {
-    const p = port(table);
+  const stage = (visibility: Record<string, TaskVisibility | undefined | "throw">, audiences: Record<string, LessonTaskAudience | undefined | "throw">) => {
+    const p = port(visibility);
+    const a = audiencePort(audiences);
     const store = new InMemoryLessonStore();
     const clock = new Clock();
-    const access = accessOf(p.value);
+    const access = accessWithAudiences(p.value, a.value);
     const identityCalls: string[] = [];
     const load: LoadDeps = { store, embedder: NO_EMBEDDER, vectors: NO_VECTORS, settings: settings(), access, audit: new Audit(), now: clock.now };
     const host = { lessons: { access, load, directory: { identity: async (_w: string, developer: string) => { identityCalls.push(developer); return { principals: [], groups: [], developerId: developer }; }, eligibility: async () => { throw new Error("not used"); } } } } as never;
-    const task = { taskId: "task-run", orgId: WS, project: PROJECT, title: "Retry failed HTTP calls", shared: false, developerId: "d".repeat(64), developerName: "Maya", provider: "slack", workflow: { revision: 1 }, ...over } as never;
+    const task = { taskId: "task-run", orgId: WS, project: PROJECT, title: "Retry failed HTTP calls", shared: false, developerId: "d".repeat(64), developerName: "Maya", provider: "slack", workflow: { revision: 1 }, ...({} as Record<string, unknown>) } as never;
     const ask = () => learnedContextForOperation(host, { orgId: WS, task, workflowMode: "IMPLEMENT", definition: { repositories: [{ name: "api", url: "https://github.com/acme/api" }] } as never }, { LEARNED_LESSONS_ENABLED: "1" });
-    return { store, ask, identityCalls, reads: p.reads };
+    return { store, ask, identityCalls, reads: p.reads, audienceReads: a.reads };
   };
-  const narrowedToXY: TaskVisibility = { kind: "shared_with", developerIds: ["x", "y"] };
+  // The legacy resolver calls an unshared task "private" (the owner's alone) and a task with a denial a list; session access does not (every project member can open an unshared task).
+  const legacyPrivate: TaskVisibility = { kind: "private", ownerDeveloperId: "x" };
+  const idsLoaded = async (w: ReturnType<typeof stage>) => (await w.ask()).learnedRefs?.lessons.map((l) => l.id);
 
-  it("a project-wide running task (task.shared is false: it is shared through Plan 5) does NOT load P's lesson once P is narrowed to [X, Y]", async () => {
-    const w = stage({ [P]: narrowedToXY, "task-run": SHARED });
+  it("the reviewer's scenario: P's People list denies Z, X runs an unshared task T. Z can see T but not P, so P's lesson does NOT load; a lesson from a task that hides nobody does (positive control)", async () => {
+    const w = stage({ [P]: legacyPrivate, "task-ok": legacyPrivate, "task-run": legacyPrivate }, { [P]: aud({ denied: new Set(["z"]) }), "task-ok": aud(), "task-run": aud() });
     await seed(w.store, lessonL, fromTasks("les_stayopen1", ["task-ok"]));
-    const w2 = stage({ [P]: narrowedToXY, "task-run": SHARED, "task-ok": SHARED });
-    await seed(w2.store, lessonL, fromTasks("les_stayopen1", ["task-ok"]));
-    const result = await w2.ask();
-    // Positive control: the lesson of a project-wide task did load; P's lesson (the leak path of the old reader) did not.
+    const result = await w.ask();
     expect(result.learnedRefs?.lessons.map((l) => l.id)).toEqual(["les_stayopen1"]);
     expect(result.learnedRefs?.taskId).toBe("task-run");
     expect(result.learnedRefs?.audience).toEqual({ kind: "shared" });
-    expect(w2.identityCalls).toEqual([]);
+    // No single person is the reader any more: the owner shortcut is gone.
+    expect(w.identityCalls).toEqual([]);
   });
 
-  it("a task shared with a list [X, Z] does not load it either; an unreadable running task reads as nobody", async () => {
-    for (const running of [{ kind: "shared_with" as const, developerIds: ["x", "z"] }, undefined]) {
-      const w = stage({ [P]: narrowedToXY, "task-ok": SHARED, "task-run": running });
-      await seed(w.store, lessonL, fromTasks("les_stayopen1", ["task-ok"]));
-      expect((await w.ask()).learnedRefs?.lessons.map((l) => l.id)).toEqual(["les_stayopen1"]);
-    }
+  it("T narrowed to a subset of P's audience (T also denies Z) loads P's lesson", async () => {
+    const w = stage({}, { [P]: aud({ denied: new Set(["z"]) }), "task-run": aud({ denied: new Set(["z"]) }) });
+    await seed(w.store, lessonL);
+    expect(await idsLoaded(w)).toEqual(["les_fromtaskp"]);
   });
 
-  it("an owner-only running task reads as its owner: the owner who may read P gets P's lesson, another owner does not", async () => {
-    for (const [owner, expected] of [["x", ["les_fromtaskp", "les_stayopen1"]], ["eve", ["les_stayopen1"]]] as const) {
-      const w = stage({ [P]: narrowedToXY, "task-ok": SHARED, "task-run": { kind: "private", ownerDeveloperId: owner } });
-      await seed(w.store, lessonL, fromTasks("les_stayopen1", ["task-ok"]));
-      const result = await w.ask();
-      expect(result.learnedRefs?.lessons.map((l) => l.id)).toEqual(expected);
-      expect(result.learnedRefs?.audience).toEqual({ kind: "private", developerId: owner });
-      expect(w.identityCalls).toEqual([owner]);
-    }
+  it("T that hides MORE than P (P denies z, T denies z and y) loads; T that hides a different person (denies y only) does not", async () => {
+    const more = stage({}, { [P]: aud({ denied: new Set(["z"]) }), "task-run": aud({ denied: new Set(["z", "y"]) }) });
+    await seed(more.store, lessonL);
+    expect(await idsLoaded(more)).toEqual(["les_fromtaskp"]);
+    const other = stage({}, { [P]: aud({ denied: new Set(["z"]) }), "task-run": aud({ denied: new Set(["y"]) }) });
+    await seed(other.store, lessonL);
+    expect(await idsLoaded(other)).toBeUndefined();
   });
 
-  it("readerOfRunningTask: owner-only is the owner, everything else (project, list, unreadable, error, timeout, no port) is nobody; a timeout aborts the read", async () => {
-    const ask = (p: TaskVisibilityPort | undefined, timeoutMs?: number) => readerOfRunningTask({ port: p, orgId: WS, taskId: "t", where: "t", timeoutMs });
-    expect(await ask(port({ t: PRIVATE_ANN }).value)).toEqual({ kind: "owner", developerId: "ann" });
-    expect(await ask(port({ t: SHARED }).value)).toEqual({ kind: "nobody" });
-    expect(await ask(port({ t: { kind: "shared_with", developerIds: ["ann", "bob"] } }).value)).toEqual({ kind: "nobody" });
-    expect(await ask(port({ t: undefined }).value)).toEqual({ kind: "nobody" });
-    expect(await ask(port({ t: "throw" }).value)).toEqual({ kind: "nobody" });
-    expect(await ask(undefined)).toEqual({ kind: "nobody" });
+  it("a project-wide T with a project-wide P loads; a denial on T but not on P loads", async () => {
+    const wide = stage({}, { [P]: aud(), "task-run": aud() });
+    await seed(wide.store, lessonL);
+    expect(await idsLoaded(wide)).toEqual(["les_fromtaskp"]);
+    const onT = stage({}, { [P]: aud(), "task-run": aud({ denied: new Set(["z"]) }) });
+    await seed(onT.store, lessonL);
+    expect(await idsLoaded(onT)).toEqual(["les_fromtaskp"]);
+  });
+
+  it("a person who reaches T by name but cannot reach P, a wider share on T, and a different project all withhold", async () => {
+    const outsider = stage({}, { [P]: aud(), "task-run": aud({ extras: new Set(["x", "w"]) }) });
+    await seed(outsider.store, lessonL);
+    expect(await idsLoaded(outsider)).toBeUndefined();
+    const shared = stage({}, { [P]: aud(), "task-run": aud({ orgWide: true }) });
+    await seed(shared.store, lessonL);
+    expect(await idsLoaded(shared)).toBeUndefined();
+    const project = stage({}, { [P]: aud({ project: "other" }), "task-run": aud() });
+    await seed(project.store, lessonL);
+    expect(await idsLoaded(project)).toBeUndefined();
+    // P shared with the same extras and the company: T may name w then.
+    const named = stage({}, { [P]: aud({ extras: new Set(["x", "w"]) }), "task-run": aud({ extras: new Set(["x", "w"]) }) });
+    await seed(named.store, lessonL);
+    expect(await idsLoaded(named)).toEqual(["les_fromtaskp"]);
+  });
+
+  it("a read failure loads nothing: P's audience unreadable, every read throwing, and no audience port", async () => {
+    const pUnknown = stage({}, { [P]: undefined, "task-run": aud() });
+    await seed(pUnknown.store, lessonL);
+    expect(await idsLoaded(pUnknown)).toBeUndefined();
+    const pThrows = stage({}, { [P]: "throw", "task-run": "throw" });
+    await seed(pThrows.store, lessonL);
+    expect(await idsLoaded(pThrows)).toBeUndefined();
+    // Running task unknown: nobody in particular, so only lessons whose source tasks are project-wide per the strict resolver load.
+    const tUnknown = stage({ [P]: { kind: "shared_with", developerIds: ["x", "y"] }, "task-ok": SHARED }, { [P]: aud(), "task-ok": aud(), "task-run": undefined });
+    await seed(tUnknown.store, lessonL, fromTasks("les_stayopen1", ["task-ok"]));
+    expect(await idsLoaded(tUnknown)).toEqual(["les_stayopen1"]);
+    // An access port without lesson audiences (an older wiring): the same nobody rule, never the owner.
+    const bare = (() => {
+      const p = port({ [P]: legacyPrivate, "task-ok": SHARED, "task-run": legacyPrivate });
+      const store = new InMemoryLessonStore();
+      const access = accessOf(p.value);
+      const host = { lessons: { access, load: { store, embedder: NO_EMBEDDER, vectors: NO_VECTORS, settings: settings(), access, audit: new Audit(), now: new Clock().now } as LoadDeps, directory: { identity: async () => ({ principals: [], groups: [] }), eligibility: async () => { throw new Error("not used"); } } } } as never;
+      return { store, ask: () => learnedContextForOperation(host, { orgId: WS, task: { taskId: "task-run", orgId: WS, project: PROJECT, title: "Retry", shared: false, developerId: "d".repeat(64), developerName: "Maya", provider: "slack", workflow: { revision: 1 } } as never, workflowMode: "IMPLEMENT", definition: { repositories: [{ name: "api", url: "https://github.com/acme/api" }] } as never }, { LEARNED_LESSONS_ENABLED: "1" }) };
+    })();
+    await seed(bare.store, lessonL, fromTasks("les_stayopen1", ["task-ok"]));
+    expect((await bare.ask()).learnedRefs?.lessons.map((l) => l.id)).toEqual(["les_stayopen1"]);
+  });
+
+  it("a timeout aborts the audience read and withholds the lessons that name a task", async () => {
     let aborted = false;
-    const slow: TaskVisibilityPort = { read: (_o, _i, options) => new Promise(() => { options?.signal?.addEventListener("abort", () => { aborted = true; }); }) };
-    expect(await ask(slow, 20)).toEqual({ kind: "nobody" });
+    const slow: LessonAudiencePort = { read: (_o, _i, options) => new Promise(() => { options?.signal?.addEventListener("abort", () => { aborted = true; }); }) };
+    const reader = createLessonLiveReader({ port: withLessonAudiences(port({}).value, slow), key: KEY, where: "t", runningTaskId: "task-run", timeoutMs: 20 });
+    expect(await reader.keep(undefined, [fromTasks("les_slowslow1", ["a"])])).toEqual([]);
     expect(aborted).toBe(true);
+  });
+
+  it("a running task's audience and every source task's are read once per request (one batch, remembered across calls)", async () => {
+    const a = audiencePort({ "task-run": aud(), t1: aud(), t2: aud() });
+    const reader = createLessonLiveReader({ port: withLessonAudiences(port({}).value, a.value), key: KEY, where: "t", runningTaskId: "task-run" });
+    expect(idsOf(await reader.keep(undefined, [fromTasks("les_00000001", ["t1"]), fromTasks("les_00000002", ["t2"])]))).toEqual(["les_00000001", "les_00000002"]);
+    expect(idsOf(await reader.keep(undefined, [fromTasks("les_00000003", ["t1", "t2"])]))).toEqual(["les_00000003"]);
+    expect(a.reads).toEqual([["task-run", "t1", "t2"]]);
   });
 });
 

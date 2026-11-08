@@ -9,7 +9,7 @@ import type { AccessCheckPort } from "../team-record/access-port.js";
 import { approversRequired, resolveLearning, stricterMode, LearningModeSchema, type LearningSettingsReader } from "./policy.js";
 import { buildWeeklyDigest } from "./digest.js";
 import { lessonPanelRows } from "./panel.js";
-import { createLessonLiveReader } from "./live-visibility.js";
+import { createLessonLiveReader, LESSON_LIVE_TIMEOUT_MS } from "./live-visibility.js";
 import { readVisible, readVisibleRanked, type LessonLog } from "./read-visible.js";
 import type { ApproverDirectory } from "./ports.js";
 import type { LessonsPauseStore } from "./pause.js";
@@ -143,11 +143,21 @@ function toView(lesson: Lesson, ctx: Context): LessonView {
 /** The company's preset is the reason the project is Regulated: it is Regulated and the project's own choice is not. */
 const companyPresetLocks = (raw: { preset?: unknown; companyPreset?: unknown }): boolean => raw.companyPreset === "regulated" && raw.preset !== "regulated";
 
+/** The whole Lessons tab stops reading task visibility after this long (API Gateway answers a 504 at 29 s; the rest of the tab needs a few seconds). */
+export const TAB_DEADLINE_MS = 20_000;
+
+/** How many candidate lessons this viewer may read now, checked a page at a time (one reader, the tab's deadline). Lessons not checked in time are not counted. */
+async function queuedCount(deps: LessonViewDeps, key: ScopeKey, viewer: IdentitySet | undefined, deadlineAt: number): Promise<number> {
+  const live = createLessonLiveReader({ port: deps.access.taskVisibility, key, where: "view", log: deps.log, timeoutMs: () => Math.max(1, Math.min(LESSON_LIVE_TIMEOUT_MS, deadlineAt - Date.now())) });
+  const ranked = await deps.store.list(key, { statuses: ["candidate"] });
+  return (await readVisibleRanked({ access: deps.access, key, viewer, where: "view", log: deps.log, live, ranked, pageSize: 50, enough: () => false, deadlineAt })).kept.length;
+}
+
 /**
  * The Lessons tab. `surface: "home"` is Home's card (LV-1 M1): it needs only the lessons waiting for this person, so only those are read and checked (the other lists come back empty). Either way each status is
  * read on its own, the lists are ranked BEFORE the visibility check and checked a page at a time until one more than the list's cap survives, and one reader serves the whole request (no task is read twice).
  */
-export async function buildLessonsView(deps: LessonViewDeps, caller: LessonCaller, project: string, options: { surface?: "tab" | "home" } = {}): Promise<LessonsViewAnswer> {
+export async function buildLessonsView(deps: LessonViewDeps, caller: LessonCaller, project: string, options: { surface?: "tab" | "home"; /** Tests: the whole tab's deadline (default `TAB_DEADLINE_MS`). */ deadlineMs?: number } = {}): Promise<LessonsViewAnswer> {
   const key = keyOf(caller, project);
   const [resolved, raw, state] = await Promise.all([
     resolveLearning(deps.settings, key.workspaceId, key.project),
@@ -167,22 +177,27 @@ export async function buildLessonsView(deps: LessonViewDeps, caller: LessonCalle
     paused = undefined;
   }
   const home = options.surface === "home";
-  const live = createLessonLiveReader({ port: deps.access.taskVisibility, key, where: "view", log: deps.log });
+  // LV-1 R4: each list has its OWN reader (so the active list's tasks can't use up the bound the waiting list needs) and the whole tab has one deadline, under API Gateway's 29 s: each task read gets only the time that
+  // is left, and a list not finished by then shows what was checked (and says it was cut). Anything not checked is not shown.
+  const deadlineAt = Date.now() + (options.deadlineMs ?? TAB_DEADLINE_MS);
   const byValue = (a: Lesson, b: Lesson): number => lessonValue(b) - lessonValue(a) || b.createdAt - a.createdAt || a.id.localeCompare(b.id);
   const byUpdated = (a: Lesson, b: Lesson): number => b.updatedAt - a.updatedAt || a.id.localeCompare(b.id);
   let checked = 0, kept = 0;
+  const cut = new Set<"waiting" | "active" | "removed">();
   /** The first `max + 1` lessons (in `order`) this viewer may read now: one more than the list shows tells whether it was cut. */
-  const top = async (statuses: Lesson["status"][], order: (a: Lesson, b: Lesson) => number, max: number): Promise<Lesson[]> => {
+  const top = async (list: "waiting" | "active" | "removed", statuses: Lesson["status"][], order: (a: Lesson, b: Lesson) => number, max: number): Promise<Lesson[]> => {
     const ranked = (await deps.store.list(key, { statuses })).sort(order);
-    const result = await readVisibleRanked({ access: deps.access, key, viewer: state.viewer, where: "view", log: deps.log, live, ranked, pageSize: max + 1, enough: (found) => found.length > max });
+    const live = createLessonLiveReader({ port: deps.access.taskVisibility, key, where: "view", log: deps.log, timeoutMs: () => Math.max(1, Math.min(LESSON_LIVE_TIMEOUT_MS, deadlineAt - Date.now())) });
+    const result = await readVisibleRanked({ access: deps.access, key, viewer: state.viewer, where: "view", log: deps.log, live, ranked, pageSize: max + 1, enough: (found) => found.length > max, deadlineAt });
     checked += result.checked; kept += result.kept.length;
+    if (!result.complete) cut.add(list);
     return result.kept;
   };
-  // People who do not decide read the active lessons only: the approval queue, who approved and what waits are for the people who can act on them.
-  const activeAll = home ? [] : await top(["active", "stale"], byValue, ACTIVE_MAX);
-  const waitingAll = state.canDecide ? await top(["pending"], byValue, WAITING_MAX) : [];
-  const removedAll = state.canDecide && !home ? await top(["retired", "expired", "rejected"], byUpdated, REMOVED_MAX) : [];
-  const queued = state.canDecide && !home ? (await readVisible({ access: deps.access, key, viewer: state.viewer, lessons: await deps.store.list(key, { statuses: ["candidate"] }), where: "view", log: deps.log, live })).length : 0;
+  // People who do not decide read the active lessons only: the approval queue, who approved and what waits are for the people who can act on them. What waits for a decision is read first.
+  const waitingAll = state.canDecide ? await top("waiting", ["pending"], byValue, WAITING_MAX) : [];
+  const activeAll = home ? [] : await top("active", ["active", "stale"], byValue, ACTIVE_MAX);
+  const queued = state.canDecide && !home ? await queuedCount(deps, key, state.viewer, deadlineAt) : 0;
+  const removedAll = state.canDecide && !home ? await top("removed", ["retired", "expired", "rejected"], byUpdated, REMOVED_MAX) : [];
   const waiting = waitingAll.slice(0, WAITING_MAX), active = activeAll.slice(0, ACTIVE_MAX), removed = removedAll.slice(0, REMOVED_MAX);
   const person = await namePeople(deps, caller.orgId, caller.developerId, [...waiting, ...active, ...removed].flatMap(personIdsOf));
   const ctx: Context = { canDecide: state.canDecide, eligibleCount: state.eligibleCount, eligible: state.eligible, me: caller.developerId, required: (lesson) => approversRequired(lesson.tier, resolved.approval), groups: resolved.requiredGroups, person };
@@ -190,9 +205,9 @@ export async function buildLessonsView(deps: LessonViewDeps, caller: LessonCalle
   const setVersion = await deps.store.setVersion(key);
   const snapshots = state.canDecide && !home ? (await deps.store.snapshots(key)).filter((s) => s.setVersion !== setVersion).slice(-SNAPSHOTS_MAX).map((s) => ({ setVersion: s.setVersion, at: s.at, lessons: s.members.length })) : [];
   const truncated: Array<"waiting" | "active" | "removed"> = [];
-  if (waitingAll.length > WAITING_MAX) truncated.push("waiting");
-  if (activeAll.length > ACTIVE_MAX) truncated.push("active");
-  if (removedAll.length > REMOVED_MAX) truncated.push("removed");
+  if (waitingAll.length > WAITING_MAX || cut.has("waiting")) truncated.push("waiting");
+  if (activeAll.length > ACTIVE_MAX || cut.has("active")) truncated.push("active");
+  if (removedAll.length > REMOVED_MAX || cut.has("removed")) truncated.push("removed");
   return {
     project, mode: resolved.mode, lockedByCompany, preset: resolved.preset, presetLockedByCompany: companyPresetLocks(raw),
     approval: { tier0: resolved.approval.tier0, tier1: resolved.approval.tier1, requiredGroups: [...resolved.requiredGroups] },

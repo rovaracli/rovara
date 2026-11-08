@@ -61,6 +61,25 @@ describe("curator decisions (design §4.5.2)", () => {
     expect(await store.list(KEY)).toHaveLength(1);
   });
 
+  it("R2: a merge unions the inherited tasks of both lessons (the laundering path through a merge), and a merge that would not fit them is refused", async () => {
+    const { deps, store } = setup();
+    await curateDraft(deps, KEY, draft({ provenance: { ...draft().provenance, inheritedTasks: ["task-p"] } }));
+    const merged = await curateDraft(deps, KEY, draft({ provenance: { ...draft().provenance, inheritedTasks: ["task-q"] } }));
+    expect(merged.outcome).toBe("merged");
+    const [lesson] = await store.list(KEY);
+    expect(lesson!.provenance.inheritedTasks).toEqual(["task-p", "task-q"]);
+    // A target without the field takes the draft's.
+    const second = setup();
+    await curateDraft(second.deps, KEY, draft());
+    await curateDraft(second.deps, KEY, draft({ provenance: { ...draft().provenance, inheritedTasks: ["task-p"] } }));
+    expect((await second.store.list(KEY))[0]!.provenance.inheritedTasks).toEqual(["task-p"]);
+    // Over the cap of 50 the merge is refused and the draft stands alone.
+    const full = setup();
+    await curateDraft(full.deps, KEY, draft({ provenance: { ...draft().provenance, inheritedTasks: Array.from({ length: 50 }, (_, i) => `task-inh-${String(i)}`) } }));
+    const refused = await curateDraft(full.deps, KEY, draft({ provenance: { ...draft().provenance, inheritedTasks: ["task-extra"] } }));
+    expect(refused.outcome).toBe("added");
+  });
+
   it("M3: a merge that would drop a task id (past the 50-task cap) is refused: the draft stands on its own as a candidate, with its task, PR and author", async () => {
     const { deps, store } = setup();
     const full = Array.from({ length: 50 }, (_, i) => `task-full-${String(i)}`);

@@ -5,8 +5,10 @@
 //
 // One rule, one module: `liveVisible` keeps a lesson only if EVERY source task is still visible to the reader (a shared or project-wide reader needs every task project-wide; a person needs to be
 // allowed on every task: `mayReadTask`). The tasks of the lessons are read in batched calls (`TaskVisibilityPort.read`, the strict State-table port of SRL-4) by ONE reader per request (`createLessonLiveReader`: no task is read twice, the bound counts only the lessons checked).
-// WHO the reader is, for an agent, is `readerOfRunningTask`: the running task's own live visibility (an owner-only task reads as its owner; anything else as nobody in particular). Fail closed: no port, a read that
-// fails or times out, a task that is gone, another company's, past the per-request bound or unreadable, a task id that is malformed: the lesson is withheld. Logs carry counts and fixed codes, never ids.
+// WHO the reader is, for an agent (owner decision 31): the audience of the RUNNING task, as a set (`task-audience.ts`: who can actually open its session). A lesson reaches the running task T only if
+// EVERY person who can see T can see EVERY source task P of the lesson (audience(T) is a subset of audience(P)). A running task whose audience cannot be read (no port, a failed or timed-out read, gone, another
+// company's), or no running task at all, reads as nobody in particular: only lessons whose source tasks are all project-wide (with no denials). Fail closed: no port, a read that fails or times out, a task that
+// is gone, another company's, past the per-request bound or unreadable, a task id that is malformed: the lesson is withheld. Logs carry counts and fixed codes, never ids.
 //
 // `readVisible` (read-visible.ts) calls it, and every lesson read already goes through `readVisible` (tests/unit/lessons/read-paths.test.ts). A new path that hands a lesson to a person or to an
 // agent WITHOUT `readVisible` (the PR "Lessons used" list, publishing a lesson to a repository) must call `liveVisible` with the viewer of that path (`undefined` for something everyone in the
@@ -14,6 +16,7 @@
 import { OrgIdSchema } from "@agentx/contracts";
 import { createLiveAudienceReader, type TaskVisibilityPort } from "../team-record/live-audience.js";
 import type { ReadAudience } from "../team-record/types.js";
+import { audienceWithin, lessonAudiencesOf, type LessonTaskAudience, type RosterMemo } from "./task-audience.js";
 import type { LessonLog } from "./read-visible.js";
 import type { ScopeKey } from "./store.js";
 import { lessonPlaces, type IdentitySet, type Lesson } from "./types.js";
@@ -72,7 +75,7 @@ export interface LessonLiveReader {
   keep(viewer: Pick<IdentitySet, "developerId"> | undefined, lessons: readonly Lesson[]): Promise<Lesson[]>;
 }
 
-export interface LessonLiveReaderInput { port: TaskVisibilityPort | undefined; key: ScopeKey; where: string; log?: LessonLog | undefined; /** Tests and the loader's own deadline (a function gives the time left for each lookup). */ timeoutMs?: number | (() => number) | undefined; maxTasks?: number | undefined }
+export interface LessonLiveReaderInput { port: TaskVisibilityPort | undefined; key: ScopeKey; where: string; /** The task the lessons are for (an agent's running task): its audience is compared with every source task's (decision 31). Absent: the viewer rule. */ runningTaskId?: string | undefined; log?: LessonLog | undefined; /** Tests and the loader's own deadline (a function gives the time left for each lookup). */ timeoutMs?: number | (() => number) | undefined; maxTasks?: number | undefined }
 
 /**
  * One reader per request (LV-1 M1). Lessons that name no task pass untouched (and no read is made when none names one). Anything that cannot be read withholds the lessons it affects. `where` names the
@@ -87,6 +90,35 @@ export function createLessonLiveReader(input: LessonLiveReaderInput): LessonLive
     })
     : undefined;
   const withheld = (count: number, reason: string): void => { input.log?.(`learning.${input.where}_live_withheld`, { lessons: count, reason }); };
+
+  // Audiences (decision 31): read once per task per request, with the same bound, per-read time and abort as the visibility reader.
+  const audiencePort = input.runningTaskId === undefined ? undefined : lessonAudiencesOf(input.port);
+  const audiences = new Map<string, LessonTaskAudience | undefined>();
+  const memo: RosterMemo = new Map();
+  const loadAudiences = async (ids: Iterable<string>): Promise<void> => {
+    if (!org.success || audiencePort === undefined) return;
+    const fresh: string[] = [];
+    for (const id of ids) {
+      if (audiences.has(id) || fresh.includes(id)) continue;
+      if (audiences.size + fresh.length >= (input.maxTasks ?? LESSON_LIVE_TASKS_MAX)) { input.log?.(`learning.${input.where}_audience_unreadable`, { reason: "bound" }); continue; }
+      fresh.push(id);
+    }
+    if (fresh.length === 0) return;
+    for (const id of fresh) audiences.set(id, undefined);
+    const abort = new AbortController();
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      const ms = typeof input.timeoutMs === "function" ? input.timeoutMs() : input.timeoutMs ?? LESSON_LIVE_TIMEOUT_MS;
+      const work = audiencePort.read(org.data, fresh, { signal: abort.signal, memo });
+      work.catch(() => undefined);
+      const found = await Promise.race([work, new Promise<never>((_resolve, reject) => { timer = setTimeout(() => { abort.abort(); reject(new Error("timed out")); }, ms); })]);
+      for (const id of fresh) audiences.set(id, found.get(id));
+    } catch {
+      input.log?.(`learning.${input.where}_audience_unreadable`, { reason: "error", tasks: fresh.length });
+    } finally {
+      if (timer !== undefined) clearTimeout(timer);
+    }
+  };
   return {
     async keep(viewer, lessons) {
       const refs = lessons.map((lesson) => lessonTaskRefs(lesson));
@@ -97,8 +129,29 @@ export function createLessonLiveReader(input: LessonLiveReaderInput): LessonLive
         withheld(named.length, org.success ? "no_port" : "bad_org");
         return lessons.filter((_, index) => !names(index));
       }
+      const runningTaskId = input.runningTaskId;
+      if (runningTaskId !== undefined && audiencePort !== undefined && TASK_ID.test(runningTaskId)) {
+        await loadAudiences([runningTaskId, ...refs.flatMap((ref) => ref.taskIds)]);
+        const running = audiences.get(runningTaskId);
+        if (running !== undefined) {
+          let withheldCount = 0;
+          const result = lessons.filter((_, index) => {
+            if (!names(index)) return true;
+            const ref = refs[index]!;
+            const ok = !ref.unreadable && ref.taskIds.every((id) => { const source = audiences.get(id); return source !== undefined && audienceWithin(running, source); });
+            if (!ok) withheldCount += 1;
+            return ok;
+          });
+          if (withheldCount > 0) withheld(withheldCount, "task_not_visible");
+          return result;
+        }
+        // The running task's audience can't be read: it reads as nobody in particular, below.
+        input.log?.(`learning.${input.where}_reader_nobody`, { reason: "unknown" });
+      } else if (runningTaskId !== undefined) {
+        input.log?.(`learning.${input.where}_reader_nobody`, { reason: "unreadable" });
+      }
       await reader.load(refs.flatMap((ref) => ref.taskIds));
-      const audience = audienceOf(org.data, viewer);
+      const audience = audienceOf(org.data, runningTaskId === undefined ? viewer : undefined);
       let count = 0;
       const kept = lessons.filter((_, index) => {
         if (!names(index)) return true;
@@ -119,36 +172,4 @@ export function createLessonLiveReader(input: LessonLiveReaderInput): LessonLive
  */
 export async function liveVisible(input: LessonLiveReaderInput & { viewer: Pick<IdentitySet, "developerId"> | undefined; lessons: readonly Lesson[] }): Promise<Lesson[]> {
   return createLessonLiveReader(input).keep(input.viewer, input.lessons);
-}
-
-/** Who a running task's lessons are read as. */
-export type RunningTaskReader = { kind: "owner"; developerId: string } | { kind: "nobody" };
-
-/**
- * LV-1 H1: the reader of what an agent is given (and of the plan, code, pull request and review notes it writes) is whoever may read the RUNNING task's output, taken from the task's LIVE Plan 5
- * visibility through the same strict port, never from `task.shared` (the Slack-thread flag) and never from the owner by default:
- *   - an owner-only task reads as its owner (their lessons, their restricted places);
- *   - a project-wide task, a task shared with a list, and a task whose visibility cannot be read (a missing port, a failed or timed-out read, a task that is gone or another company's) read as NOBODY IN
- *     PARTICULAR: only lessons whose every source task is project-wide reach it. (A list could be checked person by person; the narrower rule is simpler and never wider than the truth.)
- * Never throws. A timeout aborts the read.
- */
-export async function readerOfRunningTask(input: { port: TaskVisibilityPort | undefined; orgId: string; taskId: string; where: string; log?: LessonLog | undefined; timeoutMs?: number | undefined }): Promise<RunningTaskReader> {
-  const nobody = (reason: string): RunningTaskReader => { input.log?.(`learning.${input.where}_reader_nobody`, { reason }); return { kind: "nobody" }; };
-  const org = OrgIdSchema.safeParse(input.orgId);
-  if (!org.success || input.port === undefined || !TASK_ID.test(input.taskId)) return nobody("unreadable");
-  const abort = new AbortController();
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  try {
-    const timeout = new Promise<never>((_resolve, reject) => { timer = setTimeout(() => { abort.abort(); reject(new Error("timed out")); }, input.timeoutMs ?? LESSON_LIVE_TIMEOUT_MS); });
-    const work = input.port.read(org.data, [input.taskId], { signal: abort.signal });
-    work.catch(() => undefined);
-    const visibility = (await Promise.race([work, timeout])).get(input.taskId);
-    if (visibility === undefined) return nobody("missing");
-    if (visibility.kind === "private") return visibility.ownerDeveloperId === "" ? nobody("unreadable") : { kind: "owner", developerId: visibility.ownerDeveloperId };
-    return { kind: "nobody" };
-  } catch {
-    return nobody("error");
-  } finally {
-    if (timer !== undefined) clearTimeout(timer);
-  }
 }

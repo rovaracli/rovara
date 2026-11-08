@@ -10,7 +10,7 @@ import { lessonPlaces, satisfiesAcl, type IdentitySet, type Lesson } from "./typ
 
 export type LessonLog = (event: string, fields: Record<string, unknown>) => void;
 
-export interface ReadVisibleInput { access: AccessCheckPort; key: ScopeKey; viewer: IdentitySet | undefined; lessons: readonly Lesson[]; where: string; log?: LessonLog | undefined; /** One reader for a whole request (LV-1 M1): the tasks it has looked up are remembered across calls. Absent: a fresh one for this call. */ live?: LessonLiveReader | undefined }
+export interface ReadVisibleInput { access: AccessCheckPort; key: ScopeKey; viewer: IdentitySet | undefined; lessons: readonly Lesson[]; where: string; log?: LessonLog | undefined; /** One reader for a whole request (LV-1 M1): the tasks it has looked up are remembered across calls. Absent: a fresh one for this call. */ live?: LessonLiveReader | undefined; /** The running task the lessons are for (an agent): its audience, as a set, must lie within every source task's (decision 31). Used only when `live` is not given. */ runningTaskId?: string | undefined }
 
 /**
  * The lessons of `lessons` that `viewer` may read now. A viewer of `undefined` is nobody in particular (a project-wide running task, or a path whose readers are everyone): it reads only unrestricted lessons whose places no record
@@ -23,7 +23,7 @@ export async function readVisible(input: ReadVisibleInput): Promise<Lesson[]> {
   }
   const frozen = input.lessons.filter((lesson) => lesson.provenance.audience.kind !== "restricted" || (input.viewer !== undefined && satisfiesAcl(input.viewer, lesson.provenance.audience.acl)));
   const placed = frozen.filter((lesson) => lessonPlaces(lesson).scopes.length > 0);
-  const live = input.live ?? createLessonLiveReader({ port: input.access.taskVisibility, key: input.key, where: input.where, log: input.log });
+  const live = input.live ?? createLessonLiveReader({ port: input.access.taskVisibility, key: input.key, where: input.where, log: input.log, runningTaskId: input.runningTaskId });
   const keep = (lessons: Lesson[]): Promise<Lesson[]> => live.keep(input.viewer, lessons);
   if (placed.length === 0) return keep(frozen);
   const answers = await input.access.mayRead(OrgIdSchema.parse(input.key.workspaceId), input.viewer, placed.map((lesson) => lessonPlaces(lesson)));
@@ -37,7 +37,7 @@ export async function readVisible(input: ReadVisibleInput): Promise<Lesson[]> {
  */
 export async function readVisibleRanked(input: Omit<ReadVisibleInput, "lessons"> & { ranked: readonly Lesson[]; pageSize: number; enough: (kept: readonly Lesson[]) => boolean; deadlineAt?: number | undefined }): Promise<{ kept: Lesson[]; checked: number; complete: boolean }> {
   const kept: Lesson[] = [];
-  const live = input.live ?? createLessonLiveReader({ port: input.access?.taskVisibility, key: input.key, where: input.where, log: input.log });
+  const live = input.live ?? createLessonLiveReader({ port: input.access?.taskVisibility, key: input.key, where: input.where, log: input.log, runningTaskId: input.runningTaskId });
   let checked = 0;
   while (checked < input.ranked.length) {
     if (input.enough(kept)) return { kept, checked, complete: true };

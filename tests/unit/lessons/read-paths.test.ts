@@ -81,7 +81,7 @@ function analyse(root = BROKER): Hit[] {
       const unit = top ?? (node.parent !== undefined && ts.isSourceFile(node.parent) ? node : undefined);
       if (ts.isCallExpression(node)) {
         const kind = classify(node, checker);
-        if (kind !== undefined && unit !== undefined) hits.push({ file, kind, text: node.getText(source).slice(0, 80), guarded: callsAccess(unit, kind === "lessons" ? "readVisible" : "filterVisible") });
+        if (kind !== undefined && unit !== undefined) hits.push({ file, kind, text: node.getText(source).slice(0, 80), guarded: kind === "lessons" ? callsAccess(unit, "readVisible") || callsAccess(unit, "readVisibleRanked") : callsAccess(unit, "filterVisible") });
       }
       ts.forEachChild(node, (child) => visit(child, unit));
     };

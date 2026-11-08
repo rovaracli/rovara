@@ -8,14 +8,14 @@ import { hasStaleCitation, approvedForUse, stageAllows, toLearned, LOAD_MAX_BYTE
 import { memberView, type MemberResolver } from "./members.js";
 import { modeAllows, resolveLearning, type LearningSettingsReader } from "./policy.js";
 import type { Clock } from "./ports.js";
-import { createLessonLiveReader, readerOfRunningTask } from "./live-visibility.js";
+import { createLessonLiveReader } from "./live-visibility.js";
 import { readVisible, type LessonLog } from "./read-visible.js";
 import type { LessonStore, ScopeKey } from "./store.js";
 import { isRestricted, type IdentitySet, type Lesson } from "./types.js";
 
 export interface DeliveryDeps {
   store: LessonStore; settings: LearningSettingsReader; access: AccessCheckPort;
-  /** The reader's identity for the access check (the accounts a developer linked). May throw: nothing is delivered. */
+  /** Unused since decision 31 (the reader is the running task's audience, not one person); kept so the wiring needs no change. */
   identity(workspaceId: string, developerId: string): Promise<IdentitySet>;
   /** Counts approvers as members (a merged developer is the member they became). The dispatcher has no sign-in read, so it leaves this out and the loader's member-aware check (at queue time) stands; where given, a failed lookup delivers nothing. */
   resolveMember?: MemberResolver;
@@ -37,11 +37,11 @@ export async function learnedContextFromRefs(deps: DeliveryDeps, refs: LearnedRe
     const resolved = await resolveLearning(deps.settings, key.workspaceId, key.project);
     if (!modeAllows(resolved.mode, "load")) return undefined;
     const now = deps.now();
-    // LV-1 H1: the reader is the running task's LIVE Plan 5 visibility, asked again now (not the audience the load saw, and not `task.shared`): an owner-only task reads as its owner (their linked accounts), every
-    // other task (project-wide, a list, unreadable, or a stage queued before the task id was carried) reads as nobody in particular.
-    const reader = refs.taskId === undefined ? { kind: "nobody" as const } : await readerOfRunningTask({ port: deps.access.taskVisibility, orgId: key.workspaceId, taskId: refs.taskId, where: "deliver", ...(deps.log === undefined ? {} : { log: deps.log }) });
-    const viewer = reader.kind === "owner" ? { ...await deps.identity(key.workspaceId, reader.developerId), developerId: reader.developerId } : undefined;
-    const liveReader = createLessonLiveReader({ port: deps.access.taskVisibility, key, where: "deliver", ...(deps.log === undefined ? {} : { log: deps.log }) });
+    // Decision 31: the reader is the running task's audience, asked again now (the people who can open its session now, not the audience the load saw, and not `task.shared`). A lesson is delivered only if everyone who
+    // can see the task can see every source task of the lesson. A stage queued before the task id was carried, or a task whose audience can't be read, reads as nobody in particular. Restricted places and
+    // the lesson's own frozen audience are checked as for nobody in particular (`viewer` undefined): a lesson only some people may read never reaches an agent that several people can see.
+    const viewer = undefined;
+    const liveReader = createLessonLiveReader({ port: deps.access.taskVisibility, key, where: "deliver", runningTaskId: refs.taskId, ...(deps.log === undefined ? {} : { log: deps.log }) });
 
     const fetched: Lesson[] = [];
     for (const ref of refs.lessons) {

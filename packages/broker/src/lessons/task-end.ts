@@ -60,14 +60,16 @@ export function reflectOutcomeOf(outcome: TaskEndOutcome): ReflectSubject["outco
 }
 
 /**
- * LV-1 M2: the tasks behind every lesson that was loaded INTO the task (its load records name the lessons; each lesson names its source tasks). A lesson learned from the task's plan may restate them, so it is
- * also gated on them. Throws when a record cannot be read or a lesson names a task that cannot be read (the task is then not reflected: fail closed). A lesson that is gone (erased, purged) adds nothing.
+ * LV-1 M2 / R3: the tasks behind every lesson that was loaded INTO the task. A lesson learned from the task's plan may restate them, so it is also gated on them. Each load record names, per lesson, the tasks it was learned
+ * from AS THEY WERE AT LOAD TIME (`taskIds`), so an edit, scrub or purge of the lesson afterwards takes nothing away; the lesson's CURRENT tasks are added too (an older record without `taskIds` has only these). Throws
+ * when a record cannot be read or a lesson names a task that cannot be read (the task is then not reflected: fail closed). A lesson that is gone adds only what its record kept.
  */
 export async function inheritedTasksOf(store: Pick<LessonStore, "manifests" | "get">, key: ScopeKey, taskId: string): Promise<string[]> {
   const out = new Set<string>();
   const seen = new Set<string>();
   for (const manifest of await store.manifests(key, taskId)) {
     for (const entry of manifest.lessons) {
+      for (const id of entry.taskIds ?? []) if (id !== taskId) out.add(id);
       if (seen.has(entry.id)) continue;
       seen.add(entry.id);
       const lesson = await store.get(key, entry.id);
