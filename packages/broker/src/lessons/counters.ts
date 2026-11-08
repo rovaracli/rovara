@@ -101,6 +101,8 @@ export async function recordTaskOutcome(deps: CounterDeps, outcome: TaskOutcome)
     if (blamed) {
       if (await deps.store.markOnce(key, `harmful:${outcome.taskId}:${lessonId}`)) { await addHarmful(deps, key, lessonId, false); result.harmful.push(lessonId); }
       await deps.store.removePending(key, `helpful:${outcome.taskId}:${lessonId}`);
+      // A blamed revert is still a revert: record it so a later "merged" end for this task queues nothing.
+      if (outcome.outcome === "reverted") await deps.store.markOnce(key, `reverted:${outcome.taskId}:${lessonId}`);
       continue;
     }
     if (outcome.outcome === "reverted") {

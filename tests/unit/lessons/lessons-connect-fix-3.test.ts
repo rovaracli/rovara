@@ -163,6 +163,16 @@ describe("N2 and N3: the sweep skips a lesson with a queued helpful mark; record
     expect(await settleHelpful(deps, KEY)).toBe(0);
     expect((await store.get(KEY, "les_usedlate"))!.counters.helpful).toBe(0);
   });
+  it("F3 (blamed): a task that was blamed AND reverted still records the revert, so a later merged end for it queues nothing", async () => {
+    const { clock, store, created, deps } = await setup();
+    clock.t = created + 85 * DAY;
+    deps.judge = new Judge("caused");
+    await recordTaskOutcome(deps, merged(clock, { outcome: "reverted", mergedAt: undefined, corrections: [{ kind: "send_back", paths: ["src/retry/a.ts"], text: "wrong", at: 1 }] }));
+    expect(await store.seenOnce(KEY, "reverted:t85:les_usedlate")).toBe(true);
+    deps.judge = new Judge();
+    expect((await recordTaskOutcome(deps, merged(clock))).queuedHelpful).toEqual([]);
+    expect(await store.duePending(KEY, created + 400 * DAY, 10)).toEqual([]);
+  });
   it("F3 positive control: another task's merged end for the same lesson still queues its mark after this task was reverted", async () => {
     const { clock, store, created, deps } = await setup();
     await store.putManifest({ taskId: "t86", workspaceId: WS, project: KEY.project, stage: "IMPLEMENT", round: 1, setVersion: 1, memory: "live", at: 1, lessons: [{ id: "les_usedlate", version: 1, score: 0.5, why: "scope", citation: "valid" }], bytes: 10 });
