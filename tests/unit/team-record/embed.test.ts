@@ -1,84 +1,78 @@
 import { describe, expect, it } from "vitest";
-import { EmbedUnavailableError, createEmbedder, embeddingFamily } from "../../../packages/broker/src/team-record/embed.js";
+import { LESSON_EMBEDDER, TEAM_RECORD_EMBEDDER, VECTOR_DIMENSION_DEFAULT, teamRecordVectorIndexName } from "@agentx/contracts";
+import { EmbedderError, createEmbedderClient, type EmbedderClient } from "../../../packages/broker/src/embedder/client.js";
+import { EmbedUnavailableError, createEmbedder } from "../../../packages/broker/src/team-record/embed.js";
 
-const vec = (n: number) => Array.from({ length: n }, (_, i) => i / n);
-const err = (code: string) => Object.assign(new Error("secret detail"), { code });
-const base = { sleep: async () => undefined, baseDelayMs: 1 };
+const unit = (dimension: number): number[] => Array.from({ length: dimension }, () => 1 / Math.sqrt(dimension));
+const reply = (spec: typeof TEAM_RECORD_EMBEDDER, count: number, over: Record<string, unknown> = {}) => ({ ok: true, model: spec.model, modelId: spec.modelId, revision: spec.revision, spec: spec.spec, dimension: spec.dimension, vectors: Array.from({ length: count }, () => unit(spec.dimension)), truncated: Array.from({ length: count }, () => false), ...over });
+const clientOver = (invoke: Parameters<typeof createEmbedderClient>[0]["invoke"]): EmbedderClient => createEmbedderClient({ spec: TEAM_RECORD_EMBEDDER, invoke, sleep: async () => undefined, baseDelayMs: 1 });
 
-describe("embedding model", () => {
-  it("accepts Titan V2 and Cohere Embed (with or without a region prefix) and nothing else", () => {
-    expect(embeddingFamily("amazon.titan-embed-text-v2:0")).toBe("titan-v2");
-    expect(embeddingFamily("us.amazon.titan-embed-text-v2:0")).toBe("titan-v2");
-    expect(embeddingFamily("cohere.embed-english-v3")).toBe("cohere");
-    expect(() => embeddingFamily("anthropic.claude-3")).toThrow(/not supported/);
-    expect(() => embeddingFamily("amazon.titan-embed-text-v1")).toThrow(/not supported/);
+describe("the Team record's embedding model", () => {
+  it("is Qwen3-Embedding-0.6B at the index dimension, pinned to a Hugging Face commit, and no Bedrock model", () => {
+    expect(TEAM_RECORD_EMBEDDER).toMatchObject({ model: "record", modelId: "Qwen/Qwen3-Embedding-0.6B", dimension: 1024 });
+    expect(TEAM_RECORD_EMBEDDER.dimension).toBe(VECTOR_DIMENSION_DEFAULT);
+    expect(TEAM_RECORD_EMBEDDER.revision).toMatch(/^[0-9a-f]{40}$/);
+    expect(JSON.stringify(TEAM_RECORD_EMBEDDER)).not.toMatch(/titan|cohere|bedrock/i);
   });
-  it("refuses a dimension the model cannot return", () => {
-    expect(() => createEmbedder({ modelId: "amazon.titan-embed-text-v2:0", dimension: 999, invoke: async () => "" })).toThrow(/dimension/);
-    expect(() => createEmbedder({ modelId: "cohere.embed-english-v3", dimension: 512, invoke: async () => "" })).toThrow(/dimension/);
+  it("names the vector index by workspace AND spec, so a model change is a new index and two models never share one", () => {
+    const current = teamRecordVectorIndexName("ws-a");
+    expect(current).toMatch(/^ws-[0-9a-f]{32}$/);
+    expect(teamRecordVectorIndexName("ws-a", TEAM_RECORD_EMBEDDER.spec)).toBe(current);
+    expect(teamRecordVectorIndexName("ws-a", "0123456789abcdef")).not.toBe(current);
+    expect(teamRecordVectorIndexName("ws-b")).not.toBe(current);
+    expect(() => teamRecordVectorIndexName("ws-a", "x")).toThrow(/spec/);
+  });
+  it("refuses a client built for another model (the lessons' 384-d model must never write to the record's index)", () => {
+    expect(() => createEmbedder({ client: createEmbedderClient({ spec: LESSON_EMBEDDER, invoke: async () => ({}) }) })).toThrow(/not the Team record's model/);
   });
 });
 
-describe("Titan V2 embedding", () => {
-  it("sends the configured model id with normalize and dimensions, and returns the vector", async () => {
-    const seen: Array<{ modelId: string; body: string }> = [];
-    const embedder = createEmbedder({ ...base, modelId: "amazon.titan-embed-text-v2:0", dimension: 256, invoke: async (r) => { seen.push(r); return JSON.stringify({ embedding: vec(256), inputTextTokenCount: 3 }); } });
-    expect(await embedder.embed("  hello  ")).toHaveLength(256);
-    expect(seen[0]!.modelId).toBe("amazon.titan-embed-text-v2:0");
-    expect(JSON.parse(seen[0]!.body)).toEqual({ inputText: "hello", dimensions: 256, normalize: true });
+describe("the Team record's embedder", () => {
+  it("embeds a document or a query through the function and exposes the model, revision and spec", async () => {
+    const seen: Array<{ kind: string; texts: string[] }> = [];
+    const embedder = createEmbedder({ client: clientOver(async (request) => { seen.push({ kind: request.kind, texts: request.texts }); return reply(TEAM_RECORD_EMBEDDER, 1); }) });
+    expect(embedder.dimension).toBe(1024);
+    expect([embedder.modelId, embedder.revision, embedder.spec]).toEqual([TEAM_RECORD_EMBEDDER.modelId, TEAM_RECORD_EMBEDDER.revision, TEAM_RECORD_EMBEDDER.spec]);
+    expect(await embedder.embed("  hello  ")).toHaveLength(1024);
+    expect(await embedder.embed("what did we decide?", "query")).toHaveLength(1024);
+    expect(seen).toEqual([{ kind: "document", texts: ["hello"] }, { kind: "query", texts: ["what did we decide?"] }]);
   });
-  it("cuts very long text before the call", async () => {
+  it("cuts very long text before the call and refuses empty text without calling", async () => {
+    let calls = 0;
     let sent = "";
-    const embedder = createEmbedder({ ...base, maxChars: 50, modelId: "amazon.titan-embed-text-v2:0", dimension: 256, invoke: async (r) => { sent = (JSON.parse(r.body) as { inputText: string }).inputText; return JSON.stringify({ embedding: vec(256) }); } });
+    const embedder = createEmbedder({ maxChars: 50, client: clientOver(async (request) => { calls += 1; sent = request.texts[0]!; return reply(TEAM_RECORD_EMBEDDER, 1); }) });
     await embedder.embed("x".repeat(500));
     expect(sent).toHaveLength(50);
-  });
-  it("refuses empty text without calling the model", async () => {
-    let calls = 0;
-    const embedder = createEmbedder({ ...base, modelId: "amazon.titan-embed-text-v2:0", dimension: 256, invoke: async () => { calls += 1; return ""; } });
+    calls = 0;
     await expect(embedder.embed("   ")).rejects.toThrow(/nothing to embed/);
     expect(calls).toBe(0);
   });
-  it("retries throttling with backoff, then gives up with a fixed error that carries no model text", async () => {
-    const delays: number[] = [];
-    let calls = 0;
-    const embedder = createEmbedder({ modelId: "amazon.titan-embed-text-v2:0", dimension: 256, baseDelayMs: 10, sleep: async (ms) => { delays.push(ms); }, invoke: async () => { calls += 1; throw err("ThrottlingException"); } });
-    const failure = await embedder.embed("hi").catch((e: unknown) => e);
-    expect(failure).toBeInstanceOf(EmbedUnavailableError);
-    expect((failure as Error).message).not.toContain("secret detail");
-    expect(calls).toBe(3);
-    expect(delays).toEqual([10, 20]);
+  it("says whether the text was cut: by the model's token budget, or by this embedder's own character limit", async () => {
+    const tokens = createEmbedder({ client: clientOver(async () => reply(TEAM_RECORD_EMBEDDER, 1, { truncated: [true] })) });
+    expect(await tokens.embedWithInfo("a long record")).toMatchObject({ truncated: true });
+    const chars = createEmbedder({ maxChars: 50, client: clientOver(async () => reply(TEAM_RECORD_EMBEDDER, 1)) });
+    expect((await chars.embedWithInfo("x".repeat(500))).truncated).toBe(true);
+    expect((await chars.embedWithInfo("x".repeat(50))).truncated).toBe(false);
   });
-  it("does not retry a deterministic error", async () => {
-    let calls = 0;
-    const embedder = createEmbedder({ ...base, modelId: "amazon.titan-embed-text-v2:0", dimension: 256, invoke: async () => { calls += 1; throw err("AccessDeniedException"); } });
-    await expect(embedder.embed("hi")).rejects.toBeInstanceOf(EmbedUnavailableError);
-    expect(calls).toBe(1);
-  });
-  it("refuses a wrong-size, non-numeric or malformed answer", async () => {
-    for (const body of [JSON.stringify({ embedding: vec(10) }), JSON.stringify({ embedding: ["a"] }), "not json", JSON.stringify({})]) {
-      const embedder = createEmbedder({ ...base, modelId: "amazon.titan-embed-text-v2:0", dimension: 256, invoke: async () => body });
-      await expect(embedder.embed("hi")).rejects.toBeInstanceOf(EmbedUnavailableError);
+  it("turns every failure into the one fixed outcome, with the embedder's code as the only detail and no request text", async () => {
+    const failures: Array<[string, () => Promise<unknown>]> = [
+      ["UNREACHABLE", async () => { throw Object.assign(new Error("secret detail"), { code: "AccessDeniedException" }); }],
+      ["MODEL_UNAVAILABLE", async () => ({ ok: false, code: "MODEL_UNAVAILABLE" })],
+      ["SPEC_MISMATCH", async () => reply(TEAM_RECORD_EMBEDDER, 1, { revision: "0".repeat(40) })],
+      ["BAD_RESPONSE", async () => reply(TEAM_RECORD_EMBEDDER, 1, { vectors: [[1, 2]] })],
+    ];
+    for (const [reason, invoke] of failures) {
+      const embedder = createEmbedder({ client: clientOver(invoke) });
+      try { await embedder.embed("secret text"); expect.unreachable(); } catch (error) {
+        expect(error).toBeInstanceOf(EmbedUnavailableError);
+        expect((error as EmbedUnavailableError).reason).toBe(reason);
+        expect((error as Error).message).toBe("team-record: embedding unavailable");
+      }
     }
   });
-  it("recovers after one throttle", async () => {
-    let calls = 0;
-    const embedder = createEmbedder({ ...base, modelId: "amazon.titan-embed-text-v2:0", dimension: 256, invoke: async () => { calls += 1; if (calls === 1) throw err("ThrottlingException"); return JSON.stringify({ embedding: vec(256) }); } });
-    expect(await embedder.embed("hi")).toHaveLength(256);
-  });
-});
-
-describe("Cohere Embed", () => {
-  it("sends document or query input types and reads both v3 and v4 response shapes", async () => {
-    const seen: Array<{ input_type: string }> = [];
-    let shape = 0;
-    const embedder = createEmbedder({ ...base, modelId: "cohere.embed-english-v3", dimension: 1024, invoke: async (r) => {
-      seen.push(JSON.parse(r.body) as { input_type: string });
-      return JSON.stringify({ embeddings: shape++ === 0 ? [vec(1024)] : { float: [vec(1024)] } });
-    } });
-    expect(await embedder.embed("a", "query")).toHaveLength(1024);
-    expect(await embedder.embed("b")).toHaveLength(1024);
-    expect(seen[0]!.input_type).toBe("search_query");
-    expect(seen[1]!.input_type).toBe("search_document");
+  it("lets a different error through as the same fixed outcome without a reason", async () => {
+    const stray: EmbedderClient = { ...clientOver(async () => ({})), embedDetailed: async () => { throw new TypeError("secret"); } };
+    await expect(createEmbedder({ client: stray }).embed("a")).rejects.toMatchObject({ name: "EmbedUnavailableError", reason: undefined });
+    expect(EmbedderError).toBeDefined();
   });
 });

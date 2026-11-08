@@ -176,7 +176,7 @@ async function buildBundleInto(input: BuildBundleInput, claimed: { out?: string 
   }
   const release = ReleaseManifestSchema.parse(JSON.parse(await readFile(join(releaseDir, "release.json"), "utf8")));
   // Every image the release names is mirrored (review I6): the install pulls nothing from a public registry at run time.
-  for (const name of ["worker", "slack", "executor"] as const) {
+  for (const name of ["worker", "slack", "executor", "embedder"] as const) {
     const named = release.images[name];
     if (named === undefined) continue;
     const bundled = input.images.find((image) => image.name === name);

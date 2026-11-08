@@ -77,6 +77,10 @@ export interface RecordVectorPort {
 /** The embedding client (the storage lane's `Embedder`). Throws when it cannot embed; the row is then stored with `embedPending`. */
 export interface RecordEmbedder {
   embed(text: string, purpose?: "document" | "query"): Promise<number[]>;
+  /** The embedding spec the vectors are made with (contracts `TEAM_RECORD_EMBEDDER.spec`); recorded on every row embedded, so a row with a vector of another spec is found and embedded again. */
+  readonly spec?: string;
+  /** Like `embed`, saying whether the text was cut to fit the model. Optional so a test double need not have it; a row embedded without it is recorded as not cut. */
+  embedWithInfo?(text: string, purpose?: "document" | "query", call?: { deadline?: number }): Promise<{ vector: number[]; truncated: boolean }>;
 }
 
 /** The identities a person has at each source: source-native ids and the groups they belong to, per source kind. An unmapped person has none, and matches nothing. */

@@ -6,7 +6,7 @@
 //  - the metadata filter is only a coarse cut: the authoritative permission check runs on every hit (searchVisible);
 //  - an index belongs to one workspace (the caller builds it from the caller's org, never from a request body).
 import { createHash } from "node:crypto";
-import { NON_FILTERABLE_VECTOR_KEYS, VECTOR_DIMENSION_DEFAULT, teamRecordVectorIndexName } from "@agentx/contracts";
+import { NON_FILTERABLE_VECTOR_KEYS, VECTOR_DIMENSION_DEFAULT, retiredTeamRecordVectorIndexName, teamRecordVectorIndexName } from "@agentx/contracts";
 import type { TrustClass } from "./shared-types.js";
 import { assertSafeId } from "./shared-types.js";
 
@@ -174,6 +174,11 @@ export function buildMetadataFilter(filter: VectorFilter): MetadataFilter {
 /** One index per workspace (the name is defined in contracts, so the CDK stack and the broker agree). */
 export function vectorIndexName(workspaceId: string): string {
   return teamRecordVectorIndexName(workspaceId);
+}
+
+/** The workspace's index of the embedding generation before the current one (contracts `retiredTeamRecordVectorIndexName`): deleted once the current index exists. */
+export function retiredVectorIndexName(workspaceId: string): string {
+  return retiredTeamRecordVectorIndexName(workspaceId);
 }
 
 /**

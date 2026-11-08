@@ -54,7 +54,7 @@ describe("agentx config list and get", () => {
     // 0.5.7 (DR-FU4 part 2): the retired designReview.projects key is gone from the list (an upgrade still names it when it drops the old parameter).
     expect(rows.find((row) => row.key === "designReview.projects")).toBeUndefined();
     // UX5b: scriptTokens.enabled.
-    expect(rows).toHaveLength(41);
+    expect(rows).toHaveLength(42);
   });
 
   it("never shows the alert address itself, only that it is set", async () => {

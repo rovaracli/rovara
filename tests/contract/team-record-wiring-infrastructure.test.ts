@@ -10,6 +10,7 @@ import { describe, expect, it } from "vitest";
 import { BROKER_NAMES, BROKER_SETTINGS, LESSONS_BROKER_MODEL_WAIT_SECONDS, LESSONS_REFLECT_MAX_RECEIVES, LESSONS_REFLECT_VISIBILITY_SECONDS, LESSONS_WORKER_RESERVED_CONCURRENCY, LESSONS_WORKER_TIMEOUT_SECONDS, TEAM_RECORD_OPS_MAX_RECEIVES, HEALTH_ALARM_SUFFIXES, teamRecordTableName } from "@agentx/contracts";
 import { LESSONS_WORKER_STATE_WRITE_KEY_PATTERNS } from "../../infra/lib/team-record-wiring.js";
 import { buildAgentXApp } from "../../infra/lib/app.js";
+import { defaultProductionAvailabilityZoneIds } from "../../infra/lib/production-foundation.js";
 import { parseTeamRecordSwitch, TEAM_RECORD_JOB_SOURCE } from "../../infra/lib/team-record-wiring.js";
 import { brokerNamesIn, brokerSettingsIn } from "../support/broker-names-template.js";
 import { DEPLOY_PARAMETER_VALUES, lambdaEnvironments, type Template as ResolvableTemplate } from "../support/lambda-environment-size.js";
@@ -58,7 +59,7 @@ describe("the switch is off by default and changes nothing", () => {
     expect(Object.keys(resources).filter((id) => /TeamRecord/.test(id))).toStrictEqual([]);
     expect(Object.values(resources).filter((resource) => resource.Type === "AWS::DynamoDB::Table" && String(JSON.stringify(resource.Properties)).includes("team-record"))).toStrictEqual([]);
     const settings = brokerSettingsIn(functionVariables(plain, /^Broker[0-9A-F]{8}$/));
-    for (const key of ["teamRecord", "teamRecordActive", "teamRecordEmbeddingModel", "teamRecordLake"] as const) expect(Object.keys(settings), key).not.toContain(key);
+    for (const key of ["teamRecord", "teamRecordActive", "teamRecordLake"] as const) expect(Object.keys(settings), key).not.toContain(key);
     expect(Object.keys(brokerNamesIn(functionVariables(plain, /^Broker[0-9A-F]{8}$/)))).not.toContain("teamRecordVectorsRole");
     expect(functionVariables(plain, /^SlackIngress[0-9A-F]{8}$/)).not.toHaveProperty("TEAM_RECORD_ENABLED");
     expect((plain.toJSON() as { Parameters?: Record<string, unknown> }).Parameters).not.toHaveProperty("TeamRecordEnabled");
@@ -142,24 +143,100 @@ describe("the switch on: Public cloud", () => {
     expect(settings.teamRecord).toBe("1");
     expect(settings.teamRecordActive).toEqual({ Ref: "TeamRecordEnabled" });
     expect((on.toJSON() as { Parameters?: Record<string, unknown> }).Parameters?.TeamRecordEnabled).toMatchObject({ Type: "String", Default: "1", AllowedValues: ["0", "1"] });
-    // ENV-ROOM: the default embedding model is not passed (the broker reads an unset model as the default), and the record's dead-letter queue has a fixed name the broker derives.
-    expect(settings).not.toHaveProperty("teamRecordEmbeddingModel");
+    // ENV-ROOM: there is no embedding model setting any more (the self-hosted embedder is fixed; its function name is derived), and the record's dead-letter queue has a fixed name the broker derives.
+    expect(Object.keys(BROKER_SETTINGS)).not.toContain("teamRecordEmbeddingModel");
+    expect(variables).not.toHaveProperty("EMBEDDER_FUNCTION_NAME");
     expect(settings.teamRecordLake).toBe("1");
     expect(brokerNamesIn(variables).teamRecordVectorsRole).toStrictEqual({ Ref: expect.stringMatching(/^TeamRecordVectorsDataRole/) as string });
     expect(Object.keys(BROKER_NAMES)).not.toContain("teamRecordDeadLetters");
-    for (const spec of [BROKER_SETTINGS.teamRecord, BROKER_SETTINGS.teamRecordEmbeddingModel, BROKER_SETTINGS.teamRecordLake, BROKER_NAMES.teamRecordVectorsRole]) expect(variables).not.toHaveProperty(spec.variable);
+    for (const spec of [BROKER_SETTINGS.teamRecord, BROKER_SETTINGS.teamRecordLake, BROKER_NAMES.teamRecordVectorsRole]) expect(variables).not.toHaveProperty(spec.variable);
   }, 180_000);
 
-  it("passes the embedding model in the packed settings when the install chooses another one", () => {
-    const other = controlPlane({ ...PUBLIC, agentxTeamRecord: "enabled", agentxTeamRecordEmbeddingModelId: "cohere.embed-english-v3" });
-    expect(brokerSettingsIn(functionVariables(other, /^Broker[0-9A-F]{8}$/)).teamRecordEmbeddingModel).toBe("cohere.embed-english-v3");
+  it("refuses the retired embedding model option instead of ignoring it", () => {
+    expect(() => controlPlane({ ...PUBLIC, agentxTeamRecord: "enabled", agentxTeamRecordEmbeddingModelId: "cohere.embed-english-v3" })).toThrow(/embeddingModelId .*is retired/);
   }, 180_000);
 
-  it("schedules the hourly and the nightly job through the recovery role, with no retries, and nothing else", () => {
+  it("creates the self-hosted embedder: a container-image Lambda named from the environment, from an image digest that is required, invoked by the broker alone, in a network with no way out, with no Bedrock right", () => {
+    const template = on.toJSON() as { Parameters?: Record<string, { Default?: string; AllowedPattern?: string }>; Rules?: Record<string, { Assertions: Array<{ Assert: unknown; AssertDescription: string }> }>; Conditions?: Record<string, unknown> };
+    const parameter = template.Parameters?.EmbedderImageUri;
+    expect(parameter?.Default).toBe("none");
+    const pattern = new RegExp(parameter!.AllowedPattern!);
+    expect(pattern.test("none")).toBe(true);
+    expect(pattern.test(`111122223333.dkr.ecr.us-west-2.amazonaws.com/rovara/embedder@sha256:${"a".repeat(64)}`)).toBe(true);
+    for (const bad of ["", "embedder:latest", `111122223333.dkr.ecr.us-west-2.amazonaws.com/rovara/embedder:v1`, `ghcr.io/x/embedder@sha256:${"a".repeat(64)}`, `docker.io/library/x@sha256:${"a".repeat(64)}`]) expect(pattern.test(bad), bad).toBe(false);
+    // No keyword-only interim (decision 27): a stack with the Team record and no image is refused by a rule, with a message that says what to do. There is no condition that skips the function.
+    const rule = template.Rules?.TeamRecordNeedsEmbedderImage;
+    expect(rule?.Assertions).toHaveLength(1);
+    expect(JSON.stringify(rule!.Assertions[0]!.Assert)).toBe(JSON.stringify({ "Fn::Not": [{ "Fn::Equals": [{ Ref: "EmbedderImageUri" }, "none"] }] }));
+    expect(rule!.Assertions[0]!.AssertDescription).toMatch(/needs the embedder image.*agentx upgrade/s);
+    expect(template.Conditions ?? {}).not.toHaveProperty("HasEmbedderImage");
+    const embedder = Object.entries(resources).filter(([, resource]) => resource.Type === "AWS::Lambda::Function" && resource.Properties.FunctionName === "agentx-staging-embedder");
+    expect(embedder).toHaveLength(1);
+    const properties = embedder[0]![1].Properties;
+    expect(properties).toMatchObject({ PackageType: "Image", Architectures: ["arm64"], MemorySize: 10240, Timeout: 180, ReservedConcurrentExecutions: 4, Code: { ImageUri: { Ref: "EmbedderImageUri" } } });
+    expect(properties).not.toHaveProperty("Environment");
+    expect((embedder[0]![1] as unknown as { Condition?: string }).Condition).toBeUndefined();
+    // NO NETWORK: the function sits in two subnets of a VPC of its own with no gateway, no endpoint and no route but the local one, behind a security group with no egress rule (review H3).
+    const byType = (type: string) => Object.entries(resources).filter(([, resource]) => resource.Type === type);
+    expect(byType("AWS::EC2::VPC")).toHaveLength(1);
+    expect(byType("AWS::EC2::Subnet")).toHaveLength(2);
+    // R1: DNS is off in the VPC (the Amazon-provided resolver is not filtered by a security group and recurses to the internet: it would be an egress channel for a text).
+    expect(byType("AWS::EC2::VPC")[0]![1].Properties).toMatchObject({ EnableDnsSupport: false, EnableDnsHostnames: false });
+    // R5: the subnets sit in the foundation's verified zone IDs (a zone name is a different physical zone in each account), not in zones picked by name.
+    const zoneIds = byType("AWS::EC2::Subnet").map(([, resource]) => resource.Properties.AvailabilityZoneId);
+    expect(zoneIds).toStrictEqual([...defaultProductionAvailabilityZoneIds("us-east-1")]);
+    for (const [, subnet] of byType("AWS::EC2::Subnet")) expect(subnet.Properties).not.toHaveProperty("AvailabilityZone");
+    for (const type of ["AWS::EC2::InternetGateway", "AWS::EC2::NatGateway", "AWS::EC2::VPCEndpoint", "AWS::EC2::Route", "AWS::EC2::EIP", "AWS::EC2::VPCGatewayAttachment"]) {
+      const mine = byType(type).filter(([id]) => /^Embedder/.test(id));
+      expect(mine, type).toStrictEqual([]);
+    }
+    const vpcConfig = properties.VpcConfig as { SecurityGroupIds: unknown[]; SubnetIds: unknown[] };
+    expect(vpcConfig.SubnetIds).toHaveLength(2);
+    expect(vpcConfig.SecurityGroupIds).toHaveLength(1);
+    const group = byType("AWS::EC2::SecurityGroup").find(([id]) => /^EmbedderSecurityGroup/.test(id))![1];
+    expect(group.Properties).not.toHaveProperty("SecurityGroupIngress");
+    expect(group.Properties.SecurityGroupEgress).toStrictEqual([{ IpProtocol: "icmp", CidrIp: "255.255.255.255/32", FromPort: 252, ToPort: 86, Description: "Disallow all traffic" }]);
+    // The broker may invoke this one function; the function's own role holds log writes to its own group and the network-interface rights Lambda needs for a VPC, and nothing else; nobody holds a Bedrock embedding right for the record any more.
+    const statements = Object.values(resources).flatMap((resource) => (resource.Type === "AWS::IAM::Policy" || resource.Type === "AWS::IAM::ManagedPolicy" ? ((resource.Properties.PolicyDocument as { Statement: Array<{ Sid?: string; Action: string | string[]; Resource: unknown }> }).Statement) : []))
+    const invoke = statements.filter((statement) => statement.Sid === "InvokeEmbedder");
+    expect(invoke).toHaveLength(1);
+    expect(invoke[0]!.Action).toBe("lambda:InvokeFunction");
+    expect(JSON.stringify(invoke[0]!.Resource)).toContain("function:agentx-staging-embedder");
+    expect(statements.filter((statement) => statement.Sid === "TeamRecordEmbeddings")).toStrictEqual([]);
+    const role = Object.entries(resources).find(([id, resource]) => resource.Type === "AWS::IAM::Role" && /^EmbedderRole/.test(id))![1];
+    expect(JSON.stringify(role.Properties)).not.toMatch(/ManagedPolicyArns/);
+    const rolePolicies = Object.entries(resources).filter(([id, resource]) => resource.Type === "AWS::IAM::Policy" && /^EmbedderRole/.test(id));
+    const roleStatements = rolePolicies.flatMap(([, resource]) => (resource.Properties.PolicyDocument as { Statement: Array<{ Sid?: string; Action: string | string[]; Resource: unknown }> }).Statement);
+    const roleActions = roleStatements.flatMap((statement) => [statement.Action].flat()).sort();
+    expect(roleActions).toStrictEqual(["ec2:AssignPrivateIpAddresses", "ec2:CreateNetworkInterface", "ec2:DeleteNetworkInterface", "ec2:DescribeNetworkInterfaces", "ec2:DescribeSecurityGroups", "ec2:DescribeSubnets", "ec2:DescribeVpcs", "ec2:UnassignPrivateIpAddresses", "logs:CreateLogStream", "logs:PutLogEvents"]);
+    // Only the describe calls take "*" (they take no resource); creating an interface names these two subnets and this security group.
+    expect(roleStatements.filter((statement) => JSON.stringify(statement.Resource) === '"*"').map((statement) => statement.Sid)).toStrictEqual(["DescribeNetwork"]);
+    const create = roleStatements.find((statement) => statement.Sid === "CreateOwnNetworkInterface")!;
+    expect(JSON.stringify(create.Resource)).toContain("EmbedderSubnet1");
+    expect(JSON.stringify(create.Resource)).toContain("EmbedderSubnet2");
+    expect(JSON.stringify(create.Resource)).toContain("EmbedderSecurityGroup");
+  }, 180_000);
+
+  it("places the embedder's subnets by the zone IDs of the region it is deployed to", () => {
+    const west = resourcesOf(controlPlane({ ...PUBLIC, agentxTeamRecord: "enabled", agentxRegion: "us-west-2" }));
+    const ids = Object.entries(west).filter(([id, resource]) => resource.Type === "AWS::EC2::Subnet" && /^EmbedderSubnet/.test(id)).map(([, resource]) => resource.Properties.AvailabilityZoneId);
+    expect(ids).toStrictEqual([...defaultProductionAvailabilityZoneIds("us-west-2")]);
+  }, 360_000);
+
+  it("drops the embedder's reserved concurrency where the account cannot take one (agentxReservedConcurrency=false), and an Enterprise install gets the same function", () => {
+    const noReservation = resourcesOf(controlPlane({ ...PUBLIC, agentxTeamRecord: "enabled", agentxReservedConcurrency: false }));
+    const noResFn = Object.values(noReservation).find((resource) => resource.Type === "AWS::Lambda::Function" && resource.Properties.FunctionName === "agentx-staging-embedder");
+    expect(noResFn).toBeDefined();
+    expect(noResFn!.Properties).not.toHaveProperty("ReservedConcurrentExecutions");
+    const enterprise = resourcesOf(controlPlane({ ...ENTERPRISE, agentxTeamRecord: "enabled", agentxTeamRecordKmsKeyArn: KMS, agentxTeamRecordEnterpriseWorkspaceId: "org_aaaaaaaaaaaaaaaaaaaa" }));
+    expect(Object.values(enterprise).filter((resource) => resource.Type === "AWS::Lambda::Function" && resource.Properties.FunctionName === "agentx-ent-embedder")).toHaveLength(1);
+  }, 360_000);
+
+  it("schedules the hourly, the nightly and the re-embed job through the recovery role, with no retries, and nothing else", () => {
     const schedules = Object.entries(resources).filter(([id, resource]) => resource.Type === "AWS::Scheduler::Schedule" && id.startsWith("TeamRecord"));
-    expect(schedules.map(([id]) => id.replace(/[0-9A-F]{8}$/, "")).sort()).toStrictEqual(["TeamRecordHourlySchedule", "TeamRecordNightlySchedule"]);
+    expect(schedules.map(([id]) => id.replace(/[0-9A-F]{8}$/, "")).sort()).toStrictEqual(["TeamRecordHourlySchedule", "TeamRecordNightlySchedule", "TeamRecordReembedSchedule"]);
     const inputs = schedules.map(([, resource]) => JSON.parse((resource.Properties.Target as { Input: string }).Input) as unknown).sort((a, b) => JSON.stringify(a).localeCompare(JSON.stringify(b)));
-    expect(inputs).toStrictEqual([{ source: TEAM_RECORD_JOB_SOURCE, job: "hourly" }, { source: TEAM_RECORD_JOB_SOURCE, job: "nightly" }]);
+    expect(inputs).toStrictEqual([{ source: TEAM_RECORD_JOB_SOURCE, job: "hourly" }, { source: TEAM_RECORD_JOB_SOURCE, job: "nightly" }, { source: TEAM_RECORD_JOB_SOURCE, job: "reembed" }]);
     for (const [, resource] of schedules) expect((resource.Properties.Target as { RetryPolicy: unknown }).RetryPolicy).toStrictEqual({ MaximumRetryAttempts: 0, MaximumEventAgeInSeconds: 600 });
   }, 180_000);
 
@@ -227,15 +304,19 @@ describe("the switch on: Public cloud", () => {
     const trust = JSON.stringify(role.Properties.AssumeRolePolicyDocument);
     expect(trust).toContain("sts:TagSession");
     expect(trust).toContain("aws:RequestTag/rovara-index");
+    expect(trust).toContain("aws:RequestTag/rovara-retired-index");
     expect(trust).toContain("ws-*");
     const policies = Object.entries(resources).filter(([id, resource]) => resource.Type === "AWS::IAM::Policy" && /^TeamRecordVectorsDataRole/.test(id));
     expect(policies).toHaveLength(1);
     const text = JSON.stringify(policies[0]![1].Properties.PolicyDocument);
     expect(text).toContain("${aws:PrincipalTag/rovara-index}");
     expect(text).not.toContain("/index/*");
-    for (const statement of (policies[0]![1].Properties.PolicyDocument as { Statement: Array<{ Action: string | string[]; Resource: unknown }> }).Statement) {
-      if ([statement.Action].flat().some((action) => action.startsWith("s3vectors:"))) expect(JSON.stringify(statement.Resource)).toContain("${aws:PrincipalTag/rovara-index}");
+    for (const statement of (policies[0]![1].Properties.PolicyDocument as { Statement: Array<{ Sid?: string; Action: string | string[]; Resource: unknown }> }).Statement) {
+      if ([statement.Action].flat().some((action) => action.startsWith("s3vectors:"))) expect(JSON.stringify(statement.Resource)).toContain(statement.Sid === "TeamRecordVectorsRetireOldIndex" ? "${aws:PrincipalTag/rovara-retired-index}" : "${aws:PrincipalTag/rovara-index}");
     }
+    // The one extra right is deleting the workspace's retired index (the retire step; an erase starts with it), named by its own session tag.
+    const retire = (policies[0]![1].Properties.PolicyDocument as { Statement: Array<{ Sid?: string; Action: string | string[] }> }).Statement.filter((statement) => [statement.Action].flat().includes("s3vectors:DeleteIndex"));
+    expect(retire.map((statement) => [statement.Sid, statement.Action])).toStrictEqual([["TeamRecordVectorsRetireOldIndex", "s3vectors:DeleteIndex"]]);
     expect(JSON.stringify(on.toJSON())).toMatch(/"sts:AssumeRole","sts:TagSession"/);
   }, 180_000);
 

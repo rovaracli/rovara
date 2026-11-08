@@ -58,6 +58,23 @@ describe("the model proxy image", () => {
     }
   });
 
+  it("adds the embedder's repository only with the Team record on (the access stack of a template with the record off is what it was), the same kind of repository, and no wider operator right", () => {
+    const KMS = "arn:aws:kms:us-east-1:111122223333:key/11111111-2222-3333-4444-555555555555";
+    const withRecord = appStacks({ ...ENTERPRISE, agentxTeamRecord: "enabled", agentxTeamRecordKmsKeyArn: KMS, agentxTeamRecordEnterpriseWorkspaceId: "org_aaaaaaaaaaaaaaaaaaaa" });
+    const repositories = resourcesOf(withRecord.AgentXAccess!, "AWS::ECR::Repository");
+    expect(repositories.map(([, repository]) => repository.Properties.RepositoryName).sort()).toEqual(["rovara-bundle/ent/embedder", "rovara-bundle/ent/executor", "rovara-bundle/ent/litellm", "rovara-bundle/ent/slack", "rovara-bundle/ent/worker"]);
+    const embedder = repositories.find(([, repository]) => repository.Properties.RepositoryName === "rovara-bundle/ent/embedder")![1];
+    expect(embedder.Properties).toMatchObject({ ImageTagMutability: "IMMUTABLE", ImageScanningConfiguration: { ScanOnPush: true } });
+    // the access stack with the record off is byte-identical to the one without the switch
+    expect(JSON.stringify(enterprise.AgentXAccess!.toJSON())).toBe(JSON.stringify(appStacks(ENTERPRISE).AgentXAccess!.toJSON()));
+    // nothing else changes in the access stack (so no role, boundary or operator statement gets wider): the repository is the only added resource, and every other resource is the same
+    const before = appStacks(ENTERPRISE).AgentXAccess!.toJSON().Resources as Record<string, unknown>;
+    const after = withRecord.AgentXAccess!.toJSON().Resources as Record<string, unknown>;
+    const added = Object.keys(after).filter((id) => !(id in before));
+    expect(added).toEqual([repositories.find(([, repository]) => repository.Properties.RepositoryName === "rovara-bundle/ent/embedder")![0]]);
+    for (const id of Object.keys(before)) expect(JSON.stringify(after[id]), id).toBe(JSON.stringify(before[id]));
+  });
+
   it("is unchanged in Public and for an install with no edition: the pinned public image, no repository, no pull statement", () => {
     for (const context of [PUBLIC, { agentxEnv: "legacyish" }]) {
       const stacks = appStacks(context);

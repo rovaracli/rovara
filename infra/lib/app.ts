@@ -13,7 +13,7 @@ import { AGENTX_PRODUCTION_VPC_CIDR, ProductionFoundationStack } from "./product
 import { ENTERPRISE_ALLOW_PUBLIC_RANGES_CONTEXT_KEY, ENTERPRISE_EGRESS_CIDRS_CONTEXT_KEY, ENTERPRISE_INTERNET_EGRESS_CONTEXT_KEY, parseEditionContext, parseEnterpriseEgressCidrs, parseInternetEgress } from "./vpc-endpoints.js";
 import { EDITION_CONTEXT_KEY, NEW_INSTALL_CONTEXT_KEY, editionAtSynth } from "@agentx/contracts";
 import { EditionEnvironment } from "./edition-env.js";
-import { BUNDLE_IMAGE_NAMES, bundleImageRepository } from "./bundle-images.js";
+import { BUNDLE_EMBEDDER_IMAGE_NAME, BUNDLE_IMAGE_NAMES, bundleImageRepository } from "./bundle-images.js";
 import { parseOperatorAccessContext } from "./operator-access.js";
 import { mcpHostAllowDomains } from "./mcp-host.js";
 import { assertStdioHostStackBuilt, mcpHostPropsFromInstall, parsePrivateMcpContext, privateMcpBrokerEnvironment } from "./private-mcp.js";
@@ -137,6 +137,8 @@ export function buildAgentXApp(context: Record<string, unknown> = {}): App {
   const enterpriseInternetEgressContext = app.node.tryGetContext(ENTERPRISE_INTERNET_EGRESS_CONTEXT_KEY) as unknown;
   const enterpriseEgressCidrsContext = app.node.tryGetContext(ENTERPRISE_EGRESS_CIDRS_CONTEXT_KEY) as unknown;
   const enterpriseCidrs = parseEnterpriseEgressCidrs(enterpriseEgressCidrsContext, { allowPublicRanges: isTrue(app.node.tryGetContext(ENTERPRISE_ALLOW_PUBLIC_RANGES_CONTEXT_KEY)) });
+  // The Team record's switch (off by default; read before the access stack, because an Enterprise install with the record also gets the embedder's bundle repository; `-c agentxTeamRecord=enabled` turns its storage, schedules and broker setting on). Checked here so a wrong value stops the synth.
+  const teamRecord = parseTeamRecordSwitch({ get: (key) => app.node.tryGetContext(key) as unknown, env: naming.env, edition: explicitEdition, cloud: agentxCloud });
   // The access stack holds the roles every other environment stack is deployed with, so it comes
   // first. The deployment that predates environments has none.
   // The standing Rovara operator role (task N6): Enterprise only, and only when the install asks for it. Checked here so a wrong setting stops the synth.
@@ -156,7 +158,7 @@ export function buildAgentXApp(context: Record<string, unknown> = {}): App {
       ...(rovaraOrganizationId === undefined ? {} : { rovaraOrganizationId }),
       ...(operatorAccess === undefined ? {} : { operatorAccess }),
       ...(agentxCloud ? { cloud: true } : {}),
-      ...(explicitEdition === "enterprise" ? { bundleImageRepositories: BUNDLE_IMAGE_NAMES.map((name) => bundleImageRepository(naming.env!, name)) } : {}),
+      ...(explicitEdition === "enterprise" ? { bundleImageRepositories: [...BUNDLE_IMAGE_NAMES, ...(teamRecord === undefined ? [] : [BUNDLE_EMBEDDER_IMAGE_NAME])].map((name) => bundleImageRepository(naming.env!, name)) } : {}),
       terminationProtection: true,
       env: { region },
     });
@@ -168,8 +170,6 @@ export function buildAgentXApp(context: Record<string, unknown> = {}): App {
   // The model endpoint settings (N8: rovaraCustomModelEndpoints, rovaraModelEndpointCidrs): Enterprise only, off by default, checked here so a wrong one stops the synth.
   const modelEndpoints = parseModelEndpointContext({ edition: explicitEdition, vpcCidrs: [AGENTX_PRODUCTION_VPC_CIDR], get: (key) => app.node.tryGetContext(key) as unknown });
   const brokerEnvironment = { ...privateMcpBrokerEnvironment(privateMcp), ...modelEndpointBrokerEnvironment(modelEndpoints) };
-  // The Team record's switch (off by default; `-c agentxTeamRecord=enabled` turns its storage, schedules and broker setting on). Checked here so a wrong value stops the synth.
-  const teamRecord = parseTeamRecordSwitch({ get: (key) => app.node.tryGetContext(key) as unknown, env: naming.env, edition: explicitEdition, cloud: agentxCloud });
   // Private package registries (N9): the CodeArtifact domains the broker may mint a read-only token for (`-c rovaraCodeArtifactDomains=domain:account:region:org:repo+repo,...`; Enterprise only). Off by default.
   const registryDomains = parseCodeArtifactDomains(app.node.tryGetContext(CODEARTIFACT_DOMAINS_CONTEXT_KEY), { edition: explicitEdition, cloud: agentxCloud, env: naming.env });
   // Saved environment images (SH22): Enterprise may bring its own KMS key (a key ARN in this account and region); Public always uses the key the stack makes. `agentxSavedEnvRegistryScan=on` turns on the registry-wide basic scan-on-push setting (off by default: it replaces an existing registry setting).

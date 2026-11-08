@@ -181,7 +181,7 @@ export async function verifyBundle(input: VerifyBundleInput): Promise<VerifiedBu
     if ((entry.kind === "template" || entry.kind === "package" || entry.kind === "legal") && !releaseFiles.has(entry.file)) throw refuse(`${entry.file} is in the bundle but not in release.json`);
   }
   for (const image of manifest.images) {
-    const named = releaseManifest.images[image.name as "worker" | "slack" | "executor"];
+    const named = releaseManifest.images[image.name as "worker" | "slack" | "executor" | "embedder"];
     if (named !== undefined && named !== image.sourceRef) throw refuse(`image ${image.name} differs between release.json and the bundle`);
   }
 

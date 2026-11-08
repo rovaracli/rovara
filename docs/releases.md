@@ -122,6 +122,20 @@ place; this records what it is, so a change to any piece can be made deliberatel
   rejects such a release, so upgrade the CLI before installing or updating from a release newer than
   the one that first publishes the executor. Strictness is deliberate: an image key a CLI does not
   know must not be skipped silently.
+- **The self-hosted embedder repository (not yet created).** The Team record searches with the embedder image
+  (`environments/embedder`; Qwen3-Embedding-0.6B and bge-small baked into a linux/arm64 Lambda image, every Python package
+  installed by hash, no network at run time). Releases push it as `agentx-embedder` and record its digest as
+  `images.embedder` in release.json; the CLI passes it to the control plane (`EmbedderImageUri`), through the account's image
+  cache in a Public install and from the install's own `rovara-bundle/<env>/embedder` repository in an Enterprise one
+  (the signed bundle carries the image; the access stack creates that repository only where the Team record is built, so the
+  other templates are unchanged, and the operator role gets no new ECR right). Before the first such release an owner creates
+  the ECR Public repository `agentx-embedder` and adds it to the publish role's push permissions. The release workflow builds
+  and publishes it only when `AGENTX_PUBLISH_EMBEDDER_IMAGE` is `true` (default off): the image build runs the parity check
+  against the original weights and the offline smoke test, and pushes only if they pass. Until the variable is set, a release
+  carries no embedder image and `agentx upgrade` refuses to build or keep a Team record on it (there is no search without the
+  embedder). A CLI older than the first release with `images.embedder` refuses that release (`images` is strict).
+  **To check on the first run:** that Lambda accepts an image in a pull-through-cache repository (Public path), and that an
+  image in a customer-key-encrypted ECR repository can be used by the function (Enterprise path); neither was tested.
 - **The executor image is smoke-tested under its production sandbox before it is published.** The `images` job
   builds the executor for linux/arm64 into the runner's Docker (`--load`), runs `npx tsx scripts/executor-smoke.ts <tag>`,
   and only then pushes that same loaded image (`docker push`), so the published bytes are the smoke-tested bytes; a

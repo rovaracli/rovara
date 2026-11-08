@@ -4,7 +4,8 @@
 // init`/`agentx upgrade`) reads secrets and calls CloudFormation; this file only computes values.
 import { customDomainParameters, type CustomDomain } from "../environments/custom-domain.js";
 import type { Edition } from "@agentx/contracts";
-import { CLOUD_PROJECT_FOUNDATION_PARAMETERS, CONTROL_PLANE_FOUNDATION_PARAMETERS, ImageDigest, MODEL_PROXY_FOUNDATION_PARAMETERS, KEYED_MODEL_PROVIDERS, KEYED_PROVIDER_IDS, environmentStackName } from "@agentx/contracts";
+import { EMBEDDER_IMAGE, embedderImageHome } from "../config/keys.js";
+import { BUNDLE_IMAGE_REPOSITORY_PREFIX, CLOUD_PROJECT_FOUNDATION_PARAMETERS, CONTROL_PLANE_FOUNDATION_PARAMETERS, ImageDigest, MODEL_PROXY_FOUNDATION_PARAMETERS, KEYED_MODEL_PROVIDERS, KEYED_PROVIDER_IDS, environmentPullThroughPrefix, environmentStackName } from "@agentx/contracts";
 import type { ReleaseManifest, StackPart } from "@agentx/contracts";
 import { signInStackParameters, type StoredDeveloperSignIn } from "../signin/settings.js";
 
@@ -104,7 +105,7 @@ export const OPERATOR_PARAMETERS: Readonly<Record<DeployPart, readonly string[]>
   // The AI navigation model the customer chose (agentx config set models.e2eAgent): a stack parameter and not a model role, so it is not in the settings the upgrade's answers read.
   // MODEL3: the fallback model the customer chose (agentx config set models.fallback), also a parameter of the Slack stack.
   runtime: ["E2eAgentModelId", "ModelFallback"],
-  "control-plane": ["BudgetMonthlyUsd", "BudgetScope", "SlackAppPostedMessages", "SlackThreadTurnsPerMinute", "SlackMemberWorkspaceLimit", "SlackOrganizationWorkspaceLimit", "McpConfirmElicitation", "TaskPeopleChangesEnabled", "TaskPeoplePublicInvitationsEnabled", "TaskPeoplePrivateInvitationsEnabled", "TaskPersonProofEnabled", "WorkflowDependenciesEnabled", "RovaraCodeV2Enabled", "PlanSelfCheckEnabled", "AutofixEnabled", "LiveSteerEnabled", "LiveRedirectEnabled", "LiveAskEnabled", "LiveFixEnabled", "ProofEvidenceEnabled", "DecisionCardsEnabled", "TestEnvironmentEnabled", "LearnedLessonsEnabled", "VerifyResultsEnabled", "SetupAgentEnabled", "TestServicesEnabled", "TestAccountsEnabled", "ProjectImagesEnabled", "SecondReviewEnabled", "SavedEnvEnabled", "ScriptTokensEnabled", "DesignReviewEnabled", "SetupRecipesEnabled", "NightlyHealthEnabled", "LearningSuggestionsDefault", "TeamRecordEnabled", "AuditLockProfile", ...RETIRED_OPERATOR_PARAMETERS["control-plane"]],
+  "control-plane": ["BudgetMonthlyUsd", "BudgetScope", "SlackAppPostedMessages", "SlackThreadTurnsPerMinute", "SlackMemberWorkspaceLimit", "SlackOrganizationWorkspaceLimit", "McpConfirmElicitation", "TaskPeopleChangesEnabled", "TaskPeoplePublicInvitationsEnabled", "TaskPeoplePrivateInvitationsEnabled", "TaskPersonProofEnabled", "WorkflowDependenciesEnabled", "RovaraCodeV2Enabled", "PlanSelfCheckEnabled", "AutofixEnabled", "LiveSteerEnabled", "LiveRedirectEnabled", "LiveAskEnabled", "LiveFixEnabled", "ProofEvidenceEnabled", "DecisionCardsEnabled", "TestEnvironmentEnabled", "LearnedLessonsEnabled", "VerifyResultsEnabled", "SetupAgentEnabled", "TestServicesEnabled", "TestAccountsEnabled", "ProjectImagesEnabled", "SecondReviewEnabled", "SavedEnvEnabled", "ScriptTokensEnabled", "DesignReviewEnabled", "SetupRecipesEnabled", "NightlyHealthEnabled", "LearningSuggestionsDefault", "TeamRecordEnabled", "EmbedderImageUri", "AuditLockProfile", ...RETIRED_OPERATOR_PARAMETERS["control-plane"]],
   slack: ["SlowTurnMinutes", "ModelFallback"],
 };
 
@@ -150,6 +151,40 @@ export function privateImageUri(publicRef: string, target: { account: string; re
   }
   const hostSuffix = ecrHostSuffix(target.partition ?? "aws");
   return `${target.account}.dkr.ecr.${target.region}.${hostSuffix}/${target.prefix}/${rest}`;
+}
+
+/** Repository name of the embedder image in an Enterprise install's own ECR (loaded from the signed bundle): `rovara-bundle/<env>/embedder`. */
+const enterpriseEmbedderRepository = (env: string): string => `${BUNDLE_IMAGE_REPOSITORY_PREFIX}/${env}/embedder`;
+
+/**
+ * The control plane's EmbedderImageUri (the self-hosted embedder the Team record needs), in this order:
+ *  1. `override` (`agentx upgrade --embedder-image`): a private ECR image pinned by digest in THIS install's account and region, for an upgrade from a source checkout or with image overrides, whose
+ *     release names no embedder image;
+ *  2. the release's own image: in an Enterprise install the image in the install's own `rovara-bundle/<env>/embedder` repository (`rovara upgrade --bundle` loaded it there, digest preserved),
+ *     otherwise the release's public image through the account's pull-through cache, like the worker image. Always in this install's account and region;
+ *  3. `deployed`: the image the stack already runs (its EmbedderImageUri parameter, when it is not `none`; also what `agentx config set teamRecord.embedderImage` set by hand), so an upgrade
+ *     that has no new image keeps the old one instead of being refused.
+ * Throws when none of the three names an image: there is no Team record without one.
+ */
+export function embedderImageUri(input: { release: ReleaseManifest; edition: Edition | undefined; env: string; account: string; region: string; partition?: string; override?: string | undefined; deployed?: string | undefined }): string {
+  if (input.override !== undefined) {
+    const home = embedderImageHome(input.override);
+    if (!EMBEDDER_IMAGE.test(input.override) || home === undefined) throw new Error("--embedder-image must be a private ECR image pinned by digest (<account>.dkr.ecr.<region>.amazonaws.com/<repository>@sha256:<64 hex>)");
+    if (home.account !== input.account || home.region !== input.region) throw new Error(`--embedder-image must be in this install's own registry (${input.account}.dkr.ecr.${input.region}.*)`);
+    return input.override;
+  }
+  const reference = input.release.images.embedder;
+  if (reference === undefined) {
+    if (input.deployed !== undefined && input.deployed !== "" && input.deployed !== "none" && EMBEDDER_IMAGE.test(input.deployed)) return input.deployed;
+    throw new Error(`release ${input.release.version} carries no embedder image, and the Team record needs one (the self-hosted embedder), and the stack runs none; use a release that has it, or pass --embedder-image <image pinned by digest in your registry>`);
+  }
+  const target = { account: input.account, region: input.region, prefix: environmentPullThroughPrefix(input.env), ...(input.partition === undefined ? {} : { partition: input.partition }) };
+  if (input.edition === "enterprise") {
+    const digest = /@(sha256:[a-f0-9]{64})$/.exec(reference)?.[1];
+    if (digest === undefined) throw new Error(`image ${reference} is not pinned to a digest`);
+    return `${input.account}.dkr.ecr.${input.region}.${ecrHostSuffix(input.partition ?? "aws")}/${enterpriseEmbedderRepository(input.env)}@${digest}`;
+  }
+  return privateImageUri(reference, target);
 }
 
 /** A stack output a later stack's parameters need is missing: typed, so upgrade --export can say what to do instead. */

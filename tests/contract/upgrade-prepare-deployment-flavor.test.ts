@@ -16,6 +16,10 @@ import { CATALOG_FLAVOR_TOOL, CDK_CONSTRUCT_IDS, cdkDiff, type CommandRunner } f
 import { writeTeamRecordRecord } from "../../packages/cli/src/deploy/team-record-switch.js";
 import { prepareDeployment } from "../../packages/cli/src/deploy/commands.js";
 import { fakeRelease } from "../support/init-fakes.js";
+
+const EMBEDDER = `public.ecr.aws/agentx/agentx-embedder@sha256:${"e".repeat(64)}`;
+/** A release that names the embedder image, which a Team record needs. */
+const releaseWithEmbedder = (version = "1.2.3") => { const release = fakeRelease(version); release.manifest.images.embedder = EMBEDDER; return release; };
 import { MemoryParameterStore } from "../support/memory-parameter-store.js";
 
 const REGION = "us-west-2";
@@ -151,18 +155,22 @@ describe("agentx upgrade: prepareDeployment and the catalog flavor, driven end t
 
 // UX-4b re-check fix 4: the Team record recorded as on, with its storage options, reaches every cdk command prepareDeployment makes (the declared-parameter synth and the deployer), and the diff.
 describe("the Team record's options reach the synth, the deploy and the diff", () => {
-  const CONTEXT = ["-c agentxTeamRecord=enabled", "-c agentxTeamRecordLake=false", "-c agentxTeamRecordEmbeddingModelId=amazon.titan-embed-text-v2:0"];
+  const CONTEXT = ["-c agentxTeamRecord=enabled", "-c agentxTeamRecordLake=false"];
   it("passes them to the synth and the deploy when the install records them, and never otherwise", async () => {
     const root = await checkout();
     const { runner, calls } = harness(root);
     const store = new MemoryParameterStore();
     store.values.set("/cdk-bootstrap/hnb659fds/version", "21");
-    await writeTeamRecordRecord(store, "prod", { enabled: true, options: { lake: "false", embeddingModelId: "amazon.titan-embed-text-v2:0" } });
+    await writeTeamRecordRecord(store, "prod", { enabled: true, // An older record may still hold the retired embeddingModelId: it reads, and is never passed to the synth.
+      options: { lake: "false", embeddingModelId: "amazon.titan-embed-text-v2:0" } as never });
     const prepared = await prepareDeployment({
-      env: "prod", region: REGION, account: "111122223333", identityMode: "cognito", engine: "cdk", source: root, release: fakeRelease("1.2.3"), stderr: { write: () => undefined },
+      env: "prod", region: REGION, account: "111122223333", identityMode: "cognito", engine: "cdk", source: root, release: releaseWithEmbedder(), stderr: { write: () => undefined },
       deps: { identity: { get: async () => ({ account: "111122223333", arn: "arn:aws:sts::111122223333:assumed-role/Admin/upgrade" }) }, store, secrets: { get: async () => undefined, create: async () => undefined }, commandRunner: runner, stackOutputs: async () => ({}) },
     });
     for (const context of CONTEXT) expect(calls.find((call) => call.includes(" synth "))).toContain(context);
+    expect(calls.find((call) => call.includes(" synth "))).not.toContain("EmbeddingModelId");
+    // The release's embedder image, in this account and region through the image cache, is what the control plane is told to run.
+    expect(prepared.embedderImageUri).toBe(`111122223333.dkr.ecr.${REGION}.amazonaws.com/agentx-prod/agentx/agentx-embedder@sha256:${"e".repeat(64)}`);
     await prepared.deployer.deploy({ part: "control-plane", stackName: "agentx-prod-control-plane", parameters: {} } as never).catch(() => undefined);
     const deploy = calls.find((call) => call.includes(" deploy "));
     expect(deploy).toBeDefined();
@@ -173,13 +181,45 @@ describe("the Team record's options reach the synth, the deploy and the diff", (
     const other = harness(otherRoot);
     const plain = await prepare(otherRoot, other.runner, { env: "prod", account: "111122223333" });
     expect(other.calls.find((call) => call.includes(" synth "))).not.toContain("agentxTeamRecord");
+    expect(plain.embedderImageUri).toBeUndefined();
     await plain.cleanup();
+  });
+
+  it("refuses to deploy with the Team record on when the release carries no embedder image, before anything is built, with a message that says what to do", async () => {
+    const root = await checkout();
+    const { runner, calls } = harness(root);
+    const store = new MemoryParameterStore();
+    store.values.set("/cdk-bootstrap/hnb659fds/version", "21");
+    await writeTeamRecordRecord(store, "prod", { enabled: true, options: {} });
+    await expect(prepareDeployment({
+      env: "prod", region: REGION, account: "111122223333", identityMode: "cognito", engine: "cdk", source: root, release: fakeRelease("1.2.3"), stderr: { write: () => undefined },
+      deps: { identity: { get: async () => ({ account: "111122223333", arn: "arn:aws:sts::111122223333:assumed-role/Admin/upgrade" }) }, store, secrets: { get: async () => undefined, create: async () => undefined }, commandRunner: runner, stackOutputs: async () => undefined },
+    })).rejects.toThrow(/release 1\.2\.3 carries no embedder image, and the Team record needs one.*Nothing was deployed/s);
+    expect(calls.some((call) => call.includes("npm run build") || call.includes(" synth "))).toBe(false);
+  });
+
+  it("R7: a source upgrade whose release names no embedder image keeps the running one, or takes --embedder-image, and is refused only when neither exists", async () => {
+    const own = `111122223333.dkr.ecr.${REGION}.amazonaws.com/rovara/embedder@sha256:${"a".repeat(64)}`;
+    const named = `111122223333.dkr.ecr.${REGION}.amazonaws.com/rovara/embedder@sha256:${"b".repeat(64)}`;
+    for (const [extra, expected] of [[{ deployedEmbedderImage: own }, own], [{ embedderImage: named, deployedEmbedderImage: own }, named]] as const) {
+      const root = await checkout();
+      const { runner } = harness(root);
+      const store = new MemoryParameterStore();
+      store.values.set("/cdk-bootstrap/hnb659fds/version", "21");
+      await writeTeamRecordRecord(store, "prod", { enabled: true, options: {} });
+      const prepared = await prepareDeployment({
+        env: "prod", region: REGION, account: "111122223333", identityMode: "cognito", engine: "cdk", source: root, release: fakeRelease("1.2.3"), stderr: { write: () => undefined }, ...extra,
+        deps: { identity: { get: async () => ({ account: "111122223333", arn: "arn:aws:sts::111122223333:assumed-role/Admin/upgrade" }) }, store, secrets: { get: async () => undefined, create: async () => undefined }, commandRunner: runner, stackOutputs: async () => ({}) },
+      });
+      expect(prepared.embedderImageUri).toBe(expected);
+      await prepared.cleanup();
+    }
   });
 
   it("passes them to the diff", async () => {
     const calls: string[] = [];
     const runner: CommandRunner = { async run(command, args) { calls.push(`${command} ${args.join(" ")}`);return { stdout: "There were no differences" }; } };
-    await cdkDiff({ runner, source: "/src", env: "prod", region: REGION, identityMode: "cognito", teamRecord: { lake: "false", embeddingModelId: "amazon.titan-embed-text-v2:0" }, request: { part: "control-plane", stackName: "agentx-prod-control-plane", parameters: {} } as never });
+    await cdkDiff({ runner, source: "/src", env: "prod", region: REGION, identityMode: "cognito", teamRecord: { lake: "false", embeddingModelId: "amazon.titan-embed-text-v2:0" } as never, request: { part: "control-plane", stackName: "agentx-prod-control-plane", parameters: {} } as never });
     for (const context of CONTEXT) expect(calls[0]).toContain(context);
   });
 });

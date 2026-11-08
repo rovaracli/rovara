@@ -21,7 +21,7 @@ import { resolveSlackOrg } from "../org/resolve.js";
 import { orgOfInstallation, projectsOf as projectsOfRepository } from "../triggers/github-events.js";
 import { createRovaraPullRequestIndex } from "../rovara-code/rovara-pull-request-index.js";
 import type { DeveloperTaskRecord } from "../developer/task-records.js";
-import { athenaPort, bedrockInvokeModelPort, s3VectorsPortFromCredentials, type SdkLoader } from "./aws-adapters.js";
+import { athenaPort, s3VectorsPortFromCredentials, type SdkLoader } from "./aws-adapters.js";
 import { DynamoLessonStore } from "../lessons/dynamo-store.js";
 import { lessonDeletionPort } from "../lessons/deletion.js";
 import type { LessonVectors } from "../lessons/ports.js";
@@ -33,6 +33,8 @@ import { defaultRetention, readEdition, type TeamRecordEdition } from "./edition
 import { listSourceConfigs, markSourceFailing } from "./store.js";
 import { resolveTaskVisibility } from "../lessons/task-visibility.js";
 import { createEmbedder } from "./embed.js";
+import { recordEmbedderClientFrom, recordJobEmbedderClientFrom, recordSearchEmbedderClientFrom, EMBEDDER_JOB_WAIT_MS } from "../embedder/wiring.js";
+import { REEMBED_RUN_MS, dropReembedState, reembedRun, sweepReembedState } from "./reembed.js";
 import { eraseProject, eraseWorkspace, erasePerson, type EraseBudget } from "./erase.js";
 import { tableHotArchiveSource, ensureWorkspaceVectorBucket, tableHotStatsSource } from "./hot-source.js";
 import { createLakeClient, type LakeClient } from "./lake.js";
@@ -227,7 +229,7 @@ export interface TeamRecordRuntime {
     workspace(orgId: OrgId): Promise<void>;
   };
   jobs: {
-    run(job: "hourly" | "nightly"): Promise<TeamRecordJobSummary>;
+    run(job: TeamRecordJobName): Promise<TeamRecordJobSummary>;
     /**
      * Lessons in production (lane 2): other work for the same schedules. `work` runs once per company inside the hourly or the nightly run, after the record's own work, with the company's projects and what is
      * left of its time; its counts join the run's summary, and a failure is counted and never stops the others (or the record's own work). Returns the function that takes it away again.
@@ -238,12 +240,16 @@ export interface TeamRecordRuntime {
   opsFailures(orgId: OrgId): Promise<OpsFailures>;
 }
 
-const DEFAULT_EMBEDDING_MODEL = "amazon.titan-embed-text-v2:0";
+/** The scheduled jobs: `hourly` (deletes and erases, trackers), `nightly` (text expiry, archive) and `reembed` (gives a vector to rows that lack one, reembed.ts). */
+export type TeamRecordJobName = "hourly" | "nightly" | "reembed";
+
 const ORG_PAGE = 50;
 const MAX_ORGS_PER_RUN = 500;
 /** One scheduled run's whole budget: inside the broker function's 30 s timeout with room for the answer. */
 export const JOB_BUDGET_MS = 24_000;
 const PER_ORG_MS = 8_000;
+/** How long a failed delete of the retired (Titan-era) vector index waits before it is tried again in the same workspace. */
+const OLD_INDEX_RETRY_MS = 15 * 60_000;
 /** The most the dead-letter sweep may take of one hourly run, so the orgs keep most of the budget. */
 const DLQ_SWEEP_MS = 6_000;
 /** The most the GitHub redelivery sweep (SRL-5a) may take of one hourly run. */
@@ -282,8 +288,15 @@ export function createTeamRecordRuntime(input: TeamRecordRuntimeInput): TeamReco
   const sdkOptions = { region, ...(input.sdk === undefined ? {} : { load: input.sdk }) };
 
   // ---- vectors and the embedder (a workspace's index is opened through a session narrowed to that workspace)
-  const modelId = env.TEAM_RECORD_EMBEDDING_MODEL_ID === undefined || env.TEAM_RECORD_EMBEDDING_MODEL_ID === "" ? DEFAULT_EMBEDDING_MODEL : env.TEAM_RECORD_EMBEDDING_MODEL_ID;
-  const embedder = createEmbedder({ modelId, dimension: VECTOR_DIMENSION_DEFAULT, invoke: bedrockInvokeModelPort(sdkOptions) });
+  // The self-hosted embedder (environments/embedder): a direct invoke of the function the install names. Without one (a legacy install) rows are stored without a vector and found by keyword.
+  // Three clients of the one function, differing only in how long they wait: ingest (the queue consumer and the taps), search (a person is waiting: short, no retry, a pause after a timeout, keyword search meanwhile) and the
+  // re-embed job (the longest wait, only started when the run has the time).
+  const embedderClient = recordEmbedderClientFrom(env, sdkOptions);
+  const embedderDeps = embedderClient === undefined ? {} : { embedder: createEmbedder({ client: embedderClient }) };
+  const searchClient = recordSearchEmbedderClientFrom(env, sdkOptions, undefined, undefined, now);
+  const searchEmbedderDeps = searchClient === undefined ? {} : { embedder: createEmbedder({ client: searchClient }) };
+  const jobClient = recordJobEmbedderClientFrom(env, sdkOptions, undefined, now);
+  const jobEmbedder = jobClient === undefined ? undefined : createEmbedder({ client: jobClient });
   const buckets = (env.TEAM_RECORD_VECTOR_BUCKETS ?? "").split(",").filter((name) => name !== "");
   const rolePart = env.TEAM_RECORD_VECTORS_ROLE_ARN;
   const account = env.AGENTX_ACCOUNT_ID;
@@ -302,7 +315,15 @@ export function createTeamRecordRuntime(input: TeamRecordRuntimeInput): TeamReco
   /** The workspace's vector index, or undefined where vectors are not set up or cannot be opened (the row is then stored without a vector and found by keyword). */
   // A workspace whose index could not be opened is not tried again for a minute: without this every record write would repeat the bucket lookup, a new STS session and the failing call.
   const vectorsFailedUntil = new Map<OrgId, number>();
-  async function indexFor(orgId: OrgId): Promise<S3VectorsIndex | undefined> {
+  /** Workspaces whose index of the embedding generation before the current one is known to be gone (or was never there). */
+  const oldIndexGone = new Set<OrgId>();
+  /** Review R11: a workspace whose old-index delete failed is not tried again for this long (a permission gap during a deploy window would otherwise cost GetIndex and DeleteIndex on every call). */
+  const oldIndexRetryAt = new Map<OrgId, number>();
+  /**
+   * `strict`: the caller deletes or erases (the purge paths): it gets no index while the old one may still be there, because vectors left in it would be out of reach of the erase. A search or
+   * a write (`strict` false) does not wait for it. The old index is deleted the first time any path opens the workspace's current index (review H1).
+   */
+  async function indexFor(orgId: OrgId, options: { strict?: boolean } = {}): Promise<S3VectorsIndex | undefined> {
     if (vectorPorts === undefined) return undefined;
     if ((vectorsFailedUntil.get(orgId) ?? 0) > now()) return undefined;
     try {
@@ -310,6 +331,23 @@ export function createTeamRecordRuntime(input: TeamRecordRuntimeInput): TeamReco
       const index = await openWorkspaceIndex({ ports: vectorPorts, workspaceId: orgId, bucket, dimension: VECTOR_DIMENSION_DEFAULT });
       // Public creates one index per workspace at run time; Enterprise's single index is made by the stack.
       if (edition === "public" && !indexReady.has(orgId)) { await index.ensureIndex(); indexReady.add(orgId); }
+      if (!oldIndexGone.has(orgId)) {
+        if ((oldIndexRetryAt.get(orgId) ?? 0) > now()) {
+          // The last delete failed a short while ago: not again yet. Callers that delete or erase get no index meanwhile, as after any failed delete.
+          if (options.strict === true) return undefined;
+        } else {
+          try {
+            const outcome = await index.retireOldIndex();
+            if (outcome !== "current_missing") { oldIndexGone.add(orgId); oldIndexRetryAt.delete(orgId); }
+            if (outcome === "deleted") log("record.old_index_deleted", {});
+            if (outcome === "current_missing" && options.strict === true) return undefined;
+          } catch {
+            log("record.old_index_delete_failed", {});
+            oldIndexRetryAt.set(orgId, now() + OLD_INDEX_RETRY_MS);
+            if (options.strict === true) return undefined;
+          }
+        }
+      }
       return index;
     } catch {
       log("record.vectors_unavailable", {});
@@ -388,7 +426,7 @@ export function createTeamRecordRuntime(input: TeamRecordRuntimeInput): TeamReco
     await listOrg(orgId);
     const vectors = await indexFor(orgId);
     const made = createRecordSink({
-      table, modes, edition, rovaraDefaultRetention: defaultRetention(edition, "rovara"), embedder, now, log,
+      table, modes, edition, rovaraDefaultRetention: defaultRetention(edition, "rovara"), ...embedderDeps, now, log,
       ...(vectors === undefined ? {} : { vectors: vectors }),
     });
     // Only a sink that has its vectors is kept: one built without them (they could not be opened just now) is rebuilt on the next call.
@@ -499,7 +537,8 @@ export function createTeamRecordRuntime(input: TeamRecordRuntimeInput): TeamReco
   const lessonVectors: LessonVectors = { async upsert() {}, async query() { return []; }, async remove() {} };
   const lessons = lessonDeletionPort({ store: new DynamoLessonStore(table, now), vectors: lessonVectors, audit: { emit: async (event) => { log("record.lesson_event", { action: event.action }); } }, now });
   async function purgeFor(orgId: OrgId): Promise<PurgeDependencies> {
-    const vectors = await indexFor(orgId);
+    // Strict: an erase never runs without the workspace's old-generation index being gone (review H1); without vectors the rows stay blocked and the hourly job tries again.
+    const vectors = await indexFor(orgId, { strict: true });
     return {
       table, lakeQueue, now, log, lessons: lessons as never, ...(input.audit === undefined ? {} : { audit: input.audit }),
       ...(vectors === undefined ? {} : { vectors: vectors as unknown as RecordVectorPort }), projects: { projects: projectsOf },
@@ -526,7 +565,7 @@ export function createTeamRecordRuntime(input: TeamRecordRuntimeInput): TeamReco
   const transientDistiller = input.distillModel === undefined
     ? { distillTransient: async () => ({ accepted: false }) }
     : createTransientDistiller({
-      ingest: { table, modes, edition, rovaraDefaultRetention: defaultRetention(edition, "rovara"), embedder, now, log },
+      ingest: { table, modes, edition, rovaraDefaultRetention: defaultRetention(edition, "rovara"), ...embedderDeps, now, log },
       distill: { model: input.distillModel, now: () => new Date(now()).toISOString(), newId: () => `fact_${randomUUID().replace(/-/g, "")}` },
     });
   // Retention B writes facts (not rows) straight to the table, so it passes the SAME author gate a stored row passes (TRW-4): a note made from an unlinked author's words could not be erased with them.
@@ -577,7 +616,7 @@ export function createTeamRecordRuntime(input: TeamRecordRuntimeInput): TeamReco
     const lakeNow = lakeClient();
     const stats: StatsDeps | undefined = lakeNow === undefined ? undefined : { lake: lakeNow, tableBucket, hot };
     return {
-      table, modes, embedder, now, log,
+      table, modes, ...searchEmbedderDeps, now, log,
       limiter: dynamoRateLimiter(table, now),
       // SRL-4: rows about a Rovara task are also checked against the task's live visibility (State table), so narrowing a task hides its old rows.
       taskVisibility: tableTaskVisibilityPort({ documentClient: input.documentClient, tableName: state.tableName, now }),
@@ -734,6 +773,7 @@ export function createTeamRecordRuntime(input: TeamRecordRuntimeInput): TeamReco
       await clearStamps(orgId);
       if ((await jobsOf(orgId)).length === 0) {
         await table.documentClient.send(new DeleteCommand({ TableName: table.tableName, Key: teamRecordOrgDirectoryKey(orgId) }));
+        await dropReembedState(table, orgId);
         listed.delete(orgId);
         sinks.delete(orgId);
       }
@@ -830,7 +870,7 @@ export function createTeamRecordRuntime(input: TeamRecordRuntimeInput): TeamReco
   }
 
   // ---- the scheduled jobs: bounded in orgs, in time and (inside each module) in items
-  async function eachOrg(work: (orgId: OrgId, budgetMs: number) => Promise<Record<string, number>>, totalMs: number = input.jobBudgetMs ?? JOB_BUDGET_MS, options: { after?: string } = {}): Promise<TeamRecordJobSummary> {
+  async function eachOrg(work: (orgId: OrgId, budgetMs: number) => Promise<Record<string, number>>, totalMs: number = input.jobBudgetMs ?? JOB_BUDGET_MS, options: { after?: string } = {}, perOrgMs: number = PER_ORG_MS): Promise<TeamRecordJobSummary> {
     const started = now();
     const summary: TeamRecordJobSummary = { orgs: 0, skippedOrgs: 0, details: {} };
     let after: Record<string, unknown> | undefined = options.after === undefined ? undefined : { pk: TEAM_RECORD_ORG_DIRECTORY_PK, sk: options.after };
@@ -844,7 +884,7 @@ export function createTeamRecordRuntime(input: TeamRecordRuntimeInput): TeamReco
         const left = totalMs - (now() - started);
         if (left < 1_000 || summary.orgs >= MAX_ORGS_PER_RUN) { summary.skippedOrgs += 1; continue; }
         try {
-          for (const [key, value] of Object.entries(await work(orgId, Math.min(PER_ORG_MS, left)))) summary.details[key] = (summary.details[key] ?? 0) + value;
+          for (const [key, value] of Object.entries(await work(orgId, Math.min(perOrgMs, left)))) summary.details[key] = (summary.details[key] ?? 0) + value;
         } catch {
           // One org's failure never stops the others; a fixed line, no text.
           summary.details.orgFailures = (summary.details.orgFailures ?? 0) + 1;
@@ -1029,12 +1069,21 @@ export function createTeamRecordRuntime(input: TeamRecordRuntimeInput): TeamReco
     }
     return out;
   }
+  /** True while the company is closing or closed (read fresh): the re-embed job leaves it alone (N5). */
+  const companyIsClosing = async (orgId: OrgId): Promise<boolean> => (await whyClosed(orgId, undefined, true)) === "company_closed";
   const jobs: TeamRecordRuntime["jobs"] = {
     extend(job, work) {
       extensions[job].push(work);
       return () => { const at = extensions[job].indexOf(work); if (at >= 0) extensions[job].splice(at, 1); };
     },
     async run(job) {
+      if (job === "reembed") {
+        // Maintenance of stored rows' vectors. Paused (or no embedder in this install): nothing to do. Strict about nothing else: a workspace whose index cannot be opened is skipped this run.
+        if (paused || jobEmbedder === undefined) return { orgs: 0, skippedOrgs: 0, details: { skipped: 1 } };
+        // R2 and R3: one deadline for the whole run, measured from here; the least recently served workspace first, each with a share of what is left, each with a cursor (reembed.ts).
+        const startedAt = now();
+        return reembedRun({ table, embedder: jobEmbedder, vectorsFor: (orgId) => indexFor(orgId), isClosing: companyIsClosing, now, log }, startedAt, { maxRows: 100, maxScanned: 1_000, callMs: EMBEDDER_JOB_WAIT_MS, warmCallMs: 8_000 }, REEMBED_RUN_MS);
+      }
       if (job === "hourly") {
         // TRW-5 S1: text that reached the dead-letter queue anyway is deleted from it, first, so an org's slow work cannot starve it.
         // The whole run shares ONE budget (the broker's timeout is 30 s): what the dead-letter sweep takes, the orgs do not get.
@@ -1058,12 +1107,15 @@ export function createTeamRecordRuntime(input: TeamRecordRuntimeInput): TeamReco
         }, (input.jobBudgetMs ?? JOB_BUDGET_MS) - (now() - startedAt));
         summary.details.deadLetterTextDeleted = swept;
         for (const [key, value] of Object.entries(redelivery)) summary.details[key] = value;
+        // N5: re-embed state left behind by a workspace that was erased or closed while a re-embed run held it.
+        summary.details.reembedStateDeleted = await sweepReembedState(table, companyIsClosing).catch(() => 0);
         // SRL-5a: last, from what is left, so it can never take time from the paths above.
         for (const [key, value] of Object.entries(await githubRepositoryPass(startedAt + (input.jobBudgetMs ?? JOB_BUDGET_MS)))) summary.details[key] = value;
         return summary;
       }
       return eachOrg(async (orgId, budgetMs) => {
-        const vectors = await indexFor(orgId);
+        // Strict: the expiry and the archiver delete vectors, and a vector in the old-generation index would be out of their reach.
+        const vectors = await indexFor(orgId, { strict: true });
         const expired = await expireRawText({ table, now, log, ...(vectors === undefined ? {} : { vectors: vectors }) }, orgId, { maxItems: 2_000, maxMs: budgetMs });
         const lakeNow = lakeClient();
         // Lessons in production: the nightly re-reflection of reverted tasks runs with the expiry (it only sends ids to a queue), before the archive's longer work.

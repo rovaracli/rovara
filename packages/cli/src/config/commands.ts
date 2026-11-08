@@ -22,7 +22,7 @@ import { CLI_VERSION } from "../version.js";
 import type { DeployPart } from "../deploy/parameters.js";
 import { TEAM_RECORD_PARAMETER, parseTeamRecordOptions, readTeamRecordRecord, writeTeamRecordRecord } from "../deploy/team-record-switch.js";
 import { resolveDeployEdition } from "../deploy/edition.js";
-import { CONFIG_KEYS, configKey, whereText, type ConfigKey, type ModelRole } from "./keys.js";
+import { CONFIG_KEYS, configKey, embedderImageHome, whereText, type ConfigKey, type ModelRole } from "./keys.js";
 import { KEYED_MODEL_PROVIDERS, MODEL_FALLBACK_NONE, eligibleE2EAgentModel, isKeyedModelProvider, type ModelProvider } from "@agentx/contracts";
 
 export interface ConfigServices {
@@ -330,7 +330,7 @@ async function recordTeamRecord(services: ConfigServices, env: string, settings:
     if (effective === "public" && (recorded.options.enterpriseWorkspaceId !== undefined || recorded.options.athenaUsers !== undefined)) throw agentXError("CONFIG_INVALID", `teamRecord.enabled: enterpriseWorkspaceId and athenaUsers are for Enterprise only; change teamRecord.options; nothing changed`);
     if (recorded.enabled) { services.write(`teamRecord.enabled is already recorded as 1; run agentx --env ${env} upgrade to build it`); return { changed: false }; }
     await writeTeamRecordRecord(services.store, env, { enabled: true, options: recorded.options });
-    services.write(`teamRecord.enabled: recorded as 1. The next agentx --env ${env} upgrade builds the Team record's storage, and every upgrade after it keeps it.`);
+    services.write(`teamRecord.enabled: recorded as 1. The next agentx --env ${env} upgrade builds the Team record's storage, and every upgrade after it keeps it. The release you upgrade to must carry the embedder image (the Team record cannot search without it); an upgrade to a release that does not is refused before anything changes.`);
     return { changed: true };
   });
 }
@@ -372,6 +372,11 @@ export async function runConfigSet(services: ConfigServices, env: string, input:
   if (input.value === undefined) throw agentXError("CONFIG_INVALID", `give the new value: agentx config set ${entry.key} <value>`);
   const value = entry.parse(input.value);
   const settings = await installed(services, env);
+  if (entry.key === "teamRecord.embedderImage") {
+    // In THIS install's account and region: Lambda cannot run an image from another region, and an image in another account depends on that account's repository policy.
+    const home = embedderImageHome(value);
+    if (home === undefined || home.account !== settings.account || home.region !== settings.region) throw agentXError("CONFIG_INVALID", `teamRecord.embedderImage: the image must be in this install's own registry (${settings.account}.dkr.ecr.${settings.region}.amazonaws.com); nothing changed`);
+  }
   if (entry.teamRecord === true) {
     const built = (await services.stacks.describe(environmentStackName(env, target.part)))?.parameters[target.parameter] !== undefined;
     if (!built) return await recordTeamRecord(services, env, settings, value);

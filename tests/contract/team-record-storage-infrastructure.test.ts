@@ -1,7 +1,7 @@
 import { App, Stack, aws_iam as iam } from "aws-cdk-lib";
 import { Template } from "aws-cdk-lib/assertions";
 import { describe, expect, it } from "vitest";
-import { actionsOf, policiesOf, statementJson } from "../support/team-record-cdk.js";
+import { actionsOf, policiesOf } from "../support/team-record-cdk.js";
 import { teamRecordParameters } from "../../infra/lib/team-record-edition.js";
 import { TeamRecordStorage } from "../../infra/lib/team-record-storage.js";
 
@@ -10,9 +10,9 @@ const KMS = "arn:aws:kms:us-west-2:111122223333:key/11111111-2222-3333-4444-5555
 const ROLE = "arn:aws:iam::111122223333:role/analyst";
 
 describe("team record install parameters", () => {
-  it("defaults to a Public cell: Titan V2, 1024 dimensions, lake on, no key, no analysts", () => {
+  it("defaults to a Public cell: 1024 dimensions, lake on, no key, no analysts, and no embedding model to choose", () => {
     expect(teamRecordParameters({})).toEqual({
-      edition: "public", embeddingModelId: "amazon.titan-embed-text-v2:0", dimension: 1024, kmsKeyArn: undefined, lakeEnabled: true, athenaUsers: [], enterpriseWorkspaceId: undefined,
+      edition: "public", dimension: 1024, kmsKeyArn: undefined, lakeEnabled: true, athenaUsers: [], enterpriseWorkspaceId: undefined,
     });
   });
   it("Enterprise needs their key and their workspace; Public must not name a workspace or analysts", () => {
@@ -22,9 +22,9 @@ describe("team record install parameters", () => {
     expect(() => teamRecordParameters({ edition: "public", athenaUsers: [ROLE] })).toThrow(/Enterprise only/);
     expect(teamRecordParameters({ edition: "enterprise", kmsKeyArn: KMS, enterpriseWorkspaceId: "acme", athenaUsers: `${ROLE}` }).athenaUsers).toEqual([ROLE]);
   });
-  it("refuses an unsupported embedding model, a key alias, a non-role principal, and analysts without a lake", () => {
-    expect(() => teamRecordParameters({ embeddingModelId: "anthropic.claude" })).toThrow(/not supported/);
-    expect(teamRecordParameters({ embeddingModelId: "cohere.embed-english-v3" }).embeddingModelId).toBe("cohere.embed-english-v3");
+  it("refuses the retired embedding model option (Bedrock Titan and Cohere are gone), a key alias, a non-role principal, and analysts without a lake", () => {
+    for (const retired of ["anthropic.claude", "cohere.embed-english-v3", "amazon.titan-embed-text-v2:0", "global.cohere.embed-v4:0"]) expect(() => teamRecordParameters({ embeddingModelId: retired })).toThrow(/embeddingModelId .*is retired/);
+    expect(teamRecordParameters({ embeddingModelId: "" }).dimension).toBe(1024);
     expect(() => teamRecordParameters({ kmsKeyArn: "arn:aws:kms:us-west-2:111122223333:alias/x" })).toThrow(/KMS key ARN/);
     const enterprise = { edition: "enterprise", kmsKeyArn: KMS, enterpriseWorkspaceId: "acme" };
     expect(() => teamRecordParameters({ ...enterprise, athenaUsers: ["arn:aws:iam::111122223333:user/bob"] })).toThrow(/role ARNs/);
@@ -106,14 +106,14 @@ describe("team record storage per edition", () => {
     expect(b.storage.environment.TEAM_RECORD_TABLE_BUCKET).toBeUndefined();
   });
 
-  it("limits Bedrock to InvokeModel on the one embedding model; a region-prefixed model also gets its inference profile", () => {
-    const plain = statementJson(build({}).storage.embeddingStatements()[0]!);
-    expect(plain.Action).toBe("bedrock:InvokeModel");
-    expect(JSON.stringify(plain.Resource)).toContain("foundation-model/amazon.titan-embed-text-v2:0");
-    const prefixed = build({ embeddingModelId: "us.amazon.titan-embed-text-v2:0" }).storage;
-    const resources = JSON.stringify(statementJson(prefixed.embeddingStatements()[0]!).Resource);
-    expect(resources).toContain("inference-profile/us.amazon.titan-embed-text-v2:0");
-    expect(resources).toContain("foundation-model/amazon.titan-embed-text-v2:0");
+  it("gives the broker no Bedrock right at all: embeddings are the self-hosted embedder's job", () => {
+    for (const context of [{}, { edition: "enterprise", kmsKeyArn: KMS, enterpriseWorkspaceId: "acme" }]) {
+      const b = build(context);
+      expect(actions(b).filter((a) => a.startsWith("bedrock:"))).toEqual([]);
+      expect(JSON.stringify(b.template.toJSON())).not.toMatch(/bedrock|foundation-model|titan/i);
+      expect(b.storage.environment).not.toHaveProperty("TEAM_RECORD_EMBEDDING_MODEL_ID");
+      expect(b.storage.environment.TEAM_RECORD_EMBEDDING_DIMENSION).toBe("1024");
+    }
   });
 
   it("gives the broker no right to delete buckets, indexes, tables or workgroups", () => {

@@ -53,3 +53,5 @@ graph-state.lock
 
 # Agents' scratch copies (reviewers and builders keep these inside a worktree); never committed.
 /scratchpad/
+__pycache__/
+*.pyc

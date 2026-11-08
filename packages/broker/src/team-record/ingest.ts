@@ -30,7 +30,7 @@ import { hasQuotedOrForwarded } from "./quoted.js";
 import { isErasedActor } from "./erased.js";
 import { deleteItem, deterministicEventId, getSourceConfigByScope, putRecordEvent, tombstoneItem } from "./store.js";
 import { cleanRecordText } from "./text.js";
-import type { Edition, IngestOutcome, RecordDraft, RecordEmbedder, RecordLog, RecordVectorPort, TeamRecordTable } from "./types.js";
+import type { Edition, IngestOutcome, RecordDraft, RecordEmbedder, RecordLog, RecordVectorItem, RecordVectorPort, TeamRecordTable } from "./types.js";
 
 export interface IngestDependencies {
   table: TeamRecordTable;
@@ -318,7 +318,7 @@ async function runIngest(deps: IngestDependencies, draft: RecordDraft, admit: bo
   }
   if (result === "duplicate") return { status: "duplicate" };
 
-  // 8. The vector. A failure leaves the row with `embedPending`, which the nightly retry picks up; it never loses the row or blocks the tap.
+  // 8. The vector. A failure leaves the row with `embedPending`, which the re-embed job (reembed.ts) picks up; it never loses the row or blocks the tap.
   if (embed && deps.embedder !== undefined && deps.vectors !== undefined && text !== undefined) {
     await embedRow(deps, event, text, log);
   }
@@ -364,39 +364,64 @@ export function parseEventVectorRef(ref: string): { id: string; occurredAt: stri
   return match === null ? undefined : { id: match[1] as string, occurredAt: match[2] as string };
 }
 
+/** The vector item of a row: the row's id is the key, and the filterable metadata is the row's project, place, audience kind and trust (permissions are still checked on every hit). */
+export function eventVectorItem(event: Pick<RecordEvent, "id" | "occurredAt" | "scope" | "project" | "trust" | "audience">, vector: number[]): RecordVectorItem {
+  return {
+    key: eventVectorKey(event.id),
+    vector,
+    metadata: {
+      audience_kind: event.audience.kind,
+      scope: event.scope.slice(0, 200),
+      project: event.project ?? "_workspace",
+      trust: event.trust,
+      tier: "hot",
+      kind: "event",
+      ref: eventVectorRef(event),
+    },
+  };
+}
+
+/** Embeds with the truncation flag when the embedder has it. */
+export async function embedWithFlag(embedder: RecordEmbedder, text: string, call?: { deadline?: number }): Promise<{ vector: number[]; truncated: boolean }> {
+  return embedder.embedWithInfo === undefined ? { vector: await embedder.embed(text, "document"), truncated: false } : embedder.embedWithInfo(text, "document", call);
+}
+
+/**
+ * Records that a row's vector is in the index: its key, the spec it was made with and whether the text was cut to fit the model; clears `embedPending`. `onlyWithText` (the re-embed job): the
+ * write happens only while the row still holds its text and is not hidden, so a row that was erased or whose text expired meanwhile is not marked; it throws ConditionalCheckFailedException then.
+ */
+export async function markRowEmbedded(table: TeamRecordTable, event: Pick<RecordEvent, "id" | "occurredAt" | "workspaceId" | "project">, input: { spec: string | undefined; truncated: boolean; onlyWithText?: boolean }): Promise<void> {
+  const aliases = new Aliases();
+  const sets = [`${aliases.name("embeddingRef")} = ${aliases.value(eventVectorKey(event.id))}`];
+  const removes = [aliases.name("embedPending")];
+  if (input.spec !== undefined) sets.push(`${aliases.name("embeddingSpec")} = ${aliases.value(input.spec)}`);
+  else removes.push(aliases.name("embeddingSpec"));
+  if (input.truncated) sets.push(`${aliases.name("embeddingTruncated")} = ${aliases.value(true)}`);
+  else removes.push(aliases.name("embeddingTruncated"));
+  await table.documentClient.send(new UpdateCommand({
+    TableName: table.tableName,
+    Key: recordEventKey(event.workspaceId, event.project, event.occurredAt, event.id),
+    UpdateExpression: `SET ${sets.join(", ")} REMOVE ${removes.join(", ")}`,
+    ConditionExpression: input.onlyWithText === true ? `attribute_exists(${aliases.name("text")}) AND attribute_not_exists(${aliases.name("tombstone")})` : `attribute_exists(${aliases.name("pk")})`,
+    ExpressionAttributeNames: aliases.names,
+    ExpressionAttributeValues: aliases.values,
+  }));
+}
+
 async function embedRow(deps: IngestDependencies, event: RecordEvent, text: string, log: RecordLog): Promise<void> {
   const embedder = deps.embedder;
   const vectors = deps.vectors;
   if (embedder === undefined || vectors === undefined) return;
   try {
-    const vector = await embedder.embed(text, "document");
-    const key = eventVectorKey(event.id);
-    const result = await vectors.put([{
-      key,
-      vector,
-      metadata: {
-        audience_kind: event.audience.kind,
-        scope: event.scope.slice(0, 200),
-        project: event.project ?? "_workspace",
-        trust: event.trust,
-        tier: "hot",
-        kind: "event",
-        ref: eventVectorRef(event),
-      },
-    }]);
+    const { vector, truncated } = await embedWithFlag(embedder, text);
+    const result = await vectors.put([eventVectorItem(event, vector)]);
     if (result.failed.length > 0) {
       log("record.embed_pending", { kind: event.kind });
       return;
     }
-    const aliases = new Aliases();
-    await deps.table.documentClient.send(new UpdateCommand({
-      TableName: deps.table.tableName,
-      Key: recordEventKey(event.workspaceId, event.project, event.occurredAt, event.id),
-      UpdateExpression: `SET ${aliases.name("embeddingRef")} = ${aliases.value(key)} REMOVE ${aliases.name("embedPending")}`,
-      ConditionExpression: `attribute_exists(${aliases.name("pk")})`,
-      ExpressionAttributeNames: aliases.names,
-      ExpressionAttributeValues: aliases.values,
-    }));
+    await markRowEmbedded(deps.table, event, { spec: embedder.spec, truncated });
+    // A cut is recorded on the row and counted, never silent.
+    if (truncated) log("record.embed_truncated", { kind: event.kind });
   } catch {
     // Left embedPending on purpose; the reason is not logged (an embedding error can echo the text).
     log("record.embed_pending", { kind: event.kind });

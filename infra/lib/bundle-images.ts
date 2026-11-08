@@ -17,6 +17,11 @@ export function imageDigestOf(reference: string): string {
 export const bundleImageRepository = (env: string, name: string): string => `${BUNDLE_IMAGE_REPOSITORY_PREFIX}/${env}/${name}`;
 /** The repositories the access stack creates for an Enterprise install: one per image the templates reference. */
 export const BUNDLE_IMAGE_NAMES = [BUNDLE_LITELLM_IMAGE_NAME, "worker", "slack", "executor"] as const;
+/**
+ * The self-hosted embedder image (environments/embedder). Its repository exists only in an Enterprise install that has the Team record (the access stack creates it then, so a template with the
+ * record off is what it was); the bundle carries the image whenever the release names one, and the loader skips it where the repository is not there (`OPTIONAL_BUNDLE_IMAGE_NAMES`).
+ */
+export const BUNDLE_EMBEDDER_IMAGE_NAME = "embedder";
 /** The model proxy runs LiteLLM only; its execution role pulls from this repository and no other. */
 export const MODEL_PROXY_IMAGE_NAMES = [BUNDLE_LITELLM_IMAGE_NAME] as const;
 

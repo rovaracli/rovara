@@ -3,7 +3,6 @@
 // and `environment` to the broker environment when the stack is wired (see report.md, "Wiring pending").
 import { CfnOutput, Stack, aws_iam as iam } from "aws-cdk-lib";
 import { Construct } from "constructs";
-import { teamRecordEmbeddingFamily } from "@agentx/contracts";
 import { TeamRecordLake } from "./team-record-lake.js";
 import { kmsKeyPolicyStatements, teamRecordParameters, type TeamRecordContext, type TeamRecordParameters } from "./team-record-edition.js";
 import { TeamRecordVectors } from "./team-record-vectors.js";
@@ -70,30 +69,11 @@ export class TeamRecordStorage extends Construct {
     }
   }
 
-  /** Bedrock rights for the embedding model only. A region-prefixed model id is an inference profile: it needs the profile and the base model. */
-  embeddingStatements(): iam.PolicyStatement[] {
-    const stack = Stack.of(this);
-    const modelId = this.parameters.embeddingModelId;
-    teamRecordEmbeddingFamily(modelId);
-    const prefixed = /^[a-z]{2}\./.test(modelId);
-    const base = prefixed ? modelId.slice(3) : modelId;
-    return [
-      new iam.PolicyStatement({
-        sid: "TeamRecordEmbeddings",
-        actions: ["bedrock:InvokeModel"],
-        resources: prefixed
-          ? [stack.formatArn({ service: "bedrock", resource: "inference-profile", resourceName: modelId }), `arn:${stack.partition}:bedrock:*::foundation-model/${base}`]
-          : [`arn:${stack.partition}:bedrock:${stack.region}::foundation-model/${base}`],
-      }),
-    ];
-  }
-
   /** Everything the broker role needs for the Team-record storage. Public cells also create workspace indexes at run time. */
   brokerStatements(): iam.PolicyStatement[] {
     return [
       ...this.vectors.brokerStatements(),
       ...(this.parameters.edition === "public" ? this.vectors.brokerIndexCreationStatements() : []),
-      ...this.embeddingStatements(),
       ...(this.lake === undefined ? [] : this.lake.brokerStatements()),
       ...this.kmsStatements(),
     ];
@@ -110,7 +90,6 @@ export class TeamRecordStorage extends Construct {
     return {
       ROVARA_EDITION: this.parameters.edition,
       TEAM_RECORD_VECTOR_BUCKETS: this.vectors.bucketNames.join(","),
-      TEAM_RECORD_EMBEDDING_MODEL_ID: this.parameters.embeddingModelId,
       TEAM_RECORD_EMBEDDING_DIMENSION: String(this.parameters.dimension),
       TEAM_RECORD_LAKE_ENABLED: String(this.lake !== undefined),
       // The role the broker assumes, with a per-workspace session policy, for every vector call.

@@ -29,7 +29,7 @@ import type { ChangeSetChange, DeployEvent, StackDeployer, StackOutputs } from "
 import { deployEnvironment, type DeployAnswers, type DeployEnvironmentResult } from "./deploy-environment.js";
 import { ensureCdkPassRole } from "../init/pass-role.js";
 import { writeExportBundle } from "./export-bundle.js";
-import { installOrder, type DeployPart } from "./parameters.js";
+import { embedderImageUri, installOrder, type DeployPart } from "./parameters.js";
 import { assertReleaseCoversRegion, loadRelease, type LoadedRelease } from "./release.js";
 import { CALLBACK_SIGNING_KEY_BYTES, secretsManagerValueStore, type SecretValueStore } from "./signing-key.js";
 import { templatesDeployer, type TemplatesEngineClients } from "./templates-engine.js";
@@ -650,6 +650,7 @@ async function deployCommand(options: DeployCommandOptions, deps: DeployCliDepen
       holder: prepared.holder,
       ...(parts === undefined ? {} : { parts }),
       deployedParameters: deps.stackParameters ?? cloudFormationParametersReader(new CloudFormationClient({ region: answers.region })),
+      ...(prepared.embedderImageUri === undefined ? {} : { forcedParameters: { "control-plane": { EmbedderImageUri: prepared.embedderImageUri } } }),
       ...(prepared.declaredParameters === undefined ? {} : { declaredParameters: prepared.declaredParameters }),
       ...(prepared.ensurePassRole === undefined ? {} : { ensurePassRole: prepared.ensurePassRole }),
       ...(prepared.adoptEditionRecord === undefined ? {} : { adoptEditionRecord: prepared.adoptEditionRecord }),
@@ -691,6 +692,8 @@ export interface PreparedDeployment {
   /** The cdk engine, Enterprise only: see `adoptOrphanedEditionRecord`. */
   adoptEditionRecord?: () => Promise<"owned" | "adopted" | "none">;
   settleEditionRecord?: (completed: boolean) => Promise<void>;
+  /** The cdk engine, when the install records the Team record as on: the embedder image of the release (parameters.ts `embedderImageUri`), sent as the control plane's EmbedderImageUri. */
+  embedderImageUri?: string;
   /** Removes the cdk engine's outputs directory; a no-op for templates. */
   cleanup(): Promise<void>;
 }
@@ -719,6 +722,10 @@ export async function prepareDeployment(input: {
   newInstall?: boolean;
   release: LoadedRelease;
   source?: string;
+  /** `agentx upgrade --embedder-image`: the embedder image to deploy when the release names none (see parameters.ts `embedderImageUri`). */
+  embedderImage?: string;
+  /** The EmbedderImageUri the control plane stack runs now: kept when the release names no image and none is passed. */
+  deployedEmbedderImage?: string;
   deps: DeployCliDependencies;
   stderr: Writer;
 }): Promise<PreparedDeployment> {
@@ -754,6 +761,7 @@ export async function prepareDeployment(input: {
   let cdkOutputsDir: string | undefined;
   let builtSource: BuiltSource | undefined;
   let declaredParameters: PreparedDeployment["declaredParameters"];
+  let embedderImage: string | undefined;
   if (deps.deployer !== undefined) {
     // A test seam with no synth: the edition is only checked (a changed one is refused).
     await resolveEdition();
@@ -767,6 +775,11 @@ export async function prepareDeployment(input: {
     edition = await resolveEdition();
     // UX-4b: the Team record the install records as on is synthesized every time, so an upgrade never builds it away.
     const teamRecord = await readTeamRecordSwitch(store, input.env);
+    // The Team record has no keyword-only mode: with it on, the release must carry the embedder image, and it is refused here, before anything is built or deployed, when it does not.
+    if (teamRecord !== undefined) {
+      try { embedderImage = embedderImageUri({ release: release.manifest, edition, env: input.env, account: input.account, region, partition, override: input.embedderImage, deployed: input.deployedEmbedderImage }); }
+      catch (error) { throw agentXError("CONFIG_INVALID", `${error instanceof Error ? error.message : "the embedder image could not be named"}. Nothing was deployed`); }
+    }
     // After the cheap checks, before any cdk deploy: infra/dist is gitignored, so only a fresh
     // install and build guarantees `cdk deploy` synthesizes the tagged source.
     // The catalog flavor of what is built: staging only for env "staging" in the staging account (the account STS says the credentials in use belong to), release in every other case.
@@ -816,6 +829,7 @@ export async function prepareDeployment(input: {
     holder,
     partition,
     ...(declaredParameters === undefined ? {} : { declaredParameters }),
+    ...(embedderImage === undefined ? {} : { embedderImageUri: embedderImage }),
     ...(ensurePassRole === undefined ? {} : { ensurePassRole }),
     ...(input.engine === "cdk" && edition === "enterprise" ? { settleEditionRecord: (completed: boolean) => settleEditionRecord({ store, env: input.env, completed }), adoptEditionRecord: () => adoptOrphanedEditionRecord({ store, env: input.env, edition, foundationResources: deps.foundationResources ?? cloudFormationResourceIds(new CloudFormationClient({ region }), environmentStackName(input.env, "foundation")) }) } : {}),
     async cleanup() {

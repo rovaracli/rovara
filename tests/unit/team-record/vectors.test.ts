@@ -30,6 +30,8 @@ function fakePort(over: Partial<S3VectorsPort> = {}) {
     getVectors: async (request) => { calls.push({ op: "get", request: asReq(request) }); return { vectors: [] }; },
     deleteVectors: async (request) => { calls.push({ op: "delete", request: asReq(request) }); },
     createIndex: async (request) => { calls.push({ op: "create", request: asReq(request) }); },
+    getIndex: async (request) => { calls.push({ op: "get-index", request: asReq(request) }); },
+    deleteIndex: async (request) => { calls.push({ op: "delete-index", request: asReq(request) }); },
     ...over,
   };
   return { port, calls };

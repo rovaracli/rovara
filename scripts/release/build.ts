@@ -26,7 +26,7 @@ export interface BuildReleaseInput {
   version: string;
   out: string;
   gitCommit: string;
-  images?: { worker?: string; slack?: string; executor?: string };
+  images?: { worker?: string; slack?: string; executor?: string; embedder?: string };
 }
 
 // scripts/release/build.ts -> repo root is two levels up. NodejsFunction's esbuild bundles embed
@@ -81,6 +81,11 @@ function checkedImages(images: BuildReleaseInput["images"]): ReleaseManifest["im
     const parsed = ImageDigest.safeParse(images.executor);
     if (!parsed.success) throw new Error(`executor image must be referenced by digest, not ${JSON.stringify(images.executor)}`);
     result.executor = parsed.data;
+  }
+  if (images?.embedder !== undefined) {
+    const parsed = ImageDigest.safeParse(images.embedder);
+    if (!parsed.success) throw new Error(`embedder image must be referenced by digest, not ${JSON.stringify(images.embedder)}`);
+    result.embedder = parsed.data;
   }
   return result;
 }
@@ -353,14 +358,14 @@ export async function buildRelease(input: BuildReleaseInput): Promise<ReleaseMan
 function usage(): string {
   return (
     "Usage: tsx scripts/release/build.ts --version <version> --out <dir> " +
-    "[--worker-image <uri@sha256:...>] [--slack-image <uri@sha256:...>] [--executor-image <uri@sha256:...>]\n"
+    "[--worker-image <uri@sha256:...>] [--slack-image <uri@sha256:...>] [--executor-image <uri@sha256:...>] [--embedder-image <uri@sha256:...>]\n"
   );
 }
 
 interface CliArgs {
   version: string;
   out: string;
-  images?: { worker?: string; slack?: string; executor?: string };
+  images?: { worker?: string; slack?: string; executor?: string; embedder?: string };
 }
 
 export function parseBuildArgs(argv: readonly string[]): CliArgs {
@@ -371,7 +376,7 @@ export function parseBuildArgs(argv: readonly string[]): CliArgs {
     if (!value || value.startsWith("--")) throw new Error(`${flag} requires a value`);
     return value;
   };
-  const known = new Set(["--version", "--out", "--worker-image", "--slack-image", "--executor-image", "--help"]);
+  const known = new Set(["--version", "--out", "--worker-image", "--slack-image", "--executor-image", "--embedder-image", "--help"]);
   for (const argument of argv) {
     if (argument.startsWith("--") && !known.has(argument)) throw new Error(`unknown option ${argument}`);
   }
@@ -382,11 +387,12 @@ export function parseBuildArgs(argv: readonly string[]): CliArgs {
   const worker = valueAfter("--worker-image");
   const slack = valueAfter("--slack-image");
   const executor = valueAfter("--executor-image");
+  const embedder = valueAfter("--embedder-image");
   return {
     version,
     out,
-    ...(worker !== undefined || slack !== undefined || executor !== undefined
-      ? { images: { ...(worker !== undefined ? { worker } : {}), ...(slack !== undefined ? { slack } : {}), ...(executor !== undefined ? { executor } : {}) } }
+    ...(worker !== undefined || slack !== undefined || executor !== undefined || embedder !== undefined
+      ? { images: { ...(worker !== undefined ? { worker } : {}), ...(slack !== undefined ? { slack } : {}), ...(executor !== undefined ? { executor } : {}), ...(embedder !== undefined ? { embedder } : {}) } }
       : {}),
   };
 }

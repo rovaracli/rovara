@@ -1,0 +1,8 @@
+# The only Python packages the Lambda image installs, with --no-deps: nothing else is resolved or fetched. requirements-runtime.lock holds a sha256 for every file.
+# Regenerate: uv pip compile requirements-runtime.in --generate-hashes --no-deps --no-build --python-version 3.12 --python-platform aarch64-manylinux_2_28 --exclude-newer <today minus 14 days> --exclude-newer-package onnxruntime=<today> -o requirements-runtime.lock
+# (minimum package age 14 days, review R14; onnxruntime is the model spec's toolchain pin and moves with a re-export, see requirements-build.in)
+# onnxruntime's other declared dependencies are not needed to load and run a model (tokenizers' neither: it loads tokenizer.json with no network or huggingface_hub); the image build
+# runs smoke.py with no network, so a missing one fails the build.
+onnxruntime==1.31.1
+tokenizers==0.23.3
+numpy==2.5.4

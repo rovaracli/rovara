@@ -68,6 +68,20 @@ const fallbackModel = (key: string) => (value: string): string => {
 
 const email = (key: string) => (value: string): string => (AlertEmailSchema.safeParse(value.trim()).success ? value.trim() : refuse(key, "an email address"));
 
+export const EMBEDDER_IMAGE = /^[0-9]{12}\.dkr\.ecr\.[a-z0-9-]+\.amazonaws\.com(?:\.cn)?\/[a-z0-9][a-z0-9._/-]{1,255}@sha256:[a-f0-9]{64}$/u;
+/** A private ECR image reference pinned by digest (the stack parameter's own pattern, infra/lib/embedder-function.ts). `none` is refused: the Team record has no keyword-only mode. */
+const embedderImage = (key: string) => (value: string): string => {
+  const trimmed = value.trim();
+  if (trimmed === "none") return refuse(key, "an image pinned by digest. There is no \"none\": the Team record cannot search without its embedder");
+  return EMBEDDER_IMAGE.test(trimmed) ? trimmed : refuse(key, "a private ECR image pinned by digest (<account>.dkr.ecr.<region>.amazonaws.com/<repository>@sha256:<64 hex>)");
+};
+
+/** The account and region an embedder image reference names (the pattern above), or undefined. */
+export function embedderImageHome(value: string): { account: string; region: string } | undefined {
+  const match = /^([0-9]{12})\.dkr\.ecr\.([a-z0-9-]+)\./u.exec(value);
+  return match === null ? undefined : { account: match[1] as string, region: match[2] as string };
+}
+
 const parameter = (part: DeployPart, name: string): ConfigTarget => ({ kind: "stack-parameter", part, parameter: name });
 
 export const CONFIG_KEYS: readonly ConfigKey[] = [
@@ -123,7 +137,8 @@ export const CONFIG_KEYS: readonly ConfigKey[] = [
   { key: "decisionCards.enabled", description: "1: decision cards are on (the card routes and the Slack card press; medium and high-risk plans are approved in the app; high-risk plans, designs, design review Skips and cost choices and merges are decided on their card after a recent sign-in with the email code (never GitHub); new installs default to 1); 0: the emergency off, no card route exists and the medium and high-risk rules do not apply", target: parameter("control-plane", "DecisionCardsEnabled"), defaultValue: "1", parse: oneOf("decisionCards.enabled", ["0", "1"]) },
   { key: "testEnvironment.enabled", description: "1: the project test environment is on (Rovara proposes it from the default branch, a maintainer proves and approves it, and tasks use it; turn on only after the worker image that carries task.testEnvDetect.v1 and task.testEnvironment.v1 is deployed); 0: nothing about test environments changes", target: parameter("control-plane", "TestEnvironmentEnabled"), defaultValue: "0", parse: oneOf("testEnvironment.enabled", ["0", "1"]) },
   { key: "teamRecord.enabled", description: "1: the Team record is on (sources a project learns from, lessons and search; the first time, this records the choice and the next agentx upgrade builds its storage, which every later upgrade keeps); 0: paused, nothing is read or recorded and the stored record is kept", target: parameter("control-plane", "TeamRecordEnabled"), defaultValue: "0", teamRecord: true, parse: oneOf("teamRecord.enabled", ["0", "1"]) },
-  { key: "teamRecord.options", description: "the Team record's storage options, confirmed before it is built and passed to every upgrade: default (Rovara's), or embeddingModelId=<id>;kmsKeyArn=<arn>;lake=true|false;athenaUsers=<arn,arn>;enterpriseWorkspaceId=<id> (Enterprise needs enterpriseWorkspaceId); refused once the record is built", target: { kind: "settings", field: "teamRecordOptions" }, parse: (value) => value.trim() },
+  { key: "teamRecord.options", description: "the Team record's storage options, confirmed before it is built and passed to every upgrade: default (Rovara's), or kmsKeyArn=<arn>;lake=true|false;athenaUsers=<arn,arn>;enterpriseWorkspaceId=<id> (Enterprise needs enterpriseWorkspaceId); refused once the record is built", target: { kind: "settings", field: "teamRecordOptions" }, parse: (value) => value.trim() },
+  { key: "teamRecord.embedderImage", description: "the self-hosted embedder image the Team record embeds with (environments/embedder): a private ECR image in this account and region pinned by digest (<account>.dkr.ecr.<region>.amazonaws.com/<repository>@sha256:<digest>), (the release names it and agentx upgrade passes it; an upgrade to a release that names none keeps this one; an upgrade to a release that does replaces it); needs the Team record built", target: parameter("control-plane", "EmbedderImageUri"), defaultValue: "none", parse: embedderImage("teamRecord.embedderImage") },
   { key: "learnedLessons.enabled", description: "1: approved lessons are loaded into an agent's prompt as advice (needs the Team record; turn on only after the worker image that carries task.learnedContext.v1 is deployed); 0: no lesson is loaded or sent to an agent, even where the Team record is on", target: parameter("control-plane", "LearnedLessonsEnabled"), defaultValue: "0", parse: oneOf("learnedLessons.enabled", ["0", "1"]) },
   { key: "designReview.enabled", description: "1: fresh-context reviewers check the design of a Full task before a person approves it, but only where a company admin has allowed it and the project's mode is not Off (both are set in How we work); 0: no task has a design review, and a review already under way ends at its next step as not run", target: parameter("control-plane", "DesignReviewEnabled"), defaultValue: "0", parse: oneOf("designReview.enabled", ["0", "1"]) },
   { key: "savedEnv.enabled", description: "1: a project's proven setup can be built into a saved image and used by tasks (turn on only after the registry roles and the worker image are deployed); 0: nothing is built, pushed, pulled or sent to a worker", target: parameter("control-plane", "SavedEnvEnabled"), defaultValue: "0", parse: oneOf("savedEnv.enabled", ["0", "1"]) },

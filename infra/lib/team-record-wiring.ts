@@ -12,8 +12,8 @@
 //   - S3 Vectors bucket and per-workspace indexes: storage $0.06 per GB-month; an empty bucket costs nothing.
 //   - S3 Tables bucket and four tables (lake): storage $0.0265 per GB-month plus per-object monitoring and compaction; empty is about zero.
 //   - Athena workgroup: $5 per TB scanned, only when a query runs; the workgroup itself is free.
-//   - EventBridge Scheduler schedules (three): free at this volume; each invoke is one Lambda run of the broker (a few milliseconds when nothing is due).
-// Model calls (embeddings, the distiller) are NOT created here: they are billed on the org's spend when a feature uses them.
+//   - EventBridge Scheduler schedules (hourly, nightly, re-embed): free at this volume; each invoke is one Lambda run of the broker (a few milliseconds when nothing is due).
+// The embedder Lambda costs nothing idle (arm64, on demand, 10 GB; its call time is not measured on a real Lambda yet); its own small network (a VPC with no gateway, no NAT and no endpoint) costs nothing. The re-embed schedule (every 15 minutes) is one broker invoke that reads one index page per workspace when nothing is due. The distiller's model calls are NOT created here: they are billed on the org's spend when a feature uses them.
 import { CfnParameter, Duration, Token, aws_cloudwatch as cloudwatch, aws_lambda_event_sources as eventSources, aws_scheduler as scheduler, aws_sqs as sqs, type Stack, aws_iam as iam } from "aws-cdk-lib";
 import type { aws_dynamodb as dynamodb, aws_s3 as s3 } from "aws-cdk-lib";
 import type { aws_lambda as lambda } from "aws-cdk-lib";
@@ -24,7 +24,8 @@ import {
 } from "@agentx/contracts";
 import { packagedFunction } from "./control-plane.js";
 import { BrokerNames, BrokerSettings } from "./broker-names.js";
-import { DEFAULT_EMBEDDING_MODEL_ID, type TeamRecordContext } from "./team-record-edition.js";
+import { attachEmbedder } from "./embedder-function.js";
+import type { TeamRecordContext } from "./team-record-edition.js";
 import { TeamRecordStorage } from "./team-record-storage.js";
 import { TeamRecordTable } from "./team-record-table.js";
 
@@ -51,6 +52,7 @@ export function parseTeamRecordSwitch(input: { get: (key: string) => unknown; en
   };
   return {
     edition,
+    // Retired (DECISIONS 27): passed through so a leftover value is refused at synth (team-record-edition.ts) and not ignored in silence.
     embeddingModelId: optional("EmbeddingModelId"),
     kmsKeyArn: optional("KmsKeyArn"),
     lakeEnabled: optional("Lake"),
@@ -61,6 +63,8 @@ export function parseTeamRecordSwitch(input: { get: (key: string) => unknown; en
 
 export interface TeamRecordWiringProps {
   readonly env: string;
+  /** The region the install deploys to (the agentxRegion context, default us-east-1): the embedder's subnets are placed by this region's verified zone IDs. */
+  readonly region: string;
   readonly context: TeamRecordContext;
   readonly broker: lambda.Function;
   readonly slackIngress: lambda.Function;
@@ -71,6 +75,8 @@ export interface TeamRecordWiringProps {
   readonly dispatcher?: lambda.Function;
   /** The role the other recovery schedules use to invoke the broker. */
   readonly scheduleRole: iam.IRole;
+  /** False when the account's Lambda concurrency quota cannot take a reservation (the agentxReservedConcurrency context). */
+  readonly reservedConcurrency?: boolean;
 }
 
 /** The jobs the schedules wake. Each is bounded by its own budget in the broker. `poll` (the MCP pollers) is not scheduled: the MCP host is not part of the install yet. */
@@ -78,6 +84,8 @@ export const TEAM_RECORD_JOBS = [
   { id: "Hourly", job: "hourly", expression: "rate(1 hour)" },
   // 03:17 UTC: the archiver, the raw-text expiry and the nightly work. Off the hour on purpose.
   { id: "Nightly", job: "nightly", expression: "cron(17 3 * * ? *)" },
+  // Gives a vector to the rows that lack one (written while the embedder was away, or made with an earlier model). Each run continues every workspace from a stored cursor, the least recently served first, inside one deadline (reembed.ts); a workspace whose whole pass found nothing rests for an hour.
+  { id: "Reembed", job: "reembed", expression: "rate(15 minutes)" },
 ] as const;
 
 export interface TeamRecordResources {
@@ -100,8 +108,10 @@ export function attachTeamRecord(stack: Stack, props: TeamRecordWiringProps): Te
     brokerPrincipal: broker.role!,
   });
   // The broker's rights: the table and its indexes (no scan, no table-level delete), the vector data role (assume only; the data rights sit on the role and each session is narrowed to one
-  // workspace), Bedrock InvokeModel for the embedding model only, and the lake (Athena, S3 Tables, Glue) where the lake exists.
+  // workspace), a direct invoke of the embedder function (below), and the lake (Athena, S3 Tables, Glue) where the lake exists.
   for (const statement of [...table.brokerStatements(), ...storage.brokerStatements()]) broker.addToRolePolicy(statement);
+  // The self-hosted embedder (environments/embedder): a container-image Lambda that only the broker may invoke. The broker finds it by its derived name (embedderFunctionName), so no variable is passed.
+  attachEmbedder(stack, { env: props.env, region: props.region, broker, ...(props.reservedConcurrency === false ? { reservedConcurrency: false } : {}) });
 
   // WL-6: the dispatcher reads the lesson rows at delivery (no write), and the customer's key where there is one.
   if (props.dispatcher !== undefined) {
@@ -119,8 +129,6 @@ export function attachTeamRecord(stack: Stack, props: TeamRecordWiringProps): Te
   const enabled = new CfnParameter(stack, "TeamRecordEnabled", { type: "String", default: "1", allowedValues: ["0", "1"], description: "1: the Team record is on; 0: paused, nothing new is captured, read or learned, while erasure, removals and expiry keep running on the stored record (agentx config set teamRecord.enabled 1)" });
   settings.add("teamRecord", "1");
   settings.add("teamRecordActive", enabled.valueAsString);
-  // The default model is not passed: the broker reads an unset model as the default (team-record/runtime.ts), which keeps 36 bytes of the broker's 4 KB environment.
-  if (storage.parameters.embeddingModelId !== DEFAULT_EMBEDDING_MODEL_ID) settings.add("teamRecordEmbeddingModel", storage.parameters.embeddingModelId);
   settings.add("teamRecordLake", storage.lake === undefined ? "0" : "1");
   if (storage.vectors.dataRole !== undefined) BrokerNames.of(broker).add("teamRecordVectorsRole", storage.vectors.dataRole.roleName);
   // The customer's key (Enterprise) must be in this account and region: the broker builds its ARN from the key id, the region and the account.

@@ -74,7 +74,9 @@ describe("teamRecord.enabled before the record is built", () => {
 describe("the storage options", () => {
   it("reads default or name=value pairs, and refuses names and values it does not know", () => {
     expect(parseTeamRecordOptions("default", ENV)).toEqual({});
-    expect(parseTeamRecordOptions("lake=false; embeddingModelId=amazon.titan-embed-text-v2:0", ENV)).toEqual({ lake: "false", embeddingModelId: "amazon.titan-embed-text-v2:0" });
+    expect(parseTeamRecordOptions("lake=false; kmsKeyArn=arn:aws:kms:us-west-2:123456789012:key/1", ENV)).toEqual({ lake: "false", kmsKeyArn: "arn:aws:kms:us-west-2:123456789012:key/1" });
+    // Retired (DECISIONS 27): the Team record has no embedding model to choose; typing the option says so.
+    expect(() => parseTeamRecordOptions("embeddingModelId=amazon.titan-embed-text-v2:0", ENV)).toThrow("embeddingModelId is retired");
     expect(() => parseTeamRecordOptions("colour=blue", ENV)).toThrow("unknown option");
     expect(() => parseTeamRecordOptions("lake=maybe", ENV)).toThrow("lake is true or false");
     expect(() => parseTeamRecordOptions("kmsKeyArn=$(rm)", ENV)).toThrow("needs a value");
@@ -83,9 +85,15 @@ describe("the storage options", () => {
   it("are passed back to every cdk command as the synth's own context keys", () => {
     const base = { env: "staging", region: "us-west-2", identityMode: "cognito" as const, cloud: true };
     expect(cdkAppArguments({ ...base, teamRecord: {} })).toEqual([...cdkAppArguments(base), "-c", "agentxTeamRecord=enabled"]);
-    expect(cdkAppArguments({ ...base, teamRecord: { kmsKeyArn: "arn:aws:kms:us-west-2:123456789012:key/1", lake: "false", athenaUsers: "arn:aws:iam::1:role/a,arn:aws:iam::1:role/b", enterpriseWorkspaceId: "w1", embeddingModelId: "m" } }))
-      .toEqual([...cdkAppArguments(base), "-c", "agentxTeamRecord=enabled", "-c", "agentxTeamRecordEmbeddingModelId=m", "-c", "agentxTeamRecordKmsKeyArn=arn:aws:kms:us-west-2:123456789012:key/1", "-c", "agentxTeamRecordLake=false", "-c", "agentxTeamRecordAthenaUsers=arn:aws:iam::1:role/a,arn:aws:iam::1:role/b", "-c", "agentxTeamRecordEnterpriseWorkspaceId=w1"]);
+    expect(cdkAppArguments({ ...base, teamRecord: { kmsKeyArn: "arn:aws:kms:us-west-2:123456789012:key/1", lake: "false", athenaUsers: "arn:aws:iam::1:role/a,arn:aws:iam::1:role/b", enterpriseWorkspaceId: "w1", embeddingModelId: "m" } as never }))
+      .toEqual([...cdkAppArguments(base), "-c", "agentxTeamRecord=enabled", "-c", "agentxTeamRecordKmsKeyArn=arn:aws:kms:us-west-2:123456789012:key/1", "-c", "agentxTeamRecordLake=false", "-c", "agentxTeamRecordAthenaUsers=arn:aws:iam::1:role/a,arn:aws:iam::1:role/b", "-c", "agentxTeamRecordEnterpriseWorkspaceId=w1"]);
     expect(cdkAppArguments(base).join(" ")).not.toContain("agentxTeamRecord");
+  });
+
+  it("still reads a record stored with the retired embeddingModelId, so an older install is not stuck", async () => {
+    const store = await cdkInstall();
+    await store.put(teamRecordSwitchName(ENV), JSON.stringify({ v: 1, enabled: true, options: { lake: "false", embeddingModelId: "amazon.titan-embed-text-v2:0" } }));
+    expect((await readTeamRecordSwitch(store, ENV))?.lake).toBe("false");
   });
 
   it("can't be changed once the record is built", async () => {

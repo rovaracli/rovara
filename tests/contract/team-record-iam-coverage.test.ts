@@ -157,7 +157,9 @@ describe("the switch adds what this test expects (positive controls)", () => {
   it("adds the three storage types, the vector data role and statements in the five services", () => {
     expect(addedTypes()).toEqual(expect.arrayContaining(["AWS::S3Vectors::VectorBucket", "AWS::S3Tables::TableBucket", "AWS::S3Tables::Namespace", "AWS::S3Tables::Table", "AWS::Athena::WorkGroup", "AWS::IAM::Role"]));
     const services = new Set(addedStatements().flatMap(({ statement }) => asList(statement.Action).map((action) => action.split(":")[0])));
-    for (const service of ["s3vectors", "s3tables", "athena", "glue", "lakeformation", "sts", "dynamodb", "sqs", "bedrock"]) expect(services.has(service), service).toBe(true);
+    for (const service of ["s3vectors", "s3tables", "athena", "glue", "lakeformation", "sts", "dynamodb", "sqs"]) expect(services.has(service), service).toBe(true);
+    // The self-hosted embedder replaced Bedrock Titan: the switch adds no Bedrock statement to any role (the embedder function's own role has no AWS service grant, and the broker may invoke only that function).
+    expect(services.has("bedrock"), "bedrock").toBe(false);
     expect(addedStatements().length).toBeGreaterThan(10);
   });
 
@@ -291,6 +293,8 @@ describe("2. the boundary covers every statement the switch adds to a role", () 
     const wanted = addedStatements().flatMap(({ statement }) => asList(statement.Action)).filter((action) => /^(s3vectors|s3tables|athena|glue|lakeformation):/.test(action));
     expect(new Set(wanted)).toEqual(new Set([
       "s3vectors:PutVectors", "s3vectors:QueryVectors", "s3vectors:GetVectors", "s3vectors:DeleteVectors", "s3vectors:GetIndex", "s3vectors:CreateIndex",
+      // retires the workspace's index of the embedding generation before (team-record-vectors.ts: DeleteIndex on that one index name only)
+      "s3vectors:DeleteIndex",
       "athena:StartQueryExecution", "athena:GetQueryExecution", "athena:GetQueryResults", "athena:StopQueryExecution",
       "s3tables:GetTableBucket", "s3tables:GetNamespace", "s3tables:GetTable", "s3tables:GetTableMetadataLocation", "s3tables:UpdateTableMetadataLocation", "s3tables:GetTableData", "s3tables:PutTableData",
       "glue:GetCatalog", "glue:GetDatabase", "glue:GetDatabases", "glue:GetTable", "glue:GetTables",

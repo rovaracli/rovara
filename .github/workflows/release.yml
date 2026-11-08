@@ -36,6 +36,7 @@ jobs:
       worker: ${{ steps.push.outputs.worker }}
       slack: ${{ steps.push.outputs.slack }}
       executor: ${{ steps.push.outputs.executor }}
+      embedder: ${{ steps.push.outputs.embedder }}
     steps:
       # AGENTX_PUBLISH_ROLE_ARN's trust policy only allows this repository's v* tags (by immutable ID),
       # so a workflow_dispatch run must be re-run from the tag ref itself; fail clearly here instead
@@ -102,11 +103,15 @@ jobs:
           VERSION: ${{ github.ref_name }}
           # The executor image needs its own ECR Public repository and publish-role access (docs/releases.md); off until an owner sets this to true.
           PUBLISH_EXECUTOR: ${{ vars.AGENTX_PUBLISH_EXECUTOR_IMAGE }}
+          # The self-hosted embedder image (environments/embedder; the Team record needs it) also needs its own ECR Public repository (agentx-embedder) and publish-role access (docs/releases.md).
+          PUBLISH_EMBEDDER: ${{ vars.AGENTX_PUBLISH_EMBEDDER_IMAGE }}
         run: |
           VERSION="${VERSION#v}"
           # The executor goes first: its smoke test can fail, and a pushed tag is immutable, so a failure must stop the job before the worker or slack image is pushed.
           images="worker slack"
           if [ "$PUBLISH_EXECUTOR" = "true" ]; then images="executor $images"; fi
+          # The embedder builds with its own quality gates (parity with the original weights, offline smoke test) inside the build, and is pushed only if they pass: it goes first too.
+          if [ "$PUBLISH_EMBEDDER" = "true" ]; then images="embedder $images"; fi
           for image in $images; do
             dockerfile=environments/base/Dockerfile
             [ "$image" = slack ] && dockerfile=environments/slack/Dockerfile
@@ -116,7 +121,11 @@ jobs:
             # (the tagged manifest plus attached provenance/SBOM attestations) instead of a single
             # linux/arm64 image manifest, and the digest this job would read back is the index's,
             # not the image's — the wrong thing to pin the release to.
-            if [ "$image" = executor ]; then
+            if [ "$image" = embedder ]; then
+              # linux/arm64, from tracked files only (tests/contract/embedder-image-sources.test.ts); the build script is the same one used by hand (environments/embedder/tools/build-image.sh).
+              environments/embedder/tools/build-image.sh "$repo:$VERSION" --push "$RUNNER_TEMP/$image.json"
+              digest=$(jq -r '."containerimage.digest"' "$RUNNER_TEMP/$image.json")
+            elif [ "$image" = executor ]; then
               # The executor is built into the local Docker, smoke-tested as the host runs it (Chromium's sandbox on), and that same loaded image is pushed, so the
               # published bytes are the smoke-tested bytes. A failing smoke test stops the job before anything is pushed.
               docker buildx build --platform linux/arm64 --provenance=false --sbom=false --file "$dockerfile" --tag "$repo:$VERSION" --load .
@@ -170,11 +179,13 @@ jobs:
           WORKER: ${{ needs.images.outputs.worker }}
           SLACK: ${{ needs.images.outputs.slack }}
           EXECUTOR: ${{ needs.images.outputs.executor }}
+          EMBEDDER: ${{ needs.images.outputs.embedder }}
           GH_TOKEN: ${{ github.token }}
         run: |
           VERSION="${VERSION#v}"
           executor_flag=()
           if [ -n "$EXECUTOR" ]; then executor_flag=(--executor-image "$EXECUTOR"); fi
+          if [ -n "$EMBEDDER" ]; then executor_flag+=(--embedder-image "$EMBEDDER"); fi
           npm run release:build -- --version "$VERSION" --out "$RUNNER_TEMP/release" --worker-image "$WORKER" --slack-image "$SLACK" "${executor_flag[@]}"
           npm run release:verify -- "$RUNNER_TEMP/release"
           (cd "$RUNNER_TEMP/release" && tar -czf "$RUNNER_TEMP/agentx-$VERSION.tar.gz" .)
@@ -277,6 +288,7 @@ jobs:
           WORKER: ${{ needs.images.outputs.worker }}
           SLACK: ${{ needs.images.outputs.slack }}
           EXECUTOR: ${{ needs.images.outputs.executor }}
+          EMBEDDER: ${{ needs.images.outputs.embedder }}
           GH_TOKEN: ${{ github.token }}
         run: |
           VERSION="${VERSION#v}"
@@ -288,6 +300,7 @@ jobs:
           LITELLM=$(npx tsx -e 'import { LITELLM_SOURCE_IMAGE } from "./infra/lib/bundle-images.ts"; console.log(LITELLM_SOURCE_IMAGE)')
           image_flags=(--image "litellm=$LITELLM" --image "worker=$WORKER" --image "slack=$SLACK")
           if [ -n "$EXECUTOR" ]; then image_flags+=(--image "executor=$EXECUTOR"); fi
+          if [ -n "$EMBEDDER" ]; then image_flags+=(--image "embedder=$EMBEDDER"); fi
           npm run release:bundle -- --release "$RUNNER_TEMP/release" --out "$RUNNER_TEMP/bundle" --unsigned "${image_flags[@]}" --synth-kit "$RUNNER_TEMP/kit"
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:

@@ -192,6 +192,10 @@ export const RecordEventSchema = z.object({
   structured: z.record(z.string().min(1).max(60), Scalar).refine((value) => Object.keys(value).length <= 40, "at most 40 structured fields").optional(),
   links: z.array(z.string().url().max(2_048)).max(20),
   embeddingRef: z.string().min(1).max(200).optional(),
+  /** The embedding spec (team-record-storage.ts `TEAM_RECORD_EMBEDDER.spec`) the row's vector was made with. A row with a vector of another spec (or none recorded: the Titan era) is embedded again from its kept text. */
+  embeddingSpec: z.string().regex(/^[0-9a-f]{16}$/).optional(),
+  /** True when the text was longer than the model's token budget and the vector stands for the part that fit. Never a silent cut. */
+  embeddingTruncated: z.boolean().optional(),
   embedPending: z.boolean().optional(),
   retention: RetentionModeSchema,
   textExpiresAt: EpochSeconds.optional(),

@@ -8,6 +8,7 @@ import {
   parseMetadata,
   validateMetadata,
   vectorIndexName,
+  retiredVectorIndexName,
   NON_FILTERABLE_KEYS,
   type BatchResult,
   type VectorFilter,
@@ -34,6 +35,10 @@ export interface S3VectorsPort {
     vectors: Array<{ key: string; data?: { float32?: number[] }; metadata?: unknown }>;
   }>;
   deleteVectors(request: { vectorBucketName: string; indexName: string; keys: string[] }): Promise<void>;
+  /** Throws an error whose `code` is NotFoundException when the index is not there. */
+  getIndex(request: { vectorBucketName: string; indexName: string }): Promise<void>;
+  /** Deleting an index deletes every vector in it. Throws NotFoundException when it is already gone. */
+  deleteIndex(request: { vectorBucketName: string; indexName: string }): Promise<void>;
   createIndex(request: {
     vectorBucketName: string;
     indexName: string;
@@ -98,6 +103,7 @@ export class S3VectorsIndex implements VectorIndex {
   private readonly port: S3VectorsPort;
   private readonly bucket: string;
   private readonly indexName: string;
+  private readonly retiredIndexName: string;
   private readonly retry: Retry;
 
   constructor(options: S3VectorsIndexOptions) {
@@ -107,6 +113,7 @@ export class S3VectorsIndex implements VectorIndex {
     if (!/^[a-z0-9][a-z0-9-]{1,61}[a-z0-9]$/.test(options.bucket)) throw new Error("team-record: vector bucket name is not valid");
     this.bucket = options.bucket;
     this.indexName = vectorIndexName(options.workspaceId);
+    this.retiredIndexName = retiredVectorIndexName(options.workspaceId);
     this.retry = options.retry ?? DEFAULT_RETRY;
   }
 
@@ -125,6 +132,27 @@ export class S3VectorsIndex implements VectorIndex {
       );
     } catch (error) {
       if (codeOf(error) !== "ConflictException") throw error;
+    }
+  }
+
+  /**
+   * Deletes this workspace's index of the embedding generation before the self-hosted embedder (its vectors are in another model's space and nothing can search them), once the current
+   * index exists. `absent`: nothing to delete. `current_missing`: the current index is not there yet, so nothing is deleted (an Enterprise stack that has not made it yet). Any other failure
+   * throws; the caller treats the old index as still present, which blocks an erase until it is gone.
+   */
+  async retireOldIndex(): Promise<"deleted" | "absent" | "current_missing"> {
+    try {
+      await withRetry(this.retry, () => this.port.getIndex({ vectorBucketName: this.bucket, indexName: this.indexName }));
+    } catch (error) {
+      if (codeOf(error) === "NotFoundException") return "current_missing";
+      throw error;
+    }
+    try {
+      await withRetry(this.retry, () => this.port.deleteIndex({ vectorBucketName: this.bucket, indexName: this.retiredIndexName }));
+      return "deleted";
+    } catch (error) {
+      if (codeOf(error) === "NotFoundException") return "absent";
+      throw error;
     }
   }
 
