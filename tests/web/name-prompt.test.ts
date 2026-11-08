@@ -56,9 +56,9 @@ it("saves the name, hides the question and updates the header", async () => {
  fireEvent.change(screen.getByLabelText(QUESTION), { target: { value: "  Priya R  " } });fireEvent.click(screen.getByRole("button", { name: "Save name" }));
  await waitFor(() => expect(screen.queryByLabelText(QUESTION)).toBeNull());
  expect(saves(f)).toEqual([expect.objectContaining({ path: "/v1/app/me/name", body: { name: "Priya R" } })]);
- // The header follows the refetched navigation; on a loaded full-suite run the default 1 s window was missed once (passes alone, also under CPU load), so this wait is given room.
- await waitFor(() => expect(screen.getByRole("button", { name: "Open account menu" }).textContent).toBe("Priya R"), { timeout: 5000 });f.close();
-});
+ // The header follows the refetched navigation; on a loaded full-suite run the 1 s window, then the 5 s one, was missed (passes alone, 3 of 3, and 6 at once under CPU load). The test itself had vitest's 5 s default, which ended it as the 5 s wait did, so both are given room.
+ await waitFor(() => expect(screen.getByRole("button", { name: "Open account menu" }).textContent).toBe("Priya R"), { timeout: 20_000 });f.close();
+}, 30_000);
 it("refuses an email address or an empty name without sending anything, and says why", async () => {
  const f = shell(navWith({ name: "Member 3fa9", nameChosen: false }));await screen.findByLabelText(QUESTION);
  for (const value of ["priya@example.com", "   "]) {
