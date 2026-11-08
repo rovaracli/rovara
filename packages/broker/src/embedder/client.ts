@@ -41,8 +41,11 @@ export interface EmbedderRequest { model: EmbedderModelSpec["model"]; kind: Embe
 /** One call's own limit: the longest this call may wait (the invoke takes the smaller of this and its configured wait). */
 export interface EmbedderCallLimit { timeoutMs?: number }
 
-/** Sends one request to the function and returns its parsed JSON answer. Throws an error whose `code` is the AWS error name (never its message). */
-export type EmbedderInvoke = (request: EmbedderRequest, limit?: EmbedderCallLimit) => Promise<unknown>;
+/**
+ * Sends one request to the function and returns its parsed JSON answer. Throws an error whose `code` is the AWS error name (never its message). An invoke MAY carry `warm` (round 3, R2-4): it loads the SDK client
+ * (starting the load if need be) and says whether it is ready now or within `waitMs`, so a caller can keep that load out of a time budget it is about to start.
+ */
+export type EmbedderInvoke = ((request: EmbedderRequest, limit?: EmbedderCallLimit) => Promise<unknown>) & { warm?: (waitMs: number) => Promise<boolean> };
 
 /**
  * A call's own time limit, from the caller's run: `deadline` is an absolute time (the client's clock, milliseconds). The call never waits past it, whatever the configured wait is, and starts no
@@ -56,6 +59,8 @@ export interface EmbeddedText { vector: number[]; truncated: boolean }
 export interface EmbedderClient {
   readonly spec: EmbedderModelSpec;
   readonly dimension: number;
+  /** Whether the SDK client is loaded now or within `waitMs` (it is loaded in the background otherwise). Absent where the invoke has nothing to load. Never throws. */
+  warm?(waitMs: number): Promise<boolean>;
   embed(text: string, kind: EmbedderKind, call?: EmbedderCall): Promise<number[]>;
   /** Any number of texts: split into requests inside the function's limits, in order. */
   embedMany(texts: readonly string[], kind: EmbedderKind, call?: EmbedderCall): Promise<number[][]>;
@@ -199,9 +204,11 @@ export function createEmbedderClient(options: EmbedderClientOptions): EmbedderCl
     return entry;
   }
 
+  const warm = invoke.warm;
   return {
     spec,
     dimension: spec.dimension,
+    ...(warm === undefined ? {} : { warm: (waitMs: number) => warm(waitMs).catch(() => false) }),
     embedManyDetailed,
     embedDetailed,
     async embedMany(texts, kind, call) {

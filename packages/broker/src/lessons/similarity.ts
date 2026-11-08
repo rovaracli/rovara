@@ -191,7 +191,9 @@ export const RRF_K = 10;
 export const LIST_DEPTH = 20;
 /** The most a draft is compared with, and the most that go to the judge. */
 export const NEIGHBOURS = 8;
+/** The most LIVE lessons the judge is shown, and (round 3, R2-3) the most previously rejected lessons it is shown IN ADDITION: one call, at most seven candidates. */
 export const JUDGE_CANDIDATES = 5;
+export const JUDGE_REJECTED = 2;
 /** A lexical hit needs at least this many tokens in common with the query (one shared word is not a neighbour). */
 const MIN_SHARED_TOKENS = 2;
 /** A cosine below this does not enter the embedder's list. It is a floor, not a threshold: the list is ranked and cut at LIST_DEPTH. */
@@ -282,6 +284,9 @@ export const closeEnoughForSame = (ranked: Pick<Ranked, "bodyMutual" | "cosine" 
   if (relation.verbatim || relation.near) return true;
   // Never when a polarity, direction, unit, qualifier or number differs, a word is the other's antonym, or the words are reordered.
   if (relation.flipped || !relation.criticalSame || !relation.polaritySame) return false;
+  // Round 3 (R2-1): and never when one text is the other with more words in it, in either direction. A pure insertion is a refinement (a negation this module does not know, "refrain from", an added clause),
+  // whatever the word lists say; this holds for every language.
+  if (relation.narrows || relate(b, a).narrows) return false;
   if (hasUnclassifiedNegation(a) || hasUnclassifiedNegation(b)) return false;
   if (ranked.cosine === undefined) return ranked.bodyMutual >= JUDGE_SAME_FLOOR.mutual;
   return ranked.cosine >= JUDGE_SAME_FLOOR.cosine && ranked.bodyMutual >= JUDGE_SAME_FLOOR.cosineMutual;
@@ -298,13 +303,14 @@ export function matchesRejected(draft: { bodySet: ReadonlySet<string> }, rejecte
   const containedShare = rejected.bodySet.size === 0 ? 0 : overlap.shared / rejected.bodySet.size;
   // A cheap cut before the word-by-word test: a copy shares most of its words, so a rejected lesson sharing under half of them is not one.
   if (overlap.mutual < 0.5 && containedShare < 0.6 && !closeVector) return false;
-  const relation = relate(draftBody, rejectedBody);
+  // Round 3 (R2-5): the prefix-antonym rule is for refusing a merge; here it is off, so a prefixed word added to the draft (connecting -> disconnecting) cannot take it out of the match.
+  const relation = relate(draftBody, rejectedBody, { antonyms: false });
   if (relation.verbatim || relation.near) return true;
   // Round 2 (N1): a close vector counts unless the advice really points the other way. A synonym swap ("disable" for "turn off", "skip" for "ignore", "never" for "avoid") is flipped by the word lists but keeps its
   // stance, direction words and numbers, so the vector may speak for it; a different stance, direction word, number, unit, antonym or order is "opposed" and the vector may not.
   if (closeVector && !relation.opposed) return true;
   // Every negation, direction word and number of the rejected advice must be in the draft; the draft may say more (padding with other lessons' words, digits included, does not clear it).
-  if (relation.flipped || !covers(rejectedBody, draftBody).polarityContained) return false;
+  if (relation.flipped || !covers(rejectedBody, draftBody, { antonyms: false }).polarityContained) return false;
   if (rejected.bodySet.size >= REJECTED_MATCH.minWords && (overlap.mutual >= REJECTED_MATCH.mutual || containedShare >= REJECTED_MATCH.contained)) return true;
   return closeVector;
 }
@@ -327,6 +333,8 @@ export const SIMILARITY_LOG = {
   embedderDown: "lessons.similarity_embedder_unavailable",
   embedderSlow: "lessons.similarity_embedder_timeout",
   vectorsDown: "lessons.similarity_vectors_unavailable",
+  /** The embedder's SDK client was not loaded yet (round 3, R2-4): this ranking used keywords and paths, and the next finds it ready. */
+  embedderLoading: "lessons.similarity_embedder_loading",
 } as const;
 
 /** The most lessons embedded in one call (the rest are made on a later call): a first call after the embedder arrives, or after a model change, must not wait on 2,000 texts. */
@@ -339,9 +347,18 @@ export interface RankOptions {
   queryKind?: "query" | "document";
   /** The longest the vectors and the embedder may take, together. Past it the ranking is keywords and paths (the loader must not wait on a slow embedder). Default `EMBED_TIMEOUT_MS.curate`. */
   timeoutMs?: number;
+  /**
+   * The longest to wait for the embedder's SDK client to LOAD before the time budget starts (round 3, R2-4): the load is never part of `timeoutMs`. Past it the ranking is keywords and paths (the load carries on in the
+   * background, so the next call finds it ready). Default `EMBED_WARM_MS.curate`; the loader passes 0 and never waits.
+   */
+  warmMs?: number;
 }
 /** How long the embedder may take before the ranking falls back to keywords: the loader is quick (it is inside a dispatch), the curator may wait a few seconds. */
 export const EMBED_TIMEOUT_MS = { load: 300, curate: 5000 } as const;
+/** How long a ranking waits for the embedder's SDK to load (outside the budget above): the loader does not wait at all, the curator may. */
+export const EMBED_WARM_MS = { load: 0, curate: 1000 } as const;
+/** The vector read gets at most a third of the ranking's budget, and never more than this (round 3, R2-4): a slow read must not eat the embedder's time. */
+export const VECTOR_READ_MAX_MS = 1000;
 /** The "no embedder" line is written at most once per project per hour. */
 export const NO_EMBEDDER_NOTICE_MS = 60 * 60 * 1000;
 export interface RankResult {
@@ -382,11 +399,17 @@ export async function rankLessons(deps: SimilarityDeps, key: ScopeKey, corpus: R
     return keyword;
   }
   const embedder = deps.embedder;
+  // The SDK client is loaded BEFORE the budget starts (round 3, R2-4): a container's first call used to spend part of its 300 ms loading modules. Not ready in time: keywords and paths, no pause (nothing was asked of the function).
+  if (embedder.warm !== undefined && !(await embedder.warm(options.warmMs ?? EMBED_WARM_MS.curate).catch(() => false))) {
+    deps.log?.(SIMILARITY_LOG.embedderLoading, {});
+    deps.metrics?.count("learning.similarity_embedder_loading");
+    return keyword;
+  }
   try {
     // The race is also the embedder call's DEADLINE (round 2, N4): a call still running when the race ends is aborted by the client at that moment, and no later call of this run is started. The abandoned
     // work therefore cannot start another cold container.
     const limit = options.timeoutMs ?? EMBED_TIMEOUT_MS.curate;
-    return await withTimeout(fusedRanking(deps, embedder, key, corpus, query, docs, options, { deadline: Date.now() + limit }), limit);
+    return await withTimeout(fusedRanking(deps, embedder, key, corpus, query, docs, options, { deadline: Date.now() + limit }, Math.min(VECTOR_READ_MAX_MS, Math.floor(limit / 3))), limit);
   } catch (error) {
     deps.log?.(error instanceof EmbedTimeout ? SIMILARITY_LOG.embedderSlow : SIMILARITY_LOG.embedderDown, {});
     deps.metrics?.count(error instanceof EmbedTimeout ? "learning.similarity_embedder_timeout" : "learning.similarity_embedder_unavailable");
@@ -394,10 +417,11 @@ export async function rankLessons(deps: SimilarityDeps, key: ScopeKey, corpus: R
   }
 }
 
-async function fusedRanking(deps: SimilarityDeps, embedder: LessonEmbedder, key: ScopeKey, corpus: ReadonlyArray<LessonLike & { id: string }>, query: SimDoc, docs: readonly SimDoc[], options: RankOptions, call: EmbedderCall): Promise<RankResult> {
+async function fusedRanking(deps: SimilarityDeps, embedder: LessonEmbedder, key: ScopeKey, corpus: ReadonlyArray<LessonLike & { id: string }>, query: SimDoc, docs: readonly SimDoc[], options: RankOptions, call: EmbedderCall, readMs: number): Promise<RankResult> {
   const hashes = new Map(corpus.map((l) => [l.id, textHash(lessonTextOf(l))] as const));
   let stored: Map<string, StoredLessonVector>;
-  try { stored = await deps.vectors.get(key.workspaceId, key.project, embedder.spec, corpus.map((l) => l.id)); } catch { deps.log?.(SIMILARITY_LOG.vectorsDown, {}); stored = new Map(); }
+  // The read has its own small timeout (round 3, R2-4): a slow vector store ends in keyword-only ranking for the stored vectors, and the query is still embedded in what is left of the budget.
+  try { stored = await withTimeout(deps.vectors.get(key.workspaceId, key.project, embedder.spec, corpus.map((l) => l.id)), readMs); } catch { deps.log?.(SIMILARITY_LOG.vectorsDown, {}); stored = new Map(); }
   const vectors = new Map<string, readonly number[]>();
   for (const l of corpus) {
     const found = stored.get(l.id);

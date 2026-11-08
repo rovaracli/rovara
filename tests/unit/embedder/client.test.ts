@@ -269,9 +269,9 @@ describe("the Lambda invoke port", () => {
 
   it("a call's own limit shortens the wait and never lengthens it (review R3)", async () => {
     const hang: Send = (_command, options) => new Promise((_resolve, reject) => { options?.abortSignal?.addEventListener("abort", () => reject(Object.assign(new Error("aborted"), { name: "AbortError" }))); });
-    // configured wait 60 s, the run has 30 ms left: gives up at once
+    // configured wait 60 s, the run has 30 ms left: gives up at once. It is the CALLER's deadline that ended the call after less than 200 ms in flight, so the code is `DeadlineAbort` (no pause), not `AbortError` (round 3, R2-4).
     const startedShort = Date.now();
-    await expect(portWith(hang, 60_000)(request, { timeoutMs: 30 })).rejects.toMatchObject({ code: "AbortError" });
+    await expect(portWith(hang, 60_000)(request, { timeoutMs: 30 })).rejects.toMatchObject({ code: "DeadlineAbort" });
     expect(Date.now() - startedShort).toBeLessThan(5_000);
     // configured wait 30 ms, the run has 60 s left: still gives up at the configured wait
     const startedLong = Date.now();

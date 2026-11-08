@@ -23,19 +23,25 @@ const POLARITY: ReadonlySet<string> = new Set((
   "zero one two three four five six seven eight nine ten once twice thrice half double single hundred thousand all every " +
   // Round 2 (N3): more antonyms, the verbs of raising and cutting, and units (a changed unit changes the number's meaning).
   "block omit deactivate activate permit prevent min max minimum maximum raise cut reduce lift sync async synchronous asynchronous synchronously asynchronously public private accept reject safe unsafe " +
-  "valid invalid authenticated unauthenticated deprecated ms millisecond milliseconds s sec secs second seconds minute minutes mins hour hours day days kb mb gb tb"
+  "valid invalid authenticated unauthenticated deprecated ms millisecond milliseconds s sec secs second seconds minute minutes mins hour hours day days kb mb gb tb " +
+  // Round 3 (R2-1): verbs of avoiding, more antonyms (their -ing and -ed forms are read as the verb: see `listedForm`).
+  "refrain quit cease halt ascending descending ascend descend inside outside optional mandatory success failure succeed fail encrypt decrypt"
 ).split(" "));
 /** Words that put the advice on the "do not" side (a negator counts too). Used for the STANCE of a statement: an odd number of them is a prohibition. */
-const NEG_STANCE: ReadonlySet<string> = new Set("avoid skip ignore disable disabled off remove drop exclude forbid forbidden ban banned deny denied stop without block omit deactivate prevent".split(" "));
+const NEG_STANCE: ReadonlySet<string> = new Set("avoid skip ignore disable disabled off remove drop exclude forbid forbidden ban banned deny denied stop without block omit deactivate prevent refrain quit cease halt".split(" "));
 /** Words that put the advice on the "do" side. They carry no direction, so a synonym of them ("keep" for "store") is not a change. */
 const POS_STANCE: ReadonlySet<string> = new Set("always prefer enable enabled allow allowed require required keep add include start must should may on permit activate".split(" "));
 const UNIT_CANON: ReadonlyMap<string, string> = new Map([
   ["millisecond", "ms"], ["milliseconds", "ms"], ["s", "sec"], ["secs", "sec"], ["second", "sec"], ["seconds", "sec"], ["mins", "minute"], ["minutes", "minute"], ["hours", "hour"], ["days", "day"],
 ]);
 /** Prefixes that turn a word into its opposite: valid/invalid, used/unused, sync/async, blocking/nonblocking, connected/disconnected. */
-const ANTONYM_PREFIXES: readonly string[] = ["un", "in", "im", "non", "a", "dis"];
-/** Negation words of other languages that are spelt in ASCII (German, French, Dutch, Spanish and Portuguese): this module cannot classify them. */
-const FOREIGN_NEGATORS: ReadonlySet<string> = new Set("nicht kein keine keinen keinem keiner nie niemals pas jamais nunca nao niet geen".split(" "));
+const ANTONYM_PREFIXES: readonly string[] = ["un", "in", "im", "non", "a", "dis", "de"];
+/**
+ * Negation words of other languages that are spelt in ASCII (German, French, Dutch, Spanish, Portuguese; round 3: Italian, Norwegian, Swedish, Danish, Indonesian, Romanian, Czech, Afrikaans): this module cannot
+ * classify them. "non" is tested apart (an English "non-blocking" compound is not a negation).
+ */
+const FOREIGN_NEGATORS: ReadonlySet<string> = new Set("nicht kein keine keinen keinem keiner nie niemals pas jamais nunca nao niet geen ikke inte jangan tidak bukan nu ne nej ingen".split(" "));
+const FOREIGN_NON = /(?<![\p{L}-])non(?![\p{L}-])/iu;
 /** Words that narrow or condition a statement: an added one means the statement is not the same any more. */
 const QUALIFIERS: ReadonlySet<string> = new Set("except unless only but when whenever if for without otherwise besides excluding including".split(" "));
 
@@ -56,8 +62,24 @@ export const normalizedText = (text: string): string => wordsOf(text).join(" ");
  * critical word are left as they are. Verbatim never uses this.
  */
 function stem(word: string): string {
+  const listed = listedForm(word);
+  if (listed !== undefined) return listed;
   if (word.length >= 5 && word.endsWith("ies")) return `${word.slice(0, -3)}y`;
   return word.length >= 4 && word.endsWith("s") && !/(ss|us|is)$/u.test(word) ? word.slice(0, -1) : word;
+}
+/**
+ * Round 3 (R2-1): an -ing or -ed form of a listed word is that word ("enabling" is "enable", "skipping" is "skip", "lowered" is "lower", "decrypted" is "decrypt"). Only a form whose base is in the polarity list counts,
+ * so an ordinary word that happens to end in -ing or -ed is untouched.
+ */
+function listedForm(word: string): string | undefined {
+  for (const [suffix, extra] of [["ing", ""], ["ing", "e"], ["ed", ""], ["ed", "e"]] as const) {
+    if (!word.endsWith(suffix) || word.length < suffix.length + 3) continue;
+    const root = word.slice(0, -suffix.length);
+    for (const base of [`${root}${extra}`, root.length > 3 && root.at(-1) === root.at(-2) ? root.slice(0, -1) : undefined]) {
+      if (base !== undefined && base !== word && POLARITY.has(base) && (extra === "" || base.endsWith("e"))) return base;
+    }
+  }
+  return undefined;
 }
 const forOrder = (words: readonly string[]): string[] => words.filter((w) => !FILLER.has(w)).map((w) => (isCritical(w) ? canon(w) : stem(w)));
 
@@ -86,7 +108,7 @@ function prefixAntonym(x: readonly string[], y: readonly string[]): boolean {
 }
 
 /** Whether a text holds a word that negates in a way this module cannot classify: any letter outside ASCII (accented, Cyrillic, CJK ...) or a known ASCII negation of another language. */
-export const hasUnclassifiedNegation = (text: string): boolean => /(?=\p{L})[^\p{ASCII}]/u.test(text) || wordsOf(text).some((w) => FOREIGN_NEGATORS.has(w));
+export const hasUnclassifiedNegation = (text: string): boolean => /(?=\p{L})[^\p{ASCII}]/u.test(text) || FOREIGN_NON.test(text) || wordsOf(text).some((w) => FOREIGN_NEGATORS.has(w));
 
 /** The longest text compared word by word; a longer one is only ever called verbatim. */
 const MAX_WORDS = 400;
@@ -122,8 +144,16 @@ export interface CopyRelation {
 
 const NONE: CopyRelation = { verbatim: false, near: false, flipped: false, narrows: false, opposed: true, polaritySame: false, criticalSame: false, ordered: 0 };
 
+export interface RelateOptions {
+  /**
+   * Whether a word and its prefix antonym (connecting / disconnecting) make the pair opposed. Default true: that is what stops a MERGE. The rejected-lesson match turns it off (round 3, R2-5): adding a prefixed
+   * word to a rejected lesson's advice must not take the draft out of the match; the match only ever leads to a person or the judge, never to a merge.
+   */
+  antonyms?: boolean;
+}
+
 /** How the `draft` statement relates to the `other` one, comparing their words in order. Pure; both directions are looked at (the shorter must be wholly inside the longer). */
-export function relate(draft: string, other: string): CopyRelation {
+export function relate(draft: string, other: string, options: RelateOptions = {}): CopyRelation {
   const full = [wordsOf(draft), wordsOf(other)] as const;
   if (full[0].length === 0 || full[1].length === 0) return NONE;
   const verbatim = full[0].join(" ") === full[1].join(" ");
@@ -135,7 +165,7 @@ export function relate(draft: string, other: string): CopyRelation {
   const shortest = Math.min(x.length, y.length);
   const common = lcsLength(x, y);
   const ordered = common / longest;
-  const antonym = prefixAntonym(x, y);
+  const antonym = options.antonyms !== false && prefixAntonym(x, y);
   const polaritySame = !antonym && sortedKey(polaritySequence(x)) === sortedKey(polaritySequence(y));
   const floorCritical = (words: readonly string[]): string => sortedKey(criticalSequence(words).filter((w) => w !== "for"));
   const criticalSame = !antonym && floorCritical(x) === floorCritical(y);
@@ -157,13 +187,13 @@ export function relate(draft: string, other: string): CopyRelation {
  * How much of `small` (a correction) a longer text (a lesson) says, in order: the share of `small`'s words found in the same order in `big`, and whether every negation, direction word and number of `small` is also in `big`
  * (a lesson that says "off" does not cover a correction that says "on"). Both texts are cut at MAX_WORDS words; a text cut short covers less, never more.
  */
-export function covers(small: string, big: string): { ordered: number; pairs: number; polarityContained: boolean } {
+export function covers(small: string, big: string, options: RelateOptions = {}): { ordered: number; pairs: number; polarityContained: boolean } {
   const x = forOrder(wordsOf(small)).slice(0, MAX_WORDS);
   const y = forOrder(wordsOf(big)).slice(0, MAX_WORDS);
   if (x.length === 0 || y.length === 0) return { ordered: 0, pairs: 0, polarityContained: false };
   const have = new Map<string, number>();
   for (const w of polaritySequence(y)) have.set(w, (have.get(w) ?? 0) + 1);
-  const polarityContained = !prefixAntonym(x, y) && polaritySequence(x).every((w) => { const n = have.get(w) ?? 0; have.set(w, n - 1); return n > 0; });
+  const polarityContained = (options.antonyms === false || !prefixAntonym(x, y)) && polaritySequence(x).every((w) => { const n = have.get(w) ?? 0; have.set(w, n - 1); return n > 0; });
   // Two words swapped keep most of the order (the longest common run is only one word short) but break the pairs of neighbours around them: the share of `small`'s neighbouring pairs found in `big` (`pairs`) is part of the answer.
   const pairs = new Set(y.slice(1).map((w, i) => `${y[i]} ${w}`));
   const wanted = x.slice(1).map((w, i) => `${x[i]} ${w}`);

@@ -69,30 +69,54 @@ export interface SdkOptions { region: string | undefined; load?: SdkLoader }
  * (a crash, a timeout inside the function) is a failure of the call. The wait is bounded here: when it runs out the call is abandoned, the function carries on and is warm for the next.
  * Errors keep only their NAME as `code` (the retry rules read it), never their message.
  */
+/** A call the caller's deadline cut off after less than this in flight says nothing about the function (it had no time to answer): it is not a timeout of the function and starts no pause (round 3, R2-4). */
+export const MIN_PAUSE_FLIGHT_MS = 200;
+
 export function lambdaEmbedderInvoke(options: SdkOptions & { functionName: string; timeoutMs: number }): EmbedderInvoke {
   const load = options.load ?? loadSdkPackage;
   let client: Promise<{ module: Record<string, unknown>; client: AnyClient & { send(command: unknown, options?: { abortSignal?: AbortSignal }): Promise<unknown> } }> | undefined;
+  let loaded = false;
   const open = () => client ??= load("@aws-sdk/client-lambda").then((module) => {
     const Client = module.LambdaClient as (new (config: Record<string, unknown>) => AnyClient) | undefined;
     if (typeof Client !== "function") throw new SdkUnavailableError();
+    loaded = true;
     return { module, client: new Client(options.region === undefined ? {} : { region: options.region }) as never };
   });
-  return async (request, limit) => {
+  const invoke: EmbedderInvoke = async (request, limit) => {
+    // The caller's budget counts from here, so the SDK load below is part of it (a first call cannot overrun its deadline by the load time).
+    const startedAt = Date.now();
     const { module, client: lambda } = await open();
+    const left = limit?.timeoutMs === undefined ? Number.POSITIVE_INFINITY : limit.timeoutMs - (Date.now() - startedAt);
+    // The caller's run was over by the time the SDK was ready: nothing is sent (a call now would start a cold container for an answer nobody waits for), and it says nothing about the function.
+    if (left < 1) throw Object.assign(new Error("DeadlineElapsed"), { code: "DeadlineElapsed" });
     const abort = new AbortController();
     // The configured wait, or less when the caller's own run has less left (EmbedderCall.deadline).
-    const timer = setTimeout(() => abort.abort(), Math.max(1, Math.min(options.timeoutMs, limit?.timeoutMs ?? options.timeoutMs)));
+    const callerBound = left < options.timeoutMs;
+    const sentAt = Date.now();
+    const timer = setTimeout(() => abort.abort(), Math.max(1, Math.min(options.timeoutMs, left)));
     try {
       const reply = await lambda.send(command(module, "InvokeCommand", { FunctionName: options.functionName, InvocationType: "RequestResponse", Payload: Buffer.from(JSON.stringify(request)) }), { abortSignal: abort.signal }) as { StatusCode?: number; FunctionError?: string; Payload?: Uint8Array };
       if (reply.FunctionError !== undefined) throw Object.assign(new Error("FunctionError"), { name: "FunctionError" });
       if (reply.StatusCode !== 200 || reply.Payload === undefined) throw Object.assign(new Error("BadReply"), { name: "BadReply" });
       return JSON.parse(Buffer.from(reply.Payload).toString("utf8")) as unknown;
     } catch (error) {
+      // Only an abort that came from this invoke's OWN wait, or one that left the function a real wait (MIN_PAUSE_FLIGHT_MS), is `AbortError` (the client pauses on it). A caller's short deadline that cut the call
+      // off early is `DeadlineAbort`: the function was never given time, so nothing is known about it and no pause starts.
+      if (abort.signal.aborted && callerBound && Date.now() - sentAt < MIN_PAUSE_FLIGHT_MS) throw Object.assign(new Error("DeadlineAbort"), { code: "DeadlineAbort" });
       throw coded(error);
     } finally {
       clearTimeout(timer);
     }
   };
+  invoke.warm = async (waitMs) => {
+    if (loaded) return true;
+    const opening = open().then(() => true, () => false);
+    if (waitMs <= 0) return false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const gone = new Promise<boolean>((resolve) => { timer = setTimeout(() => resolve(false), waitMs); timer.unref?.(); });
+    try { return await Promise.race([opening, gone]); } finally { if (timer !== undefined) clearTimeout(timer); }
+  };
+  return invoke;
 }
 
 // ---- S3 Vectors

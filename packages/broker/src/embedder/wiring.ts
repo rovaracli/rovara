@@ -53,6 +53,8 @@ export interface LessonEmbedder {
   readonly spec: string;
   embed(text: string): Promise<number[]>;
   embedMany(texts: readonly string[], kind?: EmbedderKind, call?: EmbedderCall): Promise<number[][]>;
+  /** Whether the SDK client is loaded now or within `waitMs` (round 3, R2-4): the lessons' time budgets start after it, so the load is never part of them. */
+  warm?(waitMs: number): Promise<boolean>;
 }
 
 export function lessonEmbedderOver(client: EmbedderClient): LessonEmbedder {
@@ -61,6 +63,7 @@ export function lessonEmbedderOver(client: EmbedderClient): LessonEmbedder {
     spec: client.spec.spec,
     embed: (text) => client.embed(text, "document"),
     embedMany: (texts, kind = "document", call) => client.embedMany(texts, kind, call),
+    ...(client.warm === undefined ? {} : { warm: (waitMs: number) => client.warm!(waitMs) }),
   };
 }
 

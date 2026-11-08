@@ -132,7 +132,7 @@ describe("H2: a rejected lesson does not come back", () => {
   });
 
   it("a draft padded with the words of five live neighbours still meets the judge's reserved place for the rejected lesson, and the judge's \"same\" drops it", async () => {
-    const model = new ScriptedModel([answer("different", "different", "different", "different", "same")]);
+    const model = new ScriptedModel([answer("different", "different", "different", "different", "different", "same")]);
     const s = setup({ model });
     await seed(s.store, rejected());
     const padding: string[] = [];
@@ -145,7 +145,7 @@ describe("H2: a rejected lesson does not come back", () => {
     expect(out).toEqual({ outcome: "dropped", reason: "previously_rejected" });
     expect(model.calls).toHaveLength(1);
     const prompt = String(model.calls[0]!.user);
-    expect(prompt.match(/^\d\. state=/gmu)).toHaveLength(5);
+    expect(prompt.match(/^\d\. state=/gmu)).toHaveLength(6);
     expect(prompt).toContain("state=previously_rejected");
   });
 
@@ -209,7 +209,7 @@ describe("M4: the judge sees only lessons the draft's audience may read", () => 
 
   it("the access records are asked too: a source place that turned private hides the lesson from the draft", async () => {
     const asked: unknown[] = [];
-    const access = { mayRead: async (_org: unknown, viewer: unknown, places: ReadonlyArray<unknown>) => { asked.push(viewer); return places.map(() => false); } };
+    const access = { ...allowAllAccess, mayRead: async (_org: unknown, viewer: unknown, places: ReadonlyArray<unknown>) => { asked.push(viewer); return places.map(() => false); } };
     const s = setup({ model: new ScriptedModel([answer("different")]), access: access });
     await seed(s.store, lessonRecord({ id: "les_placed001", title: "Advice", description: "", body: BODY, status: "candidate", approvals: [], tier: 1, tierReasons: [], provenance: { ...lessonRecord().provenance, sourceScopes: ["slack:T1/C9"] } }));
     expect((await curateDraft(s.deps, KEY, textOf("Wrap outbound HTTP calls in the api service with withRetry from src/retry/index.ts"))).outcome).toBe("added");

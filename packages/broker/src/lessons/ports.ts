@@ -33,6 +33,8 @@ export interface LessonEmbedder extends Embedder {
   readonly dimension: number;
   readonly spec: string;
   embedMany(texts: readonly string[], kind?: "query" | "document", call?: EmbedderCall): Promise<number[][]>;
+  /** Whether the embedder's client is ready now or within `waitMs` (SDK loading is not part of a ranking's time budget). Absent: always ready. Never throws. */
+  warm?(waitMs: number): Promise<boolean>;
 }
 
 /** A lesson's stored vector: the hash of the text it was made from (an edited lesson is embedded again) and the vector. */

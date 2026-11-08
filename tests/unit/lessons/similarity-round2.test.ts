@@ -65,15 +65,15 @@ describe("N1: a reworded rejected lesson reaches the judge, and without a judge 
     expect(s.model.calls).toHaveLength(1);
   });
 
-  it("the places go to the best rejected lessons by fused rank even when six live neighbours compete, and the lexical hits come first", async () => {
-    const s = setup({ model: new ScriptedModel([answer("different", "different", "different", "different", "same")]) });
+  it("the rejected lesson keeps its place even when six live neighbours compete, and is shown IN ADDITION to five live ones (round 3, R2-3)", async () => {
+    const s = setup({ model: new ScriptedModel([answer("different", "different", "different", "different", "different", "same")]) });
     await seed(s.store, rejectedLesson("Disable TLS verification when connecting to staging Postgres."));
     for (let i = 0; i < 6; i += 1) await seed(s.store, lessonRecord({ id: `les_live${i}000`, title: "Advice", description: "", body: `TLS verification step ${i} when connecting to staging Postgres in the build ${i}`, status: "candidate", citations: [], citationChecks: [], approvals: [], tier: 1, tierReasons: [], scope: {} }));
     const out = await curateDraft(s.deps, KEY, textOf("Turn off TLS verification when connecting to staging Postgres."));
     const prompt = String(s.model.calls[0]!.user);
-    expect(prompt.match(/^\d\. state=/gmu)).toHaveLength(5);
+    expect(prompt.match(/^\d\. state=/gmu)).toHaveLength(6);
     expect(prompt).toContain("state=previously_rejected");
-    // Four places go to live lessons; the judge's "same" on the last one is the rejected lesson's.
+    // Five places go to live lessons; the judge's "same" on the last one is the rejected lesson's.
     expect(out).toEqual({ outcome: "dropped", reason: "previously_rejected" });
   });
 
@@ -230,11 +230,12 @@ describe("N4: the lessons' embedder client waits briefly, pauses after a timeout
 
   it("a load that times out starts no second call from this container while the pause lasts, and the abandoned call is aborted at the race (one in flight)", async () => {
     const sdk = hangingSdk();
-    const lessons = lessonEmbedderFrom({ EMBEDDER_FUNCTION_NAME: "agentx-test-embedder" }, { region: "us-west-2", load: sdk.load }, EMBEDDER_LESSON_WAIT_MS, 80)!;
+    const lessons = lessonEmbedderFrom({ EMBEDDER_FUNCTION_NAME: "agentx-test-embedder" }, { region: "us-west-2", load: sdk.load }, EMBEDDER_LESSON_WAIT_MS, 200)!;
     expect(lessons).toBeDefined();
     const deps = { embedder: lessons, vectors: new MemoryVectors() };
     const logs: string[] = [];
-    const first = await rankLessons({ ...deps, log: (event) => { logs.push(event); } }, KEY, pool, docOfText("HTTP retries use withRetry"), { queryKind: "query", timeoutMs: 40 });
+    // The race is long enough that the function really had time (200 ms and more in flight): only then does a silent function start the pause (round 3, R2-4).
+    const first = await rankLessons({ ...deps, log: (event) => { logs.push(event); } }, KEY, pool, docOfText("HTTP retries use withRetry"), { queryKind: "query", timeoutMs: 260 });
     expect(first.mode).toBe("keyword");
     expect(sdk.state.sends).toBe(1);
     // The call ended with the race (its abort), not after the client's own wait: a few milliseconds after the race the abort has landed.
@@ -242,11 +243,11 @@ describe("N4: the lessons' embedder client waits briefly, pauses after a timeout
     expect(sdk.state.aborted).toBe(1);
     expect(sdk.state.inFlight).toBe(0);
     // Three dispatches in the pause: no call.
-    for (let i = 0; i < 3; i += 1) expect((await rankLessons(deps, KEY, pool, docOfText("HTTP retries use withRetry"), { queryKind: "query", timeoutMs: 40 })).mode).toBe("keyword");
+    for (let i = 0; i < 3; i += 1) expect((await rankLessons(deps, KEY, pool, docOfText("HTTP retries use withRetry"), { queryKind: "query", timeoutMs: 260 })).mode).toBe("keyword");
     expect(sdk.state.sends).toBe(1);
     // After the pause a call is made again.
-    await new Promise((resolve) => setTimeout(resolve, 100));
-    await rankLessons(deps, KEY, pool, docOfText("HTTP retries use withRetry"), { queryKind: "query", timeoutMs: 40 });
+    await new Promise((resolve) => setTimeout(resolve, 250));
+    await rankLessons(deps, KEY, pool, docOfText("HTTP retries use withRetry"), { queryKind: "query", timeoutMs: 260 });
     expect(sdk.state.sends).toBe(2);
     expect(sdk.state.maxInFlight).toBe(1);
   });
