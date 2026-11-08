@@ -237,8 +237,10 @@ export class DeveloperSignIn extends Construct {
     this.signInFunction = fn;
     // What DeveloperSignInStore sends on every sign-in: GetItem, PutItem, UpdateItem, and TransactWriteItems
     // made of Put and Update items (IAM authorizes each item as PutItem or UpdateItem).
+    // SLACK-LINK-1: OrgStore also condition-checks a developer's sign-in record (not merged into another account) in the transaction that gives the developer a company
+    // (ConditionCheckItem). The same table, the same record, nothing read or written through it.
     fn.addToRolePolicy(new iam.PolicyStatement({
-      actions: ["dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:UpdateItem"],
+      actions: ["dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:UpdateItem", "dynamodb:ConditionCheckItem"],
       resources: [table.tableArn],
     }));
     // Plan 2, Task 8: unlinking a sign-in method (unlinkIdentity, the `unlink-identity` invoke). It lists the developer's own IDENTITY# items
@@ -289,9 +291,11 @@ export class DeveloperSignIn extends Construct {
     }));
     // Accepting an invite checks, in the same transaction, that the org is not closed or closing (a ConditionCheck on the org record, which
     // IAM authorizes as ConditionCheckItem). That action on that one key; the function never reads or writes anything else through it.
+    // SLACK-LINK-1: linking a Slack or GitHub account checks, in the link's transaction, that the account's own developer has no company
+    // pointer (a ConditionCheck on `DEVELOPER_ORG#<id>`); the same action on that one key.
     fn.addToRolePolicy(new iam.PolicyStatement({
       actions: ["dynamodb:ConditionCheckItem"], resources: [props.state.tableArn],
-      conditions: { "ForAllValues:StringLike": { "dynamodb:LeadingKeys": [`ORG#${orgPattern}`] } },
+      conditions: { "ForAllValues:StringLike": { "dynamodb:LeadingKeys": [`ORG#${orgPattern}`, "DEVELOPER_ORG#*"] } },
     }));
     // A removed member's ban on a single-org install (`ORG#<id>#BAN`): read by a sign-in that would join the install's org (GetItem) and
     // cleared when an invite is accepted (DeleteItem, below). The function never writes a ban; only the broker's removal does.

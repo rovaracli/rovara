@@ -224,8 +224,9 @@ export function singleOrgIdFor(config: { env: string; cloud?: unknown }): OrgId 
 export function developerIdentityStores(input: { documentClient: DynamoDBDocumentClient; stateTableName: string; signInTableName: string; now: () => number; audit?: AuditRuntime }): { orgs: OrgStore; store: DeveloperSignInStore } {
   const audit = input.audit === undefined ? {} : { audit: input.audit };
   return {
-    orgs: new OrgStore({ documentClient: input.documentClient, tableName: input.stateTableName, now: input.now, ...audit }),
-    store: new DeveloperSignInStore({ documentClient: input.documentClient, tableName: input.signInTableName, now: input.now, ...audit }),
+    // SLACK-LINK-1: each store names the other's table, so a company join and an identity link fence each other in their own transactions.
+    orgs: new OrgStore({ documentClient: input.documentClient, tableName: input.stateTableName, signInTableName: input.signInTableName, now: input.now, ...audit }),
+    store: new DeveloperSignInStore({ documentClient: input.documentClient, tableName: input.signInTableName, stateTableName: input.stateTableName, now: input.now, ...audit }),
   };
 }
 

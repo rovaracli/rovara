@@ -6420,6 +6420,7 @@ exports[`named environment templates > agentx-staging-control-plane is unchanged
                 "dynamodb:GetItem",
                 "dynamodb:PutItem",
                 "dynamodb:UpdateItem",
+                "dynamodb:ConditionCheckItem",
               ],
               "Effect": "Allow",
               "Resource": {
@@ -6547,6 +6548,7 @@ exports[`named environment templates > agentx-staging-control-plane is unchanged
                 "ForAllValues:StringLike": {
                   "dynamodb:LeadingKeys": [
                     "ORG#org_????????????????????",
+                    "DEVELOPER_ORG#*",
                   ],
                 },
               },

@@ -253,6 +253,13 @@ export class DeveloperSignInStore {
      * name, and `setChosenDisplayName` writes it. The sign-in function leaves it out (it has no grant on that item) and reads the sign-in record's name.
      */
     nameTableName?: string;
+    /**
+     * SLACK-LINK-1: the State table, named only so that linking a Slack or GitHub account can include a ConditionCheck on the State table's developer-to-company pointer
+     * (`DEVELOPER_ORG#<identity key>` must not exist) in the link's own transaction, which makes "the account holds no company" and the link one atomic write. The
+     * company side of the same fence is `OrgStore`'s `signInTableName`. Unlike `nameTableName` it adds no read: the sign-in function passes it and needs only the
+     * ConditionCheckItem grant on `DEVELOPER_ORG#*`. Absent: the link keeps only its read-then-write check (a test with two unrelated tables).
+     */
+    stateTableName?: string;
   }) {}
 
   private seconds(): number { return Math.floor(this.input.now() / 1000); }
@@ -898,6 +905,7 @@ export class DeveloperSignInStore {
     const at = this.iso();
     const TableName = this.input.tableName;
     const event = await this.identityEvent("linked", { identityKey, developerId, provider, at });
+    const stateTable = this.input.stateTableName;
     const items: SignInTransactItem[] = duplicate !== undefined
       ? this.mergeItems({ duplicate, duplicateIdentityKey: identityKey, survivorId: developerId, at, ...(current === undefined ? {} : { link: current }), ...(input.email === undefined ? {} : { email: input.email }) })
       : (() => {
@@ -916,10 +924,18 @@ export class DeveloperSignInStore {
             ExpressionAttributeNames: { "#linkedMarker": marker }, ExpressionAttributeValues: { ":no": false, ":identityKey": identityKey } } },
           ...items,
           ...this.pendingFor(event),
+          // SLACK-LINK-1: the identity's own developer still holds no company, checked in this same transaction. A company created or joined after the caller read
+          // `belongsToCompany` fails this check; the company side fails the other way (OrgStore refuses a membership for a developer merged away), so the two never both land.
+          ...(stateTable === undefined ? [] : [{ ConditionCheck: { TableName: stateTable, Key: developerOrgKey(identityKey), ConditionExpression: "attribute_not_exists(pk)" } }]),
         ],
       }));
     } catch (error) {
       if (!conditionFailed(error)) throw error;
+      // A company appeared for the identity's developer between the caller's read and this write: the same answer as when the caller saw it.
+      if (stateTable !== undefined) {
+        const reasons = cancellationReasons(error);
+        if (reasons?.[reasons.length - 1]?.Code === "ConditionalCheckFailed" && await this.companyExists(stateTable, identityKey)) return { ok: false, reason: "taken" };
+      }
       // Someone linked or moved it between the read and the write: say what the link now shows.
       const now = await this.getIdentityLink(identityKey);
       if (now !== undefined && isActiveLink(now, identityKey) && now.developerId === developerId) return { ok: true, created: false };
@@ -930,6 +946,12 @@ export class DeveloperSignInStore {
     }
     await this.flush(event);
     return { ok: true, created: true };
+  }
+
+  /** Whether the State table holds a company pointer for the developer (a consistent read, used only to name why a link's transaction was cancelled). */
+  private async companyExists(stateTable: string, developerId: string): Promise<boolean> {
+    const response = await this.input.documentClient.send(new GetCommand({ TableName: stateTable, Key: developerOrgKey(developerId), ConsistentRead: true })) as { Item?: unknown };
+    return response.Item !== undefined;
   }
 
   /** Records a sign-in on the identity's link, on both items. Nothing happens for an identity with no active link. */

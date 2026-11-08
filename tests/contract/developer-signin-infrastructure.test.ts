@@ -241,7 +241,8 @@ describe("developer sign-in infrastructure (named environments)", () => {
     // TransactWriteItems is authorized per item as PutItem and UpdateItem; no condition-check, no scan, no batch.
     const everySignIn = tableStatements.filter((statement) => actionsOf(statement).includes("dynamodb:GetItem"));
     expect(everySignIn).toHaveLength(1);
-    expect(actionsOf(everySignIn[0]!).sort()).toEqual(["dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:UpdateItem"]);
+    // SLACK-LINK-1: and ConditionCheckItem, for the company join's check that the developer's sign-in record was not merged away.
+    expect(actionsOf(everySignIn[0]!).sort()).toEqual(["dynamodb:ConditionCheckItem", "dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:UpdateItem"]);
     expect(everySignIn[0]!.Condition).toBeUndefined();
     // Unlinking a sign-in method (unlinkIdentity): the transaction's Delete of the developer's IDENTITY# item is authorized as DeleteItem, and the
     // developer's own identities are listed with a Query. Both only in the developer partitions, DEVELOPER#<id>; never SESSION#, SIGNIN_IDENTITY# or EMAIL#.
@@ -254,7 +255,7 @@ describe("developer sign-in infrastructure (named environments)", () => {
     expect(actionsOf(queries[0]!)).toEqual(["dynamodb:Query"]);
     expect(leadingKeysOf(queries[0]!)).toEqual(["DEVELOPER#*"]);
     // No other action reaches the table (a wildcard would show up here).
-    expect(tableStatements.flatMap(actionsOf).sort()).toEqual(["dynamodb:DeleteItem", "dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:Query", "dynamodb:UpdateItem"]);
+    expect(tableStatements.flatMap(actionsOf).sort()).toEqual(["dynamodb:ConditionCheckItem", "dynamodb:DeleteItem", "dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:Query", "dynamodb:UpdateItem"]);
   });
 
   it("gives DeveloperIdentity the audit outbox and nothing else of the ledger: the intake queue's URL, SendMessage on that queue, and PutItem and DeleteItem on the State table under AUDIT_PENDING# only (Audit Ledger, Task 18)", () => {
@@ -290,11 +291,12 @@ describe("developer sign-in infrastructure (named environments)", () => {
     // They are all covered by the one statement every sign-in already has: Get, Put and Update on the table, with no key condition.
     const everySignIn = tableStatements.filter((statement) => actionsOf(statement).includes("dynamodb:GetItem"));
     expect(everySignIn).toHaveLength(1);
-    expect(actionsOf(everySignIn[0]!).sort()).toEqual(["dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:UpdateItem"]);
+    // SLACK-LINK-1: and ConditionCheckItem, for the company join's check that the developer's sign-in record was not merged away.
+    expect(actionsOf(everySignIn[0]!).sort()).toEqual(["dynamodb:ConditionCheckItem", "dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:UpdateItem"]);
     expect(everySignIn[0]!.Condition).toBeUndefined();
     // Nothing was added for them: Delete and Query stay inside the developer partitions (the unlink's), and no other action exists.
     expect(tableStatements).toHaveLength(3);
-    expect(tableStatements.flatMap(actionsOf).sort()).toEqual(["dynamodb:DeleteItem", "dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:Query", "dynamodb:UpdateItem"]);
+    expect(tableStatements.flatMap(actionsOf).sort()).toEqual(["dynamodb:ConditionCheckItem", "dynamodb:DeleteItem", "dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:Query", "dynamodb:UpdateItem"]);
     for (const narrow of tableStatements.filter((statement) => !actionsOf(statement).includes("dynamodb:GetItem"))) expect(leadingKeysOf(narrow)).toEqual(["DEVELOPER#*"]);
     // The broker starts the flow by naming the token's session in an invoke; it still only reads SESSION# and DEVELOPER# and has no write.
     const broker = statementsOfRole(named, "BrokerServiceRole").filter((statement) => touches(statement, "dynamodb") && reaches(named, statement, tableId, SAMPLE_TABLE_ARN));
@@ -418,7 +420,8 @@ describe("developer sign-in infrastructure (named environments)", () => {
     expect(grantsOf).toEqual([
       // Deleting: the duplicate's member row (bare partition; IAM cannot tell it from the org record) and grants, and its org pointer.
       // Plan 2, Task 4: accepting an invite checks the org is open (ConditionCheckItem on the org record, nothing wider).
-      ["dynamodb:ConditionCheckItem", [ORG]],
+      // SLACK-LINK-1: linking a Slack or GitHub account checks the account's own developer has no company pointer, in the link's transaction.
+      ["dynamodb:ConditionCheckItem", [ORG, "DEVELOPER_ORG#*"]],
       // Plan 5, Task 20 (the notifier's, not DeveloperIdentity's): recording a task's thread checks the session's own record.
       ["dynamodb:ConditionCheckItem", [`${ORG}#AGENT_SESSION#*`]],
       // Plan 2, Task 4: it also names the ban key, which accepting an invite deletes.
@@ -712,7 +715,7 @@ describe("the notice of a newly linked sign-in method (Plan 2, Task 8, cloud ins
     const functionActions = statementsOfRole(cloud, "DeveloperSignInFunctionServiceRole").filter((statement) => touches(statement, "dynamodb") && reaches(cloud, statement, tableId, SAMPLE_TABLE_ARN)).flatMap(actionsOf).sort();
     // The named environment's five actions, plus the decide statements (state: Put, Get, Delete; session: Put, Delete; tickets and rates: Get, Put, Update).
     expect(functionActions).toEqual([
-      "dynamodb:DeleteItem", "dynamodb:DeleteItem", "dynamodb:DeleteItem", "dynamodb:GetItem", "dynamodb:GetItem", "dynamodb:GetItem",
+      "dynamodb:ConditionCheckItem", "dynamodb:DeleteItem", "dynamodb:DeleteItem", "dynamodb:DeleteItem", "dynamodb:GetItem", "dynamodb:GetItem", "dynamodb:GetItem",
       "dynamodb:PutItem", "dynamodb:PutItem", "dynamodb:PutItem", "dynamodb:PutItem", "dynamodb:Query", "dynamodb:UpdateItem", "dynamodb:UpdateItem",
     ]);
     // Plan 3, Task 21a-presence (PF9): one exact list for the broker on a cloud install: the creator check, the reads, the developer-partition

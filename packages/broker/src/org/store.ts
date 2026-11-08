@@ -98,6 +98,13 @@ export interface OrgStoreInput {
   memberRemoval?: MemberRemovalHook;
   /** Ledger delivery runtime. Invite creation always persists its outbox item; other legacy hooks may no-op without this runtime. */
   audit?: AuditRuntime;
+  /**
+   * SLACK-LINK-1: the sign-in table. With it, every transaction that gives a developer a company pointer also checks, in the same transaction, that the developer's
+   * sign-in record was not merged into another account (`DEVELOPER#<id>` has no `mergedInto`). Linking a Slack or GitHub account merges its own developer away and checks
+   * (in its own transaction) that the developer holds no company; the two checks are on the same two items, so a join and a link racing end with one of them, never both.
+   * Absent: no such check (an install or test with no sign-in table).
+   */
+  signInTableName?: string;
 }
 
 /** Who a change is recorded as made by, when its caller says; otherwise the change is recorded as Rovara's own. */
@@ -177,13 +184,32 @@ export class OrgStore {
     return await approvalCompanyChange({ ...this.input, now: () => new Date(at) }, orgId, companyEligibleLost);
   }
 
+  /**
+   * SLACK-LINK-1: for each developer this transaction gives a company pointer, a ConditionCheck on their sign-in record (not merged into another account). They are appended
+   * after the caller's items, so the caller's item positions (which `refuse` reads) do not move.
+   */
+  private mergedAwayChecks(items: TransactItem[]): TransactItem[] {
+    const table = this.input.signInTableName;
+    if (table === undefined) return [];
+    const developers = new Set<string>();
+    for (const item of items) {
+      const put = item.Put;
+      if (put !== undefined && put.TableName === this.input.tableName && put.Item?.entityType === "DEVELOPER_ORG" && typeof put.Item.pk === "string") developers.add(put.Item.pk.slice("DEVELOPER_ORG#".length));
+    }
+    return [...developers].map((developerId) => ({ ConditionCheck: { TableName: table, Key: { pk: `DEVELOPER#${developerId}`, sk: "META" }, ConditionExpression: "attribute_not_exists(mergedInto)" } }));
+  }
+
   private async transact(items: TransactItem[], refuse: (failed: Set<number>) => Error | undefined): Promise<void> {
+    const checks = this.mergedAwayChecks(items);
     try {
-      await this.input.documentClient.send(new TransactWriteCommand({ TransactItems: items }));
+      await this.input.documentClient.send(new TransactWriteCommand({ TransactItems: [...items, ...checks] }));
     } catch (error) {
       const failed = failedIndexes(error);
-      const refusal = failed === undefined ? undefined : refuse(failed);
-      throw refusal ?? error;
+      if (failed === undefined) throw error;
+      const own = new Set([...failed].filter((index) => index < items.length));
+      // Only the sign-in record check failed: this sign-in's account was linked into another one while the join ran. Nothing was written; signing in again lands on that account.
+      if (failed.size > 0 && own.size === 0) throw coded("CHANGE_STALE", MERGED_AWAY_MESSAGE);
+      throw refuse(own) ?? error;
     }
   }
 
@@ -782,6 +808,8 @@ export class OrgStore {
   }
 }
 
+/** SLACK-LINK-1: what a sign-in is told when its account was linked into another one just as it was joining a company. */
+export const MERGED_AWAY_MESSAGE = "your sign-in was linked to another account while this ran; sign in again";
 const coded = (code: AgentXErrorCode, message: string) => agentXError(code, message);
 const alreadyInOrg = () => coded("ALREADY_IN_ORG", "this developer already belongs to an organization");
 const inviteInvalid = () => coded("INVITE_INVALID", "the invite is unknown, expired or already used");

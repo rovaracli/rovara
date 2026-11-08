@@ -425,3 +425,75 @@ describe("the callback's remaining guards", () => {
     expect(calls).toEqual([{ kind: "unlink-identity", developerId: "a".repeat(64), sessionId: "00000000-0000-4000-8000-000000000001", provider: "slack" }]);
   });
 });
+
+// SLACK-LINK-1: the "already holds a company" check and the link are one atomic write. The link reads the Slack developer's company first (in the State table) and
+// writes the sign-in table after; a sign-in of the same Slack account that creates or joins a company in between must not leave both. Both orders are covered.
+describe("the link and a company for the same Slack account (SLACK-LINK-1)", () => {
+  const ownerDeveloper = slackKey(OWNER_SLACK);
+  const companyOf = (w: Awaited<ReturnType<typeof world>>) => w.h.state.get(`DEVELOPER_ORG#${ownerDeveloper}`, "ORG");
+
+  it("join, then link: a company that appears after the callback read it (but before the write) refuses the link as 'taken', and nothing is merged or written", async () => {
+    const w = await world();
+    await w.h.signIn("slack", OWNER_SLACK);
+    const real = w.h.orgs.orgForDeveloper.bind(w.h.orgs);
+    let raced = false;
+    // The callback's read of the Slack developer's company answers "none"; the other tab's sign-in then joins the company, before the link is written.
+    vi.spyOn(w.h.orgs, "orgForDeveloper").mockImplementation(async (developerId: string) => {
+      const answer = await real(developerId);
+      if (developerId === ownerDeveloper && !raced) {
+        raced = true;
+        await w.h.orgs.addMember({ orgId: w.orgId, developerId: ownerDeveloper, role: "member" });
+      }
+      return answer;
+    });
+    expect(outcomeOf(await link(w))).toBe("taken");
+    expect(raced).toBe(true);
+    expect(companyOf(w)).toMatchObject({ orgId: w.orgId });
+    expect(w.h.db.get(`DEVELOPER#${ownerDeveloper}`, "META")).not.toHaveProperty("mergedInto");
+    expect(w.h.db.get(signInIdentityKey(ownerDeveloper))).toMatchObject({ developerId: ownerDeveloper });
+    expect(w.h.db.get(developerIdentityKey(w.account, ownerDeveloper))).toBeUndefined();
+    expect(w.h.db.get(`DEVELOPER#${w.account}`, "META")).not.toHaveProperty(SLACK_LINKED_ATTRIBUTE);
+    expect(w.audit.recordedBy("identity.linked").filter((event) => event.actor.id === w.account)).toEqual([]);
+  });
+
+  it("the link write itself refuses a Slack developer that holds a company, whatever the caller read before (a stale 'no company')", async () => {
+    const w = await world();
+    await w.h.signIn("slack", OWNER_SLACK);
+    await w.h.orgs.addMember({ orgId: w.orgId, developerId: ownerDeveloper, role: "member" });
+    const result = await w.h.deps.store.linkSlackIdentity({ developerId: w.account, identityKey: ownerDeveloper, subject: OWNER_SLACK, issuer: SLACK_ISSUER, by: { method: "cloud" }, belongsToCompany: false });
+    expect(result).toEqual({ ok: false, reason: "taken" });
+    expect(w.h.db.get(`DEVELOPER#${ownerDeveloper}`, "META")).not.toHaveProperty("mergedInto");
+  });
+
+  it("link, then join: once the link has landed, the Slack developer can no longer create or join a company (create, add and accept an invite all refuse), and no company is written", async () => {
+    const w = await world();
+    await w.h.signIn("slack", OWNER_SLACK);
+    expect(outcomeOf(await link(w))).toBe("linked");
+    // The other tab's sign-in had already decided "this Slack developer has no company" and now writes it.
+    await expect(w.h.orgs.createOrgWithOwner({ name: "Late team", developerId: ownerDeveloper })).rejects.toMatchObject({ code: "CHANGE_STALE" });
+    await expect(w.h.orgs.addMember({ orgId: w.orgId, developerId: ownerDeveloper, role: "member" })).rejects.toMatchObject({ code: "CHANGE_STALE" });
+    const { token } = await w.h.orgs.createInvite({ orgId: w.orgId, createdBy: w.account, role: "member" });
+    const { inviteTokenHash } = await import("../../packages/broker/src/org/invite-url.js");
+    await expect(w.h.orgs.acceptInvite({ tokenHash: inviteTokenHash(token), developerId: ownerDeveloper })).rejects.toMatchObject({ code: "CHANGE_STALE" });
+    expect(companyOf(w)).toBeUndefined();
+    expect(w.h.state.get(`ORG#${w.orgId}#MEMBER#${ownerDeveloper}`, "META")).toBeUndefined();
+    // The web account is unaffected and the Slack mention still resolves to its company.
+    expect(await w.h.deps.store.developerOfSlackUser(OWNER_SLACK)).toBe(w.account);
+  });
+
+  it("two tabs at once: a Slack sign-in joining a company and the link race; exactly one of them wins, never both", async () => {
+    for (let round = 0; round < 6; round += 1) {
+      const w = await world();
+      await w.h.signIn("slack", OWNER_SLACK);
+      const started = await start(w.h, w.account, w.session.sessionId) as { ok: true; authorizeUrl: string };
+      const [outcome, joined] = await Promise.all([
+        finish(w.h, started.authorizeUrl, OWNER_SLACK, { sessionId: w.session.sessionId }).then(outcomeOf),
+        w.h.orgs.addMember({ orgId: w.orgId, developerId: ownerDeveloper, role: "member" }).then(() => true, () => false),
+      ]);
+      const merged = w.h.db.get(`DEVELOPER#${ownerDeveloper}`, "META")?.mergedInto === w.account;
+      expect(merged && companyOf(w) !== undefined).toBe(false);
+      expect(joined ? "taken" : "linked").toBe(outcome);
+      expect(merged).toBe(outcome === "linked");
+    }
+  });
+});
