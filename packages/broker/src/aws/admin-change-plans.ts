@@ -15,7 +15,7 @@ import {
   endSessions, grantProjectAccess, projectGrant, resolveDeveloper, revokeProjectAccess, setWorkspaceLimits,
   type AdminActionDependencies, type ResolvedDeveloper,
 } from "./admin-actions.js";
-import { adminProjects, channelLabels, getStateItem, latestProjectRecord, privateChannelsFor, queryAllItems, workspaceOwner, type AdminReadDependencies } from "./admin-reads.js";
+import { adminProjects, channelLabels, getStateItem, latestProjectRecord, privateChannelsFor, queryAllItems, scrubOwnerNames, workspaceOwner, type AdminReadDependencies } from "./admin-reads.js";
 import { requireOrgId } from "../org/resolve.js";
 import { hashJson } from "./broker-shared.js";
 import type { CredentialRegistry } from "./credentials.js";
@@ -321,6 +321,7 @@ const planStop: Planner = async (deps, identity, input) => {
   const operation = await getStateItem(deps.reads, { pk: `WORKSPACE#${workspace.id}`, sk: `OPERATION#${workspace.activeOperationId}` });
   if (operation?.kind !== "task") throw agentXError("CONFIG_INVALID", `the running operation is a ${typeof operation?.kind === "string" ? operation.kind : "setup"}, which AgentX does not cancel midway; wait for it to end`);
   const { owner } = await workspaceOwner(deps.reads, workspace);
+  if (workspace.orgId !== undefined) await scrubOwnerNames(deps.reads, workspace.orgId, [owner]);
   const who = owner.threadUrl ?? (owner.developerName === undefined ? "its owner" : `${owner.developerName}'s task`);
   return {
     effect: `Cancel the task running in workspace ${workspace.id} (project ${workspace.projectName}, ${who}, ${workspace.status}). Its conversation keeps what finished before; its compute stops on its own when idle.`,

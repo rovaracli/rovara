@@ -5,6 +5,7 @@ import { AgentXError, agentXError, emailSafeName, projectAllows, projectMemberKe
 import { effectiveProjectRole, requireNewWorkAllowed, viewerCannotStartTasksMessage } from "./project-roles.js";
 import type { DeveloperCaller } from "../aws/developer-routes.js";
 import type { DeveloperTaskRouteDependencies } from "../aws/developer-tasks.js";
+import { resolveStoredName } from "./name-resolver.js";
 import { resolveTaskPeopleAccess, type TaskRole } from "./task-people.js";
 import { resolveSessionAccess } from "../agent-sessions/access.js";
 import { AgentSessionStore } from "../agent-sessions/store.js";
@@ -267,7 +268,7 @@ async function resolveTaskRoleByTask(deps: AccessDependencies, caller: Developer
   if (!member) {
     // Only someone on the task's own Slack workspace who may use the project is told whom to ask.
     if (deps.slackTeamId === undefined || share.teamId !== deps.slackTeamId) throw notFound();
-    throw Object.assign(agentXError("TASK_ACCESS_DENIED", "you can't open this task yet"), { owners: [ownerNameForReaders(owner.name)] });
+    throw Object.assign(agentXError("TASK_ACCESS_DENIED", "you can't open this task yet"), { owners: [ownerNameForReaders(await resolveStoredName({ documentClient: deps.documentClient, tableName: deps.tableName, orgId: task.orgId }, owner.developerId, owner.name))] });
   }
   // A project viewer may look at a task in the channel but not take part: only a role that can start tasks comments, suggests or asks.
   const role: TaskRole = projectRole !== undefined && !projectAllows(projectRole, "start_tasks") ? "viewer" : "commenter";

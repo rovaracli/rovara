@@ -91,7 +91,7 @@ const COMMENT_ANSWER_ITEM_MAX_CHARS = 1_000;
  * or not a person's.
  */
 async function commentAnswerSection(deps: Pick<DeveloperTaskRouteDependencies, "documentClient" | "tableName" | "actions">, task: DeveloperTaskRecord, commentId: string): Promise<string[] | undefined> {
-  const comments = await listTaskComments(deps, task.taskId);
+  const comments = await listTaskComments(deps, task.taskId, task.orgId);
   const asked = comments.find((comment) => comment.commentId === commentId);
   if (asked === undefined || asked.author.kind !== "person" || asked.deletedAt !== undefined) return undefined;
   const nonce = promptTagId(task, `comment-answer:${commentId}`);

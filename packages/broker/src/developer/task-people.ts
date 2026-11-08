@@ -1,4 +1,5 @@
 import { requireSessionLevel, type SessionAccessDependencies } from "../agent-sessions/access.js";
+import { nameResolverOf, replacementNames } from "./name-resolver.js";
 import { randomUUID } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
 import { GetCommand, QueryCommand, TransactWriteCommand, type TransactWriteCommandInput } from "@aws-sdk/lib-dynamodb";
@@ -454,6 +455,8 @@ async function viewOf(deps: TaskPeopleDependencies, task: DeveloperTaskRecord, p
   const sameSlack = new Map<string, number>();
   for (const candidate of candidates.values()) sameSlack.set(candidate.identity.slackUserId, (sameSlack.get(candidate.identity.slackUserId) ?? 0) + 1);
   const rendered: TaskPeopleView["people"] = [];
+  // ERASE-NAME-2: the names the list shows were stored with the task; an erased person reads "A former member", a removed one never the name they chose.
+  const replaced = await replacementNames(nameResolverOf(deps, task.orgId), candidates.keys());
   const displayByDeveloper = new Map(displayChecks.map((proof) => [proof.identity.developerId, proof]));
   for (const candidate of candidates.values()) {
     const role = candidate.explicit?.role ?? "commenter";
@@ -463,7 +466,7 @@ async function viewOf(deps: TaskPeopleDependencies, task: DeveloperTaskRecord, p
       : await effectiveRole(deps, task, people, candidate.identity.developerId, admission);
     if (candidate.explicit === undefined && effective !== "commenter") continue;
     const suffix = (sameSlack.get(candidate.identity.slackUserId) ?? 0) > 1 ? (candidate.identity.method === "slack" ? " (Slack identity)" : candidate.identity.method === "saml" ? " (SAML identity)" : " (OIDC identity)") : "";
-    const baseName = candidate.explicit?.name ?? candidate.identity.name;
+    const baseName = replaced.get(candidate.identity.developerId) ?? candidate.explicit?.name ?? candidate.identity.name;
     const labeledName = suffix === "" ? baseName : `${redactAndCap(baseName, 80 - suffix.length).text}${suffix}`;
     rendered.push({
       personId: candidate.personId,

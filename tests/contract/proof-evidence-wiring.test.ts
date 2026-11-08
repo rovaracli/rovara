@@ -16,7 +16,7 @@ describe("the evidence erase is reached from every erase path", () => {
   it("broker.ts: the person erase runs the evidence step after the learning walk, over the broker's own store", () => {
     const source = code(BROKER);
     expect(source).toMatch(/const personEvidenceErase = createEvidenceErase\(\{ s3, artifactBucketName: requiredEnvironment\("ARTIFACT_BUCKET_NAME"\)/u);
-    expect(source).toMatch(/eraseLearning: learningEraseHook\([^\n]*personErasureStep\(teamRecord, personEvidenceErase\)\)/u);
+    expect(source).toMatch(/eraseLearning: learningEraseHook\([^\n]*personErasureStep\(teamRecord, personEvidenceErase, personNameEraser\)\)/u);
   });
 
   it("handler.ts: both route-dependency blocks (the review page's and the developer API's) carry evidenceErase", () => {

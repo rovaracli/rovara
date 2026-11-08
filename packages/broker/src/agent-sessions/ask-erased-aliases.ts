@@ -92,14 +92,18 @@ const strings = (value: unknown): string[] => (Array.isArray(value) ? value.filt
 
 /**
  * Remembers an erased person's aliases, as hashes, for `ERASED_ALIAS_RETENTION_DAYS`. Idempotent. Without a `key` only the label tag is kept (never a raw alias). The erase runs twice (its second pass
- * carries no names): what is already kept is merged, and the first erasure's time and expiry stay.
+ * carries no names): what is already kept is merged, the first erasure's time stays, and the expiry runs on from this erase.
  */
 export async function rememberErasedAliases(
   table: AskStoreTable, orgId: OrgId, person: { developerId: string; names?: readonly string[] | undefined; handles?: readonly string[] | undefined }, nowMs: number, key?: string  ,
 ): Promise<void> {
   const tag = askPersonTag(person.developerId);
   const itemKey = askErasedAliasKey(orgId, tag);
-  const earlier = (await table.documentClient.send(new GetCommand({ TableName: table.tableName, Key: itemKey, ConsistentRead: true }))) as { Item?: Record<string, unknown> };
+  const earlierRead = (await table.documentClient.send(new GetCommand({ TableName: table.tableName, Key: itemKey, ConsistentRead: true }))) as { Item?: Record<string, unknown> };
+  // An entry that has expired (the table's TTL may not have removed it yet) is not merged into: its hashes are over, and a new entry starts. A live entry is merged and its expiry runs on from now, so hashes
+  // written by a later erase of the same person (who came back and was erased again) are never born expired.
+  const earlierExpiry = earlierRead.Item?.[INDEX_EXPIRY_ATTRIBUTE];
+  const earlier = typeof earlierExpiry === "number" && earlierExpiry * 1000 > nowMs ? earlierRead : { Item: undefined };
   const fresh = key === undefined ? { names: [], handles: [], mentions: [] } : aliasHashesOf(key, person);
   const merge = (field: keyof AliasHashes, stored: string): string[] => [...new Set([...strings(earlier.Item?.[stored]), ...fresh[field]])];
   await table.documentClient.send(new PutCommand({
@@ -107,7 +111,7 @@ export async function rememberErasedAliases(
     Item: {
       ...itemKey, entityType: "ASK_ERASED_ALIAS", orgId, tag, nameHashes: merge("names", "nameHashes"), handleHashes: merge("handles", "handleHashes"), mentionHashes: merge("mentions", "mentionHashes"),
       erasedAt: typeof earlier.Item?.["erasedAt"] === "string" ? earlier.Item["erasedAt"] : new Date(nowMs).toISOString(),
-      [INDEX_EXPIRY_ATTRIBUTE]: typeof earlier.Item?.[INDEX_EXPIRY_ATTRIBUTE] === "number" ? earlier.Item[INDEX_EXPIRY_ATTRIBUTE] : Math.floor(nowMs / 1000) + ERASED_ALIAS_RETENTION_DAYS * DAY_SECONDS,
+      [INDEX_EXPIRY_ATTRIBUTE]: Math.floor(nowMs / 1000) + ERASED_ALIAS_RETENTION_DAYS * DAY_SECONDS,
     },
   }));
 }
@@ -138,4 +142,21 @@ export async function sweepErasedAliases(table: AskStoreTable, orgId: OrgId, now
     }
   }
   return deleted;
+}
+
+/**
+ * ERASED-REJOIN-NAME: whether `name` is a name the erased person was known by, from the keyed hashes this module keeps (nothing readable is stored or compared). A name of two or more words is the same name when
+ * its joined hash, in either word order, is kept (so case, accents, look-alike letters, spacing and word order do not get around it). A one-word name is refused when that word is kept as one of the person's words
+ * (the safer side: a person who was "Priya Rao" cannot come back as "Priya"). False when the hashes are not there: no key, the entry expired (it is kept `ERASED_ALIAS_RETENTION_DAYS` days), or the erase kept
+ * none (the Team record's switch was off, so no Ask step ran). Throws when the entry cannot be read.
+ */
+export async function erasedNameIsChosenAgain(table: AskStoreTable, orgId: OrgId, developerId: string, name: string, nowMs: number, key: string | undefined): Promise<boolean> {
+  if (key === undefined) return false;
+  const response = await table.documentClient.send(new GetCommand({ TableName: table.tableName, Key: askErasedAliasKey(orgId, askPersonTag(developerId)), ConsistentRead: true })) as { Item?: Record<string, unknown> };
+  const expires = response.Item?.[INDEX_EXPIRY_ATTRIBUTE];
+  if (response.Item === undefined || typeof expires !== "number" || expires * 1000 <= nowMs) return false;
+  const kept = { names: new Set(strings(response.Item["nameHashes"])), mentions: new Set(strings(response.Item["mentionHashes"])) };
+  const words = wordsOf(skeletonOf(normaliseWords(name.slice(0, ALIAS_MAX_CHARS))));
+  if (words.length > 1) return [words.join(""), [...words].reverse().join("")].some((joined) => kept.names.has(hash(key, "n", joined)));
+  return words.length === 1 && words[0]!.length >= 2 && kept.mentions.has(hash(key, "m", words[0]!));
 }

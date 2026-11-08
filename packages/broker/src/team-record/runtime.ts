@@ -62,6 +62,7 @@ import { chooseVectorBucketForNewWorkspace, type VectorIndex } from "./vectors.j
 import type { S3VectorsIndex } from "./s3-vectors-index.js";
 import type { DistillModel } from "./distill.js";
 import type { PurgeDependencies } from "./purge.js";
+import { FORMER_MEMBER_NAME } from "../developer/chosen-name.js";
 import { readOpsFailures, recordOpsFailure, type OpsFailures } from "./ops-failures.js";
 import type { RecordLog, RecordVectorPort, TeamRecordTable } from "./types.js";
 
@@ -107,6 +108,8 @@ export interface TeamRecordRuntimeInput {
    * keeps only the person's label tag).
    */
   namesOf?: (developerId: string) => Promise<string[]>;
+  /** ERASE-NAME-1: erases the name the person chose and the one their sign-in record holds (`developer/erase-name.ts`); run as the erase's `names` step. Absent: that step has nothing to do. */
+  nameErasure?: { erase(developerId: string): Promise<void> };
   /** The key the erased person's aliases are hashed with (`askAliasHashKey(callbackSigningKey)`, LA-5). Absent: only the person's label tag is kept for Ask scrubbing, never a raw alias. */
   askAliasKey?: string;
   /** Where the record's own audit events go (record.tombstoned, record.erased, lesson.withdrawn). Absent: none are written. */
@@ -470,6 +473,7 @@ export function createTeamRecordRuntime(input: TeamRecordRuntimeInput): TeamReco
       table, lakeQueue, now, log, lessons: lessons as never, ...(input.audit === undefined ? {} : { audit: input.audit }),
       ...(vectors === undefined ? {} : { vectors: vectors as unknown as RecordVectorPort }), projects: { projects: projectsOf },
       ...(input.askAliasKey === undefined ? {} : { askAliasKey: input.askAliasKey }),
+      ...(input.nameErasure === undefined ? {} : { names: input.nameErasure }),
     };
   }
 
@@ -712,10 +716,11 @@ export function createTeamRecordRuntime(input: TeamRecordRuntimeInput): TeamReco
     }
     // A project's erase also settles first (TRW-5 S4): done once, then done again after the cache's minute, and only then finished.
     if (job.kind === "project" && job.settleAt !== undefined && now() < job.settleAt) return false;
-    const names = job.kind === "person" ? await personNames(job.developerId) : [];
+    const read = job.kind === "person" ? await personNames(job.developerId) : { names: [], unread: false };
+    const names = read.names;
     let complete = job.kind === "project"
       ? (await eraseProject(deps, orgId, job.project, job.cause, `${job.cause}:${job.project}`, budget)).complete
-      : (await erasePerson(deps, orgId, { developerId: job.developerId, projects: job.projects, ...(job.identities.length === 0 ? {} : { identities: job.identities }), ...(names.length === 0 ? {} : { names }) }, `erase:${job.developerId}`, budget)).complete;
+      : (await erasePerson(deps, orgId, { developerId: job.developerId, projects: job.projects, ...(job.identities.length === 0 ? {} : { identities: job.identities }), ...(names.length === 0 ? {} : { names }), ...(read.unread ? { namesUnread: true } : {}) }, `erase:${job.developerId}`, budget)).complete;
     if (complete && job.kind === "project" && job.settleAt === undefined) { await saveJob(orgId, { ...job, settleAt: now() + SETTLE_MS }); complete = false; }
     if (complete) {
       // TRW-4: the person's links go with their rows. Only when the whole erase finished, so a pass that did not finish still knows which author ids to look for.
@@ -726,14 +731,14 @@ export function createTeamRecordRuntime(input: TeamRecordRuntimeInput): TeamReco
     }
     return complete;
   }
-  /** The names the person is known by, for the Ask scrub (LI-2): read now, bounded, never kept in the job. A read that fails gives none (the erase is never held up for it). */
-  async function personNames(developerId: string): Promise<string[]> {
-    if (input.namesOf === undefined) return [];
+  /** The names the person is known by, for the Ask scrub (LI-2): read now, bounded, never kept in the job. A read that fails gives none and says so (the erase is not held up for it; only the `names` step waits, so the retry hashes them before they go). */
+  async function personNames(developerId: string): Promise<{ names: string[]; unread: boolean }> {
+    if (input.namesOf === undefined) return { names: [], unread: false };
     try {
-      return [...new Set((await input.namesOf(developerId)).map((name) => name.trim()).filter((name) => name !== "" && name.length <= 200))].slice(0, 10);
+      return { names: [...new Set((await input.namesOf(developerId)).map((name) => name.trim()).filter((name) => name !== "" && name !== FORMER_MEMBER_NAME && name.length <= 200))].slice(0, 10), unread: false };
     } catch {
       log("record.erase_names_unreadable", {});
-      return [];
+      return { names: [], unread: true };
     }
   }
   /** The source identities a person has: their linked GitHub account, and each Slack user id they signed in with in every Slack team bound to the org (a Slack row is indexed under `slack:<team>`). */

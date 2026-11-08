@@ -20,8 +20,8 @@ import {
 import { auditIdentityLinked, auditIdentityUnlinked, auditMemberRenamed, auditOccurrence } from "../audit/events.js";
 import { flushAuditEvents } from "../audit/flush.js";
 import { auditPending, tryAuditEvents, type AuditRuntime, type TransactItem } from "../audit/outbox.js";
-import { chosenNameKey, readChosenName, readChosenNames, withChosenName } from "./chosen-name.js";
-import { readableDeveloper, safeDisplayName } from "./person-name.js";
+import { chosenNameStatesOf, chosenNameWrite, readChosenName, readNameItems, withChosenName, type ChosenNameItem } from "./chosen-name.js";
+import { placeholderDisplayName, readableDeveloper, safeDisplayName } from "./person-name.js";
 import { ownerKeyForSubject } from "../aws/lambda.js";
 import { pkceChallengeMatches, randomToken, sha256Hex } from "./tokens.js";
 
@@ -69,6 +69,8 @@ export type DeveloperMarks = {
 export interface DeveloperRecord extends DeveloperMarks { developerId: string; provider: DeveloperSignInMethod; issuer: string; subject: string;
   /** The name others see. Never an email address: a sign-in stores the provider's real name or a placeholder, and a record from before release 0.4.16 reads back safe (`getDeveloper`). */
   displayName: string;
+  /** ERASE-NAME-1: when the person's erase cleared the name this record held; a sign-in then leaves the placeholder name alone. */
+  nameErasedAt?: string;
   /** True once the person chose their own name (`PUT /v1/app/me/name`); a sign-in then leaves the name alone. False (or absent on an older record): the provider's name or a placeholder. */
   displayNameChosen?: boolean;
   email?: string; slackUserId?: string; firstSignInAt: string; lastSignInAt: string; revoked: boolean; sessionsEndedAt?: string;
@@ -218,6 +220,11 @@ const safeChosenName = (name: string): string | undefined => {
   return parsed.success ? parsed.data.name : undefined;
 };
 
+/** A name chosen while an erase was being written: the person's details were just erased, and the name was not saved. */
+export const NAME_ERASED_MESSAGE = "your details were just erased, so this name was not saved; choose a name again";
+/** ERASED-REJOIN-NAME: the name a person tries to choose is the one they were erased under. Their old history stays anonymous, so it can't be linked to them again by that name. */
+export const NAME_WAS_ERASED_MESSAGE = "that is the name you had before your details were erased; choose a different name (your earlier work stays under \"A former member\")";
+
 const conditionFailed = (error: unknown) =>
   error instanceof Error && (error.name === "ConditionalCheckFailedException" || error.name === "TransactionCanceledException");
 
@@ -261,6 +268,11 @@ export class DeveloperSignInStore {
      * read-then-write check (a test with two unrelated tables).
      */
     stateTableName?: string;
+    /**
+     * ERASED-REJOIN-NAME: whether `name` is the name an erased person was known by (compared as keyed hashes, so nothing readable is kept; ask-erased-aliases.ts `erasedNameIsChosenAgain`). Asked only
+     * when the person has an erase tombstone. Absent (or it answers false): the new name is accepted. A throw refuses the choice: when it cannot be settled, the old name is not let back in.
+     */
+    erasedNameCheck?: (developerId: string, name: string) => Promise<boolean>;
   }) {}
 
   private seconds(): number { return Math.floor(this.input.now() / 1000); }
@@ -399,7 +411,8 @@ export class DeveloperSignInStore {
       UpdateExpression: `SET ${[...setClauses, ...(withName ? ["displayName = :displayName", "displayNameChosen = :notChosen"] : [])].join(", ")}${removeClauses.length > 0 ? ` REMOVE ${removeClauses.join(", ")}` : ""}`,
       // A name the person chose is theirs: the sign-in writes the provider's name only while they have not chosen one. The check is part of the write, so a
       // choice made while this sign-in is in flight is never overwritten either.
-      ...(withName ? { ConditionExpression: "attribute_not_exists(displayNameChosen) OR displayNameChosen = :notChosen" } : {}),
+      // ERASE-NAME-1: a record whose name was erased (`nameErasedAt`) keeps the placeholder: a sign-in never writes the provider's name back.
+      ...(withName ? { ConditionExpression: "(attribute_not_exists(displayNameChosen) OR displayNameChosen = :notChosen) AND attribute_not_exists(nameErasedAt)" } : {}),
       ExpressionAttributeValues: { ...values, ...(withName ? { ":displayName": displayName, ":notChosen": false } : {}) },
     }));
     try {
@@ -439,9 +452,15 @@ export class DeveloperSignInStore {
       orgId: input.orgId, actor: { kind: "member", id: input.developerId }, occurredAt: at, occurrence: auditOccurrence(input.developerId, at), memberId: input.developerId,
     })]);
     const signInCheck = 1;
+    const nameCheck = 0;
+    // ERASED-REJOIN-NAME: a person who was erased may choose a name for the new membership. The tombstone stays in the item (the write keeps it); the name they were erased under is refused.
+    const existing = (await readNameItems(this.input.documentClient, nameTable, [input.developerId])).get(input.developerId);
+    if (existing?.erased === true && this.input.erasedNameCheck !== undefined && await this.input.erasedNameCheck(input.developerId, name)) throw agentXError("FORBIDDEN", NAME_WAS_ERASED_MESSAGE);
+    const write = chosenNameWrite(existing, input.developerId, name, at);
     try {
       await this.input.documentClient.send(new TransactWriteCommand({ TransactItems: [
-        { Put: { TableName: nameTable, Item: { ...chosenNameKey(input.developerId), entityType: "DEVELOPER_NAME", developerId: input.developerId, name, chosenAt: at } } },
+        // ERASE-NAME-1: the condition keeps an erase that lands in between (a new tombstone) from being overwritten by this name.
+        { Put: { TableName: nameTable, Item: write.item, ConditionExpression: write.condition, ...(write.values === undefined ? {} : { ExpressionAttributeValues: write.values }) } },
         // A person whose sign-in was turned off, or who was merged into another developer, cannot rename (a revocation landing after the session check is caught here).
         // The check is on the sign-in record, which this transaction only reads.
         { ConditionCheck: {
@@ -454,6 +473,7 @@ export class DeveloperSignInStore {
     } catch (error) {
       if (error instanceof Error && error.name === "TransactionCanceledException") {
         const reasons = (error as { CancellationReasons?: Array<{ Code?: string }> }).CancellationReasons;
+        if (reasons?.[nameCheck]?.Code === "ConditionalCheckFailed") throw agentXError("FORBIDDEN", NAME_ERASED_MESSAGE);
         if (reasons?.[signInCheck]?.Code === "ConditionalCheckFailed") throw agentXError("FORBIDDEN", "your sign-in can't change its name now; sign in again");
         throw error;
       }
@@ -483,6 +503,14 @@ export class DeveloperSignInStore {
    * of all of them in one BatchGetItem per 100. A person with no record is missing from the map.
    */
   async getDevelopers(developerIds: readonly string[]): Promise<Map<string, DeveloperRecord>> {
+    return (await this.getDevelopersWithNameItems(developerIds)).records;
+  }
+
+  /**
+   * `getDevelopers`, also handing back the name items it read (developerId to the raw item, for those who have one), so a list that must also settle who is erased or removed
+   * (`replacementNamesFrom`, name-resolver.ts) does it from the same BatchGetItem.
+   */
+  async getDevelopersWithNameItems(developerIds: readonly string[]): Promise<{ records: Map<string, DeveloperRecord>; nameItems: Map<string, ChosenNameItem> }> {
     const unique = [...new Set(developerIds)];
     const nameTable = this.input.nameTableName;
     // At most a few reads at a time, as the routes' lists did when they read the records one by one.
@@ -493,16 +521,17 @@ export class DeveloperSignInStore {
       }
       return found;
     };
-    const [items, chosen] = await Promise.all([
+    const [items, nameItems] = await Promise.all([
       read(),
-      nameTable === undefined ? Promise.resolve(new Map<string, string>()) : readChosenNames(this.input.documentClient, nameTable, unique),
+      nameTable === undefined ? Promise.resolve(new Map<string, ChosenNameItem>()) : readNameItems(this.input.documentClient, nameTable, unique),
     ]);
+    const chosen = new Map([...chosenNameStatesOf(nameItems)].map(([developerId, state]) => [developerId, state.name] as const));
     const records = new Map<string, DeveloperRecord>();
     unique.forEach((developerId, index) => {
       const item = items[index];
       if (item !== undefined) records.set(developerId, readableDeveloper(withChosenName({ ...strip(item), developerId }, chosen.get(developerId))));
     });
-    return records;
+    return { records, nameItems };
   }
 
   /** The identity's link item as stored, whether or not it still counts as a link (see `isActiveLink`). */
@@ -1149,6 +1178,28 @@ export class DeveloperSignInStore {
       if (!conditionFailed(error)) throw error;
       // The record exists with a later or equal end, or it does not exist at all.
       return (await this.getDeveloper(developerId)) === undefined ? "not_found" : "ended";
+    }
+  }
+
+  /**
+   * ERASE-NAME-1: the person's erase clears the name this record holds (the provider's real name, or the one a sign-in made): it becomes the placeholder, marked `nameErasedAt`, which a sign-in
+   * leaves alone. Repeatable (the first time stands). Only the sign-in function calls this; the broker has no write on this table. "not_found" when the person never signed in.
+   */
+  async eraseDisplayName(developerId: string, at: string): Promise<"erased" | "not_found"> {
+    const when = Date.parse(at);
+    if (!Number.isFinite(when)) throw new RangeError("eraseDisplayName needs a readable time");
+    try {
+      await this.input.documentClient.send(new UpdateCommand({
+        TableName: this.input.tableName,
+        Key: { pk: `DEVELOPER#${developerId}`, sk: META },
+        UpdateExpression: "SET displayName = :placeholder, displayNameChosen = :notChosen, nameErasedAt = if_not_exists(nameErasedAt, :at)",
+        ConditionExpression: "attribute_exists(pk)",
+        ExpressionAttributeValues: { ":placeholder": placeholderDisplayName(developerId), ":notChosen": false, ":at": new Date(when).toISOString() },
+      }));
+      return "erased";
+    } catch (error) {
+      if (!conditionFailed(error)) throw error;
+      return "not_found";
     }
   }
 

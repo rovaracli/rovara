@@ -10,7 +10,7 @@ import {
   ATTRIBUTION_NAME_MAX, ATTRIBUTION_REF_LENGTH, ActingAttributionSchema, AttributionPersonSchema, erasedPersonKey, orgMemberKey, orgRemovedKey,
   type ActingAttribution, type AttributionPerson, type OrgId,
 } from "@agentx/contracts";
-import { readChosenName } from "../developer/chosen-name.js";
+import { readChosenName, readChosenNameState } from "../developer/chosen-name.js";
 import { safeDisplayName } from "../developer/person-name.js";
 import type { AttributionLinkStore } from "./links.js";
 
@@ -119,7 +119,11 @@ export function dynamoAttributionReader(input: { documentClient: DocumentClient;
       return typeof record?.displayName === "string" ? record.displayName : "";
     },
     async isErased(orgId, developerId) {
-      return (await get(input.teamRecordTable, erasedPersonKey(orgId, { developerId }))) !== undefined;
+      // ERASE-NAME-1: the erase leaves a tombstone in the name item (State table), which exists whether or not the Team record is on; the record's own marker is checked only where there is a record table.
+      // ERASED-REJOIN-NAME: ever erased counts, also for a person who came back and chose a new name: the description of work does not name them (their old work stays anonymous).
+      const state = await readChosenNameState(input.documentClient, input.stateTable, developerId);
+      if (state?.erased === true || state?.erasedEver === true) return true;
+      return input.teamRecordTable !== "" && (await get(input.teamRecordTable, erasedPersonKey(orgId, { developerId }))) !== undefined;
     },
   };
 }

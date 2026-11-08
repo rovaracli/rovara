@@ -67,7 +67,7 @@ const ROWS: readonly Row[] = [
   ["developer/task-people.ts", "resolveTaskPeopleAccess", "owner-actor", "taskOwnerKey()"],
   ["developer/task-people.ts", "resolveTaskDispatchPeople", "owner-actor", ".developerId", "taskOwnerKey()"],
   ["aws/task-dispatch-access.ts", "guardTaskDispatchCore", "owner-actor", "taskOwnerKey()"],
-  ["aws/developer-tasks/thread-notes.ts", "planWhyEntries", "attribution", ".developerName*2", ".developerId"],
+  ["aws/developer-tasks/thread-notes.ts", "planWhyEntries", "attribution", ".developerName", ".developerId*3"],
   ["aws/developer-tasks/access.ts", "authorizeTaskAction", "caller-actor", "taskOwnerKey()"],
   // the session actor of a stop or retry (Plan 5 Task 13): a person's actor id on a task that is not theirs; it decides nothing about who owns it
   ["aws/developer-tasks/access.ts", "sessionActorAccess", "caller-actor", "taskOwnerKey()"],
@@ -106,6 +106,8 @@ const ROWS: readonly Row[] = [
   ["aws/developer-tasks/task-page.ts", "currentSuggestions", "principal", ".ownerKey"],
   ["aws/developer-tasks/task-page.ts", "getTaskDocumentView", "principal", ".ownerKey"],
   ["aws/developer-tasks/task-page.ts", "getTaskDocumentView", "caller-actor", "taskOwnerKey()*3"],
+  // ERASE-NAME-1: the history reads which of the task's people (its creator, its current owner, the Task People list) were erased, to show "A former member" for them; it decides nothing about who owns the task
+  ["aws/developer-tasks/task-page.ts", "replacedActorNames", "history", ".developerId*2", "taskOwnerKey()*3"],
   ["aws/developer-tasks/feedback-capture.ts", "feedbackReviewWorkspaceReady", "principal", "taskOwnerKey()", ".developerId"],
   // Live interaction A1: the ask context reads the task's latest document from its own object prefix (the task's principal, never changes), as the Slack-only task answer context does
   ["agent-sessions/ask-context.ts", "readDocument", "principal", ".ownerKey"],
@@ -146,8 +148,10 @@ const ROWS: readonly Row[] = [
   // Plan 6 Task 23 (Codex): a task's lazily made session records its creator as the session's owner and the starter it was started by, as `ensureTaskSession` always did (its reads moved into `lazyTaskSessionInput`, and `taskSessionHeader` out of `createTaskSessionItems`); history, and a take-over asks the session's own rules before it
   ["agent-sessions/create.ts", "lazyTaskSessionInput", "history", ".developerId*2", ".startedBy"],
   ["agent-sessions/create.ts", "taskSessionHeader", "history", ".startedBy"],
+  // ERASE-NAME-2: the owner's stored name is replaced for an erased or removed person before a session is made for the task; it decides nothing about who owns the task
+  ["agent-sessions/create.ts", "ensureTaskSession", "history", ".developerId"],
   // Plan 6 Task 23: the task's creator's name is only what the lazily made session shows as its first owner (history); who may take the task over is decided by `askTakeOver` on that session
-  ["aws/developer-tasks/task-people.ts", "codeOwnershipConfirmation", "history", ".developerName*2"],
+  ["aws/developer-tasks/task-people.ts", "codeOwnershipConfirmation", "history", ".developerName*2", ".developerId"],
   // Plan 6 Task 23: who may share a Code task is the session level "edit" (`requireSessionLevel`, which follows a take-over); the actor ids are made from that session's effective owner and the caller, and the write is fenced on the task's owner (`ownerFenceOf` in `shareItems`)
   ["aws/developer-tasks/share.ts", "authorizeShare", "caller-actor", "taskOwnerKey()*2"],
   // Plan 6 Task 16: the review reads of `getWorkflowFeedbackReview` moved into `verifiedFeedbackReview`; the review of comments Rovara fixes on its own is bound to the task's principal (`ownerKey`), which never changes, as the owner's approval path binds it
@@ -236,7 +240,7 @@ const ROWS: readonly Row[] = [
   ["aws/broker/thread-workspaces.ts", "requesterOf", "history", ".developerId", ".provider*2"],
   ["aws/broker/workspace-preparation.ts", "sharedThread", "principal", ".developerId", ".ownerKey"],
   ["aws/broker/thread-workspaces.ts", "sharedThreadWorkspace", "history", ".developerName"],
-  ["aws/broker/workspace-preparation.ts", "slackServiceIdentity", "history", ".developerId", ".developerName", ".ownerKey"],
+  ["aws/broker/workspace-preparation.ts", "slackServiceIdentity", "history", ".developerId*2", ".developerName", ".ownerKey"],
   ["aws/broker/slack-workflow-events.ts", "stopSlackThreadTask", "principal", ".ownerKey"],
   ["aws/broker/model-access.ts", "writeGateRuntime>requireRunAuthority", "principal", ".ownerKey"],
   ["aws/developer-tasks/thread-notes.ts", "threadNotesPromptSection", "other-record", ".developerId"],

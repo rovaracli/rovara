@@ -311,7 +311,7 @@ describe("erased people's kept aliases (LI-2): hashes only, at most 30 days, the
     expect(JSON.stringify(item).toLowerCase()).not.toContain("priya");
   });
 
-  it("is merged by the erase's second pass (which carries no names) and keeps the first erasure's expiry", async () => {
+  it("is merged by the erase's second pass (which carries no names), keeps the first erasure's time, and runs the expiry on from the later erase", async () => {
     const w = sessionWorld();
     await rememberErasedAliases(table(w), ORG_A, { developerId: PRIYA, names: ["Priya Raman"], handles: ["aa"] }, w.clock.now, HASH_KEY);
     await rememberErasedAliases(table(w), ORG_A, { developerId: PRIYA, handles: ["bb"] }, w.clock.now + 20 * 60_000, HASH_KEY);
@@ -319,7 +319,8 @@ describe("erased people's kept aliases (LI-2): hashes only, at most 30 days, the
     expect(alias!.names).toHaveLength(2);
     expect(alias!.handles).toHaveLength(2);
     const [item] = w.db.find((entry) => entry.pk === askErasedAliasPk(ORG_A));
-    expect(item!["indexExpiresAt"]).toBe(Math.floor(w.clock.now / 1000) + 30 * 86_400);
+    expect(item!["erasedAt"]).toBe(new Date(w.clock.now).toISOString());
+    expect(item!["indexExpiresAt"]).toBe(Math.floor((w.clock.now + 20 * 60_000) / 1000) + 30 * 86_400);
   });
 
   it("ignores an alias past its time even before the table removes it, and the sweep deletes it", async () => {

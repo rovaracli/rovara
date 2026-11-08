@@ -286,6 +286,7 @@ export {
   developerKeysThroughLambda,
   developerSinceFromEnvironment,
   endDeveloperSessionsThroughLambda,
+  eraseDeveloperNameThroughLambda,
   realtimeTokenThroughLambda,
   slackAuthCheckThroughLambda,
   slackUserByEmailThroughLambda,

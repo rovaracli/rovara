@@ -485,6 +485,14 @@ export function ownerDecisionCounts(task: TaskOwnerSource, actorId: string, deci
   return actorId === (before ? creator : ownerActorIdOf(task));
 }
 
+/**
+ * ERASED-REJOIN-NAME: when the name stored for the task's owner (`ownerDisplayName`) was written: the take-over's time, else the task's creation. A person who was erased and came back reads as their new
+ * name only for a name written after they chose it.
+ */
+export function ownerNameWrittenAt(task: TaskOwnerSource & { createdAt: string }): string {
+  return takenOverSince(task) ?? task.createdAt;
+}
+
 /** The owner's name for a display: the one recorded, or the fixed `UNNAMED_MEMBER` when none is (or the owner can't be read). Never the creator's name for someone else, never blank. */
 export function ownerDisplayName(task: TaskOwnerSource): string {
   const name = tryEffectiveTaskOwner(task)?.name;
