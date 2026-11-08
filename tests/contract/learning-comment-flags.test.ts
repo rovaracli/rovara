@@ -27,7 +27,10 @@ function withBatchGet(fixture: PageTaskFixture, onBatchGet: (command: { input: {
       send: (command: unknown) => {
         if (nameOf(command) !== "BatchGetCommand") return real(command);
         const typed = command as { input: { RequestItems: Record<string, { Keys: unknown[] }> } };
-        batches.push(Object.values(typed.input.RequestItems).reduce((total, spec) => total + spec.Keys.length, 0));
+        // Only the learning-source keys are counted. Since p1-erase-name the page also reads each commenter's chosen name (DEVELOPER_NAME#..), a different read that every viewer gets;
+        // what these tests pin is that nothing LEARNING is read for a person without standing, and that the learning reads are paged.
+        const learningKeys = Object.values(typed.input.RequestItems).reduce((total, spec) => total + spec.Keys.filter((key) => String((key as { pk?: unknown }).pk).includes("#PROJECT_LEARNING#")).length, 0);
+        if (learningKeys > 0) batches.push(learningKeys);
         return onBatchGet(typed, real);
       },
     },
