@@ -233,12 +233,12 @@ export async function promoteIfStable(deps: StableDeps, key: ScopeKey, lessonId:
   return false;
 }
 
-/** Moves every trial lesson that earned it to stable. Idempotent and bounded; returns the ids moved. For the nightly pass (a lesson that is not loaded again would otherwise wait for a load). */
-export async function promoteStableTrials(deps: StableDeps, key: ScopeKey, limit = 200): Promise<string[]> {
+/** Moves every trial lesson that earned it to stable. Idempotent and bounded; returns the ids moved. For the nightly pass (a lesson that is not loaded again would otherwise wait for a load). `stop` is asked before each lesson (the caller's time budget). */
+export async function promoteStableTrials(deps: StableDeps, key: ScopeKey, limit = 200, stop?: () => boolean): Promise<string[]> {
   const moved: string[] = [];
   const now = deps.now();
   for (const lesson of await deps.store.list(key, { statuses: ["active"] })) {
-    if (moved.length >= limit) break;
+    if (moved.length >= limit || stop?.() === true) break;
     if (trialIsStable(lesson, now) && (await promoteIfStable(deps, key, lesson.id))) moved.push(lesson.id);
   }
   return moved;

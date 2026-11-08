@@ -117,6 +117,13 @@ async function commitWith(deps: CurateDeps, key: ScopeKey, build: () => Promise<
   return undefined;
 }
 
+/** The provenance without the three flags a merge may only narrow (they are put back below when both sides have them). */
+function withoutNarrowingFlags(provenance: Lesson["provenance"]): Lesson["provenance"] {
+  const { memberCorrection: _member, claimsSupported: _claims, fromSharedTask: _shared, ...rest } = provenance;
+  void _member; void _claims; void _shared;
+  return rest;
+}
+
 /** Folds a draft into an existing lesson: citations, sources, authors and supporting tasks are unioned; trust and audience only ever narrow. */
 function mergeInto(target: Lesson, draft: LessonDraft, version: number, now: number, paused: ReadonlySet<string>): Lesson {
   const citations = [...target.citations];
@@ -129,12 +136,13 @@ function mergeInto(target: Lesson, draft: LessonDraft, version: number, now: num
   return {
     ...target, version, citations, ...(citationChecks.length === 0 ? {} : { citationChecks }), updatedAt: now,
     provenance: {
-      ...target.provenance,
+      ...withoutNarrowingFlags(target.provenance),
       sourceEvents: union(target.provenance.sourceEvents, draft.provenance.sourceEvents, 50), sourceKinds: union(target.provenance.sourceKinds, draft.provenance.sourceKinds, 20),
       authors: distinctIds([...target.provenance.authors, ...draft.provenance.authors]), sources: union(target.provenance.sources, draft.provenance.sources, 20), inputSources: unionPinned(target.provenance.inputSources, draft.provenance.inputSources, 100, paused), measured: target.provenance.measured || draft.provenance.measured, supportTasks: union(target.provenance.supportTasks, draft.provenance.supportTasks, 50),
       ...(target.provenance.inheritedTasks === undefined && draft.provenance.inheritedTasks === undefined ? {} : { inheritedTasks: union(target.provenance.inheritedTasks ?? [], draft.provenance.inheritedTasks ?? [], 50) }),
       memberSignal: target.provenance.memberSignal || draft.provenance.memberSignal,
-      // Merging narrows what the lesson rests on: it stays a member correction (and from a shared task) only if both sides are.
+      // Merging narrows what the lesson rests on: it stays a member correction (and from a shared task) only if both sides are. The target's own flag is dropped first (the spread above carries it), so a draft
+      // that lacks the flag clears it: a lesson is publishable only when EVERY task it rests on was shared.
       ...(target.provenance.memberCorrection === true && draft.provenance.memberCorrection === true ? { memberCorrection: true } : {}),
       ...(target.provenance.claimsSupported === true && draft.provenance.claimsSupported === true ? { claimsSupported: true } : {}),
       ...(target.provenance.fromSharedTask === true && draft.provenance.fromSharedTask === true ? { fromSharedTask: true } : {}),

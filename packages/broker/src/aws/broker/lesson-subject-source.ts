@@ -56,6 +56,11 @@ export interface LessonSubjectSourceDeps {
   isErased(orgId: string, developerId: string, project: string): Promise<boolean>;
   /** Who may read the task's rows (`lessons/task-visibility.ts`); undefined = nothing is recorded for this task. */
   visibility(orgId: string, taskId: string): Promise<TaskVisibility | undefined>;
+  /**
+   * The task's LIVE visibility from the strict reader (`resolveTaskVisibility(..., { strict: true })`: any unreadable record, session, share list or People list THROWS). Only for `sharedTask`, the
+   * mark that lets a lesson be published to the repository. Absent, or a read that fails, is "not shared": nothing is published on a guess.
+   */
+  strictVisibility?: ((orgId: string, taskId: string) => Promise<TaskVisibility | undefined>) | undefined;
   /** The artifact store's text read (the plan document). Absent: no plan span. */
   readObject?: ((objectKey: string, maxBytes: number) => Promise<string | undefined>) | undefined;
   now?: () => number;
@@ -86,6 +91,12 @@ function audienceOf(taskId: string, visibility: TaskVisibility, at: string): Aud
   if (visibility.kind === "shared") return { kind: "project" };
   const principals = visibility.kind === "private" ? [visibility.ownerDeveloperId] : [...visibility.developerIds].slice(0, 500);
   return { kind: "restricted", acl: { source: "rovara", scope: `rovara:task/${taskId}`, principals, capturedAt: at, liveCheck: "none" } };
+}
+
+/** Whether the task is, right now, the whole project's: shared with the project (or the company) and no People entry denies anyone. Every other answer, and every failure, is false. */
+async function sharedWithProjectNow(deps: LessonSubjectSourceDeps, orgId: string, taskId: string, audience: Audience): Promise<boolean> {
+  if (deps.strictVisibility === undefined || audience.kind !== "project") return false;
+  try { return (await deps.strictVisibility(orgId, taskId))?.kind === "shared"; } catch { return false; }
 }
 
 const present = (value: string | undefined): value is string => value !== undefined && value.trim() !== "";
@@ -400,6 +411,7 @@ export function lessonSubjectSource(deps: LessonSubjectSourceDeps): TaskSubjectS
         const address = merged === undefined ? undefined : (deps.pullRequestAddress ?? githubPullRequestAddress)(merged.url);
         if (address !== undefined) mergedCommit = await deps.mergeCommitOf({ orgId, taskId: task.taskId, address }).catch(() => undefined);
       }
+      const audience = audienceOf(task.taskId, visibility, new Date((deps.now ?? Date.now)()).toISOString());
       const base_: TaskSubjectBase = {
         facts: {
           workspaceId: orgId, project, taskId: task.taskId, repositories,
@@ -412,7 +424,9 @@ export function lessonSubjectSource(deps: LessonSubjectSourceDeps): TaskSubjectS
             steeringTrust,
             ...(creatorErased ? {} : { intentTrust: await trustOf(creator) }),
             ...(links.length === 0 ? {} : { links }),
-            audience: audienceOf(task.taskId, visibility, new Date((deps.now ?? Date.now)()).toISOString()),
+            audience,
+            // Only a task that is project-wide at THIS moment (both reads agree) may lead to a published lesson; publishing and delivery check the live visibility again at read time.
+            ...(await sharedWithProjectNow(deps, orgId, task.taskId, audience) ? { sharedTask: true as const } : {}),
             spans,
           },
         },

@@ -217,6 +217,17 @@ describe("curator decisions (design §4.5.2)", () => {
     expect((await store.get(KEY, "les_act1"))!.version).toBe(1);
   });
 
+  it("lessons connect: a merge keeps fromSharedTask only when every merged source came from a shared task (AND)", async () => {
+    const shared = (fromSharedTask: boolean | undefined): LessonDraft => draft({ provenance: { ...draft().provenance, ...(fromSharedTask === undefined ? {} : { fromSharedTask }) } });
+    for (const [first, second, expected] of [[true, true, true], [true, undefined, undefined], [undefined, true, undefined], [true, false, undefined]] as const) {
+      const { deps, store } = setup();
+      await curateDraft(deps, KEY, shared(first));
+      expect((await curateDraft(deps, KEY, shared(second))).outcome).toBe("merged");
+      const [only] = await store.list(KEY);
+      expect(only!.provenance.fromSharedTask, `${String(first)} + ${String(second)}`).toBe(expected);
+    }
+  });
+
   it("embedding failure drops the draft without writing anything", async () => {
     const { deps, store } = setup();
     embedder.fail = true;

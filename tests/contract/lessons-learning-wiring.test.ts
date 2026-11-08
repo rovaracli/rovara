@@ -246,15 +246,22 @@ describe("L4: the lessons' scheduled jobs", () => {
   const withJobs = (paused: boolean) => {
     const { dependencies, db } = install();
     const registered: string[] = [];
+    const works: Record<string, (orgId: string, projects: string[], budgetMs: number) => Promise<Record<string, number>>> = {};
     const teamRecord = dependencies.teamRecord as Record<string, unknown>;
-    teamRecord["jobs"] = { extend: (job: string) => { registered.push(job); } };
+    teamRecord["jobs"] = { extend: (job: string, work: (orgId: string, projects: string[], budgetMs: number) => Promise<Record<string, number>>) => { registered.push(job); works[job] = work; } };
     if (paused) teamRecord["paused"] = true;
-    return { dependencies, db, registered };
+    return { dependencies, db, registered, works };
   };
   it("a running record gets both: the hourly resume of half-done deletions and the nightly re-reflection of reverts", () => {
     const { dependencies, registered } = withJobs(false);
     installLessons(dependencies as never);
     expect(registered).toEqual(["hourly", "nightly"]);
+  });
+  it("lessons connect: the nightly job is the re-reflection, the expiry sweep AND the trial-to-stable pass (its counts carry both)", async () => {
+    const { dependencies, works } = withJobs(false);
+    installLessons(dependencies as never);
+    const counts = await works["nightly"]!(TEST_ORG, ["web"], 10_000);
+    expect(counts).toMatchObject({ revertsEnqueued: 0, lessonsExpired: 0, trialsPromoted: 0 });
   });
   it("a PAUSED record still gets the hourly resume (an erase must finish whether or not the record is paused), on a store-only port, and no nightly re-reflection (a paused record learns nothing)", () => {
     const { dependencies, registered } = withJobs(true);
