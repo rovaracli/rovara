@@ -1,6 +1,7 @@
 // Lessons connect fix 1 (M4, owner decision 32): `sharedTask` means "visible to the whole project with no People denial", read live and strict. An ordinary task nobody shared counts; a denial, another company's task, a task
 // with no task session and anything unreadable do not (the last one throws, which the caller reads as unknown). The Team record's own resolver (`task-visibility.ts`) is not touched.
 import { describe, expect, it } from "vitest";
+import { agentSessionKey } from "@agentx/contracts";
 import { taskKey } from "../../../packages/broker/src/developer/task-records.js";
 import { resolveTaskProjectWide } from "../../../packages/broker/src/lessons/task-project-wide.js";
 import { resolveTaskVisibility } from "../../../packages/broker/src/lessons/task-visibility.js";
@@ -42,6 +43,12 @@ describe("resolveTaskProjectWide", () => {
     expect(await t.wide()).toBe(false);
     t.w.db.set({ ...record, sessionId: "ses_00000000000000000000000000000000" });
     await expect(t.wide()).rejects.toThrow();
+  });
+  it("R4: a task whose session belongs to another project is false (the session is that project's to open, not this task's); the same task with the matching project is true", async () => {
+    const t = setup();
+    expect(await t.wide()).toBe(true);
+    t.w.db.set({ ...(t.w.db.get(agentSessionKey(ORG_A, t.sessionId, "META").pk, agentSessionKey(ORG_A, t.sessionId, "META").sk) as Record<string, unknown>), project: "other-project" });
+    expect(await t.wide()).toBe(false);
   });
   it("an unreadable People list throws (it denies everyone, so the answer is not known), and a read that fails throws", async () => {
     const t = setup({ people: [] });

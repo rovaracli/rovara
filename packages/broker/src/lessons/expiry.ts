@@ -7,7 +7,6 @@ import type { LessonDeps } from "./ports.js";
 import type { LessonStore, ScopeKey } from "./store.js";
 import type { Lesson, LessonType } from "./types.js";
 import { nextVersion } from "./store.js";
-import { isTrialLesson } from "./trial.js";
 
 const DAY = 86_400_000;
 
@@ -19,14 +18,14 @@ export function expiryWindowMs(type: LessonType, configuredDays: number | undefi
 export const pendingExpiry = (now: number): number => now + CHANGE_APPROVAL_TTL_DAYS * DAY;
 
 /**
- * Renews a lesson after a validated helpful use, or after its code citations validated. Never shortens an expiry.
- * A validated LOAD renews the lessons whose use the design counts without a person: facts, and (lessons connect, fix 1, H1) every lesson that is live on trial or stable, whatever its type (a convention or a pitfall that
- * keeps being loaded, and so keeps being published, must not lapse at day 90). A person-approved lesson of another type is renewed by a helpful use only.
+ * Renews a lesson after a validated helpful use, or after its code citations validated. Never shortens an expiry. Only a fact is renewed by a validated load (owner answer Q7: "renewed on validated helpful
+ * use; facts with valid citations renew on validation"). A lesson of any other type is renewed by a helpful use only, so one that is merely loaded, and so never judged, still lapses; the one gap that left
+ * (a use in the last 14 days before expiry, whose helpful mark falls due after it) is closed where the mark is queued (`recordTaskOutcome` holds the expiry until the mark settles).
  */
 export async function renewLesson(store: LessonStore, key: ScopeKey, id: string, now: number, configuredDays: number | undefined, reason: "helpful" | "validated"): Promise<Lesson | undefined> {
   return store.mutate(key, id, (lesson) => {
     if (lesson.status !== "active") return undefined;
-    if (reason === "validated" && lesson.type !== "fact" && !isTrialLesson(lesson)) return { lastValidatedAt: now };
+    if (reason === "validated" && lesson.type !== "fact") return { lastValidatedAt: now };
     const renewed = now + expiryWindowMs(lesson.type, configuredDays);
     return { expiresAt: Math.max(lesson.expiresAt, renewed), ...(reason === "helpful" ? { lastHelpfulAt: now } : {}), lastValidatedAt: now };
   });

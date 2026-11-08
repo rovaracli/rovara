@@ -34,10 +34,13 @@ export interface TaskOutcome {
   evalRun?: boolean;
 }
 
-/** A correction is in a lesson's scope when the lesson has no path scope (a repository-wide lesson) or one of the correction's files matches. */
+/**
+ * A correction is in a lesson's scope when the lesson has no path scope (a repository-wide lesson), or the correction names no file (a send-back and a revert name none today, so what it touched is unknown and
+ * it could be about any lesson), or one of the correction's files matches.
+ */
 const inScope = (lesson: Lesson, correction: TaskCorrection): boolean => {
   const paths = lesson.scope.paths ?? [];
-  if (paths.length === 0) return true;
+  if (paths.length === 0 || correction.paths.length === 0) return true;
   const expressions = paths.map(globToRegExp);
   return correction.paths.some((p) => expressions.some((re) => re.test(p)));
 };
@@ -102,7 +105,11 @@ export async function recordTaskOutcome(deps: CounterDeps, outcome: TaskOutcome)
     }
     if (outcome.outcome === "reverted") { await deps.store.removePending(key, `helpful:${outcome.taskId}:${lessonId}`); continue; }
     if (outcome.outcome === "merged" && outcome.sendBacks <= 1 && !unjudged && !ignored) {
-      await deps.store.addPending({ key: `helpful:${outcome.taskId}:${lessonId}`, workspaceId: key.workspaceId, project: key.project, lessonId, taskId: outcome.taskId, dueAt: (outcome.mergedAt ?? deps.now()) + REVERT_WINDOW_MS });
+      const dueAt = (outcome.mergedAt ?? deps.now()) + REVERT_WINDOW_MS;
+      await deps.store.addPending({ key: `helpful:${outcome.taskId}:${lessonId}`, workspaceId: key.workspaceId, project: key.project, lessonId, taskId: outcome.taskId, dueAt });
+      // A lesson used in its last 14 days would lapse before this mark falls due, so the expiry is held until the mark can settle (one day more, so the nightly settle, which runs before the sweep, has run).
+      // It is a hold, not a renewal: a revert takes the mark back and the lesson then lapses at the held date. Never shortens an expiry.
+      await deps.store.mutate(key, lessonId, (l) => (l.status === "active" && l.expiresAt < dueAt + DAY ? { expiresAt: dueAt + DAY } : undefined));
       result.queuedHelpful.push(lessonId);
     }
   }

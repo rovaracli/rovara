@@ -109,21 +109,22 @@ describe("S1 and M1: Helpful / Wrong here marks", () => {
   const mark = (s: ReturnType<typeof setup>, userId: string, kind: "helpful" | "wrong_here", taskId = "task-1") =>
     recordFeedback(feedbackDeps(s), { ...KEY, taskId, lessonId: "les_aaaa1111", userId, viewer: { principals: [], groups: [] }, kind });
 
+  // The user id has letters that are not hex ("zed-person"): the reference is 24 random hex characters, and a short hex-like id ("dee") appears in one by chance about once in 260 runs.
   it("the stored key holds no value derived from the person, and erasing the person deletes the link to the reference it was made with", async () => {
     const s = setup();
     await seed(s.store, lessonRecord());
     await s.store.putManifest(manifest);
-    expect(await mark(s, "dee", "helpful")).toEqual({ ok: true });
-    const derived = createHash("sha256").update(`${WS}\u0001dee`).digest("hex").slice(0, 24);
+    expect(await mark(s, "zed-person", "helpful")).toEqual({ ok: true });
+    const derived = createHash("sha256").update(`${WS}\u0001zed-person`).digest("hex").slice(0, 24);
     const names = s.store.onceNames(KEY).filter((name) => name.startsWith("feedback:"));
     expect(names).toHaveLength(1);
     expect(names[0]).not.toContain(derived);
-    expect(names[0]).not.toContain("dee");
-    const before = await s.store.markRef(KEY, "dee");
-    await s.port.erasePerson(WS, KEY.project, { developerId: "dee" }, new Set());
+    expect(names[0]).not.toContain("zed-person");
+    const before = await s.store.markRef(KEY, "zed-person");
+    await s.port.erasePerson(WS, KEY.project, { developerId: "zed-person" }, new Set());
     // The link is gone and the person is fenced: no new mark, and nothing can recompute the reference.
-    expect(await s.store.markRef(KEY, "dee")).toBeUndefined();
-    expect(await mark(s, "dee", "wrong_here")).toEqual({ ok: false, code: "not_permitted" });
+    expect(await s.store.markRef(KEY, "zed-person")).toBeUndefined();
+    expect(await mark(s, "zed-person", "wrong_here")).toEqual({ ok: false, code: "not_permitted" });
     expect(before).toBeDefined();
     expect(names[0]).toContain(before!);
     // The count the mark made stays (a number, not a person).

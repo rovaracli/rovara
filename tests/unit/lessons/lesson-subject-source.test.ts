@@ -209,7 +209,8 @@ describe("sharedTask: the mark repository publishing needs (lessons connect)", (
     expect(logs).toEqual([]);
     const down = { ...sharedNow, strictVisibility: async () => { throw new Error("secret table text"); }, projectWide: async () => { throw new Error("secret table text"); }, log: flaky.log };
     expect(await sharedOf(down)).toBeUndefined();
-    expect(logs).toEqual([["learning.shared_task_unreadable", { taskId: TASK }]]);
+    expect(logs).toEqual([["learning.shared_task_unreadable", { task: createHash("sha256").update(`${WS}\u0000${TASK}`).digest("hex").slice(0, 12) }]]);
+    expect(JSON.stringify(logs)).not.toContain(TASK);
   });
   it("positive control: the strict reader is asked for this company's task", async () => {
     const asked: string[][] = [];

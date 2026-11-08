@@ -19,6 +19,7 @@ import { taskKey, taskOwnerKey, tryEffectiveTaskOwner, type DeveloperTaskRecord 
 import { loadWorkflowDocument } from "../../developer/plan-artifacts.js";
 import type { TaskSubjectBase, TaskSubjectSource } from "../../lessons/task-end.js";
 import { isHumanSendBack } from "../../lessons/human-send-backs.js";
+import { logRef } from "../../lessons/log-ref.js";
 import type { EvidenceSpan } from "../../lessons/reflect-input.js";
 import { taskStartActor } from "../../lessons/task-subject.js";
 import type { Audience, TrustClass } from "../../lessons/types.js";
@@ -66,7 +67,7 @@ export interface LessonSubjectSourceDeps {
    * Used with the strict reader: either one saying "project-wide" is enough. Absent: only the strict reader decides.
    */
   projectWide?: ((orgId: string, taskId: string) => Promise<boolean>) | undefined;
-  /** A fixed count-only line for a read that failed (no ids, no text). */
+  /** A fixed line for a read that failed: the task only as a hash (`logRef`), never a raw id and never text. */
   log?: ((event: string, fields: Record<string, string | number>) => void) | undefined;
   /** The artifact store's text read (the plan document). Absent: no plan span. */
   readObject?: ((objectKey: string, maxBytes: number) => Promise<string | undefined>) | undefined;
@@ -113,7 +114,7 @@ async function sharedWithProjectNow(deps: LessonSubjectSourceDeps, orgId: string
       return deps.projectWide === undefined ? false : await deps.projectWide(orgId, taskId);
     } catch { /* read again once */ }
   }
-  deps.log?.("learning.shared_task_unreadable", { taskId });
+  deps.log?.("learning.shared_task_unreadable", { task: logRef(orgId, taskId) });
   return undefined;
 }
 

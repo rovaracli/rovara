@@ -125,12 +125,13 @@ function withoutNarrowingFlags(provenance: Lesson["provenance"]): Lesson["proven
 }
 
 /**
- * The "from a project-wide task" mark after a merge (lessons connect, fix 1, L1): a draft from a task that was NOT project-wide (`false`) clears it for good, one the live read could not tell about (unset) leaves what the
- * lesson already has (publishing checks every source task's live visibility again), and a draft that is project-wide only keeps a mark the lesson already has: it never sets one on a lesson that lacks it.
+ * The "from a project-wide task" mark after a merge (lessons connect, fix 2, R3; this replaces the fix-1 rule that a draft with no mark left the lesson's `true`): `true` only when EVERY source was known to be
+ * project-wide (both sides `true`). A side that is `false` (a task that was not project-wide) clears it for good; a side that is unset (the live read could not tell) leaves it unset, never `true`, so a source nobody could
+ * read can never be hidden behind the others. Publishing still checks the live visibility of every source task again.
  */
 function mergedSharedMark(target: boolean | undefined, draft: boolean | undefined): { fromSharedTask?: boolean } {
   if (draft === false || target === false) return { fromSharedTask: false };
-  return target === true ? { fromSharedTask: true } : {};
+  return target === true && draft === true ? { fromSharedTask: true } : {};
 }
 
 /** Folds a draft into an existing lesson: citations, sources, authors and supporting tasks are unioned; trust and audience only ever narrow. */
@@ -151,7 +152,7 @@ function mergeInto(target: Lesson, draft: LessonDraft, version: number, now: num
       ...(target.provenance.inheritedTasks === undefined && draft.provenance.inheritedTasks === undefined ? {} : { inheritedTasks: union(target.provenance.inheritedTasks ?? [], draft.provenance.inheritedTasks ?? [], 50) }),
       memberSignal: target.provenance.memberSignal || draft.provenance.memberSignal,
       // Merging narrows what the lesson rests on: it stays a member correction (and from a shared task) only if both sides are. The target's own flag is dropped first (the spread above carries it), so a draft
-      // that lacks the flag clears it: a lesson is publishable only when EVERY task it rests on was shared.
+      // that lacks the flag leaves it unset (`mergedSharedMark`: only a known `true` on both sides survives): a lesson is publishable only when EVERY task it rests on was known to be shared.
       ...(target.provenance.memberCorrection === true && draft.provenance.memberCorrection === true ? { memberCorrection: true } : {}),
       ...(target.provenance.claimsSupported === true && draft.provenance.claimsSupported === true ? { claimsSupported: true } : {}),
       ...mergedSharedMark(target.provenance.fromSharedTask, draft.provenance.fromSharedTask),

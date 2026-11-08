@@ -15,8 +15,8 @@ const trial = (over: Partial<Lesson> = {}, clock = new Clock()): Lesson => lesso
   trial: { state: "trial", startedAt: clock.now() - (TRIAL_STABLE_AFTER_DAYS + 1) * DAY }, counters: { loaded: 3, helpful: 0, harmful: 0, citationStale: 0 }, expiresAt: clock.now() + 90 * DAY, ...over,
 });
 
-describe("H1: a validated load renews a lesson that is live on trial or stable, whatever its type", () => {
-  it("a trial or stable convention is renewed by a validated load; a person-approved convention is not (only a helpful use renews it); a fact always is", async () => {
+describe("H1 (replaced by fix round 2, R1, owner answer Q7): a validated load renews a fact only; every other type is renewed by a validated helpful use", () => {
+  it("a validated load renews a fact and nothing else (a trial or stable convention, a person-approved convention); a helpful use renews any type", async () => {
     const store = new InMemoryLessonStore();
     const clock = new Clock();
     const old = clock.now() + 2 * DAY;
@@ -25,31 +25,28 @@ describe("H1: a validated load renews a lesson that is live on trial or stable, 
       lessonRecord({ id: "les_fact", type: "fact", status: "active", expiresAt: old }));
     for (const id of ["les_trialconv", "les_stableconv", "les_personconv", "les_fact"]) await renewLesson(store, KEY, id, clock.now(), undefined, "validated");
     const expiry = async (id: string) => (await store.get(KEY, id))!.expiresAt;
-    expect(await expiry("les_trialconv")).toBe(clock.now() + 90 * DAY);
-    expect(await expiry("les_stableconv")).toBe(clock.now() + 90 * DAY);
     expect(await expiry("les_fact")).toBe(clock.now() + 90 * DAY);
-    expect(await expiry("les_personconv")).toBe(old);
-    // A helpful use renews the person-approved one (the existing rule).
-    await renewLesson(store, KEY, "les_personconv", clock.now(), undefined, "helpful");
-    expect(await expiry("les_personconv")).toBe(clock.now() + 90 * DAY);
+    for (const id of ["les_trialconv", "les_stableconv", "les_personconv"]) expect(await expiry(id)).toBe(old);
+    for (const id of ["les_trialconv", "les_stableconv", "les_personconv"]) await renewLesson(store, KEY, id, clock.now(), undefined, "helpful");
+    for (const id of ["les_trialconv", "les_stableconv", "les_personconv"]) expect(await expiry(id)).toBe(clock.now() + 90 * DAY);
   });
-  it("a stable convention that keeps being loaded survives day 90 (worker load reports renew it each time); one that stops being loaded expires", async () => {
+  it("a stable convention that is only loaded (never marked helpful) lapses at day 90 however often it was loaded; a fact that keeps validating survives", async () => {
     const clock = new Clock();
     const store = new InMemoryLessonStore();
     const audit = new Audit();
     const created = clock.now();
-    const stable = (id: string): Lesson => trial({ id, trial: { state: "stable", startedAt: created, stableAt: created + 14 * DAY }, expiresAt: created + 90 * DAY, counters: { loaded: 3, helpful: 0, harmful: 0, citationStale: 0 } }, clock);
-    await seed(store, stable("les_loaded01"), stable("les_unload01"));
+    const stable = (id: string, type: Lesson["type"]): Lesson => trial({ id, type, trial: { state: "stable", startedAt: created, stableAt: created + 14 * DAY }, expiresAt: created + 90 * DAY, counters: { loaded: 3, helpful: 0, harmful: 0, citationStale: 0 } }, clock);
+    await seed(store, stable("les_loaded01", "convention"), stable("les_factload", "fact"));
     const deps: CounterDeps = { store, audit, now: clock.now, judge: new Judge(), settings: settings({ mode: "On", preset: "standard" }) };
     for (let day = 10; day <= 100; day += 10) {
       clock.t = created + day * DAY;
-      await store.putManifest({ taskId: `t${day}`, workspaceId: WS, project: KEY.project, stage: "IMPLEMENT", round: 1, setVersion: 1, memory: "live", at: clock.now(), lessons: [{ id: "les_loaded01", version: 1, score: 0.5, why: "scope", citation: "valid" }], bytes: 10 });
-      await applyLoadReport(deps, { workspaceId: WS, project: KEY.project, taskId: `t${day}`, stage: "IMPLEMENT", round: 1, report: { stage: "IMPLEMENT", lessons: [{ id: "les_loaded01", version: 1, citation: "valid" }] } as never });
+      await store.putManifest({ taskId: `t${day}`, workspaceId: WS, project: KEY.project, stage: "IMPLEMENT", round: 1, setVersion: 1, memory: "live", at: clock.now(), lessons: ["les_loaded01", "les_factload"].map((id) => ({ id, version: 1, score: 0.5, why: "scope", citation: "valid" as const })), bytes: 10 });
+      await applyLoadReport(deps, { workspaceId: WS, project: KEY.project, taskId: `t${day}`, stage: "IMPLEMENT", round: 1, report: { stage: "IMPLEMENT", lessons: ["les_loaded01", "les_factload"].map((id) => ({ id, version: 1, citation: "valid" })) } as never });
     }
     clock.t = created + 100 * DAY;
     const swept = await sweepExpired({ now: clock.now, audit }, store, KEY);
-    expect(swept.expired).toEqual(["les_unload01"]);
-    expect((await store.get(KEY, "les_loaded01"))!.status).toBe("active");
+    expect(swept.expired).toEqual(["les_loaded01"]);
+    expect((await store.get(KEY, "les_factload"))!.status).toBe("active");
   });
 });
 

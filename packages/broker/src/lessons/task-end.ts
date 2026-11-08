@@ -11,6 +11,7 @@ import { randomUUID } from "node:crypto";
 import { registerTaskEndHandler, type TaskEndHandler, type TaskEndOutcome } from "../agents/task-end.js";
 import { modeAllows, resolveLearning, type LearningSettingsReader } from "./policy.js";
 import { currentLearningAttempt } from "./learning-deadline.js";
+import { logRef } from "./log-ref.js";
 import { recordTaskOutcome, type CounterDeps, type TaskCorrection } from "./counters.js";
 import { processDraft, type ProcessDeps } from "./process.js";
 import { reflectSubject, type ReflectDeps } from "./reflect.js";
@@ -116,8 +117,8 @@ export async function subjectForTask(deps: TaskLearningDeps, input: { workspaceI
 const NO_TEXT = "The task was corrected.";
 
 /**
- * Lessons connect (fix 1, H1): counts the finished task for the lessons it loaded. Runs inside the worker's lease after the reflection, so a redelivery never counts twice (and the counters are idempotent per task and
- * lesson anyway). Never throws: a fault is one fixed log line and the reflection's result stands. Corrections are the task's human send-backs (counted from the task's own decision list, so an erased sender's still
+ * Lessons connect (fix 1, H1; fix 2, R2): counts the finished task for the lessons it loaded. Runs inside the worker's lease before the reflection, on every attempt (the counters are idempotent per task and
+ * lesson, so a retry or a redelivery never counts twice). Never throws: a fault is one fixed log line and the reflection's result stands. Corrections are the task's human send-backs (counted from the task's own decision list, so an erased sender's still
  * counts) and, for a revert, the revert; `recordTaskOutcome` leaves any lesson with a correction in its scope unjudged when the judge refuses.
  */
 async function countOutcome(deps: TaskLearningDeps, base: TaskSubjectBase, subject: ReflectSubject, input: { taskId: string }): Promise<void> {
@@ -134,7 +135,7 @@ async function countOutcome(deps: TaskLearningDeps, base: TaskSubjectBase, subje
       ...(subject.outcome === "merged" ? { mergedAt: at } : {}), corrections, ...(subject.evalRun === true ? { evalRun: true } : {}),
     });
   } catch {
-    deps.log?.("learning.outcome_failed", { taskId: input.taskId });
+    deps.log?.("learning.outcome_failed", { task: logRef(subject.workspaceId, input.taskId) });
   }
 }
 
@@ -168,15 +169,16 @@ export async function learnFromEndedTaskTyped(deps: TaskLearningDeps, input: { w
     if (!modeAllows(learning.mode, "reflect")) return final("off");
     const subject = await subjectFrom(deps, base, input.workspaceId, input.outcome);
     if (subject === undefined) return final("no_facts");
+    // The outcome is counted BEFORE the reflection: counting needs no model and is idempotent (a once-key per task and lesson, a queued mark that is only replaced or removed), so it happens on every attempt, whatever
+    // the reflection comes to (a refusal, a model that failed, an attempt that will be retried, a deadline that cut it). A revert's re-reflection takes the merge's queued helpful mark back here, even if it never reflects.
+    await countOutcome(deps, base, subject, input);
     const result = await reflectSubject(deps.reflect, subject);
     if (result.status !== "ok") {
       // Lane 1b: "learning_paused" is a refusal (no provider, every model forbidden, a price or budget that cannot fit, the month's limit): the reason is already recorded as the project's pause, and trying again changes
       // nothing, so it ends the reflection (final) whatever fault state an earlier step left. A spend look that could not read the counter is "spend_refused" with a retryable fault (nothing was held or sent).
-      if (result.reason === "learning_paused") { await countOutcome(deps, base, subject, input); return final("not_reflected"); }
+      if (result.reason === "learning_paused") return final("not_reflected");
       // The reflector turns a failed model call or spend look into a fixed reason; the model path says whether that failure was worth another try.
       const retryable = (result.reason === "model_error" || result.reason === "spend_refused") && currentLearningAttempt()?.fault === "retryable";
-      // A reflection that will be tried again counts the outcome on that attempt; one that ends here counts it now (counting needs no model).
-      if (!retryable) await countOutcome(deps, base, subject, input);
       return { status: "not_reflected", retry: retryable };
     }
     const key = { workspaceId: input.workspaceId, project: base.facts.project };
@@ -186,7 +188,6 @@ export async function learnFromEndedTaskTyped(deps: TaskLearningDeps, input: { w
       if (signal?.aborted === true) { deps.log?.("learning.drafts_cut_at_deadline", { taskId: input.taskId }); break; }
       try { await processDraft(deps.process, key, draft); } catch { deps.log?.("learning.draft_failed", { taskId: input.taskId }); }
     }
-    await countOutcome(deps, base, subject, input);
     return final("reflected");
   } catch {
     deps.log?.("learning.task_end_failed", { taskId: input.taskId });
