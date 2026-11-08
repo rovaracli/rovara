@@ -798,7 +798,7 @@ describe("the worker's side of the money (LP-3)", () => {
   const attemptOf = (t: ReturnType<typeof install>, extra: Partial<NonNullable<ReturnType<typeof currentLearningAttempt>>> = {}) => {
     const claims = leasesOf(t);
     return { claims, run: async <T,>(work: () => Promise<T>) => {
-      const taken = await claims.take({ orgId: TEST_ORG, taskId: "task-1", outcome: "merged", requestId: "r" }, Date.now());
+      const taken = await claims.take({ orgId: TEST_ORG, taskId: "task-1", outcome: "merged" }, Date.now());
       if (taken.kind !== "taken") throw new Error("not taken");
       const lease = taken.lease;
       const attempt: NonNullable<ReturnType<typeof currentLearningAttempt>> = {

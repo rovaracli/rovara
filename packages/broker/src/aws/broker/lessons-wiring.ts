@@ -32,6 +32,8 @@ import { lessonSubjectSource } from "./lesson-subject-source.js";
 import { setLessonsHomeReader } from "../../lessons/home-source.js";
 import { lessonsUsedReaderOver, setLessonsUsedReader, type RepositoryVisibility, visibilityOfRepositories } from "../../lessons/used-in-pr.js";
 import { resolveLearning } from "../../lessons/policy.js";
+import { humanEditMessageOf, type ReflectQueue } from "../../lessons/reflect-queue.js";
+import type { HumanEditJob } from "../../team-record/sources/codehost.js";
 import { buildLessonsView } from "../../lessons/view.js";
 import { recordAuditSinkOf } from "./team-record-wiring.js";
 import { auditPending } from "../../audit/outbox.js";
@@ -217,6 +219,21 @@ export function planFactsFor(dependencies: Pick<AwsBrokerDependencies, "s3" | "a
   };
 }
 
+/**
+ * The tap's `enqueue` for human fix-up commits: one message of coordinates on the reflections' queue, like a task's end (the learning mode is checked by the worker, before anything is read from the host or the model
+ * is called). Throws when the queue did not take it (the tap counts the delivery as failed; the lease makes a second message for the same edit harmless).
+ */
+export function humanEditEnqueue(queue: ReflectQueue, log?: (event: string, fields: Record<string, string | number>) => void, newRequestId: () => string = randomUUID): (job: HumanEditJob) => Promise<void> {
+  return async (job) => {
+    try {
+      await queue.send(humanEditMessageOf(job, newRequestId()));
+    } catch (error) {
+      log?.("learning.human_edit_enqueue_failed", { taskId: job.taskId });
+      throw error;
+    }
+  };
+}
+
 /** At handler start (`broker/handler.ts`): sets `dependencies.lessons` unless the caller gave one (tests). */
 export function installLessons(dependencies: LessonsHostDependencies): void {
   if (dependencies.lessons !== undefined) return;
@@ -241,6 +258,9 @@ export function installLessons(dependencies: LessonsHostDependencies): void {
   if (built !== undefined && live?.humanEdit !== undefined && humanEditing !== undefined) {
     humanEditing.install({
       extractor: createHumanEditExtractor({ source: live.source, settings: live.settings, reflect: live.reflect, process: live.process, standing: live.humanEdit.standing, isErased: live.humanEdit.isErased, ...(live.log === undefined ? {} : { log: live.log }) }),
+      // Where the tap sends a job at a merge: ONE message of coordinates to the LessonsReflect queue (the reflections' own queue, worker, dead-letter queue and alarms), never a compare or a model call inside the webhook's
+      // answer. The queue is only where the broker has one (the LessonsWorker itself has none and never sends). The worker checks the learning mode first, so a project with learning Off or Collect reads nothing from the host.
+      ...(dependencies.lessonsReflectQueue === undefined ? {} : { enqueue: humanEditEnqueue(dependencies.lessonsReflectQueue, live.log) }),
     });
   }
   // UX-4b: Home's "Lessons waiting" card counts what the Lessons tab would show this person to decide (learning Off: none).

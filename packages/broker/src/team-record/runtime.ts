@@ -258,7 +258,7 @@ export interface TeamRecordRuntime {
   readonly humanEdit: {
     install(input: { extractor: HumanEditExtractorPort; enqueue?: (job: HumanEditJob) => Promise<void> }): void;
     installed(): boolean;
-    run(job: HumanEditJob): Promise<"handed_on" | "skipped">;
+    run(job: HumanEditJob, options?: { leased?: boolean }): Promise<"handed_on" | "skipped">;
     /** The files a range of a pull request's branch changed when every commit in it is proved a live member's (merge commits, bots, outsiders, Rovara's own pushes and force pushes give undefined). Read live, never stored. */
     provenFiles(range: { repo: CodeHostRepo; project: string; base: string; head: string; headRef?: string }): Promise<CodeHostDiff["files"] | undefined>;
   };
@@ -670,7 +670,14 @@ export function createTeamRecordRuntime(input: TeamRecordRuntimeInput): TeamReco
   const humanEdit: TeamRecordRuntime["humanEdit"] = {
     install(installed) { humanEditing.extractor = installed.extractor; if (installed.enqueue !== undefined) humanEditing.enqueue = installed.enqueue; },
     installed: () => humanEditing.extractor !== undefined,
-    run: async (job) => (humanEditing.extractor === undefined ? "skipped" : runHumanEdit({ ...humanEditDeps, extractor: lateExtractor }, job)),
+    // `leased`: the LessonsWorker holds the lease on this job's task and head commit (a conditional write that also remembers a model call that started), which is the stronger once-claim: the tap's own claim is left out,
+    // so a worker that died after the claim but before any call cannot leave the edit unlearned for good.
+    run: async (job, options) => {
+      if (humanEditing.extractor === undefined) return "skipped";
+      const { claims: _tapClaims, ...unclaimed } = humanEditDeps;
+      void _tapClaims;
+      return runHumanEdit({ ...(options?.leased === true ? unclaimed : humanEditDeps), extractor: lateExtractor }, job);
+    },
     provenFiles: (range) => provenRangeFiles(humanEditDeps, range),
   };
   const humanEditJobs = { enqueue: async (job: HumanEditJob): Promise<void> => { if (humanEditing.extractor !== undefined && humanEditing.enqueue !== undefined) await humanEditing.enqueue(job); } };
@@ -1237,7 +1244,7 @@ export function createTeamRecordRuntime(input: TeamRecordRuntimeInput): TeamReco
 
   // ---- the durable queue's consumer. A message the queue's own consumer cannot apply throws and is retried by SQS (then dead-lettered); a Slack removal goes through the strict tap.
   // A replayed put reads the company's and the project's state fresh (TRW-5 S4).
-  const consumer = createOpConsumer({ sink: { ...directSink, put: guardedPut(true) }, distiller, humanEdit: (job) => humanEdit.run(job), log: tapLog, now });
+  const consumer = createOpConsumer({ sink: { ...directSink, put: guardedPut(true) }, distiller, log: tapLog, now });
   /** The most one drain may spend (the broker's timeout is 30 s) when the caller gives no clock of its own. */
   const DRAIN_MS = 24_000;
   /** Time kept back for the answer: a batch the function times out in raises every message's receive count without any code having run (TRW-5 S1). */

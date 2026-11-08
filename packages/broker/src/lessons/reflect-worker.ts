@@ -12,8 +12,9 @@
 // receives out; the message is then in the dead-letter queue and can be redriven. The metric is the `lessons_worker.result` line, one per message, with a fixed class.
 import { LESSONS_REFLECT_MAX_ATTEMPTS, LESSONS_REFLECT_RETRY_BACKOFF_SECONDS } from "@agentx/contracts";
 import { withLearningAttempt, type LearningAttempt } from "./learning-deadline.js";
-import { CLAIM_TTL_SECONDS, type ClaimStore } from "./reflect-claims.js";
-import { parseReflectMessage, type ReflectMessage, type ReflectVisibility } from "./reflect-queue.js";
+import type { HumanEditJob } from "../team-record/sources/codehost.js";
+import { CLAIM_TTL_SECONDS, type ClaimStore, type LeaseTarget } from "./reflect-claims.js";
+import { humanEditJobOf, humanEditLeaseOutcome, parseHumanEditMessage, parseReflectMessage, type ReflectMessage, type ReflectVisibility } from "./reflect-queue.js";
 import type { LearnResult, LearnStatus } from "./task-end.js";
 
 export { CLAIM_TTL_SECONDS };
@@ -27,6 +28,11 @@ export const DEADLINE_GRACE_MS = 10_000;
 export interface ReflectWorkerDeps {
   claims: ClaimStore;
   learn(input: { workspaceId: string; taskId: string; outcome: ReflectMessage["outcome"] }): Promise<LearnResult>;
+  /**
+   * Lessons capture: a human fix-up commit (a sibling message on the same queue). It runs under the same lease, deadline, attempt and model rules as a reflection (it is a learning model call: never paid twice). Without it a
+   * human-edit message is a misconfiguration: it is not answered, so it comes back and ends in the dead-letter queue, which alarms.
+   */
+  humanEdit?(job: HumanEditJob): Promise<LearnResult>;
   now(): number;
   /** The reflection stops being started this long after the worker began it (default: the contracts' 240 s), or sooner when the invocation has less time left. */
   deadlineMs: number;
@@ -43,10 +49,17 @@ export interface ReflectOutcome { result: ReflectResult; retry: boolean }
 export interface WorkerContext { getRemainingTimeInMillis?: () => number }
 
 export async function runReflectMessage(deps: ReflectWorkerDeps, body: string, context?: WorkerContext): Promise<ReflectOutcome> {
-  const message = parseReflectMessage(body);
-  if (message === undefined) {
+  const edit = parseHumanEditMessage(body);
+  const reflection = edit === undefined ? parseReflectMessage(body) : undefined;
+  if (edit === undefined && reflection === undefined) {
     deps.log("lessons_worker.invalid_message", {});
     return { result: "invalid", retry: false };
+  }
+  // What the lease is on (a reflection: the task's end; a human edit: the task's head commit) and the work it guards.
+  const message: LeaseTarget = edit !== undefined ? { orgId: edit.orgId, taskId: edit.taskId, outcome: humanEditLeaseOutcome(edit) } : { orgId: reflection!.orgId, taskId: reflection!.taskId, outcome: reflection!.outcome };
+  if (edit !== undefined && deps.humanEdit === undefined) {
+    deps.log("lessons_worker.result", { class: "human_edit_unavailable", taskId: edit.taskId });
+    return { result: "failed", retry: true };
   }
   const remaining = context?.getRemainingTimeInMillis?.();
   const deadlineMs = remaining === undefined ? deps.deadlineMs : Math.min(deps.deadlineMs, remaining - WORKER_RESERVE_MS);
@@ -87,7 +100,7 @@ export async function runReflectMessage(deps: ReflectWorkerDeps, body: string, c
   try {
     abortTimer = setTimeout(() => controller.abort(), deadlineMs);
     const timedOut = new Promise<"timed_out">((resolve) => { raceTimer = setTimeout(() => resolve("timed_out"), deadlineMs + (deps.graceMs ?? DEADLINE_GRACE_MS)); });
-    const done = withLearningAttempt(attempt, () => deps.learn({ workspaceId: message.orgId, taskId: message.taskId, outcome: message.outcome }));
+    const done = withLearningAttempt(attempt, () => (edit !== undefined ? deps.humanEdit!(humanEditJobOf(edit)) : deps.learn({ workspaceId: reflection!.orgId, taskId: reflection!.taskId, outcome: reflection!.outcome })));
     // The loser of the race keeps running without anyone waiting for it; its own failure must not become an unhandled rejection.
     done.catch(() => undefined);
     const first = await Promise.race([done, timedOut]);

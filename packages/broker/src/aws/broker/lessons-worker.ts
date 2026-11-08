@@ -10,6 +10,7 @@ import { dynamoReflectClaims } from "../../lessons/reflect-claims.js";
 import type { ReflectVisibility } from "../../lessons/reflect-queue.js";
 import { handleReflectBatch, type QueueBatch, type ReflectWorkerDeps, type WorkerContext } from "../../lessons/reflect-worker.js";
 import { teamRecordIsPaused } from "../../team-record/runtime.js";
+import { learnFromHumanEdit } from "../../lessons/human-edit.js";
 import { learnFromEndedTaskTyped } from "../../lessons/task-end.js";
 import type { LessonsHostDependencies } from "./definitions.js";
 import { installLessons } from "./lessons-wiring.js";
@@ -25,9 +26,13 @@ export function lessonsWorkerDepsOf(dependencies: LessonsHostDependencies, optio
   const learning = dependencies.learning;
   const ledger = ledgerOf(dependencies);
   if (learning === undefined || ledger === undefined) return undefined;
+  // (A partial record runtime, as in some test harnesses, has no `humanEdit`: then a human-edit message is not answered and ends in the dead-letter queue.)
+  const humanEditing = (dependencies.teamRecord as { humanEdit?: NonNullable<LessonsHostDependencies["teamRecord"]>["humanEdit"] } | undefined)?.humanEdit;
   return {
     claims: dynamoReflectClaims({ documentClient: dependencies.documentClient, tableName: dependencies.tableName, keysOutcome: (orgId, keyIds) => keysOutcome(ledger, OrgIdSchema.parse(orgId), keyIds) }),
     learn: (request) => learnFromEndedTaskTyped(learning, { workspaceId: request.workspaceId, taskId: request.taskId, outcome: request.outcome }),
+    // Lessons capture: a human fix-up commit is read and learned from under the same lease, deadline and attempt (the Team record's own once-claim is left out: the lease is the once-claim).
+    ...(humanEditing === undefined ? {} : { humanEdit: (job) => learnFromHumanEdit({ run: (edit) => humanEditing.run(edit, { leased: true }), settings: learning.settings }, job) }),
     now: options.now ?? Date.now,
     deadlineMs: options.deadlineMs ?? LESSONS_WORKER_DEADLINE_SECONDS * 1000,
     ...(options.visibility === undefined ? {} : { visibility: options.visibility }),

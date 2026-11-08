@@ -78,6 +78,22 @@ describe("a merged Rovara pull request", () => {
     expect(handed).toHaveLength(1);
   });
 
+  it("leased: the worker's lease is the once-claim, so the tap's own claim is left out (a worker that died after the claim cannot leave the edit unlearned); unleased, the claim still holds", async () => {
+    const queued: HumanEditJob[] = [];
+    const handed: HumanEditInput[] = [];
+    const w = setup([githubAdapter(async () => diff([{ sha: hex(22), author: { id: "123", login: "maya", isBot: false }, committer: { id: "123", login: "maya", isBot: false }, verified: true }]))]);
+    await addRow(w);
+    w.runtime.humanEdit.install({ extractor: { extract: async (input) => { handed.push(input); return { candidates: 1 }; } }, enqueue: async (job) => { queued.push(job); } });
+    await w.runtime.taps.github(mergedDelivery());
+    expect(await w.runtime.humanEdit.run(queued[0]!, { leased: true })).toBe("handed_on");
+    expect(await w.runtime.humanEdit.run(queued[0]!, { leased: true })).toBe("handed_on");
+    expect(handed).toHaveLength(2);
+    // The claim was never taken by those runs, so the first unleased run is the one that claims; its repeat is skipped.
+    expect(await w.runtime.humanEdit.run(queued[0]!)).toBe("handed_on");
+    expect(await w.runtime.humanEdit.run(queued[0]!)).toBe("skipped");
+    expect(handed).toHaveLength(3);
+  });
+
   it("outsider: a commit by someone who is not a linked member hands nothing on", async () => {
     const handed: HumanEditInput[] = [];
     const w = setup([githubAdapter(async () => diff([{ sha: hex(22), author: { id: String(bob.id), login: "bo", isBot: false }, committer: { id: String(bob.id), login: "bo", isBot: false }, verified: true }]))]);

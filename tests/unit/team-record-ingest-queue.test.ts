@@ -118,6 +118,17 @@ describe("consumer", () => {
     expect(handled).toHaveLength(1);
   });
 
+  it("a human-edit op with no handler (production: a model call has no place in this consumer) is dropped with one fixed line, never run, never retried", async () => {
+    const w = world();
+    const logs: string[] = [];
+    const consumer = createOpConsumer({ sink: w.sink, distiller: w.distiller, log: (event) => logs.push(event), now: () => NOW });
+    const jobs = new FakeQueue();
+    await createQueuedHumanEditJobs(jobs).enqueue({ repo: { host: "github", id: "1", fullName: "a/b", isPrivate: false, workspaceId: WS }, project: "p", taskId: "t", pullRequest: { number: 1, url: "https://x" }, candidateHeadSha: sha(1), headSha: sha(2) });
+    expect(jobs.sent).toHaveLength(1);
+    expect((await consumer.processBatch(jobs.sent.map((op) => record(op)))).batchItemFailures).toEqual([]);
+    expect(logs).toEqual(["record.human_edit_op_dropped"]);
+  });
+
   it("a failed op is retried by the queue (reported as a partial-batch failure); the rest of the batch goes on", async () => {
     const { w, consumer, logs } = consumerWorld();
     let failures = 1;

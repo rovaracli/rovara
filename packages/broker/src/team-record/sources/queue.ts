@@ -182,7 +182,8 @@ export function createOpConsumer(deps: OpConsumerDependencies): { processBatch(r
       case "principals": await deps.sink.changePrincipals({ workspaceId: op.workspaceId, scope: op.scope, ...(op.add === undefined ? {} : { add: op.add }), ...(op.remove === undefined ? {} : { remove: op.remove }), at: op.at }); return;
       case "audience": await deps.sink.replaceScopeAudience({ workspaceId: op.workspaceId, scope: op.scope, audience: op.audience, at: op.at }); return;
       case "distill": await deps.distiller.distillTransient(op.draft); return;
-      case "human_edit": if (deps.humanEdit !== undefined) await deps.humanEdit(op.job); return;
+      // A human edit is learned from by the LessonsWorker (a model call has no place in this queue's 30 s consumer), which has its own queue message: an op of this kind that is still here is dropped, never run.
+      case "human_edit": if (deps.humanEdit !== undefined) await deps.humanEdit(op.job); else log("record.human_edit_op_dropped", {}); return;
     }
   }
   return {
