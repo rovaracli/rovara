@@ -32,7 +32,9 @@ import { customerLearningModel } from "./learning-model.js";
 import { readLessonsModel } from "../../lessons/model-setting.js";
 import { dynamoPauseStore, spendLook } from "../../lessons/pause.js";
 import { companyLearningSpend } from "./learning-spend.js";
-import { lessonSubjectSource } from "./lesson-subject-source.js";
+import { lessonSubjectSource, type ThreadNoteAuthor } from "./lesson-subject-source.js";
+import { lessonSlackAuthor } from "./lesson-slack-author.js";
+import { readWorkflowThreadNotes } from "../developer-tasks/thread-notes.js";
 import { setLessonsHomeReader } from "../../lessons/home-source.js";
 import { lessonsUsedReaderOver, setLessonsUsedReader, type RepositoryVisibility, visibilityOfRepositories } from "../../lessons/used-in-pr.js";
 import { resolveLearning } from "../../lessons/policy.js";
@@ -183,6 +185,10 @@ export function learningDepsFor(dependencies: LessonsHostDependencies, runtime: 
     // Owner decision 32: an ordinary task nobody shared counts as project-wide when no People entry denies anyone (the Team record's own resolver above is unchanged).
     projectWide: (orgId, taskId) => resolveTaskProjectWide({ ...state, now: Date.now }, orgId, taskId),
     log,
+    // Slack thread replies name their author through the Slack account's verified Rovara link (lessons sweep, lane D); the words are not read.
+    threadNotes: async (_orgId, taskId): Promise<ThreadNoteAuthor[]> => (await readWorkflowThreadNotes(state, taskId, undefined, { includeAnswered: true }))
+      .map((note) => ("slackUserId" in note ? { kind: "slack" as const, teamId: note.teamId, slackUserId: note.slackUserId } : { kind: "other" as const })),
+    slackAuthor: lessonSlackAuthor({ documentClient: dependencies.documentClient, tableName: dependencies.tableName, signIn: new DeveloperSignInStore({ documentClient: dependencies.documentClient, tableName: signInTableName, now: Date.now }) }),
     readObject: (key, maxBytes) => readObjectText(dependencies.s3, dependencies.artifactBucketName, key, maxBytes),
     now: Date.now,
     // The corrections people already make, from the Team record: "remember this" notes (the notes of the task's comments) and reviewers' comments on its pull requests (listed by the code host through

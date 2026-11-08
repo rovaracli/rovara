@@ -5,13 +5,16 @@
 //   - the workflow snapshot: the decisions (a human send-back is a `SEND_BACK` decision; its request id is the id of the send-back's `rovara.send_back` row), the review reports (findings), the pinned review
 //     base (the base commit), the pull requests (links), the CI fix problems, the latest plan document (read from the artifact store);
 //   - the project's own definition: the repositories (never the record's claim).
-// What it does NOT hold is listed in the lane report (`.superpowers/sdd/lessons-prod/report-lane1.md`): the merge commit, per-person authorship of Slack thread replies, who pushed a failing revision, the agent's own steer messages.
+// What it does NOT hold is listed in the lane report (`.superpowers/sdd/lessons-prod/report-lane1.md`): the merge commit, who pushed a failing revision, the agent's own steer messages.
 //
 // Rules, all enforced here at READ time (the worker reads fresh, so a task queued before an erasure is covered):
 //   - A workspace other than the task's gives nothing. A task nobody started (an automatic run), a task of another kind (a setup draft, a diagnosis) gives nothing.
 //   - Every span a PERSON wrote is dropped when that person is erased (the Team record's marker or the lessons fence); an erased initiator gives no `initiatorId` and no initiator trust (so nothing is measured).
 //   - Each person-span's trust is read now (`readStanding`: member or outsider), not taken from what was true when the task ran.
 //   - Slack and other channel text is never read here. Send-back and revert facts come only through `OutcomeRowReader`, which hides erased and deleted rows.
+//   - Slack thread replies (lessons sweep, lane D): the words are NOT read, only WHO wrote each reply. A reply's author is named through the Rovara identity their Slack account is verifiably linked to
+//     (`slackAuthor`; the Slack workspace must be the task's company's); the linked person then counts like any other steerer: their project role decides member or outsider, an erased person makes
+//     the task unnamed and taints the worker-written text (the plan quotes replies), and an unlinked, unverified, other-workspace, bot or unreadable author is unknown (an outsider). Bounded.
 //   - A read that fails THROWS (the hook catches it): no read is ever treated as "not erased".
 import { GetCommand } from "@aws-sdk/lib-dynamodb";
 import { OrgIdSchema, workflowFindingFingerprint, type WorkflowArtifact, type WorkflowSnapshot } from "@agentx/contracts";
@@ -42,6 +45,14 @@ export const MAX_PULL_REQUESTS = 5;
 export const MAX_PULL_REQUEST_COMMENTS = 40;
 const COMMENT_PATH_MAX = 200;
 
+/** At most this many saved thread replies of a task are looked at; a task with more is steered by someone unnamed (no read at all). */
+export const MAX_THREAD_REPLIES = 100;
+/** At most this many distinct Slack accounts of one task are resolved to a person; more than this stays unnamed. */
+export const MAX_SLACK_AUTHORS = 20;
+
+/** One saved note of a task, as far as steering goes: a Slack reply names its Slack workspace and user; any other kind (a session message) is not named by this source. */
+export type ThreadNoteAuthor = { kind: "slack"; teamId: string; slackUserId: string } | { kind: "other" };
+
 export type { PullRequestAddress, PullRequestFeedbackView, PullRequestSurface };
 export { githubPullRequestAddress };
 
@@ -69,6 +80,16 @@ export interface LessonSubjectSourceDeps {
   projectWide?: ((orgId: string, taskId: string) => Promise<boolean>) | undefined;
   /** A fixed line for a read that failed: the task only as a hash (`logRef`), never a raw id and never text. */
   log?: ((event: string, fields: Record<string, string | number>) => void) | undefined;
+  /**
+   * The task's saved Slack thread replies and session messages (`NOTE#` rows), oldest first, with the author's Slack workspace and user id for a Slack reply. THROWS when it cannot read. Absent: a task with any
+   * saved reply stays steered by someone unnamed.
+   */
+  threadNotes?: ((orgId: string, taskId: string) => Promise<readonly ThreadNoteAuthor[]>) | undefined;
+  /**
+   * The Rovara developer a Slack account is VERIFIABLY linked to (the sign-in table's active Slack identity link, followed through merges), only when the Slack workspace is the one bound to `orgId`; undefined for an
+   * unlinked or unlinked-again account, a bot, another workspace's account or a revoked developer. May throw: a failure is "unknown" (the author stays unnamed), never a member. Absent: Slack authors stay unnamed.
+   */
+  slackAuthor?: ((input: { orgId: string; teamId: string; slackUserId: string }) => Promise<string | undefined>) | undefined;
   /** The artifact store's text read (the plan document). Absent: no plan span. */
   readObject?: ((objectKey: string, maxBytes: number) => Promise<string | undefined>) | undefined;
   now?: () => number;
@@ -170,11 +191,13 @@ function usedPullRequestComments(workflow: WorkflowSnapshot | undefined): boolea
   return workflow.feedbackReview !== undefined || (workflow.feedbackReviewHistory ?? []).length > 0 || (workflow.feedbackThreadObservations ?? []).length > 0;
 }
 
-/** Whether any person this record names beside the creator (the taker, a decision's or an answer's actor, a feedback note's actor) is erased. Asks every one (no short cut), so a read that cannot tell throws. */
+/** Whether any person this record names beside the creator (the taker, a decision's or an answer's actor, a feedback note's actor, a Slack reply's linked author) is erased. Asks every one (no short cut), so a read that cannot tell throws. */
 async function namedPeopleErased(
   task: DeveloperTaskRecord, workflow: WorkflowSnapshot | undefined, developerOfActor: (actorId: string) => string | undefined, erased: (developerId: string) => Promise<boolean>,
+  /** The people whose Slack thread replies the task holds (already resolved to their Rovara identity). */
+  slackPeople: readonly string[] = [],
 ): Promise<boolean> {
-  const people = new Set<string>();
+  const people = new Set<string>(slackPeople);
   const taker = tryEffectiveTaskOwner(task);
   if (taker !== undefined) people.add(taker.developerId);
   const actors = [
@@ -187,6 +210,46 @@ async function namedPeopleErased(
   let any = false;
   for (const person of people) if (await erased(person)) any = true;
   return any;
+}
+
+/**
+ * Who wrote the task's Slack thread replies: the Rovara developer each Slack account is verifiably linked to (`deps.slackAuthor`), one entry per distinct Slack account (`undefined` for an account that could not be named),
+ * and `unnamed` when anything about the replies cannot be accounted for. Fails closed everywhere: no reader or resolver, more than `MAX_THREAD_REPLIES` saved replies, a read that fails, a different number of rows than
+ * the task counts (some row unreadable or gone), a note that is not a Slack reply, a reply with no workspace, more than `MAX_SLACK_AUTHORS` accounts, or a resolver that throws. Nothing here ever makes someone a member:
+ * the project role is read by the caller afterwards.
+ */
+async function slackSteerers(deps: LessonSubjectSourceDeps, orgId: string, task: DeveloperTaskRecord): Promise<{ persons: Array<string | undefined>; unnamed: boolean }> {
+  const accounts = new Map<string, { teamId: string; slackUserId: string }>();
+  let unnamed = false;
+  // A reply the owner sent for the pull request feedback review is kept on the workflow too (with its Slack account).
+  for (const note of task.workflow?.feedbackNotes ?? []) {
+    if (note.source !== "THREAD_REPLY") continue;
+    if (note.slack === undefined) unnamed = true;
+    else accounts.set(`${note.slack.teamId}\u0000${note.slack.userId}`, { teamId: note.slack.teamId, slackUserId: note.slack.userId });
+  }
+  const count = task.threadNoteCount ?? 0;
+  if (count > 0) {
+    let rows: readonly ThreadNoteAuthor[] | undefined;
+    if (deps.threadNotes !== undefined && count <= MAX_THREAD_REPLIES) {
+      try { rows = await deps.threadNotes(orgId, task.taskId); } catch { rows = undefined; }
+    }
+    if (rows === undefined || rows.length !== count) unnamed = true;
+    else for (const row of rows) {
+      if (row.kind !== "slack") unnamed = true;
+      else accounts.set(`${row.teamId}\u0000${row.slackUserId}`, { teamId: row.teamId, slackUserId: row.slackUserId });
+    }
+  }
+  if (accounts.size === 0) return { persons: [], unnamed };
+  if (deps.slackAuthor === undefined) return { persons: [], unnamed: true };
+  const resolve = deps.slackAuthor;
+  const persons: Array<string | undefined> = [];
+  for (const account of [...accounts.values()].slice(0, MAX_SLACK_AUTHORS)) {
+    try {
+      const person = await resolve({ orgId, ...account });
+      persons.push(present(person) ? person.trim() : undefined);
+    } catch { persons.push(undefined); }
+  }
+  return { persons, unnamed: unnamed || accounts.size > MAX_SLACK_AUTHORS };
 }
 
 export function lessonSubjectSource(deps: LessonSubjectSourceDeps): TaskSubjectSource {
@@ -254,9 +317,12 @@ export function lessonSubjectSource(deps: LessonSubjectSourceDeps): TaskSubjectS
       const intentText = present(task.requestText) ? task.requestText : task.title;
       if (!creatorErased && present(intentText)) spans.push({ kind: "intent", text: intentText, trust: await trustOf(creator), authorId: creator });
 
+      // Slack thread replies: who wrote them, through their linked Rovara identity (see `slackSteerers`). Resolved before the worker text, because the plan quotes replies.
+      const slack = await slackSteerers(deps, orgId, task);
+
       // Worker-written text (the plan, the review findings, the CI text) is UNTRUSTED agent text (M5): the plan absorbs people's answers and the request, the findings and the CI log can carry text an outsider
       // influenced. It gets the "system" class, never "rovara". And if any person who decided on, answered for, took over or created the task is erased, none of it is read: it may hold that person's words.
-      const workerTextTainted = creatorErased || await namedPeopleErased(task, workflow, developerOfActor, erased);
+      const workerTextTainted = creatorErased || await namedPeopleErased(task, workflow, developerOfActor, erased, slack.persons.filter((person): person is string => person !== undefined));
       if (!workerTextTainted && workflow !== undefined && deps.readObject !== undefined) {
         const plan: WorkflowArtifact | undefined = workflow.artifacts.filter((artifact) => artifact.type === "plan").sort((a, b) => a.version - b.version).at(-1);
         if (plan !== undefined) {
@@ -343,16 +409,20 @@ export function lessonSubjectSource(deps: LessonSubjectSourceDeps): TaskSubjectS
         await steeredBy(decision.actorId);
       }
       for (const set of workflow?.intent?.answers ?? []) await steeredBy(set.by.actorId);
-      // The owner's own feedback decisions and notes are named steerers like any other. A Slack thread reply is saved with a Slack account, not a member: the record cannot say whose it is.
+      // The owner's own feedback decisions and notes are named steerers like any other.
       for (const decision of workflow?.feedbackDecisions ?? []) {
         if (decision.actorRole === "TASK_OWNER") await steeredBy(decision.actorId);
       }
       for (const note of workflow?.feedbackNotes ?? []) {
-        if (note.source === "THREAD_REPLY") unnamed = true;
-        else await steeredBy(note.actorId);
+        if (note.source !== "THREAD_REPLY") await steeredBy(note.actorId);
       }
-      // Replies in the task's Slack thread are saved as notes with a Slack account, not a member: the record cannot say whose they are.
-      if ((task.threadNoteCount ?? 0) > 0) unnamed = true;
+      // A Slack thread reply is saved with a Slack account, not a member. It names a steerer only through a verified link to a Rovara identity (`slackSteerers`): that person counts like any other steerer
+      // (their project role now decides member or outsider; an erased person is unknown). A reply whose author cannot be named that way, or any reply this source cannot account for, is someone unnamed.
+      if (slack.unnamed) unnamed = true;
+      for (const person of slack.persons) {
+        if (person === undefined || await erased(person)) unnamed = true;
+        else steerers.add(await trustOf(person));
+      }
       // The pull request feedback flow (M4, relaxed): the agent was shown comments from the pull request, and those can come from anyone who can comment on the repository. The task is steered by NAMED
       // MEMBERS only when every comment the agent was shown, in every round, is proved a live member's own words (see `provedShownComments`). Anything else, or any failure, stays unnamed. Skipped when the
       // task is already unnamed: the answer cannot change.
