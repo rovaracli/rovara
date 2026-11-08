@@ -41,6 +41,8 @@ test("the settings menu opens, lists every group, and a link closes it", async (
  await expect(page.getByRole("heading", { name: "Connections", exact: true, level: 1 })).toBeVisible();await expect(menu).toHaveAttribute("aria-expanded", "false");
 });
 test("a connection's setup opens in place on a phone and stays inside the screen", async ({ page }) => {
+ // UX1's GitHub-link gate: only a person with a linked GitHub account is offered Connect GitHub (the link step is covered in tests/web), so this admin has one.
+ await page.route("**/v1/web/me", async route => { const response = await route.fetch(), me = await response.json() as Record<string, unknown>;await route.fulfill({ response, json: { ...me, identities: [{ provider: "github", login: "priya", linkedAt: "2026-10-23T12:00:00.000Z", lastSignInAt: "2026-10-23T12:00:00.000Z" }] } }); });
  await page.goto("/app/admin/connections");
  await page.getByRole("button", { name: /^Fix GitHub/ }).click();
  await expect(page.getByRole("button", { name: "Connect GitHub" })).toBeVisible();await fitsThePhone(page);
