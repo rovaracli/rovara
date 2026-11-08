@@ -327,6 +327,18 @@ describe("learnFromEndedTaskTyped (H1): which failures are worth another try", (
     expect(brokenLines).toEqual([["learning.task_end_failed", { task: ref }]]);
     expect(JSON.stringify([...cutLines, ...failingLines, ...brokenLines])).not.toContain("task-1");
   });
+  it("LP-13 C3: a draft whose store write fails once with a passing fault is tried again (the reflection's model is called once, never again), and the retry's log line names the task only as logRef", async () => {
+    const w = setup();
+    const out: Array<[string, Record<string, string | number>]> = [];
+    w.deps.log = (event, fields) => { out.push([event, fields]); };
+    const real = w.store.commit.bind(w.store);
+    let failed = 0;
+    w.store.commit = (async (...args: Parameters<typeof real>) => { if (failed === 0) { failed += 1; throw Object.assign(new Error("table text"), { name: "ProvisionedThroughputExceededException" }); } return real(...args); }) as typeof w.store.commit;
+    expect(await learnFromEndedTaskTyped(w.deps, input)).toEqual({ status: "reflected", retry: false });
+    expect(w.model.calls).toHaveLength(1);
+    expect(await w.store.list({ workspaceId: WS, project: PROJECT })).toHaveLength(1);
+    expect(out).toEqual([["learning.draft_retried", { task: logRef(WS, "task-1") }]]);
+  });
   it("M4: once the deadline's signal is aborted no further draft is processed", async () => {
     const w = setup();
     const controller = new AbortController();

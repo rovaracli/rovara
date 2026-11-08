@@ -1,6 +1,6 @@
 // Learning v2 wiring (WA-2): the terminal-task hook. When a task ends (`agents/task-end.ts`, the one place every end goes through), and only when the project's learning mode allows
 // reflection, the finished task becomes a reflector subject built from the REAL sources of who did what (`task-subject.ts`): the task record says who started it, the Team record's
-// rows say who sent it back and who reverted it. The subject goes to the reflector, and each draft to the curate-and-settle pipeline (`processDraft`).
+// rows say who sent it back and who reverted it. The subject goes to the reflector, and each draft to the curate-and-settle pipeline (`processDraft`, with one bounded retry for a passing store fault before any model call: `draft-retry.ts`).
 //
 //  - Behind the switch: the project's learning mode is read first (`resolveLearning`, which fails closed to Off); Off and Collect reflect nothing and read nothing more.
 //  - Absent unless wired: the handler exists only where the broker was given `learning` dependencies (the model, store, vectors, spend, directory and the task-side facts). Where it
@@ -13,8 +13,9 @@ import { modeAllows, resolveLearning, type LearningSettingsReader } from "./poli
 import { currentLearningAttempt } from "./learning-deadline.js";
 import { logRef } from "./log-ref.js";
 import { recordTaskOutcome, type CounterDeps, type TaskCorrection } from "./counters.js";
+import { processDraftRetrying } from "./draft-retry.js";
 import { newTaskFailureTally, withFailuresCountedOnce } from "./pause.js";
-import { processDraft, type ProcessDeps } from "./process.js";
+import type { ProcessDeps } from "./process.js";
 import { reflectSubject, type ReflectDeps } from "./reflect.js";
 import type { ReflectSubject } from "./reflect-input.js";
 import type { RovaraEmitter } from "../team-record/sources/rovara.js";
@@ -190,7 +191,7 @@ export async function learnFromEndedTaskTyped(deps: TaskLearningDeps, input: { w
     for (const draft of result.drafts) {
       // M4: at the deadline no new draft is started (the store's writes are refused too, `deadline-guard.ts`). The model has been paid for; what is cut is lost, not repeated.
       if (signal?.aborted === true) { deps.log?.("learning.drafts_cut_at_deadline", { task: logRef(input.workspaceId, input.taskId) }); break; }
-      try { await processDraft(processDeps, key, draft); } catch { deps.log?.("learning.draft_failed", { task: logRef(input.workspaceId, input.taskId) }); }
+      try { await processDraftRetrying(processDeps, key, draft, { ...(deps.log === undefined ? {} : { log: (event, fields) => deps.log!(event, { task: logRef(input.workspaceId, input.taskId), ...fields }) }) }); } catch { deps.log?.("learning.draft_failed", { task: logRef(input.workspaceId, input.taskId) }); }
     }
     return final("reflected");
   } catch {

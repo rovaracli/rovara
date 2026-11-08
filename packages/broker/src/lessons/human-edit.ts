@@ -12,8 +12,9 @@ import { hostRateLimitRetryAt } from "@agentx/contracts";
 import type { HumanEditExtractorPort, HumanEditInput, HumanEditJob } from "../team-record/sources/codehost.js";
 import { currentLearningAttempt } from "./learning-deadline.js";
 import { modeAllows, resolveLearning, type LearningSettingsReader } from "./policy.js";
+import { processDraftRetrying } from "./draft-retry.js";
 import { newTaskFailureTally, withFailuresCountedOnce } from "./pause.js";
-import { processDraft, type ProcessDeps } from "./process.js";
+import type { ProcessDeps } from "./process.js";
 import { reflectSubject, type ReflectDeps } from "./reflect.js";
 import type { EvidenceSpan, ReflectSubject } from "./reflect-input.js";
 import type { LearnResult, TaskSubjectSource } from "./task-end.js";
@@ -87,7 +88,7 @@ export function createHumanEditExtractor(deps: HumanEditExtractorDeps): HumanEdi
       for (const draft of result.drafts) {
         // At the deadline no new draft is started (the lesson store refuses its writes too). The model was paid for; what is cut is lost, never repeated.
         if (signal?.aborted === true) { deps.log?.("learning.drafts_cut_at_deadline", { taskId: input.taskId }); break; }
-        try { await processDraft(processDeps, key, draft); kept += 1; } catch { deps.log?.("learning.draft_failed", { taskId: input.taskId }); }
+        try { await processDraftRetrying(processDeps, key, draft, { ...(deps.log === undefined ? {} : { log: (event, fields) => deps.log!(event, { taskId: input.taskId, ...fields }) }) }); kept += 1; } catch { deps.log?.("learning.draft_failed", { taskId: input.taskId }); }
       }
       return { candidates: kept };
     },
