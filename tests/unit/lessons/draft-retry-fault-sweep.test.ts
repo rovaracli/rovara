@@ -53,6 +53,8 @@ async function run(scenario: Scenario, failAt: number | undefined): Promise<Run>
   });
   const probe: ProcessDeps = {
     ...base, store: wrap(store), vectors: wrap(vectors), alerts: wrap(alerts),
+    // the read-only ports too (L13): a fault there fails before any write
+    embedder: wrap(embedder), verifier: wrap(verifier("valid")), facts: wrap(facts()), settings: wrap(settings({ preset: scenario.preset })), spend: wrap(spend),
     audit: { emit: async (event, options) => { hit(); await audit.emit(event, options); } },
   };
   let retried = false, threw = false;

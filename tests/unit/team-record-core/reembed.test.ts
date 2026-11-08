@@ -523,6 +523,27 @@ describe("a turn that starts no call, and a workspace that is closing (N4, N5)",
       expect(w.db.get(REEMBED_SWEEP_CURSOR_KEY)).toMatchObject({ after: orgs[5] });
     });
 
+    it("L11: the saved place carries the time the run STARTED, so a run that began first and ends last cannot overwrite a newer run's place (two overlapping runs, a real clock)", async () => {
+      const w = await setup();
+      const orgs = orgNames(10);
+      crowd(w, orgs);
+      const start = w.clock.ms;
+      let release: () => void = () => undefined;
+      const held = new Promise<void>((resolve) => { release = resolve; });
+      // run A begins first and waits on its first check
+      const a = sweepReembedStateRun(w.table, async (orgId) => { if (orgId === orgs[0]) await held; return false; }, { now: () => w.clock.ms, maxChecks: 2 });
+      await new Promise<void>((resolve) => setTimeout(resolve, 20));
+      // run B begins later (same saved place: nothing was saved yet), ends, and saves its place
+      w.clock.ms = start + 1_000;
+      await sweepReembedStateRun(w.table, async () => false, { now: () => w.clock.ms, maxChecks: 4 });
+      expect(w.db.get(REEMBED_SWEEP_CURSOR_KEY)).toMatchObject({ after: orgs[3] });
+      // A ends last, with the clock well after B: its place is older work and is refused
+      w.clock.ms = start + 5_000;
+      release();
+      await a;
+      expect(w.db.get(REEMBED_SWEEP_CURSOR_KEY)).toMatchObject({ after: orgs[3], at: new Date(start + 1_000).toISOString() });
+    });
+
     it("M1: it does not list the directory: with 2500 workspaces in it and 60 ms per page, the states of workspaces that left are still removed within the limit", async () => {
       const w = await setup();
       const live = orgNames(2_500);

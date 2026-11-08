@@ -358,6 +358,8 @@ export const REEMBED_SWEEP_CURSOR_KEY = { pk: TEAM_RECORD_ORG_DIRECTORY_PK, sk: 
  */
 export async function sweepReembedStateRun(table: TeamRecordTable, isClosing?: (orgId: OrgId) => Promise<boolean>, options: ReembedSweepOptions = {}): Promise<ReembedSweepRun> {
   const now = options.now ?? Date.now;
+  // The place is stamped with the time the run STARTED (L11): a run that began first and ends last has the older stamp, so the condition below refuses it.
+  const startedAt = new Date(now()).toISOString();
   const maxChecks = Math.max(1, options.maxChecks ?? REEMBED_SWEEP_MAX_CHECKS);
   const outOfTime = (): boolean => options.deadline !== undefined && now() >= options.deadline;
   const result: ReembedSweepRun = { deleted: 0, checked: 0, failed: 0, left: 0, stopped: false };
@@ -386,11 +388,11 @@ export async function sweepReembedStateRun(table: TeamRecordTable, isClosing?: (
   }
   result.left = Math.max(0, order.length - result.checked);
   if (last !== undefined) {
-    // Conditional on the saved place being no newer than this run: a run that finishes late (it began before another one saved) never sets the place back. A refused or failed save leaves the old place.
+    // Conditional on the saved place being no newer than this run's START: a run that finishes late (it began before another one saved) never sets the place back. A refused or failed save leaves the old place.
     try {
       await table.documentClient.send(new PutCommand({
-        TableName: table.tableName, Item: { ...REEMBED_SWEEP_CURSOR_KEY, entityType: "TEAM_RECORD_REEMBED_SWEEP", after: last, at: new Date(now()).toISOString() },
-        ConditionExpression: "attribute_not_exists(#at) OR #at <= :at", ExpressionAttributeNames: { "#at": "at" }, ExpressionAttributeValues: { ":at": new Date(now()).toISOString() },
+        TableName: table.tableName, Item: { ...REEMBED_SWEEP_CURSOR_KEY, entityType: "TEAM_RECORD_REEMBED_SWEEP", after: last, at: startedAt },
+        ConditionExpression: "attribute_not_exists(#at) OR #at <= :at", ExpressionAttributeNames: { "#at": "at" }, ExpressionAttributeValues: { ":at": startedAt },
       }));
     } catch { /* the next run starts from the old place */ }
   }
