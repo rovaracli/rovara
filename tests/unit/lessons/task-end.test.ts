@@ -461,6 +461,8 @@ describe("lessons connect fix 1 (H1): the task's end counts the loaded lessons' 
     await learnFromEndedTask(w.deps, { workspaceId: WS, taskId: "task-1", outcome: "merged" });
     expect(await w.queued()).toHaveLength(1);
     w.deps.reflect.model = new ScriptedModel([reply(candidateJson({ type: "fact", evidenceSpanIds: ["S1"] }))]);
+    // A revert counts only when a verified member reverted it (the person-link row names them).
+    w.rows.reverter = { actorDeveloperId: "rev" };
     await learnFromEndedTask(w.deps, { workspaceId: WS, taskId: "task-1", outcome: "reverted" });
     expect(await w.queued()).toEqual([]);
   });
@@ -524,6 +526,7 @@ describe("lessons connect fix 2 (R2, R4): the outcome is counted on every path, 
       await learnFromEndedTask(w.deps, merged);
       expect(await w.queued()).toEqual([MARK]);
       arrange(w);
+      w.rows.reverter = { actorDeveloperId: "rev" };
       expect(await withLearningAttempt(attempt(), () => learnFromEndedTaskTyped(w.deps, { ...merged, outcome: "reverted" }))).toEqual(expected);
       expect(await w.queued()).toEqual([]);
     });

@@ -1,6 +1,7 @@
 // Learning v2: the seams of the learning lane. The record core (R-lanes), storage and ingest are built in parallel; each interface here is what this
 // lane needs from them, with an in-memory stand-in in the tests. Nothing here talks to AWS.
 import type { LessonStage, LessonsPauseCode } from "@agentx/contracts";
+import type { TaskFailureTally } from "./pause.js";
 import type { Lesson, LessonAuditAction, IdentitySet } from "./types.js";
 
 export type Clock = () => number;
@@ -118,7 +119,12 @@ export type CorrectionKind = "send_back" | "review_comment" | "human_edit" | "re
 export type CorrectionRating = "caused" | "contradicts" | "unrelated" | "same_ignored";
 /** Rates one correction against one lesson that was loaded for the task (no tools; the answer is a fixed code). */
 export interface CorrectionJudge {
-  rate(input: { lesson: Pick<Lesson, "id" | "title" | "description" | "body" | "type">; correctionKind: CorrectionKind; correctionText: string }): Promise<CorrectionRating>;
+  /** Rates one correction. Throws when it cannot (no model, a refusal, a failed call, an answer that does not parse): the caller leaves the correction unjudged, which gives no helpful mark. */
+  rate(input: { workspaceId: string; project: string; lesson: Pick<Lesson, "id" | "title" | "description" | "body" | "type">; correctionKind: CorrectionKind; correctionText: string }): Promise<CorrectionRating>;
+  /** Whether outcomes can be rated now: a usable model on the company's own provider and room in the learning month. Reads and records nothing. Absent: assumed usable. */
+  usable?(scope: { workspaceId: string; project: string }): Promise<boolean>;
+  /** The same judge counting its failed calls toward `model_failed` once for this task (`failuresCountedOncePerTask`). Absent: the judge counts as it is. */
+  forTask?(tally: TaskFailureTally): CorrectionJudge;
 }
 
 /**

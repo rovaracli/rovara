@@ -47,9 +47,12 @@ describe("the learning dependencies", () => {
     expect(runtime.routes.judgeModel).not.toBe(REFUSING_MODEL);
     expect(runtime.routes.spend).not.toBe(DENYING_SPEND);
     expect(learning.reflect.edition).toBe("public");
-    // Lessons connect fix 1 (H1): the end of a task counts its outcome with the runtime's counters (today the refusing judge: no model call).
+    // Lessons connect fix 1 (H1): the end of a task counts its outcome with the runtime's counters. Lessons outcomes: their correction judge rides the same company model path and payer (it is not the refusing one),
+    // can say whether it is usable now, and can be scoped to one task's failure tally.
     expect(learning.counters).toBe(runtime.counters);
-    expect(runtime.counters.judge).toBe(REFUSING_JUDGE);
+    expect(runtime.counters.judge).not.toBe(REFUSING_JUDGE);
+    expect(typeof runtime.counters.judge.usable).toBe("function");
+    expect(typeof runtime.counters.judge.forTask).toBe("function");
   });
   it("lessons connect fix 1 (M4): the production subject source reads project-wide visibility live (decision 32) next to the strict Team record reader, which is left as it was", () => {
     const wiring = readFileSync(new URL("../../packages/broker/src/aws/broker/lessons-wiring.ts", import.meta.url), "utf8");

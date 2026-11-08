@@ -14,7 +14,7 @@ import { currentLearningAttempt } from "./learning-deadline.js";
 import { logRef } from "./log-ref.js";
 import { recordTaskOutcome, type CounterDeps, type TaskCorrection } from "./counters.js";
 import { processDraftRetrying } from "./draft-retry.js";
-import { newTaskFailureTally, withFailuresCountedOnce } from "./pause.js";
+import { newTaskFailureTally, withFailuresCountedOnce, type TaskFailureTally } from "./pause.js";
 import type { ProcessDeps } from "./process.js";
 import { reflectSubject, type ReflectDeps } from "./reflect.js";
 import type { ReflectSubject } from "./reflect-input.js";
@@ -119,20 +119,28 @@ export async function subjectForTask(deps: TaskLearningDeps, input: { workspaceI
 const NO_TEXT = "The task was corrected.";
 
 /**
- * Lessons connect (fix 1, H1; fix 2, R2): counts the finished task for the lessons it loaded. Runs inside the worker's lease before the reflection, on every attempt (the counters are idempotent per task and
- * lesson, so a retry or a redelivery never counts twice). Never throws: a fault is one fixed log line and the reflection's result stands. Corrections are the task's human send-backs (counted from the task's own decision list, so an erased sender's still
- * counts) and, for a revert, the revert; `recordTaskOutcome` leaves any lesson with a correction in its scope unjudged when the judge refuses.
+ * Lessons connect (fix 1, H1; fix 2, R2) and lessons outcomes: counts the finished task for the lessons it loaded. Runs inside the worker's lease before the reflection, on every attempt (the counters are idempotent per task and
+ * lesson, so a retry or a redelivery never counts twice). Never throws: a fault is one fixed log line and the reflection's result stands.
+ * The corrections are the ones lessons already read, taken from the subject this call already holds (nothing is read from the code host again): the task's human send-backs (counted from the task's own decision list, so an
+ * erased sender's still counts), the reviewers' pull request comments and "remember this" notes of members (words that are a person's own, never an outsider's or code's fixed text), and, for a revert, the revert.
+ * A revert counts only when a verified member reverted it (`subject.revertedBy`, from the person-link row; DECISIONS, revert by commit message and revert PR): anything unproven records nothing.
+ * The judge is the counters' (the company's own model path, scoped to this task's failure tally); where it cannot rate (no usable model, the month used up) `recordTaskOutcome` records nothing.
  */
-async function countOutcome(deps: TaskLearningDeps, base: TaskSubjectBase, subject: ReflectSubject, input: { taskId: string }): Promise<void> {
+async function countOutcome(deps: TaskLearningDeps, base: TaskSubjectBase, subject: ReflectSubject, input: { taskId: string }, tally: TaskFailureTally): Promise<void> {
   if (deps.counters === undefined || subject.outcome === undefined) return;
   try {
     if (currentLearningAttempt()?.signal?.aborted === true) return;
+    if (subject.outcome === "reverted" && subject.revertedBy === undefined) return;
     const at = deps.reflect.now();
     const sendBacks = subject.spans.filter((span) => span.kind === "send_back");
     const total = Math.max(sendBacks.length, base.sendBackRequestIds.length);
     const corrections: TaskCorrection[] = Array.from({ length: total }, (_, index) => ({ kind: "send_back" as const, paths: [], text: sendBacks[index]?.text ?? NO_TEXT, at }));
+    for (const span of subject.spans) {
+      if ((span.kind === "pr_comment" || span.kind === "remembered") && span.trust === "member" && span.fixedText !== true) corrections.push({ kind: "review_comment", paths: [], text: span.text, at });
+    }
     if (subject.outcome === "reverted") corrections.push({ kind: "revert", paths: [], text: NO_TEXT, at });
-    await recordTaskOutcome(deps.counters, {
+    const counters = { ...deps.counters, judge: deps.counters.judge.forTask?.(tally) ?? deps.counters.judge };
+    await recordTaskOutcome(counters, {
       workspaceId: subject.workspaceId, project: subject.project, taskId: input.taskId, outcome: subject.outcome, sendBacks: total,
       ...(subject.outcome === "merged" ? { mergedAt: at } : {}), corrections, ...(subject.evalRun === true ? { evalRun: true } : {}),
     });
@@ -173,9 +181,9 @@ export async function learnFromEndedTaskTyped(deps: TaskLearningDeps, input: { w
     if (subject === undefined) return final("no_facts");
     // The outcome is counted BEFORE the reflection: counting needs no model and is idempotent (a once-key per task and lesson, a queued mark that is only replaced or removed), so it happens on every attempt, whatever
     // the reflection comes to (a refusal, a model that failed, an attempt that will be retried, a deadline that cut it). A revert's re-reflection takes the merge's queued helpful mark back here, even if it never reflects.
-    await countOutcome(deps, base, subject, input);
-    // LP-10 R8: this task's failed model calls (the reflection and each draft's judge) count toward `model_failed` once, not once per call.
+    // LP-10 R8: this task's failed model calls (the outcome judge, the reflection and each draft's judge) count toward `model_failed` once per kind, not once per call.
     const tally = newTaskFailureTally();
+    await countOutcome(deps, base, subject, input, tally);
     const processDeps = withFailuresCountedOnce(deps.process, tally);
     const result = await reflectSubject(withFailuresCountedOnce(deps.reflect, tally), subject);
     if (result.status !== "ok") {

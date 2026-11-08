@@ -4,7 +4,7 @@
 // What is real: the Dynamo lesson store, the settings reader (the project's mode, the company lock, the tier-0 setting), the access check, the approver directory (the live roster), the
 // citation verifier and the code facts (the code host's file reads at a commit), the audit sink (the broker's ledger) and the names reader.
 // The model and the payer path are given by the broker's wiring where the company's own model path exists (`customerLearningModel`, `companyLearningSpend`); without them `judgeModel` and `spend` refuse
-// (a curator judgement fails closed: a contradiction goes to a person). The correction judge (`judge`) still refuses: a correction rating is not wired yet. Lesson similarity (DECISIONS 23: keywords,
+// (a curator judgement fails closed: a contradiction goes to a person). The correction judge of the counters rates corrections on the same model and payer path (`judge-model.ts`); without them it refuses too. Lesson similarity (DECISIONS 23: keywords,
 // cited paths and the optional small embedder, fused; the vectors kept with the lessons) plugs in through the one seam `lessonSimilarityFor`.
 import { OrgIdSchema, type OrgId } from "@agentx/contracts";
 import type { AttributionReader } from "../attribution/resolve.js";
@@ -23,6 +23,7 @@ import { dynamoLearningSettings, DynamoPresetStore, DynamoSoleOwnerSwitch, Dynam
 import { secondPersonTier0Authority } from "./tier0-authority.js";
 import type { PresetDeps } from "./preset-setting.js";
 import { DynamoLessonStore } from "./dynamo-store.js";
+import { modelCorrectionJudge } from "./judge-model.js";
 import type { LoadDeps } from "./load.js";
 import type { LessonsPauseStore } from "./pause.js";
 import type { ApproverDirectory, CorrectionJudge, LearningSpend, LessonEmbedder, LessonVectors, PipelineModel } from "./ports.js";
@@ -111,7 +112,9 @@ export function createLessonsRuntime(input: LessonsRuntimeInput): LessonsRuntime
   const verifier = createCitationVerifier({ reader: input.reader, repositoriesOf: input.repositoriesOf });
   const similarity = input.similarity ?? { vectors: NO_VECTORS };
   const load: LoadDeps = { ...base, store, embedder: similarity.embedder, vectors: similarity.vectors, settings, access, ...(directory.resolveMember === undefined ? {} : { resolveMember: (workspaceId: string, developerId: string) => directory.resolveMember!(workspaceId, developerId) }) };
-  const counters: CounterDeps = { ...base, store, judge: REFUSING_JUDGE, settings, vectors: similarity.vectors };
+  // Lessons outcomes: the counters' correction judge rides the company's own model path with its caps and pause records, like the curator's judge; without that path it refuses (a correction stays unjudged).
+  const outcomeJudge = input.model === undefined || input.spend === undefined ? REFUSING_JUDGE : modelCorrectionJudge({ model: input.model, spend: input.spend, pause: input.pause, edition: input.edition });
+  const counters: CounterDeps = { ...base, store, judge: outcomeJudge, settings, vectors: similarity.vectors };
   const presetStore = new DynamoPresetStore(input.table);
   const routes: LessonRouteDeps = {
     ...base, store, directory, settings, access, names: input.names, sources: { table: input.table },

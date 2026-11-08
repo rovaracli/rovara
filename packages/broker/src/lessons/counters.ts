@@ -82,6 +82,12 @@ export async function recordTaskOutcome(deps: CounterDeps, outcome: TaskOutcome)
 
   const loaded = new Set<string>();
   for (const id of reached(await deps.store.manifests(key, outcome.taskId))) loaded.add(id);
+  // Nothing loaded: nothing to count (and no model to ask). Otherwise the outcome is recorded only where outcomes can be rated now: a usable model on the company's own provider and room in the learning month.
+  // Where they cannot, nothing is recorded, no helpful mark either (a mark given without a judge that could have blamed the lesson would fail open). Only a revert goes on, judging nothing: taking a queued
+  // mark back is the safe direction and must not wait for a model.
+  if (loaded.size === 0) return result;
+  const canJudge = deps.judge.usable === undefined || await deps.judge.usable(key);
+  if (!canJudge && outcome.outcome !== "reverted") return result;
   let judgeCalls = 0;
   for (const lessonId of [...loaded].sort()) {
     const lesson = await deps.store.get(key, lessonId);
@@ -90,10 +96,10 @@ export async function recordTaskOutcome(deps: CounterDeps, outcome: TaskOutcome)
     let unjudged = false;
     let ignored = false;
     for (const correction of outcome.corrections.filter((c) => inScope(lesson, c)).slice(0, MAX_CORRECTIONS_PER_LESSON)) {
-      if (judgeCalls >= MAX_JUDGE_CALLS_PER_TASK) { unjudged = true; continue; }
+      if (!canJudge || judgeCalls >= MAX_JUDGE_CALLS_PER_TASK) { unjudged = true; continue; }
       judgeCalls += 1;
       let rating: Awaited<ReturnType<CorrectionJudge["rate"]>> | undefined;
-      try { rating = await deps.judge.rate({ lesson, correctionKind: correction.kind, correctionText: cleanForLearning(correction.text, 1500) }); } catch { rating = undefined; }
+      try { rating = await deps.judge.rate({ workspaceId: key.workspaceId, project: key.project, lesson, correctionKind: correction.kind, correctionText: cleanForLearning(correction.text, 1500) }); } catch { rating = undefined; }
       if (rating === undefined) { unjudged = true; continue; }
       if (rating === "caused" || rating === "contradicts") blamed = true;
       if (rating === "same_ignored") { ignored = true; deps.metrics?.count("learning.loaded_but_ignored"); }

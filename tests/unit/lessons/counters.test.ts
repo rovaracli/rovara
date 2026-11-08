@@ -6,7 +6,7 @@ import { expiryWindowMs, renewLesson, sweepExpired } from "../../../packages/bro
 import { lessonPanelRows } from "../../../packages/broker/src/lessons/panel.js";
 import { InMemoryLessonStore, type LoadManifest } from "../../../packages/broker/src/lessons/store.js";
 import type { Lesson } from "../../../packages/broker/src/lessons/types.js";
-import { Alerts, Audit, Clock, Judge, ScriptedModel, KEY, PROJECT, WS, lessonRecord, seed, settings, allowAllAccess, type FeedbackDeps } from "./lesson-helpers.js";
+import { Alerts, Audit, Clock, Judge, ScriptedModel, Spend, KEY, PROJECT, WS, lessonRecord, seed, settings, allowAllAccess, type FeedbackDeps } from "./lesson-helpers.js";
 
 const DAY = 86_400_000;
 function setup(judge = new Judge(), s = settings()) {
@@ -292,15 +292,15 @@ describe("panel rows", () => {
 export type { Lesson };
 
 describe("model-backed correction judge", () => {
-  it("answers a fixed code, with no tools; anything else throws so the correction stays unjudged", async () => {
+  it("answers a fixed code, with no tools; anything else throws so the correction stays unjudged (the path, caps and failure counts are in outcome-judge.test.ts)", async () => {
     const model = new ScriptedModel(['{"rating":"caused"}', '```json\n{"rating":"unrelated"}\n```', '{"rating":"maybe"}', "not json"]);
-    const judge = modelCorrectionJudge(model, WS);
-    const input = { lesson: lessonRecord(), correctionKind: "send_back" as const, correctionText: "use the helper" };
+    const judge = modelCorrectionJudge({ model, spend: new Spend() });
+    const input = { workspaceId: WS, project: "proj-1", lesson: lessonRecord(), correctionKind: "send_back" as const, correctionText: "use the helper" };
     expect(await judge.rate(input)).toBe("caused");
     expect(await judge.rate(input)).toBe("unrelated");
     await expect(judge.rate(input)).rejects.toThrow();
     await expect(judge.rate(input)).rejects.toThrow();
-    expect(Object.keys(model.calls[0]!).sort()).toEqual(["maxOutputTokens", "purpose", "system", "user", "workspaceId"]);
+    expect(Object.keys(model.calls[0]!).sort()).toEqual(["budgetUsd", "maxHoldUsd", "maxOutputTokens", "project", "purpose", "system", "user", "workspaceId"]);
     expect(model.calls[0]!.purpose).toBe("outcome");
   });
 });
