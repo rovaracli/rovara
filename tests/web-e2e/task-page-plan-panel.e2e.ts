@@ -170,6 +170,8 @@ for (const [width, theme] of [[1280, "light"], [390, "dark"]] as const) test("th
  expect(await page.locator("img[src=x]").count()).toBe(0);
  await expect(dialog.getByText("Lowercase or keep?")).toBeVisible();
  await expect(dialog.getByRole("checkbox", { name: "Include this finding" })).toBeChecked();
+ // The dialog fades in; axe measures contrast on what is drawn, so a half-faded dialog read as low contrast in Firefox and WebKit.
+ await expect.poll(() => dialog.evaluate(node => getComputedStyle(node).opacity)).toBe("1");
  await checkA11y(page, { theme });
  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
  await evidenceShot(page, { path: shot("task-page-feedback-view-" + String(width)), fullPage: false });
