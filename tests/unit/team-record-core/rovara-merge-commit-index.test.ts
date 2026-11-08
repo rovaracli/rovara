@@ -3,7 +3,7 @@
 // pull request, a different company / repository / task / commit never matches, and a revert named by commit records `rovara.closed{reverted}` exactly once through the real runtime.
 import { randomUUID } from "node:crypto";
 import { TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { INDEX_EXPIRY_ATTRIBUTE, githubInstallationKey, githubMemberKey, githubRepoProjectKey, developerOrgKey, projectRevisionKey, type OrgId } from "@agentx/contracts";
 import { createTeamRecordRuntime } from "../../../packages/broker/src/team-record/runtime.js";
 import { SdkUnavailableError } from "../../../packages/broker/src/team-record/aws-adapters.js";
@@ -30,7 +30,7 @@ function seedTask(db: FakeDynamoDb, over: { orgId?: OrgId; taskId?: string; head
   db.set({ ...taskKey(taskId), taskId, orgId: over.orgId ?? ORG_A, project: "web", workflow: { pullRequests: [{ repositoryId: "api", number: 7, url: URL_, state: "MERGED", ...(over.headSha === undefined && "headSha" in over ? {} : { headSha: over.headSha ?? HEAD }) }] } });
 }
 function seedIndex(db: FakeDynamoDb, over: Partial<Record<string, unknown>> = {}) {
-  db.set({ ...mergeCommitKey("acme/api", MERGE)!, entityType: "GITHUB_WORKFLOW_MERGE", orgId: ORG_A, repositoryFullName: "acme/api", repositoryId: "api", number: 7, url: URL_, taskId: TASK, mergeCommit: MERGE, createdAt: NOW, ...over });
+  db.set({ ...mergeCommitKey(ORG_A, "acme/api", MERGE)!, entityType: "GITHUB_WORKFLOW_MERGE", orgId: ORG_A, repositoryFullName: "acme/api", repositoryId: "api", number: 7, url: URL_, taskId: TASK, mergeCommit: MERGE, createdAt: NOW, ...over });
 }
 const portOf = (db: FakeDynamoDb) => createRovaraPullRequestIndex({ documentClient: db, tableName: "State" });
 const ask = (over: Partial<{ workspaceId: string; host: string; repo: string; sha: string }> = {}) => ({ workspaceId: ORG_A, host: "github", repo: "acme/api", sha: MERGE, ...over });
@@ -44,7 +44,8 @@ describe("SRL-3: the index row is written with the merge", () => {
   it("a pull request that moves to MERGED with a merge commit gets one index row, keyed by repository and commit, holding no person", async () => {
     const [row, ...rest] = putsOf(await items([{ repositoryId: "api", number: 7, mergeCommit: MERGE }]));
     expect(rest).toEqual([]);
-    expect(row).toMatchObject({ ...mergeCommitKey("acme/api", MERGE), orgId: ORG_A, repositoryFullName: "acme/api", repositoryId: "api", number: 7, url: URL_, taskId: TASK, mergeCommit: MERGE });
+    expect(row).toMatchObject({ ...mergeCommitKey(ORG_A, "acme/api", MERGE), orgId: ORG_A, repositoryFullName: "acme/api", repositoryId: "api", number: 7, url: URL_, taskId: TASK, mergeCommit: MERGE });
+    expect(row!.pk).toBe(`ORG#${ORG_A}#GITHUB_MERGE`);
     expect(typeof row![INDEX_EXPIRY_ATTRIBUTE]).toBe("number");
     expect(Object.keys(row!).sort()).toEqual(["createdAt", INDEX_EXPIRY_ATTRIBUTE, "entityType", "mergeCommit", "number", "orgId", "pk", "repositoryFullName", "repositoryId", "sk", "taskId", "url"].sort());
   });
@@ -57,6 +58,22 @@ describe("SRL-3: the index row is written with the merge", () => {
     expect(putsOf(await items([{ repositoryId: "other", number: 9, mergeCommit: MERGE }]))).toEqual([]);
   });
 
+  it("L2: a merge that got no row is counted by reason in one line, with no task, repository or commit in it", async () => {
+    const lines: string[] = [];
+    const log = vi.spyOn(console, "log").mockImplementation((line: unknown) => { lines.push(String(line)); });
+    try {
+      await items([{ repositoryId: "api", number: 7 }]);
+      await items([{ repositoryId: "api", number: 7, mergeCommit: "nope" }]);
+      await items([{ repositoryId: "api", number: 7, mergeCommit: MERGE }]);
+    } finally { log.mockRestore(); }
+    const missed = lines.map((line) => JSON.parse(line) as Record<string, unknown>).filter((line) => line.event === "merge_commit_index.missed");
+    expect(missed).toEqual([
+      { component: "broker", level: "warn", event: "merge_commit_index.missed", reason: "no_merge_commit", count: 1 },
+      { component: "broker", level: "warn", event: "merge_commit_index.missed", reason: "bad_merge_commit", count: 1 },
+    ]);
+    expect(lines.join("\n")).not.toContain(TASK);
+  });
+
   it("a pull request already merged before this save gets no new row (a replay writes nothing)", async () => {
     const list = await mergedStateItems({ documentClient: new FakeDynamoDb(), tableName: "State" }, { taskId: TASK, orgId: ORG_A }, flow("MERGED"), flow("MERGED"), NOW, [{ repositoryId: "api", number: 7, mergeCommit: MERGE }]);
     expect(putsOf(list)).toEqual([]);
@@ -66,9 +83,9 @@ describe("SRL-3: the index row is written with the merge", () => {
     const db = new FakeDynamoDb();
     const put = mergeCommitIndexItem("State", { orgId: ORG_A, repositoryFullName: "Acme/API", repositoryId: "api", number: 7, url: URL_, taskId: TASK, mergeCommit: MERGE, now: NOW })!;
     await db.send(new TransactWriteCommand({ TransactItems: [put] }));
-    const first = db.get(mergeCommitKey("acme/api", MERGE)!);
+    const first = db.get(mergeCommitKey(ORG_A, "acme/api", MERGE)!);
     await db.send(new TransactWriteCommand({ TransactItems: [put] }));
-    expect(db.get(mergeCommitKey("acme/api", MERGE)!)).toEqual(first);
+    expect(db.get(mergeCommitKey(ORG_A, "acme/api", MERGE)!)).toEqual(first);
     expect(db.find((item) => item.entityType === "GITHUB_WORKFLOW_MERGE")).toHaveLength(1);
   });
 });
@@ -242,11 +259,14 @@ describe("SRL-3: the backfill command", () => {
   it("needs a table and a profile, refuses unknown or repeated options, and runs the backfill", async () => {
     expect(() => parseBackfillArgs(["--profile", "p"])).toThrow(/--table/u);
     expect(() => parseBackfillArgs(["--table", "State"])).toThrow(/--profile/u);
-    expect(() => parseBackfillArgs(["--table", "State", "--profile", "p", "--bogus", "1"])).toThrow(/unknown option/u);
-    expect(() => parseBackfillArgs(["--table", "State", "--profile", "p", "--table", "Other"])).toThrow(/twice/u);
-    expect(() => parseBackfillArgs(["--table", "State", "--profile", "p", "--max-ms", "soon"])).toThrow(/whole number/u);
-    const args = parseBackfillArgs(["--table", "State", "--profile", "p"]);
-    expect(args).toMatchObject({ table: "State", profile: "p", region: "us-east-1" });
+    expect(() => parseBackfillArgs(["--table", "State", "--profile", "p", "--region", "us-west-2", "--bogus", "1"])).toThrow(/unknown option/u);
+    expect(() => parseBackfillArgs(["--table", "State", "--profile", "p", "--region", "us-west-2", "--table", "Other"])).toThrow(/twice/u);
+    expect(() => parseBackfillArgs(["--table", "State", "--profile", "p", "--region", "us-west-2", "--max-ms", "soon"])).toThrow(/whole number/u);
+    // L4: the region has no default (staging is us-west-2, this Mac defaults to us-east-1).
+    expect(() => parseBackfillArgs(["--table", "State", "--profile", "p"])).toThrow(/--region/u);
+    expect(() => parseBackfillArgs(["--table", "State", "--profile", "p", "--region", "west"])).toThrow(/--region/u);
+    const args = parseBackfillArgs(["--table", "State", "--profile", "p", "--region", "us-west-2"]);
+    expect(args).toMatchObject({ table: "State", profile: "p", region: "us-west-2" });
     const db = new FakeDynamoDb();
     seedTask(db);
     db.set({ pk: `ORG#${ORG_A}#OUTCOME#web#review`, sk: "SAMPLE#1", entityType: "OUTCOME_SAMPLE", orgId: ORG_A, taskId: TASK, pr: { repositoryId: "api", number: 7, mergeCommit: MERGE } });

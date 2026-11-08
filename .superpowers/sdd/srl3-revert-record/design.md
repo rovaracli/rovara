@@ -17,11 +17,12 @@ so a revert named by commit ("This reverts commit <sha>") never matched a Rovara
 ## Design
 New index row in the state table, written at merge time in the merge transaction:
 
-    pk = GITHUB_MERGE#<owner/repo lower-cased>     sk = SHA#<40 hex lower-case>
+    pk = ORG#<org>#GITHUB_MERGE     sk = <owner/repo lower-cased>#<40 hex lower-case>      (contracts mergeCommitIndexKey; review fix M1)
     { entityType: "GITHUB_WORKFLOW_MERGE", orgId, repositoryFullName, repositoryId, number, url, taskId, mergeCommit, createdAt, expiresAt (INDEX_EXPIRY_ATTRIBUTE, 400 days) }
 
-- Key = repo + sha, so two repos never share a row; the row carries `orgId` and the reader refuses a row whose `orgId` is not the asked workspace (company scoping:
-  an `orgId`/repo/sha triple, never a sha alone). A forked repo with the same sha is a different repo key.
+- Key = company + repo + sha (one partition per company), so two companies or repos never share a row; the row also carries `orgId` and the reader refuses a row whose `orgId` is not
+  the asked workspace. A fork with the same sha is a different repo name. Company close erases the whole `ORG#<org>#GITHUB_MERGE` partition (`org/track-record-cleanup.ts`, up to 8000
+  pages of 25) with no repository discovery, which is why it is one partition and not one per repository (review M1).
 - Writer: `rovara-code/merge-commit-index.ts#mergeCommitIndexItem`, called from `mergedStateItems` for each newly merged PR whose observation names a 40-hex merge commit and whose
   url is `https://github.com/<owner>/<repo>/pull/<n>` (GitHub only, as `byNumber`). Unconditional Put (a replay writes the same values; one item per sha, so no duplicate-item
   transaction error). Callers pass the commit in `MergedObservation.mergeCommit` (`observedMerges`, and the pushed-fix save). No commit in the observation: nothing written, logged
@@ -29,8 +30,12 @@ New index row in the state table, written at merge time in the merge transaction
 - Reader: `rovara-code/rovara-pull-request-index.ts#createRovaraPullRequestIndex` (moved out of runtime.ts so the TeamRecord storage-module list is untouched). `byMergeCommit`:
   strongly-consistent Get on the key; row must say what its key says and have `orgId === workspaceId`; then the existing `byNumber` path (task must be the same org,
   same task id, same pr url, `headSha` known); returns `{...pr, mergeCommitSha: sha}`. Any mismatch/miss/bad input: `undefined` (fail closed = not recorded). Host other than github: undefined.
-- No person ids in the row: no person-erase walk needed (`person-fields.ts` untouched). It holds only task/repo/sha, expires by TTL (the state table's TTL attribute) and is
-  not an org-partition row, like the existing `GITHUB_PR#` rows (these are not deleted on company close either; the orgId check keeps a later tenant on the same repo out).
+- No person ids in the row: no person-erase walk needed (`person-fields.ts` untouched). It holds only task/repo/sha, expires by TTL (the state table's TTL attribute; none on the
+  legacy template) and is erased at company close.
+- Push-path detection (review L1) needs git's revert shape: subject `Revert "` and a body line starting `This reverts commit <sha>` (`gitRevertedCommits`). A revert of a revert does not un-revert.
+- A merge with no usable commit logs a counts-only `merge_commit_index.missed` line (reason, count; no ids) (review L2).
+- The index Put stays in the merge transaction (review L3): it is one item per newly merged PR, and the transaction limit of 100 is an existing limit that audit, stats, milestone,
+  tracking, record and timeline items already approach; the merge record must not lose its index row to a later crash, which is the point of one transaction.
 - Idempotency of the record: unchanged. `rovara.closed` id `task:<id>:closed` version `reverted`, `github.revert` id `<repo>:revert:<task>`, `rovara.reverted_by`: the sink dedupes by (id, version); the re-score is claimed once per task.
 - Non-Rovara revert: no index row -> undefined -> nothing recorded, nothing failed (existing behaviour, now tested against the production port).
 

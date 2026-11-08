@@ -1,13 +1,13 @@
 // SRL-3 (owner decision 24b): the index from a pull request's merge commit to the Rovara task that made it, so a revert that names a commit ("This reverts commit <sha>") can be matched
 // to a Rovara pull request. Until now the merge commit was seen by the GitHub reads that record a merge and kept nowhere a revert could find it.
 //
-//   pk GITHUB_MERGE#<owner/repo, lower case>    sk SHA#<40 hex, lower case>
+//   pk ORG#<org>#GITHUB_MERGE    sk <owner/repo, lower case>#<40 hex, lower case>      (contracts `mergeCommitIndexKey`)
 //
-// The key is the repository AND the commit (a commit id alone is not unique across repositories, forks or companies), and the row names its company (`orgId`), which a reader must check.
-// The row is written in the same transaction that records the merge (`merged-state.ts#mergedStateItems`), holds no person, and expires (the state table's TTL attribute) well after the
+// The key is the company, the repository AND the commit (a commit id alone is not unique across repositories, forks or companies), and the row also names its company (`orgId`), which a
+// reader checks. The company's close erases the partition (`org/track-record-cleanup.ts`). The row is written in the same transaction that records the merge (`merged-state.ts#mergedStateItems`), holds no person, and expires (the state table's TTL attribute) well after the
 // longest time a revert is useful to the track record. The reader is `rovara-pull-request-index.ts`. GitHub only, as the reverse links read by `team-record/runtime.ts` are.
 import { GetCommand, PutCommand, ScanCommand } from "@aws-sdk/lib-dynamodb";
-import { INDEX_EXPIRY_ATTRIBUTE, type OrgId } from "@agentx/contracts";
+import { INDEX_EXPIRY_ATTRIBUTE, mergeCommitIndexKey, type OrgId } from "@agentx/contracts";
 import type { TransactItem } from "../agents/table-writes.js";
 import { taskKey, type DeveloperTaskRecord } from "../developer/task-records.js";
 
@@ -36,11 +36,11 @@ export interface MergeCommitRecord {
 
 export interface MergeCommitTable { documentClient: { send(command: unknown): Promise<unknown> }; tableName: string }
 
-/** The key of a repository's merge commit, or undefined when either is not one GitHub could have issued. The repository is lower-cased, the commit too. */
-export function mergeCommitKey(repositoryFullName: string, sha: string): { pk: string; sk: string } | undefined {
+/** The key of a company's repository and merge commit, or undefined when either is not one GitHub could have issued. The repository is lower-cased, the commit too. */
+export function mergeCommitKey(orgId: OrgId, repositoryFullName: string, sha: string): { pk: string; sk: string } | undefined {
   const commit = sha.toLowerCase();
   if (!REPOSITORY.test(repositoryFullName) || !SHA.test(commit)) return undefined;
-  return { pk: `GITHUB_MERGE#${repositoryFullName.toLowerCase()}`, sk: `SHA#${commit}` };
+  return mergeCommitIndexKey(orgId, repositoryFullName, commit);
 }
 
 /** The repository and number a GitHub pull request address names, or undefined (another host, another shape). */
@@ -53,7 +53,7 @@ export interface MergeCommitIndexInput { orgId: OrgId; repositoryFullName: strin
 
 /** The row for one merge, or undefined when its repository or commit cannot be keyed. */
 export function mergeCommitIndexRecord(input: MergeCommitIndexInput): MergeCommitRecord | undefined {
-  const key = mergeCommitKey(input.repositoryFullName, input.mergeCommit);
+  const key = mergeCommitKey(input.orgId, input.repositoryFullName, input.mergeCommit);
   const at = Date.parse(input.now);
   if (key === undefined || !Number.isFinite(at)) return undefined;
   return {
@@ -72,13 +72,13 @@ export function mergeCommitIndexItem(tableName: string, input: MergeCommitIndexI
  * The row for a repository's commit, or undefined. A row that does not say what its key says (its repository, its commit, its entity type) is not a row for this lookup. The caller still
  * has to check the company (`orgId`) and the task; nothing here grants anything.
  */
-export async function findMergeCommit(table: MergeCommitTable, input: { repositoryFullName: string; sha: string }): Promise<MergeCommitRecord | undefined> {
-  const key = mergeCommitKey(input.repositoryFullName, input.sha);
+export async function findMergeCommit(table: MergeCommitTable, input: { orgId: OrgId; repositoryFullName: string; sha: string }): Promise<MergeCommitRecord | undefined> {
+  const key = mergeCommitKey(input.orgId, input.repositoryFullName, input.sha);
   if (key === undefined) return undefined;
   const item = (await table.documentClient.send(new GetCommand({ TableName: table.tableName, Key: key, ConsistentRead: true })) as { Item?: Record<string, unknown> }).Item;
   if (item === undefined || item.entityType !== MERGE_COMMIT_ENTITY) return undefined;
   const { repositoryFullName, mergeCommit, orgId, repositoryId, url, taskId, number } = item;
-  if (typeof repositoryFullName !== "string" || typeof mergeCommit !== "string" || mergeCommitKey(repositoryFullName, mergeCommit)?.pk !== key.pk || mergeCommit.toLowerCase() !== key.sk.slice("SHA#".length)
+  if (typeof repositoryFullName !== "string" || typeof mergeCommit !== "string" || orgId !== input.orgId || mergeCommitKey(input.orgId, repositoryFullName, mergeCommit)?.sk !== key.sk
     || typeof orgId !== "string" || typeof repositoryId !== "string" || typeof url !== "string" || typeof taskId !== "string" || typeof number !== "number" || !Number.isSafeInteger(number)) return undefined;
   return item as unknown as MergeCommitRecord;
 }

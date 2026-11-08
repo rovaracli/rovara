@@ -1042,6 +1042,14 @@ export function trashKey(orgId: OrgId, developerId: string, taskId: string): Org
   return { pk: orgScoped(orgId, `TRASH#${keyPart(developerId, "a developer id")}`), sk: keyPart(taskId, "a task id") };
 }
 
+/**
+ * Which Rovara task a GitHub pull request was merged as (SRL-3): one partition for the company, one item for each repository and merge commit (both lower-cased), so a revert that names a
+ * commit finds the pull request, a commit id is never looked up across companies, and the company's close erases the whole partition without first finding its repositories.
+ */
+export function mergeCommitIndexKey(orgId: OrgId, repositoryFullName: string, mergeCommit: string): OrgKey {
+  return { pk: orgScoped(orgId, "GITHUB_MERGE"), sk: `${keyPart(repositoryFullName, "a repository name").toLowerCase()}#${keyPart(mergeCommit, "a commit").toLowerCase()}` };
+}
+
 /** Which task a pull request head belongs to, so a check or status event that carries only a commit finds its task. */
 export function prHeadKey(orgId: OrgId, repositoryId: string, headSha: string): OrgKey {
   return { pk: orgScoped(orgId, `PR_HEAD#${keyPart(repositoryId, "a repository id")}`), sk: keyPart(headSha, "a commit") };

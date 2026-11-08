@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { createCodeHostTap, humanEditFile, revertedCommits, runHumanEdit, revertedPullRequests, type CodeHostDiff, type CodeHostEvent, type CodeHostRepo, type HumanEditInput } from "../../packages/broker/src/team-record/sources/codehost.js";
+import { createCodeHostTap, gitRevertedCommits, humanEditFile, revertedCommits, runHumanEdit, revertedPullRequests, type CodeHostDiff, type CodeHostEvent, type CodeHostRepo, type HumanEditInput } from "../../packages/broker/src/team-record/sources/codehost.js";
 import { createGithubDiffReader, createGithubRecordTap, githubEventsOf } from "../../packages/broker/src/team-record/sources/github.js";
 import { createRovaraEmitter, type RovaraEventBase } from "../../packages/broker/src/team-record/sources/rovara.js";
 import { repoScope } from "../../packages/broker/src/team-record/sources/codehost.js";
@@ -295,7 +295,7 @@ describe("reverts of Rovara pull requests", () => {
     let failing = true;
     const { w, tap } = setup({ claims, trackRecord: { markNotHeld: async (input) => { if (failing) throw new Error("down"); marks.push(input); } } });
     w.prs.list.push(rovaraPr);
-    const push = (version: number): CodeHostEvent => ({ type: "push", repo: repo(), ref: "refs/heads/main", at: AT, commits: [{ sha: sha(40 + version), message: `This reverts commit ${sha(30)}.` }] });
+    const push = (version: number): CodeHostEvent => ({ type: "push", repo: repo(), ref: "refs/heads/main", at: AT, commits: [{ sha: sha(40 + version), message: `Revert "Fix cart total"\n\nThis reverts commit ${sha(30)}.` }] });
     await tap.handle(push(0));
     expect(marks).toEqual([]);
     failing = false;
@@ -307,9 +307,23 @@ describe("reverts of Rovara pull requests", () => {
   it("ignores a revert commit pushed to another branch, or one whose target is not a Rovara merge commit", async () => {
     const { w, tap } = setup();
     w.prs.list.push(rovaraPr);
-    await tap.handle({ type: "push", repo: repo(), ref: "refs/heads/feature", at: AT, commits: [{ sha: sha(40), message: `This reverts commit ${sha(30)}` }] });
-    await tap.handle({ type: "push", repo: repo(), ref: "refs/heads/main", at: AT, commits: [{ sha: sha(41), message: `This reverts commit ${sha(31)}` }] });
+    await tap.handle({ type: "push", repo: repo(), ref: "refs/heads/feature", at: AT, commits: [{ sha: sha(40), message: `Revert "x"\n\nThis reverts commit ${sha(30)}` }] });
+    await tap.handle({ type: "push", repo: repo(), ref: "refs/heads/main", at: AT, commits: [{ sha: sha(41), message: `Revert "x"\n\nThis reverts commit ${sha(31)}` }] });
     expect(w.sink.puts.filter((draft) => draft.kind === "github.revert")).toEqual([]);
+  });
+
+  it("SRL-3 L1: a push counts as a revert only in git's own shape (subject `Revert \"`, body line starting `This reverts commit <sha>`)", async () => {
+    expect(gitRevertedCommits(`Revert "Fix"\n\nThis reverts commit ${sha(30)}.`)).toEqual([sha(30)]);
+    expect(gitRevertedCommits(`Revert "Fix"\n\nThis reverts commit ${sha(30)}, reversing changes made to ${sha(2)}.`)).toEqual([sha(30)]);
+    expect(gitRevertedCommits(`This reverts commit ${sha(30)}`)).toEqual([]);
+    expect(gitRevertedCommits(`Fix the cart\n\nThis reverts commit ${sha(30)}`)).toEqual([]);
+    expect(gitRevertedCommits(`Revert "Fix"\n\nsee: This reverts commit ${sha(30)}`)).toEqual([]);
+    expect(gitRevertedCommits(`Revert "Fix"\n\n> This reverts commit ${sha(30)}`)).toEqual([]);
+    const { w, tap } = setup();
+    w.prs.list.push(rovaraPr);
+    const result = await tap.handle({ type: "push", repo: repo(), ref: "refs/heads/main", at: AT, commits: [{ sha: sha(40), message: `Fix cart\n\nThis reverts commit ${sha(30)}.` }] });
+    expect(result.written).toBe(0);
+    expect(w.sink.kinds()).toEqual([]);
   });
 
   it("parses revert text strictly", () => {

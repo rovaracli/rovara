@@ -332,7 +332,7 @@ export function createCodeHostTap(deps: CodeHostTapDependencies): { handle(event
     if (event.type === "push") {
       if (repo.defaultBranch === undefined || event.ref !== `refs/heads/${repo.defaultBranch}`) return;
       for (const commit of event.commits.slice(0, 100)) {
-        for (const sha of revertedCommits(commit.message)) {
+        for (const sha of gitRevertedCommits(commit.message)) {
           const target = await deps.rovaraPrs.byMergeCommit({ workspaceId: repo.workspaceId, host: repo.host, repo: repo.fullName, sha });
           if (target !== undefined) targets.push({ target, via: commit.sha, at: event.at, by: event.sender });
         }
@@ -502,6 +502,19 @@ async function pushChain(index: PushIndexPort, job: HumanEditJob): Promise<PushR
 
 function commentId(event: Extract<CodeHostEvent, { type: "comment" }>): string {
   return `${prId(event.repo, event.prNumber)}:${event.surface}${event.id}`;
+}
+
+/**
+ * SRL-3 (L1): the commits a pushed commit reverts, only when it has git's own revert shape: a subject that starts `Revert "` and a body line that STARTS with "This reverts commit <sha>".
+ * A quoted line, a sentence that mentions the words, or a commit that merely carries such text is not a revert. A revert of a revert (re-landing the change) names the first revert's
+ * commit, so it matches nothing and the task stays reverted: there is no un-revert (a known limit, DEFERRED-CHECKS SRL-3).
+ */
+export function gitRevertedCommits(message: string): string[] {
+  const subject = message.split("\n", 1)[0] ?? "";
+  if (!/^Revert\s+["“']/i.test(subject.trim())) return [];
+  const out = new Set<string>();
+  for (const match of message.matchAll(/^This reverts commit ([0-9a-f]{40})\b/gim)) out.add(match[1]!.toLowerCase());
+  return [...out].slice(0, 20);
 }
 
 /** Full commit ids named by "This reverts commit <sha>". */

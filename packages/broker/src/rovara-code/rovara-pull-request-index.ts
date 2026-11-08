@@ -1,6 +1,7 @@
 // The production `RovaraPullRequestIndexPort` of the Team record's code host tap: finds Rovara's own pull requests. Moved out of `team-record/runtime.ts` (SRL-3) so the lookup by merge
 // commit sits beside the index it reads (`merge-commit-index.ts`) and outside the Team record's storage modules; the task records and the reverse links are the state table's, not the record's.
 import { GetCommand } from "@aws-sdk/lib-dynamodb";
+import { OrgIdSchema } from "@agentx/contracts";
 import type { RovaraPullRequest, RovaraPullRequestIndexPort } from "../team-record/sources/ports.js";
 import { taskKey, type DeveloperTaskRecord } from "../developer/task-records.js";
 import { findLinkedChangeRequest } from "./linked-change-requests.js";
@@ -27,7 +28,10 @@ export function createRovaraPullRequestIndex(deps: RovaraPullRequestIndexDepende
     // names, at the address the row names. Anything that does not agree is a miss: a revert is then not recorded, never recorded against the wrong task.
     async byMergeCommit({ workspaceId, host, repo, sha }) {
       if (host !== "github") return undefined;
-      const row = await findMergeCommit(deps, { repositoryFullName: repo, sha });
+      // The key is the company's: a workspace that is not a company id finds nothing.
+      const org = OrgIdSchema.safeParse(workspaceId);
+      if (!org.success) return undefined;
+      const row = await findMergeCommit(deps, { orgId: org.data, repositoryFullName: repo, sha });
       if (row === undefined || row.orgId !== workspaceId) return undefined;
       const address = githubPullRequestAddress(row.url);
       if (address === undefined || address.number !== row.number || address.repositoryFullName.toLowerCase() !== repo.toLowerCase()) return undefined;

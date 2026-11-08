@@ -47,6 +47,8 @@ export async function mergedStateItems(
     console.log(JSON.stringify({ component: "broker", event: "merged_state.tracking_unreadable", taskId: task.taskId, error: error instanceof Error ? error.name : "unknown" }));
   }
   const session = SessionIdSchema.safeParse(task.sessionId);
+  // SRL-3 (L2): merges that got no index row, by reason. Counts only (no task, repository or commit), logged once per reason after the loop.
+  const missed = { no_merge_commit: 0, bad_merge_commit: 0 };
   for (const pullRequest of newly) {
     const prior = tracked.find((item) => item.repositoryId === pullRequest.repositoryId && item.number === pullRequest.number);
     if (prior !== undefined && prior.state !== "merged") {
@@ -71,7 +73,7 @@ export async function mergedStateItems(
     const indexed = mergeCommit === undefined || address === undefined ? undefined
       : mergeCommitIndexItem(table.tableName, { orgId, repositoryFullName: address.repositoryFullName, repositoryId: pullRequest.repositoryId, number: pullRequest.number, url: pullRequest.url, taskId: task.taskId, mergeCommit, now });
     if (indexed !== undefined) items.push(indexed);
-    else if (address !== undefined) console.log(JSON.stringify({ component: "broker", event: "merge_commit_index.skipped", taskId: task.taskId, reason: mergeCommit === undefined ? "no_merge_commit" : "bad_merge_commit" }));
+    else if (address !== undefined) missed[mergeCommit === undefined ? "no_merge_commit" : "bad_merge_commit"] += 1;
     // Merged on GitHub (not by Rovara's Merge, which claims the pull request first) with no approval that counts: a fact for the timeline, not an error.
     if (prior !== undefined && prior.mergeClaim === undefined && prior.approval === undefined && session.success) {
       const by = observed.find((entry) => entry.repositoryId === pullRequest.repositoryId && entry.number === pullRequest.number)?.mergedBy;
@@ -81,5 +83,6 @@ export async function mergedStateItems(
       }));
     }
   }
+  for (const [reason, count] of Object.entries(missed)) if (count > 0) console.log(JSON.stringify({ component: "broker", level: "warn", event: "merge_commit_index.missed", reason, count }));
   return items;
 }

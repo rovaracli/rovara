@@ -1,6 +1,6 @@
 // SRL-3 release step (optional, idempotent, resumable): indexes the merge commits of Rovara pull requests merged before the index existed, so a revert of one of them is recorded.
 //
-//   npx tsx scripts/backfill-merge-commit-index.ts --table <state table> --profile <aws profile> [--region <region>] [--max-ms <ms>] [--pause-ms <ms>]
+//   npx tsx scripts/backfill-merge-commit-index.ts --table <state table> --profile <aws profile> --region <region> [--max-ms <ms>] [--pause-ms <ms>]
 //
 // It reads the track record's outcome samples that already hold a merge commit GitHub gave, checks each against the task, and puts the missing `GITHUB_MERGE#` row with
 // `attribute_not_exists` (see `rovara-code/merge-commit-index.ts#backfillMergeCommitIndex`). It sends only Scan, Get and Put to the table, prints counts and nothing else, and can be run
@@ -10,7 +10,6 @@ import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
 import { DynamoDBDocumentClient } from "@aws-sdk/lib-dynamodb";
 import { backfillMergeCommitIndex, type BackfillResult } from "../packages/broker/src/rovara-code/merge-commit-index.js";
 
-const DEFAULT_REGION = "us-east-1";
 const DEFAULT_PAGE_SIZE = 200;
 const DEFAULT_MAX_MS = 600_000;
 const DEFAULT_PAUSE_MS = 200;
@@ -31,6 +30,8 @@ export function parseBackfillArgs(argv: readonly string[]): BackfillArgs {
   if (table === undefined || !/^[A-Za-z0-9_.-]{3,255}$/.test(table)) throw new Error("--table is required and must be a DynamoDB table name (there is no default)");
   const profile = values.get("--profile");
   if (profile === undefined) throw new Error("--profile is required (the AWS profile to use)");
+  const region = values.get("--region");
+  if (region === undefined || !/^[a-z]{2}(-[a-z]+)+-\d$/.test(region)) throw new Error("--region is required (for example us-west-2 for staging; there is no default)");
   const whole = (name: string, fallback: number): number => {
     const text = values.get(name);
     if (text === undefined) return fallback;
@@ -39,7 +40,7 @@ export function parseBackfillArgs(argv: readonly string[]): BackfillArgs {
   };
   const resumeText = values.get("--resume");
   const resume = resumeText === undefined ? undefined : (JSON.parse(resumeText) as Record<string, unknown>);
-  return { table, profile, region: values.get("--region") ?? DEFAULT_REGION, maxMs: whole("--max-ms", DEFAULT_MAX_MS), pauseMs: whole("--pause-ms", DEFAULT_PAUSE_MS), ...(resume === undefined ? {} : { resume }) };
+  return { table, profile, region, maxMs: whole("--max-ms", DEFAULT_MAX_MS), pauseMs: whole("--pause-ms", DEFAULT_PAUSE_MS), ...(resume === undefined ? {} : { resume }) };
 }
 
 /** Runs pages until the end or the time given, pausing between pages. */

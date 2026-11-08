@@ -210,7 +210,7 @@ describe("SRL-3: the merge commit is indexed in the transaction that records the
     expect(indexRows(h)).toEqual([]);
     h.merge();
     expect(await h.reconcile()).toBe(true);
-    expect(indexRows(h)).toMatchObject([{ pk: "GITHUB_MERGE#acme/api", sk: `SHA#${MERGE}`, orgId: ORG_A, taskId: h.taskId, number: 1, url: URL_, mergeCommit: MERGE, repositoryId: "api" }]);
+    expect(indexRows(h)).toMatchObject([{ pk: `ORG#${ORG_A}#GITHUB_MERGE`, sk: `acme/api#${MERGE}`, orgId: ORG_A, taskId: h.taskId, number: 1, url: URL_, mergeCommit: MERGE, repositoryId: "api" }]);
     expect(await h.reconcile()).toBe(false);
     expect(indexRows(h)).toHaveLength(1);
   });
