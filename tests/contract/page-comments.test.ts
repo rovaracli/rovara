@@ -102,17 +102,14 @@ describe("page comments", () => {
     expect((await refusal(comment(fixture, PRIYA, { parentId: other.commentId }))).pageReason).toBe("not_here");
   });
 
-  it("comments only on the current step's latest version; replies on any thread of a document's latest version while open, never on an older version's", async () => {
+  it("comments only on the current step's latest version; replies anywhere while open", async () => {
     const fixture = waitingTask();
     const { comment: onV1 } = await comment(fixture, SAM);
     fixture.addVersion("plan", pagePlan({ title: "Retry failed payments, second try" }));
     const old = await refusal(comment(fixture, SAM, { version: 1 }));
     expect(old.pageReason).toBe("not_here");
-    const { comment: onV2 } = await comment(fixture, SAM, { version: 2 });
-    expect(onV2.version).toBe(2);
-    // An older version's thread is read-only: a reply is refused as a new comment there is; editing or deleting your own comment stays allowed (changeableComment checks no version).
-    expect((await refusal(comment(fixture, PRIYA, { parentId: onV1.commentId }))).pageReason).toBe("not_here");
-    await expect(comment(fixture, PRIYA, { parentId: onV2.commentId })).resolves.toMatchObject({ comment: { version: 2, parentId: onV2.commentId } });
+    await expect(comment(fixture, SAM, { version: 2 })).resolves.toMatchObject({ comment: { version: 2 } });
+    await expect(comment(fixture, PRIYA, { parentId: onV1.commentId })).resolves.toMatchObject({ comment: { version: 1, parentId: onV1.commentId } });
     expect((await refusal(comment(fixture, SAM, { document: "design", version: 1 }))).pageReason).toBe("not_here");
     expect((await refusal(comment(fixture, SAM, { version: 3 }))).pageReason).toBe("not_here");
     // While the planner writes the next version, the latest one still takes comments.
@@ -121,10 +118,9 @@ describe("page comments", () => {
     // Once coding starts, nothing new is said on the plan, but its threads still take replies.
     fixture.setWorkflow({ ...fixture.workflow(), revision: fixture.workflow().revision + 1, stage: "IMPLEMENT", state: "READY" });
     expect((await refusal(comment(fixture, SAM, { version: 2 }))).pageReason).toBe("not_here");
-    await expect(comment(fixture, SAM, { parentId: onV2.commentId })).resolves.toMatchObject({ comment: { parentId: onV2.commentId } });
-    expect((await refusal(comment(fixture, SAM, { parentId: onV1.commentId }))).pageReason).toBe("not_here");
+    await expect(comment(fixture, SAM, { parentId: onV1.commentId })).resolves.toMatchObject({ comment: { parentId: onV1.commentId } });
     fixture.close();
-    expect((await refusal(comment(fixture, SAM, { parentId: onV2.commentId }))).pageReason).toBe("closed");
+    expect((await refusal(comment(fixture, SAM, { parentId: onV1.commentId }))).pageReason).toBe("closed");
   });
 
   it("a claim, decision or check that the version does not have is refused", async () => {

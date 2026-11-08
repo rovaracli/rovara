@@ -321,7 +321,7 @@ export function counterTouch(deps: TableDependencies, taskId: string) {
 
 /**
  * Posts a comment or a reply. A new comment goes only on the latest version of the document the current planning step is
- * about, and on a claim, decision or check that version has; a reply joins any thread on the latest version of its document while the task is open, and sits
+ * about, and on a claim, decision or check that version has; a reply joins any thread while the task is open, and sits
  * on its parent's document, version and target. A resent request (same person, same request ID) returns the stored comment.
  */
 export async function createTaskComment(
@@ -344,8 +344,6 @@ export async function createTaskComment(
     parent = await getComment(deps, task.taskId, input.parentId);
     if (parent === undefined || parent.author.kind !== "person" || parent.parentId !== undefined || parent.deletedAt !== undefined) throw pageRefusal("not_here");
     if ((parent.replyCount ?? 0) >= COMMENT_THREAD_REPLIES_MAX) throw pageRefusal("thread_full");
-    // A reply is a new write too: a thread on an older version of its document is read-only (its author may still edit or delete their own comment there).
-    if (latestVersion(task.workflow, parent.document) !== parent.version) throw pageRefusal("not_here");
     place = { document: parent.document, version: parent.version, target: parent.target };
   } else {
     const document = currentStepDocument(task.workflow);

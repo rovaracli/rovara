@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useAppHost } from "../../host.js";
 import { ApiError } from "../../api/errors.js";
@@ -13,6 +13,8 @@ const NOTE_MAX = 2000;
 const str = (value: unknown): string => (typeof value === "string" ? value : typeof value === "number" ? String(value) : "");
 const list = (value: unknown): Array<Record<string, unknown>> => (Array.isArray(value) ? value.filter((item): item is Record<string, unknown> => item !== null && typeof item === "object") : []);
 const strings = (value: unknown): string[] => (Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : []);
+/** How long after a press the review is read again by itself; then the page says to check back later. */
+const WAIT_MS = 120_000, POLL_MS = 5000;
 const DECIDED: Record<string, string> = { APPROVE: "Approved", REQUEST_CHANGES: "Changes requested", DISMISS: "Dismissed" };
 
 /** The check changes a finding's fix makes, as plain lines: the checks it retires and the commands it adds (each shown as code, never run here). */
@@ -34,14 +36,24 @@ export default function FeedbackView({ taskId, onClose }: { taskId: string; onCl
  const host = useAppHost(), query = useQueryClient(), api = useMemo(() => createPlanPanelApi(host), [host]);
  // The press of Retry review: the review digest it was for, and whether it started a review. While it counts the review is read again every few seconds: the retried review leaves the "waiting" state
  // (the server then has nothing to show) until its new proposal is ready. A review with a different digest is a new thing to retry or decide, so the earlier press no longer counts.
- const [pressed, setPressed] = useState<{ digest: string; started: boolean }>();
+ const [pressed, setPressed] = useState<{ digest: string; started: boolean; at: number }>();
  const read = useQuery({ queryKey: ["task-feedback", taskId], queryFn: () => api.feedback(taskId), retry: false,
-  refetchInterval: poll => (pressed !== undefined && (poll.state.error !== null || str(poll.state.data?.reviewDigest) === pressed.digest) ? 5000 : false) });
+  // Read again only while waiting: until two minutes after the press, and never past a real failure (a refusal or a fault other than "no review to show yet", which is the 404).
+  refetchInterval: poll => (pressed !== undefined && Date.now() - pressed.at < WAIT_MS && (poll.state.error === null ? str(poll.state.data?.reviewDigest) === pressed.digest : poll.state.error instanceof ApiError && poll.state.error.status === 404) ? POLL_MS : false) });
  const [chosen, setChosen] = useState<Record<string, boolean>>({}), [note, setNote] = useState(""), [busy, setBusy] = useState(false), [error, setError] = useState<string>(), [done, setDone] = useState<string>();
  const review = read.data;
+ // The wait ends two minutes after the press (a timer, so the page redraws then even when nothing else changed).
+ const [waitedOut, setWaitedOut] = useState<number>();
+ useEffect(() => {
+  if (pressed === undefined) return undefined;
+  const timer = setTimeout(() => { setWaitedOut(pressed.at); }, WAIT_MS);
+  return () => { clearTimeout(timer); };
+ }, [pressed]);
  const missing = read.error instanceof ApiError && read.error.status === 404;
  const retried = pressed !== undefined && review !== undefined && !missing && str(review.reviewDigest) === pressed.digest;
  const retrying = pressed !== undefined && (retried || missing);
+ // Waited long enough, or the read failed for a reason other than "nothing to show yet": stop saying it is coming, and say to check back.
+ const gaveUp = retrying && (waitedOut === pressed?.at || (read.error !== null && !missing));
  const findings = list(review?.findings), recommended = strings(review?.recommendedFindingIds);
  const pending = review?.status === "PENDING" && (review.reportStatus === undefined || review.reportStatus === "COMPLETE") && (review.workflowStatus === undefined || (review.workflowStatus === "WAITING" && review.workflowStage === "WAIT_FOR_MERGE"));
  const isChosen = (id: string) => chosen[id] ?? recommended.includes(id);
@@ -63,7 +75,7 @@ export default function FeedbackView({ taskId, onClose }: { taskId: string; onCl
   setBusy(true);setError(undefined);setDone(undefined);
   try {
    const answer = await api.retryFeedback(taskId, str(review.reviewDigest));
-   setPressed({ digest: str(review.reviewDigest), started: answer.started });
+   setPressed({ digest: str(review.reviewDigest), started: answer.started, at: Date.now() });
    await Promise.all([query.invalidateQueries({ queryKey: ["task-feedback", taskId] }), query.invalidateQueries({ queryKey: ["session"] })]);
   } catch (failure) { setError(failure instanceof ApiError ? failure.message : "Couldn't retry the review. Close and open it again."); } finally { setBusy(false); }
  }
@@ -71,7 +83,7 @@ export default function FeedbackView({ taskId, onClose }: { taskId: string; onCl
  return <Dialog title={"PR feedback" + (review === undefined ? "" : " · " + str(review.title))} open onOpenChange={open => { if (!open) onClose(); }} className="rv-plan-panel" description="AI-generated advice on your pull request's review comments. Only your approval starts code changes.">
   <div className="rv-plan-panel-body">
    {read.isPending ? <Skeleton label="Loading the PR feedback review" />
-    : missing ? <p>{retrying ? "Reviewing the feedback again. The result will show here." : "No PR feedback review is waiting on this task, or only its owner can see it."}</p>
+    : missing ? <p>{retrying ? (gaveUp ? "The review is taking longer than usual. Check back later." : "Reviewing the feedback again. The result will show here.") : "No PR feedback review is waiting on this task, or only its owner can see it."}</p>
     : review === undefined ? <p role="alert">Couldn't load the PR feedback review. Close it and try again.</p>
     : <>
      {unfinished && <section aria-label="Review did not finish"><p><strong>The review didn't finish.</strong> Retry it to review the same comments again.</p>
@@ -102,7 +114,7 @@ export default function FeedbackView({ taskId, onClose }: { taskId: string; onCl
      {list(review.candidates).length > 0 && <section aria-label="Pull requests"><h3>Pull requests</h3><ul>{list(review.candidates).map((pr, at) => <li key={at}><VisibleText text={str(pr.repositoryId) + " #" + str(pr.number)} /></li>)}</ul></section>}
     </>}
   </div>
-  <div className="rv-plan-panel-messages">{retried && <p role="status">{pressed?.started === true ? "Reviewing the feedback again. A new proposal shows here when it is ready." : "This review was already retried. A new proposal shows here when it is ready."}</p>}{done !== undefined && <p role="status">{done}</p>}{error !== undefined && <p role="alert"><VisibleText text={error} /></p>}</div>
+  <div className="rv-plan-panel-messages">{retried && <p role="status">{pressed?.started === true ? "Reviewing the feedback again. A new proposal shows here when it is ready." : "This review was already retried. A new proposal shows here when it is ready."}{gaveUp ? " Check back later." : ""}</p>}{done !== undefined && <p role="status">{done}</p>}{error !== undefined && <p role="alert"><VisibleText text={error} /></p>}</div>
   {pending && <div className="rv-plan-panel-footer" role="region" aria-label="Decide">
    <label htmlFor="feedback-note">Note for Rovara (needed to request changes or dismiss)</label>
    <textarea id="feedback-note" maxLength={NOTE_MAX} value={note} onChange={event => setNote(event.target.value)} />

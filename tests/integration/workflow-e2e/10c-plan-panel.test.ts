@@ -350,10 +350,7 @@ describe("Suite 10c: the plan panel on the task page (OWNER DECISION 18)", () =>
     expect((listed.body.comments as Array<{ version: number; text: string }>).filter((comment) => comment.version === 1).map((comment) => comment.text)).toEqual(["Say which file."]);
     // The current version asked for by number is the ordinary view.
     expect((await web(OWNER, "GET", `${base(e2e)}/documents/plan?version=2`)).body).toMatchObject({ current: { version: 2 }, access: { canDecide: true } });
-    // A thread on the older version takes no new reply (the same refusal as a new comment there); its author may still edit and delete their own comment.
-    const reply = await web(OWNER, "POST", `${base(e2e)}/comments`, commentBody({ kind: "claim", id: "1" }, "Which one?", { parentId: v1Id }));
-    expect([reply.status, JSON.stringify(reply.body)]).toEqual([409, expect.stringContaining("This task changed. Refresh the page and try again.")]);
-    expect(peopleComments(e2e).map((comment) => comment.text)).toEqual(["Say which file."]);
+    // Its author may still edit and delete their own comment there (the older view hides these controls, the routes do not check the version).
     const edited = await web(SAM, "POST", `${base(e2e)}/comments/${v1Id}/edit`, { rev: 1, text: "Say which file, please." });
     expect(edited.status, JSON.stringify(edited.body)).toBe(200);
     expect((await web(SAM, "POST", `${base(e2e)}/comments/${v1Id}/delete`, { rev: 2 })).status).toBe(200);

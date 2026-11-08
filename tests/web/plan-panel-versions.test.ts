@@ -1,8 +1,8 @@
 // @vitest-environment jsdom
 // UX2C-LATER: the plan panel browses older saved versions of a document (read-only, with that version's own comments, a clear "older version" label and a way back), and the PR feedback view
 // retries a review that did not finish with the same retry Slack's button uses.
-import { expect, it } from "vitest";
-import { screen, waitFor, fireEvent, within } from "@testing-library/react";
+import { afterEach, expect, it, vi } from "vitest";
+import { screen, waitFor, fireEvent, within, act } from "@testing-library/react";
 import { QueryClientProvider } from "@tanstack/react-query";
 import { AppHostProvider, type ApiRequest, type ApiResponse } from "../../packages/ui/src/host.js";
 import { createQueryClient } from "../../packages/ui/src/api/query.js";
@@ -159,4 +159,31 @@ it("a new review with a new digest can be retried again: the earlier press no lo
  fireEvent.click(within(dialog).getByRole("button", { name: "Retry review" }));
  await waitFor(() => expect(f.posts()).toHaveLength(2));
  expect(f.posts().map(request => request.body)).toEqual([{ reviewDigest: DIGEST }, { reviewDigest: "c".repeat(64) }]);
+});
+
+it("when the read fails for a real reason after a retry, the page stops waiting and says to check back later", async () => {
+ mountFeedback(failedReview, () => ({ status: 200, body: { started: true } }), call => (call === 1 ? { status: 200, body: { review: failedReview } } : { status: 503, body: { error: { code: "RUNTIME_UNAVAILABLE", message: "Try again shortly." } } }));
+ const dialog = await screen.findByRole("dialog", { name: /PR feedback/u });
+ fireEvent.click(await within(dialog).findByRole("button", { name: "Retry review" }));
+ await within(dialog).findByText(/Check back later\./u, undefined, { timeout: 8000 });
+ expect(within(dialog).queryByText(/No PR feedback review is waiting/u)).toBeNull();
+});
+
+afterEach(() => { vi.useRealTimers(); });
+
+it("the review is read again every few seconds after a retry, and after two minutes the page stops and says to check back later", async () => {
+ vi.useFakeTimers({ shouldAdvanceTime: true });
+ const f = mountFeedback(failedReview, () => ({ status: 200, body: { started: true } }), call => (call === 1 ? { status: 200, body: { review: failedReview } } : { status: 404, body: { error: { code: "NOT_FOUND", message: "Review not found." } } }));
+ const dialog = await screen.findByRole("dialog", { name: /PR feedback/u });
+ fireEvent.click(await within(dialog).findByRole("button", { name: "Retry review" }));
+ await within(dialog).findByText("Reviewing the feedback again. The result will show here.");
+ const reads = () => f.request.mock.calls.filter(([request]) => request.method === "GET").length;
+ const before = reads();
+ await act(async () => { await vi.advanceTimersByTimeAsync(11_000); });
+ expect(reads()).toBeGreaterThan(before);
+ await act(async () => { await vi.advanceTimersByTimeAsync(120_000); });
+ await within(dialog).findByText("The review is taking longer than usual. Check back later.");
+ const stopped = reads();
+ await act(async () => { await vi.advanceTimersByTimeAsync(60_000); });
+ expect(reads()).toBe(stopped);
 });
