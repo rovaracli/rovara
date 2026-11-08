@@ -42,8 +42,8 @@ function Composer({ id, label, initial = "", ask, onSubmit, onCancel, busy, subm
 }
 
 function CommentItem({ comment, replies, context }: { comment: PanelComment; replies: PanelComment[]; context: Context }) {
- const { view, busy } = context, current = view.current?.version;
- const mine = comment.author.kind === "person" && comment.author.you && !comment.sent && !comment.deleted;
+ const { view, busy } = context, current = view.current?.version, readOnly = view.older !== undefined;
+ const mine = !readOnly && comment.author.kind === "person" && comment.author.you && !comment.sent && !comment.deleted;
  const replyKey = "reply-" + comment.id;
  const name = comment.author.kind === "agentx" ? "Rovara" : comment.author.name + (comment.author.owner ? " (owner)" : "");
  return <li id={domId("comment", comment.id)} className="rv-panel-comment" data-author={comment.author.kind}>
@@ -56,7 +56,7 @@ function CommentItem({ comment, replies, context }: { comment: PanelComment; rep
    {comment.parentId === undefined && view.access.canComment && <Button variant="quiet" onClick={() => context.setComposing(replyKey)}>Reply</Button>}
    {mine && <Button variant="quiet" onClick={() => context.setEditing(comment.id)}>Edit</Button>}
    {mine && <Button variant="quiet" busy={busy} onClick={() => context.remove(comment)}>Delete</Button>}
-   {context.canRemember && comment.author.kind === "person" && comment.remembered !== undefined && (comment.remembered
+   {!readOnly && context.canRemember && comment.author.kind === "person" && comment.remembered !== undefined && (comment.remembered
     ? <><span className="rv-muted">Remembered for this project</span><Button variant="quiet" busy={busy} onClick={() => context.learn(comment, "forget")}>Forget</Button></>
     : <Button variant="quiet" busy={busy} onClick={() => context.learn(comment, "remember")}>Remember this</Button>)}
   </div>}
@@ -102,7 +102,7 @@ function Question({ decision, context }: { decision: PanelDecision; context: Con
 function Body({ context }: { context: Context }) {
  const { view } = context, current = view.current;
  if (current === undefined) return <p>{view.unverified ? "The saved document couldn't be verified, so it isn't shown." : "This document hasn't been written yet."}</p>;
- const status = <p className="rv-muted">{"Version " + current.version + (current.approved ? ", approved" : view.waiting ? ", waiting for the owner's decision" : "")}{view.versions.length > 1 ? " · " + view.versions.length + " versions" : ""}</p>;
+ const status = <p className="rv-muted">{"Version " + current.version + (view.older !== undefined ? " (older)" : "") + (current.approved ? ", approved" : view.waiting ? ", waiting for the owner's decision" : "")}{view.versions.length > 1 ? " · " + view.versions.length + " versions" : ""}</p>;
  if (current.format === "markdown") return <>{status}<Suspense fallback={<Skeleton label="Loading the document" />}><Markdown markdown={current.markdown} comments={[]} /></Suspense><h3>Comments</h3><Thread target={{ kind: "document" }} label="the whole document" context={context} /></>;
  return <>
   {status}
@@ -118,6 +118,21 @@ function Body({ context }: { context: Context }) {
 }
 
 /**
+ * Which saved version the panel shows: the current one, or an older one read-only. The list comes from the current read, so it stays while an older version loads. Choosing the current version (or
+ * "Back to the current version") returns to the ordinary view with its comments, suggestions and Approve.
+ */
+function VersionPicker({ versions, shown, older, onPick }: { versions: PanelView["versions"]; shown: number | undefined; older: { currentVersion: number } | undefined; onPick: (version: number | undefined) => void }) {
+ const latest = versions.find(entry => entry.current)?.version;
+ return <div className="rv-panel-versions">
+  <label htmlFor="panel-version">Version</label>
+  <select id="panel-version" value={shown ?? latest ?? ""} onChange={event => { const picked = Number(event.target.value);onPick(picked === latest ? undefined : picked); }}>
+   {[...versions].sort((left, right) => right.version - left.version).map(entry => <option key={entry.version} value={entry.version}>{"v" + entry.version + (entry.current ? " (current)" : "") + (entry.approved ? ", approved" : "")}</option>)}
+  </select>
+  {older !== undefined && <p role="status" className="rv-panel-older"><strong>Older version.</strong> You're reading v{shown} read-only. The current version is v{older.currentVersion}. <Button variant="quiet" onClick={() => onPick(undefined)}>Back to the current version</Button></p>}
+ </div>;
+}
+
+/**
  * OWNER DECISION 18: the full document inside the task page: a side panel on a desktop, a full-screen sheet on a phone. Line comments, replies, edits and deletes of your own, suggestions, Ask (its
  * answer shows in the thread) and Remember / Forget, each through the old page's own server function. `footer` is the decision card's own Approve and Request changes (the same decide path, sign-in
  * and second-person rules as the card), pinned at the bottom; without one (nothing waits on this person) the panel only reads and discusses.
@@ -125,12 +140,15 @@ function Body({ context }: { context: Context }) {
 export default function PlanPanel({ taskId, document, footer, onClose, onLoaded }: { taskId: string; document: PanelDocument; footer?: ReactNode; onClose: () => void;
  /** Called once, after the document's current version has been read and drawn (never for a document that failed to load or isn't written): a medium card records its evidence as opened then. */ onLoaded?: () => void }) {
  const host = useAppHost(), query = useQueryClient(), api = useMemo(() => createPlanPanelApi(host), [host]);
- const view = useQuery({ queryKey: ["plan-panel", taskId, document], queryFn: () => api.document(taskId, document), retry: false });
+ const [version, setVersion] = useState<number>();
+ const latest = useQuery({ queryKey: ["plan-panel", taskId, document], queryFn: () => api.document(taskId, document), retry: false });
+ const olderRead = useQuery({ queryKey: ["plan-panel", taskId, document, version], queryFn: () => api.document(taskId, document, version), retry: false, enabled: version !== undefined });
+ const view = version === undefined ? latest : olderRead;
  const comments = useQuery({ queryKey: ["plan-panel-comments", taskId], queryFn: () => api.comments(taskId), retry: false,
   // While Rovara answers a question, the thread is read again until the answer is there.
   refetchInterval: read => (read.state.data?.comments.some(comment => comment.agentx === "answering") === true ? 4000 : false) });
  const [busy, setBusy] = useState(false), [error, setError] = useState<string>(), [done, setDone] = useState<string>();
- const loaded = useRef(false), shown = view.isSuccess && view.data.current !== undefined;
+ const loaded = useRef(false), shown = latest.isSuccess && latest.data.current !== undefined;
  useEffect(() => { if (shown && !loaded.current) { loaded.current = true;onLoaded?.(); } }, [shown, onLoaded]);
  const [composing, setComposing] = useState<string>(), [editing, setEditing] = useState<string>();
  async function run(work: () => Promise<unknown>, said: string): Promise<boolean> {
@@ -145,7 +163,8 @@ export default function PlanPanel({ taskId, document, footer, onClose, onLoaded 
  const words = PANEL_DOCUMENT_WORDS[document];
  const read = view.data, listed = comments.data;
  const context: Context | undefined = read === undefined ? undefined : {
-  view: read, document, comments: listed?.comments ?? [], suggestions: listed?.suggestions ?? [], canRemember: listed?.canRemember === true, busy, composing, setComposing, editing, setEditing,
+  // An older version shows its own comments only, and none of the current questions' suggestions.
+  view: read, document, comments: (listed?.comments ?? []).filter(comment => read.older === undefined || comment.version === read.current?.version), suggestions: read.older === undefined ? listed?.suggestions ?? [] : [], canRemember: listed?.canRemember === true, busy, composing, setComposing, editing, setEditing,
   post: async (target, text, ask, parentId) => {
    let limited = false;
    const posted = await run(async () => {
@@ -161,15 +180,16 @@ export default function PlanPanel({ taskId, document, footer, onClose, onLoaded 
   learn: (comment, action) => { void run(() => api.learn(taskId, comment.id, action), action === "remember" ? "Remembered for this project." : "Forgotten."); },
   suggest: (decisionId, optionId) => { void run(() => api.suggest(taskId, document, decisionId, optionId), optionId === null ? "Suggestion cleared." : "Suggested to the owner."); },
  };
- const title = words.name + (read?.current === undefined ? "" : " v" + read.current.version);
+ const title = words.name + (read?.current === undefined ? "" : " v" + read.current.version + (read.older === undefined ? "" : " (older)"));
  return <Dialog title={title} open onOpenChange={open => { if (!open) onClose(); }} className="rv-plan-panel" description={read?.access.canComment === true ? "Read the whole document and discuss any part of it." : "Read the whole document."}>
   <div className="rv-plan-panel-body">
+   {latest.isSuccess && latest.data.versions.length > 1 && <VersionPicker versions={latest.data.versions} shown={version} older={read?.older} onPick={picked => { setComposing(undefined);setEditing(undefined);setError(undefined);setDone(undefined);setVersion(picked); }} />}
    {view.isPending ? <Skeleton label="Loading the document" />
     : view.isError || context === undefined ? <p role="alert"><VisibleText text={view.error instanceof ApiError ? view.error.message : "Couldn't load this document. Close and open it again."} /></p>
     : <Body context={context} />}
    {comments.isError && <p role="alert">Couldn't load the comments. Close and open the document again.</p>}
   </div>
   <div className="rv-plan-panel-messages">{done !== undefined && <p role="status">{done}</p>}{error !== undefined && <p role="alert"><VisibleText text={error} /></p>}</div>
-  {footer !== undefined && footer !== null && <div className="rv-plan-panel-footer" role="region" aria-label="Decide">{footer}</div>}
+  {footer !== undefined && footer !== null && read?.older === undefined && version === undefined && <div className="rv-plan-panel-footer" role="region" aria-label="Decide">{footer}</div>}
  </Dialog>;
 }

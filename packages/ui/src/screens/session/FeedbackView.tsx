@@ -27,12 +27,13 @@ function checkLines(changes: unknown): string[] {
 /**
  * OWNER DECISION 18: the PR feedback review on the task page, as the old `/review/<task>` page showed it: the findings, each with its comments, proposed fix or question for the owner, and check changes;
  * the failing CI checks; the pull requests. The owner approves the findings they choose, requests changes or dismisses it, through the same decision as the old page and Slack
- * (`submitWorkflowFeedbackDecision`); the server checks who may and every digest again.
+ * (`submitWorkflowFeedbackDecision`); the server checks who may and every digest again. A review that did not finish (it failed, timed out or was interrupted) has Retry review, the same
+ * retry as Slack's button (`retryTaskWorkflowFeedbackReview`): the server checks the owner, the project rule and the workspace, and a second press changes nothing.
  */
 export default function FeedbackView({ taskId, onClose }: { taskId: string; onClose: () => void }) {
  const host = useAppHost(), query = useQueryClient(), api = useMemo(() => createPlanPanelApi(host), [host]);
  const read = useQuery({ queryKey: ["task-feedback", taskId], queryFn: () => api.feedback(taskId), retry: false });
- const [chosen, setChosen] = useState<Record<string, boolean>>({}), [note, setNote] = useState(""), [busy, setBusy] = useState(false), [error, setError] = useState<string>(), [done, setDone] = useState<string>();
+ const [chosen, setChosen] = useState<Record<string, boolean>>({}), [note, setNote] = useState(""), [busy, setBusy] = useState(false), [error, setError] = useState<string>(), [done, setDone] = useState<string>(), [retried, setRetried] = useState(false);
  const review = read.data;
  const findings = list(review?.findings), recommended = strings(review?.recommendedFindingIds);
  const pending = review?.status === "PENDING" && (review.reportStatus === undefined || review.reportStatus === "COMPLETE") && (review.workflowStatus === undefined || (review.workflowStatus === "WAITING" && review.workflowStage === "WAIT_FOR_MERGE"));
@@ -49,6 +50,17 @@ export default function FeedbackView({ taskId, onClose }: { taskId: string; onCl
    await Promise.all([query.invalidateQueries({ queryKey: ["task-feedback", taskId] }), query.invalidateQueries({ queryKey: ["session"] })]);
   } catch (failure) { setError(failure instanceof ApiError ? failure.message : "This review changed. Close and open it again before deciding."); } finally { setBusy(false); }
  }
+ const unfinished = review !== undefined && review.reportStatus !== undefined && review.reportStatus !== "COMPLETE" && str(review.reviewDigest) !== "";
+ async function retry() {
+  if (busy || review === undefined) return;
+  setBusy(true);setError(undefined);setDone(undefined);
+  try {
+   const answer = await api.retryFeedback(taskId, str(review.reviewDigest));
+   setRetried(true);
+   setDone(answer.started ? "Reviewing the feedback again. A new proposal shows here when it is ready." : "This review was already retried. A new proposal shows here when it is ready.");
+   await query.invalidateQueries({ queryKey: ["session"] });
+  } catch (failure) { setError(failure instanceof ApiError ? failure.message : "Couldn't retry the review. Close and open it again."); } finally { setBusy(false); }
+ }
  const decision = review?.decision !== null && typeof review?.decision === "object" ? review.decision as Record<string, unknown> : undefined;
  const missing = read.error instanceof ApiError && read.error.status === 404;
  return <Dialog title={"PR feedback" + (review === undefined ? "" : " · " + str(review.title))} open onOpenChange={open => { if (!open) onClose(); }} className="rv-plan-panel" description="AI-generated advice on your pull request's review comments. Only your approval starts code changes.">
@@ -57,9 +69,10 @@ export default function FeedbackView({ taskId, onClose }: { taskId: string; onCl
     : missing ? <p>No PR feedback review is waiting on this task, or only its owner can see it.</p>
     : review === undefined ? <p role="alert">Couldn't load the PR feedback review. Close it and try again.</p>
     : <>
-     {review.reportStatus !== undefined && review.reportStatus !== "COMPLETE" && <p><strong>The review didn't finish. Retry it from the task's Slack thread.</strong></p>}
+     {unfinished && <section aria-label="Review did not finish"><p><strong>The review didn't finish.</strong> Retry it to review the same comments again.</p>
+      <Button variant="primary" busy={busy} disabled={retried} onClick={() => { void retry(); }}>Retry review</Button></section>}
      {decision !== undefined && !pending && <section aria-label="Recorded decision"><h3>Decision recorded: {DECIDED[str(decision.decision)] ?? "Decided"}</h3>{str(decision.ownerNote) !== "" && <p>Your note: <VisibleText text={str(decision.ownerNote)} /></p>}</section>}
-     {str(review.nextAction) !== "" && <p><strong>Next:</strong> <VisibleText text={str(review.nextAction)} /></p>}
+     {!unfinished && str(review.nextAction) !== "" && <p><strong>Next:</strong> <VisibleText text={str(review.nextAction)} /></p>}
      {strings(review.ciFailures).length > 0 && <section aria-label="Failing checks"><h3>CI is failing</h3><p>These checks fail on the pull request: <VisibleText text={strings(review.ciFailures).join(", ")} />. Approving fixes them in the same round.</p></section>}
      <section aria-label="Findings"><h3>{findings.length === 1 ? "1 finding" : String(findings.length) + " findings"}</h3>
       {findings.map((finding, index) => {
