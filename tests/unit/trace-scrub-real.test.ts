@@ -91,7 +91,24 @@ describe.each([["the committed fixture", FIXTURE], ...(live === undefined ? [] :
     // every entry is kept except the screencast frames that showed the token (dropped with their frames)
     const kept = [...out.keys()];
     expect(kept.filter((name) => !name.startsWith("screencast/"))).toEqual([...original.keys()].filter((name) => !name.startsWith("screencast/")));
-    expect(kept.length).toBeLessThan(original.size);
+    // Which frames could show the token, worked out here apart from the scrubber: on a page whose DOM snapshot shows a round secret, every frame after that page's last clean snapshot.
+    // A frame before it is a picture of a page whose DOM held no secret, so it is kept.
+    const events = original.get("trace.trace")!.split("\n").filter(Boolean).map((line) => ({ line, event: JSON.parse(line) as { type?: string; pageId?: string; timestamp?: number; file?: string; snapshot?: { pageId?: string; timestamp?: number } } }));
+    const roundSecrets = Object.entries(TRACE_SECRETS).filter(([name]) => name !== "password").map(([, value]) => value);
+    const snapshots = events.filter(({ event }) => event.type === "frame-snapshot").map(({ line, event }) => ({ page: event.snapshot!.pageId!, time: event.snapshot!.timestamp!, secret: roundSecrets.some((value) => line.includes(value)) }));
+    const cleanSince = new Map<string, number>();
+    for (const page of new Set(snapshots.filter((item) => item.secret).map((item) => item.page))) {
+      const ofPage = snapshots.filter((item) => item.page === page).sort((a, b) => a.time - b.time);
+      const firstHit = ofPage.findIndex((item) => item.secret);
+      cleanSince.set(page, firstHit > 0 ? ofPage[firstHit - 1]!.time : Number.NEGATIVE_INFINITY);
+    }
+    expect(cleanSince.size, "positive control: a DOM snapshot shows the token").toBeGreaterThan(0);
+    const frames = events.filter(({ event }) => event.type === "screencast-frame").map(({ event }) => event);
+    const mayShow = new Set(frames.filter((frame) => cleanSince.has(frame.pageId!) && frame.timestamp! > cleanSince.get(frame.pageId!)!).map((frame) => frame.file!));
+    const screencastsBefore = [...original.keys()].filter((name) => name.startsWith("screencast/"));
+    expect(kept.filter((name) => name.startsWith("screencast/"))).toEqual(screencastsBefore.filter((name) => !mayShow.has(name)));
+    // The committed fixture holds two frames taken after the token appeared, so it proves a drop really happens. A trace recorded now, on a loaded host, may hold none in that window (the screencast lags): then nothing is dropped, and nothing showed the token.
+    if (trace === FIXTURE) expect(kept.length).toBeLessThan(original.size);
   });
 
   it("writes a zip with no external attributes, no extra fields, and the same names in the same order", () => {

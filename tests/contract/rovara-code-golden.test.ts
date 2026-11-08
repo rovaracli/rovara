@@ -27,7 +27,10 @@ vi.mock("node:crypto", async (importOriginal) => {
 // to this value is a re-record: it needs the per-path attribution and the Opus review that PF4 requires of a Plan 2 merge.
 // Re-record 2026-11-07 (UX2 slice 2 item 1, the one status model), per path: plan-ready-full.json and plan-ready-quick.json change ONLY the shared thread's start line, "Status: STARTING." to
 // "Status: Planning." (the Slack start message says the status in words, never the raw code). No other fixture changed.
-const SHA256SUMS_SHA256 = "896bfb8f7c05954d0ad7dd917c9f60cdf5ef5dcfe1bf5c33230c87059739ffa4";
+// Re-record 2026-11-08 (0.5.11, feat/lessons-capture: the record of which pull request comments the agent was shown), per path: feedback-review.json gains ONLY
+// `taskItems[0].workflow.feedbackShown` = { rounds: [{ at: "2026-10-20T00:00:00.000Z", pulls: [] }] } (the one collection round of the scenario, whose bundles carry no comments). The field was
+// added by hand at that path, not by UPDATE_GOLDEN=1, so the change 1/4/7 deltas stay deliberate. No other fixture changed.
+const SHA256SUMS_SHA256 = "214d32f2817f15ca041772e333932230c8c700fd89883e0643771979e13590c8";
 
 beforeAll(async () => { await loadSlackBroker(); });
 

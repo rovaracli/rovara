@@ -421,6 +421,14 @@
           "threadObservations": []
         },
         "feedbackReviewHistory": [],
+        "feedbackShown": {
+          "rounds": [
+            {
+              "at": "2026-10-20T00:00:00.000Z",
+              "pulls": []
+            }
+          ]
+        },
         "ownerId": "a78afcb0fef3cc9e715b9d24a95b7b9846aa1741db03fd7e888afe8be4040de4",
         "path": "QUICK",
         "pullRequests": [

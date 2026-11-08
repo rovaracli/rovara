@@ -1,6 +1,6 @@
 bad39a579e798f9e681403de5179fc3da426e78a2b72e1aaefd19b27f5c4f43d  tests/fixtures/rovara-code-golden/chatgpt-task.json
 e8dc465d164958231200c2e452fa11cadb3a83f166c5be186f512c75a0eac591  tests/fixtures/rovara-code-golden/checks.json
-4876bd7cda3579f3a4e813a412fb9a7044ad5620e329ad9ce1deb21d67c51dfd  tests/fixtures/rovara-code-golden/feedback-review.json
+8282497ed8d4a1e86f3b6a5ea47c73b5a6a71363ca7dbecfbcc76df325f956fa  tests/fixtures/rovara-code-golden/feedback-review.json
 c492e6f7760b398c1cf07caedfeb1f55e023e22d53488cd9e64bd0252dadf3ee  tests/fixtures/rovara-code-golden/implement.json
 db1d43e4593dd01ad715f01f6082774d4686f0acc93a5760a76d0d89ac8ef1d7  tests/fixtures/rovara-code-golden/orchestrator-turn.json
 794f6d4a62ea6498d4459312fffb2afed5c33a5f9eda9687dfdba776dd3d2b81  tests/fixtures/rovara-code-golden/plan-full-design.json
