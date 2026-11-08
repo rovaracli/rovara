@@ -24,6 +24,7 @@ import { feedbackNoticeToDecisionMeasure, feedbackRecommendationMeasure } from "
 import { withTestRule } from "../../rovara-code/verification-report.js";
 import { ciOutputBlock, readCiEvidence } from "../../rovara-code/ci-fix.js";
 import type { DeveloperTaskRouteDependencies } from "./types.js";
+import { decisionCardsEnabled } from "../../proof/switch.js";
 import { requireProjectSendBackRole } from "../../developer/task-access.js";
 import { FEEDBACK_REPORT_MAX_BYTES, creatorGuard, iso, log, taskBaseOption } from "./common.js";
 import { accessFence, authorizeTaskAction, authorizeTaskActor } from "./access.js";
@@ -32,6 +33,8 @@ import { approvedWorkflowDependencies, workflowWithCurrentGraphOperation } from 
 
 /** The review page's next step for a PR feedback review that could not be completed. */
 const FEEDBACK_REVIEW_RETRY_FROM_SLACK = "Retry the review from the Slack thread of this task.";
+/** With the decision cards on the task page has Retry review (the same retry as Slack's button); the Slack thread stays an alternative. */
+export const FEEDBACK_REVIEW_RETRY_FROM_TASK_PAGE = "Retry the review from the task page in Rovara, or from the Slack thread of this task.";
 const FEEDBACK_BUNDLE_MAX_BYTES = 2_000_000;
 const FEEDBACK_BUNDLE_TOTAL_MAX_BYTES = 8_000_000;
 
@@ -54,11 +57,11 @@ async function verifiedFeedbackReview(deps: DeveloperTaskRouteDependencies, task
     throw agentXError("NOT_FOUND", "PR feedback review not found");
   }
   const reportRef = review.reviewRef;
-  // A review that failed, timed out or was interrupted has no proposal to show: the page says where to retry it.
+  // A review that failed, timed out or was interrupted has no proposal to show: the page says where to retry it (the task page with the decision cards on, else the Slack thread).
   if (reportRef.status !== "COMPLETE") {
     return { taskId, title: task.title, revision: workflow.revision, status: review.status, reportStatus: reportRef.status,
       workflowStatus: workflow.state, workflowStage: workflow.stage, reviewDigest: reportRef.sha256, bundleDigests: review.bundleRefs.map(bundle => bundle.sha256),
-      candidates: [], findings: [], recommendedFindingIds: [], checks: [], nextAction: FEEDBACK_REVIEW_RETRY_FROM_SLACK };
+      candidates: [], findings: [], recommendedFindingIds: [], checks: [], nextAction: decisionCardsEnabled() ? FEEDBACK_REVIEW_RETRY_FROM_TASK_PAGE : FEEDBACK_REVIEW_RETRY_FROM_SLACK };
   }
   const reportPrefix = `private/${task.ownerKey}/${task.workspaceId}/feedback-reviews/`;
   if (reportRef.taskId !== taskId || !reportRef.objectKey.startsWith(reportPrefix)

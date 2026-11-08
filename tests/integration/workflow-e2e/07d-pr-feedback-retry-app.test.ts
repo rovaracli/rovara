@@ -55,6 +55,8 @@ describe("Suite 7d: Retry review of a PR feedback review on the task page (OWNER
     expect(read.status, JSON.stringify(read.body)).toBe(200);
     const failed = read.body.review as Failed;
     expect(failed.reportStatus).not.toBe("COMPLETE");
+    // With the cards on, an unfinished review points to the task page (where this Retry is), with Slack as the alternative.
+    expect((read.body.review as { nextAction: string }).nextAction).toBe("Retry the review from the task page in Rovara, or from the Slack thread of this task.");
     const retry = (who: Developer, body: unknown, task = e2e.taskId()) => web(who, "POST", `/v1/app/tasks/${task}/workflow/feedback-retry`, body);
     // Not the owner: exactly what a missing task reads.
     const missing = await retry(OWNER, { reviewDigest: failed.reviewDigest }, randomUUID());
