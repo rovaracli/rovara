@@ -9,7 +9,7 @@ import { appRoutes } from "../../packages/ui/src/routes.js";
 import { AppHostProvider } from "../../packages/ui/src/host.js";
 import { createQueryClient } from "../../packages/ui/src/api/query.js";
 import { ThemeProvider } from "../../packages/ui/src/theme.js";
-import { type RegistryConnection, projectsUsing, usedByLine } from "../../packages/ui/src/screens/admin/connections/connection-state.js";
+import { type RegistryConnection, projectsUsing, trackerUsedBy, usedByLine } from "../../packages/ui/src/screens/admin/connections/connection-state.js";
 import { MONITORING_TOOLS, parseRegions } from "../../packages/ui/src/screens/admin/connections/AddMonitoring.js";
 import { fakeHost } from "./support/fake-host.js";
 import { renderUi } from "./support/render.js";
@@ -40,7 +40,7 @@ function mount(options: { path?: string; role?: "owner" | "admin"; connections?:
  return { ...f, ...view, query, router, close: () => { view.unmount();router.dispose();query.clear(); } };
 }
 const card = (id: string) => document.querySelector(`[data-card="${id}"]`) as HTMLElement;
-const jira: RegistryConnection = { ...linear, connectionId: "con_cccccccccccccccccccc", type: "jira", label: "Our Jira" };
+const jira: RegistryConnection = { ...linear, access: "read_write", connectionId: "con_cccccccccccccccccccc", type: "jira", label: "Our Jira" };
 const SRC = "src_aaaaaaaaaaaaaaaaaaaa";
 const withSource = { orgId: ORG, developerId: OWNER, revision: 1, sources: [{ sourceId: SRC, kind: "anthropic", label: "Our Anthropic key", hasCredential: true, inOrder: true, models: [] }], order: [SRC, "rovara"], available: ["anthropic"] };
 
@@ -58,16 +58,23 @@ it("words the usage: names, none, unknown, and the member's limit", () => {
  expect(usedByLine(["a"], words, false)).toContain("only projects you can see");
  expect(usedByLine(["1", "2", "3", "4", "5", "6", "7", "8"], words, true)).toBe("1, 2, 3, 4, 5, 6 and 2 more");
 });
+it("words a tracker's usage so it never says no project uses a connection that ticket updates may use", () => {
+ expect(trackerUsedBy(undefined, [{ access: "read_write" }], true)).toBeUndefined();
+ expect(trackerUsedBy([], [{ access: "read_write" }], true)).toBe("No project watches or attaches it. Used company-wide for ticket updates and the team record.");
+ expect(trackerUsedBy([], [{ access: "read" }], true)).toBe("No project watches or attaches it. The team record may also read it company-wide.");
+ expect(trackerUsedBy(["web"], [{ access: "read" }, { access: "read_write" }], false)).toBe("web (only projects you can see are listed) Used company-wide for ticket updates and the team record.");
+});
 it("shows exactly which projects use each AI provider, tracker and monitoring connection", async () => {
  const sentry = { ...linear, connectionId: "con_dddddddddddddddddddd", type: "sentry", label: "Errors" };
  const usage = { complete: true, connections: [{ connectionId: linear.connectionId, projects: ["web", "api"] }, { connectionId: jira.connectionId, projects: [] }, { connectionId: sentry.connectionId, projects: ["api"] }], sources: [{ sourceId: SRC, projects: ["web"] }, { sourceId: "rovara", projects: ["web", "api"] }] };
  const f = mount({ connections: [linear, jira, sentry], respond: async r => r.path === "/v1/app/connection-usage" ? { status: 200, body: usage } : r.path === "/v1/app/org/model-sources" ? { status: 200, body: withSource } : undefined });
  try {
-  await waitFor(() => expect(within(card("linear")).getByText("web, api".split(", ").sort().join(", "))).toBeTruthy());
-  expect(within(card("jira")).getByText("No project uses it yet.")).toBeTruthy();
+  await waitFor(() => expect(within(card("linear")).getByText("api, web The team record may also read it company-wide.")).toBeTruthy());
+  expect(within(card("jira")).getByText("No project watches or attaches it. Used company-wide for ticket updates and the team record.")).toBeTruthy();
+  expect(card("jira").textContent).not.toContain("No project uses it yet");
   expect(within(card("cloud")).getByText("api")).toBeTruthy();
   await waitFor(() => expect(within(card("ai-provider")).getByText("web")).toBeTruthy());
-  expect(card("linear").textContent).not.toContain("company-wide");
+  expect(card("linear").textContent).not.toContain("(company-wide connection)");
   fireEvent.click(within(card("linear")).getByRole("button", { name: /Manage Linear/ }));
   expect(await within(card("linear")).findByText(/Used by:/)).toBeTruthy();
   fireEvent.click(within(card("ai-provider")).getByRole("button", { name: /Manage AI provider/ }));

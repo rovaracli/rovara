@@ -2,6 +2,8 @@
 // page's "used by" is exact. Only the projects the caller may see are named, another company's projects never are, and a project that can't be read makes the answer incomplete.
 import { randomUUID } from "node:crypto";
 import { describe, expect, it, beforeAll, vi } from "vitest";
+import { orgScoped } from "../../packages/contracts/src/org-node.js";
+import { CONNECTION_USAGE_MAX_PROJECTS } from "../../packages/broker/src/aws/developer-routes/connection-usage.js";
 import { intakeSourceKey, orgProjectCatalogKey, projectAiKey, projectRevisionKey, projectMetaKey, projectMemberKey } from "../../packages/contracts/src/org-scoped-keys.js";
 import type { OrgId, OrgRole } from "../../packages/contracts/src/org-node.js";
 import { mcpEndpointGuard } from "../../packages/broker/src/connections/pinned-endpoint.js";
@@ -133,5 +135,45 @@ describe("GET /v1/app/connection-usage", () => {
     expect(status).toBe(200);
     expect(body.complete).toBe(false);
     expect(body.sources).toEqual([]);
+  });
+
+  it("counts an MCP connection a project uses as a context source, and says it is not complete when a project's context sources can't be read", async () => {
+    const { h, create, usage } = await setup();
+    const mcp = await create({ type: "mcp", label: "Docs MCP", access: "read", endpoint: "https://mcp.acme.dev/mcp", vendor: "Docs" }, { token: ["mcp", "tok", "abcdefgh"].join("_") });
+    const unused = await create({ type: "mcp", label: "Idle MCP", access: "read", endpoint: "https://mcp2.acme.dev/mcp", vendor: "Idle" }, { token: ["mcp", "tok", "ijklmnop"].join("_") });
+    seedProject(h.db, TEST_ORG, "web");
+    seedProject(h.db, TEST_ORG, "api");
+    const source = { sourceId: "docs", label: "Docs", server: { kind: "connection", connectionId: mcp }, tools: [{ upstreamName: "search_docs", role: "search", schemaHash: "a".repeat(64) }], stages: ["PLAN"], quotes: "project_members", retention: "live_only", limits: { callsPerStage: 5, bytesPerResult: 4096, bytesPerStage: 16384 }, liveFacts: [], sendCodeSnippets: false };
+    h.db.set({ pk: orgScoped(TEST_ORG, "CTXSRC#web"), sk: "DOC", revision: 1, sources: [source] });
+    const answer = await usage(DANA);
+    expect(answer.body.complete).toBe(true);
+    expect(of(answer.body.connections, "connectionId", mcp)).toEqual(["web"]);
+    expect(of(answer.body.connections, "connectionId", unused)).toEqual([]);
+    // A project whose context sources can't be read is never guessed at.
+    const send = h.db.send;
+    h.db.send = async (command: { input?: { Key?: { pk?: string } } }) => { if (command.input?.Key?.pk === orgScoped(TEST_ORG, "CTXSRC#api")) throw new Error("boom"); return send(command as never); };
+    const broken = await usage(DANA);
+    expect(broken.status).toBe(200);
+    expect(broken.body.complete).toBe(false);
+    h.db.send = send;
+  });
+
+  it("skips a catalog entry with no readable revision, as the project list does", async () => {
+    const { h, usage } = await setup();
+    seedProject(h.db, TEST_ORG, "web");
+    h.db.set({ ...orgProjectCatalogKey(TEST_ORG, "ghost"), entityType: "PROJECT_CATALOG", name: "ghost", latestRevision: 1, firstRegisteredAt: "2026-10-01T00:00:00.000Z" });
+    const { body } = await usage(DANA);
+    expect(body.complete).toBe(true);
+    expect(JSON.stringify(body)).not.toContain("ghost");
+    expect(of(body.sources, "sourceId", "rovara")).toEqual(["web"]);
+  });
+
+  it("says it is not complete past the project cap, and complete at the cap", async () => {
+    const { h, usage } = await setup();
+    const row = (index: number) => { const name = `p${String(index).padStart(3, "0")}`;h.db.set({ ...orgProjectCatalogKey(TEST_ORG, name), entityType: "PROJECT_CATALOG", name, latestRevision: 1, firstRegisteredAt: "2026-10-01T00:00:00.000Z" }); };
+    for (let index = 0; index < CONNECTION_USAGE_MAX_PROJECTS; index += 1) row(index);
+    expect((await usage(DANA)).body.complete).toBe(true);
+    row(CONNECTION_USAGE_MAX_PROJECTS);
+    expect((await usage(DANA)).body.complete).toBe(false);
   });
 });

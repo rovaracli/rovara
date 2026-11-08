@@ -105,3 +105,13 @@ export function usedByLine(projects: readonly string[] | undefined, words: { non
   const shown = projects.length > 6 ? `${projects.slice(0, 6).join(", ")} and ${String(projects.length - 6)} more` : projects.join(", ");
   return viewerSeesAll ? shown : `${shown} (only projects you can see are listed)`;
 }
+
+/**
+ * The "Used by" line of a Linear or Jira connection. Beyond the projects that watch or attach it, ticket updates (a read and write connection) and the team record use a
+ * tracker connection company-wide, for any project, so this line never says "no project uses it": it says what is certain and that. Undefined when the usage was not read.
+ */
+export function trackerUsedBy(projects: readonly string[] | undefined, connections: readonly Pick<RegistryConnection, "access">[], viewerSeesAll: boolean): string | undefined {
+  if (projects === undefined) return undefined;
+  const base = projects.length === 0 ? "No project watches or attaches it." : usedByLine(projects, { none: "", unknown: "" }, viewerSeesAll);
+  return `${base} ${connections.some(connection => connection.access === "read_write") ? "Used company-wide for ticket updates and the team record." : "The team record may also read it company-wide."}`;
+}

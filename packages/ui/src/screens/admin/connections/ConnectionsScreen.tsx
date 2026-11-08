@@ -24,7 +24,7 @@ import { JiraOrgAdminKey } from "./JiraOrgAdminKey.js";
 import { ConnectionCard } from "./ConnectionCard.js";
 import { AddTracker, RegistryItems, runCheck, type CheckResult } from "./RegistryItems.js";
 import { AddMonitoring } from "./AddMonitoring.js";
-import { githubSummary, groupSummary, providerSummary, slackSummary, type CardSummary, type ConnectionUsage, type GithubInstall, type RegistryConnection, projectsUsing, usedByLine, whoWhen } from "./connection-state.js";
+import { githubSummary, groupSummary, providerSummary, slackSummary, type CardSummary, type ConnectionUsage, type GithubInstall, type RegistryConnection, projectsUsing, trackerUsedBy, usedByLine, whoWhen } from "./connection-state.js";
 const connectionsSchema = z.object({ connections: z.array(z.object({ connectionId: z.string().max(100), type: z.string().max(64), label: z.string().max(200), hasCredential: z.boolean(), access: z.string().max(20).optional(), identity: z.enum(["service", "personal"]).optional(), createdBy: z.string().max(100).optional(), createdAt: z.string().max(40).optional(), updatedAt: z.string().max(40), lastCheck: z.object({ ok: z.boolean(), at: z.string().max(40) }).optional(), ticketUpdates: z.string().max(40).optional() })).max(1000) });
 const githubSchema = { parse(value: unknown) { return { installations: GithubInstallationsResponseReaderSchema.parse(value).installations.map(i => ({ installationId: i.installationId, accountLogin: i.accountLogin, status: i.status, connectedBy: i.connectedBy, connectedAt: i.connectedAt })) }; } };
 const requestsSchema = z.object({ requests: z.array(z.object({ accountLogin: z.string().max(100).optional(), status: z.string().max(64), requestedAt: z.string().max(40) })).max(1000) });
@@ -50,7 +50,7 @@ function ConnectionsView({ canEdit }: { canEdit: boolean }) {
   const sources = useAdminRead("sources", "/v1/app/org/model-sources", modelSourcesSnapshot.extend({ orgId: z.literal(context.orgId).optional(), developerId: z.literal(context.developerId).optional(), revision: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER).optional(), available: z.array(z.enum(["anthropic", "openai", "openrouter", "bedrock", "endpoint"])).max(5).optional() }));
   const members = useAdminRead("member-names", "/v1/app/org/members", membersSchema), projects = useAdminRead("connection-projects", "/v1/app/projects", projectsSchema);
   // Exact "used by" (which projects the viewer may see use each AI provider and connection). If it can't be read, or is not complete, the cards keep their careful company-wide wording.
-  const usageRead = useAdminRead("connection-usage", "/v1/app/connection-usage", usageSchema), usage = usageRead.data;
+  const usageRead = useAdminRead("connection-usage", "/v1/app/connection-usage", usageSchema, { stable: true }), usage = usageRead.data;
   const slack = useSlackEvidence();
   // Names only once the members list has been read: before that (or if it can't be read) who connected a thing is not shown, never guessed.
   const names = useMemo(() => members.isSuccess ? new Map(members.data.members.map(member => [member.developerId, member.name] as const)) : undefined, [members.isSuccess, members.data]);
@@ -82,8 +82,16 @@ function ConnectionsView({ canEdit }: { canEdit: boolean }) {
   const byOf = (list: readonly RegistryConnection[]) => list.length === 0 ? undefined : [...new Set(list.map(connection => whoWhen(connection.createdBy, connection.createdAt, names)))].join("; ");
   const common = { canChange: canEdit, readOnlyReason: READ_ONLY_WHY };
   const idsOf = (list: readonly RegistryConnection[]) => list.map(connection => connection.connectionId);
-  const usedOfConnections = (list: readonly RegistryConnection[], words: { none: string; unknown: string }) => list.length === 0 ? words.none : usedByLine(projectsUsing(usage, "connections", idsOf(list)), { none: "No project uses it yet.", unknown: words.unknown }, canEdit);
-  const usedForItem = (connection: RegistryConnection) => { const projects = projectsUsing(usage, "connections", [connection.connectionId]);return projects === undefined ? undefined : usedByLine(projects, { none: "No project uses it yet.", unknown: "" }, canEdit); };
+  const isTracker = (list: readonly RegistryConnection[]) => list.length > 0 && list.every(connection => connection.type === "linear" || connection.type === "jira");
+  const usedOfConnections = (list: readonly RegistryConnection[], words: { none: string; unknown: string }) => {
+    if (list.length === 0) return words.none;
+    const projects = projectsUsing(usage, "connections", idsOf(list));
+    return (isTracker(list) ? trackerUsedBy(projects, list, canEdit) : undefined) ?? usedByLine(projects, { none: "No project uses it yet.", unknown: words.unknown }, canEdit);
+  };
+  const usedForItem = (connection: RegistryConnection) => {
+    const projects = projectsUsing(usage, "connections", [connection.connectionId]);
+    return projects === undefined ? undefined : (isTracker([connection]) ? trackerUsedBy(projects, [connection], canEdit) : undefined) ?? usedByLine(projects, { none: "No project uses it yet.", unknown: "" }, canEdit);
+  };
   const providerIds = (sources.data?.sources ?? []).map(source => source.sourceId);
   const aiUsedBy = providerIds.length === 0 ? "No provider added yet. Work runs on Rovara's own models." : usedByLine(projectsUsing(usage, "sources", providerIds), { none: "No project uses your providers yet.", unknown: "Every project (company-wide). Your own provider's key pays for the work that uses it." }, canEdit);
   return <section className="rv-conn-page"><PageHeader focusOnMount title="Connections" description="Everything your company has connected to Rovara, in one place. Open a row to set it up or fix it here." />

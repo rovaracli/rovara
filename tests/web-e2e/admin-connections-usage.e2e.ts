@@ -26,8 +26,8 @@ for (const theme of ["light", "dark"] as const) test(`names the projects that us
  await page.goto("/app/admin/connections");
  await expect(page.getByRole("heading", { name: "Connections", exact: true })).toBeVisible();
  const linear = page.locator('[data-card="linear"]');
- await expect(linear.getByText("api, web", { exact: true })).toBeVisible();
- await expect(linear).not.toContainText("company-wide");
+ await expect(linear.getByText("api, web", { exact: false })).toBeVisible();
+ await expect(linear).not.toContainText("(company-wide connection)");
  await page.locator('[data-card="cloud"]').getByRole("button", { name: /See cloud tools/ }).click();
  await page.getByLabel("Sentry organization").fill("acme");
  await page.getByLabel("Auth token").fill(key);

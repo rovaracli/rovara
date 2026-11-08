@@ -127,7 +127,7 @@ export function AddMonitoring({ onAdded }: { onAdded: (connectionId: string, nee
     finally { setValues(current => Object.fromEntries(Object.entries(current).map(([key, value]) => [key, tool.fields.find(field => field.key === key)?.secret === true ? "" : value])));setBusy(false); }
   }
   return <form className="rv-conn-add" onSubmit={event => { event.preventDefault();void add(); }}><h3>Add a cloud or monitoring tool</h3>
-    <Select label="Which tool" value={kind} onValueChange={pick} options={KINDS.map(value => ({ value, label: MONITORING_TOOLS[value].name }))} />
+    <Select label="Which tool" value={kind} disabled={busy} onValueChange={pick} options={KINDS.map(value => ({ value, label: MONITORING_TOOLS[value].name }))} />
     <TextField label="Name" hint="What your team sees." value={label} maxLength={64} onChange={event => { setLabel(event.target.value);setRequestId(crypto.randomUUID()); }} />
     {tool.fields.map(field => field.options !== undefined
       ? <Select key={`${kind}-${field.key}`} label={field.label} value={values[field.key] ?? ""} onValueChange={value => { edit(field.key, value); }} options={field.options} />
