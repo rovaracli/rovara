@@ -174,6 +174,14 @@ describe("waiting cards", () => {
   expect(screen.getByText(/3 more are being collected/u)).toBeTruthy();
   expect(screen.getByText(/2 lessons come from sources you can't see/u)).toBeTruthy();
  });
+ it("L3: tells the people who decide how many lessons are on hold because their source task has no session; says nothing when none are", async () => {
+  await openLessons({ state: { view: view({ waiting: [], legacyHeld: 3 }) } });
+  expect(screen.getByTestId("lessons-legacy-held").textContent).toMatch(/3 lessons are on hold because they were learned from tasks started before sessions existed/u);
+ });
+ it("L3: no line when nothing is held", async () => {
+  await openLessons({ state: { view: view({ waiting: [] }) } });
+  expect(screen.queryByTestId("lessons-legacy-held")).toBeNull();
+ });
 });
 
 describe("deciding", () => {

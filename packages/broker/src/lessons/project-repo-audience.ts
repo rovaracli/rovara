@@ -6,6 +6,10 @@
 // repository the project has NOW, read live from the project definition (`ProjectRepoScopesPort`). Anything else stays restricted and unloaded: a Slack channel, a tracker, a repository that is another project's or
 // is no longer the project's, an explicit list, a scope joined with any other place, a scope cut at its length limit (it ends with the place `CUT_SCOPE_PLACE`, which no record matches, and a scope of the limit's length is never believed). A definition that cannot be read means no lesson is converted (fail closed).
 //
+// Owner decision 36 narrows what the conversion allows: the lesson LOADS into any project task, but it is NAMED in a pull request's "Lessons used" list and PUBLISHED only in the repository it is restricted to (`mayNameInRepository`);
+// a project rule is read in every repository, so such a lesson is not promoted (`promote.ts`). A repository whose place the Team record has closed (deleted, transferred out or excluded) is not the project's any more here,
+// though its pinned id may still be in the project definition (`tableProjectRepoScopes`, the `record` option).
+//
 // This is for lessons ONLY. The Team record's own access check (`team-record/access-port.ts`, `access.ts`) is unchanged: it still answers "restricted" for these rows, and `viewedForLessons` merely stops asking it
 // about places that are the project's own repositories. Callers keep the lesson they passed in; only the checks look at the converted copy.
 import { QueryCommand } from "@aws-sdk/lib-dynamodb";

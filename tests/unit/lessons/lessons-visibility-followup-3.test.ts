@@ -11,6 +11,11 @@ import { ORG_A, addSource, githubDraft, world } from "../../support/team-record-
 import { FakeDynamoDb } from "../../support/fake-dynamodb.js";
 import { projectRevisionKey } from "@agentx/contracts";
 import { draft, lessonRecord } from "./lesson-helpers.js";
+import { agentSessionKey } from "@agentx/contracts";
+import { taskKey } from "../../../packages/broker/src/developer/task-records.js";
+import { LegacyTaskNoSessionError, resolveLessonTaskAudience, tableLessonAudiencePort, withLessonAudiences } from "../../../packages/broker/src/lessons/task-audience.js";
+import { createLessonLiveReader } from "../../../packages/broker/src/lessons/live-visibility.js";
+import { ARJUN, ORG_A as WORLD_ORG, PRIYA, sessionWorld } from "../../support/agent-session-world.js";
 
 const AT = "2026-11-08T00:00:00.000Z";
 const repoAudience = (id: string): Audience => ({ kind: "restricted", acl: { source: "github", scope: `github:repo/${id}`, capturedAt: AT, liveCheck: "on_read" } });
@@ -97,5 +102,53 @@ describe("L2: a repository that was deleted, transferred or excluded stops conve
     expect(viewedForLessons(lesson, await port.read(ORG_A, "web")).provenance.audience.kind).toBe("restricted");
     const broken = { documentClient: { send: async () => { throw new Error("down"); } }, tableName: "record" };
     await expect(tableProjectRepoScopes({ documentClient: pinned(), tableName: "state" }, { record: broken }).read(ORG_A, "web")).rejects.toThrow();
+  });
+});
+
+describe("L3: lessons withheld because their source task is a legacy task with no session item are counted apart", () => {
+  const table = (w: ReturnType<typeof sessionWorld>) => ({ documentClient: w.db, tableName: "state", now: () => 1 });
+  const learnedFrom = (id: string, taskId: string): Lesson => lessonRecord({ id, provenance: { ...draft().provenance, supportTasks: [taskId] } });
+
+  it("the audience read tells 'no session item' (a legacy task) from a task that is gone, another company's, or unreadable", async () => {
+    const w = sessionWorld();
+    const legacy = w.seedSession({ owner: PRIYA });
+    w.db.delete(agentSessionKey(WORLD_ORG, legacy.sessionId, "META"));
+    await expect(resolveLessonTaskAudience(table(w), WORLD_ORG, legacy.taskId)).rejects.toBeInstanceOf(LegacyTaskNoSessionError);
+    // A task row that never named a session (started before sessions): the same.
+    const before = w.seedSession({ owner: PRIYA });
+    const row = { ...(w.db.get(taskKey(before.taskId)) as Record<string, unknown>) };
+    delete row.sessionId;
+    w.db.set(row);
+    await expect(resolveLessonTaskAudience(table(w), WORLD_ORG, before.taskId)).rejects.toBeInstanceOf(LegacyTaskNoSessionError);
+    // Not legacy: a task that does not exist, and a task of another company, read as absent; a session that is not a task session is an ordinary failure.
+    expect(await resolveLessonTaskAudience(table(w), WORLD_ORG, "11111111-1111-4111-8111-111111111111")).toBeUndefined();
+    const foreign = w.seedSession({ owner: PRIYA, taskOrgId: "org_bbbbbbbbbbbbbbbbbbbb" as never });
+    expect(await resolveLessonTaskAudience(table(w), WORLD_ORG, foreign.taskId)).toBeUndefined();
+    const port = tableLessonAudiencePort(table(w));
+    const legacySet = new Set<string>();
+    const answer = await port.read(WORLD_ORG, [legacy.taskId, before.taskId, foreign.taskId, "11111111-1111-4111-8111-111111111111"], { legacy: legacySet });
+    expect([...answer.values()].every((value) => value === undefined)).toBe(true);
+    expect([...legacySet].sort()).toEqual([before.taskId, legacy.taskId].sort());
+  });
+
+  it("the live reader withholds such a lesson, counts it once, logs a fixed event, and does not count a lesson withheld for another reason", async () => {
+    const w = sessionWorld();
+    const legacy = w.seedSession({ owner: PRIYA });
+    w.db.delete(agentSessionKey(WORLD_ORG, legacy.sessionId, "META"));
+    const fine = w.seedSession({ owner: PRIYA });
+    const narrowed = w.seedSession({ owner: PRIYA, people: [{ developerId: ARJUN, role: "denied" }] });
+    const lines: Array<[string, Record<string, unknown>]> = [];
+    const reader = createLessonLiveReader({
+      port: withLessonAudiences({ read: async () => new Map() }, tableLessonAudiencePort(table(w))), key: { workspaceId: WORLD_ORG, project: "web" }, where: "view", log: (event, fields) => lines.push([event, fields]),
+    });
+    const lessons = [learnedFrom("les_legacy0001", legacy.taskId), learnedFrom("les_fine0000001", fine.taskId), learnedFrom("les_narrowed001", narrowed.taskId)];
+    // Read as nobody in particular: a task with a People denial is withheld too, but it is not legacy.
+    expect((await reader.keep(undefined, lessons)).map((lesson) => lesson.id)).toEqual(["les_fine0000001"]);
+    expect((await reader.keep(undefined, lessons)).map((lesson) => lesson.id)).toEqual(["les_fine0000001"]);
+    expect(reader.legacyWithheld()).toEqual(["les_legacy0001"]);
+    expect(lines.filter(([event]) => event === "learning.view_legacy_task_withheld")).toEqual([["learning.view_legacy_task_withheld", { lessons: 1 }]]);
+    expect(JSON.stringify(lines)).not.toContain(legacy.taskId);
+    // A reader that shares its reads (the pull request description's second reader) reports the same lessons.
+    expect(reader.withoutRunningTask().legacyWithheld()).toEqual(["les_legacy0001"]);
   });
 });

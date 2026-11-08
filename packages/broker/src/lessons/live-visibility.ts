@@ -79,6 +79,11 @@ export interface LessonLiveReader {
    * they cannot be read (no port, an unreadable definition, past the deadline): nothing is then treated as a project repository, so a lesson restricted to repository readers stays restricted.
    */
   projectRepos(): Promise<ReadonlySet<string> | undefined>;
+  /**
+   * Review L3: the ids of the lessons this reader (and the readers it shares reads with) withheld because a task they were learned from is a LEGACY task with no session item, so its audience is unknown. Such a lesson is
+   * correctly kept out (fail closed); the count lets a person who decides see how many are waiting for that reason.
+   */
+  legacyWithheld(): readonly string[];
 }
 
 export interface LessonLiveReaderInput {
@@ -97,11 +102,11 @@ export interface LessonLiveReaderInput {
  * caller in the log line.
  */
 export function createLessonLiveReader(input: LessonLiveReaderInput): LessonLiveReader {
-  return buildReader(input, { audiences: new Map<string, LessonTaskAudience | undefined>(), memo: new Map<string, Promise<boolean>>(), repos: {} });
+  return buildReader(input, { audiences: new Map<string, LessonTaskAudience | undefined>(), memo: new Map<string, Promise<boolean>>(), repos: {}, legacyTasks: new Set<string>(), legacyLessons: new Set<string>() });
 }
 
 /** What readers of one request share: the audiences looked up (one read per task) and the roster answers (one read per person). */
-interface SharedReads { audiences: Map<string, LessonTaskAudience | undefined>; memo: RosterMemo; repos: { read?: Promise<ReadonlySet<string> | undefined> } }
+interface SharedReads { audiences: Map<string, LessonTaskAudience | undefined>; memo: RosterMemo; repos: { read?: Promise<ReadonlySet<string> | undefined> }; /** Tasks found to have no session item. */ legacyTasks: Set<string>; /** Lessons withheld because they name one. */ legacyLessons: Set<string> }
 
 function buildReader(input: LessonLiveReaderInput, shared: SharedReads): LessonLiveReader {
   const org = OrgIdSchema.safeParse(input.key.workspaceId);
@@ -137,7 +142,7 @@ function buildReader(input: LessonLiveReaderInput, shared: SharedReads): LessonL
     if (fresh.length === 0) return;
     for (const id of fresh) audiences.set(id, undefined);
     try {
-      const found = await bounded(limit, (signal) => audiencePort.read(org.data, fresh, { signal, memo }));
+      const found = await bounded(limit, (signal) => audiencePort.read(org.data, fresh, { signal, memo, legacy: shared.legacyTasks }));
       for (const id of fresh) audiences.set(id, found.get(id));
     } catch (error) {
       unreadable(error instanceof Error && error.message === "timed out" ? "timeout" : "error", fresh.length);
@@ -146,6 +151,7 @@ function buildReader(input: LessonLiveReaderInput, shared: SharedReads): LessonL
 
   return {
     withoutRunningTask: () => buildReader({ ...input, running: undefined }, shared),
+    legacyWithheld: () => [...shared.legacyLessons],
     projectRepos() {
       const repoPort = projectRepoScopesOf(input.port);
       if (!org.success || repoPort === undefined) {
@@ -228,6 +234,10 @@ function buildReader(input: LessonLiveReaderInput, shared: SharedReads): LessonL
       }
       const count = lessons.filter((_, index) => names(index) && !ok[index]).length;
       if (count > 0) withheld(count, "task_not_visible");
+      // Review L3: of those, the lessons learned from a legacy task with no session item (counted apart, once per lesson per request).
+      const legacy = lessons.filter((lesson, index) => names(index) && !ok[index] && refs[index]!.taskIds.some((id) => shared.legacyTasks.has(id)) && !shared.legacyLessons.has(lesson.id));
+      for (const lesson of legacy) shared.legacyLessons.add(lesson.id);
+      if (legacy.length > 0) input.log?.(`learning.${input.where}_legacy_task_withheld`, { lessons: legacy.length });
       return lessons.filter((_, index) => ok[index]);
     },
   };
