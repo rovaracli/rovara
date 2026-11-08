@@ -34,7 +34,7 @@ import { listSourceConfigs, markSourceFailing } from "./store.js";
 import { resolveTaskVisibility } from "../lessons/task-visibility.js";
 import { createEmbedder } from "./embed.js";
 import { recordEmbedderClientFrom, recordJobEmbedderClientFrom, recordSearchEmbedderClientFrom, EMBEDDER_JOB_WAIT_MS } from "../embedder/wiring.js";
-import { REEMBED_RUN_MS, dropReembedState, reembedRun } from "./reembed.js";
+import { REEMBED_RUN_MS, dropReembedState, reembedRun, sweepReembedState } from "./reembed.js";
 import { eraseProject, eraseWorkspace, erasePerson, type EraseBudget } from "./erase.js";
 import { tableHotArchiveSource, ensureWorkspaceVectorBucket, tableHotStatsSource } from "./hot-source.js";
 import { createLakeClient, type LakeClient } from "./lake.js";
@@ -1069,6 +1069,8 @@ export function createTeamRecordRuntime(input: TeamRecordRuntimeInput): TeamReco
     }
     return out;
   }
+  /** True while the company is closing or closed (read fresh): the re-embed job leaves it alone (N5). */
+  const companyIsClosing = async (orgId: OrgId): Promise<boolean> => (await whyClosed(orgId, undefined, true)) === "company_closed";
   const jobs: TeamRecordRuntime["jobs"] = {
     extend(job, work) {
       extensions[job].push(work);
@@ -1080,7 +1082,7 @@ export function createTeamRecordRuntime(input: TeamRecordRuntimeInput): TeamReco
         if (paused || jobEmbedder === undefined) return { orgs: 0, skippedOrgs: 0, details: { skipped: 1 } };
         // R2 and R3: one deadline for the whole run, measured from here; the least recently served workspace first, each with a share of what is left, each with a cursor (reembed.ts).
         const startedAt = now();
-        return reembedRun({ table, embedder: jobEmbedder, vectorsFor: (orgId) => indexFor(orgId), now, log }, startedAt, { maxRows: 100, maxScanned: 1_000, callMs: EMBEDDER_JOB_WAIT_MS, warmCallMs: 8_000 }, REEMBED_RUN_MS);
+        return reembedRun({ table, embedder: jobEmbedder, vectorsFor: (orgId) => indexFor(orgId), isClosing: companyIsClosing, now, log }, startedAt, { maxRows: 100, maxScanned: 1_000, callMs: EMBEDDER_JOB_WAIT_MS, warmCallMs: 8_000 }, REEMBED_RUN_MS);
       }
       if (job === "hourly") {
         // TRW-5 S1: text that reached the dead-letter queue anyway is deleted from it, first, so an org's slow work cannot starve it.
@@ -1105,6 +1107,8 @@ export function createTeamRecordRuntime(input: TeamRecordRuntimeInput): TeamReco
         }, (input.jobBudgetMs ?? JOB_BUDGET_MS) - (now() - startedAt));
         summary.details.deadLetterTextDeleted = swept;
         for (const [key, value] of Object.entries(redelivery)) summary.details[key] = value;
+        // N5: re-embed state left behind by a workspace that was erased or closed while a re-embed run held it.
+        summary.details.reembedStateDeleted = await sweepReembedState(table, companyIsClosing).catch(() => 0);
         // SRL-5a: last, from what is left, so it can never take time from the paths above.
         for (const [key, value] of Object.entries(await githubRepositoryPass(startedAt + (input.jobBudgetMs ?? JOB_BUDGET_MS)))) summary.details[key] = value;
         return summary;

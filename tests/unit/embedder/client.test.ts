@@ -111,7 +111,7 @@ describe("the embedder client", () => {
     expect(Object.keys(createEmbedderClient({ spec: TEAM_RECORD_EMBEDDER, invoke: async () => replyFor() }))).not.toContain("retryOnTimeout");
   });
 
-  it("after a timeout, makes no call at all for the pause (a burst of searches during a cold start takes one reserved slot, not all of them), then calls again", async () => {
+  it("after a timeout, this client makes no call at all for the pause (the pause is per broker container, so it stops that container from starting a second cold embedder, not a burst across containers), then calls again", async () => {
     let clock = 1_000;
     let calls = 0;
     let slow = true;

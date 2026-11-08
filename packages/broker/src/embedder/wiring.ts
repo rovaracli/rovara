@@ -8,7 +8,9 @@ import { createEmbedderClient, type EmbedderClient, type EmbedderKind } from "./
  * The longest the broker waits for the function on the SEARCH path: a person is waiting, and the broker's own limit is 30 s. A cold start loads the model on the first call; the function keeps
  * running when the wait ends and is warm for a later call. The search does NOT try again at once (review R4): the first call is still busy in its container, a Lambda environment serves one
  * request at a time, so a second call would start a second cold container (10 GB) and take a second of the function's few reserved slots. A search whose wait ran out answers by keyword, and for
- * `EMBEDDER_SEARCH_COOLDOWN_MS` afterwards this broker sends the function no more search calls, so a burst of searches during a cold start takes one slot, not all of them.
+ * `EMBEDDER_SEARCH_COOLDOWN_MS` afterwards THIS broker container sends the function no more search calls. The pause is per container (a Lambda environment serves one request at a time, so searches
+ * that arrive together run in different containers, each with its own pause): it stops one container from starting a second cold embedder for the same person, but a burst of simultaneous cold searches
+ * can still start several (up to the function's reserved slots). The remedy for that is keeping the function warm (provisioned concurrency), not this pause.
  */
 export const EMBEDDER_SEARCH_WAIT_MS = 9_000;
 /** After a search wait ran out, no search call to the function from this broker container for this long (about a cold start's load time); searches answer by keyword meanwhile. */

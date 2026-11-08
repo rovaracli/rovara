@@ -72,8 +72,9 @@ export interface EmbedderClientOptions {
   attempts?: number;
   baseDelayMs?: number;
   /**
-   * After a call's wait ran out (`AbortError`: the function is most likely loading its model), make no call at all for this long: each one would start ANOTHER cold container (the first is still
-   * busy, and a Lambda environment serves one request at a time) and take another of the function's few reserved slots. Callers fall back (search answers by keyword). 0 or absent: no pause.
+   * After a call's wait ran out (`AbortError`: the function is most likely loading its model), make no call at all from THIS client for this long: each one would start ANOTHER cold container (the first is
+   * still busy, and a Lambda environment serves one request at a time) and take another of the function's few reserved slots. Callers fall back (search answers by keyword). 0 or absent: no pause.
+   * The pause is per client, so per broker container: other containers (simultaneous searches run in different ones) keep their own and may each start a cold embedder.
    * There is no retry after a timeout: the function carries on and is warm for a later call, which is the next one after this pause.
    */
   cooldownAfterTimeoutMs?: number;

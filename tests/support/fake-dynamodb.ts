@@ -404,6 +404,10 @@ export class FakeDynamoDb {
           .sort((left, right) => compareTuples(indexOrder(left, sort), indexOrder(right, sort)));
         if (input.ScanIndexForward === false) found.reverse();
         const start = input.ExclusiveStartKey as Record<string, unknown> | undefined;
+        // DynamoDB refuses a start key that lies outside the key condition's range (or in another partition) instead of resuming from it.
+        if (start !== undefined && (start[partition] !== values[ranged[2]!] || typeof start[sort] !== "string" || !inRange(start[sort]))) {
+          throw Object.assign(new Error("The provided starting key is outside query boundaries based on provided conditions"), { name: "ValidationException", $metadata: {} });
+        }
         const after = start === undefined
           ? found
           : found.filter((item) => compareTuples(indexOrder(item, sort), indexOrder(start, sort)) * (input.ScanIndexForward === false ? -1 : 1) > 0);

@@ -19,6 +19,13 @@
 // start of the job. A call is started only if its whole wait fits before the deadline (the first call of a run, which may be a cold start, needs `callMs`; later ones, the function being warm,
 // `warmCallMs`), and each call is handed the deadline, so the client's wait is cut to what is left: nothing in the run outlives it, whatever the function does.
 //
+// A CURSOR HAS A SHELF LIFE (N1). The index is read for rows due AFTER now, so a stored cursor whose own due time has passed lies outside the query's range and DynamoDB refuses it
+// (ValidationException: the start key is outside the query boundaries). Such a cursor is dropped before the first query (the pass starts again), and a refusal that still comes is answered the same way:
+// the workspace's state is reset and the turn goes on from the beginning. Without this the workspace would fail the same way in every later run and never be served again.
+//
+// NOT FOR A WORKSPACE THAT IS CLOSING (N5). `reembedRun` skips a workspace with a whole-workspace erase job or a close in progress (it must not write vectors or state that the erase would then leave behind);
+// the hourly job deletes leftover `REEMBED#` rows (`sweepReembedState`).
+//
 // Quiet: two failures in a row stop the run (the embedder is down or cold: the next run tries again). It never logs text or an error message, only counts.
 // Order of writes per row: embed, put the vector, mark the row. A row that was erased or lost its text meanwhile refuses the mark (condition on the text and on no tombstone), and the vector
 // just put is deleted again, so a vector never outlives its row because of this job.
@@ -174,15 +181,19 @@ export async function reembedRows(deps: ReembedDependencies, orgId: OrgId, budge
     deps.log?.("record.reembed_state_unreadable", {});
     state = { ...FRESH };
   }
+  // N1: a cursor whose due time has passed is outside the range of this turn's query (`textDueAt > now`): start the pass again.
+  if (state.cursor !== undefined && String(state.cursor[TEAM_RECORD_GSI5.sort]) <= new Date(now()).toISOString()) state = { servedAt: state.servedAt, idleUntil: state.idleUntil, passWork: 0 };
   /** Where the next turn resumes: the start of the page being handled, moved forward only when every row of the page was handled. */
   let resumeAt = state.cursor;
   let completedPass = false;
+  /** True once this turn started an embedder call: a turn that started none (no time left in the run for one) was not a turn, and the workspace keeps its place in the order (N4). */
+  let calledEmbedder = false;
   const finish = async (): Promise<ReembedResult> => {
     const work = state.passWork + result.embedded + result.failed + result.skipped;
     const next: ReembedState = completedPass
       // The pass reached the end: the next one starts at the beginning, and a pass that found nothing to do at all lets the workspace rest for an hour.
-      ? { servedAt: now(), idleUntil: work === 0 ? now() + REEMBED_IDLE_MS : 0, passWork: 0 }
-      : { ...(resumeAt === undefined ? {} : { cursor: resumeAt }), servedAt: now(), idleUntil: 0, passWork: work };
+      ? { servedAt: calledEmbedder ? now() : state.servedAt, idleUntil: work === 0 ? now() + REEMBED_IDLE_MS : 0, passWork: 0 }
+      : { ...(resumeAt === undefined ? {} : { cursor: resumeAt }), servedAt: calledEmbedder ? now() : state.servedAt, idleUntil: 0, passWork: work };
     try {
       await saveState(deps.table, orgId, next);
     } catch {
@@ -195,17 +206,27 @@ export async function reembedRows(deps: ReembedDependencies, orgId: OrgId, budge
   for (;;) {
     if (result.scanned >= budget.maxScanned || now() >= turnEnd) { result.more = true; return finish(); }
     const filter = filterFor(spec);
-    const page = await deps.table.documentClient.send(new QueryCommand({
-      TableName: deps.table.tableName,
-      IndexName: TEAM_RECORD_GSI5.index,
-      // Rows still holding text that is not yet due: the due ones are the text-expiry job's.
-      KeyConditionExpression: `${TEAM_RECORD_GSI5.partition} = :pk AND ${TEAM_RECORD_GSI5.sort} > :now`,
-      FilterExpression: filter.FilterExpression,
-      ExpressionAttributeNames: filter.ExpressionAttributeNames,
-      ExpressionAttributeValues: { ...filter.ExpressionAttributeValues, ":pk": recordTextDueIndexValue(orgId), ":now": new Date(now()).toISOString() },
-      Limit: 100,
-      ...(resumeAt === undefined ? {} : { ExclusiveStartKey: resumeAt }),
-    })) as { Items?: Item[]; LastEvaluatedKey?: Record<string, unknown>; ScannedCount?: number };
+    let page: { Items?: Item[]; LastEvaluatedKey?: Record<string, unknown>; ScannedCount?: number };
+    try {
+      page = await deps.table.documentClient.send(new QueryCommand({
+        TableName: deps.table.tableName,
+        IndexName: TEAM_RECORD_GSI5.index,
+        // Rows still holding text that is not yet due: the due ones are the text-expiry job's.
+        KeyConditionExpression: `${TEAM_RECORD_GSI5.partition} = :pk AND ${TEAM_RECORD_GSI5.sort} > :now`,
+        FilterExpression: filter.FilterExpression,
+        ExpressionAttributeNames: filter.ExpressionAttributeNames,
+        ExpressionAttributeValues: { ...filter.ExpressionAttributeValues, ":pk": recordTextDueIndexValue(orgId), ":now": new Date(now()).toISOString() },
+        Limit: 100,
+        ...(resumeAt === undefined ? {} : { ExclusiveStartKey: resumeAt }),
+      })) as { Items?: Item[]; LastEvaluatedKey?: Record<string, unknown>; ScannedCount?: number };
+    } catch (error) {
+      // N1: the start key is refused (its time passed during the turn): reset this workspace's state and go on from the beginning. Only a query that HAD a start key is retried, once per reset.
+      if (errorName(error) !== "ValidationException" || resumeAt === undefined) throw error;
+      deps.log?.("record.reembed_cursor_reset", {});
+      state = { servedAt: state.servedAt, idleUntil: 0, passWork: 0 };
+      resumeAt = undefined;
+      continue;
+    }
     result.scanned += page.ScannedCount ?? (page.Items ?? []).length;
     for (const item of page.Items ?? []) {
       const needed = run.warm ? budget.warmCallMs : budget.callMs;
@@ -214,6 +235,7 @@ export async function reembedRows(deps: ReembedDependencies, orgId: OrgId, budge
       const event = eventFromItem(item, Math.floor(now() / 1000));
       if (event === undefined || event.text === undefined) continue;
       try {
+        calledEmbedder = true;
         const { vector, truncated } = await embedWithFlag(deps.embedder, event.text, { deadline: run.deadline });
         run.warm = true;
         const put = await deps.vectors.put([eventVectorItem(event, vector)]);
@@ -254,6 +276,8 @@ export interface ReembedRunDependencies {
   embedder: RecordEmbedder & { readonly spec: string };
   /** The workspace's vector index, or undefined where it cannot be opened (that workspace is skipped this run). */
   vectorsFor(orgId: OrgId): Promise<RecordVectorPort | undefined>;
+  /** True while the workspace is closing or closed (N5): it is skipped. Absent: no such check. A failure of the check skips the workspace this run. */
+  isClosing?(orgId: OrgId): Promise<boolean>;
   now?: (() => number) | undefined;
   log?: RecordLog | undefined;
 }
@@ -278,6 +302,41 @@ export async function listDirectoryOrgs(table: TeamRecordTable): Promise<OrgId[]
   return orgs;
 }
 
+/** Workspaces with a whole-workspace erase job in the org directory (`ERASE#<org>#workspace#all`): being erased, so not served (N5). */
+export async function listErasingOrgs(table: TeamRecordTable): Promise<Set<OrgId>> {
+  const erasing = new Set<OrgId>();
+  let after: Record<string, unknown> | undefined;
+  do {
+    const page = (await table.documentClient.send(new QueryCommand({
+      TableName: table.tableName, KeyConditionExpression: "pk = :pk AND begins_with(sk, :prefix)", ConsistentRead: true,
+      ExpressionAttributeValues: { ":pk": TEAM_RECORD_ORG_DIRECTORY_PK, ":prefix": "ERASE#" }, ...(after === undefined ? {} : { ExclusiveStartKey: after }),
+    }))) as { Items?: Array<{ sk?: unknown }>; LastEvaluatedKey?: Record<string, unknown> };
+    for (const item of page.Items ?? []) {
+      const [, org, kind] = typeof item.sk === "string" ? item.sk.split("#") : [];
+      const parsed = OrgIdSchema.safeParse(org);
+      if (parsed.success && kind === "workspace") erasing.add(parsed.data);
+    }
+    after = page.LastEvaluatedKey;
+  } while (after !== undefined);
+  return erasing;
+}
+
+/**
+ * The hourly clean-up (N5): deletes the `REEMBED#` state of every workspace that has left the org directory (its erase finished while a re-embed run was still holding its state) and of every one that is
+ * closing or closed (it is not served, so the row is only left over). Returns how many were deleted.
+ */
+export async function sweepReembedState(table: TeamRecordTable, isClosing?: (orgId: OrgId) => Promise<boolean>): Promise<number> {
+  const [directory, states] = await Promise.all([listDirectoryOrgs(table), readReembedStates(table)]);
+  const listed = new Set(directory);
+  let deleted = 0;
+  for (const orgId of states.keys()) {
+    if (listed.has(orgId) && !(await isClosing?.(orgId))) continue;
+    await dropReembedState(table, orgId);
+    deleted += 1;
+  }
+  return deleted;
+}
+
 /**
  * One scheduled run over all workspaces, inside ONE deadline (`REEMBED_RUN_MS` from `started`, the job's start). The least recently served workspace goes first; each gets a share of what is left.
  * The caller's listing, sessions and index checks count against the deadline because it is measured from the job's start.
@@ -286,7 +345,10 @@ export async function reembedRun(deps: ReembedRunDependencies, started: number, 
   const now = deps.now ?? Date.now;
   const summary: ReembedRunSummary = { orgs: 0, skippedOrgs: 0, details: { embedded: 0, failed: 0, skipped: 0, more: 0 } };
   const add = (key: string, value: number): void => { summary.details[key] = (summary.details[key] ?? 0) + value; };
-  const [orgs, states] = await Promise.all([listDirectoryOrgs(deps.table), readReembedStates(deps.table).catch(() => new Map<OrgId, ReembedState>())]);
+  const [listedOrgs, states, erasing] = await Promise.all([listDirectoryOrgs(deps.table), readReembedStates(deps.table).catch(() => new Map<OrgId, ReembedState>()), listErasingOrgs(deps.table)]);
+  // N5: a workspace being erased is not served (a vector or a state row written now would outlive the erase).
+  const orgs = listedOrgs.filter((orgId) => !erasing.has(orgId));
+  if (orgs.length < listedOrgs.length) summary.details.closing = listedOrgs.length - orgs.length;
   const due = orgs
     .filter((orgId) => (states.get(orgId)?.idleUntil ?? 0) <= now())
     .sort((left, right) => (states.get(left)?.servedAt ?? 0) - (states.get(right)?.servedAt ?? 0) || (left < right ? -1 : 1));
@@ -300,6 +362,7 @@ export async function reembedRun(deps: ReembedRunDependencies, started: number, 
     const share = Math.max(MIN_SHARE_MS, remaining / left);
     left -= 1;
     try {
+      if (await deps.isClosing?.(orgId)) { add("closing", 1); summary.skippedOrgs += 1; continue; }
       const vectors = await deps.vectorsFor(orgId);
       if (vectors === undefined) { add("unavailable", 1); summary.skippedOrgs += 1; continue; }
       const done = await reembedRows({ table: deps.table, embedder: deps.embedder, vectors, now, log: deps.log }, orgId, { ...budget, turnEnd: now() + share }, run);

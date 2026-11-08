@@ -2,7 +2,7 @@
 // outlives its row because of the job. Plus what ingest records on a row it embeds (the spec, a cut).
 import { describe, expect, it } from "vitest";
 import { TEAM_RECORD_EMBEDDER } from "@agentx/contracts";
-import { REEMBED_IDLE_MS, readReembedStates, reembedRows, reembedRun, type ReembedBudget, type ReembedRun } from "../../../packages/broker/src/team-record/reembed.js";
+import { REEMBED_IDLE_MS, readReembedStates, reembedRows, reembedRun, sweepReembedState, type ReembedBudget, type ReembedRun } from "../../../packages/broker/src/team-record/reembed.js";
 import { eventFromItem } from "../../../packages/broker/src/team-record/store.js";
 import { expireRawText } from "../../../packages/broker/src/team-record/text-expiry.js";
 import type { RecordEmbedder } from "../../../packages/broker/src/team-record/types.js";
@@ -248,6 +248,42 @@ describe("the re-embed job reaches every row (review R2)", () => {
     expect(await run(w, jobEmbedder())).toMatchObject({ embedded: 2, more: false });
   });
 
+  it("N1: a stored cursor whose due time has passed is dropped, so the pass starts again instead of DynamoDB refusing the start key (the workspace re-embeds again)", async () => {
+    const w = await setup();
+    w.deps.embedder = jobEmbedder();
+    await fill(w, ORG_A, "cur", 150);
+    // pending rows that only expire in about 7 days from now (their index time is far beyond the cursor)
+    w.deps.embedder = jobEmbedder({ fail: true });
+    await fill(w, ORG_A, "late", 2, 600_000);
+    const job = jobEmbedder();
+    // run 1 reads one page of 100 rows and stores the cursor on the last of them (due in about 5 days)
+    expect(await run(w, job, { ...BUDGET, maxScanned: 100 })).toMatchObject({ embedded: 0, more: true });
+    const cursorDue = (w.db.get({ pk: "TEAM_RECORD_ORGS", sk: `REEMBED#${ORG_A}` })!.cursor as { textDueAt: string }).textDueAt;
+    expect(Date.parse(cursorDue)).toBeGreaterThan(w.clock.ms);
+    // six days later the cursor's time is in the past: the old query refused its own start key (ValidationException) and the workspace was never served again
+    w.clock.ms += 6 * DAY;
+    expect(Date.parse(cursorDue)).toBeLessThan(w.clock.ms);
+    expect(await run(w, job)).toMatchObject({ embedded: 2, more: false });
+    expect(pendingCount(w, ORG_A)).toBe(0);
+    expect(w.db.refusals).toEqual([]);
+  }, 120_000);
+
+  it("N1: if DynamoDB still refuses the start key, that workspace's state is reset and the turn goes on from the beginning (and the saved state has no cursor of the old pass)", async () => {
+    const w = await setup();
+    w.deps.embedder = jobEmbedder();
+    await fill(w, ORG_A, "cur", 150);
+    w.deps.embedder = jobEmbedder({ fail: true });
+    await fill(w, ORG_A, "late", 2, 600_000);
+    const job = jobEmbedder();
+    await run(w, job, { ...BUDGET, maxScanned: 100 });
+    expect(w.db.get({ pk: "TEAM_RECORD_ORGS", sk: `REEMBED#${ORG_A}` })!.cursor).toBeDefined();
+    w.db.injectFault({ command: "QueryCommand", match: (input) => input.ExclusiveStartKey !== undefined && input.IndexName === "gsi5", error: { name: "ValidationException", message: "The provided starting key is outside query boundaries based on provided conditions" } });
+    expect(await run(w, job)).toMatchObject({ embedded: 2, more: false });
+    expect(pendingCount(w, ORG_A)).toBe(0);
+    expect(w.db.get({ pk: "TEAM_RECORD_ORGS", sk: `REEMBED#${ORG_A}` })).toMatchObject({ passWork: 0, idleUntil: 0 });
+    expect(w.db.get({ pk: "TEAM_RECORD_ORGS", sk: `REEMBED#${ORG_A}` })!.cursor).toBeUndefined();
+  }, 120_000);
+
   it("a pass that found nothing to do lets the workspace rest for an hour, and the next pass after that looks again", async () => {
     const w = await setup();
     directory(w, [ORG_A]);
@@ -308,6 +344,67 @@ describe("workspaces take turns (review R2)", () => {
     // one failure in each workspace is two in a row: the run ends, the second workspace is not asked again
     expect(down.calls).toHaveLength(2);
     expect(stopped.details.failed).toBe(2);
+  });
+});
+
+describe("a turn that starts no call, and a workspace that is closing (N4, N5)", () => {
+  it("N4: a workspace whose turn started no call keeps its old servedAt, so it stays at the front of the order", async () => {
+    const w = await setup();
+    directory(w, [ORG_A]);
+    w.deps.embedder = jobEmbedder({ fail: true });
+    await fill(w, ORG_A, "r", 3);
+    w.db.set({ pk: "TEAM_RECORD_ORGS", sk: `REEMBED#${ORG_A}`, entityType: "TEAM_RECORD_REEMBED_STATE", orgId: ORG_A, servedAt: 777, idleUntil: 0, passWork: 0 });
+    const job = jobEmbedder();
+    // a cold call needs 20 s but the run has 10 s: no call is started, and the turn does not count as a turn
+    await runAll(w, job, { ...BUDGET, callMs: 20_000 }, 10_000);
+    expect(job.calls).toEqual([]);
+    expect((await readReembedStates(w.table)).get(ORG_A)).toMatchObject({ servedAt: 777 });
+    // a turn that does call moves it
+    await runAll(w, job, { ...BUDGET, callMs: 20_000 }, 30_000);
+    expect(job.calls).toHaveLength(3);
+    expect((await readReembedStates(w.table)).get(ORG_A)!.servedAt).toBe(w.clock.ms);
+  });
+
+  it("N5: a workspace with a whole-workspace erase job, or one that is closing, is not served in the re-embed run (positive control: it is served when neither holds)", async () => {
+    const w = await setup();
+    await addSource(w, { orgId: ORG_B, source: "github", scope: GITHUB_SCOPE, retention: "C" });
+    directory(w, [ORG_A, ORG_B]);
+    w.deps.embedder = jobEmbedder({ fail: true });
+    await fill(w, ORG_A, "a", 2);
+    await fill(w, ORG_B, "b", 2);
+    const closing = new Set<string>();
+    const runWith = (job: ReturnType<typeof jobEmbedder>) => reembedRun({ table: w.table, embedder: job, vectorsFor: async () => w.vectors, isClosing: async (orgId) => closing.has(orgId), now: () => w.clock.ms, log: logger(w) }, w.clock.ms, BUDGET, 1_000_000);
+    // A has an erase job; B is closing: neither is touched
+    w.db.set({ pk: "TEAM_RECORD_ORGS", sk: `ERASE#${ORG_A}#workspace#all`, entityType: "TEAM_RECORD_ERASE_JOB", orgId: ORG_A, job: { kind: "workspace", phase: "hot", projects: [] } });
+    closing.add(ORG_B);
+    const blocked = jobEmbedder();
+    const first = await runWith(blocked);
+    expect(blocked.calls).toEqual([]);
+    expect(first.details).toMatchObject({ closing: 2, embedded: 0 });
+    expect(pendingCount(w, ORG_A)).toBe(2);
+    expect(pendingCount(w, ORG_B)).toBe(2);
+    expect(w.db.get({ pk: "TEAM_RECORD_ORGS", sk: `REEMBED#${ORG_A}` })).toBeUndefined();
+    // a project erase of A does not stop A (only the whole-workspace erase does); B is open again
+    w.db.delete({ pk: "TEAM_RECORD_ORGS", sk: `ERASE#${ORG_A}#workspace#all` });
+    w.db.set({ pk: "TEAM_RECORD_ORGS", sk: `ERASE#${ORG_A}#project#p`, entityType: "TEAM_RECORD_ERASE_JOB", orgId: ORG_A, job: { kind: "project", project: "p", cause: "project_archived" } });
+    closing.clear();
+    const open = jobEmbedder();
+    expect(await runWith(open)).toMatchObject({ details: { embedded: 4 } });
+    expect(pendingCount(w, ORG_A) + pendingCount(w, ORG_B)).toBe(0);
+  });
+
+  it("N5: the hourly clean-up deletes REEMBED# rows of workspaces that left the directory or are closing, and keeps those of open ones", async () => {
+    const w = await setup();
+    directory(w, [ORG_A, ORG_B]);
+    for (const orgId of [ORG_A, ORG_B]) w.db.set({ pk: "TEAM_RECORD_ORGS", sk: `REEMBED#${orgId}`, entityType: "TEAM_RECORD_REEMBED_STATE", orgId, servedAt: 5, idleUntil: 0, passWork: 0 });
+    const gone = "org_gone0000000000000000" as typeof ORG_A;
+    w.db.set({ pk: "TEAM_RECORD_ORGS", sk: `REEMBED#${gone}`, entityType: "TEAM_RECORD_REEMBED_STATE", orgId: gone, servedAt: 5, idleUntil: 0, passWork: 0 });
+    // nothing closing: only the one outside the directory goes
+    expect(await sweepReembedState(w.table, async () => false)).toBe(1);
+    expect([...(await readReembedStates(w.table)).keys()].sort()).toEqual([ORG_A, ORG_B].sort());
+    // B closing: its row goes too
+    expect(await sweepReembedState(w.table, async (orgId) => orgId === ORG_B)).toBe(1);
+    expect([...(await readReembedStates(w.table)).keys()]).toEqual([ORG_A]);
   });
 });
 
