@@ -2,7 +2,7 @@
 // pull request's merge commit is noted (the revert-by-commit match and the lesson's merged commit); a human edit hands on WHO wrote it (canonical developer ids), never a login or a diff kept.
 import { describe, expect, it } from "vitest";
 import { createCodeHostTap, runHumanEdit, repoScope, type CodeHostDiff, type CodeHostEvent, type CodeHostRepo, type HumanEditInput } from "../../packages/broker/src/team-record/sources/codehost.js";
-import { githubEventsOf } from "../../packages/broker/src/team-record/sources/github.js";
+import { createGithubDiffReader, githubEventsOf } from "../../packages/broker/src/team-record/sources/github.js";
 import { sha, world, WS } from "../support/team-record-ingest-fakes.js";
 
 const repo = (over: Partial<CodeHostRepo> = {}): CodeHostRepo => ({ host: "github", id: "77", fullName: "acme/shop", isPrivate: true, defaultBranch: "main", workspaceId: WS, project: "shop", ...over });
@@ -73,6 +73,18 @@ describe("the merge commit of a merged Rovara pull request", () => {
     expect(noted).toEqual([]);
   });
 
+  it("L8: a merge into a branch that is not the default (a milestone or stacked pull request) is not noted: it can be restacked away", async () => {
+    const noted: unknown[] = [];
+    const second = world();
+    second.prs.list.push(rovaraPr);
+    second.config.set("github", repoScope(repo()), { retention: "D" });
+    const tap = createCodeHostTap({ sink: second.sink, actors: second.actors, rovaraPrs: Object.assign(second.prs, { recordMerge: async (input: unknown) => { noted.push(input); } }), mode: second.mode, config: second.config });
+    await tap.handle(merged({ baseRef: "milestone/2" }));
+    expect(noted).toEqual([]);
+    await tap.handle(merged());
+    expect(noted).toHaveLength(1);
+  });
+
   it("a note that fails never fails the delivery", async () => {
     const second = world();
     second.config.set("github", repoScope(repo()), { retention: "D" });
@@ -118,3 +130,59 @@ describe("a human edit says who wrote it", () => {
     expect(handed).toEqual([]);
   });
 });
+
+describe("H1: a range that carries other people's work is never one member's correction", () => {
+  const job = { repo: repo(), project: "shop", taskId: "task-1", pullRequest: { number: 5, url: "https://github.com/acme/shop/pull/5" }, candidateHeadSha: sha(20), headSha: sha(21), headRef: "rovara/x" };
+  const files = [{ path: "src/a.ts", additions: 1, deletions: 0, patch: "@@ -1 +1 @@\n+x" }];
+  const outsider = { id: "7777", login: "stranger", isBot: false };
+  const dependabot = { id: "49699333", login: "dependabot[bot]", isBot: true };
+  const signed = (author: typeof alice | undefined, over: Record<string, unknown> = {}) => ({ sha: sha(60), ...(author === undefined ? {} : { author, committer: author }), verified: true, ...over });
+  function run(commits: CodeHostDiff["commits"], pushes: Array<{ before: number; after: number; sender: typeof alice }> = []) {
+    const w = world();
+    w.config.set("github", repoScope(repo()), { retention: "D" });
+    w.actors.members.set("1001", "dev-alice");
+    w.actors.members.set("1002", "dev-bob");
+    for (const push of pushes) w.pushes.pushes.push({ repo: "acme/shop", ref: "refs/heads/rovara/x", before: sha(push.before), after: sha(push.after), senderId: push.sender.id, senderIsBot: push.sender.isBot, at: AT });
+    const handed: HumanEditInput[] = [];
+    const logs: string[] = [];
+    const diff: CodeHostDiff = { status: "ahead", truncated: false, commits, files };
+    return { handed, logs, outcome: () => runHumanEdit({ actors: w.actors, mode: w.mode, config: w.config, pushes: w.pushes, diffs: { compare: async () => diff }, extractor: { extract: async (input) => { handed.push(input); return { candidates: 1 }; } }, log: (event) => { logs.push(event); } }, job) };
+  }
+
+  it("'Update branch': a merge commit in the range is skipped, even when every commit in it is a member's", async () => {
+    const f = run([signed(alice, { sha: sha(61) }), signed(alice, { sha: sha(62), merge: true })]);
+    expect(await f.outcome()).toBe("skipped");
+    expect(f.handed).toEqual([]);
+    expect(f.logs).toContain("human_edit.skipped");
+  });
+
+  it("push-chain mode: an outsider's commit under a member's push is skipped (the member does not vouch for other people's authors)", async () => {
+    const f = run([{ sha: sha(61), author: outsider, verified: false }], [{ before: 20, after: 21, sender: alice }]);
+    expect(await f.outcome()).toBe("skipped");
+    expect(f.handed).toEqual([]);
+  });
+
+  it("push-chain mode: a Dependabot commit, or a commit with no resolved author, is skipped", async () => {
+    for (const author of [dependabot, undefined]) {
+      const f = run([{ sha: sha(61), ...(author === undefined ? {} : { author }), verified: false }], [{ before: 20, after: 21, sender: alice }]);
+      expect(await f.outcome()).toBe("skipped");
+      expect(f.handed).toEqual([]);
+    }
+  });
+
+  it("push-chain mode: when every commit is a member's, every author is named (the pusher and the commit authors, once each)", async () => {
+    const f = run([{ sha: sha(61), author: bob, verified: false }, { sha: sha(62), author: alice, verified: false }], [{ before: 20, after: 21, sender: alice }]);
+    expect(await f.outcome()).toBe("handed_on");
+    expect([...f.handed[0]!.authors].sort()).toEqual(["dev-alice", "dev-bob"]);
+  });
+
+  it("the GitHub compare reader marks a commit with two parents as a merge", async () => {
+    const reader = createGithubDiffReader(async () => ({ status: 200, body: { status: "ahead", total_commits: 2, commits: [
+      { sha: sha(61), parents: [{ sha: sha(20) }], author: { id: 1001, login: "alice" } },
+      { sha: sha(62), parents: [{ sha: sha(61) }, { sha: sha(99) }], author: { id: 1001, login: "alice" } },
+    ], files: [{ filename: "a.ts", additions: 1, deletions: 0, patch: "@@ -1 +1 @@\n+x" }] } }));
+    const diff = await reader.compare({ repo: repo(), base: sha(20), head: sha(21) });
+    expect(diff!.commits.map((commit) => commit.merge === true)).toEqual([false, true]);
+  });
+});
+

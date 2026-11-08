@@ -327,6 +327,10 @@ describe("reverts of Rovara pull requests", () => {
     expect(made.marks).toHaveLength(1);
   });
 
+  // M3: a revert told by a commit message counts only when its commit is a member's: the host's compare shows it verified, authored by a member, and the member pushed it.
+  const memberRevertCommit = (n = 40): Pick<NonNullable<Parameters<typeof createCodeHostTap>[0]["diffs"]>, "compare"> => ({ compare: async () => ({ status: "ahead", truncated: false, files: [], commits: [{ sha: sha(n), author: alice, committer: alice, verified: true }] }) });
+  const pushedBy = (n: number, sender: typeof alice | null = alice): Pick<Extract<CodeHostEvent, { type: "push" }>, "before" | "after"> & { sender?: typeof alice } => ({ before: sha(n - 1), after: sha(n), ...(sender === null ? {} : { sender }) });
+
   it("detects a revert commit on the default branch, records both events once, and re-scores the task", async () => {
     const { w, tap, marks } = gated(rangeOf({}));
     const push = revertPush();
@@ -398,6 +402,50 @@ describe("reverts of Rovara pull requests", () => {
     const result = await tap.handle({ type: "push", repo: repo(), ref: "refs/heads/main", at: AT, commits: [{ sha: sha(40), message: `Fix cart\n\nThis reverts commit ${sha(30)}.` }] });
     expect(result.written).toBe(0);
     expect(w.sink.kinds()).toEqual([]);
+  });
+
+  describe("M3: a revert told only by a commit message is not forgeable", () => {
+    const message = `Revert "Fix cart total"\n\nThis reverts commit ${sha(30)}.`;
+    const pushEvent = (sender: typeof alice | null = alice): CodeHostEvent => ({ type: "push", repo: repo(), ref: "refs/heads/main", at: AT, ...pushedBy(40, sender), commits: [{ sha: sha(40), message }] });
+    const verifiedBy = (author: typeof alice | undefined, over: Record<string, unknown> = {}) => ({ compare: async () => ({ status: "ahead" as const, truncated: false, files: [], commits: [{ sha: sha(40), ...(author === undefined ? {} : { author, committer: author }), verified: true, ...over }] }) });
+    async function counts(extra: Partial<Parameters<typeof createCodeHostTap>[0]>, event: CodeHostEvent): Promise<{ kinds: string[]; marks: unknown[]; reverter: unknown }> {
+      const marks: unknown[] = [];
+      const { w, tap } = setup({ trackRecord: { markNotHeld: async (input) => { marks.push(input); } }, ...extra });
+      w.prs.list.push(rovaraPr);
+      await tap.handle(event);
+      return { kinds: w.sink.kinds(), marks, reverter: w.sink.puts.find((draft) => draft.kind === "rovara.reverted_by")?.actor };
+    }
+
+    it("positive control: a member's verified commit, pushed by the member, counts and credits the commit's author", async () => {
+      const result = await counts({ diffs: verifiedBy(alice) }, pushEvent());
+      expect(result.kinds).toEqual(["github.revert", "rovara.closed", "rovara.reverted_by"]);
+      expect(result.marks).toHaveLength(1);
+      expect(result.reverter).toMatchObject({ developerId: "dev-alice" });
+    });
+
+    it("an outsider's pull request that a member squash-merged (outsider author, host committer) does not count: no outcome, no re-score, no reverter", async () => {
+      const webFlow = { id: "19864447", login: "web-flow", isBot: false };
+      const result = await counts({ diffs: verifiedBy(mallory, { committer: webFlow, webFlow: true }) }, pushEvent(alice));
+      expect(result.kinds).toEqual([]);
+      expect(result.marks).toEqual([]);
+    });
+
+    it("does not count when the commit is a member's but was pushed by an outsider, a bot, or nobody", async () => {
+      for (const sender of [mallory, { id: "5", login: "ci[bot]", isBot: true }, null]) {
+        const result = await counts({ diffs: verifiedBy(alice) }, pushEvent(sender));
+        expect(result.kinds).toEqual([]);
+        expect(result.marks).toEqual([]);
+      }
+    });
+
+    it("does not count an unverified commit, a merge commit, a commit the compare does not list, a compare that failed, or a host with no compare at all", async () => {
+      for (const extra of [{ diffs: verifiedBy(alice, { verified: false }) }, { diffs: verifiedBy(alice, { merge: true }) }, { diffs: { compare: async () => ({ status: "ahead" as const, truncated: false, files: [], commits: [] }) } },
+        { diffs: { compare: async () => undefined } }, { diffs: { compare: async () => { throw new Error("host down"); } } }, {}]) {
+        const result = await counts(extra, pushEvent());
+        expect(result.kinds).toEqual([]);
+        expect(result.marks).toEqual([]);
+      }
+    });
   });
 
   it("parses revert text strictly", () => {
@@ -519,18 +567,18 @@ describe("human edits to Rovara pull requests (read live, never stored)", () => 
     const unsigned = { status: "ahead" as const, truncated: false, commits: [{ sha: sha(22), author: mallory, verified: false }], files: filesOf };
     const push = (before: number, after: number, sender: typeof alice, ref = "refs/heads/rovara/x") => ({ repo: "acme/shop", ref, before: sha(before), after: sha(after), senderId: sender.id, senderIsBot: sender.isBot, at: AT });
     const job = { repo: repo(), project: "shop", taskId: "task-1", pullRequest: { number: 5, url: rovaraPr.url }, candidateHeadSha: sha(20), headSha: sha(21), headRef: "rovara/x" };
-    function chainFixture(pushes: Array<ReturnType<typeof push>>) {
+    function chainFixture(pushes: Array<ReturnType<typeof push>>, commits: CodeHostDiff["commits"] = unsigned.commits) {
       const handed: HumanEditInput[] = [];
       const w = world();
       w.config.set("github", repoScope(repo()));
       w.actors.members.set("1001", "dev-alice");
       w.pushes.pushes.push(...pushes);
-      const deps = { actors: w.actors, mode: w.mode, config: w.config, pushes: w.pushes, diffs: { compare: async () => unsigned }, extractor: { extract: async (input: HumanEditInput) => { handed.push(input); return { candidates: 1 }; } } };
+      const deps = { actors: w.actors, mode: w.mode, config: w.config, pushes: w.pushes, diffs: { compare: async () => ({ ...unsigned, commits }) }, extractor: { extract: async (input: HumanEditInput) => { handed.push(input); return { candidates: 1 }; } } };
       return { handed, run: () => runHumanEdit(deps, job) };
     }
 
-    it("accepts commits that reached the branch in a complete chain of pushes by a linked member, whatever the commit metadata says", async () => {
-      const { handed, run } = chainFixture([push(20, 25, alice), push(25, 21, alice)]);
+    it("accepts unsigned commits that reached the branch in a complete chain of pushes by a linked member, when every commit's author is a member too", async () => {
+      const { handed, run } = chainFixture([push(20, 25, alice), push(25, 21, alice)], [{ sha: sha(22), author: alice, verified: false }]);
       expect(await run()).toBe("handed_on");
       expect(handed[0]).toMatchObject({ trust: "member", authorCount: 1 });
     });

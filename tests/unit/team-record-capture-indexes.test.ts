@@ -45,6 +45,16 @@ describe("push index", () => {
     expect(stranger?.senderIsBot).toBe(false);
   });
 
+  it("L1: the sender is looked up under the record's name for the host (a plug-in's is `codehost:<name>`), the same name the tap's identity fix uses", async () => {
+    const seen: string[] = [];
+    const spy = { resolve: async (input: { system: string; sourceId: string }) => { seen.push(input.system); return { trust: "outsider" as const }; }, resolveDeveloper: async () => ({ trust: "outsider" as const }) };
+    const w = world();
+    const index = tablePushIndex(w.table, spy);
+    await index.record({ workspaceId: ORG_A, host: "gitfarm", push: push(), ttlSeconds: 3600 });
+    await index.record({ workspaceId: ORG_A, host: "github", push: push({ after: sha(5) }), ttlSeconds: 3600 });
+    expect(seen).toEqual(["codehost:gitfarm", "github"]);
+  });
+
   it("another workspace or repository finds nothing", async () => {
     const w = world();
     const index = tablePushIndex(w.table, actors);

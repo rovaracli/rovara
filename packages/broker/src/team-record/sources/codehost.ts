@@ -144,8 +144,13 @@ export const PUSH_INDEX_TTL_SECONDS = 30 * 86_400;
 const PUSH_CHAIN_MAX = 50;
 const REVERTS_COMMIT = /This reverts commit ([0-9a-f]{40})\b/gi;
 
+/** The record's source name for a host name: `github`, or `codehost:<plug-in>`. */
+export function sourceOfHost(host: string): SourceSystem {
+  return host === "github" ? "github" : `codehost:${host}`;
+}
+
 export function sourceOf(repo: CodeHostRepo): SourceSystem {
-  return repo.host === "github" ? "github" : `codehost:${repo.host}`;
+  return sourceOfHost(repo.host);
 }
 
 export function repoScope(repo: CodeHostRepo): string {
@@ -332,21 +337,21 @@ export function createCodeHostTap(deps: CodeHostTapDependencies): { handle(event
   }
 
   /**
-   * Whether a revert told only by words in a pushed commit is a member's (owner decision 24b / controller ee, 2026-11-08). Words in a commit message are written by anyone who can get a commit
-   * onto the default branch. The compare of the pushed range must show that exact commit: not a merge, verified, its committer its author (or the host's own web-flow account), the AUTHOR a live
-   * member, and the account that pushed it a live non-bot member. The author is returned (credited as the reverter); undefined when anything is missing, fails or cannot be told: then nothing is
-   * recorded for that revert (no outcome row, no re-score, no reverter).
+   * Whether a revert told by words is a member's. For a push (`commitSha` given): the compare of the pushed range must show that commit, not a merge, verified with its author as committer (or the host's web-flow
+   * account for a squash merge), with a live member as its AUTHOR; and the account that pushed it must be a live member too. For a pull request (no `commitSha`): the pull request's author must be a member.
+   * The result is the author, who is credited as the reverter; undefined when anything is missing or cannot be told.
    */
-  async function memberPushedRevert(
-    repo: CodeHostRepo, project: string, source: NonNullable<Awaited<ReturnType<typeof gate>>>, diff: CodeHostDiff | undefined, pusher: CodeHostPerson | undefined, commitSha: string,
+  async function memberRevertAuthor(
+    repo: CodeHostRepo, project: string, source: NonNullable<Awaited<ReturnType<typeof gate>>>, diff: CodeHostDiff | undefined, pusher: CodeHostPerson | undefined, commitSha: string | undefined,
   ): Promise<CodeHostPerson | undefined> {
     const memberPerson = async (person: CodeHostPerson | undefined): Promise<boolean> => {
       if (person === undefined || person.isBot || isExcluded(source, person.id, person.login)) return false;
       try {
-        const resolved = await deps.actors.resolve({ workspaceId: repo.workspaceId, project, system: repo.host, sourceId: person.id });
+        const resolved = await deps.actors.resolve({ workspaceId: repo.workspaceId, project, system: sourceOf(repo), sourceId: person.id });
         return resolved.developerId !== undefined && resolved.trust === "member";
       } catch { return false; }
     };
+    if (commitSha === undefined) return (await memberPerson(pusher)) ? pusher : undefined;
     if (diff === undefined || diff.status !== "ahead" || diff.truncated) return undefined;
     const commit = diff.commits.find((candidate) => candidate.sha === commitSha);
     if (commit === undefined || commit.merge === true || !commit.verified) return undefined;
@@ -358,14 +363,16 @@ export function createCodeHostTap(deps: CodeHostTapDependencies): { handle(event
   /** A merged revert pull request, or a default-branch push whose commits say "This reverts commit <sha>". Only a Rovara pull request's merge commit counts. */
   async function revertsOf(event: CodeHostEvent, source: NonNullable<Awaited<ReturnType<typeof gate>>>, result: TapResult): Promise<void> {
     const retention = source.retention;
-    let targets: Array<{ target: RovaraPullRequest; via: string; at: string; by: CodeHostPerson | undefined }> = [];
+    // `byCommitMessage`: the revert is told only by words in a commit message or a pull request body, which anyone who can get a commit onto the default branch can write (an outside contributor's
+    // pull request that a member squash-merges carries its commit message onto the branch). Such a revert counts only when its own commit is proved to be a member's (see `memberRevertAuthor`).
+    let targets: Array<{ target: RovaraPullRequest; via: string; at: string; by: CodeHostPerson | undefined; byCommitMessage?: boolean }> = [];
     const repo = event.repo;
     if (event.type === "push") {
       if (repo.defaultBranch === undefined || event.ref !== `refs/heads/${repo.defaultBranch}`) return;
       for (const commit of event.commits.slice(0, 100)) {
         for (const sha of gitRevertedCommits(commit.message)) {
           const target = await deps.rovaraPrs.byMergeCommit({ workspaceId: repo.workspaceId, host: repo.host, repo: repo.fullName, sha });
-          if (target !== undefined) targets.push({ target, via: commit.sha, at: event.at, by: event.sender });
+          if (target !== undefined) targets.push({ target, via: commit.sha, at: event.at, by: event.sender, byCommitMessage: true });
         }
       }
     } else if (event.type === "pr" && event.action === "closed" && event.merged && repo.defaultBranch !== undefined && event.baseRef === repo.defaultBranch && /^revert\s+["“']/i.test(event.title.trim())) {
@@ -375,22 +382,25 @@ export function createCodeHostTap(deps: CodeHostTapDependencies): { handle(event
       }
       for (const sha of revertedCommits(event.body ?? "")) {
         const target = await deps.rovaraPrs.byMergeCommit({ workspaceId: repo.workspaceId, host: repo.host, repo: repo.fullName, sha });
-        if (target !== undefined) targets.push({ target, via: event.mergeCommitSha ?? prId(repo, event.number), at: event.at, by: event.author });
+        if (target !== undefined) targets.push({ target, via: event.mergeCommitSha ?? prId(repo, event.number), at: event.at, by: event.author, byCommitMessage: true });
       }
     }
-    // A revert told by a pushed commit's message counts only when that commit is proved a member's (see `memberPushedRevert`); the merged revert pull request path is unchanged.
-    if (event.type === "push") {
-      const proved: typeof targets = [];
-      let range: CodeHostDiff | undefined | null = null;
-      for (const entry of targets) {
+    // A revert told by a commit message counts only when its commit is authored by a member AND pushed (or the pull request opened) by a member. A squash-merged outsider pull request carries an
+    // outsider's author: it is not counted at all (no outcome, no re-score, no reverter). The reverter is the commit's author, not the account that pushed or merged it.
+    const proved: typeof targets = [];
+    let range: CodeHostDiff | undefined | null = null;
+    for (const entry of targets) {
+      if (entry.byCommitMessage !== true) { proved.push(entry); continue; }
+      let author: CodeHostPerson | undefined;
+      if (event.type === "push") {
         if (range === null) range = event.before !== undefined && event.after !== undefined && SHA.test(event.before) && SHA.test(event.after) && deps.diffs !== undefined
           ? await deps.diffs.compare({ repo, base: event.before, head: event.after }).catch(() => undefined) : undefined;
-        const author = await memberPushedRevert(repo, entry.target.project, source, range ?? undefined, event.sender, entry.via);
-        if (author !== undefined) proved.push({ ...entry, by: author });
-        else log("record.revert_unproven", { host: repo.host });
-      }
-      targets = proved;
+        author = await memberRevertAuthor(repo, entry.target.project, source, range ?? undefined, event.sender, entry.via);
+      } else author = await memberRevertAuthor(repo, entry.target.project, source, undefined, entry.by, undefined);
+      if (author !== undefined) proved.push({ ...entry, by: author });
+      else log("record.revert_unproven", { host: repo.host });
     }
+    targets = proved;
     // One revert per Rovara pull request, however many deliveries or ways tell us of it.
     const seen = new Set<string>();
     targets = targets.filter(({ target }) => !seen.has(target.taskId) && seen.add(target.taskId));
@@ -449,6 +459,8 @@ export function createCodeHostTap(deps: CodeHostTapDependencies): { handle(event
   /** A merged Rovara pull request: its merge commit is kept (once the host names it) for the revert-by-commit match and for the task's lessons. A failure never fails the delivery. */
   async function noteMerge(event: Extract<CodeHostEvent, { type: "pr" }>): Promise<void> {
     if (deps.rovaraPrs.recordMerge === undefined || event.mergeCommitSha === undefined || !SHA.test(event.mergeCommitSha)) return;
+    // Only a merge into the default branch is the commit a revert or a lesson's citation can rely on: a milestone or stacked pull request's merge commit may be restacked away.
+    if (event.repo.defaultBranch === undefined || event.baseRef !== event.repo.defaultBranch) return;
     try {
       const rovara = await deps.rovaraPrs.byNumber({ workspaceId: event.repo.workspaceId, host: event.repo.host, repo: event.repo.fullName, number: event.number });
       if (rovara === undefined) return;
@@ -492,45 +504,9 @@ export async function runHumanEdit(deps: Pick<CodeHostTapDependencies, "actors" 
     log("human_edit.skipped", { reason: diff.truncated ? "compare_truncated" : "not_a_clean_delta" });
     return "skipped";
   }
-  // Who wrote these commits is proved in one of two ways, never by a name or email on a commit and never by whoever merged the pull request:
-  //  (1) the host verified the signature AND the committer is the author, a linked member (or the host itself committed it, as for a web-UI edit); or
-  //  (2) the commits reached the branch in pushes the host authenticated (the signed delivery's `sender`), the chain of pushes from Rovara's last commit to
-  //      the head is complete, and every sender is a linked non-bot member. A gap in the chain, or a push by anyone else, fails closed.
-  // A person counts only as a live company member who is not excluded from the source. The result is their canonical developer id (the identity link), or undefined.
-  const memberOf = async (person: CodeHostPerson | undefined): Promise<string | undefined> => {
-    if (person === undefined || person.isBot || isExcluded(config, person.id, person.login)) return undefined;
-    const who = await deps.actors.resolve({ workspaceId: job.repo.workspaceId, project: job.project, system: sourceOf(job.repo), sourceId: person.id });
-    return who.trust === "member" ? who.developerId : undefined;
-  };
-  let vouching = new Map<string, string>();
-  let byCommits = diff.commits.length > 0;
-  for (const commit of diff.commits) {
-    const sameCommitter = commit.webFlow === true || (commit.committer !== undefined && commit.author !== undefined && commit.committer.id === commit.author.id);
-    const developerId = commit.verified && sameCommitter ? await memberOf(commit.author) : undefined;
-    if (developerId === undefined) { byCommits = false; break; }
-    vouching.set(commit.author!.id, developerId);
-  }
-  if (!byCommits) {
-    vouching = new Map();
-    const chain = deps.pushes === undefined ? undefined : await pushChain(deps.pushes, job);
-    if (chain === undefined) {
-      log("human_edit.skipped", { reason: "authorship_not_proved" });
-      return "skipped";
-    }
-    for (const push of chain) {
-      let developerId: string | undefined;
-      if (push.senderIsBot) developerId = undefined;
-      else if (push.senderDeveloperId !== undefined) developerId = (await deps.actors.resolveDeveloper({ workspaceId: job.repo.workspaceId, project: job.project, developerId: push.senderDeveloperId })).trust === "member" ? push.senderDeveloperId : undefined;
-      else developerId = await memberOf({ id: push.senderId, isBot: false });
-      if (developerId === undefined) {
-        log("human_edit.skipped", { reason: "author_not_member" });
-        return "skipped";
-      }
-      vouching.set(push.senderDeveloperId ?? push.senderId, developerId);
-    }
-  }
-  if (vouching.size === 0) return "skipped";
-  const authorIds = [...new Set(vouching.values())];
+  const proof = await provenAuthors(deps, config, { repo: job.repo, project: job.project, base: job.candidateHeadSha, head: job.headSha, ...(job.headRef === undefined ? {} : { headRef: job.headRef }) }, diff, log);
+  if (!("authors" in proof)) return "skipped";
+  const authorIds = proof.authors;
   const key = `human_edit#${job.taskId}#${job.headSha}`;
   if (deps.claims !== undefined && !await deps.claims.claim(key)) return "skipped";
   try {
@@ -541,21 +517,75 @@ export async function runHumanEdit(deps: Pick<CodeHostTapDependencies, "actors" 
     log("human_edit.handed_on", { files: Math.min(diff.files.length, HUMAN_EDIT_MAX_FILES), candidates: outcome.candidates });
     return "handed_on";
   } catch {
-    // The claim is given back so a redelivery or a queue retry can try again.
+    // The claim is given back and the failure is told on (a fixed error, never the extractor's own text): the queue's consumer then retries the job, and an inline run counts it as failed.
     await deps.claims?.release(key).catch(() => undefined);
     log("human_edit.extractor_failed", {});
-    return "skipped";
+    throw new Error("the human edit could not be read");
   }
 }
 
-/** The pushes from Rovara's last commit to the head, newest first, or undefined when any link is missing. */
-async function pushChain(index: PushIndexPort, job: HumanEditJob): Promise<PushRecord[] | undefined> {
+/** A range of commits on a pull request branch, the ends of which are known commits: what authorship is proved for. */
+export interface CommitRange { repo: CodeHostRepo; project: string; base: string; head: string; headRef?: string }
+
+/**
+ * Who wrote the commits of a clean "ahead" compare, proved; or why nothing may be said. Never a name or an email on a commit, and never whoever merged the pull request. A range with a merge commit
+ * (a branch updated from its base) carries other people's work and is refused. Otherwise, in one of two ways:
+ *  (1) every commit is verified by the host, its committer is its author (or the host itself, for a web-UI edit), and the author is a live member; or
+ *  (2) the commits reached the branch in pushes the host authenticated (the signed delivery's `sender`), the chain of pushes from `base` to `head` is complete, and every sender is a linked
+ *      non-bot member. And, either way, EVERY commit's author must be a live member too (a member's push does not vouch for an outsider's or a bot's commit): an unresolved author refuses.
+ * A person counts only as a live company member who is not excluded from the source. The result is every author as a canonical developer id (the identity link), each once.
+ */
+export async function provenAuthors(
+  deps: Pick<CodeHostTapDependencies, "actors" | "pushes">, config: NonNullable<Awaited<ReturnType<typeof gate>>>, range: CommitRange, diff: CodeHostDiff, log: TapLog,
+): Promise<{ authors: string[] } | { skip: string }> {
+  const skip = (reason: string): { skip: string } => { log("human_edit.skipped", { reason }); return { skip: reason }; };
+  if (diff.status !== "ahead" || diff.truncated) return skip(diff.truncated ? "compare_truncated" : "not_a_clean_delta");
+  if (diff.commits.some((commit) => commit.merge === true)) return skip("merge_commit_in_range");
+  const memberOf = async (person: CodeHostPerson | undefined): Promise<string | undefined> => {
+    if (person === undefined || person.isBot || isExcluded(config, person.id, person.login)) return undefined;
+    const who = await deps.actors.resolve({ workspaceId: range.repo.workspaceId, project: range.project, system: sourceOf(range.repo), sourceId: person.id });
+    return who.trust === "member" ? who.developerId : undefined;
+  };
+  const authors = new Set<string>();
+  let byCommits = diff.commits.length > 0;
+  for (const commit of diff.commits) {
+    const sameCommitter = commit.webFlow === true || (commit.committer !== undefined && commit.author !== undefined && commit.committer.id === commit.author.id);
+    const developerId = commit.verified && sameCommitter ? await memberOf(commit.author) : undefined;
+    if (developerId === undefined) { byCommits = false; break; }
+    authors.add(developerId);
+  }
+  if (!byCommits) {
+    authors.clear();
+    const chain = deps.pushes === undefined ? undefined : await pushChain(deps.pushes, range);
+    if (chain === undefined) return skip("authorship_not_proved");
+    for (const push of chain) {
+      let developerId: string | undefined;
+      if (push.senderIsBot) developerId = undefined;
+      else if (push.senderDeveloperId !== undefined) developerId = (await deps.actors.resolveDeveloper({ workspaceId: range.repo.workspaceId, project: range.project, developerId: push.senderDeveloperId })).trust === "member" ? push.senderDeveloperId : undefined;
+      else if (push.senderId !== "") developerId = await memberOf({ id: push.senderId, isBot: false });
+      if (developerId === undefined) return skip("author_not_member");
+      authors.add(developerId);
+    }
+    // The pusher is not the author: every commit's own author must be a member as well, and is named.
+    if (diff.commits.length === 0) return skip("authorship_not_proved");
+    for (const commit of diff.commits) {
+      const developerId = await memberOf(commit.author);
+      if (developerId === undefined) return skip("author_not_member");
+      authors.add(developerId);
+    }
+  }
+  if (authors.size === 0) return skip("authorship_not_proved");
+  return { authors: [...authors] };
+}
+
+/** The pushes from `range.base` to the head, newest first, or undefined when any link is missing. */
+async function pushChain(index: PushIndexPort, range: CommitRange): Promise<PushRecord[] | undefined> {
   const chain: PushRecord[] = [];
-  let current = job.headSha;
+  let current = range.head;
   for (let step = 0; step < PUSH_CHAIN_MAX; step += 1) {
-    if (current === job.candidateHeadSha) return chain.length === 0 ? undefined : chain;
-    const push = await index.byAfter({ workspaceId: job.repo.workspaceId, host: job.repo.host, repo: job.repo.fullName, after: current }).catch(() => undefined);
-    if (push === undefined || (job.headRef !== undefined && push.ref !== `refs/heads/${job.headRef}`)) return undefined;
+    if (current === range.base) return chain.length === 0 ? undefined : chain;
+    const push = await index.byAfter({ workspaceId: range.repo.workspaceId, host: range.repo.host, repo: range.repo.fullName, after: current }).catch(() => undefined);
+    if (push === undefined || (range.headRef !== undefined && push.ref !== `refs/heads/${range.headRef}`)) return undefined;
     chain.push(push);
     current = push.before;
   }

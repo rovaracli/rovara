@@ -7,6 +7,7 @@ import { createHash } from "node:crypto";
 import { DeleteCommand, GetCommand, PutCommand } from "@aws-sdk/lib-dynamodb";
 import { TEAM_RECORD_GSI2, OrgIdSchema, recordActorIndexValue, teamRecordPk, type OrgId } from "@agentx/contracts";
 import type { ActorResolverPort, OnceClaimPort, PushIndexPort, PushRecord, RovaraPullRequest } from "./sources/ports.js";
+import { sourceOfHost } from "./sources/codehost.js";
 import type { TeamRecordTable } from "./types.js";
 
 export const ONCE_CLAIM_PK = "TRCLAIM";
@@ -46,7 +47,7 @@ export function tablePushIndex(table: TeamRecordTable, actors: Pick<ActorResolve
       // The sender is looked up now. A bot is kept as a bot; a member as their developer id; anyone else as nobody (the chain then fails closed at this push).
       let developerId: string | undefined;
       if (!push.senderIsBot) {
-        const who = await actors.resolve({ workspaceId, project: undefined, system: host, sourceId: push.senderId, isBot: false });
+        const who = await actors.resolve({ workspaceId, project: undefined, system: sourceOfHost(host), sourceId: push.senderId, isBot: false });
         if (who.trust === "member" && who.developerId !== undefined) developerId = who.developerId;
       }
       await table.documentClient.send(new PutCommand({

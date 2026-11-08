@@ -545,6 +545,37 @@ describe("immutable multi-PR feedback reviews", () => {
     expect(() => decideWorkflowFeedbackFindings(collected, { ...request, expectedRevision: collected.revision }, { actorId: ownerId, role: "TASK_OWNER" }, now)).toThrow();
     expect(() => workflowContracts.collectWorkflowFeedbackBundles(current, { bundleRefs: [bundleRefs[0]], threadObservations: [] }, now)).toThrow();
   });
+  describe("the comments the agent was shown (lessons capture)", () => {
+    it("records every comment of the collected bundles and of the threads seen, per round, not only the selected ones", () => {
+      const { current, bundleRefs } = fixture();
+      const observations = [{ repositoryId: "api", number: 1, threadId: "thread-api", resolved: false, comments: [{ id: "api-0", updatedAt: now, bodyDigest: hash("a") }, { id: "api-reply", updatedAt: now, bodyDigest: hash("b") }], eligibleCommentIds: ["api-0"] }];
+      const collected = workflowContracts.collectWorkflowFeedbackBundles(current, { bundleRefs, threadObservations: observations }, now);
+      expect(collected.feedbackShown?.incomplete).toBeUndefined();
+      expect(collected.feedbackShown?.rounds).toHaveLength(1);
+      const pulls = collected.feedbackShown!.rounds[0]!.pulls;
+      expect(pulls.find(pull => pull.repositoryId === "api")?.commentIds).toEqual(["api-0", "api-1", "api-reply"]);
+      expect(pulls.find(pull => pull.repositoryId === "ui")?.commentIds).toEqual(["ui-0", "ui-1"]);
+      // A second round adds a round; the first stays.
+      const running = { ...collected, state: "WAITING" as const };
+      const again = workflowContracts.collectWorkflowFeedbackBundles(running, { bundleRefs, threadObservations: [] }, now);
+      expect(again.feedbackShown?.rounds).toHaveLength(2);
+      expect(again.feedbackShown?.incomplete).toBeUndefined();
+    });
+    it("marks the record incomplete when an earlier round was collected before it existed", () => {
+      const { current, bundleRefs, reviewRef } = fixture();
+      const reviewed = requestWorkflowFeedbackReview(current, { bundleRefs, reviewRef }, now);
+      const collected = workflowContracts.collectWorkflowFeedbackBundles(reviewed, { bundleRefs, threadObservations: [] }, now);
+      expect(collected.feedbackShown?.incomplete).toBe(true);
+    });
+    it("marks the record incomplete (and does not grow it) when the list is full", () => {
+      const { current, bundleRefs } = fixture();
+      const many = Array.from({ length: 1999 }, (_, i) => `x-${i}`);
+      const full = WorkflowSnapshotSchema.parse({ ...current, feedbackShown: { rounds: [{ at: now, pulls: [{ repositoryId: "api", number: 1, commentIds: many }] }] } });
+      const collected = workflowContracts.collectWorkflowFeedbackBundles(full, { bundleRefs, threadObservations: [] }, now);
+      expect(collected.feedbackShown?.incomplete).toBe(true);
+      expect(collected.feedbackShown?.rounds).toHaveLength(1);
+    });
+  });
   it("returns the exact active critic report to a waiting owner decision", () => {
     const { current, bundleRefs, reviewRef } = fixture();
     const collected = workflowContracts.collectWorkflowFeedbackBundles(current, { bundleRefs, threadObservations: [] }, now);

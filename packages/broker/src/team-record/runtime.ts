@@ -225,8 +225,8 @@ export interface TeamRecordRuntime {
   /** The taps. Each never throws and records only what the source rows and the mode allow. */
   taps: {
     github: ReturnType<typeof createGithubRecordTap>;
-    /** A code-host plug-in's event, already host-neutral (`CodeHostEvent`). The workspace and project of its repository are the plug-in's binding, never read from the delivery. */
-    codeHost(event: Parameters<ReturnType<typeof createCodeHostTap>["handle"]>[0]): ReturnType<ReturnType<typeof createCodeHostTap>["handle"]>;
+    /** A code-host plug-in's event, already host-neutral (`CodeHostEvent`). The workspace and project of its repository are the plug-in's server-side `binding`: it overwrites whatever the event says. */
+    codeHost(event: Parameters<ReturnType<typeof createCodeHostTap>["handle"]>[0], binding: { workspaceId: string; project?: string }): ReturnType<ReturnType<typeof createCodeHostTap>["handle"]>;
     hook: ReturnType<typeof createHookRecordTap>;
     /** A Slack event the ingress verified and forwarded, with the channel facts it read with the bot token. */
     slack(forward: { payload: unknown; channel?: { teamId: string; channelId: string; info: SlackChannelInfo } }): ReturnType<ReturnType<typeof createSlackRecordTap>>;
@@ -403,8 +403,9 @@ export function createTeamRecordRuntime(input: TeamRecordRuntimeInput): TeamReco
       const parsed = OrgIdSchema.safeParse(workspaceId);
       if (!parsed.success) return { trust: "outsider" };
       const orgId = parsed.data;
-      // A GitHub (or other code host) account linked to a company member.
-      if (system === "github" || system.startsWith("codehost:")) {
+      // A GitHub account linked to a company member. A code-host plug-in's account is NOT looked up here: the links are keyed by GitHub's numeric user id, so a plug-in's id that happens to equal a member's
+      // GitHub id would be taken for that member. Until links are kept per host, every `codehost:*` identity is an outsider (it fails closed: TRW-4, nothing is stored for a person until they are linked).
+      if (system === "github") {
         const link = (await input.documentClient.send(new GetCommand({ TableName: state.tableName, Key: githubMemberKey(orgId, sourceId), ConsistentRead: true }))) as { Item?: { developerId?: unknown; orgId?: unknown } };
         const developerId = link.Item?.developerId;
         if (typeof developerId !== "string" || (link.Item?.orgId !== undefined && link.Item.orgId !== orgId)) return { trust: "outsider" };
@@ -671,6 +672,12 @@ export function createTeamRecordRuntime(input: TeamRecordRuntimeInput): TeamReco
   const github = createGithubRecordTap({
     sink, actors, rovaraPrs, mode, config, resolveRepo, log: tapLog, now, priorEdits, sourceHealth, failures, pushes, claims, humanEditJobs, extractor: lateExtractor, diffs: captureAdapters.diffs,
   });
+  /** The event with the plug-in's own binding on its repository: what the event says of its workspace and project is never read. */
+  const bound = <E extends Parameters<typeof codeHost.handle>[0]>(event: E, binding: { workspaceId: string; project?: string }): E => {
+    const { project: _claimed, ...repo } = event.repo;
+    void _claimed;
+    return { ...event, repo: { ...repo, workspaceId: binding.workspaceId, ...(binding.project === undefined ? {} : { project: binding.project }) } };
+  };
   /** A plug-in host's events, already in the host-neutral shape: the same tap, reading compares through the host's own adapter. */
   const codeHost = createCodeHostTap({ sink, actors, rovaraPrs, mode, config, log: tapLog, priorEdits, sourceHealth, failures, pushes, claims, humanEditJobs, extractor: lateExtractor, diffs: captureAdapters.diffs });
   // A comment names only its ticket: the ticket must already be recorded under the same place (Linear), and takes its restriction from how it was recorded (Jira). Read from the record, not from the tracker.
@@ -1370,5 +1377,5 @@ export function createTeamRecordRuntime(input: TeamRecordRuntimeInput): TeamReco
     orgOfSlackTeam: (teamId) => new OrgStore({ documentClient: input.documentClient, tableName: state.tableName, now }).orgForSlackTeam(teamId),
     developerOfSlackUser: async (slackUserId) => (input.developerOfSlackUser === undefined ? undefined : await input.developerOfSlackUser(slackUserId)),
   });
-  return { edition, table, sink, drain, removal, links, trackerPeople, emitter, slackAdd, taskVisibility: (orgId, taskId) => resolveTaskVisibility({ documentClient: input.documentClient, tableName: state.tableName, now }, orgId, taskId), actors, modes, paused, routes, tools, taps: { github, hook, slack, slackStrict, codeHost: (event) => codeHost.handle(event) }, erase, jobs, captureAdapters, mergeIndex, humanEdit, opsFailures: (orgId) => readOpsFailures(table, orgId, now()) };
+  return { edition, table, sink, drain, removal, links, trackerPeople, emitter, slackAdd, taskVisibility: (orgId, taskId) => resolveTaskVisibility({ documentClient: input.documentClient, tableName: state.tableName, now }, orgId, taskId), actors, modes, paused, routes, tools, taps: { github, hook, slack, slackStrict, codeHost: (event, binding) => codeHost.handle(bound(event, binding)) }, erase, jobs, captureAdapters, mergeIndex, humanEdit, opsFailures: (orgId) => readOpsFailures(table, orgId, now()) };
 }

@@ -28,7 +28,7 @@ import type { Lesson, SpanKind, TrustClass } from "../../packages/broker/src/les
 import { queryRecordEvents, type StoredEvent } from "../../packages/broker/src/team-record/store.js";
 import { createSlackRecordTap, type SlackChannelInfo } from "../../packages/broker/src/team-record/sources/slack.js";
 import { createTicketRecorder, type TicketItem } from "../../packages/broker/src/team-record/sources/tickets.js";
-import { createCodeHostTap, type CodeHostEvent, type CodeHostRepo } from "../../packages/broker/src/team-record/sources/codehost.js";
+import { createCodeHostTap, type CodeHostDiffReader, type CodeHostEvent, type CodeHostRepo } from "../../packages/broker/src/team-record/sources/codehost.js";
 import { createRovaraEmitter } from "../../packages/broker/src/team-record/sources/rovara.js";
 import { tableOutcomeRows } from "../../packages/broker/src/lessons/task-outcome-rows.js";
 import { minTrust } from "../../packages/broker/src/team-record/taint.js";
@@ -106,9 +106,10 @@ export class Capture {
   readonly rovara = createRovaraEmitter({ sink: this.sink, actors: this.actors, mode: this.mode, config: this.config });
   /** The real reader of the rows the emitter wrote (who sent a task back, their standing, their words). */
   get outcomeRows() { return tableOutcomeRows(this.record.table); }
-  /** SRL-3: a revert told by a pushed commit's message counts only when the host's compare shows that commit a verified, non-merge commit of a member; here every pushed head is one. */
-  readonly verifiedMemberCommits = { compare: async (input: { head: string }) => ({ status: "ahead" as const, truncated: false, files: [], commits: [{ sha: input.head, author: MEMBER_GITHUB, committer: MEMBER_GITHUB, verified: true }] }) };
-  readonly codehost = createCodeHostTap({ sink: this.sink, actors: this.actors, rovaraPrs: this.prs, mode: this.mode, config: this.config, pushes: this.pushes, diffs: this.verifiedMemberCommits });
+  /** The host's compare, for the tap's authorship proofs (a revert told by a pushed commit's message counts only when the compare shows that commit a verified, non-merge commit of a member; SRL-3). By default every pushed head is one; a test sets it. */
+  readonly verifiedMemberCommits: CodeHostDiffReader = { compare: async (input: { head: string }) => ({ status: "ahead" as const, truncated: false, files: [], commits: [{ sha: input.head, author: MEMBER_GITHUB, committer: MEMBER_GITHUB, verified: true }] }) };
+  diffs: CodeHostDiffReader = this.verifiedMemberCommits;
+  readonly codehost = createCodeHostTap({ sink: this.sink, actors: this.actors, rovaraPrs: this.prs, mode: this.mode, config: this.config, pushes: this.pushes, diffs: { compare: (input) => this.diffs.compare(input) } });
 
   private ts = 1_760_000_000;
 

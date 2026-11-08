@@ -97,20 +97,51 @@ describe("a merged Rovara pull request", () => {
 });
 
 describe("another code host", () => {
-  it("registers by the same interface, its events go to the host-neutral tap, and its identities resolve under its own name", async () => {
-    const gitfarm: CodeHostCaptureAdapter = {
-      host: "gitfarm", supports: { pullRequestComments: true, commentOutdated: true, humanEdits: false, authorship: "none", mergeCommit: true },
-      pullRequestAddress: () => undefined, repositoryAddress: (fullName) => `https://git.example.test/${fullName}`,
-    };
+  const gitfarm: CodeHostCaptureAdapter = {
+    host: "gitfarm", supports: { pullRequestComments: true, commentOutdated: true, humanEdits: false, authorship: "none", mergeCommit: true },
+    pullRequestAddress: () => undefined, repositoryAddress: (fullName) => `https://git.example.test/${fullName}`,
+  };
+  const addGitfarmRow = (w: ReturnType<typeof setup>) => putSourceConfig({ documentClient: w.db, tableName: "TeamRecord" }, {
+    workspaceId: ORG_A, project: "web", source: "codehost:gitfarm", scope: "codehost:gitfarm:repo/7", enabled: true, retention: "C", exclude: [], audienceDefault: "project", health: "unknown", addedBy: "dev-1", updatedAt: "2026-10-30T10:00:00.000Z",
+  }, { edition: "enterprise" });
+  const comment = (repo: Record<string, unknown>, authorId: string) => ({ type: "comment" as const, repo: repo as never, prNumber: 3, id: "9", url: "https://git.example.test/pkg/api/cr/3#9", action: "created" as const, surface: "review_comment" as const, body: "Use withRetry", author: { id: authorId, login: "maya", isBot: false }, path: "src/a.ts", at: "2026-10-30T10:00:00.000Z", version: "created:1" });
+  const ci = (repo: Record<string, unknown>) => ({ type: "ci" as const, repo: repo as never, id: "run1", name: "build", conclusion: "success", headSha: hex(3), prNumbers: [3], at: "2026-10-30T10:00:00.000Z" });
+  const binding = { workspaceId: ORG_A, project: "web" };
+
+  it("registers by the same interface and its events go to the host-neutral tap", async () => {
     const w = setup([gitfarm]);
     expect(w.runtime.captureAdapters.support()["gitfarm"]).toMatchObject({ humanEdits: false });
-    await putSourceConfig({ documentClient: w.db, tableName: "TeamRecord" }, {
-      workspaceId: ORG_A, project: "web", source: "codehost:gitfarm", scope: "codehost:gitfarm:repo/7", enabled: true, retention: "C", exclude: [], audienceDefault: "project", health: "unknown", addedBy: "dev-1", updatedAt: "2026-10-30T10:00:00.000Z",
-    }, { edition: "enterprise" });
+    await addGitfarmRow(w);
     const repo = { host: "gitfarm", id: "7", fullName: "pkg/api", isPrivate: false, workspaceId: ORG_A, project: "web" };
-    const result = await w.runtime.taps.codeHost({ type: "comment", repo, prNumber: 3, id: "9", url: "https://git.example.test/pkg/api/cr/3#9", action: "created", surface: "review_comment", body: "Use withRetry", author: { id: "123", login: "maya", isBot: false }, path: "src/a.ts", at: "2026-10-30T10:00:00.000Z", version: "created:1" });
-    expect(result).toMatchObject({ written: 1, refused: 0 });
-    const row = w.db.find((item) => item.entityType === "TEAM_RECORD_EVENT")[0]!;
-    expect(row).toMatchObject({ source: "codehost:gitfarm", kind: "github.review_comment", trust: "member", actor: { developerId: "dev-1" } });
+    const result = await w.runtime.taps.codeHost(ci(repo), binding);
+    expect(result).toMatchObject({ written: 1 });
+    expect(w.db.find((item) => item.entityType === "TEAM_RECORD_EVENT")[0]).toMatchObject({ source: "codehost:gitfarm", kind: "github.ci" });
+  });
+
+  it("H3: a plug-in account whose id equals a linked member's GITHUB id is an outsider (GitHub links are not plug-in links), never that member", async () => {
+    const w = setup([gitfarm]);
+    await addGitfarmRow(w);
+    const repo = { host: "gitfarm", id: "7", fullName: "pkg/api", isPrivate: false, workspaceId: ORG_A, project: "web" };
+    // "123" is dev-1's GitHub account id; on gitfarm it is somebody else.
+    const result = await w.runtime.taps.codeHost(comment(repo, "123"), binding);
+    // Nothing is stored for an account that is not linked (and none is linked for a plug-in yet), and nothing is stored as dev-1's.
+    expect(result).toMatchObject({ written: 0 });
+    const rows = w.db.find((item) => item.entityType === "TEAM_RECORD_EVENT");
+    expect(JSON.stringify(rows)).not.toContain("dev-1");
+    expect(rows).toEqual([]);
+    // The same id on GitHub itself still resolves to the member.
+    expect(await w.runtime.actors.resolve({ workspaceId: ORG_A, project: "web", system: "github", sourceId: "123" })).toMatchObject({ developerId: "dev-1", trust: "member" });
+    expect(await w.runtime.actors.resolve({ workspaceId: ORG_A, project: "web", system: "codehost:gitfarm", sourceId: "123" })).toEqual({ trust: "outsider" });
+  });
+
+  it("L6: the plug-in's server-side binding overwrites the workspace and project the event claims", async () => {
+    const w = setup([gitfarm]);
+    await addGitfarmRow(w);
+    const lying = { host: "gitfarm", id: "7", fullName: "pkg/api", isPrivate: false, workspaceId: "org-victim-0000", project: "other" };
+    const result = await w.runtime.taps.codeHost(ci(lying), binding);
+    expect(result).toMatchObject({ written: 1 });
+    const rows = w.db.find((item) => item.entityType === "TEAM_RECORD_EVENT");
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ workspaceId: ORG_A, project: "web" });
   });
 });

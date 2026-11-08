@@ -50,9 +50,9 @@ describe("the revert's outcome rows carry no person", () => {
   });
 });
 
-describe("only a member counts as the reverter; the anonymous outcome is recorded either way", () => {
+describe("only a member counts as the reverter; the anonymous outcome is recorded either way (revert pull requests)", () => {
   const outcomeOnly = (w: ReturnType<typeof setup>["w"]) => { expect(kinds(w)).toEqual(["github.revert", "rovara.closed"]); expect(rowOf(w, "rovara.closed")!.structured).toMatchObject({ outcome: "reverted", taskId: "task-1" }); };
-  it("a bot, an unknown account and a push with no sender", async () => {
+  it("a bot and an unknown account that opened the revert pull request", async () => {
     for (const author of [{ id: "5", login: "revert-bot[bot]", isBot: true }, { id: "9999", login: "mallory", isBot: false }]) {
       const { w, tap } = setup();
       await tap.handle(revertPr(author));
@@ -81,6 +81,22 @@ describe("only a member counts as the reverter; the anonymous outcome is recorde
     const { w, tap } = setup();
     await tap.handle(push());
     expect(kinds(w)).toEqual([]);
+  });
+});
+
+describe("a revert told by a commit message counts only when a member wrote and pushed it (nothing is recorded otherwise)", () => {
+  it("a push with no sender, an excluded account, and a resolver that fails record nothing, and fail nothing", async () => {
+    const none = setup();
+    await none.tap.handle(push());
+    expect(kinds(none.w)).toEqual([]);
+    const excluded = setup(["1001"]);
+    await excluded.tap.handle(push(alice));
+    expect(kinds(excluded.w)).toEqual([]);
+    const broken = setup();
+    (broken.w.actors as unknown as { resolve: () => Promise<unknown> }).resolve = async () => { throw new Error("identity service down"); };
+    const result = await broken.tap.handle(push(alice));
+    expect(kinds(broken.w)).toEqual([]);
+    expect(result.failed).toBe(0);
   });
 });
 
