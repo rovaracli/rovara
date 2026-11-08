@@ -47,6 +47,24 @@ describe.each(factories)("the lesson store contract (%s)", (_name, make) => {
     expect((await store.versions(KEY, "les_a0000001")).map((v) => v.title)).toEqual(["Retries use withRetry", "Second"]);
     expect((await store.snapshots(KEY)).map((s) => [s.setVersion, s.members.length])).toEqual([[0, 0], [1, 1], [2, 1]]);
   });
+  it("listPage walks the set in id order a page at a time, filtered by status, and says where the next page starts (lessons connect fix 1, L6)", async () => {
+    const { store } = make();
+    for (let i = 1; i <= 5; i += 1) await commit(store, mk(`les_a000000${i}`, i === 3 ? { status: "retired" } : {}));
+    const seen: string[] = [];
+    let after: string | undefined;
+    let pages = 0;
+    do {
+      const page = await store.listPage(KEY, { statuses: ["active"], limit: 2, ...(after === undefined ? {} : { after }) });
+      seen.push(...page.lessons.map((l) => l.id));
+      after = page.next;
+      pages += 1;
+    } while (after !== undefined);
+    expect(seen).toEqual(["les_a0000001", "les_a0000002", "les_a0000004", "les_a0000005"]);
+    expect(pages).toBe(3);
+    expect(await store.listPage(OTHER, { limit: 2 })).toEqual({ lessons: [] });
+    expect((await store.listPage(KEY, { limit: 10 })).lessons).toHaveLength(5);
+    expect((await store.listPage(KEY, { limit: 10 })).next).toBeUndefined();
+  });
   it("one commit writes a lesson once, and refuses a lesson of another scope", async () => {
     const { store } = make();
     await expect(commit(store, mk("les_a0000001"), mk("les_a0000001"))).rejects.toThrow();

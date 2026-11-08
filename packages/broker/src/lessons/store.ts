@@ -44,6 +44,11 @@ export interface SetSnapshot { setVersion: number; at: number; members: Array<{ 
 export interface LessonStore {
   get(key: ScopeKey, id: string): Promise<Lesson | undefined>;
   list(key: ScopeKey, filter?: { statuses?: readonly LessonStatus[] }): Promise<Lesson[]>;
+  /**
+   * One page of `list`, for the nightly passes (lessons connect, fix 1, L6): the set's members in id order, `limit` of them from the first id after `after`, filtered by status. `next` is the last id looked at, and is
+   * absent when the set has no more. A page can hold fewer lessons than `limit` (members of other statuses are looked at and skipped), so a caller goes on while `next` is there.
+   */
+  listPage(key: ScopeKey, filter: { statuses?: readonly LessonStatus[]; after?: string; limit: number }): Promise<{ lessons: Lesson[]; next?: string }>;
   /** Every stored head, including lessons that a rollback dropped from the current set: deletion and erasure walk these, not only the set. */
   listAllHeads(key: ScopeKey): Promise<Lesson[]>;
   /** A lesson's head whether or not it is in the current set. */
@@ -152,6 +157,17 @@ export class InMemoryLessonStore implements LessonStore {
     return out;
   }
 
+  async listPage(key: ScopeKey, filter: { statuses?: readonly LessonStatus[]; after?: string; limit: number }): Promise<{ lessons: Lesson[]; next?: string }> {
+    const s = this.of(key);
+    const ids = [...s.members.keys()].sort().filter((id) => filter.after === undefined || id > filter.after);
+    const page = ids.slice(0, Math.max(1, filter.limit));
+    const lessons: Lesson[] = [];
+    for (const id of page) {
+      const head = s.heads.get(id);
+      if (head !== undefined && (filter.statuses === undefined || filter.statuses.includes(head.status))) lessons.push(clone(head));
+    }
+    return { lessons, ...(ids.length > page.length ? { next: page[page.length - 1]! } : {}) };
+  }
   async listAllHeads(key: ScopeKey): Promise<Lesson[]> { const s = this.of(key); return [...s.heads.keys()].sort().map((id) => clone(s.heads.get(id)!)); }
   async getHead(key: ScopeKey, id: string): Promise<Lesson | undefined> { const h = this.of(key).heads.get(id); return h === undefined ? undefined : clone(h); }
 

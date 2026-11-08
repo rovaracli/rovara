@@ -13,8 +13,10 @@ import { inheritedTasksOf, learnFromEndedTask, learnFromEndedTaskTyped, learning
 import type { OutcomeRowReader } from "../../../packages/broker/src/lessons/task-outcome-rows.js";
 import { InMemoryLessonStore } from "../../../packages/broker/src/lessons/store.js";
 import type { SendBackFact, TaskSubjectFacts } from "../../../packages/broker/src/lessons/task-subject.js";
-import { lessonRecord } from "./lesson-helpers.js";
-import { Alerts, Audit, BASE, Clock, MERGED, MemoryVectors, PROJECT, ScriptedModel, Spend, WS, candidateJson, embedder, facts, memberSpan, reply, settings, verifier } from "./lesson-helpers.js";
+import type { CounterDeps } from "../../../packages/broker/src/lessons/counters.js";
+import { REFUSING_JUDGE } from "../../../packages/broker/src/lessons/runtime.js";
+import type { Lesson } from "../../../packages/broker/src/lessons/types.js";
+import { Alerts, Audit, BASE, Clock, MERGED, MemoryVectors, PROJECT, ScriptedModel, Spend, WS, candidateJson, embedder, facts, lessonRecord, memberSpan, reply, seed, settings, verifier } from "./lesson-helpers.js";
 
 class Rows implements OutcomeRowReader {
   asked: string[] = [];
@@ -386,5 +388,63 @@ describe("LV-1 M2: a lesson learned from a task also names the tasks behind the 
     expect(await inheritedTasksOf(store, key, "task-1")).toEqual(["task-p"]);
     await store.putManifest({ ...manifest("PLAN", ["les_badtaskid1"]), stage: "UNDERSTAND" });
     await expect(inheritedTasksOf(store, key, "task-1")).rejects.toThrow();
+  });
+});
+
+describe("lessons connect fix 1 (H1): the task's end counts the loaded lessons' outcome, in the worker path, after reflection", () => {
+  const DAY = 86_400_000;
+  const KEY = { workspaceId: WS, project: PROJECT };
+  async function withCounters(over: Parameters<typeof setup>[0] = {}, lesson: Partial<Lesson> = {}) {
+    const w = setup(over);
+    const clock = new Clock();
+    await seed(w.store, lessonRecord({ id: "les_used0001", ...lesson }));
+    await w.store.putManifest({ taskId: "task-1", workspaceId: WS, project: PROJECT, stage: "IMPLEMENT", round: 1, setVersion: 1, memory: "live", at: 1, lessons: [{ id: "les_used0001", version: 1, score: 0.5, why: "scope", citation: "valid" }], bytes: 10 });
+    const counters: CounterDeps = { store: w.store, judge: REFUSING_JUDGE, settings: w.deps.settings, audit: w.audit, now: clock.now };
+    w.deps.counters = counters;
+    const queued = async () => (await w.store.duePending(KEY, clock.now() + 30 * DAY, 100)).map((entry) => entry.key);
+    return { ...w, counters, clock, queued };
+  }
+  it("a merged task with no send-back queues a helpful mark for every lesson that reached its prompt, with the current refusing judge", async () => {
+    const w = await withCounters({ base: { facts: baseFacts(), sendBackRequestIds: [] } });
+    expect(await learnFromEndedTask(w.deps, { workspaceId: WS, taskId: "task-1", outcome: "merged" })).toBe("reflected");
+    expect(await w.queued()).toEqual(["helpful:task-1:les_used0001"]);
+    // The mark is due after the 14-day revert window, not now.
+    expect(await w.store.duePending(KEY, w.clock.now(), 100)).toEqual([]);
+  });
+  it("a human send-back is a correction in the lesson's scope that the refusing judge leaves unjudged: no helpful credit (a repository-wide lesson; the send-back names no file, so a path-scoped lesson is not in its scope)", async () => {
+    const w = await withCounters({}, { scope: { repos: ["api"] } });
+    w.rows.sendBacks.set("req-1", { id: "task:task-1:sendback:req-1", origin: "human", actorDeveloperId: "sam", actorTrust: "member", reasonText: "use the shared helper" });
+    expect(await learnFromEndedTask(w.deps, { workspaceId: WS, taskId: "task-1", outcome: "merged" })).toBe("reflected");
+    expect(await w.queued()).toEqual([]);
+    expect((await w.store.get(KEY, "les_used0001"))!.counters.harmful).toBe(0);
+  });
+  it("a closed task queues nothing; a reverted task takes back the mark an earlier merge queued", async () => {
+    const closed = await withCounters({ base: { facts: baseFacts({ outcome: "closed" }), sendBackRequestIds: [] } });
+    await learnFromEndedTask(closed.deps, { workspaceId: WS, taskId: "task-1", outcome: "closed" });
+    expect(await closed.queued()).toEqual([]);
+    const w = await withCounters({ base: { facts: baseFacts(), sendBackRequestIds: [] } });
+    await learnFromEndedTask(w.deps, { workspaceId: WS, taskId: "task-1", outcome: "merged" });
+    expect(await w.queued()).toHaveLength(1);
+    w.deps.reflect.model = new ScriptedModel([reply(candidateJson({ type: "fact", evidenceSpanIds: ["S1"] }))]);
+    await learnFromEndedTask(w.deps, { workspaceId: WS, taskId: "task-1", outcome: "reverted" });
+    expect(await w.queued()).toEqual([]);
+  });
+  it("a project whose learning does not load lessons counts nothing; a counting fault is a fixed log line and the reflection still counts as made", async () => {
+    const suggestOnly = await withCounters({ settings: settings({ mode: "Collect" }) });
+    expect(await learnFromEndedTask(suggestOnly.deps, { workspaceId: WS, taskId: "task-1", outcome: "merged" })).toBe("off");
+    expect(await suggestOnly.queued()).toEqual([]);
+    const w = await withCounters({ base: { facts: baseFacts(), sendBackRequestIds: [] } });
+    const logs: string[] = [];
+    w.deps.log = (event) => logs.push(event);
+    w.deps.counters = { ...w.counters, store: Object.assign(Object.create(w.store) as InMemoryLessonStore, { manifests: async () => { throw new Error("secret table text"); } }) };
+    expect(await learnFromEndedTaskTyped(w.deps, { workspaceId: WS, taskId: "task-1", outcome: "merged" })).toEqual({ status: "reflected", retry: false });
+    expect(logs).toContain("learning.outcome_failed");
+    expect(JSON.stringify(logs)).not.toContain("secret");
+  });
+  it("without counters nothing is counted (an install that has no lessons runtime)", async () => {
+    const w = await withCounters({ base: { facts: baseFacts(), sendBackRequestIds: [] } });
+    delete w.deps.counters;
+    expect(await learnFromEndedTask(w.deps, { workspaceId: WS, taskId: "task-1", outcome: "merged" })).toBe("reflected");
+    expect(await w.queued()).toEqual([]);
   });
 });

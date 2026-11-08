@@ -1,6 +1,10 @@
 // Lessons in production, lane 2: the hourly resume of unfinished lesson deletions (WB-7) and the nightly re-reflection of reverted tasks, from the record's `rovara.reverted_by` link rows of the last 26 hours.
 import { describe, expect, it, vi } from "vitest";
+import type { CounterDeps } from "../../../packages/broker/src/lessons/counters.js";
 import { REVERT_WINDOW_MS, lessonsExpireJob, lessonsNightlyJob, lessonsPromoteJob, lessonsResumeJob, lessonsRevertJob, type LessonsJobDeps } from "../../../packages/broker/src/lessons/jobs.js";
+import { PENDING_GRACE_MS, RETURN_GAP_MS, projectHash, tableNightlyState, type NightlyPass, type NightlyPassState, type NightlyStateStore } from "../../../packages/broker/src/lessons/nightly-state.js";
+import { REFUSING_JUDGE } from "../../../packages/broker/src/lessons/runtime.js";
+import { sweepExpired } from "../../../packages/broker/src/lessons/expiry.js";
 import { InMemoryLessonStore } from "../../../packages/broker/src/lessons/store.js";
 import { TRIAL_APPROVER, TRIAL_STABLE_AFTER_DAYS } from "../../../packages/broker/src/lessons/trial.js";
 import type { Lesson } from "../../../packages/broker/src/lessons/types.js";
@@ -11,6 +15,12 @@ import { deleteDeps } from "../../support/team-record-delete.js";
 import { Audit, settings, lessonRecord, seed } from "./lesson-helpers.js";
 
 const NOW = Date.parse("2026-11-08T03:17:00.000Z");
+/** An in-memory nightly state, with the given projects already "seen" last night (so no grace window is open for them). */
+function memoryState(seen: readonly string[] = [], org: string = ORG_A): NightlyStateStore & { saved: Map<NightlyPass, NightlyPassState> } {
+  const saved = new Map<NightlyPass, NightlyPassState>();
+  const fresh = (): NightlyPassState => ({ next: 0, projects: Object.fromEntries(seen.map((project) => [projectHash(org, project), { seenAt: NOW - 3_600_000 }])) });
+  return { saved, read: async (_org, pass) => structuredClone(saved.get(pass) ?? fresh()), write: async (_org, pass, state) => { saved.set(pass, structuredClone(state)); } };
+}
 const hoursAgo = (hours: number): string => new Date(NOW - hours * 3_600_000).toISOString();
 const link = (taskId: string, at: string, over: Record<string, unknown> = {}) => githubDraft({
   source: "rovara", kind: "rovara.reverted_by", repo: undefined, scope: "rovara:project/web", sourceRef: { system: "rovara", id: `task:${taskId}:reverted_by`, version: "1" }, audience: { kind: "project" }, trust: "member",
@@ -243,7 +253,7 @@ describe("the nightly expiry sweep (lessons connect)", () => {
     const store = new InMemoryLessonStore();
     await seed(store, ...lessons);
     const audit = new Audit();
-    const { deps } = jobDeps(w, { settings: settings({ mode: "On" }), maintain: { store, audit, now: () => NOW }, ...over });
+    const { deps } = jobDeps(w, { settings: settings({ mode: "On" }), maintain: { store, audit, now: () => NOW }, state: memoryState(["web"]), ...over });
     return { deps, store, audit };
   }
   const statusOf = async (store: InMemoryLessonStore, id: string) => (await store.get({ workspaceId: ORG_A, project: "web" }, id))!.status;
@@ -273,5 +283,172 @@ describe("the nightly expiry sweep (lessons connect)", () => {
     const late = await sweep([live({ id: "les_old", expiresAt: NOW - DAY })], { now: () => (clock += 20_000) });
     expect(await lessonsExpireJob(late.deps, ORG_A, ["web"], 10_000)).toMatchObject({ lessonsExpired: 0 });
     expect(await statusOf(late.store, "les_old")).toBe("active");
+  });
+});
+
+describe("lessons connect fix 1: the nightly upkeep keeps the lessons people use (H1)", () => {
+  const DAY = 86_400_000;
+  const KEY = { workspaceId: ORG_A, project: "web" };
+  const convention = (over: Partial<Lesson>): Lesson => lessonRecord({
+    workspaceId: ORG_A, project: "web", tier: 1, status: "active", type: "convention", approvals: [{ approvalId: "p1", by: "dev-ann", at: 1, mode: "one" }], ...over,
+  });
+  async function night(lessons: Lesson[], over: Partial<LessonsJobDeps> = {}) {
+    const w = await setup();
+    const store = new InMemoryLessonStore();
+    await seed(store, ...lessons);
+    const audit = new Audit();
+    const counters: CounterDeps = { store, audit, now: () => NOW, judge: REFUSING_JUDGE, settings: settings({ mode: "On" }) };
+    const { deps } = jobDeps(w, { settings: settings({ mode: "On" }), queue: undefined, maintain: counters, counters, state: memoryState(["web"]), ...over });
+    return { deps, store, audit, counters };
+  }
+  const statusOf = async (store: InMemoryLessonStore, id: string) => (await store.get(KEY, id))!.status;
+
+  it("a convention lesson whose helpful mark fell due survives day 90 (the settle runs BEFORE the sweep); one nobody used expires", async () => {
+    // Both lessons are past their expiry tonight (day 90). Task t1 merged cleanly 15 days ago with `les_used` loaded: its helpful mark is due now.
+    const { deps, store, audit } = await night([convention({ id: "les_used", expiresAt: NOW - 1_000 }), convention({ id: "les_unused", expiresAt: NOW - 1_000 })]);
+    await store.addPending({ key: "helpful:t1:les_used", workspaceId: ORG_A, project: "web", lessonId: "les_used", taskId: "t1", dueAt: NOW - DAY });
+    expect(await lessonsNightlyJob(deps, ORG_A, ["web"], 10_000)).toMatchObject({ lessonsExpired: 1, helpfulSettled: 1, expireFailures: 0 });
+    expect(await statusOf(store, "les_used")).toBe("active");
+    expect(await statusOf(store, "les_unused")).toBe("expired");
+    const used = (await store.get(KEY, "les_used"))!;
+    expect(used.expiresAt).toBe(NOW + 90 * DAY);
+    expect(used.counters.helpful).toBe(1);
+    expect(audit.events.filter((e) => e.action === "lesson.expired").map((e) => e.lessonId)).toEqual(["les_unused"]);
+  });
+  it("a mark that is not due yet renews nothing: the lesson that is past its expiry then expires (the positive control for the settle)", async () => {
+    const { deps, store } = await night([convention({ id: "les_late", expiresAt: NOW - 1_000 })]);
+    await store.addPending({ key: "helpful:t1:les_late", workspaceId: ORG_A, project: "web", lessonId: "les_late", taskId: "t1", dueAt: NOW + DAY });
+    expect(await lessonsExpireJob(deps, ORG_A, ["web"], 10_000)).toMatchObject({ lessonsExpired: 1, helpfulSettled: 0 });
+    expect(await statusOf(store, "les_late")).toBe("expired");
+  });
+  it("a settle that fails leaves the project unswept tonight (nothing expires on a guess), and the other projects still run", async () => {
+    const { deps, store } = await night([convention({ id: "les_used", expiresAt: NOW - 1_000 })]);
+    const broken: CounterDeps = { ...deps.counters!, store: Object.assign(Object.create(store) as InMemoryLessonStore, { duePending: async () => { throw new Error("table down"); } }) };
+    const logs: string[] = [];
+    expect(await lessonsExpireJob({ ...deps, counters: broken, log: (event) => logs.push(event) }, ORG_A, ["web"], 10_000)).toMatchObject({ lessonsExpired: 0, expireFailures: 1 });
+    expect(await statusOf(store, "les_used")).toBe("active");
+    expect(logs).toEqual(["lessons_job.expire_failed"]);
+  });
+  it("lessons an eval snapshot pins never expire; a pinned read that fails skips the project", async () => {
+    const { deps, store } = await night([convention({ id: "les_pinned", expiresAt: NOW - 1_000 }), convention({ id: "les_other", expiresAt: NOW - 1_000 })]);
+    expect(await lessonsExpireJob({ ...deps, pinned: async () => new Set(["les_pinned"]) }, ORG_A, ["web"], 10_000)).toMatchObject({ lessonsExpired: 1 });
+    expect([await statusOf(store, "les_pinned"), await statusOf(store, "les_other")]).toEqual(["active", "expired"]);
+    const again = await night([convention({ id: "les_pinned", expiresAt: NOW - 1_000 })]);
+    expect(await lessonsExpireJob({ ...again.deps, pinned: async () => { throw new Error("eval store down"); } }, ORG_A, ["web"], 10_000)).toMatchObject({ lessonsExpired: 0, expireFailures: 1 });
+    expect(await statusOf(again.store, "les_pinned")).toBe("active");
+  });
+});
+
+describe("lessons connect fix 1: the sweep is bounded inside a project, rotates its starting project and holds a returning project's backlog (M3, L5, L6)", () => {
+  const DAY = 86_400_000;
+  const due = (id: string, over: Partial<Lesson> = {}): Lesson => lessonRecord({ id, workspaceId: ORG_A, project: "web", tier: 1, status: "active", expiresAt: NOW - 1_000, ...over });
+  async function sweepWith(lessons: Lesson[], over: Partial<LessonsJobDeps> = {}) {
+    const w = await setup();
+    const store = new InMemoryLessonStore();
+    await seed(store, ...lessons);
+    const audit = new Audit();
+    const { deps, logs } = jobDeps(w, { settings: settings({ mode: "On" }), queue: undefined, maintain: { store, audit, now: () => NOW }, ...over });
+    return { deps, store, audit, logs, w };
+  }
+  const statuses = async (store: InMemoryLessonStore, ids: string[], project = "web") => Promise.all(ids.map(async (id) => (await store.get({ workspaceId: ORG_A, project }, id))!.status));
+
+  it("M3: the sweep checks the time before each lesson inside a project: with the budget gone after the first, the rest wait for tomorrow, and the project is tomorrow's first again", async () => {
+    let late = false;
+    const state = memoryState(["web", "api"]);
+    const w = await setup();
+    const store = new InMemoryLessonStore();
+    await seed(store, due("les_a"), due("les_b"), due("les_c"));
+    const audit = new Audit();
+    const emit = audit.emit.bind(audit);
+    audit.emit = async (event, options) => { await emit(event, options); late = true; };
+    const { deps } = jobDeps(w, { settings: settings({ mode: "On" }), queue: undefined, state, now: () => (late ? NOW + 1_000_000 : NOW), maintain: { store, audit, now: () => NOW } });
+    expect(await lessonsExpireJob(deps, ORG_A, ["web", "api"], 10_000)).toMatchObject({ lessonsExpired: 1 });
+    expect((await statuses(store, ["les_a", "les_b", "les_c"])).filter((s) => s === "expired")).toHaveLength(1);
+    // "api" (first in order, nothing to do) was finished and counts; "web" was cut in the middle, so it does not: tomorrow's pass starts at "web" (index 1), not after it.
+    expect(state.saved.get("expire")!.next).toBe(1);
+  });
+  it("M3: both passes rotate: when the budget lets one project through a night, the next night starts at the next project (a saved position)", async () => {
+    const w = await setup();
+    const store = new InMemoryLessonStore();
+    const trials = ["api", "web", "zeta"].map((project) => lessonRecord({
+      id: `les_${project}`, workspaceId: ORG_A, project, tier: 1, status: "active", approvals: [{ approvalId: "t1", by: TRIAL_APPROVER, at: 1, mode: "trial" }],
+      trial: { state: "trial", startedAt: NOW - 20 * DAY }, counters: { loaded: 3, helpful: 0, harmful: 0, citationStale: 0 }, expiresAt: NOW + DAY,
+    }));
+    await seed(store, ...trials);
+    const audit = new Audit();
+    // Each project's settings read moves the clock 6 s; the budget is 10 s, so one project fits a night and the second finds the budget gone.
+    let clock = NOW;
+    const reader = settings({ mode: "On", preset: "standard" });
+    const ticking = { read: async (org: string, project: string) => { clock += 6_000; return reader.read(org, project); } };
+    const state = memoryState(["api", "web", "zeta"]);
+    const { deps } = jobDeps(w, { settings: ticking, queue: undefined, state, now: () => clock, maintain: { store, audit, now: () => NOW } });
+    const nights: string[] = [];
+    for (let night = 0; night < 3; night += 1) {
+      clock = NOW;
+      const before = await Promise.all(["api", "web", "zeta"].map(async (project) => (await store.get({ workspaceId: ORG_A, project }, `les_${project}`))!.trial?.state));
+      await lessonsPromoteJob(deps, ORG_A, ["api", "web", "zeta"], 10_000);
+      const after = await Promise.all(["api", "web", "zeta"].map(async (project) => (await store.get({ workspaceId: ORG_A, project }, `les_${project}`))!.trial?.state));
+      nights.push(["api", "web", "zeta"].filter((_, i) => before[i] !== after[i]).join(","));
+    }
+    // Without rotation the same first project would be the only one ever promoted; with it, a different project each night.
+    expect(nights).toEqual(["api", "web", "zeta"]);
+  });
+  it("L5: a project not seen for a few nights (learning was Off, or the passes ran out of time) holds its pending lessons for a grace window; a project seen last night does not", async () => {
+    const pending = (id: string) => due(id, { status: "pending", approvals: [], pendingExpiresAt: NOW - 2 * DAY, expiresAt: NOW + 90 * DAY });
+    const returning = await sweepWith([pending("les_p")], { state: memoryState([]) });
+    expect(await lessonsExpireJob(returning.deps, ORG_A, ["web"], 10_000)).toMatchObject({ lessonsExpired: 0 });
+    expect(await statuses(returning.store, ["les_p"])).toEqual(["pending"]);
+    const kept = (returning.deps.state as ReturnType<typeof memoryState>).saved.get("expire")!.projects[projectHash(ORG_A, "web")]!;
+    expect(kept.graceUntil).toBe(NOW + PENDING_GRACE_MS);
+    // Every following night (the project is seen each night) still holds them, until the window closes after 7 days.
+    const stateAfter = returning.deps.state as ReturnType<typeof memoryState>;
+    let expiredOnDay = -1;
+    for (let day = 1; day <= 9 && expiredOnDay < 0; day += 1) {
+      const at = NOW + day * DAY;
+      const result = await lessonsExpireJob({ ...returning.deps, now: () => at, maintain: { ...returning.deps.maintain!, now: () => at } }, ORG_A, ["web"], 10_000);
+      if (result["lessonsExpired"] === 1) expiredOnDay = day;
+      else expect(stateAfter.saved.get("expire")!.projects[projectHash(ORG_A, "web")]!.graceUntil).toBe(NOW + PENDING_GRACE_MS);
+    }
+    expect(expiredOnDay).toBe(7);
+    // Positive control: a project seen last night expires the same lesson at once.
+    const seen = await sweepWith([pending("les_p")], { state: memoryState(["web"]) });
+    expect(await lessonsExpireJob(seen.deps, ORG_A, ["web"], 10_000)).toMatchObject({ lessonsExpired: 1 });
+    // Active lessons past their expiry are never held by the grace window.
+    const active = await sweepWith([due("les_act")], { state: memoryState([]) });
+    expect(await lessonsExpireJob(active.deps, ORG_A, ["web"], 10_000)).toMatchObject({ lessonsExpired: 1 });
+  });
+  it("L5: a project whose learning is Off is not marked seen, so switching it back on opens the grace window", async () => {
+    const state = memoryState(["web"]);
+    const off = await sweepWith([due("les_old")], { settings: settings({ mode: "Off" }), state });
+    await lessonsExpireJob(off.deps, ORG_A, ["web"], 10_000);
+    expect(state.saved.get("expire")!.projects[projectHash(ORG_A, "web")]!.seenAt).toBe(NOW - 3_600_000);
+    expect(RETURN_GAP_MS).toBeLessThan(7 * DAY);
+  });
+  it("a state that cannot be read runs the pass from the top, writes nothing and opens no grace-less surprise (one fixed line)", async () => {
+    const broken: NightlyStateStore = { read: async () => { throw new Error("table text"); }, write: async () => { throw new Error("must not write"); } };
+    const w = await sweepWith([due("les_old")], { state: broken });
+    expect(await lessonsExpireJob(w.deps, ORG_A, ["web"], 10_000)).toMatchObject({ lessonsExpired: 1 });
+    expect(w.logs).toContain("lessons_job.state_unreadable");
+  });
+  it("the Team record table keeps the state in the company's own partition, under LESSONSET#NIGHTLY (the company erase wipes it), holding hashes and times only", async () => {
+    const w = await setup();
+    const store = tableNightlyState(w.table);
+    expect(await store.read(ORG_A, "expire")).toEqual({ next: 0, projects: {} });
+    await store.write(ORG_A, "expire", { next: 2, projects: { [projectHash(ORG_A, "web")]: { seenAt: 5, graceUntil: 9 } } });
+    expect(await store.read(ORG_A, "expire")).toEqual({ next: 2, projects: { [projectHash(ORG_A, "web")]: { seenAt: 5, graceUntil: 9 } } });
+    expect(await store.read(ORG_A, "promote")).toEqual({ next: 0, projects: {} });
+    expect(await store.read(ORG_B, "expire")).toEqual({ next: 0, projects: {} });
+  });
+  it("L6: the sweep reads a page at a time and goes on to the later pages (300 due lessons, all expired, none missed at a page edge)", async () => {
+    const many = Array.from({ length: 250 }, (_, i) => due(`les_${String(i).padStart(4, "0")}`));
+    const w = await sweepWith(many, { state: memoryState(["web"]) });
+    const pages: number[] = [];
+    const original = w.deps.maintain!.store.listPage.bind(w.deps.maintain!.store);
+    w.deps.maintain!.store.listPage = async (key, filter) => { pages.push(filter.limit); return original(key, filter); };
+    const store = w.deps.maintain!.store;
+    const swept = await sweepExpired(w.deps.maintain!, store, { workspaceId: ORG_A, project: "web" }, { limit: 1000 });
+    expect(swept.expired).toHaveLength(250);
+    expect(pages.length).toBe(3);
+    expect(Math.max(...pages)).toBeLessThanOrEqual(100);
   });
 });

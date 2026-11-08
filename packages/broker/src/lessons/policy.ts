@@ -143,7 +143,7 @@ function stricterApproval(project: ApprovalPolicy, floor: ApprovalPolicy, hasFlo
 /**
  * THE gate on automatic go-live (review item 6, tidy round 2). While it says no (the default, and the state for the whole pilot) a tier-0 "auto" is never honoured, whatever wrote it
  * (an old row, a hand edit, a bug, a future reader): `resolveLearning`, which every consumer of the settings goes through, reads it as "one". The broker sets the gate once at start-up
- * (`setAutoApplyGate`) with the same function it gives `Tier0Deps.autoApplyEnabled`; it is asked at every resolve, so turning it off takes effect at once.
+ * (`setAutoApplyGate`) with the broker's auto-apply switch; it is asked at every resolve, so turning it off takes effect at once.
  */
 let autoApplyGate: () => boolean = () => false;
 export function setAutoApplyGate(gate: () => boolean): void { autoApplyGate = gate; }

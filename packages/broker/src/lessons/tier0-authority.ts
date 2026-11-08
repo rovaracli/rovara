@@ -2,7 +2,7 @@
 // approval flows use) who may act, and hands back the commit conditions that pin both people's live authority and the company's membership generation. The setting write carries them
 // (`Tier0Fence`), so a person added or removed between this read and the write stops the change.
 import { readSecondPersonApprovalEvidence, type SecondPersonEvidenceDependencies } from "../org/second-person-evidence.js";
-import type { Tier0Authority } from "./tier0-setting.js";
+import type { Tier0Authority } from "./sole-owner-switch.js";
 
 export function secondPersonTier0Authority(deps: SecondPersonEvidenceDependencies): Tier0Authority {
   return {

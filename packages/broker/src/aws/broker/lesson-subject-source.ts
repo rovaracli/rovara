@@ -61,6 +61,13 @@ export interface LessonSubjectSourceDeps {
    * mark that lets a lesson be published to the repository. Absent, or a read that fails, is "not shared": nothing is published on a guess.
    */
   strictVisibility?: ((orgId: string, taskId: string) => Promise<TaskVisibility | undefined>) | undefined;
+  /**
+   * Owner decision 32: whether the task is visible to the whole project right now with no People denial (an ordinary task nobody shared counts; `lessons/task-project-wide.ts`). Strict: THROWS when anything cannot be read.
+   * Used with the strict reader: either one saying "project-wide" is enough. Absent: only the strict reader decides.
+   */
+  projectWide?: ((orgId: string, taskId: string) => Promise<boolean>) | undefined;
+  /** A fixed count-only line for a read that failed (no ids, no text). */
+  log?: ((event: string, fields: Record<string, string | number>) => void) | undefined;
   /** The artifact store's text read (the plan document). Absent: no plan span. */
   readObject?: ((objectKey: string, maxBytes: number) => Promise<string | undefined>) | undefined;
   now?: () => number;
@@ -93,10 +100,21 @@ function audienceOf(taskId: string, visibility: TaskVisibility, at: string): Aud
   return { kind: "restricted", acl: { source: "rovara", scope: `rovara:task/${taskId}`, principals, capturedAt: at, liveCheck: "none" } };
 }
 
-/** Whether the task is, right now, the whole project's: shared with the project (or the company) and no People entry denies anyone. Every other answer, and every failure, is false. */
-async function sharedWithProjectNow(deps: LessonSubjectSourceDeps, orgId: string, taskId: string, audience: Audience): Promise<boolean> {
-  if (deps.strictVisibility === undefined || audience.kind !== "project") return false;
-  try { return (await deps.strictVisibility(orgId, taskId))?.kind === "shared"; } catch { return false; }
+/**
+ * Whether the task is, right now, the whole project's: shared with the project (or the company) with no People denial, or (owner decision 32) an ordinary task nobody shared that no People entry denies anyone.
+ * `true` / `false` when the live reads say so; `undefined` when they could not be read (twice): UNKNOWN, which is not "not shared" (the lesson's mark is left unset, and a later draft or a merge does not clear what an
+ * earlier one set), logged as one fixed line. With no reader at all it is `false` for a task the strict reader calls private, and unknown otherwise.
+ */
+async function sharedWithProjectNow(deps: LessonSubjectSourceDeps, orgId: string, taskId: string): Promise<boolean | undefined> {
+  if (deps.strictVisibility === undefined && deps.projectWide === undefined) return undefined;
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    try {
+      if (deps.strictVisibility !== undefined && (await deps.strictVisibility(orgId, taskId))?.kind === "shared") return true;
+      return deps.projectWide === undefined ? false : await deps.projectWide(orgId, taskId);
+    } catch { /* read again once */ }
+  }
+  deps.log?.("learning.shared_task_unreadable", { taskId });
+  return undefined;
 }
 
 const present = (value: string | undefined): value is string => value !== undefined && value.trim() !== "";
@@ -412,6 +430,7 @@ export function lessonSubjectSource(deps: LessonSubjectSourceDeps): TaskSubjectS
         if (address !== undefined) mergedCommit = await deps.mergeCommitOf({ orgId, taskId: task.taskId, address }).catch(() => undefined);
       }
       const audience = audienceOf(task.taskId, visibility, new Date((deps.now ?? Date.now)()).toISOString());
+      const wide = await sharedWithProjectNow(deps, orgId, task.taskId);
       const base_: TaskSubjectBase = {
         facts: {
           workspaceId: orgId, project, taskId: task.taskId, repositories,
@@ -425,8 +444,9 @@ export function lessonSubjectSource(deps: LessonSubjectSourceDeps): TaskSubjectS
             ...(creatorErased ? {} : { intentTrust: await trustOf(creator) }),
             ...(links.length === 0 ? {} : { links }),
             audience,
-            // Only a task that is project-wide at THIS moment (both reads agree) may lead to a published lesson; publishing and delivery check the live visibility again at read time.
-            ...(await sharedWithProjectNow(deps, orgId, task.taskId, audience) ? { sharedTask: true as const } : {}),
+            // `sharedTask` is a FROZEN, coarse mark taken at reflection time (true / false when the live reads say so, unset when they could not be read): a lesson is publishable only if its source tasks were project-wide
+            // THEN. It is necessary, not sufficient: the task may be narrowed afterwards, so publishing must re-check every source task's live visibility (decision 32; that check is not in this change).
+            ...(wide === undefined ? {} : { sharedTask: wide }),
             spans,
           },
         },

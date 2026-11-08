@@ -9,6 +9,7 @@ import { randomUUID } from "node:crypto";
 import { secondPersonOutcome } from "../org/approval-by-risk.js";
 import { cleanForLearning, requestsCapabilityChange } from "./guards.js";
 import { expiryWindowMs } from "./expiry.js";
+import { TRIAL_MIN_EXPIRY_DAYS } from "./trial.js";
 import { approversRequired, emitAudit, modeAllows, requireAudit, resolveLearning, type LearningSettingsReader } from "./policy.js";
 import { lessonValue } from "./value.js";
 import type { ApproverDirectory, LessonDeps } from "./ports.js";
@@ -68,7 +69,8 @@ export async function activateLesson(deps: LessonDeps & { store: LessonStore }, 
   if (fresh.version !== pin.version || lesson.version !== pin.version) return undefined;
   const next: Lesson = {
     ...fresh, version: nextVersion(fresh, await deps.store.versions(key, fresh.id)), status: "active", approvals: [...approvals],
-    expiresAt: now + expiryWindowMs(fresh.type, expiryDays), updatedAt: now,
+    // A lesson that goes live on trial lives at least the trial window plus a week, whatever the project's expiry is (a 14-day setting would otherwise expire it the night it first qualifies for stable).
+    expiresAt: now + Math.max(expiryWindowMs(fresh.type, expiryDays), action === "lesson.trial_started" ? TRIAL_MIN_EXPIRY_DAYS * 86_400_000 : 0), updatedAt: now,
     ...(action === "lesson.trial_started" ? { trial: { state: "trial" as const, startedAt: now } } : {}),
   };
   delete (next as { pendingExpiresAt?: number }).pendingExpiresAt;

@@ -217,9 +217,11 @@ describe("curator decisions (design §4.5.2)", () => {
     expect((await store.get(KEY, "les_act1"))!.version).toBe(1);
   });
 
-  it("lessons connect: a merge keeps fromSharedTask only when every merged source came from a shared task (AND)", async () => {
+  it("lessons connect: a merge keeps fromSharedTask only while no merged source is known NOT project-wide; an unreadable (unset) source changes nothing and never sets the mark (fix 1, L1)", async () => {
     const shared = (fromSharedTask: boolean | undefined): LessonDraft => draft({ provenance: { ...draft().provenance, ...(fromSharedTask === undefined ? {} : { fromSharedTask }) } });
-    for (const [first, second, expected] of [[true, true, true], [true, undefined, undefined], [undefined, true, undefined], [true, false, undefined]] as const) {
+    for (const [first, second, expected] of [
+      [true, true, true], [true, undefined, true], [undefined, true, undefined], [true, false, false], [false, true, false], [undefined, false, false], [undefined, undefined, undefined], [false, undefined, false],
+    ] as const) {
       const { deps, store } = setup();
       await curateDraft(deps, KEY, shared(first));
       expect((await curateDraft(deps, KEY, shared(second))).outcome).toBe("merged");

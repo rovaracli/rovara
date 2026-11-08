@@ -46,7 +46,10 @@ export interface ReflectSubject {
   /** Permalinks the task's lessons may cite (pull request URLs). Anything else a model names is dropped. */
   links?: readonly string[];
   audience?: Audience;
-  /** The task is shared with the project (not the owner's alone). Only a lesson from such a task may be published to a repository. Unknown is not shared. */
+  /**
+   * The task was visible to the whole project with no People denial when it was reflected (owner decision 32). `false`: it was not. Unset: unknown (never read, or the live read failed). Only a lesson whose sources were all
+   * `true` can be published to a repository, and publishing checks the live visibility again: this mark is frozen, necessary and not sufficient.
+   */
   sharedTask?: boolean;
   /** The places the task or fact set itself came from (the Team record's place names). */
   scopes?: readonly string[];

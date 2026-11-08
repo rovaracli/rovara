@@ -1,9 +1,9 @@
-// Wiring lane B, LR-W3: the stored tier-0 setting, its proposals and the settings reader over the TeamRecord table; the whole path from a loosening request to the effective approval.
+// Wiring lane B, LR-W3: the stored tier-0 setting (read only in production since lessons connect fix 1), the sole-owner switch and its proposals, and the settings reader over the TeamRecord table.
 import { learningModeKey, learningModeLockKey, teamRecordPk } from "@agentx/contracts";
 import { describe, expect, it } from "vitest";
 import { dynamoLearningSettings, DynamoPresetStore, DynamoSoleOwnerSwitch, DynamoTier0Settings } from "../../../packages/broker/src/lessons/dynamo-settings.js";
 import { approversRequired, resolveLearning } from "../../../packages/broker/src/lessons/policy.js";
-import { approveSoleOwnerSwitch, approveTier0Change, requestTier0Change, setSoleOwnerSwitch, type SoleOwnerSwitchDeps, type Tier0Deps, type Tier0Scope } from "../../../packages/broker/src/lessons/tier0-setting.js";
+import { approveSoleOwnerSwitch, setSoleOwnerSwitch, type SoleOwnerSwitchDeps, type Tier0Scope } from "../../../packages/broker/src/lessons/sole-owner-switch.js";
 import { eraseWorkspace, erasePerson } from "../../../packages/broker/src/team-record/erase.js";
 import { ORG_A, ORG_B, world } from "../../support/team-record-core.js";
 import { deleteDeps } from "../../support/team-record-delete.js";
@@ -12,18 +12,18 @@ import { Audit, Clock } from "./lesson-helpers.js";
 const project = (workspaceId = ORG_A): Tier0Scope => ({ kind: "project", workspaceId, project: "web" });
 const company = (workspaceId = ORG_A): Tier0Scope => ({ kind: "company", workspaceId });
 
-function setup(autoEnabled = true) {
+function setup() {
   const w = world();
   const store = new DynamoTier0Settings(w.table);
   const sole = new DynamoSoleOwnerSwitch(w.table);
   const clock = new Clock();
   const audit = new Audit();
   const group = { complete: true, membershipVersion: 1, ownerIds: ["owner"], eligibleIds: ["owner", "ann", "bob"], lastEligibleLossAtMs: null };
-  const deps: Tier0Deps = { settings: store, changes: store, audit, authority: { eligibility: async () => group }, now: clock.now, autoApplyEnabled: () => autoEnabled, soleOwnerLoosening: (workspaceId) => sole.read(workspaceId) };
-  return { w, store, sole, deps, clock, audit, reader: dynamoLearningSettings(w.table, store) };
+  const authority = { eligibility: async () => group };
+  return { w, store, sole, authority, clock, audit, reader: dynamoLearningSettings(w.table, store) };
 }
 
-describe("the stored setting and its proposals", () => {
+describe("the stored setting", () => {
   it("round-trips per scope; another workspace or project sees nothing", async () => {
     const { store } = setup();
     expect(await store.read(project())).toBeUndefined();
@@ -48,28 +48,6 @@ describe("the stored setting and its proposals", () => {
     await store.write(project(), "two", { by: "ann", at: 1 }, "one");
     w.db.set({ ...w.db.find((i) => i.entityType === "LESSON_SETTINGS")[0]!, tier0: "loose" });
     await expect(store.read(project())).rejects.toThrow();
-  });
-  it("a proposal is claimed once: of two approvers only one moves it", async () => {
-    const { store } = setup();
-    const change = { id: "c1", scope: project(), from: "one" as const, to: "auto" as const, proposedBy: "ann", at: 1, expiresAt: 100, state: "pending" as const };
-    expect(await store.create(change)).toBe(true);
-    expect(await store.create(change)).toBe(false);
-    expect(await store.open(project(), 50)).toMatchObject({ id: "c1" });
-    expect(await store.open(project(), 100)).toBeUndefined();
-    expect(await Promise.all([store.transition(project(), "c1", "pending", "applied"), store.transition(project(), "c1", "pending", "applied")])).toEqual([true, false]);
-    expect(await store.open(project(), 50)).toBeUndefined();
-    expect(await store.get(project(), "c1")).toMatchObject({ state: "applied" });
-    expect(await store.get(project(ORG_B), "c1")).toBeUndefined();
-  });
-});
-
-describe("a proposal remembers whether its proposer was the only eligible person", () => {
-  it("the flag round-trips; an older row without it reads as absent", async () => {
-    const { w, store } = setup();
-    await store.create({ id: "c1", scope: company(), from: "two", to: "one", proposedBy: "owner", at: 1, expiresAt: 100, state: "pending", soleEligibleAtProposal: true });
-    expect(await store.get(company(), "c1")).toMatchObject({ soleEligibleAtProposal: true });
-    w.db.set({ pk: teamRecordPk(ORG_A, undefined), sk: "LESSONSET#TIER0CHG#old", entityType: "LESSON_TIER0_CHANGE", id: "old", scope: company(), from: "two", to: "one", proposedBy: "owner", at: 1, expiresAt: 100, state: "pending" });
-    expect((await store.get(company(), "old"))?.soleEligibleAtProposal).toBeUndefined();
   });
 });
 
@@ -112,29 +90,24 @@ describe("the company sole-owner switch", () => {
     expect((await eraseWorkspace(deleteDeps(w).deps, ORG_A, [], "close-sole")).complete).toBe(true);
     expect(w.db.find((item) => String(item.pk).startsWith(`WS#${ORG_A}#`) && !String(item.sk).startsWith("LAKEDEL#"))).toEqual([]);
   });
-  it("the person erase replaces the proposer on a switch proposal, and the tier-0 proposal lookup ignores it", async () => {
-    const { w, store, sole } = setup();
+  it("the person erase replaces the proposer on a switch proposal", async () => {
+    const { w, sole } = setup();
     await sole.create({ id: "s1", workspaceId: ORG_A, from: false, to: true, proposedBy: "dev-ann", at: 1, expiresAt: 100, state: "pending" });
-    expect(await store.open(company(), 5)).toBeUndefined();
     await erasePerson(deleteDeps(w).deps, ORG_A, { developerId: "dev-ann" }, "e-sole");
     expect(await sole.get(ORG_A, "s1")).toMatchObject({ proposedBy: "0".repeat(64), state: "pending" });
   });
-  it("the whole path: a sole admin loosens alone through the stored switch; switched off it is refused, and it comes back ON only through a second admin", async () => {
-    const { sole, store, deps, clock, audit } = setup();
+  it("the whole path: switched off the exception is refused for a sole admin, and it comes back ON only through a second admin", async () => {
+    const { sole, authority, clock, audit } = setup();
     const one = { complete: true, membershipVersion: 1, ownerIds: ["owner"], eligibleIds: ["owner"], lastEligibleLossAtMs: null };
-    const solo = { ...deps, authority: { eligibility: async () => one } };
-    await requestTier0Change(solo, { scope: company(), value: "two", requestedBy: "owner" });
-    expect(await requestTier0Change(solo, { scope: company(), value: "one", requestedBy: "owner" })).toMatchObject({ status: "needs_approval" });
-    const switchDeps: SoleOwnerSwitchDeps = { store: sole, audit, authority: solo.authority, now: clock.now };
+    const switchDeps: SoleOwnerSwitchDeps = { store: sole, audit, authority: { eligibility: async () => one }, now: clock.now };
     expect(await setSoleOwnerSwitch(switchDeps, { workspaceId: ORG_A, enabled: false, requestedBy: "owner" })).toEqual({ ok: true, status: "applied", enabled: false });
-    const pending = await store.open(company(), clock.now());
-    expect(await approveTier0Change(solo, { scope: company(), changeId: pending!.id, approverId: "owner" })).toEqual({ ok: false, code: "second_person_required" });
     // back ON: a proposal; the proposer alone cannot approve it, even as the only admin
     const back = await setSoleOwnerSwitch(switchDeps, { workspaceId: ORG_A, enabled: true, requestedBy: "owner" });
     expect(back).toMatchObject({ ok: true, status: "needs_approval" });
     const changeId = (back as { changeId: string }).changeId;
     expect(await approveSoleOwnerSwitch(switchDeps, { workspaceId: ORG_A, changeId, approverId: "owner" })).toEqual({ ok: false, code: "second_person_required" });
     expect(await sole.read(ORG_A)).toBe(false);
+    expect(authority).toBeDefined();
     const two = { ...one, eligibleIds: ["owner", "ann"] };
     const withAnn = { ...switchDeps, authority: { eligibility: async () => two } };
     expect(await approveSoleOwnerSwitch(withAnn, { workspaceId: ORG_A, changeId, approverId: "ann" })).toEqual({ ok: true, enabled: true });
@@ -149,14 +122,13 @@ describe("the whole path, through the settings reader", () => {
     expect(resolved.mode).toBe("Suggest");
     expect(approversRequired(0, resolved.approval)).toBe(1);
   });
-  it("auto-apply only after a second person approves, and a company floor holds it down", async () => {
-    const { reader, deps } = setup();
-    await requestTier0Change(deps, { scope: project(), value: "auto", requestedBy: "ann" });
-    expect(approversRequired(0, (await resolveLearning(reader, ORG_A, "web")).approval)).toBe(1);
-    await approveTier0Change(deps, { scope: project(), changeId: (await deps.changes.open(project(), deps.now()))!.id, approverId: "bob" });
-    expect(approversRequired(0, (await resolveLearning(reader, ORG_A, "web")).approval)).toBe(0);
-    await requestTier0Change(deps, { scope: company(), value: "one", requestedBy: "owner" });
-    expect(approversRequired(0, (await resolveLearning(reader, ORG_A, "web")).approval)).toBe(1);
+  it("the stored tier-0 setting and the company floor are still read: a stored project value, and a floor that holds it down", async () => {
+    const { reader, store } = setup();
+    await store.write(project(), "two", { by: "ann", at: 1 }, "one");
+    expect(approversRequired(0, (await resolveLearning(reader, ORG_A, "web")).approval)).toBe(2);
+    await store.write(company(), "one", { by: "owner", at: 1 }, "auto");
+    await store.write(project(), "auto", { by: "ann", at: 2 }, "two");
+    expect((await resolveLearning(reader, ORG_A, "web")).approval.tier0).toBe("one");
   });
   it("the project mode and the company lock are read, and an invalid or unreadable one is Off", async () => {
     const { reader, w } = setup();
@@ -172,31 +144,31 @@ describe("the whole path, through the settings reader", () => {
 });
 
 describe("erasing", () => {
-  it("a project with more than 1000 set snapshots still gets its proposals' proposer replaced (the snapshots sort ahead of the proposals)", async () => {
-    const { w, store } = setup();
-    await store.create({ id: "c1", scope: project(), from: "two", to: "one", proposedBy: "dev-ann", at: 1, expiresAt: 100, state: "pending" });
+  it("a project with more than 1000 set snapshots still gets a proposal's proposer replaced (the snapshots sort ahead of the proposals)", async () => {
+    const { w, sole } = setup();
+    await sole.create({ id: "c1", workspaceId: ORG_A, from: false, to: true, proposedBy: "dev-ann", at: 1, expiresAt: 100, state: "pending" });
     for (let version = 1; version <= 1_200; version += 1) w.db.set({ pk: `WS#${ORG_A}#P#web`, sk: `LESSONSET#SNAP#${String(version).padStart(12, "0")}`, entityType: "LESSON_SNAPSHOT", setVersion: version, at: version, members: [] });
     await erasePerson(deleteDeps(w).deps, ORG_A, { developerId: "dev-ann" }, "e9");
-    expect(await store.get(project(), "c1")).toMatchObject({ proposedBy: "0".repeat(64) });
+    expect(await sole.get(ORG_A, "c1")).toMatchObject({ proposedBy: "0".repeat(64) });
   });
   it("erasing a person replaces them on the settings and proposal rows (project and company) with the stand-in id, and keeps everyone else", async () => {
-    const { w, store } = setup();
+    const { w, store, sole } = setup();
     await store.write(project(), "two", { by: "dev-ann", at: 1 }, "one");
     await store.write(company(), "one", { by: "dev-ann", at: 1 }, "auto");
-    await store.create({ id: "c1", scope: project(), from: "two", to: "one", proposedBy: "dev-ann", at: 1, expiresAt: 100, state: "pending" });
-    await store.create({ id: "c2", scope: company(), from: "one", to: "auto", proposedBy: "dev-bob", at: 1, expiresAt: 100, state: "pending" });
+    await sole.create({ id: "c1", workspaceId: ORG_A, from: false, to: true, proposedBy: "dev-ann", at: 1, expiresAt: 100, state: "pending" });
+    await sole.create({ id: "c2", workspaceId: ORG_A, from: false, to: true, proposedBy: "dev-bob", at: 1, expiresAt: 100, state: "pending" });
     await erasePerson(deleteDeps(w).deps, ORG_A, { developerId: "dev-ann" }, "e1");
     const dump = JSON.stringify(w.db.find((item) => String(item.pk).startsWith(`WS#${ORG_A}#`) && !String(item.sk).startsWith("LAKEDEL#") && !String(item.sk).startsWith("ERASE")));
     expect(dump).not.toContain("dev-ann");
     expect(dump).toContain("dev-bob");
     expect(await store.read(project())).toBe("two");
-    expect(await store.get(project(), "c1")).toMatchObject({ proposedBy: "0".repeat(64), state: "pending" });
+    expect(await sole.get(ORG_A, "c1")).toMatchObject({ proposedBy: "0".repeat(64), state: "pending" });
   });
   it("the workspace erase wipes the company setting and the proposals", async () => {
-    const { w, store } = setup();
+    const { w, store, sole } = setup();
     await store.write(company(), "one", { by: "owner", at: 1 }, "auto");
     await store.write(project(), "two", { by: "ann", at: 1 }, "one");
-    await store.create({ id: "c1", scope: company(), from: "one", to: "auto", proposedBy: "ann", at: 1, expiresAt: 100, state: "pending" });
+    await sole.create({ id: "c1", workspaceId: ORG_A, from: false, to: true, proposedBy: "ann", at: 1, expiresAt: 100, state: "pending" });
     const result = await eraseWorkspace(deleteDeps(w).deps, ORG_A, ["web"], "close-1");
     expect(result.complete).toBe(true);
     // (The lake delete queue stays until the lake job has run.)
@@ -241,8 +213,8 @@ describe("the preset's conditional write and its loosening proposals", () => {
     expect(await presets.write(project(), "standard", { by: "bob", at: 2 }, "regulated")).toBe(true);
     expect(await presets.read(project())).toBe("standard");
   });
-  it("proposals are stored under the prefix the person erase rewrites, are not seen as tier-0 proposals, and move state once", async () => {
-    const { w, store } = setup();
+  it("proposals are stored under the prefix the person erase rewrites and move state once", async () => {
+    const { w } = setup();
     const presets = new DynamoPresetStore(w.table);
     const change = { id: "pc1", scope: project(), from: "regulated" as const, to: "standard" as const, proposedBy: "ann", at: 1, expiresAt: 100, state: "pending" as const, soleEligibleAtProposal: false };
     expect(await presets.create(change)).toBe(true);
@@ -251,7 +223,6 @@ describe("the preset's conditional write and its loosening proposals", () => {
     expect(String(row.sk)).toMatch(/^LESSONSET#TIER0CHG#PRESET#/u);
     expect(await presets.open(project(), 50)).toMatchObject({ id: "pc1", proposedBy: "ann" });
     expect(await presets.open(project(), 200)).toBeUndefined();
-    expect(await store.open(project(), 50)).toBeUndefined();
     expect(await presets.transition(project(), "pc1", "pending", "applied")).toBe(true);
     expect(await presets.transition(project(), "pc1", "pending", "cancelled")).toBe(false);
     expect(await presets.open(project(), 50)).toBeUndefined();

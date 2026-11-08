@@ -117,11 +117,20 @@ async function commitWith(deps: CurateDeps, key: ScopeKey, build: () => Promise<
   return undefined;
 }
 
-/** The provenance without the three flags a merge may only narrow (they are put back below when both sides have them). */
+/** The provenance without the three flags a merge may only narrow (they are put back below by their own rules). */
 function withoutNarrowingFlags(provenance: Lesson["provenance"]): Lesson["provenance"] {
   const { memberCorrection: _member, claimsSupported: _claims, fromSharedTask: _shared, ...rest } = provenance;
   void _member; void _claims; void _shared;
   return rest;
+}
+
+/**
+ * The "from a project-wide task" mark after a merge (lessons connect, fix 1, L1): a draft from a task that was NOT project-wide (`false`) clears it for good, one the live read could not tell about (unset) leaves what the
+ * lesson already has (publishing checks every source task's live visibility again), and a draft that is project-wide only keeps a mark the lesson already has: it never sets one on a lesson that lacks it.
+ */
+function mergedSharedMark(target: boolean | undefined, draft: boolean | undefined): { fromSharedTask?: boolean } {
+  if (draft === false || target === false) return { fromSharedTask: false };
+  return target === true ? { fromSharedTask: true } : {};
 }
 
 /** Folds a draft into an existing lesson: citations, sources, authors and supporting tasks are unioned; trust and audience only ever narrow. */
@@ -145,7 +154,7 @@ function mergeInto(target: Lesson, draft: LessonDraft, version: number, now: num
       // that lacks the flag clears it: a lesson is publishable only when EVERY task it rests on was shared.
       ...(target.provenance.memberCorrection === true && draft.provenance.memberCorrection === true ? { memberCorrection: true } : {}),
       ...(target.provenance.claimsSupported === true && draft.provenance.claimsSupported === true ? { claimsSupported: true } : {}),
-      ...(target.provenance.fromSharedTask === true && draft.provenance.fromSharedTask === true ? { fromSharedTask: true } : {}),
+      ...mergedSharedMark(target.provenance.fromSharedTask, draft.provenance.fromSharedTask),
       ...(people.readFrom.length === 0 ? {} : { readFrom: people.readFrom }), ...(people.coAuthored.length === 0 ? {} : { coAuthored: people.coAuthored }),
       minTrust: minTrust([target.provenance.minTrust, draft.provenance.minTrust]), audience: narrowestAudience([target.provenance.audience, draft.provenance.audience]),
       ...(target.provenance.sourceScopes === undefined && draft.provenance.sourceScopes === undefined ? {} : { sourceScopes: union(target.provenance.sourceScopes ?? [], draft.provenance.sourceScopes ?? [], 50) }),

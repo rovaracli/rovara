@@ -297,7 +297,8 @@ async function toDraft(
       claimsSupported: lessonClaimsSupported({ title, description, body, ...(candidate.scope.paths === undefined ? {} : { scopePaths: candidate.scope.paths }) }, {
         correctionTexts: cited.flatMap((s) => (s.text === undefined ? [] : [s.text])), code: citations.flatMap((c) => (c.kind === "code" ? [{ path: c.path, anchor: c.anchor }] : [])),
       }),
-      ...(subject.sharedTask === true ? { fromSharedTask: true } : {}),
+      // true: every source was project-wide when reflected; false: it was not (a merge keeps that); unset: not known (never read, or unreadable).
+      ...(subject.sharedTask === undefined ? {} : { fromSharedTask: subject.sharedTask }),
     },
   };
 }
