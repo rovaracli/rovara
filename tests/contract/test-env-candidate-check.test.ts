@@ -272,18 +272,20 @@ describe("approving writes exactly the proven commands", () => {
 });
 
 describe("S1: what is written is what was run", () => {
-  it("the check runs the commands in the form the settings save stores (no env, the list's own timeout), and the written settings are deeply the check's lists", async () => {
+  it("the check runs a new command in the form the settings save stores (no env, the list's own timeout) and a stored one with its own options, and the written settings are deeply the check's lists", async () => {
     const t = await setupWizardBench({ autoCandidate: false });
     await withSwitch("1", async () => {
-      // A command the settings already hold with an env and its own timeout: the save would drop the env and reset the timeout.
+      // A command the settings already hold with an env and its own timeout: the save keeps it as it is (UX4B-CMD-OPTS); the commands it adds come back in the saved form.
       const stored = t.db.find((item) => item.entityType === "PROJECT")[0] as { definition: { readiness: Array<Record<string, unknown>> } } & Record<string, unknown>;
       t.db.set({ ...stored, definition: { ...stored.definition, readiness: [{ ...stored.definition.readiness[0]!, env: { FOO: "1" }, timeoutSeconds: 77 }] } });
       const digest = await proposed(t);
       await startCheck(t, digest);
       const [record] = candidates(t);
-      for (const entry of [...record!.setup, ...record!.readiness]) expect(entry.env).toBeUndefined();
+      for (const entry of record!.setup) expect(entry.env).toBeUndefined();
       expect(record!.setup.every((entry) => entry.timeoutSeconds === 900)).toBe(true);
-      expect(record!.readiness.every((entry) => entry.timeoutSeconds === 1800)).toBe(true);
+      const keptTest = record!.readiness.filter((entry) => entry.args[0] === "old-test");
+      expect(keptTest).toEqual([{ cwd: "repo/web", executable: "make", args: ["old-test"], timeoutSeconds: 77, env: { FOO: "1" } }]);
+      for (const entry of record!.readiness.filter((other) => other.args[0] !== "old-test")) { expect(entry.env).toBeUndefined(); expect(entry.timeoutSeconds).toBe(1800); }
       await reportCheck(t, "SUCCEEDED");
       expect((await t.dev(OMAR, "POST", `${ENV}/prove`, { digest })).status).toBe(200);
       expect((await t.dev(OMAR, "POST", `${ENV}/approve`, { digest, expectedRevision: 0 })).status).toBe(200);

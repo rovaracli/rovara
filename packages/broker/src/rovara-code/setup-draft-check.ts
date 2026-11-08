@@ -3,7 +3,7 @@
 // commands are written only when that check passed for this digest at the settings revision as it is now. This module is the pure part: the lists a save would store, their digest, the words, and what a
 // stored check means for the apply. The apply itself (setup-draft.ts) asks `gateDraftCommands` and saves nothing unless it answers `passed`.
 //
-// "Exactly the commands that ran": the lists are built by the same function the settings save uses (`settingsCommands`: one program, the first repository's directory, the list's own timeout, no env), a list the
+// "Exactly the commands that ran": the lists are built by the same function the settings save uses (`settingsCommands`: one program, the first repository's directory, the list's own timeout, no env; a line that is one of the stored commands is that command, with its own timeout and env), a list the
 // draft does not touch stays exactly as stored (env and timeout included), and the stored check's lists must be identical to these, field for field. The digest names those lists, so a check proves one list pair
 // and nothing else; a changed settings revision is another key (nothing found), so a check never carries over to settings it did not run against.
 import { createHash } from "node:crypto";
@@ -50,8 +50,8 @@ export function draftCommandLists(
   }
   return {
     ...(devcontainer === undefined ? {} : { devcontainer }),
-    setup: settings.setupCommands === undefined ? [...definition.setup] : settingsCommands("setupCommands", settings.setupCommands, cwd, SETUP_TIMEOUT),
-    readiness: settings.testCommands === undefined ? [...definition.readiness] : settingsCommands("testCommands", settings.testCommands, cwd, TEST_TIMEOUT),
+    setup: settings.setupCommands === undefined ? [...definition.setup] : settingsCommands("setupCommands", settings.setupCommands, cwd, SETUP_TIMEOUT, definition.setup),
+    readiness: settings.testCommands === undefined ? [...definition.readiness] : settingsCommands("testCommands", settings.testCommands, cwd, TEST_TIMEOUT, definition.readiness),
   };
 }
 
