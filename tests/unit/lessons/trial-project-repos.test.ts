@@ -7,6 +7,7 @@ import { memberCorrectionOf } from "../../../packages/broker/src/lessons/reflect
 import { InMemoryLessonStore } from "../../../packages/broker/src/lessons/store.js";
 import { classifyTier as realClassifyTier } from "../../../packages/broker/src/lessons/tier.js";
 import { isPublishable, trialBlockers, type TrialContext } from "../../../packages/broker/src/lessons/trial.js";
+import type { CounterDeps } from "../../../packages/broker/src/lessons/counters.js";
 import type { ApproveDeps } from "../../../packages/broker/src/lessons/approve.js";
 import type { Audience, Lesson } from "../../../packages/broker/src/lessons/types.js";
 import { Alerts, Audit, Clock, KEY, MemoryVectors, ScriptedModel, Spend, allowAllAccess, directory, draft, embedder, facts, lessonRecord, materialFor, settings, verifier } from "./lesson-helpers.js";
@@ -81,7 +82,7 @@ function setup(projectRepos?: ProcessDeps["projectRepos"]) {
   const audit = new Audit();
   const clock = new Clock();
   let n = 0;
-  const deps: ProcessDeps & ApproveDeps = {
+  const deps: ProcessDeps & CounterDeps & ApproveDeps = {
     store, embedder, vectors: new MemoryVectors(), judgeModel: new ScriptedModel(), spend: new Spend(), audit, alerts: new Alerts(), now: clock.now,
     verifier: verifier("valid"), facts: facts(), settings: settings({ preset: "standard" }), newId: () => `les_${String(++n).padStart(4, "0")}`,
     judge: { rate: async () => "unrelated" }, directory: directory({ eligibleIds: ["owner", "ann", "bob"] }), access: allowAllAccess,
