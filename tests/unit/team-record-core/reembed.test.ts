@@ -2,7 +2,7 @@
 // outlives its row because of the job. Plus what ingest records on a row it embeds (the spec, a cut).
 import { describe, expect, it } from "vitest";
 import { TEAM_RECORD_EMBEDDER } from "@agentx/contracts";
-import { REEMBED_IDLE_MS, readReembedStates, reembedRows, reembedRun, sweepReembedState, type ReembedBudget, type ReembedRun } from "../../../packages/broker/src/team-record/reembed.js";
+import { REEMBED_IDLE_MS, REEMBED_SWEEP_MAX_CHECKS, readReembedStates, reembedRows, reembedRun, sweepReembedState, sweepReembedStateRun, type ReembedBudget, type ReembedRun } from "../../../packages/broker/src/team-record/reembed.js";
 import { eventFromItem } from "../../../packages/broker/src/team-record/store.js";
 import { expireRawText } from "../../../packages/broker/src/team-record/text-expiry.js";
 import type { RecordEmbedder } from "../../../packages/broker/src/team-record/types.js";
@@ -405,6 +405,82 @@ describe("a turn that starts no call, and a workspace that is closing (N4, N5)",
     // B closing: its row goes too
     expect(await sweepReembedState(w.table, async (orgId) => orgId === ORG_B)).toBe(1);
     expect([...(await readReembedStates(w.table)).keys()]).toEqual([ORG_A]);
+  });
+
+  // EMB-7 M1: the sweep read one State per workspace with no limit, so it could eat the hourly run's GitHub pass.
+  describe("EMB-7 M1: the clean-up has a time limit and a cap per run, and resumes next hour", () => {
+    const HOUR = 3_600_000;
+    const orgNames = (count: number): Array<typeof ORG_A> => Array.from({ length: count }, (_, index) => `org_sweep${String(index).padStart(15, "0")}` as typeof ORG_A);
+    function crowd(w: World, orgs: Array<typeof ORG_A>): void {
+      directory(w, orgs);
+      for (const orgId of orgs) w.db.set({ pk: "TEAM_RECORD_ORGS", sk: `REEMBED#${orgId}`, entityType: "TEAM_RECORD_REEMBED_STATE", orgId, servedAt: 5, idleUntil: 0, passWork: 0 });
+    }
+
+    it("starts nothing once the deadline has passed: no directory read, no check, no delete", async () => {
+      const w = await setup();
+      const orgs = orgNames(3);
+      crowd(w, orgs);
+      const asked: string[] = [];
+      const run = await sweepReembedStateRun(w.table, async (orgId) => { asked.push(orgId); return true; }, { now: () => w.clock.ms, deadline: w.clock.ms });
+      expect(run).toMatchObject({ deleted: 0, checked: 0, stopped: true });
+      expect(asked).toEqual([]);
+      expect((await readReembedStates(w.table)).size).toBe(3);
+    });
+
+    it("stops checking workspaces when the deadline comes (each check takes time) and leaves the rest for the next hour", async () => {
+      const w = await setup();
+      const orgs = orgNames(10);
+      crowd(w, orgs);
+      const start = w.clock.ms;
+      // every check costs 100 ms; the limit is 350 ms: four checks start (0, 100, 200, 300), the fifth would start at 400
+      const asked: string[] = [];
+      const first = await sweepReembedStateRun(w.table, async (orgId) => { asked.push(orgId); w.clock.ms += 100; return true; }, { now: () => w.clock.ms, deadline: start + 350 });
+      expect(asked).toHaveLength(4);
+      expect(first).toMatchObject({ deleted: 4, checked: 4, stopped: true, left: 6 });
+      expect((await readReembedStates(w.table)).size).toBe(6);
+      // the next hour continues with the ones not yet reached (they were closing: all go) and the first four are gone, so nothing is checked twice
+      w.clock.ms = start + HOUR;
+      const second = await sweepReembedStateRun(w.table, async (orgId) => { asked.push(orgId); return true; }, { now: () => w.clock.ms, deadline: w.clock.ms + 60_000 });
+      expect(second).toMatchObject({ deleted: 6, stopped: false, left: 0 });
+      expect(new Set(asked).size).toBe(10);
+      expect((await readReembedStates(w.table)).size).toBe(0);
+    });
+
+    it("checks at most maxChecks workspaces per run, and a different slice each hour, so every live workspace is reached over successive hours", async () => {
+      const w = await setup();
+      const orgs = orgNames(7);
+      crowd(w, orgs);
+      const start = w.clock.ms;
+      const seen = new Set<string>();
+      // nobody is closing: every state stays, so the rotation (not deletion) must be what moves the window
+      for (let hour = 0; hour < 4; hour += 1) {
+        w.clock.ms = start + hour * HOUR;
+        const asked: string[] = [];
+        const run = await sweepReembedStateRun(w.table, async (orgId) => { asked.push(orgId); return false; }, { now: () => w.clock.ms, maxChecks: 2 });
+        expect(asked.length).toBeLessThanOrEqual(2);
+        expect(run).toMatchObject({ deleted: 0, checked: asked.length, stopped: true });
+        for (const id of asked) seen.add(id);
+      }
+      expect(seen.size).toBe(7);
+    });
+
+    it("a workspace outside the directory is removed without a closing check, and a failing closing check keeps the state (fail safe) and goes on", async () => {
+      const w = await setup();
+      const [a, b] = orgNames(2);
+      crowd(w, [a!, b!]);
+      const gone = "org_gone0000000000000000" as typeof ORG_A;
+      w.db.set({ pk: "TEAM_RECORD_ORGS", sk: `REEMBED#${gone}`, entityType: "TEAM_RECORD_REEMBED_STATE", orgId: gone, servedAt: 5, idleUntil: 0, passWork: 0 });
+      const asked: string[] = [];
+      const run = await sweepReembedStateRun(w.table, async (orgId) => { asked.push(orgId); if (orgId === a) throw new Error("table down"); return true; }, { now: () => w.clock.ms });
+      expect(asked.sort()).toEqual([a, b].sort());
+      expect(run).toMatchObject({ deleted: 2, failed: 1, stopped: false });
+      expect([...(await readReembedStates(w.table)).keys()]).toEqual([a]);
+    });
+
+    it("the default cap is bounded (a number of checks that fits an hourly run)", () => {
+      expect(REEMBED_SWEEP_MAX_CHECKS).toBeGreaterThan(0);
+      expect(REEMBED_SWEEP_MAX_CHECKS).toBeLessThanOrEqual(500);
+    });
   });
 });
 

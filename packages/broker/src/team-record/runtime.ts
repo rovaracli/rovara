@@ -36,7 +36,7 @@ import { listSourceConfigs, markSourceFailing } from "./store.js";
 import { resolveTaskVisibility } from "../lessons/task-visibility.js";
 import { createEmbedder } from "./embed.js";
 import { lessonEmbedderFrom, recordEmbedderClientFrom, recordJobEmbedderClientFrom, recordSearchEmbedderClientFrom, EMBEDDER_JOB_WAIT_MS, type LessonEmbedder } from "../embedder/wiring.js";
-import { REEMBED_RUN_MS, dropReembedState, reembedRun, sweepReembedState } from "./reembed.js";
+import { REEMBED_RUN_MS, dropReembedState, reembedRun, sweepReembedStateRun } from "./reembed.js";
 import { eraseProject, eraseWorkspace, erasePerson, type EraseBudget } from "./erase.js";
 import { tableHotArchiveSource, ensureWorkspaceVectorBucket, tableHotStatsSource } from "./hot-source.js";
 import { createLakeClient, type LakeClient } from "./lake.js";
@@ -285,6 +285,10 @@ const OLD_INDEX_RETRY_MS = 15 * 60_000;
 const DLQ_SWEEP_MS = 6_000;
 /** The most the GitHub redelivery sweep (SRL-5a) may take of one hourly run. */
 const GITHUB_REDELIVERY_MS = 5_000;
+/** The most the re-embed state clean-up (EMB-7 M1) may take of one hourly run. */
+const REEMBED_SWEEP_MS = 2_000;
+/** What the GitHub repository pass needs left in the run to start at all (see `githubRepositoryPass`): the clean-up never takes it. */
+const GITHUB_PASS_MIN_MS = 2_000;
 /** One company's share of the repository check (SRL-5a). */
 const REPO_CHECK_ORG_MS = 4_000;
 /** The sweep's one state item (watermark and gaps), in the directory partition, which no org erase empties. It holds delivery times only: no person, no text. */
@@ -1200,7 +1204,18 @@ export function createTeamRecordRuntime(input: TeamRecordRuntimeInput): TeamReco
         summary.details.deadLetterTextDeleted = swept;
         for (const [key, value] of Object.entries(redelivery)) summary.details[key] = value;
         // N5: re-embed state left behind by a workspace that was erased or closed while a re-embed run held it.
-        summary.details.reembedStateDeleted = await sweepReembedState(table, companyIsClosing).catch(() => 0);
+        // EMB-7 M1: bounded. It runs only if the run still has the GitHub pass's own minimum left after it, takes at most REEMBED_SWEEP_MS of that, and looks at a capped number of workspaces; the rest waits an hour.
+        const jobEnd = startedAt + (input.jobBudgetMs ?? JOB_BUDGET_MS);
+        const sweepUntil = Math.min(now() + REEMBED_SWEEP_MS, jobEnd - GITHUB_PASS_MIN_MS);
+        if (sweepUntil <= now()) {
+          summary.details.reembedStateDeleted = 0;
+          summary.details.reembedSweepSkipped = 1;
+        } else {
+          const sweep = await sweepReembedStateRun(table, companyIsClosing, { now, deadline: sweepUntil }).catch(() => undefined);
+          summary.details.reembedStateDeleted = sweep?.deleted ?? 0;
+          if (sweep === undefined) summary.details.reembedSweepFailed = 1;
+          else if (sweep.stopped) { summary.details.reembedSweepLeft = sweep.left; log("record.reembed_sweep_cut", { left: sweep.left }); }
+        }
         // SRL-5a: last, from what is left, so it can never take time from the paths above.
         for (const [key, value] of Object.entries(await githubRepositoryPass(startedAt + (input.jobBudgetMs ?? JOB_BUDGET_MS)))) summary.details[key] = value;
         return summary;
