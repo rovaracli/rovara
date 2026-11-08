@@ -284,15 +284,11 @@ export interface ReembedRunDependencies {
 
 export interface ReembedRunSummary { orgs: number; skippedOrgs: number; details: Record<string, number> }
 
-/** Thrown by `listDirectoryOrgs` when its caller's `stop` says the time is over: a partial list must never be used to decide who has left the directory. */
-export class ReembedSweepOutOfTime extends Error {}
-
-/** The workspaces in the org directory (those that have written to the record). `stop`: asked before each page; true throws `ReembedSweepOutOfTime`. */
-export async function listDirectoryOrgs(table: TeamRecordTable, options: { stop?: () => boolean } = {}): Promise<OrgId[]> {
+/** The workspaces in the org directory (those that have written to the record). */
+export async function listDirectoryOrgs(table: TeamRecordTable): Promise<OrgId[]> {
   const orgs: OrgId[] = [];
   let after: Record<string, unknown> | undefined;
   do {
-    if (options.stop?.() === true) throw new ReembedSweepOutOfTime("the directory listing ran out of time");
     const page = (await table.documentClient.send(new QueryCommand({
       TableName: table.tableName, KeyConditionExpression: "pk = :pk", ExpressionAttributeValues: { ":pk": TEAM_RECORD_ORG_DIRECTORY_PK }, ConsistentRead: true, Limit: 50,
       ...(after === undefined ? {} : { ExclusiveStartKey: after }),
@@ -338,23 +334,27 @@ export interface ReembedSweepOptions {
 export interface ReembedSweepRun {
   /** States removed. */
   deleted: number;
-  /** Workspaces whose closing state was read (a fresh read each). */
+  /** Workspaces looked at (a fresh directory read each, and a closing check when it is listed). */
   checked: number;
-  /** Closing checks that failed: that workspace's state is kept (fail safe) and the sweep goes on. */
+  /** Checks or deletes that failed: that workspace's state is kept (fail safe) and the sweep goes on. */
   failed: number;
-  /** Live workspaces not reached this run (the cap or the deadline came first); the next hour starts at a different place and reaches them. */
+  /** States not reached this run (the cap or the deadline came first); the next run resumes with them. */
   left: number;
   /** True when the deadline or the cap ended the run before every workspace was looked at. */
   stopped: boolean;
 }
 
+/** Where the clean-up resumes: the last workspace it checked. One small item in the directory partition (like the GitHub sweeps' state items); it holds a company id only, no person and no text. */
+export const REEMBED_SWEEP_CURSOR_KEY = { pk: TEAM_RECORD_ORG_DIRECTORY_PK, sk: "REEMBEDSWEEP#cursor" } as const;
+
 /**
  * The hourly clean-up (N5): deletes the `REEMBED#` state of every workspace that has left the org directory (its erase finished while a re-embed run was still holding its state) and of every one that is
  * closing or closed (it is not served, so the row is only left over).
  *
- * EMB-7 M1: it is bounded. It starts nothing at or after `deadline`, looks at no more than `maxChecks` workspaces per run, and the live workspaces are walked from a place that moves with the hour (the
- * hour number times the cap, round the sorted list), so what one run could not reach the next one does, and no workspace is left out for ever. A closing check that fails keeps that workspace's state (never
- * deletes on doubt). The directory listing, which is needed whole to know who has left it, stops at the deadline too, and then nothing is deleted.
+ * EMB-7 M1: it is bounded and it resumes. It starts nothing at or after `deadline` and looks at no more than `maxChecks` workspaces per run. The states are walked in id order from a SAVED place: the last
+ * workspace the previous run really checked (`REEMBED_SWEEP_CURSOR_KEY`), so a run the time limit cut short resumes exactly where it stopped, and every workspace is reached within
+ * ceil(workspaces / checked per run) runs. Whether a workspace has left the directory is one consistent read of its own directory item (never a listing of the whole directory, which a few thousand workspaces
+ * would not finish in the limit). A check that fails (the directory read or the closing check) keeps that workspace's state (never deletes on doubt) and the walk goes on; so does a delete that fails.
  */
 export async function sweepReembedStateRun(table: TeamRecordTable, isClosing?: (orgId: OrgId) => Promise<boolean>, options: ReembedSweepOptions = {}): Promise<ReembedSweepRun> {
   const now = options.now ?? Date.now;
@@ -362,37 +362,31 @@ export async function sweepReembedStateRun(table: TeamRecordTable, isClosing?: (
   const outOfTime = (): boolean => options.deadline !== undefined && now() >= options.deadline;
   const result: ReembedSweepRun = { deleted: 0, checked: 0, failed: 0, left: 0, stopped: false };
   if (outOfTime()) return { ...result, stopped: true };
-  let directory: OrgId[];
-  let states: Map<OrgId, ReembedState>;
+  const ids = [...(await readReembedStates(table)).keys()].sort();
+  if (ids.length === 0) return result;
+  let after: string | undefined;
   try {
-    [directory, states] = await Promise.all([listDirectoryOrgs(table, { stop: outOfTime }), readReembedStates(table)]);
-  } catch (error) {
-    if (error instanceof ReembedSweepOutOfTime) return { ...result, stopped: true };
-    throw error;
-  }
-  const listed = new Set(directory);
-  const ids = [...states.keys()].sort();
-  const gone = ids.filter((orgId) => !listed.has(orgId));
-  const live = ids.filter((orgId) => listed.has(orgId));
-  let work = 0;
-  const mayStart = (): boolean => work < maxChecks && !outOfTime();
-  for (const orgId of gone) {
-    if (!mayStart()) { result.stopped = true; result.left += 1; continue; }
-    work += 1;
-    await dropReembedState(table, orgId);
-    result.deleted += 1;
-  }
-  if (isClosing === undefined || live.length === 0) return result;
-  const first = live.length === 0 ? 0 : (Math.floor(now() / 3_600_000) * maxChecks) % live.length;
-  for (const orgId of [...live.slice(first), ...live.slice(0, first)]) {
-    if (!mayStart()) { result.stopped = true; result.left += 1; continue; }
-    work += 1;
+    const saved = ((await table.documentClient.send(new GetCommand({ TableName: table.tableName, Key: REEMBED_SWEEP_CURSOR_KEY, ConsistentRead: true }))) as { Item?: { after?: unknown } }).Item?.after;
+    after = typeof saved === "string" ? saved : undefined;
+  } catch { /* from the top: still correct, only slower to reach the far ones */ }
+  // The first state after the saved workspace (ids are sorted); none after it: the walk wraps to the top.
+  const first = after === undefined ? 0 : Math.max(0, ids.findIndex((orgId) => orgId > after!));
+  const order = after !== undefined && !ids.some((orgId) => orgId > after!) ? ids : [...ids.slice(first), ...ids.slice(0, first)];
+  let last: string | undefined;
+  for (const orgId of order) {
+    if (result.checked >= maxChecks || outOfTime()) { result.stopped = true; break; }
     result.checked += 1;
-    let closing: boolean;
-    try { closing = await isClosing(orgId); } catch { result.failed += 1; continue; }
-    if (!closing) continue;
-    await dropReembedState(table, orgId);
-    result.deleted += 1;
+    last = orgId;
+    try {
+      const listed = ((await table.documentClient.send(new GetCommand({ TableName: table.tableName, Key: { pk: TEAM_RECORD_ORG_DIRECTORY_PK, sk: orgId }, ConsistentRead: true }))) as { Item?: unknown }).Item !== undefined;
+      if (listed && (isClosing === undefined || !(await isClosing(orgId)))) continue;
+      await dropReembedState(table, orgId);
+      result.deleted += 1;
+    } catch { result.failed += 1; }
+  }
+  result.left = Math.max(0, order.length - result.checked);
+  if (last !== undefined) {
+    try { await table.documentClient.send(new PutCommand({ TableName: table.tableName, Item: { ...REEMBED_SWEEP_CURSOR_KEY, entityType: "TEAM_RECORD_REEMBED_SWEEP", after: last, at: new Date(now()).toISOString() } })); } catch { /* the next run starts from the old place */ }
   }
   return result;
 }

@@ -464,6 +464,64 @@ describe("a turn that starts no call, and a workspace that is closing (N4, N5)",
       expect(seen.size).toBe(7);
     });
 
+    it("M1: time-cut runs resume where they stopped: 1000 live workspaces, each check 50 ms, a 2 s limit (about 40 per run), reached in full over successive hours", async () => {
+      const w = await setup();
+      const orgs = orgNames(1_000);
+      crowd(w, orgs);
+      const start = w.clock.ms;
+      const seen = new Set<string>();
+      let runs = 0;
+      for (let hour = 0; hour < 30 && seen.size < 1_000; hour += 1) {
+        w.clock.ms = start + hour * HOUR;
+        const asked: string[] = [];
+        const run = await sweepReembedStateRun(w.table, async (orgId) => { asked.push(orgId); w.clock.ms += 50; return false; }, { now: () => w.clock.ms, deadline: w.clock.ms + 2_000 });
+        runs += 1;
+        expect(run.checked).toBe(asked.length);
+        expect(run.checked).toBeGreaterThanOrEqual(39);
+        for (const id of asked) seen.add(id);
+      }
+      expect(seen.size).toBe(1_000);
+      // every workspace is reached within ceil(N / checked per run) runs: nothing is asked twice before everything has been asked once
+      expect(runs).toBeLessThanOrEqual(Math.ceil(1_000 / 39));
+    });
+
+    it("M1: the next run starts after the last workspace the previous run really checked (the position is saved, and moves by the checked count, not by the cap)", async () => {
+      const w = await setup();
+      const orgs = orgNames(10);
+      crowd(w, orgs);
+      const first: string[] = [], second: string[] = [];
+      await sweepReembedStateRun(w.table, async (orgId) => { first.push(orgId); return false; }, { now: () => w.clock.ms, maxChecks: 3 });
+      await sweepReembedStateRun(w.table, async (orgId) => { second.push(orgId); return false; }, { now: () => w.clock.ms, maxChecks: 3 });
+      expect(first).toEqual(orgs.slice(0, 3));
+      expect(second).toEqual(orgs.slice(3, 6));
+      // a cut at the deadline after two checks moves the position by two
+      let ticks = 0;
+      const cut: string[] = [];
+      await sweepReembedStateRun(w.table, async (orgId) => { cut.push(orgId); ticks += 1; w.clock.ms += 100; return false; }, { now: () => w.clock.ms, deadline: w.clock.ms + 150 });
+      expect(cut).toEqual(orgs.slice(6, 8));
+      const after: string[] = [];
+      await sweepReembedStateRun(w.table, async (orgId) => { after.push(orgId); return false; }, { now: () => w.clock.ms, maxChecks: 4 });
+      expect(after).toEqual([orgs[8], orgs[9], orgs[0], orgs[1]]);
+      expect(ticks).toBe(2);
+    });
+
+    it("M1: it does not list the directory: with 2500 workspaces in it and 60 ms per page, the states of workspaces that left are still removed within the limit", async () => {
+      const w = await setup();
+      const live = orgNames(2_500);
+      directory(w, live);
+      const gone = ["org_gone00000000000000a1", "org_gone00000000000000a2"].map((id) => id.slice(0, 24) as typeof ORG_A);
+      for (const orgId of [live[0]!, live[1]!, ...gone]) w.db.set({ pk: "TEAM_RECORD_ORGS", sk: `REEMBED#${orgId}`, entityType: "TEAM_RECORD_REEMBED_STATE", orgId, servedAt: 5, idleUntil: 0, passWork: 0 });
+      const slow = { ...w.table, documentClient: { send: async (command: unknown) => {
+        const input = (command as { input?: { KeyConditionExpression?: string; Limit?: number } }).input;
+        if (command?.constructor?.name === "QueryCommand" && input?.Limit === 50) w.clock.ms += 60;
+        return w.table.documentClient.send(command as never);
+      } } };
+      const run = await sweepReembedStateRun(slow as never, async () => false, { now: () => w.clock.ms, deadline: w.clock.ms + 2_000 });
+      expect(run.deleted).toBe(2);
+      expect(run.stopped).toBe(false);
+      expect([...(await readReembedStates(w.table)).keys()].sort()).toEqual([live[0]!, live[1]!].sort());
+    });
+
     it("a workspace outside the directory is removed without a closing check, and a failing closing check keeps the state (fail safe) and goes on", async () => {
       const w = await setup();
       const [a, b] = orgNames(2);
