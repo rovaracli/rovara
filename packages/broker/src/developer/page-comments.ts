@@ -1,6 +1,7 @@
 // Spec 061 slice 2: comments, replies and suggestions on a task page. Each is its own item in the task's partition
 // (`DEVTASK#<taskId>`), never inside the task item, and every write is conditional: comments on `rev`, the comment counter
 // on its cap, rate items on their window. The writer's name and owner flag come from the session and its role.
+import { nameResolverOf, replacementNames, shownNameOf } from "./name-resolver.js";
 import { createHash } from "node:crypto";
 import { GetCommand, QueryCommand, TransactWriteCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
 import {
@@ -136,14 +137,17 @@ const byTime = (left: { createdAt: string; commentId: string }, right: { created
   left.createdAt.localeCompare(right.createdAt) || left.commentId.localeCompare(right.commentId);
 
 /** The task's comments, replies and AgentX replies, oldest first. An item that does not read as a comment is left out and logged. */
-export async function listTaskComments(deps: TableDependencies & Pick<DeveloperTaskRouteDependencies, "log">, taskId: string): Promise<TaskComment[]> {
+export async function listTaskComments(deps: TableDependencies & Pick<DeveloperTaskRouteDependencies, "log">, taskId: string, orgId?: string): Promise<TaskComment[]> {
   const comments: TaskComment[] = [];
   for (const item of await queryPrefix(deps, taskId, "COMMENT#", TASK_COMMENT_ITEMS_MAX)) {
     const parsed = TaskCommentSchema.safeParse(withoutKeys(item));
     if (parsed.success) comments.push(readableTaskComment(parsed.data));
     else log(deps, { event: "developer.task_comment_unreadable", taskId });
   }
-  return comments.sort(byTime);
+  // ERASE-NAME-2: the author's name was stored with the comment; an erased person reads "A former member", a removed one never the name they chose (developer/name-resolver.ts).
+  const replaced = await replacementNames(nameResolverOf(deps, orgId), comments.flatMap((comment) => (comment.author.kind === "person" ? [comment.author.developerId] : [])));
+  return comments.map((comment) => (comment.author.kind === "person" && replaced.has(comment.author.developerId)
+    ? { ...comment, author: { ...comment.author, name: shownNameOf(comment.author.name, comment.author.developerId, replaced) } } : comment)).sort(byTime);
 }
 
 /** Comments a decision on `document` may include: people's, not deleted, not already sent, on any version up to `uptoVersion`; oldest first. */
@@ -508,14 +512,17 @@ export async function setSuggestion(deps: CommentDependencies, actor: PageActor,
 }
 
 /** Every suggestion on the task, as stored. */
-export async function listSuggestions(deps: TableDependencies & Pick<DeveloperTaskRouteDependencies, "log">, taskId: string): Promise<TaskSuggestion[]> {
+export async function listSuggestions(deps: TableDependencies & Pick<DeveloperTaskRouteDependencies, "log">, taskId: string, orgId?: string): Promise<TaskSuggestion[]> {
   const suggestions: TaskSuggestion[] = [];
   for (const item of await queryPrefix(deps, taskId, "SUGGEST#", 2_000)) {
     const parsed = TaskSuggestionSchema.safeParse(withoutKeys(item));
     if (parsed.success) suggestions.push(parsed.data);
     else log(deps, { event: "developer.task_suggestion_unreadable", taskId });
   }
-  return suggestions.sort((left, right) => left.at.localeCompare(right.at) || left.developerId.localeCompare(right.developerId));
+  // ERASE-NAME-2: as the comments' authors.
+  const replaced = await replacementNames(nameResolverOf(deps, orgId), suggestions.map((suggestion) => suggestion.developerId));
+  return suggestions.map((suggestion) => (replaced.has(suggestion.developerId) ? { ...suggestion, name: shownNameOf(suggestion.name, suggestion.developerId, replaced) } : suggestion))
+    .sort((left, right) => left.at.localeCompare(right.at) || left.developerId.localeCompare(right.developerId));
 }
 
 /**

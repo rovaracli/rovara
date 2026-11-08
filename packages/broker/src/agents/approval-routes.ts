@@ -39,7 +39,7 @@ function jsonBody(request: AdaptedHttpRequest): unknown {
  */
 export async function withChosenOwners(deps: Pick<ApprovalDependencies, "documentClient" | "tableName">, records: AnyApprovalRecord[]): Promise<AnyApprovalRecord[]> {
   const owners = records.flatMap((record) => (record.kind === "change" || record.owner === undefined ? [] : [record.owner.developerId]));
-  const names = await chosenOwnerNames(deps, owners);
+  const names = await chosenOwnerNames(deps, owners, records[0]?.orgId);
   if (names.size === 0) return records;
   return records.map((record) => (record.kind === "change" || record.owner === undefined ? record : { ...record, owner: withChosenOwnerName(record.owner, names) }));
 }

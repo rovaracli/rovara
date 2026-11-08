@@ -190,14 +190,15 @@ describe("DELETE /v1/app/org/members/{developerId}", () => {
   });
 
   // ERASE-NAME-1: a removed (not erased) person's chosen name goes with their membership; what shows then is the name their sign-in record holds.
-  it("deletes the name the removed person chose, on an install with no movers, and leaves everyone else's", async () => {
+  it("replaces the name the removed person chose with a removal marker, on an install with no movers, and leaves everyone else's", async () => {
     const harness = await org();
     const bea = person(harness, "Bea", "member", "bea@example.com");
     const nameItem = (developerId: string, name: string) => ({ pk: `DEVELOPER_NAME#${developerId}`, sk: "NAME", entityType: "DEVELOPER_NAME", developerId, name, chosenAt: "2020-01-01T00:00:00.000Z" });
     harness.db.set(nameItem(bea.developerId, "Bea Chosen"));
     harness.db.set(nameItem(OMAR.developerId, "Omar Chosen"));
     expect((await harness.remove(OMAR, bea)).status).toBe(200);
-    expect(harness.db.get(`DEVELOPER_NAME#${bea.developerId}`, "NAME")).toBeUndefined();
+    expect(harness.db.get(`DEVELOPER_NAME#${bea.developerId}`, "NAME")).toMatchObject({ removed: true });
+    expect(harness.db.get(`DEVELOPER_NAME#${bea.developerId}`, "NAME")).not.toHaveProperty("name");
     expect(harness.db.get(`DEVELOPER_NAME#${OMAR.developerId}`, "NAME")).toMatchObject({ name: "Omar Chosen" });
   });
 

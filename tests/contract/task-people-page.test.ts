@@ -128,6 +128,9 @@ describe("private task People page adapters", () => {
     expect(erasedPage.statusCode, erasedPage.body).toBe(200);
     expect(erasedPage.body).toContain("A former member made The task owner viewer");
     expect(erasedPage.body).not.toContain("Lee Park made");
+    const erasedPeople = (await routed("GET", "/api/people")).json as unknown as TaskPeopleView;
+    expect(erasedPeople.people.map((person) => person.name)).toContain("A former member");
+    expect(JSON.stringify(erasedPeople)).not.toContain("Lee Park");
     harness.db.delete(chosenNameKey(targetDeveloperId));
     const afterCoOwnerEvents = harness.db.find((item) => item.entityType === "TASK_PEOPLE_EVENT").length;
     const replay = await routed("GET", `/api/people/requests/${roleRequestId}`);

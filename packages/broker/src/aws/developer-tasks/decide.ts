@@ -293,7 +293,7 @@ export async function decideTaskWorkflow(
     if ((request.includedCommentIds?.length ?? 0) > 0) throw agentXError("CONFIG_INVALID", "only Approve and Request changes send comments");
   } else if (documentType !== undefined && decided !== undefined && (request.decision === "APPROVE" || request.includedCommentIds !== undefined)) {
     // Only an approval, or a decision that names its comments, reads them: a Slack Request changes sends none.
-    const open = openCommentsFor(await listTaskComments(deps, taskId), documentType, decided.version);
+    const open = openCommentsFor(await listTaskComments(deps, taskId, deps.orgId), documentType, decided.version);
     if (request.includedCommentIds !== undefined) {
       const byId = new Map(open.map((comment) => [comment.commentId, comment]));
       included = request.includedCommentIds.map((commentId) => {

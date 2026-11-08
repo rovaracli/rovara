@@ -250,7 +250,7 @@ export async function sessionView(deps: SessionReadDependencies, caller: Session
     ? { state: "paused_budget", reason: `it reached ${budgetScopeName(pausedView?.scope["kind"])}`, next: budgetPauseNext(pausedView?.scope["kind"], paused?.confirmUrl !== undefined, paused?.spendRequestId !== undefined) }
     : (() => { const next = taskStatusNext(baseDisplay, access.owner); const { nextOthers: _others, ...rest } = baseDisplay; void _others; return { ...rest, ...(next === undefined ? {} : { next }) }; })();
   // Release 0.4.18: the owner's chosen name, read by the stored owner's id (a session started before the rename stores the name the person had then).
-  const ownerNames = await chosenOwnerNames(deps, [access.effectiveOwner.developerId, session.owner.developerId]);
+  const ownerNames = await chosenOwnerNames(deps, [access.effectiveOwner.developerId, session.owner.developerId], session.orgId);
   const followerItem = await getItem(deps, agentSessionKey(session.orgId, session.sessionId, `FOLLOWER#${caller.developerId}`));
   // Make this an agent (Task 10c): offered to a person who may create agents in the session's project, asked of the same check the route makes, with the org role read from their record. A task session only.
   const canMakeAgent = deps.mayMakeAgent !== undefined && session.kind === "task" && session.project !== undefined && await deps.mayMakeAgent({ orgId: caller.orgId, developerId: caller.developerId, orgRole: access.orgRole }, session.project);
@@ -418,7 +418,7 @@ export function openCursor(deps: Pick<SessionReadDependencies, "cursorKey">, cal
 export async function listSessions(deps: SessionReadDependencies, caller: SessionReadCaller, query: SessionListQuery): Promise<SessionList> {
   const list = await listSessionTiles(deps, caller, query);
   // Release 0.4.18: the owners' chosen names, one BatchGetItem for the page.
-  const names = await chosenOwnerNames(deps, list.sessions.map((tile) => tile.owner.developerId));
+  const names = await chosenOwnerNames(deps, list.sessions.map((tile) => tile.owner.developerId), caller.orgId);
   return names.size === 0 ? list : { ...list, sessions: list.sessions.map((tile) => ({ ...tile, owner: withChosenOwnerName(tile.owner, names) })) };
 }
 

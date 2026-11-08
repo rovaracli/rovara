@@ -15,7 +15,7 @@ import {
 } from "../../packages/broker/src/developer/chosen-name.js";
 import { nameEraserOf } from "../../packages/broker/src/developer/erase-name.js";
 import { placeholderDisplayName } from "../../packages/broker/src/developer/person-name.js";
-import { DeveloperSignInStore } from "../../packages/broker/src/developer/store.js";
+import { DeveloperSignInStore, NAME_ERASED_MESSAGE } from "../../packages/broker/src/developer/store.js";
 import { erasePerson } from "../../packages/broker/src/team-record/erase.js";
 import { ARJUN, CELL, ORG_A, PRIYA, sessionWorld } from "../support/agent-session-world.js";
 import { FakeDynamoDb } from "../support/fake-dynamodb.js";
@@ -115,7 +115,7 @@ describe("the sign-in record and the erase of the name", () => {
     await eraseChosenName(db, "state", PRIYA, AT);
     expect([...(await broker.getDevelopers([PRIYA])).values()].map((record) => record.displayName)).toEqual([FORMER_MEMBER_NAME]);
     expect((await broker.getDeveloper(PRIYA))?.displayName).toBe(FORMER_MEMBER_NAME);
-    await expect(broker.setChosenDisplayName({ developerId: PRIYA, orgId: TEST_ORG, name: "Back Again" })).rejects.toMatchObject({ code: "FORBIDDEN" });
+    await expect(broker.setChosenDisplayName({ developerId: PRIYA, orgId: TEST_ORG, name: "Back Again" })).rejects.toMatchObject({ code: "FORBIDDEN", message: expect.stringContaining(NAME_ERASED_MESSAGE) as string });
     expect(tombstoneOf(db, PRIYA)).toMatchObject({ erased: true });
   });
 });
@@ -218,16 +218,35 @@ describe("what a person's erase runs", () => {
     expect(proof.calls).toEqual([PRIYA]);
   });
 
-  it("erases the names where the record is on, after its first pass, and also when the record's erase is unfinished (which is then repeated, and the evidence waits)", async () => {
+  it("leaves the names to the record's own names step where the record is on (after its Asks step), and erases the evidence only once the record's erase has finished", async () => {
     const order: string[] = [];
     const record = { erase: { person: async (): Promise<void> => { order.push("record"); throw new Error("unavailable"); } } };
     const names = { erase: async () => { order.push("names"); } };
     const proof = { person: async () => { order.push("evidence"); } };
-    await expect(personErasureStep(record as never, proof as never, names)(TEST_ORG as never, PRIYA)).rejects.toThrow("unavailable");
-    expect(order).toEqual(["record", "names"]);
+    await expect(personErasureStep(record, proof as never, names)(TEST_ORG as never, PRIYA)).rejects.toThrow("unavailable");
+    expect(order).toEqual(["record"]);
     record.erase.person = async () => { order.push("record"); };
     await personErasureStep(record, proof, names)(TEST_ORG, PRIYA);
-    expect(order).toEqual(["record", "names", "record", "names", "evidence"]);
+    expect(order).toEqual(["record", "record", "evidence"]);
+  });
+
+  it("the names step waits for the Asks step to keep the hashes of the names: not when a name could not be read, not when keeping them failed", async () => {
+    const db = new FakeDynamoDb();
+    const calls: string[] = [];
+    const names = { erase: async (id: string) => { calls.push(id); } };
+    const orgId = "org_aaaaaaaaaaaaaaaaaaaa" as never;
+    const table = (client: { send(command: unknown): Promise<unknown> }) => ({ documentClient: client, tableName: "state" } as never);
+    const unread = await erasePerson({ table: table(db), names }, orgId, { developerId: PRIYA, projects: [], namesUnread: true }, "erase:unread");
+    expect(unread.steps?.names).toBe(false);
+    expect(calls).toEqual([]);
+    const failing = { send: (command: unknown) => (JSON.stringify((command as { input?: unknown }).input ?? {}).includes("ASKERASED") && (command as { constructor: { name: string } }).constructor.name === "PutCommand" ? Promise.reject(new Error("unavailable")) : db.send(command as never)) };
+    const failed = await erasePerson({ table: table(failing), names }, orgId, { developerId: PRIYA, projects: [] }, "erase:failed");
+    expect(failed.steps?.asks).toBe(false);
+    expect(failed.steps?.names).toBe(false);
+    expect(calls).toEqual([]);
+    const fine = await erasePerson({ table: table(db), names }, orgId, { developerId: PRIYA, projects: [] }, "erase:fine");
+    expect(fine.steps?.names).toBe(true);
+    expect(calls).toEqual([PRIYA]);
   });
 
   it("the Team record's erase has a names step that runs the eraser for the person, and finishes without it where none is wired", async () => {
@@ -254,7 +273,10 @@ describe("a removed (not erased) person", () => {
     w.db.set(nameItem(SAM, "Sam Chosen", new Date(T0 - HOUR).toISOString()));
     expect(await readChosenName(w.db, w.deps.tableName, SAM)).toBe("Sam Chosen");
     await w.remove(SAM);
-    expect(w.db.get(chosenNameKey(SAM))).toBeUndefined();
+    // The name is gone from storage; a marker stays so readers can tell a removed person from one who never chose a name.
+    expect(w.db.get(chosenNameKey(SAM))).toMatchObject({ removed: true, removedAt: new Date(T0).toISOString() });
+    expect(w.db.get(chosenNameKey(SAM))).not.toHaveProperty("name");
+    expect(JSON.stringify(w.db.get(chosenNameKey(SAM)))).not.toContain("Sam Chosen");
     expect(await readChosenName(w.db, w.deps.tableName, SAM)).toBeUndefined();
     expect((await w.signInStore.getDeveloper(SAM))?.displayName).toBe("Sam Signin");
   });
@@ -271,6 +293,7 @@ describe("a removed (not erased) person", () => {
     expect(w.db.get(chosenNameKey(SAM))).toMatchObject({ erased: true });
     // A repeat for a person with no name item is harmless.
     await deleteChosenNameOfRemoved(w.db, w.deps.tableName, hex("9"), removedAt);
+    expect(w.db.get(chosenNameKey(hex("9")))).toBeUndefined();
   });
 
   it("a removal that runs again after a failure still deletes the name, and a finished removal is not run twice", async () => {
@@ -281,7 +304,8 @@ describe("a removed (not erased) person", () => {
     expect(w.markers()).toHaveLength(1);
     w.tick(60_000);
     expect(await w.sweep()).toMatchObject({ processed: 1, failed: 0 });
-    expect(w.db.get(chosenNameKey(SAM))).toBeUndefined();
+    expect(w.db.get(chosenNameKey(SAM))).toMatchObject({ removed: true });
+    expect(w.db.get(chosenNameKey(SAM))).not.toHaveProperty("name");
   });
 });
 

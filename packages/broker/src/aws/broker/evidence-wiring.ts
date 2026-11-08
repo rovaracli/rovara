@@ -60,8 +60,9 @@ export function evidenceEraseOf(dependencies: Pick<AwsBrokerDependencies, "s3" |
 }
 
 /**
- * What a person's erase does after the learning walk: the Team record's erase (where that switch is on), the erase of the names they are shown by (ERASE-NAME-1: always, also where the record is off, and
- * also when the record's erase is not finished, so no name waits for it), then the stored evidence of the person's tasks. Any one not finishing throws, and the request is repeated.
+ * What a person's erase does after the learning walk: the Team record's erase (where that switch is on), the erase of the names they are shown by (ERASE-NAME-1), then the stored evidence of the
+ * person's tasks. Any one not finishing throws, and the request is repeated. Where the record is on, its erase runs the names (its `names` step, after the Asks step has kept the keyed hashes of
+ * those names); where it is off, nothing hashes them and they are erased here.
  */
 export function personErasureStep(
   teamRecord: { erase: { person(orgId: OrgId, developerId: string): Promise<void> } } | undefined,
@@ -69,13 +70,8 @@ export function personErasureStep(
   names?: { erase(developerId: string): Promise<void> },
 ): (orgId: OrgId, developerId: string) => Promise<void> {
   return async (orgId, developerId) => {
-    let unfinished: Error | undefined;
-    if (teamRecord !== undefined) {
-      try { await teamRecord.erase.person(orgId, developerId); } catch (error) { unfinished = error instanceof Error ? error : new Error("record_erase_unfinished"); }
-    }
-    // After the record's first pass, which hashes the person's names for the Asks while it can still read them; before anything can throw again.
-    await names?.erase(developerId);
-    if (unfinished !== undefined) throw unfinished;
+    if (teamRecord !== undefined) await teamRecord.erase.person(orgId, developerId);
+    else await names?.erase(developerId);
     await evidence.person(orgId, developerId);
   };
 }

@@ -61,6 +61,8 @@ export interface ErasedPerson {
    * them (`ask-erased-aliases.ts`, register LI-2); then deleted. The name they chose themselves is read here too. Not used anywhere else.
    */
   names?: readonly string[];
+  /** ERASE-NAME-1: the caller could not read the person's names (the read failed). The `names` step then leaves their names in place, for the retry to hash first. */
+  namesUnread?: boolean;
 }
 
 /**
@@ -182,6 +184,8 @@ interface EraseContext {
   rows: readonly Item[]; links: readonly Item[]; at: string; occurrence: string; budget: EraseBudget; queue: ReturnType<typeof tableLakeDeleteQueue>;
   lessonsFailed?: boolean;
   lessonsPurged: number;
+  /** ERASE-NAME-1: set once the Asks step has kept the keyed hashes of the person's names (it writes them first). The `names` step destroys those names, so it waits for this. */
+  aliasesKept?: boolean;
 }
 
 const developerOf = (context: EraseContext): string => context.who.developerId ?? `source:${context.identities[0]?.system ?? "x"}:${context.identities[0]?.sourceId ?? "x"}`;
@@ -254,8 +258,11 @@ const STEP_HANDLERS: Record<Exclude<EraseStep, "rows">, (context: EraseContext) 
     if (context.who.developerId === undefined) return true;
     // Their aliases are remembered first (30 days at most), so an answer in flight cannot write them while their Asks are being removed.
     // Their names come from the caller and from the name they chose themselves (the State table); everything is hashed with the install's key before it is kept, and none of it is kept raw.
-    const chosen = await readOwnChosenName(context.deps.table.documentClient, context.deps.table.tableName, context.who.developerId).catch(() => undefined);
+    let chosenUnread = false;
+    const chosen = await readOwnChosenName(context.deps.table.documentClient, context.deps.table.tableName, context.who.developerId).catch(() => { chosenUnread = true; return undefined; });
     await rememberErasedAliases(context.deps.table, context.orgId, { developerId: context.who.developerId, names: [...(context.who.names ?? []), ...(chosen === undefined ? [] : [chosen])], handles: context.ids }, Date.parse(context.at) || Date.now(), context.deps.askAliasKey);
+    // The keyed hashes are kept; only now may the `names` step destroy the names (not when a name could not be read: the retry hashes it first).
+    if (!chosenUnread && context.who.namesUnread !== true) context.aliasesKept = true;
     for (let pass = 0; pass < ASK_ERASE_PASSES_PER_RUN; pass += 1) {
       const result = await eraseAskPerson(context.deps.table, context.orgId, context.who.developerId, { maxItems: Math.min(context.budget.maxItems, 200) }, context.ids);
       if (result.complete) return true;
@@ -265,6 +272,8 @@ const STEP_HANDLERS: Record<Exclude<EraseStep, "rows">, (context: EraseContext) 
   // ERASE-NAME-1: after the Asks step (which hashes the person's names first): the chosen name becomes a tombstone and the sign-in record's name the placeholder. Absent port: nothing to erase.
   async names(context) {
     if (context.who.developerId === undefined || context.deps.names === undefined) return true;
+    // ERASE-NAME-1: the names go only after the Asks step kept their hashes; a run where it did not leaves them for the retry.
+    if (context.aliasesKept !== true) return false;
     await context.deps.names.erase(context.who.developerId);
     return true;
   },

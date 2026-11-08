@@ -220,6 +220,9 @@ const safeChosenName = (name: string): string | undefined => {
   return parsed.success ? parsed.data.name : undefined;
 };
 
+/** ERASE-NAME-1: why a name can't be chosen over the tombstone an erase leaves. Signing in again does not help; a person who came back after an erase needs an administrator. */
+export const NAME_ERASED_MESSAGE = "your name was erased with your details, so it can't be changed here; ask a company administrator";
+
 const conditionFailed = (error: unknown) =>
   error instanceof Error && (error.name === "ConditionalCheckFailedException" || error.name === "TransactionCanceledException");
 
@@ -451,7 +454,8 @@ export class DeveloperSignInStore {
     } catch (error) {
       if (error instanceof Error && error.name === "TransactionCanceledException") {
         const reasons = (error as { CancellationReasons?: Array<{ Code?: string }> }).CancellationReasons;
-        if (reasons?.[signInCheck]?.Code === "ConditionalCheckFailed" || reasons?.[nameCheck]?.Code === "ConditionalCheckFailed") throw agentXError("FORBIDDEN", "your sign-in can't change its name now; sign in again");
+        if (reasons?.[nameCheck]?.Code === "ConditionalCheckFailed") throw agentXError("FORBIDDEN", NAME_ERASED_MESSAGE);
+        if (reasons?.[signInCheck]?.Code === "ConditionalCheckFailed") throw agentXError("FORBIDDEN", "your sign-in can't change its name now; sign in again");
         throw error;
       }
       if (error instanceof Error && error.name === "ConditionalCheckFailedException") throw agentXError("FORBIDDEN", "your sign-in can't change its name now; sign in again");

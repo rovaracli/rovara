@@ -653,7 +653,7 @@ describe("the conversation", () => {
     expect(await code(f.list(ZED))).toMatchObject({ code: "NOT_FOUND" });
     expect(await code(f.list(BO, undefined, f.sid, ORG_B))).toMatchObject({ code: "NOT_FOUND" });
     expect(await code(f.list(ARJUN, undefined, "nonsense"))).toMatchObject({ code: "NOT_FOUND" });
-    expect(f.w.db.commandNames().slice(before).filter((name) => !["GetCommand", "QueryCommand"].includes(name))).toEqual([]);
+    expect(f.w.db.commandNames().slice(before).filter((name) => !["GetCommand", "QueryCommand", "BatchGetCommand"].includes(name))).toEqual([]);
   });
 
   it("pages with a cursor that carries on, and re-reads a few seconds before it so a comment committed late is still found", async () => {

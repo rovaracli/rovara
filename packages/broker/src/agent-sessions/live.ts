@@ -358,7 +358,7 @@ async function readLive(deps: LiveDependencies, caller: SessionReadCaller, query
   const viewers = await readViewers(deps, orgId, nowMs, log);
 
   // Release 0.4.18: the owners' chosen names, one BatchGetItem for the page.
-  const ownerNames = await chosenOwnerNames(deps, page.map(({ access }) => access.effectiveOwner.developerId));
+  const ownerNames = await chosenOwnerNames(deps, page.map(({ access }) => access.effectiveOwner.developerId), orgId);
   const tiles: LiveTile[] = [];
   for (const { session, access } of page) {
     const { summary } = session;

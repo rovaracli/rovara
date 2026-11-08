@@ -6,6 +6,7 @@
 //   Tasks read the project's latest revision, so a held change is never in a task's prepared definition.
 // One check in flight per project; a newer save supersedes an older pending one. The check's result is read live from its workspace; it is acted on (proof recorded, failure announced, held change written)
 // by `settleSettingsProof`, which runs whenever the project is read or saved, so no timer is needed and a person looking at the page is what drives it.
+import { nameResolverOf, resolveStoredName } from "../../developer/name-resolver.js";
 import { randomUUID } from "node:crypto";
 import { GetCommand } from "@aws-sdk/lib-dynamodb";
 import {
@@ -296,6 +297,11 @@ function heldOf(held: HeldChange | undefined): SettingsHeld | undefined {
   return { status, fields: held.fields, heldAt: held.heldAt, ...(reason === undefined ? {} : { reason }) };
 }
 
+/** ERASE-NAME-2: who saved the failed settings, by the name stored with the save, replaced for an erased person ("A former member") and for a removed one (never the name they chose). */
+export async function savedByName(deps: Pick<DeveloperRouteDependencies, "documentClient" | "tableName" | "developer">, orgId: OrgId, saved: { by?: string | undefined; byName?: string | undefined }): Promise<string | undefined> {
+  return saved.byName === undefined || saved.by === undefined ? saved.byName : resolveStoredName(nameResolverOf(deps, orgId), saved.by, saved.byName);
+}
+
 /** Whether the commands now in the settings are proved, and what a maintainer may do about it. */
 async function proofOf(deps: DeveloperRouteDependencies, orgId: OrgId, name: string, role: ProjectRole, latest: LatestRevision): Promise<SettingsProof> {
   const store = storeOf(deps);
@@ -324,7 +330,7 @@ async function proofOf(deps: DeveloperRouteDependencies, orgId: OrgId, name: str
     ...(status === "proven" && proof.proven !== undefined && provenNow ? { provenAt: proof.proven.provenAt } : {}),
     ...(reason === undefined ? {} : { reason }),
     ...(proof.proven === undefined ? {} : { lastProvenAt: proof.proven.provenAt }),
-    ...(failed === undefined ? {} : { notice: { message: proof.proven === undefined ? PROOF_WORDS.failedNoUndo : PROOF_WORDS.failedWithUndo, at: failed.noticeAt ?? failed.savedAt, savedBy: failed.byName } }),
+    ...(failed === undefined ? {} : { notice: { message: proof.proven === undefined ? PROOF_WORDS.failedNoUndo : PROOF_WORDS.failedWithUndo, at: failed.noticeAt ?? failed.savedAt, savedBy: await savedByName(deps, orgId, failed) } }),
     ...(held === undefined ? {} : { held }),
   };
 }

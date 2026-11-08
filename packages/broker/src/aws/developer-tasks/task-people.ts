@@ -1,4 +1,5 @@
 import { agentXError, type TaskPeopleRoleRequestSchema, type TaskPeopleTakeOwnershipRequestSchema } from "@agentx/contracts";
+import { nameResolverOf, resolveStoredName } from "../../developer/name-resolver.js";
 import type { z } from "zod";
 import { taskKey, type DeveloperTaskRecord } from "../../developer/task-records.js";
 import type { DeveloperCaller } from "../developer-routes.js";
@@ -75,7 +76,7 @@ export async function codeOwnershipConfirmation(deps: DeveloperTaskRouteDependen
   }
   // Authority first (Task 23 re-check N2): the take-over rules are run over the session the task would get, and only a caller who passes them causes the missing row to be made.
   if (task.sessionId === undefined) {
-    const pending = lazyTaskSessionRecord(task, { ownerName: task.developerName, title: inertTaskTitle(task.title) });
+    const pending = lazyTaskSessionRecord(task, { ownerName: await resolveStoredName(nameResolverOf(deps, task.orgId), task.developerId, task.developerName), title: inertTaskTitle(task.title) });
     if (pending === undefined) throw agentXError("RUNTIME_UNAVAILABLE", "This task's session cannot be created right now.");
     await requireTakeOverOfNewSession(sessions, caller, pending);
   }

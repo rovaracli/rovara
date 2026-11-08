@@ -1,4 +1,5 @@
 import { personNameForText } from "../../developer/requester-text.js";
+import { nameResolverOf, replacementNames, shownNameOf } from "../../developer/name-resolver.js";
 import { createHash } from "node:crypto";
 import { QueryCommand, TransactWriteCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
 import {
@@ -52,7 +53,7 @@ import { PLANNER_WHY_AUTHOR, WHY_NOTES_MAX, WHY_NOTE_MAX_CHARS, creatorGuard, cu
  */
 export async function planWhyEntries(
   deps: Pick<DeveloperTaskRouteDependencies, "documentClient" | "tableName">,
-  task: Pick<DeveloperTaskRecord, "taskId" | "developerName" | "requestText" | "threadNotesFedFrom" | "threadNotesFedThrough"> & TaskOwnerSource,
+  task: Pick<DeveloperTaskRecord, "taskId" | "orgId" | "developerName" | "requestText" | "threadNotesFedFrom" | "threadNotesFedThrough"> & TaskOwnerSource,
   plannerEntries: PlanDocument["why"],
   /** The GitHub login a person linked, for a name that is only an email address (C60); asked only then. */
   loginOf?: (developerId: string) => Promise<string | undefined>,
@@ -60,8 +61,13 @@ export async function planWhyEntries(
   if (task.requestText === undefined) return plannerEntries.map((entry) => ({ text: entry.text, author: PLANNER_WHY_AUTHOR }));
   // The request is its creator's words; a reply from the owner is the owner's now (Plan 5 Task 12a): the person who took the task over, else the creator.
   const loginIfAddress = async (name: string, developerId: string | undefined) => loginOf === undefined || developerId === undefined || personNameForText(name) !== undefined ? undefined : loginOf(developerId);
-  const requester = ownerLabel(task.developerName, await loginIfAddress(task.developerName, task.developerId));
-  const owner = ownerLabel(ownerDisplayName(task), await loginIfAddress(ownerDisplayName(task), tryEffectiveTaskOwner(task)?.developerId));
+  // ERASE-NAME-2: the names the task stored are replaced for an erased person ("A former member") and a removed one (never the chosen name), as everywhere (developer/name-resolver.ts).
+  const ownerId = tryEffectiveTaskOwner(task)?.developerId;
+  const replaced = await replacementNames(nameResolverOf(deps, task.orgId), [task.developerId, ...(ownerId === undefined ? [] : [ownerId])]);
+  const requesterName = shownNameOf(task.developerName, task.developerId, replaced);
+  const ownerName = ownerId === undefined ? ownerDisplayName(task) : shownNameOf(ownerDisplayName(task), ownerId, replaced);
+  const requester = ownerLabel(requesterName, await loginIfAddress(requesterName, task.developerId));
+  const owner = ownerLabel(ownerName, await loginIfAddress(ownerName, ownerId));
   const through = task.threadNotesFedThrough;
   const notes = through === undefined ? []
     : (await readWorkflowThreadNotes(deps, task.taskId, task.threadNotesFedFrom)).filter((note) => note.receivedAt <= through);
