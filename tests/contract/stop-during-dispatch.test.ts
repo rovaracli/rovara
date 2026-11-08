@@ -116,6 +116,20 @@ describe("a task left INTERRUPTED and holding its workspace (a stop that did not
     expect(meta()).toMatchObject({ status: "BUSY", activeOperationId: operationId });
   });
 
+  it("the not-confirmed answers promise nothing they cannot keep: no 'within N minutes', and they say a busy worker keeps the workspace held and that nothing is deleted", async () => {
+    const { close, dev, db, taskId } = await orphaned("alive");
+    const closeAnswer = JSON.stringify((await close()).body);
+    expect(closeAnswer).toContain("still busy it stays held until the worker finishes");
+    expect(closeAnswer).toContain("nothing is deleted");
+    expect(closeAnswer).not.toMatch(/within (about )?\d+ minutes/u);
+    const meta = db.get(`DEVTASK#${taskId}`, "META") as { sessionId?: string; agent?: unknown };
+    delete meta.agent;
+    const stopAnswer = JSON.stringify((await dev(MAYA, "POST", `/v1/app/sessions/${String(meta.sessionId)}/stop`, { requestId: randomUUID() })).body);
+    expect(stopAnswer).toContain("until it finishes");
+    expect(stopAnswer).toContain("nothing is deleted");
+    expect(stopAnswer).not.toMatch(/within (about )?\d+ minutes/u);
+  });
+
   it("Close is the way forward once the compute is gone: it frees the hold and starts the check for unpublished work", async () => {
     const { close, meta, operation, workspaceId, db } = await orphaned("gone");
     const started = await close();

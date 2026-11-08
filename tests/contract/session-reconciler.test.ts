@@ -26,7 +26,7 @@ const hex = () => randomUUID().replaceAll("-", "").slice(0, 17);
 
 type Start = (input: { stateMachineArn: string; name: string; input: string }) => Promise<string>;
 
-type SetupOptions = { instances?: InstanceView[]; volumes?: VolumeView[]; executions?: Record<string, ExecutionStatus>; ping?: ReconcilerDependencies["ping"]; sweepStuckSetups?: ReconcilerDependencies["sweepStuckSetups"]; sweepStuckCancels?: ReconcilerDependencies["sweepStuckCancels"]; expireIndexDays?: ReconcilerDependencies["expireIndexDays"]; expireLearningItems?: ReconcilerDependencies["expireLearningItems"]; sweepUnwaitedTasks?: ReconcilerDependencies["sweepUnwaitedTasks"]; qualifiedWorkerAmi?: ReconcilerDependencies["qualifiedWorkerAmi"]; log?: ReconcilerDependencies["log"] };
+type SetupOptions = { instances?: InstanceView[]; volumes?: VolumeView[]; executions?: Record<string, ExecutionStatus>; ping?: ReconcilerDependencies["ping"]; sweepStuckSetups?: ReconcilerDependencies["sweepStuckSetups"]; sweepStuckCancels?: ReconcilerDependencies["sweepStuckCancels"]; expireIndexDays?: ReconcilerDependencies["expireIndexDays"]; expireLearningItems?: ReconcilerDependencies["expireLearningItems"]; sweepUnwaitedTasks?: ReconcilerDependencies["sweepUnwaitedTasks"]; qualifiedWorkerAmi?: ReconcilerDependencies["qualifiedWorkerAmi"]; describeInstance?: ReconcilerDependencies["describeInstance"]; log?: ReconcilerDependencies["log"] };
 
 function setup(options: SetupOptions = {}) {
   const db = new FakeDynamoDb();
@@ -54,6 +54,8 @@ function setup(options: SetupOptions = {}) {
       return item?.status === "CLOSED" ? item.closedAt as string : undefined;
     },
     binding: async () => binding,
+    // Default: EC2 says the instance a listing did not show does not exist.
+    describeInstance: options.describeInstance ?? (async () => undefined),
     emit,
     now: () => NOW,
     log: options.log ?? (() => undefined),
@@ -588,6 +590,88 @@ describe("reconciler: stuck cancels (issue 195)", () => {
     expect((await reconcile()).stuckCancels?.failed).toEqual([operationId]);
     expect(db.get(`WORKSPACE#${workspaceId}`, "META")).toMatchObject({ status: "BUSY", activeOperationId: operationId });
     expect(emit).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ ReconcilerStuckCancelsInterrupted: 0, ReconcilerStuckCancelFailures: 1 }));
+  });
+
+  describe("P1 stop-close: a session is marked lost only on evidence the compute is gone", () => {
+    /** A READY workspace whose INTERRUPTED task (a failed cancel) still holds it, the sweep wired to the real stuck-cancel code. */
+    function held(options: { describeInstance: ReconcilerDependencies["describeInstance"]; ping?: ReconcilerDependencies["ping"] }) {
+      const table: { db?: FakeDynamoDb } = {};
+      const harness = setup({ describeInstance: options.describeInstance, ...(options.ping === undefined ? {} : { ping: options.ping }), sweepStuckCancels: (candidates, now) => sweepStuckCancels({ client: table.db!, tableName: "state" }, candidates, now) });
+      table.db = harness.db;
+      const operationId = randomUUID();
+      const worker = ready();
+      const workspaceId = seedSession(harness.db, "READY", worker, { status: "BUSY", activeOperationId: operationId, fence: 2 });
+      harness.db.set({ pk: `WORKSPACE#${workspaceId}`, sk: `OPERATION#${operationId}`, kind: "task", status: "INTERRUPTED", fence: 2, updatedAt: minutesAgo(1) });
+      harness.state.instances = []; // the listing shows nothing
+      return { ...harness, worker, workspaceId, operationId, operation: () => harness.db.get(`WORKSPACE#${workspaceId}`, `OPERATION#${operationId}`)! };
+    }
+
+    it("a transient gap in the listing (the instance still runs when asked by ID) does not mark the session lost, fail its operation or free the hold", async () => {
+      const probe = { state: "running" };
+      const { db, reconcile, worker, workspaceId, operationId, operation, terminate } = held({ describeInstance: async (instanceId) => ({ instanceId, state: probe.state, workspaceId: "w", launchedAt: minutesAgo(60) }) });
+      const report = await reconcile();
+      expect(report.lostInstances).toEqual([]);
+      expect(terminate).not.toHaveBeenCalled();
+      expect(sessionOf(db, workspaceId)).toMatchObject({ state: "READY", instanceId: worker.instanceId });
+      expect(operation()).toMatchObject({ status: "INTERRUPTED" });
+      expect(operation()).not.toHaveProperty("workspaceReleasedAt");
+      // The worker is judged as the running instance it is: its idle answer is the sweep's only evidence, and the 10-minute wait has not passed.
+      expect(report.stuckCancels?.interrupted).toEqual([]);
+      expect(db.get(`WORKSPACE#${workspaceId}`, "META")).toMatchObject({ status: "BUSY", activeOperationId: operationId });
+    });
+
+    it("a lookup that cannot answer leaves the session READY and its compute unknown to the sweep, so no hold is freed", async () => {
+      const logs: Array<Record<string, unknown>> = [];
+      const sweep = vi.fn<NonNullable<ReconcilerDependencies["sweepStuckCancels"]>>(async () => ({ retried: [], ended: [], interrupted: [], unretried: [], failed: [] }));
+      const { db, state, reconcile } = setup({ describeInstance: async () => { throw Object.assign(new Error("PLANTED-MESSAGE"), { name: "ThrottlingException" }); }, sweepStuckCancels: sweep, log: (entry) => { logs.push(entry); } });
+      const worker = ready();
+      const workspaceId = seedSession(db, "READY", worker);
+      state.instances = [];
+      const report = await reconcile();
+      expect(report.lostInstances).toEqual([]);
+      expect(sessionOf(db, workspaceId)).toMatchObject({ state: "READY" });
+      expect([...sweep.mock.calls[0]![0]]).toEqual([{ workspaceId, compute: "unknown" }]);
+      expect(logs).toContainEqual({ event: "reconciler.instance_unconfirmed", workspaceId, instanceId: worker.instanceId, errorName: "ThrottlingException" });
+      expect(JSON.stringify(logs)).not.toContain("PLANTED-MESSAGE");
+    });
+
+    it("EC2 saying the instance does not exist marks the session lost, and the sweep frees the hold as compute-gone", async () => {
+      const { db, reconcile, workspaceId, operationId, operation, worker } = held({ describeInstance: async () => undefined });
+      const report = await reconcile();
+      expect(report.lostInstances).toEqual([worker.instanceId]);
+      expect(sessionOf(db, workspaceId)).toMatchObject({ state: "STOPPED" });
+      expect(operation()).toMatchObject({ status: "INTERRUPTED", workspaceReleaseReason: "compute-gone" });
+      expect(db.get(`WORKSPACE#${workspaceId}`, "META")).not.toHaveProperty("activeOperationId");
+      expect(report.stuckCancels?.interrupted).toEqual([operationId]);
+    });
+
+    it("EC2 reporting the instance terminated (still kept for about an hour) marks the session lost without another terminate call", async () => {
+      const { db, reconcile, workspaceId, worker, terminate } = held({ describeInstance: async (instanceId) => ({ instanceId, state: "terminated", launchedAt: minutesAgo(60) }) });
+      expect((await reconcile()).lostInstances).toEqual([worker.instanceId]);
+      expect(sessionOf(db, workspaceId)).toMatchObject({ state: "STOPPED" });
+      expect(terminate).not.toHaveBeenCalled();
+    });
+
+    it("a listed instance needs no lookup (a listed stopped one is terminated, then marked lost, as before)", async () => {
+      const describeInstance = vi.fn<ReconcilerDependencies["describeInstance"]>(async () => undefined);
+      const { db, state, reconcile, terminate } = setup({ describeInstance });
+      const worker = ready();
+      const workspaceId = seedSession(db, "READY", worker);
+      state.instances = [{ instanceId: worker.instanceId, state: "stopped", workspaceId, launchedAt: minutesAgo(60) }];
+      expect((await reconcile()).lostInstances).toEqual([worker.instanceId]);
+      expect(terminate).toHaveBeenCalledWith(worker.instanceId);
+      expect(describeInstance).not.toHaveBeenCalled();
+    });
+
+    it("the gap passes: on the next run, once the listing shows the instance again, nothing was lost in between", async () => {
+      let found = true;
+      const { db, state, reconcile, worker, workspaceId } = held({ describeInstance: async (instanceId) => found ? { instanceId, state: "running", launchedAt: minutesAgo(60) } : undefined });
+      await reconcile();
+      state.instances = [{ instanceId: worker.instanceId, state: "running", workspaceId, launchedAt: minutesAgo(60) }];
+      found = false;
+      expect((await reconcile()).lostInstances).toEqual([]);
+      expect(sessionOf(db, workspaceId)).toMatchObject({ state: "READY" });
+    });
   });
 
   it("logs and counts a sweep that throws, and the run goes on", async () => {

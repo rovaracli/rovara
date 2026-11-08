@@ -85,6 +85,12 @@ export interface ReconcilerDependencies {
   /** When the workspace closed, if it did. */
   closedAt: (workspaceId: string) => Promise<string | undefined>;
   binding: (workspaceId: string) => Promise<Ec2RuntimeBinding | undefined>;
+  /**
+   * P1 stop-close: one instance by its ID, a consistent read, for a READY session's instance that this run's listing did not show. The listing is a filtered, eventually consistent
+   * search, so a gap in it is not proof the compute is gone. Resolves the instance (any state, a terminated one included, which EC2 keeps for about an hour) or undefined when EC2
+   * says it does not exist; rejects when it cannot tell. Only a "terminated" or "does not exist" answer lets the session be marked lost.
+   */
+  describeInstance: (instanceId: string) => Promise<InstanceView | undefined>;
   emit: (metrics: Record<string, number>) => void;
   /** Spec 025 FR-055: fails developer-task prepares 50 minutes old; absent in tests that do not need it. */
   sweepStuckSetups?: (now: Date) => Promise<{ failed: string[]; keptChecks?: number }>;
@@ -150,6 +156,23 @@ export function createReconcilerHandler(dependencies: ReconcilerDependencies) {
     const instanceById = new Map(instances.map((instance) => [instance.instanceId, instance]));
     const settled = (timestamp: string) => now - Date.parse(timestamp) > GRACE_MS;
 
+    // P1 stop-close: a READY session's instance the listing did not show is looked up by its ID before anything judges it gone. Found: it is judged as listed (a gap in the listing
+    // never marks the session lost and never reads as "compute gone" to the stuck-cancel sweep). Not found or terminated: gone for sure. Unreadable: left alone this run (workspace IDs).
+    const unconfirmed = new Set<string>();
+    for (const session of sessions.values()) {
+      if (session.state !== "READY" || session.instanceId === undefined || instanceById.has(session.instanceId)) continue;
+      try {
+        const found = await dependencies.describeInstance(session.instanceId);
+        if (found !== undefined) {
+          instanceById.set(session.instanceId, found);
+          log({ event: "reconciler.instance_listing_gap", workspaceId: session.workspaceId, instanceId: session.instanceId, state: found.state });
+        }
+      } catch (error) {
+        unconfirmed.add(session.workspaceId);
+        log({ event: "reconciler.instance_unconfirmed", workspaceId: session.workspaceId, instanceId: session.instanceId, errorName: error instanceof Error ? error.name : "unknown" });
+      }
+    }
+
     // Instances no session owns.
     for (const instance of instances) {
       if (GONE.has(instance.state) || !settled(instance.launchedAt)) continue;
@@ -168,7 +191,7 @@ export function createReconcilerHandler(dependencies: ReconcilerDependencies) {
       switch (session.state) {
         case "READY": {
           const startedAt = (dependencies.now?.() ?? new Date()).getTime();
-          const worker = await reconcileReady(dependencies, session, instanceById, report, log, now, qualifiedAmi);
+          const worker = await reconcileReady(dependencies, session, instanceById, unconfirmed, report, log, now, qualifiedAmi);
           if (worker !== undefined) { workers.set(session.workspaceId, worker); pingedAt.set(session.workspaceId, startedAt); }
           break;
         }
@@ -187,7 +210,7 @@ export function createReconcilerHandler(dependencies: ReconcilerDependencies) {
     // and in its own try, so a failure here never stops the repairs that follow. Compute is judged
     // from this run's snapshot: a worker the repairs above just stopped still counts as alive, so
     // its one retry may be spent on it. The next run sees it gone and ends the task.
-    const stuckCancelMetrics = await reconcileStuckCancels(dependencies, sessions, instanceById, workers, pingedAt, now, report, log);
+    const stuckCancelMetrics = await reconcileStuckCancels(dependencies, sessions, instanceById, unconfirmed, workers, pingedAt, now, report, log);
 
     // Volumes no session claims.
     for (const volume of await dependencies.volumes()) {
@@ -293,9 +316,11 @@ export function createReconcilerHandler(dependencies: ReconcilerDependencies) {
 }
 
 /** What is known of each listed workspace's compute, from this run's session and instance reads. */
-function computeOf(session: WorkspaceSession, instances: Map<string, InstanceView>): StuckCancelCompute {
+function computeOf(session: WorkspaceSession, instances: Map<string, InstanceView>, unconfirmed: ReadonlySet<string>): StuckCancelCompute {
   switch (session.state) {
     case "READY":
+      // P1 stop-close: an instance that is missing from the listing and could not be looked up is not known to be gone: no hold is freed on it.
+      if (unconfirmed.has(session.workspaceId)) return "unknown";
       return instances.get(session.instanceId!)?.state === "running" ? "alive" : "gone";
     case "STOPPED":
     case "FAILED":
@@ -316,6 +341,7 @@ async function reconcileStuckCancels(
   dependencies: ReconcilerDependencies,
   sessions: Map<string, WorkspaceSession>,
   instances: Map<string, InstanceView>,
+  unconfirmed: ReadonlySet<string>,
   workers: Map<string, StuckCancelWorker>,
   pingedAt: Map<string, number>,
   now: number,
@@ -326,7 +352,7 @@ async function reconcileStuckCancels(
   // Only workspaces with a listed session: a task runs only on a session's compute, so a stuck
   // cancel on a workspace with none (or a DELETED one) is not looked for here.
   const candidates = [...sessions.values()].map((session): StuckCancelCandidate => {
-    const compute = computeOf(session, instances);
+    const compute = computeOf(session, instances, unconfirmed);
     const worker = compute === "alive" ? workers.get(session.workspaceId) : undefined;
     const pinged = pingedAt.get(session.workspaceId);
     return { workspaceId: session.workspaceId, compute, ...(worker === undefined ? {} : { worker }), ...(worker === undefined || pinged === undefined ? {} : { pingedAt: pinged }) };
@@ -353,14 +379,18 @@ async function reconcileReady(
   dependencies: ReconcilerDependencies,
   session: WorkspaceSession,
   instances: Map<string, InstanceView>,
+  unconfirmed: ReadonlySet<string>,
   report: ReconcilerReport,
   log: (entry: Record<string, unknown>) => void,
   now: number,
   qualifiedAmi?: string,
 ): Promise<StuckCancelWorker | undefined> {
   const instance = instances.get(session.instanceId!);
+  // P1 stop-close: missing from the listing and EC2 could not say whether it exists. Not evidence it is gone: marking the session lost (STOPPED) would let Close free a workspace whose instance
+  // may still run. Judged again on the next run.
+  if (instance === undefined && unconfirmed.has(session.workspaceId)) return undefined;
   if (instance === undefined || instance.state !== "running") {
-    // Terminated, stopped or gone from under a READY session: its work cannot finish.
+    // Terminated (by EC2 or by the call just below), stopped, or confirmed absent by a lookup of its ID: its work cannot finish. A terminate call or EC2's own word is the evidence markLost needs.
     if (instance !== undefined && !GONE.has(instance.state)) await dependencies.terminate(instance.instanceId);
     if (!(await dependencies.sessions.markLost(session))) return;
     const operationId = await dependencies.failActiveOperation(session.workspaceId, "RUNTIME_UNAVAILABLE: workspace compute was lost; retry the request");
@@ -621,6 +651,25 @@ export const handler = createReconcilerHandler({
     const response = await fetch(url, { signal: AbortSignal.timeout(PING_TIMEOUT_MS) });
     const body = await response.json() as { status?: unknown };
     return typeof body.status === "string" ? body.status : undefined;
+  },
+  async describeInstance(instanceId) {
+    try {
+      const page = await ec2.send(new DescribeInstancesCommand({ InstanceIds: [instanceId] }));
+      const instance = (page.Reservations ?? []).flatMap((reservation) => reservation.Instances ?? []).find((candidate) => candidate.InstanceId === instanceId);
+      if (instance === undefined) return undefined;
+      const workspaceId = tag(instance.Tags, "agentx:workspace");
+      return {
+        instanceId,
+        state: instance.State?.Name ?? "unknown",
+        launchedAt: (instance.LaunchTime ?? new Date()).toISOString(),
+        ...(workspaceId === undefined ? {} : { workspaceId }),
+        ...(instance.ImageId === undefined ? {} : { imageId: instance.ImageId }),
+      };
+    } catch (error) {
+      // EC2's own "no such instance" (an ID too old to keep, or never there): gone. Anything else is not an answer.
+      if (error instanceof Error && error.name === "InvalidInstanceID.NotFound") return undefined;
+      throw error;
+    }
   },
   async terminate(instanceId) {
     await ec2.send(new TerminateInstancesCommand({ InstanceIds: [instanceId] }));
