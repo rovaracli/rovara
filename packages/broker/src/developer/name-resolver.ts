@@ -6,7 +6,7 @@
 // One BatchGetItem for the name items, one read per person for the rest, results kept briefly (an erase is permanent, so a "yes" is kept; a "no" for half a minute). A read that fails leaves the copy as stored,
 // like every other best-effort name overlay.
 import { GetCommand } from "@aws-sdk/lib-dynamodb";
-import { orgMemberKey, type OrgId } from "@agentx/contracts";
+import { orgMemberKey } from "@agentx/contracts";
 import { FORMER_MEMBER_NAME, eraseChosenName, readNameItems, type ChosenNameClient, type ChosenNameItem } from "./chosen-name.js";
 import { placeholderDisplayName, safeDisplayName } from "./person-name.js";
 
