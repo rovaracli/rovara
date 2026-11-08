@@ -24,7 +24,8 @@ describe("the decision body", () => {
     const taskId = randomUUID();
     const caller: DeveloperCaller = { orgId: TEST_ORG, orgRole: "member", developerId: "d".repeat(64), sessionId: "s1", amr: "slack", name: "Maya Chen", slackUserId: "U0MAYA001", email: "maya@example.com" };
     const logged: Array<Record<string, unknown>> = [];
-    const deps = { origin: DEV_ISSUER, readOnly: true, authenticateSession: async () => caller, log: (entry: Record<string, unknown>) => { logged.push(entry); } } as unknown as TaskWebApiDependencies;
+    // Follow-up R1 (ux2c-followup): the refusal is for a task that HAS a task page to decide on; this one does.
+    const deps = { origin: DEV_ISSUER, readOnly: true, taskPagePath: async () => `/app/sessions/ses_${"a".repeat(20)}`, authenticateSession: async () => caller, log: (entry: Record<string, unknown>) => { logged.push(entry); } } as unknown as TaskWebApiDependencies;
     const request: AdaptedHttpRequest = { method: "POST", path: `/review/${taskId}/task/api/decision`, requestId: "r",
       body: JSON.stringify({ ...body, workBreakdownDigest: "b".repeat(64), note: "private note text", surprise: "value-that-must-not-leak" }),
       headers: { origin: ORIGIN, cookie: `__Host-agentx_review_session=s1; __Host-agentx_review_csrf=${CSRF}`, "x-agentx-csrf": CSRF, "content-type": "application/json" } };

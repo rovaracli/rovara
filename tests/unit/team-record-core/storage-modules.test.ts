@@ -24,6 +24,7 @@ const RECORD_STORAGE_MODULES: Record<string, string> = {
   "team-record/hot-source.ts": "the hot archive source and deleted-at-source marks",
   "team-record/text-expiry.ts": "the raw-text expiry walk",
   "team-record/mode.ts": "the capture mode and its lock",
+  "team-record/learning-mode-write.ts": "the learning mode and its lock, read as stored so the mode's writer can write conditionally on exactly that value (UX-4b)",
   "team-record/prior-edits.ts": "marks of edits the tap never stored",
   "team-record/identity-links.ts": "identity links of people",
   "team-record/tracker-directory.ts": "the tracker people directory",

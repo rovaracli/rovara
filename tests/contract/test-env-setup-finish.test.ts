@@ -27,8 +27,12 @@ describe("item 5: the approval's own settings write does not stale its own look"
       expect(after.draft.status).toBe("ready");
       // What is already approved is not offered again as a proposal.
       expect(after.proposal).toBeUndefined();
-      // A person's own save moves the settings on: the look is stale again (positive control for the same read).
-      const saved = await t.web(OMAR, "PUT", `/v1/app/projects/${NAME}/settings`, { requestId: crypto.randomUUID(), expectedRevision: 2, setupCommands: ["make old-setup", "make deps", "make other"] });
+      // UX-4b review I1 (owner decision 11): with the test environment on, a browser save that changes the commands is refused (they are proved there first); it changes nothing, so the look stays current.
+      const changed = await t.web(OMAR, "PUT", `/v1/app/projects/${NAME}/settings`, { requestId: crypto.randomUUID(), expectedRevision: 2, setupCommands: ["make old-setup", "make deps", "make other"] });
+      expect(changed.status, JSON.stringify(changed.body)).toBe(400);
+      expect((await t.state()).draft.status).toBe("ready");
+      // A person's own save of something else (here the dev container) moves the settings on: the look is stale again (positive control for the same read).
+      const saved = await t.web(OMAR, "PUT", `/v1/app/projects/${NAME}/settings`, { requestId: crypto.randomUUID(), expectedRevision: 2, devcontainer: { repository: "web", configPath: ".devcontainer/ci.json" } });
       expect(saved.status, JSON.stringify(saved.body)).toBeLessThan(300);
       expect((await t.state()).draft.status).toBe("stale");
     });

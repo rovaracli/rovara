@@ -104,8 +104,9 @@ it("routes every Rovara Code call of the runs API to the code route", async () =
  expect(f.request.mock.calls.map(([request]) => request.path)).toEqual([CODE]);expect(f.request.mock.calls[0]![0].body).toMatchObject({ input: { text: "Fix it" } });
  await expect(async () => api.startWork("rovara-code", { project: "payments", text: "   " })).rejects.toThrow();await expect(async () => api.startWork("rovara-code", { project: "../x", text: "Fix it" })).rejects.toThrow();expect(f.request).toHaveBeenCalledTimes(1);
 });
-it("says which process runs when How we work is already loaded, and does not ask for it otherwise", async () => {
- const bare = setup();await box();expect(screen.getByText("Runs: this project's process")).toBeTruthy();expect(bare.request.mock.calls.every(([request]) => !request.path.includes("how-we-work"))).toBe(true);bare.close();
+it("says which process runs when How we work is already loaded, and does not ask for it again otherwise", async () => {
+ // UX-4b: the project page's setup checklist reads How we work for its own row, so the page asks once; the start box adds no read of its own and names the process only from that shared answer.
+ const bare = setup();await box();expect(screen.getByText("Runs: this project's process")).toBeTruthy();await waitFor(() => expect(bare.request.mock.calls.filter(([request]) => request.path.includes("how-we-work")).length).toBe(1));expect(screen.getByText("Runs: this project's process")).toBeTruthy();bare.close();
  const layer = projectFixture();layer.agents.push({ agentId: LAYER, name: "Payments process", description: "How payments work", running: 0 });
  const named = setup(layer, { seed: howWeWorkView() });expect(await screen.findByText("Runs: Payments process (Rovara Code)")).toBeTruthy();named.close();
  const builtin = setup(undefined, { seed: howWeWorkView({ process: { kind: "builtin", agentId: "rovara-code" } }) });expect(await screen.findByText("Runs: the built-in process (Rovara Code)")).toBeTruthy();builtin.close();

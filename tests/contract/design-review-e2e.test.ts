@@ -1208,14 +1208,13 @@ describe("slice C: the design review's routes", () => {
       headers: { host: new URL(DEV_ISSUER).host, cookie: `__Host-agentx_review_session=${reviewCookie(w, MAYA)}` }, requestContext: { requestId: randomUUID(), http: { method: "GET" } },
     });
     const response = await get();
-    expect(response.statusCode).toBe(200);
-    const text = String(response.body);
-    // OWNER DECISION 7: with the decision cards on the page is read-only; its bar sends the owner to the task page, where the design's card is.
-    expect(text).toMatch(/<a id="decide-on-task" href="\/app\/sessions\/ses_[0-9a-z]{20}">Decide on the task<\/a>/u);
-    expect(text).not.toContain("<button type=\"button\" id=\"decide-approve\"");
-    // The header (status and next step) does not send a web-started task to Slack, and there is no People panel to be unavailable.
-    expect(text.slice(text.indexOf("<header>"), text.indexOf("</header>"))).not.toContain("Slack");
-    expect(text).not.toContain("People unavailable");
+    // OWNER DECISION 18 (dc3b9162c): with the decision cards on, the old page forwards a reader of the task to the task page, where the design's card is; it draws no page of its own (no
+    // approve control, no header that could send a web-started task to Slack).
+    const sessionId = (w.task() as { sessionId?: string }).sessionId;
+    expect(sessionId, "positive control: the started task has a session").toMatch(/^ses_[0-9a-z]{20}$/u);
+    const { headers } = response as { headers?: Record<string, string> };
+    expect([response.statusCode, headers?.["location"]]).toEqual([302, `/app/sessions/${sessionId}?doc=plan`]);
+    expect(String(response.body)).toBe("");
     // The guard is unchanged: a plain approval is still refused and nothing is decided.
     const before = w.task().workflow;
     const refused = await pageDecision(w, MAYA, { requestId: randomUUID(), expectedRevision: before.revision, artifactDigest: designDigestOf(w), decision: "APPROVE", answers: [], includedCommentIds: [] });
