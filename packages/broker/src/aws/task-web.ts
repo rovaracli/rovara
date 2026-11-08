@@ -525,7 +525,8 @@ function decideDialog(view: TaskDocumentView): string {
 function readOnlyView(view: TaskDocumentView): TaskDocumentView {
   // OWNER DECISION 17: read-only for decisions only; comments, replies, suggestions, Ask and People stay as they were.
   const { applicationRetry: _retry, reviseOffer: _revise, ...rest } = view; // eslint-disable-line @typescript-eslint/no-unused-vars -- the offers are links to the task page here, not buttons
-  return { ...rest, ...(view.access === undefined ? {} : { access: { ...view.access, canDecide: false } }), ...(view.specHold === undefined ? {} : { specHold: { ...view.specHold, canChoose: false } }) };
+  // OWNER DECISION 18 (review M1): nothing is written here with the cards on (the API refuses every write but a People confirmation), so no comment, suggestion or Ask control is offered either.
+  return { ...rest, ...(view.access === undefined ? {} : { access: { ...view.access, canDecide: false, canComment: false, canSuggest: false, canAsk: false } }), ...(view.specHold === undefined ? {} : { specHold: { ...view.specHold, canChoose: false } }) };
 }
 
 async function page(view: TaskDocumentView, nonce: string, request: TaskPageRequest, csrf?: string, readOnly = false): Promise<string> {
@@ -571,7 +572,7 @@ async function page(view: TaskDocumentView, nonce: string, request: TaskPageRequ
     }).join("")}</ol>`;
   const owns = view.access === undefined ? view.role === "owner" : view.access.role === "owner";
   const role = owns ? "You're the task owner." : view.access?.canComment === true ? "You can read and comment on this task." : "You can read this task.";
-  const slackOnly = readOnly ? '<p class="muted">Decisions are made on the task page in Rovara. Comments and suggestions can still be made here.</p>'
+  const slackOnly = readOnly ? '<p class="muted">Decisions, comments and suggestions are made on the task page in Rovara.</p>'
     : view.access?.canDecide === true ? ""
     : view.access?.canComment === true ? `<p class="muted">${view.access.canSuggest ? "Only the task owner decides; you can comment and suggest." : "Only the task owner decides; you can comment."}</p>`
     : '<p class="muted">Decisions are made on the task page in Rovara.</p>';

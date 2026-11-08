@@ -50,6 +50,8 @@ export interface FeedbackReviewWebDependencies {
 }
 
 const TASK_PAGE_PATH = /^\/app\/sessions\/ses_[0-9a-z]{20}$/u;
+/** OWNER DECISION 18: what a decision sent to this page answers while the cards are on. */
+export const FEEDBACK_PAGE_READ_ONLY_MESSAGE = "This page is read only. Decide the PR feedback on the task's page in Rovara.";
 
 export interface FeedbackReviewWebResponse { statusCode: number; headers: Record<string, string>; body: string }
 
@@ -172,6 +174,12 @@ export function createFeedbackReviewWeb(deps: FeedbackReviewWebDependencies) {
     if (caller === undefined) return safeResponse(401, { error: "sign_in_required" });
     if (endpoint === "api/decision") {
       if (request.method !== "POST") return safeResponse(405, { error: "method_not_allowed" });
+      // OWNER DECISION 18 (review M1): with the cards on, the review is decided in the task page's feedback view only; this answers where (for a reader who may read the task), deciding nothing.
+      if (deps.taskPagePath !== undefined) {
+        let taskPage: string | undefined;
+        try { taskPage = await deps.taskPagePath(caller, taskId.toLowerCase()); } catch { taskPage = undefined; }
+        return safeResponse(410, { error: "read_only", message: FEEDBACK_PAGE_READ_ONLY_MESSAGE, ...(taskPage !== undefined && TASK_PAGE_PATH.test(taskPage) ? { taskPage: `${taskPage}?view=feedback` } : {}) });
+      }
       const csrfCookie = parseCookie(request.headers, CSRF_COOKIE);
       if (request.headers.origin !== origin || !isCsrf(csrfCookie) || request.headers["x-agentx-csrf"] !== csrfCookie) return safeResponse(403, { error: "request_refused" });
       let input: unknown;

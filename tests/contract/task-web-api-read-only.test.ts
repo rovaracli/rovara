@@ -68,6 +68,10 @@ describe("task page API (OWNER DECISION 7: read-only)", () => {
       ["decision", { requestId: randomUUID(), expectedRevision: 4, artifactDigest: "a".repeat(64), decision: "APPROVE", answers: [], includedCommentIds: [] }],
       ["retry", { requestId: randomUUID(), expectedRevision: 4 }], ["revise-plan", { requestId: randomUUID(), expectedRevision: 4 }],
       ["spec/retry", { requestId: randomUUID(), expectedRevision: 4 }], ["spec/replan", { requestId: randomUUID(), expectedRevision: 4 }],
+      // OWNER DECISION 18 (review M1): one place means one place: comments, Ask, replies, edits, deletes, suggestions, Remember and People proposals are refused too.
+      ["comments", commentBody], ["comments", { ...commentBody, requestId: randomUUID(), ask: true }], [`comments/${randomUUID()}/edit`, { rev: 1, text: "x" }], [`comments/${randomUUID()}/delete`, { rev: 1 }],
+      [`comments/${randomUUID()}/remember`, {}], ["suggestions", { document: "plan", decisionId: "d1", optionId: "above" }],
+      ["people/role", { requestId: randomUUID(), expectedPeopleRevision: 1, personId: randomUUID(), role: "viewer" }], ["people/take-ownership", { requestId: randomUUID(), expectedPeopleRevision: 1 }],
     ];
     for (const [suffix, body] of writes) {
       for (const request of [post(api(suffix), body), post(api(suffix), "{not json"), post(api(suffix), body, { origin: "https://evil.example" })]) {
@@ -88,23 +92,22 @@ describe("task page API (OWNER DECISION 7: read-only)", () => {
     expect(unknown.json).toEqual({ error: "read_only", message: TASK_PAGE_READ_ONLY_MESSAGE });
   });
 
-  it("OWNER DECISION 17: comments, replies, suggestions and Ask still write here, through their own dependency with the session's caller, under the page's CSRF and origin rules", async () => {
+  it("OWNER DECISION 18 (review M1): no comment, reply, suggestion or Ask is written here with the cards on; with them off the same requests write as before", async () => {
     const created: unknown[] = [], suggested: unknown[] = [];
-    const deps = fakeDeps({
-      createComment: async (who, _task, input) => { created.push([who, input]); return { comment: {} as never }; },
-      setSuggestion: async (who, _task, input) => { suggested.push([who, input]); return {}; },
-    });
-    const parentId = randomUUID();
-    expect((await call(deps, post(api("comments"), commentBody))).statusCode).toBe(201);
-    expect((await call(deps, post(api("comments"), { ...commentBody, requestId: randomUUID(), parentId, ask: true }))).statusCode).toBe(201);
-    expect((await call(deps, post(api("suggestions"), { document: "plan", decisionId: "d1", optionId: "above" }))).statusCode).toBe(200);
-    expect(created).toEqual([[caller, commentBody], [caller, expect.objectContaining({ parentId, ask: true })]]);
-    expect(suggested).toEqual([[caller, { document: "plan", decisionId: "d1", optionId: "above" }]]);
-    // The page's own refusals are unchanged: another origin or no CSRF header is refused and nothing is written; a forged author is refused by the strict body.
-    expect((await call(deps, post(api("comments"), commentBody, { origin: "https://evil.example" }))).statusCode).toBe(403);
-    expect((await call(deps, post(api("comments"), commentBody, { "x-agentx-csrf": undefined }))).statusCode).toBe(403);
-    expect((await call(deps, post(api("comments"), { ...commentBody, author: "someone" }))).statusCode).toBe(400);
-    expect(created).toHaveLength(2);
+    const writers = { createComment: async (who: unknown, _task: unknown, input: unknown) => { created.push([who, input]); return { comment: {} as never }; },
+      setSuggestion: async (who: unknown, _task: unknown, input: unknown) => { suggested.push([who, input]); return {}; } };
+    const on = fakeDeps(writers as never);
+    for (const [suffix, body] of [["comments", commentBody], ["comments", { ...commentBody, requestId: randomUUID(), parentId: randomUUID(), ask: true }], ["suggestions", { document: "plan", decisionId: "d1", optionId: "above" }]] as const) {
+      expect((await call(on, post(api(suffix), body))).statusCode, suffix).toBe(410);
+    }
+    expect([created, suggested]).toEqual([[], []]);
+    // dk=0: the page is fully writable, under its own CSRF and origin rules.
+    const off = fakeDeps({ ...writers, readOnly: false } as never);
+    expect((await call(off, post(api("comments"), commentBody))).statusCode).toBe(201);
+    expect((await call(off, post(api("suggestions"), { document: "plan", decisionId: "d1", optionId: "above" }))).statusCode).toBe(200);
+    expect((await call(off, post(api("comments"), commentBody, { origin: "https://evil.example" }))).statusCode).toBe(403);
+    expect(created).toEqual([[caller, commentBody]]);
+    expect(suggested).toHaveLength(1);
   });
 
   it("the one write left, a People request's confirmation, needs same origin, the CSRF header and its cookie", async () => {
@@ -196,17 +199,15 @@ describe("task page API through the broker, with the decision cards on", () => {
     return { harness, id, sha256, revision, send, decision };
   }
 
-  it("OWNER DECISION 17: a teammate still comments and suggests on the page with its own rules, nobody decides there, and the owner decides on the card", async () => {
+  it("OWNER DECISION 18: nobody comments, suggests or decides on the page with the cards on (410, with where); the owner decides on the card", async () => {
     const t = await sharedTask();
-    const comment = await t.send(LEE, "POST", `/review/${t.id}/task/api/comments`, { ...commentBody, requestId: randomUUID() });
-    expect(comment.statusCode, comment.body).toBe(201);
-    expect((comment.json.comment as { author: unknown }).author).toEqual({ kind: "person", name: "Lee Park", owner: false, you: true });
-    const suggestion = await t.send(LEE, "POST", `/review/${t.id}/task/api/suggestions`, { document: "plan", decisionId: "d1", optionId: "above" });
-    expect(suggestion.statusCode, suggestion.body).toBe(200);
-    // The owner cannot suggest (the page's own rule, unchanged).
-    expect((await t.send(MAYA, "POST", `/review/${t.id}/task/api/suggestions`, { document: "plan", decisionId: "d1", optionId: "above" })).statusCode).toBe(403);
-    for (const who of [LEE, MAYA]) expect((await t.send(who, "POST", `/review/${t.id}/task/api/decision`, t.decision())).statusCode).toBe(410);
-    expect(t.harness.db.find((item) => item.entityType === "TASK_COMMENT")).toHaveLength(1);
+    for (const [who, suffix, body] of [[LEE, "comments", { ...commentBody, requestId: randomUUID() }], [LEE, "suggestions", { document: "plan", decisionId: "d1", optionId: "above" }],
+      [MAYA, "suggestions", { document: "plan", decisionId: "d1", optionId: "above" }], [LEE, "decision", t.decision()], [MAYA, "decision", t.decision()]] as const) {
+      const refused = await t.send(who, "POST", `/review/${t.id}/task/api/${suffix}`, body);
+      expect(refused.statusCode, `${who.name} ${suffix}`).toBe(410);
+      expect(refused.json.taskPage, suffix).toMatch(/^\/app\/sessions\/ses_/u);
+    }
+    expect(t.harness.db.find((item) => item.entityType === "TASK_COMMENT")).toHaveLength(0);
     expect((t.harness.db.get(`DEVTASK#${t.id}`, "META") as { workflow: { revision: number } }).workflow.revision).toBe(t.revision);
     // The teammate has no card to decide it; the owner's card decides it, through the one workflow decision.
     expect((await cardDecision(t.harness, LEE, t.id)).status).toBe(404);
@@ -222,8 +223,8 @@ describe("task page API through the broker, with the decision cards on", () => {
       for (const [method, suffix, body] of [["GET", "state", undefined], ["GET", "comments", undefined], ["POST", "comments", { ...commentBody, requestId: randomUUID() }], ["POST", "decision", t.decision()]] as const) {
         const real = await t.send(who, method, `/review/${t.id}/task/api/${suffix}`, body);
         const none = await t.send(who, method, `/review/${missing}/task/api/${suffix}`, body);
-        // A read and a comment are the not found a missing task gets; a decision is the read-only refusal, without the task page's path (OWNER DECISION 7 and 17): the same for a real task and a missing one.
-        const decisionWrite = method === "POST" && suffix === "decision";
+        // A read is the not found a missing task gets; every write is the read-only refusal, without the task page's path (OWNER DECISION 7, 17 and 18): the same for a real task and a missing one.
+        const decisionWrite = method === "POST";
         expect(real.statusCode, `${who.name} ${suffix}`).toBe(decisionWrite ? 410 : 404);
         expect(real.body).toBe(none.body);
         expect(real.json).toEqual(decisionWrite ? { error: "read_only", message: TASK_PAGE_READ_ONLY_MESSAGE } : { error: "not_found", message: "You don't have access to this task." });
@@ -244,7 +245,7 @@ describe("task page API through the broker, with the decision cards on", () => {
     expect(outsider.headers.location).toBeUndefined();
   });
 
-  it("a task with no task page in Rovara keeps the read-only page: it decides nothing for the owner (no answer controls, the bar links the task page) and keeps a teammate's comment controls", async () => {
+  it("a task with no task page in Rovara keeps the read-only page: it decides nothing for the owner (no answer controls, the bar links the task page) and offers no comment controls", async () => {
     const t = await sharedTask();
     const { sessionId: _session, ...meta } = t.harness.db.get(`DEVTASK#${t.id}`, "META") as Record<string, unknown>;
     void _session;
@@ -256,7 +257,8 @@ describe("task page API through the broker, with the decision cards on", () => {
     expect(owner.body).toContain('class="decide-bar"');
     expect(owner.body).toMatch(/Decide on the task/u);
     const island = JSON.parse(/<script type="application\/json" id="agentx-page-data">([\s\S]*?)<\/script>/u.exec(owner.body)![1]!) as { canDecide: boolean; canComment: boolean };
-    expect(island).toMatchObject({ canDecide: false, canComment: true });
+    // OWNER DECISION 18 (review M1): nothing is written here with the cards on, so no comment control either.
+    expect(island).toMatchObject({ canDecide: false, canComment: false });
     const teammate = await t.send(LEE, "GET", `/review/${t.id}/task`);
     expect(teammate.body).toContain("Only owners decide.");
     expect(teammate.body).toContain("You can read and comment on this task.");

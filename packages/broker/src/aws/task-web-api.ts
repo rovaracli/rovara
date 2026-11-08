@@ -138,8 +138,6 @@ export interface TaskWebApiDependencies {
   taskPagePath?(caller: DeveloperCaller, taskId: string): Promise<string | undefined>;
 }
 
-/** OWNER DECISION 17: the page's decision writes, refused while the cards are on (they live on the task page's cards and actions). */
-const DECISION_ENDPOINTS: ReadonlySet<string> = new Set(["decision", "retry", "revise-plan"]);
 /** OWNER DECISION 7: what a write to the read-only page answers. */
 export const TASK_PAGE_READ_ONLY_MESSAGE = "This page is read only. Decide on the task's page in Rovara.";
 
@@ -254,7 +252,9 @@ export function createTaskWebApi(deps: TaskWebApiDependencies): (request: Adapte
     }
     // OWNER DECISION 7: read-only (the cards are on): every write but a People request's confirmation (Slack's People flow) is refused, before any body is read, with where the task is decided now.
     // OWNER DECISION 17: read-only for DECISIONS only (a document's decision, the checks retry, Revise the plan, a held spec's choice); comments, replies, suggestions, Ask, Remember and People keep working.
-    if (deps.readOnly === true && method === "POST" && DECISION_ENDPOINTS.has(endpoint) || deps.readOnly === true && method === "POST" && endpoint.startsWith("spec/")) {
+    // OWNER DECISION 18 (review M1): one place means one place: with the cards on, EVERY write here is refused (comments, Ask, edits, deletes, suggestions, Remember, People proposals), each with
+    // where it is done now; only a People request's confirmation (the page Slack's People flow links to) still writes.
+    if (deps.readOnly === true && method === "POST" && !(peopleRequestId !== undefined && peopleConfirm)) {
       let taskPage: string | undefined;
       try { taskPage = await deps.taskPagePath?.(caller, taskId); } catch { taskPage = undefined; }
       const refused = json(410, { error: "read_only", message: TASK_PAGE_READ_ONLY_MESSAGE, ...(taskPage === undefined ? {} : { taskPage }) });
