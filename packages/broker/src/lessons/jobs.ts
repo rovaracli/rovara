@@ -1,5 +1,6 @@
 // Lessons in production, lane 2: the lessons' two scheduled jobs, run for one company inside the Team record's own schedules (aws/broker/lessons-wiring.ts hooks them to `jobs.extend`):
-//   - hourly (job id "lessons-resume"): finishes every deletion that was started and not finished in the company's projects (`resumePending`, WB-7), whatever the learning mode (an erase must finish);
+//   - hourly (job id "lessons-resume"): finishes every deletion that was started and not finished in the company's projects (`resumePending`, WB-7), whatever the learning mode (an erase must finish), and counts the
+//     projects with a stuck staged rollback (LP-13 C2: one fixed line, the Health page's team record line; a count only);
 //   - nightly (job id "lessons-reverts"): re-reflects tasks whose change was reverted in the last 72 hours (LP-13). One message per task to the same queue as a task's end, with the outcome `reverted`; the worker's
 //     once-claim on `LEARN#<task>#reverted` makes a revert reflected once however many nights see the row (72 hours covers the daily run, a late one and a late-arriving row). The same nightly run then moves every
 //     trial lesson that earned it to stable (`lessonsPromoteJob`, DECISIONS 24: 14 days live, 3 loads, no thumbs-down), because a lesson that is never loaded again would otherwise wait for a load that never comes.
@@ -40,11 +41,24 @@ export interface LessonsJobDeps {
   log(event: string, fields: Record<string, string | number>): void;
 }
 
-/** Hourly. Returns counts only. */
-export async function lessonsResumeJob(deps: Pick<LessonsJobDeps, "resume" | "now" | "log">, orgId: string, projects: readonly string[], budgetMs: number): Promise<Record<string, number>> {
+/** LP-13 C2: what the hourly run needs to list stuck rollback intents. Both are optional: without them the run only resumes deletions. */
+export interface StuckRollbackWatch {
+  /** Whether the project has a staged rollback that did not finish (`DynamoLessonStore.hasStuckRollback`). Throws when it cannot look. */
+  stuckRollbacks?: ((orgId: string, project: string) => Promise<boolean>) | undefined;
+  /** Where the company's count goes for the Health page (`recordOpsLevel`). Never throws. */
+  reportStuck?: ((orgId: string, count: number) => Promise<void>) | undefined;
+}
+
+/**
+ * Hourly. Finishes every unfinished deletion of each project, and (LP-13 C2) counts the projects whose staged rollback is stuck: one fixed log line with the number, the number in the answer, and the number
+ * handed to `reportStuck` (the Health page line). No project, lesson or id leaves the job. A zero is reported only when every project was looked at and none of the looks failed (a zero that could hide a stuck
+ * one would clear the Health line wrongly); a positive count is a lower bound and is always reported. Returns counts only.
+ */
+export async function lessonsResumeJob(deps: Pick<LessonsJobDeps, "resume" | "now" | "log"> & StuckRollbackWatch, orgId: string, projects: readonly string[], budgetMs: number): Promise<Record<string, number>> {
   const started = deps.now();
-  let finished = 0, failed = 0, skipped = 0;
-  for (const project of projects.slice(0, MAX_PROJECTS_PER_JOB)) {
+  let finished = 0, failed = 0, skipped = 0, stuck = 0, stuckFailures = 0;
+  const covered = projects.slice(0, MAX_PROJECTS_PER_JOB);
+  for (const project of covered) {
     if (deps.now() - started > budgetMs) { skipped += 1; continue; }
     try {
       const result = await deps.resume(orgId, project);
@@ -52,8 +66,16 @@ export async function lessonsResumeJob(deps: Pick<LessonsJobDeps, "resume" | "no
       // L4: an intent that could not be finished is counted and named in one fixed line (no ids); the project's other intents were still tried.
       if (result.failed > 0) { failed += result.failed; deps.log("lessons_job.resume_failed", { intents: result.failed }); }
     } catch { failed += 1; deps.log("lessons_job.resume_failed", {}); }
+    if (deps.stuckRollbacks === undefined) continue;
+    try { if (await deps.stuckRollbacks(orgId, project)) stuck += 1; } catch { stuckFailures += 1; }
   }
-  return { lessonDeletionsResumed: finished, lessonResumeFailures: failed, lessonResumeSkipped: skipped };
+  const out: Record<string, number> = { lessonDeletionsResumed: finished, lessonResumeFailures: failed, lessonResumeSkipped: skipped };
+  if (deps.stuckRollbacks === undefined) return out;
+  if (stuck > 0) deps.log("lessons_job.rollbacks_stuck", { projects: stuck });
+  if (stuckFailures > 0) deps.log("lessons_job.rollback_check_failed", { projects: stuckFailures });
+  const complete = skipped === 0 && stuckFailures === 0 && projects.length <= MAX_PROJECTS_PER_JOB;
+  if (deps.reportStuck !== undefined && (stuck > 0 || complete)) await deps.reportStuck(orgId, stuck).catch(() => undefined);
+  return { ...out, lessonRollbacksStuck: stuck, lessonStuckCheckFailures: stuckFailures };
 }
 
 /** Nightly. Returns counts only. */

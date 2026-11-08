@@ -96,6 +96,27 @@ describe("a commit that meets a stuck intent", () => {
     expect(logs.filter((line) => line.event === "lessons.intent_stuck_alert")).toHaveLength(1);
   });
 
+  it("LP-13 C2: the hourly job can ask whether a project has a rollback that did not finish: no intent is no; a fresh one (still running) is no; an old one, or one already recorded as an alert, is yes; nothing is changed by asking; a table fault throws", async () => {
+    const { db } = await withOpenIntent();
+    const asAt = (ms: number) => new DynamoLessonStore({ documentClient: db, tableName: "TeamRecord" }, () => ms);
+    const intentBefore = structuredClone(db.find((item) => item.sk === "LESSONSET#RBINTENT")[0]);
+    const openedAt = Number(intentBefore!["at"]);
+    expect(await asAt(openedAt + 60_000).hasStuckRollback(KEY)).toBe(false);
+    expect(await asAt(openedAt + 15 * 60_000).hasStuckRollback(KEY)).toBe(true);
+    // another project has none
+    expect(await asAt(openedAt + 60 * 60_000).hasStuckRollback({ workspaceId: ORG_A, project: "api" })).toBe(false);
+    // recorded as an alert before it is old
+    const row = db.find((item) => item.sk === "LESSONSET#RBINTENT")[0]!;
+    db.set({ ...row, stuckAt: openedAt + 1 });
+    expect(await asAt(openedAt + 60_000).hasStuckRollback(KEY)).toBe(true);
+    expect(db.find((item) => item.sk === "LESSONSET#RBINTENT")[0]).toEqual({ ...intentBefore, stuckAt: openedAt + 1 });
+    const broken = new DynamoLessonStore({ documentClient: { send: async () => { throw new Error("table down"); } }, tableName: "TeamRecord" });
+    await expect(broken.hasStuckRollback(KEY)).rejects.toThrow("table down");
+    // mended: gone
+    expect(await commitOne(asAt(openedAt + 120_000))).toMatchObject({ ok: true });
+    expect(await asAt(openedAt + 120_000).hasStuckRollback(KEY)).toBe(false);
+  });
+
   it("a fault of the table itself is not turned into a busy refusal", async () => {
     const { db } = await withOpenIntent();
     const broken = new DynamoLessonStore({ documentClient: { send: async (command: unknown) => { if ((command as { constructor: { name: string } }).constructor.name === "GetCommand") throw new Error("table down"); return db.send(command as never); } }, tableName: "TeamRecord" });

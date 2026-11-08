@@ -4,7 +4,7 @@ import { describe, expect, it } from "vitest";
 import { QueryCommand } from "@aws-sdk/lib-dynamodb";
 import { runDeleteWorker } from "../../../packages/broker/src/team-record/delete-worker.js";
 import { ERASE_SWEEP_DELAY_MS, erasePerson, eraseWorkspace, runErasureSweeps } from "../../../packages/broker/src/team-record/erase.js";
-import { readOpsFailures, recordOpsFailure } from "../../../packages/broker/src/team-record/ops-failures.js";
+import { opsFailuresCheck, readOpsFailures, recordOpsFailure, recordOpsLevel } from "../../../packages/broker/src/team-record/ops-failures.js";
 import { createCodeHostTap, type CodeHostEvent, type CodeHostRepo } from "../../../packages/broker/src/team-record/sources/codehost.js";
 import { ORG_A, ORG_B, world } from "../../support/team-record-core.js";
 import { deleteDeps, seedComments } from "../../support/team-record-delete.js";
@@ -21,6 +21,32 @@ describe("the repository check's counter (SRL-5a)", () => {
     expect(await readOpsFailures(w.table, ORG_B, t)).toEqual({ eraseSweep: 0, tombstone: 0, repoCheck: 2, lastAt: new Date(t).toISOString() });
     expect(await readOpsFailures(w.table, ORG_A, t)).toEqual({ eraseSweep: 0, tombstone: 0 });
     expect(await readOpsFailures(w.table, ORG_B, t + 48 * HOUR)).toEqual({ eraseSweep: 0, tombstone: 0 });
+  });
+});
+
+describe("the stuck lesson rollbacks' level (LP-13 C2)", () => {
+  it("is a level, not a count: the hourly job writes how many are stuck NOW, a later hour replaces an earlier one, and it shows on the Health line only while the job keeps reporting it", async () => {
+    const w = world();
+    const t = w.clock.ms;
+    await recordOpsLevel(w.table, ORG_A, "lesson_rollback", 2, t - 2 * HOUR);
+    await recordOpsLevel(w.table, ORG_A, "lesson_rollback", 2, t - HOUR);
+    await recordOpsLevel(w.table, ORG_A, "lesson_rollback", 3, t);
+    // not 7: the same intents seen every hour are not counted every hour
+    expect(await readOpsFailures(w.table, ORG_A, t)).toEqual({ eraseSweep: 0, tombstone: 0, lessonRollbacks: 3, lastAt: new Date(t).toISOString() });
+    expect(await readOpsFailures(w.table, ORG_B, t)).toEqual({ eraseSweep: 0, tombstone: 0 });
+    // the job found them mended and said 0: the line clears at once
+    await recordOpsLevel(w.table, ORG_A, "lesson_rollback", 0, t + HOUR);
+    expect(await readOpsFailures(w.table, ORG_A, t + HOUR)).toEqual({ eraseSweep: 0, tombstone: 0 });
+    // the job stopped reporting (its last word was 3, three hours ago): the line does not stay on for ever
+    await recordOpsLevel(w.table, ORG_B, "lesson_rollback", 3, t);
+    expect(await readOpsFailures(w.table, ORG_B, t + 2 * HOUR)).toMatchObject({ lessonRollbacks: 3 });
+    expect(await readOpsFailures(w.table, ORG_B, t + 4 * HOUR)).toEqual({ eraseSweep: 0, tombstone: 0 });
+    for (const item of w.db.find((row) => typeof row.sk === "string" && row.sk.startsWith("OPSFAIL#lesson_rollback#"))) expect(Object.keys(item).sort()).toEqual(["count", "entityType", "indexExpiresAt", "lastAt", "pk", "sk"]);
+  });
+  it("the Health line says how many, in words, and no id", () => {
+    expect(opsFailuresCheck({ eraseSweep: 0, tombstone: 0, lessonRollbacks: 1 })).toEqual({ status: "warn", detail: "1 lesson rollback not finished (an administrator needs to look at the project's lessons)" });
+    expect(opsFailuresCheck({ eraseSweep: 1, tombstone: 0, lessonRollbacks: 1, lastAt: "2026-11-08T10:00:00.000Z" }).detail).toBe("1 erase second pass failed or stuck in the last 24 hours; 1 lesson rollback not finished (an administrator needs to look at the project's lessons); latest 2026-11-08T10:00:00.000Z");
+    expect(opsFailuresCheck({ eraseSweep: 0, tombstone: 0, lessonRollbacks: 2 }).detail).toContain("2 lesson rollbacks not finished");
   });
 });
 

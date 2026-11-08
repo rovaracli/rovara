@@ -42,6 +42,8 @@ const MAX_QUERY_ITEMS = 20_000;
 const TX_LIMIT = 100;
 /** L5: after this many busy refusals on one unfinished change, it is recorded as an alert and the refusal says an administrator is needed. */
 export const LESSON_STUCK_AFTER_TRIES = 5;
+/** LP-13 C2: a staged rollback's intent that is older than this is not a rollback still running (one takes seconds): it is counted as stuck by the hourly job. */
+export const ROLLBACK_INTENT_STUCK_AFTER_MS = 15 * 60_000;
 const RETRIES = 5;
 const DAY = 86_400_000;
 const SOURCE_EVENT_TTL_DAYS = 60;
@@ -443,6 +445,18 @@ export class DynamoLessonStore implements LessonStore {
     } catch {
       return undefined;
     }
+  }
+
+  /**
+   * LP-13 C2: whether the project has a staged rollback that did not finish and is not just still running: its intent is older than `olderThanMs`, or it was already recorded as an alert (`stuckAt`). One consistent
+   * read; it changes nothing (the next commit or rollback of the project repairs it, `heal`). A table fault throws, so the caller can tell "none" from "could not look".
+   */
+  async hasStuckRollback(key: ScopeKey, olderThanMs: number = ROLLBACK_INTENT_STUCK_AFTER_MS): Promise<boolean> {
+    const intent = await this.getItem(this.intentRbKey(key));
+    if (intent === undefined) return false;
+    if (intent["stuckAt"] !== undefined) return true;
+    const at = Number(intent["at"]);
+    return !Number.isFinite(at) || this.now() - at >= olderThanMs;
   }
 
   /**

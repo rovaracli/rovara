@@ -164,6 +164,54 @@ describe("the hourly resume of unfinished lesson deletions", () => {
   });
 });
 
+describe("LP-13 C2: the hourly job lists stuck rollback intents (count only)", () => {
+  it("counts the projects whose staged rollback did not finish, says so in one fixed line without any id, and reports the count for the Health page", async () => {
+    const w = await setup();
+    const logs: Array<[string, Record<string, string | number>]> = [];
+    const reported: Array<[string, number]> = [];
+    const { deps } = jobDeps(w, { log: (event, fields) => logs.push([event, fields]) });
+    const asked: string[] = [];
+    const answer = await lessonsResumeJob({ ...deps, stuckRollbacks: async (org, project) => { asked.push(`${org}/${project}`); return project !== "api"; }, reportStuck: async (org, count) => { reported.push([org, count]); } }, ORG_A, ["web", "api", "docs"], 10_000);
+    expect(answer).toMatchObject({ lessonRollbacksStuck: 2, lessonStuckCheckFailures: 0 });
+    expect(asked).toEqual([`${ORG_A}/web`, `${ORG_A}/api`, `${ORG_A}/docs`]);
+    expect(reported).toEqual([[ORG_A, 2]]);
+    expect(logs).toEqual([["lessons_job.rollbacks_stuck", { projects: 2 }]]);
+  });
+  it("nothing stuck is reported as zero (so a mended one clears the Health line); the deletion resume is unaffected", async () => {
+    const w = await setup();
+    const reported: number[] = [];
+    const { deps } = jobDeps(w, { resume: async () => ({ finished: 1, failed: 0 }) });
+    const answer = await lessonsResumeJob({ ...deps, stuckRollbacks: async () => false, reportStuck: async (_org, count) => { reported.push(count); } }, ORG_A, ["web"], 10_000);
+    expect(answer).toMatchObject({ lessonDeletionsResumed: 1, lessonRollbacksStuck: 0 });
+    expect(reported).toEqual([0]);
+  });
+  it("a look that fails is counted and keeps the project's state unknown: a zero is NOT reported (it could hide a stuck one), but a positive count still is", async () => {
+    const w = await setup();
+    const reported: number[] = [];
+    const { deps } = jobDeps(w);
+    const failing = await lessonsResumeJob({ ...deps, stuckRollbacks: async () => { throw new Error("secret"); }, reportStuck: async (_org, count) => { reported.push(count); } }, ORG_A, ["web"], 10_000);
+    expect(failing).toMatchObject({ lessonRollbacksStuck: 0, lessonStuckCheckFailures: 1 });
+    expect(reported).toEqual([]);
+    const mixed = await lessonsResumeJob({ ...deps, stuckRollbacks: async (_org, project) => { if (project === "web") throw new Error("secret"); return true; }, reportStuck: async (_org, count) => { reported.push(count); } }, ORG_A, ["web", "api"], 10_000);
+    expect(mixed).toMatchObject({ lessonRollbacksStuck: 1, lessonStuckCheckFailures: 1 });
+    expect(reported).toEqual([1]);
+  });
+  it("projects the budget cut off are not looked at, so a zero is not reported either", async () => {
+    const w = await setup();
+    const reported: number[] = [];
+    let clock = NOW;
+    const { deps } = jobDeps(w, { now: () => (clock += 20_000) });
+    const answer = await lessonsResumeJob({ ...deps, stuckRollbacks: async () => false, reportStuck: async (_org, count) => { reported.push(count); } }, ORG_A, ["web"], 10_000);
+    expect(answer).toMatchObject({ lessonResumeSkipped: 1, lessonRollbacksStuck: 0 });
+    expect(reported).toEqual([]);
+  });
+  it("without the look (a harness) the job's answer is what it was", async () => {
+    const w = await setup();
+    const { deps } = jobDeps(w);
+    expect(await lessonsResumeJob(deps, ORG_A, ["web"], 10_000)).toEqual({ lessonDeletionsResumed: 0, lessonResumeFailures: 0, lessonResumeSkipped: 0 });
+  });
+});
+
 describe("the nightly trial-to-stable pass (lessons connect)", () => {
   const DAY = 86_400_000;
   const STANDARD_ON = settings({ mode: "On", preset: "standard" });

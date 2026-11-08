@@ -16,6 +16,7 @@ import type { LearningSpend, LessonEmbedder, LessonVectors, PipelineModel } from
 import { lessonAuditSink } from "../../lessons/audit-sink.js";
 import { lessonDeletionPort } from "../../lessons/deletion.js";
 import { DynamoLessonStore } from "../../lessons/dynamo-store.js";
+import { recordOpsLevel } from "../../team-record/ops-failures.js";
 import { lessonsNightlyJob, lessonsResumeJob, type LessonsJobDeps } from "../../lessons/jobs.js";
 import type { TaskLearningDeps } from "../../lessons/task-end.js";
 import { tableOutcomeRows } from "../../lessons/task-outcome-rows.js";
@@ -308,7 +309,11 @@ export function installLessonsJobs(dependencies: LessonsHostDependencies, runtim
   const log = (event: string, fields: Record<string, string | number>): void => console.log(JSON.stringify({ component: "lessons", event, ...fields }));
   const audit = runtime?.routes.audit ?? lessonAuditSink(recordAuditSinkOf(dependencies.audit, dependencies.documentClient) ?? (async () => { throw new Error("no audit ledger"); }), Date.now);
   const deletion = lessonDeletionPort({ store: runtime?.store ?? new DynamoLessonStore(teamRecord.table, Date.now), vectors: lessonSimilarityFor(dependencies).vectors, audit, now: Date.now });
-  teamRecord.jobs.extend("hourly", (orgId, projects, budgetMs) => lessonsResumeJob({ resume: (org, project) => deletion.resumeAll(org, project), now: Date.now, log }, orgId, projects, budgetMs));
+  // LP-13 C2: the hourly run also counts the projects with a stuck staged rollback (a read of the intent; it repairs nothing) and hands the count to the Health page's team record line.
+  const rollbacks = new DynamoLessonStore(teamRecord.table, Date.now);
+  const stuckRollbacks = (org: string, project: string): Promise<boolean> => rollbacks.hasStuckRollback({ workspaceId: org, project });
+  const reportStuck = async (org: string, count: number): Promise<void> => { const parsed = OrgIdSchema.safeParse(org); if (parsed.success) await recordOpsLevel(teamRecord.table, parsed.data, "lesson_rollback", count, Date.now()); };
+  teamRecord.jobs.extend("hourly", (orgId, projects, budgetMs) => lessonsResumeJob({ resume: (org, project) => deletion.resumeAll(org, project), stuckRollbacks, reportStuck, now: Date.now, log }, orgId, projects, budgetMs));
   if (runtime === undefined) return;
   const jobs: LessonsJobDeps = {
     table: teamRecord.table, settings: runtime.settings, queue: dependencies.lessonsReflectQueue, maintain: runtime.counters, counters: runtime.counters, resume: (orgId, project) => deletion.resumeAll(orgId, project),

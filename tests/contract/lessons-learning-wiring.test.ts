@@ -1,7 +1,7 @@
 // Lessons in production, lane 1: the task-end learning dependencies are built where the Team record AND the model path exist, and the inline model-calling handler is NOT registered from production wiring.
 import { readFileSync } from "node:fs";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { lessonKey, spendCounterKey } from "@agentx/contracts";
+import { lessonKey, lessonSetKey, spendCounterKey } from "@agentx/contracts";
 import { hasTaskEndHandlers } from "../../packages/broker/src/agents/task-end.js";
 import { installLearningTaskEnd, learningDepsInUse, uninstallLearningTaskEnd } from "../../packages/broker/src/aws/broker/learning-wiring.js";
 import type { learningDepsFor, lessonsRuntimeFor } from "../../packages/broker/src/aws/broker/lessons-wiring.js";
@@ -9,6 +9,7 @@ import { LEARNING_COUNTER } from "../../packages/broker/src/aws/broker/learning-
 import { createLessonsWorkerHandler } from "../../packages/broker/src/aws/broker/lessons-worker.js";
 import { installLessons, lessonSimilarityFor, pauseStillAppliesFor } from "../../packages/broker/src/aws/broker/lessons-wiring.js";
 import { installTeamRecordEmitter, uninstallTeamRecordEmitter } from "../../packages/broker/src/aws/broker/team-record-wiring.js";
+import { readOpsFailures } from "../../packages/broker/src/team-record/ops-failures.js";
 import { announceHumanSendBack } from "../../packages/broker/src/lessons/send-back-events.js";
 import type { LessonEmbedder } from "../../packages/broker/src/lessons/ports.js";
 import { DENYING_SPEND, NO_VECTORS, REFUSING_JUDGE, REFUSING_MODEL } from "../../packages/broker/src/lessons/runtime.js";
@@ -290,6 +291,21 @@ describe("L4: the lessons' scheduled jobs", () => {
     const counts = await works["nightly"]!(TEST_ORG, ["web"], 10_000);
     // `helpfulSettled` is only there when the job was given the counters: the sweep settles the due helpful marks before it expires anything (fix 1, H1).
     expect(counts).toMatchObject({ revertsEnqueued: 0, lessonsExpired: 0, helpfulSettled: 0, trialsPromoted: 0 });
+  });
+  it("LP-13 C2: the hourly run counts a project's stuck staged rollback and puts the count (no ids) on the company's Health line; a mended one clears it, and a paused record still reports", async () => {
+    for (const paused of [false, true]) {
+      const { dependencies, works } = withJobs(paused);
+      installLessons(dependencies as never);
+      const table = (dependencies.teamRecord as { table: { documentClient: FakeDynamoDb; tableName: string } }).table;
+      const intentAt = Date.now() - 2 * 3_600_000;
+      table.documentClient.set({ ...lessonSetKey(TEST_ORG, "web"), sk: "LESSONSET#RBINTENT", entityType: "LESSON_ROLLBACK_INTENT", nonce: "n", state: "open", ids: [], at: intentAt });
+      const counts = await works["hourly"]!(TEST_ORG, ["web", "api"], 10_000);
+      expect(counts).toMatchObject({ lessonRollbacksStuck: 1, lessonStuckCheckFailures: 0 });
+      expect(await readOpsFailures(table as never, TEST_ORG, Date.now())).toMatchObject({ lessonRollbacks: 1 });
+      table.documentClient.delete({ ...lessonSetKey(TEST_ORG, "web"), sk: "LESSONSET#RBINTENT" });
+      expect(await works["hourly"]!(TEST_ORG, ["web", "api"], 10_000)).toMatchObject({ lessonRollbacksStuck: 0 });
+      expect(await readOpsFailures(table as never, TEST_ORG, Date.now())).not.toHaveProperty("lessonRollbacks");
+    }
   });
   it("a PAUSED record still gets the hourly resume (an erase must finish whether or not the record is paused), on a store-only port, and no nightly re-reflection (a paused record learns nothing)", () => {
     const { dependencies, registered } = withJobs(true);

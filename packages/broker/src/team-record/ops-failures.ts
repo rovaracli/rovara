@@ -1,6 +1,7 @@
 // Failure counters for the Health page (register SRL-6): an erase's delayed second pass that failed, and a source delete that no durable path accepted. Both used to be a log line only
 // (`record.erase_sweep_failed`, `record.tombstone_failed`, `record.github_repo_check_refused`), so nothing showed an admin that a delete was stuck. One small item per company, kind and hour holds a count and the time of the last
-// failure: no person, no source id, no text, no error message. Items expire after two days; a company close removes them (`erase.ts`, WORKSPACE_PREFIXES). Writing is best effort and never
+// failure: no person, no source id, no text, no error message. One more kind is a LEVEL, not a count (`recordOpsLevel`, LP-13 C2): the lessons' hourly job writes how many lesson rollbacks are stuck right now;
+// the latest value counts while it is fresh, so an intent seen every hour is not counted every hour and a mended one clears at the next run. Items expire after two days; a company close removes them (`erase.ts`, WORKSPACE_PREFIXES). Writing is best effort and never
 // fails the work that reported the failure.
 import { UpdateCommand } from "@aws-sdk/lib-dynamodb";
 import { teamRecordPk, type OrgId } from "@agentx/contracts";
@@ -11,6 +12,10 @@ import type { TeamRecordTable } from "./types.js";
 export const OPS_FAILURE_SK_PREFIX = "OPSFAIL#";
 export type OpsFailureKind = "erase_sweep" | "tombstone" | "repo_check";
 const KINDS: readonly OpsFailureKind[] = ["erase_sweep", "tombstone", "repo_check"];
+/** Kinds that hold a level (the latest hour's value), not a sum. */
+export type OpsLevelKind = "lesson_rollback";
+/** A level older than this is no longer reported: the job that writes it runs hourly, so two missed runs are tolerated. */
+export const OPS_LEVEL_FRESH_MS = 3 * 3_600_000;
 
 const HOUR_MS = 3_600_000;
 /** What the Health page looks back over. */
@@ -28,6 +33,11 @@ export interface OpsFailures {
    * company's events, and Rovara's own faults, to the others).
    */
   repoCheck?: number;
+  /**
+   * LP-13 C2: lesson rollbacks (a staged rollback that died half way and has not been repaired for a while) that the lessons' hourly job found stuck in this company's projects at its last run. A count only: no
+   * project, no lesson. Present only when not zero.
+   */
+  lessonRollbacks?: number;
   /** The time of the latest failure of any kind, when there is one. */
   lastAt?: string;
 }
@@ -51,6 +61,22 @@ export async function recordOpsFailure(table: TeamRecordTable, orgId: OrgId, kin
   }
 }
 
+/** Records a level: how many of `kind` there are now. The current hour's item is set (not added to), so a repeat of the same run changes nothing. A zero clears the line. Never throws. */
+export async function recordOpsLevel(table: TeamRecordTable, orgId: OrgId, kind: OpsLevelKind, count: number, nowMs: number): Promise<void> {
+  const aliases = new Aliases();
+  try {
+    await table.documentClient.send(new UpdateCommand({
+      TableName: table.tableName,
+      Key: { pk: teamRecordPk(orgId), sk: `${OPS_FAILURE_SK_PREFIX}${kind}#${String(hourOf(nowMs)).padStart(9, "0")}` },
+      UpdateExpression: `SET ${aliases.name("count")} = ${aliases.value(Math.max(0, Math.trunc(count)))}, ${aliases.name("entityType")} = ${aliases.value("TEAM_RECORD_OPS_FAILURE")}, ${aliases.name("lastAt")} = ${aliases.value(new Date(nowMs).toISOString())}, ${aliases.name("indexExpiresAt")} = ${aliases.value(Math.floor(nowMs / 1000) + EXPIRY_SECONDS)}`,
+      ExpressionAttributeNames: aliases.names,
+      ExpressionAttributeValues: aliases.values,
+    }));
+  } catch {
+    // best effort
+  }
+}
+
 /** The company's failures in the last 24 hours. Throws when the table cannot be read (the Health page then says unknown). */
 export async function readOpsFailures(table: TeamRecordTable, orgId: OrgId, nowMs: number): Promise<OpsFailures> {
   const since = nowMs - OPS_FAILURE_WINDOW_MS;
@@ -66,7 +92,13 @@ export async function readOpsFailures(table: TeamRecordTable, orgId: OrgId, nowM
       if (lastAt === undefined || stamp > lastAt) lastAt = stamp;
     }
   }
-  return { eraseSweep: totals.erase_sweep, tombstone: totals.tombstone, ...(totals.repo_check === 0 ? {} : { repoCheck: totals.repo_check }), ...(lastAt === undefined ? {} : { lastAt }) };
+  // LP-13 C2: the latest hour's level (the items sort by hour), only while it is fresh.
+  const levels = await queryPrefix(table, orgId, undefined, `${OPS_FAILURE_SK_PREFIX}lesson_rollback#`, 100);
+  const latest = levels.items.filter((item) => typeof item.sk === "string").sort((a, b) => String(a.sk) < String(b.sk) ? -1 : 1).at(-1);
+  const levelAt = typeof latest?.lastAt === "string" ? Date.parse(latest.lastAt) : Number.NaN;
+  const lessonRollbacks = latest !== undefined && typeof latest.count === "number" && latest.count > 0 && Number.isFinite(levelAt) && levelAt > nowMs - OPS_LEVEL_FRESH_MS ? latest.count : 0;
+  if (lessonRollbacks > 0 && (lastAt === undefined || (latest!.lastAt as string) > lastAt)) lastAt = latest!.lastAt as string;
+  return { eraseSweep: totals.erase_sweep, tombstone: totals.tombstone, ...(totals.repo_check === 0 ? {} : { repoCheck: totals.repo_check }), ...(lessonRollbacks === 0 ? {} : { lessonRollbacks }), ...(lastAt === undefined ? {} : { lastAt }) };
 }
 
 /**
@@ -79,7 +111,9 @@ export function opsFailuresCheck(failures: OpsFailures): { status: "ok" | "warn"
     ...(failures.tombstone === 0 ? [] : [`${failures.tombstone} source delete${failures.tombstone === 1 ? "" : "s"} not accepted`]),
     ...(failures.repoCheck === undefined || failures.repoCheck === 0 ? [] : [`${failures.repoCheck} GitHub repository check${failures.repoCheck === 1 ? "" : "s"} found many repositories gone at once and removed none (check the GitHub App's repository access)`]),
   ];
-  if (problems.length === 0) return { status: "ok", detail: "no erase or source delete failures in the last 24 hours" };
-  return { status: "warn", detail: `${problems.join(", ")} in the last 24 hours${failures.lastAt === undefined ? "" : `; latest ${failures.lastAt}`}` };
+  // A level, not an event of the last 24 hours: said as it stands now.
+  const now = failures.lessonRollbacks === undefined || failures.lessonRollbacks === 0 ? [] : [`${failures.lessonRollbacks} lesson rollback${failures.lessonRollbacks === 1 ? "" : "s"} not finished (an administrator needs to look at the project's lessons)`];
+  if (problems.length === 0 && now.length === 0) return { status: "ok", detail: "no erase or source delete failures in the last 24 hours" };
+  const parts = [...(problems.length === 0 ? [] : [`${problems.join(", ")} in the last 24 hours`]), ...now];
+  return { status: "warn", detail: `${parts.join("; ")}${failures.lastAt === undefined ? "" : `; latest ${failures.lastAt}`}` };
 }
-
