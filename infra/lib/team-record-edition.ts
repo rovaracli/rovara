@@ -1,11 +1,10 @@
 // E1: the install parameters of the Team-record storage (design learning-v2-team-record.md 4.9.2), read from CDK context and checked at synth.
 // Pure functions with no CDK imports, so a test can feed them any value. W6's edition switch is not built yet: `edition` is a context value
 // (`agentxTeamRecordEdition`), and Public is the default.
-import { VECTOR_DIMENSION_DEFAULT, teamRecordEmbeddingFamily } from "@agentx/contracts";
+import { VECTOR_DIMENSION_DEFAULT } from "@agentx/contracts";
 
 export type TeamRecordEditionName = "enterprise" | "public";
 
-export const DEFAULT_EMBEDDING_MODEL_ID = "amazon.titan-embed-text-v2:0";
 const KMS_KEY_ARN = /^arn:aws[a-z-]*:kms:[a-z0-9-]+:\d{12}:key\/[0-9a-f-]{36}$/;
 const ROLE_ARN = /^arn:aws[a-z-]*:iam::\d{12}:role\/[A-Za-z0-9+=,.@_/-]{1,512}$/;
 const MAX_ATHENA_USERS = 20;
@@ -41,7 +40,7 @@ export function kmsKeyPolicyStatements(account: string): Array<Record<string, un
 
 export interface TeamRecordParameters {
   readonly edition: TeamRecordEditionName;
-  readonly embeddingModelId: string;
+  /** The index dimension. The embedder (environments/embedder, Qwen3-Embedding-0.6B) is fixed; there is no embedding model to choose. */
   readonly dimension: number;
   /** Enterprise: required. Public: the cell's key, optional. */
   readonly kmsKeyArn: string | undefined;
@@ -75,6 +74,7 @@ function list(value: unknown, name: string): string[] {
 
 export interface TeamRecordContext {
   edition?: unknown;
+  /** Retired (DECISIONS 27): the embedder is the self-hosted one in both editions. Any value is refused. */
   embeddingModelId?: unknown;
   kmsKeyArn?: unknown;
   lakeEnabled?: unknown;
@@ -87,9 +87,8 @@ export function teamRecordParameters(context: TeamRecordContext): TeamRecordPara
   if (editionValue !== "enterprise" && editionValue !== "public") throw new Error(`team record: edition must be enterprise or public, not ${JSON.stringify(editionValue)}`);
   const edition: TeamRecordEditionName = editionValue;
 
-  const embeddingModelId = text(context.embeddingModelId, "embeddingModelId") ?? DEFAULT_EMBEDDING_MODEL_ID;
-  // Throws for a model the design does not allow. Both allowed families return 1,024 dimensions here.
-  teamRecordEmbeddingFamily(embeddingModelId);
+  // Bedrock embedding models (Titan, Cohere) are gone: the Team record embeds with the self-hosted embedder in both editions (DECISIONS 27). A leftover value must not be ignored in silence.
+  if (text(context.embeddingModelId, "embeddingModelId") !== undefined) throw new Error("team record: embeddingModelId is retired; the Team record uses the built-in self-hosted embedder (remove the option: agentx config set teamRecord.options default)");
 
   const kmsKeyArn = text(context.kmsKeyArn, "kmsKeyArn");
   if (kmsKeyArn !== undefined && !KMS_KEY_ARN.test(kmsKeyArn)) throw new Error("team record: kmsKeyArn must be a KMS key ARN (a key id, not an alias)");
@@ -107,5 +106,5 @@ export function teamRecordParameters(context: TeamRecordContext): TeamRecordPara
   if (edition === "enterprise" && workspace === undefined) throw new Error("team record: an Enterprise install needs enterpriseWorkspaceId");
   if (edition === "public" && workspace !== undefined) throw new Error("team record: enterpriseWorkspaceId is for Enterprise only");
 
-  return { edition, embeddingModelId, dimension: VECTOR_DIMENSION_DEFAULT, kmsKeyArn, lakeEnabled, athenaUsers, enterpriseWorkspaceId: workspace };
+  return { edition, dimension: VECTOR_DIMENSION_DEFAULT, kmsKeyArn, lakeEnabled, athenaUsers, enterpriseWorkspaceId: workspace };
 }

@@ -1172,7 +1172,7 @@ export class ControlPlaneStack extends Stack {
       });
     }
     // Team record (wire-team-record): the whole record, behind the switch `agentxTeamRecord=enabled` (off by default: this block does not run and nothing changes).
-    const teamRecordResources = props?.teamRecord !== undefined && naming.env !== undefined ? attachTeamRecord(this, { env: naming.env, context: props.teamRecord, broker, slackIngress, dispatcher, scheduleRole: githubRecoveryRole }) : undefined;
+    const teamRecordResources = props?.teamRecord !== undefined && naming.env !== undefined ? attachTeamRecord(this, { env: naming.env, context: props.teamRecord, broker, slackIngress, dispatcher, scheduleRole: githubRecoveryRole, ...(props.reservedConcurrency === false ? { reservedConcurrency: false } : {}) }) : undefined;
     // Saved environment images (SH22): the registry side (KMS, creation template, push/pull/manage roles). Nothing pushes until the broker's `sv` setting is on.
     if (naming.env !== undefined) BrokerNames.of(broker).add("savedEnvKey", attachSavedEnvImages(this, { env: naming.env, brokerRole: broker.role!, cloudFormationRoleName: naming.cloudFormationRoleName, ...(props?.savedEnv?.kmsKeyArn === undefined ? {} : { kmsKeyArn: props.savedEnv.kmsKeyArn }), ...(props?.savedEnv?.registryScan === true ? { registryScanning: "basic" as const } : {}) }).kmsKeyId);
     // Test services (TS19): the catalog's image repositories and their key. NOT behind `TestServicesEnabled` (switch `tx`): the repositories have fixed names and are retained, so a condition would break turning the switch on, off and on again.

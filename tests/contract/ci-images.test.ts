@@ -69,7 +69,7 @@ const REGISTRY_REF = /(?:public\.ecr\.aws|docker\.io|ghcr\.io|quay\.io|gcr\.io|r
 
 describe("the public images CI pulls are all digest-pinned, and every one is mirrored", () => {
   it("lists images pinned by a sha256 digest, with an upstream tag", () => {
-    expect(images.map((image) => image.name).sort()).toEqual(["docker-dind", "node-build"]);
+    expect(images.map((image) => image.name).sort()).toEqual(["docker-dind", "embedder-build", "embedder-lambda", "node-build"]);
     for (const image of images) {
       expect(image.digest, image.name).toMatch(/^sha256:[0-9a-f]{64}$/);
       expect(pinnedRef(image), image.name).toMatch(/^[a-z0-9./-]+:[A-Za-z0-9._-]+@sha256:[0-9a-f]{64}$/);

@@ -5,7 +5,7 @@
 //  3. THE ADMIN'S MAPPING: list, map to a member of the same org (with an audit event), unmap (the link and future rows go; the automatic linker leaves them alone; the person's erase still takes their rows).
 //  4. THE READERS: Linear's and Jira's real readers (a fake fetch) read guests and company control (Linear: SAML enforced; Jira: unavailable), skip bots and deactivated people, and call only their own addresses.
 import { describe, expect, it, vi } from "vitest";
-import { developerOrgKey, orgEmailKey, orgMetaKey, orgProjectCatalogKey, teamRecordPk, type OrgId } from "@agentx/contracts";
+import { developerOrgKey, orgEmailKey, orgMetaKey, orgProjectCatalogKey, teamRecordPk, TEAM_RECORD_EMBEDDER, type OrgId } from "@agentx/contracts";
 import { OrgConnectionStore, LINEAR_GRAPHQL } from "../../../packages/broker/src/connections/store.js";
 import { OrgSecrets } from "../../../packages/broker/src/connections/org-secrets.js";
 import { createTeamRecordRuntime, type TeamRecordRuntime } from "../../../packages/broker/src/team-record/runtime.js";
@@ -18,7 +18,7 @@ import { FAKE_CONNECTOR_ROLE_ARN, FakeOrgSecrets } from "../../support/fake-org-
 import { ORG_A, ORG_B, T0 } from "../../support/team-record-core.js";
 
 const indexKeys = { gsi1: { partition: "gsi1pk" }, gsi2: { partition: "gsi2pk" }, gsi3: { partition: "gsi3pk", sort: "gsi3sk" }, gsi4: { partition: "gsi4pk" }, gsi5: { partition: "gsi5pk", sort: "textDueAt" } };
-const ON = { TEAM_RECORD_ENABLED: "1", TEAM_RECORD_TABLE_NAME: "TeamRecord", AWS_REGION: "us-west-2", ROVARA_EDITION: "enterprise" } as const;
+const ON = { TEAM_RECORD_ENABLED: "1", TEAM_RECORD_TABLE_NAME: "TeamRecord", AWS_REGION: "us-west-2", ROVARA_EDITION: "enterprise", EMBEDDER_FUNCTION_NAME: "agentx-ent-embedder" } as const;
 const VECTORS_ENV = { TEAM_RECORD_VECTORS_ROLE_ARN: "arn:aws:iam::123456789012:role/agentx/ent/vr", TEAM_RECORD_VECTOR_BUCKETS: "agentx-ent-record-vectors", AGENTX_ACCOUNT_ID: "123456789012" } as const;
 const T = (extra: Partial<TrackerUser> & { sourceId: string }): TrackerUser => ({ displayName: extra.sourceId, control: "yes", ...extra });
 
@@ -68,7 +68,7 @@ function worldOf(options: { trackers?: ConnectedTracker[]; audit?: boolean; vect
 function vectorFakes() {
   const command = (name: string) => ({ [name]: class { constructor(readonly input: Record<string, unknown>) {} get commandName() { return name; } } });
   const sdk = async (name: string): Promise<Record<string, unknown>> => {
-    if (name === "@aws-sdk/client-bedrock-runtime") return { BedrockRuntimeClient: class { async send() { return { body: Buffer.from(JSON.stringify({ embedding: Array.from({ length: 1024 }, () => 0.01) })) }; } }, ...command("InvokeModelCommand") };
+    if (name === "@aws-sdk/client-lambda") return { LambdaClient: class { async send(c: { input: { Payload: Uint8Array } }) { const count = (JSON.parse(Buffer.from(c.input.Payload).toString("utf8")) as { texts: string[] }).texts.length; return { StatusCode: 200, Payload: Buffer.from(JSON.stringify({ ok: true, model: "record", modelId: TEAM_RECORD_EMBEDDER.modelId, revision: TEAM_RECORD_EMBEDDER.revision, spec: TEAM_RECORD_EMBEDDER.spec, dimension: 1024, vectors: Array.from({ length: count }, () => Array.from({ length: 1024 }, () => 1 / 32)) })) }; } }, ...command("InvokeCommand") };
     if (name === "@aws-sdk/client-s3vectors") return { S3VectorsClient: class { async send(c: { commandName: string }) { return c.commandName === "QueryVectorsCommand" || c.commandName === "GetVectorsCommand" ? { vectors: [] } : {}; } }, ...command("PutVectorsCommand"), ...command("QueryVectorsCommand"), ...command("GetVectorsCommand"), ...command("DeleteVectorsCommand"), ...command("CreateIndexCommand") };
     throw Object.assign(new Error("not available"), { name: "SdkUnavailableError" });
   };

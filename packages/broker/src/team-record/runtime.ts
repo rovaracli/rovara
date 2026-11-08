@@ -21,7 +21,7 @@ import { resolveSlackOrg } from "../org/resolve.js";
 import { orgOfInstallation, projectsOf as projectsOfRepository } from "../triggers/github-events.js";
 import { createRovaraPullRequestIndex } from "../rovara-code/rovara-pull-request-index.js";
 import type { DeveloperTaskRecord } from "../developer/task-records.js";
-import { athenaPort, bedrockInvokeModelPort, s3VectorsPortFromCredentials, type SdkLoader } from "./aws-adapters.js";
+import { athenaPort, s3VectorsPortFromCredentials, type SdkLoader } from "./aws-adapters.js";
 import { DynamoLessonStore } from "../lessons/dynamo-store.js";
 import { lessonDeletionPort } from "../lessons/deletion.js";
 import type { LessonVectors } from "../lessons/ports.js";
@@ -33,6 +33,7 @@ import { defaultRetention, readEdition, type TeamRecordEdition } from "./edition
 import { listSourceConfigs, markSourceFailing } from "./store.js";
 import { resolveTaskVisibility } from "../lessons/task-visibility.js";
 import { createEmbedder } from "./embed.js";
+import { recordEmbedderClientFrom } from "../embedder/wiring.js";
 import { eraseProject, eraseWorkspace, erasePerson, type EraseBudget } from "./erase.js";
 import { tableHotArchiveSource, ensureWorkspaceVectorBucket, tableHotStatsSource } from "./hot-source.js";
 import { createLakeClient, type LakeClient } from "./lake.js";
@@ -238,7 +239,6 @@ export interface TeamRecordRuntime {
   opsFailures(orgId: OrgId): Promise<OpsFailures>;
 }
 
-const DEFAULT_EMBEDDING_MODEL = "amazon.titan-embed-text-v2:0";
 const ORG_PAGE = 50;
 const MAX_ORGS_PER_RUN = 500;
 /** One scheduled run's whole budget: inside the broker function's 30 s timeout with room for the answer. */
@@ -282,8 +282,9 @@ export function createTeamRecordRuntime(input: TeamRecordRuntimeInput): TeamReco
   const sdkOptions = { region, ...(input.sdk === undefined ? {} : { load: input.sdk }) };
 
   // ---- vectors and the embedder (a workspace's index is opened through a session narrowed to that workspace)
-  const modelId = env.TEAM_RECORD_EMBEDDING_MODEL_ID === undefined || env.TEAM_RECORD_EMBEDDING_MODEL_ID === "" ? DEFAULT_EMBEDDING_MODEL : env.TEAM_RECORD_EMBEDDING_MODEL_ID;
-  const embedder = createEmbedder({ modelId, dimension: VECTOR_DIMENSION_DEFAULT, invoke: bedrockInvokeModelPort(sdkOptions) });
+  // The self-hosted embedder (environments/embedder): a direct invoke of the function the install names. Without one (a legacy install) rows are stored without a vector and found by keyword.
+  const embedderClient = recordEmbedderClientFrom(env, sdkOptions);
+  const embedderDeps = embedderClient === undefined ? {} : { embedder: createEmbedder({ client: embedderClient }) };
   const buckets = (env.TEAM_RECORD_VECTOR_BUCKETS ?? "").split(",").filter((name) => name !== "");
   const rolePart = env.TEAM_RECORD_VECTORS_ROLE_ARN;
   const account = env.AGENTX_ACCOUNT_ID;
@@ -388,7 +389,7 @@ export function createTeamRecordRuntime(input: TeamRecordRuntimeInput): TeamReco
     await listOrg(orgId);
     const vectors = await indexFor(orgId);
     const made = createRecordSink({
-      table, modes, edition, rovaraDefaultRetention: defaultRetention(edition, "rovara"), embedder, now, log,
+      table, modes, edition, rovaraDefaultRetention: defaultRetention(edition, "rovara"), ...embedderDeps, now, log,
       ...(vectors === undefined ? {} : { vectors: vectors }),
     });
     // Only a sink that has its vectors is kept: one built without them (they could not be opened just now) is rebuilt on the next call.
@@ -526,7 +527,7 @@ export function createTeamRecordRuntime(input: TeamRecordRuntimeInput): TeamReco
   const transientDistiller = input.distillModel === undefined
     ? { distillTransient: async () => ({ accepted: false }) }
     : createTransientDistiller({
-      ingest: { table, modes, edition, rovaraDefaultRetention: defaultRetention(edition, "rovara"), embedder, now, log },
+      ingest: { table, modes, edition, rovaraDefaultRetention: defaultRetention(edition, "rovara"), ...embedderDeps, now, log },
       distill: { model: input.distillModel, now: () => new Date(now()).toISOString(), newId: () => `fact_${randomUUID().replace(/-/g, "")}` },
     });
   // Retention B writes facts (not rows) straight to the table, so it passes the SAME author gate a stored row passes (TRW-4): a note made from an unlinked author's words could not be erased with them.
@@ -577,7 +578,7 @@ export function createTeamRecordRuntime(input: TeamRecordRuntimeInput): TeamReco
     const lakeNow = lakeClient();
     const stats: StatsDeps | undefined = lakeNow === undefined ? undefined : { lake: lakeNow, tableBucket, hot };
     return {
-      table, modes, embedder, now, log,
+      table, modes, ...embedderDeps, now, log,
       limiter: dynamoRateLimiter(table, now),
       // SRL-4: rows about a Rovara task are also checked against the task's live visibility (State table), so narrowing a task hides its old rows.
       taskVisibility: tableTaskVisibilityPort({ documentClient: input.documentClient, tableName: state.tableName, now }),

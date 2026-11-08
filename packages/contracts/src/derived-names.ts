@@ -70,6 +70,8 @@ export const LESSONS_WORKER_RESERVED_CONCURRENCY = 2;
 export const teamRecordVectorBucketName = (env: string): string => `${teamRecordNamePrefix(env)}-record-vectors`;
 export const teamRecordTableBucketName = (env: string): string => `${teamRecordNamePrefix(env)}-record-lake`;
 export const teamRecordWorkGroupName = (env: string): string => `${teamRecordNamePrefix(env)}-record`;
+/** The embedder Lambda (environments/embedder; a container image). CDK names the function with this, and the broker builds EMBEDDER_FUNCTION_NAME from it, so nothing is passed. */
+export const embedderFunctionName = (env: string): string => `agentx-${env}-embedder`;
 
 /**
  * Test services, slice 3: the alias of the key the answer sets (fakes) are encrypted with (SSE-KMS accepts an alias). CDK names the key's alias with this; the broker builds the alias ARN from it, so no variable is passed
@@ -119,6 +121,7 @@ export const DERIVED_BROKER_VARIABLES: readonly DerivedBrokerVariable[] = [
   { variable: "TEAM_RECORD_VECTOR_BUCKETS", kind: "text", value: teamRecordVectorBucketName },
   { variable: "TEAM_RECORD_TABLE_BUCKET", kind: "text", value: teamRecordTableBucketName },
   { variable: "TEAM_RECORD_ATHENA_WORKGROUP", kind: "text", value: teamRecordWorkGroupName },
+  { variable: "EMBEDDER_FUNCTION_NAME", kind: "text", value: embedderFunctionName },
   // Test services, slice 3: the answer sets' key, by its alias (named environments only: the legacy install has no AGENTX_ENV and no key). Nothing reads it while `tx` is off.
   { variable: "FIXTURE_KEY_ARN", kind: "kmsAliasArn", alias: fixtureKeyAlias },
 ];

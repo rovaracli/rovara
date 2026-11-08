@@ -13,7 +13,10 @@ export const teamRecordSwitchName = (env: string): string => `${environmentSetti
 export const TEAM_RECORD_PARAMETER = "TeamRecordEnabled";
 
 /** The storage options the synth reads (`agentxTeamRecord<Name>`), by the names a person types. Absent means the synth's default. */
-export const TEAM_RECORD_OPTIONS = { embeddingModelId: "EmbeddingModelId", kmsKeyArn: "KmsKeyArn", lake: "Lake", athenaUsers: "AthenaUsers", enterpriseWorkspaceId: "EnterpriseWorkspaceId" } as const;
+export const TEAM_RECORD_OPTIONS = { kmsKeyArn: "KmsKeyArn", lake: "Lake", athenaUsers: "AthenaUsers", enterpriseWorkspaceId: "EnterpriseWorkspaceId" } as const;
+/** Options an earlier release accepted. `embeddingModelId` named a Bedrock embedding model; the Team record now embeds with the self-hosted embedder (DECISIONS 27) and has no model to choose. A stored value still reads (so an old record is not bricked) and is never passed to the synth; typing it is refused. */
+export const RETIRED_TEAM_RECORD_OPTIONS = ["embeddingModelId"] as const;
+const isKnownOption = (name: string): boolean => Object.hasOwn(TEAM_RECORD_OPTIONS, name) || (RETIRED_TEAM_RECORD_OPTIONS as readonly string[]).includes(name);
 export type TeamRecordOptionName = keyof typeof TEAM_RECORD_OPTIONS;
 export type TeamRecordOptions = Partial<Record<TeamRecordOptionName, string>>;
 
@@ -21,7 +24,7 @@ export type TeamRecordOptions = Partial<Record<TeamRecordOptionName, string>>;
 export interface TeamRecordRecord { enabled: boolean; options?: TeamRecordOptions }
 
 const OPTION_VALUE = /^[A-Za-z0-9:/._@,+=-]{1,1000}$/u;
-const fixText = (env: string) => `agentx --env ${env} config set teamRecord.options default (Rovara's defaults), or name them: embeddingModelId=<id>;kmsKeyArn=<arn>;lake=true|false;athenaUsers=<arn,arn>;enterpriseWorkspaceId=<id>`;
+const fixText = (env: string) => `agentx --env ${env} config set teamRecord.options default (Rovara's defaults), or name them: kmsKeyArn=<arn>;lake=true|false;athenaUsers=<arn,arn>;enterpriseWorkspaceId=<id>`;
 
 /** The options as typed: `default`, or `name=value` pairs separated by `;`. A name it does not know, or a value with characters a context value never needs, is refused. */
 export function parseTeamRecordOptions(value: string, env: string): TeamRecordOptions {
@@ -32,6 +35,7 @@ export function parseTeamRecordOptions(value: string, env: string): TeamRecordOp
     const at = part.indexOf("=");
     const name = at < 0 ? part : part.slice(0, at).trim();
     const raw = at < 0 ? "" : part.slice(at + 1).trim();
+    if ((RETIRED_TEAM_RECORD_OPTIONS as readonly string[]).includes(name)) throw agentXError("CONFIG_INVALID", `teamRecord.options: ${name} is retired; the Team record uses the built-in self-hosted embedder in both editions. Leave it out; nothing changed`);
     if (!Object.hasOwn(TEAM_RECORD_OPTIONS, name)) throw agentXError("CONFIG_INVALID", `teamRecord.options: unknown option ${JSON.stringify(name.slice(0, 40))}; use ${fixText(env)}; nothing changed`);
     if (!OPTION_VALUE.test(raw)) throw agentXError("CONFIG_INVALID", `teamRecord.options: ${name} needs a value; nothing changed`);
     if (name === "lake" && raw !== "true" && raw !== "false") throw agentXError("CONFIG_INVALID", "teamRecord.options: lake is true or false; nothing changed");
@@ -52,7 +56,7 @@ export async function readTeamRecordRecord(store: ParameterStore, env: string): 
   let parsed: unknown;
   try { parsed = JSON.parse(stored.value); } catch { parsed = undefined; }
   const record = parsed as { v?: unknown; enabled?: unknown; options?: unknown } | undefined;
-  const optionsOk = record?.options === undefined || (typeof record.options === "object" && record.options !== null && Object.entries(record.options).every(([name, value]) => Object.hasOwn(TEAM_RECORD_OPTIONS, name) && typeof value === "string" && OPTION_VALUE.test(value)));
+  const optionsOk = record?.options === undefined || (typeof record.options === "object" && record.options !== null && Object.entries(record.options).every(([name, value]) => isKnownOption(name) && typeof value === "string" && OPTION_VALUE.test(value)));
   if (record === undefined || record.v !== 1 || typeof record.enabled !== "boolean" || !optionsOk) throw agentXError("CONFIG_INVALID", `${teamRecordSwitchName(env)} can't be read; fix or delete it before deploying`);
   return { enabled: record.enabled, ...(record.options === undefined ? {} : { options: record.options as TeamRecordOptions }) };
 }

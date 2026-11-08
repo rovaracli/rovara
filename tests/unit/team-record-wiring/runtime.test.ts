@@ -5,7 +5,7 @@
 //  3. PUBLIC SLACK: message text is never stored in the Public edition (processed, then dropped), whatever the source row says; the positive control shows Enterprise does store it.
 import { readFileSync, readdirSync } from "node:fs";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { teamRecordPk, TEAM_RECORD_OPS_MAX_RECEIVES, TEAM_RECORD_QUEUED_PUT_MAX_AGE_MS, recordActorSourceHash, recordDeveloperHash, developerOrgKey, githubInstallationKey, githubMemberKey, memberGithubKey, githubRepoProjectKey, orgMetaKey, orgSlackTeamKey, orgProjectCatalogKey, projectMetaKey, projectRevisionKey, slackTeamOrgKey, type OrgId } from "@agentx/contracts";
+import { teamRecordPk, TEAM_RECORD_EMBEDDER, TEAM_RECORD_OPS_MAX_RECEIVES, TEAM_RECORD_QUEUED_PUT_MAX_AGE_MS, recordActorSourceHash, recordDeveloperHash, developerOrgKey, githubInstallationKey, githubMemberKey, memberGithubKey, githubRepoProjectKey, orgMetaKey, orgSlackTeamKey, orgProjectCatalogKey, projectMetaKey, projectRevisionKey, slackTeamOrgKey, type OrgId } from "@agentx/contracts";
 import { announceHumanSendBack } from "../../../packages/broker/src/lessons/send-back-events.js";
 import { drainTeamRecordQueue, installTeamRecordEmitter, isTeamRecordJobEvent, isTeamRecordQueueEvent, isTeamRecordSlackEvent, recordSlackForward, runTeamRecordJob, uninstallTeamRecordEmitter } from "../../../packages/broker/src/aws/broker/team-record-wiring.js";
 import { createTeamRecordRuntime, teamRecordIsOn, type TeamRecordRuntime } from "../../../packages/broker/src/team-record/runtime.js";
@@ -24,12 +24,14 @@ const SETTLE_PASS_MS = 121_000;
 
 void 0;
 const MARKER = "SECRETMARKER-QZX-withRetry";
-const ON = { TEAM_RECORD_ENABLED: "1", TEAM_RECORD_TABLE_NAME: "TeamRecord", AWS_REGION: "us-west-2" } as const;
+const ON = { TEAM_RECORD_ENABLED: "1", TEAM_RECORD_TABLE_NAME: "TeamRecord", AWS_REGION: "us-west-2", EMBEDDER_FUNCTION_NAME: "agentx-staging-embedder" } as const;
+/** The embedder function's answer for the Team record's model: one unit vector of 1,024 dimensions per text. */
+const embedderReply = (texts: number) => ({ ok: true, model: "record", modelId: TEAM_RECORD_EMBEDDER.modelId, revision: TEAM_RECORD_EMBEDDER.revision, spec: TEAM_RECORD_EMBEDDER.spec, dimension: 1024, vectors: Array.from({ length: texts }, () => Array.from({ length: 1024 }, () => 1 / 32)) });
 const indexKeys = { gsi1: { partition: "gsi1pk" }, gsi2: { partition: "gsi2pk" }, gsi3: { partition: "gsi3pk", sort: "gsi3sk" }, gsi4: { partition: "gsi4pk" }, gsi5: { partition: "gsi5pk", sort: "textDueAt" } };
 const dbOf = () => new FakeDynamoDb({ indexKeys });
 const noSdk = async (): Promise<never> => { throw new SdkUnavailableError(); };
 
-/** A fake AWS: Bedrock answers a 1,024-dimension embedding, S3 Vectors records every command with the credentials it was signed with, and STS records every session policy it was asked for. */
+/** A fake AWS: the embedder Lambda answers a 1,024-dimension embedding, S3 Vectors records every command with the credentials it was signed with, and STS records every session policy it was asked for. */
 function fakeAws() {
   const vectorCalls: Array<{ command: string; input: Record<string, unknown>; accessKeyId: string }> = [];
   const athenaCalls: Array<{ command: string; sql: string }> = [];
@@ -38,10 +40,10 @@ function fakeAws() {
   const sessions: Array<{ roleArn: string; policy: string; sessionName: string; tags?: ReadonlyArray<{ Key: string; Value: string }> | undefined }> = [];
   const command = (name: string) => ({ [name]: class { constructor(readonly input: Record<string, unknown>) {} get commandName() { return name; } } });
   const sdk = async (name: string): Promise<Record<string, unknown>> => {
-    if (name === "@aws-sdk/client-bedrock-runtime") {
+    if (name === "@aws-sdk/client-lambda") {
       return {
-        BedrockRuntimeClient: class { async send(c: { input: { body: string } }) { embedBodies.push(c.input.body); return { body: Buffer.from(JSON.stringify({ embedding: Array.from({ length: 1024 }, () => 0.01) })) }; } },
-        ...command("InvokeModelCommand"),
+        LambdaClient: class { async send(c: { input: { Payload: Uint8Array } }) { const request = JSON.parse(Buffer.from(c.input.Payload).toString("utf8")) as { texts: string[] }; embedBodies.push(JSON.stringify(request)); return { StatusCode: 200, Payload: Buffer.from(JSON.stringify(embedderReply(request.texts.length))) }; } },
+        ...command("InvokeCommand"),
       };
     }
     if (name === "@aws-sdk/client-s3vectors") {
@@ -272,8 +274,8 @@ describe("Public Slack text is processed, then dropped", () => {
     bind(db);
     const embedded: string[] = [];
     const sdk = async (name: string) => {
-      if (name !== "@aws-sdk/client-bedrock-runtime") throw new SdkUnavailableError();
-      return { BedrockRuntimeClient: class { async send(command: { input: { body: string } }) { embedded.push(command.input.body); throw new Error("no embedding in this test"); } }, InvokeModelCommand: class { constructor(readonly input: { body: string }) {} } };
+      if (name !== "@aws-sdk/client-lambda") throw new SdkUnavailableError();
+      return { LambdaClient: class { async send(command: { input: { Payload: Uint8Array } }) { embedded.push(Buffer.from(command.input.Payload).toString("utf8")); throw new Error("no embedding in this test"); } }, InvokeCommand: class { constructor(readonly input: { Payload: Uint8Array }) {} } };
     };
     const note = JSON.stringify({ facts: [{ kind: "note", text: "The team retries network calls.", links: [] }] });
     const runtime = build(db, { ...ON, ROVARA_EDITION: "public" }, { distillModel: async () => note, sdk });

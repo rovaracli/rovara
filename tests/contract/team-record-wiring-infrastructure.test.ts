@@ -58,7 +58,7 @@ describe("the switch is off by default and changes nothing", () => {
     expect(Object.keys(resources).filter((id) => /TeamRecord/.test(id))).toStrictEqual([]);
     expect(Object.values(resources).filter((resource) => resource.Type === "AWS::DynamoDB::Table" && String(JSON.stringify(resource.Properties)).includes("team-record"))).toStrictEqual([]);
     const settings = brokerSettingsIn(functionVariables(plain, /^Broker[0-9A-F]{8}$/));
-    for (const key of ["teamRecord", "teamRecordActive", "teamRecordEmbeddingModel", "teamRecordLake"] as const) expect(Object.keys(settings), key).not.toContain(key);
+    for (const key of ["teamRecord", "teamRecordActive", "teamRecordLake"] as const) expect(Object.keys(settings), key).not.toContain(key);
     expect(Object.keys(brokerNamesIn(functionVariables(plain, /^Broker[0-9A-F]{8}$/)))).not.toContain("teamRecordVectorsRole");
     expect(functionVariables(plain, /^SlackIngress[0-9A-F]{8}$/)).not.toHaveProperty("TEAM_RECORD_ENABLED");
     expect((plain.toJSON() as { Parameters?: Record<string, unknown> }).Parameters).not.toHaveProperty("TeamRecordEnabled");
@@ -142,18 +142,55 @@ describe("the switch on: Public cloud", () => {
     expect(settings.teamRecord).toBe("1");
     expect(settings.teamRecordActive).toEqual({ Ref: "TeamRecordEnabled" });
     expect((on.toJSON() as { Parameters?: Record<string, unknown> }).Parameters?.TeamRecordEnabled).toMatchObject({ Type: "String", Default: "1", AllowedValues: ["0", "1"] });
-    // ENV-ROOM: the default embedding model is not passed (the broker reads an unset model as the default), and the record's dead-letter queue has a fixed name the broker derives.
-    expect(settings).not.toHaveProperty("teamRecordEmbeddingModel");
+    // ENV-ROOM: there is no embedding model setting any more (the self-hosted embedder is fixed; its function name is derived), and the record's dead-letter queue has a fixed name the broker derives.
+    expect(Object.keys(BROKER_SETTINGS)).not.toContain("teamRecordEmbeddingModel");
+    expect(variables).not.toHaveProperty("EMBEDDER_FUNCTION_NAME");
     expect(settings.teamRecordLake).toBe("1");
     expect(brokerNamesIn(variables).teamRecordVectorsRole).toStrictEqual({ Ref: expect.stringMatching(/^TeamRecordVectorsDataRole/) as string });
     expect(Object.keys(BROKER_NAMES)).not.toContain("teamRecordDeadLetters");
-    for (const spec of [BROKER_SETTINGS.teamRecord, BROKER_SETTINGS.teamRecordEmbeddingModel, BROKER_SETTINGS.teamRecordLake, BROKER_NAMES.teamRecordVectorsRole]) expect(variables).not.toHaveProperty(spec.variable);
+    for (const spec of [BROKER_SETTINGS.teamRecord, BROKER_SETTINGS.teamRecordLake, BROKER_NAMES.teamRecordVectorsRole]) expect(variables).not.toHaveProperty(spec.variable);
   }, 180_000);
 
-  it("passes the embedding model in the packed settings when the install chooses another one", () => {
-    const other = controlPlane({ ...PUBLIC, agentxTeamRecord: "enabled", agentxTeamRecordEmbeddingModelId: "cohere.embed-english-v3" });
-    expect(brokerSettingsIn(functionVariables(other, /^Broker[0-9A-F]{8}$/)).teamRecordEmbeddingModel).toBe("cohere.embed-english-v3");
+  it("refuses the retired embedding model option instead of ignoring it", () => {
+    expect(() => controlPlane({ ...PUBLIC, agentxTeamRecord: "enabled", agentxTeamRecordEmbeddingModelId: "cohere.embed-english-v3" })).toThrow(/embeddingModelId is retired/);
   }, 180_000);
+
+  it("creates the self-hosted embedder: a container-image Lambda named from the environment, only when an image digest is given, invoked by the broker alone, with no Bedrock right", () => {
+    const parameter = (on.toJSON() as { Parameters?: Record<string, { Default?: string; AllowedPattern?: string }> }).Parameters?.EmbedderImageUri;
+    expect(parameter?.Default).toBe("none");
+    const pattern = new RegExp(parameter!.AllowedPattern!);
+    expect(pattern.test("none")).toBe(true);
+    expect(pattern.test(`111122223333.dkr.ecr.us-west-2.amazonaws.com/rovara/embedder@sha256:${"a".repeat(64)}`)).toBe(true);
+    for (const bad of ["", "embedder:latest", `111122223333.dkr.ecr.us-west-2.amazonaws.com/rovara/embedder:v1`, `ghcr.io/x/embedder@sha256:${"a".repeat(64)}`, `docker.io/library/x@sha256:${"a".repeat(64)}`]) expect(pattern.test(bad), bad).toBe(false);
+    const embedder = Object.entries(resources).filter(([, resource]) => resource.Type === "AWS::Lambda::Function" && resource.Properties.FunctionName === "agentx-staging-embedder");
+    expect(embedder).toHaveLength(1);
+    const properties = embedder[0]![1].Properties;
+    expect(properties).toMatchObject({ PackageType: "Image", Architectures: ["arm64"], MemorySize: 6144, Timeout: 90, ReservedConcurrentExecutions: 4, Code: { ImageUri: { Ref: "EmbedderImageUri" } } });
+    expect(properties).not.toHaveProperty("Environment");
+    expect((embedder[0]![1] as unknown as { Condition?: string }).Condition).toBe("HasEmbedderImage");
+    expect((on.toJSON() as { Conditions?: Record<string, unknown> }).Conditions).toHaveProperty("HasEmbedderImage");
+    // The broker may invoke this one function; the function's own role holds log writes only; nobody holds a Bedrock embedding right for the record any more.
+    const statements = Object.values(resources).flatMap((resource) => (resource.Type === "AWS::IAM::Policy" || resource.Type === "AWS::IAM::ManagedPolicy" ? ((resource.Properties.PolicyDocument as { Statement: Array<{ Sid?: string; Action: string | string[]; Resource: unknown }> }).Statement) : []));
+    const invoke = statements.filter((statement) => statement.Sid === "InvokeEmbedder");
+    expect(invoke).toHaveLength(1);
+    expect(invoke[0]!.Action).toBe("lambda:InvokeFunction");
+    expect(JSON.stringify(invoke[0]!.Resource)).toContain("function:agentx-staging-embedder");
+    expect(statements.filter((statement) => statement.Sid === "TeamRecordEmbeddings")).toStrictEqual([]);
+    const role = Object.entries(resources).find(([id, resource]) => resource.Type === "AWS::IAM::Role" && /^EmbedderRole/.test(id))![1];
+    const rolePolicies = Object.entries(resources).filter(([id, resource]) => resource.Type === "AWS::IAM::Policy" && /^EmbedderRole/.test(id));
+    expect(role).toBeDefined();
+    const roleActions = rolePolicies.flatMap(([, resource]) => (resource.Properties.PolicyDocument as { Statement: Array<{ Action: string | string[] }> }).Statement.flatMap((statement) => [statement.Action].flat())).sort();
+    expect(roleActions).toStrictEqual(["logs:CreateLogStream", "logs:PutLogEvents"]);
+  }, 180_000);
+
+  it("drops the embedder's reserved concurrency where the account cannot take one (agentxReservedConcurrency=false), and an Enterprise install gets the same function", () => {
+    const noReservation = resourcesOf(controlPlane({ ...PUBLIC, agentxTeamRecord: "enabled", agentxReservedConcurrency: false }));
+    const noResFn = Object.values(noReservation).find((resource) => resource.Type === "AWS::Lambda::Function" && resource.Properties.FunctionName === "agentx-staging-embedder");
+    expect(noResFn).toBeDefined();
+    expect(noResFn!.Properties).not.toHaveProperty("ReservedConcurrentExecutions");
+    const enterprise = resourcesOf(controlPlane({ ...ENTERPRISE, agentxTeamRecord: "enabled", agentxTeamRecordKmsKeyArn: KMS, agentxTeamRecordEnterpriseWorkspaceId: "org_aaaaaaaaaaaaaaaaaaaa" }));
+    expect(Object.values(enterprise).filter((resource) => resource.Type === "AWS::Lambda::Function" && resource.Properties.FunctionName === "agentx-ent-embedder")).toHaveLength(1);
+  }, 360_000);
 
   it("schedules the hourly and the nightly job through the recovery role, with no retries, and nothing else", () => {
     const schedules = Object.entries(resources).filter(([id, resource]) => resource.Type === "AWS::Scheduler::Schedule" && id.startsWith("TeamRecord"));

@@ -1,5 +1,9 @@
 {
   "BrokerSqsEventSourceAgentXControlPlaneTeamRecordOps5E3AD63EA5EAE174": "AWS::Lambda::EventSourceMapping",
+  "Embedder": "AWS::Lambda::Function",
+  "EmbedderLogs4662E0C5": "AWS::Logs::LogGroup",
+  "EmbedderRoleDefaultPolicy612692EC": "AWS::IAM::Policy",
+  "EmbedderRoleEC79344D": "AWS::IAM::Role",
   "LessonsReflect7C89A6B0": "AWS::SQS::Queue",
   "LessonsReflectDeadLetters33B20F74": "AWS::SQS::Queue",
   "LessonsReflectDeadLettersAlarm659B2486": "AWS::CloudWatch::Alarm",
