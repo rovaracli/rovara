@@ -566,7 +566,6 @@ describe("the lessons worker (switch on)", () => {
 describe("the team record sweep alarms (switch on)", () => {
   const SWEEP_ALARMS = [
     { suffix: "TeamRecordSweepProblem", event: "record.github_sweep_problem", metric: "TeamRecordGithubSweepProblem" },
-    { suffix: "TeamRecordRedeliveryGone", event: "record.github_redelivery_gone", metric: "TeamRecordGithubRedeliveryGone" },
     { suffix: "TeamRecordRepoCheckRefused", event: "record.github_repo_check_refused", metric: "TeamRecordGithubRepoCheckRefused" },
     { suffix: "TeamRecordRedeliveryStateConflict", event: "record.github_redelivery_state_conflict", metric: "TeamRecordGithubRedeliveryStateConflict" },
     { suffix: "TeamRecordEraseSweepFailed", event: "record.erase_sweep_failed", metric: "TeamRecordEraseSweepFailed" },
@@ -607,7 +606,13 @@ describe("the team record sweep alarms (switch on)", () => {
     expect(files.length, event).toBeGreaterThan(0);
   });
 
-  it("the seven alarms are listed for the Health page, as alarms that exist only with the switch on, and there is no other record.* filter", () => {
+  it("a lost redelivery pages once: it is counted inside the sweep-problem line, and its own line has no filter or alarm", () => {
+    expect(filters.filter(([, resource]) => resource.Properties["FilterPattern"] === '{ $.event = "record.github_redelivery_gone" }')).toHaveLength(0);
+    expect(alarms.filter((candidate) => String(candidate["AlarmName"]).includes("RedeliveryGone"))).toHaveLength(0);
+    expect(HEALTH_ALARM_SUFFIXES as readonly string[]).not.toContain("TeamRecordRedeliveryGone");
+  }, 360_000);
+
+  it("the six alarms are listed for the Health page, as alarms that exist only with the switch on, and there is no other record.* filter", () => {
     for (const { suffix } of SWEEP_ALARMS) {
       expect(HEALTH_ALARM_SUFFIXES, suffix).toContain(suffix);
       expect(HEALTH_ALARM_CONDITIONAL_SUFFIXES as readonly string[], suffix).toContain(suffix);

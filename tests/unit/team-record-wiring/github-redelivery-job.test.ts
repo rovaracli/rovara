@@ -87,6 +87,24 @@ describe("the hourly job's GitHub redelivery sweep", () => {
     expect(logs.map((entry) => entry.event)).toContain("record.github_redelivery_state_conflict");
   });
 
+  it("a state item without a revision (hand-written, or an older or future format) reads as version 0: the next run saves it and later runs keep working, with no conflict (R7)", async () => {
+    const deliveries: DeliveriesPort = { list: async () => ({ entries: [failedDelete] }), redeliver: async () => "requested" };
+    const { runtime, db, logs } = build(deliveries);
+    await runtime.jobs.run("hourly");
+    const written = { ...db.find((item) => item.sk === "GHREDELIVERY#state")[0]! };
+    delete written["rev"];
+    db.set(written);
+    expect((db.find((item) => item.sk === "GHREDELIVERY#state")[0] as { rev?: number }).rev).toBeUndefined();
+    const second = await runtime.jobs.run("hourly");
+    expect(second.details.githubRedeliveryFailed).toBe(0);
+    expect(logs.map((entry) => entry.event)).not.toContain("record.github_redelivery_state_conflict");
+    expect((db.find((item) => item.sk === "GHREDELIVERY#state")[0] as { rev: number }).rev).toBe(1);
+    const third = await runtime.jobs.run("hourly");
+    expect(third.details.githubRedeliveryFailed).toBe(0);
+    expect(logs.map((entry) => entry.event)).not.toContain("record.github_redelivery_state_conflict");
+    expect((db.find((item) => item.sk === "GHREDELIVERY#state")[0] as { rev: number }).rev).toBe(2);
+  });
+
   it("an install whose GitHub App is not set up skips the sweep quietly: no call, no failure counted", async () => {
     let called = 0;
     const db = new FakeDynamoDb({ indexKeys });

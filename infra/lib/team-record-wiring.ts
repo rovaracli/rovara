@@ -90,14 +90,13 @@ export interface TeamRecordSweepAlarmProps {
 /**
  * SRL-5 (rounds 2 and 3, R7) and SRL-6: the fixed log lines the hourly job and the delete paths write when something fails, each counted by a metric filter on the BROKER's log group (the schedules wake the broker;
  * the lines are JSON, `{"component":"team_record","event":"record.…"}`, from `createTeamRecordRuntime`) and each paging the operator. `suffix` is also in HEALTH_ALARM_SUFFIXES (contracts/admin.ts).
+ * A lost redelivery (`record.github_redelivery_gone`) has no alarm of its own: the job counts it in `record.github_sweep_problem` (`gone`), so one lost delete pages once.
  * Most alarm on one line in an hour (the hourly job runs once an hour, so a failed run is one data point). `record.github_repo_check_no_time` is the repository check finding no time left in the hourly budget: once is
  * normal on a busy hour, so it pages only when three hourly runs in a row say it. Missing data (no line) is not a breach.
  */
 export const TEAM_RECORD_SWEEP_ALARMS = [
   { id: "SweepProblem", suffix: "TeamRecordSweepProblem", event: "record.github_sweep_problem", metric: "TeamRecordGithubSweepProblem",
-    description: "A GitHub sweep of the team record's hourly job had a problem (the App unreadable, redeliveries failed or gone, or the run failed). Deleted-repository and comment webhooks may be missed. Check the broker logs for record.github_sweep_problem and what it counts." },
-  { id: "RedeliveryGone", suffix: "TeamRecordRedeliveryGone", event: "record.github_redelivery_gone", metric: "TeamRecordGithubRedeliveryGone",
-    description: "A GitHub delete webhook the team record failed to process can no longer be redelivered (GitHub no longer has it). A deletion may not have reached the record. Check the broker logs for record.github_redelivery_gone." },
+    description: "A GitHub sweep of the team record's hourly job had a problem (the App unreadable, a redelivery lost for good because GitHub no longer has it, redeliveries given up on, or the run failed). Deleted-repository and comment webhooks may be missed. Check the broker logs for record.github_sweep_problem and what it counts (gone is a lost redelivery, with its own record.github_redelivery_gone line)." },
   { id: "RepoCheckRefused", suffix: "TeamRecordRepoCheckRefused", event: "record.github_repo_check_refused", metric: "TeamRecordGithubRepoCheckRefused",
     description: "The team record's repository check refused to remove recorded repositories because the installation's view looked too narrow (a narrowed installation). Check the broker logs for record.github_repo_check_refused and that company's Health." },
   { id: "RedeliveryStateConflict", suffix: "TeamRecordRedeliveryStateConflict", event: "record.github_redelivery_state_conflict", metric: "TeamRecordGithubRedeliveryStateConflict",

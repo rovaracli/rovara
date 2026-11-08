@@ -1,6 +1,5 @@
 {
   "BrokerLogsTeamRecordEraseSweepFailedMetricAE4C0BA3": "AWS::Logs::MetricFilter",
-  "BrokerLogsTeamRecordRedeliveryGoneMetric99D2D059": "AWS::Logs::MetricFilter",
   "BrokerLogsTeamRecordRedeliveryStateConflictMetric7A1B98F6": "AWS::Logs::MetricFilter",
   "BrokerLogsTeamRecordRepoCheckNoTimeMetricC3EB4236": "AWS::Logs::MetricFilter",
   "BrokerLogsTeamRecordRepoCheckRefusedMetric1287C659": "AWS::Logs::MetricFilter",
@@ -40,7 +39,6 @@
   "TeamRecordNightlySchedule": "AWS::Scheduler::Schedule",
   "TeamRecordOps256288B5": "AWS::SQS::Queue",
   "TeamRecordOpsDeadLetters6C2C0376": "AWS::SQS::Queue",
-  "TeamRecordRedeliveryGoneAlarm1D9C9DC2": "AWS::CloudWatch::Alarm",
   "TeamRecordRedeliveryStateConflictAlarm045C1F6F": "AWS::CloudWatch::Alarm",
   "TeamRecordReembedSchedule": "AWS::Scheduler::Schedule",
   "TeamRecordRepoCheckNoTimeAlarm022C4DD4": "AWS::CloudWatch::Alarm",

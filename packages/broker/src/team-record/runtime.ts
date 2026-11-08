@@ -947,12 +947,12 @@ export function createTeamRecordRuntime(input: TeamRecordRuntimeInput): TeamReco
             };
           },
           async save(next, previous) {
-            // Optimistic: two overlapping hourly runs (a duplicate schedule, a retried invoke) cannot write over each other's gaps and tracked removals.
+            // Optimistic: two overlapping hourly runs (a duplicate schedule, a retried invoke) cannot write over each other's gaps and tracked removals. An item with no `rev` (hand-written, or an older or future format) reads as version 0, which `#rev = :previous` could never match: for version 0 a missing `rev` matches too (R7).
             try {
               await table.documentClient.send(new PutCommand({
                 TableName: table.tableName,
                 Item: { ...GITHUB_REDELIVERY_STATE_KEY, entityType: "TEAM_RECORD_GITHUB_REDELIVERY", ...(next.watermark === undefined ? {} : { watermark: next.watermark }), gaps: next.gaps, tracked: next.tracked, rev: (previous ?? 0) + 1, at: new Date(now()).toISOString() },
-                ...(previous === undefined ? { ConditionExpression: "attribute_not_exists(pk)" } : { ConditionExpression: "#rev = :previous", ExpressionAttributeNames: { "#rev": "rev" }, ExpressionAttributeValues: { ":previous": previous } }),
+                ...(previous === undefined ? { ConditionExpression: "attribute_not_exists(pk)" } : { ConditionExpression: previous === 0 ? "attribute_not_exists(#rev) OR #rev = :previous" : "#rev = :previous", ExpressionAttributeNames: { "#rev": "rev" }, ExpressionAttributeValues: { ":previous": previous } }),
               }));
             } catch (error) {
               if ((error as { name?: unknown } | null)?.name === "ConditionalCheckFailedException") throw new RedeliveryStateConflict();
