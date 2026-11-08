@@ -7,7 +7,7 @@ import { readFileSync, writeFileSync } from "node:fs";
 import { Stack } from "aws-cdk-lib";
 import { Template } from "aws-cdk-lib/assertions";
 import { describe, expect, it } from "vitest";
-import { BROKER_NAMES, BROKER_SETTINGS, LESSONS_BROKER_MODEL_WAIT_SECONDS, LESSONS_REFLECT_MAX_RECEIVES, LESSONS_REFLECT_VISIBILITY_SECONDS, LESSONS_WORKER_RESERVED_CONCURRENCY, LESSONS_WORKER_TIMEOUT_SECONDS, TEAM_RECORD_OPS_MAX_RECEIVES, HEALTH_ALARM_SUFFIXES, teamRecordTableName } from "@agentx/contracts";
+import { BROKER_NAMES, BROKER_SETTINGS, LESSONS_BROKER_MODEL_WAIT_SECONDS, LESSONS_REFLECT_MAX_RECEIVES, LESSONS_REFLECT_VISIBILITY_SECONDS, LESSONS_WORKER_RESERVED_CONCURRENCY, LESSONS_WORKER_TIMEOUT_SECONDS, TEAM_RECORD_OPS_MAX_RECEIVES, HEALTH_ALARM_CONDITIONAL_SUFFIXES, HEALTH_ALARM_SUFFIXES, teamRecordTableName } from "@agentx/contracts";
 import { LESSONS_WORKER_STATE_WRITE_KEY_PATTERNS } from "../../infra/lib/team-record-wiring.js";
 import { buildAgentXApp } from "../../infra/lib/app.js";
 import { defaultProductionAvailabilityZoneIds } from "../../infra/lib/production-foundation.js";
@@ -557,5 +557,54 @@ describe("the lessons worker (switch on)", () => {
     expect(JSON.stringify(key!.Condition)).toContain("kms:ViaService");
     // Public has no customer key, so no key statement.
     expect(statementsOf(/^LessonsWorkerServiceRole/).some((statement) => statement.Sid === "TeamRecordTableKms")).toBe(false);
+  }, 360_000);
+});
+
+// SRL-5 round 2 (3), round 3 and R7, SRL-6: the hourly job's GitHub sweeps and the delete paths log a fixed line when they fail; each line is counted by a metric filter on the BROKER's log group (the
+// hourly job runs in the broker; its lines are JSON with `event`) and pages the operator. Behind the Team record switch like everything else here.
+describe("the team record sweep alarms (switch on)", () => {
+  const SWEEP_ALARMS = [
+    { suffix: "TeamRecordSweepProblem", event: "record.github_sweep_problem", metric: "TeamRecordGithubSweepProblem" },
+    { suffix: "TeamRecordRedeliveryGone", event: "record.github_redelivery_gone", metric: "TeamRecordGithubRedeliveryGone" },
+    { suffix: "TeamRecordRepoCheckRefused", event: "record.github_repo_check_refused", metric: "TeamRecordGithubRepoCheckRefused" },
+    { suffix: "TeamRecordRedeliveryStateConflict", event: "record.github_redelivery_state_conflict", metric: "TeamRecordGithubRedeliveryStateConflict" },
+    { suffix: "TeamRecordEraseSweepFailed", event: "record.erase_sweep_failed", metric: "TeamRecordEraseSweepFailed" },
+    { suffix: "TeamRecordTombstoneFailed", event: "record.tombstone_failed", metric: "TeamRecordTombstoneFailed" },
+    { suffix: "TeamRecordRepoCheckNoTime", event: "record.github_repo_check_no_time", metric: "TeamRecordGithubRepoCheckNoTime" },
+  ] as const;
+  const on = controlPlane({ ...PUBLIC, agentxTeamRecord: "enabled" });
+  const resources = resourcesOf(on);
+  const filters = Object.entries(resources).filter(([, resource]) => resource.Type === "AWS::Logs::MetricFilter");
+  const alarms = Object.values(resources).filter((resource) => resource.Type === "AWS::CloudWatch::Alarm").map((resource) => resource.Properties);
+  const brokerLogGroupId = Object.entries(resources).find(([id, resource]) => resource.Type === "AWS::Logs::LogGroup" && /^BrokerLogs[0-9A-F]{8}$/.test(id))![0];
+
+  it.each(SWEEP_ALARMS)("$event is counted on the broker's log group by its JSON event field, exactly", ({ event, metric }) => {
+    const found = filters.filter(([, resource]) => resource.Properties["FilterPattern"] === `{ $.event = "${event}" }`);
+    expect(found).toHaveLength(1);
+    const [id, filter] = found[0]!;
+    expect(id).toMatch(/^BrokerLogs/);
+    expect(filter.Properties["LogGroupName"]).toStrictEqual({ Ref: brokerLogGroupId });
+    expect(filter.Properties["MetricTransformations"]).toStrictEqual([{ MetricName: metric, MetricNamespace: "AgentX/staging", MetricValue: "1" }]);
+  }, 360_000);
+
+  it.each(SWEEP_ALARMS.filter(({ suffix }) => suffix !== "TeamRecordRepoCheckNoTime"))("$suffix pages the operator on one line in an hour, and missing data is not a breach", ({ suffix, metric }) => {
+    const alarm = alarms.find((candidate) => candidate["AlarmName"] === `agentx-staging-${suffix}`);
+    expect(alarm).toMatchObject({ Namespace: "AgentX/staging", MetricName: metric, Statistic: "Sum", Period: 3600, EvaluationPeriods: 1, Threshold: 1, ComparisonOperator: "GreaterThanOrEqualToThreshold", TreatMissingData: "notBreaching" });
+    expect(JSON.stringify(alarm!["AlarmActions"])).toContain("OperatorAlerts");
+    expect(String(alarm!["AlarmDescription"])).toContain("record.");
+  }, 360_000);
+
+  it("the out-of-time repository check pages only when it repeats: three hourly runs in a row", () => {
+    const alarm = alarms.find((candidate) => candidate["AlarmName"] === "agentx-staging-TeamRecordRepoCheckNoTime");
+    expect(alarm).toMatchObject({ Namespace: "AgentX/staging", MetricName: "TeamRecordGithubRepoCheckNoTime", Statistic: "Sum", Period: 3600, EvaluationPeriods: 3, DatapointsToAlarm: 3, Threshold: 1, TreatMissingData: "notBreaching" });
+    expect(JSON.stringify(alarm!["AlarmActions"])).toContain("OperatorAlerts");
+  }, 360_000);
+
+  it("the seven alarms are listed for the Health page, as alarms that exist only with the switch on, and there is no other record.* filter", () => {
+    for (const { suffix } of SWEEP_ALARMS) {
+      expect(HEALTH_ALARM_SUFFIXES, suffix).toContain(suffix);
+      expect(HEALTH_ALARM_CONDITIONAL_SUFFIXES as readonly string[], suffix).toContain(suffix);
+    }
+    expect(filters.filter(([, resource]) => String(resource.Properties["FilterPattern"]).includes('$.event = "record.'))).toHaveLength(SWEEP_ALARMS.length);
   }, 360_000);
 });
