@@ -11,6 +11,7 @@
 import { foldForMatching, isMeaningfulAnchor } from "@agentx/contracts";
 import { modeAllows, requireAudit, type LearningPreset, type LearningMode } from "./policy.js";
 import type { LessonDeps } from "./ports.js";
+import { viewedForLessons } from "./project-repo-audience.js";
 import { nextVersion, type LessonStore, type ScopeKey } from "./store.js";
 import type { Lesson } from "./types.js";
 
@@ -170,6 +171,8 @@ export interface TrialContext {
   trialAllowed: boolean;
   /** The lesson contradicts another, is a refinement, was sent back to a person, is held by a paused source, or the project brake is on: a person decides. */
   contradiction: boolean; refinement: boolean; reviewRequired: boolean; held: boolean; braked: boolean;
+  /** Owner decision 34: the places of the repositories the project has NOW (read live by the caller). A lesson restricted only to readers of these counts as project-wide. Absent or unreadable: it stays restricted (fail closed). */
+  projectRepos?: ReadonlySet<string> | undefined;
 }
 
 /**
@@ -187,7 +190,7 @@ export function trialBlockers(lesson: Lesson, tier: Lesson["tier"], context: Tri
   if (lesson.provenance.minTrust === "outsider") why.push("outsider_source");
   if (lesson.provenance.memberCorrection !== true) why.push("not_member_correction");
   if (lesson.provenance.claimsSupported !== true) why.push("claims_not_supported");
-  if (lesson.provenance.audience.kind !== "project") why.push("restricted_source");
+  if (viewedForLessons(lesson, context.projectRepos).provenance.audience.kind !== "project") why.push("restricted_source");
   if (lesson.type === "review_check") why.push("review_check");
   const checks = lesson.citationChecks ?? [];
   const code = lesson.citations.flatMap((c, index) => (c.kind === "code" ? [{ c, index }] : []));
@@ -250,8 +253,8 @@ export async function promoteStableTrials(deps: StableDeps, key: ScopeKey, limit
  * caller reads; an empty list is a statement that the caller found none), and an @handle or an e-mail address always counts as a name. Anything unknown is false. The caller still checks the preset in
  * force (`ResolvedLearning.trialAllowed`: under Regulated nothing is published) and that the people who will read the repository may read the lesson NOW (`readVisible` with a viewer of `undefined`, which also checks the live visibility of every task the lesson was learned from; `fromSharedTask` is only what was true when it was learned).
  */
-export function isPublishable(lesson: Lesson, names: readonly string[]): boolean {
-  if (lesson.trial?.state !== "stable" || lesson.status !== "active" || lesson.provenance.fromSharedTask !== true || lesson.provenance.audience.kind !== "project") return false;
+export function isPublishable(lesson: Lesson, names: readonly string[], projectRepos?: ReadonlySet<string>): boolean {
+  if (lesson.trial?.state !== "stable" || lesson.status !== "active" || lesson.provenance.fromSharedTask !== true || viewedForLessons(lesson, projectRepos).provenance.audience.kind !== "project") return false;
   if (lesson.tier >= 2 || lesson.reviewRequired === true || lesson.retireProposedAt !== undefined || lesson.counters.harmful > 0) return false;
   return !namesAPerson([lesson.title, lesson.description, lesson.body].join("\n"), names);
 }
