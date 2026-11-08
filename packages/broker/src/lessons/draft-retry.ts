@@ -46,7 +46,7 @@ export interface DraftRetryOptions {
   sleep?: ((ms: number) => Promise<void>) | undefined;
   now?: (() => number) | undefined;
   /** The curate step (default `curateDraft`). A seam for tests of the guard below. */
-  curate?: typeof curateDraft | undefined;
+  curate?: ((deps: ProcessDeps, key: ScopeKey, draft: LessonDraft) => Promise<CurateOutcome>) | undefined;
 }
 
 /** The key an audit line is told apart by: what happened to which lesson. */
