@@ -149,10 +149,10 @@ export async function chooseLearningRoute(
   const ranked = [...suitable].sort((left, right) => reasons(left) - reasons(right) || cost(left) - cost(right) || (walked.get(canonicalModelName(left)) ?? 0) - (walked.get(canonicalModelName(right)) ?? 0) || canonicalModelName(left).localeCompare(canonicalModelName(right)));
   const wanted = preferred === undefined ? undefined : suitable.find((model) => canonicalModelName(model) === canonicalModelName(preferred));
   // A route is looked up by the model's canonical name, which drops an OpenRouter variant suffix (`:free`, `:batch`): a source that lists a model AND its unfit twin would answer with whichever entry comes first. So the
-  // routes are asked of a routing whose sources hold the fit entries only; an unfit entry can never be the route of a fit model.
+  // routes are asked of a routing whose OpenRouter sources hold the fit entries only (only OpenRouter has the twin names; filtering another source, a company endpoint, would break its qualification digest, which covers its whole model list).
   const fitOnly: RoutingDependencies = own.sources === undefined ? own : {
     ...own,
-    sources: { read: async (org) => { const stored = await own.sources!.read(org); return { ...stored, sources: stored.sources.map((source) => ({ ...source, models: source.models.filter((entry) => !unfitForLearning(entry.catalog)) })) as typeof stored.sources }; } },
+    sources: { read: async (org) => { const stored = await own.sources!.read(org); return { ...stored, sources: stored.sources.map((source) => (source.kind === "openrouter" ? { ...source, models: source.models.filter((entry) => !unfitForLearning(entry.catalog)) } : source)) }; } },
   };
   const seen = new Set<string>();
   for (const model of [...(wanted === undefined ? [] : [wanted]), ...ranked]) {

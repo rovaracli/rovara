@@ -4,9 +4,10 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   DEFAULT_AGENT_GUARDRAILS, FINALIZE_DELAY_MS, KEY_EXPIRY_GRACE_MS, ModelSourceSchema, agentGuardrailsKey, editionPolicy, modelKeyKey, modelCounter, originCounter, scopeKey, sourceAlias, sourceCounter, spendCounterKey, spendOriginKind,
-  type Edition, type ModelIdentifier, type ModelSource,
+  egressDomainsKey, type Edition, type ModelIdentifier, type ModelSource,
 } from "../../packages/contracts/src/index.js";
 import { listPricesPerMillion } from "@agentx/model-runtime/catalog";
+import { endpointQualificationDigest } from "../../packages/broker/src/model-sources/endpoint-digest.js";
 import { learningReasoningEffort, reasonsByDefault, unfitForLearning } from "../../packages/broker/src/model-sources/diagnosis-provider.js";
 import { ModelSourceStore } from "../../packages/broker/src/model-sources/store.js";
 import type { RoutingDependencies } from "../../packages/broker/src/model-sources/routing.js";
@@ -39,10 +40,14 @@ const near = (value: number | undefined, expected: number) => expect(value ?? 0)
 
 afterEach(() => { vi.restoreAllMocks(); });
 
-function install(options: { forbidden?: ModelIdentifier[]; edition?: Edition; withOp?: boolean; projectOrder?: string[]; monthlyCapUsd?: number; withAgents?: boolean; unpriced?: boolean; models?: ModelIdentifier[]; lessonsModel?: ModelIdentifier; source?: ModelSource } = {}) {
+function install(options: { forbidden?: ModelIdentifier[]; edition?: Edition; withOp?: boolean; projectOrder?: string[]; monthlyCapUsd?: number; withAgents?: boolean; unpriced?: boolean; models?: ModelIdentifier[]; lessonsModel?: ModelIdentifier; source?: ModelSource; approveEgress?: { sourceId: string; host: string } } = {}) {
   const db = new FakeDynamoDb();
   // The company's forbidden models are read now from its guardrails document.
   if (options.forbidden !== undefined) db.set({ ...agentGuardrailsKey(TEST_ORG), guardrails: { ...DEFAULT_AGENT_GUARDRAILS, forbiddenModels: options.forbidden }, revision: 1 });
+  if (options.approveEgress !== undefined) {
+    const owner = { kind: "model-source" as const, sourceId: options.approveEgress.sourceId };
+    db.set({ ...egressDomainsKey(TEST_ORG, owner), orgId: TEST_ORG, owner, active: true, domains: [{ domain: options.approveEgress.host, status: "approved", requestedAt: "2026-10-21T00:00:00.000Z", requestedBy: "dev-owner" }], updatedAt: "2026-10-21T00:00:00.000Z" });
+  }
   const store = new ModelSourceStore({ documentClient: db, tableName: "state", now: Date.now, chatgptSwitch: async () => true });
   const routing: RoutingDependencies = {
     sources: store, egress: { documentClient: db, tableName: "state" }, launch: { kinds: ["anthropic", "openai", "openrouter", "bedrock", "endpoint"] }, edition: editionPolicy(options.edition ?? "public"),
@@ -227,6 +232,22 @@ describe("H1: a model priced at zero, a router and a free variant are never the 
     await t.ready();
     await t.model.complete(t.request);
     expect(t.calls[0]).toMatchObject({ model: orAlias(PAID) });
+  });
+});
+
+describe("N1: the twin filter touches OpenRouter sources only", () => {
+  it("a qualified company endpoint that lists a fit model and an unfit one stays qualified (its digest covers the whole list), and learning routes the fit one through it", async () => {
+    const SRC_ENDPOINT = "src_eeeeeeeeeeeeeeeeeeee";
+    const ROUTER = { provider: "openrouter", modelId: "openrouter/auto" };
+    expect(unfitForLearning(ROUTER)).toBe(true);
+    expect(unfitForLearning(SONNET)).toBe(false);
+    const base = { kind: "endpoint", sourceId: SRC_ENDPOINT, label: "Gateway", baseUrl: "https://llm.example.com/v1", api: "openai-completions", models: [{ name: "our-router", catalog: ROUTER }, { name: "our-sonnet", catalog: SONNET }] };
+    const source = ModelSourceSchema.parse({ ...base, qualifiedDigest: endpointQualificationDigest(ModelSourceSchema.parse(base) as never) });
+    const t = install({ source, edition: "enterprise", approveEgress: { sourceId: SRC_ENDPOINT, host: "llm.example.com" } });
+    await t.ready();
+    await t.model.complete(t.request);
+    expect(t.calls).toHaveLength(1);
+    expect(t.calls[0]).toMatchObject({ model: sourceAlias(TEST_ORG, SRC_ENDPOINT, SONNET) });
   });
 });
 
