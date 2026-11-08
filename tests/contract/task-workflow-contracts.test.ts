@@ -602,6 +602,49 @@ describe("immutable multi-PR feedback reviews", () => {
       expect(tight.feedbackReview).toMatchObject({ status: "COLLECTING" });
       expect(workflowContracts.WorkflowSnapshotSchema.safeParse(tight).success).toBe(true);
     });
+    it("F6: when even the earlier rounds with the mark do not fit, the last resort keeps only the mark (collection still succeeds and the snapshot stays valid)", () => {
+      const { current, bundleRefs: small } = fixture();
+      // The first collection records a small round. The second brings a large pull request (128 comments with long ids) into a snapshot that has room for the review but not for the earlier round and the mark as well.
+      const large = [{ ...small[0]!, comments: Array.from({ length: 128 }, (_, i) => ({ ...small[0]!.comments[0]!, id: `api-${String(i).padStart(3, "0")}-${"x".repeat(100)}`, threadId: undefined })) }, small[1]!];
+      const budget = 262_144;
+      type Pad = { repositoryId: string; number: number; threadId: string; resolved: boolean; comments: Array<{ id: string; updatedAt: string; bodyDigest: string }>; eligibleCommentIds: string[] };
+      const thread = (n: number, id: string): Pad => ({ repositoryId: "api", number: 1, threadId: `pad-${n}`, resolved: true, comments: [{ id, updatedAt: now, bodyDigest: hash("a") }], eligibleCommentIds: [] });
+      const measure = (threads: Pad[]) => new TextEncoder().encode(JSON.stringify({ feedbackReview: { status: "COLLECTING", bundleRefs: large, threadObservations: [] }, feedbackReviewHistory: [], feedbackThreadObservations: threads })).length;
+      // The seen-thread record padded so that the large review leaves `room` bytes below the budget: short threads, then one whose id is as long as the rest needs (a byte count exactly reachable).
+      const padded = (room: number) => {
+        const target = budget - room;
+        const threads: Pad[] = [];
+        const short = `p${"y".repeat(40)}`;
+        const per = measure([thread(0, short)]) - measure([]);
+        for (let n = Math.max(0, Math.floor((target - measure([])) / per) - 4); n > 0; n -= 1) threads.push(thread(threads.length, short));
+        const overhead = measure([...threads, thread(threads.length, "q")]) - measure(threads) - 1;
+        while (target - measure(threads) > overhead + 128) threads.push(thread(threads.length, short));
+        threads.push(thread(threads.length, `q${"z".repeat(Math.max(0, target - measure(threads) - overhead))}`));
+        return WorkflowSnapshotSchema.parse({ ...current, feedbackThreadObservations: threads });
+      };
+      const collectTwice = (room: number) => {
+        const first = workflowContracts.collectWorkflowFeedbackBundles(padded(room), { bundleRefs: small, threadObservations: [] }, now);
+        return workflowContracts.collectWorkflowFeedbackBundles(first, { bundleRefs: large, threadObservations: [] }, now);
+      };
+      const collects = (room: number): boolean => { try { collectTwice(room); return true; } catch { return false; } };
+      // The least room in which the large review is accepted at all.
+      let low = -3_000, high = 30_000;
+      expect(collects(high)).toBe(true);
+      while (high - low > 1) { const middle = Math.floor((low + high) / 2); if (collects(middle)) high = middle; else low = middle; }
+      const outcomes = new Set<string>();
+      for (let room = high; room < high + 400; room += 1) {
+        const second = collectTwice(room);
+        const shown = second.feedbackShown!;
+        outcomes.add(`${String(shown.rounds.length)}${shown.incomplete === true ? "!" : ""}`);
+        if (shown.rounds.length === 0) {
+          expect(shown).toEqual({ rounds: [], incomplete: true });
+          expect(second.feedbackReview).toMatchObject({ status: "COLLECTING" });
+          expect(workflowContracts.WorkflowSnapshotSchema.safeParse(second).success).toBe(true);
+        }
+      }
+      // Tightest room: only the mark. A little more room: the earlier round and the mark. Plenty: both rounds.
+      expect([...outcomes]).toEqual(expect.arrayContaining(["0!", "1!"]));
+    });
     it("marks the record incomplete (and does not grow it) when the list is full", () => {
       const { current, bundleRefs } = fixture();
       const many = Array.from({ length: 799 }, (_, i) => ({ id: `x-${i}`, at: 1 }));

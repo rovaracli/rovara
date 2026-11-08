@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { SendMessageCommand } from "@aws-sdk/client-sqs";
-import { QUEUE_REQUIREMENTS, createOpConsumer, createQueuedDistiller, createQueuedHumanEditJobs, createQueuedSink, createSqsOpQueue, OP_MAX_BYTES, TRANSIENT_MAX_RECEIVES, type RecordOp, type RecordOpQueue } from "../../packages/broker/src/team-record/sources/queue.js";
+import { QUEUE_REQUIREMENTS, createOpConsumer, createQueuedDistiller, createQueuedSink, createSqsOpQueue, OP_MAX_BYTES, TRANSIENT_MAX_RECEIVES, type RecordOp, type RecordOpQueue } from "../../packages/broker/src/team-record/sources/queue.js";
 import { createSlackRecordTap } from "../../packages/broker/src/team-record/sources/slack.js";
 import { createCodeHostTap, repoScope, type CodeHostRepo } from "../../packages/broker/src/team-record/sources/codehost.js";
 import type { RecordDraft } from "../../packages/broker/src/team-record/sources/ports.js";
@@ -90,14 +90,13 @@ describe("retention B text", () => {
 describe("consumer", () => {
   function consumerWorld() {
     const w = world();
-    const handled: unknown[] = [];
     const logs: string[] = [];
-    const consumer = createOpConsumer({ sink: w.sink, distiller: w.distiller, humanEdit: async (job) => { handled.push(job); }, log: (event) => logs.push(event), now: () => NOW });
-    return { w, consumer, handled, logs };
+    const consumer = createOpConsumer({ sink: w.sink, distiller: w.distiller, log: (event) => logs.push(event), now: () => NOW });
+    return { w, consumer, logs };
   }
 
   it("applies each kind of op to the real ports", async () => {
-    const { w, consumer, handled } = consumerWorld();
+    const { w, consumer } = consumerWorld();
     const ops: RecordOp[] = [
       { v: 1, op: "put", draft, queuedAt: QUEUED_AT },
       { v: 1, op: "tombstone", workspaceId: WS, system: "slack", sourceIds: ["C1/1.1"], cause: "source_deleted" },
@@ -112,21 +111,14 @@ describe("consumer", () => {
     expect(w.sink.principalChanges).toHaveLength(1);
     expect(w.sink.audienceReplacements).toHaveLength(1);
     expect(w.distiller.received).toHaveLength(1);
-    const jobs = new FakeQueue();
-    await createQueuedHumanEditJobs(jobs).enqueue({ repo: { host: "github", id: "1", fullName: "a/b", isPrivate: false, workspaceId: WS }, project: "p", taskId: "t", pullRequest: { number: 1, url: "https://x" }, candidateHeadSha: sha(1), headSha: sha(2) });
-    await consumer.processBatch(jobs.sent.map((op) => record(op)));
-    expect(handled).toHaveLength(1);
   });
 
-  it("a human-edit op with no handler (production: a model call has no place in this consumer) is dropped with one fixed line, never run, never retried", async () => {
-    const w = world();
-    const logs: string[] = [];
-    const consumer = createOpConsumer({ sink: w.sink, distiller: w.distiller, log: (event) => logs.push(event), now: () => NOW });
-    const jobs = new FakeQueue();
-    await createQueuedHumanEditJobs(jobs).enqueue({ repo: { host: "github", id: "1", fullName: "a/b", isPrivate: false, workspaceId: WS }, project: "p", taskId: "t", pullRequest: { number: 1, url: "https://x" }, candidateHeadSha: sha(1), headSha: sha(2) });
-    expect(jobs.sent).toHaveLength(1);
-    expect((await consumer.processBatch(jobs.sent.map((op) => record(op)))).batchItemFailures).toEqual([]);
-    expect(logs).toEqual(["record.human_edit_op_dropped"]);
+  it("an old human-edit op (that kind no longer exists here: the LessonsWorker learns from edits, on its own queue) is invalid: dropped with one fixed line, never run, never retried", async () => {
+    const { w, consumer, logs } = consumerWorld();
+    const old = { v: 1, op: "human_edit", job: { repo: { host: "github", id: "1", fullName: "a/b", isPrivate: false, workspaceId: WS }, project: "p", taskId: "t", pullRequest: { number: 1, url: "https://x" }, candidateHeadSha: sha(1), headSha: sha(2) } };
+    expect((await consumer.processBatch([{ messageId: "m", body: JSON.stringify(old), receiveCount: 1 }])).batchItemFailures).toEqual([]);
+    expect(logs).toEqual(["record.op_invalid"]);
+    expect(w.sink.puts).toHaveLength(0);
   });
 
   it("a failed op is retried by the queue (reported as a partial-batch failure); the rest of the batch goes on", async () => {

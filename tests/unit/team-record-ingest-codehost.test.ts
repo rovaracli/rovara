@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { createCodeHostTap, gitRevertedCommits, humanEditFile, revertedCommits, runHumanEdit, revertedPullRequests, type CodeHostDiff, type CodeHostEvent, type CodeHostRepo, type HumanEditInput } from "../../packages/broker/src/team-record/sources/codehost.js";
 import { createGithubDiffReader, createGithubRecordTap, githubEventsOf } from "../../packages/broker/src/team-record/sources/github.js";
 import { createRovaraEmitter, type RovaraEventBase } from "../../packages/broker/src/team-record/sources/rovara.js";
@@ -662,6 +662,19 @@ describe("human edits to Rovara pull requests (read live, never stored)", () => 
     expect(compares).toEqual([]);
   });
 
+  it("F1: a compare the host has no answer for is told on with one fixed line; one the host could not answer for the moment throws out of the read, with nothing handed on", async () => {
+    const { w } = setup();
+    const logs: Array<[string, unknown]> = [];
+    const job = { repo: repo(), project: "shop", taskId: "task-1", pullRequest: { number: 5, url: rovaraPr.url }, candidateHeadSha: sha(20), headSha: sha(21) };
+    const extract = vi.fn(async () => ({ candidates: 0 }));
+    const missing = await runHumanEdit({ actors: w.actors, mode: w.mode, config: w.config, diffs: { compare: async () => undefined }, extractor: { extract }, log: (event, fields) => { logs.push([event, fields]); } }, job);
+    expect(missing).toBe("skipped");
+    expect(logs).toEqual([["human_edit.skipped", { reason: "compare_unavailable" }]]);
+    const reader = createGithubDiffReader(async () => ({ status: 503, body: {} }));
+    await expect(runHumanEdit({ actors: w.actors, mode: w.mode, config: w.config, diffs: reader, extractor: { extract } }, job)).rejects.toThrow(/unavailable/);
+    expect(extract).not.toHaveBeenCalled();
+  });
+
   it("reads a patch as hunk headers and changed lines only", () => {
     expect(humanEditFile({ path: "a.ts", additions: 1, deletions: 0, patch: "@@ -1 +1 @@ sym\n+x\n--- not a change\n+++ nor this" }).hunks).toEqual(["@@ -1 +1 @@ sym", "+x"]);
   });
@@ -732,6 +745,15 @@ describe("GitHub adapter", () => {
     expect(calls).toHaveLength(1);
     expect(await createGithubDiffReader(async () => ({ status: 404, body: {} })).compare({ repo: repo(), base: sha(20), head: sha(21) })).toBeUndefined();
     expect(await createGithubDiffReader(async () => ({ status: 200, body: { status: "weird" } })).compare({ repo: repo(), base: sha(20), head: sha(21) })).toBeUndefined();
+  });
+
+  it("F1: a rate limit or a host fault THROWS (so the read is tried again, nothing spent yet); a missing compare or an unreadable answer is still 'no diff'", async () => {
+    for (const status of [429, 500, 502, 503, 504]) {
+      await expect(createGithubDiffReader(async () => ({ status, body: {} })).compare({ repo: repo(), base: sha(20), head: sha(21) }), String(status)).rejects.toThrow(/unavailable/);
+    }
+    for (const status of [403, 404, 409, 422]) {
+      expect(await createGithubDiffReader(async () => ({ status, body: {} })).compare({ repo: repo(), base: sha(20), head: sha(21) }), String(status)).toBeUndefined();
+    }
   });
 });
 

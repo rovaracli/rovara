@@ -203,13 +203,17 @@ const Compare = z.object({
   files: z.array(z.object({ filename: z.string().max(1000), additions: z.number().int().nonnegative().default(0), deletions: z.number().int().nonnegative().default(0), patch: z.string().max(200_000).optional() }).passthrough()).max(300).default([]),
 }).passthrough();
 
-/** Reads `base...head` through `getJson`. Any other answer than a clean 200 is "no diff": the caller then hands nothing on. */
+/**
+ * Reads `base...head` through `getJson`. A rate limit (429) or a host fault (5xx) THROWS, so the caller can try again later (nothing has been spent at that point: a human edit's lease allows a retry before any model call).
+ * Any other answer than a clean 200 (a missing repository or commit, an answer that cannot be read) is "no diff": the caller then hands nothing on.
+ */
 export function createGithubDiffReader(getJson: GithubGetJson): CodeHostDiffReader {
   return {
     async compare({ repo, base, head }) {
       if (!/^[0-9a-f]{40}$/.test(base) || !/^[0-9a-f]{40}$/.test(head) || !/^[\w.-]+\/[\w.-]+$/.test(repo.fullName)) return undefined;
       const [owner, name] = repo.fullName.split("/") as [string, string];
       const answered = await getJson(`/repos/${encodeURIComponent(owner)}/${encodeURIComponent(name)}/compare/${base}...${head}?per_page=100`, { workspaceId: repo.workspaceId, fullName: repo.fullName });
+      if (answered.status === 429 || answered.status >= 500) throw new Error("the compare is unavailable right now");
       if (answered.status !== 200) return undefined;
       const parsed = Compare.safeParse(answered.body);
       if (!parsed.success) return undefined;

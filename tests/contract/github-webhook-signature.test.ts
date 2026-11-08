@@ -415,6 +415,19 @@ describe("task-wide current PR feedback reconciliation", () => {
     expect(after.workflow().feedbackReview?.bundleRefs).toEqual(before.workflow().feedbackReview?.bundleRefs);expect(callbacks).toBe(2);
     after.input.deliveryId = "delivery-2";expect(await after.module.reconcileTaskPullRequestFeedback(after.input)).toBe(false);expect(callbacks).toBe(2);
   });
+  it("F4: the provider's record of which comments were edited reaches the task's record of what was shown (a review is proved only when the host said it was never edited)", async () => {
+    const f = await fixture();
+    const read = f.input.getCurrentFeedback.bind(f.input);
+    f.input.getCurrentFeedback = async (...args) => ({ ...(await read(...args)), edits: { "review:1": false, "review_comment:4": true } });
+    expect(await f.module.reconcileTaskPullRequestFeedback(f.input)).toBe(true);
+    const rounds = f.workflow().feedbackShown?.rounds ?? [];
+    expect(rounds).toHaveLength(1);
+    const comments = rounds[0]!.pulls.flatMap((pull) => pull.comments.map((comment) => [pull.number, comment.id, comment.edited] as const));
+    expect(comments).toContainEqual([1, "review:1", false]);
+    expect(comments).toContainEqual([1, "review_comment:4", true]);
+    // A comment the host said nothing about stays unknown (no `edited` at all), never "unedited".
+    expect(comments).toContainEqual([2, "discussion:3", undefined]);
+  });
   it("B8 review M6 capture has one 1.5-second budget and ignores a late result", async () => {
     vi.useFakeTimers();try {
       const f=await fixture();let finish:()=>void=()=>undefined,calls=0;

@@ -78,6 +78,20 @@ describe("R1: a lesson names every person whose words were read, so erasing any 
     expect(p.authors).toEqual(["ian"]);
   });
 
+  it("F6: a prompt that read more people than a lesson can name (more than 100) is not turned into a lesson; exactly 100 is, with every name kept", async () => {
+    // The prompt holds at most 100 spans, so many readers come from edits written by several people: 50 edits of two people each is 100 readers.
+    const edits = Array.from({ length: 50 }, (_, i) => memberSpan(`Edit number ${String(i)}`, { kind: "human_edit", authorId: `r${String(2 * i).padStart(3, "0")}`, authorIds: [`r${String(2 * i).padStart(3, "0")}`, `r${String(2 * i + 1).padStart(3, "0")}`], eventId: `ev-${String(i)}` }));
+    for (const [intentBy, kept] of [["r000", true], ["extra", false]] as const) {
+      const model = new ScriptedModel([reply(candidateJson({ evidenceSpanIds: ["S51"], citations: [], body: "Wrap network calls with withRetry." }))]);
+      const { d, audit } = reflectDeps(model);
+      const result = await reflectSubject(d, subject([...edits, memberSpan("Make retries use the helper", { kind: "intent", authorId: intentBy, eventId: "ev-intent" })], { initiatorId: "init" }));
+      expect({ intentBy, drafts: result.drafts.length }).toEqual({ intentBy, drafts: kept ? 1 : 0 });
+      if (kept) expect(result.drafts[0]!.provenance.readFrom).toHaveLength(100);
+      // (Nothing is refused for a reason: the lesson is simply not made, and no name is cut.)
+      expect(audit.events.some((e) => e.action === "lesson.refused")).toBe(false);
+    }
+  });
+
   it("agent text and outcomes are not people: a plan span adds nobody", async () => {
     const model = new ScriptedModel([reply(candidateJson({ evidenceSpanIds: ["S2"], citations: [], body: "Wrap network calls with withRetry." }))]);
     const { d } = reflectDeps(model);

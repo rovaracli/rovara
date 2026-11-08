@@ -2,19 +2,21 @@
 import { generateKeyPairSync } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import { GitHubAppCredentialProvider } from "../../packages/broker/src/github-app.js";
+import { agentXError } from "@agentx/contracts";
 
 const ORG = "org_aaaaaaaaaaaaaaaaaaaa" as never;
 const A = "a".repeat(40);
 const B = "b".repeat(40);
-function setup() {
+function setup(options: { installation?: number; bound?: boolean } = {}) {
   const key = generateKeyPairSync("rsa", { modulusLength: 2048 }).privateKey.export({ type: "pkcs8", format: "pem" }).toString();
   const urls: string[] = [];
   const tokenBodies: unknown[] = [];
   const provider = new GitHubAppCredentialProvider({
     credentialRef: "test", appId: "123", getPrivateKey: async () => key,
+    ...(options.bound === false ? { requireInstallationBound: async () => { throw agentXError("GITHUB_NOT_CONNECTED", "not connected"); } } : {}),
     fetchImplementation: async (input, init) => {
       const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
-      if (url.endsWith("/installation")) return Response.json({ id: 123, account: { login: "acme" } });
+      if (url.endsWith("/installation")) return options.installation === undefined ? Response.json({ id: 123, account: { login: "acme" } }) : new Response("{}", { status: options.installation });
       if (url.endsWith("/access_tokens")) { tokenBodies.push(JSON.parse(init?.body as string)); return Response.json({ token: "fake-test-only", expires_at: "2030-01-01T00:00:00Z" }); }
       urls.push(url);
       return Response.json({ status: "ahead", files: [] });
@@ -45,5 +47,15 @@ describe("getRepositoryCompareJson", () => {
     }
     expect(w.urls).toEqual([]);
     expect(w.tokenBodies).toEqual([]);
+  });
+  it("F2: a repository the App no longer covers (removed from the installation, or the installation no longer bound to the company) is answered 404, never thrown; a fault of GitHub's own still throws", async () => {
+    const path = `/repos/acme/app/compare/${A}...${B}?per_page=100`;
+    const removed = setup({ installation: 404 });
+    expect(await removed.provider.getRepositoryCompareJson("https://github.com/acme/app", path, { orgId: ORG })).toEqual({ status: 404, body: undefined });
+    const unbound = setup({ bound: false });
+    expect(await unbound.provider.getRepositoryCompareJson("https://github.com/acme/app", path, { orgId: ORG })).toEqual({ status: 404, body: undefined });
+    expect(unbound.urls).toEqual([]);
+    const down = setup({ installation: 503 });
+    await expect(down.provider.getRepositoryCompareJson("https://github.com/acme/app", path, { orgId: ORG })).rejects.toMatchObject({ code: "RUNTIME_UNAVAILABLE" });
   });
 });

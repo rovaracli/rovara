@@ -504,7 +504,12 @@ export async function runHumanEdit(deps: Pick<CodeHostTapDependencies, "actors" 
   const config = await gate(deps, { workspaceId: job.repo.workspaceId, project: job.project, source: sourceOf(job.repo), scope: repoScope(job.repo) });
   if (config === undefined) return "skipped";
   const diff = await deps.diffs.compare({ repo: job.repo, base: job.candidateHeadSha, head: job.headSha });
-  if (diff === undefined || diff.status === "identical" || diff.files.length === 0) return "skipped";
+  if (diff === undefined) {
+    // (A compare the host could not answer for the moment THROWS in the reader and is retried: this is an answer, "no such compare".)
+    log("human_edit.skipped", { reason: "compare_unavailable" });
+    return "skipped";
+  }
+  if (diff.status === "identical" || diff.files.length === 0) return "skipped";
   if (diff.status !== "ahead" || diff.truncated) {
     // A force push or a rebase mixes in Rovara's own code and other people's commits; a cut-short compare has authors nobody checked.
     log("human_edit.skipped", { reason: diff.truncated ? "compare_truncated" : "not_a_clean_delta" });

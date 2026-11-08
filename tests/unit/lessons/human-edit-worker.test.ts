@@ -159,6 +159,18 @@ describe("the worker runs a human edit under the reflection's lease", () => {
     expect(w.learn).toHaveBeenCalledTimes(1);
   });
 
+  it("F2: every result line says whether the message was a human edit or a reflection (fixed words), whatever the class; so an operator can tell them apart in the dead-letter queue", async () => {
+    const w = setup();
+    const kinds = () => w.logs.filter((l) => l.event === "lessons_worker.result").map((l) => `${String(l.fields["kind"])}:${String(l.fields["class"])}`);
+    await runReflectMessage(w.deps, bodyOf());
+    await runReflectMessage(w.deps, bodyOf(job(), "req-2"));
+    await runReflectMessage(w.deps, JSON.stringify({ orgId: TEST_ORG, taskId: TASK, outcome: "merged", requestId: "r" }));
+    await runReflectMessage({ ...w.deps, humanEdit: undefined }, bodyOf(job({ headSha: hex(9) })));
+    expect(kinds()).toEqual(["human_edit:reflected", "human_edit:already", "reflection:reflected", "human_edit:human_edit_unavailable"]);
+    // The kind carries no person or text: only the two words.
+    expect(JSON.stringify(w.logs)).not.toContain("withRetry");
+  });
+
   it("MONEY: a redelivery after a model call started is never run again, whether the call failed, the worker died or the lease ran out (callStartedAt)", async () => {
     // The call started (the lease is marked) and the model failed: the attempt is a fault with no `final` note, so the message comes back...
     const failed = setup({ model: new MarkingModel([new Error("provider timeout")]) });

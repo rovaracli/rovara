@@ -12,7 +12,6 @@ import { TEAM_RECORD_OPS_MAX_RECEIVES, TEAM_RECORD_QUEUED_PUT_MAX_AGE_MS } from 
 
 /** The delivery at which a queued put is dropped: two before the queue would dead-letter it. */
 export const TEAM_RECORD_PUT_DROP_AT = TEAM_RECORD_OPS_MAX_RECEIVES - 2;
-import type { CodeHostTapDependencies, HumanEditJob } from "./codehost.js";
 import type { Audience, RecordDraft, RecordSinkPort, TapLog, TombstoneCause, TransientDistillerPort } from "./ports.js";
 
 export type RecordOp =
@@ -21,8 +20,7 @@ export type RecordOp =
   | { v: 1; op: "tombstone"; workspaceId: string; system: string; sourceIds?: string[]; scope?: string; cause: TombstoneCause }
   | { v: 1; op: "principals"; workspaceId: string; scope: string; add?: string[]; remove?: string[]; at: string }
   | { v: 1; op: "audience"; workspaceId: string; scope: string; audience: Audience; at: string }
-  | { v: 1; op: "distill"; draft: RecordDraft & { text: string } }
-  | { v: 1; op: "human_edit"; job: HumanEditJob };
+  | { v: 1; op: "distill"; draft: RecordDraft & { text: string } };
 
 /** A durable send. It throws if the message was not accepted. */
 export interface RecordOpQueue {
@@ -121,10 +119,6 @@ export function createQueuedDistiller(queue: RecordOpQueue): TransientDistillerP
   };
 }
 
-export function createQueuedHumanEditJobs(queue: RecordOpQueue): NonNullable<CodeHostTapDependencies["humanEditJobs"]> {
-  return { enqueue: (job) => queue.send({ v: 1, op: "human_edit", job }) };
-}
-
 export interface SqsLike {
   send(command: SendMessageCommand): Promise<unknown>;
 }
@@ -143,8 +137,6 @@ export function createSqsOpQueue(input: { client: SqsLike; opsQueueUrl: string; 
 export interface OpConsumerDependencies {
   sink: RecordSinkPort;
   distiller: TransientDistillerPort;
-  /** Runs a human-edit read: `(job) => runHumanEdit({ ...deps, diffs }, job)`. Absent: such jobs are dropped. */
-  humanEdit?: (job: HumanEditJob) => Promise<unknown>;
   log?: TapLog;
   /** Milliseconds, for the age of a queued put. Default `Date.now`. */
   now?: () => number;
@@ -156,7 +148,7 @@ export interface QueueRecord {
   receiveCount: number;
 }
 
-const OPS = new Set(["put", "tombstone", "principals", "audience", "distill", "human_edit"]);
+const OPS = new Set(["put", "tombstone", "principals", "audience", "distill"]);
 
 function parseOp(body: string): RecordOp | undefined {
   try {
@@ -182,8 +174,7 @@ export function createOpConsumer(deps: OpConsumerDependencies): { processBatch(r
       case "principals": await deps.sink.changePrincipals({ workspaceId: op.workspaceId, scope: op.scope, ...(op.add === undefined ? {} : { add: op.add }), ...(op.remove === undefined ? {} : { remove: op.remove }), at: op.at }); return;
       case "audience": await deps.sink.replaceScopeAudience({ workspaceId: op.workspaceId, scope: op.scope, audience: op.audience, at: op.at }); return;
       case "distill": await deps.distiller.distillTransient(op.draft); return;
-      // A human edit is learned from by the LessonsWorker (a model call has no place in this queue's 30 s consumer), which has its own queue message: an op of this kind that is still here is dropped, never run.
-      case "human_edit": if (deps.humanEdit !== undefined) await deps.humanEdit(op.job); else log("record.human_edit_op_dropped", {}); return;
+      // (A human edit is learned from by the LessonsWorker, on its own queue: a model call has no place in this 30 s consumer. There is no op of that kind here, so an old one is "invalid" and dropped, never run.)
     }
   }
   return {

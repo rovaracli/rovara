@@ -9,7 +9,7 @@
 // A message that must come back (a retry, a lease it must wait for, a claim that could not be made) is answered as a batch item failure, with a visibility backoff of 60 s, 300 s, then 900 s instead of the queue's whole
 // 1800 s; the queue sends it to its dead-letter queue (which alarms) after five receives. Five receives fit three attempts in the normal case (about two waits for the first attempt's key, one for each later one); an `exhausted` answer writes
 // no final state and uses one or two more receives before the dead-letter queue, on purpose: the alarm on that queue is the signal. A sweep that cannot read a key's spend leaves the lease at `retry` and can run the
-// receives out; the message is then in the dead-letter queue and can be redriven. The metric is the `lessons_worker.result` line, one per message, with a fixed class.
+// receives out; the message is then in the dead-letter queue and can be redriven. The metric is the `lessons_worker.result` line, one per message, with a fixed class and a fixed kind (`reflection` or `human_edit`).
 import { LESSONS_REFLECT_MAX_ATTEMPTS, LESSONS_REFLECT_RETRY_BACKOFF_SECONDS } from "@agentx/contracts";
 import { withLearningAttempt, type LearningAttempt } from "./learning-deadline.js";
 import type { HumanEditJob } from "../team-record/sources/codehost.js";
@@ -55,21 +55,23 @@ export async function runReflectMessage(deps: ReflectWorkerDeps, body: string, c
     deps.log("lessons_worker.invalid_message", {});
     return { result: "invalid", retry: false };
   }
+  // Which kind of message this is, in the result line (fixed words: an operator reading the dead-letter alarm can tell a human edit from a reflection).
+  const kind = edit !== undefined ? "human_edit" : "reflection";
   // What the lease is on (a reflection: the task's end; a human edit: the task's head commit) and the work it guards.
   const message: LeaseTarget = edit !== undefined ? { orgId: edit.orgId, taskId: edit.taskId, outcome: humanEditLeaseOutcome(edit) } : { orgId: reflection!.orgId, taskId: reflection!.taskId, outcome: reflection!.outcome };
   if (edit !== undefined && deps.humanEdit === undefined) {
-    deps.log("lessons_worker.result", { class: "human_edit_unavailable", taskId: edit.taskId });
+    deps.log("lessons_worker.result", { class: "human_edit_unavailable", kind, taskId: edit.taskId });
     return { result: "failed", retry: true };
   }
   const remaining = context?.getRemainingTimeInMillis?.();
   const deadlineMs = remaining === undefined ? deps.deadlineMs : Math.min(deps.deadlineMs, remaining - WORKER_RESERVE_MS);
   if (deadlineMs <= 0) {
-    deps.log("lessons_worker.result", { class: "no_time" });
+    deps.log("lessons_worker.result", { class: "no_time", kind });
     return { result: "no_time", retry: true };
   }
   const taken = await deps.claims.take(message, deps.now());
   if (taken.kind !== "taken") {
-    deps.log("lessons_worker.result", { class: taken.kind, taskId: message.taskId });
+    deps.log("lessons_worker.result", { class: taken.kind, kind, taskId: message.taskId });
     return taken.kind === "already" ? { result: "already", retry: false } : { result: taken.kind, retry: true };
   }
   const { lease } = taken;
@@ -129,7 +131,7 @@ export async function runReflectMessage(deps: ReflectWorkerDeps, body: string, c
     // The lease stays `running`; once it lapses the next take decides by the model keys (nothing spent: tried again; spent: never).
     deps.log("lessons_worker.finish_failed", { taskId: message.taskId });
   }
-  deps.log("lessons_worker.result", { class: outcome.retry ? "retry" : result === "timed_out" || result === "failed" ? result : outcome.status, taskId: message.taskId, attempt: lease.attempt });
+  deps.log("lessons_worker.result", { class: outcome.retry ? "retry" : result === "timed_out" || result === "failed" ? result : outcome.status, kind, taskId: message.taskId, attempt: lease.attempt });
   return { result, retry: outcome.retry };
 }
 

@@ -780,8 +780,15 @@ export class GitHubAppCredentialProvider {
     const repository = parseGitHubRepository(repositoryUrl);
     const prefix = `/repos/${encodeURIComponent(repository.owner)}/${encodeURIComponent(repository.name)}/compare/`;
     if (!apiPath.startsWith(prefix) || !/^[0-9a-f]{40}\.\.\.[0-9a-f]{40}(\?per_page=\d{1,3})?$/u.test(apiPath.slice(prefix.length))) throw agentXError("CONFIG_INVALID", "not a compare path of this repository");
-    const installed = await this.installed(repository, scope);
-    const token = await this.createInstallationToken(installed, { contents: "read" }, scope);
+    let token: string;
+    try {
+      const installed = await this.installed(repository, scope);
+      token = await this.createInstallationToken(installed, { contents: "read" }, scope);
+    } catch (error) {
+      // A repository the App no longer covers (removed from the installation, or the installation no longer bound to this company) has nothing to read, now or on any retry: answered as "not found", never thrown.
+      if (isAgentXError(error) && (error.code === "CONFIG_INVALID" || error.code === "GITHUB_NOT_CONNECTED")) return { status: 404, body: undefined };
+      throw error;
+    }
     return this.trackingJson(`https://api.github.com${apiPath}`, token);
   }
 
