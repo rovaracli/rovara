@@ -66,7 +66,7 @@ export function codeFileReader(dependencies: LessonsHostDependencies, maxBytes =
  * Whether the project's code repositories are private: "private" only when the host says so for EVERY repository the project has; "public" when it says any is not private; "unknown" for anything else
  * (no repository, a host that does not say, a read that fails). The pull request description writes lesson titles only for "private".
  */
-export async function repositoryVisibilityOf(dependencies: AwsBrokerDependencies, orgIdText: string, project: string): Promise<RepositoryVisibility> {
+export async function repositoryVisibilityOf(dependencies: LessonsHostDependencies, orgIdText: string, project: string): Promise<RepositoryVisibility> {
   try {
     const orgId = OrgIdSchema.parse(orgIdText);
     const repositories = codeRepositoriesOf((await requireLatestProject(dependencies, orgId, project)).definition);

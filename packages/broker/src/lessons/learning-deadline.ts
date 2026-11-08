@@ -21,7 +21,7 @@ export interface LearningAttempt {
   attemptId?: string;
   /** The lease item the attempt's model keys are noted on (`modelKeyIds`). */
   leaseKey?: { pk: string; sk: string };
-  /** How the attempt's model path failed, when it did. */
+  /** How the attempt's model path failed, when it did: the most severe fault it was told (final beats retryable). */
   fault?: "retryable" | "final";
   /** Writes the lease's `callStartedAt` (conditional on this attempt). Throws when it cannot: the call is then not made. */
   callStarting?: () => Promise<void>;
@@ -50,8 +50,8 @@ export function learningCallMayStart(now: number, waitMs: number): boolean {
   return now + waitMs <= attempt.deadlineAt;
 }
 
-/** The model path says how its failure should be read. A no-op outside an attempt. */
+/** The model path says how its failure should be read. A no-op outside an attempt. The attempt keeps the MOST SEVERE fault it was told (final beats retryable): a later call's retryable fault never hides an earlier call's final one. */
 export function noteLearningFault(fault: "retryable" | "final"): void {
   const attempt = storage.getStore();
-  if (attempt !== undefined) attempt.fault = fault;
+  if (attempt !== undefined && attempt.fault !== "final") attempt.fault = fault;
 }

@@ -55,7 +55,7 @@ export function tableOutcomeRows(table: TeamRecordTable, nowSeconds?: () => numb
   };
 }
 
-/** The most pages one project's look at the last day reads (500 rows each); a busier project is cut off and says so. */
+/** The most pages one project's look at the last 26 h reads (500 rows each); a busier project is cut off and says so. */
 export const MAX_REVERT_PAGES = 20;
 
 /**

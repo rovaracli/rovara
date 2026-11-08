@@ -21,7 +21,7 @@ import type { AuditRuntime } from "../audit/outbox.js";
 import { createCodeBuildGateway } from "../codebuild.js";
 import { deadlineGuardedClient } from "../lessons/deadline-guard.js";
 import { reflectQueueUrlOf, sqsReflectVisibility } from "../lessons/reflect-queue.js";
-import { ModelAccessInvoker } from "../model-proxy/invoker.js";
+import { ModelAccessInvoker, singleAttemptLambda } from "../model-proxy/invoker.js";
 import { installationBindingCheck } from "../org/github-connection.js";
 import { createTeamRecordRuntime } from "../team-record/runtime.js";
 import type { LessonsHostDependencies } from "./broker/definitions.js";
@@ -63,7 +63,7 @@ export function lessonsWorkerDependencies(): LessonsHostDependencies {
     ...(teamRecord === undefined ? {} : { teamRecord }),
     // The spend ledger exists where the install has agents and a model path: the worker's model path is the same in-VPC function the broker calls (it mints no key itself).
     agents: {},
-    ...(functionName === undefined || functionName === "" ? {} : { modelAccess: { access: new ModelAccessInvoker({ functionName, lambda: new LambdaClient(awsClientConfiguration) }), proxyUrl: "" } }),
+    ...(functionName === undefined || functionName === "" ? {} : { modelAccess: { access: new ModelAccessInvoker({ functionName, lambda: new LambdaClient(awsClientConfiguration), learningLambda: singleAttemptLambda(awsClientConfiguration) }), proxyUrl: "" } }),
     developer: { signInTableName: requiredEnvironment("DEVELOPER_SIGNIN_TABLE_NAME") },
   };
 }

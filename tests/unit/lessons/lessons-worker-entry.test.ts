@@ -1,5 +1,6 @@
 // Lessons in production, lane 2 (M4, M6): the LessonsWorker's own entry builds only what learning reads, writes audit events as pending items only, and stops writing the lessons' table once a reflection's deadline has passed.
 import { readFileSync } from "node:fs";
+import type { LambdaClient } from "@aws-sdk/client-lambda";
 import { PutCommand, GetCommand, TransactWriteCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
 import { describe, expect, it, vi } from "vitest";
 import * as builders from "../../../packages/broker/src/audit/events.js";
@@ -92,6 +93,15 @@ describe("M6: the worker's own entry", () => {
     expect(built.codeHost).toBeDefined();
     expect(built.audit?.pendingOnly).toBe(true);
     for (const forbidden of ["callbackSigningKey", "repositoryGrants", "issuer", "adminClaim", "adminValues", "codeBuild", "orchestratorRoleArn", "connectorCredentials", "githubWebhookSecret"]) expect(built, forbidden).not.toHaveProperty(forbidden);
+  });
+  it("F1: the worker's learning call goes through a Lambda client that sends once (maxAttempts 1), a different client from the retrying one it uses for everything else", async () => {
+    const invoker = built.modelAccess!.access as unknown as { input: { lambda: LambdaClient; learningLambda?: LambdaClient } };
+    expect(invoker.input.learningLambda).toBeDefined();
+    expect(await invoker.input.learningLambda!.config.maxAttempts()).toBe(1);
+    expect(invoker.input.learningLambda).not.toBe(invoker.input.lambda);
+    expect(await invoker.input.lambda.config.maxAttempts()).toBeGreaterThan(1);
+    // It is the same configuration (region) as the ordinary client's.
+    expect(await invoker.input.learningLambda!.config.region()).toBe("us-west-2");
   });
   it("Enterprise (a private install) is not the cloud", () => {
     expect(build({ ROVARA_EDITION: "enterprise" }).cloud).toBe(false);

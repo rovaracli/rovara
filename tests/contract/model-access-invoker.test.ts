@@ -1,10 +1,10 @@
 import { LambdaClient, type InvokeCommand, type InvokeCommandOutput } from "@aws-sdk/client-lambda";
 import { AgentXError } from "@agentx/contracts";
 import { describe, expect, it } from "vitest";
-import type { ModelAccess } from "../../packages/broker/src/model-proxy/access.js";
+import { LearningNotForwarded, type ModelAccess } from "../../packages/broker/src/model-proxy/access.js";
 import { ModelProxyClient } from "../../packages/broker/src/model-proxy/client.js";
 import { createModelAccessHandler } from "../../packages/broker/src/model-proxy/handler.js";
-import { ModelAccessInvoker, singleAttemptLambda, type ModelAccessInvokerInput } from "../../packages/broker/src/model-proxy/invoker.js";
+import { LEARNING_NEEDS_SINGLE_ATTEMPT, ModelAccessInvoker, singleAttemptLambda, type ModelAccessInvokerInput } from "../../packages/broker/src/model-proxy/invoker.js";
 import { routeFetch } from "../support/developer-fakes.js";
 
 const ORG = "org_abcdefghij0123456789";
@@ -22,7 +22,8 @@ const answer = (body: unknown, extra: { FunctionError?: string } = {}): InvokeCo
 
 function invokerWith(send: Send) {
   const sent: InvokeCommand[] = [];
-  const invoker = new ModelAccessInvoker({ functionName: FUNCTION_NAME, lambda: { send: async (command, options) => { sent.push(command); return send(command, options); } } });
+  const client = { send: async (command: InvokeCommand, options?: { abortSignal?: AbortSignal }) => { sent.push(command); return send(command, options); } };
+  const invoker = new ModelAccessInvoker({ functionName: FUNCTION_NAME, lambda: client, learningLambda: client });
   return { invoker, sent };
 }
 const payloadOf = (command: InvokeCommand) => JSON.parse(Buffer.from(command.input.Payload as Uint8Array).toString("utf8")) as unknown;
@@ -145,6 +146,18 @@ describe("R4: a learning call is sent to the function once, never retried by the
     await invoker.learningCompletion(base);
     expect((payloadOf(sent[0]!) as { args: Record<string, unknown> }).args.reasoningEffort).toBe("minimal");
     expect(Object.keys((payloadOf(sent[1]!) as { args: Record<string, unknown> }).args)).not.toContain("reasoningEffort");
+  });
+
+  it("F1: an invoker with no single-attempt client REFUSES a learning call with a fixed LearningNotForwarded, sends nothing, and still serves every other operation", async () => {
+    const sent: InvokeCommand[] = [];
+    const ordinary = { send: async (command: InvokeCommand) => { sent.push(command); return answer({ ok: true, result: null }); } };
+    const invoker = new ModelAccessInvoker({ functionName: FUNCTION_NAME, lambda: ordinary });
+    const error = await failure(invoker.learningCompletion({ key: "k".repeat(24), purpose: "reflect", system: "s", user: "u", maxOutputTokens: 10, model: "alias", api: "anthropic-messages" }));
+    expect(error).toBeInstanceOf(LearningNotForwarded);
+    expect(error.message).toContain(LEARNING_NEEDS_SINGLE_ATTEMPT);
+    expect(sent).toEqual([]);
+    await invoker.revokeKey("sk-virtual");
+    expect(sent).toHaveLength(1);
   });
 
   it("learningCompletion goes through the single-attempt client; every other operation goes through the ordinary one", async () => {

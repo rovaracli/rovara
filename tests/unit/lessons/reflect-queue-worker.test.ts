@@ -187,6 +187,40 @@ describe("the worker", () => {
     const failing = worker({ claims: { ...memoryClaims().claims, markCallStarted: async () => { throw new Error("table down"); } }, learn: async () => { await currentLearningAttempt()!.callStarting!(); return { status: "reflected", retry: false }; } });
     expect(await runReflectMessage(failing.deps, body())).toEqual({ result: "failed", retry: true });
   });
+  it("F2: calls are counted per attempt: a later call taken back (not forwarded) undoes only its own mark, never an earlier call's; the mark is removed only when no started call is left", async () => {
+    const w = worker({ learn: async () => {
+      const attempt = currentLearningAttempt()!;
+      await attempt.callStarting!();   // the reflector's call
+      await attempt.callStarting!();   // the judge's call
+      await attempt.callNotSent!();    // the judge's is refused before anything was sent
+      w.marks.push("--");
+      await attempt.callNotSent!();    // the reflector's own call is taken back too
+      return { status: "reflected", retry: false };
+    } });
+    await runReflectMessage(w.deps, body());
+    expect(w.marks).toEqual(["mark:att-1", "mark:att-1", "--", "clear:att-1"]);
+  });
+  it("F2: reflect-call-started, judge-not-forwarded, timeout: the lease keeps its mark, so the next take does not run the reflection again", async () => {
+    const T0 = 1_800_000_000_000;
+    const db = new FakeDynamoDb();
+    const stateOf = () => db.get(reflectClaimKey(TEST_ORG, "task-1", "merged").pk, "CLAIM") as Record<string, unknown>;
+    const claims = dynamoReflectClaims({ documentClient: db, tableName: "state", keysOutcome: async () => "clear", newAttemptId: (() => { let n = 0; return () => `att-${++n}`; })() });
+    const w = worker({
+      claims, now: () => T0,
+      learn: async () => {
+        const attempt = currentLearningAttempt()!;
+        await attempt.callStarting!();            // the reflector's call reached the provider
+        await attempt.callStarting!();            // then the judge's call ...
+        await attempt.callNotSent!();             // ... was refused before it sent anything
+        throw new Error("timed out");             // and the attempt ends without a result: the lease goes to retry
+      },
+    });
+    expect(await runReflectMessage(w.deps, body())).toEqual({ result: "failed", retry: true });
+    expect(stateOf()["leaseState"]).toBe("retry");
+    expect(typeof stateOf()["callStartedAt"]).toBe("number");
+    expect(await claims.take(message() as never, T0 + 1)).toEqual({ kind: "already" });
+    expect(stateOf()["leaseState"]).toBe("spent");
+  });
   it("M4: the deadline is also the invocation's remaining time less a minute; with no more than a minute left nothing is taken and the message comes back", async () => {
     vi.useFakeTimers();
     try {

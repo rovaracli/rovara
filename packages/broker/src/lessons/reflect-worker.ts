@@ -62,10 +62,24 @@ export async function runReflectMessage(deps: ReflectWorkerDeps, body: string, c
   const { lease } = taken;
   const startedAt = deps.now();
   const controller = new AbortController();
+  // F2: the reflector and the curator's judge share this one lease. The mark is a count of the calls this attempt started and did not take back: it is written by each call and removed only when the last one is taken
+  // back, so a later call's "not forwarded" never erases the mark an earlier call (which did reach the provider) wrote. The steps run one at a time, so two calls cannot interleave their writes.
+  let startedCalls = 0;
+  let marking: Promise<unknown> = Promise.resolve();
+  const inTurn = <T>(step: () => Promise<T>): Promise<T> => { const run = marking.then(step, step); marking = run.catch(() => undefined); return run; };
   const attempt: LearningAttempt = {
     deadlineAt: startedAt + deadlineMs, signal: controller.signal, attemptId: lease.attemptId, leaseKey: lease.key, lastAttempt: lease.attempt >= LESSONS_REFLECT_MAX_ATTEMPTS,
-    callStarting: () => deps.claims.markCallStarted(lease, deps.now()),
-    callNotSent: () => deps.claims.clearCallStarted(lease),
+    callStarting: () => inTurn(async () => {
+      // Every call writes the mark (it is conditional on this attempt still holding the lease, so a lost lease stops the call). A write that fails means this call is not made (not counted); a mark an earlier call wrote stands.
+      await deps.claims.markCallStarted(lease, deps.now());
+      startedCalls += 1;
+    }),
+    callNotSent: () => inTurn(async () => {
+      // Only this call's own share is undone. The lease's mark goes when no started call is left; a removal that fails leaves the call counted as made.
+      if (startedCalls > 1) { startedCalls -= 1; return; }
+      await deps.claims.clearCallStarted(lease);
+      startedCalls = 0;
+    }),
   };
   let abortTimer: ReturnType<typeof setTimeout> | undefined, raceTimer: ReturnType<typeof setTimeout> | undefined;
   let outcome: LearnResult;

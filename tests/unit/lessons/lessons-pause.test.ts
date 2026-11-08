@@ -126,6 +126,17 @@ describe("the reflector records why learning cannot run, and clears it when a ca
   });
 });
 
+describe("F3: the attempt keeps the most severe fault", () => {
+  it("a final fault is never overwritten by a later retryable one (the reflector's started call, then the judge's quote failing); a retryable one is raised to final", async () => {
+    const attempt: LearningAttempt = { deadlineAt: Date.now() + 60_000 };
+    await withLearningAttempt(attempt, async () => { noteLearningFault("final"); noteLearningFault("retryable"); });
+    expect(attempt.fault).toBe("final");
+    const other: LearningAttempt = { deadlineAt: Date.now() + 60_000 };
+    await withLearningAttempt(other, async () => { noteLearningFault("retryable"); expect(other.fault).toBe("retryable"); noteLearningFault("final"); });
+    expect(other.fault).toBe("final");
+  });
+});
+
 describe("R3 (lane 2): the failure count is per REFLECTION, not per retry attempt", () => {
   const attemptOf = (n: number): LearningAttempt => ({ deadlineAt: Date.now() + 60_000, attemptId: `att-${n}`, lastAttempt: n >= 3 });
   const run = async (world: ReturnType<typeof deps>, n: number) => {

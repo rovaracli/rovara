@@ -21,11 +21,14 @@ export const LEARNING_INVOKE_TIMEOUT_MS = 130_000;
  */
 export const singleAttemptLambda = (configuration: LambdaClientConfig = {}): LambdaClient => new LambdaClient({ ...configuration, maxAttempts: 1 });
 
+/** What a learning call is refused with when the invoker was built without a single-attempt client (fixed words). Nothing was sent, so it is a `LearningNotForwarded`. */
+export const LEARNING_NEEDS_SINGLE_ATTEMPT = "learning calls need a Lambda client that sends once";
+
 export interface ModelAccessInvokerInput {
   /** The function's name or ARN (env MODEL_ACCESS_FUNCTION_NAME). */
   functionName: string;
   lambda: { send(command: InvokeCommand, options?: { abortSignal?: AbortSignal }): Promise<InvokeCommandOutput> };
-  /** The client the learning call goes through: one attempt only (`singleAttemptLambda`). Absent: the ordinary client (tests). */
+  /** The client the learning call goes through: one attempt only (`singleAttemptLambda`). REQUIRED for `learningCompletion`: without it the call is refused (fail closed), never sent through the retrying `lambda`. */
   learningLambda?: { send(command: InvokeCommand, options?: { abortSignal?: AbortSignal }): Promise<InvokeCommandOutput> };
   timeoutMs?: number;
 }
@@ -103,6 +106,8 @@ export class ModelAccessInvoker implements ModelAccess {
 
   async learningCompletion(input: LearningCompletionInput): Promise<LearningCompletion> {
     const { key, purpose, system, user, maxOutputTokens, model, api, reasoningEffort, signal } = input;
+    // F1: the retrying client would re-run a call the first attempt already started (two provider calls under one key). No single-attempt client: nothing is sent, on any construction path.
+    if (this.input.learningLambda === undefined) throw new LearningNotForwarded(LEARNING_NEEDS_SINGLE_ATTEMPT);
     return this.parseResult(await this.invoke({ op: "learningCompletion", args: { key, purpose, system, user, maxOutputTokens, model, api, ...(reasoningEffort === undefined ? {} : { reasoningEffort }) } }, LEARNING_INVOKE_TIMEOUT_MS, this.input.learningLambda, signal), LearningCompletionResultSchema);
   }
 

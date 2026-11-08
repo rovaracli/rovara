@@ -175,10 +175,10 @@ describe("R1 (lane 2 re-check): a learning call refused BEFORE anything was sent
     const answer = await refused({ op: "learningCompletion", args: input() });
     expect(answer).toMatchObject({ ok: false, code: "MODEL_PROXY_UNAVAILABLE", notForwarded: true });
     expect(JSON.stringify(answer)).not.toContain(VIRTUAL);
-    expect(await failure(new ModelAccessInvoker({ functionName: "f", lambda: lambdaOver(refused) as never }).learningCompletion(input()))).toBeInstanceOf(LearningNotForwarded);
+    expect(await failure(new ModelAccessInvoker({ functionName: "f", lambda: lambdaOver(refused) as never, learningLambda: lambdaOver(refused) as never }).learningCompletion(input()))).toBeInstanceOf(LearningNotForwarded);
     const timedOut = createModelAccessHandler({ access: clientOver((async () => { throw Object.assign(new Error("t"), { name: "TimeoutError" }); })), log: () => undefined, learning: true });
     expect(await timedOut({ op: "learningCompletion", args: input() })).not.toHaveProperty("notForwarded");
-    expect(await failure(new ModelAccessInvoker({ functionName: "f", lambda: lambdaOver(timedOut) as never }).learningCompletion(input()))).not.toBeInstanceOf(LearningNotForwarded);
+    expect(await failure(new ModelAccessInvoker({ functionName: "f", lambda: lambdaOver(timedOut) as never, learningLambda: lambdaOver(timedOut) as never }).learningCompletion(input()))).not.toBeInstanceOf(LearningNotForwarded);
     // The flag is honoured for the learning operation only: another operation's failure answer cannot claim it.
     const other = { send: async () => ({ StatusCode: 200, Payload: new TextEncoder().encode(JSON.stringify({ ok: false, code: "MODEL_PROXY_UNAVAILABLE", message: "m", notForwarded: true })), $metadata: {} }) as InvokeCommandOutput };
     expect(await failure(new ModelAccessInvoker({ functionName: "f", lambda: other }).blockKey("a".repeat(64)))).not.toBeInstanceOf(LearningNotForwarded);
@@ -217,7 +217,7 @@ describe("the operation across the function boundary", () => {
   it("invoker -> handler -> client: the answer carries no key, no key id and no cost, and the request is validated", async () => {
     const { client } = proxy();
     const run = createModelAccessHandler({ access: client, log: () => undefined, learning: true });
-    const invoker = new ModelAccessInvoker({ functionName: "f", lambda: lambdaOver(run) as never });
+    const invoker = new ModelAccessInvoker({ functionName: "f", lambda: lambdaOver(run) as never, learningLambda: lambdaOver(run) as never });
     const answer = await invoker.learningCompletion(input());
     expect(answer).toEqual({ text: "{\"candidates\":[]}", model: ALIAS });
     expect(JSON.stringify(answer)).not.toContain(VIRTUAL);
@@ -228,7 +228,7 @@ describe("the operation across the function boundary", () => {
     const real = AbortSignal.timeout.bind(AbortSignal);
     vi.spyOn(AbortSignal, "timeout").mockImplementation((ms: number) => { timeouts.push(ms); return real(ms); });
     const lambda = { send: async () => ({ StatusCode: 200, Payload: new TextEncoder().encode(JSON.stringify({ ok: true, result: { text: "x", model: ALIAS } })), $metadata: {} }) as InvokeCommandOutput };
-    const invoker = new ModelAccessInvoker({ functionName: "f", lambda: lambda });
+    const invoker = new ModelAccessInvoker({ functionName: "f", lambda: lambda, learningLambda: lambda });
     expect((await invoker.learningCompletion(input())).text).toBe("x");
     expect(timeouts).toEqual([LEARNING_INVOKE_TIMEOUT_MS]);
     // The short default for any other operation is much shorter than a learning call's wait.
