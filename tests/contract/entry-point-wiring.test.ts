@@ -8,7 +8,8 @@ const source = (path: string) => readFileSync(new URL(`../../packages/broker/src
 
 describe("broker.ts hands the broker its edition, stores, plug-ins and guard", () => {
   const broker = source("broker.ts");
-  const handlerCall = broker.slice(broker.indexOf("export const handler = createAwsBrokerHandler({"));
+  // Since lessons-prod-2 the handler is built from a named `brokerInput` object (so the worker entry can share the same input); pin that object's text, and that the handler is made from it.
+  const handlerCall = broker.slice(broker.indexOf("const brokerInput: AwsBrokerInput = {"));
   it.each([
     ["the edition policy", /\.\.\.\(editionPolicy === undefined \? \{\} : \{ editionPolicy \}\)/],
     ["the company sign-in stores", /\.\.\.\(ssoStores === undefined \? \{\} : \{ sso: ssoStores \}\)/],
@@ -17,6 +18,10 @@ describe("broker.ts hands the broker its edition, stores, plug-ins and guard", (
     ["the audit ledger", /\.\.\.\(audit === undefined \? \{\} : \{ audit \}\)/],
   ])("passes %s to the handler", (_name, pattern) => {
     expect(handlerCall).toMatch(pattern);
+  });
+
+  it("builds the handler from that same input", () => {
+    expect(broker).toMatch(/export const handler = createAwsBrokerHandler\(brokerInput\);/);
   });
 
   it("reads the edition from the stamp only (never derived from the cloud flag) and builds the stores from it", () => {
