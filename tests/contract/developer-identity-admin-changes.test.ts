@@ -2,7 +2,7 @@
 // Spec 025 E8, E9, E12: the email index, an admin ending a developer's sessions, a channel by name.
 import { createHash } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
-import { channelByNameThroughLambda, endDeveloperSessionsThroughLambda } from "../../packages/broker/src/aws/developer-routes.js";
+import { channelByNameThroughLambda, endDeveloperSessionsThroughLambda, eraseDeveloperNameThroughLambda } from "../../packages/broker/src/aws/developer-routes.js";
 import { slackDirectory } from "../../packages/broker/src/developer/slack-directory.js";
 import { emailIndexKey } from "../../packages/broker/src/developer/store.js";
 import { createDeveloperTaskBroker, MAYA } from "../support/developer-task-broker.js";
@@ -181,5 +181,49 @@ describe("a channel by name (E12, Q8)", () => {
     expect(await channelByNameThroughLambda(vi.fn(async () => reply({ ok: true })))(request)).toEqual({ ok: true });
     expect(await channelByNameThroughLambda(vi.fn(async () => ({ FunctionError: "Unhandled" })))(request)).toEqual({ ok: false, error: "slack_unavailable" });
     expect(await channelByNameThroughLambda(vi.fn(async () => reply({ ok: false, error: "slack_unavailable" })))(request)).toEqual({ ok: false, error: "slack_unavailable" });
+  });
+});
+
+// ERASE-NAME-1: a person's erase clears the name their sign-in record holds, through the sign-in function (the broker has no write on that table).
+describe("clearing a developer's name on erase", () => {
+  it("replaces the stored name with the placeholder, keeps it across a later sign-in, and logs no name", async () => {
+    const harness = identityHarness({ slackUsers: [{ userId: "U0ADA00001", teamId: TEAM, name: "Ada Lovelace" }] });
+    await harness.signIn("slack", "U0ADA00001");
+    const developerId = developerIdOf(harness.db);
+    expect((harness.db.get(`DEVELOPER#${developerId}`, "META") as { displayName: string }).displayName).toBe("Ada Lovelace");
+    const at = new Date(harness.now()).toISOString();
+    expect(await harness.handler({ kind: "erase-developer-name", developerId, at } as never)).toEqual({ ok: true });
+    const erased = harness.db.get(`DEVELOPER#${developerId}`, "META") as { displayName: string; nameErasedAt: string };
+    expect(erased.displayName).toMatch(/^Member [0-9a-f]{8}$/u);
+    expect(erased.nameErasedAt).toBe(at);
+    harness.tick(1_000);
+    await harness.signIn("slack", "U0ADA00001");
+    const after = harness.db.get(`DEVELOPER#${developerId}`, "META") as { displayName: string };
+    expect(after.displayName).toBe(erased.displayName);
+    expect(JSON.stringify(harness.db.find(() => true))).not.toContain("Ada Lovelace");
+    expect(JSON.stringify(harness.logs)).not.toContain("Ada");
+    expect(harness.logs.filter((entry) => entry.event === "signin.name_erased").map((entry) => entry.result)).toEqual(["erased"]);
+  });
+
+  it("answers not_found for a developer who never signed in, and refuses a malformed request", async () => {
+    const harness = identityHarness({});
+    expect(await harness.handler({ kind: "erase-developer-name", developerId: "f".repeat(64), at: new Date().toISOString() } as never)).toEqual({ ok: false, error: "not_found" });
+    expect(harness.db.get(`DEVELOPER#${"f".repeat(64)}`, "META")).toBeUndefined();
+    expect(await harness.handler({ kind: "erase-developer-name", developerId: "nope", at: new Date().toISOString() } as never)).toEqual({ ok: false, error: "invalid_request" });
+    expect(await harness.handler({ kind: "erase-developer-name", developerId: "f".repeat(64), at: "yesterday" } as never)).toEqual({ ok: false, error: "invalid_request" });
+    expect(await harness.handler({ kind: "erase-developer-name", developerId: "f".repeat(64), at: new Date().toISOString(), name: "x" } as never)).toEqual({ ok: false, error: "invalid_request" });
+  });
+
+  it("goes through the broker's invoke helper; not_found is an answer, every other failure is unavailable", async () => {
+    const spy = vi.spyOn(console, "log").mockImplementation(() => undefined);
+    try {
+      const request = { kind: "erase-developer-name" as const, developerId: "f".repeat(64), at: new Date().toISOString() };
+      expect(await eraseDeveloperNameThroughLambda(vi.fn(async () => reply({ ok: true })))(request)).toEqual({ ok: true });
+      expect(await eraseDeveloperNameThroughLambda(vi.fn(async () => reply({ ok: false, error: "not_found" })))(request)).toEqual({ ok: false, error: "not_found" });
+      expect(await eraseDeveloperNameThroughLambda(vi.fn(async () => ({ FunctionError: "Unhandled" })))(request)).toEqual({ ok: false, error: "unavailable" });
+      expect(await eraseDeveloperNameThroughLambda(vi.fn(async () => { throw new Error("boom"); }))(request)).toEqual({ ok: false, error: "unavailable" });
+    } finally {
+      spy.mockRestore();
+    }
   });
 });

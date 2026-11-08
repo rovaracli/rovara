@@ -21,7 +21,7 @@ import { auditIdentityLinked, auditIdentityUnlinked, auditMemberRenamed, auditOc
 import { flushAuditEvents } from "../audit/flush.js";
 import { auditPending, tryAuditEvents, type AuditRuntime, type TransactItem } from "../audit/outbox.js";
 import { chosenNameKey, readChosenName, readChosenNames, withChosenName } from "./chosen-name.js";
-import { readableDeveloper, safeDisplayName } from "./person-name.js";
+import { placeholderDisplayName, readableDeveloper, safeDisplayName } from "./person-name.js";
 import { ownerKeyForSubject } from "../aws/lambda.js";
 import { pkceChallengeMatches, randomToken, sha256Hex } from "./tokens.js";
 
@@ -69,6 +69,8 @@ export type DeveloperMarks = {
 export interface DeveloperRecord extends DeveloperMarks { developerId: string; provider: DeveloperSignInMethod; issuer: string; subject: string;
   /** The name others see. Never an email address: a sign-in stores the provider's real name or a placeholder, and a record from before release 0.4.16 reads back safe (`getDeveloper`). */
   displayName: string;
+  /** ERASE-NAME-1: when the person's erase cleared the name this record held; a sign-in then leaves the placeholder name alone. */
+  nameErasedAt?: string;
   /** True once the person chose their own name (`PUT /v1/app/me/name`); a sign-in then leaves the name alone. False (or absent on an older record): the provider's name or a placeholder. */
   displayNameChosen?: boolean;
   email?: string; slackUserId?: string; firstSignInAt: string; lastSignInAt: string; revoked: boolean; sessionsEndedAt?: string;
@@ -391,7 +393,8 @@ export class DeveloperSignInStore {
       UpdateExpression: `SET ${[...setClauses, ...(withName ? ["displayName = :displayName", "displayNameChosen = :notChosen"] : [])].join(", ")}${removeClauses.length > 0 ? ` REMOVE ${removeClauses.join(", ")}` : ""}`,
       // A name the person chose is theirs: the sign-in writes the provider's name only while they have not chosen one. The check is part of the write, so a
       // choice made while this sign-in is in flight is never overwritten either.
-      ...(withName ? { ConditionExpression: "attribute_not_exists(displayNameChosen) OR displayNameChosen = :notChosen" } : {}),
+      // ERASE-NAME-1: a record whose name was erased (`nameErasedAt`) keeps the placeholder: a sign-in never writes the provider's name back.
+      ...(withName ? { ConditionExpression: "(attribute_not_exists(displayNameChosen) OR displayNameChosen = :notChosen) AND attribute_not_exists(nameErasedAt)" } : {}),
       ExpressionAttributeValues: { ...values, ...(withName ? { ":displayName": displayName, ":notChosen": false } : {}) },
     }));
     try {
@@ -431,9 +434,11 @@ export class DeveloperSignInStore {
       orgId: input.orgId, actor: { kind: "member", id: input.developerId }, occurredAt: at, occurrence: auditOccurrence(input.developerId, at), memberId: input.developerId,
     })]);
     const signInCheck = 1;
+    const nameCheck = 0;
     try {
       await this.input.documentClient.send(new TransactWriteCommand({ TransactItems: [
-        { Put: { TableName: nameTable, Item: { ...chosenNameKey(input.developerId), entityType: "DEVELOPER_NAME", developerId: input.developerId, name, chosenAt: at } } },
+        // ERASE-NAME-1: a person who was erased has a tombstone here, and no name is chosen over it.
+        { Put: { TableName: nameTable, Item: { ...chosenNameKey(input.developerId), entityType: "DEVELOPER_NAME", developerId: input.developerId, name, chosenAt: at }, ConditionExpression: "attribute_not_exists(erased)" } },
         // A person whose sign-in was turned off, or who was merged into another developer, cannot rename (a revocation landing after the session check is caught here).
         // The check is on the sign-in record, which this transaction only reads.
         { ConditionCheck: {
@@ -446,7 +451,7 @@ export class DeveloperSignInStore {
     } catch (error) {
       if (error instanceof Error && error.name === "TransactionCanceledException") {
         const reasons = (error as { CancellationReasons?: Array<{ Code?: string }> }).CancellationReasons;
-        if (reasons?.[signInCheck]?.Code === "ConditionalCheckFailed") throw agentXError("FORBIDDEN", "your sign-in can't change its name now; sign in again");
+        if (reasons?.[signInCheck]?.Code === "ConditionalCheckFailed" || reasons?.[nameCheck]?.Code === "ConditionalCheckFailed") throw agentXError("FORBIDDEN", "your sign-in can't change its name now; sign in again");
         throw error;
       }
       if (error instanceof Error && error.name === "ConditionalCheckFailedException") throw agentXError("FORBIDDEN", "your sign-in can't change its name now; sign in again");
@@ -1126,6 +1131,28 @@ export class DeveloperSignInStore {
       if (!conditionFailed(error)) throw error;
       // The record exists with a later or equal end, or it does not exist at all.
       return (await this.getDeveloper(developerId)) === undefined ? "not_found" : "ended";
+    }
+  }
+
+  /**
+   * ERASE-NAME-1: the person's erase clears the name this record holds (the provider's real name, or the one a sign-in made): it becomes the placeholder, marked `nameErasedAt`, which a sign-in
+   * leaves alone. Repeatable (the first time stands). Only the sign-in function calls this; the broker has no write on this table. "not_found" when the person never signed in.
+   */
+  async eraseDisplayName(developerId: string, at: string): Promise<"erased" | "not_found"> {
+    const when = Date.parse(at);
+    if (!Number.isFinite(when)) throw new RangeError("eraseDisplayName needs a readable time");
+    try {
+      await this.input.documentClient.send(new UpdateCommand({
+        TableName: this.input.tableName,
+        Key: { pk: `DEVELOPER#${developerId}`, sk: META },
+        UpdateExpression: "SET displayName = :placeholder, displayNameChosen = :notChosen, nameErasedAt = if_not_exists(nameErasedAt, :at)",
+        ConditionExpression: "attribute_exists(pk)",
+        ExpressionAttributeValues: { ":placeholder": placeholderDisplayName(developerId), ":notChosen": false, ":at": new Date(when).toISOString() },
+      }));
+      return "erased";
+    } catch (error) {
+      if (!conditionFailed(error)) throw error;
+      return "not_found";
     }
   }
 

@@ -41,7 +41,9 @@ import {
   isBranchSyncGiveUpReason,
   isBranchSyncBlockReason,
 } from "@agentx/contracts";
-import { isE2EPlanCorrectionBlockReason, ownerNameOfActor, taskKey, taskOwnerKey, type DeveloperTaskRecord } from "../../developer/task-records.js";
+import { isE2EPlanCorrectionBlockReason, ownerNameOfActor, taskKey, taskOwnerKey, tryEffectiveTaskOwner, type DeveloperTaskRecord } from "../../developer/task-records.js";
+import { ownerNameStates } from "../../agent-sessions/owner-names.js";
+import { FORMER_MEMBER_NAME } from "../../developer/chosen-name.js";
 import { planEvidencePointerKey, type PlanEvidencePointer } from "../../developer/plan-evidence-jobs.js";
 import { loadPlanEvidence, loadWorkflowDocument } from "../../developer/plan-artifacts.js";
 import type { DeveloperCaller } from "../developer-routes.js";
@@ -553,6 +555,16 @@ async function coherentPageAccess(deps: DeveloperTaskRouteDependencies, caller: 
   throw agentXError("RUNTIME_UNAVAILABLE", "Task People changed while the page was loading");
 }
 
+/** ERASE-NAME-1: the actor ids (`taskOwnerKey`) of the task's people (its creator, its current owner, the Task People list) whose erase has run. A state that cannot be read leaves everyone as stored. */
+async function erasedActorIds(deps: Pick<DeveloperTaskRouteDependencies, "documentClient" | "tableName">, task: DeveloperTaskRecord, presentation: ReadonlyArray<{ developerId: string }>): Promise<Set<string>> {
+  const actorDevelopers = new Map<string, string>(presentation.map((person) => [taskOwnerKey(person.developerId, task.taskId), person.developerId]));
+  actorDevelopers.set(taskOwnerKey(task.developerId, task.taskId), task.developerId);
+  const currentOwner = tryEffectiveTaskOwner(task);
+  if (currentOwner !== undefined) actorDevelopers.set(taskOwnerKey(currentOwner.developerId, task.taskId), currentOwner.developerId);
+  const states = await ownerNameStates(deps, actorDevelopers.values());
+  return new Set([...actorDevelopers].flatMap(([actorId, developerId]) => (states.get(developerId)?.erased === true ? [actorId] : [])));
+}
+
 /**
  * Task 18: what the read-only task page shows. The task's owner may read it, and so may a member of the Slack channel
  * the task is shared into (they see its thread already) who can also use the task's project (FR-048). Anyone else is
@@ -667,8 +679,11 @@ export async function getTaskDocumentView(deps: DeveloperTaskRouteDependencies, 
   try { presentation = await getTaskPeoplePresentation(deps, taskId); }
   catch { /* Historical labels are presentation only; a malformed immutable pair falls back to generic actors. */ }
   const actorNames = new Map(presentation.map((person) => [taskOwnerKey(person.developerId, taskId), redactText(person.name)]));
+  // ERASE-NAME-1: the names above were stored with the task (its owners', its people's). A person who was erased reads "A former member" in the history, whatever was stored.
+  const erasedActors = await erasedActorIds(deps, task, presentation);
   // A decision reads under the name of the owner it was made by: the creator's for the creator's actor id, the taker's for theirs (Plan 5 Task 12a).
   const personName = (actorId: string | undefined): string => {
+    if (actorId !== undefined && erasedActors.has(actorId)) return FORMER_MEMBER_NAME;
     const named = actorId === undefined ? undefined : ownerNameOfActor(task, actorId);
     if (named !== undefined) {
       const label = redactText(ownerLabel(named));

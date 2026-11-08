@@ -7,6 +7,7 @@ import type { AdaptedHttpRequest } from "../../packages/broker/src/aws/lambda.js
 import { createTaskWebApi } from "../../packages/broker/src/aws/task-web-api.js";
 import { createTaskWeb, type TaskDocumentView } from "../../packages/broker/src/aws/task-web.js";
 import { developerIdForSlackUser } from "../../packages/broker/src/aws/admin-actions.js";
+import { chosenNameKey } from "../../packages/broker/src/developer/chosen-name.js";
 import { DEV_ISSUER, createDeveloperTaskBroker, type Developer } from "../support/developer-task-broker.js";
 import { SLACK_CHANNEL, SLACK_TEAM } from "../support/slack-broker.js";
 import { TEST_ORG } from "../support/orgs.js";
@@ -121,6 +122,13 @@ describe("private task People page adapters", () => {
     const page = await routed("GET", "", undefined, targetSessionId);
     expect(page.statusCode, page.body).toBe(200);
     expect(page.body).toContain("Lee Park made The task owner viewer");
+    // ERASE-NAME-1: once Lee is erased, the task's history reads "A former member" in place of the name the task people list stored; the name shows again only if the tombstone is gone.
+    harness.db.set({ ...chosenNameKey(targetDeveloperId), entityType: "DEVELOPER_NAME", developerId: targetDeveloperId, erased: true, erasedAt: new Date().toISOString() });
+    const erasedPage = await routed("GET", "", undefined, targetSessionId);
+    expect(erasedPage.statusCode, erasedPage.body).toBe(200);
+    expect(erasedPage.body).toContain("A former member made The task owner viewer");
+    expect(erasedPage.body).not.toContain("Lee Park made");
+    harness.db.delete(chosenNameKey(targetDeveloperId));
     const afterCoOwnerEvents = harness.db.find((item) => item.entityType === "TASK_PEOPLE_EVENT").length;
     const replay = await routed("GET", `/api/people/requests/${roleRequestId}`);
     expect(replay.statusCode, replay.body).toBe(200);

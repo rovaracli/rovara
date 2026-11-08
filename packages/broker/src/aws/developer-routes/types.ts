@@ -31,6 +31,8 @@ import type {
   ChannelMembersResponse,
   DeveloperSignInMethod,
   EndDeveloperSessionsRequest,
+  EraseDeveloperNameRequest,
+  EraseDeveloperNameResponse,
   EndDeveloperSessionsResponse,
   RealtimeTokenAnswer,
   RealtimeTokenRequest,
@@ -121,6 +123,8 @@ export interface DeveloperApiConfiguration {
   slackAuthCheck?: () => Promise<SlackAuthCheckResponse>;
   /** Spec 025 E9: an admin ends a developer's sign-in sessions, through DeveloperIdentity (the broker only reads the sign-in table). */
   endDeveloperSessions?: (request: EndDeveloperSessionsRequest) => Promise<EndDeveloperSessionsResponse>;
+  /** ERASE-NAME-1: a person's erase clears the name their sign-in record holds, through DeveloperIdentity (the broker only reads the sign-in table). */
+  eraseDeveloperName?: (request: EraseDeveloperNameRequest) => Promise<EraseDeveloperNameResponse>;
   /** Plan 5 Task 8: the realtime events API's HTTP endpoint, when the install has one (`REALTIME_HTTP_ENDPOINT`). */
   realtimeEndpoint?: string | undefined;
   /** Plan 5 Task 8: a realtime token for a signed-in person, signed by DeveloperIdentity (the broker holds no signing right). Without it `POST /v1/app/realtime/token` is unavailable. */

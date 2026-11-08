@@ -327,7 +327,7 @@ import { chatGptHostId } from "../chatgpt/oauth.js";
 import { ModelAccessInvoker } from "../model-proxy/invoker.js";
 import { createChainScheduler, createDeadLetters, scheduleSettingsFromEnvironment } from "../triggers/schedules.js";
 import { SchedulerClient } from "@aws-sdk/client-scheduler";
-import { channelByNameThroughLambda, channelInfoThroughLambda, channelMembersThroughLambda, developerKeysThroughLambda, endDeveloperSessionsThroughLambda, startIdentityLinkThroughLambda, unlinkIdentityThroughLambda, realtimeTokenThroughLambda, slackAuthCheckThroughLambda, slackUserByEmailThroughLambda, taskChannelPeopleThroughLambda, taskPeopleDisplayReadThroughLambda, taskPersonProofThroughLambda, type DeveloperApiConfiguration } from "./developer-routes.js";
+import { channelByNameThroughLambda, channelInfoThroughLambda, channelMembersThroughLambda, developerKeysThroughLambda, endDeveloperSessionsThroughLambda, eraseDeveloperNameThroughLambda, startIdentityLinkThroughLambda, unlinkIdentityThroughLambda, realtimeTokenThroughLambda, slackAuthCheckThroughLambda, slackUserByEmailThroughLambda, taskChannelPeopleThroughLambda, taskPeopleDisplayReadThroughLambda, taskPersonProofThroughLambda, type DeveloperApiConfiguration } from "./developer-routes.js";
 import { createDeveloperApiConfiguration } from "./workflow-dependencies-configuration.js";
 import { autofixConfigFromEnvironment } from "./workflow-autofix-runner.js";
 import { createCodeBuildGateway } from "../codebuild.js";
@@ -354,6 +354,7 @@ import { deadLetterUrlOf, opsQueueUrlOf, sqsDeadLetters, sqsOpsQueue } from "../
 import { askAliasHashKey } from "../agent-sessions/ask-erased-aliases.js";
 import { createEvidenceErase } from "../rovara-code/evidence-erase.js";
 import { personErasureStep } from "./broker/evidence-wiring.js";
+import { nameEraserOf } from "../developer/erase-name.js";
 import { recordAuditSinkOf, removalFallbackThroughLambda, slackLinksOf } from "./broker/team-record-wiring.js";
 export { PROJECT_SETUP_CAPTURE_POLICY, WEB_ROUTE_KEY } from "./broker/definitions.js";
 export type { RegisteredProjectRecord, AwsBrokerInput } from "./broker/definitions.js";
@@ -443,6 +444,7 @@ function developerConfiguration(inviteTaskPerson?: DeveloperApiConfiguration["in
     slackUserByEmail: slackUserByEmailThroughLambda((payload) => lambdaClient.send(new InvokeCommand({ FunctionName: functionName, Payload: payload }))),
     slackAuthCheck: slackAuthCheckThroughLambda((payload) => lambdaClient.send(new InvokeCommand({ FunctionName: functionName, Payload: payload }))),
     endDeveloperSessions: endDeveloperSessionsThroughLambda((payload) => lambdaClient.send(new InvokeCommand({ FunctionName: functionName, Payload: payload }))),
+    eraseDeveloperName: eraseDeveloperNameThroughLambda((payload) => lambdaClient.send(new InvokeCommand({ FunctionName: functionName, Payload: payload }))),
     unlinkIdentity: unlinkIdentityThroughLambda((payload) => lambdaClient.send(new InvokeCommand({ FunctionName: functionName, Payload: payload }))),
     startIdentityLink: startIdentityLinkThroughLambda((payload) => lambdaClient.send(new InvokeCommand({ FunctionName: functionName, Payload: payload }))),
     channelByName: channelByNameThroughLambda((payload) => lambdaClient.send(new InvokeCommand({ FunctionName: functionName, Payload: payload }))),
@@ -537,9 +539,11 @@ const auditLedger: AuditExportClientDeps | undefined = auditLedgerTable === unde
 };
 
 // Team record (wire-team-record): `undefined` unless the install was deployed with the record's switch on (TEAM_RECORD_ENABLED is exactly "1"). With it off nothing below is built or called.
+// ERASE-NAME-1: the name a person chose and the one their sign-in record holds, erased with them whether or not the record's switch is on.
+const personNameEraser = nameEraserOf({ documentClient, stateTable: requiredEnvironment("STATE_TABLE_NAME"), ...(developer?.eraseDeveloperName === undefined ? {} : { eraseSignInName: developer.eraseDeveloperName }), now: Date.now });
 const recordOpsQueueUrl = opsQueueUrlOf(process.env);
 const recordDeadLetterUrl = deadLetterUrlOf(process.env);
-const teamRecord = createTeamRecordRuntime({ env: process.env, documentClient, ...(developer === undefined ? {} : { ...slackLinksOf(new DeveloperSignInStore({ documentClient, tableName: developer.signInTableName, nameTableName: requiredEnvironment("STATE_TABLE_NAME"), now: Date.now })) , namesOf: async (developerId: string) => { const record = await new DeveloperSignInStore({ documentClient, tableName: developer.signInTableName, nameTableName: requiredEnvironment("STATE_TABLE_NAME"), now: Date.now }).getDeveloper(developerId); return record === undefined ? [] : [record.displayName]; } }), askAliasKey: askAliasHashKey(requiredEnvironment("CALLBACK_SIGNING_KEY")), ...(recordOpsQueueUrl === undefined ? {} : { opsQueue: sqsOpsQueue(sqs, recordOpsQueueUrl) }), ...(recordDeadLetterUrl === undefined ? {} : { deadLetters: sqsDeadLetters(sqs, recordDeadLetterUrl) }), ...(process.env.AWS_LAMBDA_FUNCTION_NAME === undefined ? {} : { removalFallback: removalFallbackThroughLambda((request) => lambdaClient.send(new InvokeCommand({ FunctionName: process.env.AWS_LAMBDA_FUNCTION_NAME!, ...request }))) }), stateTableName: requiredEnvironment("STATE_TABLE_NAME"), verifiedDomains: companyDomainsPort({ documentClient, tableName: requiredEnvironment("STATE_TABLE_NAME") }), ...(orgConnections === undefined ? {} : { trackers: connectedTrackersOf({ deps: orgConnections }) }), ...(recordAuditSinkOf(audit, documentClient) === undefined ? {} : { audit: recordAuditSinkOf(audit, documentClient)! }), log: (entry) => console.log(JSON.stringify({ ...entry })) });
+const teamRecord = createTeamRecordRuntime({ env: process.env, documentClient, ...(developer === undefined ? {} : { ...slackLinksOf(new DeveloperSignInStore({ documentClient, tableName: developer.signInTableName, nameTableName: requiredEnvironment("STATE_TABLE_NAME"), now: Date.now })) , namesOf: async (developerId: string) => { const record = await new DeveloperSignInStore({ documentClient, tableName: developer.signInTableName, nameTableName: requiredEnvironment("STATE_TABLE_NAME"), now: Date.now }).getDeveloper(developerId); return record === undefined ? [] : [record.displayName]; } }), askAliasKey: askAliasHashKey(requiredEnvironment("CALLBACK_SIGNING_KEY")), nameErasure: personNameEraser, ...(recordOpsQueueUrl === undefined ? {} : { opsQueue: sqsOpsQueue(sqs, recordOpsQueueUrl) }), ...(recordDeadLetterUrl === undefined ? {} : { deadLetters: sqsDeadLetters(sqs, recordDeadLetterUrl) }), ...(process.env.AWS_LAMBDA_FUNCTION_NAME === undefined ? {} : { removalFallback: removalFallbackThroughLambda((request) => lambdaClient.send(new InvokeCommand({ FunctionName: process.env.AWS_LAMBDA_FUNCTION_NAME!, ...request }))) }), stateTableName: requiredEnvironment("STATE_TABLE_NAME"), verifiedDomains: companyDomainsPort({ documentClient, tableName: requiredEnvironment("STATE_TABLE_NAME") }), ...(orgConnections === undefined ? {} : { trackers: connectedTrackersOf({ deps: orgConnections }) }), ...(recordAuditSinkOf(audit, documentClient) === undefined ? {} : { audit: recordAuditSinkOf(audit, documentClient)! }), log: (entry) => console.log(JSON.stringify({ ...entry })) });
 
 // Proof and evidence (wire-proof fix round 1): a person's erase also deletes the stored evidence of the tasks they created or own (not behind the proof switch).
 const personEvidenceErase = createEvidenceErase({ s3, artifactBucketName: requiredEnvironment("ARTIFACT_BUCKET_NAME"), documentClient, tableName: requiredEnvironment("STATE_TABLE_NAME") });
@@ -555,7 +559,7 @@ const auditErase: AuditEraseDeps | undefined = auditLedger === undefined ? undef
   log: (entry) => console.log(JSON.stringify({ component: "broker", ...entry })),
   purgeExports: exportPurger(lambdaClient, requiredEnvironment("AUDIT_EXPORT_FUNCTION_NAME")),
   // v1.2 learning loop: a person's erase clears their corrections' text and the suggestions that hold their words, in every project of the company; the Team record (where its switch is on) deletes their rows, facts, lessons and lake rows in the same request.
-  eraseLearning: learningEraseHook(learningWalkDeps({ documentClient, tableName: requiredEnvironment("STATE_TABLE_NAME"), now: Date.now, audit }), undefined, personErasureStep(teamRecord, personEvidenceErase)),
+  eraseLearning: learningEraseHook(learningWalkDeps({ documentClient, tableName: requiredEnvironment("STATE_TABLE_NAME"), now: Date.now, audit }), undefined, personErasureStep(teamRecord, personEvidenceErase, personNameEraser)),
 };
 
 const githubNoticeSender = process.env.DEVELOPER_NOTICE_EMAIL_FROM ?? "";

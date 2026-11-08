@@ -1,4 +1,5 @@
 import { logDeveloperEvent } from "../../developer/log.js";
+import { deleteChosenNameOfRemoved } from "../../developer/chosen-name.js";
 import { changeReviewedMemberRole } from "../../org/role-changes.js";
 import { type RemovalHelpers } from "../../org/member-removal/routes.js";
 import { requireAuditorEdition } from "../../org/auditor.js";
@@ -244,9 +245,15 @@ export async function changeMemberRole(deps: DeveloperRouteDependencies, caller:
 
 /**
  * Ends a removed person's sign-in sessions through DeveloperIdentity, at the removal's own time. With movers wired the removal's sign-in step does this (retried by the marker),
- * so this is only for an install with none. They are already refused (the membership is gone), so a failure here is logged and never fails the removal.
+ * so this is only for an install with none (it also deletes the name the person chose, ERASE-NAME-1). They are already refused (the membership is gone), so a failure here is logged and never fails the removal.
  */
 async function endSessionsAfterRemoval(deps: DeveloperRouteDependencies, developerId: string, at: string): Promise<void> {
+  // ERASE-NAME-1: the name the person chose goes with their membership (the movers' removal does this too; it is repeatable).
+  try {
+    await deleteChosenNameOfRemoved(deps.documentClient, deps.tableName, developerId, at);
+  } catch (error) {
+    logDeveloperEvent({ event: "developer.org_removal_name_not_deleted", reason: errorName(error) });
+  }
   if (deps.developer.endDeveloperSessions === undefined) return;
   try {
     const answer = await deps.developer.endDeveloperSessions({ kind: "end-developer-sessions", developerId, at });

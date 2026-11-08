@@ -23,6 +23,7 @@ import {
   ADMIN_API_VERSION,
   DEVELOPER_API_VERSION,
   EndDeveloperSessionsRequestSchema,
+  EraseDeveloperNameRequestSchema,
   RealtimeTokenRequestSchema,
   UnlinkIdentityRequestSchema,
   StartIdentityLinkRequestSchema,
@@ -55,9 +56,11 @@ import {
   type EditionPolicy,
   type OrgId,
   type EndDeveloperSessionsRequest,
+  type EraseDeveloperNameRequest,
   type RealtimeTokenAnswer,
   type RealtimeTokenRequest,
   type EndDeveloperSessionsResponse,
+  type EraseDeveloperNameResponse,
   type SlackAuthCheckRequest,
   type SlackAuthCheckResponse,
   type SlackUserByEmailRequest,
@@ -1431,8 +1434,8 @@ function createIssuerHandler(deps: DeveloperIdentityDependencies) {
   const isPage = (pathname: string) => pathname === "/v1/auth/authorize" || pathname === "/v1/auth/browser/authorize" || pathname.startsWith("/v1/auth/callback/") || pathname.startsWith("/v1/auth/join") || pathname.startsWith("/v1/auth/decide/");
 
   return async (
-    event: HttpApiV2Event | ChannelMembersRequest | TaskPersonProofRequest | TaskChannelPeopleRequest | TaskPeopleDisplayReadRequest | ChannelInfoRequest | ChannelClassRequest | ChannelListRequest | MemberChannelsRequest | SlackUserByEmailRequest | SlackAuthCheckRequest | EndDeveloperSessionsRequest | UnlinkIdentityRequest | StartIdentityLinkRequest | ChannelByNameRequest | RealtimeTokenRequest,
-  ): Promise<HttpResult | ChannelMembersResult | TaskPersonProofResponse | TaskChannelPeopleResponse | TaskPeopleDisplayReadResponse | ChannelInfoResponse | ChannelClassResponse | ChannelListResponse | SlackUserByEmailResponse | SlackAuthCheckResponse | EndDeveloperSessionsResponse | UnlinkIdentityResponse | StartIdentityLinkResponse | ChannelByNameResponse | RealtimeTokenAnswer> => {
+    event: HttpApiV2Event | ChannelMembersRequest | TaskPersonProofRequest | TaskChannelPeopleRequest | TaskPeopleDisplayReadRequest | ChannelInfoRequest | ChannelClassRequest | ChannelListRequest | MemberChannelsRequest | SlackUserByEmailRequest | SlackAuthCheckRequest | EndDeveloperSessionsRequest | EraseDeveloperNameRequest | UnlinkIdentityRequest | StartIdentityLinkRequest | ChannelByNameRequest | RealtimeTokenRequest,
+  ): Promise<HttpResult | ChannelMembersResult | TaskPersonProofResponse | TaskChannelPeopleResponse | TaskPeopleDisplayReadResponse | ChannelInfoResponse | ChannelClassResponse | ChannelListResponse | SlackUserByEmailResponse | SlackAuthCheckResponse | EndDeveloperSessionsResponse | EraseDeveloperNameResponse | UnlinkIdentityResponse | StartIdentityLinkResponse | ChannelByNameResponse | RealtimeTokenAnswer> => {
     if ("kind" in event) {
       if (event.kind === "end-developer-sessions") {
         const parsed = EndDeveloperSessionsRequestSchema.safeParse(event);
@@ -1440,6 +1443,14 @@ function createIssuerHandler(deps: DeveloperIdentityDependencies) {
         const result = await store.endSessions(parsed.data.developerId, parsed.data.at);
         deps.log({ event: "signin.sessions_ended_by_admin", developerId: parsed.data.developerId, result });
         return result === "ended" ? { ok: true } : { ok: false, error: "not_found" };
+      }
+      if (event.kind === "erase-developer-name") {
+        // ERASE-NAME-1: a person's erase clears the name this record holds. Nothing but the id and the result is logged.
+        const parsed = EraseDeveloperNameRequestSchema.safeParse(event);
+        if (!parsed.success) return { ok: false, error: "invalid_request" };
+        const result = await store.eraseDisplayName(parsed.data.developerId, parsed.data.at);
+        deps.log({ event: "signin.name_erased", developerId: parsed.data.developerId, result });
+        return result === "erased" ? { ok: true } : { ok: false, error: "not_found" };
       }
       if (event.kind === "realtime-token") {
         // Plan 5 Task 8: the broker holds no signing right, so it asks here for the token of a person it has already signed in.

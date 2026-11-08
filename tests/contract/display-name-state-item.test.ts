@@ -42,7 +42,7 @@ describe("the rename is one transaction that writes only the State table", () =>
     expect(transactions).toHaveLength(1);
     const items = transactions[0]!.input.TransactItems!;
     expect(items).toHaveLength(3);
-    expect(items[0]).toEqual({ Put: { TableName: "state", Item: { ...chosenNameKey(idOf("c")), entityType: "DEVELOPER_NAME", developerId: idOf("c"), name: "Cy F", chosenAt: new Date(T0).toISOString() } } });
+    expect(items[0]).toEqual({ Put: { TableName: "state", Item: { ...chosenNameKey(idOf("c")), entityType: "DEVELOPER_NAME", developerId: idOf("c"), name: "Cy F", chosenAt: new Date(T0).toISOString() }, ConditionExpression: "attribute_not_exists(erased)" } });
     expect(items[1]).toEqual({ ConditionCheck: {
       TableName: "signin", Key: { pk: `DEVELOPER#${idOf("c")}`, sk: "META" },
       ConditionExpression: "attribute_exists(pk) AND (attribute_not_exists(revoked) OR revoked = :false) AND attribute_not_exists(mergedInto)",

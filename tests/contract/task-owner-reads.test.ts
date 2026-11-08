@@ -106,6 +106,8 @@ const ROWS: readonly Row[] = [
   ["aws/developer-tasks/task-page.ts", "currentSuggestions", "principal", ".ownerKey"],
   ["aws/developer-tasks/task-page.ts", "getTaskDocumentView", "principal", ".ownerKey"],
   ["aws/developer-tasks/task-page.ts", "getTaskDocumentView", "caller-actor", "taskOwnerKey()*3"],
+  // ERASE-NAME-1: the history reads which of the task's people (its creator, its current owner, the Task People list) were erased, to show "A former member" for them; it decides nothing about who owns the task
+  ["aws/developer-tasks/task-page.ts", "erasedActorIds", "history", ".developerId*2", "taskOwnerKey()*3"],
   ["aws/developer-tasks/feedback-capture.ts", "feedbackReviewWorkspaceReady", "principal", "taskOwnerKey()", ".developerId"],
   // Live interaction A1: the ask context reads the task's latest document from its own object prefix (the task's principal, never changes), as the Slack-only task answer context does
   ["agent-sessions/ask-context.ts", "readDocument", "principal", ".ownerKey"],

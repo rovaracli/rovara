@@ -62,6 +62,7 @@ import { chooseVectorBucketForNewWorkspace, type VectorIndex } from "./vectors.j
 import type { S3VectorsIndex } from "./s3-vectors-index.js";
 import type { DistillModel } from "./distill.js";
 import type { PurgeDependencies } from "./purge.js";
+import { FORMER_MEMBER_NAME } from "../developer/chosen-name.js";
 import { readOpsFailures, recordOpsFailure, type OpsFailures } from "./ops-failures.js";
 import type { RecordLog, RecordVectorPort, TeamRecordTable } from "./types.js";
 
@@ -107,6 +108,8 @@ export interface TeamRecordRuntimeInput {
    * keeps only the person's label tag).
    */
   namesOf?: (developerId: string) => Promise<string[]>;
+  /** ERASE-NAME-1: erases the name the person chose and the one their sign-in record holds (`developer/erase-name.ts`); run as the erase's `names` step. Absent: that step has nothing to do. */
+  nameErasure?: { erase(developerId: string): Promise<void> };
   /** The key the erased person's aliases are hashed with (`askAliasHashKey(callbackSigningKey)`, LA-5). Absent: only the person's label tag is kept for Ask scrubbing, never a raw alias. */
   askAliasKey?: string;
   /** Where the record's own audit events go (record.tombstoned, record.erased, lesson.withdrawn). Absent: none are written. */
@@ -470,6 +473,7 @@ export function createTeamRecordRuntime(input: TeamRecordRuntimeInput): TeamReco
       table, lakeQueue, now, log, lessons: lessons as never, ...(input.audit === undefined ? {} : { audit: input.audit }),
       ...(vectors === undefined ? {} : { vectors: vectors as unknown as RecordVectorPort }), projects: { projects: projectsOf },
       ...(input.askAliasKey === undefined ? {} : { askAliasKey: input.askAliasKey }),
+      ...(input.nameErasure === undefined ? {} : { names: input.nameErasure }),
     };
   }
 
@@ -730,7 +734,7 @@ export function createTeamRecordRuntime(input: TeamRecordRuntimeInput): TeamReco
   async function personNames(developerId: string): Promise<string[]> {
     if (input.namesOf === undefined) return [];
     try {
-      return [...new Set((await input.namesOf(developerId)).map((name) => name.trim()).filter((name) => name !== "" && name.length <= 200))].slice(0, 10);
+      return [...new Set((await input.namesOf(developerId)).map((name) => name.trim()).filter((name) => name !== "" && name !== FORMER_MEMBER_NAME && name.length <= 200))].slice(0, 10);
     } catch {
       log("record.erase_names_unreadable", {});
       return [];

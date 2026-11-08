@@ -25,7 +25,7 @@ import { followMerges } from "../agents/access.js";
 import type { DeveloperSignInStore } from "../developer/store.js";
 import { requireSessionLevel, type SessionAccessDependencies, type SessionCaller } from "./access.js";
 import { isPlaceholderDisplayName, safeDisplayName } from "../developer/person-name.js";
-import { chosenOwnerNames } from "./owner-names.js";
+import { ownerNameStates } from "./owner-names.js";
 import { AgentSessionStore, sessionEventItem, type SessionRef, type SessionTaskRef } from "./store.js";
 
 type Item = Record<string, unknown>;
@@ -211,14 +211,19 @@ export async function readSessionEvents(deps: SessionEventsDependencies, caller:
  * QA6-11: an event keeps the name its person had when it was written, which for work begun before they chose a name is the "Member xxxxxxxx" placeholder, while the header already shows the
  * name chosen now. A member actor is shown by the chosen name (read by the actor's id, as the owner's is), and the same placeholder in the event's words reads the same. A person who chose none
  * reads as stored, and so does every event if the read fails.
+ *
+ * ERASE-NAME-1: an actor who was erased reads "A former member", whatever name the event stored (the real name of a person who never chose one included), and the stored name in the event's
+ * words reads the same. If the state cannot be read, the event reads as stored (the same best effort as the chosen name).
  */
 async function withChosenActorNames(deps: SessionEventsDependencies, events: SessionEvent[]): Promise<SessionEvent[]> {
-  const stored = events.flatMap((event) => (event.actor?.kind === "member" && isPlaceholderDisplayName(event.actor.name) ? [event.actor.developerId] : []));
-  const chosen = await chosenOwnerNames(deps, stored);
-  if (chosen.size === 0) return events;
+  const members = events.flatMap((event) => (event.actor?.kind === "member" ? [event.actor.developerId] : []));
+  const states = await ownerNameStates(deps, members);
+  if (states.size === 0) return events;
   return events.map((event) => {
     const actor = event.actor;
-    const name = actor?.kind === "member" && isPlaceholderDisplayName(actor.name) ? chosen.get(actor.developerId) : undefined;
-    return actor?.kind !== "member" || name === undefined ? event : { ...event, actor: { ...actor, name }, text: [...event.text.split(actor.name).join(name)].slice(0, SESSION_EVENT_TEXT_MAX).join("") };
+    if (actor?.kind !== "member") return event;
+    const state = states.get(actor.developerId);
+    const name = state === undefined ? undefined : state.erased || isPlaceholderDisplayName(actor.name) ? state.name : undefined;
+    return name === undefined ? event : { ...event, actor: { ...actor, name }, text: [...(actor.name === "" ? event.text : event.text.split(actor.name).join(name))].slice(0, SESSION_EVENT_TEXT_MAX).join("") };
   });
 }

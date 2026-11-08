@@ -59,10 +59,23 @@ export function evidenceEraseOf(dependencies: Pick<AwsBrokerDependencies, "s3" |
   return createEvidenceErase({ s3: dependencies.s3, artifactBucketName: dependencies.artifactBucketName, documentClient: dependencies.documentClient, tableName: dependencies.tableName });
 }
 
-/** What a person's erase does after the learning walk: the Team record's erase (where that switch is on), then the stored evidence of the person's tasks. Either one not finishing throws, and the request is repeated. */
-export function personErasureStep(teamRecord: { erase: { person(orgId: OrgId, developerId: string): Promise<void> } } | undefined, evidence: Pick<EvidenceErase, "person">): (orgId: OrgId, developerId: string) => Promise<void> {
+/**
+ * What a person's erase does after the learning walk: the Team record's erase (where that switch is on), the erase of the names they are shown by (ERASE-NAME-1: always, also where the record is off, and
+ * also when the record's erase is not finished, so no name waits for it), then the stored evidence of the person's tasks. Any one not finishing throws, and the request is repeated.
+ */
+export function personErasureStep(
+  teamRecord: { erase: { person(orgId: OrgId, developerId: string): Promise<void> } } | undefined,
+  evidence: Pick<EvidenceErase, "person">,
+  names?: { erase(developerId: string): Promise<void> },
+): (orgId: OrgId, developerId: string) => Promise<void> {
   return async (orgId, developerId) => {
-    if (teamRecord !== undefined) await teamRecord.erase.person(orgId, developerId);
+    let unfinished: Error | undefined;
+    if (teamRecord !== undefined) {
+      try { await teamRecord.erase.person(orgId, developerId); } catch (error) { unfinished = error instanceof Error ? error : new Error("record_erase_unfinished"); }
+    }
+    // After the record's first pass, which hashes the person's names for the Asks while it can still read them; before anything can throw again.
+    await names?.erase(developerId);
+    if (unfinished !== undefined) throw unfinished;
     await evidence.person(orgId, developerId);
   };
 }

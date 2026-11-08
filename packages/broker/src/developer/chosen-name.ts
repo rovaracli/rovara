@@ -1,12 +1,20 @@
 // Release 0.4.18: the name a person chose (PUT /v1/app/me/name) lives in the broker's own State table, as one item per person, not on the sign-in record.
 // The broker may read the sign-in table but not write it (a broker bug must not be able to change a revoked or merged mark there), and a sign-in
 // never touches this item, so it can never overwrite a chosen name. Readers lay the chosen name over the sign-in record's (`withChosenName`).
-import { BatchGetCommand, GetCommand } from "@aws-sdk/lib-dynamodb";
+import { BatchGetCommand, DeleteCommand, GetCommand, PutCommand } from "@aws-sdk/lib-dynamodb";
 import { safeDisplayName } from "./person-name.js";
 
 export interface ChosenNameClient { send(command: unknown): Promise<unknown> }
 /** The item as stored: `entityType` `DEVELOPER_NAME`, the person's id (also in the key), the name as validated at the route and in the store, and when it was chosen. */
-export interface ChosenNameItem { pk: string; sk: string; entityType?: string; developerId?: string; name?: unknown; chosenAt?: string }
+export interface ChosenNameItem { pk: string; sk: string; entityType?: string; developerId?: string; name?: unknown; chosenAt?: string; erased?: unknown; erasedAt?: string }
+
+/**
+ * ERASE-NAME-1: what every reader shows for a person who was erased. The erase leaves the same State item behind as a tombstone (`erased: true`, no name), so each reader that already
+ * reads the chosen name reads the erased state in the same request, and a stored copy of the name it missed (an event's actor, a task's owner) is still replaced by this.
+ */
+export const FORMER_MEMBER_NAME = "A former member";
+/** One person's state in the name item: the name to show (the chosen one, or `FORMER_MEMBER_NAME` for an erased person) and whether they were erased. */
+export interface ChosenNameState { name: string; erased: boolean }
 
 const CHOSEN_NAME_SORT_KEY = "NAME";
 /** BatchGetItem takes 100 keys at most. */
@@ -23,15 +31,34 @@ function shownName(item: ChosenNameItem | undefined, developerId: string): strin
   return safeDisplayName(item.name, developerId);
 }
 
-/** The person's chosen name from the State table, strongly consistent, or undefined when they never chose one. */
-export async function readChosenName(client: ChosenNameClient, tableName: string, developerId: string): Promise<string | undefined> {
-  const response = await client.send(new GetCommand({ TableName: tableName, Key: chosenNameKey(developerId), ConsistentRead: true })) as { Item?: ChosenNameItem };
-  return shownName(response.Item, developerId);
+/** The state an item stands for: an erase tombstone, a usable chosen name, or nothing. */
+function stateOf(item: ChosenNameItem | undefined, developerId: string): ChosenNameState | undefined {
+  if (item === undefined) return undefined;
+  if (item.erased === true) return { name: FORMER_MEMBER_NAME, erased: true };
+  const name = shownName(item, developerId);
+  return name === undefined ? undefined : { name, erased: false };
 }
 
-/** The chosen names of many people in as few requests as possible (a BatchGetItem per 100, unprocessed keys asked again): developerId to name, for those who chose one. */
-export async function readChosenNames(client: ChosenNameClient, tableName: string, developerIds: readonly string[]): Promise<Map<string, string>> {
-  const names = new Map<string, string>();
+/** The person's state from the State table, strongly consistent: their chosen name, "A former member" for an erased person, or undefined when they never chose a name. */
+export async function readChosenNameState(client: ChosenNameClient, tableName: string, developerId: string): Promise<ChosenNameState | undefined> {
+  const response = await client.send(new GetCommand({ TableName: tableName, Key: chosenNameKey(developerId), ConsistentRead: true })) as { Item?: ChosenNameItem };
+  return stateOf(response.Item, developerId);
+}
+
+/** The name to show for the person from the State table (their chosen name, or "A former member" once erased), or undefined when they never chose one. */
+export async function readChosenName(client: ChosenNameClient, tableName: string, developerId: string): Promise<string | undefined> {
+  return (await readChosenNameState(client, tableName, developerId))?.name;
+}
+
+/** The chosen name only: undefined for an erased person. For the erase itself, which must not take "A former member" for one of the person's own names. */
+export async function readOwnChosenName(client: ChosenNameClient, tableName: string, developerId: string): Promise<string | undefined> {
+  const state = await readChosenNameState(client, tableName, developerId);
+  return state === undefined || state.erased ? undefined : state.name;
+}
+
+/** The states of many people in as few requests as possible (a BatchGetItem per 100, unprocessed keys asked again): developerId to state, for those who chose a name or were erased. */
+export async function readChosenNameStates(client: ChosenNameClient, tableName: string, developerIds: readonly string[]): Promise<Map<string, ChosenNameState>> {
+  const states = new Map<string, ChosenNameState>();
   const unique = [...new Set(developerIds)];
   for (let start = 0; start < unique.length; start += BATCH_GET_KEYS) {
     let keys: Array<{ pk: string; sk: string }> | undefined = unique.slice(start, start + BATCH_GET_KEYS).map(chosenNameKey);
@@ -42,16 +69,46 @@ export async function readChosenNames(client: ChosenNameClient, tableName: strin
       };
       for (const item of response.Responses?.[tableName] ?? []) {
         const developerId = item.pk.startsWith("DEVELOPER_NAME#") ? item.pk.slice("DEVELOPER_NAME#".length) : undefined;
-        const name = developerId === undefined ? undefined : shownName(item, developerId);
-        if (developerId !== undefined && name !== undefined) names.set(developerId, name);
+        const state = developerId === undefined ? undefined : stateOf(item, developerId);
+        if (developerId !== undefined && state !== undefined) states.set(developerId, state);
       }
       keys = response.UnprocessedKeys?.[tableName]?.Keys;
     }
   }
-  return names;
+  return states;
+}
+
+/** The names to show for many people: developerId to name, for those who chose one (an erased person reads "A former member"). */
+export async function readChosenNames(client: ChosenNameClient, tableName: string, developerIds: readonly string[]): Promise<Map<string, string>> {
+  const states = await readChosenNameStates(client, tableName, developerIds);
+  return new Map([...states].map(([developerId, state]) => [developerId, state.name]));
 }
 
 /** The sign-in record with the person's chosen name laid over it, marked chosen; the record as it is when there is none. */
 export function withChosenName<T extends { displayName: string; displayNameChosen?: boolean }>(record: T, chosen: string | undefined): T {
   return chosen === undefined ? record : { ...record, displayName: chosen, displayNameChosen: true };
+}
+
+/**
+ * ERASE-NAME-1, erasure: the name item becomes a tombstone (`erased: true`, no name, no chosen time), so the chosen name is gone from storage and every reader of the item reads "erased". Written
+ * unconditionally and repeatable. A name chosen later is refused (`setChosenDisplayName` conditions its write on there being no tombstone).
+ */
+export async function eraseChosenName(client: ChosenNameClient, tableName: string, developerId: string, at: string): Promise<void> {
+  await client.send(new PutCommand({ TableName: tableName, Item: { ...chosenNameKey(developerId), entityType: "DEVELOPER_NAME", developerId, erased: true, erasedAt: at } }));
+}
+
+/**
+ * ERASE-NAME-1, removal: deletes the chosen name of a person removed from the company at `removedAt`. Only a name chosen at or before the removal goes (one chosen after it, by a person who
+ * came back, stays), and a tombstone is never deleted. Repeatable. The sign-in record's own name shows from then on.
+ */
+export async function deleteChosenNameOfRemoved(client: ChosenNameClient, tableName: string, developerId: string, removedAt: string): Promise<void> {
+  try {
+    await client.send(new DeleteCommand({
+      TableName: tableName, Key: chosenNameKey(developerId),
+      ConditionExpression: "attribute_not_exists(erased) AND (attribute_not_exists(chosenAt) OR chosenAt <= :removedAt)",
+      ExpressionAttributeValues: { ":removedAt": removedAt },
+    }));
+  } catch (error) {
+    if ((error as { name?: string } | undefined)?.name !== "ConditionalCheckFailedException") throw error;
+  }
 }
