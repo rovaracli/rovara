@@ -2,7 +2,7 @@
 // lessons subject source (`learningDepsFor`). A reply's author counts only through a verified Rovara link, and only as a member of the task's project.
 import { afterEach, describe, expect, it } from "vitest";
 import { randomUUID } from "node:crypto";
-import { SLACK_OIDC_ISSUER, erasedPersonKey } from "@agentx/contracts";
+import { SLACK_OIDC_ISSUER, erasedPersonKey, projectMemberKey } from "@agentx/contracts";
 import { installLessons } from "../../packages/broker/src/aws/broker/lessons-wiring.js";
 import type { learningDepsFor } from "../../packages/broker/src/aws/broker/lessons-wiring.js";
 import { uninstallLearningTaskEnd } from "../../packages/broker/src/aws/broker/learning-wiring.js";
@@ -11,7 +11,8 @@ import { ownerKeyForSubject } from "../../packages/broker/src/aws/lambda.js";
 import { buildReflectorInput } from "../../packages/broker/src/lessons/reflect-input.js";
 import { buildTaskReflectSubject } from "../../packages/broker/src/lessons/task-subject.js";
 import { FakeDynamoDb } from "../support/fake-dynamodb.js";
-import { MAYA, createSingleAnswerPlanBroker, grantProject, seedMembership, type Developer } from "../support/developer-task-broker.js";
+import { recordSessionNote } from "../../packages/broker/src/aws/developer-tasks/thread-notes.js";
+import { MAYA, OMAR, createSingleAnswerPlanBroker, grantProject, seedMembership, type Developer } from "../support/developer-task-broker.js";
 import { SLACK_CHANNEL, SLACK_TEAM } from "../support/slack-broker.js";
 import { TEST_ORG } from "../support/orgs.js";
 
@@ -29,14 +30,18 @@ function linkSlack(db: FakeDynamoDb, slackUserId: string, developerId: string): 
   db.set({ pk: `SIGNIN_IDENTITY#${ownerKeyForSubject(SLACK_OIDC_ISSUER, slackUserId)}`, sk: "META", entityType: "IDENTITY_LINK", developerId, provider: "slack", issuer: SLACK_OIDC_ISSUER, subject: slackUserId, linkedAt: "2026-10-01T00:00:00.000Z", lastSignInAt: "2026-10-01T00:00:00.000Z" });
 }
 
-async function world(options: { replies: Array<{ slackUserId: string; text: string }>; link?: Array<[string, Developer]>; project?: Developer[] }) {
+async function world(options: { replies: Array<{ slackUserId: string; text: string }>; link?: Array<[string, Developer]>; project?: Developer[]; webCreator?: true }) {
   const harness = await createSingleAnswerPlanBroker();
   seedMembership(harness.db, DANA.developerId);
   harness.db.set({ pk: `DEVELOPER#${DANA.developerId}`, sk: "META", developerId: DANA.developerId, provider: "oidc", displayName: "Dana", firstSignInAt: "x", lastSignInAt: "x", revoked: false });
-  seedMembership(harness.db, MAYA_SLACK_DEV);
-  harness.db.set({ pk: `DEVELOPER#${MAYA_SLACK_DEV}`, sk: "META", developerId: MAYA_SLACK_DEV, provider: "slack", displayName: "Maya", firstSignInAt: "x", lastSignInAt: "x", revoked: false });
-  for (const who of options.project ?? [MAYA_NATIVE]) grantProject(harness.db, who);
-  for (const [slackUserId, who] of options.link ?? [[MAYA.slackUserId!, MAYA_NATIVE]]) linkSlack(harness.db, slackUserId, who.developerId);
+  // webCreator: Maya is a member through her WEB account (MAYA); the Slack-derived id the task is created under has no membership of its own.
+  const maya = options.webCreator === true ? MAYA : MAYA_NATIVE;
+  if (options.webCreator !== true) {
+    seedMembership(harness.db, MAYA_SLACK_DEV);
+    harness.db.set({ pk: `DEVELOPER#${MAYA_SLACK_DEV}`, sk: "META", developerId: MAYA_SLACK_DEV, provider: "slack", displayName: "Maya", firstSignInAt: "x", lastSignInAt: "x", revoked: false });
+  }
+  for (const who of options.project ?? [maya]) grantProject(harness.db, who);
+  for (const [slackUserId, who] of options.link ?? [[MAYA.slackUserId!, maya]]) linkSlack(harness.db, slackUserId, who.developerId);
   const thread = { teamId: SLACK_TEAM, channelId: SLACK_CHANNEL, threadTs: "1695500000.000031" };
   const started = await harness.handler({ source: "agentx.slack-ingress", action: "start-workflow", thread, userId: MAYA.slackUserId, instructions: "Add a greeting", workflowPath: "QUICK", requestId: randomUUID() });
   const taskId = String((JSON.parse(started.body) as { taskId: string }).taskId);
@@ -98,5 +103,50 @@ describe("a task steered through Slack replies, through the real Slack path and 
     w.harness.db.set({ ...erasedPersonKey(TEST_ORG, { developerId: DANA.developerId }), entityType: "ERASED_PERSON", orgId: TEST_ORG });
     expect((await w.read()).facts.rest.steeringTrust).toContain("outsider");
     expect(await w.verdict()).toMatchObject({ eligible: false, reason: "outsider_steered" });
+  });
+});
+
+describe("a task started in Slack by a member who is linked through a web account (LP-2b)", () => {
+  const replies = [{ slackUserId: MAYA.slackUserId!, text: "Keep the old flag." }];
+
+  it("the creator is read as the linked web account: a member, and the task is eligible with them as the initiator", async () => {
+    const w = await world({ replies, webCreator: true });
+    const base = await w.read();
+    expect(base.facts.rest).toMatchObject({ initiatorTrust: "member", intentTrust: "member", steeringTrust: ["member"] });
+    expect(base.facts.task.developerId).toBe(MAYA.developerId);
+    expect(await w.verdict()).toMatchObject({ eligible: true });
+  });
+
+  it("a creator whose Slack account is not linked to anyone stays an outsider", async () => {
+    const w = await world({ replies, webCreator: true, link: [] });
+    expect((await w.read()).facts.rest).toMatchObject({ initiatorTrust: "outsider", intentTrust: "outsider" });
+    expect(await w.verdict()).toMatchObject({ eligible: false });
+  });
+
+  it("the link removed after the task started: the creator is an outsider again on the next read", async () => {
+    const w = await world({ replies, webCreator: true });
+    expect(await w.verdict()).toMatchObject({ eligible: true });
+    const key = `SIGNIN_IDENTITY#${ownerKeyForSubject(SLACK_OIDC_ISSUER, MAYA.slackUserId!)}`;
+    w.harness.db.set({ ...w.harness.db.get(key, "META")!, unlinkedFrom: MAYA.developerId, unlinkedAt: "2026-11-02T00:00:00.000Z" });
+    expect(await w.verdict()).toMatchObject({ eligible: false, reason: "outsider_initiated" });
+  });
+
+  it("the linked web account removed from the project: ineligible (the live project role decides)", async () => {
+    const w = await world({ replies, webCreator: true });
+    w.harness.db.delete(projectMemberKey(TEST_ORG, MAYA.developerId, "payments"));
+    expect((await w.read()).facts.rest).toMatchObject({ initiatorTrust: "outsider", intentTrust: "outsider" });
+    expect(await w.verdict()).toMatchObject({ eligible: false });
+  });
+
+  it("a message a member sent to the agent from a session (saved by the real session-note path) is named; a sender with no project role is not", async () => {
+    const w = await world({ replies, webCreator: true });
+    const send = async (who: Developer, messageId: string) => recordSessionNote({ documentClient: w.harness.db, tableName: "state", now: Date.now },
+      { taskId: w.taskId, source: "app", developerId: who.developerId, name: who.name, isOwner: false, sessionId: "ses_aaaaaaaaaaaaaaaaaaaa", messageId, text: "Please also add a test." });
+    expect(await send(MAYA, "msg_aaaaaaaaaaaaaaaaaaaa")).toMatchObject({ outcome: "captured" });
+    expect((await w.read()).facts.rest.steeringTrust).toEqual(["member"]);
+    expect(await w.verdict()).toMatchObject({ eligible: true });
+    expect(await send(OMAR, "msg_bbbbbbbbbbbbbbbbbbbb")).toMatchObject({ outcome: "captured" });
+    expect((await w.read()).facts.rest.steeringTrust).toContain("outsider");
+    expect(await w.verdict()).toMatchObject({ eligible: false });
   });
 });

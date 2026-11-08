@@ -202,6 +202,89 @@ describe("erasure reaches the Slack-derived words", () => {
   });
 });
 
+describe("messages sent from a session (app or Linear) name their sender", () => {
+  const person = (developerId: string): ThreadNoteAuthor => ({ kind: "person", developerId });
+
+  it("a member's session message: named, a member steerer, eligible; mixed with a linked Slack reply it is still eligible", async () => {
+    const alone = setup([person("session-member")]);
+    expect(await steering(alone)).toEqual(["member"]);
+    expect(await verdict(alone)).toMatchObject({ eligible: true });
+    expect(alone.standingAsked).toContain("session-member");
+    expect(await steering(setup([person("session-member"), slackNote()]))).toEqual(["member"]);
+  });
+
+  it("a sender with no project role, an erased sender, a blank id and too many senders: not eligible", async () => {
+    expect(await verdict(setup([person("no-role-dev")]))).toMatchObject({ eligible: false, reason: "outsider_steered" });
+    expect(await verdict(setup([person("session-member")], { isErased: async (_org, who) => who === "session-member" }))).toMatchObject({ eligible: false });
+    expect(await steering(setup([person("  ")]))).toContain("outsider");
+    const crowd = Array.from({ length: MAX_SLACK_AUTHORS + 1 }, (_, index) => person(`session-${String(index)}`));
+    expect(await steering(setup(crowd))).toContain("outsider");
+  });
+
+  it("an erased sender taints the worker text (the plan carries the message)", async () => {
+    const markdown = "# Plan\nUse withRetry.";
+    const artifact = { type: "plan", version: 1, objectKey: "plans/x.md", sha256: sha(markdown), format: "markdown", createdAt: "2026-11-01T00:00:00.000Z" };
+    const s = setup([person("session-member")], { readObject: async () => markdown, isErased: async (_org, who) => who === "session-member" }, {}, { artifacts: [artifact] });
+    expect((await base(s)).facts.rest.spans!.some((span) => span.kind === "plan")).toBe(false);
+  });
+});
+
+describe("a task started in Slack is created under the Slack-derived id; its creator is read as the linked person (LP-2b)", () => {
+  const CREATOR_SLACK = "U0CREATE01";
+  const DERIVED = ownerKeyForSubject(SLACK_OIDC_ISSUER, CREATOR_SLACK);
+  const WEB_CREATOR = "web-creator";
+  const slackStarted = { developerId: DERIVED, ownerKey: taskOwnerKey(DERIVED, TASK), startedBy: undefined, agent: undefined, slackUserId: CREATOR_SLACK, share: { teamId: TEAM } };
+  // Members: only the web accounts (the Slack-derived id has no membership of its own).
+  const members = new Set([WEB_CREATOR, REPLIER]);
+  const standing = async (_org: string, who: string) => (members.has(who) ? "member" as const : "outsider" as const);
+  const lookups: Array<{ orgId: string; teamId: string; slackUserId: string }> = [];
+  const linkedCreator = async (input: { orgId: string; teamId: string; slackUserId: string }) => (lookups.push(input), input.teamId !== TEAM ? undefined : input.slackUserId === CREATOR_SLACK ? WEB_CREATOR : input.slackUserId === SLACK_REPLIER ? REPLIER : undefined);
+  const started = (notes: readonly ThreadNoteAuthor[] = [slackNote()], deps: Partial<LessonSubjectSourceDeps> = {}, over: Record<string, unknown> = {}) => {
+    lookups.length = 0;
+    return setup(notes, { standing, slackAuthor: linkedCreator, ...deps }, { ...slackStarted, ...over });
+  };
+
+  it("a creator linked through a web account is a member, and so are the replies: eligible, and the person is named as the initiator and the intent's author", async () => {
+    const s = started();
+    const b = await base(s);
+    expect(b.facts.rest).toMatchObject({ initiatorTrust: "member", intentTrust: "member", steeringTrust: ["member"] });
+    expect(b.facts.rest.spans![0]).toMatchObject({ kind: "intent", trust: "member", authorId: WEB_CREATOR });
+    const subject = buildTaskReflectSubject({ ...b.facts, sendBacks: [] });
+    expect(subject.initiatorId).toBe(WEB_CREATOR);
+    expect(buildReflectorInput(subject)).toMatchObject({ eligible: true });
+    expect(lookups).toContainEqual({ orgId: WS, teamId: TEAM, slackUserId: CREATOR_SLACK });
+  });
+
+  it("an unlinked creator (the Slack-derived id has no membership) is an outsider: ineligible", async () => {
+    const s = started([slackNote()], { slackAuthor: async (input) => (input.slackUserId === SLACK_REPLIER ? REPLIER : undefined) });
+    expect(await base(s)).toMatchObject({ facts: { rest: { initiatorTrust: "outsider", intentTrust: "outsider" } } });
+    expect(await verdict(s)).toMatchObject({ eligible: false });
+  });
+
+  it("a link removed after the task started, a lookup that fails, a task with no workspace on its share: the creator is read as recorded (an outsider here)", async () => {
+    const removed = started([slackNote()], { slackAuthor: async (input) => { if (input.slackUserId === CREATOR_SLACK) throw new Error("down"); return REPLIER; } });
+    expect(await verdict(removed)).toMatchObject({ eligible: false, reason: "outsider_initiated" });
+    const noTeam = started([slackNote()], {}, { share: undefined });
+    expect(await verdict(noTeam)).toMatchObject({ eligible: false });
+    expect(lookups.some((a) => a.slackUserId === CREATOR_SLACK)).toBe(false);
+  });
+
+  it("only the creator's own Slack-derived id is looked up: a creator id that is not derived from the record's Slack account is never mapped", async () => {
+    const s = started([slackNote()], {}, { developerId: "someone-else", ownerKey: taskOwnerKey("someone-else", TASK) });
+    expect(await verdict(s)).toMatchObject({ eligible: false });
+    expect(lookups.some((a) => a.slackUserId === CREATOR_SLACK)).toBe(false);
+  });
+
+  it("an erased linked creator is erased (checked under the linked person as well as the recorded id): no intent span, no worker text, no initiator trust", async () => {
+    const s = started([slackNote()], { isErased: async (_org, who) => who === WEB_CREATOR });
+    const b = await base(s);
+    expect(b.facts.rest.spans!.some((span) => span.kind === "intent")).toBe(false);
+    expect(b.facts.rest.initiatorTrust).toBeUndefined();
+    expect(b.facts.rest.intentTrust).toBeUndefined();
+    expect(await verdict(s)).toMatchObject({ eligible: false });
+  });
+});
+
 describe("the resolver proves the link (lessonSlackAuthor)", () => {
   const LINKED_DEV = "dev-web-1";
   const slackKey = (slackUserId: string): string => ownerKeyForSubject(SLACK_OIDC_ISSUER, slackUserId);

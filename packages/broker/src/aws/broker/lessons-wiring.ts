@@ -187,7 +187,7 @@ export function learningDepsFor(dependencies: LessonsHostDependencies, runtime: 
     log,
     // Slack thread replies name their author through the Slack account's verified Rovara link (lessons sweep, lane D); the words are not read.
     threadNotes: async (_orgId, taskId): Promise<ThreadNoteAuthor[]> => (await readWorkflowThreadNotes(state, taskId, undefined, { includeAnswered: true }))
-      .map((note) => ("slackUserId" in note ? { kind: "slack" as const, teamId: note.teamId, slackUserId: note.slackUserId } : { kind: "other" as const })),
+      .map((note) => ("slackUserId" in note ? { kind: "slack" as const, teamId: note.teamId, slackUserId: note.slackUserId } : { kind: "person" as const, developerId: note.developerId })),
     slackAuthor: lessonSlackAuthor({ documentClient: dependencies.documentClient, tableName: dependencies.tableName, signIn: new DeveloperSignInStore({ documentClient: dependencies.documentClient, tableName: signInTableName, now: Date.now }) }),
     readObject: (key, maxBytes) => readObjectText(dependencies.s3, dependencies.artifactBucketName, key, maxBytes),
     now: Date.now,

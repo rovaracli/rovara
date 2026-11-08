@@ -15,9 +15,10 @@
 //   - Slack thread replies (lessons sweep, lane D): the words are NOT read, only WHO wrote each reply. A reply's author is named through the Rovara identity their Slack account is verifiably linked to
 //     (`slackAuthor`; the Slack workspace must be the task's company's); the linked person then counts like any other steerer: their project role decides member or outsider, an erased person makes
 //     the task unnamed and taints the worker-written text (the plan quotes replies), and an unlinked, unverified, other-workspace, bot or unreadable author is unknown (an outsider). Bounded.
+//   - Messages people sent to the agent from a session (app or Linear): the route authenticated the sender and checked their level, so the note's developer id names them; they count like any other steerer.
 //   - A read that fails THROWS (the hook catches it): no read is ever treated as "not erased".
 import { GetCommand } from "@aws-sdk/lib-dynamodb";
-import { OrgIdSchema, workflowFindingFingerprint, type WorkflowArtifact, type WorkflowSnapshot } from "@agentx/contracts";
+import { OrgIdSchema, SLACK_OIDC_ISSUER, workflowFindingFingerprint, type WorkflowArtifact, type WorkflowSnapshot } from "@agentx/contracts";
 import { taskKey, taskOwnerKey, tryEffectiveTaskOwner, type DeveloperTaskRecord } from "../../developer/task-records.js";
 import { loadWorkflowDocument } from "../../developer/plan-artifacts.js";
 import type { TaskSubjectBase, TaskSubjectSource } from "../../lessons/task-end.js";
@@ -25,6 +26,7 @@ import { isHumanSendBack } from "../../lessons/human-send-backs.js";
 import { logRef } from "../../lessons/log-ref.js";
 import type { EvidenceSpan } from "../../lessons/reflect-input.js";
 import { taskStartActor } from "../../lessons/task-subject.js";
+import { ownerKeyForSubject } from "../lambda.js";
 import type { Audience, TrustClass } from "../../lessons/types.js";
 import type { TaskVisibility } from "../../team-record/sources/rovara.js";
 import { cleanForLearning } from "../../lessons/guards.js";
@@ -51,7 +53,7 @@ export const MAX_THREAD_REPLIES = 100;
 export const MAX_SLACK_AUTHORS = 20;
 
 /** One saved note of a task, as far as steering goes: a Slack reply names its Slack workspace and user; any other kind (a session message) is not named by this source. */
-export type ThreadNoteAuthor = { kind: "slack"; teamId: string; slackUserId: string } | { kind: "other" };
+export type ThreadNoteAuthor = { kind: "slack"; teamId: string; slackUserId: string } | { kind: "person"; developerId: string } | { kind: "other" };
 
 export type { PullRequestAddress, PullRequestFeedbackView, PullRequestSurface };
 export { githubPullRequestAddress };
@@ -220,6 +222,8 @@ async function namedPeopleErased(
  */
 async function slackSteerers(deps: LessonSubjectSourceDeps, orgId: string, task: DeveloperTaskRecord): Promise<{ persons: Array<string | undefined>; unnamed: boolean }> {
   const accounts = new Map<string, { teamId: string; slackUserId: string }>();
+  // People who sent a message from a session: the route authenticated them and checked their "use" level, so their developer id is the note's author as it stands.
+  const sessionPeople = new Set<string>();
   let unnamed = false;
   // A reply the owner sent for the pull request feedback review is kept on the workflow too (with its Slack account).
   for (const note of task.workflow?.feedbackNotes ?? []) {
@@ -235,14 +239,16 @@ async function slackSteerers(deps: LessonSubjectSourceDeps, orgId: string, task:
     }
     if (rows === undefined || rows.length !== count) unnamed = true;
     else for (const row of rows) {
-      if (row.kind !== "slack") unnamed = true;
+      if (row.kind === "person") { if (present(row.developerId)) sessionPeople.add(row.developerId.trim()); else unnamed = true; }
+      else if (row.kind !== "slack") unnamed = true;
       else accounts.set(`${row.teamId}\u0000${row.slackUserId}`, { teamId: row.teamId, slackUserId: row.slackUserId });
     }
   }
-  if (accounts.size === 0) return { persons: [], unnamed };
-  if (deps.slackAuthor === undefined) return { persons: [], unnamed: true };
+  const persons: Array<string | undefined> = [...sessionPeople].slice(0, MAX_SLACK_AUTHORS);
+  if (sessionPeople.size > MAX_SLACK_AUTHORS) unnamed = true;
+  if (accounts.size === 0) return { persons, unnamed };
+  if (deps.slackAuthor === undefined) return { persons, unnamed: true };
   const resolve = deps.slackAuthor;
-  const persons: Array<string | undefined> = [];
   for (const account of [...accounts.values()].slice(0, MAX_SLACK_AUTHORS)) {
     try {
       const person = await resolve({ orgId, ...account });
@@ -276,19 +282,48 @@ export function lessonSubjectSource(deps: LessonSubjectSourceDeps): TaskSubjectS
       if (visibility === undefined) return undefined;
       const project = task.project;
 
+      // A task started in Slack is recorded under the Slack-derived developer id of its creator (and its taker), which is no member of the company when the person is a member through a linked web account. For
+      // the LESSONS trust read only (nothing stored, no authorization), that id is read as the person the Slack account is verifiably linked to (`slackAuthor`, the same proof that names a reply's author).
+      // Only an id that is exactly the Slack-derived id of a Slack account this record names, in the workspace the task was shared in, is looked up. Anything else, a failed lookup or no proof: the id as it is.
+      const slackIds = new Map<string, string>();
+      for (const slackUserId of [task.slackUserId, tryEffectiveTaskOwner(task)?.slackUserId]) {
+        if (typeof slackUserId === "string" && slackUserId !== "") slackIds.set(ownerKeyForSubject(SLACK_OIDC_ISSUER, slackUserId), slackUserId);
+      }
+      const canonCache = new Map<string, string>();
+      const canon = async (developerId: string): Promise<string> => {
+        const known = canonCache.get(developerId);
+        if (known !== undefined) return known;
+        let person = developerId;
+        const slackUserId = slackIds.get(developerId);
+        const teamId = task.share?.teamId;
+        if (slackUserId !== undefined && typeof teamId === "string" && deps.slackAuthor !== undefined) {
+          try {
+            const linked = await deps.slackAuthor({ orgId, teamId, slackUserId });
+            if (present(linked)) person = linked.trim();
+          } catch { person = developerId; }
+        }
+        canonCache.set(developerId, person);
+        return person;
+      };
       const erasedCache = new Map<string, boolean>();
-      const erased = async (developerId: string): Promise<boolean> => {
+      const erasedRaw = async (developerId: string): Promise<boolean> => {
         const known = erasedCache.get(developerId);
         if (known !== undefined) return known;
         const answer = await deps.isErased(orgId, developerId, project);
         erasedCache.set(developerId, answer);
         return answer;
       };
+      // Erased under the id as recorded or under the person it is linked to: either one is enough (no short cut, so a read that cannot tell throws).
+      const erased = async (developerId: string): Promise<boolean> => {
+        const raw = await erasedRaw(developerId);
+        const person = await canon(developerId);
+        return (person !== developerId && await erasedRaw(person)) || raw;
+      };
       const standingCache = new Map<string, TrustClass>();
       const trustOf = async (developerId: string): Promise<TrustClass> => {
         const known = standingCache.get(developerId);
         if (known !== undefined) return known;
-        const trust: TrustClass = (await deps.standing(orgId, developerId, project)) === "member" ? "member" : "outsider";
+        const trust: TrustClass = (await deps.standing(orgId, await canon(developerId), project)) === "member" ? "member" : "outsider";
         standingCache.set(developerId, trust);
         return trust;
       };
@@ -303,6 +338,7 @@ export function lessonSubjectSource(deps: LessonSubjectSourceDeps): TaskSubjectS
       const initiatorId = taskStartActor(task);
       const initiatorErased = initiatorId !== undefined && await erased(initiatorId);
       const creatorErased = await erased(creator);
+      const creatorId = await canon(creator);
       // The actor ids a decision or an answer carries are hashed owner keys: the creator's, or the one who took the task over.
       const creatorKey = taskOwnerKey(creator, task.taskId);
       const takerOf = tryEffectiveTaskOwner(task);
@@ -315,7 +351,7 @@ export function lessonSubjectSource(deps: LessonSubjectSourceDeps): TaskSubjectS
       // ---- spans
       const spans: EvidenceSpan[] = [];
       const intentText = present(task.requestText) ? task.requestText : task.title;
-      if (!creatorErased && present(intentText)) spans.push({ kind: "intent", text: intentText, trust: await trustOf(creator), authorId: creator });
+      if (!creatorErased && present(intentText)) spans.push({ kind: "intent", text: intentText, trust: await trustOf(creator), authorId: await canon(creator) });
 
       // Slack thread replies: who wrote them, through their linked Rovara identity (see `slackSteerers`). Resolved before the worker text, because the plan quotes replies.
       const slack = await slackSteerers(deps, orgId, task);
@@ -349,7 +385,7 @@ export function lessonSubjectSource(deps: LessonSubjectSourceDeps): TaskSubjectS
       const closer = [...(workflow?.decisions ?? [])].reverse().find((decision) => decision.decision === "REJECT" && decision.actorRole === "TASK_OWNER" && developerOfActor(decision.actorId) !== undefined);
       if (closer !== undefined) {
         const author = developerOfActor(closer.actorId)!;
-        if (!(await erased(author))) spans.push({ kind: "close_reason", text: closer.reason, trust: await trustOf(author), authorId: author });
+        if (!(await erased(author))) spans.push({ kind: "close_reason", text: closer.reason, trust: await trustOf(author), authorId: await canon(author) });
       }
 
       /**
@@ -508,7 +544,7 @@ export function lessonSubjectSource(deps: LessonSubjectSourceDeps): TaskSubjectS
           ...(base === undefined ? {} : { baseCommit: base.commit }), ...(mergedCommit === undefined ? {} : { mergedCommit }),
           ...(outcome === undefined ? {} : { outcome }),
           // An erased initiator is nobody: with no `startedBy` and an `agent` mark the start actor is undefined, so no outcome is measured against them.
-          task: initiatorErased ? { developerId: creator, agent: task.agent ?? {} } : { developerId: creator, ...(task.startedBy === undefined ? {} : { startedBy: task.startedBy }), ...(task.agent === undefined ? {} : { agent: task.agent }) },
+          task: initiatorErased ? { developerId: creatorId, agent: task.agent ?? {} } : { developerId: creatorId, ...(task.startedBy === undefined ? {} : { startedBy: { developerId: await canon(task.startedBy.developerId) } }), ...(task.agent === undefined ? {} : { agent: task.agent }) },
           rest: {
             ...(initiatorId === undefined || initiatorErased ? {} : { initiatorTrust: await trustOf(initiatorId) }),
             steeringTrust,
