@@ -36,7 +36,7 @@ import {
 import { workflowDependenciesAllowed } from "../../rovara-code/parallel-parts.js";
 import { acceptRunLimit } from "../../spend/estimate.js";
 import { decisionCardsEnabled } from "../../proof/switch.js";
-import { planFactsOf, planRiskOf } from "../../decisions/plan-risk.js";
+import { planDecidedOnCard } from "../../decisions/plan-risk.js";
 import { decisionCardUrl } from "../../decisions/open-path.js";
 import { cleanUsd } from "../../spend/top-ups.js";
 import { aiToolTurn, developerTaskIdentity, effectiveTaskOwner, taskKey, type DeveloperTaskRecord } from "../../developer/task-records.js";
@@ -596,9 +596,8 @@ async function requirePlanApprovalPlace(deps: DeveloperTaskRouteDependencies, ca
   const browser = caller.browserSession === true || page;
   // NOT YET ALWAYS (see the slice 2 report): enforcing this with the cards off refuses Slack and tool approvals of most plans in every deployment (about 1,000 tests approve such plans that way);
   // the owner decides that rollout. Until then it holds while the decision cards are on.
-  if (!decisionCardsEnabled()) return;
-  const risk = planRiskOf(planFactsOf(loaded, task.workflow), task.runEstimate?.highUsd);
-  if (risk === "low") return;
+  const risk = planDecidedOnCard(loaded, task.workflow, task.runEstimate?.highUsd);
+  if (risk === undefined) return;
   if (!browser) { const { link, place } = planApprovalLink(deps, task); throw agentXError("FORBIDDEN", planRiskPlaceMessage(risk, link, place)); }
   // Security review (2026-11-06; this replaces the web session's freshness): a HIGH plan is approved only on its card, under the decide-grade sign-in (an email code from a clean sign-in, as the member's own
   // pool user, for this card, unused, within 10 minutes). The plan review page sends the person to the card.

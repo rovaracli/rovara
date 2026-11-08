@@ -18,7 +18,8 @@ import { ChangeMessageVisibilityCommand, SQSClient, SendMessageBatchCommand } fr
 import { DynamoDBDocumentClient, GetCommand, PutCommand, QueryCommand, TransactWriteCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
 import { INDEX_EXPIRY_ATTRIBUTE, NUDGE_WINDOW_MS, sameJsonContent, AdminChangePendingRecordSchema, planClaimCount, planSummaryLines, PullRequestResultSchema, SHARE_DELIVERY_WINDOW_MS, WorkflowFeedbackReviewReportSchema, adminChangeKey, describeWorkflowCheckChanges, redactText, workflowCheckCommandText, workflowFeedbackCheckChanges, indexExpiresAt, lastAssistantResponse, sharedTaskKey, WORKFLOW_BLOCK_REASONS, WORKFLOW_PUBLISH_CANDIDATE_CHANGED_MESSAGE, workflowPublicationRetryable, taskGraphDigest, type PendingChange, type PlanClaim, type PlanDocument, type WorkflowArtifact, type WorkflowCheck, type WorkflowCanvasLineage, type WorkflowSnapshot } from "@agentx/contracts";
 import { adminChangeExpiredMessage, adminChangeMessage, adminChangeOutcomeMessage } from "../developer/change-messages.js";
-import { loadWorkflowDocument } from "../developer/plan-artifacts.js";
+import { loadWorkflowDocument, type LoadedDocument } from "../developer/plan-artifacts.js";
+import { planDecidedOnCard } from "../decisions/plan-risk.js";
 import { PLAN_UNREADABLE_CATEGORIES, planCheckSummary, planUnreadableCategory } from "../developer/plan-check-summary.js";
 import { SELF_CHECK_NOT_APPLICABLE, loadPlanSelfCheck, planRevisionsUsed, type PlanSelfCheckView } from "../developer/plan-self-check.js";
 import { designWaitArms, readStream, type Notice, type StreamRecord } from "../developer/notifications.js";
@@ -842,7 +843,7 @@ function structuredCardClaims(plan: PlanDocument, selfCheck: PlanSelfCheckView):
  * Canvas can be linked, the task page is. A document whose digest does not match is neither summarised nor linked
  * (it returns nothing), and the card then links the task page itself, so the owner can still reach the plan.
  */
-async function prepareDocumentLink(deps: NotifierDependencies, task: DeveloperTaskRecord & { share: TaskShare }, workflow: WorkflowSnapshot): Promise<{ url?: string; summary?: string[]; structured?: NonNullable<WorkflowMessageContext["structured"]>; workBreakdownDigest?: string }> {
+async function prepareDocumentLink(deps: NotifierDependencies, task: DeveloperTaskRecord & { share: TaskShare }, workflow: WorkflowSnapshot, onLoaded?: (loaded: LoadedDocument) => void): Promise<{ url?: string; summary?: string[]; structured?: NonNullable<WorkflowMessageContext["structured"]>; workBreakdownDigest?: string }> {
   const unavailable = (reason: string) => deps.log({ event: "developer_notifier.document_link_unavailable", taskId: task.taskId, workflowRevision: workflow.revision, reason });
   const plan = workflow.artifacts.filter((artifact) => artifact.type === workflowDocumentType(workflow)).at(-1);
   if (plan === undefined || deps.readArtifact === undefined) {
@@ -855,6 +856,7 @@ async function prepareDocumentLink(deps: NotifierDependencies, task: DeveloperTa
     unavailable("integrity_check_failed");
     return {};
   }
+  onLoaded?.(loaded);
   const fallback = taskPageUrl(deps, task);
   // A structured plan is read on the task page, never in a Canvas: the card carries its top claims and a link that opens
   // the page at this document and version.
@@ -1026,6 +1028,21 @@ export function runLimitRaiseFor(task: Pick<DeveloperTaskRecord, "budgetUsd" | "
   return change?.raises === true ? { currentUsd: change.currentUsd, proposedUsd: change.proposedUsd } : undefined;
 }
 
+/**
+ * p1-slack-decide-card: where a coding-plan message sends the person INSTEAD of an Approve the server would refuse, or undefined when Approve stays. With the decision cards on, a plan the server decides on its card
+ * (medium or high risk: `planDecidedOnCard`, the very rule `requirePlanApprovalPlace` refuses by) shows no Approve; "Decide in Rovara" links the plan's card on the task page (the task page when the session is not
+ * known). A plan whose document could not be read here is also sent there (`unknown`): never an Approve that may be refused. Cards off, or a low plan, or not the coding plan: undefined, Approve as before.
+ * The notifier is given the cards switch as DECISION_CARDS_ENABLED (a variable of its own: it has no packed broker settings).
+ */
+export function planOpenFor(reviewUrlBase: string | undefined, task: Pick<DeveloperTaskRecord, "taskId" | "sessionId" | "runEstimate">, workflow: Pick<WorkflowSnapshot, "path" | "reviewPhase" | "stage" | "state" | "designReview">, page: string | undefined, loaded: LoadedDocument | undefined): { url?: string; why: "medium" | "high" | "unknown" } | undefined {
+  if (!waitsOnCodingPlan(workflow) || !decisionCardsEnabled()) return undefined;
+  let why: "medium" | "high" | "unknown" | undefined;
+  try { why = loaded === undefined ? "unknown" : planDecidedOnCard(loaded, workflow, task.runEstimate?.highUsd); } catch { why = "unknown"; }
+  if (why === undefined) return undefined;
+  const url = decisionCardUrl(reviewUrlBase, task, `approve_plan:${task.taskId}`, page);
+  return url === undefined ? { why } : { url, why };
+}
+
 /** `runLimitRaiseFor`, and for a record with no stored estimate the limit the decision will work out (`planRunLimit`), so the Approve button carries the amount. A read that fails shows no raise (the press is then refused with a link). */
 export async function runLimitRaiseLive(deps: Pick<NotifierDependencies, "documentClient" | "tableName" | "now">, task: DeveloperTaskRecord, workflow: Pick<WorkflowSnapshot, "path" | "reviewPhase" | "stage" | "state">): Promise<{ currentUsd: number; proposedUsd: number } | undefined> {
   if (!waitsOnCodingPlan(workflow)) return undefined;
@@ -1047,7 +1064,8 @@ async function workflowReply(deps: NotifierDependencies, task: DeveloperTaskReco
   let approval: WorkflowArtifact | undefined;
   if (workflow.stage === "PLAN" && workflow.state === "RUNNING" && task.planGrounding !== undefined && task.planGroundingAbandoned !== task.planGrounding.artifactSha256) context.planGroundingHeld = true;
   if (workflow.stage === "PLAN_REVIEW" && workflow.state === "WAITING") {
-    const document = await prepareDocumentLink(deps, task, workflow);
+    const read: { loaded?: LoadedDocument } = {};
+    const document = await prepareDocumentLink(deps, task, workflow, (loaded) => { read.loaded = loaded; });
     context.documentSummary = document.summary;
     context.structured = document.structured;
     context.workBreakdownDigest = document.workBreakdownDigest;
@@ -1063,6 +1081,10 @@ async function workflowReply(deps: NotifierDependencies, task: DeveloperTaskReco
     }
     const card = designCardUrlFor(deps.reviewUrlBase, task, workflow, page);
     if (card !== undefined) context.designCardUrl = card;
+    else {
+      const open = planOpenFor(deps.reviewUrlBase, task, workflow, page, read.loaded);
+      if (open !== undefined) context.planOpen = open;
+    }
     const raise = await runLimitRaiseLive(deps, task, workflow);
     if (raise !== undefined) context.runLimitRaise = raise;
   } else if (workflow.state === "BLOCKED" || (workflow.stage === "WAIT_FOR_MERGE" && workflow.state === "WAITING")) {

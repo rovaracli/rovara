@@ -10,6 +10,7 @@
 import type { DecisionRisk, PlanDocument, WorkflowSnapshot } from "@agentx/contracts";
 import type { LoadedDocument } from "../developer/plan-artifacts.js";
 import { pathsIn, planFiles, planUntestedClaims } from "../developer/plan-one-screen.js";
+import { decisionCardsEnabled } from "../proof/switch.js";
 import { riskTierOf } from "./risk-tier.js";
 
 export interface PlanFacts {
@@ -47,4 +48,14 @@ export function planFactsOf(loaded: LoadedDocument | undefined, workflow?: Pick<
 /** The coding plan card's tier for these facts and the plan's expected cost (the high end), with no company lock (none is stored yet). */
 export function planRiskOf(facts: PlanFacts, costHighUsd: number | undefined): DecisionRisk {
   return riskTierOf("approve_plan", { plan: { files: facts.files, untestedClaims: facts.untestedClaims, unread: facts.unread, ...(costHighUsd === undefined ? {} : { costHighUsd }) } }).risk;
+}
+
+/**
+ * The ONE rule for "this coding plan is decided on its card, not by an Approve in Slack, a tool or a token": the decision cards are on and the plan's tier (`planRiskOf`) is medium or high. Answers that tier, or
+ * undefined when the plan may be approved anywhere (cards off, or low risk). The server's refusal (`requirePlanApprovalPlace`) and the Slack plan message (which then offers no Approve) both read it, so they cannot drift.
+ */
+export function planDecidedOnCard(loaded: LoadedDocument | undefined, workflow: Pick<WorkflowSnapshot, "designReview"> | undefined, costHighUsd: number | undefined): "medium" | "high" | undefined {
+  if (!decisionCardsEnabled()) return undefined;
+  const risk = planRiskOf(planFactsOf(loaded, workflow), costHighUsd);
+  return risk === "low" ? undefined : risk;
 }

@@ -1406,7 +1406,7 @@ export class ControlPlaneStack extends Stack {
       // The key's id, in the broker's names: the broker builds the ARN from the region and the account (broker-environment.ts), to the same text.
       BrokerNames.of(broker).add("chatGptConnectionKey", chatGptConnectionKey.keyId);
       // Spec 025 phase 25c: sharing, named environments only (D14).
-      const notifier = new DeveloperTaskNotifier(this, "DeveloperTaskNotifier", { naming, controlPlaneUrl: customDomain === undefined ? api.attrApiEndpoint : customDomain.origin(), state, artifactBucket: artifacts, slackSecret, taskPeopleChangesEnabled: signInParameters.taskPeopleChangesEnabled, notifyOperator });
+      const notifier = new DeveloperTaskNotifier(this, "DeveloperTaskNotifier", { naming, controlPlaneUrl: customDomain === undefined ? api.attrApiEndpoint : customDomain.origin(), state, artifactBucket: artifacts, slackSecret, taskPeopleChangesEnabled: signInParameters.taskPeopleChangesEnabled, decisionCardsEnabled: signInParameters.decisionCardsEnabled, notifyOperator });
       // Spec 025 A13: the admin health route reads the environment's alarms, by name, and
       // the depths of its dead-letter queues. Read-only, and on exactly these resources.
       const alarmPrefix = naming.alarmName("");

@@ -16,6 +16,8 @@ export interface DeveloperTaskNotifierProps {
   slackSecret: secretsmanager.Secret;
   /** Existing role-change switch; notice handling remains independent of invitation switches. */
   taskPeopleChangesEnabled: CfnParameter;
+  /** The decision cards switch (stack parameter DecisionCardsEnabled): with it on, a plan decided on its card shows no Approve in Slack. The notifier has no packed broker settings, so it gets the switch as DECISION_CARDS_ENABLED. */
+  decisionCardsEnabled: CfnParameter;
   /** The operator alerts topic's action: a dead-lettered notice or stream batch is never silent. */
   notifyOperator: cloudwatch.IAlarmAction;
 }
@@ -71,6 +73,7 @@ export class DeveloperTaskNotifier extends Construct {
       SLACK_SECRET_ARN: props.slackSecret.secretArn,
       AGENTX_METRICS_NAMESPACE: props.naming.metricsNamespace,
       AGENTX_TASK_PEOPLE_CHANGES_ENABLED: props.taskPeopleChangesEnabled.valueAsString,
+      DECISION_CARDS_ENABLED: props.decisionCardsEnabled.valueAsString,
     }, Duration.seconds(30));
     props.slackSecret.grantRead(this.function);
     this.function.addToRolePolicy(new iam.PolicyStatement({
