@@ -12,6 +12,8 @@ type Mapped = { action: AuditEventInput["action"]; facts: (event: LessonAuditEve
 const num = (value: unknown): number => (typeof value === "number" && Number.isFinite(value) ? value : 0);
 const word = (value: unknown, fallback: string): string => (typeof value === "string" && /^[a-z_]{1,40}$/u.test(value) ? value : fallback);
 
+const modelWord = (value: unknown): string => (typeof value === "string" && /^[A-Za-z0-9:_\-.#@/]{1,128}$/u.test(value) ? value : "default");
+
 const MAP: Partial<Record<LessonAuditEvent["action"], Mapped>> = {
   "lesson.candidate_created": { action: "lesson.proposed", facts: (e) => ({ lessonType: word(e.facts["type"], "unknown"), tier: 1 }) },
   "lesson.pending": { action: "lesson.proposed", facts: (e) => ({ lessonType: "unknown", tier: num(e.facts["tier"]) }) },
@@ -38,6 +40,8 @@ const MAP: Partial<Record<LessonAuditEvent["action"], Mapped>> = {
   "lesson.tier0_setting_refused_retryable": { action: "lesson.refused", facts: () => ({ refusal: "membership_changed_retry" }) },
   "lesson.sole_owner_switch_proposed": { action: "lesson.sole_owner_switch_proposed", facts: (e) => ({ fromEnabled: e.facts["from"] === true, toEnabled: e.facts["to"] === true }) },
   "lesson.sole_owner_switch_changed": { action: "lesson.sole_owner_switch_changed", facts: (e) => ({ fromEnabled: e.facts["from"] === true, toEnabled: e.facts["to"] === true, mode: word(e.facts["mode"], "second_person") }) },
+  // The company's choice of the model its lesson learning runs on (or back to the default). Model names are `provider/modelId`, which the safe-fact filter already allows.
+  "lesson.model_set": { action: "lesson.model_set", facts: (e) => ({ fromModel: modelWord(e.facts["from"]), toModel: modelWord(e.facts["to"]) }) },
 };
 
 /** Actions with no ledger name on purpose: bookkeeping that grants nothing. Under `emitAudit` they are skipped; under `requireAudit` they would fail, so a grant never uses one. */
@@ -51,27 +55,44 @@ export const LEDGERED: readonly LessonAuditAction[] = Object.keys(MAP) as Lesson
 /** The ids the ledger accepts for an actor: a member id is the canonical developer id; anything else is the system. */
 const actorOf = (actor: string | undefined): AuditActor => (actor !== undefined && /^[a-f0-9]{64}$/u.test(actor) ? { kind: "member", id: actor } : { kind: "system", id: "rovara" });
 
-/** The audit sink for the lessons library over the broker's record audit sink (which writes the pending item and sends it). */
-export function lessonAuditSink(write: RecordAuditSink, now: () => number): LessonAuditSink {
+/** How a lessons event can ride in the caller's own transaction: the pending item(s) for an event, and the flush of a committed one (the broker's outbox). */
+export interface LessonAuditOutbox { pending(event: AuditEventInput): unknown[]; flush(event: AuditEventInput): Promise<void> }
+
+/** The audit sink for the lessons library over the broker's record audit sink (which writes the pending item and sends it). With an `outbox` it can also `stage` an event into the caller's transaction. */
+export function lessonAuditSink(write: RecordAuditSink, now: () => number, outbox?: LessonAuditOutbox): LessonAuditSink {
   let counter = 0;
+  /** The ledger event for a lessons event, or undefined for bookkeeping that is skipped. */
+  const eventOf = (event: LessonAuditEvent, required: boolean): AuditEventInput | undefined => {
+    const mapped = MAP[event.action];
+    if (mapped === undefined) {
+      // An event that grants something and cannot be recorded must not pass; bookkeeping may be skipped.
+      if (required || !BOOKKEEPING.includes(event.action)) throw new Error(`the ledger has no name for ${event.action}`);
+      return undefined;
+    }
+    const org = OrgIdSchema.safeParse(event.workspaceId);
+    if (!org.success) throw new Error("the audit event names no company");
+    const at = new Date(now()).toISOString();
+    // One event per occurrence: the time and a process counter keep two approvals of one lesson apart.
+    counter += 1;
+    const lessonId = event.lessonId ?? `${event.project}`;
+    return {
+      eventId: auditEventId(mapped.action, lessonId, at, String(counter), event.actor ?? "system"), orgId: org.data, action: mapped.action, actor: actorOf(event.actor),
+      target: { kind: "lesson", id: lessonId.slice(0, 100) }, occurredAt: at, facts: mapped.facts(event),
+    };
+  };
   return {
     async emit(event, options) {
-      const mapped = MAP[event.action];
-      if (mapped === undefined) {
-        // An event that grants something and cannot be recorded must not pass; bookkeeping may be skipped.
-        if (options?.required === true || !BOOKKEEPING.includes(event.action)) throw new Error(`the ledger has no name for ${event.action}`);
-        return;
-      }
-      const org = OrgIdSchema.safeParse(event.workspaceId);
-      if (!org.success) throw new Error("the audit event names no company");
-      const at = new Date(now()).toISOString();
-      // One event per occurrence: the time and a process counter keep two approvals of one lesson apart.
-      counter += 1;
-      const lessonId = event.lessonId ?? `${event.project}`;
-      await write({
-        eventId: auditEventId(mapped.action, lessonId, at, String(counter), event.actor ?? "system"), orgId: org.data, action: mapped.action, actor: actorOf(event.actor),
-        target: { kind: "lesson", id: lessonId.slice(0, 100) }, occurredAt: at, facts: mapped.facts(event),
-      });
+      const built = eventOf(event, options?.required === true);
+      if (built !== undefined) await write(built);
     },
+    ...(outbox === undefined ? {} : {
+      stage(event) {
+        const built = eventOf(event, true);
+        const items = built === undefined ? [] : outbox.pending(built);
+        // No pending item means no ledger (or an event the ledger refused to shape): a change that must be audited does not go on.
+        if (built === undefined || items.length === 0) throw new Error("the audit ledger cannot take this event");
+        return { items, async sent() { try { await outbox.flush(built); } catch { /* the pending item is durable; the drain sends it */ } } };
+      },
+    }),
   };
 }

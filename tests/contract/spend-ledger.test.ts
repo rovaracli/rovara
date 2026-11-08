@@ -1523,3 +1523,97 @@ describe("the scheduled run's time", () => {
   });
 });
 
+
+// Lessons in production (fix round 1): a key can hold its cap on counters that are not budget scopes (the Public company's learning month). They reserve, settle, finalize and abandon exactly as a scope does.
+describe("holds beyond the budget scopes", () => {
+  const LEARNING = "LEARNING";
+  const holdInput = (t: ReturnType<typeof setup>, limitUsd: number | undefined, capUsd = 0.25) =>
+    t.input({ scopes: [{ key: ORG }, { key: WEB }], capUsd, holds: [{ counter: LEARNING, ...(limitUsd === undefined ? {} : { limitUsd }) }] });
+
+  it("holds the cap on the hold counter in the same transaction as the scopes, and refuses a key that does not fit its limit without writing anything", async () => {
+    const t = setup();
+    await reserve(t.deps(), holdInput(t, 0.5));
+    near(t.counter(LEARNING)?.committedUsd, 0.25);
+    near(t.counter("ORG")?.committedUsd, 0.25);
+    const second = holdInput(t, 0.5, 0.3);
+    const refused = await reserve(t.deps(), second).catch((error: unknown) => error);
+    expect(refused).toBeInstanceOf(ScopeFullError);
+    expect((refused as ScopeFullError).scope).toBe(LEARNING);
+    near(t.counter("ORG")?.committedUsd, 0.25);
+    near(t.counter(LEARNING)?.committedUsd, 0.25);
+    expect(t.record(second.keyId)).toBeUndefined();
+    // A hold without a limit never refuses (an Enterprise company has no learning cap of its own).
+    await expect(reserve(t.deps(), holdInput(t, undefined, 0.4))).resolves.toBeDefined();
+    near(t.counter(LEARNING)?.committedUsd, 0.65);
+  });
+
+  it("a repeat of the same key holds nothing more", async () => {
+    const t = setup();
+    const input = holdInput(t, 1);
+    await reserve(t.deps(), input);
+    await reserve(t.deps(), input);
+    near(t.counter(LEARNING)?.committedUsd, 0.25);
+  });
+
+  it("settles spend onto the hold counter and, at finalize, releases only what the key did not spend", async () => {
+    const t = setup();
+    const input = holdInput(t, 20);
+    await reserve(t.deps(), input);
+    t.spend(input, 0.04);
+    await settleKey(t.deps(), t.orgId, input.keyId);
+    near(t.counter(LEARNING)?.spentUsd, 0.04);
+    near(t.counter(LEARNING)?.committedUsd, 0.25);
+    expect(await finalizeKey(t.deps(), t.orgId, input.keyId)).toBe(true);
+    near(t.counter(LEARNING)?.committedUsd, 0.04);
+    near(t.counter("ORG")?.committedUsd, 0.04);
+  });
+
+  it("spend the proxy reports late (after the call, before the finalize) is still counted, and the cap stays held until then", async () => {
+    const t = setup();
+    const input = holdInput(t, 20);
+    await reserve(t.deps(), input);
+    // The call is over but the proxy has not flushed its figure: a settle now sees 0 and the whole cap stays held.
+    await settleKey(t.deps(), t.orgId, input.keyId);
+    near(t.counter(LEARNING)?.committedUsd, 0.25);
+    near(t.counter(LEARNING)?.spentUsd, 0);
+    // The proxy flushes; the sweep after the finalize delay settles first and then releases.
+    t.spend(input, 0.11);
+    t.clock.now += 2 * FINALIZE_DELAY_MS;
+    await blockOperationKeys(t.deps(), { orgId: t.orgId, operationId: input.tags.operationId!, keyIds: [input.keyId] }).catch(() => undefined);
+    await sweepSpend(t.deps(), t.clock.now + 2 * FINALIZE_DELAY_MS);
+    near(t.counter(LEARNING)?.spentUsd, 0.11);
+    near(t.counter(LEARNING)?.committedUsd, 0.11);
+  });
+
+  it("a key abandoned before it was used gives the whole hold back", async () => {
+    const t = setup();
+    const input = holdInput(t, 20);
+    await reserve(t.deps(), input);
+    const { abandonKey } = await import("../../packages/broker/src/spend/ledger.js");
+    expect(await abandonKey(t.deps(), t.orgId, input.keyId)).toBe(true);
+    near(t.counter(LEARNING)?.committedUsd, 0);
+  });
+
+  it("a key nobody blocked is finalized by the sweep after it expired, which releases the hold (a crashed caller never leaks a month's cap)", async () => {
+    const t = setup();
+    const input = holdInput(t, 20);
+    await reserve(t.deps(), input);
+    t.clock.now = input.expiresAt + KEY_EXPIRY_GRACE_MS + 1;
+    await sweepSpend(t.deps(), t.clock.now);
+    near(t.counter(LEARNING)?.committedUsd, 0);
+    expect(t.record(input.keyId)?.finalized).toBe(true);
+  });
+});
+
+describe("the ledger lines of keys that do not belong to a task", () => {
+  it("a page boundary falling on a learning line pages on without error (M3)", async () => {
+    // Every ledger line is keyed by a 64-hex key id, so the admin view's cursor check accepts it. The cursor is the sort key of the last line of a page.
+    const t = setup();
+    const input = t.input({ tags: { ...mintTagsFor({ payer: { kind: "project", project: "web" }, place: { project: "web" }, agentId: "learning", origin: "learning", operationId: "learning-op-1" }) } });
+    await reserve(t.deps(), input);
+    t.spend(input, 0.05);
+    await settleKey(t.deps(), t.orgId, input.keyId);
+    const line = t.ledger()[0]!;
+    expect(String(line.sk)).toMatch(/#[0-9a-f]{64}#\d{6}$/u);
+  });
+});

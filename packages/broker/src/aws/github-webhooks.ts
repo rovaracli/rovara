@@ -343,8 +343,8 @@ function mergedPullRequestEvents(
 }
 
 /** Who GitHub says merged each pull request that was read (a merged one only). */
-function observedMerges(reads: ReadonlyArray<{ pr: { repositoryId: string; number: number }; feedback: GitHubPullRequestFeedback }>): Array<{ repositoryId: string; number: number; mergedBy?: string | undefined }> {
-  return reads.map(({ pr, feedback }) => ({ repositoryId: pr.repositoryId, number: pr.number, mergedBy: feedback.pullRequest.mergedBy }));
+function observedMerges(reads: ReadonlyArray<{ pr: { repositoryId: string; number: number }; feedback: GitHubPullRequestFeedback }>): Array<{ repositoryId: string; number: number; mergedBy?: string | undefined; mergeCommit?: string | undefined }> {
+  return reads.map(({ pr, feedback }) => ({ repositoryId: pr.repositoryId, number: pr.number, mergedBy: feedback.pullRequest.mergedBy, mergeCommit: feedback.pullRequest.mergeCommit }));
 }
 
 /** How many times a save that lost only to another transaction on the same items (a hot item such as the project's month count) is tried again before it fails. */

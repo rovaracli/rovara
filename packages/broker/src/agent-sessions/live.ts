@@ -46,7 +46,7 @@ import { closableSession, newSessionRoleMemo, peopleOfItem, sessionActionsFor, s
 import { presenceIsFresh } from "./followers.js";
 import { approveLink, cursorKeyOf, openCursor, sealCursor, type SessionReadCaller, type SessionReadDependencies } from "./read.js";
 import { sessionFromItem } from "./store.js";
-import { chosenOwnerNames, withChosenOwnerName } from "./owner-names.js";
+import { ownerNameOverlay, ownerNamedAt } from "./owner-names.js";
 
 export type LiveDependencies = SessionReadDependencies;
 
@@ -358,7 +358,7 @@ async function readLive(deps: LiveDependencies, caller: SessionReadCaller, query
   const viewers = await readViewers(deps, orgId, nowMs, log);
 
   // Release 0.4.18: the owners' chosen names, one BatchGetItem for the page.
-  const ownerNames = await chosenOwnerNames(deps, page.map(({ access }) => access.effectiveOwner.developerId));
+  const ownerNames = await ownerNameOverlay(deps, page.map(({ access }) => access.effectiveOwner.developerId), orgId);
   const tiles: LiveTile[] = [];
   for (const { session, access } of page) {
     const { summary } = session;
@@ -371,7 +371,7 @@ async function readLive(deps: LiveDependencies, caller: SessionReadCaller, query
       title: access.owner ? session.title : hideEmailAddresses(session.title),
       ...(session.agent === undefined ? {} : { agent: session.agent }),
       ...(session.project === undefined ? {} : { project: session.project }),
-      owner: withChosenOwnerName(access.effectiveOwner, ownerNames),
+      owner: ownerNamedAt(access.effectiveOwner, ownerNames, access.effectiveOwnerWrittenAt),
       where: session.where.kind === "cloud" ? { kind: "cloud" } : { kind: "mac", label: session.where.label, offline: summary.offline === true },
       status: summary.status,
       statusWords: taskStatusText(sessionTaskStatus(summary)),

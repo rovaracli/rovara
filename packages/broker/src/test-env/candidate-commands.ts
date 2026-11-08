@@ -1,7 +1,7 @@
 // TE-2: the commands a test-environment proposal would add to a project's settings, and the lists a candidate check therefore runs. Pure, and used by both sides of the apply: the candidate check is prepared
 // from `candidateLists` (the settings' commands plus what the proposal adds), and the approval writes `commandsToApply` of the same proposal against the same settings. When the settings are the revision the
 // check ran against, the two are the same lists, so what is written is exactly what was proved.
-import { SETUP_TIMEOUT, TEST_TIMEOUT, agentXError, type ProjectCommand, type TestEnvApplyAnswer, type TestEnvironmentBody } from "@agentx/contracts";
+import { SETUP_TIMEOUT, TEST_TIMEOUT, agentXError, keepStoredOptions, type ProjectCommand, type TestEnvApplyAnswer, type TestEnvironmentBody } from "@agentx/contracts";
 import { refusedCommand } from "./draft.js";
 import { PROVED_CHECK_KINDS } from "./prove-from-setup-check.js";
 
@@ -43,21 +43,23 @@ export function commandsToApply(
 }
 
 /**
- * A command in the form the settings save stores it: the save writes each command as a line and reads it back, so a command's own `env` is dropped and its timeout becomes the list's (900 s for setup, 1800 s for
- * tests). The candidate check runs this form, so what it proves is what is written.
+ * A command in the form the settings save stores a NEW line: the save writes each command as a line and reads it back, so a command's own `env` is dropped and its timeout becomes the list's (900 s for setup,
+ * 1800 s for tests). A line that is already one of the stored commands is that stored command (see `keepStoredOptions`), so the save keeps its own timeout and env.
  */
 export const asSaved = (command: ProjectCommand, timeoutSeconds: number): ProjectCommand => ({ cwd: command.cwd, executable: command.executable, args: [...command.args], timeoutSeconds });
 
 /**
- * The lists the settings would hold once the proposal's commands are added: what the candidate check runs, and what an approval writes. The save rewrites a list only when the proposal adds to it (every command of
- * that list comes back in the saved form); a list it adds nothing to is left exactly as stored, env and timeout included, so the check runs what stays in the settings.
+ * The lists the settings would hold once the proposal's commands are added: what the candidate check runs, and what an approval writes. The save reads every line against the stored commands: a line that is one of
+ * them keeps its stored timeout, env and directory (so editing one command leaves the others as they are), any other line comes back in the saved form. A list the proposal adds nothing to is left exactly as stored.
+ * The check runs this form, so what it proves is what is written.
  */
 export function candidateLists(body: TestEnvironmentBody, current: { setup: readonly ProjectCommand[]; readiness: readonly ProjectCommand[] }, firstRepositoryPath: string, replace = false): { setup: ProjectCommand[]; readiness: ProjectCommand[] } {
   const plan = commandsToApply(body, current, firstRepositoryPath, replace);
-  // A replacing proposal: exactly its own commands, in the saved form (an empty list stays empty).
-  if (replace) return { setup: plan.setup.map((command) => asSaved(command, SETUP_TIMEOUT)), readiness: plan.readiness.map((command) => asSaved(command, TEST_TIMEOUT)) };
+  // A replacing proposal: exactly its own commands (an empty list stays empty); each one that is a stored command keeps that command's options.
+  if (replace) return { setup: keepStoredOptions(plan.setup.map((command) => asSaved(command, SETUP_TIMEOUT)), current.setup), readiness: keepStoredOptions(plan.readiness.map((command) => asSaved(command, TEST_TIMEOUT)), current.readiness) };
+  // Stored commands stay as stored; only the added ones are put in the saved form.
   const list = (stored: readonly ProjectCommand[], added: readonly ProjectCommand[], timeoutSeconds: number): ProjectCommand[] =>
-    added.length === 0 ? [...stored] : [...stored, ...added].map((command) => asSaved(command, timeoutSeconds));
+    added.length === 0 ? [...stored] : [...stored, ...added.map((command) => asSaved(command, timeoutSeconds))];
   return { setup: list(current.setup, plan.setup, SETUP_TIMEOUT), readiness: list(current.readiness, plan.readiness, TEST_TIMEOUT) };
 }
 

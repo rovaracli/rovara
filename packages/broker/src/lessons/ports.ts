@@ -1,6 +1,6 @@
 // Learning v2: the seams of the learning lane. The record core (R-lanes), storage and ingest are built in parallel; each interface here is what this
 // lane needs from them, with an in-memory stand-in in the tests. Nothing here talks to AWS.
-import type { LessonStage } from "@agentx/contracts";
+import type { LessonStage, LessonsPauseCode } from "@agentx/contracts";
 import type { Lesson, LessonAuditAction, IdentitySet } from "./types.js";
 
 export type Clock = () => number;
@@ -8,9 +8,15 @@ export type Clock = () => number;
 /**
  * A model call for the learning pipeline (reflector, curator judge, outcome judge). It takes text and returns text: there is no field for tools, so a
  * pipeline model cannot act (control C4). The caller validates the text against a schema and drops it on any failure.
+ * `costUsd` is an UPPER BOUND on what the call cost (the cap its key holds), not a measurement: the real figure is settled later from the proxy.
  */
 export interface PipelineModel {
-  complete(request: { purpose: "reflect" | "judge" | "distill" | "outcome"; system: string; user: string; maxOutputTokens: number; workspaceId: string }): Promise<{ text: string; costUsd: number; model: string }>;
+  /**
+   * What a call of this size would hold, before it is made (lessons in production, lane 1b): the cheapest suitable model's worst-case price for this prompt and `maxOutputTokens`, or the fixed code of why learning
+   * cannot run (no provider, every model forbidden, the budgets cannot cover it, the cheapest model costs too much). Reads and writes nothing of the call's. Absent: the caller uses its own fixed estimate.
+   */
+  quote?(request: { purpose: "reflect" | "judge" | "distill" | "outcome"; system: string; user: string; maxOutputTokens: number; workspaceId: string; project?: string }): Promise<{ ok: true; usd: number } | { ok: false; code: LessonsPauseCode }>;
+  complete(request: { purpose: "reflect" | "judge" | "distill" | "outcome"; system: string; user: string; maxOutputTokens: number; workspaceId: string; /** The project the call is for: the company's own model route is chosen per project. A model that routes per project refuses a call without one. */ project?: string; /** The most the call may cost, in US dollars: the amount `LearningSpend.admit` was asked about. The model's key holds exactly this much (never more). Absent: the model's own default. */ budgetUsd?: number }): Promise<{ text: string; costUsd: number; model: string }>;
 }
 
 export interface Embedder { embed(text: string): Promise<number[]> }
@@ -23,12 +29,17 @@ export interface LessonVectors {
 }
 
 /**
- * Spend for learning. `admit` asks the customer's own limits (org and member budgets) whether a call of about `estimateUsd` may start; `charge` records
- * what was spent, on the org's ledger under the learning line. Enterprise has no learning caps of its own, only these limits (decision Q8).
+ * Spend for learning. `admit` is the cheap look before a model call: whether the company's own learning limit (Public: $20 a month) has room for a call of about `estimateUsd`. It holds nothing and writes nothing.
+ * The money itself is held and booked by the model's key, in the company's spend ledger (`PipelineModel.complete` mints and reserves it, the ordinary sweep settles and finalizes it), so a call that failed or
+ * crashed still holds its cap until it is settled. Enterprise has no learning cap of its own, only the company's existing budgets (decision Q8).
  */
 export interface LearningSpend {
   admit(workspaceId: string, estimateUsd: number): Promise<boolean>;
-  charge(workspaceId: string, project: string, usd: number, purpose: string): Promise<void>;
+  /**
+   * The same look with the reason when it refuses (lane 1b): `month_full` (the company's learning month has no room), `too_large` (one call of this size cannot fit the month's whole cap) or `unreadable` (the counter
+   * could not be read: a fault, not a limit). Absent: the caller asks `admit` and reads a refusal as `month_full`.
+   */
+  look?(workspaceId: string, estimateUsd: number): Promise<"ok" | "month_full" | "too_large" | "unreadable">;
 }
 
 export interface LessonAuditEvent {
@@ -37,7 +48,15 @@ export interface LessonAuditEvent {
   facts: Record<string, string | number | boolean>;
 }
 /** `required`: the event grants something (`requireAudit`), so a sink that has no ledger name for it must FAIL (throw) instead of passing without a record. */
-export interface LessonAuditSink { emit(event: LessonAuditEvent, options?: { required?: boolean }): Promise<void> }
+export interface LessonAuditSink {
+  emit(event: LessonAuditEvent, options?: { required?: boolean }): Promise<void>;
+  /**
+   * The event as items for the CALLER's own DynamoDB transaction (lane 1b): the audit's pending item, to be written in the same `TransactWrite` as the change it records, so the change and its audit line commit
+   * together or not at all. `sent` flushes the committed event to the ledger's queue afterwards (it never throws into the caller). Throws when the event has no ledger name or the install has no ledger.
+   * Absent: the sink can only `emit` after the fact, and a caller that needs both in one transaction refuses.
+   */
+  stage?(event: LessonAuditEvent): { items: unknown[]; sent(): Promise<void> };
+}
 export interface AlertSink { alert(workspaceId: string, project: string, code: "source_spike_paused" | "project_volume_spike" | "lesson_contradiction" | "retire_proposed"): Promise<void> }
 export interface Metrics { count(name: string, tags?: Record<string, string>): void }
 

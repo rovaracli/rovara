@@ -213,6 +213,54 @@ describe("ordered work approval digest (Spec059)", () => {
     expect(observed.structuredContent).toMatchObject({ workflow: { revision: 7, approval_document: { sha256: "b".repeat(64) }, work_breakdown_digest: taskGraphDigest(graph) } });
   });
 
+  describe("QA6-12b: the plan-approval tool shows and takes the run limit it raises", () => {
+    const workflow = { stage: "PLAN_REVIEW", state: "WAITING", revision: 5, path: "QUICK", reviewPhase: "PLAN",
+      artifacts: [{ id: "plan-artifact", type: "plan", version: 1, sha256: "d".repeat(64), producer: "agentx", objectKey: "plan.json", createdAt: "2026-10-12T12:00:00.000Z" }] } as never;
+    const approve = { task_id: TASK, request_id: "33333333-3333-4333-8333-333333333336", expected_revision: 5, decision: "APPROVE", reason: "Approved", artifact_digest: "d".repeat(64) };
+    it("the tool's description and input name the amount to pass back", async () => {
+      const tool = DEVELOPER_TOOLS.find((candidate) => candidate.name === "agentx_decide_workflow")!;
+      expect(tool.description).toContain("This raises the run limit from $A to $B");
+      expect(tool.description).toContain("acknowledged_run_limit_usd");
+      expect(Object.keys(tool.inputSchema)).toContain("acknowledged_run_limit_usd");
+    });
+    it("the plan it returns says 'This raises the run limit from $A to $B' in its text and its structure when approving raises the limit, and nothing when it does not", async () => {
+      const raising = await (await connect({ getTask: async () => view("SUCCEEDED", { workflow, planRunLimit: { currentUsd: 2, proposedUsd: 12.5, raises: true } }) })).callTool({ name: "agentx_get_task", arguments: { task_id: TASK } });
+      expect(text(raising)).toContain("This raises the run limit from $2 to $12.50.");
+      expect(text(raising)).toContain("acknowledged_run_limit_usd 12.5");
+      expect(raising.structuredContent).toMatchObject({ run_limit_change: { current_usd: 2, proposed_usd: 12.5, raises: true, text: "This raises the run limit from $2 to $12.50" } });
+      const flat = await (await connect({ getTask: async () => view("SUCCEEDED", { workflow, planRunLimit: { currentUsd: 12, proposedUsd: 12, raises: false } }) })).callTool({ name: "agentx_get_task", arguments: { task_id: TASK } });
+      expect(text(flat)).not.toContain("raises the run limit");
+      expect(text(flat)).not.toContain("acknowledged_run_limit_usd");
+      expect(flat.structuredContent).toMatchObject({ run_limit_change: { raises: false } });
+      expect((flat.structuredContent as Record<string, unknown>).run_limit_change).not.toHaveProperty("text");
+      const none = await (await connect({ getTask: async () => view("SUCCEEDED", { workflow }) })).callTool({ name: "agentx_get_task", arguments: { task_id: TASK } });
+      expect(none.structuredContent).not.toHaveProperty("run_limit_change");
+    });
+    it("passes the amount to the broker on APPROVE only; Request changes and an approval without it send none", async () => {
+      const decideWorkflowTask = vi.fn(async (...args: Parameters<ControlPlaneClient["decideWorkflowTask"]>) => { void args; return view("RUNNING", { workflow }); });
+      const mcp = await connect({ decideWorkflowTask });
+      expect((await mcp.callTool({ name: "agentx_decide_workflow", arguments: { ...approve, acknowledged_run_limit_usd: 12.5 } })).isError).not.toBe(true);
+      expect(decideWorkflowTask.mock.calls.at(-1)?.[1]).toMatchObject({ decision: "APPROVE", acknowledgedRunLimitUsd: 12.5 });
+      await mcp.callTool({ name: "agentx_decide_workflow", arguments: approve });
+      expect(decideWorkflowTask.mock.calls.at(-1)?.[1]).not.toHaveProperty("acknowledgedRunLimitUsd");
+      await mcp.callTool({ name: "agentx_decide_workflow", arguments: { ...approve, request_id: "33333333-3333-4333-8333-333333333337", decision: "REQUEST_CHANGES", acknowledged_run_limit_usd: 12.5 } });
+      expect(decideWorkflowTask.mock.calls.at(-1)?.[1]).not.toHaveProperty("acknowledgedRunLimitUsd");
+    });
+    it("a refusal for a missing or wrong amount reaches the model with the broker's words (the amounts)", async () => {
+      const words = "This raises the run limit from $2 to $12. Approve again with the run limit acknowledged as $12 (acknowledgedRunLimitUsd 12).";
+      const decideWorkflowTask = vi.fn(async () => { throw new ToolError("INVALID_REQUEST", words); });
+      const result = await (await connect({ decideWorkflowTask: decideWorkflowTask })).callTool({ name: "agentx_decide_workflow", arguments: approve });
+      expect(result.isError).toBe(true);
+      expect(text(result)).toContain("This raises the run limit from $2 to $12.");
+    });
+    it("a negative or absurd amount is not accepted as an argument", async () => {
+      const decideWorkflowTask = vi.fn(async () => view("RUNNING", { workflow }));
+      const mcp = await connect({ decideWorkflowTask: decideWorkflowTask });
+      for (const bad of [-1, 100_001, "12"]) expect((await mcp.callTool({ name: "agentx_decide_workflow", arguments: { ...approve, acknowledged_run_limit_usd: bad } })).isError, String(bad)).toBe(true);
+      expect(decideWorkflowTask).not.toHaveBeenCalled();
+    });
+  });
+
   it("leaves the work breakdown digest out of the text when the plan has none, and shows nothing to approve once the gate is past", async () => {
     const plain = { stage: "PLAN_REVIEW", state: "WAITING", revision: 4, path: "QUICK", reviewPhase: "PLAN",
       artifacts: [{ id: "plan-artifact", type: "plan", version: 1, sha256: "c".repeat(64), producer: "agentx", objectKey: "plan.json", createdAt: "2026-10-12T12:00:00.000Z" }] } as never;

@@ -26,6 +26,45 @@ describe("draftCommandLists", () => {
   });
 });
 
+describe("draftCommandLists keeps each unchanged command's own options", () => {
+  const three = StoredProjectDefinitionSchema.parse({
+    name: "web", revision: 3,
+    repositories: [{ name: "web", url: "https://github.com/acme/web.git", path: "repo/web", defaultBranch: "main", credentialRef: "github-app" }],
+    setup: [
+      { cwd: "repo/web", executable: "make", args: ["one"], timeoutSeconds: 111, env: { A: "1" } },
+      { cwd: "repo/web", executable: "make", args: ["two"], timeoutSeconds: 222, env: { B: "2" } },
+      { cwd: "repo/web", executable: "make", args: ["three"], timeoutSeconds: 333 },
+    ],
+    readiness: [{ cwd: "repo/web", executable: "make", args: ["old-test"], timeoutSeconds: 1800 }], orchestratorInstructions: "Delegate work.",
+  });
+  it("edit one of three: the other two keep their timeout and env, the edited one takes the defaults", () => {
+    const lists = draftCommandLists(three, { setupCommands: ["make one", "make two-changed", "make three"] });
+    expect(lists.setup[0]).toEqual(three.setup[0]);
+    expect(lists.setup[1]).toEqual({ cwd: "repo/web", executable: "make", args: ["two-changed"], timeoutSeconds: 900 });
+    expect(lists.setup[2]).toEqual(three.setup[2]);
+  });
+  it("reorder: each command keeps its own options, and the list still differs from the stored one (so it is proved)", () => {
+    const lists = draftCommandLists(three, { setupCommands: ["make three", "make one", "make two"] });
+    expect(lists.setup).toEqual([three.setup[2], three.setup[0], three.setup[1]]);
+    expect(draftCommandsDigest(lists)).not.toBe(draftCommandsDigest({ setup: [...three.setup], readiness: [...three.readiness] }));
+  });
+  it("delete: the rest keep their options, and the list differs from the stored one", () => {
+    const lists = draftCommandLists(three, { setupCommands: ["make one", "make three"] });
+    expect(lists.setup).toEqual([three.setup[0], three.setup[2]]);
+    expect(draftCommandsDigest(lists)).not.toBe(draftCommandsDigest({ setup: [...three.setup], readiness: [...three.readiness] }));
+  });
+  it("the same lines, spelled with other spacing or quotes, are the stored commands; a repeated line uses each stored command once", () => {
+    expect(draftCommandLists(three, { setupCommands: ["make   'one'", "make two", "make three"] }).setup).toEqual([...three.setup]);
+    const twice = draftCommandLists(three, { setupCommands: ["make one", "make one"] }).setup;
+    expect(twice[0]).toEqual(three.setup[0]);
+    expect(twice[1]).toEqual({ cwd: "repo/web", executable: "make", args: ["one"], timeoutSeconds: 900 });
+  });
+  it("a line is never given another command's env", () => {
+    const lists = draftCommandLists(three, { setupCommands: ["make two --flag"] });
+    expect(lists.setup).toEqual([{ cwd: "repo/web", executable: "make", args: ["two", "--flag"], timeoutSeconds: 900 }]);
+  });
+});
+
 describe("a dev container in the batch", () => {
   it("is part of the lists as the save stores it (the repository by its project name) and of the digest", () => {
     const plain = draftCommandLists(definition, { setupCommands: ["npm ci"] });

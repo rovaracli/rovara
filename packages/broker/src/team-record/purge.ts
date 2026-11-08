@@ -54,6 +54,12 @@ export interface PurgeDependencies {
    * keeps no attribution (the broker that writes it supplies this; `wiring/enterprise-identity.ts` `attributionErasure`).
    */
   attribution?: { erase(orgId: OrgId, developerId: string): Promise<unknown> } | undefined;
+  /**
+   * ERASE-NAME-1: the erasure of the name a person chose and the name their sign-in record holds (`developer/erase-name.ts`): the chosen name's State item becomes a tombstone that every reader of a name
+   * resolves to "A former member", and the sign-in record's name becomes the placeholder. Throws when the sign-in record could not be cleared (the step then reports unfinished and the next run repeats it).
+   * Absent: the install keeps no such names to erase (the broker supplies this).
+   */
+  names?: { erase(developerId: string): Promise<void> } | undefined;
   now?: (() => number) | undefined;
   log?: RecordLog | undefined;
 }

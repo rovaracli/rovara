@@ -73,7 +73,8 @@ describe("an admin looks at AgentX from an AI tool (US5)", () => {
     expect((await mcp.tool("agentx_admin_list_credentials")).value).toMatchObject({ references: expect.any(Array) as unknown });
     const sentByTools = harness.db.commandNames().slice(sentBefore);
     expect(sentByTools.length).toBeGreaterThan(0);
-    expect([...new Set(sentByTools)].sort()).toEqual(["GetCommand", "QueryCommand"]);
+    // reads only (a name lookup is a BatchGetItem, ERASE-NAME-2)
+    expect([...new Set(sentByTools)].sort()).toEqual(["BatchGetCommand", "GetCommand", "QueryCommand"]);
   });
 
   it("lists the admin read tools in the first tools/list after connecting, for a client that lists once (issue 203)", async () => {

@@ -17,6 +17,8 @@ import {
   type ChannelMembersRequest,
   type ChannelMembersResponse,
   type EndDeveloperSessionsRequest,
+  type EraseDeveloperNameRequest,
+  type EraseDeveloperNameResponse,
   type EndDeveloperSessionsResponse,
   type RealtimeTokenAnswer,
   type RealtimeTokenRequest,
@@ -54,7 +56,7 @@ type IdentityRefusal = typeof SLACK_UNAVAILABLE | { ok: false; error: "invalid_r
  */
 async function identityInvoke<T>(
   invoke: (payload: Uint8Array) => Promise<ChannelMembersInvokeResult>,
-  request: ChannelMembersRequest | TaskPersonProofRequest | TaskChannelPeopleRequest | ChannelInfoRequest | ChannelClassRequest | ChannelListRequest | MemberChannelsRequest | SlackUserByEmailRequest | SlackAuthCheckRequest | EndDeveloperSessionsRequest | UnlinkIdentityRequest | StartIdentityLinkRequest | ChannelByNameRequest | RealtimeTokenRequest,
+  request: ChannelMembersRequest | TaskPersonProofRequest | TaskChannelPeopleRequest | ChannelInfoRequest | ChannelClassRequest | ChannelListRequest | MemberChannelsRequest | SlackUserByEmailRequest | SlackAuthCheckRequest | EndDeveloperSessionsRequest | EraseDeveloperNameRequest | UnlinkIdentityRequest | StartIdentityLinkRequest | ChannelByNameRequest | RealtimeTokenRequest,
   readReply: (reply: Record<string, unknown>) => T | undefined,
   event: string,
 ): Promise<T | IdentityRefusal> {
@@ -264,6 +266,22 @@ export function endDeveloperSessionsThroughLambda(invoke: (payload: Uint8Array) 
       if (reply.ok === false && reply.error === "not_found") return { ok: false, error: "not_found" };
       return undefined;
     }, "developer.end_sessions");
+    if (answer.ok || answer.error === "not_found" || answer.error === "invalid_request") return answer;
+    return { ok: false, error: "unavailable" };
+  };
+}
+
+/**
+ * ERASE-NAME-1: asks DeveloperIdentity to clear the name a person's sign-in record holds (the broker has no write on that table). A not_found reply is an answer (the person never signed in); every
+ * other failure is unavailable, and the erase is repeated.
+ */
+export function eraseDeveloperNameThroughLambda(invoke: (payload: Uint8Array) => Promise<ChannelMembersInvokeResult>): (request: EraseDeveloperNameRequest) => Promise<EraseDeveloperNameResponse> {
+  return async (request) => {
+    const answer = await identityInvoke(invoke, request, (reply): EraseDeveloperNameResponse | undefined => {
+      if (reply.ok === true) return { ok: true };
+      if (reply.ok === false && reply.error === "not_found") return { ok: false, error: "not_found" };
+      return undefined;
+    }, "developer.erase_name");
     if (answer.ok || answer.error === "not_found" || answer.error === "invalid_request") return answer;
     return { ok: false, error: "unavailable" };
   };

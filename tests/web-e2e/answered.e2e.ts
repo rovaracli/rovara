@@ -24,7 +24,8 @@ test("shows the answer of an Answered task, then makes the change anyway with th
  await page.getByRole("button", { name: "Make a change anyway" }).focus();await expect(page.getByRole("button", { name: "Make a change anyway" })).toBeFocused();
  await page.keyboard.press("Enter");
  await expect(page).toHaveURL(new RegExp("/app/sessions/" + next + "$"));
- await expect(page.getByText("Building").first()).toBeVisible();
+ // The new task starts at Understand, so the status model reads "Understanding the request" (the mock's new session is understandSession, display "understanding").
+ await expect(page.getByRole("region", { name: "Work progress" }).getByText("Understanding the request", { exact: true })).toBeVisible();
  const posts = ((await (await request.get("/__mock/requests")).json()) as Array<{ method: string; path: string; body?: unknown }>).filter(row => row.method === "POST" && row.path.endsWith("/change-anyway"));
  expect(posts).toHaveLength(1);
  expect(posts[0]!.path).toBe("/v1/web/sessions/" + id + "/change-anyway");

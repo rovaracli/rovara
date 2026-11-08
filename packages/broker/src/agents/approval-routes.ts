@@ -15,7 +15,7 @@ import { endOfFailure, settleSession, type DecisionEnd } from "../developer/deci
 import { sameMember } from "./lifecycle.js";
 import { requestIdFor } from "./approval-decide-kind.js";
 import { decideWriteApproval } from "./write-gate.js";
-import { chosenOwnerNames, withChosenOwnerName } from "../agent-sessions/owner-names.js";
+import { ownerNameOverlay, ownerNamedAt } from "../agent-sessions/owner-names.js";
 
 const APPROVALS_PATH = /^\/v1\/app\/approvals(?:\/([^/]+)(?:\/(decide|confirm-link))?)?$/;
 // Only PENDING approvals are in a person's list: a record that ended PENDING is taken out of it.
@@ -39,9 +39,10 @@ function jsonBody(request: AdaptedHttpRequest): unknown {
  */
 export async function withChosenOwners(deps: Pick<ApprovalDependencies, "documentClient" | "tableName">, records: AnyApprovalRecord[]): Promise<AnyApprovalRecord[]> {
   const owners = records.flatMap((record) => (record.kind === "change" || record.owner === undefined ? [] : [record.owner.developerId]));
-  const names = await chosenOwnerNames(deps, owners);
-  if (names.size === 0) return records;
-  return records.map((record) => (record.kind === "change" || record.owner === undefined ? record : { ...record, owner: withChosenOwnerName(record.owner, names) }));
+  const overlay = await ownerNameOverlay(deps, owners, records[0]?.orgId);
+  if (overlay.chosen.size === 0 && overlay.replaced.size === 0) return records;
+  // ERASED-REJOIN-NAME: the owner's name is read as of the approval's own time.
+  return records.map((record) => (record.kind === "change" || record.owner === undefined ? record : { ...record, owner: ownerNamedAt(record.owner, overlay, record.createdAt) }));
 }
 
 /** A record as a page lists it. The arguments of a write are shown only with `includeArguments` (to one approval's viewers, not in a list). */

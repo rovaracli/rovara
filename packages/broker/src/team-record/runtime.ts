@@ -19,8 +19,8 @@ import { latestRevision } from "../org/project-settings.js";
 import { OrgStore } from "../org/store.js";
 import { resolveSlackOrg } from "../org/resolve.js";
 import { orgOfInstallation, projectsOf as projectsOfRepository } from "../triggers/github-events.js";
-import { findLinkedChangeRequest } from "../rovara-code/linked-change-requests.js";
-import { taskKey, type DeveloperTaskRecord } from "../developer/task-records.js";
+import { createRovaraPullRequestIndex } from "../rovara-code/rovara-pull-request-index.js";
+import type { DeveloperTaskRecord } from "../developer/task-records.js";
 import { athenaPort, bedrockInvokeModelPort, s3VectorsPortFromCredentials, type SdkLoader } from "./aws-adapters.js";
 import { DynamoLessonStore } from "../lessons/dynamo-store.js";
 import { lessonDeletionPort } from "../lessons/deletion.js";
@@ -41,7 +41,7 @@ import { tableLakeDeleteQueue } from "./lake-queue.js";
 import { tableModeReader, type LearningModeReader } from "./mode.js";
 import { buildRecordCaller, handleRecordRoute, type RecordRouteReply } from "./routes.js";
 import { dynamoRateLimiter, type RecordQueryDependencies } from "./query.js";
-import type { SourceRouteDependencies, SourceWriteContext } from "./source-write.js";
+import { realRefusalFloor, type SourceRouteDependencies, type SourceWriteContext } from "./source-write.js";
 import { createCaptureModePort, createRecordSink, createSourceConfigPort, NOTES_OPT_IN_FROM_SOURCE_ROW, type RecordSink } from "./sink.js";
 import { createOpConsumer, type QueueRecord } from "./sources/queue.js";
 import { TEAM_RECORD_REMOVAL_SOURCE, type DeadLetterPort, type OpsQueue, type RemovalFallback, type RemovalFallbackEvent } from "./ops-queue.js";
@@ -54,7 +54,8 @@ import { priorEditsPort } from "./prior-edits.js";
 import { trackerPlaceCheck, trackerPlaceOptions } from "./source-places.js";
 import { createGithubRecordTap, createHookRecordTap, createRecordParentLookup, createRovaraEmitter, createSlackRecordTap, createTicketRecorder, type ActorResolverPort, type RovaraEmitter, type TaskVisibility, type SlackChannelInfo, type SlackDirectoryPort } from "./sources/index.js";
 import { createSlackAdd, type SlackAddService } from "./slack-add.js";
-import { runStats, type StatsDeps } from "./stats-templates.js";
+import { tableTaskVisibilityPort } from "./live-audience-port.js";
+import { listRovaraTaskIds, runStats, type StatsDeps } from "./stats-templates.js";
 import { expireRawText } from "./text-expiry.js";
 import { createTransientDistiller } from "./transient-distiller.js";
 import { createAssume, createStsAssumePort, openWorkspaceIndex, WorkspaceVectorPorts, type StsAssumePort } from "./vector-access.js";
@@ -62,6 +63,7 @@ import { chooseVectorBucketForNewWorkspace, type VectorIndex } from "./vectors.j
 import type { S3VectorsIndex } from "./s3-vectors-index.js";
 import type { DistillModel } from "./distill.js";
 import type { PurgeDependencies } from "./purge.js";
+import { FORMER_MEMBER_NAME } from "../developer/chosen-name.js";
 import { readOpsFailures, recordOpsFailure, type OpsFailures } from "./ops-failures.js";
 import type { RecordLog, RecordVectorPort, TeamRecordTable } from "./types.js";
 import { RedeliveryStateConflict, runGithubRedelivery, type DeliveriesPort, type RedeliveryState } from "./github-redelivery.js";
@@ -124,6 +126,8 @@ export interface TeamRecordRuntimeInput {
    * keeps only the person's label tag).
    */
   namesOf?: (developerId: string) => Promise<string[]>;
+  /** ERASE-NAME-1: erases the name the person chose and the one their sign-in record holds (`developer/erase-name.ts`); run as the erase's `names` step. Absent: that step has nothing to do. */
+  nameErasure?: { erase(developerId: string): Promise<void> };
   /** The key the erased person's aliases are hashed with (`askAliasHashKey(callbackSigningKey)`, LA-5). Absent: only the person's label tag is kept for Ask scrubbing, never a raw alias. */
   askAliasKey?: string;
   /** Where the record's own audit events go (record.tombstoned, record.erased, lesson.withdrawn). Absent: none are written. */
@@ -493,6 +497,7 @@ export function createTeamRecordRuntime(input: TeamRecordRuntimeInput): TeamReco
       table, lakeQueue, now, log, lessons: lessons as never, ...(input.audit === undefined ? {} : { audit: input.audit }),
       ...(vectors === undefined ? {} : { vectors: vectors as unknown as RecordVectorPort }), projects: { projects: projectsOf },
       ...(input.askAliasKey === undefined ? {} : { askAliasKey: input.askAliasKey }),
+      ...(input.nameErasure === undefined ? {} : { names: input.nameErasure }),
     };
   }
 
@@ -539,21 +544,8 @@ export function createTeamRecordRuntime(input: TeamRecordRuntimeInput): TeamReco
     if (projects.length === 0) return undefined;
     return projects.length === 1 ? { workspaceId: orgId, project: projects[0]! } : { workspaceId: orgId };
   };
-  const rovaraPrs = {
-    async byNumber({ workspaceId, host, repo, number }: { workspaceId: string; host: string; repo: string; number: number }) {
-      if (host !== "github") return undefined;
-      const linked = await findLinkedChangeRequest(state, { hostKind: "github", repositoryAddress: `https://github.com/${repo}`, id: String(number) });
-      // The link must belong to THIS workspace: a pull request number is only unique inside a repository, and a repository belongs to one org's installation.
-      if (linked === undefined || linked.workspaceId === undefined) return undefined;
-      const task = ((await input.documentClient.send(new GetCommand({ TableName: state.tableName, Key: taskKey(linked.taskId), ConsistentRead: true }))) as { Item?: DeveloperTaskRecord }).Item;
-      if (task === undefined || task.orgId !== workspaceId) return undefined;
-      const entry = task.workflow?.pullRequests?.find((pullRequest) => pullRequest.number === number && pullRequest.url === linked.url);
-      if (entry?.headSha === undefined) return undefined;
-      return { taskId: task.taskId, project: task.project, number, url: linked.url, candidateHeadSha: entry.headSha };
-    },
-    // The merge commit of a Rovara pull request is not kept anywhere yet, so a revert named by commit cannot be matched to a task (see the lane report).
-    async byMergeCommit() { return undefined; },
-  };
+  // Rovara's own pull requests, by number (the task's reverse link) and by merge commit (the index written when the merge is recorded, SRL-3): `rovara-code/rovara-pull-request-index.ts`.
+  const rovaraPrs = createRovaraPullRequestIndex({ documentClient: input.documentClient, tableName: state.tableName });
   const priorEdits = priorEditsPort(table, now);
   // Per-editor rows: every change is its own row under the person who made it, and the sink counts a change whose person is not linked (`author_not_linked`).
   // A repository deleted or transferred also marks its source row `failing` (health only: no new revision, see `markSourceFailing`).
@@ -580,9 +572,14 @@ export function createTeamRecordRuntime(input: TeamRecordRuntimeInput): TeamReco
     return {
       table, modes, embedder, now, log,
       limiter: dynamoRateLimiter(table, now),
+      // SRL-4: rows about a Rovara task are also checked against the task's live visibility (State table), so narrowing a task hides its old rows.
+      taskVisibility: tableTaskVisibilityPort({ documentClient: input.documentClient, tableName: state.tableName, now }),
       skipped: { read: (org, project) => skipped.read(org, project) },
       ...(vectors === undefined ? {} : { vectorSearch: { query: (request) => (vectors as VectorIndex).query(request) } }),
-      ...(stats === undefined ? {} : { stats: { run: async ({ template, workspaceId, project, params }) => (await runStats(stats, { workspaceId, project, audience: "project" } as never, template, params)).rows } }),
+      ...(stats === undefined ? {} : { stats: {
+        run: async ({ template, workspaceId, project, params, onlyTaskIds, nowMs }) => (await runStats(stats, { workspaceId, project, audience: "project" } as never, template, params, { ...(onlyTaskIds === undefined ? {} : { onlyTaskIds }), ...(nowMs === undefined ? {} : { nowMs }) })).rows,
+        rovaraTasks: async ({ template, workspaceId, project, params }) => listRovaraTaskIds(stats, { workspaceId, project, audience: "project" } as never, template, params),
+      } }),
     };
   }
 
@@ -601,6 +598,8 @@ export function createTeamRecordRuntime(input: TeamRecordRuntimeInput): TeamReco
     },
     // Slack: the workspace must be the one the company bound (the binding the tap resolves); the channel itself is read live through the request's own context. Linear and Jira: the connected apps list the place.
     ...(input.slackUserIdsOf === undefined ? {} : { slackUserIdsOf: input.slackUserIdsOf }),
+    // SRL-14: a web editor's refused Slack add takes the same time whether or not the channel exists.
+    refusalFloor: realRefusalFloor(),
     slackTeamBound: async (orgId, teamId) => (await new OrgStore({ documentClient: input.documentClient, tableName: state.tableName, now }).orgForSlackTeam(teamId)) === orgId,
     ...(input.trackers === undefined ? {} : { trackerPlace: trackerPlaceCheck(input.trackers, { now }), trackerOptions: trackerPlaceOptions(input.trackers) }),
     pausedSources: async (orgId, project) => Object.keys((await new DynamoLessonStore(table, now).flags({ workspaceId: orgId, project })).pausedSources ?? {}),
@@ -735,10 +734,11 @@ export function createTeamRecordRuntime(input: TeamRecordRuntimeInput): TeamReco
     }
     // A project's erase also settles first (TRW-5 S4): done once, then done again after the cache's minute, and only then finished.
     if (job.kind === "project" && job.settleAt !== undefined && now() < job.settleAt) return false;
-    const names = job.kind === "person" ? await personNames(job.developerId) : [];
+    const read = job.kind === "person" ? await personNames(job.developerId) : { names: [], unread: false };
+    const names = read.names;
     let complete = job.kind === "project"
       ? (await eraseProject(deps, orgId, job.project, job.cause, `${job.cause}:${job.project}`, budget)).complete
-      : (await erasePerson(deps, orgId, { developerId: job.developerId, projects: job.projects, ...(job.identities.length === 0 ? {} : { identities: job.identities }), ...(names.length === 0 ? {} : { names }) }, `erase:${job.developerId}`, budget)).complete;
+      : (await erasePerson(deps, orgId, { developerId: job.developerId, projects: job.projects, ...(job.identities.length === 0 ? {} : { identities: job.identities }), ...(names.length === 0 ? {} : { names }), ...(read.unread ? { namesUnread: true } : {}) }, `erase:${job.developerId}`, budget)).complete;
     if (complete && job.kind === "project" && job.settleAt === undefined) { await saveJob(orgId, { ...job, settleAt: now() + SETTLE_MS }); complete = false; }
     if (complete) {
       // TRW-4: the person's links go with their rows. Only when the whole erase finished, so a pass that did not finish still knows which author ids to look for.
@@ -749,14 +749,14 @@ export function createTeamRecordRuntime(input: TeamRecordRuntimeInput): TeamReco
     }
     return complete;
   }
-  /** The names the person is known by, for the Ask scrub (LI-2): read now, bounded, never kept in the job. A read that fails gives none (the erase is never held up for it). */
-  async function personNames(developerId: string): Promise<string[]> {
-    if (input.namesOf === undefined) return [];
+  /** The names the person is known by, for the Ask scrub (LI-2): read now, bounded, never kept in the job. A read that fails gives none and says so (the erase is not held up for it; only the `names` step waits, so the retry hashes them before they go). */
+  async function personNames(developerId: string): Promise<{ names: string[]; unread: boolean }> {
+    if (input.namesOf === undefined) return { names: [], unread: false };
     try {
-      return [...new Set((await input.namesOf(developerId)).map((name) => name.trim()).filter((name) => name !== "" && name.length <= 200))].slice(0, 10);
+      return { names: [...new Set((await input.namesOf(developerId)).map((name) => name.trim()).filter((name) => name !== "" && name !== FORMER_MEMBER_NAME && name.length <= 200))].slice(0, 10), unread: false };
     } catch {
       log("record.erase_names_unreadable", {});
-      return [];
+      return { names: [], unread: true };
     }
   }
   /** The source identities a person has: their linked GitHub account, and each Slack user id they signed in with in every Slack team bound to the org (a Slack row is indexed under `slack:<team>`). */

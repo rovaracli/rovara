@@ -79,6 +79,12 @@ it("retries the session once with a request id and uses the actual returned sess
  const f = setup({ cards: [{ ...cards[1], sessionId, buttons: [{ action: "retry", label: "Retry", method: "POST", href: "https://cell.example/v1/app/sessions/" + sessionId + "/retry" }] }], total: 1 }, "light", 200, sent);
  const navigate = vi.spyOn(f.host, "navigate"), button = await screen.findByRole("button", { name: "Retry" });fireEvent.click(button);fireEvent.click(button);await waitFor(() => expect(navigate).toHaveBeenCalledWith("/app/sessions/" + returned));expect(sent).toHaveBeenCalledTimes(1);expect(f.request.mock.calls.find(([request]) => request.method === "POST")?.[0].body).toMatchObject({ requestId: expect.stringMatching(/^[0-9a-f-]{36}$/u) as unknown });f.close();
 });
+it("a waiting ticket's Start on Home opens the started task at the one task address (/app/sessions, UX2), not the old /s/ address", async () => {
+ const item = "a".repeat(32), started = "ses_" + "c".repeat(20), path = `/v1/app/projects/web/intake/${item}/start`, sent = vi.fn(async () => ({ status: 200, body: { started: true, sessionId: started } }));
+ const f = setup({ cards: [{ cardId: `waiting_ticket:ph_${"0".repeat(24)}_${item}`, kind: "waiting_ticket", title: "Jira PAY-12: Refunds fail", reason: "Waiting", at: "2026-11-07T10:00:00.000Z", buttons: [{ action: "start", label: "Start", method: "POST", href: "https://cell.example" + path }] }], total: 1 }, "light", 200, sent);
+ const navigate = vi.spyOn(f.host, "navigate");fireEvent.click(await screen.findByRole("button", { name: "Start" }));
+ await waitFor(() => expect(navigate).toHaveBeenCalledWith("/app/sessions/" + started));expect(navigate).toHaveBeenCalledTimes(1);expect(sent).toHaveBeenCalledTimes(1);f.close();
+});
 it("hides cross-origin writes, mismatched targets and unsupported start destinations", async () => {
  const f = setup({ cards: [{ ...cards[1], sessionId, buttons: [
  { action: "dismiss", label: "Foreign dismiss", method: "POST", href: "https://other.example/v1/app/home/cards/failure%3Asecond/dismiss" },

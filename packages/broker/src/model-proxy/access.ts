@@ -60,6 +60,36 @@ export interface MintKeyInput {
   tags?: MintTags | undefined;
 }
 
+/** The transports a learning completion can be made over: the route's own (`ModelRoute.api`). */
+export type LearningCompletionApi = "anthropic-messages" | "openai-responses" | "openai-completions";
+
+/**
+ * Lessons in production: ONE tool-less model call for the learning pipeline, made on the COMPANY's own route with a key the BROKER minted and reserved in the spend ledger (so the cap is held, and the spend is settled
+ * and the key finalized by the ordinary sweep). The function only makes the call: it does not mint, read spend or delete anything, and it answers the text alone.
+ */
+export interface LearningCompletionInput {
+  /** The key the broker minted for this call (it never leaves the broker and the function, and is never logged). */
+  key: string;
+  purpose: "reflect" | "judge" | "distill" | "outcome";
+  system: string;
+  user: string;
+  maxOutputTokens: number;
+  /** The route's alias (the company's own source alias, or a Rovara AI catalog id the company's order reaches) and its transport. */
+  model: string;
+  api: LearningCompletionApi;
+  /**
+   * Set for a model that reasons by default (OpenAI's families, OpenRouter hybrids): the call asks for the least reasoning the model's catalog entry allows ("none" when it can be turned off), so the hidden reasoning cannot use up a short answer budget and leave no text. Absent: the
+   * request carries no reasoning field at all (an Anthropic model thinks only when asked, and the Messages transport has no such field here).
+   */
+  reasoningEffort?: "none" | "minimal" | "low" | undefined;
+}
+
+export interface LearningCompletion {
+  text: string;
+  /** The alias that answered. */
+  model: string;
+}
+
 export interface MintedKey {
   key: string;
   /** Epoch milliseconds, counted from when the request was made, so never later than the proxy's own expiry. */
@@ -117,4 +147,6 @@ export interface ModelAccess {
    * deleted key's does too. A key the proxy no longer knows is already blocked. Task 30's two-phase finalize starts here.
    */
   blockKey(keyId: string): Promise<void>;
+  /** See `LearningCompletionInput`. Absent where the function does not make learning calls. Errors carry fixed words only: never the provider's text, never a key. */
+  learningCompletion?(input: LearningCompletionInput): Promise<LearningCompletion>;
 }

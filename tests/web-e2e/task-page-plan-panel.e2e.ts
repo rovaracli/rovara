@@ -170,12 +170,86 @@ for (const [width, theme] of [[1280, "light"], [390, "dark"]] as const) test("th
  expect(await page.locator("img[src=x]").count()).toBe(0);
  await expect(dialog.getByText("Lowercase or keep?")).toBeVisible();
  await expect(dialog.getByRole("checkbox", { name: "Include this finding" })).toBeChecked();
+ // The dialog fades in; axe measures contrast on what is drawn, so a half-faded dialog read as low contrast in Firefox and WebKit.
+ await expect.poll(() => dialog.evaluate(node => getComputedStyle(node).opacity)).toBe("1");
+ await dialog.evaluate(element => Promise.all(element.getAnimations().map(animation => animation.finished)));
  await checkA11y(page, { theme });
  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
  await evidenceShot(page, { path: shot("task-page-feedback-view-" + String(width)), fullPage: false });
  await dialog.getByRole("button", { name: "Approve 1 finding" }).click();
  await expect.poll(() => decided[0]).toMatchObject({ expectedRevision: 9, reviewDigest: "b".repeat(64), decision: "APPROVE", selectedFindingIds: ["finding-1"] });
  expect(Object.keys(decided[0]!).sort()).toEqual(["bundleDigests", "decision", "expectedRevision", "proposalDigest", "requestId", "reviewDigest", "selectedFindingIds"]);
+});
+
+for (const [width, theme] of [[1280, "light"], [390, "dark"]] as const) test("an older version of the plan is browsed read-only in the panel, with its own comments and a way back, at " + String(width) + "px", async ({ page, context, request, baseURL }) => {
+ await signIn(page, context, request, baseURL);
+ await withTask(page);
+ await withBroker(page);
+ const OLD_COMMENT = "77777777-7777-4777-8777-777777777777", asked: string[] = [];
+ const versions = [{ version: 1, current: false, approved: true }, { version: 2, current: true, approved: false }];
+ const older = { ...documentView, versions, older: { currentVersion: 2 }, checks: [], waiting: false, access: { canComment: false, canSuggest: false, canDecide: false, canAsk: false },
+  current: { ...documentView.current, version: 1, approved: true, title: "Retry failed payments (first draft)", claims: [{ id: "1", text: "Add a cron job for retries." }] } };
+ await page.route("**/v1/web/tasks/" + TASK + "/documents/plan**", async route => {
+  const url = new URL(route.request().url());asked.push(url.search);
+  await route.fulfill({ json: url.searchParams.get("version") === "1" ? older : { ...documentView, versions, current: { ...documentView.current, version: 2 } } });
+ });
+ await page.route("**/v1/web/tasks/" + TASK + "/comments", async route => {
+  if (route.request().method() !== "GET") { await route.fallback();return; }
+  await route.fulfill({ json: { comments: [person(OPEN, "Looks right now.", { version: 2 }), person(OLD_COMMENT, "A cron job is simpler.", { version: 1, target: { kind: "claim", id: "1" } })], suggestions: [], canRemember: false } });
+ });
+ await page.emulateMedia({ colorScheme: theme });await page.setViewportSize({ width, height: 900 });await page.goto("/app/sessions/" + id + "?doc=plan");
+ const panel = page.getByRole("dialog", { name: "Coding plan v2" });
+ await expect(panel.getByText("Wait a minute between tries.")).toBeVisible();
+ const picker = panel.getByRole("combobox", { name: "Version" });
+ await expect(picker.locator("option")).toHaveText(["v2 (current)", "v1, approved"]);
+ await expect(panel.getByText("Older version.")).toHaveCount(0);
+ await picker.selectOption("1");
+ const old = page.getByRole("dialog", { name: "Coding plan v1 (older)" });
+ await expect(old.getByText("Add a cron job for retries.")).toBeVisible();
+ expect(asked).toContain("?version=1");
+ await expect(old.getByRole("status").filter({ hasText: "Older version." })).toContainText("You're reading v1 read-only. The current version is v2.");
+ // Its own comment shows; the current version's does not; nothing can be written or decided.
+ await expect(old.getByText("A cron job is simpler.")).toBeVisible();
+ await expect(old.getByText("Looks right now.")).toHaveCount(0);
+ await expect(old.getByRole("button", { name: /^Comment on|^Reply$|^Edit$|^Delete$/u })).toHaveCount(0);
+ await expect(old.getByRole("region", { name: "Decide" })).toHaveCount(0);
+ await old.evaluate(element => Promise.all(element.getAnimations().map(animation => animation.finished)));
+ await checkA11y(page, { theme });
+ expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+ await evidenceShot(page, { path: shot("task-page-plan-panel-older-" + String(width)), fullPage: false });
+ await old.getByRole("button", { name: "Back to the current version" }).click();
+ const back = page.getByRole("dialog", { name: "Coding plan v2" });
+ await expect(back.getByText("Wait a minute between tries.")).toBeVisible();
+ await expect(back.getByText("Older version.")).toHaveCount(0);
+ // The card's own Approve is back with the current version.
+ await expect(back.getByRole("region", { name: "Decide" }).getByRole("button", { name: "Approve", exact: true })).toBeVisible();
+});
+
+for (const [width, theme] of [[1280, "light"], [390, "dark"]] as const) test("a PR feedback review that did not finish has Retry review on the task page at " + String(width) + "px", async ({ page, context, request, baseURL }) => {
+ await signIn(page, context, request, baseURL);
+ await withTask(page, { stage: "WAIT_FOR_MERGE", state: "WAITING" });
+ const retried: Array<Record<string, unknown>> = [];
+ const review = { taskId: TASK, title: "Retry failed payments", revision: 9, status: "PENDING", reportStatus: "TIMED_OUT", workflowStatus: "WAITING", workflowStage: "WAIT_FOR_MERGE",
+  reviewDigest: "b".repeat(64), bundleDigests: [], candidates: [], findings: [], recommendedFindingIds: [], checks: [], nextAction: "Retry the review from the Slack thread of this task." };
+ await page.route("**/v1/web/tasks/" + TASK + "/workflow/feedback**", async route => {
+  if (route.request().method() === "GET") { await route.fulfill({ json: { review } });return; }
+  if (!route.request().url().endsWith("/feedback-retry")) { await route.fulfill({ status: 404, json: { error: { code: "NOT_FOUND", message: "Not found" } } });return; }
+  retried.push(route.request().postDataJSON() as Record<string, unknown>);
+  await route.fulfill({ json: { started: true } });
+ });
+ await page.emulateMedia({ colorScheme: theme });await page.setViewportSize({ width, height: 900 });await page.goto("/app/sessions/" + id + "?view=feedback");
+ const dialog = page.getByRole("dialog", { name: /PR feedback/u });
+ await expect(dialog.getByText("The review didn't finish.")).toBeVisible();
+ await expect(dialog.getByText(/Slack/u)).toHaveCount(0);
+ // The dialog fades in; contrast is judged once it has settled.
+ await dialog.evaluate(element => Promise.all(element.getAnimations().map(animation => animation.finished)));
+ await checkA11y(page, { theme });
+ expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+ await evidenceShot(page, { path: shot("task-page-feedback-retry-" + String(width)), fullPage: false });
+ await dialog.getByRole("button", { name: "Retry review" }).click();
+ await expect(dialog.getByRole("status")).toHaveText("Reviewing the feedback again. A new proposal shows here when it is ready.");
+ expect(retried).toEqual([{ reviewDigest: "b".repeat(64) }]);
+ await expect(dialog.getByRole("button", { name: "Retry review" })).toBeDisabled();
 });
 
 test("with the cards off (dk=0) the task page is as it was: no panel, no feedback view, and the link to the review page's comments", async ({ page, context, request, baseURL }) => {

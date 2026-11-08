@@ -89,6 +89,15 @@ describe("a continue thread acts on the task's workspace (FR-054)", () => {
     expect(h.db.get(slackLimitPk(TEST_ORG, SLACK_TEAM), `MEMBER#${PRIYA}`)).toBeUndefined();
   });
 
+  // ERASE-NAME-2: the SHARED_TASK record keeps the owner's name from when the thread was shared, and it goes to the Slack service and its prompt.
+  it("names the task's owner 'A former member' once they are erased, and by the placeholder once they are removed, not by the stored name", async () => {
+    const h = await continueThread();
+    const developerName = async () => ((await h.ensure()).body.sharedTask as { developerName: string }).developerName;
+    expect(await developerName()).toBe("Maya Chen");
+    h.db.set({ pk: `DEVELOPER_NAME#${MAYA.developerId}`, sk: "NAME", entityType: "DEVELOPER_NAME", developerId: MAYA.developerId, erased: true, erasedAt: "2026-11-01T00:00:00.000Z" });
+    expect(await developerName()).toBe("A former member");
+  });
+
   it("runs the teammate's request as the teammate, and records who started it (C13)", async () => {
     const h = await continueThread();
     const accepted = await channelTask(h, "Priya");

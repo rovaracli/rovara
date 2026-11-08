@@ -6,7 +6,7 @@
 // MODEL_PROXY_UNAVAILABLE; a 4xx carries the proxy's message.
 import { createHash, randomInt } from "node:crypto";
 import { AgentXError, INFERENCE_PATHS, agentXError, bedrockExternalId, endpointSecretRefProblem, modelSourceOrgProblem, type OrgId } from "@agentx/contracts";
-import type { KeyAudit, MemberSpend, MintKeyInput, MintedKey, ModelAccess, SourceCheck, SpendFigures, UpsertSourceInput } from "./access.js";
+import type { KeyAudit, LearningCompletion, LearningCompletionInput, MemberSpend, MintKeyInput, MintedKey, ModelAccess, SourceCheck, SpendFigures, UpsertSourceInput } from "./access.js";
 import { endpointQualified } from "../model-sources/endpoint-digest.js";
 import { credentialNameOf, proxyModelsOf, sourceAliasPrefix, sourceUsesKey, type PriceLookup } from "./sources.js";
 
@@ -172,6 +172,38 @@ function ownOrCatalog(orgId: string, model: string, catalog: readonly string[]):
 const sameModels = (left: readonly unknown[], right: readonly string[]): boolean => left.length === right.length && [...left].sort().join("\n") === [...right].sort().join("\n");
 
 /** LiteLLM's token id for a key: the hex SHA-256 of it, which is also how its info is asked for. */
+/**
+ * One learning reply may take this long. It is the function's only step (no mint, no spend read, no delete), so the function's worst case is this plus a moment, well inside its 120 s timeout (infra) and the
+ * broker's wait (`LEARNING_INVOKE_TIMEOUT_MS`).
+ */
+export const LEARNING_CALL_TIMEOUT_MS = 100_000;
+
+/** The path and tool-less body of a learning call in the route's own transport: a system text, one user message, an output limit; no tools field in any of them. */
+function learningRequestOf(input: LearningCompletionInput): [string, Json] {
+  switch (input.api) {
+    case "anthropic-messages": return ["/v1/messages", { model: input.model, max_tokens: input.maxOutputTokens, system: input.system, messages: [{ role: "user", content: input.user }] }];
+    case "openai-responses": return ["/v1/responses", { model: input.model, max_output_tokens: input.maxOutputTokens, instructions: input.system, input: input.user, ...(input.reasoningEffort === undefined ? {} : { reasoning: { effort: input.reasoningEffort } }) }];
+    case "openai-completions": return ["/chat/completions", { model: input.model, max_tokens: input.maxOutputTokens, messages: [{ role: "system", content: input.system }, { role: "user", content: input.user }], ...(input.reasoningEffort === undefined ? {} : { reasoning_effort: input.reasoningEffort }) }];
+  }
+}
+
+/** The text of a reply in each transport, or undefined when there is none. */
+function learningTextOf(api: LearningCompletionInput["api"], body: unknown): string | undefined {
+  if (!isRecord(body)) return undefined;
+  const join = (parts: unknown[], pick: (part: Record<string, unknown>) => unknown): string => parts.flatMap((part) => (isRecord(part) && typeof pick(part) === "string" ? [pick(part) as string] : [])).join("");
+  let text: string;
+  if (api === "anthropic-messages") text = Array.isArray(body.content) ? join(body.content, (part) => (part.type === "text" ? part.text : undefined)) : "";
+  else if (api === "openai-completions") {
+    const first: unknown = Array.isArray(body.choices) ? (body.choices as unknown[])[0] : undefined;
+    const message = isRecord(first) && isRecord(first.message) ? first.message.content : undefined;
+    text = typeof message === "string" ? message : "";
+  } else {
+    text = typeof body.output_text === "string" ? body.output_text
+      : Array.isArray(body.output) ? body.output.flatMap((item) => (isRecord(item) && Array.isArray(item.content) ? [join(item.content, (part) => (part.type === "output_text" ? part.text : undefined))] : [])).join("") : "";
+  }
+  return text.trim() === "" ? undefined : text;
+}
+
 const tokenOf = (key: string): string => createHash("sha256").update(key).digest("hex");
 
 function numberOf(value: unknown): number | undefined {
@@ -403,6 +435,26 @@ export class ModelProxyClient implements ModelAccess {
       || (isRecord(entry.aliases) && Object.keys(entry.aliases).length > 0)
       || (typeof metadataOrg === "string" && metadataOrg !== team);
     return { token: entry.token, violation };
+  }
+
+  /**
+   * Lessons in production: one tool-less model call on the company's own route, with the key the broker minted and reserved for it (see `LearningCompletionInput`). This is the function's whole job here: it does not
+   * mint, read the key's spend or delete the key (the spend is the ledger's, settled after the proxy has flushed it, and the key is blocked by the broker). Every failure is a fixed sentence: the provider's words
+   * are never passed on, and neither is the key.
+   */
+  async learningCompletion(input: LearningCompletionInput): Promise<LearningCompletion> {
+    const fail = (message: string): AgentXError => agentXError("MODEL_PROXY_UNAVAILABLE", message);
+    const [path, body] = learningRequestOf(input);
+    let reply: Reply;
+    try {
+      reply = await this.request("POST", path, input.key, body, LEARNING_CALL_TIMEOUT_MS);
+    } catch {
+      throw fail("the learning model call failed");
+    }
+    if (reply.status !== 200) throw fail("the learning model call failed");
+    const text = learningTextOf(input.api, reply.body);
+    if (text === undefined) throw fail("the learning model answered with no text");
+    return { text, model: input.model };
   }
 
   async revokeKey(key: string): Promise<void> {
@@ -728,7 +780,7 @@ export class ModelProxyClient implements ModelAccess {
   }
 
   /** One HTTP exchange. Network failures and 5xx answers throw MODEL_PROXY_UNAVAILABLE; everything else is returned. */
-  private async request(method: "GET" | "POST" | "PATCH" | "DELETE", path: string, master: string, body: Json | undefined): Promise<Reply> {
+  private async request(method: "GET" | "POST" | "PATCH" | "DELETE", path: string, master: string, body: Json | undefined, timeoutMs?: number): Promise<Reply> {
     let response: Response;
     try {
       response = await this.input.fetch(`${this.baseUrl}${path}`, {
@@ -738,7 +790,7 @@ export class ModelProxyClient implements ModelAccess {
         // N6: a redirect is never followed. The calls that reach a company's endpoint (the health call, the test replies) go through this one function; an answer that is a
         // redirect is refused, so no request, and nothing in it, is sent on to an address nobody approved.
         redirect: "manual",
-        signal: AbortSignal.timeout(this.input.timeoutMs ?? DEFAULT_TIMEOUT_MS),
+        signal: AbortSignal.timeout(timeoutMs ?? this.input.timeoutMs ?? DEFAULT_TIMEOUT_MS),
       });
     } catch {
       throw unavailable("model proxy is unreachable");

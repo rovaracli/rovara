@@ -12,6 +12,7 @@ import { MAYA } from "../support/developer-task-broker.js";
 import { BEN, CARL, PREPARED, setup, type World } from "../support/spend-world.js";
 import { TEST_ORG } from "../support/orgs.js";
 import { planAnswer, planDocument } from "../support/plan-documents.js";
+import { runLimitAck } from "../support/run-limit-ack.js";
 
 /** Five QUICK runs that cost $10 each: the estimate's run limit is $20, above what a member may accept. */
 function seedHistory(w: World): void {
@@ -35,7 +36,7 @@ async function blockedPlan() {
   await w.finish(workspaceId, planningOperation(), "SUCCEEDED", { result: { workflowMode: "PLAN" } });
   const workflow = w.meta(taskId).workflow as unknown as { revision: number; artifacts: Array<{ sha256: string }> };
   const approved = await w.dev(MAYA, "POST", `/v1/dev/tasks/${taskId}/workflow/decision`, {
-    requestId: randomUUID(), expectedRevision: workflow.revision, decision: "APPROVE", reason: "Approved", artifactDigest: workflow.artifacts.at(-1)!.sha256,
+    requestId: randomUUID(), expectedRevision: workflow.revision, decision: "APPROVE", reason: "Approved", artifactDigest: workflow.artifacts.at(-1)!.sha256, ...runLimitAck(w.db, taskId),
   });
   expect(approved.status, JSON.stringify(approved.body)).toBe(200);
   const implementations = () => w.operations(workspaceId).filter((item) => item.workflowMode === "IMPLEMENT");

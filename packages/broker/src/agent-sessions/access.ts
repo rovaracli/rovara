@@ -8,6 +8,7 @@
 //   - the task's Task People list (`commenter` is `use`, `viewer` is `view`, `owner` is `edit` until the task has been taken over).
 // A project viewer (not the owner) can only watch, whatever shares say; a Task People `denied` entry takes everything but an org admin's `view`.
 // Another org's session, or no level at all, is `NOT_FOUND`, so a session's existence never leaks.
+import { resolveStoredName } from "../developer/name-resolver.js";
 import { GetCommand, QueryCommand } from "@aws-sdk/lib-dynamodb";
 import { z } from "zod";
 import {
@@ -38,7 +39,7 @@ import {
 } from "@agentx/contracts";
 import type { ProjectMembers } from "../agents/access.js";
 import { grantRoleOf } from "../developer/project-roles.js";
-import { UNNAMED_MEMBER, effectiveTaskOwner, isTaskTakenOver, taskKey, type DeveloperTaskRecord } from "../developer/task-records.js";
+import { UNNAMED_MEMBER, effectiveTaskOwner, isTaskTakenOver, takenOverSince, taskKey, type DeveloperTaskRecord } from "../developer/task-records.js";
 import { AgentSessionStore } from "./store.js";
 
 /** Who asks Plan 4 for a chain's view: the internal session actor Plan 5 passes after its own level check (Plan 4, M2). No route, header or body can set it. */
@@ -86,6 +87,8 @@ export interface SessionAccess {
   owner: boolean;
   /** Who the effective owner is, named for a header or a "ask <name>" message: the taker once the task was taken over (their name as the task records it), else the session's own owner. */
   effectiveOwner: { developerId: string; name: string };
+  /** ERASED-REJOIN-NAME: when `effectiveOwner.name` was written (the session's start, or the take-over's time): a list of sessions reads the name of a person who was erased and came back by it. */
+  effectiveOwnerWrittenAt: string;
   projectRole?: ProjectRole;
   /** An org owner or admin, on a task or chain session: they may stop it (`view` plus Stop). */
   orgAdmin: boolean;
@@ -222,6 +225,24 @@ function effectiveOwnerNamed(session: AgentSessionRecord, taskItem: Item | undef
   return { developerId: owner.developerId, name: cleanSessionName(owner.name) ?? UNNAMED_MEMBER };
 }
 
+/**
+ * ERASE-NAME-2: the effective owner with the name that may be shown. The name stored with the session or the task is the one they had then (and may be the one they chose); an erased person reads "A former member",
+ * a removed one never the name they chose, and a lookup that fails reads "A member". This is the ONE place the stored name is resolved: everything that writes the owner's name into an approval, a stored fact or an
+ * error message (`access.effectiveOwner.name`) gets the resolved one. The readers of MANY sessions (a list with a `memo`, the Live wall with a `prefetch`) put no owner name into a sentence and overlay the names of
+ * the whole page in one read themselves (`ownerNameOverlay`), so for them the name stays as stored here, which keeps a list at one read for its names.
+ */
+async function shownEffectiveOwner(deps: SessionAccessDependencies, orgId: string, owner: { developerId: string; name: string }, options: SessionAccessOptions, writtenAt?: string): Promise<{ developerId: string; name: string }> {
+  if (options.prefetch !== undefined || options.memo !== undefined) return owner;
+  return { developerId: owner.developerId, name: await resolveStoredName({ documentClient: deps.documentClient, tableName: deps.tableName, orgId }, owner.developerId, owner.name, writtenAt) };
+}
+
+/** ERASED-REJOIN-NAME: when the name `effectiveOwnerNamed` returns was written: the session's start for the session's own owner, the take-over's time for a taker. */
+function effectiveOwnerWrittenAt(session: AgentSessionRecord, taskItem: Item | undefined): string {
+  if (taskItem === undefined || !isTaskTakenOver(taskItem as unknown as DeveloperTaskRecord)) return session.createdAt;
+  const owner = effectiveTaskOwner(taskItem as unknown as DeveloperTaskRecord);
+  return owner.developerId === session.owner.developerId ? session.createdAt : takenOverSince(taskItem as unknown as DeveloperTaskRecord) ?? session.createdAt;
+}
+
 /** The id of `effectiveOwnerNamed`: access and the share notice read it. */
 export function effectiveOwnerId(session: AgentSessionRecord, taskItem: Item | undefined): string {
   return effectiveOwnerNamed(session, taskItem).developerId;
@@ -236,7 +257,7 @@ export async function effectiveOwnerOf(deps: Pick<SessionAccessDependencies, "do
 
 // ---- the level
 
-interface Computed { /** The caller's role on the session's project for a share, when asked for (`wantShareRole`). */ shareRole: ProjectRole | undefined; level: "none" | SessionLevel; /** The read-only path left out a project's Slack channel that could have changed a `none` level. */ undecided: boolean; owner: boolean; effectiveOwner: { developerId: string; name: string }; projectRole: ProjectRole | undefined; orgAdmin: boolean; orgRole: OrgRole }
+interface Computed { /** The caller's role on the session's project for a share, when asked for (`wantShareRole`). */ shareRole: ProjectRole | undefined; level: "none" | SessionLevel; /** The read-only path left out a project's Slack channel that could have changed a `none` level. */ undecided: boolean; owner: boolean; effectiveOwner: { developerId: string; name: string }; effectiveOwnerWrittenAt: string; projectRole: ProjectRole | undefined; orgAdmin: boolean; orgRole: OrgRole }
 
 async function compute(deps: SessionAccessDependencies, caller: SessionCaller, orgRole: OrgRole, session: AgentSessionRecord, options: SessionAccessOptions): Promise<Computed> {
   const { orgId } = caller;
@@ -289,7 +310,7 @@ async function compute(deps: SessionAccessDependencies, caller: SessionCaller, o
     if (found?.["orgId"] === session.orgId) taskItem = found;
   }
   let slackNotAsked = false;
-  const effectiveOwner = effectiveOwnerNamed(session, taskItem);
+  const effectiveOwner = await shownEffectiveOwner(deps, orgId, effectiveOwnerNamed(session, taskItem), options, effectiveOwnerWrittenAt(session, taskItem));
   const owner = caller.developerId === effectiveOwner.developerId;
 
   const projectRole = session.project === undefined ? undefined : (await roleOn(session.project)).effective;
@@ -330,7 +351,7 @@ async function compute(deps: SessionAccessDependencies, caller: SessionCaller, o
   // answer itself read-only for every other surface (Slack, MCP, agent tools) that asks it.
   if (!isWriterOrgRole(orgRole) && RANK[level] > RANK.view) level = "view";
   const shareRole = options.wantShareRole === true && session.project !== undefined ? await shareRoleOn(session.project) : undefined;
-  return { shareRole, level, undecided: level === "none" && slackNotAsked && !denied, owner, effectiveOwner, projectRole, orgAdmin, orgRole };
+  return { shareRole, level, undecided: level === "none" && slackNotAsked && !denied, owner, effectiveOwner, effectiveOwnerWrittenAt: effectiveOwnerWrittenAt(session, taskItem), projectRole, orgAdmin, orgRole };
 }
 
 /**
@@ -370,7 +391,7 @@ export async function sessionLevelOf(deps: SessionAccessDependencies, caller: Se
 
 function finish(session: AgentSessionRecord, computed: Computed): SessionAccess {
   if (computed.level === "none") throw NOT_FOUND();
-  return { session, level: computed.level, owner: computed.owner, effectiveOwner: computed.effectiveOwner, orgAdmin: computed.orgAdmin, orgRole: computed.orgRole, ...(computed.projectRole === undefined ? {} : { projectRole: computed.projectRole }) };
+  return { session, level: computed.level, owner: computed.owner, effectiveOwner: computed.effectiveOwner, effectiveOwnerWrittenAt: computed.effectiveOwnerWrittenAt, orgAdmin: computed.orgAdmin, orgRole: computed.orgRole, ...(computed.projectRole === undefined ? {} : { projectRole: computed.projectRole }) };
 }
 
 export interface RequireOptions extends SessionAccessOptions {

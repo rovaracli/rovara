@@ -42,6 +42,7 @@ import {
 } from "@agentx/contracts";
 import { taskStatusOf } from "../../agent-sessions/task-status.js";
 import { planRunLimit } from "../../spend/estimate.js";
+import { planRunLimitChangeLive, waitsOnCodingPlan } from "../../spend/run-limit-change.js";
 import { readSpendPolicy } from "../../spend/settings.js";
 import {
   byCreated,
@@ -363,6 +364,8 @@ export async function taskView(
     failureCategory: derived.failure?.category,
   });
   const reviewFindings = findingActionsOf(task, options.actor === "viewer");
+  // QA6-12b: what approving the waiting coding plan does to the run limit (the Slack message and the tools show it before the approval, which must carry the amount when it raises the limit).
+  const planLimitChange = task.closedAt === undefined && waitsOnCodingPlan(task.workflow) && deps.modelAccess !== undefined ? await planRunLimitChangeLive(estimateDependencies(deps), task, false) : undefined;
   return {
     modelFallbacks:modelFallbacks.data,
     statusView,
@@ -401,6 +404,7 @@ export async function taskView(
     ...(runLimit === undefined ? {} : { runLimit }),
     // QA6-12: the run limit shown is the one approving the plan sets (`planRunLimit`: the estimate, held to a lower limit the start asked for), the same as the confirmation and the broker use.
     ...(task.runEstimate === undefined ? {} : { runEstimate: task.requestedRunLimitUsd === undefined ? task.runEstimate : { ...task.runEstimate, runLimitUsd: Math.min(task.runEstimate.runLimitUsd, task.requestedRunLimitUsd) } }),
+    ...(planLimitChange === undefined ? {} : { planRunLimit: planLimitChange }),
     ...(sessionId === undefined ? {} : { sessionId, ...(deps.issuer === undefined ? {} : { sessionUrl: sessionLink(new URL(deps.issuer).origin, sessionId) }) }),
     createdAt: task.createdAt,
     // #225: a failed setup's task changed when its prepare ended, not when it was made.

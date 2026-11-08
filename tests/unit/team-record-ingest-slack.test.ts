@@ -1,3 +1,5 @@
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import { createSlackRecordTap, SLACK_TAP_EVENT_TYPES, slackRetention, withChannelInfoCache, type SlackChannelInfo, type SlackRecordTapDependencies } from "../../packages/broker/src/team-record/sources/slack.js";
 import { world, WS } from "../support/team-record-ingest-fakes.js";
@@ -374,6 +376,37 @@ describe("Slack tap: the event types it handles are the list the manifest subscr
     expect(await tap({ type: "event_callback", team_id: TEAM, event: { type: "channel_rename", channel: PRIV } })).toEqual({ outcome: "ignored", reason: "unsupported_event" });
     expect(SLACK_TAP_EVENT_TYPES).toContain("member_joined_channel");
     expect(SLACK_TAP_EVENT_TYPES).toContain("member_left_channel");
+  });
+});
+
+// SRL-14: the list above is kept by hand. This fails when the tap's `switch (event.type)` gains a case that is neither in the list nor one of the few that are deliberately not subscribed.
+describe("Slack tap: SLACK_TAP_EVENT_TYPES lists every event type the tap switches on", () => {
+  // `message` arrives through the message subscriptions, not this list; the two conversions are `message` subtypes in Slack's Events API (the tap also takes them as top-level types, which Slack does not send).
+  const NOT_SUBSCRIBED = ["message", "channel_convert_to_private", "channel_convert_to_public"];
+  it("every case label of the tap's event switch is in the list, or in the short documented exemption list", () => {
+    const source = readFileSync(fileURLToPath(new URL("../../packages/broker/src/team-record/sources/slack.ts", import.meta.url)), "utf8");
+    const start = source.indexOf("switch (event.type) {");
+    expect(start, "the tap's switch (event.type) was not found: update this test").toBeGreaterThan(-1);
+    // The switch's own body: from its opening brace to the matching closing one, and only the labels at its top level (a nested switch or object cannot add or cut labels).
+    const open = source.indexOf("{", start);
+    const labels: string[] = [];
+    let depth = 0, end = -1;
+    for (let at = open; at < source.length; at += 1) {
+      const char = source[at];
+      if (char === "{") depth += 1;
+      else if (char === "}") { depth -= 1; if (depth === 0) { end = at; break; } }
+      else if (depth === 1) {
+        const label = /^case "([a-z_]+)":/u.exec(source.slice(at, at + 60));
+        if (label !== null) labels.push(label[1]!);
+      }
+    }
+    expect(end, "the switch's closing brace was not found").toBeGreaterThan(open);
+    expect(source.slice(open, end)).toContain("default:");
+    expect(labels.length).toBeGreaterThanOrEqual(8);
+    const missing = labels.filter((label) => !SLACK_TAP_EVENT_TYPES.includes(label) && !NOT_SUBSCRIBED.includes(label));
+    expect(missing, `tap cases missing from SLACK_TAP_EVENT_TYPES (and the app manifest's subscriptions): ${missing.join(", ")}`).toEqual([]);
+    // and the exemptions stay honest: none of them is in the list
+    for (const type of NOT_SUBSCRIBED) expect(SLACK_TAP_EVENT_TYPES).not.toContain(type);
   });
 });
 

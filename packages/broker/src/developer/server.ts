@@ -23,6 +23,7 @@ import {
   ADMIN_API_VERSION,
   DEVELOPER_API_VERSION,
   EndDeveloperSessionsRequestSchema,
+  EraseDeveloperNameRequestSchema,
   RealtimeTokenRequestSchema,
   UnlinkIdentityRequestSchema,
   StartIdentityLinkRequestSchema,
@@ -55,9 +56,11 @@ import {
   type EditionPolicy,
   type OrgId,
   type EndDeveloperSessionsRequest,
+  type EraseDeveloperNameRequest,
   type RealtimeTokenAnswer,
   type RealtimeTokenRequest,
   type EndDeveloperSessionsResponse,
+  type EraseDeveloperNameResponse,
   type SlackAuthCheckRequest,
   type SlackAuthCheckResponse,
   type SlackUserByEmailRequest,
@@ -67,6 +70,7 @@ import { adaptHttpApiEvent, ownerKeyForSubject, type HttpApiV2Event } from "../a
 import { SESSION_MAX_AGE_SECONDS } from "../aws/web-session.js";
 import { INVITE_TOKEN_PATTERN, inviteTokenHash } from "../org/invite-url.js";
 import type { OrgStore } from "../org/store.js";
+import { MERGED_AWAY_MESSAGE } from "../org/store.js";
 import { NO_ORG_ON_INSTALL_MESSAGE, resolveOrgOnSignIn, sameEmail, type ResolveOrgOnSignInDependencies, type SignInNoOrg, type SignInOrg } from "../org/sign-in.js";
 import { resolveSignInDeveloper, type ResolveSignInDeveloperDependencies } from "./identities.js";
 import {
@@ -835,6 +839,13 @@ function createIssuerHandler(deps: DeveloperIdentityDependencies) {
         if (request.browserReturnTo !== undefined) return browserReturn(request.browserReturnTo, false, undefined, "method_unavailable");
         return client({ error: "access_denied", error_description: `${NO_ORG_ON_INSTALL_MESSAGE}; run agentx login again and choose Sign in with Rovara` });
       }
+      // SLACK-LINK-1: this account was linked into another one (a Slack or GitHub link in another tab) just as the sign-in was creating or joining a company. Nothing was
+      // written; a fresh sign-in resolves to the account it was linked into. Told "sign in again", not shown an internal error.
+      if (isCode(error, "CHANGE_STALE") && refusalWords(error) === MERGED_AWAY_MESSAGE) {
+        deps.log({ event: "signin.refused", method, reason: "linked_elsewhere", developerId });
+        if (request.browserReturnTo !== undefined) return browserReturn(request.browserReturnTo, false, undefined, "ended");
+        return client({ error: "access_denied", error_description: `${MERGED_AWAY_MESSAGE}; run agentx login again` });
+      }
       // A removed member (single-org ban) is told so, not shown an internal error.
       if ((error as { code?: unknown } | null)?.code !== "REMOVED_FROM_ORG") throw error;
       deps.log({ event: "signin.refused", method, reason: "removed_from_org", developerId });
@@ -1431,8 +1442,8 @@ function createIssuerHandler(deps: DeveloperIdentityDependencies) {
   const isPage = (pathname: string) => pathname === "/v1/auth/authorize" || pathname === "/v1/auth/browser/authorize" || pathname.startsWith("/v1/auth/callback/") || pathname.startsWith("/v1/auth/join") || pathname.startsWith("/v1/auth/decide/");
 
   return async (
-    event: HttpApiV2Event | ChannelMembersRequest | TaskPersonProofRequest | TaskChannelPeopleRequest | TaskPeopleDisplayReadRequest | ChannelInfoRequest | ChannelClassRequest | ChannelListRequest | MemberChannelsRequest | SlackUserByEmailRequest | SlackAuthCheckRequest | EndDeveloperSessionsRequest | UnlinkIdentityRequest | StartIdentityLinkRequest | ChannelByNameRequest | RealtimeTokenRequest,
-  ): Promise<HttpResult | ChannelMembersResult | TaskPersonProofResponse | TaskChannelPeopleResponse | TaskPeopleDisplayReadResponse | ChannelInfoResponse | ChannelClassResponse | ChannelListResponse | SlackUserByEmailResponse | SlackAuthCheckResponse | EndDeveloperSessionsResponse | UnlinkIdentityResponse | StartIdentityLinkResponse | ChannelByNameResponse | RealtimeTokenAnswer> => {
+    event: HttpApiV2Event | ChannelMembersRequest | TaskPersonProofRequest | TaskChannelPeopleRequest | TaskPeopleDisplayReadRequest | ChannelInfoRequest | ChannelClassRequest | ChannelListRequest | MemberChannelsRequest | SlackUserByEmailRequest | SlackAuthCheckRequest | EndDeveloperSessionsRequest | EraseDeveloperNameRequest | UnlinkIdentityRequest | StartIdentityLinkRequest | ChannelByNameRequest | RealtimeTokenRequest,
+  ): Promise<HttpResult | ChannelMembersResult | TaskPersonProofResponse | TaskChannelPeopleResponse | TaskPeopleDisplayReadResponse | ChannelInfoResponse | ChannelClassResponse | ChannelListResponse | SlackUserByEmailResponse | SlackAuthCheckResponse | EndDeveloperSessionsResponse | EraseDeveloperNameResponse | UnlinkIdentityResponse | StartIdentityLinkResponse | ChannelByNameResponse | RealtimeTokenAnswer> => {
     if ("kind" in event) {
       if (event.kind === "end-developer-sessions") {
         const parsed = EndDeveloperSessionsRequestSchema.safeParse(event);
@@ -1440,6 +1451,14 @@ function createIssuerHandler(deps: DeveloperIdentityDependencies) {
         const result = await store.endSessions(parsed.data.developerId, parsed.data.at);
         deps.log({ event: "signin.sessions_ended_by_admin", developerId: parsed.data.developerId, result });
         return result === "ended" ? { ok: true } : { ok: false, error: "not_found" };
+      }
+      if (event.kind === "erase-developer-name") {
+        // ERASE-NAME-1: a person's erase clears the name this record holds. Nothing but the id and the result is logged.
+        const parsed = EraseDeveloperNameRequestSchema.safeParse(event);
+        if (!parsed.success) return { ok: false, error: "invalid_request" };
+        const result = await store.eraseDisplayName(parsed.data.developerId, parsed.data.at);
+        deps.log({ event: "signin.name_erased", developerId: parsed.data.developerId, result });
+        return result === "erased" ? { ok: true } : { ok: false, error: "not_found" };
       }
       if (event.kind === "realtime-token") {
         // Plan 5 Task 8: the broker holds no signing right, so it asks here for the token of a person it has already signed in.

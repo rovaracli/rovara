@@ -108,7 +108,7 @@ describe("following a session", () => {
     const before = f.w.db.commandNames().length;
     expect(await f.unfollow(ARJUN)).toEqual({ following: false });
     expect(f.count()).toBe(1);
-    expect(f.w.db.commandNames().slice(before).filter((name) => name !== "GetCommand" && name !== "QueryCommand")).toEqual([]);
+    expect(f.w.db.commandNames().slice(before).filter((name) => name !== "GetCommand" && name !== "QueryCommand" && name !== "BatchGetCommand")).toEqual([]);
   });
 
   it("removes a follow whose count had drifted to zero, and never takes the count below zero", async () => {

@@ -32,8 +32,10 @@ test("the Tickets section shows why a ticket waits, why a source fails, and save
 
 test("Start on a waiting ticket in the section starts it once and opens its session", async ({ page, request }) => {
  await page.goto("/app/projects/payments");
+ // UX2 one task address: the started task opens at /app/sessions/<id> directly, never through the old /s/<id> address (which only redirects).
+ const visited: string[] = [];page.on("framenavigated", frame => { if (frame === page.mainFrame()) visited.push(new URL(frame.url()).pathname); });
  await page.locator("#tickets").getByRole("button", { name: "Start PAY-12", exact: true }).click();
- await expect(page).toHaveURL(/\/s\/ses_bbbbbbbbbbbbbbbbbbbb$/u);
+ await expect(page).toHaveURL(/\/app\/sessions\/ses_bbbbbbbbbbbbbbbbbbbb$/u);expect(visited.filter(path => path.startsWith("/s/"))).toEqual([]);
  const sent = await (await request.get("/__mock/requests")).json() as Sent;
  expect(sent.filter(item => item.method === "POST" && item.path.endsWith("/start"))).toHaveLength(1);
 });
@@ -43,9 +45,11 @@ test("the Home ticket card says why it waits, and Not this one takes it off Home
  await page.goto("/app");
  await expect(page.getByRole("heading", { name: "Jira PAY-12: Refunds fail twice" })).toBeVisible();
  await expect(page.getByText(/Waiting to start in "payments"\. Nobody in your company is linked/)).toBeVisible();
- await expect(page.getByRole("button", { name: "Start", exact: true })).toBeVisible();
+ // UX2 added a Start box to Home, so the card's Start is found inside the needs-you list.
+ const needsYou = page.getByRole("list", { name: "What needs you" });
+ await expect(needsYou.getByRole("button", { name: "Start", exact: true })).toBeVisible();
  await checkA11y(page, { theme: "light" });await evidenceShot(page, { path: testInfo.outputPath("home-ticket-card.png"), fullPage: true });
- await page.getByRole("button", { name: "Not this one", exact: true }).click();
+ await needsYou.getByRole("button", { name: "Not this one", exact: true }).click();
  await expect(page.getByRole("heading", { name: "Jira PAY-12: Refunds fail twice" })).toHaveCount(0);
  const sent = await (await request.get("/__mock/requests")).json() as Sent;
  const dismissals = sent.filter(item => item.method === "POST" && item.path.endsWith("/dismiss"));

@@ -183,7 +183,7 @@ describe("the event catalog", () => {
       "record.source_added", "record.source_changed", "record.source_removed", "record.tombstoned", "record.erased", "record.tracker_person_mapped", "record.tracker_person_unmapped", "record.tracker_autolink_changed", "lesson.mode_changed", "lesson.proposed",
       "lesson.activated", "lesson.approved", "lesson.edited", "lesson.rejected", "lesson.retired", "lesson.expired", "lesson.withdrawn", "lesson.refused",
       "lesson.promoted", "lesson.rolled_back", "lesson.snapshot_created",
-      "lesson.tier0_setting_proposed", "lesson.tier0_setting_changed", "lesson.sole_owner_switch_proposed", "lesson.sole_owner_switch_changed",
+      "lesson.tier0_setting_proposed", "lesson.tier0_setting_changed", "lesson.sole_owner_switch_proposed", "lesson.sole_owner_switch_changed", "lesson.model_set",
       // Lane E (private MCP servers, project Sources)
       "mcp_server.added", "mcp_server.approved", "mcp_server.disabled", "mcp_server.removed", "mcp_server.token_changed",
       // Stdio MCP host (T10): replaces nothing; the new package-run facts

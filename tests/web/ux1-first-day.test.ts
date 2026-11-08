@@ -110,3 +110,13 @@ it("opens the account menu on its Leave step from an invite to another company, 
  expect(dialog.textContent).toContain("Then open your invite link again to join the other company.");
  expect(g.request.mock.calls.some(([r]) => r.method === "POST")).toBe(false);ui.unmount();query.clear();
 });
+
+it("the GitHub connect panel waits for the person's GitHub link before offering Connect GitHub (no Connect button flashes up for someone who must link first)", async () => {
+ const { GithubConnectPanel } = await import("../../packages/ui/src/screens/onboarding/steps/GithubConnectPanel.js");
+ let answer: (response: ApiResponse) => void = () => undefined;
+ const f = mount(h(GithubConnectPanel, { requested: false, refresh: () => undefined, returnTo: "/app/admin/connections" }), r => r.method === "GET" && r.path === "/v1/app/me" ? new Promise<ApiResponse>(resolve => { answer = resolve; }) : Promise.resolve({ status: 404, body: {} }));
+ expect((await screen.findByRole("status")).textContent).toBe("Checking your GitHub account.");
+ expect(screen.queryByRole("button", { name: "Connect GitHub" })).toBeNull();expect(screen.queryByRole("button", { name: "Link your GitHub account" })).toBeNull();
+ answer({ status: 200, body: me([]) });
+ expect(await screen.findByRole("button", { name: "Link your GitHub account" })).toBeTruthy();expect(screen.queryByRole("button", { name: "Connect GitHub" })).toBeNull();f.close();
+});

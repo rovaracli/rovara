@@ -194,7 +194,7 @@ export function githubEventsOf(eventName: string, action: string | undefined, pa
 const Compare = z.object({
   status: z.enum(["identical", "ahead", "behind", "diverged"]),
   total_commits: z.number().int().nonnegative().optional(),
-  commits: z.array(z.object({ sha: z.string().regex(/^[0-9a-f]{40}$/), author: Person.nullish(), committer: Person.nullish(), commit: z.object({ verification: z.object({ verified: z.boolean().optional() }).passthrough().nullish() }).passthrough().optional() }).passthrough()).max(300).default([]),
+  commits: z.array(z.object({ sha: z.string().regex(/^[0-9a-f]{40}$/), parents: z.array(z.object({ sha: z.string() }).passthrough()).max(20).optional(), author: Person.nullish(), committer: Person.nullish(), commit: z.object({ verification: z.object({ verified: z.boolean().optional() }).passthrough().nullish() }).passthrough().optional() }).passthrough()).max(300).default([]),
   files: z.array(z.object({ filename: z.string().max(1000), additions: z.number().int().nonnegative().default(0), deletions: z.number().int().nonnegative().default(0), patch: z.string().max(200_000).optional() }).passthrough()).max(300).default([]),
 }).passthrough();
 
@@ -210,7 +210,7 @@ export function createGithubDiffReader(getJson: GithubGetJson): CodeHostDiffRead
       if (!parsed.success) return undefined;
       const diff: CodeHostDiff = {
         status: parsed.data.status,
-        commits: parsed.data.commits.map((commit) => ({ sha: commit.sha, verified: commit.commit?.verification?.verified === true, ...(commit.author ? { author: personOf(commit.author) } : {}), ...(commit.committer ? { committer: personOf(commit.committer) } : {}), ...(commit.committer?.login === "web-flow" && commit.committer.id === GITHUB_WEB_FLOW_ID ? { webFlow: true } : {}) })),
+        commits: parsed.data.commits.map((commit) => ({ sha: commit.sha, verified: commit.commit?.verification?.verified === true, ...(commit.author ? { author: personOf(commit.author) } : {}), ...(commit.committer ? { committer: personOf(commit.committer) } : {}), ...(commit.committer?.login === "web-flow" && commit.committer.id === GITHUB_WEB_FLOW_ID ? { webFlow: true } : {}), ...((commit.parents?.length ?? 0) > 1 ? { merge: true } : {}) })),
         files: parsed.data.files.map((file) => ({ path: file.filename, additions: file.additions, deletions: file.deletions, ...(file.patch === undefined ? {} : { patch: file.patch }) })),
         truncated: parsed.data.files.length >= 300 || (parsed.data.total_commits ?? 0) > parsed.data.commits.length,
       };

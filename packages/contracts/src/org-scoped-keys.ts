@@ -1042,6 +1042,14 @@ export function trashKey(orgId: OrgId, developerId: string, taskId: string): Org
   return { pk: orgScoped(orgId, `TRASH#${keyPart(developerId, "a developer id")}`), sk: keyPart(taskId, "a task id") };
 }
 
+/**
+ * Which Rovara task a GitHub pull request was merged as (SRL-3): one partition for the company, one item for each repository and merge commit (both lower-cased), so a revert that names a
+ * commit finds the pull request, a commit id is never looked up across companies, and the company's close erases the whole partition without first finding its repositories.
+ */
+export function mergeCommitIndexKey(orgId: OrgId, repositoryFullName: string, mergeCommit: string): OrgKey {
+  return { pk: orgScoped(orgId, "GITHUB_MERGE"), sk: `${keyPart(repositoryFullName, "a repository name").toLowerCase()}#${keyPart(mergeCommit, "a commit").toLowerCase()}` };
+}
+
 /** Which task a pull request head belongs to, so a check or status event that carries only a commit finds its task. */
 export function prHeadKey(orgId: OrgId, repositoryId: string, headSha: string): OrgKey {
   return { pk: orgScoped(orgId, `PR_HEAD#${keyPart(repositoryId, "a repository id")}`), sk: keyPart(headSha, "a commit") };
@@ -1384,6 +1392,17 @@ export function intakeEventKey(orgId: OrgId, project: string, itemId: string, ev
   if (!/^[a-f0-9]{32}$/u.test(itemId)) throw new Error("an intake item id is 32 hex characters");
   if (eventId.length === 0) throw new Error("an event id can't be empty");
   return { pk: orgScoped(orgId, `INTAKE_EVENT#${keyPart(project, "a project name")}`), sk: `${itemId}#${createHash("sha256").update(eventId, "utf8").digest("hex").slice(0, 32)}` };
+}
+
+/**
+ * A tracker act (a label added, or an assignee set, by one Jira changelog change) that intake has acted on for a company, one item per company, site, change and act, whichever project's hook
+ * or poll it came through. It is how a real act that a person made is started from once: the same act handed to a second project (a replay by someone who holds that hook's secret) finds it
+ * taken. The act (its kind and value) is part of the key because one change may add several labels, each a separate request. `site` is the tracker's host and `changeId` the tracker's own id
+ * for the change; all are hashed together here, so nothing a sender typed is a key.
+ */
+export function intakeChangeKey(orgId: OrgId, system: string, site: string, changeId: string, act: { kind: string; value: string }): OrgKey {
+  if (site.length === 0 || changeId.length === 0 || act.kind.length === 0 || act.value.length === 0) throw new Error("a tracker site, a change id and an act can't be empty");
+  return { pk: orgScoped(orgId, `INTAKE_CHANGE#${keyPart(system, "a tracker system")}`), sk: createHash("sha256").update(`${site.toLowerCase()}\0${changeId}\0${act.kind}\0${act.value}`, "utf8").digest("hex").slice(0, 40) };
 }
 
 /**

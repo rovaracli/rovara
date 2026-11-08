@@ -434,6 +434,14 @@ export type EndDeveloperSessionsRequest = z.infer<typeof EndDeveloperSessionsReq
 export type EndDeveloperSessionsResponse = { ok: true } | { ok: false; error: "not_found" | "invalid_request" | "unavailable" };
 
 /**
+ * ERASE-NAME-1: a person's erase clears the name their sign-in record holds (the broker has no write on that table, so it asks DeveloperIdentity). The record then holds the placeholder name, and a later sign-in
+ * leaves it alone. Not found is an answer (the person never signed in).
+ */
+export const EraseDeveloperNameRequestSchema = z.object({ kind: z.literal("erase-developer-name"), developerId: z.string().regex(/^[a-f0-9]{64}$/), at: z.string().datetime() }).strict();
+export type EraseDeveloperNameRequest = z.infer<typeof EraseDeveloperNameRequestSchema>;
+export type EraseDeveloperNameResponse = { ok: true } | { ok: false; error: "not_found" | "invalid_request" | "unavailable" };
+
+/**
  * The sign-in methods a person may unlink from their account (Plan 2, Task 8): the two that cloud installs link by verified email, and Slack, which a signed-in web user links
  * to their own account by signing in with Slack (owner decision, 2026-11-05).
  */
