@@ -271,6 +271,40 @@ describe("LP-13 review M2: a curate step that wrote something and then failed is
     await expect(processDraftRetrying(w.deps, KEY, text("Retries", A), { ...noWait, curate })).rejects.toMatchObject({ name: "ThrottlingException" });
     expect(runs).toBe(1);
   });
+  it("L14: a commit that threw but landed on an existing lesson (a merge makes no new id) is seen from the store: its new version is there, so the step is not run again", async () => {
+    const w = setup();
+    const existing = lessonRecord({ id: "les_merge1", workspaceId: KEY.workspaceId, project: KEY.project });
+    await w.store.commit(KEY, await w.store.setVersion(KEY), [existing], 10);
+    let runs = 0;
+    const curate = async (deps: ProcessDeps) => {
+      runs += 1;
+      const real = w.store.commit.bind(w.store);
+      // the write lands, the answer is lost
+      w.store.commit = async (...args: Parameters<typeof real>) => { await real(...args); throw throttled(); };
+      await deps.store.commit(KEY, await deps.store.setVersion(KEY), [{ ...existing, version: existing.version + 1 }], 20);
+      throw new Error("not reached");
+    };
+    await expect(processDraftRetrying(w.deps, KEY, text("Retries", A), { ...noWait, curate })).rejects.toMatchObject({ name: "ThrottlingException" });
+    expect(runs).toBe(1);
+    expect((await w.store.get(KEY, "les_merge1"))!.version).toBe(existing.version + 1);
+  });
+  it("L14: a commit that threw and did NOT land (the stored version is the old one) is run again", async () => {
+    const w = setup();
+    const existing = lessonRecord({ id: "les_merge2", workspaceId: KEY.workspaceId, project: KEY.project });
+    await w.store.commit(KEY, await w.store.setVersion(KEY), [existing], 10);
+    let runs = 0;
+    const curate = async (deps: ProcessDeps) => {
+      runs += 1;
+      if (runs === 1) {
+        const real = w.store.commit.bind(w.store);
+        w.store.commit = async () => { w.store.commit = real; throw throttled(); };
+        await deps.store.commit(KEY, await deps.store.setVersion(KEY), [{ ...existing, version: existing.version + 1 }], 20);
+      }
+      return { outcome: "dropped" as const, reason: "invalid" as const };
+    };
+    expect((await processDraftRetrying(w.deps, KEY, text("Retries", A), { ...noWait, curate })).outcome.outcome).toBe("dropped");
+    expect(runs).toBe(2);
+  });
   it("a step that wrote nothing is run again (positive control)", async () => {
     const w = setup();
     let runs = 0;

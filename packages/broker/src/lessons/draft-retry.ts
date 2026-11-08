@@ -57,6 +57,8 @@ export async function processDraftRetrying(deps: ProcessDeps, key: ScopeKey, dra
   let modelCalls = 0, committed = false;
   const noted = new Set<string>();
   const madeIds: string[] = [];
+  /** Every lesson version a commit of this try was asked to write: a commit whose answer was lost may still have landed (a merge makes no new id, so the version is what shows it). */
+  const asked: Array<{ id: string; version: number }> = [];
   const curate = options.curate ?? curateDraft;
   const written = new Set<string>();
   const judge: PipelineModel = deps.judgeModel;
@@ -66,7 +68,7 @@ export async function processDraftRetrying(deps: ProcessDeps, key: ScopeKey, dra
       if (typeof value !== "function") return value;
       const method = (value as (...args: unknown[]) => unknown).bind(target);
       // A commit's own answer is the fact: a commit that said ok landed. (Set after the call returned, so a commit that threw is not counted here; the lesson ids below cover an answer that was lost.)
-      if (property === "commit") return async (...args: unknown[]) => { const result = await method(...args); if ((result as { ok?: boolean } | undefined)?.ok !== false) committed = true; return result; };
+      if (property === "commit") return async (...args: unknown[]) => { for (const lesson of (args[2] as Array<{ id: string; version: number }> | undefined) ?? []) asked.push({ id: lesson.id, version: lesson.version }); const result = await method(...args); if ((result as { ok?: boolean } | undefined)?.ok !== false) committed = true; return result; };
       // A count is "made" only once the write returned: a fault in it leaves it to the retry.
       if (property === "recordSourceEvent") return async (...args: unknown[]) => { const result = await method(...args); noted.add(String((args[1] as { source?: unknown } | undefined)?.source)); return result; };
       return method;
@@ -102,7 +104,7 @@ export async function processDraftRetrying(deps: ProcessDeps, key: ScopeKey, dra
     if (modelCalls > 0 || !isPassingStoreFault(error)) throw error;
     // A curate step that wrote something and then failed is never run again: its repeat would curate the draft a second time (a second card for one draft). The writes are known from the commits' own answers and
     // from the store (a lesson this try made, whose commit's answer may have been lost).
-    if (step === "curate" && (committed || await anyStored(deps, key, madeIds))) throw error;
+    if (step === "curate" && (committed || await anyStored(deps, key, madeIds, asked))) throw error;
     const attempt = currentLearningAttempt();
     if (attempt !== undefined && (attempt.signal?.aborted === true || (attempt.deadlineAt - (options.now ?? Date.now)()) < DRAFT_RETRY_MIN_LEFT_MS)) throw error;
     options.log?.("learning.draft_retried", {});
@@ -121,10 +123,14 @@ export async function processDraftRetrying(deps: ProcessDeps, key: ScopeKey, dra
   }
 }
 
-/** True when any of the lessons (by id) is in the store, or when the store cannot say (then the step is not repeated: never on doubt). */
-async function anyStored(deps: ProcessDeps, key: ScopeKey, ids: readonly string[]): Promise<boolean> {
-  for (const id of ids) {
-    try { if (await deps.store.get(key, id) !== undefined) return true; } catch { return true; }
-  }
+/**
+ * True when the store holds a lesson this try made, or a version a commit of this try asked it to write (the answer of that commit may have been lost), or when the store cannot say (then the step is not repeated:
+ * never on doubt).
+ */
+async function anyStored(deps: ProcessDeps, key: ScopeKey, ids: readonly string[], asked: ReadonlyArray<{ id: string; version: number }>): Promise<boolean> {
+  try {
+    for (const id of ids) if (await deps.store.get(key, id) !== undefined) return true;
+    for (const { id, version } of asked) { const stored = await deps.store.get(key, id); if (stored !== undefined && stored.version >= version) return true; }
+  } catch { return true; }
   return false;
 }
