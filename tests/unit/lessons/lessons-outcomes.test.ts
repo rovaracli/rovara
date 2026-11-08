@@ -301,12 +301,10 @@ describe("M3: the reflection comes first; judging has its own time and its own l
     expect(result).toEqual({ status: "not_reflected", retry: true });
   });
   it("judging stops starting calls when its own time is used up; the rest are unjudged (no helpful mark), and the next delivery judges them again", async () => {
-    let clock: Clock | undefined;
     const judge = new RecordingJudge("unrelated");
     const rate = judge.rate.bind(judge);
-    judge.rate = async (input) => { clock!.advance(40_000); return rate(input); };
     const w = await counted(comments, judge);
-    clock = w.clock;
+    judge.rate = async (input) => { w.clock.advance(40_000); return rate(input); };
     await learnFromEndedTask(w.deps, merged);
     expect(judge.asked).toHaveLength(2);
     expect(await w.queued()).toEqual([]);
