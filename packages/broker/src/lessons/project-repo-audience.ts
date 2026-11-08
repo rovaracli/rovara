@@ -15,7 +15,6 @@
 import { QueryCommand } from "@aws-sdk/lib-dynamodb";
 import { PROJECT_REVISION_SK_PREFIX, RepositoryDefinitionSchema, codeRepositoriesOf, projectPk, repositoryHostOf, type OrgId, type RepositoryDefinition } from "@agentx/contracts";
 import { isScopeClosed } from "../team-record/item-head.js";
-import type { TeamRecordTable } from "../team-record/types.js";
 import { ACL_SCOPE_MAX, type Lesson } from "./types.js";
 
 /** The places (`<source>:repo/<id>`) of the repositories a project has now. Throws when the project definition cannot be read. */
@@ -120,7 +119,7 @@ async function latestPinnedRepositories(table: { documentClient: Send; tableName
  * queued, while the pinned id stays in the project definition until someone edits it. A closed place is left out too, so its lessons stop loading at once instead of when the queued withdrawal has run. One
  * consistent read per pinned repository; a marker that cannot be read throws (the lessons stay restricted, as for any unreadable definition).
  */
-export function tableProjectRepoScopes(table: { documentClient: Send; tableName: string }, options: { record?: TeamRecordTable | undefined } = {}): ProjectRepoScopesPort {
+export function tableProjectRepoScopes(table: { documentClient: Send; tableName: string }, options: { record?: { documentClient: Send; tableName: string } | undefined } = {}): ProjectRepoScopesPort {
   return {
     async read(orgId, project) {
       const pinned = await latestPinnedRepositories(table, orgId, project);
