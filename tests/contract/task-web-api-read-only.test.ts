@@ -87,9 +87,13 @@ describe("task page API (OWNER DECISION 7: read-only)", () => {
     expect((await call(deps, post(api("comments"), commentBody, { cookie: undefined }))).statusCode).toBe(401);
     expect((await call(deps, { ...get(api("state")), method: "POST", headers: post(api("state"), {}).headers })).statusCode).toBe(405);
     expect((await call(deps, { ...get(api("decision")), method: "PUT" })).statusCode).toBe(405);
-    // Someone the task's path cannot be given to hears the same refusal without it.
-    const unknown = await call(fakeDeps({ taskPagePath: async () => { throw Object.assign(new Error("no"), { code: "TASK_NOT_FOUND" }); } }), post(api("decision"), {}));
-    expect(unknown.json).toEqual({ error: "read_only", message: TASK_PAGE_READ_ONLY_MESSAGE });
+    // Follow-up R1: with no task page to point to (someone who may not read the task, or a task with no session), nothing is refused here: the write reaches its own function, which checks
+    // who may as it always did (these fakes accept; the broker-level tests below pin the real refusals).
+    for (const noPage of [async () => { throw Object.assign(new Error("no"), { code: "TASK_NOT_FOUND" }); }, async () => undefined, async () => "/app/projects/demo"]) {
+      const through = fakeDeps({ taskPagePath: noPage });
+      expect((await call(through, post(api("comments"), commentBody))).statusCode).toBe(201);
+      expect((await call(through, post(api(`comments/${randomUUID()}/remember`), {}))).statusCode).not.toBe(410);
+    }
   });
 
   it("OWNER DECISION 18 (review M1): no comment, reply, suggestion or Ask is written here with the cards on; with them off the same requests write as before", async () => {
@@ -224,10 +228,10 @@ describe("task page API through the broker, with the decision cards on", () => {
         const real = await t.send(who, method, `/review/${t.id}/task/api/${suffix}`, body);
         const none = await t.send(who, method, `/review/${missing}/task/api/${suffix}`, body);
         // A read is the not found a missing task gets; every write is the read-only refusal, without the task page's path (OWNER DECISION 7, 17 and 18): the same for a real task and a missing one.
-        const decisionWrite = method === "POST";
-        expect(real.statusCode, `${who.name} ${suffix}`).toBe(decisionWrite ? 410 : 404);
+        // Follow-up R1: someone who may not read the task has no task page to be pointed to, so a write reaches its function, which answers as a missing task.
+        expect(real.statusCode, `${who.name} ${suffix}`).toBe(404);
         expect(real.body).toBe(none.body);
-        expect(real.json).toEqual(decisionWrite ? { error: "read_only", message: TASK_PAGE_READ_ONLY_MESSAGE } : { error: "not_found", message: "You don't have access to this task." });
+        expect(real.json).toEqual({ error: "not_found", message: "You don't have access to this task." });
         expect(real.body).not.toContain("Maya");
       }
     }
@@ -245,23 +249,28 @@ describe("task page API through the broker, with the decision cards on", () => {
     expect(outsider.headers.location).toBeUndefined();
   });
 
-  it("a task with no task page in Rovara keeps the read-only page: it decides nothing for the owner (no answer controls, the bar links the task page) and offers no comment controls", async () => {
+  it("Follow-up R1: a task with no task page in Rovara keeps its old page fully: its controls are drawn, and comments, suggestions and the decision write there, by the same rules", async () => {
     const t = await sharedTask();
     const { sessionId: _session, ...meta } = t.harness.db.get(`DEVTASK#${t.id}`, "META") as Record<string, unknown>;
     void _session;
     t.harness.db.set(meta);
     const owner = await t.send(MAYA, "GET", `/review/${t.id}/task`);
     expect(owner.statusCode).toBe(200);
-    expect(owner.body).not.toContain('type="radio"');
-    expect(owner.body).not.toContain('id="decide-dialog"');
-    expect(owner.body).toContain('class="decide-bar"');
-    expect(owner.body).toMatch(/Decide on the task/u);
     const island = JSON.parse(/<script type="application\/json" id="agentx-page-data">([\s\S]*?)<\/script>/u.exec(owner.body)![1]!) as { canDecide: boolean; canComment: boolean };
-    // OWNER DECISION 18 (review M1): nothing is written here with the cards on, so no comment control either.
-    expect(island).toMatchObject({ canDecide: false, canComment: false });
-    const teammate = await t.send(LEE, "GET", `/review/${t.id}/task`);
-    expect(teammate.body).toContain("Only owners decide.");
-    expect(teammate.body).toContain("You can read and comment on this task.");
+    expect(island).toMatchObject({ canDecide: true, canComment: true });
+    expect(owner.body).toContain('id="decide-dialog"');
+    const comment = await t.send(LEE, "POST", `/review/${t.id}/task/api/comments`, { ...commentBody, requestId: randomUUID() });
+    expect(comment.statusCode, comment.body).toBe(201);
+    expect((await t.send(LEE, "POST", `/review/${t.id}/task/api/suggestions`, { document: "plan", decisionId: "d1", optionId: "above" })).statusCode).toBe(200);
+    // The owner's suggestion is refused by the page's own rule (not a 410), and a reader without access still learns nothing.
+    expect((await t.send(MAYA, "POST", `/review/${t.id}/task/api/suggestions`, { document: "plan", decisionId: "d1", optionId: "above" })).statusCode).toBe(403);
+    const outsider = await t.send(NIA, "POST", `/review/${t.id}/task/api/comments`, { ...commentBody, requestId: randomUUID() });
+    const missing = await t.send(NIA, "POST", `/review/${randomUUID()}/task/api/comments`, { ...commentBody, requestId: randomUUID() });
+    expect([outsider.statusCode, outsider.body]).toEqual([404, missing.body]);
+    // The decision goes to the same page decision as with the cards off.
+    const decided = await t.send(MAYA, "POST", `/review/${t.id}/task/api/decision`, t.decision({ includedCommentIds: [] }));
+    expect(decided.statusCode, decided.body).not.toBe(410);
+    expect(t.harness.db.find((item) => item.entityType === "TASK_COMMENT")).toHaveLength(1);
   });
 
 });

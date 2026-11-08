@@ -84,11 +84,18 @@ describe("authenticated PR feedback review web journey", () => {
     const refused = await createFeedbackReviewWeb(on)(request("POST", `/review/${taskId}/api/decision`, headers, decision), new URL(`/review/${taskId}/api/decision`, origin));
     expect(refused.statusCode).toBe(410);
     expect(JSON.parse(refused.body)).toEqual({ error: "read_only", message: "This page is read only. Decide the PR feedback on the task's page in Rovara.", taskPage: "/app/sessions/ses_0123456789abcdefghij?view=feedback" });
-    // Someone the task's path cannot be given to hears the same refusal without it.
-    const hidden = dependencies({ taskPagePath: async () => { throw Object.assign(new Error("no"), { code: "TASK_NOT_FOUND" }); } });
-    const blind = await createFeedbackReviewWeb(hidden)(request("POST", `/review/${taskId}/api/decision`, headers, decision), new URL(`/review/${taskId}/api/decision`, origin));
-    expect([blind.statusCode, JSON.parse(blind.body)]).toEqual([410, { error: "read_only", message: "This page is read only. Decide the PR feedback on the task's page in Rovara." }]);
-    expect([on.observed.decisions, hidden.observed.decisions]).toEqual([[], []]);
+    expect(on.observed.decisions).toEqual([]);
+    // Follow-up R1: with no task page to point to (a task with no session, or someone the check refuses), the decision reaches its own function, as with the cards off; that function
+    // decides who may (its refusal answers as before).
+    for (const noPage of [async () => undefined, async () => { throw Object.assign(new Error("no"), { code: "TASK_NOT_FOUND" }); }, async () => "/app/projects/demo"]) {
+      const kept = dependencies({ taskPagePath: noPage });
+      const through = await createFeedbackReviewWeb(kept)(request("POST", `/review/${taskId}/api/decision`, headers, { ...decision, requestId: randomUUID() }), new URL(`/review/${taskId}/api/decision`, origin));
+      expect(through.statusCode).toBe(200);
+      expect(kept.observed.decisions).toHaveLength(1);
+    }
+    const refusing = dependencies({ taskPagePath: async () => undefined, submitWorkflowFeedbackDecision: async () => { throw Object.assign(new Error("no"), { code: "FORBIDDEN" }); } });
+    const notYours = await createFeedbackReviewWeb(refusing)(request("POST", `/review/${taskId}/api/decision`, headers, decision), new URL(`/review/${taskId}/api/decision`, origin));
+    expect([notYours.statusCode, JSON.parse(notYours.body)]).toEqual([404, { error: "not_found", message: "Review not found." }]);
     // The cards off (no task page given): the same request decides.
     const off = dependencies();
     const decided = await createFeedbackReviewWeb(off)(request("POST", `/review/${taskId}/api/decision`, headers, decision), new URL(`/review/${taskId}/api/decision`, origin));

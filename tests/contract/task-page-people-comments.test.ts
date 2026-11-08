@@ -9,6 +9,7 @@ import { developerIdForSlackUser } from "../../packages/broker/src/aws/admin-act
 import { TASK_COMMENT_LEARNING_BROWSER_MESSAGE } from "../../packages/broker/src/aws/developer-routes/task-page-actions.js";
 import { commentKey } from "../../packages/broker/src/developer/page-comments.js";
 import { browserRequests } from "../support/browser-session.js";
+import { reviewPagePost } from "../support/card-decision.js";
 import { createDeveloperTaskBroker, type Developer } from "../support/developer-task-broker.js";
 import { SLACK_CHANNEL, SLACK_TEAM } from "../support/slack-broker.js";
 import { TEST_ORG } from "../support/orgs.js";
@@ -97,6 +98,38 @@ describe("People on the task page (OWNER DECISION 7)", () => {
       expect([real.status, real.body.error], write).toEqual([none.status, none.body.error]);
     }
     expect(JSON.stringify(outsider.body)).not.toContain("Lee Park");
+  });
+});
+
+describe("Follow-up: a People change is confirmed only by the person who proposed it, through the old page's confirmation, with the cards on", () => {
+  it("a second person and an outsider cannot confirm the owner's pending role change; the owner can", async () => {
+    const cards = process.env.DECISION_CARDS_ENABLED;
+    process.env.DECISION_CARDS_ENABLED = "1";
+    try {
+      const t = await slackTask();
+      const view = (await t.web(CREATOR, "GET", `/v1/app/tasks/${t.taskId}/people`)).body.view as { revision: number; people: Array<{ personId: string; name: string }> };
+      const lee = view.people.find((person) => person.name === "Lee Park")!;
+      const requestId = randomUUID();
+      const proposed = await t.web(CREATOR, "POST", `/v1/app/tasks/${t.taskId}/people/role`, { requestId, expectedPeopleRevision: view.revision, personId: lee.personId, role: "viewer" });
+      expect(proposed.body.change).toMatchObject({ status: "PENDING" });
+      const events = () => t.harness.db.find((item) => item.entityType === "TASK_PEOPLE_EVENT").length;
+      const before = events();
+      for (const who of [LEE, OUTSIDER]) {
+        await t.harness.orgOf({ ...who });
+        const refused = await reviewPagePost(t.harness, who, t.taskId, `people/requests/${requestId}/confirm`, { requestId });
+        expect(refused.status, `${who.name}: ${JSON.stringify(refused.body)}`).toBeGreaterThanOrEqual(400);
+        expect(refused.status, who.name).not.toBe(410);
+        expect(refused.body.status).not.toBe("COMMITTED");
+      }
+      expect(events()).toBe(before);
+      // Positive control: the person who proposed it confirms it on the same page.
+      const confirmed = await reviewPagePost(t.harness, CREATOR, t.taskId, `people/requests/${requestId}/confirm`, { requestId });
+      expect(confirmed.status, JSON.stringify(confirmed.body)).toBe(200);
+      expect(confirmed.body).toMatchObject({ status: "COMMITTED" });
+      expect(events()).toBeGreaterThan(before);
+    } finally {
+      if (cards === undefined) delete process.env.DECISION_CARDS_ENABLED; else process.env.DECISION_CARDS_ENABLED = cards;
+    }
   });
 });
 
