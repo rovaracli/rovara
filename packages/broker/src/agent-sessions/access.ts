@@ -8,6 +8,7 @@
 //   - the task's Task People list (`commenter` is `use`, `viewer` is `view`, `owner` is `edit` until the task has been taken over).
 // A project viewer (not the owner) can only watch, whatever shares say; a Task People `denied` entry takes everything but an org admin's `view`.
 // Another org's session, or no level at all, is `NOT_FOUND`, so a session's existence never leaks.
+import { resolveStoredName } from "../developer/name-resolver.js";
 import { GetCommand, QueryCommand } from "@aws-sdk/lib-dynamodb";
 import { z } from "zod";
 import {
@@ -222,6 +223,17 @@ function effectiveOwnerNamed(session: AgentSessionRecord, taskItem: Item | undef
   return { developerId: owner.developerId, name: cleanSessionName(owner.name) ?? UNNAMED_MEMBER };
 }
 
+/**
+ * ERASE-NAME-2: the effective owner with the name that may be shown. The name stored with the session or the task is the one they had then (and may be the one they chose); an erased person reads "A former member",
+ * a removed one never the name they chose, and a lookup that fails reads "A member". This is the ONE place the stored name is resolved: everything that writes the owner's name into an approval, a stored fact or an
+ * error message (`access.effectiveOwner.name`) gets the resolved one. The readers of MANY sessions (a list with a `memo`, the Live wall with a `prefetch`) put no owner name into a sentence and overlay the names of
+ * the whole page in one read themselves (`ownerNameOverlay`), so for them the name stays as stored here, which keeps a list at one read for its names.
+ */
+async function shownEffectiveOwner(deps: SessionAccessDependencies, orgId: string, owner: { developerId: string; name: string }, options: SessionAccessOptions): Promise<{ developerId: string; name: string }> {
+  if (options.prefetch !== undefined || options.memo !== undefined) return owner;
+  return { developerId: owner.developerId, name: await resolveStoredName({ documentClient: deps.documentClient, tableName: deps.tableName, orgId }, owner.developerId, owner.name) };
+}
+
 /** The id of `effectiveOwnerNamed`: access and the share notice read it. */
 export function effectiveOwnerId(session: AgentSessionRecord, taskItem: Item | undefined): string {
   return effectiveOwnerNamed(session, taskItem).developerId;
@@ -289,7 +301,7 @@ async function compute(deps: SessionAccessDependencies, caller: SessionCaller, o
     if (found?.["orgId"] === session.orgId) taskItem = found;
   }
   let slackNotAsked = false;
-  const effectiveOwner = effectiveOwnerNamed(session, taskItem);
+  const effectiveOwner = await shownEffectiveOwner(deps, orgId, effectiveOwnerNamed(session, taskItem), options);
   const owner = caller.developerId === effectiveOwner.developerId;
 
   const projectRole = session.project === undefined ? undefined : (await roleOn(session.project)).effective;

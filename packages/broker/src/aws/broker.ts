@@ -4,8 +4,8 @@
 // First of all the imports, so that it runs before any module below can read the environment: puts back the names the control plane passes as one variable
 // (AGENTX_NAMES), and what an environment's name decides, under the variables this file has always read (broker-environment.ts).
 // tests/contract/broker-environment-first.test.ts keeps it first and fails on any read of a packed name before it runs.
-import { readOwnChosenName } from "../developer/chosen-name.js";
 import "./broker-environment-init.js";
+import { readOwnChosenName } from "../developer/chosen-name.js";
 // The file's own imports, in their old order (after the environment init), so every dependency loads as it did before the split.
 import "../model-selection/evidence.js";
 import "../agents/table-writes.js";

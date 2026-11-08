@@ -4,19 +4,24 @@
 // an erased and a removed person. The ledger's tombstone lives in the keys table; here it is a second table name in the one fake database (the keys do not collide).
 import { randomUUID } from "node:crypto";
 import { BatchGetCommand, GetCommand } from "@aws-sdk/lib-dynamodb";
-import { beforeEach, describe, expect, it } from "vitest";
-import { agentSessionKey, orgMemberKey } from "../../packages/contracts/src/index.js";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import { agentSessionKey, orgMemberKey, sessionEventId } from "../../packages/contracts/src/index.js";
 import { taskKey } from "../../packages/broker/src/developer/task-records.js";
 import { orgFailureIndexKey, orgUsageIndexKey } from "../../packages/contracts/src/org-scoped-keys.js";
 import { chosenOwnerNames, ownerNameOverlay } from "../../packages/broker/src/agent-sessions/owner-names.js";
 import { ensureTaskSession } from "../../packages/broker/src/agent-sessions/create.js";
+import { requireSessionLevel } from "../../packages/broker/src/agent-sessions/access.js";
+import { aliasHashesOf, askAliasHashKey, readErasedAliases } from "../../packages/broker/src/agent-sessions/ask-erased-aliases.js";
+import { appendSessionEvent, readSessionEvents } from "../../packages/broker/src/agent-sessions/events.js";
+import { erasePerson } from "../../packages/broker/src/team-record/erase.js";
+import { NAME_ERASED_MESSAGE } from "../../packages/broker/src/developer/store.js";
 import { listSessionMessages, sendSessionMessage, type SessionMessageDependencies } from "../../packages/broker/src/agent-sessions/messages.js";
 import { planWhyEntries } from "../../packages/broker/src/aws/developer-tasks/thread-notes.js";
 import { savedByName } from "../../packages/broker/src/aws/developer-routes/settings-proof.js";
 import { runOfApproval } from "../../packages/broker/src/agents/approvals-store.js";
 import { listSuggestions, listTaskComments, setSuggestion } from "../../packages/broker/src/developer/page-comments.js";
-import { FORMER_MEMBER_NAME, chosenNameKey } from "../../packages/broker/src/developer/chosen-name.js";
-import { forgetResolvedNames, replacementNames, resolveStoredName } from "../../packages/broker/src/developer/name-resolver.js";
+import { FORMER_MEMBER_NAME, chosenNameKey, eraseChosenName, readOwnChosenName } from "../../packages/broker/src/developer/chosen-name.js";
+import { UNAVAILABLE_NAME, erasedNamesOnPage, forgetResolvedNames, replacementNames, resolveStoredName, scrubErasedNames } from "../../packages/broker/src/developer/name-resolver.js";
 import { placeholderDisplayName } from "../../packages/broker/src/developer/person-name.js";
 import { resolveTaskAccess } from "../../packages/broker/src/developer/task-access.js";
 import { createTaskComment } from "../../packages/broker/src/developer/page-comments.js";
@@ -87,18 +92,56 @@ describe("the resolver", () => {
     expect(recorder.commands.filter((command) => command instanceof GetCommand)).toHaveLength(30);
   });
 
-  it("treats a person the ledger erased as erased and leaves the tombstone in the name item, for the readers that cannot ask the ledger", async () => {
+  it("treats a person the ledger erased as erased WITHOUT writing: the chosen name stays until the erase's own names step (after the Asks hashes) has read it", async () => {
     const db = world();
-    expect(db.get(chosenNameKey(ids.ledger))).toBeUndefined();
-    await replacementNames(deps(db), [ids.ledger]);
-    expect(db.get(chosenNameKey(ids.ledger))).toMatchObject({ erased: true });
+    db.set(nameItem(ids.ledger));
+    const recorder = sent(db);
+    // The gap: the ledger says erased, the Asks step has not hashed the name yet, and a page is read.
+    const replaced = await replacementNames({ ...deps(db), documentClient: recorder.client }, [ids.ledger]);
+    expect(replaced.get(ids.ledger)).toBe(FORMER_MEMBER_NAME);
+    // ... so the name is not shown, and the name item is untouched: the erase can still read and hash it.
+    expect(db.get(chosenNameKey(ids.ledger))).toMatchObject({ name: CHOSEN });
+    expect(db.get(chosenNameKey(ids.ledger))).not.toHaveProperty("erased");
+    expect(recorder.commands.filter((command) => !(command instanceof GetCommand) && !(command instanceof BatchGetCommand))).toEqual([]);
+    expect(await readOwnChosenName(db, "state", ids.ledger)).toBe(CHOSEN);
   });
 
-  it("leaves the copy as stored when a read fails", async () => {
+  it("shows a generic name, not the stored one, when a read fails, and logs the failure without a name", async () => {
     const db = world();
     const failing = { send: async () => { throw new Error("unavailable"); } };
-    expect(await replacementNames({ ...deps(db), documentClient: failing }, [ids.erased])).toEqual(new Map());
-    expect(await resolveStoredName({ ...deps(db), documentClient: failing }, ids.erased, REAL)).toBe(REAL);
+    const lines: string[] = [];
+    const log = vi.spyOn(console, "log").mockImplementation((line: unknown) => { lines.push(String(line)); });
+    try {
+      expect(await replacementNames({ ...deps(db), documentClient: failing }, [ids.erased])).toEqual(new Map([[ids.erased, UNAVAILABLE_NAME]]));
+      expect(await resolveStoredName({ ...deps(db), documentClient: failing }, ids.erased, REAL)).toBe(UNAVAILABLE_NAME);
+    } finally {
+      log.mockRestore();
+    }
+    expect(lines.some((line) => line.includes("name_resolver_unavailable"))).toBe(true);
+    expect(lines.join("\n")).not.toContain(REAL);
+    // A ledger read that fails for one person leaves that person generic, and the others settled.
+    forgetResolvedNames();
+    const ledgerKeyOf = (command: unknown): string | undefined => (command instanceof GetCommand ? (command.input.Key as { sk?: string } | undefined)?.sk : undefined);
+    const flaky = { send: (command: never) => (ledgerKeyOf(command) === `SUBJECT#${ids.plain}` ? Promise.reject(new Error("throttled")) : db.send(command)) };
+    const quiet = vi.spyOn(console, "log").mockImplementation(() => undefined);
+    try {
+      const replaced = await replacementNames({ ...deps(db), documentClient: flaky }, [ids.plain, ids.ledger]);
+      expect(Object.fromEntries(replaced)).toEqual({ [ids.plain]: UNAVAILABLE_NAME, [ids.ledger]: FORMER_MEMBER_NAME });
+    } finally {
+      quiet.mockRestore();
+    }
+  });
+});
+
+describe("blanking an erased person's stored name out of words other people wrote", () => {
+  it("replaces exact whole-word occurrences of the erased actors' names only, and skips generic words, placeholders and short names", () => {
+    const replaced = new Map([["a", FORMER_MEMBER_NAME], ["b", FORMER_MEMBER_NAME], ["c", FORMER_MEMBER_NAME], ["d", FORMER_MEMBER_NAME], ["e", UNAVAILABLE_NAME]]);
+    const names = erasedNamesOnPage([
+      { developerId: "a", name: "Priya Realname" }, { developerId: "b", name: "Someone" }, { developerId: "c", name: placeholderDisplayName(hex("c")) }, { developerId: "d", name: "Al" },
+      { developerId: "e", name: "Eve Failure" }, { developerId: "z", name: "Zed Bystander" },
+    ], replaced);
+    expect(names).toEqual(["Priya Realname"]);
+    expect(scrubErasedNames("Omar took over from Priya Realname. Priya Realnames stays; priya realname too; Someone helped.", names)).toBe(`Omar took over from ${FORMER_MEMBER_NAME}. Priya Realnames stays; priya realname too; Someone helped.`);
   });
 });
 
@@ -309,5 +352,84 @@ describe("the owner shown on an approval, for an erased and a removed owner", ()
     expect((await runOfApproval(deps, record))?.owner.name).toBe(placeholderDisplayName(owner));
     db.set({ ...chosenNameKey(owner), entityType: "DEVELOPER_NAME", developerId: owner, erased: true, erasedAt: AT });
     expect((await runOfApproval(deps, record))?.owner.name).toBe(FORMER_MEMBER_NAME);
+  });
+});
+
+describe("the erase's order: the chosen name is hashed before anything destroys it", () => {
+  it("a page read between the ledger's tombstone and the Asks step shows 'A former member', destroys nothing, and the Asks step then keeps the hash of the chosen name", async () => {
+    const orgId = "org_aaaaaaaaaaaaaaaaaaaa" as const;
+    const db = new FakeDynamoDb();
+    const person = hex("7");
+    db.set(nameItem(person, CHOSEN));
+    db.set({ pk: `ORG#${orgId}`, sk: `SUBJECT#${person}`, erasedAt: AT });
+    // The page read.
+    const replaced = await replacementNames({ documentClient: db, tableName: "state", orgId, keysTable: KEYS }, [person]);
+    expect(replaced.get(person)).toBe(FORMER_MEMBER_NAME);
+    expect(db.get(chosenNameKey(person))).toMatchObject({ name: CHOSEN });
+    // The record's erase: the Asks step reads the chosen name and keeps its keyed hash, and only then does the names step run.
+    const key = askAliasHashKey("k".repeat(40));
+    const erased: string[] = [];
+    const table = { documentClient: db, tableName: "state" } as never;
+    const result = await erasePerson({ table, askAliasKey: key, names: { erase: async (id: string) => { erased.push(id); await eraseChosenName(db, "state", id, AT); } } }, orgId, { developerId: person, projects: [], names: [REAL] }, "erase:gap");
+    expect(result.steps?.names).toBe(true);
+    expect(erased).toEqual([person]);
+    const kept = await readErasedAliases(table, orgId, Date.parse(AT));
+    expect(kept.flatMap((entry) => entry.names)).toEqual(expect.arrayContaining(aliasHashesOf(key, { names: [CHOSEN, REAL] }).names));
+    expect(db.get(chosenNameKey(person))).toMatchObject({ erased: true });
+    expect(db.get(chosenNameKey(person))).not.toHaveProperty("name");
+  });
+});
+
+describe("the owner's name in access errors", () => {
+  it("names an erased owner 'A former member' in the 'ask <owner>' message", async () => {
+    const w = sessionWorld();
+    const { sessionId } = w.seedSession({ owner: PRIYA });
+    w.seedShare(ORG_A, sessionId, { kind: "member", developerId: ARJUN }, "view");
+    const deps = { documentClient: w.db, tableName: "state", now: () => w.clock.now, projectMembers: w.members };
+    const message = async () => (await requireSessionLevel(deps, w.caller(ARJUN), sessionId, "edit", "stop it").catch((error: Error) => error) as Error).message;
+    expect(await message()).toContain("Priya");
+    w.db.set({ ...chosenNameKey(PRIYA), entityType: "DEVELOPER_NAME", developerId: PRIYA, erased: true, erasedAt: AT });
+    const after = await message();
+    expect(after).toContain(FORMER_MEMBER_NAME);
+    expect(after).not.toContain("Priya");
+  });
+});
+
+describe("session events written by other people", () => {
+  it("blanks the stored name of an erased actor of the page out of other actors' words, and leaves everyone else's words alone", async () => {
+    const w = sessionWorld();
+    const deps = { documentClient: w.db, tableName: "state", now: () => Date.parse(AT) + 60_000, projectMembers: w.members, signInStore: w.signInStore };
+    const { sessionId } = w.seedSession();
+    await appendSessionEvent(deps, ORG_A, sessionId, { eventId: sessionEventId("started", "a"), at: AT, type: "status", actor: { kind: "member", developerId: PRIYA, name: REAL }, text: `${REAL} started Rovara Code` });
+    await appendSessionEvent(deps, ORG_A, sessionId, { eventId: sessionEventId("took", "b"), at: new Date(Date.parse(AT) + 1_000).toISOString(), type: "status", actor: { kind: "member", developerId: ARJUN, name: "Arjun Real" }, text: `Arjun Real took over from ${REAL}.` });
+    const texts = async () => (await readSessionEvents(deps, w.caller(ARJUN), sessionId, {})).events.map((event) => event.text);
+    expect(await texts()).toEqual([`${REAL} started Rovara Code`, `Arjun Real took over from ${REAL}.`]);
+    w.db.set({ ...chosenNameKey(PRIYA), entityType: "DEVELOPER_NAME", developerId: PRIYA, erased: true, erasedAt: AT });
+    expect(await texts()).toEqual([`${FORMER_MEMBER_NAME} started Rovara Code`, `Arjun Real took over from ${FORMER_MEMBER_NAME}.`]);
+  });
+});
+
+describe("the message for a name that was erased", () => {
+  it("says plainly that the name was erased and shows as 'A former member', and sends no one to an administrator", () => {
+    expect(NAME_ERASED_MESSAGE).toContain("erased");
+    expect(NAME_ERASED_MESSAGE).toContain(FORMER_MEMBER_NAME);
+    expect(NAME_ERASED_MESSAGE.toLowerCase()).not.toContain("administrator");
+    expect(NAME_ERASED_MESSAGE.toLowerCase()).not.toContain("admin");
+  });
+});
+
+describe("a page's name overlay when the name read fails", () => {
+  it("shows a generic name for every owner on the page, not the stored one, and logs it", async () => {
+    const failing = { send: async () => { throw new Error("throttled"); } };
+    const lines: string[] = [];
+    const log = vi.spyOn(console, "log").mockImplementation((line: unknown) => { lines.push(String(line)); });
+    try {
+      const overlay = await ownerNameOverlay({ documentClient: failing, tableName: "state" }, [PRIYA, ARJUN], ORG_A);
+      expect(Object.fromEntries(overlay.replaced)).toEqual({ [PRIYA]: UNAVAILABLE_NAME, [ARJUN]: UNAVAILABLE_NAME });
+      expect(overlay.chosen.size).toBe(0);
+    } finally {
+      log.mockRestore();
+    }
+    expect(lines.some((line) => line.includes("name_resolver_unavailable"))).toBe(true);
   });
 });

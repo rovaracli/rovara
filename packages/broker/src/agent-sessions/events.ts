@@ -25,6 +25,7 @@ import { followMerges } from "../agents/access.js";
 import type { DeveloperSignInStore } from "../developer/store.js";
 import { requireSessionLevel, type SessionAccessDependencies, type SessionCaller } from "./access.js";
 import { isPlaceholderDisplayName, safeDisplayName } from "../developer/person-name.js";
+import { erasedNamesOnPage, scrubErasedNames } from "../developer/name-resolver.js";
 import { ownerNameOverlay } from "./owner-names.js";
 import { AgentSessionStore, sessionEventItem, type SessionRef, type SessionTaskRef } from "./store.js";
 
@@ -204,7 +205,7 @@ export async function readSessionEvents(deps: SessionEventsDependencies, caller:
   }
 
   const next = lastSk !== undefined ? lastSk.slice(SK_PREFIX.length) : query.after;
-  return { events: await withChosenActorNames(deps, [...events.values()], session.orgId), ...(next === undefined ? {} : { next }) };
+  return { events: await withChosenActorNames(deps, [...events.values()], session.orgId, [session.owner]), ...(next === undefined ? {} : { next }) };
 }
 
 /**
@@ -215,14 +216,18 @@ export async function readSessionEvents(deps: SessionEventsDependencies, caller:
  * ERASE-NAME-1: an actor who was erased reads "A former member", whatever name the event stored (the real name of a person who never chose one included), and the stored name in the event's
  * words reads the same. If the state cannot be read, the event reads as stored (the same best effort as the chosen name).
  */
-async function withChosenActorNames(deps: SessionEventsDependencies, events: SessionEvent[], orgId: string): Promise<SessionEvent[]> {
-  const members = events.flatMap((event) => (event.actor?.kind === "member" ? [event.actor.developerId] : []));
-  const { chosen, replaced } = await ownerNameOverlay(deps, members, orgId);
+async function withChosenActorNames(deps: SessionEventsDependencies, events: SessionEvent[], orgId: string, alsoOnPage: ReadonlyArray<{ developerId: string; name: string }> = []): Promise<SessionEvent[]> {
+  const copies = [...events.flatMap((event) => (event.actor?.kind === "member" ? [{ developerId: event.actor.developerId, name: event.actor.name }] : [])), ...alsoOnPage];
+  const { chosen, replaced } = await ownerNameOverlay(deps, copies.map((copy) => copy.developerId), orgId);
   if (chosen.size === 0 && replaced.size === 0) return events;
+  // ERASE-NAME-2 (partial): words other people wrote name the erased person by the name stored then ("X took over from Y"). The stored names of the erased people who are on this page (actors, the owner) are
+  // blanked out of every event's text, exact and whole-word. A person who is not on the page, or named some other way, is not covered (DEFERRED-CHECKS).
+  const erasedNames = erasedNamesOnPage(copies, replaced);
   return events.map((event) => {
     const actor = event.actor;
-    if (actor?.kind !== "member") return event;
+    const scrubbed = erasedNames.length === 0 ? event : { ...event, text: [...scrubErasedNames(event.text, erasedNames)].slice(0, SESSION_EVENT_TEXT_MAX).join("") };
+    if (actor?.kind !== "member") return scrubbed;
     const name = replaced.get(actor.developerId) ?? (isPlaceholderDisplayName(actor.name) ? chosen.get(actor.developerId) : undefined);
-    return name === undefined ? event : { ...event, actor: { ...actor, name }, text: [...(actor.name === "" ? event.text : event.text.split(actor.name).join(name))].slice(0, SESSION_EVENT_TEXT_MAX).join("") };
+    return name === undefined ? scrubbed : { ...scrubbed, actor: { ...actor, name }, text: [...(actor.name === "" ? scrubbed.text : scrubbed.text.split(actor.name).join(name))].slice(0, SESSION_EVENT_TEXT_MAX).join("") };
   });
 }

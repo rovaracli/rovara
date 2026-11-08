@@ -1,4 +1,5 @@
 import { logDeveloperEvent } from "../../developer/log.js";
+import { nameResolverOf, replacementNamesFrom } from "../../developer/name-resolver.js";
 import {
   AgentXNameSchema,
   agentXError,
@@ -44,23 +45,25 @@ export async function getProjectMembers(deps: DeveloperRouteDependencies, caller
   // Who added a person is shown as the developer they have since been merged into, if any.
   const rows = (await listProjectMembers(merge, caller.orgId, name)).map(async (row) => (row.grantedBy !== undefined && "developerId" in row.grantedBy
     ? { ...row, grantedBy: { developerId: await survivorOf(merge, row.grantedBy.developerId) } } : row));
-  return buildProjectMembersResponse(deps, await Promise.all(rows), isOrgAdmin(caller));
+  return buildProjectMembersResponse(deps, caller.orgId, await Promise.all(rows), isOrgAdmin(caller));
 }
 
 /** Whether the caller is an owner or admin of the org: the people who may see other people's emails, join dates and sign-in methods (release 0.4.16, owner decision "option A"). */
 const isOrgAdmin = (caller: Pick<DeveloperCaller, "orgRole">): boolean => caller.orgRole === "owner" || caller.orgRole === "admin";
 
 /** The project's people. Names are email-safe for everyone; an email is shown to an owner or admin only (`showEmails`). */
-async function buildProjectMembersResponse(deps: DeveloperRouteDependencies, rows: Awaited<ReturnType<typeof listProjectMembers>>, showEmails: boolean): Promise<ProjectMembersResponse> {
+async function buildProjectMembersResponse(deps: DeveloperRouteDependencies, orgId: OrgId, rows: Awaited<ReturnType<typeof listProjectMembers>>, showEmails: boolean): Promise<ProjectMembersResponse> {
   const store = signInStoreOf(deps);
   const cards = new Map<string, { name: string; email?: string }>();
   const ids = [...new Set(rows.flatMap((row) => [row.developerId, ...(row.grantedBy !== undefined && "developerId" in row.grantedBy ? [row.grantedBy.developerId] : [])]))];
-  const records = await store.getDevelopers(ids);
+  const { records, nameItems } = await store.getDevelopersWithNameItems(ids);
+  // ERASE-NAME-2: a person erased (also before the name item had a tombstone) is not shown by the name stored for them.
+  const replaced = await replacementNamesFrom(nameResolverOf(deps, orgId), ids, nameItems);
   await mapLimit(ids, REVISION_READS_AT_ONCE, async (id) => {
     const record = records.get(id);
     const identities = await store.identitiesOf(id);
     const email = showEmails ? record?.email ?? identities.find((identity) => identity.email !== undefined)?.email : undefined;
-    cards.set(id, { name: record?.displayName ?? "Unknown", ...(email === undefined ? {} : { email }) });
+    cards.set(id, { name: replaced.get(id) ?? record?.displayName ?? "Unknown", ...(email === undefined ? {} : { email }) });
   });
   const members: ProjectMember[] = rows.map((row) => {
     const card = cards.get(row.developerId)!;

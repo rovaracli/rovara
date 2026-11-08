@@ -7,6 +7,7 @@ import {
 } from "@agentx/contracts";
 import type { DeveloperCaller, DeveloperRouteDependencies } from "../../aws/developer-routes.js";
 import { DeveloperSignInStore } from "../../developer/store.js";
+import { nameResolverOf, replacementNamesFrom } from "../../developer/name-resolver.js";
 import { listOrganizationInvites } from "../invite-directory.js";
 import { COUNT_CAP, countHandOffs, hasGithubLink, readDuties, removalEnds } from "./preview.js";
 
@@ -37,10 +38,12 @@ async function peopleOf(deps: Deps, caller: DeveloperCaller, ids: readonly strin
   const members = await deps.orgs!.listMembers(caller.orgId);
   const found = members.filter((member) => ids.includes(member.developerId));
   const store = new DeveloperSignInStore({ documentClient: deps.documentClient, tableName: deps.developer.signInTableName, nameTableName: deps.tableName, now: deps.now });
-  const records = await store.getDevelopers(found.map((member) => member.developerId));
+  const foundIds = found.map((member) => member.developerId);
+  const { records, nameItems } = await store.getDevelopersWithNameItems(foundIds);
+  const replaced = await replacementNamesFrom(nameResolverOf(deps, caller.orgId), foundIds, nameItems);
   return new Map(found.map((member) => {
     const role = OrgRoleSchema.safeParse(member.role);
-    return [member.developerId, { name: records.get(member.developerId)?.displayName ?? "Unknown", role: role.success ? role.data : undefined }];
+    return [member.developerId, { name: replaced.get(member.developerId) ?? records.get(member.developerId)?.displayName ?? "Unknown", role: role.success ? role.data : undefined }];
   }));
 }
 
@@ -114,9 +117,12 @@ export async function getMemberRemoval(deps: Deps, caller: DeveloperCaller, remo
   const record = ((await deps.documentClient.send(new GetCommand({ TableName: deps.tableName, Key: memberRemovalRecordKey(caller.orgId, removalId), ConsistentRead: true }))) as { Item?: MemberRemovalRecord }).Item;
   if (record === undefined || record.orgId !== caller.orgId) throw agentXError("NOT_FOUND", "removal not found");
   const store = new DeveloperSignInStore({ documentClient: deps.documentClient, tableName: deps.developer.signInTableName, nameTableName: deps.tableName, now: deps.now });
-  const people = await store.getDevelopers([record.leaverId, ...(record.successorId === undefined ? [] : [record.successorId])]);
+  const ids = [record.leaverId, ...(record.successorId === undefined ? [] : [record.successorId])];
+  const { records: people, nameItems } = await store.getDevelopersWithNameItems(ids);
+  // ERASE-NAME-2: a person erased (also before the name item had a tombstone) is not shown by the name stored for them.
+  const replaced = await replacementNamesFrom(nameResolverOf(deps, caller.orgId), ids, nameItems);
   const invites = await invitesCreatedBy(deps, caller, record.leaverId);
-  const nameOf = (id: string) => people.get(id)?.displayName ?? "Unknown";
+  const nameOf = (id: string) => replaced.get(id) ?? people.get(id)?.displayName ?? "Unknown";
   return MemberRemovalStatusSchema.parse({
     removalId, state: record.state, removedAt: record.removedAt, member: { developerId: record.leaverId, name: nameOf(record.leaverId), role: record.role },
     ...(record.successorId === undefined ? {} : { successor: { developerId: record.successorId, name: nameOf(record.successorId) } }), by: record.by,

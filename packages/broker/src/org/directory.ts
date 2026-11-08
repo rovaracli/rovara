@@ -4,6 +4,7 @@ import { OrgMemberLookupBodySchema, OrgRoleSchema, agentXError, normalizeEmail, 
 import type { DeveloperCaller, DeveloperRouteDependencies } from "../aws/developer-routes.js";
 import { DeveloperSignInStore } from "../developer/store.js";
 import { takeRateAt } from "../developer/page-comments.js";
+import { nameResolverOf, replacementNames, replacementNamesFrom } from "../developer/name-resolver.js";
 type Deps = Pick<DeveloperRouteDependencies, "documentClient" | "tableName" | "developer" | "orgs" | "now">;
 async function item(deps: Deps, table: string, key: { pk: string; sk: string }): Promise<Record<string, unknown> | undefined> {
  const answer = await deps.documentClient.send(new GetCommand({ TableName: table, Key: key, ConsistentRead: true })) as { Item?: Record<string, unknown> };return answer.Item;
@@ -18,14 +19,16 @@ export async function listOrganizationMembers(deps: Deps, caller: DeveloperCalle
  if (deps.orgs === undefined) throw agentXError("NOT_FOUND", "Organizations are not available.");
  const role = await liveDirectoryRole(deps, caller), full = role === "owner" || role === "admin";
  const records = await deps.orgs.listMembers(caller.orgId), store = storeOf(deps);
- const developerRecords = await store.getDevelopers(records.map(member => member.developerId));
+ const { records: developerRecords, nameItems } = await store.getDevelopersWithNameItems(records.map(member => member.developerId));
+ // ERASE-NAME-2: a person erased (also before the name item had a tombstone) or removed is not shown by the name stored for them.
+ const replaced = await replacementNamesFrom(nameResolverOf(deps, caller.orgId), [...new Set(records.map(member => member.developerId))], nameItems);
  records.sort((a, b) => a.joinedAt.localeCompare(b.joinedAt) || a.developerId.localeCompare(b.developerId));
  const listed: Array<{ developerId: string; name: string; role: OrgRole | "unknown"; email?: string; joinedAt?: string; identities?: string[] }> = [];
  // Bound concurrent reads. Restricted requests never read sign-in identity rows.
  for (let at = 0; at < records.length; at += 8) {
   const page = await Promise.all(records.slice(at, at + 8).map(async member => {
    const record = developerRecords.get(member.developerId), parsedRole = OrgRoleSchema.safeParse(member.role);
-   const publicFields = { developerId: member.developerId, name: record?.displayName ?? "Unknown", role: parsedRole.success ? parsedRole.data : "unknown" as const };
+   const publicFields = { developerId: member.developerId, name: replaced.get(member.developerId) ?? record?.displayName ?? "Unknown", role: parsedRole.success ? parsedRole.data : "unknown" as const };
    if (!full) return publicFields;
    const identities = await store.identitiesOf(member.developerId), email = record?.email ?? identities.find(identity => identity.email !== undefined)?.email;
    const methods = identities.length > 0 ? identities.map(identity => identity.provider) : record === undefined ? [] : [record.provider];
@@ -50,5 +53,5 @@ export async function lookupOrganizationMember(deps: Deps, caller: DeveloperCall
  const store = storeOf(deps), record = await store.getDeveloper(candidate);if (record === undefined || record.revoked) return none;
  const identities = await store.identitiesOf(candidate), emails = [record.email, ...identities.map(identity => identity.email)];
  if (!emails.some(email => email !== undefined && normalizeEmail(email).ascii && normalizeEmail(email).email === normalized.email)) return none;
- return { match: { developerId: candidate, name: record.displayName } };
+ return { match: { developerId: candidate, name: (await replacementNames(nameResolverOf(deps, caller.orgId), [candidate])).get(candidate) ?? record.displayName } };
 }

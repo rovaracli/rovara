@@ -20,7 +20,7 @@ import {
 import { auditIdentityLinked, auditIdentityUnlinked, auditMemberRenamed, auditOccurrence } from "../audit/events.js";
 import { flushAuditEvents } from "../audit/flush.js";
 import { auditPending, tryAuditEvents, type AuditRuntime, type TransactItem } from "../audit/outbox.js";
-import { chosenNameKey, readChosenName, readChosenNames, withChosenName } from "./chosen-name.js";
+import { chosenNameKey, chosenNameStatesOf, readChosenName, readNameItems, withChosenName, type ChosenNameItem } from "./chosen-name.js";
 import { placeholderDisplayName, readableDeveloper, safeDisplayName } from "./person-name.js";
 import { ownerKeyForSubject } from "../aws/lambda.js";
 import { pkceChallengeMatches, randomToken, sha256Hex } from "./tokens.js";
@@ -220,8 +220,8 @@ const safeChosenName = (name: string): string | undefined => {
   return parsed.success ? parsed.data.name : undefined;
 };
 
-/** ERASE-NAME-1: why a name can't be chosen over the tombstone an erase leaves. Signing in again does not help; a person who came back after an erase needs an administrator. */
-export const NAME_ERASED_MESSAGE = "your name was erased with your details, so it can't be changed here; ask a company administrator";
+/** ERASE-NAME-1: why a name can't be chosen over the tombstone an erase leaves. Final: signing in again does not help, and no administrator can undo an erase. */
+export const NAME_ERASED_MESSAGE = "your name was erased with your details and can't be set again; you show as \"A former member\"";
 
 const conditionFailed = (error: unknown) =>
   error instanceof Error && (error.name === "ConditionalCheckFailedException" || error.name === "TransactionCanceledException");
@@ -484,6 +484,14 @@ export class DeveloperSignInStore {
    * of all of them in one BatchGetItem per 100. A person with no record is missing from the map.
    */
   async getDevelopers(developerIds: readonly string[]): Promise<Map<string, DeveloperRecord>> {
+    return (await this.getDevelopersWithNameItems(developerIds)).records;
+  }
+
+  /**
+   * `getDevelopers`, also handing back the name items it read (developerId to the raw item, for those who have one), so a list that must also settle who is erased or removed
+   * (`replacementNamesFrom`, name-resolver.ts) does it from the same BatchGetItem.
+   */
+  async getDevelopersWithNameItems(developerIds: readonly string[]): Promise<{ records: Map<string, DeveloperRecord>; nameItems: Map<string, ChosenNameItem> }> {
     const unique = [...new Set(developerIds)];
     const nameTable = this.input.nameTableName;
     // At most a few reads at a time, as the routes' lists did when they read the records one by one.
@@ -494,16 +502,17 @@ export class DeveloperSignInStore {
       }
       return found;
     };
-    const [items, chosen] = await Promise.all([
+    const [items, nameItems] = await Promise.all([
       read(),
-      nameTable === undefined ? Promise.resolve(new Map<string, string>()) : readChosenNames(this.input.documentClient, nameTable, unique),
+      nameTable === undefined ? Promise.resolve(new Map<string, ChosenNameItem>()) : readNameItems(this.input.documentClient, nameTable, unique),
     ]);
+    const chosen = new Map([...chosenNameStatesOf(nameItems)].map(([developerId, state]) => [developerId, state.name] as const));
     const records = new Map<string, DeveloperRecord>();
     unique.forEach((developerId, index) => {
       const item = items[index];
       if (item !== undefined) records.set(developerId, readableDeveloper(withChosenName({ ...strip(item), developerId }, chosen.get(developerId))));
     });
-    return records;
+    return { records, nameItems };
   }
 
   /** The identity's link item as stored, whether or not it still counts as a link (see `isActiveLink`). */

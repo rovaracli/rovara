@@ -3,12 +3,14 @@
 //   - an erased person reads "A former member". Erased means any of: the tombstone in the name item (State table), or the audit ledger's tombstone for the person (keys table, written by every erase
 //     request, also those from before the name item had a tombstone), so no backfill is needed;
 //   - a person removed from the company (the removal marker in the name item, and not a member again) reads as their sign-in record's name, or the placeholder: never the name they chose.
-// One BatchGetItem for the name items, one read per person for the rest, results kept briefly (an erase is permanent, so a "yes" is kept; a "no" for half a minute). A read that fails leaves the copy as stored,
-// like every other best-effort name overlay.
+// One BatchGetItem for the name items, one read per person for the rest, results kept briefly (an erase is permanent, so a "yes" is kept; a "no" for half a minute). The resolver only READS: it never writes the
+// ledger's answer into the name item. (A write here could destroy the chosen name in the gap between the ledger's tombstone and the Asks step that hashes the name; the erase's `names` step writes the tombstone,
+// after the hashes are kept.) A read that FAILS shows `UNAVAILABLE_NAME` ("A member") for the people it could not settle, never the stored copy: for an erased person that copy is the name to hide. The failure is logged (a count and
+// the error's name, never a name).
 import { GetCommand } from "@aws-sdk/lib-dynamodb";
 import { orgMemberKey } from "@agentx/contracts";
-import { FORMER_MEMBER_NAME, eraseChosenName, readNameItems, type ChosenNameClient, type ChosenNameItem } from "./chosen-name.js";
-import { placeholderDisplayName, safeDisplayName } from "./person-name.js";
+import { FORMER_MEMBER_NAME, readNameItems, type ChosenNameClient, type ChosenNameItem } from "./chosen-name.js";
+import { isPlaceholderDisplayName, placeholderDisplayName, safeDisplayName } from "./person-name.js";
 
 export interface NameResolverDependencies {
   documentClient: ChosenNameClient;
@@ -20,6 +22,13 @@ export interface NameResolverDependencies {
   signInTable?: string | undefined;
   /** The audit ledger's keys table. Default: the environment's `AUDIT_KEYS_TABLE_NAME` (the broker's), when it has one. */
   keysTable?: string | undefined;
+}
+
+/** What a stored copy reads when the lookup that decides it fails: neither the stored name nor a claim about the person. */
+export const UNAVAILABLE_NAME = "A member";
+
+export function logNameLookupFailure(where: string, error: unknown, people: number): void {
+  console.log(JSON.stringify({ event: "name_resolver_unavailable", level: "error", where, people, error: error instanceof Error ? error.name : "unknown" }));
 }
 
 const SUBJECT_ID = /^[A-Za-z0-9_.-]{1,100}$/u;
@@ -49,28 +58,35 @@ async function erasedByAudit(deps: NameResolverDependencies, keysTable: string, 
   if (erasedSeen.size + notErasedUntil.size > CACHE_MAX) forgetResolvedNames();
   if (erasedAt === undefined) { notErasedUntil.set(cacheKey, now + NEGATIVE_MS); return false; }
   erasedSeen.add(cacheKey);
-  // A person erased before the name item had a tombstone: leave it now, so the readers that cannot ask the ledger (member lists) read it too. Best effort; repeatable.
-  try { await eraseChosenName(deps.documentClient, deps.tableName, developerId, erasedAt); } catch { erasedSeen.delete(cacheKey); /* the next read asks the ledger again and tries again */ }
   return true;
 }
 
 /**
  * developerId to the name that replaces a stored copy of it, for the people among `developerIds` who need one (erased, or removed). Everyone else is absent: their stored copy stands.
- * Never throws; a lookup that fails leaves that person (or all of them) out.
+ * Never throws. A person whose lookup fails (or all of them, when the name items cannot be read) gets `UNAVAILABLE_NAME`, and so does everyone past the first `MOST_IDS`; the failure is logged.
  */
 export async function replacementNames(deps: NameResolverDependencies, developerIds: Iterable<string>, now: () => number = Date.now): Promise<Map<string, string>> {
-  const unique = [...new Set(developerIds)].filter((id): id is string => typeof id === "string" && SUBJECT_ID.test(id)).slice(0, MOST_IDS);
+  const valid = [...new Set(developerIds)].filter((id): id is string => typeof id === "string" && SUBJECT_ID.test(id));
+  const unique = valid.slice(0, MOST_IDS);
   if (unique.length === 0) return new Map();
+  let replaced: Map<string, string>;
   try {
-    return await replacementNamesFrom(deps, unique, await readNameItems(deps.documentClient, deps.tableName, unique), now);
-  } catch {
-    return new Map(); // the copies stand as stored
+    replaced = await replacementNamesFrom(deps, unique, await readNameItems(deps.documentClient, deps.tableName, unique), now);
+  } catch (error) {
+    logNameLookupFailure("name_items", error, unique.length);
+    replaced = new Map(unique.map((id) => [id, UNAVAILABLE_NAME]));
   }
+  if (valid.length > MOST_IDS) {
+    logNameLookupFailure("too_many_people", undefined, valid.length);
+    for (const id of valid.slice(MOST_IDS)) replaced.set(id, UNAVAILABLE_NAME);
+  }
+  return replaced;
 }
 
 /** `replacementNames` for a caller that has already read the name items of `unique` (one BatchGetItem for both uses). */
 export async function replacementNamesFrom(deps: NameResolverDependencies, unique: readonly string[], items: ReadonlyMap<string, ChosenNameItem>, now: () => number = Date.now): Promise<Map<string, string>> {
   const replaced = new Map<string, string>();
+  const unsettled: unknown[] = [];
   try {
     const others: string[] = [];
     const removed: string[] = [];
@@ -83,7 +99,7 @@ export async function replacementNamesFrom(deps: NameResolverDependencies, uniqu
     if (keysTable !== undefined && keysTable !== "" && deps.orgId !== undefined) {
       const orgId = deps.orgId;
       await inChunks(others, async (id) => {
-        try { if (await erasedByAudit(deps, keysTable, orgId, id, now())) replaced.set(id, FORMER_MEMBER_NAME); } catch { /* this person stays as stored */ }
+        try { if (await erasedByAudit(deps, keysTable, orgId, id, now())) replaced.set(id, FORMER_MEMBER_NAME); } catch (error) { unsettled.push(error); replaced.set(id, UNAVAILABLE_NAME); }
       });
     }
     await inChunks(removed.filter((id) => !replaced.has(id)), async (id) => {
@@ -98,11 +114,13 @@ export async function replacementNamesFrom(deps: NameResolverDependencies, uniqu
           if (typeof record.Item?.displayName === "string" && record.Item.displayName !== "") name = safeDisplayName(record.Item.displayName, id);
         }
         replaced.set(id, name);
-      } catch { /* this person stays as stored */ }
+      } catch (error) { unsettled.push(error); replaced.set(id, UNAVAILABLE_NAME); }
     });
-  } catch {
-    // the copies stand as stored
+  } catch (error) {
+    unsettled.push(error);
+    for (const id of unique) if (!replaced.has(id)) replaced.set(id, UNAVAILABLE_NAME);
   }
+  if (unsettled.length > 0) logNameLookupFailure("lookup", unsettled[0], unsettled.length);
   return replaced;
 }
 
@@ -119,4 +137,38 @@ export function nameResolverOf(deps: { documentClient: ChosenNameClient; tableNa
 /** `replacementNames` for one stored copy of one person's name: the name to show. */
 export async function resolveStoredName(deps: NameResolverDependencies, developerId: string, stored: string): Promise<string> {
   return shownNameOf(stored, developerId, await replacementNames(deps, [developerId]));
+}
+
+// ---- ERASE-NAME-2, the partial cover for words other people wrote
+
+/** Words that stand for nobody in particular: never scrubbed (they would hit unrelated text). */
+const GENERIC_NAMES = new Set(["someone", "a member", "a teammate", "a former member", "unknown", "member", "teammate", "you"].map((word) => word.toLowerCase()));
+const SCRUB_NAMES_MAX = 20;
+const SCRUB_NAME_MIN_CHARS = 3;
+const escapeForPattern = (text: string): string => text.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
+
+/**
+ * The names stored with the work of people who are erased, from a page's actors (`copies`: the person's id and the name stored for them there): the exact words to blank out of OTHER people's text on the
+ * same page. Bounded (20 names), at least 3 characters, and never a generic word or a placeholder. Only people the resolver replaced with "A former member" count; a removed person's chosen name is
+ * not a name to blank out of a sentence (the sign-in name is a name as well, and it is theirs to show).
+ */
+export function erasedNamesOnPage(copies: Iterable<{ developerId: string; name: string }>, replacements: ReadonlyMap<string, string>): string[] {
+  const names = new Set<string>();
+  for (const { developerId, name } of copies) {
+    const trimmed = name.trim();
+    if (replacements.get(developerId) !== FORMER_MEMBER_NAME || trimmed.length < SCRUB_NAME_MIN_CHARS || GENERIC_NAMES.has(trimmed.toLowerCase()) || isPlaceholderDisplayName(trimmed)) continue;
+    names.add(trimmed);
+    if (names.size >= SCRUB_NAMES_MAX) break;
+  }
+  return [...names].sort((left, right) => right.length - left.length);
+}
+
+/** `text` with each exact (case-sensitive, whole-word) occurrence of one of `names` replaced by "A former member". A name inside a longer word is left alone. */
+export function scrubErasedNames(text: string, names: readonly string[]): string {
+  let scrubbed = text;
+  for (const name of names) {
+    if (!scrubbed.includes(name)) continue;
+    scrubbed = scrubbed.replace(new RegExp(`(?<![\\p{L}\\p{N}])${escapeForPattern(name)}(?![\\p{L}\\p{N}])`, "gu"), FORMER_MEMBER_NAME);
+  }
+  return scrubbed;
 }

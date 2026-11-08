@@ -2,8 +2,9 @@
 // signed in within ten minutes; confirming moves the session's owner, the task's current owner, who pays from now on and the owner's People entries in ONE
 // transaction, conditional on the session's revision and on the task's owner; the previous owner keeps "can edit"; and it is audited.
 import { createHash, randomUUID } from "node:crypto";
-import { describe, expect, it } from "vitest";
-import { agentSessionKey, agentXError, approvalKey, approverIndexKey, changesKey, liveSessionKey, mySessionsKey, sessionChannel, sessionEventId, sharedSessionsKey, userChannel, type OrgId, type Payer } from "@agentx/contracts";
+import { BatchGetCommand } from "@aws-sdk/lib-dynamodb";
+import { describe, expect, it, vi } from "vitest";
+import { agentSessionKey, agentXError, approvalKey, approverIndexKey, changesKey, liveSessionKey, mySessionsKey, orgMemberKey, sessionChannel, sessionEventId, sharedSessionsKey, userChannel, type OrgId, type Payer } from "@agentx/contracts";
 import { approvalDecideKind } from "../../packages/broker/src/agents/approval-decide-kind.js";
 import { createWriteApprovalRecord, getAnyApproval, getApprovalSubjectHandler, getApproverRule, listApprovalsFor, mayDecideApproval, type AnyApprovalRecord, type ApprovalDependencies } from "../../packages/broker/src/agents/approvals.js";
 import { WRITE_APPROVER_RULE } from "../../packages/broker/src/agents/write-gate.js";
@@ -21,6 +22,8 @@ import { resolveTaskDispatchPeople } from "../../packages/broker/src/developer/t
 import { effectiveTaskOwner, taskIndexKey, taskKey, taskOwnerKey, type DeveloperTaskRecord } from "../../packages/broker/src/developer/task-records.js";
 import { mintTagsFor, paymentOfTask } from "../../packages/broker/src/spend/payer.js";
 import { NeedsConfirmationSchema, SessionEventSchema } from "../../packages/contracts/src/index.js";
+import { FORMER_MEMBER_NAME, chosenNameKey, eraseChosenName } from "../../packages/broker/src/developer/chosen-name.js";
+import { placeholderDisplayName } from "../../packages/broker/src/developer/person-name.js";
 import { capturingAuditDeps } from "../support/audit-capture.js";
 import { ARJUN, BO, CELL, MAX, MIA, OLA, ORG_A, PRIYA, ZED, sessionWorld } from "../support/agent-session-world.js";
 
@@ -990,5 +993,47 @@ describe("what a take-over leaves behind in the lists and on the tile (12b revie
     expect(w.db.get(mySessionsKey(ORG_A, MAX, CREATED_AT, sessionId))).toBeUndefined();
     expect(w.db.get(taskIndexKey(PRIYA, CREATED_AT, taskId))).toBeDefined();
     expect(w.db.get(sharedSessionsKey(ORG_A, { kind: "member", developerId: MAX }, sessionId))).toMatchObject({ level: "edit" });
+  });
+});
+
+describe("a previous owner who was erased or removed (ERASE-NAME-2)", () => {
+  it("names an erased owner as 'A former member' in the approval's changes, the take-over event and the 'owner now' error, though the session stored the real name", async () => {
+    const w = world();
+    const { sessionId } = sessionSeed(w);
+    expect(NeedsConfirmationSchema.parse((await w.ask(MAX, sessionId)).body).changes).toContain('Priya keeps "can edit".');
+    await eraseChosenName(w.db, "state", PRIYA, CREATED_AT);
+    const { approvalId, confirmation } = await w.asked(MAX, sessionId);
+    expect(confirmation.changes).toEqual(['Max becomes the owner of "Bump the Stripe SDK".', "New AI spend counts against Max's budget.", `${FORMER_MEMBER_NAME} keeps "can edit".`]);
+    expect(JSON.stringify(await w.approvalOf(approvalId))).not.toContain("Priya");
+    const decided = await w.confirm(MAX, approvalId);
+    expect(decided.statusCode, decided.body).toBe(200);
+    expect(w.events(sessionId).map((event) => event.text)).toEqual([`Max took over from ${FORMER_MEMBER_NAME}.`]);
+    // Someone who is not the owner and may not take it over is told whom to ask by the same name.
+    const refused = await code(w.ask(ZED, sessionId));
+    expect(JSON.stringify(refused)).not.toContain("Priya");
+  });
+
+  it("names a removed owner by the placeholder, never the name stored with the session", async () => {
+    const w = world();
+    const { sessionId } = sessionSeed(w);
+    w.db.set({ ...chosenNameKey(PRIYA), entityType: "DEVELOPER_NAME", developerId: PRIYA, removed: true, removedAt: CREATED_AT });
+    w.db.delete(orgMemberKey(ORG_A, PRIYA));
+    const { confirmation } = await w.asked(MAX, sessionId);
+    expect(confirmation.changes.at(-1)).toBe(`${placeholderDisplayName(PRIYA)} keeps "can edit".`);
+  });
+
+  it("shows a generic name when the name lookup fails, and still lets the take-over be asked", async () => {
+    const w = world();
+    const { sessionId } = sessionSeed(w);
+    const send = w.db.send.bind(w.db);
+    const quiet = vi.spyOn(console, "log").mockImplementation(() => undefined);
+    w.db.send = ((command: Parameters<typeof send>[0]) => (command instanceof BatchGetCommand ? Promise.reject(new Error("throttled")) : send(command)));
+    try {
+      const { confirmation } = await w.asked(MAX, sessionId);
+      expect(confirmation.changes.at(-1)).toBe('A member keeps "can edit".');
+    } finally {
+      w.db.send = send;
+      quiet.mockRestore();
+    }
   });
 });

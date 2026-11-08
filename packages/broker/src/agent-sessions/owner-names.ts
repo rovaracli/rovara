@@ -1,8 +1,8 @@
 // Release 0.4.18: a session stores its owner's name as it was when the session started, which for work begun before a person chose their name is the placeholder.
 // What a screen shows is the chosen name now (the State item `DEVELOPER_NAME#<id>`, see developer/chosen-name.ts), read by the stored owner's id, never by the stored name.
-// Best effort: a State read that fails shows the stored name, never a failed page. Names go through the email-safe rule in `readChosenNames`.
+// Best effort: a State read that fails never fails the page; it shows a generic name (`UNAVAILABLE_NAME`), not the stored one, which may be an erased person's. Names go through the email-safe rule in `readChosenNames`.
 import { readNameItems, chosenNameStatesOf } from "../developer/chosen-name.js";
-import { replacementNamesFrom } from "../developer/name-resolver.js";
+import { UNAVAILABLE_NAME, logNameLookupFailure, replacementNamesFrom } from "../developer/name-resolver.js";
 
 export interface OwnerNameDependencies { documentClient: { send(command: unknown): Promise<unknown> }; tableName: string }
 
@@ -21,8 +21,10 @@ export async function ownerNameOverlay(deps: OwnerNameDependencies, developerIds
     // A removed person's marker holds no name; no sign-in table is known here, so they read as the placeholder.
     const replaced = await replacementNamesFrom({ documentClient: deps.documentClient, tableName: deps.tableName, orgId }, ids, items);
     return { chosen, replaced };
-  } catch {
-    return none;
+  } catch (error) {
+    // The name items could not be read: no chosen name (the stored one stands, cosmetic), but nobody's stored copy is shown as it is, as an erased person's would be (ERASE-NAME-2, the safer default).
+    logNameLookupFailure("name_items", error, ids.length);
+    return { chosen: new Map(), replaced: new Map(ids.map((id) => [id, UNAVAILABLE_NAME])) };
   }
 }
 
