@@ -24,6 +24,8 @@ const RECORD_STORAGE_MODULES: Record<string, string> = {
   "team-record/hot-source.ts": "the hot archive source and deleted-at-source marks",
   "team-record/text-expiry.ts": "the raw-text expiry walk",
   "team-record/mode.ts": "the capture mode and its lock",
+  "lessons/model-setting.ts": "the company's chosen lessons model (an org-scoped key; a model id and a time, no person (the setter is only in the audit ledger); nothing erasable), read as stored so the setting is written conditionally on exactly that value (lessons-prod-1b)",
+  "lessons/pause.ts": "the current lessons-paused reason per project or company (org-scoped keys; a fixed code, a start time and a failure count; nothing erasable) (lessons-prod-1b)",
   "team-record/learning-mode-write.ts": "the learning mode and its lock, read as stored so the mode's writer can write conditionally on exactly that value (UX-4b)",
   "team-record/prior-edits.ts": "marks of edits the tap never stored",
   "team-record/identity-links.ts": "identity links of people",
