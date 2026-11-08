@@ -29,7 +29,8 @@ describe("tier 1: one maintainer", () => {
     const lesson = (await store.get(KEY, "les_pend0001"))!;
     expect(lesson).toMatchObject({ status: "active", version: 2 });
     expect(lesson.approvals).toEqual([{ approvalId: "ap-1", by: "ann", at: clock.now(), mode: "one" }]);
-    expect(lesson.expiresAt).toBe(clock.now() + 90 * 86_400_000);
+    // Owner decision 35: the end of the 14-day trial period plus 90 days without helping.
+    expect(lesson.expiresAt).toBe(clock.now() + (14 + 90) * 86_400_000);
     expect(lesson.pendingExpiresAt).toBeUndefined();
     expect(audit.actions()).toEqual(expect.arrayContaining(["lesson.approved", "lesson.activated"]));
     expect(audit.events.every((e) => Object.values(e.facts).every((v) => typeof v !== "string" || v.length < 40))).toBe(true);

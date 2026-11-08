@@ -218,6 +218,25 @@ describe.each(factories)("the lesson store contract (%s)", (_name, make) => {
     await store.removePending(KEY, "missing");
     expect((await store.duePending(KEY, 100, 10)).map((p) => p.key)).toEqual(["c", "a"]);
   });
+  it("hasPending: true for a lesson with a queued outcome, due or not; false for another lesson, after removal and after a purge. seenOnce reads a once-key without taking it", async () => {
+    const { store } = make();
+    await commit(store, mk("les_a0000001"), mk("les_b0000001"));
+    expect(await store.hasPending(KEY, "les_a0000001")).toBe(false);
+    await store.addPending({ key: "helpful:t:les_a0000001", ...KEY, lessonId: "les_a0000001", taskId: "t", dueAt: 10 * DAY });
+    expect(await store.hasPending(KEY, "les_a0000001")).toBe(true);
+    expect(await store.hasPending(KEY, "les_b0000001")).toBe(false);
+    expect(await store.hasPending(OTHER, "les_a0000001")).toBe(false);
+    await store.removePending(KEY, "helpful:t:les_a0000001");
+    expect(await store.hasPending(KEY, "les_a0000001")).toBe(false);
+    await store.addPending({ key: "helpful:u:les_a0000001", ...KEY, lessonId: "les_a0000001", taskId: "u", dueAt: 10 * DAY });
+    await store.purge(KEY, "les_a0000001");
+    expect(await store.hasPending(KEY, "les_a0000001")).toBe(false);
+    expect(await store.seenOnce(KEY, "helpful-final:t:les_b0000001")).toBe(false);
+    expect(await store.seenOnce(KEY, "helpful-final:t:les_b0000001")).toBe(false);
+    expect(await store.markOnce(KEY, "helpful-final:t:les_b0000001")).toBe(true);
+    expect(await store.seenOnce(KEY, "helpful-final:t:les_b0000001")).toBe(true);
+    expect(await store.seenOnce(OTHER, "helpful-final:t:les_b0000001")).toBe(false);
+  });
   it("source events: counted per day back from now, every spelling of a person is one source, and forgetting removes the counts and the pause", async () => {
     const { store } = make();
     const now = 100 * DAY;

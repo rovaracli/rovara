@@ -700,6 +700,12 @@ export class DynamoLessonStore implements LessonStore {
     }
   }
 
+  async seenOnce(key: ScopeKey, name: string): Promise<boolean> { return (await this.getItem(this.k(key, `LESSONSET#ONCE#${sha(name)}`))) !== undefined; }
+
+  async hasPending(key: ScopeKey, lessonId: string): Promise<boolean> {
+    return (await this.queryPrefix(key, `${this.headKey(key, lessonId).sk}#PEND#`)).length > 0;
+  }
+
   async addPending(entry: PendingOutcome): Promise<void> {
     const key: ScopeKey = { workspaceId: entry.workspaceId, project: entry.project };
     const hash = sha(entry.key);

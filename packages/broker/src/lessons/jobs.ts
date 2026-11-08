@@ -9,7 +9,7 @@ import { createHash } from "node:crypto";
 import { OrgIdSchema, type OrgId } from "@agentx/contracts";
 import { modeAllows, resolveLearning, type LearningSettingsReader } from "./policy.js";
 import { settleHelpful, type CounterDeps } from "./counters.js";
-import { PENDING_GRACE_MS, RETURN_GAP_MS, projectHash, rotated, tableNightlyState, type NightlyPass, type NightlyPassState, type NightlyStateStore } from "./nightly-state.js";
+import { PENDING_GRACE_MS, projectHash, rotated, tableNightlyState, type NightlyPass, type NightlyPassState, type NightlyStateStore } from "./nightly-state.js";
 import type { ReflectQueue } from "./reflect-queue.js";
 import type { TeamRecordTable } from "../team-record/types.js";
 import { revertedTasksSince } from "./task-outcome-rows.js";
@@ -137,8 +137,8 @@ export async function lessonsPromoteJob(deps: Pick<LessonsJobDeps, "table" | "se
 /**
  * Nightly. Per project where learning is not Off: first settles the helpful marks that fell due (`settleHelpful`: each applies the mark and renews the lesson), THEN marks lessons past their expiry (active) and
  * pending lessons nobody decided in time as `expired` (`sweepExpired`: audited, committed through the store's erasure fence, the rule checked again on the fresh copy). So a lesson people use is renewed before the
- * sweep looks at it. Loading already ignores an expired lesson; this makes the Lessons tab, the counts and repository publishing agree. Lessons an eval snapshot pins are never expired. A project that was not seen for
- * a few nights (learning was Off) holds its pending lessons for a grace window, so switching learning back on does not expire the backlog at once. Bounded in projects, lessons and time (the sweep stops between
+ * sweep looks at it. Loading already ignores an expired lesson; this makes the Lessons tab, the counts and repository publishing agree. Lessons an eval snapshot pins are never expired. A project whose learning was Off
+ * the last time the sweep reached it (it is marked `off`), or that was never seen, holds its pending lessons for a grace window, so switching learning back on does not expire the backlog at once. A lesson fades after N days without helping (`expiry.ts`). Bounded in projects, lessons and time (the sweep stops between
  * lessons), starting at a saved position; a failing project never stops the others.
  */
 export async function lessonsExpireJob(deps: Pick<LessonsJobDeps, "table" | "settings" | "maintain" | "counters" | "pinned" | "state" | "now" | "log">, orgId: string, projects: readonly string[], budgetMs: number): Promise<Record<string, number>> {
@@ -152,7 +152,12 @@ export async function lessonsExpireJob(deps: Pick<LessonsJobDeps, "table" | "set
     if (outOfTime()) break;
     let cut = false;
     try {
-      if ((await resolveLearning(deps.settings, org.data, project)).mode === "Off") { visited += 1; continue; }
+      if ((await resolveLearning(deps.settings, org.data, project)).mode === "Off") {
+        // Say so, instead of guessing from a gap later: the first night with learning On after this opens the grace window.
+        open.state.projects[projectHash(orgId, project)] = { seenAt: deps.now(), off: true };
+        visited += 1;
+        continue;
+      }
       const key = { workspaceId: org.data, project };
       // The marks first: any failure here (or in the pinned read) leaves the project unswept tonight rather than sweeping lessons that were about to be renewed.
       if (deps.counters !== undefined) {
@@ -166,7 +171,7 @@ export async function lessonsExpireJob(deps: Pick<LessonsJobDeps, "table" | "set
       const hash = projectHash(orgId, project);
       const now = deps.now();
       const seen = open.state.projects[hash];
-      const graceUntil = seen === undefined || now - seen.seenAt > RETURN_GAP_MS ? now + PENDING_GRACE_MS : seen.graceUntil;
+      const graceUntil = seen === undefined || seen.off === true ? now + PENDING_GRACE_MS : seen.graceUntil;
       const swept = await sweepExpired(deps.maintain, deps.maintain.store, key, { limit: MAX_PROMOTIONS_PER_PROJECT, stop: outOfTime, ...(pinned === undefined ? {} : { pinned }), ...(graceUntil === undefined ? {} : { holdPendingUntil: graceUntil }) });
       expired += swept.expired.length;
       cut = swept.stopped;

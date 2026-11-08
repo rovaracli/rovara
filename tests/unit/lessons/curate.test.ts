@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import { curateDraft, type CurateDeps } from "../../../packages/broker/src/lessons/curate.js";
 import { InMemoryLessonStore, nextVersion, type CommitResult, type ScopeKey } from "../../../packages/broker/src/lessons/store.js";
 import type { LessonDraft } from "../../../packages/broker/src/lessons/reflect.js";
+import { trialBlockers } from "../../../packages/broker/src/lessons/trial.js";
 import type { Lesson } from "../../../packages/broker/src/lessons/types.js";
 import { Alerts, Audit, Clock, KEY, MemoryVectors, PROJECT, ScriptedModel, Spend, WS, draft, embedder, lessonRecord, seed, settings, verifier } from "./lesson-helpers.js";
 
@@ -227,6 +228,27 @@ describe("curator decisions (design §4.5.2)", () => {
       expect((await curateDraft(deps, KEY, shared(second))).outcome).toBe("merged");
       const [only] = await store.list(KEY);
       expect(only!.provenance.fromSharedTask, `${String(first)} + ${String(second)}`).toBe(expected);
+    }
+  });
+
+  it("N1: a merge clears memberCorrection and claimsSupported unless both sides have them, so a lesson merged with a draft that lacks them is refused for trial (not_member_correction, claims_not_supported)", async () => {
+    const marked = (member: boolean | undefined, claims: boolean | undefined): LessonDraft => {
+      const { memberCorrection: _m, claimsSupported: _c, ...rest } = draft().provenance;
+      void _m; void _c;
+      return draft({ provenance: { ...rest, ...(member === undefined ? {} : { memberCorrection: member }), ...(claims === undefined ? {} : { claimsSupported: claims }) } });
+    };
+    const context = { preset: "standard" as const, mode: "On" as const, trialAllowed: true, contradiction: false, refinement: false, reviewRequired: false, held: false, braked: false };
+    for (const [first, second, kept] of [[true, true, true], [true, undefined, false], [undefined, true, false], [true, false, false], [undefined, undefined, false]] as const) {
+      const { deps, store } = setup();
+      await curateDraft(deps, KEY, marked(first, first));
+      expect((await curateDraft(deps, KEY, marked(second, second))).outcome).toBe("merged");
+      const [only] = await store.list(KEY);
+      const label = `${String(first)} + ${String(second)}`;
+      expect(only!.provenance.memberCorrection === true, label).toBe(kept);
+      expect(only!.provenance.claimsSupported === true, label).toBe(kept);
+      const blockers = trialBlockers(only!, 1, context);
+      expect(blockers.includes("not_member_correction"), label).toBe(!kept);
+      expect(blockers.includes("claims_not_supported"), label).toBe(!kept);
     }
   });
 

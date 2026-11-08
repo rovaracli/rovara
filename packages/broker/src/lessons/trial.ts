@@ -15,11 +15,6 @@ import { nextVersion, type LessonStore, type ScopeKey } from "./store.js";
 import { peopleOf, type Lesson } from "./types.js";
 
 export const TRIAL_STABLE_AFTER_DAYS = 14;
-/**
- * The shortest a lesson that goes live on trial lives (lessons connect, fix 1, L3): the trial window plus a week. A project may set its expiry down to 14 days (`MIN_EXPIRY_DAYS`), and a trial lesson that
- * expired at day 14 would be swept in the same night it first qualifies for stable. Loads renew it from there (`renewLesson`).
- */
-export const TRIAL_MIN_EXPIRY_DAYS = TRIAL_STABLE_AFTER_DAYS + 7;
 export const TRIAL_STABLE_MIN_LOADS = 3;
 const DAY = 86_400_000;
 /** The approval a trial lesson carries: nobody, by design. The loader reads it (with the preset) as the only approval a trial lesson needs. */

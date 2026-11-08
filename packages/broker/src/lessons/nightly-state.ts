@@ -1,8 +1,9 @@
 // Lessons connect (fix 1, M3 and L5): what the nightly passes remember between nights, one small item per company and pass on the Team record table (`LESSONSET#NIGHTLY#<pass>` in the company's partition, which the
 // company erase already wipes):
 //   - `next`: where the pass starts tomorrow. Both passes walk the company's projects from a saved position, so when the time budget runs out the projects at the end are not the same ones every night.
-//   - `projects` (the expiry pass): per project (a hash, never the name), when the sweep last ran for it and until when its pending lessons are held. A project the sweep did not see for a few nights (learning was Off)
-//     starts a grace window, so switching learning back on never expires the whole pending backlog on the first night.
+//   - `projects` (the expiry pass): per project (a hash, never the name), when the sweep last ran for it and until when its pending lessons are held. A night that finds learning Off writes `off: true`; the first
+//     night with learning On after that (or a project never seen) starts a grace window, so switching learning back on never expires the whole pending backlog on the first night. A project the rotation merely
+//     reached late (the time budget) is not Off and opens no window.
 // Nothing here names a person or a lesson. A read that fails is "no memory": the pass runs from the top with no grace written.
 import { createHash } from "node:crypto";
 import { GetCommand, PutCommand } from "@aws-sdk/lib-dynamodb";
@@ -10,7 +11,7 @@ import { teamRecordPk } from "@agentx/contracts";
 import type { TeamRecordTable } from "../team-record/types.js";
 
 export type NightlyPass = "expire" | "promote";
-export interface NightlyProjectState { seenAt: number; graceUntil?: number }
+export interface NightlyProjectState { seenAt: number; graceUntil?: number; /** The night found learning Off for the project: its next night with learning On opens the grace window. */ off?: true }
 export interface NightlyPassState { next: number; projects: Record<string, NightlyProjectState> }
 export interface NightlyStateStore {
   /** Throws when the item cannot be read (the pass then neither rotates nor writes). */
@@ -18,8 +19,6 @@ export interface NightlyStateStore {
   write(orgId: string, pass: NightlyPass, state: NightlyPassState): Promise<void>;
 }
 
-/** A project is not seen for longer than this when learning was Off (or the passes ran out of time): its next sweep opens a grace window. */
-export const RETURN_GAP_MS = 3 * 86_400_000;
 /** How long a returning project's pending lessons are held. */
 export const PENDING_GRACE_MS = 7 * 86_400_000;
 const MAX_PROJECT_STATES = 400;
@@ -36,8 +35,8 @@ export function tableNightlyState(table: TeamRecordTable): NightlyStateStore {
       const projects: Record<string, NightlyProjectState> = {};
       if (typeof item.projects === "object" && item.projects !== null) {
         for (const [hash, value] of Object.entries(item.projects as Record<string, unknown>).slice(0, MAX_PROJECT_STATES)) {
-          const v = value as { seenAt?: unknown; graceUntil?: unknown };
-          if (typeof v?.seenAt === "number") projects[hash] = { seenAt: v.seenAt, ...(typeof v.graceUntil === "number" ? { graceUntil: v.graceUntil } : {}) };
+          const v = value as { seenAt?: unknown; graceUntil?: unknown; off?: unknown };
+          if (typeof v?.seenAt === "number") projects[hash] = { seenAt: v.seenAt, ...(typeof v.graceUntil === "number" ? { graceUntil: v.graceUntil } : {}), ...(v.off === true ? { off: true as const } : {}) };
         }
       }
       return { next, projects };

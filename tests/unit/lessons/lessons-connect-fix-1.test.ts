@@ -5,7 +5,7 @@ import { activateLesson } from "../../../packages/broker/src/lessons/approve.js"
 import { applyLoadReport, type CounterDeps } from "../../../packages/broker/src/lessons/counters.js";
 import { renewLesson, sweepExpired, SWEEP_PAGE } from "../../../packages/broker/src/lessons/expiry.js";
 import { InMemoryLessonStore, type LessonStore } from "../../../packages/broker/src/lessons/store.js";
-import { TRIAL_APPROVER, TRIAL_MIN_EXPIRY_DAYS, TRIAL_STABLE_AFTER_DAYS, isPublishable, promoteIfStable, promoteStableTrials, trialIsStable } from "../../../packages/broker/src/lessons/trial.js";
+import { TRIAL_APPROVER, TRIAL_STABLE_AFTER_DAYS, isPublishable, promoteIfStable, promoteStableTrials, trialIsStable } from "../../../packages/broker/src/lessons/trial.js";
 import type { Lesson } from "../../../packages/broker/src/lessons/types.js";
 import { Audit, Clock, Judge, KEY, WS, lessonRecord, seed, settings } from "./lesson-helpers.js";
 
@@ -140,7 +140,7 @@ describe("M1: promotion writes its ledger line once, never for a refused commit,
 });
 
 describe("L3 and L4: a short expiry setting cannot block stable; a stale citation blocks stable and publishing", () => {
-  it("a lesson that goes live on trial under a 14-day expiry setting lives at least the trial window plus a week; a person's go-live keeps the setting", async () => {
+  it("a lesson that goes live under a 14-day expiry setting lives its trial window plus the 14 days (owner decision 35 replaced the fixed 21-day floor; more in lessons-connect-fix-3.test.ts)", async () => {
     const clock = new Clock();
     const store = new InMemoryLessonStore();
     const audit = new Audit();
@@ -149,10 +149,9 @@ describe("L3 and L4: a short expiry setting cannot block stable; a stale citatio
     const deps = { store, audit, now: clock.now };
     const sv = await store.setVersion(KEY);
     const trialLive = await activateLesson(deps, KEY, (await store.get(KEY, "les_goTrial1"))!, [{ approvalId: "t", by: TRIAL_APPROVER, at: 1, mode: "trial" }], 14, "lesson.trial_started", { version: 1, setVersion: sv });
-    expect(trialLive!.expiresAt).toBe(clock.now() + TRIAL_MIN_EXPIRY_DAYS * DAY);
-    expect(TRIAL_MIN_EXPIRY_DAYS).toBeGreaterThan(TRIAL_STABLE_AFTER_DAYS);
+    expect(trialLive!.expiresAt).toBe(clock.now() + (TRIAL_STABLE_AFTER_DAYS + 14) * DAY);
     const personLive = await activateLesson(deps, KEY, (await store.get(KEY, "les_goPerson"))!, [{ approvalId: "a", by: "ann", at: 1, mode: "one" }], 14, "lesson.activated", { version: 1, setVersion: await store.setVersion(KEY) });
-    expect(personLive!.expiresAt).toBe(clock.now() + 14 * DAY);
+    expect(personLive!.expiresAt).toBe(clock.now() + (TRIAL_STABLE_AFTER_DAYS + 14) * DAY);
   });
   it("a trial lesson with a stale citation does not become stable, in the single call or the nightly pass; a stable one with a stale citation is not publishable", async () => {
     const clock = new Clock();

@@ -1,4 +1,4 @@
-// Lessons connect, fix round 2 (re-check of fix round 1): R1 the expiry holds until a queued helpful mark settles, and R7 a correction with no file list is in scope for every lesson.
+// Lessons connect, fix round 2 (re-check of fix round 1): R1 a lesson with a queued helpful mark is not expired before the mark settles (the sweep leaves it; fix round 3, N2), and R7 a correction with no file list is in scope for every lesson.
 // The task-end tests (R2, R4) are in task-end.test.ts, the merge rule (R3) in curate.test.ts, the sweep and the project-wide check (R4) in lessons-jobs.test.ts and task-project-wide.test.ts.
 import { describe, expect, it } from "vitest";
 import { recordTaskOutcome, settleHelpful, type CounterDeps } from "../../../packages/broker/src/lessons/counters.js";
@@ -41,29 +41,31 @@ describe("R1: a lesson used in its last 14 days is not expired before its helpfu
     expect(renewed.counters.helpful).toBe(1);
     expect(renewed.expiresAt).toBe(clock.now() + 90 * DAY);
   });
-  it("the hold is until the mark's due date and one day more, not longer: a use the revert window took back leaves the lesson expiring shortly after", async () => {
+  it("the queued mark is the whole hold and no expiry is moved: a use the revert window took back ends the hold, and the lesson then expires on the next sweep (N2 replaced the fix-2 expiry hold)", async () => {
     const { clock, store, audit, created, deps } = await setup();
     clock.t = created + 85 * DAY;
     await loadedIn(store, "t85", clock.now());
     await recordTaskOutcome(deps, { workspaceId: WS, project: KEY.project, taskId: "t85", outcome: "merged", sendBacks: 0, mergedAt: clock.now(), corrections: [] });
-    expect((await store.get(KEY, "les_usedlate"))!.expiresAt).toBe(created + 85 * DAY + 14 * DAY + DAY);
-    // Reverted on day 90: the mark is taken back; the lesson then lapses at the held date.
-    clock.t = created + 90 * DAY;
+    expect((await store.get(KEY, "les_usedlate"))!.expiresAt).toBe(created + 90 * DAY);
+    // Reverted on day 90: the mark is taken back; the lesson is no longer held and the next sweep expires it.
+    clock.t = created + 90 * DAY + 1;
     await recordTaskOutcome(deps, { workspaceId: WS, project: KEY.project, taskId: "t85", outcome: "reverted", sendBacks: 0, corrections: [] });
-    clock.t = created + 101 * DAY;
     expect(await settleHelpful(deps, KEY)).toBe(0);
     expect((await sweepExpired({ now: clock.now, audit }, store, KEY)).expired.sort()).toEqual(["les_neverused", "les_usedlate"]);
   });
-  it("an expiry that is already later than the mark's due date is not shortened, and a closed task (no mark) holds nothing", async () => {
-    const { clock, store, deps, created } = await setup();
+  it("an expiry is never moved by recording an outcome, and a closed task (no mark) holds nothing", async () => {
+    const { clock, store, audit, deps, created } = await setup();
     await seed(store, convention("les_longlife1", created + 300 * DAY));
     await store.putManifest({ taskId: "t1", workspaceId: WS, project: KEY.project, stage: "IMPLEMENT", round: 1, setVersion: 1, memory: "live", at: 1, lessons: ["les_longlife1", "les_neverused"].map((id) => ({ id, version: 1, score: 0.5, why: "scope", citation: "valid" as const })), bytes: 10 });
     await recordTaskOutcome(deps, { workspaceId: WS, project: KEY.project, taskId: "t1", outcome: "merged", sendBacks: 0, mergedAt: clock.now(), corrections: [] });
     expect((await store.get(KEY, "les_longlife1"))!.expiresAt).toBe(created + 300 * DAY);
+    expect((await store.get(KEY, "les_neverused"))!.expiresAt).toBe(created + 90 * DAY);
     await store.putManifest({ taskId: "t2", workspaceId: WS, project: KEY.project, stage: "IMPLEMENT", round: 1, setVersion: 1, memory: "live", at: 1, lessons: [{ id: "les_neverused", version: 1, score: 0.5, why: "scope", citation: "valid" }], bytes: 10 });
-    const before = (await store.get(KEY, "les_neverused"))!.expiresAt;
     await recordTaskOutcome(deps, { workspaceId: WS, project: KEY.project, taskId: "t2", outcome: "closed", sendBacks: 0, corrections: [] });
-    expect((await store.get(KEY, "les_neverused"))!.expiresAt).toBe(before);
+    // Only t1's mark is queued for les_neverused; remove it and the closed task adds none, so the lesson expires on day 91.
+    await store.removePending(KEY, "helpful:t1:les_neverused");
+    clock.t = created + 91 * DAY;
+    expect((await sweepExpired({ now: clock.now, audit }, store, KEY)).expired.sort()).toEqual(["les_neverused", "les_usedlate"]);
   });
 });
 

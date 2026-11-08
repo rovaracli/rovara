@@ -4,6 +4,7 @@ import { LESSONS_REFLECT_LEASE_GRACE_SECONDS, LESSONS_REFLECT_MAX_ATTEMPTS, LESS
 import { CLAIM_TTL_SECONDS, LEASE_MS, dynamoReflectClaims, reflectClaimKey, type ClaimStore, type Lease, type TakeResult } from "../../../packages/broker/src/lessons/reflect-claims.js";
 import { ReflectMessageSchema, parseReflectMessage, reflectQueueUrlOf, sqsReflectQueue, sqsReflectVisibility } from "../../../packages/broker/src/lessons/reflect-queue.js";
 import { handleReflectBatch, retryDelaySeconds, runReflectMessage, type ReflectWorkerDeps } from "../../../packages/broker/src/lessons/reflect-worker.js";
+import { logRef } from "../../../packages/broker/src/lessons/log-ref.js";
 import { currentLearningAttempt, learningCallMayStart } from "../../../packages/broker/src/lessons/learning-deadline.js";
 import { FakeDynamoDb } from "../../support/fake-dynamodb.js";
 import { TEST_ORG } from "../../support/orgs.js";
@@ -134,6 +135,25 @@ describe("the worker", () => {
     expect(w.finished).toEqual([{ state: "retry", attemptId: "att-1" }]);
     expect(w.events()).toContain("lessons_worker.failed");
     expect(JSON.stringify(w.logs)).not.toContain("boom");
+  });
+  it("N6: every worker log line about a task names it only as logRef(company, task), never the raw id", async () => {
+    const ref = logRef(TEST_ORG, "task-1");
+    const lines = async (w: ReturnType<typeof worker>, run: () => Promise<unknown>): Promise<Array<{ event: string; fields: Record<string, string | number> }>> => { await run(); return w.logs; };
+    const waiting = worker({}, [{ kind: "wait" }]);
+    const failed = worker({ learn: async () => { throw new Error("boom"); }, claims: { ...memoryClaims().claims, finish: async () => { throw new Error("table down"); } } });
+    const ok = worker();
+    const all = [
+      ...(await lines(waiting, () => runReflectMessage(waiting.deps, body()))),
+      ...(await lines(failed, () => runReflectMessage(failed.deps, body()))),
+      ...(await lines(ok, () => runReflectMessage(ok.deps, body()))),
+    ];
+    const about = all.filter((l) => l.event !== "lessons_worker.backoff_failed");
+    expect(about.map((l) => l.event)).toEqual(expect.arrayContaining(["lessons_worker.result", "lessons_worker.failed", "lessons_worker.finish_failed"]));
+    for (const line of about) {
+      expect(Object.keys(line.fields), line.event).not.toContain("taskId");
+      expect(line.fields["task"], line.event).toBe(ref);
+    }
+    expect(JSON.stringify(all)).not.toContain("task-1");
   });
   it("a lease it must wait for (earlier keys not settled), or whose attempts are used up, comes back without running anything and without ending a lease", async () => {
     for (const kind of ["wait", "exhausted"] as const) {

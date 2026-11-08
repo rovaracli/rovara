@@ -70,7 +70,11 @@ export interface LessonStore {
   updateManifest(manifest: LoadManifest): Promise<void>;
   /** True the first time a key is seen, false after; makes counters idempotent. */
   markOnce(key: ScopeKey, name: string): Promise<boolean>;
+  /** True when the key was already used by `markOnce` (reads only; never takes the key). */
+  seenOnce(key: ScopeKey, name: string): Promise<boolean>;
   addPending(entry: PendingOutcome): Promise<void>;
+  /** True when a pending outcome (a queued helpful mark) names the lesson, due or not. */
+  hasPending(key: ScopeKey, lessonId: string): Promise<boolean>;
   duePending(key: ScopeKey, now: number, limit: number): Promise<PendingOutcome[]>;
   removePending(key: ScopeKey, pendingKey: string): Promise<void>;
   flags(key: ScopeKey): Promise<ProjectFlags>;
@@ -312,6 +316,8 @@ export class InMemoryLessonStore implements LessonStore {
     s.once.add(name);
     return true;
   }
+  async seenOnce(key: ScopeKey, name: string): Promise<boolean> { return this.of(key).once.has(name); }
+  async hasPending(key: ScopeKey, lessonId: string): Promise<boolean> { return [...this.of(key).pending.values()].some((p) => p.lessonId === lessonId); }
   async addPending(entry: PendingOutcome): Promise<void> { this.of(entry).pending.set(entry.key, clone(entry)); }
   async duePending(key: ScopeKey, now: number, limit: number): Promise<PendingOutcome[]> {
     return [...this.of(key).pending.values()].filter((p) => p.dueAt <= now).sort((a, b) => a.dueAt - b.dueAt || a.key.localeCompare(b.key)).slice(0, limit).map(clone);

@@ -3,7 +3,7 @@
 import { randomUUID } from "node:crypto";
 import { z } from "zod";
 import { oppositePolarity } from "./guards.js";
-import { expiryWindowMs } from "./expiry.js";
+import { firstExpiry } from "./expiry.js";
 import { emitAudit } from "./policy.js";
 import { isLearningRefusal, noteModelFailure, notePause, noteRecovered, pauseOfLook, spendLook, type LessonsPauseStore } from "./pause.js";
 import type { AlertSink, Embedder, LearningSpend, LessonDeps, LessonVectors, PipelineModel } from "./ports.js";
@@ -101,7 +101,7 @@ function newLesson(deps: CurateDeps, key: ScopeKey, draft: LessonDraft, status: 
     id, version: 1, workspaceId: key.workspaceId, project: key.project, scope: draft.scope, type: draft.type, stages: draft.stages,
     title: draft.title, description: draft.description, body: draft.body, citations: draft.citations, provenance: draft.provenance,
     tier: 1, tierReasons: [], status, counters: { loaded: 0, helpful: 0, harmful: 0, citationStale: 0 }, staleAt: [],
-    expiresAt: now + expiryWindowMs(draft.type, deps.expiryDays), createdAt: now, updatedAt: now, approvals: [], ...extra,
+    expiresAt: firstExpiry(draft.type, now, deps.expiryDays), createdAt: now, updatedAt: now, approvals: [], ...extra,
   });
 }
 

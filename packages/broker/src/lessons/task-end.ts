@@ -185,12 +185,12 @@ export async function learnFromEndedTaskTyped(deps: TaskLearningDeps, input: { w
     const signal = currentLearningAttempt()?.signal;
     for (const draft of result.drafts) {
       // M4: at the deadline no new draft is started (the store's writes are refused too, `deadline-guard.ts`). The model has been paid for; what is cut is lost, not repeated.
-      if (signal?.aborted === true) { deps.log?.("learning.drafts_cut_at_deadline", { taskId: input.taskId }); break; }
-      try { await processDraft(deps.process, key, draft); } catch { deps.log?.("learning.draft_failed", { taskId: input.taskId }); }
+      if (signal?.aborted === true) { deps.log?.("learning.drafts_cut_at_deadline", { task: logRef(input.workspaceId, input.taskId) }); break; }
+      try { await processDraft(deps.process, key, draft); } catch { deps.log?.("learning.draft_failed", { task: logRef(input.workspaceId, input.taskId) }); }
     }
     return final("reflected");
   } catch {
-    deps.log?.("learning.task_end_failed", { taskId: input.taskId });
+    deps.log?.("learning.task_end_failed", { task: logRef(input.workspaceId, input.taskId) });
     // Outside a worker nothing is retried. Inside one, a fault here is a read that failed, before any model key was minted by this call (or one the model path marked itself).
     return { status: "not_reflected", retry: currentLearningAttempt() !== undefined && currentLearningAttempt()?.fault !== "final" };
   }
@@ -222,7 +222,7 @@ export function learningTaskEndHandler(get: () => TaskEndEnqueue | undefined): T
       await target.queue.send({ orgId: event.orgId, taskId: event.taskId, outcome, requestId: (target.newRequestId ?? randomUUID)() });
     } catch {
       // One fixed line (never the error's text): the end goes on.
-      (target.log ?? ((name, fields) => console.log(JSON.stringify({ component: "lessons", event: name, ...fields }))))("learning.enqueue_failed", { taskId: event.taskId });
+      (target.log ?? ((name, fields) => console.log(JSON.stringify({ component: "lessons", event: name, ...fields }))))("learning.enqueue_failed", { task: logRef(event.orgId, event.taskId) });
     }
   };
 }

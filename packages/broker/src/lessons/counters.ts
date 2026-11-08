@@ -105,11 +105,11 @@ export async function recordTaskOutcome(deps: CounterDeps, outcome: TaskOutcome)
     }
     if (outcome.outcome === "reverted") { await deps.store.removePending(key, `helpful:${outcome.taskId}:${lessonId}`); continue; }
     if (outcome.outcome === "merged" && outcome.sendBacks <= 1 && !unjudged && !ignored) {
+      // A task end delivered again after its mark settled queues nothing (the settled once-key is the record): a repeat extends nothing and counts nothing.
+      if (await deps.store.seenOnce(key, `helpful-final:${outcome.taskId}:${lessonId}`)) continue;
       const dueAt = (outcome.mergedAt ?? deps.now()) + REVERT_WINDOW_MS;
+      // The queued mark is the whole hold: the expiry sweep leaves a lesson with a queued mark alone, so a revert (which takes the mark back) ends the hold and the lesson then fades. No expiry is moved here.
       await deps.store.addPending({ key: `helpful:${outcome.taskId}:${lessonId}`, workspaceId: key.workspaceId, project: key.project, lessonId, taskId: outcome.taskId, dueAt });
-      // A lesson used in its last 14 days would lapse before this mark falls due, so the expiry is held until the mark can settle (one day more, so the nightly settle, which runs before the sweep, has run).
-      // It is a hold, not a renewal: a revert takes the mark back and the lesson then lapses at the held date. Never shortens an expiry.
-      await deps.store.mutate(key, lessonId, (l) => (l.status === "active" && l.expiresAt < dueAt + DAY ? { expiresAt: dueAt + DAY } : undefined));
       result.queuedHelpful.push(lessonId);
     }
   }

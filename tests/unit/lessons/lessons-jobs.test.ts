@@ -2,7 +2,7 @@
 import { describe, expect, it, vi } from "vitest";
 import type { CounterDeps } from "../../../packages/broker/src/lessons/counters.js";
 import { REVERT_WINDOW_MS, lessonsExpireJob, lessonsNightlyJob, lessonsPromoteJob, lessonsResumeJob, lessonsRevertJob, type LessonsJobDeps } from "../../../packages/broker/src/lessons/jobs.js";
-import { PENDING_GRACE_MS, RETURN_GAP_MS, projectHash, tableNightlyState, type NightlyPass, type NightlyPassState, type NightlyStateStore } from "../../../packages/broker/src/lessons/nightly-state.js";
+import { PENDING_GRACE_MS, projectHash, tableNightlyState, type NightlyPass, type NightlyPassState, type NightlyStateStore } from "../../../packages/broker/src/lessons/nightly-state.js";
 import { REFUSING_JUDGE } from "../../../packages/broker/src/lessons/runtime.js";
 import { sweepExpired } from "../../../packages/broker/src/lessons/expiry.js";
 import { InMemoryLessonStore } from "../../../packages/broker/src/lessons/store.js";
@@ -315,10 +315,14 @@ describe("lessons connect fix 1: the nightly upkeep keeps the lessons people use
     expect(used.counters.helpful).toBe(1);
     expect(audit.events.filter((e) => e.action === "lesson.expired").map((e) => e.lessonId)).toEqual(["les_unused"]);
   });
-  it("a mark that is not due yet renews nothing: the lesson that is past its expiry then expires (the positive control for the settle)", async () => {
+  it("a mark that is not due yet renews nothing but holds the lesson (the sweep skips a lesson with a queued mark); once the mark is taken back (a revert) the next night expires it (N2)", async () => {
     const { deps, store } = await night([convention({ id: "les_late", expiresAt: NOW - 1_000 })]);
     await store.addPending({ key: "helpful:t1:les_late", workspaceId: ORG_A, project: "web", lessonId: "les_late", taskId: "t1", dueAt: NOW + DAY });
-    expect(await lessonsExpireJob(deps, ORG_A, ["web"], 10_000)).toMatchObject({ lessonsExpired: 1, helpfulSettled: 0 });
+    expect(await lessonsExpireJob(deps, ORG_A, ["web"], 10_000)).toMatchObject({ lessonsExpired: 0, helpfulSettled: 0 });
+    expect(await statusOf(store, "les_late")).toBe("active");
+    expect((await store.get(KEY, "les_late"))!.counters.helpful).toBe(0);
+    await store.removePending(KEY, "helpful:t1:les_late");
+    expect(await lessonsExpireJob(deps, ORG_A, ["web"], 10_000)).toMatchObject({ lessonsExpired: 1 });
     expect(await statusOf(store, "les_late")).toBe("expired");
   });
   it("a settle that fails leaves the project unswept tonight (nothing expires on a guess), and the other projects still run", async () => {
@@ -417,12 +421,39 @@ describe("lessons connect fix 1: the sweep is bounded inside a project, rotates 
     const active = await sweepWith([due("les_act")], { state: memoryState([]) });
     expect(await lessonsExpireJob(active.deps, ORG_A, ["web"], 10_000)).toMatchObject({ lessonsExpired: 1 });
   });
-  it("L5: a project whose learning is Off is not marked seen, so switching it back on opens the grace window", async () => {
+  it("R5: a night that finds learning Off writes {seenAt, off: true} for the project; the first night it is On opens ONE grace window (the Off marker is dropped), and the nights after it do not open another", async () => {
     const state = memoryState(["web"]);
-    const off = await sweepWith([due("les_old")], { settings: settings({ mode: "Off" }), state });
-    await lessonsExpireJob(off.deps, ORG_A, ["web"], 10_000);
-    expect(state.saved.get("expire")!.projects[projectHash(ORG_A, "web")]!.seenAt).toBe(NOW - 3_600_000);
-    expect(RETURN_GAP_MS).toBeLessThan(7 * DAY);
+    const hash = projectHash(ORG_A, "web");
+    const pending = due("les_p", { status: "pending", approvals: [], pendingExpiresAt: NOW - 2 * DAY, expiresAt: NOW + 90 * DAY });
+    const off = await sweepWith([pending], { settings: settings({ mode: "Off" }), state });
+    expect(await lessonsExpireJob(off.deps, ORG_A, ["web"], 10_000)).toMatchObject({ lessonsExpired: 0 });
+    expect(state.saved.get("expire")!.projects[hash]).toEqual({ seenAt: NOW, off: true });
+    // Back On the next night (well inside the old 3-day gap): the window opens because it was Off, not because of a gap.
+    const on = await sweepWith([pending], { state });
+    expect(await lessonsExpireJob(on.deps, ORG_A, ["web"], 10_000)).toMatchObject({ lessonsExpired: 0 });
+    expect(await statuses(on.store, ["les_p"])).toEqual(["pending"]);
+    expect(state.saved.get("expire")!.projects[hash]).toEqual({ seenAt: NOW, graceUntil: NOW + PENDING_GRACE_MS });
+    // The night after: seen On, no Off marker, so the same window stays (not moved).
+    const later = NOW + DAY;
+    const next = await sweepWith([pending], { state, now: () => later, maintain: { store: on.store, audit: new Audit(), now: () => later } });
+    await lessonsExpireJob(next.deps, ORG_A, ["web"], 10_000);
+    expect(state.saved.get("expire")!.projects[hash]!.graceUntil).toBe(NOW + PENDING_GRACE_MS);
+  });
+  it("R5: a project the rotation reaches only every 5 nights (budget) with learning On never opens a grace window: its pending lessons expire at their date; a never-seen project opens one", async () => {
+    const state = memoryState();
+    state.saved.set("expire", { next: 0, projects: { [projectHash(ORG_A, "web")]: { seenAt: NOW - 5 * DAY } } });
+    const pending = due("les_p", { status: "pending", approvals: [], pendingExpiresAt: NOW - 2 * DAY, expiresAt: NOW + 90 * DAY });
+    const sparse = await sweepWith([pending], { state });
+    expect(await lessonsExpireJob(sparse.deps, ORG_A, ["web"], 10_000)).toMatchObject({ lessonsExpired: 1 });
+    expect(state.saved.get("expire")!.projects[projectHash(ORG_A, "web")]!.graceUntil).toBeUndefined();
+    const fresh = await sweepWith([pending], { state: memoryState([]) });
+    expect(await lessonsExpireJob(fresh.deps, ORG_A, ["web"], 10_000)).toMatchObject({ lessonsExpired: 0 });
+  });
+  it("R5: the Off marker survives a read and write of the Team record table state", async () => {
+    const w = await setup();
+    const store = tableNightlyState(w.table);
+    await store.write(ORG_A, "expire", { next: 0, projects: { [projectHash(ORG_A, "web")]: { seenAt: 5, off: true } } });
+    expect(await store.read(ORG_A, "expire")).toEqual({ next: 0, projects: { [projectHash(ORG_A, "web")]: { seenAt: 5, off: true } } });
   });
   it("a state that cannot be read runs the pass from the top, writes nothing and opens no grace-less surprise (one fixed line)", async () => {
     const broken: NightlyStateStore = { read: async () => { throw new Error("table text"); }, write: async () => { throw new Error("must not write"); } };

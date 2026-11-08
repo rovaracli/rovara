@@ -8,6 +8,7 @@ import type { DeveloperTaskRecord } from "../../../packages/broker/src/developer
 import { announceHumanSendBack, registerHumanSendBackListener, sendBackToRecord } from "../../../packages/broker/src/lessons/send-back-events.js";
 import type { ProcessDeps } from "../../../packages/broker/src/lessons/process.js";
 import { withLearningAttempt, noteLearningFault, type LearningAttempt } from "../../../packages/broker/src/lessons/learning-deadline.js";
+import { logRef } from "../../../packages/broker/src/lessons/log-ref.js";
 import { LearningRefusal } from "../../../packages/broker/src/lessons/pause.js";
 import { inheritedTasksOf, learnFromEndedTask, learnFromEndedTaskTyped, learningTaskEndHandler, reflectOutcomeOf, subjectForTask, type TaskLearningDeps, type TaskSubjectBase } from "../../../packages/broker/src/lessons/task-end.js";
 import type { OutcomeRowReader } from "../../../packages/broker/src/lessons/task-outcome-rows.js";
@@ -146,7 +147,8 @@ describe("the task-end handler and its installation (lessons in production, lane
     const logs: Array<[string, Record<string, unknown>]> = [];
     const handler = learningTaskEndHandler(() => ({ queue: { send: async () => { throw new Error("secret queue failure text"); } }, log: (event, fields) => logs.push([event, fields]) }));
     await expect(handler({} as never, endEvent())).resolves.toBeUndefined();
-    expect(logs).toEqual([["learning.enqueue_failed", { taskId: "task-1" }]]);
+    expect(logs).toEqual([["learning.enqueue_failed", { task: logRef(WS, "task-1") }]]);
+    expect(JSON.stringify(logs)).not.toContain("task-1");
     expect(JSON.stringify(logs)).not.toContain("secret");
   });
   it("is registered only when the broker has the learning dependencies AND a queue, once, and can be removed", () => {
@@ -303,6 +305,27 @@ describe("learnFromEndedTaskTyped (H1): which failures are worth another try", (
     const garbled = setup();
     garbled.deps.reflect.model = { complete: async () => ({ text: "not json", costUsd: 0.01, model: "m" }) };
     expect(await withLearningAttempt(attempt(), () => learnFromEndedTaskTyped(garbled.deps, input))).toEqual({ status: "not_reflected", retry: false });
+  });
+  it("N6: every learning log line about a task names it only as logRef(company, task): the cut at the deadline, a failed draft and a failed end", async () => {
+    const lines = (w: ReturnType<typeof setup>): Array<[string, Record<string, string | number>]> => { const out: Array<[string, Record<string, string | number>]> = []; w.deps.log = (event, fields) => { out.push([event, fields]); }; return out; };
+    const ref = logRef(WS, "task-1");
+    const cut = setup();
+    const cutLines = lines(cut);
+    const controller = new AbortController();
+    controller.abort();
+    await withLearningAttempt({ deadlineAt: Date.now() + 60_000, signal: controller.signal, attemptId: "a" }, () => learnFromEndedTaskTyped(cut.deps, input));
+    expect(cutLines).toEqual([["learning.drafts_cut_at_deadline", { task: ref }]]);
+    const failing = setup();
+    const failingLines = lines(failing);
+    failing.store.commit = async () => { throw new Error("table text"); };
+    await learnFromEndedTaskTyped(failing.deps, input);
+    expect(failingLines).toEqual([["learning.draft_failed", { task: ref }]]);
+    const broken = setup();
+    const brokenLines = lines(broken);
+    broken.deps.source = { read: async () => { throw new Error("read failed"); } };
+    await learnFromEndedTaskTyped(broken.deps, input);
+    expect(brokenLines).toEqual([["learning.task_end_failed", { task: ref }]]);
+    expect(JSON.stringify([...cutLines, ...failingLines, ...brokenLines])).not.toContain("task-1");
   });
   it("M4: once the deadline's signal is aborted no further draft is processed", async () => {
     const w = setup();

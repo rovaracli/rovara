@@ -115,7 +115,7 @@ const LessonBaseSchema = z.object({
   counters: LessonCountersSchema,
   lastValidatedAt: z.string().datetime().optional(),
   lastHelpfulAt: z.string().datetime().optional(),
-  /** Epoch seconds. 90 days by default, renewed on a validated helpful use. */
+  /** Epoch seconds. When the lesson fades: its trial period plus N days (90 by default) without helping; a validated helpful use resets it. */
   expiresAt: z.number().int().nonnegative(),
   approvals: z.array(LessonApprovalSchema).max(10),
   /** Set when a sole owner approved a tier-2 lesson alone (audited): one approval is then enough. */
