@@ -108,7 +108,7 @@ export function customerLearningModel(dependencies: AwsBrokerDependencies, optio
           runLimitUsd: estimate, stopAtUsd: estimate, budgetCeilingUsd: estimate, taskKeyIds: [],
         });
       } catch (error) {
-        if (error instanceof ScopeFullError && error.scope === LEARNING_COUNTER) throw new Error(LEARNING_MONTH_FULL);
+        if (error instanceof ScopeFullError && error.scope === LEARNING_COUNTER) throw new Error(LEARNING_MONTH_FULL, { cause: error });
         throw error;
       }
       if (minted.outcome !== "minted") throw new Error("learning could not record its model key");
@@ -121,7 +121,7 @@ export function customerLearningModel(dependencies: AwsBrokerDependencies, optio
       } finally {
         // Whatever the call did (an answer, an error, a timeout), the key is blocked now and its finalize clock starts; the sweep settles the proxy's own figure when it has flushed it. A block that fails
         // leaves the key to expire (five minutes) and to be finalized by the sweep's expiry backstop; its cap stays held until then.
-        await blockOperationKeys({ ...ledger }, { orgId, operationId, keyIds: [minted.keyId] }).catch(() => log("learning.key_not_blocked", { orgId }));
+        await blockOperationKeys(ledger, { orgId, operationId, keyIds: [minted.keyId] }).catch(() => log("learning.key_not_blocked", { orgId }));
       }
     },
   };

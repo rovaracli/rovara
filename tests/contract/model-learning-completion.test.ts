@@ -112,7 +112,7 @@ describe("ModelProxyClient.learningCompletion", () => {
 describe("what a key may name (the mint is where a learning call's alias is fenced)", () => {
   const mint = (models: string[]) => {
     const { client, seen } = proxy();
-    const result = client.mintKey({ orgId: ORG as never, purpose: "task", refId: "learning-op", maxBudgetUsd: 0.25, ttlSeconds: 300, models });
+    const result = client.mintKey({ orgId: ORG, purpose: "task", refId: "learning-op", maxBudgetUsd: 0.25, ttlSeconds: 300, models });
     return { result, seen };
   };
 
@@ -152,13 +152,13 @@ describe("the operation across the function boundary", () => {
     const real = AbortSignal.timeout.bind(AbortSignal);
     vi.spyOn(AbortSignal, "timeout").mockImplementation((ms: number) => { timeouts.push(ms); return real(ms); });
     const lambda = { send: async () => ({ StatusCode: 200, Payload: new TextEncoder().encode(JSON.stringify({ ok: true, result: { text: "x", model: ALIAS } })), $metadata: {} }) as InvokeCommandOutput };
-    const invoker = new ModelAccessInvoker({ functionName: "f", lambda: lambda as never });
+    const invoker = new ModelAccessInvoker({ functionName: "f", lambda: lambda });
     expect((await invoker.learningCompletion(input())).text).toBe("x");
     expect(timeouts).toEqual([LEARNING_INVOKE_TIMEOUT_MS]);
     // The short default for any other operation is much shorter than a learning call's wait.
     const other = { send: async () => ({ StatusCode: 200, Payload: new TextEncoder().encode(JSON.stringify({ ok: true, result: null })), $metadata: {} }) as InvokeCommandOutput };
     timeouts.length = 0;
-    await new ModelAccessInvoker({ functionName: "f", lambda: other as never }).blockKey("a".repeat(64));
+    await new ModelAccessInvoker({ functionName: "f", lambda: other }).blockKey("a".repeat(64));
     expect(timeouts[0]).toBeLessThan(LEARNING_INVOKE_TIMEOUT_MS);
   });
 

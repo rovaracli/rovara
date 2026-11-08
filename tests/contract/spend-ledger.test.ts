@@ -1609,7 +1609,7 @@ describe("the ledger lines of keys that do not belong to a task", () => {
   it("a page boundary falling on a learning line pages on without error (M3)", async () => {
     // Every ledger line is keyed by a 64-hex key id, so the admin view's cursor check accepts it. The cursor is the sort key of the last line of a page.
     const t = setup();
-    const input = t.input({ tags: { ...mintTagsFor({ payer: { kind: "project", project: "web" }, place: { project: "web" }, agentId: "learning" as never, origin: "learning", operationId: "learning-op-1" }) } });
+    const input = t.input({ tags: { ...mintTagsFor({ payer: { kind: "project", project: "web" }, place: { project: "web" }, agentId: "learning", origin: "learning", operationId: "learning-op-1" }) } });
     await reserve(t.deps(), input);
     t.spend(input, 0.05);
     await settleKey(t.deps(), t.orgId, input.keyId);
