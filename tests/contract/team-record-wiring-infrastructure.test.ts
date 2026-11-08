@@ -465,12 +465,18 @@ describe("the lessons worker (switch on)", () => {
     for (const forbidden of ["ec2:", "bedrock:", "scheduler:", "iam:", "lambda:InvokeAsync", "sqs:SendMessage", "s3:Put", "s3:Delete", "dynamodb:Scan", "dynamodb:DeleteTable", "secretsmanager:Put"]) {
       expect([...actions].filter((action) => action.startsWith(forbidden)), forbidden).toEqual([]);
     }
-    // Lambda: invoke, on the model access function alone.
+    // Lambda: invoke, on the model access function and on the self-hosted embedder (lesson similarity) alone.
     const invokes = statements.filter((statement) => [statement.Action].flat().some((action) => action.startsWith("lambda:")));
-    expect(invokes).toHaveLength(1);
-    expect([invokes[0]!.Action].flat()).toEqual(["lambda:InvokeFunction"]);
-    expect(JSON.stringify(invokes[0]!.Resource)).toContain("ModelAccessFunction");
-    expect(JSON.stringify(invokes[0]!.Resource)).not.toContain("Broker");
+    expect(invokes).toHaveLength(2);
+    for (const invoke of invokes) expect([invoke.Action].flat()).toEqual(["lambda:InvokeFunction"]);
+    const model = invokes.filter((invoke) => JSON.stringify(invoke.Resource).includes("ModelAccessFunction"));
+    expect(model).toHaveLength(1);
+    expect(JSON.stringify(model[0]!.Resource)).not.toContain("Broker");
+    const embedder = invokes.filter((invoke) => invoke.Sid === "LessonsInvokeEmbedder");
+    expect(embedder).toHaveLength(1);
+    // The one function by its derived name, exactly as the broker's InvokeEmbedder names it: no wildcard, no other function.
+    expect(JSON.stringify(embedder[0]!.Resource)).toContain("function:agentx-staging-embedder");
+    expect(JSON.stringify(embedder[0]!.Resource)).not.toContain("*");
     // The queue: consume only, on the one queue.
     const consume = statements.filter((statement) => [statement.Action].flat().includes("sqs:ReceiveMessage"));
     expect(consume).toHaveLength(1);

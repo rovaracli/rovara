@@ -8,7 +8,8 @@ import { LearningCorrectionSchema } from "@agentx/contracts";
 import { learningSalt } from "../learning/standing.js";
 import { NEGATED, compareSignatures, signatureOf, type Signature } from "../learning/similarity.js";
 import { readLearningPartition, type LearningDeps, type LearningScope } from "../learning/store.js";
-import { cleanForLearning, oppositePolarity } from "./guards.js";
+import { cleanForLearning } from "./guards.js";
+import { covers, relate } from "./copy-match.js";
 import type { CorrectionKind, Embedder } from "./ports.js";
 import type { CorrectionMatcher, CorrectionRecord, CorrectionSource, EmbeddingBudget, LessonFacts } from "./metric.js";
 import { cosine, lessonTextOf, overlapOf, tokenSetOf } from "./similarity.js";
@@ -65,7 +66,7 @@ export function signatureMatcher(scope: Pick<LearningScope, "orgId" | "project" 
 }
 
 /** Two corrections are the same advice when this share of their words is common; a correction is in a lesson when this share of the correction's words is in the lesson. */
-export const FUSED_SAME = { jaccard: 0.75, inLesson: 0.8, /** with the embedder: the cosine at which two texts are the same advice (bge-small scores unrelated text near 0.6) */ cosine: 0.9 } as const;
+export const FUSED_SAME = { jaccard: 0.75, inLesson: 0.8, /** the share of the words that must also be in the other text in the same order (the set measures above ignore order) */ ordered: 0.75, /** the share of a correction's neighbouring word pairs that a lesson must also hold (two words swapped break them) */ pairs: 0.5, /** with the embedder: the cosine at which two texts are the same advice (bge-small scores unrelated text near 0.6) */ cosine: 0.9 } as const;
 
 /**
  * The same fused matcher the curator and the loader use (lessons/similarity.ts), for the measure: two corrections, or a correction and a lesson, are the same advice when they say it in nearly the same words
@@ -80,16 +81,24 @@ export function fusedMatcher(budget: EmbeddingBudget, embedder: Embedder | undef
     if (!hasText(c)) throw new Error("no text");
     return cleanForLearning(c.text!, 1000);
   };
-  const decide = async (a: string, b: string, lexicalSame: (o: { containment: number; jaccard: number }) => boolean): Promise<boolean> => {
-    if (oppositePolarity(a, b)) return false;
+  // The comparison is ORDERED and keeps every negation, direction word and number (copy-match.ts): "turn X on" and "turn X off", or two steps in the other order, are different advice however many words they share.
+  // `check` returns false when the pair must never count as the same (a polarity, direction or number differs) and otherwise how well the first text's words appear in the second in the same order.
+  type Check = (a: string, b: string) => { ok: boolean; ordered: number };
+  const decide = async (a: string, b: string, check: Check, lexicalSame: (o: { containment: number; jaccard: number }) => boolean): Promise<boolean> => {
+    const checked = check(a, b);
+    if (!checked.ok) return false;
     const overlap = overlapOf(tokenSetOf(a), tokenSetOf(b));
-    if (lexicalSame(overlap)) return true;
+    if (lexicalSame(overlap) && checked.ordered >= FUSED_SAME.ordered) return true;
     if (embedder === undefined) return false;
     return cosine(await budget.embed(embedder, a), await budget.embed(embedder, b)) >= threshold;
   };
+  // Two corrections: neither is flipped against the other and they carry the same negations, directions and numbers.
+  const betweenCorrections: Check = (a, b) => { const r = relate(a, b); return { ok: !r.flipped && r.polaritySame, ordered: r.ordered }; };
+  // A correction against a lesson: every negation, direction word and number of the correction is in the lesson.
+  const againstLesson: Check = (correction, lesson) => { const c = covers(correction, lesson); return { ok: c.polarityContained && c.pairs >= FUSED_SAME.pairs, ordered: c.ordered }; };
   const lessonText = (lesson: LessonFacts): string => cleanForLearning(lessonTextOf(lesson), 1000);
   return {
-    sameAsCorrection: async (earlier, later) => (!hasText(earlier) || !hasText(later)) && options.signature !== undefined ? options.signature.sameAsCorrection(earlier, later) : decide(textOf(earlier), textOf(later), (o) => o.jaccard >= FUSED_SAME.jaccard),
-    sameAsLesson: async (correction, lesson) => (!hasText(correction) && options.signature !== undefined ? options.signature.sameAsLesson(correction, lesson) : decide(textOf(correction), lessonText(lesson), (o) => o.containment >= FUSED_SAME.inLesson && o.jaccard > 0)),
+    sameAsCorrection: async (earlier, later) => (!hasText(earlier) || !hasText(later)) && options.signature !== undefined ? options.signature.sameAsCorrection(earlier, later) : decide(textOf(earlier), textOf(later), betweenCorrections, (o) => o.jaccard >= FUSED_SAME.jaccard),
+    sameAsLesson: async (correction, lesson) => (!hasText(correction) && options.signature !== undefined ? options.signature.sameAsLesson(correction, lesson) : decide(textOf(correction), lessonText(lesson), againstLesson, (o) => o.containment >= FUSED_SAME.inLesson && o.jaccard > 0)),
   };
 }

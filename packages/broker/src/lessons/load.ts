@@ -9,7 +9,7 @@ import { safeScopeLabel } from "./render.js";
 import { approversRequired, modeAllows, resolveLearning, type ApprovalPolicy, type LearningSettingsReader } from "./policy.js";
 import { isTrialLesson } from "./trial.js";
 import type { LessonDeps, LessonEmbedder, LessonVectors } from "./ports.js";
-import { docOfText, rankLessons } from "./similarity.js";
+import { EMBED_TIMEOUT_MS, docOfText, rankLessons } from "./similarity.js";
 import type { LessonStore, LoadManifest, LoadManifestEntry, ScopeKey } from "./store.js";
 import type { AccessCheckPort } from "../team-record/access-port.js";
 import { createLessonLiveReader, lessonTaskRefs } from "./live-visibility.js";
@@ -176,7 +176,7 @@ export async function loadLessonsForStage(deps: LoadDeps, request: LoadRequest):
   let similarity = new Map<string, number>();
   try {
     const task = docOfText(cleanLessonText(`${request.intent}\n${request.planSummary ?? ""}`, 2000), request.files);
-    similarity = new Map((await rankLessons({ embedder: deps.embedder, vectors: deps.vectors, log: deps.log, metrics: deps.metrics }, key, eligible, task, { queryKind: "query" })).ranked.map((r) => [r.id, Math.max(0, Math.min(1, r.fused))]));
+    similarity = new Map((await rankLessons({ embedder: deps.embedder, vectors: deps.vectors, log: deps.log, metrics: deps.metrics }, key, eligible, task, { queryKind: "query", timeoutMs: EMBED_TIMEOUT_MS.load })).ranked.map((r) => [r.id, Math.max(0, Math.min(1, r.fused))]));
   } catch { deps.metrics?.count("learning_load_similarity_failed"); }
 
   const scored: Array<{ lesson: Lesson; score: number; why: LoadManifestEntry["why"] }> = [];

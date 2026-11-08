@@ -113,6 +113,12 @@ export async function approveLesson(deps: ApproveDeps, input: ApproveInput): Pro
     if (lesson === undefined) return { ok: false, code: "not_found" };
     if (lesson.status !== "pending") return { ok: false, code: "not_pending" };
     if (!(await mayHandle(deps, key, lesson, input.approverId))) return { ok: false, code: "not_permitted" };
+    // A lesson that supersedes or contradicts another is decided only by a person who could read that other lesson too: approving a refinement retires the old one, and a card must not be decided on advice its approver cannot see.
+    for (const otherId of [lesson.supersedes, lesson.contradictsWith]) {
+      if (otherId === undefined) continue;
+      const other = await deps.store.get(key, otherId);
+      if (other !== undefined && !(await mayHandle(deps, key, other, input.approverId))) return { ok: false, code: "not_permitted" };
+    }
     if (input.expectedVersion !== undefined && lesson.version !== input.expectedVersion) return { ok: false, code: "conflict" };
 
     // Edit and approve: the edited text is cleaned and screened, and the tier is worked out again on it.

@@ -14,13 +14,13 @@
 //   - Athena workgroup: $5 per TB scanned, only when a query runs; the workgroup itself is free.
 //   - EventBridge Scheduler schedules (hourly, nightly, re-embed): free at this volume; each invoke is one Lambda run of the broker (a few milliseconds when nothing is due).
 // The embedder Lambda costs nothing idle (arm64, on demand, 10 GB; its call time is not measured on a real Lambda yet); its own small network (a VPC with no gateway, no NAT and no endpoint) costs nothing. The re-embed schedule (every 15 minutes) is one broker invoke that reads one index page per workspace when nothing is due. The distiller's model calls are NOT created here: they are billed on the org's spend when a feature uses them.
-import { CfnParameter, Duration, Token, aws_cloudwatch as cloudwatch, aws_lambda_event_sources as eventSources, aws_logs as logs, aws_scheduler as scheduler, aws_sqs as sqs, type Stack, aws_iam as iam } from "aws-cdk-lib";
+import { ArnFormat, CfnParameter, Duration, Token, aws_cloudwatch as cloudwatch, aws_lambda_event_sources as eventSources, aws_logs as logs, aws_scheduler as scheduler, aws_sqs as sqs, type Stack, aws_iam as iam } from "aws-cdk-lib";
 import type { aws_dynamodb as dynamodb, aws_s3 as s3 } from "aws-cdk-lib";
 import type { aws_lambda as lambda } from "aws-cdk-lib";
 import { aws_lambda as lambdaValues } from "aws-cdk-lib";
 import {
   LESSONS_REFLECT_MAX_RECEIVES, LESSONS_REFLECT_VISIBILITY_SECONDS, LESSONS_WORKER_RESERVED_CONCURRENCY, LESSONS_WORKER_TIMEOUT_SECONDS, TEAM_RECORD_OPS_MAX_RECEIVES,
-  lessonsReflectDeadLetterName, lessonsReflectQueueName, teamRecordNamePrefix, teamRecordOpsDeadLetterName, teamRecordOpsQueueName, teamRecordTableName,
+  embedderFunctionName, lessonsReflectDeadLetterName, lessonsReflectQueueName, teamRecordNamePrefix, teamRecordOpsDeadLetterName, teamRecordOpsQueueName, teamRecordTableName,
 } from "@agentx/contracts";
 import { packagedFunction } from "./control-plane.js";
 import { BrokerNames, BrokerSettings } from "./broker-names.js";
@@ -271,8 +271,8 @@ export const LESSONS_WORKER_STATE_WRITE_KEY_PATTERNS = [
  *    backoff), the GitHub App's key secret (read; citations are checked against the code host) and, in Enterprise, the customer's table key through DynamoDB only. It has no EC2, no Bedrock, no scheduler and no other
  *    queue (not even the audit intake queue: audit events are written as pending items and sent by the broker's drain). It does not invoke itself.
  *  - M5: an alarm on the dead-letter queue (any message), on the worker's errors (15 minutes) and on its throttles; the dead-letter queue is listed on the Health page (`lessons-reflect`, derived from the environment's name).
- *  - L8 (noted): similarity (vectors, an embedder) is stubbed today (`lessonSimilarityFor`). When it lands the worker's role needs the vectors role and the embedding grant (and the customer's key in Enterprise); the IAM
- *    test names this so the gap is caught.
+ *  - Similarity (DECISIONS 23): the lessons' vectors are rows of the Team record table (covered above) and the embedder is the self-hosted function, so the role also holds `lambda:InvokeFunction` on that one function
+ *    (`LessonsInvokeEmbedder`, scoped as the broker's `InvokeEmbedder`). The function's name is derived from the environment's name like the broker's; where it is absent lessons rank by keywords and paths.
  */
 export function attachLessonsWorker(stack: Stack, props: LessonsWorkerProps): { queue: sqs.Queue; deadLetters: sqs.Queue; worker: lambda.Function } {
   const deadLetters = new sqs.Queue(stack, "LessonsReflectDeadLetters", { queueName: lessonsReflectDeadLetterName(props.env), encryption: sqs.QueueEncryption.SQS_MANAGED, retentionPeriod: Duration.days(14) });
@@ -322,6 +322,12 @@ export function attachLessonsWorker(stack: Stack, props: LessonsWorkerProps): { 
   }));
   props.artifacts.grantRead(worker, "private/*");
   props.modelAccessFunction.grantInvoke(worker);
+  // Lesson similarity (DECISIONS 23): the worker curates drafts, which ranks lessons by the self-hosted embedder's cosine where the function exists. One action on that one function, scoped as the broker's `InvokeEmbedder`
+  // (embedder-function.ts); the vectors are rows of the Team record table, which the table statements above already cover.
+  worker.addToRolePolicy(new iam.PolicyStatement({
+    sid: "LessonsInvokeEmbedder", actions: ["lambda:InvokeFunction"],
+    resources: [stack.formatArn({ service: "lambda", resource: "function", resourceName: embedderFunctionName(props.env), arnFormat: ArnFormat.COLON_RESOURCE_NAME })],
+  }));
   worker.addToRolePolicy(new iam.PolicyStatement({ sid: "ReadGithubAppKey", actions: ["secretsmanager:GetSecretValue"], resources: [props.githubAppPrivateKeySecretArn] }));
   if (typeof props.context.kmsKeyArn === "string") {
     worker.addToRolePolicy(new iam.PolicyStatement({

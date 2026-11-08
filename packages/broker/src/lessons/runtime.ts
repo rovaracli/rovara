@@ -103,7 +103,7 @@ export function createLessonsRuntime(input: LessonsRuntimeInput): LessonsRuntime
   const verifier = createCitationVerifier({ reader: input.reader, repositoriesOf: input.repositoriesOf });
   const similarity = input.similarity ?? { vectors: NO_VECTORS };
   const load: LoadDeps = { ...base, store, embedder: similarity.embedder, vectors: similarity.vectors, settings, access, ...(directory.resolveMember === undefined ? {} : { resolveMember: (workspaceId: string, developerId: string) => directory.resolveMember!(workspaceId, developerId) }) };
-  const counters: CounterDeps = { ...base, store, judge: REFUSING_JUDGE, settings };
+  const counters: CounterDeps = { ...base, store, judge: REFUSING_JUDGE, settings, vectors: similarity.vectors };
   const presetStore = new DynamoPresetStore(input.table);
   const routes: LessonRouteDeps = {
     ...base, store, directory, settings, access, names: input.names, sources: { table: input.table },

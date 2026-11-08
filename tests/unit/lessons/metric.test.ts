@@ -324,7 +324,7 @@ describe("L7-2: the embedding calls are budgeted (a hard cap, and the count is r
 
   it("embeds each distinct text once: 39 corrections compared over and over cost one call per distinct text, and the count is recorded", async () => {
     n = 0;
-    const list = Array.from({ length: 39 }, (_, i) => correction(`distinct advice number ${i}`));
+    const list = Array.from({ length: 39 }, (_, i) => correction(`distinct advice topic${i}`));
     const embedder = counting();
     const { deps } = setup(list, { matcher: (budget: EmbeddingBudget) => fusedMatcher(budget, embedder, { threshold: 0.99999 }) });
     const result = await run(deps);
@@ -338,7 +338,7 @@ describe("L7-2: the embedding calls are budgeted (a hard cap, and the count is r
 
   it("past the hard cap no further embedding call is made; those corrections are unjudged (they never lower the rate) and the answer says it was cut short", async () => {
     n = 0;
-    const list = Array.from({ length: 30 }, (_, i) => correction(`distinct advice number ${i}`));
+    const list = Array.from({ length: 30 }, (_, i) => correction(`distinct advice topic${i}`));
     const embedder = counting();
     const { deps } = setup(list, { matcher: (budget: EmbeddingBudget) => fusedMatcher(budget, embedder, { threshold: 0.99999 }) });
     const result = await run(deps, WINDOW, { maxEmbeddingCalls: 5 });
@@ -351,7 +351,7 @@ describe("L7-2: the embedding calls are budgeted (a hard cap, and the count is r
 
   it("an embedder that fails leaves the correction unjudged and still counts the attempt", async () => {
     n = 0;
-    const list = [correction("a"), correction("b"), correction("c")];
+    const list = [correction("alpha beta"), correction("gamma delta"), correction("epsilon zeta")];
     let calls = 0;
     const embedder = { embed: async () => { calls += 1; throw new Error("down"); } };
     const { deps } = setup(list, { matcher: (budget: EmbeddingBudget) => fusedMatcher(budget, embedder, { threshold: 0.9 }) });
@@ -394,8 +394,27 @@ describe("lane 5: the fused matcher (DECISIONS 23): the same words matcher as th
   it("a correction is in a lesson when the lesson says what the correction says (its words are in the lesson's)", async () => {
     const m = fusedMatcher(budget(), undefined);
     const lesson = { id: "l", type: "convention" as const, title: "Retries", description: "", body: "HTTP retries in the api service use withRetry from src/retry/index.ts.", scope: {} };
-    expect(await m.sameAsLesson(rec("retries use withRetry in the api service"), lesson)).toBe(true);
+    expect(await m.sameAsLesson(rec("retries in the api service use withRetry"), lesson)).toBe(true);
     expect(await m.sameAsLesson(rec("integer cents for money"), lesson)).toBe(false);
+  });
+
+  it("review M3: the same words with a direction, polarity, number or order changed are NOT the same mistake, between corrections and against a lesson", async () => {
+    const m = fusedMatcher(budget(), undefined);
+    const pairs: Array<[string, string]> = [
+      ["Turn TLS verification on when createClient connects to Postgres", "Turn TLS verification off when createClient connects to Postgres"],
+      ["Run migrations before seeding the database in CI", "Run seeding before migrations of the database in CI"],
+      ["Prefer pnpm over npm for installs in this repo", "Prefer npm over pnpm for installs in this repo"],
+      ["Retry the payment webhook 3 times before failing", "Retry the payment webhook 9 times before failing"],
+      ["Use the in-memory fake instead of the real Postgres client in unit tests", "Use the real Postgres client instead of the in-memory fake in unit tests"],
+    ];
+    for (const [a, b] of pairs) {
+      expect(await m.sameAsCorrection(rec(a), rec(b)), a).toBe(false);
+      const lesson = { id: "l", type: "convention" as const, title: "t", description: "", body: b, scope: {} };
+      expect(await m.sameAsLesson(rec(a), lesson), `${a} / lesson`).toBe(false);
+      // The positive control: the very same words are the same, so the answer above is the direction word and not the matcher.
+      expect(await m.sameAsCorrection(rec(a), rec(a)), `${a} / itself`).toBe(true);
+      expect(await m.sameAsLesson(rec(a), { ...lesson, body: a }), `${a} / its own lesson`).toBe(true);
+    }
   });
 
   it("with an embedder: words that differ but vectors that agree are the same, through the budget (each text once)", async () => {

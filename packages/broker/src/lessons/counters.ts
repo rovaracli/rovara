@@ -2,7 +2,7 @@
 // reverts) and from two buttons on the task page ("Helpful", "Wrong here"). Every mark is idempotent per task and lesson. The judge model is tool-less and
 // answers a fixed code; it can only add a harmful mark or withhold a helpful one, never approve or lower a tier.
 import { resolveLearning, emitAudit, modeAllows, type LearningSettingsReader } from "./policy.js";
-import type { AlertSink, CorrectionJudge, CorrectionKind, LessonDeps } from "./ports.js";
+import type { AlertSink, CorrectionJudge, CorrectionKind, LessonDeps, LessonVectors } from "./ports.js";
 import { renewLesson } from "./expiry.js";
 import { retireLesson } from "./curate.js";
 import { isTrialLesson, promoteIfStable } from "./trial.js";
@@ -24,7 +24,7 @@ const MAX_CORRECTIONS_PER_LESSON = 5;
 const REACHED_PROMPT: ReadonlySet<string> = new Set(["valid", "moved", "none"]);
 const reached = (manifests: readonly LoadManifest[]): Set<string> => new Set(manifests.flatMap((m) => m.lessons.filter((e) => REACHED_PROMPT.has(e.citation)).map((e) => e.id)));
 
-export interface CounterDeps extends LessonDeps { store: LessonStore; judge: CorrectionJudge; settings: LearningSettingsReader; alerts?: AlertSink }
+export interface CounterDeps extends LessonDeps { store: LessonStore; judge: CorrectionJudge; settings: LearningSettingsReader; alerts?: AlertSink; /** Where lesson vectors are kept: a lesson the counters retire loses its vector. */ vectors?: LessonVectors }
 
 export interface TaskCorrection { kind: CorrectionKind; /** Files the correction touches, for scope matching. */ paths: readonly string[]; text: string; at: number }
 export interface TaskOutcome {

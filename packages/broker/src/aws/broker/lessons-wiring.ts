@@ -86,7 +86,9 @@ export async function repositoryVisibilityOf(dependencies: LessonsHostDependenci
  */
 export function lessonSimilarityFor(dependencies: Pick<AwsBrokerDependencies, "teamRecord" | "lessonEmbedder">): { embedder: LessonEmbedder | undefined; vectors: LessonVectors } {
   const table = (dependencies.teamRecord as { table?: Parameters<typeof dynamoLessonVectors>[0] } | undefined)?.table;
-  return { embedder: dependencies.lessonEmbedder, vectors: table === undefined ? NO_VECTORS : dynamoLessonVectors(table) };
+  // An embedder the host passes wins (tests, a custom install); otherwise the record runtime's own, built from the embedder function the environment names (none: keywords and paths).
+  const embedder = dependencies.lessonEmbedder ?? (dependencies.teamRecord as { lessonEmbedder?: LessonEmbedder } | undefined)?.lessonEmbedder;
+  return { embedder, vectors: table === undefined ? NO_VECTORS : dynamoLessonVectors(table) };
 }
 
 /**

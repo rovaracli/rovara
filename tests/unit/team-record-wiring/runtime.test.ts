@@ -5,9 +5,10 @@
 //  3. PUBLIC SLACK: message text is never stored in the Public edition (processed, then dropped), whatever the source row says; the positive control shows Enterprise does store it.
 import { readFileSync, readdirSync } from "node:fs";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { retiredTeamRecordVectorIndexName, teamRecordVectorIndexName, teamRecordPk, TEAM_RECORD_EMBEDDER, TEAM_RECORD_OPS_MAX_RECEIVES, TEAM_RECORD_QUEUED_PUT_MAX_AGE_MS, recordActorSourceHash, recordDeveloperHash, developerOrgKey, githubInstallationKey, githubMemberKey, memberGithubKey, githubRepoProjectKey, orgMetaKey, orgSlackTeamKey, orgProjectCatalogKey, projectMetaKey, projectRevisionKey, slackTeamOrgKey, type OrgId } from "@agentx/contracts";
+import { LESSON_EMBEDDER, retiredTeamRecordVectorIndexName, teamRecordVectorIndexName, teamRecordPk, TEAM_RECORD_EMBEDDER, TEAM_RECORD_OPS_MAX_RECEIVES, TEAM_RECORD_QUEUED_PUT_MAX_AGE_MS, recordActorSourceHash, recordDeveloperHash, developerOrgKey, githubInstallationKey, githubMemberKey, memberGithubKey, githubRepoProjectKey, orgMetaKey, orgSlackTeamKey, orgProjectCatalogKey, projectMetaKey, projectRevisionKey, slackTeamOrgKey, type OrgId } from "@agentx/contracts";
 import { announceHumanSendBack } from "../../../packages/broker/src/lessons/send-back-events.js";
 import { drainTeamRecordQueue, installTeamRecordEmitter, isTeamRecordJobEvent, isTeamRecordQueueEvent, isTeamRecordSlackEvent, recordSlackForward, runTeamRecordJob, uninstallTeamRecordEmitter } from "../../../packages/broker/src/aws/broker/team-record-wiring.js";
+import { lessonSimilarityFor } from "../../../packages/broker/src/aws/broker/lessons-wiring.js";
 import { createTeamRecordRuntime, teamRecordIsOn, type TeamRecordRuntime } from "../../../packages/broker/src/team-record/runtime.js";
 import { ERASE_SWEEP_DELAY_MS } from "../../../packages/broker/src/team-record/erase.js";
 import { identitySystem } from "../../../packages/broker/src/team-record/erased.js";
@@ -1944,6 +1945,20 @@ describe("the re-embed job (review H1 and M3)", () => {
     expect(states[0]).toMatchObject({ pk: "TEAM_RECORD_ORGS", sk: `REEMBED#${ORG_A}`, orgId: ORG_A });
     // the scheduled walks of the other jobs ignore these rows (they are not workspaces)
     expect(await runtime.jobs.run("hourly")).toMatchObject({ orgs: 1 });
+  });
+
+  it("lesson similarity (DECISIONS 23): the record runtime offers the lessons' embedder where the install names the embedder function, and none where it does not; the lessons seam takes it from the record, and a host's own wins", () => {
+    const named = build(dbOf(), { ...ON });
+    expect(named.lessonEmbedder).toMatchObject({ dimension: 384, spec: LESSON_EMBEDDER.spec });
+    const seam = lessonSimilarityFor({ teamRecord: named });
+    expect(seam.embedder).toBe(named.lessonEmbedder);
+    // The vectors are the record table's own items.
+    expect(seam.vectors).toBeDefined();
+    const bare = build(dbOf(), { ...ON, EMBEDDER_FUNCTION_NAME: "" });
+    expect(bare.lessonEmbedder).toBeUndefined();
+    expect(lessonSimilarityFor({ teamRecord: bare }).embedder).toBeUndefined();
+    const own = { dimension: 2, spec: "own", embed: async () => [1, 0], embedMany: async (texts: readonly string[]) => texts.map(() => [1, 0]) };
+    expect(lessonSimilarityFor({ teamRecord: named, lessonEmbedder: own }).embedder).toBe(own);
   });
 
   it("does nothing while the record is paused, and where the install has no embedder function", async () => {

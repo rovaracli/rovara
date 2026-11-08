@@ -7,15 +7,20 @@ import { expiryWindowMs } from "./expiry.js";
 import { emitAudit } from "./policy.js";
 import { isLearningRefusal, noteModelFailure, notePause, noteRecovered, pauseOfLook, spendLook, type LessonsPauseStore } from "./pause.js";
 import type { AlertSink, LearningSpend, LessonDeps, LessonEmbedder, LessonVectors, PipelineModel } from "./ports.js";
-import { JUDGE_CANDIDATES, NEIGHBOURS, docOf, dropVector, isFlippedCopy, isNearExact, isVerbatim, keepVector, lessonTextOf, passesGate, rankLessons, type Ranked, type SimilarityLog } from "./similarity.js";
+import { relate } from "./copy-match.js";
+import { readVisible } from "./read-visible.js";
+import type { AccessCheckPort } from "../team-record/access-port.js";
+import { EMBED_TIMEOUT_MS, JUDGE_CANDIDATES, NEIGHBOURS, closeEnoughForSame, docOf, dropVector, isFlippedCopy, isNarrowing, isNearExact, isVerbatim, keepVector, matchesRejected, passesGate, rankLessons, type Ranked, type SimilarityLog } from "./similarity.js";
 import { attributableSources, noteCandidateSources } from "./sources.js";
 import type { LessonDraft } from "./reflect.js";
 import { nextVersion, type LessonStore, type ScopeKey } from "./store.js";
 import { isTrialLesson } from "./trial.js";
-import { LessonCitationSchema, LessonProvenanceSchema, LessonSchema, LessonScopeSchema, distinctIds, minTrust, narrowestAudience, normSource, trustAtLeast, type Lesson, type LessonCitation, type LessonScope } from "./types.js";
+import { LessonCitationSchema, LessonProvenanceSchema, LessonSchema, LessonScopeSchema, distinctIds, minTrust, narrowestAudience, normSource, satisfiesAcl, trustAtLeast, type IdentitySet, type Lesson, type LessonCitation, type LessonScope } from "./types.js";
 
 export { NEIGHBOURS };
 const MAX_COMMIT_TRIES = 3;
+/** Of the judge's five places, this many are kept for lessons a person rejected that the draft resembles (review H2). */
+const RESERVED_REJECTED = 2;
 
 export interface CurateDeps extends LessonDeps {
   store: LessonStore; judgeModel: PipelineModel; spend: LearningSpend; alerts?: AlertSink; pause?: LessonsPauseStore;
@@ -24,6 +29,11 @@ export interface CurateDeps extends LessonDeps {
   /** Where lesson vectors are kept (beside the lessons). */
   vectors: LessonVectors;
   log?: SimilarityLog;
+  /**
+   * The access records. A lesson goes to the judge, or is acted on, only when the DRAFT's audience may read it (`readVisible`, with the draft's audience as the reader: nobody in particular for a project-wide draft).
+   * Absent (a test): only the lessons' frozen audiences are compared; the runtime always passes it.
+   */
+  access?: AccessCheckPort | undefined;
   /** The project's configured expiry window in days (14-365), if any. */
   expiryDays?: number;
 }
@@ -40,7 +50,7 @@ export type CurateOutcome =
   | { outcome: "added"; lesson: Lesson; judgeEscalate: boolean }
   | { outcome: "merged"; lesson: Lesson }
   | { outcome: "updated"; lesson: Lesson; supersedes: string; judgeEscalate: boolean }
-  | { outcome: "contradiction"; lesson: Lesson; other: string }
+  | { outcome: "contradiction"; lesson: Lesson; other: string; /** The draft is not the opposite of `other`: it resembles advice a person REJECTED and no judge could clear it, so a person decides. */ matchesRejected?: true }
   | { outcome: "dropped"; reason: "outsider" | "invalid" | "previously_rejected" | "conflict" };
 
 const JUDGE_SYSTEM = [
@@ -48,10 +58,9 @@ const JUDGE_SYSTEM = [
   "Answer with one JSON object and nothing else: {\"verdicts\":[{\"n\":1,\"verdict\":\"same|refines|contradicts|different\"}],\"escalate\":false}. Give exactly one verdict for every candidate number, once each.",
   "same: the new lesson gives the same advice as the candidate. refines: the new lesson narrows, corrects or extends the candidate. contradicts: they advise opposite things. different: unrelated advice, even if they mention the same file.",
   "A candidate marked previously_rejected is advice a person already turned down: answer same only if the new lesson gives that same advice.",
-  "Set escalate to true when the new lesson touches tests, checks, reviews, security, permissions, dependencies, networking, or skipping or disabling anything.",
+  "Set escalate to true when the new lesson or any candidate touches tests, checks, reviews, security, permissions, dependencies, networking, or skipping or disabling anything.",
 ].join("\n");
 
-const lessonText = lessonTextOf;
 
 /** Whether two scopes overlap: a repo or language in common, or an unset dimension; paths overlap when one prefix (before any glob) contains the other. */
 export function scopesOverlap(a: LessonScope, b: LessonScope): boolean {
@@ -192,46 +201,73 @@ export async function curateDraft(deps: CurateDeps, key: ScopeKey, draft: Lesson
   // Every candidate is collected (no flat caps). It is counted against its sources; a spiking source is paused alone and its lessons are held, not dropped.
   await noteCandidateSources(deps, deps.store, key, attributableSources(draft.provenance), deps.alerts);
 
-  // The neighbours: the project's live lessons whose scope overlaps, ranked by the fused matcher (keywords, paths and, where there is one, the embedder). It never fails: an embedder that is down is keywords and paths.
+  // The neighbours: the project's lessons whose scope overlaps, ranked by the fused matcher (keywords, paths and, where there is one, the embedder). It never fails: an embedder that is down or slow is keywords and paths.
   const sim = { embedder: deps.embedder, vectors: deps.vectors, log: deps.log, metrics: deps.metrics };
   const pool = (await deps.store.list(key, { statuses: ["candidate", "pending", "active", "rejected"] })).filter((l) => scopesOverlap(l.scope, draft.scope));
-  const { ranked, queryVector } = await rankLessons(sim, key, pool, docOf(draft), { embedMissing: true, queryKind: "document" });
+  const { ranked, queryVector } = await rankLessons(sim, key, pool, docOf(draft), { embedMissing: true, queryKind: "document", timeoutMs: EMBED_TIMEOUT_MS.curate });
   const byId = new Map(pool.map((l) => [l.id, l] as const));
-  const shortlist: Array<{ ranked: Ranked; lesson: Lesson }> = ranked.filter(passesGate).slice(0, NEIGHBOURS).flatMap((r) => { const lesson = byId.get(r.id); return lesson === undefined ? [] : [{ ranked: r, lesson }]; });
-  const mine = lessonText(draft);
+  const rankedById = new Map(ranked.map((r) => [r.id, r] as const));
+  // Only lessons the draft's own audience may read are shown to the judge or acted on (their text goes into the prompt, and a refinement retires the lesson it names once approved).
+  const visible = await visibleToDraft(deps, key, draft, pool);
+  const shortlist: Array<{ ranked: Ranked; lesson: Lesson }> = ranked.filter(passesGate).flatMap((r) => { const lesson = byId.get(r.id); return lesson === undefined || !visible.has(lesson.id) ? [] : [{ ranked: r, lesson }]; }).slice(0, NEIGHBOURS);
+  const live = shortlist.filter((c) => c.lesson.status !== "rejected");
+  const body = draft.body;
 
-  // What each shortlisted lesson is to the draft. A verbatim copy (the same words, the same polarity, the same cited file or none) merges by code: no judge could say more. Everything else is the judge's call: ONE
-  // call for the draft's top few. With no judge (no provider, the month's cap, a refusal, a failed call) only a near-exact copy merges by code (the same cited file, the same polarity, nearly the same words), a
-  // copy of a lesson a person rejected is dropped, and the rest stays its own candidate. A copy that differs only in polarity (always against never) is never merged by code: the judge sees it, or a person does.
+  // Advice a person REJECTED, found among ALL the rejected lessons (not only the best few of the shortlist) by the ordered word test, with or without a cited file (review H2).
+  const draftDoc = docOf(draft);
+  const rejectedHits = pool.filter((l) => l.status === "rejected" && matchesRejected(draftDoc, docOf(l), rankedById.get(l.id)?.cosine, body, l.body));
+  if (rejectedHits.some((l) => relate(body, l.body).verbatim)) return drop("previously_rejected");
+
+  // What each neighbour is to the draft. A VERBATIM copy (the bodies are equal after case, space and punctuation; the same cited file, or neither cites one) merges by code: no judge could say more. Everything else is
+  // the judge's call: ONE call for the draft's best few (and a reserved place for rejected matches). With no judge (no provider, the month's cap, a refusal, a failed call) the ordered word test decides: a near-exact copy
+  // merges, the same words with a polarity, direction or number changed (or reordered) go to a person as a contradiction, a narrowing goes to a person as a refinement, and the rest stays its own candidate.
   const verdicts = new Map<string, Verdict>();
+  const judgedBy = new Set<string>();
   let judgeEscalate = false;
-  const copyOf = (test: typeof isNearExact) => shortlist.filter((c) => test(c.ranked, mine, lessonText(c.lesson)));
-  const verbatim = copyOf(isVerbatim);
-  if (verbatim.some((c) => c.lesson.status === "rejected")) return drop("previously_rejected");
-  const same = verbatim.find((c) => mergeAllowed(c.lesson, draft));
-  if (same !== undefined) verdicts.set(same.lesson.id, "same");
-  else if (shortlist.length > 0) {
-    const top = shortlist.slice(0, JUDGE_CANDIDATES);
-    const judged = await judgeList(deps, key, draft, top.map((c) => c.lesson));
+  const verbatim = live.find((c) => isVerbatim(c.ranked, body, c.lesson.body) && mergeAllowed(c.lesson, draft));
+  let rejectedJudged = new Set<string>();
+  if (verbatim !== undefined) verdicts.set(verbatim.lesson.id, "same");
+  else {
+    const reserved = rejectedHits.filter((l) => visible.has(l.id)).slice(0, RESERVED_REJECTED);
+    const top = [...live.slice(0, JUDGE_CANDIDATES - reserved.length).map((c) => c.lesson), ...reserved];
+    const judged = top.length === 0 ? undefined : await judgeList(deps, key, draft, top);
     if (judged !== undefined) {
-      top.forEach((c, i) => verdicts.set(c.lesson.id, judged.verdicts[i]!));
       judgeEscalate = judged.escalate;
+      top.forEach((lesson, i) => { verdicts.set(lesson.id, judged.verdicts[i]!); judgedBy.add(lesson.id); });
+      rejectedJudged = new Set(reserved.map((l) => l.id));
       // A person already turned this advice down.
-      if (top.some((c) => c.lesson.status === "rejected" && verdicts.get(c.lesson.id) === "same")) return drop("previously_rejected");
-    } else {
-      const near = copyOf(isNearExact);
-      if (near.some((c) => c.lesson.status === "rejected")) return drop("previously_rejected");
-      const copy = near.find((c) => mergeAllowed(c.lesson, draft));
-      if (copy !== undefined) verdicts.set(copy.lesson.id, "same");
-      else {
-        // No judge cannot clear a lesson with opposite polarity: it goes to a person as a contradiction.
-        const flipped = shortlist.find((c) => c.lesson.status !== "rejected" && isFlippedCopy(c.ranked, mine, lessonText(c.lesson)));
-        if (flipped !== undefined) verdicts.set(flipped.lesson.id, "contradicts");
-      }
+      if (reserved.some((l) => verdicts.get(l.id) === "same")) return drop("previously_rejected");
+    } else if (rejectedHits.some((l) => relate(body, l.body).near)) return drop("previously_rejected");
+  }
+  // Whatever the judge said, the ordered word test has the last word: a pair that is flipped goes to a person as a contradiction, and a "same" is acted on only when the two are close in words as well (a draft cannot
+  // choose by its own wording which lesson it is credited to). Where there is no verdict the ordered test alone decides what it can.
+  for (const c of live) {
+    const verdict = verdicts.get(c.lesson.id);
+    const lessonBody = c.lesson.body;
+    if (isFlippedCopy(c.ranked, body, lessonBody)) verdicts.set(c.lesson.id, "contradicts");
+    else if (verdict === "same" && judgedBy.has(c.lesson.id) && !closeEnoughForSame(c.ranked, body, lessonBody)) verdicts.set(c.lesson.id, "refines");
+    else if (verdict === undefined) {
+      if (isNearExact(c.ranked, body, lessonBody)) verdicts.set(c.lesson.id, "same");
+      else if (isNarrowing(c.ranked, body, lessonBody)) verdicts.set(c.lesson.id, "refines");
     }
   }
-  const acting = shortlist.flatMap((c) => { const verdict = verdicts.get(c.lesson.id); return c.lesson.status === "rejected" || verdict === undefined || verdict === "different" ? [] : [{ ...c, verdict }]; });
+  // A refinement or a contradiction names the other lesson: it is acted on only when that lesson's audience is at least as broad as the draft's (review M4).
+  const broadEnough = (other: Lesson): boolean => JSON.stringify(narrowestAudience([other.provenance.audience, draft.provenance.audience])) === JSON.stringify(draft.provenance.audience);
+  const acting = live.flatMap((c) => { const verdict = verdicts.get(c.lesson.id); return verdict === undefined || verdict === "different" || ((verdict === "refines" || verdict === "contradicts") && !broadEnough(c.lesson)) ? [] : [{ ...c, verdict }]; });
   const chosen = acting.find((c) => c.verdict === "contradicts") ?? acting.find((c) => c.verdict === "same" && mergeAllowed(c.lesson, draft)) ?? acting.find((c) => c.verdict === "refines");
+
+  /** The draft goes to a person with the lesson it contradicts (or, for a rejected lesson, resembles). */
+  const toPerson = async (other: Lesson, matchesRejectedLesson: boolean): Promise<CurateOutcome> => {
+    const created = newLesson(deps, key, draft, "pending", { contradictsWith: other.id, tierReasons: matchesRejectedLesson ? ["contradiction", "matches_rejected"] : ["contradiction"] });
+    const written = await commitWith(deps, key, async () => [created]);
+    if (written === undefined) return drop("conflict");
+    await keepVector(sim, key, created, queryVector);
+    await emitAudit(deps.audit, { action: "lesson.contradiction", workspaceId: key.workspaceId, project: key.project, lessonId: created.id, facts: { other: other.id, judged: judgedBy.has(other.id), ...(matchesRejectedLesson ? { matchesRejected: true } : {}) } });
+    // A later contradicting correction by a member retires a lesson that is live on trial (DECISIONS 24); the new lesson waits for a person. Audited by the retire.
+    if (!matchesRejectedLesson && isTrialLesson(other) && other.status === "active" && draft.provenance.memberCorrection === true) await retireLesson(deps, key, other.id, "contradicted", undefined, "lesson.trial_retired");
+    try { await deps.alerts?.alert(key.workspaceId, key.project, "lesson_contradiction"); } catch { /* the card is already in the queue */ }
+    return { outcome: "contradiction", lesson: created, other: other.id, ...(matchesRejectedLesson ? { matchesRejected: true as const } : {}) };
+  };
 
   if (chosen !== undefined) {
     const other = chosen.lesson;
@@ -242,28 +278,22 @@ export async function curateDraft(deps: CurateDeps, key: ScopeKey, draft: Lesson
         return [mergeInto(fresh, draft, nextVersion(fresh, await deps.store.versions(key, fresh.id)), deps.now(), new Set(Object.keys((await deps.store.flags(key)).pausedSources ?? {}).map(normSource)))];
       });
       if (merged === undefined) return drop("conflict");
-      await emitAudit(deps.audit, { action: "lesson.merged", workspaceId: key.workspaceId, project: key.project, lessonId: other.id, facts: { score: Math.round(chosen.ranked.fused * 100) / 100, tier: other.tier } });
+      await emitAudit(deps.audit, { action: "lesson.merged", workspaceId: key.workspaceId, project: key.project, lessonId: other.id, facts: { fused: Math.round(chosen.ranked.fused * 100) / 100, tier: other.tier, judged: judgedBy.has(other.id) } });
       return { outcome: "merged", lesson: merged[0]! };
     }
-    if (chosen.verdict === "contradicts") {
-      const created = newLesson(deps, key, draft, "pending", { contradictsWith: other.id, tierReasons: ["contradiction"] });
-      const written = await commitWith(deps, key, async () => [created]);
-      if (written === undefined) return drop("conflict");
-      await keepVector(sim, key, created, queryVector);
-      await emitAudit(deps.audit, { action: "lesson.contradiction", workspaceId: key.workspaceId, project: key.project, lessonId: created.id, facts: { other: other.id } });
-      // A later contradicting correction by a member retires a lesson that is live on trial (DECISIONS 24); the new lesson waits for a person. Audited by the retire.
-      if (isTrialLesson(other) && other.status === "active" && draft.provenance.memberCorrection === true) await retireLesson(deps, key, other.id, "contradicted", undefined, "lesson.trial_retired");
-      try { await deps.alerts?.alert(key.workspaceId, key.project, "lesson_contradiction"); } catch { /* the card is already in the queue */ }
-      return { outcome: "contradiction", lesson: created, other: other.id };
-    }
+    if (chosen.verdict === "contradicts") return toPerson(other, false);
     // UPDATE: the refinement is a new lesson that supersedes the old one once a person approves it. The old one stays live until then.
     const created = newLesson(deps, key, draft, "candidate", { supersedes: other.id });
     const written = await commitWith(deps, key, async () => [created]);
     if (written === undefined) return drop("conflict");
     await keepVector(sim, key, created, queryVector);
-    await emitAudit(deps.audit, { action: "lesson.updated", workspaceId: key.workspaceId, project: key.project, lessonId: created.id, facts: { supersedes: other.id } });
+    await emitAudit(deps.audit, { action: "lesson.updated", workspaceId: key.workspaceId, project: key.project, lessonId: created.id, facts: { supersedes: other.id, judged: judgedBy.has(other.id) } });
     return { outcome: "updated", lesson: created, supersedes: other.id, judgeEscalate };
   }
+
+  // Resembles advice a person rejected and no judge cleared it (none ran, or it was not shown that lesson): a person decides. It is never a plain candidate that could be applied by itself.
+  const unjudged = rejectedHits.find((l) => !rejectedJudged.has(l.id));
+  if (unjudged !== undefined) return toPerson(unjudged, true);
 
   const created = newLesson(deps, key, draft, "candidate", {});
   const written = await commitWith(deps, key, async () => [created]);
@@ -271,6 +301,21 @@ export async function curateDraft(deps: CurateDeps, key: ScopeKey, draft: Lesson
   await keepVector(sim, key, created, queryVector);
   await emitAudit(deps.audit, { action: "lesson.candidate_created", workspaceId: key.workspaceId, project: key.project, lessonId: created.id, facts: { type: created.type } });
   return { outcome: "added", lesson: created, judgeEscalate };
+}
+
+/** The lessons the draft's own audience may read now: its frozen audience and the access records (`readVisible`), the draft's audience standing in as the reader. */
+async function visibleToDraft(deps: CurateDeps, key: ScopeKey, draft: LessonDraft, pool: readonly Lesson[]): Promise<Set<string>> {
+  const audience = draft.provenance.audience;
+  // A project-wide draft reads as nobody in particular (only unrestricted lessons whose places no record restricts); a restricted draft reads as the people its audience names.
+  const viewer: IdentitySet | undefined = audience.kind === "restricted" ? { principals: audience.acl.principals ?? [], groups: audience.acl.groups ?? [] } : undefined;
+  if (deps.access === undefined) return new Set(pool.filter((l) => l.provenance.audience.kind !== "restricted" || (viewer !== undefined && satisfiesAcl(viewer, l.provenance.audience.acl))).map((l) => l.id));
+  try {
+    return new Set((await readVisible({ access: deps.access, key, viewer, lessons: pool, where: "curate", ...(deps.log === undefined ? {} : { log: deps.log }) })).map((l) => l.id));
+  } catch {
+    // An access record that cannot be read shows the draft nothing: it is curated as if it had no neighbours it may see.
+    deps.log?.("lessons.curate_access_unavailable", {});
+    return new Set();
+  }
 }
 
 /** RETIRE as a delta: one conditional commit that retires a lesson. Used by approvals, auto-retire and supersede. */

@@ -117,7 +117,7 @@ describe("copies: the only thing that merges by code", () => {
   const cited = (path: string): LessonLike["citations"] => [{ kind: "code", repo: "api", path, startLine: 1, endLine: 2, anchor: "x", commit: BASE }];
   const mk = (body: string, path: string | undefined, title = "Retries"): LessonLike & { id: string } => ({ id: "x", title, description: "", body, scope: { repos: ["api"] }, citations: path === undefined ? [] : cited(path) });
   const rank = (a: LessonLike, b: LessonLike & { id: string }) => fuse(docOf(a, "q"), [docOf(b)])[0]!;
-  const text = lessonTextOf;
+  const text = (l: LessonLike): string => l.body;
 
   it("the same cited file, the same polarity and nearly the same words: a near-exact copy; the same words with another file are not", () => {
     const a = mk("HTTP retries in the api service use withRetry from src/retry/index.ts.", "src/retry/index.ts");

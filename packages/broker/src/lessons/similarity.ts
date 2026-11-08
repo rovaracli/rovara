@@ -7,12 +7,12 @@
 //   fusion            reciprocal-rank fusion of the lists that exist, so no list's raw scale (model-specific cosines, BM25 sums) matters
 //
 // A score cannot tell "the same advice" from "the opposite advice" (the research found contradictions score as high as duplicates), so this module only SHORTLISTS. What a shortlisted lesson means for a draft is
-// decided by one listwise judge call in curate.ts; with no judge, `isNearExact` is the only thing that may merge two lessons by code.
+// decided by one listwise judge call in curate.ts; with no judge, only a near-exact copy may merge two lessons by code. Every copy test compares the bodies word by word, in order, keeping negations, directions, qualifiers and numbers (copy-match.ts).
 //
 // Nothing here calls a paid model, writes a lesson or reads the lesson store: callers pass the lessons in. The embedder is our own compute; if it is absent or fails the ranking falls back to keywords and paths (one
 // fixed log code), and nothing here ever throws into a caller.
 import { createHash } from "node:crypto";
-import { oppositePolarity } from "./guards.js";
+import { covers, relate } from "./copy-match.js";
 import type { LessonEmbedder, LessonVectors, StoredLessonVector } from "./ports.js";
 import type { ScopeKey } from "./store.js";
 import type { Lesson } from "./types.js";
@@ -170,11 +170,11 @@ export function bm25(query: SimDoc, corpus: readonly SimDoc[]): Map<string, numb
 }
 
 /** Shared tokens over the smaller side (how much of the shorter text the longer one repeats), and over the union. */
-export function overlapOf(a: ReadonlySet<string>, b: ReadonlySet<string>): { containment: number; jaccard: number; shared: number } {
-  if (a.size === 0 || b.size === 0) return { containment: 0, jaccard: 0, shared: 0 };
+export function overlapOf(a: ReadonlySet<string>, b: ReadonlySet<string>): { containment: number; jaccard: number; shared: number; /** shared over the LARGER side: how much of the bigger text the smaller one accounts for */ mutual: number } {
+  if (a.size === 0 || b.size === 0) return { containment: 0, jaccard: 0, shared: 0, mutual: 0 };
   let shared = 0;
   for (const t of a) if (b.has(t)) shared += 1;
-  return { containment: shared / Math.min(a.size, b.size), jaccard: shared / (a.size + b.size - shared), shared };
+  return { containment: shared / Math.min(a.size, b.size), jaccard: shared / (a.size + b.size - shared), shared, mutual: shared / Math.max(a.size, b.size) };
 }
 
 export function cosine(a: readonly number[], b: readonly number[]): number {
@@ -215,6 +215,8 @@ export interface Ranked {
   /** The same two measures over the bodies alone (copies are judged on these). */
   bodyContainment: number;
   bodyJaccard: number;
+  /** The share of the larger body that the smaller one holds (words, order ignored). */
+  bodyMutual: number;
   sharedFile: boolean;
   /** Neither side cites a code file. */
   bothUncited: boolean;
@@ -225,11 +227,11 @@ export const passesGate = (r: Ranked): boolean => r.containment >= GATE.containm
 /** Ranks a corpus against a query with the lists that exist (keywords always; paths when the query names any; cosines when given). Pure. */
 export function fuse(query: SimDoc, corpus: readonly SimDoc[], cosines?: ReadonlyMap<string, number>): Ranked[] {
   const lexical = bm25(query, corpus);
-  const measures = new Map<string, { containment: number; jaccard: number; bodyContainment: number; bodyJaccard: number; shared: number; path: number; sharedFile: boolean; bothUncited: boolean }>();
+  const measures = new Map<string, { containment: number; jaccard: number; bodyContainment: number; bodyJaccard: number; bodyMutual: number; shared: number; path: number; sharedFile: boolean; bothUncited: boolean }>();
   for (const doc of corpus) {
     const overlap = overlapOf(query.set, doc.set);
     const body = overlapOf(query.bodySet, doc.bodySet);
-    measures.set(doc.id, { ...overlap, bodyContainment: body.containment, bodyJaccard: body.jaccard, path: pathOverlap(query.paths, doc.paths), sharedFile: doc.files.some((f) => query.files.includes(f)), bothUncited: doc.files.length === 0 && query.files.length === 0 });
+    measures.set(doc.id, { ...overlap, bodyContainment: body.containment, bodyJaccard: body.jaccard, bodyMutual: body.mutual, path: pathOverlap(query.paths, doc.paths), sharedFile: doc.files.some((f) => query.files.includes(f)), bothUncited: doc.files.length === 0 && query.files.length === 0 });
   }
   const lists: Array<Array<{ id: string }>> = [];
   const lexicalList = [...lexical.entries()].filter(([id]) => (measures.get(id)?.shared ?? 0) >= MIN_SHARED_TOKENS).sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0])).slice(0, LIST_DEPTH).map(([id]) => ({ id }));
@@ -247,28 +249,55 @@ export function fuse(query: SimDoc, corpus: readonly SimDoc[], cosines?: Readonl
   for (const [id, raw] of fusedRaw) {
     const m = measures.get(id)!;
     const c = cosines?.get(id);
-    out.push({ id, fused: Math.min(1, raw / best), bm25: lexical.get(id) ?? 0, path: m.path, ...(c === undefined ? {} : { cosine: c }), containment: m.containment, jaccard: m.jaccard, bodyContainment: m.bodyContainment, bodyJaccard: m.bodyJaccard, sharedFile: m.sharedFile, bothUncited: m.bothUncited });
+    out.push({ id, fused: Math.min(1, raw / best), bm25: lexical.get(id) ?? 0, path: m.path, ...(c === undefined ? {} : { cosine: c }), containment: m.containment, jaccard: m.jaccard, bodyContainment: m.bodyContainment, bodyJaccard: m.bodyJaccard, bodyMutual: m.bodyMutual, sharedFile: m.sharedFile, bothUncited: m.bothUncited });
   }
   return out.sort((a, b) => b.fused - a.fused || b.containment - a.containment || a.id.localeCompare(b.id));
 }
 
 // ---- copies --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
 /**
- * Near-exact copies, for when there is NO judge: the same cited file, nearly the same words (at least 85% of the shorter body's words and 65% of all the bodies' words, a path counting once: a lesson a tier-0 template reworded still counts, as it does when the reflector writes the same fact twice), the same
- * polarity. A verbatim copy (the very same body words; the same cited file, or neither cites one) merges even when there is a judge: no judge could say more, and it spares a call on a lesson written twice.
+ * What may decide that two lessons are one, by code (DECISIONS 23, review round 1). Every test here compares the two BODIES word by word, in order (copy-match.ts), and keeps negations, direction words, qualifiers
+ * and numbers: a changed digit, "on" for "off", "instead of" turned round, a clause such as "except the billing service" added, or two words swapped is NOT a copy. The set measures of the shortlist (containment, Jaccard)
+ * never decide a copy; they only choose what a judge or a person looks at.
+ *
+ *   verbatim   the bodies are equal after case, whitespace and punctuation are normalised; the same cited file, or neither cites one. The only thing that skips an available judge.
+ *   near       with NO judge: the same cited file and the same words in the same order, a few filler words apart.
+ *   flipped    the same words with a polarity, direction or number changed (or in another order), the same cited file or none: a person decides, as a contradiction. Never merged.
+ *   narrows    the draft holds the lesson's words in order and more: a refinement for a person.
  */
-export const NEAR_EXACT = { containment: 0.85, jaccard: 0.65 } as const;
+export const isVerbatim = (ranked: Pick<Ranked, "sharedFile" | "bothUncited">, a: string, b: string): boolean => (ranked.sharedFile || ranked.bothUncited) && relate(a, b).verbatim;
+export const isNearExact = (ranked: Pick<Ranked, "sharedFile" | "bothUncited">, a: string, b: string): boolean => ranked.sharedFile && relate(a, b).near;
+export const isFlippedCopy = (ranked: Pick<Ranked, "sharedFile" | "bothUncited">, a: string, b: string): boolean => (ranked.sharedFile || ranked.bothUncited) && relate(a, b).flipped;
+export const isNarrowing = (ranked: Pick<Ranked, "sharedFile" | "bothUncited">, a: string, b: string): boolean => (ranked.sharedFile || ranked.bothUncited) && relate(a, b).narrows;
 
-/** Whether two texts are close enough in words to be one lesson written twice (no file test, no polarity test). */
-export const nearlySameWords = (r: Pick<Ranked, "bodyContainment" | "bodyJaccard">): boolean => r.bodyContainment >= NEAR_EXACT.containment && r.bodyJaccard >= NEAR_EXACT.jaccard;
+/** A judge's "same" is acted on only when the two bodies are this close as well (review H3): the judge alone cannot choose which lesson a draft is credited to. */
+export const JUDGE_SAME_FLOOR = { mutual: 0.7, cosine: 0.85 } as const;
+export const closeEnoughForSame = (ranked: Pick<Ranked, "bodyMutual" | "cosine" | "sharedFile" | "bothUncited">, a: string, b: string): boolean => {
+  const relation = relate(a, b);
+  if (relation.verbatim || relation.near) return true;
+  // Never when a polarity, direction, qualifier or number differs, or the words are reordered.
+  if (relation.flipped || !relation.criticalSame || !relation.polaritySame) return false;
+  return ranked.bodyMutual >= JUDGE_SAME_FLOOR.mutual || (ranked.cosine !== undefined && ranked.cosine >= JUDGE_SAME_FLOOR.cosine);
+};
 
 /**
- * The only thing that may merge two lessons by code when there is no judge (DECISIONS 23). The polarity words (never, always, avoid, don't...) are the guard that keeps a lesson and its opposite, which share nearly
- * all their words, from being merged: a pair that fails ONLY on polarity is `isFlippedCopy` and goes to the judge, or to a person.
+ * Whether a draft is the advice a person already REJECTED coming back (review H2): the same words in the same order (a copy), or the rejected lesson's words nearly all present in the draft, or (with an embedder) a very
+ * close vector, with no polarity, direction or number changed. It does not ask for a shared file, so an uncited rejected lesson is matched too. A rejected lesson shorter than four words is matched only as a copy.
  */
-export const isNearExact = (ranked: Ranked, a: string, b: string): boolean => ranked.sharedFile && nearlySameWords(ranked) && !oppositePolarity(a, b);
-export const isVerbatim = (ranked: Ranked, a: string, b: string): boolean => (ranked.sharedFile || ranked.bothUncited) && ranked.bodyJaccard === 1 && !oppositePolarity(a, b);
-export const isFlippedCopy = (ranked: Ranked, a: string, b: string): boolean => ranked.sharedFile && nearlySameWords(ranked) && oppositePolarity(a, b);
+export const REJECTED_MATCH = { mutual: 0.7, contained: 0.85, minWords: 4, cosine: 0.92 } as const;
+export function matchesRejected(draft: { bodySet: ReadonlySet<string> }, rejected: { bodySet: ReadonlySet<string> }, cosineValue: number | undefined, draftBody: string, rejectedBody: string): boolean {
+  const overlap = overlapOf(draft.bodySet, rejected.bodySet);
+  const closeVector = cosineValue !== undefined && cosineValue >= REJECTED_MATCH.cosine;
+  const containedShare = rejected.bodySet.size === 0 ? 0 : overlap.shared / rejected.bodySet.size;
+  // A cheap cut before the word-by-word test: a copy shares most of its words, so a rejected lesson sharing under half of them is not one.
+  if (overlap.mutual < 0.5 && containedShare < 0.6 && !closeVector) return false;
+  const relation = relate(draftBody, rejectedBody);
+  if (relation.verbatim || relation.near) return true;
+  // Every negation, direction word and number of the rejected advice must be in the draft; the draft may say more (padding with other lessons' words, digits included, does not clear it).
+  if (relation.flipped || !covers(rejectedBody, draftBody).polarityContained) return false;
+  if (rejected.bodySet.size >= REJECTED_MATCH.minWords && (overlap.mutual >= REJECTED_MATCH.mutual || containedShare >= REJECTED_MATCH.contained)) return true;
+  return closeVector;
+}
 
 // ---- the stored vectors and the ranking -----------------------------------------------------------------------------------------------------------------------------------------------
 export type SimilarityLog = (event: string, fields: Record<string, unknown>) => void;
@@ -278,12 +307,15 @@ export interface SimilarityDeps {
   vectors: LessonVectors;
   log?: SimilarityLog | undefined;
   metrics?: { count(name: string, tags?: Record<string, string>): void } | undefined;
+  /** The clock for the "no embedder" notice (default Date.now). */
+  now?: (() => number) | undefined;
 }
 
 /** The fixed log codes (no text from an error, nothing a person wrote). */
 export const SIMILARITY_LOG = {
   noEmbedder: "lessons.similarity_no_embedder",
   embedderDown: "lessons.similarity_embedder_unavailable",
+  embedderSlow: "lessons.similarity_embedder_timeout",
   vectorsDown: "lessons.similarity_vectors_unavailable",
 } as const;
 
@@ -295,7 +327,13 @@ export interface RankOptions {
   embedMissing?: boolean;
   /** `query` for a task's intent or a correction against lessons, `document` for lesson against lesson. */
   queryKind?: "query" | "document";
+  /** The longest the vectors and the embedder may take, together. Past it the ranking is keywords and paths (the loader must not wait on a slow embedder). Default `EMBED_TIMEOUT_MS.curate`. */
+  timeoutMs?: number;
 }
+/** How long the embedder may take before the ranking falls back to keywords: the loader is quick (it is inside a dispatch), the curator may wait a few seconds. */
+export const EMBED_TIMEOUT_MS = { load: 300, curate: 5000 } as const;
+/** The "no embedder" line is written at most once per project per hour. */
+export const NO_EMBEDDER_NOTICE_MS = 60 * 60 * 1000;
 export interface RankResult {
   ranked: Ranked[];
   /** The query's vector when the embedder gave one (the curator stores it with the lesson it creates). */
@@ -307,9 +345,16 @@ export interface RankResult {
 const asNumbers = (value: unknown): number[] | undefined => (Array.isArray(value) ? (value as number[]) : ArrayBuffer.isView(value) ? Array.from(value as unknown as ArrayLike<number>) : undefined);
 const validVector = (v: readonly number[] | undefined, dimension: number): v is readonly number[] => v !== undefined && v.length === dimension && v.every((x) => Number.isFinite(x));
 
-let warnedNoEmbedder = false;
-/** Test hook: the once-per-process "no embedder" line starts again. */
-export const resetNoEmbedderNotice = (): void => { warnedNoEmbedder = false; };
+const noEmbedderNoticeAt = new Map<string, number>();
+/** Test hook: the "no embedder" notice starts again. */
+export const resetNoEmbedderNotice = (): void => { noEmbedderNoticeAt.clear(); };
+
+class EmbedTimeout extends Error { constructor() { super("embedder timeout"); } }
+function withTimeout<T>(work: Promise<T>, ms: number): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const limit = new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new EmbedTimeout()), ms); timer.unref?.(); });
+  return Promise.race([work, limit]).finally(() => { if (timer !== undefined) clearTimeout(timer); });
+}
 
 /**
  * Ranks `corpus` (lessons the caller already read and filtered) against `query`. Never throws: an embedder or a vector store that fails is one fixed log code and the ranking is keywords and paths.
@@ -318,42 +363,51 @@ export async function rankLessons(deps: SimilarityDeps, key: ScopeKey, corpus: R
   const docs = corpus.map((l) => docOf(l));
   const keyword: RankResult = { ranked: fuse(query, docs), mode: "keyword" };
   if (deps.embedder === undefined) {
-    if (!warnedNoEmbedder) { warnedNoEmbedder = true; deps.log?.(SIMILARITY_LOG.noEmbedder, {}); }
+    // A no-embedder state that comes back after a deploy must show again: the line repeats once an hour for each project, not once for the life of the process.
+    const at = (deps.now ?? Date.now)();
+    const scope = `${key.workspaceId}\u0001${key.project}`;
+    const last = noEmbedderNoticeAt.get(scope);
+    if (last === undefined || at - last >= NO_EMBEDDER_NOTICE_MS || at < last) { noEmbedderNoticeAt.set(scope, at); deps.log?.(SIMILARITY_LOG.noEmbedder, {}); }
+    deps.metrics?.count("learning.similarity_no_embedder");
     return keyword;
   }
   const embedder = deps.embedder;
   try {
-    const hashes = new Map(corpus.map((l) => [l.id, textHash(lessonTextOf(l))] as const));
-    let stored: Map<string, StoredLessonVector>;
-    try { stored = await deps.vectors.get(key.workspaceId, key.project, embedder.spec, corpus.map((l) => l.id)); } catch { deps.log?.(SIMILARITY_LOG.vectorsDown, {}); stored = new Map(); }
-    const vectors = new Map<string, readonly number[]>();
-    for (const l of corpus) {
-      const found = stored.get(l.id);
-      const vector = found === undefined ? undefined : asNumbers(found.vector);
-      if (found !== undefined && found.hash === hashes.get(l.id) && validVector(vector, embedder.dimension)) vectors.set(l.id, vector);
-    }
-    if (options.embedMissing === true) {
-      const missing = corpus.filter((l) => !vectors.has(l.id)).slice(0, MAX_EMBED_PER_CALL);
-      if (missing.length > 0) {
-        const made = await embedder.embedMany(missing.map((l) => lessonTextOf(l)), "document");
-        for (const [i, l] of missing.entries()) {
-          const vector = made[i];
-          if (!validVector(vector, embedder.dimension)) continue;
-          vectors.set(l.id, vector);
-          try { await deps.vectors.put(key.workspaceId, key.project, embedder.spec, l.id, { hash: hashes.get(l.id)!, vector }); } catch { deps.log?.(SIMILARITY_LOG.vectorsDown, {}); }
-        }
-      }
-    }
-    const [queryVector] = await embedder.embedMany([query.text], options.queryKind ?? "document");
-    if (!validVector(queryVector, embedder.dimension)) throw new Error("bad vector");
-    const cosines = new Map<string, number>();
-    for (const [id, vector] of vectors) cosines.set(id, cosine(queryVector, vector));
-    return { ranked: fuse(query, docs, cosines), queryVector: [...queryVector], mode: "fused" };
-  } catch {
-    deps.log?.(SIMILARITY_LOG.embedderDown, {});
-    deps.metrics?.count("learning.similarity_embedder_unavailable");
+    return await withTimeout(fusedRanking(deps, embedder, key, corpus, query, docs, options), options.timeoutMs ?? EMBED_TIMEOUT_MS.curate);
+  } catch (error) {
+    deps.log?.(error instanceof EmbedTimeout ? SIMILARITY_LOG.embedderSlow : SIMILARITY_LOG.embedderDown, {});
+    deps.metrics?.count(error instanceof EmbedTimeout ? "learning.similarity_embedder_timeout" : "learning.similarity_embedder_unavailable");
     return keyword;
   }
+}
+
+async function fusedRanking(deps: SimilarityDeps, embedder: LessonEmbedder, key: ScopeKey, corpus: ReadonlyArray<LessonLike & { id: string }>, query: SimDoc, docs: readonly SimDoc[], options: RankOptions): Promise<RankResult> {
+  const hashes = new Map(corpus.map((l) => [l.id, textHash(lessonTextOf(l))] as const));
+  let stored: Map<string, StoredLessonVector>;
+  try { stored = await deps.vectors.get(key.workspaceId, key.project, embedder.spec, corpus.map((l) => l.id)); } catch { deps.log?.(SIMILARITY_LOG.vectorsDown, {}); stored = new Map(); }
+  const vectors = new Map<string, readonly number[]>();
+  for (const l of corpus) {
+    const found = stored.get(l.id);
+    const vector = found === undefined ? undefined : asNumbers(found.vector);
+    if (found !== undefined && found.hash === hashes.get(l.id) && validVector(vector, embedder.dimension)) vectors.set(l.id, vector);
+  }
+  if (options.embedMissing === true) {
+    const missing = corpus.filter((l) => !vectors.has(l.id)).slice(0, MAX_EMBED_PER_CALL);
+    if (missing.length > 0) {
+      const made = await embedder.embedMany(missing.map((l) => lessonTextOf(l)), "document");
+      for (const [i, l] of missing.entries()) {
+        const vector = made[i];
+        if (!validVector(vector, embedder.dimension)) continue;
+        vectors.set(l.id, vector);
+        try { await deps.vectors.put(key.workspaceId, key.project, embedder.spec, l.id, { hash: hashes.get(l.id)!, vector }); } catch { deps.log?.(SIMILARITY_LOG.vectorsDown, {}); }
+      }
+    }
+  }
+  const [queryVector] = await embedder.embedMany([query.text], options.queryKind ?? "document");
+  if (!validVector(queryVector, embedder.dimension)) throw new Error("bad vector");
+  const cosines = new Map<string, number>();
+  for (const [id, vector] of vectors) cosines.set(id, cosine(queryVector, vector));
+  return { ranked: fuse(query, docs, cosines), queryVector: [...queryVector], mode: "fused" };
 }
 
 /** Stores a lesson's vector (the curator, for the lesson it just created). Never throws. */

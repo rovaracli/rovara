@@ -1,7 +1,7 @@
 // Lessons in production, lane 1: the task-end learning dependencies are built where the Team record AND the model path exist, and the inline model-calling handler is NOT registered from production wiring.
 import { readFileSync } from "node:fs";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { spendCounterKey } from "@agentx/contracts";
+import { lessonKey, spendCounterKey } from "@agentx/contracts";
 import { hasTaskEndHandlers } from "../../packages/broker/src/agents/task-end.js";
 import { installLearningTaskEnd, learningDepsInUse, uninstallLearningTaskEnd } from "../../packages/broker/src/aws/broker/learning-wiring.js";
 import type { learningDepsFor, lessonsRuntimeFor } from "../../packages/broker/src/aws/broker/lessons-wiring.js";
@@ -151,8 +151,10 @@ describe("the learning dependencies", () => {
     expect(runtime.load.embedder).toBe(embedder);
     expect(runtime.routes.embedder).toBe(embedder);
     expect((dependencies.learning as NonNullable<ReturnType<typeof learningDepsFor>>).process.embedder).toBe(embedder);
-    await runtime.routes.vectors.put(TEST_ORG, "demo", "fake-2", "les_aaaa1111", { hash: "h", vector: [1, 0] });
     const table = (dependencies.teamRecord as { table: { documentClient: FakeDynamoDb } }).table.documentClient;
+    // The vector write is fenced on the lesson's head (a purged or never-written lesson takes none): the head is there first.
+    table.set({ ...lessonKey(TEST_ORG, "demo", "les_aaaa1111"), entityType: "LESSON", id: "les_aaaa1111" });
+    await runtime.routes.vectors.put(TEST_ORG, "demo", "fake-2", "les_aaaa1111", { hash: "h", vector: [1, 0] });
     expect(table.find((item) => String(item.sk) === "LESSON#les_aaaa1111#VEC")).toHaveLength(1);
     expect([...(await runtime.routes.vectors.get(TEST_ORG, "demo", "fake-2", ["les_aaaa1111"])).keys()]).toEqual(["les_aaaa1111"]);
   });

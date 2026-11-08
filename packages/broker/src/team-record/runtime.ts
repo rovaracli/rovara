@@ -34,7 +34,7 @@ import { defaultRetention, readEdition, type TeamRecordEdition } from "./edition
 import { listSourceConfigs, markSourceFailing } from "./store.js";
 import { resolveTaskVisibility } from "../lessons/task-visibility.js";
 import { createEmbedder } from "./embed.js";
-import { recordEmbedderClientFrom, recordJobEmbedderClientFrom, recordSearchEmbedderClientFrom, EMBEDDER_JOB_WAIT_MS } from "../embedder/wiring.js";
+import { lessonEmbedderFrom, recordEmbedderClientFrom, recordJobEmbedderClientFrom, recordSearchEmbedderClientFrom, EMBEDDER_JOB_WAIT_MS, type LessonEmbedder } from "../embedder/wiring.js";
 import { REEMBED_RUN_MS, dropReembedState, reembedRun, sweepReembedState } from "./reembed.js";
 import { eraseProject, eraseWorkspace, erasePerson, type EraseBudget } from "./erase.js";
 import { tableHotArchiveSource, ensureWorkspaceVectorBucket, tableHotStatsSource } from "./hot-source.js";
@@ -203,6 +203,8 @@ export interface TeamRecordRuntime {
   readonly modes: LearningModeReader;
   /** UX-4b review fix 1: the record is paused (`teamRecordIsPaused`): erasure, removals and expiry run, nothing new is captured, read or learned. */
   readonly paused: boolean;
+  /** The lessons' small open embedder (the same self-hosted function, its bge-small side), or undefined where the install names no embedder function. Lessons then rank by keywords and cited paths alone (lessons/similarity.ts). */
+  readonly lessonEmbedder: LessonEmbedder | undefined;
   /** `/v1/app/projects/{project}/record/...` (the caller's project role already found by the broker). `undefined` for any other path. */
   routes(request: { method: string; path: string; query: Readonly<Record<string, string | undefined>>; caller: TeamRecordCallerInput; /** What a source write needs from the broker's request (`source-write.ts`); absent: reads only. */ write?: SourceWriteContext }): Promise<RecordRouteReply | undefined>;
   /** Start from inside Slack (task 12): the private "Add to project" prompt and its Add press, through the same source route as the web (`slack-add.ts`). The Slack reads it needs are handed in per call. */
@@ -296,6 +298,7 @@ export function createTeamRecordRuntime(input: TeamRecordRuntimeInput): TeamReco
   const embedderDeps = embedderClient === undefined ? {} : { embedder: createEmbedder({ client: embedderClient }) };
   const searchClient = recordSearchEmbedderClientFrom(env, sdkOptions, undefined, undefined, now);
   const searchEmbedderDeps = searchClient === undefined ? {} : { embedder: createEmbedder({ client: searchClient }) };
+  const lessonEmbedder = lessonEmbedderFrom(env, sdkOptions);
   const jobClient = recordJobEmbedderClientFrom(env, sdkOptions, undefined, now);
   const jobEmbedder = jobClient === undefined ? undefined : createEmbedder({ client: jobClient });
   const buckets = (env.TEAM_RECORD_VECTOR_BUCKETS ?? "").split(",").filter((name) => name !== "");
@@ -1302,5 +1305,5 @@ export function createTeamRecordRuntime(input: TeamRecordRuntimeInput): TeamReco
     orgOfSlackTeam: (teamId) => new OrgStore({ documentClient: input.documentClient, tableName: state.tableName, now }).orgForSlackTeam(teamId),
     developerOfSlackUser: async (slackUserId) => (input.developerOfSlackUser === undefined ? undefined : await input.developerOfSlackUser(slackUserId)),
   });
-  return { edition, table, sink, drain, removal, links, trackerPeople, emitter, slackAdd, taskVisibility: (orgId, taskId) => resolveTaskVisibility({ documentClient: input.documentClient, tableName: state.tableName, now }, orgId, taskId), actors, modes, paused, routes, tools, taps: { github, hook, slack, slackStrict }, erase, jobs, opsFailures: (orgId) => readOpsFailures(table, orgId, now()) };
+  return { edition, table, sink, drain, removal, links, trackerPeople, emitter, slackAdd, taskVisibility: (orgId, taskId) => resolveTaskVisibility({ documentClient: input.documentClient, tableName: state.tableName, now }, orgId, taskId), actors, modes, paused, lessonEmbedder, routes, tools, taps: { github, hook, slack, slackStrict }, erase, jobs, opsFailures: (orgId) => readOpsFailures(table, orgId, now()) };
 }
