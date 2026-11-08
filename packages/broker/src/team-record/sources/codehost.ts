@@ -82,6 +82,9 @@ export interface HumanEditInput {
   authorCount: number;
   /** The authors as the company's canonical developer ids, each once (never a login or an email): so a lesson built from the edit names them, and their erasure reaches it. */
   authors: string[];
+  /** Who may read what these lines say: the repository's audience (restricted, with a live access check, for a private repository) and its scope. Every span built from the lines carries them. */
+  audience: Audience;
+  scope: string;
   files: HumanEditFile[];
   /** The only thing of this input that may be kept. */
   link: string;
@@ -512,7 +515,7 @@ export async function runHumanEdit(deps: Pick<CodeHostTapDependencies, "actors" 
   try {
     const outcome = await deps.extractor.extract({
       workspaceId: job.repo.workspaceId, project: job.project, repo: job.repo.fullName, taskId: job.taskId, pullRequest: job.pullRequest,
-      trust: "member", authorCount: authorIds.length, authors: authorIds, files: diff.files.slice(0, HUMAN_EDIT_MAX_FILES).map(humanEditFile), link: job.pullRequest.url,
+      trust: "member", authorCount: authorIds.length, authors: authorIds, audience: audienceOf(job.repo, new Date().toISOString()), scope: repoScope(job.repo), files: diff.files.slice(0, HUMAN_EDIT_MAX_FILES).map(humanEditFile), link: job.pullRequest.url,
     });
     log("human_edit.handed_on", { files: Math.min(diff.files.length, HUMAN_EDIT_MAX_FILES), candidates: outcome.candidates });
     return "handed_on";
@@ -522,6 +525,20 @@ export async function runHumanEdit(deps: Pick<CodeHostTapDependencies, "actors" 
     log("human_edit.extractor_failed", {});
     throw new Error("the human edit could not be read");
   }
+}
+
+/**
+ * The files a range of a pull request's branch changed, when the capture is on for the repository and EVERY commit in the range is proved a live member's (`provenAuthors`): so a later reader may say
+ * "a person changed these lines". Undefined for anything else (no compare, a force push, a merge commit, a bot or an outsider, Rovara's own push, a chain with a gap). Nothing is stored.
+ */
+export async function provenRangeFiles(deps: Pick<CodeHostTapDependencies, "actors" | "diffs" | "pushes" | "mode" | "config" | "log">, range: CommitRange): Promise<CodeHostDiff["files"] | undefined> {
+  if (deps.diffs === undefined || !SHA.test(range.base) || !SHA.test(range.head) || range.base === range.head) return undefined;
+  const config = await gate(deps, { workspaceId: range.repo.workspaceId, project: range.project, source: sourceOf(range.repo), scope: repoScope(range.repo) });
+  if (config === undefined) return undefined;
+  const diff = await deps.diffs.compare({ repo: range.repo, base: range.base, head: range.head });
+  if (diff === undefined || diff.status === "identical" || diff.files.length === 0) return undefined;
+  const proof = await provenAuthors(deps, config, range, diff, deps.log ?? (() => undefined));
+  return "authors" in proof ? diff.files : undefined;
 }
 
 /** A range of commits on a pull request branch, the ends of which are known commits: what authorship is proved for. */

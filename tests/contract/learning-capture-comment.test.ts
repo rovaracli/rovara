@@ -2,7 +2,7 @@
 // Standing is worked out at capture, from the live company and project records, never from the request.
 import { describe, expect, it } from "vitest";
 import { LEARNING_REMEMBER_MAX, LearningCorrectionSchema } from "../../packages/contracts/src/project-learning.js";
-import { forgetTaskComment, rememberTaskComment } from "../../packages/broker/src/learning/capture-comment.js";
+import { forgetTaskComment, liveRememberedNoteIds, rememberTaskComment } from "../../packages/broker/src/learning/capture-comment.js";
 import { groupCorrections } from "../../packages/broker/src/learning/grouping.js";
 import { openSuggestion, readLearningState, suggestionSk } from "../../packages/broker/src/learning/store.js";
 import { githubMemberKey, orgLearningSettingsKey, projectMemberKey } from "../../packages/contracts/src/index.js";
@@ -430,5 +430,22 @@ describe("the company's master suggestions switch does not stop capture", () => 
     const forgotten = await forget(fixture, PRIYA, comment.commentId);
     expect(forgotten).toEqual({ forgotten: true });
     expect(corrections(fixture)).toHaveLength(0);
+  });
+});
+
+describe("M1: the notes lessons may read are the LIVE corrections, so Forget reaches lessons", () => {
+  it("a remembered comment is listed (the note id is the correction's id); after Forget it is not, and a comment never remembered never is", async () => {
+    const fixture = membersTask();
+    const kept = seedComment(fixture, SAM, RETRY_TEXT);
+    const forgotten = seedComment(fixture, SAM, "Name the file after the component, in kebab case.");
+    const never = seedComment(fixture, SAM, "A comment nobody remembered.");
+    const keptAnswer = await remember(fixture, PRIYA, kept.commentId);
+    const forgottenAnswer = await remember(fixture, PRIYA, forgotten.commentId);
+    const ids = [kept.commentId, forgotten.commentId, never.commentId];
+    const live = () => liveRememberedNoteIds(fixture.deps, TEST_ORG, PROJECT, fixture.taskId, ids);
+    // Positive control: before the forget both remembered comments are listed.
+    expect((await live()).sort()).toEqual([keptAnswer.correction.id, forgottenAnswer.correction.id].sort());
+    await forget(fixture, PRIYA, forgotten.commentId);
+    expect(await live()).toEqual([keptAnswer.correction.id]);
   });
 });

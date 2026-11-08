@@ -16,6 +16,9 @@ export type PullRequestSurface = "review_comment" | "discussion" | "review";
 /** What the host lists of a pull request's comments now: the ids, and for an inline comment whether it still points at a line. Never the words or the people. */
 export interface PullRequestFeedbackView {
   comments: ReadonlyArray<{ kind: PullRequestSurface; id: string; line?: number | undefined }>;
+  /** The pull request's head commit now (after a merge, the last one), and its branch: what a compare from a comment's commit ends at. Absent when the host does not say. */
+  headRevision?: string | undefined;
+  sourceBranch?: string | undefined;
 }
 
 export interface CodeHostCaptureSupport {
@@ -124,7 +127,8 @@ export function captureAdapterOf(input: {
         const id = commentIdOf(comment.kind, comment.id);
         if (id !== undefined) comments.push({ kind: comment.kind, id, ...(comment.line === undefined ? {} : { line: comment.line }) });
       }
-      return { comments };
+      const head = feedback.changeRequest.headRevision;
+      return { comments, ...(/^[0-9a-f]{40}$/u.test(head) ? { headRevision: head } : {}), ...(feedback.changeRequest.sourceBranch === "" ? {} : { sourceBranch: feedback.changeRequest.sourceBranch }) };
     },
   };
 }

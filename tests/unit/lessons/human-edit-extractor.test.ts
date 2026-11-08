@@ -4,6 +4,7 @@ import { describe, expect, it } from "vitest";
 import type { HumanEditInput } from "../../../packages/broker/src/team-record/sources/codehost.js";
 import { createHumanEditExtractor, type HumanEditExtractorDeps } from "../../../packages/broker/src/lessons/human-edit.js";
 import type { ProcessDeps } from "../../../packages/broker/src/lessons/process.js";
+import { lessonDeletionPort } from "../../../packages/broker/src/lessons/deletion.js";
 import { InMemoryLessonStore } from "../../../packages/broker/src/lessons/store.js";
 import type { TaskSubjectBase } from "../../../packages/broker/src/lessons/task-end.js";
 import { Alerts, Audit, BASE, Clock, MERGED, MemoryVectors, PROJECT, ScriptedModel, Spend, WS, candidateJson, embedder, facts, memberSpan, reply, settings, verifier } from "./lesson-helpers.js";
@@ -12,7 +13,7 @@ const LINK = "https://github.com/acme/api/pull/7";
 const input = (over: Partial<HumanEditInput> = {}): HumanEditInput => ({
   workspaceId: WS, project: PROJECT, repo: "acme/api", taskId: "task-1", pullRequest: { number: 7, url: LINK }, trust: "member", authorCount: 1, authors: ["rae"],
   files: [{ path: "src/fetch.ts", additions: 1, deletions: 1, symbols: ["function load()"], hunks: ["@@ -1,2 +1,2 @@ function load()", "-for (;;) { try { fetch() } catch {} }", "+await withRetry(() => fetch())"] }],
-  link: LINK, ...over,
+  link: LINK, audience: { kind: "project" }, scope: "github:repo/77", ...over,
 });
 const baseOf = (over: Partial<TaskSubjectBase["facts"]> = {}): TaskSubjectBase => ({
   facts: {
@@ -66,12 +67,38 @@ describe("the human-edit extractor", () => {
     expect(JSON.stringify(lessons)).not.toContain("for (;;)");
   });
 
-  it("several authors: the span names none of them (a file's lines are not attributed), but each is a member", async () => {
+  it("H2: several authors: the lesson names EVERY author, so erasing any one of them deletes it (co-written lessons are purged)", async () => {
     const w = setup();
     await w.extractor.extract(input({ authorCount: 2, authors: ["rae", "sam"] }));
     expect(w.model.calls[0]!.user).toContain("kind=human_edit");
     const lessons = await w.store.list({ workspaceId: WS, project: PROJECT });
-    expect(lessons[0]!.provenance.authors).toEqual([]);
+    expect(lessons).toHaveLength(1);
+    expect([...lessons[0]!.provenance.authors].sort()).toEqual(["rae", "sam"]);
+    // Erase the second author: the lesson goes (positive control: before the erase it was live in the store).
+    const port = lessonDeletionPort({ store: w.store, vectors: new MemoryVectors(), audit: new Audit(), now: new Clock().now });
+    const done = await port.erasePerson(WS, PROJECT, { developerId: "sam" }, new Set());
+    expect(done.purged).toEqual([lessons[0]!.id]);
+    expect(await w.store.list({ workspaceId: WS, project: PROJECT })).toEqual([]);
+  });
+
+  it("M4: the lesson of an edit to a private repository carries that repository's audience and scope, so a project member without access to it cannot read it", async () => {
+    const restricted = { kind: "restricted" as const, acl: { source: "github" as const, scope: "github:repo/77", capturedAt: "2026-10-30T10:00:00.000Z", liveCheck: "on_read" as const } };
+    const w = setup();
+    await w.extractor.extract(input({ audience: restricted }));
+    const [lesson] = await w.store.list({ workspaceId: WS, project: PROJECT });
+    expect(lesson!.provenance.audience).toMatchObject({ kind: "restricted", acl: { scope: "github:repo/77" } });
+    expect(lesson!.provenance.sourceScopes).toContain("github:repo/77");
+  });
+
+  it("L9: a lesson made from changed lines may not copy more than two lines of code, so the diff is not kept in the lesson's own words", async () => {
+    const copied = candidateJson({ type: "convention", evidenceSpanIds: ["S1"], citations: [{ kind: "pr", url: LINK }], body: "Use this:\n  for (;;) {\n    try { fetch() } catch {}\n  }\n  await withRetry(() => fetch());" });
+    const w = setup({ model: new ScriptedModel([reply(copied)]) });
+    expect(await w.extractor.extract(input())).toEqual({ candidates: 0 });
+    expect(await w.store.list({ workspaceId: WS, project: PROJECT })).toEqual([]);
+    // Positive control: the same lesson in words (one short inline code mention) is kept.
+    const words = candidateJson({ type: "convention", evidenceSpanIds: ["S1"], citations: [{ kind: "pr", url: LINK }], body: "Wrap network calls with withRetry instead of an empty catch loop." });
+    const kept = setup({ model: new ScriptedModel([reply(words)]) });
+    expect(await kept.extractor.extract(input())).toEqual({ candidates: 1 });
   });
 
   it("outsider: an author who is not a member of the project now means nothing is learned and no model is called", async () => {

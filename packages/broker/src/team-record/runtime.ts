@@ -48,7 +48,8 @@ import { realRefusalFloor, type SourceRouteDependencies, type SourceWriteContext
 import { createCaptureModePort, createRecordSink, createSourceConfigPort, NOTES_OPT_IN_FROM_SOURCE_ROW, type RecordSink } from "./sink.js";
 import { createOpConsumer, type QueueRecord } from "./sources/queue.js";
 import { createCaptureAdapters, type CaptureAdapters, type CodeHostCaptureAdapter } from "./sources/capture-adapters.js";
-import { createCodeHostTap, runHumanEdit, type HumanEditExtractorPort, type HumanEditJob } from "./sources/codehost.js";
+import { createCodeHostTap, provenRangeFiles, runHumanEdit, type CodeHostDiff, type CodeHostRepo, type HumanEditExtractorPort, type HumanEditJob } from "./sources/codehost.js";
+import type { SourceSystem } from "./sources/ports.js";
 import { tableMergeIndex, tableOnceClaims, tablePushIndex, type MergeIndex } from "./capture-indexes.js";
 import { TEAM_RECORD_REMOVAL_SOURCE, type DeadLetterPort, type OpsQueue, type RemovalFallback, type RemovalFallbackEvent } from "./ops-queue.js";
 import { developerOfTrackerAuthor, isTrackerSystem, linkTrackerByVerifiedEmail, linkTrackerIdentity, listLinkedTrackerUsers, listUnmatchedTrackerUsers, mapTrackerUser, removeTrackerLinks, trackerLinksOf, unmapTrackerUser, UNMATCHED_PREFIX, type LinkedTrackerUser, type TrackerLink, type TrackerLinkVia, type UnmatchedTrackerUser } from "./identity-links.js";
@@ -259,7 +260,11 @@ export interface TeamRecordRuntime {
     install(input: { extractor: HumanEditExtractorPort; enqueue?: (job: HumanEditJob) => Promise<void> }): void;
     installed(): boolean;
     run(job: HumanEditJob): Promise<"handed_on" | "skipped">;
+    /** The files a range of a pull request's branch changed when every commit in it is proved a live member's (merge commits, bots, outsiders, Rovara's own pushes and force pushes give undefined). Read live, never stored. */
+    provenFiles(range: { repo: CodeHostRepo; project: string; base: string; head: string; headRef?: string }): Promise<CodeHostDiff["files"] | undefined>;
   };
+  /** Whether a code-host account is on the exclusion list of a place's source row now. An unreadable or missing source row THROWS or answers true (nothing is proved for it). */
+  sourceExcluded(input: { workspaceId: string; source: string; scope: string; accountId: string }): Promise<boolean>;
   /** SRL-6: the company's erase and delete failures of the last 24 hours (counts and a time), for the admin Health data. Throws when the table cannot be read. */
   opsFailures(orgId: OrgId): Promise<OpsFailures>;
 }
@@ -667,6 +672,7 @@ export function createTeamRecordRuntime(input: TeamRecordRuntimeInput): TeamReco
     install(installed) { humanEditing.extractor = installed.extractor; if (installed.enqueue !== undefined) humanEditing.enqueue = installed.enqueue; },
     installed: () => humanEditing.extractor !== undefined,
     run: async (job) => (humanEditing.extractor === undefined ? "skipped" : runHumanEdit({ ...humanEditDeps, extractor: lateExtractor }, job)),
+    provenFiles: (range) => provenRangeFiles(humanEditDeps, range),
   };
   const humanEditJobs = { enqueue: async (job: HumanEditJob): Promise<void> => { if (humanEditing.extractor !== undefined && humanEditing.enqueue !== undefined) await humanEditing.enqueue(job); } };
   const github = createGithubRecordTap({
@@ -1377,5 +1383,5 @@ export function createTeamRecordRuntime(input: TeamRecordRuntimeInput): TeamReco
     orgOfSlackTeam: (teamId) => new OrgStore({ documentClient: input.documentClient, tableName: state.tableName, now }).orgForSlackTeam(teamId),
     developerOfSlackUser: async (slackUserId) => (input.developerOfSlackUser === undefined ? undefined : await input.developerOfSlackUser(slackUserId)),
   });
-  return { edition, table, sink, drain, removal, links, trackerPeople, emitter, slackAdd, taskVisibility: (orgId, taskId) => resolveTaskVisibility({ documentClient: input.documentClient, tableName: state.tableName, now }, orgId, taskId), actors, modes, paused, routes, tools, taps: { github, hook, slack, slackStrict, codeHost: (event, binding) => codeHost.handle(bound(event, binding)) }, erase, jobs, captureAdapters, mergeIndex, humanEdit, opsFailures: (orgId) => readOpsFailures(table, orgId, now()) };
+  return { edition, table, sink, drain, removal, links, trackerPeople, emitter, slackAdd, taskVisibility: (orgId, taskId) => resolveTaskVisibility({ documentClient: input.documentClient, tableName: state.tableName, now }, orgId, taskId), actors, modes, paused, routes, tools, taps: { github, hook, slack, slackStrict, codeHost: (event, binding) => codeHost.handle(bound(event, binding)) }, erase, jobs, captureAdapters, mergeIndex, humanEdit, sourceExcluded: async ({ workspaceId, source, scope, accountId }) => { const row = await config.get(workspaceId, source as SourceSystem, scope); return row === undefined || row.exclude.includes(accountId); }, opsFailures: (orgId) => readOpsFailures(table, orgId, now()) };
 }

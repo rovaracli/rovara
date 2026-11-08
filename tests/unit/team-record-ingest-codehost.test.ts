@@ -481,6 +481,9 @@ describe("human edits to Rovara pull requests (read live, never stored)", () => 
     expect(handed).toHaveLength(1);
     const input = handed[0]!;
     expect(input).toMatchObject({ workspaceId: WS, project: "shop", taskId: "task-1", repo: "acme/shop", trust: "member", link: "https://github.com/acme/shop/pull/5" });
+    // M4: the lines carry the repository's audience and scope (a private repository's are restricted with a live access check).
+    expect(input.audience).toMatchObject({ kind: "restricted", acl: { source: "github", scope: "github:repo/77", liveCheck: "on_read" } });
+    expect(input.scope).toBe("github:repo/77");
     const file = input.files[0]!;
     expect(file.symbols).toEqual(["function total()"]);
     // 200 changed lines at most, hunk headers kept, context dropped, credentials redacted.

@@ -1550,21 +1550,22 @@ export function collectWorkflowFeedbackBundles(currentInput: unknown, input: {
 function feedbackShownAfter(current: WorkflowSnapshot, bundleRefs: readonly WorkflowFeedbackBundleRef[], threadObservations: readonly WorkflowFeedbackThreadObservation[], now: string): WorkflowFeedbackShown {
   const prior = current.feedbackShown;
   const earlierUnrecorded = prior === undefined && (current.feedbackReview !== undefined || (current.feedbackReviewHistory ?? []).length > 0);
-  const byPull = new Map<string, { repositoryId: string; number: number; ids: Set<string> }>();
-  const add = (repositoryId: string, number: number, id: string): void => {
+  const byPull = new Map<string, { repositoryId: string; number: number; comments: Map<string, { id: string; at: number }> }>();
+  const add = (repositoryId: string, number: number, id: string, updatedAt: string): void => {
     const key = `${repositoryId}\u0000${number}`;
-    const entry = byPull.get(key) ?? { repositoryId, number, ids: new Set<string>() };
-    entry.ids.add(id);
+    const entry = byPull.get(key) ?? { repositoryId, number, comments: new Map() };
+    const at = Date.parse(updatedAt);
+    entry.comments.set(`${id}\u0000${at}`, { id, at: Number.isFinite(at) && at >= 0 ? Math.floor(at) : 0 });
     byPull.set(key, entry);
   };
-  for (const bundle of bundleRefs) for (const comment of bundle.comments) add(bundle.repositoryId, bundle.number, comment.id);
-  for (const thread of threadObservations) for (const comment of thread.comments) add(thread.repositoryId, thread.number, comment.id);
-  const pulls = [...byPull.values()].map(entry => ({ repositoryId: entry.repositoryId, number: entry.number, commentIds: [...entry.ids].sort() }));
-  const used = (prior?.rounds ?? []).reduce((sum, round) => sum + round.pulls.reduce((inner, pull) => inner + pull.commentIds.length, 0), 0);
-  const adding = pulls.reduce((sum, pull) => sum + pull.commentIds.length, 0);
+  for (const bundle of bundleRefs) for (const comment of bundle.comments) add(bundle.repositoryId, bundle.number, comment.id, comment.updatedAt);
+  for (const thread of threadObservations) for (const comment of thread.comments) add(thread.repositoryId, thread.number, comment.id, comment.updatedAt);
+  const pulls = [...byPull.values()].map(entry => ({ repositoryId: entry.repositoryId, number: entry.number, comments: [...entry.comments.values()].sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : a.at - b.at)) }));
+  const used = (prior?.rounds ?? []).reduce((sum, round) => sum + round.pulls.reduce((inner, pull) => inner + pull.comments.length, 0), 0);
+  const adding = pulls.reduce((sum, pull) => sum + pull.comments.length, 0);
   const rounds = [...(prior?.rounds ?? [])];
   let incomplete = prior?.incomplete === true || earlierUnrecorded;
-  if (pulls.length > 32 || rounds.length >= FEEDBACK_SHOWN_MAX_ROUNDS || used + adding > FEEDBACK_SHOWN_MAX_IDS || pulls.some(pull => pull.commentIds.length > FEEDBACK_SHOWN_MAX_IDS)) incomplete = true;
+  if (pulls.length > 32 || rounds.length >= FEEDBACK_SHOWN_MAX_ROUNDS || used + adding > FEEDBACK_SHOWN_MAX_IDS || pulls.some(pull => pull.comments.length > FEEDBACK_SHOWN_MAX_IDS)) incomplete = true;
   else rounds.push({ at: now, pulls });
   return { rounds, ...(incomplete ? { incomplete: true as const } : {}) };
 }

@@ -80,6 +80,52 @@ describe("pull request comments", () => {
   });
 });
 
+describe("whose text the comment is (the proof the pull request feedback flow needs)", () => {
+  const CREATED_MS = Date.parse("2026-10-30T10:00:00Z");
+  const editRow = (id: string, who: { sourceId: string; developerId: string; trust: "member" }, at = "2026-10-31T10:00:00Z") => comment(id, {
+    sourceRef: { system: "github", id: pullRequestWordsId(REPO, 7, "review_comment", id), parentId: `${REPO}#pr7`, version: `edited:${at}:def`, order: 2 }, actor: who, text: "added words",
+  });
+
+  it("reports the author's account id and place, and that the text is the author's own when the comment was shown exactly as first written", async () => {
+    const w = await setup();
+    await w.sink.put(comment("11"));
+    const found = await tableCapturedRows(w.table).pullRequestWords({ ...where, commentId: "11", shownAt: CREATED_MS });
+    expect(found).toMatchObject({ authorDeveloperId: "dev-1", ownText: true });
+    expect(typeof found?.authorSourceId).toBe("string");
+  });
+
+  it("is not the author's own text when the comment was changed after it was written (the change may be anyone's, and a change by an unlinked person leaves no row)", async () => {
+    const w = await setup();
+    await w.sink.put(comment("11"));
+    const rows = tableCapturedRows(w.table);
+    expect(await rows.pullRequestWords({ ...where, commentId: "11", shownAt: CREATED_MS + 60_000 })).toMatchObject({ ownText: false });
+    // Without a time to compare, nothing is proved.
+    expect(await rows.pullRequestWords({ ...where, commentId: "11" })).toMatchObject({ ownText: false });
+  });
+
+  it("is not the author's own text when another person's edit row exists", async () => {
+    const w = await setup();
+    await w.sink.put(comment("11"));
+    await w.sink.put(editRow("11", { sourceId: "2002", developerId: "dev-2", trust: "member" }));
+    expect(await tableCapturedRows(w.table).pullRequestWords({ ...where, commentId: "11", shownAt: CREATED_MS })).toMatchObject({ authorDeveloperId: "dev-1", ownText: false });
+  });
+
+  it("a review's body can only be edited by its author: edits by the same author keep it their own; an edit row by anyone else does not", async () => {
+    const w = await setup();
+    const review = (id: string, version: string, who?: { sourceId: string; developerId: string; trust: "member" }) => comment(id, {
+      kind: "github.review", sourceRef: { system: "github", id: pullRequestWordsId(REPO, 7, "review", id), parentId: `${REPO}#pr7`, version, order: version.startsWith("submitted") ? 1 : 2 }, text: "Needs a retry wrapper", structured: { prNumber: 7 },
+      ...(who === undefined ? {} : { actor: who }),
+    });
+    await w.sink.put(review("5", "submitted:2026-10-30T10:00:00Z:abc"));
+    await w.sink.put(review("5", "edited:delivery-1:abc"));
+    await w.sink.put(review("6", "submitted:2026-10-30T10:00:00Z:abc"));
+    await w.sink.put(review("6", "edited:delivery-2:def", { sourceId: "2002", developerId: "dev-2", trust: "member" }));
+    const rows = tableCapturedRows(w.table);
+    expect(await rows.pullRequestWords({ ...where, surface: "review", commentId: "5" })).toMatchObject({ ownText: true });
+    expect(await rows.pullRequestWords({ ...where, surface: "review", commentId: "6" })).toMatchObject({ ownText: false });
+  });
+});
+
 describe("remembered notes", () => {
   it("returns the author and the words of the task's note; another task's, project's or workspace's note is nothing", async () => {
     const w = await setup();

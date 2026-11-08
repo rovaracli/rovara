@@ -11,7 +11,7 @@
 import { createHash } from "node:crypto";
 import { GetCommand } from "@aws-sdk/lib-dynamodb";
 import {
-  LearningCorrectionSchema, TaskCommentSchema, agentXError,
+  LearningCorrectionSchema, OrgIdSchema, TaskCommentSchema, agentXError,
   type AgentXErrorCode, type LearningCorrection, type LearningStanding
 } from "@agentx/contracts";
 import type { DeveloperCaller } from "../aws/developer-routes.js";
@@ -21,6 +21,7 @@ import { can, resolveTaskAccess } from "../developer/task-access.js";
 import { announceRemembered } from "../lessons/record-events.js";
 import { flushLearningEvents, learningEvents, memberActor, rememberedEvent } from "./audit.js";
 import { forgetCorrection } from "./grouping.js";
+import { visibility } from "./retention.js";
 import { learningScopeChecked, learningScopeOf, learningSalt, readProjectRole, readStanding, readStandingChecked } from "./standing.js";
 import { signatureOf } from "./similarity.js";
 import { captureCorrection, getLearningItem, readLearningPartition, sourceSk, type LearningDeps, type LearningScope } from "./store.js";
@@ -119,6 +120,30 @@ export async function rememberTaskComment(deps: CaptureCommentDeps, caller: Deve
     case "stale": throw refusal("IDEMPOTENCY_CONFLICT", "changed", "This project changed. Refresh the page and try again.");
     default: throw refusal("CONFIG_INVALID", "refused", "That couldn't be remembered right now.");
   }
+}
+
+// ---- What lessons may read
+
+/**
+ * The notes of a task's comments that are LIVE corrections now, by note id (the correction's id): a comment that was remembered and not forgotten. The Team record keeps a `rovara.remembered` row for
+ * every remember, and Forget does not remove it, so lessons take their notes from here and never from the comments themselves. A comment never remembered, or forgotten (its source record and correction are
+ * gone), is not listed. THROWS when the store cannot be read (the caller does not treat a failed read as "nothing remembered").
+ */
+export async function liveRememberedNoteIds(deps: ForgetDeps, orgId: string, project: string, taskId: string, commentIds: readonly string[]): Promise<string[]> {
+  const org = OrgIdSchema.safeParse(orgId);
+  if (!org.success) return [];
+  const scope = await learningScopeOf(deps, org.data, project);
+  if (scope === undefined) return [];
+  const learning = learningDepsOf(deps);
+  const live: string[] = [];
+  for (const commentId of commentIds) {
+    const sourceKey = commentSourceKey(taskId, commentId);
+    const source = await getLearningItem(learning, scope, sourceSk(scope.projectCreatedAt, sourceKey));
+    if (source === undefined || visibility(source, { nowMs: deps.now(), projectCreatedAt: scope.projectCreatedAt }) !== "visible" || typeof source["correctionSk"] !== "string") continue;
+    if (await getLearningItem(learning, scope, source["correctionSk"]) === undefined) continue;
+    live.push(correctionIdOf(sourceKey));
+  }
+  return live;
 }
 
 // ---- Forget

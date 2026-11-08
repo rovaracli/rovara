@@ -20,7 +20,7 @@ import { tableOutcomeRows } from "../../lessons/task-outcome-rows.js";
 import { tableCapturedRows } from "../../lessons/captured-rows.js";
 import { createHumanEditExtractor } from "../../lessons/human-edit.js";
 import { listTaskComments } from "../../developer/page-comments.js";
-import { commentSourceKey, correctionIdOf } from "../../learning/capture-comment.js";
+import { liveRememberedNoteIds } from "../../learning/capture-comment.js";
 import { loadWorkflowDocument, readObjectText } from "../../developer/plan-artifacts.js";
 import type { DeveloperTaskRecord } from "../../developer/task-records.js";
 import { PLAN_FACTS_SUMMARY_MAX, planLoadFacts } from "../../lessons/plan-facts.js";
@@ -175,7 +175,16 @@ export function learningDepsFor(dependencies: LessonsHostDependencies, runtime: 
     // The corrections people already make, from the Team record: "remember this" notes (the notes of the task's comments) and reviewers' comments on its pull requests (listed by the code host through
     // its capture adapter, read from the record). The merge commit is the one the tap noted when the host said the pull request merged.
     captured: tableCapturedRows(teamRecord.table),
-    rememberedNoteIds: async (_orgId, taskId) => (await listTaskComments(state, taskId)).filter((comment) => comment.author.kind === "person" && comment.deletedAt === undefined).map((comment) => correctionIdOf(commentSourceKey(taskId, comment.commentId))),
+    // The LIVE corrections only (M1): a comment that was remembered and not forgotten. The record keeps its row after a Forget, so the comments' own list is never the source of notes.
+    rememberedNoteIds: async (orgId, project, taskId) => liveRememberedNoteIds({ ...state, now: Date.now }, orgId, project, taskId,
+      (await listTaskComments(state, taskId)).filter((comment) => comment.author.kind === "person" && comment.deletedAt === undefined).map((comment) => comment.commentId)),
+    // The author's account on the place's exclusion list now (checked by the account id the row keeps).
+    sourceExcluded: ({ orgId, source, scope, accountId }) => teamRecord.sourceExcluded({ workspaceId: orgId, source, scope, accountId }),
+    // What a person's own commits changed on the branch since a comment's commit, read live and only for a range proved to be members' commits.
+    humanChangedFiles: async (input) => teamRecord.humanEdit.provenFiles({
+      repo: { host: input.host, id: input.scope.slice(input.scope.lastIndexOf("repo/") + "repo/".length), fullName: input.repository, isPrivate: input.isPrivate, workspaceId: input.orgId, project: input.project },
+      project: input.project, base: input.base, head: input.head, ...(input.headRef === undefined ? {} : { headRef: input.headRef }),
+    }),
     pullRequestAddress: (url) => adapters.addressOf(url)?.address,
     pullRequestFeedback: async (input) => adapters.forHost(input.address.host)?.pullRequestFeedback?.({ workspaceId: input.orgId, project: input.project, taskId: input.taskId, address: input.address, url: input.url }),
     mergeCommitOf: ({ orgId, taskId, address }) => teamRecord.mergeIndex.mergeCommitOf({ workspaceId: orgId, host: address.host, repo: address.repository, number: address.number, taskId }),

@@ -31,6 +31,13 @@ describe("getRepositoryCompareJson", () => {
     expect(w.urls).toEqual([`https://api.github.com/repos/acme/app/compare/${A}...${B}?per_page=100`]);
     expect(w.tokenBodies).toEqual([{ repositories: ["app"], permissions: { contents: "read" } }]);
   });
+  it("L3: refuses a base that is not a full commit id (a `../` segment, a branch name) before GitHub is asked", async () => {
+    const w = setup();
+    for (const base of ["..%2F..%2Fpulls", "../..", "main", "a/b", A.slice(1), "A".repeat(40)]) {
+      await expect(w.provider.getRepositoryCompareJson("https://github.com/acme/app", `/repos/acme/app/compare/${base}...${B}`, { orgId: ORG })).rejects.toMatchObject({ code: "CONFIG_INVALID" });
+    }
+    expect(w.urls).toEqual([]);
+  });
   it("refuses any other path, another repository's compare, or a branch name for the head, before GitHub is asked", async () => {
     const w = setup();
     for (const path of ["/repos/acme/app/pulls/1", "/repos/acme/other/compare/" + A + "..." + B, "/repos/acme/app/compare/" + A + "...main", "/user", "/repos/acme/app/compare/" + A + "..." + B + "/../../x"]) {

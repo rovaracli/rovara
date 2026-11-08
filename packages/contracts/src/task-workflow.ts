@@ -479,11 +479,15 @@ export const FeedbackThreadObservationsSchema = z.array(WorkflowFeedbackThreadOb
  * `incomplete`: some round could not be recorded (the list is full, or a round was collected before this record existed), so the set cannot be taken as the whole.
  */
 export const FEEDBACK_SHOWN_MAX_ROUNDS = 100;
-export const FEEDBACK_SHOWN_MAX_IDS = 2000;
+export const FEEDBACK_SHOWN_MAX_IDS = 800;
 export const WorkflowFeedbackShownSchema = z.object({
   rounds: z.array(z.object({
     at: z.string().datetime(),
-    pulls: z.array(z.object({ repositoryId: z.string().trim().min(1).max(200), number: z.number().int().positive(), commentIds: z.array(FeedbackIdSchema).max(FEEDBACK_SHOWN_MAX_IDS) }).strict()).max(32),
+    /** `at` of a comment: when the host last changed it (epoch milliseconds), as the agent was shown it. A comment edited since it was written reads differently from one never edited. */
+    pulls: z.array(z.object({
+      repositoryId: z.string().trim().min(1).max(200), number: z.number().int().positive(),
+      comments: z.array(z.object({ id: FeedbackIdSchema, at: z.number().int().nonnegative() }).strict()).max(FEEDBACK_SHOWN_MAX_IDS),
+    }).strict()).max(32),
   }).strict()).max(FEEDBACK_SHOWN_MAX_ROUNDS),
   incomplete: z.literal(true).optional(),
 }).strict();

@@ -17,6 +17,8 @@ export interface EvidenceSpan {
   /** The member whose words or edit this is. */
   /** The canonical developer id of the person (the identity-linked id across Slack, GitHub and tracker accounts, never an account or bot name). */
   authorId?: string;
+  /** Every person this span is the words or work of, when more than one (a human edit by several people): each is named on a lesson that cites it, so erasing any one of them deletes the lesson. */
+  authorIds?: readonly string[];
   /** Where it came from, for per-source spike detection: `slack:<channel>`, `linear:<project>`, `ci`. Defaults to the author, then the span kind. */
   sourceKey?: string;
   audience?: Audience;
@@ -60,7 +62,7 @@ export interface ReflectSubject {
 
 export type IneligibleReason = "eval_run" | "unknown_initiator" | "unknown_steering" | "outsider_initiated" | "outsider_steered" | "outsider_intent" | "no_member_reason" | "no_usable_evidence";
 export interface MarkedSpan {
-  id: string; kind: SpanKind; trust: TrustClass; eventId?: string; authorId?: string; sourceKey?: string; audience?: Audience; scopes?: readonly string[];
+  id: string; kind: SpanKind; trust: TrustClass; eventId?: string; authorId?: string; authorIds?: readonly string[]; sourceKey?: string; audience?: Audience; scopes?: readonly string[];
   /** The cleaned text the model saw. Kept in memory only (never stored); the trial rule compares a lesson's claims with it. */
   text?: string;
   /** The text was chosen by code, so the span is not a person's own words. */
@@ -88,6 +90,7 @@ const SYSTEM_PROMPT = [
   "Each span has an id (S1, S2, ...) and a trust class. Use only the spans you were given.",
   "A span of kind pr_comment is a reviewer's comment on the pull request; one marked led_to_change=true was followed by a change to the code it was about, so it is the strongest evidence.",
   "A lesson is advice. It must never ask for any change to tools, permissions, domains, budgets, models, checks or approvals.",
+  "Describe code in words. Never copy more than two lines of code into a lesson; a span of kind human_edit holds a person's changed lines, and they are not kept.",
   "Propose at most 3 lessons, and only when the spans show a repeatable point. Fewer is better. Return no lessons when unsure.",
   "Reply with one JSON object and nothing else: {\"candidates\":[{\"type\":\"fact|convention|pitfall|procedure|preference|review_check\",\"title\":\"<=80 chars\",\"description\":\"<=160 chars\",\"body\":\"<=600 chars\",",
   "\"scope\":{\"repos\":[],\"paths\":[],\"languages\":[]},\"stages\":[\"UNDERSTAND|PLAN|IMPLEMENT|PLAN_CRITIQUE|REVIEW\"],",
@@ -129,7 +132,7 @@ export function buildReflectorInput(subject: ReflectSubject): ReflectorInput {
     if (text === "" || used + text.length > MAX_INPUT_CHARS || spans.size >= MAX_SPANS) continue;
     const id = `S${spans.size + 1}`;
     const led = span.kind === "pr_comment" && span.ledToChange === true;
-    spans.set(id, { id, kind: span.kind, trust: span.trust, ...(led ? { ledToChange: true } : {}), ...(span.eventId === undefined ? {} : { eventId: span.eventId }), ...(span.authorId === undefined ? {} : { authorId: span.authorId }), ...(span.sourceKey === undefined ? {} : { sourceKey: span.sourceKey }), ...(span.audience === undefined ? {} : { audience: span.audience }), ...(span.scopes === undefined ? {} : { scopes: span.scopes }), text, ...(span.fixedText === true ? { fixedText: true } : {}) });
+    spans.set(id, { id, kind: span.kind, trust: span.trust, ...(led ? { ledToChange: true } : {}), ...(span.eventId === undefined ? {} : { eventId: span.eventId }), ...(span.authorId === undefined ? {} : { authorId: span.authorId }), ...(span.authorIds === undefined ? {} : { authorIds: span.authorIds }), ...(span.sourceKey === undefined ? {} : { sourceKey: span.sourceKey }), ...(span.audience === undefined ? {} : { audience: span.audience }), ...(span.scopes === undefined ? {} : { scopes: span.scopes }), text, ...(span.fixedText === true ? { fixedText: true } : {}) });
     blocks.push(`<<span id=${id} trust=${span.trust} kind=${span.kind}${led ? " led_to_change=true" : ""}>>\n${text}\n<</span ${id}>>`);
     used += text.length;
   }

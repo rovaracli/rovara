@@ -22,6 +22,16 @@ export interface CapturedWords {
   audience: Audience;
   /** The place the row came from (a repository, a project), for the access check at read time. */
   scope: string;
+  /** The account id the row's author has on the code host (the row's source id), for the checks made on the host's own account (exclusion). */
+  authorSourceId: string;
+  /** The record's name of the place's source (`github`, `codehost:<name>`). */
+  source: string;
+  /**
+   * Whether the text the agent was shown is this author's own: no other person has a row on the comment, and either it is a review (only its author can edit its body) or the comment was shown exactly
+   * as first written (`shownAt` is not later than when it was first written). A change by an unlinked person leaves no row, so only a comment never changed since it was written is proved.
+   * False when `shownAt` is not given.
+   */
+  ownText: boolean;
   /** The inline comment's file, the line it was made on and the commit it was made on, when the host said them. */
   path?: string | undefined;
   line?: number | undefined;
@@ -33,8 +43,8 @@ export type { PullRequestSurface };
 export interface CapturedRowReader {
   /** The "remember this" note of one correction (the note id is the correction's id). */
   rememberedNote(input: { workspaceId: string; project: string; taskId: string; noteId: string }): Promise<CapturedWords | undefined>;
-  /** One comment or review of a pull request, as its author first wrote it. */
-  pullRequestWords(input: { workspaceId: string; project: string; host: string; repository: string; number: number; surface: PullRequestSurface; commentId: string }): Promise<CapturedWords | undefined>;
+  /** One comment or review of a pull request, as its author first wrote it. `shownAt`: when the host last changed the comment, as the agent was shown it (epoch milliseconds), for `ownText`. */
+  pullRequestWords(input: { workspaceId: string; project: string; host: string; repository: string; number: number; surface: PullRequestSurface; commentId: string; shownAt?: number }): Promise<CapturedWords | undefined>;
 }
 
 const MAX_ROWS = 20;
@@ -42,6 +52,15 @@ const MAX_ROWS = 20;
 export const pullRequestItemId = (repository: string, number: number): string => `${repository}#pr${String(number)}`;
 /** The source id the code-host tap gives a pull request comment or review (codehost.ts `commentId` / the review case). */
 export const pullRequestWordsId = (repository: string, number: number, surface: PullRequestSurface, commentId: string): string => `${pullRequestItemId(repository, number)}:${surface}${commentId}`;
+
+/** When the comment was first written, from its first row's version (`created:<the host's time>:<tag>`): epoch milliseconds, or undefined. */
+function firstWrittenAt(version: string): number | undefined {
+  const start = version.indexOf(":");
+  const end = version.lastIndexOf(":");
+  if (start < 0 || end <= start) return undefined;
+  const at = Date.parse(version.slice(start + 1, end));
+  return Number.isFinite(at) ? at : undefined;
+}
 
 const num = (value: unknown): number | undefined => (typeof value === "number" && Number.isSafeInteger(value) && value > 0 ? value : undefined);
 const str = (value: unknown, max: number): string | undefined => (typeof value === "string" && value !== "" && value.length <= max ? value : undefined);
@@ -65,7 +84,7 @@ export function tableCapturedRows(table: TeamRecordTable, nowSeconds?: () => num
     const path = str(event.structured?.path, 1_000);
     const commitId = str(event.structured?.commitId, 64);
     return {
-      id: event.sourceRef.id, authorDeveloperId: actor.developerId, text: event.text, audience: event.audience, scope: event.scope,
+      id: event.sourceRef.id, authorDeveloperId: actor.developerId, authorSourceId: actor.sourceId, source: event.source, ownText: false, text: event.text, audience: event.audience, scope: event.scope,
       ...(path === undefined ? {} : { path }), ...(line === undefined ? {} : { line }), ...(commitId === undefined ? {} : { commitId }),
     };
   };
@@ -82,12 +101,18 @@ export function tableCapturedRows(table: TeamRecordTable, nowSeconds?: () => num
     async pullRequestWords(input) {
       const wanted = input.surface === "review" ? "github.review" : "github.review_comment";
       const created = input.surface === "review" ? "submitted:" : "created:";
-      for (const event of await rows(input.workspaceId, input.host, pullRequestWordsId(input.repository, input.number, input.surface, input.commentId))) {
+      const all = (await rows(input.workspaceId, input.host, pullRequestWordsId(input.repository, input.number, input.surface, input.commentId)))
+        .filter((event) => event.kind === wanted && event.project === input.project && (event.sourceRef.parentId === undefined || event.sourceRef.parentId === pullRequestItemId(input.repository, input.number)));
+      for (const event of all) {
         // Only the row of the person who FIRST wrote it: a later edit row holds the words an editor added, which another person may have written.
-        if (event.kind !== wanted || event.project !== input.project || !(event.sourceRef.version ?? "").startsWith(created)) continue;
-        if (event.sourceRef.parentId !== undefined && event.sourceRef.parentId !== pullRequestItemId(input.repository, input.number)) continue;
+        if (!(event.sourceRef.version ?? "").startsWith(created)) continue;
         const found = words(event);
-        if (found !== undefined) return found;
+        if (found === undefined) continue;
+        // The text is the author's own when nobody else has a row on the comment AND it cannot have been changed by someone who has none.
+        const onlyAuthor = all.every((row) => row.actor?.developerId === found.authorDeveloperId);
+        const writtenAt = firstWrittenAt(event.sourceRef.version ?? "");
+        const unchanged = input.surface === "review" || (input.shownAt !== undefined && writtenAt !== undefined && input.shownAt <= writtenAt);
+        return { ...found, ownText: onlyAuthor && unchanged };
       }
       return undefined;
     },

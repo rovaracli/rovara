@@ -96,6 +96,38 @@ describe("a merged Rovara pull request", () => {
   });
 });
 
+describe("what a person's own commits changed (for a comment that led to a change)", () => {
+  const repo = { host: "github", id: String(REPO_ID), fullName: "acme/api", isPrivate: false, workspaceId: ORG_A, project: "web" };
+  const range = { repo, project: "web", base: hex(20), head: hex(21) };
+  const maya = { id: "123", login: "maya", isBot: false };
+  async function files(commits: CodeHostDiff["commits"]) {
+    const w = setup([githubAdapter(async () => diff(commits))]);
+    await addRow(w);
+    return w.runtime.humanEdit.provenFiles(range);
+  }
+  it("gives the files of a clean range of a linked member's verified commits", async () => {
+    expect(await files([{ sha: hex(22), author: maya, committer: maya, verified: true }])).toEqual([{ path: "src/a.ts", additions: 1, deletions: 0, patch: "@@ -1 +1 @@\n+await withRetry(f)" }]);
+  });
+  it("gives nothing for a merge commit (a branch updated from main), an outsider's commit, or a range with Rovara's own push in it", async () => {
+    expect(await files([{ sha: hex(22), author: maya, committer: maya, verified: true, merge: true }])).toBeUndefined();
+    expect(await files([{ sha: hex(22), author: { id: "124", login: "bo", isBot: false }, committer: { id: "124", login: "bo", isBot: false }, verified: true }])).toBeUndefined();
+    expect(await files([{ sha: hex(22), author: { id: "1", login: "rovara[bot]", isBot: true }, committer: { id: "1", login: "rovara[bot]", isBot: true }, verified: true }])).toBeUndefined();
+  });
+  it("gives nothing when capture is not on for the repository", async () => {
+    const w = setup([githubAdapter(async () => diff([{ sha: hex(22), author: maya, committer: maya, verified: true }]))]);
+    expect(await w.runtime.humanEdit.provenFiles(range)).toBeUndefined();
+  });
+  it("sourceExcluded: an excluded account is excluded; a missing source row gives true (nothing is proved for it)", async () => {
+    const w = setup([]);
+    await putSourceConfig({ documentClient: w.db, tableName: "TeamRecord" }, {
+      workspaceId: ORG_A, project: "web", source: "github", scope: `github:repo/${REPO_ID}`, enabled: true, retention: "C", exclude: ["999"], audienceDefault: "project", health: "unknown", addedBy: "dev-1", updatedAt: "2026-10-30T10:00:00.000Z",
+    }, { edition: "enterprise" });
+    expect(await w.runtime.sourceExcluded({ workspaceId: ORG_A, source: "github", scope: `github:repo/${REPO_ID}`, accountId: "999" })).toBe(true);
+    expect(await w.runtime.sourceExcluded({ workspaceId: ORG_A, source: "github", scope: `github:repo/${REPO_ID}`, accountId: "123" })).toBe(false);
+    expect(await w.runtime.sourceExcluded({ workspaceId: ORG_A, source: "github", scope: "github:repo/404", accountId: "123" })).toBe(true);
+  });
+});
+
 describe("another code host", () => {
   const gitfarm: CodeHostCaptureAdapter = {
     host: "gitfarm", supports: { pullRequestComments: true, commentOutdated: true, humanEdits: false, authorship: "none", mergeCommit: true },

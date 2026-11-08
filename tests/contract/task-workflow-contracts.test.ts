@@ -553,8 +553,10 @@ describe("immutable multi-PR feedback reviews", () => {
       expect(collected.feedbackShown?.incomplete).toBeUndefined();
       expect(collected.feedbackShown?.rounds).toHaveLength(1);
       const pulls = collected.feedbackShown!.rounds[0]!.pulls;
-      expect(pulls.find(pull => pull.repositoryId === "api")?.commentIds).toEqual(["api-0", "api-1", "api-reply"]);
-      expect(pulls.find(pull => pull.repositoryId === "ui")?.commentIds).toEqual(["ui-0", "ui-1"]);
+      expect(pulls.find(pull => pull.repositoryId === "api")?.comments.map(comment => comment.id)).toEqual(["api-0", "api-1", "api-reply"]);
+      expect(pulls.find(pull => pull.repositoryId === "ui")?.comments.map(comment => comment.id)).toEqual(["ui-0", "ui-1"]);
+      // Each comment carries when the host last changed it, as the agent was shown it.
+      expect(pulls[0]!.comments[0]!.at).toBe(Date.parse(now));
       // A second round adds a round; the first stays.
       const running = { ...collected, state: "WAITING" as const };
       const again = workflowContracts.collectWorkflowFeedbackBundles(running, { bundleRefs, threadObservations: [] }, now);
@@ -569,8 +571,8 @@ describe("immutable multi-PR feedback reviews", () => {
     });
     it("marks the record incomplete (and does not grow it) when the list is full", () => {
       const { current, bundleRefs } = fixture();
-      const many = Array.from({ length: 1999 }, (_, i) => `x-${i}`);
-      const full = WorkflowSnapshotSchema.parse({ ...current, feedbackShown: { rounds: [{ at: now, pulls: [{ repositoryId: "api", number: 1, commentIds: many }] }] } });
+      const many = Array.from({ length: 799 }, (_, i) => ({ id: `x-${i}`, at: 1 }));
+      const full = WorkflowSnapshotSchema.parse({ ...current, feedbackShown: { rounds: [{ at: now, pulls: [{ repositoryId: "api", number: 1, comments: many }] }] } });
       const collected = workflowContracts.collectWorkflowFeedbackBundles(full, { bundleRefs, threadObservations: [] }, now);
       expect(collected.feedbackShown?.incomplete).toBe(true);
       expect(collected.feedbackShown?.rounds).toHaveLength(1);

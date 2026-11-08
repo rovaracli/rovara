@@ -28,12 +28,13 @@ export interface TaskSubjectBase {
   sendBackRequestIds: readonly string[];
 }
 export interface TaskSubjectSource {
-  read(input: { workspaceId: string; taskId: string }): Promise<TaskSubjectBase | undefined>;
   /**
    * L4: the task's project from the task record alone (one read), so the learning mode can be checked BEFORE `read` fetches plans, standing and erasure state. Undefined: no such task in the workspace, or one that
    * teaches nothing. A source without it is read first (the old order); the production source has it.
    */
   projectOf?(input: { workspaceId: string; taskId: string }): Promise<string | undefined>;
+  /** `context: "human_edit"`: only the task's own facts and steering are wanted (a human edit's reflection keeps the intent and plan); the pull request's comments are not read from the host. */
+  read(input: { workspaceId: string; taskId: string; context?: "human_edit" }): Promise<TaskSubjectBase | undefined>;
 }
 
 export interface TaskLearningDeps {

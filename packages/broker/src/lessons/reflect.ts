@@ -186,6 +186,19 @@ export async function reflectSubject(deps: ReflectDeps, subject: ReflectSubject,
   return { status: "ok", reason: drafts.length === 0 ? "no_candidates" : "candidates", drafts, costUsd: cost };
 }
 
+/** The most lines of code a lesson made from changed lines may copy. */
+export const MAX_COPIED_CODE_LINES = 2;
+/** Lines of a text that read as code: inside a fenced block, indented by two or more spaces, or ending like a statement or a block. Plain sentences are not. */
+export function copiedCodeLines(text: string): number {
+  let fenced = false;
+  let count = 0;
+  for (const line of text.split("\n")) {
+    if (/^\s*```/u.test(line)) { fenced = !fenced; continue; }
+    if (fenced || /^\s{2,}\S/u.test(line) || /[;{}]\s*$/u.test(line)) count += 1;
+  }
+  return count;
+}
+
 async function toDraft(
   deps: ReflectDeps, subject: ReflectSubject, spans: Map<string, MarkedSpan>, allowedTypes: readonly LessonType[],
   candidate: ReturnType<typeof LessonCandidateSchema.parse>, runId: string, model: string,
@@ -208,6 +221,12 @@ async function toDraft(
   if (title === "" || body === "") return undefined;
   // C6: a lesson that asks for a change to tools, permissions, domains, budgets, models or approvals is NOT dropped. It is kept as a person-approval lesson with a fixed reason
   // (`capability_request`, set by the tier step), so the approver sees it and decides; nothing is silently lost.
+
+  // L9: a lesson made from a person's changed lines is advice in words. It may not copy more than two lines of the code (Q5: the diff is not kept anywhere, and the lesson's own text is where it could be).
+  if (evidence.some((s) => s.kind === "human_edit") && copiedCodeLines(`${description}\n${body}`) > MAX_COPIED_CODE_LINES) {
+    await emitAudit(deps.audit, { action: "lesson.refused", workspaceId: subject.workspaceId, project: subject.project, facts: { reason: "copied_code", run: runId, subject: subject.id } });
+    return undefined;
+  }
 
   const citations: LessonCitation[] = [];
   const events = new Set(evidence.flatMap((s) => (s.eventId === undefined ? [] : [s.eventId])));
@@ -242,7 +261,7 @@ async function toDraft(
   const inputSources = [...new Set(everything.filter((s) => s.kind !== "loaded_lesson").map(sourceOf))].slice(0, 100);
   // Independence is counted in people: the canonical member ids of spans a PERSON wrote. Agent text (plan), system text, outcomes and channel or bucket keys
   // never make an author.
-  const authors = distinctIds([...new Set(evidence.flatMap((s) => (s.trust === "member" && s.authorId !== undefined && PERSON_KINDS.has(s.kind) ? [s.authorId] : [])))]);
+  const authors = distinctIds([...new Set(evidence.flatMap((s) => (s.trust === "member" && PERSON_KINDS.has(s.kind) ? [...(s.authorId === undefined ? [] : [s.authorId]), ...(s.authorIds ?? [])] : [])))]);
     // Measured outcomes come from structured facts in the input, never from which spans the model cited.
   // A send-back counts only when someone other than the lesson's own authors made it (a person cannot create a "measured outcome" by correcting their own task).
   // ONE function decides whether anything was measured, for every kind of outcome (a revert, a send-back, a CI failure).

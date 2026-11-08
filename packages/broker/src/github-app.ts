@@ -779,7 +779,7 @@ export class GitHubAppCredentialProvider {
   async getRepositoryCompareJson(repositoryUrl: string, apiPath: string, scope: GitHubTokenScope): Promise<{ status: number; body: unknown }> {
     const repository = parseGitHubRepository(repositoryUrl);
     const prefix = `/repos/${encodeURIComponent(repository.owner)}/${encodeURIComponent(repository.name)}/compare/`;
-    if (!apiPath.startsWith(prefix) || !/^[\w.%/-]+\.\.\.[0-9a-f]{40}(\?per_page=\d{1,3})?$/u.test(apiPath.slice(prefix.length))) throw agentXError("CONFIG_INVALID", "not a compare path of this repository");
+    if (!apiPath.startsWith(prefix) || !/^[0-9a-f]{40}\.\.\.[0-9a-f]{40}(\?per_page=\d{1,3})?$/u.test(apiPath.slice(prefix.length))) throw agentXError("CONFIG_INVALID", "not a compare path of this repository");
     const installed = await this.installed(repository, scope);
     const token = await this.createInstallationToken(installed, { contents: "read" }, scope);
     return this.trackingJson(`https://api.github.com${apiPath}`, token);
