@@ -6,7 +6,7 @@ import { LESSONS_PAUSE_CODES, lessonsPauseText, teamRecordPk } from "../../../pa
 import { lessonSubjectSource } from "../../../packages/broker/src/aws/broker/lesson-subject-source.js";
 import { taskKey, taskOwnerKey } from "../../../packages/broker/src/developer/task-records.js";
 import { withLearningAttempt, noteLearningFault, type LearningAttempt } from "../../../packages/broker/src/lessons/learning-deadline.js";
-import { LearningRefusal, MODEL_FAILURES_BEFORE_PAUSE, dynamoPauseStore, pauseScopeOf, type CurrentPause, type LessonsPauseStore } from "../../../packages/broker/src/lessons/pause.js";
+import { LearningRefusal, MODEL_FAILURES_BEFORE_PAUSE, dynamoPauseStore, noteModelFailure, pauseScopeOf, type CurrentPause, type LessonsPauseStore } from "../../../packages/broker/src/lessons/pause.js";
 import type { PipelineModel } from "../../../packages/broker/src/lessons/ports.js";
 import { buildReflectorInput } from "../../../packages/broker/src/lessons/reflect-input.js";
 import { curateDraft, type CurateDeps } from "../../../packages/broker/src/lessons/curate.js";
@@ -426,6 +426,24 @@ describe("the pause store", () => {
     expect(count("LESSONSET#FAILS_JUDGE")).toBeUndefined();
     // Both start with LESSONSET, which the erase already wipes.
     expect(await store.failed!(WS, PROJECT)).toBe(1);
+  });
+
+  it("L4 follow-up: a Lessons-tab clear starts the judge's count again too, so one judge failure after it does not pause the project, and three do; a reflection's success does not clear it", async () => {
+    const { store } = table();
+    for (let call = 0; call < MODEL_FAILURES_BEFORE_PAUSE; call += 1) await noteModelFailure(store, WS, PROJECT, "judge");
+    expect((await store.read(WS, PROJECT))?.code).toBe("model_failed");
+    // A reflection that succeeds clears the reason, not the judge's count: the next judge failure pauses again at once.
+    await store.clear(WS, PROJECT);
+    await noteModelFailure(store, WS, PROJECT, "judge");
+    expect((await store.read(WS, PROJECT))?.code).toBe("model_failed");
+    // The person's clear from the tab (conditional on the reason they saw) starts every count again.
+    await store.clear(WS, PROJECT, "project", "model_failed");
+    expect(await store.read(WS, PROJECT)).toBeUndefined();
+    await noteModelFailure(store, WS, PROJECT, "judge");
+    expect(await store.read(WS, PROJECT)).toBeUndefined();
+    await noteModelFailure(store, WS, PROJECT, "judge");
+    await noteModelFailure(store, WS, PROJECT, "judge");
+    expect((await store.read(WS, PROJECT))?.code).toBe("model_failed");
   });
 
   it("keeps one reason per project and one for the company; reads the project's own first, then the company's", async () => {

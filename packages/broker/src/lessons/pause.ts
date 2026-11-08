@@ -80,6 +80,9 @@ export function dynamoPauseStore(table: TeamRecordTable, now: () => number, log?
       }
       if (only === "company") return;
       try { await table.documentClient.send(new DeleteCommand({ TableName: table.tableName, Key: { pk: teamRecordPk(workspaceId, project), sk: FAILS_SK } })); } catch { log?.("lessons.failures_not_cleared", {}); }
+      // A person's clear from the Lessons tab (the conditional one) starts the judge's count again too: the pause they dismissed must not return on the next single judge failure. A reflection that succeeds does not (L4).
+      if (ifCode === undefined) return;
+      try { await table.documentClient.send(new DeleteCommand({ TableName: table.tableName, Key: { pk: teamRecordPk(workspaceId, project), sk: JUDGE_FAILS_SK } })); } catch { log?.("lessons.failures_not_cleared", {}); }
     },
     async clearJudgeFailures(workspaceId, project) {
       try { await table.documentClient.send(new DeleteCommand({ TableName: table.tableName, Key: { pk: teamRecordPk(workspaceId, project), sk: JUDGE_FAILS_SK } })); } catch { log?.("lessons.failures_not_cleared", {}); }
