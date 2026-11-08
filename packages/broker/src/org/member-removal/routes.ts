@@ -7,7 +7,7 @@ import {
 } from "@agentx/contracts";
 import type { DeveloperCaller, DeveloperRouteDependencies } from "../../aws/developer-routes.js";
 import { DeveloperSignInStore } from "../../developer/store.js";
-import { nameResolverOf, replacementNamesFrom } from "../../developer/name-resolver.js";
+import { nameResolverOf, replacementNamesFrom, shownNameOf } from "../../developer/name-resolver.js";
 import { listOrganizationInvites } from "../invite-directory.js";
 import { COUNT_CAP, countHandOffs, hasGithubLink, readDuties, removalEnds } from "./preview.js";
 
@@ -120,9 +120,10 @@ export async function getMemberRemoval(deps: Deps, caller: DeveloperCaller, remo
   const ids = [record.leaverId, ...(record.successorId === undefined ? [] : [record.successorId])];
   const { records: people, nameItems } = await store.getDevelopersWithNameItems(ids);
   // ERASE-NAME-2: a person erased (also before the name item had a tombstone) is not shown by the name stored for them.
-  const replaced = (await replacementNamesFrom(nameResolverOf(deps, caller.orgId), ids, nameItems)).currentOnly();
+  // A stored removal is history: a leaver or successor who was erased and came back reads by the new name only if this removal happened in the new membership, else "A former member".
+  const replaced = await replacementNamesFrom(nameResolverOf(deps, caller.orgId), ids, nameItems);
   const invites = await invitesCreatedBy(deps, caller, record.leaverId);
-  const nameOf = (id: string) => replaced.get(id) ?? people.get(id)?.displayName ?? "Unknown";
+  const nameOf = (id: string) => shownNameOf(people.get(id)?.displayName ?? "Unknown", id, replaced, record.removedAt);
   return MemberRemovalStatusSchema.parse({
     removalId, state: record.state, removedAt: record.removedAt, member: { developerId: record.leaverId, name: nameOf(record.leaverId), role: record.role },
     ...(record.successorId === undefined ? {} : { successor: { developerId: record.successorId, name: nameOf(record.successorId) } }), by: record.by,

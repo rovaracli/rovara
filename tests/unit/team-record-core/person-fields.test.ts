@@ -74,6 +74,7 @@ describe("the chosen name is in the erase registry", () => {
 
   it("only the chosen-name module and the sign-in store write the item, so a new writer cannot appear without this test being read", () => {
     const writers = sourceFiles(join(ROOT, "packages/broker/src")).filter((file) => /entityType:\s*"DEVELOPER_NAME"/u.test(readFileSync(file, "utf8"))).map((file) => file.slice(join(ROOT, "packages/broker/src").length + 1)).sort();
-    expect(writers).toEqual(["developer/chosen-name.ts", "developer/store.ts"]);
+    // The store writes a chosen name through `chosenNameWrite` (chosen-name.ts), so it holds no item literal of its own.
+    expect(writers).toEqual(["developer/chosen-name.ts"]);
   });
 });

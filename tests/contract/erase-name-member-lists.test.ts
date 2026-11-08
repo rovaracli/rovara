@@ -1,6 +1,6 @@
 // ERASE-NAME-2: the member lists (the company's members, the removal preview and status) read the sign-in record's name, and the chosen name laid over it. A person erased before the name item had a tombstone
 // (the audit ledger's tombstone only) or after (the name item's) must not show by name there, and a person removed from the company must not show by the name they chose.
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { afterEach, describe, expect, it } from "vitest";
 import { orgEmailKey, type OrgRole } from "@agentx/contracts";
 import { FORMER_MEMBER_NAME, chosenNameKey } from "../../packages/broker/src/developer/chosen-name.js";
@@ -70,6 +70,26 @@ describe("a member who was erased and came back (ERASED-REJOIN-NAME)", () => {
     const after = await h.dev(OMAR, "GET", "/v1/app/org/members");
     expect(nameIn(after.body, bea)).toBe(CHOSEN);
     expect(JSON.stringify(after.body)).not.toContain(REAL);
+  });
+});
+
+describe("a stored removal of a person who came back (ERASED-REJOIN-NAME)", () => {
+  it("names the leaver by the new name only when the removal happened in the new membership; an older removal reads 'A former member'", async () => {
+    const h = await org();
+    const bea = person(h, REAL, "member");
+    const body = { requestId: randomUUID(), expectedRole: "member" };
+    expect((await h.dev(OMAR, "POST", `/v1/app/org/members/${bea.developerId}/removal`, body)).status).toBe(200);
+    const day = 86_400_000;
+    const rejoined = (rejoinedAt: number) => h.db.set({ ...chosenNameKey(bea.developerId), entityType: "DEVELOPER_NAME", developerId: bea.developerId, erased: true, erasedAt: new Date(rejoinedAt - day).toISOString(), name: CHOSEN, chosenAt: new Date(rejoinedAt).toISOString(), rejoinedAt: new Date(rejoinedAt).toISOString() });
+    const status = async () => (await h.dev(OMAR, "GET", `/v1/app/org/removals/${body.requestId}`)).body;
+    // The person came back and chose the new name AFTER this removal: the removal is old history.
+    rejoined(Date.now() + day);
+    expect(await status()).toMatchObject({ member: { developerId: bea.developerId, name: FORMER_MEMBER_NAME } });
+    expect(JSON.stringify(await status())).not.toContain(CHOSEN);
+    // The new membership began before this removal: it is the new membership's removal.
+    forgetResolvedNames();
+    rejoined(Date.now() - day);
+    expect(await status()).toMatchObject({ member: { name: CHOSEN } });
   });
 });
 

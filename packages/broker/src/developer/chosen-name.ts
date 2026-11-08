@@ -1,12 +1,12 @@
 // Release 0.4.18: the name a person chose (PUT /v1/app/me/name) lives in the broker's own State table, as one item per person, not on the sign-in record.
 // The broker may read the sign-in table but not write it (a broker bug must not be able to change a revoked or merged mark there), and a sign-in
 // never touches this item, so it can never overwrite a chosen name. Readers lay the chosen name over the sign-in record's (`withChosenName`).
-import { BatchGetCommand, GetCommand, PutCommand } from "@aws-sdk/lib-dynamodb";
+import { BatchGetCommand, GetCommand, PutCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
 import { safeDisplayName } from "./person-name.js";
 
 export interface ChosenNameClient { send(command: unknown): Promise<unknown> }
 /** The item as stored: `entityType` `DEVELOPER_NAME`, the person's id (also in the key), the name as validated at the route and in the store, and when it was chosen. */
-export interface ChosenNameItem { pk: string; sk: string; entityType?: string; developerId?: string; name?: unknown; chosenAt?: string; erased?: unknown; erasedAt?: string; removed?: unknown; removedAt?: string }
+export interface ChosenNameItem { pk: string; sk: string; entityType?: string; developerId?: string; name?: unknown; chosenAt?: string; erased?: unknown; erasedAt?: string; rejoinedAt?: string; eraseRev?: number; removed?: unknown; removedAt?: string }
 
 /**
  * ERASE-NAME-1: what every reader shows for a person who was erased. The erase leaves the same State item behind as a tombstone (`erased: true`, no name), so each reader that already
@@ -51,7 +51,9 @@ function stateOf(item: ChosenNameItem | undefined, developerId: string): ChosenN
 export function rejoinedOf(item: ChosenNameItem | undefined, developerId: string): { name: string; at: string } | undefined {
   if (item?.erased !== true || typeof item.chosenAt !== "string" || !Number.isFinite(Date.parse(item.chosenAt))) return undefined;
   const name = shownName(item, developerId);
-  return name === undefined ? undefined : { name, at: item.chosenAt };
+  // `rejoinedAt` is the time of the FIRST name chosen after the erase and survives renames (`chosenAt` moves on every rename); an item without it is read by `chosenAt`.
+  const at = typeof item.rejoinedAt === "string" && Number.isFinite(Date.parse(item.rejoinedAt)) ? item.rejoinedAt : item.chosenAt;
+  return name === undefined ? undefined : { name, at };
 }
 
 /** The person's state from the State table, strongly consistent: their chosen name, "A former member" for an erased person, or undefined when they never chose a name. */
@@ -131,8 +133,24 @@ export async function eraseChosenName(client: ChosenNameClient, tableName: strin
       ConditionExpression: "attribute_not_exists(pk) OR attribute_not_exists(erased) OR attribute_exists(#name)",
       ExpressionAttributeNames: { "#name": "name" },
     }));
+    return;
   } catch (error) {
     if ((error as { name?: string } | undefined)?.name !== "ConditionalCheckFailedException") throw error;
+  }
+  // A bare tombstone is already there (the first `erasedAt` stands). The erase still counts, so a name choice that read the tombstone before this erase fails: the item's `eraseRev` goes up, and a name write is conditioned on it.
+  try {
+    await client.send(new UpdateCommand({
+      TableName: tableName,
+      Key: chosenNameKey(developerId),
+      UpdateExpression: "SET eraseRev = if_not_exists(eraseRev, :zero) + :one",
+      ConditionExpression: "attribute_exists(erased) AND attribute_not_exists(#name)",
+      ExpressionAttributeNames: { "#name": "name" },
+      ExpressionAttributeValues: { ":zero": 0, ":one": 1 },
+    }));
+  } catch (error) {
+    // A name was chosen between the two writes: the erase is done again, over the name.
+    if ((error as { name?: string } | undefined)?.name !== "ConditionalCheckFailedException") throw error;
+    await eraseChosenName(client, tableName, developerId, at);
   }
 }
 
@@ -144,7 +162,14 @@ export async function eraseChosenName(client: ChosenNameClient, tableName: strin
 export function chosenNameWrite(existing: ChosenNameItem | undefined, developerId: string, name: string, at: string): { item: Record<string, unknown>; condition: string; values?: Record<string, unknown> } {
   const base = { ...chosenNameKey(developerId), entityType: "DEVELOPER_NAME", developerId, name, chosenAt: at };
   if (existing?.erased === true && typeof existing.erasedAt === "string") {
-    return { item: { ...base, erased: true, erasedAt: existing.erasedAt }, condition: "erased = :erased AND erasedAt = :erasedAt", values: { ":erased": true, ":erasedAt": existing.erasedAt } };
+    // The first name chosen after the erase sets `rejoinedAt`; a rename keeps it. `eraseRev` counts the erases that landed on a bare tombstone: the write fails when one landed after the item was read.
+    const rejoinedAt = typeof existing.rejoinedAt === "string" ? existing.rejoinedAt : at;
+    const rev = typeof existing.eraseRev === "number" ? existing.eraseRev : undefined;
+    return {
+      item: { ...base, erased: true, erasedAt: existing.erasedAt, rejoinedAt, ...(rev === undefined ? {} : { eraseRev: rev }) },
+      condition: `erased = :erased AND erasedAt = :erasedAt AND ${rev === undefined ? "attribute_not_exists(eraseRev)" : "eraseRev = :eraseRev"}`,
+      values: { ":erased": true, ":erasedAt": existing.erasedAt, ...(rev === undefined ? {} : { ":eraseRev": rev }) },
+    };
   }
   return { item: base, condition: "attribute_not_exists(erased)" };
 }

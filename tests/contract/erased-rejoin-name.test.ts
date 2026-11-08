@@ -5,10 +5,11 @@ import { randomUUID } from "node:crypto";
 import { beforeEach, describe, expect, it } from "vitest";
 import { sessionEventId } from "../../packages/contracts/src/index.js";
 import { ASK_RETENTION_DAYS } from "../../packages/contracts/src/index.js";
-import { askAliasHashKey, erasedNameIsChosenAgain, rememberErasedAliases } from "../../packages/broker/src/agent-sessions/ask-erased-aliases.js";
+import { askAliasHashKey, erasedNameIsChosenAgain, readErasedAliases, rememberErasedAliases } from "../../packages/broker/src/agent-sessions/ask-erased-aliases.js";
 import { appendSessionEvent, readSessionEvents } from "../../packages/broker/src/agent-sessions/events.js";
 import { ownerNameOverlay, ownerNamedAt } from "../../packages/broker/src/agent-sessions/owner-names.js";
 import { FORMER_MEMBER, auditActorNamesOf } from "../../packages/broker/src/audit/actor-names.js";
+import { UpdateCommand } from "@aws-sdk/lib-dynamodb";
 import { FORMER_MEMBER_NAME, chosenNameKey, deleteChosenNameOfRemoved, eraseChosenName, readChosenNameState, readOwnChosenName } from "../../packages/broker/src/developer/chosen-name.js";
 import { nameEraserOf } from "../../packages/broker/src/developer/erase-name.js";
 import { forgetResolvedNames, nameResolverOf, replacementNames, resolveStoredName, scrubErasedNames, shownNameOf } from "../../packages/broker/src/developer/name-resolver.js";
@@ -111,12 +112,83 @@ describe("choosing a name after an erase", () => {
   });
 });
 
+describe("renames, the second erase and the hashes", () => {
+  const profile = (displayName: string) => ({ developerId: PRIYA, provider: "cloud" as const, issuer: "https://idp.example.test", subject: "sub-p", displayName, email: "p@example.test" });
+  const DAY = 86_400_000;
+
+  it("a rename keeps the day the new membership began: work from before the rename stays named by the new name", async () => {
+    const clock = { now: NOW };
+    const db = new FakeDynamoDb();
+    const signIn = new DeveloperSignInStore({ documentClient: db, tableName: "signin", now: () => clock.now });
+    const broker = new DeveloperSignInStore({ documentClient: db, tableName: "signin", nameTableName: "state", now: () => clock.now });
+    await signIn.upsertDeveloper(profile(REAL));
+    await eraseChosenName(db, "state", PRIYA, ERASED_AT);
+    await broker.setChosenDisplayName({ developerId: PRIYA, orgId: TEST_ORG, name: NEW });
+    const first = new Date(NOW).toISOString();
+    clock.now += 5 * DAY;
+    await broker.setChosenDisplayName({ developerId: PRIYA, orgId: TEST_ORG, name: "Pri Renamed" });
+    expect(db.get(chosenNameKey(PRIYA))).toMatchObject({ erased: true, erasedAt: ERASED_AT, name: "Pri Renamed", chosenAt: new Date(clock.now).toISOString(), rejoinedAt: first });
+    const replaced = await replacementNames({ documentClient: db, tableName: "state", orgId: TEST_ORG }, [PRIYA]);
+    // A record from two days after the new membership began (before the rename) reads by the current name; one from before it is still "A former member".
+    expect(shownNameOf(OLD, PRIYA, replaced, new Date(NOW + 2 * DAY).toISOString())).toBe("Pri Renamed");
+    expect(shownNameOf(OLD, PRIYA, replaced, new Date(NOW - DAY).toISOString())).toBe(FORMER_MEMBER_NAME);
+  });
+
+  it("a second erase of a person who came back starts a fresh entry when the first expired, and the new hashes live a full term", async () => {
+    const db = new FakeDynamoDb();
+    const t = { documentClient: db, tableName: "state" };
+    const first = Date.parse(ERASED_AT);
+    await rememberErasedAliases(t, TEST_ORG, { developerId: PRIYA, names: [OLD] }, first, KEY);
+    // The table's TTL has not removed the expired entry yet when the person, who came back as NEW, is erased again.
+    const later = first + (ASK_RETENTION_DAYS + 3) * DAY;
+    await rememberErasedAliases(t, TEST_ORG, { developerId: PRIYA, names: [NEW] }, later, KEY);
+    expect(await erasedNameIsChosenAgain(t, TEST_ORG, PRIYA, NEW, later + DAY, KEY)).toBe(true);
+    expect(await erasedNameIsChosenAgain(t, TEST_ORG, PRIYA, NEW, later + (ASK_RETENTION_DAYS - 1) * DAY, KEY)).toBe(true);
+    // The expired entry's hashes were not carried over.
+    expect(await erasedNameIsChosenAgain(t, TEST_ORG, PRIYA, OLD, later + DAY, KEY)).toBe(false);
+    expect((await readErasedAliases(t, TEST_ORG, later + DAY)).length).toBe(1);
+    // An entry still alive is merged and its term runs on from the later erase.
+    const mid = later + 20 * DAY;
+    await rememberErasedAliases(t, TEST_ORG, { developerId: PRIYA, names: ["Pri Third"] }, mid, KEY);
+    expect(await erasedNameIsChosenAgain(t, TEST_ORG, PRIYA, NEW, mid + 25 * DAY, KEY)).toBe(true);
+    expect(await erasedNameIsChosenAgain(t, TEST_ORG, PRIYA, "Pri Third", mid + 25 * DAY, KEY)).toBe(true);
+  });
+
+  it("an erase that lands on a bare tombstone after a name write read it makes that write fail; a name chosen between the erase's own two writes is erased", async () => {
+    const db = new FakeDynamoDb();
+    const signIn = new DeveloperSignInStore({ documentClient: db, tableName: "signin", now: () => NOW });
+    const broker = new DeveloperSignInStore({ documentClient: db, tableName: "signin", nameTableName: "state", now: () => NOW });
+    await signIn.upsertDeveloper(profile(REAL));
+    db.set(tombstoneItem(PRIYA));
+    const send = db.send.bind(db);
+    let landed = false;
+    db.send = ((command: Parameters<typeof send>[0]) => {
+      if (!landed && (command as { constructor: { name: string } }).constructor.name === "TransactWriteCommand") { landed = true; return eraseChosenName(db, "state", PRIYA, "2026-11-02T10:00:00.000Z").then(() => send(command)); }
+      return send(command);
+    });
+    await expect(broker.setChosenDisplayName({ developerId: PRIYA, orgId: TEST_ORG, name: NEW })).rejects.toMatchObject({ code: "FORBIDDEN" });
+    expect(db.get(chosenNameKey(PRIYA))).not.toHaveProperty("name");
+    db.send = send;
+    // Between the erase's two writes a name is chosen: the erase notices and erases over it.
+    const db2 = new FakeDynamoDb();
+    db2.set(tombstoneItem(PRIYA));
+    const send2 = db2.send.bind(db2);
+    db2.send = ((command: Parameters<typeof send2>[0]) => {
+      if (command instanceof UpdateCommand) db2.set(rejoinedItem(PRIYA));
+      return send2(command);
+    });
+    await eraseChosenName(db2, "state", PRIYA, "2026-11-03T00:00:00.000Z");
+    expect(db2.get(chosenNameKey(PRIYA))).toEqual({ ...tombstoneItem(PRIYA), erasedAt: "2026-11-03T00:00:00.000Z" });
+  });
+});
+
 describe("the eraser, the backfill and removal", () => {
   it("a repeated erase keeps the first time (the time the readers scope by); an erase of a person who came back erases the new name too", async () => {
     const db = new FakeDynamoDb();
     await eraseChosenName(db, "state", PRIYA, ERASED_AT);
     await eraseChosenName(db, "state", PRIYA, "2026-12-01T00:00:00.000Z");
-    expect(db.get(chosenNameKey(PRIYA))).toEqual(tombstoneItem(PRIYA));
+    // The first time stands; the repeat is counted (`eraseRev`), which a name write in flight is conditioned on.
+    expect(db.get(chosenNameKey(PRIYA))).toEqual({ ...tombstoneItem(PRIYA), eraseRev: 1 });
     db.set(rejoinedItem(PRIYA));
     expect(await readOwnChosenName(db, "state", PRIYA)).toBe(NEW);
     await eraseChosenName(db, "state", PRIYA, "2026-12-01T00:00:00.000Z");
@@ -133,7 +205,7 @@ describe("the eraser, the backfill and removal", () => {
     expect(db.get(chosenNameKey(PRIYA))).toEqual({ ...tombstoneItem(PRIYA), erasedAt: new Date(NOW).toISOString() });
     db.set(tombstoneItem(ARJUN));
     await eraser.erase(ARJUN);
-    expect(db.get(chosenNameKey(ARJUN))).toEqual(tombstoneItem(ARJUN));
+    expect(db.get(chosenNameKey(ARJUN))).toMatchObject(tombstoneItem(ARJUN));
     expect(calls).toEqual([PRIYA, ARJUN]);
   });
 
