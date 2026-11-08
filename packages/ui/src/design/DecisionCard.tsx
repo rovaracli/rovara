@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState, type ReactNode, type TouchEvent } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Link, useLocation } from "react-router";
-import { DECISION_LABELS, DECISION_REJECT_REASONS, decisionTaskSessionOf, type DecisionRejectReason, type DecisionTabId } from "@agentx/contracts/web";
+import { DECISION_APPROVE_TAKES, DECISION_LABELS, DECISION_REJECT_REASONS, decisionTaskSessionOf, type DecisionRejectReason, type DecisionTabId } from "@agentx/contracts/web";
 import { useAppHost } from "../host.js";
 import { ApiError } from "../api/errors.js";
 import { HIGH_ON_CARD_KINDS, decisionOpenTarget, mayApproveHere, runLimitRaise, type DecisionResult, type PlanDecisionFields, type ReadDecision } from "../api/decisions.js";
@@ -59,7 +59,7 @@ const HIGH_RISK_NOTE = "High risk: approving needs a recent sign-in.";
  * OWNER DECISION 18: what Approve sends, said where the person chooses it (the card on its task page and the panel's foot). Only an answer changed from Rovara's recommendation is sent; the workflow
  * decision gives every other question the plan's recommended answer. With open comments, exactly the ticked ones are sent; an unticked one stays open for the next version.
  */
-const APPROVE_SENDS_CHOICES = "Your answers above and the ticked comments go with your decision. A question you leave on Rovara's recommendation takes Rovara's recommended answer; a comment you untick stays open for the next version.";
+const APPROVE_SENDS_CHOICES = DECISION_APPROVE_TAKES;
 /** Where the card is only shown (Home): Approve sends the recommended answers and the open comments (up to 25), as Slack's Approve does; the choices are made on the task. */
 const APPROVE_TAKES_ELSEWHERE = "Approving here takes Rovara's recommended answer to each decision in the document and the open comments (up to 25). To answer them yourself, open the task.";
 const NO_CHOICES = { questions: [], optionalChecks: [], openComments: [] };

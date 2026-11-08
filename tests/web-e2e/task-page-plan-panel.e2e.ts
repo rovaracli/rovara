@@ -97,7 +97,7 @@ for (const [width, theme] of [[1280, "light"], [390, "dark"]] as const) test("th
  await expect(foot.getByRole("button", { name: "Approve", exact: true })).toBeVisible();
  await expect(foot.locator("summary", { hasText: "Request changes" })).toBeVisible();
  // What Approve sends is said as the panel does it (never a pointer to the old review page), and the note's label sits above its full-width box.
- await expect(foot.getByText(/Your answers above and the ticked comments go with your decision\./u)).toBeVisible();
+ await expect(foot.getByText(/Your answers on the card and the ticked comments go with your decision\./u)).toBeVisible();
  await expect(panel.getByText(/plan review page/u)).toHaveCount(0);
  const label = await foot.getByText("Note for Rovara (optional)").boundingBox(), box = await foot.getByLabel("Note for Rovara (optional)").boundingBox();
  expect(label!.y + label!.height).toBeLessThanOrEqual(box!.y + 1);

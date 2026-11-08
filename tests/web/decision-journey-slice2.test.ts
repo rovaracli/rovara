@@ -135,7 +135,7 @@ it("review fix: what Approve takes is said next to Approve on a requirements and
   const f = taskPage([item]);
   const card = await cardOn();
   // OWNER DECISION 18: on its task page the card says what Approve sends from the choices made there (never "use the plan review page", which now forwards here).
-  expect(within(card).getByText(/A question you leave on Rovara's recommendation takes Rovara's recommended answer/u)).toBeTruthy();
+  expect(within(card).getByText(/A question left on Rovara's recommendation takes that answer/u)).toBeTruthy();
   expect(within(card).queryByText(/plan review page/u)).toBeNull();
   f.close();
  }

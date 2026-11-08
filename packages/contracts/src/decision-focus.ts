@@ -27,8 +27,8 @@ export const DECISION_LABELS = {
   signInAgain: "Sign in again",
 } as const;
 
-/** Shown next to Approve on a requirements or coding plan card, at every risk (slice 2): what an Approve on the card takes, as Slack's Approve does. */
-export const DECISION_APPROVE_TAKES = "Approving here takes Rovara's recommended answer to each decision in the document and the open comments (up to 25). To answer them yourself, use the plan review page.";
+/** Shown next to Approve on a requirements or coding plan card (slice 2) and in its "What Approve takes" detail: OWNER DECISION 18, what the decision sends (only changed answers are sent; the workflow decision gives every other question the plan's recommendation; exactly the ticked comments go). Never a pointer to the plan review page, which forwards to the task page with the cards on. */
+export const DECISION_APPROVE_TAKES = "Your answers on the card and the ticked comments go with your decision. A question left on Rovara's recommendation takes that answer; an unticked comment stays open for the next version.";
 
 const TASK_PAGE = /^\/app\/sessions\/(ses_[0-9a-z]{20})(?:\?|$)/u;
 /** The task page with one card on it, focused: `<sessionPath>?decision=<card id>`. Only a bare task session page path (`/app/sessions/ses_...`, no query) is anchored; anything else is answered unchanged. */
