@@ -15,9 +15,12 @@ import type { OutcomeRowReader } from "../../../packages/broker/src/lessons/task
 import { InMemoryLessonStore } from "../../../packages/broker/src/lessons/store.js";
 import type { SendBackFact, TaskSubjectFacts } from "../../../packages/broker/src/lessons/task-subject.js";
 import type { CounterDeps } from "../../../packages/broker/src/lessons/counters.js";
-import { REFUSING_JUDGE } from "../../../packages/broker/src/lessons/runtime.js";
+import type { CorrectionJudge } from "../../../packages/broker/src/lessons/ports.js";
 import type { Lesson } from "../../../packages/broker/src/lessons/types.js";
 import { Alerts, Audit, BASE, Clock, MERGED, MemoryVectors, PROJECT, ScriptedModel, Spend, WS, candidateJson, embedder, facts, lessonRecord, memberSpan, reply, seed, settings, verifier } from "./lesson-helpers.js";
+
+/** A judge on an install whose model path answers nothing for a rating (usable, but every rating fails): a correction in scope stays unjudged. */
+const REFUSING_JUDGE: CorrectionJudge = { rate: async () => { throw new Error("no rating"); } };
 
 class Rows implements OutcomeRowReader {
   asked: string[] = [];

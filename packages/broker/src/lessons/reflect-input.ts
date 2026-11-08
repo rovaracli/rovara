@@ -31,6 +31,8 @@ export interface EvidenceSpan {
    * Set by code from the host's own facts, never from the comment's words. This is the strongest correction signal there is: a person said what was wrong and the code then changed.
    */
   ledToChange?: boolean;
+  /** `pr_comment` only: the file the comment was made on (cleaned), from the host's own row. A correction on a file counts only against lessons that reach that file (lessons outcomes). */
+  paths?: readonly string[];
 }
 
 export interface ReflectSubject {

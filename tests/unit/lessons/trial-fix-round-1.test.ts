@@ -291,9 +291,10 @@ describe("M2: counters and contradictions retire a lesson that has no person beh
     const approved = lessonRecord({ id: "les_appr0001", tier: 1, approvals: [{ approvalId: "a", by: "ann", at: 1, mode: "one" }] });
     await seed(w.store, trial, approved);
     for (const task of ["t1", "t2"]) {
+      // Two different people's corrections (a person marks a lesson once, ever).
       await w.store.putManifest(loadedManifest(task, trial.id));
       await w.store.putManifest({ ...loadedManifest(task, approved.id), round: 2 });
-      await recordTaskOutcome(w.deps, { workspaceId: WS, project: PROJECT, taskId: task, outcome: "merged", sendBacks: 1, corrections: [{ kind: "send_back", paths: ["src/retry/a.ts"], text: "wrong", at: 1 }] });
+      await recordTaskOutcome(w.deps, { workspaceId: WS, project: PROJECT, taskId: task, outcome: "merged", sendBacks: 1, corrections: [{ kind: "send_back", paths: ["src/retry/a.ts"], text: "wrong", at: 1, authorId: `dev-${task}` }] });
     }
     expect((await w.store.get(KEY, trial.id))!.status).toBe("retired");
     expect((w.audit.events.find((e) => e.action === "lesson.auto_retired" && e.lessonId === trial.id))).toBeDefined();

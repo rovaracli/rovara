@@ -1,6 +1,7 @@
 // Learning v2 L5: helpful and harmful counters, stale handling and auto-retire (design §4.6). Counters come from outcomes (merge, send-backs, reviews,
 // reverts) and from two buttons on the task page ("Helpful", "Wrong here"). Every mark is idempotent per task and lesson. The judge model is tool-less and
 // answers a fixed code; it can only add a harmful mark or withhold a helpful one, never approve or lower a tier.
+import { createHash } from "node:crypto";
 import { resolveLearning, emitAudit, modeAllows, type LearningSettingsReader } from "./policy.js";
 import type { AlertSink, CorrectionJudge, CorrectionKind, LessonDeps, LessonVectors } from "./ports.js";
 import { renewLesson } from "./expiry.js";
@@ -24,9 +25,19 @@ const MAX_CORRECTIONS_PER_LESSON = 5;
 const REACHED_PROMPT: ReadonlySet<string> = new Set(["valid", "moved", "none"]);
 const reached = (manifests: readonly LoadManifest[]): Set<string> => new Set(manifests.flatMap((m) => m.lessons.filter((e) => REACHED_PROMPT.has(e.citation)).map((e) => e.id)));
 
-export interface CounterDeps extends LessonDeps { store: LessonStore; judge: CorrectionJudge; settings: LearningSettingsReader; alerts?: AlertSink; /** Where lesson vectors are kept: a lesson the counters retire loses its vector. */ vectors?: LessonVectors }
+export interface CounterDeps extends LessonDeps {
+  store: LessonStore; judge: CorrectionJudge; settings: LearningSettingsReader; alerts?: AlertSink; /** Where lesson vectors are kept: a lesson the counters retire loses its vector. */ vectors?: LessonVectors;
+  /** Asked before each judge call: false means this task's time for judging is used up (the correction is then unjudged and the outcome is reported `deferred`). Absent: always. */
+  mayCall?: () => boolean;
+}
 
-export interface TaskCorrection { kind: CorrectionKind; /** Files the correction touches, for scope matching. */ paths: readonly string[]; text: string; at: number }
+export interface TaskCorrection {
+  kind: CorrectionKind; /** Files the correction touches, for scope matching. Empty: it names none, so it could be about any lesson. */ paths: readonly string[]; text: string; at: number;
+  /** The canonical developer id of the person whose correction this is. A harmful mark is made once per person and lesson, under their random reference (erasure takes it back). Absent: it can blame nobody. */
+  authorId?: string;
+  /** The words are code's (a send-back with no reason, an erased sender's, a revert): counted, never rated, and it leaves the lesson unjudged. */
+  fixed?: boolean;
+}
 export interface TaskOutcome {
   workspaceId: string; project: string; taskId: string; outcome: "merged" | "closed" | "abandoned" | "reverted"; sendBacks: number; mergedAt?: number;
   corrections: readonly TaskCorrection[];
@@ -73,8 +84,8 @@ async function addHelpful(deps: CounterDeps, key: ScopeKey, lessonId: string, ex
  * the lesson's scope are rated by the judge; a lesson that caused or contradicted a correction gets a harmful mark. A merged task with at most one
  * send-back and no such correction queues a helpful mark for when the 14-day revert window has passed.
  */
-export async function recordTaskOutcome(deps: CounterDeps, outcome: TaskOutcome): Promise<{ harmful: string[]; queuedHelpful: string[] }> {
-  const result = { harmful: [] as string[], queuedHelpful: [] as string[] };
+export async function recordTaskOutcome(deps: CounterDeps, outcome: TaskOutcome): Promise<{ harmful: string[]; queuedHelpful: string[]; /** Some correction went unjudged because this task's time for judging ran out. */ deferred?: true }> {
+  const result: { harmful: string[]; queuedHelpful: string[]; deferred?: true } = { harmful: [], queuedHelpful: [] };
   if (outcome.evalRun === true) return result;
   const key: ScopeKey = { workspaceId: outcome.workspaceId, project: outcome.project };
   const resolved = await resolveLearning(deps.settings, key.workspaceId, key.project);
@@ -88,24 +99,47 @@ export async function recordTaskOutcome(deps: CounterDeps, outcome: TaskOutcome)
   if (loaded.size === 0) return result;
   const canJudge = deps.judge.usable === undefined || await deps.judge.usable(key);
   if (!canJudge && outcome.outcome !== "reverted") return result;
+  // The lessons, in the order the judge's calls are spent: those a correction names a file of first (a comment on src/a.ts is about the lessons that reach src/a.ts), then the rest in an order that changes from task to
+  // task, so the 20-call limit never favours the same lessons every time.
+  const lessons: Lesson[] = [];
+  for (const lessonId of loaded) { const lesson = await deps.store.get(key, lessonId); if (lesson !== undefined) lessons.push(lesson); }
+  const named = (lesson: Lesson): boolean => (lesson.scope.paths ?? []).length > 0 && outcome.corrections.some((c) => c.paths.length > 0 && inScope(lesson, c));
+  const shuffle = (lesson: Lesson): string => createHash("sha256").update(`${outcome.taskId}\u0000${lesson.id}`).digest("hex");
+  lessons.sort((a, b) => Number(named(b)) - Number(named(a)) || shuffle(a).localeCompare(shuffle(b)));
   let judgeCalls = 0;
-  for (const lessonId of [...loaded].sort()) {
-    const lesson = await deps.store.get(key, lessonId);
-    if (lesson === undefined) continue;
+  for (const lesson of lessons) {
+    const lessonId = lesson.id;
+    const blamers = new Set<string>();
     let blamed = false;
     let unjudged = false;
     let ignored = false;
     for (const correction of outcome.corrections.filter((c) => inScope(lesson, c)).slice(0, MAX_CORRECTIONS_PER_LESSON)) {
+      // Words chosen by code are counted, never rated.
+      if (correction.fixed === true) { unjudged = true; continue; }
       if (!canJudge || judgeCalls >= MAX_JUDGE_CALLS_PER_TASK) { unjudged = true; continue; }
+      if (deps.mayCall?.() === false) { unjudged = true; result.deferred = true; continue; }
       judgeCalls += 1;
       let rating: Awaited<ReturnType<CorrectionJudge["rate"]>> | undefined;
       try { rating = await deps.judge.rate({ workspaceId: key.workspaceId, project: key.project, lesson, correctionKind: correction.kind, correctionText: cleanForLearning(correction.text, 1500) }); } catch { rating = undefined; }
       if (rating === undefined) { unjudged = true; continue; }
-      if (rating === "caused" || rating === "contradicts") blamed = true;
+      if (rating === "caused" || rating === "contradicts") { blamed = true; if (correction.authorId !== undefined) blamers.add(correction.authorId); }
       if (rating === "same_ignored") { ignored = true; deps.metrics?.count("learning.loaded_but_ignored"); }
     }
     if (blamed) {
-      if (await deps.store.markOnce(key, `harmful:${outcome.taskId}:${lessonId}`)) { await addHarmful(deps, key, lessonId, false); result.harmful.push(lessonId); }
+      // The task's record that this lesson was blamed: harm wins, so a later pass that rates the same task differently queues no helpful mark for it.
+      await deps.store.markOnce(key, `harmful:${outcome.taskId}:${lessonId}`);
+      // A harmful mark is one PERSON's, once per lesson ever, under the same key as that person's Helpful / Wrong here / thumbs-down marks: a person who is rude to a lesson on ten tasks marks it once, and two
+      // marks (the most a tier-0 or trial lesson needs to retire itself) are two different people. A correction with no known author blames nobody.
+      let marked = false;
+      for (const author of [...blamers].sort()) {
+        const ref = await deps.store.markRef(key, author);
+        if (ref === undefined) continue;
+        if (!(await deps.store.markOnce(key, `feedback:${lessonId}:${ref}`))) continue;
+        await deps.store.noteHarm(key, ref, lessonId);
+        await addHarmful(deps, key, lessonId, false);
+        marked = true;
+      }
+      if (marked) result.harmful.push(lessonId);
       await deps.store.removePending(key, `helpful:${outcome.taskId}:${lessonId}`);
       // A blamed revert is still a revert: record it so a later "merged" end for this task queues nothing.
       if (outcome.outcome === "reverted") await deps.store.markOnce(key, `reverted:${outcome.taskId}:${lessonId}`);
@@ -119,7 +153,8 @@ export async function recordTaskOutcome(deps: CounterDeps, outcome: TaskOutcome)
     }
     if (outcome.outcome === "merged" && outcome.sendBacks <= 1 && !unjudged && !ignored) {
       // A task end delivered again after its mark settled, or after that task's revert took the mark back, queues nothing (the settled and reverted once-keys are the record): a repeat extends nothing and counts nothing.
-      if (await deps.store.seenOnce(key, `helpful-final:${outcome.taskId}:${lessonId}`) || await deps.store.seenOnce(key, `reverted:${outcome.taskId}:${lessonId}`)) continue;
+      // Nor does a lesson this task already blamed.
+      if (await deps.store.seenOnce(key, `helpful-final:${outcome.taskId}:${lessonId}`) || await deps.store.seenOnce(key, `reverted:${outcome.taskId}:${lessonId}`) || await deps.store.seenOnce(key, `harmful:${outcome.taskId}:${lessonId}`)) continue;
       const dueAt = (outcome.mergedAt ?? deps.now()) + REVERT_WINDOW_MS;
       // The queued mark is the whole hold: the expiry sweep leaves a lesson with a queued mark alone, so a revert (which takes the mark back) ends the hold and the lesson then fades. No expiry is moved here.
       await deps.store.addPending({ key: `helpful:${outcome.taskId}:${lessonId}`, workspaceId: key.workspaceId, project: key.project, lessonId, taskId: outcome.taskId, dueAt });

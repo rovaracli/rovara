@@ -126,8 +126,10 @@ export class Publisher implements RulePublisher {
 
 export class Judge implements CorrectionJudge {
   calls = 0;
+  /** The lesson of each rating asked for, in order. */
+  lessons: string[] = [];
   constructor(public answer: "caused" | "contradicts" | "unrelated" | "same_ignored" | Error = "unrelated") {}
-  async rate(): Promise<"caused" | "contradicts" | "unrelated" | "same_ignored"> { this.calls += 1; if (this.answer instanceof Error) throw this.answer; return this.answer; }
+  async rate(input?: { lesson: { id: string } }): Promise<"caused" | "contradicts" | "unrelated" | "same_ignored"> { this.calls += 1; if (input !== undefined) this.lessons.push(input.lesson.id); if (this.answer instanceof Error) throw this.answer; return this.answer; }
 }
 
 export const codeCite = (over: Record<string, unknown> = {}) => ({ kind: "code" as const, repo: "api", path: "src/retry/index.ts", startLine: 12, endLine: 30, anchor: "export function withRetry(", commit: BASE, ...over });

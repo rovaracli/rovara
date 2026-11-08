@@ -658,6 +658,21 @@ export class DynamoLessonStore implements LessonStore {
     return typeof item?.ref === "string" ? item.ref : undefined;
   }
   async forgetMarkRef(key: ScopeKey, person: string): Promise<void> { await this.del(this.markRefKey(key, person)); }
+  async noteHarm(key: ScopeKey, ref: string, lessonId: string): Promise<void> {
+    if (!/^[0-9a-f]{24}$/u.test(ref)) throw unavailable("the mark reference is not valid");
+    await this.put({ ...this.k(key, `LESSONSET#HARM#${ref}#${lessonId}`), entityType: "LESSON_HARM", lessonId });
+  }
+  async takeBackHarm(key: ScopeKey, person: string): Promise<string[]> {
+    const ref = (await this.getItem(this.markRefKey(key, person)))?.ref;
+    if (typeof ref !== "string") return [];
+    const items = await this.queryPrefix(key, `LESSONSET#HARM#${ref}#`, { entityType: "LESSON_HARM" });
+    const ids: string[] = [];
+    for (const item of items) {
+      await this.del({ pk: String(item.pk), sk: String(item.sk) });
+      if (typeof item.lessonId === "string") ids.push(item.lessonId);
+    }
+    return ids;
+  }
 
   // ---- deletion intents
   async putIntent(key: ScopeKey, intent: DeletionIntent): Promise<void> {

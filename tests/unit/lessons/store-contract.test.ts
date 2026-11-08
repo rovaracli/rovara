@@ -170,6 +170,19 @@ describe.each(factories)("the lesson store contract (%s)", (_name, make) => {
     expect(await store.getIntent(KEY, "int-1")).toMatchObject({ finished: true, done: ["a"] });
     expect(await store.getIntent(KEY, "nope")).toBeUndefined();
   });
+  it("noteHarm / takeBackHarm: the lessons a person's corrections marked harmful are handed back once and forgotten; a person with no reference, or another person, has none", async () => {
+    const { store } = make();
+    const ann = (await store.markRef(KEY, "ann"))!, bob = (await store.markRef(KEY, "bob"))!;
+    await store.noteHarm(KEY, ann, "les_a0000001");
+    await store.noteHarm(KEY, ann, "les_a0000001");
+    await store.noteHarm(KEY, ann, "les_b0000001");
+    await store.noteHarm(KEY, bob, "les_a0000001");
+    expect((await store.takeBackHarm(KEY, "ann")).sort()).toEqual(["les_a0000001", "les_b0000001"]);
+    expect(await store.takeBackHarm(KEY, "ann")).toEqual([]);
+    expect(await store.takeBackHarm(KEY, "nobody")).toEqual([]);
+    expect(await store.takeBackHarm(OTHER, "bob")).toEqual([]);
+    expect(await store.takeBackHarm(KEY, "bob")).toEqual(["les_a0000001"]);
+  });
   it("scrub rewrites the head AND every stored version; a purged lesson stays gone, with its manifest entries, once-keys and pending outcomes", async () => {
     const { store } = make();
     await commit(store, withAuthors("les_a0000001", ["mallory"]));

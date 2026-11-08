@@ -22,7 +22,7 @@ const manifest = (taskId: string, ids: string[], over: Partial<LoadManifest> = {
   lessons: ids.map((id) => ({ id, version: 1, score: 0.5, why: "scope" as const, citation: "valid" as const })), bytes: 100, ...over,
 });
 const outcome = (over: Partial<TaskOutcome> = {}): TaskOutcome => ({ ...KEY, taskId: "task-1", outcome: "merged", sendBacks: 0, mergedAt: 1_800_000_000_000, corrections: [], ...over });
-const correction = (over: Record<string, unknown> = {}) => ({ kind: "send_back" as const, paths: ["src/retry/a.ts"], text: "use the shared retry helper", at: 1, ...over });
+const correction = (over: Record<string, unknown> = {}) => ({ kind: "send_back" as const, paths: ["src/retry/a.ts"], text: "use the shared retry helper", at: 1, authorId: "dev-ann", ...over });
 const counters = async (store: InMemoryLessonStore, id = "les_aaaa1111") => (await store.get(KEY, id))!.counters;
 
 describe("helpful: queued at merge, applied after the 14-day revert window", () => {
@@ -108,15 +108,81 @@ describe("harmful: judged corrections and the two buttons", () => {
     expect(judge.calls).toBe(0);
   });
 
-  it("a tier-0 lesson auto-retires when harmful >= 2 and harmful > helpful", async () => {
+  it("a tier-0 lesson auto-retires when harmful >= 2 and harmful > helpful, and the two marks are two different people's (M1)", async () => {
     const { deps, store, audit } = setup(new Judge("caused"));
     await seed(store, lessonRecord());
-    for (const task of ["t1", "t2"]) {
+    for (const [task, authorId] of [["t1", "dev-ann"], ["t2", "dev-bob"]] as const) {
       await store.putManifest(manifest(task, ["les_aaaa1111"]));
-      await recordTaskOutcome(deps, outcome({ taskId: task, corrections: [correction()] }));
+      await recordTaskOutcome(deps, outcome({ taskId: task, corrections: [correction({ authorId })] }));
     }
     expect((await store.get(KEY, "les_aaaa1111"))!.status).toBe("retired");
     expect(audit.actions()).toContain("lesson.auto_retired");
+  });
+
+  it("M1 (probe P1): one person's corrections on two tasks are ONE harmful mark ever, so they cannot retire a tier-0 lesson alone; a correction with no known author blames nobody", async () => {
+    const { deps, store, audit } = setup(new Judge("caused"));
+    await seed(store, lessonRecord());
+    for (const task of ["t1", "t2", "t3"]) {
+      await store.putManifest(manifest(task, ["les_aaaa1111"]));
+      await recordTaskOutcome(deps, outcome({ taskId: task, corrections: [correction({ text: "nit: rename this" })] }));
+    }
+    expect(await counters(store)).toMatchObject({ harmful: 1 });
+    expect((await store.get(KEY, "les_aaaa1111"))!.status).toBe("active");
+    expect(audit.actions()).not.toContain("lesson.auto_retired");
+    await store.putManifest(manifest("t4", ["les_aaaa1111"]));
+    const nobody = await recordTaskOutcome(deps, outcome({ taskId: "t4", corrections: [correction({ authorId: undefined })] }));
+    expect(nobody.harmful).toEqual([]);
+    expect(await counters(store)).toMatchObject({ harmful: 1 });
+    // The person's mark is the same one their buttons make: after a comment's harm, their "Wrong here" on the lesson is a repeat.
+    const feedback = await recordFeedback(deps, { ...KEY, taskId: "t1", lessonId: "les_aaaa1111", userId: "dev-ann", viewer: { principals: [], groups: [], developerId: "dev-ann" }, kind: "wrong_here" });
+    expect(feedback).toEqual({ ok: false, code: "repeat" });
+  });
+
+  it("M1 (probe P4): a correction that names a file is judged only against lessons that reach it", async () => {
+    const { deps, store, judge } = setup(new Judge("contradicts"));
+    await seed(store, lessonRecord({ id: "les_retry001", scope: { repos: ["api"], paths: ["src/retry/**"] } }), lessonRecord({ id: "les_wide0001", scope: { repos: ["api"] } }));
+    await store.putManifest(manifest("task-1", ["les_retry001", "les_wide0001"]));
+    const result = await recordTaskOutcome(deps, outcome({ corrections: [correction({ kind: "review_comment", paths: ["docs/README.md"], text: "say the opposite here" })] }));
+    expect(judge.calls).toBe(1);
+    expect(result.harmful).toEqual(["les_wide0001"]);
+  });
+
+  it("L2 (probe P2): a lesson a task already blamed gets no helpful mark from the same task, even when the judge changes its mind", async () => {
+    const answers = new Judge("caused");
+    const { deps, store, clock } = setup(answers);
+    await seed(store, lessonRecord({ tier: 1 }));
+    await store.putManifest(manifest("task-1", ["les_aaaa1111"]));
+    const first = await recordTaskOutcome(deps, outcome({ corrections: [correction()] }));
+    answers.answer = "unrelated";
+    const second = await recordTaskOutcome(deps, outcome({ corrections: [correction()] }));
+    expect(first.harmful).toEqual(["les_aaaa1111"]);
+    expect(second.queuedHelpful).toEqual([]);
+    clock.advance(REVERT_WINDOW_MS + 1000);
+    await settleHelpful(deps, KEY);
+    expect(await counters(store)).toMatchObject({ harmful: 1, helpful: 0 });
+  });
+
+  it("L4 (probe P3): the 20 calls are spent on path matches first, then in an order that changes from task to task, not on the same lessons by id", async () => {
+    const ids = Array.from({ length: 20 }, (_, i) => `les_${String(i).padStart(8, "0")}`);
+    const queuedBy = async (taskId: string) => {
+      const { deps, store, judge } = setup(new Judge("unrelated"));
+      await seed(store, ...ids.map((id) => lessonRecord({ id })));
+      await store.putManifest(manifest(taskId, ids));
+      const r = await recordTaskOutcome(deps, outcome({ taskId, corrections: [correction({ authorId: "a" }), correction({ authorId: "b" })] }));
+      expect(judge.calls).toBe(20);
+      return r.queuedHelpful;
+    };
+    const first = await queuedBy("task-1"), second = await queuedBy("task-2");
+    expect(first).toHaveLength(10);
+    expect(first).not.toEqual(ids.slice(0, 10));
+    expect(first).not.toEqual(second);
+    // A lesson whose files a correction names is judged first, whatever its id.
+    const { deps, store, judge } = setup(new Judge("unrelated"));
+    await seed(store, ...ids.map((id) => lessonRecord({ id, scope: { repos: ["api"] } })), lessonRecord({ id: "les_zzzzzzzz", scope: { repos: ["api"], paths: ["src/**"] } }));
+    await store.putManifest(manifest("task-9", [...ids, "les_zzzzzzzz"]));
+    await recordTaskOutcome(deps, outcome({ taskId: "task-9", corrections: Array.from({ length: 5 }, () => correction({ paths: ["src/a.ts"] })) }));
+    expect(judge.calls).toBe(20);
+    expect(judge.lessons.slice(0, 5)).toEqual(Array(5).fill("les_zzzzzzzz"));
   });
 
   it("a tier-1 lesson gets a retire proposal for a person, and stays active; helpful marks can keep it", async () => {

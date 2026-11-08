@@ -103,6 +103,10 @@ export interface LessonStore {
   markRef(key: ScopeKey, person: string): Promise<string | undefined>;
   /** Deletes the link between a person and their reference. */
   forgetMarkRef(key: ScopeKey, person: string): Promise<void>;
+  /** Remembers that the person behind `ref` (from `markRef`) caused one harmful mark on the lesson through a correction they made, so erasing the person can take it back (`takeBackHarm`). Idempotent. */
+  noteHarm(key: ScopeKey, ref: string, lessonId: string): Promise<void>;
+  /** Erasure: the lessons whose harmful mark this person's corrections caused, and forgets them (the reference is read without being made; a person who never made one has none). Call before `forgetMarkRef`. */
+  takeBackHarm(key: ScopeKey, person: string): Promise<string[]>;
   /** Whether a person is fenced (erased). Ids are compared case-insensitively. */
   isErased(key: ScopeKey, person: string): Promise<boolean>;
   putIntent(key: ScopeKey, intent: DeletionIntent): Promise<void>;
@@ -123,7 +127,7 @@ interface ProjectState {
   manifests: Map<string, LoadManifest>; once: Set<string>; pending: Map<string, PendingOutcome>; flags: ProjectFlags;
   sourceEvents: Array<{ at: number; source: string }>;
   gone: Map<string, "withdrawn" | "purged">;
-  erased: Set<string>; markRefs: Map<string, string>; erasedSources: Set<string>; deletedIds: Set<string>; intents: Map<string, DeletionIntent>;
+  erased: Set<string>; markRefs: Map<string, string>; harms: Map<string, Set<string>>; erasedSources: Set<string>; deletedIds: Set<string>; intents: Map<string, DeletionIntent>;
 }
 
 export class InMemoryLessonStore implements LessonStore {
@@ -135,7 +139,7 @@ export class InMemoryLessonStore implements LessonStore {
     const id = scopeId(key);
     let value = this.state.get(id);
     if (value === undefined) {
-      value = { heads: new Map(), versions: new Map(), members: new Map(), sets: [{ setVersion: 0, at: 0, members: [] }], manifests: new Map(), once: new Set(), pending: new Map(), flags: {}, sourceEvents: [], gone: new Map(), markRefs: new Map(), erased: new Set(), erasedSources: new Set(), deletedIds: new Set(), intents: new Map() };
+      value = { heads: new Map(), versions: new Map(), members: new Map(), sets: [{ setVersion: 0, at: 0, members: [] }], manifests: new Map(), once: new Set(), pending: new Map(), flags: {}, sourceEvents: [], gone: new Map(), markRefs: new Map(), harms: new Map(), erased: new Set(), erasedSources: new Set(), deletedIds: new Set(), intents: new Map() };
       this.state.set(id, value);
     }
     return value;
@@ -288,6 +292,17 @@ export class InMemoryLessonStore implements LessonStore {
     return ref;
   }
   async forgetMarkRef(key: ScopeKey, person: string): Promise<void> { this.of(key).markRefs.delete(normId(person)); }
+  async noteHarm(key: ScopeKey, ref: string, lessonId: string): Promise<void> {
+    const s = this.of(key);
+    (s.harms.get(ref) ?? s.harms.set(ref, new Set()).get(ref)!).add(lessonId);
+  }
+  async takeBackHarm(key: ScopeKey, person: string): Promise<string[]> {
+    const s = this.of(key), ref = s.markRefs.get(normId(person));
+    if (ref === undefined) return [];
+    const ids = [...(s.harms.get(ref) ?? [])];
+    s.harms.delete(ref);
+    return ids;
+  }
   async putIntent(key: ScopeKey, intent: DeletionIntent): Promise<void> { this.of(key).intents.set(intent.id, clone(intent)); }
   async getIntent(key: ScopeKey, id: string): Promise<DeletionIntent | undefined> { const i = this.of(key).intents.get(id); return i === undefined ? undefined : clone(i); }
   async listIntents(key: ScopeKey, filter?: { finished?: boolean }): Promise<DeletionIntent[]> {

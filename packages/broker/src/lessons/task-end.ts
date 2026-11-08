@@ -8,9 +8,12 @@
 //  - Never in the way: the hook never throws and never delays an end beyond its own awaited work; a failure is a fixed log line and the task has ended all the same.
 //  - The task-side facts come from a `TaskSubjectSource` (intent, plan and review spans, trusts, links, the commits, the start fields). Where it gives nothing the hook does nothing.
 import { randomUUID } from "node:crypto";
+import { LESSONS_BROKER_MODEL_WAIT_SECONDS } from "@agentx/contracts";
 import { registerTaskEndHandler, type TaskEndHandler, type TaskEndOutcome } from "../agents/task-end.js";
 import { modeAllows, resolveLearning, type LearningSettingsReader } from "./policy.js";
-import { currentLearningAttempt } from "./learning-deadline.js";
+import { currentLearningAttempt, learningCallMayStart, withLearningAttempt } from "./learning-deadline.js";
+import { looksLikeCorrection } from "./correction-filter.js";
+import { looksQuoted } from "./guards.js";
 import { logRef } from "./log-ref.js";
 import { recordTaskOutcome, type CounterDeps, type TaskCorrection } from "./counters.js";
 import { processDraftRetrying } from "./draft-retry.js";
@@ -118,32 +121,72 @@ export async function subjectForTask(deps: TaskLearningDeps, input: { workspaceI
 /** The fixed text of a correction whose words the record does not give (an erased sender's send-back, a revert): it is counted, never read. */
 const NO_TEXT = "The task was corrected.";
 
+/** How long a task's outcome judging may take, from its first call: the judge never holds the worker up past this, whatever time the attempt has left. */
+export const OUTCOME_JUDGE_BUDGET_MS = 60_000;
+
 /**
- * Lessons connect (fix 1, H1; fix 2, R2) and lessons outcomes: counts the finished task for the lessons it loaded. Runs inside the worker's lease before the reflection, on every attempt (the counters are idempotent per task and
- * lesson, so a retry or a redelivery never counts twice). Never throws: a fault is one fixed log line and the reflection's result stands.
- * The corrections are the ones lessons already read, taken from the subject this call already holds (nothing is read from the code host again): the task's human send-backs (counted from the task's own decision list, so an
- * erased sender's still counts), the reviewers' pull request comments and "remember this" notes of members (words that are a person's own, never an outsider's or code's fixed text), and, for a revert, the revert.
- * A revert counts only when a verified member reverted it (`subject.revertedBy`, from the person-link row; DECISIONS, revert by commit message and revert PR): anything unproven records nothing.
- * The judge is the counters' (the company's own model path, scoped to this task's failure tally); where it cannot rate (no usable model, the month used up) `recordTaskOutcome` records nothing.
+ * The task's corrections as the counters take them, from the subject this call already holds (nothing is read from the code host again):
+ *  - the task's human send-backs (counted from the task's own decision list, so an erased sender's still counts; one whose words are code's is `fixed`: counted, never rated);
+ *  - a reviewer's pull request comment, only when it is a member's own words (not an outsider's, not code's fixed text, not text that looks quoted or forwarded), reads as a correction (`correction-filter.ts`: praise, nits and
+ *    bare questions are not), was not made by the person who started the task (their own comments on their own task are unmeasured), and names its file (a lesson that does not reach the file is not judged against it);
+ *  - a "remember this" note, on the same terms;
+ *  - for a revert, the revert alone (the merge's own end already judged the comments, and a revert never pays for them again); its words are code's.
  */
-async function countOutcome(deps: TaskLearningDeps, base: TaskSubjectBase, subject: ReflectSubject, input: { taskId: string }, tally: TaskFailureTally): Promise<void> {
+function correctionsOf(base: TaskSubjectBase, subject: ReflectSubject, at: number): TaskCorrection[] {
+  if (subject.outcome === "reverted") return [{ kind: "revert", paths: [], text: NO_TEXT, at, fixed: true }];
+  const sendBacks = subject.spans.filter((span) => span.kind === "send_back");
+  const total = Math.max(sendBacks.length, base.sendBackRequestIds.length);
+  const corrections: TaskCorrection[] = Array.from({ length: total }, (_, index) => {
+    const back = sendBacks[index];
+    const fixed = back === undefined || back.fixedText === true || back.trust !== "member" || back.authorId === undefined;
+    return { kind: "send_back" as const, paths: [], text: fixed ? NO_TEXT : back.text, at, ...(fixed ? { fixed: true as const } : { authorId: back.authorId! }) };
+  });
+  for (const span of subject.spans) {
+    if (span.kind !== "pr_comment" && span.kind !== "remembered") continue;
+    if (span.trust !== "member" || span.fixedText === true || span.authorId === undefined || span.authorId === subject.initiatorId || looksQuoted(span.text)) continue;
+    if (span.kind === "pr_comment" && !looksLikeCorrection(span.text)) continue;
+    corrections.push({ kind: "review_comment", paths: span.paths ?? [], text: span.text, at, authorId: span.authorId });
+  }
+  return corrections;
+}
+
+/**
+ * Lessons connect (fix 1, H1; fix 2, R2) and lessons outcomes: counts the finished task for the lessons it loaded. Never throws: a fault is one fixed log line and the reflection's result stands.
+ * It runs in two places around the reflection, which always comes first for anything that costs a model call:
+ *  - `before` the reflection: only what needs no judge (a revert taking its queued helpful mark back, a merged task with nothing to rate), on every attempt, so the reflection's ending (a refusal, a deadline, a failed model)
+ *    never loses it. The counters are idempotent per task and lesson;
+ *  - `after` the reflection: the corrections that need the judge, in the judge's own time budget (`OUTCOME_JUDGE_BUDGET_MS`, and never into the model-wait margin the attempt's deadline needs) and outside the reflection's lease:
+ *    the judge's keys are not noted on it and its calls never mark it "a call was made", so judging can neither spend the reflection's retry nor be mistaken for it. Done once per task and outcome (`outcome-counted`),
+ *    so a reflection that is tried again does not pay for the judging again.
+ * A revert counts only when a verified member reverted it (`subject.revertedBy`, from the person-link row; DECISIONS, revert by commit message and revert PR): anything unproven records nothing.
+ * The judge is the counters' (the company's own model path, scoped to this task's failure tally and cost total); where it cannot rate (no usable model, the month used up) `recordTaskOutcome` records nothing.
+ */
+async function countOutcome(deps: TaskLearningDeps, base: TaskSubjectBase, subject: ReflectSubject, input: { taskId: string }, tally: TaskFailureTally, phase: "before" | "after"): Promise<void> {
   if (deps.counters === undefined || subject.outcome === undefined) return;
   try {
-    if (currentLearningAttempt()?.signal?.aborted === true) return;
+    const attempt = currentLearningAttempt();
+    if (attempt?.signal?.aborted === true) return;
     if (subject.outcome === "reverted" && subject.revertedBy === undefined) return;
-    const at = deps.reflect.now();
-    const sendBacks = subject.spans.filter((span) => span.kind === "send_back");
-    const total = Math.max(sendBacks.length, base.sendBackRequestIds.length);
-    const corrections: TaskCorrection[] = Array.from({ length: total }, (_, index) => ({ kind: "send_back" as const, paths: [], text: sendBacks[index]?.text ?? NO_TEXT, at }));
-    for (const span of subject.spans) {
-      if ((span.kind === "pr_comment" || span.kind === "remembered") && span.trust === "member" && span.fixedText !== true) corrections.push({ kind: "review_comment", paths: [], text: span.text, at });
-    }
-    if (subject.outcome === "reverted") corrections.push({ kind: "revert", paths: [], text: NO_TEXT, at });
-    const counters = { ...deps.counters, judge: deps.counters.judge.forTask?.(tally) ?? deps.counters.judge };
-    await recordTaskOutcome(counters, {
-      workspaceId: subject.workspaceId, project: subject.project, taskId: input.taskId, outcome: subject.outcome, sendBacks: total,
-      ...(subject.outcome === "merged" ? { mergedAt: at } : {}), corrections, ...(subject.evalRun === true ? { evalRun: true } : {}),
+    const corrections = correctionsOf(base, subject, deps.reflect.now());
+    const needsJudge = corrections.some((correction) => correction.fixed !== true);
+    if ((phase === "before") === needsJudge) return;
+    const where = { workspaceId: subject.workspaceId, project: subject.project };
+    const counted = `outcome-counted:${input.taskId}:${subject.outcome}`;
+    if (needsJudge && await deps.counters.store.seenOnce(where, counted)) return;
+    const startedAt = deps.reflect.now();
+    const counters: CounterDeps = {
+      ...deps.counters, judge: deps.counters.judge.forTask?.(tally) ?? deps.counters.judge,
+      mayCall: () => deps.reflect.now() - startedAt < OUTCOME_JUDGE_BUDGET_MS && learningCallMayStart(Date.now(), LESSONS_BROKER_MODEL_WAIT_SECONDS * 1000),
+    };
+    // The judge runs as its own attempt: the deadline and the signal are the reflection's, but no lease, no key noted on it and no "a call started" mark, and its faults are its own.
+    const judging = attempt === undefined || !needsJudge ? undefined : { deadlineAt: attempt.deadlineAt, ...(attempt.signal === undefined ? {} : { signal: attempt.signal }), ...(attempt.attemptId === undefined ? {} : { attemptId: `${attempt.attemptId}-outcome` }) };
+    const run = () => recordTaskOutcome(counters, {
+      workspaceId: subject.workspaceId, project: subject.project, taskId: input.taskId, outcome: subject.outcome!, sendBacks: Math.max(subject.spans.filter((span) => span.kind === "send_back").length, base.sendBackRequestIds.length),
+      ...(subject.outcome === "merged" ? { mergedAt: deps.reflect.now() } : {}), corrections, ...(subject.evalRun === true ? { evalRun: true } : {}),
     });
+    const result = await (judging === undefined ? run() : withLearningAttempt(judging, run));
+    // Counted for good only when no judging was cut for time; a cut one is tried again by the next delivery (the harmful marks are once per person, the queued mark is replaced, so nothing counts twice).
+    if (needsJudge && result.deferred !== true) await deps.counters.store.markOnce(where, counted);
   } catch {
     deps.log?.("learning.outcome_failed", { task: logRef(subject.workspaceId, input.taskId) });
   }
@@ -183,25 +226,30 @@ export async function learnFromEndedTaskTyped(deps: TaskLearningDeps, input: { w
     // the reflection comes to (a refusal, a model that failed, an attempt that will be retried, a deadline that cut it). A revert's re-reflection takes the merge's queued helpful mark back here, even if it never reflects.
     // LP-10 R8: this task's failed model calls (the outcome judge, the reflection and each draft's judge) count toward `model_failed` once per kind, not once per call.
     const tally = newTaskFailureTally();
-    await countOutcome(deps, base, subject, input, tally);
+    await countOutcome(deps, base, subject, input, tally, "before");
     const processDeps = withFailuresCountedOnce(deps.process, tally);
-    const result = await reflectSubject(withFailuresCountedOnce(deps.reflect, tally), subject);
-    if (result.status !== "ok") {
-      // Lane 1b: "learning_paused" is a refusal (no provider, every model forbidden, a price or budget that cannot fit, the month's limit): the reason is already recorded as the project's pause, and trying again changes
-      // nothing, so it ends the reflection (final) whatever fault state an earlier step left. A spend look that could not read the counter is "spend_refused" with a retryable fault (nothing was held or sent).
-      if (result.reason === "learning_paused") return final("not_reflected");
-      // The reflector turns a failed model call or spend look into a fixed reason; the model path says whether that failure was worth another try.
-      const retryable = (result.reason === "model_error" || result.reason === "spend_refused") && currentLearningAttempt()?.fault === "retryable";
-      return { status: "not_reflected", retry: retryable };
+    // The reflection (and its drafts) come first and are never held back by the counting: whatever they come to, the corrections that need the judge are counted after them (`countOutcome`, "after").
+    try {
+      const result = await reflectSubject(withFailuresCountedOnce(deps.reflect, tally), subject);
+      if (result.status !== "ok") {
+        // Lane 1b: "learning_paused" is a refusal (no provider, every model forbidden, a price or budget that cannot fit, the month's limit): the reason is already recorded as the project's pause, and trying again changes
+        // nothing, so it ends the reflection (final) whatever fault state an earlier step left. A spend look that could not read the counter is "spend_refused" with a retryable fault (nothing was held or sent).
+        if (result.reason === "learning_paused") return final("not_reflected");
+        // The reflector turns a failed model call or spend look into a fixed reason; the model path says whether that failure was worth another try.
+        const retryable = (result.reason === "model_error" || result.reason === "spend_refused") && currentLearningAttempt()?.fault === "retryable";
+        return { status: "not_reflected", retry: retryable };
+      }
+      const key = { workspaceId: input.workspaceId, project: base.facts.project };
+      const signal = currentLearningAttempt()?.signal;
+      for (const draft of result.drafts) {
+        // M4: at the deadline no new draft is started (the store's writes are refused too, `deadline-guard.ts`). The model has been paid for; what is cut is lost, not repeated.
+        if (signal?.aborted === true) { deps.log?.("learning.drafts_cut_at_deadline", { task: logRef(input.workspaceId, input.taskId) }); break; }
+        try { await processDraftRetrying(processDeps, key, draft, { ...(deps.log === undefined ? {} : { log: (event, fields) => deps.log!(event, { task: logRef(input.workspaceId, input.taskId), ...fields }) }) }); } catch { deps.log?.("learning.draft_failed", { task: logRef(input.workspaceId, input.taskId) }); }
+      }
+      return final("reflected");
+    } finally {
+      await countOutcome(deps, base, subject, input, tally, "after");
     }
-    const key = { workspaceId: input.workspaceId, project: base.facts.project };
-    const signal = currentLearningAttempt()?.signal;
-    for (const draft of result.drafts) {
-      // M4: at the deadline no new draft is started (the store's writes are refused too, `deadline-guard.ts`). The model has been paid for; what is cut is lost, not repeated.
-      if (signal?.aborted === true) { deps.log?.("learning.drafts_cut_at_deadline", { task: logRef(input.workspaceId, input.taskId) }); break; }
-      try { await processDraftRetrying(processDeps, key, draft, { ...(deps.log === undefined ? {} : { log: (event, fields) => deps.log!(event, { task: logRef(input.workspaceId, input.taskId), ...fields }) }) }); } catch { deps.log?.("learning.draft_failed", { task: logRef(input.workspaceId, input.taskId) }); }
-    }
-    return final("reflected");
   } catch {
     deps.log?.("learning.task_end_failed", { task: logRef(input.workspaceId, input.taskId) });
     // Outside a worker nothing is retried. Inside one, a fault here is a read that failed, before any model key was minted by this call (or one the model path marked itself).

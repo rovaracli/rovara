@@ -93,6 +93,9 @@ describe("a reviewer's comments on the task's pull requests", () => {
     expect(spans.map((s) => s.eventId)).toEqual(["acme/api#pr7:review_comment11", "acme/api#pr7:review_comment12", "acme/api#pr7:discussion13", "acme/api#pr7:review14"]);
     expect(spans[0]).toMatchObject({ text: "On src/a.ts: Use withRetry", trust: "member", authorId: "rae", scopes: ["github:repo/9"] });
     expect(spans[2]).toMatchObject({ text: "Please add a test", authorId: "sam" });
+    // Lessons outcomes (M1): the file a comment was made on goes with the span, so a lesson that does not reach it is not judged against the comment; a comment on no file carries none.
+    expect(spans[0]!.paths).toEqual(["src/a.ts"]);
+    expect(spans[2]!.paths).toBeUndefined();
   });
 
   it("M2: a comment the host now shows on no line (outdated, as after Rovara's own fix round, a rebase or a restack force-push) did NOT lead to a change", async () => {

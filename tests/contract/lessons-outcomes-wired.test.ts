@@ -84,8 +84,8 @@ class World {
   /** The nightly revert job's message for a reverted task (the job sends exactly this to the same queue). */
   async revert(taskId = "task-1"): Promise<void> { await this.queue.send({ orgId: WS, taskId, outcome: "reverted", requestId: `nightly-${Math.random()}` }); }
 
-  async seedLesson(): Promise<void> {
-    const lesson = lessonRecord({ id: LESSON, status: "active", type: "convention", tier: 1, approvals: [{ approvalId: "p1", by: "ann", at: 1, mode: "one" }], expiresAt: this.now + 5 * DAY });
+  async seedLesson(tier: 0 | 1 = 1): Promise<void> {
+    const lesson = lessonRecord({ id: LESSON, status: "active", type: "convention", tier, approvals: [{ approvalId: "p1", by: "ann", at: 1, mode: "one" }], expiresAt: this.now + 5 * DAY });
     const sv = await this.runtime.store.setVersion(KEY);
     expect((await this.runtime.store.commit(KEY, sv, [lesson], this.now)).ok).toBe(true);
     await this.runtime.store.putManifest({ taskId: "task-1", workspaceId: WS, project: PROJECT, stage: "IMPLEMENT", round: 1, setVersion: 1, memory: "live", at: this.now, lessons: [{ id: LESSON, version: 1, score: 0.5, why: "scope", citation: "valid" }], bytes: 10 });
@@ -165,6 +165,35 @@ describe("a task's outcome reaches the lessons it loaded, through the real task-
     expect(await w.queued()).toEqual([]);
   });
 
+  it("two different members whose corrections are judged 'caused' retire a tier-0 lesson; one member's corrections on several tasks are one mark", async () => {
+    const w = new World();
+    await w.seedLesson(0);
+    w.spans = [{ kind: "pr_comment", text: "This is wrong, avoid this helper", trust: "member", authorId: "dev-ann", eventId: "ev-a" }, { kind: "pr_comment", text: "Please don't use this helper here", trust: "member", authorId: "dev-bob", eventId: "ev-b" }];
+    w.judgeModel.replies.push('{"rating":"caused"}', '{"rating":"caused"}');
+    await w.end("merged");
+    expect(await w.lesson()).toMatchObject({ status: "retired", counters: { harmful: 2 } });
+    const solo = new World();
+    await solo.seedLesson(0);
+    solo.spans = [w.spans[0]!, { ...w.spans[1]!, authorId: "dev-ann" }];
+    solo.judgeModel.replies.push('{"rating":"caused"}', '{"rating":"caused"}');
+    await solo.end("merged");
+    expect(await solo.lesson()).toMatchObject({ status: "active", counters: { harmful: 1 } });
+  });
+
+  it("the reflection runs before any judge call", async () => {
+    const w = new World();
+    await w.seedLesson();
+    w.spans = [{ kind: "pr_comment", text: "This is wrong, avoid this helper", trust: "member", authorId: "dev-ann", eventId: "ev-a" }];
+    w.judgeModel.replies.push('{"rating":"unrelated"}');
+    const order: string[] = [];
+    const complete = w.judgeModel.complete.bind(w.judgeModel);
+    w.judgeModel.complete = async (request) => { order.push("judge"); return complete(request); };
+    const reflect = w.learning.reflect.model;
+    w.learning.reflect.model = { ...reflect, complete: async (request) => { order.push("reflect"); return reflect.complete(request); } };
+    await w.end("merged");
+    expect(order).toEqual(["reflect", "judge"]);
+  });
+
   it("a judge that fails leaves the correction unjudged: no harmful and no helpful mark", async () => {
     const w = new World();
     await w.seedLesson();
@@ -179,7 +208,7 @@ describe("a task's outcome reaches the lessons it loaded, through the real task-
     const off = new World();
     await off.seedLesson();
     off.mode = "Off";
-    off.spans = [{ kind: "pr_comment", text: "a comment", trust: "member", authorId: "rev", eventId: "ev-3" }];
+    off.spans = [{ kind: "pr_comment", text: "You should use the shared helper here", trust: "member", authorId: "rev", eventId: "ev-3" }];
     off.judgeModel.replies.push('{"rating":"caused"}');
     await off.end("merged");
     expect(off.judgeModel.calls).toEqual([]);

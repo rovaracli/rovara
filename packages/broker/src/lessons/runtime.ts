@@ -94,7 +94,8 @@ export interface LessonsRuntime {
 const noModel = (): never => { throw new Error("no learning model is set up in this install"); };
 /** No pipeline model: every call fails, so nothing is judged, reflected or rated by a model. */
 export const REFUSING_MODEL: PipelineModel = { complete: async () => noModel() };
-export const REFUSING_JUDGE: CorrectionJudge = { rate: async () => noModel() };
+/** Never usable: with no model nothing can be rated, so nothing is recorded and no helpful mark is queued (fails safe). */
+export const REFUSING_JUDGE: CorrectionJudge = { rate: async () => noModel(), usable: async () => false };
 /** No payer path: nothing is admitted and nothing is charged. */
 export const DENYING_SPEND: LearningSpend = { admit: async () => false };
 /** No lesson vectors are kept: the ranking is keywords and cited paths alone. */

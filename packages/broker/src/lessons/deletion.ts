@@ -242,7 +242,9 @@ export function lessonDeletionPort(deps: DeletionDeps): LessonDeletionPort {
         scrubbed.push(h.head.id);
       }
       await deps.store.forgetSource(k, `member:${erased.developerId}`);
-      // The link from the person to the reference their Helpful / Wrong here marks were made with: the marks stay as counts and name nobody.
+      // The harmful marks that this person's own corrections (a pull request comment, a note, a send-back) caused are taken back: a correction whose author is erased is no longer evidence against a lesson.
+      for (const lessonId of await deps.store.takeBackHarm(k, erased.developerId)) await deps.store.mutate(k, lessonId, (l) => ({ counters: { ...l.counters, harmful: Math.max(0, l.counters.harmful - 1) } }));
+      // The link from the person to the reference their Helpful / Wrong here marks were made with: those marks stay as counts and name nobody.
       await deps.store.forgetMarkRef(k, erased.developerId);
       return { purged, scrubbed };
     },

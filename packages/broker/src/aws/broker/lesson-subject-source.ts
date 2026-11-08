@@ -520,7 +520,7 @@ export function lessonSubjectSource(deps: LessonSubjectSourceDeps): TaskSubjectS
               const place = row.path === undefined ? undefined : cleanForLearning(row.path, COMMENT_PATH_MAX);
               spans.push({
                 kind: "pr_comment", text: place === undefined || place === "" ? row.text : `On ${place}: ${row.text}`, trust, authorId: row.authorDeveloperId, eventId: row.id,
-                audience: row.audience, scopes: [row.scope], ...(led ? { ledToChange: true } : {}),
+                audience: row.audience, scopes: [row.scope], ...(led ? { ledToChange: true } : {}), ...(place === undefined || place === "" ? {} : { paths: [place] }),
               });
             }
           }
