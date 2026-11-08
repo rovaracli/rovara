@@ -457,7 +457,15 @@ export class GitHubAppCredentialProvider {
     if (!Number.isSafeInteger(record.id) || typeof record.full_name !== "string" || record.full_name.toLowerCase() !== expectedFullName.toLowerCase()) {
       throw agentXError("RUNTIME_UNAVAILABLE", "GitHub returned an invalid repository identity");
     }
-    return { repositoryId: record.id as number, fullName: record.full_name, ...(typeof record.default_branch === "string" ? { defaultBranch: record.default_branch } : {}), ...(typeof record.private === "boolean" ? { private: record.private } : {}) };
+    // `private` is reported only when GitHub's answer is unambiguous. An `internal` repository (GitHub Enterprise) reports private: true but every member of the enterprise can read it, and a
+    // visibility word this code does not know may be wider still: both leave `private` unset, which callers read as "unknown" (fail closed).
+    const visibility = typeof record.visibility === "string" ? record.visibility : undefined;
+    const privateFlag = typeof record.private !== "boolean" ? undefined
+      : visibility === undefined ? record.private
+      : visibility === "private" && record.private ? true
+      : visibility === "public" && !record.private ? false
+      : undefined;
+    return { repositoryId: record.id as number, fullName: record.full_name, ...(typeof record.default_branch === "string" ? { defaultBranch: record.default_branch } : {}), ...(privateFlag === undefined ? {} : { private: privateFlag }) };
   }
 
   async issueCredentials(

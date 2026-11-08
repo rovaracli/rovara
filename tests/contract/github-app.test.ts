@@ -858,6 +858,33 @@ describe("GitHub App repository credentials", () => {
     expect(requests).toContain("https://api.github.com/repos/Example/Demo");
   });
 
+  it("reports a repository as private only when GitHub says private and not internal (an internal repo is readable by the whole enterprise, so its visibility is unknown)", async () => {
+    const { privateKey } = generateKeyPairSync("rsa", { modulusLength: 2048 });
+    const pem = privateKey.export({ type: "pkcs8", format: "pem" }).toString();
+    let record: Record<string, unknown> = {};
+    const fetchImplementation = vi.fn(async (url: string | URL | Request) => {
+      const requestUrl = typeof url === "string" ? url : url instanceof URL ? url.href : url.url;
+      if (requestUrl.endsWith("/installation")) return new Response(JSON.stringify({ id: 555, account: { login: "Example" } }), { status: 200 });
+      if (requestUrl.endsWith("/access_tokens")) return new Response(JSON.stringify({ token: "fixture-token" }), { status: 201 });
+      return new Response(JSON.stringify({ id: 1234, full_name: "Example/Demo", ...record }), { status: 200 });
+    });
+    const provider = new GitHubAppCredentialProvider({ credentialRef: "github-agentx-sdlc", appId: "5002502", getPrivateKey: async () => pem, fetchImplementation });
+    const identity = () => provider.getRepositoryIdentity("https://github.com/Example/Demo.git", { system: "private-install" });
+
+    record = { private: true, visibility: "private" };
+    expect((await identity())?.private).toBe(true);
+    record = { private: true };
+    expect((await identity())?.private).toBe(true);
+    record = { private: false, visibility: "public" };
+    expect((await identity())?.private).toBe(false);
+    record = { private: true, visibility: "internal" };
+    expect(await identity()).not.toHaveProperty("private");
+    record = { private: false, visibility: "internal" };
+    expect(await identity()).not.toHaveProperty("private");
+    record = { private: true, visibility: "something-new" };
+    expect(await identity()).not.toHaveProperty("private");
+  });
+
   it("looks the installation up again when the App was reinstalled", async () => {
     const { privateKey } = generateKeyPairSync("rsa", { modulusLength: 2048 });
     const pem = privateKey.export({ type: "pkcs8", format: "pem" }).toString();
