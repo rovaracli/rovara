@@ -38,6 +38,7 @@ import { Aliases, errorName } from "../agents/table-writes.js";
 import { createAccessReader } from "./access.js";
 import { filterVisible, type FilterDependencies, type FilterResult, type LiveCheckCache } from "./acl.js";
 import { parseEventVectorRef } from "./ingest.js";
+import { createLiveAudienceReader, type TaskVisibilityPort } from "./live-audience.js";
 import { assembleItem, itemKeyOf, isChangeRow, visibleItemRows } from "./item-assembly.js";
 import type { LearningModeReader } from "./mode.js";
 import type { SourceRouteDependencies } from "./source-write.js";
@@ -80,9 +81,19 @@ export interface PastWorkTasksPort {
 }
 
 export interface StatsPort {
-  /** Runs a fixed template over the lake. `workspaceId` and `project` are bound by the runner; the caller's text never reaches SQL. Rows are scalars. */
-  run(input: { template: StatsTemplate; workspaceId: OrgId; project: string; params: Record<string, string | number> }): Promise<Array<Record<string, string | number | null>>>;
+  /**
+   * Runs a fixed template over the lake. `workspaceId` and `project` are bound by the runner; the caller's text never reaches SQL. Rows are scalars. `excludeTaskIds` (SRL-4, only for the statistics
+   * that count Rovara's rows): tasks whose rows are left out because the task is no longer visible to the whole project.
+   */
+  run(input: { template: StatsTemplate; workspaceId: OrgId; project: string; params: Record<string, string | number>; excludeTaskIds?: readonly string[] }): Promise<Array<Record<string, string | number | null>>>;
+  /** SRL-4: the distinct tasks a Rovara statistic counts in its window. Absent, or `complete: false`, or a throw: that statistic is unavailable. */
+  rovaraTasks?(input: { template: StatsTemplate; workspaceId: OrgId; project: string; params: Record<string, string | number> }): Promise<{ taskIds: string[]; complete: boolean }>;
 }
+
+/** The statistics that count Rovara's own rows (see `stats-templates.ts#ROVARA_STATS`). */
+const ROVARA_STAT_TEMPLATES: readonly string[] = ["send_backs_by_stage", "rovara_merge_rate"];
+/** How long reading the live visibility of the tasks of one statistic may take. */
+const STATS_TASK_READ_TIMEOUT_MS = 15_000;
 
 export interface RecordQueryDependencies {
   table: TeamRecordTable;
@@ -92,6 +103,10 @@ export interface RecordQueryDependencies {
   liveCheck?: LiveAclCheck;
   liveCache?: LiveCheckCache;
   limiter?: RateLimiter;
+  /** SRL-4: the live Plan 5 visibility of tasks. Without it every row about a Rovara task is hidden (fail closed). */
+  taskVisibility?: TaskVisibilityPort;
+  /** How long one lookup of task visibility may take (default 5 seconds). */
+  taskVisibilityTimeoutMs?: number;
   tasks?: PastWorkTasksPort;
   /** The titles of the lessons learned from a task, each with the audience of the lesson (a lesson from a private channel is restricted). */
   lessonsOfTask?(orgId: OrgId, project: string, taskId: string): Promise<Array<{ title: string; audience: Audience; /** The places the lesson was learned from; each is checked at read time. */ scopes: string[]; /** Of those, the ones whose own access record the lesson requires. */ restrictedScopes: string[] }>>;
@@ -147,7 +162,7 @@ async function filterDependencies(deps: RecordQueryDependencies, orgId: OrgId): 
   // Work that has not finished hides its places and source items from everyone. If the queue cannot be read in full, nothing is shown (no guessing).
   const pending = await pendingHidesOf(deps.table, orgId).catch(() => undefined);
   if (pending === undefined) throw agentXError("RUNTIME_UNAVAILABLE", "The team record can't be read right now.");
-  return { access: createAccessReader(deps.table, orgId), ...(deps.liveCheck === undefined ? {} : { liveCheck: deps.liveCheck }), ...(deps.liveCache === undefined ? {} : { cache: deps.liveCache }), ...(deps.now === undefined ? {} : { now: deps.now }), pending };
+  return { access: createAccessReader(deps.table, orgId), liveTasks: createLiveAudienceReader(orgId, deps.taskVisibility, { timeoutMs: deps.taskVisibilityTimeoutMs }), ...(deps.liveCheck === undefined ? {} : { liveCheck: deps.liveCheck }), ...(deps.liveCache === undefined ? {} : { cache: deps.liveCache }), ...(deps.now === undefined ? {} : { now: deps.now }), pending };
 }
 
 const KIND_TITLES: Record<string, string> = {
@@ -357,7 +372,19 @@ export async function recordStats(deps: RecordQueryDependencies, audience: ReadA
     params[key] = value;
   }
   try {
-    const rows = await deps.stats.run({ template: request.template as StatsTemplate, workspaceId: audience.caller.orgId, project, params });
+    // SRL-4: a statistic over Rovara's rows counts only tasks the WHOLE project can view right now (a total never carries a restricted source). Every task in the window is looked up; one that cannot be read, is
+    // gone, or is narrowed is left out, and a window with more tasks than can be checked, or a failed lookup, makes the statistic unavailable.
+    let excludeTaskIds: string[] | undefined;
+    if (ROVARA_STAT_TEMPLATES.includes(request.template)) {
+      if (deps.stats.rovaraTasks === undefined) throw new Error("team-record: the statistic can't check its tasks");
+      const listed = await deps.stats.rovaraTasks({ template: request.template as StatsTemplate, workspaceId: audience.caller.orgId, project, params });
+      if (!listed.complete) throw new Error("team-record: too many tasks to check for the statistic");
+      const projectWide: ReadAudience = { kind: "shared", orgId: audience.caller.orgId };
+      const live = createLiveAudienceReader(audience.caller.orgId, deps.taskVisibility, { timeoutMs: STATS_TASK_READ_TIMEOUT_MS, maxTasks: Math.max(listed.taskIds.length, 1) });
+      await live.load(listed.taskIds);
+      excludeTaskIds = listed.taskIds.filter((id) => live.verdictOf(projectWide, [id]) !== "allow");
+    }
+    const rows = await deps.stats.run({ template: request.template as StatsTemplate, workspaceId: audience.caller.orgId, project, params, ...(excludeTaskIds === undefined ? {} : { excludeTaskIds }) });
     return { status: "ok", rows: rows.slice(0, 200) };
   } catch {
     deps.log?.("record.stats_unavailable", { template: request.template });

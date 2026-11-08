@@ -54,7 +54,8 @@ import { priorEditsPort } from "./prior-edits.js";
 import { trackerPlaceCheck, trackerPlaceOptions } from "./source-places.js";
 import { createGithubRecordTap, createHookRecordTap, createRecordParentLookup, createRovaraEmitter, createSlackRecordTap, createTicketRecorder, type ActorResolverPort, type RovaraEmitter, type TaskVisibility, type SlackChannelInfo, type SlackDirectoryPort } from "./sources/index.js";
 import { createSlackAdd, type SlackAddService } from "./slack-add.js";
-import { runStats, type StatsDeps } from "./stats-templates.js";
+import { tableTaskVisibilityPort } from "./live-audience-port.js";
+import { listRovaraTaskIds, runStats, type StatsDeps } from "./stats-templates.js";
 import { expireRawText } from "./text-expiry.js";
 import { createTransientDistiller } from "./transient-distiller.js";
 import { createAssume, createStsAssumePort, openWorkspaceIndex, WorkspaceVectorPorts, type StsAssumePort } from "./vector-access.js";
@@ -557,9 +558,14 @@ export function createTeamRecordRuntime(input: TeamRecordRuntimeInput): TeamReco
     return {
       table, modes, embedder, now, log,
       limiter: dynamoRateLimiter(table, now),
+      // SRL-4: rows about a Rovara task are also checked against the task's live visibility (State table), so narrowing a task hides its old rows.
+      taskVisibility: tableTaskVisibilityPort({ documentClient: input.documentClient, tableName: state.tableName, now }),
       skipped: { read: (org, project) => skipped.read(org, project) },
       ...(vectors === undefined ? {} : { vectorSearch: { query: (request) => (vectors as VectorIndex).query(request) } }),
-      ...(stats === undefined ? {} : { stats: { run: async ({ template, workspaceId, project, params }) => (await runStats(stats, { workspaceId, project, audience: "project" } as never, template, params)).rows } }),
+      ...(stats === undefined ? {} : { stats: {
+        run: async ({ template, workspaceId, project, params, excludeTaskIds }) => (await runStats(stats, { workspaceId, project, audience: "project" } as never, template, params, excludeTaskIds === undefined ? {} : { excludeTaskIds })).rows,
+        rovaraTasks: async ({ template, workspaceId, project, params }) => listRovaraTaskIds(stats, { workspaceId, project, audience: "project" } as never, template, params),
+      } }),
     };
   }
 
