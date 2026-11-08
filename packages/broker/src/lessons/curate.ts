@@ -271,7 +271,8 @@ export async function curateDraft(deps: CurateDeps, key: ScopeKey, draft: Lesson
     else if (verdict === undefined) {
       // No judge verdict: a verbatim copy merged above, and a near copy (the same words in the same order once filler and plurals are set aside: a tier-0 lesson is stored in a template's wording, so this is how a second
       // task corroborates it) merges here. Both are the same advice by structure. A narrowing is a refinement for a person.
-      if (isNearExact(c.ranked, body, lessonBody)) verdicts.set(c.lesson.id, "same");
+      // (A verbatim copy that could not merge is "same" too: the merge is then refused below, and the draft stands apart.)
+      if (isVerbatim(c.ranked, body, lessonBody) || isNearExact(c.ranked, body, lessonBody)) verdicts.set(c.lesson.id, "same");
       else if (isNarrowing(c.ranked, body, lessonBody)) verdicts.set(c.lesson.id, "refines");
     }
   }

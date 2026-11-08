@@ -327,6 +327,22 @@ describe("a possible duplicate is never applied by itself, even as a tier-0 fact
   });
 });
 
+describe("merged from integ: a copy whose people would not fit one lesson is kept apart for a person (lessons capture), in the structural flow too", () => {
+  it("a verbatim copy and a judge's same for a copy both stay apart as a reviewRequired candidate, audited, and the target is untouched", async () => {
+    const BODY = "Use withRetry from src/retry/index.ts for HTTP retries in the api service client calls";
+    const authors = Array.from({ length: 20 }, (_, i) => `person-${String(i)}`);
+    for (const [name, model, body] of [["verbatim", new ScriptedModel(), BODY], ["judge same on a near copy", new ScriptedModel([answer("same")]), "Use the withRetry from src/retry/index.ts for the HTTP retry in the api service client call"]] as const) {
+      const s = setup(model);
+      await seed(s.store, plain("les_target01", BODY, { status: "candidate", provenance: { ...lessonRecord().provenance, authors } }));
+      const out = await curateDraft(s.deps, KEY, textOf(body, { provenance: { ...draft().provenance, authors: ["newcomer"] } }));
+      expect(out, name).toMatchObject({ outcome: "added", lesson: { status: "candidate", reviewRequired: true, tierReasons: ["merge_too_many_people"] } });
+      expect((await s.store.get(KEY, "les_target01"))!.version, name).toBe(1);
+      expect(s.audit.events.find((e) => e.action === "lesson.refused")?.facts, name).toMatchObject({ reason: "merge_too_many_people" });
+      expect(s.audit.actions(), name).not.toContain("lesson.merged");
+    }
+  });
+});
+
 // ---- R3-4 ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
 describe("R3-4: an SDK that cannot be loaded is unavailable, not loading for ever", () => {
   const pool = [plain("les_p0000001", "HTTP retries in the api service use withRetry from src/retry/index.ts."), plain("les_p0000002", "Money amounts are stored as integer cents in the billing table.")];
