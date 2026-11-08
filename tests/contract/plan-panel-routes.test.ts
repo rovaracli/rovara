@@ -1,7 +1,7 @@
 // OWNER DECISION 18: the plan panel's and the feedback view's app routes are a live browser's only (as the old pages were): a token is refused before any task is read, so it learns nothing
 // about a task (a missing one answers the same), and the browser reaches exactly these shapes through /v1/web. What each route does is in tests/integration/workflow-e2e/10c-plan-panel.test.ts.
 import { randomUUID } from "node:crypto";
-import { describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { PLAN_PANEL_BROWSER_MESSAGE, PLAN_PANEL_ROUTE, planPanelView } from "../../packages/broker/src/aws/developer-routes/plan-panel.js";
 import { webRouteAllowed } from "../../packages/broker/src/aws/web-auth.js";
 import { taskPanelLocation } from "../../packages/broker/src/aws/task-web.js";
@@ -11,6 +11,10 @@ import { createDeveloperTaskBroker, MAYA } from "../support/developer-task-broke
 const TASK = "11111111-1111-4111-8111-111111111111", COMMENT = "22222222-2222-4222-8222-222222222222";
 
 describe("plan panel routes: a live browser only", () => {
+  const switched = process.env.DECISION_CARDS_ENABLED;
+  beforeEach(() => { process.env.DECISION_CARDS_ENABLED = "1"; });
+  afterEach(() => { if (switched === undefined) delete process.env.DECISION_CARDS_ENABLED; else process.env.DECISION_CARDS_ENABLED = switched; });
+
   it("refuses a token on every route before reading the task: a real task and a missing one answer the same", async () => {
     const harness = await createDeveloperTaskBroker();
     for (const [method, path, body] of [

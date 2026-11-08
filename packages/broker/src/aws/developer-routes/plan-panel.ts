@@ -6,9 +6,11 @@
 //   POST /v1/app/tasks/{id}/suggestions                            a teammate's suggestion on a question (`setPageSuggestion`: never the owner)
 //   GET  /v1/app/tasks/{id}/workflow/feedback                      the PR feedback review (`getWorkflowFeedbackReview`, through the `/v1/dev` route the MCP tool reads)
 //   POST /v1/app/tasks/{id}/workflow/feedback-decision             approve, request changes or dismiss it (`decideTaskWorkflowFeedback` -> `submitWorkflowFeedbackDecision`, as the feedback page and Slack)
+// OWNER DECISION 18(d): only while the decision cards are on (dk=1); with them off these paths are not found and the old pages are the only place, unchanged.
 // Every route is for a live browser session only (the web adapter checks its cookie, Origin and CSRF header); a token is refused before anything is read. Bodies are the old page's strict schemas.
-import { PAGE_API_BODY_MAX_BYTES, agentXError, redactText, type PlanClaim, type PlanDocument } from "@agentx/contracts";
-import { createPageComment, deletePageComment, editPageComment, getTaskDocumentView, routeDeveloperTaskRequest, setPageSuggestion } from "../developer-tasks.js";
+import { PAGE_API_BODY_MAX_BYTES, WorkflowFeedbackFindingsDecisionRequestSchema, agentXError, redactText, type PlanClaim, type PlanDocument } from "@agentx/contracts";
+import { decisionCardsEnabled } from "../../proof/switch.js";
+import { createPageComment, deletePageComment, editPageComment, getTaskDocumentView, getWorkflowFeedbackReview, setPageSuggestion, submitWorkflowFeedbackDecision } from "../developer-tasks.js";
 import { PageCommentDeleteSchema, PageCommentEditSchema, PageCommentInputSchema, PageSuggestionInputSchema } from "../task-web-api.js";
 import type { TaskDocumentEntry, TaskDocumentKind, TaskDocumentView } from "../task-web.js";
 import { developerTaskRouteDependencies } from "./dependencies.js";
@@ -86,10 +88,23 @@ function body(request: AdaptedHttpRequest): unknown {
   try { return JSON.parse(raw) as unknown; } catch { throw agentXError("CONFIG_INVALID", "the request body is not JSON"); }
 }
 
+/** What the old feedback page said for a refusal: not yours, another company's or no such review read "Review not found."; anything else "This review changed." (never the core's own words). */
+export const FEEDBACK_NOT_FOUND = "Review not found.";
+export const FEEDBACK_CHANGED = "This review changed. Refresh it before deciding.";
+const HIDDEN = new Set(["FORBIDDEN", "TASK_NOT_FOUND", "TASK_ACCESS_DENIED", "NOT_FOUND"]);
+async function feedbackRefusal<T>(work: () => Promise<T>): Promise<T> {
+  try { return await work(); } catch (error) {
+    const code = (error as { code?: unknown } | undefined)?.code;
+    if (typeof code === "string" && HIDDEN.has(code)) throw agentXError("NOT_FOUND", FEEDBACK_NOT_FOUND);
+    if (code === "RUNTIME_UNAVAILABLE" || code === "TASK_BUSY" || code === "WORKSPACE_BUSY") throw error;
+    throw agentXError("IDEMPOTENCY_CONFLICT", FEEDBACK_CHANGED);
+  }
+}
+
 /** The routes; undefined for any other path or method. */
 export async function routePlanPanel(deps: DeveloperRouteDependencies, caller: DeveloperCaller, request: AdaptedHttpRequest, url: URL): Promise<StatusReply | undefined> {
   const match = PLAN_PANEL_ROUTE.exec(url.pathname);
-  if (match === null) return undefined;
+  if (match === null || !decisionCardsEnabled()) return undefined;
   const endpoint = match[3] === undefined ? match[2]! : url.pathname.endsWith("/edit") ? "comments/edit" : "comments/delete";
   const method = request.method.toUpperCase();
   const reads = endpoint.startsWith("documents/") || endpoint === "workflow/feedback";
@@ -100,12 +115,13 @@ export async function routePlanPanel(deps: DeveloperRouteDependencies, caller: D
   const tasks = developerTaskRouteDependencies(deps, caller);
   const taskId = match[1]!.toLowerCase();
   if (endpoint.startsWith("documents/")) return new StatusReply(200, planPanelView(await getTaskDocumentView(tasks, caller, taskId), endpoint.slice("documents/".length) as PlanPanelDocument));
-  if (endpoint === "workflow/feedback" || endpoint === "workflow/feedback-decision") {
-    // The very route the MCP tool reaches (`/v1/dev/tasks/{id}/workflow/feedback[-decision]`): its strict schema, owner rule, GitHub refresh and fences, unchanged.
-    if (endpoint === "workflow/feedback-decision") body(request);
-    const devUrl = new URL(url.href.replace("/v1/app/tasks/", "/v1/dev/tasks/"));
-    const answer = await routeDeveloperTaskRequest(tasks, caller, { ...request, path: devUrl.pathname }, devUrl);
-    return answer instanceof StatusReply ? answer : new StatusReply(200, answer as object);
+  if (endpoint === "workflow/feedback") return new StatusReply(200, { review: await feedbackRefusal(() => getWorkflowFeedbackReview(tasks, caller, taskId)) });
+  if (endpoint === "workflow/feedback-decision") {
+    // The old feedback page's decision, through its own function (`submitWorkflowFeedbackDecision`: owner only, the GitHub refresh, the revision and digest fences), with the MCP tool's strict schema.
+    const parsed = WorkflowFeedbackFindingsDecisionRequestSchema.safeParse(body(request));
+    if (!parsed.success) throw agentXError("CONFIG_INVALID", "AgentX didn't accept that decision. Refresh the review and try again.");
+    const decided = await feedbackRefusal(() => submitWorkflowFeedbackDecision(tasks, caller, taskId, parsed.data));
+    return new StatusReply(200, { status: decided.status, nextAction: decided.nextAction });
   }
   const value = body(request);
   const invalid = () => agentXError("CONFIG_INVALID", "AgentX didn't accept that. Refresh the page and try again.");

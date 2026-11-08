@@ -2047,7 +2047,14 @@ describe("the PR feedback advisory summary", () => {
   it("OWNER DECISION 7: links its details to the task's page in Rovara when the task has a session, else to the feedback review page", async () => {
     const { feedbackDetailPath } = await import("../../packages/broker/src/aws/developer-task-notifier.js");
     const taskId = "11111111-1111-4111-8111-111111111111";
-    expect(feedbackDetailPath({ taskId, sessionId: "ses_0123456789abcdefghij" })).toBe("/app/sessions/ses_0123456789abcdefghij?view=feedback");
+    // OWNER DECISION 18(d): the feedback view only with the decision cards on; with them off the task page as before.
+    const cards = process.env.DECISION_CARDS_ENABLED;
+    try {
+      process.env.DECISION_CARDS_ENABLED = "1";
+      expect(feedbackDetailPath({ taskId, sessionId: "ses_0123456789abcdefghij" })).toBe("/app/sessions/ses_0123456789abcdefghij?view=feedback");
+      process.env.DECISION_CARDS_ENABLED = "0";
+      expect(feedbackDetailPath({ taskId, sessionId: "ses_0123456789abcdefghij" })).toBe("/app/sessions/ses_0123456789abcdefghij");
+    } finally { if (cards === undefined) delete process.env.DECISION_CARDS_ENABLED; else process.env.DECISION_CARDS_ENABLED = cards; }
     expect(feedbackDetailPath({ taskId })).toBe(`/review/${taskId}`);
     // A malformed session id is never put in a link.
     expect(feedbackDetailPath({ taskId, sessionId: "ses_../../x" })).toBe(`/review/${taskId}`);

@@ -4,7 +4,7 @@
 // old links forward to the task page with the document's panel open; with them off the old pages are unchanged (10-page-auth.test.ts still passes).
 import { randomUUID } from "node:crypto";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { SLACK_OIDC_ISSUER, type ChannelMembersRequest, type ChannelMembersResponse, type TaskPeopleDisplayReadRequest, type TaskPersonProofRequest } from "@agentx/contracts";
+import type { ChannelMembersRequest, ChannelMembersResponse } from "@agentx/contracts";
 import { createWorkflowE2E, SLACK_MAYA, type WorkflowE2E } from "../../support/workflow-e2e.js";
 import { MAYA, OMAR, type Developer } from "../../support/developer-task-broker.js";
 import { SLACK_CHANNEL } from "../../support/slack-broker.js";
@@ -13,7 +13,14 @@ import { PAGE_ORIGIN, signInToReview, type PageReader } from "../../support/page
 import { cardDecision } from "../../support/card-decision.js";
 import { planAnswer, planDocument } from "../../support/plan-documents.js";
 import { developerIdForSlackUser } from "../../../packages/broker/src/aws/admin-actions.js";
-import type { CheckTaskPerson } from "../../../packages/broker/src/developer/task-people.js";
+import { taskPeopleDirectory } from "../../support/task-people-directory.js";
+import type { SlackRequestQueue } from "../../../packages/broker/src/developer/page-comments.js";
+
+/** The Slack service's request queue as the broker sends to it: what an Ask queued. */
+function recordingQueue(): SlackRequestQueue & { sent: unknown[] } {
+  const sent: unknown[] = [];
+  return { sent, send: async (message) => { sent.push(message); } };
+}
 
 const OWNER: Developer = { ...SLACK_MAYA };
 /** A teammate in the project's Slack channel, known by the developer ID "Sign in with Slack" gives them. */
@@ -40,32 +47,10 @@ const members = async (request: ChannelMembersRequest): Promise<ChannelMembersRe
   ok: true, memberOf: [MAYA.slackUserId, SAM.slackUserId].includes(request.slackUserId) ? request.channelIds.filter((id) => id === SLACK_CHANNEL) : [],
 });
 
-/** Slack's People directory for Maya and Sam (the old page's People tests use the same one), so the owner can make Sam a viewer. */
-function taskPeopleDirectory() {
-  const names = new Map([[SLACK_MAYA.slackUserId!, SLACK_MAYA.name], [SAM.slackUserId!, SAM.name]]);
-  const proof = async (request: TaskPersonProofRequest) => {
-    const name = names.get(request.slackUserId);
-    if (name === undefined) return { ok: false as const, error: "ineligible" as const };
-    return { ok: true as const, user: { id: request.slackUserId, teamId: "T0BSHLLUGBD", name }, memberOf: request.channelIds.filter((channelId) => channelId === SLACK_CHANNEL) };
-  };
-  const display = async (request: TaskPeopleDisplayReadRequest) => request.operation === "proof"
-    ? { operation: "proof" as const, admission: { version: 1 as const, slackCallsUsed: 1 }, result: await proof(request.request) }
-    : { operation: "directory" as const, admission: { version: 1 as const, slackCallsUsed: 1 }, result: { ok: true as const,
-      users: [...names].map(([id, name]) => ({ id, teamId: "T0BSHLLUGBD", name, memberOf: request.request.channelIds.filter((channelId) => channelId === SLACK_CHANNEL) })) } };
-  const check: CheckTaskPerson = async (task, developerId) => {
-    const entry = [...names].find(([slackUserId]) => developerIdForSlackUser(slackUserId) === developerId);
-    if (entry === undefined) throw new Error("fresh task person proof is unavailable");
-    const [slackUserId, name] = entry;
-    return { subject: { developerId, slackUserId }, identity: { developerId, slackUserId, name, method: "slack", issuer: SLACK_OIDC_ISSUER, subject: slackUserId },
-      eligible: true, channelMember: task.share === undefined || task.share.channelId === SLACK_CHANNEL };
-  };
-  return { proof, display, check };
-}
-
 /** A Quick task whose coding plan waits for Maya, with sessions (so it has a task page in Rovara). */
-async function waitingPlan(options: { people?: boolean } = {}) {
-  const directory = taskPeopleDirectory();
-  const e2e = await createWorkflowE2E({ channelMembers: members, agentSessions: true, model: { plan: planAnswer(PLAN), edits: EDITS },
+async function waitingPlan(options: { people?: boolean; queue?: SlackRequestQueue } = {}) {
+  const directory = taskPeopleDirectory([SAM]);
+  const e2e = await createWorkflowE2E({ channelMembers: members, agentSessions: true, model: { plan: planAnswer(PLAN), edits: EDITS }, ...(options.queue === undefined ? {} : { slackRequestQueue: options.queue }),
     ...(options.people === true ? { taskPeople: { changesEnabled: true, checkTaskPerson: directory.check, taskPersonProof: directory.proof, taskPeopleDisplayRead: directory.display, developers: [SAM] } } : {}) });
   expect(await e2e.mention("quick: Show a retry banner when a payment fails")).toBe(200);
   await e2e.settle();
@@ -94,6 +79,11 @@ async function reviewGet(e2e: WorkflowE2E, path: string, reader?: PageReader) {
 const reader = (who: Developer): PageReader => ({ developerId: who.developerId, name: who.name, ...(who.slackUserId === undefined ? {} : { slackUserId: who.slackUserId }), ...(who.provider === "oidc" ? { provider: "oidc" as const } : {}) });
 
 describe("Suite 10c: the plan panel on the task page (OWNER DECISION 18)", () => {
+  // The panel's routes exist only with the decision cards on (18d); "with the cards off" below turns them off.
+  const switched = process.env.DECISION_CARDS_ENABLED;
+  beforeEach(() => { process.env.DECISION_CARDS_ENABLED = "1"; });
+  afterEach(() => { if (switched === undefined) delete process.env.DECISION_CARDS_ENABLED; else process.env.DECISION_CARDS_ENABLED = switched; });
+
   it("reads the current coding plan as the old page did: the owner may decide, a teammate may comment and suggest, another company reads exactly as a missing task, a token is refused", async () => {
     const { e2e, web } = await waitingPlan();
     const owner = await web(OWNER, "GET", `${base(e2e)}/documents/plan`);
@@ -174,6 +164,58 @@ describe("Suite 10c: the plan panel on the task page (OWNER DECISION 18)", () =>
       }
     }
     expect(peopleComments(e2e)).toEqual([]);
+  }, 120_000);
+
+  it("Ask through the panel queues one answer per new comment: a resend asks nothing again, and past the hourly limit the comment posts with askRefused", async () => {
+    const queue = recordingQueue();
+    const { e2e, web } = await waitingPlan({ queue });
+    const first = commentBody({ kind: "claim", id: "1" }, "Why a banner?", { ask: true });
+    const asked = await web(SAM, "POST", `${base(e2e)}/comments`, first);
+    expect(asked.status, JSON.stringify(asked.body)).toBe(201);
+    expect(asked.body.comment).toMatchObject({ agentx: "answering" });
+    expect(queue.sent).toHaveLength(1);
+    // The same request again is the same comment, and Rovara is not asked twice.
+    expect(await web(SAM, "POST", `${base(e2e)}/comments`, first)).toMatchObject({ status: 200, body: { duplicate: true } });
+    expect(queue.sent).toHaveLength(1);
+    // The owner asks too, on their own limit.
+    expect((await web(OWNER, "POST", `${base(e2e)}/comments`, commentBody({ kind: "document" }, "Is this the smallest change?", { ask: true }))).status).toBe(201);
+    expect(queue.sent).toHaveLength(2);
+    // Six questions an hour per person (AGENTX_ASK_RATE); the seventh posts as a comment with askRefused and queues nothing.
+    for (let index = 0; index < 5; index += 1) expect((await web(SAM, "POST", `${base(e2e)}/comments`, commentBody({ kind: "document" }, `Question ${index + 2}?`, { ask: true }))).body.askRefused).toBeUndefined();
+    expect(queue.sent).toHaveLength(7);
+    const limited = await web(SAM, "POST", `${base(e2e)}/comments`, commentBody({ kind: "document" }, "One too many?", { ask: true }));
+    expect(limited.status, JSON.stringify(limited.body)).toBe(201);
+    expect(limited.body.askRefused).toBe("limited");
+    expect(queue.sent).toHaveLength(7);
+    expect(peopleComments(e2e).map((comment) => comment.text)).toContain("One too many?");
+  }, 120_000);
+
+  it("refuses a body over 16 KB on every write, before any function runs, in the old page's words", async () => {
+    const { e2e, web } = await waitingPlan();
+    const big = "x".repeat(17_000);
+    for (const [path, body] of [["comments", commentBody({ kind: "document" }, big)], [`comments/${randomUUID()}/edit`, { rev: 1, text: big }], [`comments/${randomUUID()}/delete`, { rev: 1, pad: big }],
+      ["suggestions", { document: "plan", decisionId: "d1", optionId: big }], ["workflow/feedback-decision", { pad: big }]] as const) {
+      const refused = await web(OWNER, "POST", `${base(e2e)}/${path}`, body);
+      expect(refused.status, path).toBe(400);
+      expect(JSON.stringify(refused.body), path).toContain("That is too long to send.");
+    }
+    expect(peopleComments(e2e)).toEqual([]);
+  }, 120_000);
+
+  it("with the cards off (dk=0) none of the panel's routes exists: each answers as an unknown path, and nothing is written", async () => {
+    const { e2e, web } = await waitingPlan();
+    process.env.DECISION_CARDS_ENABLED = "0";
+    for (const [method, path, body] of [["GET", "documents/plan", undefined], ["POST", "comments", commentBody({ kind: "document" }, "Hello.")], ["POST", `comments/${randomUUID()}/edit`, { rev: 1, text: "x" }],
+      ["POST", `comments/${randomUUID()}/delete`, { rev: 1 }], ["POST", "suggestions", { document: "plan", decisionId: "d1", optionId: "above" }], ["GET", "workflow/feedback", undefined], ["POST", "workflow/feedback-decision", {}]] as const) {
+      const off = await web(OWNER, method, `${base(e2e)}/${path}`, body);
+      const unknown = await web(OWNER, method, `${base(e2e)}/no-such-path`, body);
+      expect([off.status, off.body], path).toEqual([unknown.status, unknown.body]);
+    }
+    expect(peopleComments(e2e)).toEqual([]);
+    expect((await web(OWNER, "GET", "/v1/app/nav")).body.features).not.toHaveProperty("decisionCards");
+    // With them on, the app nav says so (read for someone whose nav is not cached yet: the nav is cached for a moment per person).
+    process.env.DECISION_CARDS_ENABLED = "1";
+    expect((await web(SAM, "GET", "/v1/app/nav")).body.features).toMatchObject({ decisionCards: true });
   }, 120_000);
 
   it("suggestions and their limits: a teammate suggests, the owner can't, and a flood of suggestions or comments is refused until ten minutes pass", async () => {
