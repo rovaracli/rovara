@@ -119,14 +119,15 @@ async function feedbackRefusal<T>(work: () => Promise<T>): Promise<T> {
 }
 
 /**
- * Retry review's refusals as the Slack button says them: not yours or no such task reads "Review not found."; the busy and changed lines (fixed words) and the task-state lines (closed, closing, never
- * started: fixed words too, said only to the task's authorized owner) pass; anything else reads "This review changed."
+ * Retry review's refusals: not yours or no such task reads "Review not found."; the busy and changed lines (fixed words) and the project rule's refusal (PROJECT_ACCESS_DENIED: the real reason, e.g. a viewer
+ * cannot start tasks in the project; it is checked after the owner-only check, so only the task's owner ever reads it) pass; infrastructure faults pass. Anything else (a stale digest, and a task that is closed,
+ * closing or never started, whose words name MCP tools) reads "This review changed."
  */
 export async function retryRefusal<T>(work: () => Promise<T>): Promise<T> {
   try { return await work(); } catch (error) {
     const code = (error as { code?: unknown } | undefined)?.code;
     if (typeof code === "string" && HIDDEN.has(code)) throw agentXError("NOT_FOUND", FEEDBACK_NOT_FOUND);
-    if (code === "RUNTIME_UNAVAILABLE" || code === "TASK_BUSY" || code === "WORKSPACE_BUSY") throw error;
+    if (code === "RUNTIME_UNAVAILABLE" || code === "TASK_BUSY" || code === "WORKSPACE_BUSY" || code === "PROJECT_ACCESS_DENIED") throw error;
     const message = (error as { message?: unknown } | undefined)?.message;
     // An AgentXError's message reads "CODE: words".
     if (code === "CONFIG_INVALID" && (message === `CONFIG_INVALID: ${FEEDBACK_REVIEW_RETRY_BUSY}` || message === `CONFIG_INVALID: ${FEEDBACK_REVIEW_RETRY_CHANGED}`)) throw error;

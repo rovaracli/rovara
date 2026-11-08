@@ -99,6 +99,7 @@ describe("plan panel routes: a live browser only", () => {
     await expect(fail("CONFIG_INVALID", FEEDBACK_REVIEW_RETRY_BUSY)).rejects.toMatchObject({ code: "CONFIG_INVALID", message: `CONFIG_INVALID: ${FEEDBACK_REVIEW_RETRY_BUSY}` });
     await expect(fail("CONFIG_INVALID", FEEDBACK_REVIEW_RETRY_CHANGED)).rejects.toMatchObject({ code: "CONFIG_INVALID", message: `CONFIG_INVALID: ${FEEDBACK_REVIEW_RETRY_CHANGED}` });
     for (const code of ["FORBIDDEN", "TASK_NOT_FOUND", "TASK_ACCESS_DENIED", "NOT_FOUND"] as const) await expect(fail(code, "secret detail"), code).rejects.toMatchObject({ code: "NOT_FOUND", message: `NOT_FOUND: ${FEEDBACK_NOT_FOUND}` });
+    await expect(fail("PROJECT_ACCESS_DENIED", "You can view `payments` but not start tasks in it.")).rejects.toMatchObject({ code: "PROJECT_ACCESS_DENIED", message: "PROJECT_ACCESS_DENIED: You can view `payments` but not start tasks in it." });
     for (const code of ["RUNTIME_UNAVAILABLE", "TASK_BUSY", "WORKSPACE_BUSY"] as const) await expect(fail(code, "try later"), code).rejects.toMatchObject({ code });
     await expect(fail("CONFIG_INVALID", "this review changed; use the latest AgentX message")).rejects.toMatchObject({ code: "IDEMPOTENCY_CONFLICT", message: `IDEMPOTENCY_CONFLICT: ${FEEDBACK_CHANGED}` });
     await expect(fail("CONFIG_INVALID", "some git error text")).rejects.toMatchObject({ code: "IDEMPOTENCY_CONFLICT", message: `IDEMPOTENCY_CONFLICT: ${FEEDBACK_CHANGED}` });

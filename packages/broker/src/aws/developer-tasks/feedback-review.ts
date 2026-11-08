@@ -33,8 +33,9 @@ import { approvedWorkflowDependencies, workflowWithCurrentGraphOperation } from 
 
 /** The review page's next step for a PR feedback review that could not be completed. */
 const FEEDBACK_REVIEW_RETRY_FROM_SLACK = "Retry the review from the Slack thread of this task.";
-/** With the decision cards on the task page has Retry review (the same retry as Slack's button); the Slack thread stays an alternative. */
-export const FEEDBACK_REVIEW_RETRY_FROM_TASK_PAGE = "Retry the review from the task page in Rovara, or from the Slack thread of this task.";
+/** With the decision cards on, the task page has Retry review (the same retry as Slack's button); the Slack thread is named only for a task that has one. */
+export const FEEDBACK_REVIEW_RETRY_FROM_TASK_PAGE = "Retry the review from the task page in Rovara.";
+export const FEEDBACK_REVIEW_RETRY_FROM_TASK_PAGE_OR_SLACK = "Retry the review from the task page in Rovara, or from the Slack thread of this task.";
 const FEEDBACK_BUNDLE_MAX_BYTES = 2_000_000;
 const FEEDBACK_BUNDLE_TOTAL_MAX_BYTES = 8_000_000;
 
@@ -61,7 +62,8 @@ async function verifiedFeedbackReview(deps: DeveloperTaskRouteDependencies, task
   if (reportRef.status !== "COMPLETE") {
     return { taskId, title: task.title, revision: workflow.revision, status: review.status, reportStatus: reportRef.status,
       workflowStatus: workflow.state, workflowStage: workflow.stage, reviewDigest: reportRef.sha256, bundleDigests: review.bundleRefs.map(bundle => bundle.sha256),
-      candidates: [], findings: [], recommendedFindingIds: [], checks: [], nextAction: decisionCardsEnabled() ? FEEDBACK_REVIEW_RETRY_FROM_TASK_PAGE : FEEDBACK_REVIEW_RETRY_FROM_SLACK };
+      candidates: [], findings: [], recommendedFindingIds: [], checks: [], nextAction: !decisionCardsEnabled() ? FEEDBACK_REVIEW_RETRY_FROM_SLACK
+        : task.share?.threadTs === undefined ? FEEDBACK_REVIEW_RETRY_FROM_TASK_PAGE : FEEDBACK_REVIEW_RETRY_FROM_TASK_PAGE_OR_SLACK };
   }
   const reportPrefix = `private/${task.ownerKey}/${task.workspaceId}/feedback-reviews/`;
   if (reportRef.taskId !== taskId || !reportRef.objectKey.startsWith(reportPrefix)

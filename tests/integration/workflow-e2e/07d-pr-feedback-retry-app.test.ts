@@ -14,6 +14,7 @@ import { PLAN, atPlanReview, editsOrFix } from "../../support/workflow-e2e-journ
 import { cardDecision } from "../../support/card-decision.js";
 import { taskPeopleDirectory } from "../../support/task-people-directory.js";
 import { developerIdForSlackUser } from "../../../packages/broker/src/aws/admin-actions.js";
+import { projectMemberKey } from "../../../packages/contracts/src/index.js";
 import { FEEDBACK_REVIEW_RETRY_BUSY } from "../../../packages/broker/src/aws/developer-tasks.js";
 import { FEEDBACK_CHANGED, FEEDBACK_NOT_FOUND } from "../../../packages/broker/src/aws/developer-routes/plan-panel.js";
 
@@ -115,5 +116,29 @@ describe("Suite 7d: Retry review of a PR feedback review on the task page (OWNER
     e2e.db.set(idle);
     const retried = await web(OWNER, "POST", path(e2e, "feedback-retry"), { reviewDigest: failed.reviewDigest });
     expect([retried.status, started(retried.body)]).toEqual([200, { started: true }]);
+  }, 180_000);
+
+  it("an owner who is now only a viewer of the project reads the real reason, not 'changed', and nothing starts", async () => {
+    const { e2e, web } = await failedReviewWaiting();
+    const failed = (await web(OWNER, "GET", path(e2e, "feedback"))).body.review as Failed;
+    const meta = e2e.db.get(`DEVTASK#${e2e.taskId()}`, "META") as { orgId: string; project: string };
+    e2e.db.set({ ...projectMemberKey(meta.orgId, OWNER.developerId, meta.project), entityType: "MEMBERSHIP", ownerKey: OWNER.developerId, projectName: meta.project, grantId: randomUUID(), role: "viewer", projectRole: "viewer" });
+    const revision = e2e.workflow().revision;
+    const refused = await web(OWNER, "POST", path(e2e, "feedback-retry"), { reviewDigest: failed.reviewDigest });
+    expect(refused.status, JSON.stringify(refused.body)).toBe(403);
+    expect(JSON.stringify(refused.body)).toContain(`You can view \`${meta.project}\` but not start tasks in it.`);
+    expect(JSON.stringify(refused.body)).not.toContain(FEEDBACK_CHANGED);
+    expect(e2e.workflow().revision).toBe(revision);
+  }, 180_000);
+
+  it("the unfinished review's next step names the Slack thread only for a task that has one", async () => {
+    const { e2e, web } = await failedReviewWaiting();
+    const next = async () => ((await web(OWNER, "GET", path(e2e, "feedback"))).body.review as { nextAction: string }).nextAction;
+    expect(await next()).toBe("Retry the review from the task page in Rovara, or from the Slack thread of this task.");
+    const meta = e2e.db.get(`DEVTASK#${e2e.taskId()}`, "META") as { share?: Record<string, unknown> };
+    const share = { ...meta.share };
+    delete share.threadTs;
+    e2e.db.set({ ...meta, share });
+    expect(await next()).toBe("Retry the review from the task page in Rovara.");
   }, 180_000);
 });
