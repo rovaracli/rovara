@@ -15,6 +15,7 @@ const INTERNAL_LESSON_FILES: Record<string, string> = {
   "lessons/counters.ts": "counts loads and outcomes on lessons; returns counters, never a lesson (feedback is gated: see recordFeedback)",
   "lessons/curate.ts": "merges drafts into lessons; returns the result to the pipeline",
   "lessons/deletion.ts": "withdraws and erases lessons; acts on them",
+  "lessons/jobs.ts": "the nightly trial repair retires a live trial lesson a pending card contradicts; it returns counts only, never a lesson",
   "lessons/draft-retry.ts": "asks only whether a lesson the failed try made is in the store (a yes or no for the retry guard); returns nothing to a viewer",
   "lessons/expiry.ts": "expires lessons; acts on them",
   "lessons/promote.ts": "promotes a lesson to a rule; refuses restricted ones",
