@@ -136,9 +136,10 @@ export function createAwsBrokerHandler(input: AwsBrokerInput) {
   const agents = agentRouteDependencies(dependencies, tasks);
   installChainRunner(dependencies, tasks, agents);
   installOwnWriteRecorder(dependencies);
-  installLearningTaskEnd(dependencies);
   installTicketUpdates(dependencies);
   installLessons(dependencies);
+  // After installLessons, which builds `dependencies.learning`.
+  installLearningTaskEnd(dependencies);
   installTeamRecordEmitter(dependencies);
   installSlackAsk(dependencies, tasks, agents?.agentSessions);
   installDiagnosisService(dependencies, agents?.agentSessions);

@@ -277,7 +277,10 @@ No single test lists every broker read.
 | `fix-setup-wiring.ts` | Setup and test health (SH17): what the auto-fix runner needs to turn an ask about the test environment into a Fix setup card. |
 | `fixture-delivery.ts` | The fixture delivery callback, broker side (test services, slice 3, s3-fakes-run): `POST /v1/internal/workspaces/{w}/operations/{o}/fixture-set`. |
 | `handler.ts` | createAwsBrokerHandler: the request router. |
-| `learning-wiring.ts` | the learning lane's hook on the end of a task. |
+| `learning-model.ts` | Lessons in production: the learning pipeline's model (`PipelineModel`) on the company's own AI provider; mints and reserves the call's key in the spend ledger, the in-VPC `learningCompletion` only makes the call, the key is blocked and the sweep settles it; no Rovara-paid route. |
+| `learning-spend.ts` | Lessons in production: the company's learning spend (`LearningSpend`): $20 a month cap in Public, none of its own in Enterprise; `admit` is a read of the month's `LEARNING` spend counter, the binding hold is each learning key's reservation in the ledger. |
+| `learning-wiring.ts` | the learning lane's hook on the end of a task (the inline handler is registered only behind `INLINE_LEARNING_TASK_END_ENABLED`, off until the reflection runs from a queue). |
+| `lesson-subject-source.ts` | Lessons in production: the production `TaskSubjectSource` (the reflector's task-side facts from the task record and its workflow; erasure, standing and workspace rules applied at read time). |
 | `lessons-dispatch.ts` | the lesson loader's one call at a coding stage's dispatch (learning v2, L4). |
 | `lessons-report.ts` | what a worker's progress events tell the lessons library (learning v2, L4/L5) and the "What the agent loaded" record. |
 | `lessons-wiring.ts` | builds the lessons library's ports from the broker's own dependencies (learning v2, LS-3) and puts them on `dependencies.lessons`. |

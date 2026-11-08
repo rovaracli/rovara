@@ -81,14 +81,15 @@ export async function reflectSubject(deps: ReflectDeps, subject: ReflectSubject,
   let reply: { text: string; costUsd: number; model: string };
   try {
     // The request has no field for tools: a pipeline model can only return text.
-    reply = await deps.model.complete({ purpose: "reflect", system: input.system, user: input.user, maxOutputTokens: MAX_OUTPUT_TOKENS, workspaceId: subject.workspaceId });
+    reply = await deps.model.complete({ purpose: "reflect", system: input.system, user: input.user, maxOutputTokens: MAX_OUTPUT_TOKENS, workspaceId: subject.workspaceId, project: subject.project, budgetUsd: estimate });
   } catch {
+    // The model's key held its cap in the company's spend ledger; whatever the failed call cost is settled from there. Nothing to give back here.
     deps.metrics?.count("learning.reflect_failed", { reason: "model_error" });
     return none("dropped", "model_error");
   }
   const cost = Number.isFinite(reply.costUsd) && reply.costUsd > 0 ? reply.costUsd : 0;
+  // `cost` is the cap the call's key held (an upper bound): the nightly budget counts that, and the ledger books the real figure when the proxy has flushed it.
   if (budget !== undefined) budget.spentUsd += cost;
-  try { await deps.spend.charge(subject.workspaceId, subject.project, cost, "learning.reflect"); } catch { /* the ledger retries; learning never blocks the task */ }
   if (caps.perTaskUsd !== undefined && cost > caps.perTaskUsd) {
     deps.metrics?.count("learning.reflect_failed", { reason: "over_cap" });
     return none("dropped", "over_cap", cost);

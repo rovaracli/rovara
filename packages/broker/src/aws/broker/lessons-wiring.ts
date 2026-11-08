@@ -6,12 +6,19 @@ import { followMerges } from "../../agents/access.js";
 import { dynamoAttributionReader } from "../../attribution/resolve.js";
 import { DeveloperSignInStore } from "../../developer/store.js";
 import type { CodeFactsReader } from "../../lessons/code-facts.js";
-import { createLessonsRuntime, type LessonsRuntime } from "../../lessons/runtime.js";
+import { NO_EMBEDDER, NO_VECTORS, createLessonsRuntime, type LessonsRuntime } from "../../lessons/runtime.js";
+import type { Embedder, LessonVectors } from "../../lessons/ports.js";
+import type { TaskLearningDeps } from "../../lessons/task-end.js";
+import { tableOutcomeRows } from "../../lessons/task-outcome-rows.js";
+import { readObjectText } from "../../developer/plan-artifacts.js";
+import { customerLearningModel } from "./learning-model.js";
+import { companyLearningSpend } from "./learning-spend.js";
+import { lessonSubjectSource } from "./lesson-subject-source.js";
 import { setLessonsHomeReader } from "../../lessons/home-source.js";
 import { resolveLearning } from "../../lessons/policy.js";
 import { buildLessonsView } from "../../lessons/view.js";
 import { recordAuditSinkOf } from "./team-record-wiring.js";
-import { readProjectRole } from "../../learning/standing.js";
+import { readProjectRole, readStanding } from "../../learning/standing.js";
 import { requireLatestProject } from "./records.js";
 import { hostOfRepository } from "./repository-hosts.js";
 import { githubScope } from "./scope-helpers.js";
@@ -35,6 +42,16 @@ export function codeFileReader(dependencies: AwsBrokerDependencies, maxBytes = M
   };
 }
 
+/**
+ * THE seam for lesson similarity (merging duplicates, finding contradictions, ranking at load, matching outcomes). It is an open owner decision (2026-11-08: Titan is not good enough; research first), so
+ * today there is none: no embedder and no lesson vectors. Whatever is chosen plugs in HERE and nowhere else (the runtime's load and route dependencies and the learning dependencies all take it from this
+ * function). Without an embedder curate finds no neighbours, so duplicates never merge and corroboration never builds: lessons must not be switched on before this is decided.
+ */
+export function lessonSimilarityFor(dependencies: Pick<AwsBrokerDependencies, "teamRecord">): { embedder: Embedder; vectors: LessonVectors } {
+  void dependencies;
+  return { embedder: NO_EMBEDDER, vectors: NO_VECTORS };
+}
+
 /** The lessons runtime for this install, or undefined where the Team record is off. */
 export function lessonsRuntimeFor(dependencies: AwsBrokerDependencies): LessonsRuntime | undefined {
   const teamRecord = dependencies.teamRecord;
@@ -52,7 +69,13 @@ export function lessonsRuntimeFor(dependencies: AwsBrokerDependencies): LessonsR
   // The author rules compare members: a developer merged into another reads as that other (the sign-in table's `mergedInto`).
   const merges = new DeveloperSignInStore({ documentClient: dependencies.documentClient, tableName: signInTableName, now: Date.now });
   const audit = recordAuditSinkOf(dependencies.audit, dependencies.documentClient);
+  // The company's own model path, where this install has one (the model proxy): the curator's judge and the payer path. Without a proxy they stay the refusing stand-ins.
+  const modelPath = dependencies.modelAccess === undefined ? {} : {
+    model: customerLearningModel(dependencies, { edition: teamRecord.edition }),
+    spend: companyLearningSpend({ documentClient: dependencies.documentClient, tableName: dependencies.tableName, edition: teamRecord.edition, now: Date.now, log: (event, fields) => console.log(JSON.stringify({ component: "lessons", event, ...fields })) }),
+  };
   return createLessonsRuntime({
+    ...modelPath, similarity: lessonSimilarityFor(dependencies),
     table: teamRecord.table, now: Date.now, log: (event, fields) => console.log(JSON.stringify({ component: "lessons", event, ...fields })),
     ...(audit === undefined ? {} : { audit }), reader, repositoriesOf,
     evidence: { documentClient: dependencies.documentClient, tableName: dependencies.tableName, signInTableName, now: Date.now },
@@ -65,11 +88,50 @@ export function lessonsRuntimeFor(dependencies: AwsBrokerDependencies): LessonsR
   });
 }
 
+/**
+ * What the task-end hook needs (`TaskLearningDeps`), from the lessons runtime and the broker's own readers; undefined without the Team record, a model path or an audit ledger. Built here; the hook is NOT
+ * registered from it in this release: `learning-wiring.ts` registers the inline handler only when its flag is on, and it is off until the reflection runs from a queue (WB-4).
+ */
+export function learningDepsFor(dependencies: AwsBrokerDependencies, runtime: LessonsRuntime): TaskLearningDeps | undefined {
+  const teamRecord = dependencies.teamRecord;
+  const signInTableName = dependencies.developer?.signInTableName;
+  if (teamRecord === undefined || dependencies.modelAccess === undefined || signInTableName === undefined || signInTableName === "") return undefined;
+  const routes = runtime.routes;
+  const state = { documentClient: dependencies.documentClient, tableName: dependencies.tableName };
+  const log = (event: string, fields: Record<string, string | number>): void => console.log(JSON.stringify({ component: "lessons", event, ...fields }));
+  const repositoriesOf = async (orgId: string, project: string): Promise<string[]> => {
+    const record = await requireLatestProject(dependencies, OrgIdSchema.parse(orgId), project);
+    return codeRepositoriesOf(record.definition).map((repository) => repository.name);
+  };
+  return {
+    source: lessonSubjectSource({
+      ...state, repositoriesOf,
+      standing: (orgId, developerId, project) => readStanding(state, OrgIdSchema.parse(orgId), developerId, project),
+      // Erased in the Team record (the permanent marker) or in the lessons' own fence: either one is enough. A read that cannot tell throws.
+      isErased: async (orgId, developerId, project) => (await routes.names.isErased(OrgIdSchema.parse(orgId), developerId)) || (await routes.store.isErased({ workspaceId: orgId, project }, developerId)),
+      visibility: (orgId, taskId) => teamRecord.taskVisibility(orgId, taskId),
+      readObject: (key, maxBytes) => readObjectText(dependencies.s3, dependencies.artifactBucketName, key, maxBytes),
+      now: Date.now,
+    }),
+    rows: tableOutcomeRows(teamRecord.table),
+    settings: runtime.settings,
+    reflect: { model: routes.judgeModel, spend: routes.spend, audit: routes.audit, settings: runtime.settings, edition: teamRecord.edition, now: Date.now },
+    process: routes,
+    rovara: teamRecord.emitter,
+    log,
+  };
+}
+
 /** At handler start (`broker/handler.ts`): sets `dependencies.lessons` unless the caller gave one (tests). */
 export function installLessons(dependencies: AwsBrokerDependencies): void {
   if (dependencies.lessons !== undefined) return;
   const built = lessonsRuntimeFor(dependencies);
   if (built !== undefined) dependencies.lessons = built;
+  // Learning at the end of a task: only where the lessons runtime AND the model path exist (and a caller did not give its own).
+  if (built !== undefined && dependencies.learning === undefined) {
+    const learning = learningDepsFor(dependencies, built);
+    if (learning !== undefined) dependencies.learning = learning;
+  }
   // UX-4b: Home's "Lessons waiting" card counts what the Lessons tab would show this person to decide (learning Off: none).
   const routes = dependencies.lessons?.routes;
   setLessonsHomeReader(routes === undefined ? undefined : async (orgId, developerId, project) => {

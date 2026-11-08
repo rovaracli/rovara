@@ -60,12 +60,15 @@ const unionPinned = (a: readonly string[], b: readonly string[], max: number, pi
 };
 const union = <T,>(a: readonly T[], b: readonly T[], max: number): T[] => [...new Set([...a, ...b])].slice(0, max);
 
+/** What one judge call may cost: what the spend look is asked about and the cap the model's key holds. */
+const JUDGE_ESTIMATE_USD = 0.01;
+
 async function judge(deps: CurateDeps, key: ScopeKey, mine: LessonDraft, other: Lesson): Promise<{ verdict: Verdict; escalate: boolean } | undefined> {
   const user = `First lesson (existing):\n${lessonText(other)}\n\nSecond lesson (new):\n${lessonText(mine)}`;
   try {
-    if (!(await deps.spend.admit(key.workspaceId, 0.01))) return undefined;
-    const reply = await deps.judgeModel.complete({ purpose: "judge", system: JUDGE_SYSTEM, user, maxOutputTokens: 120, workspaceId: key.workspaceId });
-    try { await deps.spend.charge(key.workspaceId, key.project, Number.isFinite(reply.costUsd) ? Math.max(0, reply.costUsd) : 0, "learning.judge"); } catch { /* ledger retries */ }
+    if (!(await deps.spend.admit(key.workspaceId, JUDGE_ESTIMATE_USD))) return undefined;
+    // The model's key holds the estimate in the company's spend ledger and is settled there; a failed call needs nothing given back here.
+    const reply = await deps.judgeModel.complete({ purpose: "judge", system: JUDGE_SYSTEM, user, maxOutputTokens: 120, workspaceId: key.workspaceId, project: key.project, budgetUsd: JUDGE_ESTIMATE_USD });
     const parsed = JudgeReplySchema.parse(JSON.parse(reply.text.trim().replace(/^```(?:json)?\s*/iu, "").replace(/\s*```$/u, "")));
     return { verdict: parsed.verdict, escalate: parsed.escalate === true };
   } catch { return undefined; }
