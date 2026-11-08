@@ -30,7 +30,6 @@ const RECORD_STORAGE_MODULES: Record<string, string> = {
   "team-record/learning-mode-write.ts": "the learning mode and its lock, read as stored so the mode's writer can write conditionally on exactly that value (UX-4b)",
   "team-record/prior-edits.ts": "marks of edits the tap never stored",
   "team-record/capture-indexes.ts": "the once-claims, push index and merge index of the human-edit read",
-  "team-record/learning-mode-write.ts": "the project's learning mode writer (reads the mode item it changes)",
   "team-record/identity-links.ts": "identity links of people",
   "team-record/tracker-directory.ts": "the tracker people directory",
   "team-record/tracker-autolink.ts": "automatic tracker links",

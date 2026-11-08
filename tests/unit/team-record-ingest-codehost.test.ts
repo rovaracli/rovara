@@ -327,8 +327,6 @@ describe("reverts of Rovara pull requests", () => {
     expect(made.marks).toHaveLength(1);
   });
 
-  // M3: a revert told by a commit message counts only when its commit is a member's: the host's compare shows it verified, authored by a member, and the member pushed it.
-  const memberRevertCommit = (n = 40): Pick<NonNullable<Parameters<typeof createCodeHostTap>[0]["diffs"]>, "compare"> => ({ compare: async () => ({ status: "ahead", truncated: false, files: [], commits: [{ sha: sha(n), author: alice, committer: alice, verified: true }] }) });
   const pushedBy = (n: number, sender: typeof alice | null = alice): Pick<Extract<CodeHostEvent, { type: "push" }>, "before" | "after"> & { sender?: typeof alice } => ({ before: sha(n - 1), after: sha(n), ...(sender === null ? {} : { sender }) });
 
   it("detects a revert commit on the default branch, records both events once, and re-scores the task", async () => {
