@@ -31,12 +31,14 @@ type RepoRead = () => Promise<ReadonlySet<string>>;
 const projectHas = (...scopes: string[]): RepoRead => async () => new Set(scopes);
 
 /** The real record core's access port over a world whose record restricts the repository (readers of the repository only, no list), and the lesson ports on top. */
+/** The starting revisions `placeOf` was asked about (review N1: the pull request's repository is read in the revision the task started on). */
+const asked: Array<number | undefined> = [];
 async function setup(repos: RepoRead, tasks: Record<string, LessonTaskAudience | undefined> = {}) {
   const w = world();
   await addSource(w, { source: "github", scope: REPO });
   await w.sink.put(githubDraft({ audience: repoAudience() }));
   const team: TaskVisibilityPort = { read: async () => new Map() };
-  const taskVisibility = withProjectRepoScopes(withLessonAudiences(team, { read: async (_org, ids) => new Map(ids.map((id) => [id, id in tasks ? tasks[id] : wideAudience()])) }), { read: () => repos(), placeOf: async (_org, _project, name) => ({ api: REPO, web: OTHER_REPO } as Record<string, string>)[name] });
+  const taskVisibility = withProjectRepoScopes(withLessonAudiences(team, { read: async (_org, ids) => new Map(ids.map((id) => [id, id in tasks ? tasks[id] : wideAudience()])) }), { read: () => repos(), placeOf: async (_org, _project, name, startingRevision) => { asked.push(startingRevision); return ({ api: REPO, web: OTHER_REPO } as Record<string, string>)[name]; } });
   const access = createAccessCheckPort(w.table, { taskVisibility });
   const store = new InMemoryLessonStore();
   const vectors = new MemoryVectors();
@@ -186,10 +188,12 @@ describe("a lesson from a PR comment in a private project repository", () => {
     const manifest: LoadManifest = { taskId: "task-run", workspaceId: WS, project: PROJECT, stage: "IMPLEMENT", round: 1, setVersion: 1, memory: "live", at: 1, lessons: [{ id: "les_prcomment1", version: 1, score: 0.5, why: "scope", citation: "valid" }], bytes: 10 };
     await t.store.putManifest(manifest);
     const names = { memberName: async () => undefined, isErased: async () => false } as never;
-    const input = { orgId: WS, project: PROJECT, taskId: "task-run", pageUrl: "https://app.example.test/review/x/task" };
+    const input = { orgId: WS, project: PROJECT, taskId: "task-run", pageUrl: "https://app.example.test/review/x/task", startingRevision: 4 };
     const read = lessonsUsedReaderOver({ store: t.store, settings: settings(), access: t.access, names, visibility: async () => "private" });
+    asked.length = 0;
     // The lesson is restricted only to REPO (repository "api"): named in a pull request of "api", counted only in "web" (another project repository), in an unknown repository and when no repository is given.
     expect(await read({ ...input, repo: "api" })).toMatchObject({ count: 1, items: [{ id: "les_prcomment1" }] });
+    expect(asked).toEqual([4]);
     expect(await read({ ...input, repo: "web" })).toMatchObject({ count: 1, items: [] });
     expect(await read({ ...input, repo: "not-a-project-repo" })).toMatchObject({ count: 1, items: [] });
     expect(await read(input)).toMatchObject({ count: 1, items: [] });

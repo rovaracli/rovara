@@ -92,7 +92,7 @@ async function install() {
   /** What the Lessons tab shows `who` (a person's path): the ids of the active lessons, and the count held for legacy tasks. */
   const tab = async (who: Developer) => {
     const view = await buildLessonsView(runtime.routes, { orgId: TEST_ORG, developerId: who.developerId }, "payments");
-    return { active: view.active.map((lesson) => lesson.id), legacyHeld: view.legacyHeld };
+    return { active: view.active.map((lesson) => lesson.id), legacyHeld: view.legacyHeld, hidden: view.hidden };
   };
   /** The project's repositories: a new revision that pins them. */
   const pin = (revision: number, ...repositories: ReturnType<typeof pinnedRepo>[]) => h.db.set({ ...projectRevisionKey(TEST_ORG, "payments", revision), entityType: "PROJECT_REVISION", definition: { name: "payments", revision, repositories } });
@@ -164,6 +164,8 @@ describe("a person reads the same lessons through the Lessons tab (decision 31, 
     const admin = await t.tab(ADMIN);
     expect(admin.legacyHeld).toBe(1);
     expect(admin.active).toEqual(["les_person0001"]);
+    // N2: the held lesson is counted once. It is not ALSO a lesson "from sources you can't see".
+    expect(admin.hidden).toBe(0);
     // Not for a person who does not decide.
     expect((await t.tab(MAYA)).legacyHeld).toBeUndefined();
   });
@@ -207,11 +209,19 @@ describe("a lesson restricted only to a project repository (decisions 34 and 36)
     const [manifest] = await routes.store.manifests({ workspaceId: TEST_ORG, project: "payments" }, running.taskId);
     await routes.store.updateManifest({ ...manifest!, lessons: manifest!.lessons.map((entry) => ({ ...entry, citation: "valid" })) });
     const read = lessonsUsedReaderOver({ store: routes.store, settings: routes.settings, access: routes.access, names: { memberName: async () => undefined, isErased: async () => false }, visibility: async () => "private" });
-    const input = { orgId: TEST_ORG, project: "payments", taskId: running.taskId, pageUrl: "https://app.example.test/t/x" };
+    const input = { orgId: TEST_ORG, project: "payments", taskId: running.taskId, pageUrl: "https://app.example.test/t/x", startingRevision: 2 };
     expect(await read({ ...input, repo: "api" })).toMatchObject({ count: 1, items: [{ id: "les_repo00003" }] });
     expect(await read({ ...input, repo: "web" })).toMatchObject({ count: 1, items: [] });
+    // N1: the pull request's repository is matched by its GitHub id. Revision 3 renames repository 9 ("api" -> "api-v2") and adds a DIFFERENT repository (11) that is also called "api".
+    t.pin(3, pinnedRepo("api-v2", 9), pinnedRepo("api", 11), pinnedRepo("web", 10));
+    expect(await read({ ...input, repo: "api" })).toMatchObject({ count: 1, items: [{ id: "les_repo00003" }] });
+    expect(await read({ ...input, repo: "api", startingRevision: 3 })).toMatchObject({ count: 1, items: [] });
+    expect(await read({ ...input, repo: "api-v2", startingRevision: 3 })).toMatchObject({ count: 1, items: [{ id: "les_repo00003" }] });
     // The reader installed for pull requests (its repository visibility is asked of the code host, which this harness does not have: unknown, so only the count and the link are written).
     expect(await lessonsUsedForTask({ orgId: TEST_ORG, project: "payments", taskId: running.taskId, pageUrl: "https://app.example.test/t/x", repo: "api" })).toMatchObject({ count: 1, items: [] });
+    // Revision 4 drops repository 9 for good: the lesson is not the project's any more, so it is not counted at all.
+    t.pin(4, pinnedRepo("api", 11), pinnedRepo("web", 10));
+    expect(await read({ ...input, repo: "api" })).toBeUndefined();
   });
 
   it("the installed runtime answers the project's repositories from the latest revision; no revision or no pinned repository is 'not known' or not the project's", async () => {

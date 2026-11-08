@@ -248,7 +248,7 @@ export async function startTaskWorkflowPublicationFromSystem(
   // Setup and test health SH18: the Testing view of this code (only while `vx` is on; otherwise undefined and the description is what it was).
   const testing = rovaraV2 ? await loadTestingView(deps, task, workflow) : undefined;
   // Approve by exception (DECISIONS 24): the lessons this task used, each with a not-helpful link (none where lessons are off).
-  const lessonsUsed = lessonsUsedSection(await lessonsUsedForTask({ orgId: deps.orgId, project: task.project, taskId, pageUrl: origin.taskPageUrl, repo: repository.repositoryId }));
+  const lessonsUsed = lessonsUsedSection(await lessonsUsedForTask({ orgId: deps.orgId, project: task.project, taskId, pageUrl: origin.taskPageUrl, repo: repository.repositoryId, startingRevision: task.startingRevision }));
   const bodyContext: PullRequestBodyContext | undefined = rovaraV2
     ? { changedFiles: await candidateChangedFiles(deps, task), ...(lessonsUsed === undefined ? {} : { lessonsUsed }), ...(testing === undefined ? {} : { testing }), ...(linearIssueKey === undefined ? {} : { linearIssueKey }), ...(proof === undefined ? {} : { proof }), ...(evidenceRisk === undefined ? {} : { evidenceRisk }), attribution: resolvedAttribution.attribution }
     : { attribution: resolvedAttribution.attribution, ...(lessonsUsed === undefined ? {} : { lessonsUsed }) };

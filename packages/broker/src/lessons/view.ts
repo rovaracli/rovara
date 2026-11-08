@@ -187,6 +187,8 @@ export async function buildLessonsView(deps: LessonViewDeps, caller: LessonCalle
   let checked = 0, kept = 0;
   // Review L3: the lessons (of the waiting, active and queued lists that were looked at) withheld because they were learned from a legacy task with no session item.
   const legacyHeld = new Set<string>();
+  // Of those, the ones inside the lists' `checked` count: they are counted as held, so they are not also "left out" (review N2). The queued count reads lessons apart from `checked`.
+  const legacyChecked = new Set<string>();
   const cut = new Set<"waiting" | "active" | "removed">();
   /** The first `max + 1` lessons (in `order`) this viewer may read now: one more than the list shows tells whether it was cut. */
   const top = async (list: "waiting" | "active" | "removed", statuses: Lesson["status"][], order: (a: Lesson, b: Lesson) => number, max: number): Promise<Lesson[]> => {
@@ -194,7 +196,7 @@ export async function buildLessonsView(deps: LessonViewDeps, caller: LessonCalle
     const live = createLessonLiveReader({ port: deps.access.taskVisibility, key, where: "view", log: deps.log, timeoutMs: () => Math.max(1, Math.min(LESSON_LIVE_TIMEOUT_MS, deadlineAt - Date.now())) });
     const result = await readVisibleRanked({ access: deps.access, key, viewer: state.viewer, where: "view", log: deps.log, live, ranked, pageSize: max + 1, enough: (found) => found.length > max, deadlineAt });
     checked += result.checked; kept += result.kept.length;
-    if (list !== "removed") for (const id of live.legacyWithheld()) legacyHeld.add(id);
+    if (list !== "removed") for (const id of live.legacyWithheld()) { legacyHeld.add(id); legacyChecked.add(id); }
     if (!result.complete) cut.add(list);
     return result.kept;
   };
@@ -221,7 +223,7 @@ export async function buildLessonsView(deps: LessonViewDeps, caller: LessonCalle
     waiting: waiting.map((l) => toView(l, ctx)), active: active.map((l) => toView(l, ctx)), removed: removed.map((l) => toView(l, ctx)),
     queued,
     // Lessons the person could not see among those the lists checked (the lists check only as many as they show, so this is a count of what was looked at, not of the whole project).
-    hidden: state.canDecide ? checked - kept : 0,
+    hidden: state.canDecide ? Math.max(0, checked - kept - legacyChecked.size) : 0,
     // For people who decide: how many lessons wait because the task they were learned from has no session item (started before sessions). They stay out until that changes; the count says they are not lost.
     ...(state.canDecide && legacyHeld.size > 0 ? { legacyHeld: legacyHeld.size } : {}),
     truncated, setVersion, snapshots,

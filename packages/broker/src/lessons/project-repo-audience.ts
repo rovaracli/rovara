@@ -13,15 +13,19 @@
 // This is for lessons ONLY. The Team record's own access check (`team-record/access-port.ts`, `access.ts`) is unchanged: it still answers "restricted" for these rows, and `viewedForLessons` merely stops asking it
 // about places that are the project's own repositories. Callers keep the lesson they passed in; only the checks look at the converted copy.
 import { QueryCommand } from "@aws-sdk/lib-dynamodb";
-import { PROJECT_REVISION_SK_PREFIX, RepositoryDefinitionSchema, codeRepositoriesOf, projectPk, repositoryHostOf, type OrgId, type RepositoryDefinition } from "@agentx/contracts";
+import { PROJECT_REVISION_SK_PREFIX, RepositoryDefinitionSchema, codeRepositoriesOf, projectPk, projectRevisionKey, repositoryHostOf, type OrgId, type RepositoryDefinition } from "@agentx/contracts";
 import { isScopeClosed } from "../team-record/item-head.js";
 import { ACL_SCOPE_MAX, type Lesson } from "./types.js";
 
 /** The places (`<source>:repo/<id>`) of the repositories a project has now. Throws when the project definition cannot be read. */
 export interface ProjectRepoScopesPort {
   read(orgId: OrgId, project: string): Promise<ReadonlySet<string>>;
-  /** The place (`github:repo/<id>`) of the project's repository called `name`, or undefined when the project has no such pinned repository. Throws when the project definition cannot be read. Absent: no pull request can name a repository-only lesson (decision 36). */
-  placeOf?(orgId: OrgId, project: string, name: string): Promise<string | undefined>;
+  /**
+   * The place (`github:repo/<id>`) of the repository a pull request is in. `name` is the repository's name in the project revision the task STARTED on (`startingRevision`); that revision gives the GitHub
+   * repository id, which is what is compared with the project's repositories now, so a rename or a later revision cannot make the name mean another repository (review N1). Undefined (unknown) when there is no starting
+   * revision, either side has no pinned id, or the repository is not one of the project's now. Throws when the project definition cannot be read. Absent: no pull request can name a repository-only lesson (decision 36).
+   */
+  placeOf?(orgId: OrgId, project: string, name: string, startingRevision?: number): Promise<string | undefined>;
 }
 
 /** The port rides on the task-visibility port the access check carries (as the lesson audiences do), so the shared access port and the Team record's port types stay exactly as they were. */
@@ -89,16 +93,19 @@ type Send = { send(command: unknown): Promise<unknown> };
 
 interface PinnedRepository { name: string; place: string }
 
-/** The GitHub repositories (by pinned immutable id) of the project's LATEST revision. Throws when the project or its definition cannot be read. */
-async function latestPinnedRepositories(table: { documentClient: Send; tableName: string }, orgId: OrgId, project: string): Promise<PinnedRepository[]> {
+/** The GitHub repositories (by pinned immutable id) of the project's LATEST revision, or of revision `revision` when given. Throws when the project or its definition cannot be read. */
+async function pinnedRepositories(table: { documentClient: Send; tableName: string }, orgId: OrgId, project: string, revision?: number): Promise<PinnedRepository[]> {
   const response = await table.documentClient.send(new QueryCommand({
     TableName: table.tableName,
     KeyConditionExpression: "pk = :pk AND begins_with(sk, :revision)",
-    ExpressionAttributeValues: { ":pk": projectPk(orgId, project), ":revision": PROJECT_REVISION_SK_PREFIX },
+    // One revision: its own sort key (fixed width, so the prefix is exactly that revision). Absent: the newest.
+    ExpressionAttributeValues: { ":pk": projectPk(orgId, project), ":revision": revision === undefined ? PROJECT_REVISION_SK_PREFIX : projectRevisionKey(orgId, project, revision).sk },
     ScanIndexForward: false,
     Limit: 1,
     ConsistentRead: true,
   })) as { Items?: Array<{ definition?: unknown }> };
+  // A named revision that does not exist has no repositories (unknown); the newest one missing is an unreadable project.
+  if (revision !== undefined && response.Items?.[0] === undefined) return [];
   const definition = response.Items?.[0]?.definition as { repositories?: unknown } | undefined;
   if (definition === undefined || !Array.isArray(definition.repositories)) throw new Error("lessons: the project definition can't be read");
   const found: PinnedRepository[] = [];
@@ -122,14 +129,18 @@ async function latestPinnedRepositories(table: { documentClient: Send; tableName
 export function tableProjectRepoScopes(table: { documentClient: Send; tableName: string }, options: { record?: { documentClient: Send; tableName: string } | undefined } = {}): ProjectRepoScopesPort {
   return {
     async read(orgId, project) {
-      const pinned = await latestPinnedRepositories(table, orgId, project);
+      const pinned = await pinnedRepositories(table, orgId, project);
       const open = options.record === undefined ? pinned : (await Promise.all(pinned.map(async (repository) => ((await isScopeClosed(options.record!, orgId, repository.place)) ? undefined : repository)))).flatMap((repository) => (repository === undefined ? [] : [repository]));
       return new Set(open.map((repository) => repository.place));
     },
-    async placeOf(orgId, project, name) {
-      const found = (await latestPinnedRepositories(table, orgId, project)).find((repository) => repository.name === name);
-      if (found === undefined) return undefined;
-      return options.record !== undefined && await isScopeClosed(options.record, orgId, found.place) ? undefined : found.place;
+    async placeOf(orgId, project, name, startingRevision) {
+      if (startingRevision === undefined || !Number.isSafeInteger(startingRevision) || startingRevision < 1) return undefined;
+      // The pull request's repository is the one called `name` in the revision the task started on; the GitHub id (stable across renames) is what is matched against the project's repositories now.
+      const home = (await pinnedRepositories(table, orgId, project, startingRevision)).find((repository) => repository.name === name);
+      if (home === undefined) return undefined;
+      const now = (await pinnedRepositories(table, orgId, project)).find((repository) => repository.place === home.place);
+      if (now === undefined) return undefined;
+      return options.record !== undefined && await isScopeClosed(options.record, orgId, now.place) ? undefined : now.place;
     },
   };
 }

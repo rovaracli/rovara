@@ -36,6 +36,8 @@ export interface LessonsUsedInput {
   orgId: string; project: string; taskId: string; /** The task page's address (https); the link is this page with the lesson named. */ pageUrl: string | undefined;
   /** The project repository (its name in the project definition) the pull request is in. Absent: unknown, so a lesson restricted to one repository is only counted (decision 36). */
   repo?: string | undefined;
+  /** The project revision the task started on: `repo` is a name in THAT revision, and its GitHub repository id is what is compared (review N1). Absent: the repository is unknown. */
+  startingRevision?: number | undefined;
 }
 export type LessonsUsedReader = (input: LessonsUsedInput) => Promise<LessonsUsedSummary | undefined>;
 
@@ -129,7 +131,7 @@ async function targetPlaceOf(port: object | undefined, input: LessonsUsedInput):
   if (repos?.placeOf === undefined || input.repo === undefined) return undefined;
   const org = OrgIdSchema.safeParse(input.orgId);
   if (!org.success) return undefined;
-  try { return await repos.placeOf(org.data, input.project, input.repo); } catch { return undefined; }
+  try { return await repos.placeOf(org.data, input.project, input.repo, input.startingRevision); } catch { return undefined; }
 }
 
 /** True when neither the lesson's text nor its title names a person: an @handle, an e-mail address, or the display name of anyone who wrote it. Unknown (no reader, or it fails) is false. */
