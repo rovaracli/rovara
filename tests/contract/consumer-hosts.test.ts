@@ -20,7 +20,7 @@ function setup(options: { withoutRegistry?: boolean } = {}) {
     { name: "web", url: GITHUB_URL, path: "repo/web", defaultBranch: "main", credentialRef: "github-app" },
     { name: "web-pinned", url: GITHUB_URL, path: "repo/web2", defaultBranch: "main", credentialRef: "github-app", host: { kind: "github" as const, installationId: 5, repositoryId: 6 } },
     { name: "api", url: FAKE_URL, path: "repo/api", defaultBranch: "main", credentialRef: "x", host: { kind: "fake", ref: "r1" } },
-    { name: "mystery", url: "https://git.example.test/acme/mystery", path: "repo/m", defaultBranch: "main", credentialRef: "x", host: { kind: "gitfarm" } },
+    { name: "mystery", url: "https://git.example.test/acme/mystery", path: "repo/m", defaultBranch: "main", credentialRef: "x", host: { kind: "examplehost" } },
   ];
   db.set({ ...projectRevisionKey(TEST_ORG, "payments", 1), entityType: "PROJECT", registeredAt: "2026-10-31T00:00:00.000Z", definition: { name: "payments", revision: 1, repositories, setup: [], readiness: [], orchestratorInstructions: "x" } });
   const isTeamMember = vi.fn(async () => "member" as const);
@@ -58,7 +58,7 @@ describe("the repository the consumers are given", () => {
     const { resolve } = setup();
     await expect(resolve("payments", 1, "mystery", TEST_ORG)).rejects.toMatchObject({ code: "CONFIG_INVALID", message: expect.stringContaining(NO_HOST_MESSAGE) as unknown });
     // The refusal does not echo the kind.
-    await expect(resolve("payments", 1, "mystery", TEST_ORG)).rejects.not.toMatchObject({ message: expect.stringContaining("gitfarm") as unknown });
+    await expect(resolve("payments", 1, "mystery", TEST_ORG)).rejects.not.toMatchObject({ message: expect.stringContaining("examplehost") as unknown });
   });
 
   it("refuses the same way when the install has no registry (a GitHub-only router stands in): a fake kind is not GitHub", async () => {

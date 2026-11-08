@@ -46,7 +46,7 @@ function registry(extra: CodeHost[] = [], github = githubCodeHost(GITHUB, { cred
 const fakeDelivery = (cr = "7", delivery = "d-1", event: "cr.opened" | "cr.updated" | "cr.merged" | "cr.closed" = "cr.updated") => fakeSignedDelivery({ delivery, event, cr });
 
 describe("P6: a host kind this install has not registered is refused, and never read as GitHub", () => {
-  it.each(["gitfarm", "GitHub", "git hub", "../github", "", "x".repeat(64)])("refuses kind %j with one fixed sentence, before the delivery is read, with nothing reserved", async (kind) => {
+  it.each(["examplehost", "GitHub", "git hub", "../github", "", "x".repeat(64)])("refuses kind %j with one fixed sentence, before the delivery is read, with nothing reserved", async (kind) => {
     const { github, router } = registry();
     const normalise = vi.spyOn(github.events as { normalise: NonNullable<CodeHost["events"]["normalise"]> }, "normalise");
     const db = new FakeDynamoDb();
@@ -202,7 +202,7 @@ describe("P6: the repository key", () => {
   });
   it("keys another kind by kind and address, keeping the path's case, and never conflates two hosts or two repositories", () => {
     expect(codeHostRepositoryKey("fake", "https://Git.Example.test/Acme/Api.git/")).toBe("fake:https://git.example.test/Acme/Api");
-    expect(codeHostRepositoryKey("gitfarm", "https://git.example.test/Acme/Api")).not.toBe(codeHostRepositoryKey("fake", "https://git.example.test/Acme/Api"));
+    expect(codeHostRepositoryKey("examplehost", "https://git.example.test/Acme/Api")).not.toBe(codeHostRepositoryKey("fake", "https://git.example.test/Acme/Api"));
     expect(codeHostRepositoryKey("fake", "https://git.example.test/Acme/Api")).not.toBe(codeHostRepositoryKey("fake", "https://git.example.test/acme/api"));
   });
   it("has no key for an address the kind cannot name", () => {
@@ -374,6 +374,6 @@ describe("P6: a new event wakes the tracking row of the task it is about", () =>
 
   it("an unknown kind is refused with the fixed sentence by the broker entry too", async () => {
     const s = await setup("fake");
-    await expect(handleCodeHostWebhook(s.deps, "gitfarm", fakeDelivery())).rejects.toMatchObject({ code: "CONFIG_INVALID", message: expect.stringContaining(NO_HOST_MESSAGE) as unknown });
+    await expect(handleCodeHostWebhook(s.deps, "examplehost", fakeDelivery())).rejects.toMatchObject({ code: "CONFIG_INVALID", message: expect.stringContaining(NO_HOST_MESSAGE) as unknown });
   });
 });

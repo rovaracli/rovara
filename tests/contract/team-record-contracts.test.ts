@@ -68,7 +68,7 @@ describe("record event", () => {
   });
   it("refuses a source that does not fit the kind", () => {
     expect(parses(event({ source: "slack" }))).toBe(false);
-    expect(parses(event({ source: "codehost:gitfarm" }))).toBe(true);
+    expect(parses(event({ source: "codehost:examplehost" }))).toBe(true);
     expect(parses(event({ kind: "slack.message", source: "slack", sourceRef: { system: "slack", id: "T1/C1/1.2" } }))).toBe(true);
     expect(parses(event({ kind: "ticket.created", source: "mcp" }))).toBe(true);
     expect(parses(event({ kind: "ticket.created", source: "slack" }))).toBe(false);
@@ -223,7 +223,7 @@ describe("source row write contracts", () => {
   it("takes an add with the exact fields and refuses anything else", () => {
     expect(body(add)).toBe(true);
     expect(body({ ...add, exclude: ["a", "b"], notesOptIn: true })).toBe(true);
-    expect(body({ ...add, source: "codehost:gitfarm" })).toBe(true);
+    expect(body({ ...add, source: "codehost:examplehost" })).toBe(true);
     expect(body({ ...add, source: "bitbucket" })).toBe(false);
     expect(body({ ...add, requestId: "not-a-uuid" })).toBe(false);
     expect(body({ ...add, retention: "E" })).toBe(false);

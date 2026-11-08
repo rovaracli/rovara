@@ -107,7 +107,7 @@ describe("P5e/P6: the meta repository is read from the code host its record name
     const otherHead = other.model.commit("main", { "x.txt": "1" });
     await expect(metaPrepareOf(other.dependencies as never, other.db.find((item) => item.entityType === "PROJECT")[0] as never, TEST_ORG)).resolves.toMatchObject({ knowledgeCommit: otherHead });
     expect(other.github.getDefaultBranchHead).not.toHaveBeenCalled();
-    const unknown = withMeta([{ name: "m", url: MYSTERY_URL, role: "meta", host: { kind: "gitfarm" } }, { name: "c", url: GITHUB_URL }]);
+    const unknown = withMeta([{ name: "m", url: MYSTERY_URL, role: "meta", host: { kind: "examplehost" } }, { name: "c", url: GITHUB_URL }]);
     await expect(metaPrepareOf(unknown.dependencies as never, unknown.db.find((item) => item.entityType === "PROJECT")[0] as never, TEST_ORG)).rejects.toThrow(refusal(NO_HOST_MESSAGE));
     expect(unknown.github.getDefaultBranchHead).not.toHaveBeenCalled();
   });
@@ -165,11 +165,11 @@ describe("P5e: the change list of a session's pull request", () => {
 
   it("is refused with the router's sentence for a repository whose host this install has not registered", async () => {
     const t = await sessionRoute();
-    t.setHost({ kind: "gitfarm" });
+    t.setHost({ kind: "examplehost" });
     const response = await t.read();
     expect(response.status).toBe(400);
     expect(response.body.error?.message).toContain(NO_HOST_MESSAGE);
-    expect(response.body.error?.message).not.toContain("gitfarm");
+    expect(response.body.error?.message).not.toContain("examplehost");
     expect(t.listPullRequestFiles).not.toHaveBeenCalled();
   });
 });
@@ -189,7 +189,7 @@ describe("P5e: the setup agent's citations are re-read only from GitHub", () => 
   };
 
   it("reads a GitHub repository's citations, and leaves another host's, and an unknown one's, unchecked without asking GitHub for them", async () => {
-    const w = world({ repositories: [{ name: "web", url: GITHUB_URL }, { name: "api", url: FAKE_URL, host: { kind: "fake" } }, { name: "mystery", url: MYSTERY_URL, host: { kind: "gitfarm" } }] });
+    const w = world({ repositories: [{ name: "web", url: GITHUB_URL }, { name: "api", url: FAKE_URL, host: { kind: "fake" } }, { name: "mystery", url: MYSTERY_URL, host: { kind: "examplehost" } }] });
     const readFile = vi.fn(async () => "run the tests\n");
     const definition = (w.db.find((item) => item.entityType === "PROJECT")[0] as { definition: never }).definition;
     const deps = { documentClient: w.db, tableName: "state", now: () => Date.parse("2026-11-01T00:00:00.000Z"), readFile } as never;

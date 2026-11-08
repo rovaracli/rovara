@@ -51,7 +51,7 @@ describe("the pins of a repository, from its host record", () => {
 
   it("refuses a repository on another code host with a fixed sentence that does not echo the kind", () => {
     expect(() => githubPinsOf(elsewhere)).toThrow(/code host does not support working branch review/u);
-    expect(() => githubPinsOf({ ...web, host: { kind: "gitfarm" } })).not.toThrow(/gitfarm/u);
+    expect(() => githubPinsOf({ ...web, host: { kind: "examplehost" } })).not.toThrow(/examplehost/u);
   });
 });
 

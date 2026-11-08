@@ -60,7 +60,7 @@ async function world() {
 describe("acceptance of a workflow's own push or merge of the base, on a host that is not GitHub", () => {
   it.each([
     ["a registered other host", { kind: "fake", ref: "r1" }, GITHUB_ONLY_MESSAGE],
-    ["a host this install has not registered", { kind: "gitfarm" }, NO_HOST_MESSAGE],
+    ["a host this install has not registered", { kind: "examplehost" }, NO_HOST_MESSAGE],
   ])("%s: refused before the pull request is read, an operation is claimed or the worker is sent to push", async (_name, host, message) => {
     const w = await world();
     w.setHost(host);
@@ -105,7 +105,7 @@ function handlerFixtures(w: Awaited<ReturnType<typeof world>>, stage: "update" |
 describe("the handlers of a pushed fix and of a merge of the base, on a host that is not GitHub", () => {
   it.each([
     ["a registered other host", { kind: "fake", ref: "r1" }, GITHUB_ONLY_MESSAGE],
-    ["a host this install has not registered", { kind: "gitfarm" }, NO_HOST_MESSAGE],
+    ["a host this install has not registered", { kind: "examplehost" }, NO_HOST_MESSAGE],
   ])("%s: the pushed-fix result stops before any read", async (_name, host, message) => {
     const w = await world();
     w.setHost(host);
@@ -117,7 +117,7 @@ describe("the handlers of a pushed fix and of a merge of the base, on a host tha
 
   it.each([
     ["a registered other host", { kind: "fake", ref: "r1" }, GITHUB_ONLY_MESSAGE],
-    ["a host this install has not registered", { kind: "gitfarm" }, NO_HOST_MESSAGE],
+    ["a host this install has not registered", { kind: "examplehost" }, NO_HOST_MESSAGE],
   ])("%s: the merge-of-the-base result stops before any read", async (_name, host, message) => {
     const w = await world();
     w.setHost(host);
@@ -152,7 +152,7 @@ describe("the feedback check at a worker's start (GitHub-shaped feedback, linked
   });
 
   it("is refused with the router's sentence for a repository whose host this install has not registered", async () => {
-    const w = startWorld({ kind: "gitfarm" });
+    const w = startWorld({ kind: "examplehost" });
     await expect(verifyTaskFeedbackForWorkerStart(w.dependencies, TASK)).rejects.toThrow(refusal(NO_HOST_MESSAGE));
     expect(w.github.getPullRequestFeedback).not.toHaveBeenCalled();
   });
@@ -225,7 +225,7 @@ describe("acceptance of a workflow's publication, on a host that is not GitHub",
   };
 
   it("a host this install has not registered: refused before the idempotency row is written, the workspace claimed, the push sent or its grant issued", async () => {
-    const { w, identity, rows } = await prepared({ kind: "gitfarm" });
+    const { w, identity, rows } = await prepared({ kind: "examplehost" });
     const workspaceBefore = JSON.stringify(w.h.db.get(`WORKSPACE#${w.workspaceId}`, "META"));
     const issue = vi.spyOn(w.dependencies.repositoryGrants, "issue");
     const before = rows().length;

@@ -220,7 +220,7 @@ export async function startApplicationRound(options: RoundOptions = {}) {
     }
     for (const project of harness.db.find((row) => row.entityType === "PROJECT")) {
       const definition = project.definition as { repositories: Array<Record<string, unknown>> };
-      harness.db.set({ ...project, definition: { ...definition, repositories: definition.repositories.map((repository) => ({ ...repository, host: { kind: options.baseHost === "unknown" ? "gitfarm" : "fake", ...(options.baseHost === "unknown" ? {} : { ref: "r1" }) } })) } });
+      harness.db.set({ ...project, definition: { ...definition, repositories: definition.repositories.map((repository) => ({ ...repository, host: { kind: options.baseHost === "unknown" ? "examplehost" : "fake", ...(options.baseHost === "unknown" ? {} : { ref: "r1" }) } })) } });
     }
   }
   const task = harness.db.get(taskKey.pk, taskKey.sk)!;

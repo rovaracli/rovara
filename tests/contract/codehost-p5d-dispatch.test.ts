@@ -102,7 +102,7 @@ describe("the head of a pull request, read before a CI fix round's run is paid f
   it("starts nothing for a record that names a host this install has not registered (the head cannot be said): the row stays, and GitHub is not asked", async () => {
     const t = await world();
     const { taskId, workspaceId } = await t.inFixRound();
-    t.setHost({ kind: "gitfarm" });
+    t.setHost({ kind: "examplehost" });
     await t.sweep();
     expect(t.byMode(workspaceId, "IMPLEMENT")).toEqual([]);
     expect(t.meta(taskId).workflow).toMatchObject({ stage: "IMPLEMENT", state: "READY", fixSource: "ci" });

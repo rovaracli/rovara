@@ -459,7 +459,7 @@ describe("removing a Slack, Linear or Jira row", () => {
 describe("the kinds that are still not available", () => {
   it("MCP and plug-in code hosts answer SOURCE_KIND_NOT_YET; Slack, Linear and Jira no longer do", async () => {
     const h = harness();
-    for (const [source, scope] of [["mcp", "mcp:srv/x"], ["codehost:gitfarm", "codehost:gitfarm:repo/1"]] as const) {
+    for (const [source, scope] of [["mcp", "mcp:srv/x"], ["codehost:examplehost", "codehost:examplehost:repo/1"]] as const) {
       expect(await post(h, WHO.owner, add({ source, scope })), source).toEqual({ status: 422, body: { code: "SOURCE_KIND_NOT_YET", message: "That kind of source can't be added yet." } });
     }
     nothingWritten(h);

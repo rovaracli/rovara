@@ -42,8 +42,8 @@ describe("the repository host field", () => {
     for (const bad of [
       repo("api", { host: { kind: "github", installationId: 7, repositoryId: 99 }, installationId: 8 }),
       repo("api", { host: { kind: "github", installationId: 7, repositoryId: 99 }, githubRepositoryId: 100 }),
-      repo("api", { host: { kind: "gitfarm" }, installationId: 8 }),
-      repo("api", { host: { kind: "gitfarm" }, githubRepositoryId: 8 }),
+      repo("api", { host: { kind: "examplehost" }, installationId: 8 }),
+      repo("api", { host: { kind: "examplehost" }, githubRepositoryId: 8 }),
     ]) {
       expect(StoredProjectDefinitionSchema.safeParse(project([bad])).success).toBe(false);
     }
@@ -56,15 +56,15 @@ describe("the repository host field", () => {
   it("refuses malformed hosts: bad kind, unknown keys, non-positive ids, github fields on another kind", () => {
     for (const host of [
       { kind: "GitHub" }, { kind: "" }, { kind: "github", extra: 1 }, { kind: "github", installationId: 0 }, { kind: "github", repositoryId: -1 },
-      { kind: "gitfarm", installationId: 7 }, { kind: "gitfarm", ref: "" }, {}, "github", null,
+      { kind: "examplehost", installationId: 7 }, { kind: "examplehost", ref: "" }, {}, "github", null,
     ]) {
       expect(RepositoryHostSchema.safeParse(host).success, JSON.stringify(host)).toBe(false);
     }
-    expect(RepositoryHostSchema.safeParse({ kind: "gitfarm", ref: "pkg/abc" }).success).toBe(true);
+    expect(RepositoryHostSchema.safeParse({ kind: "examplehost", ref: "pkg/abc" }).success).toBe(true);
   });
 
   it("does not WRITE a host in this release: a save with one is refused, whatever its kind, so the release before this one can still read what was saved (rollback)", () => {
-    for (const host of [{ kind: "github" }, { kind: "github", installationId: 7, repositoryId: 99 }, { kind: "gitfarm" }, { kind: "gitfarm", ref: "pkg/abc" }, { kind: "made-up" }]) {
+    for (const host of [{ kind: "github" }, { kind: "github", installationId: 7, repositoryId: 99 }, { kind: "examplehost" }, { kind: "examplehost", ref: "pkg/abc" }, { kind: "made-up" }]) {
       const result = ProjectDefinitionSchema.safeParse(project([repo("api", { host })]));
       expect(result.success, JSON.stringify(host)).toBe(false);
       expect(JSON.stringify(result.error?.issues)).toContain("host");
@@ -92,10 +92,10 @@ describe("the code host router", () => {
   // A fake whose kind is the one a test names (the fake itself is called "fake").
   const asKind = (kind: string): CodeHost => Object.create(new FakeCodeHost(newModel()), { kind: { value: kind } }) as CodeHost;
   const github = asKind("github");
-  const other = asKind("gitfarm");
+  const other = asKind("examplehost");
 
   it("picks the entry whose kind is the host's kind", () => {
-    const picked = selectCodeHost({ kind: "gitfarm" }, [github, other]);
+    const picked = selectCodeHost({ kind: "examplehost" }, [github, other]);
     expect(picked).toBe(other);
     const withInstallation = { kind: "github", installationId: 1 };
     expect(selectCodeHost(withInstallation, [github, other])).toBe(github);
@@ -123,7 +123,7 @@ describe("the code host router", () => {
   });
 
   it("refuses at start: every repository of a project must have a known kind", () => {
-    const ok = StoredProjectDefinitionSchema.parse(project([repo("api"), repo("lib", { host: { kind: "gitfarm" } })]));
+    const ok = StoredProjectDefinitionSchema.parse(project([repo("api"), repo("lib", { host: { kind: "examplehost" } })]));
     expect(() => assertRepositoryHostsKnown(ok.repositories, [github, other])).not.toThrow();
     expect(() => assertRepositoryHostsKnown(ok.repositories, [github])).toThrow("CONFIG_INVALID");
     expect(() => assertRepositoryHostsKnown(ok.repositories, [])).toThrow("CONFIG_INVALID");
@@ -133,25 +133,25 @@ describe("the code host router", () => {
 describe("the P4 router picks by the repository record's host (one registry)", () => {
   const asKind = (kind: string): CodeHost => Object.create(new FakeCodeHost(newModel()), { kind: { value: kind } }) as CodeHost;
   const github = asKind("github");
-  const farm = asKind("gitfarm");
+  const farm = asKind("examplehost");
   const enterprise = createPluginRegistry({ codeHosts: [github, farm], checkRunners: [], policy: editionPolicy("enterprise") });
   const publicOnly = createPluginRegistry({ codeHosts: [github], checkRunners: [] });
 
   it("forRecord routes by host.kind, and a record with no host (or old pins) is GitHub", () => {
     expect(enterprise.codeHost.forRecord(ProjectDefinitionSchema.parse(project([repo("api")])).repositories[0]!)).toBe(github);
-    expect(enterprise.codeHost.forRecord(StoredProjectDefinitionSchema.parse(project([repo("api", { host: { kind: "gitfarm" } })])).repositories[0]!)).toBe(farm);
+    expect(enterprise.codeHost.forRecord(StoredProjectDefinitionSchema.parse(project([repo("api", { host: { kind: "examplehost" } })])).repositories[0]!)).toBe(farm);
     expect(enterprise.codeHost.forRecord({ installationId: 7, githubRepositoryId: 99 })).toBe(github);
   });
 
   it("forRecord refuses a kind with no registered host (fixed sentence, kind not echoed) and never falls back to GitHub", () => {
     let error: unknown;
-    try { publicOnly.codeHost.forRecord(StoredProjectDefinitionSchema.parse(project([repo("api", { host: { kind: "gitfarm" } })])).repositories[0]!); } catch (caught) { error = caught; }
+    try { publicOnly.codeHost.forRecord(StoredProjectDefinitionSchema.parse(project([repo("api", { host: { kind: "examplehost" } })])).repositories[0]!); } catch (caught) { error = caught; }
     expect((error as { code: string }).code).toBe("CONFIG_INVALID");
-    expect((error as Error).message).not.toContain("gitfarm");
+    expect((error as Error).message).not.toContain("examplehost");
   });
 
   it("the start check takes the router's kinds: the same answer as with the entries", () => {
-    const stored = StoredProjectDefinitionSchema.parse(project([repo("api"), repo("lib", { host: { kind: "gitfarm" } })]));
+    const stored = StoredProjectDefinitionSchema.parse(project([repo("api"), repo("lib", { host: { kind: "examplehost" } })]));
     expect(() => assertRepositoryHostsKnown(stored.repositories, enterprise.codeHost)).not.toThrow();
     expect(() => assertRepositoryHostsKnown(stored.repositories, publicOnly.codeHost)).toThrow("CONFIG_INVALID");
   });

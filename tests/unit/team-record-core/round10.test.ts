@@ -151,7 +151,7 @@ describe("R9-4 deleting a place purges every item unit under it", () => {
 describe("the low items", () => {
   it("the unit of a source is declared next to the source list, for every source", () => {
     for (const source of RECORD_SOURCES) expect(["item", "place"]).toContain(aclUnitOfSource(source));
-    expect([aclUnitOfSource("jira"), aclUnitOfSource("linear"), aclUnitOfSource("mcp"), aclUnitOfSource("slack"), aclUnitOfSource("github"), aclUnitOfSource("rovara"), aclUnitOfSource("codehost:gitfarm")]).toEqual(["item", "item", "item", "place", "place", "place", "place"]);
+    expect([aclUnitOfSource("jira"), aclUnitOfSource("linear"), aclUnitOfSource("mcp"), aclUnitOfSource("slack"), aclUnitOfSource("github"), aclUnitOfSource("rovara"), aclUnitOfSource("codehost:examplehost")]).toEqual(["item", "item", "item", "place", "place", "place", "place"]);
   });
 
   const TEAM = "T0TEAM00001";

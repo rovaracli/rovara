@@ -23,20 +23,20 @@ describe("a task start and the code hosts the install registers", () => {
     const harness = await createDeveloperTaskBroker({ brokerExtra: { codeHost: { kinds: () => ["github"] } } });
     expect((await start(harness)).status).toBe(200);
     const workspacesBefore = harness.db.find((item) => item.entityType === "WORKSPACE").length;
-    expect(setHostKind(harness, "gitfarm")).toBeGreaterThan(0);
+    expect(setHostKind(harness, "examplehost")).toBeGreaterThan(0);
     const refused = await start(harness);
     expect(refused.status).toBeGreaterThanOrEqual(400);
     expect(JSON.stringify(refused.body)).toContain("CONFIG_INVALID");
     expect(JSON.stringify(refused.body)).toContain("code host is not available in this install");
-    expect(JSON.stringify(refused.body)).not.toContain("gitfarm");
+    expect(JSON.stringify(refused.body)).not.toContain("examplehost");
     expect(harness.db.find((item) => item.entityType === "WORKSPACE").length).toBe(workspacesBefore);
   });
 
   it("a registered non-GitHub kind starts, and a repository with no host is GitHub", async () => {
-    const harness = await createDeveloperTaskBroker({ brokerExtra: { codeHost: { kinds: () => ["github", "gitfarm"] } } });
-    expect(setHostKind(harness, "gitfarm")).toBeGreaterThan(0);
+    const harness = await createDeveloperTaskBroker({ brokerExtra: { codeHost: { kinds: () => ["github", "examplehost"] } } });
+    expect(setHostKind(harness, "examplehost")).toBeGreaterThan(0);
     expect((await start(harness)).status).toBe(200);
-    const bare = await createDeveloperTaskBroker({ brokerExtra: { codeHost: { kinds: () => ["gitfarm"] } } });
+    const bare = await createDeveloperTaskBroker({ brokerExtra: { codeHost: { kinds: () => ["examplehost"] } } });
     const refused = await start(bare);
     expect(refused.status).toBeGreaterThanOrEqual(400);
     expect(JSON.stringify(refused.body)).toContain("CONFIG_INVALID");
@@ -44,7 +44,7 @@ describe("a task start and the code hosts the install registers", () => {
 
   it("an install that builds no registry checks nothing", async () => {
     const harness = await createDeveloperTaskBroker();
-    setHostKind(harness, "gitfarm");
+    setHostKind(harness, "examplehost");
     expect((await start(harness)).status).toBe(200);
   });
 });

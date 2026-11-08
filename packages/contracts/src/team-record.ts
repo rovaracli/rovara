@@ -39,7 +39,7 @@ export const aclUnitOfSource = (source: string): "item" | "place" => (Object.has
 export const RecordSourceSchema = z.enum(RECORD_SOURCES);
 export type RecordSource = z.infer<typeof RecordSourceSchema>;
 
-/** A code host other than GitHub, through a W6 plug-in (`codehost:gitfarm`). Record ingest consumes plug-in events, not GitHub types. */
+/** A code host other than GitHub, through a W6 plug-in (`codehost:examplehost`). Record ingest consumes plug-in events, not GitHub types. */
 export const CodehostSourceSchema = z.string().regex(/^codehost:[a-z][a-z0-9-]{0,40}$/);
 export const RecordSystemSchema = z.union([RecordSourceSchema, CodehostSourceSchema]);
 export type RecordSystem = z.infer<typeof RecordSystemSchema>;

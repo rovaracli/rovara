@@ -30,7 +30,7 @@ describe("which code host a repository record names (the shared module)", () => 
     expect(hostOfRepository(w.dependencies, records.web as never).kind).toBe("github");
     expect(hostOfRepository(w.dependencies, records.api as never)).toBe(w.fakeHost);
     expect(() => hostOfRepository(w.dependencies, records.mystery as never)).toThrow(refusal(NO_HOST_MESSAGE));
-    expect(() => hostOfRepository(w.dependencies, records.mystery as never)).not.toThrow(/gitfarm/u);
+    expect(() => hostOfRepository(w.dependencies, records.mystery as never)).not.toThrow(/examplehost/u);
   });
 
   it("finds the record by the project's name for it, else by address; an address held by repositories on different hosts is refused, not guessed", () => {
@@ -61,7 +61,7 @@ describe("which code host a repository record names (the shared module)", () => 
     expect(() => githubProviderOf(w.dependencies, w.fakeHost)).toThrow(refusal(GITHUB_ONLY_MESSAGE));
     expect(() => githubProviderOfRecord(w.dependencies, records.api as never)).toThrow(refusal(GITHUB_ONLY_MESSAGE));
     expect(() => githubProviderOfRecord(w.dependencies, records.mystery as never)).toThrow(refusal(NO_HOST_MESSAGE));
-    expect(GITHUB_ONLY_MESSAGE).not.toMatch(/fake|gitfarm/u);
+    expect(GITHUB_ONLY_MESSAGE).not.toMatch(/fake|examplehost/u);
   });
 
   it("the route side's pure check: GitHub and a record with no host pass; a registered other host is 'not available yet'; an unknown kind is the router's sentence; with no router only GitHub is known", () => {
@@ -129,7 +129,7 @@ describe("P5d: the spec pull request and the meta repository's files", () => {
   });
 
   it("reads nothing, and asks nobody, for a record that names a host this install has not registered", async () => {
-    const w = world({ repositories: [{ name: "meta", url: MYSTERY_URL, role: "meta", host: { kind: "gitfarm" } }] });
+    const w = world({ repositories: [{ name: "meta", url: MYSTERY_URL, role: "meta", host: { kind: "examplehost" } }] });
     expect(await readSpecPullRequestOf(w.dependencies)(task, MYSTERY_URL, 1)).toBeUndefined();
     expect(w.github.getPullRequestStatus).not.toHaveBeenCalled();
   });

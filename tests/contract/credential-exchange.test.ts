@@ -120,8 +120,8 @@ describe("the repository credential exchange routes by the record's host", () =>
 
   it("a record that names a host this install has not registered is refused with the router's sentence, and no host is asked", async () => {
     const t = routed();
-    await expect(t.exchange([{ hostKind: "gitfarm" }])).rejects.toMatchObject({ code: "CONFIG_INVALID", message: expect.stringContaining(NO_HOST_MESSAGE) as unknown });
-    await expect(t.exchange([{ hostKind: "gitfarm" }])).rejects.not.toThrow(/gitfarm/u);
+    await expect(t.exchange([{ hostKind: "examplehost" }])).rejects.toMatchObject({ code: "CONFIG_INVALID", message: expect.stringContaining(NO_HOST_MESSAGE) as unknown });
+    await expect(t.exchange([{ hostKind: "examplehost" }])).rejects.not.toThrow(/examplehost/u);
     expect(t.github.issueGitCredential).not.toHaveBeenCalled();
     expect(t.fake.issueGitCredential).not.toHaveBeenCalled();
   });

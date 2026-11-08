@@ -100,7 +100,7 @@ describe("a workflow publication on a host that is not GitHub", () => {
   // Replaces (P10): a registered other host was refused before anything was opened, because the result was recorded by GitHub-only code. The result is recorded for any host now
   // (workflow-items.ts), so a registered other host's change request is opened there; a host this install has not registered is still refused first.
   it("a host this install has not registered: no change request is opened, no pull request row is written, and no read of the branch is made", async () => {
-    const w = world({ recordHost: { kind: "gitfarm" }, asGithub: false });
+    const w = world({ recordHost: { kind: "examplehost" }, asGithub: false });
     const branchHead = vi.spyOn(w.model, "headOf");
     await expect(reconcilePullRequest(w.dependencies, w.operation(), w.body(w.commit))).rejects.toThrow(NO_HOST_MESSAGE);
     expect(w.model.changeRequests).toHaveLength(0);

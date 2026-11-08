@@ -356,7 +356,7 @@ describe("the code host of each cited repository is the one its record names (P5
   it("refuses a record that names a host this job has not registered: its places stay unavailable, GitHub is never asked and no retry follows", async () => {
     const harness = await jobBroker();
     const { taskId, artifact } = await plannedTask(harness);
-    onHost(harness, { url: "https://git.example.test/acme/demo", host: { kind: "gitfarm" } });
+    onHost(harness, { url: "https://git.example.test/acme/demo", host: { kind: "examplehost" } });
     const github = vi.fn<GetFile>(async () => FILE);
     expect(await runPlanEvidenceJob(jobDeps(harness, github), { taskId, artifactId: artifact.id })).toBe("attached");
     expect(github).not.toHaveBeenCalled();
@@ -372,7 +372,7 @@ describe("a project with repositories on two hosts: each cited place goes throug
   function addUnregisteredRepository(harness: Harness): void {
     const key = projectRevisionKey(TEST_ORG, "payments", 1);
     const revision = harness.db.get(key.pk, key.sk) as { definition: { repositories: Array<Record<string, unknown>> } };
-    harness.db.set({ ...revision, definition: { ...revision.definition, repositories: [...revision.definition.repositories, { name: "web", url: OTHER, path: "repo/web", defaultBranch: "main", credentialRef: "x", host: { kind: "gitfarm" } }] } });
+    harness.db.set({ ...revision, definition: { ...revision.definition, repositories: [...revision.definition.repositories, { name: "web", url: OTHER, path: "repo/web", defaultBranch: "main", credentialRef: "x", host: { kind: "examplehost" } }] } });
   }
   const BASES = { result: { preparedBase: [{ repositoryId: "demo", baseCommitSha: "e".repeat(40) }, { repositoryId: "web", baseCommitSha: "f".repeat(40) }] } };
   const PATHS = ["repo/demo/src/charge.ts", "repo/web/src/page.ts"];

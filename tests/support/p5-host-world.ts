@@ -24,7 +24,7 @@ export const SCOPE = { system: "private-install" } as const;
 export const REPOSITORIES: TestRepository[] = [
   { name: "web", url: GITHUB_URL },
   { name: "api", url: FAKE_URL, host: { kind: "fake", ref: "r1" } },
-  { name: "mystery", url: MYSTERY_URL, host: { kind: "gitfarm" } },
+  { name: "mystery", url: MYSTERY_URL, host: { kind: "examplehost" } },
   { name: "web-meta", url: GITHUB_META_URL, role: "meta" },
   { name: "api-meta", url: FAKE_META_URL, role: "meta", host: { kind: "fake", ref: "r2" } },
 ];
