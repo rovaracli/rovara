@@ -86,3 +86,32 @@ export function connectedByWords(by: string | undefined, at: string | undefined,
   const text = whoWhen(by, at, names);
   return text === "Not recorded" ? "Who connected it was not recorded" : by === undefined ? `Connected${text.replace(/^Date recorded/, "")}` : `Connected by ${text}`;
 }
+
+/** Which projects use which connection or AI provider, as `GET /v1/app/connection-usage` answers (only the projects the viewer may see). */
+export interface ConnectionUsage { complete: boolean; connections: ReadonlyArray<{ connectionId: string; projects: readonly string[] }>; sources: ReadonlyArray<{ sourceId: string; projects: readonly string[] }> }
+
+/** The projects (sorted, no repeats) that use any of `ids`, or undefined when the usage was not read or is not complete: then the card keeps its careful wording and never claims "no project". */
+export function projectsUsing(usage: ConnectionUsage | undefined, kind: "connections" | "sources", ids: readonly string[]): string[] | undefined {
+  if (usage === undefined || !usage.complete) return undefined;
+  const wanted = new Set(ids), found = new Set<string>();
+  for (const entry of usage[kind]) if (wanted.has("connectionId" in entry ? entry.connectionId : entry.sourceId)) for (const project of entry.projects) found.add(project);
+  return [...found].sort();
+}
+
+/** The "Used by" line: the project names (the first six), `none` when no project uses it, `unknown` when the usage could not be read; a member is told the list is only what they can see. */
+export function usedByLine(projects: readonly string[] | undefined, words: { none: string; unknown: string }, viewerSeesAll: boolean): string {
+  if (projects === undefined) return words.unknown;
+  if (projects.length === 0) return words.none;
+  const shown = projects.length > 6 ? `${projects.slice(0, 6).join(", ")} and ${String(projects.length - 6)} more` : projects.join(", ");
+  return viewerSeesAll ? shown : `${shown} (only projects you can see are listed)`;
+}
+
+/**
+ * The "Used by" line of a Linear or Jira connection. Beyond the projects that watch or attach it, ticket updates (a read and write connection) and the team record use a
+ * tracker connection company-wide, for any project, so this line never says "no project uses it": it says what is certain and that. Undefined when the usage was not read.
+ */
+export function trackerUsedBy(projects: readonly string[] | undefined, connections: readonly Pick<RegistryConnection, "access">[], viewerSeesAll: boolean): string | undefined {
+  if (projects === undefined) return undefined;
+  const base = projects.length === 0 ? "No project watches or attaches it." : usedByLine(projects, { none: "", unknown: "" }, viewerSeesAll);
+  return `${base} ${connections.some(connection => connection.access === "read_write") ? "Used company-wide for ticket updates and the team record." : "The team record may also read it company-wide."}`;
+}

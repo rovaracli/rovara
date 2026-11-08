@@ -16,9 +16,13 @@ const BODY_MAX_CHARS = 8_000;
 type Connection = OrgConnectionRecord & { actorId?: string; secretVersion?: string };
 
 /** The connection a source reads through: the one it names (id or label), else the only one of its type that holds a key. */
+export function sourceConnectionCandidates<T extends Pick<OrgConnectionRecord, "type" | "hasSecret" | "connectionId" | "label">>(connections: readonly T[], type: "jira" | "linear", named: string | undefined): T[] {
+  const listed = connections.filter((entry) => entry.type === type && entry.hasSecret === true);
+  return named === undefined ? listed : listed.filter((entry) => entry.connectionId === named || entry.label === named);
+}
+
 export async function connectionForSource(deps: OrgConnectionDeps, orgId: OrgId, type: "jira" | "linear", named: string | undefined): Promise<Connection> {
-  const listed = (await new OrgConnectionStore({ ...deps }).list(orgId)).filter((entry) => entry.type === type && entry.hasSecret === true);
-  const chosen = named === undefined ? listed : listed.filter((entry) => entry.connectionId === named || entry.label === named);
+  const chosen = sourceConnectionCandidates(await new OrgConnectionStore({ ...deps }).list(orgId), type, named);
   if (chosen.length === 0) throw new IntakeSearchError("CONNECTION_MISSING");
   if (chosen.length > 1) throw new IntakeSearchError("CONNECTION_AMBIGUOUS");
   const record = await readConnection(deps, orgId, chosen[0]!.connectionId) as Connection | undefined;

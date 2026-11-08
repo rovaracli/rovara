@@ -132,6 +132,7 @@ instead: give it a one-line header comment when you next edit it.
   The one Connections page is `packages/ui/src/screens/admin/connections/ConnectionsScreen.tsx#ConnectionsView`: a row per connection
   (`ConnectionCard.tsx`), its state words in `connection-state.ts`, saved connections and the Linear and Jira add form in `RegistryItems.tsx`,
   GitHub in `packages/ui/src/screens/onboarding/steps/GithubConnectPanel.tsx`, AI providers in `packages/ui/src/screens/admin/models/ProviderSetup.tsx`.
+  "Used by" is exact from `GET /v1/app/connection-usage` (`packages/broker/src/aws/developer-routes/connection-usage.ts#getConnectionUsage`: connectors, watched intake sources and each project's effective AI source order, only projects the viewer may see). The add form for cloud and monitoring tools is `AddMonitoring.tsx`; it posts to the same `POST /v1/app/connections` as the CLI.
 
 ## Contracts
 
