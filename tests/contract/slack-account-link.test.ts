@@ -496,4 +496,30 @@ describe("the link and a company for the same Slack account (SLACK-LINK-1)", () 
       expect(merged).toBe(outcome === "linked");
     }
   });
+
+  it("a browser sign-in that loses the join race to a link is told to sign in again (the signed-out page), gets no session, and no company is written", async () => {
+    const w = await world();
+    const real = w.h.orgs.createOrgWithOwner.bind(w.h.orgs);
+    let linked = false;
+    // The link (another tab) lands on the signing-in developer between the sign-in's decision and its company write.
+    vi.spyOn(w.h.orgs, "createOrgWithOwner").mockImplementation(async (input) => {
+      if (!linked) {
+        linked = true;
+        const developers = w.h.db.find((item) => String(item.pk).startsWith("DEVELOPER#") && item.sk === "META" && item.subject === zed.sub);
+        expect(developers).toHaveLength(1);
+        w.h.db.set({ ...developers[0]!, mergedInto: w.account });
+      }
+      return real(input);
+    });
+    const chooser = await w.h.http(httpEvent("GET", "/v1/auth/browser/authorize?return_to=%2Fapp%2Fwelcome&intent=create"));
+    const cookie = chooser.cookies!.find((value) => value.startsWith("__Host-agentx_review_pkce="))!.split(";")[0]!;
+    const cloudLink = /href="([^"]*method=cloud)"/.exec(chooser.body)![1]!.replaceAll("&amp;", "&");
+    const toProvider = await w.h.http({ ...httpEvent("GET", cloudLink), headers: { cookie } });
+    const done = await w.h.http({ ...httpEvent("GET", w.h.oidc.approve(toProvider.headers.location!, zed.sub)), headers: { cookie } });
+    expect(linked).toBe(true);
+    expect(done.statusCode).toBe(302);
+    expect(done.headers.location).toBe("/app/signed-out?reason=ended");
+    expect(done.cookies?.some((value) => value.startsWith(`${SESSION_COOKIE}=`))).toBe(false);
+    expect(w.h.state.find((item) => String(item.pk).startsWith("DEVELOPER_ORG#") && !String(item.pk).endsWith(w.account))).toHaveLength(0);
+  });
 });

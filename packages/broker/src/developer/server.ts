@@ -67,6 +67,7 @@ import { adaptHttpApiEvent, ownerKeyForSubject, type HttpApiV2Event } from "../a
 import { SESSION_MAX_AGE_SECONDS } from "../aws/web-session.js";
 import { INVITE_TOKEN_PATTERN, inviteTokenHash } from "../org/invite-url.js";
 import type { OrgStore } from "../org/store.js";
+import { MERGED_AWAY_MESSAGE } from "../org/store.js";
 import { NO_ORG_ON_INSTALL_MESSAGE, resolveOrgOnSignIn, sameEmail, type ResolveOrgOnSignInDependencies, type SignInNoOrg, type SignInOrg } from "../org/sign-in.js";
 import { resolveSignInDeveloper, type ResolveSignInDeveloperDependencies } from "./identities.js";
 import {
@@ -834,6 +835,13 @@ function createIssuerHandler(deps: DeveloperIdentityDependencies) {
         deps.log({ event: "signin.refused", method, reason: "no_org_on_install", developerId });
         if (request.browserReturnTo !== undefined) return browserReturn(request.browserReturnTo, false, undefined, "method_unavailable");
         return client({ error: "access_denied", error_description: `${NO_ORG_ON_INSTALL_MESSAGE}; run agentx login again and choose Sign in with Rovara` });
+      }
+      // SLACK-LINK-1: this account was linked into another one (a Slack or GitHub link in another tab) just as the sign-in was creating or joining a company. Nothing was
+      // written; a fresh sign-in resolves to the account it was linked into. Told "sign in again", not shown an internal error.
+      if (isCode(error, "CHANGE_STALE") && refusalWords(error) === MERGED_AWAY_MESSAGE) {
+        deps.log({ event: "signin.refused", method, reason: "linked_elsewhere", developerId });
+        if (request.browserReturnTo !== undefined) return browserReturn(request.browserReturnTo, false, undefined, "ended");
+        return client({ error: "access_denied", error_description: `${MERGED_AWAY_MESSAGE}; run agentx login again` });
       }
       // A removed member (single-org ban) is told so, not shown an internal error.
       if ((error as { code?: unknown } | null)?.code !== "REMOVED_FROM_ORG") throw error;

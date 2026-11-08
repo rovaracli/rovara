@@ -237,11 +237,15 @@ export class DeveloperSignIn extends Construct {
     this.signInFunction = fn;
     // What DeveloperSignInStore sends on every sign-in: GetItem, PutItem, UpdateItem, and TransactWriteItems
     // made of Put and Update items (IAM authorizes each item as PutItem or UpdateItem).
-    // SLACK-LINK-1: OrgStore also condition-checks a developer's sign-in record (not merged into another account) in the transaction that gives the developer a company
-    // (ConditionCheckItem). The same table, the same record, nothing read or written through it.
     fn.addToRolePolicy(new iam.PolicyStatement({
-      actions: ["dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:UpdateItem", "dynamodb:ConditionCheckItem"],
+      actions: ["dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:UpdateItem"],
       resources: [table.tableArn],
+    }));
+    // SLACK-LINK-1: OrgStore also condition-checks a developer's sign-in record (not merged into another account) in the transaction that gives the developer a company
+    // (IAM authorizes it as ConditionCheckItem). That action on the developer records only; nothing is read or written through it.
+    fn.addToRolePolicy(new iam.PolicyStatement({
+      actions: ["dynamodb:ConditionCheckItem"], resources: [table.tableArn],
+      conditions: { "ForAllValues:StringLike": { "dynamodb:LeadingKeys": ["DEVELOPER#*"] } },
     }));
     // Plan 2, Task 8: unlinking a sign-in method (unlinkIdentity, the `unlink-identity` invoke). It lists the developer's own IDENTITY# items
     // (Query on `DEVELOPER#<id>`) and, in one transaction, deletes the one it removes (a transaction's Delete is authorized as DeleteItem; the

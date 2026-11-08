@@ -103,6 +103,10 @@ export interface OrgStoreInput {
    * sign-in record was not merged into another account (`DEVELOPER#<id>` has no `mergedInto`). Linking a Slack or GitHub account merges its own developer away and checks
    * (in its own transaction) that the developer holds no company; the two checks are on the same two items, so a join and a link racing end with one of them, never both.
    * Absent: no such check (an install or test with no sign-in table).
+   * The check passes trivially when the developer has no `DEVELOPER#` record at all, and that is still safe: the point where the link and a sign-in serialize is then the
+   * identity link item (`SIGNIN_IDENTITY#<key>`), which the link writes with `attribute_not_exists` and a sign-in writes before it ever reaches a company step (it writes or
+   * reads its own link and its developer record first, so a link that won makes it resolve to the account). Keep that order if the sign-in is ever rearranged.
+   * Callers that build an `OrgStore` without this (slack-ingress's team lookup, SSO bootstrap) never write a membership for a Slack or GitHub identity.
    */
   signInTableName?: string;
 }

@@ -256,8 +256,9 @@ export class DeveloperSignInStore {
     /**
      * SLACK-LINK-1: the State table, named only so that linking a Slack or GitHub account can include a ConditionCheck on the State table's developer-to-company pointer
      * (`DEVELOPER_ORG#<identity key>` must not exist) in the link's own transaction, which makes "the account holds no company" and the link one atomic write. The
-     * company side of the same fence is `OrgStore`'s `signInTableName`. Unlike `nameTableName` it adds no read: the sign-in function passes it and needs only the
-     * ConditionCheckItem grant on `DEVELOPER_ORG#*`. Absent: the link keeps only its read-then-write check (a test with two unrelated tables).
+     * company side of the same fence is `OrgStore`'s `signInTableName`. Unlike `nameTableName` it reads no name: the sign-in function passes it and needs the ConditionCheckItem
+     * grant on `DEVELOPER_ORG#*`, plus the GetItem it already has there (a lost link reads the pointer once to say why it was refused). Absent: the link keeps only its
+     * read-then-write check (a test with two unrelated tables).
      */
     stateTableName?: string;
   }) {}

@@ -232,8 +232,8 @@ describe("developer sign-in infrastructure (named environments)", () => {
   it("gives DeveloperIdentity exactly the item operations its store uses on the sign-in table", () => {
     const [tableId] = ofType(named, "AWS::DynamoDB::Table").find(([logicalId]) => logicalId.startsWith("DeveloperSignInTable"))!;
     const tableStatements = statementsOfRole(named, "DeveloperSignInFunctionServiceRole").filter((statement) => touches(statement, "dynamodb") && reaches(named, statement, tableId, SAMPLE_TABLE_ARN));
-    // Three statements, each naming only the table: what every sign-in uses, and (Plan 2, Task 8) the two an unlink adds.
-    expect(tableStatements).toHaveLength(3);
+    // Four statements, each naming only the table: what every sign-in uses, (Plan 2, Task 8) the two an unlink adds, and (SLACK-LINK-1) the developer-record condition check.
+    expect(tableStatements).toHaveLength(4);
     for (const statement of tableStatements) {
       expect(statement.Effect).toBe("Allow");
       expect(statement.Resource).toEqual({ "Fn::GetAtt": [tableId, "Arn"] });
@@ -241,8 +241,7 @@ describe("developer sign-in infrastructure (named environments)", () => {
     // TransactWriteItems is authorized per item as PutItem and UpdateItem; no condition-check, no scan, no batch.
     const everySignIn = tableStatements.filter((statement) => actionsOf(statement).includes("dynamodb:GetItem"));
     expect(everySignIn).toHaveLength(1);
-    // SLACK-LINK-1: and ConditionCheckItem, for the company join's check that the developer's sign-in record was not merged away.
-    expect(actionsOf(everySignIn[0]!).sort()).toEqual(["dynamodb:ConditionCheckItem", "dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:UpdateItem"]);
+    expect(actionsOf(everySignIn[0]!).sort()).toEqual(["dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:UpdateItem"]);
     expect(everySignIn[0]!.Condition).toBeUndefined();
     // Unlinking a sign-in method (unlinkIdentity): the transaction's Delete of the developer's IDENTITY# item is authorized as DeleteItem, and the
     // developer's own identities are listed with a Query. Both only in the developer partitions, DEVELOPER#<id>; never SESSION#, SIGNIN_IDENTITY# or EMAIL#.
@@ -250,6 +249,11 @@ describe("developer sign-in infrastructure (named environments)", () => {
     expect(deletes).toHaveLength(1);
     expect(actionsOf(deletes[0]!)).toEqual(["dynamodb:DeleteItem"]);
     expect(leadingKeysOf(deletes[0]!)).toEqual(["DEVELOPER#*"]);
+    // SLACK-LINK-1: the one ConditionCheckItem on this table (a company join checks the developer's record was not merged away) is on the developer records only.
+    const checks = tableStatements.filter((statement) => actionsOf(statement).includes("dynamodb:ConditionCheckItem"));
+    expect(checks).toHaveLength(1);
+    expect(actionsOf(checks[0]!)).toEqual(["dynamodb:ConditionCheckItem"]);
+    expect(leadingKeysOf(checks[0]!)).toEqual(["DEVELOPER#*"]);
     const queries = tableStatements.filter((statement) => actionsOf(statement).includes("dynamodb:Query"));
     expect(queries).toHaveLength(1);
     expect(actionsOf(queries[0]!)).toEqual(["dynamodb:Query"]);
@@ -291,11 +295,10 @@ describe("developer sign-in infrastructure (named environments)", () => {
     // They are all covered by the one statement every sign-in already has: Get, Put and Update on the table, with no key condition.
     const everySignIn = tableStatements.filter((statement) => actionsOf(statement).includes("dynamodb:GetItem"));
     expect(everySignIn).toHaveLength(1);
-    // SLACK-LINK-1: and ConditionCheckItem, for the company join's check that the developer's sign-in record was not merged away.
-    expect(actionsOf(everySignIn[0]!).sort()).toEqual(["dynamodb:ConditionCheckItem", "dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:UpdateItem"]);
+    expect(actionsOf(everySignIn[0]!).sort()).toEqual(["dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:UpdateItem"]);
     expect(everySignIn[0]!.Condition).toBeUndefined();
     // Nothing was added for them: Delete and Query stay inside the developer partitions (the unlink's), and no other action exists.
-    expect(tableStatements).toHaveLength(3);
+    expect(tableStatements).toHaveLength(4);
     expect(tableStatements.flatMap(actionsOf).sort()).toEqual(["dynamodb:ConditionCheckItem", "dynamodb:DeleteItem", "dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:Query", "dynamodb:UpdateItem"]);
     for (const narrow of tableStatements.filter((statement) => !actionsOf(statement).includes("dynamodb:GetItem"))) expect(leadingKeysOf(narrow)).toEqual(["DEVELOPER#*"]);
     // The broker starts the flow by naming the token's session in an invoke; it still only reads SESSION# and DEVELOPER# and has no write.
