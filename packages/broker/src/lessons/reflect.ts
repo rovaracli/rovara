@@ -81,8 +81,10 @@ export async function reflectSubject(deps: ReflectDeps, subject: ReflectSubject,
   let reply: { text: string; costUsd: number; model: string };
   try {
     // The request has no field for tools: a pipeline model can only return text.
-    reply = await deps.model.complete({ purpose: "reflect", system: input.system, user: input.user, maxOutputTokens: MAX_OUTPUT_TOKENS, workspaceId: subject.workspaceId });
+    reply = await deps.model.complete({ purpose: "reflect", system: input.system, user: input.user, maxOutputTokens: MAX_OUTPUT_TOKENS, workspaceId: subject.workspaceId, project: subject.project });
   } catch {
+    // The reservation `admit` made is settled at nothing spent.
+    try { await deps.spend.charge(subject.workspaceId, subject.project, 0, "learning.reflect"); } catch { /* the reservation is released by the next settle of the month */ }
     deps.metrics?.count("learning.reflect_failed", { reason: "model_error" });
     return none("dropped", "model_error");
   }

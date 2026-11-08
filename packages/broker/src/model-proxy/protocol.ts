@@ -30,6 +30,21 @@ const MintTagsSchema = z.object({
 /** One key never needs more models than an org can have sources times their models, and a handful is the norm. */
 const MAX_KEY_MODELS = 50;
 
+/** Bounds of a learning call: the prompt is cleaned and cut upstream (20,000 characters of spans); the key's cap is a few cents to a few dollars. */
+export const LEARNING_MAX_PROMPT_CHARS = 100_000;
+export const LEARNING_MAX_BUDGET_USD = 5;
+const LearningCompletionArgsSchema = z.object({
+  orgId: OrgIdSchema,
+  project: TagValueSchema,
+  purpose: z.enum(["reflect", "judge", "distill", "outcome"]),
+  system: z.string().min(1).max(LEARNING_MAX_PROMPT_CHARS),
+  user: z.string().min(1).max(LEARNING_MAX_PROMPT_CHARS),
+  maxOutputTokens: z.number().int().min(1).max(8000),
+  model: z.string().min(1).max(512),
+  api: z.enum(["anthropic-messages", "openai-responses", "openai-completions"]),
+  maxBudgetUsd: z.number().finite().min(0.001).max(LEARNING_MAX_BUDGET_USD),
+}).strict();
+
 export const ModelAccessRequestSchema = z.discriminatedUnion("op", [
   z.object({ op: z.literal("upsertOrg"), args: z.object({ orgId: OrgIdSchema, monthlyBudgetUsd: BudgetSchema }).strict() }).strict(),
   z.object({ op: z.literal("upsertMember"), args: z.object({ orgId: OrgIdSchema, developerId: DeveloperIdSchema, monthlyBudgetUsd: BudgetSchema }).strict() }).strict(),
@@ -60,6 +75,7 @@ export const ModelAccessRequestSchema = z.discriminatedUnion("op", [
   z.object({ op: z.literal("auditKeys"), args: z.object({ budgetMs: z.number().int().min(1).max(60_000).optional() }).strict() }).strict(),
   z.object({ op: z.literal("revokeKey"), args: z.object({ key: z.string().min(1).max(512) }).strict() }).strict(),
   z.object({ op: z.literal("blockKey"), args: z.object({ keyId: KeyIdSchema }).strict() }).strict(),
+  z.object({ op: z.literal("learningCompletion"), args: LearningCompletionArgsSchema }).strict(),
 ]);
 export type ModelAccessRequest = z.infer<typeof ModelAccessRequestSchema>;
 
@@ -73,6 +89,8 @@ export const SourceCheckResultSchema = z.discriminatedUnion("ok", [
 /** Every registered source, at most as many as a thousand orgs of ten sources hold. */
 export const RegisteredSourcesResultSchema = z.array(z.object({ orgId: OrgIdSchema, sourceId: SourceIdSchema, hosts: z.array(z.string().min(1).max(253)).max(20).optional() }).strict()).max(10_000);
 export const KeyAuditResultSchema = z.object({ checked: z.number().int().min(0), blocked: z.number().int().min(0), truncated: z.boolean() }).strict();
+/** What a learning call answers: the text, what the key spent, the alias that answered. No key, no key id. */
+export const LearningCompletionResultSchema = z.object({ text: z.string().max(200_000), costUsd: z.number().finite().min(0), model: z.string().min(1).max(512) }).strict();
 export const MintedKeyResultSchema = z.object({ key: z.string().min(1), expiresAt: z.number().finite() }).strict();
 
 export type ModelAccessResponse =

@@ -1565,7 +1565,8 @@ export class ControlPlaneStack extends Stack {
       grantProviderKeySecrets(this, [modelProxy.taskRole.roleName]);
       // Ruling R28: the broker is outside the VPC, so it mints member keys and reads spend through this
       // VPC-attached function, the only reader of the master key besides the proxy. The broker may invoke it, and nothing else.
-      const modelAccessFunction = packagedFunction(this, "ModelAccessFunction", "packages/broker/src/model-proxy/handler.ts", {});
+      // Lessons in production: with the Team record on, this function also makes the one model call of a learning reflection (`learningCompletion`), which can take a minute; off, its timeout is what it was.
+      const modelAccessFunction = packagedFunction(this, "ModelAccessFunction", "packages/broker/src/model-proxy/handler.ts", {}, props?.teamRecord === undefined ? undefined : Duration.seconds(180));
       // A fixed name, like the broker's: the Bedrock source probe's role is one of the three the default boundary's AssumeOrgRoles statement names.
       (modelAccessFunction.role!.node.defaultChild as iam.CfnRole).roleName = modelAccessProbeRoleName(naming.env);
       new ModelAccess(this, "ModelAccess", {

@@ -64,7 +64,14 @@ async function judge(deps: CurateDeps, key: ScopeKey, mine: LessonDraft, other: 
   const user = `First lesson (existing):\n${lessonText(other)}\n\nSecond lesson (new):\n${lessonText(mine)}`;
   try {
     if (!(await deps.spend.admit(key.workspaceId, 0.01))) return undefined;
-    const reply = await deps.judgeModel.complete({ purpose: "judge", system: JUDGE_SYSTEM, user, maxOutputTokens: 120, workspaceId: key.workspaceId });
+    let reply: Awaited<ReturnType<PipelineModel["complete"]>>;
+    try {
+      reply = await deps.judgeModel.complete({ purpose: "judge", system: JUDGE_SYSTEM, user, maxOutputTokens: 120, workspaceId: key.workspaceId, project: key.project });
+    } catch (error) {
+      // The reservation `admit` made is settled at nothing spent.
+      try { await deps.spend.charge(key.workspaceId, key.project, 0, "learning.judge"); } catch { /* ledger retries */ }
+      throw error;
+    }
     try { await deps.spend.charge(key.workspaceId, key.project, Number.isFinite(reply.costUsd) ? Math.max(0, reply.costUsd) : 0, "learning.judge"); } catch { /* ledger retries */ }
     const parsed = JudgeReplySchema.parse(JSON.parse(reply.text.trim().replace(/^```(?:json)?\s*/iu, "").replace(/\s*```$/u, "")));
     return { verdict: parsed.verdict, escalate: parsed.escalate === true };

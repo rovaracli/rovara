@@ -81,6 +81,17 @@ describe("the switch is off by default and changes nothing", () => {
     for (const id of Object.keys(committed)) expect(id in off, id).toBe(false);
   }, 360_000);
 
+  // Lessons in production: the ModelAccessFunction makes the one model call of a learning reflection (`learningCompletion`), which takes longer than its other operations. Only with the switch on.
+  it("the model access function waits longer (180 s) only with the switch on; off, its timeout is what it was (30 s)", () => {
+    const timeoutOf = (template: Template): number => {
+      const found = Object.entries(resourcesOf(template)).filter(([id, resource]) => resource.Type === "AWS::Lambda::Function" && id.startsWith("ModelAccessFunction"));
+      expect(found).toHaveLength(1);
+      return found[0]![1].Properties.Timeout as number;
+    };
+    expect(timeoutOf(plain)).toBe(30);
+    expect(timeoutOf(controlPlane({ ...PUBLIC, agentxTeamRecord: "enabled" }))).toBe(180);
+  }, 360_000);
+
   it("is off in the legacy install and in a self-hosted install with no edition, and a wrong value stops the synth", () => {
     expect(JSON.stringify(controlPlane({}).toJSON())).not.toMatch(/s3vectors|s3tables|team-record/i);
     expect(() => controlPlane({ ...PUBLIC, agentxTeamRecord: "yes" })).toThrow(/must be "enabled" or "off"/);

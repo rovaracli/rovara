@@ -84,7 +84,19 @@ describe("reflector run (C4, C6, C8)", () => {
     const { d } = deps(model);
     await reflectSubject(d, subject([memberSpan("Use withRetry for HTTP retries in api.")]));
     expect(model.calls).toHaveLength(1);
-    expect(Object.keys(model.calls[0]!).sort()).toEqual(["maxOutputTokens", "purpose", "system", "user", "workspaceId"]);
+    expect(Object.keys(model.calls[0]!).sort()).toEqual(["maxOutputTokens", "project", "purpose", "system", "user", "workspaceId"]);
+    // The project travels so the company's own model route can be chosen for it; still no field for tools.
+    expect(model.calls[0]!.project).toBe("proj-1");
+  });
+
+  it("a model failure settles the spend reservation at nothing spent (the company's monthly cap is not held by a failed call)", async () => {
+    const charged: number[] = [];
+    const spend = { admit: async () => true, charge: async (_w: string, _p: string, usd: number) => { charged.push(usd); } };
+    const model = new ScriptedModel([new Error("provider down")]);
+    const d = { ...deps(model).d, spend };
+    const result = await reflectSubject(d, subject([memberSpan("Use withRetry for HTTP retries in api.")]));
+    expect(result).toMatchObject({ status: "dropped", reason: "model_error" });
+    expect(charged).toEqual([0]);
   });
 
   it("produces a draft with provenance: min trust, authors, support task, member signal", async () => {

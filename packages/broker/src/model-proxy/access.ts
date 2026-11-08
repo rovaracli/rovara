@@ -60,6 +60,35 @@ export interface MintKeyInput {
   tags?: MintTags | undefined;
 }
 
+/** The transports a learning completion can be made over: the route's own (`ModelRoute.api`). */
+export type LearningCompletionApi = "anthropic-messages" | "openai-responses" | "openai-completions";
+
+/**
+ * Lessons in production: ONE tool-less model call for the learning pipeline, made on the COMPANY's own route. The function mints a short-lived key for the org alone (no member), scoped to the
+ * one model alias and capped at `maxBudgetUsd`, makes the call, reads what the key spent, and gives the key back. The key never leaves the function.
+ */
+export interface LearningCompletionInput {
+  orgId: OrgId;
+  project: string;
+  purpose: "reflect" | "judge" | "distill" | "outcome";
+  system: string;
+  user: string;
+  maxOutputTokens: number;
+  /** The route's alias (the company's own source alias, or a Rovara AI catalog id the company's order reaches) and its transport. */
+  model: string;
+  api: LearningCompletionApi;
+  /** The most the call may cost, in US dollars: the key's cap. */
+  maxBudgetUsd: number;
+}
+
+export interface LearningCompletion {
+  text: string;
+  /** What the proxy says the key spent. */
+  costUsd: number;
+  /** The alias that answered. */
+  model: string;
+}
+
 export interface MintedKey {
   key: string;
   /** Epoch milliseconds, counted from when the request was made, so never later than the proxy's own expiry. */
@@ -117,4 +146,6 @@ export interface ModelAccess {
    * deleted key's does too. A key the proxy no longer knows is already blocked. Task 30's two-phase finalize starts here.
    */
   blockKey(keyId: string): Promise<void>;
+  /** See `LearningCompletionInput`. Absent where the function does not make learning calls. Errors carry fixed words only: never the provider's text, never a key. */
+  learningCompletion?(input: LearningCompletionInput): Promise<LearningCompletion>;
 }

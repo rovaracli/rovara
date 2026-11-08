@@ -83,6 +83,9 @@ async function perform(access: ModelAccess, request: ModelAccessRequest): Promis
     case "auditKeys": return access.auditKeys(request.args.budgetMs === undefined ? undefined : { budgetMs: request.args.budgetMs });
     case "revokeKey": return access.revokeKey(request.args.key).then(() => null);
     case "blockKey": return access.blockKey(request.args.keyId).then(() => null);
+    case "learningCompletion":
+      if (access.learningCompletion === undefined) throw agentXError("CONFIG_INVALID", "learning calls are not set up on this install");
+      return access.learningCompletion(request.args);
   }
 }
 

@@ -1,0 +1,207 @@
+// Learning v2 production wiring (lessons-in-production lane 1): the reflector's task-side facts, read from what the broker really records about a finished task (`TaskSubjectSource`, `lessons/task-end.ts`).
+//
+// Where each part lives:
+//   - the task record (`DEVTASK#<id>`): who created and who started it (`taskStartActor` sets `initiatorId`), the request text (the intent), the title, the workflow snapshot;
+//   - the workflow snapshot: the decisions (a human send-back is a `SEND_BACK` decision; its request id is the id of the send-back's `rovara.send_back` row), the review reports (findings), the pinned review
+//     base (the base commit), the pull requests (links), the CI fix problems, the latest plan document (read from the artifact store);
+//   - the project's own definition: the repositories (never the record's claim).
+// What it does NOT hold is listed in the lane report (`.superpowers/sdd/lessons-prod/report-lane1.md`): the merge commit, per-person authorship of Slack thread replies, who pushed a failing revision, the agent's own steer messages.
+//
+// Rules, all enforced here at READ time (the worker reads fresh, so a task queued before an erasure is covered):
+//   - A workspace other than the task's gives nothing. A task nobody started (an automatic run), a task of another kind (a setup draft, a diagnosis) gives nothing.
+//   - Every span a PERSON wrote is dropped when that person is erased (the Team record's marker or the lessons fence); an erased initiator gives no `initiatorId` and no initiator trust (so nothing is measured).
+//   - Each person-span's trust is read now (`readStanding`: member or outsider), not taken from what was true when the task ran.
+//   - Slack and other channel text is never read here. Send-back and revert facts come only through `OutcomeRowReader`, which hides erased and deleted rows.
+//   - A read that fails THROWS (the hook catches it): no read is ever treated as "not erased".
+import { GetCommand } from "@aws-sdk/lib-dynamodb";
+import { OrgIdSchema, workflowFindingFingerprint, type WorkflowArtifact, type WorkflowSnapshot } from "@agentx/contracts";
+import { taskKey, taskOwnerKey, tryEffectiveTaskOwner, type DeveloperTaskRecord } from "../../developer/task-records.js";
+import { loadWorkflowDocument } from "../../developer/plan-artifacts.js";
+import type { TaskSubjectBase, TaskSubjectSource } from "../../lessons/task-end.js";
+import type { EvidenceSpan } from "../../lessons/reflect-input.js";
+import { taskStartActor } from "../../lessons/task-subject.js";
+import type { Audience, TrustClass } from "../../lessons/types.js";
+import type { TaskVisibility } from "../../team-record/sources/rovara.js";
+
+/** At most this many human send-backs of a task are looked up (the hook reads one row for each). */
+export const MAX_SEND_BACK_IDS = 50;
+const MAX_FINDINGS = 20;
+const MAX_CI_PROBLEMS = 10;
+const PLAN_MAX_BYTES = 70_000;
+/** The words of the spans Rovara itself authors (not a person's). */
+const CI_FAILURE_PREFIX = "A check failed on the change: ";
+
+export interface LessonSubjectSourceDeps {
+  documentClient: { send(command: unknown): Promise<unknown> };
+  /** The State table (task records). */
+  tableName: string;
+  /** The names of the project's code repositories, from the project's OWN definition. */
+  repositoriesOf(orgId: string, project: string): Promise<readonly string[]>;
+  /** The person's standing in the project right now (`learning/standing.ts readStanding`). */
+  standing(orgId: string, developerId: string, project: string): Promise<"member" | "outsider">;
+  /** Whether the person is erased: the Team record's marker or the lessons fence. THROWS when it cannot tell. */
+  isErased(orgId: string, developerId: string, project: string): Promise<boolean>;
+  /** Who may read the task's rows (`lessons/task-visibility.ts`); undefined = nothing is recorded for this task. */
+  visibility(orgId: string, taskId: string): Promise<TaskVisibility | undefined>;
+  /** The artifact store's text read (the plan document). Absent: no plan span. */
+  readObject?: ((objectKey: string, maxBytes: number) => Promise<string | undefined>) | undefined;
+  now?: () => number;
+}
+
+/** Who may read a lesson made from this task: the task's own visibility (the same rule as the rows the record keeps for it, `audienceOfVisibility`). */
+function audienceOf(taskId: string, visibility: TaskVisibility, at: string): Audience {
+  if (visibility.kind === "shared") return { kind: "project" };
+  const principals = visibility.kind === "private" ? [visibility.ownerDeveloperId] : [...visibility.developerIds].slice(0, 500);
+  return { kind: "restricted", acl: { source: "rovara", scope: `rovara:task/${taskId}`, principals, capturedAt: at, liveCheck: "none" } };
+}
+
+const present = (value: string | undefined): value is string => value !== undefined && value.trim() !== "";
+
+function outcomeOf(workflow: WorkflowSnapshot | undefined): "merged" | "closed" | undefined {
+  switch (workflow?.outcome) {
+    case "MERGED": return "merged";
+    case "CLOSED": case "REJECTED": return "closed";
+    default: return undefined;
+  }
+}
+
+/** The base commit when the record pins exactly one for the project's repositories; several repositories have several bases and the subject holds one, so none is claimed. */
+function baseOf(task: DeveloperTaskRecord, repositories: readonly string[]): { repository: string; commit: string } | undefined {
+  const pinned = task.workflow?.reviewBase ?? task.preparedBase;
+  if (pinned === undefined) return undefined;
+  const mine = pinned.filter((entry) => repositories.includes(entry.repositoryId));
+  return mine.length === 1 ? { repository: mine[0]!.repositoryId, commit: mine[0]!.baseCommitSha } : undefined;
+}
+
+export function lessonSubjectSource(deps: LessonSubjectSourceDeps): TaskSubjectSource {
+  return {
+    async read(input) {
+      const orgParsed = OrgIdSchema.safeParse(input.workspaceId);
+      if (!orgParsed.success) return undefined;
+      const orgId = orgParsed.data;
+      const task = ((await deps.documentClient.send(new GetCommand({ TableName: deps.tableName, Key: taskKey(input.taskId), ConsistentRead: true }))) as { Item?: DeveloperTaskRecord }).Item;
+      // The workspace is the caller's: a record of another workspace (or none) gives nothing.
+      if (task === undefined || task.taskId !== input.taskId || task.orgId !== orgId) return undefined;
+      // Only a person's workflow task teaches: an automatic run has nobody who started it, a setup draft or a diagnosis is not a piece of work.
+      if (task.automatic !== undefined || task.purpose !== undefined) return undefined;
+      const visibility = await deps.visibility(orgId, task.taskId);
+      if (visibility === undefined) return undefined;
+      const project = task.project;
+
+      const erasedCache = new Map<string, boolean>();
+      const erased = async (developerId: string): Promise<boolean> => {
+        const known = erasedCache.get(developerId);
+        if (known !== undefined) return known;
+        const answer = await deps.isErased(orgId, developerId, project);
+        erasedCache.set(developerId, answer);
+        return answer;
+      };
+      const standingCache = new Map<string, TrustClass>();
+      const trustOf = async (developerId: string): Promise<TrustClass> => {
+        const known = standingCache.get(developerId);
+        if (known !== undefined) return known;
+        const trust: TrustClass = (await deps.standing(orgId, developerId, project)) === "member" ? "member" : "outsider";
+        standingCache.set(developerId, trust);
+        return trust;
+      };
+
+      const allRepositories = await deps.repositoriesOf(orgId, project);
+      const base = baseOf(task, allRepositories);
+      const repositories = base === undefined ? [...allRepositories] : [base.repository];
+      const workflow = task.workflow;
+
+      // ---- who is who
+      const creator = task.developerId;
+      const initiatorId = taskStartActor(task);
+      const initiatorErased = initiatorId !== undefined && await erased(initiatorId);
+      const creatorErased = await erased(creator);
+      // The actor ids a decision or an answer carries are hashed owner keys: the creator's, or the one who took the task over.
+      const creatorKey = taskOwnerKey(creator, task.taskId);
+      const takerOf = tryEffectiveTaskOwner(task);
+      const takerKey = takerOf === undefined ? undefined : taskOwnerKey(takerOf.developerId, task.taskId);
+      const developerOfActor = (actorId: string): string | undefined => {
+        if (actorId === creatorKey) return creator;
+        return takerOf !== undefined && takerKey === actorId ? takerOf.developerId : undefined;
+      };
+
+      // ---- spans
+      const spans: EvidenceSpan[] = [];
+      const intentText = present(task.requestText) ? task.requestText : task.title;
+      if (!creatorErased && present(intentText)) spans.push({ kind: "intent", text: intentText, trust: await trustOf(creator), authorId: creator });
+
+      if (workflow !== undefined && deps.readObject !== undefined) {
+        const plan: WorkflowArtifact | undefined = workflow.artifacts.filter((artifact) => artifact.type === "plan").sort((a, b) => a.version - b.version).at(-1);
+        if (plan !== undefined) {
+          const loaded = await loadWorkflowDocument((key, max) => deps.readObject!(key, max).catch(() => undefined), plan, {}).catch(() => undefined);
+          const markdown = loaded?.markdown;
+          if (present(markdown)) spans.push({ kind: "plan", text: markdown.slice(0, PLAN_MAX_BYTES), trust: "rovara", sourceKey: "plan" });
+        }
+      }
+
+      let findings = 0;
+      for (const review of workflow?.reviews ?? []) {
+        for (const finding of review.findings) {
+          if (finding.origin !== "INTRODUCED" || findings >= MAX_FINDINGS) continue;
+          findings += 1;
+          spans.push({ kind: "review_finding", text: finding.text, trust: "rovara", sourceKey: `review:${review.role.toLowerCase()}`, eventId: workflowFindingFingerprint(review.role, finding) });
+        }
+      }
+
+      if (workflow?.fixSource === "ci") {
+        for (const problem of (workflow.fixProblems ?? []).slice(0, MAX_CI_PROBLEMS)) spans.push({ kind: "ci_failure", text: `${CI_FAILURE_PREFIX}${problem}`, trust: "rovara", sourceKey: "ci" });
+      }
+
+      // The close reason: the words of the person who closed (rejected) the task, when that person is the owner (the creator or the one who took over). A project admin's close is not attributed.
+      const closer = [...(workflow?.decisions ?? [])].reverse().find((decision) => decision.decision === "REJECT" && decision.actorRole === "TASK_OWNER" && developerOfActor(decision.actorId) !== undefined);
+      if (closer !== undefined) {
+        const author = developerOfActor(closer.actorId)!;
+        if (!(await erased(author))) spans.push({ kind: "close_reason", text: closer.reason, trust: await trustOf(author), authorId: author });
+      }
+
+      // ---- steering: everyone who steered the task. The creator or the taker, when they decided, answered or sent it back; anyone this record cannot name is an outsider (unknown is outsider).
+      const steerers = new Set<TrustClass>();
+      let unnamed = false;
+      for (const decision of workflow?.decisions ?? []) {
+        if (decision.actorRole === "AGENTX") continue;
+        const person = developerOfActor(decision.actorId);
+        if (person === undefined) { unnamed = true; continue; }
+        if (!(await erased(person))) steerers.add(await trustOf(person));
+      }
+      for (const set of workflow?.intent?.answers ?? []) {
+        const person = developerOfActor(set.by.actorId);
+        if (person === undefined) { unnamed = true; continue; }
+        if (!(await erased(person))) steerers.add(await trustOf(person));
+      }
+      // Replies in the task's Slack thread are saved as notes with a Slack account, not a member: the record cannot say whose they are.
+      if ((task.threadNoteCount ?? 0) > 0 || (workflow?.feedbackNotes ?? []).some((note) => note.source === "THREAD_REPLY")) unnamed = true;
+      const steeringTrust: TrustClass[] = [...steerers, ...(unnamed ? ["outsider" as const] : [])];
+
+      const links = (workflow?.pullRequests ?? []).map((pullRequest) => pullRequest.url).slice(0, 32);
+      const sendBackRequestIds = (workflow?.decisions ?? [])
+        .filter((decision) => decision.source === "SEND_BACK" && decision.actorRole !== "AGENTX")
+        .map((decision) => decision.requestId)
+        .slice(0, MAX_SEND_BACK_IDS);
+
+      const outcome = outcomeOf(workflow);
+      const base_: TaskSubjectBase = {
+        facts: {
+          workspaceId: orgId, project, taskId: task.taskId, repositories,
+          ...(base === undefined ? {} : { baseCommit: base.commit }),
+          ...(outcome === undefined ? {} : { outcome }),
+          // An erased initiator is nobody: with no `startedBy` and an `agent` mark the start actor is undefined, so no outcome is measured against them.
+          task: initiatorErased ? { developerId: creator, agent: task.agent ?? {} } : { developerId: creator, ...(task.startedBy === undefined ? {} : { startedBy: task.startedBy }), ...(task.agent === undefined ? {} : { agent: task.agent }) },
+          rest: {
+            ...(initiatorId === undefined || initiatorErased ? {} : { initiatorTrust: await trustOf(initiatorId) }),
+            steeringTrust,
+            ...(creatorErased ? {} : { intentTrust: await trustOf(creator) }),
+            ...(links.length === 0 ? {} : { links }),
+            audience: audienceOf(task.taskId, visibility, new Date((deps.now ?? Date.now)()).toISOString()),
+            spans,
+          },
+        },
+        sendBackRequestIds,
+      };
+      return base_;
+    },
+  };
+}

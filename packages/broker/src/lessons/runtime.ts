@@ -3,9 +3,9 @@
 //
 // What is real: the Dynamo lesson store, the settings reader (the project's mode, the company lock, the tier-0 setting), the access check, the approver directory (the live roster), the
 // citation verifier and the code facts (the code host's file reads at a commit), the audit sink (the broker's ledger) and the names reader.
-// What is deliberately NOT here: any model call. There is no model adapter, spend gate or payer path for learning yet, so `judgeModel`, `judge` and `spend` refuse: a curator judgement, a
-// correction rating and a reflector call all fail closed (a contradiction goes to a person, a helpful mark waits). Lesson vectors do not exist either (the `LessonVectors` adapter over S3 Vectors is
-// not built), so the loader ranks by scope, helpfulness and recency; similarity is zero for every lesson. Both are listed in the lane report under "Left".
+// The model and the payer path are given by the broker's wiring where the company's own model path exists (`customerLearningModel`, `companyLearningSpend`); without them `judgeModel` and `spend` refuse
+// (a curator judgement fails closed: a contradiction goes to a person). The correction judge (`judge`) still refuses: a correction rating is not wired yet. Lesson similarity (the embedder and the
+// vectors) is one open owner decision, plugged in through the one seam `lessonSimilarityFor`; until it is decided there is none, the loader ranks by scope, helpfulness and recency.
 import type { OrgId } from "@agentx/contracts";
 import type { AttributionReader } from "../attribution/resolve.js";
 import type { SecondPersonEvidenceDependencies } from "../org/second-person-evidence.js";
@@ -41,6 +41,14 @@ export interface LessonsRuntimeInput {
   /** Follows a merged developer to the member they became (the author rules compare members, not raw ids). */
   resolveMember?: (orgId: OrgId, developerId: string) => Promise<string>;
   names: AttributionReader;
+  /**
+   * Lessons in production: the model the curator's judge calls and the payer path (the company's cap). Absent: the refusing stand-ins, so nothing is judged or spent. The reflector's own model is
+   * built from the same two in the broker's wiring (`aws/broker/lessons-wiring.ts`).
+   */
+  model?: PipelineModel;
+  spend?: LearningSpend;
+  /** The one seam for lesson similarity (`lessonSimilarityFor`): the embedder and the lesson vectors. Absent: none (the loader ranks by scope, helpfulness and recency; curate finds no neighbours). */
+  similarity?: { embedder: Embedder; vectors: LessonVectors };
 }
 
 /** The route-side lesson dependencies (`DeveloperRouteDependencies.lessons`). */
@@ -79,11 +87,12 @@ export function createLessonsRuntime(input: LessonsRuntimeInput): LessonsRuntime
   const base = { now: input.now, audit, ...(input.log === undefined ? {} : { log: input.log }) };
   const facts = createCodeFacts({ reader: input.reader, repositoriesOf: async (workspaceId, project) => input.repositoriesOf(workspaceId, project) });
   const verifier = createCitationVerifier({ reader: input.reader, repositoriesOf: input.repositoriesOf });
-  const load: LoadDeps = { ...base, store, embedder: NO_EMBEDDER, vectors: NO_VECTORS, settings, access, ...(directory.resolveMember === undefined ? {} : { resolveMember: (workspaceId: string, developerId: string) => directory.resolveMember!(workspaceId, developerId) }) };
+  const similarity = input.similarity ?? { embedder: NO_EMBEDDER, vectors: NO_VECTORS };
+  const load: LoadDeps = { ...base, store, embedder: similarity.embedder, vectors: similarity.vectors, settings, access, ...(directory.resolveMember === undefined ? {} : { resolveMember: (workspaceId: string, developerId: string) => directory.resolveMember!(workspaceId, developerId) }) };
   const counters: CounterDeps = { ...base, store, judge: REFUSING_JUDGE, settings };
   const routes: LessonRouteDeps = {
     ...base, store, directory, settings, access, names: input.names, sources: { table: input.table },
-    embedder: NO_EMBEDDER, vectors: NO_VECTORS, judgeModel: REFUSING_MODEL, spend: DENYING_SPEND, verifier, facts, judge: REFUSING_JUDGE,
+    embedder: similarity.embedder, vectors: similarity.vectors, judgeModel: input.model ?? REFUSING_MODEL, spend: input.spend ?? DENYING_SPEND, verifier, facts, judge: REFUSING_JUDGE,
   };
   return { store, settings, access, directory, load, counters, routes };
 }

@@ -10,7 +10,7 @@ export type Clock = () => number;
  * pipeline model cannot act (control C4). The caller validates the text against a schema and drops it on any failure.
  */
 export interface PipelineModel {
-  complete(request: { purpose: "reflect" | "judge" | "distill" | "outcome"; system: string; user: string; maxOutputTokens: number; workspaceId: string }): Promise<{ text: string; costUsd: number; model: string }>;
+  complete(request: { purpose: "reflect" | "judge" | "distill" | "outcome"; system: string; user: string; maxOutputTokens: number; workspaceId: string; /** The project the call is for: the company's own model route is chosen per project. A model that routes per project refuses a call without one. */ project?: string }): Promise<{ text: string; costUsd: number; model: string }>;
 }
 
 export interface Embedder { embed(text: string): Promise<number[]> }
@@ -25,6 +25,7 @@ export interface LessonVectors {
 /**
  * Spend for learning. `admit` asks the customer's own limits (org and member budgets) whether a call of about `estimateUsd` may start; `charge` records
  * what was spent, on the org's ledger under the learning line. Enterprise has no learning caps of its own, only these limits (decision Q8).
+ * A caller that was admitted ALWAYS follows with one `charge` (0 when the call failed), which settles the reservation `admit` made.
  */
 export interface LearningSpend {
   admit(workspaceId: string, estimateUsd: number): Promise<boolean>;

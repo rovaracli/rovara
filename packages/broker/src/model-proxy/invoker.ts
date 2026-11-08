@@ -5,10 +5,12 @@
 import { InvokeCommand, type InvokeCommandOutput } from "@aws-sdk/client-lambda";
 import { AgentXErrorCodeSchema, agentXError, type AgentXError, type OrgId } from "@agentx/contracts";
 import { z } from "zod";
-import type { KeyAudit, MemberSpend, MintKeyInput, MintedKey, ModelAccess, SourceCheck, SpendFigures, UpsertSourceInput } from "./access.js";
-import { KeyAuditResultSchema, KeySpendResultSchema, MintedKeyResultSchema, RegisteredSourcesResultSchema, SourceCheckResultSchema, SpendFiguresSchema, SpendResultSchema, type ModelAccessRequest } from "./protocol.js";
+import type { KeyAudit, LearningCompletion, LearningCompletionInput, MemberSpend, MintKeyInput, MintedKey, ModelAccess, SourceCheck, SpendFigures, UpsertSourceInput } from "./access.js";
+import { KeyAuditResultSchema, KeySpendResultSchema, LearningCompletionResultSchema, MintedKeyResultSchema, RegisteredSourcesResultSchema, SourceCheckResultSchema, SpendFiguresSchema, SpendResultSchema, type ModelAccessRequest } from "./protocol.js";
 
 const DEFAULT_TIMEOUT_MS = 25_000;
+/** A learning call is one model reply of up to a few thousand tokens: the function waits for it for up to this long (its own timeout is longer). */
+const LEARNING_TIMEOUT_MS = 170_000;
 
 export interface ModelAccessInvokerInput {
   /** The function's name or ARN (env MODEL_ACCESS_FUNCTION_NAME). */
@@ -88,18 +90,23 @@ export class ModelAccessInvoker implements ModelAccess {
     await this.invoke({ op: "blockKey", args: { keyId } });
   }
 
+  async learningCompletion(input: LearningCompletionInput): Promise<LearningCompletion> {
+    const { orgId, project, purpose, system, user, maxOutputTokens, model, api, maxBudgetUsd } = input;
+    return this.parseResult(await this.invoke({ op: "learningCompletion", args: { orgId, project, purpose, system, user, maxOutputTokens, model, api, maxBudgetUsd } }, LEARNING_TIMEOUT_MS), LearningCompletionResultSchema);
+  }
+
   private parseResult<T>(result: unknown, schema: z.ZodType<T>): T {
     const parsed = schema.safeParse(result);
     if (!parsed.success) throw unavailable("model access answered with an unexpected result");
     return parsed.data;
   }
 
-  private async invoke(request: ModelAccessRequest): Promise<unknown> {
+  private async invoke(request: ModelAccessRequest, timeoutMs?: number): Promise<unknown> {
     let output: InvokeCommandOutput;
     try {
       output = await this.input.lambda.send(
         new InvokeCommand({ FunctionName: this.input.functionName, InvocationType: "RequestResponse", Payload: Buffer.from(JSON.stringify(request), "utf8") }),
-        { abortSignal: AbortSignal.timeout(this.input.timeoutMs ?? DEFAULT_TIMEOUT_MS) },
+        { abortSignal: AbortSignal.timeout(timeoutMs ?? this.input.timeoutMs ?? DEFAULT_TIMEOUT_MS) },
       );
     } catch {
       throw unavailable("model access could not be invoked");
