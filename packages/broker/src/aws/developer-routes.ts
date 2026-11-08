@@ -229,6 +229,7 @@ import type { DeveloperCaller, DeveloperRouteDependencies } from "./developer-ro
 import { PROJECT_NOT_FOUND_IN_APP, bodyError } from "./developer-routes/common.js";
 import { authenticateDeveloper, authenticateDeveloperSessionId } from "./developer-routes/authentication.js";
 import { listAppProjects, listProjects } from "./developer-routes/project-list.js";
+import { getConnectionUsage } from "./developer-routes/connection-usage.js";
 import { changeProjectArchive, egressDepsOf, startProjectSetupCheck } from "./developer-routes/project-archive-setup.js";
 import {
   deleteProjectMember,
@@ -493,6 +494,7 @@ export async function routeDeveloperRequest(deps: DeveloperRouteDependencies, re
   }
   if (request.method === "GET" && url.pathname === "/v1/dev/projects") return listProjects(deps, caller);
   if (request.method === "GET" && url.pathname === "/v1/app/projects") return listAppProjects(deps, caller, url.searchParams.get("include") === "archived");
+  if (request.method === "GET" && url.pathname === "/v1/app/connection-usage") return getConnectionUsage(deps, caller);
   const appProject = /^\/v1\/app\/projects\/([^/]+)$/.exec(url.pathname);
   if (request.method === "GET" && appProject !== null) return getAppProjectWithProof(deps, caller, appProject[1]!);
   const projectSettingsRoute = /^\/v1\/app\/projects\/([^/]+)\/settings$/.exec(url.pathname);

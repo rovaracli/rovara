@@ -6,7 +6,10 @@ import { z } from "zod";
 import { ConnectionIdSchema } from "./agent-node.js";
 import { ConnectionLabelSchema, ConnectionSecretText } from "./connection-fields.js";
 import { publicHttpsUrlSchema } from "./mcp-connector.js";
+import { AWS_REGIONS, CLOUDWATCH_MAX_REGIONS, DATADOG_SITES } from "./connection-options.js";
 import type { OrgId } from "./org.js";
+
+export { AWS_REGIONS, CLOUDWATCH_MAX_REGIONS, DATADOG_SITES };
 
 export const ObservabilityConnectionTypeSchema = z.enum(["sentry", "datadog", "cloudwatch", "grafana", "vercel", "pagerduty"]);
 export type ObservabilityConnectionType = z.infer<typeof ObservabilityConnectionTypeSchema>;
@@ -22,31 +25,15 @@ const Common = (type: ObservabilityConnectionType) => ({ connectionId: Connectio
 export const SentryRegionSchema = z.enum(["us", "de"]);
 export const SentryOrgSlugSchema = z.string().regex(/^[a-z0-9][a-z0-9-]{0,49}$/);
 
-export const DATADOG_SITES = ["datadoghq.com", "us3.datadoghq.com", "us5.datadoghq.com", "datadoghq.eu", "ap1.datadoghq.com", "ap2.datadoghq.com", "ddog-gov.com", "us2.ddog-gov.com", "uk1.datadoghq.com"] as const;
 export const DatadogSiteSchema = z.enum(DATADOG_SITES);
 
 /** An IAM role in any AWS partition (`aws`, `aws-cn`, `aws-us-gov`, ...): the role Rovara assumes in the customer's account. */
 export const CloudWatchRoleArnSchema = z.string().regex(/^arn:aws[a-z-]*:iam::\d{12}:role\/[\w+=,.@/-]{1,512}$/);
-/**
- * Every AWS region code (docs.aws.amazon.com/general/latest/gr/rande.html, 2026-10-22), with the two China regions and the two GovCloud regions. A region
- * outside it is refused when a connection or a connector scope is saved. A region AWS adds later is added here.
- */
-export const AWS_REGIONS = [
-  "us-east-1", "us-east-2", "us-west-1", "us-west-2",
-  "af-south-1",
-  "ap-east-1", "ap-east-2", "ap-south-1", "ap-south-2", "ap-northeast-1", "ap-northeast-2", "ap-northeast-3",
-  "ap-southeast-1", "ap-southeast-2", "ap-southeast-3", "ap-southeast-4", "ap-southeast-5", "ap-southeast-6", "ap-southeast-7",
-  "ca-central-1", "ca-west-1",
-  "eu-central-1", "eu-central-2", "eu-west-1", "eu-west-2", "eu-west-3", "eu-north-1", "eu-south-1", "eu-south-2",
-  "il-central-1", "me-central-1", "me-south-1", "mx-central-1", "sa-east-1",
-  "cn-north-1", "cn-northwest-1", "us-gov-east-1", "us-gov-west-1",
-] as const;
 /** An AWS region code such as `us-east-1`, from `AWS_REGIONS`. */
 export const AwsRegionSchema = z.enum(AWS_REGIONS);
 
 /** The 12-digit AWS account a CloudWatch role ARN names, or undefined when it is not a role ARN. */
 export const cloudwatchRoleAccount = (roleArn: string): string | undefined => /^arn:aws[a-z-]*:iam::(\d{12}):role\//u.exec(roleArn)?.[1];
-export const CLOUDWATCH_MAX_REGIONS = 5;
 
 export const VercelTeamIdSchema = z.string().regex(/^team_[A-Za-z0-9]{1,64}$/);
 export const PagerDutyRegionSchema = z.enum(["us", "eu"]);
