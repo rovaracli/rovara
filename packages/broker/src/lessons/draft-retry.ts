@@ -86,11 +86,12 @@ export async function processDraftRetrying(deps: ProcessDeps, key: ScopeKey, dra
     },
   };
   let step: "curate" | "settle" = "curate";
+  let retrying = false;
   let outcome: CurateOutcome | undefined;
   const settle = async (using: ProcessDeps): Promise<ProcessResult> => {
     step = "settle";
     if (outcome === undefined || outcome.outcome === "dropped") return { outcome: outcome! };
-    const lesson = await settleLesson(using, key, outcome.lesson.id, settleOptionsOf(outcome));
+    const lesson = await settleLesson(using, key, outcome.lesson.id, { ...settleOptionsOf(outcome), ...(retrying ? { resume: true } : {}) });
     return lesson === undefined ? { outcome } : { outcome, lesson };
   };
   try {
@@ -105,6 +106,7 @@ export async function processDraftRetrying(deps: ProcessDeps, key: ScopeKey, dra
     const attempt = currentLearningAttempt();
     if (attempt !== undefined && (attempt.signal?.aborted === true || (attempt.deadlineAt - (options.now ?? Date.now)()) < DRAFT_RETRY_MIN_LEFT_MS)) throw error;
     options.log?.("learning.draft_retried", {});
+    retrying = true;
     await (options.sleep ?? ((ms) => new Promise<void>((resolve) => setTimeout(resolve, ms))))(DRAFT_RETRY_WAIT_MS);
     if (attempt?.signal?.aborted === true) throw error;
     const again: ProcessDeps = {

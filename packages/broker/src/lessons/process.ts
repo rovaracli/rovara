@@ -76,7 +76,13 @@ async function verifyCitations(deps: ProcessDeps, lesson: Lesson): Promise<Lesso
   return { ...lesson, citations, citationChecks: checks };
 }
 
-export interface SettleOptions { contradiction?: boolean; judgeEscalate?: boolean; /** Never apply by itself: used when a pause lifts, so a person decides. */ noAutoApply?: boolean }
+/** What a settle can change in a lesson, for telling a pass that changed nothing from one that did (checks are compared by result, not by the time they were made). */
+const settledShape = (lesson: Lesson): string => JSON.stringify([
+  lesson.status, lesson.tier, lesson.tierReasons, lesson.approvals, lesson.reviewRequired ?? null, lesson.pendingExpiresAt ?? null, lesson.title, lesson.description, lesson.body, lesson.citations,
+  (lesson.citationChecks ?? []).map((check) => [check.index, check.result]),
+]);
+
+export interface SettleOptions { /** A repeat of a settle that already ran (a retry, `draft-retry.ts`): a pass that would change nothing writes nothing, so a repeat never adds a version of its own. */ resume?: boolean; contradiction?: boolean; judgeEscalate?: boolean; /** Never apply by itself: used when a pause lifts, so a person decides. */ noAutoApply?: boolean }
 
 /**
  * Verifies, tiers and routes one lesson that the curator just wrote or changed. A lesson that is not yet supported stays a candidate. A lesson that is
@@ -128,12 +134,14 @@ export async function settleLesson(deps: ProcessDeps, key: ScopeKey, lessonId: s
     const braked = autoOn && brakeOn;
     // A higher tier than before means earlier approvals were for less risk: they no longer count.
     const approvals = decision.tier > current.tier ? [] : current.approvals;
-    const next: Lesson = {
+    const settled: Lesson = {
       ...verified, ...(decision.tier === 0 && decision.rendered !== undefined ? { title: decision.rendered.title, description: decision.rendered.description, body: decision.rendered.body } : {}), version, tier: decision.tier, tierReasons: decision.reasons.slice(0, 12), approvals, updatedAt: now,
       ...(options.noAutoApply === true || held || braked || current.reviewRequired === true ? { reviewRequired: true } : {}),
       status: earned ? "pending" : "candidate", ...(earned ? { pendingExpiresAt: current.pendingExpiresAt ?? pendingExpiry(now) } : {}),
     };
-    const result = await deps.store.commit(key, setVersion, [next], now);
+    // A repeat that finds the lesson already as this pass would leave it keeps its version (the later steps read `next.version`).
+    const next: Lesson = options.resume === true && settledShape(settled) === settledShape(current) ? { ...settled, version: current.version, updatedAt: current.updatedAt } : settled;
+    const result = options.resume === true && settledShape(next) === settledShape(current) ? { ok: true as const, setVersion } : await deps.store.commit(key, setVersion, [next], now);
     if (!result.ok) continue;
     if (next.status === "pending" && current.status !== "pending" && !trial) await emitAudit(deps.audit, { action: "lesson.pending", workspaceId: key.workspaceId, project: key.project, lessonId, facts: { tier: next.tier, ...(decision.reasons.includes("capability_request") ? { reason: "capability_request" } : {}) } });
 

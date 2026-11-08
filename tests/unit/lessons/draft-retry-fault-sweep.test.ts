@@ -10,7 +10,7 @@ import { Alerts, Audit, Clock, KEY, MemoryVectors, ScriptedModel, Spend, allowAl
 const throttled = (): Error => Object.assign(new Error("secret table text"), { name: "ThrottlingException" });
 const member = (over: Partial<LessonDraft> = {}, prov: Partial<LessonDraft["provenance"]> = {}): LessonDraft => draft({ ...over, provenance: { ...draft().provenance, sourceKinds: ["send_back"], memberCorrection: true, claimsSupported: true, fromSharedTask: true, ...prov } });
 
-interface Run { lessons: number; cards: number; audit: Record<string, number>; twice: string[]; judgeCalls: number; positions: number; retried: boolean; threw: boolean }
+interface Run { maxVersion: number; lessons: number; cards: number; audit: Record<string, number>; twice: string[]; judgeCalls: number; positions: number; retried: boolean; threw: boolean }
 
 /** A scenario: what is in the store before (made without faults), and the draft under test. */
 interface Scenario { name: string; preset: "standard" | "regulated"; seed: LessonDraft[]; draft: LessonDraft }
@@ -61,7 +61,7 @@ async function run(scenario: Scenario, failAt: number | undefined): Promise<Run>
   const counts: Record<string, number> = {};
   const lines = new Map<string, number>();
   for (const event of audit.events.slice(seededAudit)) { counts[event.action] = (counts[event.action] ?? 0) + 1; const line = `${event.action}|${event.lessonId ?? ""}`; lines.set(line, (lines.get(line) ?? 0) + 1); }
-  return { twice: [...lines].filter(([, times]) => times > 1).map(([line]) => line), lessons: after.length, cards: after.filter((lesson) => lesson.status === "pending" && lesson.contradictsWith !== undefined).length, audit: counts, judgeCalls: model.calls.length, positions: position, retried, threw };
+  return { maxVersion: Math.max(0, ...after.map((lesson) => lesson.version)), twice: [...lines].filter(([, times]) => times > 1).map(([line]) => line), lessons: after.length, cards: after.filter((lesson) => lesson.status === "pending" && lesson.contradictsWith !== undefined).length, audit: counts, judgeCalls: model.calls.length, positions: position, retried, threw };
 }
 
 describe.each(scenarios)("a passing fault at every call of the draft's processing: $name", (scenario) => {
@@ -78,6 +78,8 @@ describe.each(scenarios)("a passing fault at every call of the draft's processin
       if (faulted.retried) retries += 1;
       expect(faulted.judgeCalls, where).toBe(0);
       expect(faulted.lessons, where).toBeLessThanOrEqual(clean.lessons);
+      // L8: a retry of the settle step does not write a lesson again when nothing changed (no extra version)
+      expect(faulted.maxVersion, where).toBeLessThanOrEqual(clean.maxVersion);
       expect(faulted.cards, where).toBeLessThanOrEqual(clean.cards);
       // No audit line (the same action on the same lesson) twice. And no more of an action than the fault-free run wrote, except a single line of the way a fault itself sends a lesson to people (e.g. the go-live's own
       // audit failed, so the lesson waits for a person: `lesson.pending`), which the fault-free run never writes.
