@@ -76,7 +76,7 @@ describe("M1: a scope cut at 300 characters never reads as repository-only", () 
     const w = world();
     await addSource(w, { source: "github", scope: "github:repo/9" });
     await w.sink.put(githubDraft());
-    const access = createAccessCheckPort(w.table, { taskVisibility: { read: async () => new Map() } as TaskVisibilityPort });
+    const access = createAccessCheckPort(w.table, { taskVisibility: { read: async () => new Map() } });
     const reader = { principals: ["123"], groups: [] };
     const real = { scopes: ["github:repo/9"], restrictedScopes: ["github:repo/9"], capturedAt: AT };
     const cutToo = { scopes: ["github:repo/9", CUT_SCOPE_PLACE], restrictedScopes: ["github:repo/9", CUT_SCOPE_PLACE], capturedAt: AT };
