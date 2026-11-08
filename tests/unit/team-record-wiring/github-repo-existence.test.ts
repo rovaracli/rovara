@@ -10,15 +10,24 @@ const WS = "org_aaaaaaaaaaaaaaaaaaaa";
 const repo = (id: number, installationId = 9): RecordedRepository => ({ workspaceId: WS, scope: `github:repo/${id}`, repositoryId: id, installationId });
 const range = (count: number, from = 1): number[] => Array.from({ length: count }, (_, index) => from + index);
 
-function world(options: { listed?: number[]; complete?: boolean; direct?: Record<number, "exists" | "missing" | "throw">; listThrows?: boolean; removeFails?: boolean } = {}) {
-  const calls = { list: 0, status: [] as number[], removed: [] as number[] };
+function world(options: { listed?: number[]; complete?: boolean; direct?: Record<number, "exists" | "missing" | "throw">; listThrows?: boolean; removeFails?: boolean; hang?: boolean } = {}) {
+  const calls = { open: 0, status: [] as number[], removed: [] as number[], signals: [] as Array<AbortSignal | undefined> };
   const installations: InstallationRepositoriesPort = {
-    async repositoryIds() { calls.list += 1; if (options.listThrows) throw new Error("403"); return { ids: options.listed ?? [], complete: options.complete ?? true }; },
-    async status(_installation, repositoryId) {
-      calls.status.push(repositoryId);
-      const answer = options.direct?.[repositoryId] ?? "missing";
-      if (answer === "throw") throw new Error("429");
-      return answer;
+    async open(_installation, _workspace, signal) {
+      calls.open += 1;
+      calls.signals.push(signal);
+      // A port that ignores its signal and never answers: the check must still end at its deadline.
+      if (options.hang) return new Promise<never>(() => undefined);
+      if (options.listThrows) throw new Error("403");
+      return {
+        ids: options.listed ?? [], complete: options.complete ?? true,
+        async status(repositoryId) {
+          calls.status.push(repositoryId);
+          const answer = options.direct?.[repositoryId] ?? "missing";
+          if (answer === "throw") throw new Error("429");
+          return answer;
+        },
+      };
     },
   };
   const deps = { installations, remove: async (repository: RecordedRepository) => { if (options.removeFails) throw new Error("table down"); calls.removed.push(repository.repositoryId); } };
@@ -43,7 +52,32 @@ describe("the repository check removes only what GitHub clearly no longer shows 
   it("asks the installation about the repositories it holds, one list per installation, and never mixes installations", async () => {
     const w = world({ listed: range(10, 100) });
     await checkRecordedRepositories(w.deps, [repo(100, 9), repo(1, 8), repo(101, 8)]);
-    expect(w.calls.list).toBe(2);
+    expect(w.calls.open).toBe(2);
+  });
+});
+
+describe("the check has a real deadline (R1)", () => {
+  it("a port that never answers ends at the deadline with nothing removed, and the installations after it are skipped, not waited for", async () => {
+    const w = world({ hang: true });
+    const started = Date.now();
+    const outcome = await checkRecordedRepositories(w.deps, [repo(1, 8), repo(2, 9)], { signal: AbortSignal.timeout(150) });
+    expect(Date.now() - started).toBeLessThan(2_000);
+    expect(w.calls.removed).toEqual([]);
+    expect(outcome).toMatchObject({ unknown: 1, skipped: 1, removed: 0 });
+  });
+
+  it("hands the deadline's signal to the port, so the GitHub calls themselves are aborted", async () => {
+    const w = world({ listed: range(10, 100) });
+    const signal = AbortSignal.timeout(5_000);
+    await checkRecordedRepositories(w.deps, [repo(100)], { signal });
+    expect(w.calls.signals).toEqual([signal]);
+  });
+
+  it("opens each installation ONCE (one token), however many of its repositories are looked up", async () => {
+    const w = world({ listed: range(10, 100) });
+    await checkRecordedRepositories(w.deps, [repo(1), repo(2), ...range(8, 100).map((id) => repo(id))]);
+    expect(w.calls.open).toBe(1);
+    expect(w.calls.status).toEqual([1, 2]);
   });
 });
 

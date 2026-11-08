@@ -21,11 +21,17 @@ export interface RecordedRepository {
   installationId: number;
 }
 
-export interface InstallationRepositoriesPort {
-  /** Every repository id the installation reaches; `complete: false` when the list may have more. Throws on anything unclear. */
-  repositoryIds(installationId: number, workspaceId: string): Promise<{ ids: readonly number[]; complete: boolean }>;
+/** One installation as the check needs it: what it reaches, and a lookup of one repository by id. Built with ONE installation token. */
+export interface InstallationView {
+  /** Every repository id the installation reaches; `complete: false` when the list may have more. */
+  ids: readonly number[];
+  complete: boolean;
   /** `exists` on a clear 200, `missing` on a clear 404, a throw on anything else. */
-  status(installationId: number, repositoryId: number, workspaceId: string): Promise<"exists" | "missing">;
+  status(repositoryId: number, signal?: AbortSignal): Promise<"exists" | "missing">;
+}
+export interface InstallationRepositoriesPort {
+  /** Reads the installation (binding check, token, list). Throws on anything unclear. `signal` ends every call at the check's deadline. */
+  open(installationId: number, workspaceId: string, signal?: AbortSignal): Promise<InstallationView>;
 }
 
 export interface RepositoryCheckDependencies {
@@ -33,6 +39,11 @@ export interface RepositoryCheckDependencies {
   /** Removes what the record holds from the repository (the tap's own tombstone, plus marking the source row failing). Throws when no durable path took it. */
   remove(repository: RecordedRepository): Promise<void>;
   log?: (event: string, fields: Record<string, number>) => void;
+}
+
+export interface RepositoryCheckOptions {
+  /** Ends every GitHub call; when it fires, what is not finished is "unknown" and nothing of it is removed. Absent: no deadline (tests). */
+  signal?: AbortSignal;
 }
 
 export interface RepositoryCheckOutcome {
@@ -44,6 +55,8 @@ export interface RepositoryCheckOutcome {
   refused: number;
   /** Removals no durable path took. */
   failed: number;
+  /** Installations not reached because the deadline passed. */
+  skipped: number;
 }
 
 /** More than this share of an installation's recorded repositories "not held" is a sign of a narrowed installation, not of deletions. */
@@ -53,17 +66,30 @@ export const REPOSITORY_MIN_FOR_SHARE = 5;
 
 const tooMany = (missing: number, recorded: number): boolean => recorded >= REPOSITORY_MIN_FOR_SHARE ? missing / recorded > REPOSITORY_MAX_MISSING_SHARE : missing > 1;
 
-export async function checkRecordedRepositories(deps: RepositoryCheckDependencies, repositories: readonly RecordedRepository[]): Promise<RepositoryCheckOutcome> {
+/** A call that ends at the deadline even if the port ignores its signal: the check never waits longer than its budget for GitHub. */
+function bounded<T>(work: Promise<T>, signal: AbortSignal | undefined): Promise<T> {
+  if (signal === undefined) return work;
+  if (signal.aborted) { work.catch(() => undefined); return Promise.reject(new Error("deadline")); }
+  return new Promise<T>((resolve, reject) => {
+    const onAbort = (): void => reject(new Error("deadline"));
+    signal.addEventListener("abort", onAbort, { once: true });
+    work.then(resolve, reject).finally(() => signal.removeEventListener("abort", onAbort));
+  });
+}
+
+export async function checkRecordedRepositories(deps: RepositoryCheckDependencies, repositories: readonly RecordedRepository[], options: RepositoryCheckOptions = {}): Promise<RepositoryCheckOutcome> {
   const log = deps.log ?? (() => undefined);
-  const outcome: RepositoryCheckOutcome = { checked: 0, removed: 0, unknown: 0, refused: 0, failed: 0 };
+  const outcome: RepositoryCheckOutcome = { checked: 0, removed: 0, unknown: 0, refused: 0, failed: 0, skipped: 0 };
+  const { signal } = options;
   const byInstallation = new Map<number, RecordedRepository[]>();
   for (const repository of repositories) byInstallation.set(repository.installationId, [...(byInstallation.get(repository.installationId) ?? []), repository]);
   for (const [installationId, group] of byInstallation) {
+    if (signal?.aborted === true) { outcome.skipped += 1; continue; }
     const workspaceId = group[0]!.workspaceId;
     outcome.checked += group.length;
     let confirmed: RecordedRepository[];
     try {
-      const listed = await deps.installations.repositoryIds(installationId, workspaceId);
+      const listed = await bounded(deps.installations.open(installationId, workspaceId, signal), signal);
       if (!listed.complete || listed.ids.length === 0) {
         outcome.unknown += 1;
         log("record.github_repo_check_unclear", { complete: listed.complete ? 1 : 0, listed: listed.ids.length });
@@ -80,7 +106,7 @@ export async function checkRecordedRepositories(deps: RepositoryCheckDependencie
       confirmed = [];
       // Missing from the list: only a clear 404 from the repository itself counts. Anything else throws and ends this installation's check.
       for (const repository of notListed) {
-        if (await deps.installations.status(installationId, repository.repositoryId, workspaceId) === "missing") confirmed.push(repository);
+        if (await bounded(listed.status(repository.repositoryId, signal), signal) === "missing") confirmed.push(repository);
       }
     } catch {
       outcome.unknown += 1;

@@ -16,8 +16,8 @@ export interface GitHubAppCredentials {
    */
   webhookSecret: (options?: { refresh?: boolean }) => Promise<string>;
   /**
-   * Whether the App is set up on this install: its secret has a version and names an App (`agentx init` creates both). False is a state, not a failure: the Team record's GitHub sweeps skip an install with no App
-   * instead of failing every hour. A secret that cannot be read for any other reason also answers false (the sweep tries again next hour).
+   * Whether the App is set up on this install: its secret has a version and names an App (`agentx init` creates both). False means exactly "not set up" and nothing else: the Team record's GitHub sweeps skip
+   * such an install quietly. Any other failure (the secret cannot be read: permissions, KMS, an outage) THROWS, so the caller logs and counts it; the same fault also breaks webhook verification.
    */
   ready: () => Promise<boolean>;
 }
@@ -96,6 +96,10 @@ export function createGitHubAppCredentials(
       throw error;
     }
   };
-  const ready = (): Promise<boolean> => loadApp().then(() => true, () => false);
+  const ready = (): Promise<boolean> => loadApp().then(() => true, (error: unknown) => {
+    // `loadSecret` words "no secret version yet" as this one message; a secret with no App id in it is the same state.
+    if (error instanceof Error && /finish agentx init|holds no appId/u.test(error.message)) return false;
+    throw error;
+  });
   return { provider, privateKeySecretArn, webhookSecret, ready };
 }

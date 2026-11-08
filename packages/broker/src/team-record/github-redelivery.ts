@@ -227,7 +227,8 @@ export async function runGithubRedelivery(deps: RedeliveryDependencies, options:
     if (index >= maxRedeliveries || now() >= deadline) { outcome.deferred += 1; continue; }
     try {
       const answer = await deps.deliveries.redeliver(item.entryId, remaining());
-      if (answer === "gone") { outcome.gone += 1; tracked.delete(item.guid); continue; }
+      // GitHub forgot the delivery and no attempt of it was ever answered 2xx: the delete was not taken, and now cannot be asked for. Lost for good, as serious as a give-up: a fixed line the alarm filters on.
+      if (answer === "gone") { outcome.gone += 1; tracked.delete(item.guid); log("record.github_redelivery_gone", {}); continue; }
       outcome.redelivered += 1;
       tracked.set(item.guid, { ...item, asks: item.asks + 1, askedAt: new Date(now()).toISOString() });
     } catch {

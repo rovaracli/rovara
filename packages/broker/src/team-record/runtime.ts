@@ -62,7 +62,7 @@ import { chooseVectorBucketForNewWorkspace, type VectorIndex } from "./vectors.j
 import type { S3VectorsIndex } from "./s3-vectors-index.js";
 import type { DistillModel } from "./distill.js";
 import type { PurgeDependencies } from "./purge.js";
-import { readOpsFailures, recordGithubSweepFailure, recordOpsFailure, type OpsFailures } from "./ops-failures.js";
+import { readOpsFailures, recordOpsFailure, type OpsFailures } from "./ops-failures.js";
 import type { RecordLog, RecordVectorPort, TeamRecordTable } from "./types.js";
 import { RedeliveryStateConflict, runGithubRedelivery, type DeliveriesPort, type RedeliveryState } from "./github-redelivery.js";
 import { checkRecordedRepositories, type InstallationRepositoriesPort, type RecordedRepository } from "./github-repo-existence.js";
@@ -108,6 +108,9 @@ export interface TeamRecordRuntimeInput {
   githubDeliveries?: DeliveriesPort;
   /** SRL-5a: whether the GitHub App is set up here. False: both GitHub sweeps skip, quietly (an install with no App has nothing to ask). Absent: taken as set up. */
   githubAppReady?: () => Promise<boolean>;
+  /** Tests: the repository check's share of one company (default 4 s) and the hourly job's whole budget (default 24 s). */
+  repoCheckOrgMs?: number;
+  jobBudgetMs?: number;
   /**
    * SRL-5a: the GitHub App's view of an installation (the repositories it reaches, and one repository by id). Every hour each recorded repository is checked to still be held by its installation, so
    * rows from a repository GitHub deleted or transferred without a webhook we saw are removed. Absent: no check (an install without a GitHub App).
@@ -234,6 +237,8 @@ const PER_ORG_MS = 8_000;
 const DLQ_SWEEP_MS = 6_000;
 /** The most the GitHub redelivery sweep (SRL-5a) may take of one hourly run. */
 const GITHUB_REDELIVERY_MS = 5_000;
+/** One company's share of the repository check (SRL-5a). */
+const REPO_CHECK_ORG_MS = 4_000;
 /** The sweep's one state item (watermark and gaps), in the directory partition, which no org erase empties. It holds delivery times only: no person, no text. */
 const GITHUB_REDELIVERY_STATE_KEY = { pk: TEAM_RECORD_ORG_DIRECTORY_PK, sk: "GHREDELIVERY#state" } as const;
 /**
@@ -818,10 +823,10 @@ export function createTeamRecordRuntime(input: TeamRecordRuntimeInput): TeamReco
   }
 
   // ---- the scheduled jobs: bounded in orgs, in time and (inside each module) in items
-  async function eachOrg(work: (orgId: OrgId, budgetMs: number) => Promise<Record<string, number>>, totalMs: number = JOB_BUDGET_MS): Promise<TeamRecordJobSummary> {
+  async function eachOrg(work: (orgId: OrgId, budgetMs: number) => Promise<Record<string, number>>, totalMs: number = input.jobBudgetMs ?? JOB_BUDGET_MS, options: { after?: string } = {}): Promise<TeamRecordJobSummary> {
     const started = now();
     const summary: TeamRecordJobSummary = { orgs: 0, skippedOrgs: 0, details: {} };
-    let after: Record<string, unknown> | undefined;
+    let after: Record<string, unknown> | undefined = options.after === undefined ? undefined : { pk: TEAM_RECORD_ORG_DIRECTORY_PK, sk: options.after };
     for (;;) {
       const read = (await table.documentClient.send(new QueryCommand({
         TableName: table.tableName, KeyConditionExpression: "pk = :pk", ExpressionAttributeValues: { ":pk": TEAM_RECORD_ORG_DIRECTORY_PK }, ConsistentRead: true, Limit: ORG_PAGE,
@@ -868,8 +873,14 @@ export function createTeamRecordRuntime(input: TeamRecordRuntimeInput): TeamReco
     return deleted;
   }
 
-  /** Whether the GitHub App is set up here; a check that itself fails reads as not ready (the next hour asks again). */
-  const appReady = async (): Promise<boolean> => input.githubAppReady === undefined ? true : await input.githubAppReady().catch(() => false);
+  /**
+   * Whether the GitHub App is set up here. An install with no App is quiet (false). A check that FAILS (the secret cannot be read) is not "no App": it is logged as a fixed line for the alarm and the sweeps
+   * skip this hour, because the same fault also breaks webhook verification and the sweeps are what repairs the losses.
+   */
+  const appReady = async (): Promise<boolean> => {
+    if (input.githubAppReady === undefined) return true;
+    try { return await input.githubAppReady(); } catch { log("record.github_sweep_problem", { appUnreadable: 1 }); return false; }
+  };
   /** SRL-5a: asks GitHub to send failed record removals (deleted comments and repositories) again. Never throws; a failure is a fixed log line and a count. */
   async function sweepGithubRedelivery(budgetMs: number): Promise<Record<string, number>> {
     const deliveries = input.githubDeliveries;
@@ -903,24 +914,27 @@ export function createTeamRecordRuntime(input: TeamRecordRuntimeInput): TeamReco
           },
         },
       }, { budgetMs });
-      // Visible to every company's Health (the sweep is App-wide): a run that failed, a delete given up on, a gap of deliveries lost before GitHub forgot them, failures that could not be tracked.
-      const problems = (outcome.status === "failed" ? 1 : 0) + outcome.exhausted + outcome.droppedGaps + outcome.untracked;
-      if (problems > 0) await recordGithubSweepFailure(table, now(), problems);
+      // For the operator, never for a company's Health (the sweep is App-wide and its deliveries belong to every company): one fixed line the alarm filters on. `gone` is a delete GitHub forgot before it was
+      // taken: lost for good, as serious as one given up on.
+      const problems = (outcome.status === "failed" ? 1 : 0) + outcome.exhausted + outcome.gone + outcome.droppedGaps + outcome.untracked;
+      if (problems > 0) log("record.github_sweep_problem", { problems, failedRun: outcome.status === "failed" ? 1 : 0, exhausted: outcome.exhausted, gone: outcome.gone, droppedGaps: outcome.droppedGaps, untracked: outcome.untracked });
       return {
         githubRedelivered: outcome.redelivered, githubRedeliveryGone: outcome.gone, githubRedeliveryFailed: outcome.failed + (outcome.status === "failed" ? 1 : 0), githubRedeliveryDeferred: outcome.deferred,
         githubRedeliveryGaps: outcome.gaps, githubRedeliveryTracked: outcome.tracked, githubRedeliveryExhausted: outcome.exhausted,
       };
     } catch {
       log("record.github_redelivery_failed", {});
-      await recordGithubSweepFailure(table, now());
+      log("record.github_sweep_problem", { problems: 1, failedRun: 1 });
       return { githubRedeliveryFailed: 1 };
     }
   }
 
   /** SRL-5a: the repositories the org's projects record GitHub rows from, with the installation each project pins them to. A source row already marked failing (removed) is not asked about again. */
-  async function recordedRepositories(orgId: OrgId): Promise<RecordedRepository[]> {
+  async function recordedRepositories(orgId: OrgId, signal: AbortSignal): Promise<RecordedRepository[]> {
     const found = new Map<string, RecordedRepository>();
     for (const project of (await projectsOf(orgId)).slice(0, 200)) {
+      // Out of time: what was found so far is checked, the rest waits for another hour (the 200-project cap is a known limit, DEFERRED-CHECKS).
+      if (signal.aborted) break;
       const configs = (await listSourceConfigs(table, orgId, project)).filter((config) => config.source === "github" && /^github:repo\/[1-9][0-9]{0,14}$/u.test(config.scope) && config.health !== "failing");
       if (configs.length === 0) continue;
       const pinned = (await latestRevision(state, orgId, project))?.definition.repositories ?? [];
@@ -945,18 +959,45 @@ export function createTeamRecordRuntime(input: TeamRecordRuntimeInput): TeamReco
   }
   async function checkGithubRepositories(orgId: OrgId, budgetMs: number): Promise<Record<string, number>> {
     const installations = input.githubRepositories;
-    if (installations === undefined || budgetMs < 2_000 || !await appReady()) return {};
+    if (installations === undefined) return {};
+    // One deadline for everything this company's check does: the reads, the token, the lists and the lookups.
+    const signal = AbortSignal.timeout(Math.max(1, budgetMs));
     try {
-      const recorded = await recordedRepositories(orgId);
+      const recorded = await recordedRepositories(orgId, signal);
       if (recorded.length === 0) return {};
-      const outcome = await checkRecordedRepositories({ installations, remove: removeRepository, log: (event, fields) => log(event, fields) }, recorded);
-      // A removal no durable path took, or an installation that looked narrowed, is for a person to look at.
-      if (outcome.failed + outcome.refused > 0) await recordGithubSweepFailure(table, now(), outcome.failed + outcome.refused);
-      return { githubReposChecked: outcome.checked, githubReposRemoved: outcome.removed, githubReposUnknown: outcome.unknown, githubReposRefused: outcome.refused, githubReposFailed: outcome.failed };
+      const outcome = await checkRecordedRepositories({ installations, remove: removeRepository, log: (event, fields) => log(event, fields) }, recorded, { signal });
+      // An installation that looked narrowed is for THIS company's admins to look at (their own Health counter). A removal no durable path took is already counted per company by `removeRepository`.
+      for (let index = 0; index < outcome.refused; index += 1) await recordOpsFailure(table, orgId, "repo_check", now());
+      return { githubReposChecked: outcome.checked, githubReposRemoved: outcome.removed, githubReposUnknown: outcome.unknown, githubReposRefused: outcome.refused, githubReposFailed: outcome.failed, githubReposSkipped: outcome.skipped };
     } catch {
       log("record.github_repo_check_failed", {});
       return { githubReposFailed: 1 };
     }
+  }
+  const REPO_CHECK_CURSOR_KEY = { pk: TEAM_RECORD_ORG_DIRECTORY_PK, sk: "GHREPOCHECK#cursor" } as const;
+  /**
+   * SRL-5a: the repository check, run AFTER every company's delete, erase and sweep work, from what is left of the hourly run's budget, and never past it (every GitHub call carries the deadline). It walks the
+   * companies from where the last run stopped (a saved cursor), so a slow GitHub or a long list of companies delays the check for some companies by an hour or more instead of starving the same ones for ever.
+   * With under two seconds left it does not start (a fixed line). It never takes time from the privacy paths.
+   */
+  async function githubRepositoryPass(deadlineAt: number): Promise<Record<string, number>> {
+    if (input.githubRepositories === undefined) return {};
+    const left = deadlineAt - now();
+    if (left < 2_000) { log("record.github_repo_check_no_time", {}); return { githubReposNoTime: 1 }; }
+    if (!await appReady()) return {};
+    let cursor: string | undefined;
+    try {
+      const item = ((await table.documentClient.send(new GetCommand({ TableName: table.tableName, Key: REPO_CHECK_CURSOR_KEY, ConsistentRead: true }))) as { Item?: { after?: unknown } }).Item;
+      cursor = typeof item?.after === "string" && OrgIdSchema.safeParse(item.after).success ? item.after : undefined;
+    } catch { log("record.github_repo_check_cursor_unreadable", {}); }
+    let last: string | undefined;
+    const share = Math.min(input.repoCheckOrgMs ?? REPO_CHECK_ORG_MS, PER_ORG_MS);
+    const pass = await eachOrg(async (orgId, budgetMs) => { last = orgId; return checkGithubRepositories(orgId, Math.min(budgetMs, share)); }, left, cursor === undefined ? {} : { after: cursor });
+    try {
+      // Companies were left for the next run: it starts after the last one done. All done: it starts from the top.
+      await table.documentClient.send(new PutCommand({ TableName: table.tableName, Item: { ...REPO_CHECK_CURSOR_KEY, entityType: "TEAM_RECORD_GITHUB_REPO_CHECK", ...(pass.skippedOrgs > 0 && last !== undefined ? { after: last } : {}), at: new Date(now()).toISOString() } }));
+    } catch { log("record.github_repo_check_cursor_unsaved", {}); }
+    return { ...pass.details, githubReposOrgs: pass.orgs, githubReposOrgsLeft: pass.skippedOrgs };
   }
 
   /** Filled in below, where the tracker pieces are built (they need the links, which are defined after the jobs). */
@@ -981,12 +1022,12 @@ export function createTeamRecordRuntime(input: TeamRecordRuntimeInput): TeamReco
           const projectsSwept = await sweepArchivedProjects(orgId, Math.max(1_000, budgetMs / 4));
           // Lane team-record-links: the org's connected Linear and Jira users, read again once a day.
           const trackersSynced = await trackerSync.run(orgId, Math.max(1_000, budgetMs / 4)).catch(() => 0);
-          // SRL-5a: a recorded repository GitHub no longer shows its installation (deleted, transferred) is removed even if no webhook for it was seen.
-          const repositories = await checkGithubRepositories(orgId, Math.max(1_000, budgetMs / 4));
-          return { ...repositories, requests: done.requests, finished: done.finished, stillHidden: done.stillHidden, sweepFailed: done.sweepFailed, lakeStatements: lakeDeletes?.statements ?? 0, erasesFinished: erased, projectsSwept, trackersSynced };
-        }, JOB_BUDGET_MS - (now() - startedAt));
+          return { requests: done.requests, finished: done.finished, stillHidden: done.stillHidden, sweepFailed: done.sweepFailed, lakeStatements: lakeDeletes?.statements ?? 0, erasesFinished: erased, projectsSwept, trackersSynced };
+        }, (input.jobBudgetMs ?? JOB_BUDGET_MS) - (now() - startedAt));
         summary.details.deadLetterTextDeleted = swept;
         for (const [key, value] of Object.entries(redelivery)) summary.details[key] = value;
+        // SRL-5a: last, from what is left, so it can never take time from the paths above.
+        for (const [key, value] of Object.entries(await githubRepositoryPass(startedAt + (input.jobBudgetMs ?? JOB_BUDGET_MS)))) summary.details[key] = value;
         return summary;
       }
       return eachOrg(async (orgId, budgetMs) => {

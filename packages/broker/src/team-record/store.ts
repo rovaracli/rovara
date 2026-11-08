@@ -324,7 +324,8 @@ export async function putSourceConfig(table: TeamRecordTable, config: SourceConf
   if (elsewhere) return { status: "refused", reason: "scope_in_other_project" };
   // An admin saving a source row for a place opens it again (a repository transferred back, a channel brought back): the closed-place marker goes.
   await reopenScope(table, parsed.data.workspaceId, parsed.data.scope);
-  await table.documentClient.send(new PutCommand({ TableName: table.tableName, Item: sourceRowItem(parsed.data) }));
+  // The place is open again, so the row must not keep reading `failing` (set when a repository deleted or transferred, or the hourly repository check, closed it) and so stay out of the next check.
+  await table.documentClient.send(new PutCommand({ TableName: table.tableName, Item: sourceRowItem(parsed.data.health === "failing" ? { ...parsed.data, health: "unknown" } : parsed.data) }));
   return { status: "saved" };
 }
 

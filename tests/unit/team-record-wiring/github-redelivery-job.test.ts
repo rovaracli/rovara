@@ -36,15 +36,27 @@ describe("the hourly job's GitHub redelivery sweep", () => {
     expect(asked).toEqual([77]);
   });
 
-  it("a GitHub that is down does not fail the job, deletes nothing, is counted, and shows on every company's Health (M7)", async () => {
+  it("a GitHub that is down does not fail the job, deletes nothing, is counted in the job summary and as ONE fixed operator line, and never shows on any company's Health (R2)", async () => {
     const deliveries: DeliveriesPort = { list: async () => { throw new Error("secret detail from GitHub"); }, redeliver: async () => { throw new Error("no"); } };
     const { runtime, db, logs } = build(deliveries);
     const summary = await runtime.jobs.run("hourly");
     expect(summary.details.githubRedeliveryFailed).toBe(1);
     expect(JSON.stringify(logs)).not.toContain("secret detail");
-    expect((db.find(() => true) as Array<{ entityType?: string }>).map((item) => item.entityType)).toEqual(["TEAM_RECORD_APP_OPS_FAILURE"]);
-    expect(await runtime.opsFailures(TEST_ORG)).toMatchObject({ eraseSweep: 0, tombstone: 0, githubSweep: 1 });
-    expect(opsFailuresCheck(await runtime.opsFailures(TEST_ORG))).toMatchObject({ status: "warn" });
+    expect(logs.filter((entry) => entry.event === "record.github_sweep_problem")).toHaveLength(1);
+    // Nothing is written for it, and a company's Health does not move: the sweep is App-wide and its failures are Rovara's to alarm on.
+    expect(db.find(() => true)).toEqual([]);
+    const health = await runtime.opsFailures(TEST_ORG);
+    expect(health).toEqual({ eraseSweep: 0, tombstone: 0 });
+    expect(opsFailuresCheck(health).status).toBe("ok");
+  });
+
+  it("a delivery GitHub says it no longer has (404) is a delete lost for good: it is a problem line, not just a count (R3)", async () => {
+    const deliveries: DeliveriesPort = { list: async () => ({ entries: [failedDelete] }), redeliver: async () => "gone" };
+    const { runtime, logs } = build(deliveries);
+    const summary = await runtime.jobs.run("hourly");
+    expect(summary.details).toMatchObject({ githubRedeliveryGone: 1, githubRedelivered: 0 });
+    expect(logs.map((entry) => entry.event)).toContain("record.github_redelivery_gone");
+    expect(logs.find((entry) => entry.event === "record.github_sweep_problem")).toMatchObject({ gone: 1 });
   });
 
   it("writes only its own state item: no record row, event or tombstone", async () => {

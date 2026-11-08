@@ -1,6 +1,6 @@
 # SRL-5a: removing the record's copy of deleted GitHub content within a bound
 
-(Round 2, after the Opus review `reviews/0511-team-record-gaps/srl5-review.md`. This replaces the round 1 note.)
+(Round 3, after the Opus reviews in `reviews/0511-team-record-gaps/srl5-review.md`. Replaces rounds 1 and 2; the changes of round 3 are marked R1 to R6.)
 
 ## Problem
 The GitHub tap answers 503 when a comment delete or a repository delete/transfer could not be taken, but GitHub never
@@ -46,7 +46,7 @@ Run from the hourly job, App-wide, with its own 5 s budget and a signal that end
 4. Due removals (newest attempt and last ask both older than 30 min) are asked in this order: fewest asks first,
    then oldest first, at most 50 a run. A delete that always fails therefore cannot starve a new one.
    `POST /attempts`: 202 requested; 404 gone (counted separately); anything else, 422 ("spammed") included, is a
-   failure and the removal stays tracked and is asked again next hour.
+   failure and the removal stays tracked and is asked again next hour. 404 is a delete lost for good (see Visibility).
 5. Because tracking lives in the state, the watermark no longer has to be pinned for a failed or unconfirmed ask.
    It is held back only for a failed removal that could not be tracked (the list is full).
 6. A scan cut short by the page or time limit, or by an unreadable page, is saved as a gap. At most 8 gaps are kept; when
@@ -77,7 +77,10 @@ decides "Rovara can no longer read this repository", and removes in both cases. 
 transfer out (also a loss of access); a company that withdraws the repository from the App has withdrawn Rovara's
 right to hold a copy; and the live-check ACL makes the rows unreadable to others anyway. The cost of a wrong removal
 (history lost until re-learned) is smaller than the cost of keeping deleted data. This is a policy choice and is
-called out for the owner (flip: skip `remove` for repositories whose installation is `selected`).
+called out for the owner (flip: skip `remove` for repositories whose installation is `selected`). The owner's decision is
+still pending; current behaviour is kept. Limits to know (R5): a PUBLIC repository deselected from the App may still be
+readable with the installation token (200), so it is probably not removed (the safe direction; [verify on staging]); an
+UNINSTALLED App keeps every repository's record copy (the mint fails: unknown), while deselecting one repository removes it.
 
 Safeguards, taken from `sources/existence-sweep.ts`:
 - an error, refusal, timeout, redirect or unclear answer is never "not held" (a port throw = unknown, nothing of
@@ -93,17 +96,36 @@ Safeguards, taken from `sources/existence-sweep.ts`:
 
 Bound for a deleted repository: **within about 1 hour of the check running**, whether or not a webhook was ever sent.
 
-## Visibility (M7)
-A new App-wide failure counter (`OPSFAIL#app#github_sweep#<hour>` in the org directory partition) is read into every
-company's Health data (`githubSweep`, only when above zero; `opsFailuresCheck` warns). It counts: a redelivery run that
-failed, a removal given up on, a gap lost, a failure that could not be tracked, an installation whose repositories
-looked narrowed, a repository removal no durable path took. Job-summary details carry the other counts. NOT built here: a CloudWatch
-alarm (CDK) that pages on the `record.github_redelivery_*` / `record.github_repo_check_*` log lines; until it exists the
-only signal is the Health page (DEFERRED-CHECKS, marked as blocking the team record switch-on).
+## Visibility (M7, R2, R3, R6)
+- **Company Health shows only what is that company's own.** The repository check counts "an installation looked
+  narrowed (too many of this company's repositories gone at once), nothing removed" under the company's own partition
+  (`OPSFAIL#repo_check#<hour>`, shown as `repoCheck`; present only when not zero). A repository removal no durable
+  path took is counted once, through the existing per-company `tombstone` counter. NOTHING App-wide is on any company's
+  Health: an App-wide count (and its hour) would show one company's events, and Rovara's own faults, to the others.
+- **App-wide problems are for the operator**: one fixed line `record.github_sweep_problem` (counts only: a failed run, a
+  removal given up on, a delete GitHub forgot before it was taken (404 on redeliver: lost for good, also
+  `record.github_redelivery_gone`), a gap lost, an untracked failure, an App secret that cannot be read). The job summary
+  carries the same counts. There is no operator console in this repo, so the CloudWatch alarm on these lines
+  (DEFERRED-CHECKS, blocks switch-on) is the surface.
+- `githubAppReady` is false only for "not set up" (no secret version, no App id): quiet. Any other failure reading the App
+  secret THROWS; the job logs `record.github_sweep_problem` {appUnreadable} and skips the sweeps for the hour (the same
+  fault also breaks webhook verification).
 
-## Quiet when there is no App (L10)
-`githubAppReady` (the broker's App secret has a version and names an App) gates both GitHub sweeps; an install with no App
-skips them without a failure or a log line.
+## The repository check runs last and has a deadline (R1)
+- It runs AFTER every company's delete, erase and sweep work, from what is left of the hourly run's budget, and never past
+  it. With under two seconds left it does not start (`record.github_repo_check_no_time`, `githubReposNoTime`): the privacy
+  paths always come first; a run so busy that this repeats shows in the alarm.
+- Each company gets at most 4 s. One `AbortSignal` carries that deadline into the Dynamo reads (between projects) and
+  every GitHub call (token mint, list, lookups; the provider adds its own 5-8 s timeouts), and the check also stops
+  waiting for a port that ignores the signal. What is not finished is "unknown": nothing of it is removed.
+- It walks the companies from a saved cursor (`GHREPOCHECK#cursor`): if time runs out after company A, the next run
+  starts after A, so the same companies are not starved every hour.
+- ONE installation token per installation per run serves the list and every lookup (`installationRepositoryView`).
+
+## Recovering a repository the check removed (R4)
+Removing sets the source row to `failing` and closes the place. To bring a repository back: re-add it to the GitHub App,
+then remove the failing source row and add it again in the project's Sources tab (a new row opens the place and reads
+`unknown`), or save the row through `putSourceConfig`, which now also resets `failing` to `unknown`.
 
 ## Still not covered (accept or decide)
 - A comment deleted at GitHub that GitHub never delivered, or whose failure is older than 3 days: a comment existence

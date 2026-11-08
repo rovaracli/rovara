@@ -12,6 +12,18 @@ import { world as ingestWorld, WS } from "../../support/team-record-ingest-fakes
 
 const HOUR = 3_600_000;
 
+describe("the repository check's counter (SRL-5a)", () => {
+  it("counts per company under its own kind, shows only when not zero, and company B's count never appears for company A", async () => {
+    const w = world();
+    const t = w.clock.ms;
+    await recordOpsFailure(w.table, ORG_B, "repo_check", t);
+    await recordOpsFailure(w.table, ORG_B, "repo_check", t - HOUR);
+    expect(await readOpsFailures(w.table, ORG_B, t)).toEqual({ eraseSweep: 0, tombstone: 0, repoCheck: 2, lastAt: new Date(t).toISOString() });
+    expect(await readOpsFailures(w.table, ORG_A, t)).toEqual({ eraseSweep: 0, tombstone: 0 });
+    expect(await readOpsFailures(w.table, ORG_B, t + 48 * HOUR)).toEqual({ eraseSweep: 0, tombstone: 0 });
+  });
+});
+
 describe("the failure counters", () => {
   it("count per company and kind, window to the last 24 hours, and hold no person", async () => {
     const w = world();

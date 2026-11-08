@@ -2080,10 +2080,14 @@ export class GitHubAppCredentialProvider {
     if (!Number.isSafeInteger(installationId) || installationId < 1) throw agentXError("CONFIG_INVALID", "GitHub installation id must be a positive integer");
     if ("orgId" in scope && this.options.requireInstallationBound !== undefined) await this.options.requireInstallationBound(scope.orgId, installationId);
     const token = await this.mintInstallationToken(installationId, { metadata: "read" });
+    return this.readInstallationRepositories(token);
+  }
+
+  private async readInstallationRepositories(token: string, signal?: AbortSignal): Promise<GitHubInstallationRepository[]> {
     const repositories: GitHubInstallationRepository[] = [];
     for (let page = 1; page <= INSTALLATION_REPOSITORY_PAGES; page += 1) {
       const response = await this.fetchImplementation(`https://api.github.com/installation/repositories?per_page=100&page=${page}`, {
-        headers: githubHeaders(token), signal: AbortSignal.timeout(8_000), redirect: "error",
+        headers: githubHeaders(token), signal: webhookCallSignal(signal), redirect: "error",
       });
       if (!response.ok) throw agentXError("RUNTIME_UNAVAILABLE", `GitHub's repository listing failed with HTTP ${response.status}`);
       const body: unknown = await response.json();
@@ -2154,26 +2158,27 @@ export class GitHubAppCredentialProvider {
   }
 
   /**
-   * SRL-5a: the ids of every repository one installation can reach, and whether the list is certainly complete (a list that filled all its pages may have more, and is then not complete). Read with
-   * `listInstallationRepositories`, so the cloud binding check and the token mint are the same ones.
+   * SRL-5a: one installation as the repository check needs it: the ids of every repository it reaches and whether that list is certainly complete (a list that filled all its pages may have more),
+   * and a lookup of one repository by id (`GET /repositories/{id}`): `exists` on 200, `missing` on 404, a throw on anything else (a refusal, a rate limit, a server error, a redirect). 404 does not say
+   * deleted, transferred or no longer shared with the installation: the caller treats all three as "not held". ONE installation token is minted for the list and every lookup, and `signal` ends every call
+   * (with the provider's own timeout) at the caller's deadline. The cloud binding check runs once, before the mint.
    */
-  async installationRepositoryIds(installationId: number, scope: GitHubTokenScope): Promise<{ ids: number[]; complete: boolean }> {
-    const repositories = await this.listInstallationRepositories(installationId, scope);
-    return { ids: repositories.map((repository) => repository.githubRepositoryId), complete: repositories.length < INSTALLATION_REPOSITORY_PAGES * 100 };
-  }
-
-  /**
-   * SRL-5a: whether the installation's token can still read one repository by its id (`GET /repositories/{id}`): `exists` on 200, `missing` on 404, and a throw on anything else (a refusal, a rate limit, a
-   * server error, a redirect). 404 does not say deleted, transferred or no longer shared with the installation: the caller treats all three as "not held".
-   */
-  async installationRepositoryStatus(installationId: number, repositoryId: number, scope: GitHubTokenScope): Promise<"exists" | "missing"> {
-    if (!Number.isSafeInteger(installationId) || installationId < 1 || !Number.isSafeInteger(repositoryId) || repositoryId < 1) throw agentXError("CONFIG_INVALID", "GitHub installation and repository ids must be positive integers");
+  async installationRepositoryView(installationId: number, scope: GitHubTokenScope, signal?: AbortSignal): Promise<{ ids: number[]; complete: boolean; status(repositoryId: number, signal?: AbortSignal): Promise<"exists" | "missing"> }> {
+    if (!Number.isSafeInteger(installationId) || installationId < 1) throw agentXError("CONFIG_INVALID", "GitHub installation id must be a positive integer");
     if ("orgId" in scope && this.options.requireInstallationBound !== undefined) await this.options.requireInstallationBound(scope.orgId, installationId);
-    const token = await this.mintInstallationToken(installationId, { metadata: "read" });
-    const response = await this.fetchImplementation(`https://api.github.com/repositories/${repositoryId}`, { headers: githubHeaders(token), signal: AbortSignal.timeout(8_000), redirect: "error" });
-    if (response.status === 200) return "exists";
-    if (response.status === 404) return "missing";
-    throw agentXError("RUNTIME_UNAVAILABLE", `GitHub's repository lookup failed with HTTP ${response.status}`);
+    const token = await this.mintInstallationToken(installationId, { metadata: "read" }, signal);
+    const repositories = await this.readInstallationRepositories(token, signal);
+    return {
+      ids: repositories.map((repository) => repository.githubRepositoryId),
+      complete: repositories.length < INSTALLATION_REPOSITORY_PAGES * 100,
+      status: async (repositoryId, lookupSignal) => {
+        if (!Number.isSafeInteger(repositoryId) || repositoryId < 1) throw agentXError("CONFIG_INVALID", "GitHub repository id must be a positive integer");
+        const response = await this.fetchImplementation(`https://api.github.com/repositories/${repositoryId}`, { headers: githubHeaders(token), signal: webhookCallSignal(lookupSignal ?? signal), redirect: "error" });
+        if (response.status === 200) return "exists";
+        if (response.status === 404) return "missing";
+        throw agentXError("RUNTIME_UNAVAILABLE", `GitHub's repository lookup failed with HTTP ${response.status}`);
+      },
+    };
   }
 
   private async appHeaders(): Promise<Record<string, string>> {
@@ -2232,9 +2237,9 @@ export class GitHubAppCredentialProvider {
   }
 
   /** `POST /app/installations/{id}/access_tokens` with the App's JWT; the caller reads the status. */
-  private async postInstallationToken(installationId: number, body: { permissions: Record<string, "read" | "write">; repositories?: string[] }): Promise<Response> {
+  private async postInstallationToken(installationId: number, body: { permissions: Record<string, "read" | "write">; repositories?: string[] }, signal?: AbortSignal): Promise<Response> {
     return this.fetchImplementation(`https://api.github.com/app/installations/${installationId}/access_tokens`, {
-      method: "POST", headers: await this.appHeaders(), body: JSON.stringify(body), signal: AbortSignal.timeout(5_000), redirect: "error",
+      method: "POST", headers: await this.appHeaders(), body: JSON.stringify(body), signal: signal === undefined ? AbortSignal.timeout(5_000) : AbortSignal.any([AbortSignal.timeout(5_000), signal]), redirect: "error",
     });
   }
 
@@ -2256,8 +2261,8 @@ export class GitHubAppCredentialProvider {
   }
 
   /** A token for a whole installation (no repository list), for the reads that name no one repository. */
-  private async mintInstallationToken(installationId: number, permissions: Record<string, "read" | "write">): Promise<string> {
-    return this.tokenOf(await this.postInstallationToken(installationId, { permissions }));
+  private async mintInstallationToken(installationId: number, permissions: Record<string, "read" | "write">, signal?: AbortSignal): Promise<string> {
+    return this.tokenOf(await this.postInstallationToken(installationId, { permissions }, signal));
   }
 
   private async findOpenPullRequest(
