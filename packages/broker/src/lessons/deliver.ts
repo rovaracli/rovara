@@ -11,7 +11,7 @@ import type { Clock } from "./ports.js";
 import { createLessonLiveReader } from "./live-visibility.js";
 import { readVisible, type LessonLog } from "./read-visible.js";
 import type { LessonStore, ScopeKey } from "./store.js";
-import { isRestricted, type IdentitySet, type Lesson } from "./types.js";
+import type { IdentitySet, Lesson } from "./types.js";
 
 export interface DeliveryDeps {
   store: LessonStore; settings: LearningSettingsReader; access: AccessCheckPort;
@@ -69,13 +69,13 @@ export async function learnedContextFromRefs(deps: DeliveryDeps, refs: LearnedRe
       bytes += size;
     }
 
-    // The reviewer's list of what earlier stages were given: titles of lessons that still exist, are not withdrawn or restricted, whose writers are not erased, and that the reader may still see.
+    // The reviewer's list of what earlier stages were given: titles of lessons that still exist, are not withdrawn, whose writers are not erased, and that the reader may still see.
     let priorLoaded: LearnedContext["priorLoaded"];
     if (refs.priorLoaded !== undefined) {
       const seen: Lesson[] = [];
       for (const ref of refs.priorLoaded) {
         const lesson = await deps.store.get(key, ref.id);
-        if (lesson === undefined || lesson.status === "withdrawn" || isRestricted(lesson) || !(await notErased(deps.store, key, lesson))) continue;
+        if (lesson === undefined || lesson.status === "withdrawn" || !(await notErased(deps.store, key, lesson))) continue;
         seen.push(lesson);
       }
       const shown = new Set((await readVisible({ access: deps.access, key, viewer, lessons: seen, where: "deliver", live: liveReader, ...(deps.log === undefined ? {} : { log: deps.log }) })).map((lesson) => lesson.id));

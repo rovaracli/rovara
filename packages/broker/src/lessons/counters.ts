@@ -34,10 +34,13 @@ export interface TaskOutcome {
   evalRun?: boolean;
 }
 
-/** A correction is in a lesson's scope when the lesson has no path scope (a repository-wide lesson) or one of the correction's files matches. */
+/**
+ * A correction is in a lesson's scope when the lesson has no path scope (a repository-wide lesson), or the correction names no file (a send-back and a revert name none today, so what it touched is unknown and
+ * it could be about any lesson), or one of the correction's files matches.
+ */
 const inScope = (lesson: Lesson, correction: TaskCorrection): boolean => {
   const paths = lesson.scope.paths ?? [];
-  if (paths.length === 0) return true;
+  if (paths.length === 0 || correction.paths.length === 0) return true;
   const expressions = paths.map(globToRegExp);
   return correction.paths.some((p) => expressions.some((re) => re.test(p)));
 };
@@ -98,11 +101,22 @@ export async function recordTaskOutcome(deps: CounterDeps, outcome: TaskOutcome)
     if (blamed) {
       if (await deps.store.markOnce(key, `harmful:${outcome.taskId}:${lessonId}`)) { await addHarmful(deps, key, lessonId, false); result.harmful.push(lessonId); }
       await deps.store.removePending(key, `helpful:${outcome.taskId}:${lessonId}`);
+      // A blamed revert is still a revert: record it so a later "merged" end for this task queues nothing.
+      if (outcome.outcome === "reverted") await deps.store.markOnce(key, `reverted:${outcome.taskId}:${lessonId}`);
       continue;
     }
-    if (outcome.outcome === "reverted") { await deps.store.removePending(key, `helpful:${outcome.taskId}:${lessonId}`); continue; }
+    if (outcome.outcome === "reverted") {
+      await deps.store.removePending(key, `helpful:${outcome.taskId}:${lessonId}`);
+      // Remember the revert: a "merged" end for this task delivered again later must not queue the mark it took back (checked below, next to the settled once-key).
+      await deps.store.markOnce(key, `reverted:${outcome.taskId}:${lessonId}`);
+      continue;
+    }
     if (outcome.outcome === "merged" && outcome.sendBacks <= 1 && !unjudged && !ignored) {
-      await deps.store.addPending({ key: `helpful:${outcome.taskId}:${lessonId}`, workspaceId: key.workspaceId, project: key.project, lessonId, taskId: outcome.taskId, dueAt: (outcome.mergedAt ?? deps.now()) + REVERT_WINDOW_MS });
+      // A task end delivered again after its mark settled, or after that task's revert took the mark back, queues nothing (the settled and reverted once-keys are the record): a repeat extends nothing and counts nothing.
+      if (await deps.store.seenOnce(key, `helpful-final:${outcome.taskId}:${lessonId}`) || await deps.store.seenOnce(key, `reverted:${outcome.taskId}:${lessonId}`)) continue;
+      const dueAt = (outcome.mergedAt ?? deps.now()) + REVERT_WINDOW_MS;
+      // The queued mark is the whole hold: the expiry sweep leaves a lesson with a queued mark alone, so a revert (which takes the mark back) ends the hold and the lesson then fades. No expiry is moved here.
+      await deps.store.addPending({ key: `helpful:${outcome.taskId}:${lessonId}`, workspaceId: key.workspaceId, project: key.project, lessonId, taskId: outcome.taskId, dueAt });
       result.queuedHelpful.push(lessonId);
     }
   }

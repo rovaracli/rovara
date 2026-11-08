@@ -3,7 +3,7 @@
 // write. A model never rewrites the lesson set. With no judge (no provider, the month's cap, a refusal, a failed call) only a copy merges (the same words in the same order); everything else stays its own candidate (DECISIONS 23). A judge's "same" merges only a pair that is the same advice by structure (round 4); any other "same" is kept as a possible duplicate for a person.
 import { randomUUID } from "node:crypto";
 import { z } from "zod";
-import { expiryWindowMs } from "./expiry.js";
+import { firstExpiry } from "./expiry.js";
 import { emitAudit } from "./policy.js";
 import { isLearningRefusal, noteModelFailure, notePause, noteRecovered, pauseOfLook, spendLook, type LessonsPauseStore } from "./pause.js";
 import type { AlertSink, LearningSpend, LessonDeps, LessonEmbedder, LessonVectors, PipelineModel } from "./ports.js";
@@ -135,7 +135,7 @@ function newLesson(deps: CurateDeps, key: ScopeKey, draft: LessonDraft, status: 
     id, version: 1, workspaceId: key.workspaceId, project: key.project, scope: draft.scope, type: draft.type, stages: draft.stages,
     title: draft.title, description: draft.description, body: draft.body, citations: draft.citations, provenance: draft.provenance,
     tier: 1, tierReasons: [], status, counters: { loaded: 0, helpful: 0, harmful: 0, citationStale: 0 }, staleAt: [],
-    expiresAt: now + expiryWindowMs(draft.type, deps.expiryDays), createdAt: now, updatedAt: now, approvals: [], ...extra,
+    expiresAt: firstExpiry(draft.type, now, deps.expiryDays), createdAt: now, updatedAt: now, approvals: [], ...extra,
   });
 }
 
@@ -151,6 +151,23 @@ async function commitWith(deps: CurateDeps, key: ScopeKey, build: () => Promise<
   return undefined;
 }
 
+/** The provenance without the three flags a merge may only narrow (they are put back below by their own rules). */
+function withoutNarrowingFlags(provenance: Lesson["provenance"]): Lesson["provenance"] {
+  const { memberCorrection: _member, claimsSupported: _claims, fromSharedTask: _shared, ...rest } = provenance;
+  void _member; void _claims; void _shared;
+  return rest;
+}
+
+/**
+ * The "from a project-wide task" mark after a merge (lessons connect, fix 2, R3; this replaces the fix-1 rule that a draft with no mark left the lesson's `true`): `true` only when EVERY source was known to be
+ * project-wide (both sides `true`). A side that is `false` (a task that was not project-wide) clears it for good; a side that is unset (the live read could not tell) leaves it unset, never `true`, so a source nobody could
+ * read can never be hidden behind the others. Publishing still checks the live visibility of every source task again.
+ */
+function mergedSharedMark(target: boolean | undefined, draft: boolean | undefined): { fromSharedTask?: boolean } {
+  if (draft === false || target === false) return { fromSharedTask: false };
+  return target === true && draft === true ? { fromSharedTask: true } : {};
+}
+
 /** Folds a draft into an existing lesson: citations, sources, authors and supporting tasks are unioned; trust and audience only ever narrow. */
 function mergeInto(target: Lesson, draft: LessonDraft, version: number, now: number, paused: ReadonlySet<string>): Lesson {
   const citations = [...target.citations];
@@ -160,23 +177,19 @@ function mergeInto(target: Lesson, draft: LessonDraft, version: number, now: num
   const checkedKeys = new Map((target.citationChecks ?? []).map((check) => [citationKey(target.citations[check.index]!), check] as const));
   const citationChecks = citations.flatMap((c, index) => { const found = checkedKeys.get(citationKey(c)); return found === undefined ? [] : [{ ...found, index }]; });
   const people = unionPeople(target, draft);
-  // The three trust flags are set apart from the spread below: a flag the draft does not have must not survive on the target's say alone (AND, not "the target's value").
-  const targetProvenance = { ...target.provenance };
-  delete targetProvenance.memberCorrection;
-  delete targetProvenance.claimsSupported;
-  delete targetProvenance.fromSharedTask;
   return {
     ...target, version, citations, ...(citationChecks.length === 0 ? {} : { citationChecks }), updatedAt: now,
     provenance: {
-      ...targetProvenance,
+      ...withoutNarrowingFlags(target.provenance),
       sourceEvents: union(target.provenance.sourceEvents, draft.provenance.sourceEvents, 50), sourceKinds: union(target.provenance.sourceKinds, draft.provenance.sourceKinds, 20),
       authors: distinctIds([...target.provenance.authors, ...draft.provenance.authors]), sources: union(target.provenance.sources, draft.provenance.sources, 20), inputSources: unionPinned(target.provenance.inputSources, draft.provenance.inputSources, 100, paused), measured: target.provenance.measured || draft.provenance.measured, supportTasks: union(target.provenance.supportTasks, draft.provenance.supportTasks, 50),
       ...(target.provenance.inheritedTasks === undefined && draft.provenance.inheritedTasks === undefined ? {} : { inheritedTasks: union(target.provenance.inheritedTasks ?? [], draft.provenance.inheritedTasks ?? [], 50) }),
       memberSignal: target.provenance.memberSignal || draft.provenance.memberSignal,
-      // Merging narrows what the lesson rests on: it stays a member correction (and from a shared task) only if both sides are.
+      // Merging narrows what the lesson rests on: it stays a member correction (and from a shared task) only if both sides are. The target's own flag is dropped first (the spread above carries it), so a draft
+      // that lacks the flag leaves it unset (`mergedSharedMark`: only a known `true` on both sides survives): a lesson is publishable only when EVERY task it rests on was known to be shared.
       ...(target.provenance.memberCorrection === true && draft.provenance.memberCorrection === true ? { memberCorrection: true } : {}),
       ...(target.provenance.claimsSupported === true && draft.provenance.claimsSupported === true ? { claimsSupported: true } : {}),
-      ...(target.provenance.fromSharedTask === true && draft.provenance.fromSharedTask === true ? { fromSharedTask: true } : {}),
+      ...mergedSharedMark(target.provenance.fromSharedTask, draft.provenance.fromSharedTask),
       ...(people.readFrom.length === 0 ? {} : { readFrom: people.readFrom }), ...(people.coAuthored.length === 0 ? {} : { coAuthored: people.coAuthored }),
       minTrust: minTrust([target.provenance.minTrust, draft.provenance.minTrust]), audience: narrowestAudience([target.provenance.audience, draft.provenance.audience]),
       ...(target.provenance.sourceScopes === undefined && draft.provenance.sourceScopes === undefined ? {} : { sourceScopes: union(target.provenance.sourceScopes ?? [], draft.provenance.sourceScopes ?? [], 50) }),

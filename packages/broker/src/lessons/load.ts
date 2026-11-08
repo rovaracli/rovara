@@ -7,7 +7,7 @@ import {
 import { globToRegExp } from "./guards.js";
 import { safeScopeLabel } from "./render.js";
 import { approversRequired, modeAllows, resolveLearning, resolveLoadBudget, type ApprovalPolicy, type LearningSettingsReader } from "./policy.js";
-import { isTrialLesson } from "./trial.js";
+import { hasStaleCitation, isTrialLesson } from "./trial.js";
 import type { LessonDeps, LessonEmbedder, LessonVectors } from "./ports.js";
 import { EMBED_TIMEOUT_MS, EMBED_WARM_MS, docOfText, rankLessons } from "./similarity.js";
 import type { LessonStore, LoadManifest, LoadManifestEntry, ScopeKey } from "./store.js";
@@ -15,7 +15,7 @@ import type { AccessCheckPort } from "../team-record/access-port.js";
 import { createLessonLiveReader, lessonTaskRefs } from "./live-visibility.js";
 import { readVisible, readVisibleRanked } from "./read-visible.js";
 import { memberView, type MemberOf, type MemberResolver } from "./members.js";
-import { isRestricted, normId, type IdentitySet, type Lesson } from "./types.js";
+import { normId, type IdentitySet, type Lesson } from "./types.js";
 
 export const LOAD_MAX_LESSONS = LEARNED_CONTEXT_MAX_LESSONS;
 export const LOAD_MAX_BYTES = LEARNED_CONTEXT_MAX_BYTES;
@@ -100,7 +100,7 @@ export function approvedForUse(lesson: Lesson, policy: ApprovalPolicy, member: M
 }
 
 /** A code citation the broker's own check found stale keeps its lesson out; the worker checks again at the base commit. */
-export const hasStaleCitation = (lesson: Lesson): boolean => (lesson.citationChecks ?? []).some((check) => check.result === "stale");
+export { hasStaleCitation };
 
 /**
  * A tier-2 lesson loads after two different people approved it. The audited sole-owner exception stands in for the second person EXCEPT for a lesson that asks for a capability change (more tools,
@@ -236,7 +236,7 @@ export async function loadLessonsForStage(deps: LoadDeps, request: LoadRequest):
       for (const entry of manifest.lessons) {
         if (seen.has(entry.id) || seen.size >= PRIOR_LOADED_MAX) continue;
         const lesson = await deps.store.get(key, entry.id);
-        if (lesson !== undefined && !isRestricted(lesson)) seen.set(entry.id, { id: lesson.id, type: lesson.type, title: lesson.title });
+        if (lesson !== undefined) seen.set(entry.id, { id: lesson.id, type: lesson.type, title: lesson.title });
       }
     }
     // The titles go through the same read path: a lesson whose source place turned private since is not listed for a task that may no longer read it.

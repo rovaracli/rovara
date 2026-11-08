@@ -6,6 +6,7 @@ import { pendingExpiry } from "./expiry.js";
 import { approversRequired, emitAudit, modeAllows, resolveLearning, type LearningSettingsReader } from "./policy.js";
 import type { CitationVerifier, CodeFacts } from "./ports.js";
 import { gatherMaterial } from "./material.js";
+import { mentionsRepoPlace } from "./project-repo-audience.js";
 import { attributableSources, clearSourcePause, coldSourcesOf, isHeldBySource, projectBrakeOn } from "./sources.js";
 import { lessonValue } from "./value.js";
 import { isCorroborated } from "./value.js";
@@ -20,6 +21,17 @@ export interface ProcessDeps extends CurateDeps {
   verifier: CitationVerifier; facts: CodeFacts; settings: LearningSettingsReader;
   /** How many person-approved lessons a source needs before it may auto-apply one (default `AUTO_APPLY_GUARDS.coldStartLessons`). Only a test sets it lower. */
   coldStartLessons?: number;
+  /**
+   * Owner decision 34: the places (`<source>:repo/<id>`) of the repositories the project has NOW, read live from the project definition. Asked only for a lesson whose restriction is exactly "readers of repositories" (or that names
+   * one); a lesson restricted to the project's own repositories is then tiered and put on trial as a project-wide one. Absent, or `undefined` back (unreadable): the lesson stays restricted (fail closed). Must not throw.
+   */
+  projectRepos?: (key: ScopeKey) => Promise<ReadonlySet<string> | undefined>;
+}
+
+/** The project's repositories, live, when this lesson's audience depends on them; undefined otherwise or when they cannot be read. Never throws. */
+async function projectReposFor(deps: Pick<ProcessDeps, "projectRepos">, key: ScopeKey, lesson: Pick<Lesson, "provenance">): Promise<ReadonlySet<string> | undefined> {
+  if (deps.projectRepos === undefined || !mentionsRepoPlace(lesson)) return undefined;
+  try { return await deps.projectRepos(key); } catch { return undefined; }
 }
 const VERIFY_TIMEOUT_MS = 3000;
 
@@ -85,7 +97,8 @@ export async function settleLesson(deps: ProcessDeps, key: ScopeKey, lessonId: s
     if (superseded !== undefined) context.supersedesTier = superseded.tier;
     // What the renderer may rely on: identifiers and paths read from the repository at the cited commit.
     const material = await gatherMaterial(deps.facts, verified);
-    const decision = classifyTier({ ...verified, ...(material === undefined ? {} : { material }) }, context, current.tierReasons.length > 0 ? { tier: current.tier, reasons: current.tierReasons } : undefined);
+    const projectRepos = await projectReposFor(deps, key, verified);
+    const decision = classifyTier({ ...verified, ...(material === undefined ? {} : { material }) }, { ...context, projectRepos }, current.tierReasons.length > 0 ? { tier: current.tier, reasons: current.tierReasons } : undefined);
     const now = deps.now();
     const setVersion = await deps.store.setVersion(key);
     const version = nextVersion(current, await deps.store.versions(key, lessonId));
@@ -103,8 +116,8 @@ export async function settleLesson(deps: ProcessDeps, key: ScopeKey, lessonId: s
     const brakeOn = projectBrakeOn(flags, deps.now());
     // Approve by exception (DECISIONS 24): a low-risk lesson from a member's own correction with verified citations goes live on trial with no approval and no corroboration. Anything the rules
     // send to a person (tier 2, a contradiction, a refinement, a held or braked source, the Regulated preset) is decided by the old rules below.
-    const trialContext = (settings: Pick<typeof resolved, "preset" | "mode" | "trialAllowed">, braked: boolean, heldNow: boolean): TrialContext => ({
-      preset: settings.preset, mode: settings.mode, trialAllowed: settings.trialAllowed, contradiction: context.contradiction === true, refinement: current.supersedes !== undefined,
+    const trialContext = (settings: Pick<typeof resolved, "preset" | "mode" | "trialAllowed">, braked: boolean, heldNow: boolean, repos: ReadonlySet<string> | undefined = projectRepos): TrialContext => ({
+      projectRepos: repos, preset: settings.preset, mode: settings.mode, trialAllowed: settings.trialAllowed, contradiction: context.contradiction === true, refinement: current.supersedes !== undefined,
       reviewRequired: options.noAutoApply === true || current.reviewRequired === true, held: heldNow, braked,
     });
     const trialWhy = trialBlockers({ ...verified, ...(decision.tier === 0 && decision.rendered !== undefined ? { title: decision.rendered.title, description: decision.rendered.description, body: decision.rendered.body } : {}) }, decision.tier, trialContext(resolved, brakeOn, held));
@@ -138,7 +151,8 @@ export async function settleLesson(deps: ProcessDeps, key: ScopeKey, lessonId: s
       const flagsNow = await deps.store.flags(key);
       const brakedNow = projectBrakeOn(flagsNow, deps.now());
       if (brakedNow) deps.metrics?.count("learning_trial_held", { reason: "project_brake" });
-      const recheck = trialBlockers(stored, stored.tier, trialContext(again, brakedNow, isHeldBySource(flagsNow, attributableSources(stored.provenance))));
+      // The project's repositories are read AGAIN too: a repository removed from the project while this settle ran leaves the lesson restricted.
+      const recheck = trialBlockers(stored, stored.tier, trialContext(again, brakedNow, isHeldBySource(flagsNow, attributableSources(stored.provenance)), await projectReposFor(deps, key, stored)));
       if (recheck.length > 0) return toPerson("trial_recheck");
       try {
         const live = await activateLesson(deps, key, stored, [{ approvalId: `trial-${lessonId}`, by: TRIAL_APPROVER, at: deps.now(), mode: "trial" }], again.expiryDays, "lesson.trial_started", { version: stored.version, setVersion: result.setVersion });

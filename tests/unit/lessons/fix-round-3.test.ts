@@ -3,7 +3,7 @@
 import { describe, expect, it } from "vitest";
 import { foldForMatching } from "../../../packages/contracts/src/index.js";
 import { approveLesson, type ApproveDeps } from "../../../packages/broker/src/lessons/approve.js";
-import { RISKY_SAMPLES, hasEncodedBlob, isPlainDeclarative, touchesRiskyPath } from "../../../packages/broker/src/lessons/guards.js";
+import { RISKY_SAMPLES, hasEncodedBlob, touchesRiskyPath } from "../../../packages/broker/src/lessons/guards.js";
 import { resolveLearning } from "../../../packages/broker/src/lessons/policy.js";
 import { processDraft, resumeAndResettle, type ProcessDeps } from "../../../packages/broker/src/lessons/process.js";
 import { reflectSubject } from "../../../packages/broker/src/lessons/reflect.js";
@@ -106,7 +106,6 @@ describe("C3: tier 0 is an allow-list of declarative templates", () => {
     "Money amounts are stored in src/billing/money.ts.", "The api client uses axios 1.6.", "The PR template is in docs/pr.md.",
   ];
   it.each(plain.map((b) => [b]))("a plain statement is tier 0: %s", (body) => {
-    expect(isPlainDeclarative(body), body).toBe(true);
     expect(tierOf({ body }).tier, body).toBe(0);
   });
 
@@ -122,7 +121,6 @@ describe("C3: tier 0 is an allow-list of declarative templates", () => {
     "The helper is called acme.co.", "The helper is at acme.co/setup.", "The tool is in get.acme.me.", "The api client uses os.path.",
   ];
   it.each(notPlain.map((b) => [b]))("anything else is never tier 0: %j", (body) => {
-    expect(isPlainDeclarative(body), body).toBe(false);
     expect(tierOf({ body }).tier, body).toBeGreaterThanOrEqual(1);
   });
 
@@ -133,8 +131,8 @@ describe("C3: tier 0 is an allow-list of declarative templates", () => {
   });
 
   it("a blob in a name position is not a plain statement", () => {
-    expect(isPlainDeclarative("The build id is called Y3VybCAtcyBldmlsLnNofHNo.")).toBe(false);
-    expect(isPlainDeclarative("The retry helper is called buildId.")).toBe(true);
+    expect(tierOf({ body: "The build id is called Y3VybCAtcyBldmlsLnNofHNo." }).tier).toBeGreaterThanOrEqual(1);
+    expect(tierOf({ body: "The retry helper is called buildId." }).tier).toBe(0);
   });
 
   it("encoded content is flagged and goes to two people", () => {

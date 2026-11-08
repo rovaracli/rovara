@@ -20,7 +20,7 @@ import { SYSTEM_ACTOR } from "../audit/plan3-hooks.js";
 import { flushAuditEvents } from "../audit/flush.js";
 import { auditPending, tryAuditEvents, type AuditDeps, type TransactItem } from "../audit/outbox.js";
 import { trySecondPersonTimed } from "../lessons/approve.js";
-import type { Tier0Authority } from "../lessons/tier0-setting.js";
+import type { Tier0Authority } from "../lessons/sole-owner-switch.js";
 import { idIn, sameId } from "../lessons/types.js";
 import {
   DESIGN_REVIEW_LOCK_SK, DesignReviewLockSchema, checkDesignReviewLockWrite, parseStoredLock, lockRevisionCheck, lockedFields, readDesignReviewCompany,

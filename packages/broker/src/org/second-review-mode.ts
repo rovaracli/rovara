@@ -2,7 +2,7 @@
 //   - RAISING applies at once, by an eligible admin (a project: its maintainer or an admin), audited in the same transaction. Raising to `on` is refused unless the evidence for the chosen model holds (the caller asks
 //     `secondReviewVerdictHolds` and passes the answer; nothing here trusts a stored pass).
 //   - LOWERING (`on` to `shadow` or `off`, `shadow` to `off`, a company mode or a project's, and clearing a project's override when that lowers it) is a proposal that a DIFFERENT eligible person approves, with the
-//     membership the decision rested on fenced into the same transaction. It is the shared sole-owner switch's shape (lessons/tier0-setting.ts, org/known-failing-policy.ts), and like that switch it has NO sole-owner exception:
+//     membership the decision rested on fenced into the same transaction. It is the shared sole-owner switch's shape (lessons/sole-owner-switch.ts, org/known-failing-policy.ts), and like that switch it has NO sole-owner exception:
 //     a company of one that turned `on` keeps it on until a second admin joins (the one-admin rule). The proposer can never approve their own proposal.
 //   - A project can be pinned to `on` ONLY by an admin (the project's maintainer may pin `shadow`, or `off` where that is not below the company). `on` needs the evidence for the model whenever the project is not already
 //     pinned `on`, even when the company itself is `on` and the project would follow it anyway. A project pinned `on` follows the company down: when the company is LOWERED (two admins), the lowering stamps the company
@@ -23,7 +23,7 @@ import type { TransactItem } from "../audit/outbox.js";
 import { trySecondPersonTimed } from "../lessons/approve.js";
 import { secondPersonTier0Authority } from "../lessons/tier0-authority.js";
 import { idIn, sameId } from "../lessons/types.js";
-import type { Tier0Authority, Tier0Group } from "../lessons/tier0-setting.js";
+import type { Tier0Authority, Tier0Group } from "../lessons/sole-owner-switch.js";
 import { readSecondReviewSettings, SECOND_REVIEW_SETTINGS_SK, secondReviewProjectKey, type SecondReviewSettings, type SettingsTable } from "./second-review-settings.js";
 import type { SecondPersonEvidenceDependencies } from "./second-person-evidence.js";
 

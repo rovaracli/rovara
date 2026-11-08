@@ -147,10 +147,12 @@ const companyPresetLocks = (raw: { preset?: unknown; companyPreset?: unknown }):
 export const TAB_DEADLINE_MS = 20_000;
 
 /** How many candidate lessons this viewer may read now, checked a page at a time (one reader, the tab's deadline). Lessons not checked in time are not counted. */
-async function queuedCount(deps: LessonViewDeps, key: ScopeKey, viewer: IdentitySet | undefined, deadlineAt: number): Promise<number> {
+async function queuedCount(deps: LessonViewDeps, key: ScopeKey, viewer: IdentitySet | undefined, deadlineAt: number, legacy: Set<string>): Promise<number> {
   const live = createLessonLiveReader({ port: deps.access.taskVisibility, key, where: "view", log: deps.log, timeoutMs: () => Math.max(1, Math.min(LESSON_LIVE_TIMEOUT_MS, deadlineAt - Date.now())) });
   const ranked = await deps.store.list(key, { statuses: ["candidate"] });
-  return (await readVisibleRanked({ access: deps.access, key, viewer, where: "view", log: deps.log, live, ranked, pageSize: 50, enough: () => false, deadlineAt })).kept.length;
+  const kept = (await readVisibleRanked({ access: deps.access, key, viewer, where: "view", log: deps.log, live, ranked, pageSize: 50, enough: () => false, deadlineAt })).kept.length;
+  for (const id of live.legacyWithheld()) legacy.add(id);
+  return kept;
 }
 
 /**
@@ -183,6 +185,10 @@ export async function buildLessonsView(deps: LessonViewDeps, caller: LessonCalle
   const byValue = (a: Lesson, b: Lesson): number => lessonValue(b) - lessonValue(a) || b.createdAt - a.createdAt || a.id.localeCompare(b.id);
   const byUpdated = (a: Lesson, b: Lesson): number => b.updatedAt - a.updatedAt || a.id.localeCompare(b.id);
   let checked = 0, kept = 0;
+  // Review L3: the lessons (of the waiting, active and queued lists that were looked at) withheld because they were learned from a legacy task with no session item.
+  const legacyHeld = new Set<string>();
+  // Of those, the ones inside the lists' `checked` count: they are counted as held, so they are not also "left out" (review N2). The queued count reads lessons apart from `checked`.
+  const legacyChecked = new Set<string>();
   const cut = new Set<"waiting" | "active" | "removed">();
   /** The first `max + 1` lessons (in `order`) this viewer may read now: one more than the list shows tells whether it was cut. */
   const top = async (list: "waiting" | "active" | "removed", statuses: Lesson["status"][], order: (a: Lesson, b: Lesson) => number, max: number): Promise<Lesson[]> => {
@@ -190,13 +196,14 @@ export async function buildLessonsView(deps: LessonViewDeps, caller: LessonCalle
     const live = createLessonLiveReader({ port: deps.access.taskVisibility, key, where: "view", log: deps.log, timeoutMs: () => Math.max(1, Math.min(LESSON_LIVE_TIMEOUT_MS, deadlineAt - Date.now())) });
     const result = await readVisibleRanked({ access: deps.access, key, viewer: state.viewer, where: "view", log: deps.log, live, ranked, pageSize: max + 1, enough: (found) => found.length > max, deadlineAt });
     checked += result.checked; kept += result.kept.length;
+    if (list !== "removed") for (const id of live.legacyWithheld()) { legacyHeld.add(id); legacyChecked.add(id); }
     if (!result.complete) cut.add(list);
     return result.kept;
   };
   // People who do not decide read the active lessons only: the approval queue, who approved and what waits are for the people who can act on them. What waits for a decision is read first.
   const waitingAll = state.canDecide ? await top("waiting", ["pending"], byValue, WAITING_MAX) : [];
   const activeAll = home ? [] : await top("active", ["active", "stale"], byValue, ACTIVE_MAX);
-  const queued = state.canDecide && !home ? await queuedCount(deps, key, state.viewer, deadlineAt) : 0;
+  const queued = state.canDecide && !home ? await queuedCount(deps, key, state.viewer, deadlineAt, legacyHeld) : 0;
   const removedAll = state.canDecide && !home ? await top("removed", ["retired", "expired", "rejected"], byUpdated, REMOVED_MAX) : [];
   const waiting = waitingAll.slice(0, WAITING_MAX), active = activeAll.slice(0, ACTIVE_MAX), removed = removedAll.slice(0, REMOVED_MAX);
   const person = await namePeople(deps, caller.orgId, caller.developerId, [...waiting, ...active, ...removed].flatMap(personIdsOf));
@@ -216,7 +223,9 @@ export async function buildLessonsView(deps: LessonViewDeps, caller: LessonCalle
     waiting: waiting.map((l) => toView(l, ctx)), active: active.map((l) => toView(l, ctx)), removed: removed.map((l) => toView(l, ctx)),
     queued,
     // Lessons the person could not see among those the lists checked (the lists check only as many as they show, so this is a count of what was looked at, not of the whole project).
-    hidden: state.canDecide ? checked - kept : 0,
+    hidden: state.canDecide ? Math.max(0, checked - kept - legacyChecked.size) : 0,
+    // For people who decide: how many lessons wait because the task they were learned from has no session item (started before sessions). They stay out until that changes; the count says they are not lost.
+    ...(state.canDecide && legacyHeld.size > 0 ? { legacyHeld: legacyHeld.size } : {}),
     truncated, setVersion, snapshots,
     ...(paused === undefined ? {} : { paused: { code: paused.code, at: paused.at, scope: paused.scope } }),
   };

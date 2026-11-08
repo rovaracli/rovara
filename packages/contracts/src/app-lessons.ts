@@ -117,6 +117,8 @@ export const LessonsViewSchema = z.object({
   queued: z.number().int().min(0),
   /** Lessons left out because this viewer cannot see their source (a count, never a name). */
   hidden: z.number().int().min(0),
+  /** For people who decide: lessons left out because the task they were learned from is a legacy task with no session item (started before sessions). Absent: none. */
+  legacyHeld: z.number().int().min(1).max(100_000).optional(),
   truncated: z.array(z.enum(["waiting", "active", "removed"])).max(3),
   setVersion: z.number().int().min(0), snapshots: z.array(LessonSnapshotSchema).max(20),
   /** Learning cannot run for this project (or its company) right now, and why. Absent: nothing is known to be wrong. */

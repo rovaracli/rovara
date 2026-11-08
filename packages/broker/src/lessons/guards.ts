@@ -104,7 +104,6 @@ const FIXED_WORDS: ReadonlySet<string> = new Set((
   "error exception result input output param parameter argument key token session user account customer payment invoice item array string number boolean object " +
   "layer shared common base core internal public private middleware plugin feature metric app web mobile backend frontend project team policy rule"
 ).split(/\s+/u));
-const CONNECTIVE: ReadonlySet<string> = new Set(["is", "are", "use", "uses", "called", "named", "known", "as", "lives", "live", "located", "stored", "defined", "configured", "implemented", "declared", "built", "depends", "inside"]);
 
 /** Words of a lesson's own cited material, lower-cased and split on punctuation and camelCase: what a title or a slot may repeat from the code. */
 export function vocabularyOf(...pieces: readonly string[]): Set<string> {
@@ -131,13 +130,6 @@ export function isPlainSlot(slot: string, vocab: ReadonlySet<string>): boolean {
   return words.length >= 1 && words.length <= 9 && SLOT_CHARS.test(slot.trim()) && fromCode.length <= 2 && words.every((w) => knownWord(w, vocab));
 }
 
-/** A title is a short noun phrase made only of accepted words (the closed list plus the lesson's own cited words, and the template verbs): no instruction, no path. */
-export function isPlainTitle(title: string, vocab: ReadonlySet<string> = new Set()): boolean {
-  const t = normaliseForScan(title).replace(/[`"]/gu, "").trim();
-  if (t.length === 0 || t.length > 80 || IMPERATIVE_START.test(t) || /[/~\\]/u.test(t) || hasEncodedBlob(t)) return false;
-  const words = t.split(/\s+/u);
-  return words.length <= 9 && words.every((w) => CONNECTIVE.has(w.toLowerCase()) || knownWord(w.replace(/^[^A-Za-z0-9]+|[^A-Za-z0-9]+$/gu, ""), vocab));
-}
 const NAME = "[A-Za-z_@][\\w@-]*(?:\\.[\\w-]+)*";
 const PATH = "[\\w@.~-]+(?:/[\\w@.~*-]+)*/?";
 const TEMPLATES: readonly RegExp[] = [
@@ -159,7 +151,6 @@ function plainToken(token: string, kind: "name" | "path"): boolean {
   }
   return kind === "name" || segments.length > 0;
 }
-const isNameTemplate = (template: RegExp): boolean => template === TEMPLATES[1];
 export interface ParsedFact { kind: "location" | "name" | "uses"; thing: string; name?: string; version?: string; path?: string }
 /** One declarative sentence in one of the three templates, split into its slots (no vocabulary or code checks here). Undefined for anything else. */
 export function parseDeclarative(text: string): ParsedFact | undefined {
@@ -184,26 +175,6 @@ export function parseDeclarative(text: string): ParsedFact | undefined {
 }
 /** plainToken for callers outside this file. */
 export const isPlainToken = (token: string, kind: "name" | "path"): boolean => plainToken(token, kind);
-export function isPlainDeclarative(text: string, vocab: ReadonlySet<string> = new Set()): boolean {
-  const folded = normaliseForScan(text).replace(/[`"\u201C\u201D]/gu, "").trim();
-  if (folded === "" || folded.length > 400 || /[\n\r]/u.test(folded) || hasEncodedBlob(folded)) return false;
-  const sentences = folded.split(/[.!?](?:\s+|$)/u).map((s) => s.trim()).filter((s) => s !== "");
-  if (sentences.length === 0 || sentences.length > 3) return false;
-  return sentences.every((sentence) => {
-    for (const template of TEMPLATES) {
-      const match = template.exec(sentence);
-      if (match === null) continue;
-      const thing = match.groups?.thing ?? "";
-      // The slot before the verb is a name for something: short, with no modal, sequencing or imperative word in it.
-      if (!isPlainSlot(thing, vocab) || THING_FORBIDDEN.test(thing.replace(/\b(?:retries|uses?)\b/giu, "")) || IMPERATIVE_START.test(thing.trim())) continue;
-      const tokens = match.slice(1).filter((t): t is string => t !== undefined && t !== thing);
-      // A path in the body is judged like a scope path: nothing that touches tests, CI, auth or secrets, and nothing outside the repository (~ or absolute).
-      if (!isNameTemplate(template) && tokens.some((t) => /^[~/]/u.test(t) || touchesRiskyPath([t]))) continue;
-      if (tokens.every((t, i) => plainToken(t, isNameTemplate(template) || (template === TEMPLATES[2] && i === 0) ? "name" : "path"))) return true;
-    }
-    return false;
-  });
-}
 
 /**
  * Paths where a wrong lesson weakens what protects the project: tests, CI, test-runner and lint configs, git hooks, code owners, scripts, auth and security

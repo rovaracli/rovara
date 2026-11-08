@@ -8,13 +8,16 @@ import type { DeveloperTaskRecord } from "../../../packages/broker/src/developer
 import { announceHumanSendBack, registerHumanSendBackListener, sendBackToRecord } from "../../../packages/broker/src/lessons/send-back-events.js";
 import type { ProcessDeps } from "../../../packages/broker/src/lessons/process.js";
 import { withLearningAttempt, noteLearningFault, type LearningAttempt } from "../../../packages/broker/src/lessons/learning-deadline.js";
+import { logRef } from "../../../packages/broker/src/lessons/log-ref.js";
 import { LearningRefusal } from "../../../packages/broker/src/lessons/pause.js";
 import { inheritedTasksOf, learnFromEndedTask, learnFromEndedTaskTyped, learningTaskEndHandler, reflectOutcomeOf, subjectForTask, type TaskLearningDeps, type TaskSubjectBase } from "../../../packages/broker/src/lessons/task-end.js";
 import type { OutcomeRowReader } from "../../../packages/broker/src/lessons/task-outcome-rows.js";
 import { InMemoryLessonStore } from "../../../packages/broker/src/lessons/store.js";
 import type { SendBackFact, TaskSubjectFacts } from "../../../packages/broker/src/lessons/task-subject.js";
-import { lessonRecord } from "./lesson-helpers.js";
-import { Alerts, Audit, BASE, Clock, MERGED, MemoryVectors, PROJECT, ScriptedModel, Spend, WS, candidateJson, embedder, facts, memberSpan, reply, settings, verifier } from "./lesson-helpers.js";
+import type { CounterDeps } from "../../../packages/broker/src/lessons/counters.js";
+import { REFUSING_JUDGE } from "../../../packages/broker/src/lessons/runtime.js";
+import type { Lesson } from "../../../packages/broker/src/lessons/types.js";
+import { Alerts, Audit, BASE, Clock, MERGED, MemoryVectors, PROJECT, ScriptedModel, Spend, WS, candidateJson, embedder, facts, lessonRecord, memberSpan, reply, seed, settings, verifier } from "./lesson-helpers.js";
 
 class Rows implements OutcomeRowReader {
   asked: string[] = [];
@@ -144,7 +147,8 @@ describe("the task-end handler and its installation (lessons in production, lane
     const logs: Array<[string, Record<string, unknown>]> = [];
     const handler = learningTaskEndHandler(() => ({ queue: { send: async () => { throw new Error("secret queue failure text"); } }, log: (event, fields) => logs.push([event, fields]) }));
     await expect(handler({} as never, endEvent())).resolves.toBeUndefined();
-    expect(logs).toEqual([["learning.enqueue_failed", { taskId: "task-1" }]]);
+    expect(logs).toEqual([["learning.enqueue_failed", { task: logRef(WS, "task-1") }]]);
+    expect(JSON.stringify(logs)).not.toContain("task-1");
     expect(JSON.stringify(logs)).not.toContain("secret");
   });
   it("is registered only when the broker has the learning dependencies AND a queue, once, and can be removed", () => {
@@ -302,6 +306,27 @@ describe("learnFromEndedTaskTyped (H1): which failures are worth another try", (
     garbled.deps.reflect.model = { complete: async () => ({ text: "not json", costUsd: 0.01, model: "m" }) };
     expect(await withLearningAttempt(attempt(), () => learnFromEndedTaskTyped(garbled.deps, input))).toEqual({ status: "not_reflected", retry: false });
   });
+  it("N6: every learning log line about a task names it only as logRef(company, task): the cut at the deadline, a failed draft and a failed end", async () => {
+    const lines = (w: ReturnType<typeof setup>): Array<[string, Record<string, string | number>]> => { const out: Array<[string, Record<string, string | number>]> = []; w.deps.log = (event, fields) => { out.push([event, fields]); }; return out; };
+    const ref = logRef(WS, "task-1");
+    const cut = setup();
+    const cutLines = lines(cut);
+    const controller = new AbortController();
+    controller.abort();
+    await withLearningAttempt({ deadlineAt: Date.now() + 60_000, signal: controller.signal, attemptId: "a" }, () => learnFromEndedTaskTyped(cut.deps, input));
+    expect(cutLines).toEqual([["learning.drafts_cut_at_deadline", { task: ref }]]);
+    const failing = setup();
+    const failingLines = lines(failing);
+    failing.store.commit = async () => { throw new Error("table text"); };
+    await learnFromEndedTaskTyped(failing.deps, input);
+    expect(failingLines).toEqual([["learning.draft_failed", { task: ref }]]);
+    const broken = setup();
+    const brokenLines = lines(broken);
+    broken.deps.source = { read: async () => { throw new Error("read failed"); } };
+    await learnFromEndedTaskTyped(broken.deps, input);
+    expect(brokenLines).toEqual([["learning.task_end_failed", { task: ref }]]);
+    expect(JSON.stringify([...cutLines, ...failingLines, ...brokenLines])).not.toContain("task-1");
+  });
   it("M4: once the deadline's signal is aborted no further draft is processed", async () => {
     const w = setup();
     const controller = new AbortController();
@@ -386,5 +411,152 @@ describe("LV-1 M2: a lesson learned from a task also names the tasks behind the 
     expect(await inheritedTasksOf(store, key, "task-1")).toEqual(["task-p"]);
     await store.putManifest({ ...manifest("PLAN", ["les_badtaskid1"]), stage: "UNDERSTAND" });
     await expect(inheritedTasksOf(store, key, "task-1")).rejects.toThrow();
+  });
+});
+
+describe("lessons connect fix 1 (H1): the task's end counts the loaded lessons' outcome, in the worker path (fix 2, R2: before the reflection, on every path)", () => {
+  const DAY = 86_400_000;
+  const KEY = { workspaceId: WS, project: PROJECT };
+  async function withCounters(over: Parameters<typeof setup>[0] = {}, lesson: Partial<Lesson> = {}) {
+    const w = setup(over);
+    const clock = new Clock();
+    await seed(w.store, lessonRecord({ id: "les_used0001", ...lesson }));
+    await w.store.putManifest({ taskId: "task-1", workspaceId: WS, project: PROJECT, stage: "IMPLEMENT", round: 1, setVersion: 1, memory: "live", at: 1, lessons: [{ id: "les_used0001", version: 1, score: 0.5, why: "scope", citation: "valid" }], bytes: 10 });
+    const counters: CounterDeps = { store: w.store, judge: REFUSING_JUDGE, settings: w.deps.settings, audit: w.audit, now: clock.now };
+    w.deps.counters = counters;
+    const queued = async () => (await w.store.duePending(KEY, clock.now() + 30 * DAY, 100)).map((entry) => entry.key);
+    return { ...w, counters, clock, queued };
+  }
+  it("a merged task with no send-back queues a helpful mark for every lesson that reached its prompt, with the current refusing judge", async () => {
+    const w = await withCounters({ base: { facts: baseFacts(), sendBackRequestIds: [] } });
+    expect(await learnFromEndedTask(w.deps, { workspaceId: WS, taskId: "task-1", outcome: "merged" })).toBe("reflected");
+    expect(await w.queued()).toEqual(["helpful:task-1:les_used0001"]);
+    // The mark is due after the 14-day revert window, not now.
+    expect(await w.store.duePending(KEY, w.clock.now(), 100)).toEqual([]);
+  });
+  it("a human send-back is a correction in the lesson's scope that the refusing judge leaves unjudged: no helpful credit (a repository-wide lesson; a send-back names no file, so it is in scope for every lesson, R7)", async () => {
+    const w = await withCounters({}, { scope: { repos: ["api"] } });
+    w.rows.sendBacks.set("req-1", { id: "task:task-1:sendback:req-1", origin: "human", actorDeveloperId: "sam", actorTrust: "member", reasonText: "use the shared helper" });
+    expect(await learnFromEndedTask(w.deps, { workspaceId: WS, taskId: "task-1", outcome: "merged" })).toBe("reflected");
+    expect(await w.queued()).toEqual([]);
+    expect((await w.store.get(KEY, "les_used0001"))!.counters.harmful).toBe(0);
+  });
+  it("a closed task queues nothing; a reverted task takes back the mark an earlier merge queued", async () => {
+    const closed = await withCounters({ base: { facts: baseFacts({ outcome: "closed" }), sendBackRequestIds: [] } });
+    await learnFromEndedTask(closed.deps, { workspaceId: WS, taskId: "task-1", outcome: "closed" });
+    expect(await closed.queued()).toEqual([]);
+    const w = await withCounters({ base: { facts: baseFacts(), sendBackRequestIds: [] } });
+    await learnFromEndedTask(w.deps, { workspaceId: WS, taskId: "task-1", outcome: "merged" });
+    expect(await w.queued()).toHaveLength(1);
+    w.deps.reflect.model = new ScriptedModel([reply(candidateJson({ type: "fact", evidenceSpanIds: ["S1"] }))]);
+    await learnFromEndedTask(w.deps, { workspaceId: WS, taskId: "task-1", outcome: "reverted" });
+    expect(await w.queued()).toEqual([]);
+  });
+  it("a project whose learning does not load lessons counts nothing; a counting fault is a fixed log line and the reflection still counts as made", async () => {
+    const suggestOnly = await withCounters({ settings: settings({ mode: "Collect" }) });
+    expect(await learnFromEndedTask(suggestOnly.deps, { workspaceId: WS, taskId: "task-1", outcome: "merged" })).toBe("off");
+    expect(await suggestOnly.queued()).toEqual([]);
+    const w = await withCounters({ base: { facts: baseFacts(), sendBackRequestIds: [] } });
+    const logs: string[] = [];
+    const fields: Array<Record<string, string | number>> = [];
+    w.deps.log = (event, f) => { logs.push(event); fields.push(f); };
+    w.deps.counters = { ...w.counters, store: Object.assign(Object.create(w.store) as InMemoryLessonStore, { manifests: async () => { throw new Error("secret table text"); } }) };
+    expect(await learnFromEndedTaskTyped(w.deps, { workspaceId: WS, taskId: "task-1", outcome: "merged" })).toEqual({ status: "reflected", retry: false });
+    expect(logs).toContain("learning.outcome_failed");
+    expect(JSON.stringify(logs)).not.toContain("secret");
+    // R8: the task only as a 12-hex hash, never the raw id.
+    expect(Object.keys(fields[logs.indexOf("learning.outcome_failed")]!)).toEqual(["task"]);
+    expect(String(fields[logs.indexOf("learning.outcome_failed")]!.task)).toMatch(/^[0-9a-f]{12}$/u);
+    expect(JSON.stringify(fields)).not.toContain("task-1");
+  });
+  it("without counters nothing is counted (an install that has no lessons runtime)", async () => {
+    const w = await withCounters({ base: { facts: baseFacts(), sendBackRequestIds: [] } });
+    delete w.deps.counters;
+    expect(await learnFromEndedTask(w.deps, { workspaceId: WS, taskId: "task-1", outcome: "merged" })).toBe("reflected");
+    expect(await w.queued()).toEqual([]);
+  });
+});
+
+describe("lessons connect fix 2 (R2, R4): the outcome is counted on every path, before the reflection", () => {
+  const DAY = 86_400_000;
+  const KEY = { workspaceId: WS, project: PROJECT };
+  const merged = { workspaceId: WS, taskId: "task-1", outcome: "merged" as const };
+  const attempt = (signal: AbortSignal = new AbortController().signal): LearningAttempt => ({ deadlineAt: Date.now() + 60_000, signal, attemptId: "att-1" });
+  async function counted(over: Parameters<typeof setup>[0] = {}) {
+    const w = setup({ base: { facts: baseFacts(), sendBackRequestIds: [] }, ...over });
+    const clock = new Clock();
+    await seed(w.store, lessonRecord({ id: "les_used0001" }));
+    await w.store.putManifest({ taskId: "task-1", workspaceId: WS, project: PROJECT, stage: "IMPLEMENT", round: 1, setVersion: 1, memory: "live", at: 1, lessons: [{ id: "les_used0001", version: 1, score: 0.5, why: "scope", citation: "valid" }], bytes: 10 });
+    w.deps.counters = { store: w.store, judge: REFUSING_JUDGE, settings: w.deps.settings, audit: w.audit, now: clock.now };
+    const queued = async () => (await w.store.duePending(KEY, clock.now() + 30 * DAY, 100)).map((entry) => entry.key);
+    return { ...w, clock, queued };
+  }
+  const MARK = "helpful:task-1:les_used0001";
+  /** Each way a reflection can end without drafts, as the model it is given. */
+  const endings: Array<[string, (w: Awaited<ReturnType<typeof counted>>) => void, { status: string; retry: boolean }]> = [
+    ["a model that failed and may pass (retryable)", (w) => { w.deps.reflect.model = { complete: async () => { noteLearningFault("retryable"); throw new Error("model down"); } }; }, { status: "not_reflected", retry: true }],
+    ["a model that failed for good", (w) => { w.deps.reflect.model = { complete: async () => { noteLearningFault("final"); throw new Error("model down"); } }; }, { status: "not_reflected", retry: false }],
+    ["a refusal that pauses learning", (w) => { w.deps.reflect.model = { complete: async () => { throw new LearningRefusal("no_provider", "learning has no usable AI provider for this project"); } }; }, { status: "not_reflected", retry: false }],
+    ["an answer that does not parse", (w) => { w.deps.reflect.model = { complete: async () => ({ text: "not json", costUsd: 0.01, model: "m" }) }; }, { status: "not_reflected", retry: false }],
+  ];
+
+  for (const [name, arrange, expected] of endings) {
+    it(`a merged task queues its helpful mark when the reflection ends in ${name}`, async () => {
+      const w = await counted();
+      arrange(w);
+      expect(await withLearningAttempt(attempt(), () => learnFromEndedTaskTyped(w.deps, merged))).toEqual(expected);
+      expect(await w.queued()).toEqual([MARK]);
+    });
+    it(`a revert re-reflection takes the merge's queued mark back when the reflection ends in ${name}`, async () => {
+      const w = await counted();
+      await learnFromEndedTask(w.deps, merged);
+      expect(await w.queued()).toEqual([MARK]);
+      arrange(w);
+      expect(await withLearningAttempt(attempt(), () => learnFromEndedTaskTyped(w.deps, { ...merged, outcome: "reverted" }))).toEqual(expected);
+      expect(await w.queued()).toEqual([]);
+    });
+  }
+  it("an ineligible task (one an outsider started) is counted too: the reflector refuses it, the outcome still counts (R4: the not-reflected path)", async () => {
+    const withRest = baseFacts();
+    const w = await counted({ base: { facts: { ...withRest, rest: { ...withRest.rest, initiatorTrust: "outsider" } }, sendBackRequestIds: [] } });
+    const result = await learnFromEndedTaskTyped(w.deps, merged);
+    expect(result.status).toBe("not_reflected");
+    expect(w.model.calls).toEqual([]);
+    expect(await w.queued()).toEqual([MARK]);
+  });
+  it("a deadline that cuts the reflection (the signal is aborted during the model call) does not lose the count", async () => {
+    const w = await counted();
+    const controller = new AbortController();
+    w.deps.reflect.model = { complete: async () => { controller.abort(); noteLearningFault("retryable"); throw new Error("aborted"); } };
+    await withLearningAttempt(attempt(controller.signal), () => learnFromEndedTaskTyped(w.deps, merged));
+    expect(await w.queued()).toEqual([MARK]);
+  });
+  it("a project whose learning is Off still counts nothing, and an attempt retried after a counted one counts once (idempotent)", async () => {
+    const off = await counted({ settings: settings({ mode: "Off" }) });
+    expect(await learnFromEndedTask(off.deps, merged)).toBe("off");
+    expect(await off.queued()).toEqual([]);
+    const w = await counted();
+    w.deps.reflect.model = { complete: async () => { noteLearningFault("retryable"); throw new Error("model down"); } };
+    await withLearningAttempt(attempt(), () => learnFromEndedTaskTyped(w.deps, merged));
+    await withLearningAttempt(attempt(), () => learnFromEndedTaskTyped(w.deps, merged));
+    w.deps.reflect.model = new ScriptedModel([reply(candidateJson({ type: "fact", evidenceSpanIds: ["S1"] }))]);
+    expect(await learnFromEndedTask(w.deps, merged)).toBe("reflected");
+    expect(await w.queued()).toEqual([MARK]);
+    expect((await w.store.get(KEY, "les_used0001"))!.counters.helpful).toBe(0);
+  });
+  it("R4: send-backs whose sender was erased (no row text) still count as corrections, by the task's own request list: a repository-wide lesson gets no helpful credit; with the rows readable and the lesson untouched it does", async () => {
+    // The row of an erased sender is gone (the reader gives nothing), but the task's decision list still names the request.
+    const erased = await counted({ base: { facts: baseFacts(), sendBackRequestIds: ["req-1"] } });
+    expect(await learnFromEndedTask(erased.deps, merged)).toBe("reflected");
+    expect(erased.rows.asked).toContain("sendback:req-1");
+    expect(await erased.queued()).toEqual([]);
+    // Positive control: no send-back, same lesson, the mark is queued.
+    const none = await counted();
+    await learnFromEndedTask(none.deps, merged);
+    expect(await none.queued()).toEqual([MARK]);
+    // Two erased send-backs are two corrections (sendBacks counts the list, not the rows that could be read).
+    const two = await counted({ base: { facts: baseFacts(), sendBackRequestIds: ["req-1", "req-2"] } });
+    await learnFromEndedTask(two.deps, merged);
+    expect(await two.queued()).toEqual([]);
   });
 });

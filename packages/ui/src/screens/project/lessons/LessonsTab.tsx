@@ -66,6 +66,7 @@ export function LessonsTab({ project }: { project: string }) {
    {view.truncated.includes("waiting") && <p className="rv-muted">{T.TRUNCATED}</p>}
    {view.queued > 0 && <p className="rv-muted">{String(view.queued)} {T.QUEUED}</p>}
    {view.hidden > 0 && <p className="rv-muted">{String(view.hidden)} {view.hidden === 1 ? "lesson comes" : "lessons come"} from sources you can't see and {view.hidden === 1 ? "is" : "are"} left out.</p>}
+   {view.legacyHeld !== undefined && <p className="rv-muted" data-testid="lessons-legacy-held">{String(view.legacyHeld)} {view.legacyHeld === 1 ? "lesson is" : "lessons are"} on hold because {view.legacyHeld === 1 ? "it was" : "they were"} learned from tasks started before sessions existed, so who may see {view.legacyHeld === 1 ? "it" : "them"} can't be checked.</p>}
   </section>}
 
   <section aria-label={T.ACTIVE} className="rv-lessons-section">

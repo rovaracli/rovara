@@ -15,6 +15,14 @@ import { AgentSessionStore } from "../agent-sessions/store.js";
 import { effectiveTaskOwner, isTaskTakenOver, taskKey, type DeveloperTaskRecord } from "../developer/task-records.js";
 import { grantRoleOf } from "../developer/project-roles.js";
 
+/**
+ * A task of this company that has no session item at all: it was started before sessions existed (a legacy task). It has no session access to follow, so its audience is unknown and the lessons learned from it are
+ * withheld (fail closed). Kept apart from every other unreadable answer so the owner can be told how many lessons wait for this reason (review L3).
+ */
+export class LegacyTaskNoSessionError extends Error {
+  constructor() { super("lessons: the task has no session item"); this.name = "LegacyTaskNoSessionError"; }
+}
+
 export interface LessonTaskAudience {
   project: string;
   /** People the task's People list denies: they can't open the task, whatever else says. */
@@ -98,8 +106,10 @@ export async function resolveLessonTaskAudience(table: StateTable, orgId: OrgId,
   const task = (await getItem(reads, taskKey(taskId))) as DeveloperTaskRecord | undefined;
   if (task === undefined || task.orgId !== orgId) return undefined;
   const session = await new AgentSessionStore(reads).getForTask(orgId, task);
-  // A task with no readable task session has no session access to follow: unknown, never the owner's alone.
-  if (session === undefined || session.kind !== "task" || session.subject.kind !== "task" || session.project === undefined) throw new Error("lessons: the task's session can't be read");
+  // A task with no session item (a legacy task) has no session access to follow: unknown, never the owner's alone, and counted apart (review L3).
+  if (session === undefined) throw new LegacyTaskNoSessionError();
+  // A task whose session item is not a task session has no session access to follow either.
+  if (session.kind !== "task" || session.subject.kind !== "task" || session.project === undefined) throw new Error("lessons: the task's session can't be read");
   const project = session.project;
   const shares = await readSessionShares(reads, orgId, session.sessionId);
   const people = await readTaskPeople(reads, taskId);
@@ -136,7 +146,7 @@ export async function resolveLessonTaskAudience(table: StateTable, orgId: OrgId,
 /** The live audiences of tasks. A task missing from the answer, or mapped to `undefined`, is unknown. May throw: that reads as unknown for every task asked about. */
 export interface LessonAudiencePort {
   /** `signal` aborts when the caller stops waiting: the port should start no new reads then. `memo` keeps the roster answers (one per person) for the rest of the request. */
-  read(orgId: OrgId, taskIds: readonly string[], options?: { signal?: AbortSignal; memo?: RosterMemo }): Promise<ReadonlyMap<string, LessonTaskAudience | undefined>>;
+  read(orgId: OrgId, taskIds: readonly string[], options?: { signal?: AbortSignal; memo?: RosterMemo; /** Filled with the ids of tasks that have no session item (legacy tasks); they are also absent from the answer. */ legacy?: Set<string> }): Promise<ReadonlyMap<string, LessonTaskAudience | undefined>>;
 }
 
 const LOOKUP_PARALLEL = 8;
@@ -150,7 +160,7 @@ export function tableLessonAudiencePort(table: StateTable): LessonAudiencePort {
       const memo: RosterMemo = options?.memo ?? new Map<string, Promise<boolean>>();
       const worker = async (): Promise<void> => {
         for (let id = queue.shift(); id !== undefined && options?.signal?.aborted !== true; id = queue.shift()) {
-          try { out.set(id, await resolveLessonTaskAudience(table, orgId, id, memo, options?.signal)); } catch { out.set(id, undefined); }
+          try { out.set(id, await resolveLessonTaskAudience(table, orgId, id, memo, options?.signal)); } catch (error) { out.set(id, undefined); if (error instanceof LegacyTaskNoSessionError) options?.legacy?.add(id); }
         }
       };
       await Promise.all(Array.from({ length: Math.min(LOOKUP_PARALLEL, queue.length) }, worker));

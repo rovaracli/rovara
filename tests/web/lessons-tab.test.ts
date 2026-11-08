@@ -182,6 +182,24 @@ describe("waiting cards", () => {
   expect(screen.getByText(/3 more are being collected/u)).toBeTruthy();
   expect(screen.getByText(/2 lessons come from sources you can't see/u)).toBeTruthy();
  });
+ it("L3: tells the people who decide how many lessons are on hold because their source task has no session; says nothing when none are", async () => {
+  await openLessons({ state: { view: view({ waiting: [], legacyHeld: 3 }) } });
+  expect(screen.getByTestId("lessons-legacy-held").textContent).toMatch(/3 lessons are on hold because they were learned from tasks started before sessions existed/u);
+ });
+ it("N2: a held legacy lesson is not also 'a source you can't see': with nothing else hidden, only the hold line shows", async () => {
+  await openLessons({ state: { view: view({ waiting: [], legacyHeld: 3, hidden: 0 }) } });
+  expect(screen.getByTestId("lessons-legacy-held")).toBeTruthy();
+  expect(screen.queryByText(/sources you can't see/u)).toBeNull();
+ });
+ it("N2 positive control: lessons that really are from sources the person can't see still get their own line beside the hold line", async () => {
+  await openLessons({ state: { view: view({ waiting: [], legacyHeld: 3, hidden: 2 }) } });
+  expect(screen.getAllByTestId("lessons-legacy-held")).toHaveLength(1);
+  expect(screen.getByText(/2 lessons come from sources you can't see/u)).toBeTruthy();
+ });
+ it("L3: no line when nothing is held", async () => {
+  await openLessons({ state: { view: view({ waiting: [] }) } });
+  expect(screen.queryByTestId("lessons-legacy-held")).toBeNull();
+ });
 });
 
 describe("deciding", () => {

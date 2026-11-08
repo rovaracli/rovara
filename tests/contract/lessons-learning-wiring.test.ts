@@ -11,7 +11,7 @@ import { installLessons, lessonSimilarityFor, pauseStillAppliesFor } from "../..
 import { installTeamRecordEmitter, uninstallTeamRecordEmitter } from "../../packages/broker/src/aws/broker/team-record-wiring.js";
 import { announceHumanSendBack } from "../../packages/broker/src/lessons/send-back-events.js";
 import type { LessonEmbedder } from "../../packages/broker/src/lessons/ports.js";
-import { DENYING_SPEND, NO_VECTORS, REFUSING_MODEL } from "../../packages/broker/src/lessons/runtime.js";
+import { DENYING_SPEND, NO_VECTORS, REFUSING_JUDGE, REFUSING_MODEL } from "../../packages/broker/src/lessons/runtime.js";
 import { FakeDynamoDb } from "../support/fake-dynamodb.js";
 import { TEST_ORG } from "../support/orgs.js";
 
@@ -46,6 +46,14 @@ describe("the learning dependencies", () => {
     expect(runtime.routes.judgeModel).not.toBe(REFUSING_MODEL);
     expect(runtime.routes.spend).not.toBe(DENYING_SPEND);
     expect(learning.reflect.edition).toBe("public");
+    // Lessons connect fix 1 (H1): the end of a task counts its outcome with the runtime's counters (today the refusing judge: no model call).
+    expect(learning.counters).toBe(runtime.counters);
+    expect(runtime.counters.judge).toBe(REFUSING_JUDGE);
+  });
+  it("lessons connect fix 1 (M4): the production subject source reads project-wide visibility live (decision 32) next to the strict Team record reader, which is left as it was", () => {
+    const wiring = readFileSync(new URL("../../packages/broker/src/aws/broker/lessons-wiring.ts", import.meta.url), "utf8");
+    expect(wiring).toContain("projectWide: (orgId, taskId) => resolveTaskProjectWide({ ...state, now: Date.now }, orgId, taskId)");
+    expect(wiring).toContain("strictVisibility: (orgId, taskId) => resolveTaskVisibility({ ...state, now: Date.now }, orgId, taskId, { strict: true })");
   });
 
   it("the one pause store (\"lessons paused\", lane 1b) is shared by the Lessons tab, the curator and the reflector, so a reason recorded anywhere is the one the tab shows", async () => {
@@ -265,15 +273,23 @@ describe("L4: the lessons' scheduled jobs", () => {
   const withJobs = (paused: boolean) => {
     const { dependencies, db } = install();
     const registered: string[] = [];
+    const works: Record<string, (orgId: string, projects: string[], budgetMs: number) => Promise<Record<string, number>>> = {};
     const teamRecord = dependencies.teamRecord as Record<string, unknown>;
-    teamRecord["jobs"] = { extend: (job: string) => { registered.push(job); } };
+    teamRecord["jobs"] = { extend: (job: string, work: (orgId: string, projects: string[], budgetMs: number) => Promise<Record<string, number>>) => { registered.push(job); works[job] = work; } };
     if (paused) teamRecord["paused"] = true;
-    return { dependencies, db, registered };
+    return { dependencies, db, registered, works };
   };
   it("a running record gets both: the hourly resume of half-done deletions and the nightly re-reflection of reverts", () => {
     const { dependencies, registered } = withJobs(false);
     installLessons(dependencies as never);
     expect(registered).toEqual(["hourly", "nightly"]);
+  });
+  it("lessons connect: the nightly job is the re-reflection, the expiry sweep AND the trial-to-stable pass (its counts carry both)", async () => {
+    const { dependencies, works } = withJobs(false);
+    installLessons(dependencies as never);
+    const counts = await works["nightly"]!(TEST_ORG, ["web"], 10_000);
+    // `helpfulSettled` is only there when the job was given the counters: the sweep settles the due helpful marks before it expires anything (fix 1, H1).
+    expect(counts).toMatchObject({ revertsEnqueued: 0, lessonsExpired: 0, helpfulSettled: 0, trialsPromoted: 0 });
   });
   it("a PAUSED record still gets the hourly resume (an erase must finish whether or not the record is paused), on a store-only port, and no nightly re-reflection (a paused record learns nothing)", () => {
     const { dependencies, registered } = withJobs(true);

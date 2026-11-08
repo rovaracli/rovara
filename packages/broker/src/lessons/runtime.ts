@@ -6,7 +6,7 @@
 // The model and the payer path are given by the broker's wiring where the company's own model path exists (`customerLearningModel`, `companyLearningSpend`); without them `judgeModel` and `spend` refuse
 // (a curator judgement fails closed: a contradiction goes to a person). The correction judge (`judge`) still refuses: a correction rating is not wired yet. Lesson similarity (DECISIONS 23: keywords,
 // cited paths and the optional small embedder, fused; the vectors kept with the lessons) plugs in through the one seam `lessonSimilarityFor`.
-import type { OrgId } from "@agentx/contracts";
+import { OrgIdSchema, type OrgId } from "@agentx/contracts";
 import type { AttributionReader } from "../attribution/resolve.js";
 import type { SecondPersonEvidenceDependencies } from "../org/second-person-evidence.js";
 import { createAccessCheckPort, type AccessCheckPort } from "../team-record/access-port.js";
@@ -28,6 +28,7 @@ import type { LessonsPauseStore } from "./pause.js";
 import type { ApproverDirectory, CorrectionJudge, LearningSpend, LessonEmbedder, LessonVectors, PipelineModel } from "./ports.js";
 import type { ProcessDeps } from "./process.js";
 import type { LearningSettingsReader } from "./policy.js";
+import { projectRepoScopesOf } from "./project-repo-audience.js";
 import type { LessonStore } from "./store.js";
 import type { LessonViewDeps } from "./view.js";
 
@@ -113,6 +114,13 @@ export function createLessonsRuntime(input: LessonsRuntimeInput): LessonsRuntime
   const routes: LessonRouteDeps = {
     ...base, store, directory, settings, access, names: input.names, sources: { table: input.table },
     embedder: similarity.embedder, vectors: similarity.vectors, judgeModel: input.model ?? REFUSING_MODEL, spend: input.spend ?? DENYING_SPEND, ...(input.pause === undefined ? {} : { pause: input.pause }), ...(input.pauseStillApplies === undefined ? {} : { pauseStillApplies: input.pauseStillApplies }), verifier, facts, judge: REFUSING_JUDGE,
+    // Owner decision 34: the project's own repositories, read live when a lesson is tiered or put on trial; no port or an unreadable definition is "not known", which leaves a repository-restricted lesson restricted.
+    projectRepos: async (key) => {
+      const port = projectRepoScopesOf(input.taskVisibility);
+      const org = OrgIdSchema.safeParse(key.workspaceId);
+      if (port === undefined || !org.success) return undefined;
+      try { return await port.read(org.data, key.project); } catch { return undefined; }
+    },
     presets: {
       // The project's maintainers and admins decide a project's preset; a company's is decided by the company's admins. Both go through the shared second-person evidence (the same rule and fence as the tier-0 setting).
       settings: presetStore, changes: presetStore, audit, now: input.now, authority: secondPersonTier0Authority(input.evidence), soleOwnerLoosening: (workspaceId) => new DynamoSoleOwnerSwitch(input.table).read(workspaceId),

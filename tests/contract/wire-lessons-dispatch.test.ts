@@ -16,7 +16,8 @@ import { MAYA, createSingleAnswerPlanBroker } from "../support/developer-task-br
 import { TEST_ORG } from "../support/orgs.js";
 import { loadSlackBroker } from "../support/slack-broker.js";
 
-beforeAll(loadSlackBroker);
+// Loading the broker module graph takes more than the default 10 s on a busy machine (review L4).
+beforeAll(loadSlackBroker, 60_000);
 const PREPARED = { result: { preparedBase: [{ repositoryId: "demo", baseCommitSha: "e".repeat(40) }] } };
 const PROJECT = "payments";
 

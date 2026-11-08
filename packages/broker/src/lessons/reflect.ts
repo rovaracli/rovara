@@ -6,6 +6,7 @@ import { currentLearningAttempt } from "./learning-deadline.js";
 import { isLearningRefusal, noteModelFailure, notePause, noteRecovered, pauseOfLook, spendLook, type LessonsPauseStore } from "./pause.js";
 import { emitAudit, learningCaps, modeAllows, resolveLearning, type Edition, type LearningSettingsReader } from "./policy.js";
 import type { Clock, LearningSpend, LessonAuditSink, Metrics, PipelineModel } from "./ports.js";
+import { repoOnlyScopes } from "./project-repo-audience.js";
 import { buildReflectorInput, type MarkedSpan, type ReflectSubject } from "./reflect-input.js";
 import { NO_REASON_TEXT } from "./task-subject.js";
 import { lessonClaimsSupported } from "./trial.js";
@@ -75,7 +76,15 @@ const EXTERNAL_SOURCE = /^\s*(slack|linear|jira|mcp|code|comment)\b/iu;
 export function memberCorrectionOf(cited: readonly MarkedSpan[], everythingTrust: TrustClass): boolean {
   if (everythingTrust === "outsider" || cited.length === 0) return false;
   return cited.every((s) => s.trust === "member" && s.authorId !== undefined && CORRECTION_KINDS.has(s.kind) && s.fixedText !== true && s.text !== NO_REASON_TEXT
-    && s.audience?.kind !== "restricted" && !(s.sourceKey !== undefined && EXTERNAL_SOURCE.test(s.sourceKey)));
+    && !restrictedBeyondRepos(s.audience) && !(s.sourceKey !== undefined && EXTERNAL_SOURCE.test(s.sourceKey)));
+}
+
+/**
+ * Owner decision 34: a span restricted ONLY to readers of repositories (the code-host row shape) does not by itself disqualify a correction: whether those repositories are the project's own is judged LIVE where the lesson goes
+ * on trial (`trialBlockers`, "restricted_source", over the narrowest audience of everything the model read), so a repository that is not the project's still keeps the lesson off trial. Any other restriction disqualifies here.
+ */
+function restrictedBeyondRepos(audience: Audience | undefined): boolean {
+  return audience?.kind === "restricted" && repoOnlyScopes({ provenance: { audience } as LessonProvenance }) === undefined;
 }
 
 /** The source key of CI failures, as the subject source writes it. */
@@ -297,7 +306,8 @@ async function toDraft(
       claimsSupported: lessonClaimsSupported({ title, description, body, ...(candidate.scope.paths === undefined ? {} : { scopePaths: candidate.scope.paths }) }, {
         correctionTexts: cited.flatMap((s) => (s.text === undefined ? [] : [s.text])), code: citations.flatMap((c) => (c.kind === "code" ? [{ path: c.path, anchor: c.anchor }] : [])),
       }),
-      ...(subject.sharedTask === true ? { fromSharedTask: true } : {}),
+      // true: every source was project-wide when reflected; false: it was not (a merge keeps that); unset: not known (never read, or unreadable).
+      ...(subject.sharedTask === undefined ? {} : { fromSharedTask: subject.sharedTask }),
     },
   };
 }
