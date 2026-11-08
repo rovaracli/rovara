@@ -3,7 +3,7 @@ import { Match, Template } from "aws-cdk-lib/assertions";
 import { describe, expect, it } from "vitest";
 import { APPSYNC_EVENTS_ACTIONS, APPSYNC_EVENTS_UNSCOPED_ACTIONS, CLOUDFRONT_BOUNDARY_ACTIONS, CLOUDFRONT_DISTRIBUTION_ACTIONS, CLOUDFRONT_DISTRIBUTION_CREATE_ACTIONS, CLOUDFRONT_DISTRIBUTION_TAG_ACTIONS, CLOUDFRONT_ORIGIN_ACCESS_CONTROL_ACTIONS, CLOUDFRONT_RESPONSE_HEADERS_POLICY_ACTIONS, CLOUDFRONT_UNSCOPED_ACTIONS, ENVIRONMENT_PLACEHOLDER } from "@agentx/contracts";
 import { buildAgentXApp } from "../../infra/lib/app.js";
-import { SERVICE_LINKED_ROLE_SERVICES, SERVICE_ROLE_SERVICES, defaultBoundaryStatements, serviceRoleStatements } from "../../infra/lib/access-policies.js";
+import { SERVICE_LINKED_ROLE_SERVICES, SERVICE_ROLE_SERVICES, TEAM_RECORD_BOUNDARY_SERVICES, defaultBoundaryStatements, serviceRoleStatements } from "../../infra/lib/access-policies.js";
 import { boundaryWithSids } from "../support/deployed-boundary.js";
 import { skipLambdaBundling } from "../support/skip-bundling.js";
 
@@ -42,7 +42,10 @@ describe("access stack", () => {
   // permissions fails the deploy of `agentxCloud=true` and must fail here first.
   const cloudApp = buildAgentXApp({ agentxEnv: "staging", agentxCloud: true });
   const resourcesInApp = (a: App) => stacksOf(a).map((stack) => ({ stack, resources: resourcesOf(stack) }));
-  const environmentResources = () => [app, cloudApp].flatMap(resourcesInApp);
+  // TR-SWITCH-B1/B2: and the hosted cloud with the Team record switched on, whose S3 Vectors, S3 Tables and Athena resources and role statements the boundary and the service role must cover
+  // (tests/contract/team-record-iam-coverage.test.ts checks them in detail).
+  const recordApp = buildAgentXApp({ agentxEnv: "staging", agentxCloud: true, agentxTeamRecord: "enabled" });
+  const environmentResources = () => [app, cloudApp, recordApp].flatMap(resourcesInApp);
   /** The AWS service each resource type in the non-access templates is created through. */
   const resourceTypeServices = () => {
     const serviceOf = (type: string) => type.split("::")[1]!.toLowerCase().replace("apigatewayv2", "apigateway").replace("cognito", "cognito-idp").replace("applicationautoscaling", "application-autoscaling").replace("elasticloadbalancingv2", "elasticloadbalancing").replace("stepfunctions", "states");
@@ -260,7 +263,9 @@ describe("access stack", () => {
     const needed = resourceTypeServices();
     // IAM resource types (roles, instance profiles, and the broker's agentx-* managed policies, ruling M2) are created through
     // the service role's by-name IAM statements, never an iam:* wildcard.
-    expect([...needed].filter((service) => !SERVICE_ROLE_SERVICES.includes(service) && service !== "events" && service !== "iam" && service !== "appsync" && service !== "cloudfront" && !CUSTOM_DOMAIN_SERVICES.has(service))).toEqual([]);
+    // The Team record's three storage services are named by action on the environment's own resources (TEAM_RECORD_*_DEPLOY_ACTIONS), never a wildcard.
+    expect([...needed].filter((service) => !SERVICE_ROLE_SERVICES.includes(service) && service !== "events" && service !== "iam" && service !== "appsync" && service !== "cloudfront" && !CUSTOM_DOMAIN_SERVICES.has(service) && !TEAM_RECORD_BOUNDARY_SERVICES.includes(service))).toEqual([]);
+    for (const service of TEAM_RECORD_BOUNDARY_SERVICES) expect(SERVICE_ROLE_SERVICES).not.toContain(service);
     // AppSync (Events APIs and namespaces, Plan 5 Task 8) is created through its named actions, never `appsync:*`.
     const created = roleStatements(template.toJSON().Resources as Record<string, Resource>).find((st) => st.Sid === "AppSyncEvents")!;
     expect([...(created.Action as string[])].sort()).toEqual([...APPSYNC_EVENTS_ACTIONS].sort());

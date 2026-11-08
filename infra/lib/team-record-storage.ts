@@ -11,6 +11,8 @@ import { TeamRecordVectors } from "./team-record-vectors.js";
 export interface TeamRecordStorageProps {
   /** Resource-name prefix, for example `rovara-staging`. Lowercase letters, digits and hyphens. */
   readonly namePrefix: string;
+  /** The named environment: the vector data role gets the fixed name `agentx-<env>-record-vectors-data` (TR-SWITCH-B2). Absent in a construct tested alone. */
+  readonly env?: string;
   readonly context: TeamRecordContext;
   /** Only 1 is allowed until each workspace stores its assigned vector bucket (review I-7). */
   readonly publicVectorBucketCount?: number;
@@ -37,6 +39,7 @@ export class TeamRecordStorage extends Construct {
     this.vectors = new TeamRecordVectors(this, "Vectors", {
       bucketNames: Array.from({ length: count }, (_, i) => `${props.namePrefix}-record-vectors${count === 1 ? "" : `-${i + 1}`}`),
       ...(params.kmsKeyArn === undefined ? {} : { kmsKeyArn: params.kmsKeyArn }),
+      ...(props.env === undefined ? {} : { env: props.env }),
       dimension: params.dimension,
       ...(props.brokerPrincipal === undefined ? {} : { brokerPrincipal: props.brokerPrincipal }),
       ...(props.unsafeTenantWideBrokerAccess === true ? { unsafeTenantWideBrokerAccess: true } : {}),

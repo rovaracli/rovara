@@ -184,6 +184,10 @@ describe("the switch on: Public cloud", () => {
     expect(reads).toHaveLength(1);
     expect([reads[0]!.Action].flat().sort()).toStrictEqual(["dynamodb:BatchGetItem", "dynamodb:GetItem", "dynamodb:Query"]);
     expect(JSON.stringify(reads[0]!.Resource)).toMatch(/TeamRecordTable/);
+    // TR-SWITCH (0.5.11): the table only, no index. Every read of the dispatcher's delivery path is by pk and sk on the base table, and the indexes project the recorded text (the key condition the plan asked
+    // for cannot separate lesson rows from record rows: they share a partition, see TeamRecordTable.dispatcherStatements).
+    expect(JSON.stringify(reads[0]!.Resource)).not.toMatch(/index/);
+    expect(reads[0]).not.toHaveProperty("Condition");
     // Nothing else of the record is the dispatcher's: no write action on the record table, and no vector, lake or queue right.
     const recordRelated = statements.filter((statement) => /TeamRecord/.test(JSON.stringify(statement.Resource)));
     expect(recordRelated.map((statement) => statement.Sid)).toStrictEqual(["TeamRecordLessonReads"]);

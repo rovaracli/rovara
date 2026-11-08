@@ -56,14 +56,19 @@ export class TeamRecordTable extends Construct {
   }
 
   /**
-   * What the dispatcher's role needs to build a stage's lessons from the lesson store at delivery (WL-6): reads only (item reads and queries on the table and its indexes). No write, no scan.
+   * What the dispatcher's role needs to build a stage's lessons from the lesson store at delivery (WL-6): reads only (item reads and queries on the table). No write, no scan, and NO INDEX (TR-SWITCH, 0.5.11): every read of
+   * the dispatcher's delivery path (the lesson store, the learning settings and the access records, packages/broker/src/lessons/delivery-wiring.ts) is a GetItem, BatchGetItem or Query on the base table by pk and sk, never on a
+   * global secondary index, and the indexes project the recorded text (gsi1, gsi2, gsi4 and gsi5 project ALL).
+   * Why the lesson rows are not the only rows it may read: DynamoDB's `dynamodb:LeadingKeys` condition limits the partition key only, and a lesson shares its partition (`WS#<org>#P#<project>`) with the project's record rows, facts and
+   * sources, told apart by the sort key (`LESSON#...` against `REC#...`), which no IAM condition can see. The access records and settings it must read also sit in the workspace's partitions. So the key condition the plan asked for
+   * cannot be written without moving lessons to partitions of their own, a change to the lessons code and to stored data (DEFERRED-CHECKS TR-SWITCH-B1/B2, "dispatcher reads"). The code reads lessons only; the grant is as tight as the key design allows.
    */
   dispatcherStatements(): iam.PolicyStatement[] {
     return [
       new iam.PolicyStatement({
         sid: "TeamRecordLessonReads",
         actions: ["dynamodb:GetItem", "dynamodb:BatchGetItem", "dynamodb:Query"],
-        resources: [this.table.tableArn, `${this.table.tableArn}/index/*`],
+        resources: [this.table.tableArn],
       }),
     ];
   }
