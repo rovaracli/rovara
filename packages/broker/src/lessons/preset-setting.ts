@@ -4,7 +4,7 @@
 //  - Regulated (stricter) applies at once for an eligible maintainer or admin (a company's: an eligible company admin), audited, never blocked by an audit outage.
 //  - Standard (a loosening) never applies as a direct write. It opens a proposal that a DIFFERENT eligible person approves; the one exception is the shared sole-owner exception
 //    (`org/second-person-approval.ts`, owner decision 2026-11-01 "One-admin companies"): the proposer is the ONLY eligible person and nobody eligible left or was removed in the last 24 hours, and the
-//    company has not turned the exception off. The audit records mode `sole_owner_exception`.
+//    company has not turned the exception off. The audit records mode `sole_owner_exception`, and a separate `lesson.sole_owner_exception` entry (round 2).
 //  - A company's Regulated is a floor: a project cannot go below it (refused at request and again at approval).
 //  - Every write is conditional on the value it was made against and fenced on the membership the decision rested on; fail closed on anything unreadable.
 // The stored setting names no person (the audit event does); a proposal names its proposer, under the prefix the person erase already rewrites.
@@ -51,7 +51,7 @@ export interface PresetDeps {
 }
 
 export type PresetFailure = Tier0Failure;
-export type PresetResult = { ok: true; status: "applied"; changed: boolean; value: LearningPreset } | { ok: true; status: "needs_approval"; changeId: string } | { ok: false; code: PresetFailure };
+export type PresetResult = { ok: true; status: "applied"; changed: boolean; value: LearningPreset } | { ok: true; status: "needs_approval"; changeId: string; value: LearningPreset } | { ok: false; code: PresetFailure };
 export type PresetApproveResult = { ok: true; value: LearningPreset } | { ok: false; code: PresetFailure; availableAt?: string };
 
 const LEVEL: Record<LearningPreset, number> = { standard: 0, regulated: 1 };
@@ -94,9 +94,15 @@ export async function setLearningPreset(deps: PresetDeps, input: { scope: Preset
   // A loosening: a proposal.
   if ((await deps.changes.open(scope, at)) !== undefined) return { ok: false, code: "already_open" };
   const id = (deps.newId ?? (() => randomUUID()))();
-  if (!(await requireAudit(deps.audit, { action: "lesson.preset_proposed", workspaceId: scope.workspaceId, project: projectOf(scope), actor: input.requestedBy, facts: facts({ changeId: id }) }))) return { ok: false, code: "audit_unavailable" };
+  // Round 2 (R6): the proposal is created first and the ledger entry follows, so a create that loses a race leaves no `preset_proposed` entry for a proposal that does not exist. A proposal whose entry cannot be
+  // written is closed again (nothing waits for a second person without its record), and `needsApproval` reports the value actually in force.
   const created = await deps.changes.create({ id, scope, from: current, to: value, proposedBy: input.requestedBy, at, expiresAt: at + PRESET_CHANGE_TTL_MS, state: "pending", soleEligibleAtProposal: group.eligibleIds.length === 1 });
-  return created ? { ok: true, status: "needs_approval", changeId: id } : { ok: false, code: "conflict" };
+  if (!created) return { ok: false, code: "conflict" };
+  if (!(await requireAudit(deps.audit, { action: "lesson.preset_proposed", workspaceId: scope.workspaceId, project: projectOf(scope), actor: input.requestedBy, facts: facts({ changeId: id }) }))) {
+    await deps.changes.transition(scope, id, "pending", "cancelled").catch(() => false);
+    return { ok: false, code: "audit_unavailable" };
+  }
+  return { ok: true, status: "needs_approval", changeId: id, value: current };
 }
 
 /** A DIFFERENT eligible person approves a proposal to loosen a preset (or the proposer alone, through the sole-owner exception). */
@@ -138,9 +144,16 @@ export async function approvePresetChange(deps: PresetDeps, input: { scope: Pres
     return { ok: false, code: "stale" };
   }
   // The audit event is written only now, after the claim and the write; a loosening that cannot be recorded is taken back (conditionally) and the change closed.
-  const audited = await requireAudit(deps.audit, {
+  // Round 2 (R4): a sole-owner approval is also recorded as `lesson.sole_owner_exception` (the same entry the tier-0 setting writes), first, so an audit of sole-owner use across settings finds preset loosenings too.
+  const soleFacts: Record<string, string | number | boolean> = decision.mode === "sole_owner_exception"
+    ? { ownerCount: group.ownerIds.length, exceptionReason: "sole_owner_no_other_eligible_24h_clear" } : {};
+  const exceptionRecorded = decision.mode !== "sole_owner_exception" || await requireAudit(deps.audit, {
+    action: "lesson.sole_owner_exception", workspaceId: scope.workspaceId, project: projectOf(scope), actor: input.approverId,
+    facts: { scope: scope.kind, changeId: change.id, membershipVersion: group.membershipVersion, ...soleFacts },
+  });
+  const audited = exceptionRecorded && await requireAudit(deps.audit, {
     action: "lesson.preset_changed", workspaceId: scope.workspaceId, project: projectOf(scope), actor: input.approverId,
-    facts: { scope: scope.kind, from: change.from, to: change.to, mode: decision.mode, changeId: change.id },
+    facts: { scope: scope.kind, from: change.from, to: change.to, mode: decision.mode, changeId: change.id, ...soleFacts },
   });
   if (!audited) {
     await deps.settings.write(scope, change.from, { by: input.approverId, at }, change.to).catch(() => false);

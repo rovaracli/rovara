@@ -90,7 +90,8 @@ function buildWorkflowPullRequestBody(task: DeveloperTaskRecord, workflow: Workf
     "",
     // Between markers, so a pushed PR feedback fix can bring them up to date and leave the rest as the person left it.
     PULL_REQUEST_STATUS_START,
-    ...workflowPullRequestStatusLines(workflow, secondLines.length === 0 ? undefined : { secondReviewLines: secondLines }, proofLines),
+    // R1 (re-check round 1): the lessons used belong in the description a version 1 task OPENS with, not only in one a pushed fix rewrites.
+    ...workflowPullRequestStatusLines(workflow, { ...(context?.lessonsUsed === undefined ? {} : { lessonsUsed: context.lessonsUsed }), ...(secondLines.length === 0 ? {} : { secondReviewLines: secondLines }) }, proofLines),
     PULL_REQUEST_STATUS_END,
     ...attributionBodyLines(context?.attribution),
     ...(pageUrl === undefined ? [] : [`AgentX task: ${pageUrl}`]),

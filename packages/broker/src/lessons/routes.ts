@@ -140,7 +140,7 @@ async function routePreset(deps: LessonRouteDependencies, caller: DeveloperCalle
     const result: PresetResult = await setLearningPreset(presets, { scope, value: input.preset, requestedBy: caller.developerId });
     if (!result.ok) return refusePreset(result.code, notEligible);
     // A proposal leaves the value in force as it is: the answer says which one that is.
-    if (result.status === "needs_approval") return { preset: "regulated" as const, changed: false, needsApproval: true, changeId: result.changeId };
+    if (result.status === "needs_approval") return { preset: result.value, changed: false, needsApproval: true, changeId: result.changeId };
     return { preset: result.value, changed: result.changed };
   }
   const input = strictBody(LessonPresetChangeBodySchema, body());

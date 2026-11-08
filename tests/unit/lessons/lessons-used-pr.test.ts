@@ -4,7 +4,7 @@
 import { randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import { WorkflowSnapshotSchema, createCandidateManifest, createWorkflowSnapshot } from "../../../packages/contracts/src/task-workflow-node.js";
-import { workflowPullRequestStatusLines } from "../../../packages/broker/src/aws/developer-tasks.js";
+import { workflowPullRequestBody, workflowPullRequestStatusLines } from "../../../packages/broker/src/aws/developer-tasks.js";
 import { rovaraPullRequestBody, ROVARA_STATUS_END, ROVARA_STATUS_START, PULL_REQUEST_BODY_MAX_BYTES } from "../../../packages/broker/src/rovara-code/pull-request-body.js";
 import { repositoryVisibilityOf } from "../../../packages/broker/src/aws/broker/lessons-wiring.js";
 import { lessonsUsedForTask, lessonsUsedReaderOver, lessonsUsedSection, notHelpfulUrl, setLessonsUsedReader, visibilityOfRepositories } from "../../../packages/broker/src/lessons/used-in-pr.js";
@@ -56,6 +56,40 @@ describe("the description's Lessons used section", () => {
     expect(countOnly).toContain("Rovara used 2 lessons");
     expect(countOnly).not.toContain("notHelpful");
     expect(workflowPullRequestStatusLines(v1, {}).join("\n")).not.toContain("Lessons used");
+  });
+
+  // R1 (re-check round 1): the FULL description a task opens with, built by workflowPullRequestBody, for both versions. A public or unknown repository gets the count and one link; a private one gets titles.
+  describe("R1: the whole opening description, both versions", () => {
+    const openingTask = { title: "Add a retry flag" } as never;
+    const v1 = WorkflowSnapshotSchema.parse({ ...workflow, definitionVersion: "1.0.0" });
+    const bodyOf = (wf: typeof workflow, lessonsUsed: ReturnType<typeof section> | undefined) =>
+      workflowPullRequestBody(openingTask, wf, "Retry the call.", PAGE, { ...context, ...(lessonsUsed === undefined ? {} : { lessonsUsed }) });
+    const statusBlock = (body: string, start: string, end: string) => body.slice(body.indexOf(start), body.indexOf(end));
+    it("version 1: a private repository lists titles with not-helpful links, a public one only the count and one link, none when no lesson was used", () => {
+      expect(v1.definitionVersion).toBe("1.0.0");
+      const listed = bodyOf(v1, section([entry("les_aaaa1111", "Retries use withRetry")]));
+      expect(listed).toContain("## Lessons used");
+      expect(listed).toContain(`- Retries use withRetry ([not helpful](${PAGE}?notHelpful=les_aaaa1111))`);
+      // It sits inside the marked block, so a pushed fix rewrites it with the rest.
+      expect(statusBlock(listed, "<!-- agentx:checks-and-reviews -->", "<!-- /agentx:checks-and-reviews -->")).toContain("## Lessons used");
+      const countOnly = bodyOf(v1, { count: 4, taskUrl: PAGE, entries: [] });
+      expect(countOnly).toContain("Rovara used 4 lessons from this project's record.");
+      expect(countOnly).toContain(`[task page](${PAGE})`);
+      expect(countOnly).not.toContain("notHelpful");
+      expect(bodyOf(v1, undefined)).not.toContain("Lessons used");
+      expect(bodyOf(v1, section([], 0))).not.toContain("Lessons used");
+    });
+    it("version 2: the same, from the same call", () => {
+      expect(workflow.definitionVersion).toBe("1.1.0");
+      const listed = bodyOf(workflow, section([entry("les_bbbb2222", "Config defaults come first")]));
+      expect(listed).toContain("## Lessons used");
+      expect(listed).toContain(`- Config defaults come first ([not helpful](${PAGE}?notHelpful=les_bbbb2222))`);
+      expect(listed.slice(listed.indexOf(ROVARA_STATUS_START), listed.indexOf(ROVARA_STATUS_END))).toContain("## Lessons used");
+      const countOnly = bodyOf(workflow, { count: 2, taskUrl: PAGE, entries: [] });
+      expect(countOnly).toContain("Rovara used 2 lessons");
+      expect(countOnly).not.toContain("notHelpful");
+      expect(bodyOf(workflow, undefined)).not.toContain("Lessons used");
+    });
   });
 
   it("rewrites with the status block after a fix, and has no section when no lesson was used", () => {
