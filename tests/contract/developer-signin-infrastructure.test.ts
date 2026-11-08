@@ -545,6 +545,7 @@ describe("the developer task notifier (spec 025 phase 25c, named environments)",
       SLACK_SECRET_ARN: { Ref: secretId },
       AGENTX_METRICS_NAMESPACE: "AgentX/staging",
       AGENTX_TASK_PEOPLE_CHANGES_ENABLED: { Ref: "TaskPeopleChangesEnabled" },
+      DECISION_CARDS_ENABLED: { Ref: "DecisionCardsEnabled" },
     });
   });
 

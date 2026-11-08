@@ -383,18 +383,20 @@ describe("the named TEST proof-only installation gate", () => {
     // TASK_ATTENTION_DM rows (the named-templates snapshot shows exactly that string). Legacy did not move.
     // 0.5.11 (QA6-12b): the named and foreign digests were retaken after one intended change: the DeveloperTaskNotifier gains two read-only grants (GetItem on ORG#org_*#SETTINGS, Query on ORG#org_*#RUN_COST#*) for the plan's run limit.
     // Checked first: with the notifier's infra file as it was before, all three infra tests pass, so the change is that statement and nothing else. Legacy did not move.
+    // p1-slack-decide-card: the named and foreign digests were retaken after one intended change: the DeveloperTaskNotifier's Lambda gains the variable DECISION_CARDS_ENABLED (Ref DecisionCardsEnabled), no IAM change.
+    // Checked first: with the two infra files as they were before, this test passes; legacy did not move.
     const digestCases = [
       {
         label: "named",
         template: named,
-        withRoute: "e40427c418d27cf669c8ee293cc19f08bbee2138bee4cc3ac851a8f09e4f2b6f",
-        withoutRoute: "57e016e9dacfac504799fe21133bea37b83a7d64f05c3bae9b7862358400485b",
+        withRoute: "d487a0c9d8e83628e796d70fae52dc44a3ba6af8a53a6a4a23e3b719a36b3c41",
+        withoutRoute: "1c8dd5490307acc4d0ac6a6dcdb792289a4d3c1eb5fd8a8b2286058695621f8b",
       },
       {
         label: "foreign",
         template: foreign,
-        withRoute: "25c09aea928055248ba6a933ce346b3086381456bf75c85dfaecd24ab94e7d2a",
-        withoutRoute: "fe6539f9369d7dfbf8ee6a57f213a544fd941865f6aca17c0023682fdb80373e",
+        withRoute: "2c6872e36785f72f9585ff25a789f75c5706d6b8021e5e3c9b89d8d4a5ec5934",
+        withoutRoute: "838e29dd8fb225306c89e56b94b215638813f2d00fb3efb75ee1fdc24de58314",
       },
       {
         label: "legacy",

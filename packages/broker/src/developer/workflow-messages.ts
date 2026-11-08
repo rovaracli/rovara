@@ -79,10 +79,11 @@ export interface WorkflowMessageContext {
    */
   designCardUrl?: string | undefined;
   /**
-   * Slice 2: this coding plan is medium or high risk (`medium`, `high`: decided in the app, high after a recent sign-in). The message offers "Open in Rovara" to `url` (the plan review page, which exists whether or
-   * not the decision cards are on) in place of Approve. (0.5.11, QA6-12b: a plan that raises the run limit is no longer sent to the app; see `runLimitRaise`.)
+   * This coding plan is decided in the app, not in Slack (decision cards on and the plan medium or high risk: `planDecidedOnCard`, the rule the server's refusal uses; high needs a recent sign-in), or Rovara could not tell
+   * its risk (`unknown`: the safe side). The message shows NO Approve; it offers one "Decide in Rovara" link to `url` (the plan's card on the task page, or the task page), and no button at all when there is no address.
+   * The plan text and a run limit raise stay as information. (0.5.11, p1-slack-decide-card: this replaces an Approve that Slack showed and the server then refused. A stale Approve from an older message is still refused.)
    */
-  planOpen?: { url: string; why: "medium" | "high" } | undefined;
+  planOpen?: { url?: string | undefined; why: "medium" | "high" | "unknown" } | undefined;
   /**
    * 0.5.11 (QA6-12b; this replaces `planOpen` with `why: "run_limit"`): approving this coding plan raises the run limit. The message says "This raises the run limit from $A to $B", the Approve button says the new limit and
    * carries it (`runLimitUsd` in its value), and the broker refuses the press if approving would now set another amount.
@@ -97,6 +98,8 @@ export { WORKFLOW_ACTION_IDS };
 /** Escapes what Slack would read as markup: a mention, a link or a broadcast. */
 export const slackText = (value: string): string => value.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;");
 
+/** The one button a coding plan decided in Rovara carries in place of Approve. */
+const DECIDE_IN_ROVARA = "Decide in Rovara";
 const SECTION_TEXT_LIMIT = 2_800;
 const SUMMARY_LINE_MAX = 160;
 const FINDING_TEXT_MAX = 180;
@@ -502,14 +505,15 @@ function planReview(context: WorkflowMessageContext, exits: ReturnType<typeof ex
   // A design under review is approved on its card only: the message links to that card ("Open in Rovara") and never offers an Approve the server refuses. A link button carries no value, so a press is not an action.
   const planOpen = context.designCardUrl === undefined && workflowDocumentType(workflow) === "plan" ? context.planOpen : undefined;
   const cardUrl = context.designCardUrl ?? planOpen?.url;
-  const cardOnly = cardUrl !== undefined;
-  const approve: Button = cardOnly
-    ? { type: "button", action_id: "agentx_open_decision", text: { type: "plain_text", text: DECISION_LABELS.openInRovara }, url: cardUrl, style: "primary" }
+  const cardOnly = cardUrl !== undefined || planOpen !== undefined;
+  const approve: Button | undefined = cardUrl !== undefined
+    ? { type: "button", action_id: "agentx_open_decision", text: { type: "plain_text", text: planOpen === undefined ? DECISION_LABELS.openInRovara : DECIDE_IN_ROVARA }, url: cardUrl, style: "primary" }
+    : planOpen !== undefined ? undefined
     : exits.button("agentx_workflow_approve", raise === undefined ? `${DECISION_LABELS.approve} ${name}` : `${DECISION_LABELS.approve} ${name} and raise the limit to ${formatRunLimitUsd(raise.proposedUsd)}`, { value: decide("APPROVE"), primary: true });
   const decisions = document === undefined ? [exits.close] : needsE2ECorrection ? [
     exits.button("agentx_workflow_changes", DECISION_LABELS.requestChanges, { value: decide("REQUEST_CHANGES") }), exits.close,
   ] : [
-    approve,
+    ...(approve === undefined ? [] : [approve]),
     exits.button("agentx_workflow_changes", DECISION_LABELS.requestChanges, { value: decide("REQUEST_CHANGES") }),
     exits.close,
   ];
@@ -535,10 +539,14 @@ function planReview(context: WorkflowMessageContext, exits: ReturnType<typeof ex
   const unlinked = context.taskPageUrl === undefined
     ? `I couldn't link the full ${name}; ask an AgentX admin to check the task page.`
     : `I couldn't show the plan summary here. ${link(context.taskPageUrl, "Open the task page to read the plan")}`;
+  const openLead = planOpen === undefined ? `Approve the ${name} on its card in Rovara.`
+    : planOpen.why === "unknown" ? `Decide this ${name} in Rovara.` : `This ${name} is ${planOpen.why} risk: decide it in Rovara${planOpen.why === "high" ? " after signing in again" : ""}.`;
   if (structured === undefined) {
     // A Markdown document: its first lines, and where the whole text reads.
     const lines = [header];
     for (const line of (context.documentSummary ?? []).slice(0, 3)) lines.push(`> ${cleanLine(line, SUMMARY_LINE_MAX)}`);
+    // A plan decided in Rovara says so, and keeps the run limit raise as information.
+    if (planOpen !== undefined) tail.unshift(...(raise === undefined ? [] : [`${runLimitRaiseText(raise.currentUsd, raise.proposedUsd)}.`]), openLead);
     lines.push(...tail, context.documentLink === undefined ? unlinked : link(context.documentLink.url, `Read the full ${name}`));
     return { text: lines.join("\n"), buttons: decisions };
   }
@@ -549,11 +557,13 @@ function planReview(context: WorkflowMessageContext, exits: ReturnType<typeof ex
     return { text: lines.join("\n"), buttons: decisions };
   }
   // FR-036: what Approve in Slack takes. A tiny plan (FR-037) is approved in Slack as it is, so its card is unchanged.
-  const approveLead = cardOnly ? [planOpen === undefined ? `Approve the ${name} on its card in Rovara.` : `This ${name} is ${planOpen.why} risk: approve it in Rovara${planOpen.why === "high" ? " after signing in again" : ""}.`] : structured.decisionCount > 0
+  const approveLead = cardOnly ? [openLead] : structured.decisionCount > 0
     ? [`Approve here uses AgentX's answers for ${plural(structured.decisionCount, "decision")} and includes the open comments (up to 25) from the task page.`]
     : structured.tiny ? [] : ["Approve here includes the open comments (up to 25) from the task page."];
   // QA6-12b: the raise, in the owner's exact words, before the buttons; pressing Approve here accepts the new limit, or asks for it when the presser's role cannot accept it.
-  const lead = !cardOnly && raise !== undefined ? [`${runLimitRaiseText(raise.currentUsd, raise.proposedUsd)}. Approving accepts ${formatRunLimitUsd(raise.proposedUsd)} as the run limit, or asks for it if your role cannot.`, ...approveLead] : approveLead;
+  // A plan decided in Rovara keeps the raise as information (the card asks for it there), without the Approve wording.
+  const lead = planOpen !== undefined && raise !== undefined ? [`${runLimitRaiseText(raise.currentUsd, raise.proposedUsd)}.`, ...approveLead]
+    : !cardOnly && raise !== undefined ? [`${runLimitRaiseText(raise.currentUsd, raise.proposedUsd)}. Approving accepts ${formatRunLimitUsd(raise.proposedUsd)} as the run limit, or asks for it if your role cannot.`, ...approveLead] : approveLead;
   tail.unshift(...lead);
   tail.push(context.documentLink === undefined ? unlinked : link(context.documentLink.url, structured.tiny ? `Open the ${name}` : `Open the full ${name}`));
   const buttons: Button[] = context.documentLink === undefined ? decisions
