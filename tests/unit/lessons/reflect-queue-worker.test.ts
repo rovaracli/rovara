@@ -58,7 +58,7 @@ function memoryClaims(script: TakeResult[] = []) {
   };
   return { claims, taken, finished, marks };
 }
-const lease = (m: { orgId: string; taskId: string; outcome: string }, attempt: number): Lease => ({ orgId: m.orgId, taskId: m.taskId, outcome: m.outcome as Lease["outcome"], attempt, attemptId: `att-${attempt}`, key: reflectClaimKey(m.orgId, m.taskId, m.outcome) });
+const lease = (m: { orgId: string; taskId: string; outcome: string }, attempt: number): Lease => ({ orgId: m.orgId, taskId: m.taskId, outcome: m.outcome, attempt, attemptId: `att-${attempt}`, key: reflectClaimKey(m.orgId, m.taskId, m.outcome) });
 
 function worker(over: Partial<ReflectWorkerDeps> = {}, script: TakeResult[] = []) {
   const memory = memoryClaims(script);
@@ -267,7 +267,7 @@ describe("the lease in the State table", () => {
   it("L2: the key holds the org: LEARN#<org>#<task>#<outcome>; a task id another company sends can never use up this company's lease", async () => {
     const { db, claims } = leases();
     expect(reflectClaimKey("org_a", "t", "reverted")).toEqual({ pk: "LEARN#org_a#t#reverted", sk: "CLAIM" });
-    const first = taken(await claims.take(message() as never, T0));
+    const first = taken(await claims.take(message(), T0));
     expect(first).toMatchObject({ attempt: 1, attemptId: "att-1", key: { pk: `LEARN#${TEST_ORG}#task-1#merged`, sk: "CLAIM" } });
     const other = "org_zzzzzzzzzzzzzzzzzzzz";
     expect(taken(await claims.take(message({ orgId: other }) as never, T0)).key.pk).toBe(`LEARN#${other}#task-1#merged`);
@@ -276,7 +276,7 @@ describe("the lease in the State table", () => {
   });
   it("starts running with a lease for the worker's timeout plus a minute, expires in 30 days, and holds the org, the times and the state only", async () => {
     const { db, claims } = leases();
-    await claims.take(message() as never, T0);
+    await claims.take(message(), T0);
     const item = stateOf(db);
     expect(item).toMatchObject({ sk: "CLAIM", orgId: TEST_ORG, leaseState: "running", attempt: 1, attemptId: "att-1", leaseUntil: T0 + LEASE_MS, claimedAt: T0 / 1000, indexExpiresAt: T0 / 1000 + CLAIM_TTL_SECONDS });
     expect(LEASE_MS).toBe((LESSONS_WORKER_TIMEOUT_SECONDS + LESSONS_REFLECT_LEASE_GRACE_SECONDS) * 1000);
@@ -285,7 +285,7 @@ describe("the lease in the State table", () => {
   });
   it("a live lease is not taken by a second worker; done and spent are never taken again; another table fault is thrown", async () => {
     const { db, claims } = leases();
-    const held = taken(await claims.take(message() as never, T0));
+    const held = taken(await claims.take(message(), T0));
     expect(await claims.take(message() as never, T0 + 1000)).toEqual({ kind: "already" });
     await claims.finish(held, "done", T0 + 2000);
     expect(await claims.take(message() as never, T0 + LEASE_MS + 1)).toEqual({ kind: "already" });
@@ -295,12 +295,12 @@ describe("the lease in the State table", () => {
   });
   it("H1: a retry is taken again only when every model key of the earlier attempt settled with nothing spent: then attempt + 1, a new id, and the old key ids cleared", async () => {
     const { db, claims, asked } = leases(["clear"]);
-    const first = taken(await claims.take(message() as never, T0));
+    const first = taken(await claims.take(message(), T0));
     // The model path notes the keys it minted on the lease item (mintOperationKey's recordOn).
     db.set({ ...stateOf(db), modelKeyIds: ["k1", "k2"] });
     await claims.finish(first, "retry", T0 + 1000);
     expect(stateOf(db)["leaseState"]).toBe("retry");
-    const second = taken(await claims.take(message() as never, T0 + 2000));
+    const second = taken(await claims.take(message(), T0 + 2000));
     expect(asked).toEqual([["k1", "k2"]]);
     expect(second).toMatchObject({ attempt: 2, attemptId: "att-2" });
     expect(stateOf(db)).toMatchObject({ leaseState: "running", attempt: 2, attemptId: "att-2" });
@@ -308,14 +308,14 @@ describe("the lease in the State table", () => {
   });
   it("H1: any key that spent makes the work final (the lease becomes spent and is never taken again); a key not yet settled makes the taker wait, without using an attempt", async () => {
     const spent = leases(["spent"]);
-    const first = taken(await spent.claims.take(message() as never, T0));
+    const first = taken(await spent.claims.take(message(), T0));
     await spent.claims.finish(first, "retry", T0);
     expect(await spent.claims.take(message() as never, T0 + 1)).toEqual({ kind: "already" });
     expect(stateOf(spent.db)["leaseState"]).toBe("spent");
     expect(await spent.claims.take(message() as never, T0 + 2)).toEqual({ kind: "already" });
 
     const pending = leases(["pending", "clear"]);
-    const one = taken(await pending.claims.take(message() as never, T0));
+    const one = taken(await pending.claims.take(message(), T0));
     await pending.claims.finish(one, "retry", T0);
     expect(await pending.claims.take(message() as never, T0 + 1)).toEqual({ kind: "wait" });
     expect(stateOf(pending.db)).toMatchObject({ leaseState: "retry", attempt: 1 });
@@ -324,7 +324,7 @@ describe("the lease in the State table", () => {
   it("R1: a lease whose attempt started the model call is SPENT whatever its keys settled at (an unpriced route books $0, spend can land after the sweep): never run again, in retry or after a lapse; the ledger is not even asked", async () => {
     for (const how of ["retry", "lapsed"] as const) {
       const { db, claims, asked } = leases(() => "clear");
-      const held = taken(await claims.take(message() as never, T0));
+      const held = taken(await claims.take(message(), T0));
       await claims.markCallStarted(held, T0 + 10);
       expect(stateOf(db)["callStartedAt"]).toBe(T0 + 10);
       if (how === "retry") await claims.finish(held, "retry", T0 + 20);
@@ -337,12 +337,12 @@ describe("the lease in the State table", () => {
   });
   it("R1: without a call mark the old rule stands (the keys decide), and the next attempt starts with no mark; a mark taken back (the call was not sent) lets the work run again; both writes are conditional on the attempt", async () => {
     const { db, claims } = leases(() => "clear");
-    const first = taken(await claims.take(message() as never, T0));
+    const first = taken(await claims.take(message(), T0));
     await claims.markCallStarted(first, T0 + 1);
     await claims.clearCallStarted(first);
     expect(stateOf(db)["callStartedAt"]).toBeUndefined();
     await claims.finish(first, "retry", T0 + 2);
-    const second = taken(await claims.take(message() as never, T0 + 3));
+    const second = taken(await claims.take(message(), T0 + 3));
     expect(second.attempt).toBe(2);
     // The mark of an attempt that no longer holds the lease is refused, and so is taking one back: the call is not made.
     await expect(claims.markCallStarted(first, T0 + 4)).rejects.toThrow();
@@ -354,13 +354,13 @@ describe("the lease in the State table", () => {
   });
   it("H1: a worker that died (its lease ran out while running) is treated like a retry: the keys decide, a clear ledger lets the work run again, spent stops it", async () => {
     const dead = leases(["clear"]);
-    taken(await dead.claims.take(message() as never, T0));
+    taken(await dead.claims.take(message(), T0));
     expect(await dead.claims.take(message() as never, T0 + LEASE_MS - 1)).toEqual({ kind: "already" });
     expect(taken(await dead.claims.take(message() as never, T0 + LEASE_MS + 1)).attempt).toBe(2);
     expect(dead.asked).toEqual([[]]);
 
     const paid = leases(() => "spent");
-    taken(await paid.claims.take(message() as never, T0));
+    taken(await paid.claims.take(message(), T0));
     paid.db.set({ ...stateOf(paid.db), modelKeyIds: ["k9"] });
     expect(await paid.claims.take(message() as never, T0 + LEASE_MS + 1)).toEqual({ kind: "already" });
     expect(stateOf(paid.db)["leaseState"]).toBe("spent");
@@ -371,7 +371,7 @@ describe("the lease in the State table", () => {
     const { claims } = leases(() => "clear");
     let at = T0;
     for (let attempt = 1; attempt <= LESSONS_REFLECT_MAX_ATTEMPTS; attempt += 1) {
-      const held = taken(await claims.take(message() as never, at));
+      const held = taken(await claims.take(message(), at));
       expect(held.attempt).toBe(attempt);
       await claims.finish(held, "retry", at);
       at += 1000;
@@ -381,15 +381,15 @@ describe("the lease in the State table", () => {
   });
   it("two workers taking the same retry at once: one runs, the other finds it taken (a write conditional on the attempt that was read)", async () => {
     const { claims } = leases(() => "clear");
-    const held = taken(await claims.take(message() as never, T0));
+    const held = taken(await claims.take(message(), T0));
     await claims.finish(held, "retry", T0);
     const both = await Promise.all([claims.take(message() as never, T0 + 1), claims.take(message() as never, T0 + 1)]);
     expect(both.map((r) => r.kind).sort()).toEqual(["already", "taken"]);
   });
   it("ending a lease that is no longer this attempt's (it lapsed and another worker took over) changes nothing", async () => {
     const { db, claims } = leases(() => "clear");
-    const first = taken(await claims.take(message() as never, T0));
-    const second = taken(await claims.take(message() as never, T0 + LEASE_MS + 1));
+    const first = taken(await claims.take(message(), T0));
+    const second = taken(await claims.take(message(), T0 + LEASE_MS + 1));
     await claims.finish(first, "done", T0 + LEASE_MS + 2);
     expect(stateOf(db)).toMatchObject({ leaseState: "running", attemptId: second.attemptId });
     await claims.finish(second, "retry", T0 + LEASE_MS + 3);
