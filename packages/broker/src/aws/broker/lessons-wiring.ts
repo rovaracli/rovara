@@ -8,6 +8,7 @@ import { DeveloperSignInStore } from "../../developer/store.js";
 import type { CodeFactsReader } from "../../lessons/code-facts.js";
 import { createLessonsRuntime, type LessonsRuntime } from "../../lessons/runtime.js";
 import { setLessonsHomeReader } from "../../lessons/home-source.js";
+import { lessonsUsedReaderOver, setLessonsUsedReader } from "../../lessons/used-in-pr.js";
 import { resolveLearning } from "../../lessons/policy.js";
 import { buildLessonsView } from "../../lessons/view.js";
 import { recordAuditSinkOf } from "./team-record-wiring.js";
@@ -72,6 +73,8 @@ export function installLessons(dependencies: AwsBrokerDependencies): void {
   if (built !== undefined) dependencies.lessons = built;
   // UX-4b: Home's "Lessons waiting" card counts what the Lessons tab would show this person to decide (learning Off: none).
   const routes = dependencies.lessons?.routes;
+  // Approve by exception: the pull request description lists the lessons the task used (`lessons/used-in-pr.ts`).
+  setLessonsUsedReader(routes === undefined ? undefined : lessonsUsedReaderOver({ store: routes.store, settings: routes.settings, access: routes.access }));
   setLessonsHomeReader(routes === undefined ? undefined : async (orgId, developerId, project) => {
     if ((await resolveLearning(routes.settings, orgId, project)).mode === "Off") return { waiting: 0 };
     const view = await buildLessonsView(routes, { orgId, developerId }, project);

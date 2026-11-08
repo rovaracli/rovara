@@ -82,7 +82,8 @@ export class Audit implements LessonAuditSink {
 }
 export class Alerts implements AlertSink { sent: string[] = []; async alert(_w: string, _p: string, code: string): Promise<void> { this.sent.push(code); } }
 
-export const settings = (value: LearningSettings = {}): LearningSettingsReader => ({ read: async () => value });
+// The older tests exercise the person-approval machinery (corroboration, cold start, tiers), so their settings are the Regulated preset: no lesson goes live on trial. The trial tests say `preset: "standard"`.
+export const settings = (value: LearningSettings = {}): LearningSettingsReader => ({ read: async () => ({ preset: "regulated", ...value }) });
 /** Settings for a test of the AUTO path: the pilot default is "one" (a person approves), so a test of automatic go-live says so explicitly. */
 export const autoSettings = (value: LearningSettings = {}): LearningSettingsReader => settings({ tier0Approval: "auto", ...value });
 

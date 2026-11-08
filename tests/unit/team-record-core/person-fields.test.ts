@@ -25,6 +25,7 @@ const NOT_A_PERSON: Record<string, string> = {
   membershipDigest: "a one-way hash of the approvers membership version and ids, taken when a source change was proposed; it holds no id",
   soleApprover: "a flag: the viewer is the only person who could approve; the id is not shown",
   memberSignal: "a flag that a member asked for the lesson; the member is in provenance.authors",
+  memberCorrection: "a flag that the lesson cites a member's own correction (approve by exception); the member is in provenance.authors",
 };
 
 function fieldNames(source: string): string[] {

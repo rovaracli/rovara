@@ -1,7 +1,7 @@
 // Wiring lane B, LR-W3: the stored tier-0 setting, its proposals and the settings reader over the TeamRecord table; the whole path from a loosening request to the effective approval.
 import { learningModeKey, learningModeLockKey, teamRecordPk } from "@agentx/contracts";
 import { describe, expect, it } from "vitest";
-import { dynamoLearningSettings, DynamoSoleOwnerSwitch, DynamoTier0Settings } from "../../../packages/broker/src/lessons/dynamo-settings.js";
+import { dynamoLearningSettings, DynamoPresetStore, DynamoSoleOwnerSwitch, DynamoTier0Settings } from "../../../packages/broker/src/lessons/dynamo-settings.js";
 import { approversRequired, resolveLearning } from "../../../packages/broker/src/lessons/policy.js";
 import { approveSoleOwnerSwitch, approveTier0Change, requestTier0Change, setSoleOwnerSwitch, type SoleOwnerSwitchDeps, type Tier0Deps, type Tier0Scope } from "../../../packages/broker/src/lessons/tier0-setting.js";
 import { eraseWorkspace, erasePerson } from "../../../packages/broker/src/team-record/erase.js";
@@ -201,5 +201,31 @@ describe("erasing", () => {
     expect(result.complete).toBe(true);
     // (The lake delete queue stays until the lake job has run.)
     expect(w.db.find((item) => String(item.pk).startsWith(`WS#${ORG_A}#`) && !String(item.sk).startsWith("LAKEDEL#"))).toEqual([]);
+  });
+});
+
+describe("the learning preset (Standard / Regulated) on its own items", () => {
+  it("is read by the settings reader at project and company level, resolves to the stricter, and a tier-0 write never replaces it", async () => {
+    const { w, store, reader } = setup();
+    const presets = new DynamoPresetStore(w.table);
+    expect((await resolveLearning(reader, ORG_A, "web")).preset).toBe("standard");
+    await presets.write({ kind: "company", workspaceId: ORG_A }, "regulated", 1);
+    expect((await resolveLearning(reader, ORG_A, "web")).preset).toBe("regulated");
+    expect((await resolveLearning(reader, ORG_B, "web")).preset).toBe("standard");
+    await presets.write(project(), "regulated", 2);
+    await store.write(project(), "two", { by: "ann", at: 3 }, "one");
+    expect(await presets.read(project())).toBe("regulated");
+    expect(await reader.read(ORG_A, "web")).toMatchObject({ preset: "regulated", companyPreset: "regulated" });
+  });
+  it("holds no person (the erase has nothing to rewrite), lives under the LESSONSET prefix the project and workspace erase wipe, and an invalid stored value fails closed to Off", async () => {
+    const { w, reader } = setup();
+    const presets = new DynamoPresetStore(w.table);
+    await presets.write(project(), "regulated", 2);
+    const item = w.db.find((i) => i.entityType === "LESSON_PRESET")[0]!;
+    expect(String(item.sk)).toMatch(/^LESSONSET#/u);
+    expect(JSON.stringify(item)).not.toMatch(/updatedBy|ann|owner/u);
+    w.db.set({ ...item, preset: "loose" });
+    await expect(presets.read(project())).rejects.toThrow();
+    expect(await resolveLearning(reader, ORG_A, "web")).toMatchObject({ mode: "Off", preset: "regulated" });
   });
 });

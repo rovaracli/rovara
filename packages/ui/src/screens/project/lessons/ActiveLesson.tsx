@@ -30,6 +30,7 @@ export function ActiveLesson({ project, lesson, now, onDone }: { project: string
  const stale = lesson.status === "stale";
  return <li className="rv-lessons-active">
   <h4><VisibleText text={lesson.title} /></h4>
+  {lesson.trial !== undefined && <p className="rv-lessons-trial"><strong>{lesson.trial === "trial" ? T.TRIAL_BADGE : T.STABLE_BADGE}</strong> <span className="rv-muted">{lesson.trial === "trial" ? T.TRIAL_WORDS : T.STABLE_WORDS}</span></p>}
   <p className="rv-muted">{typeWords(lesson.type)} · <VisibleText text={scopeWords(lesson.scope)} /> · {stagesWords(lesson.stages)}</p>
   <p className="rv-lessons-text"><VisibleText text={lesson.body} /></p>
   {stale && <Banner title={T.STALE} tone="warning" />}

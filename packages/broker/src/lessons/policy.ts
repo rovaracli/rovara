@@ -40,6 +40,17 @@ export const DEFAULT_LEARNING_MODE: LearningMode = "On";
 /** The rule is shared with the design review stage and lives in `org/approval-by-risk.ts`; lessons call it from here as before. */
 export const approversRequired: (tier: Tier, policy: ApprovalPolicy) => 0 | 1 | 2 = sharedApproversRequired;
 
+/**
+ * The company learning preset (DECISIONS 24). Standard (the default): a low-risk lesson drafted from a project member's own correction goes live ON TRIAL with no approval. Regulated: no
+ * trial at all, every lesson needs a person first. A company's preset is a floor like the mode lock: it can only make projects stricter, and a project can choose Regulated for itself.
+ */
+export const LEARNING_PRESETS = ["standard", "regulated"] as const;
+export type LearningPreset = (typeof LEARNING_PRESETS)[number];
+export const LearningPresetSchema = z.enum(LEARNING_PRESETS);
+export const DEFAULT_LEARNING_PRESET: LearningPreset = "standard";
+/** The stricter preset: Regulated wins. */
+export const stricterPreset = (a: LearningPreset, b: LearningPreset): LearningPreset => (a === "regulated" || b === "regulated" ? "regulated" : "standard");
+
 export type Edition = "enterprise" | "public";
 /** Spend caps for learning. Enterprise has none: only the customer's own spend limits apply (decision Q8). Public keeps the caps. An absent value is no cap. */
 export interface LearningCaps { perTaskUsd?: number; perNightUsd?: number }
@@ -76,12 +87,16 @@ export interface LearningSettings {
   approval?: Partial<ApprovalPolicy>;
   /** The named switch for tier-0 approval ("auto" | "one"); `approval.tier0` still wins when set. Unset: TIER0_APPROVAL_DEFAULT. A company floor can only make it "one". */
   tier0Approval?: Tier0Approval;
+  /** The project's own preset; absent means Standard. */
+  preset?: LearningPreset;
+  /** The company's preset floor: the effective preset is the stricter of this and the project's own. */
+  companyPreset?: LearningPreset;
   expiryDays?: number;
 }
 export interface LearningSettingsReader { read(workspaceId: string, project: string): Promise<LearningSettings> }
 
 /** `requiredGroups` holds every group that must be among the approvers: the company floor's and the project's own, both. */
-export interface ResolvedLearning { mode: LearningMode; approval: ApprovalPolicy; requiredGroups: string[]; expiryDays: number | undefined }
+export interface ResolvedLearning { mode: LearningMode; approval: ApprovalPolicy; requiredGroups: string[]; expiryDays: number | undefined; /** The preset in force: the stricter of the company's and the project's. A setting that does not read gives Regulated (and mode Off). */ preset: LearningPreset }
 const MODE_ORDER: readonly LearningMode[] = ["Off", "Collect", "Suggest", "On"];
 /** The more restrictive mode: Off is the strictest, On the loosest. */
 export const stricterMode = (a: LearningMode, b: LearningMode): LearningMode => (MODE_ORDER.indexOf(a) <= MODE_ORDER.indexOf(b) ? a : b);
@@ -114,7 +129,7 @@ export function clampAutoApply(settings: LearningSettings): LearningSettings {
 
 /** Reads the settings and fails closed: a reader that throws, or settings that do not parse, give mode Off. */
 export async function resolveLearning(reader: LearningSettingsReader, workspaceId: string, project: string): Promise<ResolvedLearning> {
-  const off: ResolvedLearning = { mode: "Off", approval: DEFAULT_APPROVAL_POLICY, requiredGroups: [], expiryDays: undefined };
+  const off: ResolvedLearning = { mode: "Off", approval: DEFAULT_APPROVAL_POLICY, requiredGroups: [], expiryDays: undefined, preset: "regulated" };
   let settings: LearningSettings;
   // No settings row is the default (an undefined result), not a failure; a reader that throws fails closed.
   try { settings = (await reader.read(workspaceId, project)) ?? {}; } catch { return off; }
@@ -126,10 +141,14 @@ export async function resolveLearning(reader: LearningSettingsReader, workspaceI
   const projectApproval = ApprovalPolicySchema.safeParse({ ...DEFAULT_APPROVAL_POLICY, tier0: settings.tier0Approval ?? TIER0_APPROVAL_DEFAULT, ...(settings.approval ?? {}) });
   const floor = ApprovalPolicySchema.safeParse({ ...DEFAULT_APPROVAL_POLICY, ...(settings.companyApproval ?? {}) });
   if (!projectApproval.success || !floor.success) return off;
+  const ownPreset = LearningPresetSchema.safeParse(settings.preset ?? DEFAULT_LEARNING_PRESET);
+  const companyPreset = settings.companyPreset === undefined ? undefined : LearningPresetSchema.safeParse(settings.companyPreset);
+  if (!ownPreset.success || (companyPreset !== undefined && !companyPreset.success)) return off;
   const approval = { success: true as const, data: stricterApproval(projectApproval.data, floor.data, settings.companyApproval !== undefined) };
   const days = settings.expiryDays;
   if (days !== undefined && (!Number.isInteger(days) || days < MIN_EXPIRY_DAYS || days > MAX_EXPIRY_DAYS)) return off;
-  return { mode: mode.data, approval: approval.data, requiredGroups: [...new Set([floor.data.requiredGroup, projectApproval.data.requiredGroup].filter((g): g is string => g !== undefined))], expiryDays: days };
+  return { mode: mode.data, approval: approval.data, requiredGroups: [...new Set([floor.data.requiredGroup, projectApproval.data.requiredGroup].filter((g): g is string => g !== undefined))], expiryDays: days,
+    preset: companyPreset?.success === true ? stricterPreset(ownPreset.data, companyPreset.data) : ownPreset.data };
 }
 
 /**

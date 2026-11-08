@@ -18,7 +18,8 @@ import { createCitationVerifier } from "./citation-verifier.js";
 import { createCodeFacts, type CodeFactsReader } from "./code-facts.js";
 import type { CounterDeps } from "./counters.js";
 import { createApproverDirectory } from "./directory.js";
-import { dynamoLearningSettings, DynamoTier0Settings } from "./dynamo-settings.js";
+import { dynamoLearningSettings, DynamoPresetStore, DynamoTier0Settings } from "./dynamo-settings.js";
+import type { PresetDeps } from "./preset-setting.js";
 import { DynamoLessonStore } from "./dynamo-store.js";
 import type { LoadDeps } from "./load.js";
 import type { ApproverDirectory, CorrectionJudge, Embedder, LearningSpend, LessonVectors, PipelineModel } from "./ports.js";
@@ -44,7 +45,7 @@ export interface LessonsRuntimeInput {
 }
 
 /** The route-side lesson dependencies (`DeveloperRouteDependencies.lessons`). */
-export type LessonRouteDeps = LessonViewDeps & ApproveDeps & ProcessDeps & CounterDeps;
+export type LessonRouteDeps = LessonViewDeps & ApproveDeps & ProcessDeps & CounterDeps & { /** Where a maintainer makes the project's learning stricter (Regulated). Absent: the route is not there. */ presets?: PresetDeps };
 
 export interface LessonsRuntime {
   readonly store: LessonStore;
@@ -84,6 +85,11 @@ export function createLessonsRuntime(input: LessonsRuntimeInput): LessonsRuntime
   const routes: LessonRouteDeps = {
     ...base, store, directory, settings, access, names: input.names, sources: { table: input.table },
     embedder: NO_EMBEDDER, vectors: NO_VECTORS, judgeModel: REFUSING_MODEL, spend: DENYING_SPEND, verifier, facts, judge: REFUSING_JUDGE,
+    presets: {
+      store: new DynamoPresetStore(input.table), audit, now: input.now,
+      // The project's maintainers and admins decide a project's preset. A company-wide change has no route yet: nobody is eligible.
+      eligibility: async (scope) => (scope.kind === "project" ? directory.eligibility(scope.workspaceId, scope.project).then((g) => ({ complete: g.complete, eligibleIds: g.eligibleIds })) : { complete: false, eligibleIds: [] }),
+    },
   };
   return { store, settings, access, directory, load, counters, routes };
 }

@@ -9,7 +9,8 @@ import { LEARNING_MODE_DEFAULT, learningModeKey, learningModeLockKey, teamRecord
 import type { TransactItem } from "../audit/outbox.js";
 import { errorName, type Item } from "../agents/table-writes.js";
 import type { TeamRecordTable } from "../team-record/types.js";
-import { TIER0_APPROVAL_DEFAULT, type LearningSettings, type LearningSettingsReader } from "./policy.js";
+import { TIER0_APPROVAL_DEFAULT, type LearningPreset, type LearningSettings, type LearningSettingsReader } from "./policy.js";
+import type { PresetScope, PresetStore } from "./preset-setting.js";
 import type { SoleOwnerSwitchChange, SoleOwnerSwitchStore, Tier0Change, Tier0ChangeStore, Tier0Fence, Tier0Level, Tier0Scope, Tier0SettingsStore } from "./tier0-setting.js";
 
 const pkOf = (scope: Tier0Scope): string => teamRecordPk(scope.workspaceId, scope.kind === "project" ? scope.project : undefined);
@@ -100,6 +101,21 @@ export class DynamoTier0Settings implements Tier0SettingsStore, Tier0ChangeStore
   }
 }
 
+const presetKey = (scope: Tier0Scope) => ({ pk: pkOf(scope), sk: scope.kind === "project" ? "LESSONSET#PRESET" : "LESSONSET#COMPANYPRESET" });
+/** The learning preset (Standard / Regulated) of a project or the company, on items of their own so a tier-0 write never replaces it. The item names no person. */
+export class DynamoPresetStore implements PresetStore {
+  constructor(private readonly table: TeamRecordTable) {}
+  async read(scope: PresetScope): Promise<LearningPreset | undefined> {
+    const item = (await this.table.documentClient.send(new GetCommand({ TableName: this.table.tableName, Key: presetKey(scope), ConsistentRead: true })) as { Item?: Item }).Item;
+    if (item === undefined) return undefined;
+    if (item.preset !== "standard" && item.preset !== "regulated") throw new Error("the stored learning preset is not valid");
+    return item.preset;
+  }
+  async write(scope: PresetScope, value: LearningPreset, at: number): Promise<void> {
+    await this.table.documentClient.send(new PutCommand({ TableName: this.table.tableName, Item: { ...presetKey(scope), entityType: "LESSON_PRESET", preset: value, updatedAt: at } }));
+  }
+}
+
 /**
  * The company switch for the sole-owner exception on loosening, and its proposals. `read` is ON when never set; a stored value that is not a boolean throws (the caller counts it as OFF).
  * `write` is internal to `setSoleOwnerSwitch` / `approveSoleOwnerSwitch` (tier0-setting.ts): routes never call it, so an OFF switch can only come back ON through a second admin.
@@ -178,19 +194,23 @@ export function dynamoLearningSettings(table: TeamRecordTable, settings: Tier0Se
     if (item === undefined) return { present: false };
     return { present: true, value: (typeof item.mode === "string" ? MODE_NAMES[item.mode] ?? (item.mode as never) : ("invalid" as never)) };
   };
+  const presets = new DynamoPresetStore(table);
   // (A stored "auto" is read as "one" while automatic go-live is off: that is `resolveLearning`'s gate, which every consumer goes through.)
   return {
     async read(workspaceId, project) {
       const org = workspaceId;
-      const [own, lock, tier0, floor] = await Promise.all([
+      const [own, lock, tier0, floor, preset, companyPreset] = await Promise.all([
         mode(learningModeKey(org, project)), mode(learningModeLockKey(org)),
         settings.read({ kind: "project", workspaceId, project }), settings.read({ kind: "company", workspaceId }),
+        presets.read({ kind: "project", workspaceId, project }).catch(() => "invalid" as never), presets.read({ kind: "company", workspaceId }).catch(() => "invalid" as never),
       ]);
       return {
         mode: own.present ? own.value : MODE_NAMES[LEARNING_MODE_DEFAULT]!,
         ...(lock.present ? { companyLock: lock.value } : {}),
         ...(tier0 === undefined ? {} : { tier0Approval: tier0 }),
         ...(floor === undefined ? {} : { companyApproval: { tier0: floor } }),
+        // A preset that is stored but not valid is passed on as it is, so `resolveLearning` turns it into Off.
+        ...(preset === undefined ? {} : { preset }), ...(companyPreset === undefined ? {} : { companyPreset }),
       };
     },
   };

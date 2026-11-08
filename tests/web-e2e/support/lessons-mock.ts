@@ -4,15 +4,23 @@ import { LessonApproveBodySchema, LessonRejectBodySchema, LessonRetireBodySchema
 import type { MockExchange } from "./how-we-work-mock.js";
 
 const NOW = Date.parse("2026-11-01T12:00:00.000Z");
-interface Mock { id: string; version: number; title: string; body: string; tier: 1 | 2; status: "pending" | "active" | "retired" | "rejected"; first?: string; reason?: string }
+interface Mock { id: string; version: number; title: string; body: string; tier: 1 | 2; status: "pending" | "active" | "retired" | "rejected"; first?: string; reason?: string; trial?: "trial" | "stable"; reasons?: string[] }
 let state = fresh();
-function fresh() { return { lessons: [
+function fresh() { return { preset: "standard" as "standard" | "regulated", lessons: [
  { id: "les_one00001", version: 1, title: "Use the shared retry helper", body: "Call withRetry for HTTP calls in the api repository.", tier: 1, status: "pending" },
  { id: "les_two00001", version: 1, title: "Reviewers check auth on new routes", body: "Review every new route for an authorization check.", tier: 2, status: "pending", first: "Ann Archer" },
  { id: "les_thr00001", version: 1, title: "Skip flaky integration tests on branches", body: "Branch builds may skip the flaky integration suite.", tier: 2, status: "pending" },
  { id: "les_act00001", version: 3, title: "Prefer small pull requests", body: "Keep pull requests under 400 lines.", tier: 1, status: "active" },
 ] as Mock[] }; }
 export function resetLessons(): void { state = fresh();sources = freshSources(); }
+/** Approve by exception: an active lesson on trial, one that is stable, and one waiting with the capability reason. */
+export function setTrialLessons(): void {
+ state.lessons.push(
+  { id: "les_trial001", version: 1, title: "Retries use withRetry", body: "HTTP retries in api use withRetry.", tier: 1, status: "active", trial: "trial" },
+  { id: "les_stable01", version: 2, title: "Money amounts are in cents", body: "Money amounts in api are integer cents.", tier: 1, status: "active", trial: "stable" },
+  { id: "les_cap00001", version: 1, title: "Allow the build host", body: "Allow the agent to reach the build host.", tier: 2, status: "pending", reasons: ["capability_request"] },
+ );
+}
 
 // The Team record's source rows (source-row lane T5): the editors' view and the writes of `/record/sources`. Off until a test switches editing on; until then the route is absent (404) and the Sources tab is the read-only list.
 interface SourceMock { kind: string; scope: string; retention: string; audience: string; enabled: boolean; revision: number; exclude: string[] }
@@ -43,16 +51,17 @@ async function sourcesRoute({ method, body, json, record }: MockExchange): Promi
 const person = (name: string) => ({ name, ...(name === "You" ? { you: true as const } : {}) });
 const lesson = (item: Mock) => LessonViewSchema.parse({
  id: item.id, version: item.version, type: item.tier === 2 ? "review_check" : "convention", stages: item.tier === 2 ? ["REVIEW"] : ["IMPLEMENT"], title: item.title, description: "", body: item.body,
- scope: { repos: ["api"], paths: [], languages: [] }, tier: item.tier, tierReasons: item.tier === 2 ? ["reviewer_stage", "escalation_words"] : ["scope_not_one_repo"], status: item.status,
+ scope: { repos: ["api"], paths: [], languages: [] }, tier: item.tier, tierReasons: item.reasons ?? (item.tier === 2 ? ["reviewer_stage", "escalation_words"] : ["scope_not_one_repo"]), status: item.status,
+ ...(item.trial === undefined ? {} : { trial: item.trial }),
  counters: { loaded: 5, helpful: item.status === "active" ? 4 : 0, harmful: item.status === "active" ? 1 : 0 }, createdAt: NOW - 9 * 86_400_000, updatedAt: NOW - 86_400_000, expiresAt: NOW + 60 * 86_400_000,
  citations: [{ kind: "code", repo: "api", path: "src/retry/index.ts", startLine: 12, endLine: 30, check: "valid", checkedAt: NOW - 7_200_000 }, { kind: "pr", url: "https://github.com/acme/api/pull/42" }],
  from: [person("Carl Cole")], measured: item.tier === 2, supportTasks: 2,
  ...(item.status === "pending" ? { needs: { required: item.tier === 2 ? 2 : 1, have: item.first === undefined ? 0 : 1, ...(item.first === undefined ? {} : { first: person(item.first), firstAt: NOW - 7_200_000 }), groups: [] } } : {}),
- approvals: item.first === undefined ? [] : [{ by: person(item.first), at: NOW - 7_200_000, mode: "one" }],
+ approvals: item.trial !== undefined ? [{ by: person("Rovara"), at: NOW - 7_200_000, mode: "trial" as const }] : item.first === undefined ? [] : [{ by: person(item.first), at: NOW - 7_200_000, mode: "one" as const }],
  canApprove: item.status === "pending" && item.first !== "You", canReject: item.status === "pending", canRetire: item.status !== "retired" && item.status !== "rejected",
 });
 const view = () => LessonsViewSchema.parse({
- project: "payments", mode: "Suggest", lockedByCompany: false, approval: { tier0: "one", tier1: "one", requiredGroups: [] }, canDecide: true,
+ project: "payments", mode: "Suggest", lockedByCompany: false, preset: state.preset, presetLockedByCompany: false, approval: { tier0: "one", tier1: "one", requiredGroups: [] }, canDecide: true,
  waiting: state.lessons.filter(item => item.status === "pending").map(lesson), active: state.lessons.filter(item => item.status === "active").map(lesson),
  removed: state.lessons.filter(item => item.status === "retired" || item.status === "rejected").map(lesson), queued: 2, hidden: 0, truncated: [], setVersion: 4, snapshots: [],
 });
@@ -65,6 +74,7 @@ export async function lessonsMock({ url, method, body, json, record }: MockExcha
  if (url.pathname === base && method === "GET") { json(200, view());return true; }
  if (url.pathname === base + "/digest" && method === "GET") { json(200, LessonsDigestSchema.parse({ since: NOW - 7 * 86_400_000, top: [{ id: "les_act00001", title: "Prefer small pull requests", type: "convention", tier: 1, links: [] }], needsReview: [], autoApplied: [], waiting: [], retired: [], staleOrRetireProposed: [], queued: 2, pausedSources: [], pausedSourcesHidden: 0, hidden: 0 }));return true; }
  if (url.pathname === base + "/sources" && method === "GET") { json(200, LessonSourcesSchema.parse({ sources: [{ kind: "github", scope: "github:acme/api", enabled: true, retention: "D", health: "ok", audience: "project", updatedAt: "2026-10-30T10:00:00.000Z", paused: false }, { kind: "slack", enabled: true, retention: "B", health: "ok", audience: "maintainers", updatedAt: "2026-10-30T10:00:00.000Z", paused: true }], otherPaused: 0 }));return true; }
+ if (url.pathname === base + "/preset" && method === "POST") { record(await body());state.preset = "regulated";json(200, { preset: "regulated", changed: true });return true; }
  const action = new RegExp(`^${base}/([A-Za-z0-9_-]+)/(approve|reject|retire)$`).exec(url.pathname);
  if (action === null || method !== "POST") return false;
  const item = state.lessons.find(candidate => candidate.id === action[1]);

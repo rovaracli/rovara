@@ -13,6 +13,8 @@ export interface PanelRow {
   title?: string; type?: Lesson["type"]; helpful?: number; harmful?: number;
   /** "Helpful" and "Wrong here" are offered only on a lesson the viewer can see. */
   canMark: boolean;
+  /** Live on trial or stable, with no approval: the viewer gets the one-tap thumbs-down. */
+  trial?: "trial" | "stable";
 }
 
 export async function lessonPanelRows(store: LessonStore, key: ScopeKey, taskId: string, viewer: IdentitySet, access: AccessCheckPort, log?: LessonLog): Promise<PanelRow[]> {
@@ -25,7 +27,7 @@ export async function lessonPanelRows(store: LessonStore, key: ScopeKey, taskId:
   // One access check for the whole panel (the frozen snapshot AND the records now); an unreadable record fails the call.
   const shown = new Set((await readVisible({ access, key, viewer, lessons: entries.flatMap((e) => (e.lesson === undefined ? [] : [e.lesson])), where: "panel", log })).map((l) => l.id));
   const rows: PanelRow[] = entries.map(({ base, lesson }) => (lesson !== undefined && shown.has(lesson.id)
-    ? { ...base, visible: true, title: lesson.title, type: lesson.type, helpful: lesson.counters.helpful, harmful: lesson.counters.harmful, canMark: true }
+    ? { ...base, visible: true, title: lesson.title, type: lesson.type, helpful: lesson.counters.helpful, harmful: lesson.counters.harmful, canMark: true, ...(lesson.trial === undefined ? {} : { trial: lesson.trial.state }) }
     : { ...base, visible: false, canMark: false }));
   return rows;
 }

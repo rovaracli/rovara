@@ -21,6 +21,7 @@ const INTERNAL_LESSON_FILES: Record<string, string> = {
   "lessons/store.ts": "the store itself",
   "lessons/metric.ts": "the same-mistake-twice measure: reads lessons, their versions and load manifests only to count; returns numbers, never a lesson or any text (metric.test.ts pins that)",
   "lessons/sources.ts": "the cold-start rule counts the person-approved lessons that name a source (L7-2); it returns names and a yes or no, never a lesson",
+  "lessons/trial.ts": "moves a trial lesson that earned it to stable (14 days, 3 loads, no thumbs-down); acts on it and returns ids, never a lesson",
   "lessons/approve.ts": "decisions (approve, reject, retire, roll back) act on a lesson after mayHandle; the lists use readVisible",
 };
 const LESSON_READS = new Set(["list", "get", "manifests", "listAllHeads", "getHead", "versions"]);

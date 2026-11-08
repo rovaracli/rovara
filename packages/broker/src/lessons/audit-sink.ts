@@ -36,6 +36,10 @@ const MAP: Partial<Record<LessonAuditEvent["action"], Mapped>> = {
   "lesson.tier0_setting_changed": { action: "lesson.tier0_setting_changed", facts: (e) => ({ scope: word(e.facts["scope"], "project"), fromLevel: word(e.facts["from"], "unknown"), toLevel: word(e.facts["to"], "unknown"), mode: word(e.facts["mode"], "second_person") }) },
   // A fenced refusal that leaves the proposal open: recorded as a refusal (the contract's `lesson.refused`) with a fixed word.
   "lesson.tier0_setting_refused_retryable": { action: "lesson.refused", facts: () => ({ refusal: "membership_changed_retry" }) },
+  // Approve by exception (DECISIONS 24): a lesson that went live on trial is a go-live with no person (`auto: true`); a trial lesson retired by a thumbs-down or a contradicting correction is a retire with a fixed cause.
+  "lesson.trial_started": { action: "lesson.activated", facts: (e) => ({ lessonType: word(e.facts["type"], "unknown"), tier: num(e.facts["tier"]), auto: true }) },
+  "lesson.trial_retired": { action: "lesson.retired", facts: (e) => ({ cause: word(e.facts["reason"], "thumbs_down"), tier: num(e.facts["tier"]) }) },
+  "lesson.preset_changed": { action: "lesson.preset_changed", facts: (e) => ({ scope: word(e.facts["scope"], "project"), fromPreset: word(e.facts["from"], "unknown"), toPreset: word(e.facts["to"], "unknown") }) },
   "lesson.sole_owner_switch_proposed": { action: "lesson.sole_owner_switch_proposed", facts: (e) => ({ fromEnabled: e.facts["from"] === true, toEnabled: e.facts["to"] === true }) },
   "lesson.sole_owner_switch_changed": { action: "lesson.sole_owner_switch_changed", facts: (e) => ({ fromEnabled: e.facts["from"] === true, toEnabled: e.facts["to"] === true, mode: word(e.facts["mode"], "second_person") }) },
 };
@@ -43,7 +47,7 @@ const MAP: Partial<Record<LessonAuditEvent["action"], Mapped>> = {
 /** Actions with no ledger name on purpose: bookkeeping that grants nothing. Under `emitAudit` they are skipped; under `requireAudit` they would fail, so a grant never uses one. */
 export const BOOKKEEPING: readonly LessonAuditAction[] = [
   "lesson.stale", "lesson.retire_proposed", "lesson.wrong_here", "lesson.helpful", "lesson.source_paused", "lesson.source_resumed", "lesson.volume_spike",
-  "lesson.contradiction", "lesson.promote_failed", "lesson.held_source_paused", "lesson.tier0_setting_cancelled",
+  "lesson.contradiction", "lesson.promote_failed", "lesson.held_source_paused", "lesson.tier0_setting_cancelled", "lesson.trial_stable",
 ];
 /** The actions that have a ledger name. */
 export const LEDGERED: readonly LessonAuditAction[] = Object.keys(MAP) as LessonAuditAction[];

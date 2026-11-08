@@ -70,6 +70,9 @@ export const T = {
  SRC_ERR_PLACE: "That source can't be used here.", SRC_ERR_KIND: "That kind of source can't be added yet.", SRC_ERR_FORBIDDEN: "You can't change the sources of this project.",
  SRC_ERR_UNAVAILABLE: "Rovara can't check that right now. Try again shortly.", SRC_ERR_INVALID: "Those details aren't valid. Check them and try again.", SRC_ERR_GONE: "That source no longer exists. The list was read again.", SRC_ERR_OTHER: "Couldn't save that. Try again.",
  LOADED_TITLE: "Lessons the agent loaded", LOADED_NONE: "No lesson was loaded for this task.", LOADED_HIDDEN: "A lesson from a source you can't see", LOADED_THANKS: "Thanks. Your mark is recorded.",
+ TRIAL_BADGE: "On trial", STABLE_BADGE: "Stable", TRIAL_WORDS: "Live without anyone approving it. A thumbs-down from a project member removes it.", STABLE_WORDS: "Ran 14 days with no thumbs-down.",
+ NOT_HELPFUL: "Not helpful", NOT_HELPFUL_REMOVED: "Thanks. Rovara stopped using this lesson.", NOT_HELPFUL_ASKED: "Rovara marked it for a maintainer to look at.", NOT_HELPFUL_FROM_PR: "You opened this from a pull request. Was this lesson not helpful?",
+ PRESET_STANDARD: "Standard: a low-risk lesson from a team member's own correction goes live on trial. Anything about checks, security, access or spend waits for a person.", PRESET_REGULATED: "Regulated: every lesson waits for a person before Rovara uses it.", PRESET_COMPANY: "Your company requires this.", PRESET_REQUIRE: "Require a person for every lesson", PRESET_SAVED: "Saved. Every lesson now waits for a person.", PRESET_FAILED: "Couldn't change that. Try again.",
 } as const;
 
 const REASON_WORDS: Readonly<Record<(typeof LESSON_TIER_REASONS)[number], string>> = {
@@ -79,6 +82,7 @@ const REASON_WORDS: Readonly<Record<(typeof LESSON_TIER_REASONS)[number], string
  not_plain_declarative: "Its wording isn't a plain statement of fact.", source_not_trusted: "It rests on a source Rovara doesn't fully trust.", scope_not_one_repo: "It covers more than one repository (a broad lesson).",
  stage_not_allowed: "It would reach steps beyond building.", contradiction: "It contradicts another lesson.", restricted_source: "It comes from a source only some people can see.",
  supersedes_higher_tier: "It replaces a lesson that needed more care.", cited_fact: "A checked fact about the code.",
+ capability_request: "It asks Rovara to change tools, access, checks, approvals or limits. A lesson can't do that, so two people decide whether to keep it.",
 };
 /** The words for a tier reason. A reason this build does not know has none: the raw code is never shown. */
 export const reasonWords = (reason: string): string | undefined => Object.hasOwn(REASON_WORDS, reason) ? REASON_WORDS[reason as keyof typeof REASON_WORDS] : undefined;

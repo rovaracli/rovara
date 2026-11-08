@@ -6,16 +6,17 @@
 //   POST /v1/app/projects/{p}/lessons/{id}/approve         one-tap approval, or edit and approve
 //   POST /v1/app/projects/{p}/lessons/{id}/reject
 //   POST /v1/app/projects/{p}/lessons/{id}/retire
+//   POST /v1/app/projects/{p}/lessons/preset               a maintainer makes the project stricter: Regulated (no lesson goes live without a person)
 //   POST /v1/app/projects/{p}/lessons/rollback
 //   POST /v1/app/projects/{p}/lessons/sources/resume       a maintainer resumes a paused source (UX-4b; `resumeAndResettle`)
 //   GET  /v1/app/tasks/{task}/lessons                      the lessons the agent loaded
-//   POST /v1/app/tasks/{task}/lessons/{id}/feedback        "Helpful" / "Wrong here"
+//   POST /v1/app/tasks/{task}/lessons/{id}/feedback        "Helpful" / "Wrong here" / thumbs-down
 //
 // The module answers `undefined` for a path it does not own, as `routeLearning` does. Authority: the project is found through `projectFor` (another company's project and one the caller
 // cannot see answer the same way); who may decide is the lesson library's own check (`ApproverDirectory`, the second-person rule, the access records); a write needs a live browser
 // session and a writer role (the Auditor is refused); a refusal is a fixed sentence, never text from a lesson, a row or an error.
 import {
-  LessonApproveBodySchema, LessonFeedbackBodySchema, LessonResumeSourceBodySchema, LessonRejectBodySchema, LessonRetireBodySchema, LessonRollbackBodySchema, agentXError,
+  LessonApproveBodySchema, LessonFeedbackBodySchema, LessonPresetBodySchema, LessonResumeSourceBodySchema, LessonRejectBodySchema, LessonRetireBodySchema, LessonRollbackBodySchema, agentXError,
   type AgentXErrorCode, type ProjectRole,
 } from "@agentx/contracts";
 import type { ZodType } from "zod";
@@ -24,6 +25,7 @@ import { requireWriterCaller } from "../org/auditor.js";
 import { approveLesson, rejectLesson, retireByPerson, type ApprovalFailure, type ApproveDeps } from "./approve.js";
 import { recordFeedback, type CounterDeps } from "./counters.js";
 import { resolveLearning, whyLearningOff } from "./policy.js";
+import { setLearningPreset, type PresetDeps } from "./preset-setting.js";
 import { rollbackLessonSetSettled } from "./rollback.js";
 import { resumeAndResettle, type ProcessDeps } from "./process.js";
 import { buildLessonHistory, pauseMatches, buildLessonSources, buildLessonsDigest, buildLessonsView, buildLoadedLessons, SNAPSHOTS_MAX, type LessonViewDeps } from "./view.js";
@@ -34,7 +36,7 @@ export const TASK_LESSONS_PATH = /^\/v1\/app\/tasks\/([0-9a-f-]{36})\/lessons(?:
 
 export interface LessonRouteDependencies {
   /** The lesson library's dependencies for the project: store, directory, settings, access port, audit, citations and code facts (rollback settles each restored lesson), the judge (feedback). */
-  lessons: LessonViewDeps & ApproveDeps & ProcessDeps & CounterDeps;
+  lessons: LessonViewDeps & ApproveDeps & ProcessDeps & CounterDeps & { /** Where a maintainer makes the project stricter (Regulated). Absent: the preset route is not there. */ presets?: PresetDeps };
   /** The caller's role in the project: its name, or the one `PROJECT_NOT_FOUND` for no access, no such project and another company's. */
   projectFor(caller: DeveloperCaller, rawName: string): Promise<{ name: string; role: ProjectRole }>;
   /** The project of a task the caller may read (the task page's own access check), or a throw. */
@@ -168,6 +170,21 @@ export async function routeLessons(deps: LessonRouteDependencies, caller: Develo
     }
     return { resumed, settled };
   }
+  if (id === "preset" && action === undefined) {
+    requireWrite(caller);
+    const { name } = await deps.projectFor(caller, rawProject!);
+    await requireLearningOn(deps, caller, name);
+    if (deps.lessons.presets === undefined) throw agentXError("NOT_FOUND", "Lessons are not available for this project.");
+    await takeBudget(deps, caller, "decision");
+    const input = strictBody(LessonPresetBodySchema, body());
+    const result = await setLearningPreset(deps.lessons.presets, { scope: { kind: "project", workspaceId: caller.orgId, project: name }, value: input.preset, requestedBy: caller.developerId });
+    if (!result.ok) {
+      if (result.code === "not_eligible") throw agentXError("FORBIDDEN", "Only a maintainer of this project, or an admin, can change how lessons are approved.");
+      if (result.code === "eligibility_unavailable") throw agentXError("RUNTIME_UNAVAILABLE", "Rovara can't check who may change this right now. Try again.");
+      throw agentXError("CONFIG_INVALID", "That setting can't be changed here.");
+    }
+    return { preset: result.value, changed: result.changed };
+  }
   if (id === undefined || action === undefined || action === "history" || action === "resume") return undefined;
 
   requireWrite(caller);
@@ -208,7 +225,9 @@ async function routeTaskLessons(deps: LessonRouteDependencies, caller: Developer
   await takeBudget(deps, caller, "mark");
   const input = strictBody(LessonFeedbackBodySchema, body());
   const viewer = await deps.lessons.directory.identity(caller.orgId, caller.developerId);
-  const result = await recordFeedback(deps.lessons, { workspaceId: caller.orgId, project, taskId, lessonId, userId: caller.developerId, viewer, kind: input.kind });
+  // A thumbs-down retires a lesson on trial, so it needs a role in the project (`projectFor` answers the one PROJECT_NOT_FOUND for none); the other marks are open to whoever can read the task.
+  if (input.kind === "thumbs_down") await deps.projectFor(caller, project);
+  const result = await recordFeedback(deps.lessons, { workspaceId: caller.orgId, project, taskId, lessonId, userId: caller.developerId, viewer, kind: input.kind, ...(input.kind === "thumbs_down" ? { projectMember: true } : {}) });
   if (!result.ok) {
     if (result.code === "repeat") throw agentXError("CHANGE_STALE", "You already marked this lesson for this task.");
     throw agentXError("NOT_FOUND", "This lesson isn't available.");

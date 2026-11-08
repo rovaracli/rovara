@@ -2,7 +2,7 @@
 // version, a lesson from a source the viewer cannot see, and text that never reaches a viewer.
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
-import { AgentXError, LESSON_TIER_REASONS, LESSON_VIEW_STATUSES, LessonsViewReaderSchema, type OrgId } from "@agentx/contracts";
+import { AgentXError, agentXError, LESSON_TIER_REASONS, LESSON_VIEW_STATUSES, LessonsViewReaderSchema, type OrgId } from "@agentx/contracts";
 import { LESSON_STATUSES } from "../../../packages/broker/src/lessons/types.js";
 import { routeLessons, type LessonRouteDependencies } from "../../../packages/broker/src/lessons/routes.js";
 import { InMemoryLessonStore } from "../../../packages/broker/src/lessons/store.js";
@@ -526,7 +526,7 @@ describe("the words the screens know", () => {
     expect([...LESSON_VIEW_STATUSES]).toEqual([...LESSON_STATUSES]);
     const source = readFileSync(new URL("../../../packages/broker/src/lessons/tier.ts", import.meta.url), "utf8");
     const written = new Set([...source.matchAll(/(?:escalation|why)\.push\("(\w+)"\)/gu)].map((m) => m[1]!).concat([...source.matchAll(/reasons: \["(\w+)"\]/gu)].map((m) => m[1]!), ["supersedes_higher_tier"]));
-    for (const reason of written) if (reason !== "capability_request" && reason !== "outsider_source" && reason !== "ineligible_task") expect(LESSON_TIER_REASONS as readonly string[], reason).toContain(reason);
+    for (const reason of written) if (reason !== "outsider_source" && reason !== "ineligible_task") expect(LESSON_TIER_REASONS as readonly string[], reason).toContain(reason);
     expect(written.size).toBeGreaterThan(10);
   });
 });
@@ -553,6 +553,69 @@ describe("what a browser may reach", () => {
     // Upper-case task ids are not task ids here (the broker's own patterns are lower-case only).
     expect(webRouteAllowed("GET", `/v1/web/tasks/${"ABCDEFAB-1111-4111-8111-111111111111"}/lessons`)).toBe(false);
     expect(webRouteAllowed("GET", `/v1/web/tasks/${"ABCDEFAB-1111-4111-8111-111111111111"}/loaded-knowledge`)).toBe(false);
+  });
+});
+
+describe("approve by exception on the routes (DECISIONS 24)", () => {
+  const TASK = "11111111-1111-1111-1111-111111111111";
+  const task = `/v1/app/tasks/${TASK}/lessons`;
+  const trialLesson = () => lessonRecord({
+    id: "les_trial001", trial: { state: "trial", startedAt: 1 }, tier: 1, approvals: [{ approvalId: "t", by: "system:trial", at: 1, mode: "trial" }],
+    provenance: { ...lessonRecord().provenance, memberCorrection: true, fromSharedTask: true },
+  });
+  async function withTrial() {
+    const s = setup({ value: { preset: "standard" } });
+    await seed(s.store, trialLesson());
+    await s.store.putManifest({ taskId: TASK, workspaceId: WS, project: PROJECT, stage: "IMPLEMENT", round: 1, setVersion: 1, memory: "live", at: 1, bytes: 10, lessons: [{ id: "les_trial001", version: 1, score: 0.5, why: "scope", citation: "valid" }] });
+    return s;
+  }
+
+  it("the Lessons tab says which lessons are on trial and which preset is in force", async () => {
+    const s = await withTrial();
+    const view = LessonsViewReaderSchema.parse(await s.call(callerOf("ann"), "GET", base));
+    expect(view).toMatchObject({ preset: "standard", presetLockedByCompany: false });
+    expect(view.active[0]).toMatchObject({ id: "les_trial001", trial: "trial", approvals: [{ mode: "trial" }] });
+    const regulated = setup({ value: { preset: "standard", companyPreset: "regulated" } });
+    expect(LessonsViewReaderSchema.parse(await regulated.call(callerOf("ann"), "GET", base))).toMatchObject({ preset: "regulated", presetLockedByCompany: true });
+  });
+
+  it("a thumbs-down from a project member retires the lesson on trial at once; the task page row says it is on trial", async () => {
+    const s = await withTrial();
+    const rows = (await s.call(callerOf("mallory"), "GET", task)) as { lessons: Array<{ lessonId: string; trial?: string }> };
+    expect(rows.lessons[0]).toMatchObject({ lessonId: "les_trial001", trial: "trial" });
+    expect(await s.call(callerOf("mallory"), "POST", `${task}/les_trial001/feedback`, { kind: "thumbs_down" })).toEqual({ done: true });
+    expect((await s.store.get(KEY, "les_trial001"))!.status).toBe("retired");
+    expect(s.audit.actions()).toContain("lesson.trial_retired");
+    expect((await refused(s.call(callerOf("mallory"), "POST", `${task}/les_trial001/feedback`, { kind: "thumbs_down" }))).code).toBe("CHANGE_STALE");
+  });
+
+  it("a person with no role in the project is refused, the Auditor and a non-browser caller too, and the lesson stays", async () => {
+    const s = await withTrial();
+    (s.deps as { projectFor: unknown }).projectFor = async () => { throw agentXError("PROJECT_NOT_FOUND", "No such project."); };
+    expect((await refused(s.call(callerOf("outsider"), "POST", `${task}/les_trial001/feedback`, { kind: "thumbs_down" }))).code).toBe("PROJECT_NOT_FOUND");
+    expect((await refused(s.call(callerOf("mallory", { browserSession: undefined }), "POST", `${task}/les_trial001/feedback`, { kind: "thumbs_down" }))).code).toBe("FORBIDDEN");
+    expect((await s.store.get(KEY, "les_trial001"))!.status).toBe("active");
+  });
+
+  it("a maintainer makes the project Regulated; others are refused; going back is refused; a body with anything else is refused", async () => {
+    const s = setup();
+    const rows = new Map<string, "standard" | "regulated">();
+    (s.deps.lessons as { presets?: unknown }).presets = {
+      store: { read: async (sc: { kind: string }) => rows.get(sc.kind), write: async (sc: { kind: string }, v: "standard" | "regulated", _at: number) => { void _at;rows.set(sc.kind, v); } },
+      audit: s.audit, now: s.clock.now, eligibility: async () => ({ complete: true, eligibleIds: ["owner", "ann"] }),
+    };
+    expect((await refused(s.call(callerOf("mallory"), "POST", `${base}/preset`, { preset: "regulated" }))).code).toBe("FORBIDDEN");
+    expect((await refused(s.call(callerOf("ann"), "POST", `${base}/preset`, { preset: "standard" }))).code).toBe("CONFIG_INVALID");
+    expect((await refused(s.call(callerOf("ann"), "POST", `${base}/preset`, { preset: "regulated", extra: 1 }))).code).toBe("CONFIG_INVALID");
+    expect(await s.call(callerOf("ann"), "POST", `${base}/preset`, { preset: "regulated" })).toEqual({ preset: "regulated", changed: true });
+    expect(rows.get("project")).toBe("regulated");
+    expect(s.audit.events.at(-1)).toMatchObject({ action: "lesson.preset_changed", actor: "ann" });
+    expect((await refused(s.call(callerOf("ann", { browserSession: undefined }), "POST", `${base}/preset`, { preset: "regulated" }))).code).toBe("FORBIDDEN");
+  });
+
+  it("the preset route is not there where no preset store is wired", async () => {
+    const s = setup();
+    expect((await refused(s.call(callerOf("ann"), "POST", `${base}/preset`, { preset: "regulated" }))).code).toBe("NOT_FOUND");
   });
 });
 

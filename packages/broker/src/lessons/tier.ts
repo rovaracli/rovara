@@ -1,5 +1,5 @@
 // Learning v2 L3a: risk tiers (design §4.5.3). Evaluated by code. The classifier flags (escalation words, the judge's escalate flag, reviewer stages)
-// can only raise a tier, never lower it. A lesson that asks for a capability change, or comes from an outsider or an ineligible task, is "never".
+// can only raise a tier, never lower it. A lesson that comes from an outsider or an ineligible task is "never". One that asks for a capability change is tier 2 with the reason `capability_request`.
 import { isMeaningfulAnchor } from "@agentx/contracts";
 import { hasCommandOrUrl, hasEncodedBlob, hasEscalationWords, requestsCapabilityChange, touchesRiskyPath } from "./guards.js";
 import { renderTier0, type Tier0Text, type VerifiedMaterial } from "./render.js";
@@ -31,12 +31,13 @@ function validCodeCitations(input: TierInput): boolean {
 }
 
 function classifyBase(input: TierInput, context: TierContext): TierDecision {
-  if (requestsCapabilityChange(input.title, input.description, input.body)) return { tier: "never", reasons: ["capability_request"], refused: true };
   if (input.provenance.minTrust === "outsider") return { tier: "never", reasons: ["outsider_source"], refused: false };
   if (context.ineligibleTask === true) return { tier: "never", reasons: ["ineligible_task"], refused: false };
 
   // Escalation: any of these puts the lesson in front of two people, whatever the structural rules say.
   const escalation: string[] = [];
+  // A lesson that asks for a change to tools, access, checks, approvals or limits is never dropped silently: it goes to people (two, as every authority matter does) with this fixed reason.
+  if (requestsCapabilityChange(input.title, input.description, input.body)) escalation.push("capability_request");
   if (input.stages.includes("PLAN_CRITIQUE") || input.stages.includes("REVIEW")) escalation.push("reviewer_stage");
   if (input.type === "review_check") escalation.push("review_check");
   if (hasEscalationWords(input.title, input.description, input.body)) escalation.push("escalation_words");

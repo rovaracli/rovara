@@ -72,7 +72,7 @@ const personIdsOf = (lesson: Lesson): string[] => [...lesson.provenance.authors,
 /** What a pending lesson still needs: the people the policy asks for, who approved first, and the groups not yet represented. */
 function needsOf(lesson: Lesson, required: 0 | 1 | 2, groups: readonly string[], eligible: readonly string[], person: (id: string) => LessonPerson): LessonView["needs"] {
   // Only approvals from people who can still approve count: a first approver who left no longer stands (the next approval drops it).
-  const people = lesson.approvals.filter((a) => a.mode !== "auto" && idIn(eligible, a.by));
+  const people = lesson.approvals.filter((a) => a.mode !== "auto" && a.mode !== "trial" && idIn(eligible, a.by));
   const distinct = new Set(people.map((a) => normId(a.by)));
   const total = Math.max(required, lesson.reviewRequired === true ? 1 : 0, 1) as 1 | 2;
   const first = people[0];
@@ -126,12 +126,16 @@ function toView(lesson: Lesson, ctx: Context): LessonView {
     ...(pending ? { needs: needsOf(lesson, ctx.required(lesson), ctx.groups, ctx.eligible, ctx.person) } : {}),
     // Who approved is for people who decide; a reader sees the lesson, not its approvers.
     approvals: ctx.canDecide ? lesson.approvals.map((a) => ({ by: ctx.person(a.by), at: a.at, mode: a.mode })) : [],
+    ...(lesson.trial === undefined ? {} : { trial: lesson.trial.state }),
     ...(lesson.reviewRequired === true ? { reviewRequired: true as const } : {}), ...(lesson.contradictsWith === undefined ? {} : { contradicts: lesson.contradictsWith }),
     ...(lesson.retireProposedAt === undefined ? {} : { retireProposed: true as const }), ...(lesson.supersedes === undefined ? {} : { supersedes: lesson.supersedes }),
     ...(lesson.status === "rejected" && lesson.rejectedReason !== undefined ? { rejectedReason: lesson.rejectedReason } : {}),
     canApprove, canReject: ctx.canDecide && pending, canRetire: ctx.canDecide && (lesson.status === "active" || lesson.status === "stale" || pending),
   };
 }
+
+/** The company's preset is the reason the project is Regulated: it is Regulated and the project's own choice is not. */
+const companyPresetLocks = (raw: { preset?: unknown; companyPreset?: unknown }): boolean => raw.companyPreset === "regulated" && raw.preset !== "regulated";
 
 export async function buildLessonsView(deps: LessonViewDeps, caller: LessonCaller, project: string): Promise<LessonsViewAnswer> {
   const key = keyOf(caller, project);
@@ -163,7 +167,7 @@ export async function buildLessonsView(deps: LessonViewDeps, caller: LessonCalle
   if (activeAll.length > ACTIVE_MAX) truncated.push("active");
   if (state.canDecide && removedAll.length > REMOVED_MAX) truncated.push("removed");
   return {
-    project, mode: resolved.mode, lockedByCompany,
+    project, mode: resolved.mode, lockedByCompany, preset: resolved.preset, presetLockedByCompany: companyPresetLocks(raw),
     approval: { tier0: resolved.approval.tier0, tier1: resolved.approval.tier1, requiredGroups: [...resolved.requiredGroups] },
     ...(resolved.expiryDays === undefined ? {} : { expiryDays: resolved.expiryDays }),
     canDecide: state.canDecide,
@@ -183,7 +187,7 @@ export async function buildLessonHistory(deps: LessonViewDeps, caller: LessonCal
   if (head === undefined || (await readVisible({ access: deps.access, key, viewer: state.viewer, lessons: [head], where: "view", log: deps.log })).length !== 1) throw agentXError("NOT_FOUND", "This lesson isn't available.");
   const versions = (await readVisible({ access: deps.access, key, viewer: state.viewer, lessons: await deps.store.versions(key, lessonId), where: "view", log: deps.log })).sort((a, b) => b.version - a.version).slice(0, 50);
   const person = await namePeople(deps, caller.orgId, caller.developerId, versions.flatMap((v) => v.approvals.map((a) => a.by)));
-  return { versions: versions.map((v) => ({ version: v.version, at: v.updatedAt, status: v.status, title: v.title, body: v.body, approvedBy: v.approvals.filter((a) => a.mode !== "auto").map((a) => person(a.by)) })) };
+  return { versions: versions.map((v) => ({ version: v.version, at: v.updatedAt, status: v.status, title: v.title, body: v.body, approvedBy: v.approvals.filter((a) => a.mode !== "auto" && a.mode !== "trial").map((a) => person(a.by)) })) };
 }
 
 /** The weekly digest, led by the top lessons. For people who decide. */
@@ -230,5 +234,5 @@ export async function buildLoadedLessons(deps: LessonViewDeps, caller: LessonCal
   const key = keyOf(caller, project);
   const viewer = await deps.directory.identity(key.workspaceId, caller.developerId);
   const rows = await lessonPanelRows(deps.store, key, taskId, viewer, deps.access, deps.log);
-  return { lessons: rows.slice(0, 500).map((r) => ({ stage: r.stage, round: r.round, lessonId: r.lessonId, version: r.version, why: r.why, citation: r.citation, visible: r.visible, ...(r.title === undefined ? {} : { title: r.title }), ...(r.type === undefined ? {} : { type: r.type }), ...(r.helpful === undefined ? {} : { helpful: r.helpful }), ...(r.harmful === undefined ? {} : { harmful: r.harmful }), canMark: r.canMark })) };
+  return { lessons: rows.slice(0, 500).map((r) => ({ stage: r.stage, round: r.round, lessonId: r.lessonId, version: r.version, why: r.why, citation: r.citation, visible: r.visible, ...(r.title === undefined ? {} : { title: r.title }), ...(r.type === undefined ? {} : { type: r.type }), ...(r.helpful === undefined ? {} : { helpful: r.helpful }), ...(r.harmful === undefined ? {} : { harmful: r.harmful }), canMark: r.canMark, ...(r.trial === undefined ? {} : { trial: r.trial }) })) };
 }

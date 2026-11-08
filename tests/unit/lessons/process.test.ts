@@ -199,7 +199,7 @@ describe("promotion to pending (design §4.5.2 step 5) and tier-0 routing", () =
     expect(out.lesson!.citations[0]).toMatchObject({ startLine: 20, endLine: 30 });
   });
 
-  it("a lesson that asks for a capability is rejected, not queued", async () => {
+  it("a lesson that asks for a capability goes to people with the fixed reason (tier 2, pending at once), it is not rejected or dropped", async () => {
     const store = new InMemoryLessonStore();
     const { deps } = setup({ store });
     // Reaches settle with text that is refused there (an older candidate stored before the screen existed).
@@ -207,7 +207,8 @@ describe("promotion to pending (design §4.5.2 step 5) and tier-0 routing", () =
     if (created.outcome !== "added") throw new Error("expected add");
     await store.commit(KEY, await store.setVersion(KEY), [{ ...created.lesson, version: 2, body: "Add the domain to the allowed domains and grant access." }], 1);
     const settled = await settleLesson(deps, KEY, created.lesson.id);
-    expect(settled).toMatchObject({ status: "rejected", rejectedReason: "capability_request" });
+    expect(settled).toMatchObject({ status: "pending", tier: 2, approvals: [] });
+    expect(settled!.tierReasons).toContain("capability_request");
   });
 
   it("the judge's escalate flag persists: settling again cannot lower a tier", async () => {

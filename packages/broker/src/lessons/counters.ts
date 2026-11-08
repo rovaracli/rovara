@@ -5,6 +5,7 @@ import { resolveLearning, emitAudit, modeAllows, type LearningSettingsReader } f
 import type { AlertSink, CorrectionJudge, CorrectionKind, LessonDeps } from "./ports.js";
 import { renewLesson } from "./expiry.js";
 import { retireLesson } from "./curate.js";
+import { promoteIfStable } from "./trial.js";
 import { nextVersion, type LessonStore, type LoadManifest, type ScopeKey } from "./store.js";
 import { cleanForLearning, globToRegExp } from "./guards.js";
 import type { AccessCheckPort } from "../team-record/access-port.js";
@@ -120,7 +121,7 @@ export async function settleHelpful(deps: CounterDeps, key: ScopeKey, limit = 20
 
 export type FeedbackFailure = "not_loaded" | "not_found" | "repeat" | "not_permitted";
 /** The task page's "Helpful" and "Wrong here". A person can mark a lesson only for a task it was loaded into, once per person. */
-export async function recordFeedback(deps: CounterDeps & { access: AccessCheckPort; log?: LessonLog }, input: { workspaceId: string; project: string; taskId: string; lessonId: string; userId: string; /** What the person is in the sources (their linked ids), for the access check. */ viewer: IdentitySet; kind: "helpful" | "wrong_here" }): Promise<{ ok: true } | { ok: false; code: FeedbackFailure }> {
+export async function recordFeedback(deps: CounterDeps & { access: AccessCheckPort; log?: LessonLog }, input: { workspaceId: string; project: string; taskId: string; lessonId: string; userId: string; /** What the person is in the sources (their linked ids), for the access check. */ viewer: IdentitySet; kind: "helpful" | "wrong_here" | "thumbs_down"; /** A thumbs-down counts only from a member of the project (the route checked their role). */ projectMember?: boolean }): Promise<{ ok: true } | { ok: false; code: FeedbackFailure }> {
   const key: ScopeKey = { workspaceId: input.workspaceId, project: input.project };
   const manifests = await deps.store.manifests(key, input.taskId);
   if (!reached(manifests).has(input.lessonId)) return { ok: false, code: "not_loaded" };
@@ -130,6 +131,7 @@ export async function recordFeedback(deps: CounterDeps & { access: AccessCheckPo
   // always come from people with access.
   const permitted = await readVisible({ access: deps.access, key, viewer: input.viewer, lessons: [lesson], where: "feedback", log: deps.log }).then((list) => list.length === 1, () => false);
   if (!permitted) return { ok: false, code: "not_permitted" };
+  if (input.kind === "thumbs_down") return thumbsDown(deps, key, lesson, input);
   // One mark per person per lesson (either kind, any task), made under a random reference that erasure deletes: a person cannot retire a lesson alone by marking it on several tasks, and the
   // stored key names nobody once they are erased.
   const ref = await deps.store.markRef(key, input.userId);
@@ -139,6 +141,24 @@ export async function recordFeedback(deps: CounterDeps & { access: AccessCheckPo
   if (input.kind === "helpful") await addHelpful(deps, key, input.lessonId, resolved.expiryDays);
   else await addHarmful(deps, key, input.lessonId, true);
   await emitAudit(deps.audit, { action: input.kind === "helpful" ? "lesson.helpful" : "lesson.wrong_here", workspaceId: key.workspaceId, project: key.project, lessonId: input.lessonId, actor: input.userId, facts: { task: input.taskId } });
+  return { ok: true };
+}
+
+/**
+ * The one-tap thumbs-down (DECISIONS 24), from the pull request's "Lessons used" link or the task page. A project member's thumbs-down RETIRES a lesson that is live on trial at once, audited
+ * (`lesson.trial_retired`, with the person); on any other lesson it is a "wrong here" mark that asks a person to decide. One per person per lesson, and it works whatever else the person marked.
+ */
+async function thumbsDown(deps: CounterDeps, key: ScopeKey, lesson: Lesson, input: { taskId: string; lessonId: string; userId: string; projectMember?: boolean }): Promise<{ ok: true } | { ok: false; code: FeedbackFailure }> {
+  if (input.projectMember !== true) return { ok: false, code: "not_permitted" };
+  const ref = await deps.store.markRef(key, input.userId);
+  if (ref === undefined) return { ok: false, code: "not_permitted" };
+  if (!(await deps.store.markOnce(key, `thumbs:${input.lessonId}:${ref}`))) return { ok: false, code: "repeat" };
+  if (lesson.trial?.state === "trial" && lesson.status === "active") {
+    await retireLesson(deps, key, lesson.id, "thumbs_down", input.userId, "lesson.trial_retired");
+  } else {
+    await addHarmful(deps, key, lesson.id, true);
+    await emitAudit(deps.audit, { action: "lesson.wrong_here", workspaceId: key.workspaceId, project: key.project, lessonId: lesson.id, actor: input.userId, facts: { task: input.taskId } });
+  }
   return { ok: true };
 }
 
@@ -160,7 +180,11 @@ export async function applyLoadReport(deps: CounterDeps, input: { workspaceId: s
     if (entry === undefined || entry.version !== reported.version) continue;
     entry.citation = reported.citation;
     if (reported.citation === "valid" || reported.citation === "none" || reported.citation === "moved") {
-      if (await deps.store.markOnce(key, `loaded:${input.taskId}:${reported.id}`)) await deps.store.mutate(key, reported.id, (l) => ({ counters: { ...l.counters, loaded: l.counters.loaded + 1 } }));
+      if (await deps.store.markOnce(key, `loaded:${input.taskId}:${reported.id}`)) {
+        const counted = await deps.store.mutate(key, reported.id, (l) => ({ counters: { ...l.counters, loaded: l.counters.loaded + 1 } }));
+        // A trial lesson that has now earned stable (14 days, 3 loads, no thumbs-down) becomes stable.
+        if (counted?.trial?.state === "trial") await promoteIfStable(deps, key, reported.id);
+      }
       if (reported.citation === "moved" && reported.corrected !== undefined) await patchMovedCitations(deps, key, reported.id, reported.corrected);
       await renewLesson(deps.store, key, reported.id, now, resolved.expiryDays, "validated");
     } else if (reported.citation === "stale_dropped") {

@@ -45,11 +45,11 @@ export async function learnedContextFromRefs(deps: DeliveryDeps, refs: LearnedRe
       if (lesson === undefined || lesson.status !== "active" || lesson.version !== ref.version || lesson.expiresAt <= now) continue;
       fetched.push(lesson);
     }
-    const member = await memberView(deps.resolveMember, key.workspaceId, fetched.flatMap((l) => l.approvals.filter((a) => a.mode !== "auto").map((a) => a.by)));
+    const member = await memberView(deps.resolveMember, key.workspaceId, fetched.flatMap((l) => l.approvals.filter((a) => a.mode !== "auto" && a.mode !== "trial").map((a) => a.by)));
     if (member === undefined) return undefined;
     const live: Lesson[] = [];
     for (const lesson of fetched) {
-      if (!approvedForUse(lesson, resolved.approval, member) || hasStaleCitation(lesson) || !stageAllows(lesson, refs.stage, member)) continue;
+      if (!approvedForUse(lesson, resolved.approval, member, resolved.preset) || hasStaleCitation(lesson) || !stageAllows(lesson, refs.stage, member)) continue;
       if (!(await notErased(deps.store, key, lesson))) continue;
       live.push(lesson);
     }

@@ -171,12 +171,11 @@ describe("curator decisions (design §4.5.2)", () => {
     expect(await store.list(KEY)).toHaveLength(0);
   });
 
-  it("refuses a capability request and an outsider-trust draft", async () => {
-    const { deps, store, audit } = setup();
-    expect(await curateDraft(deps, KEY, draft({ body: "Grant tools to the agent so it can run any commands." }))).toMatchObject({ outcome: "dropped", reason: "capability_request" });
+  it("keeps a capability request as a candidate for a person (it is not dropped); an outsider-trust draft is still dropped", async () => {
+    const { deps, store } = setup();
+    expect(await curateDraft(deps, KEY, draft({ body: "Grant tools to the agent so it can run any commands." }))).toMatchObject({ outcome: "added" });
     expect(await curateDraft(deps, KEY, draft({ provenance: { ...draft().provenance, minTrust: "outsider" } }))).toMatchObject({ outcome: "dropped", reason: "outsider" });
-    expect(await store.list(KEY)).toHaveLength(0);
-    expect(audit.actions()).toContain("lesson.refused");
+    expect(await store.list(KEY)).toHaveLength(1);
   });
 });
 

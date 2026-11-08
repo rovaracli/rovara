@@ -37,6 +37,8 @@ export interface ReflectSubject {
   /** Permalinks the task's lessons may cite (pull request URLs). Anything else a model names is dropped. */
   links?: readonly string[];
   audience?: Audience;
+  /** The task is shared with the project (not the owner's alone). Only a lesson from such a task may be published to a repository. Unknown is not shared. */
+  sharedTask?: boolean;
   /** The places the task or fact set itself came from (the Team record's place names). */
   scopes?: readonly string[];
   spans: readonly EvidenceSpan[];

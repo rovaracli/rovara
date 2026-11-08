@@ -115,7 +115,7 @@ export async function coldSourcesOf(store: LessonStore, key: ScopeKey, sources: 
   if (needed <= 0) return { cold: [], unattributed: false };
   // Heads of every stored lesson (a retired or expired one was approved by a person too), counted by the people-approved ones that name the source.
   const heads = await store.listAllHeads(key);
-  const proven = heads.filter((lesson) => lesson.id !== selfId && lesson.approvals.some((a) => a.mode !== "auto"));
+  const proven = heads.filter((lesson) => lesson.id !== selfId && lesson.approvals.some((a) => a.mode !== "auto" && a.mode !== "trial"));
   const cold: string[] = [];
   for (const source of sources) {
     const count = proven.filter((lesson) => attributableSources(lesson.provenance).some((s) => sameSource(s, source))).length;

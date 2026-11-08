@@ -9,6 +9,7 @@ import { TextField } from "../../../design/TextField.js";
 import { VisibleText } from "../../../design/VisibleText.js";
 import { ActiveLesson } from "./ActiveLesson.js";
 import { LearningModeControl } from "./LearningModeControl.js";
+import { PresetControl } from "./PresetControl.js";
 import { useLearningMode } from "../../../api/learning-mode.js";
 import { Digest } from "./Digest.js";
 import { LessonCard, type Decided } from "./LessonCard.js";
@@ -53,6 +54,7 @@ export function LessonsTab({ project }: { project: string }) {
   {view.lockedByCompany && <p className="rv-muted">{T.LOCKED}</p>}
   {!view.canDecide && <p className="rv-muted">{T.READ_ONLY}</p>}
   {view.canDecide && <LearningModeControl project={project} compact />}
+  {!off && <PresetControl project={project} view={view} />}
   {notice !== undefined && <p role="status">{notice}</p>}
 
   {view.canDecide && <section aria-label={T.WAITING} className="rv-lessons-section">
