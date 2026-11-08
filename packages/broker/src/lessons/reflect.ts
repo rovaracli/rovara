@@ -10,7 +10,7 @@ import { buildReflectorInput, type MarkedSpan, type ReflectSubject } from "./ref
 import { NO_REASON_TEXT } from "./task-subject.js";
 import { lessonClaimsSupported } from "./trial.js";
 import {
-  LessonCandidateSchema, ReflectorOutputSchema, distinctIds, idIn, minTrust, narrowestAudience, normSource, sameId,
+  LessonCandidateSchema, ReflectorOutputSchema, MAX_READ_FROM, distinctIds, idIn, minTrust, narrowestAudience, normId, normSource, sameId,
   type Audience, type LessonCitation, type LessonProvenance, type LessonScope, type LessonStage, type LessonType, type TrustClass,
 } from "./types.js";
 
@@ -215,6 +215,7 @@ async function toDraft(
   // with nothing else behind it is dropped. They still count for trust and audience below (they were read).
   const evidence = cited.filter((s) => s.kind !== "loaded_lesson");
   if (evidence.length === 0) return undefined;
+  if (subject.requireEvidenceKind !== undefined && !evidence.some((s) => s.kind === subject.requireEvidenceKind)) return undefined;
   const title = cleanForLearning(candidate.title, 80);
   const description = cleanForLearning(candidate.description, 160);
   const body = cleanForLearning(candidate.body, 600);
@@ -223,7 +224,8 @@ async function toDraft(
   // (`capability_request`, set by the tier step), so the approver sees it and decides; nothing is silently lost.
 
   // L9: a lesson made from a person's changed lines is advice in words. It may not copy more than two lines of the code (Q5: the diff is not kept anywhere, and the lesson's own text is where it could be).
-  if (evidence.some((s) => s.kind === "human_edit") && copiedCodeLines(`${description}\n${body}`) > MAX_COPIED_CODE_LINES) {
+  // The check follows what the model READ, not what it cited: a lesson that cites only the intent still came from a prompt that held the person's changed lines.
+  if ([...spans.values()].some((s) => s.kind === "human_edit") && copiedCodeLines(`${description}\n${body}`) > MAX_COPIED_CODE_LINES) {
     await emitAudit(deps.audit, { action: "lesson.refused", workspaceId: subject.workspaceId, project: subject.project, facts: { reason: "copied_code", run: runId, subject: subject.id } });
     return undefined;
   }
@@ -262,6 +264,12 @@ async function toDraft(
   // Independence is counted in people: the canonical member ids of spans a PERSON wrote. Agent text (plan), system text, outcomes and channel or bucket keys
   // never make an author.
   const authors = distinctIds([...new Set(evidence.flatMap((s) => (s.trust === "member" && PERSON_KINDS.has(s.kind) ? [...(s.authorId === undefined ? [] : [s.authorId]), ...(s.authorIds ?? [])] : [])))]);
+  // Everyone whose words or work the model READ (cited or not): erasing any of them deletes the lesson. They are not authors (no effect on independence or the author rule).
+  const readFrom = distinctIds(everything.flatMap((s) => (s.trust === "member" && PERSON_KINDS.has(s.kind) ? [...(s.authorId === undefined ? [] : [s.authorId]), ...(s.authorIds ?? [])] : [])));
+  // A prompt that read more people than a lesson can name is not turned into a lesson: no name is ever cut.
+  if (readFrom.length > MAX_READ_FROM) return undefined;
+  // The people of each edit that several people wrote count as ONE source toward corroboration.
+  const coAuthored = [...new Map(evidence.filter((s) => s.kind === "human_edit" && s.trust === "member" && (s.authorIds?.length ?? 0) > 1).map((s) => { const group = distinctIds(s.authorIds!); return [group.map(normId).sort().join("\u0001"), group] as const; })).values()];
     // Measured outcomes come from structured facts in the input, never from which spans the model cited.
   // A send-back counts only when someone other than the lesson's own authors made it (a person cannot create a "measured outcome" by correcting their own task).
   // ONE function decides whether anything was measured, for every kind of outcome (a revert, a send-back, a CI failure).
@@ -282,6 +290,7 @@ async function toDraft(
       sourceEvents: [...events], sourceKinds: [...new Set(evidence.map((s) => s.kind))], authors, supportTasks: subject.kind === "task" ? [subject.id] : [], ...(inheritedTasks.length === 0 ? {} : { inheritedTasks }), sources, inputSources, measured,
       minTrust: trust, audience, reflectorRun: runId, model: model.slice(0, 100),
       ...(sourceScopes.length === 0 ? {} : { sourceScopes }),
+      ...(readFrom.length === 0 ? {} : { readFrom }), ...(coAuthored.length === 0 ? {} : { coAuthored }),
       memberSignal: evidence.some((s) => s.trust === "member" && (s.kind === "remembered" || s.kind === "human_edit" || (s.kind === "pr_comment" && s.ledToChange === true))),
       memberCorrection: memberCorrectionOf(cited, trust),
       // The lesson's key words must appear in the cited correction or the cited code, and nowhere else: worked out here, where the correction text is in hand (it is never stored).

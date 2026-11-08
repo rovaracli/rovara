@@ -1252,10 +1252,16 @@ export class GitHubAppCredentialProvider {
     let reviewCursor: string | null = null;
     const reviewCursors = new Set<string>();
     const currentReviewIds = new Set<string>();
+    // Whether the host records an edit of a comment (GraphQL `lastEditedAt`: null = never edited). A comment the host does not say anything about is left out, which is unknown, never "unedited".
+    const edits: Record<string, boolean> = {};
+    const noteEdit = (id: string, lastEditedAt: unknown): void => {
+      if (lastEditedAt === null) edits[id] = false;
+      else if (typeof lastEditedAt === "string") edits[id] = true;
+    };
     do {
       const data = await this.feedbackGraphql(token, `query($owner:String!,$name:String!,$number:Int!,$cursor:String) {
         repository(owner:$owner,name:$name) { nameWithOwner pullRequest(number:$number) { number headRefOid
-          reviews(first:100,after:$cursor) { nodes { fullDatabaseId updatedAt url body } pageInfo { hasNextPage endCursor } }
+          reviews(first:100,after:$cursor) { nodes { fullDatabaseId updatedAt lastEditedAt url body } pageInfo { hasNextPage endCursor } }
         } }
       }`, { owner: repository.owner, name: repository.name, number, cursor: reviewCursor });
       const repo = feedbackRecord(data.repository); const pr = feedbackRecord(repo.pullRequest);
@@ -1272,6 +1278,7 @@ export class GitHubAppCredentialProvider {
         if (currentReviewIds.has(id) || comment.url !== review.url || comment.body !== review.body
           || typeof review.updatedAt !== "string" || !Number.isFinite(Date.parse(review.updatedAt))) throw feedbackReadError("review changed during collection");
         currentReviewIds.add(id); comment.updatedAt = new Date(review.updatedAt).toISOString();
+        noteEdit(id, review.lastEditedAt);
       }
       reviewCursor = nextFeedbackCursor(connection, reviewCursors);
     } while (reviewCursor !== null);
@@ -1300,12 +1307,13 @@ export class GitHubAppCredentialProvider {
             const id = feedbackDatabaseId(feedbackRecord(comment).fullDatabaseId);
             if (id === null) throw feedbackReadError("invalid thread comment ID");
             ids.push(`review_comment:${id}`);
+            noteEdit(`review_comment:${id}`, feedbackRecord(comment).lastEditedAt);
           }
           const next = nextFeedbackCursor(threadComments, commentCursors);
           if (next === null) break;
           const more = await this.feedbackGraphql(token, `query($threadId:ID!,$cursor:String) { node(id:$threadId) { ... on PullRequestReviewThread {
             id isResolved repository { nameWithOwner } pullRequest { number }
-            comments(first:100,after:$cursor) { nodes { fullDatabaseId } pageInfo { hasNextPage endCursor } }
+            comments(first:100,after:$cursor) { nodes { fullDatabaseId lastEditedAt } pageInfo { hasNextPage endCursor } }
           } } }`, { threadId: thread.id, cursor: next });
           const node = feedbackRecord(more.node);
           validateFeedbackThread(node, repository, number);
@@ -1349,10 +1357,10 @@ export class GitHubAppCredentialProvider {
     if (ownIds.size > 0) {
       return {
         pullRequest: { ...final, headTreeSha }, comments: comments.filter((comment) => !ownIds.has(comment.id)),
-        threads: threads.map((thread) => ({ ...thread, commentIds: thread.commentIds.filter((id) => !ownIds.has(id)) })),
+        threads: threads.map((thread) => ({ ...thread, commentIds: thread.commentIds.filter((id) => !ownIds.has(id)) })), edits,
       };
     }
-    return { pullRequest: { ...final, headTreeSha }, comments, threads };
+    return { pullRequest: { ...final, headTreeSha }, comments, threads, edits };
   }
 
   /** The login the App's own comments carry (`<slug>[bot]`, lower-case), or undefined when the slug cannot be read. */
@@ -2371,9 +2379,14 @@ export interface GitHubFeedbackComment {
 export interface GitHubFeedbackThread { id: string; resolved: boolean; commentIds: string[] }
 export interface GitHubPullRequestFeedback {
   pullRequest: GitHubPullRequestDetails & { headTreeSha: string }; comments: GitHubFeedbackComment[]; threads: GitHubFeedbackThread[];
+  /**
+   * Comment id to whether the host records an edit of it (GraphQL `lastEditedAt`): false = never edited, true = edited. A comment not listed is unknown. Kept beside the comments, never in them:
+   * the comments are digested into the bundles. Lessons capture reads it to prove a review body or comment is its author's own words.
+   */
+  edits?: Readonly<Record<string, boolean>>;
 }
 const FEEDBACK_THREAD_FIELDS = `id isResolved repository { nameWithOwner } pullRequest { number }
-  comments(first:100) { nodes { fullDatabaseId } pageInfo { hasNextPage endCursor } }`;
+  comments(first:100) { nodes { fullDatabaseId lastEditedAt } pageInfo { hasNextPage endCursor } }`;
 /** A GitHub database ID: a positive-integer string (GraphQL BigInt) or a safe-integer number. Null when neither. */
 function feedbackDatabaseId(value: unknown): string | null {
   if (typeof value !== "string" && typeof value !== "number") return null;

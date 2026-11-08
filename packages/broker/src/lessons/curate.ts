@@ -11,7 +11,7 @@ import { attributableSources, noteCandidateSources } from "./sources.js";
 import type { LessonDraft } from "./reflect.js";
 import { nextVersion, type LessonStore, type ScopeKey } from "./store.js";
 import { isTrialLesson } from "./trial.js";
-import { LessonCitationSchema, LessonProvenanceSchema, LessonSchema, LessonScopeSchema, distinctIds, minTrust, narrowestAudience, normSource, trustAtLeast, type Lesson, type LessonCitation, type LessonScope } from "./types.js";
+import { LessonCitationSchema, LessonProvenanceSchema, LessonSchema, LessonScopeSchema, MAX_CO_AUTHORED, MAX_READ_FROM, distinctIds, minTrust, narrowestAudience, normId, normSource, trustAtLeast, type Lesson, type LessonCitation, type LessonScope } from "./types.js";
 
 /** At or above this similarity two lessons are the same advice, merged by code with no model call. */
 export const MERGE_SIMILARITY = 0.92;
@@ -125,33 +125,46 @@ function mergeInto(target: Lesson, draft: LessonDraft, version: number, now: num
   // Checks follow their citations by key; a new citation has no check yet, so it is not trusted as verified.
   const checkedKeys = new Map((target.citationChecks ?? []).map((check) => [citationKey(target.citations[check.index]!), check] as const));
   const citationChecks = citations.flatMap((c, index) => { const found = checkedKeys.get(citationKey(c)); return found === undefined ? [] : [{ ...found, index }]; });
+  const people = unionPeople(target, draft);
   return {
     ...target, version, citations, ...(citationChecks.length === 0 ? {} : { citationChecks }), updatedAt: now,
     provenance: {
       ...target.provenance,
       sourceEvents: union(target.provenance.sourceEvents, draft.provenance.sourceEvents, 50), sourceKinds: union(target.provenance.sourceKinds, draft.provenance.sourceKinds, 20),
-      authors: distinctIds([...target.provenance.authors, ...draft.provenance.authors]).slice(0, 20), sources: union(target.provenance.sources, draft.provenance.sources, 20), inputSources: unionPinned(target.provenance.inputSources, draft.provenance.inputSources, 100, paused), measured: target.provenance.measured || draft.provenance.measured, supportTasks: union(target.provenance.supportTasks, draft.provenance.supportTasks, 50),
+      authors: distinctIds([...target.provenance.authors, ...draft.provenance.authors]), sources: union(target.provenance.sources, draft.provenance.sources, 20), inputSources: unionPinned(target.provenance.inputSources, draft.provenance.inputSources, 100, paused), measured: target.provenance.measured || draft.provenance.measured, supportTasks: union(target.provenance.supportTasks, draft.provenance.supportTasks, 50),
       ...(target.provenance.inheritedTasks === undefined && draft.provenance.inheritedTasks === undefined ? {} : { inheritedTasks: union(target.provenance.inheritedTasks ?? [], draft.provenance.inheritedTasks ?? [], 50) }),
       memberSignal: target.provenance.memberSignal || draft.provenance.memberSignal,
       // Merging narrows what the lesson rests on: it stays a member correction (and from a shared task) only if both sides are.
       ...(target.provenance.memberCorrection === true && draft.provenance.memberCorrection === true ? { memberCorrection: true } : {}),
       ...(target.provenance.claimsSupported === true && draft.provenance.claimsSupported === true ? { claimsSupported: true } : {}),
       ...(target.provenance.fromSharedTask === true && draft.provenance.fromSharedTask === true ? { fromSharedTask: true } : {}),
+      ...(people.readFrom.length === 0 ? {} : { readFrom: people.readFrom }), ...(people.coAuthored.length === 0 ? {} : { coAuthored: people.coAuthored }),
       minTrust: minTrust([target.provenance.minTrust, draft.provenance.minTrust]), audience: narrowestAudience([target.provenance.audience, draft.provenance.audience]),
       ...(target.provenance.sourceScopes === undefined && draft.provenance.sourceScopes === undefined ? {} : { sourceScopes: union(target.provenance.sourceScopes ?? [], draft.provenance.sourceScopes ?? [], 50) }),
     },
   };
 }
 
+export const MAX_AUTHORS = 20;
+/** The people a merge would name: the union of both lessons' read-from lists and co-author groups. */
+function unionPeople(target: Lesson, draft: LessonDraft): { readFrom: string[]; coAuthored: string[][] } {
+  const groups = new Map<string, string[]>();
+  for (const g of [...(target.provenance.coAuthored ?? []), ...(draft.provenance.coAuthored ?? [])]) groups.set(distinctIds(g).map(normId).sort().join("\u0001"), g);
+  return { readFrom: distinctIds([...(target.provenance.readFrom ?? []), ...(draft.provenance.readFrom ?? [])]), coAuthored: [...groups.values()] };
+}
 /**
  * LV-1 M3: a merge must keep EVERY task and event the two lessons name. The task lists are capped, and a cap that cut the draft's task id would leave its citations and authors on a lesson that no longer
- * names the task (a narrowed task's pull request would then show on a project-visible lesson). So a merge that would not fit is refused: the draft stands on its own as a candidate.
+ * names the task (a narrowed task's pull request would then show on a project-visible lesson). Lessons capture: it must also name every person both lessons name. A list that would pass its bound is never cut
+ * (a cut name is a person whose erasure no longer reaches the lesson). So a merge that would not fit is refused: the draft stands on its own as a candidate, for a person to decide.
  */
-const mergeFits = (target: Lesson, draft: LessonDraft): boolean =>
-  new Set([...target.provenance.supportTasks, ...draft.provenance.supportTasks]).size <= 50
-  && new Set([...target.provenance.sourceEvents, ...draft.provenance.sourceEvents]).size <= 50
-  && new Set([...(target.provenance.inheritedTasks ?? []), ...(draft.provenance.inheritedTasks ?? [])]).size <= 50
-  && new Set([...(target.provenance.sourceScopes ?? []), ...(draft.provenance.sourceScopes ?? [])]).size <= 50;
+const mergeFits = (target: Lesson, draft: LessonDraft): boolean => {
+  const people = unionPeople(target, draft);
+  return new Set([...target.provenance.supportTasks, ...draft.provenance.supportTasks]).size <= 50
+    && new Set([...target.provenance.sourceEvents, ...draft.provenance.sourceEvents]).size <= 50
+    && new Set([...(target.provenance.inheritedTasks ?? []), ...(draft.provenance.inheritedTasks ?? [])]).size <= 50
+    && new Set([...(target.provenance.sourceScopes ?? []), ...(draft.provenance.sourceScopes ?? [])]).size <= 50
+    && distinctIds([...target.provenance.authors, ...draft.provenance.authors]).length <= MAX_AUTHORS && people.readFrom.length <= MAX_READ_FROM && people.coAuthored.length <= MAX_CO_AUTHORED;
+};
 
 /** A merge into an active lesson may not lower its trust or narrow its audience: that is a different lesson. */
 const mergeAllowed = (target: Lesson, draft: LessonDraft): boolean =>
@@ -192,10 +205,20 @@ export async function curateDraft(deps: CurateDeps, key: ScopeKey, draft: Lesson
     }
     if (verdict === undefined || verdict === "different") continue;
 
+    if (verdict === "same" && mergeAllowed(other, draft) && !mergeFits(other, draft)) {
+      // Too many people to name on one lesson: keep the draft apart, for a person to decide, rather than cut names off the merged one.
+      await emitAudit(deps.audit, { action: "lesson.refused", workspaceId: key.workspaceId, project: key.project, lessonId: other.id, facts: { reason: "merge_too_many_people" } });
+      const apart = newLesson(deps, key, draft, "candidate", { reviewRequired: true, tierReasons: ["merge_too_many_people"] });
+      const written = await commitWith(deps, key, async () => [apart]);
+      if (written === undefined) return drop("conflict");
+      await deps.vectors.upsert(key.workspaceId, key.project, apart.id, vector, { status: "candidate" });
+      await emitAudit(deps.audit, { action: "lesson.candidate_created", workspaceId: key.workspaceId, project: key.project, lessonId: apart.id, facts: { type: apart.type } });
+      return { outcome: "added", lesson: apart, judgeEscalate };
+    }
     if (verdict === "same" && mergeAllowed(other, draft)) {
       const merged = await commitWith(deps, key, async () => {
         const fresh = await deps.store.get(key, other.id);
-        if (fresh === undefined || !mergeAllowed(fresh, draft)) return undefined;
+        if (fresh === undefined || !mergeAllowed(fresh, draft) || !mergeFits(fresh, draft)) return undefined;
         return [mergeInto(fresh, draft, nextVersion(fresh, await deps.store.versions(key, fresh.id)), deps.now(), new Set(Object.keys((await deps.store.flags(key)).pausedSources ?? {}).map(normSource)))];
       });
       if (merged === undefined) return drop("conflict");

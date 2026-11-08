@@ -12,7 +12,7 @@ import type { HumanEditExtractorPort, HumanEditInput } from "../team-record/sour
 import { modeAllows, resolveLearning, type LearningSettingsReader } from "./policy.js";
 import { processDraft, type ProcessDeps } from "./process.js";
 import { reflectSubject, type ReflectDeps } from "./reflect.js";
-import type { EvidenceSpan } from "./reflect-input.js";
+import type { EvidenceSpan, ReflectSubject } from "./reflect-input.js";
 import type { TaskSubjectSource } from "./task-end.js";
 import { buildTaskReflectSubject } from "./task-subject.js";
 
@@ -27,6 +27,9 @@ export interface HumanEditExtractorDeps {
   isErased(orgId: string, developerId: string, project: string): Promise<boolean>;
   log?: (event: string, fields: Record<string, string | number>) => void;
 }
+
+/** The most authors of one edit that are learned from. */
+export const MAX_EDIT_AUTHORS = 5;
 
 /** The kinds of the task's own spans a human edit's reflection keeps for context. */
 const CONTEXT_KINDS: ReadonlySet<string> = new Set(["intent", "plan"]);
@@ -48,6 +51,8 @@ export function createHumanEditExtractor(deps: HumanEditExtractorDeps): HumanEdi
     async extract(input) {
       const none = { candidates: 0 };
       if (input.authors.length === 0 || input.files.length === 0) return none;
+      // A lesson names every author and a provenance list holds 20 names: an edit by a crowd is not learned from (no name is ever cut).
+      if (input.authors.length > MAX_EDIT_AUTHORS) return none;
       const learning = await resolveLearning(deps.settings, input.workspaceId, input.project);
       if (!modeAllows(learning.mode, "reflect")) return none;
       const base = await deps.source.read({ workspaceId: input.workspaceId, taskId: input.taskId, context: "human_edit" });
@@ -62,11 +67,12 @@ export function createHumanEditExtractor(deps: HumanEditExtractorDeps): HumanEdi
       if (!allowed) return none;
       const context = (base.facts.rest.spans ?? []).filter((span) => CONTEXT_KINDS.has(span.kind));
       const links = [...new Set([...(base.facts.rest.links ?? []), input.link])];
-      const subject = buildTaskReflectSubject({
+      const subject: ReflectSubject = buildTaskReflectSubject({
         ...base.facts, sendBacks: [],
         rest: { ...base.facts.rest, links, spans: [...context, ...input.files.map((file) => editSpan(file, input))] },
       });
-      const result = await reflectSubject(deps.reflect, subject);
+      // A lesson from an edit must stand on the edit: a candidate that cites no edit span is dropped (the people named come from everything read, but the lesson is about the lines).
+      const result = await reflectSubject(deps.reflect, { ...subject, requireEvidenceKind: "human_edit" });
       if (result.reason === "model_error") throw new Error("the model call failed");
       if (result.status !== "ok") return none;
       const key = { workspaceId: input.workspaceId, project: input.project };

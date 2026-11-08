@@ -486,7 +486,11 @@ export const WorkflowFeedbackShownSchema = z.object({
     /** `at` of a comment: when the host last changed it (epoch milliseconds), as the agent was shown it. A comment edited since it was written reads differently from one never edited. */
     pulls: z.array(z.object({
       repositoryId: z.string().trim().min(1).max(200), number: z.number().int().positive(),
-      comments: z.array(z.object({ id: FeedbackIdSchema, at: z.number().int().nonnegative() }).strict()).max(FEEDBACK_SHOWN_MAX_IDS),
+      comments: z.array(z.object({
+        id: FeedbackIdSchema, at: z.number().int().nonnegative(),
+        /** Whether the host records an edit of the comment (GraphQL `lastEditedAt`): false = never edited, true = edited, absent = the host did not say. Only `false` proves a review body is its author's own words. */
+        edited: z.boolean().optional(),
+      }).strict()).max(FEEDBACK_SHOWN_MAX_IDS),
     }).strict()).max(32),
   }).strict()).max(FEEDBACK_SHOWN_MAX_ROUNDS),
   incomplete: z.literal(true).optional(),
@@ -818,6 +822,14 @@ export const WorkflowPullRequestUpdateFailureSchema = z.object({
   cause: z.enum(WORKFLOW_PULL_REQUEST_UPDATE_CAUSES).optional(),
 }).strict();
 
+/** The task snapshot's storage budget for its workflow metadata (the feedback, canvas and dependency records), in bytes of JSON. */
+export const WORKFLOW_METADATA_BUDGET_BYTES = 262_144;
+/** The bytes of JSON the metadata of a workflow takes against `WORKFLOW_METADATA_BUDGET_BYTES`. One definition, so a writer can measure a record before adding it. */
+export function workflowMetadataBytes(workflow: { [K in "feedbackReview" | "feedbackDecisions" | "feedbackDispatchApproval" | "feedbackNotes" | "feedbackReviewHistory" | "feedbackShown" | "feedbackThreadObservations" | "verificationRetries" | "canvasLineage" | "canvasCloseout" | "canvasCloseoutAttempt" | "workflowDependenciesApproval" | "workflowDependenciesOperationId" | "workflowDependenciesProgress"]?: unknown }): number {
+  const taskMetadata = { feedbackReview: workflow.feedbackReview, feedbackDecisions: workflow.feedbackDecisions, feedbackDispatchApproval: workflow.feedbackDispatchApproval, feedbackNotes: workflow.feedbackNotes, feedbackReviewHistory: workflow.feedbackReviewHistory, feedbackShown: workflow.feedbackShown, feedbackThreadObservations: workflow.feedbackThreadObservations, verificationRetries: workflow.verificationRetries, canvasLineage: workflow.canvasLineage, canvasCloseout: workflow.canvasCloseout, canvasCloseoutAttempt: workflow.canvasCloseoutAttempt, workflowDependenciesApproval: workflow.workflowDependenciesApproval, workflowDependenciesOperationId: workflow.workflowDependenciesOperationId, workflowDependenciesProgress: workflow.workflowDependenciesProgress };
+  return new TextEncoder().encode(JSON.stringify(taskMetadata)).length;
+}
+
 export const WorkflowSnapshotShapeSchema = z.object({
   schemaVersion: z.literal(1),
   definitionId: z.literal("agentx-task-to-pr"),
@@ -973,8 +985,7 @@ export const WorkflowSnapshotShapeSchema = z.object({
       context.addIssue({ code: "custom", path: ["programRounds"], message: "review rounds are counted only for review steps of the program" });
     }
   }
-  const taskMetadata = { feedbackReview: workflow.feedbackReview, feedbackDecisions: workflow.feedbackDecisions, feedbackDispatchApproval: workflow.feedbackDispatchApproval, feedbackNotes: workflow.feedbackNotes, feedbackReviewHistory: workflow.feedbackReviewHistory, feedbackShown: workflow.feedbackShown, feedbackThreadObservations: workflow.feedbackThreadObservations, verificationRetries: workflow.verificationRetries, canvasLineage: workflow.canvasLineage, canvasCloseout: workflow.canvasCloseout, canvasCloseoutAttempt: workflow.canvasCloseoutAttempt, workflowDependenciesApproval: workflow.workflowDependenciesApproval, workflowDependenciesOperationId: workflow.workflowDependenciesOperationId, workflowDependenciesProgress: workflow.workflowDependenciesProgress };
-  if (new TextEncoder().encode(JSON.stringify(taskMetadata)).length > 262_144) {
+  if (workflowMetadataBytes(workflow) > WORKFLOW_METADATA_BUDGET_BYTES) {
     context.addIssue({ code: "custom", message: "workflow metadata exceeds the task snapshot storage budget" });
   }
   const dependencyApproval = workflow.workflowDependenciesApproval;

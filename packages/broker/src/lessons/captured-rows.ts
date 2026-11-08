@@ -27,15 +27,18 @@ export interface CapturedWords {
   /** The record's name of the place's source (`github`, `codehost:<name>`). */
   source: string;
   /**
-   * Whether the text the agent was shown is this author's own: no other person has a row on the comment, and either it is a review (only its author can edit its body) or the comment was shown exactly
-   * as first written (`shownAt` is not later than when it was first written). A change by an unlinked person leaves no row, so only a comment never changed since it was written is proved.
-   * False when `shownAt` is not given.
+   * Whether the text the agent was shown is this author's own: no other person has a row on the comment, the host does not record an edit of it, and the comment was shown exactly as first written
+   * (`shownAt` is not later than when it was first written). A change by an unlinked, excluded or since-erased person leaves no row, so the rows alone cannot prove it: a REVIEW body is proved only when the
+   * host said at collection that it was never edited (`edited === false`: anyone with write access may edit another person's review, and nothing else would show it); a comment is refused when the host said
+   * it was edited, and otherwise needs the time check. False when `shownAt` is not given (comments).
    */
   ownText: boolean;
   /** The inline comment's file, the line it was made on and the commit it was made on, when the host said them. */
   path?: string | undefined;
   line?: number | undefined;
   commitId?: string | undefined;
+  /** Which side of the diff `line` is numbered on (`LEFT`: the base file; `RIGHT`: the file at `commitId`), when the host said. */
+  side?: "LEFT" | "RIGHT" | undefined;
 }
 
 export type { PullRequestSurface };
@@ -43,8 +46,8 @@ export type { PullRequestSurface };
 export interface CapturedRowReader {
   /** The "remember this" note of one correction (the note id is the correction's id). */
   rememberedNote(input: { workspaceId: string; project: string; taskId: string; noteId: string }): Promise<CapturedWords | undefined>;
-  /** One comment or review of a pull request, as its author first wrote it. `shownAt`: when the host last changed the comment, as the agent was shown it (epoch milliseconds), for `ownText`. */
-  pullRequestWords(input: { workspaceId: string; project: string; host: string; repository: string; number: number; surface: PullRequestSurface; commentId: string; shownAt?: number }): Promise<CapturedWords | undefined>;
+  /** One comment or review of a pull request, as its author first wrote it. `shownAt`: when the host last changed the comment, as the agent was shown it (epoch milliseconds); `edited`: whether the host recorded an edit of it at collection (absent: not said). Both for `ownText`. */
+  pullRequestWords(input: { workspaceId: string; project: string; host: string; repository: string; number: number; surface: PullRequestSurface; commentId: string; shownAt?: number; edited?: boolean }): Promise<CapturedWords | undefined>;
 }
 
 const MAX_ROWS = 20;
@@ -83,9 +86,10 @@ export function tableCapturedRows(table: TeamRecordTable, nowSeconds?: () => num
     const line = num(event.structured?.line);
     const path = str(event.structured?.path, 1_000);
     const commitId = str(event.structured?.commitId, 64);
+    const side = event.structured?.side === "LEFT" || event.structured?.side === "RIGHT" ? event.structured.side : undefined;
     return {
       id: event.sourceRef.id, authorDeveloperId: actor.developerId, authorSourceId: actor.sourceId, source: event.source, ownText: false, text: event.text, audience: event.audience, scope: event.scope,
-      ...(path === undefined ? {} : { path }), ...(line === undefined ? {} : { line }), ...(commitId === undefined ? {} : { commitId }),
+      ...(path === undefined ? {} : { path }), ...(line === undefined ? {} : { line }), ...(commitId === undefined ? {} : { commitId }), ...(side === undefined ? {} : { side }),
     };
   };
 
@@ -111,7 +115,9 @@ export function tableCapturedRows(table: TeamRecordTable, nowSeconds?: () => num
         // The text is the author's own when nobody else has a row on the comment AND it cannot have been changed by someone who has none.
         const onlyAuthor = all.every((row) => row.actor?.developerId === found.authorDeveloperId);
         const writtenAt = firstWrittenAt(event.sourceRef.version ?? "");
-        const unchanged = input.surface === "review" || (input.shownAt !== undefined && writtenAt !== undefined && input.shownAt <= writtenAt);
+        const unchanged = input.surface === "review"
+          ? input.edited === false
+          : input.edited !== true && input.shownAt !== undefined && writtenAt !== undefined && input.shownAt <= writtenAt;
         return { ...found, ownText: onlyAuthor && unchanged };
       }
       return undefined;

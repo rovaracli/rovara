@@ -1388,7 +1388,7 @@ describe("bounded pull request merge observation", () => {
 
 
 describe("current PR feedback API reads", () => {
-  function fixture(options: { wrongScope?: boolean; changedHead?: boolean; nested?: boolean; exactReviewTime?: boolean; numericIds?: boolean; emptyReview?: boolean } = {}) {
+  function fixture(options: { wrongScope?: boolean; changedHead?: boolean; nested?: boolean; exactReviewTime?: boolean; numericIds?: boolean; emptyReview?: boolean; lastEditedAt?: string | null } = {}) {
     const { privateKey } = generateKeyPairSync("rsa", { modulusLength: 2048 });
     const root = "https://github.com/ps06756/personal-website-test/pull/42";
     const api = "https://api.github.com/repos/ps06756/personal-website-test";
@@ -1410,10 +1410,11 @@ describe("current PR feedback API reads", () => {
           const variables = request.variables;
           if (request.query.includes("reviews(first")) return Response.json({ data: { repository: { nameWithOwner: "ps06756/personal-website-test", pullRequest: { number: 42, headRefOid: "a".repeat(40), reviews: page(options.emptyReview
             ? [{ fullDatabaseId: "5480349109", body: "", updatedAt: "2026-10-05T13:00:00Z", url: `${root}#pullrequestreview-5480349109` }]
-            : [{ fullDatabaseId: gid(1), body: "comment 1", updatedAt: "2026-10-05T13:00:00Z", url: `${root}#pullrequestreview-1` }]) } } } });
+            : [{ fullDatabaseId: gid(1), body: "comment 1", updatedAt: "2026-10-05T13:00:00Z", url: `${root}#pullrequestreview-1`, ...("lastEditedAt" in options ? { lastEditedAt: options.lastEditedAt } : {}) }]) } } } });
           const threadId = typeof variables.threadId === "string" ? variables.threadId : undefined;
-          const connection = page([{ fullDatabaseId: gid(2) }], !!options.nested && !threadId, "comment-next");
-          const thread = { id: "thread-1", isResolved: !options.emptyReview, repository: { nameWithOwner: "ps06756/personal-website-test" }, pullRequest: { number: 42 }, comments: threadId ? page([{ fullDatabaseId: gid(4) }]) : connection };
+          const edit = "lastEditedAt" in options ? { lastEditedAt: options.lastEditedAt } : {};
+          const connection = page([{ fullDatabaseId: gid(2), ...edit }], !!options.nested && !threadId, "comment-next");
+          const thread = { id: "thread-1", isResolved: !options.emptyReview, repository: { nameWithOwner: "ps06756/personal-website-test" }, pullRequest: { number: 42 }, comments: threadId ? page([{ fullDatabaseId: gid(4), ...edit }]) : connection };
           return Response.json({ data: threadId ? { node: thread } : { repository: { nameWithOwner: "ps06756/personal-website-test", pullRequest: { number: 42, headRefOid: "a".repeat(40), reviewThreads: page([thread]) } } } });
         }
         if (requestUrl.includes("/reviews?")) {
@@ -1434,6 +1435,17 @@ describe("current PR feedback API reads", () => {
     const { provider } = fixture();
     const result = await provider.getPullRequestFeedback("https://github.com/ps06756/personal-website-test.git", 42, { system: "private-install" });
     expect(result.comments[0]).toMatchObject({ authorId: "12345", authorType: "User" });
+  });
+  it("R3: records whether the host says a review body or inline comment was edited (lastEditedAt), beside the comments; a host that says nothing is unknown", async () => {
+    const never = await fixture({ nested: true, lastEditedAt: null }).provider.getPullRequestFeedback("https://github.com/ps06756/personal-website-test.git", 42, { system: "private-install" });
+    expect(never.edits).toEqual({ "review:1": false, "review_comment:2": false, "review_comment:4": false });
+    const edited = await fixture({ nested: true, lastEditedAt: "2026-10-06T10:00:00Z" }).provider.getPullRequestFeedback("https://github.com/ps06756/personal-website-test.git", 42, { system: "private-install" });
+    expect(edited.edits).toEqual({ "review:1": true, "review_comment:2": true, "review_comment:4": true });
+    const silent = await fixture({ nested: true }).provider.getPullRequestFeedback("https://github.com/ps06756/personal-website-test.git", 42, { system: "private-install" });
+    expect(silent.edits).toEqual({});
+    // The marker is never part of a comment (the comments are digested into the bundles).
+    expect(JSON.stringify(never.comments)).not.toContain("lastEditedAt");
+    expect(never.comments.every((comment) => !("edited" in comment))).toBe(true);
   });
   it("collects paginated discussion, review bodies and inline comment IDs with current thread state", async () => {
     const { provider, requests } = fixture({ nested: true });

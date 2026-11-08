@@ -354,7 +354,11 @@ describe("reverts of Rovara pull requests", () => {
     await tap.handle(revertPr({ body: "Reverts other/repo#5", version: "closed:10" }));
     await tap.handle(revertPr({ body: "Reverts acme/shop#99", version: "closed:11" }));
     expect(w.sink.kinds().filter((kind) => kind === "github.revert")).toEqual([]);
+    // R7: a revert pull request nobody is known to have merged (or a non-member merged) records nothing.
     await tap.handle(revertPr({ version: "closed:12" }));
+    await tap.handle(revertPr({ version: "closed:13", mergedBy: mallory }));
+    expect(w.sink.kinds().filter((kind) => kind === "github.revert")).toEqual([]);
+    await tap.handle(revertPr({ version: "closed:14", mergedBy: alice }));
     expect(w.sink.kinds().filter((kind) => kind === "github.revert")).toEqual(["github.revert"]);
   });
 

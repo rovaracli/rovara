@@ -36,7 +36,7 @@ function setup(fixture: Fixture = {}, over: Partial<LessonSubjectSourceDeps> = {
   const asked: string[] = [];
   const captured: CapturedRowReader = {
     rememberedNote: async ({ noteId }) => fixture.notes?.[noteId],
-    pullRequestWords: async ({ surface, commentId, repository, number, shownAt }) => { asked.push(`${repository}#${String(number)}:${surface}:${commentId}${shownAt === undefined ? "" : `@${String(shownAt)}`}`); if (fixture.lookupThrows === true) throw new Error("table down"); return fixture.comments?.[`${surface}:${commentId}`]; },
+    pullRequestWords: async ({ surface, commentId, repository, number, shownAt, edited }) => { asked.push(`${repository}#${String(number)}:${surface}:${commentId}${shownAt === undefined ? "" : `@${String(shownAt)}`}${edited === undefined ? "" : `/edited=${String(edited)}`}`); if (fixture.lookupThrows === true) throw new Error("table down"); return fixture.comments?.[`${surface}:${commentId}`]; },
   };
   const source = lessonSubjectSource({
     documentClient: db, tableName: "state", repositoriesOf: async () => ["api"],
@@ -120,7 +120,7 @@ describe("a reviewer's comments on the task's pull requests", () => {
     const COMMIT = "c".repeat(40);
     const patch = "@@ -10,4 +10,4 @@\n a\n b\n-the commented line 12\n+the fixed line\n d";
     const view = (over: Partial<PullRequestFeedbackView> = {}): PullRequestFeedbackView => ({ comments: [{ kind: "review_comment", id: "11" }], headRevision: HEAD, sourceBranch: "rovara/x", ...over });
-    const one = { "review_comment:11": words("acme/api#pr7:review_comment11", "rae", "Use withRetry", { path: "src/a.ts", line: 12, commitId: COMMIT }) };
+    const one = { "review_comment:11": words("acme/api#pr7:review_comment11", "rae", "Use withRetry", { path: "src/a.ts", line: 12, commitId: COMMIT, side: "RIGHT" }) };
     const ledOf = async (files: Array<{ path: string; patch?: string }> | undefined, over: Partial<Parameters<typeof setup>[1]> = {}, feedbackOver: Partial<PullRequestFeedbackView> = {}) => {
       const asked: unknown[] = [];
       const { source } = setup({ comments: one, feedback: view(feedbackOver) }, { humanChangedFiles: async (input) => { asked.push(input); return files; }, ...over });
@@ -140,9 +140,23 @@ describe("a reviewer's comments on the task's pull requests", () => {
       expect((await ledOf([{ path: "src/a.ts", patch }], {}, { headRevision: COMMIT })).asked).toEqual([]);
       expect((await ledOf([{ path: "src/a.ts", patch }], { humanChangedFiles: async () => { throw new Error("host down"); } })).led).toBeUndefined();
     });
+    it("R6: only a RIGHT-side comment drives it: a comment on a deleted line (LEFT) or one whose side the host did not say is numbered in another file and tests the wrong line", async () => {
+      const withSide = async (side: "LEFT" | "RIGHT" | undefined) => {
+        const asked: unknown[] = [];
+        const row = words("acme/api#pr7:review_comment11", "rae", "Use withRetry", { path: "src/a.ts", line: 12, commitId: COMMIT, ...(side === undefined ? {} : { side }) });
+        const { source } = setup({ comments: { "review_comment:11": row }, feedback: view() }, { humanChangedFiles: async (input) => { asked.push(input); return [{ path: "src/a.ts", patch }]; } });
+        return { led: (await spansOf(source)).find((s) => s.kind === "pr_comment")!.ledToChange, asked };
+      };
+      expect((await withSide("RIGHT")).led).toBe(true);
+      for (const side of ["LEFT", undefined] as const) {
+        const result = await withSide(side);
+        expect(result.led).toBeUndefined();
+        expect(result.asked).toEqual([]);
+      }
+    });
     it("reads each commit's range once, however many comments were made on it", async () => {
       const asked: unknown[] = [];
-      const many = { "review_comment:11": one["review_comment:11"], "review_comment:12": words("acme/api#pr7:review_comment12", "rae", "And here", { path: "src/a.ts", line: 40, commitId: COMMIT }) };
+      const many = { "review_comment:11": one["review_comment:11"], "review_comment:12": words("acme/api#pr7:review_comment12", "rae", "And here", { path: "src/a.ts", line: 40, commitId: COMMIT, side: "RIGHT" }) };
       const { source } = setup({ comments: many, feedback: view({ comments: [{ kind: "review_comment", id: "11" }, { kind: "review_comment", id: "12" }] }) }, { humanChangedFiles: async (input) => { asked.push(input); return [{ path: "src/a.ts", patch }]; } });
       const spans = (await spansOf(source)).filter((s) => s.kind === "pr_comment");
       expect(spans.map((s) => s.ledToChange)).toEqual([true, undefined]);
@@ -221,7 +235,7 @@ describe("the merged commit", () => {
 
 describe("M4 relaxed: a task whose agent was shown pull request comments is steered by named members only on proof", () => {
   const AT = 1_762_000_000_000;
-  const shownRecord = (ids: string[], extra: Record<string, unknown> = {}) => ({ rounds: [{ at: "2026-11-01T00:00:00.000Z", pulls: [{ repositoryId: "api", number: 7, comments: ids.map((id) => ({ id, at: AT })) }] }], ...extra });
+  const shownRecord = (ids: string[], extra: Record<string, unknown> = {}, edited?: boolean) => ({ rounds: [{ at: "2026-11-01T00:00:00.000Z", pulls: [{ repositoryId: "api", number: 7, comments: ids.map((id) => ({ id, at: AT, ...(edited === undefined ? {} : { edited }) })) }] }], ...extra });
   const history = [{ sha256: "4".repeat(64), objectKey: "k" }];
   const comments = {
     "review_comment:11": words("acme/api#pr7:review_comment11", "rae", "Use withRetry", { path: "src/a.ts", line: 12 }),
@@ -238,6 +252,16 @@ describe("M4 relaxed: a task whose agent was shown pull request comments is stee
     const { steering: trust, asked } = await steering({});
     expect(trust).toEqual(["member"]);
     expect(asked).toEqual([`acme/api#7:review_comment:11@${AT}`, `acme/api#7:discussion:13@${AT}`, `acme/api#7:review:14@${AT}`]);
+  });
+
+  it("R3: the host's record of an edit is passed on, and is sticky across rounds: one round that saw the comment edited (or did not say) decides", async () => {
+    const never = await steering({ workflow: { feedbackShown: shownRecord(ALL, {}, false) } });
+    expect(never.asked).toEqual([`acme/api#7:review_comment:11@${AT}/edited=false`, `acme/api#7:discussion:13@${AT}/edited=false`, `acme/api#7:review:14@${AT}/edited=false`]);
+    const twoRounds = { rounds: [shownRecord(ALL, {}, false).rounds[0]!, shownRecord(["review:14"], {}, true).rounds[0]!] };
+    const mixed = await steering({ workflow: { feedbackShown: twoRounds } });
+    expect(mixed.asked).toContain(`acme/api#7:review:14@${AT}/edited=true`);
+    const unknownLater = { rounds: [shownRecord(ALL, {}, false).rounds[0]!, shownRecord(["review:14"]).rounds[0]!] };
+    expect((await steering({ workflow: { feedbackShown: unknownLater } })).asked.some((line) => line.startsWith("acme/api#7:review:14") && !line.includes("/edited="))).toBe(true);
   });
 
   it("every round counts: a comment shown only in an earlier round is proved too, and one that cannot be proved there keeps the task unnamed", async () => {

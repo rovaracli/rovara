@@ -8,7 +8,7 @@ import { designReviewActive, designReviewAwaitsDesign, rearmedDesignReview, work
 import { redactText } from "./redaction.js";
 import type { WorkflowFeedbackShownSchema, WorkflowAcceptedFindingSchema, WorkflowFeedbackBundleRefSchema, WorkflowFeedbackReviewRefSchema, WorkflowFeedbackApprovalBindingSchema, WorkflowFeedbackThreadObservationSchema, WorkflowStageSchema, WorkflowStateSchema, WorkflowProgramSchema, WorkflowCheckPolicySchema, WorkflowPathSchema, WorkflowReviewPhaseSchema, WorkflowCanvasLineageSchema, WorkflowCanvasCloseoutSchema, WorkflowCanvasCloseoutAttemptSchema, WORKFLOW_PULL_REQUEST_UPDATE_CAUSES, WorkflowReviewBaseSchema} from "./task-workflow.js";
 import { WORKFLOW_AGENTX_ACTOR_ID, WORKFLOW_AUTO_ACTION_LIMIT, WORKFLOW_AUTO_RETRY_LIMIT, WORKFLOW_AUTO_SEND_BACK_LIMIT, type WORKFLOW_AUTO_STAGES, WorkflowDecisionRecordSchema } from "./task-workflow.js";
-import { FEEDBACK_SHOWN_MAX_ROUNDS, FEEDBACK_SHOWN_MAX_IDS, openSecondReviewFindings, ActorIdSchema, WORKFLOW_AUTO_PUBLISH_FAILED_MESSAGE, isStepNotRunReason, CandidateRepositorySchema, CandidateManifestSchema, VerificationResultsSchema, WorkflowPullRequestSchema, FeedbackCommentRefSchema, WorkflowFeedbackBundleMetadataSchema, FeedbackIdSchema, WorkflowFeedbackFindingRefSchema, WorkflowFeedbackReviewMetadataSchema, WorkflowFeedbackNoteSchema, WorkflowFeedbackDecisionSchema, WorkflowArtifactSchema, WorkflowDecisionSchema, WorkflowCheckProposalSchema, WorkflowCheckSchema, WORKFLOW_PROPOSED_CHECKS_MAX, type WorkflowCheck, type WorkflowCheckPolicy, WorkflowSnapshotShapeSchema, WorkflowAnswerSchema, WORKFLOW_DECISION_ANSWERS_MAX, WORKFLOW_DECISION_COMMENTS_MAX, workflowIsReviewOnly, WORKFLOW_BLOCK_REASONS, WorkflowReviewReportSchema, reviewCleared, PROGRAM_ROUNDS_MAX, WorkflowPullRequestUpdateFailureSchema, WorkflowFeedbackReviewSchema, ReviewedWorkflowFeedbackSchema, findingBlocks, findingAccepted, blockingFindings, workflowFindingFingerprint, WORKFLOW_ACCEPTED_FINDINGS_MAX , type WorkflowDefinitionVersion } from "./task-workflow.js";
+import { FEEDBACK_SHOWN_MAX_ROUNDS, FEEDBACK_SHOWN_MAX_IDS, WORKFLOW_METADATA_BUDGET_BYTES, workflowMetadataBytes, openSecondReviewFindings, ActorIdSchema, WORKFLOW_AUTO_PUBLISH_FAILED_MESSAGE, isStepNotRunReason, CandidateRepositorySchema, CandidateManifestSchema, VerificationResultsSchema, WorkflowPullRequestSchema, FeedbackCommentRefSchema, WorkflowFeedbackBundleMetadataSchema, FeedbackIdSchema, WorkflowFeedbackFindingRefSchema, WorkflowFeedbackReviewMetadataSchema, WorkflowFeedbackNoteSchema, WorkflowFeedbackDecisionSchema, WorkflowArtifactSchema, WorkflowDecisionSchema, WorkflowCheckProposalSchema, WorkflowCheckSchema, WORKFLOW_PROPOSED_CHECKS_MAX, type WorkflowCheck, type WorkflowCheckPolicy, WorkflowSnapshotShapeSchema, WorkflowAnswerSchema, WORKFLOW_DECISION_ANSWERS_MAX, WORKFLOW_DECISION_COMMENTS_MAX, workflowIsReviewOnly, WORKFLOW_BLOCK_REASONS, WorkflowReviewReportSchema, reviewCleared, PROGRAM_ROUNDS_MAX, WorkflowPullRequestUpdateFailureSchema, WorkflowFeedbackReviewSchema, ReviewedWorkflowFeedbackSchema, findingBlocks, findingAccepted, blockingFindings, workflowFindingFingerprint, WORKFLOW_ACCEPTED_FINDINGS_MAX , type WorkflowDefinitionVersion } from "./task-workflow.js";
 import { isRunLimitBlockReason } from "./spend.js";
 import { createHash } from "node:crypto";
 import { z } from "zod";
@@ -1521,9 +1521,11 @@ export function recordWorkflowBranchSync(currentInput: unknown, input: { reposit
 /** Saves recoverable review input without inventing an independent report or code authority. */
 export function collectWorkflowFeedbackBundles(currentInput: unknown, input: {
   bundleRefs: unknown; threadObservations: unknown;
+  /** Per pull request, which of its comments the host records an edit of (`false` = never edited). Comments not listed are unknown. Lessons capture only; absent or malformed means nothing is known. */
+  edits?: ReadonlyArray<{ repositoryId: string; number: number; edits: Readonly<Record<string, boolean>> }>;
 }, now: string): WorkflowSnapshot {
   const current = validSnapshot(currentInput);
-  const collected = WorkflowFeedbackReviewSchema.safeParse({ ...input, status: "COLLECTING" });
+  const collected = WorkflowFeedbackReviewSchema.safeParse({ bundleRefs: input.bundleRefs, threadObservations: input.threadObservations, status: "COLLECTING" });
   if (!collected.success || collected.data.status !== "COLLECTING"
     || current.stage !== "WAIT_FOR_MERGE" || current.state !== "WAITING"
     || current.pullRequests?.some(pr => (pr.state === "OPEN" || pr.state === "UNKNOWN")
@@ -1537,9 +1539,10 @@ export function collectWorkflowFeedbackBundles(currentInput: unknown, input: {
   const previousReport = current.feedbackReview?.reviewRef;
   const history = [...(current.feedbackReviewHistory ?? [])];
   if (previousReport && !history.some(r => r.sha256 === previousReport.sha256)) history.push(previousReport);
-  return WorkflowSnapshotSchema.parse({ ...current, revision: current.revision + 1, feedback: undefined,
-    feedbackReview: collected.data, feedbackReviewHistory: history, feedbackShown: feedbackShownAfter(current, collected.data.bundleRefs, collected.data.threadObservations, now),
-    feedbackDispatchApproval: undefined, feedbackCiFailures: undefined, updatedAt: now });
+  const next = { ...current, revision: current.revision + 1, feedback: undefined,
+    feedbackReview: collected.data, feedbackReviewHistory: history,
+    feedbackDispatchApproval: undefined, feedbackCiFailures: undefined, updatedAt: now };
+  return WorkflowSnapshotSchema.parse({ ...next, feedbackShown: feedbackShownAfter(current, next, collected.data.bundleRefs, collected.data.threadObservations, now, input.edits) });
 }
 
 /**
@@ -1547,15 +1550,19 @@ export function collectWorkflowFeedbackBundles(currentInput: unknown, input: {
  * counts as shown, not only the ones the owner later selects. A round that cannot be recorded in full (the list is full, or an earlier round was collected before this record existed) marks the whole
  * record `incomplete`, and a reader then takes the task as steered by someone unnamed.
  */
-function feedbackShownAfter(current: WorkflowSnapshot, bundleRefs: readonly WorkflowFeedbackBundleRef[], threadObservations: readonly WorkflowFeedbackThreadObservation[], now: string): WorkflowFeedbackShown {
+function feedbackShownAfter(
+  current: WorkflowSnapshot, next: Parameters<typeof workflowMetadataBytes>[0], bundleRefs: readonly WorkflowFeedbackBundleRef[], threadObservations: readonly WorkflowFeedbackThreadObservation[], now: string,
+  edits: ReadonlyArray<{ repositoryId: string; number: number; edits: Readonly<Record<string, boolean>> }> | undefined,
+): WorkflowFeedbackShown {
   const prior = current.feedbackShown;
   const earlierUnrecorded = prior === undefined && (current.feedbackReview !== undefined || (current.feedbackReviewHistory ?? []).length > 0);
-  const byPull = new Map<string, { repositoryId: string; number: number; comments: Map<string, { id: string; at: number }> }>();
+  const byPull = new Map<string, { repositoryId: string; number: number; comments: Map<string, { id: string; at: number; edited?: boolean }> }>();
   const add = (repositoryId: string, number: number, id: string, updatedAt: string): void => {
     const key = `${repositoryId}\u0000${number}`;
     const entry = byPull.get(key) ?? { repositoryId, number, comments: new Map() };
     const at = Date.parse(updatedAt);
-    entry.comments.set(`${id}\u0000${at}`, { id, at: Number.isFinite(at) && at >= 0 ? Math.floor(at) : 0 });
+    const edited = (edits ?? []).find(item => item.repositoryId === repositoryId && item.number === number)?.edits[id];
+    entry.comments.set(`${id}\u0000${at}`, { id, at: Number.isFinite(at) && at >= 0 ? Math.floor(at) : 0, ...(typeof edited === "boolean" ? { edited } : {}) });
     byPull.set(key, entry);
   };
   for (const bundle of bundleRefs) for (const comment of bundle.comments) add(bundle.repositoryId, bundle.number, comment.id, comment.updatedAt);
@@ -1564,10 +1571,16 @@ function feedbackShownAfter(current: WorkflowSnapshot, bundleRefs: readonly Work
   const used = (prior?.rounds ?? []).reduce((sum, round) => sum + round.pulls.reduce((inner, pull) => inner + pull.comments.length, 0), 0);
   const adding = pulls.reduce((sum, pull) => sum + pull.comments.length, 0);
   const rounds = [...(prior?.rounds ?? [])];
-  let incomplete = prior?.incomplete === true || earlierUnrecorded;
-  if (pulls.length > 32 || rounds.length >= FEEDBACK_SHOWN_MAX_ROUNDS || used + adding > FEEDBACK_SHOWN_MAX_IDS || pulls.some(pull => pull.comments.length > FEEDBACK_SHOWN_MAX_IDS)) incomplete = true;
-  else rounds.push({ at: now, pulls });
-  return { rounds, ...(incomplete ? { incomplete: true as const } : {}) };
+  const wasIncomplete = prior?.incomplete === true || earlierUnrecorded;
+  const full = pulls.length > 32 || rounds.length >= FEEDBACK_SHOWN_MAX_ROUNDS || used + adding > FEEDBACK_SHOWN_MAX_IDS || pulls.some(pull => pull.comments.length > FEEDBACK_SHOWN_MAX_IDS);
+  if (!full) {
+    // A large pull request must not push the task snapshot over its metadata budget (that would stop feedback collection, a core flow): when this round would not fit, it is not added and the record
+    // is marked incomplete. If even the record as it stands does not fit with the mark, the rounds go and only the mark stays.
+    const withRound = { rounds: [...rounds, { at: now, pulls }], ...(wasIncomplete ? { incomplete: true as const } : {}) };
+    if (workflowMetadataBytes({ ...next, feedbackShown: withRound }) <= WORKFLOW_METADATA_BUDGET_BYTES) return withRound;
+  }
+  const marked = { rounds, incomplete: true as const };
+  return workflowMetadataBytes({ ...next, feedbackShown: marked }) <= WORKFLOW_METADATA_BUDGET_BYTES ? marked : { rounds: [], incomplete: true as const };
 }
 
 /** Registers immutable reconciled inputs and a separate AI advisory report; never starts code. */

@@ -110,7 +110,25 @@ describe("whose text the comment is (the proof the pull request feedback flow ne
     expect(await tableCapturedRows(w.table).pullRequestWords({ ...where, commentId: "11", shownAt: CREATED_MS })).toMatchObject({ authorDeveloperId: "dev-1", ownText: false });
   });
 
-  it("a review's body can only be edited by its author: edits by the same author keep it their own; an edit row by anyone else does not", async () => {
+  it("R3: a review body is proved only when the host said at collection it was never edited; a comment the host says was edited is not the author's own", async () => {
+    const w = await setup();
+    const review = (id: string) => comment(id, {
+      kind: "github.review", sourceRef: { system: "github", id: pullRequestWordsId(REPO, 7, "review", id), parentId: `${REPO}#pr7`, version: "submitted:2026-10-30T10:00:00Z:abc", order: 1 }, text: "Needs a retry wrapper", structured: { prNumber: 7 },
+    });
+    await w.sink.put(review("5"));
+    await w.sink.put(comment("11"));
+    const rows = tableCapturedRows(w.table);
+    // A review with no row of an edit: anyone with write access may have edited it, leaving no row. Only the host's own "never edited" proves it.
+    expect(await rows.pullRequestWords({ ...where, surface: "review", commentId: "5" })).toMatchObject({ ownText: false });
+    expect(await rows.pullRequestWords({ ...where, surface: "review", commentId: "5", edited: true })).toMatchObject({ ownText: false });
+    expect(await rows.pullRequestWords({ ...where, surface: "review", commentId: "5", edited: false })).toMatchObject({ ownText: true });
+    // A comment: the time check still applies, and an edit the host records disproves it.
+    expect(await rows.pullRequestWords({ ...where, commentId: "11", shownAt: CREATED_MS, edited: true })).toMatchObject({ ownText: false });
+    expect(await rows.pullRequestWords({ ...where, commentId: "11", shownAt: CREATED_MS, edited: false })).toMatchObject({ ownText: true });
+    expect(await rows.pullRequestWords({ ...where, commentId: "11", shownAt: CREATED_MS })).toMatchObject({ ownText: true });
+  });
+
+  it("a review's body: an edit row by anyone else disproves it even when the host says never edited; edits by the same author keep it their own", async () => {
     const w = await setup();
     const review = (id: string, version: string, who?: { sourceId: string; developerId: string; trust: "member" }) => comment(id, {
       kind: "github.review", sourceRef: { system: "github", id: pullRequestWordsId(REPO, 7, "review", id), parentId: `${REPO}#pr7`, version, order: version.startsWith("submitted") ? 1 : 2 }, text: "Needs a retry wrapper", structured: { prNumber: 7 },
@@ -121,8 +139,8 @@ describe("whose text the comment is (the proof the pull request feedback flow ne
     await w.sink.put(review("6", "submitted:2026-10-30T10:00:00Z:abc"));
     await w.sink.put(review("6", "edited:delivery-2:def", { sourceId: "2002", developerId: "dev-2", trust: "member" }));
     const rows = tableCapturedRows(w.table);
-    expect(await rows.pullRequestWords({ ...where, surface: "review", commentId: "5" })).toMatchObject({ ownText: true });
-    expect(await rows.pullRequestWords({ ...where, surface: "review", commentId: "6" })).toMatchObject({ ownText: false });
+    expect(await rows.pullRequestWords({ ...where, surface: "review", commentId: "5", edited: false })).toMatchObject({ ownText: true });
+    expect(await rows.pullRequestWords({ ...where, surface: "review", commentId: "6", edited: false })).toMatchObject({ ownText: false });
   });
 });
 

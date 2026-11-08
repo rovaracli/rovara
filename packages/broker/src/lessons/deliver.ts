@@ -24,7 +24,7 @@ export interface DeliveryDeps {
 }
 
 /** People who wrote or rewrote a lesson's text: an erased one's lessons are never delivered (erasure fences them before it removes anything). */
-const writersOf = (lesson: Lesson): string[] => [...lesson.provenance.authors, ...(lesson.provenance.editors ?? [])];
+const writersOf = (lesson: Lesson): string[] => [...lesson.provenance.authors, ...(lesson.provenance.editors ?? []), ...(lesson.provenance.readFrom ?? [])];
 
 async function notErased(store: LessonStore, key: ScopeKey, lesson: Lesson): Promise<boolean> {
   for (const person of new Set(writersOf(lesson).map((p) => p.trim().toLowerCase()))) if (await store.isErased(key, person)) return false;

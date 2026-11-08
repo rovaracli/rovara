@@ -33,11 +33,12 @@ export interface CodeHostRepo {
 export type CodeHostEvent =
   | { type: "pr"; repo: CodeHostRepo; number: number; url: string; action: "opened" | "closed" | "reopened" | "edited"; merged: boolean; title: string; body?: string;
       author: CodeHostPerson; /** Who made this change (the delivery's sender): the person an edit, a close or a reopen is recorded under. Absent: the author. */ editor?: CodeHostPerson;
-      /** What an `edited` change changed, and the text as it was (GitHub's `changes`). Absent: unknown, and no words of the edit are kept. */ changed?: { title?: boolean; body?: boolean }; previousBody?: string; previousTitle?: string; headSha: string; headRef?: string; mergeCommitSha?: string; baseRef: string; at: string; version: string }
+      /** What an `edited` change changed, and the text as it was (GitHub's `changes`). Absent: unknown, and no words of the edit are kept. */ changed?: { title?: boolean; body?: boolean }; previousBody?: string; previousTitle?: string; headSha: string; headRef?: string; mergeCommitSha?: string;
+      /** Who merged it (the host's `merged_by`), for a merged pull request: the person a revert pull request is credited to. Absent: unknown, and a revert pull request then records nothing. */ mergedBy?: CodeHostPerson; baseRef: string; at: string; version: string }
   | { type: "review"; repo: CodeHostRepo; prNumber: number; id: string; url: string; action: "submitted" | "edited" | "dismissed"; state: string; body?: string; author: CodeHostPerson; editor?: CodeHostPerson; previousBody?: string; /** When the delivery was received, for an edit or dismissal that carries no time of its own: it orders the review's changes (it is not part of the row's identity). */ receivedAt?: string; at: string; version: string }
   | { type: "comment"; repo: CodeHostRepo; prNumber: number; id: string; url: string; action: "created" | "edited" | "deleted"; surface: "review_comment" | "discussion";
       body?: string; author: CodeHostPerson; editor?: CodeHostPerson; previousBody?: string; path?: string;
-      /** An inline comment: the line it was made on and the commit it was made on, as the host said them. Kept so a later reader can tell whether the code the comment was about then changed. */ line?: number; commitId?: string; at: string; version: string }
+      /** An inline comment: the line it was made on and the commit it was made on, as the host said them. Kept so a later reader can tell whether the code the comment was about then changed. */ line?: number; commitId?: string; /** Which side of the diff the comment's line is numbered on: `LEFT` is the base file (a deleted line), `RIGHT` the file as of the commit. */ side?: "LEFT" | "RIGHT"; at: string; version: string }
   | { type: "ci"; repo: CodeHostRepo; id: string; name: string; conclusion: string; headSha: string; prNumbers: readonly number[]; url?: string; at: string }
   | { type: "push"; repo: CodeHostRepo; ref: string; commits: ReadonlyArray<{ sha: string; message: string }>; at: string;
       /** The pushed range and the account the host authenticated for the push (the signed delivery's sender): the second way a human commit is vouched for. */
@@ -53,7 +54,8 @@ export interface CodeHostDiff {
    * the author email, which anyone with push access can set. `webFlow`: the host itself committed it (a web-UI edit, signed as the logged-in author).
    */
   commits: ReadonlyArray<{ sha: string; author?: CodeHostPerson; committer?: CodeHostPerson; verified: boolean; webFlow?: boolean;
-    /** The commit has more than one parent (a merge, as when a branch is updated from the base branch): it carries other people's work. */ merge?: boolean }>;
+    /** The commit has more than one parent (a merge, as when a branch is updated from the base branch): it carries other people's work. */ merge?: boolean;
+    /** The commit message carries a `Co-authored-by:` trailer (as a committed suggestion does), or the host did not give the message: someone else may have written part of it, and the host cannot prove who. */ coAuthored?: boolean }>;
   files: ReadonlyArray<{ path: string; additions: number; deletions: number; patch?: string }>;
   truncated: boolean;
 }
@@ -285,7 +287,7 @@ export function createCodeHostTap(deps: CodeHostTapDependencies): { handle(event
             ...base, kind: "github.review_comment", occurredAt: event.at,
             sourceRef: { system: event.repo.host, id: commentId(event), url: event.url, parentId: prId(event.repo, event.prNumber), version: row.version, order: row.order },
             actor: who, trust: who.trust, pieceTrusts: [who.trust], audience: audienceOf(event.repo, event.at), ...(text === undefined ? {} : { text }),
-            structured: scalars({ prNumber: event.prNumber, surface: event.surface, path: event.path, line: event.line, commitId: event.commitId, action: event.action }),
+            structured: scalars({ prNumber: event.prNumber, surface: event.surface, path: event.path, line: event.line, commitId: event.commitId, side: event.side, action: event.action }),
             links: linksOf(event.url), retention: config.retention,
           });
           break;
@@ -366,16 +368,16 @@ export function createCodeHostTap(deps: CodeHostTapDependencies): { handle(event
   /** A merged revert pull request, or a default-branch push whose commits say "This reverts commit <sha>". Only a Rovara pull request's merge commit counts. */
   async function revertsOf(event: CodeHostEvent, source: NonNullable<Awaited<ReturnType<typeof gate>>>, result: TapResult): Promise<void> {
     const retention = source.retention;
-    // `byCommitMessage`: the revert is told only by words in a commit message or a pull request body, which anyone who can get a commit onto the default branch can write (an outside contributor's
-    // pull request that a member squash-merges carries its commit message onto the branch). Such a revert counts only when its own commit is proved to be a member's (see `memberRevertAuthor`).
-    let targets: Array<{ target: RovaraPullRequest; via: string; at: string; by: CodeHostPerson | undefined; byCommitMessage?: boolean }> = [];
+    // A revert is told only by words (a commit message, a pull request's title and body), which anyone who can get a commit or a pull request onto the default branch can write. It counts only when a member is
+    // proved behind it (see `memberRevertAuthor` and the proof below).
+    let targets: Array<{ target: RovaraPullRequest; via: string; at: string; by: CodeHostPerson | undefined }> = [];
     const repo = event.repo;
     if (event.type === "push") {
       if (repo.defaultBranch === undefined || event.ref !== `refs/heads/${repo.defaultBranch}`) return;
       for (const commit of event.commits.slice(0, 100)) {
         for (const sha of gitRevertedCommits(commit.message)) {
           const target = await deps.rovaraPrs.byMergeCommit({ workspaceId: repo.workspaceId, host: repo.host, repo: repo.fullName, sha });
-          if (target !== undefined) targets.push({ target, via: commit.sha, at: event.at, by: event.sender, byCommitMessage: true });
+          if (target !== undefined) targets.push({ target, via: commit.sha, at: event.at, by: event.sender });
         }
       }
     } else if (event.type === "pr" && event.action === "closed" && event.merged && repo.defaultBranch !== undefined && event.baseRef === repo.defaultBranch && /^revert\s+["“']/i.test(event.title.trim())) {
@@ -385,21 +387,22 @@ export function createCodeHostTap(deps: CodeHostTapDependencies): { handle(event
       }
       for (const sha of revertedCommits(event.body ?? "")) {
         const target = await deps.rovaraPrs.byMergeCommit({ workspaceId: repo.workspaceId, host: repo.host, repo: repo.fullName, sha });
-        if (target !== undefined) targets.push({ target, via: event.mergeCommitSha ?? prId(repo, event.number), at: event.at, by: event.author, byCommitMessage: true });
+        if (target !== undefined) targets.push({ target, via: event.mergeCommitSha ?? prId(repo, event.number), at: event.at, by: event.author });
       }
     }
-    // A revert told by a commit message counts only when its commit is authored by a member AND pushed (or the pull request opened) by a member. A squash-merged outsider pull request carries an
-    // outsider's author: it is not counted at all (no outcome, no re-score, no reverter). The reverter is the commit's author, not the account that pushed or merged it.
+    // A revert told by a commit message counts only when its commit is authored by a member AND pushed by a member. A revert PULL REQUEST counts only when it was MERGED by a live project member (the host's
+    // `merged_by`, and the delivery's sender when it names someone else is a mismatch): the member who merged it is credited as the reverter, whoever opened it (the host's Revert button makes the member who
+    // clicks it the author, but a bot or an outsider can open one that a member then merges). Anything unproven records nothing: no outcome, no re-score, no reverter.
     const proved: typeof targets = [];
     let range: CodeHostDiff | undefined | null = null;
+    const merger = event.type === "pr" && event.mergedBy !== undefined && (event.editor === undefined || event.editor.id === event.mergedBy.id) ? event.mergedBy : undefined;
     for (const entry of targets) {
-      if (entry.byCommitMessage !== true) { proved.push(entry); continue; }
       let author: CodeHostPerson | undefined;
       if (event.type === "push") {
         if (range === null) range = event.before !== undefined && event.after !== undefined && SHA.test(event.before) && SHA.test(event.after) && deps.diffs !== undefined
           ? await deps.diffs.compare({ repo, base: event.before, head: event.after }).catch(() => undefined) : undefined;
         author = await memberRevertAuthor(repo, entry.target.project, source, range ?? undefined, event.sender, entry.via);
-      } else author = await memberRevertAuthor(repo, entry.target.project, source, undefined, entry.by, undefined);
+      } else author = await memberRevertAuthor(repo, entry.target.project, source, undefined, merger, undefined);
       if (author !== undefined) proved.push({ ...entry, by: author });
       else log("record.revert_unproven", { host: repo.host });
     }
@@ -546,7 +549,7 @@ export interface CommitRange { repo: CodeHostRepo; project: string; base: string
 
 /**
  * Who wrote the commits of a clean "ahead" compare, proved; or why nothing may be said. Never a name or an email on a commit, and never whoever merged the pull request. A range with a merge commit
- * (a branch updated from its base) carries other people's work and is refused. Otherwise, in one of two ways:
+ * (a branch updated from its base) carries other people's work and is refused, and so does a range with a `Co-authored-by:` trailer (a committed suggestion). Otherwise, in one of two ways:
  *  (1) every commit is verified by the host, its committer is its author (or the host itself, for a web-UI edit), and the author is a live member; or
  *  (2) the commits reached the branch in pushes the host authenticated (the signed delivery's `sender`), the chain of pushes from `base` to `head` is complete, and every sender is a linked
  *      non-bot member. And, either way, EVERY commit's author must be a live member too (a member's push does not vouch for an outsider's or a bot's commit): an unresolved author refuses.
@@ -558,6 +561,8 @@ export async function provenAuthors(
   const skip = (reason: string): { skip: string } => { log("human_edit.skipped", { reason }); return { skip: reason }; };
   if (diff.status !== "ahead" || diff.truncated) return skip(diff.truncated ? "compare_truncated" : "not_a_clean_delta");
   if (diff.commits.some((commit) => commit.merge === true)) return skip("merge_commit_in_range");
+  // A co-author trailer names a person the host cannot tie to a member (an email in a message): the range may hold their lines, so it is skipped, as a merge is.
+  if (diff.commits.some((commit) => commit.coAuthored === true)) return skip("co_authored_commit");
   const memberOf = async (person: CodeHostPerson | undefined): Promise<string | undefined> => {
     if (person === undefined || person.isBot || isExcluded(config, person.id, person.login)) return undefined;
     const who = await deps.actors.resolve({ workspaceId: range.repo.workspaceId, project: range.project, system: sourceOf(range.repo), sourceId: person.id });

@@ -569,6 +569,39 @@ describe("immutable multi-PR feedback reviews", () => {
       const collected = workflowContracts.collectWorkflowFeedbackBundles(reviewed, { bundleRefs, threadObservations: [] }, now);
       expect(collected.feedbackShown?.incomplete).toBe(true);
     });
+    it("R3: the host's record of an edit goes into the shown record per comment (false = never edited, true = edited, absent = not said)", () => {
+      const { current, bundleRefs } = fixture();
+      const collected = workflowContracts.collectWorkflowFeedbackBundles(current, { bundleRefs, threadObservations: [], edits: [{ repositoryId: "api", number: 1, edits: { "api-0": false, "api-1": true } }] }, now);
+      const api = collected.feedbackShown!.rounds[0]!.pulls.find(pull => pull.repositoryId === "api")!;
+      expect(api.comments.map(comment => [comment.id, comment.edited])).toEqual([["api-0", false], ["api-1", true]]);
+      // The other pull request's comments were not listed: unknown.
+      expect(collected.feedbackShown!.rounds[0]!.pulls.find(pull => pull.repositoryId === "ui")!.comments.every(comment => comment.edited === undefined)).toBe(true);
+    });
+    it("R4: a round that would push the task's metadata over its storage budget is not added: the record is marked incomplete and collection still succeeds", () => {
+      const { current, bundleRefs: small } = fixture();
+      // A large pull request: 128 comments with long ids in the first bundle.
+      const bundleRefs = [{ ...small[0]!, comments: Array.from({ length: 128 }, (_, i) => ({ ...small[0]!.comments[0]!, id: `api-${String(i).padStart(3, "0")}-${"x".repeat(100)}`, threadId: undefined })) }, small[1]!];
+      const budget = 262_144;
+      const gap = (extra: number) => {
+        // Pad the snapshot's seen-thread record until the metadata (with the collected review, without the new round) leaves `extra` bytes below the budget.
+        const threads: Array<{ repositoryId: string; number: number; threadId: string; resolved: boolean; comments: Array<{ id: string; updatedAt: string; bodyDigest: string }>; eligibleCommentIds: string[] }> = [];
+        for (;;) {
+          const padded = WorkflowSnapshotSchema.parse({ ...current, feedbackThreadObservations: threads });
+          const bytes = new TextEncoder().encode(JSON.stringify({ feedbackReview: { status: "COLLECTING", bundleRefs, threadObservations: [] }, feedbackReviewHistory: [], feedbackThreadObservations: threads })).length;
+          if (bytes >= budget - extra) return padded;
+          threads.push({ repositoryId: "api", number: 1, threadId: `pad-${threads.length}`, resolved: true, comments: [{ id: `p${"y".repeat(120)}`, updatedAt: now, bodyDigest: hash("a") }], eligibleCommentIds: [] });
+        }
+      };
+      // Room for the new round: it is recorded.
+      const roomy = workflowContracts.collectWorkflowFeedbackBundles(gap(60_000), { bundleRefs, threadObservations: [] }, now);
+      expect(roomy.feedbackShown?.incomplete).toBeUndefined();
+      expect(roomy.feedbackShown?.rounds).toHaveLength(1);
+      // No room for it (about 128 ids need over 20 KB): the collection still works, and the record says it is not the whole.
+      const tight = workflowContracts.collectWorkflowFeedbackBundles(gap(8_000), { bundleRefs, threadObservations: [] }, now);
+      expect(tight.feedbackShown).toEqual({ rounds: [], incomplete: true });
+      expect(tight.feedbackReview).toMatchObject({ status: "COLLECTING" });
+      expect(workflowContracts.WorkflowSnapshotSchema.safeParse(tight).success).toBe(true);
+    });
     it("marks the record incomplete (and does not grow it) when the list is full", () => {
       const { current, bundleRefs } = fixture();
       const many = Array.from({ length: 799 }, (_, i) => ({ id: `x-${i}`, at: 1 }));

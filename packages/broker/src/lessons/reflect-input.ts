@@ -58,6 +58,8 @@ export interface ReflectSubject {
    * was given cannot launder a narrowed task. At most 50; more is refused by `reflectSubject`.
    */
   inheritedTasks?: readonly string[];
+  /** When set, a candidate must cite at least one span of this kind, or it is dropped (the human-edit extractor: a lesson from an edit must stand on the edit). */
+  requireEvidenceKind?: SpanKind;
 }
 
 export type IneligibleReason = "eval_run" | "unknown_initiator" | "unknown_steering" | "outsider_initiated" | "outsider_steered" | "outsider_intent" | "no_member_reason" | "no_usable_evidence";

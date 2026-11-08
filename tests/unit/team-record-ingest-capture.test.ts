@@ -23,22 +23,36 @@ describe("an inline review comment keeps where it was made", () => {
   it("the webhook's commit and line reach the event, and the row keeps them with the action", async () => {
     const events = githubEventsOf("pull_request_review_comment", "created", {
       action: "created", pull_request: { number: 5 }, sender: { id: 1001, login: "alice", type: "User" },
-      comment: { id: 31, html_url: "https://github.com/acme/shop/pull/5#discussion_r31", body: "Use withRetry", user: { id: 1001, login: "alice", type: "User" }, path: "src/a.ts", line: 12, commit_id: "c".repeat(40), updated_at: AT },
+      comment: { id: 31, html_url: "https://github.com/acme/shop/pull/5#discussion_r31", body: "Use withRetry", user: { id: 1001, login: "alice", type: "User" }, path: "src/a.ts", line: 12, commit_id: "c".repeat(40), side: "LEFT", updated_at: AT },
     }, repo(), AT);
-    expect(events[0]).toMatchObject({ type: "comment", path: "src/a.ts", line: 12, commitId: "c".repeat(40) });
+    expect(events[0]).toMatchObject({ type: "comment", path: "src/a.ts", line: 12, commitId: "c".repeat(40), side: "LEFT" });
     const { w, tap } = setup();
     await tap.handle(events[0]!);
-    expect(w.sink.puts[0]).toMatchObject({ kind: "github.review_comment", structured: { prNumber: 5, path: "src/a.ts", line: 12, commitId: "c".repeat(40), action: "created" } });
+    expect(w.sink.puts[0]).toMatchObject({ kind: "github.review_comment", structured: { prNumber: 5, path: "src/a.ts", line: 12, commitId: "c".repeat(40), side: "LEFT", action: "created" } });
   });
 
   it("a malformed commit or line is not kept", () => {
     const events = githubEventsOf("pull_request_review_comment", "created", {
       action: "created", pull_request: { number: 5 },
-      comment: { id: 31, html_url: "https://github.com/acme/shop/pull/5#discussion_r31", body: "x", user: { id: 1001, login: "alice" }, path: "src/a.ts", line: -3, commit_id: "not-a-sha", updated_at: AT },
+      comment: { id: 31, html_url: "https://github.com/acme/shop/pull/5#discussion_r31", body: "x", user: { id: 1001, login: "alice" }, path: "src/a.ts", line: -3, commit_id: "not-a-sha", side: "MIDDLE", updated_at: AT },
     }, repo(), AT);
     expect(events[0]).toBeDefined();
     expect(events[0]).not.toHaveProperty("commitId");
     expect(events[0]).not.toHaveProperty("line");
+    expect(events[0]).not.toHaveProperty("side");
+  });
+});
+
+describe("R7: who merged a pull request", () => {
+  const payload = (over: Record<string, unknown>) => ({
+    action: "closed", sender: { id: 1001, login: "alice", type: "User" },
+    pull_request: { number: 9, html_url: "https://github.com/acme/shop/pull/9", title: "T", user: { id: 9999, login: "mallory", type: "User" }, head: { sha: sha(11) }, base: { ref: "main" }, updated_at: AT, ...over },
+  });
+  it("a merged pull request carries the host's merged_by; an unmerged one, or a delivery without it, carries none", () => {
+    const merged = githubEventsOf("pull_request", "closed", payload({ merged: true, merged_by: { id: 1001, login: "alice", type: "User" } }), repo(), AT)[0]!;
+    expect(merged).toMatchObject({ type: "pr", mergedBy: { id: "1001", login: "alice", isBot: false }, author: { id: "9999" } });
+    expect(githubEventsOf("pull_request", "closed", payload({ merged: true }), repo(), AT)[0]).not.toHaveProperty("mergedBy");
+    expect(githubEventsOf("pull_request", "closed", payload({ merged: false, merged_by: { id: 1001, login: "alice", type: "User" } }), repo(), AT)[0]).not.toHaveProperty("mergedBy");
   });
 });
 
@@ -174,6 +188,32 @@ describe("H1: a range that carries other people's work is never one member's cor
     const f = run([{ sha: sha(61), author: bob, verified: false }, { sha: sha(62), author: alice, verified: false }], [{ before: 20, after: 21, sender: alice }]);
     expect(await f.outcome()).toBe("handed_on");
     expect([...f.handed[0]!.authors].sort()).toEqual(["dev-alice", "dev-bob"]);
+  });
+
+  it("R2: a commit that carries a Co-authored-by trailer (a committed suggestion) skips the range, in verified mode and in push-chain mode", async () => {
+    const verified = run([signed(alice, { sha: sha(61) }), signed(alice, { sha: sha(62), coAuthored: true })]);
+    expect(await verified.outcome()).toBe("skipped");
+    expect(verified.handed).toEqual([]);
+    expect(verified.logs).toContain("human_edit.skipped");
+    const chain = run([{ sha: sha(61), author: alice, verified: false, coAuthored: true }], [{ before: 20, after: 21, sender: alice }]);
+    expect(await chain.outcome()).toBe("skipped");
+    expect(chain.handed).toEqual([]);
+    // Positive control: the same commits without the trailer are handed on.
+    const clean = run([signed(alice, { sha: sha(61) }), signed(alice, { sha: sha(62) })]);
+    expect(await clean.outcome()).toBe("handed_on");
+  });
+
+  it("R2: the GitHub compare reader marks a commit whose message has a Co-authored-by trailer (any case, any position) and one with no message at all", async () => {
+    const message = (text: string | undefined) => ({ sha: sha(61), parents: [{ sha: sha(20) }], author: { id: 1001, login: "alice" }, commit: text === undefined ? {} : { message: text } });
+    const reader = createGithubDiffReader(async () => ({ status: 200, body: { status: "ahead", total_commits: 5, commits: [
+      message("Fix the retry"),
+      message("Apply suggestions from code review\n\nCo-authored-by: Sam <sam@example.com>"),
+      message("Tidy\n\nbody\nCO-AUTHORED-BY : Sam <sam@example.com>\nSigned-off-by: A"),
+      message("Mentions Co-authored-by: in the middle of a line only"),
+      message(undefined),
+    ], files: [{ filename: "a.ts", additions: 1, deletions: 0, patch: "@@ -1 +1 @@\n+x" }] } }));
+    const diff = await reader.compare({ repo: repo(), base: sha(20), head: sha(21) });
+    expect(diff!.commits.map((commit) => commit.coAuthored === true)).toEqual([false, true, true, false, true]);
   });
 
   it("the GitHub compare reader marks a commit with two parents as a merge", async () => {

@@ -115,7 +115,7 @@ export const MAX_SHOWN_COMMENTS_PROVED = 100;
 
 /**
  * Whether a unified patch changes a commented line: a removed line within `radius` lines of it, or lines added right at it. Context lines do not count. Pure; a patch it cannot read is "no".
- * (The line is the one the comment was made on, in the file as it was at the comment's commit: the old side of a compare from that commit.)
+ * (The line is the one the comment was made on, in the file as it was at the comment's commit: the old side of a compare from that commit. Only a RIGHT-side comment has such a line: a comment on a deleted line is numbered in the base file.)
  */
 export function patchChangesLine(patch: string | undefined, line: number, radius = 2): boolean {
   if (patch === undefined) return false;
@@ -269,9 +269,13 @@ export function lessonSubjectSource(deps: LessonSubjectSourceDeps): TaskSubjectS
         if (captured === undefined || excluded === undefined || workflow === undefined || shown === undefined || shown.incomplete === true) return false;
         const key = (repositoryId: string, number: number, id: string): string => `${repositoryId}\u0000${String(number)}\u0000${id}`;
         const latest = new Map<string, { repositoryId: string; number: number; id: string; at: number }>();
+        // A comment shown in several rounds is "never edited" only when EVERY round saw it so; one round that saw it edited, or did not say, decides.
+        const editedBy = new Map<string, boolean | undefined>();
         for (const round of shown.rounds) for (const pull of round.pulls) for (const comment of pull.comments) {
-          const known = latest.get(key(pull.repositoryId, pull.number, comment.id));
-          if (known === undefined || comment.at > known.at) latest.set(key(pull.repositoryId, pull.number, comment.id), { repositoryId: pull.repositoryId, number: pull.number, id: comment.id, at: comment.at });
+          const id = key(pull.repositoryId, pull.number, comment.id);
+          const known = latest.get(id);
+          if (known === undefined || comment.at > known.at) latest.set(id, { repositoryId: pull.repositoryId, number: pull.number, id: comment.id, at: comment.at });
+          editedBy.set(id, editedBy.has(id) ? (editedBy.get(id) === true || comment.edited === true ? true : editedBy.get(id) === false && comment.edited === false ? false : undefined) : comment.edited);
         }
         if (usedPullRequestComments(workflow) && shown.rounds.length === 0) return false;
         // What the record holds now was shown; what was selected was shown.
@@ -286,7 +290,7 @@ export function lessonSubjectSource(deps: LessonSubjectSourceDeps): TaskSubjectS
           const parsed = SHOWN_ID.exec(entry.id);
           if (address === undefined || parsed === null) return false;
           const row = await captured.pullRequestWords({
-            workspaceId: orgId, project, host: address.host, repository: address.repository, number: address.number, surface: parsed[1] as PullRequestSurface, commentId: parsed[2]!, shownAt: entry.at,
+            workspaceId: orgId, project, host: address.host, repository: address.repository, number: address.number, surface: parsed[1] as PullRequestSurface, commentId: parsed[2]!, shownAt: entry.at, ...(editedBy.get(key(entry.repositoryId, entry.number, entry.id)) === undefined ? {} : { edited: editedBy.get(key(entry.repositoryId, entry.number, entry.id))! }),
           });
           if (row === undefined || !row.ownText) return false;
           if (await erased(row.authorDeveloperId) || await trustOf(row.authorDeveloperId) !== "member") return false;
@@ -364,7 +368,7 @@ export function lessonSubjectSource(deps: LessonSubjectSourceDeps): TaskSubjectS
               if (trust === undefined) continue;
               taken += 1;
               let led = acted.has(`${comment.kind}:${comment.id}`);
-              if (!led && comment.kind === "review_comment" && row.path !== undefined && row.line !== undefined && row.commitId !== undefined && listed?.headRevision !== undefined && listed.headRevision !== row.commitId && deps.humanChangedFiles !== undefined) {
+              if (!led && comment.kind === "review_comment" && row.side === "RIGHT" && row.path !== undefined && row.line !== undefined && row.commitId !== undefined && listed?.headRevision !== undefined && listed.headRevision !== row.commitId && deps.humanChangedFiles !== undefined) {
                 if (!changedSince.has(row.commitId)) {
                   try {
                     changedSince.set(row.commitId, await deps.humanChangedFiles({ orgId, project, host: address.host, repository: address.repository, scope: row.scope, isPrivate: row.audience.kind === "restricted", base: row.commitId, head: listed.headRevision, ...(listed.sourceBranch === undefined ? {} : { headRef: listed.sourceBranch }) }));
