@@ -23,6 +23,8 @@ import type { EvidenceSpan } from "../../lessons/reflect-input.js";
 import { taskStartActor } from "../../lessons/task-subject.js";
 import type { Audience, TrustClass } from "../../lessons/types.js";
 import type { TaskVisibility } from "../../team-record/sources/rovara.js";
+import { cleanForLearning } from "../../lessons/guards.js";
+import type { CapturedRowReader, PullRequestSurface } from "../../lessons/captured-rows.js";
 
 /** At most this many human send-backs of a task are looked up (the hook reads one row for each). */
 export const MAX_SEND_BACK_IDS = 50;
@@ -31,6 +33,26 @@ const MAX_CI_PROBLEMS = 10;
 const PLAN_MAX_BYTES = 70_000;
 /** The words of the spans Rovara itself authors (not a person's). */
 const CI_FAILURE_PREFIX = "A check failed on the change: ";
+
+/** At most this many remembered notes, pull requests and pull request comments of a task are read. */
+export const MAX_REMEMBERED_NOTES = 20;
+export const MAX_PULL_REQUESTS = 5;
+export const MAX_PULL_REQUEST_COMMENTS = 40;
+const COMMENT_PATH_MAX = 200;
+
+/** What the code host lists of a pull request's comments now: which exist (their ids), and whether an inline comment still points at a line. Never the words or the people: those come from the record. */
+export interface PullRequestFeedbackView {
+  comments: ReadonlyArray<{ kind: PullRequestSurface; id: string; line?: number | undefined }>;
+}
+/** A pull request as the record names it: the host, the repository's full name as the tap lower-cased it, and the number. */
+export interface PullRequestAddress { host: string; repository: string; number: number }
+
+const GITHUB_PULL = /^https:\/\/github\.com\/([\w.-]+)\/([\w.-]+)\/pull\/([1-9][0-9]{0,9})$/u;
+/** The default: GitHub, the one code host this install ships. A plug-in host supplies its own through `pullRequestAddress`. */
+export function githubPullRequestAddress(url: string): PullRequestAddress | undefined {
+  const match = GITHUB_PULL.exec(url);
+  return match === null ? undefined : { host: "github", repository: `${match[1]}/${match[2]}`.toLowerCase(), number: Number(match[3]) };
+}
 
 export interface LessonSubjectSourceDeps {
   documentClient: { send(command: unknown): Promise<unknown> };
@@ -47,6 +69,14 @@ export interface LessonSubjectSourceDeps {
   /** The artifact store's text read (the plan document). Absent: no plan span. */
   readObject?: ((objectKey: string, maxBytes: number) => Promise<string | undefined>) | undefined;
   now?: () => number;
+  /** The Team record's captured words (remembered notes, pull request comments). Absent: neither kind of span is read. */
+  captured?: CapturedRowReader | undefined;
+  /** The ids of the correction notes of the task's comments (what "Remember this" made). Absent: no remembered spans. */
+  rememberedNoteIds?: ((orgId: string, taskId: string) => Promise<readonly string[]>) | undefined;
+  /** Which comments the code host lists on one pull request now. Absent, or a host that cannot say: no pull request comment spans. */
+  pullRequestFeedback?: ((input: { orgId: string; project: string; taskId: string; address: PullRequestAddress; url: string }) => Promise<PullRequestFeedbackView | undefined>) | undefined;
+  /** The record's name of a pull request URL. Default: GitHub's. */
+  pullRequestAddress?: ((url: string) => PullRequestAddress | undefined) | undefined;
 }
 
 /** Who may read a lesson made from this task: the task's own visibility (the same rule as the rows the record keeps for it, `audienceOfVisibility`). */
@@ -198,6 +228,50 @@ export function lessonSubjectSource(deps: LessonSubjectSourceDeps): TaskSubjectS
       if (closer !== undefined) {
         const author = developerOfActor(closer.actorId)!;
         if (!(await erased(author))) spans.push({ kind: "close_reason", text: closer.reason, trust: await trustOf(author), authorId: author });
+      }
+
+      // ---- a person's own corrections that the record already holds (no extra work for anyone): "remember this" notes, and reviewers' comments on the task's pull requests. Each is read from the
+      // record by its row id; the person is the row's actor, their standing and erasure are read NOW, and an erased person's words are dropped. An outsider's span keeps its class: the reflector removes it.
+      if (deps.captured !== undefined) {
+        const captured = deps.captured;
+        const where = { workspaceId: orgId, project };
+        const person = async (authorId: string): Promise<TrustClass | undefined> => ((await erased(authorId)) ? undefined : trustOf(authorId));
+        if (deps.rememberedNoteIds !== undefined) {
+          for (const noteId of (await deps.rememberedNoteIds(orgId, task.taskId)).slice(0, MAX_REMEMBERED_NOTES)) {
+            const row = await captured.rememberedNote({ ...where, taskId: task.taskId, noteId });
+            if (row === undefined) continue;
+            const trust = await person(row.authorDeveloperId);
+            if (trust === undefined) continue;
+            spans.push({ kind: "remembered", text: row.text, trust, authorId: row.authorDeveloperId, eventId: row.id, audience: row.audience, scopes: [row.scope] });
+          }
+        }
+        if (deps.pullRequestFeedback !== undefined) {
+          // The owner sent these comments to the agent and approved the change: the code changed because of them.
+          const acted = new Set((workflow?.feedbackDecisions ?? []).filter((decision) => decision.decision === "APPROVE").flatMap((decision) => decision.selectedCommentIds));
+          let taken = 0;
+          for (const pullRequest of (workflow?.pullRequests ?? []).slice(0, MAX_PULL_REQUESTS)) {
+            const address = (deps.pullRequestAddress ?? githubPullRequestAddress)(pullRequest.url);
+            if (address === undefined) continue;
+            let listed: PullRequestFeedbackView | undefined;
+            try { listed = await deps.pullRequestFeedback({ orgId, project, taskId: task.taskId, address, url: pullRequest.url }); } catch { listed = undefined; }
+            for (const comment of listed?.comments ?? []) {
+              if (taken >= MAX_PULL_REQUEST_COMMENTS) break;
+              const row = await captured.pullRequestWords({ ...where, host: address.host, repository: address.repository, number: address.number, surface: comment.kind, commentId: comment.id });
+              if (row === undefined) continue;
+              const trust = await person(row.authorDeveloperId);
+              if (trust === undefined) continue;
+              taken += 1;
+              // The comment was made on a line; the host now says it points at none, so a later commit changed those lines.
+              const outdated = comment.kind === "review_comment" && row.line !== undefined && comment.line === undefined;
+              const led = outdated || acted.has(`${comment.kind}:${comment.id}`);
+              const place = row.path === undefined ? undefined : cleanForLearning(row.path, COMMENT_PATH_MAX);
+              spans.push({
+                kind: "pr_comment", text: place === undefined || place === "" ? row.text : `On ${place}: ${row.text}`, trust, authorId: row.authorDeveloperId, eventId: row.id,
+                audience: row.audience, scopes: [row.scope], ...(led ? { ledToChange: true } : {}),
+              });
+            }
+          }
+        }
       }
 
       // ---- steering: everyone who steered the task. The creator or the taker, when they decided, answered or sent it back; anyone this record cannot name is an outsider (unknown is outsider).

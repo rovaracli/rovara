@@ -81,7 +81,7 @@ export function memberCorrectionOf(cited: readonly MarkedSpan[], everythingTrust
 /** The source key of CI failures, as the subject source writes it. */
 const CI_SOURCE_KEY = "ci";
 /** Kinds a person writes. Plans are agent text, and outcomes, CI output and loaded lessons are not people. */
-const PERSON_KINDS: ReadonlySet<string> = new Set(["send_back", "remembered", "human_edit", "close_reason", "review_finding", "intent"]);
+const PERSON_KINDS: ReadonlySet<string> = new Set(["send_back", "remembered", "human_edit", "close_reason", "review_finding", "intent", "pr_comment"]);
 
 function parseJson(text: string): unknown {
   const trimmed = text.trim().replace(/^```(?:json)?\s*/iu, "").replace(/\s*```$/u, "");
@@ -263,7 +263,7 @@ async function toDraft(
       sourceEvents: [...events], sourceKinds: [...new Set(evidence.map((s) => s.kind))], authors, supportTasks: subject.kind === "task" ? [subject.id] : [], ...(inheritedTasks.length === 0 ? {} : { inheritedTasks }), sources, inputSources, measured,
       minTrust: trust, audience, reflectorRun: runId, model: model.slice(0, 100),
       ...(sourceScopes.length === 0 ? {} : { sourceScopes }),
-      memberSignal: evidence.some((s) => s.trust === "member" && (s.kind === "remembered" || s.kind === "human_edit")),
+      memberSignal: evidence.some((s) => s.trust === "member" && (s.kind === "remembered" || s.kind === "human_edit" || (s.kind === "pr_comment" && s.ledToChange === true))),
       memberCorrection: memberCorrectionOf(cited, trust),
       // The lesson's key words must appear in the cited correction or the cited code, and nowhere else: worked out here, where the correction text is in hand (it is never stored).
       claimsSupported: lessonClaimsSupported({ title, description, body, ...(candidate.scope.paths === undefined ? {} : { scopePaths: candidate.scope.paths }) }, {
