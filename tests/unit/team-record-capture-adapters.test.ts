@@ -10,8 +10,8 @@ const feedback = (comments: ChangeRequestFeedback["comments"]): Pick<CodeHost, "
 const comment = (id: string, kind: "review" | "review_comment" | "discussion", over: Record<string, unknown> = {}) => ({ id, kind, url: "", author: "x", updatedAt: "2026-11-01T00:00:00.000Z", body: "secret words", ...over }) as ChangeRequestFeedback["comments"][number];
 const examplehost = (comments: ChangeRequestFeedback["comments"], diffs?: { compare(): Promise<CodeHostDiff | undefined> }) => captureAdapterOf({
   host: "codehost:examplehost", codeHost: feedback(comments),
-  pullRequestAddress: (url) => { const m = /^https:\/\/codehost\.example\/cr\/(\d+)$/u.exec(url); return m === null ? undefined : { host: "codehost:examplehost", repository: "pkg/api", number: Number(m[1]) }; },
-  refOf: (address, url) => ({ repository: { url: `https://codehost.example/${address.repository}` }, id: String(address.number), url }),
+  pullRequestAddress: (url) => { const m = /^https:\/\/examplehost\.example\/cr\/(\d+)$/u.exec(url); return m === null ? undefined : { host: "codehost:examplehost", repository: "pkg/api", number: Number(m[1]) }; },
+  refOf: (address, url) => ({ repository: { url: `https://examplehost.example/${address.repository}` }, id: String(address.number), url }),
   scopeOf: (workspaceId) => ({ orgId: workspaceId }), ...(diffs === undefined ? {} : { diffs: diffs }),
 });
 
@@ -21,7 +21,7 @@ describe("the registry", () => {
     adapters.register(examplehost([]));
     adapters.register({ host: "github", supports: { pullRequestComments: false, commentOutdated: false, humanEdits: false, authorship: "none", mergeCommit: true }, pullRequestAddress: githubPullRequestAddress });
     expect(adapters.forHost("codehost:examplehost")?.host).toBe("codehost:examplehost");
-    expect(adapters.addressOf("https://codehost.example/cr/9")).toMatchObject({ address: { number: 9, repository: "pkg/api" } });
+    expect(adapters.addressOf("https://examplehost.example/cr/9")).toMatchObject({ address: { number: 9, repository: "pkg/api" } });
     expect(adapters.addressOf("https://github.com/Acme/Api/pull/7")?.address).toEqual({ host: "github", repository: "acme/api", number: 7 });
     expect(adapters.addressOf("https://elsewhere.example/pull/1")).toBeUndefined();
     expect(Object.keys(adapters.support()).sort()).toEqual(["codehost:examplehost", "github"]);
@@ -47,7 +47,7 @@ describe("the registry", () => {
 describe("an adapter made from a CodeHost port", () => {
   it("lists comment ids and lines, never the words or the people", async () => {
     const adapter = examplehost([comment("review_comment:11", "review_comment", { line: 4, path: "a.ts" }), comment("22", "discussion"), comment("review:5", "review"), comment("review_comment:x1", "review_comment"), comment("discussion:9", "review_comment")]);
-    const view = await adapter.pullRequestFeedback!({ workspaceId: "org", project: "p", taskId: "t", address: { host: "codehost:examplehost", repository: "pkg/api", number: 9 }, url: "https://codehost.example/cr/9" });
+    const view = await adapter.pullRequestFeedback!({ workspaceId: "org", project: "p", taskId: "t", address: { host: "codehost:examplehost", repository: "pkg/api", number: 9 }, url: "https://examplehost.example/cr/9" });
     expect(view).toEqual({ comments: [{ kind: "review_comment", id: "11", line: 4 }, { kind: "discussion", id: "22" }, { kind: "review", id: "5" }] });
     expect(JSON.stringify(view)).not.toContain("secret words");
   });
