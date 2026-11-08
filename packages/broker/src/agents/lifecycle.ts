@@ -13,6 +13,7 @@
 //
 // Until the drain has run, readers see through the merge: `resolveMember` follows the duplicate's `mergedInto`, which access (Task 6) and the
 // deciders of approvals and spend requests use.
+import { deleteChosenNameOfRemoved } from "../developer/chosen-name.js";
 import { DeleteCommand, GetCommand, QueryCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
 import {
   BUILTIN_AGENT_IDS, MEMBER_MERGE_QUEUE_PK, MEMBER_REMOVAL_QUEUE_PK, MEMBER_REMOVAL_SUCCESSOR_HOPS, memberRemovalRecordKey, orgMemberKey, orgPk, orgRemovedKey, projectAgentKey, projectAllows,
@@ -529,6 +530,8 @@ export async function onMemberRemoved(deps: LifecycleDeps, removal: RemovalEvent
   }
   let signInEnded = false;
   if (removedAt !== undefined) signInEnded = (await attempt("sign-in", () => endSessionsAt(deps, developerId, removedAt))) === true;
+  // ERASE-NAME-1: the name the person chose goes with their membership (only one chosen before the removal, so a person who came back and chose again keeps it). The sign-in record's own name shows from then on.
+  if (removedAt !== undefined) await attempt("chosen-name", () => deleteChosenNameOfRemoved(deps.documentClient, deps.tableName, developerId, removedAt));
   const rejoinedAtStart = removedAt !== undefined && await isMember(deps, orgId, developerId);
   const cut: CutOff = { orgId, developerId, by, ...(removedAt === undefined ? {} : { removedAt }), rejoined: rejoinedAtStart };
   const cutResult = await runMovers(deps, "member_removed.mover_failed", fields, (mover) => mover.cutOff?.(deps, cut));

@@ -5,7 +5,7 @@
 // The button words are the shared table (`DECISION_LABELS`), the same as the web card's.
 // A pressed button carries only the card's id; the server re-checks everything (routes.ts), so a forged or stale press is refused there. Every word that came from a person, a plan or a repository
 // was already flattened by the projector; here it is also escaped for Slack (a mention, a link, a broadcast).
-import { DECISION_LABELS, hideEmailAddresses, type DecisionCard, type DecisionTab } from "@agentx/contracts";
+import { DECISION_LABELS, formatRunLimitUsd, hideEmailAddresses, runLimitRaiseText, runLimitRaises, type DecisionCard, type DecisionTab } from "@agentx/contracts";
 
 export const DECISION_SLACK_APPROVE_ACTION = "rovara_decision_approve";
 export const DECISION_SLACK_REJECT_ACTION = "rovara_decision_reject";
@@ -37,9 +37,12 @@ export function slackCardMessage(card: DecisionCard, input: { cardUrl: string; /
   const reasons = card.riskReasons.slice(0, 2).map(escapeSlack);
   const head = `*${escapeSlack(card.title)}*\n${escapeSlack(card.question)}`;
   const text = escapeSlack(`${card.title}: ${card.question}`);
+  // QA6-12b: a coding plan that raises the run limit says so in the owner's words, and its Approve button carries the amount it shows (a third part of the value); the server refuses a press whose amount is no longer what approving sets.
+  const raise = card.kind === "approve_plan" && card.runLimit !== undefined && runLimitRaises(card.runLimit.currentUsd, card.runLimit.proposedUsd) ? card.runLimit : undefined;
+  const raiseLine = raise === undefined ? [] : [raise.currentUsd === undefined ? `This sets the run limit to ${formatRunLimitUsd(raise.proposedUsd)}.` : `${runLimitRaiseText(raise.currentUsd, raise.proposedUsd)}.`];
   const blocks: Array<Record<string, unknown>> = [
     { type: "section", text: { type: "mrkdwn", text: clip(head) } },
-    { type: "section", text: { type: "mrkdwn", text: clip([`Recommended: ${escapeSlack(card.recommended.action)}. ${escapeSlack(card.recommended.why)}`, `Next: ${escapeSlack(card.next.text)}`, ...tabs].join("\n")) } },
+    { type: "section", text: { type: "mrkdwn", text: clip([`Recommended: ${escapeSlack(card.recommended.action)}. ${escapeSlack(card.recommended.why)}`, `Next: ${escapeSlack(card.next.text)}`, ...raiseLine, ...tabs].join("\n")) } },
     ...(evidence.length === 0 ? [] : [{ type: "context", elements: [{ type: "mrkdwn", text: clip(evidence.join("  |  ")) }] }]),
     { type: "context", elements: [{ type: "mrkdwn", text: clip([escapeSlack(riskWords(card)), ...reasons, `Project: ${escapeSlack(card.project)}`].join("  |  ")) }] },
   ];
@@ -54,7 +57,7 @@ export function slackCardMessage(card: DecisionCard, input: { cardUrl: string; /
   if (card.risk === "high") {
     elements.push(button(DECISION_SLACK_OPEN_ACTION, DECISION_LABELS.open, { url: input.cardUrl, style: "primary", value: `${card.id}|${input.digest}` }));
   } else if (card.risk === "low" && canApprove) {
-    elements.push(button(DECISION_SLACK_APPROVE_ACTION, card.kind === "merge" ? DECISION_LABELS.merge : DECISION_LABELS.approve, { style: "primary", value: `${card.id}|${input.digest}` }));
+    elements.push(button(DECISION_SLACK_APPROVE_ACTION, card.kind === "merge" ? DECISION_LABELS.merge : DECISION_LABELS.approve, { style: "primary", value: `${card.id}|${input.digest}${raise === undefined ? "" : `|${String(raise.proposedUsd)}`}` }));
     if (canReject) elements.push(button(DECISION_SLACK_REJECT_ACTION, DECISION_LABELS.notNow, { value: `${card.id}|${input.digest}` }));
     elements.push(button(DECISION_SLACK_OPEN_ACTION, DECISION_LABELS.open, { url: input.cardUrl, value: `${card.id}|${input.digest}` }));
   } else {

@@ -14,6 +14,7 @@
 //   - To a Mac: the task is cancelled, its branch pushed, and then ONE transaction ends the cloud leg, adds the Mac leg, moves the session, clears the task's `sessionId`, creates the Mac's
 //     state and entry, drops the followers who can't see a session on a Mac, and writes the event and the request with its answer. A failure before the transaction leaves the session in the
 //     cloud with its task cancelled (nothing is lost: the branch is pushed, and the same request id asks again, which both calls tolerate).
+import { resolveStoredName } from "../developer/name-resolver.js";
 import { createHash } from "node:crypto";
 import { PutCommand, QueryCommand, TransactWriteCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
 import { z } from "zod";
@@ -365,7 +366,7 @@ async function toCloud(deps: HandoffDependencies, caller: ControlCaller, access:
     const ours = fresh.subject.kind === "task" && fresh.subject.taskId === taskId;
     if (ours) return answerOf(deps, caller, session.sessionId);
     try {
-      checkStillMovable(fresh, caller.developerId, "local");
+      await checkStillMovable(deps, fresh, caller.developerId, "local");
     } catch (error) {
       await abandonStarted(deps, session, input.requestId, attempt, taskId, task);
       throw error;
@@ -468,9 +469,10 @@ async function recordedOrOurs(deps: HandoffDependencies, caller: ControlCaller, 
 }
 
 /** A session that a move still fits: open, owned by the person moving it, and on the place the move leaves. */
-function checkStillMovable(fresh: AgentSessionRecord, ownerId: string, from: "local" | "task"): void {
+async function checkStillMovable(deps: Pick<HandoffDependencies, "documentClient" | "tableName">, fresh: AgentSessionRecord, ownerId: string, from: "local" | "task"): Promise<void> {
   if (isEnded(fresh)) throw agentXError("SESSION_ENDED", SESSION_ENDED_MESSAGE);
-  if (fresh.owner.developerId !== ownerId) throw agentXError("FORBIDDEN", handoffOwnerOnlyMessage(fresh.owner.name));
+  // ERASE-NAME-2: the owner who took it over may be erased or removed since; the message names them the way every page does.
+  if (fresh.owner.developerId !== ownerId) throw agentXError("FORBIDDEN", handoffOwnerOnlyMessage(await resolveStoredName({ documentClient: deps.documentClient, tableName: deps.tableName, orgId: fresh.orgId }, fresh.owner.developerId, fresh.owner.name)));
   if (fresh.subject.kind !== from) throw agentXError("CONFIG_INVALID", from === "local" ? HANDOFF_ALREADY_CLOUD_MESSAGE : HANDOFF_ALREADY_MAC_MESSAGE);
   if (fresh.legs.length >= SESSION_LEGS_MAX) throw agentXError("CONFIG_INVALID", HANDOFF_TOO_MANY_LEGS_MESSAGE);
 }
@@ -616,7 +618,7 @@ export function makeHandoffRecovery(deps: HandoffDependencies): (session: AgentS
 async function claimMove(deps: HandoffDependencies, caller: ControlCaller, session: AgentSessionRecord, taskId: string, requestId: string): Promise<void> {
   for (let tries = 1; tries <= ATTEMPTS; tries += 1) {
     const fresh = await currentSession(deps, session);
-    checkStillMovable(fresh, caller.developerId, "task");
+    await checkStillMovable(deps, fresh, caller.developerId, "task");
     if (fresh.subject.kind !== "task" || fresh.subject.taskId !== taskId) throw agentXError("CONFIG_INVALID", HANDOFF_ALREADY_MAC_MESSAGE);
     const nowMs = deps.now();
     if (fresh.moving !== undefined && fresh.moving.requestId !== requestId && Date.parse(fresh.moving.until) > nowMs) throw agentXError("RUNTIME_UNAVAILABLE", HANDOFF_MOVING_MESSAGE);
@@ -676,7 +678,7 @@ async function toMac(deps: HandoffDependencies, caller: ControlCaller, access: S
   for (let attempt = 1; attempt <= ATTEMPTS; attempt += 1) {
     const fresh = await currentSession(deps, session);
     if (fresh.subject.kind === "local" && await readControlRequest(deps, session, input.requestId) !== undefined) return answer;
-    checkStillMovable(fresh, caller.developerId, "task");
+    await checkStillMovable(deps, fresh, caller.developerId, "task");
     if (fresh.subject.kind !== "task" || fresh.subject.taskId !== task.taskId) throw agentXError("CONFIG_INVALID", HANDOFF_ALREADY_MAC_MESSAGE);
     // The Mac is read again for every attempt: one removed since the check is refused here, not by a condition that would fail the same way each time.
     const device = await ownLiveDevice(deps, asker, input.deviceId);

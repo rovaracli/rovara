@@ -381,18 +381,24 @@ describe("the named TEST proof-only installation gate", () => {
     // Retaken again from the test's own values after the rebase onto integ/0510 at 44030261c (ux1, ux6a, ux5, ux4a merged); the named-templates snapshot differs from that head only by `pt`. Legacy did not move.
     // 2026-11-07 (UX2 slice 2 notifications): the named and foreign digests were retaken from the values the test reports, after one intended change: the DeveloperTaskNotifier's stream filter also passes
     // TASK_ATTENTION_DM rows (the named-templates snapshot shows exactly that string). Legacy did not move.
+    // 0.5.11 (QA6-12b): the named and foreign digests were retaken after one intended change: the DeveloperTaskNotifier gains two read-only grants (GetItem on ORG#org_*#SETTINGS, Query on ORG#org_*#RUN_COST#*) for the plan's run limit.
+    // Checked first: with the notifier's infra file as it was before, all three infra tests pass, so the change is that statement and nothing else. Legacy did not move.
+    // p1-slack-decide-card: the named and foreign digests were retaken after one intended change: the DeveloperTaskNotifier's Lambda gains the variable DECISION_CARDS_ENABLED (Ref DecisionCardsEnabled), no IAM change.
+    // Checked first: with the two infra files as they were before, this test passes; legacy did not move.
+    // integ/0511 merge: the named and foreign digests were retaken from the values the test reports, after the lanes' intended infra changes were merged together: p1-slack-link-atomic's ConditionCheckItem on DEVELOPER#* for the sign-in
+    // function and DEVELOPER_ORG#* for the broker, and p1-runlimit-ack's read-only notifier grants (already recorded above). The named-templates snapshot shows exactly those statements. Legacy did not move.
     const digestCases = [
       {
         label: "named",
         template: named,
-        withRoute: "0929e8be480acd17349bbf9b104b96ac3e2bcb1f149cb5cebb6a392ca329c422",
-        withoutRoute: "3f1d3d18aea99cd8905d3cc18b396ac3b0c014ac3686d6cf7b1f4d214fe5d5a8",
+        withRoute: "0d64aae778eccecda78386f9b6c07e62526718b720ccf06985ca51a7e7d05dbc",
+        withoutRoute: "7e9a8954de677a110e2a5d8ecf2cc21e8530fc0901dca629a77d51d03c91aa6f",
       },
       {
         label: "foreign",
         template: foreign,
-        withRoute: "cd5935bfbab07d1dfb17fa8736faee8d04c52622702a903b611f6870c75c451a",
-        withoutRoute: "4cce66dbb9c24ba8af2c095c18c0ff97f38bc30fae59f9beb66512ce66b35617",
+        withRoute: "c880c6e407f8d46d4b6b1883d79f6b557cdc181ac5f9a379628b772e72315e31",
+        withoutRoute: "202e87563b531e3fcfe6c75abde806db2426a19e27f4adde648fbebadebba064",
       },
       {
         label: "legacy",

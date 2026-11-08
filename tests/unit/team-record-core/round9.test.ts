@@ -386,7 +386,7 @@ describe("R8-1 learning v2 asks the access records at read time", () => {
     const w = world();
     for (const scope of ["slack:T1/CA", "slack:T1/CB"]) { await addSource(w, { source: "slack", scope }); await w.sink.put(slackRow(`x${scope}`, scope, ["U2"])); }
     const joined = { kind: "restricted" as const, acl: { source: "slack" as const, scope: "slack:T1/CA+slack:T1/CB", principals: ["U2"], capturedAt: T1, liveCheck: "none" as const } };
-    const deps = { table: w.table, modes: w.deps.modes, now: () => w.clock.ms, tasks: { async search() { return [{ taskId: "t1", title: "T", status: "merged", pullRequests: [], planSummary: "p", audience: { kind: "project" as const }, trust: "member" as const }]; } },
+    const deps = { table: w.table, modes: w.deps.modes, now: () => w.clock.ms, taskVisibility: { async read(_org: unknown, ids: readonly string[]) { return new Map(ids.map((id) => [id, { kind: "shared" as const }])); } }, tasks: { async search() { return [{ taskId: "t1", title: "T", status: "merged", pullRequests: [], planSummary: "p", audience: { kind: "project" as const }, trust: "member" as const }]; } },
       lessonsOfTask: async () => [{ title: "Both channels lesson", audience: joined, scopes: ["slack:T1/CA", "slack:T1/CB"], restrictedScopes: ["slack:T1/CA", "slack:T1/CB"] }] };
     const ask = async () => (await pastWork(deps, { kind: "caller", caller: U.U2 }, "private", "web", { query: "x" })).items[0]?.lessonsLearned ?? [];
     expect(await ask()).toEqual(["Both channels lesson"]);

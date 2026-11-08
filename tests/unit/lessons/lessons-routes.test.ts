@@ -46,6 +46,43 @@ function setup(over: { eligible?: string[]; access?: AccessCheckPort; value?: Pa
 }
 const refused = async (promise: Promise<unknown>): Promise<AgentXError> => { try { await promise; } catch (error) { if (error instanceof AgentXError) return error; throw error; } throw new Error("expected a refusal"); };
 
+describe("the Lessons tab says why learning is paused (lessons in production, lane 1b)", () => {
+  const pauseStore = (current?: { code: "monthly_limit" | "no_provider"; at: number; scope: "project" | "company" }) => ({ record: async () => undefined, clear: async () => undefined, read: async () => current });
+
+  it("L2: the view carries the one current reason (a fixed code, a time and whom it applies to) and nothing else, for a person who decides; a person who only reads is told nothing about it", async () => {
+    const s = setup();
+    (s.deps as unknown as { lessons: { pause?: unknown } }).lessons.pause = pauseStore({ code: "monthly_limit", at: 1234, scope: "company" });
+    const decider = LessonsViewReaderSchema.parse(await s.call(callerOf("bob"), "GET", base));
+    expect(decider.paused).toEqual({ code: "monthly_limit", at: 1234, scope: "company" });
+    for (const who of ["stranger", "mallory"]) expect(LessonsViewReaderSchema.parse(await s.call(callerOf(who), "GET", base)).paused).toBeUndefined();
+  });
+
+  it("L3: a reason whose cause is gone is cleared when a person who decides reads it (not shown); one that still holds, or whose check fails, stays; only the shown scope is cleared", async () => {
+    for (const [check, shown, cleared] of [
+      [async () => false, false, 1], [async () => true, true, 0], [async () => { throw new Error("probe down"); }, true, 0],
+    ] as const) {
+      const s = setup();
+      const clears: Array<unknown> = [];
+      const codes: Array<unknown> = [];
+      const store = { record: async () => undefined, clear: async (_w: string, _p: string, only?: string, ifCode?: string) => { clears.push(only); codes.push(ifCode); }, read: async () => ({ code: "no_provider" as const, at: 99, scope: "project" as const }) };
+      Object.assign((s.deps as unknown as { lessons: object }).lessons, { pause: store, pauseStillApplies: check });
+      const view = LessonsViewReaderSchema.parse(await s.call(callerOf("bob"), "GET", base));
+      expect(view.paused !== undefined).toBe(shown);
+      expect(clears).toHaveLength(cleared);
+      // R5: the clear is conditional on the reason that was shown, so a reason recorded in between is not deleted.
+      if (cleared > 0) { expect(clears[0]).toBe("project"); expect(codes[0]).toBe("no_provider"); }
+    }
+  });
+
+  it("with nothing recorded, or a store that cannot be read, the view has no paused field; and with learning Off the tab says it is off instead", async () => {
+    const none = setup();
+    expect(LessonsViewReaderSchema.parse(await none.call(callerOf("bob"), "GET", base)).paused).toBeUndefined();
+    const broken = setup();
+    (broken.deps as unknown as { lessons: { pause?: unknown } }).lessons.pause = { record: async () => undefined, clear: async () => undefined, read: async () => { throw new Error("down"); } };
+    expect(LessonsViewReaderSchema.parse(await broken.call(callerOf("bob"), "GET", base)).paused).toBeUndefined();
+  });
+});
+
 describe("the Lessons tab read", () => {
   it("shows a maintainer what waits, with who approved first and how many people are needed, and shows the active list with counts and expiry", async () => {
     const { store, call } = setup();

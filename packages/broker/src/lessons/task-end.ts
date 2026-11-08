@@ -93,9 +93,9 @@ export async function learnFromEndedTask(deps: TaskLearningDeps, input: { worksp
 }
 
 /**
- * TODO (register WB-1, before this is wired): the handler runs the reflector, a model call, INLINE while the task ends. When `learning` is first given to a broker, replace the inline call
- * with a queue (enqueue `{ workspaceId, taskId, outcome }`, a worker runs `learnFromEndedTask` under its own time and spend limits) so an end is never held up by a model, and a model
- * outage or retry storm cannot slow or fail task ends. Not wired today: nothing registers this handler.
+ * WB-4 (open until lane 2 of lessons in production): the handler runs the reflector, a model call, INLINE while the task ends. The broker builds the dependencies (`aws/broker/lessons-wiring.ts#learningDepsFor`)
+ * but does NOT register this handler (`aws/broker/learning-wiring.ts`, `INLINE_LEARNING_TASK_END_ENABLED` is false). Lane 2 replaces the inline call with a queue (enqueue `{ orgId, taskId, outcome, requestId }`, a worker
+ * runs `learnFromEndedTask` under its own time and spend limits) so an end is never held up by a model and a model outage or retry storm cannot slow or fail task ends.
  */
 /** The handler for `registerTaskEndHandler`. It reads the dependencies when a task ends, so a later broker's dependencies are the ones it uses; none means it does nothing. */
 export function learningTaskEndHandler(get: () => TaskLearningDeps | undefined): TaskEndHandler {

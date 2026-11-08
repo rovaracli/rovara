@@ -19,6 +19,8 @@ export interface PanelView {
  document: PanelDocument;
  versions: Array<{ version: number; current: boolean; approved: boolean }>;
  current?: { version: number; approved: boolean } & ({ format: "structured"; title: string; why: Array<{ text: string; author: string }>; claims: PanelClaim[]; decisions: PanelDecision[]; risks: string[]; notChanging: string[] } | { format: "markdown"; markdown: string });
+ /** Set when `current` holds an OLDER saved version (read-only); `currentVersion` is the version that is current now. */
+ older?: { currentVersion: number };
  checks: Array<{ id: string; label: string }>;
  unverified: boolean;
  waiting: boolean;
@@ -58,7 +60,7 @@ export function readPanelView(value: unknown): PanelView {
   shown = { version: current.version, approved: current.approved === true, format: "markdown", markdown: current.markdown };
  }
  return {
-  document, ...(shown === undefined ? {} : { current: shown }),
+  document, ...(shown === undefined ? {} : { current: shown }), ...(typeof obj(view.older).currentVersion === "number" ? { older: { currentVersion: obj(view.older).currentVersion as number } } : {}),
   versions: list(view.versions).flatMap(raw => { const entry = obj(raw);return typeof entry.version === "number" ? [{ version: entry.version, current: entry.current === true, approved: entry.approved === true }] : []; }),
   checks: list(view.checks).flatMap(raw => { const check = obj(raw);return typeof check.id === "string" && typeof check.label === "string" ? [{ id: check.id, label: check.label }] : []; }),
   unverified: view.unverified === true, waiting: view.waiting === true,
@@ -87,7 +89,7 @@ export function createPlanPanelApi(host: AppHost) {
  const api = createApiClient(host);
  const base = (taskId: string) => "/v1/app/tasks/" + encodeURIComponent(taskId);
  return {
-  document: async (taskId: string, document: PanelDocument) => readPanelView(await api.get(base(taskId) + "/documents/" + document, ANY)),
+  document: async (taskId: string, document: PanelDocument, version?: number) => readPanelView(await api.get(base(taskId) + "/documents/" + document + (version === undefined ? "" : "?version=" + String(version)), ANY)),
   comments: async (taskId: string) => readPanelComments(await api.get(base(taskId) + "/comments", ANY)),
   comment: (taskId: string, input: { document: PanelDocument; version: number; target: CommentTarget; parentId?: string; text: string; ask: boolean }) =>
    api.sendAnswer("POST", base(taskId) + "/comments", { requestId: crypto.randomUUID(), ...input }, ANY, NEVER),
@@ -96,6 +98,8 @@ export function createPlanPanelApi(host: AppHost) {
   suggest: (taskId: string, document: PanelDocument, decisionId: string, optionId: string | null) => api.sendAnswer("POST", base(taskId) + "/suggestions", { document, decisionId, optionId }, ANY, NEVER),
   learn: (taskId: string, commentId: string, action: "remember" | "forget") => api.sendAnswer("POST", base(taskId) + "/comments/" + commentId + "/" + action, {}, ANY, NEVER),
   feedback: async (taskId: string) => obj(obj(await api.get(base(taskId) + "/workflow/feedback", ANY)).review),
+  /** Retry review of a feedback review that did not finish: `started` is false when it had already been retried (nothing changed). */
+  retryFeedback: async (taskId: string, reviewDigest: string) => ({ started: obj(await api.sendAnswer("POST", base(taskId) + "/workflow/feedback-retry", { reviewDigest }, ANY, NEVER)).started === true }),
   decideFeedback: (taskId: string, input: Record<string, unknown>) => api.sendAnswer("POST", base(taskId) + "/workflow/feedback-decision", { requestId: crypto.randomUUID(), ...input }, ANY, NEVER),
  };
 }

@@ -127,6 +127,17 @@ describe("an approval made before the rename", () => {
     expect(sent.filter((command) => command instanceof GetCommand)).toHaveLength(1);
   });
 
+  // ERASE-NAME-2: the owner an approval stored reads "A former member" once erased and the placeholder once removed, though the stored copy holds the name they chose.
+  it("names an erased owner 'A former member' and a removed owner by the placeholder, whatever the record stored", async () => {
+    const { db, deps } = await approval();
+    db.set({ ...chosenNameKey(owner), entityType: "DEVELOPER_NAME", developerId: owner, name: "Dee D", chosenAt: "2026-10-27T09:00:00.000Z" });
+    expect((await viewed(deps as never)).owner.name).toBe("Dee D");
+    db.set({ ...chosenNameKey(owner), entityType: "DEVELOPER_NAME", developerId: owner, removed: true, removedAt: "2026-10-28T09:00:00.000Z" });
+    expect((await viewed(deps as never)).owner.name).toBe(placeholderDisplayName(owner));
+    db.set({ ...chosenNameKey(owner), entityType: "DEVELOPER_NAME", developerId: owner, erased: true, erasedAt: "2026-10-29T09:00:00.000Z" });
+    expect((await viewed(deps as never)).owner.name).toBe("A former member");
+  });
+
   it("never lets an email back in through the chosen name", async () => {
     const { db, deps } = await approval();
     db.set(nameItem(owner, "dee@example.com"));

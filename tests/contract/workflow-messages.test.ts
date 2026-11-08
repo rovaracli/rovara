@@ -891,17 +891,85 @@ describe("decision journey slice 1: a design under review links to its card, nev
   });
 });
 
-describe("decision journey slice 2: a coding plan that raises the run limit links to its card, never an Approve the server refuses", () => {
-  const cardUrl = "https://cell.example/app/sessions/ses_aaaaaaaaaaaaaaaaaaaa?decision=approve_plan%3A" + taskId;
-  it("offers Open in Rovara to the plan's card, says why, and keeps Request changes and Close", () => {
-    const shown = workflowMessage({ taskId, workflow: snapshot("PLAN_REVIEW", "WAITING"), structured: { claims: ["A claim."], claimCount: 1, decisionCount: 0, tiny: false }, planOpen: { url: cardUrl, why: "run_limit" } })!;
-    const elements = (shown.blocks.find((block) => block.type === "actions") as { elements: Array<Record<string, unknown>> }).elements;
-    expect(elements.find((element) => element["action_id"] === "agentx_open_decision")).toMatchObject({ text: { text: "Open in Rovara" }, url: cardUrl });
-    expect(elements.map((element) => element["action_id"])).not.toContain("agentx_workflow_approve");
-    expect(shown.text).toContain("raises the run limit");
+describe("QA6-12b: a coding plan that raises the run limit says so in the owner's words and its Approve button carries the amount (this replaces slice 2's Open in Rovara in place of Approve)", () => {
+  const approveOf = (shown: NonNullable<ReturnType<typeof workflowMessage>>) => buttonsOf(shown.blocks).find((button) => button.action_id === "agentx_workflow_approve")!;
+  it("shows 'This raises the run limit from $A to $B', keeps Approve with the new limit in its label and in its value, and keeps Request changes and Close", () => {
+    const shown = workflowMessage({ taskId, workflow: snapshot("PLAN_REVIEW", "WAITING"), structured: { claims: ["A claim."], claimCount: 1, decisionCount: 0, tiny: false }, runLimitRaise: { currentUsd: 2, proposedUsd: 12 } })!;
+    expect(shown.text).toContain("This raises the run limit from $2 to $12.");
+    expect(shown.text).toContain("Approving accepts $12 as the run limit, or asks for it if your role cannot.");
+    const approve = approveOf(shown);
+    expect(approve.text.text).toBe("Approve coding plan and raise the limit to $12");
+    expect(JSON.parse(approve.value)).toMatchObject({ taskId, decision: "APPROVE", runLimitUsd: 12 });
+    expect(buttonsOf(shown.blocks).map((button) => button.action_id)).toEqual(expect.arrayContaining(["agentx_workflow_changes", "agentx_workflow_close"]));
+    expect(buttonsOf(shown.blocks).map((button) => button.action_id)).not.toContain("agentx_open_decision");
+    // Request changes carries no amount.
+    expect(JSON.parse(buttonsOf(shown.blocks).find((button) => button.action_id === "agentx_workflow_changes")!.value)).not.toHaveProperty("runLimitUsd");
+  });
+  it("shows cents exactly", () => {
+    const shown = workflowMessage({ taskId, workflow: snapshot("PLAN_REVIEW", "WAITING"), structured: { claims: ["A claim."], claimCount: 1, decisionCount: 0, tiny: false }, runLimitRaise: { currentUsd: 2.5, proposedUsd: 12.25 } })!;
+    expect(shown.text).toContain("This raises the run limit from $2.50 to $12.25.");
+    expect(JSON.parse(approveOf(shown).value)).toMatchObject({ runLimitUsd: 12.25 });
+  });
+  it("a plan that does not raise the limit is as before: no line, no amount in the button", () => {
+    const shown = workflowMessage({ taskId, workflow: snapshot("PLAN_REVIEW", "WAITING"), structured: { claims: ["A claim."], claimCount: 1, decisionCount: 0, tiny: false } })!;
+    expect(shown.text).not.toContain("raises the run limit");
+    expect(approveOf(shown).text.text).toBe("Approve coding plan");
+    expect(JSON.parse(approveOf(shown).value)).not.toHaveProperty("runLimitUsd");
   });
   it("is ignored for requirements (approving them sets no run limit)", () => {
-    const shown = workflowMessage({ taskId, workflow: snapshot("PLAN_REVIEW", "WAITING", { path: "FULL", reviewPhase: "REQUIREMENTS", artifacts: [{ ...plan, type: "requirements" }] }), documentSummary: ["The requirements."], planOpen: { url: cardUrl, why: "run_limit" } })!;
+    const shown = workflowMessage({ taskId, workflow: snapshot("PLAN_REVIEW", "WAITING", { path: "FULL", reviewPhase: "REQUIREMENTS", artifacts: [{ ...plan, type: "requirements" }] }), documentSummary: ["The requirements."], runLimitRaise: { currentUsd: 2, proposedUsd: 12 } })!;
     expect(buttonsOf(shown.blocks).map((button) => button.action_id)).toContain("agentx_workflow_approve");
+    expect(shown.text).not.toContain("raises the run limit");
+  });
+});
+
+describe("p1-slack-decide-card: a coding plan decided in Rovara shows no Approve, one Decide in Rovara link, and keeps the plan text and the raise as information", () => {
+  const cardUrl = "https://cell.example/app/sessions/ses_aaaaaaaaaaaaaaaaaaaa?decision=approve_plan%3A" + taskId;
+  const structured = { claims: ["A claim."], claimCount: 1, decisionCount: 0, tiny: false };
+  const actionsOf = (shown: NonNullable<ReturnType<typeof workflowMessage>>) => buttonsOf(shown.blocks);
+  const plans = [["structured", (extra: Record<string, unknown>) => workflowMessage({ taskId, workflow: snapshot("PLAN_REVIEW", "WAITING"), structured, ...extra })!],
+    ["markdown", (extra: Record<string, unknown>) => workflowMessage({ taskId, workflow: snapshot("PLAN_REVIEW", "WAITING"), documentSummary: ["The plan."], ...extra })!]] as const;
+  for (const [form, make] of plans) {
+    for (const why of ["medium", "high"] as const) {
+      it(`${form}, ${why} risk: no Approve; Decide in Rovara links the card; Request changes and Close stay`, () => {
+        const shown = make({ planOpen: { url: cardUrl, why } });
+        const buttons = actionsOf(shown);
+        expect(buttons.map((button) => button.action_id)).not.toContain("agentx_workflow_approve");
+        const open = buttons.find((button) => button.action_id === "agentx_open_decision")!;
+        expect(open).toMatchObject({ type: "button", text: { type: "plain_text", text: "Decide in Rovara" }, url: cardUrl });
+        expect(open).not.toHaveProperty("value");
+        expect(buttons.map((button) => button.action_id)).toEqual(expect.arrayContaining(["agentx_workflow_changes", "agentx_workflow_close"]));
+        expect(shown.text).toContain(`${why} risk: decide it in Rovara`);
+        expect(shown.text).not.toContain("Approve here");
+        expect(JSON.stringify(shown.blocks)).not.toContain("Approve coding plan");
+      });
+    }
+    it(`${form}: the run limit raise stays as information, with no amount to press`, () => {
+      const shown = make({ planOpen: { url: cardUrl, why: "medium" }, runLimitRaise: { currentUsd: 2, proposedUsd: 12 } });
+      expect(shown.text).toContain("This raises the run limit from $2 to $12.");
+      expect(shown.text).not.toContain("Approving accepts");
+      expect(JSON.stringify(shown.blocks)).not.toContain("runLimitUsd");
+      expect(actionsOf(shown).map((button) => button.action_id)).not.toContain("agentx_workflow_approve");
+    });
+    it(`${form}: a plan whose risk is not known is decided in Rovara too; with no address there is no button but still no Approve`, () => {
+      const unknown = make({ planOpen: { url: cardUrl, why: "unknown" } });
+      expect(unknown.text).toContain("Decide this coding plan in Rovara.");
+      expect(actionsOf(unknown).map((button) => button.action_id)).toEqual(expect.arrayContaining(["agentx_open_decision"]));
+      const unlinked = make({ planOpen: { why: "unknown" } });
+      expect(actionsOf(unlinked).map((button) => button.action_id)).not.toContain("agentx_workflow_approve");
+      expect(actionsOf(unlinked).map((button) => button.action_id)).not.toContain("agentx_open_decision");
+      expect(actionsOf(unlinked).map((button) => button.action_id)).toEqual(expect.arrayContaining(["agentx_workflow_changes", "agentx_workflow_close"]));
+    });
+    it(`${form}: a low plan (no planOpen) is unchanged: Approve, with the amount when it raises the limit`, () => {
+      const shown = make({ runLimitRaise: { currentUsd: 2, proposedUsd: 12 } });
+      const approve = actionsOf(shown).find((button) => button.action_id === "agentx_workflow_approve")!;
+      expect(approve.text.text).toBe("Approve coding plan and raise the limit to $12");
+      expect(JSON.parse(approve.value)).toMatchObject({ decision: "APPROVE", runLimitUsd: 12 });
+      expect(actionsOf(shown).map((button) => button.action_id)).not.toContain("agentx_open_decision");
+    });
+  }
+  it("a design card still wins and still says Open in Rovara", () => {
+    const shown = workflowMessage({ taskId, workflow: snapshot("PLAN_REVIEW", "WAITING", { path: "FULL", reviewPhase: "DESIGN", artifacts: [{ ...plan, type: "design" }] }), structured, designCardUrl: cardUrl, planOpen: { url: "https://x.example/p", why: "high" } })!;
+    expect(actionsOf(shown).find((button) => button.action_id === "agentx_open_decision")).toMatchObject({ text: { text: "Open in Rovara" }, url: cardUrl });
   });
 });

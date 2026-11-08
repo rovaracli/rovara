@@ -54,3 +54,19 @@ function quoteWord(word: string): string {
 export function formatCommandLine(command: ProjectCommand): string {
   return [command.executable, ...command.args].map(quoteWord).join(" ");
 }
+
+/**
+ * Per-line options survive an edit of another line. A settings save, and the candidate check that proves it, hold commands as lines; a line carries no timeout or env, so a line that reads back as exactly one of the
+ * STORED commands (same program and arguments) is that stored command, options and directory included. Matched in order, each stored command used once (so a reorder, a deletion or a repeated line keeps each
+ * command's own options). Any other line stays as parsed: its defaults. Pure; the same function for the save and for the check, so what is proved is what is written.
+ */
+export function keepStoredOptions(commands: readonly ProjectCommand[], stored: readonly ProjectCommand[]): ProjectCommand[] {
+  const used = new Set<number>();
+  return commands.map((command) => {
+    const line = formatCommandLine(command);
+    const at = stored.findIndex((candidate, index) => !used.has(index) && formatCommandLine(candidate) === line);
+    if (at < 0) return command;
+    used.add(at);
+    return { ...stored[at]!, args: [...stored[at]!.args], ...(stored[at]!.env === undefined ? {} : { env: { ...stored[at]!.env } }) };
+  });
+}

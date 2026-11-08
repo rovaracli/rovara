@@ -2,6 +2,7 @@ import {ModelApplyRefusalSchema} from "../model-selection/process-refusal.js";
 // Plan 3 Task 7 and Task 21: the approvals' records and everything that writes or reads them one at a time: the three record kinds and their schemas, the
 // registries of rules and subject handlers, creating a change, a step and a write approval, listing, who may decide, and the transaction helpers the decision, the
 // sweep and the movers share. `approvals.ts` re-exports it.
+import { resolveStoredName } from "../developer/name-resolver.js";
 import {ModelSelectionPolicyPutSchema,type ModelSelectionPolicyPut} from "@agentx/contracts";
 import { createHash } from "node:crypto";
 import { GetCommand, QueryCommand, TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
@@ -749,6 +750,12 @@ function ownerOfRun(task: DeveloperTaskRecord | undefined, stored: ApprovalRunVi
  * taker (`ownerOfRun`). Undefined when they can't be told (a change record, a chain gate without them): a rule that needs them then refuses.
  */
 export async function runOfApproval(deps: Pick<ApprovalStoreDependencies, "documentClient" | "tableName">, record: AnyApprovalRecord): Promise<ApprovalRunView | undefined> {
+  const run = await storedRunOfApproval(deps, record);
+  // ERASE-NAME-2: the owner's name was stored with the task or the approval; an erased person reads "A former member", a removed one never the name they chose.
+  return run === undefined ? undefined : { ...run, owner: { ...run.owner, name: await resolveStoredName({ documentClient: deps.documentClient, tableName: deps.tableName, orgId: record.orgId }, run.owner.developerId, run.owner.name) } };
+}
+
+async function storedRunOfApproval(deps: Pick<ApprovalStoreDependencies, "documentClient" | "tableName">, record: AnyApprovalRecord): Promise<ApprovalRunView | undefined> {
   if (record.kind === "write") {
     const owner = ownerOfRun(await taskOfApproval(deps, record), record.owner);
     return owner === undefined ? undefined : { project: record.project, owner };

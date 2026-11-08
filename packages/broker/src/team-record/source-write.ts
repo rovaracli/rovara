@@ -14,7 +14,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import { TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
 import {
-  SOURCE_WIDENED_WORDS, parseSlackPlaceInput, scopeAndAncestors, SourceConfigSchema, SourceWriteBodySchema, SourcesAdminViewSchema,
+  AgentXError, SOURCE_WIDENED_WORDS, parseSlackPlaceInput, scopeAndAncestors, SourceConfigSchema, SourceWriteBodySchema, SourcesAdminViewSchema,
   agentXError, canonicalJson, isWriterOrgRole, recordScopeMarkerKey, recordSourceKey,
   type AuditEventInput, type OrgId, type RetentionMode, type SourceConfig, type SourceWidenedWord, type SourceWriteBody,
 } from "@agentx/contracts";
@@ -30,7 +30,7 @@ import { classifySlack, parseSlackScope, type SlackFacts, type TrackerPlaceCheck
 import { auditRecordSourceAdded, auditRecordSourceChanged, auditRecordSourceRemoved } from "./audit.js";
 import { closeScope } from "./item-head.js";
 import { DEFAULT_WORK_BUDGET, tombstoneRows } from "./scope-work.js";
-import type { RecordQueryDependencies } from "./query.js";
+import { personRateKey, type RecordQueryDependencies } from "./query.js";
 import type { RecordRouteReply, RecordRouteRequest } from "./routes.js";
 import { rovaraScope } from "./sources/rovara.js";
 import { claimDrop, claimPut, readRevisionFloor, readScopeClaim, readSourceRequest, readSourceRow, requestPut, revisionFloorCheck, revisionFloorPut } from "./source-store.js";
@@ -55,7 +55,40 @@ export interface SourceRouteDependencies {
   trackerOptions?: TrackerPlaceOptions;
   /** The source keys the learning loop paused (for the admin view). */
   pausedSources?(orgId: OrgId, project: string): Promise<readonly string[]>;
+  /**
+   * SRL-14: the least time a web editor's refused Slack add takes (see `SLACK_REFUSAL_FLOOR_MS`). `sleep` waits that many milliseconds; the runtime passes a real timer and tests pass one that moves their clock. Absent: refusals are not
+   * held back (only for tests that do not care; the runtime always sets it).
+   */
+  refusalFloor?: RefusalFloor;
   newId?(): string;
+}
+
+/**
+ * SRL-14 (owner decision 24b): a web editor who types a channel ID must not learn from the response time whether a private channel exists or Rovara is in it. The refusals the editor may not learn the reason for (SLACK_INVITE_NEEDED,
+ * SLACK_NOT_LINKED) are held until this long after the place check began, on top of making the same Slack reads on every path. Slack answers in well under this; a Slack slower than this (its own per-call limit is 5 s) is not slowed further.
+ */
+export const SLACK_REFUSAL_FLOOR_MS = 3_000;
+/** The membership reads must be done this long before the floor ends; what is not done by then counts as "not in", so the refusal is still sent AT the floor and a slow Slack cannot separate the cases (review of SRL-14, finding 1). */
+export const SLACK_MEMBERSHIP_MARGIN_MS = 250;
+/** A web editor's Slack adds a minute (each one reads Slack up to 1 + 5 times, and a refusal holds a Lambda for the floor). Counted before the place is read, so every channel gets the same answer. */
+export const SLACK_ADDS_PER_EDITOR_PER_MINUTE = 20;
+export interface RefusalFloor {
+  ms: number;
+  /** Waits that many milliseconds. */
+  sleep(ms: number): Promise<void>;
+  /** Waits for `work`, but no longer than `ms`: "late" when the time is up first (the work is left to finish unobserved). */
+  within<T>(ms: number, work: Promise<T>): Promise<T | "late">;
+}
+/** The floor as the runtime runs it: real timers. */
+export function realRefusalFloor(ms: number = SLACK_REFUSAL_FLOOR_MS): RefusalFloor {
+  return {
+    ms,
+    sleep: (wait) => new Promise<void>((resolve) => { setTimeout(resolve, wait); }),
+    within: (wait, work) => new Promise((resolve, reject) => {
+      const timer = setTimeout(() => resolve("late"), Math.max(0, wait));
+      work.then((value) => { clearTimeout(timer); resolve(value); }, (error: unknown) => { clearTimeout(timer); reject(error instanceof Error ? error : new Error("the work failed")); });
+    }),
+  };
 }
 
 /** A page of Slack channels, or why it could not be read. */
@@ -127,7 +160,7 @@ const notLinkedReply = (): RecordRouteReply => ({ status: 422, body: { code: "SL
 /** A pasted link (or place) for a Slack workspace other than this install's: its own route-local code and one fixed sentence (task 11, B). */
 class WrongWorkspace extends Error {}
 const wrongWorkspaceReply = (): RecordRouteReply => ({ status: 422, body: { code: "SLACK_WRONG_WORKSPACE", message: "That link is for a different Slack workspace." } });
-const inviteNeededReply = (): RecordRouteReply => ({ status: 422, body: { code: "SLACK_INVITE_NEEDED", message: "Rovara isn't in that channel yet. Type /invite @Rovara in the channel, then try again. You must be in the channel yourself, with your Slack account linked to Rovara." } });
+const inviteNeededReply = (): RecordRouteReply => ({ status: 422, body: { code: "SLACK_INVITE_NEEDED", message: "Rovara isn't in that channel yet. Type /invite @Rovara in the channel, then try again. You must be in the channel yourself, with your Slack account linked to Rovara. If Rovara and you are both in it already, wait a minute and try again." } });
 const removalRunningReply = (): RecordRouteReply => ({ status: 409, body: { code: "SOURCE_REMOVAL_RUNNING", message: "This source was just removed and its stored data is still being deleted. You can add it again in about an hour." } });
 const clearingElsewhereReply = (): RecordRouteReply => ({ status: 409, body: { code: "SOURCE_CLEARING", message: "This source is still being cleared after a recent removal. You can add it again in about an hour." } });
 const removalBusyReply = (): RecordRouteReply => ({ status: 409, body: { code: "SOURCE_REMOVAL_BUSY", message: "Rovara is still deleting data from recently removed sources. Try again in an hour." } });
@@ -248,8 +281,43 @@ function slackPlaceOf(ctx: SourceWriteContext, scope: string): string {
 /**
  * A Slack place: the workspace is this company's (the binding the tap resolves), the channel is read LIVE and classified here, and the edition's rules apply. A workspace of another company answers as a
  * missing place and Slack is never asked; a channel that cannot be read fails closed. Slack Connect, and a DM or group DM in Public, are refused with their own code.
+ * A web editor's refusals that hide the reason (SRL-14) are held to a fixed floor in time (`withRefusalFloor`).
  */
 async function checkSlackPlace(run: Run, scope: string, editorInChannel: boolean): Promise<SlackScope> {
+  if (!editorInChannel || run.ctx.actor === "slack_interaction") return await checkSlackPlaceNow(run, scope, false, undefined);
+  // The editor's own count first: the same answer for every channel, so it says nothing about one.
+  await rationSlackAdds(run);
+  return await withRefusalFloor(run, (started) => checkSlackPlaceNow(run, scope, true, started));
+}
+
+/** One from the editor's minute. No limiter wired: no limit. A limiter that cannot answer refuses (fail closed). Kept under `RATE#slack-add-web|person:<id>`, which person erase removes (`PERSON_RATE_KINDS`). */
+async function rationSlackAdds(run: Run): Promise<void> {
+  const limiter = run.deps.limiter;
+  if (limiter === undefined) return;
+  const allowed = await limiter.take(`${run.orgId}|slack-add-web|${personRateKey(run.me)}`, SLACK_ADDS_PER_EDITOR_PER_MINUTE, 60).then((value) => value, () => false);
+  if (!allowed) throw agentXError("TOO_MANY_REQUESTS", "Too many channels added just now. Try again in a minute.");
+}
+
+/**
+ * Runs the check; when it ends in a refusal that must not tell why, or in "unavailable" (an anomaly on a channel Rovara can see is told apart from a missing one by speed alone, so a 503 is held back too), waits out the rest of
+ * the floor before letting it go. Success and every other answer are not delayed.
+ */
+async function withRefusalFloor<T>(run: Run, work: (started: number) => Promise<T>): Promise<T> {
+  const floor = run.sources.refusalFloor;
+  if (floor === undefined) return await work(run.now());
+  const started = run.now();
+  try {
+    return await work(started);
+  } catch (error) {
+    if (error instanceof InviteNeeded || error instanceof NotLinked || (error instanceof AgentXError && error.code === "RUNTIME_UNAVAILABLE")) {
+      const rest = floor.ms - (run.now() - started);
+      if (rest > 0) { try { await floor.sleep(rest); } catch { /* the answer is the same without the wait */ } }
+    }
+    throw error;
+  }
+}
+
+async function checkSlackPlaceNow(run: Run, scope: string, editorInChannel: boolean, started: number | undefined): Promise<SlackScope> {
   const parsed = parseSlackScope(scope);
   if (parsed === undefined) throw invalid(WORDS.place);
   const bound = run.sources.slackTeamBound;
@@ -262,39 +330,53 @@ async function checkSlackPlace(run: Run, scope: string, editorInChannel: boolean
   let facts: SlackFacts | "none" | undefined;
   try { facts = await run.ctx.slackChannel(parsed.teamId, parsed.channelId); } catch { facts = undefined; }
   if (facts === undefined) throw unavailable();
-  // Slack does not show the bot this channel: it is not in it, or there is no such channel. Never said which.
-  if (facts === "none") throw (await unlinkedEditor(run, editorInChannel)) ? new NotLinked() : new InviteNeeded();
+  // Slack does not show the bot this channel: it is not in it, or there is no such channel. Never said which. SRL-14: a web editor goes through EXACTLY the reads a private channel Rovara is in would cost (their linked ids, then one membership
+  // read per id, on this same channel), so the work, and the answer, are the same either way. Nothing the reads say can change the answer here.
+  if (facts === "none") {
+    if (editorInChannel) await editorIsInByTheFloor(run, parsed.channelId, started);
+    throw new InviteNeeded();
+  }
   // Adding a channel that is not public from the web: the editor must be in it, by one of their own linked Slack ids (as the Slack-side Add checks), BEFORE anything else is said about the channel (Slack Connect, a DM). The Slack
   // interaction has already checked the person who pressed. A person not in it, with no linked id, answers exactly as "Rovara is not in that channel": the channel's existence is never told.
-  if (editorInChannel && run.ctx.actor !== "slack_interaction" && facts.kind !== "public") await requireEditorIn(run, parsed.channelId);
+  if (editorInChannel && facts.kind !== "public" && !await editorIsInByTheFloor(run, parsed.channelId, started)) throw new InviteNeeded();
   const place = classifySlack(facts);
   if (!slackScopeAllowed(run.sources.edition, place).allowed) throw new NotAllowed(place === "slack_connect" ? WORDS.connect : WORDS.directMessages);
   return place;
 }
 
 const SLACK_USER_ID = /^[UW][A-Z0-9]{2,31}$/u;
-/** Whether a web editor adding a Slack place has no linked Slack account (read by the server). A read that is absent or fails is not "unlinked": the answer stays the merged one. */
-async function unlinkedEditor(run: Run, editorInChannel: boolean): Promise<boolean> {
-  if (!editorInChannel || run.ctx.actor === "slack_interaction" || run.sources.slackUserIdsOf === undefined) return false;
-  try { return (await run.sources.slackUserIdsOf(run.me)).filter((id) => SLACK_USER_ID.test(id)).length === 0; } catch { return false; }
-}
 const LINKED_IDS_MAX = 5;
-/** The editor's own linked Slack ids (the sign-in store's, read by the server from the session's developer, never from the request) and whether one of them is in the channel. Unreadable fails closed as unavailable. */
-async function requireEditorIn(run: Run, channelId: string): Promise<void> {
+/**
+ * Whether one of the editor's own linked Slack ids (the sign-in store's, read by the server from the session's developer, never from the request) is in the channel. NotLinked when they have none. A membership that cannot be read
+ * (an error, a throw, a channel Slack will not show) counts as "not in", the same as a plain no, so that a missing scope or a failing read on an existing private channel is not a different answer from a channel that does not exist
+ * (SRL-14). A missing way to read it, or the links failing, is unavailable for every channel alike.
+ */
+async function editorIsIn(run: Run, channelId: string): Promise<boolean> {
   const linksOf = run.sources.slackUserIdsOf, memberOf = run.ctx.slackMember;
   if (linksOf === undefined || memberOf === undefined) throw unavailable();
   let ids: string[];
   try { ids = [...new Set(await linksOf(run.me))].filter((id) => SLACK_USER_ID.test(id)).sort().slice(0, LINKED_IDS_MAX); } catch { throw unavailable(); }
   if (ids.length === 0) throw new NotLinked();
-  let unreadable = false;
-  for (const id of ids) {
-    let answer: boolean | undefined;
-    try { answer = await memberOf(id, channelId); } catch { answer = undefined; }
-    if (answer === true) return;
-    if (answer === undefined) unreadable = true;
-  }
-  if (unreadable) throw unavailable();
-  throw new InviteNeeded();
+  // All the ids at once (one round trip however many the editor linked, in every case), answered "yes" as soon as one is.
+  return await new Promise<boolean>((resolve) => {
+    let left = ids.length;
+    for (const id of ids) {
+      Promise.resolve().then(() => memberOf(id, channelId)).then((answer) => answer === true, () => false).then((yes) => {
+        if (yes) resolve(true);
+        else { left -= 1; if (left === 0) resolve(false); }
+      }, () => { left -= 1; if (left === 0) resolve(false); });
+    }
+  });
+}
+
+/** `editorIsIn`, but done by the time the floor allows. A web editor's membership reads that are not finished by then count as "not in": the refusal is sent at the floor in every case instead of whenever Slack finishes. */
+async function editorIsInByTheFloor(run: Run, channelId: string, started: number | undefined): Promise<boolean> {
+  const floor = run.sources.refusalFloor;
+  const work = editorIsIn(run, channelId);
+  if (floor === undefined || started === undefined) return await work;
+  work.catch(() => undefined); // a read that outlives the answer must not surface later
+  const result = await floor.within(floor.ms - SLACK_MEMBERSHIP_MARGIN_MS - (run.now() - started), work);
+  return result === "late" ? false : result;
 }
 
 /** A Linear team or Jira project: one the company's connected app lists, read live. No app of that kind (or an install without connections) is a missing place; a listing that cannot be read fails closed. */

@@ -18,7 +18,9 @@ const DAY = 86_400_000;
 const PROJECT: Audience = { kind: "project" };
 const person = (extra = {}) => ({ kind: "caller" as const, caller: caller(extra) });
 const shared = { kind: "shared" as const, orgId: ORG_A };
-const deps = (w: World, extra: Partial<RecordQueryDependencies> = {}): RecordQueryDependencies => ({ table: w.table, modes: w.deps.modes, now: () => w.clock.ms, ...extra });
+/** SRL-4: past_work shows only tasks whose live visibility lets the asker in; here every task is still the project's. */
+const allShared = { async read(_org: unknown, ids: readonly string[]) { return new Map(ids.map((id) => [id, { kind: "shared" as const }])); } };
+const deps = (w: World, extra: Partial<RecordQueryDependencies> = {}): RecordQueryDependencies => ({ table: w.table, modes: w.deps.modes, now: () => w.clock.ms, taskVisibility: allShared, ...extra });
 const lesson = (id: string, sourceEvents: string[], extra: Record<string, unknown> = {}) => ({ id, version: 1, status: "active", citations: [], provenance: { sourceEvents }, counters: { citationStale: 0 }, ...extra }) as never;
 const priv = (scope = GITHUB_SCOPE, principals = ["123"]): Audience => ({ kind: "restricted", acl: { source: "github", scope, principals, capturedAt: "2026-10-30T10:00:00.000Z", liveCheck: "none" } });
 

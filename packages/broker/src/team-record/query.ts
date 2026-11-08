@@ -38,6 +38,7 @@ import { Aliases, errorName } from "../agents/table-writes.js";
 import { createAccessReader } from "./access.js";
 import { filterVisible, type FilterDependencies, type FilterResult, type LiveCheckCache } from "./acl.js";
 import { parseEventVectorRef } from "./ingest.js";
+import { createLiveAudienceReader, type TaskVisibilityPort } from "./live-audience.js";
 import { assembleItem, itemKeyOf, isChangeRow, visibleItemRows } from "./item-assembly.js";
 import type { LearningModeReader } from "./mode.js";
 import type { SourceRouteDependencies } from "./source-write.js";
@@ -80,9 +81,19 @@ export interface PastWorkTasksPort {
 }
 
 export interface StatsPort {
-  /** Runs a fixed template over the lake. `workspaceId` and `project` are bound by the runner; the caller's text never reaches SQL. Rows are scalars. */
-  run(input: { template: StatsTemplate; workspaceId: OrgId; project: string; params: Record<string, string | number> }): Promise<Array<Record<string, string | number | null>>>;
+  /**
+   * Runs a fixed template over the lake. `workspaceId` and `project` are bound by the runner; the caller's text never reaches SQL. Rows are scalars. `onlyTaskIds` (SRL-4, only for the statistics
+   * that count Rovara's rows): the ONLY tasks counted (checked, and visible to the whole project now). `nowMs` fixes the window to the one the task list was made for.
+   */
+  run(input: { template: StatsTemplate; workspaceId: OrgId; project: string; params: Record<string, string | number>; onlyTaskIds?: readonly string[]; nowMs?: number }): Promise<Array<Record<string, string | number | null>>>;
+  /** SRL-4: the distinct tasks a Rovara statistic counts in its window. Absent, or `complete: false`, or a throw: that statistic is unavailable. */
+  rovaraTasks?(input: { template: StatsTemplate; workspaceId: OrgId; project: string; params: Record<string, string | number> }): Promise<{ taskIds: string[]; complete: boolean; nowMs?: number }>;
 }
+
+/** The statistics that count Rovara's own rows (see `stats-templates.ts#ROVARA_STATS`). */
+const ROVARA_STAT_TEMPLATES: readonly string[] = ["send_backs_by_stage", "rovara_merge_rate"];
+/** How long reading the live visibility of the tasks of one statistic may take. */
+const STATS_TASK_READ_TIMEOUT_MS = 15_000;
 
 export interface RecordQueryDependencies {
   table: TeamRecordTable;
@@ -92,6 +103,10 @@ export interface RecordQueryDependencies {
   liveCheck?: LiveAclCheck;
   liveCache?: LiveCheckCache;
   limiter?: RateLimiter;
+  /** SRL-4: the live Plan 5 visibility of tasks. Without it every row about a Rovara task is hidden (fail closed). */
+  taskVisibility?: TaskVisibilityPort;
+  /** How long one lookup of task visibility may take (default 5 seconds). */
+  taskVisibilityTimeoutMs?: number;
   tasks?: PastWorkTasksPort;
   /** The titles of the lessons learned from a task, each with the audience of the lesson (a lesson from a private channel is restricted). */
   lessonsOfTask?(orgId: OrgId, project: string, taskId: string): Promise<Array<{ title: string; audience: Audience; /** The places the lesson was learned from; each is checked at read time. */ scopes: string[]; /** Of those, the ones whose own access record the lesson requires. */ restrictedScopes: string[] }>>;
@@ -114,7 +129,7 @@ export interface QueryOptions {
  * The rate items that name a person (register SRL-9): `RATE#<what>|person:<developerId>#<window>` for the four record reads and the source picker. A task's key, a project's shared key and the company's own
  * counters hold no person. Person erase removes these (`erase.ts`, config step); add a `what` here when a new read is rationed per person.
  */
-export const PERSON_RATE_KINDS = ["search", "facts", "past_work", "stats", "source-options"] as const;
+export const PERSON_RATE_KINDS = ["search", "facts", "past_work", "stats", "source-options", "slack-add-web"] as const;
 /**
  * Unkeyed hashes of enumerable ids are personal data, so erase finds the items that carry them (SRL-9): a picker session's `person` (`SRCOPT#`) and the slack-add rate item's key. One definition for the
  * writers (`source-options.ts`, `slack-add.ts`) and for erase.
@@ -147,7 +162,7 @@ async function filterDependencies(deps: RecordQueryDependencies, orgId: OrgId): 
   // Work that has not finished hides its places and source items from everyone. If the queue cannot be read in full, nothing is shown (no guessing).
   const pending = await pendingHidesOf(deps.table, orgId).catch(() => undefined);
   if (pending === undefined) throw agentXError("RUNTIME_UNAVAILABLE", "The team record can't be read right now.");
-  return { access: createAccessReader(deps.table, orgId), ...(deps.liveCheck === undefined ? {} : { liveCheck: deps.liveCheck }), ...(deps.liveCache === undefined ? {} : { cache: deps.liveCache }), ...(deps.now === undefined ? {} : { now: deps.now }), pending };
+  return { access: createAccessReader(deps.table, orgId), liveTasks: createLiveAudienceReader(orgId, deps.taskVisibility, { timeoutMs: deps.taskVisibilityTimeoutMs, log: deps.log }), ...(deps.liveCheck === undefined ? {} : { liveCheck: deps.liveCheck }), ...(deps.liveCache === undefined ? {} : { cache: deps.liveCache }), ...(deps.now === undefined ? {} : { now: deps.now }), pending };
 }
 
 const KIND_TITLES: Record<string, string> = {
@@ -308,8 +323,21 @@ export async function pastWork(deps: RecordQueryDependencies, audience: ReadAudi
   const filters = await filterDependencies(deps, orgId);
   const checked = await filterVisible(found.map((task) => ({ ...task, audience: task.audience })), effective, filters);
 
+  // The tasks shown are checked against their live visibility first (a task that can't be read or no longer lets this reader in is not shown, so an outcome is never reported for a task nobody could judge).
+  // Only THEN are the outcome rows read, and only the rows of the shown tasks, so the per-request task bound is not spent on unrelated tasks.
+  const candidates = checked.visible.slice(0, limit);
+  await filters.liveTasks?.load(candidates.map((task) => task.taskId));
+  let taskHidden = false;
+  const shown = candidates.filter((task) => {
+    const verdict = filters.liveTasks === undefined ? "unreadable" : filters.liveTasks.verdictOf(effective, [task.taskId]);
+    if (verdict === "deny") taskHidden = true;
+    return verdict === "allow";
+  });
+  const shownIds = new Set(shown.map((task) => task.taskId));
   // The outcome rows pass the same filter: a revert seen only in a private repository does not show in a shared answer.
-  const outcomeRows = (await filterVisible(await queryRecordEvents(deps.table, orgId, project, { limit: PAST_WORK_EVENT_SCAN, nowSeconds: nowSecondsOf(deps) }), effective, filters)).visible;
+  const scanned = (await queryRecordEvents(deps.table, orgId, project, { limit: PAST_WORK_EVENT_SCAN, nowSeconds: nowSecondsOf(deps) }))
+    .filter((event) => OUTCOME_KINDS.has(event.kind) && typeof event.structured?.taskId === "string" && shownIds.has(event.structured.taskId));
+  const outcomeRows = (await filterVisible(scanned, effective, filters)).visible;
   const outcomes = new Map<string, { merged: boolean; sendBacks: number; reverted: boolean }>();
   for (const event of outcomeRows) {
     if (event.tombstone !== undefined || !OUTCOME_KINDS.has(event.kind)) continue;
@@ -325,7 +353,7 @@ export async function pastWork(deps: RecordQueryDependencies, audience: ReadAudi
   }
   const items: PastWorkItem[] = [];
   let lessonHidden = false;
-  for (const task of checked.visible.slice(0, limit)) {
+  for (const task of shown) {
     // A lesson from a private place shows its title only to an audience that could see that place.
     const learned = await (deps.lessonsOfTask?.(orgId, project, task.taskId) ?? Promise.resolve<Array<{ title: string; audience: Audience; scopes: string[]; restrictedScopes: string[] }>>([])).then((list) => list, () => []);
     // One malformed lesson audience drops that entry, not the call.
@@ -339,7 +367,7 @@ export async function pastWork(deps: RecordQueryDependencies, audience: ReadAudi
       outcome: outcomes.get(task.taskId) ?? { merged: false, sendBacks: 0, reverted: false }, lessonsLearned: lessons,
     });
   }
-  return PastWorkResponseSchema.parse({ items, someHidden: effective.kind === "caller" && (checked.withheld > 0 || lessonHidden) });
+  return PastWorkResponseSchema.parse({ items, someHidden: effective.kind === "caller" && (checked.withheld > 0 || lessonHidden || taskHidden) });
 }
 
 export type StatsAnswer = { status: "ok"; rows: Array<Record<string, string | number | null>> } | { status: "unavailable"; text: string };
@@ -357,7 +385,21 @@ export async function recordStats(deps: RecordQueryDependencies, audience: ReadA
     params[key] = value;
   }
   try {
-    const rows = await deps.stats.run({ template: request.template as StatsTemplate, workspaceId: audience.caller.orgId, project, params });
+    // SRL-4: a statistic over Rovara's rows counts only tasks the WHOLE project can view right now (a total never carries a restricted source). Every task in the window is looked up; only the ones still visible to the whole project are counted (an allow list, so a task that appears after
+    // the check is not counted unchecked), and the run uses the window the list was made for. A task that cannot be read, is gone, or is narrowed is left out, and a window with more tasks than can be checked, or a failed lookup, makes the statistic unavailable.
+    let onlyTaskIds: string[] | undefined;
+    let nowMs: number | undefined;
+    if (ROVARA_STAT_TEMPLATES.includes(request.template)) {
+      if (deps.stats.rovaraTasks === undefined) throw new Error("team-record: the statistic can't check its tasks");
+      const listed = await deps.stats.rovaraTasks({ template: request.template as StatsTemplate, workspaceId: audience.caller.orgId, project, params });
+      if (!listed.complete) throw new Error("team-record: too many tasks to check for the statistic");
+      const projectWide: ReadAudience = { kind: "shared", orgId: audience.caller.orgId };
+      const live = createLiveAudienceReader(audience.caller.orgId, deps.taskVisibility, { timeoutMs: STATS_TASK_READ_TIMEOUT_MS, maxTasks: Math.max(listed.taskIds.length, 1), log: deps.log });
+      await live.load(listed.taskIds);
+      onlyTaskIds = listed.taskIds.filter((id) => live.verdictOf(projectWide, [id]) === "allow");
+      nowMs = listed.nowMs;
+    }
+    const rows = await deps.stats.run({ template: request.template as StatsTemplate, workspaceId: audience.caller.orgId, project, params, ...(onlyTaskIds === undefined ? {} : { onlyTaskIds }), ...(nowMs === undefined ? {} : { nowMs }) });
     return { status: "ok", rows: rows.slice(0, 200) };
   } catch {
     deps.log?.("record.stats_unavailable", { template: request.template });

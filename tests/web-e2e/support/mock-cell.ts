@@ -28,7 +28,7 @@ import { homeFixture } from "../../web/support/fixtures.js";
 import { FIXTURE_ORG, FIXTURE_DEVELOPER, FIXTURE_SESSION } from "../../web/support/fixtures.js";
 import { scenario } from "./scenarios.js";
 import { howWeWorkMock, resetHowWeWork } from "./how-we-work-mock.js";
-import { lessonsMock, resetLessons, resetTaskLessons, setSourceEditing, setTrialLessons, taskLessonsMock } from "./lessons-mock.js";
+import { lessonsMock, resetLessons, resetTaskLessons, setLessonsPaused, setSourceEditing, setTrialLessons, taskLessonsMock } from "./lessons-mock.js";
 import { intakeHomeCards, intakeMock, resetIntake, showTicketOnHome } from "./intake-mock.js";
 import { resetTestEnvironment, testEnvironmentMock } from "./test-environment-mock.js";
 import { learningMock, learningSettingsMock, lockLearning, resetLearning, overviewLearning, homeSuggestionCards } from "./learning-mock.js";
@@ -71,6 +71,7 @@ async function handleRequest(request: IncomingMessage, response: ServerResponse)
  const url = new URL(request.url ?? "/", origin), method = request.method ?? "GET", headers = Object.fromEntries(Object.entries(request.headers).map(([name, value]) => [name, Array.isArray(value) ? value.join(",") : value]));
  function json(status: number, body: unknown) { response.writeHead(status, { "content-type": "application/json", "cache-control": "no-store" });response.end(JSON.stringify(body)); }
  try {
+ if (url.pathname === "/__mock/lessons-paused" && method === "POST") { let body = "";for await (const chunk of request) body += String(chunk);const input = JSON.parse(body) as { code?: unknown };setLessonsPaused(typeof input.code === "string" ? input.code : undefined);json(200, { ok: true });return; }
  if (url.pathname === "/__mock/source-editing" && method === "POST") { setSourceEditing(true);json(200, { ok: true });return; }
  if (url.pathname === "/__mock/trial-lessons" && method === "POST") { setTrialLessons();json(200, { ok: true });return; }
  if (url.pathname === "/__mock/ticket-on-home" && method === "POST") { showTicketOnHome();json(200, { ok: true });return; }

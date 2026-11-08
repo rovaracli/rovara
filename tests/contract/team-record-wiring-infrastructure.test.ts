@@ -81,6 +81,22 @@ describe("the switch is off by default and changes nothing", () => {
     for (const id of Object.keys(committed)) expect(id in off, id).toBe(false);
   }, 360_000);
 
+  // Lessons in production: the ModelAccessFunction makes the one model call of a learning reflection (`learningCompletion`, with a key the broker minted and reserved), which takes longer than its other operations. Only with the
+  // switch on: the timeout is 120 s (its only step is the 100 s call) and the environment switch that lets the handler accept the operation is set (L3). Off, both are what they were.
+  it("the model access function waits longer (120 s) and accepts the learning call only with the switch on; off, its timeout is what it was (30 s) and it has no learning switch", () => {
+    const functionOf = (template: Template) => {
+      const found = Object.entries(resourcesOf(template)).filter(([id, resource]) => resource.Type === "AWS::Lambda::Function" && id.startsWith("ModelAccessFunction"));
+      expect(found).toHaveLength(1);
+      return found[0]![1].Properties as { Timeout: number; Environment?: { Variables?: Record<string, string> } };
+    };
+    const off = functionOf(plain);
+    expect(off.Timeout).toBe(30);
+    expect(off.Environment?.Variables?.LEARNING_COMPLETION_ENABLED).toBeUndefined();
+    const on = functionOf(controlPlane({ ...PUBLIC, agentxTeamRecord: "enabled" }));
+    expect(on.Timeout).toBe(120);
+    expect(on.Environment?.Variables?.LEARNING_COMPLETION_ENABLED).toBe("1");
+  }, 360_000);
+
   it("is off in the legacy install and in a self-hosted install with no edition, and a wrong value stops the synth", () => {
     expect(JSON.stringify(controlPlane({}).toJSON())).not.toMatch(/s3vectors|s3tables|team-record/i);
     expect(() => controlPlane({ ...PUBLIC, agentxTeamRecord: "yes" })).toThrow(/must be "enabled" or "off"/);

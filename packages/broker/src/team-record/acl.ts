@@ -5,6 +5,7 @@
 import { MAINTAINERS_GROUP, agentXError, type AclSnapshot, type Audience, type RecordTombstone } from "@agentx/contracts";
 import { scopeAndAncestors, teamRecordSourceHash } from "@agentx/contracts";
 import { accessScopesOf, judgeAccess, viewerOfCaller, type AccessReader, type AccessVerdict } from "./access.js";
+import { rovaraTaskRefsOf, type LiveAudienceReader } from "./live-audience.js";
 import type { LiveAclCheck, PendingHides, ReadAudience, RecordCaller } from "./types.js";
 
 /** How long a live re-check answer is reused, per caller and scope (design 4.4.2). */
@@ -23,6 +24,9 @@ export interface Visible {
   /** The source item a row is (events), or the ones a fact was distilled from (`system:sourceId`). */
   sourceRef?: { system: string; id: string } | undefined;
   derivedFrom?: readonly string[] | undefined;
+  /** For the live task check (`live-audience.ts`): a Rovara event names its task here or in its source id. */
+  source?: string | undefined;
+  structured?: Readonly<Record<string, string | number | boolean>> | undefined;
 }
 
 /** Whether a caller's identities satisfy a snapshot. No principals and no groups is an empty snapshot: nobody. */
@@ -89,6 +93,11 @@ export interface FilterDependencies {
    * snapshot is a pre-filter, never the final word. A restricted row whose unit has no record is dropped; a record that cannot be read makes the call fail (unavailable).
    */
   access: AccessReader;
+  /**
+   * SRL-4: the live Plan 5 visibility of the tasks the rows are about (one reader per request). A row about a Rovara task is shown only if the task's visibility NOW also lets the reader in, on top of the
+   * audience the row was recorded with. Absent, every row about a Rovara task is hidden (fail closed).
+   */
+  liveTasks?: LiveAudienceReader;
 }
 
 export interface FilterResult<T> {
@@ -120,7 +129,16 @@ export function hiddenByPending(row: Visible, pending: PendingHides | undefined)
 export async function filterVisible<T extends Visible>(rows: readonly T[], audience: ReadAudience, dependencies: FilterDependencies): Promise<FilterResult<T>> {
   const now = dependencies.now ?? Date.now;
   const viewer = audience.kind === "caller" ? viewerOfCaller(audience.caller) : undefined;
-  await dependencies.access.load(rows.filter((row) => row.tombstone === undefined && visibleWithoutLiveCheck(audience, row)).flatMap((row) => accessScopesOf(row).all), viewer);
+  const candidates = rows.filter((row) => row.tombstone === undefined && visibleWithoutLiveCheck(audience, row));
+  await dependencies.access.load(candidates.flatMap((row) => accessScopesOf(row).all), viewer);
+  // SRL-4: the tasks the remaining rows are about, asked in one batch (and remembered for the rest of the request).
+  const taskRefs = new Map<T, ReturnType<typeof rovaraTaskRefsOf>>();
+  for (const row of candidates) {
+    if (hiddenByPending(row, dependencies.pending)) continue;
+    const refs = rovaraTaskRefsOf(row);
+    if (refs !== undefined) taskRefs.set(row, refs);
+  }
+  await dependencies.liveTasks?.load([...taskRefs.values()].flatMap((refs) => (refs?.unreadable === true ? [] : refs?.taskIds ?? [])));
   let unavailable = false;
   const visible: T[] = [];
   let withheld = 0;
@@ -131,6 +149,16 @@ export async function filterVisible<T extends Visible>(rows: readonly T[], audie
     if (!visibleWithoutLiveCheck(audience, row)) {
       withheld += 1;
       continue;
+    }
+    const refs = taskRefs.get(row);
+    if (refs !== undefined) {
+      // A row about a Rovara task: a task whose visibility cannot be read hides its rows from everyone (not counted as hidden from this reader); a task that does not let this reader in counts as withheld.
+      const live = refs.unreadable || dependencies.liveTasks === undefined ? "unreadable" : dependencies.liveTasks.verdictOf(audience, refs.taskIds);
+      if (live === "unreadable") continue;
+      if (live === "deny") {
+        withheld += 1;
+        continue;
+      }
     }
     const verdict: AccessVerdict = judgeAccess(dependencies.access, viewer, accessScopesOf(row));
     if (verdict === "unavailable") { unavailable = true; continue; }

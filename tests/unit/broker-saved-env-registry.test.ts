@@ -843,10 +843,10 @@ describe("the Environment panel (SH26)", () => {
     const state = { orgId: "org-1", projectId: "proj-1", version: 1, enabled: true, images: [imageOf(dig(1), { recordedAt: iso(T0 - 3 * 86_400_000 - 1000) })], health: "healthy" as const, lastRebuildReason: "key_changed" as const };
     const view = panelView(state, T0, "maintainer");
     expect(SavedEnvPanelSchema.safeParse(view).success).toBe(true);
-    expect(view).toEqual({ health: "healthy", image: { builtAt: iso(T0 - 3 * 86_400_000 - 1000), ageDays: 3, status: "ready" }, lastRebuildReason: "key_changed", canReset: true });
+    expect(view).toEqual({ health: "healthy", image: { builtAt: iso(T0 - 3 * 86_400_000 - 1000), ageDays: 3, status: "ready" }, lastRebuildReason: "key_changed", canReset: true, enabled: true, canChangeSetting: true });
     expect(JSON.stringify(view)).not.toContain(dig(1));
     expect(JSON.stringify(view)).not.toContain(repository);
-    expect(panelView(undefined, T0, "maintainer")).toEqual({ health: "never_proved", canReset: true });
+    expect(panelView(undefined, T0, "maintainer")).toEqual({ health: "never_proved", canReset: true, enabled: true, canChangeSetting: true });
   });
 
   it("says a queued job is waiting, a dispatched one is running, and an expired lease is neither", () => {
@@ -872,6 +872,18 @@ describe("the Environment panel (SH26)", () => {
     expect(panelView(state, T0, "contributor").canReset).toBe(false);
     expect(panelView(state, T0, "viewer").canReset).toBe(false);
     expect(panelView({ ...state, archived: true }, T0, "maintainer").canReset).toBe(false);
+  });
+
+  it("says whether the project's setting is on, and offers its control to a maintainer only (SV-1l)", () => {
+    const state = { orgId: "org-1", projectId: "proj-1", version: 1, enabled: true, images: [], health: "healthy" as const };
+    expect(panelView(state, T0, "viewer").enabled).toBe(true);
+    expect(panelView({ ...state, enabled: false }, T0, "viewer").enabled).toBe(false);
+    // no row yet: on, as the setting route reads it
+    expect(panelView(undefined, T0, "viewer").enabled).toBe(true);
+    expect(panelView(state, T0, "maintainer").canChangeSetting).toBe(true);
+    expect(panelView(state, T0, "contributor").canChangeSetting).toBe(false);
+    expect(panelView(state, T0, "viewer").canChangeSetting).toBe(false);
+    expect(SavedEnvPanelSchema.safeParse(panelView({ ...state, enabled: false }, T0, "contributor")).success).toBe(true);
   });
 
   it("the panel does not exist with `sv` off", async () => {

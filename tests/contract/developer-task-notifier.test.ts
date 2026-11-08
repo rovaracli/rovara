@@ -7,7 +7,7 @@ import { describe, expect, it, vi } from "vitest";
 import { PER_TASK_BUDGET_USD, orgMemberKey, projectMemberKey, WORKFLOW_AUTO_PUBLISH_FAILED_MESSAGE, WORKFLOW_AUTO_REVIEW_FAILED_MESSAGE, indexExpiresAt, plannerReplyCommentId, planQualityFinding } from "@agentx/contracts";
 import { developerTaskIdentity, plannerRepliesKey } from "../../packages/broker/src/developer/task-records.js";
 import { SlackPostError, chatPostMessage } from "../../packages/broker/src/aws/slack-web.js";
-import { cachedSlackPoster, createNotifierHandler, designCardUrlFor, planOpenFor, retryDelaySeconds, type NotifierDependencies } from "../../packages/broker/src/aws/developer-task-notifier.js";
+import { cachedSlackPoster, createNotifierHandler, designCardUrlFor, planOpenFor, runLimitRaiseFor, runLimitRaiseLive, retryDelaySeconds, type NotifierDependencies } from "../../packages/broker/src/aws/developer-task-notifier.js";
 import { noticesOf, type Notice } from "../../packages/broker/src/developer/notifications.js";
 import { MAYA, OMAR, createSingleAnswerPlanBroker, grantProject, recordStream } from "../support/developer-task-broker.js";
 import { finishPlanningWithMarkdown, planAnswer, planDocument } from "../support/plan-documents.js";
@@ -2690,20 +2690,116 @@ describe("decision journey slice 1: a plan-review message for a design under rev
   });
 });
 
-describe("decision journey slice 2: a coding plan that raises the run limit offers Open in Rovara (from the task record), to the plan review page", () => {
-  const taskId = "11111111-1111-4111-8111-111111111111", page = `https://agentx.example.test/review/${taskId}/task`;
-  const estimate = (runLimitUsd: number) => ({ lowUsd: 1, highUsd: 3, runLimitUsd, stopAtUsd: runLimitUsd, basis: "default" as const, samples: 0 });
-  const quick = { path: "QUICK" as const, reviewPhase: undefined };
-  it("the plan review page when approving raises the limit: above the task's limit, or above the per-task default when it has none", () => {
-    expect(planOpenFor({ budgetUsd: 2, runEstimate: estimate(6) }, quick, page)).toEqual({ url: page, why: "run_limit" });
-    expect(planOpenFor({ runEstimate: estimate(PER_TASK_BUDGET_USD + 1) }, { path: "FULL", reviewPhase: "IMPLEMENTATION_PLAN" }, page)).toEqual({ url: page, why: "run_limit" });
+describe("QA6-12b: a plan with no stored estimate is worked out live, as the decision does", () => {
+  const quick = { path: "QUICK" as const, reviewPhase: undefined, stage: "PLAN_REVIEW" as const, state: "WAITING" as const };
+  const base = { taskId: "11111111-1111-4111-8111-111111111111", orgId: TEST_ORG, project: "payments", budgetUsd: 2 };
+  const task = base as never;
+  const clock = () => Date.now();
+  it("reads the spend policy and the run history and shows the raise (a Quick plan with no history is $10)", async () => {
+    expect(await runLimitRaiseLive({ documentClient: new FakeDynamoDb(), tableName: "state", now: clock }, task, quick)).toEqual({ currentUsd: 2, proposedUsd: 10 });
   });
-  it("nothing (Approve stays) when the limit does not rise (the start's own lower limit counts), there is no estimate, the document is not the coding plan, or there is no page", () => {
-    expect(planOpenFor({ budgetUsd: 6, runEstimate: estimate(6) }, quick, page)).toBeUndefined();
-    expect(planOpenFor({ runEstimate: estimate(PER_TASK_BUDGET_USD) }, quick, page)).toBeUndefined();
-    expect(planOpenFor({ budgetUsd: 2, runEstimate: estimate(6), requestedRunLimitUsd: 2 }, quick, page)).toBeUndefined();
-    expect(planOpenFor({ budgetUsd: 2 }, quick, page)).toBeUndefined();
-    expect(planOpenFor({ budgetUsd: 2, runEstimate: estimate(6) }, { path: "FULL", reviewPhase: "REQUIREMENTS" }, page)).toBeUndefined();
-    expect(planOpenFor({ budgetUsd: 2, runEstimate: estimate(6) }, quick, undefined)).toBeUndefined();
+  it("shows nothing when the read fails, the task has no limit of its own, or the document is not the coding plan; and reads nothing when the record has its estimate", async () => {
+    const failing = { send: async () => { throw new Error("denied"); } };
+    expect(await runLimitRaiseLive({ documentClient: failing, tableName: "state", now: clock }, task, quick)).toBeUndefined();
+    expect(await runLimitRaiseLive({ documentClient: new FakeDynamoDb(), tableName: "state", now: clock }, { ...base, budgetUsd: undefined } as never, quick)).toBeUndefined();
+    expect(await runLimitRaiseLive({ documentClient: new FakeDynamoDb(), tableName: "state", now: clock }, task, { ...quick, path: "FULL", reviewPhase: "DESIGN" })).toBeUndefined();
+    const stored = { ...base, runEstimate: { lowUsd: 1, highUsd: 3, runLimitUsd: 8, stopAtUsd: 8, basis: "default", samples: 0 } } as never;
+    expect(await runLimitRaiseLive({ documentClient: failing, tableName: "state", now: clock }, stored, quick)).toEqual({ currentUsd: 2, proposedUsd: 8 });
+  });
+});
+
+describe("QA6-12b: a coding plan that raises the run limit shows the raise in Slack (from the task record) and keeps Approve", () => {
+  const estimate = (runLimitUsd: number) => ({ lowUsd: 1, highUsd: 3, runLimitUsd, stopAtUsd: runLimitUsd, basis: "default" as const, samples: 0 });
+  const quick = { path: "QUICK" as const, reviewPhase: undefined, stage: "PLAN_REVIEW" as const, state: "WAITING" as const };
+  it("the raise, from the task's limit or from the per-task default when it has none", () => {
+    expect(runLimitRaiseFor({ budgetUsd: 2, runEstimate: estimate(6) }, quick)).toEqual({ currentUsd: 2, proposedUsd: 6 });
+    expect(runLimitRaiseFor({ runEstimate: estimate(PER_TASK_BUDGET_USD + 1) }, { path: "FULL", reviewPhase: "IMPLEMENTATION_PLAN", stage: "PLAN_REVIEW", state: "WAITING" })).toEqual({ currentUsd: PER_TASK_BUDGET_USD, proposedUsd: PER_TASK_BUDGET_USD + 1 });
+  });
+  it("a start's own lower limit counts: the plan proposes the lower of its estimate and what the start asked for", () => {
+    expect(runLimitRaiseFor({ budgetUsd: 2, runEstimate: estimate(6), requestedRunLimitUsd: 4 }, quick)).toEqual({ currentUsd: 2, proposedUsd: 4 });
+  });
+  it("nothing when the limit does not rise, there is no estimate, or the document is not the coding plan", () => {
+    expect(runLimitRaiseFor({ budgetUsd: 6, runEstimate: estimate(6) }, quick)).toBeUndefined();
+    expect(runLimitRaiseFor({ runEstimate: estimate(PER_TASK_BUDGET_USD) }, quick)).toBeUndefined();
+    expect(runLimitRaiseFor({ budgetUsd: 2, runEstimate: estimate(6), requestedRunLimitUsd: 2 }, quick)).toBeUndefined();
+    expect(runLimitRaiseFor({ budgetUsd: 2 }, quick)).toBeUndefined();
+    expect(runLimitRaiseFor({ budgetUsd: 2, runEstimate: estimate(6) }, { ...quick, path: "FULL", reviewPhase: "REQUIREMENTS" })).toBeUndefined();
+    expect(runLimitRaiseFor({ budgetUsd: 2, runEstimate: estimate(6) }, { ...quick, path: "FULL", reviewPhase: "DESIGN" })).toBeUndefined();
+  });
+});
+
+describe("p1-slack-decide-card: with the decision cards on, a plan decided on its card shows no Approve in Slack", () => {
+  const quick = { path: "QUICK" as const, reviewPhase: undefined, stage: "PLAN_REVIEW" as const, state: "WAITING" as const };
+  const task = { taskId: "11111111-1111-4111-8111-111111111111", sessionId: "ses_0123456789abcdefghij" } as never;
+  const page = "https://agentx.example.test/review/11111111-1111-4111-8111-111111111111/task";
+  const markdown = { format: "markdown" as const, markdown: "# Plan\nChange the thing.", artifact: {} as never };
+  // A structured plan that names its file and proves every claim: low risk.
+  const lowPlan = { format: "structured" as const, markdown: "", artifact: {} as never, plan: planDocument({ claims: [], risks: ["Touches src/util/format.ts only."] }) };
+  const withCards = async (value: string | undefined, work: () => void | Promise<void>) => {
+    const before = process.env.DECISION_CARDS_ENABLED;
+    if (value === undefined) delete process.env.DECISION_CARDS_ENABLED; else process.env.DECISION_CARDS_ENABLED = value;
+    try { await work(); } finally { if (before === undefined) delete process.env.DECISION_CARDS_ENABLED; else process.env.DECISION_CARDS_ENABLED = before; }
+  };
+  it("sends a medium or high plan (the server's own rule) to its card on the task page", async () => {
+    await withCards("1", () => {
+      // A markdown plan is unread: at least medium.
+      expect(planOpenFor("https://agentx.example.test", task, quick, page, markdown)).toEqual({ url: "https://agentx.example.test/app/sessions/ses_0123456789abcdefghij?decision=approve_plan%3A11111111-1111-4111-8111-111111111111", why: "medium" });
+      // Expensive: high.
+      expect(planOpenFor("https://agentx.example.test", { ...(task as object), runEstimate: { lowUsd: 1, highUsd: 500, runLimitUsd: 600, stopAtUsd: 600, basis: "default", samples: 0 } } as never, quick, page, lowPlan)?.why).toBe("high");
+      // No session: the task page.
+      expect(planOpenFor("https://agentx.example.test", { taskId: "11111111-1111-4111-8111-111111111111" }, quick, page, markdown)).toEqual({ url: page, why: "medium" });
+    });
+  });
+  it("leaves a low plan with Approve", async () => {
+    await withCards("1", () => { expect(planOpenFor("https://agentx.example.test", task, quick, page, lowPlan)).toBeUndefined(); });
+  });
+  it("leaves everything as it was with the cards off", async () => {
+    for (const value of [undefined, "0", "true"]) await withCards(value, () => { expect(planOpenFor("https://agentx.example.test", task, quick, page, markdown)).toBeUndefined(); });
+  });
+  it("is only for the coding plan", async () => {
+    await withCards("1", () => {
+      expect(planOpenFor("https://agentx.example.test", task, { ...quick, path: "FULL", reviewPhase: "REQUIREMENTS" }, page, markdown)).toBeUndefined();
+      expect(planOpenFor("https://agentx.example.test", task, { ...quick, state: "RUNNING" }, page, markdown)).toBeUndefined();
+    });
+  });
+  it("fails safe: a plan that could not be read here is decided in Rovara (no Approve), with no button when there is no address", async () => {
+    await withCards("1", () => {
+      expect(planOpenFor("https://agentx.example.test", task, quick, page, undefined)).toMatchObject({ why: "unknown", url: expect.stringContaining("approve_plan") as string });
+      expect(planOpenFor(undefined, { taskId: "11111111-1111-4111-8111-111111111111" }, quick, undefined, undefined)).toEqual({ why: "unknown" });
+    });
+  });
+
+  async function planReady(options: { cards: string | undefined }) {
+    const before = process.env.DECISION_CARDS_ENABLED;
+    if (options.cards === undefined) delete process.env.DECISION_CARDS_ENABLED; else process.env.DECISION_CARDS_ENABLED = options.cards;
+    try {
+      const plan = planDocument({ claims: [{ id: "1", text: "Payments that time out are retried." }, { id: "2", text: "A payment is never charged twice." }], decisions: [] });
+      const h = await notifierHarness({ shareToChannel: true, workflow: true, workflowPath: "QUICK" }, { readArtifact: async (key) => String(h.s3.objects.get(key)), reviewUrlBase: "https://agentx.example.test" });
+      await h.pump();
+      await h.finish(h.workspaceId, h.active(), "SUCCEEDED");
+      await h.pump();
+      const planning = h.active();
+      await h.artifact(h.workspaceId, planning, "plan.md", planAnswer(plan));
+      await h.finish(h.workspaceId, planning, "SUCCEEDED", { result: { workflowMode: "PLAN" } });
+      await h.pump();
+      return { h, message: h.posts.at(-1)! };
+    } finally { if (before === undefined) delete process.env.DECISION_CARDS_ENABLED; else process.env.DECISION_CARDS_ENABLED = before; }
+  }
+  it("posts Decide in Rovara and no Approve for a plan with unproved claims when the cards are on", async () => {
+    const { h, message } = await planReady({ cards: "1" });
+    const actions = (message.blocks?.at(-1) as { elements: Array<{ action_id: string; url?: string; text: { text: string } }> }).elements;
+    expect(actions.map((button) => button.action_id)).not.toContain("agentx_workflow_approve");
+    const open = actions.find((button) => button.action_id === "agentx_open_decision")!;
+    expect(open.text.text).toBe("Decide in Rovara");
+    expect(open.url).toContain(h.taskId);
+    expect(message.text).toContain("risk: decide it in Rovara");
+    expect(message.text).toContain("Payments that time out are retried.");
+    expect(actions.map((button) => button.action_id)).toEqual(expect.arrayContaining(["agentx_workflow_changes", "agentx_workflow_close"]));
+  });
+  it("posts the Approve it always did when the cards are off", async () => {
+    const { message } = await planReady({ cards: undefined });
+    const actions = (message.blocks?.at(-1) as { elements: Array<{ action_id: string }> }).elements;
+    expect(actions.map((button) => button.action_id)).toContain("agentx_workflow_approve");
+    expect(actions.map((button) => button.action_id)).not.toContain("agentx_open_decision");
   });
 });

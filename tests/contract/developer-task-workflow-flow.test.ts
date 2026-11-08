@@ -40,6 +40,7 @@ import { call, registerSlackProject } from "../support/slack-broker.js";
 import { SLACK_CHANNEL, SLACK_TEAM } from "../support/slack-broker.js";
 import { TEST_ORG } from "../support/orgs.js";
 import { projectMemberKey, projectPk, projectRevisionKey } from "../../packages/contracts/src/org-scoped-keys.js";
+import { runLimitAck } from "../support/run-limit-ack.js";
 
 /** A prepare result as the worker sends it: where preparation checked out each repository. */
 const PREPARED = { result: { preparedBase: [{ repositoryId: "demo", baseCommitSha: "e".repeat(40) }] } };
@@ -107,7 +108,7 @@ async function workflowAtVerification(harness: Harness, structured?: PlanDocumen
   const plan = "# Plan\n\n1. Fix retry handling.\n2. Add a regression test.\n";
   await finishPlanningWithMarkdown(harness, workspaceId, String(planning.id), plan);
   const digest = structured === undefined ? createHash("sha256").update(plan).digest("hex") : seedStructured(harness, taskId, "plan", structured);
-  await harness.dev(MAYA, "POST", `/v1/dev/tasks/${taskId}/workflow/decision`, { requestId: randomUUID(), expectedRevision: taskWorkflow(harness, taskId).revision, decision: "APPROVE", reason: "Approved", artifactDigest: digest });
+  await harness.dev(MAYA, "POST", `/v1/dev/tasks/${taskId}/workflow/decision`, { requestId: randomUUID(), expectedRevision: taskWorkflow(harness, taskId).revision, decision: "APPROVE", reason: "Approved", artifactDigest: digest, ...runLimitAck(harness.db, taskId) });
   const implementation = operations(harness, workspaceId).find((item) => item.workflowMode === "IMPLEMENT")!;
   const candidate = createCandidateManifest([{ repositoryId: "demo", commitSha: "d".repeat(40), treeSha: "b".repeat(40), baseCommitSha: "e".repeat(40) }]);
   const finishImplementation = () => harness.finish(workspaceId, String(implementation.id), "SUCCEEDED", { result: { workflowCandidateRepositories: candidate.repositories, workflowCheckCandidateRepositories: candidate.repositories, checks: passingChecks() } });

@@ -5,7 +5,7 @@ import { fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { MemoryRouter, Route, Routes } from "react-router";
 import { QueryClientProvider } from "@tanstack/react-query";
 import { ProjectScreen } from "../../packages/ui/src/screens/project/ProjectScreen.js";
-import { setupRow } from "../../packages/ui/src/screens/project/ProjectSetupChecklist.js";
+import { savedEnvRowOf, setupRow } from "../../packages/ui/src/screens/project/ProjectSetupChecklist.js";
 import { setupFailureOf } from "../../packages/ui/src/screens/onboarding/steps/setup-failure.js";
 import { AppHostProvider, type ApiRequest, type ApiResponse } from "../../packages/ui/src/host.js";
 import { Announcer } from "../../packages/ui/src/design/Announcer.js";
@@ -42,12 +42,14 @@ it("shows every setup row with its state and why, even when the setup is ready",
  const f = setup();
  await screen.findByRole("region", { name: "Project setup" });
  await waitFor(() => { expect(within(row("Learning sources")).getByText(/Learning is off/u)).toBeTruthy(); });
- for (const name of ["Repository", "Setup commands", "Test environment", "How we work", "Learning sources", "Connections used"]) expect(row(name)).toBeTruthy();
+ for (const name of ["Repository", "Setup commands", "Test environment", "Saved environment", "How we work", "Learning sources", "Connections used"]) expect(row(name)).toBeTruthy();
  expect(within(row("Repository")).getByText("acme/payments")).toBeTruthy();
  expect(within(row("Setup commands")).getByText("Done.")).toBeTruthy();
  expect(within(row("Learning sources")).getByText("Needs attention.")).toBeTruthy();
  expect(within(row("Connections used")).getByText(/payments-dev/u)).toBeTruthy();
  expect(within(row("Test environment")).getByText(/aren't turned on in this installation/u)).toBeTruthy();
+ await waitFor(() => { expect(within(row("Saved environment")).getByText("Saved environments aren't turned on in this installation.")).toBeTruthy(); });
+ expect(within(row("Saved environment")).queryByRole("button", { name: "Open" })).toBeNull();
  f.close();
 });
 
@@ -113,4 +115,63 @@ it("UX-4b review M3: the learning row says the team record is paused", async () 
  await screen.findByRole("region", { name: "Project setup" });
  await waitFor(() => { expect(within(row("Learning sources")).getByText(/paused in this installation/u)).toBeTruthy(); });
  f.close();
+});
+
+// SV-1l: the saved environment row, and its on/off setting opened in place.
+const SAVED_ENV = "/v1/app/projects/payments/environment-image";
+const savedPanel = (over: Record<string, unknown> = {}) => ({ health: "healthy", canReset: true, enabled: true, canChangeSetting: true, ...over });
+
+it("SV-1l: a maintainer opens the saved environment row and turns it off with one Save", async () => {
+ const puts: unknown[] = [];
+ let enabled = true;
+ const f = setup({ route: (request, path) => {
+  if (path === SAVED_ENV + "/setting" && request.method === "PUT") { puts.push(request.body);enabled = (request.body as { enabled: boolean }).enabled;return { status: 200, body: { enabled, changed: true } }; }
+  if (path === SAVED_ENV && request.method === "GET") return { status: 200, body: savedPanel({ enabled }) };
+  return undefined;
+ } });
+ await screen.findByRole("region", { name: "Project setup" });
+ await waitFor(() => { expect(within(row("Saved environment")).getByText("On. New tasks start from the saved copy.")).toBeTruthy(); });
+ expect(within(row("Saved environment")).getByText("Done.")).toBeTruthy();
+ fireEvent.click(within(row("Saved environment")).getByRole("button", { name: "Open" }));
+ const opened = within(row("Saved environment"));
+ expect(await opened.findByText("A maintainer of this project.")).toBeTruthy();
+ fireEvent.click(opened.getByRole("switch", { name: "Use a saved environment for new tasks" }));
+ fireEvent.click(opened.getByRole("button", { name: "Save" }));
+ expect(await opened.findByText("Saved. New tasks set up fresh.")).toBeTruthy();
+ expect(puts).toEqual([{ enabled: false }]);
+ await waitFor(() => { expect(within(row("Saved environment")).getByText("Off for this project. Every new task sets up fresh.")).toBeTruthy(); });
+ await expectNoAxeViolations(f.container);
+ f.close();
+});
+
+it("SV-1l: a viewer opens the row to read the setting and who can change it, with no switch", async () => {
+ const viewer = projectFixture({ you: { role: "viewer", canStartWork: false, canEditSettings: false, canViewSpend: false } });
+ const f = setup({ overview: viewer, route: (request, path) => path === SAVED_ENV && request.method === "GET" ? { status: 200, body: savedPanel({ canReset: false, canChangeSetting: false }) } : undefined });
+ await screen.findByRole("region", { name: "Project setup" });
+ await waitFor(() => { expect(within(row("Saved environment")).getByRole("button", { name: "Open" })).toBeTruthy(); });
+ fireEvent.click(within(row("Saved environment")).getByRole("button", { name: "Open" }));
+ const opened = within(row("Saved environment"));
+ expect(await opened.findByText("You can see this setting but not change it. Ask a maintainer of this project.")).toBeTruthy();
+ expect(opened.queryByRole("switch")).toBeNull();
+ f.close();
+});
+
+it("SV-1l: reads the saved environment row's state", () => {
+ expect(savedEnvRowOf({ enabled: false, health: "healthy" })).toMatchObject({ state: "neutral", why: "Off for this project. Every new task sets up fresh." });
+ expect(savedEnvRowOf({ enabled: true, health: "healthy" })).toMatchObject({ state: "done" });
+ expect(savedEnvRowOf({ enabled: true, health: "needs_repair" })).toMatchObject({ state: "attention", why: "On, but the saved copy needs repair. New tasks set up fresh until the next build works." });
+ expect(savedEnvRowOf({ enabled: true, health: "never_proved" })).toMatchObject({ state: "neutral" });
+});
+
+it("SV-1l: an older server that sends no setting offers nothing to open, and a 403 read is not called 'not turned on'", async () => {
+ const old = setup({ route: (request, path) => path === SAVED_ENV && request.method === "GET" ? { status: 200, body: { health: "healthy", canReset: true } } : undefined });
+ await screen.findByRole("region", { name: "Project setup" });
+ await waitFor(() => { expect(within(row("Saved environment")).getByText("On. New tasks start from the saved copy.")).toBeTruthy(); });
+ expect(within(row("Saved environment")).queryByRole("button", { name: "Open" })).toBeNull();
+ old.close();
+ const refused = setup({ route: (request, path) => path === SAVED_ENV && request.method === "GET" ? { status: 403, body: { code: "FORBIDDEN", message: "x" } } : undefined });
+ await screen.findByRole("region", { name: "Project setup" });
+ await waitFor(() => { expect(within(row("Saved environment")).getByText("The saved environment isn't shown for this sign-in.")).toBeTruthy(); });
+ expect(within(row("Saved environment")).queryByRole("button", { name: "Open" })).toBeNull();
+ refused.close();
 });

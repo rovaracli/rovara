@@ -1,5 +1,6 @@
 // A task session is created with the run it wraps (Plan 5 Task 2): `createTaskSessionItems` returns the items that join the run's own start
 // transaction, so the task and its session exist together or not at all.
+import { resolveStoredName } from "../developer/name-resolver.js";
 import { createHash } from "node:crypto";
 import { GetCommand, TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
 import {
@@ -348,7 +349,9 @@ export async function ensureTaskSession(
 ): Promise<string | undefined> {
   try {
     if (task.sessionId !== undefined) return task.sessionId;
-    const sessionInput = lazyTaskSessionInput(task, input);
+    // ERASE-NAME-2: a session made after the person was erased (or removed) does not store a fresh copy of the name they had (developer/name-resolver.ts).
+    const ownerName = await resolveStoredName({ documentClient: table.documentClient, tableName: table.tableName, orgId: task.orgId }, task.developerId, input.ownerName, task.createdAt);
+    const sessionInput = lazyTaskSessionInput(task, { ...input, ownerName });
     if (sessionInput === undefined || task.orgId === undefined) return undefined;
     const sessionId = sessionInput.sessionId;
     const key = { pk: `DEVTASK#${task.taskId}`, sk: "META" };

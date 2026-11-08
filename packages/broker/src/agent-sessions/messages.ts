@@ -9,6 +9,7 @@
 // `GET …/messages` is one conversation over two stores (I11): this session's comments and, for a task session, the task page's comments read through (`source: "page"`; they are
 // edited on the page). A message's id sorts by the time it was written, so both stores read in one order, and a cursor read repeats the seconds before the cursor to catch one that
 // committed late.
+import { replacementNames, shownNameOf } from "../developer/name-resolver.js";
 import { createHash } from "node:crypto";
 import { GetCommand, QueryCommand, TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
 import { z } from "zod";
@@ -531,7 +532,7 @@ async function pageMessages(deps: SessionMessageDependencies, session: AgentSess
   if (session.subject.kind !== "task") return [];
   const task = await getItem(deps, taskKey(session.subject.taskId));
   if (task === undefined || task["orgId"] !== session.orgId) return [];
-  const comments = await listTaskComments({ documentClient: deps.documentClient, tableName: deps.tableName, ...(deps.log === undefined ? {} : { log: deps.log }) }, session.subject.taskId);
+  const comments = await listTaskComments({ documentClient: deps.documentClient, tableName: deps.tableName, ...(deps.log === undefined ? {} : { log: deps.log }) }, session.subject.taskId, session.orgId);
   const messages: SessionMessage[] = [];
   for (const comment of comments) {
     if (comment.author.kind !== "person" || comment.deletedAt !== undefined) continue;
@@ -572,5 +573,9 @@ export async function listSessionMessages(deps: SessionMessageDependencies, call
   }
   fresh = fresh.slice(0, SESSION_MESSAGES_PAGE_MAX);
   const next = fresh.at(-1)?.key ?? query.after;
-  return { messages: await presentMessages(deps, session, access, [...repeated, ...fresh].map((entry) => entry.message), targets), ...(next === undefined ? {} : { next }) };
+  const presented = await presentMessages(deps, session, access, [...repeated, ...fresh].map((entry) => entry.message), targets);
+  // ERASE-NAME-2: the author's name was stored with the message; an erased person reads "A former member", a removed one never the name they chose (developer/name-resolver.ts).
+  const replaced = await replacementNames({ documentClient: deps.documentClient, tableName: deps.tableName, orgId: session.orgId }, presented.map((message) => message.author.developerId));
+  const shown = replaced.size === 0 ? presented : presented.map((message) => (replaced.has(message.author.developerId) ? { ...message, author: { ...message.author, name: shownNameOf(message.author.name, message.author.developerId, replaced, message.createdAt) } } : message));
+  return { messages: shown, ...(next === undefined ? {} : { next }) };
 }

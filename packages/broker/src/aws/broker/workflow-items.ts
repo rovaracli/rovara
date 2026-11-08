@@ -285,7 +285,8 @@ async function completedPullRequestUpdateItems(
   // The merge this save records is reported as the merged milestone, in the same transaction, as it is when a webhook or the sweep finds the merge (Plan 6 Task 20).
   ...await mergedMilestoneItems({ documentClient: dependencies.documentClient, tableName: dependencies.tableName }, task, workflow, next, now),
   // ... and what was kept about the pull request (its tracking row and its record) says merged too (Bug H).
-  ...await mergedStateItems({ documentClient: dependencies.documentClient, tableName: dependencies.tableName }, task, workflow, next, now, [],
+  ...await mergedStateItems({ documentClient: dependencies.documentClient, tableName: dependencies.tableName }, task, workflow, next, now,
+    [{ repositoryId: pullRequest.repositoryId, number: pullRequest.number, mergeCommit: current.pullRequest.mergeCommit }],
     recordUpdated && current.pullRequest.state === "merged" ? [{ repositoryId: pullRequest.repositoryId, number: pullRequest.number }] : []),
   // A round Rovara decided itself leaves one reply on each thread it fixed, sent after the commit (Plan 6 Task 16); a round a person decided leaves none.
   ...(task.orgId === undefined || current.pullRequest.state === "merged" ? [] : feedbackReplyItems({ tableName: dependencies.tableName, orgId: task.orgId, workflow, repositoryId: pullRequest.repositoryId, number: pullRequest.number, head, now })),

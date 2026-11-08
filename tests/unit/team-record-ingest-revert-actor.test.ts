@@ -15,15 +15,17 @@ const revertPr = (author: { id: string; login: string; isBot: boolean }, over: P
   type: "pr", repo: repo(), number: 9, url: "https://github.com/acme/shop/pull/9", action: "closed", merged: true, title: 'Revert "Fix cart total"', body: "Reverts acme/shop#5",
   author, headSha: sha(11), baseRef: "main", mergeCommitSha: sha(41), at: AT, version: "closed:9", ...over,
 });
-const push = (sender?: { id: string; login: string; isBot: boolean }): CodeHostEvent => ({ type: "push", repo: repo(), ref: "refs/heads/main", at: AT, ...(sender === undefined ? {} : { sender }), commits: [{ sha: sha(40), message: `Revert "Fix cart total"\n\nThis reverts commit ${sha(30)}.` }] });
+const push = (sender?: { id: string; login: string; isBot: boolean }): CodeHostEvent => ({ type: "push", repo: repo(), ref: "refs/heads/main", at: AT, before: sha(39), after: sha(40), ...(sender === undefined ? {} : { sender }), commits: [{ sha: sha(40), message: `Revert "Fix cart total"\n\nThis reverts commit ${sha(30)}.` }] });
 const alice = { id: "1001", login: "alice", isBot: false };
+// SRL-3 (controller ee): a revert told only by a pushed commit's message counts only when the host's compare shows that commit non-merge, verified and a live member's own.
+const verifiedRange = { compare: async () => ({ status: "ahead" as const, truncated: false, files: [], commits: [{ sha: sha(40), author: alice, committer: alice, verified: true }] }) };
 
 function setup(exclude: string[] = []) {
   const w = world();
   w.config.set("github", repoScope(repo()), { retention: "D", exclude });
   w.actors.members.set("1001", "dev-alice");
   w.prs.list.push(rovaraPr);
-  const tap = createCodeHostTap({ sink: w.sink, actors: w.actors, rovaraPrs: w.prs, mode: w.mode, config: w.config });
+  const tap = createCodeHostTap({ sink: w.sink, actors: w.actors, rovaraPrs: w.prs, mode: w.mode, config: w.config, diffs: verifiedRange });
   return { w, tap };
 }
 const kinds = (w: ReturnType<typeof setup>["w"]) => w.sink.kinds().filter((kind) => kind !== "github.pr"); // (a revert pull request is also recorded as a pull request)
@@ -41,7 +43,7 @@ describe("the revert's outcome rows carry no person", () => {
     expect(link.sourceRef.id).toBe("task:task-1:reverted_by");
     for (const kind of ["github.revert", "rovara.closed", "rovara.reverted_by"]) expect(JSON.stringify(rowOf(w, kind)!.structured)).not.toMatch(/dev-alice|1001/u);
   });
-  it("a revert commit pushed by a member names the pusher on the link row too", async () => {
+  it("a revert commit pushed by a member names the commit's author on the link row too", async () => {
     const { w, tap } = setup();
     await tap.handle(push(alice));
     expect(rowOf(w, "rovara.reverted_by")!.actor).toMatchObject({ developerId: "dev-alice" });
@@ -56,9 +58,6 @@ describe("only a member counts as the reverter; the anonymous outcome is recorde
       await tap.handle(revertPr(author));
       outcomeOnly(w);
     }
-    const { w, tap } = setup();
-    await tap.handle(push());
-    outcomeOnly(w);
   });
   it("an account the resolver calls an outsider, even if it knows a developer id for it", async () => {
     const { w, tap } = setup();
@@ -67,16 +66,21 @@ describe("only a member counts as the reverter; the anonymous outcome is recorde
     outcomeOnly(w);
   });
   it("a resolver that fails", async () => {
-    const { w, tap } = setup();
-    (w.actors as unknown as { resolve: () => Promise<unknown> }).resolve = async () => { throw new Error("identity service down"); };
-    const result = await tap.handle(push(alice));
-    outcomeOnly(w);
-    expect(result.failed).toBe(0);
+    // A pushed commit's words count only when its author and pusher are proved members: a resolver that fails proves nothing, so nothing is recorded (and nothing fails).
+    const pushed = setup();
+    (pushed.w.actors as unknown as { resolve: () => Promise<unknown> }).resolve = async () => { throw new Error("identity service down"); };
+    expect((await pushed.tap.handle(push(alice))).failed).toBe(0);
+    expect(kinds(pushed.w)).toEqual([]);
   });
-  it("an excluded account that pushes a revert", async () => {
+  it("an excluded account that pushes a revert commit records nothing at all", async () => {
     const { w, tap } = setup(["1001"]);
     await tap.handle(push(alice));
-    outcomeOnly(w);
+    expect(kinds(w)).toEqual([]);
+  });
+  it("a push with no sender records nothing at all", async () => {
+    const { w, tap } = setup();
+    await tap.handle(push());
+    expect(kinds(w)).toEqual([]);
   });
 });
 
@@ -88,7 +92,7 @@ describe("erasure and the revert (real record core)", () => {
     fakes.config.set("github", repoScope(rrepo), { retention: "D" });
     fakes.actors.members.set("1001", "dev-alice");
     fakes.prs.list.push(rovaraPr);
-    const tap = createCodeHostTap({ sink: core.sink, actors: fakes.actors, rovaraPrs: fakes.prs, mode: fakes.mode, config: fakes.config });
+    const tap = createCodeHostTap({ sink: core.sink, actors: fakes.actors, rovaraPrs: fakes.prs, mode: fakes.mode, config: fakes.config, diffs: verifiedRange });
     return { core, tap, rrepo };
   }
   const event = (rrepo: CodeHostRepo): CodeHostEvent => ({ ...(push(alice) as Extract<CodeHostEvent, { type: "push" }>), repo: rrepo });

@@ -26,6 +26,9 @@ import {
   workflowResolveFindingsOffered,
   workflowSelectedChecks,
   workflowSendBackOffered,
+  PER_TASK_BUDGET_USD,
+  formatRunLimitUsd,
+  runLimitRaiseText,
   workflowReviseOffered,
   workflowReadmitsApplicationRound,
   answeredConfirmationBlocks,
@@ -1013,7 +1016,8 @@ async function handOffToSelf(lambda: LambdaClient, event: HandedOffWorkflowStart
   if (response.StatusCode !== 202) throw Object.assign(new Error("the start was not handed over"), { name: "StartHandOffRefused" });
 }
 
-interface WorkflowActionValue { taskId: string; revision: number; digest: string; decision: "APPROVE" | "REQUEST_CHANGES"; workBreakdownDigest?: string }
+/** `acknowledgedRunLimitUsd` (QA6-12b): the run limit the Approve button showed ("This raises the run limit from $A to $B"); the broker refuses the press if approving would now set another one. */
+interface WorkflowActionValue { taskId: string; revision: number; digest: string; decision: "APPROVE" | "REQUEST_CHANGES"; workBreakdownDigest?: string; acknowledgedRunLimitUsd?: number }
 
 class WorkflowInteractionRefusal extends Error {
   constructor(message: string) { super(message); this.name = "WorkflowInteractionRefusal"; }
@@ -1069,15 +1073,20 @@ export function closeConfirmationText(workflow: WorkflowSnapshot): string {
 
 const CHOICE_NOT_WAITING = workflowChoiceRefusal("none");
 
+const validRunLimitUsd = (value: unknown): value is number => typeof value === "number" && Number.isFinite(value) && value >= 0 && value <= 100_000;
+
 function workflowActionValue(value: string): WorkflowActionValue | undefined {
   try {
     const parsed = JSON.parse(value) as Record<string, unknown>;
     if (typeof parsed.taskId !== "string" || !CHANGE_ID.test(parsed.taskId) || !Number.isInteger(parsed.revision)
       || typeof parsed.digest !== "string" || !/^[a-f0-9]{64}$/.test(parsed.digest)
       || (parsed.decision !== "APPROVE" && parsed.decision !== "REQUEST_CHANGES")
-      || (parsed.workBreakdownDigest !== undefined && (typeof parsed.workBreakdownDigest !== "string" || !/^[a-f0-9]{64}$/.test(parsed.workBreakdownDigest)))) return undefined;
+      || (parsed.workBreakdownDigest !== undefined && (typeof parsed.workBreakdownDigest !== "string" || !/^[a-f0-9]{64}$/.test(parsed.workBreakdownDigest)))
+      // The run limit a button carries is a plain amount; anything else is a button we did not make.
+      || (parsed.runLimitUsd !== undefined && !validRunLimitUsd(parsed.runLimitUsd))) return undefined;
     return { taskId: parsed.taskId, revision: parsed.revision as number, digest: parsed.digest, decision: parsed.decision,
-      ...(typeof parsed.workBreakdownDigest === "string" ? { workBreakdownDigest: parsed.workBreakdownDigest } : {}) };
+      ...(typeof parsed.workBreakdownDigest === "string" ? { workBreakdownDigest: parsed.workBreakdownDigest } : {}),
+      ...(parsed.decision === "APPROVE" && typeof parsed.runLimitUsd === "number" ? { acknowledgedRunLimitUsd: parsed.runLimitUsd } : {}) };
   } catch { return undefined; }
 }
 
@@ -1285,7 +1294,8 @@ export function workflowSlackHandlers(deps: {
     // order is the same decision rather than a replay mismatch.
     const selectedOptionalCheckIds = [...chosenOptionalCheckIds].sort();
     const requestId = workflowDecisionRequestId({ taskId: value.taskId, revision: value.revision, digest: value.digest, decision: value.decision, reason, selectedOptionalCheckIds,
-      ...(value.workBreakdownDigest === undefined ? {} : { workBreakdownDigest: value.workBreakdownDigest }) });
+      ...(value.workBreakdownDigest === undefined ? {} : { workBreakdownDigest: value.workBreakdownDigest }),
+      ...(value.acknowledgedRunLimitUsd === undefined ? {} : { acknowledgedRunLimitUsd: value.acknowledgedRunLimitUsd }) });
     if (workflow.decisions.some((decision) => decision.requestId === requestId)) {
       console.log(JSON.stringify({ component: "slack-interactivity", event: "workflow.decision_replayed", taskId: value.taskId, requestId }));
       return false;
@@ -1295,6 +1305,7 @@ export function workflowSlackHandlers(deps: {
       taskId: value.taskId, userId, thread,
       expectedRevision: value.revision, artifactDigest: value.digest, decision: value.decision,
       ...(value.decision === "APPROVE" && value.workBreakdownDigest !== undefined ? { workBreakdownDigest: value.workBreakdownDigest } : {}),
+      ...(value.decision === "APPROVE" && value.acknowledgedRunLimitUsd !== undefined ? { acknowledgedRunLimitUsd: value.acknowledgedRunLimitUsd } : {}),
       reason, selectedOptionalCheckIds, requestId,
     });
     return true;
@@ -1628,7 +1639,7 @@ export function workflowSlackHandlers(deps: {
       }
       const value = workflowActionValue(action.value);
       if (!value || action.triggerId === "") throw new Error("invalid workflow action");
-      const { workflow } = await loadOwnedThreadTask(value, action, action.thread);
+      const { task, workflow } = await loadOwnedThreadTask(value, action, action.thread);
       const requiredChecks = workflow.checkPolicy?.required ?? [];
       const codingPlan = workflow.path === "QUICK" || workflow.reviewPhase === "IMPLEMENTATION_PLAN";
       const optionalChecks = workflow.checkPolicy?.optional ?? [];
@@ -1645,6 +1656,11 @@ export function workflowSlackHandlers(deps: {
         ? [{ type: "section", text: { type: "mrkdwn", text: optionalChecks.length > 0
           ? "No project checks are required. You choose checks when you approve the coding plan." : "No project checks are required." } }]
         : [...controls];
+      // QA6-12b: the form that approves a raise says so first, in the same words as the message, and what Approve confirms.
+      if (choosing && value.acknowledgedRunLimitUsd !== undefined) {
+        const currentUsd = typeof task.budgetUsd === "number" ? task.budgetUsd : PER_TASK_BUDGET_USD;
+        blocks.unshift({ type: "section", text: { type: "mrkdwn", text: `${runLimitRaiseText(currentUsd, value.acknowledgedRunLimitUsd)}. Approving accepts ${formatRunLimitUsd(value.acknowledgedRunLimitUsd)} as the run limit, or asks for it if your role cannot.` } });
+      }
       if (value.decision === "REQUEST_CHANGES") {
         blocks.push({ type: "input", block_id: "workflow_feedback", label: { type: "plain_text", text: "What should change?" }, element: { type: "plain_text_input", action_id: "reason", multiline: true, max_length: 500 } });
       }
@@ -1845,7 +1861,8 @@ export function workflowSlackHandlers(deps: {
       let metadata: Record<string, unknown>;
       try { metadata = asRecord(JSON.parse(typeof view.private_metadata === "string" ? view.private_metadata : "")); }
       catch { throw new Error("invalid workflow modal metadata"); }
-      const value = workflowActionValue(JSON.stringify({ taskId: metadata.taskId, revision: metadata.revision, digest: metadata.digest, decision: metadata.decision }));
+      // The run limit the Approve button showed rides in the form's metadata (`acknowledgedRunLimitUsd`) and is sent with the decision.
+      const value = workflowActionValue(JSON.stringify({ taskId: metadata.taskId, revision: metadata.revision, digest: metadata.digest, decision: metadata.decision, runLimitUsd: metadata.acknowledgedRunLimitUsd }));
       const thread = SlackThreadSchema.safeParse(metadata.thread);
       const userId = SlackUserIdSchema.safeParse(asRecord(payload.user).id);
       if (!value || !thread.success || !userId.success) throw new Error("invalid workflow modal submission");
@@ -1876,7 +1893,7 @@ export function workflowSlackHandlers(deps: {
 }
 
 /** Retries of the same Slack modal submission reuse the broker's idempotency key. */
-function workflowDecisionRequestId(input: { taskId: string; revision: number; digest: string; decision: string; reason: string; selectedOptionalCheckIds: string[]; workBreakdownDigest?: string }): string {
+function workflowDecisionRequestId(input: { taskId: string; revision: number; digest: string; decision: string; reason: string; selectedOptionalCheckIds: string[]; workBreakdownDigest?: string; acknowledgedRunLimitUsd?: number }): string {
   const digest = createHash("sha256").update(JSON.stringify({ ...input, selectedOptionalCheckIds: [...input.selectedOptionalCheckIds].sort() }), "utf8").digest("hex");
   return `${digest.slice(0, 8)}-${digest.slice(8, 12)}-5${digest.slice(13, 16)}-8${digest.slice(17, 20)}-${digest.slice(20, 32)}`;
 }

@@ -125,7 +125,7 @@ function workBreakdownLines(plan: PlanDocument): string[] {
  */
 async function choicesOf(deps: DeveloperRouteDependencies, task: DeveloperTaskRecord, type: DocumentType, artifact: WorkflowArtifact, plan: PlanDocument | undefined, loaded?: LoadedDocument): Promise<DecisionPlanChoices | undefined> {
   try {
-    const [comments, suggestions] = await Promise.all([listTaskComments(deps, task.taskId), plan === undefined ? Promise.resolve([]) : listSuggestions(deps, task.taskId)]);
+    const [comments, suggestions] = await Promise.all([listTaskComments(deps, task.taskId, task.orgId), plan === undefined ? Promise.resolve([]) : listSuggestions(deps, task.taskId, task.orgId)]);
     const questions = (plan?.decisions ?? []).slice(0, DECISION_PLAN_QUESTIONS_MAX).map((decision) => {
       const suggested = suggestions.filter((suggestion) => suggestion.document === type && suggestion.version === artifact.version && suggestion.decisionId === decision.id && decision.options.some((option) => option.id === suggestion.optionId))
         .slice(0, 10).map((suggestion) => ({ optionId: suggestion.optionId, name: plain(suggestion.name, 80) || "Someone" }));

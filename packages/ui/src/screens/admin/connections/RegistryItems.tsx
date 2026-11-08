@@ -23,8 +23,10 @@ export async function runCheck(host: ReturnType<typeof useAppHost>, connectionId
     return value?.ok === true ? { state: "ok" } : { state: "failed", message: causeText(value?.message) };
   } catch (failure) { return { state: "failed", message: failure instanceof ApiError ? causeText(failure.message) : "the check didn't finish. Try again" }; }
 }
-export function RegistryItems({ connections, names, canChange, checks, onCheck, onChanged }: {
+export function RegistryItems({ connections, names, canChange, checks, onCheck, onChanged, usedBy }: {
   connections: readonly RegistryConnection[]; names: ReadonlyMap<string, string> | undefined; canChange: boolean; checks: Readonly<Record<string, CheckResult>>; onCheck: (connectionId: string) => void; onChanged: () => void;
+  /** The words for the projects that use one connection (exact, from the usage read); none while that was not read. */
+  usedBy?: (connection: RegistryConnection) => string | undefined;
 }) {
   const host = useAppHost();
   const [removing, setRemoving] = useState<RegistryConnection>(), [busy, setBusy] = useState(false), [error, setError] = useState<string>();
@@ -43,6 +45,7 @@ export function RegistryItems({ connections, names, canChange, checks, onCheck, 
       return <li key={connection.connectionId} className="rv-conn-item">
         <p><strong><VisibleText text={connection.label} /></strong> · {STATE_WORDS[shown.state]}</p>
         <p className="rv-muted">{connectedByWords(connection.createdBy, connection.createdAt, names)}.{connection.access === "read_write" ? " It can read and write." : " It can only read."}{connection.identity === "personal" ? " It uses a personal key." : ""}</p>
+        {usedBy?.(connection) !== undefined && <p className="rv-muted">Used by: <VisibleText text={usedBy(connection)!} /></p>}
         {canChange && <div className="rv-conn-buttons"><Button busy={result?.state === "busy"} onClick={() => { onCheck(connection.connectionId); }}>Check it works</Button><Button variant="quiet" onClick={() => { setError(undefined);setRemoving(connection); }}>Remove</Button></div>}
         {result?.state === "ok" && <p role="status">✓ It works. Rovara reached the service with the saved key.</p>}
         {result?.state === "failed" && <p role="alert">It didn't work: <VisibleText text={result.message} /></p>}

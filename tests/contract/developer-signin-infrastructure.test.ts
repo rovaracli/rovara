@@ -232,8 +232,8 @@ describe("developer sign-in infrastructure (named environments)", () => {
   it("gives DeveloperIdentity exactly the item operations its store uses on the sign-in table", () => {
     const [tableId] = ofType(named, "AWS::DynamoDB::Table").find(([logicalId]) => logicalId.startsWith("DeveloperSignInTable"))!;
     const tableStatements = statementsOfRole(named, "DeveloperSignInFunctionServiceRole").filter((statement) => touches(statement, "dynamodb") && reaches(named, statement, tableId, SAMPLE_TABLE_ARN));
-    // Three statements, each naming only the table: what every sign-in uses, and (Plan 2, Task 8) the two an unlink adds.
-    expect(tableStatements).toHaveLength(3);
+    // Four statements, each naming only the table: what every sign-in uses, (Plan 2, Task 8) the two an unlink adds, and (SLACK-LINK-1) the developer-record condition check.
+    expect(tableStatements).toHaveLength(4);
     for (const statement of tableStatements) {
       expect(statement.Effect).toBe("Allow");
       expect(statement.Resource).toEqual({ "Fn::GetAtt": [tableId, "Arn"] });
@@ -249,12 +249,17 @@ describe("developer sign-in infrastructure (named environments)", () => {
     expect(deletes).toHaveLength(1);
     expect(actionsOf(deletes[0]!)).toEqual(["dynamodb:DeleteItem"]);
     expect(leadingKeysOf(deletes[0]!)).toEqual(["DEVELOPER#*"]);
+    // SLACK-LINK-1: the one ConditionCheckItem on this table (a company join checks the developer's record was not merged away) is on the developer records only.
+    const checks = tableStatements.filter((statement) => actionsOf(statement).includes("dynamodb:ConditionCheckItem"));
+    expect(checks).toHaveLength(1);
+    expect(actionsOf(checks[0]!)).toEqual(["dynamodb:ConditionCheckItem"]);
+    expect(leadingKeysOf(checks[0]!)).toEqual(["DEVELOPER#*"]);
     const queries = tableStatements.filter((statement) => actionsOf(statement).includes("dynamodb:Query"));
     expect(queries).toHaveLength(1);
     expect(actionsOf(queries[0]!)).toEqual(["dynamodb:Query"]);
     expect(leadingKeysOf(queries[0]!)).toEqual(["DEVELOPER#*"]);
     // No other action reaches the table (a wildcard would show up here).
-    expect(tableStatements.flatMap(actionsOf).sort()).toEqual(["dynamodb:DeleteItem", "dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:Query", "dynamodb:UpdateItem"]);
+    expect(tableStatements.flatMap(actionsOf).sort()).toEqual(["dynamodb:ConditionCheckItem", "dynamodb:DeleteItem", "dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:Query", "dynamodb:UpdateItem"]);
   });
 
   it("gives DeveloperIdentity the audit outbox and nothing else of the ledger: the intake queue's URL, SendMessage on that queue, and PutItem and DeleteItem on the State table under AUDIT_PENDING# only (Audit Ledger, Task 18)", () => {
@@ -293,8 +298,8 @@ describe("developer sign-in infrastructure (named environments)", () => {
     expect(actionsOf(everySignIn[0]!).sort()).toEqual(["dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:UpdateItem"]);
     expect(everySignIn[0]!.Condition).toBeUndefined();
     // Nothing was added for them: Delete and Query stay inside the developer partitions (the unlink's), and no other action exists.
-    expect(tableStatements).toHaveLength(3);
-    expect(tableStatements.flatMap(actionsOf).sort()).toEqual(["dynamodb:DeleteItem", "dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:Query", "dynamodb:UpdateItem"]);
+    expect(tableStatements).toHaveLength(4);
+    expect(tableStatements.flatMap(actionsOf).sort()).toEqual(["dynamodb:ConditionCheckItem", "dynamodb:DeleteItem", "dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:Query", "dynamodb:UpdateItem"]);
     for (const narrow of tableStatements.filter((statement) => !actionsOf(statement).includes("dynamodb:GetItem"))) expect(leadingKeysOf(narrow)).toEqual(["DEVELOPER#*"]);
     // The broker starts the flow by naming the token's session in an invoke; it still only reads SESSION# and DEVELOPER# and has no write.
     const broker = statementsOfRole(named, "BrokerServiceRole").filter((statement) => touches(statement, "dynamodb") && reaches(named, statement, tableId, SAMPLE_TABLE_ARN));
@@ -418,19 +423,24 @@ describe("developer sign-in infrastructure (named environments)", () => {
     expect(grantsOf).toEqual([
       // Deleting: the duplicate's member row (bare partition; IAM cannot tell it from the org record) and grants, and its org pointer.
       // Plan 2, Task 4: accepting an invite checks the org is open (ConditionCheckItem on the org record, nothing wider).
-      ["dynamodb:ConditionCheckItem", [ORG]],
+      // SLACK-LINK-1: linking a Slack or GitHub account checks the account's own developer has no company pointer, in the link's transaction.
+      ["dynamodb:ConditionCheckItem", [ORG, "DEVELOPER_ORG#*"]],
       // Plan 5, Task 20 (the notifier's, not DeveloperIdentity's): recording a task's thread checks the session's own record.
       ["dynamodb:ConditionCheckItem", [`${ORG}#AGENT_SESSION#*`]],
       // Plan 2, Task 4: it also names the ban key, which accepting an invite deletes.
       ["dynamodb:DeleteItem", [`${ORG}#MEMBER#*`, ORG, `${ORG}#BAN`, "DEVELOPER_ORG#*"]],
       // Plan 2, Task 4: a sign-in reads the ban (a removed member of a single-org install is refused); nothing else, and never a write.
       ["dynamodb:GetItem", [`${ORG}#BAN`]],
+      // 0.5.11 (the notifier's, not DeveloperIdentity's): a coding plan with no stored estimate has its run limit worked out as the decision does, which reads the org's spend policy by key.
+      ["dynamodb:GetItem", [`${ORG}#SETTINGS`]],
       // The org's budget settings, read and written back.
       ["dynamodb:GetItem,dynamodb:PutItem", [`${ORG}#SETTINGS`]],
       // What every sign-in uses: the bare org partition (20 characters, an org ID's), the developer's org pointer, and the email and invite rows.
       ["dynamodb:GetItem,dynamodb:PutItem,dynamodb:UpdateItem", [ORG, "DEVELOPER_ORG#*", "ORG_EMAIL#*", "ORG_INVITE#*"]],
       // Listing: a member's grants, a race org's whole partition, and its project catalog.
       ["dynamodb:Query", [`${ORG}#MEMBER#*`, ORG, `${ORG}#PROJECT_CATALOG`]],
+      // 0.5.11 (the notifier's): the same run-limit read of the newest costs of this project's runs, in one RUN_COST partition.
+      ["dynamodb:Query", [`${ORG}#RUN_COST#*`]],
       // A member's grants copied to the survivor.
       ["dynamodb:PutItem", [`${ORG}#MEMBER#*`]],
       // Plan 5, Task 20 (the notifier's): the session's binding to the thread (in its own partition, never the session's) and the thread's reverse item, put with the thread's record.
@@ -541,6 +551,7 @@ describe("the developer task notifier (spec 025 phase 25c, named environments)",
       SLACK_SECRET_ARN: { Ref: secretId },
       AGENTX_METRICS_NAMESPACE: "AgentX/staging",
       AGENTX_TASK_PEOPLE_CHANGES_ENABLED: { Ref: "TaskPeopleChangesEnabled" },
+      DECISION_CARDS_ENABLED: { Ref: "DecisionCardsEnabled" },
     });
   });
 
@@ -712,7 +723,7 @@ describe("the notice of a newly linked sign-in method (Plan 2, Task 8, cloud ins
     const functionActions = statementsOfRole(cloud, "DeveloperSignInFunctionServiceRole").filter((statement) => touches(statement, "dynamodb") && reaches(cloud, statement, tableId, SAMPLE_TABLE_ARN)).flatMap(actionsOf).sort();
     // The named environment's five actions, plus the decide statements (state: Put, Get, Delete; session: Put, Delete; tickets and rates: Get, Put, Update).
     expect(functionActions).toEqual([
-      "dynamodb:DeleteItem", "dynamodb:DeleteItem", "dynamodb:DeleteItem", "dynamodb:GetItem", "dynamodb:GetItem", "dynamodb:GetItem",
+      "dynamodb:ConditionCheckItem", "dynamodb:DeleteItem", "dynamodb:DeleteItem", "dynamodb:DeleteItem", "dynamodb:GetItem", "dynamodb:GetItem", "dynamodb:GetItem",
       "dynamodb:PutItem", "dynamodb:PutItem", "dynamodb:PutItem", "dynamodb:PutItem", "dynamodb:Query", "dynamodb:UpdateItem", "dynamodb:UpdateItem",
     ]);
     // Plan 3, Task 21a-presence (PF9): one exact list for the broker on a cloud install: the creator check, the reads, the developer-partition

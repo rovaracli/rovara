@@ -22,7 +22,7 @@ import {
   type AdmissionDependencies, type BudgetDependencies, type SpendPath,
 } from "../org/budget.js";
 import { admitMachineTime, admitTrial, monthOf } from "../org/trial.js";
-import { ScopeFullError, abandonKey, finalizeKey, readScopeCounters, reserve, supersedeKeys, type KeyScope, type LedgerDependencies, type ScopeCounter } from "./ledger.js";
+import { ScopeFullError, abandonKey, finalizeKey, readScopeCounters, reserve, supersedeKeys, type KeyHold, type KeyScope, type LedgerDependencies, type ScopeCounter } from "./ledger.js";
 import { budgetScopesFor } from "./payer.js";
 import { effectiveLimits } from "./settings.js";
 
@@ -198,6 +198,8 @@ export interface MintOperationKeyInput {
   scopes?: readonly BudgetScope[] | undefined;
   /** What the key says about who pays and what ran; the key is reserved in the ledger when these and `scopes` are given. */
   tags?: MintTags | undefined;
+  /** Counters beside the scopes the key's cap is held on (the Public company's learning month): reserved in the same transaction, a counter with a limit that cannot fit the cap refuses the key (`ScopeFullError`). */
+  holds?: readonly KeyHold[] | undefined;
   /** The model the key may call. Its alias scopes the key (`models`) and the model counter, and its source id is the tags' source. */
   route?: { alias: string; sourceId?: string | undefined; /** SR-1: the other aliases a second reviewer inside this operation may call (the key is scoped to the aliases the broker chose, no others). */ extraAliases?: readonly string[] | undefined } | undefined;
   /** The task's run limit, and where the run stops: the lower of the run limit and the agent's max per run. */
@@ -418,7 +420,7 @@ export async function mintOperationKey(deps: MintOperationDependencies, input: M
     if (ledger !== undefined && tags !== undefined) {
       try {
         const keyScopes: KeyScope[] = levels.map((level) => ({ key: level.scope, limitUsd: level.limitUsd }));
-        await reserve(ledger, { orgId: input.orgId, month, keyId, capUsd, scopes: keyScopes, tags, ...(input.route === undefined ? {} : { model: input.route.alias }), expiresAt: minted.expiresAt });
+        await reserve(ledger, { orgId: input.orgId, month, keyId, capUsd, scopes: keyScopes, tags, ...(input.holds === undefined ? {} : { holds: input.holds }), ...(input.route === undefined ? {} : { model: input.route.alias }), expiresAt: minted.expiresAt });
       } catch (error) {
         await giveBack({ ...deps, ledger }, minted, keyId, input.orgId);
         if (!(error instanceof ScopeFullError)) throw error;

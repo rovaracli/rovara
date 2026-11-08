@@ -1,5 +1,6 @@
 // Part of the broker (split out of ../broker.ts): workspace preparation, Slack identities, shared threads and Slack bindings.
 
+import { nameResolverOf, resolveStoredName } from "../../developer/name-resolver.js";
 import { fixtureDigestsOfPlan } from "../../test-env/fixture-lookup.js";
 import { approvalGrantChange } from "../../org/approval-membership.js";
 import { randomUUID } from "node:crypto";
@@ -386,7 +387,7 @@ export async function slackServiceIdentity(
   };
   const shared = await sharedThread(dependencies, context.thread);
   if (shared === undefined) return own;
-  const sharedTask = { taskId: shared.taskId, workspaceId: shared.workspaceId, developerName: emailSafeName(shared.developerName) ?? "a member" };
+  const sharedTask = { taskId: shared.taskId, workspaceId: shared.workspaceId, developerName: emailSafeName(await resolveStoredName(nameResolverOf(dependencies, orgId), shared.developerId, shared.developerName)) ?? "a member" };
   // C11: open only while continue, not closed, and the channel still serves the task's project.
   // A Slack-started task's own thread is driven by its owner's buttons, never by the channel's chat agent: closed to it.
   if (!sharedThreadOpen(shared, binding)) {

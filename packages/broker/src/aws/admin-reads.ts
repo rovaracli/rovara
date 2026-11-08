@@ -1,4 +1,5 @@
 import { installOrgIdFromEnvironment } from "../org/resolve.js";
+import { nameResolverOf, replacementNames, shownNameOf } from "../developer/name-resolver.js";
 import { OrgIdSchema } from "@agentx/contracts";
 import { resolveSlackThreadKey } from "./slack-thread-key.js";
 // Spec 025 phase 25d, FR-038: the admin read routes. Each checks the admin claim only, as today's
@@ -367,7 +368,10 @@ export async function readFailures(deps: AdminReadDependencies, orgId: OrgId, wi
     } while (start !== undefined && failures.length < options.limit);
   }
   if (skipped > 0) deps.log({ event: "admin.failure_index_unreadable", count: skipped });
-  return { failures, skipped };
+  // ERASE-NAME-2: the requester's name was stored with the index row; an erased or removed person reads as the resolver says.
+  const replacements = await replacementNames(nameResolverOf(deps, orgId), failures.flatMap((failure) => (failure.requester.kind === "developer" ? [failure.requester.developerId] : [])));
+  return { failures: failures.map((failure) => (failure.requester.kind === "developer" && failure.requester.name !== undefined && replacements.has(failure.requester.developerId)
+    ? { ...failure, requester: { ...failure.requester, name: shownNameOf(failure.requester.name, failure.requester.developerId, replacements) } } : failure)), skipped };
 }
 
 async function listFailures(deps: AdminReadDependencies, orgId: OrgId, url: URL): Promise<AdminFailuresResponse> {
@@ -384,13 +388,15 @@ const DISPLAY_NAME_MAX = 200;
 /** A16: a developer's display name comes from their identity provider, so it is redacted and capped like a channel name. */
 const displayName = (name: string) => redactAndCap(name, DISPLAY_NAME_MAX).text;
 
-const requesterKey = (value: unknown): string => {
+const requesterKey = (value: unknown, replacements: ReadonlyMap<string, string> = new Map()): string => {
   const requester = value as { kind?: string; userId?: string; developerId?: string; name?: string } | undefined;
   if (requester?.kind === "slack" || (requester?.kind === undefined && typeof requester?.userId === "string")) return `slack:${requester.userId}`;
   if (requester?.kind === "developer") {
     // One group per developer: two people can share a display name, or names that redact the same.
     const id = requester.developerId?.slice(0, 8) ?? "unknown";
-    return `developer:${requester.name === undefined ? id : `${displayName(requester.name)} (${id})`}`;
+    // ERASE-NAME-2: the name stored with the operation is replaced for an erased or removed person (developer/name-resolver.ts).
+    const shown = requester.name === undefined || requester.developerId === undefined ? requester.name : shownNameOf(requester.name, requester.developerId, replacements);
+    return `developer:${shown === undefined ? id : `${displayName(shown)} (${id})`}`;
   }
   return "none";
 };
@@ -410,6 +416,8 @@ const USAGE_TURN_PAGES_MAX = 2 * (ADMIN_USAGE_READ_MAX / ADMIN_LIST_MAX);
  */
 async function usageEntries(deps: AdminReadDependencies, orgId: OrgId, window: { since: string; until: string }): Promise<{ entries: UsageEntry[]; truncated: boolean; skipped: number }> {
   const entries: UsageEntry[] = [];
+  /** The requesters as stored, named once every entry is read (one lookup for all of them). */
+  const requesters: Array<{ entry: UsageEntry; requester: unknown }> = [];
   let truncated = false;
   let read = 0;
   let skipped = 0;
@@ -435,7 +443,8 @@ async function usageEntries(deps: AdminReadDependencies, orgId: OrgId, window: {
           continue;
         }
         const usage = parsed.data;
-        entries.push({ project: usage.project, origin: usage.origin, requester: requesterKey(usage.requester), day: usage.at.slice(0, 10), turn: false, task: true, durationMs: usage.durationMs, input: usage.inputTokens, output: usage.outputTokens, cost: usage.costUsd });
+        entries.push({ project: usage.project, origin: usage.origin, requester: "", day: usage.at.slice(0, 10), turn: false, task: true, durationMs: usage.durationMs, input: usage.inputTokens, output: usage.outputTokens, cost: usage.costUsd });
+        requesters.push({ entry: entries[entries.length - 1]!, requester: usage.requester });
       }
       start = page.LastEvaluatedKey;
       if (read >= ADMIN_USAGE_READ_MAX) {
@@ -469,13 +478,14 @@ async function usageEntries(deps: AdminReadDependencies, orgId: OrgId, window: {
         }
         const known = telemetry?.success === true ? telemetry.data : undefined;
         entries.push({
-          project: (workspaceId === undefined ? undefined : projects.get(workspaceId)) ?? "unknown", origin: "slack", requester: requesterKey(item.requestedBy),
+          project: (workspaceId === undefined ? undefined : projects.get(workspaceId)) ?? "unknown", origin: "slack", requester: "",
           day: String(item.receivedAt).slice(0, 10), turn: true, task: false, durationMs: 0,
           input: known === undefined ? 0 : known.tokens.input + known.tokens.cacheRead + known.tokens.cacheWrite,
           output: known?.tokens.output ?? 0,
           // No usage at all is a known zero (R14); usage that no longer parses is an unknown cost.
           cost: telemetry === undefined ? 0 : known === undefined ? null : known.costUsd,
         });
+        requesters.push({ entry: entries[entries.length - 1]!, requester: item.requestedBy });
         turns += 1;
       }
       key = page.lastEvaluatedKey;
@@ -484,8 +494,16 @@ async function usageEntries(deps: AdminReadDependencies, orgId: OrgId, window: {
     // IDs only: a turn record holds redacted request and response text, which never reaches a log.
     if (unreadableCount > 0) deps.log({ event: "admin.usage_unreadable", count: unreadableCount, eventIds: unreadable });
   }
+  const replacements = await replacementNames(nameResolverOf(deps, orgId), requesters.flatMap(({ requester }) => developerIdOfRequester(requester)));
+  for (const { entry, requester } of requesters) entry.requester = requesterKey(requester, replacements);
   return { entries, truncated, skipped };
 }
+
+/** The developer id of a stored requester, when it is a developer's. */
+const developerIdOfRequester = (value: unknown): string[] => {
+  const requester = value as { kind?: string; developerId?: unknown } | undefined;
+  return requester?.kind === "developer" && typeof requester.developerId === "string" ? [requester.developerId] : [];
+};
 
 async function usageSummary(deps: AdminReadDependencies, orgId: OrgId, url: URL): Promise<AdminUsageResponse> {
   const groupBy = AdminUsageGroupBySchema.safeParse(url.searchParams.get("group_by"));
@@ -538,6 +556,14 @@ export async function projectWorkspaceRows(deps: AdminReadDependencies, orgId: O
     }
   } while (start !== undefined);
   return { rows: rows.slice(0, cap), truncated };
+}
+
+/** ERASE-NAME-2: the owners' names, with the stored name of an erased or removed person replaced (one lookup for all of them). The owner objects are changed in place. */
+export async function scrubOwnerNames(deps: AdminReadDependencies, orgId: OrgId, owners: ReadonlyArray<{ developerId?: string | undefined; developerName?: string | undefined }>): Promise<void> {
+  const replacements = await replacementNames(nameResolverOf(deps, orgId), owners.flatMap((owner) => (owner.developerId === undefined ? [] : [owner.developerId])));
+  for (const owner of owners) {
+    if (owner.developerId !== undefined && owner.developerName !== undefined) owner.developerName = displayName(shownNameOf(owner.developerName, owner.developerId, replacements));
+  }
 }
 
 /** A10, #214: the charged starter (or unprepared creator), never the latest requester or task title. */
@@ -596,6 +622,7 @@ async function listWorkspaces(deps: AdminReadDependencies, identity: Authenticat
     workspaces.push({ id: workspace.id, project: workspace.projectName, origin, owner, status: workspace.status, busy: workspace.activeOperationId !== null, lastActivityAt: workspace.updatedAt });
   }
   const orgId = requireOrgId(identity.orgId);
+  await scrubOwnerNames(deps, orgId, workspaces.map((workspace) => workspace.owner));
   const limits = await readWorkspaceLimits(deps.documentClient, deps.tableName, orgId, deps.limitDefaults, (entry) => deps.log(entry));
   const organization = deps.slackTeamId === undefined ? 0 : await counterCount(deps, slackOrganizationLimitKey(orgId, deps.slackTeamId));
   const developerOrganization = await counterCount(deps, orgLimitKey(orgId));

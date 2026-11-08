@@ -51,7 +51,8 @@ export interface CodeHostDiff {
    * `verified`: the host verified the signature, which proves the COMMITTER's key, not who wrote the commit. `author` is only the account the host matched to
    * the author email, which anyone with push access can set. `webFlow`: the host itself committed it (a web-UI edit, signed as the logged-in author).
    */
-  commits: ReadonlyArray<{ sha: string; author?: CodeHostPerson; committer?: CodeHostPerson; verified: boolean; webFlow?: boolean }>;
+  commits: ReadonlyArray<{ sha: string; author?: CodeHostPerson; committer?: CodeHostPerson; verified: boolean; webFlow?: boolean;
+    /** The commit has more than one parent (a merge, as when a branch is updated from the base branch): it carries other people's work. */ merge?: boolean }>;
   files: ReadonlyArray<{ path: string; additions: number; deletions: number; patch?: string }>;
   truncated: boolean;
 }
@@ -324,6 +325,30 @@ export function createCodeHostTap(deps: CodeHostTapDependencies): { handle(event
     }
   }
 
+  /**
+   * Whether a revert told only by words in a pushed commit is a member's (owner decision 24b / controller ee, 2026-11-08). Words in a commit message are written by anyone who can get a commit
+   * onto the default branch. The compare of the pushed range must show that exact commit: not a merge, verified, its committer its author (or the host's own web-flow account), the AUTHOR a live
+   * member, and the account that pushed it a live non-bot member. The author is returned (credited as the reverter); undefined when anything is missing, fails or cannot be told: then nothing is
+   * recorded for that revert (no outcome row, no re-score, no reverter).
+   */
+  async function memberPushedRevert(
+    repo: CodeHostRepo, project: string, source: NonNullable<Awaited<ReturnType<typeof gate>>>, diff: CodeHostDiff | undefined, pusher: CodeHostPerson | undefined, commitSha: string,
+  ): Promise<CodeHostPerson | undefined> {
+    const memberPerson = async (person: CodeHostPerson | undefined): Promise<boolean> => {
+      if (person === undefined || person.isBot || isExcluded(source, person.id, person.login)) return false;
+      try {
+        const resolved = await deps.actors.resolve({ workspaceId: repo.workspaceId, project, system: repo.host, sourceId: person.id });
+        return resolved.developerId !== undefined && resolved.trust === "member";
+      } catch { return false; }
+    };
+    if (diff === undefined || diff.status !== "ahead" || diff.truncated) return undefined;
+    const commit = diff.commits.find((candidate) => candidate.sha === commitSha);
+    if (commit === undefined || commit.merge === true || !commit.verified) return undefined;
+    const sameCommitter = commit.webFlow === true || (commit.committer !== undefined && commit.author !== undefined && commit.committer.id === commit.author.id);
+    if (!sameCommitter || !await memberPerson(commit.author) || !await memberPerson(pusher)) return undefined;
+    return commit.author;
+  }
+
   /** A merged revert pull request, or a default-branch push whose commits say "This reverts commit <sha>". Only a Rovara pull request's merge commit counts. */
   async function revertsOf(event: CodeHostEvent, source: NonNullable<Awaited<ReturnType<typeof gate>>>, result: TapResult): Promise<void> {
     const retention = source.retention;
@@ -332,7 +357,7 @@ export function createCodeHostTap(deps: CodeHostTapDependencies): { handle(event
     if (event.type === "push") {
       if (repo.defaultBranch === undefined || event.ref !== `refs/heads/${repo.defaultBranch}`) return;
       for (const commit of event.commits.slice(0, 100)) {
-        for (const sha of revertedCommits(commit.message)) {
+        for (const sha of gitRevertedCommits(commit.message)) {
           const target = await deps.rovaraPrs.byMergeCommit({ workspaceId: repo.workspaceId, host: repo.host, repo: repo.fullName, sha });
           if (target !== undefined) targets.push({ target, via: commit.sha, at: event.at, by: event.sender });
         }
@@ -346,6 +371,19 @@ export function createCodeHostTap(deps: CodeHostTapDependencies): { handle(event
         const target = await deps.rovaraPrs.byMergeCommit({ workspaceId: repo.workspaceId, host: repo.host, repo: repo.fullName, sha });
         if (target !== undefined) targets.push({ target, via: event.mergeCommitSha ?? prId(repo, event.number), at: event.at, by: event.author });
       }
+    }
+    // A revert told by a pushed commit's message counts only when that commit is proved a member's (see `memberPushedRevert`); the merged revert pull request path is unchanged.
+    if (event.type === "push") {
+      const proved: typeof targets = [];
+      let range: CodeHostDiff | undefined | null = null;
+      for (const entry of targets) {
+        if (range === null) range = event.before !== undefined && event.after !== undefined && SHA.test(event.before) && SHA.test(event.after) && deps.diffs !== undefined
+          ? await deps.diffs.compare({ repo, base: event.before, head: event.after }).catch(() => undefined) : undefined;
+        const author = await memberPushedRevert(repo, entry.target.project, source, range ?? undefined, event.sender, entry.via);
+        if (author !== undefined) proved.push({ ...entry, by: author });
+        else log("record.revert_unproven", { host: repo.host });
+      }
+      targets = proved;
     }
     // One revert per Rovara pull request, however many deliveries or ways tell us of it.
     const seen = new Set<string>();
@@ -502,6 +540,19 @@ async function pushChain(index: PushIndexPort, job: HumanEditJob): Promise<PushR
 
 function commentId(event: Extract<CodeHostEvent, { type: "comment" }>): string {
   return `${prId(event.repo, event.prNumber)}:${event.surface}${event.id}`;
+}
+
+/**
+ * SRL-3 (L1): the commits a pushed commit reverts, only when it has git's own revert shape: a subject that starts `Revert "` and a body line that STARTS with "This reverts commit <sha>".
+ * A quoted line, a sentence that mentions the words, or a commit that merely carries such text is not a revert. A revert of a revert (re-landing the change) names the first revert's
+ * commit, so it matches nothing and the task stays reverted: there is no un-revert (a known limit, DEFERRED-CHECKS SRL-3).
+ */
+export function gitRevertedCommits(message: string): string[] {
+  const subject = message.split("\n", 1)[0] ?? "";
+  if (!/^Revert\s+["“']/i.test(subject.trim())) return [];
+  const out = new Set<string>();
+  for (const match of message.matchAll(/^This reverts commit ([0-9a-f]{40})\b/gim)) out.add(match[1]!.toLowerCase());
+  return [...out].slice(0, 20);
 }
 
 /** Full commit ids named by "This reverts commit <sha>". */

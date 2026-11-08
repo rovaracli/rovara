@@ -43,9 +43,11 @@ export function auditActorNamesFor(reader: AttributionReader, orgId: OrgId): Aud
   };
 }
 
-/** The reader over the install's tables for the route: the team record's erased markers are consulted only where the team record is on. */
+/**
+ * The reader over the install's tables for the route: the team record's erased markers are consulted only where the team record is on. ERASE-NAME-1: the erase's tombstone in the name item (State table)
+ * is consulted everywhere, so an erased person reads "A former member" with the record off too.
+ */
 export function auditActorNamesOf(input: { documentClient: { send(command: unknown): Promise<unknown> }; stateTable: string; signInTable: string; teamRecordTable: string | undefined; orgId: OrgId }): AuditActorNames {
   const reader = dynamoAttributionReader({ documentClient: input.documentClient, stateTable: input.stateTable, signInTable: input.signInTable, teamRecordTable: input.teamRecordTable ?? "" });
-  const erased = input.teamRecordTable === undefined ? { ...reader, isErased: async () => false } : reader;
-  return auditActorNamesFor(erased, input.orgId);
+  return auditActorNamesFor(reader, input.orgId);
 }

@@ -474,7 +474,8 @@ export function slackDirectory(input: {
       }
       // Fail closed: a kind Slack did not state plainly is unavailable, never guessed, and a channel is public only when Slack says it is a channel and not private.
       const kind = slackKindOf(channel);
-      if (channel.id !== channelId || kind === undefined) return { ok: false, error: "slack_unavailable" };
+      // SRL-14: a channel Slack shows the bot but that cannot be classified (another id back, no clear kind) is refused like one Rovara cannot see ("none"), never a different, faster answer that says it exists.
+      if (channel.id !== channelId || kind === undefined) { problem("conversations.info", reply.status, channel.id !== channelId ? "channel_id_mismatch" : "channel_kind_unclear"); return { ok: true }; }
       return { ok: true, channel: { kind, extShared: channel.is_ext_shared === true || channel.is_pending_ext_shared === true } };
     },
     async channelList(teamId, options = {}) {

@@ -241,6 +241,12 @@ export class DeveloperSignIn extends Construct {
       actions: ["dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:UpdateItem"],
       resources: [table.tableArn],
     }));
+    // SLACK-LINK-1: OrgStore also condition-checks a developer's sign-in record (not merged into another account) in the transaction that gives the developer a company
+    // (IAM authorizes it as ConditionCheckItem). That action on the developer records only; nothing is read or written through it.
+    fn.addToRolePolicy(new iam.PolicyStatement({
+      actions: ["dynamodb:ConditionCheckItem"], resources: [table.tableArn],
+      conditions: { "ForAllValues:StringLike": { "dynamodb:LeadingKeys": ["DEVELOPER#*"] } },
+    }));
     // Plan 2, Task 8: unlinking a sign-in method (unlinkIdentity, the `unlink-identity` invoke). It lists the developer's own IDENTITY# items
     // (Query on `DEVELOPER#<id>`) and, in one transaction, deletes the one it removes (a transaction's Delete is authorized as DeleteItem; the
     // same transaction's Put and Update are the table-wide grants above). Both stay inside the developer partitions; nothing else is deleted
@@ -289,9 +295,11 @@ export class DeveloperSignIn extends Construct {
     }));
     // Accepting an invite checks, in the same transaction, that the org is not closed or closing (a ConditionCheck on the org record, which
     // IAM authorizes as ConditionCheckItem). That action on that one key; the function never reads or writes anything else through it.
+    // SLACK-LINK-1: linking a Slack or GitHub account checks, in the link's transaction, that the account's own developer has no company
+    // pointer (a ConditionCheck on `DEVELOPER_ORG#<id>`); the same action on that one key.
     fn.addToRolePolicy(new iam.PolicyStatement({
       actions: ["dynamodb:ConditionCheckItem"], resources: [props.state.tableArn],
-      conditions: { "ForAllValues:StringLike": { "dynamodb:LeadingKeys": [`ORG#${orgPattern}`] } },
+      conditions: { "ForAllValues:StringLike": { "dynamodb:LeadingKeys": [`ORG#${orgPattern}`, "DEVELOPER_ORG#*"] } },
     }));
     // A removed member's ban on a single-org install (`ORG#<id>#BAN`): read by a sign-in that would join the install's org (GetItem) and
     // cleared when an invite is accepted (DeleteItem, below). The function never writes a ban; only the broker's removal does.

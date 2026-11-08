@@ -106,7 +106,9 @@ export class Capture {
   readonly rovara = createRovaraEmitter({ sink: this.sink, actors: this.actors, mode: this.mode, config: this.config });
   /** The real reader of the rows the emitter wrote (who sent a task back, their standing, their words). */
   get outcomeRows() { return tableOutcomeRows(this.record.table); }
-  readonly codehost = createCodeHostTap({ sink: this.sink, actors: this.actors, rovaraPrs: this.prs, mode: this.mode, config: this.config, pushes: this.pushes });
+  /** SRL-3: a revert told by a pushed commit's message counts only when the host's compare shows that commit a verified, non-merge commit of a member; here every pushed head is one. */
+  readonly verifiedMemberCommits = { compare: async (input: { head: string }) => ({ status: "ahead" as const, truncated: false, files: [], commits: [{ sha: input.head, author: MEMBER_GITHUB, committer: MEMBER_GITHUB, verified: true }] }) };
+  readonly codehost = createCodeHostTap({ sink: this.sink, actors: this.actors, rovaraPrs: this.prs, mode: this.mode, config: this.config, pushes: this.pushes, diffs: this.verifiedMemberCommits });
 
   private ts = 1_760_000_000;
 

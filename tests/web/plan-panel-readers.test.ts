@@ -25,6 +25,12 @@ describe("plan panel readers", () => {
     expect(readPanelView({ current: { version: 1, format: "html", markdown: "<b>x</b>" } }).current).toBeUndefined();
   });
 
+  it("reads an older version's marker only when the server sent a real version number", () => {
+    const shown = { version: 1, format: "markdown", markdown: "# Old" };
+    expect(readPanelView({ current: shown, older: { currentVersion: 3 } }).older).toEqual({ currentVersion: 3 });
+    for (const bad of [undefined, null, {}, { currentVersion: "3" }, "3"]) expect(readPanelView({ current: shown, older: bad }).older, JSON.stringify(bad)).toBeUndefined();
+  });
+
   it("reads comments and suggestions, leaving out any without a real id or target", () => {
     const read = readPanelComments({ canRemember: true, comments: [
       { id: ID, document: "plan", version: 1, target: { kind: "claim", id: "2" }, author: { kind: "person", name: "Sam", you: true }, text: "Hi", rev: 2, learning: { remembered: false } },

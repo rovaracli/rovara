@@ -10,6 +10,7 @@ import {
 import { developerIdForSlackUser } from "../../packages/broker/src/aws/admin-actions.js";
 import { ownerKeyForSubject } from "../../packages/broker/src/aws/lambda.js";
 import { projectMembersOf, type DeveloperRouteDependencies } from "../../packages/broker/src/aws/developer-routes.js";
+import { forgetResolvedNames } from "../../packages/broker/src/developer/name-resolver.js";
 import { createProjectMembers, type ProjectMembers } from "../../packages/broker/src/org/project-members.js";
 import { MAYA, OMAR, createDeveloperTaskBroker, grantProject, seedMembership, type Developer } from "../support/developer-task-broker.js";
 import type { FakeDynamoDb } from "../support/fake-dynamodb.js";
@@ -103,6 +104,26 @@ async function team(options: Parameters<typeof createDeveloperTaskBroker>[0] = {
   grantRole(h.db, KIT, "contributor");
   return h;
 }
+
+describe("a project's people who were erased (ERASE-NAME-2)", () => {
+  it("lists an erased person (the name item's tombstone, or the ledger's alone) as 'A former member', in the list and as who added someone", async () => {
+    const h = await team();
+    const names = async () => Object.fromEntries(listed(await members(h, PRIYA)).map((member) => [member.developerId, { name: member.name, by: member.grantedBy?.name }]));
+    expect((await names())[SAM.developerId]).toEqual({ name: "Sam Okoye", by: "Priya Raman" });
+    h.db.set({ pk: `DEVELOPER_NAME#${SAM.developerId}`, sk: "NAME", entityType: "DEVELOPER_NAME", developerId: SAM.developerId, erased: true, erasedAt: "2026-11-01T00:00:00.000Z" });
+    process.env["AUDIT_KEYS_TABLE_NAME"] = "keys";
+    h.db.set({ pk: `ORG#${TEST_ORG}`, sk: `SUBJECT#${PRIYA.developerId}`, erasedAt: "2026-09-01T00:00:00.000Z" });
+    try {
+      const after = await names();
+      expect(after[SAM.developerId]).toEqual({ name: "A former member", by: "A former member" });
+      expect(after[PRIYA.developerId]).toEqual({ name: "A former member", by: "A former member" });
+      expect(after[KIT.developerId]?.name).toBe("Kit Alvarez");
+    } finally {
+      delete process.env["AUDIT_KEYS_TABLE_NAME"];
+      forgetResolvedNames();
+    }
+  });
+});
 
 describe("a viewer", () => {
   it("sees the project, its detail and its settings", async () => {

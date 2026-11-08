@@ -23,6 +23,37 @@ describe("what a Slack press hears when the broker refuses it", () => {
     expect(said!.toLowerCase()).toContain(reason.slice(0, 40).toLowerCase());
   });
 
+  it("QA6-12b: a refused raise says the amounts, in Slack's terms; a stale button hears the new one", () => {
+    expect(slackRefusalMessage("CONFIG_INVALID", OUT_OF_DATE, "This raises the run limit from $2 to $12. Approve again with the run limit acknowledged as $12 (acknowledgedRunLimitUsd 12), or approve it in Rovara: https://cell.example/review/x/task"))
+      .toBe("This raises the run limit from $2 to $12. This button does not carry the new limit. Use the latest message in this thread if it shows this raise, or approve the plan in Rovara: https://cell.example/review/x/task");
+    // Without a link the way forward is still said.
+    expect(slackRefusalMessage("CONFIG_INVALID", OUT_OF_DATE, "This raises the run limit from $2 to $12. Approve again with the run limit acknowledged as $12 (acknowledgedRunLimitUsd 12)."))
+      .toBe("This raises the run limit from $2 to $12. This button does not carry the new limit. Use the latest message in this thread if it shows this raise, or approve the plan in Rovara.");
+    // A link with markup in it is not said.
+    expect(slackRefusalMessage("CONFIG_INVALID", OUT_OF_DATE, "This raises the run limit from $2 to $12. Approve again (acknowledgedRunLimitUsd 12), or approve it in Rovara: https://x.example/<!channel>"))
+      .not.toContain("<");
+    expect(slackRefusalMessage("CONFIG_INVALID", OUT_OF_DATE, "This plan's run limit is now $15.50, not the $12 you were shown. This raises the run limit from $2 to $15.50. Check it and approve again with the run limit acknowledged as $15.50."))
+      .toBe("The run limit changed since this message was posted: it is now $15.50, not the $12 this button showed. This raises the run limit from $2 to $15.50. Use the latest message in this thread to approve it.");
+    // The limit came down to what the task has: nothing is raised, and the sentence says only that.
+    expect(slackRefusalMessage("CONFIG_INVALID", OUT_OF_DATE, "This plan's run limit is now $2, not the $12 you were shown. Check it and approve again with the run limit acknowledged as $2."))
+      .toBe("The run limit changed since this message was posted: it is now $2, not the $12 this button showed. Use the latest message in this thread to approve it.");
+    // A stale amount keeps the checked plan link too, escaped, so the person always has a way forward even when the latest message is the same button.
+    expect(slackRefusalMessage("CONFIG_INVALID", OUT_OF_DATE, "This plan's run limit is now $15, not the $12 you were shown. This raises the run limit from $2 to $15. Check it and approve again with the run limit acknowledged as $15, or approve it in Rovara: https://cell.example/review/x/task?a=1&b=2"))
+      .toBe("The run limit changed since this message was posted: it is now $15, not the $12 this button showed. This raises the run limit from $2 to $15. Use the latest message in this thread to approve it, or approve the plan in Rovara: https://cell.example/review/x/task?a=1&amp;b=2");
+    expect(slackRefusalMessage("CONFIG_INVALID", OUT_OF_DATE, "This plan's run limit is now $15, not the $12 you were shown. Check it and approve again, or approve it in Rovara: https://x.example/<!channel>")).not.toContain("<");
+    // Words that merely start alike are not said.
+    expect(slackRefusalMessage("CONFIG_INVALID", OUT_OF_DATE, "This raises the run limit from <@U1> to $12.")).toBe(OUT_OF_DATE);
+    expect(slackRefusalMessage("CONFIG_INVALID", OUT_OF_DATE, "something else")).toBe(OUT_OF_DATE);
+  });
+
+  it("a medium or high plan pressed in Slack hears where to approve it, with the link; any other forbidden stays the owner message", () => {
+    const link = "https://cell.example/app/sessions/ses_aaaaaaaaaaaaaaaaaaaa?decision=approve_plan%3Ax";
+    expect(slackRefusalMessage("FORBIDDEN", OUT_OF_DATE, `This plan is medium risk, so it is approved on its card in Rovara: ${link}`)).toBe(`This plan is medium risk, so it is approved on its card in Rovara: ${link}`);
+    expect(slackRefusalMessage("FORBIDDEN", OUT_OF_DATE, "This plan is high risk, so it is approved on its card in Rovara, after a sign-in with the email code.")).toContain("high risk");
+    expect(slackRefusalMessage("FORBIDDEN", OUT_OF_DATE, "This plan is high risk, so it is approved on its card in Rovara <!channel>")).toBe("Only the task owner can do that.");
+    expect(slackRefusalMessage("FORBIDDEN", OUT_OF_DATE, "nope")).toBe("Only the task owner can do that.");
+  });
+
   it("tells a person removed from the company so, as a sentence", () => {
     expect(slackRefusalMessage("REMOVED_FROM_ORG", OUT_OF_DATE, "You were removed from this organization. Ask an admin to invite you again.")).toBe(SLACK_REMOVED_FROM_ORG);
     expect(SLACK_REMOVED_FROM_ORG).toBe("You're no longer a member of this organization.");

@@ -101,6 +101,26 @@ test("the Lessons tab is usable on a phone and the lesson text is plain text", a
  expect(overflow).toBeLessThanOrEqual(0);
  await expect(page.locator(".rv-lessons img, .rv-lessons script")).toHaveCount(0);
 });
+test("when learning cannot run the Lessons tab says why in one line, and says nothing when it can", async ({ page, context, request, baseURL }) => {
+ await openTab(page, context, request, baseURL);
+ await expect(page.getByRole("heading", { name: "Active lessons (1)" })).toBeVisible();
+ await expect(page.getByTestId("lessons-paused")).toHaveCount(0);
+ await request.post("/__mock/lessons-paused", { data: { code: "monthly_limit" } });
+ await page.reload();
+ const line = page.getByTestId("lessons-paused");
+ await expect(page.getByTestId("lessons-paused-line")).toHaveText("Lessons paused: monthly learning limit reached (for the whole company, every project)");
+ await expect(page.getByTestId("lessons-paused-since")).toHaveText(/^since \d{4}-\d{2}-\d{2}$/u);
+ await expect(line).toHaveAttribute("role", "status");
+ await evidenceShot(page, { path: ".test-build/web-e2e/lessons-paused-desktop.png", fullPage: true });
+ await checkA11y(page, { theme: "light" });
+ await checkA11y(page, { theme: "dark" });
+ await page.setViewportSize({ width: 375, height: 800 });
+ await expect(line).toBeVisible();
+ expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+ await request.post("/__mock/lessons-paused", { data: { code: "all_models_forbidden" } });
+ await page.reload();
+ await expect(page.getByTestId("lessons-paused-line")).toHaveText("Lessons paused: every available model is forbidden");
+});
 test("approve by exception: a lesson on trial and a stable one are marked, the preset is explained and a maintainer can require a person, and a capability ask says why it needs two people", async ({ page, context, request, baseURL }) => {
  await openTab(page, context, request, baseURL);
  // The scenario above reset the lessons; add the trial ones and read the tab again.

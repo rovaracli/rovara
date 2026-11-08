@@ -150,13 +150,15 @@ export function canReadFeedback(dependencies: Pick<AwsBrokerDependencies, "githu
 /** What the workflow code reads of a pull request, in the shape it always read it (GitHub's words), from the port's feedback read. */
 export interface PullRequestFacts {
   number: number; url: string; state: "open" | "closed" | "merged"; headBranch: string; baseBranch: string; headCommit: string; headTreeSha: string;
+  /** The commit the host says a merged change request was merged as (SRL-3: indexed at merge). */
+  mergeCommit?: string;
 }
 
 export function pullRequestFactsOf(feedback: ChangeRequestFeedback): { pullRequest: PullRequestFacts } {
   const change = feedback.changeRequest;
   return { pullRequest: {
     number: Number(change.ref.id), url: change.ref.url, state: change.state, headBranch: change.sourceBranch, baseBranch: change.targetBranch,
-    headCommit: change.headRevision, headTreeSha: change.headTreeRevision,
+    headCommit: change.headRevision, headTreeSha: change.headTreeRevision, ...(change.mergeRevision === undefined ? {} : { mergeCommit: change.mergeRevision }),
   } };
 }
 

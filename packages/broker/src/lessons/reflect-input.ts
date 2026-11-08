@@ -65,7 +65,7 @@ export const MAX_SPAN_CHARS = 1500;
 export const MAX_SPANS = 100;
 export const MAX_INPUT_CHARS = 20_000;
 /** Kinds whose text is a person's own words, so a quote inside them has another author. */
-const FREE_TEXT: ReadonlySet<SpanKind> = new Set(["intent", "plan", "send_back", "review_finding", "remembered", "close_reason", "fact"]);
+const FREE_TEXT: ReadonlySet<SpanKind> = new Set(["intent", "plan", "send_back", "review_finding", "remembered", "close_reason", "fact", "ci_failure"]);
 const PRIORITY: Record<SpanKind, number> = { remembered: 0, human_edit: 1, send_back: 2, close_reason: 3, review_finding: 4, fact: 5, outcome: 6, ci_failure: 7, plan: 8, intent: 9, loaded_lesson: 10 };
 
 const SYSTEM_PROMPT = [

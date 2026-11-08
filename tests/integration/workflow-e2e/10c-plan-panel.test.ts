@@ -328,4 +328,41 @@ describe("Suite 10c: the plan panel on the task page (OWNER DECISION 18)", () =>
     await e2e.settle();
     expect(e2e.workflow().decisions).toHaveLength(1);
   }, 120_000);
+
+  it("an older version of the plan reads whole but read-only (?version=N): the owner sees it with no rights, a teammate too, another company a missing task, and a bad or unknown version is refused", async () => {
+    const { e2e, web, shim } = await waitingPlan();
+    // Sam comments on v1, then the owner sends the plan back: v2 is written and v1 is older.
+    const onV1 = await web(SAM, "POST", `${base(e2e)}/comments`, commentBody({ kind: "claim", id: "1" }, "Say which file."));
+    expect(onV1.status).toBe(201);
+    const v1Id = String((onV1.body.comment as { id: string }).id);
+    const sentBack = await cardDecision(shim, OWNER, e2e.taskId(), { decision: "REQUEST_CHANGES", reason: "Name the file." });
+    expect(sentBack.status, JSON.stringify(sentBack.body)).toBe(200);
+    await e2e.settle();
+    const now = await web(OWNER, "GET", `${base(e2e)}/documents/plan`);
+    expect(now.body).toMatchObject({ current: { version: 2 }, versions: [{ version: 1, current: false }, { version: 2, current: true }] });
+    expect(now.body.older).toBeUndefined();
+    const older = await web(OWNER, "GET", `${base(e2e)}/documents/plan?version=1`);
+    expect(older.status, JSON.stringify(older.body)).toBe(200);
+    expect(older.body).toMatchObject({ document: "plan", older: { currentVersion: 2 }, current: { version: 1, format: "structured", title: "Show a retry banner" }, checks: [], waiting: false,
+      access: { canComment: false, canSuggest: false, canDecide: false, canAsk: false } });
+    // The comment made on v1 is still listed with its version, for the panel to show beside v1.
+    const listed = await web(OWNER, "GET", `${base(e2e)}/comments`);
+    expect((listed.body.comments as Array<{ version: number; text: string }>).filter((comment) => comment.version === 1).map((comment) => comment.text)).toEqual(["Say which file."]);
+    // The current version asked for by number is the ordinary view.
+    expect((await web(OWNER, "GET", `${base(e2e)}/documents/plan?version=2`)).body).toMatchObject({ current: { version: 2 }, access: { canDecide: true } });
+    // Its author may still edit and delete their own comment there (the older view hides these controls, the routes do not check the version).
+    const edited = await web(SAM, "POST", `${base(e2e)}/comments/${v1Id}/edit`, { rev: 1, text: "Say which file, please." });
+    expect(edited.status, JSON.stringify(edited.body)).toBe(200);
+    expect((await web(SAM, "POST", `${base(e2e)}/comments/${v1Id}/delete`, { rev: 2 })).status).toBe(200);
+    // A teammate reads it too, still with no rights; another company reads exactly as a missing task.
+    expect((await web(SAM, "GET", `${base(e2e)}/documents/plan?version=1`)).body).toMatchObject({ older: { currentVersion: 2 }, access: { canComment: false } });
+    const outsider = await web(OUTSIDER, "GET", `${base(e2e)}/documents/plan?version=1`);
+    const none = await web(OUTSIDER, "GET", `/v1/app/tasks/${randomUUID()}/documents/plan?version=1`);
+    expect([outsider.status, outsider.body]).toEqual([none.status, none.body]);
+    expect(outsider.status).toBeGreaterThanOrEqual(400);
+    // A version that was never written, a document with no versions, and anything that is not a plain number.
+    expect((await web(OWNER, "GET", `${base(e2e)}/documents/plan?version=9`)).status).toBe(404);
+    expect((await web(OWNER, "GET", `${base(e2e)}/documents/requirements?version=1`)).status).toBe(404);
+    for (const bad of ["0", "-1", "1.5", "abc", "1e2", "01", "1234567", ""]) expect((await web(OWNER, "GET", `${base(e2e)}/documents/plan?version=${bad}`)).status, bad).toBe(400);
+  }, 180_000);
 });

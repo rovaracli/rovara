@@ -153,14 +153,24 @@ async function recentRows(table: TeamRecordTable, orgId: OrgId, project: string,
   return events;
 }
 
+/** SRL-4: the task a Rovara row is about (its structured `taskId`). */
+const taskOf = (event: RecordEvent): string | undefined => (typeof event.structured?.taskId === "string" && event.structured.taskId !== "" ? event.structured.taskId : undefined);
+/** SRL-4: whether a statistic counts this row. With a list of tasks that may be counted, a Rovara row counts only when it names a task on it. */
+const countable = (event: RecordEvent, allowed: ReadonlySet<string> | undefined): boolean => {
+  if (allowed === undefined || event.source !== "rovara") return true;
+  const task = taskOf(event);
+  return task !== undefined && allowed.has(task);
+};
+
 export function tableHotStatsSource(table: TeamRecordTable): HotStatsSource {
   return {
     async groupedCounts(request) {
       const spec = GROUPS[request.template];
       if (spec === undefined) throw new Error("team-record stats: no hot side for that template");
       const counts = new Map<string, number>();
+      const allowed = request.onlyTaskIds === undefined ? undefined : new Set(request.onlyTaskIds);
       for (const event of await recentRows(table, request.workspaceId, request.project, request.since, request.until)) {
-        if (event.kind !== spec.kind || (spec.where !== undefined && !spec.where(event.structured ?? {}))) continue;
+        if (event.kind !== spec.kind || (spec.where !== undefined && !spec.where(event.structured ?? {})) || !countable(event, allowed)) continue;
         const value = event.structured?.[spec.field];
         const group = typeof value === "string" && value.length > 0 ? value : "unknown";
         counts.set(group, (counts.get(group) ?? 0) + 1);
@@ -169,8 +179,9 @@ export function tableHotStatsSource(table: TeamRecordTable): HotStatsSource {
     },
     async mergeTotals(request) {
       const totals = { tasks: 0, merged: 0, reverted: 0, send_backs: 0 };
+      const allowed = request.onlyTaskIds === undefined ? undefined : new Set(request.onlyTaskIds);
       for (const event of await recentRows(table, request.workspaceId, request.project, request.since, request.until)) {
-        if (event.kind !== "rovara.task") continue;
+        if (event.kind !== "rovara.task" || !countable(event, allowed)) continue;
         totals.tasks += 1;
         if (event.structured?.outcome === "merged") totals.merged += 1;
         if (event.structured?.outcome === "reverted") totals.reverted += 1;
@@ -178,6 +189,16 @@ export function tableHotStatsSource(table: TeamRecordTable): HotStatsSource {
         if (typeof sendBacks === "number" && Number.isFinite(sendBacks) && sendBacks > 0) totals.send_backs += sendBacks;
       }
       return totals;
+    },
+    async rovaraTaskIds(request) {
+      const kind = request.template === "send_backs_by_stage" ? "rovara.send_back" : request.template === "rovara_merge_rate" ? "rovara.task" : undefined;
+      if (kind === undefined) throw new Error("team-record stats: no Rovara rows are counted for that template");
+      const ids = new Set<string>();
+      for (const event of await recentRows(table, request.workspaceId, request.project, request.since, request.until)) {
+        const task = event.kind === kind ? taskOf(event) : undefined;
+        if (task !== undefined) ids.add(task);
+      }
+      return [...ids];
     },
   };
 }

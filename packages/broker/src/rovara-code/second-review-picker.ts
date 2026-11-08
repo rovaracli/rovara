@@ -7,6 +7,7 @@ import {
   canonicalModelName, modelCompany, secondReviewModelKey, secondReviewedByLine, type ModelCompany, type ModelIdentifier, type SecondReviewModelRef, type SecondReviewReplayRun, type SecondReviewVerdict, secondReviewVerdictHolds,
 } from "@agentx/contracts";
 import { differentCompany } from "../agents/dispatch.js";
+import { isFreeVariant } from "../model-sources/model-variants.js";
 import { candidatesOf, criticCapabilityTier, rankCriticModels, type CriticModelLimits } from "./critic.js";
 
 /** A typical review's size: one place for the cost estimate shown beside each model (tokens in and out). No prompt caching is assumed. */
@@ -60,8 +61,8 @@ export interface PickerInput {
 
 // By capability tier (critic.ts): frontier, Sonnet, small; a model no tier names reads as the last.
 const STRENGTH_WORDS = ["high strength", "good strength", "lighter and faster"] as const;
-/** A free variant of an OpenRouter model: the provider may train on what it is sent. */
-export const isFreeVariant = (model: ModelIdentifier): boolean => model.provider.toLowerCase() === "openrouter" && /:free$/iu.test(model.modelId);
+// `isFreeVariant` lives in model-sources/model-variants.ts (the lessons and model code use it too); re-exported for the callers that import it from here.
+export { isFreeVariant };
 
 function priceBand(costUsd: number | undefined): string {
   if (costUsd === undefined) return "price unknown";

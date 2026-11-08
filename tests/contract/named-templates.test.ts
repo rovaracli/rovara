@@ -243,6 +243,9 @@ function withoutTaskPeopleControls(template: unknown): unknown {
   const notifierVariables = variablesFor(notifierFunctions[0]![1]);
   expect(notifierVariables.AGENTX_TASK_PEOPLE_CHANGES_ENABLED).toStrictEqual({ Ref: "TaskPeopleChangesEnabled" });
   delete notifierVariables.AGENTX_TASK_PEOPLE_CHANGES_ENABLED;
+  // p1-slack-decide-card: the notifier is told the decision cards switch (it has no packed broker settings), so a plan decided on its card shows no Approve in Slack. Taken out here like the flag above.
+  expect(notifierVariables.DECISION_CARDS_ENABLED).toStrictEqual({ Ref: "DecisionCardsEnabled" });
+  delete notifierVariables.DECISION_CARDS_ENABLED;
   return template;
 }
 

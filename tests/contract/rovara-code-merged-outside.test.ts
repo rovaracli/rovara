@@ -15,7 +15,7 @@ const HEAD = "a".repeat(40);
 const WORKSPACE = "workspace";
 const URL_ = "https://github.com/acme/api/pull/1";
 
-function harness(options: { mergedBy?: string | undefined; tracking?: "approved" | "none" | "claimed" | "absent"; record?: boolean } = {}) {
+function harness(options: { mergedBy?: string | undefined; mergeCommit?: string | undefined; tracking?: "approved" | "none" | "claimed" | "absent"; record?: boolean } = {}) {
   const w = sessionWorld();
   const { taskId, sessionId } = w.seedSession();
   const candidate = createCandidateManifest([{ repositoryId: "api", commitSha: HEAD, treeSha: "b".repeat(40) }]);
@@ -48,7 +48,7 @@ function harness(options: { mergedBy?: string | undefined; tracking?: "approved"
     loadTask: async () => ({ project: "web", startingRevision: 1, orgId: ORG_A, sessionId, workflow }),
     repositoryUrl: async () => "https://github.com/acme/api.git",
     getCurrentFeedback: async () => ({
-      pullRequest: { number: 1, url: URL_, state: remote, headBranch: "feature", baseBranch: "main", headCommit: HEAD, headTreeSha: "b".repeat(40), title: "t", body: "", ...(options.mergedBy === undefined ? {} : { mergedBy: options.mergedBy }) },
+      pullRequest: { number: 1, url: URL_, state: remote, headBranch: "feature", baseBranch: "main", headCommit: HEAD, headTreeSha: "b".repeat(40), title: "t", body: "", ...(options.mergedBy === undefined ? {} : { mergedBy: options.mergedBy }), ...(options.mergeCommit === undefined ? {} : { mergeCommit: options.mergeCommit }) },
       comments: [], threads: [],
     }),
     persistBundle: async () => { throw new Error("no feedback is collected on a merge"); },
@@ -198,5 +198,31 @@ describe("through the real broker", () => {
     await reconcileWorkflowMergeRecoveryTask(h.brokerInput as never, h.taskId, {} as never);
     const events = await h.dev(MAYA, "GET", `/v1/app/sessions/${h.sessionId}/events`);
     expect((events.body.events as Array<{ text?: string }>).map((event) => event.text ?? "").filter((text) => text.includes("no approval"))).toEqual([]);
+  });
+});
+
+describe("SRL-3: the merge commit is indexed in the transaction that records the merge", () => {
+  const MERGE = "c".repeat(40);
+  const indexRows = (h: ReturnType<typeof harness>) => h.w.db.find((item) => item.entityType === "GITHUB_WORKFLOW_MERGE");
+
+  it("writes one row keyed by repository and commit, naming the company and the task, and a redelivery changes nothing", async () => {
+    const h = harness({ mergeCommit: MERGE, tracking: "none" });
+    expect(indexRows(h)).toEqual([]);
+    h.merge();
+    expect(await h.reconcile()).toBe(true);
+    expect(indexRows(h)).toMatchObject([{ pk: `ORG#${ORG_A}#GITHUB_MERGE`, sk: `acme/api#${MERGE}`, orgId: ORG_A, taskId: h.taskId, number: 1, url: URL_, mergeCommit: MERGE, repositoryId: "api" }]);
+    expect(await h.reconcile()).toBe(false);
+    expect(indexRows(h)).toHaveLength(1);
+  });
+
+  it("a pull request still open writes no row, and a merge that names no commit writes none (the merge is still recorded)", async () => {
+    const open = harness({ mergeCommit: MERGE });
+    await open.reconcile();
+    expect(indexRows(open)).toEqual([]);
+    const unnamed = harness();
+    unnamed.merge();
+    expect(await unnamed.reconcile()).toBe(true);
+    expect(unnamed.workflow()).toMatchObject({ stage: "MERGED" });
+    expect(indexRows(unnamed)).toEqual([]);
   });
 });

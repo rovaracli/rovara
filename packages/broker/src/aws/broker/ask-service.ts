@@ -51,7 +51,7 @@ async function peopleOf(dependencies: AwsBrokerDependencies, task: DeveloperTask
   const table = { documentClient: dependencies.documentClient, tableName: dependencies.tableName };
   const people = await loadTaskPeople(table, task.taskId).catch(() => undefined);
   const ids = new Set<string>([task.developerId, effectiveTaskOwner(task).developerId, ...(askerId === undefined ? [] : [askerId]), ...(people?.people ?? []).map((person) => person.developerId)]);
-  const chosen = await chosenOwnerNames(table, ids);
+  const chosen = await chosenOwnerNames(table, ids, task.orgId);
   const stored = new Map<string, { names: Set<string>; handles: Set<string> }>();
   const entry = (developerId: string) => { let found = stored.get(developerId); if (found === undefined) { found = { names: new Set(), handles: new Set() }; stored.set(developerId, found); } return found; };
   for (const id of ids) { const name = chosen.get(id); if (name !== undefined) entry(id).names.add(name); else entry(id); }

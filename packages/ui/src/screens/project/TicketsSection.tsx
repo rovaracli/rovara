@@ -7,6 +7,7 @@ import {
   type IntakeChannelRef, type IntakeSourceView, type TicketUpdatesSettings, type TicketUpdateMoment,
 } from "@agentx/contracts/web";
 import { useAppHost } from "../../host.js";
+import { paths } from "../../paths.js";
 import { createIntakeApi } from "../../api/intake.js";
 import { ApiError } from "../../api/errors.js";
 import { Button } from "../../design/Button.js";
@@ -40,7 +41,8 @@ export function TicketsSection({ project, canStart, canEdit }: { project: string
   const act = (itemId: string, action: "start" | "dismiss") => run(async () => {
     const answer = await api.act(api.itemPath(project, itemId, action), action);
     await query.invalidateQueries({ queryKey: ["project", project, "intake"] });
-    if ("started" in answer && answer.started && SessionIdSchema.safeParse(answer.sessionId).success) host.navigate("/s/" + answer.sessionId);
+    const started = "started" in answer && answer.started ? SessionIdSchema.safeParse(answer.sessionId) : undefined;
+    if (started?.success === true) host.navigate(paths.session(started.data));
     else if ("started" in answer && !answer.started) setError("Rovara couldn't start this ticket yet. Try again later.");
   });
   const sources = list.data?.sources ?? [];

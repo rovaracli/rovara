@@ -191,6 +191,8 @@ export const HOST_RULES: readonly HostRule[] = [
       "agentx.invalid", "agentx-mock.invalid", "fixtures.invalid", "application.invalid", "none.invalid", "rovara.invalid", "auth.test", "agentx.example.com", "probe.example.com", "acme.okta.com",
       // The example Jira site in the Connections page's "Jira site" field hint (packages/ui/src/screens/admin/connections/RegistryItems.tsx, UX3). Text for a person to read; the page sends nothing to it.
       "acme.atlassian.net",
+      // The example Grafana address in the Connections page's "Add monitoring" field hint (packages/ui/src/screens/admin/connections/AddMonitoring.tsx, P1 connections UX). Text for a person to read; the page sends nothing to it.
+      "grafana.acme.dev",
       "abc123.execute-api.us-west-2.amazonaws.com", "host.example.test", "builds.example.test", "nativeexport.app",
       // The example registry address in the private-MCP install setting's error message (infra/lib/private-mcp.ts); example.net is reserved and cannot resolve.
       "registry.corp.example.net",

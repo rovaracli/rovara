@@ -4,6 +4,7 @@ import { putRecordFact } from "../../../packages/broker/src/team-record/store.js
 import { dynamoRateLimiter, pastWork, recordFacts, recordSearch, recordStats, type RecordQueryDependencies, type RecordVectorSearchPort, type PastWorkTask } from "../../../packages/broker/src/team-record/query.js";
 import { eventVectorRef } from "../../../packages/broker/src/team-record/ingest.js";
 import { eventFromItem } from "../../../packages/broker/src/team-record/store.js";
+import type { TaskVisibilityPort } from "../../../packages/broker/src/team-record/live-audience.js";
 import type { ReadAudience } from "../../../packages/broker/src/team-record/types.js";
 import { GITHUB_SCOPE, ORG_A, ORG_B, addSource, caller, githubDraft, rows, setMode, world, type World } from "../../support/team-record-core.js";
 
@@ -11,6 +12,8 @@ const FACT = "5b8e9f4c-2b1a-4c1e-9a53-3f2d3d1a0002";
 const person = (extra = {}): ReadAudience => ({ kind: "caller", caller: caller(extra) });
 const shared: ReadAudience = { kind: "shared", orgId: ORG_A };
 const PROJECT_AUDIENCE = { kind: "project" as const };
+/** SRL-4: rows about a Rovara task are also checked against the task's live visibility; here every task is still the project's (live-audience.test.ts narrows them). */
+const allShared: TaskVisibilityPort = { async read(_org, ids) { return new Map(ids.map((id) => [id, { kind: "shared" as const }])); } };
 
 function deps(w: World, extra: Partial<RecordQueryDependencies> = {}): RecordQueryDependencies {
   return { table: w.table, modes: w.deps.modes, now: () => w.clock.ms, ...extra };
@@ -216,7 +219,7 @@ describe("pastWork (the Plan 9 contract)", () => {
     await outcomes(w);
     await observeRowAccess(w.table, ORG_A, privateAudience.acl);
     const list = [task("t1", PROJECT_AUDIENCE), task("t2", privateAudience)];
-    const d = deps(w, { tasks: tasks(list), lessonsOfTask: async (_o, _p, id) => (id === "t1" ? [{ title: "Use withRetry", audience: PROJECT_AUDIENCE, scopes: [], restrictedScopes: [] }] : []) });
+    const d = deps(w, { taskVisibility: allShared, tasks: tasks(list), lessonsOfTask: async (_o, _p, id) => (id === "t1" ? [{ title: "Use withRetry", audience: PROJECT_AUDIENCE, scopes: [], restrictedScopes: [] }] : []) });
     const sharedResult = await pastWork(d, person(), "shared", "web", { query: "billing" });
     expect(sharedResult.items.map((item) => item.taskId)).toEqual(["t1"]);
     expect(sharedResult.someHidden).toBe(false);
@@ -231,7 +234,7 @@ describe("pastWork (the Plan 9 contract)", () => {
   it("reads a revert from the record, answers nothing without a task index, and needs a person for private", async () => {
     const w = world();
     await outcomes(w);
-    const d = deps(w, { tasks: tasks([task("t3", PROJECT_AUDIENCE)]) });
+    const d = deps(w, { taskVisibility: allShared, tasks: tasks([task("t3", PROJECT_AUDIENCE)]) });
     expect((await pastWork(d, shared, "shared", "web", { query: "x" })).items[0]!.outcome).toEqual({ merged: false, sendBacks: 0, reverted: true });
     expect(await pastWork(deps(w), person(), "shared", "web", { query: "x" })).toEqual({ items: [], someHidden: false });
     await expect(pastWork(d, shared, "private", "web", { query: "x" })).rejects.toThrow(/FORBIDDEN/);
@@ -239,7 +242,7 @@ describe("pastWork (the Plan 9 contract)", () => {
 
   it("a shared search by a person is still project-wide only, and a failing lessons port drops only the lessons", async () => {
     const w = world();
-    const d = deps(w, { tasks: tasks([task("t2", privateAudience), task("t1", PROJECT_AUDIENCE)]), lessonsOfTask: async () => { throw new Error("down"); } });
+    const d = deps(w, { taskVisibility: allShared, tasks: tasks([task("t2", privateAudience), task("t1", PROJECT_AUDIENCE)]), lessonsOfTask: async () => { throw new Error("down"); } });
     const result = await pastWork(d, person({ identities: { ids: { rovara: ["dev-1"] }, groups: {} } }), "shared", "web", { query: "x" });
     expect(result.items.map((item) => item.taskId)).toEqual(["t1"]);
     expect(result.items[0]!.lessonsLearned).toEqual([]);
@@ -250,10 +253,10 @@ describe("recordStats", () => {
   it("runs only a known template, binds the workspace and project from the caller, and says unavailable when the lake fails", async () => {
     const w = world();
     const calls: unknown[] = [];
-    const stats = { async run(input: unknown) { calls.push(input); return [{ stage: "REVIEW", count: 3 }]; } };
+    const stats = { async run(input: unknown) { calls.push(input); return [{ stage: "REVIEW", count: 3 }]; }, async rovaraTasks() { return { taskIds: [], complete: true }; } };
     const d = deps(w, { stats });
     expect(await recordStats(d, person(), "web", { template: "send_backs_by_stage", params: { since: "2026-10-01" } })).toEqual({ status: "ok", rows: [{ stage: "REVIEW", count: 3 }] });
-    expect(calls).toEqual([{ template: "send_backs_by_stage", workspaceId: ORG_A, project: "web", params: { since: "2026-10-01" } }]);
+    expect(calls).toEqual([{ template: "send_backs_by_stage", workspaceId: ORG_A, project: "web", params: { since: "2026-10-01" }, onlyTaskIds: [] }]);
     await expect(recordStats(d, person(), "web", { template: "drop_table" })).rejects.toThrow(/CONFIG_INVALID/);
     await expect(recordStats(d, person(), "web", { template: "send_backs_by_stage", params: { "bad key;": "x" } })).rejects.toThrow(/CONFIG_INVALID/);
     await expect(recordStats(d, shared, "web", { template: "send_backs_by_stage" })).rejects.toThrow(/FORBIDDEN/);

@@ -69,11 +69,10 @@ export class ScriptedModel implements PipelineModel {
 }
 
 export class Spend implements LearningSpend {
-  charges: Array<{ usd: number; purpose: string }> = [];
+  /** The estimates `admit` was asked about, in order. */
+  asked: number[] = [];
   admitted = true;
-  async admit(): Promise<boolean> { return this.admitted; }
-  async charge(_ws: string, _p: string, usd: number, purpose: string): Promise<void> { this.charges.push({ usd, purpose }); }
-  get total(): number { return this.charges.reduce((s, c) => s + c.usd, 0); }
+  async admit(_workspaceId?: string, estimateUsd?: number): Promise<boolean> { if (estimateUsd !== undefined) this.asked.push(estimateUsd); return this.admitted; }
 }
 
 export class Audit implements LessonAuditSink {

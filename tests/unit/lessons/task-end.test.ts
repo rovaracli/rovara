@@ -131,8 +131,8 @@ describe("the task-end handler and its installation", () => {
     installLearningTaskEnd({});
     expect(hasTaskEndHandlers()).toBe(before);
     const w = setup();
-    installLearningTaskEnd({ learning: w.deps });
-    installLearningTaskEnd({ learning: w.deps });
+    installLearningTaskEnd({ learning: w.deps }, { inline: true });
+    installLearningTaskEnd({ learning: w.deps }, { inline: true });
     expect(hasTaskEndHandlers()).toBe(true);
     uninstallLearningTaskEnd();
     expect(hasTaskEndHandlers()).toBe(before);
@@ -151,7 +151,7 @@ describe("a human send-back names who sent it", () => {
 
   it("reaches the emitter with the pressing person's developer id, the round and the owner's private audience", async () => {
     const { sent, deps } = emitterSetup();
-    installLearningTaskEnd({ learning: deps });
+    installLearningTaskEnd({ learning: deps }, { inline: true });
     try {
       await announce();
       expect(sent).toEqual([{
@@ -190,12 +190,12 @@ describe("a human send-back names who sent it", () => {
       await expect(announceHumanSendBack({} as never)).resolves.toBeUndefined();
     } finally { remove(); }
     const { deps } = emitterSetup();
-    installLearningTaskEnd({ learning: { ...deps, rovara: { sendBack: async () => { throw new Error("down"); } } } });
+    installLearningTaskEnd({ learning: { ...deps, rovara: { sendBack: async () => { throw new Error("down"); } } } }, { inline: true });
     try { await expect(announce()).resolves.toBeUndefined(); } finally { uninstallLearningTaskEnd(); }
   });
   it("an unreadable owner falls back to the creator, so the row stays private to a person", async () => {
     const { sent, deps } = emitterSetup();
-    installLearningTaskEnd({ learning: deps });
+    installLearningTaskEnd({ learning: deps }, { inline: true });
     try {
       await announce({ task: task({ currentOwner: { broken: true } as never }) });
       expect(sent[0]).toMatchObject({ visibility: { kind: "private", ownerDeveloperId: "owner-1" } });
