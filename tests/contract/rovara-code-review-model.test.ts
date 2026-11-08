@@ -18,6 +18,7 @@ import { MAYA, createSingleAnswerPlanBroker } from "../support/developer-task-br
 import { fakeModelAccess } from "../support/fake-model-access.js";
 import { capturingAuditDeps } from "../support/audit-capture.js";
 import { TEST_ORG } from "../support/orgs.js";
+import { runLimitAck } from "../support/run-limit-ack.js";
 import { planAnswer, planDocument } from "../support/plan-documents.js";
 import { loadSlackBroker, registerSlackProject } from "../support/slack-broker.js";
 
@@ -142,7 +143,7 @@ async function builtTask(options: { beforeBuild?: (ctx: { h: Awaited<ReturnType<
   await h.artifact(workspaceId, String(critique.id), "plan-critique.md", `I read the plan.\n\n\`\`\`rovara-plan-critique\n{"verdict":"ok","points":[]}\n\`\`\`\n`);
   await h.finish(workspaceId, String(critique.id), "SUCCEEDED", { result: { workflowMode: "PLAN_CRITIQUE" } });
   const approved = await h.dev(MAYA, "POST", `/v1/dev/tasks/${taskId}/workflow/decision`, {
-    requestId: randomUUID(), expectedRevision: record().workflow.revision, decision: "APPROVE", reason: "Approved", artifactDigest: record().workflow.artifacts.at(-1)!.sha256,
+    requestId: randomUUID(), expectedRevision: record().workflow.revision, decision: "APPROVE", reason: "Approved", artifactDigest: record().workflow.artifacts.at(-1)!.sha256, ...runLimitAck(h.db, taskId),
   });
   expect(approved.status, JSON.stringify(approved.body)).toBe(200);
   options.beforeBuild?.({ h, workspaceId, operations });

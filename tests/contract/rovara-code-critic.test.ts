@@ -25,6 +25,7 @@ import { MAYA, OMAR, createSingleAnswerPlanBroker } from "../support/developer-t
 import { fakeModelAccess } from "../support/fake-model-access.js";
 import { capturingAuditDeps } from "../support/audit-capture.js";
 import { TEST_ORG } from "../support/orgs.js";
+import { runLimitAck } from "../support/run-limit-ack.js";
 import { planAnswer, planDocument } from "../support/plan-documents.js";
 import { blockStoppedWorkflowRun } from "../../packages/broker/src/aws/workflow-cancel-reconcile.js";
 import { failOutboxOperation } from "../../packages/broker/src/aws/outbox-failure.js";
@@ -624,7 +625,7 @@ describe("a version 2 plan goes to the plan check", () => {
     expect(t.byMode(workspaceId, "PLAN_CRITIQUE")).toEqual([]);
     for (let phase = 0; phase < 2; phase += 1) {
       const workflow = t.meta(taskId).workflow;
-      expect((await t.h.dev(MAYA, "POST", `/v1/dev/tasks/${taskId}/workflow/decision`, { requestId: randomUUID(), expectedRevision: workflow.revision, decision: "APPROVE", reason: "Approved", artifactDigest: workflow.artifacts.at(-1)!.sha256 })).status).toBe(200);
+      expect((await t.h.dev(MAYA, "POST", `/v1/dev/tasks/${taskId}/workflow/decision`, { requestId: randomUUID(), expectedRevision: workflow.revision, decision: "APPROVE", reason: "Approved", artifactDigest: workflow.artifacts.at(-1)!.sha256, ...runLimitAck(t.h.db, taskId) })).status).toBe(200);
       await t.finishPlanning(workspaceId);
       if (phase === 0) expect(t.byMode(workspaceId, "PLAN_CRITIQUE")).toEqual([]);
     }
@@ -705,7 +706,7 @@ describe("the plan check's result", () => {
     expect(record.workflow.outcome).toBeUndefined();
     expect(t.byMode(workspaceId, "IMPLEMENT")).toEqual([]);
     // The person's approval then goes to coding, not back to the check.
-    const decision = await t.h.dev(MAYA, "POST", `/v1/dev/tasks/${taskId}/workflow/decision`, { requestId: randomUUID(), expectedRevision: record.workflow.revision, decision: "APPROVE", reason: "Approved", artifactDigest: record.workflow.artifacts.at(-1)!.sha256 });
+    const decision = await t.h.dev(MAYA, "POST", `/v1/dev/tasks/${taskId}/workflow/decision`, { requestId: randomUUID(), expectedRevision: record.workflow.revision, decision: "APPROVE", reason: "Approved", artifactDigest: record.workflow.artifacts.at(-1)!.sha256, ...runLimitAck(t.h.db, taskId) });
     expect(decision.status, JSON.stringify(decision.body)).toBe(200);
     expect(t.meta(taskId).workflow).toMatchObject({ stage: "IMPLEMENT", state: "RUNNING" });
     expect(t.byMode(workspaceId, "PLAN_CRITIQUE")).toHaveLength(1);
@@ -906,7 +907,7 @@ describe("the automatic revision never asks for money", () => {
     expect(text).toContain("Problem: No limit on retries.");
     expect(text).not.toContain("I revised the plan once");
     // The person's approval then goes to coding as ever.
-    const approved = await t.h.dev(MAYA, "POST", `/v1/dev/tasks/${taskId}/workflow/decision`, { requestId: randomUUID(), expectedRevision: record.workflow.revision, decision: "APPROVE", reason: "Approved", artifactDigest: record.workflow.artifacts.at(-1)!.sha256 });
+    const approved = await t.h.dev(MAYA, "POST", `/v1/dev/tasks/${taskId}/workflow/decision`, { requestId: randomUUID(), expectedRevision: record.workflow.revision, decision: "APPROVE", reason: "Approved", artifactDigest: record.workflow.artifacts.at(-1)!.sha256, ...runLimitAck(t.h.db, taskId) });
     expect(approved.status, JSON.stringify(approved.body)).toBe(200);
   });
 

@@ -26,6 +26,7 @@ import { MAYA, OMAR, createDeveloperTaskBroker, seedMembership, type Developer }
 import { fakeModelAccess } from "../support/fake-model-access.js";
 import { planAnswer, planDocument } from "../support/plan-documents.js";
 import { TEST_ORG } from "../support/orgs.js";
+import { runLimitAck } from "../support/run-limit-ack.js";
 import { loadSlackBroker } from "../support/slack-broker.js";
 
 const NOW = "2026-10-26T12:00:00.000Z";
@@ -381,7 +382,7 @@ async function world(options: { live?: boolean; orgs?: boolean } = {}) {
     return { ...run, digest: document.sha256 };
   };
   const decide = (who: Developer, taskId: string, body: Record<string, unknown>) =>
-    h.dev(who, "POST", `/v1/dev/tasks/${taskId}/workflow/decision`, { requestId: randomUUID(), expectedRevision: meta(taskId).workflow.revision, ...body });
+    h.dev(who, "POST", `/v1/dev/tasks/${taskId}/workflow/decision`, { requestId: randomUUID(), expectedRevision: meta(taskId).workflow.revision, ...(body.decision === "APPROVE" ? runLimitAck(h.db, taskId) : {}), ...body });
   const sessionRecord = (sessionId: string) => h.db.get(agentSessionKey(TEST_ORG, sessionId, "META")) as Record<string, unknown> & { summary: { status: string; step?: string } };
   const events = (sessionId: string) => h.db.find((item) => item.pk === agentSessionKey(TEST_ORG, sessionId, "META").pk && String(item.sk).startsWith("EVENT#")).map((item) => String(item.text));
   const milestones = (taskId: string) => h.db.find((item) => item.pk === `DEVTASK#${taskId}` && String(item.sk).startsWith("CODE_MILESTONE#answered"));

@@ -22,6 +22,7 @@ import { fakeModelAccess } from "../support/fake-model-access.js";
 import { planAnswer, planDocument } from "../support/plan-documents.js";
 import { PRIYA, pageTask } from "../support/page-tasks.js";
 import { TEST_ORG } from "../support/orgs.js";
+import { runLimitAck } from "../support/run-limit-ack.js";
 import { loadSlackBroker } from "../support/slack-broker.js";
 
 const NOW = "2026-10-26T12:00:00.000Z";
@@ -65,7 +66,7 @@ async function world() {
     await h.artifact(run.workspaceId, String(plan.id), "plan.md", planAnswer(planDocument({ noChangeNeeded: noChange() }), { checks: { checks: [], none_reason: "Nothing runs." } }));
     await h.finish(run.workspaceId, String(plan.id), "SUCCEEDED", { result: { workflowMode: "PLAN" } });
     const digest = meta(taskId).workflow.artifacts.at(-1)!.sha256;
-    const decided = await h.dev(MAYA, "POST", `/v1/dev/tasks/${taskId}/workflow/decision`, { requestId: randomUUID(), expectedRevision: meta(taskId).workflow.revision, decision: "APPROVE", reason: "Approved", artifactDigest: digest });
+    const decided = await h.dev(MAYA, "POST", `/v1/dev/tasks/${taskId}/workflow/decision`, { requestId: randomUUID(), expectedRevision: meta(taskId).workflow.revision, decision: "APPROVE", reason: "Approved", artifactDigest: digest, ...runLimitAck(h.db, taskId) });
     expect(decided.status, JSON.stringify(decided.body)).toBe(200);
     return run;
   };

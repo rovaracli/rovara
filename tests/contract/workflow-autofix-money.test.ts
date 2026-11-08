@@ -12,6 +12,7 @@ import { fakeModelAccess } from "../support/fake-model-access.js";
 import { call } from "../support/slack-broker.js";
 import { MAYA, createDeveloperTaskBroker } from "../support/developer-task-broker.js";
 import { TEST_ORG } from "../support/orgs.js";
+import { runLimitAck } from "../support/run-limit-ack.js";
 import { finishPlanningWithMarkdown } from "../support/plan-documents.js";
 
 const PROXY = "http://internal-proxy.example.test:4000";
@@ -59,7 +60,7 @@ async function blockedOnFindings(installed: Installed, options: { fixSource?: "c
   const planning = operations(harness, workspaceId).find((item) => item.workflowMode === "PLAN")!;
   await finishPlanningWithMarkdown(harness, workspaceId, String(planning.id), plan);
   const digest = createHash("sha256").update(plan).digest("hex");
-  await harness.dev(MAYA, "POST", `/v1/dev/tasks/${taskId}/workflow/decision`, { requestId: randomUUID(), expectedRevision: taskOf(harness, taskId).workflow.revision, decision: "APPROVE", reason: "Approved", artifactDigest: digest });
+  await harness.dev(MAYA, "POST", `/v1/dev/tasks/${taskId}/workflow/decision`, { requestId: randomUUID(), expectedRevision: taskOf(harness, taskId).workflow.revision, decision: "APPROVE", reason: "Approved", artifactDigest: digest, ...runLimitAck(harness.db, taskId) });
   const approvedWindow = taskOf(harness, taskId).budgetBaselineUsd;
   // Plan 6's own fix rounds carry their source (the pull request already exists); #408 must stay out of them.
   if (options.fixSource !== undefined) harness.db.set({ ...taskOf(harness, taskId), workflow: { ...taskOf(harness, taskId).workflow, fixSource: options.fixSource } });

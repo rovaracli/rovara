@@ -34,6 +34,7 @@ import { createCandidateManifest } from "../../packages/contracts/src/task-workf
 import { finishPlanningWithMarkdown } from "../support/plan-documents.js";
 import { MAYA, OMAR, createSingleAnswerPlanBroker } from "../support/developer-task-broker.js";
 import { TEST_ORG } from "../support/orgs.js";
+import { runLimitAck } from "../support/run-limit-ack.js";
 import { loadSlackBroker, registerSlackProject, call as httpCall } from "../support/slack-broker.js";
 
 // ---- the rules as plain functions
@@ -738,7 +739,7 @@ describe("a refusal at dispatch is final and tells the owner", () => {
     const plan = "# Plan\n\n1. Fix retry handling.\n2. Add a regression test.\n";
     await finishPlanningWithMarkdown(t, run.workspaceId, String(run.planning.id), plan);
     const approved = await t.dev(MAYA, "POST", `/v1/dev/tasks/${run.taskId}/workflow/decision`, {
-      requestId: randomUUID(), expectedRevision: (run.meta().workflow as unknown as { revision: number }).revision, decision: "APPROVE", reason: "Approved", artifactDigest: createHash("sha256").update(plan).digest("hex"),
+      requestId: randomUUID(), expectedRevision: (run.meta().workflow as unknown as { revision: number }).revision, decision: "APPROVE", reason: "Approved", artifactDigest: createHash("sha256").update(plan).digest("hex"), ...runLimitAck(t.db, run.taskId),
     });
     expect(approved.status, JSON.stringify(approved.body)).toBe(200);
     const implementing = t.operations(run.workspaceId).find((item) => item.workflowMode === "IMPLEMENT")!;
