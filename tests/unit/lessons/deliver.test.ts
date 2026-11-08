@@ -7,7 +7,7 @@ import { InMemoryLessonStore } from "../../../packages/broker/src/lessons/store.
 import type { Lesson } from "../../../packages/broker/src/lessons/types.js";
 import { lessonDeletionPort } from "../../../packages/broker/src/lessons/deletion.js";
 import { NO_VECTORS } from "../../../packages/broker/src/lessons/runtime.js";
-import { Audit, Clock, KEY, WS, PROJECT, allowAllAccess, lessonRecord, seed, settings } from "./lesson-helpers.js";
+import { Audit, Clock, KEY, WS, PROJECT, allSharedTasks, allowAllAccess, lessonRecord, seed, settings } from "./lesson-helpers.js";
 
 const ann = { approvalId: "ap-ann", by: "ann", at: 1, mode: "one" as const };
 const SECRET = "Call the internal retry endpoint at the secret path before every request.";
@@ -103,7 +103,7 @@ describe("learnedContextFromRefs", () => {
 
     it("a restricted lesson is delivered only to a task whose owner may still read its source (asked of the access records NOW)", async () => {
       const restricted = conv("les_restrict1", { provenance: { ...lessonRecord().provenance, audience: restrictedTo(["gh-1"]) } });
-      const access = (allowed: boolean) => ({ mayRead: async (_org: unknown, _viewer: unknown, places: readonly unknown[]) => places.map(() => allowed) });
+      const access = (allowed: boolean) => ({ mayRead: async (_org: unknown, _viewer: unknown, places: readonly unknown[]) => places.map(() => allowed), taskVisibility: allSharedTasks });
       const privateRefs = refs([["les_restrict1"]], { audience: { kind: "private", developerId: "d".repeat(64) } });
       const calls: string[] = [];
       const yes = world({ access: access(true), identity: async (_w, id) => { calls.push(id); return { principals: ["gh-1"], groups: [] }; } });
@@ -122,7 +122,7 @@ describe("learnedContextFromRefs", () => {
     it("an access record that cannot be read, or an identity that cannot be found, delivers nothing (fail closed)", async () => {
       const store = new InMemoryLessonStore();
       await seed(store, placed("les_aaaaaaa1"));
-      const down = world({ store, access: { mayRead: async () => { throw new Error("down"); } } });
+      const down = world({ store, access: { mayRead: async () => { throw new Error("down"); }, taskVisibility: allSharedTasks } });
       expect(await learnedContextFromRefs(down.deps, refs([["les_aaaaaaa1"]]))).toBeUndefined();
       const noIdentity = world({ store, identity: async () => { throw new Error("down"); } });
       expect(await learnedContextFromRefs(noIdentity.deps, refs([["les_aaaaaaa1"]], { audience: { kind: "private", developerId: "d".repeat(64) } }))).toBeUndefined();

@@ -162,7 +162,7 @@ export async function loadLessonsForStage(deps: LoadDeps, request: LoadRequest):
     return empty("access_unavailable", setVersion);
   }
   // Every candidate goes through the one read path: the frozen snapshot AND the access records now (one batch). A record that cannot be read loads nothing.
-  const viewer = request.taskAudience.kind === "private" ? { principals: request.taskAudience.identity.principals, groups: request.taskAudience.identity.groups } : undefined;
+  const viewer = request.taskAudience.kind === "private" ? { principals: request.taskAudience.identity.principals, groups: request.taskAudience.identity.groups, developerId: request.taskAudience.identity.developerId } : undefined;
   let readable: Set<string>;
   try {
     readable = new Set((await readVisible({ access: deps.access, key, viewer, lessons: active.filter((lesson) => stageAllows(lesson, stage, member)), where: "load", log: deps.log })).map((lesson) => lesson.id));

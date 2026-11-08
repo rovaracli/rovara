@@ -176,9 +176,9 @@ describe("audience and isolation", () => {
 
   it("P9: a lesson of another workspace, or another project, is never loaded", async () => {
     const { deps, add } = setup();
-    await add(conv("les_ours0001"), conv("les_ws2b0001", { workspaceId: "ws-B" }), conv("les_proj2001", { project: "proj-2" }));
+    await add(conv("les_ours0001"), conv("les_ws2b0001", { workspaceId: "org_bbbbbbbbbbbbbbbbbbbb" }), conv("les_proj2001", { project: "proj-2" }));
     expect(ids(await loadLessonsForStage(deps, request()))).toEqual(["les_ours0001"]);
-    expect(ids(await loadLessonsForStage(deps, request({ workspaceId: "ws-B" })))).toEqual(["les_ws2b0001"]);
+    expect(ids(await loadLessonsForStage(deps, request({ workspaceId: "org_bbbbbbbbbbbbbbbbbbbb" })))).toEqual(["les_ws2b0001"]);
   });
 });
 

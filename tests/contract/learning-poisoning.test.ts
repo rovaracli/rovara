@@ -715,7 +715,7 @@ describe("P10 a lesson learned in a restricted Slack channel, in a shared task",
   });
 
   it("a member who has since left the channel stops getting it (the access records are asked now, not the frozen snapshot)", async () => {
-    const left: AccessCheckPort = { mayRead: async (_org, _viewer, places) => places.map((place) => !place.scopes.includes(SLACK_SCOPE_PRIVATE)) };
+    const left: AccessCheckPort = { mayRead: async (_org, _viewer, places) => places.map((place) => !place.scopes.includes(SLACK_SCOPE_PRIVATE)), taskVisibility: allowAllAccess.taskVisibility };
     const p = pipeline({ access: left });
     withChannelMembers(p);
     // Make the lesson active under an access port that allowed it at the time.
@@ -1078,7 +1078,7 @@ describe("the loader never loads a lesson that is not live, current and in this 
     (p.loadDeps.vectors as MemoryVectors).fail = false;
     const noAccess = { ...p.loadDeps, access: undefined as unknown as AccessCheckPort };
     expect((await loadLessonsForStage(noAccess, p.loadRequest())).context).toBeUndefined();
-    const down: AccessCheckPort = { mayRead: async () => { throw new Error("record down"); } };
+    const down: AccessCheckPort = { mayRead: async () => { throw new Error("record down"); }, taskVisibility: allowAllAccess.taskVisibility };
     // A lesson with a source place is checked against the records; when they cannot be read it does not load.
     const placed = byPerson(lessonRecord({ id: "les_plcd0001", type: "convention", tier: 1, stages: ["IMPLEMENT"], scope: { repos: ["api"] }, provenance: { ...lesson.provenance, sourceScopes: [SLACK_SCOPE_PUBLIC] } }));
     await seed(p.store, placed);

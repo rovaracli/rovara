@@ -9,7 +9,7 @@ import { InMemoryLessonStore } from "../../../packages/broker/src/lessons/store.
 import { createAccessCheckPort } from "../../../packages/broker/src/team-record/access-port.js";
 import { applyAudienceEvent, applyMemberEvents } from "../../../packages/broker/src/team-record/access.js";
 import { ORG_A, addSource, githubDraft, world } from "../../support/team-record-core.js";
-import { Audit, Clock, MemoryVectors, PROJECT, directory, embedder, lessonRecord, seed, settings } from "./lesson-helpers.js";
+import { Audit, Clock, MemoryVectors, PROJECT, allSharedTasks, directory, embedder, lessonRecord, seed, settings } from "./lesson-helpers.js";
 
 const WS = ORG_A;
 const KEY = { workspaceId: WS, project: PROJECT };
@@ -23,7 +23,7 @@ async function setup() {
   const w = world();
   await addSource(w, { source: "slack", scope: SC });
   await w.sink.put(githubDraft({ source: "slack", kind: "slack.message", repo: undefined, sourceRef: { system: "T1", id: "m1", version: "1" }, audience: slackAcl(["U-member", "U-other"]), actor: { sourceId: "U-other", trust: "member" }, text: "x", links: [] }));
-  const access = createAccessCheckPort(w.table);
+  const access = createAccessCheckPort(w.table, { taskVisibility: allSharedTasks });
   const store = new InMemoryLessonStore();
   const base = lessonRecord({ workspaceId: WS });
   const prov = { ...base.provenance, audience: slackAcl(["U-member", "U-other"]), sourceScopes: [SC], authors: ["carl"] };
@@ -113,7 +113,7 @@ describe("place-scoped tracker lessons are denied (F6), with a log line, never l
   it("a Jira lesson recorded against the place is read by nobody, not even a person its snapshot names", async () => {
     const { w, store } = await setup();
     const lines: string[] = [];
-    const access = createAccessCheckPort(w.table, { log: (event) => { lines.push(event); } });
+    const access = createAccessCheckPort(w.table, { taskVisibility: allSharedTasks, log: (event) => { lines.push(event); } });
     const clock = new Clock();
     const vectors = new MemoryVectors();
     const deps: LoadDeps = { access, store, embedder, vectors, settings: settings(), audit: new Audit(), now: clock.now };

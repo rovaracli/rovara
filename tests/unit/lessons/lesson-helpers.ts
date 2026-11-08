@@ -1,5 +1,6 @@
 // Shared fakes for the learning v2 lane tests (L1-L5). No AWS, no network: every port of packages/broker/src/lessons/ports.ts has an in-memory stand-in.
 import type { AccessCheckPort } from "../../../packages/broker/src/team-record/access-port.js";
+import type { TaskVisibilityPort } from "../../../packages/broker/src/team-record/live-audience.js";
 import type { CounterDeps } from "../../../packages/broker/src/lessons/counters.js";
 import type { LessonDraft } from "../../../packages/broker/src/lessons/reflect.js";
 import type {
@@ -191,7 +192,9 @@ export function classifyTier(input: TierInput, context?: TierContext, floor?: { 
 /** An access-check port that lets every place through: for the tests that exercise the lessons themselves, not the access records. */
 /** What `recordFeedback` takes: the counter ports plus the record core's access check. */
 export type FeedbackDeps = CounterDeps & { access: AccessCheckPort };
-export const allowAllAccess: AccessCheckPort = { mayRead: async (_org, _viewer, places) => places.map(() => true) };
+/** Every task project-wide: the live check of a lesson's source tasks (`live-visibility.ts`) lets every lesson through. */
+export const allSharedTasks: TaskVisibilityPort = { read: async (_org, ids) => new Map(ids.map((id) => [id, { kind: "shared" as const }])) };
+export const allowAllAccess: AccessCheckPort = { mayRead: async (_org, _viewer, places) => places.map(() => true), taskVisibility: allSharedTasks };
 
 /**
  * In-memory ports for the preset setting (`preset-setting.ts`): the stored preset per scope, its loosening proposals, and an authority that answers from a roster the test can change.

@@ -60,7 +60,11 @@ export function narrowestAudience(list: readonly Audience[]): Audience {
 }
 
 /** The asker's linked identities, for ACL checks. An unmapped identity is simply absent, and matches nothing (fail closed). */
-export interface IdentitySet { principals: readonly string[]; groups: readonly string[] }
+export interface IdentitySet {
+  principals: readonly string[]; groups: readonly string[];
+  /** Who the reader is, for the live check of the tasks a lesson was learned from (`live-visibility.ts`). Absent: the reader is treated as nobody in particular and sees only lessons from project-wide tasks (fail closed). */
+  developerId?: string | undefined;
+}
 /** Whether an identity set satisfies a restricted ACL. An ACL with no principals and no groups is satisfied by nobody. */
 export function satisfiesAcl(identity: IdentitySet, acl: AclSnapshot): boolean {
   const byPrincipal = (acl.principals ?? []).some((p) => identity.principals.includes(p));

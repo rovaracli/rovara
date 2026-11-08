@@ -37,7 +37,7 @@ export async function learnedContextFromRefs(deps: DeliveryDeps, refs: LearnedRe
     if (!modeAllows(resolved.mode, "load")) return undefined;
     const now = deps.now();
     // The reader the load was for: a private task's owner (their linked accounts), or nobody in particular for a shared task.
-    const viewer = refs.audience.kind === "shared" ? undefined : await deps.identity(key.workspaceId, refs.audience.developerId);
+    const viewer = refs.audience.kind === "shared" ? undefined : { ...await deps.identity(key.workspaceId, refs.audience.developerId), developerId: refs.audience.developerId };
 
     const fetched: Lesson[] = [];
     for (const ref of refs.lessons) {

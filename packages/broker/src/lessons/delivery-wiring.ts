@@ -4,6 +4,7 @@
 import { GetCommand } from "@aws-sdk/lib-dynamodb";
 import { OrgIdSchema, memberGithubKey, type LearnedContext, type LearnedRefs } from "@agentx/contracts";
 import { createAccessCheckPort } from "../team-record/access-port.js";
+import { tableTaskVisibilityPort } from "../team-record/live-audience-port.js";
 import type { TeamRecordTable } from "../team-record/types.js";
 import { learnedContextFromRefs } from "./deliver.js";
 import { dynamoLearningSettings, DynamoTier0Settings } from "./dynamo-settings.js";
@@ -32,7 +33,7 @@ export function createLessonDelivery(input: LessonDeliveryInput): ((refs: Learne
   const deps = {
     store: new DynamoLessonStore(table, now),
     settings: dynamoLearningSettings(table, new DynamoTier0Settings(table)),
-    access: createAccessCheckPort(table, input.log === undefined ? {} : { log: input.log }),
+    access: createAccessCheckPort(table, { taskVisibility: tableTaskVisibilityPort({ documentClient: input.documentClient, tableName: input.stateTable, now }), ...(input.log === undefined ? {} : { log: input.log }) }),
     now,
     ...(input.log === undefined ? {} : { log: input.log }),
     // The reader's identity: the accounts the developer linked (a GitHub account, today), as the broker's own directory reads them.

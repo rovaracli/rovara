@@ -16,7 +16,7 @@ import { InMemoryLessonStore } from "../../../packages/broker/src/lessons/store.
 import { recordAccessKey, recordAccessMemberKey, recordAccessPersonPrefix } from "@agentx/contracts";
 import { ORG_A, addSource, caller, githubDraft, rows, world, type World } from "../../support/team-record-core.js";
 import { deleteDeps } from "../../support/team-record-delete.js";
-import { Audit, Clock, MemoryVectors, PROJECT, embedder, lessonRecord, seed as seedLessons, settings } from "../lessons/lesson-helpers.js";
+import { Audit, Clock, MemoryVectors, PROJECT, allSharedTasks, embedder, lessonRecord, seed as seedLessons, settings } from "../lessons/lesson-helpers.js";
 
 const T1 = "2026-10-30T09:00:00.000Z";
 const T2 = "2026-10-30T10:00:00.000Z";
@@ -311,7 +311,7 @@ describe("R8-1 learning v2 asks the access records at read time", () => {
     const store = new InMemoryLessonStore();
     const vectors = new MemoryVectors();
     const clock = new Clock();
-    const deps: LoadDeps = { store, embedder, vectors, settings: settings(), audit: new Audit(), now: clock.now, access: createAccessCheckPort(w.table) };
+    const deps: LoadDeps = { store, embedder, vectors, settings: settings(), audit: new Audit(), now: clock.now, access: createAccessCheckPort(w.table, { taskVisibility: allSharedTasks }) };
     const lesson = lessonFor();
     await seedLessons(store, lesson);
     await vectors.upsert(WS, PROJECT, (lesson as { id: string }).id, await embedder.embed("x"), { status: "active" });

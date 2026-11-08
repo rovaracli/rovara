@@ -7,6 +7,7 @@ import { followMerges } from "../../agents/access.js";
 import { dynamoAttributionReader } from "../../attribution/resolve.js";
 import { DeveloperSignInStore } from "../../developer/store.js";
 import type { CodeFactsReader } from "../../lessons/code-facts.js";
+import { tableTaskVisibilityPort } from "../../team-record/live-audience-port.js";
 import { NO_EMBEDDER, NO_VECTORS, createLessonsRuntime, type LessonsRuntime } from "../../lessons/runtime.js";
 import type { Embedder, LearningSpend, LessonVectors, PipelineModel } from "../../lessons/ports.js";
 import { lessonAuditSink } from "../../lessons/audit-sink.js";
@@ -129,6 +130,7 @@ export function lessonsRuntimeFor(dependencies: LessonsHostDependencies): Lesson
     ...(audit === undefined ? {} : { audit }),
     ...(dependencies.audit === undefined ? {} : (() => { const ledger = dependencies.audit; return { auditOutbox: { pending: (event: AuditEventInput) => auditPending({ audit: ledger }, event), flush: (event: AuditEventInput) => flushAuditEvents({ audit: ledger }, [event]) } }; })()),
     reader, repositoriesOf,
+    taskVisibility: tableTaskVisibilityPort({ documentClient: dependencies.documentClient, tableName: dependencies.tableName, now: Date.now }),
     evidence: { documentClient: dependencies.documentClient, tableName: dependencies.tableName, signInTableName, now: Date.now },
     resolveMember: (_orgId, developerId) => followMerges(merges, developerId),
     linkedAccounts: async (orgId, developerId) => {

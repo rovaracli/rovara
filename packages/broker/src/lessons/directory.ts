@@ -40,7 +40,7 @@ export function createApproverDirectory(input: DirectoryInput): ApproverDirector
       const org = OrgIdSchema.safeParse(workspaceId);
       // No identity is a person who matches no restricted place (fail closed).
       if (!org.success) return { principals: [], groups: [] };
-      try { return { principals: [...await input.linkedAccounts(org.data, developerId)], groups: [] }; } catch { return { principals: [], groups: [] }; }
+      try { return { principals: [...await input.linkedAccounts(org.data, developerId)], groups: [], developerId }; } catch { return { principals: [], groups: [], developerId }; }
     },
   };
 }

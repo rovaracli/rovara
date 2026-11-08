@@ -4,6 +4,7 @@
 // importing this module or being listed there as an internal writer.
 import { OrgIdSchema } from "@agentx/contracts";
 import type { AccessCheckPort } from "../team-record/access-port.js";
+import { liveVisible } from "./live-visibility.js";
 import type { ScopeKey } from "./store.js";
 import { lessonPlaces, satisfiesAcl, type IdentitySet, type Lesson } from "./types.js";
 
@@ -20,8 +21,9 @@ export async function readVisible(input: { access: AccessCheckPort; key: ScopeKe
   }
   const frozen = input.lessons.filter((lesson) => lesson.provenance.audience.kind !== "restricted" || (input.viewer !== undefined && satisfiesAcl(input.viewer, lesson.provenance.audience.acl)));
   const placed = frozen.filter((lesson) => lessonPlaces(lesson).scopes.length > 0);
-  if (placed.length === 0) return frozen;
+  const live = (lessons: Lesson[]): Promise<Lesson[]> => liveVisible({ port: input.access.taskVisibility, key: input.key, viewer: input.viewer, lessons, where: input.where, log: input.log });
+  if (placed.length === 0) return live(frozen);
   const answers = await input.access.mayRead(OrgIdSchema.parse(input.key.workspaceId), input.viewer, placed.map((lesson) => lessonPlaces(lesson)));
   const allowed = new Set(placed.filter((_, index) => answers[index] === true).map((lesson) => lesson.id));
-  return frozen.filter((lesson) => !placed.includes(lesson) || allowed.has(lesson.id));
+  return live(frozen.filter((lesson) => !placed.includes(lesson) || allowed.has(lesson.id)));
 }
