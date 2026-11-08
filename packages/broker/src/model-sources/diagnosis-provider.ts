@@ -8,7 +8,7 @@
 // With no such source the answer is "none", and the diagnosis is not offered (`DIAGNOSIS_NO_PROVIDER_MESSAGE`). Nothing here falls back to anything else.
 import { canonicalModelName, type ModelIdentifier, type OrgId } from "@agentx/contracts";
 import { catalogModel, listPricesPerMillion } from "@agentx/model-runtime/catalog";
-import { isFreeVariant } from "../rovara-code/second-review-picker.js";
+import { isBatchVariant, isFreeVariant } from "./model-variants.js";
 import { effectiveSources, servableModels, servingRoutes, type ModelRoute, type RoutingDependencies } from "./routing.js";
 
 const billedToCompany = (id: string): boolean => id !== "personal-chatgpt";
@@ -78,20 +78,40 @@ export function learningWorstCaseUsd(model: ModelIdentifier, shape: LearningCall
 /** OpenRouter's router meta-models (`openrouter/auto`, `openrouter/free`, ...) and routers by name: the provider picks the real model behind them, so neither its price nor where the text goes is known here. */
 const isRouterModel = (model: ModelIdentifier): boolean => model.provider.toLowerCase() === "openrouter" && /^(?:auto$|openrouter\/|.*router)/iu.test(model.modelId);
 
-/**
- * A model learning must never run on, however cheap it looks: one whose catalog list price is zero or negative (a free tier, or a router whose spend the ledger would count at $0 while the provider bills the
- * company), an OpenRouter router meta-model, and a `:free` variant (the provider may train on the text sent to it). Used to rank, and to refuse the company's "lessons model" setting.
- */
-export function unfitForLearning(model: ModelIdentifier): boolean {
-  if (isFreeVariant(model) || isRouterModel(model)) return true;
-  const price = listPricesPerMillion(model);
-  return price !== undefined && !(price.input > 0 && price.output > 0);
-}
+/** The reasoning levels a learning call may send. */
+export type LearningReasoningEffort = "none" | "minimal" | "low";
+const LEARNING_EFFORTS: readonly LearningReasoningEffort[] = ["minimal", "low"];
 
 /** A reasoning model that spends its output budget on hidden reasoning unless told not to (OpenAI's families, on their own transports). Anthropic models list `reasoning: true` too, but think only when asked. */
 export function reasonsByDefault(model: ModelIdentifier): boolean {
   const known = catalogModel(model);
   return known !== undefined && known.reasoning === true && (known.api === "openai-responses" || known.api === "openai-completions");
+}
+
+/**
+ * The reasoning level a learning call on this model asks for, read from the catalog's own `thinkingLevelMap` (never guessed from the model's name; a level the map lists as null is refused by the provider): the map's "off"
+ * value (such as "none") when it has one, else "minimal", else "low". A model that reasons by default and supports none of those cannot be told to keep its reasoning short, so it is unfit (`fit: false`). A model that does not
+ * reason by default, or has no map, gets no level at all (nothing is sent).
+ */
+export function learningReasoningEffort(model: ModelIdentifier): { fit: true; effort?: LearningReasoningEffort } | { fit: false } {
+  if (!reasonsByDefault(model)) return { fit: true };
+  const map = catalogModel(model)?.thinkingLevelMap as Record<string, string | null | undefined> | undefined;
+  if (map === undefined) return { fit: true };
+  const off = map["off"];
+  if (typeof off === "string" && off === "none") return { fit: true, effort: "none" };
+  for (const level of LEARNING_EFFORTS) if (typeof map[level] === "string") return { fit: true, effort: level };
+  return { fit: false };
+}
+
+/**
+ * A model learning must never run on, however cheap it looks: one whose catalog list price is zero or negative (a free tier, or a router whose spend the ledger would count at $0 while the provider bills the
+ * company), an OpenRouter router meta-model, a `:free` variant (the provider may train on the text sent to it), a `:batch` variant (the Batch API's id, at a price the hold is not sized on), and a model that reasons
+ * by default and supports no short reasoning level (`learningReasoningEffort`). Used to rank, and to refuse the company's "lessons model" setting.
+ */
+export function unfitForLearning(model: ModelIdentifier): boolean {
+  if (isFreeVariant(model) || isBatchVariant(model) || isRouterModel(model) || !learningReasoningEffort(model).fit) return true;
+  const price = listPricesPerMillion(model);
+  return price !== undefined && !(price.input > 0 && price.output > 0);
 }
 
 /** A chat model that takes text and can answer a call of this size with JSON (any chat model can; the catalog's limits are checked where it knows the model). */
@@ -128,12 +148,18 @@ export async function chooseLearningRoute(
   const reasons = (model: ModelIdentifier): number => (reasonsByDefault(model) ? 1 : 0);
   const ranked = [...suitable].sort((left, right) => reasons(left) - reasons(right) || cost(left) - cost(right) || (walked.get(canonicalModelName(left)) ?? 0) - (walked.get(canonicalModelName(right)) ?? 0) || canonicalModelName(left).localeCompare(canonicalModelName(right)));
   const wanted = preferred === undefined ? undefined : suitable.find((model) => canonicalModelName(model) === canonicalModelName(preferred));
+  // A route is looked up by the model's canonical name, which drops an OpenRouter variant suffix (`:free`, `:batch`): a source that lists a model AND its unfit twin would answer with whichever entry comes first. So the
+  // routes are asked of a routing whose sources hold the fit entries only; an unfit entry can never be the route of a fit model.
+  const fitOnly: RoutingDependencies = own.sources === undefined ? own : {
+    ...own,
+    sources: { read: async (org) => { const stored = await own.sources!.read(org); return { ...stored, sources: stored.sources.map((source) => ({ ...source, models: source.models.filter((entry) => !unfitForLearning(entry.catalog)) })) as typeof stored.sources }; } },
+  };
   const seen = new Set<string>();
   for (const model of [...(wanted === undefined ? [] : [wanted]), ...ranked]) {
     const name = canonicalModelName(model);
     if (seen.has(name)) continue;
     seen.add(name);
-    const route = (await servingRoutes(own, { orgId, project, model })).find((served) => served.alias !== undefined);
+    const route = (await servingRoutes(fitOnly, { orgId, project, model })).find((served) => served.alias !== undefined);
     if (route?.alias !== undefined) return { model, route: { ...route, alias: route.alias } };
   }
   return { none: "no_provider" };

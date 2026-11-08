@@ -114,7 +114,6 @@ export async function reflectSubject(deps: ReflectDeps, subject: ReflectSubject,
     await noteModelFailure(deps.pause, subject.workspaceId, subject.project);
     return none("dropped", "model_error");
   }
-  await noteRecovered(deps.pause, subject.workspaceId, subject.project);
   const cost = Number.isFinite(reply.costUsd) && reply.costUsd > 0 ? reply.costUsd : 0;
   // `cost` is the cap the call's key held (an upper bound): the nightly budget counts that, and the ledger books the real figure when the proxy has flushed it.
   if (budget !== undefined) budget.spentUsd += cost;
@@ -125,9 +124,13 @@ export async function reflectSubject(deps: ReflectDeps, subject: ReflectSubject,
 
   let output: { candidates: unknown[] };
   try { output = ReflectorOutputSchema.parse(parseJson(reply.text)); } catch {
+    // R3: a reply that cannot be used is a failed call (it was billed): it counts toward the project's model_failed pause, and clears nothing.
     deps.metrics?.count("learning.reflect_failed", { reason: "parse_error" });
+    await noteModelFailure(deps.pause, subject.workspaceId, subject.project);
     return none("dropped", "parse_error", cost);
   }
+  // Only a reply that parsed is a success: it clears the pause and the failure count.
+  await noteRecovered(deps.pause, subject.workspaceId, subject.project);
 
   const runId = (deps.newId ?? randomUUID)();
   const drafts: LessonDraft[] = [];

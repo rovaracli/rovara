@@ -85,8 +85,10 @@ async function judge(deps: CurateDeps, key: ScopeKey, mine: LessonDraft, other: 
       else await noteModelFailure(deps.pause, key.workspaceId, key.project);
       return undefined;
     }
+    let parsed: ReturnType<typeof JudgeReplySchema.parse>;
+    // R3: a reply that cannot be used is a failed call, not a success: it counts toward model_failed and clears nothing.
+    try { parsed = JudgeReplySchema.parse(JSON.parse(reply.text.trim().replace(/^```(?:json)?\s*/iu, "").replace(/\s*```$/u, ""))); } catch { await noteModelFailure(deps.pause, key.workspaceId, key.project); return undefined; }
     await noteRecovered(deps.pause, key.workspaceId, key.project);
-    const parsed = JudgeReplySchema.parse(JSON.parse(reply.text.trim().replace(/^```(?:json)?\s*/iu, "").replace(/\s*```$/u, "")));
     return { verdict: parsed.verdict, escalate: parsed.escalate === true };
   } catch { return undefined; }
 }

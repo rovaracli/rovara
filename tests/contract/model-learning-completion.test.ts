@@ -79,14 +79,17 @@ describe("ModelProxyClient.learningCompletion", () => {
       await plain.client.learningCompletion(input(api));
       expect(JSON.stringify(plain.seen.find((entry) => entry.path === REPLIES[api][0])!.body)).not.toMatch(/reasoning/u);
     }
+    const none = proxy({ api: "openai-responses" });
+    await none.client.learningCompletion({ ...input("openai-responses"), reasoningEffort: "none" });
+    expect(none.seen.find((entry) => entry.path === "/v1/responses")!.body).toMatchObject({ reasoning: { effort: "none" } });
     const messages = proxy();
     await messages.client.learningCompletion({ ...input(), reasoningEffort: "low" });
     expect(JSON.stringify(messages.seen.find((entry) => entry.path === "/v1/messages")!.body)).not.toMatch(/reasoning/u);
   });
 
-  it("H2: the function's request schema takes a minimal or low effort and nothing else", () => {
+  it("R1: the function's request schema takes a none, minimal or low effort and nothing else", () => {
     const request = (reasoningEffort: unknown) => ModelAccessRequestSchema.safeParse({ op: "learningCompletion", args: { ...input("openai-responses"), ...(reasoningEffort === undefined ? {} : { reasoningEffort }) } }).success;
-    expect([request(undefined), request("minimal"), request("low"), request("high"), request("")]).toEqual([true, true, true, false, false]);
+    expect([request(undefined), request("none"), request("minimal"), request("low"), request("high"), request("")]).toEqual([true, true, true, true, false, false]);
   });
 
   it("H2: a reply with no text (a reasoning model that spent the whole budget) is a failure with fixed words, never an empty answer", async () => {

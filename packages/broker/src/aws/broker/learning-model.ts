@@ -23,7 +23,7 @@ import { readGuardrails } from "../../agents/guardrails.js";
 import { LearningRefusal } from "../../lessons/pause.js";
 import type { Edition } from "../../lessons/policy.js";
 import type { PipelineModel } from "../../lessons/ports.js";
-import { chooseLearningRoute, learningWorstCaseUsd, reasonsByDefault } from "../../model-sources/diagnosis-provider.js";
+import { chooseLearningRoute, learningReasoningEffort, learningWorstCaseUsd } from "../../model-sources/diagnosis-provider.js";
 import type { RoutingDependencies } from "../../model-sources/routing.js";
 import { admitWork, mintOperationKey } from "../../spend/admission.js";
 import { ScopeFullError, blockOperationKeys } from "../../spend/ledger.js";
@@ -113,8 +113,11 @@ export function customerLearningModel(dependencies: AwsBrokerDependencies, optio
     const hold = sized ?? Math.min(request.budgetUsd ?? options.budgetUsd ?? LEARNING_CALL_BUDGET_USD, LEARNING_MAX_CALL_BUDGET_USD);
     if (hold > LEARNING_MAX_CALL_BUDGET_USD) throw new LearningRefusal("cost_too_high", LEARNING_TOO_DEAR);
     if (!(hold >= 0.001)) throw new LearningRefusal("no_budget", LEARNING_NO_BUDGET);
-    // A model that reasons by default is asked for the least reasoning it allows (OpenAI's `gpt-5` family takes "minimal"; the others "low"), so the hidden reasoning cannot eat a short answer budget.
-    const effort = chosen.route.api !== "anthropic-messages" && reasonsByDefault(chosen.model) ? (/gpt-5/iu.test(chosen.model.modelId) ? "minimal" as const : "low" as const) : undefined;
+    // A model that reasons by default is asked for the least reasoning its catalog entry allows (its thinkingLevelMap: the off value such as "none", else "minimal", else "low"), so the hidden reasoning cannot eat a
+    // short answer budget. A model with no map is sent nothing (a guessed level may be refused). The Messages transport has no such field.
+    const effortOf: ReturnType<typeof learningReasoningEffort> = chosen.route.api === "anthropic-messages" ? { fit: true } : learningReasoningEffort(chosen.model);
+    if (!effortOf.fit) throw new LearningRefusal("no_suitable_model", LEARNING_NO_SUITABLE_MODEL);
+    const effort = effortOf.fit ? effortOf.effort : undefined;
     return { orgId, project, chosen: { model: chosen.model, alias: chosen.route.alias, sourceId: chosen.route.sourceId, api: chosen.route.api, ...(effort === undefined ? {} : { reasoningEffort: effort }) }, hold: cleanUsd(hold) };
   }
 
@@ -168,7 +171,10 @@ export function customerLearningModel(dependencies: AwsBrokerDependencies, optio
           runLimitUsd: hold, stopAtUsd: hold, budgetCeilingUsd: hold, taskKeyIds: [],
         });
       } catch (error) {
-        if (error instanceof ScopeFullError && error.scope === LEARNING_COUNTER) throw new LearningRefusal("monthly_limit", LEARNING_MONTH_FULL, { cause: error });
+        if (error instanceof ScopeFullError) {
+          // The learning month is the company's own limit; any other scope that fills between the admission and the mint (the org's or the project's budget) is a budget pause, not a provider failure.
+          throw error.scope === LEARNING_COUNTER ? new LearningRefusal("monthly_limit", LEARNING_MONTH_FULL, { cause: error }) : new LearningRefusal("no_budget", LEARNING_NO_BUDGET, { cause: error });
+        }
         throw asBudgetRefusal(error) ?? error;
       }
       if (minted.outcome !== "minted") throw new Error("learning could not record its model key");

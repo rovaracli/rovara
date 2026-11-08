@@ -27,8 +27,8 @@ export interface CurrentPause { code: LessonsPauseCode; at: number; scope: "proj
 export interface LessonsPauseStore {
   /** Records the one current reason for the code's scope (the monthly limit is the company's; every other reason is the project's). Never throws. */
   record(workspaceId: string, project: string, code: LessonsPauseCode): Promise<void>;
-  /** A learning call for the project succeeded: its own reason and the company's are cleared, and the count of failures in a row starts again. Never throws. */
-  clear(workspaceId: string, project: string, only?: "project" | "company"): Promise<void>;
+  /** A learning call for the project succeeded: its own reason and the company's are cleared, and the count of failures in a row starts again. Never throws. With `ifCode`, a reason is deleted only while it is still that code (the Lessons tab clears the reason it showed, never one recorded since); when it is not, nothing is cleared, not even the count. */
+  clear(workspaceId: string, project: string, only?: "project" | "company", ifCode?: LessonsPauseCode): Promise<void>;
   /** A learning call for the project failed after its key was made (the provider, the proxy, an empty answer): counts one more failure in a row and returns the count. Never throws; absent counts nothing. */
   failed?(workspaceId: string, project: string): Promise<number>;
   /** The reason in force for a project: its own, else the company's. Undefined when there is none or it cannot be read. */
@@ -60,9 +60,18 @@ export function dynamoPauseStore(table: TeamRecordTable, now: () => number, log?
         }));
       } catch (error) { if ((error as { name?: unknown } | null)?.name !== "ConditionalCheckFailedException") log?.("lessons.pause_not_recorded", { code }); }
     },
-    async clear(workspaceId, project, only) {
+    async clear(workspaceId, project, only, ifCode) {
       for (const scoped of only === "project" ? [project] : only === "company" ? [undefined] : [project, undefined]) {
-        try { await table.documentClient.send(new DeleteCommand({ TableName: table.tableName, Key: keyOf(workspaceId, scoped) })); } catch { log?.("lessons.pause_not_cleared", { scope: scoped === undefined ? "company" : "project" }); }
+        try {
+          await table.documentClient.send(new DeleteCommand({
+            TableName: table.tableName, Key: keyOf(workspaceId, scoped),
+            ...(ifCode === undefined ? {} : { ConditionExpression: "#code = :seen", ExpressionAttributeNames: { "#code": "code" }, ExpressionAttributeValues: { ":seen": ifCode } }),
+          }));
+        } catch (error) {
+          // The reason is no longer the one that was shown: a newer one stays, and so does the count of failures that goes with it.
+          if (ifCode !== undefined && (error as { name?: unknown } | null)?.name === "ConditionalCheckFailedException") return;
+          log?.("lessons.pause_not_cleared", { scope: scoped === undefined ? "company" : "project" });
+        }
       }
       if (only === "company") return;
       try { await table.documentClient.send(new DeleteCommand({ TableName: table.tableName, Key: { pk: teamRecordPk(workspaceId, project), sk: FAILS_SK } })); } catch { log?.("lessons.failures_not_cleared", {}); }

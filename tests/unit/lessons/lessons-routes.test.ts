@@ -63,12 +63,14 @@ describe("the Lessons tab says why learning is paused (lessons in production, la
     ] as const) {
       const s = setup();
       const clears: Array<unknown> = [];
-      const store = { record: async () => undefined, clear: async (_w: string, _p: string, only?: string) => { clears.push(only); }, read: async () => ({ code: "no_provider" as const, at: 99, scope: "project" as const }) };
+      const codes: Array<unknown> = [];
+      const store = { record: async () => undefined, clear: async (_w: string, _p: string, only?: string, ifCode?: string) => { clears.push(only); codes.push(ifCode); }, read: async () => ({ code: "no_provider" as const, at: 99, scope: "project" as const }) };
       Object.assign((s.deps as unknown as { lessons: object }).lessons, { pause: store, pauseStillApplies: check });
       const view = LessonsViewReaderSchema.parse(await s.call(callerOf("bob"), "GET", base));
       expect(view.paused !== undefined).toBe(shown);
       expect(clears).toHaveLength(cleared);
-      if (cleared > 0) expect(clears[0]).toBe("project");
+      // R5: the clear is conditional on the reason that was shown, so a reason recorded in between is not deleted.
+      if (cleared > 0) { expect(clears[0]).toBe("project"); expect(codes[0]).toBe("no_provider"); }
     }
   });
 

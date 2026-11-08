@@ -153,7 +153,8 @@ export async function buildLessonsView(deps: LessonViewDeps, caller: LessonCalle
   // Why learning is paused is for the people who decide here (the same rule as Home): it names the company's budget state, which a reader has no use for. A reason whose cause has gone is cleared, not shown.
   let paused = resolved.mode === "Off" || !state.canDecide ? undefined : await deps.pause?.read(key.workspaceId, key.project).catch(() => undefined);
   if (paused !== undefined && deps.pauseStillApplies !== undefined && !(await deps.pauseStillApplies(key.workspaceId, key.project, paused.code).catch(() => true))) {
-    await deps.pause?.clear(key.workspaceId, key.project, paused.scope).catch(() => undefined);
+    // Only the reason that was shown: one a learning call recorded since is not deleted.
+    await deps.pause?.clear(key.workspaceId, key.project, paused.scope, paused.code).catch(() => undefined);
     paused = undefined;
   }
   const all = await deps.store.list(key);

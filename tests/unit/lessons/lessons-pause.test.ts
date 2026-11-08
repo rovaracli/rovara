@@ -21,8 +21,9 @@ class MemoryPause implements LessonsPauseStore {
   failures = new Map<string, number>();
   private key(ws: string, project: string | undefined): string { return `${ws}/${project ?? "*"}`; }
   async record(ws: string, project: string, code: CurrentPause["code"]): Promise<void> { this.log.push(`record:${code}`); this.current.set(this.key(ws, pauseScopeOf(code) === "company" ? undefined : project), { code, at: 1, scope: pauseScopeOf(code) }); }
-  async clear(ws: string, project: string, only?: "project" | "company"): Promise<void> {
+  async clear(ws: string, project: string, only?: "project" | "company", ifCode?: CurrentPause["code"]): Promise<void> {
     this.log.push("clear");
+    if (ifCode !== undefined && this.current.get(this.key(ws, only === "company" ? undefined : project))?.code !== ifCode) return;
     if (only !== "company") { this.current.delete(this.key(ws, project)); this.failures.delete(this.key(ws, project)); }
     if (only !== "project") this.current.delete(this.key(ws, undefined));
   }
@@ -204,6 +205,53 @@ describe("H3: a model that keeps failing is never silent", () => {
   });
 });
 
+describe("R3: a reply that cannot be used is a failure, not a success", () => {
+  const junk = "I think the lesson is to retry, but here is no JSON";
+  it("three replies in a row that do not parse pause the project as model_failed; a good reply after two bad ones starts the count again", async () => {
+    const model = new QuotingModel([junk, junk, junk], { ok: true, usd: 0.03 });
+    const world = deps(model);
+    for (let index = 0; index < 2; index += 1) {
+      expect((await reflectSubject(world.d, one())).reason).toBe("parse_error");
+      expect(await world.pause.read(WS, PROJECT)).toBeUndefined();
+    }
+    expect((await reflectSubject(world.d, one())).reason).toBe("parse_error");
+    expect(await world.pause.read(WS, PROJECT)).toMatchObject({ code: "model_failed", scope: "project" });
+    const mixed = new QuotingModel([junk, junk, reply(candidateJson()), junk, junk], { ok: true, usd: 0.03 });
+    const again = deps(mixed);
+    for (let index = 0; index < 5; index += 1) await reflectSubject(again.d, one());
+    expect(await again.pause.read(WS, PROJECT)).toBeUndefined();
+  });
+
+  it("a reply that does not parse does not clear a pause already in force, or the failure count (no noteRecovered before the parse)", async () => {
+    const model = new QuotingModel([junk], { ok: true, usd: 0.03 });
+    const world = deps(model);
+    await world.pause.record(WS, PROJECT, "model_failed");
+    world.pause.failures.set(`${WS}/${PROJECT}`, 2);
+    await reflectSubject(world.d, one());
+    expect(world.pause.log).not.toContain("clear");
+    expect((await world.pause.read(WS, PROJECT))?.code).toBe("model_failed");
+  });
+
+  it("the curator's judge counts a reply that does not parse the same way", async () => {
+    const a = "Use withRetry from src/retry/index.ts for HTTP retries in the api service client calls";
+    const b = "Use withRetry from src/retry/index.ts for HTTP retries in the api service wrapper";
+    const model = new QuotingModel([junk, junk, junk], { ok: true, usd: 0.004 });
+    const pause = new MemoryPause();
+    for (let round = 0; round < 3; round += 1) {
+      let n = 0;
+      const d: CurateDeps & { verifier: unknown; settings: unknown } = {
+        store: new InMemoryLessonStore(), embedder, vectors: new MemoryVectors(), judgeModel: model, spend: new Spend(), audit: new Audit(), alerts: new Alerts(), now: new Clock().now,
+        verifier: verifier("valid"), settings: settings(), newId: () => `les_${String(++n).padStart(4, "0")}`, pause,
+      };
+      await curateDraft(d, KEY, draft({ title: "Retries", description: "", body: a }));
+      await curateDraft(d, KEY, draft({ title: "Retries", description: "", body: b }));
+    }
+    expect(model.calls).toHaveLength(3);
+    expect(pause.log).not.toContain("clear");
+    expect((await pause.read(WS, PROJECT))?.code).toBe("model_failed");
+  });
+});
+
 describe("L1: the cheap look says why it refused", () => {
   const withLook = (answer: "ok" | "month_full" | "too_large" | "unreadable"): Spend => Object.assign(new Spend(), { look: async () => answer });
   it("a full month is the company's monthly limit; a call too large for the whole cap is a cost problem; an unreadable counter records nothing", async () => {
@@ -322,6 +370,20 @@ describe("the pause store", () => {
     await store.record(WS, "web", "no_provider");
     await store.clear(WS, "web", "company");
     expect(await store.read(WS, "web")).toMatchObject({ code: "no_provider", scope: "project" });
+  });
+
+  it("R5: a clear that names the reason it saw deletes that reason only; a different reason recorded in between stays, with the failure count", async () => {
+    const { db, store } = table();
+    await store.record(WS, "web", "no_provider");
+    await store.failed!(WS, "web");
+    // A learning call records another reason after the view read "no_provider".
+    await store.record(WS, "web", "no_budget");
+    await store.clear(WS, "web", "project", "no_provider");
+    expect(await store.read(WS, "web")).toMatchObject({ code: "no_budget" });
+    expect(db.get({ pk: teamRecordPk(WS, "web"), sk: "LESSONSET#FAILS" })).toBeDefined();
+    await store.clear(WS, "web", "project", "no_budget");
+    expect(await store.read(WS, "web")).toBeUndefined();
+    expect(db.get({ pk: teamRecordPk(WS, "web"), sk: "LESSONSET#FAILS" })).toBeUndefined();
   });
 
   it("a table that fails is never an error for learning", async () => {
