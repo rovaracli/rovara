@@ -38,7 +38,7 @@ None. `setupDraftDepsOf` (aws/developer-routes/dependencies.ts) gains `candidate
 None.
 
 ## Risks / notes
-- Cost: a draft apply with commands now runs a full prepare plus the commands (30-45 min on the Amazon pilot), then the project's own setup check starts as before (second run). The draft's own check could be reused for the project's status later.
+- Cost: a draft apply with commands now runs a full prepare plus the commands (30-45 min on a large repository), then the project's own setup check starts as before (second run). The draft's own check could be reused for the project's status later.
 - The candidate check's workspace counts against the person's and the company's workspace limits like any setup check; a full limit shows as `check_failed` with the limit sentence.
 - The 7-day freshness and the 50-minute stall rule are TE-2's.
 - A request that waits is not stored, so a different request id with the same ticks also finds the same running check (no second one).
