@@ -37,6 +37,8 @@ export interface CurateDeps extends LessonDeps {
   access?: AccessCheckPort | undefined;
   /** The project's configured expiry window in days (14-365), if any. */
   expiryDays?: number;
+  /** LP-13 C3: the draft's sources were already counted by an earlier try of the same draft (a retry), so they are not counted again. */
+  noSourceNote?: boolean;
 }
 
 export type Verdict = "same" | "refines" | "contradicts" | "different";
@@ -254,7 +256,7 @@ export async function curateDraft(deps: CurateDeps, key: ScopeKey, draft: Lesson
   if (!z.array(LessonCitationSchema).max(6).safeParse(draft.citations).success || !LessonProvenanceSchema.safeParse(draft.provenance).success || !LessonScopeSchema.safeParse(draft.scope).success) return drop("invalid");
 
   // Every candidate is collected (no flat caps). It is counted against its sources; a spiking source is paused alone and its lessons are held, not dropped.
-  await noteCandidateSources(deps, deps.store, key, attributableSources(draft.provenance), deps.alerts);
+  if (deps.noSourceNote !== true) await noteCandidateSources(deps, deps.store, key, attributableSources(draft.provenance), deps.alerts);
 
   // The neighbours: the project's lessons whose scope overlaps, ranked by the fused matcher (keywords, paths and, where there is one, the embedder). It never fails: an embedder that is down or slow is keywords and paths.
   const sim = { embedder: deps.embedder, vectors: deps.vectors, log: deps.log, metrics: deps.metrics };

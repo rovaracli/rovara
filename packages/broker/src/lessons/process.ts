@@ -188,12 +188,16 @@ export async function settleLesson(deps: ProcessDeps, key: ScopeKey, lessonId: s
 
 export interface ProcessResult { outcome: CurateOutcome; lesson?: Lesson }
 
+/** What the curate step's answer tells the settle step (kept apart so a retry can settle without curating again: `draft-retry.ts`). */
+export function settleOptionsOf(outcome: CurateOutcome): SettleOptions {
+  return outcome.outcome === "contradiction" ? { contradiction: true } : outcome.outcome === "added" || outcome.outcome === "updated" || outcome.outcome === "possible_duplicate" ? { judgeEscalate: outcome.judgeEscalate } : {};
+}
+
 /** Curates one reflector draft and settles the resulting lesson. */
 export async function processDraft(deps: ProcessDeps, key: ScopeKey, draft: LessonDraft): Promise<ProcessResult> {
   const outcome = await curateDraft(deps, key, draft);
   if (outcome.outcome === "dropped") return { outcome };
-  const options: SettleOptions = outcome.outcome === "contradiction" ? { contradiction: true } : outcome.outcome === "added" || outcome.outcome === "updated" || outcome.outcome === "possible_duplicate" ? { judgeEscalate: outcome.judgeEscalate } : {};
-  const lesson = await settleLesson(deps, key, outcome.lesson.id, options);
+  const lesson = await settleLesson(deps, key, outcome.lesson.id, settleOptionsOf(outcome));
   return lesson === undefined ? { outcome } : { outcome, lesson };
 }
 

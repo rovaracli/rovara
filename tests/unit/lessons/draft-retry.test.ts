@@ -6,7 +6,7 @@ import { withLearningAttempt } from "../../../packages/broker/src/lessons/learni
 import { InMemoryLessonStore } from "../../../packages/broker/src/lessons/store.js";
 import type { ProcessDeps } from "../../../packages/broker/src/lessons/process.js";
 import type { LessonDraft } from "../../../packages/broker/src/lessons/reflect.js";
-import { Alerts, Audit, Clock, KEY, MemoryVectors, ScriptedModel, Spend, closeEmbedder, draft, facts, settings, verifier } from "./lesson-helpers.js";
+import { Alerts, Audit, Clock, KEY, MemoryVectors, ScriptedModel, Spend, allowAllAccess, closeEmbedder, directory, draft, embedder, facts, settings, verifier } from "./lesson-helpers.js";
 
 const throttled = (): Error => Object.assign(new Error("secret table text"), { name: "ThrottlingException" });
 const text = (title: string, body: string): LessonDraft => draft({ title, description: "", body });
@@ -115,5 +115,78 @@ describe("processDraftRetrying", () => {
     expect(second.outcome.outcome).toBe("added");
     expect(model.calls).toHaveLength(1);
     expect(model.calls[0]).toMatchObject({ purpose: "judge" });
+  });
+});
+
+describe("LP-13 C3 side effects: a retry does not repeat what the failed try already did", () => {
+  const STANDARD = settings({ preset: "standard" });
+  /** A member's own correction, which goes live on trial with no approval (trial.test.ts). */
+  const memberDraft = (): LessonDraft => draft({ provenance: { ...draft().provenance, sourceKinds: ["send_back"], memberCorrection: true, claimsSupported: true, fromSharedTask: true } });
+  function trialSetup() {
+    const store = new InMemoryLessonStore();
+    const audit = new Audit();
+    const clock = new Clock();
+    let n = 0;
+    const sourceEvents: string[] = [];
+    const realRecord = store.recordSourceEvent.bind(store);
+    store.recordSourceEvent = async (...args: Parameters<typeof realRecord>) => { sourceEvents.push(String(args[1].source)); return realRecord(...args); };
+    const deps = {
+      store, embedder, vectors: new MemoryVectors(), judgeModel: new ScriptedModel(), spend: new Spend(), audit, alerts: new Alerts(), now: clock.now,
+      verifier: verifier("valid"), facts: facts(), settings: STANDARD, newId: () => `les_${String(++n).padStart(4, "0")}`,
+      judge: { rate: async () => "unrelated" }, directory: directory({ eligibleIds: ["owner", "ann", "bob"] }), access: allowAllAccess,
+    } as unknown as ProcessDeps;
+    /** The Nth commit (1 = the add, 2 = the go-live) fails once with a passing fault, before anything is written. */
+    const failCommit = (nth: number): void => {
+      const real = store.commit.bind(store);
+      let calls = 0;
+      store.commit = async (...args: Parameters<typeof real>) => { calls += 1; if (calls === nth) throw throttled(); return real(...args); };
+    };
+    return { deps, store, audit, sourceEvents, failCommit };
+  }
+  const clean = async () => { const w = trialSetup(); const out = await processDraftRetrying(w.deps, KEY, memberDraft(), noWait); return { ...w, out }; };
+
+  it("positive control: without a fault the draft goes live on trial, with one go-live audit line and its source notes", async () => {
+    const w = await clean();
+    expect(w.out.lesson).toMatchObject({ status: "active", trial: { state: "trial" } });
+    expect(w.audit.actions().filter((action) => action === "lesson.trial_started")).toHaveLength(1);
+    expect(w.sourceEvents.length).toBeGreaterThan(0);
+  });
+
+  it("a fault at the go-live (the add already committed): the retry only settles, so the lesson is not merged into itself and no lesson.merged / second lesson.candidate_created line appears", async () => {
+    const control = await clean();
+    const w = trialSetup();
+    w.failCommit(2);
+    const out = await processDraftRetrying(w.deps, KEY, memberDraft(), noWait);
+    expect(out.lesson).toMatchObject({ status: "active", trial: { state: "trial" }, version: control.out.lesson!.version });
+    expect(await w.store.list(KEY)).toHaveLength(1);
+    expect(w.audit.actions()).not.toContain("lesson.merged");
+    expect(w.audit.actions().filter((action) => action === "lesson.candidate_created")).toHaveLength(1);
+  });
+
+  it("the go-live audit line (lesson.trial_started) is written once even when its commit had to be tried again after the line was written", async () => {
+    const w = trialSetup();
+    // commit 1 is the add, 2 the move to pending, 3 the go-live (written AFTER its audit line, which the settle step writes first)
+    w.failCommit(3);
+    await processDraftRetrying(w.deps, KEY, memberDraft(), noWait);
+    expect(w.audit.actions().filter((action) => action === "lesson.trial_started")).toHaveLength(1);
+    expect((await w.store.list(KEY))[0]).toMatchObject({ status: "active", trial: { state: "trial" } });
+  });
+
+  it("the project's volume counter and the sources' counts are noted once for one draft: a fault at the go-live does not note them again", async () => {
+    const control = await clean();
+    const w = trialSetup();
+    w.failCommit(2);
+    await processDraftRetrying(w.deps, KEY, memberDraft(), noWait);
+    expect(w.sourceEvents).toEqual(control.sourceEvents);
+  });
+
+  it("a fault in the curate step before anything was committed (the add itself failed): the retry curates again but does not note the sources again", async () => {
+    const control = await clean();
+    const w = trialSetup();
+    w.failCommit(1);
+    const out = await processDraftRetrying(w.deps, KEY, memberDraft(), noWait);
+    expect(out.lesson).toMatchObject({ status: "active" });
+    expect(w.sourceEvents).toEqual(control.sourceEvents);
+    expect(w.audit.actions().filter((action) => action === "lesson.candidate_created")).toHaveLength(1);
   });
 });
