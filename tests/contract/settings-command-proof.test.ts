@@ -831,3 +831,62 @@ describe("S4: the stop is one conditional write", () => {
     expect(t.db.find((item) => item.entityType === "OPERATION" && item.workspaceId === first.workspaceId).map((item) => item.status)).toEqual(["DISPATCHING"]);
   });
 });
+
+// UX4B-CMD-OPTS: changing ONE line of the command list leaves the other commands' own timeout and env alone (a line carries neither); the changed list still goes through proof exactly as before.
+describe("editing one command keeps the others' own timeout and env", () => {
+  const ONE = { ...command("make", ["one"], 111), env: { A: "1" } };
+  const TWO = { ...command("make", ["two"], 222), env: { B: "2" } };
+  const THREE = command("make", ["three"], 333);
+  /** Revision 1 holds three setup commands with options of their own (and the usual test command). */
+  const withThree = async () => {
+    const t = await setup();
+    const stored = t.db.get(projectRevisionKey(TEST_ORG, NAME, 1)) as { definition: Record<string, unknown> } & Record<string, unknown>;
+    t.db.set({ ...stored, definition: { ...stored.definition, setup: [ONE, TWO, THREE] } });
+    return t;
+  };
+  const defaults = (args: string[]) => command("make", args, 900);
+
+  it("a browser save of one changed line: the other two are stored exactly as they were, the changed one takes the defaults, and the saved commands are checked", async () => {
+    const t = await withThree();
+    const saved = await t.browserSave({ setupCommands: ["make one", "make two-changed", "make three"] });
+    expect(saved.status, JSON.stringify(saved.body)).toBe(200);
+    expect(t.latest().setup).toEqual([ONE, defaults(["two-changed"]), THREE]);
+    expect(t.candidates()).toHaveLength(1);
+    expect(t.candidates()[0]).toMatchObject({ revision: 2, setup: [ONE, defaults(["two-changed"]), THREE] });
+  });
+
+  it("a reorder and a deletion keep each command's own options, and are checked", async () => {
+    const t = await withThree();
+    expect((await t.browserSave({ setupCommands: ["make three", "make one", "make two"] })).status).toBe(200);
+    expect(t.latest().setup).toEqual([THREE, ONE, TWO]);
+    expect(t.candidates().at(-1)).toMatchObject({ revision: 2, setup: [THREE, ONE, TWO] });
+    expect((await t.browserSave({ setupCommands: ["make three", "make two"] })).status).toBe(200);
+    expect(t.latest().setup).toEqual([THREE, TWO]);
+    expect(t.candidates().at(-1)).toMatchObject({ revision: 3, setup: [THREE, TWO] });
+  });
+
+  it("a line never inherits another command's env, and an added line takes the defaults", async () => {
+    const t = await withThree();
+    await t.browserSave({ setupCommands: ["make one", "make one --more", "make two", "make three"] });
+    expect(t.latest().setup).toEqual([ONE, defaults(["one", "--more"]), TWO, THREE]);
+  });
+
+  it("an API key's change of one line is held with the other lines' options kept, nothing is written before its check passes, and what is written is the checked lists", async () => {
+    const t = await withThree();
+    const reply = await t.tokenSave({ setupCommands: ["make one", "make two", "make three-changed"] });
+    expect(reply.body.held).toMatchObject({ status: "checking", fields: ["setupCommands"] });
+    expect(t.latest()).toMatchObject({ revision: 1, setup: [ONE, TWO, THREE] });
+    const expected = [ONE, TWO, defaults(["three-changed"])];
+    expect(t.candidates()[0]).toMatchObject({ revision: 1, setup: expected });
+    await t.reportNewest("SUCCEEDED");
+    await t.view();
+    expect(t.latest()).toMatchObject({ revision: 2, setup: expected });
+  });
+
+  it("a save that resends the same lines changes nothing and starts no check", async () => {
+    const t = await withThree();
+    await t.browserSave({ setupCommands: ["make one", "make two", "make three"] });
+    expect(t.latest()).toMatchObject({ revision: 1, setup: [ONE, TWO, THREE] });
+    expect(t.candidates()).toHaveLength(0);
+  });
+});

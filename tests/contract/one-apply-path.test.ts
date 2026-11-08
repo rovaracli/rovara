@@ -18,7 +18,7 @@ const PROPOSAL = {
 interface Stored { definition: { revision: number; setup: Array<{ args: string[] }>; readiness: Array<{ args: string[] }> } }
 const settingsOf = (t: Bench) => (t.db.find((item) => item.entityType === "PROJECT") as unknown as Stored[]).sort((a, b) => a.definition.revision - b.definition.revision).at(-1)!.definition;
 const argsOf = (commands: ReadonlyArray<{ args: string[] }>) => commands.map((entry) => entry.args[0]);
-const candidates = (t: Bench) => t.db.find((item) => item.entityType === "TEST_ENV_CANDIDATE_CHECK") as unknown as Array<{ workspaceId: string; digest: string }>;
+const candidates = (t: Bench) => t.db.find((item) => item.entityType === "TEST_ENV_CANDIDATE_CHECK") as unknown as Array<{ workspaceId: string; digest: string; setup: unknown[]; readiness: unknown[] }>;
 const prepareOf = (t: Bench, workspaceId: string) => String((t.db.get(`WORKSPACE#${workspaceId}`, "META") as { activeOperationId: string }).activeOperationId);
 async function checkAndProve(t: Bench, digest: string): Promise<void> {
   const started = await t.dev(OMAR, "POST", `${ENV}/check`, { digest, requestId: randomUUID() });
@@ -289,6 +289,51 @@ describe("review R4 with the test environment off: a resent list keeps the store
       // Held: the settings are as they were until the check of exactly those commands passes.
       expect(settingsOf(t).revision).toBe(1);
       expect(t.db.find((item) => typeof item.sk === "string" && /HELD|SETTINGS_PROOF/u.test(item.sk)).length).toBeGreaterThan(0);
+    });
+  });
+});
+
+describe("UX4B-CMD-OPTS: with the test environment on, typing a change to one command keeps the others' own timeout and env", () => {
+  const stored = (executable: string, arg: string, timeoutSeconds: number, env?: Record<string, string>) => ({ cwd: "repo/web", executable, args: [arg], timeoutSeconds, ...(env === undefined ? {} : { env }) });
+  const ONE = stored("make", "one", 111, { A: "1" }), TWO = stored("make", "two", 222, { B: "2" }), THREE = stored("make", "three", 333);
+  const seedThree = (t: Bench) => {
+    const row = t.db.get(projectRevisionKey(TEST_ORG, NAME, 1)) as { definition: Record<string, unknown> } & Record<string, unknown>;
+    t.db.set({ ...row, definition: { ...row.definition, setup: [ONE, TWO, THREE] } });
+  };
+  const optionsOf = (commands: unknown) => JSON.stringify(commands);
+
+  it("edit one of three: the other two keep their options, the edited one takes the defaults, and nothing is written before the check, Prove and approval", async () => {
+    const t = await setupWizardBench({ autoCandidate: false });
+    seedThree(t);
+    await withSwitch("1", async () => {
+      const typed = await t.dev(OMAR, "POST", `${BASE}/typed`, { requestId: randomUUID(), expectedRevision: 1, setupCommands: ["make one", "make two-changed", "make three"], testCommands: ["make smoke"] });
+      expect(typed.status, JSON.stringify(typed.body)).toBe(200);
+      // Proposed only: the stored commands are untouched until the approval.
+      expect(optionsOf(settingsOf(t).setup)).toBe(optionsOf([ONE, TWO, THREE]));
+      const digest = typed.body.proposalDigest as string;
+      // The approval without a passing Prove writes nothing.
+      const early = await t.dev(OMAR, "POST", `${ENV}/approve`, { digest, expectedRevision: 0 });
+      expect(early.status).not.toBe(200);
+      expect(settingsOf(t).revision).toBe(1);
+      await checkAndProve(t, digest);
+      // The check ran exactly the lists that will be written.
+      expect(candidates(t).at(-1)).toMatchObject({ digest, setup: [ONE, stored("make", "two-changed", 900), THREE] });
+      const approved = await t.dev(OMAR, "POST", `${ENV}/approve`, { digest, expectedRevision: 0 });
+      expect(approved.status, JSON.stringify(approved.body)).toBe(200);
+      expect(optionsOf(settingsOf(t).setup)).toBe(optionsOf([ONE, stored("make", "two-changed", 900), THREE]));
+    });
+  });
+
+  it("reorder and delete keep each command's own options", async () => {
+    const t = await setupWizardBench({ autoCandidate: false });
+    seedThree(t);
+    await withSwitch("1", async () => {
+      await typedApproved(t, ["make three", "make one", "make two"], ["make smoke"]);
+      expect(candidates(t).at(-1)!.setup).toEqual([THREE, ONE, TWO]);
+      expect(optionsOf(settingsOf(t).setup)).toBe(optionsOf([THREE, ONE, TWO]));
+      await typedApproved(t, ["make three", "make two"], ["make smoke"]);
+      expect(candidates(t).at(-1)!.setup).toEqual([THREE, TWO]);
+      expect(optionsOf(settingsOf(t).setup)).toBe(optionsOf([THREE, TWO]));
     });
   });
 });

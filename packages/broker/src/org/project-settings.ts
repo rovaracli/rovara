@@ -21,6 +21,7 @@ import {
   canonicalJson,
   githubInstallationKey,
   githubNotConnectedMessage,
+  keepStoredOptions,
   orgPk,
   parseCommandLine,
   projectAllows,
@@ -92,18 +93,18 @@ const withoutCode = (error: AgentXError) => error.message.replace(new RegExp(`^$
 const invalid = (message: string) => agentXError("CONFIG_INVALID", message);
 
 /**
- * The commands a settings save stores for a list of command lines: each parsed to one program in the project's first repository's directory, with the list's own timeout and no env. The save uses this and
+ * The commands a settings save stores for a list of command lines: each parsed to one program in the project's first repository's directory, with the list's own timeout and no env (a line that is one of the `stored` commands is that command, with its own timeout, env and directory). The save uses this and
  * so does the check of a setup draft's commands (rovara-code/setup-draft-check.ts), so what is checked is exactly what is stored.
  */
-export function settingsCommands(field: "setupCommands" | "testCommands", lines: readonly string[], cwd: string, timeoutSeconds: number): ProjectCommand[] {
-  return lines.map((line, index) => {
+export function settingsCommands(field: "setupCommands" | "testCommands", lines: readonly string[], cwd: string, timeoutSeconds: number, stored: readonly ProjectCommand[] = []): ProjectCommand[] {
+  return keepStoredOptions(lines.map((line, index) => {
     try {
       return parseCommandLine(line, cwd, timeoutSeconds);
     } catch (error) {
       if (error instanceof AgentXError) throw invalid(`${field}.${String(index)}: ${withoutCode(error)}`);
       throw error;
     }
-  });
+  }), stored);
 }
 
 /** What a project's repository is called to a person: GitHub's `owner/name`, from its URL. */
@@ -336,8 +337,10 @@ export async function updateProjectSettings<Caller extends ProjectSettingsCaller
   }
   // Commands run in the project's first repository, the way the one repository of a created project is.
   const cwd = repositories[0]!.path;
-  if (body.setupCommands !== undefined) next.setup = settingsCommands("setupCommands", body.setupCommands, cwd, SETUP_TIMEOUT);
-  if (body.testCommands !== undefined) next.readiness = settingsCommands("testCommands", body.testCommands, cwd, TEST_TIMEOUT);
+  // A line that is one of the stored commands keeps its own timeout, env and directory; any other line takes the list's defaults. With repositories changing in the same save the commands may be re-anchored, so none is kept.
+  const keptCommands = body.addRepositories !== undefined || body.removeRepositories !== undefined ? { setup: [], readiness: [] } : { setup: current.setup, readiness: current.readiness };
+  if (body.setupCommands !== undefined) next.setup = settingsCommands("setupCommands", body.setupCommands, cwd, SETUP_TIMEOUT, keptCommands.setup);
+  if (body.testCommands !== undefined) next.readiness = settingsCommands("testCommands", body.testCommands, cwd, TEST_TIMEOUT, keptCommands.readiness);
   // A command the save keeps still runs where it did; one whose repository is removed would run in a directory that is gone.
   for (const [index, entry] of (body.removeRepositories ?? []).entries()) {
     const path = resolveRepository(current.repositories, entry)!.path;
