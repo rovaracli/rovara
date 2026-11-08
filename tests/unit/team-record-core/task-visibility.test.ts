@@ -115,6 +115,50 @@ describe("a task's visibility for the record", () => {
     expect(await resolveTaskVisibility(failing, ORG_A, t.taskId)).toEqual({ kind: "private", ownerDeveloperId: PRIYA });
   });
 
+  // SRL-4: a READ of the record is strict. Writing falls back to "the owner's alone" (never wider than the truth); reading with nothing known shows nothing, not even to the owner.
+  describe("strict (reading the record)", () => {
+    const strict = (table: Parameters<typeof resolveTaskVisibility>[0], orgId: string, taskId: string) => resolveTaskVisibility(table, orgId, taskId, { strict: true });
+
+    it("answers exactly as the default does when everything can be read", async () => {
+      const t = setup({ people: [{ developerId: MIA, role: "viewer" }] });
+      t.w.seedShare(ORG_A, t.sessionId, { kind: "member", developerId: ARJUN }, "use");
+      const table = { documentClient: t.w.db, tableName: "state", now: () => 0 };
+      expect(await strict(table, ORG_A, t.taskId)).toEqual(await resolveTaskVisibility(table, ORG_A, t.taskId));
+      const plain = setup();
+      expect(await strict({ documentClient: plain.w.db, tableName: "state", now: () => 0 }, ORG_A, plain.taskId)).toEqual({ kind: "private", ownerDeveloperId: PRIYA });
+    });
+
+    it("throws for an unreadable People list, a share list that fails, a garbled session and a task read that fails", async () => {
+      const people = setup({ people: [] });
+      people.w.db.set({ pk: `DEVTASK#${people.taskId}`, sk: "PEOPLE", schemaVersion: 7, people: "garbled" });
+      await expect(strict({ documentClient: people.w.db, tableName: "state", now: () => 0 }, ORG_A, people.taskId)).rejects.toThrow();
+
+      const shares = setup();
+      shares.w.seedShare(ORG_A, shares.sessionId, { kind: "org" }, "view");
+      const failing = { documentClient: { send: async (command: unknown) => { if (JSON.stringify((command as { input?: unknown }).input).includes("SHARE#")) throw new Error("down"); return shares.w.db.send(command as never); } }, tableName: "state", now: () => 0 };
+      await expect(strict(failing, ORG_A, shares.taskId)).rejects.toThrow();
+
+      const garbled = setup();
+      garbled.w.db.set({ ...agentSessionKey(ORG_A, garbled.sessionId, "META"), orgId: ORG_A, sessionId: garbled.sessionId, nonsense: true });
+      garbled.w.seedShare(ORG_A, garbled.sessionId, { kind: "org" }, "view");
+      await expect(strict({ documentClient: garbled.w.db, tableName: "state", now: () => 0 }, ORG_A, garbled.taskId)).rejects.toThrow();
+
+      const down = { documentClient: { send: async () => { throw new Error("down"); } }, tableName: "state", now: () => 0 };
+      await expect(strict(down, ORG_A, garbled.taskId)).rejects.toThrow();
+    });
+
+    it("is still undefined for a task that is missing or another company's, and the owner's alone for a task with no session at all", async () => {
+      const t = setup();
+      const table = { documentClient: t.w.db, tableName: "state", now: () => 0 };
+      expect(await strict(table, ORG_B, t.taskId)).toBeUndefined();
+      expect(await strict(table, ORG_A, "00000000-0000-4000-8000-000000000000")).toBeUndefined();
+      const record = t.w.db.get(taskKey(t.taskId).pk, taskKey(t.taskId).sk) as Record<string, unknown>;
+      const { sessionId: _gone, ...without } = record; // eslint-disable-line @typescript-eslint/no-unused-vars
+      t.w.db.set(without);
+      expect(await strict(table, ORG_A, t.taskId)).toEqual({ kind: "private", ownerDeveloperId: PRIYA });
+    });
+  });
+
   it("nothing is recorded for a task that is missing, another org's, or has no readable owner", async () => {
     const t = setup();
     expect(await t.visibility(ORG_B)).toBeUndefined();
