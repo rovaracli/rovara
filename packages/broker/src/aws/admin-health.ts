@@ -4,7 +4,7 @@
 import { ADMIN_API_VERSION, DEVELOPER_API_VERSION, MISSING_ALARM_STATE, type AdminHealthCheck, type OrgId, type AdminHealthResponse, type SlackAuthCheckResponse } from "@agentx/contracts";
 import type { AuthenticatedIdentity } from "../auth.js";
 import { requireOrgId } from "../org/resolve.js";
-import { opsFailuresCheck } from "../team-record/ops-failures.js";
+import { opsFailuresCheck, type OpsFailures } from "../team-record/ops-failures.js";
 import { adminProjects, projectWorkspaceRows, readFailures, type AdminReadDependencies } from "./admin-reads.js";
 
 /** Function-valued fields, not methods, so a probe can be called on its own (no `this`). */
@@ -15,7 +15,7 @@ export interface AdminHealthProbes {
   slackAuthCheck?: () => Promise<SlackAuthCheckResponse>;
   githubInstallations?: () => Promise<number>;
   /** SRL-6: the company's erase and source-delete failures of the last 24 hours. Absent where the team record is off, and the answer then has no such check. */
-  teamRecordFailures?: (orgId: OrgId) => Promise<{ eraseSweep: number; tombstone: number; lastAt?: string }>;
+  teamRecordFailures?: (orgId: OrgId) => Promise<OpsFailures>;
   timeoutMs?: number;
 }
 

@@ -88,9 +88,9 @@ describe("ensureGithubWebhook", () => {
     const outcome = await ensureGithubWebhook({
       appJwt: "jwt", api: fakeGitHubApi({ hookUrl: URL, events: ["pull_request", "issue_comment"] }), secrets, secretValue: valueOf(secrets), secretId: SECRET_ID, webhookUrl: URL,
     });
-    expect(outcome.missingEvents).toEqual(["pull_request_review", "pull_request_review_comment", "deployment_status", "workflow_run", "issues", "check_suite", "check_run", "status", "push"]);
+    expect(outcome.missingEvents).toEqual(["pull_request_review", "pull_request_review_comment", "deployment_status", "workflow_run", "issues", "check_suite", "check_run", "status", "push", "repository"]);
     expect(outcome.settingsUrl).toBe("https://github.com/organizations/acme/settings/apps/agentx-acme-staging/permissions");
-    expect(missingEventsLine(outcome)).toBe(`GitHub webhook: tick these events on ${outcome.settingsUrl}: pull_request_review, pull_request_review_comment, deployment_status, workflow_run, issues, check_suite, check_run, status, push`);
+    expect(missingEventsLine(outcome)).toBe(`GitHub webhook: tick these events on ${outcome.settingsUrl}: pull_request_review, pull_request_review_comment, deployment_status, workflow_run, issues, check_suite, check_run, status, push, repository`);
     const user = await ensureGithubWebhook({ appJwt: "jwt", api: fakeGitHubApi({ hookUrl: URL, ownerType: "User" }), secrets, secretValue: valueOf(secrets), secretId: SECRET_ID, webhookUrl: URL });
     expect(user.settingsUrl).toBe("https://github.com/settings/apps/agentx-acme-staging/permissions");
     expect(missingEventsLine(user)).toBeUndefined();
@@ -128,8 +128,8 @@ describe("ensureGithubWebhook", () => {
     expect((failure as { cause?: unknown }).cause).toBeUndefined();
   });
 
-  it("names the eleven events the broker accepts", () => {
-    expect([...GITHUB_WEBHOOK_EVENTS]).toEqual(["pull_request", "pull_request_review", "pull_request_review_comment", "issue_comment", "deployment_status", "workflow_run", "issues", "check_suite", "check_run", "status", "push"]);
+  it("names the twelve events the broker accepts", () => {
+    expect([...GITHUB_WEBHOOK_EVENTS]).toEqual(["pull_request", "pull_request_review", "pull_request_review_comment", "issue_comment", "deployment_status", "workflow_run", "issues", "check_suite", "check_run", "status", "push", "repository"]);
   });
 
   it("refuses a secret that is not JSON without echoing it", async () => {

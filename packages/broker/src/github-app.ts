@@ -264,6 +264,8 @@ export interface GitHubWebhookRepositoryScope {
 export interface GitHubRepositoryIdentity { repositoryId: number; fullName: string; defaultBranch?: string }
 
 const INSTALLATION_REPOSITORY_PAGES = 10;
+/** The longest one call to the App's webhook delivery API may take, and the caller's own deadline too when it gives one. */
+const webhookCallSignal = (deadline?: AbortSignal): AbortSignal => deadline === undefined ? AbortSignal.timeout(8_000) : AbortSignal.any([AbortSignal.timeout(8_000), deadline]);
 
 /** One repository an installation can reach, as GitHub lists it. */
 export interface GitHubInstallationRepository { fullName: string; githubRepositoryId: number; private: boolean; defaultBranch: string }
@@ -327,6 +329,17 @@ interface InstalledRepository {
  * lifetime. There is no account allowlist: only administrators register repositories, and an
  * installation's token reaches only that installation's repositories.
  */
+/** One attempt in the App's webhook delivery history (SRL-5a). `statusCode` is what the broker answered; 0 for a timeout or a refused connection. */
+export interface GitHubWebhookDelivery {
+  id: number;
+  guid: string;
+  deliveredAt: string;
+  redelivery: boolean;
+  event: string;
+  action: string | null;
+  statusCode: number;
+}
+
 export class GitHubAppCredentialProvider {
   private readonly fetchImplementation: typeof fetch;
   private readonly now: () => number;
@@ -2067,10 +2080,14 @@ export class GitHubAppCredentialProvider {
     if (!Number.isSafeInteger(installationId) || installationId < 1) throw agentXError("CONFIG_INVALID", "GitHub installation id must be a positive integer");
     if ("orgId" in scope && this.options.requireInstallationBound !== undefined) await this.options.requireInstallationBound(scope.orgId, installationId);
     const token = await this.mintInstallationToken(installationId, { metadata: "read" });
+    return this.readInstallationRepositories(token);
+  }
+
+  private async readInstallationRepositories(token: string, signal?: AbortSignal): Promise<GitHubInstallationRepository[]> {
     const repositories: GitHubInstallationRepository[] = [];
     for (let page = 1; page <= INSTALLATION_REPOSITORY_PAGES; page += 1) {
       const response = await this.fetchImplementation(`https://api.github.com/installation/repositories?per_page=100&page=${page}`, {
-        headers: githubHeaders(token), signal: AbortSignal.timeout(8_000), redirect: "error",
+        headers: githubHeaders(token), signal: webhookCallSignal(signal), redirect: "error",
       });
       if (!response.ok) throw agentXError("RUNTIME_UNAVAILABLE", `GitHub's repository listing failed with HTTP ${response.status}`);
       const body: unknown = await response.json();
@@ -2097,6 +2114,71 @@ export class GitHubAppCredentialProvider {
     const body: unknown = await response.json();
     if (!Array.isArray(body)) throw agentXError("RUNTIME_UNAVAILABLE", "GitHub returned an invalid installations response");
     return body.length;
+  }
+
+  /**
+   * SRL-5a: one page of the App's webhook deliveries, newest first (`GET /app/hook/deliveries`, App JWT only). `cursor` is the opaque value of the previous page's `Link: rel="next"`.
+   * An entry GitHub states badly is left out (the sweep never acts on what it cannot read). Throws when GitHub did not answer the list.
+   */
+  async listWebhookDeliveries(input: { cursor?: string; perPage: number; signal?: AbortSignal }): Promise<{ entries: GitHubWebhookDelivery[]; next?: string }> {
+    const query = new URLSearchParams({ per_page: String(Math.min(Math.max(1, Math.trunc(input.perPage)), 100)) });
+    if (input.cursor !== undefined) query.set("cursor", input.cursor);
+    const response = await this.fetchImplementation(`https://api.github.com/app/hook/deliveries?${query.toString()}`, {
+      headers: await this.appHeaders(), signal: webhookCallSignal(input.signal), redirect: "error",
+    });
+    if (!response.ok) throw agentXError("RUNTIME_UNAVAILABLE", `GitHub's webhook delivery list failed with HTTP ${response.status}`);
+    const body: unknown = await response.json();
+    if (!Array.isArray(body)) throw agentXError("RUNTIME_UNAVAILABLE", "GitHub returned an invalid webhook delivery list");
+    const entries: GitHubWebhookDelivery[] = [];
+    for (const item of body) {
+      const record = item !== null && typeof item === "object" ? item as Record<string, unknown> : {};
+      if (!Number.isSafeInteger(record.id) || typeof record.guid !== "string" || typeof record.delivered_at !== "string" || Number.isNaN(Date.parse(record.delivered_at))
+        || typeof record.event !== "string" || !Number.isSafeInteger(record.status_code)) continue;
+      entries.push({
+        id: record.id as number, guid: record.guid, deliveredAt: new Date(record.delivered_at).toISOString(), redelivery: record.redelivery === true,
+        event: record.event, action: typeof record.action === "string" ? record.action : null, statusCode: record.status_code as number,
+      });
+    }
+    const next = /<[^>]*[?&]cursor=([^&>]+)[^>]*>;\s*rel="next"/u.exec(response.headers.get("link") ?? "")?.[1];
+    return { entries, ...(next === undefined ? {} : { next: decodeURIComponent(next) }) };
+  }
+
+  /**
+   * SRL-5a: asks GitHub to deliver one delivery again (`POST /app/hook/deliveries/{id}/attempts`): `requested` on 202, `gone` only on 404 (GitHub no longer has it). Everything else THROWS, 422 included:
+   * GitHub documents 422 as "validation failed, or the endpoint has been spammed", so it can mean "slow down", never "this delivery is gone".
+   */
+  async redeliverWebhookDelivery(deliveryId: number, signal?: AbortSignal): Promise<"requested" | "gone"> {
+    if (!Number.isSafeInteger(deliveryId) || deliveryId < 1) throw agentXError("CONFIG_INVALID", "GitHub webhook delivery id must be a positive integer");
+    const response = await this.fetchImplementation(`https://api.github.com/app/hook/deliveries/${deliveryId}/attempts`, {
+      method: "POST", headers: await this.appHeaders(), signal: webhookCallSignal(signal), redirect: "error",
+    });
+    if (response.status === 202) return "requested";
+    if (response.status === 404) return "gone";
+    throw agentXError("RUNTIME_UNAVAILABLE", `GitHub's webhook redelivery failed with HTTP ${response.status}`);
+  }
+
+  /**
+   * SRL-5a: one installation as the repository check needs it: the ids of every repository it reaches and whether that list is certainly complete (a list that filled all its pages may have more),
+   * and a lookup of one repository by id (`GET /repositories/{id}`): `exists` on 200, `missing` on 404, a throw on anything else (a refusal, a rate limit, a server error, a redirect). 404 does not say
+   * deleted, transferred or no longer shared with the installation: the caller treats all three as "not held". ONE installation token is minted for the list and every lookup, and `signal` ends every call
+   * (with the provider's own timeout) at the caller's deadline. The cloud binding check runs once, before the mint.
+   */
+  async installationRepositoryView(installationId: number, scope: GitHubTokenScope, signal?: AbortSignal): Promise<{ ids: number[]; complete: boolean; status(repositoryId: number, signal?: AbortSignal): Promise<"exists" | "missing"> }> {
+    if (!Number.isSafeInteger(installationId) || installationId < 1) throw agentXError("CONFIG_INVALID", "GitHub installation id must be a positive integer");
+    if ("orgId" in scope && this.options.requireInstallationBound !== undefined) await this.options.requireInstallationBound(scope.orgId, installationId);
+    const token = await this.mintInstallationToken(installationId, { metadata: "read" }, signal);
+    const repositories = await this.readInstallationRepositories(token, signal);
+    return {
+      ids: repositories.map((repository) => repository.githubRepositoryId),
+      complete: repositories.length < INSTALLATION_REPOSITORY_PAGES * 100,
+      status: async (repositoryId, lookupSignal) => {
+        if (!Number.isSafeInteger(repositoryId) || repositoryId < 1) throw agentXError("CONFIG_INVALID", "GitHub repository id must be a positive integer");
+        const response = await this.fetchImplementation(`https://api.github.com/repositories/${repositoryId}`, { headers: githubHeaders(token), signal: webhookCallSignal(lookupSignal ?? signal), redirect: "error" });
+        if (response.status === 200) return "exists";
+        if (response.status === 404) return "missing";
+        throw agentXError("RUNTIME_UNAVAILABLE", `GitHub's repository lookup failed with HTTP ${response.status}`);
+      },
+    };
   }
 
   private async appHeaders(): Promise<Record<string, string>> {
@@ -2155,9 +2237,9 @@ export class GitHubAppCredentialProvider {
   }
 
   /** `POST /app/installations/{id}/access_tokens` with the App's JWT; the caller reads the status. */
-  private async postInstallationToken(installationId: number, body: { permissions: Record<string, "read" | "write">; repositories?: string[] }): Promise<Response> {
+  private async postInstallationToken(installationId: number, body: { permissions: Record<string, "read" | "write">; repositories?: string[] }, signal?: AbortSignal): Promise<Response> {
     return this.fetchImplementation(`https://api.github.com/app/installations/${installationId}/access_tokens`, {
-      method: "POST", headers: await this.appHeaders(), body: JSON.stringify(body), signal: AbortSignal.timeout(5_000), redirect: "error",
+      method: "POST", headers: await this.appHeaders(), body: JSON.stringify(body), signal: signal === undefined ? AbortSignal.timeout(5_000) : AbortSignal.any([AbortSignal.timeout(5_000), signal]), redirect: "error",
     });
   }
 
@@ -2179,8 +2261,8 @@ export class GitHubAppCredentialProvider {
   }
 
   /** A token for a whole installation (no repository list), for the reads that name no one repository. */
-  private async mintInstallationToken(installationId: number, permissions: Record<string, "read" | "write">): Promise<string> {
-    return this.tokenOf(await this.postInstallationToken(installationId, { permissions }));
+  private async mintInstallationToken(installationId: number, permissions: Record<string, "read" | "write">, signal?: AbortSignal): Promise<string> {
+    return this.tokenOf(await this.postInstallationToken(installationId, { permissions }, signal));
   }
 
   private async findOpenPullRequest(

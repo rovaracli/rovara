@@ -2,7 +2,7 @@
 export * from "./ports.js";
 export { cleanText, permalink, TEXT_MAX_BYTES } from "./common.js";
 export * from "./codehost.js";
-export { createGithubRecordTap, createGithubDiffReader, githubEventsOf, type GithubGetJson, type GithubRecordTapDependencies } from "./github.js";
+export { createGithubRecordTap, createGithubDiffReader, githubEventsOf, isRecordRemovalDelivery, RECORD_REMOVAL_DELIVERIES, type GithubGetJson, type GithubRecordTapDependencies } from "./github.js";
 export * from "./rovara.js";
 export * from "./slack.js";
 export * from "./tickets.js";

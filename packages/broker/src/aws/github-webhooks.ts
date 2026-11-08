@@ -1115,8 +1115,9 @@ export async function handleGithubWebhook(input: Parameters<typeof handleVerifie
   try {
     outcome = await handleVerifiedGithubWebhook({ ...input, recordTap: watched }, signals);
   } catch (error) {
-    // A delivery the other paths left unanswered (ignored) is retryable when the delete was lost; any other failure keeps its own answer.
-    if (signals.removalLost && error instanceof GithubWebhookIgnorable) throw new GithubWebhookRetryableError("the record could not take the delete");
+    // A delete the record lost is retryable whatever else went wrong with the delivery (an ignored event, a refusal, a conflict, an unexpected error): the answer must be one GitHub's history
+    // shows as a failure, or the delete is never asked for again. Any other failure keeps its own answer.
+    if (signals.removalLost) throw new GithubWebhookRetryableError("the record could not take the delete");
     throw error;
   }
   if (signals.removalLost) throw new GithubWebhookRetryableError("the record could not take the delete");

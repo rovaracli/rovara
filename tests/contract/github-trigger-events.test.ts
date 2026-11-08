@@ -563,7 +563,7 @@ describe("the GitHub App asks for what the events need", () => {
       // Meta repo lane A: a meta repo's config file changes by a push, which needs no permission beyond the contents read the App already has.
       expect(found.default_events, String(cloud)).toContain("push");
     }
-    expect([...GITHUB_WEBHOOK_EVENTS]).toEqual(["pull_request", "pull_request_review", "pull_request_review_comment", "issue_comment", "deployment_status", "workflow_run", "issues", "check_suite", "check_run", "status", "push"]);
+    expect([...GITHUB_WEBHOOK_EVENTS]).toEqual(["pull_request", "pull_request_review", "pull_request_review_comment", "issue_comment", "deployment_status", "workflow_run", "issues", "check_suite", "check_run", "status", "push", "repository"]);
   });
 
   it("makes agentx doctor name the events and permissions an older App lacks, and say nothing of a permission GitHub did not report", async () => {
