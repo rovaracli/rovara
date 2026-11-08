@@ -6,7 +6,8 @@
 import { taskStatusOf } from "../agent-sessions/task-status.js";
 import { decisionCardsEnabled } from "../proof/switch.js";
 import { decisionCardUrl, sessionPageUrl } from "../decisions/open-path.js";
-import { PER_TASK_BUDGET_USD, SessionIdSchema, runLimitRaises, taskStatusText } from "@agentx/contracts";
+import { SessionIdSchema, taskStatusText } from "@agentx/contracts";
+import { planRunLimitChange, planRunLimitChangeLive, waitsOnCodingPlan } from "../spend/run-limit-change.js";
 import { chatGptFallbackText } from "../chatgpt/fallback-notice.js";
 import { developerIdForSlackUser } from "./admin-actions.js";
 import { createHash } from "node:crypto";
@@ -1015,18 +1016,21 @@ export function designCardUrlFor(reviewUrlBase: string | undefined, task: Pick<D
 }
 
 /**
- * Slice 2 (review fix): whether a coding plan's message offers "Open in Rovara" in place of Approve because approving raises the run limit (measured as the decision does: the plan's limit, lowered to
- * what the start asked for, against the task's limit or the per-task default); a raise is taken only with the limit acknowledged, which Slack cannot show. The link is the plan review page: this Lambda
- * cannot read the decision-cards switch, and that page exists either way (its approval acknowledges the limit), so Slack never points to a card that is not there and never offers an Approve the
- * decision refuses. A medium or high plan pressed from Slack is refused by the decision with the words and the card's link. Undefined: Approve stays (not the coding plan, no estimate on the record:
- * with none the plan carried no limit to show, or no page to link).
+ * 0.5.11 (QA6-12b; this replaces slice 2's `planOpenFor`, which put "Open in Rovara" in place of Approve because Slack could not show the limit): whether approving the coding plan raises the run limit, and
+ * from what to what, measured as the decision does (`planRunLimitChange`). The message says "This raises the run limit from $A to $B", and its Approve button carries the new limit, which the decision checks again.
+ * Undefined: not the coding plan, or the record carries no estimate (no limit to show; the decision refuses a raise sent without the amount, with the words).
  */
-export function planOpenFor(task: Pick<DeveloperTaskRecord, "budgetUsd" | "runEstimate" | "requestedRunLimitUsd">, workflow: Pick<WorkflowSnapshot, "path" | "reviewPhase">, page: string | undefined): { url: string; why: "run_limit" } | undefined {
-  if (page === undefined || (workflow.path === "FULL" && (workflow.reviewPhase === "REQUIREMENTS" || workflow.reviewPhase === "DESIGN"))) return undefined;
-  const estimate = task.runEstimate;
-  if (estimate === undefined) return undefined;
-  const proposedUsd = task.requestedRunLimitUsd === undefined ? estimate.runLimitUsd : Math.min(estimate.runLimitUsd, task.requestedRunLimitUsd);
-  return runLimitRaises(task.budgetUsd ?? PER_TASK_BUDGET_USD, proposedUsd) ? { url: page, why: "run_limit" } : undefined;
+export function runLimitRaiseFor(task: Pick<DeveloperTaskRecord, "budgetUsd" | "runEstimate" | "requestedRunLimitUsd">, workflow: Pick<WorkflowSnapshot, "path" | "reviewPhase" | "stage" | "state">): { currentUsd: number; proposedUsd: number } | undefined {
+  if (!waitsOnCodingPlan(workflow)) return undefined;
+  const change = planRunLimitChange(task);
+  return change?.raises === true ? { currentUsd: change.currentUsd, proposedUsd: change.proposedUsd } : undefined;
+}
+
+/** `runLimitRaiseFor`, and for a record with no stored estimate the limit the decision will work out (`planRunLimit`), so the Approve button carries the amount. A read that fails shows no raise (the press is then refused with a link). */
+export async function runLimitRaiseLive(deps: Pick<NotifierDependencies, "documentClient" | "tableName" | "now">, task: DeveloperTaskRecord, workflow: Pick<WorkflowSnapshot, "path" | "reviewPhase" | "stage" | "state">): Promise<{ currentUsd: number; proposedUsd: number } | undefined> {
+  if (!waitsOnCodingPlan(workflow)) return undefined;
+  const change = await planRunLimitChangeLive({ documentClient: deps.documentClient, tableName: deps.tableName, now: deps.now }, task, true);
+  return change?.raises === true ? { currentUsd: change.currentUsd, proposedUsd: change.proposedUsd } : undefined;
 }
 
 async function workflowReply(deps: NotifierDependencies, task: DeveloperTaskRecord & { share: TaskShare }, workflow: WorkflowSnapshot, reopenedPullRequests?: ReadonlyArray<{ repositoryId: string; number: number }>): Promise<Reply | undefined> {
@@ -1059,8 +1063,8 @@ async function workflowReply(deps: NotifierDependencies, task: DeveloperTaskReco
     }
     const card = designCardUrlFor(deps.reviewUrlBase, task, workflow, page);
     if (card !== undefined) context.designCardUrl = card;
-    const planOpen = planOpenFor(task, workflow, page);
-    if (planOpen !== undefined) context.planOpen = planOpen;
+    const raise = await runLimitRaiseLive(deps, task, workflow);
+    if (raise !== undefined) context.runLimitRaise = raise;
   } else if (workflow.state === "BLOCKED" || (workflow.stage === "WAIT_FOR_MERGE" && workflow.state === "WAITING")) {
     // Replies that came in after the plan and that no step has taken: said, with where to read them.
     context.newReplies = await newThreadReplies(deps, task);

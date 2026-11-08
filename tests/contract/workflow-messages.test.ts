@@ -891,17 +891,34 @@ describe("decision journey slice 1: a design under review links to its card, nev
   });
 });
 
-describe("decision journey slice 2: a coding plan that raises the run limit links to its card, never an Approve the server refuses", () => {
-  const cardUrl = "https://cell.example/app/sessions/ses_aaaaaaaaaaaaaaaaaaaa?decision=approve_plan%3A" + taskId;
-  it("offers Open in Rovara to the plan's card, says why, and keeps Request changes and Close", () => {
-    const shown = workflowMessage({ taskId, workflow: snapshot("PLAN_REVIEW", "WAITING"), structured: { claims: ["A claim."], claimCount: 1, decisionCount: 0, tiny: false }, planOpen: { url: cardUrl, why: "run_limit" } })!;
-    const elements = (shown.blocks.find((block) => block.type === "actions") as { elements: Array<Record<string, unknown>> }).elements;
-    expect(elements.find((element) => element["action_id"] === "agentx_open_decision")).toMatchObject({ text: { text: "Open in Rovara" }, url: cardUrl });
-    expect(elements.map((element) => element["action_id"])).not.toContain("agentx_workflow_approve");
-    expect(shown.text).toContain("raises the run limit");
+describe("QA6-12b: a coding plan that raises the run limit says so in the owner's words and its Approve button carries the amount (this replaces slice 2's Open in Rovara in place of Approve)", () => {
+  const approveOf = (shown: NonNullable<ReturnType<typeof workflowMessage>>) => buttonsOf(shown.blocks).find((button) => button.action_id === "agentx_workflow_approve")!;
+  it("shows 'This raises the run limit from $A to $B', keeps Approve with the new limit in its label and in its value, and keeps Request changes and Close", () => {
+    const shown = workflowMessage({ taskId, workflow: snapshot("PLAN_REVIEW", "WAITING"), structured: { claims: ["A claim."], claimCount: 1, decisionCount: 0, tiny: false }, runLimitRaise: { currentUsd: 2, proposedUsd: 12 } })!;
+    expect(shown.text).toContain("This raises the run limit from $2 to $12.");
+    expect(shown.text).toContain("Approving accepts $12 as the run limit, or asks for it if your role cannot.");
+    const approve = approveOf(shown);
+    expect(approve.text.text).toBe("Approve coding plan and raise the limit to $12");
+    expect(JSON.parse(approve.value)).toMatchObject({ taskId, decision: "APPROVE", runLimitUsd: 12 });
+    expect(buttonsOf(shown.blocks).map((button) => button.action_id)).toEqual(expect.arrayContaining(["agentx_workflow_changes", "agentx_workflow_close"]));
+    expect(buttonsOf(shown.blocks).map((button) => button.action_id)).not.toContain("agentx_open_decision");
+    // Request changes carries no amount.
+    expect(JSON.parse(buttonsOf(shown.blocks).find((button) => button.action_id === "agentx_workflow_changes")!.value)).not.toHaveProperty("runLimitUsd");
+  });
+  it("shows cents exactly", () => {
+    const shown = workflowMessage({ taskId, workflow: snapshot("PLAN_REVIEW", "WAITING"), structured: { claims: ["A claim."], claimCount: 1, decisionCount: 0, tiny: false }, runLimitRaise: { currentUsd: 2.5, proposedUsd: 12.25 } })!;
+    expect(shown.text).toContain("This raises the run limit from $2.50 to $12.25.");
+    expect(JSON.parse(approveOf(shown).value)).toMatchObject({ runLimitUsd: 12.25 });
+  });
+  it("a plan that does not raise the limit is as before: no line, no amount in the button", () => {
+    const shown = workflowMessage({ taskId, workflow: snapshot("PLAN_REVIEW", "WAITING"), structured: { claims: ["A claim."], claimCount: 1, decisionCount: 0, tiny: false } })!;
+    expect(shown.text).not.toContain("raises the run limit");
+    expect(approveOf(shown).text.text).toBe("Approve coding plan");
+    expect(JSON.parse(approveOf(shown).value)).not.toHaveProperty("runLimitUsd");
   });
   it("is ignored for requirements (approving them sets no run limit)", () => {
-    const shown = workflowMessage({ taskId, workflow: snapshot("PLAN_REVIEW", "WAITING", { path: "FULL", reviewPhase: "REQUIREMENTS", artifacts: [{ ...plan, type: "requirements" }] }), documentSummary: ["The requirements."], planOpen: { url: cardUrl, why: "run_limit" } })!;
+    const shown = workflowMessage({ taskId, workflow: snapshot("PLAN_REVIEW", "WAITING", { path: "FULL", reviewPhase: "REQUIREMENTS", artifacts: [{ ...plan, type: "requirements" }] }), documentSummary: ["The requirements."], runLimitRaise: { currentUsd: 2, proposedUsd: 12 } })!;
     expect(buttonsOf(shown.blocks).map((button) => button.action_id)).toContain("agentx_workflow_approve");
+    expect(shown.text).not.toContain("raises the run limit");
   });
 });

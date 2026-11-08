@@ -139,6 +139,25 @@ export class DeveloperTaskNotifier extends Construct {
         Null: { "dynamodb:LeadingKeys": "false" },
       },
     }));
+    // 0.5.11 (QA6-12b): a coding plan whose record carries no run-limit estimate still shows its raise and carries the amount on Slack's Approve: the notifier works the limit out as the decision does
+    // (`planRunLimit`), which reads the org's spend policy (one item in its SETTINGS partition, GetItem by key) and the newest costs of this project's runs (a Query in one RUN_COST partition).
+    // Read only, org keys only, and each action on its own partition (not the cross product).
+    this.function.addToRolePolicy(new iam.PolicyStatement({
+      actions: ["dynamodb:GetItem"],
+      resources: [props.state.tableArn],
+      conditions: {
+        "ForAllValues:StringLike": { "dynamodb:LeadingKeys": [`ORG#${orgPattern}#SETTINGS`] },
+        Null: { "dynamodb:LeadingKeys": "false" },
+      },
+    }));
+    this.function.addToRolePolicy(new iam.PolicyStatement({
+      actions: ["dynamodb:Query"],
+      resources: [props.state.tableArn],
+      conditions: {
+        "ForAllValues:StringLike": { "dynamodb:LeadingKeys": [`ORG#${orgPattern}#RUN_COST#*`] },
+        Null: { "dynamodb:LeadingKeys": "false" },
+      },
+    }));
     // Spec 025 E13: the notifier reads a change and records its message (dm, dmClaimedAt), by key.
     this.function.addToRolePolicy(new iam.PolicyStatement({
       actions: ["dynamodb:GetItem", "dynamodb:UpdateItem"],

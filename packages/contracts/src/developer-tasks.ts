@@ -159,6 +159,11 @@ export const DeveloperTaskViewSchema = z.object({
   testOffer: z.object({ capUsd: z.number().nonnegative() }).strict().optional(),
   /** Plan 3, Task 34: what the coding plan under review is expected to cost and the run limit approving it accepts. */
   runEstimate: RunEstimateSchema.optional(),
+  /**
+   * 0.5.11 (QA6-12b): while the coding plan waits for approval, what approving does to the run limit: the limit now, the one approving sets and whether that raises it. A raise is approved only with `proposedUsd`
+   * acknowledged (the tool's `acknowledged_run_limit_usd`, the API's `acknowledgedRunLimitUsd`). Absent unless the coding plan waits and the task carries an estimate.
+   */
+  planRunLimit: z.object({ currentUsd: z.number().nonnegative(), proposedUsd: z.number().nonnegative(), raises: z.boolean() }).strict().optional(),
   /** Plan 5, Task 2: the task's session and its link (`<origin>/s/<sessionId>`); absent on a task with no session (before sessions, a chain step, an install without agents). */
   sessionId: SessionIdSchema.optional(),
   sessionUrl: z.string().url().optional(),

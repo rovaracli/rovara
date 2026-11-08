@@ -431,12 +431,16 @@ describe("developer sign-in infrastructure (named environments)", () => {
       ["dynamodb:DeleteItem", [`${ORG}#MEMBER#*`, ORG, `${ORG}#BAN`, "DEVELOPER_ORG#*"]],
       // Plan 2, Task 4: a sign-in reads the ban (a removed member of a single-org install is refused); nothing else, and never a write.
       ["dynamodb:GetItem", [`${ORG}#BAN`]],
+      // 0.5.11 (the notifier's, not DeveloperIdentity's): a coding plan with no stored estimate has its run limit worked out as the decision does, which reads the org's spend policy by key.
+      ["dynamodb:GetItem", [`${ORG}#SETTINGS`]],
       // The org's budget settings, read and written back.
       ["dynamodb:GetItem,dynamodb:PutItem", [`${ORG}#SETTINGS`]],
       // What every sign-in uses: the bare org partition (20 characters, an org ID's), the developer's org pointer, and the email and invite rows.
       ["dynamodb:GetItem,dynamodb:PutItem,dynamodb:UpdateItem", [ORG, "DEVELOPER_ORG#*", "ORG_EMAIL#*", "ORG_INVITE#*"]],
       // Listing: a member's grants, a race org's whole partition, and its project catalog.
       ["dynamodb:Query", [`${ORG}#MEMBER#*`, ORG, `${ORG}#PROJECT_CATALOG`]],
+      // 0.5.11 (the notifier's): the same run-limit read of the newest costs of this project's runs, in one RUN_COST partition.
+      ["dynamodb:Query", [`${ORG}#RUN_COST#*`]],
       // A member's grants copied to the survivor.
       ["dynamodb:PutItem", [`${ORG}#MEMBER#*`]],
       // Plan 5, Task 20 (the notifier's): the session's binding to the thread (in its own partition, never the session's) and the thread's reverse item, put with the thread's record.

@@ -27,6 +27,7 @@ import { fakeModelAccess } from "../support/fake-model-access.js";
 import { TEST_ORG } from "../support/orgs.js";
 import { planAnswer, planDocument } from "../support/plan-documents.js";
 import { loadSlackBroker } from "../support/slack-broker.js";
+import { runLimitAck } from "../support/run-limit-ack.js";
 
 const ORG_B = "org_bbbbbbbbbbbbbbbbbbbb" as OrgId;
 const PROXY_URL = "http://internal-proxy.example.test:4000";
@@ -657,7 +658,7 @@ describe("a version 2 plan that reaches review", () => {
     expect(t.meta(taskId).runEstimate).toBeUndefined();
     for (let phase = 0; phase < 2; phase += 1) {
       const workflow = t.meta(taskId).workflow;
-      expect((await t.h.dev(MAYA, "POST", `/v1/dev/tasks/${taskId}/workflow/decision`, { requestId: randomUUID(), expectedRevision: workflow.revision, decision: "APPROVE", reason: "Approved", artifactDigest: workflow.artifacts.at(-1)!.sha256 })).status).toBe(200);
+      expect((await t.h.dev(MAYA, "POST", `/v1/dev/tasks/${taskId}/workflow/decision`, { requestId: randomUUID(), expectedRevision: workflow.revision, decision: "APPROVE", reason: "Approved", artifactDigest: workflow.artifacts.at(-1)!.sha256, ...runLimitAck(t.h.db, taskId) })).status).toBe(200);
       await t.finishPlanning(workspaceId);
     }
     expect(t.meta(taskId).runEstimate).toMatchObject({ minutes: { low: 60, high: 180, basis: "default", samples: 0 } });
@@ -804,7 +805,7 @@ describe("the plan-quality guidance reaches the prompts", () => {
     const planPrompt = t.promptOf(t.planOperation(workspaceId).id);
     await t.finishPlanning(workspaceId);
     const digest = t.meta(taskId).workflow.artifacts.at(-1)!.sha256;
-    const approved = await t.h.dev(MAYA, "POST", `/v1/dev/tasks/${taskId}/workflow/decision`, { requestId: randomUUID(), expectedRevision: t.meta(taskId).workflow.revision, decision: "APPROVE", reason: "Approved", artifactDigest: digest });
+    const approved = await t.h.dev(MAYA, "POST", `/v1/dev/tasks/${taskId}/workflow/decision`, { requestId: randomUUID(), expectedRevision: t.meta(taskId).workflow.revision, decision: "APPROVE", reason: "Approved", artifactDigest: digest, ...runLimitAck(t.h.db, taskId) });
     expect(approved.status, JSON.stringify(approved.body)).toBe(200);
     const build = t.operations(workspaceId).find((item) => item.workflowMode === "IMPLEMENT")!;
     return { planPrompt, buildPrompt: t.promptOf(build.id) };
@@ -940,7 +941,7 @@ async function publishedTask(t: Awaited<ReturnType<typeof world>>) {
   await t.finishPrepare(workspaceId);
   await t.finishPlanning(workspaceId);
   const digest = t.meta(taskId).workflow.artifacts.at(-1)!.sha256;
-  const approved = await t.h.dev(MAYA, "POST", `/v1/dev/tasks/${taskId}/workflow/decision`, { requestId: randomUUID(), expectedRevision: t.meta(taskId).workflow.revision, decision: "APPROVE", reason: "Approved", artifactDigest: digest });
+  const approved = await t.h.dev(MAYA, "POST", `/v1/dev/tasks/${taskId}/workflow/decision`, { requestId: randomUUID(), expectedRevision: t.meta(taskId).workflow.revision, decision: "APPROVE", reason: "Approved", artifactDigest: digest, ...runLimitAck(t.h.db, taskId) });
   expect(approved.status, JSON.stringify(approved.body)).toBe(200);
   const implementation = t.operations(workspaceId).find((item) => item.workflowMode === "IMPLEMENT")!;
   const candidate = createCandidateManifest([{ repositoryId: "demo", commitSha: "d".repeat(40), treeSha: "b".repeat(40), baseCommitSha: "e".repeat(40) }]);

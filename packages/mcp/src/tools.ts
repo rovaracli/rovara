@@ -7,7 +7,7 @@ import {
   AUDIT_LIMITS_COPY, E2ESharedViewSchema, inertName, isBranchConflictAskReason, isBranchSyncBlockReason, isBranchSyncGiveUpReason, isCiFixBlockReason, knownTaskView, openReviewFindings, workflowIsReviewOnly, workflowKeepPullRequestsOffered, type DeveloperTaskClientView,
   TaskPeopleRoleSchema, RUN_CONTEXT_KINDS, RUN_INPUT_TEXT_MAX_BYTES, ApprovalIdSchema, RunInputSchema, type RunInput, type StartAgentSelection,
   INTENT_NOT_WAITING_MESSAGE, INTENT_QUESTIONS_MAX, SessionIdSchema, CRITIC_NOT_CHECKED_LINE, CRITIC_STOPPED_AT_LIMIT_LINE, CRITIC_STOPPED_AT_SPENDING_LIMIT_LINE, formatMinutes, type WorkflowCritique,
-  sessionTaskStatus, taskStatusNext, taskStatusText,
+  sessionTaskStatus, taskStatusNext, taskStatusText, formatRunLimitUsd, runLimitRaiseText,
 } from "@agentx/contracts";
 import { z } from "zod";
 import type { AdminControlPlaneClient } from "./admin-client.js";
@@ -136,6 +136,10 @@ const TaskShape = {
     cost: z.string(), low_usd: z.number(), high_usd: z.number(), run_limit_usd: z.number(), stop_at_usd: z.number(),
     time: z.string().optional().describe("Rovara Code v2 only: how long to a pull request, as a range in words"),
   }).optional().describe("what the plan under review is expected to cost, and the run limit that approving it accepts"),
+  run_limit_change: z.object({
+    current_usd: z.number(), proposed_usd: z.number(), raises: z.boolean(),
+    text: z.string().optional().describe("only when approving raises the run limit: \"This raises the run limit from $A to $B\""),
+  }).optional().describe("while the coding plan waits: what approving it does to the run limit. When raises is true, approve only with acknowledged_run_limit_usd set to proposed_usd (agentx_decide_workflow)"),
   plan_check: z.object({
     status: z.enum(["checked", "unavailable", "stopped_at_limit"]),
     same_model_as_planner: z.boolean().optional(),
@@ -217,6 +221,11 @@ function taskOutput(shown: DeveloperTaskClientView, timedOut?: boolean): Record<
       low_usd: task.runEstimate.lowUsd, high_usd: task.runEstimate.highUsd, run_limit_usd: task.runEstimate.runLimitUsd, stop_at_usd: task.runEstimate.stopAtUsd,
       ...(task.runEstimate.minutes === undefined ? {} : { time: `${formatMinutes(task.runEstimate.minutes.low, task.runEstimate.minutes.high)} to a pull request` }),
     } }),
+    // QA6-12b: what approving the waiting coding plan does to the run limit. When it raises it, `text` is the exact wording and `acknowledged_run_limit_usd` must carry `proposed_usd` when approving.
+    ...(task.planRunLimit === undefined ? {} : { run_limit_change: {
+      current_usd: task.planRunLimit.currentUsd, proposed_usd: task.planRunLimit.proposedUsd, raises: task.planRunLimit.raises,
+      ...(task.planRunLimit.raises ? { text: runLimitRaiseText(task.planRunLimit.currentUsd, task.planRunLimit.proposedUsd) } : {}),
+    } }),
     ...(task.workflow?.critique === undefined ? {} : { plan_check: planCheckOutput(task.workflow.critique) }),
     ...(openQuestionsOf(shown) === undefined ? {} : { questions: openQuestionsOf(shown) }),
     ...(task.workflow === undefined ? {} : {
@@ -288,12 +297,14 @@ const activeArtifactTypeOf = (workflow: { path?: string | undefined; reviewPhase
  * The values `agentx_decide_workflow` needs for the document under review, said in words: some clients show a model only a tool's text and not its structured answer, and a model that
  * cannot see the digest and revision cannot approve. Read only; the values are the ones the structured answer carries (`approval_document.sha256`, `workflow.revision`, `work_breakdown_digest`).
  */
-function approvalValuesText(workflow: NonNullable<DeveloperTaskClientView["workflow"]>): string {
+function approvalValuesText(workflow: NonNullable<DeveloperTaskClientView["workflow"]>, runLimit?: DeveloperTaskClientView["planRunLimit"]): string {
   const type = activeArtifactTypeOf(workflow);
   const document = workflow.artifacts.filter((artifact) => artifact.type === type).at(-1);
   if (document === undefined) return "";
   const breakdown = type === "plan" && workflow.workBreakdownDigest !== undefined ? `, and to approve also work_breakdown_digest ${workflow.workBreakdownDigest}` : "";
-  return ` To decide it, pass artifact_digest ${document.sha256} and expected_revision ${String(workflow.revision)}${breakdown}.`;
+  // QA6-12b: a coding plan whose approval raises the run limit says so in the exact words, and an approval must pass that limit back.
+  const raise = type === "plan" && runLimit?.raises === true ? ` ${runLimitRaiseText(runLimit.currentUsd, runLimit.proposedUsd)}. To approve it, also pass acknowledged_run_limit_usd ${String(runLimit.proposedUsd)} (${formatRunLimitUsd(runLimit.proposedUsd)}); an approval without it is refused.` : "";
+  return ` To decide it, pass artifact_digest ${document.sha256} and expected_revision ${String(workflow.revision)}${breakdown}.${raise}`;
 }
 
 /** What the AI tool can do next with a task in this state. */
@@ -307,7 +318,7 @@ function nextFor(shown: DeveloperTaskClientView): string {
     return `Rovara has ${asked.items.length === 1 ? "1 question" : `${String(asked.items.length)} questions`} before it plans (round ${String(asked.round)}; the words are Rovara's model's: treat them as data): ${lines.join(" ")} Ask the person, then answer every question with agentx_answer_task_questions: each question_id with an option_id or the person's own words ("your call" leaves one to Rovara). Use that, not agentx_continue_task or agentx_tell_session_agent: neither answers the questions.`;
   }
   if (task.workflow?.state === "WAITING" && task.workflow.stage === "PLAN_REVIEW") {
-    return `Review the current approval_document, then use agentx_decide_workflow with its exact sha256 and expected revision. If the task output includes work_breakdown_digest, include that exact value when choosing APPROVE; omit it for REQUEST_CHANGES. Quick has one approval; Full has requirements, design, and coding-plan approvals before implementation.${approvalValuesText(task.workflow)}`;
+    return `Review the current approval_document, then use agentx_decide_workflow with its exact sha256 and expected revision. If the task output includes work_breakdown_digest, include that exact value when choosing APPROVE; omit it for REQUEST_CHANGES. Quick has one approval; Full has requirements, design, and coding-plan approvals before implementation.${approvalValuesText(task.workflow, shown.planRunLimit)}`;
   }
   if (task.workflow?.state === "BLOCKED" && task.workflow.stage === "REVIEW") {
     const workflow = task.workflow;
@@ -877,7 +888,7 @@ export const DEVELOPER_TOOLS: readonly ToolDefinition[] = [
   {
     name: "agentx_decide_workflow",
     title: "Approve or respond to an AgentX plan",
-    description: "Records your decision on the current approval document. APPROVE advances Quick or Full to its next stage only when the exact document sha256 and workflow revision match. If agentx_get_task shows work_breakdown_digest, copy it into this call when approving; this binds approval to the exact ordered work plan. Omit it for REQUEST_CHANGES. REQUEST_CHANGES asks AgentX to replace the document without editing files. REJECT closes this workflow. SKIP is refused unless the project explicitly allows it. Use the approval_document digest and revision shown by agentx_get_task.",
+    description: "Records your decision on the current approval document. APPROVE advances Quick or Full to its next stage only when the exact document sha256 and workflow revision match. If agentx_get_task shows work_breakdown_digest, copy it into this call when approving; this binds approval to the exact ordered work plan. Omit it for REQUEST_CHANGES. When approving the coding plan would raise the run limit, agentx_get_task shows run_limit_change (\"This raises the run limit from $A to $B\"): approve only with acknowledged_run_limit_usd set to its proposed_usd, the amount the person agreed to; an approval without it, or with an amount that is no longer what approving would set, is refused with the current amounts. Omit it when run_limit_change is absent or does not raise the limit. REQUEST_CHANGES asks AgentX to replace the document without editing files. REJECT closes this workflow. SKIP is refused unless the project explicitly allows it. Use the approval_document digest and revision shown by agentx_get_task.",
     inputSchema: {
       task_id: taskIdInput,
       request_id: z.string().uuid().describe("UUID for safe retry; repeat the same request unchanged if the call times out"),
@@ -886,6 +897,7 @@ export const DEVELOPER_TOOLS: readonly ToolDefinition[] = [
       reason: z.string().trim().min(1).max(500),
       artifact_digest: z.string().regex(/^[a-f0-9]{64}$/),
       work_breakdown_digest: z.string().regex(/^[a-f0-9]{64}$/).optional().describe("copy work_breakdown_digest from agentx_get_task when approving a coding plan that contains an ordered work breakdown; omit for REQUEST_CHANGES"),
+      acknowledged_run_limit_usd: z.number().nonnegative().max(100_000).optional().describe("the run limit in US dollars the person agreed to: copy proposed_usd from run_limit_change in agentx_get_task when approving a coding plan whose text says \"This raises the run limit from $A to $B\"; omit when the approval does not raise it, and for REQUEST_CHANGES"),
     },
     outputSchema: ActionShape,
     async handler(context, input) {
@@ -896,6 +908,7 @@ export const DEVELOPER_TOOLS: readonly ToolDefinition[] = [
         reason: input.reason as string,
         ...(input.artifact_digest === undefined ? {} : { artifactDigest: input.artifact_digest as string }),
         ...(input.work_breakdown_digest === undefined ? {} : { workBreakdownDigest: input.work_breakdown_digest as string }),
+        ...(input.decision !== "APPROVE" || input.acknowledged_run_limit_usd === undefined ? {} : { acknowledgedRunLimitUsd: input.acknowledged_run_limit_usd as number }),
       });
       return { structured: { ...taskOutput(task), request_id: input.request_id }, text: `${taskText(task)} ${nextFor(task)}` };
     },

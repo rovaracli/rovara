@@ -33,9 +33,10 @@ beforeAll(async () => { await loadSlackBroker(); });
 
 // Plan 3 Task 34, change 1: a workflow task starts at its planning limit ($2 Quick, $6 Full) and a task with no workflow at the TASK estimate's run limit ($10
 // with no history), instead of the $25 per-task cap; approving a coding plan sets the run limit its estimate gave ($6 Quick with no history) and starts the
-// window at what planning spent. Change 4: a coding plan that reaches review carries that estimate (`task.runEstimate`), and the plan-ready message says it.
+// window at what planning spent. Change 4: a coding plan that reaches review carries that estimate (`task.runEstimate`), and the plan-ready message says it, with the raise
+// (0.5.11, QA6-12b: 'This raises the run limit from $2 to $6', which Slack's Approve confirms).
 const NO_HISTORY_ESTIMATE = { basis: "default", highUsd: 3, lowUsd: 1, runLimitUsd: 6, samples: 0, stopAtUsd: 6 };
-const READY_WITH_ESTIMATE = "*Coding plan v1 is ready for your approval.* No code has changed yet.\n> Payments that fail with a timeout are retried.\n> A payment is never charged twice.\nAnd 1 more claim.\nApprove here uses AgentX's answers for 1 decision and includes the open comments (up to 25) from the task page.\n• d1: How many times should a payment be retried? Answer: Three times\n• Not checked by AgentX's plan check.\nNo automated checks apply. Review only.\nEstimated cost: about $1\u2013$3. Run limit: $6.\nI couldn't link the full coding plan; ask an AgentX admin to check the task page.";
+const READY_WITH_ESTIMATE = "*Coding plan v1 is ready for your approval.* No code has changed yet.\n> Payments that fail with a timeout are retried.\n> A payment is never charged twice.\nAnd 1 more claim.\nThis raises the run limit from $2 to $6. Approving accepts $6 as the run limit, or asks for it if your role cannot.\nApprove here uses AgentX's answers for 1 decision and includes the open comments (up to 25) from the task page.\n• d1: How many times should a payment be retried? Answer: Three times\n• Not checked by AgentX's plan check.\nNo automated checks apply. Review only.\nEstimated cost: about $1\u2013$3. Run limit: $6.\nI couldn't link the full coding plan; ask an AgentX admin to check the task page.";
 /** The limit each scenario's task has when the scenario is recorded; `baseline` and `estimate` are fields the task gains by then, `readyText` the post that gains the estimate line. */
 const RUN_LIMITS: Partial<Record<GoldenScenario, { budgetUsd: number; baseline?: true; estimate?: true; readyText?: true }>> = {
   "plan-quick": { budgetUsd: 2 },
@@ -64,6 +65,28 @@ function stringPaths(record: unknown, matches: (text: string) => boolean, path =
   if (record === null || typeof record !== "object") return [];
   return Object.entries(record).flatMap(([key, child]) => stringPaths(child, matches, Array.isArray(record) ? `${path}[${key}]` : path === "" ? key : `${path}.${key}`));
 }
+/** Every string in a record with the path it is at. */
+function stringsAt(record: unknown, path = ""): Array<{ path: string; text: string }> {
+  if (typeof record === "string") return [{ path, text: record }];
+  if (record === null || typeof record !== "object") return [];
+  return Object.entries(record).flatMap(([key, child]) => stringsAt(child, Array.isArray(record) ? `${path}[${key}]` : path === "" ? key : `${path}.${key}`));
+}
+/**
+ * 0.5.11 (QA6-12b): the plan-ready post's Approve button says the new limit and carries it ("Approve coding plan and raise the limit to $6", `runLimitUsd` in its value), in the post and in its notice. The value
+ * is the old one plus that amount; it is checked as such, then taken by value like the other deliberate changes.
+ */
+function approveButtonChanges(record: unknown, readyText: boolean): Array<{ path: string; expected: unknown; change: 4 }> {
+  if (!readyText) return [];
+  const label = `Approve coding plan and raise the limit to $${String(NO_HISTORY_ESTIMATE.runLimitUsd)}`;
+  const labels = stringsAt(record).filter((entry) => entry.text === label).map((entry) => ({ path: entry.path, expected: label, change: 4 as const }));
+  const values = stringsAt(record).filter((entry) => entry.text.startsWith('{"taskId"') && entry.text.includes('"decision":"APPROVE"')).map((entry) => {
+    expect(JSON.parse(entry.text), "the Approve button carries the limit it shows").toMatchObject({ decision: "APPROVE", runLimitUsd: NO_HISTORY_ESTIMATE.runLimitUsd });
+    return { path: entry.path, expected: entry.text, change: 4 as const };
+  });
+  expect(labels.length, "the Approve button's label, in the post and its blocks").toBeGreaterThan(0);
+  expect(values.length, "the Approve button's value, in the post and its blocks").toBeGreaterThan(0);
+  return [...labels, ...values];
+}
 /** The deliberate changes of change 1 and change 4 in one record, each by value. */
 function runLimitChanges(scenario: GoldenScenario, record: unknown): Array<{ path: string; expected: unknown; change: 1 | 4 }> {
   const limit = RUN_LIMITS[scenario];
@@ -82,6 +105,7 @@ function runLimitChanges(scenario: GoldenScenario, record: unknown): Array<{ pat
     ...(limit.baseline === true ? [{ path: `taskItems[${String(task)}].budgetBaselineUsd`, expected: 0, change: 1 as const }] : []),
     ...(limit.estimate === true ? [{ path: `taskItems[${String(task)}].runEstimate`, expected: NO_HISTORY_ESTIMATE, change: 4 as const }] : []),
     ...ready.map((path) => ({ path, expected: READY_WITH_ESTIMATE, change: 4 as const })),
+    ...approveButtonChanges(record, limit.readyText === true),
   ];
 }
 
