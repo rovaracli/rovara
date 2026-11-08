@@ -385,18 +385,20 @@ describe("the named TEST proof-only installation gate", () => {
     // Checked first: with the notifier's infra file as it was before, all three infra tests pass, so the change is that statement and nothing else. Legacy did not move.
     // p1-slack-decide-card: the named and foreign digests were retaken after one intended change: the DeveloperTaskNotifier's Lambda gains the variable DECISION_CARDS_ENABLED (Ref DecisionCardsEnabled), no IAM change.
     // Checked first: with the two infra files as they were before, this test passes; legacy did not move.
+    // integ/0511 merge: the named and foreign digests were retaken from the values the test reports, after the lanes' intended infra changes were merged together: p1-slack-link-atomic's ConditionCheckItem on DEVELOPER#* for the sign-in
+    // function and DEVELOPER_ORG#* for the broker, and p1-runlimit-ack's read-only notifier grants (already recorded above). The named-templates snapshot shows exactly those statements. Legacy did not move.
     const digestCases = [
       {
         label: "named",
         template: named,
-        withRoute: "d487a0c9d8e83628e796d70fae52dc44a3ba6af8a53a6a4a23e3b719a36b3c41",
-        withoutRoute: "1c8dd5490307acc4d0ac6a6dcdb792289a4d3c1eb5fd8a8b2286058695621f8b",
+        withRoute: "0d64aae778eccecda78386f9b6c07e62526718b720ccf06985ca51a7e7d05dbc",
+        withoutRoute: "7e9a8954de677a110e2a5d8ecf2cc21e8530fc0901dca629a77d51d03c91aa6f",
       },
       {
         label: "foreign",
         template: foreign,
-        withRoute: "2c6872e36785f72f9585ff25a789f75c5706d6b8021e5e3c9b89d8d4a5ec5934",
-        withoutRoute: "838e29dd8fb225306c89e56b94b215638813f2d00fb3efb75ee1fdc24de58314",
+        withRoute: "c880c6e407f8d46d4b6b1883d79f6b557cdc181ac5f9a379628b772e72315e31",
+        withoutRoute: "202e87563b531e3fcfe6c75abde806db2426a19e27f4adde648fbebadebba064",
       },
       {
         label: "legacy",
