@@ -10,7 +10,7 @@ const feedback = (comments: ChangeRequestFeedback["comments"]): Pick<CodeHost, "
 const comment = (id: string, kind: "review" | "review_comment" | "discussion", over: Record<string, unknown> = {}) => ({ id, kind, url: "", author: "x", updatedAt: "2026-11-01T00:00:00.000Z", body: "secret words", ...over }) as ChangeRequestFeedback["comments"][number];
 const examplehost = (comments: ChangeRequestFeedback["comments"], diffs?: { compare(): Promise<CodeHostDiff | undefined> }) => captureAdapterOf({
   host: "codehost:examplehost", codeHost: feedback(comments),
-  pullRequestAddress: (url) => { const m = /^https:\/\/examplehost\.example\/cr\/(\d+)$/u.exec(url); return m === null ? undefined : { host: "codehost:examplehost", repository: "pkg/api", number: Number(m[1]) }; },
+  pullRequestAddress: (url) => { const m = /^https:\/\/codehost\.example\/cr\/(\d+)$/u.exec(url); return m === null ? undefined : { host: "codehost:examplehost", repository: "pkg/api", number: Number(m[1]) }; },
   refOf: (address, url) => ({ repository: { url: `https://codehost.example/${address.repository}` }, id: String(address.number), url }),
   scopeOf: (workspaceId) => ({ orgId: workspaceId }), ...(diffs === undefined ? {} : { diffs: diffs }),
 });
