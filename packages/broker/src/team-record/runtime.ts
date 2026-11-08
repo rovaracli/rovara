@@ -563,7 +563,7 @@ export function createTeamRecordRuntime(input: TeamRecordRuntimeInput): TeamReco
       skipped: { read: (org, project) => skipped.read(org, project) },
       ...(vectors === undefined ? {} : { vectorSearch: { query: (request) => (vectors as VectorIndex).query(request) } }),
       ...(stats === undefined ? {} : { stats: {
-        run: async ({ template, workspaceId, project, params, excludeTaskIds }) => (await runStats(stats, { workspaceId, project, audience: "project" } as never, template, params, excludeTaskIds === undefined ? {} : { excludeTaskIds })).rows,
+        run: async ({ template, workspaceId, project, params, onlyTaskIds, nowMs }) => (await runStats(stats, { workspaceId, project, audience: "project" } as never, template, params, { ...(onlyTaskIds === undefined ? {} : { onlyTaskIds }), ...(nowMs === undefined ? {} : { nowMs }) })).rows,
         rovaraTasks: async ({ template, workspaceId, project, params }) => listRovaraTaskIds(stats, { workspaceId, project, audience: "project" } as never, template, params),
       } }),
     };

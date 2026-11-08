@@ -61,13 +61,14 @@ function scopeParameters(caller: StatsCaller, range: { since: string; until: str
 const EVENT_FILTER = `"workspace_id" = ? AND "project" = ? AND "occurred_at" >= ? AND "occurred_at" < ? AND "audience_kind" = 'project'`;
 
 /**
- * SRL-4: ` AND <column> NOT IN (?, ...)` for the tasks a Rovara statistic must leave out (tasks that are no longer visible to the whole project), or nothing when no list is given.
- * The ids are bound as parameters. The column is ours, never a caller's.
+ * SRL-4: ` AND <column> IN (?, ...)` over the tasks a Rovara statistic may count (checked, and visible to the whole project right now). An ALLOW list, so a task that appears after the check is
+ * not counted unchecked; an empty list counts nothing. `undefined` adds no clause (statistics over other sources, and direct callers). The ids are bound as parameters; the column is ours.
  */
-function notInTasks(column: string, excludeTaskIds: readonly string[] | undefined): { sql: string; parameters: string[] } {
-  if (excludeTaskIds === undefined || excludeTaskIds.length === 0) return { sql: "", parameters: [] };
-  if (excludeTaskIds.length > STATS_ROVARA_TASKS_MAX) throw new Error("team-record stats: too many tasks to leave out");
-  return { sql: ` AND ${column} NOT IN (${excludeTaskIds.map(() => "?").join(", ")})`, parameters: excludeTaskIds.map(stringParameter) };
+function onlyTasks(column: string, onlyTaskIds: readonly string[] | undefined): { sql: string; parameters: string[] } {
+  if (onlyTaskIds === undefined) return { sql: "", parameters: [] };
+  if (onlyTaskIds.length === 0) return { sql: " AND 1 = 0", parameters: [] };
+  if (onlyTaskIds.length > STATS_ROVARA_TASKS_MAX) throw new Error("team-record stats: too many tasks to count");
+  return { sql: ` AND ${column} IN (${onlyTaskIds.map(() => "?").join(", ")})`, parameters: onlyTaskIds.map(stringParameter) };
 }
 const EVENT_TASK_ID = `coalesce(json_extract_scalar("structured_json", '$.taskId'), '')`;
 
@@ -85,22 +86,22 @@ function groupedEvents(bucket: string, kindClause: string, groupExpr: string, ex
 
 interface Template {
   /** Validates `params` against the template's own strict schema, then builds the statement. */
-  build(bucket: string, caller: StatsCaller, params: unknown, nowMs: number, excludeTaskIds?: readonly string[]): Built;
+  build(bucket: string, caller: StatsCaller, params: unknown, nowMs: number, onlyTaskIds?: readonly string[]): Built;
 }
 
-function template<S extends z.ZodType>(schema: S, build: (bucket: string, caller: StatsCaller, params: z.infer<S>, nowMs: number, excludeTaskIds: readonly string[] | undefined) => Built): Template {
+function template<S extends z.ZodType>(schema: S, build: (bucket: string, caller: StatsCaller, params: z.infer<S>, nowMs: number, onlyTaskIds: readonly string[] | undefined) => Built): Template {
   return {
-    build(bucket, caller, params, nowMs, excludeTaskIds) {
+    build(bucket, caller, params, nowMs, onlyTaskIds) {
       const parsed = schema.safeParse(params ?? {});
       if (!parsed.success) throw new Error("team-record stats: the parameters are not valid for this template");
-      return build(bucket, caller, parsed.data, nowMs, excludeTaskIds);
+      return build(bucket, caller, parsed.data, nowMs, onlyTaskIds);
     },
   };
 }
 
 export const STATS_TEMPLATES: Record<StatsTemplateName, Template> = {
-  send_backs_by_stage: template(groupedParams, (bucket, caller, params, nowMs, excludeTaskIds) => {
-    const out = notInTasks(EVENT_TASK_ID, excludeTaskIds);
+  send_backs_by_stage: template(groupedParams, (bucket, caller, params, nowMs, onlyTaskIds) => {
+    const out = onlyTasks(EVENT_TASK_ID, onlyTaskIds);
     return groupedEvents(bucket, `"kind" = 'rovara.send_back'`, `coalesce(json_extract_scalar("structured_json", '$.stage'), 'unknown')`, out.sql, caller, params, nowMs, out.parameters);
   }),
   tickets_by_component: template(groupedParams, (bucket, caller, params, nowMs) =>
@@ -109,9 +110,9 @@ export const STATS_TEMPLATES: Record<StatsTemplateName, Template> = {
   ci_failures_by_test: template(groupedParams, (bucket, caller, params, nowMs) =>
     groupedEvents(bucket, `"kind" = 'github.ci'`, `coalesce(json_extract_scalar("structured_json", '$.check'), 'unknown')`, ` AND json_extract_scalar("structured_json", '$.conclusion') = 'failure'`, caller, params, nowMs),
   ),
-  rovara_merge_rate: template(rateParams, (bucket, caller, params, nowMs, excludeTaskIds) => {
+  rovara_merge_rate: template(rateParams, (bucket, caller, params, nowMs, onlyTaskIds) => {
     const range = window(params, nowMs);
-    const out = notInTasks(`"task_id"`, excludeTaskIds);
+    const out = onlyTasks(`"task_id"`, onlyTaskIds);
     return {
       sql:
         `SELECT count(*) AS "tasks", count_if("merged") AS "merged", count_if("reverted") AS "reverted", ` +
@@ -129,9 +130,9 @@ export const STATS_TEMPLATES: Record<StatsTemplateName, Template> = {
  * so nothing is counted twice (apart from the moment between the lake insert and `markArchived`). The record lane (R2/R9) provides it.
  */
 export interface HotStatsSource {
-  /** `excludeTaskIds` (SRL-4): Rovara rows of these tasks are not counted, and a Rovara row that names no task is not counted either. */
-  groupedCounts(request: { workspaceId: string; project: string; template: StatsTemplateName; since: string; until: string; excludeTaskIds?: readonly string[] }): Promise<Array<{ group: string; count: number }>>;
-  mergeTotals(request: { workspaceId: string; project: string; since: string; until: string; excludeTaskIds?: readonly string[] }): Promise<{ tasks: number; merged: number; reverted: number; send_backs: number }>;
+  /** `onlyTaskIds` (SRL-4): only Rovara rows of these tasks are counted (a Rovara row that names no task is not). */
+  groupedCounts(request: { workspaceId: string; project: string; template: StatsTemplateName; since: string; until: string; onlyTaskIds?: readonly string[] }): Promise<Array<{ group: string; count: number }>>;
+  mergeTotals(request: { workspaceId: string; project: string; since: string; until: string; onlyTaskIds?: readonly string[] }): Promise<{ tasks: number; merged: number; reverted: number; send_backs: number }>;
   /** SRL-4: the distinct tasks the Rovara statistic `template` counts on the recent side (for the check of their live visibility). */
   rovaraTaskIds?(request: { workspaceId: string; project: string; template: StatsTemplateName; since: string; until: string }): Promise<string[]>;
 }
@@ -151,12 +152,12 @@ export interface StatsResult extends LakeRows {
 }
 
 /** Builds (without running) the statement of a template. Exposed for tests and for the Ask tool's dry run. */
-export function buildStats(bucket: string, caller: StatsCaller, templateName: string, params: unknown, nowMs: number, limitOverride?: number, excludeTaskIds?: readonly string[]): Built {
+export function buildStats(bucket: string, caller: StatsCaller, templateName: string, params: unknown, nowMs: number, limitOverride?: number, onlyTaskIds?: readonly string[]): Built {
   assertSafeId(caller.workspaceId, "workspace id");
   assertSafeId(caller.project, "project");
   if (!(STATS_TEMPLATE_NAMES as readonly string[]).includes(templateName)) throw new Error("team-record stats: unknown template");
   const withLimit = limitOverride !== undefined && templateName !== "rovara_merge_rate" ? { ...(params as object), limit: limitOverride } : params;
-  return STATS_TEMPLATES[templateName as StatsTemplateName].build(bucket, caller, withLimit, nowMs, excludeTaskIds);
+  return STATS_TEMPLATES[templateName as StatsTemplateName].build(bucket, caller, withLimit, nowMs, onlyTaskIds);
 }
 
 const GROUP_FETCH_LIMIT = 200;
@@ -169,11 +170,12 @@ export const readsRovaraRows = (templateName: string): boolean => (ROVARA_STATS 
  * SRL-4: the distinct tasks a Rovara statistic counts in its window, lake and recent side, so the caller can read each one's live visibility. `complete` is false when the lake's list was cut
  * (more than `max` tasks): the statistic must then not be shown. A failure of the lake or the recent side throws (nothing is shown).
  */
-export async function listRovaraTaskIds(deps: StatsDeps, caller: StatsCaller, templateName: string, params: unknown, max = STATS_ROVARA_TASKS_MAX): Promise<{ taskIds: string[]; complete: boolean }> {
+export async function listRovaraTaskIds(deps: StatsDeps, caller: StatsCaller, templateName: string, params: unknown, options: { max?: number; nowMs?: number } = {}): Promise<{ taskIds: string[]; complete: boolean; nowMs: number }> {
   if (!readsRovaraRows(templateName)) throw new Error("team-record stats: that statistic does not count Rovara's rows");
   if (deps.hot.rovaraTaskIds === undefined) throw new Error("team-record stats: the recent side can't list tasks");
-  const nowMs = deps.lake.now();
+  const nowMs = options.nowMs ?? deps.lake.now();
   const built = buildStats(deps.tableBucket, caller, templateName, params, nowMs); // validates the parameters and fixes the window
+  const max = options.max ?? STATS_ROVARA_TASKS_MAX;
   const bounds = { ...built.range };
   const sql = templateName === "send_backs_by_stage"
     ? `SELECT DISTINCT ${EVENT_TASK_ID} AS "task" FROM ${tableRef(deps.tableBucket, "events")} WHERE ${EVENT_FILTER} AND "kind" = 'rovara.send_back' LIMIT ${String(max + 1)}`
@@ -184,18 +186,18 @@ export async function listRovaraTaskIds(deps: StatsDeps, caller: StatsCaller, te
   ]);
   const ids = new Set<string>(recent);
   for (const row of lake.rows) if (typeof row.task === "string" && row.task !== "") ids.add(row.task);
-  return { taskIds: [...ids], complete: !lake.truncated && lake.rows.length <= max && ids.size <= max };
+  return { taskIds: [...ids], complete: !lake.truncated && lake.rows.length <= max && ids.size <= max, nowMs };
 }
 
-export async function runStats(deps: StatsDeps, caller: StatsCaller, templateName: string, params: unknown, options: { excludeTaskIds?: readonly string[] } = {}): Promise<StatsResult> {
-  const nowMs = deps.lake.now();
-  const excludeTaskIds = options.excludeTaskIds;
-  const first = buildStats(deps.tableBucket, caller, templateName, params, nowMs, undefined, excludeTaskIds); // validates everything
-  const base = { workspaceId: caller.workspaceId, project: caller.project, ...first.range, ...(excludeTaskIds === undefined ? {} : { excludeTaskIds }) };
+export async function runStats(deps: StatsDeps, caller: StatsCaller, templateName: string, params: unknown, options: { onlyTaskIds?: readonly string[]; nowMs?: number } = {}): Promise<StatsResult> {
+  const nowMs = options.nowMs ?? deps.lake.now();
+  const onlyTaskIds = options.onlyTaskIds;
+  const first = buildStats(deps.tableBucket, caller, templateName, params, nowMs, undefined, onlyTaskIds); // validates everything
+  const base = { workspaceId: caller.workspaceId, project: caller.project, ...first.range, ...(onlyTaskIds === undefined ? {} : { onlyTaskIds }) };
   const grouped = templateName !== "rovara_merge_rate";
 
   // Both sides always, then merge. A lake failure leaves the recent side (flagged); a failure of the recent side is an error.
-  const lakeBuilt = grouped ? buildStats(deps.tableBucket, caller, templateName, params, nowMs, GROUP_FETCH_LIMIT, excludeTaskIds) : first;
+  const lakeBuilt = grouped ? buildStats(deps.tableBucket, caller, templateName, params, nowMs, GROUP_FETCH_LIMIT, onlyTaskIds) : first;
   const [hotResult, lakeResult] = await Promise.all([
     grouped ? deps.hot.groupedCounts({ ...base, template: templateName as StatsTemplateName }) : deps.hot.mergeTotals(base),
     deps.lake.query(lakeBuilt.sql, lakeBuilt.parameters).catch((error: unknown) => {

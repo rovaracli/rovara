@@ -5,7 +5,7 @@
 // This file is pure (no AWS); the State-table port is `live-audience-port.ts`. The one place that applies it is `acl.ts#filterVisible`, which every read of the record ends in.
 import type { Audience, OrgId } from "@agentx/contracts";
 import type { TaskVisibility } from "./sources/rovara.js";
-import type { ReadAudience } from "./types.js";
+import type { ReadAudience, RecordLog } from "./types.js";
 
 /** The most distinct tasks one request looks up. A task past it reads as unreadable (its rows are hidden), never as visible. */
 export const LIVE_TASKS_PER_REQUEST_MAX = 100;
@@ -104,30 +104,41 @@ async function withTimeout<T>(work: Promise<T>, ms: number): Promise<T> {
   }
 }
 
-export function createLiveAudienceReader(orgId: OrgId, port: TaskVisibilityPort | undefined, options: { timeoutMs?: number | undefined; maxTasks?: number | undefined } = {}): LiveAudienceReader {
+export function createLiveAudienceReader(orgId: OrgId, port: TaskVisibilityPort | undefined, options: { timeoutMs?: number | undefined; maxTasks?: number | undefined; log?: RecordLog | undefined } = {}): LiveAudienceReader {
   const maxTasks = options.maxTasks ?? LIVE_TASKS_PER_REQUEST_MAX;
   const answers = new Map<string, TaskVisibility | undefined>();
   return {
     async load(taskIds) {
       const fresh: string[] = [];
+      const beyond = new Set<string>();
       for (const id of taskIds) {
-        if (answers.has(id) || fresh.includes(id)) continue;
+        if (answers.has(id) || fresh.includes(id) || beyond.has(id)) continue;
         // Past the bound a task is asked about no more: it stays unanswered, which reads as unreadable.
-        if (answers.size + fresh.length >= maxTasks) break;
+        if (answers.size + fresh.length >= maxTasks) { beyond.add(id); continue; }
         fresh.push(id);
       }
+      // Counts only, never ids: rows are hidden because a visibility could not be read, and ops should be able to see that it is happening.
+      if (beyond.size > 0) options.log?.("record.live_audience_unreadable", { reason: "bound", tasks: beyond.size });
       if (fresh.length === 0) return;
       for (const id of fresh) answers.set(id, undefined);
-      if (port === undefined) return;
+      if (port === undefined) {
+        options.log?.("record.live_audience_unreadable", { reason: "no_port", tasks: fresh.length });
+        return;
+      }
       let found: ReadonlyMap<string, TaskVisibility | undefined>;
       try {
         found = await withTimeout(port.read(orgId, fresh), options.timeoutMs ?? LIVE_TASK_READ_TIMEOUT_MS);
-      } catch {
+      } catch (error) {
+        options.log?.("record.live_audience_unreadable", { reason: error instanceof Error && error.message.includes("timed out") ? "timeout" : "error", tasks: fresh.length });
         return;
       }
       for (const id of fresh) answers.set(id, found.get(id));
+      const missing = fresh.filter((id) => found.get(id) === undefined).length;
+      if (missing > 0) options.log?.("record.live_audience_unreadable", { reason: "missing", tasks: missing });
     },
     verdictOf(audience, taskIds) {
+      // No task to check is no answer (fail closed): a caller that names none must not read this as "allow".
+      if (taskIds.length === 0) return "unreadable";
       let verdict: LiveVerdict = "allow";
       for (const id of taskIds) {
         const visibility = answers.get(id);

@@ -153,6 +153,32 @@ describe("a visibility that cannot be read shows nothing from those rows (fail c
   });
 });
 
+describe("an unreadable visibility is counted, and an empty task list is never an answer", () => {
+  it("logs counts only (no ids) when rows are hidden because a visibility could not be read: a timeout, an error, a missing answer, the bound and no port", async () => {
+    const logs: Array<{ event: string; fields: Record<string, unknown> }> = [];
+    const log = (event: string, fields: Readonly<Record<string, string | number | boolean>>) => { logs.push({ event, fields: { ...fields } }); };
+    await createLiveAudienceReader(ORG_A, port({ [T1]: "throw" }), { log }).load([T1]);
+    await createLiveAudienceReader(ORG_A, port({ [T1]: undefined }), { log }).load([T1, T2]);
+    await createLiveAudienceReader(ORG_A, undefined, { log }).load([T1]);
+    await createLiveAudienceReader(ORG_A, port({}), { log, maxTasks: 1 }).load([T1, T2, "t3"]);
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    const slow = createLiveAudienceReader(ORG_A, { read: () => new Promise(() => undefined) }, { log, timeoutMs: 20 }).load([T1]);
+    await vi.advanceTimersByTimeAsync(50);
+    await slow;
+    expect(new Set(logs.map((entry) => entry.fields.reason))).toEqual(new Set(["bound", "error", "missing", "no_port", "timeout"]));
+    for (const entry of logs) {
+      expect(entry.event).toBe("record.live_audience_unreadable");
+      expect(Object.keys(entry.fields).sort()).toEqual(["reason", "tasks"]);
+      expect(JSON.stringify(entry)).not.toContain(T1);
+    }
+    expect(logs.find((entry) => entry.fields.reason === "bound")!.fields.tasks).toBe(2);
+  });
+
+  it("an empty list of tasks is unreadable, never allow", () => {
+    expect(createLiveAudienceReader(ORG_A, port({})).verdictOf(person(OWNER), [])).toBe("unreadable");
+  });
+});
+
 describe("what counts as a row about a task", () => {
   const refs = (row: Partial<Visible> & { source?: string; structured?: Record<string, string | number | boolean> }) => rovaraTaskRefsOf({ audience: { kind: "project" }, ...row });
   it("reads the task from the Rovara source id, the structured field, a fact's derivedFrom and a task place", () => {
@@ -227,20 +253,44 @@ describe("every read path of the record applies the live check", () => {
     expect((await recordSearch(d, person(OTHER), "web", { query: "anything" })).hits).toHaveLength(0);
   });
 
-  it("past work: the outcome rows of a narrowed task are not counted, and a lesson learned at a task place needs the live list too", async () => {
-    const w = world();
-    for (const [kind, id, structured] of [["rovara.send_back", "sb1", { taskId: T1 }], ["rovara.task", "end", { taskId: T1, outcome: "merged" }]] as const) {
-      expect((await w.sink.put(githubDraft({ source: "rovara", kind, repo: undefined, sourceRef: { system: "rovara", id: `task:${T1}:${id}`, version: "1" }, audience: { kind: "project" }, scope: "rovara:project/web", trust: "rovara", actor: undefined, text: undefined, structured, retention: "C" }))).status).toBe("stored");
+  async function outcomesOf(w: World, taskId: string): Promise<void> {
+    for (const [kind, id, structured] of [["rovara.send_back", "sb1", { taskId }], ["rovara.task", "end", { taskId, outcome: "merged" }]] as const) {
+      expect((await w.sink.put(githubDraft({ source: "rovara", kind, repo: undefined, sourceRef: { system: "rovara", id: `task:${taskId}:${id}`, version: "1" }, audience: { kind: "project" }, scope: "rovara:project/web", trust: "rovara", actor: undefined, text: undefined, structured, retention: "C" }))).status).toBe("stored");
     }
-    const task: PastWorkTask = { taskId: T1, title: "Task", status: "merged", pullRequests: [], planSummary: "x", audience: { kind: "project" } };
+  }
+  const taskOf = (taskId: string): PastWorkTask => ({ taskId, title: "Task", status: "merged", pullRequests: [], planSummary: "x", audience: { kind: "project" } });
+
+  it("past work: a task that was narrowed is not shown with an outcome nobody could judge, and a lesson learned at a task place needs the live list too", async () => {
+    const w = world();
+    await outcomesOf(w, T1);
     const lesson = { title: "Retry with jitter", audience: projectAudience, scopes: [`rovara:task/${T1}`], restrictedScopes: [] };
     const live = port({ [T1]: SHARED });
-    const d = deps(w, live, { tasks: { async search() { return [task]; } }, lessonsOfTask: async () => [lesson] });
+    const d = deps(w, live, { tasks: { async search() { return [taskOf(T1)]; } }, lessonsOfTask: async () => [lesson] });
     const before = await pastWork(d, person(OTHER), "shared", "web", { query: "x" });
     expect(before.items[0]).toMatchObject({ outcome: { merged: true, sendBacks: 1 }, lessonsLearned: ["Retry with jitter"] });
     live.live[T1] = PRIVATE;
+    // not an all-false outcome: the task is not in the answer at all, and the reader is told something is hidden
     const after = await pastWork(d, person(OTHER), "shared", "web", { query: "x" });
-    expect(after.items[0]).toMatchObject({ outcome: { merged: false, sendBacks: 0 }, lessonsLearned: [] });
+    expect(after.items).toEqual([]);
+    expect((await pastWork(d, person(OTHER), "private", "web", { query: "x" })).someHidden).toBe(true);
+    expect((await pastWork(d, person(OWNER), "private", "web", { query: "x" })).items[0]).toMatchObject({ outcome: { merged: true, sendBacks: 1 } });
+    // unreadable: also not shown
+    live.live[T1] = "throw";
+    expect((await pastWork(d, person(OWNER), "private", "web", { query: "x" })).items).toEqual([]);
+  });
+
+  it("past work: only the shown tasks are looked up, so a long scan of other tasks never spends the per-request bound or turns a real outcome into an empty one", async () => {
+    const w = world();
+    const others = Array.from({ length: LIVE_TASKS_PER_REQUEST_MAX + 20 }, (_, index) => `other-${String(index)}`);
+    for (const id of others) {
+      await w.sink.put(githubDraft({ source: "rovara", kind: "rovara.send_back", repo: undefined, sourceRef: { system: "rovara", id: `task:${id}:sb`, version: "1" }, audience: { kind: "project" }, scope: "rovara:project/web", trust: "rovara", actor: undefined, text: undefined, structured: { taskId: id }, retention: "C" }));
+    }
+    await outcomesOf(w, T1);
+    const live = port({ [T1]: SHARED });
+    const d = deps(w, live, { tasks: { async search() { return [taskOf(T1)]; } } });
+    const result = await pastWork(d, person(OTHER), "shared", "web", { query: "x" });
+    expect(result.items[0]).toMatchObject({ outcome: { merged: true, sendBacks: 1 } });
+    expect(live.calls.flat()).toEqual([T1]);
   });
 
   it("another workspace is never asked about: the port gets the caller's org", async () => {

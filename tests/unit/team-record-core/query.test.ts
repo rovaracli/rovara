@@ -242,7 +242,7 @@ describe("pastWork (the Plan 9 contract)", () => {
 
   it("a shared search by a person is still project-wide only, and a failing lessons port drops only the lessons", async () => {
     const w = world();
-    const d = deps(w, { tasks: tasks([task("t2", privateAudience), task("t1", PROJECT_AUDIENCE)]), lessonsOfTask: async () => { throw new Error("down"); } });
+    const d = deps(w, { taskVisibility: allShared, tasks: tasks([task("t2", privateAudience), task("t1", PROJECT_AUDIENCE)]), lessonsOfTask: async () => { throw new Error("down"); } });
     const result = await pastWork(d, person({ identities: { ids: { rovara: ["dev-1"] }, groups: {} } }), "shared", "web", { query: "x" });
     expect(result.items.map((item) => item.taskId)).toEqual(["t1"]);
     expect(result.items[0]!.lessonsLearned).toEqual([]);
@@ -256,7 +256,7 @@ describe("recordStats", () => {
     const stats = { async run(input: unknown) { calls.push(input); return [{ stage: "REVIEW", count: 3 }]; }, async rovaraTasks() { return { taskIds: [], complete: true }; } };
     const d = deps(w, { stats });
     expect(await recordStats(d, person(), "web", { template: "send_backs_by_stage", params: { since: "2026-10-01" } })).toEqual({ status: "ok", rows: [{ stage: "REVIEW", count: 3 }] });
-    expect(calls).toEqual([{ template: "send_backs_by_stage", workspaceId: ORG_A, project: "web", params: { since: "2026-10-01" }, excludeTaskIds: [] }]);
+    expect(calls).toEqual([{ template: "send_backs_by_stage", workspaceId: ORG_A, project: "web", params: { since: "2026-10-01" }, onlyTaskIds: [] }]);
     await expect(recordStats(d, person(), "web", { template: "drop_table" })).rejects.toThrow(/CONFIG_INVALID/);
     await expect(recordStats(d, person(), "web", { template: "send_backs_by_stage", params: { "bad key;": "x" } })).rejects.toThrow(/CONFIG_INVALID/);
     await expect(recordStats(d, shared, "web", { template: "send_backs_by_stage" })).rejects.toThrow(/FORBIDDEN/);
