@@ -247,21 +247,24 @@ export async function releaseIntakeEvent(table: IntakeTable, orgId: OrgId, proje
   await table.documentClient.send(new DeleteCommand({ TableName: table.tableName, Key: intakeEventKey(orgId, project, itemId, eventId) })).catch(() => undefined);
 }
 
+/** One tracker act (a change's label or assignee) taken for the company, and the project and ticket that took it. */
+export interface IntakeChangeClaim { orgId: OrgId; system: string; site: string; changeId: string; act: { kind: string; value: string }; project: string; itemId: string }
+
 /** How long a tracker change stays claimed: far past the event age window (24 hours), so a replay that is still believed always finds it. */
 export const INTAKE_CHANGE_KEPT_DAYS = 7;
 
 /**
- * Takes a tracker's change (a Jira changelog id) in for the company, once, whichever project's hook it came through. Called only AFTER the tracker confirmed the change is real, so a made-up
+ * Takes a tracker's act (a Jira changelog id and what it did) in for the company, once, whichever project's hook it came through. Called only AFTER the tracker confirmed the change is real, so a made-up
  * change id never uses one up. The item names the project and ticket that took it:
  *   - "claimed": first time; it is the caller's (given back with `releaseIntakeChange` if the ticket could not be handled for a fault that may pass).
  *   - "same": already taken by this same project and ticket (the same delivery again, or another label of one change on one ticket); the per-event claim after it keeps that idempotent.
- *   - "taken": taken by another project or ticket of the company: refuse.
+ *   - "taken": taken by another project or ticket of the company: the caller must not start work as the person (it waits).
  */
 export async function claimIntakeChange(
   table: IntakeTable,
-  input: { orgId: OrgId; system: string; site: string; changeId: string; project: string; itemId: string },
+  input: IntakeChangeClaim,
 ): Promise<"claimed" | "same" | "taken"> {
-  const key = intakeChangeKey(input.orgId, input.system, input.site, input.changeId);
+  const key = intakeChangeKey(input.orgId, input.system, input.site, input.changeId, input.act);
   // Twice at most: a claim given back between our failed write and our read leaves nothing to read, and the write is then made again.
   for (let attempt = 0; attempt < 2; attempt += 1) {
     try {
@@ -283,11 +286,11 @@ export async function claimIntakeChange(
 /** Gives a change back when the ticket could not be handled for a fault that may pass, so the redelivery is handled. Only the project and ticket that took it can give it back. */
 export async function releaseIntakeChange(
   table: IntakeTable,
-  input: { orgId: OrgId; system: string; site: string; changeId: string; project: string; itemId: string },
+  input: IntakeChangeClaim,
 ): Promise<void> {
   await table.documentClient.send(new DeleteCommand({
     TableName: table.tableName,
-    Key: intakeChangeKey(input.orgId, input.system, input.site, input.changeId),
+    Key: intakeChangeKey(input.orgId, input.system, input.site, input.changeId, input.act),
     ConditionExpression: "orgId = :org AND #project = :project AND itemId = :item",
     ExpressionAttributeNames: { "#project": "project" },
     ExpressionAttributeValues: { ":org": input.orgId, ":project": input.project, ":item": input.itemId },

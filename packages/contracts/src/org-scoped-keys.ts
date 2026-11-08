@@ -1387,13 +1387,14 @@ export function intakeEventKey(orgId: OrgId, project: string, itemId: string, ev
 }
 
 /**
- * A tracker change (a Jira changelog id) that intake has acted on for a company, one item per company, site and change, whichever project's hook it came through. It is how a real act
- * that a person made is started from once: the same change handed to a second project's hook (a replay by someone who holds that hook's secret) finds it taken. `site` is the tracker's
- * host and `changeId` the tracker's own id for the change; both are hashed together here, so nothing a sender typed is a key.
+ * A tracker act (a label added, or an assignee set, by one Jira changelog change) that intake has acted on for a company, one item per company, site, change and act, whichever project's hook
+ * or poll it came through. It is how a real act that a person made is started from once: the same act handed to a second project (a replay by someone who holds that hook's secret) finds it
+ * taken. The act (its kind and value) is part of the key because one change may add several labels, each a separate request. `site` is the tracker's host and `changeId` the tracker's own id
+ * for the change; all are hashed together here, so nothing a sender typed is a key.
  */
-export function intakeChangeKey(orgId: OrgId, system: string, site: string, changeId: string): OrgKey {
-  if (site.length === 0 || changeId.length === 0) throw new Error("a tracker site and a change id can't be empty");
-  return { pk: orgScoped(orgId, `INTAKE_CHANGE#${keyPart(system, "a tracker system")}`), sk: createHash("sha256").update(`${site.toLowerCase()}\0${changeId}`, "utf8").digest("hex").slice(0, 40) };
+export function intakeChangeKey(orgId: OrgId, system: string, site: string, changeId: string, act: { kind: string; value: string }): OrgKey {
+  if (site.length === 0 || changeId.length === 0 || act.kind.length === 0 || act.value.length === 0) throw new Error("a tracker site, a change id and an act can't be empty");
+  return { pk: orgScoped(orgId, `INTAKE_CHANGE#${keyPart(system, "a tracker system")}`), sk: createHash("sha256").update(`${site.toLowerCase()}\0${changeId}\0${act.kind}\0${act.value}`, "utf8").digest("hex").slice(0, 40) };
 }
 
 /**

@@ -62,6 +62,11 @@ const createdOf = (entry: Record<string, unknown>): number => { const at = Date.
  * not say is nobody (no actor, so the ticket waits). Rovara's own account is `rovara`.
  */
 export function jiraActorOf(histories: readonly unknown[], act: { kind: "label" | "assignee"; value: string } | undefined, me?: string): IntakeSearchItem["actor"] {
+  return jiraActOf(histories, act, me).actor;
+}
+
+/** `jiraActorOf`, and with it the id of the change entry that made the act (the tracker's own id for it), when it names one. */
+export function jiraActOf(histories: readonly unknown[], act: { kind: "label" | "assignee"; value: string } | undefined, me?: string): { actor?: IntakeSearchItem["actor"]; changeId?: string } {
   const sorted = histories.map(rec).sort((left, right) => createdOf(right) - createdOf(left));
   for (const entry of sorted) {
     const asked = arr(entry["items"]).some((change) => {
@@ -73,11 +78,12 @@ export function jiraActorOf(histories: readonly unknown[], act: { kind: "label" 
     if (!asked) continue;
     const author = rec(entry["author"]);
     const accountId = str(author["accountId"]);
-    if (author["accountType"] === "app") return { kind: "bot" };
-    if (author["accountType"] !== "atlassian" || accountId === undefined) return undefined;
-    return { kind: accountId === me ? "rovara" : "person", accountId };
+    if (author["accountType"] === "app") return { actor: { kind: "bot" } };
+    if (author["accountType"] !== "atlassian" || accountId === undefined) return {};
+    const id = typeof entry["id"] === "string" || typeof entry["id"] === "number" ? String(entry["id"]) : undefined;
+    return { actor: { kind: accountId === me ? "rovara" : "person", accountId }, ...(id === undefined ? {} : { changeId: id }) };
   }
-  return undefined;
+  return {};
 }
 
 /** How far a change's own time may be from the event's time and still be that event's change. */
@@ -174,13 +180,16 @@ export function jiraIntakeSearch(input: { deps: OrgConnectionDeps; fetch?: typeo
       const fields = rec(issue["fields"]);
       if (key === undefined || !/^[A-Z][A-Z0-9_]{0,30}-[1-9][0-9]{0,9}$/u.test(key)) continue;
       // Who did it: the newest change that ADDED the label, or that assigned the issue to Rovara's own account.
-      const actor = jiraActorOf(arr(rec(issue["changelog"])["histories"]), label === undefined ? undefined : { kind: "label", value: label }, me);
+      const found = jiraActOf(arr(rec(issue["changelog"])["histories"]), label === undefined ? undefined : { kind: "label", value: label }, me);
+      const actor = found.actor;
       items.push({
         externalRef: { system: "jira", id: key, url: `${site}/browse/${key}` },
         title: cut(str(fields["summary"]) ?? key, INTAKE_TITLE_MAX),
         body: cut(adfText(fields["description"]), BODY_MAX_CHARS),
         reporter: { display: str(rec(fields["reporter"])["displayName"]) },
         ...(actor === undefined ? {} : { actor }),
+        // The change that made the label-add, as Jira's own change log says: claimed once per company by the engine, so a project watching the same label does not start it a second time as the person.
+        ...(label === undefined || found.changeId === undefined ? {} : { change: { id: found.changeId, act: { kind: "label" as const, value: label } } }),
         ...(str(issue["id"]) === undefined ? {} : { alternateIds: [str(issue["id"])!] }),
       });
     }
