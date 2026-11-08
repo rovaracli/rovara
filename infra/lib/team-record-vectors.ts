@@ -5,7 +5,7 @@
 import { type CfnTag, Duration, RemovalPolicy, aws_iam as iam } from "aws-cdk-lib";
 import { CfnIndex, CfnVectorBucket } from "aws-cdk-lib/aws-s3vectors";
 import { Construct } from "constructs";
-import { NON_FILTERABLE_VECTOR_KEYS, VECTOR_DIMENSION_DEFAULT, teamRecordVectorIndexName } from "@agentx/contracts";
+import { NON_FILTERABLE_VECTOR_KEYS, VECTOR_DIMENSION_DEFAULT, teamRecordVectorIndexName, teamRecordVectorsRoleName } from "@agentx/contracts";
 
 /** The IAM policy variable that holds the session's index name. The broker tags every AssumeRole with `rovara-index` = the workspace's index name (team-record/vector-access.ts). */
 export const SESSION_INDEX_VARIABLE = "${aws:PrincipalTag/rovara-index}";
@@ -16,6 +16,11 @@ export interface TeamRecordVectorsProps {
   readonly bucketNames: readonly string[];
   /** The customer's key (Enterprise) or the cell's key (Public). Without it the buckets use S3-managed keys. */
   readonly kmsKeyArn?: string;
+  /**
+   * The environment the data role is named for (`agentx-<env>-record-vectors-data`, teamRecordVectorsRoleName). A fixed name, so the default boundary can let the broker assume it and the deploy role can look it up
+   * (TR-SWITCH-B2). Without it CloudFormation names the role, which is only for a construct tested alone.
+   */
+  readonly env?: string;
   readonly dimension?: number;
   /** Enterprise: the one workspace of the install. Its index is created here and not at run time. */
   readonly enterpriseWorkspaceId?: string;
@@ -85,6 +90,7 @@ export class TeamRecordVectors extends Construct {
         assumedBy: props.brokerPrincipal,
         description: "Rovara Team record: vector data access, assumed by the broker with a per-workspace session policy",
         maxSessionDuration: Duration.hours(1),
+        ...(props.env === undefined ? {} : { roleName: teamRecordVectorsRoleName(props.env) }),
       });
       // Fix round 1, S2: the role's own rights name the index through the session TAG, `index/${aws:PrincipalTag/rovara-index}`. A session that was not tagged has no value for the variable and matches
       // no resource (IAM: "a resource that includes a policy variable with no value will not match any resource"), so an AssumeRole made without the per-workspace policy and tag reaches nothing. The

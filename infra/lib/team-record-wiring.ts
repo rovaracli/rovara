@@ -87,6 +87,7 @@ export function attachTeamRecord(stack: Stack, props: TeamRecordWiringProps): Te
   });
   const storage = new TeamRecordStorage(stack, "TeamRecord", {
     namePrefix: teamRecordNamePrefix(props.env),
+    env: props.env,
     context: props.context,
     brokerPrincipal: broker.role!,
   });

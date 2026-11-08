@@ -50,7 +50,7 @@ describe("service role policy", () => {
       } else if (statement.Sid === "IamFixedNameRolesNotYetCreated") {
         // The fixed-name roles: IAM authorizes CloudFormation's lookup of each before it exists against its path-less ARN.
         // Reads and deletes only, never create or change (tests/contract/role-paths.test.ts proves what each action may do).
-        expect(resources).toEqual(["connector-secrets", "connector-secrets-test-accounts", "broker-role", "model-proxy-task", "model-access-probe", "chain-schedule", "img-push", "img-pull", "img-manage"].map((name) => `arn:aws:iam::123456789012:role/agentx-staging-${name}`));
+        expect(resources).toEqual(["connector-secrets", "connector-secrets-test-accounts", "broker-role", "model-proxy-task", "model-access-probe", "chain-schedule", "img-push", "img-pull", "img-manage", "record-vectors-data"].map((name) => `arn:aws:iam::123456789012:role/agentx-staging-${name}`));
         expect(statement.Action.every((a) => /^iam:(Get|List|Delete|Detach)/.test(a))).toBe(true);
       } else if (statement.Sid === "IamInstanceProfiles") {
         // The EC2 workers' instance profile, under the same path as the environment's roles.
@@ -448,7 +448,8 @@ describe("default permission boundary", () => {
     // CloudFront is the exception: action families (not cloudfront:*), as a ceiling over the service role's exact actions.
     // 2026-11-03: and the two unconditional "*" reads that used to be statements of their own (sts:GetCallerIdentity, servicequotas:GetServiceQuota), by name.
     expect(services.Action).toEqual([...BOUNDARY_SERVICES.map((s) => `${s}:*`), ...CLOUDFRONT_BOUNDARY_ACTIONS, ...BOUNDARY_NAMED_READS]);
-    expect([...BOUNDARY_NAMED_READS]).toEqual(["sts:GetCallerIdentity", "servicequotas:GetServiceQuota"]);
+    // TR-SWITCH-B2: and the Team record's Glue reads and lakeformation:GetDataAccess (no resource type); its S3 Vectors, S3 Tables and Athena are wildcards in BOUNDARY_SERVICES.
+    expect([...BOUNDARY_NAMED_READS]).toEqual(["sts:GetCallerIdentity", "servicequotas:GetServiceQuota", "lakeformation:GetDataAccess", "glue:GetCatalog", "glue:GetDatabase*", "glue:GetTable*"]);
     expect(services.Resource).toBe("*");
     for (const service of ["iam", "organizations", "account", "sts"]) expect(BOUNDARY_SERVICES).not.toContain(service);
     // The service role's own wildcard services must all pass the boundary it runs under.
@@ -479,7 +480,11 @@ describe("default permission boundary", () => {
     expect(allows.find((s) => s.Sid === "ConnectorSecretsRole")).toEqual({
       Sid: "ConnectorSecretsRole", Effect: "Allow", Action: ["sts:AssumeRole", "sts:TagSession"],
       // Test services TS26: the TestAccountSecretsRole shares the connector role's name as a prefix, so the one ARN ends in a wildcard (the boundary has no room for another; the broker's own policy names each role exactly).
-      Resource: ["arn:aws:iam::123456789012:role/agentx/staging/agentx-staging-connector-secrets*", "arn:aws:iam::123456789012:role/agentx/staging/agentx-staging-img-*"],
+      Resource: [
+        "arn:aws:iam::123456789012:role/agentx/staging/agentx-staging-connector-secrets*", "arn:aws:iam::123456789012:role/agentx/staging/agentx-staging-img-*",
+        // TR-SWITCH-B2: the Team record's vector data role, a fixed name (it was generated).
+        "arn:aws:iam::123456789012:role/agentx/staging/agentx-staging-record-vectors-data",
+      ],
     });
     expect(allows.flatMap((s) => s.Action).filter((a) => a === "*" || a === "sts:*")).toEqual([]);
     expect(allows.filter((s) => s.Action.some((a) => /^sts:(AssumeRole|TagSession)/.test(a))).map((s) => s.Sid)).toEqual(["ConnectorSecretsRole", "AssumeOrgRoles"]);

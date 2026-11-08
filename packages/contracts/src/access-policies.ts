@@ -123,6 +123,12 @@ export const SERVICE_ROLE_SERVICES: readonly string[] = [
 ];
 
 /**
+ * The Team record's storage services (TR-SWITCH-B1/B2). NOT in SERVICE_ROLE_SERVICES: the service role gets named actions on this environment's own resources (teamRecordDeployStatements), never a wildcard.
+ * They are in the boundary as wildcards, as a ceiling, because the boundary has no room to name the resources (see BOUNDARY_SERVICES).
+ */
+export const TEAM_RECORD_BOUNDARY_SERVICES: readonly string[] = ["athena", "s3tables", "s3vectors"];
+
+/**
  * Services the default permission boundary allows by wildcard: the service role's own, plus what
  * the environment's roles call (Bedrock models, X-Ray, CodeBuild and API Gateway invoke). STS and
  * Service Quotas are not here: sts:* would let a bounded role assume any same-account role that
@@ -136,11 +142,17 @@ export const SERVICE_ROLE_SERVICES: readonly string[] = [
  * own statements name the one monthly budget; the boundary only bounds them and grants nothing by
  * itself. The generated test in access-stack.test.ts keeps this list complete and free of unused
  * services.
+ * The Team record's three storage services (TEAM_RECORD_BOUNDARY_SERVICES) are wildcards here for the same reason, and for size: naming this environment's bucket, table bucket and workgroup in the boundary costs about 560
+ * characters on top of the 560 it has free (a worst case of 6,461 against IAM's 6,144 limit, measured 2026-11-08). The deploy role's grants and the broker's and vector role's own policies name them; the boundary is only their ceiling.
  */
-export const BOUNDARY_SERVICES: readonly string[] = [...SERVICE_ROLE_SERVICES, "bedrock", "budgets", "codebuild", "execute-api", "xray"];
+export const BOUNDARY_SERVICES: readonly string[] = [...SERVICE_ROLE_SERVICES, "bedrock", "budgets", "codebuild", "execute-api", "xray", ...TEAM_RECORD_BOUNDARY_SERVICES];
 
-/** The two reads the boundary names on "*" in its Services statement: not the whole services (sts:*, servicequotas:*), see the note above. */
-export const BOUNDARY_NAMED_READS: readonly string[] = ["sts:GetCallerIdentity", "servicequotas:GetServiceQuota"];
+
+/**
+ * The reads the boundary names on "*" in its Services statement: not the whole services (sts:*, servicequotas:*, glue:*, lakeformation:*), see the note above.
+ * The Team record adds the Glue reads Athena's federated S3 Tables catalog makes (the catalog, databases and tables; the broker's own grant names this lake's) and lakeformation:GetDataAccess (no resource type, TRW-1 R3).
+ */
+export const BOUNDARY_NAMED_READS: readonly string[] = ["sts:GetCallerIdentity", "servicequotas:GetServiceQuota", "lakeformation:GetDataAccess", "glue:GetCatalog", "glue:GetDatabase*", "glue:GetTable*"];
 
 /**
  * Service-linked roles the service role may create while deploying. route53resolver: associating
@@ -359,6 +371,60 @@ const INSTANCE_PROFILE_ACTIONS = [
  */
 const BUDGET_ACTIONS = ["budgets:ModifyBudget", "budgets:ViewBudget", "budgets:TagResource", "budgets:UntagResource", "budgets:ListTagsForResource"];
 
+/**
+ * The Team record (TR-SWITCH-B1/B2, 0.5.11): what CloudFormation's handlers call to create, update and delete the record's three storage resources, taken from the handler permissions the public
+ * CloudFormation registry publishes for each type (read 2026-11-08, pinned in tests/fixtures/cfn-handler-permissions-team-record-2026-11-08.json and checked by tests/contract/team-record-iam-coverage.test.ts), and nothing else
+ * of S3 Vectors, S3 Tables or Athena. Each is on this environment's own resource names (`agentx-<env>-record-vectors|record-lake|record`), never on another bucket or workgroup of the account.
+ * The `kms:*` and `s3:*` the handlers also call are already in the service role's Services statement, and the Athena results bucket is an ordinary S3 bucket.
+ * Not granted, on purpose (the record sets none of these properties, so the handlers do not call them): `iam:PassRole` and `iam:CreateServiceLinkedRole` that the table bucket and workgroup handlers list (the record passes
+ * no role to either), and `s3tables:PutTableBucketReplication` / `s3tables:DeleteTableBucketReplication` (they would let a deploy copy the lake to another bucket).
+ *
+ * The service role's inline policy is capped at 10,240 characters, so the actions are IAM name patterns, each chosen to match exactly the handler actions and no other action of the service (the coverage test checks the
+ * match set against AWS's full action list for each service, pinned in tests/fixtures/team-record-service-actions-2026-11-08.json): `*VectorBucket` is Create/Get/DeleteVectorBucket and not the *Policy actions, `*Tag*` is
+ * TagResource, UntagResource and ListTagsForResource, `*Namespace*` is the four namespace actions, `*WorkGroup` is Create/Get/Update/DeleteWorkGroup and not ListWorkGroups, and so on.
+ */
+export const TEAM_RECORD_VECTORS_DEPLOY_ACTIONS: readonly string[] = ["s3vectors:*VectorBucket", "s3vectors:*Index", "s3vectors:ListIndexes", "s3vectors:*Tag*"];
+export const TEAM_RECORD_LAKE_DEPLOY_ACTIONS: readonly string[] = [
+  // the table bucket: create/get/delete, its encryption, its maintenance and metrics configuration, its storage class, a read of its replication
+  "s3tables:*TableBucket", "s3tables:*TableBucketEncryption", "s3tables:*TableBucket*Configuration", "s3tables:*Table*StorageClass", "s3tables:GetTableBucketReplication",
+  // the namespace and the tables: create, list, get, rename, delete, the data write CreateTable makes, a table's maintenance configuration
+  "s3tables:*Namespace*", "s3tables:CreateTable", "s3tables:ListTables", "s3tables:GetTable", "s3tables:DeleteTable", "s3tables:RenameTable", "s3tables:PutTableData", "s3tables:*TableMaintenanceConfiguration",
+  "s3tables:*Tag*",
+];
+export const TEAM_RECORD_WORK_GROUP_DEPLOY_ACTIONS: readonly string[] = ["athena:*WorkGroup", "athena:*Tag*"];
+/**
+ * The three List calls the handlers' list operations make. They take no resource type, so they can only be on "*" (the same reason as CreateApi above); they return names and ARNs only, no data. CloudFormation's own
+ * create, update and delete do not need them as far as is known, so this statement is the first to drop if a staging deploy proves it unused ([verify on staging]).
+ */
+export const TEAM_RECORD_LIST_ACTIONS: readonly string[] = ["s3vectors:ListVectorBuckets", "s3tables:ListTableBuckets", "athena:ListWorkGroups"];
+
+/** The ARNs of the record's storage in this environment. A vector bucket and a table bucket carry no region in their names, so the ARNs name the deploy region and account. */
+function teamRecordArns(scope: Pick<PolicyScope, "env" | "partition" | "region" | "account">) {
+  const names = recordStorageNames(scope.env);
+  const at = (service: string) => `arn:${scope.partition}:${service}:${scope.region}:${scope.account}:`;
+  return {
+    vectorBucket: `${at("s3vectors")}bucket/${names.vectorBucket}`,
+    tableBucket: `${at("s3tables")}bucket/${names.tableBucket}`,
+    workGroup: `${at("athena")}workgroup/${names.workGroup}`,
+  };
+}
+
+/**
+ * The service role's grants for the Team record's storage (see TEAM_RECORD_VECTORS_DEPLOY_ACTIONS). They exist whether or not the record is switched on: the access stack is deployed before the control plane that creates the
+ * resources, and a switch-on must not need a second access deploy. One statement for the three services (an action only ever applies to an ARN of its own service), and the List calls on "*".
+ */
+function teamRecordDeployStatements(scope: Pick<PolicyScope, "env" | "partition" | "region" | "account">): PolicyStatementJson[] {
+  const arn = teamRecordArns(scope);
+  return [
+    {
+      Sid: "TeamRecordStorage", Effect: "Allow",
+      Action: [...TEAM_RECORD_VECTORS_DEPLOY_ACTIONS, ...TEAM_RECORD_LAKE_DEPLOY_ACTIONS, ...TEAM_RECORD_WORK_GROUP_DEPLOY_ACTIONS],
+      Resource: [arn.vectorBucket, `${arn.vectorBucket}/index/*`, arn.tableBucket, `${arn.tableBucket}/table/*`, arn.workGroup],
+    },
+    { Sid: "TeamRecordLists", Effect: "Allow", Action: [...TEAM_RECORD_LIST_ACTIONS], Resource: "*" },
+  ];
+}
+
 /** The IAM path every role of an environment's stacks lives under, except the access stack's two roles. */
 export function environmentRolePath(env: string): string {
   return `/agentx/${env}/`;
@@ -427,6 +493,21 @@ export function taskPersonProofRoleName(env: string): string {
 }
 
 /**
+ * The Team record's vector data role (infra/lib/team-record-vectors.ts): the broker assumes it, tagged with a workspace's index name, to reach one workspace's vector index. Fixed (it was a CloudFormation-generated name, which no
+ * boundary ARN can name, TR-SWITCH-B2) so the default boundary can name it as a role a bounded role may assume, and the deploy role and the boundary can answer the path-less lookup of a role that does not exist yet.
+ * The role is only created while the record is switched on (agentxTeamRecord=enabled), and nothing was deployed with the old generated name (the record has never been switched on), so the rename moves no live role.
+ */
+export function teamRecordVectorsRoleName(env: string): string {
+  return `agentx-${env}-record-vectors-data`;
+}
+
+/**
+ * The names the Team record gives its storage, `agentx-<env>-record-vectors|record-lake|record`. They are the same strings as teamRecordVectorBucketName, teamRecordTableBucketName and teamRecordWorkGroupName in derived-names.ts, which
+ * imports this file and so cannot be imported here; tests/contract/team-record-iam-coverage.test.ts pins the two to each other.
+ */
+const recordStorageNames = (env: string) => ({ vectorBucket: `agentx-${env}-record-vectors`, tableBucket: `agentx-${env}-record-lake`, workGroup: `agentx-${env}-record` });
+
+/**
  * Every role the environment's stacks create under a fixed RoleName (the access stack's two roles are not among them: they are
  * created at the root by the operator). Each one needs the path-less grant of fixedNameRoleLookupStatement, so keep this list
  * complete: tests/contract/role-paths.test.ts compares it with the synthesized templates.
@@ -435,6 +516,7 @@ export function fixedNameEnvironmentRoleNames(env: string): string[] {
   return [
     connectorSecretsRoleName(env), testAccountSecretsRoleName(env), brokerRoleName(env), modelProxyTaskRoleName(env), modelAccessProbeRoleName(env), chainScheduleRoleName(env),
     savedEnvPushRoleName(env), savedEnvPullRoleName(env), savedEnvManageRoleName(env), savedEnvCreateRoleName(env),
+    teamRecordVectorsRoleName(env),
     ...(env === TASK_PERSON_PROOF_ENV ? [taskPersonProofRoleName(env)] : []),
   ];
 }
@@ -567,6 +649,7 @@ export function serviceRoleStatements(scope: PolicyScope): PolicyStatementJson[]
     ecrTemplateServiceLinkedRole(scope.partition, scope.account),
     // FR-047: the control-plane stack's monthly budget, and only that one, never budgets:* on *.
     { Sid: "Budget", Effect: "Allow", Action: [...BUDGET_ACTIONS], Resource: `arn:${scope.partition}:budgets::${scope.account}:budget/agentx-${scope.env}-monthly` },
+    ...teamRecordDeployStatements(scope),
   ];
 }
 
@@ -628,6 +711,8 @@ export function defaultBoundaryStatements(scope: Pick<PolicyScope, "env" | "part
         // Test services TS26: and the TestAccountSecretsRole, which shares the ConnectorSecretsRole's name as a prefix (one ARN with a trailing wildcard; the boundary has no room for another).
         `arn:${partition}:iam::${account}:role${environmentRolePath(scope.env)}${connectorSecretsRoleName(scope.env)}*`,
         `arn:${partition}:iam::${account}:role${environmentRolePath(scope.env)}${savedEnvRolePrefix(scope.env)}*`,
+        // TR-SWITCH-B2: and the Team record's vector data role, which the broker assumes with a workspace's index name as the session tag (a fixed name, so this can name it; it was generated).
+        `arn:${partition}:iam::${account}:role${environmentRolePath(scope.env)}${teamRecordVectorsRoleName(scope.env)}`,
       ],
     },
     // A bounded role may be granted `sts:AssumeRole` into a customer's role in ANOTHER account, with an external id that names a Rovara org (the broker's CloudWatch

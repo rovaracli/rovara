@@ -197,7 +197,9 @@ describe("ConnectorSecretsRole (named environments)", () => {
       Action: ["sts:AssumeRole", "sts:TagSession"],
       // Setup and test health SH22: and one wildcard for the saved environment image roles (the broker's own policy names the three exactly).
       // Test services TS26: and the TestAccountSecretsRole, whose name starts the same way (one wildcard ARN; see test-account-secrets-infrastructure.test.ts).
-      Resource: ["arn:aws:iam::111122223333:role/agentx/staging/agentx-staging-connector-secrets*", "arn:aws:iam::111122223333:role/agentx/staging/agentx-staging-img-*"],
+      Resource: ["arn:aws:iam::111122223333:role/agentx/staging/agentx-staging-connector-secrets*", "arn:aws:iam::111122223333:role/agentx/staging/agentx-staging-img-*",
+        // TR-SWITCH-B2: and the Team record's vector data role, a fixed name.
+        "arn:aws:iam::111122223333:role/agentx/staging/agentx-staging-record-vectors-data"],
     });
     // Owner decision A narrows it to the broker, the model proxy task role and the model access probe (ArnLike on the principal): see access-policies.test.ts for the exact JSON.
     expect(sts[1]!.Condition).toEqual({

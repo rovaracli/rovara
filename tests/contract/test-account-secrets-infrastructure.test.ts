@@ -248,7 +248,7 @@ describe("TestAccountSecretsRole (named environments)", () => {
   it("is covered by the default boundary's one connector-secrets* ARN, which stays the only sts:AssumeRole grant of this account's roles besides the saved environment's", () => {
     const boundary = defaultBoundaryStatements({ env: "staging", partition: "aws", region: "us-west-2", account: "111122223333", cloudFormationRoleName: "x" });
     const statement = boundary.find((entry) => entry.Sid === "ConnectorSecretsRole")!;
-    expect(statement.Resource).toEqual(["arn:aws:iam::111122223333:role/agentx/staging/agentx-staging-connector-secrets*", "arn:aws:iam::111122223333:role/agentx/staging/agentx-staging-img-*"]);
+    expect(statement.Resource).toEqual(["arn:aws:iam::111122223333:role/agentx/staging/agentx-staging-connector-secrets*", "arn:aws:iam::111122223333:role/agentx/staging/agentx-staging-img-*", "arn:aws:iam::111122223333:role/agentx/staging/agentx-staging-record-vectors-data"]);
     expect("arn:aws:iam::111122223333:role/agentx/staging/agentx-staging-connector-secrets-test-accounts").toMatch(new RegExp(`^${(statement.Resource as string[])[0]!.replace(/\*/gu, ".*")}$`, "u"));
   });
 
