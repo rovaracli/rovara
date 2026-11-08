@@ -4,12 +4,13 @@ import { describe, expect, it } from "vitest";
 import { approveLesson, listQueued, listWaiting, rejectLesson, type ApproveDeps } from "../../../packages/broker/src/lessons/approve.js";
 import { recordFeedback } from "../../../packages/broker/src/lessons/counters.js";
 import { loadLessonsForStage, type LoadDeps } from "../../../packages/broker/src/lessons/load.js";
+import { readVisible } from "../../../packages/broker/src/lessons/read-visible.js";
 import { lessonDeletionPort } from "../../../packages/broker/src/lessons/deletion.js";
 import { InMemoryLessonStore } from "../../../packages/broker/src/lessons/store.js";
 import { createAccessCheckPort } from "../../../packages/broker/src/team-record/access-port.js";
 import { applyAudienceEvent, applyMemberEvents } from "../../../packages/broker/src/team-record/access.js";
 import { ORG_A, addSource, githubDraft, world } from "../../support/team-record-core.js";
-import { Audit, Clock, MemoryVectors, PROJECT, directory, embedder, lessonRecord, seed, settings } from "./lesson-helpers.js";
+import { Audit, Clock, MemoryVectors, PROJECT, allSharedTasks, directory, embedder, lessonRecord, seed, settings } from "./lesson-helpers.js";
 
 const WS = ORG_A;
 const KEY = { workspaceId: WS, project: PROJECT };
@@ -23,7 +24,7 @@ async function setup() {
   const w = world();
   await addSource(w, { source: "slack", scope: SC });
   await w.sink.put(githubDraft({ source: "slack", kind: "slack.message", repo: undefined, sourceRef: { system: "T1", id: "m1", version: "1" }, audience: slackAcl(["U-member", "U-other"]), actor: { sourceId: "U-other", trust: "member" }, text: "x", links: [] }));
-  const access = createAccessCheckPort(w.table);
+  const access = createAccessCheckPort(w.table, { taskVisibility: allSharedTasks });
   const store = new InMemoryLessonStore();
   const base = lessonRecord({ workspaceId: WS });
   const prov = { ...base.provenance, audience: slackAcl(["U-member", "U-other"]), sourceScopes: [SC], authors: ["carl"] };
@@ -113,7 +114,7 @@ describe("place-scoped tracker lessons are denied (F6), with a log line, never l
   it("a Jira lesson recorded against the place is read by nobody, not even a person its snapshot names", async () => {
     const { w, store } = await setup();
     const lines: string[] = [];
-    const access = createAccessCheckPort(w.table, { log: (event) => { lines.push(event); } });
+    const access = createAccessCheckPort(w.table, { taskVisibility: allSharedTasks, log: (event) => { lines.push(event); } });
     const clock = new Clock();
     const vectors = new MemoryVectors();
     const deps: LoadDeps = { access, store, embedder, vectors, settings: settings(), audit: new Audit(), now: clock.now };
@@ -121,9 +122,12 @@ describe("place-scoped tracker lessons are denied (F6), with a log line, never l
     const legacy = { kind: "restricted" as const, acl: { source: "jira" as never, scope: "jira:project/KEY", principals: ["J-member"], capturedAt: T1, liveCheck: "none" as const } };
     await seed(store, { ...base, id: "les_jira0001", type: "convention", tier: 1, approvals: [{ approvalId: "ap-ann", by: "ann", at: 1, mode: "one" as const }], provenance: { ...base.provenance, audience: legacy } } as never);
     await vectors.upsert(WS, PROJECT, "les_jira0001", await embedder.embed("x"), { status: "active" });
-    const request = (principals: string[]) => ({ workspaceId: WS, project: PROJECT, taskId: "t1", stage: "IMPLEMENT" as const, round: 1, intent: "Retry failed HTTP calls", repos: ["api"], files: ["src/retry/client.ts"], languages: [], taskAudience: { kind: "private" as const, identity: { principals, groups: [] } } });
-    expect(((await loadLessonsForStage(deps, request(["J-member"]))).context?.lessons ?? []).map((l) => l.id)).not.toContain("les_jira0001");
-    expect(((await loadLessonsForStage(deps, request(["J-stranger"]))).context?.lessons ?? []).map((l) => l.id)).not.toContain("les_jira0001");
+    const request = { workspaceId: WS, project: PROJECT, taskId: "t1", stage: "IMPLEMENT" as const, round: 1, intent: "Retry failed HTTP calls", repos: ["api"], files: ["src/retry/client.ts"], languages: [], taskAudience: { kind: "shared" as const } };
+    expect(((await loadLessonsForStage(deps, request)).context?.lessons ?? []).map((l) => l.id)).not.toContain("les_jira0001");
+    // People are asked through the read path: not even the member its snapshot names reads it.
+    const seenBy = async (principals: string[]) => (await readVisible({ access, key: KEY, viewer: { principals, groups: [] }, lessons: [(await store.get(KEY, "les_jira0001"))!], where: "test" })).map((l) => l.id);
+    expect(await seenBy(["J-member"])).toEqual([]);
+    expect(await seenBy(["J-stranger"])).toEqual([]);
     expect(lines).toContain("learning.place_scoped_tracker_lesson_denied");
   });
 });

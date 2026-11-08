@@ -8,13 +8,14 @@ import { hasStaleCitation, approvedForUse, stageAllows, toLearned, LOAD_MAX_BYTE
 import { memberView, type MemberResolver } from "./members.js";
 import { modeAllows, resolveLearning, type LearningSettingsReader } from "./policy.js";
 import type { Clock } from "./ports.js";
+import { createLessonLiveReader } from "./live-visibility.js";
 import { readVisible, type LessonLog } from "./read-visible.js";
 import type { LessonStore, ScopeKey } from "./store.js";
 import { isRestricted, type IdentitySet, type Lesson } from "./types.js";
 
 export interface DeliveryDeps {
   store: LessonStore; settings: LearningSettingsReader; access: AccessCheckPort;
-  /** The reader's identity for the access check (the accounts a developer linked). May throw: nothing is delivered. */
+  /** Unused since decision 31 (the reader is the running task's audience, not one person); kept so the wiring needs no change. */
   identity(workspaceId: string, developerId: string): Promise<IdentitySet>;
   /** Counts approvers as members (a merged developer is the member they became). The dispatcher has no sign-in read, so it leaves this out and the loader's member-aware check (at queue time) stands; where given, a failed lookup delivers nothing. */
   resolveMember?: MemberResolver;
@@ -36,8 +37,11 @@ export async function learnedContextFromRefs(deps: DeliveryDeps, refs: LearnedRe
     const resolved = await resolveLearning(deps.settings, key.workspaceId, key.project);
     if (!modeAllows(resolved.mode, "load")) return undefined;
     const now = deps.now();
-    // The reader the load was for: a private task's owner (their linked accounts), or nobody in particular for a shared task.
-    const viewer = refs.audience.kind === "shared" ? undefined : await deps.identity(key.workspaceId, refs.audience.developerId);
+    // Decision 31: the reader is the running task's audience, asked again now (the people who can open its session now, not the audience the load saw, and not `task.shared`). A lesson is delivered only if everyone who
+    // can see the task can see every source task of the lesson. A stage queued before the task id was carried, or a task whose audience can't be read, gets no lesson that names a task (there is no weaker rule to fall back to). Restricted places and
+    // the lesson's own frozen audience are checked as for nobody in particular (`viewer` undefined): a lesson only some people may read never reaches an agent that several people can see.
+    const viewer = undefined;
+    const liveReader = createLessonLiveReader({ port: deps.access.taskVisibility, key, where: "deliver", running: { taskId: refs.taskId }, ...(deps.log === undefined ? {} : { log: deps.log }) });
 
     const fetched: Lesson[] = [];
     for (const ref of refs.lessons) {
@@ -53,7 +57,7 @@ export async function learnedContextFromRefs(deps: DeliveryDeps, refs: LearnedRe
       if (!(await notErased(deps.store, key, lesson))) continue;
       live.push(lesson);
     }
-    const readable = new Set((await readVisible({ access: deps.access, key, viewer, lessons: live, where: "deliver", ...(deps.log === undefined ? {} : { log: deps.log }) })).map((lesson) => lesson.id));
+    const readable = new Set((await readVisible({ access: deps.access, key, viewer, lessons: live, where: "deliver", live: liveReader, ...(deps.log === undefined ? {} : { log: deps.log }) })).map((lesson) => lesson.id));
     const chosen: LearnedLesson[] = [];
     let bytes = 0;
     for (const lesson of live) {
@@ -74,7 +78,7 @@ export async function learnedContextFromRefs(deps: DeliveryDeps, refs: LearnedRe
         if (lesson === undefined || lesson.status === "withdrawn" || isRestricted(lesson) || !(await notErased(deps.store, key, lesson))) continue;
         seen.push(lesson);
       }
-      const shown = new Set((await readVisible({ access: deps.access, key, viewer, lessons: seen, where: "deliver", ...(deps.log === undefined ? {} : { log: deps.log }) })).map((lesson) => lesson.id));
+      const shown = new Set((await readVisible({ access: deps.access, key, viewer, lessons: seen, where: "deliver", live: liveReader, ...(deps.log === undefined ? {} : { log: deps.log }) })).map((lesson) => lesson.id));
       priorLoaded = seen.filter((lesson) => shown.has(lesson.id)).map((lesson) => ({ id: lesson.id, type: lesson.type, title: lesson.title }));
     }
 

@@ -60,7 +60,11 @@ export function narrowestAudience(list: readonly Audience[]): Audience {
 }
 
 /** The asker's linked identities, for ACL checks. An unmapped identity is simply absent, and matches nothing (fail closed). */
-export interface IdentitySet { principals: readonly string[]; groups: readonly string[] }
+export interface IdentitySet {
+  principals: readonly string[]; groups: readonly string[];
+  /** Who the reader is, for the live check of the tasks a lesson was learned from (`live-visibility.ts`). Absent: the reader is treated as nobody in particular and sees only lessons from project-wide tasks (fail closed). */
+  developerId?: string | undefined;
+}
 /** Whether an identity set satisfies a restricted ACL. An ACL with no principals and no groups is satisfied by nobody. */
 export function satisfiesAcl(identity: IdentitySet, acl: AclSnapshot): boolean {
   const byPrincipal = (acl.principals ?? []).some((p) => identity.principals.includes(p));
@@ -115,6 +119,11 @@ export const LessonProvenanceSchema = z.object({
   editors: z.array(z.string().max(100)).max(20).optional(),
   /** Independent tasks that support the lesson (one id per task). */
   supportTasks: z.array(z.string().max(100)).max(50),
+  /**
+   * LV-1 M2: the tasks behind the lessons that were loaded INTO the task this lesson was learned from (read from the task's load records when it ended). The agent may have restated what it was given, so this
+   * lesson is also gated on those tasks: re-learning cannot launder a narrowed task. Not support (never counted toward recurrence or corroboration). Absent: none.
+   */
+  inheritedTasks: z.array(z.string().max(100)).max(50).optional(),
   /** Where the evidence came from, for per-source spike detection: `member:<id>`, `slack:<channel>`, `ci`, or a span kind. */
   sources: z.array(z.string().max(120)).max(20),
   /** Every source present in the reflector's input (not only the cited ones), for spike detection and holds. Never used for corroboration. */

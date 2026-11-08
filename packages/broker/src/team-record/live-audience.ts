@@ -14,7 +14,8 @@ export const LIVE_TASK_READ_TIMEOUT_MS = 5_000;
 
 /** The live Plan 5 visibility of tasks. A task missing from the answer, or mapped to `undefined`, is unreadable. May throw: that reads as unreadable for every task asked about. */
 export interface TaskVisibilityPort {
-  read(orgId: OrgId, taskIds: readonly string[]): Promise<ReadonlyMap<string, TaskVisibility | undefined>>;
+  /** `signal` aborts when the caller stops waiting (a timeout): the port should stop starting new reads then (the answers are no longer used). */
+  read(orgId: OrgId, taskIds: readonly string[], options?: { signal?: AbortSignal }): Promise<ReadonlyMap<string, TaskVisibility | undefined>>;
 }
 
 /** The parts of a row (an event, a fact, a lesson) that name a Rovara task. */
@@ -93,9 +94,9 @@ export interface LiveAudienceReader {
   verdictOf(audience: ReadAudience, taskIds: readonly string[]): LiveVerdict;
 }
 
-async function withTimeout<T>(work: Promise<T>, ms: number): Promise<T> {
+async function withTimeout<T>(work: Promise<T>, ms: number, onTimeout?: () => void): Promise<T> {
   let timer: ReturnType<typeof setTimeout> | undefined;
-  const timeout = new Promise<never>((_resolve, reject) => { timer = setTimeout(() => { reject(new Error("team-record: the task visibility lookup timed out")); }, ms); });
+  const timeout = new Promise<never>((_resolve, reject) => { timer = setTimeout(() => { onTimeout?.(); reject(new Error("team-record: the task visibility lookup timed out")); }, ms); });
   work.catch(() => undefined);
   try {
     return await Promise.race([work, timeout]);
@@ -104,7 +105,7 @@ async function withTimeout<T>(work: Promise<T>, ms: number): Promise<T> {
   }
 }
 
-export function createLiveAudienceReader(orgId: OrgId, port: TaskVisibilityPort | undefined, options: { timeoutMs?: number | undefined; maxTasks?: number | undefined; log?: RecordLog | undefined } = {}): LiveAudienceReader {
+export function createLiveAudienceReader(orgId: OrgId, port: TaskVisibilityPort | undefined, options: { /** A number of ms, or a function giving the time left for THIS lookup (the loader's shared deadline). */ timeoutMs?: number | (() => number) | undefined; maxTasks?: number | undefined; log?: RecordLog | undefined } = {}): LiveAudienceReader {
   const maxTasks = options.maxTasks ?? LIVE_TASKS_PER_REQUEST_MAX;
   const answers = new Map<string, TaskVisibility | undefined>();
   return {
@@ -126,8 +127,10 @@ export function createLiveAudienceReader(orgId: OrgId, port: TaskVisibilityPort 
         return;
       }
       let found: ReadonlyMap<string, TaskVisibility | undefined>;
+      const abort = new AbortController();
       try {
-        found = await withTimeout(port.read(orgId, fresh), options.timeoutMs ?? LIVE_TASK_READ_TIMEOUT_MS);
+        // On a timeout the port is told to stop (LV-1 L2): its workers would otherwise keep reading the State table for answers nobody uses.
+        found = await withTimeout(port.read(orgId, fresh, { signal: abort.signal }), (typeof options.timeoutMs === "function" ? options.timeoutMs() : options.timeoutMs) ?? LIVE_TASK_READ_TIMEOUT_MS, () => { abort.abort(); });
       } catch (error) {
         options.log?.("record.live_audience_unreadable", { reason: error instanceof Error && error.message.includes("timed out") ? "timeout" : "error", tasks: fresh.length });
         return;

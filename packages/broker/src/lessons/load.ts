@@ -11,7 +11,8 @@ import { isTrialLesson } from "./trial.js";
 import type { Embedder, LessonDeps, LessonVectors } from "./ports.js";
 import type { LessonStore, LoadManifest, LoadManifestEntry, ScopeKey } from "./store.js";
 import type { AccessCheckPort } from "../team-record/access-port.js";
-import { readVisible } from "./read-visible.js";
+import { createLessonLiveReader, lessonTaskRefs } from "./live-visibility.js";
+import { readVisible, readVisibleRanked } from "./read-visible.js";
 import { memberView, type MemberOf, type MemberResolver } from "./members.js";
 import { isRestricted, normId, type IdentitySet, type Lesson } from "./types.js";
 
@@ -22,8 +23,13 @@ const VECTOR_FETCH = 60;
 const DAY = 86_400_000;
 /** The reviewer's list of what earlier stages loaded is kept short (about 1 KB of titles), so it cannot crowd the lessons budget. */
 const PRIOR_LOADED_MAX = 12;
+/** The ranked candidates are checked against the access records and the source tasks' live visibility this many at a time (LV-1 M1), until enough survive. */
+const CHECK_PAGE = 3 * LOAD_MAX_LESSONS;
+/** The whole visibility work of one load must end inside the dispatcher's 2.5 s deadline (`lessons-dispatch.ts`): what is not checked by then is not offered, and each batched task read is cut at the same time. */
+export const LOAD_VISIBILITY_BUDGET_MS = 1_800;
 
-export type TaskAudience = { kind: "shared" } | { kind: "private"; identity: IdentitySet };
+/** Who reads what a stage produces. Only "shared": the reader is the running task's audience, read live (decision 31), never one named person (a "private" reader would let a lesson only some people may read reach an agent several people can see). */
+export type TaskAudience = { kind: "shared" };
 export interface LoadRequest {
   workspaceId: string; project: string; taskId: string; stage: LessonStage | "CHECKS"; round: number;
   /** The task's intent and, from PLAN on, the plan summary: both are text the project already holds. */
@@ -161,19 +167,13 @@ export async function loadLessonsForStage(deps: LoadDeps, request: LoadRequest):
     deps.metrics?.count("learning_load_skipped", { reason: "access_unavailable" });
     return empty("access_unavailable", setVersion);
   }
-  // Every candidate goes through the one read path: the frozen snapshot AND the access records now (one batch). A record that cannot be read loads nothing.
-  const viewer = request.taskAudience.kind === "private" ? { principals: request.taskAudience.identity.principals, groups: request.taskAudience.identity.groups } : undefined;
-  let readable: Set<string>;
-  try {
-    readable = new Set((await readVisible({ access: deps.access, key, viewer, lessons: active.filter((lesson) => stageAllows(lesson, stage, member)), where: "load", log: deps.log })).map((lesson) => lesson.id));
-  } catch {
-    deps.metrics?.count("learning_load_skipped", { reason: "access_unavailable" });
-    return empty("access_unavailable", setVersion);
-  }
-
+  // Every candidate goes through the one read path: the frozen snapshot AND the access records AND the source tasks' live visibility. The candidates are scored and scope-matched FIRST (cheap, no reads), then the
+  // best ones are checked a page at a time until enough survive (LV-1 M1), with one reader for the whole load so no task is read twice.
+  // No single person is the reader: restricted lessons and restricted places are checked as for nobody in particular, and the source tasks against the running task's audience.
+  const viewer: IdentitySet | undefined = undefined;
   const scored: Array<{ lesson: Lesson; score: number; why: LoadManifestEntry["why"] }> = [];
   for (const lesson of active) {
-    if (!stageAllows(lesson, stage, member) || !readable.has(lesson.id)) continue;
+    if (!stageAllows(lesson, stage, member)) continue;
     const match = scopeMatch(lesson, request);
     if (!match.matches) continue;
     const sim = similarity.get(lesson.id) ?? 0;
@@ -182,18 +182,41 @@ export async function loadLessonsForStage(deps: LoadDeps, request: LoadRequest):
     scored.push({ lesson, score, why: match.byPath ? "path" : sim >= 0.6 ? "similar" : "scope" });
   }
   scored.sort((a, b) => b.score - a.score || a.lesson.id.localeCompare(b.lesson.id));
+  const rank = new Map(scored.map((entry) => [entry.lesson.id, entry] as const));
 
+  const log = (event: string, fields: Record<string, unknown>): void => {
+    deps.log?.(event, fields);
+    if (fields.reason === "bound") deps.metrics?.count("learning_live_bound_hit", { where: "load" });
+  };
+  const deadlineAt = Date.now() + LOAD_VISIBILITY_BUDGET_MS;
+  // Each batched task read gets only the time that is left, so the whole load stays inside the dispatcher's deadline whatever the State table does.
+  const live = createLessonLiveReader({ port: deps.access.taskVisibility, key, where: "load", log, running: { taskId: request.taskId }, timeoutMs: () => Math.max(1, deadlineAt - Date.now()) });
   const chosen: LearnedLesson[] = [];
   const entries: LoadManifestEntry[] = [];
   let bytes = 0;
-  for (const { lesson, score, why } of scored) {
-    if (chosen.length >= LOAD_MAX_LESSONS) break;
-    const learned = toLearned(lesson);
-    const size = sizeOf(learned);
-    if (bytes + size > LOAD_MAX_BYTES) continue;
-    chosen.push(learned);
-    entries.push({ id: lesson.id, version: lesson.version, score: Math.round(score * 1000) / 1000, why, citation: "unchecked" });
-    bytes += size;
+  const choose = (lessons: readonly Lesson[]): void => {
+    chosen.length = 0; entries.length = 0; bytes = 0;
+    for (const lesson of lessons) {
+      if (chosen.length >= LOAD_MAX_LESSONS) break;
+      const picked = rank.get(lesson.id)!;
+      const learned = toLearned(lesson);
+      const size = sizeOf(learned);
+      if (bytes + size > LOAD_MAX_BYTES) continue;
+      chosen.push(learned);
+      entries.push({ id: lesson.id, version: lesson.version, score: Math.round(picked.score * 1000) / 1000, why: picked.why, citation: "unchecked", taskIds: lessonTaskRefs(lesson).taskIds });
+      bytes += size;
+    }
+  };
+  try {
+    const checked = await readVisibleRanked({
+      access: deps.access, key, viewer, where: "load", log, live, ranked: scored.map((entry) => entry.lesson), pageSize: CHECK_PAGE,
+      enough: (kept) => { choose(kept); return chosen.length >= LOAD_MAX_LESSONS; }, deadlineAt,
+    });
+    choose(checked.kept);
+    if (!checked.complete) { deps.log?.("learning.load_visibility_budget", { checked: checked.checked, ranked: scored.length }); deps.metrics?.count("learning_load_budget_hit"); }
+  } catch {
+    deps.metrics?.count("learning_load_skipped", { reason: "access_unavailable" });
+    return empty("access_unavailable", setVersion);
   }
 
   let priorLoaded: LearnedContext["priorLoaded"];
@@ -209,7 +232,7 @@ export async function loadLessonsForStage(deps: LoadDeps, request: LoadRequest):
       }
     }
     // The titles go through the same read path: a lesson whose source place turned private since is not listed for a task that may no longer read it.
-    const shown = new Set((await readVisible({ access: deps.access, key, viewer, lessons: (await Promise.all([...seen.keys()].map((id) => deps.store.get(key, id)))).flatMap((l) => (l === undefined ? [] : [l])), where: "load", log: deps.log })).map((l) => l.id));
+    const shown = new Set((await readVisible({ access: deps.access, key, viewer, live, lessons: (await Promise.all([...seen.keys()].map((id) => deps.store.get(key, id)))).flatMap((l) => (l === undefined ? [] : [l])), where: "load", log })).map((l) => l.id));
     priorLoaded = [...seen.values()].filter((entry) => shown.has(entry.id));
   }
 

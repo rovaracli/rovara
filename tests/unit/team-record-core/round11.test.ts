@@ -10,7 +10,7 @@ import { admitTransient } from "../../../packages/broker/src/team-record/ingest.
 import { ORG_A, addSource, githubDraft, rows, world, type World } from "../../support/team-record-core.js";
 import { deleteDeps } from "../../support/team-record-delete.js";
 import { readVisible } from "../../../packages/broker/src/lessons/read-visible.js";
-import { lessonRecord } from "../lessons/lesson-helpers.js";
+import { allSharedTasks, lessonRecord } from "../lessons/lesson-helpers.js";
 
 const T1 = "2026-10-30T09:00:00.000Z";
 const T2 = "2026-10-30T10:00:00.000Z";
@@ -116,7 +116,7 @@ describe("F6 place-scoped tracker data is never created, and never read as a lim
     const w = world();
     await addSource(w, { source: "jira", scope: "jira:project/KEY" });
     await w.sink.put(jiraRow("KEY-1", ["PA", "PB"]));
-    const access = createAccessCheckPort(w.table);
+    const access = createAccessCheckPort(w.table, { taskVisibility: allSharedTasks });
     const base = lessonRecord({ id: "les_legacy01", workspaceId: ORG_A });
     const legacy = { ...base, provenance: { ...base.provenance, audience: acl("jira:project/KEY", ["PA", "PB"], T1, "jira") } } as never;
     const seen = async (id: string) => (await readVisible({ access, key: { workspaceId: ORG_A, project: "web" }, viewer: { principals: [id], groups: [] }, lessons: [legacy], where: "test" })).map((l) => l.id);

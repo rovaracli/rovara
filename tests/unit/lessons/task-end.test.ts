@@ -9,10 +9,11 @@ import { announceHumanSendBack, registerHumanSendBackListener, sendBackToRecord 
 import type { ProcessDeps } from "../../../packages/broker/src/lessons/process.js";
 import { withLearningAttempt, noteLearningFault, type LearningAttempt } from "../../../packages/broker/src/lessons/learning-deadline.js";
 import { LearningRefusal } from "../../../packages/broker/src/lessons/pause.js";
-import { learnFromEndedTask, learnFromEndedTaskTyped, learningTaskEndHandler, reflectOutcomeOf, subjectForTask, type TaskLearningDeps, type TaskSubjectBase } from "../../../packages/broker/src/lessons/task-end.js";
+import { inheritedTasksOf, learnFromEndedTask, learnFromEndedTaskTyped, learningTaskEndHandler, reflectOutcomeOf, subjectForTask, type TaskLearningDeps, type TaskSubjectBase } from "../../../packages/broker/src/lessons/task-end.js";
 import type { OutcomeRowReader } from "../../../packages/broker/src/lessons/task-outcome-rows.js";
 import { InMemoryLessonStore } from "../../../packages/broker/src/lessons/store.js";
 import type { SendBackFact, TaskSubjectFacts } from "../../../packages/broker/src/lessons/task-subject.js";
+import { lessonRecord } from "./lesson-helpers.js";
 import { Alerts, Audit, BASE, Clock, MERGED, MemoryVectors, PROJECT, ScriptedModel, Spend, WS, candidateJson, embedder, facts, memberSpan, reply, settings, verifier } from "./lesson-helpers.js";
 
 class Rows implements OutcomeRowReader {
@@ -312,5 +313,78 @@ describe("learnFromEndedTaskTyped (H1): which failures are worth another try", (
     expect(result).toEqual({ status: "reflected", retry: false });
     expect(processed).toBe(0);
     expect(await w.store.list({ workspaceId: WS, project: PROJECT })).toEqual([]);
+  });
+});
+
+
+describe("LV-1 M2: a lesson learned from a task also names the tasks behind the lessons loaded into it", () => {
+  const loadedInto = async (w: ReturnType<typeof setup>) => {
+    // L (from task P) was loaded into task-1 at its PLAN stage; the agent may have restated it in its plan.
+    const loaded = lessonRecord({ id: "les_loaded001", provenance: { ...lessonRecord().provenance, supportTasks: ["task-p"] } });
+    await w.store.commit({ workspaceId: WS, project: PROJECT }, await w.store.setVersion({ workspaceId: WS, project: PROJECT }), [loaded], 1);
+    await w.store.putManifest({ taskId: "task-1", workspaceId: WS, project: PROJECT, stage: "PLAN", round: 0, setVersion: 1, memory: "live", at: 5, lessons: [{ id: "les_loaded001", version: 1, score: 0.5, why: "scope", citation: "valid" }], bytes: 10 });
+  };
+  it("the new draft carries the loaded lesson's source tasks as inheritedTasks (not as support), and not the task itself", async () => {
+    const w = setup();
+    await loadedInto(w);
+    expect(await learnFromEndedTask(w.deps, { workspaceId: WS, taskId: "task-1" })).toBe("reflected");
+    const created = (await w.store.list({ workspaceId: WS, project: PROJECT })).find((l) => l.id !== "les_loaded001")!;
+    expect(created.provenance.supportTasks).toEqual(["task-1"]);
+    expect(created.provenance.inheritedTasks).toEqual(["task-p"]);
+  });
+  it("a task that had nothing loaded adds no field", async () => {
+    const w = setup();
+    await learnFromEndedTask(w.deps, { workspaceId: WS, taskId: "task-1" });
+    expect((await w.store.list({ workspaceId: WS, project: PROJECT }))[0]!.provenance.inheritedTasks).toBeUndefined();
+  });
+  it("fails closed: load records that can't be read, or more inherited tasks than a lesson can name, reflect nothing and call no model", async () => {
+    const down = setup();
+    down.store.manifests = async () => { throw new Error("table down"); };
+    expect(await learnFromEndedTask(down.deps, { workspaceId: WS, taskId: "task-1" })).toBe("not_reflected");
+    expect(down.model.calls).toEqual([]);
+    const many = setup();
+    const key = { workspaceId: WS, project: PROJECT };
+    const lessons = Array.from({ length: 3 }, (_, n) => lessonRecord({ id: `les_many0000${String(n)}`, provenance: { ...lessonRecord().provenance, supportTasks: Array.from({ length: 20 }, (_x, i) => `tp-${String(n)}-${String(i)}`) } }));
+    await many.store.commit(key, await many.store.setVersion(key), lessons, 1);
+    await many.store.putManifest({ taskId: "task-1", workspaceId: WS, project: PROJECT, stage: "PLAN", round: 0, setVersion: 1, memory: "live", at: 5, lessons: lessons.map((l) => ({ id: l.id, version: 1, score: 0.5, why: "scope" as const, citation: "valid" as const })), bytes: 10 });
+    expect(await learnFromEndedTask(many.deps, { workspaceId: WS, taskId: "task-1" })).toBe("not_reflected");
+    expect(many.model.calls).toEqual([]);
+  });
+  it("R3: the load record keeps the lesson's tasks as they were at load time, so a lesson edited, scrubbed of its task refs or purged afterwards still passes them on", async () => {
+    const store = new InMemoryLessonStore();
+    const key = { workspaceId: WS, project: PROJECT };
+    const scrubbed = lessonRecord({ id: "les_scrubbed01", provenance: { ...lessonRecord().provenance, supportTasks: [], sourceEvents: [] } });
+    await store.commit(key, await store.setVersion(key), [scrubbed], 1);
+    const manifest = { taskId: "task-1", workspaceId: WS, project: PROJECT, stage: "PLAN" as const, round: 0, setVersion: 1, memory: "live" as const, at: 1, bytes: 1 };
+    await store.putManifest({ ...manifest, lessons: [{ id: "les_scrubbed01", version: 1, score: 0.5, why: "scope" as const, citation: "valid" as const, taskIds: ["task-p", "task-q"] }, { id: "les_purged0001", version: 1, score: 0.5, why: "scope" as const, citation: "valid" as const, taskIds: ["task-r", "task-1"] }] });
+    expect((await inheritedTasksOf(store, key, "task-1")).sort()).toEqual(["task-p", "task-q", "task-r"]);
+    // An older record without the field falls back to the lesson's current tasks (the M2 behaviour).
+    const old = new InMemoryLessonStore();
+    await old.commit(key, await old.setVersion(key), [lessonRecord({ id: "les_loaded001", provenance: { ...lessonRecord().provenance, supportTasks: ["task-p"] } })], 1);
+    await old.putManifest({ ...manifest, lessons: [{ id: "les_loaded001", version: 1, score: 0.5, why: "scope", citation: "valid" }] });
+    expect(await inheritedTasksOf(old, key, "task-1")).toEqual(["task-p"]);
+  });
+  it("LV-3: the nightly re-reflection of a reverted task goes through the same subject path, so its draft carries inheritedTasks too", async () => {
+    const w = setup({ base: { facts: baseFacts({ outcome: "reverted" }), sendBackRequestIds: [] } });
+    await loadedInto(w);
+    w.rows.reverter = { actorDeveloperId: "reverter" };
+    expect(await learnFromEndedTask(w.deps, { workspaceId: WS, taskId: "task-1", outcome: "reverted" })).toBe("reflected");
+    const created = (await w.store.list({ workspaceId: WS, project: PROJECT })).find((l) => l.id !== "les_loaded001")!;
+    expect(created.provenance.inheritedTasks).toEqual(["task-p"]);
+    // The subject itself (what the nightly worker builds) names them.
+    expect((await subjectForTask(w.deps, { workspaceId: WS, taskId: "task-1", outcome: "reverted" }))?.inheritedTasks).toEqual(["task-p"]);
+  });
+  it("inheritedTasksOf follows each loaded lesson once, skips one that is gone, and throws on a lesson that names an unreadable task", async () => {
+    const store = new InMemoryLessonStore();
+    const key = { workspaceId: WS, project: PROJECT };
+    const bad = lessonRecord({ id: "les_badtaskid1", provenance: { ...lessonRecord().provenance, supportTasks: ["bad id!"] } });
+    await store.commit(key, await store.setVersion(key), [lessonRecord({ id: "les_loaded001", provenance: { ...lessonRecord().provenance, supportTasks: ["task-p", "task-1"] } }), bad], 1);
+    const entry = (id: string) => ({ id, version: 1, score: 0.5, why: "scope" as const, citation: "valid" as const });
+    const manifest = (stage: "PLAN" | "IMPLEMENT", ids: string[]) => ({ taskId: "task-1", workspaceId: WS, project: PROJECT, stage, round: 0, setVersion: 1, memory: "live" as const, at: stage === "PLAN" ? 1 : 2, lessons: ids.map(entry), bytes: 1 });
+    await store.putManifest(manifest("PLAN", ["les_loaded001", "les_gone00001"]));
+    await store.putManifest(manifest("IMPLEMENT", ["les_loaded001"]));
+    expect(await inheritedTasksOf(store, key, "task-1")).toEqual(["task-p"]);
+    await store.putManifest({ ...manifest("PLAN", ["les_badtaskid1"]), stage: "UNDERSTAND" });
+    await expect(inheritedTasksOf(store, key, "task-1")).rejects.toThrow();
   });
 });

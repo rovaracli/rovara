@@ -15,6 +15,7 @@ import { approveLesson } from "../../packages/broker/src/lessons/approve.js";
 import { curateDraft } from "../../packages/broker/src/lessons/curate.js";
 import { requestsCapabilityChange } from "../../packages/broker/src/lessons/guards.js";
 import { loadLessonsForStage } from "../../packages/broker/src/lessons/load.js";
+import { readVisible } from "../../packages/broker/src/lessons/read-visible.js";
 import { processDraft, settleLesson } from "../../packages/broker/src/lessons/process.js";
 import { reflectSubject } from "../../packages/broker/src/lessons/reflect.js";
 import { reflectNightly } from "../../packages/broker/src/lessons/reflect-nightly.js";
@@ -706,26 +707,26 @@ describe("P10 a lesson learned in a restricted Slack channel, in a shared task",
     const approved = await approveLesson(p.approveDeps, { workspaceId: WS, project: PROJECT, lessonId: lesson.id, approverId: "bob" });
     expect(approved).toMatchObject({ ok: true, status: "active" });
 
-    // Shared task: nobody in particular, so nothing restricted loads.
+    // A task is never a reader of a restricted lesson (several people can see it, decision 31): nothing restricted loads, whoever owns the task.
     expect((await p.load({ taskAudience: { kind: "shared" } })).ids).toEqual([]);
-    // Private task of a person outside the channel.
-    expect((await p.load({ taskAudience: { kind: "private", identity: { principals: [OUTSIDER_SLACK], groups: [] } } })).ids).toEqual([]);
-    // Private task of a channel member: positive control, the path can load it.
-    expect((await p.load({ taskAudience: { kind: "private", identity: { principals: [MEMBER_SLACK], groups: [] } } })).ids).toEqual([lesson.id]);
+    // People are asked through the read path. A person outside the channel reads nothing; a channel member does (positive control: the path can show it).
+    const seenBy = async (principals: string[]) => (await readVisible({ access: p.loadDeps.access, key: KEY, viewer: { principals, groups: [] }, lessons: [lesson], where: "test" })).map((l) => l.id);
+    expect(await seenBy([OUTSIDER_SLACK])).toEqual([]);
+    expect(await seenBy([MEMBER_SLACK])).toEqual([lesson.id]);
   });
 
   it("a member who has since left the channel stops getting it (the access records are asked now, not the frozen snapshot)", async () => {
-    const left: AccessCheckPort = { mayRead: async (_org, _viewer, places) => places.map((place) => !place.scopes.includes(SLACK_SCOPE_PRIVATE)) };
+    const left: AccessCheckPort = { mayRead: async (_org, _viewer, places) => places.map((place) => !place.scopes.includes(SLACK_SCOPE_PRIVATE)), taskVisibility: allowAllAccess.taskVisibility };
     const p = pipeline({ access: left });
     withChannelMembers(p);
     // Make the lesson active under an access port that allowed it at the time.
     const lesson = await learnInPrivateChannel(p);
     p.approveDeps.access = allowAllAccess;
     expect(await approveLesson(p.approveDeps, { workspaceId: WS, project: PROJECT, lessonId: lesson.id, approverId: "bob" })).toMatchObject({ ok: true, status: "active" });
-    const member = { taskAudience: { kind: "private" as const, identity: { principals: [MEMBER_SLACK], groups: [] } } };
-    expect((await p.load(member)).ids).toEqual([]);
+    const seenByMember = async () => (await readVisible({ access: p.loadDeps.access, key: KEY, viewer: { principals: [MEMBER_SLACK], groups: [] }, lessons: [lesson], where: "test" })).map((l) => l.id);
+    expect(await seenByMember()).toEqual([]);
     p.loadDeps.access = allowAllAccess;
-    expect((await p.load(member)).ids).toEqual([lesson.id]);
+    expect(await seenByMember()).toEqual([lesson.id]);
   });
 
   it("the Lessons tab does not show the lesson or its citations to a non-member, and shows both to a member", async () => {
@@ -1078,7 +1079,7 @@ describe("the loader never loads a lesson that is not live, current and in this 
     (p.loadDeps.vectors as MemoryVectors).fail = false;
     const noAccess = { ...p.loadDeps, access: undefined as unknown as AccessCheckPort };
     expect((await loadLessonsForStage(noAccess, p.loadRequest())).context).toBeUndefined();
-    const down: AccessCheckPort = { mayRead: async () => { throw new Error("record down"); } };
+    const down: AccessCheckPort = { mayRead: async () => { throw new Error("record down"); }, taskVisibility: allowAllAccess.taskVisibility };
     // A lesson with a source place is checked against the records; when they cannot be read it does not load.
     const placed = byPerson(lessonRecord({ id: "les_plcd0001", type: "convention", tier: 1, stages: ["IMPLEMENT"], scope: { repos: ["api"] }, provenance: { ...lesson.provenance, sourceScopes: [SLACK_SCOPE_PUBLIC] } }));
     await seed(p.store, placed);

@@ -108,6 +108,10 @@ export async function reflectSubject(deps: ReflectDeps, subject: ReflectSubject,
   const resolved = await resolveLearning(deps.settings, subject.workspaceId, subject.project);
   if (!modeAllows(resolved.mode, "reflect")) return none("skipped", "mode_off");
 
+  // LV-1 M2: more inherited tasks than a lesson can name would be cut, and a cut list leaks: nothing is reflected (before any model call).
+  const inherited = [...new Set(subject.inheritedTasks ?? [])].filter((id) => id !== subject.id);
+  if (inherited.length > 50) { deps.metrics?.count("learning.reflect_ineligible", { reason: "inherited_overflow" }); return none("ineligible", "inherited_overflow"); }
+
   const input = buildReflectorInput(subject);
   if (!input.eligible) {
     deps.metrics?.count("learning.reflect_ineligible", { reason: input.reason });
@@ -222,6 +226,8 @@ async function toDraft(
     }
   }
 
+  // LV-1 M2: also gated on the tasks behind the lessons loaded into the task (bounded by `reflectSubject` before it reaches here).
+  const inheritedTasks = [...new Set(subject.inheritedTasks ?? [])].filter((id) => id !== subject.id).slice(0, 50);
   // Trust and audience come from EVERYTHING the model read, not what it chose to cite: the lowest trust and the narrowest audience of every span in the
   // prompt. Citations only decide what the lesson shows as its sources.
   const everything = [...spans.values()];
@@ -254,7 +260,7 @@ async function toDraft(
   return {
     type: candidate.type, title, description, body, scope: candidate.scope, stages: [...new Set(candidate.stages)], citations,
     provenance: {
-      sourceEvents: [...events], sourceKinds: [...new Set(evidence.map((s) => s.kind))], authors, supportTasks: subject.kind === "task" ? [subject.id] : [], sources, inputSources, measured,
+      sourceEvents: [...events], sourceKinds: [...new Set(evidence.map((s) => s.kind))], authors, supportTasks: subject.kind === "task" ? [subject.id] : [], ...(inheritedTasks.length === 0 ? {} : { inheritedTasks }), sources, inputSources, measured,
       minTrust: trust, audience, reflectorRun: runId, model: model.slice(0, 100),
       ...(sourceScopes.length === 0 ? {} : { sourceScopes }),
       memberSignal: evidence.some((s) => s.trust === "member" && (s.kind === "remembered" || s.kind === "human_edit")),

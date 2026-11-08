@@ -154,7 +154,7 @@ describe("the lessons runtime the broker builds", () => {
     const db = new FakeDynamoDb();
     return createLessonsRuntime({
       table: { documentClient: db, tableName: "record" }, now: () => 1_800_000_000_000, reader: { file: async () => undefined }, repositoriesOf: async () => [],
-      evidence: { documentClient: db, tableName: "state", signInTableName: "signin", now: () => 1_800_000_000_000 }, linkedAccounts: async () => [], names: { memberName: async () => "x", isErased: async () => false },
+      evidence: { documentClient: db, tableName: "state", signInTableName: "signin", now: () => 1_800_000_000_000 }, linkedAccounts: async () => [], taskVisibility: allowAllAccess.taskVisibility, names: { memberName: async () => "x", isErased: async () => false },
     });
   };
 
@@ -193,8 +193,8 @@ describe("the lessons runtime the broker builds", () => {
     expect(await runtime.directory.eligibility("not-an-org", "demo")).toMatchObject({ complete: false, eligibleIds: [] });
     expect(await runtime.directory.identity("not-an-org", me)).toEqual({ principals: [], groups: [] });
     const linked = createApproverDirectory({ evidence: { documentClient: new FakeDynamoDb(), tableName: "s", signInTableName: "i", now: Date.now }, linkedAccounts: async () => ["gh-1"] });
-    expect(await linked.identity(A, me)).toEqual({ principals: ["gh-1"], groups: [] });
+    expect(await linked.identity(A, me)).toEqual({ principals: ["gh-1"], groups: [], developerId: me });
     const broken = createApproverDirectory({ evidence: { documentClient: new FakeDynamoDb(), tableName: "s", signInTableName: "i", now: Date.now }, linkedAccounts: async () => { throw new Error("down"); } });
-    expect(await broken.identity(A, me)).toEqual({ principals: [], groups: [] });
+    expect(await broken.identity(A, me)).toEqual({ principals: [], groups: [], developerId: me });
   });
 });

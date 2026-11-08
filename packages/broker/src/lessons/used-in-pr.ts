@@ -1,9 +1,11 @@
 // Learning v2 (DECISIONS 24): "Lessons used", what a task's pull request description says about the lessons the task loaded. The description is read by everyone who can see the repository, so:
 //  - a repository that is PUBLIC, or whose visibility is UNKNOWN, gets only the number of lessons and one link to the task page (the titles are behind sign-in);
 //  - a repository known to be PRIVATE also lists the lessons, each with a "not helpful" link, except tier-2 and review-check lessons and any that name a person (or whose authors cannot be named);
-//  - a lesson learned from a restricted place is never counted or named; only lessons that reached the agent's prompt count; at most LESSONS_USED_MAX are listed.
+//  - a lesson learned from a restricted place is never counted or named; only lessons that reached the agent's prompt count (and may still be given to the task, decision 31); at most LESSONS_USED_MAX are listed;
+//  - a lesson is NAMED only when every task it was learned from is open to the whole project with no People denial, checked live (decision 32); otherwise it is only counted.
 // The reader is plugged in at handler start where lessons are on (`setLessonsUsedReader`), the way Home's lessons card is; without it, or with learning off for the project, the description has no section.
 import type { AccessCheckPort } from "../team-record/access-port.js";
+import { createLessonLiveReader } from "./live-visibility.js";
 import { readVisible } from "./read-visible.js";
 import { modeAllows, resolveLearning, type LearningSettingsReader } from "./policy.js";
 import type { LessonStore, ScopeKey } from "./store.js";
@@ -79,13 +81,18 @@ export function lessonsUsedReaderOver(deps: LessonsUsedReaderDeps): LessonsUsedR
     const visibility: RepositoryVisibility = await Promise.resolve().then(() => (deps.visibility === undefined ? "unknown" as const : deps.visibility(input.orgId, input.project))).catch(() => "unknown" as const);
     const seen = new Set<string>();
     const used: Lesson[] = [];
+    // Two readers for the whole description (no task is read twice by either). COUNT (`live`): the lessons the task used that it may still be given: the audience of the task itself lies within every source task's
+    // (decision 31), checked live. NAME (`wide`): a pull request is readable by anyone with access to the repository, so a lesson is named only while EVERY task it was learned from is open to the whole project with no
+    // People denial, checked live (decision 32, "nobody in particular"); the repository must also be known private (below). Anything else is counted and linked, not named.
+    const live = createLessonLiveReader({ port: deps.access.taskVisibility, key, where: "pull_request", running: { taskId: input.taskId } });
+    const wide = createLessonLiveReader({ port: deps.access.taskVisibility, key, where: "pull_request" });
     for (const manifest of await deps.store.manifests(key, input.taskId)) {
       for (const entry of manifest.lessons) {
         if (seen.has(entry.id) || !REACHED.has(entry.citation)) continue;
         seen.add(entry.id);
         const lesson = await deps.store.get(key, entry.id);
-        // Read as "nobody in particular" (a shared task): a lesson from a restricted place, or one whose place the access records restrict now, is not counted in a description the repository's readers see.
-        if (lesson === undefined || isRestricted(lesson) || (await readVisible({ access: deps.access, key, viewer: undefined, lessons: [lesson], where: "pull_request" })).length !== 1) continue;
+        // Read as "nobody in particular" for restricted places: a lesson from a restricted place, or one whose place the access records restrict now, is not counted in a description the repository's readers see.
+        if (lesson === undefined || isRestricted(lesson) || (await readVisible({ access: deps.access, key, viewer: undefined, live, lessons: [lesson], where: "pull_request" })).length !== 1) continue;
         used.push(lesson);
       }
     }
@@ -96,6 +103,8 @@ export function lessonsUsedReaderOver(deps: LessonsUsedReaderDeps): LessonsUsedR
       for (const lesson of used) {
         if (items.length >= LESSONS_USED_MAX) break;
         if (lesson.tier >= 2 || lesson.type === "review_check" || !(await namesNobody(deps.names, input.orgId, lesson))) continue;
+        // Decision 32: named only when every source task is open to the whole project (no People denial), read now.
+        if ((await wide.keep(undefined, [lesson])).length !== 1) continue;
         const url = notHelpfulUrl(input.pageUrl, lesson.id);
         if (url !== undefined) items.push({ id: lesson.id, title: lesson.title, notHelpfulUrl: url });
       }

@@ -13,6 +13,7 @@ import { DEFAULT_APPROVAL_POLICY } from "../../../packages/broker/src/lessons/po
 import { NO_EMBEDDER, NO_VECTORS } from "../../../packages/broker/src/lessons/runtime.js";
 import { InMemoryLessonStore } from "../../../packages/broker/src/lessons/store.js";
 import type { Lesson } from "../../../packages/broker/src/lessons/types.js";
+import type { TaskVisibility } from "../../../packages/broker/src/team-record/sources/rovara.js";
 import { Audit, Clock, KEY, PROJECT, WS, allowAllAccess, lessonRecord, seed, settings } from "./lesson-helpers.js";
 
 afterEach(() => { vi.useRealTimers(); });
@@ -48,12 +49,13 @@ describe("only approved lessons are used", () => {
 
 // ---- the dispatch call
 
-function world(over: { settings?: ReturnType<typeof settings>; store?: InMemoryLessonStore; identity?: { principals: string[]; groups: string[] } } = {}) {
+function world(over: { settings?: ReturnType<typeof settings>; store?: InMemoryLessonStore; identity?: { principals: string[]; groups: string[] }; /** The running task's live visibility (default: project-wide). */ visibility?: TaskVisibility } = {}) {
   const store = over.store ?? new InMemoryLessonStore();
   const clock = new Clock();
   const load: LoadDeps = { store, embedder: NO_EMBEDDER, vectors: NO_VECTORS, settings: over.settings ?? settings(), access: allowAllAccess, audit: new Audit(), now: clock.now };
   const identityCalls: string[] = [];
-  const lessons = { load, directory: { identity: async (_w: string, developer: string) => { identityCalls.push(developer); return over.identity ?? { principals: [], groups: [] }; }, eligibility: async () => { throw new Error("not used"); } } };
+  const access = { ...allowAllAccess, taskVisibility: { read: async (_org: unknown, ids: readonly string[]) => new Map(ids.map((id) => [id, over.visibility ?? { kind: "shared" as const }])) } };
+  const lessons = { load, access, directory: { identity: async (_w: string, developer: string) => { identityCalls.push(developer); return over.identity ?? { principals: [], groups: [] }; }, eligibility: async () => { throw new Error("not used"); } } };
   return { host: { lessons } as never, store, load, identityCalls };
 }
 const task = (over: Record<string, unknown> = {}) => ({ taskId: "task-1", orgId: WS, project: PROJECT, title: "Retry failed HTTP calls", shared: true, developerId: "d".repeat(64), developerName: "Maya", provider: "slack", workflow: { revision: 4 }, ...over }) as never;
@@ -145,18 +147,15 @@ describe("learnedContextForOperation", () => {
     expect(await ask(w.host, { task: task({ orgId: "org_bbbbbbbbbbbbbbbbbbbb" }) })).toEqual({});
   });
 
-  it("a private task reads what its owner may read: a restricted lesson reaches the owner who passes its ACL and nobody else", async () => {
+  it("a restricted lesson reaches no agent, whoever owns the task (decision 31: the reader is everyone who can open the task, so no single person's access can stand in for it)", async () => {
     const restricted = (principals: string[]) => ({ kind: "restricted" as const, acl: { source: "slack" as const, scope: "slack:T/C9", principals, capturedAt: "x", liveCheck: "none" as const } });
     const base = conv("les_restricted");
     const secret = { ...base, provenance: { ...base.provenance, audience: restricted(["U-owner"]) } };
-    const member = world({ identity: { principals: ["U-owner"], groups: [] } });
+    const ownerOnly = { kind: "private" as const, ownerDeveloperId: "d".repeat(64) };
+    const member = world({ identity: { principals: ["U-owner"], groups: [] }, visibility: ownerOnly });
     await seed(member.store, secret);
-    expect((await ask(member.host, { task: task({ shared: false }) })).learnedRefs?.lessons.map((l) => l.id)).toEqual(["les_restricted"]);
-    expect(member.identityCalls).toEqual(["d".repeat(64)]);
-    const stranger = world({ identity: { principals: ["U-other"], groups: [] } });
-    await seed(stranger.store, secret);
-    expect(await ask(stranger.host, { task: task({ shared: false }) })).toEqual({});
-    // A shared task is nobody in particular: it reads no restricted lesson.
+    expect(await ask(member.host, { task: task({ shared: false }) })).toEqual({});
+    expect(member.identityCalls).toEqual([]);
     const shared = world();
     await seed(shared.store, secret);
     expect(await ask(shared.host)).toEqual({});

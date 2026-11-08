@@ -61,6 +61,44 @@ describe("curator decisions (design §4.5.2)", () => {
     expect(await store.list(KEY)).toHaveLength(1);
   });
 
+  it("R2: a merge unions the inherited tasks of both lessons (the laundering path through a merge), and a merge that would not fit them is refused", async () => {
+    const { deps, store } = setup();
+    await curateDraft(deps, KEY, draft({ provenance: { ...draft().provenance, inheritedTasks: ["task-p"] } }));
+    const merged = await curateDraft(deps, KEY, draft({ provenance: { ...draft().provenance, inheritedTasks: ["task-q"] } }));
+    expect(merged.outcome).toBe("merged");
+    const [lesson] = await store.list(KEY);
+    expect(lesson!.provenance.inheritedTasks).toEqual(["task-p", "task-q"]);
+    // A target without the field takes the draft's.
+    const second = setup();
+    await curateDraft(second.deps, KEY, draft());
+    await curateDraft(second.deps, KEY, draft({ provenance: { ...draft().provenance, inheritedTasks: ["task-p"] } }));
+    expect((await second.store.list(KEY))[0]!.provenance.inheritedTasks).toEqual(["task-p"]);
+    // Over the cap of 50 the merge is refused and the draft stands alone.
+    const full = setup();
+    await curateDraft(full.deps, KEY, draft({ provenance: { ...draft().provenance, inheritedTasks: Array.from({ length: 50 }, (_, i) => `task-inh-${String(i)}`) } }));
+    const refused = await curateDraft(full.deps, KEY, draft({ provenance: { ...draft().provenance, inheritedTasks: ["task-extra"] } }));
+    expect(refused.outcome).toBe("added");
+  });
+
+  it("M3: a merge that would drop a task id (past the 50-task cap) is refused: the draft stands on its own as a candidate, with its task, PR and author", async () => {
+    const { deps, store } = setup();
+    const full = Array.from({ length: 50 }, (_, i) => `task-full-${String(i)}`);
+    await curateDraft(deps, KEY, draft({ provenance: { ...draft().provenance, supportTasks: full } }));
+    // Below the cap a merge still works (positive control): the 50th task id is the last one that fits.
+    const fits = await curateDraft(deps, KEY, draft({ provenance: { ...draft().provenance, supportTasks: [full[0]!] } }));
+    expect(fits.outcome).toBe("merged");
+    const out = await curateDraft(deps, KEY, draft({ provenance: { ...draft().provenance, supportTasks: ["task-narrowed"], authors: ["eve"] }, citations: [{ kind: "pr", url: "https://github.com/acme/api/pull/77" }] }));
+    expect(out.outcome).toBe("added");
+    const lessons = await store.list(KEY);
+    expect(lessons).toHaveLength(2);
+    const target = lessons.find((l) => l.provenance.supportTasks.length === 50)!;
+    expect(target.provenance.supportTasks).not.toContain("task-narrowed");
+    expect(target.provenance.authors).not.toContain("eve");
+    expect(JSON.stringify(target.citations)).not.toContain("pull/77");
+    const own = lessons.find((l) => l !== target)!;
+    expect(own.provenance.supportTasks).toEqual(["task-narrowed"]);
+  });
+
   it("calls the judge between 0.75 and 0.92; 'different' adds, 'same' merges", async () => {
     const a = "Use withRetry from src/retry/index.ts for HTTP retries in the api service client calls";
     const b = "Use withRetry from src/retry/index.ts for HTTP retries in the api service wrapper";

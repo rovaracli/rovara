@@ -248,7 +248,7 @@ export async function promoteStableTrials(deps: StableDeps, key: ScopeKey, limit
  * What repository publishing (lane 6) may publish: a lesson that is stable, live, from a task shared with the project and a project-wide source, still sound (not tier 2, no send-back to a person, no
  * retire proposal, no thumbs-down or wrong-here mark), and whose text names no person. Names are matched against `names` (REQUIRED: the display names of the people the lesson could name, which the
  * caller reads; an empty list is a statement that the caller found none), and an @handle or an e-mail address always counts as a name. Anything unknown is false. The caller still checks the preset in
- * force (`ResolvedLearning.trialAllowed`: under Regulated nothing is published) and that the people who will read the repository may read the lesson (`readVisible`).
+ * force (`ResolvedLearning.trialAllowed`: under Regulated nothing is published) and that the people who will read the repository may read the lesson NOW (`readVisible` with a viewer of `undefined`, which also checks the live visibility of every task the lesson was learned from; `fromSharedTask` is only what was true when it was learned).
  */
 export function isPublishable(lesson: Lesson, names: readonly string[]): boolean {
   if (lesson.trial?.state !== "stable" || lesson.status !== "active" || lesson.provenance.fromSharedTask !== true || lesson.provenance.audience.kind !== "project") return false;

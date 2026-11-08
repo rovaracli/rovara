@@ -7,7 +7,7 @@ import { InMemoryLessonStore } from "../../../packages/broker/src/lessons/store.
 import type { Lesson } from "../../../packages/broker/src/lessons/types.js";
 import { lessonDeletionPort } from "../../../packages/broker/src/lessons/deletion.js";
 import { NO_VECTORS } from "../../../packages/broker/src/lessons/runtime.js";
-import { Audit, Clock, KEY, WS, PROJECT, allowAllAccess, lessonRecord, seed, settings } from "./lesson-helpers.js";
+import { Audit, Clock, KEY, WS, PROJECT, allSharedTasks, allowAllAccess, lessonRecord, seed, settings } from "./lesson-helpers.js";
 
 const ann = { approvalId: "ap-ann", by: "ann", at: 1, mode: "one" as const };
 const SECRET = "Call the internal retry endpoint at the secret path before every request.";
@@ -16,8 +16,11 @@ const restrictedTo = (principals: string[]) => ({ kind: "restricted" as const, a
 /** A lesson whose source place the access records must be asked about. */
 const placed = (id: string, over: Partial<Lesson> = {}): Lesson => conv(id, { provenance: { ...lessonRecord().provenance, sourceScopes: ["slack:T/C9"] }, ...over });
 const refs = (ids: Array<[string, number?]>, over: Partial<LearnedRefs> = {}): LearnedRefs => ({
-  v: 1, orgId: WS, project: PROJECT, setVersion: 5, stage: "IMPLEMENT", audience: { kind: "shared" }, lessons: ids.map(([id, version]) => ({ id, version: version ?? 1 })), ...over,
+  v: 1, orgId: WS, project: PROJECT, setVersion: 5, stage: "IMPLEMENT", audience: { kind: "shared" }, taskId: "task-run", lessons: ids.map(([id, version]) => ({ id, version: version ?? 1 })), ...over,
 });
+
+/** The running task is `task-run`, and every task is project-wide (`allSharedTasks`); delivery reads the running task's LIVE audience (decision 31). */
+const OWNER = "d".repeat(64);
 
 function world(over: Partial<DeliveryDeps> = {}) {
   const store = new InMemoryLessonStore();
@@ -101,31 +104,25 @@ describe("learnedContextFromRefs", () => {
       }
     });
 
-    it("a restricted lesson is delivered only to a task whose owner may still read its source (asked of the access records NOW)", async () => {
+    it("a restricted lesson is never delivered to an agent (decision 31: the reader is everyone who can open the task, not one owner), and nobody's identity is looked up", async () => {
       const restricted = conv("les_restrict1", { provenance: { ...lessonRecord().provenance, audience: restrictedTo(["gh-1"]) } });
-      const access = (allowed: boolean) => ({ mayRead: async (_org: unknown, _viewer: unknown, places: readonly unknown[]) => places.map(() => allowed) });
-      const privateRefs = refs([["les_restrict1"]], { audience: { kind: "private", developerId: "d".repeat(64) } });
+      const access = (allowed: boolean) => ({ mayRead: async (_org: unknown, _viewer: unknown, places: readonly unknown[]) => places.map(() => allowed), taskVisibility: allSharedTasks });
+      const privateRefs = refs([["les_restrict1"]], { audience: { kind: "private", developerId: OWNER }, taskId: "task-run" });
       const calls: string[] = [];
-      const yes = world({ access: access(true), identity: async (_w, id) => { calls.push(id); return { principals: ["gh-1"], groups: [] }; } });
-      await seed(yes.store, restricted);
-      expect((await learnedContextFromRefs(yes.deps, privateRefs))?.lessons.map((l) => l.id)).toEqual(["les_restrict1"]);
-      expect(calls).toEqual(["d".repeat(64)]);
-      const no = world({ access: access(false), identity: async () => ({ principals: ["gh-1"], groups: [] }) });
-      await seed(no.store, restricted);
-      expect(await learnedContextFromRefs(no.deps, privateRefs)).toBeUndefined();
-      // A shared task reads no restricted lesson at all.
-      const shared = world({ access: access(true) });
-      await seed(shared.store, restricted);
-      expect(await learnedContextFromRefs(shared.deps, refs([["les_restrict1"]]))).toBeUndefined();
+      for (const allowed of [true, false]) {
+        const w = world({ access: access(allowed), identity: async (_w, id) => { calls.push(id); return { principals: ["gh-1"], groups: [] }; } });
+        await seed(w.store, restricted);
+        expect(await learnedContextFromRefs(w.deps, privateRefs)).toBeUndefined();
+        expect(await learnedContextFromRefs(w.deps, refs([["les_restrict1"]]))).toBeUndefined();
+      }
+      expect(calls).toEqual([]);
     });
 
-    it("an access record that cannot be read, or an identity that cannot be found, delivers nothing (fail closed)", async () => {
+    it("an access record that cannot be read delivers nothing (fail closed)", async () => {
       const store = new InMemoryLessonStore();
       await seed(store, placed("les_aaaaaaa1"));
-      const down = world({ store, access: { mayRead: async () => { throw new Error("down"); } } });
+      const down = world({ store, access: { mayRead: async () => { throw new Error("down"); }, taskVisibility: allSharedTasks } });
       expect(await learnedContextFromRefs(down.deps, refs([["les_aaaaaaa1"]]))).toBeUndefined();
-      const noIdentity = world({ store, identity: async () => { throw new Error("down"); } });
-      expect(await learnedContextFromRefs(noIdentity.deps, refs([["les_aaaaaaa1"]], { audience: { kind: "private", developerId: "d".repeat(64) } }))).toBeUndefined();
     });
 
     it("the store being down delivers nothing and throws nothing", async () => {

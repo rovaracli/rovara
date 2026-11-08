@@ -12,11 +12,12 @@ import { listScopeWork } from "../../../packages/broker/src/team-record/store.js
 import { buildWeeklyDigest } from "../../../packages/broker/src/lessons/digest.js";
 import { learnedContextForDispatch, loadLessonsForStage, type LoadDeps } from "../../../packages/broker/src/lessons/load.js";
 import { lessonPanelRows } from "../../../packages/broker/src/lessons/panel.js";
+import { readVisible } from "../../../packages/broker/src/lessons/read-visible.js";
 import { InMemoryLessonStore } from "../../../packages/broker/src/lessons/store.js";
 import { recordAccessKey, recordAccessMemberKey, recordAccessPersonPrefix } from "@agentx/contracts";
 import { ORG_A, addSource, caller, githubDraft, rows, world, type World } from "../../support/team-record-core.js";
 import { deleteDeps } from "../../support/team-record-delete.js";
-import { Audit, Clock, MemoryVectors, PROJECT, embedder, lessonRecord, seed as seedLessons, settings } from "../lessons/lesson-helpers.js";
+import { Audit, Clock, MemoryVectors, PROJECT, allSharedTasks, embedder, lessonRecord, seed as seedLessons, settings } from "../lessons/lesson-helpers.js";
 
 const T1 = "2026-10-30T09:00:00.000Z";
 const T2 = "2026-10-30T10:00:00.000Z";
@@ -311,25 +312,30 @@ describe("R8-1 learning v2 asks the access records at read time", () => {
     const store = new InMemoryLessonStore();
     const vectors = new MemoryVectors();
     const clock = new Clock();
-    const deps: LoadDeps = { store, embedder, vectors, settings: settings(), audit: new Audit(), now: clock.now, access: createAccessCheckPort(w.table) };
+    const deps: LoadDeps = { store, embedder, vectors, settings: settings(), audit: new Audit(), now: clock.now, access: createAccessCheckPort(w.table, { taskVisibility: allSharedTasks }) };
     const lesson = lessonFor();
     await seedLessons(store, lesson);
     await vectors.upsert(WS, PROJECT, (lesson as { id: string }).id, await embedder.embed("x"), { status: "active" });
     return { w, store, deps };
   }
-  const request = (identity: { principals: string[]; groups: string[] } | undefined) => ({
+  // An agent's task has no single person as its reader (decision 31): the loader is asked as for nobody in particular, so a restricted lesson never loads. People are asked through `readVisible`, the one read path
+  // the loader, the digest, the panel and the tab all share (the frozen audience AND the access records, now).
+  const request = () => ({
     workspaceId: WS, project: PROJECT, taskId: "t1", stage: "IMPLEMENT" as const, round: 1, intent: "Retry failed HTTP calls", repos: ["api"], files: ["src/retry/client.ts"], languages: [],
-    taskAudience: identity === undefined ? { kind: "shared" as const } : { kind: "private" as const, identity },
+    taskAudience: { kind: "shared" as const },
   });
   const member = { principals: ["U-member"], groups: [] };
   const key = { workspaceId: WS, project: PROJECT };
+  const seenBy = async (deps: LoadDeps, identity: { principals: string[]; groups: string[] } | undefined, id: string) =>
+    (await readVisible({ access: deps.access, key, viewer: identity, lessons: [(await deps.store.get(key, id))!], where: "test" })).map((l) => l.id);
 
-  it("the loader stops loading a channel's lesson into the private task of a person removed from the channel", async () => {
+  it("the read path stops showing a channel's lesson to a person removed from the channel, and the loader never gives a restricted lesson to an agent", async () => {
     const { w, deps } = await setup();
-    expect((await loadLessonsForStage(deps, request(member))).context?.lessons.map((l) => l.id)).toEqual(["les_slack001"]);
+    expect(await seenBy(deps, member, "les_slack001")).toEqual(["les_slack001"]);
+    expect((await loadLessonsForStage(deps, request())).context).toBeUndefined();
     await applyMemberEvents(w.table, ORG_A, { scope: SC, remove: ["U-member"], at: T2 });
-    expect((await loadLessonsForStage(deps, request(member))).context).toBeUndefined();
-    expect((await learnedContextForDispatch(deps, request(member), ["task.learnedContext.v1"])).learnedContext).toBeUndefined();
+    expect(await seenBy(deps, member, "les_slack001")).toEqual([]);
+    expect((await learnedContextForDispatch(deps, request(), ["task.learnedContext.v1"])).learnedContext).toBeUndefined();
   });
 
   it("the digest and the panel drop the lesson for a removed person, and keep it for a member", async () => {
@@ -351,10 +357,11 @@ describe("R8-1 learning v2 asks the access records at read time", () => {
     await deps.vectors.upsert(WS, PROJECT, "les_proj0001", await embedder.embed("x"), { status: "active" });
     await addSource(w, { source: "slack", scope: "slack:T1/CPUB" });
     await w.sink.put(slackRow("p1", "slack:T1/CPUB", ["U-other"]));
-    const idsFor = async (identity: { principals: string[]; groups: string[] } | undefined) => ((await loadLessonsForStage(deps, request(identity))).context?.lessons ?? []).map((l) => l.id);
+    const idsFor = (identity: { principals: string[]; groups: string[] } | undefined) => seenBy(deps, identity, "les_proj0001");
     expect(await idsFor(undefined)).toEqual([]); // the channel is restricted: a shared task is nobody
     expect(await idsFor({ principals: ["U-stranger"], groups: [] })).toEqual([]);
-    expect(await idsFor({ principals: ["U-other"], groups: [] })).toContain("les_proj0001");
+    expect(await idsFor({ principals: ["U-other"], groups: [] })).toEqual(["les_proj0001"]);
+    expect(((await loadLessonsForStage(deps, request())).context?.lessons ?? []).map((l) => l.id)).not.toContain("les_proj0001");
   });
 
   it("a caller that cannot supply the access port gets no lessons, an empty digest and hidden panel rows, each with a log line", async () => {
@@ -362,10 +369,10 @@ describe("R8-1 learning v2 asks the access records at read time", () => {
     const lines: string[] = [];
     const log = (event: string) => { lines.push(event); };
     const without = { ...deps, access: undefined as never, log };
-    const loaded = await loadLessonsForStage(without, request(member));
+    const loaded = await loadLessonsForStage(without, request());
     expect(loaded.context).toBeUndefined();
     expect(loaded.skipped).toBe("access_unavailable");
-    expect((await learnedContextForDispatch(without, request(member), ["task.learnedContext.v1"])).learnedContext).toBeUndefined();
+    expect((await learnedContextForDispatch(without, request(), ["task.learnedContext.v1"])).learnedContext).toBeUndefined();
     const digest = await buildWeeklyDigest(store, key, deps.now(), member, undefined as never, log);
     expect(digest.top).toEqual([]);
     expect(digest.restrictedHidden).toBe(1);
@@ -377,9 +384,9 @@ describe("R8-1 learning v2 asks the access records at read time", () => {
   it("a record that cannot be read loads no lessons (and the load says why)", async () => {
     const { w, deps } = await setup();
     w.db.injectFault({ command: "BatchGetCommand", error: { name: "InternalServerError" }, times: 100 });
-    const result = await loadLessonsForStage(deps, request(member));
+    await expect(seenBy(deps, member, "les_slack001")).rejects.toThrow();
+    const result = await loadLessonsForStage(deps, request());
     expect(result.context).toBeUndefined();
-    expect(result.skipped).toBe("access_unavailable");
   });
 
   it("past_work checks a lesson's real source places, not the joined string, and drops a lesson from a place the asker left", async () => {

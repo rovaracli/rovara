@@ -4,6 +4,7 @@
 // cannot be read throws RUNTIME_UNAVAILABLE (the caller must not treat that as "visible", nor as "hidden").
 import { aclUnitOfSource, agentXError, scopeAndAncestors, type OrgId } from "@agentx/contracts";
 import { createAccessReader, judgeAccess, viewerOfLists } from "./access.js";
+import type { TaskVisibilityPort } from "./live-audience.js";
 import type { TeamRecordTable } from "./types.js";
 
 /** The places one thing (a lesson) was learned from. */
@@ -27,13 +28,16 @@ export interface AccessCheckPort {
    * places no record restricts. Throws RUNTIME_UNAVAILABLE when a record cannot be read.
    */
   mayRead(orgId: OrgId, viewer: AccessViewerLists | undefined, places: readonly AccessPlaces[]): Promise<boolean[]>;
+  /** The strict reader of tasks' LIVE Plan 5 visibility (SRL-4). `readVisible` also asks it about every task a lesson was learned from (`lessons/live-visibility.ts`); without it such a lesson is withheld. */
+  readonly taskVisibility: TaskVisibilityPort;
 }
 
 /** A place-level scope of an item-level source (`jira:project/KEY`): the scope an old lesson recorded before items had their own units. */
 const isLegacyPlaceScope = (scope: string): boolean => aclUnitOfSource(scope.split(":", 1)[0] ?? "") === "item" && !scope.includes("/item:");
 
-export function createAccessCheckPort(table: TeamRecordTable, options: { log?: (event: string, fields: Record<string, unknown>) => void } = {}): AccessCheckPort {
+export function createAccessCheckPort(table: TeamRecordTable, options: { log?: (event: string, fields: Record<string, unknown>) => void; taskVisibility: TaskVisibilityPort }): AccessCheckPort {
   return {
+    taskVisibility: options.taskVisibility,
     async mayRead(orgId, viewer, places) {
       const reader = createAccessReader(table, orgId);
       const who = viewer === undefined ? undefined : viewerOfLists(viewer);

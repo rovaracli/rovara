@@ -1,13 +1,13 @@
 // Part of the broker: the lesson loader's one call at a coding stage's dispatch (learning v2, L4). `learnedContextForOperation` is what `taskOperationParts` spreads into the worker payload. It is
 // the only place a lesson can enter a worker invocation, and it does nothing (returns `{}`) unless ALL of these hold: the install switch for lessons reaching an agent is on (`LEARNED_LESSONS_ENABLED`, apart from the Team record's), the install has lesson ports (`dependencies.lessons`, built only where the
-// Team record is on), the operation is a stage of a Rovara Code task with an org, the project's learning mode allows loading (the loader's own check), and the task's owner can be told. It never
+// Team record is on), the operation is a stage of a Rovara Code task with an org, the project's learning mode allows loading (the loader's own check) (the running task's audience is checked live by the loader, decision 31). It never
 // throws and never waits long: any failure, or a load slower than the deadline, sends nothing and the stage runs as it would without memory.
 //
 // What this returns is the lessons' IDS and VERSIONS (`learnedRefs`), never their text: the outbox row, the queue message, its dead-letter copy and a FAILED row carry only those, and the dispatcher builds the
 // `learnedContext` from the lesson store at delivery (`lessons/deliver.ts`), so a lesson erased or retired after the stage was queued is never delivered and no text sits in a stored copy (WL-6). The worker gets the
 // field only if it lists "task.learnedContext.v1": delivery removes it for an older worker, so an older worker is never refused and never sees a lesson.
 import { LEARNED_CONTEXT_FEATURE, codeRepositoriesOf, learnedRefsOf, type LearnedRefs, type LessonStage, type ProjectDefinition } from "@agentx/contracts";
-import { effectiveTaskOwner, type DeveloperTaskRecord } from "../../developer/task-records.js";
+import type { DeveloperTaskRecord } from "../../developer/task-records.js";
 import { learnedContextForDispatch, type TaskAudience } from "../../lessons/load.js";
 import type { LessonsRuntime } from "../../lessons/runtime.js";
 import { learnedLessonsEnabled } from "../../lessons/switch.js";
@@ -38,13 +38,10 @@ export async function learnedContextForOperation(
   if (task.orgId === undefined || task.orgId !== input.orgId || task.purpose !== undefined) return {};
   let timer: ReturnType<typeof setTimeout> | undefined;
   try {
-    let audience: TaskAudience;
-    if (task.shared) audience = { kind: "shared" };
-    else {
-      // A private task reads what its owner may read; an owner that cannot be named reads nothing.
-      const owner = effectiveTaskOwner(task);
-      audience = { kind: "private", identity: await lessons.directory.identity(task.orgId, owner.developerId) };
-    }
+    // Decision 31: who reads what this stage produces is the people who can open the RUNNING task's session (its project's members minus anyone its People list denies, or the narrower list), read live by the loader
+    // (`readVisible` with `running`). A lesson loads only if all of them can see every task it was learned from. No reader is named here: the loader's audience is "nobody in particular" for restricted
+    // places, and a task whose audience can't be read loads NO lesson that names a task (there is no weaker rule to fall back to).
+    const audience: TaskAudience = { kind: "shared" };
     const round = task.workflow?.revision ?? 0;
     const run = learnedContextForDispatch(lessons.load, {
       workspaceId: task.orgId, project: task.project, taskId: task.taskId, stage, round, intent: task.title,
@@ -53,7 +50,7 @@ export async function learnedContextForOperation(
     }, [LEARNED_CONTEXT_FEATURE]);
     const result = await Promise.race([run, new Promise<Awaited<typeof run>>((resolve) => { timer = setTimeout(() => resolve({}), LESSON_LOAD_DEADLINE_MS); timer.unref?.(); })]);
     if (result.learnedContext === undefined) return {};
-    const refs = learnedRefsOf(result.learnedContext, { orgId: task.orgId, project: task.project, audience: audience.kind === "shared" ? { kind: "shared" } : { kind: "private", developerId: effectiveTaskOwner(task).developerId } });
+    const refs = learnedRefsOf(result.learnedContext, { orgId: task.orgId, project: task.project, audience: { kind: "shared" }, taskId: task.taskId });
     return { learnedRefs: refs, load: { taskId: task.taskId, project: task.project, stage, round } };
   } catch {
     return {};

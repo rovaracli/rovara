@@ -7,6 +7,8 @@ import { followMerges } from "../../agents/access.js";
 import { dynamoAttributionReader } from "../../attribution/resolve.js";
 import { DeveloperSignInStore } from "../../developer/store.js";
 import type { CodeFactsReader } from "../../lessons/code-facts.js";
+import { tableTaskVisibilityPort } from "../../team-record/live-audience-port.js";
+import { tableLessonAudiencePort, withLessonAudiences } from "../../lessons/task-audience.js";
 import { NO_EMBEDDER, NO_VECTORS, createLessonsRuntime, type LessonsRuntime } from "../../lessons/runtime.js";
 import type { Embedder, LearningSpend, LessonVectors, PipelineModel } from "../../lessons/ports.js";
 import { lessonAuditSink } from "../../lessons/audit-sink.js";
@@ -129,6 +131,7 @@ export function lessonsRuntimeFor(dependencies: LessonsHostDependencies): Lesson
     ...(audit === undefined ? {} : { audit }),
     ...(dependencies.audit === undefined ? {} : (() => { const ledger = dependencies.audit; return { auditOutbox: { pending: (event: AuditEventInput) => auditPending({ audit: ledger }, event), flush: (event: AuditEventInput) => flushAuditEvents({ audit: ledger }, [event]) } }; })()),
     reader, repositoriesOf,
+    taskVisibility: withLessonAudiences(tableTaskVisibilityPort({ documentClient: dependencies.documentClient, tableName: dependencies.tableName, now: Date.now }), tableLessonAudiencePort({ documentClient: dependencies.documentClient, tableName: dependencies.tableName, now: Date.now })),
     evidence: { documentClient: dependencies.documentClient, tableName: dependencies.tableName, signInTableName, now: Date.now },
     resolveMember: (_orgId, developerId) => followMerges(merges, developerId),
     linkedAccounts: async (orgId, developerId) => {
@@ -193,7 +196,7 @@ export function installLessons(dependencies: LessonsHostDependencies): void {
   }));
   setLessonsHomeReader(routes === undefined ? undefined : async (orgId, developerId, project) => {
     if ((await resolveLearning(routes.settings, orgId, project)).mode === "Off") return { waiting: 0 };
-    const view = await buildLessonsView(routes, { orgId, developerId }, project);
+    const view = await buildLessonsView(routes, { orgId, developerId }, project, { surface: "home" });
     // Lane 1b: a person who decides here also hears why learning is paused (never silent).
     const paused = view.canDecide ? view.paused : undefined;
     if (!view.canDecide || view.waiting.length === 0) return { waiting: 0, ...(paused === undefined ? {} : { paused }) };

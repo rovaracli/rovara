@@ -9,14 +9,16 @@ import { FakeDynamoDb } from "../support/fake-dynamodb.js";
 
 const ann = { approvalId: "ap-ann", by: "ann", at: 1, mode: "one" as const };
 const NOW = 1_800_000_000_000;
+/** Lessons that name no task: the live check of a lesson's source tasks (LV-1) reads nothing for them. The State table here holds no tasks. */
+const noTasks = { ...lessonRecord().provenance, supportTasks: [], sourceEvents: [] };
 const refs = (ids: string[], over: Partial<LearnedRefs> = {}): LearnedRefs => ({ v: 1, orgId: WS, project: PROJECT, setVersion: 1, stage: "IMPLEMENT", audience: { kind: "shared" }, lessons: ids.map((id) => ({ id, version: 1 })), ...over });
 
 async function world() {
   const db = new FakeDynamoDb();
   const table = { documentClient: db, tableName: "record" };
   const store = new DynamoLessonStore(table, () => NOW);
-  const mallory = lessonRecord({ id: "les_mallory01", type: "convention", tier: 1, stages: ["IMPLEMENT"], approvals: [ann], scope: {}, title: "Mallory's rule", body: "Call the internal retry endpoint at the secret path.", provenance: { ...lessonRecord().provenance, authors: ["mallory"] } });
-  const other = lessonRecord({ id: "les_other0001", type: "convention", tier: 1, stages: ["IMPLEMENT"], approvals: [ann], scope: {}, title: "Other rule" });
+  const mallory = lessonRecord({ id: "les_mallory01", type: "convention", tier: 1, stages: ["IMPLEMENT"], approvals: [ann], scope: {}, title: "Mallory's rule", body: "Call the internal retry endpoint at the secret path.", provenance: { ...noTasks, authors: ["mallory"] } });
+  const other = lessonRecord({ id: "les_other0001", type: "convention", tier: 1, stages: ["IMPLEMENT"], approvals: [ann], scope: {}, title: "Other rule", provenance: noTasks });
   const committed = await store.commit(KEY, await store.setVersion(KEY), [mallory, other], NOW);
   expect(committed.ok).toBe(true);
   const deliver = createLessonDelivery({ documentClient: db, stateTable: "state", recordTable: "record", enabled: () => true, now: () => NOW })!;
@@ -34,6 +36,14 @@ describe("createLessonDelivery", () => {
     const { deliver } = await world();
     const context = await deliver(refs(["les_mallory01", "les_other0001"]));
     expect(context?.lessons.map((l) => l.title)).toEqual(["Mallory's rule", "Other rule"]);
+  });
+
+  it("LV-1: a lesson learned from a task is delivered only while the State table says the task is readable; a task it cannot find withholds the lesson (the real strict port)", async () => {
+    const { deliver, store } = await world();
+    const learned = lessonRecord({ id: "les_fromtask01", type: "convention", tier: 1, stages: ["IMPLEMENT"], approvals: [ann], scope: {}, title: "From a task", provenance: { ...noTasks, supportTasks: ["task-gone"] } });
+    expect((await store.commit(KEY, await store.setVersion(KEY), [learned], NOW)).ok).toBe(true);
+    const context = await deliver(refs(["les_fromtask01", "les_other0001"]));
+    expect(context?.lessons.map((l) => l.id)).toEqual(["les_other0001"]);
   });
 
   it("a private task's reader is looked up in the State table (the linked account), and a lookup that fails delivers nothing", async () => {

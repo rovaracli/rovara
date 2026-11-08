@@ -9,7 +9,7 @@ import { InMemoryLessonStore } from "../../../packages/broker/src/lessons/store.
 import type { AccessCheckPort } from "../../../packages/broker/src/team-record/access-port.js";
 import type { DeveloperCaller } from "../../../packages/broker/src/aws/developer-routes.js";
 import type { LessonRouteDependencies as _Deps } from "../../../packages/broker/src/lessons/routes.js";
-import { Alerts, Audit, Clock, KEY, MemoryVectors, PROJECT, ScriptedModel, Spend, WS, allowAllAccess, directory, draft, embedder, facts, Judge, lessonRecord, presetFakes, seed, settings, verifier } from "./lesson-helpers.js";
+import { Alerts, Audit, Clock, KEY, MemoryVectors, PROJECT, ScriptedModel, Spend, WS, allSharedTasks, allowAllAccess, directory, draft, embedder, facts, Judge, lessonRecord, presetFakes, seed, settings, verifier } from "./lesson-helpers.js";
 import { addSource, world } from "../../support/team-record-core.js";
 import { webRouteAllowed } from "../../../packages/broker/src/aws/web-auth.js";
 
@@ -118,7 +118,7 @@ describe("the Lessons tab read", () => {
   it("a lesson from a source the viewer cannot see is not listed and its words are nowhere in the answer; a maintainer only gets a count", async () => {
     const secret = "Quarterly layoff planning is in the finance channel";
     const restricted = lessonRecord({ id: "les_rest0001", title: secret, status: "active", provenance: { ...lessonRecord().provenance, audience: { kind: "restricted", acl: { source: "slack", scope: "slack:T1/CPRIV", principals: ["U9"], capturedAt: "2026-10-30T00:00:00.000Z", liveCheck: "none" } } } });
-    const denyAll: AccessCheckPort = { mayRead: async (_o, _v, places) => places.map(() => false) };
+    const denyAll: AccessCheckPort = { mayRead: async (_o, _v, places) => places.map(() => false), taskVisibility: allSharedTasks };
     const { store, call } = setup({ access: denyAll });
     await seed(store, restricted, lessonRecord({ id: "les_open0001" }));
     const answer = await call(callerOf("ann"), "GET", base);
@@ -199,7 +199,7 @@ describe("approving", () => {
 
   it("a lesson the viewer cannot see answers exactly as one that does not exist", async () => {
     const restricted = pending({ provenance: { ...lessonRecord().provenance, authors: ["carl"], audience: { kind: "restricted", acl: { source: "slack", scope: "slack:T1/CPRIV", principals: ["U9"], capturedAt: "2026-10-30T00:00:00.000Z", liveCheck: "none" } } } });
-    const s = setup({ access: { mayRead: async (_o, _v, places) => places.map(() => false) } });
+    const s = setup({ access: { mayRead: async (_o, _v, places) => places.map(() => false), taskVisibility: allSharedTasks } });
     await seed(s.store, restricted);
     const hidden = await refused(approve(s, "ann"));
     const missing = await refused(approve(s, "ann", "les_nothing1"));
@@ -549,7 +549,7 @@ describe("the task page: lessons the agent loaded", () => {
     expect((await refused(s.call(callerOf("mallory", { browserSession: undefined }), "POST", taskFeedback, { kind: "helpful" }))).code).toBe("FORBIDDEN");
     expect((await refused(s.call(callerOf("mallory", { orgRole: "auditor" as never }), "POST", taskFeedback, { kind: "helpful" }))).code).toBe("FORBIDDEN");
     expect((await s.store.get(KEY, "les_load0001"))!.counters.helpful).toBe(0);
-    const dark = setup({ access: { mayRead: async (_o, _v, places) => places.map(() => false) } });
+    const dark = setup({ access: { mayRead: async (_o, _v, places) => places.map(() => false), taskVisibility: allSharedTasks } });
     await seed(dark.store, lessonRecord({ id: "les_load0001", title: "Secret title", provenance: { ...lessonRecord().provenance, sourceScopes: ["slack:T1/CPRIV"] } }));
     await dark.store.putManifest({ taskId: "11111111-1111-1111-1111-111111111111", workspaceId: WS, project: PROJECT, stage: "IMPLEMENT", round: 1, setVersion: 1, memory: "live", at: 1, bytes: 10, lessons: [{ id: "les_load0001", version: 1, score: 0.5, why: "scope", citation: "valid" }] });
     const hidden = await dark.call(callerOf("mallory"), "GET", task);

@@ -31,9 +31,15 @@ export interface WeeklyDigest {
 export async function buildWeeklyDigest(store: LessonStore, key: ScopeKey, now: number, viewer: IdentitySet, access: AccessCheckPort, log?: LessonLog): Promise<WeeklyDigest> {
   const since = now - WEEK;
   const all = await store.list(key);
+  // LV-1 M1: only the lessons the digest can show are checked (a status it lists, a retirement of the week, or a lesson that mentions a paused source, whose name is shown only if the viewer sees all of them): not the
+  // rejected, withdrawn or long-retired lessons, and not the candidates (they are counted below, never shown).
+  const pausedKeys = Object.keys((await store.flags(key)).pausedSources ?? {});
+  const considered = all.filter((l) => l.status === "active" || l.status === "pending" || l.status === "stale"
+    || ((l.status === "retired" || l.status === "expired") && l.updatedAt >= since)
+    || pausedKeys.some((source) => l.provenance.sources.some((s) => sameSource(s, source)) || l.provenance.inputSources.some((s) => sameSource(s, source))));
   const item = (l: Lesson): DigestItem => ({ id: l.id, title: l.title, type: l.type, tier: l.tier, scope: l.scope, links: l.citations.flatMap((c) => (c.kind === "pr" ? [c.url] : [])) });
   // The frozen snapshot AND the access records now (an unreadable record fails the digest rather than showing or hiding a guess).
-  const shown = await readVisible({ access, key, viewer, lessons: all, where: "digest", log });
+  const shown = await readVisible({ access, key, viewer, lessons: considered, where: "digest", log });
   const shownIds = new Set(shown.map((l) => l.id));
   const visible = (l: Lesson): boolean => shownIds.has(l.id);
   const byValue = (a: Lesson, b: Lesson): number => lessonValue(b) - lessonValue(a) || a.id.localeCompare(b.id);
@@ -47,7 +53,7 @@ export async function buildWeeklyDigest(store: LessonStore, key: ScopeKey, now: 
     staleOrRetireProposed: shown.filter((l) => l.status === "stale" || (l.status === "active" && l.retireProposedAt !== undefined)).map(item),
     queuedCount: all.filter((l) => l.status === "candidate").length,
     ...(await pausedSourcesFor(store, key, all, visible)),
-    restrictedHidden: all.length - shown.length,
+    restrictedHidden: considered.length - shown.length,
   };
 }
 
