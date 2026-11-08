@@ -3,6 +3,7 @@
 //    with a template built with the switch spelled `off`, and the resources are listed by type, so a resource added outside the switch fails here.
 //  - ON (Public cloud and Enterprise): the table, the vector bucket, the lake and the schedules exist, named from the environment; the broker is given the switch and the two install
 //    parameters in its packed settings, and the role it assumes for vectors in its packed names; the Slack ingress is told to hand events to the broker.
+import { execFileSync } from "node:child_process";
 import { readFileSync, writeFileSync } from "node:fs";
 import { Stack } from "aws-cdk-lib";
 import { Template } from "aws-cdk-lib/assertions";
@@ -599,6 +600,12 @@ describe("the team record sweep alarms (switch on)", () => {
     expect(alarm).toMatchObject({ Namespace: "AgentX/staging", MetricName: "TeamRecordGithubRepoCheckNoTime", Statistic: "Sum", Period: 3600, EvaluationPeriods: 3, DatapointsToAlarm: 3, Threshold: 1, TreatMissingData: "notBreaching" });
     expect(JSON.stringify(alarm!["AlarmActions"])).toContain("OperatorAlerts");
   }, 360_000);
+
+  // The alarms are only as good as the event names: a rename in the broker would leave the filter counting nothing, so each name must still be written by the broker's source as a string literal.
+  it.each(SWEEP_ALARMS)("$event is still emitted by the broker's team record source", ({ event }) => {
+    const files = execFileSync("grep", ["-rlF", `"${event}"`, "packages/broker/src/team-record"], { encoding: "utf8" }).trim().split("\n").filter((line) => line !== "");
+    expect(files.length, event).toBeGreaterThan(0);
+  });
 
   it("the seven alarms are listed for the Health page, as alarms that exist only with the switch on, and there is no other record.* filter", () => {
     for (const { suffix } of SWEEP_ALARMS) {
