@@ -53,7 +53,8 @@ describe("channel-class: the directory reads the channel fresh and classifies it
     expect(await mine.dir.channelClass("T0OTHER99", "C0PUBLIC1")).toEqual({ ok: false, error: "slack_unavailable" });
     expect(infoCalls(mine.fetch)).toBe(0);
     expect(await directory({ teamId: undefined }).dir.channelClass(TEAM, "C0PUBLIC1")).toEqual({ ok: false, error: "slack_unavailable" });
-    for (const channel of ["C0ODDKIND", "C0MISMTCH"]) expect(await mine.dir.channelClass(TEAM, channel), channel).toEqual({ ok: false, error: "slack_unavailable" });
+    // SRL-14: a channel Slack shows but that cannot be classified is refused like one Rovara cannot see ({ ok: true } without a channel), not a different and faster 503.
+    for (const channel of ["C0ODDKIND", "C0MISMTCH"]) expect(await mine.dir.channelClass(TEAM, channel), channel).toEqual({ ok: true });
     mine.fake.state.down = true;
     expect(await mine.dir.channelClass(TEAM, "C0PUBLIC1")).toEqual({ ok: false, error: "slack_unavailable" });
   });

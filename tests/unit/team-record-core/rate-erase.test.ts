@@ -154,3 +154,19 @@ describe("SRL-9 the picker sessions and the slack-add rate items are erased too"
     expect(paths).toContain("RATE#slack-add");
   });
 });
+
+describe("SRL-14 person erase removes the web editor's Slack-add rate items", () => {
+  it("removes `RATE#slack-add-web|person:<id>#<window>` of the person and nothing of anyone else", async () => {
+    const w = world();
+    const limiter = dynamoRateLimiter(w.table, () => w.clock.ms);
+    await limiter.take(`${ORG_A}|slack-add-web|person:dev-1`, 20, 60);
+    await limiter.take(`${ORG_A}|slack-add-web|person:dev-2`, 20, 60);
+    expect(rateKeys(w).filter((key) => key.includes("slack-add-web|person:dev-1")).length).toBe(1);
+    const d = deleteDeps(w);
+    const result = await erasePerson(d.deps, ORG_A, { developerId: "dev-1" }, "erase-rate-web-1");
+    expect(result.complete).toBe(true);
+    const left = rateKeys(w);
+    expect(left.some((key) => key.includes("slack-add-web|person:dev-1#"))).toBe(false);
+    expect(left.some((key) => key.includes("slack-add-web|person:dev-2#"))).toBe(true);
+  });
+});

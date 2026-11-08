@@ -156,7 +156,7 @@ const claims = (h: Harness) => h.w.db.find((item) => item.entityType === "TEAM_R
 const requests = (h: Harness) => h.w.db.find((item) => item.entityType === "TEAM_RECORD_SOURCE_REQUEST");
 const nothingWritten = (h: Harness) => { expect(sourceRows(h)).toHaveLength(0); expect(proposals(h)).toHaveLength(0); expect(claims(h)).toHaveLength(0); expect(requests(h)).toHaveLength(0); };
 const flushed = async (h: Harness) => { await new Promise((resolve) => setTimeout(resolve, 0)); return h.audit.recorded(); };
-const INVITE_NEEDED = { status: 422, body: { code: "SLACK_INVITE_NEEDED", message: "Rovara isn't in that channel yet. Type /invite @Rovara in the channel, then try again. You must be in the channel yourself, with your Slack account linked to Rovara." } };
+const INVITE_NEEDED = { status: 422, body: { code: "SLACK_INVITE_NEEDED", message: "Rovara isn't in that channel yet. Type /invite @Rovara in the channel, then try again. You must be in the channel yourself, with your Slack account linked to Rovara. If Rovara and you are both in it already, wait a minute and try again." } };
 const DIFFERENT_WORKSPACE = { status: 422, body: { code: "SLACK_WRONG_WORKSPACE", message: "That link is for a different Slack workspace." } };
 const NOT_ALLOWED = (message: string) => ({ status: 422, body: { code: "SOURCE_NOT_ALLOWED", message } });
 const CONNECT_WORDS = "Slack Connect channels can't be used as a source.";
