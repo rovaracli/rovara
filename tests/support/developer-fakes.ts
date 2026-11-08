@@ -435,7 +435,8 @@ export function identityHarness(options: {
   const now = () => clock;
   const state = options.state ?? new FakeDynamoDb();
   const db = options.sharedTable === true ? state : new FakeDynamoDb();
-  const orgs = new OrgStore({ documentClient: state, tableName: "state", now });
+  // The sharedTable fake holds both tables, so the sign-in/company fence of SLACK-LINK-1 (a ConditionCheck on the other table in the same transaction) is wired as in production.
+  const orgs = new OrgStore({ documentClient: state, tableName: "state", now, ...(options.sharedTable === true ? { signInTableName: "signin" } : {}) });
   const slack = fakeSlack({ users: options.slackUsers ?? [], now, ...(options.channels ? { channels: options.channels } : {}), ...(options.channelInfo ? { channelInfo: options.channelInfo } : {}), ...(options.userChannels ? { userChannels: options.userChannels } : {}) });
   const oidc = fakeOidc({ users: options.oidcUsers ?? [], now });
   const github = fakeGithub({ users: options.github?.users ?? [] });
@@ -459,7 +460,7 @@ export function identityHarness(options: {
     ...(cloudProvider === undefined ? {} : { cloud: cloudProvider }),
     ...(githubProvider === undefined ? {} : { github: githubProvider }),
   };
-  const store = new DeveloperSignInStore({ documentClient: db, tableName: "signin", now, ...(options.storeAudit === true && options.audit !== undefined ? { audit: options.audit.audit } : {}) });
+  const store = new DeveloperSignInStore({ documentClient: db, tableName: "signin", now, ...(options.sharedTable === true ? { stateTableName: "state" } : {}), ...(options.storeAudit === true && options.audit !== undefined ? { audit: options.audit.audit } : {}) });
   const ssoStores = options.sso !== true ? undefined : ssoStoresFor({ documentClient: state, tableName: "state", policy: options.editionPolicy });
   const samlProvider = options.saml !== true || ssoStores === undefined || options.singleOrg === false ? undefined : samlSignInProvider({
     sp: samlServiceProviderAddresses(ISSUER), orgId: TEST_ORG, load: (orgId) => ssoStores.saml.config.get(orgId), replay: ssoStores.saml.replay, stash: ssoStores.saml.stash, now,

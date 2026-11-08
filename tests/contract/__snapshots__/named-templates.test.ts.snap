@@ -6430,6 +6430,23 @@ exports[`named environment templates > agentx-staging-control-plane is unchanged
               },
             },
             {
+              "Action": "dynamodb:ConditionCheckItem",
+              "Condition": {
+                "ForAllValues:StringLike": {
+                  "dynamodb:LeadingKeys": [
+                    "DEVELOPER#*",
+                  ],
+                },
+              },
+              "Effect": "Allow",
+              "Resource": {
+                "Fn::GetAtt": [
+                  "DeveloperSignInTable26CE739E",
+                  "Arn",
+                ],
+              },
+            },
+            {
               "Action": "dynamodb:DeleteItem",
               "Condition": {
                 "ForAllValues:StringLike": {
@@ -6547,6 +6564,7 @@ exports[`named environment templates > agentx-staging-control-plane is unchanged
                 "ForAllValues:StringLike": {
                   "dynamodb:LeadingKeys": [
                     "ORG#org_????????????????????",
+                    "DEVELOPER_ORG#*",
                   ],
                 },
               },

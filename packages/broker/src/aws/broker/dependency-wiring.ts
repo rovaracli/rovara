@@ -409,9 +409,11 @@ export function removalDepsOf(agents: AgentRouteDependencies, dependencies: Pick
   return end === undefined ? agents : { ...agents, endDeveloperSessions: end };
 }
 
-export function orgStoreOf(dependencies: Pick<AwsBrokerDependencies, "documentClient" | "tableName" | "audit">, memberRemoval?: MemberRemovalHook): OrgStore {
+export function orgStoreOf(dependencies: Pick<AwsBrokerDependencies, "documentClient" | "tableName" | "audit"> & { developer?: Pick<NonNullable<AwsBrokerDependencies["developer"]>, "signInTableName"> }, memberRemoval?: MemberRemovalHook): OrgStore {
   return new OrgStore({
     documentClient: dependencies.documentClient, tableName: dependencies.tableName, now: Date.now,
+    // SLACK-LINK-1: a membership is refused for a developer whose sign-in was merged into another account (the other half of the Slack link's fence).
+    ...(dependencies.developer === undefined ? {} : { signInTableName: dependencies.developer.signInTableName }),
     ...(dependencies.audit === undefined ? {} : { audit: dependencies.audit }),
     // Plan 3, Task 11: a removed member's agents, skills and shares move on (the routes that remove people pass it).
     ...(memberRemoval === undefined ? {} : { memberRemoval }),
