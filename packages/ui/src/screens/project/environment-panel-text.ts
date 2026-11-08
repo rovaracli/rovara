@@ -11,6 +11,22 @@ export const ENV = {
  RESET_FAILED: "Couldn't start the rebuild. Try again.", RESET_REFUSED: "Only a maintainer of this project can reset the saved environment.",
  ONLY_MAINTAINER: "Only a maintainer of this project can reset it.",
  NO_IMAGE: "No saved copy yet.",
+ // SV-1l: the project's on/off setting.
+ OFF: "Off for this project. Every new task sets up fresh, and no saved copy is built.",
+ RESET_OFF: "Turn the saved environment on to build a new saved copy.",
+} as const;
+
+/** SV-1l: the words of the on/off setting, the same in the setup checklist and the Saved environment section. */
+export const SETTING = {
+ LABEL: "Use a saved environment for new tasks",
+ AFFECTS: "New tasks in this project only. On: a new task starts from the saved copy of the proven setup, and Rovara keeps that copy up to date. Off: every new task installs everything again, so it starts more slowly, and no new saved copy is built. Nothing is blocked either way: a task that can't use the saved copy sets up fresh.",
+ WHO: "A maintainer of this project.",
+ WHY_NOT: "You can see this setting but not change it. Ask a maintainer of this project.",
+ SAVE: "Save", SAVED_ON: "Saved. New tasks start from the saved copy.", SAVED_OFF: "Saved. New tasks set up fresh.",
+ REFUSED: "Only a maintainer of this project can change this setting.",
+ STALE: "Someone changed the saved environment meanwhile. It was read again; check it and save again.",
+ FAILED: "Couldn't save the setting. Your choice is still here; try again.",
+ ON_WORD: "On", OFF_WORD: "Off",
 } as const;
 
 const HEALTH: Record<string, string> = {
