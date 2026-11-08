@@ -2,10 +2,12 @@
 // about a task (a missing one answers the same), and the browser reaches exactly these shapes through /v1/web. What each route does is in tests/integration/workflow-e2e/10c-plan-panel.test.ts.
 import { randomUUID } from "node:crypto";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { PLAN_PANEL_BROWSER_MESSAGE, PLAN_PANEL_ROUTE, planPanelView } from "../../packages/broker/src/aws/developer-routes/plan-panel.js";
+import { FEEDBACK_CHANGED, FEEDBACK_NOT_FOUND, PLAN_PANEL_BROWSER_MESSAGE, PLAN_PANEL_ROUTE, planPanelView, retryRefusal } from "../../packages/broker/src/aws/developer-routes/plan-panel.js";
 import { webRouteAllowed } from "../../packages/broker/src/aws/web-auth.js";
 import { taskPanelLocation } from "../../packages/broker/src/aws/task-web.js";
 import type { TaskDocumentView } from "../../packages/broker/src/aws/task-web.js";
+import { FEEDBACK_REVIEW_RETRY_BUSY, FEEDBACK_REVIEW_RETRY_CHANGED } from "../../packages/broker/src/aws/developer-tasks.js";
+import { agentXError } from "@agentx/contracts";
 import { createDeveloperTaskBroker, MAYA } from "../support/developer-task-broker.js";
 
 const TASK = "11111111-1111-4111-8111-111111111111", COMMENT = "22222222-2222-4222-8222-222222222222";
@@ -20,7 +22,7 @@ describe("plan panel routes: a live browser only", () => {
     for (const [method, path, body] of [
       ["GET", "documents/plan", undefined], ["POST", "comments", { requestId: randomUUID(), document: "plan", version: 1, target: { kind: "document" }, text: "Hi.", ask: false }],
       ["POST", `comments/${COMMENT}/edit`, { rev: 1, text: "x" }], ["POST", `comments/${COMMENT}/delete`, { rev: 1 }], ["POST", "suggestions", { document: "plan", decisionId: "d1", optionId: "a" }],
-      ["GET", "workflow/feedback", undefined], ["POST", "workflow/feedback-decision", {}],
+      ["GET", "workflow/feedback", undefined], ["POST", "workflow/feedback-decision", {}], ["POST", "workflow/feedback-retry", { reviewDigest: "a".repeat(64) }],
     ] as const) {
       const real = await harness.dev(MAYA, method, `/v1/app/tasks/${TASK}/${path}`, body);
       const missing = await harness.dev(MAYA, method, `/v1/app/tasks/${randomUUID()}/${path}`, body);
@@ -31,10 +33,10 @@ describe("plan panel routes: a live browser only", () => {
   });
 
   it("matches exactly the panel's shapes, and the browser may reach exactly those", () => {
-    for (const path of [`documents/plan`, `documents/design`, `documents/requirements`, "comments", `comments/${COMMENT}/edit`, `comments/${COMMENT}/delete`, "suggestions", "workflow/feedback", "workflow/feedback-decision"]) {
+    for (const path of [`documents/plan`, `documents/design`, `documents/requirements`, "comments", `comments/${COMMENT}/edit`, `comments/${COMMENT}/delete`, "suggestions", "workflow/feedback", "workflow/feedback-decision", "workflow/feedback-retry"]) {
       expect(PLAN_PANEL_ROUTE.test(`/v1/app/tasks/${TASK}/${path}`), path).toBe(true);
     }
-    for (const path of ["documents/other", "documents/plan/x", `comments/${COMMENT}/remember`, `comments/${COMMENT}`, "suggestions/x", "workflow/feedback-retry"]) {
+    for (const path of ["documents/other", "documents/plan/x", `comments/${COMMENT}/remember`, `comments/${COMMENT}`, "suggestions/x", "workflow/feedback-retries", "workflow/retry"]) {
       expect(PLAN_PANEL_ROUTE.test(`/v1/app/tasks/${TASK}/${path}`), path).toBe(false);
     }
     expect(webRouteAllowed("GET", `/v1/web/tasks/${TASK}/documents/plan`)).toBe(true);
@@ -46,7 +48,8 @@ describe("plan panel routes: a live browser only", () => {
     expect(webRouteAllowed("POST", `/v1/web/tasks/${TASK}/suggestions`)).toBe(true);
     expect(webRouteAllowed("GET", `/v1/web/tasks/${TASK}/workflow/feedback`)).toBe(true);
     expect(webRouteAllowed("POST", `/v1/web/tasks/${TASK}/workflow/feedback-decision`)).toBe(true);
-    expect(webRouteAllowed("POST", `/v1/web/tasks/${TASK}/workflow/feedback-retry`)).toBe(false);
+    expect(webRouteAllowed("POST", `/v1/web/tasks/${TASK}/workflow/feedback-retry`)).toBe(true);
+    expect(webRouteAllowed("GET", `/v1/web/tasks/${TASK}/workflow/feedback-retry`)).toBe(false);
   });
 
   it("an old link forwards only to a task page of the fixed shape, with a document from the fixed list", () => {
@@ -71,5 +74,36 @@ describe("plan panel routes: a live browser only", () => {
     const plan = planPanelView(view, "plan");
     expect(plan).toMatchObject({ waiting: true, checks: [{ id: "unit", label: "Unit tests" }], access: { canAsk: false, canDecide: true }, current: { title: "Fix it", claims: [{ id: "1", text: "Line one line two" }] } });
     expect(planPanelView(view, "design")).toMatchObject({ waiting: false, checks: [], versions: [] });
+  });
+
+  it("an older version of a document reads whole but read-only: its own text, no checks, nothing to decide, and a missing version is refused", () => {
+    const entry = (version: number, current: boolean, title: string) => ({ kind: "coding plan", version, approved: version === 1, current, format: "structured",
+      plan: { schemaVersion: 1, title, why: [], claims: [{ id: "1", text: "Claim " + String(version) }], notChanging: [], risks: [], decisions: [] } });
+    const view = { taskId: TASK, title: "t", status: "s", nextStep: "n", path: "QUICK", stage: "Coding plan", role: "owner", findings: [], pullRequests: [], history: [],
+      checks: [{ id: "unit", label: "Unit tests", passed: undefined }], access: { role: "owner", canComment: true, canSuggest: true, canDecide: true, canAsk: true }, askAvailable: true,
+      waiting: { kind: "coding plan", version: 2, artifactDigest: "a".repeat(64) }, documents: [entry(1, false, "First"), entry(2, true, "Second")] } as unknown as TaskDocumentView;
+    const older = planPanelView(view, "plan", 1);
+    expect(older).toMatchObject({ older: { currentVersion: 2 }, current: { version: 1, approved: true, title: "First", claims: [{ id: "1", text: "Claim 1" }] }, checks: [], waiting: false,
+      access: { canComment: false, canSuggest: false, canDecide: false, canAsk: false }, versions: [{ version: 1, current: false }, { version: 2, current: true }] });
+    // Asking for the current version, or for none, is the ordinary current view.
+    for (const same of [planPanelView(view, "plan"), planPanelView(view, "plan", 2)]) {
+      expect(same).toMatchObject({ current: { version: 2, title: "Second" }, waiting: true, checks: [{ id: "unit" }], access: { canDecide: true } });
+      expect(same.older).toBeUndefined();
+    }
+    expect(() => planPanelView(view, "plan", 7)).toThrow("That version isn't available.");
+    expect(() => planPanelView(view, "design", 1)).toThrow("That version isn't available.");
+  });
+
+  it("Retry review's refusals: the busy and changed words pass; not-yours reads as a missing review; infrastructure faults pass; anything else (including the core's own words) reads as changed", async () => {
+    const fail = (code: Parameters<typeof agentXError>[0], message: string) => retryRefusal(async () => { throw agentXError(code, message); });
+    await expect(fail("CONFIG_INVALID", FEEDBACK_REVIEW_RETRY_BUSY)).rejects.toMatchObject({ code: "CONFIG_INVALID", message: `CONFIG_INVALID: ${FEEDBACK_REVIEW_RETRY_BUSY}` });
+    await expect(fail("CONFIG_INVALID", FEEDBACK_REVIEW_RETRY_CHANGED)).rejects.toMatchObject({ code: "CONFIG_INVALID", message: `CONFIG_INVALID: ${FEEDBACK_REVIEW_RETRY_CHANGED}` });
+    for (const code of ["FORBIDDEN", "TASK_NOT_FOUND", "TASK_ACCESS_DENIED", "NOT_FOUND"] as const) await expect(fail(code, "secret detail"), code).rejects.toMatchObject({ code: "NOT_FOUND", message: `NOT_FOUND: ${FEEDBACK_NOT_FOUND}` });
+    await expect(fail("PROJECT_ACCESS_DENIED", "You can view `payments` but not start tasks in it.")).rejects.toMatchObject({ code: "PROJECT_ACCESS_DENIED", message: "PROJECT_ACCESS_DENIED: You can view `payments` but not start tasks in it." });
+    for (const code of ["RUNTIME_UNAVAILABLE", "TASK_BUSY", "WORKSPACE_BUSY"] as const) await expect(fail(code, "try later"), code).rejects.toMatchObject({ code });
+    await expect(fail("CONFIG_INVALID", "this review changed; use the latest AgentX message")).rejects.toMatchObject({ code: "IDEMPOTENCY_CONFLICT", message: `IDEMPOTENCY_CONFLICT: ${FEEDBACK_CHANGED}` });
+    await expect(fail("CONFIG_INVALID", "some git error text")).rejects.toMatchObject({ code: "IDEMPOTENCY_CONFLICT", message: `IDEMPOTENCY_CONFLICT: ${FEEDBACK_CHANGED}` });
+    await expect(retryRefusal(async () => { throw new Error("boom"); })).rejects.toMatchObject({ code: "IDEMPOTENCY_CONFLICT", message: `IDEMPOTENCY_CONFLICT: ${FEEDBACK_CHANGED}` });
+    await expect(retryRefusal(async () => ({ started: true }))).resolves.toEqual({ started: true });
   });
 });
