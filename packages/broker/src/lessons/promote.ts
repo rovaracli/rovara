@@ -3,7 +3,8 @@
 // never promoted (design Q14): a rule is read by everyone in the project.
 import type { TaskVisibilityPort } from "../team-record/live-audience.js";
 import { cleanForLearning } from "./guards.js";
-import { liveVisible } from "./live-visibility.js";
+import { createLessonLiveReader } from "./live-visibility.js";
+import { mentionsRepoPlace, viewedForLessons } from "./project-repo-audience.js";
 import { trySecondPerson } from "./approve.js";
 import { emitAudit, modeAllows, requireAudit, resolveLearning, type LearningSettingsReader } from "./policy.js";
 import type { ApproverDirectory, LessonDeps, RulePublisher } from "./ports.js";
@@ -49,9 +50,11 @@ export async function promoteToRule(deps: PromoteDeps, input: { workspaceId: str
   if (lesson === undefined) return { ok: false, code: "not_found" };
   if (lesson.promotedRuleId !== undefined) return { ok: true, ruleId: lesson.promotedRuleId, already: true };
   if (lesson.status !== "active") return { ok: false, code: "not_active" };
-  if (isRestricted(lesson)) return { ok: false, code: "restricted" };
+  // Owner decision 34: a restriction that is only the readers of the project's own repositories counts as project-wide (read live; unreadable leaves it restricted).
+  const reader = createLessonLiveReader({ port: deps.taskVisibility, key, where: "promote" });
+  if (isRestricted(viewedForLessons(lesson, mentionsRepoPlace(lesson) ? await reader.projectRepos() : undefined))) return { ok: false, code: "restricted" };
   // Every task it was learned from must be project-wide NOW (a reader of "nobody in particular" keeps it only then).
-  if ((await liveVisible({ port: deps.taskVisibility, key, viewer: undefined, lessons: [lesson], where: "promote" })).length !== 1) return { ok: false, code: "task_not_shared" };
+  if ((await reader.keep(undefined, [lesson])).length !== 1) return { ok: false, code: "task_not_shared" };
   if (!trustAtLeast(lesson.provenance.minTrust, "rovara")) return { ok: false, code: "not_trusted" };
 
   if (lesson.tier === 2) {

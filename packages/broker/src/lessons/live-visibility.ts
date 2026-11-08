@@ -19,13 +19,14 @@
 import { OrgIdSchema } from "@agentx/contracts";
 import type { TaskVisibilityPort } from "../team-record/live-audience.js";
 import { audienceWithin, inAudience, lessonAudiencesOf, openToWholeProject, type LessonTaskAudience, type RosterMemo } from "./task-audience.js";
+import { projectRepoScopesOf } from "./project-repo-audience.js";
 import type { LessonLog } from "./read-visible.js";
 import type { ScopeKey } from "./store.js";
 import { lessonPlaces, type IdentitySet, type Lesson } from "./types.js";
 
 /** The most distinct source tasks one call looks up. A lesson learned from a task past it is withheld. */
 export const LESSON_LIVE_TASKS_MAX = 300;
-/** How long the one batched lookup (and the comparison after it) may take before every lesson that names a task is withheld. */
+/** How long ONE check (`keep`: the batched lookup and the comparison after it, together) may take before every lesson that names a task is withheld. */
 export const LESSON_LIVE_TIMEOUT_MS = 8_000;
 
 // The shape of a task id (the same as `live-audience.ts`): anything else cannot be asked about, so a lesson that names one is withheld.
@@ -68,6 +69,16 @@ export function lessonTaskRefs(lesson: Pick<Lesson, "provenance" | "citations">)
 export interface LessonLiveReader {
   /** The lessons of `lessons` whose source tasks are all still visible to the reader now (see the top of this file), in their order. Never throws. */
   keep(viewer: Pick<IdentitySet, "developerId"> | undefined, lessons: readonly Lesson[]): Promise<Lesson[]>;
+  /**
+   * A reader for NOBODY in particular (decision 32) that shares what this one has looked up: the audiences and roster answers already read are not read again. For a path that checks the same source tasks twice, once
+   * for the running task and once for the repository's readers (the pull request description), so each source task is read once per request.
+   */
+  withoutRunningTask(): LessonLiveReader;
+  /**
+   * Owner decision 34: the places (`<source>:repo/<id>`) of the repositories the lesson's project has NOW, read live from the project definition, once per request (a failed read is not remembered). `undefined` when
+   * they cannot be read (no port, an unreadable definition, past the deadline): nothing is then treated as a project repository, so a lesson restricted to repository readers stays restricted.
+   */
+  projectRepos(): Promise<ReadonlySet<string> | undefined>;
 }
 
 export interface LessonLiveReaderInput {
@@ -86,6 +97,13 @@ export interface LessonLiveReaderInput {
  * caller in the log line.
  */
 export function createLessonLiveReader(input: LessonLiveReaderInput): LessonLiveReader {
+  return buildReader(input, { audiences: new Map<string, LessonTaskAudience | undefined>(), memo: new Map<string, Promise<boolean>>(), repos: {} });
+}
+
+/** What readers of one request share: the audiences looked up (one read per task) and the roster answers (one read per person). */
+interface SharedReads { audiences: Map<string, LessonTaskAudience | undefined>; memo: RosterMemo; repos: { read?: Promise<ReadonlySet<string> | undefined> } }
+
+function buildReader(input: LessonLiveReaderInput, shared: SharedReads): LessonLiveReader {
   const org = OrgIdSchema.safeParse(input.key.workspaceId);
   const audiencePort = lessonAudiencesOf(input.port);
   const maxTasks = input.maxTasks ?? LESSON_LIVE_TASKS_MAX;
@@ -93,23 +111,22 @@ export function createLessonLiveReader(input: LessonLiveReaderInput): LessonLive
   const unreadable = (reason: string, tasks?: number): void => { input.log?.(`learning.${input.where}_audience_unreadable`, tasks === undefined ? { reason } : { reason, tasks }); };
 
   // Audiences: read once per task per request, with the same bound, per-read time and abort for every read of the request.
-  const audiences = new Map<string, LessonTaskAudience | undefined>();
-  const memo: RosterMemo = new Map();
+  const { audiences, memo } = shared;
   const verdicts = new Map<string, Promise<boolean>>();
   const timeLeft = (): number => (typeof input.timeoutMs === "function" ? input.timeoutMs() : input.timeoutMs ?? LESSON_LIVE_TIMEOUT_MS);
-  /** `run` with a deadline: when it passes, `run`'s signal aborts (no new read starts, a read in flight is cut) and the wait ends. */
-  const bounded = async <T,>(run: (signal: AbortSignal) => Promise<T>): Promise<T> => {
+  /** `run` with a deadline `limit()` ms away: when it passes, `run`'s signal aborts (no new read starts, a read in flight is cut) and the wait ends. */
+  const bounded = async <T,>(limit: () => number, run: (signal: AbortSignal) => Promise<T>): Promise<T> => {
     const abort = new AbortController();
     let timer: ReturnType<typeof setTimeout> | undefined;
     try {
       const work = run(abort.signal);
       work.catch(() => undefined);
-      return await Promise.race([work, new Promise<never>((_resolve, reject) => { timer = setTimeout(() => { abort.abort(); reject(new Error("timed out")); }, timeLeft()); })]);
+      return await Promise.race([work, new Promise<never>((_resolve, reject) => { timer = setTimeout(() => { abort.abort(); reject(new Error("timed out")); }, limit()); })]);
     } finally {
       if (timer !== undefined) clearTimeout(timer);
     }
   };
-  const loadAudiences = async (ids: Iterable<string>): Promise<void> => {
+  const loadAudiences = async (ids: Iterable<string>, limit: () => number): Promise<void> => {
     if (!org.success || audiencePort === undefined) return;
     const fresh: string[] = [];
     for (const id of ids) {
@@ -120,7 +137,7 @@ export function createLessonLiveReader(input: LessonLiveReaderInput): LessonLive
     if (fresh.length === 0) return;
     for (const id of fresh) audiences.set(id, undefined);
     try {
-      const found = await bounded((signal) => audiencePort.read(org.data, fresh, { signal, memo }));
+      const found = await bounded(limit, (signal) => audiencePort.read(org.data, fresh, { signal, memo }));
       for (const id of fresh) audiences.set(id, found.get(id));
     } catch (error) {
       unreadable(error instanceof Error && error.message === "timed out" ? "timeout" : "error", fresh.length);
@@ -128,6 +145,23 @@ export function createLessonLiveReader(input: LessonLiveReaderInput): LessonLive
   };
 
   return {
+    withoutRunningTask: () => buildReader({ ...input, running: undefined }, shared),
+    projectRepos() {
+      const repoPort = projectRepoScopesOf(input.port);
+      if (!org.success || repoPort === undefined) {
+        unreadable("no_project_repos");
+        return Promise.resolve(undefined);
+      }
+      if (shared.repos.read === undefined) {
+        const read = bounded(timeLeft, () => repoPort.read(org.data, input.key.project)).catch((error: unknown) => {
+          unreadable(error instanceof Error && error.message === "timed out" ? "timeout" : "project_repos_error");
+          if (shared.repos.read === read) delete shared.repos.read;
+          return undefined;
+        });
+        shared.repos.read = read;
+      }
+      return shared.repos.read;
+    },
     async keep(viewer, lessons) {
       const refs = lessons.map((lesson) => lessonTaskRefs(lesson));
       const names = (index: number): boolean => refs[index]!.taskIds.length > 0 || refs[index]!.unreadable;
@@ -138,6 +172,9 @@ export function createLessonLiveReader(input: LessonLiveReaderInput): LessonLive
         withheld(named.length, org.success ? "no_port" : "bad_org");
         return unnamed();
       }
+      // ONE deadline for this whole check: the audience read and the comparison after it share it (and the caller's own deadline, when it gives one as a function).
+      const deadline = Date.now() + timeLeft();
+      const remaining = (): number => Math.max(1, Math.min(deadline - Date.now(), timeLeft()));
       const running = input.running;
       const runningId = running?.taskId;
       if (running !== undefined && (runningId === undefined || !TASK_ID.test(runningId))) {
@@ -147,7 +184,7 @@ export function createLessonLiveReader(input: LessonLiveReaderInput): LessonLive
       }
       const person = running !== undefined ? undefined : viewer?.developerId;
       const who = person === undefined || person === "" ? undefined : person;
-      await loadAudiences([...(runningId === undefined ? [] : [runningId]), ...refs.flatMap((ref) => ref.taskIds)]);
+      await loadAudiences([...(runningId === undefined ? [] : [runningId]), ...refs.flatMap((ref) => ref.taskIds)], remaining);
       const runningAudience = runningId === undefined ? undefined : audiences.get(runningId);
       if (running !== undefined && runningAudience === undefined) {
         // The running task's audience can't be read: nothing that names a task is kept.
@@ -156,7 +193,8 @@ export function createLessonLiveReader(input: LessonLiveReaderInput): LessonLive
       }
       /** Whether this reader may see the source task `id` (cached per request). May throw (an unreadable roster entry). */
       const allowed = (id: string, signal: AbortSignal): Promise<boolean> => {
-        const cacheKey = `${runningId ?? who ?? "-"}\u0000${id}`;
+        // The answer depends on WHO is reading (the running task, a person, or nobody in particular): the key says which, so a reader asked for two viewers never hands one the other's answer.
+        const cacheKey = `${running !== undefined ? `running:${runningId ?? ""}` : who !== undefined ? `person:${who}` : "nobody"}\u0000${id}`;
         let known = verdicts.get(cacheKey);
         if (known === undefined) {
           const source = audiences.get(id);
@@ -171,7 +209,7 @@ export function createLessonLiveReader(input: LessonLiveReaderInput): LessonLive
       };
       let ok: boolean[];
       try {
-        ok = await bounded(async (signal) => {
+        ok = await bounded(remaining, async (signal) => {
           const out: boolean[] = [];
           for (let index = 0; index < lessons.length; index += 1) {
             if (!names(index)) { out.push(true); continue; }
