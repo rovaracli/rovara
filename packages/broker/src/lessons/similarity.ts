@@ -12,8 +12,8 @@
 // Nothing here calls a paid model, writes a lesson or reads the lesson store: callers pass the lessons in. The embedder is our own compute; if it is absent or fails the ranking falls back to keywords and paths (one
 // fixed log code), and nothing here ever throws into a caller.
 import { createHash } from "node:crypto";
-import { covers, relate } from "./copy-match.js";
-import type { LessonEmbedder, LessonVectors, StoredLessonVector } from "./ports.js";
+import { covers, hasUnclassifiedNegation, relate } from "./copy-match.js";
+import type { EmbedderCall, LessonEmbedder, LessonVectors, StoredLessonVector } from "./ports.js";
 import type { ScopeKey } from "./store.js";
 import type { Lesson } from "./types.js";
 
@@ -261,7 +261,7 @@ export function fuse(query: SimDoc, corpus: readonly SimDoc[], cosines?: Readonl
  * never decide a copy; they only choose what a judge or a person looks at.
  *
  *   verbatim   the bodies are equal after case, whitespace and punctuation are normalised; the same cited file, or neither cites one. The only thing that skips an available judge.
- *   near       with NO judge: the same cited file and the same words in the same order, a few filler words apart.
+ *   near       with NO judge: the same cited file and the same words in the same order, differing by filler only (equal word sequences once filler is removed and plurals are stemmed: no content word differs, at any length).
  *   flipped    the same words with a polarity, direction or number changed (or in another order), the same cited file or none: a person decides, as a contradiction. Never merged.
  *   narrows    the draft holds the lesson's words in order and more: a refinement for a person.
  */
@@ -270,14 +270,21 @@ export const isNearExact = (ranked: Pick<Ranked, "sharedFile" | "bothUncited">, 
 export const isFlippedCopy = (ranked: Pick<Ranked, "sharedFile" | "bothUncited">, a: string, b: string): boolean => (ranked.sharedFile || ranked.bothUncited) && relate(a, b).flipped;
 export const isNarrowing = (ranked: Pick<Ranked, "sharedFile" | "bothUncited">, a: string, b: string): boolean => (ranked.sharedFile || ranked.bothUncited) && relate(a, b).narrows;
 
-/** A judge's "same" is acted on only when the two bodies are this close as well (review H3): the judge alone cannot choose which lesson a draft is credited to. */
-export const JUDGE_SAME_FLOOR = { mutual: 0.7, cosine: 0.85 } as const;
+/**
+ * A judge's "same" is acted on only when the two bodies are this close as well (review H3, N3): the judge alone cannot choose which lesson a draft is credited to. With an embedder BOTH the cosine and the word share
+ * are needed (a cosine alone is not enough: unrelated same-topic text scores 0.6 and a small model scores "enable" and "disable" alike); with none the word share is held to the higher bar.
+ * Text with a negation this module cannot classify (any non-ASCII word: German, French, Cyrillic, CJK ...) is never "same" by a judge's word: it goes to a person (documented, DEFERRED-CHECKS LS-2). Verbatim copies
+ * and near copies (equal words) are still the same.
+ */
+export const JUDGE_SAME_FLOOR = { mutual: 0.7, cosineMutual: 0.5, cosine: 0.92 } as const;
 export const closeEnoughForSame = (ranked: Pick<Ranked, "bodyMutual" | "cosine" | "sharedFile" | "bothUncited">, a: string, b: string): boolean => {
   const relation = relate(a, b);
   if (relation.verbatim || relation.near) return true;
-  // Never when a polarity, direction, qualifier or number differs, or the words are reordered.
+  // Never when a polarity, direction, unit, qualifier or number differs, a word is the other's antonym, or the words are reordered.
   if (relation.flipped || !relation.criticalSame || !relation.polaritySame) return false;
-  return ranked.bodyMutual >= JUDGE_SAME_FLOOR.mutual || (ranked.cosine !== undefined && ranked.cosine >= JUDGE_SAME_FLOOR.cosine);
+  if (hasUnclassifiedNegation(a) || hasUnclassifiedNegation(b)) return false;
+  if (ranked.cosine === undefined) return ranked.bodyMutual >= JUDGE_SAME_FLOOR.mutual;
+  return ranked.cosine >= JUDGE_SAME_FLOOR.cosine && ranked.bodyMutual >= JUDGE_SAME_FLOOR.cosineMutual;
 };
 
 /**
@@ -293,6 +300,9 @@ export function matchesRejected(draft: { bodySet: ReadonlySet<string> }, rejecte
   if (overlap.mutual < 0.5 && containedShare < 0.6 && !closeVector) return false;
   const relation = relate(draftBody, rejectedBody);
   if (relation.verbatim || relation.near) return true;
+  // Round 2 (N1): a close vector counts unless the advice really points the other way. A synonym swap ("disable" for "turn off", "skip" for "ignore", "never" for "avoid") is flipped by the word lists but keeps its
+  // stance, direction words and numbers, so the vector may speak for it; a different stance, direction word, number, unit, antonym or order is "opposed" and the vector may not.
+  if (closeVector && !relation.opposed) return true;
   // Every negation, direction word and number of the rejected advice must be in the draft; the draft may say more (padding with other lessons' words, digits included, does not clear it).
   if (relation.flipped || !covers(rejectedBody, draftBody).polarityContained) return false;
   if (rejected.bodySet.size >= REJECTED_MATCH.minWords && (overlap.mutual >= REJECTED_MATCH.mutual || containedShare >= REJECTED_MATCH.contained)) return true;
@@ -373,7 +383,10 @@ export async function rankLessons(deps: SimilarityDeps, key: ScopeKey, corpus: R
   }
   const embedder = deps.embedder;
   try {
-    return await withTimeout(fusedRanking(deps, embedder, key, corpus, query, docs, options), options.timeoutMs ?? EMBED_TIMEOUT_MS.curate);
+    // The race is also the embedder call's DEADLINE (round 2, N4): a call still running when the race ends is aborted by the client at that moment, and no later call of this run is started. The abandoned
+    // work therefore cannot start another cold container.
+    const limit = options.timeoutMs ?? EMBED_TIMEOUT_MS.curate;
+    return await withTimeout(fusedRanking(deps, embedder, key, corpus, query, docs, options, { deadline: Date.now() + limit }), limit);
   } catch (error) {
     deps.log?.(error instanceof EmbedTimeout ? SIMILARITY_LOG.embedderSlow : SIMILARITY_LOG.embedderDown, {});
     deps.metrics?.count(error instanceof EmbedTimeout ? "learning.similarity_embedder_timeout" : "learning.similarity_embedder_unavailable");
@@ -381,7 +394,7 @@ export async function rankLessons(deps: SimilarityDeps, key: ScopeKey, corpus: R
   }
 }
 
-async function fusedRanking(deps: SimilarityDeps, embedder: LessonEmbedder, key: ScopeKey, corpus: ReadonlyArray<LessonLike & { id: string }>, query: SimDoc, docs: readonly SimDoc[], options: RankOptions): Promise<RankResult> {
+async function fusedRanking(deps: SimilarityDeps, embedder: LessonEmbedder, key: ScopeKey, corpus: ReadonlyArray<LessonLike & { id: string }>, query: SimDoc, docs: readonly SimDoc[], options: RankOptions, call: EmbedderCall): Promise<RankResult> {
   const hashes = new Map(corpus.map((l) => [l.id, textHash(lessonTextOf(l))] as const));
   let stored: Map<string, StoredLessonVector>;
   try { stored = await deps.vectors.get(key.workspaceId, key.project, embedder.spec, corpus.map((l) => l.id)); } catch { deps.log?.(SIMILARITY_LOG.vectorsDown, {}); stored = new Map(); }
@@ -394,7 +407,7 @@ async function fusedRanking(deps: SimilarityDeps, embedder: LessonEmbedder, key:
   if (options.embedMissing === true) {
     const missing = corpus.filter((l) => !vectors.has(l.id)).slice(0, MAX_EMBED_PER_CALL);
     if (missing.length > 0) {
-      const made = await embedder.embedMany(missing.map((l) => lessonTextOf(l)), "document");
+      const made = await embedder.embedMany(missing.map((l) => lessonTextOf(l)), "document", call);
       for (const [i, l] of missing.entries()) {
         const vector = made[i];
         if (!validVector(vector, embedder.dimension)) continue;
@@ -403,7 +416,7 @@ async function fusedRanking(deps: SimilarityDeps, embedder: LessonEmbedder, key:
       }
     }
   }
-  const [queryVector] = await embedder.embedMany([query.text], options.queryKind ?? "document");
+  const [queryVector] = await embedder.embedMany([query.text], options.queryKind ?? "document", call);
   if (!validVector(queryVector, embedder.dimension)) throw new Error("bad vector");
   const cosines = new Map<string, number>();
   for (const [id, vector] of vectors) cosines.set(id, cosine(queryVector, vector));

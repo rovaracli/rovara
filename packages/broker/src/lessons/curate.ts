@@ -50,7 +50,7 @@ export type CurateOutcome =
   | { outcome: "added"; lesson: Lesson; judgeEscalate: boolean }
   | { outcome: "merged"; lesson: Lesson }
   | { outcome: "updated"; lesson: Lesson; supersedes: string; judgeEscalate: boolean }
-  | { outcome: "contradiction"; lesson: Lesson; other: string; /** The draft is not the opposite of `other`: it resembles advice a person REJECTED and no judge could clear it, so a person decides. */ matchesRejected?: true }
+  | { outcome: "contradiction"; lesson: Lesson; /** The lesson it contradicts. Absent for a rejected lesson the draft's audience cannot read: the card then names nothing (round 2, N5). */ other?: string; /** The draft is not the opposite of `other`: it resembles advice a person REJECTED and no judge could clear it, so a person decides. */ matchesRejected?: true }
   | { outcome: "dropped"; reason: "outsider" | "invalid" | "previously_rejected" | "conflict" };
 
 const JUDGE_SYSTEM = [
@@ -209,8 +209,11 @@ export async function curateDraft(deps: CurateDeps, key: ScopeKey, draft: Lesson
   const rankedById = new Map(ranked.map((r) => [r.id, r] as const));
   // Only lessons the draft's own audience may read are shown to the judge or acted on (their text goes into the prompt, and a refinement retires the lesson it names once approved).
   const visible = await visibleToDraft(deps, key, draft, pool);
-  const shortlist: Array<{ ranked: Ranked; lesson: Lesson }> = ranked.filter(passesGate).flatMap((r) => { const lesson = byId.get(r.id); return lesson === undefined || !visible.has(lesson.id) ? [] : [{ ranked: r, lesson }]; }).slice(0, NEIGHBOURS);
+  const gated: Array<{ ranked: Ranked; lesson: Lesson }> = ranked.filter(passesGate).flatMap((r) => { const lesson = byId.get(r.id); return lesson === undefined || !visible.has(lesson.id) ? [] : [{ ranked: r, lesson }]; });
+  const shortlist = gated.slice(0, NEIGHBOURS);
   const live = shortlist.filter((c) => c.lesson.status !== "rejected");
+  // Rejected lessons the draft may read that clear the gate, best fused rank first: the judge's reserved places are filled from these (round 2, N1), not only from the ones the lexical test calls a match.
+  const rejectedGated = gated.filter((c) => c.lesson.status === "rejected").map((c) => c.lesson);
   const body = draft.body;
 
   // Advice a person REJECTED, found among ALL the rejected lessons (not only the best few of the shortlist) by the ordered word test, with or without a cited file (review H2).
@@ -228,7 +231,9 @@ export async function curateDraft(deps: CurateDeps, key: ScopeKey, draft: Lesson
   let rejectedJudged = new Set<string>();
   if (verbatim !== undefined) verdicts.set(verbatim.lesson.id, "same");
   else {
-    const reserved = rejectedHits.filter((l) => visible.has(l.id)).slice(0, RESERVED_REJECTED);
+    // The lexical matches first, then the best of the other gate-passing rejected lessons by fused rank: a reworded rejected lesson that the word test misses is still shown to the judge (round 2, N1).
+    const hitIds = new Set(rejectedHits.map((l) => l.id));
+    const reserved = [...rejectedHits.filter((l) => visible.has(l.id)), ...rejectedGated.filter((l) => !hitIds.has(l.id))].slice(0, RESERVED_REJECTED);
     const top = [...live.slice(0, JUDGE_CANDIDATES - reserved.length).map((c) => c.lesson), ...reserved];
     const judged = top.length === 0 ? undefined : await judgeList(deps, key, draft, top);
     if (judged !== undefined) {
@@ -256,17 +261,21 @@ export async function curateDraft(deps: CurateDeps, key: ScopeKey, draft: Lesson
   const acting = live.flatMap((c) => { const verdict = verdicts.get(c.lesson.id); return verdict === undefined || verdict === "different" || ((verdict === "refines" || verdict === "contradicts") && !broadEnough(c.lesson)) ? [] : [{ ...c, verdict }]; });
   const chosen = acting.find((c) => c.verdict === "contradicts") ?? acting.find((c) => c.verdict === "same" && mergeAllowed(c.lesson, draft)) ?? acting.find((c) => c.verdict === "refines");
 
-  /** The draft goes to a person with the lesson it contradicts (or, for a rejected lesson, resembles). */
+  /**
+   * The draft goes to a person with the lesson it contradicts (or, for a rejected lesson, resembles). A rejected lesson the draft's audience cannot read is not named (round 2, N5): the card carries the reason
+   * `matches_rejected` and no link, and settling treats that reason like a contradiction.
+   */
   const toPerson = async (other: Lesson, matchesRejectedLesson: boolean): Promise<CurateOutcome> => {
-    const created = newLesson(deps, key, draft, "pending", { contradictsWith: other.id, tierReasons: matchesRejectedLesson ? ["contradiction", "matches_rejected"] : ["contradiction"] });
+    const named = !matchesRejectedLesson || visible.has(other.id);
+    const created = newLesson(deps, key, draft, "pending", { ...(named ? { contradictsWith: other.id } : {}), tierReasons: matchesRejectedLesson ? ["contradiction", "matches_rejected"] : ["contradiction"] });
     const written = await commitWith(deps, key, async () => [created]);
     if (written === undefined) return drop("conflict");
     await keepVector(sim, key, created, queryVector);
-    await emitAudit(deps.audit, { action: "lesson.contradiction", workspaceId: key.workspaceId, project: key.project, lessonId: created.id, facts: { other: other.id, judged: judgedBy.has(other.id), ...(matchesRejectedLesson ? { matchesRejected: true } : {}) } });
+    await emitAudit(deps.audit, { action: "lesson.contradiction", workspaceId: key.workspaceId, project: key.project, lessonId: created.id, facts: { ...(named ? { other: other.id, judged: judgedBy.has(other.id) } : {}), ...(matchesRejectedLesson ? { matchesRejected: true } : {}) } });
     // A later contradicting correction by a member retires a lesson that is live on trial (DECISIONS 24); the new lesson waits for a person. Audited by the retire.
     if (!matchesRejectedLesson && isTrialLesson(other) && other.status === "active" && draft.provenance.memberCorrection === true) await retireLesson(deps, key, other.id, "contradicted", undefined, "lesson.trial_retired");
     try { await deps.alerts?.alert(key.workspaceId, key.project, "lesson_contradiction"); } catch { /* the card is already in the queue */ }
-    return { outcome: "contradiction", lesson: created, other: other.id, ...(matchesRejectedLesson ? { matchesRejected: true as const } : {}) };
+    return { outcome: "contradiction", lesson: created, ...(named ? { other: other.id } : {}), ...(matchesRejectedLesson ? { matchesRejected: true as const } : {}) };
   };
 
   if (chosen !== undefined) {

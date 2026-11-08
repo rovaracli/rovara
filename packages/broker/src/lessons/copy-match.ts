@@ -3,8 +3,10 @@
 // through this module instead. Nothing here reads a store or calls a model.
 //
 //   verbatim   the two bodies are EQUAL after normalising case, whitespace and punctuation. Nothing else: every word, digit, negation and direction word is kept, in order.
-//   near       a copy with a few filler words added or removed: the same words in the same order, the same negations, direction words, qualifiers and numbers, at most a tenth (and three words) more on one side.
+//   near       a copy that differs only by filler (round 2, N2): the two word sequences are EQUAL after filler is removed and a plural "s" is stemmed. No content word may differ, at any length.
 //   flipped    the same words with a polarity, direction or number changed, or the same words in another order: a person decides (a contradiction card), never a merge.
+//   opposed    flipped's stricter sibling (round 2, N1): the advice really points the other way (a different stance, direction word, number, unit or antonym, or another order). A synonym swap ("disable" for
+//              "turn off", "skip" for "ignore") is flipped by the word lists but NOT opposed.
 //   narrows    the other lesson's words, in order, with more added: a refinement (a person decides), never a copy.
 //
 // A word that is in the "critical" lists below is never filler. The lists are deliberately long: a word wrongly kept as critical only sends a pair to the judge or a person, a word wrongly dropped merges advice.
@@ -18,8 +20,22 @@ const NEGATORS: ReadonlySet<string> = new Set("not no never none nothing nobody 
 const POLARITY: ReadonlySet<string> = new Set((
   "always avoid prefer instead rather on off before after over than more less most least enable enabled disable disabled true false allow allowed deny denied forbid forbidden ban banned require required " +
   "skip ignore keep remove add drop include exclude start stop increase decrease higher lower above below first last must should may up down open close " +
-  "zero one two three four five six seven eight nine ten once twice thrice half double single hundred thousand all every"
+  "zero one two three four five six seven eight nine ten once twice thrice half double single hundred thousand all every " +
+  // Round 2 (N3): more antonyms, the verbs of raising and cutting, and units (a changed unit changes the number's meaning).
+  "block omit deactivate activate permit prevent min max minimum maximum raise cut reduce lift sync async synchronous asynchronous synchronously asynchronously public private accept reject safe unsafe " +
+  "valid invalid authenticated unauthenticated deprecated ms millisecond milliseconds s sec secs second seconds minute minutes mins hour hours day days kb mb gb tb"
 ).split(" "));
+/** Words that put the advice on the "do not" side (a negator counts too). Used for the STANCE of a statement: an odd number of them is a prohibition. */
+const NEG_STANCE: ReadonlySet<string> = new Set("avoid skip ignore disable disabled off remove drop exclude forbid forbidden ban banned deny denied stop without block omit deactivate prevent".split(" "));
+/** Words that put the advice on the "do" side. They carry no direction, so a synonym of them ("keep" for "store") is not a change. */
+const POS_STANCE: ReadonlySet<string> = new Set("always prefer enable enabled allow allowed require required keep add include start must should may on permit activate".split(" "));
+const UNIT_CANON: ReadonlyMap<string, string> = new Map([
+  ["millisecond", "ms"], ["milliseconds", "ms"], ["s", "sec"], ["secs", "sec"], ["second", "sec"], ["seconds", "sec"], ["mins", "minute"], ["minutes", "minute"], ["hours", "hour"], ["days", "day"],
+]);
+/** Prefixes that turn a word into its opposite: valid/invalid, used/unused, sync/async, blocking/nonblocking, connected/disconnected. */
+const ANTONYM_PREFIXES: readonly string[] = ["un", "in", "im", "non", "a", "dis"];
+/** Negation words of other languages that are spelt in ASCII (German, French, Dutch, Spanish and Portuguese): this module cannot classify them. */
+const FOREIGN_NEGATORS: ReadonlySet<string> = new Set("nicht kein keine keinen keinem keiner nie niemals pas jamais nunca nao niet geen".split(" "));
 /** Words that narrow or condition a statement: an added one means the statement is not the same any more. */
 const QUALIFIERS: ReadonlySet<string> = new Set("except unless only but when whenever if for without otherwise besides excluding including".split(" "));
 
@@ -43,7 +59,7 @@ function stem(word: string): string {
   if (word.length >= 5 && word.endsWith("ies")) return `${word.slice(0, -3)}y`;
   return word.length >= 4 && word.endsWith("s") && !/(ss|us|is)$/u.test(word) ? word.slice(0, -1) : word;
 }
-const forOrder = (words: readonly string[]): string[] => words.filter((w) => !FILLER.has(w)).map((w) => (isCritical(w) ? w : stem(w)));
+const forOrder = (words: readonly string[]): string[] => words.filter((w) => !FILLER.has(w)).map((w) => (isCritical(w) ? canon(w) : stem(w)));
 
 const isNumber = (word: string): boolean => NUMBER.test(word);
 const isSign = (word: string): boolean => word === "!=" || /^[<>=≤≥≠]$/u.test(word);
@@ -51,12 +67,26 @@ const isPolarity = (word: string): boolean => NEGATORS.has(word) || POLARITY.has
 const isQualifier = (word: string): boolean => QUALIFIERS.has(word);
 /** Every kind of word whose presence or place changes what the advice says. */
 export const isCritical = (word: string): boolean => isPolarity(word) || isQualifier(word);
-const canon = (word: string): string => (NEGATORS.has(word) ? "not" : word);
+const canon = (word: string): string => (NEGATORS.has(word) ? "not" : (UNIT_CANON.get(word) ?? word));
 
 const polaritySequence = (words: readonly string[]): string[] => words.filter(isPolarity).map(canon);
 const criticalSequence = (words: readonly string[]): string[] => words.filter(isCritical).map(canon);
 const sameSequence = (a: readonly string[], b: readonly string[]): boolean => a.length === b.length && a.every((x, i) => x === b[i]);
 const sortedKey = (words: readonly string[]): string => [...words].sort().join(" ");
+
+/** The words that point somewhere: direction and comparison words, units, antonym words, numbers and signs. A stance word (do / do not) is not one. */
+const directionSequence = (words: readonly string[]): string[] => words.filter((w) => isPolarity(w) && !NEGATORS.has(w) && !NEG_STANCE.has(w) && !POS_STANCE.has(w)).map(canon);
+/** Whether the statement prohibits (an odd number of negating words) rather than asks. */
+const isProhibition = (words: readonly string[]): boolean => words.filter((w) => NEGATORS.has(w) || NEG_STANCE.has(w)).length % 2 === 1;
+/** One side has a word and the other the same word with an opposite-making prefix (valid / invalid, used / unused, sync / async). Words under four letters are not tried. */
+function prefixAntonym(x: readonly string[], y: readonly string[]): boolean {
+  const left = new Set(x), right = new Set(y);
+  const opposes = (a: ReadonlySet<string>, b: ReadonlySet<string>): boolean => { for (const w of a) if (w.length >= 4 && /^\p{L}+$/u.test(w) && ANTONYM_PREFIXES.some((p) => b.has(`${p}${w}`))) return true; return false; };
+  return opposes(left, right) || opposes(right, left);
+}
+
+/** Whether a text holds a word that negates in a way this module cannot classify: any letter outside ASCII (accented, Cyrillic, CJK ...) or a known ASCII negation of another language. */
+export const hasUnclassifiedNegation = (text: string): boolean => /(?=\p{L})[^\p{ASCII}]/u.test(text) || wordsOf(text).some((w) => FOREIGN_NEGATORS.has(w));
 
 /** The longest text compared word by word; a longer one is only ever called verbatim. */
 const MAX_WORDS = 400;
@@ -74,13 +104,15 @@ function lcsLength(a: readonly string[], b: readonly string[]): number {
 export interface CopyRelation {
   /** The bodies are equal after normalisation. */
   verbatim: boolean;
-  /** The same words, in the same order, with only filler (and at most a tenth, three words, more on one side) different; every negation, direction word, qualifier and number is the same, in the same place. */
+  /** The same words, in the same order, with only filler different: the two sequences are equal once filler is removed and plurals are stemmed. */
   near: boolean;
   /** Close in words but a polarity, direction or number differs, or the same words come in another order. */
   flipped: boolean;
   /** The FIRST text (the draft) holds all of the second's words, in order, and more: a narrowing or extension. Never a copy. */
   narrows: boolean;
-  /** The negations, direction words and numbers are the same words (any order). */
+  /** The advice points the other way: another stance (do / do not), direction word, unit, number or antonym, or the same words in another order. A synonym swap is not. */
+  opposed: boolean;
+  /** The negations, direction words and numbers are the same words (any order), and no word is the other's prefix antonym. */
   polaritySame: boolean;
   /** Negations, direction words, qualifiers (not "for") and numbers are the same words (any order): the floor under a judge's "same". */
   criticalSame: boolean;
@@ -88,7 +120,7 @@ export interface CopyRelation {
   ordered: number;
 }
 
-const NONE: CopyRelation = { verbatim: false, near: false, flipped: false, narrows: false, polaritySame: false, criticalSame: false, ordered: 0 };
+const NONE: CopyRelation = { verbatim: false, near: false, flipped: false, narrows: false, opposed: true, polaritySame: false, criticalSame: false, ordered: 0 };
 
 /** How the `draft` statement relates to the `other` one, comparing their words in order. Pure; both directions are looked at (the shorter must be wholly inside the longer). */
 export function relate(draft: string, other: string): CopyRelation {
@@ -103,20 +135,22 @@ export function relate(draft: string, other: string): CopyRelation {
   const shortest = Math.min(x.length, y.length);
   const common = lcsLength(x, y);
   const ordered = common / longest;
-  const polaritySame = sortedKey(polaritySequence(x)) === sortedKey(polaritySequence(y));
+  const antonym = prefixAntonym(x, y);
+  const polaritySame = !antonym && sortedKey(polaritySequence(x)) === sortedKey(polaritySequence(y));
   const floorCritical = (words: readonly string[]): string => sortedKey(criticalSequence(words).filter((w) => w !== "for"));
-  const criticalSame = floorCritical(x) === floorCritical(y);
-  const criticalInOrder = sameSequence(criticalSequence(x), criticalSequence(y));
+  const criticalSame = !antonym && floorCritical(x) === floorCritical(y);
   const subsequence = common === shortest;
-  const near = verbatim || (shortest >= 2 && criticalInOrder && subsequence && longest - shortest <= Math.min(3, Math.floor(longest * 0.1)));
+  // Round 2 (N2): a copy has EQUAL words once filler is gone. A content word added or dropped (at any length) is a different statement, not a copy.
+  const near = verbatim || (shortest >= 2 && sameSequence(x, y));
   // The same words in another order ("pnpm over npm" against "npm over pnpm", "migrations before seeding" against the reverse), or close in order with a polarity, direction or number changed.
   const reordered = shortest >= 3 && x.length === y.length && sortedKey(x) === sortedKey(y) && !sameSequence(x, y);
-  const polarityDiffers = !sameSequence(polaritySequence(x), polaritySequence(y));
+  const polarityDiffers = antonym || !sameSequence(polaritySequence(x), polaritySequence(y));
   // One side holds the other's words in order and ADDS a negation ("Never use withRetry ... ; call fetch directly" against "Use withRetry ..."): that is the opposite advice with more words around it, not a narrowing.
   const addsNegation = subsequence && x.some((w) => NEGATORS.has(w)) !== y.some((w) => NEGATORS.has(w));
   const flipped = !near && (reordered || (polarityDiffers && (ordered >= 0.7 || addsNegation)));
   const narrows = !near && !flipped && y.length >= 4 && common === y.length && x.length > y.length;
-  return { verbatim, near, flipped, narrows, polaritySame, criticalSame, ordered };
+  const opposed = !near && (reordered || antonym || isProhibition(x) !== isProhibition(y) || !sameSequence(directionSequence(x), directionSequence(y)));
+  return { verbatim, near, flipped, narrows, opposed, polaritySame, criticalSame, ordered };
 }
 
 /**
@@ -129,7 +163,7 @@ export function covers(small: string, big: string): { ordered: number; pairs: nu
   if (x.length === 0 || y.length === 0) return { ordered: 0, pairs: 0, polarityContained: false };
   const have = new Map<string, number>();
   for (const w of polaritySequence(y)) have.set(w, (have.get(w) ?? 0) + 1);
-  const polarityContained = polaritySequence(x).every((w) => { const n = have.get(w) ?? 0; have.set(w, n - 1); return n > 0; });
+  const polarityContained = !prefixAntonym(x, y) && polaritySequence(x).every((w) => { const n = have.get(w) ?? 0; have.set(w, n - 1); return n > 0; });
   // Two words swapped keep most of the order (the longest common run is only one word short) but break the pairs of neighbours around them: the share of `small`'s neighbouring pairs found in `big` (`pairs`) is part of the answer.
   const pairs = new Set(y.slice(1).map((w, i) => `${y[i]} ${w}`));
   const wanted = x.slice(1).map((w, i) => `${x[i]} ${w}`);

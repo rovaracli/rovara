@@ -29,6 +29,8 @@ const VERIFY_TIMEOUT_MS = 3000;
  */
 export function earnedAttention(lesson: Lesson, tier: Lesson["tier"], reasons: readonly string[] = []): boolean {
   if (lesson.contradictsWith !== undefined) return true;
+  // A draft that resembles advice a person rejected is in front of people at once, with or without a link to the rejected lesson (it has none when the draft's audience cannot read that lesson).
+  if (reasons.includes("matches_rejected")) return true;
   // A lesson that asks for a capability change is in front of people at once: the guard that used to drop it now only sends it to them.
   if (reasons.includes("capability_request")) return true;
   if (new Set(lesson.provenance.supportTasks).size >= 2) return true;
@@ -75,7 +77,7 @@ export async function settleLesson(deps: ProcessDeps, key: ScopeKey, lessonId: s
     if (current === undefined || (current.status !== "candidate" && current.status !== "pending")) return current;
     const verified = await verifyCitations(deps, current);
     // The judge's escalate flag and a contradiction stay with the lesson: settling again can raise a tier, never lower it.
-    const context: TierContext = { contradiction: current.contradictsWith !== undefined || options.contradiction === true, judgeEscalate: options.judgeEscalate === true || current.tierReasons.includes("judge_escalate") };
+    const context: TierContext = { contradiction: current.contradictsWith !== undefined || current.tierReasons.includes("matches_rejected") || options.contradiction === true, judgeEscalate: options.judgeEscalate === true || current.tierReasons.includes("judge_escalate") };
     // A refinement is at least as risky as the lesson it replaces. A lesson already tiered keeps its tier and reasons: settling again only raises.
     const superseded = current.supersedes === undefined ? undefined : await deps.store.get(key, current.supersedes);
     if (superseded !== undefined) context.supersedesTier = superseded.tier;

@@ -49,6 +49,13 @@ export const embedder: LessonEmbedder & { fail: boolean; calls: number; spec: st
   async embedMany(texts: readonly string[]): Promise<number[][]> { return Promise.all(texts.map((t) => this.embed(t))); },
 };
 
+/** An embedder that finds every text exactly as close as every other (cosine 1): what a small model does with a synonym swap or a close paraphrase. Real cosines are not controlled by the word-bag `embedder` above. */
+export const closeEmbedder: LessonEmbedder = {
+  dimension: 4, spec: "test-close-4",
+  async embed() { return [1, 0, 0, 0]; },
+  async embedMany(texts: readonly string[]) { return texts.map(() => [1, 0, 0, 0]); },
+};
+
 /** In-memory lesson vectors with the port's semantics: a vector of another spec is a miss, a removal takes every spec. */
 export class MemoryVectors implements LessonVectors {
   rows = new Map<string, { id: string; spec: string; hash: string; vector: readonly number[] }>();

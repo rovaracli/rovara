@@ -1,8 +1,8 @@
 // Builds the embedder clients from the broker's environment: the function's name is derived from the environment's name (contracts/derived-names.ts), the SDK is
-// loaded on first use. Lane lessons-prod (lane 5) takes `lessonEmbedderFrom` for the lessons' `Embedder` port; the Team record uses `recordEmbedderClientFrom`.
+// loaded on first use. Lane lessons-prod (lane 5) takes `lessonEmbedderFrom` for the lessons' `Embedder` port (a short wait and a pause after a timeout, like the search client); the Team record uses `recordEmbedderClientFrom`.
 import { LESSON_EMBEDDER, TEAM_RECORD_EMBEDDER, type EmbedderModelSpec } from "@agentx/contracts";
 import { lambdaEmbedderInvoke, type SdkOptions } from "../team-record/aws-adapters.js";
-import { createEmbedderClient, type EmbedderClient, type EmbedderKind } from "./client.js";
+import { createEmbedderClient, type EmbedderCall, type EmbedderClient, type EmbedderKind } from "./client.js";
 
 /**
  * The longest the broker waits for the function on the SEARCH path: a person is waiting, and the broker's own limit is 30 s. A cold start loads the model on the first call; the function keeps
@@ -52,7 +52,7 @@ export interface LessonEmbedder {
   readonly dimension: number;
   readonly spec: string;
   embed(text: string): Promise<number[]>;
-  embedMany(texts: readonly string[], kind?: EmbedderKind): Promise<number[][]>;
+  embedMany(texts: readonly string[], kind?: EmbedderKind, call?: EmbedderCall): Promise<number[][]>;
 }
 
 export function lessonEmbedderOver(client: EmbedderClient): LessonEmbedder {
@@ -60,12 +60,21 @@ export function lessonEmbedderOver(client: EmbedderClient): LessonEmbedder {
     dimension: client.dimension,
     spec: client.spec.spec,
     embed: (text) => client.embed(text, "document"),
-    embedMany: (texts, kind = "document") => client.embedMany(texts, kind),
+    embedMany: (texts, kind = "document", call) => client.embedMany(texts, kind, call),
   };
 }
 
+/**
+ * The lessons' wait (round 2, N4). Lessons use the embedder inside a dispatch (the loader races it for 300 ms) and in the curator (5 s), and both pass their race down as the call's deadline, so a call never waits past
+ * its race whatever this is; this is the ceiling for a caller that passes none (the nightly measure). A container still loading its models is NOT asked again: after a timeout this broker container sends the function no
+ * more lesson calls for `EMBEDDER_LESSON_COOLDOWN_MS` (the lessons rank by keywords and paths meanwhile), because the abandoned call keeps its cold container busy and a second call would start another
+ * (10 GB) and take another of the function's few reserved slots, which the Team record's search and ingest share. The load path has no throttle retry: a retry needs a second of the call's deadline, and the load's is 300 ms.
+ */
+export const EMBEDDER_LESSON_WAIT_MS = 5_000;
+export const EMBEDDER_LESSON_COOLDOWN_MS = 20_000;
+
 /** The lessons' embedder, or undefined where the install names no embedder function. */
-export function lessonEmbedderFrom(env: Readonly<Record<string, string | undefined>>, sdk: SdkOptions, timeoutMs: number = EMBEDDER_INGEST_WAIT_MS): LessonEmbedder | undefined {
-  const client = clientFor(LESSON_EMBEDDER, env, sdk, timeoutMs);
+export function lessonEmbedderFrom(env: Readonly<Record<string, string | undefined>>, sdk: SdkOptions, timeoutMs: number = EMBEDDER_LESSON_WAIT_MS, cooldownMs: number = EMBEDDER_LESSON_COOLDOWN_MS, now?: () => number): LessonEmbedder | undefined {
+  const client = clientFor(LESSON_EMBEDDER, env, sdk, timeoutMs, cooldownMs, now);
   return client === undefined ? undefined : lessonEmbedderOver(client);
 }

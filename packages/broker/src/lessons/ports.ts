@@ -21,6 +21,9 @@ export interface PipelineModel {
 
 export interface Embedder { embed(text: string): Promise<number[]> }
 
+/** One call's own limit: `deadline` is an absolute time (Date.now milliseconds). The call never waits past it and starts no retry that could not finish by it (embedder/client.ts). */
+export interface EmbedderCall { deadline?: number }
+
 /**
  * The lessons' embedder (DECISIONS 23): the small open model served by the self-hosted embedder, 384 dimensions. It is OPTIONAL: where an install has none, similarity runs on keywords and cited paths alone.
  * The shape is the one the embedder lane exports as `lessonEmbedderOver`. `spec` names the model and revision the vectors come from: a vector is only compared with, or stored beside, vectors of the same spec,
@@ -29,7 +32,7 @@ export interface Embedder { embed(text: string): Promise<number[]> }
 export interface LessonEmbedder extends Embedder {
   readonly dimension: number;
   readonly spec: string;
-  embedMany(texts: readonly string[], kind?: "query" | "document"): Promise<number[][]>;
+  embedMany(texts: readonly string[], kind?: "query" | "document", call?: EmbedderCall): Promise<number[][]>;
 }
 
 /** A lesson's stored vector: the hash of the text it was made from (an edited lesson is embedded again) and the vector. */

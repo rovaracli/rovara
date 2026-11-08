@@ -132,7 +132,7 @@ export async function approveLesson(deps: ApproveDeps, input: ApproveInput): Pro
       working = { ...lesson, title, description, body };
       // The tier of an edited lesson is the higher of its old tier and the new one, and it keeps its reasons (including the judge's escalate flag): an edit can
       // raise a tier, never lower it, so rewording a tier-2 lesson cannot take it to one person.
-      const decision = classifyTier(working, { contradiction: lesson.contradictsWith !== undefined, judgeEscalate: lesson.tierReasons.includes("judge_escalate") }, { tier: lesson.tier, reasons: lesson.tierReasons });
+      const decision = classifyTier(working, { contradiction: lesson.contradictsWith !== undefined || lesson.tierReasons.includes("matches_rejected"), judgeEscalate: lesson.tierReasons.includes("judge_escalate") }, { tier: lesson.tier, reasons: lesson.tierReasons });
       if (decision.tier === "never") return { ok: false, code: "tier_never" };
       // The editor is recorded as an EDITOR, not an author: the author rule (who may approve alone) is about who wrote the evidence, so a one-tap edit keeps working, but erasure counts
       // an editor as a writer of the text (a lesson an erased person rewrote is hard-deleted).

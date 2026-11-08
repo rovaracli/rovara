@@ -4,7 +4,7 @@ import { curateDraft, type CurateDeps } from "../../../packages/broker/src/lesso
 import { InMemoryLessonStore, nextVersion, type CommitResult, type ScopeKey } from "../../../packages/broker/src/lessons/store.js";
 import type { LessonDraft } from "../../../packages/broker/src/lessons/reflect.js";
 import type { Lesson } from "../../../packages/broker/src/lessons/types.js";
-import { Alerts, Audit, Clock, KEY, MemoryVectors, PROJECT, ScriptedModel, Spend, WS, codeCite, draft, embedder, lessonRecord, seed, settings, verifier } from "./lesson-helpers.js";
+import { Alerts, Audit, Clock, KEY, MemoryVectors, PROJECT, ScriptedModel, Spend, WS, codeCite, closeEmbedder, draft, embedder, lessonRecord, seed, settings, verifier } from "./lesson-helpers.js";
 
 class FlakyStore extends InMemoryLessonStore {
   failures = 0;
@@ -106,6 +106,8 @@ describe("curator decisions (design §4.5.2)", () => {
     const b = "Wrap outbound HTTP calls in the api service with withRetry from src/retry/index.ts";
     for (const [verdict, expected] of [["different", "added"], ["same", "merged"]] as const) {
       const { deps, store, judgeModel } = setup({ model: new ScriptedModel([one(verdict)]) });
+      // A judge's "same" is acted on only when the vectors are close (0.92) as well as the words (round 2, N3): this embedder says the reworded pair is as close as can be.
+      deps.embedder = closeEmbedder;
       await curateDraft(deps, KEY, text("Retries", a));
       const out = await curateDraft(deps, KEY, text("Retries", b));
       expect(out.outcome).toBe(expected);

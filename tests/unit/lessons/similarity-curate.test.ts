@@ -6,7 +6,7 @@ import type { PipelineModel } from "../../../packages/broker/src/lessons/ports.j
 import type { LessonDraft } from "../../../packages/broker/src/lessons/reflect.js";
 import { resetNoEmbedderNotice, textHash, lessonTextOf } from "../../../packages/broker/src/lessons/similarity.js";
 import { InMemoryLessonStore } from "../../../packages/broker/src/lessons/store.js";
-import { Alerts, Audit, Clock, KEY, MemoryVectors, PROJECT, ScriptedModel, Spend, WS, codeCite, draft, embedder, lessonRecord, seed, settings, verifier } from "./lesson-helpers.js";
+import { Alerts, Audit, Clock, KEY, MemoryVectors, PROJECT, ScriptedModel, Spend, WS, closeEmbedder, codeCite, draft, embedder, lessonRecord, seed, settings, verifier } from "./lesson-helpers.js";
 
 const text = (title: string, body: string, over: Partial<LessonDraft> = {}): LessonDraft => draft({ title, description: "", body, ...over });
 const answer = (...verdicts: string[]): string => JSON.stringify({ verdicts: verdicts.map((verdict, i) => ({ n: i + 1, verdict })) });
@@ -87,6 +87,8 @@ describe.each([["no embedder", false], ["a fake embedder", true]] as const)("the
   it("every outcome: same merges, refines supersedes after approval, contradicts goes to a person, different adds", async () => {
     for (const [verdict, outcome] of [["same", "merged"], ["refines", "updated"], ["contradicts", "contradiction"], ["different", "added"]] as const) {
       const s = make({ model: new Quoting([answer(verdict)]) });
+      // A judge's "same" needs close vectors as well as close words (round 2, N3); with an embedder here, it says the pair is as close as can be.
+      if (s.deps.embedder !== undefined) s.deps.embedder = closeEmbedder;
       const first = await curateDraft(s.deps, KEY, text("Retries", A));
       if (first.outcome !== "added") throw new Error("expected add");
       const out = await curateDraft(s.deps, KEY, text("Retries", B));

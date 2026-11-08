@@ -121,9 +121,9 @@ describe("copies: the only thing that merges by code", () => {
 
   it("the same cited file, the same polarity and nearly the same words: a near-exact copy; the same words with another file are not", () => {
     const a = mk("HTTP retries in the api service use withRetry from src/retry/index.ts.", "src/retry/index.ts");
-    const near = mk("HTTP retries in the api service use withRetry from src/retry/index.ts today.", "src/retry/index.ts");
+    const near = mk("HTTP retries in the api service use withRetry from src/retry/index.ts too.", "src/retry/index.ts");
     expect(isNearExact(rank(a, near), text(a), text(near))).toBe(true);
-    const other = mk("HTTP retries in the api service use withRetry from src/retry/index.ts today.", "src/other/file.ts");
+    const other = mk("HTTP retries in the api service use withRetry from src/retry/index.ts too.", "src/other/file.ts");
     expect(isNearExact(rank(a, other), text(a), text(other))).toBe(false);
   });
 
