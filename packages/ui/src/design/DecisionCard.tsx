@@ -191,10 +191,10 @@ export function DecisionCard({ decision, actions, focused = false }: { decision:
  const panelDocument = panelDocumentOfCard(card.kind, activeTab), panel = usePanelDocument();
  const panelHere = onItsPage && card.status === "pending" && panelDocument !== undefined && panel.open !== undefined && (panel.open === panelDocument || (tabs !== undefined && (panel.open === "requirements" || panel.open === "design")));
  useEffect(() => { if (panelHere && tabs !== undefined && (panel.open === "requirements" || panel.open === "design") && panel.open !== tab) setTab(panel.open); }, [panelHere, tabs, panel.open, tab]);
- // A medium card's evidence is the document: opening it in full records that it was opened, as the evidence panel does (the server records it for this digest).
- useEffect(() => { if (panelHere && needsEvidence && !isOpened(activeTab)) void open(activeTab); }, [panelHere]); // eslint-disable-line react-hooks/exhaustive-deps -- once, when the panel opens
- const documentTab = onItsPage && panelDocument === undefined ? DOCUMENT_TAB[card.kind] : undefined;
- const readLink = onItsPage && panelDocument !== undefined ? <Button className="rv-decision-read" onClick={() => panel.show(panelDocument)}>{PANEL_DOCUMENT_WORDS[panelDocument].read}</Button>
+ // A medium card's evidence is the document: once it has been read and drawn in full (review M3: not on opening, and never when it failed to load), it is recorded as opened, as the evidence panel does.
+ const documentShown = () => { if (needsEvidence && !isOpened(activeTab)) void open(activeTab); };
+ const documentTab = onItsPage && (panelDocument === undefined || !panel.on) ? DOCUMENT_TAB[card.kind] : undefined;
+ const readLink = onItsPage && panelDocument !== undefined && panel.on ? <Button className="rv-decision-read" onClick={() => panel.show(panelDocument)}>{PANEL_DOCUMENT_WORDS[panelDocument].read}</Button>
   : documentTab !== undefined && <Link className="rv-decision-read" to={{ search: location.search, hash: documentTab.hash }}>{documentTab.words}</Link>;
  // OWNER DECISION 18 (a): the key facts the server worked out from the document itself, the risk and why, the cost and time, and how many comments are open.
  const summary = decision.choices?.summary, openCount = decision.choices?.openCommentCount;
@@ -244,6 +244,6 @@ export function DecisionCard({ decision, actions, focused = false }: { decision:
   {questionsBox}
   {readLink}
   {panelHere ? <p className="rv-muted" role="status">{"Deciding in the open " + PANEL_DOCUMENT_WORDS[panel.open ?? panelDocument ?? "plan"].name.toLowerCase() + "."}</p> : actionsBlock}
-  {panelHere && <PlanPanelSlot taskId={card.taskId ?? ""} document={panel.open ?? panelDocument ?? "plan"} onClose={panel.close} footer={<>{deciding}{actionsBlock}</>} />}
+  {panelHere && <PlanPanelSlot taskId={card.taskId ?? ""} document={panel.open ?? panelDocument ?? "plan"} onClose={panel.close} onLoaded={documentShown} footer={<>{deciding}{actionsBlock}</>} />}
  </article>;
 }

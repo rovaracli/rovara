@@ -1,4 +1,4 @@
-import { lazy, Suspense, useMemo, useState, type ReactNode } from "react";
+import { lazy, Suspense, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useAppHost } from "../../host.js";
 import { ApiError } from "../../api/errors.js";
@@ -122,13 +122,16 @@ function Body({ context }: { context: Context }) {
  * answer shows in the thread) and Remember / Forget, each through the old page's own server function. `footer` is the decision card's own Approve and Request changes (the same decide path, sign-in
  * and second-person rules as the card), pinned at the bottom; without one (nothing waits on this person) the panel only reads and discusses.
  */
-export default function PlanPanel({ taskId, document, footer, onClose }: { taskId: string; document: PanelDocument; footer?: ReactNode; onClose: () => void }) {
+export default function PlanPanel({ taskId, document, footer, onClose, onLoaded }: { taskId: string; document: PanelDocument; footer?: ReactNode; onClose: () => void;
+ /** Called once, after the document's current version has been read and drawn (never for a document that failed to load or isn't written): a medium card records its evidence as opened then. */ onLoaded?: () => void }) {
  const host = useAppHost(), query = useQueryClient(), api = useMemo(() => createPlanPanelApi(host), [host]);
  const view = useQuery({ queryKey: ["plan-panel", taskId, document], queryFn: () => api.document(taskId, document), retry: false });
  const comments = useQuery({ queryKey: ["plan-panel-comments", taskId], queryFn: () => api.comments(taskId), retry: false,
   // While Rovara answers a question, the thread is read again until the answer is there.
   refetchInterval: read => (read.state.data?.comments.some(comment => comment.agentx === "answering") === true ? 4000 : false) });
  const [busy, setBusy] = useState(false), [error, setError] = useState<string>(), [done, setDone] = useState<string>();
+ const loaded = useRef(false), shown = view.isSuccess && view.data.current !== undefined;
+ useEffect(() => { if (shown && !loaded.current) { loaded.current = true;onLoaded?.(); } }, [shown, onLoaded]);
  const [composing, setComposing] = useState<string>(), [editing, setEditing] = useState<string>();
  async function run(work: () => Promise<unknown>, said: string): Promise<boolean> {
   if (busy) return false;

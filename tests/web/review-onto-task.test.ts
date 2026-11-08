@@ -3,7 +3,7 @@
 // with who suggested what), the optional checks, the open comments to send and a note, and sends only what the person set; a stopped task offers the checks retry, Revise the plan and a held spec's
 // choices where the task view says so, each through its own route.
 import { expect, it } from "vitest";
-import { screen, fireEvent, waitFor, within } from "@testing-library/react";
+import { act, screen, fireEvent, waitFor, within } from "@testing-library/react";
 import { createMemoryRouter, RouterProvider } from "react-router";
 import { QueryClientProvider } from "@tanstack/react-query";
 import { DecisionCardsViewSchema } from "@agentx/contracts/web";
@@ -45,7 +45,7 @@ function taskPage(items: DecisionItem[], answer: (request: ApiRequest) => { stat
  const query = createQueryClient(), router = createMemoryRouter([{ path: "/app/sessions/:id", element: h(SessionScreen, {}) }], { initialEntries: [SESSION_PATH] });
  const ui = renderUi(h(AppHostProvider, { host: f.host, children: h(QueryClientProvider, { client: query, children: h(Announcer, { children: h(RouterProvider, { router }) }) }) }));
  const posts = () => f.request.mock.calls.map(([request]) => request).filter(request => request.method === "POST" && !request.path.endsWith("/presence"));
- return { ...f, posts, close() { ui.unmount();router.dispose();query.clear(); } };
+ return { ...f, posts, query, close() { ui.unmount();router.dispose();query.clear(); } };
 }
 const cardOn = () => screen.findByRole("article", { name: "Retry failed payments" });
 
@@ -130,8 +130,11 @@ it("People and the review page's comments are on the task page: Remember posts t
   return undefined;
  });
  const region = await screen.findByRole("region", { name: "People and comments" });
- // OWNER DECISION 18 (replaces 17's link): comments are in the plan panel on this page; nothing links to the review page.
- expect(within(region).queryByRole("link", { name: "Comment on the plan" })).toBeNull();
+ // OWNER DECISION 18(d): with the cards off (the app nav does not say decisionCards) the task page is as it was: it links the review page's comments.
+ expect(within(region).getByRole("link", { name: "Comment on the plan" }).getAttribute("href")).toBe("/review/" + TASK + "/task?doc=coding-plan");
+ // With them on, comments are in the plan panel on this page (replacing 17's link) and nothing links to the review page.
+ act(() => { f.query.setQueryData(["nav"], { me: { developerId: "d".repeat(64), name: "Maya", orgRole: "member" }, org: { name: "Acme" }, homeCount: 0, projects: [], shared: { agents: [], sessions: [] }, features: { localAgents: false, usage: false, admin: false, chains: false, notices: false, describe: false, decisionCards: true } }); });
+ await waitFor(() => expect(within(region).queryByRole("link", { name: "Comment on the plan" })).toBeNull());
  expect(document.querySelector('a[href^="/review/"]')).toBeNull();
  fireEvent.click(await within(region).findByRole("button", { name: "Remember this" }));
  await waitFor(() => expect(f.posts().map(request => request.path)).toContain("/v1/app/tasks/" + TASK + "/comments/" + COMMENT + "/remember"));

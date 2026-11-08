@@ -96,13 +96,13 @@ describe("task page API (OWNER DECISION 7: read-only)", () => {
     const created: unknown[] = [], suggested: unknown[] = [];
     const writers = { createComment: async (who: unknown, _task: unknown, input: unknown) => { created.push([who, input]); return { comment: {} as never }; },
       setSuggestion: async (who: unknown, _task: unknown, input: unknown) => { suggested.push([who, input]); return {}; } };
-    const on = fakeDeps(writers as never);
+    const on = fakeDeps(writers);
     for (const [suffix, body] of [["comments", commentBody], ["comments", { ...commentBody, requestId: randomUUID(), parentId: randomUUID(), ask: true }], ["suggestions", { document: "plan", decisionId: "d1", optionId: "above" }]] as const) {
       expect((await call(on, post(api(suffix), body))).statusCode, suffix).toBe(410);
     }
     expect([created, suggested]).toEqual([[], []]);
     // dk=0: the page is fully writable, under its own CSRF and origin rules.
-    const off = fakeDeps({ ...writers, readOnly: false } as never);
+    const off = fakeDeps({ ...writers, readOnly: false });
     expect((await call(off, post(api("comments"), commentBody))).statusCode).toBe(201);
     expect((await call(off, post(api("suggestions"), { document: "plan", decisionId: "d1", optionId: "above" }))).statusCode).toBe(200);
     expect((await call(off, post(api("comments"), commentBody, { origin: "https://evil.example" }))).statusCode).toBe(403);
