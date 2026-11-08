@@ -34,6 +34,9 @@ const WRITE_ROUTES: ReadonlyArray<[string, string]> = [
   ["POST", "/v1/app/projects/payments/lessons/les_abc12345/approve"], ["POST", "/v1/app/projects/payments/lessons/les_abc12345/reject"], ["POST", "/v1/app/projects/payments/lessons/les_abc12345/merge"], ["POST", "/v1/app/projects/payments/lessons/les_abc12345/retire"],
   ["POST", "/v1/app/projects/payments/lessons/rollback"], ["POST", "/v1/app/projects/payments/lessons"], ["PUT", "/v1/app/projects/payments/lessons"], ["DELETE", "/v1/app/projects/payments/lessons/sources"],
   ["POST", "/v1/app/tasks/11111111-1111-4111-8111-111111111111/lessons/les_abc12345/feedback"],
+  // The preset: the project's set, approve and cancel, and the company's set, approve and cancel (lessons leftovers sweep, LT-2).
+  ["POST", "/v1/app/projects/payments/lessons/preset"], ["POST", "/v1/app/projects/payments/lessons/preset/approve"], ["POST", "/v1/app/projects/payments/lessons/preset/cancel"],
+  ["POST", "/v1/app/org/lessons/preset"], ["POST", "/v1/app/org/lessons/preset/approve"], ["POST", "/v1/app/org/lessons/preset/cancel"],
 ];
 const READ_ROUTES_NOT_ALLOWED: ReadonlyArray<[string, string]> = [
   ["GET", "/v1/app/nav"], ["GET", "/v1/app/projects"], ["GET", "/v1/dev/projects"], ["GET", "/v1/app/org/members"], ["GET", "/v1/app/org"], ["GET", "/v1/app/org/budget"], ["GET", "/v1/app/org/invites"],
@@ -41,6 +44,8 @@ const READ_ROUTES_NOT_ALLOWED: ReadonlyArray<[string, string]> = [
   ["GET", "/v1/app/org/audit/unknown"], ["GET", "/v1/app/org/audit"], ["GET", "/v1/app/org/audit/"], ["GET", "/v1/app/org/audit/exports/e1/extra"], ["GET", "/v1/app/org/audit/admin/records"],
   // L3b: the lessons reads that stay with people who decide, and everything else that only looks like the open two.
   ["GET", "/v1/app/projects/payments/lessons/digest"], ["GET", "/v1/app/projects/payments/lessons/les_abc12345/history"], ["GET", "/v1/app/projects/payments/lessons/"], ["GET", "/v1/app/projects/payments/lessons/sources/x"],
+  // The company's preset and its waiting proposal are for the people who could decide it, never for the Auditor.
+  ["GET", "/v1/app/org/lessons/preset"], ["GET", "/v1/app/org/lessons/preset/approve"],
   ["GET", "/v1/app/projects/pay/ments/lessons"], ["GET", "/v1/app/projects/payments/Lessons"], ["GET", "/v1/app/tasks/11111111-1111-4111-8111-111111111111/lessons"], ["GET", "/v1/app/tasks/11111111-1111-4111-8111-111111111111/loaded-knowledge"],
 ];
 

@@ -2,7 +2,7 @@
 // L3b: the Lessons tab and the Sources tab, state by state: loading, failing, off, collecting, locked, read-only, waiting cards (one person, two people, who approved first), citations,
 // one-tap approval, edit and approve, reject, remove, history, search, digest, going back, and text that is shown as text.
 import { describe, expect, it } from "vitest";
-import { screen, fireEvent, waitFor, within } from "@testing-library/react";
+import { act, screen, fireEvent, waitFor, within } from "@testing-library/react";
 import { MemoryRouter, Routes, Route } from "react-router";
 import { QueryClientProvider } from "@tanstack/react-query";
 import { LessonApproveBodySchema, LessonMergeBodySchema, LessonPresetChangeBodySchema, LessonRejectBodySchema, LessonRollbackBodySchema } from "@agentx/contracts/web";
@@ -565,6 +565,22 @@ describe("a pending preset proposal: approve and cancel", () => {
   const box = screen.getByRole("region", { name: "Waiting for approval" });
   expect(within(box).getByText(/You are the only person who can approve it/u)).toBeTruthy();
   expect(within(box).getByRole("button", { name: "Approve going back to Standard" })).toBeTruthy();
+ });
+ it("two quick taps send the decision once (the guard is a ref, not a render)", async () => {
+  const log: { path: string; body: unknown }[] = [];
+  await openLessons({ state: { view: pendingView() }, lessons: decide(log, { preset: "standard", changed: true }) });
+  const approve = screen.getByRole("button", { name: "Approve going back to Standard" });
+  act(() => { approve.click();approve.click(); });
+  await screen.findByText(/Approved\./u);
+  expect(log).toHaveLength(1);
+ });
+ it("two quick taps on Cancel send once", async () => {
+  const log: { path: string; body: unknown }[] = [];
+  await openLessons({ state: { view: pendingView() }, lessons: decide(log, { done: true }) });
+  const cancel = screen.getByRole("button", { name: "Cancel the request" });
+  act(() => { cancel.click();cancel.click(); });
+  await screen.findByText(/Cancelled\./u);
+  expect(log).toHaveLength(1);
  });
  it("a refusal is shown in the server's own fixed words and nothing else changes", async () => {
   await openLessons({ state: { view: pendingView() }, lessons: (request, url) => request.method === "POST" && url.pathname.endsWith("/preset/approve") ? refusal("FORBIDDEN", "A different maintainer or admin has to approve going back to Standard.") : undefined });

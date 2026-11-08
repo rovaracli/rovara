@@ -756,6 +756,19 @@ describe("approve by exception on the routes (DECISIONS 24)", () => {
       expect(LessonCompanyPresetReaderSchema.parse(await s.call(callerOf("bob", { orgRole: "admin" }), "GET", "/v1/app/org/lessons/preset")).proposal).toMatchObject({ changeId: company.changeId });
     });
 
+    it("another company's admin sees nothing of this company's proposal or preset", async () => {
+      const s = withPresets({ eligible: ["owner", "ann", "bob"] });
+      const { changeId } = await asked(s);
+      void changeId;
+      await s.call(callerOf("ann", { orgRole: "admin" }), "POST", company, { preset: "regulated" });
+      await s.call(callerOf("ann", { orgRole: "admin" }), "POST", company, { preset: "standard" });
+      // Positive control: this company's admin does see the proposal.
+      expect(LessonCompanyPresetReaderSchema.parse(await s.call(callerOf("bob", { orgRole: "admin" }), "GET", company)).proposal).toBeDefined();
+      const outsider = callerOf("zed", { orgRole: "admin", orgId: "org_bbbbbbbbbbbbbbbbbbbb" });
+      const view = await s.call(outsider, "GET", company) as { proposal?: unknown };
+      expect(view.proposal).toBeUndefined();
+    });
+
     it("the company read: only an owner or admin; it names the preset in force and the proposal, and never another company's or a project's", async () => {
       const s = withPresets({ eligible: ["owner", "ann", "bob"] });
       const admin = (id: string) => callerOf(id, { orgRole: "admin", browserSession: undefined });

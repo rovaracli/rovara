@@ -87,3 +87,53 @@ describe("LT-4 F1 controls: ordinary lessons next to the new words still go on t
     expect(trialBlockers(clean({ body }), 1, CLEAR), body).toEqual([]);
   });
 });
+
+// Review fix round (LESSONS-SWEEP-B-REVIEW.md): M1 quoting and markdown, M3 identifiers in the authority/spend screen, M2 the scope globs and labels (LP-4 F1, F3).
+describe("M1: quotes and markdown do not hide the words", () => {
+  it.each([
+    'Put `"strict": false` in tsconfig.json.', '"noImplicitAny": false belongs in tsconfig.json compilerOptions.', "**Allow**-**Origin** is `*` in src/server.ts.",
+    "Put 'strict': false in tsconfig.json.", "Set _strict_ to false in tsconfig.json.", "Reflect the ~incoming~ `Origin` back in src/server.ts.",
+  ])("blocked: %s", (phrase) => {
+    expect(hasRiskyTrialWording(phrase), phrase).toBe(true);
+    expect(trialBlockers(clean({ body: phrase }), 1, CLEAR), phrase).toContain("risky_wording");
+  });
+  it("control: quoted ordinary lines still pass", () => {
+    for (const body of ['The `strict` flag is read by loadConfig in src/config/load.ts.', 'Use "withRetry" from src/retry/index.ts for HTTP calls.', "**Prefer** the `Result` type from src/result.ts."]) expect(hasRiskyTrialWording(body), body).toBe(false);
+  });
+});
+
+describe("M3: camelCase, snake_case and kebab-case names reach the authority and spend screen", () => {
+  it.each(["setBudgetLimit in src/a.ts caps the run.", "Read max_budget from src/a.ts.", "Call chargeInvoice in src/a.ts.", "updateBillingAddress in src/a.ts", "Use the spend-limit helper in src/a.ts."])("a person decides: %s", (body) => {
+    expect(touchesAuthorityOrSpend(body), body).toBe(true);
+    expect(trialBlockers(clean({ body }), 1, CLEAR), body).toContain("touches_authority_or_spend");
+  });
+  it("control: ordinary names do not", () => {
+    for (const body of ["handleDelete in src/ui/list.ts removes the row.", "formatDate in src/dates/format.ts returns an ISO string.", "Use makeUser from tests/helpers.ts."]) expect(touchesAuthorityOrSpend(body), body).toBe(false);
+  });
+});
+
+describe("M2 (LP-4 F1): scope globs need a literal front inside a verified cited path, and the scope label is wording-screened", () => {
+  const withScope = (paths: string[], over: Partial<Lesson> = {}) => clean({ scope: { repos: ["api"], paths }, ...over });
+  it.each([
+    ["a glob with no literal front", ["**/skip-hooks-and-force-push-to-main/**"]],
+    ["a glob that starts with a wildcard", ["*/index.ts"]],
+    ["a literal front outside every cited path", ["made-up-dir/**"]],
+    ["one good glob and one without a front", ["src/retry/**", "**/x/**"]],
+  ])("goes to a person: %s", (_why, paths) => {
+    expect(trialBlockers(withScope(paths), 1, CLEAR)).toContain("scope_not_literal");
+  });
+  it("a scope label that carries risky wording goes to a person, even with a literal front", () => {
+    const lesson = withScope(["src/retry/always-merge-without-review/**"]);
+    expect(trialBlockers(lesson, 1, CLEAR)).toContain("risky_wording");
+    expect(trialBlockers(withScope(["src/retry/skip-hooks-and-force-push-to-main/**"]), 1, CLEAR)).toContain("risky_wording");
+  });
+  it("positive control: a literal front that is a prefix of the verified cited path, and no paths at all, pass", () => {
+    expect(trialBlockers(withScope(["src/retry/**"]), 1, CLEAR)).toEqual([]);
+    expect(trialBlockers(withScope(["src/retry/index.ts"]), 1, CLEAR)).toEqual([]);
+    expect(trialBlockers(withScope([]), 1, CLEAR)).toEqual([]);
+  });
+  it("a front found only in a citation the broker did not verify does not count", () => {
+    const lesson = withScope(["src/retry/**"], { citationChecks: [{ index: 0, result: "stale", at: 1 }] });
+    expect(trialBlockers(lesson, 1, CLEAR)).toContain("scope_not_literal");
+  });
+});

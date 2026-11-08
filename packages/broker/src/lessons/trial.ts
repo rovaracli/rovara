@@ -29,7 +29,7 @@ const AUTHORITY_OR_SPEND: readonly RegExp[] = [
   /\b(budgets?|spend(ing)?|billing|invoices?|quotas?|payments?|pricing|prices?|costs?|credits?)\b/iu,
   /\b(authority|authori[sz]ation|entitle\w*|owners?|maintainers?|guardrails?|polic(y|ies)|governance|compliance|rbac|sudo|privileged?|escalat\w*)\b/iu,
 ];
-export const touchesAuthorityOrSpend = (...texts: readonly string[]): boolean => texts.map(foldForMatching).some((text) => AUTHORITY_OR_SPEND.some((pattern) => pattern.test(text)));
+export const touchesAuthorityOrSpend = (...texts: readonly string[]): boolean => texts.map(foldForMatching).flatMap(wordingVariants).some((text) => AUTHORITY_OR_SPEND.some((pattern) => pattern.test(text)));
 
 /** The lesson types that may go on trial: statements of fact, convention and pitfall. A procedure, a preference or a review check is advice about HOW to work, and a person reads that first. */
 export const TRIAL_TYPES: ReadonlySet<Lesson["type"]> = new Set(["fact", "convention", "pitfall"]);
@@ -89,33 +89,34 @@ const RISKY_WORDING: readonly RegExp[] = [
   /\bcode[-\s]?owners?\b|\bbranch[-\s]?protection\b|\brequired\s+(reviews?|checks?|reviewers?|status\w*)\b|\brulesets?\b|\bprotected\s+(branch\w*|tags?)\b|\bstatus\s+checks?\b/iu,
   // real people's data (round 2, R2)
   /\b(real|actual|genuine|live|prod\w*)\s+(customers?|users?|data|records?|accounts?|emails?|names?|people|clients?|traffic)\b|\b(customers?|users?|clients?)[-\s]?(data|records?|emails?|info\w*|details)\b|\breal[-\s]?world\s+data\b/iu,
-  // Round 3 (LT-4 F1, lessons leftovers sweep): the fresh phrasings the round-2 re-check found passing. Each pattern is as narrow as the phrasing allows; F2 (false positives) is measured by the replay eval, not tuned here.
-  // CORS: an allow-origin header, and reflecting or mirroring the caller's origin, referer or host
-  /\ballow[-\s]?origin\b|\b(reflect\w*|mirror\w*|echo\w*|copy|copies|forward\w*)\b[^\n]{0,40}\b(origin|referer|referrer|host\s+header)\b/iu,
+  // Round 3 (LT-4 F1, lessons leftovers sweep): the fresh phrasings the round-2 re-check found passing. Each pattern is as NARROW as its phrasing allows (review fix round: the first version sent 20 of 38 ordinary lines to a
+  // person, the base 7; approve by exception exists to cut human work, so a pattern that needs a bare common word is not added). `trial-eval-set.test.ts` pins the false-positive rate. F2 (narrowing the older words) waits for lane 7.
+  // CORS: an allow-origin header, and reflecting, mirroring or echoing the caller's origin or referer
+  /\ballow[-\s]?origin\b|\b(reflect\w*|mirror\w*|echo\w*)\b[^\n]{0,40}\b(origin|referer|referrer|host\s+header)\b/iu,
   // turning strictness or an implicit/unused check off in a compiler config
   /\b(strict|implicit|unused|skip\s+lib\s+check|isolated\s+modules)(?:\s+(?:null|any|this|property|initiali[sz]ation|function|bind|call|apply|checks?|locals?|parameters?|index|access|override|modules?))*(?:\s+(?:to|is)\s+|\s*[=:]\s*|\s+)(?:false|off|0)\b/iu,
   // writing a whole request, event or user object to standard output, and leaking raw errors, call stacks or whole profiles
-  /\b(req|request|res|response|ctx|context|event|payload|body|headers?|user|profile|session|env|object)\b[^\n]{0,40}\b(stdout|stderr|process\.std\w*|standard\s+(?:out|output|error))\b|\b(stdout|stderr|process\.std\w*)\b[^\n]{0,40}\b(req|request|res|response|ctx|context|event|payload|body|headers?|user|profile|session|env)\b/iu,
+  /\b(full|whole|entire|raw|complete)\s+(req|request|res|response|ctx|context|event|payload|body|headers?|user|profile|session|env)\b[^\n]{0,40}\b(stdout|stderr|process\.std\w*)\b|\b(pass|write|send|pipe|dump|print)\w*\s+(req|request|res|response|ctx|payload|body|headers?)\s+to\s+(stdout|stderr|process\.std\w*)/iu,
   /\b(raw|unfiltered|unredacted|unsanitized)\s+(errors?|exceptions?)\b|\b(errors?|exceptions?)\b[^\n]{0,30}\bcall\s*stacks?\b|\b(respon\w*|return\w*|send\w*|expos\w*|show\w*|render\w*|leak\w*)\b[^\n]{0,30}\bcall\s*stacks?\b/iu,
-  /\b(full|entire|whole|complete)\s+(profiles?|user\s+(profiles?|objects?|records?)|customer\s+(profiles?|objects?|records?)|account\s+(objects?|records?))\b|\b(users?|customers?|members?|people|person)'?s?\s+(full|entire|whole|complete)\s+(profiles?|records?|details|data|info\w*|objects?|accounts?)\b/iu,
-  // marking a suite, workflow or step as succeeded; treating a red build as fine
-  /\b(mark\w*|report\w*|treat\w*|count\w*|record\w*|set\w*|force\w*|flip\w*|make\w*)\b[^\n]{0,30}\b(suites?|workflows?|steps?|stages?|specs?)\b[^\n]{0,30}\b(pass\w*|success\w*|succe\w*|ok|okay|healthy|fine|green)\b/iu,
+  /\b(users?|customers?|members?)'?s\s+(full|entire|whole|complete)\s+(profiles?|records?|details|data|info\w*|objects?|accounts?)\b|\b(full|entire|whole|complete)\s+(user|customer)\s+(profiles?|objects?|records?)\b/iu,
+  // marking a suite or workflow as succeeded; treating a red build as fine
+  /\b(mark\w*|report\w*|treat\w*|count\w*|record\w*|set\w*|force\w*|flip\w*|make\w*)\b[^\n]{0,30}\b(suites?|workflows?)\b[^\n]{0,30}\b(pass\w*|success\w*|succe\w*|ok|okay|healthy|fine|green)\b/iu,
   /\bred\s+(builds?|ci|runs?|checks?|pipelines?|tests?|status|suites?|jobs?)\b[^\n]{0,40}\b(fine|ok|okay|acceptable|passing|passed|safe|ignor\w*|harmless|green|success\w*)\b|\b(treat\w*|consider\w*|accept\w*|ignor\w*|count\w*|call\w*)\b[^\n]{0,20}\bred\s+(builds?|ci|runs?|checks?|pipelines?|tests?|status|suites?|jobs?)\b/iu,
-  // the primary database, and building a query from strings
+  // the primary database, and building SQL from strings
   /\bprimary\s+(db|database|datastore|replicas?)\b/iu,
-  /\bconcat\w*\b[^\n]{0,40}\b(sql|quer(?:y|ies)|statements?)\b|\b(sql|quer(?:y|ies))\b[^\n]{0,40}\bconcat\w*|\b(user|client|form|request)\s+input\b[^\n]{0,30}\b(sql|quer(?:y|ies))\b/iu,
+  /\bconcat\w*\b[^\n]{0,40}\bsql\b|\bsql\b[^\n]{0,40}\bconcat\w*|\b(user|client|form|request)\s+input\b[^\n]{0,30}\bsql\b/iu,
   // building code from a string
   /\bfunction\s*\([^)\n]{0,60}\)\s*\(|\bset\s*(?:timeout|interval)\b[^\n]{0,30}\bstring\b/iu,
-  // plain http, a self-issued certificate chain, secrets in browser storage, hard-coded logins, objects readable by everyone, a wildcard action
-  /\bplain[-\s]?(?:text\s+)?http\b|\bhttp\s+(?:instead\s+of|rather\s+than|over)\s+https\b|\bun-?encrypted\b|\bcleartext\b|\bself[-\s]?(?:issued|generated|made)\b|\b(?:accept\w*|trust\w*)\b[^\n]{0,30}\b(?:root\s+cas?|unknown\s+(?:ca|issuer))\b/iu,
+  // plain http, a self-issued certificate chain, secrets in browser storage, hard-coded logins, objects readable by everyone, a wildcard action on a cloud service
+  /\bplain[-\s]?(?:text\s+)?http\b|\bhttp\s+(?:instead\s+of|rather\s+than|over)\s+https\b|\bun-?encrypted\b|\bcleartext\b|\bself[-\s]?issued\b|\b(?:accept\w*|trust\w*)\b[^\n]{0,30}\b(?:root\s+cas?|unknown\s+(?:ca|issuer))\b/iu,
   /\b(?:sessions?|auth\w*|access|api|login|csrf|jwt|secrets?|keys?|tokens?|passwords?|credentials?|cookies?)\b[^\n]{0,40}\b(?:local|session)[-\s]?storage\b|\b(?:local|session)[-\s]?storage\b[^\n]{0,40}\b(?:sessions?|auth\w*|jwt|secrets?|keys?|tokens?|passwords?|credentials?|cookies?)\b/iu,
   /\bhard[-\s]?cod\w*\b[^\n]{0,60}\b(?:logins?|passwords?|secrets?|keys?|tokens?|credentials?|creds?|usernames?|dsn|connection\s+strings?)\b|\b(?:logins?|passwords?|secrets?|keys?|tokens?|credentials?|creds?)\b[^\n]{0,60}\bhard[-\s]?cod\w*\b/iu,
-  /\b(?:readable|writable|writeable|accessible)\s+(?:by|to|for)\s+(?:all|anyone|everyone|any|the\s+world|the\s+public|every\w*)\b|\bworld[-\s]?(?:readable|writable)\b/iu,
-  /\b[a-z][a-z0-9-]{1,30}:\*|\b(?:action|resource)s?\s*[:=]\s*["']?\*/iu,
-  // landing on the primary line, editing generated files by hand, leaving a failing step out
-  /\b(?:primary|default|release|stable)\s+(?:line|stream|trunk)\b|\b(?:once|as\s+soon\s+as|after|when)\s+(?:it|the\s+code|the\s+change)\s+(?:compiles?|builds?|typechecks?|type-checks?)\b/iu,
-  /\b(?:hand|manually)[-\s]?(?:edit\w*|chang\w*|patch\w*|modif\w*)\b[^\n]{0,40}\b(?:generated|gen|lock\w*|vendor\w*|dist|build)\b|\bgenerated\s+(?:files?|code|sources?)\b[^\n]{0,40}\b(?:edit\w*|chang\w*|patch\w*|modif\w*|without)\b|\bwithout\s+(?:re-?)?generat\w*/iu,
-  /\b(?:leav\w*|omit\w*|exclud\w*|tak\w*|left)\b[^\n]{0,40}\bout\b[^\n]{0,50}\b(?:when|if|on)\b[^\n]{0,15}\b(?:fails?|failed|failing|errors?|breaks?|times?\s*out)\b/iu,
+  /\b(?:readable|writable|writeable|accessible)\s+(?:by|to|for)\s+(?:all|anyone|everyone|any|the\s+world|the\s+public|every\w*)\b(?!\s+(?:screen|assistive))|\bworld[-\s]?(?:readable|writable)\b/iu,
+  /\b(?:s3|iam|ec2|lambda|dynamodb|sqs|sns|kms|sts|ssm|rds|logs|events|states|ecr|ecs|eks|route53|cloudfront|secretsmanager|cloudformation|apigateway|elasticloadbalancing|\*):\*|\b(?:action|resource)s?\s*[:=]\s*["']?\*/iu,
+  // landing on the primary line, editing generated files without regenerating them, leaving a failing step out
+  /\bprimary\s+(?:line|trunk|stream)\b/iu,
+  /\bwithout\s+(?:re-?)?generat\w*/iu,
+  /\b(?:leav\w*|omit\w*|exclud\w*|tak\w*)\b[^\n]{0,30}\b(?:steps?|stages?|jobs?|checks?|tests?|migrations?|gates?|phases?)\b[^\n]{0,20}\bout\b[^\n]{0,50}\b(?:when|if|on)\b[^\n]{0,15}\b(?:fails?|failed|failing|errors?)\b/iu,
 ];
 /** Dots inside a gap no longer end it (`req.body`, `user.email`): only a sentence end does (a dot followed by a space or the end). */
 const GAP_FROM = "[^.\\n]";
@@ -124,9 +125,17 @@ const PATTERNS: readonly RegExp[] = RISKY_WORDING.map((pattern) => new RegExp(pa
 /** The text with its identifiers cut into words: `useProdDatabase`, `PROD_DB_URL`, `use-prod-db` and `skipPreCommit` read as `use Prod Database`, `PROD DB URL`, `use prod db` and `skip Pre Commit`. */
 export const splitIdentifiers = (text: string): string => text
   .replace(/(\p{Ll}|\p{N})(\p{Lu})/gu, "$1 $2").replace(/(\p{Lu}+)(\p{Lu}\p{Ll})/gu, "$1 $2").replace(/[_]+/gu, " ").replace(/(?<=[\p{L}\p{N}])-+(?=[\p{L}\p{N}])/gu, " ");
+/**
+ * The copies of one (already folded) text the wording screens read: as written, with identifiers split into words, and each of those again with quotes, backticks, `*`, `~` and `_` taken out (review fix round, M1:
+ * `"strict": false`, `**Allow**-**Origin**` and `_strict_` read as the words they hold). A function declaration, so the authority and spend screen above can use it too (M3).
+ */
+function wordingVariants(text: string): string[] {
+  const plain = text.replace(/[*`"'~_]/gu, "");
+  return [text, splitIdentifiers(text), plain, splitIdentifiers(plain)];
+}
 /** Whether any of the lesson's words is in a family no trial lesson may use. Each text is matched as written AND with its identifiers split into words (round 2, R2), after look-alikes and hidden characters are folded. */
 export const hasRiskyTrialWording = (...texts: readonly string[]): boolean =>
-  texts.map(foldForMatching).flatMap((text) => [text, splitIdentifiers(text)]).some((text) => PATTERNS.some((pattern) => pattern.test(text)));
+  texts.map(foldForMatching).flatMap(wordingVariants).some((text) => PATTERNS.some((pattern) => pattern.test(text)));
 
 /**
  * Key identifiers of a lesson's text: the tokens a reader could check against the correction or the code. A path (has a slash), a file name, a snake_case or camelCase or PascalCase name, an
@@ -227,7 +236,11 @@ export function trialBlockers(lesson: Lesson, tier: Lesson["tier"], context: Tri
   const repos = lesson.scope.repos ?? [];
   if (repos.length !== 1 || code.some(({ c }) => c.repo !== repos[0])) why.push("scope_not_repo");
   if (touchesAuthorityOrSpend(lesson.title, lesson.description, lesson.body, ...(lesson.scope.paths ?? []))) why.push("touches_authority_or_spend");
-  if (hasRiskyTrialWording(lesson.title, lesson.description, lesson.body)) why.push("risky_wording");
+  // The scope label is shown to the agent, so it is wording-screened like the text (review fix round, M2).
+  if (hasRiskyTrialWording(lesson.title, lesson.description, lesson.body, ...(lesson.scope.paths ?? []))) why.push("risky_wording");
+  // LP-4 F1: every scope glob has a literal front, and that front is a prefix of a code path the broker verified (a front found only in the correction text, or a glob that starts with a wildcard, goes to a person).
+  const verified = code.filter(({ index }) => checks.some((check) => check.index === index && check.result === "valid")).map(({ c }) => (c.kind === "code" ? c.path.replace(/^\.\//u, "").toLowerCase() : ""));
+  if ((lesson.scope.paths ?? []).some((glob) => { const front = globPrefix(glob); return front === undefined || !verified.some((path) => path.startsWith(front.prefix)); })) why.push("scope_not_literal");
   if (context.contradiction) why.push("contradiction");
   if (context.refinement) why.push("refinement");
   // Round 4: a lesson linked as a possible duplicate of another is never started on trial while the link stands; a person decides (merge, keep both, reject). Read from the lesson itself, so the second check sees it too.

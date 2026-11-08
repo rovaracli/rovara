@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { lessonsKey, useLessonsApi, type LessonsView } from "../../../api/lessons.js";
 import { Button } from "../../../design/Button.js";
@@ -11,13 +11,14 @@ import { T, failureText } from "./lessons-text.js";
  * for the people who decide. A company that requires Regulated says so.
  */
 export function PresetControl({ project, view }: { project: string; view: Pick<LessonsView, "preset" | "presetLockedByCompany" | "canDecide" | "presetProposal"> }) {
- const api = useLessonsApi(), query = useQueryClient(), [busy, setBusy] = useState(false), [error, setError] = useState<string>(), [saved, setSaved] = useState<string>();
+ const api = useLessonsApi(), query = useQueryClient(), sending = useRef(false), [busy, setBusy] = useState(false), [error, setError] = useState<string>(), [saved, setSaved] = useState<string>();
  async function run(work: () => Promise<string>) {
-  if (busy) return;
-  setBusy(true);setError(undefined);setSaved(undefined);
+  // A ref, not the render: two quick taps arrive before the buttons are disabled.
+  if (sending.current) return;
+  sending.current = true;setBusy(true);setError(undefined);setSaved(undefined);
   try { setSaved(await work());await query.invalidateQueries({ queryKey: lessonsKey(project) }); }
   catch (failure) { setError(failureText(failure, T.PRESET_FAILED));await query.invalidateQueries({ queryKey: lessonsKey(project) }).catch(() => undefined); }
-  finally { setBusy(false); }
+  finally { sending.current = false;setBusy(false); }
  }
  const change = (to: "regulated" | "standard") => run(async () => {
   const answer = to === "regulated" ? await api.requirePerson(project) : await api.allowTrial(project);
