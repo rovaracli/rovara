@@ -1,4 +1,4 @@
-// Track record: the company-close erasure of the outcome samples (`OUTCOME#`), their scored copies (`OUTCOME_SCORED#`) and the run costs (`RUN_COST#`).
+// Track record: the company-close erasure of the outcome samples (`OUTCOME#`), their scored copies (`OUTCOME_SCORED#`), the run costs (`RUN_COST#`) and (SRL-3) the merge-commit index (`GITHUB_MERGE`).
 // Their partitions are named by project (and stage, or agent and path), so they are found from the project catalog and the agent directory, not by a
 // prefix scan. Like the other close cleanups it runs only while the company is closing or closed, pins that state in every batch, never resends an
 // ambiguous call, and a failure stops the close (`closingAt` stays, and the next close resumes). Their expiries (180 and 365 days) are the backstop.
@@ -19,6 +19,7 @@ const ALL_PATHS_ERASED: Exclude<EstimatePath, (typeof PATHS)[number]> extends ne
 void ALL_PATHS_ERASED;
 const PAGE = 25;
 const MAX_PAGES = 1000;
+const MERGE_INDEX_MAX_PAGES = 8000;
 
 export async function clearTrackRecordData(deps: Dependencies, value: unknown): Promise<{ deleted: number }> {
   const parsed = OrgIdSchema.safeParse(value);
@@ -56,9 +57,9 @@ export async function clearTrackRecordData(deps: Dependencies, value: unknown): 
     };
     /** Every item of one partition, in batches that each pin the closing state. */
     let deleted = 0;
-    const clearPartition = async (pk: string): Promise<void> => {
+    const clearPartition = async (pk: string, maxPages: number = MAX_PAGES): Promise<void> => {
       let cursor: { pk: string; sk: string } | undefined;
-      for (let page = 0; page < MAX_PAGES; page += 1) {
+      for (let page = 0; page < maxPages; page += 1) {
         const result = await query(pk, undefined, cursor);
         const keys = (result.Items ?? []).map((raw) => {
           const row = z.object({ pk: z.literal(pk), sk: z.string().min(1) }).passthrough().safeParse(raw);
@@ -94,6 +95,8 @@ export async function clearTrackRecordData(deps: Dependencies, value: unknown): 
       }
       throw unavailable();
     };
+    // The merge-commit index is one partition for the company (no project or repository to find first); a busy company may hold many rows, so it is given more pages than the others.
+    await clearPartition(orgScoped(orgId, "GITHUB_MERGE"), MERGE_INDEX_MAX_PAGES);
     const projects = await names(orgProjectCatalogPk(orgId), "PROJECT#", (row) => row.name);
     const agents = [...new Set([...BUILTIN_AGENT_IDS, ...await names(orgScoped(orgId, "AGENT_DIRECTORY"), undefined, (row) => row.agentId)])];
     for (const project of projects) {

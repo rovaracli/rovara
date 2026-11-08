@@ -65,6 +65,9 @@ instead: give it a one-line header comment when you next edit it.
 - **Merge.** A person presses merge: `packages/broker/src/rovara-code/merge.ts#pressMerge` (readiness in
   `packages/broker/src/rovara-code/merge.ts#mergeReadiness`). After that, `packages/broker/src/rovara-code/merge-tracking.ts#trackTask`
   follows the PR. The web button is `packages/ui/src/screens/session/MergeSection.tsx#MergeSection`.
+  The merge transaction also writes the merge-commit index row (`packages/broker/src/rovara-code/merge-commit-index.ts#mergeCommitIndexItem`, called from
+  `packages/broker/src/rovara-code/merged-state.ts#mergedStateItems`); the Team record finds a Rovara PR by merge commit, to record a revert, with
+  `packages/broker/src/rovara-code/rovara-pull-request-index.ts#createRovaraPullRequestIndex`.
 - **The task page** the app shows: `packages/broker/src/aws/developer-tasks/task-page.ts#getTaskPageState` and
   `packages/broker/src/aws/developer-tasks/task-view.ts#taskView`.
 

@@ -39,6 +39,7 @@ import {
   memberGithubKey,
   mergeTrackingKey,
   prHeadKey,
+  mergeCommitIndexKey,
   setupDraftKey,
   trashKey,
 } from "../../packages/contracts/src/org-scoped-keys.js";
@@ -289,6 +290,7 @@ describe("keys", () => {
     ["setupDraftKey", (org) => setupDraftKey(org, "web")],
     ["trashKey", (org) => trashKey(org, "d1", taskId)],
     ["prHeadKey", (org) => prHeadKey(org, "payments", "a".repeat(40))],
+    ["mergeCommitIndexKey", (org) => mergeCommitIndexKey(org, "acme/api", "a".repeat(40))],
   ];
 
   it.each(builders)("%s puts the org in the partition key, so two orgs never share an item", (_name, build) => {
@@ -303,6 +305,8 @@ describe("keys", () => {
     expect(() => githubMemberKey(orgA, "")).toThrow();
     expect(() => trashKey(orgA, "d1", "x\u0000y")).toThrow();
     expect(() => prHeadKey(orgA, "pay#ments", "a".repeat(40))).toThrow();
+    expect(() => mergeCommitIndexKey(orgA, "acme/a#pi", "a".repeat(40))).toThrow();
+    expect(mergeCommitIndexKey(orgA, "Acme/API", "A".repeat(40))).toEqual({ pk: `ORG#${orgA}#GITHUB_MERGE`, sk: `acme/api#${"a".repeat(40)}` });
   });
 
   it("keeps merge tracking and milestones in the task's partition, ordered", () => {

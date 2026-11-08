@@ -12,6 +12,8 @@ async function fixture() {
   const seedOrg = (org: string, projects = ["payments", "web"]) => {
     const rows: Array<{ pk: string; sk: string }> = [];
     const put = (pk: string, sk: string, entityType: string) => { const row = { pk, sk, entityType, orgId: org }; db.set(row); rows.push({ pk, sk }); };
+    // SRL-3: the merge-commit index is one partition for the company (more rows than a page, so the walk pages through it).
+    for (let n = 0; n < 30; n += 1) put(`ORG#${org}#GITHUB_MERGE`, `acme/api#${n.toString(16).padStart(40, "0")}`, "GITHUB_WORKFLOW_MERGE");
     for (const project of projects) {
       db.set({ ...orgProjectCatalogKey(org, project), entityType: "PROJECT_CATALOG", name: project, latestRevision: 1 });
       for (const stage of ["plan_critic", "review", "check", "risk"]) {
