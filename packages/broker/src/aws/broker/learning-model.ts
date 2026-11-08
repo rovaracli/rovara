@@ -108,7 +108,11 @@ export function learningFaultOf(error: unknown, callStarted: boolean): "retryabl
 export function customerLearningModel(dependencies: LessonsHostDependencies, options: CustomerLearningModelOptions = {}): PipelineModel {
   const log = options.log ?? ((event, fields) => console.log(JSON.stringify({ component: "lessons", event, ...fields })));
   const admissionOf = (modelAccess: NonNullable<LessonsHostDependencies["modelAccess"]>) =>
-    ({ documentClient: dependencies.documentClient, tableName: dependencies.tableName, access: modelAccess.access, cloud: dependencies.cloud === true });
+    ({
+      documentClient: dependencies.documentClient, tableName: dependencies.tableName, access: modelAccess.access, cloud: dependencies.cloud === true,
+      // R2: inside the LessonsWorker (a running attempt) the budget-sync markers are written best-effort: its role has no grant on the budget settings partition and must not get one.
+      ...(currentLearningAttempt() === undefined ? {} : { bestEffortMarkers: { log: (event: string, fields: Record<string, string>) => log(`learning.${event}`, fields) } }),
+    });
 
   /** The model, the route and the hold of one call, or a `LearningRefusal` (nothing is made, nothing is held). */
   async function plan(request: CompleteRequest) {

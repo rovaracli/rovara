@@ -40,6 +40,7 @@ const OUTSIDE_STORAGE_MODULES: Record<string, string> = {
   "lessons/dynamo-settings.ts": "the learning settings",
   "lessons/delivery-wiring.ts": "lesson delivery reads",
   "org/test-environment.ts": "the test-environment row",
+  "lessons/task-outcome-rows.ts": "the nightly re-reflection's look at one project's `rovara.reverted_by` link rows of the last day (a record query by time, never a scan; ids only; erased, tombstoned and expired rows are skipped by `eventFromItem`) (lessons-prod-2)",
 };
 
 function sourceFiles(dir: string): string[] {

@@ -212,12 +212,25 @@ describe("the LessonsWorker handler (lane 2): the slim entry builds the same lea
     expect(db.find(() => true).length).toBe(writes);
   });
 
-  it("where the Team record is off or has no model path there is nothing to learn with: the messages are answered (dropped), not held, and nothing is claimed", async () => {
+  it("R5: only a PAUSED record (TEAM_RECORD_ACTIVE exactly \"0\") answers the messages quietly (dropped, nothing claimed); a missing record runtime, model path or ledger is a misconfiguration: the handler throws (the Errors alarm fires, the messages stay in the queue), and the next invocation builds again", async () => {
     for (const over of [{ teamRecord: false }, { modelAccess: false }] as const) {
       const { dependencies, db } = install(over);
-      expect(await createLessonsWorkerHandler(() => dependencies as never)(batch)).toEqual({ batchItemFailures: [] });
+      // Paused: quiet.
+      expect(await createLessonsWorkerHandler(() => dependencies as never, { env: { TEAM_RECORD_ACTIVE: "0" } })(batch)).toEqual({ batchItemFailures: [] });
+      // Not paused (the variable is "1", or absent, or anything else): a named failure.
+      for (const env of [{ TEAM_RECORD_ACTIVE: "1" }, {}, { TEAM_RECORD_ACTIVE: "" }, { TEAM_RECORD_ACTIVE: "false" }]) {
+        await expect(createLessonsWorkerHandler(() => dependencies as never, { env })(batch)).rejects.toThrow(/not configured/u);
+      }
       expect(db.find((item) => String(item["pk"]).startsWith("LEARN#"))).toHaveLength(0);
     }
+    // A failed build is not remembered: once the value is there the same handler goes on.
+    const broken = install({ modelAccess: false });
+    const good = install();
+    let current = broken.dependencies;
+    const handler = createLessonsWorkerHandler(() => current as never, { env: {} });
+    await expect(handler(batch)).rejects.toThrow();
+    current = good.dependencies;
+    expect(await handler(batch)).toEqual({ batchItemFailures: [] });
   });
 
   it("the lease table failing brings the message back, and the next delivery goes through", async () => {

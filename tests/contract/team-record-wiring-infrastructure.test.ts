@@ -420,7 +420,9 @@ describe("the lessons worker (switch on)", () => {
     const stateWriters = writers.filter((statement) => statement.Sid !== "TeamRecordTable");
     expect(stateWriters.map((statement) => statement.Sid)).toEqual(["LessonsStateTableWrites"]);
     const condition = stateWriters[0]!.Condition as Record<string, Record<string, string[]>>;
-    expect(Object.keys(condition)).toEqual(["ForAllValues:StringLike"]);
+    // R6: ForAllValues passes when the key is absent, so the condition also requires that the key is present (a Null test), which protects an action added later.
+    expect(Object.keys(condition).sort()).toEqual(["ForAllValues:StringLike", "Null"]);
+    expect(condition["Null"]).toEqual({ "dynamodb:LeadingKeys": "false" });
     const patterns = condition["ForAllValues:StringLike"]!["dynamodb:LeadingKeys"]!;
     expect([...patterns].sort()).toEqual([...LESSONS_WORKER_STATE_WRITE_KEY_PATTERNS].sort());
     // A task, a session, a sign-in name, a key or a billing record is not under any of them.

@@ -1527,8 +1527,8 @@ export class GitHubAppCredentialProvider {
   }
 
   /**
-   * What a path is at a commit: "file", "dir" (a directory or a submodule) or "none" (GitHub's 404, or a name its parent directory does not list). Throws when GitHub cannot answer (never "none" for an error)
-   * and for a symbolic link (what it points to is not known here). Same commit and path rules as `getFileAtCommit`.
+   * What a path is at a commit: "file", "dir" (a directory or a submodule) or "none" (GitHub's 404, a name its parent directory does not list, or a parent that is a plain file). Throws when GitHub cannot answer (never "none" for an error)
+   * and for a symbolic link, at the path or as its parent directory (what it points to is not known here). Same commit and path rules as `getFileAtCommit`.
    * L7: it lists the path's PARENT directory and reads the entry's type, so no file's bytes are fetched just to learn what it is (a listing is at most 1,000 entries; a listing that is full and does not name the
    * path cannot say "none").
    */
@@ -1554,8 +1554,12 @@ export class GitHubAppCredentialProvider {
     // A directory is a JSON list. An answer over the cap is not read (it cannot be told cheaply): the caller treats a throw as "not verified".
     if (Number(response.headers.get("content-length")) > PATH_KIND_MAX_BYTES) { await response.body?.cancel(); throw agentXError("RUNTIME_UNAVAILABLE", "GitHub's path answer is too large to read"); }
     const body: unknown = await response.json();
-    // The parent is not a directory (a file, a submodule or a link): nothing is below it.
-    if (!Array.isArray(body)) return "none";
+    // The parent is not a directory. A real file has nothing below it ("none"). A symbolic link may point at a directory that has the name, and a submodule's contents are not in this repository: those are "cannot tell"
+    // (a throw), because "none" is a final answer for a citation.
+    if (!Array.isArray(body)) {
+      if ((body as { type?: unknown } | null)?.type === "file") return "none";
+      throw agentXError("RUNTIME_UNAVAILABLE", "GitHub reports a link or a submodule where a directory was expected");
+    }
     const entry = (body as Array<{ name?: unknown; type?: unknown }>).find((candidate) => candidate.name === name);
     if (entry === undefined) {
       if (body.length >= PATH_LISTING_MAX_ENTRIES) throw agentXError("RUNTIME_UNAVAILABLE", "GitHub's directory listing was cut before this name");

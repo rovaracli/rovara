@@ -1,6 +1,7 @@
 // Lessons in production, lane 2 (M4): a reflection that is past its deadline writes nothing more to the lessons' store. The worker gives its DynamoDB client to the Team record and the lessons through this wrapper:
 // once the running attempt's abort signal (`learning-deadline.ts`) is aborted, a write command (put, update, delete, batch or transaction) to one of the guarded tables is refused before it is sent. A write
-// already sent finishes on its own (a transaction is all or nothing), so a lesson change is never left half-written by a worker that has been given up on and frozen into a later invocation. Other tables are not
+// already sent finishes on its own (a transaction is all or nothing), so ONE transaction is never left half-written. A lesson change that takes several writes can still stop between two of them: the guard refuses the
+// later ones and the intent is left for the `LESSON_BUSY` retry and the hourly heal to finish (re-check R6). Other tables are not
 // guarded: the spend ledger must still block and settle the attempt's model keys after the deadline. Outside an attempt (the broker, tests) nothing is refused.
 import { currentLearningAttempt } from "./learning-deadline.js";
 

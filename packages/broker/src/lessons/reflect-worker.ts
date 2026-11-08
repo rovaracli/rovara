@@ -1,12 +1,15 @@
 // Lessons in production, lane 2 (WB-4, H1, M4): the LessonsWorker's work. One queue message is one finished task (`reflect-queue.ts`). The worker:
 //   1. reads the message (anything that is not exactly the four ids is dropped with one fixed log line: a poison message must never be retried or hold the queue);
-//   2. takes the lease on `LEARN#<org>#<task>#<outcome>` (`reflect-claims.ts`): a redelivery, a second task-end call or the nightly re-send never runs the model twice. A fault that is known to have spent nothing
-//      leaves the lease at `retry`; the next take runs the work again only if every model key the earlier attempt minted settled with nothing spent;
-//   3. runs `learnFromEndedTaskTyped` as one attempt (`learning-deadline.ts`): no model call starts that could still be running at the deadline, the deadline's abort signal goes into the model call, the lesson store
-//      stops writing once it is aborted, and a race gives up a little after it as the last guard (logged as a fault);
+//   2. takes the lease on `LEARN#<org>#<task>#<outcome>` (`reflect-claims.ts`): a redelivery, a second task-end call or the nightly re-send never runs the model twice. A fault from BEFORE the model call (a read, the mint,
+//      the deadline) leaves the lease at `retry` and the next take runs the work again. Once the call has started (the lease carries `callStartedAt`, written just before it) the reflection is spent: never run again,
+//      whatever the key settles at (re-check R1);
+//   3. runs `learnFromEndedTaskTyped` as one attempt (`learning-deadline.ts`): no model call starts that could still be running at the deadline, the deadline's abort signal goes into the model call (it stops OUR WAIT;
+//      the in-VPC function and the provider request may run on, so an aborted call counts as made), the lesson store stops writing once it is aborted, and a race gives up a little after it as the last guard;
 //   4. ends the lease: `done` for every final outcome, `retry` for a typed retryable fault (or the deadline).
 // A message that must come back (a retry, a lease it must wait for, a claim that could not be made) is answered as a batch item failure, with a visibility backoff of 60 s, 300 s, then 900 s instead of the queue's whole
-// 1800 s; the queue sends it to its dead-letter queue (which alarms) after five receives. The metric is the `lessons_worker.result` line, one per message, with a fixed class.
+// 1800 s; the queue sends it to its dead-letter queue (which alarms) after five receives. Five receives fit three attempts in the normal case (about two waits for the first attempt's key, one for each later one); an `exhausted` answer writes
+// no final state and uses one or two more receives before the dead-letter queue, on purpose: the alarm on that queue is the signal. A sweep that cannot read a key's spend leaves the lease at `retry` and can run the
+// receives out; the message is then in the dead-letter queue and can be redriven. The metric is the `lessons_worker.result` line, one per message, with a fixed class.
 import { LESSONS_REFLECT_MAX_ATTEMPTS, LESSONS_REFLECT_RETRY_BACKOFF_SECONDS } from "@agentx/contracts";
 import { withLearningAttempt, type LearningAttempt } from "./learning-deadline.js";
 import { CLAIM_TTL_SECONDS, type ClaimStore } from "./reflect-claims.js";

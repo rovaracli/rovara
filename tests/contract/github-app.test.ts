@@ -330,6 +330,8 @@ describe("GitHub App repository credentials", () => {
         requests.push({ url: requestUrl, init });
         if (requestUrl.endsWith("/access_tokens")) return new Response(JSON.stringify({ token: "lookup-token" }), { status: 201 });
         if (requestUrl.includes("/contents/src?")) return new Response(JSON.stringify([{ type: "file", name: "a.ts" }, { type: "dir", name: "http" }, { type: "symlink", name: "link" }, { type: "mystery", name: "weird" }]), { status: 200 });
+        if (requestUrl.includes("/contents/linkdir?")) return new Response(JSON.stringify({ type: "symlink", name: "linkdir", target: "src" }), { status: 200 });
+        if (requestUrl.includes("/contents/submod?")) return new Response(JSON.stringify({ type: "submodule", name: "submod" }), { status: 200 });
         if (requestUrl.includes("/contents/vendor?")) return new Response(JSON.stringify([{ type: "submodule", name: "lib" }]), { status: 200 });
         if (requestUrl.includes("/contents?ref=")) return new Response(JSON.stringify([{ type: "dir", name: "src" }, { type: "file", name: "README.md" }]), { status: 200 });
         if (requestUrl.includes("/contents/src/a.ts?")) return new Response(JSON.stringify({ type: "file", name: "a.ts", content: "eA==" }), { status: 200 });
@@ -351,7 +353,8 @@ describe("GitHub App repository credentials", () => {
     // Something below a file is nothing.
     expect(await kind("src/a.ts/below")).toBe("none");
     // L7: a symbolic link is not claimed to be a file (it may point at a directory); an unknown type, a full listing that does not name the path, a huge answer and a GitHub error are "cannot tell".
-    for (const path of ["src/link", "src/weird", "big/missing", "huge/x", "broken/x"]) await expect(kind(path), path).rejects.toMatchObject({ code: "RUNTIME_UNAVAILABLE" });
+    // R6: a parent that is a symbolic link (it may point at a directory that holds the name) or a submodule is "cannot tell" too, never "none"; a plain file as parent stays "none" (above).
+    for (const path of ["linkdir/x", "submod/x", "src/link", "src/weird", "big/missing", "huge/x", "broken/x"]) await expect(kind(path), path).rejects.toMatchObject({ code: "RUNTIME_UNAVAILABLE" });
     expect(await kind("big/f7")).toBe("file");
     // The same rules as a file read: a full commit id and a clean repository-relative path, with the contents-read token and the ordinary (JSON) media type.
     await expect(provider.getPathKindAtCommit(url, "src", "main", { system: "private-install" })).rejects.toMatchObject({ code: "CONFIG_INVALID" });

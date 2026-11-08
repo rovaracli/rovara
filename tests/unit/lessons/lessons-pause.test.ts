@@ -5,6 +5,7 @@ import { describe, expect, it } from "vitest";
 import { LESSONS_PAUSE_CODES, lessonsPauseText, teamRecordPk } from "../../../packages/contracts/src/index.js";
 import { lessonSubjectSource } from "../../../packages/broker/src/aws/broker/lesson-subject-source.js";
 import { taskKey, taskOwnerKey } from "../../../packages/broker/src/developer/task-records.js";
+import { withLearningAttempt, noteLearningFault, type LearningAttempt } from "../../../packages/broker/src/lessons/learning-deadline.js";
 import { LearningRefusal, MODEL_FAILURES_BEFORE_PAUSE, dynamoPauseStore, pauseScopeOf, type CurrentPause, type LessonsPauseStore } from "../../../packages/broker/src/lessons/pause.js";
 import type { PipelineModel } from "../../../packages/broker/src/lessons/ports.js";
 import { buildReflectorInput } from "../../../packages/broker/src/lessons/reflect-input.js";
@@ -122,6 +123,43 @@ describe("the reflector records why learning cannot run, and clears it when a ca
     const { d, pause } = deps(model, { capsOverride: { perTaskUsd: 0.2 } });
     expect(await reflectSubject(d, one())).toMatchObject({ reason: "learning_paused" });
     expect((await pause.read(WS, PROJECT))?.code).toBe("cost_too_high");
+  });
+});
+
+describe("R3 (lane 2): the failure count is per REFLECTION, not per retry attempt", () => {
+  const attemptOf = (n: number): LearningAttempt => ({ deadlineAt: Date.now() + 60_000, attemptId: `att-${n}`, lastAttempt: n >= 3 });
+  const run = async (world: ReturnType<typeof deps>, n: number) => {
+    const attempt = attemptOf(n);
+    await withLearningAttempt(attempt, () => reflectSubject(world.d, one()));
+    return attempt;
+  };
+  it("one task whose call fails before it starts on all three attempts counts ONCE (the last attempt's), so it cannot trip the 3-in-a-row pause; two more such tasks do", async () => {
+    const throwing = (): PipelineModel => ({ complete: async () => { noteLearningFault("retryable"); throw new Error("table down"); } });
+    const world = deps(throwing());
+    for (const n of [1, 2, 3]) await run(world, n);
+    expect(world.pause.failures.get(`${WS}/${PROJECT}`)).toBe(1);
+    expect(await world.pause.read(WS, PROJECT)).toBeUndefined();
+    for (const n of [1, 2, 3]) await run(world, n);
+    for (const n of [1, 2, 3]) await run(world, n);
+    expect(world.pause.failures.get(`${WS}/${PROJECT}`)).toBe(MODEL_FAILURES_BEFORE_PAUSE);
+    expect(await world.pause.read(WS, PROJECT)).toMatchObject({ code: "model_failed" });
+  });
+  it("a quote that fails before the call is the same: not counted while another attempt is left", async () => {
+    const model: PipelineModel = { complete: async () => { throw new Error("unreachable"); }, quote: async () => { noteLearningFault("retryable"); throw new Error("table down"); } };
+    const world = deps(model);
+    await run(world, 1);
+    await run(world, 2);
+    expect(world.pause.failures.size).toBe(0);
+    await run(world, 3);
+    expect(world.pause.failures.get(`${WS}/${PROJECT}`)).toBe(1);
+  });
+  it("a FINAL failure (the call had started) counts at once, on any attempt; outside the worker every failure counts (nothing is retried there)", async () => {
+    const world = deps({ complete: async () => { noteLearningFault("final"); throw new Error("timeout"); } });
+    await run(world, 1);
+    expect(world.pause.failures.get(`${WS}/${PROJECT}`)).toBe(1);
+    const outside = deps({ complete: async () => { throw new Error("provider down"); } });
+    await reflectSubject(outside.d, one());
+    expect(outside.pause.failures.get(`${WS}/${PROJECT}`)).toBe(1);
   });
 });
 

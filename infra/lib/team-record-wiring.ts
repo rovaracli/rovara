@@ -254,7 +254,9 @@ export function attachLessonsWorker(stack: Stack, props: LessonsWorkerProps): { 
   worker.addToRolePolicy(new iam.PolicyStatement({
     sid: "LessonsStateTableWrites", actions: ["dynamodb:PutItem", "dynamodb:UpdateItem", "dynamodb:DeleteItem", "dynamodb:ConditionCheckItem"],
     resources: [props.state.tableArn],
-    conditions: { "ForAllValues:StringLike": { "dynamodb:LeadingKeys": [...LESSONS_WORKER_STATE_WRITE_KEY_PATTERNS] } },
+    // ForAllValues passes when the key is absent, so a Null test requires that the condition key is present (re-check R6: no action added later can slip past). The patterns cover EVERY org's spend counters and model-key
+    // records (`ORG#*#SPEND#*`, `ORG#*#MODEL_KEY#*`): the worker serves all orgs, so that breadth is inherent to the design and accepted. `LEARN#*` does not match `LEARNING_WALK#...`.
+    conditions: { "ForAllValues:StringLike": { "dynamodb:LeadingKeys": [...LESSONS_WORKER_STATE_WRITE_KEY_PATTERNS] }, Null: { "dynamodb:LeadingKeys": "false" } },
   }));
   for (const statement of props.resources.table.brokerStatements()) worker.addToRolePolicy(statement);
   worker.addToRolePolicy(new iam.PolicyStatement({

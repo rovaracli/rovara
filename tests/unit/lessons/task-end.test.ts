@@ -8,6 +8,7 @@ import type { DeveloperTaskRecord } from "../../../packages/broker/src/developer
 import { announceHumanSendBack, registerHumanSendBackListener, sendBackToRecord } from "../../../packages/broker/src/lessons/send-back-events.js";
 import type { ProcessDeps } from "../../../packages/broker/src/lessons/process.js";
 import { withLearningAttempt, noteLearningFault, type LearningAttempt } from "../../../packages/broker/src/lessons/learning-deadline.js";
+import { LearningRefusal } from "../../../packages/broker/src/lessons/pause.js";
 import { learnFromEndedTask, learnFromEndedTaskTyped, learningTaskEndHandler, reflectOutcomeOf, subjectForTask, type TaskLearningDeps, type TaskSubjectBase } from "../../../packages/broker/src/lessons/task-end.js";
 import type { OutcomeRowReader } from "../../../packages/broker/src/lessons/task-outcome-rows.js";
 import { InMemoryLessonStore } from "../../../packages/broker/src/lessons/store.js";
@@ -276,6 +277,18 @@ describe("learnFromEndedTaskTyped (H1): which failures are worth another try", (
       w.deps.reflect.model = { complete: async () => { if (fault !== undefined) noteLearningFault(fault); throw new Error("model down"); } };
       expect(await withLearningAttempt(attempt(), () => learnFromEndedTaskTyped(w.deps, input)), String(fault)).toEqual({ status: "not_reflected", retry });
     }
+  });
+  it("1b: 'learning_paused' (a refusal, the pause is already recorded) is final even when an earlier step left a retryable fault; 'spend_refused' stays retryable only when the model path said so", async () => {
+    const paused = setup();
+    paused.deps.reflect.model = { complete: async () => { throw new LearningRefusal("no_provider", "learning has no usable AI provider for this project"); } };
+    expect(await withLearningAttempt({ ...attempt(), fault: "retryable" }, () => learnFromEndedTaskTyped(paused.deps, input))).toEqual({ status: "not_reflected", retry: false });
+    const quoteRefuses = setup();
+    quoteRefuses.deps.reflect.model = { quote: async () => ({ ok: false, code: "no_budget" }), complete: async () => { throw new Error("not reached"); } };
+    const stale = attempt();
+    expect(await withLearningAttempt(stale, async () => { noteLearningFault("retryable"); return learnFromEndedTaskTyped(quoteRefuses.deps, input); })).toEqual({ status: "not_reflected", retry: false });
+    const unreadable = setup();
+    unreadable.deps.reflect.spend = { admit: async () => false, look: async () => { noteLearningFault("retryable"); return "unreadable"; } };
+    expect(await withLearningAttempt(attempt(), () => learnFromEndedTaskTyped(unreadable.deps, input))).toEqual({ status: "not_reflected", retry: true });
   });
   it("a made reflection, a switched-off project and a task that teaches nothing are final; a parse failure is final too (it was paid for)", async () => {
     const ok = setup();

@@ -45,6 +45,12 @@ export interface BudgetDependencies {
   cloud?: boolean;
   /** The Audit Ledger's outbox; absent on a legacy install, where a budget change records nothing. */
   audit?: AuditRuntime;
+  /**
+   * Lessons worker (lane 2, re-check R2): the BUDGET_SYNCED markers are only a cache of what the proxy was told, and the worker's role may not write them (its State grant is limited to its own key patterns; the
+   * budget settings partition is deliberately NOT among them). With this set, a marker write or delete the table refuses with AccessDenied is skipped and reported once with a fixed code; the proxy is
+   * told again the next time instead (an upsert is idempotent), and a lost proxy state heals by forcing that upsert rather than by clearing markers. Any other fault still throws.
+   */
+  bestEffortMarkers?: { log(event: string, fields: Record<string, string>): void };
 }
 
 export interface AdmissionDependencies extends BudgetDependencies {
@@ -218,7 +224,12 @@ export async function viaProxy<T>(call: () => Promise<T>): Promise<T> {
 }
 
 async function mark(deps: BudgetDependencies, key: OrgKey, limitUsd: number): Promise<void> {
-  await deps.documentClient.send(new PutCommand({ TableName: deps.tableName, Item: { ...key, entityType: "BUDGET_SYNCED", limitUsd } }));
+  try {
+    await deps.documentClient.send(new PutCommand({ TableName: deps.tableName, Item: { ...key, entityType: "BUDGET_SYNCED", limitUsd } }));
+  } catch (error) {
+    if (deps.bestEffortMarkers === undefined || (error as { name?: unknown } | null)?.name !== "AccessDeniedException") throw error;
+    deps.bestEffortMarkers.log("budget_marker.skipped", { code: "access_denied" });
+  }
 }
 
 /** A base limit with the month's top-up for its scope (Task 28); a limit that is not set is not read for one. */
@@ -307,9 +318,9 @@ export async function changeBudgets(
  * changes): one read of the settings and one of each marker, and an upsert only when the marker differs from the
  * current limit. A member lowered by an admin is upserted again here, at their next start.
  */
-export async function ensureSynced(deps: BudgetDependencies, orgId: OrgId, developerId?: string): Promise<OrgBudgetSettings> {
+export async function ensureSynced(deps: BudgetDependencies, orgId: OrgId, developerId?: string, options: { force?: boolean } = {}): Promise<OrgBudgetSettings> {
   const settings = await readBudgets(deps, orgId);
-  const synced = async (key: OrgKey, limit: number) => (await get(deps, key))?.limitUsd === limit;
+  const synced = async (key: OrgKey, limit: number) => options.force !== true && (await get(deps, key))?.limitUsd === limit;
   // The limit the proxy enforces is the base plus this month's top-up, so a new month (or a top-up) changes it and is told again.
   const month = monthOf((deps.now ?? Date.now)());
   const orgLimit = proxyLimit(await monthLimit(deps, orgId, month, { kind: "org" }, settings.orgMonthlyUsd));
@@ -358,6 +369,11 @@ async function healingLostProxyState<T>(deps: BudgetDependencies, orgId: OrgId, 
     return await call();
   } catch (error) {
     if (!isLostProxyState(error)) throw error;
+    if (deps.bestEffortMarkers !== undefined) {
+      // R2: this caller may not write the markers, so it does not clear them: the proxy is told again whatever they say.
+      await ensureSynced(deps, orgId, developerId, { force: true });
+      return call();
+    }
     await deps.documentClient.send(new DeleteCommand({ TableName: deps.tableName, Key: budgetSyncedKey(orgId) }));
     if (developerId !== undefined) await deps.documentClient.send(new DeleteCommand({ TableName: deps.tableName, Key: budgetSyncedKey(orgId, developerId) }));
     await ensureSynced(deps, orgId, developerId);
