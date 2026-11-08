@@ -209,7 +209,7 @@ describe("a lesson from a PR comment in a private project repository", () => {
     const manifest: LoadManifest = { taskId: "task-run", workspaceId: WS, project: PROJECT, stage: "IMPLEMENT", round: 1, setVersion: 1, memory: "live", at: 1, lessons: [{ id: "les_prcomment1", version: 1, score: 0.5, why: "scope", citation: "valid" }], bytes: 10 };
     for (const port of [{ read: async () => new Set([REPO]), placeOf: async (): Promise<string | undefined> => { throw new Error("unreadable"); } }, { read: async () => new Set([REPO]) }]) {
       const t = await setup(projectHas(REPO));
-      const access = createAccessCheckPort(t.w.table, { taskVisibility: withProjectRepoScopes(withLessonAudiences({ read: async () => new Map() } as TaskVisibilityPort, { read: async (_o, ids) => new Map(ids.map((id) => [id, wideAudience()])) }), port) });
+      const access = createAccessCheckPort(t.w.table, { taskVisibility: withProjectRepoScopes(withLessonAudiences({ read: async () => new Map() }, { read: async (_o, ids) => new Map(ids.map((id) => [id, wideAudience()])) }), port) });
       await t.put(prLesson);
       await t.store.putManifest(manifest);
       expect(await lessonsUsedReaderOver({ store: t.store, settings: settings(), access, names, visibility: async () => "private" })(input)).toMatchObject({ count: 1, items: [] });

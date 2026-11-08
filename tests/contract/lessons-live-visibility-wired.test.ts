@@ -206,7 +206,7 @@ describe("a lesson restricted only to a project repository (decisions 34 and 36)
     const routes = t.runtime.routes as unknown as Parameters<typeof lessonsUsedReaderOver>[0] & { store: { manifests(key: unknown, taskId: string): Promise<Array<{ lessons: Array<{ citation: string }> }>>; updateManifest(manifest: unknown): Promise<void> } };
     const [manifest] = await routes.store.manifests({ workspaceId: TEST_ORG, project: "payments" }, running.taskId);
     await routes.store.updateManifest({ ...manifest!, lessons: manifest!.lessons.map((entry) => ({ ...entry, citation: "valid" })) });
-    const read = lessonsUsedReaderOver({ store: routes.store, settings: routes.settings, access: routes.access, names: { memberName: async () => undefined, isErased: async () => false } as never, visibility: async () => "private" });
+    const read = lessonsUsedReaderOver({ store: routes.store, settings: routes.settings, access: routes.access, names: { memberName: async () => undefined, isErased: async () => false }, visibility: async () => "private" });
     const input = { orgId: TEST_ORG, project: "payments", taskId: running.taskId, pageUrl: "https://app.example.test/t/x" };
     expect(await read({ ...input, repo: "api" })).toMatchObject({ count: 1, items: [{ id: "les_repo00003" }] });
     expect(await read({ ...input, repo: "web" })).toMatchObject({ count: 1, items: [] });

@@ -7,7 +7,7 @@ import type { TaskVisibilityPort } from "../../../packages/broker/src/team-recor
 import { closeScope } from "../../../packages/broker/src/team-record/item-head.js";
 import { CUT_SCOPE_PLACE, lessonPlaces, narrowestAudience, type Audience, type Lesson } from "../../../packages/broker/src/lessons/types.js";
 import { repoOnlyScopes, tableProjectRepoScopes, viewedForLessons } from "../../../packages/broker/src/lessons/project-repo-audience.js";
-import { ORG_A, addSource, githubDraft, world } from "../../support/team-record-core.js";
+import { ORG_A, world } from "../../support/team-record-core.js";
 import { FakeDynamoDb } from "../../support/fake-dynamodb.js";
 import { projectRevisionKey } from "@agentx/contracts";
 import { draft, lessonRecord } from "./lesson-helpers.js";
@@ -122,7 +122,7 @@ describe("L3: lessons withheld because their source task is a legacy task with n
     await expect(resolveLessonTaskAudience(table(w), WORLD_ORG, before.taskId)).rejects.toBeInstanceOf(LegacyTaskNoSessionError);
     // Not legacy: a task that does not exist, and a task of another company, read as absent; a session that is not a task session is an ordinary failure.
     expect(await resolveLessonTaskAudience(table(w), WORLD_ORG, "11111111-1111-4111-8111-111111111111")).toBeUndefined();
-    const foreign = w.seedSession({ owner: PRIYA, taskOrgId: "org_bbbbbbbbbbbbbbbbbbbb" as never });
+    const foreign = w.seedSession({ owner: PRIYA, taskOrgId: "org_bbbbbbbbbbbbbbbbbbbb" });
     expect(await resolveLessonTaskAudience(table(w), WORLD_ORG, foreign.taskId)).toBeUndefined();
     const port = tableLessonAudiencePort(table(w));
     const legacySet = new Set<string>();
