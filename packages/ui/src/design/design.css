@@ -35,6 +35,10 @@ button:disabled{cursor:default;opacity:.65}
 .rv-menu-item[data-disabled]{opacity:.6;cursor:default}
 .rv-tooltip{font-size:var(--rv-font-sm);padding:var(--rv-space-2) var(--rv-space-3)}
 .rv-tabs{display:flex;gap:var(--rv-space-4);border-bottom:1px solid var(--rv-border);overflow-x:auto}
+/* A strip that scrolls fades out at each edge that still has tabs past it (the Tabs component sets data-more-start / data-more-end while that is true). The mask only changes opacity, so it reads the same in light and dark. 28px = TAB_FADE_PX. */
+.rv-tabs[data-more-end]{-webkit-mask-image:linear-gradient(to right,#000 calc(100% - 28px),transparent);mask-image:linear-gradient(to right,#000 calc(100% - 28px),transparent)}
+.rv-tabs[data-more-start]{-webkit-mask-image:linear-gradient(to left,#000 calc(100% - 28px),transparent);mask-image:linear-gradient(to left,#000 calc(100% - 28px),transparent)}
+.rv-tabs[data-more-start][data-more-end]{-webkit-mask-image:linear-gradient(to right,transparent,#000 28px,#000 calc(100% - 28px),transparent);mask-image:linear-gradient(to right,transparent,#000 28px,#000 calc(100% - 28px),transparent)}
 .rv-tab{min-height:44px;white-space:nowrap;padding:var(--rv-space-2) var(--rv-space-1);background:transparent;color:var(--rv-text-muted);border:0;border-bottom:2px solid transparent;font-weight:550}
 .rv-tab[data-state=active]{color:var(--rv-accent-text);border-bottom-color:var(--rv-accent)}
 .rv-tab-panel{padding-top:var(--rv-space-5)}
