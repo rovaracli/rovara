@@ -254,6 +254,7 @@ No single test lists every broker read.
 | `acceptance.ts` | accepting tasks and pull requests, and cancelling tasks. |
 | `admin-and-helpers.ts` | SWE-bench routes, admin task reads, keys, request parsing helpers and event hooks. |
 | `ask-service.ts` | Live interaction A3: the broker's wiring for Ask, and the three service routes the chat service calls (`/v1/service/asks/*`, the orchestrator role only). |
+| `attention-wiring.ts` | UX2 slice 2 item 5: the broker's wiring for task notifications (`notifications/attention.ts`), run by the five-minute session sweep. |
 | `attribution-erasure.ts` | Enterprise foundations I3 (wiring): the broker's side of erasing a person from the attribution change requests carry. |
 | `callbacks.ts` | worker callbacks, workflow candidate export, build source and baseline source. |
 | `code-host-events.ts` | P6: the broker end of the neutral code host events, for any registered host. |
@@ -302,9 +303,9 @@ No single test lists every broker read.
 | `saved-env-rebuild.ts` | Saved project images (SV wiring): starting the rebuild job. |
 | `saved-env-sweep.ts` | Saved project images (SV wiring): settling the end of a rebuild. |
 | `saved-env-triggers.ts` | Saved project images (SV wiring): what makes the registry look at a project, and what starts the job it queues. |
-| `seed-lock-wiring.ts` | SEED-RISK-1: the code host's side of the broker's seed locks (`test-env/seed-lock.ts`): the default branch's head, one tree listing and file reads, GitHub only. |
 | `scope-helpers.ts` | environment, organisation and GitHub scope helpers, egress decisions, connection stores. |
 | `second-review-evidence-routes.ts` | Second review (lane cr-settings, switch `cr`): the writers of the evidence that lets a model block. |
+| `seed-lock-wiring.ts` | SEED-RISK-1: the code host's side of the broker's seed locks (test-env/seed-lock.ts). |
 | `setup-pins.ts` | P1 (su): the broker pins the commit a setup run reads. |
 | `setup-stopped-result.ts` | F5 (su): a setup run that a person stopped ends at once (the cancel's own transaction), and the worker, which was asked to abort, finishes within a few seconds and reports the partial proposal it had. |
 | `slack-workflow-events.ts` | Slack workflow, people and note events. |
@@ -316,7 +317,7 @@ No single test lists every broker read.
 | `terminal-and-github-events.ts` | queued first tasks, terminal results, GitHub workflow events, merge recovery. |
 | `terminal-result.ts` | recording a task's terminal result and the stop, end and close notices. |
 | `thread-workspaces.ts` | closing workspaces, admitting Slack work, thread workspaces and their preparation. |
-| `ticket-updates-wiring.ts` | Slice 5 "Outside tools" (owner decision 6): the broker's wiring of ticket updates: the milestone and task end handlers registered once at start, and the plan-ready moment after a worker's result. |
+| `ticket-updates-wiring.ts` | Slice 5 "Outside tools" (owner decision 6): the broker's wiring of ticket updates. |
 | `workflow-e2e-verification.ts` | verifying workflow E2E evidence, authority checks and presentations. |
 | `workflow-items.ts` | retries, evidence jobs and the items each completed workflow step writes. |
 | `workspace-preparation.ts` | workspace preparation, Slack identities, shared threads and Slack bindings. |
@@ -361,7 +362,7 @@ No single test lists every broker read.
 | `start.ts` | (No header comment.) Exports `limitError`, `chargeFailure`, `shareFor`. |
 | `task-answer-context.ts` | (No header comment.) Exports `workflowTaskAnswerContext`, `taskCommentSection`, `taskOwnsThread`. |
 | `task-index.ts` | (No header comment.) Exports `runResultOf`, `ownerIndexRowOf`, `syncIndex`. |
-| `task-page.ts` | (No header comment.) Exports `taskPageStage`, `publicationAttempts`, `taskPageStep`. |
+| `task-page.ts` | (No header comment.) Exports `designCardOnlyApplies`, `taskPageStage`, `publicationAttempts`. |
 | `task-people.ts` | (No header comment.) Exports `taskPeopleEffectsDependencies`, `getTaskPeople`, `getTaskPeopleCapabilities`. |
 | `task-reads.ts` | (No header comment.) Exports `readTask`, `getTaskPlan`, `listTasks`. |
 | `task-view.ts` | (No header comment.) Exports `candidateChangedFiles`, `unpublishedOf`, `WorkspaceReads`. |
@@ -384,8 +385,10 @@ No single test lists every broker read.
 |---|---|
 | `audit-export-fresh.ts` | Enterprise foundations I2/I1 (controller default, pending the owner's answer): starting an audit export needs a sign-in made within the last few minutes (the rule of the other high-risk actions, `isFreshSignIn`). |
 | `authentication.ts` | (No header comment.) Exports `DeveloperTokenClaims`, `developerClaims`, `getSignIn`. |
+| `card-decide-grade.ts` | Security review follow-up (2026-11-06): the decide-grade sign-in for a HIGH card that has no approval of its own: a high design (the task page's inline approve) and a high requirements or coding plan card. |
 | `common.ts` | (No header comment.) Exports `PROJECT_NOT_FOUND_IN_APP`, `signInStoreOf`, `bodyError`. |
 | `company-domains.ts` | Company domain verification (owner decision 2026-11-02): the owner-only "Company domains" routes. |
+| `connection-usage.ts` | `GET /v1/app/connection-usage`: which projects use each company connection, for the "used by" line of the Connections page. |
 | `decisions.ts` | Decision cards (wire-proof, setup wizard E4): what the card routes (`decisions/routes.ts`) need for one caller, built from the developer route dependencies. |
 | `dependencies.ts` | (No header comment.) Exports `setupDraftDepsOf`, `diagnosisRouteDepsOf`, `agentRunStarterOf`. |
 | `design-review-company.ts` | Design review (DR-FU4): `/v1/app/org/design-review`, the company's How we work card for design review, for company owners and admins only. |
@@ -399,6 +402,9 @@ No single test lists every broker read.
 | `known-failing-policy.ts` | Setup and test health SH17 (owner decision F4): `/v1/app/org/known-failing-policy`, the company setting "always two people" for marking tests as already failing. |
 | `lessons.ts` | Learning v2 L3b wiring: the lessons routes and the loaded-knowledge routes on the developer routes. |
 | `organization.ts` | (No header comment.) Exports `createProject`, `getAppNavigation`, `getAppMe`. |
+| `outside-cards.ts` | Decision journey slice 3b: outside approvers decide on the card. |
+| `plan-cards.ts` | Decision journey slice 2: the requirements and the coding plan as decision cards, decided on the card (Approve, Request changes) through the ONE workflow decision Slack, MCP and the task page use (`decideTaskWorkflow`... |
+| `plan-panel.ts` | OWNER DECISION 18 (PLAN-PANEL-NOW): the task page reads, discusses and decides the plan in one place. |
 | `project-access.ts` | (No header comment.) Exports `checkProjectAccess`, `listWorkspaces`. |
 | `project-archive-setup.ts` | (No header comment.) Exports `archiveDepsOf`, `egressDepsOf`, `getAppProject`. |
 | `project-list.ts` | (No header comment.) Exports `queryAll`, `REVISION_READS_AT_ONCE`, `mapLimit`. |
@@ -412,6 +418,8 @@ No single test lists every broker read.
 | `setup-recipes.ts` | Setup and test health SH29 wiring (switch `sp`): company setup recipes, as routes. |
 | `spec-routes.ts` | Meta repo lane D: the task owner's choices on a held spec. |
 | `sso.ts` | Enterprise foundations I1: the admin routes for company group sign-in. |
+| `task-findings.ts` | UX2 slice 2 item 3: review findings are decided on the task page in Rovara, with the same authority as Slack and the MCP tools. |
+| `task-page-actions.ts` | OWNER DECISION 7: what the old review page (`/review/<task>/task`) could still press on a stopped task, now on the task page in Rovara, through the very functions that page and Slack call: POST /v1/app/tasks/{id}/work... |
 | `team-record-source-write.ts` | What a Team record source write needs from the broker's own request (`team-record/source-write.ts`): the caller's company role and whether the session is a live browser one, the body (read only when a write asks for i... |
 | `test-environment-candidate.ts` | TE-2: a test-environment proposal's candidate check, as the routes use it. |
 | `test-environment-wizard.ts` | Setup wizard (E4), the parts of the test-environment routes that go beyond propose / prove / approve: edit a maintainer's EDITED proposal body: validated like any environment, then stored as a proposal (never approved... |
