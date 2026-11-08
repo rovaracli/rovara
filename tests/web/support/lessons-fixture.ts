@@ -16,7 +16,7 @@ export const lesson = (over: Raw = {}) => LessonViewSchema.parse({
 });
 export const waiting = (over: Raw = {}) => lesson({ id: "les_pend0001", status: "pending", title: "Retry only idempotent calls", body: "Only wrap idempotent HTTP calls in withRetry.", needs: { required: 1, have: 0, groups: [] }, approvals: [], canApprove: true, canReject: true, canRetire: true, ...over });
 export const view = (over: Raw = {}) => LessonsViewSchema.parse({
- project: "payments", mode: "Suggest", lockedByCompany: false, approval: { tier0: "one", tier1: "one", requiredGroups: [] }, canDecide: true,
+ project: "payments", mode: "Suggest", lockedByCompany: false, preset: "standard", presetLockedByCompany: false, approval: { tier0: "one", tier1: "one", requiredGroups: [] }, canDecide: true,
  waiting: [waiting()], active: [lesson()], removed: [], queued: 0, hidden: 0, truncated: [], setVersion: 4, snapshots: [], ...over,
 });
 export const digest = (over: Raw = {}) => LessonsDigestSchema.parse({ since: NOW - 7 * DAY, top: [], needsReview: [], autoApplied: [], waiting: [], retired: [], staleOrRetireProposed: [], queued: 0, pausedSources: [], pausedSourcesHidden: 0, hidden: 0, ...over });

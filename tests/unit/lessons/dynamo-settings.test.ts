@@ -1,7 +1,7 @@
 // Wiring lane B, LR-W3: the stored tier-0 setting, its proposals and the settings reader over the TeamRecord table; the whole path from a loosening request to the effective approval.
 import { learningModeKey, learningModeLockKey, teamRecordPk } from "@agentx/contracts";
 import { describe, expect, it } from "vitest";
-import { dynamoLearningSettings, DynamoSoleOwnerSwitch, DynamoTier0Settings } from "../../../packages/broker/src/lessons/dynamo-settings.js";
+import { dynamoLearningSettings, DynamoPresetStore, DynamoSoleOwnerSwitch, DynamoTier0Settings } from "../../../packages/broker/src/lessons/dynamo-settings.js";
 import { approversRequired, resolveLearning } from "../../../packages/broker/src/lessons/policy.js";
 import { approveSoleOwnerSwitch, approveTier0Change, requestTier0Change, setSoleOwnerSwitch, type SoleOwnerSwitchDeps, type Tier0Deps, type Tier0Scope } from "../../../packages/broker/src/lessons/tier0-setting.js";
 import { eraseWorkspace, erasePerson } from "../../../packages/broker/src/team-record/erase.js";
@@ -203,3 +203,58 @@ describe("erasing", () => {
     expect(w.db.find((item) => String(item.pk).startsWith(`WS#${ORG_A}#`) && !String(item.sk).startsWith("LAKEDEL#"))).toEqual([]);
   });
 });
+
+describe("the learning preset (Standard / Regulated) on its own items", () => {
+  it("is read by the settings reader at project and company level, resolves to the stricter, and a tier-0 write never replaces it", async () => {
+    const { w, store, reader } = setup();
+    const presets = new DynamoPresetStore(w.table);
+    expect((await resolveLearning(reader, ORG_A, "web")).preset).toBe("standard");
+    expect(await presets.write({ kind: "company", workspaceId: ORG_A }, "regulated", { by: "owner", at: 1 }, "standard")).toBe(true);
+    expect((await resolveLearning(reader, ORG_A, "web")).preset).toBe("regulated");
+    expect((await resolveLearning(reader, ORG_B, "web")).preset).toBe("standard");
+    expect(await presets.write(project(), "regulated", { by: "ann", at: 2 }, "standard")).toBe(true);
+    await store.write(project(), "two", { by: "ann", at: 3 }, "one");
+    expect(await presets.read(project())).toBe("regulated");
+    expect(await reader.read(ORG_A, "web")).toMatchObject({ preset: "regulated", companyPreset: "regulated" });
+  });
+  it("holds no person (the erase has nothing to rewrite), lives under the LESSONSET prefix the project and workspace erase wipe, and an invalid stored value fails closed to Off", async () => {
+    const { w, reader } = setup();
+    const presets = new DynamoPresetStore(w.table);
+    await presets.write(project(), "regulated", { by: "ann", at: 2 }, "standard");
+    const item = w.db.find((i) => i.entityType === "LESSON_PRESET")[0]!;
+    expect(String(item.sk)).toMatch(/^LESSONSET#/u);
+    expect(JSON.stringify(item)).not.toMatch(/updatedBy|ann|owner/u);
+    w.db.set({ ...item, preset: "loose" });
+    await expect(presets.read(project())).rejects.toThrow();
+    expect(await resolveLearning(reader, ORG_A, "web")).toMatchObject({ mode: "Off", preset: "regulated" });
+  });
+});
+
+describe("the preset's conditional write and its loosening proposals", () => {
+  it("writes only against the value it read (an absent item is Standard), so a stricter write made in between is never overwritten", async () => {
+    const { w } = setup();
+    const presets = new DynamoPresetStore(w.table);
+    expect(await presets.write(project(), "regulated", { by: "ann", at: 1 }, "regulated")).toBe(false);
+    expect(await presets.write(project(), "regulated", { by: "ann", at: 1 }, "standard")).toBe(true);
+    expect(await presets.write(project(), "standard", { by: "bob", at: 2 }, "standard")).toBe(false);
+    expect(await presets.read(project())).toBe("regulated");
+    expect(await presets.write(project(), "standard", { by: "bob", at: 2 }, "regulated")).toBe(true);
+    expect(await presets.read(project())).toBe("standard");
+  });
+  it("proposals are stored under the prefix the person erase rewrites, are not seen as tier-0 proposals, and move state once", async () => {
+    const { w, store } = setup();
+    const presets = new DynamoPresetStore(w.table);
+    const change = { id: "pc1", scope: project(), from: "regulated" as const, to: "standard" as const, proposedBy: "ann", at: 1, expiresAt: 100, state: "pending" as const, soleEligibleAtProposal: false };
+    expect(await presets.create(change)).toBe(true);
+    expect(await presets.create(change)).toBe(false);
+    const row = w.db.find((i) => i.entityType === "LESSON_PRESET_CHANGE")[0]!;
+    expect(String(row.sk)).toMatch(/^LESSONSET#TIER0CHG#PRESET#/u);
+    expect(await presets.open(project(), 50)).toMatchObject({ id: "pc1", proposedBy: "ann" });
+    expect(await presets.open(project(), 200)).toBeUndefined();
+    expect(await store.open(project(), 50)).toBeUndefined();
+    expect(await presets.transition(project(), "pc1", "pending", "applied")).toBe(true);
+    expect(await presets.transition(project(), "pc1", "pending", "cancelled")).toBe(false);
+    expect(await presets.open(project(), 50)).toBeUndefined();
+  });
+});
+

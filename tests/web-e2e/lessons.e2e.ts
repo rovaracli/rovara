@@ -121,3 +121,52 @@ test("when learning cannot run the Lessons tab says why in one line, and says no
  await page.reload();
  await expect(page.getByTestId("lessons-paused-line")).toHaveText("Lessons paused: every available model is forbidden");
 });
+test("approve by exception: a lesson on trial and a stable one are marked, the preset is explained and a maintainer can require a person, and a capability ask says why it needs two people", async ({ page, context, request, baseURL }) => {
+ await openTab(page, context, request, baseURL);
+ // The scenario above reset the lessons; add the trial ones and read the tab again.
+ await request.post("/__mock/trial-lessons");await page.reload();
+ const trial = page.getByRole("listitem").filter({ hasText: "Retries use withRetry" });
+ await expect(trial.getByText("On trial", { exact: true })).toBeVisible();
+ await expect(trial.getByText(/Live without anyone approving it/u)).toBeVisible();
+ const stable = page.getByRole("listitem").filter({ hasText: "Money amounts are in cents" });
+ await expect(stable.getByText("Stable", { exact: true })).toBeVisible();
+ const cap = page.getByRole("region", { name: "Allow the build host" });
+ await expect(cap.getByText(/asks Rovara to change tools, access, checks, approvals or limits/u)).toBeVisible();
+ await expect(cap.getByText(/Needs two people/u)).toBeVisible();
+ await expect(page.getByText(/Standard: a low-risk lesson from a team member's own correction goes live on trial/u)).toBeVisible();
+ await evidenceShot(page, { path: ".test-build/web-e2e/lessons-trial-desktop.png", fullPage: true });
+ await checkA11y(page, { theme: "light" });
+ await page.getByRole("button", { name: "Require a person for every lesson" }).click();
+ await expect(page.getByRole("status").filter({ hasText: "Every lesson now waits for a person." })).toBeVisible();
+ await expect(page.getByText(/Regulated: every lesson waits for a person/u)).toBeVisible();
+ await expect(page.getByRole("button", { name: "Require a person for every lesson" })).toHaveCount(0);
+ // Going back is a loosening: it asks a different maintainer or admin, and the project stays Regulated meanwhile.
+ await page.getByRole("button", { name: "Allow lessons on trial again" }).click();
+ await expect(page.getByRole("status").filter({ hasText: "A different maintainer or admin has to approve going back to Standard." })).toBeVisible();
+ await expect(page.getByText(/Regulated: every lesson waits for a person/u)).toBeVisible();
+ const sent = ((await (await request.get("/__mock/requests")).json()) as Sent).filter(item => item.method === "POST" && item.path === BASE + "/preset");
+ expect(sent.map(item => item.body)).toEqual([{ preset: "regulated" }, { preset: "standard" }]);
+ await checkA11y(page, { theme: "dark" });
+ await page.setViewportSize({ width: 390, height: 900 });
+ expect(await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth)).toBeLessThanOrEqual(0);
+ await evidenceShot(page, { path: ".test-build/web-e2e/lessons-trial-phone.png", fullPage: true });
+});
+test("approve by exception: the task page lists the lessons a task loaded with their trial marks, and one tap on thumbs-down removes a lesson on trial", async ({ page, context, request, baseURL }) => {
+ await request.post("/__mock/scenario", { data: { name: "workspace" } });
+ await context.addCookies([{ name: "__Host-agentx_review_session", value: "11111111-1111-4111-8111-111111111111", url: baseURL!, secure: true, httpOnly: true, sameSite: "Strict" }]);
+ await mockRealtime(page);await page.goto("/app/sessions/ses_aaaaaaaaaaaaaaaaaaaa");
+ await page.getByRole("tab", { name: "Pipeline" }).click();
+ await page.getByText("What the agent loaded").click();
+ const section = page.getByRole("region", { name: "Lessons the agent loaded" });
+ await expect(section).toContainText("Retries use withRetry");
+ await expect(section).toContainText("On trial");
+ await expect(section).toContainText("Stable");
+ await evidenceShot(page, { path: ".test-build/web-e2e/lessons-thumbs-down.png", fullPage: true });
+ await checkA11y(page, { theme: "light" });await checkA11y(page, { theme: "dark" });
+ await page.getByRole("button", { name: "Not helpful (thumbs down): Retries use withRetry" }).click();
+ await expect(section.getByRole("status")).toContainText("Rovara stopped using this lesson");
+ const sent = ((await (await request.get("/__mock/requests")).json()) as Sent).filter(item => item.method === "POST" && item.path.endsWith("/lessons/les_trial001/feedback"));
+ expect(sent.map(item => item.body)).toEqual([{ kind: "thumbs_down" }]);
+ await page.setViewportSize({ width: 390, height: 900 });
+ expect(await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth)).toBeLessThanOrEqual(0);
+});

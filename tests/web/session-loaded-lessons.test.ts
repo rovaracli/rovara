@@ -18,9 +18,9 @@ import { SESSION_FIXTURE_ID } from "./support/session-fixture.js";
 import { loaded, loadedRow } from "./support/lessons-fixture.js";
 import type { ApiRequest, ApiResponse } from "../../packages/ui/src/host.js";
 
-function setup(respond: (request: ApiRequest) => Promise<ApiResponse>) {
+function setup(respond: (request: ApiRequest) => Promise<ApiResponse>, entry = "/app/sessions/" + SESSION_FIXTURE_ID) {
  const session = SessionViewReaderSchema.parse(fixture()), f = fakeHost(respond), query = createQueryClient();
- const router = createMemoryRouter([{ path: "*", element: h("main", {}, h("h1", {}, session.title), h(Workspace, { session, onComment: () => undefined })) }], { initialEntries: ["/app/sessions/" + SESSION_FIXTURE_ID] });
+ const router = createMemoryRouter([{ path: "*", element: h("main", {}, h("h1", {}, session.title), h(Workspace, { session, onComment: () => undefined })) }], { initialEntries: [entry] });
  const ui = renderUi(h(AppHostProvider, { host: f.host, children: h(QueryClientProvider, { client: query, children: h(RouterProvider, { router }) }) }));
  return { ...ui, f, close() { ui.unmount(); router.dispose(); query.clear(); } };
 }
@@ -86,4 +86,49 @@ it("says no lesson was loaded, says nothing where the lessons route is absent, a
  await waitFor(() => { expect(absent.f.request.mock.calls.some(([request]) => lessonsPath(request))).toBe(true); });
  expect(screen.queryByText("Lessons the agent loaded")).toBeNull();
  absent.close();
+});
+
+it("a lesson on trial offers a one-tap thumbs-down (not Wrong here); it sends one thumbs_down mark and says the lesson was removed; a stable lesson says a maintainer will look", async () => {
+ const sent: Array<{ path: string; body: unknown }> = [];
+ const s = setup(async request => {
+  if (request.method === "POST") { sent.push({ path: request.path, body: request.body });return { status: 200, body: { done: true } }; }
+  return rules(request) ?? { status: 200, body: loaded([loadedRow({ trial: "trial" }), loadedRow({ lessonId: "les_bbbb2222", title: "Second", trial: "stable" }), loadedRow({ lessonId: "les_cccc3333", title: "Third" })]) };
+ });
+ await open();
+ const section = await screen.findByRole("region", { name: "Lessons the agent loaded" });
+ expect(section.textContent).toContain("On trial");
+ expect(section.textContent).toContain("Stable");
+ // Only a lesson without a trial keeps "Wrong here".
+ expect(screen.queryByRole("button", { name: "Wrong here: Use the shared retry helper" })).toBeNull();
+ expect(screen.getByRole("button", { name: "Wrong here: Third" })).toBeTruthy();
+ fireEvent.click(screen.getByRole("button", { name: "Not helpful (thumbs down): Use the shared retry helper" }));
+ await screen.findByText(/Rovara stopped using this lesson/u);
+ expect(sent).toHaveLength(1);
+ expect(sent[0]!.path.endsWith("/lessons/les_aaaa1111/feedback")).toBe(true);
+ expect(LessonFeedbackBodySchema.parse(sent[0]!.body)).toEqual({ kind: "thumbs_down" });
+ fireEvent.click(screen.getByRole("button", { name: "Not helpful (thumbs down): Second" }));
+ await screen.findByText(/Rovara marked it for a maintainer to look at/u);
+ await expectNoAxeViolations(s.container);
+ s.close();
+});
+
+it("L6: the thumbs-down is not offered when the broker says it will not work for this person (no role in the project); the rest of the row stays", async () => {
+ const s = setup(async request => rules(request) ?? { status: 200, body: { ...loaded([loadedRow({ trial: "trial" })]), canThumbsDown: false } });
+ await open();
+ const section = await screen.findByRole("region", { name: "Lessons the agent loaded" });
+ expect(section.textContent).toContain("On trial");
+ expect(screen.queryByRole("button", { name: /Not helpful \(thumbs down\)/u })).toBeNull();
+ s.close();
+});
+
+it("the pull request's link (?notHelpful=<lesson>) opens the page asking, and marks nothing by itself", async () => {
+ const sent: unknown[] = [];
+ const s = setup(async request => {
+  if (request.method === "POST") { sent.push(request.body);return { status: 200, body: { done: true } }; }
+  return rules(request) ?? { status: 200, body: loaded([loadedRow({ trial: "trial" }), loadedRow({ lessonId: "les_bbbb2222", title: "Second", trial: "trial" })]) };
+ }, "/app/sessions/" + SESSION_FIXTURE_ID + "?notHelpful=les_aaaa1111");
+ await open();
+ expect(await screen.findAllByText(/You opened this from a pull request/u)).toHaveLength(1);
+ expect(sent).toEqual([]);
+ s.close();
 });

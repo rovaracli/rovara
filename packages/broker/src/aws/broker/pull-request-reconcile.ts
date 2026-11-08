@@ -28,6 +28,8 @@ import { reviewSameModelOf } from "../../rovara-code/review-model-lines.js";
 import { secondReviewPullRequestLines } from "../../rovara-code/second-review-store.js";
 import { candidateChangedFiles, approvedPlanForPullRequest, workflowPullRequestStatusLines } from "../developer-tasks.js";
 import { readMergeTracking } from "../../rovara-code/merge-tracking.js";
+import { lessonsUsedForTask, lessonsUsedSection } from "../../lessons/used-in-pr.js";
+import { taskPageUrl } from "../developer-tasks/common.js";
 import { taskAccessFence } from "../../developer/task-people.js";
 import { assertCurrentWorkflowPublication, codeBuildKey, isStatus, object, pullRequestKey, startsConversation, workspaceKey } from "./admin-and-helpers.js";
 import { EVENT_TRANSACTION_CHUNK, MAX_ARTIFACT_BYTES, type AwsBrokerDependencies, type CodeBuildRecord, type PullRequestRecord } from "./definitions.js";
@@ -191,8 +193,11 @@ export async function describeFeedbackFixes(dependencies: AwsBrokerDependencies,
     // Setup and test health SH18: the Testing view of the code now on the pull request (only while `vx` is on).
     const testing = pushedChecked && workflow.definitionVersion === "1.1.0"
       ? await loadTestingView({ documentClient: dependencies.documentClient, tableName: dependencies.tableName, now: Date.now, nightlyHead: nightlyHeadReaderOf(dependencies), evidence: evidenceRouteDependencies(dependencies).evidence }, task, workflow) : undefined;
-    const bodyContext = changedFiles === undefined && tracked === undefined && linearIssueKey === undefined && proof === undefined && !reviewSameModel && secondReviewLines.length === 0 && evidenceRisk === undefined && testing === undefined ? undefined : {
-      ...(testing === undefined ? {} : { testing }),
+    // Approve by exception (DECISIONS 24): the lessons used so far, rewritten with the rest of the block (a fix may have loaded more).
+    const lessonsUsed = task.orgId !== undefined && dependencies.developer?.issuer !== undefined
+      ? lessonsUsedSection(await lessonsUsedForTask({ orgId: task.orgId, project: task.project, taskId: task.taskId, pageUrl: taskPageUrl(dependencies.developer.issuer, task.taskId) })) : undefined;
+    const bodyContext = changedFiles === undefined && tracked === undefined && linearIssueKey === undefined && proof === undefined && !reviewSameModel && secondReviewLines.length === 0 && evidenceRisk === undefined && testing === undefined && lessonsUsed === undefined ? undefined : {
+      ...(testing === undefined ? {} : { testing }), ...(lessonsUsed === undefined ? {} : { lessonsUsed }),
       ...(reviewSameModel ? { reviewSameModel: true as const } : {}), ...(secondReviewLines.length === 0 ? {} : { secondReviewLines }), ...(changedFiles === undefined ? {} : { changedFiles }), ...(tracked === undefined ? {} : { ciBasis: tracked.ciBasis, baseBranch: tracked.baseBranch }),
       ...(linearIssueKey === undefined ? {} : { linearIssueKey }), ...(proof === undefined ? {} : { proof }), ...(evidenceRisk === undefined ? {} : { evidenceRisk }),
     };

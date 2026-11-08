@@ -1,11 +1,13 @@
 // Learning v2 L1: the reflector (design §4.5.1). One tool-less model call per finished task, and a nightly pass. Its output is schema-checked JSON that
 // code turns into lesson drafts; the model never writes to a store. Any parse failure drops the whole output, with no retry loop.
 import { randomUUID } from "node:crypto";
-import { cleanForLearning, requestsCapabilityChange } from "./guards.js";
+import { cleanForLearning } from "./guards.js";
 import { isLearningRefusal, noteModelFailure, notePause, noteRecovered, pauseOfLook, spendLook, type LessonsPauseStore } from "./pause.js";
-import { emitAudit, learningCaps, modeAllows, resolveLearning, type Edition, type LearningSettingsReader } from "./policy.js";
+import { learningCaps, modeAllows, resolveLearning, type Edition, type LearningSettingsReader } from "./policy.js";
 import type { Clock, LearningSpend, LessonAuditSink, Metrics, PipelineModel } from "./ports.js";
 import { buildReflectorInput, type MarkedSpan, type ReflectSubject } from "./reflect-input.js";
+import { NO_REASON_TEXT } from "./task-subject.js";
+import { lessonClaimsSupported } from "./trial.js";
 import {
   LessonCandidateSchema, ReflectorOutputSchema, distinctIds, idIn, minTrust, narrowestAudience, normSource, sameId,
   type Audience, type LessonCitation, type LessonProvenance, type LessonScope, type LessonStage, type LessonType, type TrustClass,
@@ -50,6 +52,31 @@ export interface ReflectDeps {
 }
 
 const MAX_OUTPUT_TOKENS = 1800;
+/**
+ * The kinds of cited span that are a member's own correction of Rovara's work (DECISIONS 24): a send-back, a human edit (including a member's review comment on the pull request), "remember this",
+ * and a member's reason for closing. A plan, an agent's review finding, CI text and the task's own wording are not corrections.
+ */
+const CORRECTION_KINDS: ReadonlySet<string> = new Set(["send_back", "human_edit", "remembered", "close_reason", "review_finding"]);
+/** Source keys that are not a member speaking to Rovara: Slack, trackers, MCP sources and code comments. A lesson that cites one never goes live on trial. */
+const EXTERNAL_SOURCE = /^\s*(slack|linear|jira|mcp|code|comment)\b/iu;
+
+/**
+ * Whether a lesson counts as drafted from a project member's own correction. Worked out from the spans the lesson CITES (never from every span in the task, so a plan or finding that Rovara wrote
+ * does not take it away, and uncited text cannot give it). An ALLOW-LIST: EVERY cited span must itself be a member's own correction (trust member, a known author, a correction kind, not a sentence
+ * chosen by code such as the no-reason send-back, not from Slack, a tracker, an MCP source or a code comment, not restricted); a lesson that also cites a plan, an agent finding, CI text, the task's
+ * wording or a loaded lesson goes to a person. Nothing the model read may be an outsider's (`everythingTrust`, the lowest trust of the whole input; outsiders are removed before the model call, this is the
+ * second line). Whether the lesson's WORDS rest on those spans is the other half of the rule (`claimsSupported`).
+ *
+ * Integration rule (LT-1 / lane 1 capture): a span of kind `human_edit` or `review_finding` may carry trust `member` only when the code-host account that wrote it is resolved to a person with a role in this
+ * project. Never from a git commit author or committer e-mail (anyone can set it), never from GitHub `author_association` alone, and a commenter on a public repository who has a Rovara account but no role in
+ * the project is an outsider.
+ */
+export function memberCorrectionOf(cited: readonly MarkedSpan[], everythingTrust: TrustClass): boolean {
+  if (everythingTrust === "outsider" || cited.length === 0) return false;
+  return cited.every((s) => s.trust === "member" && s.authorId !== undefined && CORRECTION_KINDS.has(s.kind) && s.fixedText !== true && s.text !== NO_REASON_TEXT
+    && s.audience?.kind !== "restricted" && !(s.sourceKey !== undefined && EXTERNAL_SOURCE.test(s.sourceKey)));
+}
+
 /** The source key of CI failures, as the subject source writes it. */
 const CI_SOURCE_KEY = "ci";
 /** Kinds a person writes. Plans are agent text, and outcomes, CI output and loaded lessons are not people. */
@@ -164,11 +191,8 @@ async function toDraft(
   const description = cleanForLearning(candidate.description, 160);
   const body = cleanForLearning(candidate.body, 600);
   if (title === "" || body === "") return undefined;
-  // C6: a lesson that asks for a change to tools, permissions, domains, budgets, models or approvals is refused and logged.
-  if (requestsCapabilityChange(title, description, body)) {
-    await emitAudit(deps.audit, { action: "lesson.refused", workspaceId: subject.workspaceId, project: subject.project, facts: { reason: "capability_request", run: runId, subject: subject.id } });
-    return undefined;
-  }
+  // C6: a lesson that asks for a change to tools, permissions, domains, budgets, models or approvals is NOT dropped. It is kept as a person-approval lesson with a fixed reason
+  // (`capability_request`, set by the tier step), so the approver sees it and decides; nothing is silently lost.
 
   const citations: LessonCitation[] = [];
   const events = new Set(evidence.flatMap((s) => (s.eventId === undefined ? [] : [s.eventId])));
@@ -223,6 +247,12 @@ async function toDraft(
       minTrust: trust, audience, reflectorRun: runId, model: model.slice(0, 100),
       ...(sourceScopes.length === 0 ? {} : { sourceScopes }),
       memberSignal: evidence.some((s) => s.trust === "member" && (s.kind === "remembered" || s.kind === "human_edit")),
+      memberCorrection: memberCorrectionOf(cited, trust),
+      // The lesson's key words must appear in the cited correction or the cited code, and nowhere else: worked out here, where the correction text is in hand (it is never stored).
+      claimsSupported: lessonClaimsSupported({ title, description, body, ...(candidate.scope.paths === undefined ? {} : { scopePaths: candidate.scope.paths }) }, {
+        correctionTexts: cited.flatMap((s) => (s.text === undefined ? [] : [s.text])), code: citations.flatMap((c) => (c.kind === "code" ? [{ path: c.path, anchor: c.anchor }] : [])),
+      }),
+      ...(subject.sharedTask === true ? { fromSharedTask: true } : {}),
     },
   };
 }

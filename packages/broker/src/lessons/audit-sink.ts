@@ -38,6 +38,13 @@ const MAP: Partial<Record<LessonAuditEvent["action"], Mapped>> = {
   "lesson.tier0_setting_changed": { action: "lesson.tier0_setting_changed", facts: (e) => ({ scope: word(e.facts["scope"], "project"), fromLevel: word(e.facts["from"], "unknown"), toLevel: word(e.facts["to"], "unknown"), mode: word(e.facts["mode"], "second_person") }) },
   // A fenced refusal that leaves the proposal open: recorded as a refusal (the contract's `lesson.refused`) with a fixed word.
   "lesson.tier0_setting_refused_retryable": { action: "lesson.refused", facts: () => ({ refusal: "membership_changed_retry" }) },
+  // Approve by exception (DECISIONS 24): a lesson that went live on trial is a go-live with no person (`auto: true`); a trial lesson retired by a thumbs-down or a contradicting correction is a retire with a fixed cause.
+  "lesson.trial_started": { action: "lesson.activated", facts: (e) => ({ lessonType: word(e.facts["type"], "unknown"), tier: num(e.facts["tier"]), auto: true }) },
+  "lesson.trial_retired": { action: "lesson.retired", facts: (e) => ({ cause: word(e.facts["reason"], "thumbs_down"), tier: num(e.facts["tier"]) }) },
+  "lesson.preset_changed": { action: "lesson.preset_changed", facts: (e) => ({ scope: word(e.facts["scope"], "project"), fromPreset: word(e.facts["from"], "unknown"), toPreset: word(e.facts["to"], "unknown"), mode: word(e.facts["mode"], "direct") }) },
+  "lesson.preset_proposed": { action: "lesson.preset_proposed", facts: (e) => ({ scope: word(e.facts["scope"], "project"), fromPreset: word(e.facts["from"], "unknown"), toPreset: word(e.facts["to"], "unknown") }) },
+  // Stable makes a lesson publishable to a repository, so it is on the ledger.
+  "lesson.trial_stable": { action: "lesson.trial_stable", facts: (e) => ({ tier: num(e.facts["tier"]) }) },
   "lesson.sole_owner_switch_proposed": { action: "lesson.sole_owner_switch_proposed", facts: (e) => ({ fromEnabled: e.facts["from"] === true, toEnabled: e.facts["to"] === true }) },
   "lesson.sole_owner_switch_changed": { action: "lesson.sole_owner_switch_changed", facts: (e) => ({ fromEnabled: e.facts["from"] === true, toEnabled: e.facts["to"] === true, mode: word(e.facts["mode"], "second_person") }) },
   // The company's choice of the model its lesson learning runs on (or back to the default). Model names are `provider/modelId`, which the safe-fact filter already allows.

@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
+import { useSearchParams } from "react-router";
 import { ApiError } from "../../api/errors.js";
 import { useLessonsApi, useLoadedLessons, type LoadedLessonRow } from "../../api/lessons.js";
 import { Button } from "../../design/Button.js";
@@ -13,9 +14,16 @@ const CITATION: Readonly<Record<string, string>> = {
 };
 const word = (table: Readonly<Record<string, string>>, key: string, fallback: string): string => Object.hasOwn(table, key) ? table[key]! : fallback;
 
-function Row({ taskId, row, canMark }: { taskId: string; row: LoadedLessonRow; canMark: boolean }) {
- const api = useLessonsApi(), query = useQueryClient(), [marked, setMarked] = useState<"helpful" | "wrong_here">(), [busy, setBusy] = useState(false), [error, setError] = useState<string>();
- async function mark(kind: "helpful" | "wrong_here") {
+/** The lesson a pull request's "not helpful" link named (`?notHelpful=<id>`): the page opens ready to ask, it never marks by itself. */
+function useNamedByLink(): string | undefined {
+ const [params] = useSearchParams();
+ return params.get("notHelpful") ?? undefined;
+}
+
+function Row({ taskId, row, canMark, canThumbsDown }: { taskId: string; row: LoadedLessonRow; canMark: boolean; canThumbsDown: boolean }) {
+ const api = useLessonsApi(), query = useQueryClient(), [marked, setMarked] = useState<"helpful" | "wrong_here" | "thumbs_down">(), [busy, setBusy] = useState(false), [error, setError] = useState<string>();
+ const fromLink = useNamedByLink() === row.lessonId;
+ async function mark(kind: "helpful" | "wrong_here" | "thumbs_down") {
   if (busy) return;
   setBusy(true);setError(undefined);
   try { await api.mark(taskId, row.lessonId, kind);setMarked(kind);await query.invalidateQueries({ queryKey: ["task", taskId, "lessons"] }); }
@@ -26,8 +34,13 @@ function Row({ taskId, row, canMark }: { taskId: string; row: LoadedLessonRow; c
  return <li>
   <span className={row.visible ? undefined : "rv-muted"}><VisibleText text={label} /></span>{" "}
   <span className="rv-muted">{[row.type === undefined ? "" : typeWords(row.type), "Chosen because it " + word(WHY, row.why, "matched"), word(CITATION, row.citation, "Not checked")].filter(part => part !== "").join(" · ")}{row.helpful !== undefined && row.harmful !== undefined ? ` · Helpful ${String(row.helpful)}, wrong ${String(row.harmful)}` : ""}</span>
-  {canMark && row.canMark && marked === undefined && <> <Button variant="quiet" busy={busy} onClick={() => { void mark("helpful"); }} aria-label={"Helpful: " + label}>{T.HELPFUL}</Button> <Button variant="quiet" busy={busy} onClick={() => { void mark("wrong_here"); }} aria-label={"Wrong here: " + label}>{T.WRONG}</Button></>}
-  {marked !== undefined && <span role="status"> {T.LOADED_THANKS}</span>}
+  {row.trial !== undefined && <span className="rv-muted"> · {row.trial === "trial" ? T.TRIAL_BADGE : T.STABLE_BADGE}</span>}
+  {fromLink && marked === undefined && <span role="note" className="rv-loaded-from-pr"> {T.NOT_HELPFUL_FROM_PR}</span>}
+  {canMark && row.canMark && marked === undefined && <> <Button variant="quiet" busy={busy} onClick={() => { void mark("helpful"); }} aria-label={"Helpful: " + label}>{T.HELPFUL}</Button> {row.trial !== undefined
+   ? canThumbsDown && <Button variant={fromLink ? "primary" : "quiet"} busy={busy} onClick={() => { void mark("thumbs_down"); }} aria-label={"Not helpful (thumbs down): " + label}>{"\u{1F44E} " + T.NOT_HELPFUL}</Button>
+   : <Button variant="quiet" busy={busy} onClick={() => { void mark("wrong_here"); }} aria-label={"Wrong here: " + label}>{T.WRONG}</Button>}</>}
+  {marked === "thumbs_down" && <span role="status"> {row.trial === "trial" ? T.NOT_HELPFUL_REMOVED : T.NOT_HELPFUL_ASKED}</span>}
+  {marked !== undefined && marked !== "thumbs_down" && <span role="status"> {T.LOADED_THANKS}</span>}
   {error !== undefined && <span role="alert"> {error}</span>}
  </li>;
 }
@@ -44,7 +57,7 @@ export function LoadedLessons({ taskId }: { taskId: string }) {
   <h4>{T.LOADED_TITLE}</h4>
   {groups.size === 0 ? <p className="rv-muted">{T.LOADED_NONE}</p> : [...groups.entries()].map(([key, rows]) => <div key={key}>
    <p><strong>{stagesWords([rows[0]!.stage])}{rows[0]!.round > 1 ? `, round ${String(rows[0]!.round)}` : ""}</strong></p>
-   <ul className="rv-loaded-list" aria-label={"Lessons loaded: " + stagesWords([rows[0]!.stage])}>{rows.map(row => <Row key={row.lessonId + row.version} taskId={taskId} row={row} canMark={true} />)}</ul>
+   <ul className="rv-loaded-list" aria-label={"Lessons loaded: " + stagesWords([rows[0]!.stage])}>{rows.map(row => <Row key={row.lessonId + row.version} taskId={taskId} row={row} canMark={true} canThumbsDown={read.data.canThumbsDown !== false} />)}</ul>
   </div>)}
  </section>;
 }

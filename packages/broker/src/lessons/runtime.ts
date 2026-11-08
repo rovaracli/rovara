@@ -18,7 +18,9 @@ import { createCitationVerifier } from "./citation-verifier.js";
 import { createCodeFacts, type CodeFactsReader } from "./code-facts.js";
 import type { CounterDeps } from "./counters.js";
 import { createApproverDirectory } from "./directory.js";
-import { dynamoLearningSettings, DynamoTier0Settings } from "./dynamo-settings.js";
+import { dynamoLearningSettings, DynamoPresetStore, DynamoSoleOwnerSwitch, DynamoTier0Settings } from "./dynamo-settings.js";
+import { secondPersonTier0Authority } from "./tier0-authority.js";
+import type { PresetDeps } from "./preset-setting.js";
 import { DynamoLessonStore } from "./dynamo-store.js";
 import type { LoadDeps } from "./load.js";
 import type { LessonsPauseStore } from "./pause.js";
@@ -59,7 +61,7 @@ export interface LessonsRuntimeInput {
 }
 
 /** The route-side lesson dependencies (`DeveloperRouteDependencies.lessons`). */
-export type LessonRouteDeps = LessonViewDeps & ApproveDeps & ProcessDeps & CounterDeps;
+export type LessonRouteDeps = LessonViewDeps & ApproveDeps & ProcessDeps & CounterDeps & { /** Where a maintainer or admin sets the preset (Regulated at once; Standard through a second person). Absent: the route is not there. */ presets?: PresetDeps };
 
 export interface LessonsRuntime {
   readonly store: LessonStore;
@@ -97,9 +99,14 @@ export function createLessonsRuntime(input: LessonsRuntimeInput): LessonsRuntime
   const similarity = input.similarity ?? { embedder: NO_EMBEDDER, vectors: NO_VECTORS };
   const load: LoadDeps = { ...base, store, embedder: similarity.embedder, vectors: similarity.vectors, settings, access, ...(directory.resolveMember === undefined ? {} : { resolveMember: (workspaceId: string, developerId: string) => directory.resolveMember!(workspaceId, developerId) }) };
   const counters: CounterDeps = { ...base, store, judge: REFUSING_JUDGE, settings };
+  const presetStore = new DynamoPresetStore(input.table);
   const routes: LessonRouteDeps = {
     ...base, store, directory, settings, access, names: input.names, sources: { table: input.table },
     embedder: similarity.embedder, vectors: similarity.vectors, judgeModel: input.model ?? REFUSING_MODEL, spend: input.spend ?? DENYING_SPEND, ...(input.pause === undefined ? {} : { pause: input.pause }), ...(input.pauseStillApplies === undefined ? {} : { pauseStillApplies: input.pauseStillApplies }), verifier, facts, judge: REFUSING_JUDGE,
+    presets: {
+      // The project's maintainers and admins decide a project's preset; a company's is decided by the company's admins. Both go through the shared second-person evidence (the same rule and fence as the tier-0 setting).
+      settings: presetStore, changes: presetStore, audit, now: input.now, authority: secondPersonTier0Authority(input.evidence), soleOwnerLoosening: (workspaceId) => new DynamoSoleOwnerSwitch(input.table).read(workspaceId),
+    },
   };
   return { store, settings, access, directory, load, counters, routes };
 }

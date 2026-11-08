@@ -125,6 +125,21 @@ export const LessonProvenanceSchema = z.object({
   /** Set when a person asked for the lesson with "remember this" or a member's edit made it (a strong signal). */
   memberSignal: z.boolean(),
   /**
+   * Set by code (`memberCorrectionOf` in reflect.ts), from the spans the lesson CITES and not from every span the model read: true when at least one cited span is a project member's own
+   * correction (a send-back, a human edit, "remember this", a close reason, a review comment by a member; trust member, a known author), no cited span came from Slack, a tracker, an MCP
+   * source or a code comment, and nothing the model read is an outsider's. It is what lets a low-risk lesson go live on trial (DECISIONS 24). `minTrust` stays the lowest trust of everything the
+   * model read, so worker-written spans in the same task (a plan, a review finding, CI text; trust "system" or "rovara") neither take it away nor can make it true. Absent: not a member correction.
+   */
+  memberCorrection: z.boolean().optional(),
+  /**
+   * Set by code (`lessonClaimsSupported` in trial.ts, worked out in reflect.ts while the correction text is in hand): every key identifier or path the lesson names appears in the cited member
+   * correction or in the cited code, and the lesson names at least one. It is the second half of what lets a lesson go live on trial: the words came from the member's correction and the code, not from text
+   * the model read elsewhere. The correction text itself is never stored. Absent: not supported (a person decides).
+   */
+  claimsSupported: z.boolean().optional(),
+  /** Set by code: the task the lesson came from is shared with the project (not the owner's alone). Only such a lesson may be published to a repository (`isPublishable`). Absent: not shared. */
+  fromSharedTask: z.boolean().optional(),
+  /**
    * The places (a channel, a repository, an issue) the evidence came from, restricted or not, as the Team record names them. They are what the access records are asked about when the
    * lesson is read, so a person removed from a channel stops getting its lessons. Absent on a lesson learned before this field: its restricted places are read from the audience's scope.
    */
@@ -149,7 +164,12 @@ export const LessonSchema = z.object({
   expiresAt: z.number(),
   /** Pending lessons that nobody decided expire at this time. */
   pendingExpiresAt: z.number().optional(),
-  approvals: z.array(z.object({ approvalId: z.string().max(100), by: z.string().max(100), at: z.number(), mode: z.enum(["one", "second_person", "sole_owner_exception", "auto"]) }).strict()).max(10),
+  approvals: z.array(z.object({ approvalId: z.string().max(100), by: z.string().max(100), at: z.number(), mode: z.enum(["one", "second_person", "sole_owner_exception", "auto", "trial"]) }).strict()).max(10),
+  /**
+   * Set when the lesson went live ON TRIAL with no approval (DECISIONS 24): `trial` until it has run 14 days with at least 3 loads and no thumbs-down, then `stable`. A trial lesson is retired
+   * by a project member's thumbs-down or by a later contradicting correction. Absent: a person approved it (or it is not live).
+   */
+  trial: z.object({ state: z.enum(["trial", "stable"]), startedAt: z.number(), stableAt: z.number().optional() }).strict().optional(),
   supersedes: z.string().max(64).optional(),
   /** People who asked for this lesson to become a How we work rule; a tier-2 lesson needs two before it is published. */
   promotionApprovals: z.array(z.object({ by: z.string().max(100), at: z.number() }).strict()).max(5).optional(),
@@ -187,6 +207,7 @@ export const LESSON_AUDIT_ACTIONS = [
   "lesson.sole_owner_exception", "lesson.citation_moved", "lesson.contradiction", "lesson.withdrawn", "lesson.promote_failed", "lesson.held_source_paused",
   "lesson.tier0_setting_proposed", "lesson.tier0_setting_changed", "lesson.tier0_setting_cancelled", "lesson.tier0_setting_refused_retryable",
   "lesson.sole_owner_switch_proposed", "lesson.sole_owner_switch_changed", "lesson.model_set",
+  "lesson.trial_started", "lesson.trial_retired", "lesson.trial_stable", "lesson.preset_changed", "lesson.preset_proposed",
 ] as const;
 export type LessonAuditAction = (typeof LESSON_AUDIT_ACTIONS)[number];
 

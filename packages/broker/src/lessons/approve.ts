@@ -56,12 +56,12 @@ export interface ActivationPin { version: number; setVersion: number; fence?: re
  * exactly `pin.version` and the set is still at `pin.setVersion`. Approvals are given for a version and its text, so a lesson that moved on (an edit, a rollback, another person's
  * decision) is never made live under them; the caller re-reads and decides again. Returns undefined when it did not go live.
  */
-export async function activateLesson(deps: LessonDeps & { store: LessonStore }, key: ScopeKey, lesson: Lesson, approvals: Lesson["approvals"], expiryDays: number | undefined, action: "lesson.activated" | "lesson.auto_applied", pin: ActivationPin): Promise<Lesson | undefined> {
+export async function activateLesson(deps: LessonDeps & { store: LessonStore }, key: ScopeKey, lesson: Lesson, approvals: Lesson["approvals"], expiryDays: number | undefined, action: "lesson.activated" | "lesson.auto_applied" | "lesson.trial_started", pin: ActivationPin): Promise<Lesson | undefined> {
   const now = deps.now();
   // A refinement is never applied without a person: the judge that called it a refinement can be steered by the text it read.
-  if (action === "lesson.auto_applied" && lesson.supersedes !== undefined) return undefined;
+  if (action !== "lesson.activated" && lesson.supersedes !== undefined) return undefined;
   // Audit first: a go-live that cannot be recorded does not happen.
-  if (!(await requireAudit(deps.audit, { action, workspaceId: key.workspaceId, project: key.project, lessonId: lesson.id, facts: { tier: lesson.tier, approvals: approvals.length, ...(lesson.supersedes === undefined ? {} : { supersedes: lesson.supersedes }) } }))) throw new AuditUnavailable();
+  if (!(await requireAudit(deps.audit, { action, workspaceId: key.workspaceId, project: key.project, lessonId: lesson.id, facts: { tier: lesson.tier, type: lesson.type, approvals: approvals.length, ...(lesson.supersedes === undefined ? {} : { supersedes: lesson.supersedes }) } }))) throw new AuditUnavailable();
   const fresh = await deps.store.get(key, lesson.id);
   if (fresh === undefined || (fresh.status !== "pending" && fresh.status !== "candidate")) return undefined;
   // The approvals were collected on `pin.version`: any other version (someone's edit landed since) is not made live under them.
@@ -69,8 +69,11 @@ export async function activateLesson(deps: LessonDeps & { store: LessonStore }, 
   const next: Lesson = {
     ...fresh, version: nextVersion(fresh, await deps.store.versions(key, fresh.id)), status: "active", approvals: [...approvals],
     expiresAt: now + expiryWindowMs(fresh.type, expiryDays), updatedAt: now,
+    ...(action === "lesson.trial_started" ? { trial: { state: "trial" as const, startedAt: now } } : {}),
   };
   delete (next as { pendingExpiresAt?: number }).pendingExpiresAt;
+  // A person's go-live (or any other way than trial) is not a trial: a leftover trial record would let one thumbs-down retire an approved lesson and make it publishable without ever having been a trial.
+  if (action !== "lesson.trial_started") delete (next as { trial?: Lesson["trial"] }).trial;
   const writes = [next];
   if (fresh.supersedes !== undefined) {
     const old = await deps.store.get(key, fresh.supersedes);
@@ -129,7 +132,7 @@ export async function approveLesson(deps: ApproveDeps, input: ApproveInput): Pro
     }
 
     // An approval counts only while its giver is still eligible: a first approver who left the project (or was erased) is dropped, audited, and the person deciding now gives the first.
-    const gone = approvals.filter((a) => a.mode !== "auto" && !idIn(group.eligibleIds, a.by));
+    const gone = approvals.filter((a) => a.mode !== "auto" && a.mode !== "trial" && !idIn(group.eligibleIds, a.by));
     if (gone.length > 0) {
       approvals = approvals.filter((a) => !gone.includes(a));
       await emitAudit(deps.audit, { action: "lesson.updated", workspaceId: key.workspaceId, project: key.project, lessonId: lesson.id, actor: input.approverId, facts: { dropped: gone.length, reason: "approver_not_eligible" } });
@@ -170,6 +173,8 @@ export async function approveLesson(deps: ApproveDeps, input: ApproveInput): Pro
       if (mode !== "sole_owner_exception" && !hasNonAuthor(member, [first.by, input.approverId], working.provenance.authors)) return { ok: false, code: "second_person_required" };
     }
 
+    // A lesson that asks for a capability change (more tools, domains, budget or approvals) reaches the agent only after two different people. The sole-owner exception does not stand in for the second.
+    if (mode === "sole_owner_exception" && working.tierReasons.includes("capability_request")) return { ok: false, code: "second_person_required" };
     const now = deps.now();
     const given = { approvalId: (deps.newId ?? randomUUID)(), by: input.approverId, at: now, mode };
     approvals = [...approvals, given];
@@ -289,7 +294,7 @@ async function recheckRestored(deps: ApproveDeps, key: ScopeKey, id: string, gro
   if (lesson === undefined || lesson.status !== "pending") return;
   const resolved = await resolveLearning(deps.settings, key.workspaceId, key.project);
   const eligible = new Set(group.eligibleIds.map(normId));
-  const persons = lesson.approvals.filter((a) => a.mode !== "auto");
+  const persons = lesson.approvals.filter((a) => a.mode !== "auto" && a.mode !== "trial");
   const valid = persons.filter((a) => eligible.has(normId(a.by)));
   if (valid.length !== lesson.approvals.length) {
     const next: Lesson = { ...lesson, version: nextVersion(lesson, await deps.store.versions(key, id)), approvals: valid, updatedAt: deps.now() };

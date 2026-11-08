@@ -61,7 +61,7 @@ export function githubCodeHost(provider: GitHubCodeHostProvider, options: GitHub
 
     async repositoryIdentity(repository: RepositoryRef, scope: HostScope): Promise<RepositoryIdentity | undefined> {
       const identity = await provider.getRepositoryIdentity(repository.url, checkedScope(scope));
-      return identity === undefined ? undefined : { id: String(identity.repositoryId), fullName: identity.fullName, ...(identity.defaultBranch === undefined ? {} : { defaultBranch: identity.defaultBranch }) };
+      return identity === undefined ? undefined : { id: String(identity.repositoryId), fullName: identity.fullName, ...(identity.defaultBranch === undefined ? {} : { defaultBranch: identity.defaultBranch }), ...(identity.private === undefined ? {} : { private: identity.private }) };
     },
 
     async checkRepository(repository: RepositoryRef, scope: HostScope): Promise<void> {

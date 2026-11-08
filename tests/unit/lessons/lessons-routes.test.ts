@@ -2,14 +2,14 @@
 // version, a lesson from a source the viewer cannot see, and text that never reaches a viewer.
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
-import { AgentXError, LESSON_TIER_REASONS, LESSON_VIEW_STATUSES, LessonsViewReaderSchema, type OrgId } from "@agentx/contracts";
+import { AgentXError, agentXError, LESSON_TIER_REASONS, LESSON_VIEW_STATUSES, LessonsViewReaderSchema, type OrgId } from "@agentx/contracts";
 import { LESSON_STATUSES } from "../../../packages/broker/src/lessons/types.js";
 import { routeLessons, type LessonRouteDependencies } from "../../../packages/broker/src/lessons/routes.js";
 import { InMemoryLessonStore } from "../../../packages/broker/src/lessons/store.js";
 import type { AccessCheckPort } from "../../../packages/broker/src/team-record/access-port.js";
 import type { DeveloperCaller } from "../../../packages/broker/src/aws/developer-routes.js";
 import type { LessonRouteDependencies as _Deps } from "../../../packages/broker/src/lessons/routes.js";
-import { Alerts, Audit, Clock, KEY, MemoryVectors, PROJECT, ScriptedModel, Spend, WS, allowAllAccess, directory, draft, embedder, facts, Judge, lessonRecord, seed, settings, verifier } from "./lesson-helpers.js";
+import { Alerts, Audit, Clock, KEY, MemoryVectors, PROJECT, ScriptedModel, Spend, WS, allowAllAccess, directory, draft, embedder, facts, Judge, lessonRecord, presetFakes, seed, settings, verifier } from "./lesson-helpers.js";
 import { addSource, world } from "../../support/team-record-core.js";
 import { webRouteAllowed } from "../../../packages/broker/src/aws/web-auth.js";
 
@@ -563,7 +563,7 @@ describe("the words the screens know", () => {
     expect([...LESSON_VIEW_STATUSES]).toEqual([...LESSON_STATUSES]);
     const source = readFileSync(new URL("../../../packages/broker/src/lessons/tier.ts", import.meta.url), "utf8");
     const written = new Set([...source.matchAll(/(?:escalation|why)\.push\("(\w+)"\)/gu)].map((m) => m[1]!).concat([...source.matchAll(/reasons: \["(\w+)"\]/gu)].map((m) => m[1]!), ["supersedes_higher_tier"]));
-    for (const reason of written) if (reason !== "capability_request" && reason !== "outsider_source" && reason !== "ineligible_task") expect(LESSON_TIER_REASONS as readonly string[], reason).toContain(reason);
+    for (const reason of written) if (reason !== "outsider_source" && reason !== "ineligible_task") expect(LESSON_TIER_REASONS as readonly string[], reason).toContain(reason);
     expect(written.size).toBeGreaterThan(10);
   });
 });
@@ -590,6 +590,137 @@ describe("what a browser may reach", () => {
     // Upper-case task ids are not task ids here (the broker's own patterns are lower-case only).
     expect(webRouteAllowed("GET", `/v1/web/tasks/${"ABCDEFAB-1111-4111-8111-111111111111"}/lessons`)).toBe(false);
     expect(webRouteAllowed("GET", `/v1/web/tasks/${"ABCDEFAB-1111-4111-8111-111111111111"}/loaded-knowledge`)).toBe(false);
+  });
+});
+
+describe("approve by exception on the routes (DECISIONS 24)", () => {
+  const TASK = "11111111-1111-1111-1111-111111111111";
+  const task = `/v1/app/tasks/${TASK}/lessons`;
+  const trialLesson = () => lessonRecord({
+    id: "les_trial001", trial: { state: "trial", startedAt: 1 }, tier: 1, approvals: [{ approvalId: "t", by: "system:trial", at: 1, mode: "trial" }],
+    provenance: { ...lessonRecord().provenance, memberCorrection: true, fromSharedTask: true },
+  });
+  async function withTrial() {
+    const s = setup({ value: { preset: "standard" } });
+    await seed(s.store, trialLesson());
+    await s.store.putManifest({ taskId: TASK, workspaceId: WS, project: PROJECT, stage: "IMPLEMENT", round: 1, setVersion: 1, memory: "live", at: 1, bytes: 10, lessons: [{ id: "les_trial001", version: 1, score: 0.5, why: "scope", citation: "valid" }] });
+    return s;
+  }
+
+  it("the Lessons tab says which lessons are on trial and which preset is in force", async () => {
+    const s = await withTrial();
+    const view = LessonsViewReaderSchema.parse(await s.call(callerOf("ann"), "GET", base));
+    expect(view).toMatchObject({ preset: "standard", presetLockedByCompany: false });
+    expect(view.active[0]).toMatchObject({ id: "les_trial001", trial: "trial", approvals: [{ mode: "trial" }] });
+    const regulated = setup({ value: { preset: "standard", companyPreset: "regulated" } });
+    expect(LessonsViewReaderSchema.parse(await regulated.call(callerOf("ann"), "GET", base))).toMatchObject({ preset: "regulated", presetLockedByCompany: true });
+  });
+
+  it("a thumbs-down from a project member retires the lesson on trial at once; the task page row says it is on trial", async () => {
+    const s = await withTrial();
+    const rows = (await s.call(callerOf("mallory"), "GET", task)) as { lessons: Array<{ lessonId: string; trial?: string }> };
+    expect(rows.lessons[0]).toMatchObject({ lessonId: "les_trial001", trial: "trial" });
+    expect(await s.call(callerOf("mallory"), "POST", `${task}/les_trial001/feedback`, { kind: "thumbs_down" })).toEqual({ done: true });
+    expect((await s.store.get(KEY, "les_trial001"))!.status).toBe("retired");
+    expect(s.audit.actions()).toContain("lesson.trial_retired");
+    expect((await refused(s.call(callerOf("mallory"), "POST", `${task}/les_trial001/feedback`, { kind: "thumbs_down" }))).code).toBe("CHANGE_STALE");
+  });
+
+  it("a person with no role in the project is refused, the Auditor and a non-browser caller too, and the lesson stays", async () => {
+    const s = await withTrial();
+    (s.deps as { projectFor: unknown }).projectFor = async () => { throw agentXError("PROJECT_NOT_FOUND", "No such project."); };
+    expect((await refused(s.call(callerOf("outsider"), "POST", `${task}/les_trial001/feedback`, { kind: "thumbs_down" }))).code).toBe("PROJECT_NOT_FOUND");
+    expect((await refused(s.call(callerOf("mallory", { browserSession: undefined }), "POST", `${task}/les_trial001/feedback`, { kind: "thumbs_down" }))).code).toBe("FORBIDDEN");
+    expect((await s.store.get(KEY, "les_trial001"))!.status).toBe("active");
+  });
+
+  const withPresets = (options: Parameters<typeof presetFakes>[0] = {}, value: Parameters<typeof setup>[0] = {}) => {
+    const s = setup(value);
+    const fakes = presetFakes(options);
+    (s.deps.lessons as { presets?: unknown }).presets = fakes.deps;
+    return { ...s, ...fakes };
+  };
+
+  it("a maintainer makes the project Regulated at once; others are refused; a body with anything else is refused; a stricter setting does not need learning to be on (L5)", async () => {
+    const s = withPresets({ eligible: ["owner", "ann"] }, { value: { mode: "Off" } });
+    expect((await refused(s.call(callerOf("mallory"), "POST", `${base}/preset`, { preset: "regulated" }))).code).toBe("FORBIDDEN");
+    expect((await refused(s.call(callerOf("ann"), "POST", `${base}/preset`, { preset: "off" }))).code).toBe("CONFIG_INVALID");
+    expect((await refused(s.call(callerOf("ann"), "POST", `${base}/preset`, { preset: "regulated", extra: 1 }))).code).toBe("CONFIG_INVALID");
+    expect(await s.call(callerOf("ann"), "POST", `${base}/preset`, { preset: "regulated" })).toEqual({ preset: "regulated", changed: true });
+    expect(s.rows.get("project:" + PROJECT)).toBe("regulated");
+    expect(s.audit.events.at(-1)).toMatchObject({ action: "lesson.preset_changed", actor: "ann" });
+    expect((await refused(s.call(callerOf("ann", { browserSession: undefined }), "POST", `${base}/preset`, { preset: "regulated" }))).code).toBe("FORBIDDEN");
+  });
+
+  it("H3: going back to Standard opens a proposal; a different maintainer approves it; the proposer cannot approve it while someone else can; the audit names who", async () => {
+    const s = withPresets({ eligible: ["owner", "ann", "bob"] });
+    await s.call(callerOf("ann"), "POST", `${base}/preset`, { preset: "regulated" });
+    const asked = await s.call(callerOf("ann"), "POST", `${base}/preset`, { preset: "standard" }) as { needsApproval: boolean; changeId: string; preset: string };
+    expect(asked).toMatchObject({ preset: "regulated", changed: false, needsApproval: true });
+    expect(s.rows.get("project:" + PROJECT)).toBe("regulated");
+    expect(s.audit.actions()).toContain("lesson.preset_proposed");
+    expect((await refused(s.call(callerOf("ann"), "POST", `${base}/preset`, { preset: "standard" }))).code).toBe("CHANGE_STALE");
+    expect((await refused(s.call(callerOf("ann"), "POST", `${base}/preset/approve`, { changeId: asked.changeId }))).code).toBe("FORBIDDEN");
+    expect((await refused(s.call(callerOf("mallory"), "POST", `${base}/preset/approve`, { changeId: asked.changeId }))).code).toBe("FORBIDDEN");
+    expect(await s.call(callerOf("bob"), "POST", `${base}/preset/approve`, { changeId: asked.changeId })).toEqual({ preset: "standard", changed: true });
+    expect(s.rows.get("project:" + PROJECT)).toBe("standard");
+    expect(s.audit.events.at(-1)).toMatchObject({ action: "lesson.preset_changed", actor: "bob", facts: { from: "regulated", to: "standard", mode: "second_person" } });
+    expect((await refused(s.call(callerOf("bob"), "POST", `${base}/preset/approve`, { changeId: asked.changeId }))).code).toBe("CHANGE_STALE");
+  });
+
+  it("the sole-owner exception: the only eligible person approves their own loosening (audited as such); a company that turned the exception off cannot", async () => {
+    const s = withPresets({ eligible: ["ann"], owners: ["ann"] });
+    await s.call(callerOf("ann"), "POST", `${base}/preset`, { preset: "regulated" });
+    const asked = await s.call(callerOf("ann"), "POST", `${base}/preset`, { preset: "standard" }) as { changeId: string };
+    expect(await s.call(callerOf("ann"), "POST", `${base}/preset/approve`, { changeId: asked.changeId })).toEqual({ preset: "standard", changed: true });
+    expect(s.audit.events.at(-1)).toMatchObject({ action: "lesson.preset_changed", facts: { mode: "sole_owner_exception" } });
+    const off = withPresets({ eligible: ["ann"], owners: ["ann"], sole: false });
+    await off.call(callerOf("ann"), "POST", `${base}/preset`, { preset: "regulated" });
+    const again = await off.call(callerOf("ann"), "POST", `${base}/preset`, { preset: "standard" }) as { changeId: string };
+    expect((await refused(off.call(callerOf("ann"), "POST", `${base}/preset/approve`, { changeId: again.changeId }))).code).toBe("FORBIDDEN");
+    expect(off.rows.get("project:" + PROJECT)).toBe("regulated");
+  });
+
+  it("a proposal can be cancelled by an eligible person, and then cannot be approved", async () => {
+    const s = withPresets({ eligible: ["owner", "ann", "bob"] });
+    await s.call(callerOf("ann"), "POST", `${base}/preset`, { preset: "regulated" });
+    const asked = await s.call(callerOf("ann"), "POST", `${base}/preset`, { preset: "standard" }) as { changeId: string };
+    expect(await s.call(callerOf("ann"), "POST", `${base}/preset/cancel`, { changeId: asked.changeId })).toEqual({ done: true });
+    expect((await refused(s.call(callerOf("bob"), "POST", `${base}/preset/approve`, { changeId: asked.changeId }))).code).toBe("CHANGE_STALE");
+    expect(s.rows.get("project:" + PROJECT)).toBe("regulated");
+  });
+
+  it("the company's preset is a floor: a project cannot go below it, and only a company owner or admin sets it (audited, Regulated at once, Standard through a second admin)", async () => {
+    const s = withPresets({ eligible: ["owner", "ann", "bob"] });
+    const company = "/v1/app/org/lessons/preset";
+    expect((await refused(s.call(callerOf("ann"), "POST", company, { preset: "regulated" }))).code).toBe("FORBIDDEN");
+    expect((await refused(s.call(callerOf("ann", { orgRole: "admin", browserSession: undefined }), "POST", company, { preset: "regulated" }))).code).toBe("FORBIDDEN");
+    expect(await s.call(callerOf("ann", { orgRole: "admin" }), "POST", company, { preset: "regulated" })).toEqual({ preset: "regulated", changed: true });
+    expect(s.rows.get("company:")).toBe("regulated");
+    expect(s.audit.events.at(-1)).toMatchObject({ action: "lesson.preset_changed", actor: "ann", facts: { scope: "company", from: "standard", to: "regulated" } });
+    // A project cannot loosen under it.
+    expect((await refused(s.call(callerOf("bob"), "POST", `${base}/preset`, { preset: "standard" }))).code).toBe("FORBIDDEN");
+    // The company loosens only through a different admin.
+    const asked = await s.call(callerOf("ann", { orgRole: "admin" }), "POST", company, { preset: "standard" }) as { changeId: string; needsApproval: boolean };
+    expect(asked.needsApproval).toBe(true);
+    expect((await refused(s.call(callerOf("ann", { orgRole: "admin" }), "POST", `${company}/approve`, { changeId: asked.changeId }))).code).toBe("FORBIDDEN");
+    expect(await s.call(callerOf("bob", { orgRole: "owner" }), "POST", `${company}/approve`, { changeId: asked.changeId })).toEqual({ preset: "standard", changed: true });
+    expect(s.rows.get("company:")).toBe("standard");
+  });
+
+  it("L6: the task page tells the caller whether the thumbs-down will work for them", async () => {
+    const s = setup();
+    const task = `/v1/app/tasks/${"0".repeat(8)}-0000-0000-0000-${"0".repeat(12)}/lessons`;
+    expect(await s.call(callerOf("ann"), "GET", task)).toMatchObject({ canThumbsDown: true });
+    (s.deps as { projectFor: unknown }).projectFor = async () => { throw agentXError("PROJECT_NOT_FOUND", "No such project."); };
+    expect(await s.call(callerOf("mallory"), "GET", task)).toMatchObject({ canThumbsDown: false });
+    (s.deps as { projectFor: unknown }).projectFor = async (_who: unknown, raw: string) => ({ name: decodeURIComponent(raw), role: "viewer" as const });
+    expect(await s.call(callerOf("ann", { browserSession: undefined }), "GET", task)).toMatchObject({ canThumbsDown: false });
+  });
+
+  it("the preset route is not there where no preset store is wired", async () => {
+    const s = setup();
+    expect((await refused(s.call(callerOf("ann"), "POST", `${base}/preset`, { preset: "regulated" }))).code).toBe("NOT_FOUND");
   });
 });
 

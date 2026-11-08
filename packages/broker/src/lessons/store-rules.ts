@@ -91,7 +91,9 @@ export function planRollback(target: ReadonlyArray<{ id: string; version: number
       // Approval given for a lower tier does not carry to a higher one.
       if (restored.tier > content.tier) restored.approvals = [];
     }
-    restored.approvals = restored.approvals.filter((a) => a.mode !== "auto");
+    restored.approvals = restored.approvals.filter((a) => a.mode !== "auto" && a.mode !== "trial");
+    // A restored lesson is no longer on trial: it comes back for a person (the trial record and its approval went with the live version).
+    delete (restored as { trial?: unknown }).trial;
     restored.reviewRequired = true;
     // It always comes back pending. A person's earlier approval is kept as a record, but it counts only after it is re-checked against who may approve NOW and the current policy
     // (rollbackLessonSet does that); until then nothing is live.

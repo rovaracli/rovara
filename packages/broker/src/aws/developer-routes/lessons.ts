@@ -6,7 +6,7 @@ import { LOADED_KNOWLEDGE_PATH, routeLoadedKnowledge } from "../../developer/loa
 import { takeRateAt } from "../../developer/page-comments.js";
 import { resolveTaskAccess } from "../../developer/task-access.js";
 import { resolveLearning, whyLearningOff } from "../../lessons/policy.js";
-import { LESSONS_PATH, TASK_LESSONS_PATH, routeLessons, type LessonRouteDependencies } from "../../lessons/routes.js";
+import { COMPANY_PRESET_PATH, LESSONS_PATH, TASK_LESSONS_PATH, routeLessons, type LessonRouteDependencies } from "../../lessons/routes.js";
 import { developerTaskRouteDependencies } from "./dependencies.js";
 import { latestDefinition } from "./project-list.js";
 import { projectRoleForRoute } from "./project-members.js";
@@ -42,7 +42,7 @@ export function lessonRouteDependenciesOf(deps: DeveloperRouteDependencies, call
 
 /** The lessons, Sources and task-lessons routes for a request, or undefined when the request is not one or the install has no lesson ports. */
 export async function routeLessonsFor(deps: DeveloperRouteDependencies, caller: DeveloperCaller, method: string, url: URL, body: () => unknown): Promise<object | undefined> {
-  if (!LESSONS_PATH.test(url.pathname) && !TASK_LESSONS_PATH.test(url.pathname)) return undefined;
+  if (!LESSONS_PATH.test(url.pathname) && !TASK_LESSONS_PATH.test(url.pathname) && !COMPANY_PRESET_PATH.test(url.pathname)) return undefined;
   const lessonDeps = lessonRouteDependenciesOf(deps, caller);
   return lessonDeps === undefined ? undefined : routeLessons(lessonDeps, caller, method, url, body);
 }

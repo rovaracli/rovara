@@ -17,6 +17,7 @@ import { dynamoPauseStore, spendLook } from "../../lessons/pause.js";
 import { companyLearningSpend } from "./learning-spend.js";
 import { lessonSubjectSource } from "./lesson-subject-source.js";
 import { setLessonsHomeReader } from "../../lessons/home-source.js";
+import { lessonsUsedReaderOver, setLessonsUsedReader, type RepositoryVisibility, visibilityOfRepositories } from "../../lessons/used-in-pr.js";
 import { resolveLearning } from "../../lessons/policy.js";
 import { buildLessonsView } from "../../lessons/view.js";
 import { recordAuditSinkOf } from "./team-record-wiring.js";
@@ -44,6 +45,20 @@ export function codeFileReader(dependencies: AwsBrokerDependencies, maxBytes = M
       return hostOfRepository(dependencies, repository).fileAtRevision({ url: repository.url }, input.path, input.commit, githubScope(dependencies, orgId), { timeoutMs: input.timeoutMs, maxBytes });
     },
   };
+}
+
+/**
+ * Whether the project's code repositories are private: "private" only when the host says so for EVERY repository the project has; "public" when it says any is not private; "unknown" for anything else
+ * (no repository, a host that does not say, a read that fails). The pull request description writes lesson titles only for "private".
+ */
+export async function repositoryVisibilityOf(dependencies: AwsBrokerDependencies, orgIdText: string, project: string): Promise<RepositoryVisibility> {
+  try {
+    const orgId = OrgIdSchema.parse(orgIdText);
+    const repositories = codeRepositoriesOf((await requireLatestProject(dependencies, orgId, project)).definition);
+    const answers = [];
+    for (const repository of repositories) answers.push(await hostOfRepository(dependencies, repository).repositoryIdentity({ url: repository.url }, githubScope(dependencies, orgId)));
+    return visibilityOfRepositories(answers);
+  } catch { return "unknown"; }
 }
 
 /**
@@ -155,6 +170,10 @@ export function installLessons(dependencies: AwsBrokerDependencies): void {
   }
   // UX-4b: Home's "Lessons waiting" card counts what the Lessons tab would show this person to decide (learning Off: none).
   const routes = dependencies.lessons?.routes;
+  // Approve by exception: the pull request description lists the lessons the task used (`lessons/used-in-pr.ts`).
+  setLessonsUsedReader(routes === undefined ? undefined : lessonsUsedReaderOver({
+    store: routes.store, settings: routes.settings, access: routes.access, names: routes.names, visibility: (orgId, project) => repositoryVisibilityOf(dependencies, orgId, project),
+  }));
   setLessonsHomeReader(routes === undefined ? undefined : async (orgId, developerId, project) => {
     if ((await resolveLearning(routes.settings, orgId, project)).mode === "Off") return { waiting: 0 };
     const view = await buildLessonsView(routes, { orgId, developerId }, project);

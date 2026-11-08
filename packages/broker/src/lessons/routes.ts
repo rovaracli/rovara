@@ -6,16 +6,18 @@
 //   POST /v1/app/projects/{p}/lessons/{id}/approve         one-tap approval, or edit and approve
 //   POST /v1/app/projects/{p}/lessons/{id}/reject
 //   POST /v1/app/projects/{p}/lessons/{id}/retire
+//   POST /v1/app/projects/{p}/lessons/preset               a maintainer sets the preset: Regulated at once; Standard opens a proposal a different person approves (.../preset/approve, .../preset/cancel)
+//   POST /v1/app/org/lessons/preset                        a company owner or admin sets the company's preset the same way (a floor for every project)
 //   POST /v1/app/projects/{p}/lessons/rollback
 //   POST /v1/app/projects/{p}/lessons/sources/resume       a maintainer resumes a paused source (UX-4b; `resumeAndResettle`)
 //   GET  /v1/app/tasks/{task}/lessons                      the lessons the agent loaded
-//   POST /v1/app/tasks/{task}/lessons/{id}/feedback        "Helpful" / "Wrong here"
+//   POST /v1/app/tasks/{task}/lessons/{id}/feedback        "Helpful" / "Wrong here" / thumbs-down
 //
 // The module answers `undefined` for a path it does not own, as `routeLearning` does. Authority: the project is found through `projectFor` (another company's project and one the caller
 // cannot see answer the same way); who may decide is the lesson library's own check (`ApproverDirectory`, the second-person rule, the access records); a write needs a live browser
 // session and a writer role (the Auditor is refused); a refusal is a fixed sentence, never text from a lesson, a row or an error.
 import {
-  LessonApproveBodySchema, LessonFeedbackBodySchema, LessonResumeSourceBodySchema, LessonRejectBodySchema, LessonRetireBodySchema, LessonRollbackBodySchema, agentXError,
+  LessonApproveBodySchema, LessonFeedbackBodySchema, LessonPresetBodySchema, LessonPresetChangeBodySchema, LessonResumeSourceBodySchema, LessonRejectBodySchema, LessonRetireBodySchema, LessonRollbackBodySchema, agentXError,
   type AgentXErrorCode, type ProjectRole,
 } from "@agentx/contracts";
 import type { ZodType } from "zod";
@@ -24,17 +26,20 @@ import { requireWriterCaller } from "../org/auditor.js";
 import { approveLesson, rejectLesson, retireByPerson, type ApprovalFailure, type ApproveDeps } from "./approve.js";
 import { recordFeedback, type CounterDeps } from "./counters.js";
 import { resolveLearning, whyLearningOff } from "./policy.js";
+import { approvePresetChange, cancelPresetChange, setLearningPreset, type PresetDeps, type PresetFailure, type PresetResult, type PresetScope } from "./preset-setting.js";
 import { rollbackLessonSetSettled } from "./rollback.js";
 import { resumeAndResettle, type ProcessDeps } from "./process.js";
 import { buildLessonHistory, pauseMatches, buildLessonSources, buildLessonsDigest, buildLessonsView, buildLoadedLessons, SNAPSHOTS_MAX, type LessonViewDeps } from "./view.js";
 import type { ScopeKey } from "./store.js";
 
-export const LESSONS_PATH = /^\/v1\/app\/projects\/([^/]+)\/lessons(?:\/([A-Za-z0-9_-]{1,64})(?:\/(approve|reject|retire|history|resume))?)?$/u;
+export const LESSONS_PATH = /^\/v1\/app\/projects\/([^/]+)\/lessons(?:\/([A-Za-z0-9_-]{1,64})(?:\/(approve|reject|retire|history|resume|cancel))?)?$/u;
+/** The company's preset (an owner or admin): `POST` sets it, `POST .../approve` and `.../cancel` decide a proposal to loosen it. */
+export const COMPANY_PRESET_PATH = /^\/v1\/app\/org\/lessons\/preset(?:\/(approve|cancel))?$/u;
 export const TASK_LESSONS_PATH = /^\/v1\/app\/tasks\/([0-9a-f-]{36})\/lessons(?:\/([A-Za-z0-9_-]{4,64})\/feedback)?$/u;
 
 export interface LessonRouteDependencies {
   /** The lesson library's dependencies for the project: store, directory, settings, access port, audit, citations and code facts (rollback settles each restored lesson), the judge (feedback). */
-  lessons: LessonViewDeps & ApproveDeps & ProcessDeps & CounterDeps;
+  lessons: LessonViewDeps & ApproveDeps & ProcessDeps & CounterDeps & { /** Where a maintainer makes the project stricter (Regulated). Absent: the preset route is not there. */ presets?: PresetDeps };
   /** The caller's role in the project: its name, or the one `PROJECT_NOT_FOUND` for no access, no such project and another company's. */
   projectFor(caller: DeveloperCaller, rawName: string): Promise<{ name: string; role: ProjectRole }>;
   /** The project of a task the caller may read (the task page's own access check), or a throw. */
@@ -106,7 +111,58 @@ function requireWrite(caller: DeveloperCaller): DeveloperCaller {
   return caller;
 }
 
+const PRESET_REFUSALS: Partial<Record<PresetFailure, readonly [AgentXErrorCode, string]>> = {
+  eligibility_unavailable: ["RUNTIME_UNAVAILABLE", "Rovara can't check who may change this right now. Try again."],
+  second_person_required: ["FORBIDDEN", "A different maintainer or admin has to approve going back to Standard."],
+  sole_owner_cool_off: ["CHANGE_STALE", "You are the only person who can approve this, and it needs a short wait first. Try again later."],
+  audit_unavailable: ["RUNTIME_UNAVAILABLE", "That couldn't be recorded, so nothing changed. Try again."],
+  already_open: ["CHANGE_STALE", "A change to Standard is already waiting for a different person to approve it."],
+  expired: ["CHANGE_STALE", "That proposal expired. Ask again."],
+  not_found: ["NOT_FOUND", "No such proposal."],
+  not_pending: ["CHANGE_STALE", "That proposal was already decided."],
+  below_company_floor: ["FORBIDDEN", "Your company requires a person for every lesson, so a project can't go back to Standard."],
+  membership_changed_retry: ["CHANGE_STALE", "Someone joined or left meanwhile. Check and approve again."],
+  invalid_value: ["CONFIG_INVALID", "That setting can't be changed here."],
+};
+function refusePreset(code: PresetFailure, notEligible: string): never {
+  if (code === "not_eligible") throw agentXError("FORBIDDEN", notEligible);
+  const [errorCode, message] = PRESET_REFUSALS[code] ?? ["CHANGE_STALE", "This setting changed. Reload and try again."];
+  throw agentXError(errorCode, message);
+}
+
+/** Sets, approves or cancels a change of the preset of one scope (a project or the company). The library decides who may; the answer is fixed words and ids. */
+async function routePreset(deps: LessonRouteDependencies, caller: DeveloperCaller, scope: PresetScope, action: string | undefined, body: () => unknown, notEligible: string): Promise<object> {
+  const presets = deps.lessons.presets;
+  if (presets === undefined) throw agentXError("NOT_FOUND", "Lessons are not available for this project.");
+  await takeBudget(deps, caller, "decision");
+  if (action === undefined) {
+    const input = strictBody(LessonPresetBodySchema, body());
+    const result: PresetResult = await setLearningPreset(presets, { scope, value: input.preset, requestedBy: caller.developerId });
+    if (!result.ok) return refusePreset(result.code, notEligible);
+    // A proposal leaves the value in force as it is: the answer says which one that is.
+    if (result.status === "needs_approval") return { preset: result.value, changed: false, needsApproval: true, changeId: result.changeId };
+    return { preset: result.value, changed: result.changed };
+  }
+  const input = strictBody(LessonPresetChangeBodySchema, body());
+  if (action === "cancel") {
+    const result = await cancelPresetChange(presets, { scope, changeId: input.changeId, actorId: caller.developerId });
+    if (!result.ok) return refusePreset(result.code, notEligible);
+    return { done: true as const };
+  }
+  const result = await approvePresetChange(presets, { scope, changeId: input.changeId, approverId: caller.developerId });
+  if (!result.ok) return refusePreset(result.code, notEligible);
+  return { preset: result.value, changed: true };
+}
+
 export async function routeLessons(deps: LessonRouteDependencies, caller: DeveloperCaller, method: string, url: URL, body: () => unknown): Promise<object | undefined> {
+  const company = COMPANY_PRESET_PATH.exec(url.pathname);
+  if (company !== null) {
+    if (method !== "POST") return undefined;
+    requireWrite(caller);
+    // The company's preset is a floor for every project, so only an owner or admin sets it (the library then checks the live roster and the fence).
+    if (caller.orgRole !== "owner" && caller.orgRole !== "admin") throw agentXError("FORBIDDEN", "Only a company owner or admin can change this.");
+    return routePreset(deps, caller, { kind: "company", workspaceId: caller.orgId }, company[1], body, "Only a company owner or admin can change this.");
+  }
   const task = TASK_LESSONS_PATH.exec(url.pathname);
   if (task !== null) return routeTaskLessons(deps, caller, method, task[1]!, task[2], body);
   const matched = LESSONS_PATH.exec(url.pathname);
@@ -168,7 +224,13 @@ export async function routeLessons(deps: LessonRouteDependencies, caller: Develo
     }
     return { resumed, settled };
   }
-  if (id === undefined || action === undefined || action === "history" || action === "resume") return undefined;
+  if (id === "preset" && (action === undefined || action === "approve" || action === "cancel")) {
+    requireWrite(caller);
+    // Making a setting stricter is always allowed, so this does not wait for learning to be on: a project with learning Off can still be set to Regulated.
+    const { name } = await deps.projectFor(caller, rawProject!);
+    return routePreset(deps, caller, { kind: "project", workspaceId: caller.orgId, project: name }, action, body, "Only a maintainer of this project, or an admin, can change how lessons are approved.");
+  }
+  if (id === undefined || action === undefined || action === "history" || action === "resume" || action === "cancel") return undefined;
 
   requireWrite(caller);
   const { name } = await deps.projectFor(caller, rawProject!);
@@ -199,7 +261,9 @@ async function routeTaskLessons(deps: LessonRouteDependencies, caller: Developer
   if (method === "GET" && lessonId === undefined) {
     const { project } = await deps.taskFor(caller, taskId);
     await requireLearningOn(deps, caller, project);
-    return buildLoadedLessons(deps.lessons, who, project, taskId);
+    // The one-tap thumbs-down is offered only to someone it will work for: a writer with a role in the task's project.
+    const canThumbsDown = await deps.projectFor(caller, project).then(() => { try { requireWriterCaller(caller); return caller.browserSession === true; } catch { return false; } }, () => false);
+    return { ...(await buildLoadedLessons(deps.lessons, who, project, taskId)), canThumbsDown };
   }
   if (method !== "POST" || lessonId === undefined) return undefined;
   requireWrite(caller);
@@ -208,7 +272,9 @@ async function routeTaskLessons(deps: LessonRouteDependencies, caller: Developer
   await takeBudget(deps, caller, "mark");
   const input = strictBody(LessonFeedbackBodySchema, body());
   const viewer = await deps.lessons.directory.identity(caller.orgId, caller.developerId);
-  const result = await recordFeedback(deps.lessons, { workspaceId: caller.orgId, project, taskId, lessonId, userId: caller.developerId, viewer, kind: input.kind });
+  // A thumbs-down retires a lesson on trial, so it needs a role in the project (`projectFor` answers the one PROJECT_NOT_FOUND for none); the other marks are open to whoever can read the task.
+  if (input.kind === "thumbs_down") await deps.projectFor(caller, project);
+  const result = await recordFeedback(deps.lessons, { workspaceId: caller.orgId, project, taskId, lessonId, userId: caller.developerId, viewer, kind: input.kind, ...(input.kind === "thumbs_down" ? { projectMember: true } : {}) });
   if (!result.ok) {
     if (result.code === "repeat") throw agentXError("CHANGE_STALE", "You already marked this lesson for this task.");
     throw agentXError("NOT_FOUND", "This lesson isn't available.");

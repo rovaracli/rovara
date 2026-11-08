@@ -68,7 +68,8 @@ export type CodeHostCapabilities = z.infer<typeof CodeHostCapabilitiesSchema>;
 
 // ---- neutral data
 
-export const RepositoryIdentitySchema = z.object({ id: ExternalIdSchema, fullName: z.string().min(1).max(300), defaultBranch: BranchNameSchema.optional() }).strict();
+/** `private`: whether only the company's own people can read the repository (absent: the host did not say, which callers treat as not private). */
+export const RepositoryIdentitySchema = z.object({ id: ExternalIdSchema, fullName: z.string().min(1).max(300), defaultBranch: BranchNameSchema.optional(), private: z.boolean().optional() }).strict();
 export type RepositoryIdentity = z.infer<typeof RepositoryIdentitySchema>;
 
 export const HostPermissionSchema = z.enum(["admin", "write", "read", "none"]);

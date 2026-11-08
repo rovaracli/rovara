@@ -11,6 +11,7 @@ import { InMemoryLessonStore } from "../../../packages/broker/src/lessons/store.
 import type { Lesson } from "../../../packages/broker/src/lessons/types.js";
 import type { CodeFacts } from "../../../packages/broker/src/lessons/ports.js";
 import { pathsToVerify, type VerifiedMaterial } from "../../../packages/broker/src/lessons/render.js";
+import type { PresetChange, PresetDeps } from "../../../packages/broker/src/lessons/preset-setting.js";
 import { classifyTier as realClassifyTier, type TierContext, type TierInput } from "../../../packages/broker/src/lessons/tier.js";
 
 import { setAutoApplyGate } from "../../../packages/broker/src/lessons/policy.js";
@@ -76,12 +77,13 @@ export class Spend implements LearningSpend {
 
 export class Audit implements LessonAuditSink {
   events: LessonAuditEvent[] = [];
-  async emit(event: LessonAuditEvent): Promise<void> { this.events.push(event); }
+  async emit(event: LessonAuditEvent, _options?: { required?: boolean }): Promise<void> { void _options; this.events.push(event); }
   actions(): string[] { return this.events.map((e) => e.action); }
 }
 export class Alerts implements AlertSink { sent: string[] = []; async alert(_w: string, _p: string, code: string): Promise<void> { this.sent.push(code); } }
 
-export const settings = (value: LearningSettings = {}): LearningSettingsReader => ({ read: async () => value });
+// The older tests exercise the person-approval machinery (corroboration, cold start, tiers), so their settings are the Regulated preset: no lesson goes live on trial. The trial tests say `preset: "standard"`.
+export const settings = (value: LearningSettings = {}): LearningSettingsReader => ({ read: async () => ({ preset: "regulated", ...value }) });
 /** Settings for a test of the AUTO path: the pilot default is "one" (a person approves), so a test of automatic go-live says so explicitly. */
 export const autoSettings = (value: LearningSettings = {}): LearningSettingsReader => settings({ tier0Approval: "auto", ...value });
 
@@ -190,3 +192,26 @@ export function classifyTier(input: TierInput, context?: TierContext, floor?: { 
 /** What `recordFeedback` takes: the counter ports plus the record core's access check. */
 export type FeedbackDeps = CounterDeps & { access: AccessCheckPort };
 export const allowAllAccess: AccessCheckPort = { mayRead: async (_org, _viewer, places) => places.map(() => true) };
+
+/**
+ * In-memory ports for the preset setting (`preset-setting.ts`): the stored preset per scope, its loosening proposals, and an authority that answers from a roster the test can change.
+ * `sole` is the company's sole-owner switch (default ON).
+ */
+export function presetFakes(options: { eligible?: string[]; owners?: string[]; complete?: boolean; lastLossAtMs?: number | null; sole?: boolean } = {}) {
+  const rows = new Map<string, "standard" | "regulated">();
+  const changes = new Map<string, PresetChange>();
+  const key = (s: { kind: string; project?: string }) => `${s.kind}:${s.project ?? ""}`;
+  const state = { eligible: options.eligible ?? ["ann", "bob"], owners: options.owners ?? ["ann"], complete: options.complete ?? true, lastLossAtMs: options.lastLossAtMs ?? null, sole: options.sole ?? true, membershipVersion: 1, ids: 0 };
+  const audit = new Audit();
+  const deps: PresetDeps = {
+    settings: { read: async (s) => rows.get(key(s)), write: async (s, v, _meta, from) => { if ((rows.get(key(s)) ?? "standard") !== from) return false; rows.set(key(s), v); return true; } },
+    changes: {
+      create: async (c) => { if (changes.has(c.id)) return false; changes.set(c.id, { ...c }); return true; },
+      get: async (_s, id) => changes.get(id), open: async () => [...changes.values()].find((c) => c.state === "pending" && c.expiresAt > 0),
+      transition: async (_s, id, from, to) => { const c = changes.get(id); if (c === undefined || c.state !== from) return false; c.state = to; return true; },
+    },
+    audit, now: () => 1_800_000_000_000, newId: () => `chg-${++state.ids}`, soleOwnerLoosening: async () => state.sole,
+    authority: { eligibility: async () => ({ complete: state.complete, membershipVersion: state.membershipVersion, ownerIds: state.owners, eligibleIds: state.eligible, lastEligibleLossAtMs: state.lastLossAtMs }) },
+  };
+  return { deps, rows, changes, audit, state };
+}

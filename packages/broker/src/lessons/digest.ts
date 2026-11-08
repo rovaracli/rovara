@@ -41,7 +41,7 @@ export async function buildWeeklyDigest(store: LessonStore, key: ScopeKey, now: 
     since,
     top: shown.filter((l) => l.status === "active" || l.status === "pending").sort(byValue).slice(0, DIGEST_TOP).map(item),
     needsReview: shown.filter((l) => l.reviewRequired === true && l.status === "active").sort(byValue).map(item),
-    autoApplied: shown.filter((l) => l.status === "active" && l.approvals.some((a) => a.mode === "auto") && l.updatedAt >= since).sort(byValue).map(item),
+    autoApplied: shown.filter((l) => l.status === "active" && l.approvals.some((a) => a.mode === "auto" || a.mode === "trial") && l.updatedAt >= since).sort(byValue).map(item),
     waiting: shown.filter((l) => l.status === "pending").sort(byValue).map(item),
     retired: shown.filter((l) => (l.status === "retired" || l.status === "expired") && l.updatedAt >= since).map(item),
     staleOrRetireProposed: shown.filter((l) => l.status === "stale" || (l.status === "active" && l.retireProposedAt !== undefined)).map(item),

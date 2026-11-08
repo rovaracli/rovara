@@ -3,7 +3,7 @@
 import { useMemo } from "react";
 import { useQuery } from "@tanstack/react-query";
 import {
-  DeveloperTaskViewSchema, LessonApproveAnswerReaderSchema, LessonApproveBodySchema, LessonDoneAnswerReaderSchema, LessonFeedbackBodySchema, LessonHistoryReaderSchema, LessonRejectBodySchema,
+  DeveloperTaskViewSchema, LessonApproveAnswerReaderSchema, LessonApproveBodySchema, LessonDoneAnswerReaderSchema, LessonFeedbackBodySchema, LessonHistoryReaderSchema, LessonPresetAnswerReaderSchema, LessonPresetBodySchema, LessonRejectBodySchema,
   LessonResumeAnswerReaderSchema, LessonResumeSourceBodySchema, LessonRetireBodySchema, LessonRollbackAnswerReaderSchema, LessonRollbackBodySchema, LessonSourcesReaderSchema, LessonsDigestReaderSchema, LessonsViewReaderSchema, LoadedLessonsReaderSchema,
   ProjectOverviewProjectSchema,
 } from "@agentx/contracts/web";
@@ -42,7 +42,11 @@ export function createLessonsApi(host: AppHost) {
   /** UX-4b: a maintainer resumes a paused source; the lessons held while it was paused wait for people again (none goes live from here). */
   async resume(project: string, source: string, scope: string) { return settled(await api.send("POST", base(project) + "/sources/resume", LessonResumeSourceBodySchema.parse({ source, scope }), LessonResumeAnswerReaderSchema, NEVER)); },
   loaded: (taskId: string) => api.get(taskBase(taskId), LoadedLessonsReaderSchema),
-  async mark(taskId: string, lessonId: string, kind: "helpful" | "wrong_here") { return settled(await api.send("POST", taskBase(taskId) + "/" + one(lessonId) + "/feedback", LessonFeedbackBodySchema.parse({ kind }), LessonDoneAnswerReaderSchema, NEVER)); },
+  /** A maintainer makes this project stricter: every lesson needs a person first (Regulated). */
+  async requirePerson(project: string) { return settled(await api.send("POST", base(project) + "/preset", LessonPresetBodySchema.parse({ preset: "regulated" }), LessonPresetAnswerReaderSchema, NEVER)); },
+  /** Going back to Standard is a loosening: it asks a different maintainer or admin to approve (the answer says `needsApproval`), or applies at once for the only person who can decide. */
+  async allowTrial(project: string) { return settled(await api.send("POST", base(project) + "/preset", LessonPresetBodySchema.parse({ preset: "standard" }), LessonPresetAnswerReaderSchema, NEVER)); },
+  async mark(taskId: string, lessonId: string, kind: "helpful" | "wrong_here" | "thumbs_down") { return settled(await api.send("POST", taskBase(taskId) + "/" + one(lessonId) + "/feedback", LessonFeedbackBodySchema.parse({ kind }), LessonDoneAnswerReaderSchema, NEVER)); },
  };
 }
 export function useLessonsApi() { const host = useAppHost();return useMemo(() => createLessonsApi(host), [host]); }

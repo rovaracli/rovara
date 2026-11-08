@@ -15,7 +15,7 @@ export const LessonViewStatusSchema = z.enum(LESSON_VIEW_STATUSES);
 /** The reasons for a tier, as the classifier writes them. A reason this build does not know is shown with no words (never the raw code). */
 export const LESSON_TIER_REASONS = [
   "reviewer_stage", "review_check", "escalation_words", "command_or_url", "encoded_content", "risky_path", "judge_escalate", "not_a_fact", "citations_not_verified",
-  "not_plain_declarative", "source_not_trusted", "scope_not_one_repo", "stage_not_allowed", "contradiction", "restricted_source", "supersedes_higher_tier", "cited_fact",
+  "not_plain_declarative", "source_not_trusted", "scope_not_one_repo", "stage_not_allowed", "contradiction", "restricted_source", "supersedes_higher_tier", "cited_fact", "capability_request",
 ] as const;
 
 /**
@@ -85,7 +85,9 @@ export const LessonViewSchema = z.object({
   /** Whether the evidence includes a measured outcome (a send-back, a revert or a failed check), and how many tasks back it. */
   measured: z.boolean(), supportTasks: z.number().int().min(0).max(50),
   needs: LessonNeedsSchema.optional(),
-  approvals: z.array(z.object({ by: LessonPersonSchema, at: z.number(), mode: z.enum(["one", "second_person", "sole_owner_exception", "auto"]) }).strict()).max(10),
+  approvals: z.array(z.object({ by: LessonPersonSchema, at: z.number(), mode: z.enum(["one", "second_person", "sole_owner_exception", "auto", "trial"]) }).strict()).max(10),
+  /** Live with no approval, on trial for 14 days (approve by exception), or stable after it. Absent: a person approved it. */
+  trial: z.enum(["trial", "stable"]).optional(),
   /** Sent back to a person (for example kept on code alone after its sources were deleted), or the lesson it contradicts, or a retire that waits for a person. */
   reviewRequired: z.literal(true).optional(), contradicts: z.string().max(64).optional(), retireProposed: z.literal(true).optional(), supersedes: z.string().max(64).optional(),
   rejectedReason: z.string().max(200).optional(),
@@ -104,6 +106,8 @@ export const LessonsViewSchema = z.object({
   /** How many people each tier needs before a lesson is used. */
   approval: z.object({ tier0: z.enum(["auto", "one", "two"]), tier1: z.enum(["one", "two"]), requiredGroups: z.array(z.string().max(100)).max(10) }).strict(),
   expiryDays: z.number().int().min(14).max(365).optional(),
+  /** The learning preset in force: Standard (a low-risk lesson from a member's own correction goes live on trial) or Regulated (every lesson needs a person), and whether the company's preset is the reason. */
+  preset: z.enum(["standard", "regulated"]), presetLockedByCompany: z.boolean(),
   /** Whether this viewer may approve, reject, retire and roll back. A viewer who may not still reads the active lessons. */
   canDecide: z.boolean(),
   waiting: z.array(LessonViewSchema).max(100), active: z.array(LessonViewSchema).max(200), removed: z.array(LessonViewSchema).max(50),
@@ -174,8 +178,11 @@ export const LoadedLessonRowSchema = z.object({
   /** False when this viewer cannot see the lesson's source: the row then has no words. */
   visible: z.boolean(), title: z.string().max(80).optional(), type: LessonTypeSchema.optional(), helpful: z.number().int().min(0).optional(), harmful: z.number().int().min(0).optional(),
   canMark: z.boolean(),
+  /** Live on trial or stable with no approval: the row offers the one-tap thumbs-down. */
+  trial: z.enum(["trial", "stable"]).optional(),
 }).strict();
-export const LoadedLessonsSchema = z.object({ lessons: z.array(LoadedLessonRowSchema).max(500) }).strict();
+/** `canThumbsDown`: the caller has a role in the project and may write, so the task page offers the one-tap thumbs-down only to someone it will work for. Absent (an older broker): offered, and the broker decides. */
+export const LoadedLessonsSchema = z.object({ lessons: z.array(LoadedLessonRowSchema).max(500), canThumbsDown: z.boolean().optional() }).strict();
 export const LoadedLessonsReaderSchema = forwardReader(LoadedLessonsSchema);
 
 // ---- request bodies
@@ -191,7 +198,16 @@ export const LessonRollbackBodySchema = z.object({ targetSetVersion: z.number().
 export const LessonResumeSourceBodySchema = z.object({ source: z.string().min(1).max(40), scope: z.string().min(1).max(300) }).strict();
 export const LessonResumeAnswerSchema = z.object({ resumed: z.boolean(), settled: z.number().int().min(0) }).strict();
 export const LessonResumeAnswerReaderSchema = forwardReader(LessonResumeAnswerSchema);
-export const LessonFeedbackBodySchema = z.object({ kind: z.enum(["helpful", "wrong_here"]) }).strict();
+export const LessonFeedbackBodySchema = z.object({ kind: z.enum(["helpful", "wrong_here", "thumbs_down"]) }).strict();
+/**
+ * Sets the preset of a project (a maintainer or admin) or of the company (an admin). Regulated applies at once. Standard is a loosening: it opens a proposal that a different maintainer or admin approves
+ * (or the only eligible person, through the sole-owner exception), like the tier-0 approval setting.
+ */
+export const LessonPresetBodySchema = z.object({ preset: z.enum(["standard", "regulated"]) }).strict();
+export const LessonPresetChangeBodySchema = z.object({ changeId: z.string().min(1).max(100) }).strict();
+/** `needsApproval` with a `changeId`: the change is a proposal waiting for a second person; `preset` is then the value still in force. */
+export const LessonPresetAnswerSchema = z.object({ preset: z.enum(["standard", "regulated"]), changed: z.boolean(), needsApproval: z.boolean().optional(), changeId: z.string().min(1).max(100).optional() }).strict();
+export const LessonPresetAnswerReaderSchema = forwardReader(LessonPresetAnswerSchema);
 
 export const LessonApproveAnswerSchema = z.object({ status: z.enum(["active", "pending"]), needs: z.enum(["nothing", "second_person", "group_member"]) }).strict();
 export const LessonApproveAnswerReaderSchema = forwardReader(LessonApproveAnswerSchema);
