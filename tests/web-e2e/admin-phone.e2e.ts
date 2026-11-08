@@ -20,15 +20,14 @@ async function fitsThePhone(page: Page) {
  expect(outside).toEqual([]);
 }
 const PAGES = [["/app/admin", "Company settings"], ["/app/admin/people", "People"], ["/app/admin/people/roles", "Roles"], ["/app/admin/invites", "Invites"], ["/app/admin/money/budgets", "Spending"], ["/app/admin/connections", "Connections"], ["/app/admin/models/sources", "AI models"], ["/app/admin/projects", "Projects"], ["/app/admin/agents", "Agents"], ["/app/admin/health", "Rovara service status"]] as const;
-for (const theme of ["light", "dark"] as const) test(`every main company settings page fits a 390px phone in ${theme}`, async ({ page }) => {
+// One test per page and theme: ten pages, each with an axe pass and a screenshot, ran past the 30-second test budget on CI's Firefox (it timed out, nothing overflowed), so each page gets the whole budget.
+for (const theme of ["light", "dark"] as const) for (const [path, heading] of PAGES) test(`${path} fits a 390px phone in ${theme}`, async ({ page }) => {
  await page.emulateMedia({ colorScheme: theme });
- for (const [path, heading] of PAGES) {
-  await page.goto(path);await expect(page.getByRole("heading", { name: heading, exact: true, level: 1 })).toBeVisible();
-  await expect(page.getByRole("button", { name: "Settings menu" })).toBeVisible();
-  await expect(page.getByRole("progressbar")).toHaveCount(0);
-  await fitsThePhone(page);await checkA11y(page, { theme });
-  if (theme === "light") await evidenceShot(page, { path: ".test-build/web-e2e/ux3-phone-" + path.replaceAll("/", "-") + ".png", fullPage: true });
- }
+ await page.goto(path);await expect(page.getByRole("heading", { name: heading, exact: true, level: 1 })).toBeVisible();
+ await expect(page.getByRole("button", { name: "Settings menu" })).toBeVisible();
+ await expect(page.getByRole("progressbar")).toHaveCount(0);
+ await fitsThePhone(page);await checkA11y(page, { theme });
+ if (theme === "light") await evidenceShot(page, { path: ".test-build/web-e2e/ux3-phone-" + path.replaceAll("/", "-") + ".png", fullPage: true });
 });
 test("the settings menu opens, lists every group, and a link closes it", async ({ page }) => {
  await page.goto("/app/admin/people");
