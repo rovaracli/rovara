@@ -77,6 +77,11 @@ export interface LearningCompletionInput {
   /** The route's alias (the company's own source alias, or a Rovara AI catalog id the company's order reaches) and its transport. */
   model: string;
   api: LearningCompletionApi;
+  /**
+   * Set for a model that reasons by default (OpenAI's families): the call asks for the least reasoning the model allows, so the hidden reasoning cannot use up a short answer budget and leave no text. Absent: the
+   * request carries no reasoning field at all (an Anthropic model thinks only when asked, and the Messages transport has no such field here).
+   */
+  reasoningEffort?: "minimal" | "low" | undefined;
 }
 
 export interface LearningCompletion {

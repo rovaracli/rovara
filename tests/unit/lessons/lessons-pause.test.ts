@@ -5,7 +5,7 @@ import { describe, expect, it } from "vitest";
 import { LESSONS_PAUSE_CODES, lessonsPauseText, teamRecordPk } from "../../../packages/contracts/src/index.js";
 import { lessonSubjectSource } from "../../../packages/broker/src/aws/broker/lesson-subject-source.js";
 import { taskKey, taskOwnerKey } from "../../../packages/broker/src/developer/task-records.js";
-import { LearningRefusal, dynamoPauseStore, pauseScopeOf, type CurrentPause, type LessonsPauseStore } from "../../../packages/broker/src/lessons/pause.js";
+import { LearningRefusal, MODEL_FAILURES_BEFORE_PAUSE, dynamoPauseStore, pauseScopeOf, type CurrentPause, type LessonsPauseStore } from "../../../packages/broker/src/lessons/pause.js";
 import type { PipelineModel } from "../../../packages/broker/src/lessons/ports.js";
 import { buildReflectorInput } from "../../../packages/broker/src/lessons/reflect-input.js";
 import { curateDraft, type CurateDeps } from "../../../packages/broker/src/lessons/curate.js";
@@ -18,9 +18,15 @@ import { Alerts, Audit, Clock, KEY, MemoryVectors, PROJECT, ScriptedModel, Spend
 class MemoryPause implements LessonsPauseStore {
   current = new Map<string, CurrentPause>();
   log: string[] = [];
+  failures = new Map<string, number>();
   private key(ws: string, project: string | undefined): string { return `${ws}/${project ?? "*"}`; }
   async record(ws: string, project: string, code: CurrentPause["code"]): Promise<void> { this.log.push(`record:${code}`); this.current.set(this.key(ws, pauseScopeOf(code) === "company" ? undefined : project), { code, at: 1, scope: pauseScopeOf(code) }); }
-  async clear(ws: string, project: string): Promise<void> { this.log.push("clear"); this.current.delete(this.key(ws, project)); this.current.delete(this.key(ws, undefined)); }
+  async clear(ws: string, project: string, only?: "project" | "company"): Promise<void> {
+    this.log.push("clear");
+    if (only !== "company") { this.current.delete(this.key(ws, project)); this.failures.delete(this.key(ws, project)); }
+    if (only !== "project") this.current.delete(this.key(ws, undefined));
+  }
+  async failed(ws: string, project: string): Promise<number> { const next = (this.failures.get(this.key(ws, project)) ?? 0) + 1; this.failures.set(this.key(ws, project), next); return next; }
   async read(ws: string, project: string): Promise<CurrentPause | undefined> { return this.current.get(this.key(ws, project)) ?? this.current.get(this.key(ws, undefined)); }
 }
 
@@ -118,10 +124,125 @@ describe("the reflector records why learning cannot run, and clears it when a ca
   });
 });
 
+describe("H3: a model that keeps failing is never silent", () => {
+  const failing = (n: number, error: Error = new Error("provider down")) => Array.from({ length: n }, () => error);
+  const reflectTimes = async (model: PipelineModel, times: number, over: Partial<ReflectDeps> = {}) => {
+    const world = deps(model, over);
+    for (let index = 0; index < times; index += 1) await reflectSubject(world.d, one());
+    return world;
+  };
+
+  it("pauses the project as model_failed after the third failure in a row, and not before", async () => {
+    expect(MODEL_FAILURES_BEFORE_PAUSE).toBe(3);
+    const model = new QuotingModel(failing(5), { ok: true, usd: 0.03 });
+    const world = deps(model);
+    for (let attempt = 1; attempt <= 2; attempt += 1) {
+      expect((await reflectSubject(world.d, one())).reason).toBe("model_error");
+      expect(await world.pause.read(WS, PROJECT)).toBeUndefined();
+    }
+    expect((await reflectSubject(world.d, one())).reason).toBe("model_error");
+    expect(await world.pause.read(WS, PROJECT)).toMatchObject({ code: "model_failed", scope: "project" });
+    expect(lessonsPauseText("model_failed")).toBe("Lessons paused: the AI provider is not answering");
+  });
+
+  it("covers every failure after the mint: a revoked key or a proxy fault (a plain error), an empty answer, learning off on the install, a guardrails read fault in the quote", async () => {
+    const errors = [new Error("MODEL_PROXY_UNAVAILABLE the learning model call failed"), new Error("MODEL_PROXY_UNAVAILABLE the learning model answered with no text"), Object.assign(new Error("CONFIG_INVALID learning calls are not set up on this install"), { code: "CONFIG_INVALID" })];
+    for (const error of errors) {
+      const { pause } = await reflectTimes(new QuotingModel(failing(3, error), { ok: true, usd: 0.03 }), 3);
+      expect((await pause.read(WS, PROJECT))?.code).toBe("model_failed");
+    }
+    // The quote itself throws (a guardrails read fault, a mint-side fault): the same count.
+    class ThrowingQuote extends QuotingModel { override async quote(): Promise<never> { throw new Error("guardrails unreadable"); } }
+    const { pause, } = await reflectTimes(new ThrowingQuote([], { ok: true, usd: 0.03 }), 3);
+    expect((await pause.read(WS, PROJECT))?.code).toBe("model_failed");
+  });
+
+  it("a success in between starts the count again, and clears an existing model_failed pause", async () => {
+    const model = new QuotingModel([new Error("down"), new Error("down"), reply(candidateJson()), new Error("down"), new Error("down")], { ok: true, usd: 0.03 });
+    const world = deps(model);
+    for (let index = 0; index < 5; index += 1) await reflectSubject(world.d, one());
+    // down, down, ok (resets), down, down: never three in a row.
+    expect(await world.pause.read(WS, PROJECT)).toBeUndefined();
+    const paused = new QuotingModel([new Error("down"), new Error("down"), new Error("down"), reply(candidateJson())], { ok: true, usd: 0.03 });
+    const again = deps(paused);
+    for (let index = 0; index < 3; index += 1) await reflectSubject(again.d, one());
+    expect((await again.pause.read(WS, PROJECT))?.code).toBe("model_failed");
+    expect((await reflectSubject(again.d, one())).status).toBe("ok");
+    expect(await again.pause.read(WS, PROJECT)).toBeUndefined();
+  });
+
+  it("a refusal before the key (no provider) is not counted as a failed call, and another project's failures are its own", async () => {
+    const refused = new QuotingModel([], { ok: false, code: "no_provider" });
+    const world = deps(refused);
+    for (let index = 0; index < 4; index += 1) await reflectSubject(world.d, one());
+    expect((await world.pause.read(WS, PROJECT))?.code).toBe("no_provider");
+    expect(world.pause.failures.size).toBe(0);
+    const model = new QuotingModel(failing(3), { ok: true, usd: 0.03 });
+    const other = deps(model);
+    for (let index = 0; index < 3; index += 1) await reflectSubject(other.d, { ...one(), project: "api" });
+    expect((await other.pause.read(WS, "api"))?.code).toBe("model_failed");
+    expect(await other.pause.read(WS, PROJECT)).toBeUndefined();
+  });
+
+  it("the curator's judge counts too: a judge call that keeps failing pauses the project", async () => {
+    const a = "Use withRetry from src/retry/index.ts for HTTP retries in the api service client calls";
+    const b = "Use withRetry from src/retry/index.ts for HTTP retries in the api service wrapper";
+    const model = new QuotingModel([new Error("down"), new Error("down"), new Error("down")], { ok: true, usd: 0.004 });
+    const pause = new MemoryPause();
+    // Three separate curations, each judging one pair (a fresh lesson set each time), against one pause store: three judge failures in a row for the project.
+    for (let round = 0; round < 3; round += 1) {
+      let n = 0;
+      const d: CurateDeps & { verifier: unknown; settings: unknown } = {
+        store: new InMemoryLessonStore(), embedder, vectors: new MemoryVectors(), judgeModel: model, spend: new Spend(), audit: new Audit(), alerts: new Alerts(), now: new Clock().now,
+        verifier: verifier("valid"), settings: settings(), newId: () => `les_${String(++n).padStart(4, "0")}`, pause,
+      };
+      await curateDraft(d, KEY, draft({ title: "Retries", description: "", body: a }));
+      await curateDraft(d, KEY, draft({ title: "Retries", description: "", body: b }));
+    }
+    expect(model.calls).toHaveLength(3);
+    expect((await pause.read(WS, PROJECT))?.code).toBe("model_failed");
+  });
+});
+
+describe("L1: the cheap look says why it refused", () => {
+  const withLook = (answer: "ok" | "month_full" | "too_large" | "unreadable"): Spend => Object.assign(new Spend(), { look: async () => answer });
+  it("a full month is the company's monthly limit; a call too large for the whole cap is a cost problem; an unreadable counter records nothing", async () => {
+    const expected = { month_full: "monthly_limit", too_large: "cost_too_high", unreadable: undefined } as const;
+    for (const look of ["month_full", "too_large", "unreadable"] as const) {
+      const model = new QuotingModel([], { ok: true, usd: 0.03 });
+      const { d, pause } = deps(model, { spend: withLook(look) });
+      expect(await reflectSubject(d, one())).toMatchObject({ status: "skipped", reason: "spend_refused" });
+      expect((await pause.read(WS, PROJECT))?.code).toBe(expected[look]);
+      expect(model.calls).toHaveLength(0);
+    }
+  });
+});
+
+describe("L4: Public keeps a per-task learning cap whatever the quote; Enterprise has none of its own", () => {
+  it("Public: a sized hold above $0.15 is refused as cost_too_high, and one at or under it runs", async () => {
+    const dear = new QuotingModel([reply(candidateJson())], { ok: true, usd: 0.16 });
+    const refused = deps(dear);
+    expect(await reflectSubject(refused.d, one())).toMatchObject({ status: "skipped", reason: "learning_paused" });
+    expect(dear.calls).toHaveLength(0);
+    expect((await refused.pause.read(WS, PROJECT))?.code).toBe("cost_too_high");
+    const fair = new QuotingModel([reply(candidateJson())], { ok: true, usd: 0.15 });
+    expect((await reflectSubject(deps(fair).d, one())).status).toBe("ok");
+  });
+
+  it("Enterprise: the same $1 quote runs (no per-task cap of its own; the company's budgets bind in the model's own admission)", async () => {
+    const dear = new QuotingModel([reply(candidateJson())], { ok: true, usd: 1 });
+    const world = deps(dear, { edition: "enterprise" });
+    expect((await reflectSubject(world.d, one())).status).toBe("ok");
+    expect(dear.calls[0]).toMatchObject({ budgetUsd: 1 });
+    expect(await world.pause.read(WS, PROJECT)).toBeUndefined();
+  });
+});
+
 describe("R6: a failed call counts toward the nightly budget; a call refused before it started does not", () => {
   it("adds the hold of a failed call to what the night has spent, so a provider that keeps failing stops the night", async () => {
     const model = new QuotingModel([new Error("provider down"), new Error("provider down"), new Error("provider down")], { ok: true, usd: 0.6 });
-    const { d } = deps(model);
+    // Enterprise has no per-task cap of its own, so the 0.6 hold is not refused for its size here.
+    const { d } = deps(model, { edition: "enterprise" });
     const budget = { spentUsd: 0, capUsd: 1 };
     expect((await reflectSubject(d, one(), budget)).reason).toBe("model_error");
     expect(budget.spentUsd).toBeCloseTo(0.6, 6);
@@ -166,6 +287,43 @@ describe("the pause store", () => {
     expect(await store.read(WS, "web")).toBeUndefined();
   });
 
+  it("L3: a reason already in force keeps the time it started; a different reason, or one after a success, starts a new time", async () => {
+    const db = new FakeDynamoDb();
+    let clock = 100;
+    const store = dynamoPauseStore({ documentClient: db, tableName: "team" }, () => clock);
+    await store.record(WS, "web", "no_provider");
+    clock = 500;
+    await store.record(WS, "web", "no_provider");
+    expect(await store.read(WS, "web")).toMatchObject({ code: "no_provider", at: 100 });
+    await store.record(WS, "web", "no_budget");
+    expect(await store.read(WS, "web")).toMatchObject({ code: "no_budget", at: 500 });
+    await store.clear(WS, "web");
+    clock = 900;
+    await store.record(WS, "web", "no_budget");
+    expect(await store.read(WS, "web")).toMatchObject({ at: 900 });
+  });
+
+  it("H3: counts failures in a row per project (a count and a time, nothing else), and a success clears them", async () => {
+    const { db, store } = table();
+    expect([await store.failed!(WS, "web"), await store.failed!(WS, "web"), await store.failed!(WS, "api")]).toEqual([1, 2, 1]);
+    const stored = db.get({ pk: teamRecordPk(WS, "web"), sk: "LESSONSET#FAILS" }) as Record<string, unknown>;
+    expect(Object.keys(stored).sort()).toEqual(["at", "count", "entityType", "pk", "sk"]);
+    await store.clear(WS, "web");
+    expect(await store.failed!(WS, "web")).toBe(1);
+    expect(await store.failed!(WS, "api")).toBe(2);
+  });
+
+  it("L3: clearing only the project's reason leaves the company's, and the other way round", async () => {
+    const { store } = table();
+    await store.record(WS, "web", "no_provider");
+    await store.record(WS, "web", "monthly_limit");
+    await store.clear(WS, "web", "project");
+    expect(await store.read(WS, "web")).toMatchObject({ code: "monthly_limit", scope: "company" });
+    await store.record(WS, "web", "no_provider");
+    await store.clear(WS, "web", "company");
+    expect(await store.read(WS, "web")).toMatchObject({ code: "no_provider", scope: "project" });
+  });
+
   it("a table that fails is never an error for learning", async () => {
     const failing = dynamoPauseStore({ documentClient: { send: async () => { throw new Error("down"); } }, tableName: "team" }, () => 1);
     await expect(failing.record(WS, "web", "no_provider")).resolves.toBeUndefined();
@@ -174,7 +332,7 @@ describe("the pause store", () => {
   });
 });
 
-describe("R2: a CI failure from the subject source's CI path is a measured outcome", () => {
+describe("R2 / L6: a CI failure is a measured outcome only when a person pushed the failing revision", () => {
   const TASK = randomUUID();
   const CREATOR = "creator-1", STARTER = "starter-1";
   function sourceSubject() {
@@ -205,15 +363,26 @@ describe("R2: a CI failure from the subject source's CI path is a measured outco
     return { measured: result.drafts[0]?.provenance.measured, ci: [...input.spans.values()].filter((span) => span.kind === "ci_failure") };
   };
 
-  it("through the real subject source: the CI span carries the worker-text trust 'system' and the CI source key, and the lesson is measured (a person stands behind it and the check is independent of them)", async () => {
+  it("L6: through the real subject source, a CI failure on a revision the AGENT pushed is kept as evidence (the span is in the prompt) but is not a measured outcome", async () => {
     const out = await measuredOf();
     expect(out.ci).toHaveLength(1);
     expect(out.ci[0]).toMatchObject({ trust: "system", sourceKey: "ci" });
+    expect(out.ci[0]).not.toHaveProperty("authorId");
+    expect(out.measured).toBe(false);
+  });
+
+  it("L6: a CI failure on a revision a PERSON pushed (a known member who is neither the lesson's author nor the task's initiator) is a measured outcome", async () => {
+    const out = await measuredOf((spans) => { for (const span of spans) if (span.kind === "ci_failure") span.authorId = "pusher-9"; });
     expect(out.measured).toBe(true);
   });
 
-  it("a CI-shaped span that did not come through the CI path (no CI source key) is still not measured", async () => {
-    const out = await measuredOf((spans) => { for (const span of spans) if (span.kind === "ci_failure") delete span.sourceKey; });
+  it("L6: the person who pushed must be someone else: the task's initiator pushing the failing revision is not independent evidence either", async () => {
+    const out = await measuredOf((spans) => { for (const span of spans) if (span.kind === "ci_failure") span.authorId = STARTER; });
+    expect(out.measured).toBe(false);
+  });
+
+  it("a CI-shaped span that did not come through the CI path (no CI source key) is still not measured, even with a pusher named", async () => {
+    const out = await measuredOf((spans) => { for (const span of spans) if (span.kind === "ci_failure") { delete span.sourceKey; span.authorId = "pusher-9"; } });
     expect(out.measured).toBe(false);
   });
 

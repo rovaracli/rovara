@@ -58,7 +58,7 @@ const view = () => LessonsViewSchema.parse({
  project: "payments", mode: "Suggest", lockedByCompany: false, approval: { tier0: "one", tier1: "one", requiredGroups: [] }, canDecide: true,
  waiting: state.lessons.filter(item => item.status === "pending").map(lesson), active: state.lessons.filter(item => item.status === "active").map(lesson),
  removed: state.lessons.filter(item => item.status === "retired" || item.status === "rejected").map(lesson), queued: 2, hidden: 0, truncated: [], setVersion: 4, snapshots: [],
- ...(paused === undefined ? {} : { paused: { code: paused, at: NOW } }),
+ ...(paused === undefined ? {} : { paused: { code: paused, at: NOW, scope: paused === "monthly_limit" ? "company" : "project" } }),
 });
 const stale = { error: { code: "CHANGE_STALE", message: "This lesson changed while you were looking at it. Reload and check it again." } };
 

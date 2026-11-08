@@ -48,6 +48,7 @@ const LearningCompletionArgsSchema = z.object({
   maxOutputTokens: z.number().int().min(1).max(2_000),
   model: z.string().min(1).max(512),
   api: z.enum(["anthropic-messages", "openai-responses", "openai-completions"]),
+  reasoningEffort: z.enum(["minimal", "low"]).optional(),
 }).strict().superRefine((args, context) => {
   const limits = LEARNING_LIMITS[args.purpose];
   if (args.system.length > limits.systemChars) context.addIssue({ code: "custom", path: ["system"], message: "too long for this purpose" });

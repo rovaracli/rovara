@@ -67,6 +67,33 @@ describe("ModelProxyClient.learningCompletion", () => {
     });
   }
 
+  it("H2: a reasoning effort is sent in each OpenAI transport's own field, and never on the Messages transport or when none is asked for", async () => {
+    const responses = proxy({ api: "openai-responses" });
+    await responses.client.learningCompletion({ ...input("openai-responses"), reasoningEffort: "minimal" });
+    expect(responses.seen.find((entry) => entry.path === "/v1/responses")!.body).toMatchObject({ reasoning: { effort: "minimal" } });
+    const completions = proxy({ api: "openai-completions" });
+    await completions.client.learningCompletion({ ...input("openai-completions"), reasoningEffort: "low" });
+    expect(completions.seen.find((entry) => entry.path === "/chat/completions")!.body).toMatchObject({ reasoning_effort: "low" });
+    for (const api of ["openai-responses", "openai-completions", "anthropic-messages"] as const) {
+      const plain = proxy({ api });
+      await plain.client.learningCompletion(input(api));
+      expect(JSON.stringify(plain.seen.find((entry) => entry.path === REPLIES[api][0])!.body)).not.toMatch(/reasoning/u);
+    }
+    const messages = proxy();
+    await messages.client.learningCompletion({ ...input(), reasoningEffort: "low" });
+    expect(JSON.stringify(messages.seen.find((entry) => entry.path === "/v1/messages")!.body)).not.toMatch(/reasoning/u);
+  });
+
+  it("H2: the function's request schema takes a minimal or low effort and nothing else", () => {
+    const request = (reasoningEffort: unknown) => ModelAccessRequestSchema.safeParse({ op: "learningCompletion", args: { ...input("openai-responses"), ...(reasoningEffort === undefined ? {} : { reasoningEffort }) } }).success;
+    expect([request(undefined), request("minimal"), request("low"), request("high"), request("")]).toEqual([true, true, true, false, false]);
+  });
+
+  it("H2: a reply with no text (a reasoning model that spent the whole budget) is a failure with fixed words, never an empty answer", async () => {
+    const { client } = proxy({ api: "openai-responses", inference: () => json({ output: [{ type: "reasoning", summary: [] }], usage: { output_tokens: 120 } }) });
+    expect((await failure(client.learningCompletion(input("openai-responses")))).message).toMatch(/no text/u);
+  });
+
   it("the call is made with the broker's key, never the master key, and the function does nothing else: it mints, reads and deletes no key", async () => {
     const { client, seen } = proxy();
     await client.learningCompletion(input());

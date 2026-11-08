@@ -2,7 +2,7 @@
 // code turns into lesson drafts; the model never writes to a store. Any parse failure drops the whole output, with no retry loop.
 import { randomUUID } from "node:crypto";
 import { cleanForLearning, requestsCapabilityChange } from "./guards.js";
-import { isLearningRefusal, notePause, noteRecovered, type LessonsPauseStore } from "./pause.js";
+import { isLearningRefusal, noteModelFailure, notePause, noteRecovered, pauseOfLook, spendLook, type LessonsPauseStore } from "./pause.js";
 import { emitAudit, learningCaps, modeAllows, resolveLearning, type Edition, type LearningSettingsReader } from "./policy.js";
 import type { Clock, LearningSpend, LessonAuditSink, Metrics, PipelineModel } from "./ports.js";
 import { buildReflectorInput, type MarkedSpan, type ReflectSubject } from "./reflect-input.js";
@@ -50,9 +50,8 @@ export interface ReflectDeps {
 }
 
 const MAX_OUTPUT_TOKENS = 1800;
-/** The source key of CI failures, as the subject source writes it, and the actor of a CI failure that names no person. */
+/** The source key of CI failures, as the subject source writes it. */
 const CI_SOURCE_KEY = "ci";
-const CI_ACTOR = "system:ci";
 /** Kinds a person writes. Plans are agent text, and outcomes, CI output and loaded lessons are not people. */
 const PERSON_KINDS: ReadonlySet<string> = new Set(["send_back", "remembered", "human_edit", "close_reason", "review_finding", "intent"]);
 
@@ -81,22 +80,21 @@ export async function reflectSubject(deps: ReflectDeps, subject: ReflectSubject,
   const request = { purpose: "reflect" as const, system: input.system, user: input.user, maxOutputTokens: MAX_OUTPUT_TOKENS, workspaceId: subject.workspaceId, project: subject.project };
   // The hold is sized to the call by the model itself (the cheapest suitable model's worst-case price for this prompt). A model that cannot quote keeps the edition's fixed per-task figure.
   let estimate: number;
-  let perTaskCap = caps.perTaskUsd;
+  const perTaskCap = caps.perTaskUsd;
   if (deps.model.quote !== undefined) {
     let quoted: Awaited<ReturnType<NonNullable<PipelineModel["quote"]>>>;
-    try { quoted = await deps.model.quote(request); } catch { deps.metrics?.count("learning.reflect_failed", { reason: "model_error" }); return none("dropped", "model_error"); }
+    try { quoted = await deps.model.quote(request); } catch { deps.metrics?.count("learning.reflect_failed", { reason: "model_error" }); await noteModelFailure(deps.pause, subject.workspaceId, subject.project); return none("dropped", "model_error"); }
     if (!quoted.ok) { await notePause(deps.pause, subject.workspaceId, subject.project, quoted.code); return none("skipped", "learning_paused"); }
     estimate = quoted.usd;
-    // Only a cap somebody set on purpose binds a sized call; the edition's fixed figure was the stand-in for a price nobody knew.
-    perTaskCap = deps.capsOverride?.perTaskUsd;
+    // Public keeps its per-task cap whatever the quote (owner rule "Public keeps the caps"): a call whose sized hold is above it is refused. Enterprise has none of its own (`learningCaps`).
     if (perTaskCap !== undefined && estimate > perTaskCap) { await notePause(deps.pause, subject.workspaceId, subject.project, "cost_too_high"); return none("skipped", "learning_paused"); }
   } else estimate = caps.perTaskUsd ?? 0.15;
   if (budget?.capUsd !== undefined && budget.spentUsd + estimate > budget.capUsd) return none("skipped", "night_cap");
-  let admitted: boolean;
-  try { admitted = await deps.spend.admit(subject.workspaceId, estimate); } catch { admitted = false; }
-  if (!admitted) {
-    // The only reason the cheap look refuses is the company's learning month (the budgets are checked when the call is quoted).
-    await notePause(deps.pause, subject.workspaceId, subject.project, "monthly_limit");
+  const look = await spendLook(deps.spend, subject.workspaceId, estimate);
+  if (look !== "ok") {
+    // The month is full (the company's), the call is larger than the month's whole cap (a cost problem), or the counter could not be read (a fault: nothing is recorded as a reason).
+    const code = pauseOfLook(look);
+    if (code !== undefined) await notePause(deps.pause, subject.workspaceId, subject.project, code);
     return none("skipped", "spend_refused");
   }
 
@@ -113,6 +111,7 @@ export async function reflectSubject(deps: ReflectDeps, subject: ReflectSubject,
     // The model's key held its cap in the company's spend ledger; whatever the failed call cost is settled from there. A failed call may have spent money, so it counts toward the nightly budget (R6).
     if (budget !== undefined) budget.spentUsd += estimate;
     deps.metrics?.count("learning.reflect_failed", { reason: "model_error" });
+    await noteModelFailure(deps.pause, subject.workspaceId, subject.project);
     return none("dropped", "model_error");
   }
   await noteRecovered(deps.pause, subject.workspaceId, subject.project);
@@ -208,10 +207,10 @@ async function toDraft(
     events: [
       ...(subject.outcome === "reverted" ? [{ kind: "revert" as const, actor: subject.revertedBy }] : []),
       ...everything.filter((s) => s.kind === "send_back" && s.trust === "member").map((s) => ({ kind: "send_back" as const, actor: s.authorId })),
-      // A CI failure is a structured fact: it counts when it came through the source's CI path (`sourceKey` "ci", set by the broker's subject source, never by span text) whatever trust its text carries
-      // (worker-written text is `system`); the older `rovara` trust still counts. CI does not record who pushed the failing revision, so such a failure is the automated check's own (`system:ci`), which is neither one of the
-      // lesson's authors nor the task's initiator; an author the source did record is compared as for any outcome.
-      ...everything.filter((s) => s.kind === "ci_failure" && (s.sourceKey === CI_SOURCE_KEY || s.trust === "rovara")).map((s) => ({ kind: "ci_failure" as const, actor: s.authorId ?? (s.sourceKey === CI_SOURCE_KEY ? CI_ACTOR : undefined) })),
+      // A CI failure is a structured fact: it came through the source's CI path (`sourceKey` "ci", set by the broker's subject source, never by span text) whatever trust its text carries (worker-written text is
+      // `system`); the older `rovara` trust still counts. It is a MEASURED outcome only when the failing revision was pushed by a person: the span's author is that known member, compared as for any outcome (not one of
+      // the lesson's authors, not the task's initiator). A failure on a revision the agent pushed names no person, so it stays evidence in the prompt and measures nothing: the agent cannot corroborate its own lesson.
+      ...everything.filter((s) => s.kind === "ci_failure" && (s.sourceKey === CI_SOURCE_KEY || s.trust === "rovara")).map((s) => ({ kind: "ci_failure" as const, actor: s.authorId })),
     ],
   });
   return {

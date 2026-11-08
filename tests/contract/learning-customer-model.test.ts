@@ -7,6 +7,7 @@ import {
   type Edition, type ModelIdentifier, type ModelSource,
 } from "../../packages/contracts/src/index.js";
 import { listPricesPerMillion } from "@agentx/model-runtime/catalog";
+import { reasonsByDefault, unfitForLearning } from "../../packages/broker/src/model-sources/diagnosis-provider.js";
 import { ModelSourceStore } from "../../packages/broker/src/model-sources/store.js";
 import type { RoutingDependencies } from "../../packages/broker/src/model-sources/routing.js";
 import { keyIdOf } from "../../packages/broker/src/org/budget.js";
@@ -16,7 +17,7 @@ import { FakeDynamoDb } from "../support/fake-dynamodb.js";
 import { fakeModelAccess } from "../support/fake-model-access.js";
 import { TEST_ORG } from "../support/orgs.js";
 import {
-  LEARNING_CALL_BUDGET_USD, LEARNING_MONTH_FULL, LEARNING_NO_BUDGET, LEARNING_ALL_FORBIDDEN, LEARNING_NO_PROVIDER, LEARNING_TOO_DEAR, customerLearningModel, worstCaseTokens,
+  LEARNING_CALL_BUDGET_USD, LEARNING_HOLD_MARGIN, LEARNING_MONTH_FULL, LEARNING_NO_BUDGET, LEARNING_ALL_FORBIDDEN, LEARNING_NO_PROVIDER, LEARNING_TOO_DEAR, customerLearningModel, worstCaseTokens,
 } from "../../packages/broker/src/aws/broker/learning-model.js";
 import { LEARNING_COUNTER } from "../../packages/broker/src/aws/broker/learning-spend.js";
 import { ledgerOf } from "../../packages/broker/src/aws/broker/sweeps-and-readiness.js";
@@ -30,13 +31,15 @@ const UNPRICED = { provider: "anthropic", modelId: "acme-tuned-1" };
 const ALIAS = sourceAlias(TEST_ORG, SRC_ANTHROPIC, SONNET);
 const MONTH = new Date().toISOString().slice(0, 7);
 const anthropic = (models: ModelIdentifier[] = [SONNET]): ModelSource => ModelSourceSchema.parse({ kind: "anthropic", sourceId: SRC_ANTHROPIC, label: "Anthropic", models: models.map((catalog) => ({ catalog })) });
-// The hold is sized to the call: the chosen model's worst-case list price. The one model here is Sonnet ($3 in, $15 out per million tokens); the request below is 2 + 2 ASCII tokens, 256 tokens of framing and 1800 output tokens.
-const HOLD = (258 * 3 + 1800 * 15) / 1_000_000;
+// The hold is sized to the call: the chosen model's worst-case list price plus the margin. The one model here is Sonnet ($3 in, $15 out per million tokens); the request below is 3 + 3 UTF-8 bytes (a token each at the bound),
+// 256 tokens of framing and 1800 output tokens.
+const withMargin = (usd: number) => Math.ceil(usd * LEARNING_HOLD_MARGIN * 1e6) / 1e6;
+const HOLD = withMargin((262 * 3 + 1800 * 15) / 1_000_000);
 const near = (value: number | undefined, expected: number) => expect(value ?? 0).toBeCloseTo(expected, 6);
 
 afterEach(() => { vi.restoreAllMocks(); });
 
-function install(options: { forbidden?: ModelIdentifier[]; edition?: Edition; withOp?: boolean; projectOrder?: string[]; monthlyCapUsd?: number; withAgents?: boolean; unpriced?: boolean; models?: ModelIdentifier[]; lessonsModel?: ModelIdentifier } = {}) {
+function install(options: { forbidden?: ModelIdentifier[]; edition?: Edition; withOp?: boolean; projectOrder?: string[]; monthlyCapUsd?: number; withAgents?: boolean; unpriced?: boolean; models?: ModelIdentifier[]; lessonsModel?: ModelIdentifier; source?: ModelSource } = {}) {
   const db = new FakeDynamoDb();
   // The company's forbidden models are read now from its guardrails document.
   if (options.forbidden !== undefined) db.set({ ...agentGuardrailsKey(TEST_ORG), guardrails: { ...DEFAULT_AGENT_GUARDRAILS, forbiddenModels: options.forbidden }, revision: 1 });
@@ -64,8 +67,9 @@ function install(options: { forbidden?: ModelIdentifier[]; edition?: Edition; wi
   const seedCounter = (sk: string, counts: { spentUsd?: number; committedUsd?: number }) => db.set({ ...spendCounterKey(TEST_ORG, MONTH, sk), entityType: "SPEND_COUNTER", ...counts });
   const limitProject = (limitUsd: number) => db.set({ pk: `ORG#${TEST_ORG}#PROJECT_AI#web`, sk: "SETTINGS", entityType: "PROJECT_AI", projectPays: false, monthlyBudgetUsd: limitUsd, revision: 1 });
   const ready = async () => {
-    await store.save({ orgId: TEST_ORG, source: anthropic(options.unpriced === true ? [UNPRICED] : options.models ?? [SONNET]), mode: "create", by: "dev-owner" });
-    await store.setOrder({ orgId: TEST_ORG, order: [SRC_ANTHROPIC], by: "dev-owner" });
+    const source = options.source ?? anthropic(options.unpriced === true ? [UNPRICED] : options.models ?? [SONNET]);
+    await store.save({ orgId: TEST_ORG, source, mode: "create", by: "dev-owner" });
+    await store.setOrder({ orgId: TEST_ORG, order: [source.sourceId], by: "dev-owner" });
   };
   /** The sweep, as it runs `ms` after now. */
   const sweepLater = async (ms: number) => {
@@ -105,14 +109,14 @@ describe("the learning model runs on the company's own provider", () => {
 
 describe("the model is the company's CHEAPEST suitable one, not its main assistant model (R8)", () => {
   const aliasOf = (model: ModelIdentifier) => sourceAlias(TEST_ORG, SRC_ANTHROPIC, model);
-  const priceOf = (model: ModelIdentifier, tokens: number) => { const price = listPricesPerMillion(model)!; return (tokens * price.input + 1800 * price.output) / 1_000_000; };
+  const priceOf = (model: ModelIdentifier, tokens: number) => { const price = listPricesPerMillion(model)!; return withMargin((tokens * price.input + 1800 * price.output) / 1_000_000); };
 
   it("picks the lowest list price among the company's models whatever their order, and holds that model's price", async () => {
     const t = install({ models: [SONNET, HAIKU] });
     await t.ready();
     await t.model.complete(t.request);
     expect(t.calls[0]).toMatchObject({ model: aliasOf(HAIKU) });
-    near(t.record(t.keyIds()[0]!)?.capUsd, priceOf(HAIKU, 258));
+    near(t.record(t.keyIds()[0]!)?.capUsd, priceOf(HAIKU, 262));
   });
 
   it("a model with no list price comes after every priced one, and is used when it is the only one", async () => {
@@ -164,7 +168,7 @@ describe("the model is the company's CHEAPEST suitable one, not its main assista
     await t.ready();
     const quoted = await t.model.quote!(t.request);
     expect(quoted.ok).toBe(true);
-    near(quoted.ok ? quoted.usd : 0, priceOf(HAIKU, 258));
+    near(quoted.ok ? quoted.usd : 0, priceOf(HAIKU, 262));
     expect(t.proxy.mintKey).not.toHaveBeenCalled();
     t.limitProject(1);
     t.seedCounter("PROJECT#web", { spentUsd: 0.999, committedUsd: 0.999 });
@@ -177,6 +181,101 @@ describe("the model is the company's CHEAPEST suitable one, not its main assista
   it("the usage is the company's: learning spend reads as automatic, never as a person's (R9)", async () => {
     expect(spendOriginKind("learning")).toBe("autonomous");
     expect(spendOriginKind("app")).toBe("person");
+  });
+});
+
+const SRC_OPENROUTER = "src_rrrrrrrrrrrrrrrrrrrr";
+const SRC_OPENAI = "src_oooooooooooooooooooo".slice(0, 24);
+const openrouter = (...models: string[]): ModelSource => ModelSourceSchema.parse({ kind: "openrouter", sourceId: SRC_OPENROUTER, label: "OpenRouter", models: models.map((modelId) => ({ catalog: { provider: "openrouter", modelId } })) });
+const openai = (...models: string[]): ModelSource => ModelSourceSchema.parse({ kind: "openai", sourceId: SRC_OPENAI, label: "OpenAI", models: models.map((modelId) => ({ catalog: { provider: "openai", modelId } })) });
+const orAlias = (modelId: string) => sourceAlias(TEST_ORG, SRC_OPENROUTER, { provider: "openrouter", modelId });
+const oaAlias = (modelId: string) => sourceAlias(TEST_ORG, SRC_OPENAI, { provider: "openai", modelId });
+
+describe("H1: a model priced at zero, a router and a free variant are never the 'cheapest' (they can train on the text or spend uncounted)", () => {
+  const PAID = "anthropic/claude-haiku-4.5";
+
+  it("next to a paid model, `openrouter/auto` (listed at $0, routes to a real model and bills the company) and a ':free' variant are passed over", async () => {
+    const t = install({ source: openrouter("openrouter/auto", "cohere/north-mini-code:free", PAID) });
+    await t.ready();
+    await t.model.complete(t.request);
+    expect(t.calls[0]).toMatchObject({ model: orAlias(PAID) });
+    // The hold is the paid model's price (not the $0.001 floor of a model listed at nothing).
+    expect(t.record(t.keyIds()[0]!)?.capUsd).toBeGreaterThan(0.01);
+  });
+
+  it("unfitForLearning: free variants, routers and any catalog model listed at a zero price are unfit, whatever else is true of them; paid models are not", () => {
+    const unfit = (provider: string, modelId: string) => unfitForLearning({ provider, modelId });
+    expect([unfit("openrouter", "openrouter/auto"), unfit("openrouter", "openrouter/free"), unfit("openrouter", "typesafe/jev-router"), unfit("openrouter", "google/gemma-4-31b-it:free"), unfit("openrouter", "anything:FREE")]).toEqual([true, true, true, true, true]);
+    // Zero price from the catalog itself (not the name): the entries listed at nothing.
+    expect(unfit("openrouter", "auto")).toBe(true);
+    expect([unfit("anthropic", "claude-haiku-4-5"), unfit("openai", "gpt-5-nano"), unfit("openrouter", "anthropic/claude-haiku-4.5"), unfit("anthropic", "acme-tuned-1")]).toEqual([false, false, false, false]);
+    expect([reasonsByDefault({ provider: "openai", modelId: "gpt-5-nano" }), reasonsByDefault({ provider: "openai", modelId: "gpt-4.1-nano" }), reasonsByDefault({ provider: "anthropic", modelId: "claude-haiku-4-5" }), reasonsByDefault({ provider: "anthropic", modelId: "acme-tuned-1" })]).toEqual([true, false, false, false]);
+  });
+
+  it("when only free, router or zero-priced models are served, learning has no suitable model: the refusal says so and no key is made", async () => {
+    for (const id of ["openrouter/auto", "openrouter/free", "cohere/north-mini-code:free", "typesafe/jev-router"]) {
+      const t = install({ source: openrouter(id) });
+      await t.ready();
+      await expect(t.model.complete(t.request)).rejects.toMatchObject({ code: "no_suitable_model" });
+      expect(t.proxy.mintKey).not.toHaveBeenCalled();
+      expect(await t.model.quote!(t.request)).toEqual({ ok: false, code: "no_suitable_model" });
+    }
+  });
+
+  it("a stored lessons model that is unfit is ignored on read: the cheapest paid model is used, as for an unserved setting", async () => {
+    const t = install({ source: openrouter("openrouter/auto", PAID), lessonsModel: { provider: "openrouter", modelId: "openrouter/auto" } });
+    await t.ready();
+    await t.model.complete(t.request);
+    expect(t.calls[0]).toMatchObject({ model: orAlias(PAID) });
+  });
+});
+
+describe("H2: a model that reasons by default is ranked after the ones that do not, and is asked for the least reasoning", () => {
+  it("gpt-5-nano is cheaper than gpt-4.1-nano on paper, but it spends a short answer budget on reasoning: the non-reasoning model is chosen", async () => {
+    const t = install({ source: openai("gpt-5-nano", "gpt-4.1-nano") });
+    await t.ready();
+    await t.model.complete(t.request);
+    expect(t.calls[0]).toMatchObject({ model: oaAlias("gpt-4.1-nano") });
+    expect(t.calls[0]).not.toHaveProperty("reasoningEffort");
+  });
+
+  it("when a reasoning model is the only one, the call asks for minimal reasoning (low for the families that have no minimal), and its hold still covers the whole output budget", async () => {
+    const nano = install({ source: openai("gpt-5-nano") });
+    await nano.ready();
+    await nano.model.complete(nano.request);
+    expect(nano.calls[0]).toMatchObject({ model: oaAlias("gpt-5-nano"), api: "openai-responses", reasoningEffort: "minimal" });
+    const price = listPricesPerMillion({ provider: "openai", modelId: "gpt-5-nano" })!;
+    near(nano.record(nano.keyIds()[0]!)?.capUsd, Math.max(withMargin((262 * price.input + 1800 * price.output) / 1_000_000), 0.001));
+    expect(nano.record(nano.keyIds()[0]!)?.capUsd).toBeGreaterThanOrEqual((1800 * price.output) / 1_000_000);
+    const o4 = install({ source: openai("o4-mini") });
+    await o4.ready();
+    await o4.model.complete(o4.request);
+    expect(o4.calls[0]).toMatchObject({ reasoningEffort: "low" });
+  });
+
+  it("an Anthropic model lists reasoning in the catalog but thinks only when asked: it is not demoted, and no reasoning field is sent", async () => {
+    const t = install({ models: [HAIKU] });
+    await t.ready();
+    await t.model.complete(t.request);
+    expect(Object.keys(t.calls[0]!)).not.toContain("reasoningEffort");
+    const mixed = install({ source: openrouter("openai/gpt-5-nano", "anthropic/claude-haiku-4.5") });
+    await mixed.ready();
+    await mixed.model.complete(mixed.request);
+    expect(mixed.calls[0]).toMatchObject({ model: orAlias("anthropic/claude-haiku-4.5") });
+  });
+});
+
+describe("L4 / L5: the budget codes are exact", () => {
+  it("a rate-limit style code from the mint is a plain failure, not 'the AI budget has run out'", async () => {
+    const t = install();
+    await t.ready();
+    t.proxy.mintKey.mockRejectedValueOnce(Object.assign(new Error("slow down"), { code: "RATE_LIMITED" }));
+    const failure = await t.model.complete(t.request).then(() => undefined, (error: unknown) => error);
+    expect(failure).toBeInstanceOf(Error);
+    expect((failure as { code?: string }).code).toBe("RATE_LIMITED");
+    expect(failure).not.toHaveProperty("name", "LearningRefusal");
+    t.proxy.mintKey.mockRejectedValueOnce(Object.assign(new Error("full"), { code: "PROJECT_BUDGET_EXCEEDED" }));
+    await expect(t.model.complete(t.request)).rejects.toMatchObject({ code: "no_budget" });
   });
 });
 
@@ -265,19 +364,31 @@ describe("the money: reserved before the call, blocked after it, settled when th
     await expect(t.model.complete({ ...t.request, user: "x".repeat(40_000), budgetUsd: 0.05 })).rejects.toThrow(LEARNING_TOO_DEAR);
     expect(t.proxy.mintKey).not.toHaveBeenCalled();
     await t.model.complete({ ...t.request, user: "x".repeat(40_000) });
-    near(t.record(t.keyIds()[0]!)?.capUsd, ((Math.ceil(40_000 / 3) + 1 + 256) * 3 + 1800 * 15) / 1_000_000);
+    near(t.record(t.keyIds()[0]!)?.capUsd, withMargin(((40_000 + 3 + 256) * 3 + 1800 * 15) / 1_000_000));
   });
 
-  it("R7: non-Latin text is counted a token per byte, so a CJK prompt is not under-held by the old three-characters-a-token guess", async () => {
+  it("R7 / M1: every byte is a token at the bound (CJK, hex, base64 and dense JSON included), so no prompt is under-held by a characters-per-token guess", async () => {
     const t = install();
     await t.ready();
     const cjk = "漢".repeat(3_000);
     await t.model.complete({ ...t.request, user: cjk });
-    // 3000 characters of 3 bytes: 9000 tokens at the bound (the old guess said 1000), plus the framing and the system text.
-    const inputTokens = 9_000 + 1 + 256;
-    near(t.record(t.keyIds()[0]!)?.capUsd, (inputTokens * 3 + 1800 * 15) / 1_000_000);
-    expect(worstCaseTokens("abc")).toBe(1);
+    // 3000 characters of 3 bytes: 9000 tokens at the bound (the old guess said 1000), plus the framing and the system text (3 bytes).
+    const inputTokens = 9_000 + 3 + 256;
+    near(t.record(t.keyIds()[0]!)?.capUsd, withMargin((inputTokens * 3 + 1800 * 15) / 1_000_000));
+    expect(worstCaseTokens("abc")).toBe(3);
     expect(worstCaseTokens("é")).toBe(2);
+    // Text that tokenizes at one or two characters a token (hex, base64, digit runs) is still bounded: never more tokens than bytes.
+    for (const dense of ["0123456789abcdef".repeat(64), "QUJDREVGR0g=".repeat(64), "1234567890".repeat(100)]) expect(worstCaseTokens(dense)).toBe(dense.length);
+  });
+
+  it("M1: the hold carries a margin above the worst-case list price, so a proxy price a little above the list price cannot take a call past its hold", async () => {
+    const t = install();
+    await t.ready();
+    await t.model.complete(t.request);
+    const worst = (262 * 3 + 1800 * 15) / 1_000_000;
+    const held = t.record(t.keyIds()[0]!)?.capUsd ?? 0;
+    expect(held).toBeGreaterThanOrEqual(worst * 1.2);
+    expect(LEARNING_HOLD_MARGIN).toBeGreaterThan(1);
   });
 
   it("R3: a key capped below the hold (a concurrent mint took the room after the look) is blocked and refused, and no call is made", async () => {
@@ -359,7 +470,7 @@ describe("Public: the $20 learning month is held atomically with the key (M2, L1
   });
 
   it("concurrent calls cannot take the month past its cap, whatever order they finish in (this proves the transaction's condition on a fake table, not DynamoDB's own atomicity)", async () => {
-    const t = install({ monthlyCapUsd: 0.1 });
+    const t = install({ monthlyCapUsd: 0.12 });
     await t.ready();
     const results = await Promise.allSettled(Array.from({ length: 6 }, () => t.model.complete(t.request)));
     expect(results.filter((result) => result.status === "fulfilled")).toHaveLength(3);
@@ -372,7 +483,7 @@ describe("Public: the $20 learning month is held atomically with the key (M2, L1
     await t.ready();
     await t.model.complete({ ...t.request, purpose: "reflect" });
     await t.model.complete({ ...t.request, purpose: "judge", maxOutputTokens: 120 });
-    const judgeHold = (258 * 3 + 120 * 15) / 1_000_000;
+    const judgeHold = withMargin((262 * 3 + 120 * 15) / 1_000_000);
     near(t.counter(LEARNING_COUNTER)?.committedUsd, HOLD + judgeHold);
     // The small call finishes and settles first, then the big one: neither borrows the other's hold.
     t.proxy.setKeySpent(t.proxy.mintedKeys()[1]!, 0.004);

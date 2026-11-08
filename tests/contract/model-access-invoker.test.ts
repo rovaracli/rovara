@@ -138,6 +138,15 @@ describe("R4: a learning call is sent to the function once, never retried by the
     expect(await new LambdaClient({ region: "us-west-2" }).config.maxAttempts()).toBeGreaterThan(1);
   });
 
+  it("H2: a reasoning effort reaches the function, and an absent one adds no field", async () => {
+    const { invoker, sent } = invokerWith(async () => answer({ ok: true, result: { text: "{}", model: "m" } }));
+    const base = { key: "k".repeat(24), purpose: "reflect" as const, system: "s", user: "u", maxOutputTokens: 10, model: "alias", api: "openai-responses" as const };
+    await invoker.learningCompletion({ ...base, reasoningEffort: "minimal" });
+    await invoker.learningCompletion(base);
+    expect((payloadOf(sent[0]!) as { args: Record<string, unknown> }).args.reasoningEffort).toBe("minimal");
+    expect(Object.keys((payloadOf(sent[1]!) as { args: Record<string, unknown> }).args)).not.toContain("reasoningEffort");
+  });
+
   it("learningCompletion goes through the single-attempt client; every other operation goes through the ordinary one", async () => {
     const used: string[] = [];
     const lambda = (name: string, body: unknown): ModelAccessInvokerInput["lambda"] => ({ send: async () => { used.push(name); return answer(body); } });

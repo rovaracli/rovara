@@ -55,27 +55,44 @@ export const LEDGERED: readonly LessonAuditAction[] = Object.keys(MAP) as Lesson
 /** The ids the ledger accepts for an actor: a member id is the canonical developer id; anything else is the system. */
 const actorOf = (actor: string | undefined): AuditActor => (actor !== undefined && /^[a-f0-9]{64}$/u.test(actor) ? { kind: "member", id: actor } : { kind: "system", id: "rovara" });
 
-/** The audit sink for the lessons library over the broker's record audit sink (which writes the pending item and sends it). */
-export function lessonAuditSink(write: RecordAuditSink, now: () => number): LessonAuditSink {
+/** How a lessons event can ride in the caller's own transaction: the pending item(s) for an event, and the flush of a committed one (the broker's outbox). */
+export interface LessonAuditOutbox { pending(event: AuditEventInput): unknown[]; flush(event: AuditEventInput): Promise<void> }
+
+/** The audit sink for the lessons library over the broker's record audit sink (which writes the pending item and sends it). With an `outbox` it can also `stage` an event into the caller's transaction. */
+export function lessonAuditSink(write: RecordAuditSink, now: () => number, outbox?: LessonAuditOutbox): LessonAuditSink {
   let counter = 0;
+  /** The ledger event for a lessons event, or undefined for bookkeeping that is skipped. */
+  const eventOf = (event: LessonAuditEvent, required: boolean): AuditEventInput | undefined => {
+    const mapped = MAP[event.action];
+    if (mapped === undefined) {
+      // An event that grants something and cannot be recorded must not pass; bookkeeping may be skipped.
+      if (required || !BOOKKEEPING.includes(event.action)) throw new Error(`the ledger has no name for ${event.action}`);
+      return undefined;
+    }
+    const org = OrgIdSchema.safeParse(event.workspaceId);
+    if (!org.success) throw new Error("the audit event names no company");
+    const at = new Date(now()).toISOString();
+    // One event per occurrence: the time and a process counter keep two approvals of one lesson apart.
+    counter += 1;
+    const lessonId = event.lessonId ?? `${event.project}`;
+    return {
+      eventId: auditEventId(mapped.action, lessonId, at, String(counter), event.actor ?? "system"), orgId: org.data, action: mapped.action, actor: actorOf(event.actor),
+      target: { kind: "lesson", id: lessonId.slice(0, 100) }, occurredAt: at, facts: mapped.facts(event),
+    };
+  };
   return {
     async emit(event, options) {
-      const mapped = MAP[event.action];
-      if (mapped === undefined) {
-        // An event that grants something and cannot be recorded must not pass; bookkeeping may be skipped.
-        if (options?.required === true || !BOOKKEEPING.includes(event.action)) throw new Error(`the ledger has no name for ${event.action}`);
-        return;
-      }
-      const org = OrgIdSchema.safeParse(event.workspaceId);
-      if (!org.success) throw new Error("the audit event names no company");
-      const at = new Date(now()).toISOString();
-      // One event per occurrence: the time and a process counter keep two approvals of one lesson apart.
-      counter += 1;
-      const lessonId = event.lessonId ?? `${event.project}`;
-      await write({
-        eventId: auditEventId(mapped.action, lessonId, at, String(counter), event.actor ?? "system"), orgId: org.data, action: mapped.action, actor: actorOf(event.actor),
-        target: { kind: "lesson", id: lessonId.slice(0, 100) }, occurredAt: at, facts: mapped.facts(event),
-      });
+      const built = eventOf(event, options?.required === true);
+      if (built !== undefined) await write(built);
     },
+    ...(outbox === undefined ? {} : {
+      stage(event) {
+        const built = eventOf(event, true);
+        const items = built === undefined ? [] : outbox.pending(built);
+        // No pending item means no ledger (or an event the ledger refused to shape): a change that must be audited does not go on.
+        if (built === undefined || items.length === 0) throw new Error("the audit ledger cannot take this event");
+        return { items, async sent() { try { await outbox.flush(built); } catch { /* the pending item is durable; the drain sends it */ } } };
+      },
+    }),
   };
 }

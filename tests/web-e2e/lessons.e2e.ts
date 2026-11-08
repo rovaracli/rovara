@@ -108,7 +108,8 @@ test("when learning cannot run the Lessons tab says why in one line, and says no
  await request.post("/__mock/lessons-paused", { data: { code: "monthly_limit" } });
  await page.reload();
  const line = page.getByTestId("lessons-paused");
- await expect(line).toHaveText("Lessons paused: monthly learning limit reached");
+ await expect(page.getByTestId("lessons-paused-line")).toHaveText("Lessons paused: monthly learning limit reached (for the whole company, every project)");
+ await expect(page.getByTestId("lessons-paused-since")).toHaveText(/^since \d{4}-\d{2}-\d{2}$/u);
  await expect(line).toHaveAttribute("role", "status");
  await evidenceShot(page, { path: ".test-build/web-e2e/lessons-paused-desktop.png", fullPage: true });
  await checkA11y(page, { theme: "light" });
@@ -118,5 +119,5 @@ test("when learning cannot run the Lessons tab says why in one line, and says no
  expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
  await request.post("/__mock/lessons-paused", { data: { code: "all_models_forbidden" } });
  await page.reload();
- await expect(page.getByTestId("lessons-paused")).toHaveText("Lessons paused: every available model is forbidden");
+ await expect(page.getByTestId("lessons-paused-line")).toHaveText("Lessons paused: every available model is forbidden");
 });

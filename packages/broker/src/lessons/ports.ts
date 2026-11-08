@@ -35,6 +35,11 @@ export interface LessonVectors {
  */
 export interface LearningSpend {
   admit(workspaceId: string, estimateUsd: number): Promise<boolean>;
+  /**
+   * The same look with the reason when it refuses (lane 1b): `month_full` (the company's learning month has no room), `too_large` (one call of this size cannot fit the month's whole cap) or `unreadable` (the counter
+   * could not be read: a fault, not a limit). Absent: the caller asks `admit` and reads a refusal as `month_full`.
+   */
+  look?(workspaceId: string, estimateUsd: number): Promise<"ok" | "month_full" | "too_large" | "unreadable">;
 }
 
 export interface LessonAuditEvent {
@@ -43,7 +48,15 @@ export interface LessonAuditEvent {
   facts: Record<string, string | number | boolean>;
 }
 /** `required`: the event grants something (`requireAudit`), so a sink that has no ledger name for it must FAIL (throw) instead of passing without a record. */
-export interface LessonAuditSink { emit(event: LessonAuditEvent, options?: { required?: boolean }): Promise<void> }
+export interface LessonAuditSink {
+  emit(event: LessonAuditEvent, options?: { required?: boolean }): Promise<void>;
+  /**
+   * The event as items for the CALLER's own DynamoDB transaction (lane 1b): the audit's pending item, to be written in the same `TransactWrite` as the change it records, so the change and its audit line commit
+   * together or not at all. `sent` flushes the committed event to the ledger's queue afterwards (it never throws into the caller). Throws when the event has no ledger name or the install has no ledger.
+   * Absent: the sink can only `emit` after the fact, and a caller that needs both in one transaction refuses.
+   */
+  stage?(event: LessonAuditEvent): { items: unknown[]; sent(): Promise<void> };
+}
 export interface AlertSink { alert(workspaceId: string, project: string, code: "source_spike_paused" | "project_volume_spike" | "lesson_contradiction" | "retire_proposed"): Promise<void> }
 export interface Metrics { count(name: string, tags?: Record<string, string>): void }
 

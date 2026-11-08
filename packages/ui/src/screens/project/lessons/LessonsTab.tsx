@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
-import { lessonsPauseText } from "@agentx/contracts/web";
+import { lessonsPauseLine } from "@agentx/contracts/web";
 import { ApiError } from "../../../api/errors.js";
 import { lessonsKey, useLessons } from "../../../api/lessons.js";
 import { Banner } from "../../../design/Banner.js";
@@ -51,7 +51,7 @@ export function LessonsTab({ project }: { project: string }) {
   <p className="rv-muted">{T.INTRO}</p>
   {off && <Banner title={T.OFF} tone="warning" />}
   {/* Never silent: when learning cannot run for this project (no provider, the monthly limit, every model forbidden, the budgets), the tab says why in one line. */}
-  {!off && view.paused !== undefined && <p role="status" className="rv-lessons-paused" data-testid="lessons-paused">{lessonsPauseText(view.paused.code)}</p>}
+  {!off && view.paused !== undefined && <p role="status" className="rv-lessons-paused" data-testid="lessons-paused"><span data-testid="lessons-paused-line">{lessonsPauseLine(view.paused)}</span> <span className="rv-muted" data-testid="lessons-paused-since">since {dateWords(view.paused.at)}</span></p>}
   {collecting && <Banner title={T.COLLECT} tone="info" />}
   {view.lockedByCompany && <p className="rv-muted">{T.LOCKED}</p>}
   {!view.canDecide && <p className="rv-muted">{T.READ_ONLY}</p>}

@@ -5,7 +5,7 @@ import { z } from "zod";
 import { oppositePolarity, requestsCapabilityChange } from "./guards.js";
 import { expiryWindowMs } from "./expiry.js";
 import { emitAudit } from "./policy.js";
-import { isLearningRefusal, notePause, noteRecovered, type LessonsPauseStore } from "./pause.js";
+import { isLearningRefusal, noteModelFailure, notePause, noteRecovered, pauseOfLook, spendLook, type LessonsPauseStore } from "./pause.js";
 import type { AlertSink, Embedder, LearningSpend, LessonDeps, LessonVectors, PipelineModel } from "./ports.js";
 import { attributableSources, noteCandidateSources } from "./sources.js";
 import type { LessonDraft } from "./reflect.js";
@@ -71,15 +71,18 @@ async function judge(deps: CurateDeps, key: ScopeKey, mine: LessonDraft, other: 
     // The hold is sized to the call by the model itself (the cheapest suitable model's worst-case price); a model that cannot quote keeps the fixed judge estimate.
     let estimate = JUDGE_ESTIMATE_USD;
     if (deps.judgeModel.quote !== undefined) {
-      const quoted = await deps.judgeModel.quote(request);
+      let quoted: Awaited<ReturnType<NonNullable<PipelineModel["quote"]>>>;
+      try { quoted = await deps.judgeModel.quote(request); } catch { await noteModelFailure(deps.pause, key.workspaceId, key.project); return undefined; }
       if (!quoted.ok) { await notePause(deps.pause, key.workspaceId, key.project, quoted.code); return undefined; }
       estimate = quoted.usd;
     }
-    if (!(await deps.spend.admit(key.workspaceId, estimate))) { await notePause(deps.pause, key.workspaceId, key.project, "monthly_limit"); return undefined; }
+    const look = await spendLook(deps.spend, key.workspaceId, estimate);
+    if (look !== "ok") { const code = pauseOfLook(look); if (code !== undefined) await notePause(deps.pause, key.workspaceId, key.project, code); return undefined; }
     // The model's key holds the estimate in the company's spend ledger and is settled there; a failed call needs nothing given back here.
     let reply: Awaited<ReturnType<PipelineModel["complete"]>>;
     try { reply = await deps.judgeModel.complete({ ...request, budgetUsd: estimate }); } catch (error) {
       if (isLearningRefusal(error)) await notePause(deps.pause, key.workspaceId, key.project, error.code);
+      else await noteModelFailure(deps.pause, key.workspaceId, key.project);
       return undefined;
     }
     await noteRecovered(deps.pause, key.workspaceId, key.project);

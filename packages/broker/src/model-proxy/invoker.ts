@@ -102,8 +102,8 @@ export class ModelAccessInvoker implements ModelAccess {
   }
 
   async learningCompletion(input: LearningCompletionInput): Promise<LearningCompletion> {
-    const { key, purpose, system, user, maxOutputTokens, model, api } = input;
-    return this.parseResult(await this.invoke({ op: "learningCompletion", args: { key, purpose, system, user, maxOutputTokens, model, api } }, LEARNING_INVOKE_TIMEOUT_MS, this.input.learningLambda), LearningCompletionResultSchema);
+    const { key, purpose, system, user, maxOutputTokens, model, api, reasoningEffort } = input;
+    return this.parseResult(await this.invoke({ op: "learningCompletion", args: { key, purpose, system, user, maxOutputTokens, model, api, ...(reasoningEffort === undefined ? {} : { reasoningEffort }) } }, LEARNING_INVOKE_TIMEOUT_MS, this.input.learningLambda), LearningCompletionResultSchema);
   }
 
   private parseResult<T>(result: unknown, schema: z.ZodType<T>): T {

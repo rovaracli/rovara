@@ -63,12 +63,20 @@ describe("lessons paused (lane 1b: never silent)", () => {
   const quiet = await openLessons();
   expect(screen.queryByTestId("lessons-paused")).toBeNull();
   quiet.unmount();
-  await openLessons({ state: { view: view({ paused: { code: "monthly_limit", at: NOW } }) } });
-  expect(screen.getByTestId("lessons-paused").textContent).toBe("Lessons paused: monthly learning limit reached");
+  await openLessons({ state: { view: view({ paused: { code: "no_provider", at: NOW } }) } });
+  expect(screen.getByTestId("lessons-paused-line").textContent).toBe("Lessons paused: no AI provider is connected for this project");
+ });
+ it("L2 / L3: says when the pause started, and labels a company-wide reason as company-wide (a project reason is not)", async () => {
+  const company = await openLessons({ state: { view: view({ paused: { code: "monthly_limit", at: NOW, scope: "company" } }) } });
+  expect(screen.getByTestId("lessons-paused-line").textContent).toBe("Lessons paused: monthly learning limit reached (for the whole company, every project)");
+  expect(screen.getByTestId("lessons-paused-since").textContent).toBe(`since ${new Date(NOW).toISOString().slice(0, 10)}`);
+  company.unmount();
+  await openLessons({ state: { view: view({ paused: { code: "model_failed", at: NOW, scope: "project" } }) } });
+  expect(screen.getByTestId("lessons-paused-line").textContent).toBe("Lessons paused: the AI provider is not answering");
  });
  it("reads a reason this build does not know as a plain 'Lessons paused', never as raw text", async () => {
   await openLessons({ state: { view: { ...view(), paused: { code: "something_new", at: NOW } } } });
-  expect(screen.getByTestId("lessons-paused").textContent).toBe("Lessons paused");
+  expect(screen.getByTestId("lessons-paused-line").textContent).toBe("Lessons paused");
  });
  it("says nothing about it while learning is off (the tab already says it is off)", async () => {
   await openLessons({ state: { view: view({ mode: "Off", waiting: [], active: [], paused: { code: "no_provider", at: NOW } }) } });

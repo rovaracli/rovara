@@ -16,6 +16,9 @@ import type { DeveloperCaller, DeveloperRouteDependencies } from "./types.js";
 export const LEARNING_MODEL_PATH = "/v1/app/org/learning-model";
 export const LEARNING_MODEL_BROWSER_MESSAGE = "Use a live browser session to change the model lessons run on.";
 
+/** Said in the GET answer: the choice is checked here at the company level, and each project uses it only while that project's own sources serve it. */
+export const LEARNING_MODEL_NOTE = "A project whose AI sources do not serve this model learns on its cheapest suitable model instead.";
+
 const Ref = z.object({ provider: z.string().min(1).max(128), modelId: z.string().min(1).max(256) }).strict();
 const BodySchema = z.discriminatedUnion("action", [
   z.object({ action: z.literal("set"), model: Ref, expected: Ref.nullable() }).strict(),
@@ -32,7 +35,7 @@ export async function routeLearningModel(deps: DeveloperRouteDependencies, calle
   const modelDeps: LessonsModelDeps = { table, routing: deps.agents?.modelRouting ?? {}, forbidden, audit: deps.lessons.audit, now: deps.now };
   if (request.method === "GET") {
     const [model, candidates] = await Promise.all([readLessonsModel(table, caller.orgId), allowedModels(modelDeps, caller.orgId)]);
-    return new StatusReply(200, { model: model ?? null, candidates: candidates.slice(0, 200).map((candidate) => ({ provider: candidate.provider, modelId: candidate.modelId })) });
+    return new StatusReply(200, { model: model ?? null, note: LEARNING_MODEL_NOTE, candidates: candidates.slice(0, 200).map((candidate) => ({ provider: candidate.provider, modelId: candidate.modelId })) });
   }
   if (request.method !== "POST") return undefined;
   if (caller.browserSession !== true) throw agentXError("FORBIDDEN", LEARNING_MODEL_BROWSER_MESSAGE);

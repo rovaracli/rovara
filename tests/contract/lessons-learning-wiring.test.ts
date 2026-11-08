@@ -6,7 +6,7 @@ import { hasTaskEndHandlers } from "../../packages/broker/src/agents/task-end.js
 import { INLINE_LEARNING_TASK_END_ENABLED, installLearningTaskEnd, learningDepsInUse, uninstallLearningTaskEnd } from "../../packages/broker/src/aws/broker/learning-wiring.js";
 import type { learningDepsFor, lessonsRuntimeFor } from "../../packages/broker/src/aws/broker/lessons-wiring.js";
 import { LEARNING_COUNTER } from "../../packages/broker/src/aws/broker/learning-spend.js";
-import { installLessons, lessonSimilarityFor } from "../../packages/broker/src/aws/broker/lessons-wiring.js";
+import { installLessons, lessonSimilarityFor, pauseStillAppliesFor } from "../../packages/broker/src/aws/broker/lessons-wiring.js";
 import { announceHumanSendBack } from "../../packages/broker/src/lessons/send-back-events.js";
 import { DENYING_SPEND, NO_EMBEDDER, NO_VECTORS, REFUSING_MODEL } from "../../packages/broker/src/lessons/runtime.js";
 import { FakeDynamoDb } from "../support/fake-dynamodb.js";
@@ -55,6 +55,43 @@ describe("the learning dependencies", () => {
     expect(learning.process.pause).toBe(runtime.routes.pause);
     await runtime.routes.pause!.record(TEST_ORG, "web", "no_provider");
     expect(await runtime.routes.pause!.read(TEST_ORG, "web")).toMatchObject({ code: "no_provider", scope: "project" });
+  });
+
+  it("L3: the pause view is wired with a check that clears a reason whose cause is gone, and the audit outbox is wired where the install has a ledger", () => {
+    const { dependencies } = install();
+    installLessons(dependencies as never);
+    const runtime = dependencies.lessons as NonNullable<ReturnType<typeof lessonsRuntimeFor>>;
+    expect(runtime.routes.pauseStillApplies).toBeTypeOf("function");
+    // No ledger on this install: the audit sink cannot stage a change into a transaction.
+    expect("stage" in runtime.routes.audit).toBe(false);
+    const ledgered = install();
+    ledgered.dependencies.audit = { sqs: { send: async () => ({}) }, queueUrl: "http://queue", documentClient: ledgered.db, tableName: "state", now: Date.now, log: () => undefined };
+    installLessons(ledgered.dependencies as never);
+    expect("stage" in (ledgered.dependencies.lessons as NonNullable<ReturnType<typeof lessonsRuntimeFor>>).routes.audit).toBe(true);
+  });
+
+  it("L3: pauseStillAppliesFor re-asks the model's quote for a provider, model or budget reason; the month's look for the monthly limit; and keeps the size and provider-failure reasons for the next call", async () => {
+    const quotes: unknown[] = [];
+    let answer: { ok: boolean; code?: string } = { ok: true };
+    const model = { complete: async () => ({ text: "", costUsd: 0, model: "m" }), quote: async (request: unknown) => { quotes.push(request); if (answer.ok === undefined) throw new Error("down"); return answer as never; } };
+    let look: "ok" | "month_full" = "ok";
+    const spend = { admit: async () => look === "ok", look: async () => look };
+    const applies = pauseStillAppliesFor(model, spend);
+    // The cause is gone (a provider was connected): the quote is accepted, so the reason no longer applies.
+    expect(await applies(TEST_ORG, "web", "no_provider")).toBe(false);
+    expect(quotes[0]).toMatchObject({ purpose: "reflect", workspaceId: TEST_ORG, project: "web" });
+    answer = { ok: false, code: "no_provider" };
+    expect(await applies(TEST_ORG, "web", "no_provider")).toBe(true);
+    expect(await applies(TEST_ORG, "web", "all_models_forbidden")).toBe(true);
+    // A reason that depends on the size of the call, or on what the provider did, is left for the next learning call.
+    answer = { ok: true };
+    expect(await applies(TEST_ORG, "web", "cost_too_high")).toBe(true);
+    expect(await applies(TEST_ORG, "web", "model_failed")).toBe(true);
+    expect(await applies(TEST_ORG, "web", "monthly_limit")).toBe(false);
+    look = "month_full";
+    expect(await applies(TEST_ORG, "web", "monthly_limit")).toBe(true);
+    const broken = pauseStillAppliesFor({ ...model, quote: async () => { throw new Error("down"); } }, spend);
+    expect(await broken(TEST_ORG, "web", "no_budget")).toBe(true);
   });
 
   it("are not built without the model path (the lessons runtime then keeps its refusing stand-ins), without the Team record, or when a caller gave its own", async () => {

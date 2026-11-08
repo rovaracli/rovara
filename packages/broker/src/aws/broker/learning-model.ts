@@ -5,8 +5,8 @@
 // not its main assistant model), or the "lessons model" an admin set. With no usable provider the call THROWS a `LearningRefusal` with a fixed code (the reflector records it as the project's "lessons paused"
 // reason). There is NO Rovara-paid route anywhere in this file: no support key, no fallback model, no default.
 //
-// The hold is SIZED to the call (lane 1b): the chosen model's list price x the prompt's worst-case token count (non-Latin text counts a token per byte, ASCII three characters per token) + `maxOutputTokens` x the
-// output price. A model with no list price holds the caller's budget (or the default). Only the company's budgets, the Public $20 month or the protocol's ceiling can refuse it.
+// The hold is SIZED to the call (lane 1b): the chosen model's list price x the prompt's worst-case token count (one token per UTF-8 byte, a true ceiling for any byte-level tokenizer) + `maxOutputTokens` x the
+// output price, plus a margin (`LEARNING_HOLD_MARGIN`) for a proxy price that is not exactly the list price. A model with no list price holds the caller's budget (or the default). Only the company's budgets, the Public $20 month or the protocol's ceiling can refuse it.
 //
 // The money follows the product's ordinary key lifecycle (spend/ledger.ts), so it is booked where every other chat turn and task is, and is never read before the proxy has flushed it:
 //   1. `admitWork` (the trial, the machine time, the room of the org's and the project's budgets) and the worst-case price check;
@@ -23,7 +23,7 @@ import { readGuardrails } from "../../agents/guardrails.js";
 import { LearningRefusal } from "../../lessons/pause.js";
 import type { Edition } from "../../lessons/policy.js";
 import type { PipelineModel } from "../../lessons/ports.js";
-import { chooseLearningRoute, learningWorstCaseUsd } from "../../model-sources/diagnosis-provider.js";
+import { chooseLearningRoute, learningWorstCaseUsd, reasonsByDefault } from "../../model-sources/diagnosis-provider.js";
 import type { RoutingDependencies } from "../../model-sources/routing.js";
 import { admitWork, mintOperationKey } from "../../spend/admission.js";
 import { ScopeFullError, blockOperationKeys } from "../../spend/ledger.js";
@@ -47,17 +47,15 @@ export const LEARNING_ALL_FORBIDDEN = "every model learning could use is forbidd
 export const LEARNING_NO_SUITABLE_MODEL = "no available model can take this learning call";
 /** A learning key lives for at most five minutes (the call itself is bounded to 100 s). */
 export const LEARNING_KEY_TTL_SECONDS = 300;
-/** ASCII text (prose, code, JSON) runs shorter than three characters per token only in odd cases, so three characters a token is the bound for it. Anything else counts one token per UTF-8 byte, the most any tokenizer can make of it (R7: CJK is about a token a character). */
-const ASCII_CHARS_PER_TOKEN = 3;
 /** The role markers and framing a provider adds around a prompt. */
 const FRAMING_TOKENS = 256;
+/** The hold is the worst case plus this much: the proxy's price for a route need not equal the catalog's list price, and the proxy checks a key's budget only before a request. */
+export const LEARNING_HOLD_MARGIN = 1.25;
 const LEARNING_AGENT_NAME = "Learning";
 
-/** The most tokens a text can be: ASCII at three characters a token, every other byte a token of its own. */
+/** The most tokens a text can be: one per UTF-8 byte. Hex, base64, digit runs, dense JSON and CJK all stay at or under it; no byte-level tokenizer makes more tokens than bytes. */
 export function worstCaseTokens(text: string): number {
-  let ascii = 0, other = 0;
-  for (const byte of Buffer.from(text, "utf8")) { if (byte < 0x80) ascii += 1; else other += 1; }
-  return Math.ceil(ascii / ASCII_CHARS_PER_TOKEN) + other;
+  return Buffer.byteLength(text, "utf8");
 }
 
 export interface CustomerLearningModelOptions {
@@ -74,11 +72,15 @@ export interface CustomerLearningModelOptions {
   log?: (event: string, fields: Record<string, string | number>) => void;
 }
 
-const BUDGET_CODE = /BUDGET|TRIAL|MACHINE_TIME|LIMIT/u;
-/** A refusal of the company's own budgets (the org's, the project's, the trial) is a learning pause with its own code; anything else (the proxy down, a bug) is the caller's plain failure. */
+/** The codes `admitWork` and the mint refuse the company's own budgets with (the org's, the member's, the project's, the agent's, the chain's, the test allowance, the trial, the machine time). Exact codes only: a rate limit or any other code is a plain failure. */
+const BUDGET_CODES: ReadonlySet<string> = new Set([
+  "BUDGET_EXCEEDED", "ORG_BUDGET_EXCEEDED", "PROJECT_BUDGET_EXCEEDED", "AGENT_BUDGET_EXCEEDED", "AGENT_BUDGET_REQUIRED", "CHAIN_BUDGET_EXCEEDED", "CHAIN_BUDGET_REQUIRED",
+  "TEST_ALLOWANCE_USED", "TRIAL_LOCKED", "MACHINE_TIME_EXCEEDED",
+]);
+/** A refusal of the company's own budgets is a learning pause with its own code; anything else (the proxy down, a bug) is the caller's plain failure. */
 const asBudgetRefusal = (error: unknown): LearningRefusal | undefined => {
   const code = (error as { code?: unknown } | null)?.code;
-  return typeof code === "string" && code !== "MODEL_PROXY_UNAVAILABLE" && BUDGET_CODE.test(code) ? new LearningRefusal("no_budget", LEARNING_NO_BUDGET, { cause: error }) : undefined;
+  return typeof code === "string" && BUDGET_CODES.has(code) ? new LearningRefusal("no_budget", LEARNING_NO_BUDGET, { cause: error }) : undefined;
 };
 
 type CompleteRequest = Parameters<PipelineModel["complete"]>[0];
@@ -106,11 +108,14 @@ export function customerLearningModel(dependencies: AwsBrokerDependencies, optio
     if (chosen.route.api === undefined) throw new LearningRefusal("no_provider", LEARNING_NO_PROVIDER);
     // The hold is the call's own worst case on the model's list price. A caller's budget is a ceiling on it. A model with no list price holds the caller's budget (or the default): its key's cap is the only bound.
     const worst = learningWorstCaseUsd(chosen.model, shape);
-    if (worst !== undefined && request.budgetUsd !== undefined && worst > request.budgetUsd) throw new LearningRefusal("cost_too_high", LEARNING_TOO_DEAR);
-    const hold = worst === undefined ? Math.min(request.budgetUsd ?? options.budgetUsd ?? LEARNING_CALL_BUDGET_USD, LEARNING_MAX_CALL_BUDGET_USD) : Math.max(Math.ceil(worst * 1e6) / 1e6, 0.001);
+    const sized = worst === undefined ? undefined : Math.max(Math.ceil(worst * LEARNING_HOLD_MARGIN * 1e6) / 1e6, 0.001);
+    if (sized !== undefined && request.budgetUsd !== undefined && sized > request.budgetUsd + 1e-9) throw new LearningRefusal("cost_too_high", LEARNING_TOO_DEAR);
+    const hold = sized ?? Math.min(request.budgetUsd ?? options.budgetUsd ?? LEARNING_CALL_BUDGET_USD, LEARNING_MAX_CALL_BUDGET_USD);
     if (hold > LEARNING_MAX_CALL_BUDGET_USD) throw new LearningRefusal("cost_too_high", LEARNING_TOO_DEAR);
     if (!(hold >= 0.001)) throw new LearningRefusal("no_budget", LEARNING_NO_BUDGET);
-    return { orgId, project, chosen: { model: chosen.model, alias: chosen.route.alias, sourceId: chosen.route.sourceId, api: chosen.route.api }, hold: cleanUsd(hold) };
+    // A model that reasons by default is asked for the least reasoning it allows (OpenAI's `gpt-5` family takes "minimal"; the others "low"), so the hidden reasoning cannot eat a short answer budget.
+    const effort = chosen.route.api !== "anthropic-messages" && reasonsByDefault(chosen.model) ? (/gpt-5/iu.test(chosen.model.modelId) ? "minimal" as const : "low" as const) : undefined;
+    return { orgId, project, chosen: { model: chosen.model, alias: chosen.route.alias, sourceId: chosen.route.sourceId, api: chosen.route.api, ...(effort === undefined ? {} : { reasoningEffort: effort }) }, hold: cleanUsd(hold) };
   }
 
   /** The company's existing budgets, like any chat turn of the project: nothing left refuses, before any key exists. */
@@ -173,7 +178,7 @@ export function customerLearningModel(dependencies: AwsBrokerDependencies, optio
         if (minted.maxBudgetUsd + 1e-9 < hold) throw new LearningRefusal("no_budget", LEARNING_NO_BUDGET);
         const answer = await completion({
           key: minted.key, purpose: request.purpose, system: request.system, user: request.user, maxOutputTokens: request.maxOutputTokens,
-          model: chosen.alias, api: chosen.api,
+          model: chosen.alias, api: chosen.api, ...(chosen.reasoningEffort === undefined ? {} : { reasoningEffort: chosen.reasoningEffort }),
         });
         return { text: answer.text, costUsd: minted.maxBudgetUsd, model: answer.model };
       } finally {

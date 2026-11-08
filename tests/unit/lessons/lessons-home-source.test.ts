@@ -43,6 +43,15 @@ describe("the Lessons waiting card", () => {
     expect(web.cardId).not.toBe(api.cardId);
   });
 
+  it("L2: a company-wide reason is labelled as company-wide on the card", async () => {
+    setLessonsHomeReader(async () => ({ waiting: 0, paused: { code: "monthly_limit", at: 5, scope: "company" } }));
+    const [card] = await lessonsHomeSource.list(deps([{ project: "web", role: "maintainer" }]), caller, {} as never);
+    expect(card!.reason).toBe("Lessons paused: monthly learning limit reached (for the whole company, every project)");
+    setLessonsHomeReader(async () => ({ waiting: 0, paused: { code: "no_provider", at: 5, scope: "project" } }));
+    const [own] = await lessonsHomeSource.list(deps([{ project: "web", role: "maintainer" }]), caller, {} as never);
+    expect(own!.reason).toBe("Lessons paused: no AI provider is connected for this project");
+  });
+
   it("reads at most the bounded number of projects", async () => {
     let reads = 0;
     setLessonsHomeReader(async () => { reads += 1; return { waiting: 1 }; });
