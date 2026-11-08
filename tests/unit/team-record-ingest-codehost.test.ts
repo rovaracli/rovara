@@ -251,21 +251,94 @@ describe("S1: a delivery GitHub sends again is the same change", () => {
 
 describe("reverts of Rovara pull requests", () => {
   const rovaraPr = { taskId: "task-1", project: "shop", number: 5, url: "https://github.com/acme/shop/pull/5", candidateHeadSha: sha(20), mergeCommitSha: sha(30) };
+  // SRL-3 (controller ee, 2026-11-08): a revert told only by a pushed commit's message counts only when the host's compare shows that exact commit non-merge, verified, committed by its author
+  // (or the host's web-flow account), the author a live member and the pusher a live non-bot member. Anything else, or a compare that fails, records nothing.
+  const COMMIT = sha(40);
+  const goodCommit = { sha: COMMIT, author: alice, committer: alice, verified: true };
+  const rangeOf = (commit: Record<string, unknown> | undefined, over: Partial<CodeHostDiff> = {}): CodeHostDiff => ({ status: "ahead", truncated: false, files: [], commits: commit === undefined ? [] : [{ ...goodCommit, ...commit }], ...over });
+  const revertPush = (over: Partial<Extract<CodeHostEvent, { type: "push" }>> = {}): CodeHostEvent => ({
+    type: "push", repo: repo(), ref: "refs/heads/main", at: AT, before: sha(39), after: COMMIT, sender: alice,
+    commits: [{ sha: COMMIT, message: `Revert "Fix cart total"\n\nThis reverts commit ${sha(30)}.` }], ...over,
+  });
+  function gated(range: CodeHostDiff | "throws" | undefined | "none") {
+    const marks: unknown[] = [];
+    const compares: unknown[] = [];
+    const diffs = range === "none" ? {} : { diffs: { compare: async (input: unknown) => { compares.push(input); if (range === "throws") throw new Error("down"); return range; } } };
+    const made = setup({ trackRecord: { markNotHeld: async (input) => { marks.push(input); } }, ...diffs });
+    made.w.prs.list.push(rovaraPr);
+    return { ...made, marks, compares };
+  }
+  const recordsNothing = (made: ReturnType<typeof gated>, result: { written: number; failed: number }) => {
+    expect(result).toMatchObject({ written: 0, failed: 0 });
+    expect(made.w.sink.puts).toEqual([]);
+    expect(made.marks).toEqual([]);
+  };
+
+  it("SRL-3 all pass: a non-merge, verified commit authored and pushed by a live member records the outcome, the reverter and the re-score", async () => {
+    const made = gated(rangeOf({}));
+    const result = await made.tap.handle(revertPush());
+    expect(result.written).toBe(3);
+    expect(made.w.sink.kinds()).toEqual(["github.revert", "rovara.closed", "rovara.reverted_by"]);
+    expect(made.w.sink.puts[2]!.actor).toMatchObject({ developerId: "dev-alice" });
+    expect(made.marks).toHaveLength(1);
+    expect(made.compares).toEqual([{ repo: repo(), base: sha(39), head: COMMIT }]);
+  });
+  it("SRL-3 the web-flow account may commit a member's squash-merged revert", async () => {
+    const made = gated(rangeOf({ committer: { id: "19864447", login: "web-flow", isBot: false }, webFlow: true }));
+    expect((await made.tap.handle(revertPush())).written).toBe(3);
+  });
+  it.each([
+    ["a merge commit", rangeOf({ merge: true })],
+    ["an unverified commit", rangeOf({ verified: false })],
+    ["an author who is not a member", rangeOf({ author: mallory, committer: mallory })],
+    ["a committer who is not the author (and not web-flow)", rangeOf({ committer: mallory })],
+    ["no committer at all", rangeOf({ committer: undefined })],
+    ["a compare that does not show the commit", rangeOf(undefined)],
+    ["a compare that is not a clean ahead", rangeOf({}, { status: "diverged" })],
+    ["a cut-short compare", rangeOf({}, { truncated: true })],
+    ["no answer from the host", undefined],
+    ["a compare that throws (read failure)", "throws" as const],
+    ["no compare reader at all", "none" as const],
+  ])("SRL-3 %s: nothing is recorded, nothing is re-scored, no reverter", async (_name, range) => {
+    const made = gated(range);
+    recordsNothing(made, await made.tap.handle(revertPush()));
+    expect(made.logs).toContain("record.revert_unproven");
+  });
+  it.each([
+    ["a pusher who is not a member", { sender: mallory }],
+    ["a bot pusher", { sender: { id: "5", login: "revert-bot[bot]", isBot: true } }],
+    ["no pusher", { sender: undefined }],
+    ["an excluded pusher", {}],
+  ])("SRL-3 %s: nothing is recorded, nothing is re-scored, no reverter", async (name, over) => {
+    const made = gated(rangeOf({}));
+    if (name === "an excluded pusher") made.w.config.set("github", repoScope(repo()), { retention: "D", exclude: ["1001"] });
+    recordsNothing(made, await made.tap.handle(revertPush(over as never)));
+  });
+  it("SRL-3 the compare is read only after an index hit, and once for a push, so a non-Rovara revert costs no read", async () => {
+    const made = gated(rangeOf({}));
+    made.w.prs.list.length = 0;
+    await made.tap.handle(revertPush());
+    expect(made.compares).toEqual([]);
+  });
+  it("SRL-3 the merged revert pull request path needs no compare", async () => {
+    const made = gated("none");
+    await made.tap.handle(pr({ number: 9, title: 'Revert "Fix cart total"', body: "Reverts acme/shop#5", action: "closed", merged: true, mergeCommitSha: sha(41), version: "closed:9" }));
+    expect(made.w.sink.kinds()).toContain("rovara.closed");
+    expect(made.marks).toHaveLength(1);
+  });
 
   it("detects a revert commit on the default branch, records both events once, and re-scores the task", async () => {
-    const marks: unknown[] = [];
-    const { w, tap } = setup({ trackRecord: { markNotHeld: async (input) => { marks.push(input); } } });
-    w.prs.list.push(rovaraPr);
-    const push: CodeHostEvent = { type: "push", repo: repo(), ref: "refs/heads/main", at: AT, commits: [{ sha: sha(40), message: `Revert "Fix cart total"\n\nThis reverts commit ${sha(30)}.` }] };
+    const { w, tap, marks } = gated(rangeOf({}));
+    const push = revertPush();
     const first = await tap.handle(push);
-    expect(first.written).toBe(2);
-    expect(w.sink.kinds()).toEqual(["github.revert", "rovara.closed"]);
+    expect(first.written).toBe(3);
+    expect(w.sink.kinds()).toEqual(["github.revert", "rovara.closed", "rovara.reverted_by"]);
     expect(w.sink.puts[1]!).toMatchObject({ source: "rovara", trust: "rovara", structured: { outcome: "reverted", taskId: "task-1" } });
     expect(marks).toEqual([{ workspaceId: WS, project: "shop", taskId: "task-1", reason: "reverted", revertRef: sha(40) }]);
     // The same revert told again (a second delivery, or the revert pull request's merge) adds nothing new to the record.
     const second = await tap.handle(push);
     expect(second.written).toBe(0);
-    expect(second.duplicates).toBe(2);
+    expect(second.duplicates).toBe(3);
   });
 
   it("detects a merged revert pull request by its body, and ignores one that is not merged, not ours, or about another repository", async () => {
@@ -293,9 +366,10 @@ describe("reverts of Rovara pull requests", () => {
     const claims = { claim: async (key: string) => (claimed.has(key) ? false : (claimed.add(key), true)), release: async (key: string) => { claimed.delete(key); } };
     const marks: unknown[] = [];
     let failing = true;
-    const { w, tap } = setup({ claims, trackRecord: { markNotHeld: async (input) => { if (failing) throw new Error("down"); marks.push(input); } } });
+    const diffs = { compare: async (input: { head: string }) => rangeOf({ sha: input.head }) };
+    const { w, tap } = setup({ claims, diffs, trackRecord: { markNotHeld: async (input) => { if (failing) throw new Error("down"); marks.push(input); } } });
     w.prs.list.push(rovaraPr);
-    const push = (version: number): CodeHostEvent => ({ type: "push", repo: repo(), ref: "refs/heads/main", at: AT, commits: [{ sha: sha(40 + version), message: `Revert "Fix cart total"\n\nThis reverts commit ${sha(30)}.` }] });
+    const push = (version: number): CodeHostEvent => ({ type: "push", repo: repo(), ref: "refs/heads/main", at: AT, before: sha(39), after: sha(40 + version), sender: alice, commits: [{ sha: sha(40 + version), message: `Revert "Fix cart total"\n\nThis reverts commit ${sha(30)}.` }] });
     await tap.handle(push(0));
     expect(marks).toEqual([]);
     failing = false;
