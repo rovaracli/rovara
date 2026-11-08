@@ -48,8 +48,19 @@ export interface KeyInput {
   tags: MintTags;
   /** The model the key may call, for the model counter; absent while a key is not tied to one model. */
   model?: string | undefined;
+  /**
+   * Counters that are not budget scopes but hold the key's cap just the same (the Public company's learning month, `LEARNING`): reserved with the scopes in one transaction (a counter with a limit refuses a cap that does not
+   * fit, `ScopeFullError` naming the counter), settled with the key's spend and released at finalize. Only a reserving key (`reserve`) holds them.
+   */
+  holds?: readonly KeyHold[] | undefined;
   /** Epoch milliseconds. */
   expiresAt: number;
+}
+
+/** A counter (the sort key of a spend counter) a key holds its cap on, and the limit its reservation is held to. */
+export interface KeyHold {
+  counter: string;
+  limitUsd?: number | undefined;
 }
 
 export interface ModelKeyRecord {
@@ -60,6 +71,8 @@ export interface ModelKeyRecord {
   /** How much of the key's spend has been counted. */
   settledUsd: number;
   scopes: BudgetScope[];
+  /** The counters the key holds its cap on besides its scopes (`KeyInput.holds`), by counter name. */
+  holds?: string[];
   tags: MintTags;
   model?: string;
   /** True when the key holds its cap on each scope's `committedUsd` until it is finalized. */
@@ -97,6 +110,9 @@ function cancellationCodes(error: unknown): string[] | undefined {
   if (errorName(error) !== "TransactionCanceledException" || !Array.isArray(reasons)) return undefined;
   return reasons.map((reason: { Code?: string } | undefined) => reason?.Code ?? "unknown");
 }
+
+/** Every counter a key's cap is held on and its spend is added to: its scopes' and its holds'. */
+const counterNamesOf = (record: Pick<ModelKeyRecord, "scopes" | "holds">): string[] => [...record.scopes.map((scope) => scopeKey(scope)), ...(record.holds ?? [])];
 
 const iso = (epochMs: number): string => new Date(epochMs).toISOString();
 const log = (deps: LedgerDependencies, entry: Record<string, unknown>): void => (deps.log ?? ((line) => console.log(JSON.stringify({ component: "broker", ...line }))))(entry);
@@ -137,7 +153,7 @@ function upsert(deps: LedgerDependencies, key: { pk: string; sk: string }, entit
 function recordItems(deps: LedgerDependencies, input: KeyInput, reserved: boolean, createdAt: number): { record: Item; index: Item } {
   const record: Item = withoutUndefined({
     ...modelKeyKey(input.orgId, input.keyId), entityType: "MODEL_KEY", orgId: input.orgId, keyId: input.keyId, month: input.month, capUsd: cleanUsd(input.capUsd),
-    settledUsd: 0, scopes: input.scopes.map((scope) => scope.key), tags: withoutUndefined({ ...input.tags }), model: input.model, reserved,
+    settledUsd: 0, scopes: input.scopes.map((scope) => scope.key), holds: (input.holds ?? []).length === 0 ? undefined : (input.holds ?? []).map((hold) => hold.counter), tags: withoutUndefined({ ...input.tags }), model: input.model, reserved,
     createdAt, expiresAt: input.expiresAt, finalized: false, settleCount: 0,
   });
   const index: Item = { ...openModelKeysKey(iso(createdAt), input.orgId, input.keyId), entityType: "OPEN_MODEL_KEY", orgId: input.orgId, keyId: input.keyId };
@@ -145,7 +161,7 @@ function recordItems(deps: LedgerDependencies, input: KeyInput, reserved: boolea
 }
 
 function checkInput(input: KeyInput): void {
-  if (input.scopes.length > MAX_SCOPES) throw agentXError("CONFIG_INVALID", "a model key counts against too many budgets");
+  if (input.scopes.length + (input.holds?.length ?? 0) > MAX_SCOPES) throw agentXError("CONFIG_INVALID", "a model key counts against too many budgets");
   if (!/^\d{4}-(0[1-9]|1[0-2])$/u.test(input.month)) throw agentXError("CONFIG_INVALID", "a model key's spend is counted in a month, YYYY-MM");
   if (!Number.isFinite(input.expiresAt)) throw agentXError("CONFIG_INVALID", "a model key has an expiry");
   if (!/^[0-9a-f]{64}$/u.test(input.keyId)) throw agentXError("CONFIG_INVALID", "a model key is known by its token id");
@@ -163,7 +179,7 @@ const uniqueScopes = (scopes: readonly KeyScope[]): KeyScope[] => {
  */
 export async function registerKey(deps: LedgerDependencies, input: KeyInput, guard?: RegisterGuard): Promise<ModelKeyRecord> {
   checkInput(input);
-  const { record, index } = recordItems(deps, { ...input, scopes: uniqueScopes(input.scopes) }, false, deps.now());
+  const { record, index } = recordItems(deps, { ...input, scopes: uniqueScopes(input.scopes), holds: undefined }, false, deps.now());
   const checks = guard?.checks ?? [];
   for (let attempt = 0; ; attempt += 1) {
     try {
@@ -201,15 +217,19 @@ export async function reserve(deps: LedgerDependencies, input: KeyInput): Promis
   checkInput(input);
   const scopes = uniqueScopes(input.scopes);
   const cap = cleanUsd(input.capUsd);
-  // A cap above a scope's whole limit fits nowhere, whatever is committed.
-  for (const scope of scopes) if (scope.limitUsd !== undefined && cleanUsd(scope.limitUsd - cap) < 0) throw new ScopeFullError(scopeKey(scope.key));
-  const { record, index } = recordItems(deps, { ...input, scopes }, true, deps.now());
+  // The counters the cap is held on, in order: the scopes', then the holds' (a hold named like a scope is the scope's, once).
+  const named = new Set(scopes.map((scope) => scopeKey(scope.key)));
+  const holds = (input.holds ?? []).filter((hold) => !named.has(hold.counter) && named.add(hold.counter));
+  const counters: Array<{ name: string; limitUsd?: number | undefined }> = [...scopes.map((scope) => ({ name: scopeKey(scope.key), limitUsd: scope.limitUsd })), ...holds.map((hold) => ({ name: hold.counter, limitUsd: hold.limitUsd }))];
+  // A cap above a counter's whole limit fits nowhere, whatever is committed.
+  for (const counter of counters) if (counter.limitUsd !== undefined && cleanUsd(counter.limitUsd - cap) < 0) throw new ScopeFullError(counter.name);
+  const { record, index } = recordItems(deps, { ...input, scopes, holds }, true, deps.now());
   const items: TransactItem[] = [
-    ...scopes.map((scope) => upsert(deps, spendCounterKey(input.orgId, input.month, scopeKey(scope.key)), "SPEND_COUNTER", {
+    ...counters.map((counter) => upsert(deps, spendCounterKey(input.orgId, input.month, counter.name), "SPEND_COUNTER", {
       add: { committedUsd: cap },
-      ...(scope.limitUsd === undefined ? {} : {
+      ...(counter.limitUsd === undefined ? {} : {
         // A millionth of slack keeps float dust from refusing a key that fits exactly.
-        condition: (aliases) => `attribute_not_exists(${aliases.name("committedUsd")}) OR ${aliases.name("committedUsd")} <= ${aliases.value(cleanUsd(scope.limitUsd! - cap + 0.000001))}`,
+        condition: (aliases) => `attribute_not_exists(${aliases.name("committedUsd")}) OR ${aliases.name("committedUsd")} <= ${aliases.value(cleanUsd(counter.limitUsd! - cap + 0.000001))}`,
       }),
     })),
     { Put: { TableName: deps.tableName, Item: record, ConditionExpression: NOT_EXISTS } },
@@ -223,14 +243,14 @@ export async function reserve(deps: LedgerDependencies, input: KeyInput): Promis
       if (errorName(error) !== "TransactionCanceledException") throw error;
       const reasons = ((error as { CancellationReasons?: Array<{ Code?: string } | undefined> }).CancellationReasons ?? []).map((reason) => reason?.Code);
       const failed = failedIndexes(error) ?? new Set<number>();
-      // The record already exists: a repeat. (Its scope conditions may fail too, having been counted once already.)
-      if (failed.has(scopes.length)) {
+      // The record already exists: a repeat. (Its counter conditions may fail too, having been counted once already.)
+      if (failed.has(counters.length)) {
         const existing = await readRecord(deps, input.orgId, input.keyId);
         if (existing !== undefined) return existing;
         throw error;
       }
-      const full = scopes.findIndex((_scope, position) => failed.has(position));
-      if (full !== -1) throw new ScopeFullError(scopeKey(scopes[full]!.key));
+      const full = counters.findIndex((_counter, position) => failed.has(position));
+      if (full !== -1) throw new ScopeFullError(counters[full]!.name);
       // Two reservations on one counter at once: DynamoDB cancels one without a failed condition. It is decided again from the fresh counters.
       if (reasons.includes("TransactionConflict") && attempt < 3) continue;
       throw error;
@@ -288,7 +308,7 @@ async function settleOnce(deps: LedgerDependencies, record: ModelKeyRecord): Pro
       set: { settledUsd: spent, settleCount: seq, lastSettledAt: iso(at), alertsDue: true },
       condition: (aliases) => `${aliases.name("settledUsd")} = ${aliases.value(record.settledUsd)} AND ${aliases.name("finalized")} = ${aliases.value(record.finalized)}`,
     }),
-    ...record.scopes.map((scope) => upsert(deps, spendCounterKey(orgId, record.month, scopeKey(scope)), "SPEND_COUNTER", { add: { spentUsd: deltaUsd, ...(committed === 0 ? {} : { committedUsd: committed }) } })),
+    ...counterNamesOf(record).map((name) => upsert(deps, spendCounterKey(orgId, record.month, name), "SPEND_COUNTER", { add: { spentUsd: deltaUsd, ...(committed === 0 ? {} : { committedUsd: committed }) } })),
     ...extraCounters(record).map((sk) => upsert(deps, spendCounterKey(orgId, record.month, sk), "SPEND_COUNTER", { add: { spentUsd: deltaUsd } })),
     { Put: { TableName: deps.tableName, Item: withoutUndefined({
       ...ledgerKey(orgId, record.month, iso(at), record.keyId, seq), entityType: "LEDGER", orgId, month: record.month, at: iso(at), keyId: record.keyId,
@@ -397,7 +417,7 @@ export async function finalizeKey(deps: LedgerDependencies, orgId: OrgId, keyId:
         set: { finalized: true, finalizedAt: deps.now() },
         condition: (aliases) => `${aliases.name("finalized")} = ${aliases.value(false)} AND ${aliases.name("settledUsd")} = ${aliases.value(record.settledUsd)}`,
       }),
-      ...(release === 0 ? [] : record.scopes.map((scope) => upsert(deps, spendCounterKey(orgId, record.month, scopeKey(scope)), "SPEND_COUNTER", { add: { committedUsd: -release } }))),
+      ...(release === 0 ? [] : counterNamesOf(record).map((name) => upsert(deps, spendCounterKey(orgId, record.month, name), "SPEND_COUNTER", { add: { committedUsd: -release } }))),
     ];
     try {
       await send(deps, items);
@@ -421,7 +441,7 @@ export async function abandonKey(deps: LedgerDependencies, orgId: OrgId, keyId: 
     await send(deps, [
       { Delete: { TableName: deps.tableName, Key: modelKeyKey(orgId, keyId), ConditionExpression: "settleCount = :none AND finalized = :open", ExpressionAttributeValues: { ":none": 0, ":open": false } } },
       { Delete: { TableName: deps.tableName, Key: openModelKeysKey(iso(record.createdAt), orgId, keyId) } },
-      ...record.scopes.map((scope) => upsert(deps, spendCounterKey(orgId, record.month, scopeKey(scope)), "SPEND_COUNTER", { add: { committedUsd: -cleanUsd(record.capUsd) } })),
+      ...counterNamesOf(record).map((name) => upsert(deps, spendCounterKey(orgId, record.month, name), "SPEND_COUNTER", { add: { committedUsd: -cleanUsd(record.capUsd) } })),
     ]);
     return true;
   } catch (error) {

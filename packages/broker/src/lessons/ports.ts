@@ -8,9 +8,10 @@ export type Clock = () => number;
 /**
  * A model call for the learning pipeline (reflector, curator judge, outcome judge). It takes text and returns text: there is no field for tools, so a
  * pipeline model cannot act (control C4). The caller validates the text against a schema and drops it on any failure.
+ * `costUsd` is an UPPER BOUND on what the call cost (the cap its key holds), not a measurement: the real figure is settled later from the proxy.
  */
 export interface PipelineModel {
-  complete(request: { purpose: "reflect" | "judge" | "distill" | "outcome"; system: string; user: string; maxOutputTokens: number; workspaceId: string; /** The project the call is for: the company's own model route is chosen per project. A model that routes per project refuses a call without one. */ project?: string }): Promise<{ text: string; costUsd: number; model: string }>;
+  complete(request: { purpose: "reflect" | "judge" | "distill" | "outcome"; system: string; user: string; maxOutputTokens: number; workspaceId: string; /** The project the call is for: the company's own model route is chosen per project. A model that routes per project refuses a call without one. */ project?: string; /** The most the call may cost, in US dollars: the amount `LearningSpend.admit` was asked about. The model's key holds exactly this much (never more). Absent: the model's own default. */ budgetUsd?: number }): Promise<{ text: string; costUsd: number; model: string }>;
 }
 
 export interface Embedder { embed(text: string): Promise<number[]> }
@@ -23,13 +24,12 @@ export interface LessonVectors {
 }
 
 /**
- * Spend for learning. `admit` asks the customer's own limits (org and member budgets) whether a call of about `estimateUsd` may start; `charge` records
- * what was spent, on the org's ledger under the learning line. Enterprise has no learning caps of its own, only these limits (decision Q8).
- * A caller that was admitted ALWAYS follows with one `charge` (0 when the call failed), which settles the reservation `admit` made.
+ * Spend for learning. `admit` is the cheap look before a model call: whether the company's own learning limit (Public: $20 a month) has room for a call of about `estimateUsd`. It holds nothing and writes nothing.
+ * The money itself is held and booked by the model's key, in the company's spend ledger (`PipelineModel.complete` mints and reserves it, the ordinary sweep settles and finalizes it), so a call that failed or
+ * crashed still holds its cap until it is settled. Enterprise has no learning cap of its own, only the company's existing budgets (decision Q8).
  */
 export interface LearningSpend {
   admit(workspaceId: string, estimateUsd: number): Promise<boolean>;
-  charge(workspaceId: string, project: string, usd: number, purpose: string): Promise<void>;
 }
 
 export interface LessonAuditEvent {

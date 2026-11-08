@@ -64,12 +64,12 @@ export interface MintKeyInput {
 export type LearningCompletionApi = "anthropic-messages" | "openai-responses" | "openai-completions";
 
 /**
- * Lessons in production: ONE tool-less model call for the learning pipeline, made on the COMPANY's own route. The function mints a short-lived key for the org alone (no member), scoped to the
- * one model alias and capped at `maxBudgetUsd`, makes the call, reads what the key spent, and gives the key back. The key never leaves the function.
+ * Lessons in production: ONE tool-less model call for the learning pipeline, made on the COMPANY's own route with a key the BROKER minted and reserved in the spend ledger (so the cap is held, and the spend is settled
+ * and the key finalized by the ordinary sweep). The function only makes the call: it does not mint, read spend or delete anything, and it answers the text alone.
  */
 export interface LearningCompletionInput {
-  orgId: OrgId;
-  project: string;
+  /** The key the broker minted for this call (it never leaves the broker and the function, and is never logged). */
+  key: string;
   purpose: "reflect" | "judge" | "distill" | "outcome";
   system: string;
   user: string;
@@ -77,14 +77,10 @@ export interface LearningCompletionInput {
   /** The route's alias (the company's own source alias, or a Rovara AI catalog id the company's order reaches) and its transport. */
   model: string;
   api: LearningCompletionApi;
-  /** The most the call may cost, in US dollars: the key's cap. */
-  maxBudgetUsd: number;
 }
 
 export interface LearningCompletion {
   text: string;
-  /** What the proxy says the key spent. */
-  costUsd: number;
   /** The alias that answered. */
   model: string;
 }

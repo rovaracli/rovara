@@ -9,8 +9,11 @@ import type { KeyAudit, LearningCompletion, LearningCompletionInput, MemberSpend
 import { KeyAuditResultSchema, KeySpendResultSchema, LearningCompletionResultSchema, MintedKeyResultSchema, RegisteredSourcesResultSchema, SourceCheckResultSchema, SpendFiguresSchema, SpendResultSchema, type ModelAccessRequest } from "./protocol.js";
 
 const DEFAULT_TIMEOUT_MS = 25_000;
-/** A learning call is one model reply of up to a few thousand tokens: the function waits for it for up to this long (its own timeout is longer). */
-const LEARNING_TIMEOUT_MS = 170_000;
+/**
+ * A learning call is one model reply of up to two thousand tokens. The function gives the provider `LEARNING_CALL_TIMEOUT_MS` (100 s) and has nothing else to do, and its own timeout is 120 s, so its worst case is 120 s:
+ * the broker waits longer than that (130 s), so a call is never given up on while the function may still be running it. The key is the ledger's by then and is settled and finalized by the sweep either way.
+ */
+export const LEARNING_INVOKE_TIMEOUT_MS = 130_000;
 
 export interface ModelAccessInvokerInput {
   /** The function's name or ARN (env MODEL_ACCESS_FUNCTION_NAME). */
@@ -91,8 +94,8 @@ export class ModelAccessInvoker implements ModelAccess {
   }
 
   async learningCompletion(input: LearningCompletionInput): Promise<LearningCompletion> {
-    const { orgId, project, purpose, system, user, maxOutputTokens, model, api, maxBudgetUsd } = input;
-    return this.parseResult(await this.invoke({ op: "learningCompletion", args: { orgId, project, purpose, system, user, maxOutputTokens, model, api, maxBudgetUsd } }, LEARNING_TIMEOUT_MS), LearningCompletionResultSchema);
+    const { key, purpose, system, user, maxOutputTokens, model, api } = input;
+    return this.parseResult(await this.invoke({ op: "learningCompletion", args: { key, purpose, system, user, maxOutputTokens, model, api } }, LEARNING_INVOKE_TIMEOUT_MS), LearningCompletionResultSchema);
   }
 
   private parseResult<T>(result: unknown, schema: z.ZodType<T>): T {

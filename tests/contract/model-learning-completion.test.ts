@@ -1,17 +1,17 @@
-// Lessons in production, lane 1: the `learningCompletion` operation of the ModelAccessFunction. One tool-less model call on the company's own route, made with a short-lived key
-// for the org alone, scoped to the one alias, capped at the call's budget, deleted after the call. The key never leaves the function and no error carries the provider's words.
+// Lessons in production, lane 1 (fix round 1): the `learningCompletion` operation of the ModelAccessFunction. The BROKER mints the key and reserves its cap in the spend ledger; the function makes ONE tool-less model
+// call with that key on the company's own route and answers the text. It does not mint, read spend or delete anything, so it cannot read a spend figure before the proxy has flushed it. No error carries the provider's words.
 import type { AgentXError } from "@agentx/contracts";
-import { describe, expect, it } from "vitest";
-import { createHash } from "node:crypto";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type { InvokeCommandOutput } from "@aws-sdk/client-lambda";
-import { ModelProxyClient } from "../../packages/broker/src/model-proxy/client.js";
+import { LEARNING_CALL_TIMEOUT_MS, ModelProxyClient } from "../../packages/broker/src/model-proxy/client.js";
 import { createModelAccessHandler } from "../../packages/broker/src/model-proxy/handler.js";
-import { ModelAccessInvoker } from "../../packages/broker/src/model-proxy/invoker.js";
-import { ModelAccessRequestSchema } from "../../packages/broker/src/model-proxy/protocol.js";
+import { LEARNING_INVOKE_TIMEOUT_MS, ModelAccessInvoker } from "../../packages/broker/src/model-proxy/invoker.js";
+import { LEARNING_LIMITS, ModelAccessRequestSchema } from "../../packages/broker/src/model-proxy/protocol.js";
 import { routeFetch } from "../support/developer-fakes.js";
 
 const BASE = "http://proxy.internal:4001";
 const ORG = "org_abcdefghij0123456789";
+const OTHER_ORG = "org_zzzzzzzzzzzzzzzzzzzz";
 const NOW = 1_800_000_000_000;
 const CATALOG = ["us.anthropic.claude-sonnet-4-6", "us.anthropic.claude-haiku-4-5-20251001-v1:0"];
 const ALIAS = CATALOG[1]!;
@@ -19,7 +19,8 @@ const ALIAS = CATALOG[1]!;
 const MASTER = ["master", "planted", "value"].join("-");
 const VIRTUAL = ["virtual", "planted", "value"].join("-");
 const PROVIDER_WORDS = "PROVIDER-SECRET-ERROR-TEXT";
-const tokenOf = (key: string): string => createHash("sha256").update(key).digest("hex");
+/** The function's own timeout in the control plane (infra/lib/control-plane.ts): a learning call and the broker's wait are sized against it. */
+const FUNCTION_TIMEOUT_MS = 120_000;
 
 const json = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
 interface Seen { method: string; path: string; headers: Headers; body: Record<string, unknown> | undefined }
@@ -31,23 +32,13 @@ const REPLIES: Record<Api, [string, Record<string, unknown>]> = {
   "openai-responses": ["/v1/responses", { output: [{ type: "message", content: [{ type: "output_text", text: "{\"candidates\":[]}" }] }], usage: { input_tokens: 10, output_tokens: 5 } }],
 };
 
-function proxy(options: { api?: Api; inference?: (seen: Seen) => Response; spend?: number | "unknown"; mint?: Response; deleteStatus?: number } = {}) {
+function proxy(options: { api?: Api; inference?: (seen: Seen) => Response } = {}) {
   const api = options.api ?? "anthropic-messages";
   const seen: Seen[] = [];
-  let stored: Record<string, unknown> | undefined;
-  let infoReads = 0;
   const fetch = routeFetch(async (url, init) => {
     const entry: Seen = { method: init?.method ?? "GET", path: url.pathname, headers: new Headers(init?.headers), body: typeof init?.body === "string" ? JSON.parse(init.body) as Record<string, unknown> : undefined };
     seen.push(entry);
     if (entry.path === "/team/info") return json({ team_info: { models: CATALOG } });
-    if (entry.path === "/key/generate") { stored = entry.body; return options.mint ?? json({ key: VIRTUAL }); }
-    if (entry.path === "/key/info") {
-      infoReads += 1;
-      // The mint reads the key back once; "unknown" means the proxy cannot say what it spent afterwards.
-      if (options.spend === "unknown" && infoReads > 1) return json({ error: { message: "nope" } }, 404);
-      return json({ info: { models: stored?.models, team_id: stored?.team_id, aliases: {}, allowed_routes: stored?.allowed_routes, spend: options.spend ?? 0.0123 } });
-    }
-    if (entry.path === "/key/delete") return json({}, options.deleteStatus ?? 200);
     if (entry.path === REPLIES[api][0]) return options.inference?.(entry) ?? json(REPLIES[api][1]);
     return json({ error: { message: "not found" } }, 404);
   });
@@ -55,15 +46,17 @@ function proxy(options: { api?: Api; inference?: (seen: Seen) => Response; spend
   return { client, seen };
 }
 
-const input = (api: Api = "anthropic-messages") => ({ orgId: ORG as never, project: "proj-1", purpose: "reflect" as const, system: "You turn work into lessons.", user: "Subject: finished task", maxOutputTokens: 1800, model: ALIAS, api, maxBudgetUsd: 0.25 });
+const input = (api: Api = "anthropic-messages") => ({ key: VIRTUAL, purpose: "reflect" as const, system: "You turn work into lessons.", user: "Subject: finished task", maxOutputTokens: 1800, model: ALIAS, api });
 const failure = async (action: Promise<unknown>) => { try { await action; } catch (error) { return error as AgentXError; } throw new Error("expected a rejection"); };
+
+afterEach(() => { vi.restoreAllMocks(); });
 
 describe("ModelProxyClient.learningCompletion", () => {
   for (const api of ["anthropic-messages", "openai-completions", "openai-responses"] as const) {
-    it(`${api}: answers the text, what the key spent and the alias, with a tool-less request`, async () => {
+    it(`${api}: answers the text and the alias, with a tool-less request`, async () => {
       const { client, seen } = proxy({ api });
       const answer = await client.learningCompletion(input(api));
-      expect(answer).toEqual({ text: "{\"candidates\":[]}", costUsd: 0.0123, model: ALIAS });
+      expect(answer).toEqual({ text: "{\"candidates\":[]}", model: ALIAS });
       const call = seen.find((entry) => entry.path === REPLIES[api][0])!;
       expect(call.method).toBe("POST");
       expect(call.body).toBeDefined();
@@ -74,43 +67,30 @@ describe("ModelProxyClient.learningCompletion", () => {
     });
   }
 
-  it("the call is made with the minted key, never the master key", async () => {
+  it("the call is made with the broker's key, never the master key, and the function does nothing else: it mints, reads and deletes no key", async () => {
     const { client, seen } = proxy();
     await client.learningCompletion(input());
     const call = seen.find((entry) => entry.path === "/v1/messages")!;
     expect(call.headers.get("authorization")).toBe(`Bearer ${VIRTUAL}`);
     expect(JSON.stringify(call.body)).not.toContain(MASTER);
     expect(call.headers.get("authorization")).not.toContain(MASTER);
+    // No /key/generate, /key/info or /key/delete: it cannot read a spend figure the proxy has not flushed yet, and it cannot delete the figure away.
+    expect(seen.map((entry) => entry.path)).toEqual(["/v1/messages"]);
   });
 
-  it("mints a key for the org alone (no member), scoped to the one alias, capped at the budget, alive five minutes at most, for inference routes only", async () => {
-    const { client, seen } = proxy();
+  it("gives the provider a bounded wait that fits inside the function's own timeout, and the broker waits longer than the function can run", async () => {
+    const timeouts: number[] = [];
+    const real = AbortSignal.timeout.bind(AbortSignal);
+    vi.spyOn(AbortSignal, "timeout").mockImplementation((ms: number) => { timeouts.push(ms); return real(ms); });
+    const { client } = proxy();
     await client.learningCompletion(input());
-    const generate = seen.find((entry) => entry.path === "/key/generate")!;
-    expect(generate.body).toMatchObject({ team_id: ORG, max_budget: 0.25, models: [ALIAS], duration: "300s", metadata: { orgId: ORG, purpose: "turn", project: "proj-1", origin: "learning", agentId: "learning" } });
-    expect(generate.body).not.toHaveProperty("user_id");
-    expect(generate.body!.allowed_routes).toEqual(["/v1/messages", "/v1/responses", "/chat/completions"]);
+    expect(timeouts).toEqual([LEARNING_CALL_TIMEOUT_MS]);
+    expect(LEARNING_CALL_TIMEOUT_MS).toBeLessThan(FUNCTION_TIMEOUT_MS);
+    expect(LEARNING_INVOKE_TIMEOUT_MS).toBeGreaterThan(FUNCTION_TIMEOUT_MS);
   });
 
-  it("reads the cost from the key's own spend, then deletes the key (read first: the figure is gone after the delete)", async () => {
-    const { client, seen } = proxy({ spend: 0.0421 });
-    expect((await client.learningCompletion(input())).costUsd).toBe(0.0421);
-    const order = seen.map((entry) => entry.path);
-    const spendRead = order.lastIndexOf("/key/info");
-    const del = seen.find((entry) => entry.path === "/key/delete")!;
-    expect(del.body).toEqual({ keys: [VIRTUAL] });
-    expect(order.indexOf("/key/delete")).toBeGreaterThan(spendRead);
-    expect(seen.some((entry) => entry.path === "/key/info" && entry.method === "GET")).toBe(true);
-    expect(tokenOf(VIRTUAL)).toHaveLength(64);
-  });
-
-  it("when the proxy cannot say what the key spent, the call is counted at the key's whole cap (never less)", async () => {
-    const { client } = proxy({ spend: "unknown" });
-    expect((await client.learningCompletion(input())).costUsd).toBe(0.25);
-  });
-
-  it("a provider error gives a fixed sentence and a fixed code; the provider's words, the key and the master key appear nowhere, and the key is still deleted", async () => {
-    const { client, seen } = proxy({ inference: () => json({ error: { message: PROVIDER_WORDS, key: VIRTUAL } }, 500) });
+  it("a provider error gives a fixed sentence and a fixed code; the provider's words, the key and the master key appear nowhere", async () => {
+    const { client } = proxy({ inference: () => json({ error: { message: PROVIDER_WORDS, key: VIRTUAL } }, 500) });
     const error = await failure(client.learningCompletion(input()));
     expect(error.code).toBe("MODEL_PROXY_UNAVAILABLE");
     for (const text of [error.message, JSON.stringify(error)]) {
@@ -118,7 +98,6 @@ describe("ModelProxyClient.learningCompletion", () => {
       expect(text).not.toContain(VIRTUAL);
       expect(text).not.toContain(MASTER);
     }
-    expect(seen.some((entry) => entry.path === "/key/delete")).toBe(true);
     const refused = await failure(proxy({ inference: () => json({ error: { message: PROVIDER_WORDS } }, 400) }).client.learningCompletion(input()));
     expect(refused.message).not.toContain(PROVIDER_WORDS);
   });
@@ -128,79 +107,89 @@ describe("ModelProxyClient.learningCompletion", () => {
     const error = await failure(client.learningCompletion(input()));
     expect(error.code).toBe("MODEL_PROXY_UNAVAILABLE");
   });
+});
 
-  it("a mint the proxy refuses is a fixed sentence without the proxy's text", async () => {
-    const { client } = proxy({ mint: json({ error: { message: PROVIDER_WORDS } }, 400) });
-    const error = await failure(client.learningCompletion(input()));
-    expect(error.message).not.toContain(PROVIDER_WORDS);
-  });
-
-  it("an alias that is not the org's own or the catalog's is refused before any call is made", async () => {
+describe("what a key may name (the mint is where a learning call's alias is fenced)", () => {
+  const mint = (models: string[]) => {
     const { client, seen } = proxy();
-    const error = await failure(client.learningCompletion({ ...input(), model: "org_zzzzzzzzzzzzzzzzzzzz/other" }));
-    expect(error.code).toBe("CONFIG_INVALID");
-    expect(seen.some((entry) => entry.path === "/v1/messages")).toBe(false);
+    const result = client.mintKey({ orgId: ORG as never, purpose: "task", refId: "learning-op", maxBudgetUsd: 0.25, ttlSeconds: 300, models });
+    return { result, seen };
+  };
+
+  it("another org's real alias, an own-prefixed wildcard and a bare wildcard are refused before any key is made", async () => {
+    for (const models of [[`${OTHER_ORG}.src_aaaaaaaaaaaaaaaaaaaa.claude-sonnet-4-6`], [`${ORG}.*`], [`${ORG}.src_aaaaaaaaaaaaaaaaaaaa.*`], ["*"], [ALIAS, `${OTHER_ORG}.src_aaaaaaaaaaaaaaaaaaaa.claude-sonnet-4-6`]]) {
+      const { result, seen } = mint(models);
+      const error = await failure(result);
+      expect(error.code, models.join(",")).toBe("CONFIG_INVALID");
+      expect(seen.some((entry) => entry.path === "/key/generate")).toBe(false);
+    }
   });
 
-  it("a failed delete does not fail the call, and logs no key", async () => {
-    const lines: string[] = [];
-    const { seen } = proxy({ deleteStatus: 500 });
-    const fetch = routeFetch(async (url, init) => {
-      const entry = { path: url.pathname, body: typeof init?.body === "string" ? JSON.parse(init.body) as Record<string, unknown> : undefined };
-      if (entry.path === "/team/info") return json({ team_info: { models: CATALOG } });
-      if (entry.path === "/key/generate") return json({ key: VIRTUAL });
-      if (entry.path === "/key/info") return json({ info: { models: [ALIAS], team_id: ORG, aliases: {}, allowed_routes: ["/v1/messages", "/v1/responses", "/chat/completions"], spend: 0.01 } });
-      if (entry.path === "/key/delete") return json({}, 500);
-      return json(REPLIES["anthropic-messages"][1]);
-    });
-    const client = new ModelProxyClient({ baseUrl: BASE, masterKey: async () => MASTER, fetch, now: () => NOW, catalog: CATALOG, log: (entry) => lines.push(JSON.stringify(entry)) });
-    expect((await client.learningCompletion(input())).text).toBe("{\"candidates\":[]}");
-    expect(lines.join("\n")).not.toContain(VIRTUAL);
-    expect(seen).toBeDefined();
+  it("positive control: a catalog alias passes the same check (it reaches the proxy's mint)", async () => {
+    const { result, seen } = mint([ALIAS]);
+    await result.catch(() => undefined);
+    expect(seen.some((entry) => entry.path === "/team/info")).toBe(true);
   });
 });
 
 describe("the operation across the function boundary", () => {
-  it("invoker -> handler -> client: the answer carries no key and the request is validated", async () => {
+  const lambdaOver = (run: (event: unknown) => Promise<unknown>) => ({ send: async (command: { input: { Payload?: Uint8Array } }) => {
+    const out = await run(JSON.parse(Buffer.from(command.input.Payload as Uint8Array).toString("utf8")));
+    return { StatusCode: 200, Payload: new TextEncoder().encode(JSON.stringify(out)), $metadata: {} } as InvokeCommandOutput;
+  } });
+
+  it("invoker -> handler -> client: the answer carries no key, no key id and no cost, and the request is validated", async () => {
     const { client } = proxy();
-    const run = createModelAccessHandler({ access: client, log: () => undefined });
-    const lambda = { send: async (command: { input: { Payload?: Uint8Array } }) => {
-      const out = await run(JSON.parse(Buffer.from(command.input.Payload as Uint8Array).toString("utf8")));
-      return { StatusCode: 200, Payload: new TextEncoder().encode(JSON.stringify(out)), $metadata: {} } as InvokeCommandOutput;
-    } };
-    const invoker = new ModelAccessInvoker({ functionName: "f", lambda: lambda as never });
+    const run = createModelAccessHandler({ access: client, log: () => undefined, learning: true });
+    const invoker = new ModelAccessInvoker({ functionName: "f", lambda: lambdaOver(run) as never });
     const answer = await invoker.learningCompletion(input());
-    expect(answer).toEqual({ text: "{\"candidates\":[]}", costUsd: 0.0123, model: ALIAS });
+    expect(answer).toEqual({ text: "{\"candidates\":[]}", model: ALIAS });
     expect(JSON.stringify(answer)).not.toContain(VIRTUAL);
   });
 
-  it("the invoker waits longer for a learning call than for the other operations", async () => {
-    const seen: number[] = [];
-    const lambda = { send: async (_command: unknown, options?: { abortSignal?: AbortSignal }) => {
-      void options; seen.push(1);
-      return { StatusCode: 200, Payload: new TextEncoder().encode(JSON.stringify({ ok: true, result: { text: "x", costUsd: 0, model: ALIAS } })), $metadata: {} } as InvokeCommandOutput;
-    } };
-    const invoker = new ModelAccessInvoker({ functionName: "f", lambda: lambda });
+  it("the invoker waits for a learning call as long as it says and for the other operations the short default", async () => {
+    const timeouts: number[] = [];
+    const real = AbortSignal.timeout.bind(AbortSignal);
+    vi.spyOn(AbortSignal, "timeout").mockImplementation((ms: number) => { timeouts.push(ms); return real(ms); });
+    const lambda = { send: async () => ({ StatusCode: 200, Payload: new TextEncoder().encode(JSON.stringify({ ok: true, result: { text: "x", model: ALIAS } })), $metadata: {} }) as InvokeCommandOutput };
+    const invoker = new ModelAccessInvoker({ functionName: "f", lambda: lambda as never });
     expect((await invoker.learningCompletion(input())).text).toBe("x");
-    expect(seen).toHaveLength(1);
+    expect(timeouts).toEqual([LEARNING_INVOKE_TIMEOUT_MS]);
+    // The short default for any other operation is much shorter than a learning call's wait.
+    const other = { send: async () => ({ StatusCode: 200, Payload: new TextEncoder().encode(JSON.stringify({ ok: true, result: null })), $metadata: {} }) as InvokeCommandOutput };
+    timeouts.length = 0;
+    await new ModelAccessInvoker({ functionName: "f", lambda: other as never }).blockKey("a".repeat(64));
+    expect(timeouts[0]).toBeLessThan(LEARNING_INVOKE_TIMEOUT_MS);
   });
 
-  it("a function without the operation answers a fixed refusal", async () => {
-    const run = createModelAccessHandler({ access: {} as never, log: () => undefined });
-    const out = await run({ op: "learningCompletion", args: input() });
-    expect(out).toMatchObject({ ok: false, code: "CONFIG_INVALID" });
+  it("a function that is not set up for learning refuses (the switch is off, or the client has no operation), and makes no call", async () => {
+    const called = vi.fn();
+    const withOp = { learningCompletion: async () => { called(); return { text: "x", model: ALIAS }; } };
+    const off = createModelAccessHandler({ access: withOp as never, log: () => undefined });
+    expect(await off({ op: "learningCompletion", args: input() })).toMatchObject({ ok: false, code: "CONFIG_INVALID" });
+    expect(called).not.toHaveBeenCalled();
+    const noOp = createModelAccessHandler({ access: {} as never, log: () => undefined, learning: true });
+    expect(await noOp({ op: "learningCompletion", args: input() })).toMatchObject({ ok: false, code: "CONFIG_INVALID" });
+    const on = createModelAccessHandler({ access: withOp as never, log: () => undefined, learning: true });
+    expect(await on({ op: "learningCompletion", args: input() })).toMatchObject({ ok: true });
+    expect(called).toHaveBeenCalledTimes(1);
   });
 
-  it("the protocol bounds the call: a budget above five dollars, a tools field, a member and an empty prompt are refused", () => {
+  it("the protocol bounds the call per purpose: a tools field, a member, a budget field, an empty prompt, a prompt or an answer over the purpose's limit are refused", () => {
     const args = input();
     const ok = (extra: Record<string, unknown>) => ModelAccessRequestSchema.safeParse({ op: "learningCompletion", args: { ...args, ...extra } }).success;
     expect(ok({})).toBe(true);
-    expect(ok({ maxBudgetUsd: 5.01 })).toBe(false);
-    expect(ok({ maxBudgetUsd: 0 })).toBe(false);
     expect(ok({ tools: [] })).toBe(false);
     expect(ok({ developerId: "a".repeat(64) })).toBe(false);
+    expect(ok({ maxBudgetUsd: 0.25 })).toBe(false);
+    expect(ok({ orgId: ORG })).toBe(false);
     expect(ok({ rovaraPaid: true })).toBe(false);
     expect(ok({ user: "" })).toBe(false);
+    expect(ok({ key: "" })).toBe(false);
     expect(ok({ api: "gemini" })).toBe(false);
+    expect(ok({ purpose: "judge", user: "x".repeat(LEARNING_LIMITS.judge.userChars + 1) })).toBe(false);
+    expect(ok({ purpose: "judge", user: "x".repeat(LEARNING_LIMITS.judge.userChars) , maxOutputTokens: LEARNING_LIMITS.judge.outputTokens })).toBe(true);
+    expect(ok({ purpose: "judge", maxOutputTokens: LEARNING_LIMITS.judge.outputTokens + 1 })).toBe(false);
+    expect(ok({ purpose: "reflect", maxOutputTokens: LEARNING_LIMITS.reflect.outputTokens + 1 })).toBe(false);
   });
 });

@@ -78,17 +78,19 @@ describe("curator decisions (design §4.5.2)", () => {
     }
   });
 
-  it("the judge call names the project, and a judge that fails settles its spend reservation at nothing spent", async () => {
+  it("the judge call names the project and carries the amount `admit` was asked about as its budget; a judge that fails leaves the contradiction to a person", async () => {
     const a = "Use withRetry from src/retry/index.ts for HTTP retries in the api service client calls";
     const b = "Use withRetry from src/retry/index.ts for HTTP retries in the api service wrapper";
     const ok = setup({ model: new ScriptedModel([JSON.stringify({ verdict: "different" })]) });
     await curateDraft(ok.deps, KEY, text("Retries", a));
     await curateDraft(ok.deps, KEY, text("Retries", b));
     expect(ok.judgeModel.calls[0]!.project).toBe(PROJECT);
+    expect(ok.judgeModel.calls[0]!.budgetUsd).toBe(ok.spend.asked[0]);
     const broken = setup({ model: new ScriptedModel([new Error("provider down")]) });
     await curateDraft(broken.deps, KEY, text("Retries", a));
-    await curateDraft(broken.deps, KEY, text("Retries", b));
-    expect(broken.spend.charges).toEqual([{ usd: 0, purpose: "learning.judge" }]);
+    const result = await curateDraft(broken.deps, KEY, text("Retries", b));
+    expect(broken.judgeModel.calls).toHaveLength(1);
+    expect(result).toBeDefined();
   });
 
   it("UPDATE: 'refines' makes a new lesson that supersedes the old one; the old one is untouched", async () => {

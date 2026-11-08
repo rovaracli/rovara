@@ -30,20 +30,30 @@ const MintTagsSchema = z.object({
 /** One key never needs more models than an org can have sources times their models, and a handful is the norm. */
 const MAX_KEY_MODELS = 50;
 
-/** Bounds of a learning call: the prompt is cleaned and cut upstream (20,000 characters of spans); the key's cap is a few cents to a few dollars. */
-export const LEARNING_MAX_PROMPT_CHARS = 100_000;
-export const LEARNING_MAX_BUDGET_USD = 5;
+/**
+ * Bounds of a learning call, per purpose: the prompt is cleaned and cut upstream (20,000 characters of spans for a reflection) and the answer is a few lessons or one verdict. They keep the worst-case price of one call
+ * under the amount its key holds (`learning-model.ts` checks that against the model's list price).
+ */
+export const LEARNING_LIMITS = {
+  reflect: { systemChars: 8_000, userChars: 40_000, outputTokens: 2_000 },
+  judge: { systemChars: 4_000, userChars: 8_000, outputTokens: 200 },
+  distill: { systemChars: 8_000, userChars: 40_000, outputTokens: 2_000 },
+  outcome: { systemChars: 8_000, userChars: 40_000, outputTokens: 2_000 },
+} as const;
 const LearningCompletionArgsSchema = z.object({
-  orgId: OrgIdSchema,
-  project: TagValueSchema,
+  key: z.string().min(1).max(512),
   purpose: z.enum(["reflect", "judge", "distill", "outcome"]),
-  system: z.string().min(1).max(LEARNING_MAX_PROMPT_CHARS),
-  user: z.string().min(1).max(LEARNING_MAX_PROMPT_CHARS),
-  maxOutputTokens: z.number().int().min(1).max(8000),
+  system: z.string().min(1).max(8_000),
+  user: z.string().min(1).max(40_000),
+  maxOutputTokens: z.number().int().min(1).max(2_000),
   model: z.string().min(1).max(512),
   api: z.enum(["anthropic-messages", "openai-responses", "openai-completions"]),
-  maxBudgetUsd: z.number().finite().min(0.001).max(LEARNING_MAX_BUDGET_USD),
-}).strict();
+}).strict().superRefine((args, context) => {
+  const limits = LEARNING_LIMITS[args.purpose];
+  if (args.system.length > limits.systemChars) context.addIssue({ code: "custom", path: ["system"], message: "too long for this purpose" });
+  if (args.user.length > limits.userChars) context.addIssue({ code: "custom", path: ["user"], message: "too long for this purpose" });
+  if (args.maxOutputTokens > limits.outputTokens) context.addIssue({ code: "custom", path: ["maxOutputTokens"], message: "too many for this purpose" });
+});
 
 export const ModelAccessRequestSchema = z.discriminatedUnion("op", [
   z.object({ op: z.literal("upsertOrg"), args: z.object({ orgId: OrgIdSchema, monthlyBudgetUsd: BudgetSchema }).strict() }).strict(),
@@ -89,8 +99,8 @@ export const SourceCheckResultSchema = z.discriminatedUnion("ok", [
 /** Every registered source, at most as many as a thousand orgs of ten sources hold. */
 export const RegisteredSourcesResultSchema = z.array(z.object({ orgId: OrgIdSchema, sourceId: SourceIdSchema, hosts: z.array(z.string().min(1).max(253)).max(20).optional() }).strict()).max(10_000);
 export const KeyAuditResultSchema = z.object({ checked: z.number().int().min(0), blocked: z.number().int().min(0), truncated: z.boolean() }).strict();
-/** What a learning call answers: the text, what the key spent, the alias that answered. No key, no key id. */
-export const LearningCompletionResultSchema = z.object({ text: z.string().max(200_000), costUsd: z.number().finite().min(0), model: z.string().min(1).max(512) }).strict();
+/** What a learning call answers: the text and the alias that answered. No key, no key id, no cost (the spend is the ledger's, settled from the proxy after it has flushed). */
+export const LearningCompletionResultSchema = z.object({ text: z.string().max(200_000), model: z.string().min(1).max(512) }).strict();
 export const MintedKeyResultSchema = z.object({ key: z.string().min(1), expiresAt: z.number().finite() }).strict();
 
 export type ModelAccessResponse =

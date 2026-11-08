@@ -71,7 +71,7 @@ export function lessonsRuntimeFor(dependencies: AwsBrokerDependencies): LessonsR
   const audit = recordAuditSinkOf(dependencies.audit, dependencies.documentClient);
   // The company's own model path, where this install has one (the model proxy): the curator's judge and the payer path. Without a proxy they stay the refusing stand-ins.
   const modelPath = dependencies.modelAccess === undefined ? {} : {
-    model: customerLearningModel(dependencies),
+    model: customerLearningModel(dependencies, { edition: teamRecord.edition }),
     spend: companyLearningSpend({ documentClient: dependencies.documentClient, tableName: dependencies.tableName, edition: teamRecord.edition, now: Date.now, log: (event, fields) => console.log(JSON.stringify({ component: "lessons", event, ...fields })) }),
   };
   return createLessonsRuntime({

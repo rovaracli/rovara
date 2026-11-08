@@ -64,7 +64,10 @@ export function endpointSecretReader(secrets: { send(command: GetSecretValueComm
   };
 }
 
-async function perform(access: ModelAccess, request: ModelAccessRequest): Promise<unknown> {
+/** The environment switch that turns the learning call on (set by the control plane only where the Team record is on); the function's timeout is sized for it. */
+export const LEARNING_COMPLETION_ENV = "LEARNING_COMPLETION_ENABLED";
+
+async function perform(access: ModelAccess, request: ModelAccessRequest, options: { learning: boolean }): Promise<unknown> {
   switch (request.op) {
     case "upsertOrg": return access.upsertOrg(request.args.orgId, request.args.monthlyBudgetUsd).then(() => null);
     case "upsertMember": return access.upsertMember(request.args.orgId, request.args.developerId, request.args.monthlyBudgetUsd).then(() => null);
@@ -84,13 +87,14 @@ async function perform(access: ModelAccess, request: ModelAccessRequest): Promis
     case "revokeKey": return access.revokeKey(request.args.key).then(() => null);
     case "blockKey": return access.blockKey(request.args.keyId).then(() => null);
     case "learningCompletion":
-      if (access.learningCompletion === undefined) throw agentXError("CONFIG_INVALID", "learning calls are not set up on this install");
+      // With the switch off the function's timeout is the short one: a call would be cut off mid-generation and spend money for nothing, so it is refused before anything is sent.
+      if (!options.learning || access.learningCompletion === undefined) throw agentXError("CONFIG_INVALID", "learning calls are not set up on this install");
       return access.learningCompletion(request.args);
   }
 }
 
 /** The handler over any ModelAccess; the exported `handler` wires the real client. */
-export function createModelAccessHandler(input: { access: ModelAccess; log?: (entry: Record<string, unknown>) => void }) {
+export function createModelAccessHandler(input: { access: ModelAccess; log?: (entry: Record<string, unknown>) => void; /** Whether `learningCompletion` is allowed (default: not). */ learning?: boolean }) {
   const log = input.log ?? ((entry) => console.log(JSON.stringify({ component: "model-access", ...entry })));
   return async (event: unknown): Promise<ModelAccessResponse> => {
     const parsed = ModelAccessRequestSchema.safeParse(event);
@@ -102,7 +106,7 @@ export function createModelAccessHandler(input: { access: ModelAccess; log?: (en
     }
     const { op } = parsed.data;
     try {
-      const result = await perform(input.access, parsed.data);
+      const result = await perform(input.access, parsed.data, { learning: input.learning === true });
       log({ event: "model_access.done", op });
       return { ok: true, result };
     } catch (error) {
@@ -144,6 +148,7 @@ function wire() {
   });
   const log = (entry: Record<string, unknown>): void => console.log(JSON.stringify({ component: "model-access", ...entry }));
   return createModelAccessHandler({
+    learning: process.env[LEARNING_COMPLETION_ENV] === "1",
     access: new ModelProxyClient({
       log,
       baseUrl: requiredEnvironment("MODEL_PROXY_URL"),

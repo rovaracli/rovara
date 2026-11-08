@@ -172,11 +172,11 @@ function ownOrCatalog(orgId: string, model: string, catalog: readonly string[]):
 const sameModels = (left: readonly unknown[], right: readonly string[]): boolean => left.length === right.length && [...left].sort().join("\n") === [...right].sort().join("\n");
 
 /** LiteLLM's token id for a key: the hex SHA-256 of it, which is also how its info is asked for. */
-/** A learning key lives for at most five minutes. */
-const LEARNING_KEY_TTL_SECONDS = 300;
-/** One learning reply may take this long. */
-const LEARNING_CALL_TIMEOUT_MS = 150_000;
-const cleanCost = (usd: number): number => (Number.isFinite(usd) && usd > 0 ? Number(usd.toFixed(6)) : 0);
+/**
+ * One learning reply may take this long. It is the function's only step (no mint, no spend read, no delete), so the function's worst case is this plus a moment, well inside its 120 s timeout (infra) and the
+ * broker's wait (`LEARNING_INVOKE_TIMEOUT_MS`).
+ */
+export const LEARNING_CALL_TIMEOUT_MS = 100_000;
 
 /** The path and tool-less body of a learning call in the route's own transport: a system text, one user message, an output limit; no tools field in any of them. */
 function learningRequestOf(input: LearningCompletionInput): [string, Json] {
@@ -438,48 +438,23 @@ export class ModelProxyClient implements ModelAccess {
   }
 
   /**
-   * Lessons in production: one tool-less model call on the company's own route, with a key made for it alone (see `LearningCompletionInput`). The key is for the org (no member), scoped to the one alias,
-   * capped at the budget, alive for at most five minutes, used once and deleted. Every failure is a fixed sentence: the provider's words are never passed on, and neither is the key.
+   * Lessons in production: one tool-less model call on the company's own route, with the key the broker minted and reserved for it (see `LearningCompletionInput`). This is the function's whole job here: it does not
+   * mint, read the key's spend or delete the key (the spend is the ledger's, settled after the proxy has flushed it, and the key is blocked by the broker). Every failure is a fixed sentence: the provider's words
+   * are never passed on, and neither is the key.
    */
   async learningCompletion(input: LearningCompletionInput): Promise<LearningCompletion> {
-    const fail = (code: "MODEL_PROXY_UNAVAILABLE" | "CONFIG_INVALID" | "MODEL_NOT_ALLOWED", message: string): AgentXError => agentXError(code, message);
-    let minted: MintedKey;
+    const fail = (message: string): AgentXError => agentXError("MODEL_PROXY_UNAVAILABLE", message);
+    const [path, body] = learningRequestOf(input);
+    let reply: Reply;
     try {
-      minted = await this.mintKey({
-        orgId: input.orgId, purpose: "turn", refId: `learning-${randomBase36()}`, maxBudgetUsd: input.maxBudgetUsd, ttlSeconds: LEARNING_KEY_TTL_SECONDS, models: [input.model],
-        tags: { agentId: "learning", project: input.project, payerKind: "project", payerId: input.project, source: "learning", origin: "learning" },
-      });
-    } catch (error) {
-      // The proxy's reason for a refusal is its own text: only its code is passed on.
-      this.input.log?.({ event: "model_access.learning_mint_failed", code: error instanceof AgentXError ? error.code : "unknown" });
-      throw fail(error instanceof AgentXError && error.code === "CONFIG_INVALID" ? "CONFIG_INVALID" : "MODEL_PROXY_UNAVAILABLE", "the learning model could not be reached");
-    }
-    const key = minted.key;
-    try {
-      const [path, body] = learningRequestOf(input);
-      let reply: Reply;
-      try {
-        reply = await this.request("POST", path, key, body, LEARNING_CALL_TIMEOUT_MS);
-      } catch {
-        throw fail("MODEL_PROXY_UNAVAILABLE", "the learning model call failed");
-      }
-      if (reply.status !== 200) throw fail("MODEL_PROXY_UNAVAILABLE", "the learning model call failed");
-      const text = learningTextOf(input.api, reply.body);
-      if (text === undefined) throw fail("MODEL_PROXY_UNAVAILABLE", "the learning model answered with no text");
-      return { text, costUsd: await this.learningCost(key, input), model: input.model };
-    } finally {
-      // The key was for this one call. A delete that fails leaves a five-minute key nobody holds.
-      await this.revokeKey(key).catch(() => this.input.log?.({ event: "model_access.learning_revoke_failed" }));
-    }
-  }
-
-  /** What the call cost: the proxy's own figure for the key; if it cannot say, the key's whole cap (never less than the call may have cost). */
-  private async learningCost(key: string, input: LearningCompletionInput): Promise<number> {
-    try {
-      return cleanCost(await this.keySpend([tokenOf(key)]));
+      reply = await this.request("POST", path, input.key, body, LEARNING_CALL_TIMEOUT_MS);
     } catch {
-      return cleanCost(input.maxBudgetUsd);
+      throw fail("the learning model call failed");
     }
+    if (reply.status !== 200) throw fail("the learning model call failed");
+    const text = learningTextOf(input.api, reply.body);
+    if (text === undefined) throw fail("the learning model answered with no text");
+    return { text, model: input.model };
   }
 
   async revokeKey(key: string): Promise<void> {

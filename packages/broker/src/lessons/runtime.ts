@@ -72,7 +72,7 @@ const noModel = (): never => { throw new Error("no learning model is set up in t
 export const REFUSING_MODEL: PipelineModel = { complete: async () => noModel() };
 export const REFUSING_JUDGE: CorrectionJudge = { rate: async () => noModel() };
 /** No payer path: nothing is admitted and nothing is charged. */
-export const DENYING_SPEND: LearningSpend = { admit: async () => false, charge: async () => undefined };
+export const DENYING_SPEND: LearningSpend = { admit: async () => false };
 /** No lesson vectors and no embeddings: the loader ranks by scope, helpfulness and recency. No Bedrock call is made. */
 export const NO_EMBEDDER: Embedder = { embed: async () => [] };
 export const NO_VECTORS: LessonVectors = { upsert: async () => undefined, query: async () => [], remove: async () => undefined };

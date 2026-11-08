@@ -1,9 +1,11 @@
 // Lessons in production, lane 1: the task-end learning dependencies are built where the Team record AND the model path exist, and the inline model-calling handler is NOT registered from production wiring.
 import { readFileSync } from "node:fs";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { spendCounterKey } from "@agentx/contracts";
 import { hasTaskEndHandlers } from "../../packages/broker/src/agents/task-end.js";
 import { INLINE_LEARNING_TASK_END_ENABLED, installLearningTaskEnd, learningDepsInUse, uninstallLearningTaskEnd } from "../../packages/broker/src/aws/broker/learning-wiring.js";
 import type { learningDepsFor, lessonsRuntimeFor } from "../../packages/broker/src/aws/broker/lessons-wiring.js";
+import { LEARNING_COUNTER } from "../../packages/broker/src/aws/broker/learning-spend.js";
 import { installLessons, lessonSimilarityFor } from "../../packages/broker/src/aws/broker/lessons-wiring.js";
 import { announceHumanSendBack } from "../../packages/broker/src/lessons/send-back-events.js";
 import { DENYING_SPEND, NO_EMBEDDER, NO_VECTORS, REFUSING_MODEL } from "../../packages/broker/src/lessons/runtime.js";
@@ -18,7 +20,7 @@ function install(over: { modelAccess?: boolean; teamRecord?: boolean } = {}) {
   const dependencies = {
     documentClient: db, tableName: "state", developer: { signInTableName: "signin" }, artifactBucketName: "artifacts", s3: { send: async () => ({}) },
     ...(over.teamRecord === false ? {} : { teamRecord: { table: { documentClient: new FakeDynamoDb(), tableName: "record" }, edition: "public", emitter: { sendBack }, taskVisibility: async () => ({ kind: "shared" }) } }),
-    ...(over.modelAccess === false ? {} : { modelAccess: { access: { learningCompletion: async () => ({ text: "{}", costUsd: 0, model: "m" }) }, proxyUrl: "http://proxy" } }),
+    ...(over.modelAccess === false ? {} : { modelAccess: { access: { learningCompletion: async () => ({ text: "{}", model: "m" }) }, proxyUrl: "http://proxy" } }),
   } as Record<string, unknown>;
   return { db, dependencies };
 }
@@ -61,12 +63,15 @@ describe("the learning dependencies", () => {
     expect(kept.learning).toBe(given);
   });
 
-  it("the spend gate is the company's cap on the install's State table", async () => {
+  it("the spend gate is the company's learning month on the install's State table: a look that holds and writes nothing, refusing when the month's counter has no room", async () => {
     const { dependencies, db } = install();
     installLessons(dependencies as never);
     const runtime = dependencies.lessons as NonNullable<ReturnType<typeof lessonsRuntimeFor>>;
     expect(await runtime.routes.spend.admit(TEST_ORG, 0.15)).toBe(true);
-    expect(db.find((item) => item["entityType"] === "LEARNING_SPEND")).toHaveLength(1);
+    expect(db.find((item) => item["entityType"] === "LEARNING_SPEND" || item["entityType"] === "SPEND_COUNTER")).toHaveLength(0);
+    const month = new Date().toISOString().slice(0, 7);
+    db.set({ ...spendCounterKey(TEST_ORG, month, LEARNING_COUNTER), entityType: "SPEND_COUNTER", spentUsd: 19.95, committedUsd: 19.95 });
+    expect(await runtime.routes.spend.admit(TEST_ORG, 0.15)).toBe(false);
   });
 
   it("similarity is one seam: the load and route dependencies and the learning pieces take the embedder and the vectors from lessonSimilarityFor, which has none today", async () => {
