@@ -25,6 +25,9 @@ export function panelView(state: SavedEnvState | undefined, nowMs: number, role:
     ...(state?.lastRebuildReason === undefined ? {} : { lastRebuildReason: state.lastRebuildReason }),
     ...(failure === undefined ? {} : { lastFailure: failure }),
     canReset: projectAllows(role, "edit_settings") && state?.archived !== true && state?.deleted !== true,
+    // SV-1l: the project's own setting (on until a maintainer turns it off, as `setProjectEnabled` reads it), and whether to offer its control: the same right the setting route checks.
+    enabled: state?.enabled ?? true,
+    canChangeSetting: projectAllows(role, "edit_settings"),
   };
 }
 

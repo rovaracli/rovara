@@ -5,8 +5,7 @@
 //                                                               runs before this file (a write with no valid token is refused there). The role is the one the broker reads for the session's person, never one the request names.
 //   PUT   /v1/app/projects/{name}/environment-image/setting     { enabled }: the project's `savedEnv.enabled` setting. A maintainer, from a browser; audited (`saved_env.setting_changed`, who and the new value).
 // The registry's rules are in `test-env/saved-env-panel.ts` and `test-env/saved-env.ts`; this file reads the caller's role and passes it.
-import { z } from "zod";
-import { SavedEnvResetBodySchema, agentXError, projectAllows } from "@agentx/contracts";
+import { SavedEnvResetBodySchema, SavedEnvSettingBodySchema, agentXError, projectAllows } from "@agentx/contracts";
 import { logDeveloperEvent } from "../../developer/log.js";
 import { savedEnvPanel, resetFromPanel } from "../../test-env/saved-env-panel.js";
 import { setProjectEnabled } from "../../test-env/saved-env.js";
@@ -22,8 +21,6 @@ export const SAVED_ENV_IMAGE_PATH = /^\/v1\/app\/projects\/([^/]+)\/environment-
 export const SAVED_ENV_IMAGE_BROWSER_MESSAGE = "Use a live browser session for the project's saved environment.";
 /** Whether the path is one of this file's (the entry file refuses a token for these before anything is read). */
 export const isSavedEnvImagePath = (pathname: string): boolean => SAVED_ENV_IMAGE_PATH.test(pathname);
-
-const SettingBodySchema = z.object({ enabled: z.boolean() }).strict();
 
 export async function routeSavedEnvImage(deps: DeveloperRouteDependencies, caller: DeveloperCaller, request: AdaptedHttpRequest, url: URL, env: NodeJS.ProcessEnv = process.env): Promise<StatusReply | undefined> {
   if (!savedEnvEnabled(env)) return undefined;
@@ -45,7 +42,7 @@ export async function routeSavedEnvImage(deps: DeveloperRouteDependencies, calle
   const ids = { orgId: caller.orgId, projectId: name };
   if (setting) {
     if (!projectAllows(role, "edit_settings")) throw agentXError("FORBIDDEN", "Only a project maintainer can change the project's saved environment.");
-    const parsed = SettingBodySchema.safeParse(jsonBody(request));
+    const parsed = SavedEnvSettingBodySchema.safeParse(jsonBody(request));
     if (!parsed.success) throw bodyError(parsed.error);
     const changed = await setProjectEnabled(registry, ids, parsed.data.enabled, caller.developerId);
     if (!changed.ok) throw agentXError(changed.reason === "disabled" ? "NOT_FOUND" : "CHANGE_STALE", changed.reason === "disabled" ? "route not found" : "The project's saved environment changed meanwhile; try again.");

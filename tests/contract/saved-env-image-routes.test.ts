@@ -66,7 +66,7 @@ describe("who may", () => {
       on();
       const panel = await t.web(MAYA, "GET", PATH);
       expect(panel.status).toBe(200);
-      expect(SavedEnvPanelSchema.parse(answer(panel.body))).toMatchObject({ canReset: false });
+      expect(SavedEnvPanelSchema.parse(answer(panel.body))).toMatchObject({ canReset: false, canChangeSetting: false, enabled: true });
       expect((await t.web(MAYA, "POST", PATH, { action: "reset", requestId: "abcdefgh1234" })).status, role).toBe(403);
       expect((await t.web(MAYA, "PUT", SETTING, { enabled: false })).status, role).toBe(403);
       expect(w.store.rows.size).toBe(0);
@@ -129,6 +129,8 @@ describe("the project's setting", () => {
     expect(w.store.log).toEqual([]);
     expect(await t.web(MAYA, "PUT", SETTING, { enabled: false })).toMatchObject({ status: 200, body: { enabled: false, changed: true } });
     expect(w.row()?.enabled).toBe(false);
+    // the panel says it is off, and still offers the maintainer the control (SV-1l)
+    expect(await t.web(MAYA, "GET", PATH)).toMatchObject({ status: 200, body: { enabled: false, canChangeSetting: true } });
     expect(w.store.log).toEqual([expect.objectContaining({ action: "setting_changed", enabled: false, actor: MAYA.developerId })]);
     // a project turned off queues nothing
     expect(await t.web(MAYA, "POST", PATH, { action: "reset", requestId: "press-0003-aaaa" })).toMatchObject({ status: 200, body: { status: "nothing_to_do" } });

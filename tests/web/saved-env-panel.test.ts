@@ -23,7 +23,7 @@ const panel = (over: Record<string, unknown> = {}) => SavedEnvPanelSchema.parse(
 });
 type Handler = (request: ApiRequest) => Promise<ApiResponse | undefined> | ApiResponse | undefined;
 
-function setup(options: { panel?: ReturnType<typeof panel>; read?: ApiResponse; post?: Handler; page?: boolean } = {}) {
+function setup(options: { panel?: ReturnType<typeof panel>; read?: ApiResponse; post?: Handler; put?: Handler; page?: boolean } = {}) {
  let state = options.panel ?? panel();
  const f = fakeHost(async request => {
   const path = request.path.split("?")[0];
@@ -36,6 +36,13 @@ function setup(options: { panel?: ReturnType<typeof panel>; read?: ApiResponse; 
    state = panel({ rebuild: { state: "queued", reason: "reset" }, lastRebuildReason: "reset" });
    return { status: 200, body: { status: "queued", panel: state } };
   }
+  if (path === PATH + "/setting" && request.method === "PUT") {
+   const custom = await options.put?.(request);
+   if (custom !== undefined) return custom;
+   const enabled = (request.body as { enabled: boolean }).enabled;
+   state = { ...state, enabled };
+   return { status: 200, body: { enabled, changed: true } };
+  }
   return { status: 404, body: { error: { code: "NOT_FOUND", message: "Not found." } } };
  });
  const query = createQueryClient();
@@ -44,7 +51,8 @@ function setup(options: { panel?: ReturnType<typeof panel>; read?: ApiResponse; 
   : h(EnvironmentPanel, { project: "payments" });
  const ui = renderUi(h(AppHostProvider, { host: f.host, children: h(QueryClientProvider, { client: query, children: element }) }), { theme: "light" });
  const posts = () => f.request.mock.calls.map(([request]) => request).filter(request => request.method === "POST");
- return { ...f, ...ui, query, posts };
+ const puts = () => f.request.mock.calls.map(([request]) => request).filter(request => request.method === "PUT");
+ return { ...f, ...ui, query, posts, puts };
 }
 const region = async () => within(await screen.findByRole("region", { name: "Saved environment" }));
 
@@ -163,4 +171,90 @@ it("has no accessibility violations", async () => {
  const f = setup();
  await (await region()).findByText("Healthy. New tasks start from the saved copy.");
  await expectNoAxeViolations(f.container);
+});
+
+// SV-1l: the project's on/off setting, in the Saved environment section.
+const SWITCH = "Use a saved environment for new tasks";
+it("a maintainer turns it off with one switch and one Save: one PUT, then the section says it is off and offers no Reset", async () => {
+ const f = setup({ panel: panel({ enabled: true, canChangeSetting: true }) });
+ const section = await region();
+ expect(await section.findByText(/New tasks in this project only\./u)).toBeTruthy();
+ expect(section.getByText("A maintainer of this project.")).toBeTruthy();
+ const save = section.getByRole("button", { name: "Save" });
+ expect(save.hasAttribute("disabled")).toBe(true);
+ fireEvent.click(section.getByRole("switch", { name: SWITCH }));
+ expect(save.hasAttribute("disabled")).toBe(false);
+ act(() => { save.click();save.click(); });
+ expect(await section.findByText("Saved. New tasks set up fresh.")).toBeTruthy();
+ expect(f.puts()).toHaveLength(1);
+ expect(f.puts()[0]!.path).toBe(PATH + "/setting");
+ expect(f.puts()[0]!.body).toEqual({ enabled: false });
+ expect(await section.findByText("Off for this project. Every new task sets up fresh, and no saved copy is built.")).toBeTruthy();
+ expect(section.queryByRole("button", { name: "Reset" })).toBeNull();
+ expect(section.getByText("Turn the saved environment on to build a new saved copy.")).toBeTruthy();
+ expect(section.getByRole("switch", { name: SWITCH }).getAttribute("aria-checked")).toBe("false");
+});
+
+it("turns it back on from off", async () => {
+ const f = setup({ panel: panel({ enabled: false, canChangeSetting: true }) });
+ const section = await region();
+ fireEvent.click(await section.findByRole("switch", { name: SWITCH }));
+ fireEvent.click(section.getByRole("button", { name: "Save" }));
+ expect(await section.findByText("Saved. New tasks start from the saved copy once one is ready.")).toBeTruthy();
+ expect(f.puts()[0]!.body).toEqual({ enabled: true });
+});
+
+it("a person who can't change it reads the value and is told who can, with no switch and no Save", async () => {
+ setup({ panel: panel({ enabled: false, canChangeSetting: false, canReset: false }) });
+ const section = await region();
+ expect(await section.findByText("You can see this setting but not change it. Ask a maintainer of this project.")).toBeTruthy();
+ expect(section.getByText("Off")).toBeTruthy();
+ expect(section.queryByRole("switch")).toBeNull();
+ expect(section.queryByRole("button", { name: "Save" })).toBeNull();
+});
+
+it("an older server that sends no setting gets no control", async () => {
+ setup();
+ const section = await region();
+ await section.findByText("Healthy. New tasks start from the saved copy.");
+ expect(section.queryByRole("switch")).toBeNull();
+ expect(section.queryByText(/New tasks in this project only\./u)).toBeNull();
+});
+
+it("a refusal and a lost race are fixed sentences, each sent once, and both read the panel again", async () => {
+ const refused = setup({ panel: panel({ enabled: true, canChangeSetting: true }), put: () => ({ status: 403, body: { error: { code: "FORBIDDEN", message: "server words <b>x</b>" } } }) });
+ fireEvent.click(await (await region()).findByRole("switch", { name: SWITCH }));
+ const refusedReads = () => refused.request.mock.calls.filter(([request]) => request.path === PATH && request.method === "GET").length;
+ const readsBefore = refusedReads();
+ const save = screen.getByRole("button", { name: "Save" });
+ act(() => { save.click();save.click(); });
+ expect((await screen.findByRole("alert")).textContent).toBe("Only a maintainer of this project can change this setting.");
+ expect(document.querySelector("b")).toBeNull();
+ expect(refused.puts()).toHaveLength(1);
+ await waitFor(() => expect(refusedReads()).toBeGreaterThan(readsBefore));
+ refused.unmount();
+ const stale = setup({ panel: panel({ enabled: true, canChangeSetting: true }), put: () => ({ status: 409, body: { error: { code: "CHANGE_STALE", message: "x" } } }) });
+ fireEvent.click(await (await region()).findByRole("switch", { name: SWITCH }));
+ const reads = () => stale.request.mock.calls.filter(([request]) => request.path === PATH && request.method === "GET").length;
+ const before = reads();
+ fireEvent.click(screen.getByRole("button", { name: "Save" }));
+ expect((await screen.findByRole("alert")).textContent).toBe("Someone changed the saved environment meanwhile. It was read again; check it and save again.");
+ await waitFor(() => expect(reads()).toBeGreaterThan(before));
+ expect(screen.getByRole("switch", { name: SWITCH }).getAttribute("aria-checked")).toBe("true");
+});
+
+it("the setting has no accessibility violations, for a maintainer and for a viewer", async () => {
+ for (const canChangeSetting of [true, false]) {
+  const f = setup({ panel: panel({ enabled: true, canChangeSetting }) });
+  await (await region()).findByText("A maintainer of this project.");
+  await expectNoAxeViolations(f.container);
+  f.unmount();
+ }
+});
+
+it("while off, a waiting or running rebuild is not described as building", async () => {
+ setup({ panel: panel({ enabled: false, canChangeSetting: true, rebuild: { state: "running", reason: "stale" } }) });
+ const section = await region();
+ expect(await section.findByText("Off for this project. Every new task sets up fresh, and no saved copy is built.")).toBeTruthy();
+ expect(section.queryByText(/Building a new saved copy now/u)).toBeNull();
 });
