@@ -14,7 +14,7 @@
 //   - Athena workgroup: $5 per TB scanned, only when a query runs; the workgroup itself is free.
 //   - EventBridge Scheduler schedules (hourly, nightly, re-embed): free at this volume; each invoke is one Lambda run of the broker (a few milliseconds when nothing is due).
 // The embedder Lambda costs nothing idle (arm64, on demand, 10 GB; its call time is not measured on a real Lambda yet); its own small network (a VPC with no gateway, no NAT and no endpoint) costs nothing. The re-embed schedule (every 15 minutes) is one broker invoke that reads one index page per workspace when nothing is due. The distiller's model calls are NOT created here: they are billed on the org's spend when a feature uses them.
-import { CfnParameter, Duration, Token, aws_cloudwatch as cloudwatch, aws_lambda_event_sources as eventSources, aws_scheduler as scheduler, aws_sqs as sqs, type Stack, aws_iam as iam } from "aws-cdk-lib";
+import { CfnParameter, Duration, Token, aws_cloudwatch as cloudwatch, aws_lambda_event_sources as eventSources, aws_logs as logs, aws_scheduler as scheduler, aws_sqs as sqs, type Stack, aws_iam as iam } from "aws-cdk-lib";
 import type { aws_dynamodb as dynamodb, aws_s3 as s3 } from "aws-cdk-lib";
 import type { aws_lambda as lambda } from "aws-cdk-lib";
 import { aws_lambda as lambdaValues } from "aws-cdk-lib";
@@ -77,7 +77,38 @@ export interface TeamRecordWiringProps {
   readonly scheduleRole: iam.IRole;
   /** False when the account's Lambda concurrency quota cannot take a reservation (the agentxReservedConcurrency context). */
   readonly reservedConcurrency?: boolean;
+  /** SRL-5: the install's alarm names, the operator notification the other alarms use and the metrics namespace. Without it the sweep alarms below are not made (a caller without alarms still synthesises). */
+  readonly alarms?: TeamRecordSweepAlarmProps;
 }
+
+export interface TeamRecordSweepAlarmProps {
+  readonly name: (suffix: string) => string;
+  readonly action: cloudwatch.IAlarmAction;
+  readonly metricsNamespace: string;
+}
+
+/**
+ * SRL-5 (rounds 2 and 3, R7) and SRL-6: the fixed log lines the hourly job and the delete paths write when something fails, each counted by a metric filter on the BROKER's log group (the schedules wake the broker;
+ * the lines are JSON, `{"component":"team_record","event":"record.…"}`, from `createTeamRecordRuntime`) and each paging the operator. `suffix` is also in HEALTH_ALARM_SUFFIXES (contracts/admin.ts).
+ * Most alarm on one line in an hour (the hourly job runs once an hour, so a failed run is one data point). `record.github_repo_check_no_time` is the repository check finding no time left in the hourly budget: once is
+ * normal on a busy hour, so it pages only when three hourly runs in a row say it. Missing data (no line) is not a breach.
+ */
+export const TEAM_RECORD_SWEEP_ALARMS = [
+  { id: "SweepProblem", suffix: "TeamRecordSweepProblem", event: "record.github_sweep_problem", metric: "TeamRecordGithubSweepProblem",
+    description: "A GitHub sweep of the team record's hourly job had a problem (the App unreadable, redeliveries failed or gone, or the run failed). Deleted-repository and comment webhooks may be missed. Check the broker logs for record.github_sweep_problem and what it counts." },
+  { id: "RedeliveryGone", suffix: "TeamRecordRedeliveryGone", event: "record.github_redelivery_gone", metric: "TeamRecordGithubRedeliveryGone",
+    description: "A GitHub delete webhook the team record failed to process can no longer be redelivered (GitHub no longer has it). A deletion may not have reached the record. Check the broker logs for record.github_redelivery_gone." },
+  { id: "RepoCheckRefused", suffix: "TeamRecordRepoCheckRefused", event: "record.github_repo_check_refused", metric: "TeamRecordGithubRepoCheckRefused",
+    description: "The team record's repository check refused to remove recorded repositories because the installation's view looked too narrow (a narrowed installation). Check the broker logs for record.github_repo_check_refused and that company's Health." },
+  { id: "RedeliveryStateConflict", suffix: "TeamRecordRedeliveryStateConflict", event: "record.github_redelivery_state_conflict", metric: "TeamRecordGithubRedeliveryStateConflict",
+    description: "The GitHub redelivery sweep could not save its place (another writer changed it). Redeliveries may repeat or stall. Check the broker logs for record.github_redelivery_state_conflict." },
+  { id: "EraseSweepFailed", suffix: "TeamRecordEraseSweepFailed", event: "record.erase_sweep_failed", metric: "TeamRecordEraseSweepFailed",
+    description: "The second pass of an erasure failed, so an erase may not be final yet (the sweep items stay and the next run tries again). Check the broker logs for record.erase_sweep_failed." },
+  { id: "TombstoneFailed", suffix: "TeamRecordTombstoneFailed", event: "record.tombstone_failed", metric: "TeamRecordTombstoneFailed",
+    description: "A GitHub delete (a repository or a comment) could not be removed from the team record. Check the broker logs for record.tombstone_failed; the hourly redelivery asks GitHub for it again." },
+  { id: "RepoCheckNoTime", suffix: "TeamRecordRepoCheckNoTime", event: "record.github_repo_check_no_time", metric: "TeamRecordGithubRepoCheckNoTime", repeats: 3,
+    description: "The team record's repository check found no time left in the hourly job for three runs in a row, so deleted or unshared repositories are not being noticed. Check the broker logs for record.github_repo_check_no_time and the hourly job's other work." },
+] as const;
 
 /** The jobs the schedules wake. Each is bounded by its own budget in the broker. `poll` (the MCP pollers) is not scheduled: the MCP host is not part of the install yet. */
 export const TEAM_RECORD_JOBS = [
@@ -174,7 +205,27 @@ export function attachTeamRecord(stack: Stack, props: TeamRecordWiringProps): Te
       },
     });
   }
+  if (props.alarms !== undefined) attachSweepAlarms(broker, props.alarms);
   return { table, storage, activeSetting: enabled.valueAsString };
+}
+
+/** SRL-5, SRL-6: one metric filter and one alarm per line of `TEAM_RECORD_SWEEP_ALARMS`, on the broker's log group. No IAM: a metric filter and an alarm need no right of the broker's. */
+function attachSweepAlarms(broker: lambda.Function, alarms: TeamRecordSweepAlarmProps): void {
+  const stack = broker.stack;
+  for (const line of TEAM_RECORD_SWEEP_ALARMS) {
+    broker.logGroup.addMetricFilter(`TeamRecord${line.id}Metric`, {
+      filterPattern: logs.FilterPattern.stringValue("$.event", "=", line.event),
+      metricNamespace: alarms.metricsNamespace, metricName: line.metric, metricValue: "1",
+    });
+    const repeats = "repeats" in line ? line.repeats : 1;
+    new cloudwatch.Alarm(stack, `TeamRecord${line.id}Alarm`, {
+      alarmName: alarms.name(line.suffix), alarmDescription: line.description,
+      // The hourly job runs once an hour: an hour is one run. A line that must repeat needs that many hours in a row (every one of them breaching; no line is not a breach).
+      metric: new cloudwatch.Metric({ namespace: alarms.metricsNamespace, metricName: line.metric, statistic: "Sum", period: Duration.hours(1) }),
+      threshold: 1, evaluationPeriods: repeats, datapointsToAlarm: repeats,
+      comparisonOperator: cloudwatch.ComparisonOperator.GREATER_THAN_OR_EQUAL_TO_THRESHOLD, treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
+    }).addAlarmAction(alarms.action);
+  }
 }
 
 export interface LessonsWorkerProps {
