@@ -5,7 +5,7 @@
 // The button words are the shared table (`DECISION_LABELS`), the same as the web card's.
 // A pressed button carries only the card's id; the server re-checks everything (routes.ts), so a forged or stale press is refused there. Every word that came from a person, a plan or a repository
 // was already flattened by the projector; here it is also escaped for Slack (a mention, a link, a broadcast).
-import { DECISION_LABELS, hideEmailAddresses, runLimitRaiseText, runLimitRaises, type DecisionCard, type DecisionTab } from "@agentx/contracts";
+import { DECISION_LABELS, formatRunLimitUsd, hideEmailAddresses, runLimitRaiseText, runLimitRaises, type DecisionCard, type DecisionTab } from "@agentx/contracts";
 
 export const DECISION_SLACK_APPROVE_ACTION = "rovara_decision_approve";
 export const DECISION_SLACK_REJECT_ACTION = "rovara_decision_reject";
@@ -39,7 +39,7 @@ export function slackCardMessage(card: DecisionCard, input: { cardUrl: string; /
   const text = escapeSlack(`${card.title}: ${card.question}`);
   // QA6-12b: a coding plan that raises the run limit says so in the owner's words, and its Approve button carries the amount it shows (a third part of the value); the server refuses a press whose amount is no longer what approving sets.
   const raise = card.kind === "approve_plan" && card.runLimit !== undefined && runLimitRaises(card.runLimit.currentUsd, card.runLimit.proposedUsd) ? card.runLimit : undefined;
-  const raiseLine = raise === undefined ? [] : [raise.currentUsd === undefined ? `This sets the run limit to $${String(raise.proposedUsd)}.` : `${runLimitRaiseText(raise.currentUsd, raise.proposedUsd)}.`];
+  const raiseLine = raise === undefined ? [] : [raise.currentUsd === undefined ? `This sets the run limit to ${formatRunLimitUsd(raise.proposedUsd)}.` : `${runLimitRaiseText(raise.currentUsd, raise.proposedUsd)}.`];
   const blocks: Array<Record<string, unknown>> = [
     { type: "section", text: { type: "mrkdwn", text: clip(head) } },
     { type: "section", text: { type: "mrkdwn", text: clip([`Recommended: ${escapeSlack(card.recommended.action)}. ${escapeSlack(card.recommended.why)}`, `Next: ${escapeSlack(card.next.text)}`, ...raiseLine, ...tabs].join("\n")) } },

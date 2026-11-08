@@ -896,7 +896,7 @@ describe("QA6-12b: a coding plan that raises the run limit says so in the owner'
   it("shows 'This raises the run limit from $A to $B', keeps Approve with the new limit in its label and in its value, and keeps Request changes and Close", () => {
     const shown = workflowMessage({ taskId, workflow: snapshot("PLAN_REVIEW", "WAITING"), structured: { claims: ["A claim."], claimCount: 1, decisionCount: 0, tiny: false }, runLimitRaise: { currentUsd: 2, proposedUsd: 12 } })!;
     expect(shown.text).toContain("This raises the run limit from $2 to $12.");
-    expect(shown.text).toContain("Approve here confirms $12 as the run limit.");
+    expect(shown.text).toContain("Approving accepts $12 as the run limit, or asks for it if your role cannot.");
     const approve = approveOf(shown);
     expect(approve.text.text).toBe("Approve coding plan and raise the limit to $12");
     expect(JSON.parse(approve.value)).toMatchObject({ taskId, decision: "APPROVE", runLimitUsd: 12 });

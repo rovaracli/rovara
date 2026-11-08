@@ -7,7 +7,7 @@ import { taskStatusOf } from "../agent-sessions/task-status.js";
 import { decisionCardsEnabled } from "../proof/switch.js";
 import { decisionCardUrl, sessionPageUrl } from "../decisions/open-path.js";
 import { SessionIdSchema, taskStatusText } from "@agentx/contracts";
-import { planRunLimitChange, waitsOnCodingPlan } from "../spend/run-limit-change.js";
+import { planRunLimitChange, planRunLimitChangeLive, waitsOnCodingPlan } from "../spend/run-limit-change.js";
 import { chatGptFallbackText } from "../chatgpt/fallback-notice.js";
 import { developerIdForSlackUser } from "./admin-actions.js";
 import { createHash } from "node:crypto";
@@ -1026,6 +1026,13 @@ export function runLimitRaiseFor(task: Pick<DeveloperTaskRecord, "budgetUsd" | "
   return change?.raises === true ? { currentUsd: change.currentUsd, proposedUsd: change.proposedUsd } : undefined;
 }
 
+/** `runLimitRaiseFor`, and for a record with no stored estimate the limit the decision will work out (`planRunLimit`), so the Approve button carries the amount. A read that fails shows no raise (the press is then refused with a link). */
+export async function runLimitRaiseLive(deps: Pick<NotifierDependencies, "documentClient" | "tableName" | "now">, task: DeveloperTaskRecord, workflow: Pick<WorkflowSnapshot, "path" | "reviewPhase" | "stage" | "state">): Promise<{ currentUsd: number; proposedUsd: number } | undefined> {
+  if (!waitsOnCodingPlan(workflow)) return undefined;
+  const change = await planRunLimitChangeLive({ documentClient: deps.documentClient, tableName: deps.tableName, now: deps.now }, task, true);
+  return change?.raises === true ? { currentUsd: change.currentUsd, proposedUsd: change.proposedUsd } : undefined;
+}
+
 async function workflowReply(deps: NotifierDependencies, task: DeveloperTaskRecord & { share: TaskShare }, workflow: WorkflowSnapshot, reopenedPullRequests?: ReadonlyArray<{ repositoryId: string; number: number }>): Promise<Reply | undefined> {
   // A task closed in Slack has its own closed reply; a second "closed" line would say it twice.
   if (workflow.stage === "CLOSED" && task.closedAt !== undefined) return undefined;
@@ -1056,7 +1063,7 @@ async function workflowReply(deps: NotifierDependencies, task: DeveloperTaskReco
     }
     const card = designCardUrlFor(deps.reviewUrlBase, task, workflow, page);
     if (card !== undefined) context.designCardUrl = card;
-    const raise = runLimitRaiseFor(task, workflow);
+    const raise = await runLimitRaiseLive(deps, task, workflow);
     if (raise !== undefined) context.runLimitRaise = raise;
   } else if (workflow.state === "BLOCKED" || (workflow.stage === "WAIT_FOR_MERGE" && workflow.state === "WAITING")) {
     // Replies that came in after the plan and that no step has taken: said, with where to read them.

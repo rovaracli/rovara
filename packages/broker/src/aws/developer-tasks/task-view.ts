@@ -42,7 +42,7 @@ import {
 } from "@agentx/contracts";
 import { taskStatusOf } from "../../agent-sessions/task-status.js";
 import { planRunLimit } from "../../spend/estimate.js";
-import { planRunLimitChange, waitsOnCodingPlan } from "../../spend/run-limit-change.js";
+import { planRunLimitChangeLive, waitsOnCodingPlan } from "../../spend/run-limit-change.js";
 import { readSpendPolicy } from "../../spend/settings.js";
 import {
   byCreated,
@@ -365,7 +365,7 @@ export async function taskView(
   });
   const reviewFindings = findingActionsOf(task, options.actor === "viewer");
   // QA6-12b: what approving the waiting coding plan does to the run limit (the Slack message and the tools show it before the approval, which must carry the amount when it raises the limit).
-  const planLimitChange = task.closedAt === undefined && waitsOnCodingPlan(task.workflow) ? planRunLimitChange(task) : undefined;
+  const planLimitChange = task.closedAt === undefined && waitsOnCodingPlan(task.workflow) && deps.modelAccess !== undefined ? await planRunLimitChangeLive(estimateDependencies(deps), task, false) : undefined;
   return {
     modelFallbacks:modelFallbacks.data,
     statusView,

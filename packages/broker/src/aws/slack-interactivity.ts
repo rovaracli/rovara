@@ -1659,7 +1659,7 @@ export function workflowSlackHandlers(deps: {
       // QA6-12b: the form that approves a raise says so first, in the same words as the message, and what Approve confirms.
       if (choosing && value.acknowledgedRunLimitUsd !== undefined) {
         const currentUsd = typeof task.budgetUsd === "number" ? task.budgetUsd : PER_TASK_BUDGET_USD;
-        blocks.unshift({ type: "section", text: { type: "mrkdwn", text: `${runLimitRaiseText(currentUsd, value.acknowledgedRunLimitUsd)}. Approving confirms ${formatRunLimitUsd(value.acknowledgedRunLimitUsd)} as the run limit.` } });
+        blocks.unshift({ type: "section", text: { type: "mrkdwn", text: `${runLimitRaiseText(currentUsd, value.acknowledgedRunLimitUsd)}. Approving accepts ${formatRunLimitUsd(value.acknowledgedRunLimitUsd)} as the run limit, or asks for it if your role cannot.` } });
       }
       if (value.decision === "REQUEST_CHANGES") {
         blocks.push({ type: "input", block_id: "workflow_feedback", label: { type: "plain_text", text: "What should change?" }, element: { type: "plain_text_input", action_id: "reason", multiline: true, max_length: 500 } });

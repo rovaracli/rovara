@@ -3,6 +3,7 @@
 // task's limit or the per-task default. The decision itself recomputes the limit (the estimate or the spend policy may have moved since) and refuses an acknowledgement that no longer matches.
 import { PER_TASK_BUDGET_USD, runLimitRaises, type WorkflowSnapshot } from "@agentx/contracts";
 import type { DeveloperTaskRecord } from "../developer/task-records.js";
+import { planRunLimit, type EstimateDependencies } from "./estimate.js";
 
 export interface PlanRunLimitChange {
   /** The limit the task has now (the per-task default when it has none). */
@@ -25,4 +26,21 @@ export function planRunLimitChange(task: Pick<DeveloperTaskRecord, "budgetUsd" |
   const proposedUsd = task.requestedRunLimitUsd === undefined ? estimate.runLimitUsd : Math.min(estimate.runLimitUsd, task.requestedRunLimitUsd);
   const currentUsd = task.budgetUsd ?? PER_TASK_BUDGET_USD;
   return { currentUsd, proposedUsd, raises: runLimitRaises(currentUsd, proposedUsd) };
+}
+
+/**
+ * `planRunLimitChange`, and for a coding plan whose record carries no estimate (the estimate failed when the plan reached review, or the task is older) the limit the decision itself will work out
+ * (`planRunLimit`, as the plan card does), so the Approve button and the tools still carry the amount. Undefined when there is no org to work it out for or it cannot be read: the decision then refuses a
+ * raise sent without the amount, with the words and a link. `requireLimit` keeps this to a task that has a limit of its own (an install with no model proxy sets none, and approving sets none).
+ */
+export async function planRunLimitChangeLive(deps: EstimateDependencies, task: DeveloperTaskRecord, requireLimit: boolean): Promise<PlanRunLimitChange | undefined> {
+  const stored = planRunLimitChange(task);
+  if (stored !== undefined || task.orgId === undefined || (requireLimit && task.budgetUsd === undefined)) return stored;
+  try {
+    const proposedUsd = await planRunLimit(deps, task);
+    const currentUsd = task.budgetUsd ?? PER_TASK_BUDGET_USD;
+    return { currentUsd, proposedUsd, raises: runLimitRaises(currentUsd, proposedUsd) };
+  } catch {
+    return undefined;
+  }
 }

@@ -835,6 +835,20 @@ describe("approving the plan", () => {
       expect((await t.h.dev(MAYA, "GET", `/v1/dev/tasks/${taskId}`)).body.task, "nothing to approve once decided").not.toHaveProperty("planRunLimit");
     });
 
+    it("a plan whose record has no estimate (it failed when the plan reached review) still shows the raise in the task view, and the amount shown is the one the decision sets", async () => {
+      const { t, taskId, plan, current } = await raising();
+      const { runEstimate: _gone, ...withoutEstimate } = t.meta(taskId) as Record<string, unknown>; // eslint-disable-line @typescript-eslint/no-unused-vars -- the estimate is the thing left out
+      t.h.db.delete(`DEVTASK#${taskId}`, "META");
+      t.h.db.set(withoutEstimate);
+      expect(t.meta(taskId).runEstimate).toBeUndefined();
+      const view = (await t.h.dev(MAYA, "GET", `/v1/dev/tasks/${taskId}`)).body.task as { planRunLimit?: { currentUsd: number; proposedUsd: number; raises: boolean } };
+      expect(view.planRunLimit, "worked out live, as the plan card does").toMatchObject({ currentUsd: current, raises: true });
+      const shown = view.planRunLimit!.proposedUsd;
+      expect((await t.decide(taskId, plan, randomUUID(), "APPROVE", "none")).status, "without the amount it is still refused").toBe(400);
+      expect((await t.decide(taskId, plan, randomUUID(), "APPROVE", shown)).status).toBe(200);
+      expect(t.meta(taskId).budgetUsd, "the amount shown is the amount set").toBe(shown);
+    });
+
     it("a stale acknowledgement is refused: the amount moved after the person saw it, and the refusal shows the new amount", async () => {
       const { t, taskId, plan, current, proposed } = await raising();
       t.h.db.set({ ...t.meta(taskId), runEstimate: { ...t.meta(taskId).runEstimate!, runLimitUsd: proposed + 5 } });

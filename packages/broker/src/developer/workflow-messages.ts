@@ -552,8 +552,8 @@ function planReview(context: WorkflowMessageContext, exits: ReturnType<typeof ex
   const approveLead = cardOnly ? [planOpen === undefined ? `Approve the ${name} on its card in Rovara.` : `This ${name} is ${planOpen.why} risk: approve it in Rovara${planOpen.why === "high" ? " after signing in again" : ""}.`] : structured.decisionCount > 0
     ? [`Approve here uses AgentX's answers for ${plural(structured.decisionCount, "decision")} and includes the open comments (up to 25) from the task page.`]
     : structured.tiny ? [] : ["Approve here includes the open comments (up to 25) from the task page."];
-  // QA6-12b: the raise, in the owner's exact words, before the buttons; pressing Approve here confirms the new limit.
-  const lead = !cardOnly && raise !== undefined ? [`${runLimitRaiseText(raise.currentUsd, raise.proposedUsd)}. Approve here confirms ${formatRunLimitUsd(raise.proposedUsd)} as the run limit.`, ...approveLead] : approveLead;
+  // QA6-12b: the raise, in the owner's exact words, before the buttons; pressing Approve here accepts the new limit, or asks for it when the presser's role cannot accept it.
+  const lead = !cardOnly && raise !== undefined ? [`${runLimitRaiseText(raise.currentUsd, raise.proposedUsd)}. Approving accepts ${formatRunLimitUsd(raise.proposedUsd)} as the run limit, or asks for it if your role cannot.`, ...approveLead] : approveLead;
   tail.unshift(...lead);
   tail.push(context.documentLink === undefined ? unlinked : link(context.documentLink.url, structured.tiny ? `Open the ${name}` : `Open the full ${name}`));
   const buttons: Button[] = context.documentLink === undefined ? decisions

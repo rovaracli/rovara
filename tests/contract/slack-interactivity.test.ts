@@ -1123,7 +1123,7 @@ describe("Slack native workflow review controls", () => {
         const handlers = workflowSlackHandlers({ loadTask: async () => ({ ...task, budgetUsd: 2 }), openView: async (trigger, view) => { await strict.openView(trigger, view); opened = view; }, submit: async (input) => { submitted.push(input); } });
         await handlers.handleAction(raised(workflow.revision, 12));
         const blocks = opened?.blocks as Array<{ text?: { text: string } }>;
-        expect(blocks[0]!.text!.text).toBe("This raises the run limit from $2 to $12. Approving confirms $12 as the run limit.");
+        expect(blocks[0]!.text!.text).toBe("This raises the run limit from $2 to $12. Approving accepts $12 as the run limit, or asks for it if your role cannot.");
         await handlers.handleSubmission(submission(opened?.private_metadata, { workflow_checks: { selected_options: { selected_options: [{ value: "coverage" }] } } }));
         expect(submitted[0]).toMatchObject({ decision: "APPROVE", selectedOptionalCheckIds: ["coverage"], acknowledgedRunLimitUsd: 12 });
       });

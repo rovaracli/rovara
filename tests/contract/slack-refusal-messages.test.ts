@@ -25,7 +25,13 @@ describe("what a Slack press hears when the broker refuses it", () => {
 
   it("QA6-12b: a refused raise says the amounts, in Slack's terms; a stale button hears the new one", () => {
     expect(slackRefusalMessage("CONFIG_INVALID", OUT_OF_DATE, "This raises the run limit from $2 to $12. Approve again with the run limit acknowledged as $12 (acknowledgedRunLimitUsd 12), or approve it in Rovara: https://cell.example/review/x/task"))
-      .toBe("This raises the run limit from $2 to $12. This button does not confirm it. Use the latest message in this thread, or approve the plan in Rovara.");
+      .toBe("This raises the run limit from $2 to $12. This button does not carry the new limit. Use the latest message in this thread if it shows this raise, or approve the plan in Rovara: https://cell.example/review/x/task");
+    // Without a link the way forward is still said.
+    expect(slackRefusalMessage("CONFIG_INVALID", OUT_OF_DATE, "This raises the run limit from $2 to $12. Approve again with the run limit acknowledged as $12 (acknowledgedRunLimitUsd 12)."))
+      .toBe("This raises the run limit from $2 to $12. This button does not carry the new limit. Use the latest message in this thread if it shows this raise, or approve the plan in Rovara.");
+    // A link with markup in it is not said.
+    expect(slackRefusalMessage("CONFIG_INVALID", OUT_OF_DATE, "This raises the run limit from $2 to $12. Approve again (acknowledgedRunLimitUsd 12), or approve it in Rovara: https://x.example/<!channel>"))
+      .not.toContain("<");
     expect(slackRefusalMessage("CONFIG_INVALID", OUT_OF_DATE, "This plan's run limit is now $15.50, not the $12 you were shown. This raises the run limit from $2 to $15.50. Check it and approve again with the run limit acknowledged as $15.50."))
       .toBe("The run limit changed since this message was posted: it is now $15.50, not the $12 this button showed. This raises the run limit from $2 to $15.50. Use the latest message in this thread to approve it.");
     // The limit came down to what the task has: nothing is raised, and the sentence says only that.

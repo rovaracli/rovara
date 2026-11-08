@@ -7,7 +7,7 @@ import { describe, expect, it, vi } from "vitest";
 import { PER_TASK_BUDGET_USD, orgMemberKey, projectMemberKey, WORKFLOW_AUTO_PUBLISH_FAILED_MESSAGE, WORKFLOW_AUTO_REVIEW_FAILED_MESSAGE, indexExpiresAt, plannerReplyCommentId, planQualityFinding } from "@agentx/contracts";
 import { developerTaskIdentity, plannerRepliesKey } from "../../packages/broker/src/developer/task-records.js";
 import { SlackPostError, chatPostMessage } from "../../packages/broker/src/aws/slack-web.js";
-import { cachedSlackPoster, createNotifierHandler, designCardUrlFor, runLimitRaiseFor, retryDelaySeconds, type NotifierDependencies } from "../../packages/broker/src/aws/developer-task-notifier.js";
+import { cachedSlackPoster, createNotifierHandler, designCardUrlFor, runLimitRaiseFor, runLimitRaiseLive, retryDelaySeconds, type NotifierDependencies } from "../../packages/broker/src/aws/developer-task-notifier.js";
 import { noticesOf, type Notice } from "../../packages/broker/src/developer/notifications.js";
 import { MAYA, OMAR, createSingleAnswerPlanBroker, grantProject, recordStream } from "../support/developer-task-broker.js";
 import { finishPlanningWithMarkdown, planAnswer, planDocument } from "../support/plan-documents.js";
@@ -2687,6 +2687,24 @@ describe("decision journey slice 1: a plan-review message for a design under rev
   it("nothing (Approve stays) without a design review, or at another step", () => {
     expect(designCardUrlFor("https://agentx.example.test", { taskId, sessionId }, { designReview: undefined, reviewPhase: "DESIGN" }, page)).toBeUndefined();
     expect(designCardUrlFor("https://agentx.example.test", { taskId, sessionId }, { designReview: review, reviewPhase: "IMPLEMENTATION_PLAN" }, page)).toBeUndefined();
+  });
+});
+
+describe("QA6-12b: a plan with no stored estimate is worked out live, as the decision does", () => {
+  const quick = { path: "QUICK" as const, reviewPhase: undefined, stage: "PLAN_REVIEW" as const, state: "WAITING" as const };
+  const base = { taskId: "11111111-1111-4111-8111-111111111111", orgId: TEST_ORG, project: "payments", budgetUsd: 2 };
+  const task = base as never;
+  const clock = () => Date.now();
+  it("reads the spend policy and the run history and shows the raise (a Quick plan with no history is $10)", async () => {
+    expect(await runLimitRaiseLive({ documentClient: new FakeDynamoDb(), tableName: "state", now: clock }, task, quick)).toEqual({ currentUsd: 2, proposedUsd: 10 });
+  });
+  it("shows nothing when the read fails, the task has no limit of its own, or the document is not the coding plan; and reads nothing when the record has its estimate", async () => {
+    const failing = { send: async () => { throw new Error("denied"); } };
+    expect(await runLimitRaiseLive({ documentClient: failing, tableName: "state", now: clock }, task, quick)).toBeUndefined();
+    expect(await runLimitRaiseLive({ documentClient: new FakeDynamoDb(), tableName: "state", now: clock }, { ...base, budgetUsd: undefined } as never, quick)).toBeUndefined();
+    expect(await runLimitRaiseLive({ documentClient: new FakeDynamoDb(), tableName: "state", now: clock }, task, { ...quick, path: "FULL", reviewPhase: "DESIGN" })).toBeUndefined();
+    const stored = { ...base, runEstimate: { lowUsd: 1, highUsd: 3, runLimitUsd: 8, stopAtUsd: 8, basis: "default", samples: 0 } } as never;
+    expect(await runLimitRaiseLive({ documentClient: failing, tableName: "state", now: clock }, stored, quick)).toEqual({ currentUsd: 2, proposedUsd: 8 });
   });
 });
 
