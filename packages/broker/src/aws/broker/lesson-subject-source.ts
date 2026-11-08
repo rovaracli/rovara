@@ -65,6 +65,8 @@ export interface LessonSubjectSourceDeps {
   rememberedNoteIds?: ((orgId: string, taskId: string) => Promise<readonly string[]>) | undefined;
   /** Which comments the code host lists on one pull request now. Absent, or a host that cannot say: no pull request comment spans. */
   pullRequestFeedback?: ((input: { orgId: string; project: string; taskId: string; address: PullRequestAddress; url: string }) => Promise<PullRequestFeedbackView | undefined>) | undefined;
+  /** The merge commit noted for a merged pull request of this task (the default branch's commit), or undefined. Absent: the subject names no merged commit. */
+  mergeCommitOf?: ((input: { orgId: string; taskId: string; address: PullRequestAddress }) => Promise<string | undefined>) | undefined;
   /** The record's name of a pull request URL. Default: GitHub's. */
   pullRequestAddress?: ((url: string) => PullRequestAddress | undefined) | undefined;
 }
@@ -301,10 +303,17 @@ export function lessonSubjectSource(deps: LessonSubjectSourceDeps): TaskSubjectS
         .slice(0, MAX_SEND_BACK_IDS);
 
       const outcome = outcomeOf(workflow);
+      // The merge commit: noted when the host said the pull request merged. Named only for the one repository the subject names (a base was chosen), and only for a merged task.
+      let mergedCommit: string | undefined;
+      if (outcome === "merged" && base !== undefined && deps.mergeCommitOf !== undefined) {
+        const merged = (workflow?.pullRequests ?? []).find((pullRequest) => pullRequest.repositoryId === base.repository && pullRequest.state === "MERGED");
+        const address = merged === undefined ? undefined : (deps.pullRequestAddress ?? githubPullRequestAddress)(merged.url);
+        if (address !== undefined) mergedCommit = await deps.mergeCommitOf({ orgId, taskId: task.taskId, address }).catch(() => undefined);
+      }
       const base_: TaskSubjectBase = {
         facts: {
           workspaceId: orgId, project, taskId: task.taskId, repositories,
-          ...(base === undefined ? {} : { baseCommit: base.commit }),
+          ...(base === undefined ? {} : { baseCommit: base.commit }), ...(mergedCommit === undefined ? {} : { mergedCommit }),
           ...(outcome === undefined ? {} : { outcome }),
           // An erased initiator is nobody: with no `startedBy` and an `agent` mark the start actor is undefined, so no outcome is measured against them.
           task: initiatorErased ? { developerId: creator, agent: task.agent ?? {} } : { developerId: creator, ...(task.startedBy === undefined ? {} : { startedBy: task.startedBy }), ...(task.agent === undefined ? {} : { agent: task.agent }) },

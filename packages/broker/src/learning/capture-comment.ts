@@ -49,7 +49,7 @@ const notHere = () => refusal("IDEMPOTENCY_CONFLICT", "not_here", "Rovara isn't 
 
 /** The source key of a comment: one correction per task comment. */
 export const commentSourceKey = (taskId: string, commentId: string): string => `comment#${taskId}#${commentId}`;
-const correctionIdOf = (sourceKey: string): string => createHash("sha256").update(`learning-correction\0${sourceKey}`, "utf8").digest("hex").slice(0, 32);
+export const correctionIdOf = (sourceKey: string): string => createHash("sha256").update(`learning-correction\0${sourceKey}`, "utf8").digest("hex").slice(0, 32);
 
 const learningDepsOf = (deps: ForgetDeps, audit?: LearningDeps["audit"]): LearningDeps => ({ documentClient: deps.documentClient, tableName: deps.tableName, now: deps.now, ...(audit === undefined ? {} : { audit }) });
 

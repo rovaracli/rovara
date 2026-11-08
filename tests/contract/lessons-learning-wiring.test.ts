@@ -272,3 +272,23 @@ describe("what the production subject source is given", () => {
     expect(await learning.source.read({ workspaceId: TEST_ORG, taskId: "11111111-1111-4111-8111-111111111111" })).toBeUndefined();
   });
 });
+
+describe("human fix-up commits and the corrections people already make", () => {
+  it("the extractor is installed in the Team record's tap, with NO queue (a model call does not fit the ops queue's 30 seconds), and the subject source reads the record's captured words", async () => {
+    const { dependencies } = install();
+    const installed: Array<{ extractor: unknown; enqueue?: unknown }> = [];
+    (dependencies.teamRecord as Record<string, unknown>).humanEdit = { install: (input: { extractor: unknown; enqueue?: unknown }) => { installed.push(input); } };
+    installLessons(dependencies as never);
+    expect(installed).toHaveLength(1);
+    expect(typeof (installed[0]!.extractor as { extract: unknown }).extract).toBe("function");
+    expect(installed[0]!.enqueue).toBeUndefined();
+  });
+
+  it("not installed without the model path or the Team record", () => {
+    const noModel = install({ modelAccess: false });
+    const installed: unknown[] = [];
+    (noModel.dependencies.teamRecord as Record<string, unknown>).humanEdit = { install: (input: unknown) => { installed.push(input); } };
+    installLessons(noModel.dependencies as never);
+    expect(installed).toEqual([]);
+  });
+});

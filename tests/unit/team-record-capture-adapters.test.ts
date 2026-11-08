@@ -60,3 +60,22 @@ describe("an adapter made from a CodeHost port", () => {
     await expect(adapter.pullRequestFeedback!({ workspaceId: "o", project: "p", taskId: "t", address: { host: "x", repository: "r", number: 1 }, url: "u" })).rejects.toThrow();
   });
 });
+
+describe("the GitHub adapter", () => {
+  it("reads a compare through the provider with the company's scope (or the private install's), lists comments through the port, and supports everything", async () => {
+    const { githubCaptureAdapter } = await import("../../packages/broker/src/aws/broker/capture-adapters-wiring.js");
+    const calls: unknown[] = [];
+    const provider = { getRepositoryCompareJson: async (url: string, path: string, scope: unknown) => { calls.push([url, path, scope]); return { status: 404, body: undefined }; } };
+    const adapter = githubCaptureAdapter({ provider, codeHost: feedback([comment("review_comment:5", "review_comment", { line: 3 })]), cloud: true });
+    expect(adapter.supports).toEqual({ pullRequestComments: true, commentOutdated: true, humanEdits: true, authorship: "verified_commits_and_push_chain", mergeCommit: true });
+    expect(adapter.repositoryAddress?.("acme/api")).toBe("https://github.com/acme/api");
+    const repo = { host: "github", id: "1", fullName: "acme/api", isPrivate: true, workspaceId: "org_aaaaaaaaaaaaaaaaaaaa" };
+    expect(await adapter.diffs!.compare({ repo, base: "a".repeat(40), head: "b".repeat(40) })).toBeUndefined();
+    expect(calls).toEqual([["https://github.com/acme/api", `/repos/acme/api/compare/${"a".repeat(40)}...${"b".repeat(40)}?per_page=100`, { orgId: "org_aaaaaaaaaaaaaaaaaaaa" }]]);
+    const privateInstall = githubCaptureAdapter({ provider, codeHost: feedback([]), cloud: false });
+    await privateInstall.diffs!.compare({ repo, base: "a".repeat(40), head: "b".repeat(40) });
+    expect(calls[1]).toMatchObject([expect.any(String), expect.any(String), { system: "private-install" }]);
+    const view = await adapter.pullRequestFeedback!({ workspaceId: "org_aaaaaaaaaaaaaaaaaaaa", project: "p", taskId: "t", address: { host: "github", repository: "acme/api", number: 7 }, url: "https://github.com/acme/api/pull/7" });
+    expect(view).toEqual({ comments: [{ kind: "review_comment", id: "5", line: 3 }] });
+  });
+});

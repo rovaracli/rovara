@@ -146,3 +146,23 @@ describe("a reviewer's comments on the task's pull requests", () => {
     expect(named.asked).toHaveLength(4);
   });
 });
+
+describe("the merged commit", () => {
+  const sha = "d".repeat(40);
+  const merged = { workflow: { pullRequests: [{ repositoryId: "api", number: 7, url: PR, candidateDigest: "b".repeat(64), required: true, state: "MERGED" }], reviewBase: [{ repositoryId: "api", baseCommitSha: "a".repeat(40) }] } };
+  it("is the merge commit noted for the task's merged pull request in the repository the subject names", async () => {
+    const asked: unknown[] = [];
+    const { source } = setup(merged, { mergeCommitOf: async (input) => { asked.push(input); return sha; } });
+    expect((await source.read({ workspaceId: WS, taskId: TASK }))!.facts.mergedCommit).toBe(sha);
+    expect(asked).toEqual([{ orgId: WS, taskId: TASK, address: { host: "github", repository: "acme/api", number: 7 } }]);
+  });
+  it("is not claimed when no commit was noted, the lookup fails, the pull request is not merged, or no base names a repository", async () => {
+    expect((await setup(merged, { mergeCommitOf: async () => undefined }).source.read({ workspaceId: WS, taskId: TASK }))!.facts.mergedCommit).toBeUndefined();
+    expect((await setup(merged, { mergeCommitOf: async () => { throw new Error("down"); } }).source.read({ workspaceId: WS, taskId: TASK }))!.facts.mergedCommit).toBeUndefined();
+    const open = { workflow: { ...merged.workflow, pullRequests: [{ ...merged.workflow.pullRequests[0]!, state: "OPEN" }], outcome: "CLOSED" } };
+    expect((await setup(open, { mergeCommitOf: async () => sha }).source.read({ workspaceId: WS, taskId: TASK }))!.facts.mergedCommit).toBeUndefined();
+    const noBase = { workflow: { pullRequests: merged.workflow.pullRequests } };
+    expect((await setup(noBase, { mergeCommitOf: async () => sha }).source.read({ workspaceId: WS, taskId: TASK }))!.facts.mergedCommit).toBeUndefined();
+    expect((await setup(merged).source.read({ workspaceId: WS, taskId: TASK }))!.facts.mergedCommit).toBeUndefined();
+  });
+});
