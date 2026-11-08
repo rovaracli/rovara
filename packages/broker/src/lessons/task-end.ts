@@ -113,7 +113,8 @@ export type LearnStatus = "off" | "no_facts" | "not_reflected" | "reflected";
  * has checked the ledger for the keys the attempt minted (`reflect-claims.ts`). Everything else is final: a reflection that was made (or cut at the deadline after its model answered), a refusal that trying again will not
  * change (no provider, no budget, the month's limit), a model answer that did not parse, a task that teaches nothing.
  */
-export interface LearnResult { status: LearnStatus; retry: boolean }
+/** `retryAt`: when a retry came from a host's rate limit, the time (ms since the epoch) the host said asking again may work. */
+export interface LearnResult { status: LearnStatus; retry: boolean; retryAt?: number }
 
 const final = (status: LearnStatus): LearnResult => ({ status, retry: false });
 

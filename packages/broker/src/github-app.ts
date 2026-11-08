@@ -245,6 +245,14 @@ export class GithubMergeRateLimitError extends HostRateLimitError {
   }
 }
 
+/** GitHub's rate-limit answer to a compare read (lessons capture): the neutral `HostRateLimitError`, so the queue worker waits for the time GitHub gave. */
+export class GithubCompareRateLimitError extends HostRateLimitError {
+  constructor(retryAt: number) {
+    super(retryAt, "GitHub is limiting requests; the compare will be tried again");
+    this.name = "GithubCompareRateLimitError";
+  }
+}
+
 export interface GitHubPullRequestUpdate {
   title?: string;
   body?: string;
@@ -789,7 +797,7 @@ export class GitHubAppCredentialProvider {
       if (isAgentXError(error) && (error.code === "CONFIG_INVALID" || error.code === "GITHUB_NOT_CONNECTED")) return { status: 404, body: undefined };
       throw error;
     }
-    return this.trackingJson(`https://api.github.com${apiPath}`, token);
+    return this.trackingJson(`https://api.github.com${apiPath}`, token, { rateLimit: true });
   }
 
   /** The provider a tracking pass reads through: itself with no budget, else one bounded provider per budget (a pass's reads share its installation lookup). */
@@ -804,7 +812,7 @@ export class GitHubAppCredentialProvider {
     return provider;
   }
 
-  private async trackingJson(url: string, token: string, init: { method?: string; body?: unknown } = {}): Promise<{ status: number; body: unknown }> {
+  private async trackingJson(url: string, token: string, init: { method?: string; body?: unknown; rateLimit?: boolean } = {}): Promise<{ status: number; body: unknown }> {
     const response = await this.fetchImplementation(url, {
       method: init.method ?? "GET", headers: githubHeaders(token), redirect: "error", signal: AbortSignal.timeout(8_000),
       ...(init.body === undefined ? {} : { body: JSON.stringify(init.body) }),
@@ -814,6 +822,12 @@ export class GitHubAppCredentialProvider {
       body = response.status === 204 ? undefined : await response.json();
     } catch {
       body = undefined;
+    }
+    // A caller that asked for it (`rateLimit`) never gets a rate limit as an ordinary answer: GitHub's limits are mostly a 403 (the primary limit with `x-ratelimit-remaining: 0`, the secondary with `retry-after`, or only
+    // the words in the message), and "no access" is a 403 too. It throws the neutral rate-limit error with the time to ask again; a 403 without any such signal is returned as it is.
+    if (init.rateLimit === true) {
+      const retryAt = compareRateLimitRetryAt(response, body, this.now());
+      if (retryAt !== undefined) throw new GithubCompareRateLimitError(retryAt);
     }
     return { status: response.status, body };
   }
@@ -2502,6 +2516,15 @@ export function mergeRateLimitRetryAt(response: Response, now: number): number |
   }
   if (response.status === 403 && candidates.length === 0 && !exhausted) return undefined;
   return candidates.length > 0 ? Math.max(...candidates) : safeFutureMilliseconds(now + 5 * 60_000, now);
+}
+
+/** When to ask GitHub again after a compare read, when the answer was a rate limit; undefined for every other answer (a 403 for lack of access included). */
+export function compareRateLimitRetryAt(response: Response, body: unknown, now: number): number | undefined {
+  const byHeaders = mergeRateLimitRetryAt(response, now);
+  if (byHeaders !== undefined) return byHeaders;
+  if (response.status !== 403) return undefined;
+  const message = (body as { message?: unknown } | null | undefined)?.message;
+  return typeof message === "string" && /rate limit|abuse detection/iu.test(message) ? now + 60_000 : undefined;
 }
 
 function assertMergePullRequestIdentity(details: GitHubPullRequestDetails, expectedNumber: number): void {

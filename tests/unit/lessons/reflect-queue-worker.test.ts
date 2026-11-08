@@ -101,6 +101,19 @@ describe("the worker", () => {
     await runReflectMessage(ok.deps, body());
     expect(await handleReflectBatch(ok.deps, { Records: [{ messageId: "m3", body: body() }] })).toEqual({ batchItemFailures: [] });
   });
+  it("a retry that carries a time the host gave waits for it (at least the backoff, at most 15 minutes, in whole seconds); one without a time keeps the backoff", async () => {
+    const record = { messageId: "m1", body: body(), receiptHandle: "h", attributes: { ApproximateReceiveCount: "1" } };
+    const waits = async (retryAt: number | undefined): Promise<number | undefined> => {
+      const w = worker({ learn: async () => ({ status: "not_reflected", retry: true, ...(retryAt === undefined ? {} : { retryAt }) }), now: () => 1_000_000 });
+      await handleReflectBatch(w.deps, { Records: [record] });
+      return w.delays[0]?.seconds;
+    };
+    expect(await waits(1_000_000 + 120_500)).toBe(121);
+    expect(await waits(1_000_000 + 10_000)).toBe(60);
+    expect(await waits(1_000_000 + 3_600_000)).toBe(900);
+    expect(await waits(1_000_000 - 5)).toBe(60);
+    expect(await waits(undefined)).toBe(60);
+  });
   it("H1: a typed retryable fault ends the lease at retry and the message comes back after the backoff of its receive count (60, 300, then 900 s); a final outcome is answered", async () => {
     expect(LESSONS_REFLECT_RETRY_BACKOFF_SECONDS).toEqual([60, 300, 900]);
     expect([1, 2, 3, 4, 9].map(retryDelaySeconds)).toEqual([60, 300, 900, 900, 900]);

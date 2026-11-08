@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import { hostRateLimitRetryAt } from "@agentx/contracts";
 import { createCodeHostTap, gitRevertedCommits, humanEditFile, revertedCommits, runHumanEdit, revertedPullRequests, type CodeHostDiff, type CodeHostEvent, type CodeHostRepo, type HumanEditInput } from "../../packages/broker/src/team-record/sources/codehost.js";
 import { createGithubDiffReader, createGithubRecordTap, githubEventsOf } from "../../packages/broker/src/team-record/sources/github.js";
 import { createRovaraEmitter, type RovaraEventBase } from "../../packages/broker/src/team-record/sources/rovara.js";
@@ -754,6 +755,19 @@ describe("GitHub adapter", () => {
     for (const status of [403, 404, 409, 422]) {
       expect(await createGithubDiffReader(async () => ({ status, body: {} })).compare({ repo: repo(), base: sha(20), head: sha(21) }), String(status)).toBeUndefined();
     }
+  });
+
+
+  it("a 403 that is a rate limit THROWS a host rate-limit error with the time to ask again (a signal from the read, or the host's own message); a 403 without rate-limit signals is 'no diff'", async () => {
+    const now = 1_800_000_000_000;
+    const ask = (answer: { status: number; body: unknown; retryAt?: number }) => createGithubDiffReader(async () => answer, () => now).compare({ repo: repo(), base: sha(20), head: sha(21) }).then(() => undefined, (error: unknown) => error);
+    expect(hostRateLimitRetryAt(await ask({ status: 403, body: {}, retryAt: now + 90_000 }))).toBe(now + 90_000);
+    expect(hostRateLimitRetryAt(await ask({ status: 403, body: { message: "You have exceeded a secondary rate limit. Please wait a few minutes." } }))).toBe(now + 60_000);
+    expect(hostRateLimitRetryAt(await ask({ status: 403, body: { message: "API rate limit exceeded for installation 1" }, retryAt: now + 5_000 }))).toBe(now + 5_000);
+    expect(hostRateLimitRetryAt(await ask({ status: 429, body: {}, retryAt: now + 30_000 }))).toBe(now + 30_000);
+    expect(hostRateLimitRetryAt(await ask({ status: 429, body: {} }))).toBe(now + 60_000);
+    expect(await ask({ status: 403, body: { message: "Resource not accessible by integration" } })).toBeUndefined();
+    expect(await createGithubDiffReader(async () => ({ status: 403, body: { message: "Forbidden" } })).compare({ repo: repo(), base: sha(20), head: sha(21) })).toBeUndefined();
   });
 });
 

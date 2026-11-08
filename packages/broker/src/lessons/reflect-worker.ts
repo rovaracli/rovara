@@ -44,7 +44,7 @@ export interface ReflectWorkerDeps {
 
 export type ReflectResult = LearnStatus | "invalid" | "already" | "wait" | "exhausted" | "timed_out" | "failed" | "no_time";
 /** `retry`: the message must come back (a batch item failure). */
-export interface ReflectOutcome { result: ReflectResult; retry: boolean }
+export interface ReflectOutcome { result: ReflectResult; retry: boolean; retryAt?: number }
 
 export interface WorkerContext { getRemainingTimeInMillis?: () => number }
 
@@ -132,7 +132,7 @@ export async function runReflectMessage(deps: ReflectWorkerDeps, body: string, c
     deps.log("lessons_worker.finish_failed", { taskId: message.taskId });
   }
   deps.log("lessons_worker.result", { class: outcome.retry ? "retry" : result === "timed_out" || result === "failed" ? result : outcome.status, kind, taskId: message.taskId, attempt: lease.attempt });
-  return { result, retry: outcome.retry };
+  return { result, retry: outcome.retry, ...(outcome.retry && outcome.retryAt !== undefined ? { retryAt: outcome.retryAt } : {}) };
 }
 
 export interface QueueBatch { Records: Array<{ messageId: string; body: string; receiptHandle?: string; attributes?: { ApproximateReceiveCount?: string } }> }
@@ -140,13 +140,26 @@ export interface QueueBatch { Records: Array<{ messageId: string; body: string; 
 /** The wait before a message that must come back is visible again, by how many times it has been received. */
 export const retryDelaySeconds = (receiveCount: number): number => LESSONS_REFLECT_RETRY_BACKOFF_SECONDS[Math.min(Math.max(receiveCount, 1), LESSONS_REFLECT_RETRY_BACKOFF_SECONDS.length) - 1]!;
 
+/** The longest a host's own retry time may hold a message back (the last of the backoff steps): a longer wait is left to the queue's receive count and the dead-letter queue. */
+const HOST_RETRY_WAIT_MAX_SECONDS = 900;
+
+/** The wait before a retry: the backoff of its receive count, or the time the host gave when that is later (whole seconds, capped). */
+export function retryDelayFor(receiveCount: number, retryAt: number | undefined, now: number): number {
+  const backoff = retryDelaySeconds(receiveCount);
+  if (retryAt === undefined) return backoff;
+  return Math.max(backoff, Math.min(HOST_RETRY_WAIT_MAX_SECONDS, Math.ceil((retryAt - now) / 1000)));
+}
+
 /** The partial-batch answer SQS reads: a message comes back when it must be tried again, when it waits for the ledger, or when its lease could not be taken. */
 export async function handleReflectBatch(deps: ReflectWorkerDeps, event: QueueBatch, context?: WorkerContext): Promise<{ batchItemFailures: Array<{ itemIdentifier: string }> }> {
   const batchItemFailures: Array<{ itemIdentifier: string }> = [];
   for (const record of event.Records) {
     let comeBack: boolean;
+    let retryAt: number | undefined;
     try {
-      comeBack = (await runReflectMessage(deps, record.body, context)).retry;
+      const ran = await runReflectMessage(deps, record.body, context);
+      comeBack = ran.retry;
+      retryAt = ran.retryAt;
     } catch {
       deps.log("lessons_worker.claim_failed", {});
       deps.log("lessons_worker.result", { class: "claim_failed" });
@@ -155,7 +168,7 @@ export async function handleReflectBatch(deps: ReflectWorkerDeps, event: QueueBa
     if (!comeBack) continue;
     batchItemFailures.push({ itemIdentifier: record.messageId });
     if (deps.visibility !== undefined && record.receiptHandle !== undefined) {
-      try { await deps.visibility.delay(record.receiptHandle, retryDelaySeconds(Number(record.attributes?.ApproximateReceiveCount ?? "1") || 1)); } catch { deps.log("lessons_worker.backoff_failed", {}); }
+      try { await deps.visibility.delay(record.receiptHandle, retryDelayFor(Number(record.attributes?.ApproximateReceiveCount ?? "1") || 1, retryAt, deps.now())); } catch { deps.log("lessons_worker.backoff_failed", {}); }
     }
   }
   return { batchItemFailures };

@@ -8,6 +8,7 @@
 //  - The model call is the reflector's: it goes through the customer-pays `PipelineModel` and the company's learning spend (lane 1), tool-less.
 //  - The task's own facts (intent, plan, who started and steered it) come from the same source as the task-end reflection; the task's send-backs, findings and close reason are that reflection's.
 //  - A model error THROWS (the tap gives the claim back and the queue retries). A spend refusal, an ineligible task or a reply with no lesson is a quiet "0 candidates".
+import { hostRateLimitRetryAt } from "@agentx/contracts";
 import type { HumanEditExtractorPort, HumanEditInput, HumanEditJob } from "../team-record/sources/codehost.js";
 import { currentLearningAttempt } from "./learning-deadline.js";
 import { modeAllows, resolveLearning, type LearningSettingsReader } from "./policy.js";
@@ -108,7 +109,10 @@ export async function learnFromHumanEdit(deps: HumanEditWorkDeps, job: HumanEdit
     if (!modeAllows(learning.mode, "reflect")) return { status: "off", retry: false };
     const handed = await deps.run(job);
     return { status: handed === "handed_on" ? "reflected" : "no_facts", retry: false };
-  } catch {
-    return { status: "not_reflected", retry: currentLearningAttempt() !== undefined && currentLearningAttempt()?.fault !== "final" };
+  } catch (error) {
+    const retry = currentLearningAttempt() !== undefined && currentLearningAttempt()?.fault !== "final";
+    // A host's rate limit (nothing was spent: the compare is read before any model call) comes back with the time the host gave, so the queue waits for it.
+    const retryAt = retry ? hostRateLimitRetryAt(error) : undefined;
+    return { status: "not_reflected", retry, ...(retryAt === undefined ? {} : { retryAt }) };
   }
 }

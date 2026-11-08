@@ -1,7 +1,7 @@
 // Lessons capture lane, integration with lane 2: a human fix-up commit rides the LessonsReflect queue as a sibling message (ids only), and the LessonsWorker reads and learns from it under the reflection's own lease,
 // deadline, single-attempt model client and `callStartedAt` rules. A human-edit extraction is a learning model call: it is never paid twice.
 import { describe, expect, it, vi } from "vitest";
-import { LESSONS_REFLECT_MAX_ATTEMPTS } from "@agentx/contracts";
+import { HostRateLimitError, LESSONS_REFLECT_MAX_ATTEMPTS } from "@agentx/contracts";
 import { humanEditEnqueue } from "../../../packages/broker/src/aws/broker/lessons-wiring.js";
 import { createHumanEditExtractor, learnFromHumanEdit, type HumanEditExtractorDeps } from "../../../packages/broker/src/lessons/human-edit.js";
 import { currentLearningAttempt, withLearningAttempt } from "../../../packages/broker/src/lessons/learning-deadline.js";
@@ -277,6 +277,11 @@ describe("learnFromHumanEdit", () => {
     expect(await boom).toEqual({ status: "not_reflected", retry: false });
     expect(await learnFromHumanEdit({ run: async () => "skipped", settings: settings({ mode: "On" }) }, job())).toEqual({ status: "no_facts", retry: false });
     expect(await learnFromHumanEdit({ run: async () => "handed_on", settings: settings({ mode: "On" }) }, job())).toEqual({ status: "reflected", retry: false });
+  });
+  it("a host rate limit before any model call is a retry that carries the time the host gave; outside an attempt, or after a final fault, it is not", async () => {
+    const limited = { run: async (): Promise<"handed_on"> => { throw new HostRateLimitError(1_800_000_090_000); }, settings: settings({ mode: "On" }) };
+    expect(await withLearningAttempt({ deadlineAt: Date.now() + 10_000 }, () => learnFromHumanEdit(limited, job()))).toEqual({ status: "not_reflected", retry: true, retryAt: 1_800_000_090_000 });
+    expect(await learnFromHumanEdit(limited, job())).toEqual({ status: "not_reflected", retry: false });
   });
 });
 

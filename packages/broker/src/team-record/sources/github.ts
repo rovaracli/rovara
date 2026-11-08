@@ -1,6 +1,7 @@
 // R5: GitHub as the first code host. Turns a verified webhook delivery into host-neutral `CodeHostEvent`s (codehost.ts), and reads a
 // compare through any `getJson` that carries an installation token. A body is a hint only: the workspace and project of a repository come from
 // the installation (`resolveRepo`), never from the delivery.
+import { HostRateLimitError } from "@agentx/contracts";
 import { z } from "zod";
 import { isoOrUndefined } from "./common.js";
 import { createCodeHostTap, type CodeHostDiff, type CodeHostDiffReader, type CodeHostEvent, type CodeHostPerson, type CodeHostRepo, type CodeHostTapDependencies, type TapResult } from "./codehost.js";
@@ -56,7 +57,8 @@ export interface GithubRecordTapDependencies extends CodeHostTapDependencies {
 }
 
 /** `context` names the workspace and the repository the path is about, so the caller can mint the right installation token. */
-export type GithubGetJson = (path: string, context?: { workspaceId: string; fullName: string }) => Promise<{ status: number; body: unknown }>;
+/** `retryAt`: when the host said this answer was a rate limit, the time (ms since the epoch) asking again may work. */
+export type GithubGetJson = (path: string, context?: { workspaceId: string; fullName: string }) => Promise<{ status: number; body: unknown; retryAt?: number }>;
 
 /**
  * The deliveries that remove what the record holds, by event name and action: a deleted comment (both comment events) and a deleted or transferred repository (`createCodeHostTap` tombstones
@@ -204,16 +206,26 @@ const Compare = z.object({
 }).passthrough();
 
 /**
- * Reads `base...head` through `getJson`. A rate limit (429) or a host fault (5xx) THROWS, so the caller can try again later (nothing has been spent at that point: a human edit's lease allows a retry before any model call).
- * Any other answer than a clean 200 (a missing repository or commit, an answer that cannot be read) is "no diff": the caller then hands nothing on.
+ * Reads `base...head` through `getJson`. A rate limit THROWS a `HostRateLimitError` (429, or GitHub's usual 403 that carries a rate-limit signal: the read's own `retryAt`, or the words "rate limit" in GitHub's message),
+ * and a host fault (5xx) throws, so the caller can try again later (nothing has been spent at that point: a human edit's lease allows a retry before any model call).
+ * Any other answer than a clean 200 (a missing repository or commit, a 403 for lack of access, an answer that cannot be read) is "no diff": the caller then hands nothing on.
  */
-export function createGithubDiffReader(getJson: GithubGetJson): CodeHostDiffReader {
+const RATE_LIMIT_MESSAGE = /rate limit|abuse detection/iu;
+/** With no time from the host, GitHub's advice for a secondary limit: wait at least a minute. */
+const RATE_LIMIT_DEFAULT_WAIT_MS = 60_000;
+
+export function createGithubDiffReader(getJson: GithubGetJson, now: () => number = Date.now): CodeHostDiffReader {
   return {
     async compare({ repo, base, head }) {
       if (!/^[0-9a-f]{40}$/.test(base) || !/^[0-9a-f]{40}$/.test(head) || !/^[\w.-]+\/[\w.-]+$/.test(repo.fullName)) return undefined;
       const [owner, name] = repo.fullName.split("/") as [string, string];
       const answered = await getJson(`/repos/${encodeURIComponent(owner)}/${encodeURIComponent(name)}/compare/${base}...${head}?per_page=100`, { workspaceId: repo.workspaceId, fullName: repo.fullName });
-      if (answered.status === 429 || answered.status >= 500) throw new Error("the compare is unavailable right now");
+      const message = (answered.body as { message?: unknown } | null | undefined)?.message;
+      if (answered.status === 429 || (answered.status === 403 && (answered.retryAt !== undefined || (typeof message === "string" && RATE_LIMIT_MESSAGE.test(message))))) {
+        const at = answered.retryAt !== undefined && answered.retryAt > now() ? answered.retryAt : now() + RATE_LIMIT_DEFAULT_WAIT_MS;
+        throw new HostRateLimitError(at, "the compare is unavailable right now: the host is rate limited");
+      }
+      if (answered.status >= 500) throw new Error("the compare is unavailable right now");
       if (answered.status !== 200) return undefined;
       const parsed = Compare.safeParse(answered.body);
       if (!parsed.success) return undefined;
