@@ -55,8 +55,19 @@ export interface SourceRouteDependencies {
   trackerOptions?: TrackerPlaceOptions;
   /** The source keys the learning loop paused (for the admin view). */
   pausedSources?(orgId: OrgId, project: string): Promise<readonly string[]>;
+  /**
+   * SRL-14: the least time a web editor's refused Slack add takes (see `SLACK_REFUSAL_FLOOR_MS`). `sleep` waits that many milliseconds; the runtime passes a real timer and tests pass one that moves their clock. Absent: refusals are not
+   * held back (only for tests that do not care; the runtime always sets it).
+   */
+  refusalFloor?: { ms: number; sleep(ms: number): Promise<void> };
   newId?(): string;
 }
+
+/**
+ * SRL-14 (owner decision 24b): a web editor who types a channel ID must not learn from the response time whether a private channel exists or Rovara is in it. The refusals the editor may not learn the reason for (SLACK_INVITE_NEEDED,
+ * SLACK_NOT_LINKED) are held until this long after the place check began, on top of making the same Slack reads on every path. Slack answers in well under this; a Slack slower than this (its own per-call limit is 5 s) is not slowed further.
+ */
+export const SLACK_REFUSAL_FLOOR_MS = 3_000;
 
 /** A page of Slack channels, or why it could not be read. */
 export type SlackChannelPage =
@@ -248,8 +259,30 @@ function slackPlaceOf(ctx: SourceWriteContext, scope: string): string {
 /**
  * A Slack place: the workspace is this company's (the binding the tap resolves), the channel is read LIVE and classified here, and the edition's rules apply. A workspace of another company answers as a
  * missing place and Slack is never asked; a channel that cannot be read fails closed. Slack Connect, and a DM or group DM in Public, are refused with their own code.
+ * A web editor's refusals that hide the reason (SRL-14) are held to a fixed floor in time (`withRefusalFloor`).
  */
 async function checkSlackPlace(run: Run, scope: string, editorInChannel: boolean): Promise<SlackScope> {
+  if (!editorInChannel || run.ctx.actor === "slack_interaction") return await checkSlackPlaceNow(run, scope, false);
+  return await withRefusalFloor(run, () => checkSlackPlaceNow(run, scope, true));
+}
+
+/** Runs the check; when it ends in a refusal that must not tell why, waits out the rest of the floor before letting it go. Success and every other answer are not delayed. */
+async function withRefusalFloor<T>(run: Run, work: () => Promise<T>): Promise<T> {
+  const floor = run.sources.refusalFloor;
+  if (floor === undefined) return await work();
+  const started = run.now();
+  try {
+    return await work();
+  } catch (error) {
+    if (error instanceof InviteNeeded || error instanceof NotLinked) {
+      const rest = floor.ms - (run.now() - started);
+      if (rest > 0) { try { await floor.sleep(rest); } catch { /* the answer is the same without the wait */ } }
+    }
+    throw error;
+  }
+}
+
+async function checkSlackPlaceNow(run: Run, scope: string, editorInChannel: boolean): Promise<SlackScope> {
   const parsed = parseSlackScope(scope);
   if (parsed === undefined) throw invalid(WORDS.place);
   const bound = run.sources.slackTeamBound;
@@ -262,39 +295,39 @@ async function checkSlackPlace(run: Run, scope: string, editorInChannel: boolean
   let facts: SlackFacts | "none" | undefined;
   try { facts = await run.ctx.slackChannel(parsed.teamId, parsed.channelId); } catch { facts = undefined; }
   if (facts === undefined) throw unavailable();
-  // Slack does not show the bot this channel: it is not in it, or there is no such channel. Never said which.
-  if (facts === "none") throw (await unlinkedEditor(run, editorInChannel)) ? new NotLinked() : new InviteNeeded();
+  // Slack does not show the bot this channel: it is not in it, or there is no such channel. Never said which. SRL-14: a web editor goes through EXACTLY the reads a private channel Rovara is in would cost (their linked ids, then one membership
+  // read per id, on this same channel), so the work, and the answer, are the same either way. Nothing the reads say can change the answer here.
+  if (facts === "none") {
+    if (editorInChannel) await editorIsIn(run, parsed.channelId);
+    throw new InviteNeeded();
+  }
   // Adding a channel that is not public from the web: the editor must be in it, by one of their own linked Slack ids (as the Slack-side Add checks), BEFORE anything else is said about the channel (Slack Connect, a DM). The Slack
   // interaction has already checked the person who pressed. A person not in it, with no linked id, answers exactly as "Rovara is not in that channel": the channel's existence is never told.
-  if (editorInChannel && run.ctx.actor !== "slack_interaction" && facts.kind !== "public") await requireEditorIn(run, parsed.channelId);
+  if (editorInChannel && facts.kind !== "public" && !await editorIsIn(run, parsed.channelId)) throw new InviteNeeded();
   const place = classifySlack(facts);
   if (!slackScopeAllowed(run.sources.edition, place).allowed) throw new NotAllowed(place === "slack_connect" ? WORDS.connect : WORDS.directMessages);
   return place;
 }
 
 const SLACK_USER_ID = /^[UW][A-Z0-9]{2,31}$/u;
-/** Whether a web editor adding a Slack place has no linked Slack account (read by the server). A read that is absent or fails is not "unlinked": the answer stays the merged one. */
-async function unlinkedEditor(run: Run, editorInChannel: boolean): Promise<boolean> {
-  if (!editorInChannel || run.ctx.actor === "slack_interaction" || run.sources.slackUserIdsOf === undefined) return false;
-  try { return (await run.sources.slackUserIdsOf(run.me)).filter((id) => SLACK_USER_ID.test(id)).length === 0; } catch { return false; }
-}
 const LINKED_IDS_MAX = 5;
-/** The editor's own linked Slack ids (the sign-in store's, read by the server from the session's developer, never from the request) and whether one of them is in the channel. Unreadable fails closed as unavailable. */
-async function requireEditorIn(run: Run, channelId: string): Promise<void> {
+/**
+ * Whether one of the editor's own linked Slack ids (the sign-in store's, read by the server from the session's developer, never from the request) is in the channel. NotLinked when they have none. A membership that cannot be read
+ * (an error, a throw, a channel Slack will not show) counts as "not in", the same as a plain no, so that a missing scope or a failing read on an existing private channel is not a different answer from a channel that does not exist
+ * (SRL-14). A missing way to read it, or the links failing, is unavailable for every channel alike.
+ */
+async function editorIsIn(run: Run, channelId: string): Promise<boolean> {
   const linksOf = run.sources.slackUserIdsOf, memberOf = run.ctx.slackMember;
   if (linksOf === undefined || memberOf === undefined) throw unavailable();
   let ids: string[];
   try { ids = [...new Set(await linksOf(run.me))].filter((id) => SLACK_USER_ID.test(id)).sort().slice(0, LINKED_IDS_MAX); } catch { throw unavailable(); }
   if (ids.length === 0) throw new NotLinked();
-  let unreadable = false;
   for (const id of ids) {
     let answer: boolean | undefined;
     try { answer = await memberOf(id, channelId); } catch { answer = undefined; }
-    if (answer === true) return;
-    if (answer === undefined) unreadable = true;
+    if (answer === true) return true;
   }
-  if (unreadable) throw unavailable();
-  throw new InviteNeeded();
+  return false;
 }
 
 /** A Linear team or Jira project: one the company's connected app lists, read live. No app of that kind (or an install without connections) is a missing place; a listing that cannot be read fails closed. */

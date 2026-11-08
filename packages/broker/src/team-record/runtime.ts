@@ -41,7 +41,7 @@ import { tableLakeDeleteQueue } from "./lake-queue.js";
 import { tableModeReader, type LearningModeReader } from "./mode.js";
 import { buildRecordCaller, handleRecordRoute, type RecordRouteReply } from "./routes.js";
 import { dynamoRateLimiter, type RecordQueryDependencies } from "./query.js";
-import type { SourceRouteDependencies, SourceWriteContext } from "./source-write.js";
+import { SLACK_REFUSAL_FLOOR_MS, type SourceRouteDependencies, type SourceWriteContext } from "./source-write.js";
 import { createCaptureModePort, createRecordSink, createSourceConfigPort, NOTES_OPT_IN_FROM_SOURCE_ROW, type RecordSink } from "./sink.js";
 import { createOpConsumer, type QueueRecord } from "./sources/queue.js";
 import { TEAM_RECORD_REMOVAL_SOURCE, type DeadLetterPort, type OpsQueue, type RemovalFallback, type RemovalFallbackEvent } from "./ops-queue.js";
@@ -578,6 +578,8 @@ export function createTeamRecordRuntime(input: TeamRecordRuntimeInput): TeamReco
     },
     // Slack: the workspace must be the one the company bound (the binding the tap resolves); the channel itself is read live through the request's own context. Linear and Jira: the connected apps list the place.
     ...(input.slackUserIdsOf === undefined ? {} : { slackUserIdsOf: input.slackUserIdsOf }),
+    // SRL-14: a web editor's refused Slack add takes the same time whether or not the channel exists.
+    refusalFloor: { ms: SLACK_REFUSAL_FLOOR_MS, sleep: (ms) => new Promise<void>((resolve) => { setTimeout(resolve, ms); }) },
     slackTeamBound: async (orgId, teamId) => (await new OrgStore({ documentClient: input.documentClient, tableName: state.tableName, now }).orgForSlackTeam(teamId)) === orgId,
     ...(input.trackers === undefined ? {} : { trackerPlace: trackerPlaceCheck(input.trackers, { now }), trackerOptions: trackerPlaceOptions(input.trackers) }),
     pausedSources: async (orgId, project) => Object.keys((await new DynamoLessonStore(table, now).flags({ workspaceId: orgId, project })).pausedSources ?? {}),
