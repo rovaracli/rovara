@@ -4,7 +4,7 @@ import { randomUUID } from "node:crypto";
 import { cleanForLearning } from "./guards.js";
 import { currentLearningAttempt } from "./learning-deadline.js";
 import { isLearningRefusal, noteModelFailure, notePause, noteRecovered, pauseOfLook, spendLook, type LessonsPauseStore } from "./pause.js";
-import { learningCaps, modeAllows, resolveLearning, type Edition, type LearningSettingsReader } from "./policy.js";
+import { emitAudit, learningCaps, modeAllows, resolveLearning, type Edition, type LearningSettingsReader } from "./policy.js";
 import type { Clock, LearningSpend, LessonAuditSink, Metrics, PipelineModel } from "./ports.js";
 import { buildReflectorInput, type MarkedSpan, type ReflectSubject } from "./reflect-input.js";
 import { NO_REASON_TEXT } from "./task-subject.js";
