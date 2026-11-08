@@ -50,7 +50,7 @@ const NUMBER = /^-?\d/u;
 const SIGNS: ReadonlySet<string> = new Set(["!=", "!==", "===", "==", "<=", ">=", "&&", "||", "<>"]);
 // Round 4 (R3-1): code operators are tokens. `!` right before an identifier, a call or a bracket is a NOT (it becomes the "not" token); `&&`, `||`, `==`, `===`, `!=`, `!==`, `<`, `>`, `<=`, `>=` and the like are sign tokens.
 // A `!` after a letter, digit or closing bracket (`value!`, `a[0]!`) is TypeScript's non-null assertion or ordinary punctuation, not a negation.
-const WORD = /-?\d+(?:[.,]\d+)*[\p{L}%]*|[\p{L}_][\p{L}\p{N}_]*|!==|===|!=|<=|>=|==|&&|\|\||<>|[<>=≤≥≠]|(?<![\p{L}\p{N}_)\]!])!(?=[\p{L}_(\[])/gu;
+const WORD = /-?\d+(?:[.,]\d+)*[\p{L}%]*|[\p{L}_][\p{L}\p{N}_]*|!==|===|!=|<=|>=|==|&&|\|\||<>|[<>=≤≥≠]|(?<![\p{L}\p{N}_)\]!])!(?=[\p{L}_([])/gu;
 
 /** The words of a text, in order, lower case, punctuation and whitespace gone. Digits, negations and code operators are kept (`!x` is "not x"); an apostrophe inside a word is dropped (don't -> dont). */
 export function wordsOf(text: string): string[] {

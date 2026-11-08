@@ -350,7 +350,7 @@ describe("R3-4: an SDK that cannot be loaded is unavailable, not loading for eve
 
   it("the curator, which waits for the load, hears the failure at once and reports unavailable", async () => {
     const logs: string[] = [];
-    const lessonsEmbedder = lessonEmbedderFrom({ EMBEDDER_FUNCTION_NAME: "agentx-test-embedder" }, { region: "us-west-2", load: async () => ({ InvokeCommand: class {}, LambdaClient: undefined }) as Record<string, unknown> }, EMBEDDER_LESSON_WAIT_MS, 10_000)!;
+    const lessonsEmbedder = lessonEmbedderFrom({ EMBEDDER_FUNCTION_NAME: "agentx-test-embedder" }, { region: "us-west-2", load: async () => ({ InvokeCommand: class {}, LambdaClient: undefined }) }, EMBEDDER_LESSON_WAIT_MS, 10_000)!;
     const deps = { embedder: lessonsEmbedder, vectors: new MemoryVectors(), log: (event: string) => { logs.push(event); } };
     expect((await rankLessons(deps, KEY, pool, query(), { queryKind: "document", timeoutMs: 5_000, warmMs: 1_000 })).mode).toBe("keyword");
     expect(logs).toEqual([SIMILARITY_LOG.embedderDown]);
@@ -358,7 +358,7 @@ describe("R3-4: an SDK that cannot be loaded is unavailable, not loading for eve
 
   it("positive control: a slow (not failed) load is still 'loading'", async () => {
     const logs: string[] = [];
-    const slow = lessonEmbedderFrom({ EMBEDDER_FUNCTION_NAME: "agentx-test-embedder" }, { region: "us-west-2", load: async () => { await wait(150); return { InvokeCommand: class {}, LambdaClient: class { send(): Promise<never> { return new Promise(() => undefined); } } } as Record<string, unknown>; } }, EMBEDDER_LESSON_WAIT_MS, 10_000)!;
+    const slow = lessonEmbedderFrom({ EMBEDDER_FUNCTION_NAME: "agentx-test-embedder" }, { region: "us-west-2", load: async () => { await wait(150); return { InvokeCommand: class {}, LambdaClient: class { send(): Promise<never> { return new Promise(() => undefined); } } }; } }, EMBEDDER_LESSON_WAIT_MS, 10_000)!;
     const deps = { embedder: slow, vectors: new MemoryVectors(), log: (event: string) => { logs.push(event); } };
     await rankLessons(deps, KEY, pool, query(), { queryKind: "query", timeoutMs: 300, warmMs: 0 });
     expect(logs).toEqual([SIMILARITY_LOG.embedderLoading]);
