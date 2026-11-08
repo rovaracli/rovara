@@ -305,7 +305,7 @@ describe("the fake DynamoDB start key", () => {
     input: { KeyConditionExpression: "pk = :pk AND begins_with(sk, :prefix)", ExpressionAttributeValues: { ":pk": "P", ":prefix": "TASK#" }, ExclusiveStartKey: start },
   });
   it("resumes after a start key in range", async () => {
-    expect(await query(table(), { pk: "P", sk: "TASK#a" })).toEqual({ Items: [{ pk: "P", sk: "TASK#b" }, { pk: "P", sk: "TASK#c" }] });
+    expect(await query(table(), { pk: "P", sk: "TASK#a" })).toEqual({ Items: [{ pk: "P", sk: "TASK#b" }, { pk: "P", sk: "TASK#c" }], ScannedCount: 2 }); // the fake reports ScannedCount like DynamoDB (tests/support/fake-dynamodb.ts)
   });
   it.each([[{ pk: "P" }], [{ pk: "P", sk: "ZZZ#d" }], [{ pk: "Q", sk: "TASK#a" }]])("refuses %j like DynamoDB", async (start) => {
     await expect(query(table(), start)).rejects.toMatchObject({ name: "ValidationException" });

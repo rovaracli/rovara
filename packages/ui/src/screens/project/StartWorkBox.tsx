@@ -1,6 +1,6 @@
 import { useEffect, useId, useMemo, useRef, useState } from "react";
 import { Link } from "react-router";
-import { useQuery, skipToken } from "@tanstack/react-query";
+import { useQuery } from "@tanstack/react-query";
 import { formatUsdMicrodollars, SessionIdSchema, type HowWeWorkViewReaderSchema } from "@agentx/contracts/web";
 import { useAppHost } from "../../host.js";
 import { createCodeApi, CODE_TEXT_MAX, DESIGN_FIRST_REFUSED } from "../../api/code.js";
@@ -19,7 +19,8 @@ import { OpenTasksToClose } from "./OpenTasksToClose.js";
  * built-in one, or just "this project's process" when the page can't say more.
  */
 function useRunsLine(project: string, agents: readonly { agentId: string; name: string }[]): string {
- const loaded = useQuery<ReturnType<typeof HowWeWorkViewReaderSchema.parse>>({ queryKey: [...howWeWorkKey(project), "view"], queryFn: skipToken }).data;
+ // Read-only observer: no queryFn (not skipToken, which a refetch would run if this observer set the query's options last).
+ const loaded = useQuery<ReturnType<typeof HowWeWorkViewReaderSchema.parse>>({ queryKey: [...howWeWorkKey(project), "view"], enabled: false }).data;
  if (loaded === undefined) return "Runs: this project's process";
  if (loaded.process.kind === "builtin") return "Runs: the built-in process (Rovara Code)";
  const name = agents.find(agent => agent.agentId === loaded.process.agentId)?.name;

@@ -23,11 +23,18 @@ async function open(page: Page, context: BrowserContext, request: APIRequestCont
  return { puts };
 }
 
-/** Nothing scrolls sideways, and every visible control sits inside the screen's width. */
+/**
+ * Nothing scrolls sideways, and every visible control sits inside the screen's width. The project page's tab strip is the one place that scrolls on its own by design (`.rv-tabs`, overflow-x: auto): how many tabs fit
+ * depends on the font, so on Linux's wider system font the last tab ("Sources") sits past the edge of the strip (0.5.11 CI, all three browsers; it fit on the Mac). The strip itself must fit the screen, and a tab
+ * inside it may be scrolled out of view as long as scrolling the strip brings it in.
+ */
 async function fitsThePhone(page: Page) {
  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
- const outside = await page.evaluate(() => [...document.querySelectorAll<HTMLElement>("main button, main a, main input, main select, main textarea, main [role=switch]")].filter(node => { const box = node.getBoundingClientRect();return box.width > 0 && box.height > 0 && (box.left < -1 || box.right > innerWidth + 1); }).map(node => node.textContent?.slice(0, 40) ?? node.tagName));
+ const outside = await page.evaluate(() => [...document.querySelectorAll<HTMLElement>("main button, main a, main input, main select, main textarea, main [role=switch]")].filter(node => { if (node.closest("[role=tablist]") !== null) return false;const box = node.getBoundingClientRect();return box.width > 0 && box.height > 0 && (box.left < -1 || box.right > innerWidth + 1); }).map(node => node.textContent?.slice(0, 40) ?? node.tagName));
  expect(outside).toEqual([]);
+ const strips = await page.evaluate(() => [...document.querySelectorAll<HTMLElement>("main [role=tablist]")].map(strip => { const box = strip.getBoundingClientRect();const tabs = [...strip.querySelectorAll<HTMLElement>("[role=tab]")];strip.scrollLeft = strip.scrollWidth;const last = tabs[tabs.length - 1]?.getBoundingClientRect();strip.scrollLeft = 0;return { fits: box.left >= -1 && box.right <= innerWidth + 1, lastReachable: last === undefined || (last.right <= box.right + 1 && last.left >= box.left - 1) }; }));
+ expect(strips.length).toBeGreaterThan(0);
+ expect(strips).toEqual(strips.map(() => ({ fits: true, lastReachable: true })));
 }
 
 for (const theme of ["light", "dark"] as const) test(`a maintainer turns the saved environment off from the setup checklist on a 390px phone in ${theme}`, async ({ page, context, request, baseURL }) => {
