@@ -49,7 +49,7 @@ const ROWS: readonly Row[] = [
   ["lessons/task-subject.ts", "taskStartActor", "history", ".developerId", ".startedBy*2"],
   // Lessons in production: the reflector's facts about a finished task. The creator authored the intent; the start fields say who started it; a past decision's or answer's actor id (a hashed owner key) is turned back into the person it was
   // (the creator, or the one who took the task over) to attribute their words and to tell who steered the task. It records what was true when the task ran and decides nothing about who owns the task now.
-  ["aws/broker/lesson-subject-source.ts", "lessonSubjectSource>read", "history", ".developerId", ".startedBy*2", "taskOwnerKey()*2"],
+  ["aws/broker/lesson-subject-source.ts", "lessonSubjectSource>read", "history", ".developerId", ".startedBy*2", "taskOwnerKey()*2", ".slackUserId"],
   // SH12: a setup website ask is credited to the person the BROKER recorded as the starter of its setup run (read from the run's own task record), and a press is refused unless that still matches; it decides nothing about who owns the task now
   ["rovara-code/setup-host-ask.ts", "setupRunStarterOf", "history", ".developerId*2", ".startedBy"],
   // I3: the reference rows of a commit's attribution store the person a reference stood for (the requester or approver of a task); it decides nothing about who owns the task
@@ -126,6 +126,8 @@ const ROWS: readonly Row[] = [
   ["agent-sessions/ask-readers.ts", "createAskReaders>notes", "other-record", ".developerId", ".slackUserId"],
   // a Slack reply's own sender (the note's author, not the task's creator), matched to the People list to tell a member's information from outsider text (LA-5, M7); it decides nothing about who owns the task
   ["agent-sessions/ask-readers.ts", "createAskReaders>outsider", "other-record", ".slackUserId"],
+  // a saved reply or session message sender (a Slack account or a developer), handed to the lessons' subject source to be named through the Slack account's verified link (lessons sweep, lane D); the reply's sender is not the task's creator and this decides nothing about who owns the task
+  ["aws/broker/lesson-thread-note-authors.ts", "threadNoteAuthors", "other-record", ".slackUserId", ".developerId"],
   ["aws/developer-tasks/task-answer-context.ts", "workflowTaskAnswerContext", "principal", ".ownerKey"],
   ["aws/developer-tasks/task-answer-context.ts", "commentAnswerSection", "principal", ".ownerKey"],
   ["aws/developer-tasks/close.ts", "finishTaskClose>closing", "index", ".developerId"],
