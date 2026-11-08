@@ -13,6 +13,7 @@ import { modeAllows, resolveLearning, type LearningSettingsReader } from "./poli
 import { currentLearningAttempt } from "./learning-deadline.js";
 import { logRef } from "./log-ref.js";
 import { recordTaskOutcome, type CounterDeps, type TaskCorrection } from "./counters.js";
+import { newTaskFailureTally, withFailuresCountedOnce } from "./pause.js";
 import { processDraft, type ProcessDeps } from "./process.js";
 import { reflectSubject, type ReflectDeps } from "./reflect.js";
 import type { ReflectSubject } from "./reflect-input.js";
@@ -172,7 +173,10 @@ export async function learnFromEndedTaskTyped(deps: TaskLearningDeps, input: { w
     // The outcome is counted BEFORE the reflection: counting needs no model and is idempotent (a once-key per task and lesson, a queued mark that is only replaced or removed), so it happens on every attempt, whatever
     // the reflection comes to (a refusal, a model that failed, an attempt that will be retried, a deadline that cut it). A revert's re-reflection takes the merge's queued helpful mark back here, even if it never reflects.
     await countOutcome(deps, base, subject, input);
-    const result = await reflectSubject(deps.reflect, subject);
+    // LP-10 R8: this task's failed model calls (the reflection and each draft's judge) count toward `model_failed` once, not once per call.
+    const tally = newTaskFailureTally();
+    const processDeps = withFailuresCountedOnce(deps.process, tally);
+    const result = await reflectSubject(withFailuresCountedOnce(deps.reflect, tally), subject);
     if (result.status !== "ok") {
       // Lane 1b: "learning_paused" is a refusal (no provider, every model forbidden, a price or budget that cannot fit, the month's limit): the reason is already recorded as the project's pause, and trying again changes
       // nothing, so it ends the reflection (final) whatever fault state an earlier step left. A spend look that could not read the counter is "spend_refused" with a retryable fault (nothing was held or sent).
@@ -186,7 +190,7 @@ export async function learnFromEndedTaskTyped(deps: TaskLearningDeps, input: { w
     for (const draft of result.drafts) {
       // M4: at the deadline no new draft is started (the store's writes are refused too, `deadline-guard.ts`). The model has been paid for; what is cut is lost, not repeated.
       if (signal?.aborted === true) { deps.log?.("learning.drafts_cut_at_deadline", { task: logRef(input.workspaceId, input.taskId) }); break; }
-      try { await processDraft(deps.process, key, draft); } catch { deps.log?.("learning.draft_failed", { task: logRef(input.workspaceId, input.taskId) }); }
+      try { await processDraft(processDeps, key, draft); } catch { deps.log?.("learning.draft_failed", { task: logRef(input.workspaceId, input.taskId) }); }
     }
     return final("reflected");
   } catch {

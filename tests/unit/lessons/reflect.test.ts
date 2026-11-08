@@ -96,8 +96,8 @@ describe("reflector run (C4, C6, C8)", () => {
     const { d } = deps(model);
     await reflectSubject(d, subject([memberSpan("Use withRetry for HTTP retries in api.")]));
     expect(model.calls).toHaveLength(1);
-    expect(Object.keys(model.calls[0]!).sort()).toEqual(["budgetUsd", "maxOutputTokens", "project", "purpose", "system", "user", "workspaceId"]);
-    // The project travels so the company's own model route can be chosen for it; still no field for tools.
+    expect(Object.keys(model.calls[0]!).sort()).toEqual(["budgetUsd", "maxHoldUsd", "maxOutputTokens", "project", "purpose", "system", "user", "workspaceId"]);
+    // The project travels so the company's own model route can be chosen for it, and Public's per-task cap travels so the model can pick one that fits (LP-10 R4); still no field for tools.
     expect(model.calls[0]!.project).toBe("proj-1");
   });
 

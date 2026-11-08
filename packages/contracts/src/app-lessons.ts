@@ -32,7 +32,7 @@ export const LESSONS_PAUSE_TEXT: Record<LessonsPauseCode, string> = {
   no_suitable_model: "Lessons paused: no available model can write lessons",
   monthly_limit: "Lessons paused: monthly learning limit reached",
   no_budget: "Lessons paused: the AI budget has run out",
-  cost_too_high: "Lessons paused: the cheapest available model costs too much for one lesson",
+  cost_too_high: "Lessons paused: even the cheapest available model costs too much for one lesson",
   model_failed: "Lessons paused: the AI provider is not answering",
 };
 export const lessonsPauseText = (code: string): string => (LESSONS_PAUSE_TEXT as Record<string, string | undefined>)[code] ?? "Lessons paused";

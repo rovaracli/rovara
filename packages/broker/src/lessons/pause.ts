@@ -23,6 +23,8 @@ export class LearningRefusal extends Error {
 }
 export const isLearningRefusal = (error: unknown): error is LearningRefusal => error instanceof LearningRefusal;
 
+/** Whose failures a count is of: the reflector's model call, or the curator's judge call. Each has its own count in a row, so one's success never hides the other's failures. */
+export type FailureKind = "reflect" | "judge";
 export interface CurrentPause { code: LessonsPauseCode; at: number; scope: "project" | "company" }
 export interface LessonsPauseStore {
   /** Records the one current reason for the code's scope (the monthly limit is the company's; every other reason is the project's). Never throws. */
@@ -30,7 +32,9 @@ export interface LessonsPauseStore {
   /** A learning call for the project succeeded: its own reason and the company's are cleared, and the count of failures in a row starts again. Never throws. With `ifCode`, a reason is deleted only while it is still that code (the Lessons tab clears the reason it showed, never one recorded since); when it is not, nothing is cleared, not even the count. */
   clear(workspaceId: string, project: string, only?: "project" | "company", ifCode?: LessonsPauseCode): Promise<void>;
   /** A learning call for the project failed after its key was made (the provider, the proxy, an empty answer): counts one more failure in a row and returns the count. Never throws; absent counts nothing. */
-  failed?(workspaceId: string, project: string): Promise<number>;
+  failed?(workspaceId: string, project: string, kind?: FailureKind): Promise<number>;
+  /** The curator's judge answered (L4): its own count of failures in a row starts again. The reflector's success does NOT do this (it clears the reflector's count only), so a judge that always fails still pauses the project. Never throws; absent clears nothing. */
+  clearJudgeFailures?(workspaceId: string, project: string): Promise<void>;
   /** The reason in force for a project: its own, else the company's. Undefined when there is none or it cannot be read. */
   read(workspaceId: string, project: string): Promise<CurrentPause | undefined>;
 }
@@ -40,6 +44,7 @@ export const pauseScopeOf = (code: LessonsPauseCode): "project" | "company" => (
 
 const SK = "LESSONSET#PAUSED";
 const FAILS_SK = "LESSONSET#FAILS";
+const JUDGE_FAILS_SK = "LESSONSET#FAILS_JUDGE";
 /** This many failed learning calls in a row for a project pause it as `model_failed`. */
 export const MODEL_FAILURES_BEFORE_PAUSE = 3;
 const isCode = (value: unknown): value is LessonsPauseCode => typeof value === "string" && (LESSONS_PAUSE_CODES as readonly string[]).includes(value);
@@ -75,11 +80,17 @@ export function dynamoPauseStore(table: TeamRecordTable, now: () => number, log?
       }
       if (only === "company") return;
       try { await table.documentClient.send(new DeleteCommand({ TableName: table.tableName, Key: { pk: teamRecordPk(workspaceId, project), sk: FAILS_SK } })); } catch { log?.("lessons.failures_not_cleared", {}); }
+      // A person's clear from the Lessons tab (the conditional one) starts the judge's count again too: the pause they dismissed must not return on the next single judge failure. A reflection that succeeds does not (L4).
+      if (ifCode === undefined) return;
+      try { await table.documentClient.send(new DeleteCommand({ TableName: table.tableName, Key: { pk: teamRecordPk(workspaceId, project), sk: JUDGE_FAILS_SK } })); } catch { log?.("lessons.failures_not_cleared", {}); }
     },
-    async failed(workspaceId, project) {
+    async clearJudgeFailures(workspaceId, project) {
+      try { await table.documentClient.send(new DeleteCommand({ TableName: table.tableName, Key: { pk: teamRecordPk(workspaceId, project), sk: JUDGE_FAILS_SK } })); } catch { log?.("lessons.failures_not_cleared", {}); }
+    },
+    async failed(workspaceId, project, kind = "reflect") {
       try {
         const out = await table.documentClient.send(new UpdateCommand({
-          TableName: table.tableName, Key: { pk: teamRecordPk(workspaceId, project), sk: FAILS_SK }, ReturnValues: "ALL_NEW",
+          TableName: table.tableName, Key: { pk: teamRecordPk(workspaceId, project), sk: kind === "judge" ? JUDGE_FAILS_SK : FAILS_SK }, ReturnValues: "ALL_NEW",
           UpdateExpression: "ADD #count :one SET entityType = :type, #at = :now", ExpressionAttributeNames: { "#count": "count", "#at": "at" }, ExpressionAttributeValues: { ":one": 1, ":type": "LESSON_FAILS", ":now": now() },
         })) as { Attributes?: { count?: unknown } };
         return typeof out.Attributes?.count === "number" ? out.Attributes.count : 0;
@@ -115,10 +126,46 @@ export async function spendLook(spend: LearningSpend, workspaceId: string, estim
 /** The pause a refused look records: the month's limit is the company's; a call too large for the whole cap is a cost problem; a counter that could not be read is a fault, not a reason (nothing is recorded). */
 export const pauseOfLook = (look: "month_full" | "too_large" | "unreadable"): LessonsPauseCode | undefined => (look === "month_full" ? "monthly_limit" : look === "too_large" ? "cost_too_high" : undefined);
 
+/** What one task's learning has counted so far, per kind (shared by the reflector's and the curator's pause handles of that task). */
+export interface TaskFailureTally { counted: Set<FailureKind> }
+export const newTaskFailureTally = (): TaskFailureTally => ({ counted: new Set() });
+/**
+ * LP-10 R8 / LP-15: a pause handle that counts failed model calls toward `model_failed` ONCE per kind for a task (or one draft set), not once per call. A task whose reflection is judged against several neighbours, draft
+ * by draft, could otherwise reach the three failures that pause the project from one short outage. After the first failure of a kind the rest of the task's failures of that kind are not counted (the reason and the clear are
+ * untouched), and a call that succeeds clears that kind's count as always, after which a later failure of the same task counts afresh (the count is "in a row"). Share one tally between the handles of a task.
+ */
+export function failuresCountedOncePerTask(pause: LessonsPauseStore | undefined, tally: TaskFailureTally): LessonsPauseStore | undefined {
+  if (pause?.failed === undefined) return pause;
+  const failed = pause.failed.bind(pause);
+  return {
+    record: (workspaceId, project, code) => pause.record(workspaceId, project, code),
+    read: (workspaceId, project) => pause.read(workspaceId, project),
+    async clear(workspaceId, project, only, ifCode) { await pause.clear(workspaceId, project, only, ifCode); if (only !== "company" && ifCode === undefined) tally.counted.delete("reflect"); },
+    ...(pause.clearJudgeFailures === undefined ? {} : { async clearJudgeFailures(workspaceId: string, project: string) { await pause.clearJudgeFailures!(workspaceId, project); tally.counted.delete("judge"); } }),
+    async failed(workspaceId, project, kind = "reflect") {
+      // Zero is returned for a failure after the first of its kind: below the pause threshold, so nothing is recorded.
+      if (tally.counted.has(kind)) return 0;
+      tally.counted.add(kind);
+      return failed(workspaceId, project, kind);
+    },
+  };
+}
+
+/** `deps` with its pause handle counting failures once per task (`failuresCountedOncePerTask`); deps with no pause store are returned as they are. */
+export function withFailuresCountedOnce<T extends { pause?: LessonsPauseStore }>(deps: T, tally: TaskFailureTally): T {
+  const pause = failuresCountedOncePerTask(deps.pause, tally);
+  return pause === undefined ? deps : { ...deps, pause };
+}
+
 /** A learning call failed after its key was made: counts it, and pauses the project as `model_failed` once this many in a row have failed (a success clears both). Never throws. */
-export async function noteModelFailure(pause: LessonsPauseStore | undefined, workspaceId: string, project: string): Promise<void> {
+export async function noteModelFailure(pause: LessonsPauseStore | undefined, workspaceId: string, project: string, kind: FailureKind = "reflect"): Promise<void> {
   if (pause?.failed === undefined) return;
   try {
-    if ((await pause.failed(workspaceId, project)) >= MODEL_FAILURES_BEFORE_PAUSE) await pause.record(workspaceId, project, "model_failed");
+    if ((await pause.failed(workspaceId, project, kind)) >= MODEL_FAILURES_BEFORE_PAUSE) await pause.record(workspaceId, project, "model_failed");
   } catch { /* bookkeeping only */ }
+}
+/** The curator's judge answered: clears the pause as any success does, and the judge's own count of failures in a row (the reflector's success never clears that one, L4). Never throws. */
+export async function noteJudgeRecovered(pause: LessonsPauseStore | undefined, workspaceId: string, project: string): Promise<void> {
+  await noteRecovered(pause, workspaceId, project);
+  try { await pause?.clearJudgeFailures?.(workspaceId, project); } catch { /* bookkeeping only */ }
 }

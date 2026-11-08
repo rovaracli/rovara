@@ -40,3 +40,15 @@ it("lists a Rovara catalog model the account cannot call as disabled, with the b
  unusable=new Set(catalog.map(canonicalModelName));
  expect((await read()).filter(entry=>entry.unusableReason!==undefined)).toEqual([]);
 });
+
+it("LP-11: the model picker never lists an OpenRouter ':batch' variant (the Batch API's id, answered within a day), and keeps the ordinary model beside it",async()=>{
+ const members=new FakeProjectMembers(),h=await createDeveloperTaskBroker({register:false,brokerExtra:{agents:{projectMembers:members}}});await h.dev(MAYA,"GET","/v1/app/models");const {orgId}=await h.orgOf(MAYA);
+ const {createAgentRouteDependencies}=await import("../../packages/broker/src/aws/broker.js");const deps=createAgentRouteDependencies(h.brokerInput as unknown as AwsBrokerInput)!;
+ const sourceId="src_cccccccccccccccccccc",plain={provider:"openrouter",modelId:"openai/gpt-4.1-nano"},batch={provider:"openrouter",modelId:"openai/gpt-4.1-nano:batch"};
+ const source=ModelSourceSchema.parse({kind:"openrouter",sourceId,label:"OpenRouter",models:[{catalog:batch},{catalog:plain}]});
+ deps.modelRouting={sources:{read:async()=>({sources:[source],order:[sourceId],credentials:[],removing:[],revision:1})},launch:{kinds:["openrouter"]}};
+ const caller={orgId,developerId:MAYA.developerId,orgRole:"member" as const},listed=(await getModels(deps,caller,new URL("https://cell.example/v1/app/models"))).models.map(entry=>entry.modelId);
+ // Positive control: the ordinary model of the same source is listed, so the source was read.
+ expect(listed).toContain(plain.modelId);
+ expect(listed).not.toContain(batch.modelId);
+});

@@ -13,6 +13,7 @@ import { WorkflowSnapshotSchema, createCandidateManifest, createWorkflowSnapshot
 import { completedWorkflowItems } from "../../packages/broker/src/aws/broker/workflow-items.js";
 import { taskKey } from "../../packages/broker/src/developer/task-records.js";
 import { planSecondReview, secondOpinionOf, secondOpinionUnavailable, secondReviewAcknowledgement, secondReviewUnavailableDecision, type SecondReviewPlanInput } from "../../packages/broker/src/rovara-code/second-review.js";
+import { noticeWhyText } from "../../packages/broker/src/rovara-code/second-review-notice.js";
 import { defaultModelLine, secondReviewPicker, secondReviewTrackRecord } from "../../packages/broker/src/rovara-code/second-review-picker.js";
 import { secondOpinionFromReviewResult, secondReviewMergeWait, secondReviewTaskView, type SecondReviewOperationPlan } from "../../packages/broker/src/rovara-code/second-review-store.js";
 import { prepareSecondReview } from "../../packages/broker/src/rovara-code/second-review-start.js";
@@ -78,6 +79,17 @@ describe("the model picker", () => {
     expect(keys(without.entries.map((entry) => entry.model))).toEqual(keys([OPUS]));
     // A model the company has no source for is not offered, however strong.
     expect(picked.entries.some((entry) => entry.model.modelId === "gpt-6.1-sol")).toBe(false);
+  });
+
+  it("LP-11: never lists an OpenRouter ':batch' variant (the Batch API's id, not one for chat calls), nor suggests it; the ordinary model beside it stays", () => {
+    const BATCH: ModelIdentifier = { provider: "openrouter", modelId: "openai/gpt-4.1-nano:batch" };
+    const PLAIN: ModelIdentifier = { provider: "openrouter", modelId: "openai/gpt-4.1-nano" };
+    const withBatch = secondReviewPicker({ sources: [SONNET, PLAIN, BATCH], project: {}, forbidden: [], against: [SONNET] });
+    expect(withBatch.entries.map((entry) => entry.model.modelId)).toContain(PLAIN.modelId);
+    expect(withBatch.entries.map((entry) => entry.model.modelId)).not.toContain(BATCH.modelId);
+    expect(withBatch.suggested.map((entry) => entry.model.modelId)).not.toContain(BATCH.modelId);
+    // A project's approved list that names only the batch id (no sources) lists nothing.
+    expect(secondReviewPicker({ sources: [], project: { approved: [BATCH] }, forbidden: [], against: [SONNET] }).entries).toEqual([]);
   });
 
   it("greys out a model from the same company as the builder, with the reason, and one whose maker is unknown", () => {
@@ -155,6 +167,10 @@ describe("the plan: choice, default and the company's sources", () => {
     expect(backup.skipped).toEqual([{ model: { provider: SONNET.provider, modelId: SONNET.modelId }, why: "same-company" }]);
     // A chosen model the company has no source for any more is the same: not swapped.
     expect(planSecondReview(base({ companyModels: [{ provider: "openrouter", modelId: "mistral/large-9" }] }))).toMatchObject({ run: false, reason: "choice-not-qualifying", skipped: [{ why: "not-routable" }] });
+    // L6 (Lane A review): a saved choice of an OpenRouter ':batch' model says why in plain words, not "no connected source serves it".
+    const batch = planSecondReview(base({ companyModels: [{ provider: "openrouter", modelId: "openai/gpt-4.1-nano:batch" }] }));
+    expect(batch).toMatchObject({ run: false, reason: "choice-not-qualifying", skipped: [{ why: "batch-only" }] });
+    expect(noticeWhyText("batch-only")).toBe("it is a batch-only model, not for reviews");
     // A choice that could not be read holds nothing: it never falls back to the default.
     expect(planSecondReview(base({ companyModels: [] }))).toMatchObject({ run: false, reason: "choice-not-qualifying" });
   });

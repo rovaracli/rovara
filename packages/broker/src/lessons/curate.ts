@@ -4,8 +4,8 @@
 import { randomUUID } from "node:crypto";
 import { z } from "zod";
 import { firstExpiry } from "./expiry.js";
-import { emitAudit } from "./policy.js";
-import { isLearningRefusal, noteModelFailure, notePause, noteRecovered, pauseOfLook, spendLook, type LessonsPauseStore } from "./pause.js";
+import { emitAudit, learningCaps, type Edition } from "./policy.js";
+import { isLearningRefusal, noteJudgeRecovered, noteModelFailure, notePause, pauseOfLook, spendLook, type LessonsPauseStore } from "./pause.js";
 import type { AlertSink, LearningSpend, LessonDeps, LessonEmbedder, LessonVectors, PipelineModel } from "./ports.js";
 import { relate } from "./copy-match.js";
 import { readVisible } from "./read-visible.js";
@@ -23,6 +23,8 @@ const MAX_COMMIT_TRIES = 3;
 
 export interface CurateDeps extends LessonDeps {
   store: LessonStore; judgeModel: PipelineModel; spend: LearningSpend; alerts?: AlertSink; pause?: LessonsPauseStore;
+  /** The install's edition: Public caps what one judge call may hold (`learningCaps`, like the reflector). Absent: Public, the safe side. */
+  edition?: Edition; capsOverride?: { perTaskUsd?: number; perNightUsd?: number };
   /** The small open embedder, where the install has one. Absent: the shortlist is keywords and paths (lessons/similarity.ts). */
   embedder?: LessonEmbedder | undefined;
   /** Where lesson vectors are kept (beside the lessons). */
@@ -94,13 +96,16 @@ function judgePrompt(mine: LessonDraft, candidates: readonly Lesson[]): string {
  */
 async function judgeList(deps: CurateDeps, key: ScopeKey, mine: LessonDraft, candidates: readonly Lesson[]): Promise<{ verdicts: Verdict[]; escalate: boolean } | undefined> {
   const user = judgePrompt(mine, candidates);
+  const maxHoldUsd = learningCaps(deps.edition ?? "public", deps.capsOverride).perTaskUsd;
   try {
-    const request = { purpose: "judge" as const, system: JUDGE_SYSTEM, user, maxOutputTokens: Math.min(400, 60 + 30 * candidates.length), workspaceId: key.workspaceId, project: key.project };
+    const request = { purpose: "judge" as const, system: JUDGE_SYSTEM, user, maxOutputTokens: Math.min(400, 60 + 30 * candidates.length), workspaceId: key.workspaceId, project: key.project,
+      // L1: Public's per-task cap goes with the judge call too, so the judge and the reflector choose among the same models (an over-cap "lessons model" is skipped for the cheapest that fits).
+      ...(maxHoldUsd === undefined ? {} : { maxHoldUsd }) };
     // The hold is sized to the call by the model itself (the cheapest suitable model's worst-case price); a model that cannot quote keeps the fixed judge estimate.
     let estimate = JUDGE_ESTIMATE_USD;
     if (deps.judgeModel.quote !== undefined) {
       let quoted: Awaited<ReturnType<NonNullable<PipelineModel["quote"]>>>;
-      try { quoted = await deps.judgeModel.quote(request); } catch { await noteModelFailure(deps.pause, key.workspaceId, key.project); return undefined; }
+      try { quoted = await deps.judgeModel.quote(request); } catch { await noteModelFailure(deps.pause, key.workspaceId, key.project, "judge"); return undefined; }
       if (!quoted.ok) { await notePause(deps.pause, key.workspaceId, key.project, quoted.code); return undefined; }
       estimate = quoted.usd;
     }
@@ -110,7 +115,7 @@ async function judgeList(deps: CurateDeps, key: ScopeKey, mine: LessonDraft, can
     let reply: Awaited<ReturnType<PipelineModel["complete"]>>;
     try { reply = await deps.judgeModel.complete({ ...request, budgetUsd: estimate }); } catch (error) {
       if (isLearningRefusal(error)) await notePause(deps.pause, key.workspaceId, key.project, error.code);
-      else await noteModelFailure(deps.pause, key.workspaceId, key.project);
+      else await noteModelFailure(deps.pause, key.workspaceId, key.project, "judge");
       return undefined;
     }
     // R3: a reply that cannot be used is a failed call, not a success: it counts toward model_failed and clears nothing. Every candidate must be answered, once.
@@ -122,8 +127,8 @@ async function judgeList(deps: CurateDeps, key: ScopeKey, mine: LessonDraft, can
       if (parsed.verdicts.length !== candidates.length || byNumber.size !== candidates.length || candidates.some((_, i) => !byNumber.has(i + 1))) throw new Error("incomplete");
       verdicts = candidates.map((_, i) => byNumber.get(i + 1)!);
       escalate = parsed.escalate === true;
-    } catch { await noteModelFailure(deps.pause, key.workspaceId, key.project); return undefined; }
-    await noteRecovered(deps.pause, key.workspaceId, key.project);
+    } catch { await noteModelFailure(deps.pause, key.workspaceId, key.project, "judge"); return undefined; }
+    await noteJudgeRecovered(deps.pause, key.workspaceId, key.project);
     return { verdicts, escalate };
   } catch { return undefined; }
 }

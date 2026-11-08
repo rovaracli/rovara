@@ -7,7 +7,7 @@ import {
   canonicalModelName, modelCompany, secondReviewModelKey, secondReviewedByLine, type ModelCompany, type ModelIdentifier, type SecondReviewModelRef, type SecondReviewReplayRun, type SecondReviewVerdict, secondReviewVerdictHolds,
 } from "@agentx/contracts";
 import { differentCompany } from "../agents/dispatch.js";
-import { isFreeVariant } from "../model-sources/model-variants.js";
+import { isBatchVariant, isFreeVariant } from "../model-sources/model-variants.js";
 import { candidatesOf, criticCapabilityTier, rankCriticModels, type CriticModelLimits } from "./critic.js";
 
 /** A typical review's size: one place for the cost estimate shown beside each model (tokens in and out). No prompt caching is assumed. */
@@ -85,7 +85,8 @@ export function secondReviewPicker(input: PickerInput): { entries: PickerEntry[]
   const limits: CriticModelLimits = { approved: input.project.approved, forbidden: input.forbidden, unusable: input.unusable, legacyRanking: input.legacyRanking };
   // Every route the company can use, each exactly as the source lists it (a `:free` variant is its own entry, not the same model as the paid one): allowed by the limits, strongest first.
   const exact = new Map<string, ModelIdentifier>();
-  for (const model of input.sources.length > 0 ? input.sources : input.project.approved ?? []) exact.set(secondReviewModelKey(model), model);
+  // LP-11: an OpenRouter `:batch` variant is the Batch API's id (half price, answered within a day), never one for a review, so it is not listed or suggested.
+  for (const model of input.sources.length > 0 ? input.sources : input.project.approved ?? []) if (!isBatchVariant(model)) exact.set(secondReviewModelKey(model), model);
   const usable = rankCriticModels([...exact.values()].filter((model) => candidatesOf(limits, [model]).length > 0), undefined, input.legacyRanking === true);
   const entries: PickerEntry[] = usable.map((model) => {
     const company = modelCompany(model);

@@ -9,7 +9,7 @@ import {
 } from "../../packages/contracts/src/index.js";
 import { listPricesPerMillion } from "@agentx/model-runtime/catalog";
 import { endpointQualificationDigest } from "../../packages/broker/src/model-sources/endpoint-digest.js";
-import { learningReasoningEffort, reasonsByDefault, unfitForLearning } from "../../packages/broker/src/model-sources/diagnosis-provider.js";
+import { learningReasoningEffort, learningEffortOfMap, reasonsByDefault, unfitForLearning } from "../../packages/broker/src/model-sources/diagnosis-provider.js";
 import { ModelSourceStore } from "../../packages/broker/src/model-sources/store.js";
 import type { RoutingDependencies } from "../../packages/broker/src/model-sources/routing.js";
 import { keyIdOf } from "../../packages/broker/src/org/budget.js";
@@ -70,13 +70,14 @@ function install(options: { forbidden?: ModelIdentifier[]; edition?: Edition; wi
   const baseMint = proxy.mintKey.getMockImplementation()!;
   proxy.mintKey.mockImplementation(async (mint) => ({ ...(await baseMint(mint)), expiresAt: Date.now() + mint.ttlSeconds * 1000 }));
   const calls: Array<Record<string, unknown>> = [];
+  const logs: Array<Record<string, unknown>> = [];
   const learningCompletion = vi.fn(async (input: Record<string, unknown>) => { calls.push(input); return { text: "{\"candidates\":[]}", model: String(input.model) }; });
   const access = Object.assign(proxy, options.withOp === false ? {} : { learningCompletion });
   const dependencies = {
     documentClient: db, tableName: "state", cloud: true, ...(options.withAgents === false ? {} : { agents: {} }),
     modelAccess: { access, proxyUrl: "http://proxy" },
   } as unknown as AwsBrokerDependencies;
-  const model = customerLearningModel(dependencies, { routing: () => routing, edition: options.edition ?? "public", ...(options.lessonsModel === undefined ? {} : { lessonsModel: async () => options.lessonsModel }), ...(options.monthlyCapUsd === undefined ? {} : { monthlyCapUsd: options.monthlyCapUsd }), log: () => undefined });
+  const model = customerLearningModel(dependencies, { routing: () => routing, edition: options.edition ?? "public", ...(options.lessonsModel === undefined ? {} : { lessonsModel: async () => options.lessonsModel }), ...(options.monthlyCapUsd === undefined ? {} : { monthlyCapUsd: options.monthlyCapUsd }), log: (event, fields) => { logs.push({ event, ...fields }); } });
   const request = { purpose: "reflect" as const, system: "sys", user: "usr", maxOutputTokens: 1800, workspaceId: TEST_ORG, project: "web" };
   const counter = (sk: string) => db.get(spendCounterKey(TEST_ORG, MONTH, sk)) as { spentUsd?: number; committedUsd?: number } | undefined;
   const seedCounter = (sk: string, counts: { spentUsd?: number; committedUsd?: number }) => db.set({ ...spendCounterKey(TEST_ORG, MONTH, sk), entityType: "SPEND_COUNTER", ...counts });
@@ -93,7 +94,7 @@ function install(options: { forbidden?: ModelIdentifier[]; edition?: Edition; wi
   };
   const keyIds = () => proxy.mintedKeys().map(keyIdOf);
   const record = (keyId: string) => db.get(modelKeyKey(TEST_ORG, keyId)) as { settledUsd: number; finalized: boolean; finalizeAfter?: number; capUsd: number; reserved: boolean; tags: Record<string, string> } | undefined;
-  return { db, store, model, request, calls, learningCompletion, dependencies, proxy, counter, seedCounter, limitProject, ready, sweepLater, keyIds, record };
+  return { db, store, model, request, calls, logs, learningCompletion, dependencies, proxy, counter, seedCounter, limitProject, ready, sweepLater, keyIds, record };
 }
 
 describe("the learning model runs on the company's own provider", () => {
@@ -318,6 +319,42 @@ describe("R1: the reasoning level comes from the catalog's thinkingLevelMap, nev
     expect(effortOf("anthropic", "acme-tuned-1")).toEqual({ fit: true });
   });
 
+  it("N2 / LP-11 map: only a null level is unsupported; a level the map does not list means the provider's default, so it is allowed", () => {
+    // Pure rule over a thinkingLevelMap (null = unsupported, string = mapped, missing = provider default).
+    expect(learningEffortOfMap({ off: "none", minimal: null, low: "low" })).toEqual({ fit: true, effort: "none" });
+    expect(learningEffortOfMap({ off: null, minimal: "minimal", low: "low" })).toEqual({ fit: true, effort: "minimal" });
+    expect(learningEffortOfMap({ off: null, minimal: null, low: "low" })).toEqual({ fit: true, effort: "low" });
+    // The gemini-style map: off is null and nothing else is listed. minimal and low are missing, not null, so a short level can be asked for.
+    expect(learningEffortOfMap({ off: null })).toEqual({ fit: true, effort: "low" });
+    expect(learningEffortOfMap({})).toEqual({ fit: true, effort: "low" });
+    // One of the two missing: the other is null, so the missing one is the one that is asked for.
+    expect(learningEffortOfMap({ off: null, minimal: null })).toEqual({ fit: true, effort: "low" });
+    expect(learningEffortOfMap({ off: null, low: null })).toEqual({ fit: true, effort: "minimal" });
+    // Every short level is null (and off is not "none"): unsupported, so unfit.
+    expect(learningEffortOfMap({ off: null, minimal: null, low: null, high: "high" })).toEqual({ fit: false });
+    expect(learningEffortOfMap({ minimal: null, low: null })).toEqual({ fit: false });
+  });
+
+  it("N2 / LP-11 map: the 24 real OpenRouter entries whose map is only {off: null} (deepseek-r1, aion) are now fit; entries with explicit nulls (gpt-5-pro) stay unfit", async () => {
+    for (const id of ["deepseek/deepseek-r1", "deepseek/deepseek-r1-0528", "aion-labs/aion-2.0", "aion-labs/aion-3.0"]) {
+      expect(effortOf("openrouter", id)).toEqual({ fit: true, effort: "low" });
+      expect(unfitForLearning({ provider: "openrouter", modelId: id })).toBe(false);
+    }
+    expect(effortOf("openrouter", "openai/gpt-5-pro")).toEqual({ fit: false });
+    const t = install({ source: openrouter("deepseek/deepseek-r1") });
+    await t.ready();
+    await t.model.complete(t.request);
+    expect(t.calls[0]).toMatchObject({ model: orAlias("deepseek/deepseek-r1"), api: "openai-completions", reasoningEffort: "low" });
+  });
+
+  it("L5: a level the map names is sent as the value the map gives it, when the protocol takes it; any other value leaves that level out", () => {
+    expect(learningEffortOfMap({ off: null, minimal: null, low: "minimal" })).toEqual({ fit: true, effort: "minimal" });
+    expect(learningEffortOfMap({ off: null, minimal: "low", low: "low" })).toEqual({ fit: true, effort: "low" });
+    // {low: "high"} must not send "low" (it is not the level the provider takes for it): the level is left out, and with minimal null nothing is left.
+    expect(learningEffortOfMap({ off: null, minimal: null, low: "high" })).toEqual({ fit: false });
+    expect(learningEffortOfMap({ off: null, low: "high" })).toEqual({ fit: true, effort: "minimal" });
+  });
+
   it("gpt-5.4-nano is asked for 'none' (it has no 'minimal'), gpt-5.1 too, and gpt-5 'minimal'", async () => {
     for (const [id, effort] of [["gpt-5.4-nano", "none"], ["gpt-5.1", "none"], ["gpt-5", "minimal"], ["gpt-5-mini", "minimal"]] as const) {
       const t = await openaiOnly(id);
@@ -373,6 +410,111 @@ describe("R2: an OpenRouter ':batch' variant is not for chat calls", () => {
   });
 });
 
+describe("LP-10 R4: a 'lessons model' over the per-call cap is skipped for the cheapest one that fits; cost_too_high only when none fits", () => {
+  const HAIKU_HOLD = withMargin((262 * 1 + 1800 * 5) / 1_000_000);
+  const SONNET_HOLD = HOLD;
+  const CAP = 0.02;
+  const capped = (t: ReturnType<typeof install>) => ({ ...t.request, maxHoldUsd: CAP });
+
+  it("control: with no cap the admin's dearer model is used", async () => {
+    const t = install({ models: [SONNET, HAIKU], lessonsModel: SONNET });
+    await t.ready();
+    expect(SONNET_HOLD).toBeGreaterThan(CAP);
+    expect(HAIKU_HOLD).toBeLessThanOrEqual(CAP);
+    expect(await t.model.quote!(t.request)).toEqual({ ok: true, usd: SONNET_HOLD });
+    await t.model.complete(t.request);
+    expect(t.calls[0]).toMatchObject({ model: sourceAlias(TEST_ORG, SRC_ANTHROPIC, SONNET) });
+  });
+
+  it("the admin's model (hold over the cap) is skipped: the quote is the cheapest model's hold, and the call and the key use that model", async () => {
+    const t = install({ models: [SONNET, HAIKU], lessonsModel: SONNET });
+    await t.ready();
+    expect(await t.model.quote!(capped(t))).toEqual({ ok: true, usd: HAIKU_HOLD });
+    await t.model.complete({ ...capped(t), budgetUsd: HAIKU_HOLD });
+    expect(t.calls[0]).toMatchObject({ model: sourceAlias(TEST_ORG, SRC_ANTHROPIC, HAIKU) });
+    near(t.record(t.keyIds()[0]!)?.capUsd, HAIKU_HOLD);
+  });
+
+  it("an admin's model that fits the cap is still used (the setting wins over a cheaper model)", async () => {
+    const t = install({ models: [SONNET, HAIKU], lessonsModel: SONNET });
+    await t.ready();
+    expect(await t.model.quote!({ ...t.request, maxHoldUsd: 0.05 })).toEqual({ ok: true, usd: SONNET_HOLD });
+  });
+
+  it("when even the cheapest model is over the cap the call is refused as cost_too_high, before any key is made", async () => {
+    const t = install({ models: [SONNET, HAIKU], lessonsModel: SONNET });
+    await t.ready();
+    expect(await t.model.quote!({ ...t.request, maxHoldUsd: 0.005 })).toEqual({ ok: false, code: "cost_too_high" });
+    await expect(t.model.complete({ ...t.request, maxHoldUsd: 0.005 })).rejects.toMatchObject({ code: "cost_too_high" });
+    expect(t.proxy.mintKey).not.toHaveBeenCalled();
+  });
+
+  it("a model with no list price holds the default budget, so over a small cap it is skipped for a priced one", async () => {
+    const t = install({ models: [UNPRICED, HAIKU] });
+    await t.ready();
+    expect(LEARNING_CALL_BUDGET_USD).toBeGreaterThan(CAP);
+    expect(await t.model.quote!(capped(t))).toEqual({ ok: true, usd: HAIKU_HOLD });
+    const only = install({ unpriced: true });
+    await only.ready();
+    expect(await only.model.quote!(capped(only))).toEqual({ ok: false, code: "cost_too_high" });
+  });
+});
+
+describe("Lane A review lows: the judge is capped like the reflector (L1); a skipped lessons model is said in the log (L2)", () => {
+  const HAIKU_HOLD = withMargin((262 * 1 + 400 * 5) / 1_000_000);
+  it("L1: a judge call with Public's cap skips the admin's dear model for the cheapest that fits, as the reflector does", async () => {
+    const t = install({ models: [SONNET, HAIKU], lessonsModel: SONNET });
+    await t.ready();
+    const judge = { ...t.request, purpose: "judge" as const, maxOutputTokens: 400, maxHoldUsd: 0.005 };
+    const quote = await t.model.quote!(judge);
+    expect(quote).toEqual({ ok: true, usd: HAIKU_HOLD });
+    await t.model.complete({ ...judge, budgetUsd: HAIKU_HOLD });
+    expect(t.calls[0]).toMatchObject({ model: sourceAlias(TEST_ORG, SRC_ANTHROPIC, HAIKU), purpose: "judge" });
+    // Positive control: without the cap the same judge call goes to the admin's model.
+    const open = install({ models: [SONNET, HAIKU], lessonsModel: SONNET });
+    await open.ready();
+    await open.model.complete({ ...open.request, purpose: "judge" as const, maxOutputTokens: 400 });
+    expect(open.calls[0]).toMatchObject({ model: sourceAlias(TEST_ORG, SRC_ANTHROPIC, SONNET) });
+  });
+
+  it("L2: when the admin's model is skipped because it is over the cap, a log line says so (the company and the purpose only, never the model's name); no line when it fits or none is set", async () => {
+    const t = install({ models: [SONNET, HAIKU], lessonsModel: SONNET });
+    await t.ready();
+    await t.model.quote!({ ...t.request, maxHoldUsd: 0.02 });
+    expect(t.logs).toEqual([{ event: "learning.lessons_model_over_cap", orgId: TEST_ORG, purpose: "reflect" }]);
+    expect(JSON.stringify(t.logs)).not.toContain("sonnet");
+    const fits = install({ models: [SONNET, HAIKU], lessonsModel: SONNET });
+    await fits.ready();
+    await fits.model.quote!({ ...fits.request, maxHoldUsd: 0.05 });
+    expect(fits.logs).toEqual([]);
+    const unset = install({ models: [SONNET, HAIKU] });
+    await unset.ready();
+    await unset.model.quote!({ ...unset.request, maxHoldUsd: 0.02 });
+    expect(unset.logs).toEqual([]);
+  });
+});
+
+describe("M1 (Lane A review): the quote and the call price the same model", () => {
+  const HAIKU_HOLD = withMargin((262 * 1 + 1800 * 5) / 1_000_000);
+  it("Public: an unpriced 'lessons model' holds the fixed figure, which is over the cap, so the quote AND the call (made with the quote as its ceiling) both use the priced model", async () => {
+    const t = install({ models: [UNPRICED, HAIKU], lessonsModel: UNPRICED });
+    await t.ready();
+    expect(await t.model.quote!({ ...t.request, maxHoldUsd: 0.15 })).toEqual({ ok: true, usd: HAIKU_HOLD });
+    await t.model.complete({ ...t.request, maxHoldUsd: 0.15, budgetUsd: HAIKU_HOLD });
+    expect(t.calls[0]).toMatchObject({ model: sourceAlias(TEST_ORG, SRC_ANTHROPIC, HAIKU) });
+    near(t.record(t.keyIds()[0]!)?.capUsd, HAIKU_HOLD);
+  });
+
+  it("a call whose model would hold more than the quote approved is refused before any key is made (the world changed between the quote and the call)", async () => {
+    // No cap on the call, so the unpriced lessons model is chosen; the ceiling is the cheaper model's quote.
+    const t = install({ models: [UNPRICED, HAIKU], lessonsModel: UNPRICED });
+    await t.ready();
+    await expect(t.model.complete({ ...t.request, budgetUsd: HAIKU_HOLD })).rejects.toMatchObject({ code: "cost_too_high" });
+    expect(t.proxy.mintKey).not.toHaveBeenCalled();
+    expect(t.calls).toHaveLength(0);
+  });
+});
+
 describe("R6: a scope that fills at the mint is a budget pause, not a provider failure", () => {
   it("a ScopeFullError for the org or the project (not the learning month) maps to no_budget", async () => {
     const t = install();
@@ -407,15 +549,20 @@ describe("the money: reserved before the call, blocked after it, settled when th
     for (const sk of ["ORG", "PROJECT#web", LEARNING_COUNTER]) near(t.counter(sk)?.committedUsd, HOLD);
   });
 
-  it("a model with no list price holds the caller's budget, else the default call budget", async () => {
+  it("a model with no list price holds the fixed figure (the default call budget), never the caller's budget; a caller budget below it refuses the call before any key is made", async () => {
     const t = install({ unpriced: true });
     await t.ready();
-    await t.model.complete({ ...t.request, budgetUsd: 0.12 });
-    expect(t.record(t.keyIds()[0]!)?.capUsd).toBe(0.12);
+    await t.model.complete({ ...t.request, budgetUsd: LEARNING_CALL_BUDGET_USD });
+    expect(t.record(t.keyIds()[0]!)?.capUsd).toBe(LEARNING_CALL_BUDGET_USD);
     const { budgetUsd: _omitted, ...bare } = { ...t.request, budgetUsd: 0 };
     void _omitted;
     await t.model.complete(bare);
     expect(t.record(t.keyIds()[1]!)?.capUsd).toBe(LEARNING_CALL_BUDGET_USD);
+    // A ceiling below the fixed figure is not a smaller hold for this model: the call is refused.
+    await expect(t.model.complete({ ...t.request, budgetUsd: 0.12 })).rejects.toMatchObject({ code: "cost_too_high" });
+    expect(t.proxy.mintKey).toHaveBeenCalledTimes(2);
+    // The quote names the same figure, so a call made on the quote runs.
+    expect(await t.model.quote!(t.request)).toEqual({ ok: true, usd: LEARNING_CALL_BUDGET_USD });
   });
 
   it("after the call the key is BLOCKED (not deleted) and given a finalize clock; nothing is charged yet", async () => {

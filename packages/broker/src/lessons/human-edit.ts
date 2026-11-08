@@ -12,6 +12,7 @@ import { hostRateLimitRetryAt } from "@agentx/contracts";
 import type { HumanEditExtractorPort, HumanEditInput, HumanEditJob } from "../team-record/sources/codehost.js";
 import { currentLearningAttempt } from "./learning-deadline.js";
 import { modeAllows, resolveLearning, type LearningSettingsReader } from "./policy.js";
+import { newTaskFailureTally, withFailuresCountedOnce } from "./pause.js";
 import { processDraft, type ProcessDeps } from "./process.js";
 import { reflectSubject, type ReflectDeps } from "./reflect.js";
 import type { EvidenceSpan, ReflectSubject } from "./reflect-input.js";
@@ -74,7 +75,10 @@ export function createHumanEditExtractor(deps: HumanEditExtractorDeps): HumanEdi
         rest: { ...base.facts.rest, links, spans: [...context, ...input.files.map((file) => editSpan(file, input))] },
       });
       // A lesson from an edit must stand on the edit: a candidate that cites no edit span is dropped (the people named come from everything read, but the lesson is about the lines).
-      const result = await reflectSubject(deps.reflect, { ...subject, requireEvidenceKind: "human_edit" });
+      // LP-10 R8: this edit's failed model calls (the reflection and each draft's judge) count toward `model_failed` once, not once per call.
+      const tally = newTaskFailureTally();
+      const processDeps = withFailuresCountedOnce(deps.process, tally);
+      const result = await reflectSubject(withFailuresCountedOnce(deps.reflect, tally), { ...subject, requireEvidenceKind: "human_edit" });
       if (result.reason === "model_error" || (result.reason === "spend_refused" && currentLearningAttempt()?.fault === "retryable")) throw new Error("the model call failed");
       if (result.status !== "ok") return none;
       const key = { workspaceId: input.workspaceId, project: input.project };
@@ -83,7 +87,7 @@ export function createHumanEditExtractor(deps: HumanEditExtractorDeps): HumanEdi
       for (const draft of result.drafts) {
         // At the deadline no new draft is started (the lesson store refuses its writes too). The model was paid for; what is cut is lost, never repeated.
         if (signal?.aborted === true) { deps.log?.("learning.drafts_cut_at_deadline", { taskId: input.taskId }); break; }
-        try { await processDraft(deps.process, key, draft); kept += 1; } catch { deps.log?.("learning.draft_failed", { taskId: input.taskId }); }
+        try { await processDraft(processDeps, key, draft); kept += 1; } catch { deps.log?.("learning.draft_failed", { taskId: input.taskId }); }
       }
       return { candidates: kept };
     },
