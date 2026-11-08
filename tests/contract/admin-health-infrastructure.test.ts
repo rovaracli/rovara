@@ -315,6 +315,8 @@ describe("the health route's grants (A13)", () => {
       "packages/broker/src/test-env/seed-lock.ts",
       // UX2 slice 2: a task notification waiting for the sweep (3 days), the per-person batching marker (1 day) and a Slack direct message row the notifier posts (2 days); each is a working row, none a durable record.
       "packages/broker/src/notifications/attention.ts",
+      // SRL-3 (owner decision 24b): the merge-commit index row (GITHUB_WORKFLOW_MERGE, pk ORG#<org>#GITHUB_MERGE) maps a pull request's merge commit to its Rovara task so a revert can be matched; it is an index row that holds no person and expires after 400 days, and only merge-commit-index.ts builds it.
+      "packages/broker/src/rovara-code/merge-commit-index.ts",
     ]);
     const found = execFileSync("grep", ["-rl", "indexExpiresAt\\|INDEX_EXPIRY_ATTRIBUTE", "packages", "infra/lib", "--include=*.ts", "--exclude-dir=dist", "--exclude-dir=node_modules"], { encoding: "utf8" }).trim().split("\n").filter((file) => file !== "");
     expect(found.filter((file) => !allowed.has(file))).toEqual([]);
