@@ -1,5 +1,5 @@
 import { useId, useState } from "react";
-import { useQuery, skipToken } from "@tanstack/react-query";
+import { useQuery } from "@tanstack/react-query";
 import type { ReadAppNav } from "@agentx/contracts/web";
 import { useProject } from "../../api/projects.js";
 import { VisibleText } from "../../design/VisibleText.js";
@@ -10,7 +10,8 @@ import { StartWorkBox } from "../project/StartWorkBox.js";
  * the project page would show it (the broker's `canStartWork` for this person). The start route checks everything again.
  */
 export function HomeStart() {
- const nav = useQuery<ReadAppNav>({ queryKey: ["nav"], queryFn: skipToken }).data, field = useId();
+ // Read-only observer: no queryFn (not skipToken, a truthy value that a refetch would run if this observer set the query's options last), so the shell's own queryFn always runs.
+ const nav = useQuery<ReadAppNav>({ queryKey: ["nav"], enabled: false }).data, field = useId();
  const projects = (nav?.projects ?? []).map(project => project.name);
  const [chosen, setChosen] = useState<string>();
  const project = chosen !== undefined && projects.includes(chosen) ? chosen : projects[0];
