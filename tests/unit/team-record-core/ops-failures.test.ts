@@ -43,6 +43,14 @@ describe("the stuck lesson rollbacks' level (LP-13 C2)", () => {
     expect(await readOpsFailures(w.table, ORG_B, t + 4 * HOUR)).toEqual({ eraseSweep: 0, tombstone: 0 });
     for (const item of w.db.find((row) => typeof row.sk === "string" && row.sk.startsWith("OPSFAIL#lesson_rollback#"))) expect(Object.keys(item).sort()).toEqual(["count", "entityType", "indexExpiresAt", "lastAt", "pk", "sk"]);
   });
+  it("the newest level is read even when more than 100 hourly items are stored (the oldest are not what counts)", async () => {
+    const w = world();
+    const t = w.clock.ms;
+    for (let age = 119; age >= 1; age -= 1) await recordOpsLevel(w.table, ORG_A, "lesson_rollback", 5, t - age * HOUR);
+    await recordOpsLevel(w.table, ORG_A, "lesson_rollback", 2, t);
+    expect(w.db.find((row) => typeof row.sk === "string" && row.sk.startsWith("OPSFAIL#lesson_rollback#")).length).toBe(120);
+    expect(await readOpsFailures(w.table, ORG_A, t)).toMatchObject({ lessonRollbacks: 2 });
+  });
   it("the Health line says how many, in words, and no id", () => {
     expect(opsFailuresCheck({ eraseSweep: 0, tombstone: 0, lessonRollbacks: 1 })).toEqual({ status: "warn", detail: "1 lesson rollback not finished (an administrator needs to look at the project's lessons)" });
     expect(opsFailuresCheck({ eraseSweep: 1, tombstone: 0, lessonRollbacks: 1, lastAt: "2026-11-08T10:00:00.000Z" }).detail).toBe("1 erase second pass failed or stuck in the last 24 hours; 1 lesson rollback not finished (an administrator needs to look at the project's lessons); latest 2026-11-08T10:00:00.000Z");

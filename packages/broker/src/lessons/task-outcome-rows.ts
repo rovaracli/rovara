@@ -55,36 +55,48 @@ export function tableOutcomeRows(table: TeamRecordTable, nowSeconds?: () => numb
   };
 }
 
-/** The most pages one project's look at the revert window (72 h) reads (500 rows each); a busier project is cut off and says so. */
-export const MAX_REVERT_PAGES = 20;
+/**
+ * The most pages one project's look at the revert window (72 h) reads (500 rows each). Half go newest first and, if the project had more than that, half go oldest first (LP-13 review L3): the rows at the OLD end of
+ * the window are the ones that reached the record late, so a busy project is cut in the middle, where the rows were seen on earlier nights, not at the end that most needs the window.
+ */
+export const MAX_REVERT_PAGES = 30;
+export const REVERT_PAGE_ROWS = 500;
 
 /**
  * Lessons in production, lane 2 (nightly re-reflection): the tasks of one project whose change was reverted since `sinceMs`, from the `rovara.reverted_by` link rows (a record query over the project's rows
  * by time, never a scan of the table). Erasure-respecting by what the record already does: a row of an erased person is deleted, a tombstoned or hidden row is skipped here, and text past its expiry is dropped
- * by `eventFromItem`. A row that names another workspace, project or no task is ignored. Ids only; nothing a person wrote is read out. `truncated` says the project had more rows than the pages allow.
+ * by `eventFromItem`. A row that names another workspace, project or no task is ignored. Ids only; nothing a person wrote is read out. `truncated` says the project had more rows than the pages allow (the middle of the window was not read).
  */
-export async function revertedTasksSince(table: TeamRecordTable, workspaceId: OrgId, project: string, sinceMs: number, options: { nowSeconds?: number; maxPages?: number } = {}): Promise<{ taskIds: string[]; truncated: boolean }> {
+export async function revertedTasksSince(table: TeamRecordTable, workspaceId: OrgId, project: string, sinceMs: number, options: { nowSeconds?: number; maxPages?: number; pageSize?: number } = {}): Promise<{ taskIds: string[]; truncated: boolean }> {
   const seen = new Set<string>();
-  let startKey: Record<string, unknown> | undefined;
   const maxPages = options.maxPages ?? MAX_REVERT_PAGES;
-  for (let page = 0; page < maxPages; page += 1) {
-    const response = await table.documentClient.send(new QueryCommand({
-      TableName: table.tableName, KeyConditionExpression: "pk = :pk AND sk BETWEEN :low AND :high",
-      ExpressionAttributeValues: { ":pk": teamRecordPk(workspaceId, project), ":low": `${RECORD_EVENT_SK_PREFIX}${new Date(sinceMs).toISOString()}`, ":high": `${RECORD_EVENT_SK_PREFIX}￿`, ":kind": "rovara.reverted_by" },
-      // L3 (lane 2 review): only the revert link rows come back, and the read is eventually consistent (half the cost): the window is a day wide and a row a moment too new is found by the next night.
-      FilterExpression: "#kind = :kind", ExpressionAttributeNames: { "#kind": "kind" },
-      ScanIndexForward: false, Limit: 500, ...(startKey === undefined ? {} : { ExclusiveStartKey: startKey }), ConsistentRead: false,
-    })) as { Items?: Array<Record<string, unknown>>; LastEvaluatedKey?: Record<string, unknown> };
-    for (const item of response.Items ?? []) {
-      if (item["kind"] !== "rovara.reverted_by") continue;
-      const event = eventFromItem(item, options.nowSeconds);
-      if (event === undefined || event.tombstone !== undefined || event.kind !== "rovara.reverted_by") continue;
-      const taskId = event.structured?.taskId;
-      if (event.workspaceId !== workspaceId || event.project !== project || typeof taskId !== "string" || taskId === "") continue;
-      seen.add(taskId);
+  const newestPages = Math.ceil(maxPages / 2), oldestPages = Math.floor(maxPages / 2);
+  /** Reads up to `pages` pages in one direction; true when the direction reached the end of the window. */
+  async function walk(forward: boolean, pages: number): Promise<boolean> {
+    let startKey: Record<string, unknown> | undefined;
+    for (let page = 0; page < pages; page += 1) {
+      const response = await table.documentClient.send(new QueryCommand({
+        TableName: table.tableName, KeyConditionExpression: "pk = :pk AND sk BETWEEN :low AND :high",
+        ExpressionAttributeValues: { ":pk": teamRecordPk(workspaceId, project), ":low": `${RECORD_EVENT_SK_PREFIX}${new Date(sinceMs).toISOString()}`, ":high": `${RECORD_EVENT_SK_PREFIX}￿`, ":kind": "rovara.reverted_by" },
+        // L3 (lane 2 review): only the revert link rows come back, and the read is eventually consistent (half the cost): the window is wide and a row a moment too new is found by the next night.
+        FilterExpression: "#kind = :kind", ExpressionAttributeNames: { "#kind": "kind" },
+        ScanIndexForward: forward, Limit: options.pageSize ?? REVERT_PAGE_ROWS, ...(startKey === undefined ? {} : { ExclusiveStartKey: startKey }), ConsistentRead: false,
+      })) as { Items?: Array<Record<string, unknown>>; LastEvaluatedKey?: Record<string, unknown> };
+      for (const item of response.Items ?? []) {
+        if (item["kind"] !== "rovara.reverted_by") continue;
+        const event = eventFromItem(item, options.nowSeconds);
+        if (event === undefined || event.tombstone !== undefined || event.kind !== "rovara.reverted_by") continue;
+        const taskId = event.structured?.taskId;
+        if (event.workspaceId !== workspaceId || event.project !== project || typeof taskId !== "string" || taskId === "") continue;
+        seen.add(taskId);
+      }
+      startKey = response.LastEvaluatedKey;
+      if (startKey === undefined) return true;
     }
-    startKey = response.LastEvaluatedKey;
-    if (startKey === undefined) return { taskIds: [...seen], truncated: false };
+    return false;
   }
-  return { taskIds: [...seen], truncated: true };
+  if (await walk(false, newestPages)) return { taskIds: [...seen], truncated: false };
+  // More rows than the newest half-budget: the old end of the window is read too, so late-arriving rows are not the ones left out.
+  const complete = await walk(true, oldestPages);
+  return { taskIds: [...seen], truncated: !complete };
 }

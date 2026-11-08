@@ -84,7 +84,7 @@ export async function lessonsRevertJob(deps: LessonsJobDeps, orgId: string, proj
   if (!org.success || deps.queue === undefined) return { revertsEnqueued: 0 };
   const workspaceId: OrgId = org.data;
   const started = deps.now();
-  let enqueued = 0, failed = 0, truncated = 0;
+  let enqueued = 0, failed = 0, truncated = 0, capped = 0;
   for (const project of projects.slice(0, MAX_PROJECTS_PER_JOB)) {
     if (deps.now() - started > budgetMs) break;
     try {
@@ -93,6 +93,8 @@ export async function lessonsRevertJob(deps: LessonsJobDeps, orgId: string, proj
       const found = await revertedTasksSince(deps.table, workspaceId, project, deps.now() - REVERT_WINDOW_MS, { nowSeconds: Math.floor(deps.now() / 1000) });
       // L3: a project cut off by the page limit says so in one fixed line, the project only as a hash.
       if (found.truncated) { truncated += 1; deps.log("lessons_job.revert_window_truncated", { project: createHash("sha256").update(`${orgId}\u0000${project}`).digest("hex").slice(0, 12) }); }
+      // LP-13 review L3: the per-project cap used to cut without a word. Now one fixed line (the project as a hash) and a count.
+      if (found.taskIds.length > MAX_REVERTS_PER_PROJECT) { capped += 1; deps.log("lessons_job.reverts_capped", { project: createHash("sha256").update(`${orgId}\u0000${project}`).digest("hex").slice(0, 12) }); }
       for (const taskId of found.taskIds.slice(0, MAX_REVERTS_PER_PROJECT)) {
         try { await deps.queue.send({ orgId: workspaceId, taskId, outcome: "reverted", requestId: deps.newRequestId() }); enqueued += 1; } catch { failed += 1; deps.log("lessons_job.enqueue_failed", {}); }
       }
@@ -101,7 +103,7 @@ export async function lessonsRevertJob(deps: LessonsJobDeps, orgId: string, proj
       deps.log("lessons_job.revert_failed", {});
     }
   }
-  return { revertsEnqueued: enqueued, revertFailures: failed, revertWindowsTruncated: truncated };
+  return { revertsEnqueued: enqueued, revertFailures: failed, revertWindowsTruncated: truncated, revertsCapped: capped };
 }
 
 export const MAX_PROMOTIONS_PER_PROJECT = 200;

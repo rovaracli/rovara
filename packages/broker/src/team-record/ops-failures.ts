@@ -93,8 +93,8 @@ export async function readOpsFailures(table: TeamRecordTable, orgId: OrgId, nowM
     }
   }
   // LP-13 C2: the latest hour's level (the items sort by hour), only while it is fresh.
-  const levels = await queryPrefix(table, orgId, undefined, `${OPS_FAILURE_SK_PREFIX}lesson_rollback#`, 100);
-  const latest = levels.items.filter((item) => typeof item.sk === "string").sort((a, b) => String(a.sk) < String(b.sk) ? -1 : 1).at(-1);
+  // Newest first, one item: the hour numbers are padded, so the newest sorts last; reading from the oldest end would miss it once more than a hundred hourly items are stored (the table removes them after two days, late).
+  const latest = (await queryPrefix(table, orgId, undefined, `${OPS_FAILURE_SK_PREFIX}lesson_rollback#`, 1, { newestFirst: true })).items[0];
   const levelAt = typeof latest?.lastAt === "string" ? Date.parse(latest.lastAt) : Number.NaN;
   const lessonRollbacks = latest !== undefined && typeof latest.count === "number" && latest.count > 0 && Number.isFinite(levelAt) && levelAt > nowMs - OPS_LEVEL_FRESH_MS ? latest.count : 0;
   if (lessonRollbacks > 0 && (lastAt === undefined || (latest!.lastAt as string) > lastAt)) lastAt = latest!.lastAt as string;

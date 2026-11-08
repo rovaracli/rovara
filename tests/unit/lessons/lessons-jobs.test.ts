@@ -45,6 +45,18 @@ describe("revertedTasksSince", () => {
     expect(found.taskIds.sort()).toEqual(["task-edge", "task-new"]);
     expect(found.truncated).toBe(false);
   });
+  it("LP-13 review L3: a project too busy for its page budget is read from BOTH ends (newest first, then oldest first), so the late-arriving rows at the old end of the window are not the ones cut", async () => {
+    const w = await setup();
+    for (let hour = 1; hour <= 10; hour += 1) await w.sink.put(link(`task-h${String(hour).padStart(2, "0")}`, hoursAgo(hour * 6)));
+    // 2 rows a page, 4 pages: the newest 2 pages and the oldest 2 pages are read, the middle two rows are not
+    const found = await revertedTasksSince(w.table, ORG_A, "web", NOW - REVERT_WINDOW_MS, { nowSeconds: NOW / 1000, maxPages: 4, pageSize: 2 });
+    expect(found.truncated).toBe(true);
+    expect(found.taskIds.sort()).toEqual(["task-h01", "task-h02", "task-h03", "task-h04", "task-h07", "task-h08", "task-h09", "task-h10"].sort());
+    // with room for all of it nothing is cut and nothing is listed twice
+    const all = await revertedTasksSince(w.table, ORG_A, "web", NOW - REVERT_WINDOW_MS, { nowSeconds: NOW / 1000, maxPages: 20, pageSize: 2 });
+    expect(all.truncated).toBe(false);
+    expect(all.taskIds).toHaveLength(10);
+  });
   it("is the company's and the project's own: another company or project sees none of it", async () => {
     const w = await setup();
     await w.sink.put(link("task-a", hoursAgo(1)));
@@ -96,6 +108,18 @@ describe("the nightly re-reflection", () => {
     const { deps, sent } = jobDeps(w);
     expect(await lessonsRevertJob(deps, ORG_A, ["web"], 10_000)).toMatchObject({ revertsEnqueued: 1 });
     expect((sent as Array<{ taskId: string }>).map((m) => m.taskId)).toEqual(["task-late"]);
+  });
+  it("LP-13 review L3: more reverts than one project may send in a night is said in one fixed line (the project as a hash) and counted, and the first 100 still go", async () => {
+    const w = await setup();
+    for (let i = 0; i < 103; i += 1) await w.sink.put(link(`task-${String(i).padStart(3, "0")}`, hoursAgo(1 + i / 100)));
+    const logs: Array<[string, Record<string, string | number>]> = [];
+    const { deps, sent } = jobDeps(w, { log: (event, fields) => logs.push([event, fields]) });
+    expect(await lessonsRevertJob(deps, ORG_A, ["web"], 10_000)).toMatchObject({ revertsEnqueued: 100, revertsCapped: 1 });
+    expect(sent).toHaveLength(100);
+    expect(logs).toHaveLength(1);
+    expect(logs[0]![0]).toBe("lessons_job.reverts_capped");
+    expect(JSON.stringify(logs)).not.toMatch(/web|org_|task-/u);
+    expect(logs[0]![1]["project"]).toMatch(/^[0-9a-f]{12}$/u);
   });
   it("a project whose learning is Off or Collect sends nothing; no queue sends nothing; one enqueue failure is counted and the rest go on", async () => {
     const w = await setup();
