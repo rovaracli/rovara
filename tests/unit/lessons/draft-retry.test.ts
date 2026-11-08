@@ -6,7 +6,7 @@ import { withLearningAttempt } from "../../../packages/broker/src/lessons/learni
 import { InMemoryLessonStore } from "../../../packages/broker/src/lessons/store.js";
 import type { ProcessDeps } from "../../../packages/broker/src/lessons/process.js";
 import type { LessonDraft } from "../../../packages/broker/src/lessons/reflect.js";
-import { Alerts, Audit, Clock, KEY, MemoryVectors, ScriptedModel, Spend, allowAllAccess, closeEmbedder, directory, draft, embedder, facts, settings, verifier } from "./lesson-helpers.js";
+import { Alerts, Audit, Clock, KEY, MemoryVectors, ScriptedModel, Spend, allowAllAccess, closeEmbedder, directory, draft, embedder, facts, lessonRecord, settings, verifier } from "./lesson-helpers.js";
 
 const throttled = (): Error => Object.assign(new Error("secret table text"), { name: "ThrottlingException" });
 const text = (title: string, body: string): LessonDraft => draft({ title, description: "", body });
@@ -188,5 +188,94 @@ describe("LP-13 C3 side effects: a retry does not repeat what the failed try alr
     expect(out.lesson).toMatchObject({ status: "active" });
     expect(w.sourceEvents).toEqual(control.sourceEvents);
     expect(w.audit.actions().filter((action) => action === "lesson.candidate_created")).toHaveLength(1);
+  });
+
+  it("L7: a fault in the very first count (the project's volume) leaves it to the retry: the volume is counted once, not zero times", async () => {
+    const control = await clean();
+    const w = trialSetup();
+    const counted = w.store.recordSourceEvent;
+    let first = true;
+    w.store.recordSourceEvent = async (...args: Parameters<typeof counted>) => { if (first) { first = false; throw throttled(); } return counted(...args); };
+    await processDraftRetrying(w.deps, KEY, memberDraft(), noWait);
+    expect(w.sourceEvents).toEqual(control.sourceEvents);
+  });
+
+  it("L7: a fault in a later count keeps what the failed try already counted and counts only the rest, once each", async () => {
+    const control = await clean();
+    expect(control.sourceEvents.length).toBeGreaterThan(1);
+    const w = trialSetup();
+    const counted = w.store.recordSourceEvent;
+    let calls = 0;
+    w.store.recordSourceEvent = async (...args: Parameters<typeof counted>) => { calls += 1; if (calls === 2) throw throttled(); return counted(...args); };
+    await processDraftRetrying(w.deps, KEY, memberDraft(), noWait);
+    expect(w.sourceEvents).toEqual(control.sourceEvents);
+  });
+});
+
+describe("LP-13 review M2: the trial lesson a card contradicts", () => {
+  it("a fault in retiring it (after the card was committed) is not the draft's: no retry, one card, the trial lesson stays live and one fixed line says it was left", async () => {
+    const store = new InMemoryLessonStore();
+    const audit = new Audit();
+    const clock = new Clock();
+    const spend = new Spend();
+    spend.admitted = false;
+    let n = 0;
+    const logs: string[] = [];
+    const deps = {
+      store, embedder, vectors: new MemoryVectors(), judgeModel: new ScriptedModel(), spend, audit, alerts: new Alerts(), now: clock.now, verifier: verifier("valid"), facts: facts(), settings: settings({ preset: "standard" }),
+      newId: () => `les_${String(++n).padStart(4, "0")}`, judge: { rate: async () => "unrelated" }, directory: directory({ eligibleIds: ["owner", "ann", "bob"] }), access: allowAllAccess, log: (event: string) => { logs.push(event); },
+    } as unknown as ProcessDeps;
+    const member = (title: string, body: string): LessonDraft => draft({ title, description: "", body, provenance: { ...draft().provenance, sourceKinds: ["send_back"], memberCorrection: true, claimsSupported: true, fromSharedTask: true } });
+    const first = (await processDraftRetrying(deps, KEY, member("Use withRetry", "Always use withRetry for HTTP retries in the api service client calls"), noWait)).lesson!;
+    expect(first.status).toBe("active");
+    // the next commit is the card's, the one after it is the retire's: that one fails with a passing fault
+    const real = store.commit.bind(store);
+    let commits = 0;
+    store.commit = async (...args: Parameters<typeof real>) => { commits += 1; if (commits === 2) throw throttled(); return real(...args); };
+    const retried: string[] = [];
+    const out = await processDraftRetrying(deps, KEY, member("Do not use withRetry", "Never use withRetry for HTTP retries in the api service client calls"), { ...noWait, log: (event) => retried.push(event) });
+    expect(out.outcome.outcome).toBe("contradiction");
+    expect(retried).toEqual([]);
+    expect(logs).toContain("lessons.trial_retire_deferred");
+    expect((await store.list(KEY)).filter((lesson) => lesson.status === "pending" && lesson.contradictsWith !== undefined)).toHaveLength(1);
+    expect((await store.get(KEY, first.id))!.status).toBe("active");
+    expect(audit.actions().filter((action) => action === "lesson.contradiction")).toHaveLength(1);
+  });
+});
+
+describe("LP-13 review M2: a curate step that wrote something and then failed is never run again", () => {
+  it("the step's own commit answered ok, then it failed: it is not run again (the answer of the store is the fact)", async () => {
+    const w = setup();
+    let runs = 0;
+    const curate = async (deps: ProcessDeps) => { runs += 1; const lesson = lessonRecord({ id: "les_x1", workspaceId: KEY.workspaceId, project: KEY.project }); await deps.store.commit(KEY, await deps.store.setVersion(KEY), [lesson], 10); throw throttled(); };
+    await expect(processDraftRetrying(w.deps, KEY, text("Retries", A), { ...noWait, curate })).rejects.toMatchObject({ name: "ThrottlingException" });
+    expect(runs).toBe(1);
+  });
+  it("the step made a lesson and the store has it, but the answer of the commit was lost (the call threw): it is not run again", async () => {
+    const w = setup();
+    let runs = 0;
+    const curate = async (deps: ProcessDeps) => {
+      runs += 1;
+      const id = deps.newId!();
+      // written behind the retry's back: the lesson is in the store, no answer reached the step
+      await w.store.commit(KEY, await w.store.setVersion(KEY), [lessonRecord({ id, workspaceId: KEY.workspaceId, project: KEY.project })], 10);
+      throw throttled();
+    };
+    await expect(processDraftRetrying(w.deps, KEY, text("Retries", A), { ...noWait, curate })).rejects.toMatchObject({ name: "ThrottlingException" });
+    expect(runs).toBe(1);
+  });
+  it("the store cannot say whether the lesson it made is there: not run again (never on doubt)", async () => {
+    const w = setup();
+    let runs = 0;
+    const curate = async (deps: ProcessDeps) => { runs += 1; deps.newId!(); w.store.get = async () => { throw throttled(); }; throw throttled(); };
+    await expect(processDraftRetrying(w.deps, KEY, text("Retries", A), { ...noWait, curate })).rejects.toMatchObject({ name: "ThrottlingException" });
+    expect(runs).toBe(1);
+  });
+  it("a step that wrote nothing is run again (positive control)", async () => {
+    const w = setup();
+    let runs = 0;
+    const curate = async (deps: ProcessDeps) => { runs += 1; deps.newId!(); if (runs === 1) throw throttled(); return { outcome: "dropped" as const, reason: "invalid" as const }; };
+    expect((await processDraftRetrying(w.deps, KEY, text("Retries", A), { ...noWait, curate })).outcome.outcome).toBe("dropped");
+    expect(runs).toBe(2);
   });
 });

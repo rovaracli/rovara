@@ -10,10 +10,11 @@
 //
 // A retry must not do again what the failed try already did. The two steps are kept apart, so a retry resumes where the failure was:
 //   - a fault in the SETTLE step (the lesson was already added or merged by the curate step): only settle runs again, with the curate step's answer; the lesson is not curated (merged into itself) a second time;
-//   - a fault in the CURATE step: the curate step runs again (its last write is its own commit, so a fault in it means nothing of the draft was kept; the steps after the commit never throw);
+//   - a fault in the CURATE step: it runs again only if nothing of it was written (no commit answered ok, and none of the lesson ids it made is in the store; the store failing to say counts as written). A step that wrote
+//     and then failed is never run again: a repeat would curate the draft a second time, and two cards would reach people for one draft;
 //   - audit lines the failed try already wrote (same action, same lesson) are not written again by the retry;
 //   - the draft's sources and the project's volume are counted once: a retry of the curate step skips the count when the failed try already made it.
-import { curateDraft, type CurateOutcome } from "./curate.js";
+import { curateDraft, defaultLessonId, type CurateOutcome } from "./curate.js";
 import { currentLearningAttempt } from "./learning-deadline.js";
 import type { LessonAuditEvent, LessonAuditSink, PipelineModel } from "./ports.js";
 import { settleLesson, settleOptionsOf, type ProcessDeps, type ProcessResult } from "./process.js";
@@ -44,6 +45,8 @@ export interface DraftRetryOptions {
   /** The wait before the retry (default: a timer of `DRAFT_RETRY_WAIT_MS`). */
   sleep?: ((ms: number) => Promise<void>) | undefined;
   now?: (() => number) | undefined;
+  /** The curate step (default `curateDraft`). A seam for tests of the guard below. */
+  curate?: typeof curateDraft | undefined;
 }
 
 /** The key an audit line is told apart by: what happened to which lesson. */
@@ -51,7 +54,10 @@ const auditKey = (event: LessonAuditEvent): string => `${event.action}|${event.l
 
 /** `processDraft`, with the one bounded retry above. Throws the last fault, as `processDraft` does. */
 export async function processDraftRetrying(deps: ProcessDeps, key: ScopeKey, draft: LessonDraft, options: DraftRetryOptions = {}): Promise<ProcessResult> {
-  let modelCalls = 0, noted = false;
+  let modelCalls = 0, committed = false;
+  const noted = new Set<string>();
+  const madeIds: string[] = [];
+  const curate = options.curate ?? curateDraft;
   const written = new Set<string>();
   const judge: PipelineModel = deps.judgeModel;
   const store = new Proxy(deps.store, {
@@ -59,7 +65,10 @@ export async function processDraftRetrying(deps: ProcessDeps, key: ScopeKey, dra
       const value = Reflect.get(target, property, receiver) as unknown;
       if (typeof value !== "function") return value;
       const method = (value as (...args: unknown[]) => unknown).bind(target);
-      if (property === "recordSourceEvent") return (...args: unknown[]) => { noted = true; return method(...args); };
+      // A commit's own answer is the fact: a commit that said ok landed. (Set after the call returned, so a commit that threw is not counted here; the lesson ids below cover an answer that was lost.)
+      if (property === "commit") return async (...args: unknown[]) => { const result = await method(...args); if ((result as { ok?: boolean } | undefined)?.ok !== false) committed = true; return result; };
+      // A count is "made" only once the write returned: a fault in it leaves it to the retry.
+      if (property === "recordSourceEvent") return async (...args: unknown[]) => { const result = await method(...args); noted.add(String((args[1] as { source?: unknown } | undefined)?.source)); return result; };
       return method;
     },
   });
@@ -69,6 +78,8 @@ export async function processDraftRetrying(deps: ProcessDeps, key: ScopeKey, dra
   };
   const first: ProcessDeps = {
     ...deps, store, audit,
+    // The ids this try gave to new lessons: whether any of them is in the store says, from the store itself, whether the step's write landed.
+    newId: () => { const id = (deps.newId ?? defaultLessonId)(); madeIds.push(id); return id; },
     judgeModel: {
       ...(judge.quote === undefined ? {} : { quote: (request) => judge.quote!(request) }),
       complete: (request) => { modelCalls += 1; return judge.complete(request); },
@@ -83,24 +94,35 @@ export async function processDraftRetrying(deps: ProcessDeps, key: ScopeKey, dra
     return lesson === undefined ? { outcome } : { outcome, lesson };
   };
   try {
-    outcome = await curateDraft(first, key, draft);
+    outcome = await curate(first, key, draft);
     step = "settle";
     return await settle(first);
   } catch (error) {
     if (modelCalls > 0 || !isPassingStoreFault(error)) throw error;
+    // A curate step that wrote something and then failed is never run again: its repeat would curate the draft a second time (a second card for one draft). The writes are known from the commits' own answers and
+    // from the store (a lesson this try made, whose commit's answer may have been lost).
+    if (step === "curate" && (committed || await anyStored(deps, key, madeIds))) throw error;
     const attempt = currentLearningAttempt();
     if (attempt !== undefined && (attempt.signal?.aborted === true || (attempt.deadlineAt - (options.now ?? Date.now)()) < DRAFT_RETRY_MIN_LEFT_MS)) throw error;
     options.log?.("learning.draft_retried", {});
     await (options.sleep ?? ((ms) => new Promise<void>((resolve) => setTimeout(resolve, ms))))(DRAFT_RETRY_WAIT_MS);
     if (attempt?.signal?.aborted === true) throw error;
     const again: ProcessDeps = {
-      ...deps, ...(noted ? { noSourceNote: true } : {}),
+      ...deps, ...(noted.size === 0 ? {} : { alreadyNoted: noted }),
       // A line the failed try wrote is not written again (the retry is told it succeeded).
       audit: { emit: async (event, emitOptions) => { if (!written.has(auditKey(event))) await deps.audit.emit(event, emitOptions); }, ...(deps.audit.stage === undefined ? {} : { stage: (event: LessonAuditEvent) => deps.audit.stage!(event) }) },
     };
     if (step === "curate") {
-      outcome = await curateDraft(again, key, draft);
+      outcome = await curate(again, key, draft);
     }
     return settle(again);
   }
+}
+
+/** True when any of the lessons (by id) is in the store, or when the store cannot say (then the step is not repeated: never on doubt). */
+async function anyStored(deps: ProcessDeps, key: ScopeKey, ids: readonly string[]): Promise<boolean> {
+  for (const id of ids) {
+    try { if (await deps.store.get(key, id) !== undefined) return true; } catch { return true; }
+  }
+  return false;
 }

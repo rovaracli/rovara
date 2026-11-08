@@ -37,8 +37,8 @@ export interface CurateDeps extends LessonDeps {
   access?: AccessCheckPort | undefined;
   /** The project's configured expiry window in days (14-365), if any. */
   expiryDays?: number;
-  /** LP-13 C3: the draft's sources were already counted by an earlier try of the same draft (a retry), so they are not counted again. */
-  noSourceNote?: boolean;
+  /** LP-13 C3: the sources (and the project's volume, `PROJECT_VOLUME_KEY`) an earlier try of the same draft already counted (a retry): they are not counted again, and the ones it did not reach still are. */
+  alreadyNoted?: ReadonlySet<string>;
 }
 
 export type Verdict = "same" | "refines" | "contradicts" | "different";
@@ -135,9 +135,12 @@ async function judgeList(deps: CurateDeps, key: ScopeKey, mine: LessonDraft, can
   } catch { return undefined; }
 }
 
+/** A fresh lesson id. */
+export const defaultLessonId = (): string => `les_${randomUUID().replaceAll("-", "").slice(0, 16)}`;
+
 function newLesson(deps: CurateDeps, key: ScopeKey, draft: LessonDraft, status: Lesson["status"], extra: Partial<Lesson>): Lesson {
   const now = deps.now();
-  const id = (deps.newId ?? (() => `les_${randomUUID().replaceAll("-", "").slice(0, 16)}`))();
+  const id = (deps.newId ?? defaultLessonId)();
   return LessonSchema.parse({
     id, version: 1, workspaceId: key.workspaceId, project: key.project, scope: draft.scope, type: draft.type, stages: draft.stages,
     title: draft.title, description: draft.description, body: draft.body, citations: draft.citations, provenance: draft.provenance,
@@ -256,7 +259,7 @@ export async function curateDraft(deps: CurateDeps, key: ScopeKey, draft: Lesson
   if (!z.array(LessonCitationSchema).max(6).safeParse(draft.citations).success || !LessonProvenanceSchema.safeParse(draft.provenance).success || !LessonScopeSchema.safeParse(draft.scope).success) return drop("invalid");
 
   // Every candidate is collected (no flat caps). It is counted against its sources; a spiking source is paused alone and its lessons are held, not dropped.
-  if (deps.noSourceNote !== true) await noteCandidateSources(deps, deps.store, key, attributableSources(draft.provenance), deps.alerts);
+  await noteCandidateSources(deps, deps.store, key, attributableSources(draft.provenance), deps.alerts, deps.alreadyNoted);
 
   // The neighbours: the project's lessons whose scope overlaps, ranked by the fused matcher (keywords, paths and, where there is one, the embedder). It never fails: an embedder that is down or slow is keywords and paths.
   const sim = { embedder: deps.embedder, vectors: deps.vectors, log: deps.log, metrics: deps.metrics };
@@ -342,7 +345,11 @@ export async function curateDraft(deps: CurateDeps, key: ScopeKey, draft: Lesson
     await keepVector(sim, key, created, queryVector);
     await emitAudit(deps.audit, { action: "lesson.contradiction", workspaceId: key.workspaceId, project: key.project, lessonId: created.id, facts: { ...(named ? { other: other.id, judged: judgedBy.has(other.id) } : {}), ...(matchesRejectedLesson ? { matchesRejected: true } : {}) } });
     // A later contradicting correction by a member retires a lesson that is live on trial (DECISIONS 24); the new lesson waits for a person. Audited by the retire.
-    if (!matchesRejectedLesson && isTrialLesson(other) && other.status === "active" && draft.provenance.memberCorrection === true) await retireLesson(deps, key, other.id, "contradicted", undefined, "lesson.trial_retired");
+    // The card is already committed, so a fault here never reaches the caller (a retry would curate the draft a second time and make a second card): the trial lesson stays live, one fixed line says so, and the
+    // person who decides the card (or the lesson's own fade) settles it.
+    if (!matchesRejectedLesson && isTrialLesson(other) && other.status === "active" && draft.provenance.memberCorrection === true) {
+      try { await retireLesson(deps, key, other.id, "contradicted", undefined, "lesson.trial_retired"); } catch { deps.log?.("lessons.trial_retire_deferred", {}); }
+    }
     try { await deps.alerts?.alert(key.workspaceId, key.project, "lesson_contradiction"); } catch { /* the card is already in the queue */ }
     return { outcome: "contradiction", lesson: created, ...(named ? { other: other.id } : {}), ...(matchesRejectedLesson ? { matchesRejected: true as const } : {}) };
   };

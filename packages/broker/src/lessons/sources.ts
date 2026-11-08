@@ -26,11 +26,13 @@ export function baselineOf(history: readonly number[]): number {
 }
 
 /** Counts one candidate against each of its sources, and pauses any source that spiked. Returns the sources paused by this call. */
-export async function noteCandidateSources(deps: LessonDeps, store: LessonStore, key: ScopeKey, sources: readonly string[], alerts?: AlertSink): Promise<string[]> {
+export async function noteCandidateSources(deps: LessonDeps, store: LessonStore, key: ScopeKey, sources: readonly string[], alerts?: AlertSink, alreadyNoted: ReadonlySet<string> = new Set()): Promise<string[]> {
   const paused: string[] = [];
   const now = deps.now();
-  await noteProjectVolume(deps, store, key, alerts);
+  if (!alreadyNoted.has(PROJECT_VOLUME_KEY)) await noteProjectVolume(deps, store, key, alerts);
   for (const source of new Set(sources.map(normSource))) {
+    // A retry of the same draft: this source was counted by the try that failed.
+    if (alreadyNoted.has(source)) continue;
     // A late event of a person who was erased is not recorded, and cannot start a pause for them (whatever the spelling of the key).
     const member = memberOfSource(source);
     if (member !== undefined && (await store.isErased(key, member))) continue;
