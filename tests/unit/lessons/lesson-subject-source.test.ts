@@ -83,11 +83,12 @@ describe("the task's facts", () => {
     const spans = (await read(source))!.facts.rest.spans!;
     const finding = spans.filter((s) => s.kind === "review_finding");
     expect(finding).toHaveLength(1);
-    expect(finding[0]).toMatchObject({ text: "Missing null check", trust: "rovara" });
+    // Worker-written text is untrusted agent text: the "system" class, never "rovara" (M5).
+    expect(finding[0]).toMatchObject({ text: "Missing null check", trust: "system" });
     expect(finding[0]!.authorId).toBeUndefined();
     const ci = spans.filter((s) => s.kind === "ci_failure");
     expect(ci.map((s) => s.sourceKey)).toEqual(["ci", "ci"]);
-    expect(ci.every((s) => s.authorId === undefined && s.trust === "rovara")).toBe(true);
+    expect(ci.every((s) => s.authorId === undefined && s.trust === "system")).toBe(true);
   });
 
   it("the plan is an agent span with no author, read from the artifact store", async () => {
@@ -95,7 +96,7 @@ describe("the task's facts", () => {
     const artifact = { type: "plan", version: 1, objectKey: "plans/x.md", sha256: sha(markdown), format: "markdown", createdAt: "2026-11-01T00:00:00.000Z" };
     const { source } = setup({}, { artifacts: [artifact] }, { readObject: async (key) => (key === "plans/x.md" ? markdown : undefined) });
     const plan = (await read(source))!.facts.rest.spans!.find((s) => s.kind === "plan");
-    expect(plan).toMatchObject({ trust: "rovara", text: markdown });
+    expect(plan).toMatchObject({ trust: "system", text: markdown });
     expect(plan!.authorId).toBeUndefined();
     // No store, or a copy that does not match its digest: no plan span.
     expect((await read(setup({}, { artifacts: [artifact] }).source))!.facts.rest.spans!.some((s) => s.kind === "plan")).toBe(false);
@@ -194,5 +195,77 @@ describe("erasure at read time", () => {
     // A thread reply cannot be attributed to a member by the record: the task counts as steered by someone unnamed (an outsider).
     expect(base.facts.rest.steeringTrust).toContain("outsider");
     expect(erasedAsked).toContain(CREATOR);
+  });
+});
+
+describe("steering through the pull request feedback flow (M4)", () => {
+  const FEEDBACK_DECISION = { schemaVersion: 1, requestId: randomUUID(), workflowRevision: 2, decision: "REQUEST_CHANGES", actorId: taskOwnerKey(CREATOR, TASK), actorRole: "TASK_OWNER", reviewDigest: "1".repeat(64), proposalDigest: "2".repeat(64), bundleDigests: ["3".repeat(64)], selectedFindingIds: [], selectedCommentIds: [], candidates: [], at: "2026-11-01T00:00:00.000Z" };
+  const steering = async (workflow: Record<string, unknown>, over: Record<string, unknown> = {}) => (await read(setup(over, workflow).source))!.facts.rest.steeringTrust;
+
+  it("positive control: a task nobody steered has an empty steering list", async () => {
+    expect(await steering({})).toEqual([]);
+  });
+
+  it("a feedback round that acted on selected pull request comments is steered by whoever wrote them: an outsider", async () => {
+    expect(await steering({ feedbackDecisions: [{ ...FEEDBACK_DECISION, selectedCommentIds: ["c1"] }] })).toContain("outsider");
+  });
+
+  it("a collected feedback review history, a review thread observation or a thread reply also make the task outsider-steered; an owner's own note does not", async () => {
+    expect(await steering({ feedbackReviewHistory: [{ sha256: "4".repeat(64), objectKey: "k" }] })).toContain("outsider");
+    expect(await steering({ feedbackThreadObservations: [{ threadId: "t" }] })).toContain("outsider");
+    expect(await steering({ feedbackReview: { status: "COLLECTING", bundleRefs: [], threadObservations: [] } })).toContain("outsider");
+    // A reply in the task's thread has no named author; an owner's own note is a named steer (a member).
+    const note = (source: string) => ({ requestId: randomUUID(), actorId: taskOwnerKey(CREATOR, TASK), source, sourceId: "x", text: "do it", at: "2026-11-01T00:00:00.000Z" });
+    expect(await steering({ feedbackNotes: [note("THREAD_REPLY")] })).toContain("outsider");
+    expect(await steering({ feedbackNotes: [note("REQUEST_CHANGES")] })).toEqual(["member"]);
+  });
+
+  it("a feedback decision with no selected comments (findings only) is the owner's own steer: a member", async () => {
+    expect(await steering({ feedbackDecisions: [{ ...FEEDBACK_DECISION, selectedFindingIds: ["f1"] }] })).toEqual(["member"]);
+  });
+});
+
+describe("worker-written text and erased people (M5, M6)", () => {
+  const erasing = (...ids: string[]) => ({ isErased: async (_org: string, who: string) => ids.includes(who) });
+  const markdown = "# Plan\nUse withRetry.";
+  const artifact = { type: "plan", version: 1, objectKey: "plans/x.md", sha256: sha(markdown), format: "markdown", createdAt: "2026-11-01T00:00:00.000Z" };
+  const report = { operationId: randomUUID(), candidateDigest: "d".repeat(64), role: "CRITIC", provider: "p", version: "1", status: "FINDINGS", findings: [{ text: "Missing null check", origin: "INTRODUCED" }], readOnly: true, recordedAt: "2026-11-01T00:00:00.000Z" };
+  const workerKinds = ["plan", "review_finding", "ci_failure"];
+  const workerSpans = async (over: Record<string, unknown>, workflow: Record<string, unknown>, deps: Partial<LessonSubjectSourceDeps>) =>
+    (await read(setup(over, { artifacts: [artifact], reviews: [report], fixSource: "ci", fixProblems: ["unit tests"], ...workflow }, { readObject: async () => markdown, ...deps }).source))!.facts.rest.spans!.filter((s) => workerKinds.includes(s.kind));
+
+  it("positive control: with nobody erased the plan, the finding and the CI text are all read, as untrusted agent text", async () => {
+    const spans = await workerSpans({}, {}, {});
+    expect(spans.map((s) => s.kind).sort()).toEqual(["ci_failure", "plan", "review_finding"]);
+    expect(spans.every((s) => s.trust === "system")).toBe(true);
+  });
+
+  it("an erased person who answered the plan questions: the plan, the findings and the CI text are not read (fail closed)", async () => {
+    const answers = [{ by: { actorId: taskOwnerKey(CREATOR, TASK) } }];
+    expect(await workerSpans({}, { intent: { answers } }, erasing(CREATOR))).toEqual([]);
+  });
+
+  it("an erased person who decided on the task, or who took it over, taints the worker text too", async () => {
+    const decided = { decisions: [decision({ source: "GATE", decision: "APPROVE" })] };
+    expect(await workerSpans({}, decided, erasing(CREATOR))).toEqual([]);
+    expect((await workerSpans({}, decided, erasing("someone-else"))).length).toBe(3);
+    const taken = { currentOwner: { developerId: "taker-1", name: "Taker", provider: "oidc", since: "2026-11-02T00:00:00.000Z" } };
+    expect(await workerSpans(taken, {}, erasing("taker-1"))).toEqual([]);
+    expect((await workerSpans(taken, {}, erasing("someone-else"))).length).toBe(3);
+  });
+
+  it("an erased steerer is an outsider (the task stays ineligible), never removed from the list (M6)", async () => {
+    const decided = { decisions: [decision({ source: "GATE", decision: "APPROVE" })] };
+    const live = (await read(setup({}, decided).source))!.facts.rest.steeringTrust;
+    expect(live).toEqual(["member"]);
+    const gone = (await read(setup({}, decided, erasing(CREATOR)).source))!.facts.rest.steeringTrust;
+    expect(gone).toContain("outsider");
+    const answered = (await read(setup({}, { intent: { answers: [{ by: { actorId: taskOwnerKey(CREATOR, TASK) } }] } }, erasing(CREATOR)).source))!.facts.rest.steeringTrust;
+    expect(answered).toContain("outsider");
+    // An erased taker who decided: still an outsider steerer, with the creator (not erased) alone steering as a member.
+    const taken = { currentOwner: { developerId: "taker-1", name: "Taker", provider: "oidc", since: "2026-11-02T00:00:00.000Z" } };
+    const takerDecided = { decisions: [decision({ source: "GATE", decision: "APPROVE", actorId: taskOwnerKey("taker-1", TASK) })] };
+    expect((await read(setup(taken, takerDecided).source))!.facts.rest.steeringTrust).toEqual(["member"]);
+    expect((await read(setup(taken, takerDecided, erasing("taker-1")).source))!.facts.rest.steeringTrust).toContain("outsider");
   });
 });

@@ -73,6 +73,35 @@ function baseOf(task: DeveloperTaskRecord, repositories: readonly string[]): { r
   return mine.length === 1 ? { repository: mine[0]!.repositoryId, commit: mine[0]!.baseCommitSha } : undefined;
 }
 
+
+/** Worker-written text is untrusted agent text: the class below the Rovara-authored one (it ranks above "outsider" only). */
+const AGENT_TEXT_TRUST: TrustClass = "system";
+
+/** Whether the pull request feedback flow brought in text from the repository's commenters: a collected review, a review kept in the history, or review threads seen. */
+function usedPullRequestComments(workflow: WorkflowSnapshot | undefined): boolean {
+  if (workflow === undefined) return false;
+  return workflow.feedbackReview !== undefined || (workflow.feedbackReviewHistory ?? []).length > 0 || (workflow.feedbackThreadObservations ?? []).length > 0;
+}
+
+/** Whether any person this record names beside the creator (the taker, a decision's or an answer's actor, a feedback note's actor) is erased. Asks every one (no short cut), so a read that cannot tell throws. */
+async function namedPeopleErased(
+  task: DeveloperTaskRecord, workflow: WorkflowSnapshot | undefined, developerOfActor: (actorId: string) => string | undefined, erased: (developerId: string) => Promise<boolean>,
+): Promise<boolean> {
+  const people = new Set<string>();
+  const taker = tryEffectiveTaskOwner(task);
+  if (taker !== undefined) people.add(taker.developerId);
+  const actors = [
+    ...(workflow?.decisions ?? []).filter((decision) => decision.actorRole !== "AGENTX").map((decision) => decision.actorId),
+    ...(workflow?.intent?.answers ?? []).map((set) => set.by.actorId),
+    ...(workflow?.feedbackDecisions ?? []).filter((decision) => decision.actorRole === "TASK_OWNER").map((decision) => decision.actorId),
+    ...(workflow?.feedbackNotes ?? []).filter((note) => note.source !== "THREAD_REPLY").map((note) => note.actorId),
+  ];
+  for (const actor of actors) { const person = developerOfActor(actor); if (person !== undefined) people.add(person); }
+  let any = false;
+  for (const person of people) if (await erased(person)) any = true;
+  return any;
+}
+
 export function lessonSubjectSource(deps: LessonSubjectSourceDeps): TaskSubjectSource {
   return {
     async read(input) {
@@ -129,26 +158,29 @@ export function lessonSubjectSource(deps: LessonSubjectSourceDeps): TaskSubjectS
       const intentText = present(task.requestText) ? task.requestText : task.title;
       if (!creatorErased && present(intentText)) spans.push({ kind: "intent", text: intentText, trust: await trustOf(creator), authorId: creator });
 
-      if (workflow !== undefined && deps.readObject !== undefined) {
+      // Worker-written text (the plan, the review findings, the CI text) is UNTRUSTED agent text (M5): the plan absorbs people's answers and the request, the findings and the CI log can carry text an outsider
+      // influenced. It gets the "system" class, never "rovara". And if any person who decided on, answered for, took over or created the task is erased, none of it is read: it may hold that person's words.
+      const workerTextTainted = creatorErased || await namedPeopleErased(task, workflow, developerOfActor, erased);
+      if (!workerTextTainted && workflow !== undefined && deps.readObject !== undefined) {
         const plan: WorkflowArtifact | undefined = workflow.artifacts.filter((artifact) => artifact.type === "plan").sort((a, b) => a.version - b.version).at(-1);
         if (plan !== undefined) {
           const loaded = await loadWorkflowDocument((key, max) => deps.readObject!(key, max).catch(() => undefined), plan, {}).catch(() => undefined);
           const markdown = loaded?.markdown;
-          if (present(markdown)) spans.push({ kind: "plan", text: markdown.slice(0, PLAN_MAX_BYTES), trust: "rovara", sourceKey: "plan" });
+          if (present(markdown)) spans.push({ kind: "plan", text: markdown.slice(0, PLAN_MAX_BYTES), trust: AGENT_TEXT_TRUST, sourceKey: "plan" });
         }
       }
 
       let findings = 0;
-      for (const review of workflow?.reviews ?? []) {
+      for (const review of workerTextTainted ? [] : workflow?.reviews ?? []) {
         for (const finding of review.findings) {
           if (finding.origin !== "INTRODUCED" || findings >= MAX_FINDINGS) continue;
           findings += 1;
-          spans.push({ kind: "review_finding", text: finding.text, trust: "rovara", sourceKey: `review:${review.role.toLowerCase()}`, eventId: workflowFindingFingerprint(review.role, finding) });
+          spans.push({ kind: "review_finding", text: finding.text, trust: AGENT_TEXT_TRUST, sourceKey: `review:${review.role.toLowerCase()}`, eventId: workflowFindingFingerprint(review.role, finding) });
         }
       }
 
-      if (workflow?.fixSource === "ci") {
-        for (const problem of (workflow.fixProblems ?? []).slice(0, MAX_CI_PROBLEMS)) spans.push({ kind: "ci_failure", text: `${CI_FAILURE_PREFIX}${problem}`, trust: "rovara", sourceKey: "ci" });
+      if (!workerTextTainted && workflow?.fixSource === "ci") {
+        for (const problem of (workflow.fixProblems ?? []).slice(0, MAX_CI_PROBLEMS)) spans.push({ kind: "ci_failure", text: `${CI_FAILURE_PREFIX}${problem}`, trust: AGENT_TEXT_TRUST, sourceKey: "ci" });
       }
 
       // The close reason: the words of the person who closed (rejected) the task, when that person is the owner (the creator or the one who took over). A project admin's close is not attributed.
@@ -159,21 +191,33 @@ export function lessonSubjectSource(deps: LessonSubjectSourceDeps): TaskSubjectS
       }
 
       // ---- steering: everyone who steered the task. The creator or the taker, when they decided, answered or sent it back; anyone this record cannot name is an outsider (unknown is outsider).
+      // An ERASED steerer is unknown too (M6): their words may still be in the plan, so the task stays ineligible; they are never taken off the list.
       const steerers = new Set<TrustClass>();
       let unnamed = false;
+      const steeredBy = async (actorId: string): Promise<void> => {
+        const person = developerOfActor(actorId);
+        if (person === undefined || await erased(person)) { unnamed = true; return; }
+        steerers.add(await trustOf(person));
+      };
       for (const decision of workflow?.decisions ?? []) {
         if (decision.actorRole === "AGENTX") continue;
-        const person = developerOfActor(decision.actorId);
-        if (person === undefined) { unnamed = true; continue; }
-        if (!(await erased(person))) steerers.add(await trustOf(person));
+        await steeredBy(decision.actorId);
       }
-      for (const set of workflow?.intent?.answers ?? []) {
-        const person = developerOfActor(set.by.actorId);
-        if (person === undefined) { unnamed = true; continue; }
-        if (!(await erased(person))) steerers.add(await trustOf(person));
+      for (const set of workflow?.intent?.answers ?? []) await steeredBy(set.by.actorId);
+      // The pull request feedback flow (M4): the owner picks review comments from the pull request and the agent acts on them. Those comments can come from anyone who can comment on the repository, and the
+      // record keeps no author for them, so a round that used any (or that collected a review, saw review threads or carries an owner's note on one) is steered by someone unnamed. The owner's own decision is a
+      // named steerer like any other.
+      for (const decision of workflow?.feedbackDecisions ?? []) {
+        if (decision.actorRole === "TASK_OWNER") await steeredBy(decision.actorId);
+        if (decision.selectedCommentIds.length > 0) unnamed = true;
       }
+      for (const note of workflow?.feedbackNotes ?? []) {
+        if (note.source === "THREAD_REPLY") unnamed = true;
+        else await steeredBy(note.actorId);
+      }
+      if (usedPullRequestComments(workflow)) unnamed = true;
       // Replies in the task's Slack thread are saved as notes with a Slack account, not a member: the record cannot say whose they are.
-      if ((task.threadNoteCount ?? 0) > 0 || (workflow?.feedbackNotes ?? []).some((note) => note.source === "THREAD_REPLY")) unnamed = true;
+      if ((task.threadNoteCount ?? 0) > 0) unnamed = true;
       const steeringTrust: TrustClass[] = [...steerers, ...(unnamed ? ["outsider" as const] : [])];
 
       const links = (workflow?.pullRequests ?? []).map((pullRequest) => pullRequest.url).slice(0, 32);
