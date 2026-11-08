@@ -1,6 +1,6 @@
 // Learning v2: the seams of the learning lane. The record core (R-lanes), storage and ingest are built in parallel; each interface here is what this
 // lane needs from them, with an in-memory stand-in in the tests. Nothing here talks to AWS.
-import type { LessonStage } from "@agentx/contracts";
+import type { LessonStage, LessonsPauseCode } from "@agentx/contracts";
 import type { Lesson, LessonAuditAction, IdentitySet } from "./types.js";
 
 export type Clock = () => number;
@@ -11,6 +11,11 @@ export type Clock = () => number;
  * `costUsd` is an UPPER BOUND on what the call cost (the cap its key holds), not a measurement: the real figure is settled later from the proxy.
  */
 export interface PipelineModel {
+  /**
+   * What a call of this size would hold, before it is made (lessons in production, lane 1b): the cheapest suitable model's worst-case price for this prompt and `maxOutputTokens`, or the fixed code of why learning
+   * cannot run (no provider, every model forbidden, the budgets cannot cover it, the cheapest model costs too much). Reads and writes nothing of the call's. Absent: the caller uses its own fixed estimate.
+   */
+  quote?(request: { purpose: "reflect" | "judge" | "distill" | "outcome"; system: string; user: string; maxOutputTokens: number; workspaceId: string; project?: string }): Promise<{ ok: true; usd: number } | { ok: false; code: LessonsPauseCode }>;
   complete(request: { purpose: "reflect" | "judge" | "distill" | "outcome"; system: string; user: string; maxOutputTokens: number; workspaceId: string; /** The project the call is for: the company's own model route is chosen per project. A model that routes per project refuses a call without one. */ project?: string; /** The most the call may cost, in US dollars: the amount `LearningSpend.admit` was asked about. The model's key holds exactly this much (never more). Absent: the model's own default. */ budgetUsd?: number }): Promise<{ text: string; costUsd: number; model: string }>;
 }
 

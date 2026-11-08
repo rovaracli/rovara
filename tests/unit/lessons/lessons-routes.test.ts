@@ -46,6 +46,27 @@ function setup(over: { eligible?: string[]; access?: AccessCheckPort; value?: Pa
 }
 const refused = async (promise: Promise<unknown>): Promise<AgentXError> => { try { await promise; } catch (error) { if (error instanceof AgentXError) return error; throw error; } throw new Error("expected a refusal"); };
 
+describe("the Lessons tab says why learning is paused (lessons in production, lane 1b)", () => {
+  const pauseStore = (current?: { code: "monthly_limit" | "no_provider"; at: number; scope: "project" | "company" }) => ({ record: async () => undefined, clear: async () => undefined, read: async () => current });
+
+  it("the view carries the one current reason (a fixed code and a time) and nothing else, for a viewer who only reads too", async () => {
+    const s = setup();
+    (s.deps as unknown as { lessons: { pause?: unknown } }).lessons.pause = pauseStore({ code: "monthly_limit", at: 1234, scope: "company" });
+    for (const who of ["bob", "stranger"]) {
+      const view = LessonsViewReaderSchema.parse(await s.call(callerOf(who), "GET", base));
+      expect(view.paused).toEqual({ code: "monthly_limit", at: 1234 });
+    }
+  });
+
+  it("with nothing recorded, or a store that cannot be read, the view has no paused field; and with learning Off the tab says it is off instead", async () => {
+    const none = setup();
+    expect(LessonsViewReaderSchema.parse(await none.call(callerOf("bob"), "GET", base)).paused).toBeUndefined();
+    const broken = setup();
+    (broken.deps as unknown as { lessons: { pause?: unknown } }).lessons.pause = { record: async () => undefined, clear: async () => undefined, read: async () => { throw new Error("down"); } };
+    expect(LessonsViewReaderSchema.parse(await broken.call(callerOf("bob"), "GET", base)).paused).toBeUndefined();
+  });
+});
+
 describe("the Lessons tab read", () => {
   it("shows a maintainer what waits, with who approved first and how many people are needed, and shows the active list with counts and expiry", async () => {
     const { store, call } = setup();

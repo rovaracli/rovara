@@ -18,6 +18,25 @@ export const LESSON_TIER_REASONS = [
   "not_plain_declarative", "source_not_trusted", "scope_not_one_repo", "stage_not_allowed", "contradiction", "restricted_source", "supersedes_higher_tier", "cited_fact",
 ] as const;
 
+/**
+ * Why learning cannot run for a project or its company right now (lessons in production, "never silent"). A fixed code and a time, nothing else: no model name, no amount, no provider text.
+ * One current reason at most per project and per company; it is cleared when a learning call succeeds.
+ */
+export const LESSONS_PAUSE_CODES = ["no_provider", "all_models_forbidden", "no_suitable_model", "monthly_limit", "no_budget", "cost_too_high"] as const;
+export const LessonsPauseCodeSchema = z.enum(LESSONS_PAUSE_CODES);
+export type LessonsPauseCode = z.infer<typeof LessonsPauseCodeSchema>;
+/** The one line that says it, on the Lessons tab and on Home. */
+export const LESSONS_PAUSE_TEXT: Record<LessonsPauseCode, string> = {
+  no_provider: "Lessons paused: no AI provider is connected for this project",
+  all_models_forbidden: "Lessons paused: every available model is forbidden",
+  no_suitable_model: "Lessons paused: no available model can write lessons",
+  monthly_limit: "Lessons paused: monthly learning limit reached",
+  no_budget: "Lessons paused: the AI budget has run out",
+  cost_too_high: "Lessons paused: the cheapest available model costs too much for one lesson",
+};
+export const lessonsPauseText = (code: string): string => (LESSONS_PAUSE_TEXT as Record<string, string | undefined>)[code] ?? "Lessons paused";
+export const LessonsPausedSchema = z.object({ code: LessonsPauseCodeSchema, at: z.number() }).strict();
+
 export const LESSON_LEARNING_MODES = ["Off", "Collect", "Suggest", "On"] as const;
 export const LessonLearningModeSchema = z.enum(LESSON_LEARNING_MODES);
 
@@ -90,6 +109,8 @@ export const LessonsViewSchema = z.object({
   hidden: z.number().int().min(0),
   truncated: z.array(z.enum(["waiting", "active", "removed"])).max(3),
   setVersion: z.number().int().min(0), snapshots: z.array(LessonSnapshotSchema).max(20),
+  /** Learning cannot run for this project (or its company) right now, and why. Absent: nothing is known to be wrong. */
+  paused: LessonsPausedSchema.optional(),
 }).strict();
 export type LessonsViewAnswer = z.infer<typeof LessonsViewSchema>;
 export const LessonsViewReaderSchema = forwardReader(LessonsViewSchema);

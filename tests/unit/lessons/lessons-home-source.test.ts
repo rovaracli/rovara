@@ -32,6 +32,17 @@ describe("the Lessons waiting card", () => {
     expect(cards[0]!.reason).toBe("1 lesson waits for a maintainer's OK in \"web\"");
   });
 
+  it("a project whose learning is paused gets a card with the one line, even with nothing waiting; with lessons waiting the line joins the card", async () => {
+    setLessonsHomeReader(async (_o, _d, project) => (project === "web" ? { waiting: 0, paused: { code: "monthly_limit", at: Date.parse("2026-11-07T01:00:00.000Z") } } : project === "api" ? { waiting: 2, at: "2026-11-06T00:00:00.000Z", paused: { code: "no_provider", at: 5 } } : { waiting: 0 }));
+    const cards = await lessonsHomeSource.list(deps([{ project: "web", role: "maintainer" }, { project: "api", role: "maintainer" }, { project: "docs", role: "maintainer" }]), caller, {} as never);
+    const web = cards.find((card) => card.title.includes("web"))!, api = cards.find((card) => card.title.includes("api"))!;
+    expect(cards).toHaveLength(2);
+    expect(web).toMatchObject({ kind: "lesson_waiting", title: "Lessons paused in \"web\"", reason: "Lessons paused: monthly learning limit reached", at: "2026-11-07T01:00:00.000Z" });
+    expect(api.reason).toBe("2 lessons wait for a maintainer's OK in \"api\". Lessons paused: no AI provider is connected for this project");
+    for (const card of cards) expect(HomeCardSchema.safeParse(card).success).toBe(true);
+    expect(web.cardId).not.toBe(api.cardId);
+  });
+
   it("reads at most the bounded number of projects", async () => {
     let reads = 0;
     setLessonsHomeReader(async () => { reads += 1; return { waiting: 1 }; });

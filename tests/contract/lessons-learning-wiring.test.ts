@@ -45,6 +45,18 @@ describe("the learning dependencies", () => {
     expect(learning.reflect.edition).toBe("public");
   });
 
+  it("the one pause store (\"lessons paused\", lane 1b) is shared by the Lessons tab, the curator and the reflector, so a reason recorded anywhere is the one the tab shows", async () => {
+    const { dependencies } = install();
+    installLessons(dependencies as never);
+    const runtime = dependencies.lessons as NonNullable<ReturnType<typeof lessonsRuntimeFor>>;
+    const learning = dependencies.learning as NonNullable<ReturnType<typeof learningDepsFor>>;
+    expect(runtime.routes.pause).toBeDefined();
+    expect(learning.reflect.pause).toBe(runtime.routes.pause);
+    expect(learning.process.pause).toBe(runtime.routes.pause);
+    await runtime.routes.pause!.record(TEST_ORG, "web", "no_provider");
+    expect(await runtime.routes.pause!.read(TEST_ORG, "web")).toMatchObject({ code: "no_provider", scope: "project" });
+  });
+
   it("are not built without the model path (the lessons runtime then keeps its refusing stand-ins), without the Team record, or when a caller gave its own", async () => {
     const noModel = install({ modelAccess: false });
     installLessons(noModel.dependencies as never);

@@ -2,7 +2,7 @@
 // The broker Lambdas are not in the VPC and never hold the master key. Any failure to invoke, to get
 // an answer in time, or to read the answer is MODEL_PROXY_UNAVAILABLE; an `ok: false` answer becomes
 // an AgentXError with the same code.
-import { InvokeCommand, type InvokeCommandOutput } from "@aws-sdk/client-lambda";
+import { InvokeCommand, LambdaClient, type InvokeCommandOutput, type LambdaClientConfig } from "@aws-sdk/client-lambda";
 import { AgentXErrorCodeSchema, agentXError, type AgentXError, type OrgId } from "@agentx/contracts";
 import { z } from "zod";
 import type { KeyAudit, LearningCompletion, LearningCompletionInput, MemberSpend, MintKeyInput, MintedKey, ModelAccess, SourceCheck, SpendFigures, UpsertSourceInput } from "./access.js";
@@ -15,10 +15,18 @@ const DEFAULT_TIMEOUT_MS = 25_000;
  */
 export const LEARNING_INVOKE_TIMEOUT_MS = 130_000;
 
+/**
+ * A Lambda client that sends each command ONCE. The SDK's default retries (three attempts) would re-run a learning call after a network or 5xx fault that came after the function had started it: the key's cap does not
+ * bind a second run (the first run's spend is not flushed yet), so the call could spend twice what its key holds. Every other model-access call is idempotent and keeps the ordinary client.
+ */
+export const singleAttemptLambda = (configuration: LambdaClientConfig = {}): LambdaClient => new LambdaClient({ ...configuration, maxAttempts: 1 });
+
 export interface ModelAccessInvokerInput {
   /** The function's name or ARN (env MODEL_ACCESS_FUNCTION_NAME). */
   functionName: string;
   lambda: { send(command: InvokeCommand, options?: { abortSignal?: AbortSignal }): Promise<InvokeCommandOutput> };
+  /** The client the learning call goes through: one attempt only (`singleAttemptLambda`). Absent: the ordinary client (tests). */
+  learningLambda?: { send(command: InvokeCommand, options?: { abortSignal?: AbortSignal }): Promise<InvokeCommandOutput> };
   timeoutMs?: number;
 }
 
@@ -95,7 +103,7 @@ export class ModelAccessInvoker implements ModelAccess {
 
   async learningCompletion(input: LearningCompletionInput): Promise<LearningCompletion> {
     const { key, purpose, system, user, maxOutputTokens, model, api } = input;
-    return this.parseResult(await this.invoke({ op: "learningCompletion", args: { key, purpose, system, user, maxOutputTokens, model, api } }, LEARNING_INVOKE_TIMEOUT_MS), LearningCompletionResultSchema);
+    return this.parseResult(await this.invoke({ op: "learningCompletion", args: { key, purpose, system, user, maxOutputTokens, model, api } }, LEARNING_INVOKE_TIMEOUT_MS, this.input.learningLambda), LearningCompletionResultSchema);
   }
 
   private parseResult<T>(result: unknown, schema: z.ZodType<T>): T {
@@ -104,10 +112,10 @@ export class ModelAccessInvoker implements ModelAccess {
     return parsed.data;
   }
 
-  private async invoke(request: ModelAccessRequest, timeoutMs?: number): Promise<unknown> {
+  private async invoke(request: ModelAccessRequest, timeoutMs?: number, lambda: ModelAccessInvokerInput["lambda"] = this.input.lambda): Promise<unknown> {
     let output: InvokeCommandOutput;
     try {
-      output = await this.input.lambda.send(
+      output = await lambda.send(
         new InvokeCommand({ FunctionName: this.input.functionName, InvocationType: "RequestResponse", Payload: Buffer.from(JSON.stringify(request), "utf8") }),
         { abortSignal: AbortSignal.timeout(timeoutMs ?? this.input.timeoutMs ?? DEFAULT_TIMEOUT_MS) },
       );

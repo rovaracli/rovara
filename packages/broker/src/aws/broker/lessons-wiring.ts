@@ -12,6 +12,8 @@ import type { TaskLearningDeps } from "../../lessons/task-end.js";
 import { tableOutcomeRows } from "../../lessons/task-outcome-rows.js";
 import { readObjectText } from "../../developer/plan-artifacts.js";
 import { customerLearningModel } from "./learning-model.js";
+import { readLessonsModel } from "../../lessons/model-setting.js";
+import { dynamoPauseStore } from "../../lessons/pause.js";
 import { companyLearningSpend } from "./learning-spend.js";
 import { lessonSubjectSource } from "./lesson-subject-source.js";
 import { setLessonsHomeReader } from "../../lessons/home-source.js";
@@ -71,11 +73,11 @@ export function lessonsRuntimeFor(dependencies: AwsBrokerDependencies): LessonsR
   const audit = recordAuditSinkOf(dependencies.audit, dependencies.documentClient);
   // The company's own model path, where this install has one (the model proxy): the curator's judge and the payer path. Without a proxy they stay the refusing stand-ins.
   const modelPath = dependencies.modelAccess === undefined ? {} : {
-    model: customerLearningModel(dependencies, { edition: teamRecord.edition }),
+    model: customerLearningModel(dependencies, { edition: teamRecord.edition, lessonsModel: (orgId) => readLessonsModel(teamRecord.table, orgId) }),
     spend: companyLearningSpend({ documentClient: dependencies.documentClient, tableName: dependencies.tableName, edition: teamRecord.edition, now: Date.now, log: (event, fields) => console.log(JSON.stringify({ component: "lessons", event, ...fields })) }),
   };
   return createLessonsRuntime({
-    ...modelPath, similarity: lessonSimilarityFor(dependencies),
+    ...modelPath, pause: dynamoPauseStore(teamRecord.table, Date.now, (event, fields) => console.log(JSON.stringify({ component: "lessons", event, ...fields }))), similarity: lessonSimilarityFor(dependencies),
     table: teamRecord.table, now: Date.now, log: (event, fields) => console.log(JSON.stringify({ component: "lessons", event, ...fields })),
     ...(audit === undefined ? {} : { audit }), reader, repositoriesOf,
     evidence: { documentClient: dependencies.documentClient, tableName: dependencies.tableName, signInTableName, now: Date.now },
@@ -115,7 +117,7 @@ export function learningDepsFor(dependencies: AwsBrokerDependencies, runtime: Le
     }),
     rows: tableOutcomeRows(teamRecord.table),
     settings: runtime.settings,
-    reflect: { model: routes.judgeModel, spend: routes.spend, audit: routes.audit, settings: runtime.settings, edition: teamRecord.edition, now: Date.now },
+    reflect: { model: routes.judgeModel, spend: routes.spend, ...(routes.pause === undefined ? {} : { pause: routes.pause }), audit: routes.audit, settings: runtime.settings, edition: teamRecord.edition, now: Date.now },
     process: routes,
     rovara: teamRecord.emitter,
     log,
@@ -137,8 +139,10 @@ export function installLessons(dependencies: AwsBrokerDependencies): void {
   setLessonsHomeReader(routes === undefined ? undefined : async (orgId, developerId, project) => {
     if ((await resolveLearning(routes.settings, orgId, project)).mode === "Off") return { waiting: 0 };
     const view = await buildLessonsView(routes, { orgId, developerId }, project);
-    if (!view.canDecide || view.waiting.length === 0) return { waiting: 0 };
-    return { waiting: view.waiting.length, at: new Date(Math.max(...view.waiting.map((lesson) => lesson.updatedAt))).toISOString() };
+    // Lane 1b: a person who decides here also hears why learning is paused (never silent).
+    const paused = view.canDecide ? view.paused : undefined;
+    if (!view.canDecide || view.waiting.length === 0) return { waiting: 0, ...(paused === undefined ? {} : { paused }) };
+    return { waiting: view.waiting.length, at: new Date(Math.max(...view.waiting.map((lesson) => lesson.updatedAt))).toISOString(), ...(paused === undefined ? {} : { paused }) };
   });
 }
 

@@ -3,9 +3,10 @@
 // has flushed it. These tests drive the model on a fake table, a fake proxy that reports spend late, and the real mint, ledger and sweep.
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
-  DEFAULT_AGENT_GUARDRAILS, FINALIZE_DELAY_MS, KEY_EXPIRY_GRACE_MS, ModelSourceSchema, agentGuardrailsKey, editionPolicy, modelKeyKey, modelCounter, originCounter, scopeKey, sourceAlias, sourceCounter, spendCounterKey,
+  DEFAULT_AGENT_GUARDRAILS, FINALIZE_DELAY_MS, KEY_EXPIRY_GRACE_MS, ModelSourceSchema, agentGuardrailsKey, editionPolicy, modelKeyKey, modelCounter, originCounter, scopeKey, sourceAlias, sourceCounter, spendCounterKey, spendOriginKind,
   type Edition, type ModelIdentifier, type ModelSource,
 } from "../../packages/contracts/src/index.js";
+import { listPricesPerMillion } from "@agentx/model-runtime/catalog";
 import { ModelSourceStore } from "../../packages/broker/src/model-sources/store.js";
 import type { RoutingDependencies } from "../../packages/broker/src/model-sources/routing.js";
 import { keyIdOf } from "../../packages/broker/src/org/budget.js";
@@ -15,7 +16,7 @@ import { FakeDynamoDb } from "../support/fake-dynamodb.js";
 import { fakeModelAccess } from "../support/fake-model-access.js";
 import { TEST_ORG } from "../support/orgs.js";
 import {
-  LEARNING_CALL_BUDGET_USD, LEARNING_MONTH_FULL, LEARNING_NO_BUDGET, LEARNING_NO_PROVIDER, LEARNING_TOO_DEAR, customerLearningModel,
+  LEARNING_CALL_BUDGET_USD, LEARNING_MONTH_FULL, LEARNING_NO_BUDGET, LEARNING_ALL_FORBIDDEN, LEARNING_NO_PROVIDER, LEARNING_TOO_DEAR, customerLearningModel, worstCaseTokens,
 } from "../../packages/broker/src/aws/broker/learning-model.js";
 import { LEARNING_COUNTER } from "../../packages/broker/src/aws/broker/learning-spend.js";
 import { ledgerOf } from "../../packages/broker/src/aws/broker/sweeps-and-readiness.js";
@@ -24,14 +25,18 @@ import type { AwsBrokerDependencies } from "../../packages/broker/src/aws/broker
 const SRC_ANTHROPIC = "src_aaaaaaaaaaaaaaaaaaaa";
 const SRC_CHATGPT = "personal-chatgpt";
 const SONNET = { provider: "anthropic", modelId: "claude-sonnet-4-6" };
+const HAIKU = { provider: "anthropic", modelId: "claude-haiku-4-5" };
+const UNPRICED = { provider: "anthropic", modelId: "acme-tuned-1" };
 const ALIAS = sourceAlias(TEST_ORG, SRC_ANTHROPIC, SONNET);
 const MONTH = new Date().toISOString().slice(0, 7);
-const anthropic = (): ModelSource => ModelSourceSchema.parse({ kind: "anthropic", sourceId: SRC_ANTHROPIC, label: "Anthropic", models: [{ catalog: SONNET }] });
+const anthropic = (models: ModelIdentifier[] = [SONNET]): ModelSource => ModelSourceSchema.parse({ kind: "anthropic", sourceId: SRC_ANTHROPIC, label: "Anthropic", models: models.map((catalog) => ({ catalog })) });
+// The hold is sized to the call: the chosen model's worst-case list price. The one model here is Sonnet ($3 in, $15 out per million tokens); the request below is 2 + 2 ASCII tokens, 256 tokens of framing and 1800 output tokens.
+const HOLD = (258 * 3 + 1800 * 15) / 1_000_000;
 const near = (value: number | undefined, expected: number) => expect(value ?? 0).toBeCloseTo(expected, 6);
 
 afterEach(() => { vi.restoreAllMocks(); });
 
-function install(options: { forbidden?: ModelIdentifier[]; edition?: Edition; withOp?: boolean; projectOrder?: string[]; monthlyCapUsd?: number; withAgents?: boolean } = {}) {
+function install(options: { forbidden?: ModelIdentifier[]; edition?: Edition; withOp?: boolean; projectOrder?: string[]; monthlyCapUsd?: number; withAgents?: boolean; unpriced?: boolean; models?: ModelIdentifier[]; lessonsModel?: ModelIdentifier } = {}) {
   const db = new FakeDynamoDb();
   // The company's forbidden models are read now from its guardrails document.
   if (options.forbidden !== undefined) db.set({ ...agentGuardrailsKey(TEST_ORG), guardrails: { ...DEFAULT_AGENT_GUARDRAILS, forbiddenModels: options.forbidden }, revision: 1 });
@@ -53,13 +58,13 @@ function install(options: { forbidden?: ModelIdentifier[]; edition?: Edition; wi
     documentClient: db, tableName: "state", cloud: true, ...(options.withAgents === false ? {} : { agents: {} }),
     modelAccess: { access, proxyUrl: "http://proxy" },
   } as unknown as AwsBrokerDependencies;
-  const model = customerLearningModel(dependencies, { routing: () => routing, edition: options.edition ?? "public", ...(options.monthlyCapUsd === undefined ? {} : { monthlyCapUsd: options.monthlyCapUsd }), log: () => undefined });
-  const request = { purpose: "reflect" as const, system: "sys", user: "usr", maxOutputTokens: 1800, workspaceId: TEST_ORG, project: "web", budgetUsd: 0.15 };
+  const model = customerLearningModel(dependencies, { routing: () => routing, edition: options.edition ?? "public", ...(options.lessonsModel === undefined ? {} : { lessonsModel: async () => options.lessonsModel }), ...(options.monthlyCapUsd === undefined ? {} : { monthlyCapUsd: options.monthlyCapUsd }), log: () => undefined });
+  const request = { purpose: "reflect" as const, system: "sys", user: "usr", maxOutputTokens: 1800, workspaceId: TEST_ORG, project: "web" };
   const counter = (sk: string) => db.get(spendCounterKey(TEST_ORG, MONTH, sk)) as { spentUsd?: number; committedUsd?: number } | undefined;
   const seedCounter = (sk: string, counts: { spentUsd?: number; committedUsd?: number }) => db.set({ ...spendCounterKey(TEST_ORG, MONTH, sk), entityType: "SPEND_COUNTER", ...counts });
   const limitProject = (limitUsd: number) => db.set({ pk: `ORG#${TEST_ORG}#PROJECT_AI#web`, sk: "SETTINGS", entityType: "PROJECT_AI", projectPays: false, monthlyBudgetUsd: limitUsd, revision: 1 });
   const ready = async () => {
-    await store.save({ orgId: TEST_ORG, source: anthropic(), mode: "create", by: "dev-owner" });
+    await store.save({ orgId: TEST_ORG, source: anthropic(options.unpriced === true ? [UNPRICED] : options.models ?? [SONNET]), mode: "create", by: "dev-owner" });
     await store.setOrder({ orgId: TEST_ORG, order: [SRC_ANTHROPIC], by: "dev-owner" });
   };
   /** The sweep, as it runs `ms` after now. */
@@ -80,7 +85,7 @@ describe("the learning model runs on the company's own provider", () => {
     expect(answer).toMatchObject({ text: "{\"candidates\":[]}", model: ALIAS });
     expect(t.proxy.mintKey).toHaveBeenCalledTimes(1);
     const minted = t.proxy.mintKey.mock.calls[0]![0];
-    expect(minted).toMatchObject({ orgId: TEST_ORG, models: [ALIAS], maxBudgetUsd: 0.15, ttlSeconds: 300 });
+    expect(minted).toMatchObject({ orgId: TEST_ORG, models: [ALIAS], maxBudgetUsd: HOLD, ttlSeconds: 300 });
     // The org alone: no member is named, and the tags say the source, the project that pays and where the spend came from.
     expect(minted).not.toHaveProperty("developerId");
     expect(minted.tags).toMatchObject({ agentId: "learning", project: "web", payerKind: "project", payerId: "web", source: SRC_ANTHROPIC, origin: "learning" });
@@ -94,25 +99,107 @@ describe("the learning model runs on the company's own provider", () => {
     // The proxy has not recorded anything yet (a fake that reports spend late): a read now would say 0.
     const answer = await t.model.complete(t.request);
     expect(t.proxy.keySpend).not.toHaveBeenCalledWith([t.keyIds()[0]]);
-    expect(answer.costUsd).toBe(0.15);
+    near(answer.costUsd, HOLD);
+  });
+});
+
+describe("the model is the company's CHEAPEST suitable one, not its main assistant model (R8)", () => {
+  const aliasOf = (model: ModelIdentifier) => sourceAlias(TEST_ORG, SRC_ANTHROPIC, model);
+  const priceOf = (model: ModelIdentifier, tokens: number) => { const price = listPricesPerMillion(model)!; return (tokens * price.input + 1800 * price.output) / 1_000_000; };
+
+  it("picks the lowest list price among the company's models whatever their order, and holds that model's price", async () => {
+    const t = install({ models: [SONNET, HAIKU] });
+    await t.ready();
+    await t.model.complete(t.request);
+    expect(t.calls[0]).toMatchObject({ model: aliasOf(HAIKU) });
+    near(t.record(t.keyIds()[0]!)?.capUsd, priceOf(HAIKU, 258));
+  });
+
+  it("a model with no list price comes after every priced one, and is used when it is the only one", async () => {
+    const mixed = install({ models: [UNPRICED, SONNET] });
+    await mixed.ready();
+    await mixed.model.complete(mixed.request);
+    expect(mixed.calls[0]).toMatchObject({ model: aliasOf(SONNET) });
+    const alone = install({ unpriced: true });
+    await alone.ready();
+    await alone.model.complete(alone.request);
+    expect(alone.calls[0]).toMatchObject({ model: aliasOf(UNPRICED) });
+  });
+
+  it("a forbidden model is never chosen: the next cheapest is used, and when every model is forbidden the refusal says so", async () => {
+    const t = install({ models: [SONNET, HAIKU], forbidden: [HAIKU] });
+    await t.ready();
+    await t.model.complete(t.request);
+    expect(t.calls[0]).toMatchObject({ model: aliasOf(SONNET) });
+    const none = install({ models: [SONNET, HAIKU], forbidden: [HAIKU, SONNET] });
+    await none.ready();
+    await expect(none.model.complete(none.request)).rejects.toMatchObject({ code: "all_models_forbidden", message: LEARNING_ALL_FORBIDDEN });
+    expect(none.proxy.mintKey).not.toHaveBeenCalled();
+  });
+
+  it("the company's lessons model wins over the cheapest while it is served and allowed; once it is forbidden the cheapest is used again", async () => {
+    const set = install({ models: [SONNET, HAIKU], lessonsModel: SONNET });
+    await set.ready();
+    await set.model.complete(set.request);
+    expect(set.calls[0]).toMatchObject({ model: aliasOf(SONNET) });
+    const forbidden = install({ models: [SONNET, HAIKU], lessonsModel: SONNET, forbidden: [SONNET] });
+    await forbidden.ready();
+    await forbidden.model.complete(forbidden.request);
+    expect(forbidden.calls[0]).toMatchObject({ model: aliasOf(HAIKU) });
+    // A setting for a model no company source serves is ignored too.
+    const unserved = install({ models: [HAIKU], lessonsModel: SONNET });
+    await unserved.ready();
+    await unserved.model.complete(unserved.request);
+    expect(unserved.calls[0]).toMatchObject({ model: aliasOf(HAIKU) });
+  });
+
+  it("a model whose output limit is below what the call asks for is not suitable; with none left the refusal says so", async () => {
+    const t = install({ models: [HAIKU] });
+    await t.ready();
+    await expect(t.model.complete({ ...t.request, maxOutputTokens: 200_000 })).rejects.toMatchObject({ code: "no_suitable_model" });
+  });
+
+  it("quote() answers the hold, or the fixed code of why learning cannot run, and makes no key and no call", async () => {
+    const t = install({ models: [HAIKU, SONNET] });
+    await t.ready();
+    const quoted = await t.model.quote!(t.request);
+    expect(quoted.ok).toBe(true);
+    near(quoted.ok ? quoted.usd : 0, priceOf(HAIKU, 258));
+    expect(t.proxy.mintKey).not.toHaveBeenCalled();
+    t.limitProject(1);
+    t.seedCounter("PROJECT#web", { spentUsd: 0.999, committedUsd: 0.999 });
+    expect(await t.model.quote!(t.request)).toEqual({ ok: false, code: "no_budget" });
+    const none = install({ projectOrder: [] });
+    await none.ready();
+    expect(await none.model.quote!(none.request)).toEqual({ ok: false, code: "no_provider" });
+  });
+
+  it("the usage is the company's: learning spend reads as automatic, never as a person's (R9)", async () => {
+    expect(spendOriginKind("learning")).toBe("autonomous");
+    expect(spendOriginKind("app")).toBe("person");
   });
 });
 
 describe("the money: reserved before the call, blocked after it, settled when the proxy has flushed (C1, H2, M1)", () => {
-  it("holds the key's cap on the org, the project and the learning month in one reservation, never above the amount the caller asked about", async () => {
+  it("holds the key's cap on the org, the project and the learning month in one reservation, sized to the call and never above a ceiling the caller names", async () => {
     const t = install();
     await t.ready();
     await t.model.complete({ ...t.request, budgetUsd: 0.12 });
     const [keyId] = t.keyIds();
-    expect(t.record(keyId!)).toMatchObject({ capUsd: 0.12, reserved: true, finalized: false, tags: { origin: "learning", source: SRC_ANTHROPIC } });
-    for (const sk of ["ORG", "PROJECT#web", LEARNING_COUNTER]) near(t.counter(sk)?.committedUsd, 0.12);
-    // No budget named: the default call budget.
-    const t2 = install();
-    await t2.ready();
-    const { budgetUsd: _omitted, ...bare } = t2.request;
+    expect(t.record(keyId!)).toMatchObject({ reserved: true, finalized: false, tags: { origin: "learning", source: SRC_ANTHROPIC } });
+    near(t.record(keyId!)?.capUsd, HOLD);
+    for (const sk of ["ORG", "PROJECT#web", LEARNING_COUNTER]) near(t.counter(sk)?.committedUsd, HOLD);
+  });
+
+  it("a model with no list price holds the caller's budget, else the default call budget", async () => {
+    const t = install({ unpriced: true });
+    await t.ready();
+    await t.model.complete({ ...t.request, budgetUsd: 0.12 });
+    expect(t.record(t.keyIds()[0]!)?.capUsd).toBe(0.12);
+    const { budgetUsd: _omitted, ...bare } = { ...t.request, budgetUsd: 0 };
     void _omitted;
-    await t2.model.complete(bare);
-    expect(t2.record(t2.keyIds()[0]!)?.capUsd).toBe(LEARNING_CALL_BUDGET_USD);
+    await t.model.complete(bare);
+    expect(t.record(t.keyIds()[1]!)?.capUsd).toBe(LEARNING_CALL_BUDGET_USD);
   });
 
   it("after the call the key is BLOCKED (not deleted) and given a finalize clock; nothing is charged yet", async () => {
@@ -133,11 +220,11 @@ describe("the money: reserved before the call, blocked after it, settled when th
     await t.model.complete(t.request);
     // Right after the call the proxy says 0 (its batch write has not happened): a sweep now sees nothing, and the whole cap stays held on every counter.
     await t.sweepLater(1_000);
-    for (const sk of ["ORG", "PROJECT#web", LEARNING_COUNTER]) { near(t.counter(sk)?.committedUsd, 0.15); near(t.counter(sk)?.spentUsd, 0); }
+    for (const sk of ["ORG", "PROJECT#web", LEARNING_COUNTER]) { near(t.counter(sk)?.committedUsd, HOLD); near(t.counter(sk)?.spentUsd, 0); }
     // The proxy flushes. The sweep after FINALIZE_DELAY_MS settles the real figure and releases what was not spent.
     t.proxy.setKeySpent(t.proxy.mintedKeys()[0]!, 0.07);
     await t.sweepLater(FINALIZE_DELAY_MS + 1_000);
-    const scopes = ["ORG", "PROJECT#web", LEARNING_COUNTER, sourceCounter(SRC_ANTHROPIC), modelCounter(ALIAS), originCounter("learning", "person")];
+    const scopes = ["ORG", "PROJECT#web", LEARNING_COUNTER, sourceCounter(SRC_ANTHROPIC), modelCounter(ALIAS), originCounter("learning", "autonomous")];
     for (const sk of scopes) near(t.counter(sk)?.spentUsd, 0.07);
     for (const sk of ["ORG", "PROJECT#web", LEARNING_COUNTER]) near(t.counter(sk)?.committedUsd, 0.07);
     expect(t.record(t.keyIds()[0]!)?.finalized).toBe(true);
@@ -150,7 +237,7 @@ describe("the money: reserved before the call, blocked after it, settled when th
     await expect(t.model.complete(t.request)).rejects.toThrow();
     const [keyId] = t.keyIds();
     expect(t.proxy.blockKey).toHaveBeenCalledWith(keyId);
-    for (const sk of ["ORG", "PROJECT#web", LEARNING_COUNTER]) near(t.counter(sk)?.committedUsd, 0.15);
+    for (const sk of ["ORG", "PROJECT#web", LEARNING_COUNTER]) near(t.counter(sk)?.committedUsd, HOLD);
     t.proxy.setKeySpent(t.proxy.mintedKeys()[0]!, 0.09);
     await t.sweepLater(FINALIZE_DELAY_MS + 1_000);
     for (const sk of ["ORG", "PROJECT#web", LEARNING_COUNTER]) { near(t.counter(sk)?.spentUsd, 0.09); near(t.counter(sk)?.committedUsd, 0.09); }
@@ -162,23 +249,54 @@ describe("the money: reserved before the call, blocked after it, settled when th
     t.proxy.blockKey.mockRejectedValue(new Error("proxy down"));
     await t.model.complete(t.request);
     expect(t.record(t.keyIds()[0]!)?.finalizeAfter).toBeUndefined();
-    near(t.counter(LEARNING_COUNTER)?.committedUsd, 0.15);
+    near(t.counter(LEARNING_COUNTER)?.committedUsd, HOLD);
     // Not yet expired: the hold stays. Past the key's expiry and the grace: released.
     await t.sweepLater(60_000);
-    near(t.counter(LEARNING_COUNTER)?.committedUsd, 0.15);
+    near(t.counter(LEARNING_COUNTER)?.committedUsd, HOLD);
     t.proxy.blockKey.mockResolvedValue(undefined);
     await t.sweepLater(300_000 + KEY_EXPIRY_GRACE_MS + 60_000);
     near(t.counter(LEARNING_COUNTER)?.committedUsd, 0);
     expect(t.record(t.keyIds()[0]!)?.finalized).toBe(true);
   });
 
-  it("the worst-case price of one call on a model with a list price must fit what the key holds; a call that could pass it is refused before any key is made", async () => {
+  it("a longer prompt holds more, and a ceiling the caller names refuses a call whose worst case passes it before any key is made", async () => {
     const t = install();
     await t.ready();
     await expect(t.model.complete({ ...t.request, user: "x".repeat(40_000), budgetUsd: 0.05 })).rejects.toThrow(LEARNING_TOO_DEAR);
     expect(t.proxy.mintKey).not.toHaveBeenCalled();
-    // The same prompt is fine when the key holds enough for it.
-    await expect(t.model.complete({ ...t.request, user: "x".repeat(40_000), budgetUsd: 0.2 })).resolves.toBeDefined();
+    await t.model.complete({ ...t.request, user: "x".repeat(40_000) });
+    near(t.record(t.keyIds()[0]!)?.capUsd, ((Math.ceil(40_000 / 3) + 1 + 256) * 3 + 1800 * 15) / 1_000_000);
+  });
+
+  it("R7: non-Latin text is counted a token per byte, so a CJK prompt is not under-held by the old three-characters-a-token guess", async () => {
+    const t = install();
+    await t.ready();
+    const cjk = "漢".repeat(3_000);
+    await t.model.complete({ ...t.request, user: cjk });
+    // 3000 characters of 3 bytes: 9000 tokens at the bound (the old guess said 1000), plus the framing and the system text.
+    const inputTokens = 9_000 + 1 + 256;
+    near(t.record(t.keyIds()[0]!)?.capUsd, (inputTokens * 3 + 1800 * 15) / 1_000_000);
+    expect(worstCaseTokens("abc")).toBe(1);
+    expect(worstCaseTokens("é")).toBe(2);
+  });
+
+  it("R3: a key capped below the hold (a concurrent mint took the room after the look) is blocked and refused, and no call is made", async () => {
+    const t = install();
+    await t.ready();
+    t.limitProject(1);
+    // The company's figures are read once for the look (admitWork) and once more when the cap is planned: between the two, another mint takes the project's room.
+    const base = t.proxy.orgSpend.getMockImplementation()!;
+    let reads = 0;
+    t.proxy.orgSpend.mockImplementation(async (...args) => {
+      const figures = await base(...args);
+      reads += 1;
+      if (reads === 1) t.seedCounter("PROJECT#web", { spentUsd: 0.99, committedUsd: 0.99 });
+      return figures;
+    });
+    await expect(t.model.complete(t.request)).rejects.toMatchObject({ code: "no_budget" });
+    expect(reads).toBeGreaterThanOrEqual(2);
+    expect(t.learningCompletion).not.toHaveBeenCalled();
+    expect(t.proxy.blockKey).toHaveBeenCalled();
   });
 });
 
@@ -187,13 +305,13 @@ describe("the company's budgets bind learning, project budgets included (H1)", (
     const t = install();
     await t.ready();
     t.limitProject(1);
-    t.seedCounter("PROJECT#web", { spentUsd: 0.9, committedUsd: 0.9 });
-    await expect(t.model.complete(t.request)).rejects.toThrow();
+    t.seedCounter("PROJECT#web", { spentUsd: 0.99, committedUsd: 0.99 });
+    await expect(t.model.complete(t.request)).rejects.toMatchObject({ code: "no_budget" });
     expect(t.proxy.mintKey).not.toHaveBeenCalled();
     expect(t.learningCompletion).not.toHaveBeenCalled();
     t.seedCounter("PROJECT#web", { spentUsd: 0.5, committedUsd: 0.5 });
     await t.model.complete(t.request);
-    near(t.counter("PROJECT#web")?.committedUsd, 0.65);
+    near(t.counter("PROJECT#web")?.committedUsd, 0.5 + HOLD);
   });
 
   it("an Enterprise project budget binds the same way, and Enterprise keeps no learning cap of its own", async () => {
@@ -202,9 +320,9 @@ describe("the company's budgets bind learning, project budgets included (H1)", (
     // Far past what Public would allow in a month.
     t.seedCounter(LEARNING_COUNTER, { spentUsd: 500, committedUsd: 500 });
     await t.model.complete(t.request);
-    near(t.counter(LEARNING_COUNTER)?.committedUsd, 500.15);
+    near(t.counter(LEARNING_COUNTER)?.committedUsd, 500 + HOLD);
     t.limitProject(1);
-    t.seedCounter("PROJECT#web", { spentUsd: 0.95, committedUsd: 0.95 });
+    t.seedCounter("PROJECT#web", { spentUsd: 0.99, committedUsd: 0.99 });
     await expect(t.model.complete(t.request)).rejects.toThrow();
     expect(t.proxy.mintKey).toHaveBeenCalledTimes(1);
   });
@@ -213,8 +331,8 @@ describe("the company's budgets bind learning, project budgets included (H1)", (
     const t = install();
     await t.ready();
     t.limitProject(1);
-    t.seedCounter("PROJECT#web", { spentUsd: 0.9, committedUsd: 0.9 });
-    await expect(t.model.complete({ ...t.request, budgetUsd: 0.2 })).rejects.toThrow(LEARNING_NO_BUDGET);
+    t.seedCounter("PROJECT#web", { spentUsd: 0.99, committedUsd: 0.99 });
+    await expect(t.model.complete(t.request)).rejects.toThrow(LEARNING_NO_BUDGET);
   });
 
   it("a budget refusal from the company's own limits stops the call before any key is made", async () => {
@@ -231,30 +349,31 @@ describe("Public: the $20 learning month is held atomically with the key (M2, L1
   it("refuses a call that does not fit the month, with nothing held and no key left behind", async () => {
     const t = install();
     await t.ready();
-    t.seedCounter(LEARNING_COUNTER, { spentUsd: 19.9, committedUsd: 19.9 });
-    await expect(t.model.complete(t.request)).rejects.toThrow(LEARNING_MONTH_FULL);
+    t.seedCounter(LEARNING_COUNTER, { spentUsd: 19.99, committedUsd: 19.99 });
+    await expect(t.model.complete(t.request)).rejects.toMatchObject({ message: LEARNING_MONTH_FULL, code: "monthly_limit" });
     expect(t.learningCompletion).not.toHaveBeenCalled();
     // The org and project counters were in the same transaction: nothing moved, and the key that was made was given back.
     expect(t.counter("ORG")?.committedUsd ?? 0).toBe(0);
-    near(t.counter(LEARNING_COUNTER)?.committedUsd, 19.9);
+    near(t.counter(LEARNING_COUNTER)?.committedUsd, 19.99);
     expect(t.proxy.revokeKey).toHaveBeenCalled();
   });
 
   it("concurrent calls cannot take the month past its cap, whatever order they finish in (this proves the transaction's condition on a fake table, not DynamoDB's own atomicity)", async () => {
-    const t = install({ monthlyCapUsd: 0.5 });
+    const t = install({ monthlyCapUsd: 0.1 });
     await t.ready();
-    const results = await Promise.allSettled(Array.from({ length: 6 }, () => t.model.complete({ ...t.request, budgetUsd: 0.15 })));
+    const results = await Promise.allSettled(Array.from({ length: 6 }, () => t.model.complete(t.request)));
     expect(results.filter((result) => result.status === "fulfilled")).toHaveLength(3);
     expect(results.filter((result) => result.status === "rejected")).toHaveLength(3);
-    near(t.counter(LEARNING_COUNTER)?.committedUsd, 0.45);
+    near(t.counter(LEARNING_COUNTER)?.committedUsd, 3 * HOLD);
   });
 
   it("holds of calls with different amounts settle on their own keys: each key releases exactly its own unspent cap", async () => {
     const t = install();
     await t.ready();
-    await t.model.complete({ ...t.request, purpose: "reflect", budgetUsd: 0.15 });
-    await t.model.complete({ ...t.request, purpose: "judge", budgetUsd: 0.01, maxOutputTokens: 120 });
-    near(t.counter(LEARNING_COUNTER)?.committedUsd, 0.16);
+    await t.model.complete({ ...t.request, purpose: "reflect" });
+    await t.model.complete({ ...t.request, purpose: "judge", maxOutputTokens: 120 });
+    const judgeHold = (258 * 3 + 120 * 15) / 1_000_000;
+    near(t.counter(LEARNING_COUNTER)?.committedUsd, HOLD + judgeHold);
     // The small call finishes and settles first, then the big one: neither borrows the other's hold.
     t.proxy.setKeySpent(t.proxy.mintedKeys()[1]!, 0.004);
     t.proxy.setKeySpent(t.proxy.mintedKeys()[0]!, 0.1);

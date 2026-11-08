@@ -196,6 +196,7 @@ import { verifyResultsEnabled } from "../verification/switch.js";
 import { DESIGN_REVIEW_COMPANY_BROWSER_MESSAGE, DESIGN_REVIEW_COMPANY_PATH, routeDesignReviewCompany } from "./developer-routes/design-review-company.js";
 import { KNOWN_FAILING_POLICY_BROWSER_MESSAGE, KNOWN_FAILING_POLICY_PATH, routeKnownFailingPolicy } from "./developer-routes/known-failing-policy.js";
 import { SECOND_REVIEW_ACK_BROWSER_MESSAGE, acknowledgeSecondReview } from "./developer-tasks/second-review-ack.js";
+import { routeLearningModel } from "./developer-routes/learning-model.js";
 import { SECOND_REVIEW_BROWSER_MESSAGE, SECOND_REVIEW_PATH, routeSecondReview } from "./developer-routes/second-review.js";
 import { routeTrackerPeople } from "./developer-routes/tracker-people.js";
 import { routeJiraOrgAdmin } from "./developer-routes/jira-org-admin.js";
@@ -604,6 +605,8 @@ export async function routeDeveloperRequest(deps: DeveloperRouteDependencies, re
   if (findingsReply !== undefined) return findingsReply;
   const secondReviewReply = await routeSecondReview(deps, caller, request, url);
   if (secondReviewReply !== undefined) return secondReviewReply;
+  const learningModelReply = await routeLearningModel(deps, caller, request, url);
+  if (learningModelReply !== undefined) return learningModelReply;
   const trackerPeopleReply = await routeTrackerPeople(deps, caller, request, url);
   if (trackerPeopleReply !== undefined) return trackerPeopleReply;
   const jiraOrgAdminReply = await routeJiraOrgAdmin(deps, caller, request, url);

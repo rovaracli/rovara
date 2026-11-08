@@ -21,6 +21,7 @@ import { createApproverDirectory } from "./directory.js";
 import { dynamoLearningSettings, DynamoTier0Settings } from "./dynamo-settings.js";
 import { DynamoLessonStore } from "./dynamo-store.js";
 import type { LoadDeps } from "./load.js";
+import type { LessonsPauseStore } from "./pause.js";
 import type { ApproverDirectory, CorrectionJudge, Embedder, LearningSpend, LessonVectors, PipelineModel } from "./ports.js";
 import type { ProcessDeps } from "./process.js";
 import type { LearningSettingsReader } from "./policy.js";
@@ -47,6 +48,8 @@ export interface LessonsRuntimeInput {
    */
   model?: PipelineModel;
   spend?: LearningSpend;
+  /** Where "lessons paused" is recorded and read (lane 1b). Absent: learning never records why it stopped, and the tab and Home say nothing about it. */
+  pause?: LessonsPauseStore;
   /** The one seam for lesson similarity (`lessonSimilarityFor`): the embedder and the lesson vectors. Absent: none (the loader ranks by scope, helpfulness and recency; curate finds no neighbours). */
   similarity?: { embedder: Embedder; vectors: LessonVectors };
 }
@@ -92,7 +95,7 @@ export function createLessonsRuntime(input: LessonsRuntimeInput): LessonsRuntime
   const counters: CounterDeps = { ...base, store, judge: REFUSING_JUDGE, settings };
   const routes: LessonRouteDeps = {
     ...base, store, directory, settings, access, names: input.names, sources: { table: input.table },
-    embedder: similarity.embedder, vectors: similarity.vectors, judgeModel: input.model ?? REFUSING_MODEL, spend: input.spend ?? DENYING_SPEND, verifier, facts, judge: REFUSING_JUDGE,
+    embedder: similarity.embedder, vectors: similarity.vectors, judgeModel: input.model ?? REFUSING_MODEL, spend: input.spend ?? DENYING_SPEND, ...(input.pause === undefined ? {} : { pause: input.pause }), verifier, facts, judge: REFUSING_JUDGE,
   };
   return { store, settings, access, directory, load, counters, routes };
 }

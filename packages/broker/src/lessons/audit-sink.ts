@@ -12,6 +12,8 @@ type Mapped = { action: AuditEventInput["action"]; facts: (event: LessonAuditEve
 const num = (value: unknown): number => (typeof value === "number" && Number.isFinite(value) ? value : 0);
 const word = (value: unknown, fallback: string): string => (typeof value === "string" && /^[a-z_]{1,40}$/u.test(value) ? value : fallback);
 
+const modelWord = (value: unknown): string => (typeof value === "string" && /^[A-Za-z0-9:_\-.#@/]{1,128}$/u.test(value) ? value : "default");
+
 const MAP: Partial<Record<LessonAuditEvent["action"], Mapped>> = {
   "lesson.candidate_created": { action: "lesson.proposed", facts: (e) => ({ lessonType: word(e.facts["type"], "unknown"), tier: 1 }) },
   "lesson.pending": { action: "lesson.proposed", facts: (e) => ({ lessonType: "unknown", tier: num(e.facts["tier"]) }) },
@@ -38,6 +40,8 @@ const MAP: Partial<Record<LessonAuditEvent["action"], Mapped>> = {
   "lesson.tier0_setting_refused_retryable": { action: "lesson.refused", facts: () => ({ refusal: "membership_changed_retry" }) },
   "lesson.sole_owner_switch_proposed": { action: "lesson.sole_owner_switch_proposed", facts: (e) => ({ fromEnabled: e.facts["from"] === true, toEnabled: e.facts["to"] === true }) },
   "lesson.sole_owner_switch_changed": { action: "lesson.sole_owner_switch_changed", facts: (e) => ({ fromEnabled: e.facts["from"] === true, toEnabled: e.facts["to"] === true, mode: word(e.facts["mode"], "second_person") }) },
+  // The company's choice of the model its lesson learning runs on (or back to the default). Model names are `provider/modelId`, which the safe-fact filter already allows.
+  "lesson.model_set": { action: "lesson.model_set", facts: (e) => ({ fromModel: modelWord(e.facts["from"]), toModel: modelWord(e.facts["to"]) }) },
 };
 
 /** Actions with no ledger name on purpose: bookkeeping that grants nothing. Under `emitAudit` they are skipped; under `requireAudit` they would fail, so a grant never uses one. */

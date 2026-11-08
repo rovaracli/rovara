@@ -58,6 +58,24 @@ describe("loading and failing", () => {
  });
 });
 
+describe("lessons paused (lane 1b: never silent)", () => {
+ it("says in one line why learning cannot run, in the server's fixed words, and says nothing when nothing is wrong", async () => {
+  const quiet = await openLessons();
+  expect(screen.queryByTestId("lessons-paused")).toBeNull();
+  quiet.unmount();
+  await openLessons({ state: { view: view({ paused: { code: "monthly_limit", at: NOW } }) } });
+  expect(screen.getByTestId("lessons-paused").textContent).toBe("Lessons paused: monthly learning limit reached");
+ });
+ it("reads a reason this build does not know as a plain 'Lessons paused', never as raw text", async () => {
+  await openLessons({ state: { view: { ...view(), paused: { code: "something_new", at: NOW } } } });
+  expect(screen.getByTestId("lessons-paused").textContent).toBe("Lessons paused");
+ });
+ it("says nothing about it while learning is off (the tab already says it is off)", async () => {
+  await openLessons({ state: { view: view({ mode: "Off", waiting: [], active: [], paused: { code: "no_provider", at: NOW } }) } });
+  expect(screen.queryByTestId("lessons-paused")).toBeNull();
+ });
+});
+
 describe("learning mode", () => {
  it("says learning is off", async () => {
   await openLessons({ state: { view: view({ mode: "Off", waiting: [], active: [] }) } });

@@ -11,6 +11,7 @@ import { buildWeeklyDigest } from "./digest.js";
 import { lessonPanelRows } from "./panel.js";
 import { readVisible, type LessonLog } from "./read-visible.js";
 import type { ApproverDirectory } from "./ports.js";
+import type { LessonsPauseStore } from "./pause.js";
 import type { LessonStore, ScopeKey } from "./store.js";
 import { ERASED_MARK, idIn, normId, normSource, sameId, type IdentitySet, type Lesson } from "./types.js";
 import { lessonValue } from "./value.js";
@@ -23,6 +24,8 @@ export interface LessonViewDeps {
   log?: LessonLog;
   /** The Team record table, for the Sources tab. Absent: the sources route answers "not set up". */
   sources?: { table: TeamRecordTable };
+  /** Why learning cannot run for the project right now (lessons in production, lane 1b). Absent: the tab says nothing about it. */
+  pause?: LessonsPauseStore;
 }
 export interface LessonCaller { orgId: OrgId; developerId: string }
 
@@ -145,6 +148,7 @@ export async function buildLessonsView(deps: LessonViewDeps, caller: LessonCalle
   // The lock is "the reason" only when it made the mode stricter than the project's own choice.
   const lockedByCompany = lock.success && own.success && stricterMode(own.data, lock.data) !== own.data;
 
+  const paused = resolved.mode === "Off" ? undefined : await deps.pause?.read(key.workspaceId, key.project).catch(() => undefined);
   const all = await deps.store.list(key);
   const shown = await readVisible({ access: deps.access, key, viewer: state.viewer, lessons: all, where: "view", log: deps.log });
   const byValue = (a: Lesson, b: Lesson): number => lessonValue(b) - lessonValue(a) || b.createdAt - a.createdAt || a.id.localeCompare(b.id);
@@ -171,6 +175,7 @@ export async function buildLessonsView(deps: LessonViewDeps, caller: LessonCalle
     queued: state.canDecide ? shown.filter((l) => l.status === "candidate").length : 0,
     hidden: state.canDecide ? all.filter((l) => l.status !== "candidate").length - shown.filter((l) => l.status !== "candidate").length : 0,
     truncated, setVersion, snapshots,
+    ...(paused === undefined ? {} : { paused: { code: paused.code, at: paused.at } }),
   };
 }
 

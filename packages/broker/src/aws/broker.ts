@@ -324,7 +324,7 @@ import { awsCloudWatchAccess } from "./cloudwatch-connector-type.js";
 import { mcpEndpointGuard } from "../connections/pinned-endpoint.js";
 import { HookSecretStore, type OrgConnectionDeps } from "../connections/store.js";
 import { chatGptHostId } from "../chatgpt/oauth.js";
-import { ModelAccessInvoker } from "../model-proxy/invoker.js";
+import { ModelAccessInvoker, singleAttemptLambda } from "../model-proxy/invoker.js";
 import { createChainScheduler, createDeadLetters, scheduleSettingsFromEnvironment } from "../triggers/schedules.js";
 import { SchedulerClient } from "@aws-sdk/client-scheduler";
 import { channelByNameThroughLambda, channelInfoThroughLambda, channelMembersThroughLambda, developerKeysThroughLambda, endDeveloperSessionsThroughLambda, startIdentityLinkThroughLambda, unlinkIdentityThroughLambda, realtimeTokenThroughLambda, slackAuthCheckThroughLambda, slackUserByEmailThroughLambda, taskChannelPeopleThroughLambda, taskPeopleDisplayReadThroughLambda, taskPersonProofThroughLambda, type DeveloperApiConfiguration } from "./developer-routes.js";
@@ -489,7 +489,7 @@ const modelAccessFunctionName = process.env.MODEL_ACCESS_FUNCTION_NAME;
 const modelProxyUrl = process.env.MODEL_PROXY_URL;
 const modelAccess = modelAccessFunctionName === undefined || modelAccessFunctionName === "" || modelProxyUrl === undefined || modelProxyUrl === ""
   ? undefined
-  : { access: new ModelAccessInvoker({ functionName: modelAccessFunctionName, lambda: lambdaClient }), proxyUrl: modelProxyUrl };
+  : { access: new ModelAccessInvoker({ functionName: modelAccessFunctionName, lambda: lambdaClient, learningLambda: singleAttemptLambda(awsClientConfiguration) }), proxyUrl: modelProxyUrl };
 // Owner decision 2026-11-03: which of Rovara's catalog models this account cannot call (not enabled in Amazon Bedrock). Learned from a probe of the account's model availability (the broker role's one
 // `bedrock:GetFoundationModelAvailability` grant, at most once every ten minutes) and from refused calls. Only where the install runs the model proxy; nothing here refuses a model somebody chose.
 const usableModels = (() => {

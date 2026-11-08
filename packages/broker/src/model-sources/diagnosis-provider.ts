@@ -7,7 +7,7 @@
 // A person's ChatGPT plan is never used: a diagnosis turn has no person's plan behind it and a route without an alias cannot carry a key.
 // With no such source the answer is "none", and the diagnosis is not offered (`DIAGNOSIS_NO_PROVIDER_MESSAGE`). Nothing here falls back to anything else.
 import { canonicalModelName, type ModelIdentifier, type OrgId } from "@agentx/contracts";
-import { listPricesPerMillion } from "@agentx/model-runtime/catalog";
+import { catalogModel, listPricesPerMillion } from "@agentx/model-runtime/catalog";
 import { effectiveSources, servableModels, servingRoutes, type ModelRoute, type RoutingDependencies } from "./routing.js";
 
 const billedToCompany = (id: string): boolean => id !== "personal-chatgpt";
@@ -57,4 +57,62 @@ export async function chooseDiagnosisRoute(
     if (route?.alias !== undefined) return { model, route: { ...route, alias: route.alias } };
   }
   return undefined;
+}
+
+// ---- Learning (lessons in production, lane 1b): the company's CHEAPEST suitable company-billed model, not its assistant model.
+
+/** Why learning has no model: no company-billed source serves anything, every served model is forbidden, or none of the allowed ones can take a call of this size. */
+export type LearningRouteNone = "no_provider" | "all_models_forbidden" | "no_suitable_model";
+/** The size of the call being priced: the most input tokens it can hold and the most output tokens it may ask for. */
+export interface LearningCallShape { inputTokens: number; maxOutputTokens: number }
+/** Ids that are plainly not chat models. The installed catalogs hold chat models only; a company's own endpoint can name anything, so its names are checked. */
+const NOT_CHAT = /embed|rerank|moderation|whisper|transcri|tts|speech|dall-?e|image-gen|realtime|audio/iu;
+
+/** What one call of this shape costs at most on a model with a list price, in USD; undefined for a model with no list price (a company's own source). */
+export function learningWorstCaseUsd(model: ModelIdentifier, shape: LearningCallShape): number | undefined {
+  const price = listPricesPerMillion(model);
+  return price === undefined ? undefined : (shape.inputTokens * price.input + shape.maxOutputTokens * price.output) / 1_000_000;
+}
+
+/** A chat model that takes text and can answer a call of this size with JSON (any chat model can; the catalog's limits are checked where it knows the model). */
+function suitableForLearning(model: ModelIdentifier, shape: LearningCallShape): boolean {
+  if (NOT_CHAT.test(model.modelId)) return false;
+  const known = catalogModel(model);
+  if (known === undefined) return true;
+  if (known.type !== undefined && known.type !== "chat") return false;
+  if (Array.isArray(known.input) && !known.input.includes("text")) return false;
+  return known.maxTokens >= shape.maxOutputTokens && known.contextWindow >= shape.inputTokens + shape.maxOutputTokens;
+}
+
+/**
+ * The model and route learning (the reflector, the curator's judge) runs on: the company's own CHEAPEST suitable model among the company-billed sources the project walks (its own sources and Rovara's metered
+ * built-in AI; never a person's ChatGPT plan), by the call's own worst-case list price. A model with no list price comes after every priced one, in the order the sources are walked. A model the company forbids is
+ * never chosen. `preferred` is the company's "lessons model" setting: it wins when it is still served, allowed and suitable, and is ignored (the cheapest is used) when it is not.
+ */
+export async function chooseLearningRoute(
+  deps: RoutingDependencies, orgId: OrgId, project: string, forbidden: (model: ModelIdentifier) => boolean, shape: LearningCallShape, preferred?: ModelIdentifier,
+): Promise<{ model: ModelIdentifier; route: ModelRoute & { alias: string } } | { none: LearningRouteNone }> {
+  const own = customerProviderRouting(deps);
+  if (own === undefined) return { none: "no_provider" };
+  const effective = await effectiveSources(own, orgId, project);
+  if (effective === undefined || effective.order.length === 0) return { none: "no_provider" };
+  const served = await servableModels(own, orgId, project);
+  if (served.length === 0) return { none: "no_provider" };
+  const allowed = served.filter((model) => !forbidden(model));
+  if (allowed.length === 0) return { none: "all_models_forbidden" };
+  const suitable = allowed.filter((model) => suitableForLearning(model, shape));
+  if (suitable.length === 0) return { none: "no_suitable_model" };
+  const cost = (model: ModelIdentifier): number => learningWorstCaseUsd(model, shape) ?? Number.POSITIVE_INFINITY;
+  const walked = new Map(suitable.map((model, index) => [canonicalModelName(model), index] as const));
+  const ranked = [...suitable].sort((left, right) => cost(left) - cost(right) || (walked.get(canonicalModelName(left)) ?? 0) - (walked.get(canonicalModelName(right)) ?? 0) || canonicalModelName(left).localeCompare(canonicalModelName(right)));
+  const wanted = preferred === undefined ? undefined : suitable.find((model) => canonicalModelName(model) === canonicalModelName(preferred));
+  const seen = new Set<string>();
+  for (const model of [...(wanted === undefined ? [] : [wanted]), ...ranked]) {
+    const name = canonicalModelName(model);
+    if (seen.has(name)) continue;
+    seen.add(name);
+    const route = (await servingRoutes(own, { orgId, project, model })).find((served) => served.alias !== undefined);
+    if (route?.alias !== undefined) return { model, route: { ...route, alias: route.alias } };
+  }
+  return { none: "no_provider" };
 }
