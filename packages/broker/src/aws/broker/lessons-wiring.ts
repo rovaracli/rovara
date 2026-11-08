@@ -32,9 +32,9 @@ import { customerLearningModel } from "./learning-model.js";
 import { readLessonsModel } from "../../lessons/model-setting.js";
 import { dynamoPauseStore, spendLook } from "../../lessons/pause.js";
 import { companyLearningSpend } from "./learning-spend.js";
-import { lessonSubjectSource, type ThreadNoteAuthor } from "./lesson-subject-source.js";
+import { MAX_THREAD_REPLIES, lessonSubjectSource } from "./lesson-subject-source.js";
 import { lessonSlackAuthor } from "./lesson-slack-author.js";
-import { readWorkflowThreadNotes } from "../developer-tasks/thread-notes.js";
+import { threadNoteAuthors } from "./lesson-thread-note-authors.js";
 import { setLessonsHomeReader } from "../../lessons/home-source.js";
 import { lessonsUsedReaderOver, setLessonsUsedReader, type RepositoryVisibility, visibilityOfRepositories } from "../../lessons/used-in-pr.js";
 import { resolveLearning } from "../../lessons/policy.js";
@@ -186,8 +186,7 @@ export function learningDepsFor(dependencies: LessonsHostDependencies, runtime: 
     projectWide: (orgId, taskId) => resolveTaskProjectWide({ ...state, now: Date.now }, orgId, taskId),
     log,
     // Slack thread replies name their author through the Slack account's verified Rovara link (lessons sweep, lane D); the words are not read.
-    threadNotes: async (_orgId, taskId): Promise<ThreadNoteAuthor[]> => (await readWorkflowThreadNotes(state, taskId, undefined, { includeAnswered: true }))
-      .map((note) => ("slackUserId" in note ? { kind: "slack" as const, teamId: note.teamId, slackUserId: note.slackUserId } : { kind: "person" as const, developerId: note.developerId })),
+    threadNotes: (_orgId, taskId) => threadNoteAuthors(state, taskId, MAX_THREAD_REPLIES),
     slackAuthor: lessonSlackAuthor({ documentClient: dependencies.documentClient, tableName: dependencies.tableName, signIn: new DeveloperSignInStore({ documentClient: dependencies.documentClient, tableName: signInTableName, now: Date.now }) }),
     readObject: (key, maxBytes) => readObjectText(dependencies.s3, dependencies.artifactBucketName, key, maxBytes),
     now: Date.now,

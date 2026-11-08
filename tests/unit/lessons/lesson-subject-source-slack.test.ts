@@ -4,6 +4,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import { SLACK_OIDC_ISSUER, slackTeamOrgKey } from "@agentx/contracts";
 import { MAX_SLACK_AUTHORS, MAX_THREAD_REPLIES, lessonSubjectSource, type LessonSubjectSourceDeps, type ThreadNoteAuthor } from "../../../packages/broker/src/aws/broker/lesson-subject-source.js";
+import { threadNoteAuthors } from "../../../packages/broker/src/aws/broker/lesson-thread-note-authors.js";
 import { lessonSlackAuthor } from "../../../packages/broker/src/aws/broker/lesson-slack-author.js";
 import { ownerKeyForSubject } from "../../../packages/broker/src/aws/lambda.js";
 import { DeveloperSignInStore } from "../../../packages/broker/src/developer/store.js";
@@ -285,6 +286,61 @@ describe("a task started in Slack is created under the Slack-derived id; its cre
   });
 });
 
+describe("review lows", () => {
+  it("Low 4: one memory of the bindings per subject build, a new one for the next build", async () => {
+    const scopes: unknown[] = [];
+    const s = setup([slackNote(), slackNote("U0OTHER001")], { slackAuthor: async (_input, scope) => { scopes.push(scope); return REPLIER; } });
+    await base(s);
+    await base(s);
+    expect(scopes).toHaveLength(4);
+    expect(scopes[0]).toBeInstanceOf(Map);
+    expect(scopes[0]).toBe(scopes[1]);
+    expect(scopes[2]).toBe(scopes[3]);
+    expect(scopes[0]).not.toBe(scopes[2]);
+  });
+
+  it("Low 2: the linked person's id is what the subject carries; erasing that person (or the recorded Slack-derived id) removes BOTH ids from the subject", async () => {
+    const CREATOR_SLACK = "U0CREATE01";
+    const DERIVED = ownerKeyForSubject(SLACK_OIDC_ISSUER, CREATOR_SLACK);
+    const WEB = "web-creator";
+    const over = { developerId: DERIVED, ownerKey: taskOwnerKey(DERIVED, TASK), startedBy: undefined, agent: undefined, slackUserId: CREATOR_SLACK, share: { teamId: TEAM } };
+    const deps = { standing: async () => "member" as const, slackAuthor: async (input: { slackUserId: string }) => (input.slackUserId === CREATOR_SLACK ? WEB : REPLIER) };
+    const carried = async (erasedIds: string[]) => {
+      const b = await base(setup([slackNote()], { ...deps, isErased: async (_org, who) => erasedIds.includes(who) }, over));
+      return JSON.stringify(buildTaskReflectSubject({ ...b.facts, sendBacks: [] }));
+    };
+    // Positive control: the person's id (not the Slack-derived one) is what the subject carries.
+    const live = await carried([]);
+    expect(live).toContain(WEB);
+    expect(live).not.toContain(DERIVED);
+    for (const erased of [[WEB], [DERIVED]]) {
+      const subject = await carried(erased);
+      expect(subject, erased.join()).not.toContain(WEB);
+      expect(subject, erased.join()).not.toContain(DERIVED);
+    }
+  });
+
+  it("Low 3: the note reader asks for author fields only (no text), and reads what it gets as authors", async () => {
+    const db = new FakeDynamoDb();
+    const note = { pk: `DEVTASK#${TASK}`, entityType: "WORKFLOW_THREAD_NOTE", text: "SECRET WORDS" };
+    db.set({ ...note, sk: "NOTE#1695500002.000001", slackUserId: SLACK_REPLIER, teamId: TEAM });
+    db.set({ ...note, sk: "NOTE#msg_aaaaaaaaaaaaaaaaaaaa", source: "app", developerId: "session-dev" });
+    db.set({ ...note, sk: "NOTE#1695500003.000001", slackUserId: "B0BOT0001", teamId: TEAM });
+    db.set({ ...note, sk: "NOTE#1695500004.000001", entityType: "SOMETHING_ELSE", slackUserId: SLACK_REPLIER, teamId: TEAM });
+    db.set({ ...note, sk: "NOTE#msg_bbbbbbbbbbbbbbbbbbbb", source: "linear", developerId: " " });
+    const seen: Array<Record<string, unknown>> = [];
+    const spy = { send: async (command: { input?: Record<string, unknown> }) => { seen.push(command.input ?? {}); return db.send(command as never); } };
+    const authors = await threadNoteAuthors({ documentClient: spy, tableName: "state" }, TASK, 100);
+    expect(authors).toContainEqual({ kind: "slack", teamId: TEAM, slackUserId: SLACK_REPLIER });
+    expect(authors).toContainEqual({ kind: "person", developerId: "session-dev" });
+    expect(authors).toHaveLength(5);
+    expect(authors.filter((author) => author.kind === "other")).toHaveLength(3);
+    const projection = String(seen[0]!["ProjectionExpression"]);
+    expect(projection).not.toMatch(/\btext\b/u);
+    expect(projection).toContain("slackUserId");
+  });
+});
+
 describe("the resolver proves the link (lessonSlackAuthor)", () => {
   const LINKED_DEV = "dev-web-1";
   const slackKey = (slackUserId: string): string => ownerKeyForSubject(SLACK_OIDC_ISSUER, slackUserId);
@@ -294,7 +350,7 @@ describe("the resolver proves the link (lessonSlackAuthor)", () => {
     if (over.bound !== null) db.set({ ...slackTeamOrgKey(TEAM), orgId: over.bound ?? WS });
     if (over.link !== null) db.set({ pk: `SIGNIN_IDENTITY#${slackKey(SLACK_REPLIER)}`, sk: "META", entityType: "IDENTITY_LINK", developerId: LINKED_DEV, provider: "slack", issuer: SLACK_OIDC_ISSUER, subject: SLACK_REPLIER, linkedAt: "2026-10-01T00:00:00.000Z", lastSignInAt: "2026-10-01T00:00:00.000Z", ...over.link });
     if (over.developer !== null) db.set({ pk: `DEVELOPER#${LINKED_DEV}`, sk: "META", provider: "github", issuer: "https://github.com", subject: "1", displayName: "Dana", firstSignInAt: "2026-10-01T00:00:00.000Z", lastSignInAt: "2026-10-01T00:00:00.000Z", revoked: false, ...over.developer });
-    if (over.merged !== undefined) db.set({ pk: `DEVELOPER#${over.merged["id"] as string}`, sk: "META", provider: "github", issuer: "https://github.com", subject: "2", displayName: "Dana 2", firstSignInAt: "2026-10-01T00:00:00.000Z", lastSignInAt: "2026-10-01T00:00:00.000Z", revoked: false });
+    if (over.merged !== undefined) db.set({ pk: `DEVELOPER#${over.merged["id"] as string}`, sk: "META", provider: "github", issuer: "https://github.com", subject: "2", displayName: "Dana 2", firstSignInAt: "2026-10-01T00:00:00.000Z", lastSignInAt: "2026-10-01T00:00:00.000Z", revoked: false, ...(over.merged["mergedInto"] === undefined ? {} : { mergedInto: over.merged["mergedInto"] }) });
     const signIn = new DeveloperSignInStore({ documentClient: db, tableName: "state", now: () => 1_800_000_000_000 });
     return lessonSlackAuthor({ documentClient: db, tableName: "state", signIn });
   }
@@ -334,6 +390,31 @@ describe("the resolver proves the link (lessonSlackAuthor)", () => {
     const resolve = world();
     for (const slackUserId of ["B0BOT0001", "USLACKBOT-", "u0lower01", "", "U0", "U0REPLY01 "]) expect(await who(resolve, { slackUserId }), slackUserId).toBeUndefined();
     for (const teamId of ["", "t0team001", "X0TEAM001", "T0"]) expect(await who(resolve, { teamId }), teamId).toBeUndefined();
+  });
+
+  it("a merge cycle, the hop limit or any record that was itself merged away names nobody (Low 1)", async () => {
+    const cycle = world({ developer: { mergedInto: "dev-b" }, merged: { id: "dev-b", mergedInto: LINKED_DEV } });
+    expect(await who(cycle)).toBeUndefined();
+    // A chain longer than the merge walk follows ends on a record that still says it was merged.
+    const db = new FakeDynamoDb();
+    db.set({ ...slackTeamOrgKey(TEAM), orgId: WS });
+    db.set({ pk: `SIGNIN_IDENTITY#${slackKey(SLACK_REPLIER)}`, sk: "META", entityType: "IDENTITY_LINK", developerId: "hop-0", provider: "slack", issuer: SLACK_OIDC_ISSUER, subject: SLACK_REPLIER });
+    for (let hop = 0; hop < 30; hop += 1) db.set({ pk: `DEVELOPER#hop-${String(hop)}`, sk: "META", provider: "github", issuer: "https://github.com", subject: String(hop), displayName: "x", firstSignInAt: "x", lastSignInAt: "x", revoked: false, mergedInto: `hop-${String(hop + 1)}` });
+    const long = lessonSlackAuthor({ documentClient: db, tableName: "state", signIn: new DeveloperSignInStore({ documentClient: db, tableName: "state", now: () => 1_800_000_000_000 }) });
+    expect(await long({ orgId: WS, teamId: TEAM, slackUserId: SLACK_REPLIER })).toBeUndefined();
+  });
+
+  it("with a scope the workspace's binding is read once for all the accounts asked; without one each asks (Low 4)", async () => {
+    const db = new FakeDynamoDb();
+    db.set({ ...slackTeamOrgKey(TEAM), orgId: WS });
+    let bindingReads = 0;
+    const counting = { send: async (command: { input?: { Key?: { pk?: string } } }) => { if (command.input?.Key?.pk === `SLACK_TEAM#${TEAM}`) bindingReads += 1; return db.send(command as never); } };
+    const resolve = lessonSlackAuthor({ documentClient: counting, tableName: "state", signIn: { getIdentityLink: async () => undefined, getDeveloper: async () => undefined } });
+    const scope = new Map<string, Promise<unknown>>();
+    for (const slackUserId of ["U0AAAA001", "U0BBBB001", "U0CCCC001"]) await resolve({ orgId: WS, teamId: TEAM, slackUserId }, scope);
+    expect(bindingReads).toBe(1);
+    for (const slackUserId of ["U0AAAA001", "U0BBBB001"]) await resolve({ orgId: WS, teamId: TEAM, slackUserId });
+    expect(bindingReads).toBe(3);
   });
 
   it("a table that cannot be read throws (the source treats that as unknown)", async () => {

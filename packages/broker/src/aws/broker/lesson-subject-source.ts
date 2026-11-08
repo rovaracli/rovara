@@ -27,6 +27,7 @@ import { logRef } from "../../lessons/log-ref.js";
 import type { EvidenceSpan } from "../../lessons/reflect-input.js";
 import { taskStartActor } from "../../lessons/task-subject.js";
 import { ownerKeyForSubject } from "../lambda.js";
+import type { SlackWorkspaceScope } from "./lesson-slack-author.js";
 import type { Audience, TrustClass } from "../../lessons/types.js";
 import type { TaskVisibility } from "../../team-record/sources/rovara.js";
 import { cleanForLearning } from "../../lessons/guards.js";
@@ -91,7 +92,7 @@ export interface LessonSubjectSourceDeps {
    * The Rovara developer a Slack account is VERIFIABLY linked to (the sign-in table's active Slack identity link, followed through merges), only when the Slack workspace is the one bound to `orgId`; undefined for an
    * unlinked or unlinked-again account, a bot, another workspace's account or a revoked developer. May throw: a failure is "unknown" (the author stays unnamed), never a member. Absent: Slack authors stay unnamed.
    */
-  slackAuthor?: ((input: { orgId: string; teamId: string; slackUserId: string }) => Promise<string | undefined>) | undefined;
+  slackAuthor?: ((input: { orgId: string; teamId: string; slackUserId: string }, scope?: SlackWorkspaceScope) => Promise<string | undefined>) | undefined;
   /** The artifact store's text read (the plan document). Absent: no plan span. */
   readObject?: ((objectKey: string, maxBytes: number) => Promise<string | undefined>) | undefined;
   now?: () => number;
@@ -220,7 +221,7 @@ async function namedPeopleErased(
  * the task counts (some row unreadable or gone), a note that is not a Slack reply, a reply with no workspace, more than `MAX_SLACK_AUTHORS` accounts, or a resolver that throws. Nothing here ever makes someone a member:
  * the project role is read by the caller afterwards.
  */
-async function slackSteerers(deps: LessonSubjectSourceDeps, orgId: string, task: DeveloperTaskRecord): Promise<{ persons: Array<string | undefined>; unnamed: boolean }> {
+async function slackSteerers(deps: LessonSubjectSourceDeps, orgId: string, task: DeveloperTaskRecord, workspaces: SlackWorkspaceScope): Promise<{ persons: Array<string | undefined>; unnamed: boolean }> {
   const accounts = new Map<string, { teamId: string; slackUserId: string }>();
   // People who sent a message from a session: the route authenticated them and checked their "use" level, so their developer id is the note's author as it stands.
   const sessionPeople = new Set<string>();
@@ -251,7 +252,7 @@ async function slackSteerers(deps: LessonSubjectSourceDeps, orgId: string, task:
   const resolve = deps.slackAuthor;
   for (const account of [...accounts.values()].slice(0, MAX_SLACK_AUTHORS)) {
     try {
-      const person = await resolve({ orgId, ...account });
+      const person = await resolve({ orgId, ...account }, workspaces);
       persons.push(present(person) ? person.trim() : undefined);
     } catch { persons.push(undefined); }
   }
@@ -282,9 +283,13 @@ export function lessonSubjectSource(deps: LessonSubjectSourceDeps): TaskSubjectS
       if (visibility === undefined) return undefined;
       const project = task.project;
 
-      // A task started in Slack is recorded under the Slack-derived developer id of its creator (and its taker), which is no member of the company when the person is a member through a linked web account. For
-      // the LESSONS trust read only (nothing stored, no authorization), that id is read as the person the Slack account is verifiably linked to (`slackAuthor`, the same proof that names a reply's author).
+      // A task started in Slack is recorded under the Slack-derived developer id of its creator (and its taker), which is no member of the company when the person is a member through a linked web account. The
+      // task record, its ownership and every authorization path keep that id. This source reads it as the person the Slack account is verifiably linked to (`slackAuthor`, the same proof that names a reply's author),
+      // and that person's id is what goes into the subject: their trust and erasure are read under it, and it is the intent span's and the close reason's `authorId` and the initiator, so the lessons made from
+      // the task are attributed to the person (and a later erase of that person removes them). An erase is checked under the recorded id as well as the person (see `erased`).
       // Only an id that is exactly the Slack-derived id of a Slack account this record names, in the workspace the task was shared in, is looked up. Anything else, a failed lookup or no proof: the id as it is.
+      // One memory of the workspace-to-company bindings for this build: each workspace's binding is read once.
+      const workspaces: SlackWorkspaceScope = new Map();
       const slackIds = new Map<string, string>();
       for (const slackUserId of [task.slackUserId, tryEffectiveTaskOwner(task)?.slackUserId]) {
         if (typeof slackUserId === "string" && slackUserId !== "") slackIds.set(ownerKeyForSubject(SLACK_OIDC_ISSUER, slackUserId), slackUserId);
@@ -298,7 +303,7 @@ export function lessonSubjectSource(deps: LessonSubjectSourceDeps): TaskSubjectS
         const teamId = task.share?.teamId;
         if (slackUserId !== undefined && typeof teamId === "string" && deps.slackAuthor !== undefined) {
           try {
-            const linked = await deps.slackAuthor({ orgId, teamId, slackUserId });
+            const linked = await deps.slackAuthor({ orgId, teamId, slackUserId }, workspaces);
             if (present(linked)) person = linked.trim();
           } catch { person = developerId; }
         }
@@ -354,7 +359,7 @@ export function lessonSubjectSource(deps: LessonSubjectSourceDeps): TaskSubjectS
       if (!creatorErased && present(intentText)) spans.push({ kind: "intent", text: intentText, trust: await trustOf(creator), authorId: await canon(creator) });
 
       // Slack thread replies: who wrote them, through their linked Rovara identity (see `slackSteerers`). Resolved before the worker text, because the plan quotes replies.
-      const slack = await slackSteerers(deps, orgId, task);
+      const slack = await slackSteerers(deps, orgId, task, workspaces);
 
       // Worker-written text (the plan, the review findings, the CI text) is UNTRUSTED agent text (M5): the plan absorbs people's answers and the request, the findings and the CI log can carry text an outsider
       // influenced. It gets the "system" class, never "rovara". And if any person who decided on, answered for, took over or created the task is erased, none of it is read: it may hold that person's words.

@@ -22,12 +22,23 @@ export interface LessonSlackAuthorDeps {
   signIn: Pick<DeveloperSignInStore, "getIdentityLink" | "getDeveloper">;
 }
 
-/** The developer the Slack account is verifiably linked to, in the task's company; undefined when anything cannot be proved. THROWS when a read fails (the caller treats that as unknown). */
-export function lessonSlackAuthor(deps: LessonSlackAuthorDeps): (input: { orgId: string; teamId: string; slackUserId: string }) => Promise<string | undefined> {
-  return async ({ orgId, teamId, slackUserId }) => {
+/**
+ * One subject build's memory of which company each Slack workspace is bound to, so the binding record is read once per workspace per build (a later build reads it again: a binding can change).
+ * Make a new one per read of a task; never keep one across reads.
+ */
+export type SlackWorkspaceScope = Map<string, Promise<unknown>>;
+
+/**
+ * The developer the Slack account is verifiably linked to, in the task's company; undefined when anything cannot be proved. THROWS when a read fails (the caller treats that as unknown). With a `scope`,
+ * the workspace's binding is read once for all the accounts asked with it.
+ */
+export function lessonSlackAuthor(deps: LessonSlackAuthorDeps): (input: { orgId: string; teamId: string; slackUserId: string }, scope?: SlackWorkspaceScope) => Promise<string | undefined> {
+  return async ({ orgId, teamId, slackUserId }, scope) => {
     if (!SLACK_TEAM_ID.test(teamId) || !SlackUserIdSchema.safeParse(slackUserId).success) return undefined;
-    const binding = ((await deps.documentClient.send(new GetCommand({ TableName: deps.tableName, Key: slackTeamOrgKey(teamId), ConsistentRead: true }))) as { Item?: { orgId?: unknown } }).Item;
-    if (binding?.orgId !== orgId) return undefined;
+    const readBinding = async (): Promise<unknown> => (((await deps.documentClient.send(new GetCommand({ TableName: deps.tableName, Key: slackTeamOrgKey(teamId), ConsistentRead: true }))) as { Item?: { orgId?: unknown } }).Item)?.orgId;
+    let pending = scope?.get(teamId);
+    if (pending === undefined) { pending = readBinding(); scope?.set(teamId, pending); }
+    if ((await pending) !== orgId) return undefined;
     const identityKey = ownerKeyForSubject(SLACK_OIDC_ISSUER, slackUserId);
     const link = await deps.signIn.getIdentityLink(identityKey);
     if (link === undefined || link.provider !== "slack" || link.issuer !== SLACK_OIDC_ISSUER || link.subject !== slackUserId) return undefined;
@@ -36,6 +47,7 @@ export function lessonSlackAuthor(deps: LessonSlackAuthorDeps): (input: { orgId:
     if (typeof link.developerId !== "string" || link.developerId.trim() === "") return undefined;
     const person = await followMerges(deps.signIn, link.developerId);
     const record = await deps.signIn.getDeveloper(person);
-    return record === undefined || record.revoked ? undefined : person;
+    // `followMerges` stops at a loop or the hop limit and hands back a record that was itself merged away: that is not "the person they are now", so it names nobody.
+    return record === undefined || record.revoked || record.mergedInto !== undefined ? undefined : person;
   };
 }

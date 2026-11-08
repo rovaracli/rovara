@@ -127,7 +127,7 @@ const ROWS: readonly Row[] = [
   // a Slack reply's own sender (the note's author, not the task's creator), matched to the People list to tell a member's information from outsider text (LA-5, M7); it decides nothing about who owns the task
   ["agent-sessions/ask-readers.ts", "createAskReaders>outsider", "other-record", ".slackUserId"],
   // a saved reply or session message sender (a Slack account or a developer), handed to the lessons' subject source to be named through the Slack account's verified link (lessons sweep, lane D); the reply's sender is not the task's creator and this decides nothing about who owns the task
-  ["aws/broker/lessons-wiring.ts", "learningDepsFor>threadNotes", "other-record", ".slackUserId", ".developerId"],
+  ["aws/broker/lesson-thread-note-authors.ts", "threadNoteAuthors", "other-record", ".slackUserId", ".developerId"],
   ["aws/developer-tasks/task-answer-context.ts", "workflowTaskAnswerContext", "principal", ".ownerKey"],
   ["aws/developer-tasks/task-answer-context.ts", "commentAnswerSection", "principal", ".ownerKey"],
   ["aws/developer-tasks/close.ts", "finishTaskClose>closing", "index", ".developerId"],
