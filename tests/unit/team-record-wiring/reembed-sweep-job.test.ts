@@ -11,7 +11,7 @@ const ON = { TEAM_RECORD_ENABLED: "1", TEAM_RECORD_TABLE_NAME: "TeamRecord", AWS
 const NOW = Date.parse("2026-11-08T12:00:00.000Z");
 const table = (db: FakeDynamoDb) => ({ documentClient: db as never, tableName: "TeamRecord" });
 /** Workspaces that left the directory but still hold a re-embed state: the sweep deletes them without a closing check. */
-const leftOvers = (count: number): OrgId[] => Array.from({ length: count }, (_, index) => `org_gone${String(index).padStart(16, "0")}` as OrgId);
+const leftOvers = (count: number): OrgId[] => Array.from({ length: count }, (_, index) => `org_gone${String(index).padStart(16, "0")}`);
 
 function seed(db: FakeDynamoDb, orgs: readonly OrgId[]): void {
   for (const orgId of orgs) db.set({ pk: "TEAM_RECORD_ORGS", sk: `REEMBED#${orgId}`, entityType: "TEAM_RECORD_REEMBED_STATE", orgId, servedAt: 5, idleUntil: 0, passWork: 0 });

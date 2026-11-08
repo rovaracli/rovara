@@ -333,7 +333,7 @@ describe("learnFromEndedTaskTyped (H1): which failures are worth another try", (
     w.deps.log = (event, fields) => { out.push([event, fields]); };
     const real = w.store.commit.bind(w.store);
     let failed = 0;
-    w.store.commit = (async (...args: Parameters<typeof real>) => { if (failed === 0) { failed += 1; throw Object.assign(new Error("table text"), { name: "ProvisionedThroughputExceededException" }); } return real(...args); }) as typeof w.store.commit;
+    w.store.commit = (async (...args: Parameters<typeof real>) => { if (failed === 0) { failed += 1; throw Object.assign(new Error("table text"), { name: "ProvisionedThroughputExceededException" }); } return real(...args); });
     expect(await learnFromEndedTaskTyped(w.deps, input)).toEqual({ status: "reflected", retry: false });
     expect(w.model.calls).toHaveLength(1);
     expect(await w.store.list({ workspaceId: WS, project: PROJECT })).toHaveLength(1);

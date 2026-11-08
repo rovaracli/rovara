@@ -410,7 +410,7 @@ describe("a turn that starts no call, and a workspace that is closing (N4, N5)",
   // EMB-7 M1: the sweep read one State per workspace with no limit, so it could eat the hourly run's GitHub pass.
   describe("EMB-7 M1: the clean-up has a time limit and a cap per run, and resumes next hour", () => {
     const HOUR = 3_600_000;
-    const orgNames = (count: number): Array<typeof ORG_A> => Array.from({ length: count }, (_, index) => `org_sweep${String(index).padStart(15, "0")}` as typeof ORG_A);
+    const orgNames = (count: number): Array<typeof ORG_A> => Array.from({ length: count }, (_, index) => `org_sweep${String(index).padStart(15, "0")}`);
     function crowd(w: World, orgs: Array<typeof ORG_A>): void {
       directory(w, orgs);
       for (const orgId of orgs) w.db.set({ pk: "TEAM_RECORD_ORGS", sk: `REEMBED#${orgId}`, entityType: "TEAM_RECORD_REEMBED_STATE", orgId, servedAt: 5, idleUntil: 0, passWork: 0 });

@@ -26,7 +26,7 @@ function setup(model: ScriptedModel = new ScriptedModel()) {
   const failCommits = (error: Error, times: number): { attempts: () => number } => {
     const real = store.commit.bind(store);
     let failures = 0, attempts = 0;
-    store.commit = (async (...args: Parameters<typeof real>) => { attempts += 1; if (failures < times) { failures += 1; throw error; } return real(...args); }) as typeof store.commit;
+    store.commit = async (...args: Parameters<typeof real>) => { attempts += 1; if (failures < times) { failures += 1; throw error; } return real(...args); };
     return { attempts: () => attempts };
   };
   return { deps, store, failCommits };
