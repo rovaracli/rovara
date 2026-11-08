@@ -4,13 +4,13 @@ import { randomUUID } from "node:crypto";
 import { cleanForLearning } from "./guards.js";
 import { currentLearningAttempt } from "./learning-deadline.js";
 import { isLearningRefusal, noteModelFailure, notePause, noteRecovered, pauseOfLook, spendLook, type LessonsPauseStore } from "./pause.js";
-import { learningCaps, modeAllows, resolveLearning, type Edition, type LearningSettingsReader } from "./policy.js";
+import { emitAudit, learningCaps, modeAllows, resolveLearning, type Edition, type LearningSettingsReader } from "./policy.js";
 import type { Clock, LearningSpend, LessonAuditSink, Metrics, PipelineModel } from "./ports.js";
 import { buildReflectorInput, type MarkedSpan, type ReflectSubject } from "./reflect-input.js";
 import { NO_REASON_TEXT } from "./task-subject.js";
 import { lessonClaimsSupported } from "./trial.js";
 import {
-  LessonCandidateSchema, ReflectorOutputSchema, distinctIds, idIn, minTrust, narrowestAudience, normSource, sameId,
+  LessonCandidateSchema, ReflectorOutputSchema, MAX_READ_FROM, distinctIds, idIn, minTrust, narrowestAudience, normId, normSource, sameId,
   type Audience, type LessonCitation, type LessonProvenance, type LessonScope, type LessonStage, type LessonType, type TrustClass,
 } from "./types.js";
 
@@ -81,7 +81,7 @@ export function memberCorrectionOf(cited: readonly MarkedSpan[], everythingTrust
 /** The source key of CI failures, as the subject source writes it. */
 const CI_SOURCE_KEY = "ci";
 /** Kinds a person writes. Plans are agent text, and outcomes, CI output and loaded lessons are not people. */
-const PERSON_KINDS: ReadonlySet<string> = new Set(["send_back", "remembered", "human_edit", "close_reason", "review_finding", "intent"]);
+const PERSON_KINDS: ReadonlySet<string> = new Set(["send_back", "remembered", "human_edit", "close_reason", "review_finding", "intent", "pr_comment"]);
 
 function parseJson(text: string): unknown {
   const trimmed = text.trim().replace(/^```(?:json)?\s*/iu, "").replace(/\s*```$/u, "");
@@ -186,6 +186,19 @@ export async function reflectSubject(deps: ReflectDeps, subject: ReflectSubject,
   return { status: "ok", reason: drafts.length === 0 ? "no_candidates" : "candidates", drafts, costUsd: cost };
 }
 
+/** The most lines of code a lesson made from changed lines may copy. */
+export const MAX_COPIED_CODE_LINES = 2;
+/** Lines of a text that read as code: inside a fenced block, indented by two or more spaces, or ending like a statement or a block. Plain sentences are not. */
+export function copiedCodeLines(text: string): number {
+  let fenced = false;
+  let count = 0;
+  for (const line of text.split("\n")) {
+    if (/^\s*```/u.test(line)) { fenced = !fenced; continue; }
+    if (fenced || /^\s{2,}\S/u.test(line) || /[;{}]\s*$/u.test(line)) count += 1;
+  }
+  return count;
+}
+
 async function toDraft(
   deps: ReflectDeps, subject: ReflectSubject, spans: Map<string, MarkedSpan>, allowedTypes: readonly LessonType[],
   candidate: ReturnType<typeof LessonCandidateSchema.parse>, runId: string, model: string,
@@ -202,12 +215,20 @@ async function toDraft(
   // with nothing else behind it is dropped. They still count for trust and audience below (they were read).
   const evidence = cited.filter((s) => s.kind !== "loaded_lesson");
   if (evidence.length === 0) return undefined;
+  if (subject.requireEvidenceKind !== undefined && !evidence.some((s) => s.kind === subject.requireEvidenceKind)) return undefined;
   const title = cleanForLearning(candidate.title, 80);
   const description = cleanForLearning(candidate.description, 160);
   const body = cleanForLearning(candidate.body, 600);
   if (title === "" || body === "") return undefined;
   // C6: a lesson that asks for a change to tools, permissions, domains, budgets, models or approvals is NOT dropped. It is kept as a person-approval lesson with a fixed reason
   // (`capability_request`, set by the tier step), so the approver sees it and decides; nothing is silently lost.
+
+  // L9: a lesson made from a person's changed lines is advice in words. It may not copy more than two lines of the code (Q5: the diff is not kept anywhere, and the lesson's own text is where it could be).
+  // The check follows what the model READ, not what it cited: a lesson that cites only the intent still came from a prompt that held the person's changed lines.
+  if ([...spans.values()].some((s) => s.kind === "human_edit") && copiedCodeLines(`${description}\n${body}`) > MAX_COPIED_CODE_LINES) {
+    await emitAudit(deps.audit, { action: "lesson.refused", workspaceId: subject.workspaceId, project: subject.project, facts: { reason: "copied_code", run: runId, subject: subject.id } });
+    return undefined;
+  }
 
   const citations: LessonCitation[] = [];
   const events = new Set(evidence.flatMap((s) => (s.eventId === undefined ? [] : [s.eventId])));
@@ -242,7 +263,13 @@ async function toDraft(
   const inputSources = [...new Set(everything.filter((s) => s.kind !== "loaded_lesson").map(sourceOf))].slice(0, 100);
   // Independence is counted in people: the canonical member ids of spans a PERSON wrote. Agent text (plan), system text, outcomes and channel or bucket keys
   // never make an author.
-  const authors = distinctIds([...new Set(evidence.flatMap((s) => (s.trust === "member" && s.authorId !== undefined && PERSON_KINDS.has(s.kind) ? [s.authorId] : [])))]);
+  const authors = distinctIds([...new Set(evidence.flatMap((s) => (s.trust === "member" && PERSON_KINDS.has(s.kind) ? [...(s.authorId === undefined ? [] : [s.authorId]), ...(s.authorIds ?? [])] : [])))]);
+  // Everyone whose words or work the model READ (cited or not): erasing any of them deletes the lesson. They are not authors (no effect on independence or the author rule).
+  const readFrom = distinctIds(everything.flatMap((s) => (s.trust === "member" && PERSON_KINDS.has(s.kind) ? [...(s.authorId === undefined ? [] : [s.authorId]), ...(s.authorIds ?? [])] : [])));
+  // A prompt that read more people than a lesson can name is not turned into a lesson: no name is ever cut.
+  if (readFrom.length > MAX_READ_FROM) return undefined;
+  // The people of each edit that several people wrote count as ONE source toward corroboration.
+  const coAuthored = [...new Map(evidence.filter((s) => s.kind === "human_edit" && s.trust === "member" && (s.authorIds?.length ?? 0) > 1).map((s) => { const group = distinctIds(s.authorIds!); return [group.map(normId).sort().join("\u0001"), group] as const; })).values()];
     // Measured outcomes come from structured facts in the input, never from which spans the model cited.
   // A send-back counts only when someone other than the lesson's own authors made it (a person cannot create a "measured outcome" by correcting their own task).
   // ONE function decides whether anything was measured, for every kind of outcome (a revert, a send-back, a CI failure).
@@ -263,7 +290,8 @@ async function toDraft(
       sourceEvents: [...events], sourceKinds: [...new Set(evidence.map((s) => s.kind))], authors, supportTasks: subject.kind === "task" ? [subject.id] : [], ...(inheritedTasks.length === 0 ? {} : { inheritedTasks }), sources, inputSources, measured,
       minTrust: trust, audience, reflectorRun: runId, model: model.slice(0, 100),
       ...(sourceScopes.length === 0 ? {} : { sourceScopes }),
-      memberSignal: evidence.some((s) => s.trust === "member" && (s.kind === "remembered" || s.kind === "human_edit")),
+      ...(readFrom.length === 0 ? {} : { readFrom }), ...(coAuthored.length === 0 ? {} : { coAuthored }),
+      memberSignal: evidence.some((s) => s.trust === "member" && (s.kind === "remembered" || s.kind === "human_edit" || (s.kind === "pr_comment" && s.ledToChange === true))),
       memberCorrection: memberCorrectionOf(cited, trust),
       // The lesson's key words must appear in the cited correction or the cited code, and nowhere else: worked out here, where the correction text is in hand (it is never stored).
       claimsSupported: lessonClaimsSupported({ title, description, body, ...(candidate.scope.paths === undefined ? {} : { scopePaths: candidate.scope.paths }) }, {

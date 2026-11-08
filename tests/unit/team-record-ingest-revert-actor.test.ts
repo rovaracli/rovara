@@ -13,7 +13,7 @@ const AT = "2026-10-30T10:00:00.000Z";
 const rovaraPr = { taskId: "task-1", project: "shop", number: 5, url: "https://github.com/acme/shop/pull/5", candidateHeadSha: sha(20), mergeCommitSha: sha(30) };
 const revertPr = (author: { id: string; login: string; isBot: boolean }, over: Partial<Extract<CodeHostEvent, { type: "pr" }>> = {}): CodeHostEvent => ({
   type: "pr", repo: repo(), number: 9, url: "https://github.com/acme/shop/pull/9", action: "closed", merged: true, title: 'Revert "Fix cart total"', body: "Reverts acme/shop#5",
-  author, headSha: sha(11), baseRef: "main", mergeCommitSha: sha(41), at: AT, version: "closed:9", ...over,
+  author, headSha: sha(11), baseRef: "main", mergeCommitSha: sha(41), at: AT, version: "closed:9", mergedBy: { id: "1001", login: "alice", isBot: false }, ...over,
 });
 const push = (sender?: { id: string; login: string; isBot: boolean }): CodeHostEvent => ({ type: "push", repo: repo(), ref: "refs/heads/main", at: AT, before: sha(39), after: sha(40), ...(sender === undefined ? {} : { sender }), commits: [{ sha: sha(40), message: `Revert "Fix cart total"\n\nThis reverts commit ${sha(30)}.` }] });
 const alice = { id: "1001", login: "alice", isBot: false };
@@ -50,20 +50,52 @@ describe("the revert's outcome rows carry no person", () => {
   });
 });
 
-describe("only a member counts as the reverter; the anonymous outcome is recorded either way", () => {
-  const outcomeOnly = (w: ReturnType<typeof setup>["w"]) => { expect(kinds(w)).toEqual(["github.revert", "rovara.closed"]); expect(rowOf(w, "rovara.closed")!.structured).toMatchObject({ outcome: "reverted", taskId: "task-1" }); };
-  it("a bot, an unknown account and a push with no sender", async () => {
+describe("R7: a revert pull request counts only when a verified live member merged it, and that member is the reverter", () => {
+  const nothing = (w: ReturnType<typeof setup>["w"]) => expect(kinds(w)).toEqual([]);
+  it("a bot-authored or outsider-authored revert pull request that a member merged counts, with the member who merged it as the reverter", async () => {
     for (const author of [{ id: "5", login: "revert-bot[bot]", isBot: true }, { id: "9999", login: "mallory", isBot: false }]) {
       const { w, tap } = setup();
       await tap.handle(revertPr(author));
-      outcomeOnly(w);
+      expect(kinds(w)).toEqual(expect.arrayContaining(["github.revert", "rovara.closed", "rovara.reverted_by"]));
+      expect(rowOf(w, "rovara.closed")!.structured).toMatchObject({ outcome: "reverted", taskId: "task-1" });
+      expect(rowOf(w, "rovara.reverted_by")!.actor).toMatchObject({ developerId: "dev-alice", trust: "member" });
     }
   });
-  it("an account the resolver calls an outsider, even if it knows a developer id for it", async () => {
-    const { w, tap } = setup();
-    (w.actors as unknown as { resolve: () => Promise<unknown> }).resolve = async () => ({ developerId: "dev-ext", trust: "outsider" });
-    await tap.handle(revertPr(alice));
-    outcomeOnly(w);
+  it("a member-authored revert pull request that someone who is not a member merged records nothing (positive control above: the same pull request merged by the member counts)", async () => {
+    for (const merger of [{ id: "5", login: "merge-bot[bot]", isBot: true }, { id: "9999", login: "mallory", isBot: false }]) {
+      const { w, tap } = setup();
+      await tap.handle(revertPr(alice, { mergedBy: merger }));
+      nothing(w);
+    }
+    const unknown = setup();
+    const { mergedBy: _noMerger, ...unmerged } = revertPr(alice) as Extract<CodeHostEvent, { type: "pr" }>;
+    void _noMerger;
+    await unknown.tap.handle(unmerged);
+    nothing(unknown.w);
+  });
+  it("an excluded merger, a merger the resolver calls an outsider, a resolver that fails, and a delivery whose sender is not the merger record nothing", async () => {
+    const excluded = setup(["1001"]);
+    await excluded.tap.handle(revertPr(alice));
+    nothing(excluded.w);
+    const outsider = setup();
+    (outsider.w.actors as unknown as { resolve: () => Promise<unknown> }).resolve = async () => ({ developerId: "dev-ext", trust: "outsider" });
+    await outsider.tap.handle(revertPr(alice));
+    nothing(outsider.w);
+    const broken = setup();
+    (broken.w.actors as unknown as { resolve: () => Promise<unknown> }).resolve = async () => { throw new Error("identity service down"); };
+    await broken.tap.handle(revertPr(alice));
+    nothing(broken.w);
+    const mismatch = setup();
+    await mismatch.tap.handle(revertPr(alice, { editor: { id: "9999", login: "mallory", isBot: false } }));
+    nothing(mismatch.w);
+  });
+  it("the same holds for a pull request that tells of the revert by a commit sha in its body", async () => {
+    const outsiderMerged = setup();
+    await outsiderMerged.tap.handle(revertPr(alice, { body: `This reverts commit ${sha(30)}.`, mergedBy: { id: "9999", login: "mallory", isBot: false } }));
+    nothing(outsiderMerged.w);
+    const memberMerged = setup();
+    await memberMerged.tap.handle(revertPr({ id: "9999", login: "mallory", isBot: false }, { body: `This reverts commit ${sha(30)}.` }));
+    expect(rowOf(memberMerged.w, "rovara.reverted_by")!.actor).toMatchObject({ developerId: "dev-alice" });
   });
   it("a resolver that fails", async () => {
     // A pushed commit's words count only when its author and pusher are proved members: a resolver that fails proves nothing, so nothing is recorded (and nothing fails).
@@ -81,6 +113,22 @@ describe("only a member counts as the reverter; the anonymous outcome is recorde
     const { w, tap } = setup();
     await tap.handle(push());
     expect(kinds(w)).toEqual([]);
+  });
+});
+
+describe("a revert told by a commit message counts only when a member wrote and pushed it (nothing is recorded otherwise)", () => {
+  it("a push with no sender, an excluded account, and a resolver that fails record nothing, and fail nothing", async () => {
+    const none = setup();
+    await none.tap.handle(push());
+    expect(kinds(none.w)).toEqual([]);
+    const excluded = setup(["1001"]);
+    await excluded.tap.handle(push(alice));
+    expect(kinds(excluded.w)).toEqual([]);
+    const broken = setup();
+    (broken.w.actors as unknown as { resolve: () => Promise<unknown> }).resolve = async () => { throw new Error("identity service down"); };
+    const result = await broken.tap.handle(push(alice));
+    expect(kinds(broken.w)).toEqual([]);
+    expect(result.failed).toBe(0);
   });
 });
 

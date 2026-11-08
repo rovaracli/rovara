@@ -245,6 +245,14 @@ export class GithubMergeRateLimitError extends HostRateLimitError {
   }
 }
 
+/** GitHub's rate-limit answer to a compare read (lessons capture): the neutral `HostRateLimitError`, so the queue worker waits for the time GitHub gave. */
+export class GithubCompareRateLimitError extends HostRateLimitError {
+  constructor(retryAt: number) {
+    super(retryAt, "GitHub is limiting requests; the compare will be tried again");
+    this.name = "GithubCompareRateLimitError";
+  }
+}
+
 export interface GitHubPullRequestUpdate {
   title?: string;
   body?: string;
@@ -772,6 +780,26 @@ export class GitHubAppCredentialProvider {
     return { files, ...(hasNext && options.page < 10_000 ? { nextPage: options.page + 1 } : {}) };
   }
 
+  /**
+   * Lessons capture: a read-only GET of one COMPARE of an installed repository (`/repos/<owner>/<name>/compare/<base>...<head>`), with a token that asks for `contents: read` only. The caller learns what the
+   * people changed after Rovara's last push. Any other path is refused before GitHub is asked, so this cannot read anything but a compare of the repository it names.
+   */
+  async getRepositoryCompareJson(repositoryUrl: string, apiPath: string, scope: GitHubTokenScope): Promise<{ status: number; body: unknown }> {
+    const repository = parseGitHubRepository(repositoryUrl);
+    const prefix = `/repos/${encodeURIComponent(repository.owner)}/${encodeURIComponent(repository.name)}/compare/`;
+    if (!apiPath.startsWith(prefix) || !/^[0-9a-f]{40}\.\.\.[0-9a-f]{40}(\?per_page=\d{1,3})?$/u.test(apiPath.slice(prefix.length))) throw agentXError("CONFIG_INVALID", "not a compare path of this repository");
+    let token: string;
+    try {
+      const installed = await this.installed(repository, scope);
+      token = await this.createInstallationToken(installed, { contents: "read" }, scope);
+    } catch (error) {
+      // A repository the App no longer covers (removed from the installation, or the installation no longer bound to this company) has nothing to read, now or on any retry: answered as "not found", never thrown.
+      if (isAgentXError(error) && (error.code === "CONFIG_INVALID" || error.code === "GITHUB_NOT_CONNECTED")) return { status: 404, body: undefined };
+      throw error;
+    }
+    return this.trackingJson(`https://api.github.com${apiPath}`, token, { rateLimit: true });
+  }
+
   /** The provider a tracking pass reads through: itself with no budget, else one bounded provider per budget (a pass's reads share its installation lookup). */
   private trackingProvider(budget: GithubMergeReadBudget | undefined): GitHubAppCredentialProvider {
     if (budget === undefined) return this;
@@ -784,7 +812,7 @@ export class GitHubAppCredentialProvider {
     return provider;
   }
 
-  private async trackingJson(url: string, token: string, init: { method?: string; body?: unknown } = {}): Promise<{ status: number; body: unknown }> {
+  private async trackingJson(url: string, token: string, init: { method?: string; body?: unknown; rateLimit?: boolean } = {}): Promise<{ status: number; body: unknown }> {
     const response = await this.fetchImplementation(url, {
       method: init.method ?? "GET", headers: githubHeaders(token), redirect: "error", signal: AbortSignal.timeout(8_000),
       ...(init.body === undefined ? {} : { body: JSON.stringify(init.body) }),
@@ -794,6 +822,12 @@ export class GitHubAppCredentialProvider {
       body = response.status === 204 ? undefined : await response.json();
     } catch {
       body = undefined;
+    }
+    // A caller that asked for it (`rateLimit`) never gets a rate limit as an ordinary answer: GitHub's limits are mostly a 403 (the primary limit with `x-ratelimit-remaining: 0`, the secondary with `retry-after`, or only
+    // the words in the message), and "no access" is a 403 too. It throws the neutral rate-limit error with the time to ask again; a 403 without any such signal is returned as it is.
+    if (init.rateLimit === true) {
+      const retryAt = compareRateLimitRetryAt(response, body, this.now());
+      if (retryAt !== undefined) throw new GithubCompareRateLimitError(retryAt);
     }
     return { status: response.status, body };
   }
@@ -1239,10 +1273,16 @@ export class GitHubAppCredentialProvider {
     let reviewCursor: string | null = null;
     const reviewCursors = new Set<string>();
     const currentReviewIds = new Set<string>();
+    // Whether the host records an edit of a comment (GraphQL `lastEditedAt`: null = never edited). A comment the host does not say anything about is left out, which is unknown, never "unedited".
+    const edits: Record<string, boolean> = {};
+    const noteEdit = (id: string, lastEditedAt: unknown): void => {
+      if (lastEditedAt === null) edits[id] = false;
+      else if (typeof lastEditedAt === "string") edits[id] = true;
+    };
     do {
       const data = await this.feedbackGraphql(token, `query($owner:String!,$name:String!,$number:Int!,$cursor:String) {
         repository(owner:$owner,name:$name) { nameWithOwner pullRequest(number:$number) { number headRefOid
-          reviews(first:100,after:$cursor) { nodes { fullDatabaseId updatedAt url body } pageInfo { hasNextPage endCursor } }
+          reviews(first:100,after:$cursor) { nodes { fullDatabaseId updatedAt lastEditedAt url body } pageInfo { hasNextPage endCursor } }
         } }
       }`, { owner: repository.owner, name: repository.name, number, cursor: reviewCursor });
       const repo = feedbackRecord(data.repository); const pr = feedbackRecord(repo.pullRequest);
@@ -1259,6 +1299,7 @@ export class GitHubAppCredentialProvider {
         if (currentReviewIds.has(id) || comment.url !== review.url || comment.body !== review.body
           || typeof review.updatedAt !== "string" || !Number.isFinite(Date.parse(review.updatedAt))) throw feedbackReadError("review changed during collection");
         currentReviewIds.add(id); comment.updatedAt = new Date(review.updatedAt).toISOString();
+        noteEdit(id, review.lastEditedAt);
       }
       reviewCursor = nextFeedbackCursor(connection, reviewCursors);
     } while (reviewCursor !== null);
@@ -1287,12 +1328,13 @@ export class GitHubAppCredentialProvider {
             const id = feedbackDatabaseId(feedbackRecord(comment).fullDatabaseId);
             if (id === null) throw feedbackReadError("invalid thread comment ID");
             ids.push(`review_comment:${id}`);
+            noteEdit(`review_comment:${id}`, feedbackRecord(comment).lastEditedAt);
           }
           const next = nextFeedbackCursor(threadComments, commentCursors);
           if (next === null) break;
           const more = await this.feedbackGraphql(token, `query($threadId:ID!,$cursor:String) { node(id:$threadId) { ... on PullRequestReviewThread {
             id isResolved repository { nameWithOwner } pullRequest { number }
-            comments(first:100,after:$cursor) { nodes { fullDatabaseId } pageInfo { hasNextPage endCursor } }
+            comments(first:100,after:$cursor) { nodes { fullDatabaseId lastEditedAt } pageInfo { hasNextPage endCursor } }
           } } }`, { threadId: thread.id, cursor: next });
           const node = feedbackRecord(more.node);
           validateFeedbackThread(node, repository, number);
@@ -1336,10 +1378,10 @@ export class GitHubAppCredentialProvider {
     if (ownIds.size > 0) {
       return {
         pullRequest: { ...final, headTreeSha }, comments: comments.filter((comment) => !ownIds.has(comment.id)),
-        threads: threads.map((thread) => ({ ...thread, commentIds: thread.commentIds.filter((id) => !ownIds.has(id)) })),
+        threads: threads.map((thread) => ({ ...thread, commentIds: thread.commentIds.filter((id) => !ownIds.has(id)) })), edits,
       };
     }
-    return { pullRequest: { ...final, headTreeSha }, comments, threads };
+    return { pullRequest: { ...final, headTreeSha }, comments, threads, edits };
   }
 
   /** The login the App's own comments carry (`<slug>[bot]`, lower-case), or undefined when the slug cannot be read. */
@@ -2358,9 +2400,14 @@ export interface GitHubFeedbackComment {
 export interface GitHubFeedbackThread { id: string; resolved: boolean; commentIds: string[] }
 export interface GitHubPullRequestFeedback {
   pullRequest: GitHubPullRequestDetails & { headTreeSha: string }; comments: GitHubFeedbackComment[]; threads: GitHubFeedbackThread[];
+  /**
+   * Comment id to whether the host records an edit of it (GraphQL `lastEditedAt`): false = never edited, true = edited. A comment not listed is unknown. Kept beside the comments, never in them:
+   * the comments are digested into the bundles. Lessons capture reads it to prove a review body or comment is its author's own words.
+   */
+  edits?: Readonly<Record<string, boolean>>;
 }
 const FEEDBACK_THREAD_FIELDS = `id isResolved repository { nameWithOwner } pullRequest { number }
-  comments(first:100) { nodes { fullDatabaseId } pageInfo { hasNextPage endCursor } }`;
+  comments(first:100) { nodes { fullDatabaseId lastEditedAt } pageInfo { hasNextPage endCursor } }`;
 /** A GitHub database ID: a positive-integer string (GraphQL BigInt) or a safe-integer number. Null when neither. */
 function feedbackDatabaseId(value: unknown): string | null {
   if (typeof value !== "string" && typeof value !== "number") return null;
@@ -2469,6 +2516,15 @@ export function mergeRateLimitRetryAt(response: Response, now: number): number |
   }
   if (response.status === 403 && candidates.length === 0 && !exhausted) return undefined;
   return candidates.length > 0 ? Math.max(...candidates) : safeFutureMilliseconds(now + 5 * 60_000, now);
+}
+
+/** When to ask GitHub again after a compare read, when the answer was a rate limit; undefined for every other answer (a 403 for lack of access included). */
+export function compareRateLimitRetryAt(response: Response, body: unknown, now: number): number | undefined {
+  const byHeaders = mergeRateLimitRetryAt(response, now);
+  if (byHeaders !== undefined) return byHeaders;
+  if (response.status !== 403) return undefined;
+  const message = (body as { message?: unknown } | null | undefined)?.message;
+  return typeof message === "string" && /rate limit|abuse detection/iu.test(message) ? now + 60_000 : undefined;
 }
 
 function assertMergePullRequestIdentity(details: GitHubPullRequestDetails, expectedNumber: number): void {

@@ -303,3 +303,28 @@ describe("the citation verifier", () => {
     expect((await verifier(async () => "x".repeat(1024 * 1024 + 1)).verify(input())).result).toBe("unknown");
   });
 });
+
+describe("what the loader is told about the task (lessons capture lane)", () => {
+  it("passes the request, the plan's summary and the files the plan names, so path scopes filter; the default budget is 5 lessons", async () => {
+    const w = world();
+    await seed(w.store, conv("les_billing01", { scope: { repos: ["api"], paths: ["src/billing/**"] } }), conv("les_http00001", { scope: { repos: ["api"], paths: ["src/http/**"] } }), conv("les_open00001", { scope: { repos: ["api"] } }));
+    const asked: unknown[] = [];
+    const host = { lessons: { ...(w.host as { lessons: object }).lessons, planFacts: async (t: unknown) => { asked.push(t); return { summary: "Retry failed HTTP calls\nWrap fetch in withRetry", files: ["src/http/client.ts"] }; } } } as never;
+    const result = await ask(host, { task: task({ requestText: "Please make the api retry failed calls" }) });
+    expect(result.learnedRefs?.lessons.map((l) => l.id).sort()).toEqual(["les_http00001", "les_open00001"]);
+    expect(asked).toHaveLength(1);
+    const [manifest] = await w.store.manifests(KEY, "task-1");
+    expect(manifest!.lessons.find((e) => e.id === "les_http00001")!.why).toBe("path");
+  });
+
+  it("the intent is the title and the start of the request; a plan that cannot be read adds nothing and the load goes on", async () => {
+    const { intentOf } = await import("../../../packages/broker/src/aws/broker/lessons-dispatch.js");
+    expect(intentOf({ title: "Retry", requestText: "x".repeat(1000) })).toBe(`Retry\n${"x".repeat(600)}`);
+    expect(intentOf({ title: "Retry" })).toBe("Retry");
+    const w = world();
+    await seed(w.store, conv("les_open00001", { scope: { repos: ["api"], paths: ["src/billing/**"] } }));
+    const host = { lessons: { ...(w.host as { lessons: object }).lessons, planFacts: async () => { throw new Error("store down"); } } } as never;
+    // No files are known, so the path-scoped lesson is not dropped for want of them.
+    expect((await ask(host)).learnedRefs?.lessons.map((l) => l.id)).toEqual(["les_open00001"]);
+  });
+});

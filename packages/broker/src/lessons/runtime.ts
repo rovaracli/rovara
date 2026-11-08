@@ -80,6 +80,11 @@ export interface LessonsRuntime {
   readonly counters: CounterDeps;
   /** What the lessons routes need. */
   readonly routes: LessonRouteDeps;
+  /**
+   * What the loader is told about a task besides its title: a summary of the approved plan and the files it names (`plan-facts.ts`). Set by the broker's wiring where the artifact store is reachable.
+   * Absent, or a task with no plan yet: the loader asks with the title and the request alone and no files, so no path scope is judged.
+   */
+  planFacts?: (task: { orgId?: string | undefined; taskId: string; workflow?: unknown }) => Promise<{ summary: string; files: readonly string[] } | undefined>;
 }
 
 const noModel = (): never => { throw new Error("no learning model is set up in this install"); };

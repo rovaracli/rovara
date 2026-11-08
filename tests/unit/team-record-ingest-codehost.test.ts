@@ -1,4 +1,5 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+import { hostRateLimitRetryAt } from "@agentx/contracts";
 import { createCodeHostTap, gitRevertedCommits, humanEditFile, revertedCommits, runHumanEdit, revertedPullRequests, type CodeHostDiff, type CodeHostEvent, type CodeHostRepo, type HumanEditInput } from "../../packages/broker/src/team-record/sources/codehost.js";
 import { createGithubDiffReader, createGithubRecordTap, githubEventsOf } from "../../packages/broker/src/team-record/sources/github.js";
 import { createRovaraEmitter, type RovaraEventBase } from "../../packages/broker/src/team-record/sources/rovara.js";
@@ -322,10 +323,12 @@ describe("reverts of Rovara pull requests", () => {
   });
   it("SRL-3 the merged revert pull request path needs no compare", async () => {
     const made = gated("none");
-    await made.tap.handle(pr({ number: 9, title: 'Revert "Fix cart total"', body: "Reverts acme/shop#5", action: "closed", merged: true, mergeCommitSha: sha(41), version: "closed:9" }));
+    await made.tap.handle(pr({ number: 9, title: 'Revert "Fix cart total"', body: "Reverts acme/shop#5", action: "closed", merged: true, mergedBy: alice, mergeCommitSha: sha(41), version: "closed:9" }));
     expect(made.w.sink.kinds()).toContain("rovara.closed");
     expect(made.marks).toHaveLength(1);
   });
+
+  const pushedBy = (n: number, sender: typeof alice | null = alice): Pick<Extract<CodeHostEvent, { type: "push" }>, "before" | "after"> & { sender?: typeof alice } => ({ before: sha(n - 1), after: sha(n), ...(sender === null ? {} : { sender }) });
 
   it("detects a revert commit on the default branch, records both events once, and re-scores the task", async () => {
     const { w, tap, marks } = gated(rangeOf({}));
@@ -350,7 +353,11 @@ describe("reverts of Rovara pull requests", () => {
     await tap.handle(revertPr({ body: "Reverts other/repo#5", version: "closed:10" }));
     await tap.handle(revertPr({ body: "Reverts acme/shop#99", version: "closed:11" }));
     expect(w.sink.kinds().filter((kind) => kind === "github.revert")).toEqual([]);
+    // R7: a revert pull request nobody is known to have merged (or a non-member merged) records nothing.
     await tap.handle(revertPr({ version: "closed:12" }));
+    await tap.handle(revertPr({ version: "closed:13", mergedBy: mallory }));
+    expect(w.sink.kinds().filter((kind) => kind === "github.revert")).toEqual([]);
+    await tap.handle(revertPr({ version: "closed:14", mergedBy: alice }));
     expect(w.sink.kinds().filter((kind) => kind === "github.revert")).toEqual(["github.revert"]);
   });
 
@@ -400,6 +407,50 @@ describe("reverts of Rovara pull requests", () => {
     expect(w.sink.kinds()).toEqual([]);
   });
 
+  describe("M3: a revert told only by a commit message is not forgeable", () => {
+    const message = `Revert "Fix cart total"\n\nThis reverts commit ${sha(30)}.`;
+    const pushEvent = (sender: typeof alice | null = alice): CodeHostEvent => ({ type: "push", repo: repo(), ref: "refs/heads/main", at: AT, ...pushedBy(40, sender), commits: [{ sha: sha(40), message }] });
+    const verifiedBy = (author: typeof alice | undefined, over: Record<string, unknown> = {}) => ({ compare: async () => ({ status: "ahead" as const, truncated: false, files: [], commits: [{ sha: sha(40), ...(author === undefined ? {} : { author, committer: author }), verified: true, ...over }] }) });
+    async function counts(extra: Partial<Parameters<typeof createCodeHostTap>[0]>, event: CodeHostEvent): Promise<{ kinds: string[]; marks: unknown[]; reverter: unknown }> {
+      const marks: unknown[] = [];
+      const { w, tap } = setup({ trackRecord: { markNotHeld: async (input) => { marks.push(input); } }, ...extra });
+      w.prs.list.push(rovaraPr);
+      await tap.handle(event);
+      return { kinds: w.sink.kinds(), marks, reverter: w.sink.puts.find((draft) => draft.kind === "rovara.reverted_by")?.actor };
+    }
+
+    it("positive control: a member's verified commit, pushed by the member, counts and credits the commit's author", async () => {
+      const result = await counts({ diffs: verifiedBy(alice) }, pushEvent());
+      expect(result.kinds).toEqual(["github.revert", "rovara.closed", "rovara.reverted_by"]);
+      expect(result.marks).toHaveLength(1);
+      expect(result.reverter).toMatchObject({ developerId: "dev-alice" });
+    });
+
+    it("an outsider's pull request that a member squash-merged (outsider author, host committer) does not count: no outcome, no re-score, no reverter", async () => {
+      const webFlow = { id: "19864447", login: "web-flow", isBot: false };
+      const result = await counts({ diffs: verifiedBy(mallory, { committer: webFlow, webFlow: true }) }, pushEvent(alice));
+      expect(result.kinds).toEqual([]);
+      expect(result.marks).toEqual([]);
+    });
+
+    it("does not count when the commit is a member's but was pushed by an outsider, a bot, or nobody", async () => {
+      for (const sender of [mallory, { id: "5", login: "ci[bot]", isBot: true }, null]) {
+        const result = await counts({ diffs: verifiedBy(alice) }, pushEvent(sender));
+        expect(result.kinds).toEqual([]);
+        expect(result.marks).toEqual([]);
+      }
+    });
+
+    it("does not count an unverified commit, a merge commit, a commit the compare does not list, a compare that failed, or a host with no compare at all", async () => {
+      for (const extra of [{ diffs: verifiedBy(alice, { verified: false }) }, { diffs: verifiedBy(alice, { merge: true }) }, { diffs: { compare: async () => ({ status: "ahead" as const, truncated: false, files: [], commits: [] }) } },
+        { diffs: { compare: async () => undefined } }, { diffs: { compare: async () => { throw new Error("host down"); } } }, {}]) {
+        const result = await counts(extra, pushEvent());
+        expect(result.kinds).toEqual([]);
+        expect(result.marks).toEqual([]);
+      }
+    });
+  });
+
   it("parses revert text strictly", () => {
     expect(revertedCommits(`This reverts commit ${sha(30).toUpperCase()}.`)).toEqual([sha(30)]);
     expect(revertedCommits("This reverts commit abc123")).toEqual([]);
@@ -433,6 +484,9 @@ describe("human edits to Rovara pull requests (read live, never stored)", () => 
     expect(handed).toHaveLength(1);
     const input = handed[0]!;
     expect(input).toMatchObject({ workspaceId: WS, project: "shop", taskId: "task-1", repo: "acme/shop", trust: "member", link: "https://github.com/acme/shop/pull/5" });
+    // M4: the lines carry the repository's audience and scope (a private repository's are restricted with a live access check).
+    expect(input.audience).toMatchObject({ kind: "restricted", acl: { source: "github", scope: "github:repo/77", liveCheck: "on_read" } });
+    expect(input.scope).toBe("github:repo/77");
     const file = input.files[0]!;
     expect(file.symbols).toEqual(["function total()"]);
     // 200 changed lines at most, hunk headers kept, context dropped, credentials redacted.
@@ -519,18 +573,18 @@ describe("human edits to Rovara pull requests (read live, never stored)", () => 
     const unsigned = { status: "ahead" as const, truncated: false, commits: [{ sha: sha(22), author: mallory, verified: false }], files: filesOf };
     const push = (before: number, after: number, sender: typeof alice, ref = "refs/heads/rovara/x") => ({ repo: "acme/shop", ref, before: sha(before), after: sha(after), senderId: sender.id, senderIsBot: sender.isBot, at: AT });
     const job = { repo: repo(), project: "shop", taskId: "task-1", pullRequest: { number: 5, url: rovaraPr.url }, candidateHeadSha: sha(20), headSha: sha(21), headRef: "rovara/x" };
-    function chainFixture(pushes: Array<ReturnType<typeof push>>) {
+    function chainFixture(pushes: Array<ReturnType<typeof push>>, commits: CodeHostDiff["commits"] = unsigned.commits) {
       const handed: HumanEditInput[] = [];
       const w = world();
       w.config.set("github", repoScope(repo()));
       w.actors.members.set("1001", "dev-alice");
       w.pushes.pushes.push(...pushes);
-      const deps = { actors: w.actors, mode: w.mode, config: w.config, pushes: w.pushes, diffs: { compare: async () => unsigned }, extractor: { extract: async (input: HumanEditInput) => { handed.push(input); return { candidates: 1 }; } } };
+      const deps = { actors: w.actors, mode: w.mode, config: w.config, pushes: w.pushes, diffs: { compare: async () => ({ ...unsigned, commits }) }, extractor: { extract: async (input: HumanEditInput) => { handed.push(input); return { candidates: 1 }; } } };
       return { handed, run: () => runHumanEdit(deps, job) };
     }
 
-    it("accepts commits that reached the branch in a complete chain of pushes by a linked member, whatever the commit metadata says", async () => {
-      const { handed, run } = chainFixture([push(20, 25, alice), push(25, 21, alice)]);
+    it("accepts unsigned commits that reached the branch in a complete chain of pushes by a linked member, when every commit's author is a member too", async () => {
+      const { handed, run } = chainFixture([push(20, 25, alice), push(25, 21, alice)], [{ sha: sha(22), author: alice, verified: false }]);
       expect(await run()).toBe("handed_on");
       expect(handed[0]).toMatchObject({ trust: "member", authorCount: 1 });
     });
@@ -609,6 +663,19 @@ describe("human edits to Rovara pull requests (read live, never stored)", () => 
     expect(compares).toEqual([]);
   });
 
+  it("F1: a compare the host has no answer for is told on with one fixed line; one the host could not answer for the moment throws out of the read, with nothing handed on", async () => {
+    const { w } = setup();
+    const logs: Array<[string, unknown]> = [];
+    const job = { repo: repo(), project: "shop", taskId: "task-1", pullRequest: { number: 5, url: rovaraPr.url }, candidateHeadSha: sha(20), headSha: sha(21) };
+    const extract = vi.fn(async () => ({ candidates: 0 }));
+    const missing = await runHumanEdit({ actors: w.actors, mode: w.mode, config: w.config, diffs: { compare: async () => undefined }, extractor: { extract }, log: (event, fields) => { logs.push([event, fields]); } }, job);
+    expect(missing).toBe("skipped");
+    expect(logs).toEqual([["human_edit.skipped", { reason: "compare_unavailable" }]]);
+    const reader = createGithubDiffReader(async () => ({ status: 503, body: {} }));
+    await expect(runHumanEdit({ actors: w.actors, mode: w.mode, config: w.config, diffs: reader, extractor: { extract } }, job)).rejects.toThrow(/unavailable/);
+    expect(extract).not.toHaveBeenCalled();
+  });
+
   it("reads a patch as hunk headers and changed lines only", () => {
     expect(humanEditFile({ path: "a.ts", additions: 1, deletions: 0, patch: "@@ -1 +1 @@ sym\n+x\n--- not a change\n+++ nor this" }).hunks).toEqual(["@@ -1 +1 @@ sym", "+x"]);
   });
@@ -679,6 +746,28 @@ describe("GitHub adapter", () => {
     expect(calls).toHaveLength(1);
     expect(await createGithubDiffReader(async () => ({ status: 404, body: {} })).compare({ repo: repo(), base: sha(20), head: sha(21) })).toBeUndefined();
     expect(await createGithubDiffReader(async () => ({ status: 200, body: { status: "weird" } })).compare({ repo: repo(), base: sha(20), head: sha(21) })).toBeUndefined();
+  });
+
+  it("F1: a rate limit or a host fault THROWS (so the read is tried again, nothing spent yet); a missing compare or an unreadable answer is still 'no diff'", async () => {
+    for (const status of [429, 500, 502, 503, 504]) {
+      await expect(createGithubDiffReader(async () => ({ status, body: {} })).compare({ repo: repo(), base: sha(20), head: sha(21) }), String(status)).rejects.toThrow(/unavailable/);
+    }
+    for (const status of [403, 404, 409, 422]) {
+      expect(await createGithubDiffReader(async () => ({ status, body: {} })).compare({ repo: repo(), base: sha(20), head: sha(21) }), String(status)).toBeUndefined();
+    }
+  });
+
+
+  it("a 403 that is a rate limit THROWS a host rate-limit error with the time to ask again (a signal from the read, or the host's own message); a 403 without rate-limit signals is 'no diff'", async () => {
+    const now = 1_800_000_000_000;
+    const ask = (answer: { status: number; body: unknown; retryAt?: number }) => createGithubDiffReader(async () => answer, () => now).compare({ repo: repo(), base: sha(20), head: sha(21) }).then(() => undefined, (error: unknown) => error);
+    expect(hostRateLimitRetryAt(await ask({ status: 403, body: {}, retryAt: now + 90_000 }))).toBe(now + 90_000);
+    expect(hostRateLimitRetryAt(await ask({ status: 403, body: { message: "You have exceeded a secondary rate limit. Please wait a few minutes." } }))).toBe(now + 60_000);
+    expect(hostRateLimitRetryAt(await ask({ status: 403, body: { message: "API rate limit exceeded for installation 1" }, retryAt: now + 5_000 }))).toBe(now + 5_000);
+    expect(hostRateLimitRetryAt(await ask({ status: 429, body: {}, retryAt: now + 30_000 }))).toBe(now + 30_000);
+    expect(hostRateLimitRetryAt(await ask({ status: 429, body: {} }))).toBe(now + 60_000);
+    expect(await ask({ status: 403, body: { message: "Resource not accessible by integration" } })).toBeUndefined();
+    expect(await createGithubDiffReader(async () => ({ status: 403, body: { message: "Forbidden" } })).compare({ repo: repo(), base: sha(20), head: sha(21) })).toBeUndefined();
   });
 });
 

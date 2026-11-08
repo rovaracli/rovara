@@ -103,6 +103,10 @@ describe("M6: the worker's own entry", () => {
     // It is the same configuration (region) as the ordinary client's.
     expect(await invoker.input.learningLambda!.config.region()).toBe("us-west-2");
   });
+  it("a human edit's compare can be read: the GitHub capture adapter is registered in the worker's Team record (a human-edit message reads the host itself), and nothing it sends goes anywhere", () => {
+    expect(built.teamRecord?.captureAdapters.support()["github"]).toMatchObject({ humanEdits: true });
+    expect(built.teamRecord?.captureAdapters.diffs).toBeDefined();
+  });
   it("Enterprise (a private install) is not the cloud", () => {
     expect(build({ ROVARA_EDITION: "enterprise" }).cloud).toBe(false);
   });

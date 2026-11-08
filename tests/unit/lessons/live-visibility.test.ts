@@ -407,7 +407,8 @@ describe("M1: rank and filter first, check in pages, one reader per request", ()
     const clock = new Clock();
     await seed(store, ...lessons);
     const started = Date.now();
-    const result = await loadLessonsForStage({ access: accessOf(p.value), store, vectors: NO_VECTORS, settings: settings(), audit: new Audit(), now: clock.now }, request);
+    // (The project's budget is raised to the caps: the default is 5 lessons and 2 KB per stage, and this test is about which twelve are chosen.)
+    const result = await loadLessonsForStage({ access: accessOf(p.value), store, vectors: NO_VECTORS, settings: settings({ loadBudget: { lessons: 12, bytes: 6 * 1024 } }), audit: new Audit(), now: clock.now }, request);
     expect(Date.now() - started).toBeLessThan(2_500);
     // The 100 narrowed lessons rank first and are withheld; the twelve best open ones follow.
     expect(result.context?.lessons.map((l) => l.id)).toEqual(lessons.slice(100, 112).map((l) => l.id));

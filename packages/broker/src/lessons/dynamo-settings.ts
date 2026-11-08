@@ -5,11 +5,11 @@
 //   company sole-owner switch: the workspace pk, sk `LESSONSET#COMPANYSOLE` (`enabled`: whether the sole-owner exception may approve a loosening; absent means ON). It holds no person.
 // Every sort key starts with `LESSONSET`, which the project erase and the workspace erase already wipe.
 import { GetCommand, PutCommand, QueryCommand, TransactWriteCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
-import { LEARNING_MODE_DEFAULT, learningModeKey, learningModeLockKey, teamRecordPk } from "@agentx/contracts";
+import { LEARNED_CONTEXT_MAX_BYTES, LEARNED_CONTEXT_MAX_LESSONS, LEARNING_MODE_DEFAULT, learningModeKey, learningModeLockKey, teamRecordPk } from "@agentx/contracts";
 import type { TransactItem } from "../audit/outbox.js";
 import { errorName, type Item } from "../agents/table-writes.js";
 import type { TeamRecordTable } from "../team-record/types.js";
-import { TIER0_APPROVAL_DEFAULT, type LearningPreset, type LearningSettings, type LearningSettingsReader } from "./policy.js";
+import { LOAD_BUDGET_MIN, TIER0_APPROVAL_DEFAULT, type LearningPreset, type LearningSettings, type LearningSettingsReader, type LoadBudgetSetting } from "./policy.js";
 import type { PresetChange, PresetChangeStore, PresetScope, PresetStore } from "./preset-setting.js";
 import type { SoleOwnerSwitchChange, SoleOwnerSwitchStore, Tier0Change, Tier0ChangeStore, Tier0Fence, Tier0Level, Tier0Scope, Tier0SettingsStore } from "./tier0-setting.js";
 
@@ -241,6 +241,24 @@ export class DynamoSoleOwnerSwitch implements SoleOwnerSwitchStore {
  * company floor. A mode that is stored but not valid is passed on as it is, so `resolveLearning` turns it into Off; an absent project mode is the record core's default (Suggest).
  * Any read that fails throws, and `resolveLearning` then fails closed.
  */
+const LOAD_BUDGET_SK = "LESSONSET#LOADBUDGET";
+const loadBudgetKey = (workspaceId: string, project: string) => ({ pk: teamRecordPk(workspaceId, project), sk: LOAD_BUDGET_SK });
+
+/**
+ * The project's own load budget (how many lessons and how many bytes a stage may be told), within the caps. Stored under `LESSONSET#`, which the project erase and the workspace erase already wipe; it holds
+ * no person. A value outside the caps is refused here and ignored by `resolveLoadBudget` if one is ever found stored. Returns whether the value was stored.
+ */
+export async function writeLoadBudget(table: TeamRecordTable, scope: { workspaceId: string; project: string }, budget: LoadBudgetSetting, at: number): Promise<boolean> {
+  const caps = { lessons: LEARNED_CONTEXT_MAX_LESSONS, bytes: LEARNED_CONTEXT_MAX_BYTES };
+  const valid = (value: number | undefined, min: number, max: number): boolean => value === undefined || (Number.isInteger(value) && value >= min && value <= max);
+  if (!valid(budget.lessons, LOAD_BUDGET_MIN.lessons, caps.lessons) || !valid(budget.bytes, LOAD_BUDGET_MIN.bytes, caps.bytes)) return false;
+  await table.documentClient.send(new PutCommand({
+    TableName: table.tableName,
+    Item: { ...loadBudgetKey(scope.workspaceId, scope.project), entityType: "LESSON_LOAD_BUDGET", ...(budget.lessons === undefined ? {} : { lessons: budget.lessons }), ...(budget.bytes === undefined ? {} : { bytes: budget.bytes }), updatedAt: at },
+  }));
+  return true;
+}
+
 export function dynamoLearningSettings(table: TeamRecordTable, settings: Tier0SettingsStore): LearningSettingsReader {
   const mode = async (key: { pk: string; sk: string }): Promise<{ present: false } | { present: true; value: Mode }> => {
     const item = (await table.documentClient.send(new GetCommand({ TableName: table.tableName, Key: key, ConsistentRead: true })) as { Item?: Item }).Item;
@@ -252,11 +270,16 @@ export function dynamoLearningSettings(table: TeamRecordTable, settings: Tier0Se
   return {
     async read(workspaceId, project) {
       const org = workspaceId;
-      const [own, lock, tier0, floor, preset, companyPreset] = await Promise.all([
+      const [own, lock, tier0, floor, preset, companyPreset, budget] = await Promise.all([
         mode(learningModeKey(org, project)), mode(learningModeLockKey(org)),
         settings.read({ kind: "project", workspaceId, project }), settings.read({ kind: "company", workspaceId }),
         presets.read({ kind: "project", workspaceId, project }).catch(() => "invalid" as never), presets.read({ kind: "company", workspaceId }).catch(() => "invalid" as never),
+        table.documentClient.send(new GetCommand({ TableName: table.tableName, Key: loadBudgetKey(workspaceId, project), ConsistentRead: true })) as Promise<{ Item?: Item }>,
       ]);
+      const stored = budget.Item;
+      const loadBudget: LoadBudgetSetting | undefined = stored?.entityType !== "LESSON_LOAD_BUDGET" ? undefined : {
+        ...(typeof stored.lessons === "number" ? { lessons: stored.lessons } : {}), ...(typeof stored.bytes === "number" ? { bytes: stored.bytes } : {}),
+      };
       return {
         mode: own.present ? own.value : MODE_NAMES[LEARNING_MODE_DEFAULT]!,
         ...(lock.present ? { companyLock: lock.value } : {}),
@@ -264,6 +287,7 @@ export function dynamoLearningSettings(table: TeamRecordTable, settings: Tier0Se
         ...(floor === undefined ? {} : { companyApproval: { tier0: floor } }),
         // A preset that is stored but not valid is passed on as it is, so `resolveLearning` turns it into Off.
         ...(preset === undefined ? {} : { preset }), ...(companyPreset === undefined ? {} : { companyPreset }),
+        ...(loadBudget === undefined ? {} : { loadBudget }),
       };
     },
   };

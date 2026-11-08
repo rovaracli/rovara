@@ -6,9 +6,9 @@ import {
 import { INTENT_NOT_WAITING_MESSAGE } from "./errors.js";
 import { designReviewActive, designReviewAwaitsDesign, rearmedDesignReview, workflowIsDesignReviewing } from "./design-review-state.js";
 import { redactText } from "./redaction.js";
-import type { WorkflowAcceptedFindingSchema, WorkflowFeedbackBundleRefSchema, WorkflowFeedbackReviewRefSchema, WorkflowFeedbackApprovalBindingSchema, WorkflowFeedbackThreadObservationSchema, WorkflowStageSchema, WorkflowStateSchema, WorkflowProgramSchema, WorkflowCheckPolicySchema, WorkflowPathSchema, WorkflowReviewPhaseSchema, WorkflowCanvasLineageSchema, WorkflowCanvasCloseoutSchema, WorkflowCanvasCloseoutAttemptSchema, WORKFLOW_PULL_REQUEST_UPDATE_CAUSES, WorkflowReviewBaseSchema} from "./task-workflow.js";
+import type { WorkflowFeedbackShownSchema, WorkflowAcceptedFindingSchema, WorkflowFeedbackBundleRefSchema, WorkflowFeedbackReviewRefSchema, WorkflowFeedbackApprovalBindingSchema, WorkflowFeedbackThreadObservationSchema, WorkflowStageSchema, WorkflowStateSchema, WorkflowProgramSchema, WorkflowCheckPolicySchema, WorkflowPathSchema, WorkflowReviewPhaseSchema, WorkflowCanvasLineageSchema, WorkflowCanvasCloseoutSchema, WorkflowCanvasCloseoutAttemptSchema, WORKFLOW_PULL_REQUEST_UPDATE_CAUSES, WorkflowReviewBaseSchema} from "./task-workflow.js";
 import { WORKFLOW_AGENTX_ACTOR_ID, WORKFLOW_AUTO_ACTION_LIMIT, WORKFLOW_AUTO_RETRY_LIMIT, WORKFLOW_AUTO_SEND_BACK_LIMIT, type WORKFLOW_AUTO_STAGES, WorkflowDecisionRecordSchema } from "./task-workflow.js";
-import { openSecondReviewFindings, ActorIdSchema, WORKFLOW_AUTO_PUBLISH_FAILED_MESSAGE, isStepNotRunReason, CandidateRepositorySchema, CandidateManifestSchema, VerificationResultsSchema, WorkflowPullRequestSchema, FeedbackCommentRefSchema, WorkflowFeedbackBundleMetadataSchema, FeedbackIdSchema, WorkflowFeedbackFindingRefSchema, WorkflowFeedbackReviewMetadataSchema, WorkflowFeedbackNoteSchema, WorkflowFeedbackDecisionSchema, WorkflowArtifactSchema, WorkflowDecisionSchema, WorkflowCheckProposalSchema, WorkflowCheckSchema, WORKFLOW_PROPOSED_CHECKS_MAX, type WorkflowCheck, type WorkflowCheckPolicy, WorkflowSnapshotShapeSchema, WorkflowAnswerSchema, WORKFLOW_DECISION_ANSWERS_MAX, WORKFLOW_DECISION_COMMENTS_MAX, workflowIsReviewOnly, WORKFLOW_BLOCK_REASONS, WorkflowReviewReportSchema, reviewCleared, PROGRAM_ROUNDS_MAX, WorkflowPullRequestUpdateFailureSchema, WorkflowFeedbackReviewSchema, ReviewedWorkflowFeedbackSchema, findingBlocks, findingAccepted, blockingFindings, workflowFindingFingerprint, WORKFLOW_ACCEPTED_FINDINGS_MAX , type WorkflowDefinitionVersion } from "./task-workflow.js";
+import { FEEDBACK_SHOWN_MAX_ROUNDS, FEEDBACK_SHOWN_MAX_IDS, WORKFLOW_METADATA_BUDGET_BYTES, workflowMetadataBytes, openSecondReviewFindings, ActorIdSchema, WORKFLOW_AUTO_PUBLISH_FAILED_MESSAGE, isStepNotRunReason, CandidateRepositorySchema, CandidateManifestSchema, VerificationResultsSchema, WorkflowPullRequestSchema, FeedbackCommentRefSchema, WorkflowFeedbackBundleMetadataSchema, FeedbackIdSchema, WorkflowFeedbackFindingRefSchema, WorkflowFeedbackReviewMetadataSchema, WorkflowFeedbackNoteSchema, WorkflowFeedbackDecisionSchema, WorkflowArtifactSchema, WorkflowDecisionSchema, WorkflowCheckProposalSchema, WorkflowCheckSchema, WORKFLOW_PROPOSED_CHECKS_MAX, type WorkflowCheck, type WorkflowCheckPolicy, WorkflowSnapshotShapeSchema, WorkflowAnswerSchema, WORKFLOW_DECISION_ANSWERS_MAX, WORKFLOW_DECISION_COMMENTS_MAX, workflowIsReviewOnly, WORKFLOW_BLOCK_REASONS, WorkflowReviewReportSchema, reviewCleared, PROGRAM_ROUNDS_MAX, WorkflowPullRequestUpdateFailureSchema, WorkflowFeedbackReviewSchema, ReviewedWorkflowFeedbackSchema, findingBlocks, findingAccepted, blockingFindings, workflowFindingFingerprint, WORKFLOW_ACCEPTED_FINDINGS_MAX , type WorkflowDefinitionVersion } from "./task-workflow.js";
 import { isRunLimitBlockReason } from "./spend.js";
 import { createHash } from "node:crypto";
 import { z } from "zod";
@@ -385,6 +385,7 @@ export function workflowFeedbackApprovalMatchesReview(
 }
 
 export type WorkflowFeedbackThreadObservation = z.infer<typeof WorkflowFeedbackThreadObservationSchema>;
+export type WorkflowFeedbackShown = z.infer<typeof WorkflowFeedbackShownSchema>;
 
 /** Creates AgentX's canonical candidate identity; callers cannot supply or override its digest. */
 export function createCandidateManifest(input: readonly CandidateRepository[]): CandidateManifest {
@@ -1520,9 +1521,11 @@ export function recordWorkflowBranchSync(currentInput: unknown, input: { reposit
 /** Saves recoverable review input without inventing an independent report or code authority. */
 export function collectWorkflowFeedbackBundles(currentInput: unknown, input: {
   bundleRefs: unknown; threadObservations: unknown;
+  /** Per pull request, which of its comments the host records an edit of (`false` = never edited). Comments not listed are unknown. Lessons capture only; absent or malformed means nothing is known. */
+  edits?: ReadonlyArray<{ repositoryId: string; number: number; edits: Readonly<Record<string, boolean>> }>;
 }, now: string): WorkflowSnapshot {
   const current = validSnapshot(currentInput);
-  const collected = WorkflowFeedbackReviewSchema.safeParse({ ...input, status: "COLLECTING" });
+  const collected = WorkflowFeedbackReviewSchema.safeParse({ bundleRefs: input.bundleRefs, threadObservations: input.threadObservations, status: "COLLECTING" });
   if (!collected.success || collected.data.status !== "COLLECTING"
     || current.stage !== "WAIT_FOR_MERGE" || current.state !== "WAITING"
     || current.pullRequests?.some(pr => (pr.state === "OPEN" || pr.state === "UNKNOWN")
@@ -1536,8 +1539,48 @@ export function collectWorkflowFeedbackBundles(currentInput: unknown, input: {
   const previousReport = current.feedbackReview?.reviewRef;
   const history = [...(current.feedbackReviewHistory ?? [])];
   if (previousReport && !history.some(r => r.sha256 === previousReport.sha256)) history.push(previousReport);
-  return WorkflowSnapshotSchema.parse({ ...current, revision: current.revision + 1, feedback: undefined,
-    feedbackReview: collected.data, feedbackReviewHistory: history, feedbackDispatchApproval: undefined, feedbackCiFailures: undefined, updatedAt: now });
+  const next = { ...current, revision: current.revision + 1, feedback: undefined,
+    feedbackReview: collected.data, feedbackReviewHistory: history,
+    feedbackDispatchApproval: undefined, feedbackCiFailures: undefined, updatedAt: now };
+  return WorkflowSnapshotSchema.parse({ ...next, feedbackShown: feedbackShownAfter(current, next, collected.data.bundleRefs, collected.data.threadObservations, now, input.edits) });
+}
+
+/**
+ * The record of which pull request comments the agent was shown, with this round added. Every comment of every collected bundle, and every comment of the threads seen with them (replies included),
+ * counts as shown, not only the ones the owner later selects. A round that cannot be recorded in full (the list is full, or an earlier round was collected before this record existed) marks the whole
+ * record `incomplete`, and a reader then takes the task as steered by someone unnamed.
+ */
+function feedbackShownAfter(
+  current: WorkflowSnapshot, next: Parameters<typeof workflowMetadataBytes>[0], bundleRefs: readonly WorkflowFeedbackBundleRef[], threadObservations: readonly WorkflowFeedbackThreadObservation[], now: string,
+  edits: ReadonlyArray<{ repositoryId: string; number: number; edits: Readonly<Record<string, boolean>> }> | undefined,
+): WorkflowFeedbackShown {
+  const prior = current.feedbackShown;
+  const earlierUnrecorded = prior === undefined && (current.feedbackReview !== undefined || (current.feedbackReviewHistory ?? []).length > 0);
+  const byPull = new Map<string, { repositoryId: string; number: number; comments: Map<string, { id: string; at: number; edited?: boolean }> }>();
+  const add = (repositoryId: string, number: number, id: string, updatedAt: string): void => {
+    const key = `${repositoryId}\u0000${number}`;
+    const entry = byPull.get(key) ?? { repositoryId, number, comments: new Map() };
+    const at = Date.parse(updatedAt);
+    const edited = (edits ?? []).find(item => item.repositoryId === repositoryId && item.number === number)?.edits[id];
+    entry.comments.set(`${id}\u0000${at}`, { id, at: Number.isFinite(at) && at >= 0 ? Math.floor(at) : 0, ...(typeof edited === "boolean" ? { edited } : {}) });
+    byPull.set(key, entry);
+  };
+  for (const bundle of bundleRefs) for (const comment of bundle.comments) add(bundle.repositoryId, bundle.number, comment.id, comment.updatedAt);
+  for (const thread of threadObservations) for (const comment of thread.comments) add(thread.repositoryId, thread.number, comment.id, comment.updatedAt);
+  const pulls = [...byPull.values()].map(entry => ({ repositoryId: entry.repositoryId, number: entry.number, comments: [...entry.comments.values()].sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : a.at - b.at)) }));
+  const used = (prior?.rounds ?? []).reduce((sum, round) => sum + round.pulls.reduce((inner, pull) => inner + pull.comments.length, 0), 0);
+  const adding = pulls.reduce((sum, pull) => sum + pull.comments.length, 0);
+  const rounds = [...(prior?.rounds ?? [])];
+  const wasIncomplete = prior?.incomplete === true || earlierUnrecorded;
+  const full = pulls.length > 32 || rounds.length >= FEEDBACK_SHOWN_MAX_ROUNDS || used + adding > FEEDBACK_SHOWN_MAX_IDS || pulls.some(pull => pull.comments.length > FEEDBACK_SHOWN_MAX_IDS);
+  if (!full) {
+    // A large pull request must not push the task snapshot over its metadata budget (that would stop feedback collection, a core flow): when this round would not fit, it is not added and the record
+    // is marked incomplete. If even the record as it stands does not fit with the mark, the rounds go and only the mark stays.
+    const withRound = { rounds: [...rounds, { at: now, pulls }], ...(wasIncomplete ? { incomplete: true as const } : {}) };
+    if (workflowMetadataBytes({ ...next, feedbackShown: withRound }) <= WORKFLOW_METADATA_BUDGET_BYTES) return withRound;
+  }
+  const marked = { rounds, incomplete: true as const };
+  return workflowMetadataBytes({ ...next, feedbackShown: marked }) <= WORKFLOW_METADATA_BUDGET_BYTES ? marked : { rounds: [], incomplete: true as const };
 }
 
 /** Registers immutable reconciled inputs and a separate AI advisory report; never starts code. */
@@ -2832,4 +2875,4 @@ export function decideWorkflow(
 
 export { workflowCheckCommandText } from "./workflow-check-input.js";
 
-export { WORKFLOW_NOT_RUN_PREFIX, isStepNotRunReason, openSecondReviewFindings, secondReviewBlockFinding, WORKFLOW_SECOND_REVIEW_LINE_MAX, WorkflowSecondReviewBlockSchema, type WorkflowSecondReviewBlock, ActorIdSchema, WORKFLOW_PLAN_MAX_BYTES, WORKFLOW_AUTO_PUBLISH_FAILED_MESSAGE, WORKFLOW_BLOCK_REASONS, WORKFLOW_REGRESSED_CHECKS_MAX, WORKFLOW_REGRESSED_CHECK_MAX, CandidateRepositorySchema, CandidateManifestSchema, VerificationResultsSchema, WorkflowVerificationRetrySchema, WorkflowReviewFindingSchema, type WorkflowReviewFinding, WORKFLOW_REVIEW_FAILURE_REASONS, WORKFLOW_REVIEW_MODEL_FAILURE_PATTERN, WorkflowReviewReportSchema, type WorkflowReviewReport, findingBlocks, workflowFindingFingerprint, WorkflowAcceptedFindingSchema, WORKFLOW_ACCEPTED_FINDINGS_MAX, type AcceptedFindingRef, findingAccepted, blockingFindings, reviewCleared, WorkflowPullRequestSchema, FeedbackIdSchema, FeedbackObjectKeySchema, FeedbackCommentRefSchema, WorkflowFeedbackBundleMetadataSchema, WorkflowFeedbackBundleRefSchema, WorkflowFeedbackPrioritySchema, WorkflowFeedbackAssessmentSchema, WorkflowFeedbackFindingRefSchema, WorkflowFeedbackCandidateBindingSchema, WorkflowFeedbackReviewMetadataSchema, WorkflowFeedbackReviewRefSchema, WorkflowFeedbackNoteSchema, WorkflowFeedbackDecisionSchema, WorkflowFeedbackApprovalBindingSchema, ReviewedWorkflowFeedbackSchema, WorkflowFeedbackThreadObservationSchema, FeedbackThreadObservationsSchema, WorkflowFeedbackReviewSchema, WorkflowStageSchema, WorkflowStateSchema, WorkflowProgramStepSchema, WorkflowProgramSchema, WorkflowObjectKeySchema, WorkflowArtifactSchema, WORKFLOW_DECISION_ANSWERS_MAX, WORKFLOW_DECISION_COMMENTS_MAX, PlanDecisionIdSchema, PlanOptionIdSchema, WorkflowAnswerSchema, WorkflowDecisionSchema, WorkflowDecisionRecordSchema, WORKFLOW_AGENTX_ACTOR_ID, WORKFLOW_AUTO_STAGES, WORKFLOW_AUTO_SEND_BACK_LIMIT, WORKFLOW_AUTO_RETRY_LIMIT, WORKFLOW_AUTO_ACTION_LIMIT, WorkflowAutoActionSchema, WorkflowCheckSchema, type WorkflowCheck, WORKFLOW_PROPOSED_CHECKS_MAX, WorkflowCheckProposalSchema, WorkflowCheckPolicySchema, type WorkflowCheckPolicy, workflowSelectedChecks, workflowIsReviewOnly, WorkflowPathSchema, WorkflowReviewPhaseSchema, WorkflowCanvasLineageSchema, WorkflowCanvasCloseoutSchema, WorkflowCanvasCloseoutAttemptSchema, WorkflowReviewBaseSchema, PROGRAM_ROUNDS_MAX, WORKFLOW_PULL_REQUEST_UPDATE_CAUSES, WORKFLOW_FIX_DROPS_BASE_CHANGES, WorkflowPullRequestUpdateFailureSchema, WorkflowSnapshotShapeSchema, WorkflowSnapshotViewSchema } from "./task-workflow.js";
+export { WORKFLOW_NOT_RUN_PREFIX, isStepNotRunReason, openSecondReviewFindings, secondReviewBlockFinding, WORKFLOW_SECOND_REVIEW_LINE_MAX, WorkflowSecondReviewBlockSchema, type WorkflowSecondReviewBlock, ActorIdSchema, WORKFLOW_PLAN_MAX_BYTES, WORKFLOW_AUTO_PUBLISH_FAILED_MESSAGE, WORKFLOW_BLOCK_REASONS, WORKFLOW_REGRESSED_CHECKS_MAX, WORKFLOW_REGRESSED_CHECK_MAX, CandidateRepositorySchema, CandidateManifestSchema, VerificationResultsSchema, WorkflowVerificationRetrySchema, WorkflowReviewFindingSchema, type WorkflowReviewFinding, WORKFLOW_REVIEW_FAILURE_REASONS, WORKFLOW_REVIEW_MODEL_FAILURE_PATTERN, WorkflowReviewReportSchema, type WorkflowReviewReport, findingBlocks, workflowFindingFingerprint, WorkflowAcceptedFindingSchema, WORKFLOW_ACCEPTED_FINDINGS_MAX, type AcceptedFindingRef, findingAccepted, blockingFindings, reviewCleared, WorkflowPullRequestSchema, FeedbackIdSchema, FeedbackObjectKeySchema, FeedbackCommentRefSchema, WorkflowFeedbackBundleMetadataSchema, WorkflowFeedbackBundleRefSchema, WorkflowFeedbackPrioritySchema, WorkflowFeedbackAssessmentSchema, WorkflowFeedbackFindingRefSchema, WorkflowFeedbackCandidateBindingSchema, WorkflowFeedbackReviewMetadataSchema, WorkflowFeedbackReviewRefSchema, WorkflowFeedbackNoteSchema, WorkflowFeedbackDecisionSchema, WorkflowFeedbackApprovalBindingSchema, ReviewedWorkflowFeedbackSchema, WorkflowFeedbackThreadObservationSchema, FeedbackThreadObservationsSchema, WorkflowFeedbackReviewSchema, WorkflowFeedbackShownSchema, FEEDBACK_SHOWN_MAX_ROUNDS, FEEDBACK_SHOWN_MAX_IDS, WorkflowStageSchema, WorkflowStateSchema, WorkflowProgramStepSchema, WorkflowProgramSchema, WorkflowObjectKeySchema, WorkflowArtifactSchema, WORKFLOW_DECISION_ANSWERS_MAX, WORKFLOW_DECISION_COMMENTS_MAX, PlanDecisionIdSchema, PlanOptionIdSchema, WorkflowAnswerSchema, WorkflowDecisionSchema, WorkflowDecisionRecordSchema, WORKFLOW_AGENTX_ACTOR_ID, WORKFLOW_AUTO_STAGES, WORKFLOW_AUTO_SEND_BACK_LIMIT, WORKFLOW_AUTO_RETRY_LIMIT, WORKFLOW_AUTO_ACTION_LIMIT, WorkflowAutoActionSchema, WorkflowCheckSchema, type WorkflowCheck, WORKFLOW_PROPOSED_CHECKS_MAX, WorkflowCheckProposalSchema, WorkflowCheckPolicySchema, type WorkflowCheckPolicy, workflowSelectedChecks, workflowIsReviewOnly, WorkflowPathSchema, WorkflowReviewPhaseSchema, WorkflowCanvasLineageSchema, WorkflowCanvasCloseoutSchema, WorkflowCanvasCloseoutAttemptSchema, WorkflowReviewBaseSchema, PROGRAM_ROUNDS_MAX, WORKFLOW_PULL_REQUEST_UPDATE_CAUSES, WORKFLOW_FIX_DROPS_BASE_CHANGES, WorkflowPullRequestUpdateFailureSchema, WorkflowSnapshotShapeSchema, WorkflowSnapshotViewSchema } from "./task-workflow.js";

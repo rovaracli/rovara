@@ -6,7 +6,7 @@ import {
 } from "@agentx/contracts";
 import { globToRegExp } from "./guards.js";
 import { safeScopeLabel } from "./render.js";
-import { approversRequired, modeAllows, resolveLearning, type ApprovalPolicy, type LearningSettingsReader } from "./policy.js";
+import { approversRequired, modeAllows, resolveLearning, resolveLoadBudget, type ApprovalPolicy, type LearningSettingsReader } from "./policy.js";
 import { isTrialLesson } from "./trial.js";
 import type { LessonDeps, LessonEmbedder, LessonVectors } from "./ports.js";
 import { EMBED_TIMEOUT_MS, EMBED_WARM_MS, docOfText, rankLessons } from "./similarity.js";
@@ -200,14 +200,16 @@ export async function loadLessonsForStage(deps: LoadDeps, request: LoadRequest):
   const chosen: LearnedLesson[] = [];
   const entries: LoadManifestEntry[] = [];
   let bytes = 0;
+  // At most the project's budget (default 5 lessons and 2 KB), never above the caps.
+  const budget = resolveLoadBudget(resolved.loadBudget, { lessons: LOAD_MAX_LESSONS, bytes: LOAD_MAX_BYTES });
   const choose = (lessons: readonly Lesson[]): void => {
     chosen.length = 0; entries.length = 0; bytes = 0;
     for (const lesson of lessons) {
-      if (chosen.length >= LOAD_MAX_LESSONS) break;
+      if (chosen.length >= budget.lessons) break;
       const picked = rank.get(lesson.id)!;
       const learned = toLearned(lesson);
       const size = sizeOf(learned);
-      if (bytes + size > LOAD_MAX_BYTES) continue;
+      if (bytes + size > budget.bytes) continue;
       chosen.push(learned);
       entries.push({ id: lesson.id, version: lesson.version, score: Math.round(picked.score * 1000) / 1000, why: picked.why, citation: "unchecked", taskIds: lessonTaskRefs(lesson).taskIds });
       bytes += size;
@@ -216,7 +218,7 @@ export async function loadLessonsForStage(deps: LoadDeps, request: LoadRequest):
   try {
     const checked = await readVisibleRanked({
       access: deps.access, key, viewer, where: "load", log, live, ranked: scored.map((entry) => entry.lesson), pageSize: CHECK_PAGE,
-      enough: (kept) => { choose(kept); return chosen.length >= LOAD_MAX_LESSONS; }, deadlineAt,
+      enough: (kept) => { choose(kept); return chosen.length >= budget.lessons; }, deadlineAt,
     });
     choose(checked.kept);
     if (!checked.complete) { deps.log?.("learning.load_visibility_budget", { checked: checked.checked, ranked: scored.length }); deps.metrics?.count("learning_load_budget_hit"); }

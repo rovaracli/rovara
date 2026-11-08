@@ -19,7 +19,6 @@
 import { GetCommand, PutCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
 import { INDEX_EXPIRY_ATTRIBUTE, LESSONS_REFLECT_LEASE_GRACE_SECONDS, LESSONS_REFLECT_MAX_ATTEMPTS, LESSONS_WORKER_TIMEOUT_SECONDS } from "@agentx/contracts";
 import { randomUUID } from "node:crypto";
-import type { ReflectMessage } from "./reflect-queue.js";
 
 /** How long a claim is kept: far past the queue's 4 days of retention, so no redelivery of the same message can find the claim gone. */
 export const CLAIM_TTL_SECONDS = 30 * 24 * 60 * 60;
@@ -27,10 +26,13 @@ export const LEASE_MS = (LESSONS_WORKER_TIMEOUT_SECONDS + LESSONS_REFLECT_LEASE_
 
 export const reflectClaimKey = (orgId: string, taskId: string, outcome: string) => ({ pk: `LEARN#${orgId}#${taskId}#${outcome}`, sk: "CLAIM" as const });
 
+/** What a lease is taken on: a reflection's (org, task, outcome word), or a human edit's (org, task, `human_edit-<head commit>`, `humanEditLeaseOutcome`). */
+export interface LeaseTarget { orgId: string; taskId: string; outcome: string }
+
 export interface Lease {
   orgId: string;
   taskId: string;
-  outcome: ReflectMessage["outcome"];
+  outcome: string;
   attempt: number;
   attemptId: string;
   key: { pk: string; sk: "CLAIM" };
@@ -40,7 +42,7 @@ export type FinishState = "done" | "retry" | "spent";
 
 export interface ClaimStore {
   /** Takes the lease on this (org, task, outcome) for one attempt. Throws when the table could not be read or written (the message is then tried again). */
-  take(message: ReflectMessage, nowMs: number): Promise<TakeResult>;
+  take(message: LeaseTarget, nowMs: number): Promise<TakeResult>;
   /** Ends the attempt: `done` (never run again), `retry` (the next take decides by the keys), `spent` (never run again, money was spent). A no-op when the lease is no longer this attempt's. */
   finish(lease: Lease, state: FinishState, nowMs: number): Promise<void>;
   /** Writes `callStartedAt` on the lease, conditional on this attempt still holding it. Throws when it cannot (the model call is then not made). */
@@ -62,7 +64,7 @@ const isConditionFailure = (error: unknown): boolean => error instanceof Error &
 export function dynamoReflectClaims(deps: ReflectClaimDeps): ClaimStore {
   const newAttemptId = deps.newAttemptId ?? randomUUID;
   const send = (command: unknown) => deps.documentClient.send(command);
-  const lease = (message: ReflectMessage, attempt: number, attemptId: string): Lease => ({ orgId: message.orgId, taskId: message.taskId, outcome: message.outcome, attempt, attemptId, key: reflectClaimKey(message.orgId, message.taskId, message.outcome) });
+  const lease = (message: LeaseTarget, attempt: number, attemptId: string): Lease => ({ orgId: message.orgId, taskId: message.taskId, outcome: message.outcome, attempt, attemptId, key: reflectClaimKey(message.orgId, message.taskId, message.outcome) });
   return {
     async take(message, nowMs) {
       const key = reflectClaimKey(message.orgId, message.taskId, message.outcome);

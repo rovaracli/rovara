@@ -529,6 +529,9 @@ describe("the lessons worker (switch on)", () => {
     const dead = named("LessonsReflectDeadLetters");
     expect(dead).toMatchObject({ MetricName: "ApproximateNumberOfMessagesVisible", Namespace: "AWS/SQS", Threshold: 1, ComparisonOperator: "GreaterThanOrEqualToThreshold", TreatMissingData: "notBreaching" });
     expect(JSON.stringify(dead["Dimensions"])).toContain("LessonsReflectDeadLetters");
+    // F2: the dead-letter queue holds reflections and human edits; the alarm text says so and where to tell them apart.
+    expect(String(dead["AlarmDescription"])).toMatch(/human edit/);
+    expect(String(dead["AlarmDescription"])).toMatch(/kind field says reflection or human_edit/);
     const errors = named("LessonsWorkerErrors");
     expect(errors).toMatchObject({ MetricName: "Errors", Namespace: "AWS/Lambda", Period: 900, Threshold: 1 });
     expect(JSON.stringify(errors["Dimensions"])).toContain("LessonsWorker");

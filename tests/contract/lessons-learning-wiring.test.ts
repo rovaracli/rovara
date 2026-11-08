@@ -291,3 +291,46 @@ describe("what the production subject source is given", () => {
     expect(await learning.source.read({ workspaceId: TEST_ORG, taskId: "11111111-1111-4111-8111-111111111111" })).toBeUndefined();
   });
 });
+
+describe("human fix-up commits and the corrections people already make", () => {
+  it("the extractor is installed in the Team record's tap, with NO queue (a model call does not fit the ops queue's 30 seconds), and the subject source reads the record's captured words", async () => {
+    const { dependencies } = install();
+    const installed: Array<{ extractor: unknown; enqueue?: unknown }> = [];
+    (dependencies.teamRecord as Record<string, unknown>).humanEdit = { install: (input: { extractor: unknown; enqueue?: unknown }) => { installed.push(input); } };
+    installLessons(dependencies as never);
+    expect(installed).toHaveLength(1);
+    expect(typeof (installed[0]!.extractor as { extract: unknown }).extract).toBe("function");
+    expect(installed[0]!.enqueue).toBeUndefined();
+  });
+
+  it("with the reflect queue: the tap is given a way to queue a job, which sends ONE human-edit message of ids to the reflections' queue (never the compare, never a model call), and the worker is given the handler", async () => {
+    const { dependencies } = install();
+    const sent: unknown[] = [];
+    dependencies.lessonsReflectQueue = { send: async (message: unknown) => { sent.push(message); } };
+    const installed: Array<{ extractor: unknown; enqueue?: (job: unknown) => Promise<void> }> = [];
+    const runs: unknown[] = [];
+    (dependencies.teamRecord as Record<string, unknown>).humanEdit = { install: (input: { extractor: unknown; enqueue?: (job: unknown) => Promise<void> }) => { installed.push(input); }, run: async (job: unknown, options: unknown) => { runs.push({ job, options }); return "skipped"; } };
+    installLessons(dependencies as never);
+    expect(installed).toHaveLength(1);
+    const job = { repo: { host: "github", id: "77", fullName: "acme/api", isPrivate: false, workspaceId: TEST_ORG }, project: "web", taskId: "t1", pullRequest: { number: 7, url: "https://github.com/acme/api/pull/7" }, candidateHeadSha: "a".repeat(40), headSha: "b".repeat(40) };
+    await installed[0]!.enqueue!(job);
+    expect(sent).toEqual([expect.objectContaining({ kind: "human_edit", orgId: TEST_ORG, taskId: "t1", headSha: "b".repeat(40), requestId: expect.any(String) as string })]);
+    expect(Object.keys(sent[0] as object).sort()).toEqual(["candidateHeadSha", "headSha", "kind", "orgId", "project", "pullRequest", "repo", "requestId", "taskId"]);
+    // The worker's side: the handler is given, and it runs the Team record's read under the lease (`leased: true`: the tap's own claim is left out).
+    const { lessonsWorkerDepsOf } = await import("../../packages/broker/src/aws/broker/lessons-worker.js");
+    const deps = lessonsWorkerDepsOf(dependencies as never, {});
+    expect(typeof deps?.humanEdit).toBe("function");
+    const result = await deps!.humanEdit!(job);
+    // The default mode (Suggest) reflects, so the Team record's read ran, once, for this job, as a LEASED run (the tap's own claim left out); it skipped, which is "no facts", final.
+    expect(runs).toEqual([{ job, options: { leased: true } }]);
+    expect(result).toEqual({ status: "no_facts", retry: false });
+  });
+
+  it("not installed without the model path or the Team record", () => {
+    const noModel = install({ modelAccess: false });
+    const installed: unknown[] = [];
+    (noModel.dependencies.teamRecord as Record<string, unknown>).humanEdit = { install: (input: unknown) => { installed.push(input); } };
+    installLessons(noModel.dependencies as never);
+    expect(installed).toEqual([]);
+  });
+});

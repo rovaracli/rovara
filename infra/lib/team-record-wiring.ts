@@ -344,7 +344,7 @@ export function attachLessonsWorker(stack: Stack, props: LessonsWorkerProps): { 
       comparisonOperator: cloudwatch.ComparisonOperator.GREATER_THAN_OR_EQUAL_TO_THRESHOLD, treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
     }).addAlarmAction(props.alarms.action);
   };
-  alarm("LessonsReflectDeadLettersAlarm", "LessonsReflectDeadLetters", "A finished task's reflection exhausted its receives and is in the lessons-reflect dead-letter queue (ids only). Learning from that task is lost unless it is redriven; check the LessonsWorker logs for lessons_worker.result.",
+  alarm("LessonsReflectDeadLettersAlarm", "LessonsReflectDeadLetters", "A finished task's reflection or a human edit's lesson exhausted its receives and is in the lessons-reflect dead-letter queue (ids only). Learning from it is lost unless it is redriven; check the LessonsWorker logs for lessons_worker.result (its kind field says reflection or human_edit).",
     deadLetters.metricApproximateNumberOfMessagesVisible({ statistic: "Maximum", period: Duration.minutes(5) }));
   alarm("LessonsWorkerErrorsAlarm", "LessonsWorkerErrors", "The LessonsWorker failed an invocation (a start-up fault, a timeout or an out-of-memory kill). Check its logs.",
     worker.metricErrors({ statistic: "Sum", period: Duration.minutes(15) }));

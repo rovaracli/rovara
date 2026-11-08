@@ -27,6 +27,7 @@ import { createTeamRecordRuntime } from "../team-record/runtime.js";
 import type { LessonsHostDependencies } from "./broker/definitions.js";
 import { installEditionPolicy } from "./broker/edition-wiring.js";
 import { createLessonsWorkerHandler } from "./broker/lessons-worker.js";
+import { githubCaptureAdapter } from "./broker/capture-adapters-wiring.js";
 import { createBrokerPlugins } from "./broker/plugin-wiring.js";
 import { recordAuditSinkOf } from "./broker/team-record-wiring.js";
 import { createGitHubAppCredentials } from "./github-credentials.js";
@@ -54,7 +55,10 @@ export function lessonsWorkerDependencies(): LessonsHostDependencies {
     // Never used: the worker writes pending items only (`pendingOnly`), and has no right to the queue.
     sqs: new SQSClient(awsClientConfiguration), queueUrl: "", documentClient, tableName: stateTableName, now: Date.now, log: (entry) => logLine(entry), pendingOnly: true,
   };
-  const teamRecord = createTeamRecordRuntime({ env, documentClient, stateTableName, log: logLine, audit: recordAuditSinkOf(audit, documentClient)! });
+  // Lessons capture: the worker reads a human edit's compare itself (a `contents: read` installation token, like the broker), so it registers the GitHub capture adapter the broker does. It reads nothing until a human-edit
+  // message arrives, and the message carries no token or text.
+  const captureAdapters = [githubCaptureAdapter({ provider: github.provider, codeHost: plugins.codeHost.forKind("github"), cloud })];
+  const teamRecord = createTeamRecordRuntime({ env, documentClient, stateTableName, log: logLine, audit: recordAuditSinkOf(audit, documentClient)!, captureAdapters });
   const functionName = env.MODEL_ACCESS_FUNCTION_NAME;
   return {
     documentClient, s3: new S3Client(awsClientConfiguration), tableName: stateTableName, artifactBucketName: requiredEnvironment("ARTIFACT_BUCKET_NAME"),
