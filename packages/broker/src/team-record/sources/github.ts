@@ -43,7 +43,7 @@ const changesOf = (action: string | undefined, payload: unknown): { changed?: { 
   return { changed: { title: changes.title !== undefined, body: changes.body !== undefined }, ...(changes.body === undefined ? {} : { previousBody: changes.body.from ?? "" }), ...(changes.title === undefined ? {} : { previousTitle: changes.title.from }) };
 };
 
-export interface GithubRecordTapDependencies extends Omit<CodeHostTapDependencies, "diffs"> {
+export interface GithubRecordTapDependencies extends CodeHostTapDependencies {
   /**
    * The workspace and project an installation's repository belongs to (the Rovara project's repository registry). It MUST check that the repository is one
    * the installation holds and a project registered, never trusting the body's names: a delivery for any other repository must answer `undefined`, and then
@@ -55,7 +55,8 @@ export interface GithubRecordTapDependencies extends Omit<CodeHostTapDependencie
   now?: () => number;
 }
 
-export type GithubGetJson = (path: string) => Promise<{ status: number; body: unknown }>;
+/** `context` names the workspace and the repository the path is about, so the caller can mint the right installation token. */
+export type GithubGetJson = (path: string, context?: { workspaceId: string; fullName: string }) => Promise<{ status: number; body: unknown }>;
 
 /**
  * The deliveries that remove what the record holds, by event name and action: a deleted comment (both comment events) and a deleted or transferred repository (`createCodeHostTap` tombstones
@@ -205,7 +206,7 @@ export function createGithubDiffReader(getJson: GithubGetJson): CodeHostDiffRead
     async compare({ repo, base, head }) {
       if (!/^[0-9a-f]{40}$/.test(base) || !/^[0-9a-f]{40}$/.test(head) || !/^[\w.-]+\/[\w.-]+$/.test(repo.fullName)) return undefined;
       const [owner, name] = repo.fullName.split("/") as [string, string];
-      const answered = await getJson(`/repos/${encodeURIComponent(owner)}/${encodeURIComponent(name)}/compare/${base}...${head}?per_page=100`);
+      const answered = await getJson(`/repos/${encodeURIComponent(owner)}/${encodeURIComponent(name)}/compare/${base}...${head}?per_page=100`, { workspaceId: repo.workspaceId, fullName: repo.fullName });
       if (answered.status !== 200) return undefined;
       const parsed = Compare.safeParse(answered.body);
       if (!parsed.success) return undefined;

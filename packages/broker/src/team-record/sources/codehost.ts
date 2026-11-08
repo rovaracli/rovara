@@ -199,7 +199,7 @@ export function createCodeHostTap(deps: CodeHostTapDependencies): { handle(event
       const project = event.repo.project ?? config.project;
       const base = { workspaceId: event.repo.workspaceId, ...(project === undefined ? {} : { project }), repo: event.repo.fullName, source: sourceOf(event.repo), scope: repoScope(event.repo), links: [] as string[] };
       const actor = async (person: CodeHostPerson): Promise<NonNullable<RecordDraft["actor"]>> => {
-        const resolved = await deps.actors.resolve({ workspaceId: event.repo.workspaceId, project, system: event.repo.host, sourceId: person.id, isBot: person.isBot });
+        const resolved = await deps.actors.resolve({ workspaceId: event.repo.workspaceId, project, system: sourceOf(event.repo), sourceId: person.id, isBot: person.isBot });
         return { sourceId: person.id, ...(resolved.developerId === undefined ? {} : { developerId: resolved.developerId }), trust: person.isBot ? "system" : resolved.trust };
       };
       // Per-editor rows (owner, 2026-11-02): ONE row per change to a pull request, review or comment, under the person who made it (the delivery's sender for an edit, a close, a reopen, a dismissal;
@@ -402,7 +402,7 @@ export function createCodeHostTap(deps: CodeHostTapDependencies): { handle(event
       let reverter: NonNullable<RecordDraft["actor"]> | undefined;
       if (by !== undefined && !by.isBot && !isExcluded(source, by.id, by.login)) {
         try {
-          const resolved = await deps.actors.resolve({ workspaceId: repo.workspaceId, project: target.project, system: repo.host, sourceId: by.id });
+          const resolved = await deps.actors.resolve({ workspaceId: repo.workspaceId, project: target.project, system: sourceOf(repo), sourceId: by.id });
           if (resolved.developerId !== undefined && resolved.trust === "member") reverter = { sourceId: resolved.developerId, developerId: resolved.developerId, trust: "member" };
         } catch {
           log("record.reverter_unresolved", { host: repo.host });
@@ -499,7 +499,7 @@ export async function runHumanEdit(deps: Pick<CodeHostTapDependencies, "actors" 
   // A person counts only as a live company member who is not excluded from the source. The result is their canonical developer id (the identity link), or undefined.
   const memberOf = async (person: CodeHostPerson | undefined): Promise<string | undefined> => {
     if (person === undefined || person.isBot || isExcluded(config, person.id, person.login)) return undefined;
-    const who = await deps.actors.resolve({ workspaceId: job.repo.workspaceId, project: job.project, system: job.repo.host, sourceId: person.id });
+    const who = await deps.actors.resolve({ workspaceId: job.repo.workspaceId, project: job.project, system: sourceOf(job.repo), sourceId: person.id });
     return who.trust === "member" ? who.developerId : undefined;
   };
   let vouching = new Map<string, string>();

@@ -37,6 +37,8 @@ export interface CodeHostCaptureAdapter {
   readonly supports: CodeHostCaptureSupport;
   /** The record's name of a pull request URL on this host; undefined for a URL that is not this host's. */
   pullRequestAddress(url: string): PullRequestAddress | undefined;
+  /** The repository's address as the project's repository record spells it, from the full name the tap uses, so a Rovara pull request on this host can be found. Absent: such pull requests are not matched. */
+  repositoryAddress?(fullName: string): string | undefined;
   /** The comments the host lists now. THROWS when the host cannot be read. Absent when `supports.pullRequestComments` is false. */
   pullRequestFeedback?(input: { workspaceId: string; project: string; taskId: string; address: PullRequestAddress; url: string }): Promise<PullRequestFeedbackView | undefined>;
   /** Reads a compare live. Absent when `supports.humanEdits` is false. */
@@ -95,6 +97,8 @@ export function captureAdapterOf(input: {
   host: string; codeHost: Pick<CodeHost, "feedback">;
   /** The record's name of a pull request URL on this host. */
   pullRequestAddress(url: string): PullRequestAddress | undefined;
+  /** The repository's address for a full name (see `CodeHostCaptureAdapter.repositoryAddress`). */
+  repositoryAddress?(fullName: string): string | undefined;
   /** The port's change request ref for an address. */
   refOf(address: PullRequestAddress, url: string): ChangeRequestRef;
   /** The scope the port's call is made under (the company's own). */
@@ -111,6 +115,7 @@ export function captureAdapterOf(input: {
       authorship: input.diffs === undefined ? "none" : input.authorship ?? "verified_commits_and_push_chain", mergeCommit: input.mergeCommit ?? true,
     },
     pullRequestAddress: input.pullRequestAddress,
+    ...(input.repositoryAddress === undefined ? {} : { repositoryAddress: input.repositoryAddress }),
     ...(input.diffs === undefined ? {} : { diffs: input.diffs }),
     async pullRequestFeedback({ workspaceId, address, url }) {
       const feedback = await input.codeHost.feedback(input.refOf(address, url), await input.scopeOf(workspaceId));

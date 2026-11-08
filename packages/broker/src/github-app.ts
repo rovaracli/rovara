@@ -772,6 +772,19 @@ export class GitHubAppCredentialProvider {
     return { files, ...(hasNext && options.page < 10_000 ? { nextPage: options.page + 1 } : {}) };
   }
 
+  /**
+   * Lessons capture: a read-only GET of one COMPARE of an installed repository (`/repos/<owner>/<name>/compare/<base>...<head>`), with a token that asks for `contents: read` only. The caller learns what the
+   * people changed after Rovara's last push. Any other path is refused before GitHub is asked, so this cannot read anything but a compare of the repository it names.
+   */
+  async getRepositoryCompareJson(repositoryUrl: string, apiPath: string, scope: GitHubTokenScope): Promise<{ status: number; body: unknown }> {
+    const repository = parseGitHubRepository(repositoryUrl);
+    const prefix = `/repos/${encodeURIComponent(repository.owner)}/${encodeURIComponent(repository.name)}/compare/`;
+    if (!apiPath.startsWith(prefix) || !/^[\w.%/-]+\.\.\.[0-9a-f]{40}(\?per_page=\d{1,3})?$/u.test(apiPath.slice(prefix.length))) throw agentXError("CONFIG_INVALID", "not a compare path of this repository");
+    const installed = await this.installed(repository, scope);
+    const token = await this.createInstallationToken(installed, { contents: "read" }, scope);
+    return this.trackingJson(`https://api.github.com${apiPath}`, token);
+  }
+
   /** The provider a tracking pass reads through: itself with no budget, else one bounded provider per budget (a pass's reads share its installation lookup). */
   private trackingProvider(budget: GithubMergeReadBudget | undefined): GitHubAppCredentialProvider {
     if (budget === undefined) return this;

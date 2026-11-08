@@ -20,7 +20,8 @@ import { OrgStore } from "../org/store.js";
 import { resolveSlackOrg } from "../org/resolve.js";
 import { orgOfInstallation, projectsOf as projectsOfRepository } from "../triggers/github-events.js";
 import { createRovaraPullRequestIndex } from "../rovara-code/rovara-pull-request-index.js";
-import type { DeveloperTaskRecord } from "../developer/task-records.js";
+import { findLinkedChangeRequest } from "../rovara-code/linked-change-requests.js";
+import { taskKey, type DeveloperTaskRecord } from "../developer/task-records.js";
 import { athenaPort, s3VectorsPortFromCredentials, type SdkLoader } from "./aws-adapters.js";
 import { DynamoLessonStore } from "../lessons/dynamo-store.js";
 import { lessonDeletionPort } from "../lessons/deletion.js";
@@ -45,7 +46,10 @@ import { buildRecordCaller, handleRecordRoute, type RecordRouteReply } from "./r
 import { dynamoRateLimiter, type RecordQueryDependencies } from "./query.js";
 import { realRefusalFloor, type SourceRouteDependencies, type SourceWriteContext } from "./source-write.js";
 import { createCaptureModePort, createRecordSink, createSourceConfigPort, NOTES_OPT_IN_FROM_SOURCE_ROW, type RecordSink } from "./sink.js";
-import { createOpConsumer, type QueueRecord } from "./sources/queue.js";
+import { createOpConsumer, createQueuedHumanEditJobs, type QueueRecord } from "./sources/queue.js";
+import { createCaptureAdapters, type CaptureAdapters, type CodeHostCaptureAdapter } from "./sources/capture-adapters.js";
+import { createCodeHostTap, runHumanEdit, type HumanEditExtractorPort, type HumanEditJob } from "./sources/codehost.js";
+import { tableMergeIndex, tableOnceClaims, tablePushIndex, type MergeIndex } from "./capture-indexes.js";
 import { TEAM_RECORD_REMOVAL_SOURCE, type DeadLetterPort, type OpsQueue, type RemovalFallback, type RemovalFallbackEvent } from "./ops-queue.js";
 import { developerOfTrackerAuthor, isTrackerSystem, linkTrackerByVerifiedEmail, linkTrackerIdentity, listLinkedTrackerUsers, listUnmatchedTrackerUsers, mapTrackerUser, removeTrackerLinks, trackerLinksOf, unmapTrackerUser, UNMATCHED_PREFIX, type LinkedTrackerUser, type TrackerLink, type TrackerLinkVia, type UnmatchedTrackerUser } from "./identity-links.js";
 import { autoLinkEnabled, setAutoLinkEnabled, type VerifiedDomainsPort } from "./tracker-autolink.js";
@@ -151,6 +155,11 @@ export interface TeamRecordRuntimeInput {
    * person is linked by themselves, and nothing is guessed from members' emails.
    */
   verifiedDomains?: VerifiedDomainsPort;
+  /**
+   * Lessons capture: the code hosts learning can read, each through the one capture interface (`sources/capture-adapters.ts`). GitHub's is built by the broker (its compare read and its comment listing);
+   * a code-host plug-in adds its own here. Absent: no host is read for human edits or pull request comments.
+   */
+  captureAdapters?: readonly CodeHostCaptureAdapter[];
   /** Tests: a loader for the AWS SDK packages and an STS port. */
   sdk?: SdkLoader;
   sts?: StsAssumePort;
@@ -216,6 +225,8 @@ export interface TeamRecordRuntime {
   /** The taps. Each never throws and records only what the source rows and the mode allow. */
   taps: {
     github: ReturnType<typeof createGithubRecordTap>;
+    /** A code-host plug-in's event, already host-neutral (`CodeHostEvent`). The workspace and project of its repository are the plug-in's binding, never read from the delivery. */
+    codeHost(event: Parameters<ReturnType<typeof createCodeHostTap>["handle"]>[0]): ReturnType<ReturnType<typeof createCodeHostTap>["handle"]>;
     hook: ReturnType<typeof createHookRecordTap>;
     /** A Slack event the ingress verified and forwarded, with the channel facts it read with the bot token. */
     slack(forward: { payload: unknown; channel?: { teamId: string; channelId: string; info: SlackChannelInfo } }): ReturnType<ReturnType<typeof createSlackRecordTap>>;
@@ -235,6 +246,19 @@ export interface TeamRecordRuntime {
      * left of its time; its counts join the run's summary, and a failure is counted and never stops the others (or the record's own work). Returns the function that takes it away again.
      */
     extend(job: "hourly" | "nightly", work: (orgId: OrgId, projects: string[], budgetMs: number) => Promise<Record<string, number>>): () => void;
+  };
+  /** Lessons capture: the code hosts learning reads, and the merge commits noted for Rovara's merged pull requests. */
+  readonly captureAdapters: CaptureAdapters;
+  readonly mergeIndex: MergeIndex;
+  /**
+   * Human fix-up commits (decision Q5). Nothing is read from a host until `install` gives an extractor: the lessons runtime does (`aws/broker/lessons-wiring.ts`). `run` is what a worker with enough time calls for
+   * one job: it proves the authors, reads the compare live, hands it to the extractor once, and keeps nothing. `enqueue` is where the tap sends a job at a merge; without one nothing is queued (a job is never run
+   * inside a webhook's answer, and the ops queue's consumer has 30 seconds, less than a model call needs).
+   */
+  readonly humanEdit: {
+    install(input: { extractor: HumanEditExtractorPort; enqueue?: (job: HumanEditJob) => Promise<void> }): void;
+    installed(): boolean;
+    run(job: HumanEditJob): Promise<"handed_on" | "skipped">;
   };
   /** SRL-6: the company's erase and delete failures of the last 24 hours (counts and a time), for the admin Health data. Throws when the table cannot be read. */
   opsFailures(orgId: OrgId): Promise<OpsFailures>;
@@ -590,8 +614,37 @@ export function createTeamRecordRuntime(input: TeamRecordRuntimeInput): TeamReco
     if (projects.length === 0) return undefined;
     return projects.length === 1 ? { workspaceId: orgId, project: projects[0]! } : { workspaceId: orgId };
   };
-  // Rovara's own pull requests, by number (the task's reverse link) and by merge commit (the index written when the merge is recorded, SRL-3): `rovara-code/rovara-pull-request-index.ts`.
-  const rovaraPrs = createRovaraPullRequestIndex({ documentClient: input.documentClient, tableName: state.tableName });
+  // Rovara's own pull requests, by number (the task's reverse link) and by merge commit. GitHub's lookups are SRL-3's (`rovara-code/rovara-pull-request-index.ts`, the index written when the merge is recorded);
+  // another host is matched through its capture adapter, and the tap's own merge note (`recordMerge`, the Team record's merge index) answers a revert named by commit that SRL-3's index does not hold.
+  const mergeIndex = tableMergeIndex(table, now);
+  const captureAdapters = createCaptureAdapters();
+  for (const adapter of input.captureAdapters ?? []) captureAdapters.register(adapter);
+  const githubPrs = createRovaraPullRequestIndex({ documentClient: input.documentClient, tableName: state.tableName });
+  const rovaraPrs = {
+    async byNumber({ workspaceId, host, repo, number }: { workspaceId: string; host: string; repo: string; number: number }) {
+      if (host === "github") return githubPrs.byNumber({ workspaceId, host, repo, number });
+      // Another host says its own repository address through its capture adapter (a host with none cannot be matched).
+      const repositoryAddress = captureAdapters.forHost(host)?.repositoryAddress?.(repo);
+      if (repositoryAddress === undefined) return undefined;
+      const linked = await findLinkedChangeRequest(state, { hostKind: host, repositoryAddress, id: String(number) });
+      // The link must belong to THIS workspace: a pull request number is only unique inside a repository, and a repository belongs to one org's installation.
+      if (linked === undefined || linked.workspaceId === undefined) return undefined;
+      const task = ((await input.documentClient.send(new GetCommand({ TableName: state.tableName, Key: taskKey(linked.taskId), ConsistentRead: true }))) as { Item?: DeveloperTaskRecord }).Item;
+      if (task === undefined || task.orgId !== workspaceId) return undefined;
+      const entry = task.workflow?.pullRequests?.find((pullRequest) => pullRequest.number === number && pullRequest.url === linked.url);
+      if (entry?.headSha === undefined) return undefined;
+      return { taskId: task.taskId, project: task.project, number, url: linked.url, candidateHeadSha: entry.headSha };
+    },
+    // The merge commit of a Rovara pull request is noted when it merges, so a revert named by commit finds its task: SRL-3's index first (GitHub), then the tap's note.
+    async byMergeCommit({ workspaceId, host, repo, sha }: { workspaceId: string; host: string; repo: string; sha: string }) {
+      const recorded = await githubPrs.byMergeCommit?.({ workspaceId, host, repo, sha });
+      if (recorded !== undefined) return recorded;
+      const found = await mergeIndex.byMergeCommit({ workspaceId, host, repo, sha });
+      if (found === undefined) return undefined;
+      return { ...found, candidateHeadSha: sha };
+    },
+    recordMerge: (note: Parameters<MergeIndex["record"]>[0]) => mergeIndex.record(note),
+  };
   const priorEdits = priorEditsPort(table, now);
   // Per-editor rows: every change is its own row under the person who made it, and the sink counts a change whose person is not linked (`author_not_linked`).
   // A repository deleted or transferred also marks its source row `failing` (health only: no new revision, see `markSourceFailing`).
@@ -603,7 +656,23 @@ export function createTeamRecordRuntime(input: TeamRecordRuntimeInput): TeamReco
   };
   // SRL-6: a source delete that no durable path accepted is counted for the company's Health page (an id that is not an org id is not counted).
   const failures = { async tombstoneLost(workspaceId: string): Promise<void> { const org = OrgIdSchema.safeParse(workspaceId); if (org.success) await recordOpsFailure(table, org.data, "tombstone", now()); } };
-  const github = createGithubRecordTap({ sink, actors, rovaraPrs, mode, config, resolveRepo, log: tapLog, now, priorEdits, sourceHealth, failures });
+  // ---- human fix-up commits and the hosts learning reads (lessons capture lane). Nothing is read until the lessons runtime installs an extractor.
+  const claims = tableOnceClaims(table, now);
+  const pushes = tablePushIndex(table, actors, now);
+  const humanEditing: { extractor?: HumanEditExtractorPort; enqueue?: (job: HumanEditJob) => Promise<void> } = {};
+  const humanEditDeps = { actors, mode, config, pushes, claims, diffs: captureAdapters.diffs, log: tapLog };
+  const lateExtractor: HumanEditExtractorPort = { extract: async (job) => (humanEditing.extractor === undefined ? { candidates: 0 } : humanEditing.extractor.extract(job)) };
+  const humanEdit: TeamRecordRuntime["humanEdit"] = {
+    install(installed) { humanEditing.extractor = installed.extractor; if (installed.enqueue !== undefined) humanEditing.enqueue = installed.enqueue; },
+    installed: () => humanEditing.extractor !== undefined,
+    run: async (job) => (humanEditing.extractor === undefined ? "skipped" : runHumanEdit({ ...humanEditDeps, extractor: lateExtractor }, job)),
+  };
+  const humanEditJobs = { enqueue: async (job: HumanEditJob): Promise<void> => { if (humanEditing.extractor !== undefined && humanEditing.enqueue !== undefined) await humanEditing.enqueue(job); } };
+  const github = createGithubRecordTap({
+    sink, actors, rovaraPrs, mode, config, resolveRepo, log: tapLog, now, priorEdits, sourceHealth, failures, pushes, claims, humanEditJobs, extractor: lateExtractor, diffs: captureAdapters.diffs,
+  });
+  /** A plug-in host's events, already in the host-neutral shape: the same tap, reading compares through the host's own adapter. */
+  const codeHost = createCodeHostTap({ sink, actors, rovaraPrs, mode, config, log: tapLog, priorEdits, sourceHealth, failures, pushes, claims, humanEditJobs, extractor: lateExtractor, diffs: captureAdapters.diffs });
   // A comment names only its ticket: the ticket must already be recorded under the same place (Linear), and takes its restriction from how it was recorded (Jira). Read from the record, not from the tracker.
   const recorder = createTicketRecorder({ sink, actors, mode, config, log: tapLog, priorEdits, parents: createRecordParentLookup(table) });
   const hook = createHookRecordTap({ recorder });
@@ -1156,7 +1225,7 @@ export function createTeamRecordRuntime(input: TeamRecordRuntimeInput): TeamReco
 
   // ---- the durable queue's consumer. A message the queue's own consumer cannot apply throws and is retried by SQS (then dead-lettered); a Slack removal goes through the strict tap.
   // A replayed put reads the company's and the project's state fresh (TRW-5 S4).
-  const consumer = createOpConsumer({ sink: { ...directSink, put: guardedPut(true) }, distiller, log: tapLog, now });
+  const consumer = createOpConsumer({ sink: { ...directSink, put: guardedPut(true) }, distiller, humanEdit: (job) => humanEdit.run(job), log: tapLog, now });
   /** The most one drain may spend (the broker's timeout is 30 s) when the caller gives no clock of its own. */
   const DRAIN_MS = 24_000;
   /** Time kept back for the answer: a batch the function times out in raises every message's receive count without any code having run (TRW-5 S1). */
@@ -1301,5 +1370,5 @@ export function createTeamRecordRuntime(input: TeamRecordRuntimeInput): TeamReco
     orgOfSlackTeam: (teamId) => new OrgStore({ documentClient: input.documentClient, tableName: state.tableName, now }).orgForSlackTeam(teamId),
     developerOfSlackUser: async (slackUserId) => (input.developerOfSlackUser === undefined ? undefined : await input.developerOfSlackUser(slackUserId)),
   });
-  return { edition, table, sink, drain, removal, links, trackerPeople, emitter, slackAdd, taskVisibility: (orgId, taskId) => resolveTaskVisibility({ documentClient: input.documentClient, tableName: state.tableName, now }, orgId, taskId), actors, modes, paused, routes, tools, taps: { github, hook, slack, slackStrict }, erase, jobs, opsFailures: (orgId) => readOpsFailures(table, orgId, now()) };
+  return { edition, table, sink, drain, removal, links, trackerPeople, emitter, slackAdd, taskVisibility: (orgId, taskId) => resolveTaskVisibility({ documentClient: input.documentClient, tableName: state.tableName, now }, orgId, taskId), actors, modes, paused, routes, tools, taps: { github, hook, slack, slackStrict, codeHost: (event) => codeHost.handle(event) }, erase, jobs, captureAdapters, mergeIndex, humanEdit, opsFailures: (orgId) => readOpsFailures(table, orgId, now()) };
 }
