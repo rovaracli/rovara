@@ -97,15 +97,15 @@ describe("the service role and the default boundary are untouched", () => {
   const scope = (env: string): PolicyScope => ({
     env, partition: "aws", region: "ap-southeast-2", account: "944937319445", cloudFormationRoleName: `agentx-${env}-cloudformation`, artifactBucketArn: `arn:aws:s3:::agentx-${env}-access-artifactbucket-abcdefghijkl`, rovaraOrganizationId: `o-${"a".repeat(32)}`,
   } as PolicyScope);
-  it("the service role's inline policy is 7,864 of 10,240 in the worst case, as before this lane (the service role already allows s3, kms and dynamodb on the stack)", () => {
+  it("the service role's inline policy is 9,198 of 10,240 in the worst case (7,864 before TR-SWITCH-B1/B2 added the Team record's storage grants, 1,334) (the service role already allows s3, kms and dynamodb on the stack)", () => {
     const longest = scope("a".repeat(20));
-    expect(size(serviceRoleStatements(longest))).toBe(7864);
+    expect(size(serviceRoleStatements(longest))).toBe(9198);
     const statements = serviceRoleStatements(longest);
     expect(JSON.stringify(statements)).not.toContain("fixtures");
     const services = statements.find((statement) => statement.Sid === "Services")!.Action;
     expect(services).toEqual(expect.arrayContaining(["s3:*", "kms:*", "dynamodb:*"]));
   });
-  it("the default boundary is 5,585 of 6,144 in the worst case (integ/054 tightened it from 6,048; this lane adds nothing to it)", () => {
-    expect(size(withoutSids(defaultBoundaryStatements(scope("a".repeat(20)))))).toBe(5585);
+  it("the default boundary is 6,014 of 6,144 in the worst case (integ/054 tightened it from 6,048 to 5,585; TR-SWITCH-B1/B2 added 429 for the Team record's three services, Glue reads, GetDataAccess, the vector role and the sharing Deny)", () => {
+    expect(size(withoutSids(defaultBoundaryStatements(scope("a".repeat(20)))))).toBe(6014);
   });
 });

@@ -55,8 +55,12 @@ describe("the default boundary after the 2026-11-03 tightening", () => {
     });
 
     it(`${name}: permits and refuses the same (action, resource) pairs as v0.5.2`, () => {
-      const actions = [...new Set([...iamActions, ...SAMPLE_ACTIONS, ...[...before, ...after].flatMap((statement) => list(statement.Action)).filter((action) => !action.includes("*"))])];
-      const resources = [...new Set([...resourcesOf(before), ...resourcesOf(after)])];
+      // TR-SWITCH-B1/B2 (0.5.11) widened the boundary on purpose, in exactly three ways, so they are left out of this grid (tests/contract/team-record-iam-coverage.test.ts checks them): the S3 Vectors / S3 Tables /
+      // Athena wildcards and the Glue read patterns (they hold wildcards, so they are not in the action grid anyway), lakeformation:GetDataAccess and glue:GetCatalog, and the Team record's vector data role (the sts and the path-less
+      // lookup grants on its fixed name). Everything else must still permit and refuse exactly what v0.5.2's did.
+      const newRecordGrants = (text: string) => text.includes("record-vectors-data");
+      const actions = [...new Set([...iamActions, ...SAMPLE_ACTIONS, ...[...before, ...after].flatMap((statement) => list(statement.Action)).filter((action) => !action.includes("*") && !action.startsWith("lakeformation:") && !action.startsWith("glue:"))])];
+      const resources = [...new Set([...resourcesOf(before), ...resourcesOf(after)])].filter((resource) => !newRecordGrants(resource));
       const differences: string[] = [];
       let permitted = 0;
       for (const action of actions) {

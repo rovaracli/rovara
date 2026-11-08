@@ -8,7 +8,7 @@
 // agentx-staging-connector-secrets"), and so is the rollback's delete. So each fixed-name role needs its exact
 // path-less ARN named, for the read and delete actions only, in the deploy role and in the boundary it carries.
 import { Stack } from "aws-cdk-lib";
-import { brokerRoleName, chainScheduleRoleName, connectorSecretsRoleName, modelAccessProbeRoleName, modelProxyTaskRoleName, savedEnvCreateRoleName, savedEnvManageRoleName, savedEnvPullRoleName, savedEnvPushRoleName, testAccountSecretsRoleName } from "@agentx/contracts";
+import { brokerRoleName, chainScheduleRoleName, connectorSecretsRoleName, modelAccessProbeRoleName, modelProxyTaskRoleName, savedEnvCreateRoleName, savedEnvManageRoleName, savedEnvPullRoleName, savedEnvPushRoleName, teamRecordVectorsRoleName, testAccountSecretsRoleName } from "@agentx/contracts";
 import { Template } from "aws-cdk-lib/assertions";
 import { beforeAll, describe, expect, it } from "vitest";
 import { buildAgentXApp } from "../../infra/lib/app.js";
@@ -28,7 +28,8 @@ const ENVIRONMENTS = ["staging", "a1234567890123456789", "agentxlivetest123"];
 const synthesized = new Map<string, Synthesized>();
 
 function synthesize(env: string): Synthesized {
-  const app = buildAgentXApp({ agentxEnv: env, agentxCloud: "true" });
+  // TR-SWITCH-B2: with the Team record on, so its vector data role (a fixed name the boundary and the deploy role must name) is among the roles checked.
+  const app = buildAgentXApp({ agentxEnv: env, agentxCloud: "true", agentxTeamRecord: "enabled" });
   const result: Synthesized = { access: {}, others: [] };
   for (const stack of app.node.children.filter((child): child is Stack => Stack.isStack(child))) {
     const resources = Template.fromStack(stack).toJSON().Resources as Record<string, Resource>;
@@ -122,6 +123,8 @@ describe.each(ENVIRONMENTS)("the roles of the named cloud environment %s", (env)
         `agentx-${env}-connector-secrets`, testAccountSecretsRoleName(env), brokerRoleName(env), modelProxyTaskRoleName(env), modelAccessProbeRoleName(env), chainScheduleRoleName(env),
         // Setup and test health SH22: the roles the broker assumes for saved environment images.
         savedEnvPushRoleName(env), savedEnvPullRoleName(env), savedEnvManageRoleName(env), savedEnvCreateRoleName(env),
+        // TR-SWITCH-B2: the Team record's vector data role (only while the record is switched on, as here).
+        teamRecordVectorsRoleName(env),
         ...(env === "agentxlivetest123" ? [`${env}-task-person-proof`] : []),
       ].sort(),
     );
@@ -144,7 +147,8 @@ describe.each(ENVIRONMENTS)("the roles of the named cloud environment %s", (env)
     const arn = `arn:aws:iam::${ACCOUNT}:role${path}agentx-${env}-connector-secrets`;
     const boundaryStatement = defaultBoundaryStatements(scope()).find((statement) => statement.Sid === "ConnectorSecretsRole");
     // Test services TS26: the TestAccountSecretsRole's name starts with the connector role's, and one wildcard ARN names both.
-    expect(boundaryStatement?.Resource).toEqual([`${arn}*`, `arn:aws:iam::${ACCOUNT}:role${path}agentx-${env}-img-*`]);
+    // TR-SWITCH-B2: and the Team record's vector data role, by its fixed name.
+    expect(boundaryStatement?.Resource).toEqual([`${arn}*`, `arn:aws:iam::${ACCOUNT}:role${path}agentx-${env}-img-*`, `arn:aws:iam::${ACCOUNT}:role${path}${teamRecordVectorsRoleName(env)}`]);
     const built: MutableEnvironment = { AGENTX_ENV: env, AGENTX_NAMES: "{}", AWS_REGION: "us-west-2", AGENTX_ACCOUNT_ID: ACCOUNT };
     hydrateBrokerEnvironment(built);
     expect(built.CONNECTOR_SECRETS_ROLE_ARN).toBe(arn);
