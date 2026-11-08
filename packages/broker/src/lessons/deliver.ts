@@ -8,6 +8,7 @@ import { hasStaleCitation, approvedForUse, stageAllows, toLearned, LOAD_MAX_BYTE
 import { memberView, type MemberResolver } from "./members.js";
 import { modeAllows, resolveLearning, type LearningSettingsReader } from "./policy.js";
 import type { Clock } from "./ports.js";
+import { createLessonLiveReader, readerOfRunningTask } from "./live-visibility.js";
 import { readVisible, type LessonLog } from "./read-visible.js";
 import type { LessonStore, ScopeKey } from "./store.js";
 import { isRestricted, type IdentitySet, type Lesson } from "./types.js";
@@ -36,8 +37,11 @@ export async function learnedContextFromRefs(deps: DeliveryDeps, refs: LearnedRe
     const resolved = await resolveLearning(deps.settings, key.workspaceId, key.project);
     if (!modeAllows(resolved.mode, "load")) return undefined;
     const now = deps.now();
-    // The reader the load was for: a private task's owner (their linked accounts), or nobody in particular for a shared task.
-    const viewer = refs.audience.kind === "shared" ? undefined : { ...await deps.identity(key.workspaceId, refs.audience.developerId), developerId: refs.audience.developerId };
+    // LV-1 H1: the reader is the running task's LIVE Plan 5 visibility, asked again now (not the audience the load saw, and not `task.shared`): an owner-only task reads as its owner (their linked accounts), every
+    // other task (project-wide, a list, unreadable, or a stage queued before the task id was carried) reads as nobody in particular.
+    const reader = refs.taskId === undefined ? { kind: "nobody" as const } : await readerOfRunningTask({ port: deps.access.taskVisibility, orgId: key.workspaceId, taskId: refs.taskId, where: "deliver", ...(deps.log === undefined ? {} : { log: deps.log }) });
+    const viewer = reader.kind === "owner" ? { ...await deps.identity(key.workspaceId, reader.developerId), developerId: reader.developerId } : undefined;
+    const liveReader = createLessonLiveReader({ port: deps.access.taskVisibility, key, where: "deliver", ...(deps.log === undefined ? {} : { log: deps.log }) });
 
     const fetched: Lesson[] = [];
     for (const ref of refs.lessons) {
@@ -53,7 +57,7 @@ export async function learnedContextFromRefs(deps: DeliveryDeps, refs: LearnedRe
       if (!(await notErased(deps.store, key, lesson))) continue;
       live.push(lesson);
     }
-    const readable = new Set((await readVisible({ access: deps.access, key, viewer, lessons: live, where: "deliver", ...(deps.log === undefined ? {} : { log: deps.log }) })).map((lesson) => lesson.id));
+    const readable = new Set((await readVisible({ access: deps.access, key, viewer, lessons: live, where: "deliver", live: liveReader, ...(deps.log === undefined ? {} : { log: deps.log }) })).map((lesson) => lesson.id));
     const chosen: LearnedLesson[] = [];
     let bytes = 0;
     for (const lesson of live) {
@@ -74,7 +78,7 @@ export async function learnedContextFromRefs(deps: DeliveryDeps, refs: LearnedRe
         if (lesson === undefined || lesson.status === "withdrawn" || isRestricted(lesson) || !(await notErased(deps.store, key, lesson))) continue;
         seen.push(lesson);
       }
-      const shown = new Set((await readVisible({ access: deps.access, key, viewer, lessons: seen, where: "deliver", ...(deps.log === undefined ? {} : { log: deps.log }) })).map((lesson) => lesson.id));
+      const shown = new Set((await readVisible({ access: deps.access, key, viewer, lessons: seen, where: "deliver", live: liveReader, ...(deps.log === undefined ? {} : { log: deps.log }) })).map((lesson) => lesson.id));
       priorLoaded = seen.filter((lesson) => shown.has(lesson.id)).map((lesson) => ({ id: lesson.id, type: lesson.type, title: lesson.title }));
     }
 

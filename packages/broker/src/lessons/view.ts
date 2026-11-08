@@ -9,7 +9,8 @@ import type { AccessCheckPort } from "../team-record/access-port.js";
 import { approversRequired, resolveLearning, stricterMode, LearningModeSchema, type LearningSettingsReader } from "./policy.js";
 import { buildWeeklyDigest } from "./digest.js";
 import { lessonPanelRows } from "./panel.js";
-import { readVisible, type LessonLog } from "./read-visible.js";
+import { createLessonLiveReader } from "./live-visibility.js";
+import { readVisible, readVisibleRanked, type LessonLog } from "./read-visible.js";
 import type { ApproverDirectory } from "./ports.js";
 import type { LessonsPauseStore } from "./pause.js";
 import type { LessonStore, ScopeKey } from "./store.js";
@@ -142,7 +143,11 @@ function toView(lesson: Lesson, ctx: Context): LessonView {
 /** The company's preset is the reason the project is Regulated: it is Regulated and the project's own choice is not. */
 const companyPresetLocks = (raw: { preset?: unknown; companyPreset?: unknown }): boolean => raw.companyPreset === "regulated" && raw.preset !== "regulated";
 
-export async function buildLessonsView(deps: LessonViewDeps, caller: LessonCaller, project: string): Promise<LessonsViewAnswer> {
+/**
+ * The Lessons tab. `surface: "home"` is Home's card (LV-1 M1): it needs only the lessons waiting for this person, so only those are read and checked (the other lists come back empty). Either way each status is
+ * read on its own, the lists are ranked BEFORE the visibility check and checked a page at a time until one more than the list's cap survives, and one reader serves the whole request (no task is read twice).
+ */
+export async function buildLessonsView(deps: LessonViewDeps, caller: LessonCaller, project: string, options: { surface?: "tab" | "home" } = {}): Promise<LessonsViewAnswer> {
   const key = keyOf(caller, project);
   const [resolved, raw, state] = await Promise.all([
     resolveLearning(deps.settings, key.workspaceId, key.project),
@@ -161,31 +166,42 @@ export async function buildLessonsView(deps: LessonViewDeps, caller: LessonCalle
     await deps.pause?.clear(key.workspaceId, key.project, paused.scope, paused.code).catch(() => undefined);
     paused = undefined;
   }
-  const all = await deps.store.list(key);
-  const shown = await readVisible({ access: deps.access, key, viewer: state.viewer, lessons: all, where: "view", log: deps.log });
+  const home = options.surface === "home";
+  const live = createLessonLiveReader({ port: deps.access.taskVisibility, key, where: "view", log: deps.log });
   const byValue = (a: Lesson, b: Lesson): number => lessonValue(b) - lessonValue(a) || b.createdAt - a.createdAt || a.id.localeCompare(b.id);
+  const byUpdated = (a: Lesson, b: Lesson): number => b.updatedAt - a.updatedAt || a.id.localeCompare(b.id);
+  let checked = 0, kept = 0;
+  /** The first `max + 1` lessons (in `order`) this viewer may read now: one more than the list shows tells whether it was cut. */
+  const top = async (statuses: Lesson["status"][], order: (a: Lesson, b: Lesson) => number, max: number): Promise<Lesson[]> => {
+    const ranked = (await deps.store.list(key, { statuses })).sort(order);
+    const result = await readVisibleRanked({ access: deps.access, key, viewer: state.viewer, where: "view", log: deps.log, live, ranked, pageSize: max + 1, enough: (found) => found.length > max });
+    checked += result.checked; kept += result.kept.length;
+    return result.kept;
+  };
   // People who do not decide read the active lessons only: the approval queue, who approved and what waits are for the people who can act on them.
-  const waitingAll = state.canDecide ? shown.filter((l) => l.status === "pending").sort(byValue) : [];
-  const activeAll = shown.filter((l) => l.status === "active" || l.status === "stale").sort(byValue);
-  const removedAll = shown.filter((l) => l.status === "retired" || l.status === "expired" || l.status === "rejected").sort((a, b) => b.updatedAt - a.updatedAt || a.id.localeCompare(b.id));
-  const waiting = waitingAll.slice(0, WAITING_MAX), active = activeAll.slice(0, ACTIVE_MAX), removed = state.canDecide ? removedAll.slice(0, REMOVED_MAX) : [];
+  const activeAll = home ? [] : await top(["active", "stale"], byValue, ACTIVE_MAX);
+  const waitingAll = state.canDecide ? await top(["pending"], byValue, WAITING_MAX) : [];
+  const removedAll = state.canDecide && !home ? await top(["retired", "expired", "rejected"], byUpdated, REMOVED_MAX) : [];
+  const queued = state.canDecide && !home ? (await readVisible({ access: deps.access, key, viewer: state.viewer, lessons: await deps.store.list(key, { statuses: ["candidate"] }), where: "view", log: deps.log, live })).length : 0;
+  const waiting = waitingAll.slice(0, WAITING_MAX), active = activeAll.slice(0, ACTIVE_MAX), removed = removedAll.slice(0, REMOVED_MAX);
   const person = await namePeople(deps, caller.orgId, caller.developerId, [...waiting, ...active, ...removed].flatMap(personIdsOf));
   const ctx: Context = { canDecide: state.canDecide, eligibleCount: state.eligibleCount, eligible: state.eligible, me: caller.developerId, required: (lesson) => approversRequired(lesson.tier, resolved.approval), groups: resolved.requiredGroups, person };
 
   const setVersion = await deps.store.setVersion(key);
-  const snapshots = state.canDecide ? (await deps.store.snapshots(key)).filter((s) => s.setVersion !== setVersion).slice(-SNAPSHOTS_MAX).map((s) => ({ setVersion: s.setVersion, at: s.at, lessons: s.members.length })) : [];
+  const snapshots = state.canDecide && !home ? (await deps.store.snapshots(key)).filter((s) => s.setVersion !== setVersion).slice(-SNAPSHOTS_MAX).map((s) => ({ setVersion: s.setVersion, at: s.at, lessons: s.members.length })) : [];
   const truncated: Array<"waiting" | "active" | "removed"> = [];
   if (waitingAll.length > WAITING_MAX) truncated.push("waiting");
   if (activeAll.length > ACTIVE_MAX) truncated.push("active");
-  if (state.canDecide && removedAll.length > REMOVED_MAX) truncated.push("removed");
+  if (removedAll.length > REMOVED_MAX) truncated.push("removed");
   return {
     project, mode: resolved.mode, lockedByCompany, preset: resolved.preset, presetLockedByCompany: companyPresetLocks(raw),
     approval: { tier0: resolved.approval.tier0, tier1: resolved.approval.tier1, requiredGroups: [...resolved.requiredGroups] },
     ...(resolved.expiryDays === undefined ? {} : { expiryDays: resolved.expiryDays }),
     canDecide: state.canDecide,
     waiting: waiting.map((l) => toView(l, ctx)), active: active.map((l) => toView(l, ctx)), removed: removed.map((l) => toView(l, ctx)),
-    queued: state.canDecide ? shown.filter((l) => l.status === "candidate").length : 0,
-    hidden: state.canDecide ? all.filter((l) => l.status !== "candidate").length - shown.filter((l) => l.status !== "candidate").length : 0,
+    queued,
+    // Lessons the person could not see among those the lists checked (the lists check only as many as they show, so this is a count of what was looked at, not of the whole project).
+    hidden: state.canDecide ? checked - kept : 0,
     truncated, setVersion, snapshots,
     ...(paused === undefined ? {} : { paused: { code: paused.code, at: paused.at, scope: paused.scope } }),
   };

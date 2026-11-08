@@ -4,6 +4,7 @@
 //  - a lesson learned from a restricted place is never counted or named; only lessons that reached the agent's prompt count; at most LESSONS_USED_MAX are listed.
 // The reader is plugged in at handler start where lessons are on (`setLessonsUsedReader`), the way Home's lessons card is; without it, or with learning off for the project, the description has no section.
 import type { AccessCheckPort } from "../team-record/access-port.js";
+import { createLessonLiveReader } from "./live-visibility.js";
 import { readVisible } from "./read-visible.js";
 import { modeAllows, resolveLearning, type LearningSettingsReader } from "./policy.js";
 import type { LessonStore, ScopeKey } from "./store.js";
@@ -79,13 +80,16 @@ export function lessonsUsedReaderOver(deps: LessonsUsedReaderDeps): LessonsUsedR
     const visibility: RepositoryVisibility = await Promise.resolve().then(() => (deps.visibility === undefined ? "unknown" as const : deps.visibility(input.orgId, input.project))).catch(() => "unknown" as const);
     const seen = new Set<string>();
     const used: Lesson[] = [];
+    // One reader for the whole description (no task is read twice). The viewer is `undefined`: a pull request is readable by anyone with access to the repository, so a lesson reaches it only while EVERY task it was
+    // learned from is project-wide NOW (LV-1).
+    const live = createLessonLiveReader({ port: deps.access.taskVisibility, key, where: "pull_request" });
     for (const manifest of await deps.store.manifests(key, input.taskId)) {
       for (const entry of manifest.lessons) {
         if (seen.has(entry.id) || !REACHED.has(entry.citation)) continue;
         seen.add(entry.id);
         const lesson = await deps.store.get(key, entry.id);
         // Read as "nobody in particular" (a shared task): a lesson from a restricted place, or one whose place the access records restrict now, is not counted in a description the repository's readers see.
-        if (lesson === undefined || isRestricted(lesson) || (await readVisible({ access: deps.access, key, viewer: undefined, lessons: [lesson], where: "pull_request" })).length !== 1) continue;
+        if (lesson === undefined || isRestricted(lesson) || (await readVisible({ access: deps.access, key, viewer: undefined, live, lessons: [lesson], where: "pull_request" })).length !== 1) continue;
         used.push(lesson);
       }
     }

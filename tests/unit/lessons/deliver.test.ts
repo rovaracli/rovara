@@ -19,6 +19,10 @@ const refs = (ids: Array<[string, number?]>, over: Partial<LearnedRefs> = {}): L
   v: 1, orgId: WS, project: PROJECT, setVersion: 5, stage: "IMPLEMENT", audience: { kind: "shared" }, lessons: ids.map(([id, version]) => ({ id, version: version ?? 1 })), ...over,
 });
 
+/** The running task `task-run` is private to its owner (LV-1 H1: delivery reads the running task's LIVE visibility to name the reader); every other task is project-wide. */
+const OWNER = "d".repeat(64);
+const ownerOnlyTasks: DeliveryDeps["access"]["taskVisibility"] = { read: async (_org, ids) => new Map(ids.map((id) => [id, id === "task-run" ? { kind: "private" as const, ownerDeveloperId: OWNER } : { kind: "shared" as const }])) };
+
 function world(over: Partial<DeliveryDeps> = {}) {
   const store = new InMemoryLessonStore();
   const clock = new Clock();
@@ -103,8 +107,8 @@ describe("learnedContextFromRefs", () => {
 
     it("a restricted lesson is delivered only to a task whose owner may still read its source (asked of the access records NOW)", async () => {
       const restricted = conv("les_restrict1", { provenance: { ...lessonRecord().provenance, audience: restrictedTo(["gh-1"]) } });
-      const access = (allowed: boolean) => ({ mayRead: async (_org: unknown, _viewer: unknown, places: readonly unknown[]) => places.map(() => allowed), taskVisibility: allSharedTasks });
-      const privateRefs = refs([["les_restrict1"]], { audience: { kind: "private", developerId: "d".repeat(64) } });
+      const access = (allowed: boolean) => ({ mayRead: async (_org: unknown, _viewer: unknown, places: readonly unknown[]) => places.map(() => allowed), taskVisibility: ownerOnlyTasks });
+      const privateRefs = refs([["les_restrict1"]], { audience: { kind: "private", developerId: OWNER }, taskId: "task-run" });
       const calls: string[] = [];
       const yes = world({ access: access(true), identity: async (_w, id) => { calls.push(id); return { principals: ["gh-1"], groups: [] }; } });
       await seed(yes.store, restricted);
@@ -124,8 +128,8 @@ describe("learnedContextFromRefs", () => {
       await seed(store, placed("les_aaaaaaa1"));
       const down = world({ store, access: { mayRead: async () => { throw new Error("down"); }, taskVisibility: allSharedTasks } });
       expect(await learnedContextFromRefs(down.deps, refs([["les_aaaaaaa1"]]))).toBeUndefined();
-      const noIdentity = world({ store, identity: async () => { throw new Error("down"); } });
-      expect(await learnedContextFromRefs(noIdentity.deps, refs([["les_aaaaaaa1"]], { audience: { kind: "private", developerId: "d".repeat(64) } }))).toBeUndefined();
+      const noIdentity = world({ store, access: { mayRead: async (_o, _v, places) => places.map(() => true), taskVisibility: ownerOnlyTasks }, identity: async () => { throw new Error("down"); } });
+      expect(await learnedContextFromRefs(noIdentity.deps, refs([["les_aaaaaaa1"]], { audience: { kind: "private", developerId: OWNER }, taskId: "task-run" }))).toBeUndefined();
     });
 
     it("the store being down delivers nothing and throws nothing", async () => {

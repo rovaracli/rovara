@@ -1,15 +1,24 @@
 // Learning v2 L3a: "Promote to How we work rule" (design §4.5.3). It turns one active lesson into exactly one paragraph and hands it to the same publish
 // path the v1.2 Accept button uses (`acceptSuggestion` through `publishDraft`), which keeps its own less-safe checks. A lesson from a restricted source is
 // never promoted (design Q14): a rule is read by everyone in the project.
+import type { TaskVisibilityPort } from "../team-record/live-audience.js";
 import { cleanForLearning } from "./guards.js";
+import { liveVisible } from "./live-visibility.js";
 import { trySecondPerson } from "./approve.js";
 import { emitAudit, modeAllows, requireAudit, resolveLearning, type LearningSettingsReader } from "./policy.js";
 import type { ApproverDirectory, LessonDeps, RulePublisher } from "./ports.js";
 import { nextVersion, type LessonStore, type ScopeKey } from "./store.js";
 import { idIn, isRestricted, sameId, trustAtLeast, type Lesson } from "./types.js";
 
-export interface PromoteDeps extends LessonDeps { store: LessonStore; directory: ApproverDirectory; settings: LearningSettingsReader; publisher: RulePublisher }
-export type PromoteFailure = "not_found" | "not_active" | "restricted" | "not_trusted" | "not_eligible" | "eligibility_unavailable" | "mode_off" | "publish_failed" | "conflict"
+export interface PromoteDeps extends LessonDeps {
+  store: LessonStore; directory: ApproverDirectory; settings: LearningSettingsReader; publisher: RulePublisher;
+  /**
+   * The live Plan 5 visibility of tasks (LV-1). A rule is a COPY of the text that every stage reads, so a lesson learned from a task that is not project-wide is never promoted (narrowing the task later could
+   * not recall the rule). Absent: a lesson that names any task is refused (fail closed).
+   */
+  taskVisibility?: TaskVisibilityPort | undefined;
+}
+export type PromoteFailure = "not_found" | "not_active" | "restricted" | "task_not_shared" | "not_trusted" | "not_eligible" | "eligibility_unavailable" | "mode_off" | "publish_failed" | "conflict"
   | "already_approved" | "audit_unavailable" | "second_person_required" | "sole_owner_cool_off";
 
 /** One paragraph: the title as a sentence, then the body, on one line. No headings, lists or line breaks, so the rule is one paragraph (v1.2 rule I6). */
@@ -41,6 +50,8 @@ export async function promoteToRule(deps: PromoteDeps, input: { workspaceId: str
   if (lesson.promotedRuleId !== undefined) return { ok: true, ruleId: lesson.promotedRuleId, already: true };
   if (lesson.status !== "active") return { ok: false, code: "not_active" };
   if (isRestricted(lesson)) return { ok: false, code: "restricted" };
+  // Every task it was learned from must be project-wide NOW (a reader of "nobody in particular" keeps it only then).
+  if ((await liveVisible({ port: deps.taskVisibility, key, viewer: undefined, lessons: [lesson], where: "promote" })).length !== 1) return { ok: false, code: "task_not_shared" };
   if (!trustAtLeast(lesson.provenance.minTrust, "rovara")) return { ok: false, code: "not_trusted" };
 
   if (lesson.tier === 2) {

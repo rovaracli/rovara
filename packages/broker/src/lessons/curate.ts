@@ -131,6 +131,7 @@ function mergeInto(target: Lesson, draft: LessonDraft, version: number, now: num
       ...target.provenance,
       sourceEvents: union(target.provenance.sourceEvents, draft.provenance.sourceEvents, 50), sourceKinds: union(target.provenance.sourceKinds, draft.provenance.sourceKinds, 20),
       authors: distinctIds([...target.provenance.authors, ...draft.provenance.authors]).slice(0, 20), sources: union(target.provenance.sources, draft.provenance.sources, 20), inputSources: unionPinned(target.provenance.inputSources, draft.provenance.inputSources, 100, paused), measured: target.provenance.measured || draft.provenance.measured, supportTasks: union(target.provenance.supportTasks, draft.provenance.supportTasks, 50),
+      ...(target.provenance.inheritedTasks === undefined && draft.provenance.inheritedTasks === undefined ? {} : { inheritedTasks: union(target.provenance.inheritedTasks ?? [], draft.provenance.inheritedTasks ?? [], 50) }),
       memberSignal: target.provenance.memberSignal || draft.provenance.memberSignal,
       // Merging narrows what the lesson rests on: it stays a member correction (and from a shared task) only if both sides are.
       ...(target.provenance.memberCorrection === true && draft.provenance.memberCorrection === true ? { memberCorrection: true } : {}),
@@ -142,10 +143,20 @@ function mergeInto(target: Lesson, draft: LessonDraft, version: number, now: num
   };
 }
 
+/**
+ * LV-1 M3: a merge must keep EVERY task and event the two lessons name. The task lists are capped, and a cap that cut the draft's task id would leave its citations and authors on a lesson that no longer
+ * names the task (a narrowed task's pull request would then show on a project-visible lesson). So a merge that would not fit is refused: the draft stands on its own as a candidate.
+ */
+const mergeFits = (target: Lesson, draft: LessonDraft): boolean =>
+  new Set([...target.provenance.supportTasks, ...draft.provenance.supportTasks]).size <= 50
+  && new Set([...target.provenance.sourceEvents, ...draft.provenance.sourceEvents]).size <= 50
+  && new Set([...(target.provenance.inheritedTasks ?? []), ...(draft.provenance.inheritedTasks ?? [])]).size <= 50
+  && new Set([...(target.provenance.sourceScopes ?? []), ...(draft.provenance.sourceScopes ?? [])]).size <= 50;
+
 /** A merge into an active lesson may not lower its trust or narrow its audience: that is a different lesson. */
 const mergeAllowed = (target: Lesson, draft: LessonDraft): boolean =>
-  target.status !== "active" || ((target.trial === undefined || (draft.provenance.memberCorrection === true && draft.provenance.claimsSupported === true)) && trustAtLeast(draft.provenance.minTrust, target.provenance.minTrust)
-    && JSON.stringify(narrowestAudience([target.provenance.audience, draft.provenance.audience])) === JSON.stringify(target.provenance.audience));
+  mergeFits(target, draft) && (target.status !== "active" || ((target.trial === undefined || (draft.provenance.memberCorrection === true && draft.provenance.claimsSupported === true)) && trustAtLeast(draft.provenance.minTrust, target.provenance.minTrust)
+    && JSON.stringify(narrowestAudience([target.provenance.audience, draft.provenance.audience])) === JSON.stringify(target.provenance.audience)));
 
 export async function curateDraft(deps: CurateDeps, key: ScopeKey, draft: LessonDraft): Promise<CurateOutcome> {
   const drop = (reason: Extract<CurateOutcome, { outcome: "dropped" }>["reason"]): CurateOutcome => ({ outcome: "dropped", reason });

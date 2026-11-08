@@ -166,6 +166,23 @@ describe("the reader behind it", () => {
     expect(blind.items).toEqual([]);
   });
 
+  it("LV-1: a lesson learned from a task that is no longer project-wide is neither counted nor named in a description everyone with repository access reads", async () => {
+    const store = await seeded([{ id: "les_narrow001", title: "Narrowed lesson", tier: 1, provenance: { ...draft().provenance, supportTasks: ["t-narrow"] } }, { id: "les_wide00001", title: "Wide lesson", tier: 1, provenance: { ...draft().provenance, supportTasks: ["t-wide"] } }]);
+    await store.putManifest({ ...manifest([["les_narrow001", "valid"], ["les_wide00001", "valid"]]), round: 2 });
+    const reads: string[][] = [];
+    const table: Record<string, { kind: "shared" } | { kind: "private"; ownerDeveloperId: string }> = { "t-narrow": { kind: "private", ownerDeveloperId: "ann" }, "t-wide": { kind: "shared" } };
+    const access = { ...allowAllAccess, taskVisibility: { read: async (_o: unknown, ids: readonly string[]) => { reads.push([...ids]); return new Map(ids.map((id) => [id, table[id] ?? { kind: "shared" as const }])); } } };
+    const out = (await lessonsUsedReaderOver({ store, settings: settings(), access, names, visibility: async () => "private" })(input))!;
+    expect(out.items.map((i) => i.id).sort()).toEqual(["les_open0001", "les_wide00001"]);
+    expect(out.count).toBe(2);
+    expect(JSON.stringify(out)).not.toContain("Narrowed lesson");
+    // Positive control: the narrowed task WAS asked about, so the exclusion came from its live visibility; and each task once for the whole description.
+    expect(reads.flat()).toEqual(expect.arrayContaining(["t-narrow", "t-wide"]));
+    expect(new Set(reads.flat()).size).toBe(reads.flat().length);
+    table["t-narrow"] = { kind: "shared" };
+    expect((await lessonsUsedReaderOver({ store, settings: settings(), access, names, visibility: async () => "private" })(input))!.count).toBe(3);
+  });
+
   it("the broker call never throws and is empty without a reader", async () => {
     setLessonsUsedReader(undefined);
     expect(await lessonsUsedForTask({ orgId: WS, project: PROJECT, taskId: "t", pageUrl: PAGE })).toBeUndefined();

@@ -17,6 +17,8 @@ import type { ReflectSubject } from "./reflect-input.js";
 import type { RovaraEmitter } from "../team-record/sources/rovara.js";
 import type { ReflectQueue } from "./reflect-queue.js";
 import type { OutcomeRowReader } from "./task-outcome-rows.js";
+import { lessonTaskRefs } from "./live-visibility.js";
+import type { LessonStore, ScopeKey } from "./store.js";
 import { buildTaskReflectSubject, type SendBackFact, type TaskSubjectFacts } from "./task-subject.js";
 
 /** What the task record side knows: the subject's facts without the parts that live in the Team record, and the requests of the task's human send-backs. */
@@ -57,6 +59,27 @@ export function reflectOutcomeOf(outcome: TaskEndOutcome): ReflectSubject["outco
   }
 }
 
+/**
+ * LV-1 M2: the tasks behind every lesson that was loaded INTO the task (its load records name the lessons; each lesson names its source tasks). A lesson learned from the task's plan may restate them, so it is
+ * also gated on them. Throws when a record cannot be read or a lesson names a task that cannot be read (the task is then not reflected: fail closed). A lesson that is gone (erased, purged) adds nothing.
+ */
+export async function inheritedTasksOf(store: Pick<LessonStore, "manifests" | "get">, key: ScopeKey, taskId: string): Promise<string[]> {
+  const out = new Set<string>();
+  const seen = new Set<string>();
+  for (const manifest of await store.manifests(key, taskId)) {
+    for (const entry of manifest.lessons) {
+      if (seen.has(entry.id)) continue;
+      seen.add(entry.id);
+      const lesson = await store.get(key, entry.id);
+      if (lesson === undefined) continue;
+      const refs = lessonTaskRefs(lesson);
+      if (refs.unreadable) throw new Error("lessons: a loaded lesson names a task that can't be read");
+      for (const id of refs.taskIds) if (id !== taskId) out.add(id);
+    }
+  }
+  return [...out];
+}
+
 /** Builds the subject from the task-side facts and the record's rows. The workspace is the caller's, never the source's claim. */
 async function subjectFrom(deps: TaskLearningDeps, base: TaskSubjectBase, workspaceId: string, outcome: ReflectSubject["outcome"] | undefined): Promise<ReflectSubject | undefined> {
   if (base.facts.workspaceId !== workspaceId) return undefined;
@@ -68,7 +91,8 @@ async function subjectFrom(deps: TaskLearningDeps, base: TaskSubjectBase, worksp
     if (fact !== undefined) sendBacks.push(fact);
   }
   const revert = facts.outcome === "reverted" ? await deps.rows.revertedBy(where) : undefined;
-  return buildTaskReflectSubject({ ...facts, sendBacks, ...(revert === undefined ? {} : { revert }) });
+  const inheritedTasks = await inheritedTasksOf(deps.process.store, { workspaceId, project: facts.project }, facts.taskId);
+  return { ...buildTaskReflectSubject({ ...facts, sendBacks, ...(revert === undefined ? {} : { revert }) }), ...(inheritedTasks.length === 0 ? {} : { inheritedTasks }) };
 }
 
 /** The subject of one task (also for the nightly work source, which re-reflects a task whose change was later reverted: pass `outcome: "reverted"`). Undefined when there are no facts. */

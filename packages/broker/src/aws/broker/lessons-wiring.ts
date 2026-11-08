@@ -195,7 +195,7 @@ export function installLessons(dependencies: LessonsHostDependencies): void {
   }));
   setLessonsHomeReader(routes === undefined ? undefined : async (orgId, developerId, project) => {
     if ((await resolveLearning(routes.settings, orgId, project)).mode === "Off") return { waiting: 0 };
-    const view = await buildLessonsView(routes, { orgId, developerId }, project);
+    const view = await buildLessonsView(routes, { orgId, developerId }, project, { surface: "home" });
     // Lane 1b: a person who decides here also hears why learning is paused (never silent).
     const paused = view.canDecide ? view.paused : undefined;
     if (!view.canDecide || view.waiting.length === 0) return { waiting: 0, ...(paused === undefined ? {} : { paused }) };

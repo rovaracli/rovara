@@ -9,11 +9,11 @@ const LOOKUP_PARALLEL = 8;
 
 export function tableTaskVisibilityPort(table: StateTable): TaskVisibilityPort {
   return {
-    async read(orgId, taskIds) {
+    async read(orgId, taskIds, options) {
       const out = new Map<string, Awaited<ReturnType<typeof resolveTaskVisibility>>>();
       const queue = [...new Set(taskIds)];
       const worker = async (): Promise<void> => {
-        for (let id = queue.shift(); id !== undefined; id = queue.shift()) {
+        for (let id = queue.shift(); id !== undefined && options?.signal?.aborted !== true; id = queue.shift()) {
           try {
             out.set(id, await resolveTaskVisibility(table, orgId, id, { strict: true }));
           } catch {

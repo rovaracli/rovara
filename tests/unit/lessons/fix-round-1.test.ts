@@ -15,7 +15,7 @@ import { InMemoryLessonStore, type LoadManifest } from "../../../packages/broker
 import { type TierInput } from "../../../packages/broker/src/lessons/tier.js";
 import { isCorroborated, lessonValue } from "../../../packages/broker/src/lessons/value.js";
 import type { Audience, Lesson } from "../../../packages/broker/src/lessons/types.js";
-import { Alerts, Audit, Clock, Judge, KEY, MemoryVectors, PROJECT, Publisher, ScriptedModel, Spend, WS, candidateJson, codeCite, directory, draft, embedder, lessonRecord, memberSpan, reply, seed, settings, subject, verifier, classifyTier, facts, autoSettings, allowAllAccess, type FeedbackDeps } from "./lesson-helpers.js";
+import { Alerts, Audit, Clock, Judge, KEY, MemoryVectors, PROJECT, Publisher, ScriptedModel, Spend, WS, candidateJson, codeCite, directory, draft, embedder, lessonRecord, memberSpan, reply, seed, settings, subject, verifier, classifyTier, facts, autoSettings, allSharedTasks, allowAllAccess, type FeedbackDeps } from "./lesson-helpers.js";
 import type { EvidenceSpan } from "../../../packages/broker/src/lessons/reflect-input.js";
 
 const restricted: Audience = { kind: "restricted", acl: { source: "slack", scope: "slack:T/C9", principals: ["U-member"], capturedAt: "x", liveCheck: "none" } };
@@ -232,7 +232,7 @@ describe("I3: promoting a tier-2 lesson needs two people", () => {
   function promoteSetup(dir = directory()) {
     const s = approveSetup({ dir });
     const publisher = new Publisher();
-    const deps: PromoteDeps = { ...s.deps, publisher };
+    const deps: PromoteDeps = { ...s.deps, publisher, taskVisibility: allSharedTasks };
     return { ...s, deps, publisher };
   }
   const t2 = () => lessonRecord({ tier: 2, tierReasons: ["reviewer_stage"], type: "convention" });
@@ -305,7 +305,7 @@ describe("I5: audit that grants something is written first and fails closed", ()
     expect(await rollbackLessonSet(s.deps, { ...KEY, targetSetVersion: 1, actorId: "ann" })).toEqual({ ok: false, code: "audit_unavailable" });
     expect(await s.store.setVersion(KEY)).toBe(2);
     const publisher = new Publisher();
-    expect(await promoteToRule({ ...s.deps, publisher }, { ...KEY, lessonId: "les_live0001", approverId: "ann" })).toEqual({ ok: false, code: "audit_unavailable" });
+    expect(await promoteToRule({ ...s.deps, publisher, taskVisibility: allSharedTasks }, { ...KEY, lessonId: "les_live0001", approverId: "ann" })).toEqual({ ok: false, code: "audit_unavailable" });
     expect(publisher.published).toHaveLength(0);
     expect(await retireByPerson(s.deps, { ...KEY, lessonId: "les_live0001", actorId: "ann", reason: "kill" })).toEqual({ ok: true });
     expect((await s.store.get(KEY, "les_live0001"))!.status).toBe("retired");

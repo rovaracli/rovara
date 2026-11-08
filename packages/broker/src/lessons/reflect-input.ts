@@ -46,6 +46,11 @@ export interface ReflectSubject {
   spans: readonly EvidenceSpan[];
   /** An eval run never reflects (design §4.13). */
   evalRun?: boolean;
+  /**
+   * LV-1 M2: the tasks behind the lessons that were loaded into this task (read from its load records, `task-end.ts`). A lesson reflected from the task is also gated on them, so an agent that restated what it
+   * was given cannot launder a narrowed task. At most 50; more is refused by `reflectSubject`.
+   */
+  inheritedTasks?: readonly string[];
 }
 
 export type IneligibleReason = "eval_run" | "unknown_initiator" | "unknown_steering" | "outsider_initiated" | "outsider_steered" | "outsider_intent" | "no_member_reason" | "no_usable_evidence";
