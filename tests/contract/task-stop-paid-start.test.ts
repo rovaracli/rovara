@@ -19,6 +19,7 @@ import { planAnswer, planDocument } from "../support/plan-documents.js";
 import { setup, PREPARED, CODING, TRIAGE, BEN, DEB, ADA } from "../support/spend-world.js";
 import { TEST_ORG } from "../support/orgs.js";
 import { realIdentityRow } from "../support/real-identity-row.js";
+import { runLimitAck } from "../support/run-limit-ack.js";
 async function fixture(amount = 1_234_567, options?: Parameters<typeof setup>[0]) {
   const t = await setup(options), policy = orgSettingsKey(TEST_ORG, "TASK_STOP_POLICY"), project = projectAiKey(TEST_ORG, "payments"), agent = builtinSettingsKey(TEST_ORG, ROVARA_CODE_AGENT_ID);
   t.db.set({ ...policy, entityType: "ORG_TASK_STOP_POLICY", orgId: TEST_ORG, revision: 1, policy: { schemaVersion: 2, defaultPolicy: { kind: "limited", stopMicrousd: amount } }, enrollment: { version: 1, state: "enabled" } });
@@ -1092,7 +1093,7 @@ for (const recovery of ["valid", "bounded_valid", "closing", "cap_source", "inva
     const settings: Record<string, unknown> = { ...f.t.db.get(f.agent)!, revision: 2, stopKind: "inherit" }; delete settings.maxPerRunUsd; f.t.db.set(settings);
   }
   const workflow = f.t.db.get(taskKey(taskId))!.workflow as { revision: number; artifacts: Array<{ sha256: string }> };
-  expect((await f.t.dev(MAYA, "POST", `/v1/dev/tasks/${taskId}/workflow/decision`, { requestId: randomUUID(), expectedRevision: workflow.revision, decision: "APPROVE", reason: "Approved", artifactDigest: workflow.artifacts.at(-1)!.sha256 })).status).toBe(200);
+  expect((await f.t.dev(MAYA, "POST", `/v1/dev/tasks/${taskId}/workflow/decision`, { requestId: randomUUID(), expectedRevision: workflow.revision, decision: "APPROVE", reason: "Approved", artifactDigest: workflow.artifacts.at(-1)!.sha256, ...runLimitAck(f.t.db, taskId) })).status).toBe(200);
   const request = f.t.requestOf(taskId, "run_limit")[0]!; expect(request).toMatchObject({ resume: "implement", newLimitUsd: 20 });
   const decisionId = randomUUID(), send = f.t.db.send.bind(f.t.db); let lost = false, changed = false, captures = 0;
   f.t.db.send = async command => {
