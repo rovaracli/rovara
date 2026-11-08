@@ -128,7 +128,8 @@ export async function reflectSubject(deps: ReflectDeps, subject: ReflectSubject,
   }
 
   const caps = learningCaps(deps.edition, deps.capsOverride);
-  const request = { purpose: "reflect" as const, system: input.system, user: input.user, maxOutputTokens: MAX_OUTPUT_TOKENS, workspaceId: subject.workspaceId, project: subject.project };
+  // LP-10 R4: Public's per-task cap goes to the model with the request, so a "lessons model" whose hold is over it is skipped for one that fits (the cheapest), instead of pausing learning.
+  const request = { purpose: "reflect" as const, system: input.system, user: input.user, maxOutputTokens: MAX_OUTPUT_TOKENS, workspaceId: subject.workspaceId, project: subject.project, ...(caps.perTaskUsd === undefined ? {} : { maxHoldUsd: caps.perTaskUsd }) };
   // The hold is sized to the call by the model itself (the cheapest suitable model's worst-case price for this prompt). A model that cannot quote keeps the edition's fixed per-task figure.
   let estimate: number;
   const perTaskCap = caps.perTaskUsd;

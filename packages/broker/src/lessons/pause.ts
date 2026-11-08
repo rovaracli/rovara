@@ -115,6 +115,36 @@ export async function spendLook(spend: LearningSpend, workspaceId: string, estim
 /** The pause a refused look records: the month's limit is the company's; a call too large for the whole cap is a cost problem; a counter that could not be read is a fault, not a reason (nothing is recorded). */
 export const pauseOfLook = (look: "month_full" | "too_large" | "unreadable"): LessonsPauseCode | undefined => (look === "month_full" ? "monthly_limit" : look === "too_large" ? "cost_too_high" : undefined);
 
+/** What one task's learning has counted so far (shared by the reflector's and the curator's pause handles of that task). */
+export interface TaskFailureTally { counted: boolean }
+export const newTaskFailureTally = (): TaskFailureTally => ({ counted: false });
+/**
+ * LP-10 R8 / LP-15: a pause handle that counts failed model calls toward `model_failed` ONCE for a task (or one draft set), not once per call. A task whose reflection is judged against several neighbours, draft by
+ * draft, could otherwise reach the three failures that pause the project from one short outage. After the first failure the rest of the task's failures are not counted (the reason and the clear are untouched), and a
+ * call that succeeds clears the count as always, after which a later failure of the same task counts afresh (the count is "in a row"). Share one tally between the handles of a task.
+ */
+export function failuresCountedOncePerTask(pause: LessonsPauseStore | undefined, tally: TaskFailureTally): LessonsPauseStore | undefined {
+  if (pause?.failed === undefined) return pause;
+  const failed = pause.failed.bind(pause);
+  return {
+    record: (workspaceId, project, code) => pause.record(workspaceId, project, code),
+    read: (workspaceId, project) => pause.read(workspaceId, project),
+    async clear(workspaceId, project, only, ifCode) { await pause.clear(workspaceId, project, only, ifCode); if (only !== "company") tally.counted = false; },
+    async failed(workspaceId, project) {
+      // Zero is returned for a failure after the first: below the pause threshold, so nothing is recorded.
+      if (tally.counted) return 0;
+      tally.counted = true;
+      return failed(workspaceId, project);
+    },
+  };
+}
+
+/** `deps` with its pause handle counting failures once per task (`failuresCountedOncePerTask`); deps with no pause store are returned as they are. */
+export function withFailuresCountedOnce<T extends { pause?: LessonsPauseStore }>(deps: T, tally: TaskFailureTally): T {
+  const pause = failuresCountedOncePerTask(deps.pause, tally);
+  return pause === undefined ? deps : { ...deps, pause };
+}
+
 /** A learning call failed after its key was made: counts it, and pauses the project as `model_failed` once this many in a row have failed (a success clears both). Never throws. */
 export async function noteModelFailure(pause: LessonsPauseStore | undefined, workspaceId: string, project: string): Promise<void> {
   if (pause?.failed === undefined) return;

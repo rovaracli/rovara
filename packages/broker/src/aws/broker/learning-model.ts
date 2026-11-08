@@ -47,7 +47,7 @@ export const LEARNING_MONTH_FULL = "learning's monthly limit is used up";
 export const LEARNING_DEADLINE = "the reflection ran out of time before this call could finish";
 /** The longest the broker waits for the in-VPC function's one call (lane 1): what a call must be able to finish inside before the worker's deadline. */
 export const LEARNING_BROKER_WAIT_MS = LESSONS_BROKER_MODEL_WAIT_SECONDS * 1000;
-export const LEARNING_TOO_DEAR = "the model's price could take a call past what learning holds for it";
+export const LEARNING_TOO_DEAR = "no available model costs little enough for what learning holds for one call";
 export const LEARNING_ALL_FORBIDDEN = "every model learning could use is forbidden";
 export const LEARNING_NO_SUITABLE_MODEL = "no available model can take this learning call";
 /** A learning key lives for at most five minutes (the call itself is bounded to 100 s). */
@@ -125,16 +125,20 @@ export function customerLearningModel(dependencies: LessonsHostDependencies, opt
     if (routing === undefined) throw new LearningRefusal("no_provider", LEARNING_NO_PROVIDER);
     const preferred = options.lessonsModel === undefined ? undefined : await options.lessonsModel(orgId).catch(() => undefined);
     const shape = { inputTokens: worstCaseTokens(request.system) + worstCaseTokens(request.user) + FRAMING_TOKENS, maxOutputTokens: request.maxOutputTokens };
-    const chosen = await chooseLearningRoute(routing, orgId, project, forbidden, shape, preferred);
+    // What a call on a model holds: its worst case on the list price plus the margin; a model with no list price holds the caller's budget (or the default). A caller's budget is a ceiling on the sized one.
+    const holdOf = (model: ModelIdentifier): number => {
+      const worst = learningWorstCaseUsd(model, shape);
+      return worst === undefined ? Math.min(request.budgetUsd ?? options.budgetUsd ?? LEARNING_CALL_BUDGET_USD, LEARNING_MAX_CALL_BUDGET_USD) : Math.max(Math.ceil(worst * LEARNING_HOLD_MARGIN * 1e6) / 1e6, 0.001);
+    };
+    // LP-10 R4: the caller's per-call cap (Public's per-task cap) is passed to the choice, so a dear "lessons model" is skipped for the cheapest one that fits. Only when none fits is the call `cost_too_high`.
+    const chosen = await chooseLearningRoute(routing, orgId, project, forbidden, shape, preferred, request.maxHoldUsd === undefined ? undefined : { usd: request.maxHoldUsd, holdOf });
     if ("none" in chosen) {
-      throw new LearningRefusal(chosen.none, chosen.none === "all_models_forbidden" ? LEARNING_ALL_FORBIDDEN : chosen.none === "no_suitable_model" ? LEARNING_NO_SUITABLE_MODEL : LEARNING_NO_PROVIDER);
+      throw new LearningRefusal(chosen.none, chosen.none === "all_models_forbidden" ? LEARNING_ALL_FORBIDDEN : chosen.none === "no_suitable_model" ? LEARNING_NO_SUITABLE_MODEL : chosen.none === "cost_too_high" ? LEARNING_TOO_DEAR : LEARNING_NO_PROVIDER);
     }
     if (chosen.route.api === undefined) throw new LearningRefusal("no_provider", LEARNING_NO_PROVIDER);
     // The hold is the call's own worst case on the model's list price. A caller's budget is a ceiling on it. A model with no list price holds the caller's budget (or the default): its key's cap is the only bound.
-    const worst = learningWorstCaseUsd(chosen.model, shape);
-    const sized = worst === undefined ? undefined : Math.max(Math.ceil(worst * LEARNING_HOLD_MARGIN * 1e6) / 1e6, 0.001);
-    if (sized !== undefined && request.budgetUsd !== undefined && sized > request.budgetUsd + 1e-9) throw new LearningRefusal("cost_too_high", LEARNING_TOO_DEAR);
-    const hold = sized ?? Math.min(request.budgetUsd ?? options.budgetUsd ?? LEARNING_CALL_BUDGET_USD, LEARNING_MAX_CALL_BUDGET_USD);
+    const hold = holdOf(chosen.model);
+    if (learningWorstCaseUsd(chosen.model, shape) !== undefined && request.budgetUsd !== undefined && hold > request.budgetUsd + 1e-9) throw new LearningRefusal("cost_too_high", LEARNING_TOO_DEAR);
     if (hold > LEARNING_MAX_CALL_BUDGET_USD) throw new LearningRefusal("cost_too_high", LEARNING_TOO_DEAR);
     if (!(hold >= 0.001)) throw new LearningRefusal("no_budget", LEARNING_NO_BUDGET);
     // A model that reasons by default is asked for the least reasoning its catalog entry allows (its thinkingLevelMap: the off value such as "none", else "minimal", else "low"), so the hidden reasoning cannot eat a

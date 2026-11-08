@@ -1,5 +1,6 @@
 import { ModelListSchema, agentXError, canonicalModelName, editionFromEnvironment, forbiddenModelMatcher, modelCompany, modelNotEnabledSentence } from "@agentx/contracts";
 import { bedrockClaudeModelIds, catalogModel } from "@agentx/model-runtime/catalog";
+import { isBatchVariant } from "../model-sources/model-variants.js";
 import { servableModels, servingRoutes } from "../model-sources/routing.js";
 import { readGuardrails } from "./guardrails.js";
 import { roleOnProject } from "./roster.js";
@@ -17,7 +18,8 @@ export async function getModels(deps: AgentRouteDependencies, caller: AgentCalle
  const left=cannotUse.size===0?[]:bedrockClaudeModelIds(routing.rovaraGeography??"us").map(modelId=>({provider:"amazon-bedrock",modelId})).filter(model=>cannotUse.has(canonicalModelName(model))&&!listed.has(canonicalModelName(model)));
  const entries=[];
  for(const model of [...models,...left]) {
-  if(forbidden(model))continue;
+  // LP-11: an OpenRouter `:batch` variant is the Batch API's id (answered within a day), not one for chat; it is never offered.
+ if(isBatchVariant(model)||forbidden(model))continue;
   const routes=deps.modelRouting===undefined?[{sourceId:"rovara"}]:await servingRoutes(pickerRouting,{orgId:caller.orgId,project:project??"",model});
   if(routes.length===0)continue;
   const sources=[...new Set(routes.map(route=>route.sourceId))];

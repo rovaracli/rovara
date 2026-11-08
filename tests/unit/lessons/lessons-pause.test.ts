@@ -326,6 +326,16 @@ describe("L4: Public keeps a per-task learning cap whatever the quote; Enterpris
     expect((await reflectSubject(deps(fair).d, one())).status).toBe("ok");
   });
 
+  it("LP-10 R4: Public passes its per-task cap to the model with the quote and the call, so the model can choose one that fits; Enterprise passes none", async () => {
+    const pub = new QuotingModel([reply(candidateJson())], { ok: true, usd: 0.03 });
+    expect((await reflectSubject(deps(pub).d, one())).status).toBe("ok");
+    expect(pub.quotes[0]).toMatchObject({ maxHoldUsd: 0.15 });
+    expect(pub.calls[0]).toMatchObject({ maxHoldUsd: 0.15, budgetUsd: 0.03 });
+    const ent = new QuotingModel([reply(candidateJson())], { ok: true, usd: 0.03 });
+    expect((await reflectSubject(deps(ent, { edition: "enterprise" }).d, one())).status).toBe("ok");
+    expect(ent.quotes[0]).not.toHaveProperty("maxHoldUsd");
+  });
+
   it("Enterprise: the same $1 quote runs (no per-task cap of its own; the company's budgets bind in the model's own admission)", async () => {
     const dear = new QuotingModel([reply(candidateJson())], { ok: true, usd: 1 });
     const world = deps(dear, { edition: "enterprise" });

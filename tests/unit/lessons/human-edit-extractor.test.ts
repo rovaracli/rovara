@@ -3,6 +3,7 @@
 import { describe, expect, it } from "vitest";
 import type { HumanEditInput } from "../../../packages/broker/src/team-record/sources/codehost.js";
 import { createHumanEditExtractor, type HumanEditExtractorDeps } from "../../../packages/broker/src/lessons/human-edit.js";
+import type { CurrentPause, LessonsPauseStore } from "../../../packages/broker/src/lessons/pause.js";
 import type { ProcessDeps } from "../../../packages/broker/src/lessons/process.js";
 import { lessonDeletionPort } from "../../../packages/broker/src/lessons/deletion.js";
 import { InMemoryLessonStore } from "../../../packages/broker/src/lessons/store.js";
@@ -44,7 +45,7 @@ function setup(over: { base?: TaskSubjectBase | undefined; mode?: "Off" | "On"; 
     standing: async (_org, who) => (over.outsiders?.includes(who) ? "outsider" : "member"),
     isErased: async (_org, who) => { if (over.erasedThrows) throw new Error("cannot tell"); return over.erased?.includes(who) === true; },
   };
-  return { extractor: createHumanEditExtractor(deps), store, model, audit };
+  return { extractor: createHumanEditExtractor(deps), store, model, audit, process };
 }
 
 describe("the human-edit extractor", () => {
@@ -65,6 +66,21 @@ describe("the human-edit extractor", () => {
     expect(lessons[0]!.citations).toContainEqual({ kind: "pr", url: LINK });
     // Q5: nothing of the diff is in the stored lesson.
     expect(JSON.stringify(lessons)).not.toContain("for (;;)");
+  });
+
+  it("LP-10 R8: the edit's failed judge calls count toward model_failed once, not once per call", async () => {
+    const bodies = ["a client calls", "a service wrapper", "a gateway calls", "a batch calls"].map((tail) => `Use withRetry from src/retry/index.ts for HTTP retries in the api service ${tail}`);
+    const model = new ScriptedModel([reply(...bodies.map((body) => candidateJson({ type: "convention", title: "Retries", description: "", body, evidenceSpanIds: ["S1"], citations: [{ kind: "pr", url: LINK }] })))]);
+    const w = setup({ model });
+    const pause: LessonsPauseStore & { count: number } = {
+      count: 0, async record() { /* not asked */ }, async clear() { this.count = 0; }, async failed() { this.count += 1; return this.count; }, async read(): Promise<CurrentPause | undefined> { return undefined; },
+    };
+    const judged: string[] = [];
+    Object.assign(w.process, { pause, judgeModel: { complete: async () => { judged.push("judge"); throw new Error("provider down"); } } });
+    await w.extractor.extract(input());
+    // Positive control: more judge calls than the three that would pause the project, counted once.
+    expect(judged.length).toBeGreaterThanOrEqual(3);
+    expect(pause.count).toBe(1);
   });
 
   it("H2: several authors: the lesson names EVERY author, so erasing any one of them deletes it (co-written lessons are purged)", async () => {

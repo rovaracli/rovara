@@ -9,7 +9,7 @@ import {
 } from "../../packages/contracts/src/index.js";
 import { listPricesPerMillion } from "@agentx/model-runtime/catalog";
 import { endpointQualificationDigest } from "../../packages/broker/src/model-sources/endpoint-digest.js";
-import { learningReasoningEffort, reasonsByDefault, unfitForLearning } from "../../packages/broker/src/model-sources/diagnosis-provider.js";
+import { learningReasoningEffort, learningEffortOfMap, reasonsByDefault, unfitForLearning } from "../../packages/broker/src/model-sources/diagnosis-provider.js";
 import { ModelSourceStore } from "../../packages/broker/src/model-sources/store.js";
 import type { RoutingDependencies } from "../../packages/broker/src/model-sources/routing.js";
 import { keyIdOf } from "../../packages/broker/src/org/budget.js";
@@ -318,6 +318,34 @@ describe("R1: the reasoning level comes from the catalog's thinkingLevelMap, nev
     expect(effortOf("anthropic", "acme-tuned-1")).toEqual({ fit: true });
   });
 
+  it("N2 / LP-11 map: only a null level is unsupported; a level the map does not list means the provider's default, so it is allowed", () => {
+    // Pure rule over a thinkingLevelMap (null = unsupported, string = mapped, missing = provider default).
+    expect(learningEffortOfMap({ off: "none", minimal: null, low: "low" })).toEqual({ fit: true, effort: "none" });
+    expect(learningEffortOfMap({ off: null, minimal: "minimal", low: "low" })).toEqual({ fit: true, effort: "minimal" });
+    expect(learningEffortOfMap({ off: null, minimal: null, low: "low" })).toEqual({ fit: true, effort: "low" });
+    // The gemini-style map: off is null and nothing else is listed. minimal and low are missing, not null, so a short level can be asked for.
+    expect(learningEffortOfMap({ off: null })).toEqual({ fit: true, effort: "low" });
+    expect(learningEffortOfMap({})).toEqual({ fit: true, effort: "low" });
+    // One of the two missing: the other is null, so the missing one is the one that is asked for.
+    expect(learningEffortOfMap({ off: null, minimal: null })).toEqual({ fit: true, effort: "low" });
+    expect(learningEffortOfMap({ off: null, low: null })).toEqual({ fit: true, effort: "minimal" });
+    // Every short level is null (and off is not "none"): unsupported, so unfit.
+    expect(learningEffortOfMap({ off: null, minimal: null, low: null, high: "high" })).toEqual({ fit: false });
+    expect(learningEffortOfMap({ minimal: null, low: null })).toEqual({ fit: false });
+  });
+
+  it("N2 / LP-11 map: the 24 real OpenRouter entries whose map is only {off: null} (deepseek-r1, aion) are now fit; entries with explicit nulls (gpt-5-pro) stay unfit", async () => {
+    for (const id of ["deepseek/deepseek-r1", "deepseek/deepseek-r1-0528", "aion-labs/aion-2.0", "aion-labs/aion-3.0"]) {
+      expect(effortOf("openrouter", id)).toEqual({ fit: true, effort: "low" });
+      expect(unfitForLearning({ provider: "openrouter", modelId: id })).toBe(false);
+    }
+    expect(effortOf("openrouter", "openai/gpt-5-pro")).toEqual({ fit: false });
+    const t = install({ source: openrouter("deepseek/deepseek-r1") });
+    await t.ready();
+    await t.model.complete(t.request);
+    expect(t.calls[0]).toMatchObject({ model: orAlias("deepseek/deepseek-r1"), api: "openai-completions", reasoningEffort: "low" });
+  });
+
   it("gpt-5.4-nano is asked for 'none' (it has no 'minimal'), gpt-5.1 too, and gpt-5 'minimal'", async () => {
     for (const [id, effort] of [["gpt-5.4-nano", "none"], ["gpt-5.1", "none"], ["gpt-5", "minimal"], ["gpt-5-mini", "minimal"]] as const) {
       const t = await openaiOnly(id);
@@ -370,6 +398,56 @@ describe("R2: an OpenRouter ':batch' variant is not for chat calls", () => {
     await set.ready();
     await set.model.complete(set.request);
     expect(set.calls[0]).toMatchObject({ model: orAlias("openai/gpt-4.1-nano") });
+  });
+});
+
+describe("LP-10 R4: a 'lessons model' over the per-call cap is skipped for the cheapest one that fits; cost_too_high only when none fits", () => {
+  const HAIKU_HOLD = withMargin((262 * 1 + 1800 * 5) / 1_000_000);
+  const SONNET_HOLD = HOLD;
+  const CAP = 0.02;
+  const capped = (t: ReturnType<typeof install>) => ({ ...t.request, maxHoldUsd: CAP });
+
+  it("control: with no cap the admin's dearer model is used", async () => {
+    const t = install({ models: [SONNET, HAIKU], lessonsModel: SONNET });
+    await t.ready();
+    expect(SONNET_HOLD).toBeGreaterThan(CAP);
+    expect(HAIKU_HOLD).toBeLessThanOrEqual(CAP);
+    expect(await t.model.quote!(t.request)).toEqual({ ok: true, usd: SONNET_HOLD });
+    await t.model.complete(t.request);
+    expect(t.calls[0]).toMatchObject({ model: sourceAlias(TEST_ORG, SRC_ANTHROPIC, SONNET) });
+  });
+
+  it("the admin's model (hold over the cap) is skipped: the quote is the cheapest model's hold, and the call and the key use that model", async () => {
+    const t = install({ models: [SONNET, HAIKU], lessonsModel: SONNET });
+    await t.ready();
+    expect(await t.model.quote!(capped(t))).toEqual({ ok: true, usd: HAIKU_HOLD });
+    await t.model.complete({ ...capped(t), budgetUsd: HAIKU_HOLD });
+    expect(t.calls[0]).toMatchObject({ model: sourceAlias(TEST_ORG, SRC_ANTHROPIC, HAIKU) });
+    near(t.record(t.keyIds()[0]!)?.capUsd, HAIKU_HOLD);
+  });
+
+  it("an admin's model that fits the cap is still used (the setting wins over a cheaper model)", async () => {
+    const t = install({ models: [SONNET, HAIKU], lessonsModel: SONNET });
+    await t.ready();
+    expect(await t.model.quote!({ ...t.request, maxHoldUsd: 0.05 })).toEqual({ ok: true, usd: SONNET_HOLD });
+  });
+
+  it("when even the cheapest model is over the cap the call is refused as cost_too_high, before any key is made", async () => {
+    const t = install({ models: [SONNET, HAIKU], lessonsModel: SONNET });
+    await t.ready();
+    expect(await t.model.quote!({ ...t.request, maxHoldUsd: 0.005 })).toEqual({ ok: false, code: "cost_too_high" });
+    await expect(t.model.complete({ ...t.request, maxHoldUsd: 0.005 })).rejects.toMatchObject({ code: "cost_too_high" });
+    expect(t.proxy.mintKey).not.toHaveBeenCalled();
+  });
+
+  it("a model with no list price holds the default budget, so over a small cap it is skipped for a priced one", async () => {
+    const t = install({ models: [UNPRICED, HAIKU] });
+    await t.ready();
+    expect(LEARNING_CALL_BUDGET_USD).toBeGreaterThan(CAP);
+    expect(await t.model.quote!(capped(t))).toEqual({ ok: true, usd: HAIKU_HOLD });
+    const only = install({ unpriced: true });
+    await only.ready();
+    expect(await only.model.quote!(capped(only))).toEqual({ ok: false, code: "cost_too_high" });
   });
 });
 

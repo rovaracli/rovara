@@ -80,6 +80,17 @@ describe("the model picker", () => {
     expect(picked.entries.some((entry) => entry.model.modelId === "gpt-6.1-sol")).toBe(false);
   });
 
+  it("LP-11: never lists an OpenRouter ':batch' variant (the Batch API's id, not one for chat calls), nor suggests it; the ordinary model beside it stays", () => {
+    const BATCH: ModelIdentifier = { provider: "openrouter", modelId: "openai/gpt-4.1-nano:batch" };
+    const PLAIN: ModelIdentifier = { provider: "openrouter", modelId: "openai/gpt-4.1-nano" };
+    const withBatch = secondReviewPicker({ sources: [SONNET, PLAIN, BATCH], project: {}, forbidden: [], against: [SONNET] });
+    expect(withBatch.entries.map((entry) => entry.model.modelId)).toContain(PLAIN.modelId);
+    expect(withBatch.entries.map((entry) => entry.model.modelId)).not.toContain(BATCH.modelId);
+    expect(withBatch.suggested.map((entry) => entry.model.modelId)).not.toContain(BATCH.modelId);
+    // A project's approved list that names only the batch id (no sources) lists nothing.
+    expect(secondReviewPicker({ sources: [], project: { approved: [BATCH] }, forbidden: [], against: [SONNET] }).entries).toEqual([]);
+  });
+
   it("greys out a model from the same company as the builder, with the reason, and one whose maker is unknown", () => {
     const sonnet = picked.entries.find((entry) => entry.model.modelId === SONNET.modelId)!;
     expect(sonnet).toMatchObject({ eligible: false, ineligibleWhy: "same-company", suggested: false });

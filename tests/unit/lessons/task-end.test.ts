@@ -9,7 +9,7 @@ import { announceHumanSendBack, registerHumanSendBackListener, sendBackToRecord 
 import type { ProcessDeps } from "../../../packages/broker/src/lessons/process.js";
 import { withLearningAttempt, noteLearningFault, type LearningAttempt } from "../../../packages/broker/src/lessons/learning-deadline.js";
 import { logRef } from "../../../packages/broker/src/lessons/log-ref.js";
-import { LearningRefusal } from "../../../packages/broker/src/lessons/pause.js";
+import { LearningRefusal, MODEL_FAILURES_BEFORE_PAUSE, noteModelFailure, failuresCountedOncePerTask, newTaskFailureTally, type CurrentPause, type LessonsPauseStore } from "../../../packages/broker/src/lessons/pause.js";
 import { inheritedTasksOf, learnFromEndedTask, learnFromEndedTaskTyped, learningTaskEndHandler, reflectOutcomeOf, subjectForTask, type TaskLearningDeps, type TaskSubjectBase } from "../../../packages/broker/src/lessons/task-end.js";
 import type { OutcomeRowReader } from "../../../packages/broker/src/lessons/task-outcome-rows.js";
 import { InMemoryLessonStore } from "../../../packages/broker/src/lessons/store.js";
@@ -558,5 +558,54 @@ describe("lessons connect fix 2 (R2, R4): the outcome is counted on every path, 
     const two = await counted({ base: { facts: baseFacts(), sendBackRequestIds: ["req-1", "req-2"] } });
     await learnFromEndedTask(two.deps, merged);
     expect(await two.queued()).toEqual([]);
+  });
+});
+
+/** A pause store that remembers its reasons and how many failures it was asked to count. */
+class CountingPause implements LessonsPauseStore {
+  count = 0;
+  reasons: string[] = [];
+  cleared = 0;
+  async record(_w: string, _p: string, code: CurrentPause["code"]): Promise<void> { this.reasons.push(code); }
+  async clear(): Promise<void> { this.cleared += 1; this.count = 0; }
+  async failed(): Promise<number> { this.count += 1; return this.count; }
+  async read(): Promise<CurrentPause | undefined> { return undefined; }
+}
+
+describe("LP-10 R8 / LP-15: a task's failed model calls count toward model_failed once, not once per call", () => {
+  const bodies = [
+    "Use withRetry from src/retry/index.ts for HTTP retries in the api service client calls",
+    "Use withRetry from src/retry/index.ts for HTTP retries in the api service wrapper",
+    "Use withRetry from src/retry/index.ts for HTTP retries in the api service gateway calls",
+    "Use withRetry from src/retry/index.ts for HTTP retries in the api service batch calls",
+  ];
+  const fourDrafts = () => reply(...bodies.map((body) => candidateJson({ title: "Retries", description: "", body, type: "fact", evidenceSpanIds: ["S1"] })));
+  const failingJudge = () => { const calls: string[] = []; return { calls, complete: async () => { calls.push("judge"); throw new Error("provider down"); } }; };
+
+  it("a task with four similar drafts makes several failing judge calls and counts ONE failure, so one short outage does not pause the project", async () => {
+    const w = setup({ model: new ScriptedModel([fourDrafts()]) });
+    const pause = new CountingPause();
+    const judge = failingJudge();
+    w.deps.process = { ...w.deps.process, judgeModel: judge, pause };
+    w.deps.reflect = { ...w.deps.reflect, pause };
+    expect(await learnFromEndedTask(w.deps, { workspaceId: WS, taskId: "task-1" })).toBe("reflected");
+    // Positive control: the judge was called at least MODEL_FAILURES_BEFORE_PAUSE times in this one task, so per-call counting would have paused the project.
+    expect(judge.calls.length).toBeGreaterThanOrEqual(MODEL_FAILURES_BEFORE_PAUSE);
+    expect(pause.count).toBe(1);
+    expect(pause.reasons).not.toContain("model_failed");
+  });
+
+  it("the handle counts the first failure only, and a success (clear) starts the count again", async () => {
+    const inner = new CountingPause();
+    const tally = newTaskFailureTally();
+    const pause = failuresCountedOncePerTask(inner, tally)!;
+    for (let call = 0; call < 5; call += 1) await noteModelFailure(pause, WS, PROJECT);
+    expect(inner.count).toBe(1);
+    await pause.clear(WS, PROJECT);
+    await noteModelFailure(pause, WS, PROJECT);
+    expect(inner.count).toBe(1);
+    expect(inner.cleared).toBe(1);
+    // A store with no counter is returned as it is.
+    expect(failuresCountedOncePerTask(undefined, tally)).toBeUndefined();
   });
 });
