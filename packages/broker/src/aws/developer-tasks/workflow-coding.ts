@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { humanSendBackCount } from "../../lessons/human-send-backs.js";
 import { DeleteCommand, TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
 import {
   CanvasCloseoutRetryRequestSchema,
@@ -431,7 +432,7 @@ export async function sendTaskWorkflowBackToCoding(deps: DeveloperTaskRouteDepen
   // (`autoSendBackToCodingFromSystem`) is another function and never captures. A code send-back carries no included comments. Slack's fixed note is not a person's reason.
   await captureSendBackQuietly(deps, { caller, taskId, project: task.project, requestId: request.requestId, reason: request.instructions === SLACK_SEND_BACK_INSTRUCTIONS ? "" : request.instructions, included: [], stage: await codeSendBackStage(deps, caller.orgId, task.taskId, next),
     // Learning (WA-2, LS-1): the lessons side hears of this send-back from the one capture entry point, not from a call beside it: WHO sent it back (a listener exists only where learning is wired).
-    alsoRecord: () => announceTaskSendBack({ task, callerDeveloperId: caller.developerId, requestId: request.requestId, instructions: request.instructions === SLACK_SEND_BACK_INSTRUCTIONS ? "" : request.instructions, earlierSendBacks: workflow.decisions.filter((decision) => decision.source === "SEND_BACK").length, at: receivedAt }) });
+    alsoRecord: () => announceTaskSendBack({ task, callerDeveloperId: caller.developerId, requestId: request.requestId, instructions: request.instructions === SLACK_SEND_BACK_INSTRUCTIONS ? "" : request.instructions, earlierSendBacks: humanSendBackCount(workflow), at: receivedAt }) });
   return queued;
 }
 
@@ -509,9 +510,15 @@ export async function resolveTaskWorkflowFindings(deps: DeveloperTaskRouteDepend
     const ownerNotes = instructions.length === 0 ? "none beyond fixing the problems." : `\n${instructions.join("\n")}`;
     const prompt = (notes: string) => `Address only the problems below in the code, keeping to the approved plan. ${NO_PUBLISH_NOTE}\n\n${problems}\n\nOwner instructions for these problems (the owner's own instructions for this step; the numbers follow the order the problems are listed in): ${ownerNotes}${ownerConstraintsSection(workflow, plan)}\n\nApproved plan (sha256 ${plan.sha256}):\n${plan.text}${notes}`;
     const running: WorkflowSnapshot = { ...next, revision: next.revision + 1, state: "RUNNING", updatedAt: receivedAt };
-    return queueWorkflowCoding(deps, caller, { ...access, task: { ...task, workflow } }, { requestId: request.requestId, prompt, next: running,
+    const queued = await queueWorkflowCoding(deps, caller, { ...access, task: { ...task, workflow } }, { requestId: request.requestId, prompt, next: running,
       request: `Fix ${toFix.length} review finding${toFix.length === 1 ? "" : "s"}`, response: workflowDependencies === undefined ? "AgentX sent the findings to fix back to coding" : "AgentX restarted the approved ordered work plan for the review findings",
       ...(restartApprovedGraph === undefined ? {} : { workflowDependencies: restartApprovedGraph }) });
+    // WB-7: a finding the owner had FIXED is a send-back too, and is announced through the SAME entry point as the plain send-back (`captureSendBackQuietly`'s `alsoRecord`, one HumanSendBackListener): the pressing
+    // person, their request, and their own per-finding notes (the findings' text is reviewer output and is not passed on). The note is not captured as a correction here (`reason` is empty: the owner's notes are
+    // answers to particular findings), so only the record's row is written. Never fails or holds up the decision.
+    await captureSendBackQuietly(deps, { caller, taskId, project: task.project, requestId: request.requestId, reason: "", included: [], stage: await codeSendBackStage(deps, caller.orgId, task.taskId, running),
+      alsoRecord: () => announceTaskSendBack({ task, callerDeveloperId: caller.developerId, requestId: request.requestId, instructions: instructions.join("\n"), earlierSendBacks: humanSendBackCount(workflow), at: receivedAt }) });
+    return queued;
   }
   // Every finding accepted. When the reviews now stand, the next step is due: the draft pull request, committed with the
   // decision as a passing review's result commits it (so a lost start is the recovery sweep's); or, in a custom sequence,

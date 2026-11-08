@@ -34,7 +34,7 @@ export interface CodeFactsDeps {
 
 /** A `CodeFactsReader` over the code-host port. `resolve` gives the repository and scope for a project's repository name; no answer means no read. */
 export function codeHostFactsReader(
-  host: Pick<CodeHost, "fileAtRevision">,
+  host: Pick<CodeHost, "fileAtRevision" | "pathKind">,
   resolve: (workspaceId: string, project: string, repo: string) => Promise<{ repository: RepositoryRef; scope: HostScope } | undefined>,
 ): CodeFactsReader {
   return {
@@ -43,6 +43,14 @@ export function codeHostFactsReader(
       if (target === undefined) return undefined;
       return host.fileAtRevision(target.repository, input.path, input.commit, target.scope, { timeoutMs: input.timeoutMs });
     },
+    // WB-7: only where the host can tell a directory from nothing; a host without `pathKind` leaves the reader without `kind`, and then only a readable file counts.
+    ...(host.pathKind === undefined ? {} : {
+      async kind(input) {
+        const target = await resolve(input.workspaceId, input.project, input.repo);
+        if (target === undefined) return undefined;
+        return host.pathKind!(target.repository, input.path, input.commit, target.scope, { timeoutMs: input.timeoutMs });
+      },
+    }),
   };
 }
 
@@ -102,9 +110,10 @@ export function createCodeFacts(deps: CodeFactsDeps): CodeFacts {
       if (glob && prefix === "") return true;
       if (deps.reader.kind !== undefined) {
         const kind = await within(() => deps.reader.kind!({ ...ask, path: prefix }));
-        if (kind === undefined) return undefined;
         // A glob's prefix must be a directory; a plain path may be a file or a directory.
-        return glob ? kind === "dir" : kind !== "none";
+        if (kind !== undefined) return glob ? kind === "dir" : kind !== "none";
+        // M3 (lane 2 review): a host that cannot tell the kind (its `kind` answers "cannot tell", as the broker's reader does for a host without `pathKind`) falls back to reading the file, exactly as a reader
+        // without `kind` always did; a glob needs the directory and stays unverified.
       }
       // No way to tell a directory from a missing path: only a file that can be read is known to exist.
       if (glob) return undefined;

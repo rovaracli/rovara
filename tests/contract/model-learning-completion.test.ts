@@ -3,6 +3,7 @@
 import type { AgentXError } from "@agentx/contracts";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { InvokeCommandOutput } from "@aws-sdk/client-lambda";
+import { LearningNotForwarded } from "../../packages/broker/src/model-proxy/access.js";
 import { LEARNING_CALL_TIMEOUT_MS, ModelProxyClient } from "../../packages/broker/src/model-proxy/client.js";
 import { createModelAccessHandler } from "../../packages/broker/src/model-proxy/handler.js";
 import { LEARNING_INVOKE_TIMEOUT_MS, ModelAccessInvoker } from "../../packages/broker/src/model-proxy/invoker.js";
@@ -139,6 +140,51 @@ describe("ModelProxyClient.learningCompletion", () => {
   });
 });
 
+describe("R1 (lane 2 re-check): a learning call refused BEFORE anything was sent is typed; every other failure is not", () => {
+  const refusedFetch = (code: string, how: "cause" | "own" = "cause") => (async () => {
+    const error = Object.assign(new TypeError("fetch failed"), how === "own" ? { code } : { cause: Object.assign(new Error("connect"), { code }) });
+    throw error;
+  }) as unknown as typeof fetch;
+  const clientOver = (fetch: typeof globalThis.fetch) => new ModelProxyClient({ baseUrl: BASE, masterKey: async () => MASTER, fetch, now: () => NOW, catalog: CATALOG });
+
+  it("a refused connection or a name that does not resolve is LearningNotForwarded (still MODEL_PROXY_UNAVAILABLE for any other caller)", async () => {
+    for (const code of ["ECONNREFUSED", "ENOTFOUND", "EAI_AGAIN"]) {
+      for (const how of ["cause", "own"] as const) {
+        const error = await failure(clientOver(refusedFetch(code, how)).learningCompletion(input()));
+        expect(error, `${code} ${how}`).toBeInstanceOf(LearningNotForwarded);
+        expect(error.code).toBe("MODEL_PROXY_UNAVAILABLE");
+      }
+    }
+  });
+
+  it("a timeout, a reset, an unknown network fault, a 5xx, a non-200 answer and an answer with no text may all come AFTER the provider was reached: none is typed", async () => {
+    const timeout = Object.assign(new Error("timed out"), { name: "TimeoutError" });
+    for (const fetch of [async () => { throw timeout; }, refusedFetch("ECONNRESET"), refusedFetch("ETIMEDOUT"), async () => json({}, 503), async () => json({ error: "x" }, 429), async () => json({ content: [] })] as Array<typeof globalThis.fetch>) {
+      const error = await failure(clientOver(fetch).learningCompletion(input()));
+      expect(error).not.toBeInstanceOf(LearningNotForwarded);
+      expect(error.code).toBe("MODEL_PROXY_UNAVAILABLE");
+    }
+  });
+
+  it("it crosses the function boundary: the failure answer says notForwarded and the invoker raises LearningNotForwarded again; a failure without the flag stays an ordinary error", async () => {
+    const lambdaOver = (run: (event: unknown) => Promise<unknown>) => ({ send: async (command: { input: { Payload?: Uint8Array } }) => {
+      const out = await run(JSON.parse(Buffer.from(command.input.Payload as Uint8Array).toString("utf8")));
+      return { StatusCode: 200, Payload: new TextEncoder().encode(JSON.stringify(out)), $metadata: {} } as InvokeCommandOutput;
+    } });
+    const refused = createModelAccessHandler({ access: clientOver(refusedFetch("ECONNREFUSED")), log: () => undefined, learning: true });
+    const answer = await refused({ op: "learningCompletion", args: input() });
+    expect(answer).toMatchObject({ ok: false, code: "MODEL_PROXY_UNAVAILABLE", notForwarded: true });
+    expect(JSON.stringify(answer)).not.toContain(VIRTUAL);
+    expect(await failure(new ModelAccessInvoker({ functionName: "f", lambda: lambdaOver(refused) as never, learningLambda: lambdaOver(refused) as never }).learningCompletion(input()))).toBeInstanceOf(LearningNotForwarded);
+    const timedOut = createModelAccessHandler({ access: clientOver((async () => { throw Object.assign(new Error("t"), { name: "TimeoutError" }); })), log: () => undefined, learning: true });
+    expect(await timedOut({ op: "learningCompletion", args: input() })).not.toHaveProperty("notForwarded");
+    expect(await failure(new ModelAccessInvoker({ functionName: "f", lambda: lambdaOver(timedOut) as never, learningLambda: lambdaOver(timedOut) as never }).learningCompletion(input()))).not.toBeInstanceOf(LearningNotForwarded);
+    // The flag is honoured for the learning operation only: another operation's failure answer cannot claim it.
+    const other = { send: async () => ({ StatusCode: 200, Payload: new TextEncoder().encode(JSON.stringify({ ok: false, code: "MODEL_PROXY_UNAVAILABLE", message: "m", notForwarded: true })), $metadata: {} }) as InvokeCommandOutput };
+    expect(await failure(new ModelAccessInvoker({ functionName: "f", lambda: other }).blockKey("a".repeat(64)))).not.toBeInstanceOf(LearningNotForwarded);
+  });
+});
+
 describe("what a key may name (the mint is where a learning call's alias is fenced)", () => {
   const mint = (models: string[]) => {
     const { client, seen } = proxy();
@@ -171,7 +217,7 @@ describe("the operation across the function boundary", () => {
   it("invoker -> handler -> client: the answer carries no key, no key id and no cost, and the request is validated", async () => {
     const { client } = proxy();
     const run = createModelAccessHandler({ access: client, log: () => undefined, learning: true });
-    const invoker = new ModelAccessInvoker({ functionName: "f", lambda: lambdaOver(run) as never });
+    const invoker = new ModelAccessInvoker({ functionName: "f", lambda: lambdaOver(run) as never, learningLambda: lambdaOver(run) as never });
     const answer = await invoker.learningCompletion(input());
     expect(answer).toEqual({ text: "{\"candidates\":[]}", model: ALIAS });
     expect(JSON.stringify(answer)).not.toContain(VIRTUAL);
@@ -182,7 +228,7 @@ describe("the operation across the function boundary", () => {
     const real = AbortSignal.timeout.bind(AbortSignal);
     vi.spyOn(AbortSignal, "timeout").mockImplementation((ms: number) => { timeouts.push(ms); return real(ms); });
     const lambda = { send: async () => ({ StatusCode: 200, Payload: new TextEncoder().encode(JSON.stringify({ ok: true, result: { text: "x", model: ALIAS } })), $metadata: {} }) as InvokeCommandOutput };
-    const invoker = new ModelAccessInvoker({ functionName: "f", lambda: lambda });
+    const invoker = new ModelAccessInvoker({ functionName: "f", lambda: lambda, learningLambda: lambda });
     expect((await invoker.learningCompletion(input())).text).toBe("x");
     expect(timeouts).toEqual([LEARNING_INVOKE_TIMEOUT_MS]);
     // The short default for any other operation is much shorter than a learning call's wait.

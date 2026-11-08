@@ -5,6 +5,7 @@ import type { LinearReplyPort } from "../../rovara-code/linear-comments.js";
 import type { SlackAskDependencies } from "./ask-service.js";
 import type { DiagnosisCoreDependencies } from "../../diagnosis/light.js";
 import type { AskContextDependencies, AskContextReaders } from "../../agent-sessions/ask-context.js";
+import type { ReflectQueue } from "../../lessons/reflect-queue.js";
 import type { TaskLearningDeps } from "../../lessons/task-end.js";
 import type { TeamRecordRuntime } from "../../team-record/runtime.js";
 import type { LessonsRuntime } from "../../lessons/runtime.js";
@@ -376,6 +377,8 @@ export interface AwsBrokerDependencies {
   contextSources?: ContextSourcesRuntime;
   /** Learning v2 wiring (WA-2): the terminal-task hook's dependencies. Absent (the pilot default): no hook is registered and learning reads and writes nothing at a task's end. */
   learning?: TaskLearningDeps;
+  /** Lessons in production (lane 2, WB-4): where a finished task's reflection is sent (the LessonsReflect queue). Absent: no hook is registered and a task's end sends nothing. */
+  lessonsReflectQueue?: ReflectQueue;
   /** Team record (wire-team-record): the record's runtime. Absent (the default: the switch is off) means NOTHING of the record reads, writes, schedules or answers. */
   teamRecord?: TeamRecordRuntime;
   /** Learning v2 wiring (LS-3): the lessons library's ports, built only where the Team record is on. Absent (the default) means no lesson is loaded, sent, shown or decided. */
@@ -424,3 +427,12 @@ export const DEVELOPER_ROUTE_KEY = "ANY /v1/dev/{proxy+}";
 export const APP_ROUTE_KEY = "ANY /v1/app/{proxy+}";
 export const WEB_ROUTE_KEY = "ANY /v1/web/{proxy+}";
 export const FEEDBACK_REVIEW_ROUTE_KEY = "ANY /review/{proxy+}";
+
+/**
+ * Lessons in production (lane 2, M6): what the lessons and learning code reads of the broker's dependencies. The LessonsWorker has its own slim entry and builds only this, with no broker handler and none of the broker's
+ * secrets; the broker passes its whole `AwsBrokerDependencies` (a Pick of it). `developer` is narrowed to the sign-in table's name, which is all learning reads of it. A new read of another field is a type error in the
+ * worker's entry, not a missing value at run time.
+ */
+export type LessonsHostDependencies =
+  Pick<AwsBrokerDependencies, "documentClient" | "s3" | "tableName" | "artifactBucketName" | "audit" | "teamRecord" | "modelAccess" | "cloud" | "codeHost" | "githubPullRequests" | "editionPolicy" | "agents" | "chatgpt" | "usableModels" | "lessons" | "learning" | "lessonsReflectQueue" | "orgResolver">
+  & { developer?: Pick<NonNullable<AwsBrokerDependencies["developer"]>, "signInTableName"> | undefined };

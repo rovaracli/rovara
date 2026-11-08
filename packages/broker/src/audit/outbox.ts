@@ -33,6 +33,11 @@ export interface AuditRuntime {
   tableName: string;
   now: () => number;
   log: (entry: Record<string, unknown>) => void;
+  /**
+   * Lessons in production (lane 2, M6): the LessonsWorker has no right to the audit intake queue. With this set, an event is written as a pending item and never sent from this process: the broker's drain delivers it
+   * (the same path as an event whose send failed). `sqs` is then never used.
+   */
+  pendingOnly?: true;
 }
 
 /** Embedded in a broker's dependencies. Absent on a legacy install: every audit function is then a no-op. */

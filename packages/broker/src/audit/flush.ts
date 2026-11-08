@@ -92,7 +92,7 @@ export async function deleteAuditPending(audit: AuditRuntime, events: AuditEvent
  */
 export async function flushAuditEvents(deps: AuditDeps, events: AuditEventInput[]): Promise<void> {
   const audit = deps.audit;
-  if (audit === undefined) return;
+  if (audit === undefined || audit.pendingOnly === true) return;
   try {
     // An invalid event has no pending item (auditPending logged it); there is nothing to send.
     const valid = events.filter((event) => AuditEventInputSchema.safeParse(event).success);

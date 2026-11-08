@@ -27,7 +27,7 @@
 //   - Bounded: a set holds at most MAX_SET_MEMBERS lessons and a commit at most MAX_COMMIT_WRITES lessons; beyond that the call throws (fail closed), it never writes part of a commit.
 import { createHash, randomUUID } from "node:crypto";
 import { BatchGetCommand, DeleteCommand, GetCommand, PutCommand, QueryCommand, TransactWriteCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
-import { INDEX_EXPIRY_ATTRIBUTE, agentXError, lessonKey, lessonSetKey, lessonVersionKey, loadManifestKey, type OrgId } from "@agentx/contracts";
+import { AgentXError, INDEX_EXPIRY_ATTRIBUTE, agentXError, lessonKey, lessonSetKey, lessonVersionKey, loadManifestKey, type OrgId } from "@agentx/contracts";
 import { NOT_EXISTS, errorName, failedIndexes, isTransactionConflict, type Item, type TransactItem } from "../agents/table-writes.js";
 import type { TeamRecordTable } from "../team-record/types.js";
 import type { CommitResult, DeletionIntent, LessonStore, LoadManifest, PendingOutcome, ProjectFlags, ScopeKey, SetSnapshot } from "./store.js";
@@ -40,6 +40,8 @@ export const MAX_COMMIT_WRITES = 30;
 export const MAX_SNAPSHOTS_READ = 500;
 const MAX_QUERY_ITEMS = 20_000;
 const TX_LIMIT = 100;
+/** L5: after this many busy refusals on one unfinished change, it is recorded as an alert and the refusal says an administrator is needed. */
+export const LESSON_STUCK_AFTER_TRIES = 5;
 const RETRIES = 5;
 const DAY = 86_400_000;
 const SOURCE_EVENT_TTL_DAYS = 60;
@@ -59,7 +61,7 @@ interface Names { [alias: string]: string }
 
 export class DynamoLessonStore implements LessonStore {
   /** `orgOf` maps a scope's workspace id to the org id that keys the partition; the default is the id itself (the workspace IS the org). Tests with made-up workspace ids pass a mapper. */
-  constructor(private readonly table: TeamRecordTable, private readonly now: () => number = Date.now, private readonly orgOf: (workspaceId: string) => OrgId = (id) => id) {}
+  constructor(private readonly table: TeamRecordTable, private readonly now: () => number = Date.now, private readonly orgOf: (workspaceId: string) => OrgId = (id) => id, private readonly log: (event: string, fields: Record<string, string | number>) => void = (event, fields) => console.log(JSON.stringify({ component: "lessons", event, ...fields }))) {}
 
   // ---- keys
   private pk(key: ScopeKey): string { return lessonSetKey(this.orgOf(key.workspaceId), key.project).pk; }
@@ -278,7 +280,7 @@ export class DynamoLessonStore implements LessonStore {
       parsed.push(lesson);
     }
     for (let attempt = 0; attempt < RETRIES; attempt += 1) {
-      await this.heal(key);
+      await this.healBeforeWrite(key);
       const set = await this.readSet(key);
       if (set.setVersion !== expectedSetVersion) return { ok: false, reason: "conflict" };
       const fenceVer = await this.fenceVersion(key);
@@ -316,7 +318,7 @@ export class DynamoLessonStore implements LessonStore {
   async rollback(key: ScopeKey, targetSetVersion: number, expectedSetVersion: number, at: number): Promise<CommitResult> {
     for (let attempt = 0; attempt < RETRIES; attempt += 1) {
       // A staged rollback that never finished is put back before anything else is decided.
-      await this.heal(key);
+      await this.healBeforeWrite(key);
       const set = await this.readSet(key);
       if (set.setVersion !== expectedSetVersion || targetSetVersion >= expectedSetVersion || targetSetVersion < 0) return { ok: false, reason: "conflict" };
       let target: ReadonlyArray<{ id: string; version: number }> = [];
@@ -380,6 +382,54 @@ export class DynamoLessonStore implements LessonStore {
   private intentRbKey(key: ScopeKey) { return this.k(key, "LESSONSET#RBINTENT"); }
   private rbIntentOpen(key: ScopeKey, nonce: string): TransactItem {
     return { ConditionCheck: { TableName: this.table.tableName, Key: this.intentRbKey(key), ConditionExpression: "#n = :n AND #s = :open", ExpressionAttributeNames: { "#n": "nonce", "#s": "state" }, ExpressionAttributeValues: { ":n": nonce, ":open": "open" } } };
+  }
+
+  /**
+   * WB-7: a write that meets an unfinished earlier change (a stuck intent) resumes it first (`heal`), and once more if that did not finish. Still stuck is a fixed LESSON_BUSY refusal ("try again"), never the
+   * RUNTIME_UNAVAILABLE `heal` throws, which a route would show as the service being down. A fault of the table itself (anything but the intent's own refusal) is not hidden by this.
+   */
+  private async healBeforeWrite(key: ScopeKey): Promise<void> {
+    for (let attempt = 0; ; attempt += 1) {
+      try { return await this.heal(key); }
+      catch (error) {
+        if (!(error instanceof AgentXError) || error.code !== "RUNTIME_UNAVAILABLE") throw error;
+        if (attempt >= 1) {
+          // L5: still stuck. The refusal is counted on the intent; from the fifth on it is recorded as an alert and no longer reads as "try again" (a permanent fault must not look like a passing one).
+          const tries = await this.noteBusy(key);
+          throw agentXError("LESSON_BUSY", tries !== undefined && tries >= LESSON_STUCK_AFTER_TRIES
+            ? "These lessons could not be repaired automatically after several tries. An administrator needs to look at them."
+            : "These lessons are being tidied up from an earlier change. Try again in a moment.");
+        }
+      }
+    }
+  }
+
+  /**
+   * L5: counts a busy refusal on the stuck intent (best effort: a fault of this write never changes the refusal), logs one fixed line (the scope as a hash, the intent's age and the number of tries; no ids, no text),
+   * and on the fifth records the alert on the intent itself (`stuckAt`, once) with its own line. Returns the number of tries, or undefined when it could not be counted.
+   */
+  private async noteBusy(key: ScopeKey): Promise<number | undefined> {
+    try {
+      const nowMs = this.now();
+      const updated = await this.send<{ Attributes?: Item }>(new UpdateCommand({
+        TableName: this.table.tableName, Key: this.intentRbKey(key), UpdateExpression: "SET lastBusyAt = :now ADD busyCount :one", ConditionExpression: "attribute_exists(pk)",
+        ExpressionAttributeValues: { ":now": nowMs, ":one": 1 }, ReturnValues: "ALL_NEW",
+      }));
+      const row = updated.Attributes;
+      const tries = Number(row?.["busyCount"]);
+      if (!Number.isFinite(tries)) return undefined;
+      const at = Number(row?.["at"]);
+      const scope = createHash("sha256").update(`${key.workspaceId}\u0000${key.project}`).digest("hex").slice(0, 12);
+      this.log("lessons.intent_stuck", { scope, tries, ageMs: Number.isFinite(at) ? Math.max(0, nowMs - at) : -1 });
+      if (tries >= LESSON_STUCK_AFTER_TRIES && row?.["stuckAt"] === undefined) {
+        await this.send(new UpdateCommand({
+          TableName: this.table.tableName, Key: this.intentRbKey(key), UpdateExpression: "SET stuckAt = :now", ConditionExpression: "attribute_exists(pk) AND attribute_not_exists(stuckAt)", ExpressionAttributeValues: { ":now": nowMs },
+        })).then(() => this.log("lessons.intent_stuck_alert", { scope, tries }), (error: unknown) => { if (errorName(error) !== "ConditionalCheckFailedException") throw error; });
+      }
+      return tries;
+    } catch {
+      return undefined;
+    }
   }
 
   /**

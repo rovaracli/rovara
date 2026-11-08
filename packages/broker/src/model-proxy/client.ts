@@ -5,8 +5,8 @@
 // once per call, and never puts it, or a key, in an error. Network failures and 5xx answers are
 // MODEL_PROXY_UNAVAILABLE; a 4xx carries the proxy's message.
 import { createHash, randomInt } from "node:crypto";
-import { AgentXError, INFERENCE_PATHS, agentXError, bedrockExternalId, endpointSecretRefProblem, modelSourceOrgProblem, type OrgId } from "@agentx/contracts";
-import type { KeyAudit, LearningCompletion, LearningCompletionInput, MemberSpend, MintKeyInput, MintedKey, ModelAccess, SourceCheck, SpendFigures, UpsertSourceInput } from "./access.js";
+import { AgentXError, INFERENCE_PATHS, agentXError, errorStatus, bedrockExternalId, endpointSecretRefProblem, modelSourceOrgProblem, type OrgId } from "@agentx/contracts";
+import { LearningNotForwarded, type KeyAudit, type LearningCompletion, type LearningCompletionInput, type MemberSpend, type MintKeyInput, type MintedKey, type ModelAccess, type SourceCheck, type SpendFigures, type UpsertSourceInput } from "./access.js";
 import { endpointQualified } from "../model-sources/endpoint-digest.js";
 import { credentialNameOf, proxyModelsOf, sourceAliasPrefix, sourceUsesKey, type PriceLookup } from "./sources.js";
 
@@ -103,6 +103,19 @@ function streamedUsageTotal(text: string): number {
 
 const isRecord = (value: unknown): value is Json => typeof value === "object" && value !== null && !Array.isArray(value);
 const unavailable = (message: string) => agentXError("MODEL_PROXY_UNAVAILABLE", message);
+/** The proxy could not be reached at all: the connection was refused or the name did not resolve, so nothing was sent. Same answer as any unreachable proxy (`unavailable`); a learning call tells it apart. */
+class ProxyNotReached extends AgentXError {
+  constructor() { super("MODEL_PROXY_UNAVAILABLE", "model proxy is unreachable", errorStatus("MODEL_PROXY_UNAVAILABLE")); }
+}
+const NOT_SENT_CODES: ReadonlySet<string> = new Set(["ECONNREFUSED", "ENOTFOUND", "EAI_AGAIN"]);
+/** Whether a failed fetch proves nothing was sent (the system error is on the error or its cause). A timeout, a reset or anything unrecognised is NOT proof. */
+function notReached(error: unknown): boolean {
+  for (let current: unknown = error, depth = 0; depth < 4 && typeof current === "object" && current !== null; depth += 1, current = (current as { cause?: unknown }).cause) {
+    const code = (current as { code?: unknown }).code;
+    if (typeof code === "string" && NOT_SENT_CODES.has(code)) return true;
+  }
+  return false;
+}
 const notScoped = () => agentXError("CONFIG_INVALID", "this organization's model team is not limited to its own models; ask a Rovara admin to look at it");
 
 /** What a Rovara AI catalog id looks like (`<geography>.anthropic.claude-...`): a stale one is a retired or older id, which a team may be brought back from. */
@@ -448,7 +461,9 @@ export class ModelProxyClient implements ModelAccess {
     let reply: Reply;
     try {
       reply = await this.request("POST", path, input.key, body, LEARNING_CALL_TIMEOUT_MS);
-    } catch {
+    } catch (error) {
+      // Re-check R1: only a connection that was refused or a name that did not resolve proves nothing was sent. A timeout, a reset, a 5xx or a redirect may all have come after the provider was reached.
+      if (error instanceof ProxyNotReached) throw new LearningNotForwarded("the learning model call was not sent");
       throw fail("the learning model call failed");
     }
     if (reply.status !== 200) throw fail("the learning model call failed");
@@ -792,8 +807,8 @@ export class ModelProxyClient implements ModelAccess {
         redirect: "manual",
         signal: AbortSignal.timeout(timeoutMs ?? this.input.timeoutMs ?? DEFAULT_TIMEOUT_MS),
       });
-    } catch {
-      throw unavailable("model proxy is unreachable");
+    } catch (error) {
+      throw notReached(error) ? new ProxyNotReached() : unavailable("model proxy is unreachable");
     }
     if (response.status >= 300 && response.status < 400) throw unavailable("model proxy answered with a redirect, which is not followed");
     if (response.status >= 500) throw unavailable(`model proxy answered ${String(response.status)}`);

@@ -98,6 +98,15 @@ export class FakeCodeHost implements CodeHost {
     return (options?.untilLine === undefined ? content : content.split("\n").slice(0, options.untilLine).join("\n"));
   }
 
+  async pathKind(repository: RepositoryRef, path: string, revision: string, scope: HostScope): Promise<"file" | "dir" | "none"> {
+    this.checkScope(scope);
+    const files = this.registered(repository).revision(revision).files;
+    if (files.has(path)) return "file";
+    // A directory is a path some file lives under.
+    for (const name of files.keys()) if (name.startsWith(`${path}/`)) return "dir";
+    return "none";
+  }
+
   async tree(repository: RepositoryRef, revision: string, scope: HostScope): Promise<string> {
     this.checkScope(scope);
     return (this.registered(repository).revision(revision).tree);

@@ -709,10 +709,11 @@ describe("LS-1: one entry point for a send-back, and the lessons side is fed fro
   it("no call site announces beside the capture: the announcement is only ever passed to captureSendBackQuietly, and the plan send-back has none", () => {
     const read = (path: string) => readFileSync(new URL(`../../packages/broker/src/aws/developer-tasks/${path}`, import.meta.url), "utf8");
     const coding = read("workflow-coding.ts");
+    // WB-7 (lessons in production, lane 2): two call sites, the plain send-back and the findings the owner had FIXED; each announces only from its own captureSendBackQuietly's `alsoRecord`.
     const calls = [...coding.matchAll(/announceTaskSendBack\(/gu)];
-    expect(calls).toHaveLength(1);
-    expect(coding.slice(Math.max(0, calls[0]!.index - 40), calls[0]!.index)).toContain("alsoRecord: () => ");
-    expect(coding.match(/captureSendBackQuietly\(/gu)).toHaveLength(1);
+    expect(calls).toHaveLength(2);
+    for (const call of calls) expect(coding.slice(Math.max(0, call.index - 40), call.index)).toContain("alsoRecord: () => ");
+    expect(coding.match(/captureSendBackQuietly\(/gu)).toHaveLength(2);
     expect(read("decide.ts")).not.toMatch(/announce(Task|Human)SendBack/u);
     expect(coding).not.toMatch(/announceHumanSendBack/u);
   });

@@ -32,7 +32,7 @@ export const GITHUB_CODE_HOST_CAPABILITIES: CodeHostCapabilities = {
 
 /** The provider methods the adapter uses: a narrow type, so a test can stand in for the rest. */
 export type GitHubCodeHostProvider = Pick<GitHubAppCredentialProvider,
-  | "getRepositoryIdentity" | "checkRepository" | "getRepositoryStanding" | "resolveWithExpiry" | "getFileAtCommit" | "getCommitTree" | "getBranchHead" | "listWorkingBranches"
+  | "getRepositoryIdentity" | "checkRepository" | "getRepositoryStanding" | "resolveWithExpiry" | "getFileAtCommit" | "getPathKindAtCommit" | "getCommitTree" | "getBranchHead" | "listWorkingBranches"
   | "getCommitParents" | "getDefaultBranchHead" | "getPullRequestMergeObservation"
   | "installationForRepository" | "readCodeOwners" | "reconcilePullRequest" | "getPullRequest" | "updatePullRequest" | "getPullRequestStatus" | "listPullRequestFiles"
   | "getPullRequestFeedback" | "replyToReviewThread" | "markPullRequestReady" | "requestReviewers" | "mergePullRequest">;
@@ -88,6 +88,13 @@ export function githubCodeHost(provider: GitHubCodeHostProvider, options: GitHub
     async fileAtRevision(repository: RepositoryRef, path: string, revision: string, scope: HostScope, fileOptions?: { untilLine?: number; timeoutMs?: number; maxBytes?: number }): Promise<string | undefined> {
       return provider.getFileAtCommit(repository.url, path, revision, checkedScope(scope), fileOptions);
     },
+
+    // Only where the provider can tell (a partial provider of a harness cannot): a host without `kind` leaves a directory unverified.
+    ...(typeof provider.getPathKindAtCommit !== "function" ? {} : {
+      async pathKind(repository: RepositoryRef, path: string, revision: string, scope: HostScope, kindOptions?: { timeoutMs?: number }): Promise<"file" | "dir" | "none"> {
+        return provider.getPathKindAtCommit(repository.url, path, revision, checkedScope(scope), kindOptions);
+      },
+    }),
 
     async tree(repository: RepositoryRef, revision: string, scope: HostScope): Promise<string> {
       return provider.getCommitTree(repository.url, revision, checkedScope(scope));

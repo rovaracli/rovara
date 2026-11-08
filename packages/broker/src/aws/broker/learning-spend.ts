@@ -9,6 +9,7 @@
 //   - Fail closed: a counter that cannot be read is a refusal.
 import { GetCommand } from "@aws-sdk/lib-dynamodb";
 import { OrgIdSchema, spendCounterKey } from "@agentx/contracts";
+import { noteLearningFault } from "../../lessons/learning-deadline.js";
 import type { Edition } from "../../lessons/policy.js";
 import type { LearningSpend } from "../../lessons/ports.js";
 import { cleanUsd } from "../../spend/top-ups.js";
@@ -54,6 +55,8 @@ export function companyLearningSpend(deps: CompanyLearningSpendDependencies): Le
       return committed <= cleanUsd(cap - estimate + 0.000001) ? "ok" : "month_full";
     } catch {
       deps.log?.("learning.spend_admit_failed", { orgId: org.data });
+      // Lane 2 (H1): a counter that could not be read is a fault, not a refusal; nothing was held or sent, so inside the worker the reflection is worth another try.
+      noteLearningFault("retryable");
       return "unreadable";
     }
   };

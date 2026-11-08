@@ -57,9 +57,11 @@ describe("the health route's grants (A13)", () => {
       .flatMap((stack) => Object.values(Template.fromStack(stack).findResources("AWS::CloudWatch::Alarm") as Record<string, { Properties: { AlarmName?: unknown } }>))
       .map((alarm) => alarm.Properties.AlarmName);
     const stacks = buildAgentXApp({ agentxEnv: "live25d" }).node.children.filter((child): child is Stack => Stack.isStack(child));
-    // The automatic renewal's alarms exist only where its CDK context is on (AR-2).
-    expect([...alarmNamesOf({})].sort()).toStrictEqual(HEALTH_ALARM_SUFFIXES.filter((suffix) => !suffix.startsWith("RuntimeRequalify")).map((suffix) => `agentx-live25d-${suffix}`).sort());
-    expect([...alarmNamesOf({ "agentx:autoRequalify": "enabled" })].sort()).toStrictEqual(HEALTH_ALARM_SUFFIXES.map((suffix) => `agentx-live25d-${suffix}`).sort());
+    // The automatic renewal's alarms exist only where its CDK context is on (AR-2); the lessons worker's, only with the Team record switch on (lessons in production, M5).
+    const withoutLessons = (suffix: string) => !suffix.startsWith("Lessons");
+    expect([...alarmNamesOf({})].sort()).toStrictEqual(HEALTH_ALARM_SUFFIXES.filter((suffix) => !suffix.startsWith("RuntimeRequalify") && withoutLessons(suffix)).map((suffix) => `agentx-live25d-${suffix}`).sort());
+    expect([...alarmNamesOf({ "agentx:autoRequalify": "enabled" })].sort()).toStrictEqual(HEALTH_ALARM_SUFFIXES.filter(withoutLessons).map((suffix) => `agentx-live25d-${suffix}`).sort());
+    expect((alarmNamesOf({ agentxCloud: true, agentxTeamRecord: "enabled" }) as string[]).filter((name) => name.includes("-Lessons")).sort()).toStrictEqual(HEALTH_ALARM_SUFFIXES.filter((suffix) => !withoutLessons(suffix)).map((suffix) => `agentx-live25d-${suffix}`).sort());
     expect(stacks.flatMap((stack) => Object.keys(Template.fromStack(stack).findResources("AWS::CloudWatch::CompositeAlarm")))).toEqual([]);
   }, 120_000);
 
@@ -317,6 +319,8 @@ describe("the health route's grants (A13)", () => {
       "packages/broker/src/notifications/attention.ts",
       // SRL-3 (owner decision 24b): the merge-commit index row (GITHUB_WORKFLOW_MERGE, pk ORG#<org>#GITHUB_MERGE) maps a pull request's merge commit to its Rovara task so a revert can be matched; it is an index row that holds no person and expires after 400 days, and only merge-commit-index.ts builds it.
       "packages/broker/src/rovara-code/merge-commit-index.ts",
+      // 2026-11-08, lessons in production (lane 2): the once-claim of a reflection (`LEARN#<task>#<outcome>`, 30 days) is a marker so a redelivered queue message never reflects or charges twice; none is a durable record, and only reflect-claims.ts writes it.
+      "packages/broker/src/lessons/reflect-claims.ts",
     ]);
     const found = execFileSync("grep", ["-rl", "indexExpiresAt\\|INDEX_EXPIRY_ATTRIBUTE", "packages", "infra/lib", "--include=*.ts", "--exclude-dir=dist", "--exclude-dir=node_modules"], { encoding: "utf8" }).trim().split("\n").filter((file) => file !== "");
     expect(found.filter((file) => !allowed.has(file))).toEqual([]);

@@ -26,6 +26,7 @@ import {
   MODEL_PROXY_INFERENCE_PORT,
   decodeBrokerList,
   environmentRolePath,
+  lessonsReflectDeadLetterName,
   teamRecordOpsDeadLetterName,
   type BrokerNameSpec,
   type BrokerSettingSpec,
@@ -206,6 +207,8 @@ export function hydrateBrokerEnvironment(env: MutableEnvironment): void {
   const name = env.AGENTX_ENV;
   // The Team record's operations dead-letter queue has a fixed name (`teamRecordOpsDeadLetterName`), so it is derived, not passed (ENV-ROOM): listed last, as it always was, and only where the record is on.
   if (env.TEAM_RECORD_ENABLED === "1" && isSet(name)) listed.push(["team-record", queueUrl(requiredScope(env, "HEALTH_DEAD_LETTER_QUEUES team-record"), teamRecordOpsDeadLetterName(name))]);
+  // Lessons in production (lane 2, M5): the reflection queue's dead-letter queue has a fixed name too (`lessonsReflectDeadLetterName`), created with the record's switch, so it is listed after the record's own.
+  if (env.TEAM_RECORD_ENABLED === "1" && isSet(name)) listed.push(["lessons-reflect", queueUrl(requiredScope(env, "HEALTH_DEAD_LETTER_QUEUES lessons-reflect"), lessonsReflectDeadLetterName(name))]);
   if (listed.length > 0 && !isSet(env.HEALTH_DEAD_LETTER_QUEUES)) env.HEALTH_DEAD_LETTER_QUEUES = JSON.stringify(Object.fromEntries(listed));
   if (!isSet(name)) return;
   for (const [variable, value] of derived(env, name)) {

@@ -1,4 +1,5 @@
 // Lessons in production, lane 1: the production TaskSubjectSource reads the task record and its workflow, and applies erasure, standing and workspace rules at READ time.
+import { humanSendBackCount, isHumanSendBack } from "../../../packages/broker/src/lessons/human-send-backs.js";
 import { createHash, randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import { MAX_SEND_BACK_IDS, lessonSubjectSource, type LessonSubjectSourceDeps } from "../../../packages/broker/src/aws/broker/lesson-subject-source.js";
@@ -125,6 +126,19 @@ describe("human send-backs", () => {
     const human = decision(), auto = decision({ actorRole: "AGENTX", actorId: "f".repeat(64), source: "AUTO_FIX", auto: { stage: "VERIFY" } }), gate = decision({ source: "GATE", decision: "APPROVE" });
     const { source } = setup({}, { decisions: [gate, human, auto] });
     expect((await read(source))!.sendBackRequestIds).toEqual([human.requestId]);
+  });
+
+  it("M2: a resolve-findings decision that sent the task back to coding (a FIX) is a send-back the reflector reads too; accepting every finding is an approval and is not", async () => {
+    const plain = decision(), fixed = decision({ source: "FINDINGS", reason: "1 accepted, 1 to fix" }), acceptedAll = decision({ source: "FINDINGS", decision: "APPROVE", reason: "2 accepted, 0 to fix" });
+    const autoFindings = decision({ source: "FINDINGS", actorRole: "AGENTX", actorId: "f".repeat(64) });
+    const { source } = setup({}, { decisions: [plain, acceptedAll, fixed, autoFindings] });
+    expect((await read(source))!.sendBackRequestIds).toEqual([plain.requestId, fixed.requestId]);
+  });
+
+  it("M2: the round number the announcement writes and the list the reflector reads count the same decisions (one shared rule)", () => {
+    const decisions = [decision(), decision({ source: "FINDINGS" }), decision({ source: "FINDINGS", decision: "APPROVE" }), decision({ source: "GATE", decision: "APPROVE" }), decision({ source: "AUTO_FIX", actorRole: "AGENTX" })];
+    expect(humanSendBackCount({ decisions } as never)).toBe(2);
+    expect(decisions.filter((entry) => isHumanSendBack(entry as never))).toHaveLength(2);
   });
 
   it("caps the ids it hands on", async () => {

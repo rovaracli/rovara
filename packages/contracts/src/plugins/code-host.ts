@@ -373,6 +373,11 @@ export interface CodeHost {
    * can record the refusal once and not retry it. `untilLine` reads up to a line; `timeoutMs` bounds the wait.
    */
   fileAtRevision(repository: RepositoryRef, path: string, revision: string, scope: HostScope, options?: { untilLine?: number; timeoutMs?: number; maxBytes?: number }): Promise<string | undefined>;
+  /**
+   * Lessons in production (lane 2, WB-7): what a path is at a revision: a file, a directory, or nothing there. Optional: a host that cannot tell leaves it out, and a reader then knows only that a readable file exists
+   * (a directory, or the literal directory prefix of a glob, is then not verified). Same path rules as `fileAtRevision`; a host that cannot answer THROWS (it never answers "none" for an error).
+   */
+  pathKind?(repository: RepositoryRef, path: string, revision: string, scope: HostScope, options?: { timeoutMs?: number }): Promise<"file" | "dir" | "none">;
   /** The id of the tree a revision holds. */
   tree(repository: RepositoryRef, revision: string, scope: HostScope): Promise<string>;
   branchHead(repository: RepositoryRef, branch: string, scope: HostScope): Promise<string>;

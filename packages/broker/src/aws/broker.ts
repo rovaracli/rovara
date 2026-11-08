@@ -338,6 +338,8 @@ import { swebenchDeploymentFromParameters } from "./swebench-settings.js";
 import { positiveInteger } from "./broker/admin-and-helpers.js";
 import { orgStoreOf } from "./broker/dependency-wiring.js";
 import { createAwsBrokerHandler } from "./broker/handler.js";
+import { REFLECT_SDK_REQUEST_TIMEOUT_MS, reflectQueueUrlOf, sqsReflectQueue } from "../lessons/reflect-queue.js";
+import type { AwsBrokerInput } from "./broker/definitions.js";
 import { registryTokenSource } from "./broker/registry-tokens-wiring.js";
 import { createEditionGuard, editionBackupName, editionRecordName, installEditionPolicy, ssmEditionRecordReader } from "./broker/edition-wiring.js";
 import { createBrokerPlugins } from "./broker/plugin-wiring.js";
@@ -576,9 +578,11 @@ const egressDomainsSync = projectAllowListId === undefined || projectAllowListId
 // Enterprise foundations I1: the group mapping and break-glass stores, built once (only where the edition has company sign-in).
 const ssoStores = ssoStoresFor({ documentClient, tableName: requiredEnvironment("STATE_TABLE_NAME"), policy: editionPolicy, ...(audit === undefined ? {} : { audit }) });
 
-export const handler = createAwsBrokerHandler({
+const brokerInput: AwsBrokerInput = {
   documentClient,
   ...(teamRecord === undefined ? {} : { teamRecord }),
+  // Lessons in production (lane 2, WB-4, M1): a finished task's reflection goes to this queue (its URL is derived from the environment's name; nothing is passed). Its client gives up quickly (two tries, 1.5 s), like the audit client, so a queue brownout cannot hold a task end.
+  ...(teamRecord === undefined || reflectQueueUrlOf(process.env) === undefined ? {} : { lessonsReflectQueue: sqsReflectQueue(new SQSClient({ ...awsClientConfiguration, maxAttempts: 2, requestHandler: { requestTimeout: REFLECT_SDK_REQUEST_TIMEOUT_MS, connectionTimeout: REFLECT_SDK_REQUEST_TIMEOUT_MS } }), reflectQueueUrlOf(process.env)!) }),
   ...(audit === undefined ? {} : { audit }),
   ...(auditLedger === undefined ? {} : { auditLedger }),
   ...(auditErase === undefined ? {} : { auditErase }),
@@ -729,4 +733,5 @@ export const handler = createAwsBrokerHandler({
         },
       }
     : {}),
-});
+};
+export const handler = createAwsBrokerHandler(brokerInput);

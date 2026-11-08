@@ -18,6 +18,7 @@ import { OrgIdSchema, workflowFindingFingerprint, type WorkflowArtifact, type Wo
 import { taskKey, taskOwnerKey, tryEffectiveTaskOwner, type DeveloperTaskRecord } from "../../developer/task-records.js";
 import { loadWorkflowDocument } from "../../developer/plan-artifacts.js";
 import type { TaskSubjectBase, TaskSubjectSource } from "../../lessons/task-end.js";
+import { isHumanSendBack } from "../../lessons/human-send-backs.js";
 import type { EvidenceSpan } from "../../lessons/reflect-input.js";
 import { taskStartActor } from "../../lessons/task-subject.js";
 import type { Audience, TrustClass } from "../../lessons/types.js";
@@ -104,6 +105,15 @@ async function namedPeopleErased(
 
 export function lessonSubjectSource(deps: LessonSubjectSourceDeps): TaskSubjectSource {
   return {
+    // L4: the project of a task from its record alone (one read), so the learning mode is checked before the plan, standing and erasure state are read. Same rules as `read` for whose task it is.
+    async projectOf(input) {
+      const orgParsed = OrgIdSchema.safeParse(input.workspaceId);
+      if (!orgParsed.success) return undefined;
+      const task = ((await deps.documentClient.send(new GetCommand({ TableName: deps.tableName, Key: taskKey(input.taskId), ConsistentRead: true }))) as { Item?: DeveloperTaskRecord }).Item;
+      if (task === undefined || task.taskId !== input.taskId || task.orgId !== orgParsed.data) return undefined;
+      if (task.automatic !== undefined || task.purpose !== undefined) return undefined;
+      return task.project;
+    },
     async read(input) {
       const orgParsed = OrgIdSchema.safeParse(input.workspaceId);
       if (!orgParsed.success) return undefined;
@@ -222,7 +232,7 @@ export function lessonSubjectSource(deps: LessonSubjectSourceDeps): TaskSubjectS
 
       const links = (workflow?.pullRequests ?? []).map((pullRequest) => pullRequest.url).slice(0, 32);
       const sendBackRequestIds = (workflow?.decisions ?? [])
-        .filter((decision) => decision.source === "SEND_BACK" && decision.actorRole !== "AGENTX")
+        .filter(isHumanSendBack)
         .map((decision) => decision.requestId)
         .slice(0, MAX_SEND_BACK_IDS);
 

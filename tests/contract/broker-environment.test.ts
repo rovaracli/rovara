@@ -153,8 +153,10 @@ describe("hydrateBrokerEnvironment: the names (AGENTX_NAMES)", () => {
       "developer-notices": `https://sqs.us-west-2.amazonaws.com/123456789012/${NAMES.developerNoticeDeadLetters}`,
       "developer-notice-stream": `https://sqs.us-west-2.amazonaws.com/123456789012/${NAMES.developerNoticeStreamFailures}`,
       "team-record": "https://sqs.us-west-2.amazonaws.com/123456789012/agentx-staging-team-record-ops-dead",
+      // Lessons in production (lane 2, M5): the reflection queue's dead letters, derived the same way, listed after the record's own.
+      "lessons-reflect": "https://sqs.us-west-2.amazonaws.com/123456789012/agentx-staging-lessons-reflect-dead",
     });
-    expect(Object.keys(JSON.parse(hydrated({ ...SCOPE, TEAM_RECORD_ENABLED: "1", [BROKER_NAMES_VARIABLE]: bag() }).HEALTH_DEAD_LETTER_QUEUES!) as object).at(-1)).toBe("team-record");
+    expect(Object.keys(JSON.parse(hydrated({ ...SCOPE, TEAM_RECORD_ENABLED: "1", [BROKER_NAMES_VARIABLE]: bag() }).HEALTH_DEAD_LETTER_QUEUES!) as object).at(-1)).toBe("lessons-reflect");
     // Every name in the table came back under its variable.
     for (const spec of Object.values(BROKER_NAMES)) expect(env[spec.variable], spec.variable).toBeTruthy();
   });

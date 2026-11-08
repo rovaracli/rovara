@@ -3,22 +3,24 @@ import { readFileSync } from "node:fs";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { spendCounterKey } from "@agentx/contracts";
 import { hasTaskEndHandlers } from "../../packages/broker/src/agents/task-end.js";
-import { INLINE_LEARNING_TASK_END_ENABLED, installLearningTaskEnd, learningDepsInUse, uninstallLearningTaskEnd } from "../../packages/broker/src/aws/broker/learning-wiring.js";
+import { installLearningTaskEnd, learningDepsInUse, uninstallLearningTaskEnd } from "../../packages/broker/src/aws/broker/learning-wiring.js";
 import type { learningDepsFor, lessonsRuntimeFor } from "../../packages/broker/src/aws/broker/lessons-wiring.js";
 import { LEARNING_COUNTER } from "../../packages/broker/src/aws/broker/learning-spend.js";
+import { createLessonsWorkerHandler } from "../../packages/broker/src/aws/broker/lessons-worker.js";
 import { installLessons, lessonSimilarityFor, pauseStillAppliesFor } from "../../packages/broker/src/aws/broker/lessons-wiring.js";
+import { installTeamRecordEmitter, uninstallTeamRecordEmitter } from "../../packages/broker/src/aws/broker/team-record-wiring.js";
 import { announceHumanSendBack } from "../../packages/broker/src/lessons/send-back-events.js";
 import { DENYING_SPEND, NO_EMBEDDER, NO_VECTORS, REFUSING_MODEL } from "../../packages/broker/src/lessons/runtime.js";
 import { FakeDynamoDb } from "../support/fake-dynamodb.js";
 import { TEST_ORG } from "../support/orgs.js";
 
-afterEach(() => uninstallLearningTaskEnd());
+afterEach(() => { uninstallLearningTaskEnd(); sendBack.mockClear(); });
 
 const sendBack = vi.fn(async (input: unknown) => { void input; });
 function install(over: { modelAccess?: boolean; teamRecord?: boolean } = {}) {
   const db = new FakeDynamoDb();
   const dependencies = {
-    documentClient: db, tableName: "state", developer: { signInTableName: "signin" }, artifactBucketName: "artifacts", s3: { send: async () => ({}) },
+    documentClient: db, tableName: "state", agents: {}, developer: { signInTableName: "signin" }, artifactBucketName: "artifacts", s3: { send: async () => ({}) },
     ...(over.teamRecord === false ? {} : { teamRecord: { table: { documentClient: new FakeDynamoDb(), tableName: "record" }, edition: "public", emitter: { sendBack }, taskVisibility: async () => ({ kind: "shared" }) } }),
     ...(over.modelAccess === false ? {} : { modelAccess: { access: { learningCompletion: async () => ({ text: "{}", model: "m" }) }, proxyUrl: "http://proxy" } }),
   } as Record<string, unknown>;
@@ -139,32 +141,126 @@ describe("the learning dependencies", () => {
   });
 });
 
-describe("the inline handler is not registered from production wiring (it would call the model while a task ends)", () => {
-  it("the flag is off, and installing the broker's learning dependencies registers no task-end handler and no send-back listener", async () => {
-    expect(INLINE_LEARNING_TASK_END_ENABLED).toBe(false);
+describe("lessons in production, lane 2: a task's end sends ids to the queue (WB-4); one send-back listener (L6)", () => {
+  const queue = () => { const sent: unknown[] = []; return { sent, queue: { send: async (m: unknown) => { sent.push(m); } } }; };
+
+  it("the inline flag is gone: production registers the ENQUEUING handler where the learning dependencies and a queue exist, and nothing without a queue", async () => {
     const { dependencies } = install();
     installLessons(dependencies as never);
-    const before = hasTaskEndHandlers();
     installLearningTaskEnd(dependencies);
-    expect(hasTaskEndHandlers()).toBe(before);
     expect(hasTaskEndHandlers()).toBe(false);
-    // The dependencies are kept for the queue worker, and a human send-back does not reach them.
+    const q = queue();
+    dependencies.lessonsReflectQueue = q.queue;
+    installLearningTaskEnd(dependencies);
+    expect(hasTaskEndHandlers()).toBe(true);
     expect(learningDepsInUse()).toBe(dependencies.learning);
-    await announceHumanSendBack({ workspaceId: TEST_ORG, project: "p", taskId: "t", requestId: "r", actorDeveloperId: "d", instructions: "x", round: 1, shared: false, ownerDeveloperId: "o", at: "2026-11-01T00:00:00.000Z" });
-    expect(sendBack).not.toHaveBeenCalled();
+    expect(readFileSync(new URL("../../packages/broker/src/aws/broker/learning-wiring.ts", import.meta.url), "utf8")).not.toMatch(/INLINE_LEARNING|inline/u);
   });
 
-  it("only an explicit opt-in registers it (the unit tests of the handler itself)", () => {
+  it("a task that ends sends one message of ids and the model is never called by the broker", async () => {
     const { dependencies } = install();
     installLessons(dependencies as never);
-    installLearningTaskEnd(dependencies, { inline: true });
-    expect(hasTaskEndHandlers()).toBe(true);
+    const q = queue();
+    dependencies.lessonsReflectQueue = q.queue;
+    installLearningTaskEnd(dependencies);
+    const completion = vi.fn();
+    (dependencies.modelAccess as { access: { learningCompletion: unknown } }).access.learningCompletion = completion;
+    const { onTaskEnded } = await import("../../packages/broker/src/agents/task-end.js");
+    const taskId = "11111111-1111-4111-8111-111111111111";
+    const task = { taskId, orgId: TEST_ORG, project: "p", developerId: "d", ownerKey: "o", workspaceId: "w" };
+    await onTaskEnded({ documentClient: dependencies.documentClient, tableName: "state", now: Date.now, log: () => undefined } as never, task as never, "merged", {}, { record: true });
+    expect(q.sent).toEqual([{ orgId: TEST_ORG, taskId, outcome: "merged", requestId: expect.stringMatching(/^[0-9a-f-]{36}$/u) as string }]);
+    expect(completion).not.toHaveBeenCalled();
+  });
+
+  it("L6: installing the learning hook registers no human send-back listener; the Team record's one listener writes a send-back once", async () => {
+    const { dependencies } = install();
+    installLessons(dependencies as never);
+    dependencies.lessonsReflectQueue = queue().queue;
+    (dependencies.teamRecord as Record<string, unknown>)["jobs"] = undefined;
+    installLearningTaskEnd(dependencies);
+    const event = { workspaceId: TEST_ORG, project: "p", taskId: "t", requestId: "r", actorDeveloperId: "d", instructions: "x", round: 1, shared: false, ownerDeveloperId: "o", at: "2026-11-01T00:00:00.000Z" };
+    await announceHumanSendBack(event);
+    expect(sendBack).not.toHaveBeenCalled();
+    installTeamRecordEmitter(dependencies);
+    try {
+      await announceHumanSendBack(event);
+      expect(sendBack).toHaveBeenCalledTimes(1);
+    } finally { uninstallTeamRecordEmitter(); }
   });
 
   it("the handler builds the dependencies before it installs the hook", () => {
     const handler = readFileSync(new URL("../../packages/broker/src/aws/broker/handler.ts", import.meta.url), "utf8");
     expect(handler.indexOf("installLessons(dependencies);")).toBeGreaterThan(0);
     expect(handler.indexOf("installLearningTaskEnd(dependencies);")).toBeGreaterThan(handler.indexOf("installLessons(dependencies);"));
+  });
+});
+
+describe("the LessonsWorker handler (lane 2): the slim entry builds the same learning dependencies", () => {
+  const taskId = "11111111-1111-4111-8111-111111111111";
+  const batch = { Records: [{ messageId: "m1", body: JSON.stringify({ orgId: TEST_ORG, taskId, outcome: "merged", requestId: "r1" }) }] };
+
+  it("builds the learning dependencies from the same dependencies as the broker, takes the lease on the task in the State table and reflects (a task that does not exist teaches nothing, and its lease is done all the same)", async () => {
+    const { dependencies, db } = install();
+    const handler = createLessonsWorkerHandler(() => dependencies as never);
+    expect(await handler(batch)).toEqual({ batchItemFailures: [] });
+    expect(db.find((item) => item["pk"] === `LEARN#${TEST_ORG}#${taskId}#merged`)).toHaveLength(1);
+    expect(db.find((item) => item["pk"] === `LEARN#${TEST_ORG}#${taskId}#merged`)[0]).toMatchObject({ leaseState: "done", attempt: 1 });
+    // The same message again (SQS delivers at least once): the lease is done, nothing more is written.
+    const writes = db.find(() => true).length;
+    expect(await handler(batch)).toEqual({ batchItemFailures: [] });
+    expect(db.find(() => true).length).toBe(writes);
+  });
+
+  it("R5: only a PAUSED record (TEAM_RECORD_ACTIVE exactly \"0\") answers the messages quietly (dropped, nothing claimed); a missing record runtime, model path or ledger is a misconfiguration: the handler throws (the Errors alarm fires, the messages stay in the queue), and the next invocation builds again", async () => {
+    for (const over of [{ teamRecord: false }, { modelAccess: false }] as const) {
+      const { dependencies, db } = install(over);
+      // Paused: quiet.
+      expect(await createLessonsWorkerHandler(() => dependencies as never, { env: { TEAM_RECORD_ACTIVE: "0" } })(batch)).toEqual({ batchItemFailures: [] });
+      // Not paused (the variable is "1", or absent, or anything else): a named failure.
+      for (const env of [{ TEAM_RECORD_ACTIVE: "1" }, {}, { TEAM_RECORD_ACTIVE: "" }, { TEAM_RECORD_ACTIVE: "false" }]) {
+        await expect(createLessonsWorkerHandler(() => dependencies as never, { env })(batch)).rejects.toThrow(/not configured/u);
+      }
+      expect(db.find((item) => String(item["pk"]).startsWith("LEARN#"))).toHaveLength(0);
+    }
+    // A failed build is not remembered: once the value is there the same handler goes on.
+    const broken = install({ modelAccess: false });
+    const good = install();
+    let current = broken.dependencies;
+    const handler = createLessonsWorkerHandler(() => current as never, { env: {} });
+    await expect(handler(batch)).rejects.toThrow();
+    current = good.dependencies;
+    expect(await handler(batch)).toEqual({ batchItemFailures: [] });
+  });
+
+  it("the lease table failing brings the message back, and the next delivery goes through", async () => {
+    const { dependencies, db } = install();
+    const handler = createLessonsWorkerHandler(() => dependencies as never);
+    db.injectFault({ command: "PutCommand", match: (input) => String((input.Item as { pk?: string } | undefined)?.pk ?? "").startsWith("LEARN#"), error: { name: "InternalServerError" }, times: 1 });
+    expect(await handler(batch)).toEqual({ batchItemFailures: [{ itemIdentifier: "m1" }] });
+    expect(await handler(batch)).toEqual({ batchItemFailures: [] });
+  });
+});
+
+describe("L4: the lessons' scheduled jobs", () => {
+  const withJobs = (paused: boolean) => {
+    const { dependencies, db } = install();
+    const registered: string[] = [];
+    const teamRecord = dependencies.teamRecord as Record<string, unknown>;
+    teamRecord["jobs"] = { extend: (job: string) => { registered.push(job); } };
+    if (paused) teamRecord["paused"] = true;
+    return { dependencies, db, registered };
+  };
+  it("a running record gets both: the hourly resume of half-done deletions and the nightly re-reflection of reverts", () => {
+    const { dependencies, registered } = withJobs(false);
+    installLessons(dependencies as never);
+    expect(registered).toEqual(["hourly", "nightly"]);
+  });
+  it("a PAUSED record still gets the hourly resume (an erase must finish whether or not the record is paused), on a store-only port, and no nightly re-reflection (a paused record learns nothing)", () => {
+    const { dependencies, registered } = withJobs(true);
+    installLessons(dependencies as never);
+    expect(dependencies.lessons).toBeUndefined();
+    expect(registered).toEqual(["hourly"]);
   });
 });
 

@@ -106,4 +106,4 @@ export const MintedKeyResultSchema = z.object({ key: z.string().min(1), expiresA
 
 export type ModelAccessResponse =
   | { ok: true; result: unknown }
-  | { ok: false; code: AgentXErrorCode; message: string };
+  | { ok: false; code: AgentXErrorCode; message: string; /** A learning call refused before anything was sent (`LearningNotForwarded`). */ notForwarded?: true };
