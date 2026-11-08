@@ -172,6 +172,63 @@ test("approve by exception: a lesson on trial and a stable one are marked, the p
  expect(await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth)).toBeLessThanOrEqual(0);
  await evidenceShot(page, { path: ".test-build/web-e2e/lessons-trial-phone.png", fullPage: true });
 });
+test("a request to go back to Standard is found in the Lessons tab: a different maintainer approves it, or cancels it, on desktop and phone", async ({ page, context, request, baseURL }) => {
+ await openTab(page, context, request, baseURL);
+ await request.post("/__mock/preset-proposal");await page.reload();
+ const box = page.getByRole("region", { name: "Waiting for approval" });
+ await expect(box.getByText(/Someone on your team asked to allow lessons on trial again/u)).toBeVisible();
+ await expect(page.getByRole("button", { name: "Allow lessons on trial again" })).toHaveCount(0);
+ await evidenceShot(page, { path: ".test-build/web-e2e/lessons-preset-proposal-desktop.png", fullPage: true });
+ await checkA11y(page, { theme: "light" });await checkA11y(page, { theme: "dark" });
+ await page.setViewportSize({ width: 390, height: 900 });
+ expect(await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth)).toBeLessThanOrEqual(0);
+ await expect(box.getByRole("button", { name: "Approve going back to Standard" })).toBeVisible();
+ await evidenceShot(page, { path: ".test-build/web-e2e/lessons-preset-proposal-phone.png", fullPage: true });
+ await box.getByRole("button", { name: "Approve going back to Standard" }).click();
+ await expect(page.getByRole("status").filter({ hasText: "Approved. Low-risk lessons from a team member's correction go live on trial again." })).toBeVisible();
+ await expect(page.getByRole("region", { name: "Waiting for approval" })).toHaveCount(0);
+ await expect(page.getByText(/Standard: a low-risk lesson from a team member's own correction goes live on trial/u)).toBeVisible();
+ // A second request, cancelled instead.
+ await request.post("/__mock/preset-proposal");await page.reload();
+ await page.getByRole("region", { name: "Waiting for approval" }).getByRole("button", { name: "Cancel the request" }).click();
+ await expect(page.getByRole("status").filter({ hasText: "Cancelled. Every lesson still waits for a person." })).toBeVisible();
+ await expect(page.getByRole("button", { name: "Allow lessons on trial again" })).toBeVisible();
+ const sent = ((await (await request.get("/__mock/requests")).json()) as Sent).filter(item => item.method === "POST" && item.path.startsWith(BASE + "/preset/"));
+ expect(sent.map(item => [item.path, item.body])).toEqual([[BASE + "/preset/approve", { changeId: "chg-7" }], [BASE + "/preset/cancel", { changeId: "chg-7" }]]);
+});
+test("the company page shows the company's lessons setting: an owner requires a person everywhere, and another admin finds and approves the request to go back", async ({ page, context, request, baseURL }) => {
+ await request.post("/__mock/scenario", { data: { name: "admin" } });
+ await context.addCookies([{ name: "__Host-agentx_review_session", value: "11111111-1111-4111-8111-111111111111", url: baseURL!, secure: true, httpOnly: true, sameSite: "Strict" }]);
+ await page.route("**/v1/web/org/model-sources", route => route.fulfill({ json: { sources: [], order: ["rovara"] } }));
+ const company: { preset: "standard" | "regulated"; proposal?: Record<string, unknown> } = { preset: "standard" };
+ const posts: Array<{ path: string; body: unknown }> = [];
+ await page.route("**/v1/web/org/lessons/preset**", async route => {
+  const path = new URL(route.request().url()).pathname;
+  if (route.request().method() === "GET") { await route.fulfill({ json: company });return; }
+  const body = route.request().postDataJSON() as { preset?: string };posts.push({ path, body });
+  if (path.endsWith("/approve")) { company.preset = "standard";delete company.proposal;await route.fulfill({ json: { preset: "standard", changed: true } });return; }
+  if (body.preset === "regulated") { company.preset = "regulated";await route.fulfill({ json: { preset: "regulated", changed: true } });return; }
+  company.proposal = { changeId: "chg-9", to: "standard", mine: false, soleOwner: false, expiresAt: Date.now() + 6 * 86_400_000 };
+  await route.fulfill({ json: { preset: "regulated", changed: false, needsApproval: true, changeId: "chg-9" } });
+ });
+ await page.setViewportSize({ width: 1280, height: 900 });
+ await page.goto("/app/admin/how-we-work");
+ const box = page.getByRole("region", { name: "Lessons: company setting" });
+ await expect(box.getByText(/Standard: a low-risk lesson from a team member's own correction goes live on trial in every project/u)).toBeVisible();
+ await box.getByRole("button", { name: "Require a person for every lesson in every project" }).click();
+ await expect(box.getByRole("status").filter({ hasText: "Saved. Every lesson in every project now waits for a person." })).toBeVisible();
+ // Another admin asked to go back: the request is found here with Approve and Cancel.
+ company.proposal = { changeId: "chg-9", to: "standard", mine: false, soleOwner: false, expiresAt: Date.now() + 6 * 86_400_000 };
+ await page.reload();
+ await expect(box.getByText(/Someone asked to allow lessons on trial again/u)).toBeVisible();
+ await checkA11y(page, { theme: "light" });await checkA11y(page, { theme: "dark" });
+ await page.setViewportSize({ width: 390, height: 900 });
+ expect(await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth)).toBeLessThanOrEqual(0);
+ await evidenceShot(page, { path: ".test-build/web-e2e/lessons-company-preset-phone.png", fullPage: true });
+ await box.getByRole("button", { name: "Approve going back to Standard" }).click();
+ await expect(box.getByRole("status").filter({ hasText: "Approved. Low-risk lessons from a team member's correction go live on trial again." })).toBeVisible();
+ expect(posts.map(item => [item.path, item.body])).toEqual([["/v1/web/org/lessons/preset", { preset: "regulated" }], ["/v1/web/org/lessons/preset/approve", { changeId: "chg-9" }]]);
+});
 test("approve by exception: the task page lists the lessons a task loaded with their trial marks, and one tap on thumbs-down removes a lesson on trial", async ({ page, context, request, baseURL }) => {
  await request.post("/__mock/scenario", { data: { name: "workspace" } });
  await context.addCookies([{ name: "__Host-agentx_review_session", value: "11111111-1111-4111-8111-111111111111", url: baseURL!, secure: true, httpOnly: true, sameSite: "Strict" }]);

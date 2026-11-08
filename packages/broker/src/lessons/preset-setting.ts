@@ -163,6 +163,21 @@ export async function approvePresetChange(deps: PresetDeps, input: { scope: Pres
   return { ok: true, value: change.to };
 }
 
+/** What the people who decide are shown about a proposal waiting for a person (the Lessons tab and the company read). Names nobody: `mine` says whether the viewer asked. */
+export interface PresetProposalView { changeId: string; to: LearningPreset; mine: boolean; soleOwner: boolean; expiresAt: number }
+/**
+ * The open proposal of a scope as `viewerId` may see it, or undefined. Read side only: a store that cannot be read shows nothing (the approval itself is checked again, live, by `approvePresetChange`),
+ * so a reader of this never learns anything the routes would not let the same person do. The caller shows it only to people who decide.
+ */
+export async function readPresetProposal(deps: Pick<PresetDeps, "changes" | "now">, scope: PresetScope, viewerId: string): Promise<PresetProposalView | undefined> {
+  const at = deps.now();
+  const open = await deps.changes.open(scope, at).catch(() => undefined);
+  if (open === undefined || open.state !== "pending" || open.expiresAt <= at || !sameScope(open.scope, scope)) return undefined;
+  return { changeId: open.id, to: open.to, mine: sameId(open.proposedBy, viewerId), soleOwner: open.soleEligibleAtProposal === true, expiresAt: open.expiresAt };
+}
+/** The company preset in force, for the company read. A stored value that cannot be read throws (the route answers 503). */
+export async function readPreset(deps: Pick<PresetDeps, "settings">, scope: PresetScope): Promise<LearningPreset> { return currentOf(deps, scope); }
+
 /** An eligible person withdraws a pending proposal. */
 export async function cancelPresetChange(deps: PresetDeps, input: { scope: PresetScope; changeId: string; actorId: string }): Promise<{ ok: true } | { ok: false; code: PresetFailure }> {
   const group = await groupOf(deps, input.scope, { proposerId: input.actorId, approverId: input.actorId });

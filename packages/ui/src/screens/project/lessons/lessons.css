@@ -9,3 +9,7 @@
 .rv-lessons-picker li+li{border-top:1px solid var(--rv-border)}
 .rv-lessons-option{display:flex;flex-wrap:wrap;gap:var(--rv-space-2);align-items:baseline;padding:var(--rv-space-2) var(--rv-space-3);cursor:pointer;overflow-wrap:anywhere}
 .rv-lessons-option input{flex:none}.rv-lessons-option[data-unavailable="true"]{cursor:not-allowed;opacity:.8}
+
+/* LT-2: the request to go back to Standard that waits for a person (project tab and company page). The buttons wrap on a phone and nothing is wider than the column. */
+.rv-lessons-preset-pending{display:grid;gap:var(--rv-space-2);min-width:0;padding:var(--rv-space-3);border:1px solid var(--rv-border);border-radius:var(--rv-radius-sm);overflow-wrap:anywhere}.rv-lessons-preset-pending h3,.rv-lessons-preset-pending p{margin:0}
+.rv-lessons-preset-actions{display:flex;flex-wrap:wrap;gap:var(--rv-space-3);align-items:center}

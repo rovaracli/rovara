@@ -8,6 +8,7 @@
 //   POST /v1/app/projects/{p}/lessons/{id}/merge           a person merges a possible duplicate into the lesson it may duplicate (audited lesson.merged, judged by the person)
 //   POST /v1/app/projects/{p}/lessons/{id}/retire
 //   POST /v1/app/projects/{p}/lessons/preset               a maintainer sets the preset: Regulated at once; Standard opens a proposal a different person approves (.../preset/approve, .../preset/cancel)
+//   GET  /v1/app/org/lessons/preset                        a company owner or admin reads the company's preset and the proposal waiting on it
 //   POST /v1/app/org/lessons/preset                        a company owner or admin sets the company's preset the same way (a floor for every project)
 //   POST /v1/app/projects/{p}/lessons/rollback
 //   POST /v1/app/projects/{p}/lessons/sources/resume       a maintainer resumes a paused source (UX-4b; `resumeAndResettle`)
@@ -27,7 +28,7 @@ import { requireWriterCaller } from "../org/auditor.js";
 import { approveLesson, mergeDuplicate, rejectLesson, retireByPerson, type ApprovalFailure, type ApproveDeps } from "./approve.js";
 import { recordFeedback, type CounterDeps } from "./counters.js";
 import { resolveLearning, whyLearningOff } from "./policy.js";
-import { approvePresetChange, cancelPresetChange, setLearningPreset, type PresetDeps, type PresetFailure, type PresetResult, type PresetScope } from "./preset-setting.js";
+import { approvePresetChange, cancelPresetChange, readPreset, readPresetProposal, setLearningPreset, type PresetDeps, type PresetFailure, type PresetResult, type PresetScope } from "./preset-setting.js";
 import { rollbackLessonSetSettled } from "./rollback.js";
 import { resumeAndResettle, type ProcessDeps } from "./process.js";
 import { buildLessonHistory, pauseMatches, buildLessonSources, buildLessonsDigest, buildLessonsView, buildLoadedLessons, SNAPSHOTS_MAX, type LessonViewDeps } from "./view.js";
@@ -156,9 +157,24 @@ async function routePreset(deps: LessonRouteDependencies, caller: DeveloperCalle
   return { preset: result.value, changed: true };
 }
 
+/** The company's preset and the proposal waiting on it. Only an owner or admin reads it (the same people who may change it); the roster is checked again by the approve and cancel routes. */
+async function readCompanyPreset(deps: LessonRouteDependencies, caller: DeveloperCaller): Promise<object> {
+  if (caller.orgRole !== "owner" && caller.orgRole !== "admin") throw agentXError("FORBIDDEN", "Only a company owner or admin can see this.");
+  const presets = deps.lessons.presets;
+  if (presets === undefined) throw agentXError("NOT_FOUND", "Lessons are not available for this project.");
+  await takeBudget(deps, caller, "read");
+  const scope: PresetScope = { kind: "company", workspaceId: caller.orgId };
+  let preset;
+  try { preset = await readPreset(presets, scope); } catch { throw agentXError("RUNTIME_UNAVAILABLE", "The company's lessons setting could not be read."); }
+  const proposal = await readPresetProposal(presets, scope, caller.developerId);
+  return { preset, ...(proposal === undefined ? {} : { proposal }) };
+}
+
 export async function routeLessons(deps: LessonRouteDependencies, caller: DeveloperCaller, method: string, url: URL, body: () => unknown): Promise<object | undefined> {
   const company = COMPANY_PRESET_PATH.exec(url.pathname);
   if (company !== null) {
+    // The read: the company's preset and the proposal waiting on it, for the people who could decide it (an owner or admin).
+    if (method === "GET" && company[1] === undefined) return readCompanyPreset(deps, caller);
     if (method !== "POST") return undefined;
     requireWrite(caller);
     // The company's preset is a floor for every project, so only an owner or admin sets it (the library then checks the live roster and the fence).
@@ -179,7 +195,13 @@ export async function routeLessons(deps: LessonRouteDependencies, caller: Develo
     const { name } = await deps.projectFor(caller, rawProject!);
     // UX-4b: the tab's own read says why too (LEARNING_OFF / LEARNING_LOCKED), so the Lessons tab explains it and offers to turn learning on instead of "not set up".
     await requireLearningOn(deps, caller, name, id === undefined || (action === undefined && id === "sources"));
-    if (id === undefined) return buildLessonsView(deps.lessons, who, name);
+    if (id === undefined) {
+      const view = await buildLessonsView(deps.lessons, who, name);
+      // A proposal to go back to Standard that waits for a person is shown to the people who decide, so a second maintainer or admin can find it.
+      const presets = deps.lessons.presets;
+      const proposal = presets === undefined || !view.canDecide ? undefined : await readPresetProposal(presets, { kind: "project", workspaceId: caller.orgId, project: name }, caller.developerId);
+      return proposal === undefined ? view : { ...view, presetProposal: proposal };
+    }
     await takeBudget(deps, caller, "read");
     if (action === undefined && id === "digest") return buildLessonsDigest(deps.lessons, who, name);
     if (action === undefined && id === "sources") return buildLessonSources(deps.lessons, who, name);

@@ -28,6 +28,8 @@ import "./how-we-work.css";
 const SetupLocksRow = lazy(() => import("./SetupLocksRow.js"));
 // DR-FU4: the company's design review card (allowed, rules). Its own chunk; it shows nothing while design review is off in the environment, and for anyone but an admin.
 const DesignReviewCompanyRow = lazy(() => import("./DesignReviewCompanyRow.js"));
+// LT-2: the company's lessons setting (Standard / Regulated and the request to go back to Standard). Its own chunk; an owner or admin only, and nothing where lessons are not set up.
+const LessonsPresetRow = lazy(() => import("./LessonsPresetRow.js"));
 
 const effortChoice = (effort: CompanyOverride["thinkingLevel"]): EffortChoice => effort === undefined ? "inherit" : effort === null ? "null" : effort;
 type Notice = { kind: "saved" } | { kind: "saved_reload_failed" } | { kind: "stale" } | { kind: "failed"; text: string } | { kind: "confirm"; url: string | undefined; changes: string[]; soleOwner: SoleOwnerConfirmation | undefined };
@@ -41,6 +43,7 @@ export function HowWeWorkCompanyScreen() {
  return <UnsavedChanges><section><PageHeader focusOnMount title={T.PAGE_TITLE} description={T.PAGE_NOTE} /><SettingsNote area="how-we-work" /><p className="rv-muted">{T.SAVE_MODEL_NOTE}</p>
   <p><Link to="/app/admin/models/sources">Back to AI models</Link></p>
   <LearningSuggestionsRow />
+  {(role === "owner" || role === "admin") && <Suspense fallback={null}><LessonsPresetRow /></Suspense>}
   <KnownFailingPolicyRow />
   <SetupRecipesLink />
   {(role === "owner" || role === "admin") && <Suspense fallback={null}><SetupLocksRow /></Suspense>}

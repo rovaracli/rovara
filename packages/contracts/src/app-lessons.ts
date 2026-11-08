@@ -98,6 +98,13 @@ export const LessonViewSchema = z.object({
 }).strict();
 export type LessonView = z.infer<typeof LessonViewSchema>;
 
+/**
+ * A proposal to go back to Standard that waits for a person (lessons leftovers sweep, LT-2). Only people who decide see it: the Lessons tab (`presetProposal`) and the company read below. `mine`: the viewer asked for
+ * it. `soleOwner`: the person who asked was the only one who could approve, so only they can (after the short wait the server enforces). The server decides again when someone taps Approve or Cancel.
+ */
+export const LessonPresetProposalSchema = z.object({ changeId: z.string().min(1).max(100), to: z.enum(["standard", "regulated"]), mine: z.boolean(), soleOwner: z.boolean(), expiresAt: z.number() }).strict();
+export type LessonPresetProposal = z.infer<typeof LessonPresetProposalSchema>;
+
 /** A lesson-set version a maintainer can roll back to. */
 export const LessonSnapshotSchema = z.object({ setVersion: z.number().int().min(0), at: z.number(), lessons: z.number().int().min(0).max(5_000) }).strict();
 
@@ -110,6 +117,8 @@ export const LessonsViewSchema = z.object({
   expiryDays: z.number().int().min(14).max(365).optional(),
   /** The learning preset in force: Standard (a low-risk lesson from a member's own correction goes live on trial) or Regulated (every lesson needs a person), and whether the company's preset is the reason. */
   preset: z.enum(["standard", "regulated"]), presetLockedByCompany: z.boolean(),
+  /** For people who decide: the proposal to go back to Standard that waits for a person. Absent: none. */
+  presetProposal: LessonPresetProposalSchema.optional(),
   /** Whether this viewer may approve, reject, retire and roll back. A viewer who may not still reads the active lessons. */
   canDecide: z.boolean(),
   waiting: z.array(LessonViewSchema).max(100), active: z.array(LessonViewSchema).max(200), removed: z.array(LessonViewSchema).max(50),
@@ -214,6 +223,9 @@ export const LessonPresetChangeBodySchema = z.object({ changeId: z.string().min(
 /** `needsApproval` with a `changeId`: the change is a proposal waiting for a second person; `preset` is then the value still in force. */
 export const LessonPresetAnswerSchema = z.object({ preset: z.enum(["standard", "regulated"]), changed: z.boolean(), needsApproval: z.boolean().optional(), changeId: z.string().min(1).max(100).optional() }).strict();
 export const LessonPresetAnswerReaderSchema = forwardReader(LessonPresetAnswerSchema);
+/** The company's preset and the proposal waiting on it (an owner or admin reads it). */
+export const LessonCompanyPresetSchema = z.object({ preset: z.enum(["standard", "regulated"]), proposal: LessonPresetProposalSchema.optional() }).strict();
+export const LessonCompanyPresetReaderSchema = forwardReader(LessonCompanyPresetSchema);
 
 export const LessonApproveAnswerSchema = z.object({ status: z.enum(["active", "pending"]), needs: z.enum(["nothing", "second_person", "group_member"]) }).strict();
 export const LessonApproveAnswerReaderSchema = forwardReader(LessonApproveAnswerSchema);
