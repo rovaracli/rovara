@@ -220,7 +220,7 @@ describe("what a person's erase runs", () => {
 
   it("erases the names where the record is on, after its first pass, and also when the record's erase is unfinished (which is then repeated, and the evidence waits)", async () => {
     const order: string[] = [];
-    const record = { erase: { person: async () => { order.push("record"); throw new Error("unavailable"); } } };
+    const record = { erase: { person: async (): Promise<void> => { order.push("record"); throw new Error("unavailable"); } } };
     const names = { erase: async () => { order.push("names"); } };
     const proof = { person: async () => { order.push("evidence"); } };
     await expect(personErasureStep(record as never, proof as never, names)(TEST_ORG as never, PRIYA)).rejects.toThrow("unavailable");
@@ -236,13 +236,13 @@ describe("what a person's erase runs", () => {
     const calls: string[] = [];
     const orgId = "org_aaaaaaaaaaaaaaaaaaaa" as never;
     const withNames = await erasePerson({ table, names: { erase: async (id) => { calls.push(id); } } }, orgId, { developerId: PRIYA, projects: [] }, "erase:test");
-    expect(withNames.steps.names).toBe(true);
+    expect(withNames.steps?.names).toBe(true);
     expect(calls).toEqual([PRIYA]);
     const without = await erasePerson({ table }, orgId, { developerId: PRIYA, projects: [] }, "erase:test2");
-    expect(without.steps.names).toBe(true);
+    expect(without.steps?.names).toBe(true);
     // A failure leaves the step unfinished: the next run repeats it.
     const failing = await erasePerson({ table, names: { erase: async () => { throw new Error("sign-in unavailable"); } } }, orgId, { developerId: PRIYA, projects: [] }, "erase:test3");
-    expect(failing.steps.names).toBe(false);
+    expect(failing.steps?.names).toBe(false);
     expect(failing.complete).toBe(false);
   });
 });
