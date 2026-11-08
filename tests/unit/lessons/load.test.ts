@@ -2,7 +2,7 @@
 import { describe, expect, it } from "vitest";
 import { LearnedContextSchema } from "../../../packages/contracts/src/index.js";
 import { applyLoadReport } from "../../../packages/broker/src/lessons/counters.js";
-import { LOAD_MAX_BYTES, LOAD_MAX_LESSONS, learnedContextForDispatch, loadLessonsForStage, scopeMatch, wilsonLower, type LoadDeps, type LoadRequest } from "../../../packages/broker/src/lessons/load.js";
+import { learnedContextForDispatch, loadLessonsForStage, scopeMatch, wilsonLower, type LoadDeps, type LoadRequest } from "../../../packages/broker/src/lessons/load.js";
 import { readVisible } from "../../../packages/broker/src/lessons/read-visible.js";
 import { LOAD_DEFAULT_BYTES, LOAD_DEFAULT_LESSONS } from "../../../packages/broker/src/lessons/policy.js";
 import { InMemoryLessonStore } from "../../../packages/broker/src/lessons/store.js";

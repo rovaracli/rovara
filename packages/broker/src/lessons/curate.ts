@@ -157,14 +157,16 @@ function unionPeople(target: Lesson, draft: LessonDraft): { readFrom: string[]; 
  * names the task (a narrowed task's pull request would then show on a project-visible lesson). Lessons capture: it must also name every person both lessons name. A list that would pass its bound is never cut
  * (a cut name is a person whose erasure no longer reaches the lesson). So a merge that would not fit is refused: the draft stands on its own as a candidate, for a person to decide.
  */
-const mergeFits = (target: Lesson, draft: LessonDraft): boolean => {
+const peopleFit = (target: Lesson, draft: LessonDraft): boolean => {
   const people = unionPeople(target, draft);
-  return new Set([...target.provenance.supportTasks, ...draft.provenance.supportTasks]).size <= 50
+  return distinctIds([...target.provenance.authors, ...draft.provenance.authors]).length <= MAX_AUTHORS && people.readFrom.length <= MAX_READ_FROM && people.coAuthored.length <= MAX_CO_AUTHORED;
+};
+const mergeFits = (target: Lesson, draft: LessonDraft): boolean =>
+  peopleFit(target, draft)
+    && new Set([...target.provenance.supportTasks, ...draft.provenance.supportTasks]).size <= 50
     && new Set([...target.provenance.sourceEvents, ...draft.provenance.sourceEvents]).size <= 50
     && new Set([...(target.provenance.inheritedTasks ?? []), ...(draft.provenance.inheritedTasks ?? [])]).size <= 50
-    && new Set([...(target.provenance.sourceScopes ?? []), ...(draft.provenance.sourceScopes ?? [])]).size <= 50
-    && distinctIds([...target.provenance.authors, ...draft.provenance.authors]).length <= MAX_AUTHORS && people.readFrom.length <= MAX_READ_FROM && people.coAuthored.length <= MAX_CO_AUTHORED;
-};
+    && new Set([...(target.provenance.sourceScopes ?? []), ...(draft.provenance.sourceScopes ?? [])]).size <= 50;
 
 /** A merge into an active lesson may not lower its trust or narrow its audience: that is a different lesson. */
 const mergeAllowed = (target: Lesson, draft: LessonDraft): boolean =>
@@ -205,7 +207,7 @@ export async function curateDraft(deps: CurateDeps, key: ScopeKey, draft: Lesson
     }
     if (verdict === undefined || verdict === "different") continue;
 
-    if (verdict === "same" && mergeAllowed(other, draft) && !mergeFits(other, draft)) {
+    if (verdict === "same" && !peopleFit(other, draft)) {
       // Too many people to name on one lesson: keep the draft apart, for a person to decide, rather than cut names off the merged one.
       await emitAudit(deps.audit, { action: "lesson.refused", workspaceId: key.workspaceId, project: key.project, lessonId: other.id, facts: { reason: "merge_too_many_people" } });
       const apart = newLesson(deps, key, draft, "candidate", { reviewRequired: true, tierReasons: ["merge_too_many_people"] });
