@@ -36,6 +36,7 @@ const INTERNAL_RECORD_FILES: Record<string, string> = {
   "team-record/transient-distiller.ts": "distils; writes facts", "team-record/distill.ts": "distils; writes facts",
   "team-record/prior-edits.ts": "answers yes or no to a tap whether anyone else edited an item; returns no row",
   "team-record/sources/parent-lookup.ts": "answers yes or no to the ticket webhook whether a ticket is already recorded under a scope (an index read by source); returns no row and no text, and a failed or truncated read answers no (0.5.5 integration, team-record-sources)",
+  "lessons/captured-rows.ts": "the reflector's input: the words of a remembered note or a reviewer's comment, read by the row's id for the pipeline (spans), nothing to a viewer",
   "lessons/task-outcome-rows.ts": "the reflector's facts about a finished task (who sent it back, who reverted it); returns ids and counts to the pipeline, nothing to a viewer",
 };
 const RECORD_READS = new Set(["queryRecordEvents", "queryRecordFacts", "getRecordEvent", "getRecordFact", "byScope", "scopePage", "bySource", "byActor", "byActorSource"]);

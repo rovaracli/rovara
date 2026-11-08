@@ -1,5 +1,5 @@
 // Part of the broker: the GitHub code host through the one capture interface learning reads a host by (team-record/sources/capture-adapters.ts). A code-host plug-in builds its own adapter with
-// `captureAdapterOf` and is added to the same list (`createTeamRecordRuntime({ captureAdapters })`); nothing else changes.
+// `captureAdapterOf` and is added to the same list (the runtime's `captureAdapters` input); nothing else changes.
 //   - pull request comments: listed through the `CodeHost` port's `feedback` read (the words and the people come from the Team record);
 //   - human fix-up commits: a compare of two commits read with a `contents: read` installation token (`github-app.ts getRepositoryCompareJson`);
 //   - the merge commit: from GitHub's own pull request event.
