@@ -68,7 +68,7 @@ export const REVERT_PAGE_ROWS = 500;
  * by `eventFromItem`. A row that names another workspace, project or no task is ignored. Ids only; nothing a person wrote is read out. `truncated` says the project had more rows than the pages allow (the middle of the window was not read).
  */
 export async function revertedTasksSince(table: TeamRecordTable, workspaceId: OrgId, project: string, sinceMs: number, options: { nowSeconds?: number; maxPages?: number; pageSize?: number } = {}): Promise<{ taskIds: string[]; truncated: boolean }> {
-  const seen = new Set<string>();
+  let seen = new Set<string>();
   const maxPages = options.maxPages ?? MAX_REVERT_PAGES;
   const newestPages = Math.ceil(maxPages / 2), oldestPages = Math.floor(maxPages / 2);
   /** Reads up to `pages` pages in one direction; true when the direction reached the end of the window. */
@@ -95,8 +95,22 @@ export async function revertedTasksSince(table: TeamRecordTable, workspaceId: Or
     }
     return false;
   }
-  if (await walk(false, newestPages)) return { taskIds: [...seen], truncated: false };
-  // More rows than the newest half-budget: the old end of the window is read too, so late-arriving rows are not the ones left out.
-  const complete = await walk(true, oldestPages);
-  return { taskIds: [...seen], truncated: !complete };
+  const finished = await walk(false, newestPages);
+  const newest = [...seen];
+  let oldest: string[];
+  let complete = finished;
+  if (finished) oldest = [...newest].reverse();
+  else {
+    // More rows than the newest half-budget: the old end of the window is read too, so late-arriving rows are not the ones left out.
+    seen = new Set<string>();
+    complete = await walk(true, oldestPages);
+    oldest = [...seen];
+  }
+  // The caller may send only some of them (a per-project cap): the order alternates between the two ends of the window, the old end first, so a cap cuts the MIDDLE, never one end only.
+  const ordered = new Set<string>();
+  for (let index = 0; index < Math.max(newest.length, oldest.length); index += 1) {
+    if (index < oldest.length) ordered.add(oldest[index]!);
+    if (index < newest.length) ordered.add(newest[index]!);
+  }
+  return { taskIds: [...ordered], truncated: !complete };
 }

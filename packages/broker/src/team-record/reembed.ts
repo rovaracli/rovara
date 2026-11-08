@@ -386,7 +386,13 @@ export async function sweepReembedStateRun(table: TeamRecordTable, isClosing?: (
   }
   result.left = Math.max(0, order.length - result.checked);
   if (last !== undefined) {
-    try { await table.documentClient.send(new PutCommand({ TableName: table.tableName, Item: { ...REEMBED_SWEEP_CURSOR_KEY, entityType: "TEAM_RECORD_REEMBED_SWEEP", after: last, at: new Date(now()).toISOString() } })); } catch { /* the next run starts from the old place */ }
+    // Conditional on the saved place being no newer than this run: a run that finishes late (it began before another one saved) never sets the place back. A refused or failed save leaves the old place.
+    try {
+      await table.documentClient.send(new PutCommand({
+        TableName: table.tableName, Item: { ...REEMBED_SWEEP_CURSOR_KEY, entityType: "TEAM_RECORD_REEMBED_SWEEP", after: last, at: new Date(now()).toISOString() },
+        ConditionExpression: "attribute_not_exists(#at) OR #at <= :at", ExpressionAttributeNames: { "#at": "at" }, ExpressionAttributeValues: { ":at": new Date(now()).toISOString() },
+      }));
+    } catch { /* the next run starts from the old place */ }
   }
   return result;
 }

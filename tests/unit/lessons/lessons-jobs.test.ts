@@ -116,6 +116,11 @@ describe("the nightly re-reflection", () => {
     const { deps, sent } = jobDeps(w, { log: (event, fields) => logs.push([event, fields]) });
     expect(await lessonsRevertJob(deps, ORG_A, ["web"], 10_000)).toMatchObject({ revertsEnqueued: 100, revertsCapped: 1 });
     expect(sent).toHaveLength(100);
+    // the cap cuts the middle of the window, not one end: the newest and the oldest revert both go
+    const sentIds = (sent as Array<{ taskId: string }>).map((message) => message.taskId);
+    expect(sentIds).toContain("task-000");
+    expect(sentIds).toContain("task-102");
+    expect(sentIds).not.toContain("task-051");
     expect(logs).toHaveLength(1);
     expect(logs[0]![0]).toBe("lessons_job.reverts_capped");
     expect(JSON.stringify(logs)).not.toMatch(/web|org_|task-/u);

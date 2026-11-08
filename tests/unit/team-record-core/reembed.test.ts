@@ -2,7 +2,7 @@
 // outlives its row because of the job. Plus what ingest records on a row it embeds (the spec, a cut).
 import { describe, expect, it } from "vitest";
 import { TEAM_RECORD_EMBEDDER } from "@agentx/contracts";
-import { REEMBED_IDLE_MS, REEMBED_SWEEP_MAX_CHECKS, readReembedStates, reembedRows, reembedRun, sweepReembedState, sweepReembedStateRun, type ReembedBudget, type ReembedRun } from "../../../packages/broker/src/team-record/reembed.js";
+import { REEMBED_IDLE_MS, REEMBED_SWEEP_CURSOR_KEY, REEMBED_SWEEP_MAX_CHECKS, readReembedStates, reembedRows, reembedRun, sweepReembedState, sweepReembedStateRun, type ReembedBudget, type ReembedRun } from "../../../packages/broker/src/team-record/reembed.js";
 import { eventFromItem } from "../../../packages/broker/src/team-record/store.js";
 import { expireRawText } from "../../../packages/broker/src/team-record/text-expiry.js";
 import type { RecordEmbedder } from "../../../packages/broker/src/team-record/types.js";
@@ -503,6 +503,24 @@ describe("a turn that starts no call, and a workspace that is closing (N4, N5)",
       await sweepReembedStateRun(w.table, async (orgId) => { after.push(orgId); return false; }, { now: () => w.clock.ms, maxChecks: 4 });
       expect(after).toEqual([orgs[8], orgs[9], orgs[0], orgs[1]]);
       expect(ticks).toBe(2);
+    });
+
+    it("L9: the saved place never moves back: a run that finishes late (its clock is older than the saved place's) does not overwrite a newer one's", async () => {
+      const w = await setup();
+      const orgs = orgNames(10);
+      crowd(w, orgs);
+      const start = w.clock.ms;
+      w.clock.ms = start + HOUR;
+      await sweepReembedStateRun(w.table, async () => false, { now: () => w.clock.ms, maxChecks: 3 });
+      expect(w.db.get(REEMBED_SWEEP_CURSOR_KEY)).toMatchObject({ after: orgs[2] });
+      // a slow earlier run (it began an hour before) ends now and tries to save its own, older place
+      const late = { ...w.table, documentClient: { send: async (command: unknown) => w.table.documentClient.send(command as never) } };
+      await sweepReembedStateRun(late as never, async () => false, { now: () => start, maxChecks: 5 });
+      expect(w.db.get(REEMBED_SWEEP_CURSOR_KEY)).toMatchObject({ after: orgs[2] });
+      // a later run moves it on
+      w.clock.ms = start + 2 * HOUR;
+      await sweepReembedStateRun(w.table, async () => false, { now: () => w.clock.ms, maxChecks: 3 });
+      expect(w.db.get(REEMBED_SWEEP_CURSOR_KEY)).toMatchObject({ after: orgs[5] });
     });
 
     it("M1: it does not list the directory: with 2500 workspaces in it and 60 ms per page, the states of workspaces that left are still removed within the limit", async () => {
