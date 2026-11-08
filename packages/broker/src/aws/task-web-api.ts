@@ -276,7 +276,8 @@ export function createTaskWebApi(deps: TaskWebApiDependencies): (request: Adapte
         }
         if (endpoint === "comments") {
           const listed = await deps.listComments(caller, taskId);
-          return json(200, { comments: listed.comments, suggestions: listed.suggestions ?? [], ...(listed.canRemember === undefined ? {} : { canRemember: listed.canRemember }) });
+          // OWNER DECISION 18 (review M1): with the cards on Remember and Forget are the task page's, so the page is not told it may.
+          return json(200, { comments: listed.comments, suggestions: listed.suggestions ?? [], ...(listed.canRemember === undefined || deps.readOnly === true ? {} : { canRemember: listed.canRemember }) });
         }
         const state = await deps.taskState(caller, taskId);
         const current = parseCookie(request.headers, CSRF_COOKIE);
@@ -286,7 +287,7 @@ export function createTaskWebApi(deps: TaskWebApiDependencies): (request: Adapte
           ...(state.peopleRevision === undefined ? {} : { peopleRevision: state.peopleRevision }),
           canRead: state.canRead, canComment: state.canComment, canSuggest: state.canSuggest, canDecide: state.canDecide,
           canAsk: state.canAsk, canManagePeople: state.canManagePeople, canTakeOwnership: state.canTakeOwnership, csrf,
-          ...(state.canRemember === undefined ? {} : { canRemember: state.canRemember }),
+          ...(state.canRemember === undefined || deps.readOnly === true ? {} : { canRemember: state.canRemember }),
           ...(state.e2ePresentation === undefined ? {} : { e2ePresentation: state.e2ePresentation }),
         });
         response.headers["set-cookie"] = csrfCookie(csrf);

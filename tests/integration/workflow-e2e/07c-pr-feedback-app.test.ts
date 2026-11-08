@@ -30,7 +30,7 @@ async function feedbackWaiting() {
   // With the cards on the plan is approved on its card (Slack's Approve opens Rovara for it), then coding, checks, reviews and the draft pull request.
   await atPlanReview(e2e);
   const shim = { db: e2e.db, handler: e2e.handler, orgOf: async () => undefined };
-  const approved = await cardDecision(shim, OWNER, e2e.taskId(), { acknowledgedRunLimitUsd: undefined });
+  const approved = await cardDecision(shim, OWNER, e2e.taskId());
   expect(approved.status, JSON.stringify(approved.body)).toBe(200);
   await e2e.settle();
   expect(e2e.workflow()).toMatchObject({ stage: "WAIT_FOR_MERGE", state: "WAITING" });
