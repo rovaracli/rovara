@@ -89,6 +89,33 @@ const RISKY_WORDING: readonly RegExp[] = [
   /\bcode[-\s]?owners?\b|\bbranch[-\s]?protection\b|\brequired\s+(reviews?|checks?|reviewers?|status\w*)\b|\brulesets?\b|\bprotected\s+(branch\w*|tags?)\b|\bstatus\s+checks?\b/iu,
   // real people's data (round 2, R2)
   /\b(real|actual|genuine|live|prod\w*)\s+(customers?|users?|data|records?|accounts?|emails?|names?|people|clients?|traffic)\b|\b(customers?|users?|clients?)[-\s]?(data|records?|emails?|info\w*|details)\b|\breal[-\s]?world\s+data\b/iu,
+  // Round 3 (LT-4 F1, lessons leftovers sweep): the fresh phrasings the round-2 re-check found passing. Each pattern is as narrow as the phrasing allows; F2 (false positives) is measured by the replay eval, not tuned here.
+  // CORS: an allow-origin header, and reflecting or mirroring the caller's origin, referer or host
+  /\ballow[-\s]?origin\b|\b(reflect\w*|mirror\w*|echo\w*|copy|copies|forward\w*)\b[^\n]{0,40}\b(origin|referer|referrer|host\s+header)\b/iu,
+  // turning strictness or an implicit/unused check off in a compiler config
+  /\b(strict|implicit|unused|skip\s+lib\s+check|isolated\s+modules)(?:\s+(?:null|any|this|property|initiali[sz]ation|function|bind|call|apply|checks?|locals?|parameters?|index|access|override|modules?))*(?:\s+(?:to|is)\s+|\s*[=:]\s*|\s+)(?:false|off|0)\b/iu,
+  // writing a whole request, event or user object to standard output, and leaking raw errors, call stacks or whole profiles
+  /\b(req|request|res|response|ctx|context|event|payload|body|headers?|user|profile|session|env|object)\b[^\n]{0,40}\b(stdout|stderr|process\.std\w*|standard\s+(?:out|output|error))\b|\b(stdout|stderr|process\.std\w*)\b[^\n]{0,40}\b(req|request|res|response|ctx|context|event|payload|body|headers?|user|profile|session|env)\b/iu,
+  /\b(raw|unfiltered|unredacted|unsanitized)\s+(errors?|exceptions?)\b|\b(errors?|exceptions?)\b[^\n]{0,30}\bcall\s*stacks?\b|\b(respon\w*|return\w*|send\w*|expos\w*|show\w*|render\w*|leak\w*)\b[^\n]{0,30}\bcall\s*stacks?\b/iu,
+  /\b(full|entire|whole|complete)\s+(profiles?|user\s+(profiles?|objects?|records?)|customer\s+(profiles?|objects?|records?)|account\s+(objects?|records?))\b|\b(users?|customers?|members?|people|person)'?s?\s+(full|entire|whole|complete)\s+(profiles?|records?|details|data|info\w*|objects?|accounts?)\b/iu,
+  // marking a suite, workflow or step as succeeded; treating a red build as fine
+  /\b(mark\w*|report\w*|treat\w*|count\w*|record\w*|set\w*|force\w*|flip\w*|make\w*)\b[^\n]{0,30}\b(suites?|workflows?|steps?|stages?|specs?)\b[^\n]{0,30}\b(pass\w*|success\w*|succe\w*|ok|okay|healthy|fine|green)\b/iu,
+  /\bred\s+(builds?|ci|runs?|checks?|pipelines?|tests?|status|suites?|jobs?)\b[^\n]{0,40}\b(fine|ok|okay|acceptable|passing|passed|safe|ignor\w*|harmless|green|success\w*)\b|\b(treat\w*|consider\w*|accept\w*|ignor\w*|count\w*|call\w*)\b[^\n]{0,20}\bred\s+(builds?|ci|runs?|checks?|pipelines?|tests?|status|suites?|jobs?)\b/iu,
+  // the primary database, and building a query from strings
+  /\bprimary\s+(db|database|datastore|replicas?)\b/iu,
+  /\bconcat\w*\b[^\n]{0,40}\b(sql|quer(?:y|ies)|statements?)\b|\b(sql|quer(?:y|ies))\b[^\n]{0,40}\bconcat\w*|\b(user|client|form|request)\s+input\b[^\n]{0,30}\b(sql|quer(?:y|ies))\b/iu,
+  // building code from a string
+  /\bfunction\s*\([^)\n]{0,60}\)\s*\(|\bset\s*(?:timeout|interval)\b[^\n]{0,30}\bstring\b/iu,
+  // plain http, a self-issued certificate chain, secrets in browser storage, hard-coded logins, objects readable by everyone, a wildcard action
+  /\bplain[-\s]?(?:text\s+)?http\b|\bhttp\s+(?:instead\s+of|rather\s+than|over)\s+https\b|\bun-?encrypted\b|\bcleartext\b|\bself[-\s]?(?:issued|generated|made)\b|\b(?:accept\w*|trust\w*)\b[^\n]{0,30}\b(?:root\s+cas?|unknown\s+(?:ca|issuer))\b/iu,
+  /\b(?:sessions?|auth\w*|access|api|login|csrf|jwt|secrets?|keys?|tokens?|passwords?|credentials?|cookies?)\b[^\n]{0,40}\b(?:local|session)[-\s]?storage\b|\b(?:local|session)[-\s]?storage\b[^\n]{0,40}\b(?:sessions?|auth\w*|jwt|secrets?|keys?|tokens?|passwords?|credentials?|cookies?)\b/iu,
+  /\bhard[-\s]?cod\w*\b[^\n]{0,60}\b(?:logins?|passwords?|secrets?|keys?|tokens?|credentials?|creds?|usernames?|dsn|connection\s+strings?)\b|\b(?:logins?|passwords?|secrets?|keys?|tokens?|credentials?|creds?)\b[^\n]{0,60}\bhard[-\s]?cod\w*\b/iu,
+  /\b(?:readable|writable|writeable|accessible)\s+(?:by|to|for)\s+(?:all|anyone|everyone|any|the\s+world|the\s+public|every\w*)\b|\bworld[-\s]?(?:readable|writable)\b/iu,
+  /\b[a-z][a-z0-9-]{1,30}:\*|\b(?:action|resource)s?\s*[:=]\s*["']?\*/iu,
+  // landing on the primary line, editing generated files by hand, leaving a failing step out
+  /\b(?:primary|default|release|stable)\s+(?:line|stream|trunk)\b|\b(?:once|as\s+soon\s+as|after|when)\s+(?:it|the\s+code|the\s+change)\s+(?:compiles?|builds?|typechecks?|type-checks?)\b/iu,
+  /\b(?:hand|manually)[-\s]?(?:edit\w*|chang\w*|patch\w*|modif\w*)\b[^\n]{0,40}\b(?:generated|gen|lock\w*|vendor\w*|dist|build)\b|\bgenerated\s+(?:files?|code|sources?)\b[^\n]{0,40}\b(?:edit\w*|chang\w*|patch\w*|modif\w*|without)\b|\bwithout\s+(?:re-?)?generat\w*/iu,
+  /\b(?:leav\w*|omit\w*|exclud\w*|tak\w*|left)\b[^\n]{0,40}\bout\b[^\n]{0,50}\b(?:when|if|on)\b[^\n]{0,15}\b(?:fails?|failed|failing|errors?|breaks?|times?\s*out)\b/iu,
 ];
 /** Dots inside a gap no longer end it (`req.body`, `user.email`): only a sentence end does (a dot followed by a space or the end). */
 const GAP_FROM = "[^.\\n]";
