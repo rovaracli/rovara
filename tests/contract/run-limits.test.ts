@@ -856,6 +856,7 @@ describe("approving the plan", () => {
       expect(stale.status).toBe(400);
       expect(message(stale)).toContain(`This plan's run limit is now $${String(proposed + 5)}, not the $${String(proposed)} you were shown.`);
       expect(message(stale)).toContain(`This raises the run limit from $${String(current)} to $${String(proposed + 5)}.`);
+      expect(message(stale), "a way forward: the plan's link").toMatch(/, or approve it in Rovara: https:\/\/\S+$/u);
       expect(t.meta(taskId).workflow.decisions).toEqual([]);
       expect((await t.decide(taskId, plan, randomUUID(), "APPROVE", proposed + 5)).status).toBe(200);
       expect(t.meta(taskId).budgetUsd).toBe(proposed + 5);
@@ -904,6 +905,7 @@ describe("approving the plan", () => {
       const stale = JSON.parse((await press({ acknowledgedRunLimitUsd: proposed - 1 })).body) as { refused?: boolean; message?: string };
       expect(stale).toMatchObject({ refused: true });
       expect(stale.message).toContain(`it is now $${String(proposed)}, not the $${String(proposed - 1)} this button showed`);
+      expect(stale.message, "a way forward: the plan's link").toMatch(/or approve the plan in Rovara: https:\/\/\S+$/u);
       expect(stale.message).toContain(`This raises the run limit from $${String(current)} to $${String(proposed)}.`);
       untouched();
       const approved = await press({ acknowledgedRunLimitUsd: proposed });

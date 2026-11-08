@@ -381,18 +381,20 @@ describe("the named TEST proof-only installation gate", () => {
     // Retaken again from the test's own values after the rebase onto integ/0510 at 44030261c (ux1, ux6a, ux5, ux4a merged); the named-templates snapshot differs from that head only by `pt`. Legacy did not move.
     // 2026-11-07 (UX2 slice 2 notifications): the named and foreign digests were retaken from the values the test reports, after one intended change: the DeveloperTaskNotifier's stream filter also passes
     // TASK_ATTENTION_DM rows (the named-templates snapshot shows exactly that string). Legacy did not move.
+    // 0.5.11 (QA6-12b): the named and foreign digests were retaken after one intended change: the DeveloperTaskNotifier gains two read-only grants (GetItem on ORG#org_*#SETTINGS, Query on ORG#org_*#RUN_COST#*) for the plan's run limit.
+    // Checked first: with the notifier's infra file as it was before, all three infra tests pass, so the change is that statement and nothing else. Legacy did not move.
     const digestCases = [
       {
         label: "named",
         template: named,
-        withRoute: "0929e8be480acd17349bbf9b104b96ac3e2bcb1f149cb5cebb6a392ca329c422",
-        withoutRoute: "3f1d3d18aea99cd8905d3cc18b396ac3b0c014ac3686d6cf7b1f4d214fe5d5a8",
+        withRoute: "e40427c418d27cf669c8ee293cc19f08bbee2138bee4cc3ac851a8f09e4f2b6f",
+        withoutRoute: "57e016e9dacfac504799fe21133bea37b83a7d64f05c3bae9b7862358400485b",
       },
       {
         label: "foreign",
         template: foreign,
-        withRoute: "cd5935bfbab07d1dfb17fa8736faee8d04c52622702a903b611f6870c75c451a",
-        withoutRoute: "4cce66dbb9c24ba8af2c095c18c0ff97f38bc30fae59f9beb66512ce66b35617",
+        withRoute: "25c09aea928055248ba6a933ce346b3086381456bf75c85dfaecd24ab94e7d2a",
+        withoutRoute: "fe6539f9369d7dfbf8ee6a57f213a544fd941865f6aca17c0023682fdb80373e",
       },
       {
         label: "legacy",

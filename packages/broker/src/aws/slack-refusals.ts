@@ -65,7 +65,7 @@ function slackPlanApprovalRefusal(reason: string): string | undefined {
 
 const USD = "\\$[0-9]+(?:\\.[0-9]+)?";
 const RUN_LIMIT_ACK_MISSING = new RegExp(`^(This raises the run limit from ${USD} to ${USD})\\.(?:.*?, or approve it in Rovara: (https?://[^\\s<>|]{1,500}))?`, "su");
-const RUN_LIMIT_CHANGED = new RegExp(`^This plan's run limit is now (${USD}), not the (${USD}) you were shown\\.(?: (This raises the run limit from ${USD} to ${USD})\\.)?`, "u");
+const RUN_LIMIT_CHANGED = new RegExp(`^This plan's run limit is now (${USD}), not the (${USD}) you were shown\\.(?: (This raises the run limit from ${USD} to ${USD})\\.)?(?:.*?, or approve it in Rovara: (https?://[^\\s<>|]{1,500}))?`, "su");
 /**
  * QA6-12b: an approval of a plan that raises the run limit was refused because it came without the amount (an older button) or with an amount that is not the one approving would set now (a stale button, the
  * plan or the limits changed since the message was posted). The decision's own words are numbers and fixed sentences (built from `runLimitRaiseText`), so they are said, in Slack's terms: the new amount is shown.
@@ -76,7 +76,7 @@ export function slackRunLimitRefusal(reason: string): string | undefined {
   // The way forward is always there: the checked link to the plan in Rovara when the broker gave one (a message with no amount on its button has no other).
   if (missing !== null) return `${missing[1]!}. This button does not carry the new limit. Use the latest message in this thread if it shows this raise, or approve the plan in Rovara${missing[2] === undefined ? "." : `: ${missing[2].replace(/&/gu, "&amp;")}`}`;
   const changed = RUN_LIMIT_CHANGED.exec(reason);
-  if (changed !== null) return `The run limit changed since this message was posted: it is now ${changed[1]!}, not the ${changed[2]!} this button showed.${changed[3] === undefined ? "" : ` ${changed[3]}.`} Use the latest message in this thread to approve it.`;
+  if (changed !== null) return `The run limit changed since this message was posted: it is now ${changed[1]!}, not the ${changed[2]!} this button showed.${changed[3] === undefined ? "" : ` ${changed[3]}.`} Use the latest message in this thread to approve it${changed[4] === undefined ? "." : `, or approve the plan in Rovara: ${changed[4].replace(/&/gu, "&amp;")}`}`;
   return undefined;
 }
 

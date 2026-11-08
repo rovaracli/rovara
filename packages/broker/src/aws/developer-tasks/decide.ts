@@ -553,10 +553,10 @@ export async function decideTaskWorkflow(
  * QA6-12: said when the plan's run limit is not the one the person was shown (the estimate was redone, or the project's limits changed, since the page loaded or the message was posted).
  * The page says to refresh; every other surface (Slack, a tool, the API) is told the new amount and, when it raises the limit, the raise, so the person sees what they would now agree to.
  */
-const runLimitChangedMessage = (shownUsd: number, nowUsd: number, currentUsd: number, browser: boolean): string => {
+const runLimitChangedMessage = (shownUsd: number, nowUsd: number, currentUsd: number, browser: boolean, link?: string): string => {
   const head = `This plan's run limit is now ${formatRunLimitUsd(nowUsd)}, not the ${formatRunLimitUsd(shownUsd)} you were shown.`;
   if (browser) return `${head} Refresh the page, check the limit, and approve again.`;
-  return `${head} ${runLimitRaisesNote(currentUsd, nowUsd)}Check it and approve again with the run limit acknowledged as ${formatRunLimitUsd(nowUsd)}.`;
+  return `${head} ${runLimitRaisesNote(currentUsd, nowUsd)}Check it and approve again with the run limit acknowledged as ${formatRunLimitUsd(nowUsd)}${link === undefined ? "." : `, or approve it in Rovara: ${link}`}`;
 };
 /** The raise as the owner's exact words and a full stop, or nothing when approving would not raise the limit. */
 const runLimitRaisesNote = (currentUsd: number, proposedUsd: number): string => (runLimitRaises(currentUsd, proposedUsd) ? `${runLimitRaiseText(currentUsd, proposedUsd)}. ` : "");
@@ -624,7 +624,7 @@ async function settleRunLimit(deps: DeveloperTaskRouteDependencies, caller: Deve
   const currentUsd = task.budgetUsd ?? PER_TASK_BUDGET_USD;
   // QA6-12: both outcomes carry the limit that would be set; a different one than the person was shown is refused before anything is asked or written.
   if (acknowledgedUsd !== undefined && decision.runLimitUsd !== acknowledgedUsd) {
-    throw Object.assign(agentXError("CONFIG_INVALID", runLimitChangedMessage(acknowledgedUsd, decision.runLimitUsd, currentUsd, browser)), { pageReason: "changed" });
+    throw Object.assign(agentXError("CONFIG_INVALID", runLimitChangedMessage(acknowledgedUsd, decision.runLimitUsd, currentUsd, browser, planApprovalLink(deps, task).link)), { pageReason: "changed" });
   }
   // 0.5.11 (QA6-12b; this replaces decision journey slice 2's "never a Slack button or a tool that cannot show it"): an approval that RAISES the run limit (none set yet, or a higher one) is taken only with the limit
   // acknowledged, from every surface and whatever the decision-cards switch says: the web card and page tick it, a Slack button and the tool's argument carry the amount they showed ("This raises the run limit from

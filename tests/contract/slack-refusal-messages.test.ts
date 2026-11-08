@@ -37,6 +37,10 @@ describe("what a Slack press hears when the broker refuses it", () => {
     // The limit came down to what the task has: nothing is raised, and the sentence says only that.
     expect(slackRefusalMessage("CONFIG_INVALID", OUT_OF_DATE, "This plan's run limit is now $2, not the $12 you were shown. Check it and approve again with the run limit acknowledged as $2."))
       .toBe("The run limit changed since this message was posted: it is now $2, not the $12 this button showed. Use the latest message in this thread to approve it.");
+    // A stale amount keeps the checked plan link too, escaped, so the person always has a way forward even when the latest message is the same button.
+    expect(slackRefusalMessage("CONFIG_INVALID", OUT_OF_DATE, "This plan's run limit is now $15, not the $12 you were shown. This raises the run limit from $2 to $15. Check it and approve again with the run limit acknowledged as $15, or approve it in Rovara: https://cell.example/review/x/task?a=1&b=2"))
+      .toBe("The run limit changed since this message was posted: it is now $15, not the $12 this button showed. This raises the run limit from $2 to $15. Use the latest message in this thread to approve it, or approve the plan in Rovara: https://cell.example/review/x/task?a=1&amp;b=2");
+    expect(slackRefusalMessage("CONFIG_INVALID", OUT_OF_DATE, "This plan's run limit is now $15, not the $12 you were shown. Check it and approve again, or approve it in Rovara: https://x.example/<!channel>")).not.toContain("<");
     // Words that merely start alike are not said.
     expect(slackRefusalMessage("CONFIG_INVALID", OUT_OF_DATE, "This raises the run limit from <@U1> to $12.")).toBe(OUT_OF_DATE);
     expect(slackRefusalMessage("CONFIG_INVALID", OUT_OF_DATE, "something else")).toBe(OUT_OF_DATE);
