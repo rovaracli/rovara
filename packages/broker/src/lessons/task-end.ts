@@ -222,8 +222,8 @@ export async function learnFromEndedTaskTyped(deps: TaskLearningDeps, input: { w
     if (!modeAllows(learning.mode, "reflect")) return final("off");
     const subject = await subjectFrom(deps, base, input.workspaceId, input.outcome);
     if (subject === undefined) return final("no_facts");
-    // The outcome is counted BEFORE the reflection: counting needs no model and is idempotent (a once-key per task and lesson, a queued mark that is only replaced or removed), so it happens on every attempt, whatever
-    // the reflection comes to (a refusal, a model that failed, an attempt that will be retried, a deadline that cut it). A revert's re-reflection takes the merge's queued helpful mark back here, even if it never reflects.
+    // What needs no judge is counted BEFORE the reflection (idempotent: a once-key per task and lesson, a queued mark that is only replaced or removed), so it happens on every attempt whatever the reflection comes to (a refusal,
+    // a model that failed, an attempt that will be retried, a deadline that cut it); a revert's re-reflection takes the merge's queued helpful mark back here. What needs the judge is counted AFTER the reflection.
     // LP-10 R8: this task's failed model calls (the outcome judge, the reflection and each draft's judge) count toward `model_failed` once per kind, not once per call.
     const tally = newTaskFailureTally();
     await countOutcome(deps, base, subject, input, tally, "before");
