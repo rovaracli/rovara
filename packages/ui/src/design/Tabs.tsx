@@ -1,7 +1,7 @@
-import { useEffect, useRef, type ReactNode } from "react";
+import { useLayoutEffect, useRef, type ReactNode } from "react";
 import { Tabs as R } from "radix-ui";
 export interface TabItem { value: string; label: string; content: ReactNode; disabled?: boolean }
-/** Width of the fade at a strip edge that still has tabs past it; `.rv-tabs` in design.css uses the same number. */
+/** Width of the fade at a strip edge that still has tabs past it; `--rv-tab-fade` on `.rv-tabs` in design.css is the same number. */
 export const TAB_FADE_PX = 28;
 /** Which edges of a scrolling strip have tabs hidden past them (1px of slack for fractional scroll positions). */
 export function hiddenEdges(strip: { scrollLeft: number; clientWidth: number; scrollWidth: number }): { start: boolean; end: boolean } {
@@ -15,7 +15,8 @@ export function scrollToTab(strip: { left: number; right: number; scrollLeft: nu
 /** Keeps `data-more-start` / `data-more-end` true while tabs are hidden past that edge (the stylesheet fades them), and scrolls the selected tab into view on mount and whenever the selection changes. Arrow keys, focus and roles are Radix's, untouched. */
 function useTabStripCue() {
  const ref = useRef<HTMLDivElement>(null);
- useEffect(() => {
+ // Before paint, so the first frame already has the selected tab in view and the fade on.
+ useLayoutEffect(() => {
   const strip = ref.current;
   if (strip === null) return;
   const mark = () => { const edges = hiddenEdges(strip);strip.toggleAttribute("data-more-start", edges.start);strip.toggleAttribute("data-more-end", edges.end); };
@@ -31,7 +32,9 @@ function useTabStripCue() {
   let gone = false;
   void document.fonts?.ready.then(() => { if (!gone) { reveal();mark(); } });
   // A narrower window, a tab added or removed, or a font that finishes loading changes how many tabs fit.
-  const sizes = typeof ResizeObserver === "undefined" ? undefined : new ResizeObserver(mark);
+  // A change in the strip's own width (rotating the phone, a closed panel opening) looks for the selected tab again; a tab changing width only redraws the fades, so a strip the person scrolled by hand stays put.
+  let width = strip.clientWidth;
+  const sizes = typeof ResizeObserver === "undefined" ? undefined : new ResizeObserver(() => { if (strip.clientWidth !== width) { width = strip.clientWidth;reveal(); } mark(); });
   const watch = () => { sizes?.observe(strip);for (const child of strip.children) sizes?.observe(child); };
   const changes = new MutationObserver(() => { watch();reveal();mark(); });
   changes.observe(strip, { attributes: true, attributeFilter: ["data-state"], childList: true, subtree: true });

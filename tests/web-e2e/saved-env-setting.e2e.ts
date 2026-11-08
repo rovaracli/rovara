@@ -91,7 +91,7 @@ async function stripState(page: Page) {
    hidden, atStart: strip.scrollLeft <= 1, atEnd: strip.scrollLeft + strip.clientWidth >= strip.scrollWidth - 1,
    moreStart: strip.hasAttribute("data-more-start"), moreEnd: strip.hasAttribute("data-more-end"),
    faded: mask !== "none",
-   activeInside: active.left >= box.left - 1 && active.right <= box.right + 1, selectedLabel: strip.querySelector("[role=tab][aria-selected=true]")!.textContent,
+   activeInside: active.left >= box.left + (strip.scrollLeft > 1 ? 28 : 0) - 1 && active.right <= box.right - (strip.scrollLeft + strip.clientWidth < strip.scrollWidth - 1 ? 28 : 0) + 1, selectedLabel: strip.querySelector("[role=tab][aria-selected=true]")!.textContent,
   };
  });
 }
