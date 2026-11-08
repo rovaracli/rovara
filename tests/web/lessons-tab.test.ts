@@ -2,10 +2,10 @@
 // L3b: the Lessons tab and the Sources tab, state by state: loading, failing, off, collecting, locked, read-only, waiting cards (one person, two people, who approved first), citations,
 // one-tap approval, edit and approve, reject, remove, history, search, digest, going back, and text that is shown as text.
 import { describe, expect, it } from "vitest";
-import { screen, fireEvent, waitFor, within } from "@testing-library/react";
+import { act, screen, fireEvent, waitFor, within } from "@testing-library/react";
 import { MemoryRouter, Routes, Route } from "react-router";
 import { QueryClientProvider } from "@tanstack/react-query";
-import { LessonApproveBodySchema, LessonMergeBodySchema, LessonRejectBodySchema, LessonRollbackBodySchema } from "@agentx/contracts/web";
+import { LessonApproveBodySchema, LessonMergeBodySchema, LessonPresetChangeBodySchema, LessonRejectBodySchema, LessonRollbackBodySchema } from "@agentx/contracts/web";
 import { ProjectScreen } from "../../packages/ui/src/screens/project/ProjectScreen.js";
 import { AppHostProvider } from "../../packages/ui/src/host.js";
 import { Announcer } from "../../packages/ui/src/design/Announcer.js";
@@ -515,5 +515,92 @@ describe("approve by exception: trial marks and the preset", () => {
  it("a lesson waiting because it asked for a capability change says why in fixed words", async () => {
   await openLessons({ state: { view: view({ waiting: [waiting({ tier: 2, tierReasons: ["capability_request"], needs: { required: 2, have: 0, groups: [] } })] }) } });
   expect(screen.getByText(/asks Rovara to change tools, access, checks, approvals or limits/u)).toBeTruthy();
+ });
+});
+
+// LT-2 (lessons leftovers sweep): a proposal to go back to Standard is found in the Lessons tab, and a different maintainer or admin approves or cancels it there.
+describe("a pending preset proposal: approve and cancel", () => {
+ const proposal = (over: Record<string, unknown> = {}) => ({ changeId: "chg-1", to: "standard", mine: false, soleOwner: false, expiresAt: NOW + 7 * 86_400_000, ...over });
+ const pendingView = (over: Record<string, unknown> = {}, extra: Record<string, unknown> = {}) => view({ preset: "regulated", presetLockedByCompany: false, presetProposal: proposal(over), ...extra });
+ const decide = (log: { path: string; body: unknown }[], answer: unknown) => (request: { method: string; path: string; body?: unknown }, url: URL) => {
+  if (request.method === "POST" && /\/preset\/(approve|cancel)$/u.test(url.pathname)) { log.push({ path: url.pathname, body: request.body });return ok(answer); }
+  return undefined;
+ };
+ it("a different maintainer sees the waiting request with Approve and Cancel, and no second way to ask", async () => {
+  await openLessons({ state: { view: pendingView() } });
+  const box = screen.getByRole("region", { name: "Waiting for approval" });
+  expect(within(box).getByText(/Someone on your team asked to allow lessons on trial again/u)).toBeTruthy();
+  expect(within(box).getByRole("button", { name: "Approve going back to Standard" })).toBeTruthy();
+  expect(within(box).getByRole("button", { name: "Cancel the request" })).toBeTruthy();
+  expect(screen.queryByRole("button", { name: "Allow lessons on trial again" })).toBeNull();
+ });
+ it("Approve sends the change id once to the project's approve route, says so, and reads the tab again", async () => {
+  const log: { path: string; body: unknown }[] = [];
+  let approved = false;
+  const f = await openLessons({ state: { view: pendingView() }, lessons: (request, url) => { const got = decide(log, { preset: "standard", changed: true })(request, url);if (got !== undefined) approved = true;return got; } });
+  const reads = f.lessonReads().length;
+  fireEvent.click(screen.getByRole("button", { name: "Approve going back to Standard" }));
+  await screen.findByText(/Approved\. Low-risk lessons from a team member's correction go live on trial again/u);
+  expect(approved).toBe(true);
+  expect(log).toEqual([{ path: LESSONS_PATH + "/preset/approve", body: { changeId: "chg-1" } }]);
+  expect(LessonPresetChangeBodySchema.parse(log[0]!.body)).toEqual({ changeId: "chg-1" });
+  await waitFor(() => expect(f.lessonReads().length).toBeGreaterThan(reads));
+ });
+ it("Cancel sends the change id to the cancel route and says every lesson still waits for a person", async () => {
+  const log: { path: string; body: unknown }[] = [];
+  await openLessons({ state: { view: pendingView() }, lessons: decide(log, { done: true }) });
+  fireEvent.click(screen.getByRole("button", { name: "Cancel the request" }));
+  await screen.findByText(/Cancelled\. Every lesson still waits for a person/u);
+  expect(log).toEqual([{ path: LESSONS_PATH + "/preset/cancel", body: { changeId: "chg-1" } }]);
+ });
+ it("the person who asked sees that it waits for someone else, with Cancel only", async () => {
+  await openLessons({ state: { view: pendingView({ mine: true }) } });
+  const box = screen.getByRole("region", { name: "Waiting for approval" });
+  expect(within(box).getByText(/You asked to allow lessons on trial again\. A different maintainer or admin has to approve it/u)).toBeTruthy();
+  expect(within(box).queryByRole("button", { name: "Approve going back to Standard" })).toBeNull();
+  expect(within(box).getByRole("button", { name: "Cancel the request" })).toBeTruthy();
+ });
+ it("the only person who can approve it may approve their own request, and is told it needs a short wait", async () => {
+  await openLessons({ state: { view: pendingView({ mine: true, soleOwner: true }) } });
+  const box = screen.getByRole("region", { name: "Waiting for approval" });
+  expect(within(box).getByText(/You are the only person who can approve it/u)).toBeTruthy();
+  expect(within(box).getByRole("button", { name: "Approve going back to Standard" })).toBeTruthy();
+ });
+ it("two quick taps send the decision once (the guard is a ref, not a render)", async () => {
+  const log: { path: string; body: unknown }[] = [];
+  await openLessons({ state: { view: pendingView() }, lessons: decide(log, { preset: "standard", changed: true }) });
+  const approve = screen.getByRole("button", { name: "Approve going back to Standard" });
+  act(() => { approve.click();approve.click(); });
+  await screen.findByText(/Approved\./u);
+  expect(log).toHaveLength(1);
+ });
+ it("two quick taps on Cancel send once", async () => {
+  const log: { path: string; body: unknown }[] = [];
+  await openLessons({ state: { view: pendingView() }, lessons: decide(log, { done: true }) });
+  const cancel = screen.getByRole("button", { name: "Cancel the request" });
+  act(() => { cancel.click();cancel.click(); });
+  await screen.findByText(/Cancelled\./u);
+  expect(log).toHaveLength(1);
+ });
+ it("a refusal is shown in the server's own fixed words and nothing else changes", async () => {
+  await openLessons({ state: { view: pendingView() }, lessons: (request, url) => request.method === "POST" && url.pathname.endsWith("/preset/approve") ? refusal("FORBIDDEN", "A different maintainer or admin has to approve going back to Standard.") : undefined });
+  fireEvent.click(screen.getByRole("button", { name: "Approve going back to Standard" }));
+  expect((await screen.findByRole("alert")).textContent).toContain("A different maintainer or admin has to approve going back to Standard.");
+  expect(screen.getByRole("button", { name: "Cancel the request" })).toBeTruthy();
+ });
+ it("someone who cannot decide gets no buttons even if a proposal reached the screen", async () => {
+  await openLessons({ state: { view: pendingView({}, { canDecide: false, waiting: [] }) } });
+  expect(screen.queryByRole("button", { name: "Approve going back to Standard" })).toBeNull();
+  expect(screen.queryByRole("button", { name: "Cancel the request" })).toBeNull();
+  expect(screen.queryByRole("region", { name: "Waiting for approval" })).toBeNull();
+ });
+ it("no proposal, no box", async () => {
+  await openLessons({ state: { view: view({ preset: "regulated" }) } });
+  expect(screen.queryByRole("region", { name: "Waiting for approval" })).toBeNull();
+  expect(screen.getByRole("button", { name: "Allow lessons on trial again" })).toBeTruthy();
+ });
+ it("a proposal on a company-locked project shows no buttons either (nothing to approve here)", async () => {
+  await openLessons({ state: { view: pendingView({}, { presetLockedByCompany: true }) } });
+  expect(screen.queryByRole("button", { name: "Approve going back to Standard" })).toBeNull();
  });
 });

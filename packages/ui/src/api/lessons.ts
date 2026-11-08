@@ -3,7 +3,7 @@
 import { useMemo } from "react";
 import { useQuery } from "@tanstack/react-query";
 import {
-  DeveloperTaskViewSchema, LessonApproveAnswerReaderSchema, LessonApproveBodySchema, LessonDoneAnswerReaderSchema, LessonFeedbackBodySchema, LessonHistoryReaderSchema, LessonMergeBodySchema, LessonPresetAnswerReaderSchema, LessonPresetBodySchema, LessonRejectBodySchema,
+  DeveloperTaskViewSchema, LessonApproveAnswerReaderSchema, LessonApproveBodySchema, LessonDoneAnswerReaderSchema, LessonFeedbackBodySchema, LessonHistoryReaderSchema, LessonCompanyPresetReaderSchema, LessonMergeBodySchema, LessonPresetAnswerReaderSchema, LessonPresetBodySchema, LessonPresetChangeBodySchema, LessonRejectBodySchema,
   LessonResumeAnswerReaderSchema, LessonResumeSourceBodySchema, LessonRetireBodySchema, LessonRollbackAnswerReaderSchema, LessonRollbackBodySchema, LessonSourcesReaderSchema, LessonsDigestReaderSchema, LessonsViewReaderSchema, LoadedLessonsReaderSchema,
   ProjectOverviewProjectSchema,
 } from "@agentx/contracts/web";
@@ -13,6 +13,8 @@ import { createApiClient, type SendResult } from "./client.js";
 import { ApiError } from "./errors.js";
 
 export type LessonsView = ReturnType<typeof LessonsViewReaderSchema.parse>;
+export type LessonPresetProposalView = NonNullable<LessonsView["presetProposal"]>;
+export type LessonCompanyPreset = ReturnType<typeof LessonCompanyPresetReaderSchema.parse>;
 export type LessonItem = LessonsView["waiting"][number];
 export type LessonsDigest = ReturnType<typeof LessonsDigestReaderSchema.parse>;
 export type LessonSources = ReturnType<typeof LessonSourcesReaderSchema.parse>;
@@ -22,6 +24,7 @@ export type LoadedLessonRow = LoadedLessons["lessons"][number];
 
 const NEVER = { retry: "never" } as const;
 const base = (project: string) => "/v1/app/projects/" + encodeURIComponent(ProjectOverviewProjectSchema.shape.name.parse(project)) + "/lessons";
+const COMPANY_PRESET = "/v1/app/org/lessons/preset";
 const taskBase = (taskId: string) => "/v1/app/tasks/" + encodeURIComponent(DeveloperTaskViewSchema.shape.taskId.parse(taskId)) + "/lessons";
 /** These routes answer 200 only; a 202 this build does not know is an unreadable answer, never a success. */
 const settled = <T,>(result: SendResult<T>): T => { if (result.kind !== "done") throw new ApiError(502, "INVALID_RESPONSE", "Rovara returned an unreadable response. Reload this page.");return result.value; };
@@ -48,6 +51,15 @@ export function createLessonsApi(host: AppHost) {
   async requirePerson(project: string) { return settled(await api.send("POST", base(project) + "/preset", LessonPresetBodySchema.parse({ preset: "regulated" }), LessonPresetAnswerReaderSchema, NEVER)); },
   /** Going back to Standard is a loosening: it asks a different maintainer or admin to approve (the answer says `needsApproval`), or applies at once for the only person who can decide. */
   async allowTrial(project: string) { return settled(await api.send("POST", base(project) + "/preset", LessonPresetBodySchema.parse({ preset: "standard" }), LessonPresetAnswerReaderSchema, NEVER)); },
+  /** A different maintainer or admin approves the waiting request to go back to Standard; the server checks who may and says why not in fixed words. */
+  async approvePreset(project: string, changeId: string) { return settled(await api.send("POST", base(project) + "/preset/approve", LessonPresetChangeBodySchema.parse({ changeId }), LessonPresetAnswerReaderSchema, NEVER)); },
+  async cancelPreset(project: string, changeId: string) { return settled(await api.send("POST", base(project) + "/preset/cancel", LessonPresetChangeBodySchema.parse({ changeId }), LessonDoneAnswerReaderSchema, NEVER)); },
+  /** The company's preset and the request waiting on it (an owner or admin). */
+  companyPreset: () => api.get(COMPANY_PRESET, LessonCompanyPresetReaderSchema),
+  async requireCompanyPerson() { return settled(await api.send("POST", COMPANY_PRESET, LessonPresetBodySchema.parse({ preset: "regulated" }), LessonPresetAnswerReaderSchema, NEVER)); },
+  async allowCompanyTrial() { return settled(await api.send("POST", COMPANY_PRESET, LessonPresetBodySchema.parse({ preset: "standard" }), LessonPresetAnswerReaderSchema, NEVER)); },
+  async approveCompanyPreset(changeId: string) { return settled(await api.send("POST", COMPANY_PRESET + "/approve", LessonPresetChangeBodySchema.parse({ changeId }), LessonPresetAnswerReaderSchema, NEVER)); },
+  async cancelCompanyPreset(changeId: string) { return settled(await api.send("POST", COMPANY_PRESET + "/cancel", LessonPresetChangeBodySchema.parse({ changeId }), LessonDoneAnswerReaderSchema, NEVER)); },
   async mark(taskId: string, lessonId: string, kind: "helpful" | "wrong_here" | "thumbs_down") { return settled(await api.send("POST", taskBase(taskId) + "/" + one(lessonId) + "/feedback", LessonFeedbackBodySchema.parse({ kind }), LessonDoneAnswerReaderSchema, NEVER)); },
  };
 }
@@ -58,3 +70,5 @@ export function useLessonsDigest(project: string, enabled: boolean) { const api 
 export function useLessonSources(project: string) { const api = useLessonsApi();return useQuery({ queryKey: [...lessonsKey(project), "sources"], queryFn: () => api.sources(project) }); }
 export function useLessonHistory(project: string, id: string, enabled: boolean) { const api = useLessonsApi();return useQuery({ queryKey: [...lessonsKey(project), "history", id], enabled, queryFn: () => api.history(project, id) }); }
 export function useLoadedLessons(taskId: string, enabled: boolean) { const api = useLessonsApi();return useQuery({ queryKey: ["task", taskId, "lessons"], enabled, retry: false, queryFn: () => api.loaded(taskId) }); }
+export const companyPresetKey = ["lessons", "company-preset"] as const;
+export function useCompanyPreset(enabled: boolean) { const api = useLessonsApi();return useQuery({ queryKey: companyPresetKey, enabled, retry: false, queryFn: () => api.companyPreset() }); }

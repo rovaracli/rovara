@@ -2,7 +2,7 @@
 // version, a lesson from a source the viewer cannot see, and text that never reaches a viewer.
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
-import { AgentXError, agentXError, LESSON_TIER_REASONS, LESSON_VIEW_STATUSES, LessonsViewReaderSchema, type OrgId } from "@agentx/contracts";
+import { AgentXError, agentXError, LESSON_TIER_REASONS, LESSON_VIEW_STATUSES, LessonCompanyPresetReaderSchema, LessonsViewReaderSchema, type OrgId } from "@agentx/contracts";
 import { LESSON_STATUSES } from "../../../packages/broker/src/lessons/types.js";
 import { routeLessons, type LessonRouteDependencies } from "../../../packages/broker/src/lessons/routes.js";
 import { InMemoryLessonStore } from "../../../packages/broker/src/lessons/store.js";
@@ -580,6 +580,8 @@ describe("what a browser may reach", () => {
   const task = "11111111-1111-4111-8111-111111111111";
   it("the project's lessons routes are under the projects family, and under tasks only the lessons read and the feedback write are open", () => {
     expect(webRouteAllowed("GET", `/v1/web/projects/${PROJECT}/lessons`)).toBe(true);
+    // The preset proposal: the project's approve and cancel, and the company's read, set, approve and cancel.
+    for (const [method, path] of [["POST", `/projects/${PROJECT}/lessons/preset/approve`], ["POST", `/projects/${PROJECT}/lessons/preset/cancel`], ["GET", "/org/lessons/preset"], ["POST", "/org/lessons/preset"], ["POST", "/org/lessons/preset/approve"], ["POST", "/org/lessons/preset/cancel"]] as const) expect(webRouteAllowed(method, "/v1/web" + path), `${method} ${path}`).toBe(true);
     expect(webRouteAllowed("POST", `/v1/web/projects/${PROJECT}/lessons/les_pend0001/approve`)).toBe(true);
     expect(webRouteAllowed("GET", `/v1/web/tasks/${task}/lessons`)).toBe(true);
     expect(webRouteAllowed("POST", `/v1/web/tasks/${task}/lessons/les_pend0001/feedback`)).toBe(true);
@@ -696,6 +698,91 @@ describe("approve by exception on the routes (DECISIONS 24)", () => {
     expect(await s.call(callerOf("ann"), "POST", `${base}/preset/cancel`, { changeId: asked.changeId })).toEqual({ done: true });
     expect((await refused(s.call(callerOf("bob"), "POST", `${base}/preset/approve`, { changeId: asked.changeId }))).code).toBe("CHANGE_STALE");
     expect(s.rows.get("project:" + PROJECT)).toBe("regulated");
+  });
+
+  // LT-2 (lessons leftovers sweep): a pending proposal to go back to Standard is READ by the people who could approve it, so a second maintainer or admin can find it.
+  describe("the pending preset proposal is shown to the people who decide", () => {
+    const company = "/v1/app/org/lessons/preset";
+    const asked = async (s: ReturnType<typeof withPresets>, who = "ann") => {
+      await s.call(callerOf(who), "POST", `${base}/preset`, { preset: "regulated" });
+      return await s.call(callerOf(who), "POST", `${base}/preset`, { preset: "standard" }) as { changeId: string };
+    };
+
+    it("the Lessons tab carries it for a maintainer (mine: true for the asker, false for another), and a person who only reads sees none", async () => {
+      const s = withPresets({ eligible: ["owner", "ann", "bob"] });
+      const none = LessonsViewReaderSchema.parse(await s.call(callerOf("bob"), "GET", base));
+      expect(none.presetProposal).toBeUndefined();
+      const { changeId } = await asked(s);
+      const bob = LessonsViewReaderSchema.parse(await s.call(callerOf("bob"), "GET", base));
+      expect(bob.presetProposal).toMatchObject({ changeId, to: "standard", mine: false, soleOwner: false });
+      expect(bob.preset).toBe("regulated");
+      expect(LessonsViewReaderSchema.parse(await s.call(callerOf("ann"), "GET", base)).presetProposal).toMatchObject({ changeId, mine: true, soleOwner: false });
+      // Positive control: the reader sees the tab and the preset in force, only not the proposal.
+      const reader = LessonsViewReaderSchema.parse(await s.call(callerOf("mallory"), "GET", base));
+      expect(reader).toMatchObject({ canDecide: false, preset: "regulated" });
+      expect(reader.presetProposal).toBeUndefined();
+    });
+
+    it("the only eligible person who asked is marked soleOwner; a decided or cancelled proposal is gone", async () => {
+      const sole = withPresets({ eligible: ["ann"], owners: ["ann"] });
+      await asked(sole);
+      expect(LessonsViewReaderSchema.parse(await sole.call(callerOf("ann"), "GET", base)).presetProposal).toMatchObject({ mine: true, soleOwner: true });
+      const s = withPresets({ eligible: ["owner", "ann", "bob"] });
+      const { changeId } = await asked(s);
+      await s.call(callerOf("bob"), "POST", `${base}/preset/cancel`, { changeId });
+      expect(LessonsViewReaderSchema.parse(await s.call(callerOf("bob"), "GET", base)).presetProposal).toBeUndefined();
+      const again = await s.call(callerOf("ann"), "POST", `${base}/preset`, { preset: "standard" }) as { changeId: string };
+      await s.call(callerOf("bob"), "POST", `${base}/preset/approve`, { changeId: again.changeId });
+      expect(LessonsViewReaderSchema.parse(await s.call(callerOf("bob"), "GET", base)).presetProposal).toBeUndefined();
+    });
+
+    it("a proposal that cannot be read does not break the tab", async () => {
+      const s = withPresets({ eligible: ["owner", "ann", "bob"] });
+      await asked(s);
+      s.deps.changes.open = async () => { throw new Error("store down"); };
+      const view = LessonsViewReaderSchema.parse(await s.call(callerOf("bob"), "GET", base));
+      expect(view.presetProposal).toBeUndefined();
+      expect(view.canDecide).toBe(true);
+    });
+
+    it("a proposal that belongs to another scope (a store that answers loosely) is never shown", async () => {
+      const s = withPresets({ eligible: ["owner", "ann", "bob"] });
+      await s.call(callerOf("ann", { orgRole: "admin" }), "POST", "/v1/app/org/lessons/preset", { preset: "regulated" });
+      const company = await s.call(callerOf("ann", { orgRole: "admin" }), "POST", "/v1/app/org/lessons/preset", { preset: "standard" }) as { changeId: string };
+      const theirs = s.changes.get(company.changeId)!;
+      s.deps.changes.open = async () => theirs;
+      expect(LessonsViewReaderSchema.parse(await s.call(callerOf("bob"), "GET", base)).presetProposal).toBeUndefined();
+      // Positive control: the same row is what the company read shows.
+      expect(LessonCompanyPresetReaderSchema.parse(await s.call(callerOf("bob", { orgRole: "admin" }), "GET", "/v1/app/org/lessons/preset")).proposal).toMatchObject({ changeId: company.changeId });
+    });
+
+    it("another company's admin sees nothing of this company's proposal or preset", async () => {
+      const s = withPresets({ eligible: ["owner", "ann", "bob"] });
+      const { changeId } = await asked(s);
+      void changeId;
+      await s.call(callerOf("ann", { orgRole: "admin" }), "POST", company, { preset: "regulated" });
+      await s.call(callerOf("ann", { orgRole: "admin" }), "POST", company, { preset: "standard" });
+      // Positive control: this company's admin does see the proposal.
+      expect(LessonCompanyPresetReaderSchema.parse(await s.call(callerOf("bob", { orgRole: "admin" }), "GET", company)).proposal).toBeDefined();
+      const outsider = callerOf("zed", { orgRole: "admin", orgId: "org_bbbbbbbbbbbbbbbbbbbb" });
+      const view = await s.call(outsider, "GET", company) as { proposal?: unknown };
+      expect(view.proposal).toBeUndefined();
+    });
+
+    it("the company read: only an owner or admin; it names the preset in force and the proposal, and never another company's or a project's", async () => {
+      const s = withPresets({ eligible: ["owner", "ann", "bob"] });
+      const admin = (id: string) => callerOf(id, { orgRole: "admin", browserSession: undefined });
+      expect((await refused(s.call(callerOf("ann"), "GET", company))).code).toBe("FORBIDDEN");
+      expect(LessonCompanyPresetReaderSchema.parse(await s.call(admin("ann"), "GET", company))).toEqual({ preset: "standard" });
+      await s.call(callerOf("ann", { orgRole: "admin" }), "POST", company, { preset: "regulated" });
+      // A project's own proposal is not the company's.
+      await s.call(callerOf("bob"), "POST", `${base}/preset`, { preset: "regulated" });
+      const proposal = await s.call(callerOf("ann", { orgRole: "admin" }), "POST", company, { preset: "standard" }) as { changeId: string };
+      const ann = LessonCompanyPresetReaderSchema.parse(await s.call(admin("ann"), "GET", company));
+      expect(ann).toMatchObject({ preset: "regulated", proposal: { changeId: proposal.changeId, to: "standard", mine: true, soleOwner: false } });
+      expect(LessonCompanyPresetReaderSchema.parse(await s.call(admin("bob"), "GET", company)).proposal).toMatchObject({ changeId: proposal.changeId, mine: false });
+      expect((await refused(s.call(callerOf("ann", { orgRole: "member" }), "GET", company))).code).toBe("FORBIDDEN");
+    });
   });
 
   it("the company's preset is a floor: a project cannot go below it, and only a company owner or admin sets it (audited, Regulated at once, Standard through a second admin)", async () => {

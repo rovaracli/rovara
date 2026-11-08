@@ -235,7 +235,7 @@ export function presetFakes(options: { eligible?: string[]; owners?: string[]; c
     settings: { read: async (s) => rows.get(key(s)), write: async (s, v, _meta, from) => { if ((rows.get(key(s)) ?? "standard") !== from) return false; rows.set(key(s), v); return true; } },
     changes: {
       create: async (c) => { if (changes.has(c.id)) return false; changes.set(c.id, { ...c }); return true; },
-      get: async (_s, id) => changes.get(id), open: async () => [...changes.values()].find((c) => c.state === "pending" && c.expiresAt > 0),
+      get: async (_s, id) => changes.get(id), open: async (s, now) => [...changes.values()].find((c) => c.state === "pending" && c.expiresAt > now && key(c.scope) === key(s)),
       transition: async (_s, id, from, to) => { const c = changes.get(id); if (c === undefined || c.state !== from) return false; c.state = to; return true; },
     },
     audit, now: () => 1_800_000_000_000, newId: () => `chg-${++state.ids}`, soleOwnerLoosening: async () => state.sole,

@@ -1,12 +1,12 @@
 // The project's lessons routes for the Lessons tab journey: the view, approve, reject, remove and the sources. State lives for one scenario. Bodies are parsed by the contract's strict schemas,
 // as the real routes do, and the one-tap / two-person rules are applied here the way the broker applies them (a second person is a different one; a stale version is refused).
-import { LessonApproveBodySchema, LessonFeedbackBodySchema, LessonMergeBodySchema, LessonPresetBodySchema, LoadedLessonsSchema, LessonRejectBodySchema, LessonRetireBodySchema, LessonSourcesSchema, LessonViewSchema, LessonsDigestSchema, LessonsViewSchema, SourceWriteBodySchema, SourcesAdminViewSchema } from "@agentx/contracts";
+import { LessonApproveBodySchema, LessonPresetChangeBodySchema, LessonFeedbackBodySchema, LessonMergeBodySchema, LessonPresetBodySchema, LoadedLessonsSchema, LessonRejectBodySchema, LessonRetireBodySchema, LessonSourcesSchema, LessonViewSchema, LessonsDigestSchema, LessonsViewSchema, SourceWriteBodySchema, SourcesAdminViewSchema } from "@agentx/contracts";
 import type { MockExchange } from "./how-we-work-mock.js";
 
 const NOW = Date.parse("2026-11-01T12:00:00.000Z");
 interface Mock { id: string; version: number; title: string; body: string; tier: 1 | 2; status: "pending" | "active" | "retired" | "rejected"; first?: string; duplicateOf?: string; reason?: string; trial?: "trial" | "stable"; reasons?: string[] }
 let state = fresh();
-function fresh() { return { preset: "standard" as "standard" | "regulated", lessons: [
+function fresh() { return { preset: "standard" as "standard" | "regulated", proposal: false, lessons: [
  { id: "les_one00001", version: 1, title: "Use the shared retry helper", body: "Call withRetry for HTTP calls in the api repository.", tier: 1, status: "pending" },
  { id: "les_two00001", version: 1, title: "Reviewers check auth on new routes", body: "Review every new route for an authorization check.", tier: 2, status: "pending", first: "Ann Archer" },
  { id: "les_thr00001", version: 1, title: "Skip flaky integration tests on branches", body: "Branch builds may skip the flaky integration suite.", tier: 2, status: "pending" },
@@ -24,6 +24,9 @@ export function setTrialLessons(): void {
   { id: "les_cap00001", version: 1, title: "Allow the build host", body: "Allow the agent to reach the build host.", tier: 2, status: "pending", reasons: ["capability_request"] },
  );
 }
+
+/** The project is Regulated and another maintainer asked to go back to Standard: the tab shows the waiting request with Approve and Cancel. */
+export function setPresetProposal(): void { state.preset = "regulated";state.proposal = true; }
 
 /** A pending lesson kept apart as a possible duplicate of the active "Prefer small pull requests" lesson (the card offers "Merge into the existing lesson"). */
 export function setDuplicateLesson(): void {
@@ -69,7 +72,7 @@ const lesson = (item: Mock) => LessonViewSchema.parse({
  canApprove: item.status === "pending" && item.first !== "You", canReject: item.status === "pending", canRetire: item.status !== "retired" && item.status !== "rejected",
 });
 const view = () => LessonsViewSchema.parse({
- project: "payments", mode: "Suggest", lockedByCompany: false, preset: state.preset, presetLockedByCompany: false, approval: { tier0: "one", tier1: "one", requiredGroups: [] }, canDecide: true,
+ project: "payments", mode: "Suggest", lockedByCompany: false, preset: state.preset, presetLockedByCompany: false, ...(state.proposal ? { presetProposal: { changeId: "chg-7", to: "standard", mine: false, soleOwner: false, expiresAt: NOW + 6 * 86_400_000 } } : {}), approval: { tier0: "one", tier1: "one", requiredGroups: [] }, canDecide: true,
  waiting: state.lessons.filter(item => item.status === "pending").map(lesson), active: state.lessons.filter(item => item.status === "active").map(lesson),
  removed: state.lessons.filter(item => item.status === "retired" || item.status === "rejected").map(lesson), queued: 2, hidden: 0, truncated: [], setVersion: 4, snapshots: [],
  ...(paused === undefined ? {} : { paused: { code: paused, at: NOW, scope: paused === "monthly_limit" ? "company" : "project" } }),
@@ -88,6 +91,13 @@ export async function lessonsMock({ url, method, body, json, record }: MockExcha
   // Regulated applies at once; going back to Standard is a loosening that waits for a different maintainer or admin (the project stays Regulated meanwhile).
   if (input.preset === "regulated") { state.preset = "regulated";json(200, { preset: "regulated", changed: true });return true; }
   json(200, { preset: "regulated", changed: false, needsApproval: true, changeId: "chg-1" });return true;
+ }
+ if ((url.pathname === base + "/preset/approve" || url.pathname === base + "/preset/cancel") && method === "POST") {
+  const input = LessonPresetChangeBodySchema.parse(await body());record(input);
+  if (!state.proposal || input.changeId !== "chg-7") { json(409, { error: { code: "CHANGE_STALE", message: "That proposal was already decided." } });return true; }
+  state.proposal = false;
+  if (url.pathname.endsWith("/approve")) { state.preset = "standard";json(200, { preset: "standard", changed: true });return true; }
+  json(200, { done: true });return true;
  }
  const action = new RegExp(`^${base}/([A-Za-z0-9_-]+)/(approve|reject|merge|retire)$`).exec(url.pathname);
  if (action === null || method !== "POST") return false;

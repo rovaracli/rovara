@@ -1,6 +1,7 @@
 // Lane 3 "lessons-trial", fix round 1 (Opus review LESSONS-TRIAL-REVIEW.md): H1 (where the words came from), H2 (risky wording and lesson types), H3 (stricter settings stop trial), M1-M3, M6 and the Lows.
 import { describe, expect, it } from "vitest";
 import { approveLesson, type ApproveDeps } from "../../../packages/broker/src/lessons/approve.js";
+import { lessonDeletionPort } from "../../../packages/broker/src/lessons/deletion.js";
 import { recordFeedback, recordTaskOutcome, type CounterDeps } from "../../../packages/broker/src/lessons/counters.js";
 import { LOAD_MAX_LESSONS, approvedForUse, loadLessonsForStage, type LoadDeps } from "../../../packages/broker/src/lessons/load.js";
 import { DEFAULT_APPROVAL_POLICY, resolveLearning, type LearningSettings } from "../../../packages/broker/src/lessons/policy.js";
@@ -9,7 +10,7 @@ import { buildReflectorInput } from "../../../packages/broker/src/lessons/reflec
 import { memberCorrectionOf, reflectSubject, type LessonDraft, type ReflectDeps } from "../../../packages/broker/src/lessons/reflect.js";
 import { InMemoryLessonStore, type LoadManifest } from "../../../packages/broker/src/lessons/store.js";
 import { NO_REASON_TEXT } from "../../../packages/broker/src/lessons/task-subject.js";
-import { TRIAL_APPROVER, hasRiskyTrialWording, isPublishable, keyIdentifiers, lessonClaimsSupported, promoteIfStable, trialBlockers, type TrialContext } from "../../../packages/broker/src/lessons/trial.js";
+import { TRIAL_APPROVER, hasRiskyTrialWording, isPublishable, isTrialLesson, keyIdentifiers, lessonClaimsSupported, promoteIfStable, trialBlockers, type TrialContext } from "../../../packages/broker/src/lessons/trial.js";
 import type { Lesson } from "../../../packages/broker/src/lessons/types.js";
 import {
   Alerts, Audit, Clock, KEY, MemoryVectors, PROJECT, ScriptedModel, Spend, WS, allowAllAccess, candidateJson, codeCite, directory, draft, embedder, facts, lessonRecord, memberSpan, reply, seed, settings, subject, verifier,
@@ -336,6 +337,36 @@ describe("L3: a person's go-live is not a trial", () => {
     const live = (await w.store.get(KEY, leftover.id))!;
     expect(live.status).toBe("active");
     expect(live.trial).toBeUndefined();
+    expect(isPublishable(live, [])).toBe(false);
+  });
+
+  // LT-2 (lessons leftovers sweep): the downgrade after a source is deleted ("backToPerson") takes the trial away, and a person's later approval is not a trial.
+  it("backToPerson: a trial lesson whose record source is deleted goes back to pending with no trial; a person's later approval is not on trial", async () => {
+    const w = setup({ settings: settings({ preset: "regulated" }) });
+    const onTrial = lessonRecord({
+      id: "les_back0001", type: "convention", tier: 1, tierReasons: [], status: "active", reviewRequired: false, lastValidatedAt: 5,
+      trial: { state: "trial", startedAt: 1 }, approvals: [{ approvalId: "t", by: TRIAL_APPROVER, at: 1, mode: "trial" }],
+      citations: [codeCite(), { kind: "record", eventId: "A" }], citationChecks: [{ index: 0, result: "valid", at: 1 }],
+      provenance: { ...draft().provenance, sourceEvents: ["A"], authors: ["carl"], memberCorrection: true, claimsSupported: true },
+    });
+    await seed(w.store, onTrial);
+    expect(isTrialLesson((await w.store.get(KEY, onTrial.id))!)).toBe(true);
+    const port = lessonDeletionPort({ store: w.store, vectors: w.deps.vectors, audit: w.audit, now: w.clock.now });
+    await port.forgetSources(WS, PROJECT, onTrial.id, new Set(["A"]));
+    const back = (await w.store.get(KEY, onTrial.id))!;
+    expect(back).toMatchObject({ status: "pending", reviewRequired: true, approvals: [] });
+    expect(back.trial).toBeUndefined();
+    expect(isTrialLesson(back)).toBe(false);
+    // Positive control: the deletion ran (the record source is gone) and the code citation is what keeps the lesson.
+    expect(back.provenance.sourceEvents).toEqual([]);
+    expect(back.citations.map((c) => c.kind)).toEqual(["code"]);
+    // A person approves it next: it is live, but not on trial (one thumbs-down would not retire it, and it is not publishable as a stable trial lesson).
+    expect(await approveLesson(w.deps, { workspaceId: WS, project: PROJECT, lessonId: onTrial.id, approverId: "ann" })).toMatchObject({ ok: true, status: "active" });
+    const live = (await w.store.get(KEY, onTrial.id))!;
+    expect(live.status).toBe("active");
+    expect(live.trial).toBeUndefined();
+    expect(isTrialLesson(live)).toBe(false);
+    expect(live.approvals.map((a) => a.by)).toEqual(["ann"]);
     expect(isPublishable(live, [])).toBe(false);
   });
 });
