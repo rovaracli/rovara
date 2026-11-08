@@ -57,15 +57,40 @@ export interface GithubRecordTapDependencies extends Omit<CodeHostTapDependencie
 
 export type GithubGetJson = (path: string) => Promise<{ status: number; body: unknown }>;
 
-/** A verified delivery in, nothing out: it never throws, so a failed record can never fail the webhook that carried it. */
+/**
+ * The deliveries that remove what the record holds, by event name and action: a deleted comment (both comment events) and a deleted or transferred repository (`createCodeHostTap` tombstones
+ * on exactly these). One list for the tap (it decides "is this a removal" BEFORE it looks the repository up), the redelivery sweep (it asks GitHub for these only), and the test that the
+ * GitHub App is subscribed to every one of the events.
+ */
+export const RECORD_REMOVAL_DELIVERIES: Readonly<Record<string, readonly string[]>> = {
+  issue_comment: ["deleted"],
+  pull_request_review_comment: ["deleted"],
+  repository: ["deleted", "transferred"],
+};
+
+export function isRecordRemovalDelivery(event: string, action: string | null | undefined): boolean {
+  return action !== null && action !== undefined && Object.hasOwn(RECORD_REMOVAL_DELIVERIES, event) && RECORD_REMOVAL_DELIVERIES[event]!.includes(action);
+}
+
+const LOST_REMOVAL: TapResult = { written: 0, duplicates: 0, refused: 0, failed: 1, removalFailed: true };
+
+/**
+ * A verified delivery in, nothing out: it never throws, so a failed record can never fail the webhook that carried it. Except that a REMOVAL is never silently dropped: whether a delivery is a
+ * removal is decided from the event and action alone, before the repository is looked up, and a removal whose lookup fails (or hangs: `removalStarted` was told first) is reported lost, so the webhook
+ * answers a retryable error and GitHub's delivery history shows a failure that the redelivery sweep can ask again for. A repository the record does not hold is still `undefined`: a 2xx.
+ */
 export function createGithubRecordTap(deps: GithubRecordTapDependencies): (verified: { eventName: string | undefined; deliveryId: string; payload: unknown; removalStarted?: () => void }) => Promise<TapResult | undefined> {
   const tap = createCodeHostTap({ ...deps, ...(deps.getJson === undefined ? {} : { diffs: createGithubDiffReader(deps.getJson) }) });
   const now = deps.now ?? Date.now;
   return async ({ eventName, deliveryId, payload, removalStarted }) => {
+    let removal = false;
     try {
       if (eventName === undefined) return undefined;
       const envelope = Envelope.safeParse(payload);
       if (!envelope.success) return undefined;
+      removal = isRecordRemovalDelivery(eventName, envelope.data.action);
+      // The webhook is told first that a removal began, so a lookup still running at its budget is answered retryable.
+      if (removal) { try { removalStarted?.(); } catch { /* a caller's callback never fails the removal */ } }
       const fullName = envelope.data.repository.full_name.toLowerCase();
       const scope = await deps.resolveRepo({ installationId: envelope.data.installation.id, repositoryId: envelope.data.repository.id, fullName });
       if (scope === undefined) return undefined;
@@ -77,12 +102,13 @@ export function createGithubRecordTap(deps: GithubRecordTapDependencies): (verif
       const events = githubEventsOf(eventName, envelope.data.action, payload, repo, new Date(now()).toISOString(), deliveryId);
       let total: TapResult | undefined;
       for (const event of events) {
-        const result = await tap.handle(event, removalStarted === undefined ? {} : { removalStarted });
+        // `removalStarted` was already called above for a removal, before the lookup; the code host tap is not asked to call it again.
+        const result = await tap.handle(event);
         total = total === undefined ? result : { written: total.written + result.written, duplicates: total.duplicates + result.duplicates, refused: total.refused + result.refused, failed: total.failed + result.failed, ...(total.removalFailed === true || result.removalFailed === true ? { removalFailed: true } : {}) };
       }
       return total;
     } catch {
-      return undefined;
+      return removal ? { ...LOST_REMOVAL } : undefined;
     }
   };
 }

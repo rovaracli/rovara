@@ -36,6 +36,70 @@ describe("the tap reports a delete nothing accepted", () => {
   });
 });
 
+describe("a removal whose repository lookup fails is a lost removal (SRL-5a H2)", () => {
+  const envelope = { installation: { id: 1 }, repository: { id: 77, full_name: "acme/shop", private: true } };
+  const comment = { id: 41, html_url: "https://github.com/acme/shop/pull/5#c41", body: "x", user: { id: 1001, login: "alice" }, updated_at: AT };
+  const tapOf = (resolveRepo: () => Promise<{ workspaceId: string; project?: string } | undefined>) => {
+    const w = world();
+    return createGithubRecordTap({ sink: w.sink, actors: w.actors, rovaraPrs: w.prs, mode: w.mode, config: w.config, resolveRepo });
+  };
+
+  it("a removal whose lookup throws is reported lost (removalFailed), for a deleted comment, a deleted repository and a transfer", async () => {
+    const tap = tapOf(async () => { throw new Error("State table throttled"); });
+    for (const [eventName, payload] of [
+      ["issue_comment", { ...envelope, action: "deleted", comment, issue: { number: 5, pull_request: {} } }],
+      ["pull_request_review_comment", { ...envelope, action: "deleted", comment, pull_request: { number: 5 } }],
+      ["repository", { ...envelope, action: "deleted" }], ["repository", { ...envelope, action: "transferred" }],
+    ] as const) {
+      expect(await tap({ eventName, deliveryId: "d1", payload }), eventName).toMatchObject({ failed: 1, removalFailed: true });
+    }
+  });
+
+  it("tells the webhook a removal began BEFORE the lookup, so a lookup that hangs is answered retryable", async () => {
+    const order: string[] = [];
+    const tap = tapOf(async () => { order.push("lookup"); return undefined; });
+    await tap({ eventName: "repository", deliveryId: "d1", payload: { ...envelope, action: "deleted" }, removalStarted: () => order.push("started") });
+    expect(order).toEqual(["started", "lookup"]);
+  });
+
+  it("a repository the record does not hold is still a plain nothing (a 2xx), and a NON-removal whose lookup throws is unchanged", async () => {
+    expect(await tapOf(async () => undefined)({ eventName: "repository", deliveryId: "d1", payload: { ...envelope, action: "deleted" } })).toBeUndefined();
+    const throwing = tapOf(async () => { throw new Error("State table throttled"); });
+    expect(await throwing({ eventName: "repository", deliveryId: "d1", payload: { ...envelope, action: "renamed" } })).toBeUndefined();
+    expect(await throwing({ eventName: "issue_comment", deliveryId: "d1", payload: { ...envelope, action: "created", comment, issue: { number: 5, pull_request: {} } } })).toBeUndefined();
+  });
+
+  const SIGNED = (raw: string) => `sha256=${createHmac("sha256", SECRET).update(raw).digest("hex")}`;
+  const commentPayload = { ...envelope, action: "deleted", comment: { ...comment, created_at: AT, updated_at: AT, pull_request_review_id: null }, issue: { number: 5, pull_request: { url: "https://api.github.com/x" } }, pull_request: { number: 5 } };
+  function deliverComment(recordTap: (verified: { eventName: string | undefined; deliveryId: string; payload: unknown; removalStarted?: () => void }) => Promise<unknown>, documentClient = new FakeDynamoDb(), authorize = async () => true) {
+    const raw = JSON.stringify(commentPayload);
+    return handleGithubWebhook({
+      documentClient, tableName: "T", rawBody: raw, secret: SECRET, now: () => AT,
+      headers: { "x-hub-signature-256": SIGNED(raw), "x-github-delivery": "6a0b3c52-0000-4000-8000-000000000002", "x-github-event": "issue_comment" },
+      authorizeRepository: authorize, process: async () => undefined, recordTap,
+    });
+  }
+
+  it("a lost removal is a retryable 503 whatever else went wrong with the delivery: a reservation conflict (a refusal), an authorisation that throws", async () => {
+    const lost = async () => ({ written: 0, duplicates: 0, refused: 0, failed: 1, removalFailed: true });
+    // The same delivery id was stored with other content: the webhook refuses it (403) after the tap ran.
+    const stored = new FakeDynamoDb();
+    stored.set({ pk: "GITHUB_DELIVERY#6a0b3c52-0000-4000-8000-000000000002", sk: "META", eventHash: "f".repeat(64), installationId: 1, repositoryId: 77, status: "COMPLETED" });
+    await expect(deliverComment(lost, stored)).rejects.toBeInstanceOf(GithubWebhookRetryableError);
+    // Without the lost removal the same delivery keeps its own answer (a refusal).
+    await expect(deliverComment(async () => undefined, stored)).rejects.not.toBeInstanceOf(GithubWebhookRetryableError);
+    await expect(deliverComment(lost, new FakeDynamoDb(), async () => { throw new Error("state table down"); })).rejects.toBeInstanceOf(GithubWebhookRetryableError);
+  });
+
+  it("a removal whose lookup hangs past the tap budget is a retryable 503 end to end", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    const hanging = tapOf(() => new Promise<never>(() => undefined));
+    const outcome = deliverComment((verified) => hanging(verified as never)).then((result) => `answered:${result.status}`, (error: unknown) => (error instanceof GithubWebhookRetryableError ? "retryable" : "other"));
+    await vi.advanceTimersByTimeAsync(RECORD_TAP_BUDGET_MS + 100);
+    expect(await outcome).toBe("retryable");
+  });
+});
+
 describe("the webhook answer", () => {
   const sign = (raw: string) => `sha256=${createHmac("sha256", SECRET).update(raw).digest("hex")}`;
   const payload = { action: "opened", installation: { id: 9 }, repository: { id: 77, full_name: "acme/shop" } };

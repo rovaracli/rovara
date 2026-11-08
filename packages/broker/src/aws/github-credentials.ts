@@ -15,6 +15,11 @@ export interface GitHubAppCredentials {
    * picked up without a redeploy.
    */
   webhookSecret: (options?: { refresh?: boolean }) => Promise<string>;
+  /**
+   * Whether the App is set up on this install: its secret has a version and names an App (`agentx init` creates both). False is a state, not a failure: the Team record's GitHub sweeps skip an install with no App
+   * instead of failing every hour. A secret that cannot be read for any other reason also answers false (the sweep tries again next hour).
+   */
+  ready: () => Promise<boolean>;
 }
 
 const REREAD_INTERVAL_MS = 30_000;
@@ -91,5 +96,6 @@ export function createGitHubAppCredentials(
       throw error;
     }
   };
-  return { provider, privateKeySecretArn, webhookSecret };
+  const ready = (): Promise<boolean> => loadApp().then(() => true, () => false);
+  return { provider, privateKeySecretArn, webhookSecret, ready };
 }

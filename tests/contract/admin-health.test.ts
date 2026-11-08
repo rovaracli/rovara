@@ -180,16 +180,55 @@ describe("the GitHub App's webhook deliveries", () => {
     await expect(provider((async () => Response.json({ not: "a list" }))).listWebhookDeliveries({ perPage: 100 })).rejects.toMatchObject({ code: "RUNTIME_UNAVAILABLE" });
   });
 
-  it("asks for a redelivery with a POST: 202 is requested, 404 and 422 are gone, anything else throws", async () => {
+  it("asks for a redelivery with a POST: 202 is requested, ONLY 404 is gone, and anything else (422 \"spammed\" included) throws", async () => {
     const fetch = vi.fn(async () => new Response("{}", { status: 202 }));
-    expect(await provider(fetch as never).redeliverWebhookDelivery(42)).toBe("requested");
+    expect(await provider(fetch).redeliverWebhookDelivery(42)).toBe("requested");
     const [url, init] = fetch.mock.calls[0] as unknown as [string, RequestInit];
     expect(url).toBe("https://api.github.com/app/hook/deliveries/42/attempts");
     expect(init.method).toBe("POST");
     expect(await provider((async () => new Response("", { status: 404 }))).redeliverWebhookDelivery(42)).toBe("gone");
-    expect(await provider((async () => new Response("", { status: 422 }))).redeliverWebhookDelivery(42)).toBe("gone");
-    await expect(provider((async () => new Response("", { status: 500 }))).redeliverWebhookDelivery(42)).rejects.toMatchObject({ code: "RUNTIME_UNAVAILABLE" });
-    await expect(provider((async () => new Response("", { status: 403 }))).redeliverWebhookDelivery(42)).rejects.toMatchObject({ code: "RUNTIME_UNAVAILABLE" });
-    await expect(provider(fetch as never).redeliverWebhookDelivery(0)).rejects.toMatchObject({ code: "CONFIG_INVALID" });
+    for (const status of [422, 500, 403, 429, 301]) {
+      await expect(provider((async () => new Response("", { status }))).redeliverWebhookDelivery(42), String(status)).rejects.toMatchObject({ code: "RUNTIME_UNAVAILABLE" });
+    }
+    await expect(provider(fetch).redeliverWebhookDelivery(0)).rejects.toMatchObject({ code: "CONFIG_INVALID" });
+  });
+
+  it("ends a delivery call at the caller's deadline", async () => {
+    const aborted = vi.fn(async (_url: unknown, init?: RequestInit) => { await new Promise((resolve) => init?.signal?.addEventListener("abort", resolve)); throw new Error("aborted"); });
+    await expect(provider(aborted as never).listWebhookDeliveries({ perPage: 10, signal: AbortSignal.timeout(20) })).rejects.toThrow();
+  });
+
+  describe("what an installation still holds (the repository check)", () => {
+    const repositoriesFetch = (options: { pages?: number[][]; direct?: Record<number, number>; tokenStatus?: number }) => vi.fn(async (input: unknown) => {
+      const url = new URL(String(input));
+      if (url.pathname.endsWith("/access_tokens")) return options.tokenStatus === undefined ? Response.json({ token: ["inst", "token"].join("-"), expires_at: "2099-01-01T00:00:00Z" }, { status: 201 }) : new Response("no", { status: options.tokenStatus });
+      if (url.pathname === "/installation/repositories") {
+        const page = Number(url.searchParams.get("page") ?? "1");
+        return Response.json({ repositories: (options.pages?.[page - 1] ?? []).map((id) => ({ id, full_name: `acme/r${id}`, private: true, default_branch: "main" })) });
+      }
+      const direct = /^\/repositories\/(\d+)$/u.exec(url.pathname);
+      if (direct !== null) return new Response("{}", { status: options.direct?.[Number(direct[1])] ?? 200 });
+      return new Response("unexpected", { status: 500 });
+    });
+
+    it("lists the ids an installation reaches, and says the list is complete only when it did not fill every page", async () => {
+      const small = await provider(repositoriesFetch({ pages: [[5, 6, 7]] })).installationRepositoryIds(9, { system: "private-install" });
+      expect(small).toEqual({ ids: [5, 6, 7], complete: true });
+      const full = Array.from({ length: 100 }, (_, index) => index + 1);
+      const filled = await provider(repositoriesFetch({ pages: Array.from({ length: 10 }, () => full) })).installationRepositoryIds(9, { system: "private-install" });
+      expect(filled.complete).toBe(false);
+    });
+
+    it("answers a repository by id: 200 exists, 404 missing, and anything else (403, 429, 500, a redirect) throws, so it can never read as gone", async () => {
+      const status = (code: number) => provider(repositoriesFetch({ direct: { 5: code } })).installationRepositoryStatus(9, 5, { system: "private-install" });
+      expect(await status(200)).toBe("exists");
+      expect(await status(404)).toBe("missing");
+      for (const code of [301, 403, 429, 500]) await expect(status(code), String(code)).rejects.toMatchObject({ code: "RUNTIME_UNAVAILABLE" });
+    });
+
+    it("throws when the installation token cannot be minted (an uninstalled App is not a deletion)", async () => {
+      await expect(provider(repositoriesFetch({ tokenStatus: 404 }) as never).installationRepositoryStatus(9, 5, { system: "private-install" })).rejects.toBeDefined();
+      await expect(provider(repositoriesFetch({ tokenStatus: 404 }) as never).installationRepositoryIds(9, { system: "private-install" })).rejects.toBeDefined();
+    });
   });
 });

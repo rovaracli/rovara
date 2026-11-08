@@ -3,7 +3,9 @@
 import { describe, expect, it } from "vitest";
 import { createTeamRecordRuntime } from "../../../packages/broker/src/team-record/runtime.js";
 import type { DeliveriesPort, DeliveryEntry } from "../../../packages/broker/src/team-record/github-redelivery.js";
+import { opsFailuresCheck } from "../../../packages/broker/src/team-record/ops-failures.js";
 import { FakeDynamoDb } from "../../support/fake-dynamodb.js";
+import { TEST_ORG } from "../../support/orgs.js";
 
 const indexKeys = { gsi1: { partition: "gsi1pk" }, gsi2: { partition: "gsi2pk" }, gsi3: { partition: "gsi3pk", sort: "gsi3sk" }, gsi4: { partition: "gsi4pk" }, gsi5: { partition: "gsi5pk", sort: "textDueAt" } };
 const ON = { TEAM_RECORD_ENABLED: "1", TEAM_RECORD_TABLE_NAME: "TeamRecord", AWS_REGION: "us-west-2", ROVARA_EDITION: "enterprise" } as const;
@@ -34,14 +36,15 @@ describe("the hourly job's GitHub redelivery sweep", () => {
     expect(asked).toEqual([77]);
   });
 
-  it("a GitHub that is down does not fail the job, deletes nothing and is counted", async () => {
+  it("a GitHub that is down does not fail the job, deletes nothing, is counted, and shows on every company's Health (M7)", async () => {
     const deliveries: DeliveriesPort = { list: async () => { throw new Error("secret detail from GitHub"); }, redeliver: async () => { throw new Error("no"); } };
     const { runtime, db, logs } = build(deliveries);
-    const before = JSON.stringify(db.find(() => true));
     const summary = await runtime.jobs.run("hourly");
     expect(summary.details.githubRedeliveryFailed).toBe(1);
     expect(JSON.stringify(logs)).not.toContain("secret detail");
-    expect(JSON.stringify(db.find(() => true))).toBe(before);
+    expect((db.find(() => true) as Array<{ entityType?: string }>).map((item) => item.entityType)).toEqual(["TEAM_RECORD_APP_OPS_FAILURE"]);
+    expect(await runtime.opsFailures(TEST_ORG)).toMatchObject({ eraseSweep: 0, tombstone: 0, githubSweep: 1 });
+    expect(opsFailuresCheck(await runtime.opsFailures(TEST_ORG))).toMatchObject({ status: "warn" });
   });
 
   it("writes only its own state item: no record row, event or tombstone", async () => {
@@ -50,6 +53,36 @@ describe("the hourly job's GitHub redelivery sweep", () => {
     await runtime.jobs.run("hourly");
     const items = db.find(() => true) as Array<{ entityType?: string }>;
     expect(items.map((item) => item.entityType)).toEqual(["TEAM_RECORD_GITHUB_REDELIVERY"]);
+  });
+
+  it("two hourly runs that overlap cannot write over each other: the one that saves second finds the state changed and drops its own (L11)", async () => {
+    const entries = [failedDelete];
+    let release: () => void = () => undefined;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const slowFirst: DeliveriesPort = { list: async () => { await gate; return { entries }; }, redeliver: async () => "requested" };
+    const fast: DeliveriesPort = { list: async () => ({ entries }), redeliver: async () => "requested" };
+    const db = new FakeDynamoDb({ indexKeys });
+    const logs: Array<Record<string, unknown>> = [];
+    const a = createTeamRecordRuntime({ env: ON, documentClient: db, stateTableName: "State", now: () => NOW, githubDeliveries: slowFirst, log: (entry) => logs.push(entry) })!;
+    const b = createTeamRecordRuntime({ env: ON, documentClient: db, stateTableName: "State", now: () => NOW, githubDeliveries: fast })!;
+    const running = a.jobs.run("hourly");
+    await b.jobs.run("hourly");
+    release();
+    await running;
+    const state = db.find((item) => item.sk === "GHREDELIVERY#state")[0] as { rev: number };
+    // The fast run wrote revision 1; the slow run (which read "no state") was refused, so the state is still revision 1.
+    expect(state.rev).toBe(1);
+    expect(logs.map((entry) => entry.event)).toContain("record.github_redelivery_state_conflict");
+  });
+
+  it("an install whose GitHub App is not set up skips the sweep quietly: no call, no failure counted", async () => {
+    let called = 0;
+    const db = new FakeDynamoDb({ indexKeys });
+    const runtime = createTeamRecordRuntime({ env: ON, documentClient: db, stateTableName: "State", now: () => NOW, githubAppReady: async () => false, githubDeliveries: { list: async () => { called += 1; return { entries: [] }; }, redeliver: async () => "requested" } });
+    const summary = await runtime!.jobs.run("hourly");
+    expect(called).toBe(0);
+    expect(summary.details.githubRedeliveryFailed).toBeUndefined();
+    expect(db.find(() => true)).toEqual([]);
   });
 
   it("an install without a GitHub App skips the sweep", async () => {

@@ -146,7 +146,7 @@ describe("agentx upgrade (FR-042 to FR-044)", () => {
     it("tells the owner which events to tick and where", async () => {
       const h = await harness({ github: { hookUrl: GITHUB_WEBHOOK_URL, events: ["pull_request"] } });
       await runUpgrade(options, h.deps);
-      expect(h.lines).toContain("GitHub webhook: tick these events on https://github.com/organizations/acme/settings/apps/agentx-acme-staging/permissions: pull_request_review, pull_request_review_comment, issue_comment, deployment_status, workflow_run, issues, check_suite, check_run, status, push");
+      expect(h.lines).toContain("GitHub webhook: tick these events on https://github.com/organizations/acme/settings/apps/agentx-acme-staging/permissions: pull_request_review, pull_request_review_comment, issue_comment, deployment_status, workflow_run, issues, check_suite, check_run, status, push, repository");
     });
 
     it("never prints the webhook secret, stored or generated", async () => {

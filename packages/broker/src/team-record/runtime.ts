@@ -30,7 +30,7 @@ import type { RecordAuditSink } from "./audit.js";
 import { callRecordTool, recordToolsFor, type RecordToolContext } from "./agent-tools.js";
 import { runDeleteWorker, type DeleteBudget } from "./delete-worker.js";
 import { defaultRetention, readEdition, type TeamRecordEdition } from "./edition.js";
-import { markSourceFailing } from "./store.js";
+import { listSourceConfigs, markSourceFailing } from "./store.js";
 import { resolveTaskVisibility } from "../lessons/task-visibility.js";
 import { createEmbedder } from "./embed.js";
 import { eraseProject, eraseWorkspace, erasePerson, type EraseBudget } from "./erase.js";
@@ -62,9 +62,10 @@ import { chooseVectorBucketForNewWorkspace, type VectorIndex } from "./vectors.j
 import type { S3VectorsIndex } from "./s3-vectors-index.js";
 import type { DistillModel } from "./distill.js";
 import type { PurgeDependencies } from "./purge.js";
-import { readOpsFailures, recordOpsFailure, type OpsFailures } from "./ops-failures.js";
+import { readOpsFailures, recordGithubSweepFailure, recordOpsFailure, type OpsFailures } from "./ops-failures.js";
 import type { RecordLog, RecordVectorPort, TeamRecordTable } from "./types.js";
-import { runGithubRedelivery, type DeliveriesPort, type RedeliveryState } from "./github-redelivery.js";
+import { RedeliveryStateConflict, runGithubRedelivery, type DeliveriesPort, type RedeliveryState } from "./github-redelivery.js";
+import { checkRecordedRepositories, type InstallationRepositoriesPort, type RecordedRepository } from "./github-repo-existence.js";
 
 type DocClient = TeamRecordTable["documentClient"];
 
@@ -105,6 +106,13 @@ export interface TeamRecordRuntimeInput {
    * failed to process is not lost for good (GitHub never redelivers on its own). Absent: no sweep (an install without a GitHub App).
    */
   githubDeliveries?: DeliveriesPort;
+  /** SRL-5a: whether the GitHub App is set up here. False: both GitHub sweeps skip, quietly (an install with no App has nothing to ask). Absent: taken as set up. */
+  githubAppReady?: () => Promise<boolean>;
+  /**
+   * SRL-5a: the GitHub App's view of an installation (the repositories it reaches, and one repository by id). Every hour each recorded repository is checked to still be held by its installation, so
+   * rows from a repository GitHub deleted or transferred without a webhook we saw are removed. Absent: no check (an install without a GitHub App).
+   */
+  githubRepositories?: InstallationRepositoriesPort;
   /** A delete that neither the table nor the durable queue accepted goes here: an asynchronous Event invoke of the broker itself (TRW-5 S2). Absent: the failure is thrown, as before. */
   removalFallback?: RemovalFallback;
   /**
@@ -860,10 +868,12 @@ export function createTeamRecordRuntime(input: TeamRecordRuntimeInput): TeamReco
     return deleted;
   }
 
+  /** Whether the GitHub App is set up here; a check that itself fails reads as not ready (the next hour asks again). */
+  const appReady = async (): Promise<boolean> => input.githubAppReady === undefined ? true : await input.githubAppReady().catch(() => false);
   /** SRL-5a: asks GitHub to send failed record removals (deleted comments and repositories) again. Never throws; a failure is a fixed log line and a count. */
   async function sweepGithubRedelivery(budgetMs: number): Promise<Record<string, number>> {
     const deliveries = input.githubDeliveries;
-    if (deliveries === undefined) return {};
+    if (deliveries === undefined || !await appReady()) return {};
     try {
       const outcome = await runGithubRedelivery({
         deliveries, now, log: (event, fields) => log(event, fields),
@@ -871,17 +881,81 @@ export function createTeamRecordRuntime(input: TeamRecordRuntimeInput): TeamReco
           async load() {
             const item = ((await table.documentClient.send(new GetCommand({ TableName: table.tableName, Key: GITHUB_REDELIVERY_STATE_KEY, ConsistentRead: true }))) as { Item?: Record<string, unknown> }).Item;
             if (item === undefined) return undefined;
-            return { ...(typeof item.watermark === "string" ? { watermark: item.watermark } : {}), gaps: Array.isArray(item.gaps) ? item.gaps as RedeliveryState["gaps"] : [] };
+            return {
+              ...(typeof item.watermark === "string" ? { watermark: item.watermark } : {}),
+              gaps: Array.isArray(item.gaps) ? item.gaps as RedeliveryState["gaps"] : [],
+              tracked: Array.isArray(item.tracked) ? item.tracked as RedeliveryState["tracked"] : [],
+              version: typeof item.rev === "number" ? item.rev : 0,
+            };
           },
-          async save(next) {
-            await table.documentClient.send(new PutCommand({ TableName: table.tableName, Item: { ...GITHUB_REDELIVERY_STATE_KEY, entityType: "TEAM_RECORD_GITHUB_REDELIVERY", ...(next.watermark === undefined ? {} : { watermark: next.watermark }), gaps: next.gaps, at: new Date(now()).toISOString() } }));
+          async save(next, previous) {
+            // Optimistic: two overlapping hourly runs (a duplicate schedule, a retried invoke) cannot write over each other's gaps and tracked removals.
+            try {
+              await table.documentClient.send(new PutCommand({
+                TableName: table.tableName,
+                Item: { ...GITHUB_REDELIVERY_STATE_KEY, entityType: "TEAM_RECORD_GITHUB_REDELIVERY", ...(next.watermark === undefined ? {} : { watermark: next.watermark }), gaps: next.gaps, tracked: next.tracked, rev: (previous ?? 0) + 1, at: new Date(now()).toISOString() },
+                ...(previous === undefined ? { ConditionExpression: "attribute_not_exists(pk)" } : { ConditionExpression: "#rev = :previous", ExpressionAttributeNames: { "#rev": "rev" }, ExpressionAttributeValues: { ":previous": previous } }),
+              }));
+            } catch (error) {
+              if ((error as { name?: unknown } | null)?.name === "ConditionalCheckFailedException") throw new RedeliveryStateConflict();
+              throw error;
+            }
           },
         },
       }, { budgetMs });
-      return { githubRedelivered: outcome.redelivered, githubRedeliveryFailed: outcome.failed + (outcome.status === "failed" ? 1 : 0), githubRedeliveryDeferred: outcome.deferred, githubRedeliveryGaps: outcome.gaps };
+      // Visible to every company's Health (the sweep is App-wide): a run that failed, a delete given up on, a gap of deliveries lost before GitHub forgot them, failures that could not be tracked.
+      const problems = (outcome.status === "failed" ? 1 : 0) + outcome.exhausted + outcome.droppedGaps + outcome.untracked;
+      if (problems > 0) await recordGithubSweepFailure(table, now(), problems);
+      return {
+        githubRedelivered: outcome.redelivered, githubRedeliveryGone: outcome.gone, githubRedeliveryFailed: outcome.failed + (outcome.status === "failed" ? 1 : 0), githubRedeliveryDeferred: outcome.deferred,
+        githubRedeliveryGaps: outcome.gaps, githubRedeliveryTracked: outcome.tracked, githubRedeliveryExhausted: outcome.exhausted,
+      };
     } catch {
       log("record.github_redelivery_failed", {});
+      await recordGithubSweepFailure(table, now());
       return { githubRedeliveryFailed: 1 };
+    }
+  }
+
+  /** SRL-5a: the repositories the org's projects record GitHub rows from, with the installation each project pins them to. A source row already marked failing (removed) is not asked about again. */
+  async function recordedRepositories(orgId: OrgId): Promise<RecordedRepository[]> {
+    const found = new Map<string, RecordedRepository>();
+    for (const project of (await projectsOf(orgId)).slice(0, 200)) {
+      const configs = (await listSourceConfigs(table, orgId, project)).filter((config) => config.source === "github" && /^github:repo\/[1-9][0-9]{0,14}$/u.test(config.scope) && config.health !== "failing");
+      if (configs.length === 0) continue;
+      const pinned = (await latestRevision(state, orgId, project))?.definition.repositories ?? [];
+      for (const config of configs) {
+        const repositoryId = Number(config.scope.slice("github:repo/".length));
+        const installationId = pinned.find((repository) => repository.githubRepositoryId === repositoryId)?.installationId;
+        // A repository no project pins has no installation to ask: it is left alone.
+        if (installationId !== undefined) found.set(config.scope, { workspaceId: orgId, scope: config.scope, repositoryId, installationId });
+      }
+    }
+    return [...found.values()];
+  }
+  /** SRL-5a: removes what the record holds from a repository GitHub no longer shows the installation: the tap's own tombstone, then the source row reads as failing. Throws when no durable path took the tombstone. */
+  async function removeRepository(repository: RecordedRepository): Promise<void> {
+    try {
+      await sink.tombstone({ workspaceId: repository.workspaceId, system: "github", scope: repository.scope, cause: "source_deleted" });
+    } catch (error) {
+      await failures.tombstoneLost(repository.workspaceId).catch(() => undefined);
+      throw error;
+    }
+    await sourceHealth.markFailing({ workspaceId: repository.workspaceId, source: "github", scope: repository.scope }).catch(() => log("record.health_failed", { host: "github" }));
+  }
+  async function checkGithubRepositories(orgId: OrgId, budgetMs: number): Promise<Record<string, number>> {
+    const installations = input.githubRepositories;
+    if (installations === undefined || budgetMs < 2_000 || !await appReady()) return {};
+    try {
+      const recorded = await recordedRepositories(orgId);
+      if (recorded.length === 0) return {};
+      const outcome = await checkRecordedRepositories({ installations, remove: removeRepository, log: (event, fields) => log(event, fields) }, recorded);
+      // A removal no durable path took, or an installation that looked narrowed, is for a person to look at.
+      if (outcome.failed + outcome.refused > 0) await recordGithubSweepFailure(table, now(), outcome.failed + outcome.refused);
+      return { githubReposChecked: outcome.checked, githubReposRemoved: outcome.removed, githubReposUnknown: outcome.unknown, githubReposRefused: outcome.refused, githubReposFailed: outcome.failed };
+    } catch {
+      log("record.github_repo_check_failed", {});
+      return { githubReposFailed: 1 };
     }
   }
 
@@ -907,7 +981,9 @@ export function createTeamRecordRuntime(input: TeamRecordRuntimeInput): TeamReco
           const projectsSwept = await sweepArchivedProjects(orgId, Math.max(1_000, budgetMs / 4));
           // Lane team-record-links: the org's connected Linear and Jira users, read again once a day.
           const trackersSynced = await trackerSync.run(orgId, Math.max(1_000, budgetMs / 4)).catch(() => 0);
-          return { requests: done.requests, finished: done.finished, stillHidden: done.stillHidden, sweepFailed: done.sweepFailed, lakeStatements: lakeDeletes?.statements ?? 0, erasesFinished: erased, projectsSwept, trackersSynced };
+          // SRL-5a: a recorded repository GitHub no longer shows its installation (deleted, transferred) is removed even if no webhook for it was seen.
+          const repositories = await checkGithubRepositories(orgId, Math.max(1_000, budgetMs / 4));
+          return { ...repositories, requests: done.requests, finished: done.finished, stillHidden: done.stillHidden, sweepFailed: done.sweepFailed, lakeStatements: lakeDeletes?.statements ?? 0, erasesFinished: erased, projectsSwept, trackersSynced };
         }, JOB_BUDGET_MS - (now() - startedAt));
         summary.details.deadLetterTextDeleted = swept;
         for (const [key, value] of Object.entries(redelivery)) summary.details[key] = value;

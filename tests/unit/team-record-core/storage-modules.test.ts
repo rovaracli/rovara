@@ -20,6 +20,7 @@ const RECORD_STORAGE_MODULES: Record<string, string> = {
   "team-record/delete-worker.ts": "the delete worker's own queue and head reads",
   "team-record/erase.ts": "erase progress, sweep items and markers",
   "team-record/erased.ts": "erased-person markers",
+  "team-record/ops-failures.ts": "the App-wide GitHub sweeps' failure counters in the org directory partition (SRL-5a)",
   "team-record/purge.ts": "reads the rows and links a purge removes",
   "team-record/hot-source.ts": "the hot archive source and deleted-at-source marks",
   "team-record/text-expiry.ts": "the raw-text expiry walk",
