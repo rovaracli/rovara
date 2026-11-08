@@ -322,7 +322,7 @@ describe("reverts of Rovara pull requests", () => {
   });
   it("SRL-3 the merged revert pull request path needs no compare", async () => {
     const made = gated("none");
-    await made.tap.handle(pr({ number: 9, title: 'Revert "Fix cart total"', body: "Reverts acme/shop#5", action: "closed", merged: true, mergeCommitSha: sha(41), version: "closed:9" }));
+    await made.tap.handle(pr({ number: 9, title: 'Revert "Fix cart total"', body: "Reverts acme/shop#5", action: "closed", merged: true, mergedBy: alice, mergeCommitSha: sha(41), version: "closed:9" }));
     expect(made.w.sink.kinds()).toContain("rovara.closed");
     expect(made.marks).toHaveLength(1);
   });
