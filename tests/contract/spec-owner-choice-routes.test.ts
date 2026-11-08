@@ -109,12 +109,15 @@ describe("the task page's endpoint for the owner's choice", () => {
 describe("OWNER DECISION 7: with the decision cards on, the old review page's spec choices are read-only", () => {
   it("refuses every choice on the old page with 410 and where the task is decided now, and the spec's state does not move; the task page's route is the one that chooses", async () => {
     const t = await heldTask();
+    // Follow-up R1 (ux2c-followup): the old page is read-only only for a task that has a task page to decide on, so this task has a session (a task with none keeps its old page's writes).
+    const sessionId = `ses_${"a".repeat(20)}`;
+    t.db.set({ ...(t.db.get(`DEVTASK#${t.taskId}`, "META") as Record<string, unknown>), sessionId });
     const before = await t.state();
     process.env.DECISION_CARDS_ENABLED = "1";
     try { for (const action of ["retry", "continue", "keep", "replan"]) {
       const refused = await reviewPagePost(t, MAYA, t.taskId, `spec/${action}`, { expectedRevision: 1 });
       expect(refused.status, action).toBe(410);
-      expect(refused.body, action).toMatchObject({ error: "read_only", message: TASK_PAGE_READ_ONLY_MESSAGE });
+      expect(refused.body, action).toMatchObject({ error: "read_only", message: TASK_PAGE_READ_ONLY_MESSAGE, taskPage: `/app/sessions/${sessionId}` });
     } } finally { delete process.env.DECISION_CARDS_ENABLED; }
     expect(await t.state()).toEqual(before);
     // Positive control: the same owner chooses on the task page's route.
