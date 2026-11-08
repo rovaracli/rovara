@@ -20,7 +20,8 @@ import { OrgStore } from "../org/store.js";
 import { resolveSlackOrg } from "../org/resolve.js";
 import { orgOfInstallation, projectsOf as projectsOfRepository } from "../triggers/github-events.js";
 import { createRovaraPullRequestIndex } from "../rovara-code/rovara-pull-request-index.js";
-import type { DeveloperTaskRecord } from "../developer/task-records.js";
+import { findLinkedChangeRequest } from "../rovara-code/linked-change-requests.js";
+import { taskKey, type DeveloperTaskRecord } from "../developer/task-records.js";
 import { athenaPort, s3VectorsPortFromCredentials, type SdkLoader } from "./aws-adapters.js";
 import { DynamoLessonStore } from "../lessons/dynamo-store.js";
 import { lessonDeletionPort } from "../lessons/deletion.js";
@@ -46,6 +47,9 @@ import { dynamoRateLimiter, type RecordQueryDependencies } from "./query.js";
 import { realRefusalFloor, type SourceRouteDependencies, type SourceWriteContext } from "./source-write.js";
 import { createCaptureModePort, createRecordSink, createSourceConfigPort, NOTES_OPT_IN_FROM_SOURCE_ROW, type RecordSink } from "./sink.js";
 import { createOpConsumer, type QueueRecord } from "./sources/queue.js";
+import { createCaptureAdapters, type CaptureAdapters, type CodeHostCaptureAdapter } from "./sources/capture-adapters.js";
+import { createCodeHostTap, provenRangeFiles, runHumanEdit, type CodeHostDiff, type CodeHostRepo, type HumanEditExtractorPort, type HumanEditJob } from "./sources/codehost.js";
+import { tableMergeIndex, tableOnceClaims, tablePushIndex, type MergeIndex } from "./capture-indexes.js";
 import { TEAM_RECORD_REMOVAL_SOURCE, type DeadLetterPort, type OpsQueue, type RemovalFallback, type RemovalFallbackEvent } from "./ops-queue.js";
 import { developerOfTrackerAuthor, isTrackerSystem, linkTrackerByVerifiedEmail, linkTrackerIdentity, listLinkedTrackerUsers, listUnmatchedTrackerUsers, mapTrackerUser, removeTrackerLinks, trackerLinksOf, unmapTrackerUser, UNMATCHED_PREFIX, type LinkedTrackerUser, type TrackerLink, type TrackerLinkVia, type UnmatchedTrackerUser } from "./identity-links.js";
 import { autoLinkEnabled, setAutoLinkEnabled, type VerifiedDomainsPort } from "./tracker-autolink.js";
@@ -151,6 +155,11 @@ export interface TeamRecordRuntimeInput {
    * person is linked by themselves, and nothing is guessed from members' emails.
    */
   verifiedDomains?: VerifiedDomainsPort;
+  /**
+   * Lessons capture: the code hosts learning can read, each through the one capture interface (`sources/capture-adapters.ts`). GitHub's is built by the broker (its compare read and its comment listing);
+   * a code-host plug-in adds its own here. Absent: no host is read for human edits or pull request comments.
+   */
+  captureAdapters?: readonly CodeHostCaptureAdapter[];
   /** Tests: a loader for the AWS SDK packages and an STS port. */
   sdk?: SdkLoader;
   sts?: StsAssumePort;
@@ -216,6 +225,8 @@ export interface TeamRecordRuntime {
   /** The taps. Each never throws and records only what the source rows and the mode allow. */
   taps: {
     github: ReturnType<typeof createGithubRecordTap>;
+    /** A code-host plug-in's event, already host-neutral (`CodeHostEvent`). The workspace and project of its repository are the plug-in's server-side `binding`: it overwrites whatever the event says. */
+    codeHost(event: Parameters<ReturnType<typeof createCodeHostTap>["handle"]>[0], binding: { workspaceId: string; project?: string }): ReturnType<ReturnType<typeof createCodeHostTap>["handle"]>;
     hook: ReturnType<typeof createHookRecordTap>;
     /** A Slack event the ingress verified and forwarded, with the channel facts it read with the bot token. */
     slack(forward: { payload: unknown; channel?: { teamId: string; channelId: string; info: SlackChannelInfo } }): ReturnType<ReturnType<typeof createSlackRecordTap>>;
@@ -236,6 +247,23 @@ export interface TeamRecordRuntime {
      */
     extend(job: "hourly" | "nightly", work: (orgId: OrgId, projects: string[], budgetMs: number) => Promise<Record<string, number>>): () => void;
   };
+  /** Lessons capture: the code hosts learning reads, and the merge commits noted for Rovara's merged pull requests. */
+  readonly captureAdapters: CaptureAdapters;
+  readonly mergeIndex: MergeIndex;
+  /**
+   * Human fix-up commits (decision Q5). Nothing is read from a host until `install` gives an extractor: the lessons runtime does (`aws/broker/lessons-wiring.ts`). `run` is what a worker with enough time calls for
+   * one job: it proves the authors, reads the compare live, hands it to the extractor once, and keeps nothing. `enqueue` is where the tap sends a job at a merge; without one nothing is queued (a job is never run
+   * inside a webhook's answer, and the ops queue's consumer has 30 seconds, less than a model call needs).
+   */
+  readonly humanEdit: {
+    install(input: { extractor: HumanEditExtractorPort; enqueue?: (job: HumanEditJob) => Promise<void> }): void;
+    installed(): boolean;
+    run(job: HumanEditJob, options?: { leased?: boolean }): Promise<"handed_on" | "skipped">;
+    /** The files a range of a pull request's branch changed when every commit in it is proved a live member's (merge commits, bots, outsiders, Rovara's own pushes and force pushes give undefined). Read live, never stored. */
+    provenFiles(range: { repo: CodeHostRepo; project: string; base: string; head: string; headRef?: string }): Promise<CodeHostDiff["files"] | undefined>;
+  };
+  /** Whether a code-host account is on the exclusion list of a place's source row now. An unreadable or missing source row THROWS or answers true (nothing is proved for it). */
+  sourceExcluded(input: { workspaceId: string; source: string; scope: string; accountId: string }): Promise<boolean>;
   /** SRL-6: the company's erase and delete failures of the last 24 hours (counts and a time), for the admin Health data. Throws when the table cannot be read. */
   opsFailures(orgId: OrgId): Promise<OpsFailures>;
 }
@@ -379,8 +407,9 @@ export function createTeamRecordRuntime(input: TeamRecordRuntimeInput): TeamReco
       const parsed = OrgIdSchema.safeParse(workspaceId);
       if (!parsed.success) return { trust: "outsider" };
       const orgId = parsed.data;
-      // A GitHub (or other code host) account linked to a company member.
-      if (system === "github" || system.startsWith("codehost:")) {
+      // A GitHub account linked to a company member. A code-host plug-in's account is NOT looked up here: the links are keyed by GitHub's numeric user id, so a plug-in's id that happens to equal a member's
+      // GitHub id would be taken for that member. Until links are kept per host, every `codehost:*` identity is an outsider (it fails closed: TRW-4, nothing is stored for a person until they are linked).
+      if (system === "github") {
         const link = (await input.documentClient.send(new GetCommand({ TableName: state.tableName, Key: githubMemberKey(orgId, sourceId), ConsistentRead: true }))) as { Item?: { developerId?: unknown; orgId?: unknown } };
         const developerId = link.Item?.developerId;
         if (typeof developerId !== "string" || (link.Item?.orgId !== undefined && link.Item.orgId !== orgId)) return { trust: "outsider" };
@@ -590,8 +619,37 @@ export function createTeamRecordRuntime(input: TeamRecordRuntimeInput): TeamReco
     if (projects.length === 0) return undefined;
     return projects.length === 1 ? { workspaceId: orgId, project: projects[0]! } : { workspaceId: orgId };
   };
-  // Rovara's own pull requests, by number (the task's reverse link) and by merge commit (the index written when the merge is recorded, SRL-3): `rovara-code/rovara-pull-request-index.ts`.
-  const rovaraPrs = createRovaraPullRequestIndex({ documentClient: input.documentClient, tableName: state.tableName });
+  // Rovara's own pull requests, by number (the task's reverse link) and by merge commit. GitHub's lookups are SRL-3's (`rovara-code/rovara-pull-request-index.ts`, the index written when the merge is recorded);
+  // another host is matched through its capture adapter, and the tap's own merge note (`recordMerge`, the Team record's merge index) answers a revert named by commit that SRL-3's index does not hold.
+  const mergeIndex = tableMergeIndex(table, now);
+  const captureAdapters = createCaptureAdapters();
+  for (const adapter of input.captureAdapters ?? []) captureAdapters.register(adapter);
+  const githubPrs = createRovaraPullRequestIndex({ documentClient: input.documentClient, tableName: state.tableName });
+  const rovaraPrs = {
+    async byNumber({ workspaceId, host, repo, number }: { workspaceId: string; host: string; repo: string; number: number }) {
+      if (host === "github") return githubPrs.byNumber({ workspaceId, host, repo, number });
+      // Another host says its own repository address through its capture adapter (a host with none cannot be matched).
+      const repositoryAddress = captureAdapters.forHost(host)?.repositoryAddress?.(repo);
+      if (repositoryAddress === undefined) return undefined;
+      const linked = await findLinkedChangeRequest(state, { hostKind: host, repositoryAddress, id: String(number) });
+      // The link must belong to THIS workspace: a pull request number is only unique inside a repository, and a repository belongs to one org's installation.
+      if (linked === undefined || linked.workspaceId === undefined) return undefined;
+      const task = ((await input.documentClient.send(new GetCommand({ TableName: state.tableName, Key: taskKey(linked.taskId), ConsistentRead: true }))) as { Item?: DeveloperTaskRecord }).Item;
+      if (task === undefined || task.orgId !== workspaceId) return undefined;
+      const entry = task.workflow?.pullRequests?.find((pullRequest) => pullRequest.number === number && pullRequest.url === linked.url);
+      if (entry?.headSha === undefined) return undefined;
+      return { taskId: task.taskId, project: task.project, number, url: linked.url, candidateHeadSha: entry.headSha };
+    },
+    // The merge commit of a Rovara pull request is noted when it merges, so a revert named by commit finds its task: SRL-3's index first (GitHub), then the tap's note.
+    async byMergeCommit({ workspaceId, host, repo, sha }: { workspaceId: string; host: string; repo: string; sha: string }) {
+      const recorded = await githubPrs.byMergeCommit?.({ workspaceId, host, repo, sha });
+      if (recorded !== undefined) return recorded;
+      const found = await mergeIndex.byMergeCommit({ workspaceId, host, repo, sha });
+      if (found === undefined) return undefined;
+      return { ...found, candidateHeadSha: sha };
+    },
+    recordMerge: (note: Parameters<MergeIndex["record"]>[0]) => mergeIndex.record(note),
+  };
   const priorEdits = priorEditsPort(table, now);
   // Per-editor rows: every change is its own row under the person who made it, and the sink counts a change whose person is not linked (`author_not_linked`).
   // A repository deleted or transferred also marks its source row `failing` (health only: no new revision, see `markSourceFailing`).
@@ -603,7 +661,37 @@ export function createTeamRecordRuntime(input: TeamRecordRuntimeInput): TeamReco
   };
   // SRL-6: a source delete that no durable path accepted is counted for the company's Health page (an id that is not an org id is not counted).
   const failures = { async tombstoneLost(workspaceId: string): Promise<void> { const org = OrgIdSchema.safeParse(workspaceId); if (org.success) await recordOpsFailure(table, org.data, "tombstone", now()); } };
-  const github = createGithubRecordTap({ sink, actors, rovaraPrs, mode, config, resolveRepo, log: tapLog, now, priorEdits, sourceHealth, failures });
+  // ---- human fix-up commits and the hosts learning reads (lessons capture lane). Nothing is read until the lessons runtime installs an extractor.
+  const claims = tableOnceClaims(table, now);
+  const pushes = tablePushIndex(table, actors, now);
+  const humanEditing: { extractor?: HumanEditExtractorPort; enqueue?: (job: HumanEditJob) => Promise<void> } = {};
+  const humanEditDeps = { actors, mode, config, pushes, claims, diffs: captureAdapters.diffs, log: tapLog };
+  const lateExtractor: HumanEditExtractorPort = { extract: async (job) => (humanEditing.extractor === undefined ? { candidates: 0 } : humanEditing.extractor.extract(job)) };
+  const humanEdit: TeamRecordRuntime["humanEdit"] = {
+    install(installed) { humanEditing.extractor = installed.extractor; if (installed.enqueue !== undefined) humanEditing.enqueue = installed.enqueue; },
+    installed: () => humanEditing.extractor !== undefined,
+    // `leased`: the LessonsWorker holds the lease on this job's task and head commit (a conditional write that also remembers a model call that started), which is the stronger once-claim: the tap's own claim is left out,
+    // so a worker that died after the claim but before any call cannot leave the edit unlearned for good.
+    run: async (job, options) => {
+      if (humanEditing.extractor === undefined) return "skipped";
+      const { claims: _tapClaims, ...unclaimed } = humanEditDeps;
+      void _tapClaims;
+      return runHumanEdit({ ...(options?.leased === true ? unclaimed : humanEditDeps), extractor: lateExtractor }, job);
+    },
+    provenFiles: (range) => provenRangeFiles(humanEditDeps, range),
+  };
+  const humanEditJobs = { enqueue: async (job: HumanEditJob): Promise<void> => { if (humanEditing.extractor !== undefined && humanEditing.enqueue !== undefined) await humanEditing.enqueue(job); } };
+  const github = createGithubRecordTap({
+    sink, actors, rovaraPrs, mode, config, resolveRepo, log: tapLog, now, priorEdits, sourceHealth, failures, pushes, claims, humanEditJobs, extractor: lateExtractor, diffs: captureAdapters.diffs,
+  });
+  /** The event with the plug-in's own binding on its repository: what the event says of its workspace and project is never read. */
+  const bound = <E extends Parameters<typeof codeHost.handle>[0]>(event: E, binding: { workspaceId: string; project?: string }): E => {
+    const { project: _claimed, ...repo } = event.repo;
+    void _claimed;
+    return { ...event, repo: { ...repo, workspaceId: binding.workspaceId, ...(binding.project === undefined ? {} : { project: binding.project }) } };
+  };
+  /** A plug-in host's events, already in the host-neutral shape: the same tap, reading compares through the host's own adapter. */
+  const codeHost = createCodeHostTap({ sink, actors, rovaraPrs, mode, config, log: tapLog, priorEdits, sourceHealth, failures, pushes, claims, humanEditJobs, extractor: lateExtractor, diffs: captureAdapters.diffs });
   // A comment names only its ticket: the ticket must already be recorded under the same place (Linear), and takes its restriction from how it was recorded (Jira). Read from the record, not from the tracker.
   const recorder = createTicketRecorder({ sink, actors, mode, config, log: tapLog, priorEdits, parents: createRecordParentLookup(table) });
   const hook = createHookRecordTap({ recorder });
@@ -1301,5 +1389,5 @@ export function createTeamRecordRuntime(input: TeamRecordRuntimeInput): TeamReco
     orgOfSlackTeam: (teamId) => new OrgStore({ documentClient: input.documentClient, tableName: state.tableName, now }).orgForSlackTeam(teamId),
     developerOfSlackUser: async (slackUserId) => (input.developerOfSlackUser === undefined ? undefined : await input.developerOfSlackUser(slackUserId)),
   });
-  return { edition, table, sink, drain, removal, links, trackerPeople, emitter, slackAdd, taskVisibility: (orgId, taskId) => resolveTaskVisibility({ documentClient: input.documentClient, tableName: state.tableName, now }, orgId, taskId), actors, modes, paused, routes, tools, taps: { github, hook, slack, slackStrict }, erase, jobs, opsFailures: (orgId) => readOpsFailures(table, orgId, now()) };
+  return { edition, table, sink, drain, removal, links, trackerPeople, emitter, slackAdd, taskVisibility: (orgId, taskId) => resolveTaskVisibility({ documentClient: input.documentClient, tableName: state.tableName, now }, orgId, taskId), actors, modes, paused, routes, tools, taps: { github, hook, slack, slackStrict, codeHost: (event, binding) => codeHost.handle(bound(event, binding)) }, erase, jobs, captureAdapters, mergeIndex, humanEdit, sourceExcluded: async ({ workspaceId, source, scope, accountId }) => { const row = await config.get(workspaceId, source, scope); return row === undefined || row.exclude.includes(accountId); }, opsFailures: (orgId) => readOpsFailures(table, orgId, now()) };
 }

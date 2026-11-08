@@ -2,7 +2,7 @@
 // record is off (`dependencies.teamRecord` is undefined, the default), or the install has no developer sign-in table, nothing is built: no lesson is stored, loaded, sent, shown or decided.
 import { randomUUID } from "node:crypto";
 import { GetCommand } from "@aws-sdk/lib-dynamodb";
-import { OrgIdSchema, codeRepositoriesOf, memberGithubKey, type AuditEventInput, type LessonsPauseCode, type OrgId } from "@agentx/contracts";
+import { OrgIdSchema, cleanLessonText, codeRepositoriesOf, memberGithubKey, type AuditEventInput, type LessonsPauseCode, type OrgId } from "@agentx/contracts";
 import { followMerges } from "../../agents/access.js";
 import { dynamoAttributionReader } from "../../attribution/resolve.js";
 import { DeveloperSignInStore } from "../../developer/store.js";
@@ -17,7 +17,13 @@ import { DynamoLessonStore } from "../../lessons/dynamo-store.js";
 import { lessonsResumeJob, lessonsRevertJob, type LessonsJobDeps } from "../../lessons/jobs.js";
 import type { TaskLearningDeps } from "../../lessons/task-end.js";
 import { tableOutcomeRows } from "../../lessons/task-outcome-rows.js";
-import { readObjectText } from "../../developer/plan-artifacts.js";
+import { tableCapturedRows } from "../../lessons/captured-rows.js";
+import { createHumanEditExtractor } from "../../lessons/human-edit.js";
+import { listTaskComments } from "../../developer/page-comments.js";
+import { liveRememberedNoteIds } from "../../learning/capture-comment.js";
+import { loadWorkflowDocument, readObjectText } from "../../developer/plan-artifacts.js";
+import type { DeveloperTaskRecord } from "../../developer/task-records.js";
+import { PLAN_FACTS_SUMMARY_MAX, planLoadFacts } from "../../lessons/plan-facts.js";
 import { customerLearningModel } from "./learning-model.js";
 import { readLessonsModel } from "../../lessons/model-setting.js";
 import { dynamoPauseStore, spendLook } from "../../lessons/pause.js";
@@ -26,6 +32,8 @@ import { lessonSubjectSource } from "./lesson-subject-source.js";
 import { setLessonsHomeReader } from "../../lessons/home-source.js";
 import { lessonsUsedReaderOver, setLessonsUsedReader, type RepositoryVisibility, visibilityOfRepositories } from "../../lessons/used-in-pr.js";
 import { resolveLearning } from "../../lessons/policy.js";
+import { humanEditMessageOf, type ReflectQueue } from "../../lessons/reflect-queue.js";
+import type { HumanEditJob } from "../../team-record/sources/codehost.js";
 import { buildLessonsView } from "../../lessons/view.js";
 import { recordAuditSinkOf } from "./team-record-wiring.js";
 import { auditPending } from "../../audit/outbox.js";
@@ -157,22 +165,72 @@ export function learningDepsFor(dependencies: LessonsHostDependencies, runtime: 
     const record = await requireLatestProject(dependencies, OrgIdSchema.parse(orgId), project);
     return codeRepositoriesOf(record.definition).map((repository) => repository.name);
   };
-  return {
-    source: lessonSubjectSource({
-      ...state, repositoriesOf,
-      standing: (orgId, developerId, project) => readStanding(state, OrgIdSchema.parse(orgId), developerId, project),
-      // Erased in the Team record (the permanent marker) or in the lessons' own fence: either one is enough. A read that cannot tell throws.
-      isErased: async (orgId, developerId, project) => (await routes.names.isErased(OrgIdSchema.parse(orgId), developerId)) || (await routes.store.isErased({ workspaceId: orgId, project }, developerId)),
-      visibility: (orgId, taskId) => teamRecord.taskVisibility(orgId, taskId),
-      readObject: (key, maxBytes) => readObjectText(dependencies.s3, dependencies.artifactBucketName, key, maxBytes),
-      now: Date.now,
+  const standing = (orgId: string, developerId: string, project: string) => readStanding(state, OrgIdSchema.parse(orgId), developerId, project);
+  // Erased in the Team record (the permanent marker) or in the lessons' own fence: either one is enough. A read that cannot tell throws.
+  const isErased = async (orgId: string, developerId: string, project: string): Promise<boolean> => (await routes.names.isErased(OrgIdSchema.parse(orgId), developerId)) || (await routes.store.isErased({ workspaceId: orgId, project }, developerId));
+  const adapters = teamRecord.captureAdapters;
+  const source = lessonSubjectSource({
+    ...state, repositoriesOf, standing, isErased,
+    visibility: (orgId, taskId) => teamRecord.taskVisibility(orgId, taskId),
+    readObject: (key, maxBytes) => readObjectText(dependencies.s3, dependencies.artifactBucketName, key, maxBytes),
+    now: Date.now,
+    // The corrections people already make, from the Team record: "remember this" notes (the notes of the task's comments) and reviewers' comments on its pull requests (listed by the code host through
+    // its capture adapter, read from the record). The merge commit is the one the tap noted when the host said the pull request merged.
+    captured: tableCapturedRows(teamRecord.table),
+    // The LIVE corrections only (M1): a comment that was remembered and not forgotten. The record keeps its row after a Forget, so the comments' own list is never the source of notes.
+    rememberedNoteIds: async (orgId, project, taskId) => liveRememberedNoteIds({ ...state, now: Date.now }, orgId, project, taskId,
+      (await listTaskComments(state, taskId)).filter((comment) => comment.author.kind === "person" && comment.deletedAt === undefined).map((comment) => comment.commentId)),
+    // The author's account on the place's exclusion list now (checked by the account id the row keeps).
+    sourceExcluded: ({ orgId, source, scope, accountId }) => teamRecord.sourceExcluded({ workspaceId: orgId, source, scope, accountId }),
+    // What a person's own commits changed on the branch since a comment's commit, read live and only for a range proved to be members' commits.
+    humanChangedFiles: async (input) => teamRecord.humanEdit.provenFiles({
+      repo: { host: input.host, id: input.scope.slice(input.scope.lastIndexOf("repo/") + "repo/".length), fullName: input.repository, isPrivate: input.isPrivate, workspaceId: input.orgId, project: input.project },
+      project: input.project, base: input.base, head: input.head, ...(input.headRef === undefined ? {} : { headRef: input.headRef }),
     }),
+    pullRequestAddress: (url) => adapters.addressOf(url)?.address,
+    pullRequestFeedback: async (input) => adapters.forHost(input.address.host)?.pullRequestFeedback?.({ workspaceId: input.orgId, project: input.project, taskId: input.taskId, address: input.address, url: input.url }),
+    mergeCommitOf: ({ orgId, taskId, address }) => teamRecord.mergeIndex.mergeCommitOf({ workspaceId: orgId, host: address.host, repo: address.repository, number: address.number, taskId }),
+  });
+  return {
+    source,
     rows: tableOutcomeRows(teamRecord.table),
     settings: runtime.settings,
     reflect: { model: routes.judgeModel, spend: routes.spend, ...(routes.pause === undefined ? {} : { pause: routes.pause }), audit: routes.audit, settings: runtime.settings, edition: teamRecord.edition, now: Date.now },
     process: routes,
     rovara: teamRecord.emitter,
     log,
+    humanEdit: { standing, isErased },
+  };
+}
+
+/**
+ * What the dispatch tells the loader about a task besides its title: the latest plan document's summary and the files it names (`lessons/plan-facts.ts`), read from the artifact store. A task with no plan
+ * yet, a plan that cannot be read or whose copy does not match its digest gives nothing; a plan written as Markdown (an older task) gives its first lines and no files.
+ */
+export function planFactsFor(dependencies: Pick<AwsBrokerDependencies, "s3" | "artifactBucketName">): NonNullable<LessonsRuntime["planFacts"]> {
+  return async (task) => {
+    const workflow = (task as { workflow?: DeveloperTaskRecord["workflow"] }).workflow;
+    const plan = (workflow?.artifacts ?? []).filter((artifact) => artifact.type === "plan").sort((a, b) => a.version - b.version).at(-1);
+    if (plan === undefined) return undefined;
+    const loaded = await loadWorkflowDocument((key, max) => readObjectText(dependencies.s3, dependencies.artifactBucketName, key, max).catch(() => undefined), plan, {});
+    if (loaded === undefined) return undefined;
+    if (loaded.format === "structured") return planLoadFacts(loaded.plan);
+    return { summary: cleanLessonText(loaded.markdown, PLAN_FACTS_SUMMARY_MAX), files: [] };
+  };
+}
+
+/**
+ * The tap's `enqueue` for human fix-up commits: one message of coordinates on the reflections' queue, like a task's end (the learning mode is checked by the worker, before anything is read from the host or the model
+ * is called). Throws when the queue did not take it (the tap counts the delivery as failed; the lease makes a second message for the same edit harmless).
+ */
+export function humanEditEnqueue(queue: ReflectQueue, log?: (event: string, fields: Record<string, string | number>) => void, newRequestId: () => string = randomUUID): (job: HumanEditJob) => Promise<void> {
+  return async (job) => {
+    try {
+      await queue.send(humanEditMessageOf(job, newRequestId()));
+    } catch (error) {
+      log?.("learning.human_edit_enqueue_failed", { taskId: job.taskId });
+      throw error;
+    }
   };
 }
 
@@ -180,7 +238,10 @@ export function learningDepsFor(dependencies: LessonsHostDependencies, runtime: 
 export function installLessons(dependencies: LessonsHostDependencies): void {
   if (dependencies.lessons !== undefined) return;
   const built = lessonsRuntimeFor(dependencies);
-  if (built !== undefined) dependencies.lessons = built;
+  if (built !== undefined) {
+    dependencies.lessons = built;
+    built.planFacts = planFactsFor(dependencies);
+  }
   // Learning at the end of a task: only where the lessons runtime AND the model path exist (and a caller did not give its own).
   if (built !== undefined && dependencies.learning === undefined) {
     const learning = learningDepsFor(dependencies, built);
@@ -188,6 +249,20 @@ export function installLessons(dependencies: LessonsHostDependencies): void {
   }
   // Lessons in production (lane 2, WB-7): the lessons' two jobs ride the Team record's schedules (the hourly deletion resumer, the nightly re-reflection of reverted tasks).
   installLessonsJobs(dependencies, built);
+
+  // Human fix-up commits (decision Q5): the extractor is given to the Team record's tap, which reads nothing from a host until it has one. It also needs a way to queue a job that has time for a model call
+  // (the LessonsWorker, lane 2): `humanEdit.install({ enqueue })` is that seam. Until a queue is installed no job is queued and no host is read.
+  const live = dependencies.learning;
+  // (A partial record runtime, as in some test harnesses, has no `humanEdit`: then nothing is installed.)
+  const humanEditing = (dependencies.teamRecord as { humanEdit?: NonNullable<AwsBrokerDependencies["teamRecord"]>["humanEdit"] } | undefined)?.humanEdit;
+  if (built !== undefined && live?.humanEdit !== undefined && humanEditing !== undefined) {
+    humanEditing.install({
+      extractor: createHumanEditExtractor({ source: live.source, settings: live.settings, reflect: live.reflect, process: live.process, standing: live.humanEdit.standing, isErased: live.humanEdit.isErased, ...(live.log === undefined ? {} : { log: live.log }) }),
+      // Where the tap sends a job at a merge: ONE message of coordinates to the LessonsReflect queue (the reflections' own queue, worker, dead-letter queue and alarms), never a compare or a model call inside the webhook's
+      // answer. The queue is only where the broker has one (the LessonsWorker itself has none and never sends). The worker checks the learning mode first, so a project with learning Off or Collect reads nothing from the host.
+      ...(dependencies.lessonsReflectQueue === undefined ? {} : { enqueue: humanEditEnqueue(dependencies.lessonsReflectQueue, live.log) }),
+    });
+  }
   // UX-4b: Home's "Lessons waiting" card counts what the Lessons tab would show this person to decide (learning Off: none).
   const routes = dependencies.lessons?.routes;
   // Approve by exception: the pull request description lists the lessons the task used (`lessons/used-in-pr.ts`).

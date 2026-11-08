@@ -63,6 +63,20 @@ describe("learnedContextFromRefs", () => {
       expect(JSON.stringify(after)).not.toContain("secret path");
     });
 
+    it("F3: a person who is only in `readFrom` (their words were read to make the lesson, they are not an author) fences it too, and so for the reviewer's list of prior titles", async () => {
+      const { store, deps } = world();
+      const readMallory = (id: string, title: string): Lesson => conv(id, { title, provenance: { ...lessonRecord().provenance, authors: ["alice"], sources: ["member:alice"], inputSources: ["member:alice"], readFrom: ["mallory"] } });
+      await seed(store, readMallory("les_readfrom01", "Read from Mallory"), conv("les_aaaaaaa1"));
+      const asked = refs([["les_readfrom01"], ["les_aaaaaaa1"]], { priorLoaded: [{ id: "les_readfrom01" }, { id: "les_aaaaaaa1" }] });
+      const before = await learnedContextFromRefs(deps, asked);
+      expect(before?.lessons.map((l) => l.id)).toEqual(["les_readfrom01", "les_aaaaaaa1"]);
+      expect(before?.priorLoaded?.map((l) => l.id)).toEqual(["les_readfrom01", "les_aaaaaaa1"]);
+      await store.fence(KEY, { people: ["mallory"] });
+      const after = await learnedContextFromRefs(deps, asked);
+      expect(after?.lessons.map((l) => l.id)).toEqual(["les_aaaaaaa1"]);
+      expect(after?.priorLoaded?.map((l) => l.id)).toEqual(["les_aaaaaaa1"]);
+    });
+
     for (const [name, over] of [
       ["retired", { status: "retired" as const }], ["withdrawn", { status: "withdrawn" as const }], ["stale", { status: "stale" as const }], ["rejected", { status: "rejected" as const }],
       ["expired", { expiresAt: 1 }], ["a stale citation", { citationChecks: [{ index: 0, result: "stale" as const, at: 1 }] }], ["approvals no longer enough", { approvals: [] }],

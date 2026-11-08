@@ -321,6 +321,8 @@ describe("the health route's grants (A13)", () => {
       "packages/broker/src/rovara-code/merge-commit-index.ts",
       // 2026-11-08, lessons in production (lane 2): the once-claim of a reflection (`LEARN#<task>#<outcome>`, 30 days) is a marker so a redelivered queue message never reflects or charges twice; none is a durable record, and only reflect-claims.ts writes it.
       "packages/broker/src/lessons/reflect-claims.ts",
+      // Lessons capture: a human-edit read's once-claim (a hash and an expiry), the push index (who pushed which range, as a canonical developer id, 30 days; erased with the person) and the merge index (task ids and shas only) are small working rows of the code-host tap; none holds free text or a diff, and only capture-indexes.ts writes them.
+      "packages/broker/src/team-record/capture-indexes.ts",
     ]);
     const found = execFileSync("grep", ["-rl", "indexExpiresAt\\|INDEX_EXPIRY_ATTRIBUTE", "packages", "infra/lib", "--include=*.ts", "--exclude-dir=dist", "--exclude-dir=node_modules"], { encoding: "utf8" }).trim().split("\n").filter((file) => file !== "");
     expect(found.filter((file) => !allowed.has(file))).toEqual([]);

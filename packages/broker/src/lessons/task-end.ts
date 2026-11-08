@@ -28,12 +28,13 @@ export interface TaskSubjectBase {
   sendBackRequestIds: readonly string[];
 }
 export interface TaskSubjectSource {
-  read(input: { workspaceId: string; taskId: string }): Promise<TaskSubjectBase | undefined>;
   /**
    * L4: the task's project from the task record alone (one read), so the learning mode can be checked BEFORE `read` fetches plans, standing and erasure state. Undefined: no such task in the workspace, or one that
    * teaches nothing. A source without it is read first (the old order); the production source has it.
    */
   projectOf?(input: { workspaceId: string; taskId: string }): Promise<string | undefined>;
+  /** `context: "human_edit"`: only the task's own facts and steering are wanted (a human edit's reflection keeps the intent and plan); the pull request's comments are not read from the host. */
+  read(input: { workspaceId: string; taskId: string; context?: "human_edit" }): Promise<TaskSubjectBase | undefined>;
 }
 
 export interface TaskLearningDeps {
@@ -45,6 +46,8 @@ export interface TaskLearningDeps {
   /** Writes the human send-backs of tasks to the Team record, naming who sent them back. Without it send-backs are not recorded here (and so never counted). */
   rovara?: Pick<RovaraEmitter, "sendBack">;
   log?: (event: string, fields: Record<string, string | number>) => void;
+  /** The checks a human-edit read makes on its authors now (the same readers the subject source uses). Absent: human edits are not learned from. */
+  humanEdit?: { standing: (orgId: string, developerId: string, project: string) => Promise<"member" | "outsider">; isErased: (orgId: string, developerId: string, project: string) => Promise<boolean> };
 }
 
 const MAX_SEND_BACKS = 50;
@@ -110,7 +113,8 @@ export type LearnStatus = "off" | "no_facts" | "not_reflected" | "reflected";
  * has checked the ledger for the keys the attempt minted (`reflect-claims.ts`). Everything else is final: a reflection that was made (or cut at the deadline after its model answered), a refusal that trying again will not
  * change (no provider, no budget, the month's limit), a model answer that did not parse, a task that teaches nothing.
  */
-export interface LearnResult { status: LearnStatus; retry: boolean }
+/** `retryAt`: when a retry came from a host's rate limit, the time (ms since the epoch) the host said asking again may work. */
+export interface LearnResult { status: LearnStatus; retry: boolean; retryAt?: number }
 
 const final = (status: LearnStatus): LearnResult => ({ status, retry: false });
 

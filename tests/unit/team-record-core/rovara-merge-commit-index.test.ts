@@ -4,7 +4,7 @@
 import { randomUUID } from "node:crypto";
 import { TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
 import { describe, expect, it, vi } from "vitest";
-import { INDEX_EXPIRY_ATTRIBUTE, githubInstallationKey, githubMemberKey, githubRepoProjectKey, developerOrgKey, projectRevisionKey, type OrgId } from "@agentx/contracts";
+import { INDEX_EXPIRY_ATTRIBUTE, githubInstallationKey, githubMemberKey, githubRepoProjectKey, developerOrgKey, orgMemberKey, projectMemberKey, projectRevisionKey, type OrgId } from "@agentx/contracts";
 import { createTeamRecordRuntime } from "../../../packages/broker/src/team-record/runtime.js";
 import { SdkUnavailableError } from "../../../packages/broker/src/team-record/aws-adapters.js";
 import { createRovaraPullRequestIndex } from "../../../packages/broker/src/rovara-code/rovara-pull-request-index.js";
@@ -165,6 +165,9 @@ async function runtimeWorld() {
   const db = new FakeDynamoDb({ indexKeys });
   db.set({ ...githubMemberKey(ORG_A, "123"), entityType: "GITHUB_MEMBER", developerId: "dev-1", orgId: ORG_A });
   db.set({ ...developerOrgKey("dev-1"), entityType: "DEVELOPER_ORG", orgId: ORG_A, role: "member" });
+  // A revert pull request counts only when a live project member merged it: dev-1 is a contributor of the project.
+  db.set({ ...orgMemberKey(ORG_A, "dev-1"), entityType: "ORG_MEMBER", orgId: ORG_A, developerId: "dev-1", role: "member" });
+  db.set({ ...projectMemberKey(ORG_A, "dev-1", "web"), ownerKey: "dev-1", projectName: "web", role: "developer", projectRole: "contributor", grantId: "grant-dev1" });
   db.set({ ...githubInstallationKey(55), entityType: "GITHUB_INSTALLATION", orgId: ORG_A, status: "active" });
   db.set({ ...githubRepoProjectKey(REPO_ID, ORG_A, "web"), entityType: "GITHUB_REPO_PROJECT", orgId: ORG_A, project: "web", installationId: 55, githubRepositoryId: REPO_ID });
   db.set({
@@ -200,7 +203,7 @@ describe("SRL-3: a revert of a Rovara pull request is recorded", () => {
     const { db, runtime } = await runtimeWorld();
     seedTask(db);
     seedIndex(db);
-    const pr = { number: 20, html_url: "https://github.com/acme/api/pull/20", title: 'Revert "Fix cart"', body: `This reverts commit ${MERGE}.`, user: alice, head: { sha: hex(20), ref: "revert-fix" }, base: { ref: "main" }, merged: true, merge_commit_sha: hex(0xf02), updated_at: "2026-11-08T11:00:00Z" };
+    const pr = { number: 20, html_url: "https://github.com/acme/api/pull/20", title: 'Revert "Fix cart"', body: `This reverts commit ${MERGE}.`, user: alice, head: { sha: hex(20), ref: "revert-fix" }, base: { ref: "main" }, merged: true, merged_by: alice, merge_commit_sha: hex(0xf02), updated_at: "2026-11-08T11:00:00Z" };
     const deliver = () => runtime.taps.github({ eventName: "pull_request", deliveryId: randomUUID(), payload: { ...envelope, action: "closed", pull_request: pr, sender: alice } });
     expect(await deliver()).toMatchObject({ failed: 0 });
     expect(closedRows(db)).toHaveLength(1);

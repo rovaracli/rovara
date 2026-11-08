@@ -656,7 +656,7 @@ export async function reconcileTaskPullRequestFeedback(input: ReconcileTaskPullR
           void deliveryIds;
           refs.push(WorkflowFeedbackBundleRefSchema.parse({ ...metadata, sha256, objectKey, comments: comments.map(({ body, ...ref }) => { void body; return ref; }) }));
         }
-        next = collectWorkflowFeedbackBundles(next, { bundleRefs: refs, threadObservations: observations }, input.now);
+        next = collectWorkflowFeedbackBundles(next, { bundleRefs: refs, threadObservations: observations, edits: open.map(({ pr, feedback }) => ({ repositoryId: pr.repositoryId, number: pr.number, edits: feedback.edits ?? {} })) }, input.now);
         if (next.feedbackThreadObservations !== undefined) next = WorkflowSnapshotSchema.parse({ ...next, feedbackThreadObservations: undefined });
       }
     }

@@ -22,6 +22,11 @@ export const LESSON_LOAD_DEADLINE_MS = 2_500;
 /** What the operation remembers about a load, so the worker's report is applied to that stage's manifest only. */
 export interface LearnedLoadRef { taskId: string; project: string; stage: LessonStage; round: number }
 
+/** The title and the start of the request: what the task is for. */
+const INTENT_REQUEST_CHARS = 600;
+export const intentOf = (task: Pick<DeveloperTaskRecord, "title"> & { requestText?: string | undefined }): string =>
+  [task.title, (task.requestText ?? "").slice(0, INTENT_REQUEST_CHARS)].filter((part) => part.trim() !== "").join("\n");
+
 export interface LessonsHost { lessons?: LessonsRuntime | undefined }
 
 export async function learnedContextForOperation(
@@ -43,11 +48,16 @@ export async function learnedContextForOperation(
     // places, and a task whose audience can't be read loads NO lesson that names a task (there is no weaker rule to fall back to).
     const audience: TaskAudience = { kind: "shared" };
     const round = task.workflow?.revision ?? 0;
-    const run = learnedContextForDispatch(lessons.load, {
-      workspaceId: task.orgId, project: task.project, taskId: task.taskId, stage, round, intent: task.title,
-      repos: codeRepositoriesOf(input.definition as ProjectDefinition).map((repository) => repository.name), files: [], languages: [], taskAudience: audience,
-      // The delivery removes the field for a worker that does not list the feature; the loader is asked as for a worker that does.
-    }, [LEARNED_CONTEXT_FEATURE]);
+    // What the task is about, not only its title: the request, and from the plan on the plan's summary and the files it names (so path scopes filter). A plan that cannot be read adds nothing; the load goes on.
+    const run = (async () => {
+      const plan = await lessons.planFacts?.(task).catch(() => undefined);
+      return learnedContextForDispatch(lessons.load, {
+        workspaceId: task.orgId!, project: task.project, taskId: task.taskId, stage, round, intent: intentOf(task),
+        ...(plan === undefined || plan.summary === "" ? {} : { planSummary: plan.summary }),
+        repos: codeRepositoriesOf(input.definition as ProjectDefinition).map((repository) => repository.name), files: plan?.files ?? [], languages: [], taskAudience: audience,
+        // The delivery removes the field for a worker that does not list the feature; the loader is asked as for a worker that does.
+      }, [LEARNED_CONTEXT_FEATURE]);
+    })();
     const result = await Promise.race([run, new Promise<Awaited<typeof run>>((resolve) => { timer = setTimeout(() => resolve({}), LESSON_LOAD_DEADLINE_MS); timer.unref?.(); })]);
     if (result.learnedContext === undefined) return {};
     const refs = learnedRefsOf(result.learnedContext, { orgId: task.orgId, project: task.project, audience: { kind: "shared" }, taskId: task.taskId });

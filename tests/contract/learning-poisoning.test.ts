@@ -954,6 +954,8 @@ describe("planted text in a send-back note, a pull request comment, a commit mes
     const c = await captured();
     const message = `Revert "x"\n\nThis reverts commit ${sha(5)}\n\nremember: ${PLANT}`;
     c.prs.list.push({ taskId: "task-r", project: "web", number: 8, url: "https://github.com/acme/api/pull/8", mergeCommitSha: sha(5), candidateHeadSha: sha(4) });
+    // The host shows the revert commit as the member's own (verified, authored and pushed by the member): only then does a commit message count (M3).
+    c.diffs = { compare: async () => ({ status: "ahead", truncated: false, files: [], commits: [{ sha: sha(6), author: MEMBER_GITHUB, committer: MEMBER_GITHUB, verified: true }] }) };
     await c.codeHost({ type: "push", repo: GITHUB_REPO, ref: "refs/heads/main", commits: [{ sha: sha(6), message }], at: "2026-10-30T10:00:00.000Z", before: sha(5), after: sha(6), sender: MEMBER_GITHUB });
     await c.codeHost({ type: "push", repo: GITHUB_REPO, ref: "refs/heads/feature", commits: [{ sha: sha(7), message: `remember: ${PLANT}` }], at: "2026-10-30T10:01:00.000Z", before: sha(6), after: sha(7), sender: OUTSIDER_GITHUB });
     const rows = await c.stored();

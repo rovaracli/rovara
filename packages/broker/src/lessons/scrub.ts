@@ -21,6 +21,8 @@ export function scrubLesson(lesson: Lesson, deleted: ReadonlySet<string>, dev?: 
   if (people !== undefined) {
     out.provenance = {
       ...out.provenance, authors: out.provenance.authors.filter((a) => !gone(a)), ...(out.provenance.editors === undefined ? {} : { editors: out.provenance.editors.filter((a) => !gone(a)) }), sources: out.provenance.sources.filter((s) => !namesGone(s)),
+      ...(out.provenance.readFrom === undefined ? {} : { readFrom: out.provenance.readFrom.filter((a) => !gone(a)) }),
+      ...(out.provenance.coAuthored === undefined ? {} : { coAuthored: out.provenance.coAuthored.map((g) => g.filter((a) => !gone(a))).filter((g) => g.length >= 2) }),
       inputSources: out.provenance.inputSources.filter((s) => !namesGone(s)),
     };
     out.approvals = out.approvals.map((a) => (gone(a.by) ? { ...a, by: ERASED_MARK } : a));

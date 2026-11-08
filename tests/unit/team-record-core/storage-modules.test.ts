@@ -29,6 +29,7 @@ const RECORD_STORAGE_MODULES: Record<string, string> = {
   "lessons/pause.ts": "the current lessons-paused reason per project or company (org-scoped keys; a fixed code, a start time and a failure count; nothing erasable) (lessons-prod-1b)",
   "team-record/learning-mode-write.ts": "the learning mode and its lock, read as stored so the mode's writer can write conditionally on exactly that value (UX-4b)",
   "team-record/prior-edits.ts": "marks of edits the tap never stored",
+  "team-record/capture-indexes.ts": "the once-claims, push index and merge index of the human-edit read",
   "team-record/identity-links.ts": "identity links of people",
   "team-record/tracker-directory.ts": "the tracker people directory",
   "team-record/tracker-autolink.ts": "automatic tracker links",

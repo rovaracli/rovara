@@ -2,8 +2,9 @@
 import { describe, expect, it } from "vitest";
 import { LearnedContextSchema } from "../../../packages/contracts/src/index.js";
 import { applyLoadReport } from "../../../packages/broker/src/lessons/counters.js";
-import { LOAD_MAX_BYTES, LOAD_MAX_LESSONS, learnedContextForDispatch, loadLessonsForStage, scopeMatch, wilsonLower, type LoadDeps, type LoadRequest } from "../../../packages/broker/src/lessons/load.js";
+import { learnedContextForDispatch, loadLessonsForStage, scopeMatch, wilsonLower, type LoadDeps, type LoadRequest } from "../../../packages/broker/src/lessons/load.js";
 import { readVisible } from "../../../packages/broker/src/lessons/read-visible.js";
+import { LOAD_DEFAULT_BYTES, LOAD_DEFAULT_LESSONS } from "../../../packages/broker/src/lessons/policy.js";
 import { InMemoryLessonStore } from "../../../packages/broker/src/lessons/store.js";
 import type { Lesson } from "../../../packages/broker/src/lessons/types.js";
 import { Audit, Clock, KEY, MemoryVectors, PROJECT, WS, embedder, lessonRecord, seed, settings, allowAllAccess } from "./lesson-helpers.js";
@@ -52,7 +53,8 @@ describe("selection", () => {
   });
 
   it("what each stage gets (design §4.7)", async () => {
-    const { deps, add } = setup();
+    // (A budget up to the caps, so this test sees every lesson the stage allows.)
+    const { deps, add } = setup(settings({ loadBudget: { lessons: 12, bytes: 6 * 1024 } }));
     await add(
       lessonRecord({ id: "les_fact0001", type: "fact", stages: ["UNDERSTAND", "PLAN", "IMPLEMENT"] }),
       lessonRecord({ id: "les_fnc00001", type: "fact", citations: [], stages: ["UNDERSTAND", "PLAN", "IMPLEMENT"] }),
@@ -88,7 +90,7 @@ describe("selection", () => {
     expect((await loadLessonsForStage(deps, request({ stage: "IMPLEMENT", round: 2 }))).context!.priorLoaded).toBeUndefined();
   });
 
-  it("ranks by similarity, then helpfulness, deterministically; respects 12 lessons and 6 KB", async () => {
+  it("ranks by similarity, then helpfulness, deterministically; respects the default budget of 5 lessons and 2 KB", async () => {
     const { deps, add } = setup();
     await add(conv("les_aaaa0001", { title: "Retry failed HTTP calls", body: "Retry failed HTTP calls in the api service with withRetry" }), conv("les_bbbb0001", { title: "Logging", body: "Use structured logging for the billing worker queue" }));
     const result = await loadLessonsForStage(deps, request());
@@ -100,12 +102,12 @@ describe("selection", () => {
     const many = setup();
     await many.add(...Array.from({ length: 20 }, (_, i) => conv(`les_many${String(i).padStart(4, "0")}`, { title: `Lesson ${i}`, body: `Advice number ${i} about retries in api` })));
     const capped = await loadLessonsForStage(many.deps, request());
-    expect(capped.context!.lessons).toHaveLength(LOAD_MAX_LESSONS);
+    expect(capped.context!.lessons).toHaveLength(LOAD_DEFAULT_LESSONS);
 
     const big = setup();
     await big.add(...Array.from({ length: 8 }, (_, i) => conv(`les_big0${String(i).padStart(4, "0")}`, { title: `Big ${i}`, body: `retry ${"x".repeat(560)}`, description: "d".repeat(150) })));
     const bytes = await loadLessonsForStage(big.deps, request());
-    expect(bytes.manifest.bytes).toBeLessThanOrEqual(LOAD_MAX_BYTES);
+    expect(bytes.manifest.bytes).toBeLessThanOrEqual(LOAD_DEFAULT_BYTES);
     expect(bytes.context!.lessons.length).toBeLessThan(8);
     expect(wilsonLower(0, 0)).toBe(0);
     expect(wilsonLower(9, 10)).toBeGreaterThan(wilsonLower(1, 2));

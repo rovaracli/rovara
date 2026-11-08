@@ -21,7 +21,7 @@ export function minTrust(list: readonly TrustClass[]): TrustClass {
 export const trustAtLeast = (trust: TrustClass, floor: TrustClass): boolean => TRUST_RANK[trust] >= TRUST_RANK[floor];
 
 export const AclSnapshotSchema = z.object({
-  source: z.enum(["slack", "github", "linear", "jira", "mcp", "rovara"]), scope: z.string().min(1).max(300),
+  source: z.union([z.enum(["slack", "github", "linear", "jira", "mcp", "rovara"]), z.string().regex(/^codehost:[a-z][a-z0-9-]{0,40}$/)]), scope: z.string().min(1).max(300),
   principals: z.array(z.string().max(100)).max(500).optional(), groups: z.array(z.string().max(100)).max(100).optional(),
   capturedAt: z.string().max(40), liveCheck: z.enum(["none", "on_read"]),
 }).strict();
@@ -76,7 +76,7 @@ export const LESSON_STATUSES = ["candidate", "pending", "active", "stale", "reti
 export type LessonStatus = (typeof LESSON_STATUSES)[number];
 export type Tier = 0 | 1 | 2;
 
-export const SPAN_KINDS = ["intent", "plan", "send_back", "review_finding", "ci_failure", "human_edit", "outcome", "loaded_lesson", "remembered", "close_reason", "fact"] as const;
+export const SPAN_KINDS = ["intent", "plan", "send_back", "review_finding", "ci_failure", "human_edit", "outcome", "loaded_lesson", "remembered", "close_reason", "fact", "pr_comment"] as const;
 export type SpanKind = (typeof SPAN_KINDS)[number];
 
 const PrCitationSchema = z.object({ kind: z.literal("pr"), url: z.string().url().max(300).refine((u) => u.startsWith("https://"), "https only") }).strict();
@@ -108,6 +108,10 @@ export const LessonCandidateSchema = z.object({
 export type LessonCandidate = z.infer<typeof LessonCandidateSchema>;
 export const ReflectorOutputSchema = z.object({ candidates: z.array(z.unknown()).max(20) }).strict();
 
+/** The most people a lesson names as read from, and the most groups of co-authors: bounds of the provenance schema. A list that would pass them is never cut (see `curate.ts`). */
+export const MAX_READ_FROM = 100;
+export const MAX_CO_AUTHORED = 20;
+
 export const LessonProvenanceSchema = z.object({
   sourceEvents: z.array(z.string().max(100)).max(50), sourceKinds: z.array(z.enum(SPAN_KINDS)).max(20),
   /** Developer ids of the members whose words or edits the lesson comes from. */
@@ -117,6 +121,14 @@ export const LessonProvenanceSchema = z.object({
    * of the lesson (it is hard-deleted). Absent on a lesson edited before this field: read as none.
    */
   editors: z.array(z.string().max(100)).max(20).optional(),
+  /**
+   * Every person whose words or work the reflector READ for this lesson (a human edit's authors, a pull request comment, a remembered note, a send-back, the intent), whichever span the model chose to cite.
+   * Not authors: they do not count for independence or the author rule. Erasure treats them as writers (erasing any of them deletes the lesson), because the model read their words.
+   * Absent on a lesson learned before this field: read as none.
+   */
+  readFrom: z.array(z.string().max(100)).max(MAX_READ_FROM).optional(),
+  /** The people of each human edit that several people wrote: one group counts as ONE source toward corroboration, however many co-authors it has. */
+  coAuthored: z.array(z.array(z.string().max(100)).min(2).max(20)).max(MAX_CO_AUTHORED).optional(),
   /** Independent tasks that support the lesson (one id per task). */
   supportTasks: z.array(z.string().max(100)).max(50),
   /**
@@ -224,7 +236,7 @@ export type LessonAuditAction = (typeof LESSON_AUDIT_ACTIONS)[number];
 export const ERASED_MARK = "erased";
 /** Every person a version names: its authors, `member:` source keys, and anyone who approved or asked to promote it. System and erased marks are not people. */
 export const peopleOf = (l: Pick<Lesson, "provenance" | "approvals" | "promotionApprovals">): string[] => [
-  ...l.provenance.authors, ...(l.provenance.editors ?? []), ...[...l.provenance.sources, ...l.provenance.inputSources].flatMap((s) => { const member = memberOfSource(s); return member === undefined ? [] : [member]; }),
+  ...l.provenance.authors, ...(l.provenance.editors ?? []), ...(l.provenance.readFrom ?? []), ...[...l.provenance.sources, ...l.provenance.inputSources].flatMap((s) => { const member = memberOfSource(s); return member === undefined ? [] : [member]; }),
   ...l.approvals.map((a) => a.by), ...(l.promotionApprovals ?? []).map((a) => a.by),
 ].filter((p) => p !== ERASED_MARK && !p.startsWith("system:"));
 /** Every record row a version rests on: its source events and the record citations. */
