@@ -140,7 +140,7 @@ export function lessonsRuntimeFor(dependencies: LessonsHostDependencies): Lesson
     ...(audit === undefined ? {} : { audit }),
     ...(dependencies.audit === undefined ? {} : (() => { const ledger = dependencies.audit; return { auditOutbox: { pending: (event: AuditEventInput) => auditPending({ audit: ledger }, event), flush: (event: AuditEventInput) => flushAuditEvents({ audit: ledger }, [event]) } }; })()),
     reader, repositoriesOf,
-    taskVisibility: withProjectRepoScopes(withLessonAudiences(tableTaskVisibilityPort({ documentClient: dependencies.documentClient, tableName: dependencies.tableName, now: Date.now }), tableLessonAudiencePort({ documentClient: dependencies.documentClient, tableName: dependencies.tableName, now: Date.now })), tableProjectRepoScopes({ documentClient: dependencies.documentClient, tableName: dependencies.tableName })),
+    taskVisibility: withProjectRepoScopes(withLessonAudiences(tableTaskVisibilityPort({ documentClient: dependencies.documentClient, tableName: dependencies.tableName, now: Date.now }), tableLessonAudiencePort({ documentClient: dependencies.documentClient, tableName: dependencies.tableName, now: Date.now })), tableProjectRepoScopes({ documentClient: dependencies.documentClient, tableName: dependencies.tableName }, { record: teamRecord.table })),
     evidence: { documentClient: dependencies.documentClient, tableName: dependencies.tableName, signInTableName, now: Date.now },
     resolveMember: (_orgId, developerId) => followMerges(merges, developerId),
     linkedAccounts: async (orgId, developerId) => {

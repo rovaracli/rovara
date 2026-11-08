@@ -36,7 +36,7 @@ async function setup(repos: RepoRead, tasks: Record<string, LessonTaskAudience |
   await addSource(w, { source: "github", scope: REPO });
   await w.sink.put(githubDraft({ audience: repoAudience() }));
   const team: TaskVisibilityPort = { read: async () => new Map() };
-  const taskVisibility = withProjectRepoScopes(withLessonAudiences(team, { read: async (_org, ids) => new Map(ids.map((id) => [id, id in tasks ? tasks[id] : wideAudience()])) }), { read: () => repos() });
+  const taskVisibility = withProjectRepoScopes(withLessonAudiences(team, { read: async (_org, ids) => new Map(ids.map((id) => [id, id in tasks ? tasks[id] : wideAudience()])) }), { read: () => repos(), placeOf: async (_org, _project, name) => ({ api: REPO, web: OTHER_REPO } as Record<string, string>)[name] });
   const access = createAccessCheckPort(w.table, { taskVisibility });
   const store = new InMemoryLessonStore();
   const vectors = new MemoryVectors();
@@ -180,28 +180,52 @@ describe("a lesson from a PR comment in a private project repository", () => {
     expect(await learnedContextFromRefs(deps, refs)).toBeUndefined();
   });
 
-  it("the pull request list counts it, and names it only for a private repository with every source task open to the project", async () => {
-    const t = await setup(projectHas(REPO));
+  it("the pull request list counts it everywhere, and (decision 36) names it only in repository A itself, for a private repository with every source task open to the project", async () => {
+    const t = await setup(projectHas(REPO, OTHER_REPO));
     await t.put(prLesson);
     const manifest: LoadManifest = { taskId: "task-run", workspaceId: WS, project: PROJECT, stage: "IMPLEMENT", round: 1, setVersion: 1, memory: "live", at: 1, lessons: [{ id: "les_prcomment1", version: 1, score: 0.5, why: "scope", citation: "valid" }], bytes: 10 };
     await t.store.putManifest(manifest);
     const names = { memberName: async () => undefined, isErased: async () => false } as never;
     const input = { orgId: WS, project: PROJECT, taskId: "task-run", pageUrl: "https://app.example.test/review/x/task" };
     const read = lessonsUsedReaderOver({ store: t.store, settings: settings(), access: t.access, names, visibility: async () => "private" });
-    expect(await read(input)).toMatchObject({ count: 1, items: [{ id: "les_prcomment1" }] });
+    // The lesson is restricted only to REPO (repository "api"): named in a pull request of "api", counted only in "web" (another project repository), in an unknown repository and when no repository is given.
+    expect(await read({ ...input, repo: "api" })).toMatchObject({ count: 1, items: [{ id: "les_prcomment1" }] });
+    expect(await read({ ...input, repo: "web" })).toMatchObject({ count: 1, items: [] });
+    expect(await read({ ...input, repo: "not-a-project-repo" })).toMatchObject({ count: 1, items: [] });
+    expect(await read(input)).toMatchObject({ count: 1, items: [] });
+    // A project-wide lesson that merely cites the repository among its sources is named in every repository (the rule is about a lesson RESTRICTED to one repository).
+    const wide = lessonWith("les_widewithrepo", { kind: "project" }, [REPO]);
+    await t.put(wide);
+    await t.store.putManifest({ ...manifest, taskId: "task-wide", lessons: [{ id: "les_widewithrepo", version: 1, score: 0.5, why: "scope", citation: "valid" }] });
+    expect(await read({ ...input, taskId: "task-wide", repo: "web" })).toMatchObject({ count: 1, items: [{ id: "les_widewithrepo" }] });
+    // A repository that left the project: the lesson is not counted at all.
     const removed = lessonsUsedReaderOver({ store: t.store, settings: settings(), access: (await setup(projectHas())).access, names, visibility: async () => "private" });
-    expect(await removed(input)).toBeUndefined();
+    expect(await removed({ ...input, repo: "api" })).toBeUndefined();
   });
 
-  it("promote: a repository-restricted lesson is promoted as a project-wide one (and refused when the repository is not the project's)", async () => {
+  it("decision 36: a placeOf that fails, or a port without it, never names a repository-only lesson", async () => {
+    const names = { memberName: async () => undefined, isErased: async () => false } as never;
+    const input = { orgId: WS, project: PROJECT, taskId: "task-run", pageUrl: "https://app.example.test/review/x/task", repo: "api" };
+    const manifest: LoadManifest = { taskId: "task-run", workspaceId: WS, project: PROJECT, stage: "IMPLEMENT", round: 1, setVersion: 1, memory: "live", at: 1, lessons: [{ id: "les_prcomment1", version: 1, score: 0.5, why: "scope", citation: "valid" }], bytes: 10 };
+    for (const port of [{ read: async () => new Set([REPO]), placeOf: async (): Promise<string | undefined> => { throw new Error("unreadable"); } }, { read: async () => new Set([REPO]) }]) {
+      const t = await setup(projectHas(REPO));
+      const access = createAccessCheckPort(t.w.table, { taskVisibility: withProjectRepoScopes(withLessonAudiences({ read: async () => new Map() } as TaskVisibilityPort, { read: async (_o, ids) => new Map(ids.map((id) => [id, wideAudience()])) }), port) });
+      await t.put(prLesson);
+      await t.store.putManifest(manifest);
+      expect(await lessonsUsedReaderOver({ store: t.store, settings: settings(), access, names, visibility: async () => "private" })(input)).toMatchObject({ count: 1, items: [] });
+    }
+  });
+
+  it("promote: a project rule is read in every repository, so a repository-restricted lesson is refused (decision 36); a project-wide one is not", async () => {
     const a = { ...(await setup(projectHas(REPO))) };
     const b = { ...(await setup(projectHas())) };
-    await a.put(prLesson);
+    await a.put(prLesson, lessonWith("les_promotewide1", { kind: "project" }, []));
     await b.put(prLesson);
     const base = { directory: { eligibility: async () => ({ complete: true, eligibleIds: ["owner"], ownerIds: ["owner"] }) }, settings: settings(), now: () => 1, audit: new Audit() };
-    const attempt = async (t: typeof a) => promoteToRule({ ...base, store: t.store, taskVisibility: t.taskVisibility } as never, { workspaceId: WS, project: PROJECT, lessonId: "les_prcomment1", approverId: "owner" });
+    const attempt = async (t: typeof a, lessonId = "les_prcomment1") => promoteToRule({ ...base, store: t.store, taskVisibility: t.taskVisibility } as never, { workspaceId: WS, project: PROJECT, lessonId, approverId: "owner" });
     expect(await attempt(b)).toEqual({ ok: false, code: "restricted" });
-    expect(await attempt(a)).not.toEqual({ ok: false, code: "restricted" });
+    expect(await attempt(a)).toEqual({ ok: false, code: "restricted" });
+    expect(await attempt(a, "les_promotewide1")).not.toEqual({ ok: false, code: "restricted" });
   });
 });
 

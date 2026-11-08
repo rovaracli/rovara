@@ -4,7 +4,7 @@
 import type { TaskVisibilityPort } from "../team-record/live-audience.js";
 import { cleanForLearning } from "./guards.js";
 import { createLessonLiveReader } from "./live-visibility.js";
-import { mentionsRepoPlace, viewedForLessons } from "./project-repo-audience.js";
+import { mentionsRepoPlace, repoOnlyScopes, viewedForLessons } from "./project-repo-audience.js";
 import { trySecondPerson } from "./approve.js";
 import { emitAudit, modeAllows, requireAudit, resolveLearning, type LearningSettingsReader } from "./policy.js";
 import type { ApproverDirectory, LessonDeps, RulePublisher } from "./ports.js";
@@ -53,6 +53,9 @@ export async function promoteToRule(deps: PromoteDeps, input: { workspaceId: str
   // Owner decision 34: a restriction that is only the readers of the project's own repositories counts as project-wide (read live; unreadable leaves it restricted).
   const reader = createLessonLiveReader({ port: deps.taskVisibility, key, where: "promote" });
   if (isRestricted(viewedForLessons(lesson, mentionsRepoPlace(lesson) ? await reader.projectRepos() : undefined))) return { ok: false, code: "restricted" };
+  // Owner decision 36: a project rule is read in EVERY repository of the project, but a lesson restricted only to one repository is named and published only there. Rules are per project, not per repository, so such a lesson is
+  // refused here (the conservative choice); it keeps loading as a lesson, and a person can write the rule themselves.
+  if (repoOnlyScopes(lesson) !== undefined) return { ok: false, code: "restricted" };
   // Every task it was learned from must be project-wide NOW (a reader of "nobody in particular" keeps it only then).
   if ((await reader.keep(undefined, [lesson])).length !== 1) return { ok: false, code: "task_not_shared" };
   if (!trustAtLeast(lesson.provenance.minTrust, "rovara")) return { ok: false, code: "not_trusted" };

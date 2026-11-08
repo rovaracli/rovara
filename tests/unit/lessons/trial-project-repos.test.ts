@@ -61,9 +61,13 @@ describe("trialBlockers and classifyTier follow the project's own repositories (
 
   it("isPublishable is asked with the project's repositories too: a stable lesson restricted to them is publishable, otherwise not", () => {
     const stable = prComment({ status: "active", trial: { state: "stable", startedAt: 1, stableAt: 2 } as never });
-    expect(isPublishable(stable, [], new Set([REPO]))).toBe(true);
+    // Decision 36: published only into repository A itself (its place is the target); no target, or another repository of the project, is refused.
+    expect(isPublishable(stable, [], new Set([REPO]), REPO)).toBe(true);
+    expect(isPublishable(stable, [], new Set([REPO]))).toBe(false);
+    expect(isPublishable(stable, [], new Set([REPO, OTHER_REPO]), OTHER_REPO)).toBe(false);
+    expect(isPublishable(stable, [], undefined, REPO)).toBe(false);
     expect(isPublishable(stable, [])).toBe(false);
-    expect(isPublishable(stable, [], new Set([OTHER_REPO]))).toBe(false);
+    expect(isPublishable(stable, [], new Set([OTHER_REPO]), REPO)).toBe(false);
   });
 });
 

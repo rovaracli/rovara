@@ -195,7 +195,7 @@ export async function describeFeedbackFixes(dependencies: AwsBrokerDependencies,
       ? await loadTestingView({ documentClient: dependencies.documentClient, tableName: dependencies.tableName, now: Date.now, nightlyHead: nightlyHeadReaderOf(dependencies), evidence: evidenceRouteDependencies(dependencies).evidence }, task, workflow) : undefined;
     // Approve by exception (DECISIONS 24): the lessons used so far, rewritten with the rest of the block (a fix may have loaded more).
     const lessonsUsed = task.orgId !== undefined && dependencies.developer?.issuer !== undefined
-      ? lessonsUsedSection(await lessonsUsedForTask({ orgId: task.orgId, project: task.project, taskId: task.taskId, pageUrl: taskPageUrl(dependencies.developer.issuer, task.taskId) })) : undefined;
+      ? lessonsUsedSection(await lessonsUsedForTask({ orgId: task.orgId, project: task.project, taskId: task.taskId, pageUrl: taskPageUrl(dependencies.developer.issuer, task.taskId), repo: record.repository })) : undefined;
     const bodyContext = changedFiles === undefined && tracked === undefined && linearIssueKey === undefined && proof === undefined && !reviewSameModel && secondReviewLines.length === 0 && evidenceRisk === undefined && testing === undefined && lessonsUsed === undefined ? undefined : {
       ...(testing === undefined ? {} : { testing }), ...(lessonsUsed === undefined ? {} : { lessonsUsed }),
       ...(reviewSameModel ? { reviewSameModel: true as const } : {}), ...(secondReviewLines.length === 0 ? {} : { secondReviewLines }), ...(changedFiles === undefined ? {} : { changedFiles }), ...(tracked === undefined ? {} : { ciBasis: tracked.ciBasis, baseBranch: tracked.baseBranch }),
