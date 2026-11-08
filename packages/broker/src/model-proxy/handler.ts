@@ -6,7 +6,7 @@ import { GetSecretValueCommand, SecretsManagerClient } from "@aws-sdk/client-sec
 import { AssumeRoleCommand, STSClient } from "@aws-sdk/client-sts";
 import { AgentXError, MODEL_ENDPOINT_SECRET_PREFIX, agentXError, isModelEndpointSecretRef } from "@agentx/contracts";
 import { bedrockClaudeModelIds, listPricesPerMillion, proxyGeographyForRegion } from "@agentx/model-runtime/catalog";
-import type { ModelAccess } from "./access.js";
+import { LearningNotForwarded, type ModelAccess } from "./access.js";
 import { endpointRangesFromEnvironment, modelEndpointChecker, CUSTOM_MODEL_ENDPOINTS_ENV } from "../model-sources/endpoint-qualification.js";
 import { ModelProxyClient, type RoleAssumer } from "./client.js";
 import { ModelAccessRequestSchema, type ModelAccessRequest, type ModelAccessResponse } from "./protocol.js";
@@ -112,7 +112,7 @@ export function createModelAccessHandler(input: { access: ModelAccess; log?: (en
     } catch (error) {
       if (error instanceof AgentXError) {
         log({ event: "model_access.failed", op, code: error.code });
-        return { ok: false, code: error.code, message: error.message.slice(error.code.length + 2) };
+        return { ok: false, code: error.code, message: error.message.slice(error.code.length + 2), ...(error instanceof LearningNotForwarded ? { notForwarded: true as const } : {}) };
       }
       log({ event: "model_access.failed", op, code: "MODEL_PROXY_UNAVAILABLE" });
       return { ok: false, code: "MODEL_PROXY_UNAVAILABLE", message: "model access failed unexpectedly" };

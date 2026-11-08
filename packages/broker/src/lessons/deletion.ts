@@ -33,6 +33,11 @@ export interface LessonDeletionPort {
   forgetSources(orgId: string, project: string, lessonId: string, deleted: ReadonlySet<string>, cause?: DeletionCause, erased?: ErasedPerson): Promise<void>;
   /** Finishes every deletion that was started and not finished (a retry, or a sweeper): the original intent is resumed, never switched. Returns how many it finished. */
   resumePending(orgId: string, project: string): Promise<number>;
+  /**
+   * L4 (lane 2 review): the same, for a sweeper. EVERY unfinished intent is tried (one that fails never stops the ones after it); nothing is thrown, the counts are returned. `resumePending` tries them all too, and then
+   * throws the first failure, because an erase must not report done while an intent is not.
+   */
+  resumeAll(orgId: string, project: string): Promise<{ finished: number; failed: number }>;
   /** The whole erasure of one person in one project: purge what they wrote or alone support, scrub them from the rest. Returns what was purged and scrubbed. */
   erasePerson(orgId: string, project: string, erased: ErasedPerson, deleted: ReadonlySet<string>): Promise<{ purged: string[]; scrubbed: string[] }>;
   /** Removes an erased person's source ids from the audience snapshot of every version of every lesson of the project (the id must not outlive the erase anywhere). */
@@ -181,6 +186,16 @@ export function lessonDeletionPort(deps: DeletionDeps): LessonDeletionPort {
     await start(k, { lessonId, kind: "forget", cause, deleted: [...deleted], outcome, inSet: h.inSet });
   }
 
+  /** Tries every unfinished intent of the scope, in order; a failure is counted and the first one kept (the intent's own error). */
+  async function resumeScope(orgId: string, project: string): Promise<{ finished: number; failed: number; firstFailure: unknown }> {
+    const k = key(orgId, project);
+    let finished = 0, failed = 0, firstFailure: unknown;
+    for (const intent of await deps.store.listIntents(k, { finished: false })) {
+      try { await execute(k, intent); finished += 1; } catch (error) { if (failed === 0) firstFailure = error; failed += 1; }
+    }
+    return { finished, failed, firstFailure };
+  }
+
   return {
     async affected(orgId, project, deleted, erased) {
       const out: LessonForDeletion[] = [];
@@ -203,10 +218,13 @@ export function lessonDeletionPort(deps: DeletionDeps): LessonDeletionPort {
       await deps.store.fence(k, { sourceIds: ids });
       for (const h of await histories(k)) await everyVersion(k, h.head.id, (l) => stripAudienceIds(l, gone));
     },
+    async resumeAll(orgId, project) {
+      const { finished, failed } = await resumeScope(orgId, project);
+      return { finished, failed };
+    },
     async resumePending(orgId, project) {
-      const k = key(orgId, project);
-      let finished = 0;
-      for (const intent of await deps.store.listIntents(k, { finished: false })) { await execute(k, intent); finished += 1; }
+      const { finished, failed, firstFailure } = await resumeScope(orgId, project);
+      if (failed > 0) throw firstFailure;
       return finished;
     },
     async erasePerson(orgId, project, erased, deleted) {

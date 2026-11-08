@@ -1,7 +1,17 @@
 // What the broker's callers see of the model proxy (ruling R28). ModelProxyClient talks to LiteLLM
 // directly and runs only inside the VPC-attached ModelAccessFunction; ModelAccessInvoker satisfies the
 // same interface from the broker Lambdas, which are not in the VPC and never hold the master key.
-import type { ModelSource, OrgId } from "@agentx/contracts";
+import { AgentXError, errorStatus, type ModelSource, type OrgId } from "@agentx/contracts";
+
+/**
+ * A learning call the in-VPC client refused BEFORE it sent anything to the proxy (the connection to it was refused, or the name did not resolve). Nothing can have reached the provider, so the caller may try the
+ * reflection again; every other failure of a learning call, once it has started, is final (a timeout, an abort, a non-200 answer or an answer with no text may all have been billed). The flag crosses the Lambda
+ * boundary as `notForwarded` on the failure answer (`protocol.ts`).
+ */
+export class LearningNotForwarded extends AgentXError {
+  readonly notForwarded = true as const;
+  constructor(message: string) { super("MODEL_PROXY_UNAVAILABLE", message, errorStatus("MODEL_PROXY_UNAVAILABLE")); }
+}
 
 export interface SpendFigures {
   spentUsd: number;
@@ -82,6 +92,8 @@ export interface LearningCompletionInput {
    * request carries no reasoning field at all (an Anthropic model thinks only when asked, and the Messages transport has no such field here).
    */
   reasoningEffort?: "none" | "minimal" | "low" | undefined;
+  /** Aborted when the caller's reflection reaches its deadline (lessons in production, M4): only the broker's wait for the function stops; the function may still be running. Never sent to the function. */
+  signal?: AbortSignal | undefined;
 }
 
 export interface LearningCompletion {

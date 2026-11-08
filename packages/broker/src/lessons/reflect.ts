@@ -2,6 +2,7 @@
 // code turns into lesson drafts; the model never writes to a store. Any parse failure drops the whole output, with no retry loop.
 import { randomUUID } from "node:crypto";
 import { cleanForLearning } from "./guards.js";
+import { currentLearningAttempt } from "./learning-deadline.js";
 import { isLearningRefusal, noteModelFailure, notePause, noteRecovered, pauseOfLook, spendLook, type LessonsPauseStore } from "./pause.js";
 import { learningCaps, modeAllows, resolveLearning, type Edition, type LearningSettingsReader } from "./policy.js";
 import type { Clock, LearningSpend, LessonAuditSink, Metrics, PipelineModel } from "./ports.js";
@@ -89,6 +90,16 @@ function parseJson(text: string): unknown {
 const shaMatches = (cited: string, known: string | undefined): boolean => known !== undefined && cited.length >= 7 && (known === cited || known.startsWith(cited));
 
 /**
+ * Counts a failed model call toward the project's `model_failed` pause, once per REFLECTION (re-check R3). Inside the worker a failure that came before the call and that the worker will try again is not counted
+ * (`fault` is retryable and another attempt is left): one task's retries cannot trip the 3-in-a-row pause. The last attempt's retryable fault, and every final failure, are counted once.
+ */
+async function countFailure(deps: ReflectDeps, subject: ReflectSubject): Promise<void> {
+  const attempt = currentLearningAttempt();
+  if (attempt?.fault === "retryable" && attempt.lastAttempt !== true) return;
+  await noteModelFailure(deps.pause, subject.workspaceId, subject.project);
+}
+
+/**
  * Reflects on one finished task (or one set of recent facts). Never throws and never blocks the task: every failure is a fixed `reason`.
  * `budget`, when given, is the nightly budget this call draws from.
  */
@@ -110,7 +121,7 @@ export async function reflectSubject(deps: ReflectDeps, subject: ReflectSubject,
   const perTaskCap = caps.perTaskUsd;
   if (deps.model.quote !== undefined) {
     let quoted: Awaited<ReturnType<NonNullable<PipelineModel["quote"]>>>;
-    try { quoted = await deps.model.quote(request); } catch { deps.metrics?.count("learning.reflect_failed", { reason: "model_error" }); await noteModelFailure(deps.pause, subject.workspaceId, subject.project); return none("dropped", "model_error"); }
+    try { quoted = await deps.model.quote(request); } catch { deps.metrics?.count("learning.reflect_failed", { reason: "model_error" }); await countFailure(deps, subject); return none("dropped", "model_error"); }
     if (!quoted.ok) { await notePause(deps.pause, subject.workspaceId, subject.project, quoted.code); return none("skipped", "learning_paused"); }
     estimate = quoted.usd;
     // Public keeps its per-task cap whatever the quote (owner rule "Public keeps the caps"): a call whose sized hold is above it is refused. Enterprise has none of its own (`learningCaps`).
@@ -138,7 +149,7 @@ export async function reflectSubject(deps: ReflectDeps, subject: ReflectSubject,
     // The model's key held its cap in the company's spend ledger; whatever the failed call cost is settled from there. A failed call may have spent money, so it counts toward the nightly budget (R6).
     if (budget !== undefined) budget.spentUsd += estimate;
     deps.metrics?.count("learning.reflect_failed", { reason: "model_error" });
-    await noteModelFailure(deps.pause, subject.workspaceId, subject.project);
+    await countFailure(deps, subject);
     return none("dropped", "model_error");
   }
   const cost = Number.isFinite(reply.costUsd) && reply.costUsd > 0 ? reply.costUsd : 0;

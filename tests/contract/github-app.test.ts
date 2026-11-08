@@ -317,22 +317,23 @@ describe("GitHub App repository credentials", () => {
     await expect(provider.getFileAtCommit(url, "big.txt", sha, { system: "private-install" })).rejects.toThrow(/file too large/);
   });
 
-  it("tells a file from a directory from nothing at a commit (lessons in production: pathKind), and never calls an error 'none'", async () => {
+  it("tells a file from a directory from nothing at a commit by listing the parent directory (lessons in production: pathKind, L7), and never calls an error 'none'", async () => {
     const { privateKey } = generateKeyPairSync("rsa", { modulusLength: 2048 });
     const pem = privateKey.export({ type: "pkcs8", format: "pem" }).toString();
     const sha = "e".repeat(40);
     const requests: Array<{ url: string; init: RequestInit | undefined }> = [];
+    const full = Array.from({ length: 1000 }, (_unused, index) => ({ type: "file", name: `f${index}` }));
     const provider = appProvider({
       credentialRef: "github-agentx-sdlc", appId: "5002502", getPrivateKey: async () => pem,
       fetchImplementation: async (url, init) => {
         const requestUrl = typeof url === "string" ? url : url instanceof URL ? url.href : url.url;
         requests.push({ url: requestUrl, init });
         if (requestUrl.endsWith("/access_tokens")) return new Response(JSON.stringify({ token: "lookup-token" }), { status: 201 });
+        if (requestUrl.includes("/contents/src?")) return new Response(JSON.stringify([{ type: "file", name: "a.ts" }, { type: "dir", name: "http" }, { type: "symlink", name: "link" }, { type: "mystery", name: "weird" }]), { status: 200 });
+        if (requestUrl.includes("/contents/vendor?")) return new Response(JSON.stringify([{ type: "submodule", name: "lib" }]), { status: 200 });
+        if (requestUrl.includes("/contents?ref=")) return new Response(JSON.stringify([{ type: "dir", name: "src" }, { type: "file", name: "README.md" }]), { status: 200 });
         if (requestUrl.includes("/contents/src/a.ts?")) return new Response(JSON.stringify({ type: "file", name: "a.ts", content: "eA==" }), { status: 200 });
-        if (requestUrl.includes("/contents/src?")) return new Response(JSON.stringify([{ type: "file", name: "a.ts" }]), { status: 200 });
-        if (requestUrl.includes("/contents/vendor/lib?")) return new Response(JSON.stringify({ type: "submodule", name: "lib" }), { status: 200 });
-        if (requestUrl.includes("/contents/link?")) return new Response(JSON.stringify({ type: "symlink", name: "link" }), { status: 200 });
-        if (requestUrl.includes("/contents/weird?")) return new Response(JSON.stringify({ type: "mystery" }), { status: 200 });
+        if (requestUrl.includes("/contents/big?")) return new Response(JSON.stringify(full), { status: 200 });
         if (requestUrl.includes("/contents/huge?")) return new Response("[]", { status: 200, headers: { "content-length": String(3 * 1024 * 1024) } });
         if (requestUrl.includes("/contents/broken?")) return new Response("oops", { status: 500 });
         return new Response("not found", { status: 404 });
@@ -341,15 +342,23 @@ describe("GitHub App repository credentials", () => {
     const url = "https://github.com/ps06756/personal-website-test.git";
     const kind = (path: string) => provider.getPathKindAtCommit(url, path, sha, { system: "private-install" });
     expect(await kind("src/a.ts")).toBe("file");
+    expect(await kind("src/http")).toBe("dir");
     expect(await kind("src")).toBe("dir");
+    expect(await kind("README.md")).toBe("file");
     expect(await kind("vendor/lib")).toBe("dir");
-    expect(await kind("link")).toBe("file");
-    expect(await kind("missing")).toBe("none");
-    for (const path of ["weird", "huge", "broken"]) await expect(kind(path), path).rejects.toMatchObject({ code: "RUNTIME_UNAVAILABLE" });
+    expect(await kind("src/missing.ts")).toBe("none");
+    expect(await kind("missing/deeper.ts")).toBe("none");
+    // Something below a file is nothing.
+    expect(await kind("src/a.ts/below")).toBe("none");
+    // L7: a symbolic link is not claimed to be a file (it may point at a directory); an unknown type, a full listing that does not name the path, a huge answer and a GitHub error are "cannot tell".
+    for (const path of ["src/link", "src/weird", "big/missing", "huge/x", "broken/x"]) await expect(kind(path), path).rejects.toMatchObject({ code: "RUNTIME_UNAVAILABLE" });
+    expect(await kind("big/f7")).toBe("file");
     // The same rules as a file read: a full commit id and a clean repository-relative path, with the contents-read token and the ordinary (JSON) media type.
     await expect(provider.getPathKindAtCommit(url, "src", "main", { system: "private-install" })).rejects.toMatchObject({ code: "CONFIG_INVALID" });
     await expect(kind("../etc")).rejects.toMatchObject({ code: "CONFIG_INVALID" });
     await expect(kind("a//b")).rejects.toMatchObject({ code: "CONFIG_INVALID" });
+    // Only the parent directory's listing is asked for: "src/a.ts" and "src/http" are read from the listing of "src", never fetched themselves.
+    expect(requests.filter((request) => request.url.endsWith(`/contents/src?ref=${sha}`)).length).toBeGreaterThanOrEqual(4);
     expect(requests.find((request) => request.url.includes("/contents/src?"))?.url).toBe(`https://api.github.com/repos/ps06756/personal-website-test/contents/src?ref=${sha}`);
     expect((requests.find((request) => request.url.includes("/contents/src?"))?.init?.headers as Record<string, string>).accept).not.toBe("application/vnd.github.raw+json");
     expect((JSON.parse(requests[0]?.init?.body as string) as { permissions: unknown }).permissions).toEqual({ contents: "read" });

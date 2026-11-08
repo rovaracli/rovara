@@ -18,6 +18,7 @@ import { OrgIdSchema, workflowFindingFingerprint, type WorkflowArtifact, type Wo
 import { taskKey, taskOwnerKey, tryEffectiveTaskOwner, type DeveloperTaskRecord } from "../../developer/task-records.js";
 import { loadWorkflowDocument } from "../../developer/plan-artifacts.js";
 import type { TaskSubjectBase, TaskSubjectSource } from "../../lessons/task-end.js";
+import { isHumanSendBack } from "../../lessons/human-send-backs.js";
 import type { EvidenceSpan } from "../../lessons/reflect-input.js";
 import { taskStartActor } from "../../lessons/task-subject.js";
 import type { Audience, TrustClass } from "../../lessons/types.js";
@@ -231,7 +232,7 @@ export function lessonSubjectSource(deps: LessonSubjectSourceDeps): TaskSubjectS
 
       const links = (workflow?.pullRequests ?? []).map((pullRequest) => pullRequest.url).slice(0, 32);
       const sendBackRequestIds = (workflow?.decisions ?? [])
-        .filter((decision) => decision.source === "SEND_BACK" && decision.actorRole !== "AGENTX")
+        .filter(isHumanSendBack)
         .map((decision) => decision.requestId)
         .slice(0, MAX_SEND_BACK_IDS);
 

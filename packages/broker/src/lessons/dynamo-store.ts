@@ -40,6 +40,8 @@ export const MAX_COMMIT_WRITES = 30;
 export const MAX_SNAPSHOTS_READ = 500;
 const MAX_QUERY_ITEMS = 20_000;
 const TX_LIMIT = 100;
+/** L5: after this many busy refusals on one unfinished change, it is recorded as an alert and the refusal says an administrator is needed. */
+export const LESSON_STUCK_AFTER_TRIES = 5;
 const RETRIES = 5;
 const DAY = 86_400_000;
 const SOURCE_EVENT_TTL_DAYS = 60;
@@ -59,7 +61,7 @@ interface Names { [alias: string]: string }
 
 export class DynamoLessonStore implements LessonStore {
   /** `orgOf` maps a scope's workspace id to the org id that keys the partition; the default is the id itself (the workspace IS the org). Tests with made-up workspace ids pass a mapper. */
-  constructor(private readonly table: TeamRecordTable, private readonly now: () => number = Date.now, private readonly orgOf: (workspaceId: string) => OrgId = (id) => id) {}
+  constructor(private readonly table: TeamRecordTable, private readonly now: () => number = Date.now, private readonly orgOf: (workspaceId: string) => OrgId = (id) => id, private readonly log: (event: string, fields: Record<string, string | number>) => void = (event, fields) => console.log(JSON.stringify({ component: "lessons", event, ...fields }))) {}
 
   // ---- keys
   private pk(key: ScopeKey): string { return lessonSetKey(this.orgOf(key.workspaceId), key.project).pk; }
@@ -391,8 +393,42 @@ export class DynamoLessonStore implements LessonStore {
       try { return await this.heal(key); }
       catch (error) {
         if (!(error instanceof AgentXError) || error.code !== "RUNTIME_UNAVAILABLE") throw error;
-        if (attempt >= 1) throw agentXError("LESSON_BUSY", "These lessons are being tidied up from an earlier change. Try again in a moment.");
+        if (attempt >= 1) {
+          // L5: still stuck. The refusal is counted on the intent; from the fifth on it is recorded as an alert and no longer reads as "try again" (a permanent fault must not look like a passing one).
+          const tries = await this.noteBusy(key);
+          throw agentXError("LESSON_BUSY", tries !== undefined && tries >= LESSON_STUCK_AFTER_TRIES
+            ? "These lessons could not be repaired automatically after several tries. An administrator needs to look at them."
+            : "These lessons are being tidied up from an earlier change. Try again in a moment.");
+        }
       }
+    }
+  }
+
+  /**
+   * L5: counts a busy refusal on the stuck intent (best effort: a fault of this write never changes the refusal), logs one fixed line (the scope as a hash, the intent's age and the number of tries; no ids, no text),
+   * and on the fifth records the alert on the intent itself (`stuckAt`, once) with its own line. Returns the number of tries, or undefined when it could not be counted.
+   */
+  private async noteBusy(key: ScopeKey): Promise<number | undefined> {
+    try {
+      const nowMs = this.now();
+      const updated = await this.send<{ Attributes?: Item }>(new UpdateCommand({
+        TableName: this.table.tableName, Key: this.intentRbKey(key), UpdateExpression: "SET lastBusyAt = :now ADD busyCount :one", ConditionExpression: "attribute_exists(pk)",
+        ExpressionAttributeValues: { ":now": nowMs, ":one": 1 }, ReturnValues: "ALL_NEW",
+      }));
+      const row = updated.Attributes;
+      const tries = Number(row?.["busyCount"]);
+      if (!Number.isFinite(tries)) return undefined;
+      const at = Number(row?.["at"]);
+      const scope = createHash("sha256").update(`${key.workspaceId}\u0000${key.project}`).digest("hex").slice(0, 12);
+      this.log("lessons.intent_stuck", { scope, tries, ageMs: Number.isFinite(at) ? Math.max(0, nowMs - at) : -1 });
+      if (tries >= LESSON_STUCK_AFTER_TRIES && row?.["stuckAt"] === undefined) {
+        await this.send(new UpdateCommand({
+          TableName: this.table.tableName, Key: this.intentRbKey(key), UpdateExpression: "SET stuckAt = :now", ConditionExpression: "attribute_exists(pk) AND attribute_not_exists(stuckAt)", ExpressionAttributeValues: { ":now": nowMs },
+        })).then(() => this.log("lessons.intent_stuck_alert", { scope, tries }), (error: unknown) => { if (errorName(error) !== "ConditionalCheckFailedException") throw error; });
+      }
+      return tries;
+    } catch {
+      return undefined;
     }
   }
 

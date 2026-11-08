@@ -1,7 +1,7 @@
 // Lessons in production, lane 2 (WB-4): the queue a finished task's reflection waits in. The message holds ids and one fixed word only (never a person's words, a task title or any text): the org, the task, how
 // the task ended and the request that asked. A worker (`reflect-worker.ts`) reads everything else fresh, so what it reflects on is what is true when it runs (an erased person, a deleted place and a changed
 // project setting are all seen).
-import { SendMessageCommand } from "@aws-sdk/client-sqs";
+import { ChangeMessageVisibilityCommand, SendMessageCommand } from "@aws-sdk/client-sqs";
 import { OrgIdSchema, lessonsReflectQueueName } from "@agentx/contracts";
 import { z } from "zod";
 
@@ -15,13 +15,33 @@ export type ReflectMessage = z.infer<typeof ReflectMessageSchema>;
 /** Where a reflection is sent. Throws when the queue did not take it (the caller turns that into one fixed log line). */
 export interface ReflectQueue { send(message: ReflectMessage): Promise<void> }
 
-export function sqsReflectQueue(client: { send(command: SendMessageCommand): Promise<unknown> }, queueUrl: string): ReflectQueue {
+/** M1: how long a task end (or the nightly job) waits for the queue. The client gives up sooner (`reflectQueueClientConfiguration`); this is the last guard, for a client that does not. */
+export const REFLECT_SEND_TIMEOUT_MS = 2000;
+/** The reflect queue's own SQS client settings: two tries and 1.5 s on the request and the connection (the same kind of limits as the audit client), so a queue brownout cannot hold a task end. */
+export const REFLECT_SDK_REQUEST_TIMEOUT_MS = 1500;
+
+export function sqsReflectQueue(client: { send(command: SendMessageCommand, options?: { abortSignal?: AbortSignal }): Promise<unknown> }, queueUrl: string, options: { timeoutMs?: number } = {}): ReflectQueue {
+  const timeoutMs = options.timeoutMs ?? REFLECT_SEND_TIMEOUT_MS;
   return {
     async send(message) {
       const body = JSON.stringify(ReflectMessageSchema.parse(message));
-      await client.send(new SendMessageCommand({ QueueUrl: queueUrl, MessageBody: body }));
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      try {
+        await Promise.race([
+          client.send(new SendMessageCommand({ QueueUrl: queueUrl, MessageBody: body }), { abortSignal: AbortSignal.timeout(timeoutMs) }),
+          new Promise<never>((_resolve, reject) => { timer = setTimeout(() => reject(new Error("the reflection queue did not answer in time")), timeoutMs); }),
+        ]);
+      } finally {
+        if (timer !== undefined) clearTimeout(timer);
+      }
     },
   };
+}
+
+/** The worker's side of a retry: the message comes back after `seconds`, not after the queue's whole visibility timeout. Best effort (the caller ignores a failure). */
+export interface ReflectVisibility { delay(receiptHandle: string, seconds: number): Promise<void> }
+export function sqsReflectVisibility(client: { send(command: ChangeMessageVisibilityCommand): Promise<unknown> }, queueUrl: string): ReflectVisibility {
+  return { async delay(receiptHandle, seconds) { await client.send(new ChangeMessageVisibilityCommand({ QueueUrl: queueUrl, ReceiptHandle: receiptHandle, VisibilityTimeout: seconds })); } };
 }
 
 /** The queue's URL, built from the install's own environment name, region and account (the same derivation as the Team record's queues). `undefined` when any is missing. */

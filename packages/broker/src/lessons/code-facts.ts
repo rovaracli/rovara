@@ -110,9 +110,10 @@ export function createCodeFacts(deps: CodeFactsDeps): CodeFacts {
       if (glob && prefix === "") return true;
       if (deps.reader.kind !== undefined) {
         const kind = await within(() => deps.reader.kind!({ ...ask, path: prefix }));
-        if (kind === undefined) return undefined;
         // A glob's prefix must be a directory; a plain path may be a file or a directory.
-        return glob ? kind === "dir" : kind !== "none";
+        if (kind !== undefined) return glob ? kind === "dir" : kind !== "none";
+        // M3 (lane 2 review): a host that cannot tell the kind (its `kind` answers "cannot tell", as the broker's reader does for a host without `pathKind`) falls back to reading the file, exactly as a reader
+        // without `kind` always did; a glob needs the directory and stays unverified.
       }
       // No way to tell a directory from a missing path: only a file that can be read is known to exist.
       if (glob) return undefined;

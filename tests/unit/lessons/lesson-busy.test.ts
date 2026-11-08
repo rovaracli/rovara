@@ -67,6 +67,35 @@ describe("a commit that meets a stuck intent", () => {
     await expect(store.rollback(KEY, 5, await store.setVersion(KEY), 60)).rejects.toMatchObject({ code: "LESSON_BUSY" });
   });
 
+  it("L5: every busy refusal is counted on the intent and logged with a hashed scope and the intent's age; the fifth is recorded as an alert (stuckAt) and its text says it needs an administrator, not 'try again'", async () => {
+    const { db } = await withOpenIntent();
+    const logs: Array<{ event: string; fields: Record<string, string | number> }> = [];
+    const store = new DynamoLessonStore({ documentClient: db, tableName: "TeamRecord" }, () => 1_000, undefined, (event, fields) => logs.push({ event, fields }));
+    const intent = db.find((item) => item.sk === "LESSONSET#RBINTENT")[0]!;
+    db.delete({ pk: intent.pk as string, sk: `LESSON#${(intent.ids as string[])[0]!}#V#000000000002` });
+    const texts: string[] = [];
+    for (let attempt = 1; attempt <= 6; attempt += 1) {
+      const error = await commitOne(store).then(() => undefined, (caught: unknown) => caught as Error);
+      expect(error).toMatchObject({ code: "LESSON_BUSY", statusCode: 409 });
+      texts.push(error!.message);
+      const row = db.find((item) => item.sk === "LESSONSET#RBINTENT")[0]!;
+      expect(row["busyCount"]).toBe(attempt);
+      expect(row["stuckAt"] !== undefined, `after ${attempt}`).toBe(attempt >= 5);
+    }
+    // The first four say "try again"; from the fifth on the refusal says the repair needs an administrator (a permanent fault must not read as a passing one).
+    expect(new Set(texts.slice(0, 4)).size).toBe(1);
+    expect(texts[0]).toMatch(/try again/iu);
+    expect(texts[4]).toMatch(/administrator/iu);
+    expect(texts[4]).not.toMatch(/try again/iu);
+    // The log line is fixed, names the scope only as a hash and the age and the tries as numbers; the alert line is its own event.
+    const stuck = logs.filter((line) => line.event === "lessons.intent_stuck");
+    expect(stuck).toHaveLength(6);
+    expect(JSON.stringify(stuck)).not.toMatch(/les_|org_|web/u);
+    expect(stuck[0]!.fields).toMatchObject({ tries: 1 });
+    expect(typeof stuck[0]!.fields["scope"]).toBe("string");
+    expect(logs.filter((line) => line.event === "lessons.intent_stuck_alert")).toHaveLength(1);
+  });
+
   it("a fault of the table itself is not turned into a busy refusal", async () => {
     const { db } = await withOpenIntent();
     const broken = new DynamoLessonStore({ documentClient: { send: async (command: unknown) => { if ((command as { constructor: { name: string } }).constructor.name === "GetCommand") throw new Error("table down"); return db.send(command as never); } }, tableName: "TeamRecord" });

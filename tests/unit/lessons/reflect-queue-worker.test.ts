@@ -1,10 +1,10 @@
 // Lessons in production, lane 2 (WB-4): the queue message holds ids only; the worker claims a reflection once, runs it under a deadline, and answers SQS's partial-batch way.
 import { describe, expect, it, vi } from "vitest";
-import { LESSONS_REFLECT_MAX_RECEIVES, lessonsReflectDeadLetterName, lessonsReflectQueueName } from "@agentx/contracts";
-import { dynamoReflectClaims, reflectClaimKey } from "../../../packages/broker/src/lessons/reflect-claims.js";
-import { ReflectMessageSchema, parseReflectMessage, reflectQueueUrlOf, sqsReflectQueue } from "../../../packages/broker/src/lessons/reflect-queue.js";
-import { CLAIM_TTL_SECONDS, handleReflectBatch, runReflectMessage, type ClaimStore, type ReflectWorkerDeps } from "../../../packages/broker/src/lessons/reflect-worker.js";
-import { learningCallMayStart } from "../../../packages/broker/src/lessons/learning-deadline.js";
+import { LESSONS_REFLECT_LEASE_GRACE_SECONDS, LESSONS_REFLECT_MAX_ATTEMPTS, LESSONS_REFLECT_MAX_RECEIVES, LESSONS_REFLECT_RETRY_BACKOFF_SECONDS, LESSONS_WORKER_TIMEOUT_SECONDS, lessonsReflectDeadLetterName, lessonsReflectQueueName } from "@agentx/contracts";
+import { CLAIM_TTL_SECONDS, LEASE_MS, dynamoReflectClaims, reflectClaimKey, type ClaimStore, type Lease, type TakeResult } from "../../../packages/broker/src/lessons/reflect-claims.js";
+import { ReflectMessageSchema, parseReflectMessage, reflectQueueUrlOf, sqsReflectQueue, sqsReflectVisibility } from "../../../packages/broker/src/lessons/reflect-queue.js";
+import { handleReflectBatch, retryDelaySeconds, runReflectMessage, type ReflectWorkerDeps } from "../../../packages/broker/src/lessons/reflect-worker.js";
+import { currentLearningAttempt, learningCallMayStart } from "../../../packages/broker/src/lessons/learning-deadline.js";
 import { FakeDynamoDb } from "../../support/fake-dynamodb.js";
 import { TEST_ORG } from "../../support/orgs.js";
 
@@ -29,85 +29,299 @@ describe("the message", () => {
     expect(reflectQueueUrlOf({ AGENTX_ENV: "stg", AWS_REGION: "us-west-2", AGENTX_ACCOUNT_ID: "123456789012" })).toBe(`https://sqs.us-west-2.amazonaws.com/123456789012/${lessonsReflectQueueName("stg")}`);
     expect(reflectQueueUrlOf({ AGENTX_ENV: "stg", AWS_REGION: "us-west-2" })).toBeUndefined();
     expect(lessonsReflectDeadLetterName("stg")).not.toBe(lessonsReflectQueueName("stg"));
-    expect(LESSONS_REFLECT_MAX_RECEIVES).toBe(3);
+    expect(LESSONS_REFLECT_MAX_RECEIVES).toBe(5);
   });
 });
 
-function worker(over: Partial<ReflectWorkerDeps> = {}) {
-  const claimed = new Set<string>();
-  const claims: ClaimStore = { claim: async (m) => { const key = `${m.taskId}#${m.outcome}`; if (claimed.has(key)) return "already"; claimed.add(key); return "claimed"; } };
-  const learn = vi.fn(async () => "reflected" as const);
-  const logs: string[] = [];
-  const deps: ReflectWorkerDeps = { claims, learn, now: () => 1_000_000, deadlineMs: 240_000, log: (event) => logs.push(event), ...over };
-  return { deps, learn, logs, claimed };
+
+type Learn = ReflectWorkerDeps["learn"];
+const reflected: Learn = async () => ({ status: "reflected", retry: false });
+
+/** A lease store in memory for the worker's own logic (the Dynamo one is tested below). */
+function memoryClaims(script: TakeResult[] = []) {
+  const taken: string[] = [];
+  const finished: Array<{ state: string; attemptId: string }> = [];
+  const seen = new Set<string>();
+  const claims: ClaimStore = {
+    take: async (m) => {
+      const next = script.shift();
+      if (next !== undefined) return next;
+      const key = `${m.orgId}#${m.taskId}#${m.outcome}`;
+      if (seen.has(key)) return { kind: "already" };
+      seen.add(key); taken.push(key);
+      return { kind: "taken", lease: lease(m, 1) };
+    },
+    finish: async (held, state) => { finished.push({ state, attemptId: held.attemptId }); },
+  };
+  return { claims, taken, finished };
+}
+const lease = (m: { orgId: string; taskId: string; outcome: string }, attempt: number): Lease => ({ orgId: m.orgId, taskId: m.taskId, outcome: m.outcome as Lease["outcome"], attempt, attemptId: `att-${attempt}`, key: reflectClaimKey(m.orgId, m.taskId, m.outcome) });
+
+function worker(over: Partial<ReflectWorkerDeps> = {}, script: TakeResult[] = []) {
+  const memory = memoryClaims(script);
+  const learn = vi.fn(reflected);
+  const logs: Array<{ event: string; fields: Record<string, string | number> }> = [];
+  const delays: Array<{ handle: string; seconds: number }> = [];
+  const deps: ReflectWorkerDeps = {
+    claims: memory.claims, learn, now: () => 1_000_000, deadlineMs: 240_000, visibility: { delay: async (handle, seconds) => { delays.push({ handle, seconds }); } },
+    log: (event, fields) => logs.push({ event, fields }), ...over,
+  };
+  return { deps, learn, logs, delays, ...memory, events: () => logs.map((l) => l.event), classes: () => logs.filter((l) => l.event === "lessons_worker.result").map((l) => l.fields["class"]) };
 }
 
 describe("the worker", () => {
-  it("claims once: a redelivery of the same task and outcome never runs the model or charges twice, while another outcome of the same task is its own reflection", async () => {
+  it("takes the lease once: a redelivery of the same task and outcome never runs the model again, while another outcome of the same task is its own reflection", async () => {
     const w = worker();
-    expect(await runReflectMessage(w.deps, body())).toBe("reflected");
-    expect(await runReflectMessage(w.deps, body({ requestId: "req-2" }))).toBe("already");
+    expect(await runReflectMessage(w.deps, body())).toEqual({ result: "reflected", retry: false });
+    expect(await runReflectMessage(w.deps, body({ requestId: "req-2" }))).toEqual({ result: "already", retry: false });
     expect(w.learn).toHaveBeenCalledTimes(1);
     expect(w.learn).toHaveBeenCalledWith({ workspaceId: TEST_ORG, taskId: "task-1", outcome: "merged" });
-    expect(await runReflectMessage(w.deps, body({ outcome: "reverted" }))).toBe("reflected");
+    expect((await runReflectMessage(w.deps, body({ outcome: "reverted" }))).result).toBe("reflected");
     expect(w.learn).toHaveBeenCalledTimes(2);
+    expect(w.finished.map((f) => f.state)).toEqual(["done", "done"]);
   });
-  it("drops a message that is not four ids (one fixed log line, nothing claimed, nothing run)", async () => {
+  it("drops a message that is not four ids (one fixed log line, nothing taken, nothing run)", async () => {
     const w = worker();
-    expect(await runReflectMessage(w.deps, body({ extra: "x" }))).toBe("invalid");
+    expect(await runReflectMessage(w.deps, body({ extra: "x" }))).toEqual({ result: "invalid", retry: false });
     expect(w.learn).not.toHaveBeenCalled();
-    expect(w.claimed.size).toBe(0);
-    expect(w.logs).toEqual(["lessons_worker.invalid_message"]);
+    expect(w.taken).toHaveLength(0);
+    expect(w.events()).toEqual(["lessons_worker.invalid_message"]);
   });
-  it("a fault of the claim makes the message come back (a partial-batch answer), while a message that cannot be parsed or was claimed does not", async () => {
-    const failing: ClaimStore = { claim: async () => { throw new Error("table down"); } };
+  it("a fault of the lease makes the message come back, with a backoff; a message that cannot be parsed or was already taken does not", async () => {
+    const failing: ClaimStore = { take: async () => { throw new Error("table down"); }, finish: async () => undefined };
     const w = worker({ claims: failing });
-    expect(await handleReflectBatch(w.deps, { Records: [{ messageId: "m1", body: body() }, { messageId: "m2", body: "junk" }] })).toEqual({ batchItemFailures: [{ itemIdentifier: "m1" }] });
+    expect(await handleReflectBatch(w.deps, { Records: [{ messageId: "m1", body: body(), receiptHandle: "h1" }, { messageId: "m2", body: "junk", receiptHandle: "h2" }] })).toEqual({ batchItemFailures: [{ itemIdentifier: "m1" }] });
     expect(w.learn).not.toHaveBeenCalled();
+    expect(w.delays).toEqual([{ handle: "h1", seconds: 60 }]);
+    expect(w.classes()).toEqual(["claim_failed"]);
     const ok = worker();
     await runReflectMessage(ok.deps, body());
     expect(await handleReflectBatch(ok.deps, { Records: [{ messageId: "m3", body: body() }] })).toEqual({ batchItemFailures: [] });
   });
-  it("once the claim is taken a failing reflection is never retried (a second run is what the claim forbids): the message is answered", async () => {
-    const w = worker({ learn: async () => { throw new Error("boom"); } });
-    expect(await handleReflectBatch(w.deps, { Records: [{ messageId: "m1", body: body() }] })).toEqual({ batchItemFailures: [] });
-    expect(w.logs).toContain("lessons_worker.failed");
+  it("H1: a typed retryable fault ends the lease at retry and the message comes back after the backoff of its receive count (60, 300, then 900 s); a final outcome is answered", async () => {
+    expect(LESSONS_REFLECT_RETRY_BACKOFF_SECONDS).toEqual([60, 300, 900]);
+    expect([1, 2, 3, 4, 9].map(retryDelaySeconds)).toEqual([60, 300, 900, 900, 900]);
+    const retrying = worker({ learn: async () => ({ status: "not_reflected", retry: true }) });
+    const record = (receives: string) => ({ messageId: "m1", body: body(), receiptHandle: "h", attributes: { ApproximateReceiveCount: receives } });
+    expect(await handleReflectBatch(retrying.deps, { Records: [record("2")] })).toEqual({ batchItemFailures: [{ itemIdentifier: "m1" }] });
+    expect(retrying.finished).toEqual([{ state: "retry", attemptId: "att-1" }]);
+    expect(retrying.delays).toEqual([{ handle: "h", seconds: 300 }]);
+    expect(retrying.classes()).toEqual(["retry"]);
+    const final = worker({ learn: async () => ({ status: "not_reflected", retry: false }) });
+    expect(await handleReflectBatch(final.deps, { Records: [record("1")] })).toEqual({ batchItemFailures: [] });
+    expect(final.finished).toEqual([{ state: "done", attemptId: "att-1" }]);
+    expect(final.delays).toEqual([]);
+  });
+  it("a reflection that throws is a retryable fault too (the lease says retry; the ledger decides on the next take), and its text is never logged", async () => {
+    const w = worker({ learn: async () => { throw new Error("boom with a person's words"); } });
+    expect(await handleReflectBatch(w.deps, { Records: [{ messageId: "m1", body: body() }] })).toEqual({ batchItemFailures: [{ itemIdentifier: "m1" }] });
+    expect(w.finished).toEqual([{ state: "retry", attemptId: "att-1" }]);
+    expect(w.events()).toContain("lessons_worker.failed");
     expect(JSON.stringify(w.logs)).not.toContain("boom");
   });
-  it("gives up at the deadline, whatever is still running, and starts no model call that could not finish inside it", async () => {
+  it("a lease it must wait for (earlier keys not settled), or whose attempts are used up, comes back without running anything and without ending a lease", async () => {
+    for (const kind of ["wait", "exhausted"] as const) {
+      const w = worker({}, [{ kind }]);
+      expect(await handleReflectBatch(w.deps, { Records: [{ messageId: "m1", body: body(), receiptHandle: "h" }] })).toEqual({ batchItemFailures: [{ itemIdentifier: "m1" }] });
+      expect(w.learn).not.toHaveBeenCalled();
+      expect(w.finished).toEqual([]);
+      expect(w.classes()).toEqual([kind]);
+    }
+  });
+  it("a failure to set the backoff or to end the lease never changes the answer", async () => {
+    const w = worker({ learn: async () => ({ status: "not_reflected", retry: true }), visibility: { delay: async () => { throw new Error("sqs down"); } }, claims: { ...memoryClaims().claims, finish: async () => { throw new Error("table down"); } } });
+    expect(await handleReflectBatch(w.deps, { Records: [{ messageId: "m1", body: body(), receiptHandle: "h" }] })).toEqual({ batchItemFailures: [{ itemIdentifier: "m1" }] });
+    expect(w.events()).toEqual(expect.arrayContaining(["lessons_worker.finish_failed", "lessons_worker.backoff_failed"]));
+  });
+  it("M4: the deadline aborts the signal the work holds (and no model call starts that could not finish inside it); the work that stops by itself is a retryable fault, not a loss", async () => {
     vi.useFakeTimers();
     try {
       const seen: boolean[] = [];
-      let release: () => void = () => undefined;
+      let signal: AbortSignal | undefined;
       const w = worker({
         deadlineMs: 5_000, now: () => Date.now(),
-        learn: () => new Promise((resolve) => { seen.push(learningCallMayStart(Date.now(), 1_000), learningCallMayStart(Date.now() + 4_500, 1_000)); release = () => resolve("reflected"); }),
+        learn: () => new Promise((resolve) => {
+          const attempt = currentLearningAttempt()!;
+          signal = attempt.signal;
+          seen.push(learningCallMayStart(Date.now(), 1_000), learningCallMayStart(Date.now() + 4_500, 1_000));
+          attempt.signal!.addEventListener("abort", () => resolve({ status: "not_reflected", retry: true }));
+        }),
       });
       const running = runReflectMessage(w.deps, body());
       await vi.advanceTimersByTimeAsync(5_000);
-      expect(await running).toBe("timed_out");
-      expect(w.logs).toContain("lessons_worker.deadline");
+      expect(signal?.aborted).toBe(true);
+      expect(await running).toEqual({ result: "not_reflected", retry: true });
+      expect(w.finished).toEqual([{ state: "retry", attemptId: "att-1" }]);
       // Inside the work: a call of 1 s may start at the beginning, not 4.5 s in. Outside any worker there is no deadline.
       expect(seen).toEqual([true, false]);
       expect(learningCallMayStart(Date.now() + 10_000_000, 1_000_000)).toBe(true);
-      release();
+    } finally { vi.useRealTimers(); }
+  });
+  it("M4: work that ignores the signal is given up a grace after it (the last guard), logged as a fault and retried; its attempt carries the lease's id and key", async () => {
+    vi.useFakeTimers();
+    try {
+      let attemptSeen: ReturnType<typeof currentLearningAttempt>;
+      const w = worker({ deadlineMs: 5_000, graceMs: 2_000, now: () => Date.now(), learn: () => { attemptSeen = currentLearningAttempt(); return new Promise(() => undefined); } });
+      const running = runReflectMessage(w.deps, body());
+      await vi.advanceTimersByTimeAsync(7_000);
+      expect(await running).toEqual({ result: "timed_out", retry: true });
+      expect(w.events()).toContain("lessons_worker.deadline");
+      expect(w.finished).toEqual([{ state: "retry", attemptId: "att-1" }]);
+      expect(attemptSeen).toMatchObject({ attemptId: "att-1", leaseKey: reflectClaimKey(TEST_ORG, "task-1", "merged") });
+      expect(attemptSeen?.signal?.aborted).toBe(true);
+    } finally { vi.useRealTimers(); }
+  });
+  it("M4: the deadline is also the invocation's remaining time less a minute; with no more than a minute left nothing is taken and the message comes back", async () => {
+    vi.useFakeTimers();
+    try {
+      let deadlineAt = 0;
+      const w = worker({ now: () => Date.now(), learn: async () => { deadlineAt = currentLearningAttempt()!.deadlineAt; return { status: "reflected", retry: false }; } });
+      const start = Date.now();
+      await runReflectMessage(w.deps, body(), { getRemainingTimeInMillis: () => 100_000 });
+      expect(deadlineAt - start).toBe(40_000);
+      const late = worker();
+      expect(await runReflectMessage(late.deps, body(), { getRemainingTimeInMillis: () => 59_000 })).toEqual({ result: "no_time", retry: true });
+      expect(late.taken).toHaveLength(0);
     } finally { vi.useRealTimers(); }
   });
 });
 
-describe("the claim in the State table", () => {
-  it("is a conditional put of LEARN#<task>#<outcome> that expires in 30 days; the second put finds it taken, and another table fault is thrown", async () => {
+describe("the lease in the State table", () => {
+  const T0 = 1_800_000_000_000;
+  const stateOf = (db: FakeDynamoDb, m = message()) => db.get(reflectClaimKey(m.orgId, m.taskId, m.outcome).pk, "CLAIM") as Record<string, unknown>;
+  function leases(outcomes: Array<"clear" | "spent" | "pending"> | ((ids: readonly string[]) => "clear" | "spent" | "pending") = []) {
     const db = new FakeDynamoDb();
-    const claims = dynamoReflectClaims({ documentClient: db, tableName: "state" });
-    const now = 1_800_000_000;
-    expect(await claims.claim(message() as never, now)).toBe("claimed");
-    expect(await claims.claim(message({ requestId: "again" }) as never, now + 5)).toBe("already");
-    const item = db.find((row) => row["pk"] === "LEARN#task-1#merged")[0]!;
-    expect(item).toMatchObject({ sk: "CLAIM", orgId: TEST_ORG, claimedAt: now, indexExpiresAt: now + CLAIM_TTL_SECONDS });
+    const asked: Array<readonly string[]> = [];
+    let n = 0;
+    const claims = dynamoReflectClaims({
+      documentClient: db, tableName: "state", newAttemptId: () => `att-${++n}`,
+      keysOutcome: async (_org, ids) => { asked.push(ids); return typeof outcomes === "function" ? outcomes(ids) : outcomes.shift() ?? "clear"; },
+    });
+    return { db, claims, asked };
+  }
+  const taken = (result: TakeResult): Lease => { if (result.kind !== "taken") throw new Error(`not taken: ${result.kind}`); return result.lease; };
+
+  it("L2: the key holds the org: LEARN#<org>#<task>#<outcome>; a task id another company sends can never use up this company's lease", async () => {
+    const { db, claims } = leases();
+    expect(reflectClaimKey("org_a", "t", "reverted")).toEqual({ pk: "LEARN#org_a#t#reverted", sk: "CLAIM" });
+    const first = taken(await claims.take(message() as never, T0));
+    expect(first).toMatchObject({ attempt: 1, attemptId: "att-1", key: { pk: `LEARN#${TEST_ORG}#task-1#merged`, sk: "CLAIM" } });
+    const other = "org_zzzzzzzzzzzzzzzzzzzz";
+    expect(taken(await claims.take(message({ orgId: other }) as never, T0)).key.pk).toBe(`LEARN#${other}#task-1#merged`);
+    expect(await claims.take(message({ requestId: "again" }) as never, T0 + 5)).toEqual({ kind: "already" });
+    expect(db.find((row) => String(row["pk"]).startsWith("LEARN#"))).toHaveLength(2);
+  });
+  it("starts running with a lease for the worker's timeout plus a minute, expires in 30 days, and holds the org, the times and the state only", async () => {
+    const { db, claims } = leases();
+    await claims.take(message() as never, T0);
+    const item = stateOf(db);
+    expect(item).toMatchObject({ sk: "CLAIM", orgId: TEST_ORG, leaseState: "running", attempt: 1, attemptId: "att-1", leaseUntil: T0 + LEASE_MS, claimedAt: T0 / 1000, indexExpiresAt: T0 / 1000 + CLAIM_TTL_SECONDS });
+    expect(LEASE_MS).toBe((LESSONS_WORKER_TIMEOUT_SECONDS + LESSONS_REFLECT_LEASE_GRACE_SECONDS) * 1000);
     expect(CLAIM_TTL_SECONDS).toBe(30 * 86_400);
-    expect(Object.keys(item).sort()).toEqual(["claimedAt", "entityType", "indexExpiresAt", "orgId", "pk", "sk"]);
-    expect(reflectClaimKey("t", "reverted")).toEqual({ pk: "LEARN#t#reverted", sk: "CLAIM" });
-    db.injectFault({ command: "PutCommand", error: { name: "InternalServerError" }, times: 1 });
-    await expect(claims.claim(message({ taskId: "task-2" }) as never, now)).rejects.toThrow();
+    expect(Object.keys(item).sort()).toEqual(["attempt", "attemptId", "claimedAt", "entityType", "indexExpiresAt", "leaseState", "leaseUntil", "orgId", "pk", "sk"]);
+  });
+  it("a live lease is not taken by a second worker; done and spent are never taken again; another table fault is thrown", async () => {
+    const { db, claims } = leases();
+    const held = taken(await claims.take(message() as never, T0));
+    expect(await claims.take(message() as never, T0 + 1000)).toEqual({ kind: "already" });
+    await claims.finish(held, "done", T0 + 2000);
+    expect(await claims.take(message() as never, T0 + LEASE_MS + 1)).toEqual({ kind: "already" });
+    expect(stateOf(db)["leaseState"]).toBe("done");
+    db.injectFault({ command: "GetCommand", error: { name: "InternalServerError" }, times: 1 });
+    await expect(claims.take(message({ taskId: "task-2" }) as never, T0)).rejects.toThrow();
+  });
+  it("H1: a retry is taken again only when every model key of the earlier attempt settled with nothing spent: then attempt + 1, a new id, and the old key ids cleared", async () => {
+    const { db, claims, asked } = leases(["clear"]);
+    const first = taken(await claims.take(message() as never, T0));
+    // The model path notes the keys it minted on the lease item (mintOperationKey's recordOn).
+    db.set({ ...stateOf(db), modelKeyIds: ["k1", "k2"] });
+    await claims.finish(first, "retry", T0 + 1000);
+    expect(stateOf(db)["leaseState"]).toBe("retry");
+    const second = taken(await claims.take(message() as never, T0 + 2000));
+    expect(asked).toEqual([["k1", "k2"]]);
+    expect(second).toMatchObject({ attempt: 2, attemptId: "att-2" });
+    expect(stateOf(db)).toMatchObject({ leaseState: "running", attempt: 2, attemptId: "att-2" });
+    expect(stateOf(db)["modelKeyIds"]).toBeUndefined();
+  });
+  it("H1: any key that spent makes the work final (the lease becomes spent and is never taken again); a key not yet settled makes the taker wait, without using an attempt", async () => {
+    const spent = leases(["spent"]);
+    const first = taken(await spent.claims.take(message() as never, T0));
+    await spent.claims.finish(first, "retry", T0);
+    expect(await spent.claims.take(message() as never, T0 + 1)).toEqual({ kind: "already" });
+    expect(stateOf(spent.db)["leaseState"]).toBe("spent");
+    expect(await spent.claims.take(message() as never, T0 + 2)).toEqual({ kind: "already" });
+
+    const pending = leases(["pending", "clear"]);
+    const one = taken(await pending.claims.take(message() as never, T0));
+    await pending.claims.finish(one, "retry", T0);
+    expect(await pending.claims.take(message() as never, T0 + 1)).toEqual({ kind: "wait" });
+    expect(stateOf(pending.db)).toMatchObject({ leaseState: "retry", attempt: 1 });
+    expect(taken(await pending.claims.take(message() as never, T0 + 2)).attempt).toBe(2);
+  });
+  it("H1: a worker that died (its lease ran out while running) is treated like a retry: the keys decide, a clear ledger lets the work run again, spent stops it", async () => {
+    const dead = leases(["clear"]);
+    taken(await dead.claims.take(message() as never, T0));
+    expect(await dead.claims.take(message() as never, T0 + LEASE_MS - 1)).toEqual({ kind: "already" });
+    expect(taken(await dead.claims.take(message() as never, T0 + LEASE_MS + 1)).attempt).toBe(2);
+    expect(dead.asked).toEqual([[]]);
+
+    const paid = leases(() => "spent");
+    taken(await paid.claims.take(message() as never, T0));
+    paid.db.set({ ...stateOf(paid.db), modelKeyIds: ["k9"] });
+    expect(await paid.claims.take(message() as never, T0 + LEASE_MS + 1)).toEqual({ kind: "already" });
+    expect(stateOf(paid.db)["leaseState"]).toBe("spent");
+    expect(paid.asked).toEqual([["k9"]]);
+  });
+  it("H1: the attempts are capped; after the last retry the answer is exhausted (the message goes on to the dead-letter queue), and never a fourth run", async () => {
+    expect(LESSONS_REFLECT_MAX_ATTEMPTS).toBe(3);
+    const { claims } = leases(() => "clear");
+    let at = T0;
+    for (let attempt = 1; attempt <= LESSONS_REFLECT_MAX_ATTEMPTS; attempt += 1) {
+      const held = taken(await claims.take(message() as never, at));
+      expect(held.attempt).toBe(attempt);
+      await claims.finish(held, "retry", at);
+      at += 1000;
+    }
+    expect(await claims.take(message() as never, at)).toEqual({ kind: "exhausted" });
+    expect(await claims.take(message() as never, at + 1)).toEqual({ kind: "exhausted" });
+  });
+  it("two workers taking the same retry at once: one runs, the other finds it taken (a write conditional on the attempt that was read)", async () => {
+    const { claims } = leases(() => "clear");
+    const held = taken(await claims.take(message() as never, T0));
+    await claims.finish(held, "retry", T0);
+    const both = await Promise.all([claims.take(message() as never, T0 + 1), claims.take(message() as never, T0 + 1)]);
+    expect(both.map((r) => r.kind).sort()).toEqual(["already", "taken"]);
+  });
+  it("ending a lease that is no longer this attempt's (it lapsed and another worker took over) changes nothing", async () => {
+    const { db, claims } = leases(() => "clear");
+    const first = taken(await claims.take(message() as never, T0));
+    const second = taken(await claims.take(message() as never, T0 + LEASE_MS + 1));
+    await claims.finish(first, "done", T0 + LEASE_MS + 2);
+    expect(stateOf(db)).toMatchObject({ leaseState: "running", attemptId: second.attemptId });
+    await claims.finish(second, "retry", T0 + LEASE_MS + 3);
+    expect(stateOf(db)["leaseState"]).toBe("retry");
+  });
+});
+
+describe("the visibility backoff", () => {
+  it("sets the message's visibility timeout on its queue by receipt handle", async () => {
+    const sent: Array<{ QueueUrl?: string; ReceiptHandle?: string; VisibilityTimeout?: number }> = [];
+    await sqsReflectVisibility({ send: async (command) => { sent.push((command as { input: (typeof sent)[number] }).input); } }, "https://queue.example/q").delay("receipt-1", 300);
+    expect(sent).toEqual([{ QueueUrl: "https://queue.example/q", ReceiptHandle: "receipt-1", VisibilityTimeout: 300 }]);
+  });
+});
+
+describe("M1: the enqueue never holds a task end", () => {
+  it("gives up at its own time limit when the queue does not answer, and passes the limit to the client as an abort signal", async () => {
+    vi.useFakeTimers();
+    try {
+      const signals: Array<AbortSignal | undefined> = [];
+      const queue = sqsReflectQueue({ send: (_command, options) => { signals.push(options?.abortSignal); return new Promise(() => undefined); } }, "https://queue.example/q", { timeoutMs: 2000 });
+      const sending = queue.send(message() as never);
+      const outcome = sending.then(() => "sent", () => "gave up");
+      await vi.advanceTimersByTimeAsync(2000);
+      expect(await outcome).toBe("gave up");
+      expect(signals[0]).toBeInstanceOf(AbortSignal);
+    } finally { vi.useRealTimers(); }
   });
 });

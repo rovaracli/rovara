@@ -7,7 +7,8 @@ import { announceTaskSendBack } from "../../../packages/broker/src/aws/developer
 import type { DeveloperTaskRecord } from "../../../packages/broker/src/developer/task-records.js";
 import { announceHumanSendBack, registerHumanSendBackListener, sendBackToRecord } from "../../../packages/broker/src/lessons/send-back-events.js";
 import type { ProcessDeps } from "../../../packages/broker/src/lessons/process.js";
-import { learnFromEndedTask, learningTaskEndHandler, reflectOutcomeOf, subjectForTask, type TaskLearningDeps, type TaskSubjectBase } from "../../../packages/broker/src/lessons/task-end.js";
+import { withLearningAttempt, noteLearningFault, type LearningAttempt } from "../../../packages/broker/src/lessons/learning-deadline.js";
+import { learnFromEndedTask, learnFromEndedTaskTyped, learningTaskEndHandler, reflectOutcomeOf, subjectForTask, type TaskLearningDeps, type TaskSubjectBase } from "../../../packages/broker/src/lessons/task-end.js";
 import type { OutcomeRowReader } from "../../../packages/broker/src/lessons/task-outcome-rows.js";
 import { InMemoryLessonStore } from "../../../packages/broker/src/lessons/store.js";
 import type { SendBackFact, TaskSubjectFacts } from "../../../packages/broker/src/lessons/task-subject.js";
@@ -251,5 +252,52 @@ describe("a human send-back names who sent it", () => {
       await announce({ task: task({ currentOwner: { broken: true } as never }) });
       expect(sent[0]).toMatchObject({ visibility: { kind: "private", ownerDeveloperId: "owner-1" } });
     } finally { remove(); }
+  });
+});
+
+describe("learnFromEndedTaskTyped (H1): which failures are worth another try", () => {
+  const input = { workspaceId: WS, taskId: "task-1" };
+  const attempt = (): LearningAttempt => ({ deadlineAt: Date.now() + 60_000, signal: new AbortController().signal, attemptId: "att-1" });
+  it("a read of the task, the rows or the settings that fails is retryable inside a worker attempt, and never outside one", async () => {
+    const readFails = setup();
+    readFails.deps.source = { read: async () => { throw new Error("table down"); } };
+    expect(await learnFromEndedTaskTyped(readFails.deps, input)).toEqual({ status: "not_reflected", retry: false });
+    expect(await withLearningAttempt(attempt(), () => learnFromEndedTaskTyped(readFails.deps, input))).toEqual({ status: "not_reflected", retry: true });
+    const projectFails = setup();
+    projectFails.deps.source = { read: async () => undefined, projectOf: async () => { throw new Error("throttled"); } };
+    expect(await withLearningAttempt(attempt(), () => learnFromEndedTaskTyped(projectFails.deps, input))).toMatchObject({ retry: true });
+    const rowsFail = setup();
+    rowsFail.rows.failing = true;
+    expect(await withLearningAttempt(attempt(), () => learnFromEndedTaskTyped(rowsFail.deps, input))).toMatchObject({ status: "not_reflected", retry: true });
+  });
+  it("the model path's own word decides a dropped reflection: retryable is retried, final (or nothing said) is not", async () => {
+    for (const [fault, retry] of [["retryable", true], ["final", false], [undefined, false]] as const) {
+      const w = setup({ model: new ScriptedModel([]) });
+      w.deps.reflect.model = { complete: async () => { if (fault !== undefined) noteLearningFault(fault); throw new Error("model down"); } };
+      expect(await withLearningAttempt(attempt(), () => learnFromEndedTaskTyped(w.deps, input)), String(fault)).toEqual({ status: "not_reflected", retry });
+    }
+  });
+  it("a made reflection, a switched-off project and a task that teaches nothing are final; a parse failure is final too (it was paid for)", async () => {
+    const ok = setup();
+    expect(await withLearningAttempt(attempt(), () => learnFromEndedTaskTyped(ok.deps, input))).toEqual({ status: "reflected", retry: false });
+    const off = setup({ settings: settings({ mode: "Off" }) });
+    expect(await withLearningAttempt(attempt(), () => learnFromEndedTaskTyped(off.deps, input))).toEqual({ status: "off", retry: false });
+    const none = setup({ base: undefined });
+    expect(await withLearningAttempt(attempt(), () => learnFromEndedTaskTyped(none.deps, input))).toEqual({ status: "no_facts", retry: false });
+    const garbled = setup();
+    garbled.deps.reflect.model = { complete: async () => ({ text: "not json", costUsd: 0.01, model: "m" }) };
+    expect(await withLearningAttempt(attempt(), () => learnFromEndedTaskTyped(garbled.deps, input))).toEqual({ status: "not_reflected", retry: false });
+  });
+  it("M4: once the deadline's signal is aborted no further draft is processed", async () => {
+    const w = setup();
+    const controller = new AbortController();
+    let processed = 0;
+    const real = w.store.commit.bind(w.store);
+    w.store.commit = async (...args: Parameters<typeof real>) => { processed += 1; return real(...args); };
+    controller.abort();
+    const result = await withLearningAttempt({ deadlineAt: Date.now() + 60_000, signal: controller.signal, attemptId: "a" }, () => learnFromEndedTaskTyped(w.deps, input));
+    expect(result).toEqual({ status: "reflected", retry: false });
+    expect(processed).toBe(0);
+    expect(await w.store.list({ workspaceId: WS, project: PROJECT })).toEqual([]);
   });
 });

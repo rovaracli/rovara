@@ -427,3 +427,12 @@ export const DEVELOPER_ROUTE_KEY = "ANY /v1/dev/{proxy+}";
 export const APP_ROUTE_KEY = "ANY /v1/app/{proxy+}";
 export const WEB_ROUTE_KEY = "ANY /v1/web/{proxy+}";
 export const FEEDBACK_REVIEW_ROUTE_KEY = "ANY /review/{proxy+}";
+
+/**
+ * Lessons in production (lane 2, M6): what the lessons and learning code reads of the broker's dependencies. The LessonsWorker has its own slim entry and builds only this, with no broker handler and none of the broker's
+ * secrets; the broker passes its whole `AwsBrokerDependencies` (a Pick of it). `developer` is narrowed to the sign-in table's name, which is all learning reads of it. A new read of another field is a type error in the
+ * worker's entry, not a missing value at run time.
+ */
+export type LessonsHostDependencies =
+  Pick<AwsBrokerDependencies, "documentClient" | "s3" | "tableName" | "artifactBucketName" | "audit" | "teamRecord" | "modelAccess" | "cloud" | "codeHost" | "githubPullRequests" | "editionPolicy" | "agents" | "chatgpt" | "usableModels" | "lessons" | "learning" | "lessonsReflectQueue" | "orgResolver">
+  & { developer?: Pick<NonNullable<AwsBrokerDependencies["developer"]>, "signInTableName"> | undefined };

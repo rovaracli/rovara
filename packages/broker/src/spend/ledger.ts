@@ -128,6 +128,24 @@ async function readRecord(deps: LedgerDependencies, orgId: OrgId, keyId: string)
   return item as unknown as ModelKeyRecord;
 }
 
+/**
+ * H1 (lessons in production, lane 2 review): what became of keys an earlier attempt of some work minted, for the decision whether that work may run again without any chance of paying twice.
+ *   - `clear`: every key is finalized with nothing counted, or has no record (it was taken back before anyone used it): nothing was spent, so the work may be tried again;
+ *   - `spent`: some key has counted spend: the work reached the provider, so it is never repeated;
+ *   - `pending`: some key is still open with nothing counted yet (the proxy may not have flushed, the sweep has not finalized it): not decided, ask again later.
+ * `spent` wins over `pending`, which wins over `clear`.
+ */
+export async function keysOutcome(deps: LedgerDependencies, orgId: OrgId, keyIds: readonly string[]): Promise<"clear" | "spent" | "pending"> {
+  let outcome: "clear" | "pending" = "clear";
+  for (const keyId of new Set(keyIds)) {
+    const record = await readRecord(deps, orgId, keyId);
+    if (record === undefined) continue;
+    if (record.settledUsd > 0) return "spent";
+    if (!record.finalized) outcome = "pending";
+  }
+  return outcome;
+}
+
 async function send(deps: LedgerDependencies, items: TransactItem[]): Promise<void> {
   await deps.documentClient.send(new TransactWriteCommand({ TransactItems: items }));
 }

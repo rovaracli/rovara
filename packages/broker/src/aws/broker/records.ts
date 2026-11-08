@@ -173,7 +173,7 @@ export async function publicationProject(
 }
 
 export async function requireLatestProject(
-  dependencies: AwsBrokerDependencies,
+  dependencies: Pick<AwsBrokerDependencies, "documentClient" | "tableName">,
   orgId: OrgId,
   projectName: string,
 ): Promise<RegisteredProjectRecord> {

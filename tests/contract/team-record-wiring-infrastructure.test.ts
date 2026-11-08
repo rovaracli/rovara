@@ -7,7 +7,8 @@ import { readFileSync, writeFileSync } from "node:fs";
 import { Stack } from "aws-cdk-lib";
 import { Template } from "aws-cdk-lib/assertions";
 import { describe, expect, it } from "vitest";
-import { BROKER_NAMES, BROKER_SETTINGS, LESSONS_BROKER_MODEL_WAIT_SECONDS, LESSONS_REFLECT_MAX_RECEIVES, LESSONS_REFLECT_VISIBILITY_SECONDS, LESSONS_WORKER_RESERVED_CONCURRENCY, LESSONS_WORKER_TIMEOUT_SECONDS, TEAM_RECORD_OPS_MAX_RECEIVES, teamRecordTableName } from "@agentx/contracts";
+import { BROKER_NAMES, BROKER_SETTINGS, LESSONS_BROKER_MODEL_WAIT_SECONDS, LESSONS_REFLECT_MAX_RECEIVES, LESSONS_REFLECT_VISIBILITY_SECONDS, LESSONS_WORKER_RESERVED_CONCURRENCY, LESSONS_WORKER_TIMEOUT_SECONDS, TEAM_RECORD_OPS_MAX_RECEIVES, HEALTH_ALARM_SUFFIXES, teamRecordTableName } from "@agentx/contracts";
+import { LESSONS_WORKER_STATE_WRITE_KEY_PATTERNS } from "../../infra/lib/team-record-wiring.js";
 import { buildAgentXApp } from "../../infra/lib/app.js";
 import { parseTeamRecordSwitch, TEAM_RECORD_JOB_SOURCE } from "../../infra/lib/team-record-wiring.js";
 import { brokerNamesIn, brokerSettingsIn } from "../support/broker-names-template.js";
@@ -333,11 +334,11 @@ describe("the lessons worker (switch on)", () => {
     .filter(([id, resource]) => (resource.Type === "AWS::IAM::Policy" || resource.Type === "AWS::IAM::ManagedPolicy") && rolePattern.test(id))
     .flatMap(([, resource]) => (resource.Properties.PolicyDocument as { Statement: Array<{ Sid?: string; Action: string | string[]; Resource: unknown; Condition?: unknown }> }).Statement);
 
-  it("the queue holds ids for four days, encrypted, with a dead-letter queue after three receives; its visibility timeout is above the worker's timeout, and the worker outlives the broker's 130 s model wait (R5)", () => {
+  it("the queue holds ids for four days, encrypted, with a dead-letter queue after five receives (the attempts are capped at three, so the queue reaches it only after them); its visibility timeout is above the worker's timeout, and the worker outlives the broker's 130 s model wait (R5)", () => {
     const main = queue(/^LessonsReflect[0-9A-F]{8}$/);
     expect(main).toMatchObject({ QueueName: "agentx-staging-lessons-reflect", MessageRetentionPeriod: 345600, SqsManagedSseEnabled: true, RedrivePolicy: { maxReceiveCount: LESSONS_REFLECT_MAX_RECEIVES } });
     expect(JSON.stringify((main.RedrivePolicy as { deadLetterTargetArn: unknown }).deadLetterTargetArn)).toContain("LessonsReflectDeadLetters");
-    expect(LESSONS_REFLECT_MAX_RECEIVES).toBe(3);
+    expect(LESSONS_REFLECT_MAX_RECEIVES).toBe(5);
     const dead = queue(/^LessonsReflectDeadLetters[0-9A-F]{8}$/);
     expect(dead).toMatchObject({ QueueName: "agentx-staging-lessons-reflect-dead", SqsManagedSseEnabled: true });
     // The numbers, pinned from the template itself: timeout 300 s, visibility 1800 s, the model wait 130 s.
@@ -349,7 +350,7 @@ describe("the lessons worker (switch on)", () => {
     expect(main["VisibilityTimeout"]).toBe(LESSONS_REFLECT_VISIBILITY_SECONDS);
   }, 360_000);
 
-  it("the worker is the broker's bundle with its own handler, outside the VPC, reserved to two, fed one message at a time with partial-batch answers", () => {
+  it("the worker is its own entry, outside the VPC, reserved to two, fed one message at a time with partial-batch answers (M6)", () => {
     const fn = worker();
     expect(fn.Handler).toBe("index.lessonsWorkerHandler");
     expect(fn.ReservedConcurrentExecutions).toBe(LESSONS_WORKER_RESERVED_CONCURRENCY);
@@ -357,9 +358,23 @@ describe("the lessons worker (switch on)", () => {
     const mapping = Object.values(resources).find((resource) => resource.Type === "AWS::Lambda::EventSourceMapping" && JSON.stringify(resource.Properties).includes("LessonsWorker"));
     expect(mapping?.Properties).toMatchObject({ FunctionResponseTypes: ["ReportBatchItemFailures"], BatchSize: 1, ScalingConfig: { MaximumConcurrency: LESSONS_WORKER_RESERVED_CONCURRENCY } });
     expect(JSON.stringify(mapping?.Properties)).toContain("LessonsReflect");
-    // It builds what the broker builds, from the broker's own variables.
+  }, 360_000);
+
+  it("M6: the worker has an explicit, small environment: no callback signing key, no OIDC or admin settings, nothing the broker holds that learning does not read; its names and settings are only those the entry reads", () => {
+    const variables = worker().Environment?.Variables ?? {};
     const broker = functionVariables(on, /^Broker[0-9A-F]{8}$/);
-    expect(fn.Environment?.Variables).toStrictEqual(broker);
+    // The broker has the signing key (a secret passed in plain text); the worker is never given it, or any variable the broker has that the worker's entry does not read.
+    expect(broker).toHaveProperty("CALLBACK_SIGNING_KEY");
+    for (const forbidden of ["CALLBACK_SIGNING_KEY", "OIDC_ISSUER", "ADMIN_CLAIM", "ADMIN_VALUES", "CHATGPT_CONNECTION_KEY_ARN", "AUDIT_INTAKE_QUEUE_URL", "SLACK_REQUEST_QUEUE_URL"]) expect(variables, forbidden).not.toHaveProperty(forbidden);
+    expect(JSON.stringify(variables)).not.toMatch(/CallbackSigningKey/u);
+    expect(Object.keys(variables).sort()).toEqual(["AGENTX_ACCOUNT_ID", "AGENTX_ENV", "AGENTX_NAMES", "AGENTX_SETTINGS", "GITHUB_APP_PRIVATE_KEY_SECRET_ARN", "ROVARA_EDITION"]);
+    // The packed names are the State table, the artifacts bucket, the sign-in table and the model function (codes in BROKER_NAMES), and the packed settings are the Team record's two and the GitHub App's two.
+    const codesOf = (value: unknown): string[] => [...JSON.stringify(value).matchAll(/"?,?([a-z]{2})=/gu)].map((match) => match[1]!);
+    const nameCodes = codesOf(variables["AGENTX_NAMES"]);
+    expect(nameCodes.sort()).toEqual([BROKER_NAMES.signInTable.code, BROKER_NAMES.stateTable.code, BROKER_NAMES.artifactBucket.code, BROKER_NAMES.modelAccessFunction.code].sort());
+    expect(codesOf(variables["AGENTX_SETTINGS"]).sort()).toEqual([BROKER_SETTINGS.teamRecord.code, BROKER_SETTINGS.teamRecordActive.code, BROKER_SETTINGS.githubAppCredentialRef.code, BROKER_SETTINGS.githubAppId.code].sort());
+    // Its own entry: the broker module (and so a second broker) is not loaded; the sizes are far inside Lambda's 4 KB.
+    expect(JSON.stringify(variables).length).toBeLessThan(2000);
   }, 360_000);
 
   it("the worker's role holds only what a reflection touches: the tables, the plan documents, the model function, the queue and the GitHub key; the broker may send to the queue and not receive", () => {
@@ -395,6 +410,58 @@ describe("the lessons worker (switch on)", () => {
     const toQueue = brokerStatements.filter((statement) => JSON.stringify(statement.Resource).includes("LessonsReflect[0-9A-F]") || /"LessonsReflect[0-9A-F]{8}"/.test(JSON.stringify(statement.Resource)));
     expect(toQueue.flatMap((statement) => [statement.Action].flat())).toContain("sqs:SendMessage");
     expect(toQueue.flatMap((statement) => [statement.Action].flat()).filter((action) => /Receive|Delete/.test(action))).toEqual([]);
+  }, 360_000);
+
+  it("M7: the State table is READ anywhere but WRITTEN only under the key prefixes the worker uses (its lease, the spend ledger's records, pending audit items); no write action is allowed without that condition", () => {
+    const statements = statementsOf(/^LessonsWorkerServiceRole/);
+    const writeActions = /^dynamodb:(PutItem|UpdateItem|DeleteItem|ConditionCheckItem|BatchWriteItem)$/u;
+    const writers = statements.filter((statement) => [statement.Action].flat().some((action) => writeActions.test(action)));
+    // The Team record table's own statement (the lessons' store) is the broker's, by name; every other statement that writes is the State table's and carries the key condition.
+    const stateWriters = writers.filter((statement) => statement.Sid !== "TeamRecordTable");
+    expect(stateWriters.map((statement) => statement.Sid)).toEqual(["LessonsStateTableWrites"]);
+    const condition = stateWriters[0]!.Condition as Record<string, Record<string, string[]>>;
+    expect(Object.keys(condition)).toEqual(["ForAllValues:StringLike"]);
+    const patterns = condition["ForAllValues:StringLike"]!["dynamodb:LeadingKeys"]!;
+    expect([...patterns].sort()).toEqual([...LESSONS_WORKER_STATE_WRITE_KEY_PATTERNS].sort());
+    // A task, a session, a sign-in name, a key or a billing record is not under any of them.
+    const matches = (key: string) => patterns.some((pattern) => new RegExp(`^${pattern.replace(/[.+?^${}()|[\]\\]/gu, "\\$&").replace(/\*/gu, ".*")}$`, "u").test(key));
+    for (const key of ["LEARN#org_aaaaaaaaaaaaaaaaaaaa#task-1#merged", "ORG#org_aaaaaaaaaaaaaaaaaaaa#SPEND#2026-11", `ORG#org_aaaaaaaaaaaaaaaaaaaa#MODEL_KEY#${"a".repeat(64)}`, "OPEN_MODEL_KEYS", "AUDIT_PENDING#3"]) expect(matches(key), key).toBe(true);
+    for (const key of ["DEVTASK#t1", "TASK#t1", "SESSION#s1", "ORG#org_aaaaaaaaaaaaaaaaaaaa#PROJECT#web", "ORG#org_aaaaaaaaaaaaaaaaaaaa", "ORG#org_aaaaaaaaaaaaaaaaaaaa#BILLING#x", "ORG#org_aaaaaaaaaaaaaaaaaaaa#MEMBER_KEY#k", "KEYS#x"]) expect(matches(key), key).toBe(false);
+    // The reads are a statement of their own, with no write action in it.
+    const reads = statements.find((statement) => statement.Sid === "LessonsStateTableReads")!;
+    expect([reads.Action].flat().sort()).toEqual(["dynamodb:BatchGetItem", "dynamodb:GetItem", "dynamodb:Query"]);
+    expect(reads.Condition).toBeUndefined();
+  }, 360_000);
+
+  it("M5: the dead-letter queue and the worker's errors and throttles alarm the operator; the broker may read the dead-letter queue's depth (and nothing else on it) for the Health page", () => {
+    const alarms = Object.entries(resources).filter(([, resource]) => resource.Type === "AWS::CloudWatch::Alarm").map(([id, resource]): Record<string, unknown> => ({ id, ...resource.Properties }));
+    const named = (suffix: string) => alarms.find((alarm) => alarm["AlarmName"] === `agentx-staging-${suffix}`) as Record<string, unknown>;
+    const dead = named("LessonsReflectDeadLetters");
+    expect(dead).toMatchObject({ MetricName: "ApproximateNumberOfMessagesVisible", Namespace: "AWS/SQS", Threshold: 1, ComparisonOperator: "GreaterThanOrEqualToThreshold", TreatMissingData: "notBreaching" });
+    expect(JSON.stringify(dead["Dimensions"])).toContain("LessonsReflectDeadLetters");
+    const errors = named("LessonsWorkerErrors");
+    expect(errors).toMatchObject({ MetricName: "Errors", Namespace: "AWS/Lambda", Period: 900, Threshold: 1 });
+    expect(JSON.stringify(errors["Dimensions"])).toContain("LessonsWorker");
+    expect(named("LessonsWorkerThrottles")).toMatchObject({ MetricName: "Throttles", Period: 900 });
+    for (const alarm of [dead, errors, named("LessonsWorkerThrottles")]) expect(JSON.stringify(alarm["AlarmActions"]), String(alarm["AlarmName"])).toContain("OperatorAlerts");
+    // The broker reads the queue's depth: GetQueueAttributes on the dead-letter queue, no receive, no delete.
+    const brokerStatements = Object.entries(resources).filter(([id, resource]) => /Broker/.test(id) && (resource.Type === "AWS::IAM::Policy" || resource.Type === "AWS::IAM::ManagedPolicy"))
+      .flatMap(([, resource]) => (resource.Properties.PolicyDocument as { Statement: Array<{ Action: string | string[]; Resource: unknown }> }).Statement);
+    const toDead = brokerStatements.filter((statement) => /"LessonsReflectDeadLetters[0-9A-F]{8}"/.test(JSON.stringify(statement.Resource)));
+    expect(toDead.flatMap((statement) => [statement.Action].flat())).toContain("sqs:GetQueueAttributes");
+    expect(toDead.flatMap((statement) => [statement.Action].flat()).filter((action) => /Receive|Delete|Send|Purge/.test(action))).toEqual([]);
+    expect(HEALTH_ALARM_SUFFIXES).toEqual(expect.arrayContaining(["LessonsReflectDeadLetters", "LessonsWorkerErrors", "LessonsWorkerThrottles"]));
+  }, 360_000);
+
+  it("M6: the worker holds no right to the audit intake queue, to itself or to any queue but its own, and L8 is noted: the vectors and embedder grants are not there yet because similarity is stubbed", () => {
+    const statements = statementsOf(/^LessonsWorkerServiceRole/);
+    const actions = [...new Set(statements.flatMap((statement) => [statement.Action].flat()))];
+    // Queues: only what consuming its own queue takes; never a send.
+    expect(actions.filter((action) => action.startsWith("sqs:")).sort()).toEqual(["sqs:ChangeMessageVisibility", "sqs:DeleteMessage", "sqs:GetQueueAttributes", "sqs:GetQueueUrl", "sqs:ReceiveMessage"]);
+    expect(JSON.stringify(statements.filter((statement) => [statement.Action].flat().some((action) => action.startsWith("sqs:"))).map((statement) => statement.Resource))).not.toMatch(/Audit|Broker|TeamRecordOps/u);
+    // L8 (noted): similarity is NOT wired (lessonSimilarityFor answers no embedder and no vectors), so the worker has no vectors role, no Bedrock and no S3 Vectors right. When DECISIONS 23/27 land the embedder and the vectors this
+    // test must change on purpose: the worker's role then needs the vectors data role (assume only), the embedding model's InvokeModel, and in Enterprise the customer's key for S3 Vectors.
+    expect(actions.filter((action) => /^(bedrock|s3vectors|sts):/.test(action))).toEqual([]);
   }, 360_000);
 
   it("Enterprise: the worker may use the customer's table key through DynamoDB only", () => {

@@ -209,14 +209,14 @@ export const HEALTH_ALARM_SUFFIXES = [
   "AuditChainMismatch", "AuditIntakeBacklog", "AuditIntakeDeadLetters", "AuditLockDrift", "AuditObjectConflict", "AuditPendingStuck", "AuditRecordFailed", "AuditSealOverdue", "AuditShredFailed", "AuditTimestampFailed",
   "BedrockThrottling", "ChainScheduleDeadLetters", "ChainWriteApproverSelectorFailed", "CheckerFailures", "ClassifierThrottling", "ConnectorBroken", "ConnectorNotConnected",
   "DeveloperNoticeDeadLetters", "DeveloperNoticeStreamFailures", "DispatchDeadLetters", "EmptyResponses",
-  "EvalBatchTickErrors", "EvalBatchWatcherErrors", "EvalExecutionsFailed",
+  "EvalBatchTickErrors", "EvalBatchWatcherErrors", "EvalExecutionsFailed", "LessonsReflectDeadLetters", "LessonsWorkerErrors", "LessonsWorkerThrottles",
   "ReconcilerLostInstances", "ReconcilerQualifiedAmiReadFailures", "ReconcilerQuarantinedVolumes", "ReconcilerStuckProvisioning", "RecordingFailures",
   "RuntimeRequalifyAgeUnreadable", "RuntimeRequalifyMachineFailures", "RuntimeRequalifyStale", "RuntimeRequalifyStepErrors",
   "SessionDeleterFailures", "SessionProvisionerFailures", "SessionReaperErrors", "SessionReconcilerErrors",
   "SlackDeadLetters", "SlackDeliveryFailed", "SlackHandOffFailures", "SlowTurns", "StuckCancels", "StuckSetupChecks", "TestAlarm", "TurnErrors", "UnwaitedTaskFailures",
 ] as const;
-/** The listed alarms an environment creates only on Amazon Bedrock (or, for RuntimeRequalify*, only with the automatic renewal on), so their absence is expected. */
-export const HEALTH_ALARM_CONDITIONAL_SUFFIXES = ["BedrockThrottling", "ClassifierThrottling", "RuntimeRequalifyAgeUnreadable", "RuntimeRequalifyMachineFailures", "RuntimeRequalifyStale", "RuntimeRequalifyStepErrors"] as const satisfies ReadonlyArray<typeof HEALTH_ALARM_SUFFIXES[number]>;
+/** The listed alarms an environment creates only on Amazon Bedrock (or, for RuntimeRequalify*, only with the automatic renewal on; or, for Lessons*, only with the Team record switch on), so their absence is expected. */
+export const HEALTH_ALARM_CONDITIONAL_SUFFIXES = ["BedrockThrottling", "ClassifierThrottling", "LessonsReflectDeadLetters", "LessonsWorkerErrors", "LessonsWorkerThrottles", "RuntimeRequalifyAgeUnreadable", "RuntimeRequalifyMachineFailures", "RuntimeRequalifyStale", "RuntimeRequalifyStepErrors"] as const satisfies ReadonlyArray<typeof HEALTH_ALARM_SUFFIXES[number]>;
 /** The state the health route gives a listed alarm CloudWatch did not return. */
 export const MISSING_ALARM_STATE = "MISSING";
 

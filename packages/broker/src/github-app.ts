@@ -23,6 +23,8 @@ const CHANGED_PATH_PAGES = 10;
 const FILE_AT_COMMIT_TIMEOUT_MS = 8_000;
 /** The most of a contents answer read to tell a file from a directory (a listing holds at most 1,000 entries). */
 const PATH_KIND_MAX_BYTES = 2 * 1024 * 1024;
+/** GitHub lists at most this many entries of a directory; a full listing may have more. */
+const PATH_LISTING_MAX_ENTRIES = 1000;
 const READ_TOKEN_REUSE_MS = 5 * 60_000;
 /** GitHub makes an App's slug from its name: letters, digits and hyphens. It goes into the install address. */
 const GITHUB_REPOSITORY_NAME = /^[A-Za-z0-9._-]{1,100}$/;
@@ -1525,8 +1527,10 @@ export class GitHubAppCredentialProvider {
   }
 
   /**
-   * What a path is at a commit: "file", "dir" (a directory or a submodule) or "none" (GitHub's 404). The contents API answers a file with one object and a directory with a list. Throws when GitHub cannot answer
-   * (never "none" for an error). Same commit and path rules as `getFileAtCommit`.
+   * What a path is at a commit: "file", "dir" (a directory or a submodule) or "none" (GitHub's 404, or a name its parent directory does not list). Throws when GitHub cannot answer (never "none" for an error)
+   * and for a symbolic link (what it points to is not known here). Same commit and path rules as `getFileAtCommit`.
+   * L7: it lists the path's PARENT directory and reads the entry's type, so no file's bytes are fetched just to learn what it is (a listing is at most 1,000 entries; a listing that is full and does not name the
+   * path cannot say "none").
    */
   async getPathKindAtCommit(repositoryUrl: string, path: string, commitSha: string, scope: GitHubTokenScope, options?: { timeoutMs?: number }): Promise<"file" | "dir" | "none"> {
     if (!/^[a-f0-9]{40}$/u.test(commitSha)) throw agentXError("CONFIG_INVALID", "commit identity is invalid");
@@ -1536,8 +1540,10 @@ export class GitHubAppCredentialProvider {
     }
     const repository = await this.installed(parseGitHubRepository(repositoryUrl), scope);
     const token = await this.readTokenFor(repository, scope);
+    const name = segments[segments.length - 1]!;
+    const parent = segments.slice(0, -1).map(encodeURIComponent).join("/");
     const response = await this.fetchImplementation(
-      `https://api.github.com/repos/${encodeURIComponent(repository.owner)}/${encodeURIComponent(repository.name)}/contents/${segments.map(encodeURIComponent).join("/")}?ref=${commitSha}`,
+      `https://api.github.com/repos/${encodeURIComponent(repository.owner)}/${encodeURIComponent(repository.name)}/contents${parent === "" ? "" : `/${parent}`}?ref=${commitSha}`,
       { headers: githubHeaders(token), signal: AbortSignal.timeout(options?.timeoutMs ?? FILE_AT_COMMIT_TIMEOUT_MS), redirect: "error" },
     );
     if (response.status === 404) { await response.body?.cancel(); return "none"; }
@@ -1545,14 +1551,20 @@ export class GitHubAppCredentialProvider {
       await response.body?.cancel();
       throw agentXError("RUNTIME_UNAVAILABLE", `GitHub path lookup failed with HTTP ${response.status}`);
     }
-    // A directory is a JSON list; a file (or a symlink) is one object. An answer over the cap is not read (it cannot be told cheaply): the caller treats a throw as "not verified".
+    // A directory is a JSON list. An answer over the cap is not read (it cannot be told cheaply): the caller treats a throw as "not verified".
     if (Number(response.headers.get("content-length")) > PATH_KIND_MAX_BYTES) { await response.body?.cancel(); throw agentXError("RUNTIME_UNAVAILABLE", "GitHub's path answer is too large to read"); }
     const body: unknown = await response.json();
-    if (Array.isArray(body)) return "dir";
-    const type = typeof body === "object" && body !== null ? (body as { type?: unknown }).type : undefined;
-    if (type === "submodule") return "dir";
-    if (type === "file" || type === "symlink") return "file";
-    throw agentXError("RUNTIME_UNAVAILABLE", "GitHub returned an unexpected path answer");
+    // The parent is not a directory (a file, a submodule or a link): nothing is below it.
+    if (!Array.isArray(body)) return "none";
+    const entry = (body as Array<{ name?: unknown; type?: unknown }>).find((candidate) => candidate.name === name);
+    if (entry === undefined) {
+      if (body.length >= PATH_LISTING_MAX_ENTRIES) throw agentXError("RUNTIME_UNAVAILABLE", "GitHub's directory listing was cut before this name");
+      return "none";
+    }
+    if (entry.type === "dir" || entry.type === "submodule") return "dir";
+    if (entry.type === "file") return "file";
+    // A symbolic link may point at a file, a directory or nothing; it is not claimed to be any of them.
+    throw agentXError("RUNTIME_UNAVAILABLE", entry.type === "symlink" ? "GitHub reports a symbolic link at this path" : "GitHub returned an unexpected path answer");
   }
 
   /**

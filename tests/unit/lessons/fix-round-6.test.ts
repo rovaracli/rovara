@@ -197,6 +197,37 @@ describe("N5-3 / N5-4 / N5-7: deletions run from a durable intent record", () =>
     expect(await store.listIntents(KEY, { finished: false })).toEqual([]);
   });
 
+  it("L4: one intent that cannot be finished never stops the ones after it: resumeAll tries every intent and counts; resumePending tries every intent and then throws the first failure", async () => {
+    const { store, vectors, port, add } = setup();
+    await add(onRecord("les_a0000001", ["A"], { provenance: { ...lessonRecord().provenance, authors: ["mallory"], sources: ["member:mallory"], inputSources: [], sourceEvents: ["A"] } }));
+    await add(onRecord("les_b0000001", ["A"], { provenance: { ...lessonRecord().provenance, authors: ["mallory"], sources: ["member:mallory"], inputSources: [], sourceEvents: ["A"] } }));
+    // Both deletions are started and neither can commit: two unfinished intents.
+    store.commitFailures = 99;
+    await expect(port.forgetSources(WS, PROJECT, "les_a0000001", new Set(["A"]))).rejects.toThrow();
+    await expect(port.forgetSources(WS, PROJECT, "les_b0000001", new Set(["A"]))).rejects.toThrow();
+    expect(await store.listIntents(KEY, { finished: false })).toHaveLength(2);
+    // The store works again, but the vector index fails once: the first intent fails, the second must still be finished.
+    store.commitFailures = 0;
+    vectors.removeFailures = 1;
+    expect(await port.resumeAll(WS, PROJECT)).toEqual({ finished: 1, failed: 1 });
+    expect(await store.listIntents(KEY, { finished: false })).toHaveLength(1);
+    // The failure is not forgotten: a later resume (the vector index is back) finishes it.
+    expect(await port.resumeAll(WS, PROJECT)).toEqual({ finished: 1, failed: 0 });
+    expect(await store.listIntents(KEY, { finished: false })).toEqual([]);
+  });
+
+  it("L4: resumePending still throws when an intent could not be finished (an erase must not report done), after trying the others", async () => {
+    const { store, vectors, port, add } = setup();
+    for (const id of ["les_a0000001", "les_b0000001"]) await add(onRecord(id, ["A"]));
+    store.commitFailures = 99;
+    for (const id of ["les_a0000001", "les_b0000001"]) await expect(port.forgetSources(WS, PROJECT, id, new Set(["A"]))).rejects.toThrow();
+    store.commitFailures = 0;
+    vectors.removeFailures = 1;
+    await expect(port.resumePending(WS, PROJECT)).rejects.toThrow();
+    expect(await store.listIntents(KEY, { finished: false })).toHaveLength(1);
+    expect(await port.resumePending(WS, PROJECT)).toBe(1);
+  });
+
   it("N5-7: a retry finishes the ORIGINAL intent; it never switches keep to withdraw", async () => {
     const { store, port, add } = setup();
     await add(codeSupported("les_code0001"));

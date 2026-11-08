@@ -21,8 +21,11 @@ import {
   LEARNING_BROKER_WAIT_MS, LEARNING_CALL_BUDGET_USD, LEARNING_DEADLINE, LEARNING_HOLD_MARGIN, LEARNING_MONTH_FULL, LEARNING_NO_BUDGET, LEARNING_ALL_FORBIDDEN, LEARNING_NO_PROVIDER, LEARNING_TOO_DEAR, customerLearningModel, worstCaseTokens,
 } from "../../packages/broker/src/aws/broker/learning-model.js";
 import { LEARNING_COUNTER } from "../../packages/broker/src/aws/broker/learning-spend.js";
-import { runReflectMessage } from "../../packages/broker/src/lessons/reflect-worker.js";
-import { withLearningDeadline } from "../../packages/broker/src/lessons/learning-deadline.js";
+import { runReflectMessage, type ReflectWorkerDeps } from "../../packages/broker/src/lessons/reflect-worker.js";
+import { dynamoReflectClaims, reflectClaimKey } from "../../packages/broker/src/lessons/reflect-claims.js";
+import type { currentLearningAttempt} from "../../packages/broker/src/lessons/learning-deadline.js";
+import { withLearningAttempt, withLearningDeadline } from "../../packages/broker/src/lessons/learning-deadline.js";
+import { keysOutcome } from "../../packages/broker/src/spend/ledger.js";
 import { LEARNING_INVOKE_TIMEOUT_MS } from "../../packages/broker/src/model-proxy/invoker.js";
 import { ledgerOf } from "../../packages/broker/src/aws/broker/sweeps-and-readiness.js";
 import type { AwsBrokerDependencies } from "../../packages/broker/src/aws/broker/definitions.js";
@@ -694,33 +697,107 @@ void scopeKey;
 // Lessons in production, lane 2 (LP-3): the same ledger reservations, seen from the WORKER. A worker that dies (or is given up on) between the key's reservation and its settling never leaks the month's cap
 // or charges twice, and a call that could not finish before the worker's deadline is not started at all.
 describe("the worker's side of the money (LP-3)", () => {
-  const claimsOf = () => { const taken = new Set<string>(); return { claim: async (m: { taskId: string; outcome: string }) => { const k = `${m.taskId}#${m.outcome}`; if (taken.has(k)) return "already" as const; taken.add(k); return "claimed" as const; } }; };
   const body = JSON.stringify({ orgId: TEST_ORG, taskId: "task-1", outcome: "merged", requestId: "r1" });
+  /** The worker's lease store on the test's own table and ledger, with the real keys-outcome check. */
+  const leasesOf = (t: ReturnType<typeof install>) => dynamoReflectClaims({ documentClient: t.db, tableName: "state", keysOutcome: (org, ids) => keysOutcome(ledgerOf(t.dependencies)!, org, ids) });
+  const workerOf = (t: ReturnType<typeof install>, over: Partial<ReflectWorkerDeps> = {}): ReflectWorkerDeps => ({
+    claims: leasesOf(t), learn: async () => { await t.model.complete(t.request); return { status: "reflected", retry: false }; }, now: () => Date.now(), deadlineMs: 240_000, graceMs: 1_000, log: () => undefined, ...over,
+  });
 
-  it("a worker given up on while the model call is in flight leaves the key reserved; the ordinary sweep finalizes the expired key and releases the month's cap; the redelivery is claimed and reserves nothing more", async () => {
+  it("H1: a worker given up on while the model call is in flight leaves the key reserved; a redelivery now WAITS (no second key, no second hold); once the sweep has finalized the key with nothing spent the work runs again on a new attempt", async () => {
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
     try {
       const t = install();
       await t.ready();
-      // The call never answers: the worker dies (or its deadline passes) with the key reserved and not blocked.
-      t.learningCompletion.mockImplementation(() => new Promise(() => undefined));
-      const claims = claimsOf();
-      const worker = { claims, learn: async () => { await t.model.complete(t.request); return "reflected" as const; }, now: () => Date.now(), deadlineMs: 240_000, log: () => undefined };
+      // The call never answers (and ignores the signal): the worker is given up on at its deadline with the key reserved and not blocked.
+      t.learningCompletion.mockImplementationOnce(() => new Promise(() => undefined));
+      const worker = workerOf(t);
       const running = runReflectMessage(worker, body);
-      await vi.advanceTimersByTimeAsync(240_000);
-      expect(await running).toBe("timed_out");
+      await vi.advanceTimersByTimeAsync(241_000);
+      expect(await running).toEqual({ result: "timed_out", retry: true });
+      const firstKey = t.keyIds()[0]!;
       expect(t.keyIds()).toHaveLength(1);
-      expect(t.proxy.blockKey).not.toHaveBeenCalled();
+      // The key was tagged with the attempt and noted on the lease.
+      const lease = t.db.get(reflectClaimKey(TEST_ORG, "task-1", "merged").pk, "CLAIM") as { leaseState: string; attempt: number; attemptId: string; modelKeyIds: string[] };
+      expect(lease).toMatchObject({ leaseState: "retry", attempt: 1, modelKeyIds: [firstKey] });
+      expect(t.record(firstKey)?.tags.operationId).toMatch(new RegExp(`^learning-${lease.attemptId}-`));
       for (const sk of ["ORG", "PROJECT#web", LEARNING_COUNTER]) near(t.counter(sk)?.committedUsd, 0.15);
-      // SQS hands the same message to a second worker: the claim stops it, so there is no second key and no second hold.
-      expect(await runReflectMessage(worker, body)).toBe("already");
+      // SQS hands the same message to a second worker: the key is not settled, so it waits. No second key, no second hold, no attempt used.
+      expect(await runReflectMessage(worker, body)).toEqual({ result: "wait", retry: true });
       expect(t.keyIds()).toHaveLength(1);
       for (const sk of ["ORG", "PROJECT#web", LEARNING_COUNTER]) near(t.counter(sk)?.committedUsd, 0.15);
+      expect((t.db.get(reflectClaimKey(TEST_ORG, "task-1", "merged").pk, "CLAIM") as { attempt: number }).attempt).toBe(1);
       // The key's expiry plus its grace: the sweep finalizes it and releases the hold on every counter (nothing was spent: the proxy never saw a request).
       await t.sweepLater(300_000 + KEY_EXPIRY_GRACE_MS + 60_000);
       for (const sk of ["ORG", "PROJECT#web", LEARNING_COUNTER]) { near(t.counter(sk)?.committedUsd, 0); near(t.counter(sk)?.spentUsd, 0); }
-      expect(t.record(t.keyIds()[0]!)?.finalized).toBe(true);
+      expect(t.record(firstKey)?.finalized).toBe(true);
+      // Now a delivery runs the work again, as attempt 2, with its own key.
+      vi.setSystemTime(Date.now() + 301_000 + KEY_EXPIRY_GRACE_MS + 60_000);
+      expect(await runReflectMessage(worker, body)).toEqual({ result: "reflected", retry: false });
+      expect(t.keyIds()).toHaveLength(2);
+      expect(t.db.get(reflectClaimKey(TEST_ORG, "task-1", "merged").pk, "CLAIM")).toMatchObject({ leaseState: "done", attempt: 2 });
     } finally { vi.useRealTimers(); }
+  });
+
+  it("H1: if the earlier attempt's key spent anything, the work is never run again, however many times the message comes back", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
+    try {
+      const t = install();
+      await t.ready();
+      t.learningCompletion.mockImplementationOnce(() => new Promise(() => undefined));
+      const worker = workerOf(t);
+      const running = runReflectMessage(worker, body);
+      await vi.advanceTimersByTimeAsync(241_000);
+      expect((await running).result).toBe("timed_out");
+      // The call did reach the provider: the proxy flushes a figure for the key.
+      t.proxy.setKeySpent(t.proxy.mintedKeys()[0]!, 0.06);
+      await t.sweepLater(300_000 + KEY_EXPIRY_GRACE_MS + 60_000);
+      vi.setSystemTime(Date.now() + 301_000 + KEY_EXPIRY_GRACE_MS + 60_000);
+      for (let delivery = 0; delivery < 3; delivery += 1) expect(await runReflectMessage(worker, body)).toEqual({ result: "already", retry: false });
+      expect(t.keyIds()).toHaveLength(1);
+      expect(t.db.get(reflectClaimKey(TEST_ORG, "task-1", "merged").pk, "CLAIM")).toMatchObject({ leaseState: "spent", attempt: 1 });
+    } finally { vi.useRealTimers(); }
+  });
+
+  it("H1: a model failure is a retryable fault when it is the provider's or the table's, and final when it is a refusal that trying again will not change; both are told to the worker through the attempt", async () => {
+    const t = install();
+    await t.ready();
+    const faultOf = async (run: () => Promise<unknown>) => {
+      const attempt = { deadlineAt: Date.now() + 200_000 } as NonNullable<ReturnType<typeof currentLearningAttempt>>;
+      await withLearningAttempt(attempt, run).catch(() => undefined);
+      return attempt.fault;
+    };
+    // The function failed: retryable (the ledger decides on the next take whether the key spent anything).
+    t.learningCompletion.mockRejectedValueOnce(new Error("MODEL_PROXY_UNAVAILABLE"));
+    expect(await faultOf(() => t.model.complete(t.request))).toBe("retryable");
+    // A table fault before any key.
+    t.db.injectFault({ command: "GetCommand", error: { name: "ProvisionedThroughputExceededException" }, times: 1 });
+    expect(await faultOf(() => t.model.complete(t.request))).toBe("retryable");
+    // The deadline's refusal.
+    const refused = { deadlineAt: Date.now() + 1_000 } as NonNullable<ReturnType<typeof currentLearningAttempt>>;
+    await withLearningAttempt(refused, () => t.model.complete(t.request)).catch(() => undefined);
+    expect(refused.fault).toBe("retryable");
+    // No provider, no budget, a month that is full, a price too high: final.
+    const noProvider = install({ projectOrder: [] });
+    await noProvider.store.save({ orgId: TEST_ORG, source: anthropic(), mode: "create", by: "dev-owner" });
+    await noProvider.store.setOrder({ orgId: TEST_ORG, order: [SRC_ANTHROPIC, "rovara"], by: "dev-owner" });
+    expect(await faultOf(() => noProvider.model.complete(noProvider.request))).toBe("final");
+    const tooDear = install();
+    await tooDear.ready();
+    expect(await faultOf(() => tooDear.model.complete({ ...tooDear.request, system: "s".repeat(8_000), user: "u".repeat(40_000), maxOutputTokens: 2_000, budgetUsd: 0.001 }))).toBe("final");
+    const monthFull = install({ monthlyCapUsd: 0.1 });
+    await monthFull.ready();
+    expect(await faultOf(() => monthFull.model.complete(monthFull.request))).toBe("final");
+  });
+
+  it("M4: the attempt's abort signal reaches the function's call, so a call in flight is stopped at the deadline", async () => {
+    const t = install();
+    await t.ready();
+    const controller = new AbortController();
+    await withLearningAttempt({ deadlineAt: Date.now() + 200_000, signal: controller.signal, attemptId: "att-9" }, () => t.model.complete(t.request));
+    expect(t.calls[0]!["signal"]).toBe(controller.signal);
+    await t.model.complete(t.request);
+    expect(t.calls[1]!["signal"]).toBeUndefined();
   });
 
   it("a call that could still be running at the worker's deadline is refused before any key exists: nothing is reserved or charged", async () => {

@@ -46,8 +46,17 @@ export const teamRecordOpsDeadLetterName = (env: string): string => `agentx-${en
  */
 export const lessonsReflectQueueName = (env: string): string => `agentx-${env}-lessons-reflect`;
 export const lessonsReflectDeadLetterName = (env: string): string => `agentx-${env}-lessons-reflect-dead`;
-/** A reflection that fails three times lands in the dead-letter queue (ids only, so nothing there holds a person's words). */
-export const LESSONS_REFLECT_MAX_RECEIVES = 3;
+/**
+ * A reflection that is received five times lands in the dead-letter queue (ids only, so nothing there holds a person's words). H1 (lane 2 review): a reflection that failed before anything was spent is tried again, at most
+ * `LESSONS_REFLECT_MAX_ATTEMPTS` times, each after the backoff below (a retry waits for its turn, not the queue's whole 1800 s); the receives left over (a lease still held, a model key not yet settled) are what lets
+ * the queue reach its dead-letter queue only after the attempts are used up.
+ */
+export const LESSONS_REFLECT_MAX_RECEIVES = 5;
+export const LESSONS_REFLECT_MAX_ATTEMPTS = 3;
+/** The wait before a failed message becomes visible again, by how many times it has been received (the last figure holds for every later receive). */
+export const LESSONS_REFLECT_RETRY_BACKOFF_SECONDS = [60, 300, 900] as const;
+/** A reflection's lease lasts the worker's timeout and this much more; a lease past it belongs to a worker that died. */
+export const LESSONS_REFLECT_LEASE_GRACE_SECONDS = 60;
 /**
  * The worker's time, pinned together (R5 of the lane 1 re-check): the model step is bounded at 100 s inside the in-VPC function (timeout 120 s) and the broker waits 130 s for it; the worker has to outlive that wait,
  * the key-block step after it and the work around it, so its timeout is 300 s and the work stops starting model calls 240 s in. SQS must not hand the message to a second worker while the first can still be running:

@@ -72,6 +72,16 @@ describe("pathExists through a host that has pathKind", () => {
     expect(await ask(f, commit, "src/http/**/*.ts")).toBeUndefined();
   });
 
+  it("M3: a reader whose kind cannot tell (the broker's reader over a host with no pathKind) still verifies a plain file by reading it; a directory and a glob stay unverified", async () => {
+    const { host, commit } = build();
+    const reader = { file: (input: Parameters<typeof host.fileAtRevision>[1] extends string ? { path: string; commit: string } : never) => host.fileAtRevision({ url: URL }, input.path, input.commit, SCOPE), kind: async () => undefined };
+    const f = createCodeFacts({ reader: reader, repositoriesOf: async () => ["api"] });
+    expect(await ask(f, commit, "src/http/client.ts")).toBe(true);
+    expect(await ask(f, commit, "src/missing.ts")).toBeUndefined();
+    expect(await ask(f, commit, "src/http")).toBeUndefined();
+    expect(await ask(f, commit, "src/http/**/*.ts")).toBeUndefined();
+  });
+
   it("a host that fails is not verified (undefined), not 'missing'", async () => {
     const { host, commit } = build();
     const f = facts({ fileAtRevision: host.fileAtRevision.bind(host), pathKind: async () => { throw new Error("host down"); } });

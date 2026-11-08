@@ -3,6 +3,7 @@
 //   - nightly (job id "lessons-reverts"): re-reflects tasks whose change was reverted in the last 26 hours. One message per task to the same queue as a task's end, with the outcome `reverted`; the worker's
 //     once-claim on `LEARN#<task>#reverted` makes a revert reflected once however many nights see the row (26 hours covers the daily run with a margin for a late one).
 // Both are bounded (projects, tasks, time) and a failure of one project never stops the others.
+import { createHash } from "node:crypto";
 import { OrgIdSchema, type OrgId } from "@agentx/contracts";
 import { modeAllows, resolveLearning, type LearningSettingsReader } from "./policy.js";
 import type { ReflectQueue } from "./reflect-queue.js";
@@ -17,19 +18,25 @@ export interface LessonsJobDeps {
   table: TeamRecordTable;
   settings: LearningSettingsReader;
   queue?: ReflectQueue | undefined;
-  resumePending(orgId: string, project: string): Promise<number>;
+  /** Tries every unfinished deletion of the project (`LessonDeletionPort.resumeAll`): one that fails never stops the ones after it. */
+  resume(orgId: string, project: string): Promise<{ finished: number; failed: number }>;
   now(): number;
   newRequestId(): string;
   log(event: string, fields: Record<string, string | number>): void;
 }
 
 /** Hourly. Returns counts only. */
-export async function lessonsResumeJob(deps: LessonsJobDeps, orgId: string, projects: readonly string[], budgetMs: number): Promise<Record<string, number>> {
+export async function lessonsResumeJob(deps: Pick<LessonsJobDeps, "resume" | "now" | "log">, orgId: string, projects: readonly string[], budgetMs: number): Promise<Record<string, number>> {
   const started = deps.now();
   let finished = 0, failed = 0, skipped = 0;
   for (const project of projects.slice(0, MAX_PROJECTS_PER_JOB)) {
     if (deps.now() - started > budgetMs) { skipped += 1; continue; }
-    try { finished += await deps.resumePending(orgId, project); } catch { failed += 1; deps.log("lessons_job.resume_failed", {}); }
+    try {
+      const result = await deps.resume(orgId, project);
+      finished += result.finished;
+      // L4: an intent that could not be finished is counted and named in one fixed line (no ids); the project's other intents were still tried.
+      if (result.failed > 0) { failed += result.failed; deps.log("lessons_job.resume_failed", { intents: result.failed }); }
+    } catch { failed += 1; deps.log("lessons_job.resume_failed", {}); }
   }
   return { lessonDeletionsResumed: finished, lessonResumeFailures: failed, lessonResumeSkipped: skipped };
 }
@@ -47,7 +54,8 @@ export async function lessonsRevertJob(deps: LessonsJobDeps, orgId: string, proj
       // The worker checks the mode too (L4); asking here keeps a project with learning off from sending anything.
       if (!modeAllows((await resolveLearning(deps.settings, orgId, project)).mode, "reflect")) continue;
       const found = await revertedTasksSince(deps.table, workspaceId, project, deps.now() - REVERT_WINDOW_MS, { nowSeconds: Math.floor(deps.now() / 1000) });
-      if (found.truncated) truncated += 1;
+      // L3: a project cut off by the page limit says so in one fixed line, the project only as a hash.
+      if (found.truncated) { truncated += 1; deps.log("lessons_job.revert_window_truncated", { project: createHash("sha256").update(`${orgId}\u0000${project}`).digest("hex").slice(0, 12) }); }
       for (const taskId of found.taskIds.slice(0, MAX_REVERTS_PER_PROJECT)) {
         try { await deps.queue.send({ orgId: workspaceId, taskId, outcome: "reverted", requestId: deps.newRequestId() }); enqueued += 1; } catch { failed += 1; deps.log("lessons_job.enqueue_failed", {}); }
       }

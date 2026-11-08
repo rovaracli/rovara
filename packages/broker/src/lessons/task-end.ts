@@ -10,6 +10,7 @@
 import { randomUUID } from "node:crypto";
 import { registerTaskEndHandler, type TaskEndHandler, type TaskEndOutcome } from "../agents/task-end.js";
 import { modeAllows, resolveLearning, type LearningSettingsReader } from "./policy.js";
+import { currentLearningAttempt } from "./learning-deadline.js";
 import { processDraft, type ProcessDeps } from "./process.js";
 import { reflectSubject, type ReflectDeps } from "./reflect.js";
 import type { ReflectSubject } from "./reflect-input.js";
@@ -77,34 +78,61 @@ export async function subjectForTask(deps: TaskLearningDeps, input: { workspaceI
 }
 
 export type LearnStatus = "off" | "no_facts" | "not_reflected" | "reflected";
+/**
+ * H1: what a reflection came to, typed. `retry` is true only for a fault that is known to have spent nothing at the moment it happened and may pass: a read of the task, the project's settings or the record failed, the
+ * model path failed in a way it marked retryable (a table fault before the call, a refusal by the deadline, a call the in-VPC client refused before sending), or the spend look failed. The worker retries those, and only after it
+ * has checked the ledger for the keys the attempt minted (`reflect-claims.ts`). Everything else is final: a reflection that was made (or cut at the deadline after its model answered), a refusal that trying again will not
+ * change (no provider, no budget, the month's limit), a model answer that did not parse, a task that teaches nothing.
+ */
+export interface LearnResult { status: LearnStatus; retry: boolean }
+
+const final = (status: LearnStatus): LearnResult => ({ status, retry: false });
 
 /** Reflects on one finished task. Never throws. */
-export async function learnFromEndedTask(deps: TaskLearningDeps, input: { workspaceId: string; taskId: string; outcome?: ReflectSubject["outcome"] }): Promise<LearnStatus> {
+export async function learnFromEndedTaskTyped(deps: TaskLearningDeps, input: { workspaceId: string; taskId: string; outcome?: ReflectSubject["outcome"] }): Promise<LearnResult> {
+  const faultBefore = currentLearningAttempt();
+  if (faultBefore !== undefined) delete faultBefore.fault;
   try {
     // L4: the switch comes first, from the task's project alone. A project whose learning is Off or Collect never has its plan text, standing or erasure state read.
     if (deps.source.projectOf !== undefined) {
       const project = await deps.source.projectOf({ workspaceId: input.workspaceId, taskId: input.taskId });
-      if (project === undefined) return "no_facts";
-      if (!modeAllows((await resolveLearning(deps.settings, input.workspaceId, project)).mode, "reflect")) return "off";
+      if (project === undefined) return final("no_facts");
+      if (!modeAllows((await resolveLearning(deps.settings, input.workspaceId, project)).mode, "reflect")) return final("off");
     }
     const base = await deps.source.read({ workspaceId: input.workspaceId, taskId: input.taskId });
-    if (base === undefined || base.facts.workspaceId !== input.workspaceId) return "no_facts";
+    if (base === undefined || base.facts.workspaceId !== input.workspaceId) return final("no_facts");
     // The switch again on the project the facts name (the only check for a source that cannot name the project alone; for the others it only repeats the same answer).
     const learning = await resolveLearning(deps.settings, input.workspaceId, base.facts.project);
-    if (!modeAllows(learning.mode, "reflect")) return "off";
+    if (!modeAllows(learning.mode, "reflect")) return final("off");
     const subject = await subjectFrom(deps, base, input.workspaceId, input.outcome);
-    if (subject === undefined) return "no_facts";
+    if (subject === undefined) return final("no_facts");
     const result = await reflectSubject(deps.reflect, subject);
-    if (result.status !== "ok") return "not_reflected";
+    if (result.status !== "ok") {
+      // Lane 1b: "learning_paused" is a refusal (no provider, every model forbidden, a price or budget that cannot fit, the month's limit): the reason is already recorded as the project's pause, and trying again changes
+      // nothing, so it ends the reflection (final) whatever fault state an earlier step left. A spend look that could not read the counter is "spend_refused" with a retryable fault (nothing was held or sent).
+      if (result.reason === "learning_paused") return final("not_reflected");
+      // The reflector turns a failed model call or spend look into a fixed reason; the model path says whether that failure was worth another try.
+      const retryable = (result.reason === "model_error" || result.reason === "spend_refused") && currentLearningAttempt()?.fault === "retryable";
+      return { status: "not_reflected", retry: retryable };
+    }
     const key = { workspaceId: input.workspaceId, project: base.facts.project };
+    const signal = currentLearningAttempt()?.signal;
     for (const draft of result.drafts) {
+      // M4: at the deadline no new draft is started (the store's writes are refused too, `deadline-guard.ts`). The model has been paid for; what is cut is lost, not repeated.
+      if (signal?.aborted === true) { deps.log?.("learning.drafts_cut_at_deadline", { taskId: input.taskId }); break; }
       try { await processDraft(deps.process, key, draft); } catch { deps.log?.("learning.draft_failed", { taskId: input.taskId }); }
     }
-    return "reflected";
+    return final("reflected");
   } catch {
     deps.log?.("learning.task_end_failed", { taskId: input.taskId });
-    return "not_reflected";
+    // Outside a worker nothing is retried. Inside one, a fault here is a read that failed, before any model key was minted by this call (or one the model path marked itself).
+    return { status: "not_reflected", retry: currentLearningAttempt() !== undefined && currentLearningAttempt()?.fault !== "final" };
   }
+}
+
+/** Reflects on one finished task. Never throws. */
+export async function learnFromEndedTask(deps: TaskLearningDeps, input: { workspaceId: string; taskId: string; outcome?: ReflectSubject["outcome"] }): Promise<LearnStatus> {
+  return (await learnFromEndedTaskTyped(deps, input)).status;
 }
 
 /**

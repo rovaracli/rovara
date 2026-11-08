@@ -1537,7 +1537,13 @@ describe("the production wiring of the person erase (LA-5)", () => {
     const sites = readdirSync(root, { recursive: true, encoding: "utf8" })
       .filter((file) => /^[a-z-]+\/src\/.*\.ts$/u.test(file.replaceAll("\\", "/")) && readFileSync(new URL(file, root), "utf8").includes("createTeamRecordRuntime("))
       .map((file) => file.replaceAll("\\", "/")).sort();
-    expect(sites).toEqual(["broker/src/aws/broker.ts", "broker/src/team-record/runtime.ts"]);
+    // Lessons in production (lane 2, M6): the LessonsWorker's slim entry is the one deliberate second site. It reflects and never erases a person (the erase, which needs the alias key, runs in the broker), so it is built
+    // without the alias key, the names, the durable queue, the dead-letter reader and the removal fallback; a test of that entry says so.
+    expect(sites).toEqual(["broker/src/aws/broker.ts", "broker/src/aws/lessons-worker-entry.ts", "broker/src/team-record/runtime.ts"]);
+    const worker = readFileSync(new URL("../../../packages/broker/src/aws/lessons-worker-entry.ts", import.meta.url), "utf8");
+    const workerCall = /createTeamRecordRuntime\(\{[^\n]*\}\);/u.exec(worker)?.[0] ?? "";
+    expect(workerCall).not.toContain("askAliasKey");
+    expect(workerCall).not.toContain("removalFallback");
   });
 });
 

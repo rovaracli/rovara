@@ -20,7 +20,7 @@ const sendBack = vi.fn(async (input: unknown) => { void input; });
 function install(over: { modelAccess?: boolean; teamRecord?: boolean } = {}) {
   const db = new FakeDynamoDb();
   const dependencies = {
-    documentClient: db, tableName: "state", developer: { signInTableName: "signin" }, artifactBucketName: "artifacts", s3: { send: async () => ({}) },
+    documentClient: db, tableName: "state", agents: {}, developer: { signInTableName: "signin" }, artifactBucketName: "artifacts", s3: { send: async () => ({}) },
     ...(over.teamRecord === false ? {} : { teamRecord: { table: { documentClient: new FakeDynamoDb(), tableName: "record" }, edition: "public", emitter: { sendBack }, taskVisibility: async () => ({ kind: "shared" }) } }),
     ...(over.modelAccess === false ? {} : { modelAccess: { access: { learningCompletion: async () => ({ text: "{}", model: "m" }) }, proxyUrl: "http://proxy" } }),
   } as Record<string, unknown>;
@@ -196,16 +196,17 @@ describe("lessons in production, lane 2: a task's end sends ids to the queue (WB
   });
 });
 
-describe("the LessonsWorker handler (lane 2): the broker's bundle with its own entry", () => {
+describe("the LessonsWorker handler (lane 2): the slim entry builds the same learning dependencies", () => {
   const taskId = "11111111-1111-4111-8111-111111111111";
   const batch = { Records: [{ messageId: "m1", body: JSON.stringify({ orgId: TEST_ORG, taskId, outcome: "merged", requestId: "r1" }) }] };
 
-  it("builds the learning dependencies from the same input as the broker, claims the task in the State table and reflects (a task that does not exist teaches nothing, and is claimed all the same)", async () => {
+  it("builds the learning dependencies from the same dependencies as the broker, takes the lease on the task in the State table and reflects (a task that does not exist teaches nothing, and its lease is done all the same)", async () => {
     const { dependencies, db } = install();
-    const handler = createLessonsWorkerHandler(dependencies as never);
+    const handler = createLessonsWorkerHandler(() => dependencies as never);
     expect(await handler(batch)).toEqual({ batchItemFailures: [] });
-    expect(db.find((item) => item["pk"] === `LEARN#${taskId}#merged`)).toHaveLength(1);
-    // The same message again (SQS delivers at least once): claimed already, nothing more is written.
+    expect(db.find((item) => item["pk"] === `LEARN#${TEST_ORG}#${taskId}#merged`)).toHaveLength(1);
+    expect(db.find((item) => item["pk"] === `LEARN#${TEST_ORG}#${taskId}#merged`)[0]).toMatchObject({ leaseState: "done", attempt: 1 });
+    // The same message again (SQS delivers at least once): the lease is done, nothing more is written.
     const writes = db.find(() => true).length;
     expect(await handler(batch)).toEqual({ batchItemFailures: [] });
     expect(db.find(() => true).length).toBe(writes);
@@ -214,17 +215,39 @@ describe("the LessonsWorker handler (lane 2): the broker's bundle with its own e
   it("where the Team record is off or has no model path there is nothing to learn with: the messages are answered (dropped), not held, and nothing is claimed", async () => {
     for (const over of [{ teamRecord: false }, { modelAccess: false }] as const) {
       const { dependencies, db } = install(over);
-      expect(await createLessonsWorkerHandler(dependencies as never)(batch)).toEqual({ batchItemFailures: [] });
+      expect(await createLessonsWorkerHandler(() => dependencies as never)(batch)).toEqual({ batchItemFailures: [] });
       expect(db.find((item) => String(item["pk"]).startsWith("LEARN#"))).toHaveLength(0);
     }
   });
 
-  it("the claim table failing brings the message back, and the next delivery goes through", async () => {
+  it("the lease table failing brings the message back, and the next delivery goes through", async () => {
     const { dependencies, db } = install();
-    const handler = createLessonsWorkerHandler(dependencies as never);
+    const handler = createLessonsWorkerHandler(() => dependencies as never);
     db.injectFault({ command: "PutCommand", match: (input) => String((input.Item as { pk?: string } | undefined)?.pk ?? "").startsWith("LEARN#"), error: { name: "InternalServerError" }, times: 1 });
     expect(await handler(batch)).toEqual({ batchItemFailures: [{ itemIdentifier: "m1" }] });
     expect(await handler(batch)).toEqual({ batchItemFailures: [] });
+  });
+});
+
+describe("L4: the lessons' scheduled jobs", () => {
+  const withJobs = (paused: boolean) => {
+    const { dependencies, db } = install();
+    const registered: string[] = [];
+    const teamRecord = dependencies.teamRecord as Record<string, unknown>;
+    teamRecord["jobs"] = { extend: (job: string) => { registered.push(job); } };
+    if (paused) teamRecord["paused"] = true;
+    return { dependencies, db, registered };
+  };
+  it("a running record gets both: the hourly resume of half-done deletions and the nightly re-reflection of reverts", () => {
+    const { dependencies, registered } = withJobs(false);
+    installLessons(dependencies as never);
+    expect(registered).toEqual(["hourly", "nightly"]);
+  });
+  it("a PAUSED record still gets the hourly resume (an erase must finish whether or not the record is paused), on a store-only port, and no nightly re-reflection (a paused record learns nothing)", () => {
+    const { dependencies, registered } = withJobs(true);
+    installLessons(dependencies as never);
+    expect(dependencies.lessons).toBeUndefined();
+    expect(registered).toEqual(["hourly"]);
   });
 });
 

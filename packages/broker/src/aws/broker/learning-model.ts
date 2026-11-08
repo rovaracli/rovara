@@ -18,18 +18,19 @@
 //      for money that may have been spent, and nothing leaks a month's cap.
 // `costUsd` of the answer is therefore an upper bound, the cap the key held.
 import { randomUUID } from "node:crypto";
-import { LESSONS_BROKER_MODEL_WAIT_SECONDS, OrgIdSchema, ROVARA_CODE_AGENT_ID, forbiddenModelMatcher, type ModelIdentifier, type OrgId } from "@agentx/contracts";
+import { AgentXError, LESSONS_BROKER_MODEL_WAIT_SECONDS, OrgIdSchema, ROVARA_CODE_AGENT_ID, forbiddenModelMatcher, type ModelIdentifier, type OrgId } from "@agentx/contracts";
 import { readGuardrails } from "../../agents/guardrails.js";
-import { learningCallMayStart } from "../../lessons/learning-deadline.js";
+import { currentLearningAttempt, learningCallMayStart, noteLearningFault } from "../../lessons/learning-deadline.js";
 import { LearningRefusal } from "../../lessons/pause.js";
 import type { Edition } from "../../lessons/policy.js";
 import type { PipelineModel } from "../../lessons/ports.js";
+import { LearningNotForwarded } from "../../model-proxy/access.js";
 import { chooseLearningRoute, learningReasoningEffort, learningWorstCaseUsd } from "../../model-sources/diagnosis-provider.js";
 import type { RoutingDependencies } from "../../model-sources/routing.js";
 import { admitWork, mintOperationKey } from "../../spend/admission.js";
 import { ScopeFullError, blockOperationKeys } from "../../spend/ledger.js";
 import { ROVARA_SOURCE_ID, budgetScopesFor } from "../../spend/payer.js";
-import type { AwsBrokerDependencies } from "./definitions.js";
+import type { LessonsHostDependencies } from "./definitions.js";
 import { cleanUsd } from "../../spend/top-ups.js";
 import { LEARNING_AGENT_ID, LEARNING_COUNTER, learningMonthlyCapUsd } from "./learning-spend.js";
 import { routingOf } from "./scope-helpers.js";
@@ -64,7 +65,7 @@ export function worstCaseTokens(text: string): number {
 
 export interface CustomerLearningModelOptions {
   /** Replaces the broker's routing (tests). */
-  routing?: (dependencies: AwsBrokerDependencies) => RoutingDependencies | undefined;
+  routing?: (dependencies: LessonsHostDependencies) => RoutingDependencies | undefined;
   /** Replaces the call's budget when the caller names none. */
   budgetUsd?: number;
   /** The install's edition: Public holds every key's cap on the company's $20 learning month; Enterprise has no learning cap of its own. Default Public (the safe side). */
@@ -89,15 +90,30 @@ const asBudgetRefusal = (error: unknown): LearningRefusal | undefined => {
 
 type CompleteRequest = Parameters<PipelineModel["complete"]>[0];
 
-export function customerLearningModel(dependencies: AwsBrokerDependencies, options: CustomerLearningModelOptions = {}): PipelineModel {
+/**
+ * How a failure of the model path is read inside the worker (lane 2, H1; re-check R1, R3). ONE refusal class (`LearningRefusal`, final: the answer will not change, so it is never retried). The rule for everything else is
+ * decided by whether the model call STARTED, never by dollars:
+ *   - before the call starts (a read or a mint failed, the deadline left no room, the lease could not be marked) nothing was sent to the provider, so a plain fault or a 5xx is retryable and a 4xx is final;
+ *   - once the call has started every failure is final (a timeout, our own abort, a non-200 answer, an answer with no text: the provider may have been reached and may still be working), except a
+ *     `LearningNotForwarded` refusal, which the in-VPC client raises only before it sent anything, and which is retryable once the lease mark is taken back.
+ * `keysOutcome` of the ledger stays as a second check (`reflect-claims.ts`).
+ */
+export function learningFaultOf(error: unknown, callStarted: boolean): "retryable" | "final" {
+  if (error instanceof LearningRefusal) return "final";
+  if (callStarted) return "final";
+  if (error instanceof AgentXError) return error.statusCode >= 500 ? "retryable" : "final";
+  return "retryable";
+}
+
+export function customerLearningModel(dependencies: LessonsHostDependencies, options: CustomerLearningModelOptions = {}): PipelineModel {
   const log = options.log ?? ((event, fields) => console.log(JSON.stringify({ component: "lessons", event, ...fields })));
-  const admissionOf = (modelAccess: NonNullable<AwsBrokerDependencies["modelAccess"]>) =>
+  const admissionOf = (modelAccess: NonNullable<LessonsHostDependencies["modelAccess"]>) =>
     ({ documentClient: dependencies.documentClient, tableName: dependencies.tableName, access: modelAccess.access, cloud: dependencies.cloud === true });
 
   /** The model, the route and the hold of one call, or a `LearningRefusal` (nothing is made, nothing is held). */
   async function plan(request: CompleteRequest) {
     const org = OrgIdSchema.safeParse(request.workspaceId);
-    if (!org.success || request.project === undefined || request.project === "") throw new Error("learning needs a company and a project");
+    if (!org.success || request.project === undefined || request.project === "") throw new LearningRefusal("no_provider", LEARNING_NO_PROVIDER);
     const orgId: OrgId = org.data, project = request.project;
     // The company's forbidden models, read now: an unreadable document refuses (fail closed) rather than choosing among models without the list.
     const forbidden = forbiddenModelMatcher((await readGuardrails({ documentClient: dependencies.documentClient, tableName: dependencies.tableName }, orgId)).forbiddenModels);
@@ -126,12 +142,84 @@ export function customerLearningModel(dependencies: AwsBrokerDependencies, optio
   }
 
   /** The company's existing budgets, like any chat turn of the project: nothing left refuses, before any key exists. */
-  async function admit(modelAccess: NonNullable<AwsBrokerDependencies["modelAccess"]>, planned: Awaited<ReturnType<typeof plan>>): Promise<void> {
+  async function admit(modelAccess: NonNullable<LessonsHostDependencies["modelAccess"]>, planned: Awaited<ReturnType<typeof plan>>): Promise<void> {
     try {
       const admitted = await admitWork(admissionOf(modelAccess), { orgId: planned.orgId, payer: { kind: "project", project: planned.project }, project: planned.project, agentId: ROVARA_CODE_AGENT_ID, agentName: LEARNING_AGENT_NAME, path: "CHAT" });
       if (admitted.maxBudgetUsd < planned.hold) throw new LearningRefusal("no_budget", LEARNING_NO_BUDGET);
     } catch (error) {
       throw asBudgetRefusal(error) ?? error;
+    }
+  }
+
+  async function completeOnce(request: CompleteRequest, state: { callStarted: boolean }): ReturnType<PipelineModel["complete"]> {
+    const modelAccess = dependencies.modelAccess;
+    const completion = modelAccess?.access.learningCompletion?.bind(modelAccess.access);
+    // These are about this install, not this reflection: a refusal (final) with the code that says learning has nothing to run on here.
+    if (modelAccess === undefined || completion === undefined) throw new LearningRefusal("no_provider", LEARNING_NO_PROVIDER);
+    // Lane 2: inside the worker, a call that could still be running at the reflection's deadline is not started (nothing is reserved or charged).
+    if (!learningCallMayStart(Date.now(), LEARNING_BROKER_WAIT_MS)) throw new Error(LEARNING_DEADLINE);
+    // The ledger is the money's home: an install without one cannot hold a cap, so it makes no call (fail closed).
+    const ledger = ledgerOf(dependencies);
+    if (ledger === undefined) throw new LearningRefusal("no_provider", LEARNING_NO_PROVIDER);
+    const planned = await plan(request);
+    const { orgId, project, chosen, hold } = planned;
+    await admit(modelAccess, planned);
+
+    const payer = { kind: "project", project } as const;
+    // H1: inside the worker the key is tagged with the attempt (its operation id carries the attempt's id) and noted on the reflection's lease, so a later worker can read from the ledger what this attempt spent.
+    const attempt = currentLearningAttempt();
+    const operationId = `learning-${attempt?.attemptId === undefined ? "" : `${attempt.attemptId}-`}${randomUUID()}`;
+    const monthlyCap = learningMonthlyCapUsd(options.edition ?? "public", options.monthlyCapUsd);
+    let minted: Awaited<ReturnType<typeof mintOperationKey>>;
+    try {
+      minted = await mintOperationKey({ ...admissionOf(modelAccess), ledger }, {
+        orgId, refId: operationId, ttlSeconds: LEARNING_KEY_TTL_SECONDS, agentName: LEARNING_AGENT_NAME,
+        // The same scopes a chat turn of the project counts against (the org and the project), and the learning month beside them.
+        scopes: budgetScopesFor(payer, { project }, { agentId: ROVARA_CODE_AGENT_ID }),
+        holds: [{ counter: LEARNING_COUNTER, ...(monthlyCap === undefined ? {} : { limitUsd: monthlyCap }) }],
+        tags: { agentId: LEARNING_AGENT_ID, project, payerKind: "project", payerId: project, source: ROVARA_SOURCE_ID, origin: "learning", operationId },
+        route: { alias: chosen.alias, sourceId: chosen.sourceId },
+        // The hold is sized to the call: the key is never capped above it (nor, when the budgets are short, above what they have left).
+        runLimitUsd: hold, stopAtUsd: hold, budgetCeilingUsd: hold, taskKeyIds: [],
+        ...(attempt?.leaseKey === undefined ? {} : { recordOn: [{ key: attempt.leaseKey }] }),
+      });
+    } catch (error) {
+      if (error instanceof ScopeFullError) {
+        // The learning month is the company's own limit; any other scope that fills between the admission and the mint (the org's or the project's budget) is a budget pause, not a provider failure.
+        throw error.scope === LEARNING_COUNTER ? new LearningRefusal("monthly_limit", LEARNING_MONTH_FULL, { cause: error }) : new LearningRefusal("no_budget", LEARNING_NO_BUDGET, { cause: error });
+      }
+      throw asBudgetRefusal(error) ?? error;
+    }
+    if (minted.outcome !== "minted") throw new Error("learning could not record its model key");
+    try {
+      // R3 (lane 1b): a concurrent mint can leave the key capped below the hold (the worst-case check was made against the hold). The proxy checks a key's budget only before a request, so a call that could cost more than
+      // the key holds must not be made: refuse it (the finally below blocks the key and the sweep releases its hold).
+      if (minted.maxBudgetUsd + 1e-9 < hold) throw new LearningRefusal("no_budget", LEARNING_NO_BUDGET);
+      // Re-check R4: the steps above (guardrails, routing, admission, the mint) can take seconds, so the time is looked at again right before the call. No room: nothing was sent, the key is blocked and spent nothing.
+      if (!learningCallMayStart(Date.now(), LEARNING_BROKER_WAIT_MS)) throw new Error(LEARNING_DEADLINE);
+      // Re-check R1: from here the call MAY reach the provider. The lease says so first (a conditional write on this attempt); a lease that cannot be marked means the call is not made. Once marked, `take` never
+      // runs this reflection again, whatever the key's figure turns out to be, unless the in-VPC client says it sent nothing.
+      await attempt?.callStarting?.();
+      state.callStarted = true;
+      let answer: Awaited<ReturnType<typeof completion>>;
+      try {
+        answer = await completion({
+          key: minted.key, purpose: request.purpose, system: request.system, user: request.user, maxOutputTokens: request.maxOutputTokens,
+          model: chosen.alias, api: chosen.api, ...(chosen.reasoningEffort === undefined ? {} : { reasoningEffort: chosen.reasoningEffort }),
+          ...(attempt?.signal === undefined ? {} : { signal: attempt.signal }),
+        });
+      } catch (error) {
+        // The in-VPC client refused before it sent anything: the call is taken back (the lease's mark is removed) and the reflection may be tried again. A mark that cannot be removed leaves the call counted as made.
+        if (error instanceof LearningNotForwarded && attempt?.callNotSent !== undefined) {
+          try { await attempt.callNotSent(); state.callStarted = false; } catch { log("learning.call_mark_kept", { orgId }); }
+        }
+        throw error;
+      }
+      return { text: answer.text, costUsd: minted.maxBudgetUsd, model: answer.model };
+    } finally {
+      // Whatever the call did (an answer, an error, a timeout), the key is blocked now and its finalize clock starts; the sweep settles the proxy's own figure when it has flushed it. A block that fails
+      // leaves the key to expire (five minutes) and to be finalized by the sweep's expiry backstop; its cap stays held until then.
+      await blockOperationKeys(ledger, { orgId, operationId, keyIds: [minted.keyId] }).catch(() => log("learning.key_not_blocked", { orgId }));
     }
   }
 
@@ -145,58 +233,19 @@ export function customerLearningModel(dependencies: AwsBrokerDependencies, optio
         return { ok: true, usd: planned.hold };
       } catch (error) {
         if (error instanceof LearningRefusal) return { ok: false, code: error.code };
+        // R3: a quote makes no call and holds nothing, so a table or proxy fault here is typed like any fault before the call: retryable (a 4xx is final). Without this a quote fault read as final.
+        noteLearningFault(learningFaultOf(error, false));
         throw error;
       }
     },
     async complete(request) {
-      const modelAccess = dependencies.modelAccess;
-      const completion = modelAccess?.access.learningCompletion?.bind(modelAccess.access);
-      if (modelAccess === undefined || completion === undefined) throw new Error("learning has no model path in this install");
-      // Lane 2: inside the worker, a call that could still be running at the reflection's deadline is not started (nothing is reserved or charged).
-      if (!learningCallMayStart(Date.now(), LEARNING_BROKER_WAIT_MS)) throw new Error(LEARNING_DEADLINE);
-      // The ledger is the money's home: an install without one cannot hold a cap, so it makes no call (fail closed).
-      const ledger = ledgerOf(dependencies);
-      if (ledger === undefined) throw new Error("learning has no spend ledger in this install");
-      const planned = await plan(request);
-      const { orgId, project, chosen, hold } = planned;
-      await admit(modelAccess, planned);
-
-      const payer = { kind: "project", project } as const;
-      const operationId = `learning-${randomUUID()}`;
-      const monthlyCap = learningMonthlyCapUsd(options.edition ?? "public", options.monthlyCapUsd);
-      let minted: Awaited<ReturnType<typeof mintOperationKey>>;
+      const state = { callStarted: false };
       try {
-        minted = await mintOperationKey({ ...admissionOf(modelAccess), ledger }, {
-          orgId, refId: operationId, ttlSeconds: LEARNING_KEY_TTL_SECONDS, agentName: LEARNING_AGENT_NAME,
-          // The same scopes a chat turn of the project counts against (the org and the project), and the learning month beside them.
-          scopes: budgetScopesFor(payer, { project }, { agentId: ROVARA_CODE_AGENT_ID }),
-          holds: [{ counter: LEARNING_COUNTER, ...(monthlyCap === undefined ? {} : { limitUsd: monthlyCap }) }],
-          tags: { agentId: LEARNING_AGENT_ID, project, payerKind: "project", payerId: project, source: ROVARA_SOURCE_ID, origin: "learning", operationId },
-          route: { alias: chosen.alias, sourceId: chosen.sourceId },
-          // The hold is sized to the call: the key is never capped above it (nor, when the budgets are short, above what they have left).
-          runLimitUsd: hold, stopAtUsd: hold, budgetCeilingUsd: hold, taskKeyIds: [],
-        });
+        return await completeOnce(request, state);
       } catch (error) {
-        if (error instanceof ScopeFullError) {
-          // The learning month is the company's own limit; any other scope that fills between the admission and the mint (the org's or the project's budget) is a budget pause, not a provider failure.
-          throw error.scope === LEARNING_COUNTER ? new LearningRefusal("monthly_limit", LEARNING_MONTH_FULL, { cause: error }) : new LearningRefusal("no_budget", LEARNING_NO_BUDGET, { cause: error });
-        }
-        throw asBudgetRefusal(error) ?? error;
-      }
-      if (minted.outcome !== "minted") throw new Error("learning could not record its model key");
-      try {
-        // R3: a concurrent mint can leave the key capped below the hold (the worst-case check was made against the hold). The proxy checks a key's budget only before a request, so a call that could cost more than
-        // the key holds must not be made: refuse it (the finally below blocks the key and the sweep releases its hold).
-        if (minted.maxBudgetUsd + 1e-9 < hold) throw new LearningRefusal("no_budget", LEARNING_NO_BUDGET);
-        const answer = await completion({
-          key: minted.key, purpose: request.purpose, system: request.system, user: request.user, maxOutputTokens: request.maxOutputTokens,
-          model: chosen.alias, api: chosen.api, ...(chosen.reasoningEffort === undefined ? {} : { reasoningEffort: chosen.reasoningEffort }),
-        });
-        return { text: answer.text, costUsd: minted.maxBudgetUsd, model: answer.model };
-      } finally {
-        // Whatever the call did (an answer, an error, a timeout), the key is blocked now and its finalize clock starts; the sweep settles the proxy's own figure when it has flushed it. A block that fails
-        // leaves the key to expire (five minutes) and to be finalized by the sweep's expiry backstop; its cap stays held until then.
-        await blockOperationKeys(ledger, { orgId, operationId, keyIds: [minted.keyId] }).catch(() => log("learning.key_not_blocked", { orgId }));
+        // Inside the worker the attempt learns whether this failure is worth another try (the reflector turns every model failure into one fixed reason).
+        noteLearningFault(learningFaultOf(error, state.callStarted));
+        throw error;
       }
     },
   };

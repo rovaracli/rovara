@@ -39,6 +39,9 @@ import { approvalDecideKind } from "../../agents/approval-decide-kind.js";
 import { authenticateBearer } from "../developer-routes.js";
 import { connectedAwsAccountsOf, workspaceKey } from "./admin-and-helpers.js";
 import type { AwsBrokerDependencies } from "./definitions.js";
+
+/** What `routingOf` reads of the broker's dependencies (the LessonsWorker builds only these). */
+export type RoutingHostDependencies = Pick<AwsBrokerDependencies, "agents" | "modelAccess" | "documentClient" | "tableName" | "chatgpt" | "editionPolicy" | "usableModels" | "orgResolver" | "cloud" | "audit">;
 import { orgStoreOf } from "./dependency-wiring.js";
 import { routeEditionDependencies } from "../../wiring/enterprise-identity.js";
 
@@ -195,7 +198,7 @@ export function customModelEndpointsOn(dependencies: Pick<AwsBrokerDependencies,
 const saidMisconfigured = new Set<string>();
 
 /** The launch lists with the endpoint kind added when the install has custom endpoints on. A launch an install or test supplied is kept as it is. */
-function launchWithEndpoint(dependencies: AwsBrokerDependencies): ModelSourceBrokerOptions["launch"] {
+function launchWithEndpoint(dependencies: RoutingHostDependencies): ModelSourceBrokerOptions["launch"] {
   const given = dependencies.agents?.modelSources?.launch;
   if (!customModelEndpointsOn(dependencies)) return given;
   return { ...(given ?? {}), kinds: [...new Set([...(given?.kinds ?? []), "endpoint" as const])] };
@@ -219,7 +222,7 @@ export function modelEndpointRouteOptions(dependencies: AwsBrokerDependencies): 
 }
 
 /** The company AI sources' record (Task 24b). The install-wide ChatGPT switch sets a new org's default order. */
-export function modelSourceStoreOf(dependencies: AwsBrokerDependencies): ModelSourceStore {
+export function modelSourceStoreOf(dependencies: RoutingHostDependencies): ModelSourceStore {
   return new ModelSourceStore({
     documentClient: dependencies.documentClient, tableName: dependencies.tableName, now: Date.now,
     // Read the way ChatGPT's own code reads it, so what a new org's order says and what the install shows agree.
@@ -234,7 +237,7 @@ export function modelSourceStoreOf(dependencies: AwsBrokerDependencies): ModelSo
  * Task 26: what routing a step's model needs: the org's sources, the project's own order, a person's ChatGPT plan and the endpoint hosts' approvals.
  * Governed stage routing reads sources even before agents are configured; other flows retain their existing enablement.
  */
-export function routingOf(dependencies: AwsBrokerDependencies, stageModel = false): RoutingDependencies | undefined {
+export function routingOf(dependencies: RoutingHostDependencies, stageModel = false): RoutingDependencies | undefined {
   if ((!stageModel && dependencies.agents === undefined) || dependencies.modelAccess === undefined) return undefined;
   const settings = { documentClient: dependencies.documentClient, tableName: dependencies.tableName };
   let geography: RoutingDependencies["rovaraGeography"];

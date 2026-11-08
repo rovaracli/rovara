@@ -9,7 +9,9 @@ import { DeveloperSignInStore } from "../../developer/store.js";
 import type { CodeFactsReader } from "../../lessons/code-facts.js";
 import { NO_EMBEDDER, NO_VECTORS, createLessonsRuntime, type LessonsRuntime } from "../../lessons/runtime.js";
 import type { Embedder, LearningSpend, LessonVectors, PipelineModel } from "../../lessons/ports.js";
+import { lessonAuditSink } from "../../lessons/audit-sink.js";
 import { lessonDeletionPort } from "../../lessons/deletion.js";
+import { DynamoLessonStore } from "../../lessons/dynamo-store.js";
 import { lessonsResumeJob, lessonsRevertJob, type LessonsJobDeps } from "../../lessons/jobs.js";
 import type { TaskLearningDeps } from "../../lessons/task-end.js";
 import { tableOutcomeRows } from "../../lessons/task-outcome-rows.js";
@@ -30,7 +32,7 @@ import { readProjectRole, readStanding } from "../../learning/standing.js";
 import { requireLatestProject } from "./records.js";
 import { hostOfRepository } from "./repository-hosts.js";
 import { githubScope } from "./scope-helpers.js";
-import type { AwsBrokerDependencies } from "./definitions.js";
+import type { AwsBrokerDependencies, LessonsHostDependencies } from "./definitions.js";
 
 const MAX_BYTES = 1024 * 1024;
 /** A rule file shown on the task page is cut at 64 KB by the route; the read stops there too. */
@@ -38,7 +40,7 @@ const RULE_TEXT_BYTES = 70 * 1024;
 const RULE_TEXT_TIMEOUT_MS = 5_000;
 
 /** The code host's file read at a commit, for the repository a project names. Never the working tree; a repository that is not the project's reads nothing. */
-export function codeFileReader(dependencies: AwsBrokerDependencies, maxBytes = MAX_BYTES): CodeFactsReader {
+export function codeFileReader(dependencies: LessonsHostDependencies, maxBytes = MAX_BYTES): CodeFactsReader {
   return {
     async file(input) {
       const orgId = OrgIdSchema.parse(input.workspaceId);
@@ -99,7 +101,7 @@ export function pauseStillAppliesFor(model: PipelineModel, spend: LearningSpend)
 const PUBLIC_PER_TASK_PROBE_USD = 0.15;
 
 /** The lessons runtime for this install, or undefined where the Team record is off. */
-export function lessonsRuntimeFor(dependencies: AwsBrokerDependencies): LessonsRuntime | undefined {
+export function lessonsRuntimeFor(dependencies: LessonsHostDependencies): LessonsRuntime | undefined {
   const teamRecord = dependencies.teamRecord;
   const signInTableName = dependencies.developer?.signInTableName;
   // A record runtime without its table (a partial one, as in some test harnesses) gives no lessons: lessons are off, never a crash at handler start.
@@ -141,7 +143,7 @@ export function lessonsRuntimeFor(dependencies: AwsBrokerDependencies): LessonsR
  * What the task-end hook needs (`TaskLearningDeps`), from the lessons runtime and the broker's own readers; undefined without the Team record, a model path or an audit ledger. Built here; the hook is NOT
  * registered from it in this release: `learning-wiring.ts` registers the inline handler only when its flag is on, and it is off until the reflection runs from a queue (WB-4).
  */
-export function learningDepsFor(dependencies: AwsBrokerDependencies, runtime: LessonsRuntime): TaskLearningDeps | undefined {
+export function learningDepsFor(dependencies: LessonsHostDependencies, runtime: LessonsRuntime): TaskLearningDeps | undefined {
   const teamRecord = dependencies.teamRecord;
   const signInTableName = dependencies.developer?.signInTableName;
   if (teamRecord === undefined || dependencies.modelAccess === undefined || signInTableName === undefined || signInTableName === "") return undefined;
@@ -172,7 +174,7 @@ export function learningDepsFor(dependencies: AwsBrokerDependencies, runtime: Le
 }
 
 /** At handler start (`broker/handler.ts`): sets `dependencies.lessons` unless the caller gave one (tests). */
-export function installLessons(dependencies: AwsBrokerDependencies): void {
+export function installLessons(dependencies: LessonsHostDependencies): void {
   if (dependencies.lessons !== undefined) return;
   const built = lessonsRuntimeFor(dependencies);
   if (built !== undefined) dependencies.lessons = built;
@@ -182,7 +184,7 @@ export function installLessons(dependencies: AwsBrokerDependencies): void {
     if (learning !== undefined) dependencies.learning = learning;
   }
   // Lessons in production (lane 2, WB-7): the lessons' two jobs ride the Team record's schedules (the hourly deletion resumer, the nightly re-reflection of reverted tasks).
-  if (built !== undefined) installLessonsJobs(dependencies, built);
+  installLessonsJobs(dependencies, built);
   // UX-4b: Home's "Lessons waiting" card counts what the Lessons tab would show this person to decide (learning Off: none).
   const routes = dependencies.lessons?.routes;
   // Approve by exception: the pull request description lists the lessons the task used (`lessons/used-in-pr.ts`).
@@ -199,16 +201,23 @@ export function installLessons(dependencies: AwsBrokerDependencies): void {
   });
 }
 
-/** The hourly `lessons-resume` job and the nightly `lessons-reverts` job (`lessons/jobs.ts`), added to the record's schedules. Nothing is added where the record has no job runner (a partial harness). */
-export function installLessonsJobs(dependencies: AwsBrokerDependencies, runtime: LessonsRuntime): void {
+/**
+ * The hourly `lessons-resume` job and the nightly `lessons-reverts` job (`lessons/jobs.ts`), added to the record's schedules. Nothing is added where the record has no job runner (a partial harness).
+ * L4 (lane 2 review): the hourly resume does not depend on the lessons runtime: an erase or a deletion left half-done must finish whether or not the record is paused, so with no runtime (a paused record) it runs on a
+ * store-only deletion port (the lessons' store over the record's table, no vectors, the audit sink of the record). The nightly re-reflection needs the runtime (the learning mode) and so is not added while paused.
+ */
+export function installLessonsJobs(dependencies: LessonsHostDependencies, runtime: LessonsRuntime | undefined): void {
   const teamRecord = dependencies.teamRecord;
-  if (teamRecord?.jobs?.extend === undefined) return;
-  const deletion = lessonDeletionPort({ store: runtime.store, vectors: lessonSimilarityFor(dependencies).vectors, audit: runtime.routes.audit, now: Date.now });
+  if (teamRecord?.jobs?.extend === undefined || (teamRecord as { table?: unknown }).table === undefined) return;
+  const log = (event: string, fields: Record<string, string | number>): void => console.log(JSON.stringify({ component: "lessons", event, ...fields }));
+  const audit = runtime?.routes.audit ?? lessonAuditSink(recordAuditSinkOf(dependencies.audit, dependencies.documentClient) ?? (async () => { throw new Error("no audit ledger"); }), Date.now);
+  const deletion = lessonDeletionPort({ store: runtime?.store ?? new DynamoLessonStore(teamRecord.table, Date.now), vectors: lessonSimilarityFor(dependencies).vectors, audit, now: Date.now });
+  teamRecord.jobs.extend("hourly", (orgId, projects, budgetMs) => lessonsResumeJob({ resume: (org, project) => deletion.resumeAll(org, project), now: Date.now, log }, orgId, projects, budgetMs));
+  if (runtime === undefined) return;
   const jobs: LessonsJobDeps = {
-    table: teamRecord.table, settings: runtime.settings, queue: dependencies.lessonsReflectQueue, resumePending: (orgId, project) => deletion.resumePending(orgId, project),
-    now: Date.now, newRequestId: () => `nightly-${randomUUID()}`, log: (event, fields) => console.log(JSON.stringify({ component: "lessons", event, ...fields })),
+    table: teamRecord.table, settings: runtime.settings, queue: dependencies.lessonsReflectQueue, resume: (orgId, project) => deletion.resumeAll(orgId, project),
+    now: Date.now, newRequestId: () => `nightly-${randomUUID()}`, log,
   };
-  teamRecord.jobs.extend("hourly", (orgId, projects, budgetMs) => lessonsResumeJob(jobs, orgId, projects, budgetMs));
   teamRecord.jobs.extend("nightly", (orgId, projects, budgetMs) => lessonsRevertJob(jobs, orgId, projects, budgetMs));
 }
 

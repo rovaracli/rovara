@@ -5,7 +5,7 @@
 import { InvokeCommand, LambdaClient, type InvokeCommandOutput, type LambdaClientConfig } from "@aws-sdk/client-lambda";
 import { AgentXErrorCodeSchema, agentXError, type AgentXError, type OrgId } from "@agentx/contracts";
 import { z } from "zod";
-import type { KeyAudit, LearningCompletion, LearningCompletionInput, MemberSpend, MintKeyInput, MintedKey, ModelAccess, SourceCheck, SpendFigures, UpsertSourceInput } from "./access.js";
+import { LearningNotForwarded, type KeyAudit, type LearningCompletion, LearningCompletionInput, MemberSpend, MintKeyInput, MintedKey, ModelAccess, SourceCheck, SpendFigures, UpsertSourceInput } from "./access.js";
 import { KeyAuditResultSchema, KeySpendResultSchema, LearningCompletionResultSchema, MintedKeyResultSchema, RegisteredSourcesResultSchema, SourceCheckResultSchema, SpendFiguresSchema, SpendResultSchema, type ModelAccessRequest } from "./protocol.js";
 
 const DEFAULT_TIMEOUT_MS = 25_000;
@@ -30,7 +30,7 @@ export interface ModelAccessInvokerInput {
   timeoutMs?: number;
 }
 
-const FailureSchema = z.object({ ok: z.literal(false), code: AgentXErrorCodeSchema, message: z.string() });
+const FailureSchema = z.object({ ok: z.literal(false), code: AgentXErrorCodeSchema, message: z.string(), notForwarded: z.literal(true).optional() });
 const SuccessSchema = z.object({ ok: z.literal(true), result: z.unknown() });
 
 const unavailable = (message: string): AgentXError => agentXError("MODEL_PROXY_UNAVAILABLE", message);
@@ -102,8 +102,8 @@ export class ModelAccessInvoker implements ModelAccess {
   }
 
   async learningCompletion(input: LearningCompletionInput): Promise<LearningCompletion> {
-    const { key, purpose, system, user, maxOutputTokens, model, api, reasoningEffort } = input;
-    return this.parseResult(await this.invoke({ op: "learningCompletion", args: { key, purpose, system, user, maxOutputTokens, model, api, ...(reasoningEffort === undefined ? {} : { reasoningEffort }) } }, LEARNING_INVOKE_TIMEOUT_MS, this.input.learningLambda), LearningCompletionResultSchema);
+    const { key, purpose, system, user, maxOutputTokens, model, api, reasoningEffort, signal } = input;
+    return this.parseResult(await this.invoke({ op: "learningCompletion", args: { key, purpose, system, user, maxOutputTokens, model, api, ...(reasoningEffort === undefined ? {} : { reasoningEffort }) } }, LEARNING_INVOKE_TIMEOUT_MS, this.input.learningLambda, signal), LearningCompletionResultSchema);
   }
 
   private parseResult<T>(result: unknown, schema: z.ZodType<T>): T {
@@ -112,12 +112,12 @@ export class ModelAccessInvoker implements ModelAccess {
     return parsed.data;
   }
 
-  private async invoke(request: ModelAccessRequest, timeoutMs?: number, lambda: ModelAccessInvokerInput["lambda"] = this.input.lambda): Promise<unknown> {
+  private async invoke(request: ModelAccessRequest, timeoutMs?: number, lambda: ModelAccessInvokerInput["lambda"] = this.input.lambda, signal?: AbortSignal): Promise<unknown> {
     let output: InvokeCommandOutput;
     try {
       output = await lambda.send(
         new InvokeCommand({ FunctionName: this.input.functionName, InvocationType: "RequestResponse", Payload: Buffer.from(JSON.stringify(request), "utf8") }),
-        { abortSignal: AbortSignal.timeout(timeoutMs ?? this.input.timeoutMs ?? DEFAULT_TIMEOUT_MS) },
+        { abortSignal: signal === undefined ? AbortSignal.timeout(timeoutMs ?? this.input.timeoutMs ?? DEFAULT_TIMEOUT_MS) : AbortSignal.any([AbortSignal.timeout(timeoutMs ?? this.input.timeoutMs ?? DEFAULT_TIMEOUT_MS), signal]) },
       );
     } catch {
       throw unavailable("model access could not be invoked");
@@ -130,7 +130,7 @@ export class ModelAccessInvoker implements ModelAccess {
       throw unavailable("model access answered with a body that is not JSON");
     }
     const failure = FailureSchema.safeParse(decoded);
-    if (failure.success) throw agentXError(failure.data.code, failure.data.message);
+    if (failure.success) throw failure.data.notForwarded === true && request.op === "learningCompletion" ? new LearningNotForwarded(failure.data.message) : agentXError(failure.data.code, failure.data.message);
     const success = SuccessSchema.safeParse(decoded);
     if (!success.success) throw unavailable("model access answered with an unexpected body");
     return success.data.result;

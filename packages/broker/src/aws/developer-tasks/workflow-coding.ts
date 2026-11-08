@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { humanSendBackCount } from "../../lessons/human-send-backs.js";
 import { DeleteCommand, TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
 import {
   CanvasCloseoutRetryRequestSchema,
@@ -431,7 +432,7 @@ export async function sendTaskWorkflowBackToCoding(deps: DeveloperTaskRouteDepen
   // (`autoSendBackToCodingFromSystem`) is another function and never captures. A code send-back carries no included comments. Slack's fixed note is not a person's reason.
   await captureSendBackQuietly(deps, { caller, taskId, project: task.project, requestId: request.requestId, reason: request.instructions === SLACK_SEND_BACK_INSTRUCTIONS ? "" : request.instructions, included: [], stage: await codeSendBackStage(deps, caller.orgId, task.taskId, next),
     // Learning (WA-2, LS-1): the lessons side hears of this send-back from the one capture entry point, not from a call beside it: WHO sent it back (a listener exists only where learning is wired).
-    alsoRecord: () => announceTaskSendBack({ task, callerDeveloperId: caller.developerId, requestId: request.requestId, instructions: request.instructions === SLACK_SEND_BACK_INSTRUCTIONS ? "" : request.instructions, earlierSendBacks: workflow.decisions.filter((decision) => decision.source === "SEND_BACK").length, at: receivedAt }) });
+    alsoRecord: () => announceTaskSendBack({ task, callerDeveloperId: caller.developerId, requestId: request.requestId, instructions: request.instructions === SLACK_SEND_BACK_INSTRUCTIONS ? "" : request.instructions, earlierSendBacks: humanSendBackCount(workflow), at: receivedAt }) });
   return queued;
 }
 
@@ -516,7 +517,7 @@ export async function resolveTaskWorkflowFindings(deps: DeveloperTaskRouteDepend
     // person, their request, and their own per-finding notes (the findings' text is reviewer output and is not passed on). The note is not captured as a correction here (`reason` is empty: the owner's notes are
     // answers to particular findings), so only the record's row is written. Never fails or holds up the decision.
     await captureSendBackQuietly(deps, { caller, taskId, project: task.project, requestId: request.requestId, reason: "", included: [], stage: await codeSendBackStage(deps, caller.orgId, task.taskId, running),
-      alsoRecord: () => announceTaskSendBack({ task, callerDeveloperId: caller.developerId, requestId: request.requestId, instructions: instructions.join("\n"), earlierSendBacks: workflow.decisions.filter((decision) => decision.source === "SEND_BACK" || decision.source === "FINDINGS").length, at: receivedAt }) });
+      alsoRecord: () => announceTaskSendBack({ task, callerDeveloperId: caller.developerId, requestId: request.requestId, instructions: instructions.join("\n"), earlierSendBacks: humanSendBackCount(workflow), at: receivedAt }) });
     return queued;
   }
   // Every finding accepted. When the reviews now stand, the next step is due: the draft pull request, committed with the

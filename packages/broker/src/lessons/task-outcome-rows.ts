@@ -70,8 +70,10 @@ export async function revertedTasksSince(table: TeamRecordTable, workspaceId: Or
   for (let page = 0; page < maxPages; page += 1) {
     const response = await table.documentClient.send(new QueryCommand({
       TableName: table.tableName, KeyConditionExpression: "pk = :pk AND sk BETWEEN :low AND :high",
-      ExpressionAttributeValues: { ":pk": teamRecordPk(workspaceId, project), ":low": `${RECORD_EVENT_SK_PREFIX}${new Date(sinceMs).toISOString()}`, ":high": `${RECORD_EVENT_SK_PREFIX}￿` },
-      ScanIndexForward: false, Limit: 500, ...(startKey === undefined ? {} : { ExclusiveStartKey: startKey }), ConsistentRead: true,
+      ExpressionAttributeValues: { ":pk": teamRecordPk(workspaceId, project), ":low": `${RECORD_EVENT_SK_PREFIX}${new Date(sinceMs).toISOString()}`, ":high": `${RECORD_EVENT_SK_PREFIX}￿`, ":kind": "rovara.reverted_by" },
+      // L3 (lane 2 review): only the revert link rows come back, and the read is eventually consistent (half the cost): the window is a day wide and a row a moment too new is found by the next night.
+      FilterExpression: "#kind = :kind", ExpressionAttributeNames: { "#kind": "kind" },
+      ScanIndexForward: false, Limit: 500, ...(startKey === undefined ? {} : { ExclusiveStartKey: startKey }), ConsistentRead: false,
     })) as { Items?: Array<Record<string, unknown>>; LastEvaluatedKey?: Record<string, unknown> };
     for (const item of response.Items ?? []) {
       if (item["kind"] !== "rovara.reverted_by") continue;

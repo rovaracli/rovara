@@ -57,7 +57,7 @@ function jobDeps(w: World, over: Partial<LessonsJobDeps> = {}) {
   const sent: unknown[] = [];
   const logs: string[] = [];
   const deps: LessonsJobDeps = {
-    table: w.table, settings: settings({ mode: "On" }), queue: { send: async (m) => { sent.push(m); } }, resumePending: async () => 0,
+    table: w.table, settings: settings({ mode: "On" }), queue: { send: async (m) => { sent.push(m); } }, resume: async () => ({ finished: 0, failed: 0 }),
     now: () => NOW, newRequestId: () => "nightly-1", log: (event) => logs.push(event), ...over,
   };
   return { deps, sent, logs };
@@ -91,6 +91,24 @@ describe("the nightly re-reflection", () => {
     expect(result).toMatchObject({ revertsEnqueued: 1, revertFailures: 1 });
     expect(flaky.logs).toEqual(["lessons_job.enqueue_failed"]);
   });
+  it("L3: reads only the revert link rows, eventually consistent, and says in one fixed line (the project as a hash) when a project was cut off by the page limit", async () => {
+    const w = await setup();
+    await w.sink.put(link("task-a", hoursAgo(3)));
+    const queries: Array<Record<string, unknown>> = [];
+    const spied = { ...w.table, documentClient: { send: async (command: unknown) => { queries.push((command as { input: Record<string, unknown> }).input); return (w.table.documentClient).send(command); } } };
+    const found = await revertedTasksSince(spied, ORG_A, "web", NOW - REVERT_WINDOW_MS, { nowSeconds: Math.floor(NOW / 1000) });
+    expect(found.taskIds).toEqual(["task-a"]);
+    expect(queries[0]).toMatchObject({ FilterExpression: "#kind = :kind", ConsistentRead: false });
+    expect((queries[0]!["ExpressionAttributeValues"] as Record<string, unknown>)[":kind"]).toBe("rovara.reverted_by");
+    // A project the page limit cut off: counted, and logged with a hash, never the project's name or the company.
+    const logs: Array<[string, Record<string, string | number>]> = [];
+    const limited = jobDeps(w, { log: (event, fields) => logs.push([event, fields]), table: { ...w.table, documentClient: { send: async (command: unknown) => ({ Items: [], LastEvaluatedKey: { pk: "x", sk: "y" }, ...(command ? {} : {}) }) } } });
+    expect(await lessonsRevertJob(limited.deps, ORG_A, ["web"], 10_000)).toMatchObject({ revertWindowsTruncated: 1 });
+    expect(logs).toHaveLength(1);
+    expect(logs[0]![0]).toBe("lessons_job.revert_window_truncated");
+    expect(JSON.stringify(logs)).not.toMatch(/web|org_/u);
+    expect(logs[0]![1]["project"]).toMatch(/^[0-9a-f]{12}$/u);
+  });
   it("is bounded in time: with no time left no project is looked at", async () => {
     const w = await setup();
     await w.sink.put(link("task-a", hoursAgo(3)));
@@ -103,16 +121,23 @@ describe("the nightly re-reflection", () => {
 describe("the hourly resume of unfinished lesson deletions", () => {
   it("resumes every project of the company whatever its learning mode (an erase must finish), counting what it finished", async () => {
     const w = await setup();
-    const resume = vi.fn(async (_org: string, project: string) => (project === "web" ? 2 : 0));
-    const { deps } = jobDeps(w, { resumePending: resume, settings: settings({ mode: "Off" }) });
+    const resume = vi.fn(async (_org: string, project: string) => ({ finished: project === "web" ? 2 : 0, failed: 0 }));
+    const { deps } = jobDeps(w, { resume, settings: settings({ mode: "Off" }) });
     expect(await lessonsResumeJob(deps, ORG_A, ["web", "api"], 10_000)).toEqual({ lessonDeletionsResumed: 2, lessonResumeFailures: 0, lessonResumeSkipped: 0 });
     expect(resume.mock.calls).toEqual([[ORG_A, "web"], [ORG_A, "api"]]);
   });
   it("one project failing is a fixed log line and the others still run", async () => {
     const w = await setup();
     const logs: string[] = [];
-    const { deps } = jobDeps(w, { resumePending: async (_org, project) => { if (project === "web") throw new Error("secret"); return 1; }, log: (event) => logs.push(event) });
+    const { deps } = jobDeps(w, { resume: async (_org, project) => { if (project === "web") throw new Error("secret"); return { finished: 1, failed: 0 }; }, log: (event) => logs.push(event) });
     expect(await lessonsResumeJob(deps, ORG_A, ["web", "api"], 10_000)).toEqual({ lessonDeletionsResumed: 1, lessonResumeFailures: 1, lessonResumeSkipped: 0 });
     expect(logs).toEqual(["lessons_job.resume_failed"]);
+  });
+  it("L4: an intent that fails is counted, and the rest of that project's intents were still tried (the counts come from the port, not from a throw)", async () => {
+    const w = await setup();
+    const logs: Array<[string, Record<string, string | number>]> = [];
+    const { deps } = jobDeps(w, { resume: async () => ({ finished: 2, failed: 1 }), log: (event, fields) => logs.push([event, fields]) });
+    expect(await lessonsResumeJob(deps, ORG_A, ["web"], 10_000)).toEqual({ lessonDeletionsResumed: 2, lessonResumeFailures: 1, lessonResumeSkipped: 0 });
+    expect(logs).toEqual([["lessons_job.resume_failed", { intents: 1 }]]);
   });
 });
