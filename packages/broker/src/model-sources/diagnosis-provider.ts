@@ -83,6 +83,7 @@ const isRouterModel = (model: ModelIdentifier): boolean => model.provider.toLowe
 /** The reasoning levels a learning call may send. */
 export type LearningReasoningEffort = "none" | "minimal" | "low";
 const LEARNING_EFFORTS: readonly LearningReasoningEffort[] = ["minimal", "low"];
+const ALLOWED_EFFORTS: readonly LearningReasoningEffort[] = ["none", "minimal", "low"];
 
 /** A reasoning model that spends its output budget on hidden reasoning unless told not to (OpenAI's families, on their own transports). Anthropic models list `reasoning: true` too, but think only when asked. */
 export function reasonsByDefault(model: ModelIdentifier): boolean {
@@ -92,12 +93,16 @@ export function reasonsByDefault(model: ModelIdentifier): boolean {
 
 /**
  * The reasoning level a learning call asks for, read from a model's `thinkingLevelMap` (the catalog's own doc: a level the map LISTS as null is unsupported and the provider refuses it; a level the map does NOT list uses the provider's default,
- * so it is allowed; LP-12 N2). In order: the map's "off" value when it is "none"; a short level the map names with a string ("minimal", then "low"); a short level the map leaves out ("low" first, the one every provider that has levels
+ * so it is allowed; LP-12 N2). In order: the map's "off" value when it is "none"; a short level the map names with a string the protocol takes, sent as that string ("minimal", then "low"); a short level the map leaves out ("low" first, the one every provider that has levels
  * takes, then "minimal"). A map that nulls both short levels and has no usable "off" cannot be told to keep its reasoning short: unfit (`fit: false`). The level sent is always one of the three the protocol allows, never a longer one.
  */
 export function learningEffortOfMap(map: Readonly<Record<string, string | null | undefined>>): { fit: true; effort: LearningReasoningEffort } | { fit: false } {
   if (map["off"] === "none") return { fit: true, effort: "none" };
-  for (const level of LEARNING_EFFORTS) if (typeof map[level] === "string") return { fit: true, effort: level };
+  // L5: a level the map names is sent as the value the map gives it, when that is one the protocol takes (`{low: "high"}` must not send "low"); any other value leaves that level out (fail closed).
+  for (const level of LEARNING_EFFORTS) {
+    const mapped = map[level];
+    if (typeof mapped === "string" && (ALLOWED_EFFORTS as readonly string[]).includes(mapped)) return { fit: true, effort: mapped as LearningReasoningEffort };
+  }
   for (const level of [...LEARNING_EFFORTS].reverse()) if (map[level] === undefined) return { fit: true, effort: level };
   return { fit: false };
 }
@@ -141,7 +146,7 @@ function suitableForLearning(model: ModelIdentifier, shape: LearningCallShape): 
  */
 export async function chooseLearningRoute(
   deps: RoutingDependencies, orgId: OrgId, project: string, forbidden: (model: ModelIdentifier) => boolean, shape: LearningCallShape, preferred?: ModelIdentifier, cap?: LearningHoldCap,
-): Promise<{ model: ModelIdentifier; route: ModelRoute & { alias: string } } | { none: LearningRouteNone }> {
+): Promise<{ model: ModelIdentifier; route: ModelRoute & { alias: string }; /** The company's "lessons model" was set, is suitable, and was passed over only because its hold is over `cap` (L2: said in a log line, never silently). */ preferredOverCap?: true } | { none: LearningRouteNone }> {
   const own = customerProviderRouting(deps);
   if (own === undefined) return { none: "no_provider" };
   const effective = await effectiveSources(own, orgId, project);
@@ -160,6 +165,7 @@ export async function chooseLearningRoute(
   // A model that reasons by default comes after every one that does not (its hidden reasoning can use the whole answer budget); within each kind, the cheapest first.
   const reasons = (model: ModelIdentifier): number => (reasonsByDefault(model) ? 1 : 0);
   const ranked = [...affordable].sort((left, right) => reasons(left) - reasons(right) || cost(left) - cost(right) || (walked.get(canonicalModelName(left)) ?? 0) - (walked.get(canonicalModelName(right)) ?? 0) || canonicalModelName(left).localeCompare(canonicalModelName(right)));
+  const preferredOverCap = preferred !== undefined && affordable.length < suitable.length && suitable.some((model) => canonicalModelName(model) === canonicalModelName(preferred)) && !affordable.some((model) => canonicalModelName(model) === canonicalModelName(preferred));
   const wanted = preferred === undefined ? undefined : affordable.find((model) => canonicalModelName(model) === canonicalModelName(preferred));
   // A route is looked up by the model's canonical name, which drops an OpenRouter variant suffix (`:free`, `:batch`): a source that lists a model AND its unfit twin would answer with whichever entry comes first. So the
   // routes are asked of a routing whose OpenRouter sources hold the fit entries only (only OpenRouter has the twin names; filtering another source, a company endpoint, would break its qualification digest, which covers its whole model list).
@@ -173,7 +179,7 @@ export async function chooseLearningRoute(
     if (seen.has(name)) continue;
     seen.add(name);
     const route = (await servingRoutes(fitOnly, { orgId, project, model })).find((served) => served.alias !== undefined);
-    if (route?.alias !== undefined) return { model, route: { ...route, alias: route.alias } };
+    if (route?.alias !== undefined) return { model, route: { ...route, alias: route.alias }, ...(preferredOverCap ? { preferredOverCap: true as const } : {}) };
   }
   return { none: "no_provider" };
 }

@@ -609,3 +609,64 @@ describe("LP-10 R8 / LP-15: a task's failed model calls count toward model_faile
     expect(failuresCountedOncePerTask(undefined, tally)).toBeUndefined();
   });
 });
+
+/** A pause store that keeps the reflector's and the judge's failures in a row apart, as the real one does. */
+class KindPause implements LessonsPauseStore {
+  counts = { reflect: 0, judge: 0 };
+  current: CurrentPause["code"] | undefined;
+  async record(_w: string, _p: string, code: CurrentPause["code"]): Promise<void> { this.current = code; }
+  async clear(_w?: string, _p?: string, _only?: "project" | "company", ifCode?: CurrentPause["code"]): Promise<void> { if (ifCode !== undefined && this.current !== ifCode) return; this.current = undefined; this.counts.reflect = 0; }
+  async clearJudgeFailures(): Promise<void> { this.counts.judge = 0; }
+  async failed(_w: string, _p: string, kind: "reflect" | "judge" = "reflect"): Promise<number> { this.counts[kind] += 1; return this.counts[kind]; }
+  async read(): Promise<CurrentPause | undefined> { return this.current === undefined ? undefined : { code: this.current, at: 1, scope: "project" }; }
+}
+
+describe("L4 (Lane A review): a judge that always fails still pauses the project, one task at a time", () => {
+  const bodies = [
+    "Use withRetry from src/retry/index.ts for HTTP retries in the api service client calls",
+    "Use withRetry from src/retry/index.ts for HTTP retries in the api service wrapper",
+    "Use withRetry from src/retry/index.ts for HTTP retries in the api service gateway calls",
+  ];
+  const threeDrafts = () => reply(...bodies.map((body) => candidateJson({ title: "Retries", description: "", body, type: "fact", evidenceSpanIds: ["S1"] })));
+  const runTask = async (pause: KindPause) => {
+    const w = setup({ model: new ScriptedModel([threeDrafts()]) });
+    w.deps.process = { ...w.deps.process, judgeModel: { complete: async () => { throw new Error("provider down"); } }, pause };
+    w.deps.reflect = { ...w.deps.reflect, pause };
+    await learnFromEndedTask(w.deps, { workspaceId: WS, taskId: "task-1" });
+  };
+
+  it("each task counts the judge's failures once (the reflection that succeeded in between does not clear them), so three tasks in a row pause the project", async () => {
+    const pause = new KindPause();
+    await runTask(pause);
+    expect(pause.counts.judge).toBe(1);
+    await runTask(pause);
+    expect(pause.counts.judge).toBe(2);
+    expect(pause.current).toBeUndefined();
+    await runTask(pause);
+    expect(pause.counts.judge).toBe(MODEL_FAILURES_BEFORE_PAUSE);
+    expect(pause.current).toBe("model_failed");
+  });
+
+  it("a judge that answers starts its count again", async () => {
+    const pause = new KindPause();
+    await runTask(pause);
+    await runTask(pause);
+    await pause.clearJudgeFailures();
+    await runTask(pause);
+    expect(pause.counts.judge).toBe(1);
+    expect(pause.current).toBeUndefined();
+  });
+
+  it("L7: a conditional clear that did nothing does not reopen the task's count", async () => {
+    const inner = new KindPause();
+    const handle = failuresCountedOncePerTask(inner, newTaskFailureTally())!;
+    await noteModelFailure(handle, WS, PROJECT, "reflect");
+    // No reason is in force, so the conditional clear changes nothing, and a second failure of the same task is still not counted.
+    await handle.clear(WS, PROJECT, "project", "model_failed");
+    await noteModelFailure(handle, WS, PROJECT, "reflect");
+    expect(inner.counts.reflect).toBe(1);
+    await noteModelFailure(handle, WS, PROJECT, "judge");
+    await noteModelFailure(handle, WS, PROJECT, "judge");
+    expect(inner.counts.judge).toBe(1);
+  });
+});

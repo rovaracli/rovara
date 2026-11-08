@@ -6,6 +6,7 @@
 // What this relies on (do not weaken): `modelCompany` reads a Bedrock id's maker with or without a geography (`openai.gpt-oss` over Bedrock is OpenAI, as `gpt-5` is), and a model it cannot place is `other`,
 // which never counts as different (`differentCompany`). The forbidden-model check is `forbiddenModelMatcher` through the critic's `candidatesOf`, which refuses an unrecognised Bedrock id whenever
 // anything is forbidden and matches by `canonicalModelName`, so another route to a forbidden model is forbidden too.
+import { isBatchVariant } from "../model-sources/model-variants.js";
 import {
   SECOND_REVIEW_CANDIDATES_MAX, SecondOpinionSchema, secondReviewDidNotRunLine, blockingFindings, modelCompany, narrowedSecondReviewModels, secondReviewModelKey, secondReviewVerdictHolds,
   type AcceptedFindingRef, type ModelCompany, type ModelIdentifier, type ModelSelection, type SecondOpinion, type SecondOpinionUnavailableReason, type SecondReviewChoice, type SecondReviewMode, type SecondReviewModelRef,
@@ -51,7 +52,7 @@ export interface SecondReviewPlanInput {
 }
 
 /** Why a model the company named was not used (fixed words). */
-export type SecondReviewSkippedWhy = "not-routable" | "not-allowed" | "same-company" | "company-unknown";
+export type SecondReviewSkippedWhy = "not-routable" | "not-allowed" | "same-company" | "company-unknown" | "batch-only";
 export interface SecondReviewSkipped { model: SecondReviewModelRef; why: SecondReviewSkippedWhy }
 
 export type SecondReviewPlan =
@@ -106,7 +107,7 @@ export function planSecondReview(input: SecondReviewPlanInput): SecondReviewPlan
     tested = [];
     for (const entry of named ?? []) {
       const found = find(entry);
-      const why: SecondReviewSkippedWhy | undefined = found === undefined ? "not-routable" : found.eligible ? undefined : found.ineligibleWhy;
+      const why: SecondReviewSkippedWhy | undefined = found === undefined ? (isBatchVariant(entry) ? "batch-only" : "not-routable") : found.eligible ? undefined : found.ineligibleWhy;
       if (why === undefined) tested.push(entry); else skipped.push({ model: { provider: entry.provider, modelId: entry.modelId }, why });
     }
     if (tested.length === 0) return { run: false, reason: "choice-not-qualifying", skipped };

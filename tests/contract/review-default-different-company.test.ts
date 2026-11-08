@@ -2,6 +2,7 @@
 // One test per rule; each is mutation-checked (see the lane report).
 import { describe, expect, it } from "vitest";
 import { resolveStageModel, type StageModelInput } from "../../packages/broker/src/model-selection/resolver.js";
+import { candidatesOf } from "../../packages/broker/src/rovara-code/critic.js";
 import { reviewDefaultExtras, STAGE_POOL_MAX } from "../../packages/broker/src/model-selection/review-default-pool.js";
 import { reviewNoOtherCompanyLine } from "../../packages/broker/src/rovara-code/review-model-lines.js";
 import { EffectiveStageModelSchema } from "../../packages/contracts/src/stage-models.js";
@@ -135,6 +136,16 @@ describe("rule 5: the models the company can use reach the stage pool, within it
     expect(ids(reviewDefaultExtras({ servable, approved: undefined, forbidden: [], have: new Set(), size: 0 }))).toEqual(["openai/gpt-5", "anthropic/claude-opus-4", "google/gemini-2.5-pro", "anthropic/claude-sonnet-4"]);
     expect(ids(reviewDefaultExtras({ servable, approved: undefined, forbidden: [gpt], have: new Set(), size: 0 }))).not.toContain("openai/gpt-5");
     expect(ids(reviewDefaultExtras({ servable, approved: [sonnet, gemini], forbidden: [], have: new Set(), size: 0 }))).toEqual(["google/gemini-2.5-pro", "anthropic/claude-sonnet-4"]);
+  });
+  it("LP-11 / M2: an OpenRouter ':batch' variant is never added to the pool or used by a plan check, even when it is listed first and shares a canonical name with the plain model", () => {
+    const batch = { provider: "openrouter", modelId: "openai/gpt-5.2:batch" }, plain = { provider: "openrouter", modelId: "openai/gpt-5.2" };
+    expect(ids(reviewDefaultExtras({ servable: [batch], approved: undefined, forbidden: [], have: new Set(), size: 0 }))).toEqual([]);
+    const extras = ids(reviewDefaultExtras({ servable: [batch, plain], approved: undefined, forbidden: [], have: new Set(), size: 0 }));
+    // Positive control: the plain model is still added, so the pool was read.
+    expect(extras).toContain("openrouter/openai/gpt-5.2");
+    expect(extras).not.toContain("openrouter/openai/gpt-5.2:batch");
+    expect(ids(candidatesOf({ forbidden: [] }, [batch, plain]))).toEqual(["openrouter/openai/gpt-5.2"]);
+    expect(candidatesOf({ forbidden: [] }, [batch])).toEqual([]);
   });
   it("never grows the pool past its limit, and keeps every company's strongest when room is short", () => {
     const servable = [opus, sonnet, gpt, gemini];

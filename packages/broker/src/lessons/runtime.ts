@@ -27,7 +27,7 @@ import type { LoadDeps } from "./load.js";
 import type { LessonsPauseStore } from "./pause.js";
 import type { ApproverDirectory, CorrectionJudge, LearningSpend, LessonEmbedder, LessonVectors, PipelineModel } from "./ports.js";
 import type { ProcessDeps } from "./process.js";
-import type { LearningSettingsReader } from "./policy.js";
+import type { Edition, LearningSettingsReader } from "./policy.js";
 import { projectRepoScopesOf } from "./project-repo-audience.js";
 import type { LessonStore } from "./store.js";
 import type { LessonViewDeps } from "./view.js";
@@ -56,6 +56,8 @@ export interface LessonsRuntimeInput {
    */
   model?: PipelineModel;
   spend?: LearningSpend;
+  /** The install's edition: the curator's judge call is held to Public's per-task cap (like the reflector's). Absent: Public. */
+  edition?: Edition;
   /** Where "lessons paused" is recorded and read (lane 1b). Absent: learning never records why it stopped, and the tab and Home say nothing about it. */
   pause?: LessonsPauseStore;
   /** Whether a recorded pause reason still holds (`LessonViewDeps.pauseStillApplies`). */
@@ -113,7 +115,7 @@ export function createLessonsRuntime(input: LessonsRuntimeInput): LessonsRuntime
   const presetStore = new DynamoPresetStore(input.table);
   const routes: LessonRouteDeps = {
     ...base, store, directory, settings, access, names: input.names, sources: { table: input.table },
-    embedder: similarity.embedder, vectors: similarity.vectors, judgeModel: input.model ?? REFUSING_MODEL, spend: input.spend ?? DENYING_SPEND, ...(input.pause === undefined ? {} : { pause: input.pause }), ...(input.pauseStillApplies === undefined ? {} : { pauseStillApplies: input.pauseStillApplies }), verifier, facts, judge: REFUSING_JUDGE,
+    embedder: similarity.embedder, vectors: similarity.vectors, judgeModel: input.model ?? REFUSING_MODEL, spend: input.spend ?? DENYING_SPEND, ...(input.edition === undefined ? {} : { edition: input.edition }), ...(input.pause === undefined ? {} : { pause: input.pause }), ...(input.pauseStillApplies === undefined ? {} : { pauseStillApplies: input.pauseStillApplies }), verifier, facts, judge: REFUSING_JUDGE,
     // Owner decision 34: the project's own repositories, read live when a lesson is tiered or put on trial; no port or an unreadable definition is "not known", which leaves a repository-restricted lesson restricted.
     projectRepos: async (key) => {
       const port = projectRepoScopesOf(input.taskVisibility);

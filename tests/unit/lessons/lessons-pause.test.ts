@@ -301,6 +301,56 @@ describe("R3: a reply that cannot be used is a failure, not a success", () => {
   });
 });
 
+describe("Lane A review L1: the curator's judge call carries Public's per-task cap", () => {
+  const a = "Use withRetry from src/retry/index.ts for HTTP retries in the api service client calls";
+  const b = "Use withRetry from src/retry/index.ts for HTTP retries in the api service wrapper";
+  const judged = async (edition?: "public" | "enterprise") => {
+    const model = new QuotingModel([junk0], { ok: true, usd: 0.004 });
+    const d: CurateDeps & { verifier: unknown; settings: unknown } = {
+      store: new InMemoryLessonStore(), embedder, vectors: new MemoryVectors(), judgeModel: model, spend: new Spend(), audit: new Audit(), alerts: new Alerts(), now: new Clock().now,
+      verifier: verifier("valid"), settings: settings(), newId: (() => { let n = 0; return () => `les_${String(++n).padStart(4, "0")}`; })(), ...(edition === undefined ? {} : { edition }),
+    };
+    await curateDraft(d, KEY, draft({ title: "Retries", description: "", body: a }));
+    await curateDraft(d, KEY, draft({ title: "Retries", description: "", body: b }));
+    return model;
+  };
+  const junk0 = "no json";
+  it("L4: a judge that answers clears the judge's own count of failures in a row (a failed one counted first)", async () => {
+    const model = new QuotingModel(["no json", JSON.stringify({ verdicts: [{ n: 1, verdict: "different" }, { n: 2, verdict: "different" }] })], { ok: true, usd: 0.004 });
+    const pause = Object.assign(new MemoryPause(), { judgeFailures: 0, judgeCleared: 0 });
+    const inner = pause.failed.bind(pause);
+    Object.assign(pause, {
+      failed: async (ws: string, project: string, kind?: string) => { if (kind === "judge") { pause.judgeFailures += 1; return pause.judgeFailures; } return inner(ws, project); },
+      clearJudgeFailures: async () => { pause.judgeFailures = 0; pause.judgeCleared += 1; },
+    });
+    let n = 0;
+    const d: CurateDeps & { verifier: unknown; settings: unknown } = {
+      store: new InMemoryLessonStore(), embedder, vectors: new MemoryVectors(), judgeModel: model, spend: new Spend(), audit: new Audit(), alerts: new Alerts(), now: new Clock().now,
+      verifier: verifier("valid"), settings: settings(), newId: () => `les_${String(++n).padStart(4, "0")}`, pause,
+    };
+    const a = "Use withRetry from src/retry/index.ts for HTTP retries in the api service client calls";
+    await curateDraft(d, KEY, draft({ title: "Retries", description: "", body: a }));
+    await curateDraft(d, KEY, draft({ title: "Retries", description: "", body: "Use withRetry from src/retry/index.ts for HTTP retries in the api service wrapper" }));
+    expect(pause.judgeFailures).toBe(1);
+    await curateDraft(d, KEY, draft({ title: "Retries", description: "", body: "Use withRetry from src/retry/index.ts for HTTP retries in the api service gateway calls" }));
+    expect(pause.judgeCleared).toBe(1);
+    expect(pause.judgeFailures).toBe(0);
+  });
+
+  it("Public (and an install that does not say: the safe side) sends the cap with the quote and the call; Enterprise sends none", async () => {
+    for (const edition of [undefined, "public"] as const) {
+      const model = await judged(edition);
+      // Positive control: the judge was reached.
+      expect(model.calls).toHaveLength(1);
+      expect(model.quotes[0]).toMatchObject({ purpose: "judge", maxHoldUsd: 0.15 });
+      expect(model.calls[0]).toMatchObject({ purpose: "judge", maxHoldUsd: 0.15 });
+    }
+    const enterprise = await judged("enterprise");
+    expect(enterprise.calls).toHaveLength(1);
+    expect(enterprise.quotes[0]).not.toHaveProperty("maxHoldUsd");
+  });
+});
+
 describe("L1: the cheap look says why it refused", () => {
   const withLook = (answer: "ok" | "month_full" | "too_large" | "unreadable"): Spend => Object.assign(new Spend(), { look: async () => answer });
   it("a full month is the company's monthly limit; a call too large for the whole cap is a cost problem; an unreadable counter records nothing", async () => {
@@ -361,6 +411,22 @@ describe("R6: a failed call counts toward the nightly budget; a call refused bef
 
 describe("the pause store", () => {
   const table = () => { const db = new FakeDynamoDb(); return { db, store: dynamoPauseStore({ documentClient: db, tableName: "team" }, () => 1234) }; };
+
+  it("L4: the judge's failures in a row are counted apart from the reflector's: a reflection that succeeds clears the reflector's count and the reason, never the judge's", async () => {
+    const { db, store } = table();
+    const count = (sk: string) => (db.get({ pk: teamRecordPk(WS, PROJECT), sk }) as { count?: number } | undefined)?.count;
+    expect(await store.failed!(WS, PROJECT, "judge")).toBe(1);
+    expect(await store.failed!(WS, PROJECT, "judge")).toBe(2);
+    expect(await store.failed!(WS, PROJECT, "reflect")).toBe(1);
+    await store.clear(WS, PROJECT);
+    expect(count("LESSONSET#FAILS")).toBeUndefined();
+    expect(count("LESSONSET#FAILS_JUDGE")).toBe(2);
+    expect(await store.failed!(WS, PROJECT, "judge")).toBe(3);
+    await store.clearJudgeFailures!(WS, PROJECT);
+    expect(count("LESSONSET#FAILS_JUDGE")).toBeUndefined();
+    // Both start with LESSONSET, which the erase already wipes.
+    expect(await store.failed!(WS, PROJECT)).toBe(1);
+  });
 
   it("keeps one reason per project and one for the company; reads the project's own first, then the company's", async () => {
     const { store } = table();

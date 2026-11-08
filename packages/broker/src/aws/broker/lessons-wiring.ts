@@ -140,7 +140,7 @@ export function lessonsRuntimeFor(dependencies: LessonsHostDependencies): Lesson
     return { model, spend, pauseStillApplies: pauseStillAppliesFor(model, spend) };
   })();
   return createLessonsRuntime({
-    ...modelPath, pause: dynamoPauseStore(teamRecord.table, Date.now, (event, fields) => console.log(JSON.stringify({ component: "lessons", event, ...fields }))), similarity: lessonSimilarityFor(dependencies),
+    ...modelPath, edition: teamRecord.edition, pause: dynamoPauseStore(teamRecord.table, Date.now, (event, fields) => console.log(JSON.stringify({ component: "lessons", event, ...fields }))), similarity: lessonSimilarityFor(dependencies),
     table: teamRecord.table, now: Date.now, log: (event, fields) => console.log(JSON.stringify({ component: "lessons", event, ...fields })),
     ...(audit === undefined ? {} : { audit }),
     ...(dependencies.audit === undefined ? {} : (() => { const ledger = dependencies.audit; return { auditOutbox: { pending: (event: AuditEventInput) => auditPending({ audit: ledger }, event), flush: (event: AuditEventInput) => flushAuditEvents({ audit: ledger }, [event]) } }; })()),

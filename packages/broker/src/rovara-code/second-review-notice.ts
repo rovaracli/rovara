@@ -28,7 +28,7 @@ export const NOTICE_TEXT: Record<NoticeCode, string> = {
   "default-changed": "The default second-opinion model changed because the earlier one no longer fits.",
   "no-candidate": "No allowed model from a different AI company can be used for the second opinion, so it is not running.",
 };
-const WHY_TEXT: Record<SecondReviewSkippedWhy, string> = { "not-routable": "no connected source serves it", "not-allowed": "it is not allowed here", "same-company": "it is from the same AI company as the model that wrote the code", "company-unknown": "its maker is not known" };
+const WHY_TEXT: Record<SecondReviewSkippedWhy, string> = { "not-routable": "no connected source serves it", "not-allowed": "it is not allowed here", "same-company": "it is from the same AI company as the model that wrote the code", "company-unknown": "its maker is not known", "batch-only": "it is a batch-only model, not for reviews" };
 export const noticeWhyText = (why: SecondReviewSkippedWhy): string => WHY_TEXT[why];
 
 const keyOf = (code: NoticeCode, models: ReadonlyArray<{ model: SecondReviewModelRef; why?: string | undefined }>): string =>

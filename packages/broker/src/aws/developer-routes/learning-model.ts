@@ -17,7 +17,7 @@ export const LEARNING_MODEL_PATH = "/v1/app/org/learning-model";
 export const LEARNING_MODEL_BROWSER_MESSAGE = "Use a live browser session to change the model lessons run on.";
 
 /** Said in the GET answer: the choice is checked here at the company level, and each project uses it only while that project's own sources serve it. */
-export const LEARNING_MODEL_NOTE = "A project whose AI sources do not serve this model learns on its cheapest suitable model instead.";
+export const LEARNING_MODEL_NOTE = "A project whose AI sources do not serve this model learns on its cheapest suitable model instead. The same happens on the Public edition when one lesson on this model could cost more than the per-lesson limit.";
 
 const Ref = z.object({ provider: z.string().min(1).max(128), modelId: z.string().min(1).max(256) }).strict();
 const BodySchema = z.discriminatedUnion("action", [

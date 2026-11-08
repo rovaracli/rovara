@@ -7,6 +7,7 @@ import {
   type AgentGuardrails, type ModelIdentifier, type ModelSelection, type PlanCritique,
 } from "@agentx/contracts";
 import { listPricesPerMillion } from "@agentx/model-runtime/catalog";
+import { isBatchVariant } from "../model-sources/model-variants.js";
 import { modelNotAllowedText } from "../model-sources/routing.js";
 
 const sameModel = (left: ModelIdentifier, right: ModelIdentifier): boolean => canonicalModelName(left) === canonicalModelName(right);
@@ -184,7 +185,9 @@ export function criticModelUnusable(error: string | undefined): boolean {
  */
 export function candidatesOf(limits: CriticModelLimits, sources: readonly ModelIdentifier[]): ModelIdentifier[] {
   const pool = sources.length > 0 ? sources : limits.approved ?? [];
-  const ranked = rankCriticModels(distinct(pool.filter((model) => allowed(limits, model) && !triedAndFailed(limits, model))), limits.reference, limits.legacyRanking === true);
+  // LP-11: an OpenRouter `:batch` variant is the Batch API's id (answered within a day), never a model for a review or a plan check, whoever lists it. Dropped BEFORE `distinct`, so it cannot take the place of the plain model
+  // (the two share a canonical name).
+  const ranked = rankCriticModels(distinct(pool.filter((model) => !isBatchVariant(model) && allowed(limits, model) && !triedAndFailed(limits, model))), limits.reference, limits.legacyRanking === true);
   return failedTiersLast(limits, ranked);
 }
 
