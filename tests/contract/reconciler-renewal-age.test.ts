@@ -67,7 +67,7 @@ describe("the reconciler run", () => {
       sessions: { listByState: async () => [], get: async () => undefined } as never,
       instances: async () => [], volumes: async () => [], executionStatus: async () => undefined, ping: async () => "Healthy",
       terminate: async () => undefined, deleteVolume: async () => undefined, quarantine: async () => undefined, failActiveOperation: async () => undefined,
-      closedAt: async () => undefined, binding: async () => undefined, emit, now: () => NOW, log: () => undefined,
+      closedAt: async () => undefined, binding: async () => undefined, describeInstance: async () => undefined, emit, now: () => NOW, log: () => undefined,
       ...(options.renewalAgeDays === undefined ? {} : { renewalAgeDays: options.renewalAgeDays }),
     });
     return { run, emit };
