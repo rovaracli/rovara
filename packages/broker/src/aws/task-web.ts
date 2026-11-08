@@ -113,6 +113,8 @@ export interface TaskDocumentView {
 export interface TaskWebDependencies {
   /** OWNER DECISION 7: true while the decision cards are on: the page is read-only (no data island, deciding script, form or button; "Decide on the task" links the task page). Off: it decides as before. */
   readOnly?: boolean;
+  /** OWNER DECISION 18: with `readOnly`, the task's page in Rovara (`/app/sessions/<id>`) for a reader who may read the task (refusing anyone else as `getTaskDocumentView` does); the page then forwards there. */
+  taskPagePath?(caller: DeveloperCaller, taskId: string): Promise<string | undefined>;
   /** Resolves an opaque session ID against the revocable developer sign-in store on every request. */
   authenticateSession(sessionId: string): Promise<DeveloperCaller | undefined>;
   /** Must load the task through the broker and refuse (TASK_NOT_FOUND) a reader who may not see it. */
@@ -211,6 +213,16 @@ function pageRequest(url: URL): TaskPageRequest {
     ...(doc === "requirements" || doc === "design" || doc === "coding-plan" ? { doc } : {}),
     ...(from !== null && /^[1-9][0-9]{0,8}$/.test(from) ? { from: Number(from) } : {}),
   };
+}
+
+/** OWNER DECISION 18: the panel's name for each document the old page named in `?doc=` (a fixed list; anything else, or none, opens the coding plan). */
+const PANEL_DOCUMENT = { requirements: "requirements", design: "design", "coding-plan": "plan" } as const;
+const TASK_PAGE_PATH = /^\/app\/sessions\/ses_[0-9a-z]{20}$/u;
+
+/** Where an old task page link goes with the cards on: the task's page in Rovara with the document's panel open, or undefined when the task has no such page. Never anything the request said but the document's fixed name. */
+export function taskPanelLocation(taskPage: string | undefined, doc: TaskPageRequest["doc"]): string | undefined {
+  if (taskPage === undefined || !TASK_PAGE_PATH.test(taskPage)) return undefined;
+  return `${taskPage}?doc=${PANEL_DOCUMENT[doc ?? "coding-plan"]}`;
 }
 
 /** The part of the link that must survive sign-in: only a known document, and only an earlier version that sign-in accepts (1 to 999). */
@@ -513,7 +525,8 @@ function decideDialog(view: TaskDocumentView): string {
 function readOnlyView(view: TaskDocumentView): TaskDocumentView {
   // OWNER DECISION 17: read-only for decisions only; comments, replies, suggestions, Ask and People stay as they were.
   const { applicationRetry: _retry, reviseOffer: _revise, ...rest } = view; // eslint-disable-line @typescript-eslint/no-unused-vars -- the offers are links to the task page here, not buttons
-  return { ...rest, ...(view.access === undefined ? {} : { access: { ...view.access, canDecide: false } }), ...(view.specHold === undefined ? {} : { specHold: { ...view.specHold, canChoose: false } }) };
+  // OWNER DECISION 18 (review M1): nothing is written here with the cards on (the API refuses every write but a People confirmation), so no comment, suggestion or Ask control is offered either.
+  return { ...rest, ...(view.access === undefined ? {} : { access: { ...view.access, canDecide: false, canComment: false, canSuggest: false, canAsk: false } }), ...(view.specHold === undefined ? {} : { specHold: { ...view.specHold, canChoose: false } }) };
 }
 
 async function page(view: TaskDocumentView, nonce: string, request: TaskPageRequest, csrf?: string, readOnly = false): Promise<string> {
@@ -559,7 +572,7 @@ async function page(view: TaskDocumentView, nonce: string, request: TaskPageRequ
     }).join("")}</ol>`;
   const owns = view.access === undefined ? view.role === "owner" : view.access.role === "owner";
   const role = owns ? "You're the task owner." : view.access?.canComment === true ? "You can read and comment on this task." : "You can read this task.";
-  const slackOnly = readOnly ? '<p class="muted">Decisions are made on the task page in Rovara. Comments and suggestions can still be made here.</p>'
+  const slackOnly = readOnly ? '<p class="muted">Decisions, comments and suggestions are made on the task page in Rovara.</p>'
     : view.access?.canDecide === true ? ""
     : view.access?.canComment === true ? `<p class="muted">${view.access.canSuggest ? "Only the task owner decides; you can comment and suggest." : "Only the task owner decides; you can comment."}</p>`
     : '<p class="muted">Decisions are made on the task page in Rovara.</p>';
@@ -703,6 +716,15 @@ export function createTaskWeb(deps: TaskWebDependencies): (request: AdaptedHttpR
           : { taskId, requestId, expiresAt: proposal.expiresAt, kind: "role", personName: personName!, role: proposal.role! }));
         response.headers["set-cookie"] = csrfCookie(csrf);
         return response;
+      }
+      // OWNER DECISION 18: with the cards on, the page moved into the task page: a reader who may read the task is sent there with the document open in its panel. Only a known document
+      // and a session path of the fixed shape go into the location; a task with no session (or a reader the check refuses: the catch below answers as before) keeps this page.
+      if (deps.readOnly === true && deps.taskPagePath !== undefined) {
+        const location = taskPanelLocation(await deps.taskPagePath(caller, taskId), pageRequest(url).doc);
+        if (location !== undefined) {
+          const redirect = safeResponse(302, "");
+          return { ...redirect, headers: { ...redirect.headers, "content-security-policy": policy(""), "cross-origin-opener-policy": "same-origin", location } };
+        }
       }
       let view = await deps.getTaskDocumentView(caller, taskId);
       if (deps.getTaskPeople !== undefined) {

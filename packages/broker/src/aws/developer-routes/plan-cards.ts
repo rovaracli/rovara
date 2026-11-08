@@ -18,7 +18,8 @@ import type { DecisionItem } from "../../decisions/project.js";
 import { perform, type KindHandler } from "../../decisions/performer.js";
 import type { PerformInput, PerformOutcome } from "../../decisions/routes.js";
 import { withCardDecideGrade } from "./card-decide-grade.js";
-import { loadWorkflowDocument } from "../../developer/plan-artifacts.js";
+import { loadWorkflowDocument, type LoadedDocument } from "../../developer/plan-artifacts.js";
+import { documentSummary } from "../../decisions/plan-summary.js";
 import { planRunLimit } from "../../spend/estimate.js";
 import { estimateDependencies } from "../developer-tasks/common.js";
 import { decideTaskWorkflow } from "../developer-tasks/decide.js";
@@ -78,7 +79,7 @@ async function itemOf(deps: DeveloperRouteDependencies, caller: DeveloperCaller,
   if (artifact === undefined) return undefined;
   const loaded = await loadWorkflowDocument(reader(deps, caller), artifact, {}).catch(() => undefined);
   const claims = loaded?.format === "structured" ? planClaimCount(loaded.plan) : 0;
-  const choices = await choicesOf(deps, task, type, artifact, loaded?.format === "structured" ? loaded.plan : undefined);
+  const choices = await choicesOf(deps, task, type, artifact, loaded?.format === "structured" ? loaded.plan : undefined, loaded);
   const base = {
     subjectId: task.taskId, taskId: task.taskId, project: task.project, title: task.title, createdAt: workflow.updatedAt ?? new Date(deps.now()).toISOString(),
     openPath: await taskPagePathOf(deps, caller.orgId, task), contentVersion: artifact.sha256,
@@ -122,7 +123,7 @@ function workBreakdownLines(plan: PlanDocument): string[] {
  * OWNER DECISION 7 items 1, 3 and 9: what the card offers beside Approve: the document's questions (with the suggestions people made on this version), the coding plan's optional checks, and the person comments
  * still open on the document (what the old review page offered). Read-only: the workflow decision checks every answer, check and comment again when the card is pressed. Undefined when nothing can be read.
  */
-async function choicesOf(deps: DeveloperRouteDependencies, task: DeveloperTaskRecord, type: DocumentType, artifact: WorkflowArtifact, plan: PlanDocument | undefined): Promise<DecisionPlanChoices | undefined> {
+async function choicesOf(deps: DeveloperRouteDependencies, task: DeveloperTaskRecord, type: DocumentType, artifact: WorkflowArtifact, plan: PlanDocument | undefined, loaded?: LoadedDocument): Promise<DecisionPlanChoices | undefined> {
   try {
     const [comments, suggestions] = await Promise.all([listTaskComments(deps, task.taskId), plan === undefined ? Promise.resolve([]) : listSuggestions(deps, task.taskId)]);
     const questions = (plan?.decisions ?? []).slice(0, DECISION_PLAN_QUESTIONS_MAX).map((decision) => {
@@ -135,8 +136,11 @@ async function choicesOf(deps: DeveloperRouteDependencies, task: DeveloperTaskRe
     });
     const policy = task.workflow?.checkPolicy;
     const optionalChecks = type !== "plan" ? [] : (policy?.optional ?? []).slice(0, 20).map((check) => ({ id: check.id, label: plain(check.label, 200) || check.id, selected: (policy?.selectedOptionalIds ?? []).includes(check.id) }));
-    const openComments = openCommentsFor(comments, type, artifact.version).slice(0, DECISION_PLAN_COMMENTS_MAX).map((comment) => ({ id: comment.commentId, excerpt: plain(comment.text, 200) || "A comment" }));
-    return { questions, optionalChecks, openComments };
+    const open = openCommentsFor(comments, type, artifact.version);
+    const openComments = open.slice(0, DECISION_PLAN_COMMENTS_MAX).map((comment) => ({ id: comment.commentId, excerpt: plain(comment.text, 200) || "A comment" }));
+    // OWNER DECISION 18: the key facts on the card, from the document itself (no model call), and how many comments are open on it.
+    const summary = documentSummary(loaded);
+    return { questions, optionalChecks, openComments, ...(summary === undefined ? {} : { summary }), openCommentCount: open.length };
   } catch { return undefined; }
 }
 

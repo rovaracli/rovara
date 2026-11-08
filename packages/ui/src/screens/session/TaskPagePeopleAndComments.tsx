@@ -5,6 +5,7 @@ import { createApiClient } from "../../api/client.js";
 import { ApiError } from "../../api/errors.js";
 import { Button } from "../../design/Button.js";
 import { VisibleText } from "../../design/VisibleText.js";
+import { usePlanPanelOn } from "./plan-panel-host.js";
 
 const NEVER = { retry: "never" } as const;
 const ANY = { parse: (value: unknown) => value };
@@ -64,8 +65,10 @@ export function TaskPagePeopleAndComments({ taskId }: { taskId: string }) {
   await query.invalidateQueries({ queryKey: ["task-comments", taskId] });
  }, action === "remember" ? "Remembered for this project." : "Forgotten.");
  const list = comments.data?.comments ?? [], view = people.data;
- // OWNER DECISION 17: comments, replies, suggestions and Ask stay on the review page until the next release; the task page links straight to its comments.
- const commentLink = <p className="rv-task-comment-link"><a href={"/review/" + encodeURIComponent(taskId) + "/task?doc=coding-plan"}>Comment on the plan</a> <span className="rv-muted">Comments, replies, suggestions and questions for Rovara are on the plan's review page.</span></p>;
+ // OWNER DECISION 18: with the cards on, comments, replies, suggestions and Ask are in the plan panel ("Read the full plan"), replacing OWNER DECISION 17's link to the review page.
+ // With them off (18d) the task page is as it was: the link to the review page's comments.
+ const panelOn = usePlanPanelOn();
+ const commentLink = panelOn ? null : <p className="rv-task-comment-link"><a href={"/review/" + encodeURIComponent(taskId) + "/task?doc=coding-plan"}>Comment on the plan</a> <span className="rv-muted">Comments, replies, suggestions and questions for Rovara are on the plan's review page.</span></p>;
  return <section className="rv-task-people-comments" aria-label="People and comments">
   {commentLink}
   {view !== undefined && <div><h2>People</h2><ul>{view.people.map(person => <li key={person.personId}><VisibleText text={person.name + (person.you ? " (you)" : "") + ": " + (ROLE_WORDS[person.role] ?? "Role unknown")} />
@@ -74,7 +77,7 @@ export function TaskPagePeopleAndComments({ taskId }: { taskId: string }) {
   </li>)}</ul>
    {view.canTakeOwnership && <p>Taking ownership does not restart work. <Button busy={busy} onClick={() => { void run(() => propose("/people/take-ownership", { expectedPeopleRevision: view.revision }), "Confirm on the next page."); }}>Take ownership</Button></p>}
   </div>}
-  {list.length > 0 && <div><h2>Comments from the review page</h2><ul>{list.map(comment => <li key={comment.id}><p><VisibleText text={comment.name + ": " + comment.text} /></p>
+  {list.length > 0 && <div><h2>{panelOn ? "Comments" : "Comments from the review page"}</h2><ul>{list.map(comment => <li key={comment.id}><p><VisibleText text={comment.name + ": " + comment.text} /></p>
    {comments.data?.canRemember === true && (comment.remembered === true
     ? <p><span>Remembered for this project</span> <Button variant="quiet" busy={busy} onClick={() => { void learn(comment, "forget"); }}>Forget</Button></p>
     : comment.remembered === false ? <Button variant="quiet" busy={busy} onClick={() => { void learn(comment, "remember"); }}>Remember this</Button> : null)}

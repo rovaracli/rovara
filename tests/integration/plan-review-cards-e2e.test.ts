@@ -145,9 +145,9 @@ describe("deciding on the task page's card, end to end (OWNER DECISION 7)", () =
   it("a teammate and someone outside the channel cannot decide: no card is theirs, and the read-only page refuses them the same way it refuses a missing task", async () => {
     const e2e = await waitingPlan();
     const workflow = e2e.workflow();
+    // OWNER DECISION 18: the page forwards a teammate who may read it to the task page, where they have no card.
     const sam = await openTaskPage(e2e, SAM, { search: "?doc=coding-plan", scripts: false });
-    expect(sam.status).toBe(200);
-    expect(sam.text()).toContain("Only owners decide.");
+    expect(sam.status).toBe(302);
     expect((await onCard(e2e, SAM)).status).toBe(404);
     const decision = { expectedRevision: workflow.revision, artifactDigest: workflow.artifacts.at(-1)!.sha256, decision: "APPROVE", answers: [], includedCommentIds: [] };
     expect(await toPage(e2e, SAM, "decision", decision)).toMatchObject({ status: 410, body: { error: "read_only" } });
@@ -184,19 +184,23 @@ describe("deciding on the task page's card, end to end (OWNER DECISION 7)", () =
     expect(codingRuns(e2e)).toHaveLength(1);
   }, 120_000);
 
-  it("OWNER DECISION 17: with the cards on, a teammate's comment with Ask still goes through the page and is queued for an answer; the page still reads in full with JavaScript off, with nothing to decide", async () => {
+  it("OWNER DECISION 18: a teammate's comment with Ask goes through the task page's panel route and is queued for an answer, as from the old page; the old page forwards there", async () => {
     const queue = recordingQueue();
     const e2e = await waitingPlan({ queue });
-    const posted = await toPage(e2e, SAM, "comments", { document: "plan", version: 1, target: { kind: "document" }, text: "Why below?", ask: true });
+    const web = (await import("../support/browser-session.js")).browserRequests({ db: e2e.db, handler: e2e.handler, orgOf: async () => undefined });
+    const posted = await web(asDeveloper(SAM), "POST", `/v1/app/tasks/${e2e.taskId()}/comments`, { requestId: crypto.randomUUID(), document: "plan", version: 1, target: { kind: "document" }, text: "Why below?", ask: true });
     expect(posted.status, JSON.stringify(posted.body)).toBe(201);
+    expect(posted.body.comment).toMatchObject({ text: "Why below?", agentx: "answering" });
     expect(queue.sent).toHaveLength(1);
     // An outsider's comment is refused as a missing task's would be.
-    expect((await toPage(e2e, OMAR_OUTSIDE, "comments", { document: "plan", version: 1, target: { kind: "document" }, text: "Hi", ask: false })).status).toBe(404);
+    const outsider = await web(asDeveloper(OMAR_OUTSIDE), "POST", `/v1/app/tasks/${e2e.taskId()}/comments`, { requestId: crypto.randomUUID(), document: "plan", version: 1, target: { kind: "document" }, text: "Hi", ask: false });
+    const missing = await web(asDeveloper(OMAR_OUTSIDE), "POST", `/v1/app/tasks/${crypto.randomUUID()}/comments`, { requestId: crypto.randomUUID(), document: "plan", version: 1, target: { kind: "document" }, text: "Hi", ask: false });
+    expect([outsider.status, outsider.body]).toEqual([missing.status, missing.body]);
+    expect(queue.sent).toHaveLength(1);
+    const listed = await web(asDeveloper(OWNER), "GET", `/v1/app/tasks/${e2e.taskId()}/comments`);
+    expect((listed.body.comments as Array<{ text: string; author: { name: string } }>).map((comment) => [comment.author.name, comment.text])).toEqual([["Sam Lee", "Why below?"]]);
     const page = await openTaskPage(e2e, OWNER, { search: "?doc=coding-plan", scripts: false });
-    const text = page.text();
-    for (const expected of ["You're the task owner.", "It is placed near the pay button.", "Where does the banner go?", "Sam Lee", "Why below?", "Decide on the task"]) expect(text).toContain(expected);
-    expect(page.document.getElementById("decide-approve")).toBeNull();
-    expect(page.document.querySelector("dialog")).toBeNull();
+    expect(page.status).toBe(302);
   }, 120_000);
 
 });

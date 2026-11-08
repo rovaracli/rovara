@@ -1,7 +1,6 @@
 import { test,expect } from "./support/csp.js";
 import { checkA11y } from "./support/axe.js";
 import { evidenceShot } from "./support/screenshot.js";
-type Sent=Array<{method:string;path:string;body?:Record<string,unknown>}>;
 // OWNER DECISION 7 and 17: with the decision cards on, the old review page decides nothing. On a phone it still reads in full, sends the owner to the task page to decide, offers nothing to press, and its API refuses a decision.
 for(const [theme,width] of [["light",390],["dark",360]] as const)test("with the cards on, reads the plan, decides nothing and sends the owner to the task page at "+width+"px in "+theme,async({page,context,request,baseURL})=>{
  await request.post("/__mock/scenario",{data:{name:"shell"}});await request.post("/__mock/task-read-only");await context.addCookies([{name:"__Host-agentx_review_session",value:"11111111-1111-4111-8111-111111111111",url:baseURL!,secure:true,httpOnly:true,sameSite:"Strict"}]);await page.emulateMedia({colorScheme:theme});await page.setViewportSize({width,height:844});await page.goto("/review/11111111-1111-4111-8111-111111111111/task");await expect(page.getByRole("heading",{name:"Retry failed payments",level:1})).toBeVisible();
@@ -12,20 +11,16 @@ for(const [theme,width] of [["light",390],["dark",360]] as const)test("with the 
  const refused=await page.evaluate(async()=>{const response=await fetch("/review/11111111-1111-4111-8111-111111111111/task/api/decision",{method:"POST",headers:{"content-type":"application/json","x-agentx-csrf":"c".repeat(43)},body:"{}"});return {status:response.status,body:await response.json() as Record<string,unknown>};});
  expect(refused.status).toBe(410);expect(refused.body).toMatchObject({error:"read_only"});
 });
-// OWNER DECISION 7: the old review page is read-only, so a remembered comment reads as remembered there and the page offers neither Remember nor Forget; both are refused by its API.
-// Remember and Forget belong to the task page in Rovara (the React route `/v1/app/projects/{p}/learning/remember`); see the deferral in the slice report.
-// OWNER DECISION 17: with the cards on, the page decides nothing but Remember and Forget on a comment still work there.
-test("with the cards on, a person still remembers a comment on the review page, then forgets it",async({page,context,request,baseURL})=>{
+// OWNER DECISION 18 (review M1, replacing 17's exception): with the cards on, the review page takes no write at all. A comment reads there, but neither Remember nor Forget is offered, and its API refuses
+// both (410, with where): they are on the task page in Rovara.
+test("with the cards on, the review page offers no Remember or Forget and its API refuses them",async({page,context,request,baseURL})=>{
  await request.post("/__mock/scenario",{data:{name:"shell"}});await request.post("/__mock/task-learning");await request.post("/__mock/task-read-only");await context.addCookies([{name:"__Host-agentx_review_session",value:"11111111-1111-4111-8111-111111111111",url:baseURL!,secure:true,httpOnly:true,sameSite:"Strict"}]);
  await page.goto("/review/11111111-1111-4111-8111-111111111111/task");
  const comment=page.locator("#comment-22222222-2222-4222-8222-222222222222");
  await expect(comment).toContainText("Say three tries, not five.");
- await comment.getByRole("button",{name:"Remember this"}).click();
- await expect(comment.getByText("Remembered for this project")).toBeVisible();
- await comment.getByRole("button",{name:"Forget"}).click();
- await expect(comment.getByRole("button",{name:"Remember this"})).toBeVisible();
- await expect(comment.getByText("Remembered for this project")).toHaveCount(0);
- const sent=((await(await request.get("/__mock/requests")).json()) as Sent).filter(item=>item.method==="POST"&&/\/comments\/[^/]+\/(remember|forget)$/.test(item.path));
- expect(sent.map(item=>item.path.split("/").pop())).toEqual(["remember","forget"]);
- expect(sent.every(item=>JSON.stringify(item.body)==="{}")).toBe(true);
+ await expect(comment.getByRole("button",{name:/Remember this|Forget/u})).toHaveCount(0);
+ for(const action of ["remember","forget"]){
+  const refused=await page.evaluate(async(which)=>{const response=await fetch("/review/11111111-1111-4111-8111-111111111111/task/api/comments/22222222-2222-4222-8222-222222222222/"+which,{method:"POST",headers:{"content-type":"application/json","x-agentx-csrf":"c".repeat(43)},body:"{}"});return {status:response.status,body:await response.json() as Record<string,unknown>};},action);
+  expect(refused.status,action).toBe(410);expect(refused.body).toMatchObject({error:"read_only"});
+ }
 });

@@ -134,7 +134,9 @@ it("review fix: what Approve takes is said next to Approve on a requirements and
   expect(projectDecisionCards([item]).cards[0]!.risk, "positive control: low").toBe("low");
   const f = taskPage([item]);
   const card = await cardOn();
-  expect(within(card).getByText(/takes Rovara's recommended answer to each decision/u)).toBeTruthy();
+  // OWNER DECISION 18: on its task page the card says what Approve sends from the choices made there (never "use the plan review page", which now forwards here).
+  expect(within(card).getByText(/A question left on Rovara's recommendation takes that answer/u)).toBeTruthy();
+  expect(within(card).queryByText(/plan review page/u)).toBeNull();
   f.close();
  }
 });

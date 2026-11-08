@@ -4,6 +4,7 @@
 // names, IDs, notice kinds and Slack error codes only: never a token, a post's text or a task's text.
 // Spec 025 E13: it also posts an admin change's Slack Confirm message, and edits it when the change ends.
 import { taskStatusOf } from "../agent-sessions/task-status.js";
+import { decisionCardsEnabled } from "../proof/switch.js";
 import { decisionCardUrl, sessionPageUrl } from "../decisions/open-path.js";
 import { PER_TASK_BUDGET_USD, SessionIdSchema, runLimitRaises, taskStatusText } from "@agentx/contracts";
 import { chatGptFallbackText } from "../chatgpt/fallback-notice.js";
@@ -1208,7 +1209,9 @@ async function feedbackReviewNotification(deps: NotifierDependencies, task: Deve
 
 /** OWNER DECISION 7: where the PR feedback card's details link goes: the task's page in Rovara (its decisions, findings and next step); a task with no session keeps the feedback review page. */
 export function feedbackDetailPath(task: { taskId: string; sessionId?: string | undefined }): string {
-  return SessionIdSchema.safeParse(task.sessionId).success ? `/app/sessions/${encodeURIComponent(task.sessionId!)}` : `/review/${encodeURIComponent(task.taskId)}`;
+  // OWNER DECISION 18 (review M6): with the decision cards on, the task page's feedback view, where the review is read and decided; with them off (18d) the task page as before.
+  if (!SessionIdSchema.safeParse(task.sessionId).success) return `/review/${encodeURIComponent(task.taskId)}`;
+  return `/app/sessions/${encodeURIComponent(task.sessionId!)}${decisionCardsEnabled() ? "?view=feedback" : ""}`;
 }
 
 /**

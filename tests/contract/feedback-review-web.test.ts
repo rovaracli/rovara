@@ -75,6 +75,27 @@ describe("authenticated PR feedback review web journey", () => {
     expect(response.headers["x-robots-tag"]).toBe("noindex, nofollow, noarchive");
   });
 
+  it("OWNER DECISION 18 (review M1): with the cards on, the page forwards its reader and its decision answers 410 with the feedback view's path, deciding nothing; off, it decides", async () => {
+    const decision = { requestId: randomUUID(), expectedRevision: 12, reviewDigest: "e".repeat(64), proposalDigest: "b".repeat(64), bundleDigests: ["a".repeat(64)], decision: "APPROVE", selectedFindingIds: [finding.id] };
+    const headers = { cookie: "__Host-agentx_review_session=session-owner; __Host-agentx_review_csrf=" + "c".repeat(43), origin, "x-agentx-csrf": "c".repeat(43), "content-type": "application/json" };
+    const on = dependencies({ taskPagePath: async () => "/app/sessions/ses_0123456789abcdefghij" });
+    const page = await createFeedbackReviewWeb(on)(request("GET", `/review/${taskId}`, { cookie: headers.cookie }), new URL(`/review/${taskId}`, origin));
+    expect([page.statusCode, page.headers.location]).toEqual([302, "/app/sessions/ses_0123456789abcdefghij?view=feedback"]);
+    const refused = await createFeedbackReviewWeb(on)(request("POST", `/review/${taskId}/api/decision`, headers, decision), new URL(`/review/${taskId}/api/decision`, origin));
+    expect(refused.statusCode).toBe(410);
+    expect(JSON.parse(refused.body)).toEqual({ error: "read_only", message: "This page is read only. Decide the PR feedback on the task's page in Rovara.", taskPage: "/app/sessions/ses_0123456789abcdefghij?view=feedback" });
+    // Someone the task's path cannot be given to hears the same refusal without it.
+    const hidden = dependencies({ taskPagePath: async () => { throw Object.assign(new Error("no"), { code: "TASK_NOT_FOUND" }); } });
+    const blind = await createFeedbackReviewWeb(hidden)(request("POST", `/review/${taskId}/api/decision`, headers, decision), new URL(`/review/${taskId}/api/decision`, origin));
+    expect([blind.statusCode, JSON.parse(blind.body)]).toEqual([410, { error: "read_only", message: "This page is read only. Decide the PR feedback on the task's page in Rovara." }]);
+    expect([on.observed.decisions, hidden.observed.decisions]).toEqual([[], []]);
+    // The cards off (no task page given): the same request decides.
+    const off = dependencies();
+    const decided = await createFeedbackReviewWeb(off)(request("POST", `/review/${taskId}/api/decision`, headers, decision), new URL(`/review/${taskId}/api/decision`, origin));
+    expect(decided.statusCode).toBe(200);
+    expect(off.observed.decisions).toHaveLength(1);
+  });
+
   it("renders a concise advisory first view and sets a secure CSRF cookie without exposing a token", async () => {
     const deps = dependencies();
     const response = await createFeedbackReviewWeb(deps)(request("GET", `/review/${taskId}`, { cookie: "__Host-agentx_review_session=session-owner" }), new URL(`/review/${taskId}`, origin));
