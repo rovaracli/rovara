@@ -2,7 +2,7 @@
 // task only if everyone who can see the task can see every source task. This file tests the audience sets and the subset rule, and pins that the Team record's own resolver (`task-visibility.ts`) is unchanged for the
 // same tasks: the record's audience was NOT widened (an unshared task's rows still go to its owner alone).
 import { describe, expect, it } from "vitest";
-import { projectRevisionKey, type OrgId } from "@agentx/contracts";
+import { orgMemberKey, projectRevisionKey, type OrgId } from "@agentx/contracts";
 import { AgentSessionStore } from "../../../packages/broker/src/agent-sessions/store.js";
 import { resolveTaskVisibility } from "../../../packages/broker/src/lessons/task-visibility.js";
 import { audienceWithin, inAudience, lessonAudiencesOf, openToWholeProject, resolveLessonTaskAudience, tableLessonAudiencePort, withLessonAudiences, type LessonTaskAudience } from "../../../packages/broker/src/lessons/task-audience.js";
@@ -113,6 +113,20 @@ describe("a task's audience for lessons", () => {
     await expect(inAudience(flakyAudience, MIA)).rejects.toThrow();
     down = false;
     await expect(inAudience(flakyAudience, MIA)).resolves.toBe(true);
+  });
+
+  it("G1: a member row whose own developer id is not the id it is filed under (a stale or merged-away entry) is not on the roster; the listed roster does not name it either", async () => {
+    const t = setup();
+    const a = (await t.audienceOf(t.task().taskId))!;
+    // A row filed under "old-id" that says it is ZED's, with an admin role: reading it by key would put "old-id" on the roster.
+    const stale = "e".repeat(10) + "-old";
+    t.w.db.set({ ...orgMemberKey(ORG_A, stale), entityType: "ORG_MEMBER", orgId: ORG_A, developerId: ZED, role: "admin", joinedAt: "2026-10-01T00:00:00.000Z" });
+    expect(await inAudience(a, stale)).toBe(false);
+    expect(await a.onRoster(stale)).toBe(false);
+    expect((await listProjectMembers(t.table, ORG_A, "web")).map((row) => row.developerId)).not.toContain(stale);
+    // Positive control: a row filed under its own id as an admin IS on the roster.
+    t.w.db.set({ ...orgMemberKey(ORG_A, ZED), entityType: "ORG_MEMBER", orgId: ORG_A, developerId: ZED, role: "admin", joinedAt: "2026-10-01T00:00:00.000Z" });
+    expect(await a.onRoster(ZED)).toBe(true);
   });
 
   it("F3: the roster is never listed or read member by member: a task's audience and a comparison read only the people that differ, and each person once per request", async () => {

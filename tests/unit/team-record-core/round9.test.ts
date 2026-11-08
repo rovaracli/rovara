@@ -389,6 +389,20 @@ describe("R8-1 learning v2 asks the access records at read time", () => {
     expect(result.context).toBeUndefined();
   });
 
+  // G3 (visibility follow-up): the lesson above is restricted, so the loader drops it before it asks the access records. An UNRESTRICTED lesson from a placed source is the one that asks them: when they
+  // cannot be read it is withheld and the load says `access_unavailable` (never loaded around the check).
+  it("a non-restricted lesson from a placed source, whose access record cannot be read, is withheld with the access_unavailable reason", async () => {
+    const { w, deps, store } = await setup();
+    await seedLessons(store, lessonFor({ id: "les_proj0002", provenance: { audience: { kind: "project" }, sourceScopes: ["slack:T1/CPUB"] } }));
+    await deps.vectors.upsert(WS, PROJECT, "les_proj0002", await embedder.embed("x"), { status: "active" });
+    // Control: with the records readable, the load does not say access_unavailable.
+    expect((await loadLessonsForStage(deps, request())).skipped).not.toBe("access_unavailable");
+    w.db.injectFault({ command: "BatchGetCommand", error: { name: "InternalServerError" }, times: 100 });
+    const result = await loadLessonsForStage(deps, request());
+    expect(result.context).toBeUndefined();
+    expect(result.skipped).toBe("access_unavailable");
+  });
+
   it("past_work checks a lesson's real source places, not the joined string, and drops a lesson from a place the asker left", async () => {
     const w = world();
     for (const scope of ["slack:T1/CA", "slack:T1/CB"]) { await addSource(w, { source: "slack", scope }); await w.sink.put(slackRow(`x${scope}`, scope, ["U2"])); }

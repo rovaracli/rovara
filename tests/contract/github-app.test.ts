@@ -908,7 +908,7 @@ describe("GitHub App repository credentials", () => {
     expect(requests).toContain("https://api.github.com/repos/Example/Demo");
   });
 
-  it("reports a repository as private only when GitHub says private and not internal (an internal repo is readable by the whole enterprise, so its visibility is unknown)", async () => {
+  it("reports a repository as private only when GitHub says private AND names its visibility as private (internal, an unknown word or no visibility word at all is unknown)", async () => {
     const { privateKey } = generateKeyPairSync("rsa", { modulusLength: 2048 });
     const pem = privateKey.export({ type: "pkcs8", format: "pem" }).toString();
     let record: Record<string, unknown> = {};
@@ -923,8 +923,13 @@ describe("GitHub App repository credentials", () => {
 
     record = { private: true, visibility: "private" };
     expect((await identity())?.private).toBe(true);
+    // No `visibility` word (an older Enterprise Server reports private: true for an internal repository; api.github.com always sends the word): unknown, whatever `private` says.
     record = { private: true };
-    expect((await identity())?.private).toBe(true);
+    expect(await identity()).not.toHaveProperty("private");
+    record = { private: false };
+    expect(await identity()).not.toHaveProperty("private");
+    record = { private: true, visibility: 3 };
+    expect(await identity()).not.toHaveProperty("private");
     record = { private: false, visibility: "public" };
     expect((await identity())?.private).toBe(false);
     record = { private: true, visibility: "internal" };

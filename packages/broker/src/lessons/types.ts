@@ -32,6 +32,18 @@ export const AudienceSchema = z.discriminatedUnion("kind", [
 ]);
 export type Audience = z.infer<typeof AudienceSchema>;
 
+/** The longest ACL scope (`AclSnapshotSchema`). A joined scope of this length may have been cut (`narrowestAudience`), so it is never read as a complete list of places. */
+export const ACL_SCOPE_MAX = 300;
+/** A place that no access record, no project repository and no reader ever matches. `narrowestAudience` ends a cut scope with it, so the places that were cut away can never make a lesson look broader (fails closed). */
+export const CUT_SCOPE_PLACE = "rovara:scope-cut";
+
+/** The places joined into one ACL scope. When they do not fit, the scope keeps what fits and ENDS with `CUT_SCOPE_PLACE`: a reader of a cut scope sees a place nobody can read, never a shorter, complete-looking list. */
+function joinedScope(scopes: readonly string[]): string {
+  const joined = scopes.join("+");
+  if (joined.length <= ACL_SCOPE_MAX) return joined;
+  return `${joined.slice(0, ACL_SCOPE_MAX - CUT_SCOPE_PLACE.length - 1)}+${CUT_SCOPE_PLACE}`;
+}
+
 /**
  * The narrowest audience of the inputs: any restricted input makes the result restricted. Two different restricted sources give an ACL that holds only
  * what both allow (principals and groups intersect; the scope names both). An empty list is the project audience.
@@ -52,7 +64,7 @@ export function narrowestAudience(list: readonly Audience[]): Audience {
   return {
     kind: "restricted",
     acl: {
-      source: first.source, scope: scopes.join("+").slice(0, 300), ...(principals === undefined ? {} : { principals }), ...(groups === undefined ? {} : { groups }),
+      source: first.source, scope: joinedScope(scopes), ...(principals === undefined ? {} : { principals }), ...(groups === undefined ? {} : { groups }),
       capturedAt: restricted.map((a) => a.capturedAt).sort()[0] ?? first.capturedAt,
       liveCheck: restricted.some((a) => a.liveCheck === "on_read") ? "on_read" : "none",
     },

@@ -482,11 +482,12 @@ export class GitHubAppCredentialProvider {
     if (!Number.isSafeInteger(record.id) || typeof record.full_name !== "string" || record.full_name.toLowerCase() !== expectedFullName.toLowerCase()) {
       throw agentXError("RUNTIME_UNAVAILABLE", "GitHub returned an invalid repository identity");
     }
-    // `private` is reported only when GitHub's answer is unambiguous. An `internal` repository (GitHub Enterprise) reports private: true but every member of the enterprise can read it, and a
-    // visibility word this code does not know may be wider still: both leave `private` unset, which callers read as "unknown" (fail closed).
+    // `private` is reported only when GitHub's answer is unambiguous (lessons visibility follow-up, G4): the answer must carry BOTH `private` and a `visibility` word, and they must agree. This code talks to api.github.com only
+    // (`parseGitHubRepository` refuses every other host), and that API always sends `visibility`. An answer without it (an older GitHub Enterprise Server, which reports private: true for an internal repository that
+    // every member of the enterprise can read, or any proxy or stand-in) cannot be told apart from one, so it reads as "unknown". An `internal` repository, and a visibility word this code does not know (may be wider
+    // still), also leave `private` unset. Callers read an unset `private` as "unknown" (fail closed): the pull request description then carries a count and a link, never a lesson title.
     const visibility = typeof record.visibility === "string" ? record.visibility : undefined;
-    const privateFlag = typeof record.private !== "boolean" ? undefined
-      : visibility === undefined ? record.private
+    const privateFlag = typeof record.private !== "boolean" || visibility === undefined ? undefined
       : visibility === "private" && record.private ? true
       : visibility === "public" && !record.private ? false
       : undefined;

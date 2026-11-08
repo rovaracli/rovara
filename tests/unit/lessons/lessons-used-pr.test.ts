@@ -182,10 +182,9 @@ describe("the reader behind it", () => {
     expect(out.items.map((i) => i.id).sort()).toEqual(["les_open0001", "les_wide00001"]);
     expect(out.count).toBe(2);
     expect(JSON.stringify(out)).not.toContain("Narrowed lesson");
-    // Positive control: the narrowed task WAS asked about, so the exclusion came from its live audience; each reader asks each task once (the count reader, then the naming reader for what was counted).
+    // Positive control: the narrowed task WAS asked about, so the exclusion came from its live audience; the count reader and the naming reader share their reads, so every source task is read ONCE for the whole description (G2).
     expect(reads.flat()).toEqual(expect.arrayContaining(["t-narrow", "t-wide"]));
-    expect(reads.flat().filter((id) => id === "t-narrow")).toHaveLength(1);
-    expect(reads.flat().filter((id) => id === "t-wide")).toHaveLength(2);
+    for (const id of ["task-1", "t-narrow", "t-wide"]) expect(reads.flat().filter((read) => read === id), id).toHaveLength(1);
     // The task itself also hides bob: the lesson may be given to it, so it IS counted, but it is still not NAMED (a source task with a People denial is not open to the whole project): count and link only.
     table["task-1"] = wideAudience({ denied: new Set(["bob"]) });
     const counted = (await read())!;

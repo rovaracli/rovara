@@ -3,6 +3,7 @@
 import { isMeaningfulAnchor } from "@agentx/contracts";
 import { hasCommandOrUrl, hasEncodedBlob, hasEscalationWords, requestsCapabilityChange, touchesRiskyPath } from "./guards.js";
 import { renderTier0, type Tier0Text, type VerifiedMaterial } from "./render.js";
+import { viewedForLessons } from "./project-repo-audience.js";
 import { isRestricted, trustAtLeast, type Lesson, type LessonCitation, type LessonProvenance, type LessonScope, type LessonStage, type LessonType, type Tier } from "./types.js";
 
 export interface TierInput {
@@ -18,6 +19,8 @@ export interface TierContext {
   ineligibleTask?: boolean;
   /** The tier of the lesson this one supersedes: a refinement is never lower. */
   supersedesTier?: Tier;
+  /** Owner decision 34: the places of the repositories the project has NOW (read live by the caller). A lesson restricted only to readers of these is project-wide here. Absent or unreadable: it stays restricted (fail closed). */
+  projectRepos?: ReadonlySet<string> | undefined;
 }
 export type TierDecision =
   | { tier: Tier; reasons: string[]; /** For tier 0: the text the agent will see. */ rendered?: Tier0Text }
@@ -62,7 +65,7 @@ function classifyBase(input: TierInput, context: TierContext): TierDecision {
   if (repos.length !== 1 || [...cited].some((repo) => repo !== repos[0])) why.push("scope_not_one_repo");
   if (!input.stages.every((stage) => SAFE_STAGES.has(stage))) why.push("stage_not_allowed");
   if (context.contradiction === true) why.push("contradiction");
-  if (isRestricted({ provenance: input.provenance as LessonProvenance })) why.push("restricted_source");
+  if (isRestricted(viewedForLessons({ provenance: input.provenance as LessonProvenance }, context.projectRepos))) why.push("restricted_source");
   return why.length === 0 && rendered !== undefined ? { tier: 0, reasons: ["cited_fact"], rendered } : { tier: 1, reasons: why };
 }
 

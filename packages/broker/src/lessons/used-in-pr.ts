@@ -2,15 +2,19 @@
 //  - a repository that is PUBLIC, or whose visibility is UNKNOWN, gets only the number of lessons and one link to the task page (the titles are behind sign-in);
 //  - a repository known to be PRIVATE also lists the lessons, each with a "not helpful" link, except tier-2 and review-check lessons and any that name a person (or whose authors cannot be named);
 //  - a lesson learned from a restricted place is never counted or named; only lessons that reached the agent's prompt count (and may still be given to the task, decision 31); at most LESSONS_USED_MAX are listed;
-//  - a lesson is NAMED only when every task it was learned from is open to the whole project with no People denial, checked live (decision 32); otherwise it is only counted.
+//  - a lesson is NAMED only when every task it was learned from is open to the whole project with no People denial, checked live (decision 32); otherwise it is only counted;
+//  - a lesson restricted only to ONE project repository A (decision 34) is counted in every pull request of the project but NAMED only in a pull request of repository A itself (decision 36); the pull request's repository
+//    comes in `input.repo`, and a repository that is not known is "not A".
 // The reader is plugged in at handler start where lessons are on (`setLessonsUsedReader`), the way Home's lessons card is; without it, or with learning off for the project, the description has no section.
+import { OrgIdSchema } from "@agentx/contracts";
 import type { AccessCheckPort } from "../team-record/access-port.js";
 import { createLessonLiveReader } from "./live-visibility.js";
 import { readVisible } from "./read-visible.js";
 import { modeAllows, resolveLearning, type LearningSettingsReader } from "./policy.js";
 import type { LessonStore, ScopeKey } from "./store.js";
 import { namesAPerson } from "./trial.js";
-import { isRestricted, type Lesson } from "./types.js";
+import { mayNameInRepository, projectRepoScopesOf, repoOnlyScopes } from "./project-repo-audience.js";
+import type { Lesson } from "./types.js";
 import type { AttributionReader } from "../attribution/resolve.js";
 
 export const LESSONS_USED_MAX = 30;
@@ -28,7 +32,13 @@ export interface LessonUsed { id: string; title: string; notHelpfulUrl: string }
  * `items` is empty for a public repository and for one whose visibility is unknown.
  */
 export interface LessonsUsedSummary { count: number; taskUrl: string; items: readonly LessonUsed[] }
-export interface LessonsUsedInput { orgId: string; project: string; taskId: string; /** The task page's address (https); the link is this page with the lesson named. */ pageUrl: string | undefined }
+export interface LessonsUsedInput {
+  orgId: string; project: string; taskId: string; /** The task page's address (https); the link is this page with the lesson named. */ pageUrl: string | undefined;
+  /** The project repository (its name in the project definition) the pull request is in. Absent: unknown, so a lesson restricted to one repository is only counted (decision 36). */
+  repo?: string | undefined;
+  /** The project revision the task started on: `repo` is a name in THAT revision, and its GitHub repository id is what is compared (review N1). Absent: the repository is unknown. */
+  startingRevision?: number | undefined;
+}
 export type LessonsUsedReader = (input: LessonsUsedInput) => Promise<LessonsUsedSummary | undefined>;
 
 let reader: LessonsUsedReader | undefined;
@@ -81,18 +91,18 @@ export function lessonsUsedReaderOver(deps: LessonsUsedReaderDeps): LessonsUsedR
     const visibility: RepositoryVisibility = await Promise.resolve().then(() => (deps.visibility === undefined ? "unknown" as const : deps.visibility(input.orgId, input.project))).catch(() => "unknown" as const);
     const seen = new Set<string>();
     const used: Lesson[] = [];
-    // Two readers for the whole description (no task is read twice by either). COUNT (`live`): the lessons the task used that it may still be given: the audience of the task itself lies within every source task's
+    // Two readers for the whole description that share their reads (each source task is read once, not once per reader). COUNT (`live`): the lessons the task used that it may still be given: the audience of the task itself lies within every source task's
     // (decision 31), checked live. NAME (`wide`): a pull request is readable by anyone with access to the repository, so a lesson is named only while EVERY task it was learned from is open to the whole project with no
     // People denial, checked live (decision 32, "nobody in particular"); the repository must also be known private (below). Anything else is counted and linked, not named.
     const live = createLessonLiveReader({ port: deps.access.taskVisibility, key, where: "pull_request", running: { taskId: input.taskId } });
-    const wide = createLessonLiveReader({ port: deps.access.taskVisibility, key, where: "pull_request" });
+    const wide = live.withoutRunningTask(); // shares what `live` has read: each source task is read once for the whole description
     for (const manifest of await deps.store.manifests(key, input.taskId)) {
       for (const entry of manifest.lessons) {
         if (seen.has(entry.id) || !REACHED.has(entry.citation)) continue;
         seen.add(entry.id);
         const lesson = await deps.store.get(key, entry.id);
         // Read as "nobody in particular" for restricted places: a lesson from a restricted place, or one whose place the access records restrict now, is not counted in a description the repository's readers see.
-        if (lesson === undefined || isRestricted(lesson) || (await readVisible({ access: deps.access, key, viewer: undefined, live, lessons: [lesson], where: "pull_request" })).length !== 1) continue;
+        if (lesson === undefined || (await readVisible({ access: deps.access, key, viewer: undefined, live, lessons: [lesson], where: "pull_request" })).length !== 1) continue;
         used.push(lesson);
       }
     }
@@ -100,9 +110,11 @@ export function lessonsUsedReaderOver(deps: LessonsUsedReaderDeps): LessonsUsedR
     const items: LessonUsed[] = [];
     // Titles only where every reader of the repository is the company's own, and only the harmless ones: no tier-2 or review-check lesson, no title that names a person.
     if (visibility === "private") {
+      // Decision 36: the place of the pull request's repository, read live from the project definition; a repository the project does not pin, or one that cannot be read, is "unknown".
+      const target = used.some((lesson) => repoOnlyScopes(lesson) !== undefined) ? await targetPlaceOf(deps.access.taskVisibility, input) : undefined;
       for (const lesson of used) {
         if (items.length >= LESSONS_USED_MAX) break;
-        if (lesson.tier >= 2 || lesson.type === "review_check" || !(await namesNobody(deps.names, input.orgId, lesson))) continue;
+        if (lesson.tier >= 2 || lesson.type === "review_check" || !mayNameInRepository(lesson, target) || !(await namesNobody(deps.names, input.orgId, lesson))) continue;
         // Decision 32: named only when every source task is open to the whole project (no People denial), read now.
         if ((await wide.keep(undefined, [lesson])).length !== 1) continue;
         const url = notHelpfulUrl(input.pageUrl, lesson.id);
@@ -111,6 +123,15 @@ export function lessonsUsedReaderOver(deps: LessonsUsedReaderDeps): LessonsUsedR
     }
     return { count: used.length, taskUrl, items };
   };
+}
+
+/** The place of the pull request's repository, or undefined (no repository given, not a pinned GitHub repository of the project, no port, or a read that fails). */
+async function targetPlaceOf(port: object | undefined, input: LessonsUsedInput): Promise<string | undefined> {
+  const repos = projectRepoScopesOf(port);
+  if (repos?.placeOf === undefined || input.repo === undefined) return undefined;
+  const org = OrgIdSchema.safeParse(input.orgId);
+  if (!org.success) return undefined;
+  try { return await repos.placeOf(org.data, input.project, input.repo, input.startingRevision); } catch { return undefined; }
 }
 
 /** True when neither the lesson's text nor its title names a person: an @handle, an e-mail address, or the display name of anyone who wrote it. Unknown (no reader, or it fails) is false. */
