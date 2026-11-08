@@ -75,7 +75,6 @@ export const AUTO_APPLY_GUARDS = { brakeMs: 86_400_000, coldStartLessons: 9 } as
 export const MIN_EXPIRY_DAYS = 14;
 export const MAX_EXPIRY_DAYS = 365;
 export const DEFAULT_EXPIRY_DAYS = 90;
-export const PREFERENCE_EXPIRY_DAYS = 180;
 
 /**
  * How much a stage may be told (owner 2026-11-08, from the evidence that long context files cost more and help little): by default at most 5 lessons and 2 KB per stage. A project may ask for more or less within

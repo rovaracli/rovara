@@ -103,10 +103,15 @@ export async function recordTaskOutcome(deps: CounterDeps, outcome: TaskOutcome)
       await deps.store.removePending(key, `helpful:${outcome.taskId}:${lessonId}`);
       continue;
     }
-    if (outcome.outcome === "reverted") { await deps.store.removePending(key, `helpful:${outcome.taskId}:${lessonId}`); continue; }
+    if (outcome.outcome === "reverted") {
+      await deps.store.removePending(key, `helpful:${outcome.taskId}:${lessonId}`);
+      // Remember the revert: a "merged" end for this task delivered again later must not queue the mark it took back (checked below, next to the settled once-key).
+      await deps.store.markOnce(key, `reverted:${outcome.taskId}:${lessonId}`);
+      continue;
+    }
     if (outcome.outcome === "merged" && outcome.sendBacks <= 1 && !unjudged && !ignored) {
-      // A task end delivered again after its mark settled queues nothing (the settled once-key is the record): a repeat extends nothing and counts nothing.
-      if (await deps.store.seenOnce(key, `helpful-final:${outcome.taskId}:${lessonId}`)) continue;
+      // A task end delivered again after its mark settled, or after that task's revert took the mark back, queues nothing (the settled and reverted once-keys are the record): a repeat extends nothing and counts nothing.
+      if (await deps.store.seenOnce(key, `helpful-final:${outcome.taskId}:${lessonId}`) || await deps.store.seenOnce(key, `reverted:${outcome.taskId}:${lessonId}`)) continue;
       const dueAt = (outcome.mergedAt ?? deps.now()) + REVERT_WINDOW_MS;
       // The queued mark is the whole hold: the expiry sweep leaves a lesson with a queued mark alone, so a revert (which takes the mark back) ends the hold and the lesson then fades. No expiry is moved here.
       await deps.store.addPending({ key: `helpful:${outcome.taskId}:${lessonId}`, workspaceId: key.workspaceId, project: key.project, lessonId, taskId: outcome.taskId, dueAt });

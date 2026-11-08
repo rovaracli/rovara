@@ -36,8 +36,9 @@ describe("owner decision 35: a lesson fades after N days without helping, and ne
       const normal = await goLive({ id: "les_fadeone1", days: undefined, action });
       expect(normal.live.expiresAt, action).toBe(normal.created + (TRIAL_STABLE_AFTER_DAYS + 90) * DAY);
     }
+    // Decision 37: a preference fades after 90 days like every other type (the 180-day default is gone).
     const preference = await goLive({ id: "les_fadeone1", days: undefined, type: "preference", action: "lesson.activated" });
-    expect(preference.live.expiresAt).toBe(preference.created + (TRIAL_STABLE_AFTER_DAYS + 180) * DAY);
+    expect(preference.live.expiresAt).toBe(preference.created + (TRIAL_STABLE_AFTER_DAYS + 90) * DAY);
     expect(await import("../../../packages/broker/src/lessons/trial.js")).not.toHaveProperty("TRIAL_MIN_EXPIRY_DAYS");
   });
   it("N=14 and the lesson is never used: it lives through its trial and fades 14 days after the trial ends (alive on day 27, gone on day 28)", async () => {
@@ -146,5 +147,28 @@ describe("N2 and N3: the sweep skips a lesson with a queued helpful mark; record
     expect(after.counters.helpful).toBe(1);
     clock.t = settled.expiresAt + 1;
     expect((await sweepExpired({ now: clock.now, audit }, store, KEY)).expired).toEqual(["les_usedlate"]);
+  });
+  it("F3: a merged task end delivered again after that task's revert took the mark back queues nothing (the reverted once-key)", async () => {
+    const { clock, store, created, deps } = await setup();
+    clock.t = created + 85 * DAY;
+    expect((await recordTaskOutcome(deps, merged(clock))).queuedHelpful).toEqual(["les_usedlate"]);
+    clock.t = created + 86 * DAY;
+    await recordTaskOutcome(deps, merged(clock, { outcome: "reverted", mergedAt: undefined }));
+    expect(await store.duePending(KEY, created + 400 * DAY, 10)).toEqual([]);
+    expect(await store.seenOnce(KEY, "reverted:t85:les_usedlate")).toBe(true);
+    clock.t = created + 87 * DAY;
+    const again = await recordTaskOutcome(deps, merged(clock));
+    expect(again.queuedHelpful).toEqual([]);
+    expect(await store.duePending(KEY, created + 400 * DAY, 10)).toEqual([]);
+    expect(await settleHelpful(deps, KEY)).toBe(0);
+    expect((await store.get(KEY, "les_usedlate"))!.counters.helpful).toBe(0);
+  });
+  it("F3 positive control: another task's merged end for the same lesson still queues its mark after this task was reverted", async () => {
+    const { clock, store, created, deps } = await setup();
+    await store.putManifest({ taskId: "t86", workspaceId: WS, project: KEY.project, stage: "IMPLEMENT", round: 1, setVersion: 1, memory: "live", at: 1, lessons: [{ id: "les_usedlate", version: 1, score: 0.5, why: "scope", citation: "valid" }], bytes: 10 });
+    clock.t = created + 85 * DAY;
+    await recordTaskOutcome(deps, merged(clock));
+    await recordTaskOutcome(deps, merged(clock, { outcome: "reverted", mergedAt: undefined }));
+    expect((await recordTaskOutcome(deps, merged(clock, { taskId: "t86" }))).queuedHelpful).toEqual(["les_usedlate"]);
   });
 });

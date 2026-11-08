@@ -278,6 +278,23 @@ describe("the DynamoDB lesson store only", () => {
     expect(w.db.find((item) => String(item.pk).includes("#P#web"))).toEqual([]);
   });
 
+  it("hasPending asks DynamoDB for one pending reference and stops (Limit 1), never reading them all (lessons connect fix 4, F1)", async () => {
+    const db = new FakeDynamoDb();
+    const queries: Array<Record<string, unknown>> = [];
+    const store = new DynamoLessonStore({ documentClient: { send: async (command: unknown) => {
+      if ((command as { constructor: { name: string } }).constructor.name === "QueryCommand") queries.push((command as { input: Record<string, unknown> }).input);
+      return db.send(command as never);
+    } }, tableName: "TeamRecord" });
+    await commit(store, mk("les_a0000001"));
+    for (const t of ["t1", "t2", "t3"]) await store.addPending({ key: `helpful:${t}:les_a0000001`, ...KEY, lessonId: "les_a0000001", taskId: t, dueAt: 10 * DAY });
+    queries.length = 0;
+    expect(await store.hasPending(KEY, "les_a0000001")).toBe(true);
+    expect(queries).toHaveLength(1);
+    expect(queries[0]!.Limit).toBe(1);
+    queries.length = 0;
+    expect(await store.hasPending(KEY, "les_b0000001")).toBe(false);
+    expect(queries).toHaveLength(1);
+  });
   it("a commit that read before an erase fenced fails its transaction and then sees the fence", async () => {
     const db = new FakeDynamoDb();
     const store = new DynamoLessonStore({ documentClient: db, tableName: "TeamRecord" });

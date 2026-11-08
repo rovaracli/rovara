@@ -703,7 +703,12 @@ export class DynamoLessonStore implements LessonStore {
   async seenOnce(key: ScopeKey, name: string): Promise<boolean> { return (await this.getItem(this.k(key, `LESSONSET#ONCE#${sha(name)}`))) !== undefined; }
 
   async hasPending(key: ScopeKey, lessonId: string): Promise<boolean> {
-    return (await this.queryPrefix(key, `${this.headKey(key, lessonId).sk}#PEND#`)).length > 0;
+    // A yes/no answer: ask for one reference and stop (no paging, no full read).
+    const response = await this.send<{ Items?: Item[] }>(new QueryCommand({
+      TableName: this.table.tableName, KeyConditionExpression: "pk = :pk AND begins_with(sk, :p)", ConsistentRead: true, Limit: 1,
+      ExpressionAttributeValues: { ":pk": this.pk(key), ":p": `${this.headKey(key, lessonId).sk}#PEND#` },
+    }));
+    return (response.Items ?? []).length > 0;
   }
 
   async addPending(entry: PendingOutcome): Promise<void> {

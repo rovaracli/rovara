@@ -1,9 +1,9 @@
-// Learning v2 L5: lesson expiry (design §4.6, decision Q7; owner decision 35, 2026-11-08). A lesson FADES after N days without helping: N is 90 by default, 180 for a preference, and a project may set it from
+// Learning v2 L5: lesson expiry (design §4.6, decision Q7; owner decision 35, 2026-11-08). A lesson FADES after N days without helping: N is 90 by default for every type (preferences included, owner decision 37), and a project may set it from
 // 14 to 365 days. A validated helpful use resets the clock (`renewLesson`). A fact whose code citations still validate renews whenever they validate. Every new lesson first gets its trial period (the
 // 14 days the trial window uses, `TRIAL_STABLE_AFTER_DAYS`) before the clock can remove it: a lesson goes live expiring at the end of its trial period plus N days, so a quiet project, or a short setting, never
 // kills a lesson before it has had a fair chance. This replaces the fixed 21-day floor for trial lessons and the expiry counted from creation.
 import { CHANGE_APPROVAL_TTL_DAYS } from "@agentx/contracts";
-import { DEFAULT_EXPIRY_DAYS, MAX_EXPIRY_DAYS, MIN_EXPIRY_DAYS, PREFERENCE_EXPIRY_DAYS, emitAudit } from "./policy.js";
+import { DEFAULT_EXPIRY_DAYS, MAX_EXPIRY_DAYS, MIN_EXPIRY_DAYS, emitAudit } from "./policy.js";
 import type { LessonDeps } from "./ports.js";
 import type { LessonStore, ScopeKey } from "./store.js";
 import type { Lesson, LessonType } from "./types.js";
@@ -12,9 +12,9 @@ import { TRIAL_STABLE_AFTER_DAYS } from "./trial.js";
 
 const DAY = 86_400_000;
 
-export function expiryWindowMs(type: LessonType, configuredDays: number | undefined): number {
+export function expiryWindowMs(_type: LessonType, configuredDays: number | undefined): number {
   const days = configuredDays !== undefined && Number.isInteger(configuredDays) && configuredDays >= MIN_EXPIRY_DAYS && configuredDays <= MAX_EXPIRY_DAYS
-    ? configuredDays : type === "preference" ? PREFERENCE_EXPIRY_DAYS : DEFAULT_EXPIRY_DAYS;
+    ? configuredDays : DEFAULT_EXPIRY_DAYS;
   return days * DAY;
 }
 /** When a lesson that goes live at `now` first fades: the end of its trial period, plus N days without helping (never earlier than the trial period ends). */
