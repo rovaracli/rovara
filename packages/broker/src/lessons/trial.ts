@@ -165,6 +165,19 @@ const globPrefix = (glob: string): { prefix: string; partial: boolean } | undefi
   return { prefix: literal.toLowerCase(), partial: cut !== -1 && !literal.endsWith("/") && !literal.endsWith(".") };
 };
 
+/**
+ * Whether a scope glob starts with whole, literal path segments that lead to a verified cited code path (a segment with a wildcard ends the literal front, so `sr*` and `src/re*` have none). `src/retry/**` and
+ * `src/retry/index.ts` pass for the cited `src/retry/index.ts`; `**`/x, `sr*`/`**`, `src/re*`/`**` and a front no valid citation lies under do not (review fix round 2, LP-4 F1).
+ */
+function scopeFrontIsCited(glob: string, verifiedPaths: readonly string[]): boolean {
+  const segments = glob.replace(/^\.\//u, "").toLowerCase().split("/");
+  const lead: string[] = [];
+  for (const segment of segments) { if (/[*?[\]{}]/u.test(segment)) break; lead.push(segment); }
+  const front = lead.join("/");
+  if (front === "" || lead.some((segment) => segment === "" || segment === "." || segment === "..")) return false;
+  return verifiedPaths.some((path) => path === front || path.startsWith(front + "/"));
+}
+
 /** A character that continues an identifier or a path segment (so a match that touches one is part of a longer name). */
 const TOKEN_CHAR = /[\p{L}\p{N}_-]/u;
 /**
@@ -240,7 +253,7 @@ export function trialBlockers(lesson: Lesson, tier: Lesson["tier"], context: Tri
   if (hasRiskyTrialWording(lesson.title, lesson.description, lesson.body, ...(lesson.scope.paths ?? []))) why.push("risky_wording");
   // LP-4 F1: every scope glob has a literal front, and that front is a prefix of a code path the broker verified (a front found only in the correction text, or a glob that starts with a wildcard, goes to a person).
   const verified = code.filter(({ index }) => checks.some((check) => check.index === index && check.result === "valid")).map(({ c }) => (c.kind === "code" ? c.path.replace(/^\.\//u, "").toLowerCase() : ""));
-  if ((lesson.scope.paths ?? []).some((glob) => { const front = globPrefix(glob); return front === undefined || !verified.some((path) => path.startsWith(front.prefix)); })) why.push("scope_not_literal");
+  if ((lesson.scope.paths ?? []).some((glob) => !scopeFrontIsCited(glob, verified))) why.push("scope_not_literal");
   if (context.contradiction) why.push("contradiction");
   if (context.refinement) why.push("refinement");
   // Round 4: a lesson linked as a possible duplicate of another is never started on trial while the link stands; a person decides (merge, keep both, reject). Read from the lesson itself, so the second check sees it too.

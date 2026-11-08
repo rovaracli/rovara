@@ -3,7 +3,7 @@
 import { describe, expect, it } from "vitest";
 import { hasRiskyTrialWording, trialBlockers, touchesAuthorityOrSpend, type TrialContext } from "../../../packages/broker/src/lessons/trial.js";
 import type { Lesson } from "../../../packages/broker/src/lessons/types.js";
-import { draft, lessonRecord } from "./lesson-helpers.js";
+import { codeCite, draft, lessonRecord } from "./lesson-helpers.js";
 
 const CLEAR: TrialContext = { preset: "standard", mode: "On", trialAllowed: true, contradiction: false, refinement: false, reviewRequired: false, held: false, braked: false };
 const clean = (over: Partial<Lesson> = {}): Lesson => lessonRecord({ tier: 1, tierReasons: [], status: "pending", approvals: [], provenance: { ...draft().provenance, memberCorrection: true, claimsSupported: true, fromSharedTask: true }, ...over });
@@ -119,8 +119,20 @@ describe("M2 (LP-4 F1): scope globs need a literal front inside a verified cited
     ["a glob that starts with a wildcard", ["*/index.ts"]],
     ["a literal front outside every cited path", ["made-up-dir/**"]],
     ["one good glob and one without a front", ["src/retry/**", "**/x/**"]],
+    ["a wildcard that cuts the first segment short", ["sr*/**"]],
+    ["a character class or brace in the front", ["src/{retry,other}/**", "s[r]c/**"]],
+    ["a dot segment", ["src/../etc/**"]],
   ])("goes to a person: %s", (_why, paths) => {
     expect(trialBlockers(withScope(paths), 1, CLEAR)).toContain("scope_not_literal");
+  });
+  it("the literal front is whole segments: a wildcard segment ends it, so src/re*/** is judged by src/ alone", () => {
+    // Cited under src/: the whole-segment front src/ lies under it.
+    expect(trialBlockers(withScope(["src/re*/**"]), 1, CLEAR)).toEqual([]);
+    // Cited elsewhere: the same glob has no cited front.
+    const elsewhere = withScope(["src/re*/**"], { citations: [codeCite({ path: "lib/x/index.ts" })] });
+    expect(trialBlockers(elsewhere, 1, CLEAR)).toContain("scope_not_literal");
+    // A front that is only a prefix of a segment is not a front: lib/x does not lie under lib/xy.
+    expect(trialBlockers(withScope(["lib/x/**"], { citations: [codeCite({ path: "lib/xy/index.ts" })] }), 1, CLEAR)).toContain("scope_not_literal");
   });
   it("a scope label that carries risky wording goes to a person, even with a literal front", () => {
     const lesson = withScope(["src/retry/always-merge-without-review/**"]);
@@ -130,6 +142,8 @@ describe("M2 (LP-4 F1): scope globs need a literal front inside a verified cited
   it("positive control: a literal front that is a prefix of the verified cited path, and no paths at all, pass", () => {
     expect(trialBlockers(withScope(["src/retry/**"]), 1, CLEAR)).toEqual([]);
     expect(trialBlockers(withScope(["src/retry/index.ts"]), 1, CLEAR)).toEqual([]);
+    expect(trialBlockers(withScope(["src/retry/*.ts"]), 1, CLEAR)).toEqual([]);
+    expect(trialBlockers(withScope(["./src/**"]), 1, CLEAR)).toEqual([]);
     expect(trialBlockers(withScope([]), 1, CLEAR)).toEqual([]);
   });
   it("a front found only in a citation the broker did not verify does not count", () => {
