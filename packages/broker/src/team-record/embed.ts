@@ -2,7 +2,7 @@
 // both editions; Bedrock embeddings (Amazon Titan, Cohere) are gone. The model, its pinned revision and its spec are `TEAM_RECORD_EMBEDDER` in contracts, and the client
 // refuses any answer that is not that spec, so a changed model can never put vectors beside the ones already stored (the index name carries the spec too).
 import { TEAM_RECORD_EMBEDDER, VECTOR_DIMENSION_DEFAULT } from "@agentx/contracts";
-import { EmbedderError, trimEmbedderText, type EmbedderClient, type EmbedderErrorCode } from "../embedder/client.js";
+import { EmbedderError, trimEmbedderText, type EmbedderCall, type EmbedderClient, type EmbedderErrorCode } from "../embedder/client.js";
 import { assertVector } from "./vectors.js";
 
 export interface EmbedConfig {
@@ -46,12 +46,12 @@ export function createEmbedder(config: EmbedConfig): Embedder {
   // The record's index is 1,024-d and holds this model's vectors only: a client for another model is a wiring mistake, caught here and not at the first write.
   if (client.spec.spec !== TEAM_RECORD_EMBEDDER.spec || client.dimension !== VECTOR_DIMENSION_DEFAULT) throw new Error("team-record: the embedder client is not the Team record's model");
   const maxChars = config.maxChars ?? 24_000;
-  async function embedWithInfo(text: string, purpose: EmbedPurpose = "document"): Promise<EmbeddedVector> {
+  async function embedWithInfo(text: string, purpose: EmbedPurpose = "document", call?: EmbedderCall): Promise<EmbeddedVector> {
     const trimmed = trimEmbedderText(text);
     const input = trimmed.slice(0, maxChars);
     if (input.length === 0) throw new Error("team-record: nothing to embed");
     try {
-      const { vector, truncated } = await client.embedDetailed(input, purpose);
+      const { vector, truncated } = await client.embedDetailed(input, purpose, call);
       // A wrong-size or non-numeric answer is a contract failure, never stored: the index would reject or mis-rank it.
       assertVector(vector, client.dimension);
       return { vector, truncated: truncated || trimmed.length > input.length };

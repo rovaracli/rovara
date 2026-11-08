@@ -118,16 +118,17 @@ export function registerUpgradeCommand(program: Command, context: UpgradeCommand
     .option("--worker-image <digest-ref>", "worker image by digest; an agentx built from source needs it with --engine cdk when the tag has no published release.json")
     .option("--boot-stage2-sha256 <hex>", "with --worker-image: the SHA-256 of packages/worker/ec2/boot-stage2.sh in the release source that image was built from (a release supplies its own)")
     .option("--slack-image <digest-ref>", "Slack service image by digest; an agentx built from source needs it with --engine cdk when the tag has no published release.json")
+    .option("--embedder-image <digest-ref>", "the Team record's embedder image (a private ECR image pinned by digest in this install's account and region) for a release that names none, such as an upgrade from a --source checkout; without it the image the stack already runs is kept")
     .option("--yes", "apply without asking; every change and the release notes are still printed", false)
     .option("--no-reserved-concurrency", "the cdk engine only: deploy with no Lambda reserved concurrency, for an AWS account whose Lambda concurrency limit is too low to reserve any (a new account's limit of 10); keep it on in production")
     .option("--region <region>", "AWS region of the environment; defaults to your AWS configuration")
-    .action(async (options: { approveBuild: boolean; deployApproved?: string; bundle?: string; approvedBundleSha256?: string; bundlePublicKey: string[]; to?: string; release?: string; source?: string; allowReplace: string[]; export?: string; workerImage?: string; slackImage?: string; bootStage2Sha256?: string; yes: boolean; region?: string; reservedConcurrency: boolean }, command: Command) => {
+    .action(async (options: { approveBuild: boolean; deployApproved?: string; bundle?: string; approvedBundleSha256?: string; bundlePublicKey: string[]; to?: string; release?: string; source?: string; allowReplace: string[]; export?: string; workerImage?: string; slackImage?: string; embedderImage?: string; bootStage2Sha256?: string; yes: boolean; region?: string; reservedConcurrency: boolean }, command: Command) => {
       const globals = command.optsWithGlobals<{ env: string; json: boolean; configDir: string }>();
       const overrides = context.overrides ?? {};
       const aws = options.region === undefined ? {} : { region: options.region };
       if (options.deployApproved !== undefined) {
         // The operator's whole path: a bundle id to the customer's deployer. No release, bundle, source or setting of the operator's choosing is accepted beside it.
-        if (options.approveBuild || options.bundle !== undefined || options.to !== undefined || options.release !== undefined || options.source !== undefined || options.export !== undefined || options.approvedBundleSha256 !== undefined || options.workerImage !== undefined || options.slackImage !== undefined || options.bootStage2Sha256 !== undefined) {
+        if (options.approveBuild || options.bundle !== undefined || options.to !== undefined || options.release !== undefined || options.source !== undefined || options.export !== undefined || options.approvedBundleSha256 !== undefined || options.workerImage !== undefined || options.slackImage !== undefined || options.embedderImage !== undefined || options.bootStage2Sha256 !== undefined) {
           throw agentXError("CONFIG_INVALID", "--deploy-approved takes a bundle id and nothing else");
         }
         const result = await startApprovedDeployment({ env: globals.env, bundleId: options.deployApproved, invoker: context.deployerInvoker ?? lambdaInvoker(new LambdaClient(aws)), write: (line) => { context.stderr.write(`${line}\n`); } });
@@ -177,6 +178,7 @@ export function registerUpgradeCommand(program: Command, context: UpgradeCommand
         prepare: overrides.prepare ?? ((input) => prepareDeployment({
           engine: input.settings.engine, env: input.settings.env, region: input.settings.region, account: input.settings.account,
           identityMode: input.settings.identity.mode, ...(input.settings.cloud === true ? { cloud: true } : {}), ...(input.reservedConcurrency === false ? { reservedConcurrency: false as const } : {}), release: input.release, ...(input.source === undefined ? {} : { source: input.source }),
+          ...(input.embedderImage === undefined ? {} : { embedderImage: input.embedderImage }), ...(input.deployedEmbedderImage === undefined ? {} : { deployedEmbedderImage: input.deployedEmbedderImage }),
           deps: context.deploy ?? {}, stderr: context.stderr,
         })),
         // Enterprise foundations E2: the diff is synthesized with the install's recorded edition, as the deploy is, so it does not show the edition stamp as removed.
@@ -193,8 +195,8 @@ export function registerUpgradeCommand(program: Command, context: UpgradeCommand
         now: overrides.now ?? Date.now,
         cliVersion: "cliVersion" in overrides ? overrides.cliVersion : RELEASE_VERSION,
       };
-      const images = options.workerImage === undefined && options.slackImage === undefined && options.bootStage2Sha256 === undefined ? undefined : {
-        ...(options.workerImage === undefined ? {} : { worker: options.workerImage }), ...(options.slackImage === undefined ? {} : { slack: options.slackImage }),
+      const images = options.workerImage === undefined && options.slackImage === undefined && options.embedderImage === undefined && options.bootStage2Sha256 === undefined ? undefined : {
+        ...(options.workerImage === undefined ? {} : { worker: options.workerImage }), ...(options.slackImage === undefined ? {} : { slack: options.slackImage }), ...(options.embedderImage === undefined ? {} : { embedder: options.embedderImage }),
         ...(options.bootStage2Sha256 === undefined ? {} : { bootStage2Sha256: options.bootStage2Sha256 }),
       };
       const result = await runUpgrade({

@@ -198,6 +198,24 @@ describe("the Team record's options reach the synth, the deploy and the diff", (
     expect(calls.some((call) => call.includes("npm run build") || call.includes(" synth "))).toBe(false);
   });
 
+  it("R7: a source upgrade whose release names no embedder image keeps the running one, or takes --embedder-image, and is refused only when neither exists", async () => {
+    const own = `111122223333.dkr.ecr.${REGION}.amazonaws.com/rovara/embedder@sha256:${"a".repeat(64)}`;
+    const named = `111122223333.dkr.ecr.${REGION}.amazonaws.com/rovara/embedder@sha256:${"b".repeat(64)}`;
+    for (const [extra, expected] of [[{ deployedEmbedderImage: own }, own], [{ embedderImage: named, deployedEmbedderImage: own }, named]] as const) {
+      const root = await checkout();
+      const { runner } = harness(root);
+      const store = new MemoryParameterStore();
+      store.values.set("/cdk-bootstrap/hnb659fds/version", "21");
+      await writeTeamRecordRecord(store, "prod", { enabled: true, options: {} });
+      const prepared = await prepareDeployment({
+        env: "prod", region: REGION, account: "111122223333", identityMode: "cognito", engine: "cdk", source: root, release: fakeRelease("1.2.3"), stderr: { write: () => undefined }, ...extra,
+        deps: { identity: { get: async () => ({ account: "111122223333", arn: "arn:aws:sts::111122223333:assumed-role/Admin/upgrade" }) }, store, secrets: { get: async () => undefined, create: async () => undefined }, commandRunner: runner, stackOutputs: async () => ({}) },
+      });
+      expect(prepared.embedderImageUri).toBe(expected);
+      await prepared.cleanup();
+    }
+  });
+
   it("passes them to the diff", async () => {
     const calls: string[] = [];
     const runner: CommandRunner = { async run(command, args) { calls.push(`${command} ${args.join(" ")}`);return { stdout: "There were no differences" }; } };

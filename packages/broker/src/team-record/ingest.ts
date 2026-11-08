@@ -382,8 +382,8 @@ export function eventVectorItem(event: Pick<RecordEvent, "id" | "occurredAt" | "
 }
 
 /** Embeds with the truncation flag when the embedder has it. */
-export async function embedWithFlag(embedder: RecordEmbedder, text: string): Promise<{ vector: number[]; truncated: boolean }> {
-  return embedder.embedWithInfo === undefined ? { vector: await embedder.embed(text, "document"), truncated: false } : embedder.embedWithInfo(text, "document");
+export async function embedWithFlag(embedder: RecordEmbedder, text: string, call?: { deadline?: number }): Promise<{ vector: number[]; truncated: boolean }> {
+  return embedder.embedWithInfo === undefined ? { vector: await embedder.embed(text, "document"), truncated: false } : embedder.embedWithInfo(text, "document", call);
 }
 
 /**

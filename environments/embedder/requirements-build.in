@@ -1,5 +1,8 @@
 # Build stage only (export, check against the original weights). The top-level choices; requirements-build.lock is the full closure with a sha256 for every file.
-# Regenerate: uv pip compile requirements-build.in --generate-hashes --no-build --python-version 3.12 --python-platform aarch64-manylinux_2_28 -o requirements-build.lock
+# Regenerate: uv pip compile requirements-build.in --generate-hashes --no-build --python-version 3.12 --python-platform aarch64-manylinux_2_28 --exclude-newer <today minus 14 days> --exclude-newer-package transformers=<today> --exclude-newer-package onnxruntime=<today> -o requirements-build.lock
+# MINIMUM AGE (review R14): no package of the closure may be younger than 14 days when the lock is made (a just-published version is the usual window for a hijacked release). --exclude-newer enforces it for every
+# package but the two top-level toolchain pins named in models.lock.json (transformers, onnxruntime), whose versions are part of the model spec and move only together with a re-export (EMB-3): both are still
+# younger than 14 days at the time of writing (5.22.2 of 2026-11-06, 1.31.1 of 2026-10-26); the versions that are old enough are 5.20.2 and 1.31.0.
 # models.lock.json "toolchain" names torch (2.15.0), transformers, onnx, onnxruntime and tokenizers at the versions pinned here; tests/unit/embedder/spec.test.ts keeps them equal.
 # torch is pinned by URL and hash, from the PyTorch CPU wheels: the PyPI build for aarch64 pulls in the CUDA libraries (about 3 GB the export never uses). No extra package index is used
 # anywhere, so no package can come from a second index.
@@ -9,5 +12,5 @@ onnx==1.23.2
 onnxruntime==1.31.1
 tokenizers==0.23.3
 numpy==2.5.4
-huggingface_hub==2.4.0
+huggingface_hub==2.3.0
 sentence-transformers==6.2.0

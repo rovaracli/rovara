@@ -116,6 +116,21 @@ describe("recordSearch", () => {
     expect((await recordSearch(deps(w, { embedder: w.embedder, vectorSearch: full }), person(), "web", { query: "billing retry", limit: 1 })).hits.map((hit) => hit.id)).toEqual([ticket.id]);
   });
 
+  it("ranks every keyword hit below every vector hit, even a weak vector hit and a perfect keyword match", async () => {
+    const w = world();
+    await seed(w);
+    const ticket = eventFromItem(rows(w, "TEAM_RECORD_EVENT").find((item) => (item.sourceRef as { id: string }).id === "ENG-7"))!;
+    // distance 1.4 is a vector score of -0.4: far below what a scaled keyword score would be (0.5 at most)
+    const weak: RecordVectorSearchPort = { async query() { return [{ key: `event:${ticket.id}`, distance: 1.4, metadata: { ref: eventVectorRef(ticket), kind: "event", project: "web", trust: ticket.trust, audience_kind: ticket.audience.kind, scope: "x" } }]; } };
+    const result = await recordSearch(deps(w, { embedder: w.embedder, vectorSearch: weak }), person(), "web", { query: "billing retry", limit: 5 });
+    expect(result.hits.length).toBeGreaterThan(1);
+    expect(result.hits[0]!.id).toBe(ticket.id);
+    // with no vector hits at all, keyword ranking is unchanged (best match first)
+    const none: RecordVectorSearchPort = { async query() { return []; } };
+    const keywordOnly = await recordSearch(deps(w, { embedder: w.embedder, vectorSearch: none }), person(), "web", { query: "billing retry", limit: 5 });
+    expect(keywordOnly.hits.length).toBeGreaterThan(0);
+  });
+
   it("uses the vector index when present, asks it for the project only (and project rows only for a shared task), checks every hit, and hides a tombstoned one", async () => {
     const w = world();
     await seed(w);

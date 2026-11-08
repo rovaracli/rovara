@@ -518,6 +518,25 @@ describe("agentx upgrade with the cdk engine", () => {
     expect(h.prepared).toEqual([]);
   });
 
+  // Review R7: a source or override upgrade has a release with no embedder image; the image the stack runs is handed on, and --embedder-image names one.
+  it("hands prepare the embedder image the control plane runs now (not `none`) and the --embedder-image flag", async () => {
+    const running = `123456789012.dkr.ecr.us-east-1.amazonaws.com/rovara/embedder@sha256:${"a".repeat(64)}`;
+    const named = `123456789012.dkr.ecr.us-east-1.amazonaws.com/rovara/embedder@sha256:${"b".repeat(64)}`;
+    const base = { GitHubAppId: "123", GitHubAppPrivateKeySecretArn: "arn:aws:secretsmanager:us-east-1:123456789012:secret:agentx/staging/github-app-AbCdEf", BudgetMonthlyUsd: "250", CallbackSigningKey: "****" };
+    for (const [stackValue, images, expected] of [
+      [running, undefined, { deployedEmbedderImage: running }],
+      ["none", undefined, {}],
+      [running, { embedder: named }, { embedderImage: named, deployedEmbedderImage: running }],
+    ] as const) {
+      const seen: Array<{ embedderImage?: string; deployedEmbedderImage?: string }> = [];
+      const h = await cdk({ cliVersion: undefined, controlPlane: { ...base, EmbedderImageUri: stackValue }, sourceRelease: async () => release("1.3.0") });
+      const prepare = h.deps.prepare.bind(h.deps);
+      h.deps.prepare = async (input) => { seen.push({ ...(input.embedderImage === undefined ? {} : { embedderImage: input.embedderImage }), ...(input.deployedEmbedderImage === undefined ? {} : { deployedEmbedderImage: input.deployedEmbedderImage }) }); return prepare(input); };
+      await runUpgrade({ ...options, source: "/src", ...(images === undefined ? {} : { images }) }, h.deps);
+      expect(seen, stackValue).toEqual([expected]);
+    }
+  });
+
   it("with --to or --release, loads that release as before (prepare then checks it is the source's tag)", async () => {
     const loaded: Array<{ releaseDir?: string; version?: string }> = [];
     const h = await cdk({

@@ -77,10 +77,11 @@ export function lambdaEmbedderInvoke(options: SdkOptions & { functionName: strin
     if (typeof Client !== "function") throw new SdkUnavailableError();
     return { module, client: new Client(options.region === undefined ? {} : { region: options.region }) as never };
   });
-  return async (request) => {
+  return async (request, limit) => {
     const { module, client: lambda } = await open();
     const abort = new AbortController();
-    const timer = setTimeout(() => abort.abort(), options.timeoutMs);
+    // The configured wait, or less when the caller's own run has less left (EmbedderCall.deadline).
+    const timer = setTimeout(() => abort.abort(), Math.max(1, Math.min(options.timeoutMs, limit?.timeoutMs ?? options.timeoutMs)));
     try {
       const reply = await lambda.send(command(module, "InvokeCommand", { FunctionName: options.functionName, InvocationType: "RequestResponse", Payload: Buffer.from(JSON.stringify(request)) }), { abortSignal: abort.signal }) as { StatusCode?: number; FunctionError?: string; Payload?: Uint8Array };
       if (reply.FunctionError !== undefined) throw Object.assign(new Error("FunctionError"), { name: "FunctionError" });

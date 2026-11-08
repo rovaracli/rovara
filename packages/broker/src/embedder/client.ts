@@ -38,8 +38,17 @@ export class EmbedderError extends Error {
 
 export interface EmbedderRequest { model: EmbedderModelSpec["model"]; kind: EmbedderKind; texts: string[] }
 
+/** One call's own limit: the longest this call may wait (the invoke takes the smaller of this and its configured wait). */
+export interface EmbedderCallLimit { timeoutMs?: number }
+
 /** Sends one request to the function and returns its parsed JSON answer. Throws an error whose `code` is the AWS error name (never its message). */
-export type EmbedderInvoke = (request: EmbedderRequest) => Promise<unknown>;
+export type EmbedderInvoke = (request: EmbedderRequest, limit?: EmbedderCallLimit) => Promise<unknown>;
+
+/**
+ * A call's own time limit, from the caller's run: `deadline` is an absolute time (the client's clock, milliseconds). The call never waits past it, whatever the configured wait is, and starts no
+ * retry that could not finish by it. The re-embed job (a scheduled run that must end inside the broker's 30 s) passes the run's end here.
+ */
+export interface EmbedderCall { deadline?: number }
 
 /** One text's vector, and whether the text was longer than the model's token budget (or this port's character limit) and was cut to fit. A cut is never silent. */
 export interface EmbeddedText { vector: number[]; truncated: boolean }
@@ -47,13 +56,13 @@ export interface EmbeddedText { vector: number[]; truncated: boolean }
 export interface EmbedderClient {
   readonly spec: EmbedderModelSpec;
   readonly dimension: number;
-  embed(text: string, kind: EmbedderKind): Promise<number[]>;
+  embed(text: string, kind: EmbedderKind, call?: EmbedderCall): Promise<number[]>;
   /** Any number of texts: split into requests inside the function's limits, in order. */
-  embedMany(texts: readonly string[], kind: EmbedderKind): Promise<number[][]>;
+  embedMany(texts: readonly string[], kind: EmbedderKind, call?: EmbedderCall): Promise<number[][]>;
   /** Like `embed`, with the truncation flag. */
-  embedDetailed(text: string, kind: EmbedderKind): Promise<EmbeddedText>;
+  embedDetailed(text: string, kind: EmbedderKind, call?: EmbedderCall): Promise<EmbeddedText>;
   /** Like `embedMany`, with the truncation flag of each text. */
-  embedManyDetailed(texts: readonly string[], kind: EmbedderKind): Promise<EmbeddedText[]>;
+  embedManyDetailed(texts: readonly string[], kind: EmbedderKind, call?: EmbedderCall): Promise<EmbeddedText[]>;
 }
 
 export interface EmbedderClientOptions {
@@ -63,12 +72,18 @@ export interface EmbedderClientOptions {
   attempts?: number;
   baseDelayMs?: number;
   /**
-   * Also try again when the wait ran out (`AbortError`): a call that waited out a cold start leaves the function loading and warm for the next try. For the search path, where the second try is
-   * likely quick; the ingest paths wait longer once instead (wiring.ts), because each of their retries costs a slot of the broker's own 30 s.
+   * After a call's wait ran out (`AbortError`: the function is most likely loading its model), make no call at all for this long: each one would start ANOTHER cold container (the first is still
+   * busy, and a Lambda environment serves one request at a time) and take another of the function's few reserved slots. Callers fall back (search answers by keyword). 0 or absent: no pause.
+   * There is no retry after a timeout: the function carries on and is warm for a later call, which is the next one after this pause.
    */
-  retryOnTimeout?: boolean;
+  cooldownAfterTimeoutMs?: number;
   sleep?: (ms: number) => Promise<void>;
+  /** The clock (milliseconds), for deadlines and the pause. Default Date.now. */
+  now?: () => number;
 }
+
+/** A retry that would have less than this left before the call's deadline is not started. */
+const MIN_RETRY_WINDOW_MS = 1_000;
 
 const TRANSIENT_INVOKE = new Set(["TooManyRequestsException", "ServiceException", "ResourceNotReadyException", "EC2ThrottledException"]);
 const TIMED_OUT = "AbortError";
@@ -134,23 +149,26 @@ export function createEmbedderClient(options: EmbedderClientOptions): EmbedderCl
   const { invoke, spec } = options;
   const attempts = options.attempts ?? 2;
   const baseDelayMs = options.baseDelayMs ?? 300;
-  const retryOnTimeout = options.retryOnTimeout === true;
+  const cooldownMs = options.cooldownAfterTimeoutMs ?? 0;
   const sleep = options.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
+  const clock = options.now ?? Date.now;
+  let coolUntil = 0;
 
-  async function request(kind: EmbedderKind, texts: string[]): Promise<EmbeddedText[]> {
+  async function request(kind: EmbedderKind, texts: string[], call: EmbedderCall | undefined): Promise<EmbeddedText[]> {
     for (let attempt = 1; ; attempt += 1) {
+      if (clock() < coolUntil) throw new EmbedderError("UNREACHABLE");
+      const left = call?.deadline === undefined ? undefined : call.deadline - clock();
+      // The caller's run is over (or too short for this call): nothing is sent.
+      if (left !== undefined && left < (attempt === 1 ? 1 : MIN_RETRY_WINDOW_MS)) throw new EmbedderError("UNREACHABLE");
       let reply: unknown;
       try {
-        reply = await invoke({ model: spec.model, kind, texts });
+        reply = await invoke({ model: spec.model, kind, texts }, left === undefined ? undefined : { timeoutMs: left });
       } catch (error) {
         const code = codeOf(error);
-        if (code !== undefined && attempt < attempts) {
-          if (TRANSIENT_INVOKE.has(code)) {
-            await sleep(baseDelayMs * 2 ** (attempt - 1));
-            continue;
-          }
-          // The function is loading (or busy) and carries on after the wait ends: the next try finds it warm.
-          if (retryOnTimeout && code === TIMED_OUT) continue;
+        if (code === TIMED_OUT && cooldownMs > 0) coolUntil = clock() + cooldownMs;
+        if (code !== undefined && attempt < attempts && TRANSIENT_INVOKE.has(code)) {
+          await sleep(baseDelayMs * 2 ** (attempt - 1));
+          continue;
         }
         throw new EmbedderError("UNREACHABLE");
       }
@@ -158,7 +176,7 @@ export function createEmbedderClient(options: EmbedderClientOptions): EmbedderCl
     }
   }
 
-  async function embedManyDetailed(texts: readonly string[], kind: EmbedderKind): Promise<EmbeddedText[]> {
+  async function embedManyDetailed(texts: readonly string[], kind: EmbedderKind, call?: EmbedderCall): Promise<EmbeddedText[]> {
     if (kind !== "query" && kind !== "document") throw new EmbedderError("UNKNOWN_KIND");
     const cut: boolean[] = [];
     const cleaned = texts.map((text) => {
@@ -169,13 +187,13 @@ export function createEmbedderClient(options: EmbedderClientOptions): EmbedderCl
       return trimmed.slice(0, EMBEDDER_LIMITS.maxTextChars);
     });
     const out: EmbeddedText[] = [];
-    for (const batch of embedderBatches(cleaned)) out.push(...(await request(kind, batch)));
+    for (const batch of embedderBatches(cleaned)) out.push(...(await request(kind, batch, call)));
     // A text this port cut to the function's character limit is flagged, whatever the function says about its tokens.
     return out.map((entry, index) => (cut[index] === true ? { ...entry, truncated: true } : entry));
   }
 
-  async function embedDetailed(text: string, kind: EmbedderKind): Promise<EmbeddedText> {
-    const [entry] = await embedManyDetailed([text], kind);
+  async function embedDetailed(text: string, kind: EmbedderKind, call?: EmbedderCall): Promise<EmbeddedText> {
+    const [entry] = await embedManyDetailed([text], kind, call);
     if (entry === undefined) throw new EmbedderError("BAD_RESPONSE");
     return entry;
   }
@@ -185,11 +203,11 @@ export function createEmbedderClient(options: EmbedderClientOptions): EmbedderCl
     dimension: spec.dimension,
     embedManyDetailed,
     embedDetailed,
-    async embedMany(texts, kind) {
-      return (await embedManyDetailed(texts, kind)).map((entry) => entry.vector);
+    async embedMany(texts, kind, call) {
+      return (await embedManyDetailed(texts, kind, call)).map((entry) => entry.vector);
     },
-    async embed(text, kind) {
-      return (await embedDetailed(text, kind)).vector;
+    async embed(text, kind, call) {
+      return (await embedDetailed(text, kind, call)).vector;
     },
   };
 }

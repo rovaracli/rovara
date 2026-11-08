@@ -240,18 +240,20 @@ export async function recordSearch(deps: RecordQueryDependencies, audience: Read
   }
   if (candidates === undefined || candidates.length < limit) {
     // Keyword over the newest hot rows and the facts (design 4.11: the embedding or the index is unavailable). Also when the vector search came back with fewer than `limit` hits: rows that
-    // have no vector yet (written while the embedder was away, or made with an earlier embedding model and not re-embedded yet) are still found. Vector hits keep the better rank.
+    // have no vector yet (written while the embedder was away, or made with an earlier embedding model and not re-embedded yet) are still found. Vector hits keep the better rank: when there
+    // are vector hits, every keyword hit is ranked strictly BELOW the weakest of them (a vector score is 1 - distance and can be low, so scaling the keyword score is not enough).
     const fromVectors = candidates ?? [];
     const seen = new Set(fromVectors.map((candidate) => candidate.event?.id ?? candidate.fact?.id));
     const weight = candidates === undefined ? 1 : 0.5;
+    const offset = fromVectors.length === 0 ? 0 : Math.min(...fromVectors.map((candidate) => candidate.score)) - 1;
     const keyword: Candidate[] = [];
     for (const event of await queryRecordEvents(deps.table, orgId, project, { limit: KEYWORD_SCAN_ROWS, nowSeconds })) {
       const score = matches(request.query, `${event.text ?? ""} ${JSON.stringify(event.structured ?? {})}`);
-      if (score > 0 && !seen.has(event.id)) keyword.push({ score: score * weight, event });
+      if (score > 0 && !seen.has(event.id)) keyword.push({ score: offset + score * weight, event });
     }
     for (const fact of await queryRecordFacts(deps.table, orgId, project, FACT_SCAN)) {
       const score = matches(request.query, fact.text);
-      if (score > 0 && !seen.has(fact.id)) keyword.push({ score: score * weight, fact });
+      if (score > 0 && !seen.has(fact.id)) keyword.push({ score: offset + score * weight, fact });
     }
     candidates = [...fromVectors, ...keyword];
   }

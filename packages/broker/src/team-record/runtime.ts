@@ -34,7 +34,7 @@ import { listSourceConfigs, markSourceFailing } from "./store.js";
 import { resolveTaskVisibility } from "../lessons/task-visibility.js";
 import { createEmbedder } from "./embed.js";
 import { recordEmbedderClientFrom, recordJobEmbedderClientFrom, recordSearchEmbedderClientFrom, EMBEDDER_JOB_WAIT_MS } from "../embedder/wiring.js";
-import { reembedRows } from "./reembed.js";
+import { REEMBED_RUN_MS, dropReembedState, reembedRun } from "./reembed.js";
 import { eraseProject, eraseWorkspace, erasePerson, type EraseBudget } from "./erase.js";
 import { tableHotArchiveSource, ensureWorkspaceVectorBucket, tableHotStatsSource } from "./hot-source.js";
 import { createLakeClient, type LakeClient } from "./lake.js";
@@ -248,6 +248,8 @@ const MAX_ORGS_PER_RUN = 500;
 /** One scheduled run's whole budget: inside the broker function's 30 s timeout with room for the answer. */
 export const JOB_BUDGET_MS = 24_000;
 const PER_ORG_MS = 8_000;
+/** How long a failed delete of the retired (Titan-era) vector index waits before it is tried again in the same workspace. */
+const OLD_INDEX_RETRY_MS = 15 * 60_000;
 /** The most the dead-letter sweep may take of one hourly run, so the orgs keep most of the budget. */
 const DLQ_SWEEP_MS = 6_000;
 /** The most the GitHub redelivery sweep (SRL-5a) may take of one hourly run. */
@@ -287,13 +289,13 @@ export function createTeamRecordRuntime(input: TeamRecordRuntimeInput): TeamReco
 
   // ---- vectors and the embedder (a workspace's index is opened through a session narrowed to that workspace)
   // The self-hosted embedder (environments/embedder): a direct invoke of the function the install names. Without one (a legacy install) rows are stored without a vector and found by keyword.
-  // Three clients of the one function, differing only in how long they wait: ingest (the queue consumer and the taps), search (a person is waiting: short, one more try after a timeout) and the
+  // Three clients of the one function, differing only in how long they wait: ingest (the queue consumer and the taps), search (a person is waiting: short, no retry, a pause after a timeout, keyword search meanwhile) and the
   // re-embed job (the longest wait, only started when the run has the time).
   const embedderClient = recordEmbedderClientFrom(env, sdkOptions);
   const embedderDeps = embedderClient === undefined ? {} : { embedder: createEmbedder({ client: embedderClient }) };
-  const searchClient = recordSearchEmbedderClientFrom(env, sdkOptions);
+  const searchClient = recordSearchEmbedderClientFrom(env, sdkOptions, undefined, undefined, now);
   const searchEmbedderDeps = searchClient === undefined ? {} : { embedder: createEmbedder({ client: searchClient }) };
-  const jobClient = recordJobEmbedderClientFrom(env, sdkOptions);
+  const jobClient = recordJobEmbedderClientFrom(env, sdkOptions, undefined, now);
   const jobEmbedder = jobClient === undefined ? undefined : createEmbedder({ client: jobClient });
   const buckets = (env.TEAM_RECORD_VECTOR_BUCKETS ?? "").split(",").filter((name) => name !== "");
   const rolePart = env.TEAM_RECORD_VECTORS_ROLE_ARN;
@@ -315,6 +317,8 @@ export function createTeamRecordRuntime(input: TeamRecordRuntimeInput): TeamReco
   const vectorsFailedUntil = new Map<OrgId, number>();
   /** Workspaces whose index of the embedding generation before the current one is known to be gone (or was never there). */
   const oldIndexGone = new Set<OrgId>();
+  /** Review R11: a workspace whose old-index delete failed is not tried again for this long (a permission gap during a deploy window would otherwise cost GetIndex and DeleteIndex on every call). */
+  const oldIndexRetryAt = new Map<OrgId, number>();
   /**
    * `strict`: the caller deletes or erases (the purge paths): it gets no index while the old one may still be there, because vectors left in it would be out of reach of the erase. A search or
    * a write (`strict` false) does not wait for it. The old index is deleted the first time any path opens the workspace's current index (review H1).
@@ -328,14 +332,20 @@ export function createTeamRecordRuntime(input: TeamRecordRuntimeInput): TeamReco
       // Public creates one index per workspace at run time; Enterprise's single index is made by the stack.
       if (edition === "public" && !indexReady.has(orgId)) { await index.ensureIndex(); indexReady.add(orgId); }
       if (!oldIndexGone.has(orgId)) {
-        try {
-          const outcome = await index.retireOldIndex();
-          if (outcome !== "current_missing") oldIndexGone.add(orgId);
-          if (outcome === "deleted") log("record.old_index_deleted", {});
-          if (outcome === "current_missing" && options.strict === true) return undefined;
-        } catch {
-          log("record.old_index_delete_failed", {});
+        if ((oldIndexRetryAt.get(orgId) ?? 0) > now()) {
+          // The last delete failed a short while ago: not again yet. Callers that delete or erase get no index meanwhile, as after any failed delete.
           if (options.strict === true) return undefined;
+        } else {
+          try {
+            const outcome = await index.retireOldIndex();
+            if (outcome !== "current_missing") { oldIndexGone.add(orgId); oldIndexRetryAt.delete(orgId); }
+            if (outcome === "deleted") log("record.old_index_deleted", {});
+            if (outcome === "current_missing" && options.strict === true) return undefined;
+          } catch {
+            log("record.old_index_delete_failed", {});
+            oldIndexRetryAt.set(orgId, now() + OLD_INDEX_RETRY_MS);
+            if (options.strict === true) return undefined;
+          }
         }
       }
       return index;
@@ -763,6 +773,7 @@ export function createTeamRecordRuntime(input: TeamRecordRuntimeInput): TeamReco
       await clearStamps(orgId);
       if ((await jobsOf(orgId)).length === 0) {
         await table.documentClient.send(new DeleteCommand({ TableName: table.tableName, Key: teamRecordOrgDirectoryKey(orgId) }));
+        await dropReembedState(table, orgId);
         listed.delete(orgId);
         sinks.delete(orgId);
       }
@@ -1067,12 +1078,9 @@ export function createTeamRecordRuntime(input: TeamRecordRuntimeInput): TeamReco
       if (job === "reembed") {
         // Maintenance of stored rows' vectors. Paused (or no embedder in this install): nothing to do. Strict about nothing else: a workspace whose index cannot be opened is skipped this run.
         if (paused || jobEmbedder === undefined) return { orgs: 0, skippedOrgs: 0, details: { skipped: 1 } };
-        return eachOrg(async (orgId, budgetMs) => {
-          const vectors = await indexFor(orgId);
-          if (vectors === undefined) return { unavailable: 1 };
-          const done = await reembedRows({ table, embedder: jobEmbedder, vectors, now, log }, orgId, { maxRows: 100, maxScanned: 1_000, maxMs: budgetMs + 4_000, callMs: EMBEDDER_JOB_WAIT_MS, warmCallMs: 8_000 });
-          return { embedded: done.embedded, failed: done.failed, skipped: done.skipped, more: done.more ? 1 : 0 };
-        }, JOB_BUDGET_MS, JOB_BUDGET_MS);
+        // R2 and R3: one deadline for the whole run, measured from here; the least recently served workspace first, each with a share of what is left, each with a cursor (reembed.ts).
+        const startedAt = now();
+        return reembedRun({ table, embedder: jobEmbedder, vectorsFor: (orgId) => indexFor(orgId), now, log }, startedAt, { maxRows: 100, maxScanned: 1_000, callMs: EMBEDDER_JOB_WAIT_MS, warmCallMs: 8_000 }, REEMBED_RUN_MS);
       }
       if (job === "hourly") {
         // TRW-5 S1: text that reached the dead-letter queue anyway is deleted from it, first, so an org's slow work cannot starve it.

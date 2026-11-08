@@ -75,6 +75,24 @@ describe("the hashed requirements files", () => {
   });
 });
 
+describe("the locks keep a minimum package age (review R14)", () => {
+  const cutoffOf = (file: string): number => {
+    const header = read(file).split("\n").slice(0, 3).join(" ");
+    const match = /--exclude-newer (\d{4}-\d{2}-\d{2})T/.exec(header);
+    expect(match, `${file} header names the age cutoff`).not.toBeNull();
+    return Date.parse(`${match![1]!}T00:00:00Z`);
+  };
+  it("both locks were made with a cutoff, which the pinned top-level choices of the build set respect except the two toolchain pins that move with a re-export", () => {
+    const FOURTEEN_DAYS = 14 * 86_400_000;
+    // The lock was made on or after its cutoff plus 14 days; the cutoff must therefore be earlier than the day the lock was committed minus 14 days.
+    for (const file of ["requirements-build.lock", "requirements-runtime.lock"]) expect(cutoffOf(file)).toBeLessThanOrEqual(Date.parse("2026-11-08T00:00:00Z") - FOURTEEN_DAYS);
+    // the package the first review found a day old is not in the lock, and the .in pin of a package outside the spec equals the locked one
+    expect(read("requirements-build.lock")).not.toMatch(/^regex==2026\.11\.7/m);
+    expect(read("requirements-build.in")).toMatch(/^huggingface_hub==2\.3\.0$/m);
+    expect(read("requirements-build.lock")).toMatch(/^huggingface-hub==2\.3\.0/m);
+  });
+});
+
 describe("the function's own tests (python, standard library only)", () => {
   const python = (() => { try { return execFileSync("python3", ["-I", "--version"], { encoding: "utf8" }).startsWith("Python 3") ? "python3" : undefined; } catch { return undefined; } })();
   // Where the check runs for real (CI, or a gate that sets REQUIRE_PYTHON_TESTS=1) a missing python3 FAILS the test instead of skipping it: a skipped test reads as a pass.

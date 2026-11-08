@@ -2,7 +2,7 @@
 import { describe, expect, it } from "vitest";
 import { LESSON_EMBEDDER, TEAM_RECORD_EMBEDDER } from "@agentx/contracts";
 import { EMBEDDER_BLANK_CODE_POINTS, EMBEDDER_ERROR_CODES, EMBEDDER_LIMITS, EmbedderError, checkEmbedderReply, createEmbedderClient, embedderBatches, trimEmbedderText, type EmbedderInvoke, type EmbedderRequest } from "../../../packages/broker/src/embedder/client.js";
-import { EMBEDDER_INGEST_WAIT_MS, EMBEDDER_JOB_WAIT_MS, EMBEDDER_SEARCH_WAIT_MS, lessonEmbedderFrom, lessonEmbedderOver, recordEmbedderClientFrom, recordJobEmbedderClientFrom, recordSearchEmbedderClientFrom } from "../../../packages/broker/src/embedder/wiring.js";
+import { EMBEDDER_INGEST_WAIT_MS, EMBEDDER_JOB_WAIT_MS, EMBEDDER_SEARCH_COOLDOWN_MS, EMBEDDER_SEARCH_WAIT_MS, lessonEmbedderFrom, lessonEmbedderOver, recordEmbedderClientFrom, recordJobEmbedderClientFrom, recordSearchEmbedderClientFrom } from "../../../packages/broker/src/embedder/wiring.js";
 import { lambdaEmbedderInvoke } from "../../../packages/broker/src/team-record/aws-adapters.js";
 
 const unit = (dimension: number): number[] => Array.from({ length: dimension }, () => 1 / Math.sqrt(dimension));
@@ -102,15 +102,57 @@ describe("the embedder client", () => {
     }
   });
 
-  it("tries once more after a timeout when asked to (the search path), and only once", async () => {
+  it("never retries a timeout (review R4): the first call is still busy in its container, so a second one would start another cold container and take another reserved slot", async () => {
     let calls = 0;
-    const warm = createEmbedderClient({ ...fast, spec: TEAM_RECORD_EMBEDDER, retryOnTimeout: true, invoke: async () => { calls += 1; if (calls === 1) throw awsError("AbortError"); return replyFor(); } });
-    expect(await warm.embed("a", "query")).toHaveLength(1024);
+    const client = createEmbedderClient({ ...fast, spec: TEAM_RECORD_EMBEDDER, attempts: 5, invoke: async () => { calls += 1; throw awsError("AbortError"); } });
+    expect(await codeOf(() => client.embed("a", "query"))).toBe("UNREACHABLE");
+    expect(calls).toBe(1);
+    // and the option that used to ask for one no longer exists
+    expect(Object.keys(createEmbedderClient({ spec: TEAM_RECORD_EMBEDDER, invoke: async () => replyFor() }))).not.toContain("retryOnTimeout");
+  });
+
+  it("after a timeout, makes no call at all for the pause (a burst of searches during a cold start takes one reserved slot, not all of them), then calls again", async () => {
+    let clock = 1_000;
+    let calls = 0;
+    let slow = true;
+    const client = createEmbedderClient({ ...fast, spec: TEAM_RECORD_EMBEDDER, cooldownAfterTimeoutMs: 20_000, now: () => clock, invoke: async () => { calls += 1; if (slow) throw awsError("AbortError"); return replyFor(); } });
+    expect(await codeOf(() => client.embed("a", "query"))).toBe("UNREACHABLE");
+    expect(calls).toBe(1);
+    for (let burst = 0; burst < 5; burst += 1) { clock += 1_000; expect(await codeOf(() => client.embed("a", "query"))).toBe("UNREACHABLE"); }
+    expect(calls).toBe(1);
+    slow = false;
+    clock += 20_000;
+    expect(await client.embed("a", "query")).toHaveLength(1024);
     expect(calls).toBe(2);
-    calls = 0;
-    const stuck = createEmbedderClient({ ...fast, spec: TEAM_RECORD_EMBEDDER, retryOnTimeout: true, attempts: 2, invoke: async () => { calls += 1; throw awsError("AbortError"); } });
-    expect(await codeOf(() => stuck.embed("a", "query"))).toBe("UNREACHABLE");
-    expect(calls).toBe(2);
+    // an error that is not a timeout starts no pause
+    let other = 0;
+    const flaky = createEmbedderClient({ ...fast, spec: TEAM_RECORD_EMBEDDER, cooldownAfterTimeoutMs: 20_000, now: () => clock, invoke: async () => { other += 1; throw awsError("AccessDeniedException"); } });
+    await codeOf(() => flaky.embed("a", "query")); await codeOf(() => flaky.embed("a", "query"));
+    expect(other).toBe(2);
+  });
+
+  it("a call with a deadline waits no longer than what is left of it, sends nothing when the run is over, and starts no retry that cannot finish in time (review R3)", async () => {
+    let clock = 10_000;
+    const limits: Array<number | undefined> = [];
+    const delays: number[] = [];
+    let fail = 0;
+    const client = createEmbedderClient({ spec: TEAM_RECORD_EMBEDDER, now: () => clock, baseDelayMs: 100, sleep: async (ms) => { delays.push(ms); clock += ms; }, invoke: async (_request, limit) => { limits.push(limit?.timeoutMs); if (fail > 0) { fail -= 1; throw awsError("ServiceException"); } return replyFor(); } });
+    await client.embed("a", "document", { deadline: 14_000 });
+    expect(limits).toEqual([4_000]);
+    await client.embed("a", "document");
+    expect(limits.at(-1)).toBeUndefined();
+    // past the deadline: not sent
+    clock = 14_000;
+    expect(await codeOf(() => client.embed("a", "document", { deadline: 14_000 }))).toBe("UNREACHABLE");
+    expect(limits).toHaveLength(2);
+    // a transient fault whose retry would leave under a second: not retried
+    clock = 10_000; fail = 1;
+    expect(await codeOf(() => client.embed("a", "document", { deadline: 10_900 }))).toBe("UNREACHABLE");
+    expect(limits).toHaveLength(3);
+    // with room it is retried, and the retry gets only what is left
+    clock = 10_000; fail = 1; limits.length = 0;
+    await client.embed("a", "document", { deadline: 20_000 });
+    expect(limits).toEqual([10_000, 9_900]);
   });
 
   it("maps the function's own refusal codes, and anything it does not know is a bad response", async () => {
@@ -175,10 +217,11 @@ describe("the lessons' embedder (for lane lessons-prod)", () => {
     expect(lessonEmbedderFrom({ EMBEDDER_FUNCTION_NAME: "agentx-staging-embedder" }, { region: "us-west-2" })?.dimension).toBe(384);
   });
 
-  it("has three clients of the one function that differ in how long they wait: search short with a retry, ingest unchanged, the re-embed job longest", () => {
+  it("has three clients of the one function that differ in how long they wait: search short (no retry, a pause after a timeout), ingest unchanged, the re-embed job longest", () => {
     expect([EMBEDDER_SEARCH_WAIT_MS, EMBEDDER_INGEST_WAIT_MS, EMBEDDER_JOB_WAIT_MS]).toEqual([9_000, 15_000, 20_000]);
-    // two search waits stay inside the broker's 30 s with room for the vector query and the keyword fallback
-    expect(EMBEDDER_SEARCH_WAIT_MS * 2).toBeLessThan(20_000);
+    // the one search wait leaves most of the broker's 30 s for the vector query and the keyword fallback
+    expect(EMBEDDER_SEARCH_WAIT_MS).toBeLessThan(15_000);
+    expect(EMBEDDER_SEARCH_COOLDOWN_MS).toBeGreaterThan(EMBEDDER_SEARCH_WAIT_MS);
     const env = { EMBEDDER_FUNCTION_NAME: "agentx-staging-embedder" };
     for (const client of [recordSearchEmbedderClientFrom(env, { region: "us-west-2" }), recordEmbedderClientFrom(env, { region: "us-west-2" }), recordJobEmbedderClientFrom(env, { region: "us-west-2" })]) expect(client?.spec).toBe(TEAM_RECORD_EMBEDDER);
     expect(recordSearchEmbedderClientFrom({}, { region: "us-west-2" })).toBeUndefined();
@@ -222,6 +265,18 @@ describe("the Lambda invoke port", () => {
     const invoke = portWith((_command, options) => { signal = options?.abortSignal; return new Promise((_resolve, reject) => { options?.abortSignal?.addEventListener("abort", () => reject(Object.assign(new Error("aborted"), { name: "AbortError" }))); }); }, 20);
     await expect(invoke(request)).rejects.toMatchObject({ code: "AbortError" });
     expect(signal?.aborted).toBe(true);
+  });
+
+  it("a call's own limit shortens the wait and never lengthens it (review R3)", async () => {
+    const hang: Send = (_command, options) => new Promise((_resolve, reject) => { options?.abortSignal?.addEventListener("abort", () => reject(Object.assign(new Error("aborted"), { name: "AbortError" }))); });
+    // configured wait 60 s, the run has 30 ms left: gives up at once
+    const startedShort = Date.now();
+    await expect(portWith(hang, 60_000)(request, { timeoutMs: 30 })).rejects.toMatchObject({ code: "AbortError" });
+    expect(Date.now() - startedShort).toBeLessThan(5_000);
+    // configured wait 30 ms, the run has 60 s left: still gives up at the configured wait
+    const startedLong = Date.now();
+    await expect(portWith(hang, 30)(request, { timeoutMs: 60_000 })).rejects.toMatchObject({ code: "AbortError" });
+    expect(Date.now() - startedLong).toBeLessThan(5_000);
   });
 
   it("fails with sdk_unavailable when the package cannot be loaded", async () => {

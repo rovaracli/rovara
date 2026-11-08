@@ -722,6 +722,10 @@ export async function prepareDeployment(input: {
   newInstall?: boolean;
   release: LoadedRelease;
   source?: string;
+  /** `agentx upgrade --embedder-image`: the embedder image to deploy when the release names none (see parameters.ts `embedderImageUri`). */
+  embedderImage?: string;
+  /** The EmbedderImageUri the control plane stack runs now: kept when the release names no image and none is passed. */
+  deployedEmbedderImage?: string;
   deps: DeployCliDependencies;
   stderr: Writer;
 }): Promise<PreparedDeployment> {
@@ -773,7 +777,7 @@ export async function prepareDeployment(input: {
     const teamRecord = await readTeamRecordSwitch(store, input.env);
     // The Team record has no keyword-only mode: with it on, the release must carry the embedder image, and it is refused here, before anything is built or deployed, when it does not.
     if (teamRecord !== undefined) {
-      try { embedderImage = embedderImageUri({ release: release.manifest, edition, env: input.env, account: input.account, region, partition }); }
+      try { embedderImage = embedderImageUri({ release: release.manifest, edition, env: input.env, account: input.account, region, partition, override: input.embedderImage, deployed: input.deployedEmbedderImage }); }
       catch (error) { throw agentXError("CONFIG_INVALID", `${error instanceof Error ? error.message : "the embedder image could not be named"}. Nothing was deployed`); }
     }
     // After the cheap checks, before any cdk deploy: infra/dist is gitignored, so only a fresh

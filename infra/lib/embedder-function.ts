@@ -8,15 +8,17 @@
 // repository in an Enterprise one (loaded from the signed bundle). A Team record with no embedder image is refused (decision 27: no keyword-only interim): the template carries a rule that
 // fails the stack operation with a message, and the CLI refuses earlier.
 //
-// NO NETWORK, ENFORCED: the function runs in a small VPC of its own (below) whose subnets have no route out (no internet gateway, no NAT, no endpoint) and a security group with no
-// egress rule, so even a compromised dependency has nowhere to send a text. Lambda needs none of that to be invoked (the broker calls the Lambda API, not the VPC) or to write logs.
+// NO NETWORK, ENFORCED: the function runs in a small VPC of its own (below) whose subnets have no route out (no internet gateway, no NAT, no endpoint), a security group with no
+// egress rule, and DNS turned OFF for the VPC (the Amazon-provided resolver is not filtered by security groups and recurses to the internet, so it would carry a text out as a query name),
+// so even a compromised dependency has nowhere to send a text. Lambda needs none of that to be invoked (the broker calls the Lambda API, not the VPC) or to write logs.
 // Only the broker may invoke it (its role gets `lambda:InvokeFunction` on this one function); the function itself can reach no AWS service: its role holds log writes and the network-interface
 // rights Lambda needs for a VPC, and it has no environment variable.
 //
 // [verify] on the first Enterprise deploy: a KMS-encrypted ECR repository (the bundle repositories use ECR's default encryption today) may need the deploying role or Lambda to be allowed
 // kms:Decrypt on the key; the image pull by CreateFunction was not tested against a customer-managed key (needs a staging run with an image in such a repository).
-import { ArnFormat, Aws, CfnParameter, CfnRule, Duration, Fn, RemovalPolicy, type Stack, aws_ec2 as ec2, aws_iam as iam, aws_lambda as lambda, aws_logs as logs } from "aws-cdk-lib";
+import { ArnFormat, CfnParameter, CfnRule, Duration, Fn, RemovalPolicy, type Stack, aws_ec2 as ec2, aws_iam as iam, aws_lambda as lambda, aws_logs as logs } from "aws-cdk-lib";
 import { embedderFunctionName } from "@agentx/contracts";
+import { defaultProductionAvailabilityZoneIds } from "./production-foundation.js";
 
 /**
  * The most Lambda gives (10 GB, about 5.8 vCPUs): the models run in fp32 (the Qwen weights are 2.4 GB on disk and in memory), and a long text is real compute (the record model reads up
@@ -34,12 +36,14 @@ export const EMBEDDER_IMAGE_PATTERN = "^(none|[0-9]{12}\\.dkr\\.ecr\\.[a-z0-9-]+
 /** The message CloudFormation shows when the Team record is asked for with no embedder image. */
 export const EMBEDDER_IMAGE_REQUIRED_MESSAGE = "The Team record needs the embedder image: name an image pinned by digest in EmbedderImageUri (agentx upgrade passes the release's own embedder image; agentx config set teamRecord.embedderImage <image> names one by hand). There is no search without it.";
 
-/** The embedder's own network: two subnets with no route to anywhere, in a VPC with no gateway. */
+/** The embedder's own network: two subnets with no route to anywhere, in a VPC with no gateway and with DNS off. */
 const NETWORK_CIDR = "10.251.0.0/24";
 const SUBNET_CIDRS = ["10.251.0.0/26", "10.251.0.64/26"] as const;
 
 export interface EmbedderProps {
   readonly env: string;
+  /** The region the install deploys to: the subnets are placed by its verified availability-zone IDs (review R5). */
+  readonly region: string;
   /** The only principal allowed to invoke the function. */
   readonly broker: lambda.Function;
   /** False where the account's Lambda concurrency quota cannot take a reservation (the agentxReservedConcurrency context). */
@@ -67,9 +71,14 @@ export function attachEmbedder(stack: Stack, props: EmbedderProps): EmbedderReso
   new CfnRule(stack, "TeamRecordNeedsEmbedderImage", { assertions: [{ assert: Fn.conditionNot(Fn.conditionEquals(imageUri.valueAsString, "none")), assertDescription: EMBEDDER_IMAGE_REQUIRED_MESSAGE }] });
 
   // The function's own network. No internet gateway, no NAT gateway, no endpoint, and the subnets use the VPC's main route table (the local route only); the security group has no egress rule.
-  const vpc = new ec2.CfnVPC(stack, "EmbedderNetwork", { cidrBlock: NETWORK_CIDR, enableDnsSupport: true, enableDnsHostnames: false, tags: [{ key: "Name", value: `${functionName}-no-egress` }] });
+  // DNS is OFF (review R1): traffic to the Amazon-provided resolver is not filtered by security groups or network ACLs, and the resolver recurses to the internet, so with DNS on a compromised
+  // package could send text out as query names. The function resolves nothing: the Lambda service invokes it and takes its logs from outside the VPC.
+  const vpc = new ec2.CfnVPC(stack, "EmbedderNetwork", { cidrBlock: NETWORK_CIDR, enableDnsSupport: false, enableDnsHostnames: false, tags: [{ key: "Name", value: `${functionName}-no-egress` }] });
+  // The subnets are placed by the foundation's verified availability-zone IDs (review R5), not by zone names: a zone NAME is a different physical zone in each account, and in us-east-1 one
+  // zone ID (use1-az3) does not take Lambda VPC networking. An unsupported region fails at synth, as the foundation does.
+  const zoneIds = defaultProductionAvailabilityZoneIds(props.region);
   const subnets = SUBNET_CIDRS.map((cidrBlock, index) => new ec2.CfnSubnet(stack, `EmbedderSubnet${index + 1}`, {
-    vpcId: vpc.ref, cidrBlock, availabilityZone: Fn.select(index, Fn.getAzs(Aws.REGION)), mapPublicIpOnLaunch: false, tags: [{ key: "Name", value: `${functionName}-no-egress-${index + 1}` }],
+    vpcId: vpc.ref, cidrBlock, availabilityZoneId: zoneIds[index] as string, mapPublicIpOnLaunch: false, tags: [{ key: "Name", value: `${functionName}-no-egress-${index + 1}` }],
   }));
   const securityGroup = new ec2.CfnSecurityGroup(stack, "EmbedderSecurityGroup", {
     vpcId: vpc.ref,

@@ -1845,7 +1845,8 @@ describe("the index of the embedding generation before the current one (review H
   it("an index that is already gone is fine, and a failure does not stop writes and searches (the old vectors are useless to them) but blocks an erase until the old index is gone", async () => {
     const db = dbOf();
     const aws = fakeAws();
-    const runtime = build(db, ENT, { sdk: aws.sdk, sts: aws.sts });
+    const clock = { ms: T0 };
+    const runtime = build(db, ENT, { sdk: aws.sdk, sts: aws.sts, now: () => clock.ms });
     await addSource(db, "enterprise", { orgId: ORG_A, source: "github", scope: "github:repo/9", retention: "C" });
     aws.retire.fail = "AccessDeniedException";
     expect(await runtime.sink.put(githubDraft({ retention: "C", audience: { kind: "project" }, scope: "github:repo/9", text: `vector survives ${MARKER}` }))).toMatchObject({ status: "stored" });
@@ -1855,13 +1856,38 @@ describe("the index of the embedding generation before the current one (review H
     expect(aws.vectorCalls.filter((call) => call.command === "DeleteVectorsCommand")).toHaveLength(0);
     expect(db.find((item) => item.entityType === "TEAM_RECORD_EVENT")).toHaveLength(1);
     expect(db.find((item) => item.entityType === "TEAM_RECORD_ERASE_JOB")).toHaveLength(1);
-    // the delete works again (a minute later the open is tried again): the erase finishes
+    // the delete works again (a failed delete is tried again after 15 minutes, review R11): the erase finishes
     aws.retire.fail = undefined;
+    clock.ms += 15 * 60_000;
     await runtime.erase.person(ORG_A, "dev-1").catch(() => undefined);
     await runtime.jobs.run("hourly");
     expect(aws.retire.deleted).toBeGreaterThan(0);
     expect(aws.vectorCalls.filter((call) => call.command === "DeleteVectorsCommand").length).toBeGreaterThan(0);
     expect(db.find((item) => item.entityType === "TEAM_RECORD_EVENT")).toHaveLength(0);
+  });
+
+  it("a failed delete of the old index is not tried again on every call (every search opens the index), but after a pause (review R11), and then succeeds", async () => {
+    const db = dbOf();
+    const aws = fakeAws();
+    const clock = { ms: T0 };
+    const runtime = build(db, ENT, { sdk: aws.sdk, sts: aws.sts, now: () => clock.ms });
+    await addSource(db, "enterprise", { orgId: ORG_A, source: "github", scope: "github:repo/9", retention: "C" });
+    aws.retire.fail = "AccessDeniedException";
+    const search = () => runtime.routes({ method: "GET", path: "/v1/app/projects/web/record/search", query: { query: "anything" }, caller: { orgId: ORG_A, developerId: "dev-1", projectRole: "maintainer" } });
+    expect(await runtime.sink.put(githubDraft({ retention: "C", audience: { kind: "project" }, scope: "github:repo/9", text: "first write" }))).toMatchObject({ status: "stored" });
+    expect(deletedIndexes(aws)).toHaveLength(1);
+    for (let index = 0; index < 4; index += 1) { clock.ms += 1_000; expect((await search())?.status).toBe(200); }
+    // one attempt in all: the failure is remembered, and the searches went on
+    expect(deletedIndexes(aws)).toHaveLength(1);
+    // the pause is over (15 minutes) and the permission is back: one more attempt, which works
+    aws.retire.fail = undefined;
+    clock.ms += 15 * 60_000;
+    expect((await search())?.status).toBe(200);
+    expect(deletedIndexes(aws)).toHaveLength(2);
+    expect(aws.retire.deleted).toBe(1);
+    // done: never again
+    await search();
+    expect(deletedIndexes(aws)).toHaveLength(2);
   });
 
   it("NotFoundException is the normal answer where nothing was ever there", async () => {
@@ -1904,6 +1930,20 @@ describe("the re-embed job (review H1 and M3)", () => {
     const calls = aws.embedBodies.length;
     expect(await runtime.jobs.run("reembed")).toMatchObject({ details: { embedded: 0 } });
     expect(aws.embedBodies).toHaveLength(calls);
+  });
+
+  it("keeps a cursor per workspace in the org directory and removes it with the workspace's directory entry", async () => {
+    const db = dbOf();
+    const aws = fakeAws();
+    const runtime = build(db, ENT, { sdk: aws.sdk, sts: aws.sts });
+    await addSource(db, "enterprise", { orgId: ORG_A, source: "github", scope: "github:repo/9", retention: "C" });
+    await runtime.sink.put(githubDraft({ retention: "C", audience: { kind: "project" }, scope: "github:repo/9", text: "one" }));
+    await runtime.jobs.run("reembed");
+    const states = db.find((item) => item.entityType === "TEAM_RECORD_REEMBED_STATE");
+    expect(states).toHaveLength(1);
+    expect(states[0]).toMatchObject({ pk: "TEAM_RECORD_ORGS", sk: `REEMBED#${ORG_A}`, orgId: ORG_A });
+    // the scheduled walks of the other jobs ignore these rows (they are not workspaces)
+    expect(await runtime.jobs.run("hourly")).toMatchObject({ orgs: 1 });
   });
 
   it("does nothing while the record is paused, and where the install has no embedder function", async () => {

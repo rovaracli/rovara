@@ -63,6 +63,8 @@ export function parseTeamRecordSwitch(input: { get: (key: string) => unknown; en
 
 export interface TeamRecordWiringProps {
   readonly env: string;
+  /** The region the install deploys to (the agentxRegion context, default us-east-1): the embedder's subnets are placed by this region's verified zone IDs. */
+  readonly region: string;
   readonly context: TeamRecordContext;
   readonly broker: lambda.Function;
   readonly slackIngress: lambda.Function;
@@ -82,7 +84,7 @@ export const TEAM_RECORD_JOBS = [
   { id: "Hourly", job: "hourly", expression: "rate(1 hour)" },
   // 03:17 UTC: the archiver, the raw-text expiry and the nightly work. Off the hour on purpose.
   { id: "Nightly", job: "nightly", expression: "cron(17 3 * * ? *)" },
-  // Gives a vector to the rows that lack one (written while the embedder was away, or made with an earlier model). A run with nothing to do reads one index page per workspace.
+  // Gives a vector to the rows that lack one (written while the embedder was away, or made with an earlier model). Each run continues every workspace from a stored cursor, the least recently served first, inside one deadline (reembed.ts); a workspace whose whole pass found nothing rests for an hour.
   { id: "Reembed", job: "reembed", expression: "rate(15 minutes)" },
 ] as const;
 
@@ -109,7 +111,7 @@ export function attachTeamRecord(stack: Stack, props: TeamRecordWiringProps): Te
   // workspace), a direct invoke of the embedder function (below), and the lake (Athena, S3 Tables, Glue) where the lake exists.
   for (const statement of [...table.brokerStatements(), ...storage.brokerStatements()]) broker.addToRolePolicy(statement);
   // The self-hosted embedder (environments/embedder): a container-image Lambda that only the broker may invoke. The broker finds it by its derived name (embedderFunctionName), so no variable is passed.
-  attachEmbedder(stack, { env: props.env, broker, ...(props.reservedConcurrency === false ? { reservedConcurrency: false } : {}) });
+  attachEmbedder(stack, { env: props.env, region: props.region, broker, ...(props.reservedConcurrency === false ? { reservedConcurrency: false } : {}) });
 
   // WL-6: the dispatcher reads the lesson rows at delivery (no write), and the customer's key where there is one.
   if (props.dispatcher !== undefined) {

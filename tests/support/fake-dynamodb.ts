@@ -314,7 +314,7 @@ export class FakeDynamoDb {
    * the filter. LastEvaluatedKey is handed out only when `Limit` stopped the read early, keyed by
    * the table's keys plus, for an index, the index's own key attributes.
    */
-  private queryPage(input: Record<string, unknown>): { Items: Item[]; LastEvaluatedKey?: Record<string, unknown> } {
+  private queryPage(input: Record<string, unknown>): { Items: Item[]; ScannedCount: number; LastEvaluatedKey?: Record<string, unknown> } {
     const limit = input.Limit as number | undefined;
     const evaluated = this.query({ ...input, Limit: undefined });
     const page = limit === undefined ? evaluated : evaluated.slice(0, limit);
@@ -323,9 +323,10 @@ export class FakeDynamoDb {
     const values = (input.ExpressionAttributeValues ?? {}) as Values;
     const items = filter === undefined ? page : page.filter((item) => evaluateCondition(filter, item, names, values));
     const last = page.at(-1);
-    if (limit === undefined || evaluated.length <= limit || last === undefined) return { Items: items };
+    // ScannedCount: what was read before the filter, as DynamoDB reports it.
+    if (limit === undefined || evaluated.length <= limit || last === undefined) return { Items: items, ScannedCount: page.length };
     const indexKeys = input.IndexName === undefined ? [] : this.indexAttributes(input);
-    return { Items: items, LastEvaluatedKey: Object.fromEntries(["pk", "sk", ...indexKeys].map((name) => [name, last[name]])) };
+    return { Items: items, ScannedCount: page.length, LastEvaluatedKey: Object.fromEntries(["pk", "sk", ...indexKeys].map((name) => [name, last[name]])) };
   }
 
   /**

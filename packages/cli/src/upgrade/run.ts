@@ -36,7 +36,7 @@ function withEmbedderImage(forced: ReturnType<typeof forcedOperatorValues>, imag
   return { ...forced, "control-plane": { ...forced["control-plane"], EmbedderImageUri: image } };
 }
 
-export interface UpgradeOptions { env: string; /** With `--bundle` on a cdk install: the build made at approval is approved without asking. `--yes` never does this. */ approveBuild?: boolean; /** N3: a signed release bundle directory; verified (signature, approved id, every hash) before anything is read or changed. */ bundleDir?: string; /** N3: the bundle id (SHA-256 of bundle.json) the customer approved; any other bundle is refused. */ approvedBundleSha256?: string; to?: string; releaseDir?: string; source?: string; yes: boolean; allowReplace: string[]; exportDir?: string; /** --no-reserved-concurrency: the cdk app leaves Lambda reserved concurrency off (cdk engine only). */ reservedConcurrency?: false; images?: { worker?: string; slack?: string; bootStage2Sha256?: string } }
+export interface UpgradeOptions { env: string; /** With `--bundle` on a cdk install: the build made at approval is approved without asking. `--yes` never does this. */ approveBuild?: boolean; /** N3: a signed release bundle directory; verified (signature, approved id, every hash) before anything is read or changed. */ bundleDir?: string; /** N3: the bundle id (SHA-256 of bundle.json) the customer approved; any other bundle is refused. */ approvedBundleSha256?: string; to?: string; releaseDir?: string; source?: string; yes: boolean; allowReplace: string[]; exportDir?: string; /** --no-reserved-concurrency: the cdk app leaves Lambda reserved concurrency off (cdk engine only). */ reservedConcurrency?: false; images?: { worker?: string; slack?: string; bootStage2Sha256?: string; /** --embedder-image: the embedder image for a release that names none (a source or override upgrade). */ embedder?: string } }
 
 export interface UpgradeDependencies {
   store: ParameterStore;
@@ -60,7 +60,7 @@ export interface UpgradeDependencies {
    * image flags or the tag's published release.json. */
   sourceRelease(input: { source: string; images?: { worker?: string; slack?: string; bootStage2Sha256?: string } }): Promise<LoadedRelease>;
   notes(version: string): Promise<ReleaseNotes | undefined>;
-  prepare(input: { settings: EnvironmentSettings; release: LoadedRelease; source?: string; reservedConcurrency?: false }): Promise<PreparedDeployment>;
+  prepare(input: { settings: EnvironmentSettings; release: LoadedRelease; source?: string; reservedConcurrency?: false; /** --embedder-image. */ embedderImage?: string; /** The control plane stack's EmbedderImageUri now (not `none`): kept when the release names no image. */ deployedEmbedderImage?: string }): Promise<PreparedDeployment>;
   cdkDiff(request: DeployRequest, settings: EnvironmentSettings, source: string, reservedConcurrency?: false, releaseVersion?: string): Promise<string>;
   ask: Ask;
   isInteractive(): boolean;
@@ -213,7 +213,7 @@ async function verifiedBundle(options: UpgradeOptions, deps: UpgradeDependencies
     return undefined;
   }
   if (options.releaseDir !== undefined || options.to !== undefined || options.source !== undefined || options.exportDir !== undefined || options.images !== undefined) {
-    throw agentXError("CONFIG_INVALID", "--bundle carries its own release and images; do not combine it with --release, --to, --source, --export, --worker-image, --slack-image or --boot-stage2-sha256");
+    throw agentXError("CONFIG_INVALID", "--bundle carries its own release and images; do not combine it with --release, --to, --source, --export, --worker-image, --slack-image, --embedder-image or --boot-stage2-sha256");
   }
   if (deps.verifyBundle === undefined) throw agentXError("CONFIG_INVALID", "this agentx cannot verify bundles; bundle refused, nothing was changed");
   return deps.verifyBundle({ dir: options.bundleDir, ...(options.approvedBundleSha256 === undefined ? {} : { approvedBundleSha256: options.approvedBundleSha256 }) });
@@ -325,7 +325,13 @@ async function runVerifiedUpgrade(options: UpgradeOptions, deps: UpgradeDependen
     const review = upgradeConfirm({ write: deps.write, ask: deps.ask, yes: options.yes, allowReplace });
     // Prepared before the dropped keys are named: the cdk engine's synth of the source (issue 152)
     // says which parameters the deploy can send, and so which it drops.
-    const prepared = await deps.prepare({ settings, release, ...(options.source === undefined ? {} : { source: options.source }), ...(options.reservedConcurrency === false ? { reservedConcurrency: false as const } : {}) });
+    // The embedder image the stack runs now, for a release that names none (a --source or --worker-image upgrade): kept, not refused. Read live, as the answers are.
+    const runningEmbedder = (await deps.stacks.describe(settings.stacks["control-plane"]))?.parameters.EmbedderImageUri;
+    const prepared = await deps.prepare({
+      settings, release, ...(options.source === undefined ? {} : { source: options.source }), ...(options.reservedConcurrency === false ? { reservedConcurrency: false as const } : {}),
+      ...(options.images?.embedder === undefined ? {} : { embedderImage: options.images.embedder }),
+      ...(runningEmbedder === undefined || runningEmbedder === "" || runningEmbedder === "none" ? {} : { deployedEmbedderImage: runningEmbedder }),
+    });
     try {
       const declaredBy = prepared.declaredParameters;
       const declared = (part: DeployPart) => (declaredBy === undefined ? templateParameterNames(release, part, env) : declaredBy(part));

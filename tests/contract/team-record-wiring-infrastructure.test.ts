@@ -10,6 +10,7 @@ import { describe, expect, it } from "vitest";
 import { BROKER_NAMES, BROKER_SETTINGS, LESSONS_BROKER_MODEL_WAIT_SECONDS, LESSONS_REFLECT_MAX_RECEIVES, LESSONS_REFLECT_VISIBILITY_SECONDS, LESSONS_WORKER_RESERVED_CONCURRENCY, LESSONS_WORKER_TIMEOUT_SECONDS, TEAM_RECORD_OPS_MAX_RECEIVES, HEALTH_ALARM_SUFFIXES, teamRecordTableName } from "@agentx/contracts";
 import { LESSONS_WORKER_STATE_WRITE_KEY_PATTERNS } from "../../infra/lib/team-record-wiring.js";
 import { buildAgentXApp } from "../../infra/lib/app.js";
+import { defaultProductionAvailabilityZoneIds } from "../../infra/lib/production-foundation.js";
 import { parseTeamRecordSwitch, TEAM_RECORD_JOB_SOURCE } from "../../infra/lib/team-record-wiring.js";
 import { brokerNamesIn, brokerSettingsIn } from "../support/broker-names-template.js";
 import { DEPLOY_PARAMETER_VALUES, lambdaEnvironments, type Template as ResolvableTemplate } from "../support/lambda-environment-size.js";
@@ -179,6 +180,12 @@ describe("the switch on: Public cloud", () => {
     const byType = (type: string) => Object.entries(resources).filter(([, resource]) => resource.Type === type);
     expect(byType("AWS::EC2::VPC")).toHaveLength(1);
     expect(byType("AWS::EC2::Subnet")).toHaveLength(2);
+    // R1: DNS is off in the VPC (the Amazon-provided resolver is not filtered by a security group and recurses to the internet: it would be an egress channel for a text).
+    expect(byType("AWS::EC2::VPC")[0]![1].Properties).toMatchObject({ EnableDnsSupport: false, EnableDnsHostnames: false });
+    // R5: the subnets sit in the foundation's verified zone IDs (a zone name is a different physical zone in each account), not in zones picked by name.
+    const zoneIds = byType("AWS::EC2::Subnet").map(([, resource]) => resource.Properties.AvailabilityZoneId);
+    expect(zoneIds).toStrictEqual([...defaultProductionAvailabilityZoneIds("us-east-1")]);
+    for (const [, subnet] of byType("AWS::EC2::Subnet")) expect(subnet.Properties).not.toHaveProperty("AvailabilityZone");
     for (const type of ["AWS::EC2::InternetGateway", "AWS::EC2::NatGateway", "AWS::EC2::VPCEndpoint", "AWS::EC2::Route", "AWS::EC2::EIP", "AWS::EC2::VPCGatewayAttachment"]) {
       const mine = byType(type).filter(([id]) => /^Embedder/.test(id));
       expect(mine, type).toStrictEqual([]);
@@ -209,6 +216,12 @@ describe("the switch on: Public cloud", () => {
     expect(JSON.stringify(create.Resource)).toContain("EmbedderSubnet2");
     expect(JSON.stringify(create.Resource)).toContain("EmbedderSecurityGroup");
   }, 180_000);
+
+  it("places the embedder's subnets by the zone IDs of the region it is deployed to", () => {
+    const west = resourcesOf(controlPlane({ ...PUBLIC, agentxTeamRecord: "enabled", agentxRegion: "us-west-2" }));
+    const ids = Object.entries(west).filter(([id, resource]) => resource.Type === "AWS::EC2::Subnet" && /^EmbedderSubnet/.test(id)).map(([, resource]) => resource.Properties.AvailabilityZoneId);
+    expect(ids).toStrictEqual([...defaultProductionAvailabilityZoneIds("us-west-2")]);
+  }, 360_000);
 
   it("drops the embedder's reserved concurrency where the account cannot take one (agentxReservedConcurrency=false), and an Enterprise install gets the same function", () => {
     const noReservation = resourcesOf(controlPlane({ ...PUBLIC, agentxTeamRecord: "enabled", agentxReservedConcurrency: false }));

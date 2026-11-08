@@ -152,7 +152,10 @@ agentx --env <env> upgrade --region <region> --to <version> --source <checkout o
 
 `--to` or `--release`, when given, must be the checkout's tag. An `agentx` built from source needs
 neither: it upgrades to the checkout's tag, and reads the images from `--worker-image` and
-`--slack-image`, or else from that tag's `release.json` on GitHub.
+`--slack-image`, or else from that tag's `release.json` on GitHub. An install that records the Team record
+needs an embedder image too: a tag whose `release.json` names none keeps the image the stack already runs,
+or takes `--embedder-image <account>.dkr.ecr.<region>.amazonaws.com/<repo>@sha256:<digest>` (an image in your
+own registry, pinned by digest).
 
 **For a pipeline: `upgrade --export`.** This writes the upgrade as files and changes nothing:
 

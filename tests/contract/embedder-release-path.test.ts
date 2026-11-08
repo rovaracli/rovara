@@ -93,6 +93,22 @@ describe("the CLI names the embedder image from the release", () => {
   it("refuses a release that carries none, with a message that says what is missing", () => {
     expect(() => embedderImageUri({ ...target, release: baseRelease, edition: undefined })).toThrow(/carries no embedder image, and the Team record needs one/);
   });
+  const own = `123456789012.dkr.ecr.us-east-1.amazonaws.com/rovara/embedder@sha256:${d("a")}`;
+  it("R7: a release with no image keeps the image the stack already runs (a source or override upgrade, or the key set by hand), instead of refusing", () => {
+    expect(embedderImageUri({ ...target, release: baseRelease, edition: undefined, deployed: own })).toBe(own);
+    expect(embedderImageUri({ ...target, release: baseRelease, edition: "enterprise", deployed: own })).toBe(own);
+    // `none` is no image; a value that is not a digest-pinned image of the registry is not kept either
+    for (const deployed of ["none", "", "embedder:latest", undefined]) expect(() => embedderImageUri({ ...target, release: baseRelease, edition: undefined, deployed }), String(deployed)).toThrow(/carries no embedder image.*stack runs none.*--embedder-image/s);
+    // a release that names an image still wins over the running one (the upgrade moves the stack to the release's embedder)
+    expect(embedderImageUri({ ...target, edition: undefined, deployed: own })).toContain("/agentx-staging/agentx/agentx-embedder@sha256:");
+  });
+  it("R7: --embedder-image names the image for a release that has none, and wins over the release and the running image; it must be pinned by digest in this account and region", () => {
+    expect(embedderImageUri({ ...target, release: baseRelease, edition: undefined, override: own })).toBe(own);
+    expect(embedderImageUri({ ...target, edition: "enterprise", override: own, deployed: `123456789012.dkr.ecr.us-east-1.amazonaws.com/other/embedder@sha256:${d("b")}` })).toBe(own);
+    expect(() => embedderImageUri({ ...target, edition: undefined, override: "embedder:latest" })).toThrow(/pinned by digest/);
+    expect(() => embedderImageUri({ ...target, edition: undefined, override: `999999999999.dkr.ecr.us-east-1.amazonaws.com/rovara/embedder@sha256:${d("a")}` })).toThrow(/this install's own registry/);
+    expect(() => embedderImageUri({ ...target, edition: undefined, override: `123456789012.dkr.ecr.eu-west-1.amazonaws.com/rovara/embedder@sha256:${d("a")}` })).toThrow(/this install's own registry/);
+  });
   it("the key teamRecord.embedderImage takes only an image pinned by digest in this account and region, never none", () => {
     const entry = configKey("teamRecord.embedderImage");
     const ok = `123456789012.dkr.ecr.us-east-1.amazonaws.com/rovara/embedder@sha256:${d("a")}`;
