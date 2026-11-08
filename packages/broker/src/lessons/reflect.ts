@@ -1,9 +1,9 @@
 // Learning v2 L1: the reflector (design §4.5.1). One tool-less model call per finished task, and a nightly pass. Its output is schema-checked JSON that
 // code turns into lesson drafts; the model never writes to a store. Any parse failure drops the whole output, with no retry loop.
 import { randomUUID } from "node:crypto";
-import { cleanForLearning, requestsCapabilityChange } from "./guards.js";
+import { cleanForLearning } from "./guards.js";
 import { isLearningRefusal, noteModelFailure, notePause, noteRecovered, pauseOfLook, spendLook, type LessonsPauseStore } from "./pause.js";
-import { emitAudit, learningCaps, modeAllows, resolveLearning, type Edition, type LearningSettingsReader } from "./policy.js";
+import { learningCaps, modeAllows, resolveLearning, type Edition, type LearningSettingsReader } from "./policy.js";
 import type { Clock, LearningSpend, LessonAuditSink, Metrics, PipelineModel } from "./ports.js";
 import { buildReflectorInput, type MarkedSpan, type ReflectSubject } from "./reflect-input.js";
 import { NO_REASON_TEXT } from "./task-subject.js";
