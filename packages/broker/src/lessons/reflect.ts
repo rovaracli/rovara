@@ -5,6 +5,8 @@ import { cleanForLearning } from "./guards.js";
 import { learningCaps, modeAllows, resolveLearning, type Edition, type LearningSettingsReader } from "./policy.js";
 import type { Clock, LearningSpend, LessonAuditSink, Metrics, PipelineModel } from "./ports.js";
 import { buildReflectorInput, type MarkedSpan, type ReflectSubject } from "./reflect-input.js";
+import { NO_REASON_TEXT } from "./task-subject.js";
+import { lessonClaimsSupported } from "./trial.js";
 import {
   LessonCandidateSchema, ReflectorOutputSchema, distinctIds, idIn, minTrust, narrowestAudience, normSource, sameId,
   type Audience, type LessonCitation, type LessonProvenance, type LessonScope, type LessonStage, type LessonType, type TrustClass,
@@ -57,13 +59,19 @@ const EXTERNAL_SOURCE = /^\s*(slack|linear|jira|mcp|code|comment)\b/iu;
 
 /**
  * Whether a lesson counts as drafted from a project member's own correction. Worked out from the spans the lesson CITES (never from every span in the task, so a plan or finding that Rovara wrote
- * does not take it away, and uncited text cannot give it): at least one cited span is a correction by a member (trust member, a known author, a correction kind), no cited span comes
- * from Slack, a tracker, an MCP source or a code comment, none is restricted, and nothing the model read was an outsider's (`everythingTrust`, the lowest trust of the whole input; outsiders are removed before the model call, this is the second line).
+ * does not take it away, and uncited text cannot give it). An ALLOW-LIST: EVERY cited span must itself be a member's own correction (trust member, a known author, a correction kind, not a sentence
+ * chosen by code such as the no-reason send-back, not from Slack, a tracker, an MCP source or a code comment, not restricted); a lesson that also cites a plan, an agent finding, CI text, the task's
+ * wording or a loaded lesson goes to a person. Nothing the model read may be an outsider's (`everythingTrust`, the lowest trust of the whole input; outsiders are removed before the model call, this is the
+ * second line). Whether the lesson's WORDS rest on those spans is the other half of the rule (`claimsSupported`).
+ *
+ * Integration rule (LT-1 / lane 1 capture): a span of kind `human_edit` or `review_finding` may carry trust `member` only when the code-host account that wrote it is resolved to a person with a role in this
+ * project. Never from a git commit author or committer e-mail (anyone can set it), never from GitHub `author_association` alone, and a commenter on a public repository who has a Rovara account but no role in
+ * the project is an outsider.
  */
 export function memberCorrectionOf(cited: readonly MarkedSpan[], everythingTrust: TrustClass): boolean {
-  if (everythingTrust === "outsider") return false;
-  if (cited.some((s) => s.trust === "outsider" || s.audience?.kind === "restricted" || (s.sourceKey !== undefined && EXTERNAL_SOURCE.test(s.sourceKey)))) return false;
-  return cited.some((s) => s.trust === "member" && s.authorId !== undefined && CORRECTION_KINDS.has(s.kind));
+  if (everythingTrust === "outsider" || cited.length === 0) return false;
+  return cited.every((s) => s.trust === "member" && s.authorId !== undefined && CORRECTION_KINDS.has(s.kind) && s.fixedText !== true && s.text !== NO_REASON_TEXT
+    && s.audience?.kind !== "restricted" && !(s.sourceKey !== undefined && EXTERNAL_SOURCE.test(s.sourceKey)));
 }
 
 /** Kinds a person writes. Plans are agent text, and outcomes, CI output and loaded lessons are not people. */
@@ -204,7 +212,11 @@ async function toDraft(
       minTrust: trust, audience, reflectorRun: runId, model: model.slice(0, 100),
       ...(sourceScopes.length === 0 ? {} : { sourceScopes }),
       memberSignal: evidence.some((s) => s.trust === "member" && (s.kind === "remembered" || s.kind === "human_edit")),
-      memberCorrection: memberCorrectionOf(evidence, trust),
+      memberCorrection: memberCorrectionOf(cited, trust),
+      // The lesson's key words must appear in the cited correction or the cited code, and nowhere else: worked out here, where the correction text is in hand (it is never stored).
+      claimsSupported: lessonClaimsSupported({ title, description, body, ...(candidate.scope.paths === undefined ? {} : { scopePaths: candidate.scope.paths }) }, {
+        correctionTexts: cited.flatMap((s) => (s.text === undefined ? [] : [s.text])), code: citations.flatMap((c) => (c.kind === "code" ? [{ path: c.path, anchor: c.anchor }] : [])),
+      }),
       ...(subject.sharedTask === true ? { fromSharedTask: true } : {}),
     },
   };

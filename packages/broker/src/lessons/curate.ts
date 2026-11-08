@@ -9,6 +9,7 @@ import type { AlertSink, Embedder, LearningSpend, LessonDeps, LessonVectors, Pip
 import { attributableSources, noteCandidateSources } from "./sources.js";
 import type { LessonDraft } from "./reflect.js";
 import { nextVersion, type LessonStore, type ScopeKey } from "./store.js";
+import { isTrialLesson } from "./trial.js";
 import { LessonCitationSchema, LessonProvenanceSchema, LessonSchema, LessonScopeSchema, distinctIds, minTrust, narrowestAudience, normSource, trustAtLeast, type Lesson, type LessonCitation, type LessonScope } from "./types.js";
 
 /** At or above this similarity two lessons are the same advice, merged by code with no model call. */
@@ -111,6 +112,7 @@ function mergeInto(target: Lesson, draft: LessonDraft, version: number, now: num
       memberSignal: target.provenance.memberSignal || draft.provenance.memberSignal,
       // Merging narrows what the lesson rests on: it stays a member correction (and from a shared task) only if both sides are.
       ...(target.provenance.memberCorrection === true && draft.provenance.memberCorrection === true ? { memberCorrection: true } : {}),
+      ...(target.provenance.claimsSupported === true && draft.provenance.claimsSupported === true ? { claimsSupported: true } : {}),
       ...(target.provenance.fromSharedTask === true && draft.provenance.fromSharedTask === true ? { fromSharedTask: true } : {}),
       minTrust: minTrust([target.provenance.minTrust, draft.provenance.minTrust]), audience: narrowestAudience([target.provenance.audience, draft.provenance.audience]),
       ...(target.provenance.sourceScopes === undefined && draft.provenance.sourceScopes === undefined ? {} : { sourceScopes: union(target.provenance.sourceScopes ?? [], draft.provenance.sourceScopes ?? [], 50) }),
@@ -120,7 +122,7 @@ function mergeInto(target: Lesson, draft: LessonDraft, version: number, now: num
 
 /** A merge into an active lesson may not lower its trust or narrow its audience: that is a different lesson. */
 const mergeAllowed = (target: Lesson, draft: LessonDraft): boolean =>
-  target.status !== "active" || ((target.trial === undefined || draft.provenance.memberCorrection === true) && trustAtLeast(draft.provenance.minTrust, target.provenance.minTrust)
+  target.status !== "active" || ((target.trial === undefined || (draft.provenance.memberCorrection === true && draft.provenance.claimsSupported === true)) && trustAtLeast(draft.provenance.minTrust, target.provenance.minTrust)
     && JSON.stringify(narrowestAudience([target.provenance.audience, draft.provenance.audience])) === JSON.stringify(target.provenance.audience));
 
 export async function curateDraft(deps: CurateDeps, key: ScopeKey, draft: LessonDraft): Promise<CurateOutcome> {
@@ -174,7 +176,7 @@ export async function curateDraft(deps: CurateDeps, key: ScopeKey, draft: Lesson
       await deps.vectors.upsert(key.workspaceId, key.project, created.id, vector, { status: "pending" });
       await emitAudit(deps.audit, { action: "lesson.contradiction", workspaceId: key.workspaceId, project: key.project, lessonId: created.id, facts: { other: other.id } });
       // A later contradicting correction by a member retires a lesson that is live on trial (DECISIONS 24); the new lesson waits for a person. Audited by the retire.
-      if (other.trial?.state === "trial" && other.status === "active" && draft.provenance.memberCorrection === true) await retireLesson(deps, key, other.id, "contradicted", undefined, "lesson.trial_retired");
+      if (isTrialLesson(other) && other.status === "active" && draft.provenance.memberCorrection === true) await retireLesson(deps, key, other.id, "contradicted", undefined, "lesson.trial_retired");
       try { await deps.alerts?.alert(key.workspaceId, key.project, "lesson_contradiction"); } catch { /* the card is already in the queue */ }
       return { outcome: "contradiction", lesson: created, other: other.id };
     }

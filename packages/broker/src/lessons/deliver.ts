@@ -49,7 +49,7 @@ export async function learnedContextFromRefs(deps: DeliveryDeps, refs: LearnedRe
     if (member === undefined) return undefined;
     const live: Lesson[] = [];
     for (const lesson of fetched) {
-      if (!approvedForUse(lesson, resolved.approval, member, resolved.preset) || hasStaleCitation(lesson) || !stageAllows(lesson, refs.stage, member)) continue;
+      if (!approvedForUse(lesson, resolved.approval, member, resolved.trialAllowed) || hasStaleCitation(lesson) || !stageAllows(lesson, refs.stage, member)) continue;
       if (!(await notErased(deps.store, key, lesson))) continue;
       live.push(lesson);
     }

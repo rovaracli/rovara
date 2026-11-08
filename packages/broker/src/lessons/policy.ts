@@ -96,7 +96,16 @@ export interface LearningSettings {
 export interface LearningSettingsReader { read(workspaceId: string, project: string): Promise<LearningSettings> }
 
 /** `requiredGroups` holds every group that must be among the approvers: the company floor's and the project's own, both. */
-export interface ResolvedLearning { mode: LearningMode; approval: ApprovalPolicy; requiredGroups: string[]; expiryDays: number | undefined; /** The preset in force: the stricter of the company's and the project's. A setting that does not read gives Regulated (and mode Off). */ preset: LearningPreset }
+export interface ResolvedLearning {
+  mode: LearningMode; approval: ApprovalPolicy; requiredGroups: string[]; expiryDays: number | undefined;
+  /** The preset in force: the stricter of the company's and the project's. A setting that does not read gives Regulated (and mode Off). */
+  preset: LearningPreset;
+  /**
+   * Whether a lesson may be live on trial under these settings: Standard preset AND mode On AND no stricter approval setting asks for a person (a company approval floor, a required group, a two-person
+   * requirement for tier 0 or tier 1). Every one of those means "a person decides", so a trial lesson, which has no person, would go around it. False when the settings do not read.
+   */
+  trialAllowed: boolean;
+}
 const MODE_ORDER: readonly LearningMode[] = ["Off", "Collect", "Suggest", "On"];
 /** The more restrictive mode: Off is the strictest, On the loosest. */
 export const stricterMode = (a: LearningMode, b: LearningMode): LearningMode => (MODE_ORDER.indexOf(a) <= MODE_ORDER.indexOf(b) ? a : b);
@@ -129,7 +138,7 @@ export function clampAutoApply(settings: LearningSettings): LearningSettings {
 
 /** Reads the settings and fails closed: a reader that throws, or settings that do not parse, give mode Off. */
 export async function resolveLearning(reader: LearningSettingsReader, workspaceId: string, project: string): Promise<ResolvedLearning> {
-  const off: ResolvedLearning = { mode: "Off", approval: DEFAULT_APPROVAL_POLICY, requiredGroups: [], expiryDays: undefined, preset: "regulated" };
+  const off: ResolvedLearning = { mode: "Off", approval: DEFAULT_APPROVAL_POLICY, requiredGroups: [], expiryDays: undefined, preset: "regulated", trialAllowed: false };
   let settings: LearningSettings;
   // No settings row is the default (an undefined result), not a failure; a reader that throws fails closed.
   try { settings = (await reader.read(workspaceId, project)) ?? {}; } catch { return off; }
@@ -147,8 +156,13 @@ export async function resolveLearning(reader: LearningSettingsReader, workspaceI
   const approval = { success: true as const, data: stricterApproval(projectApproval.data, floor.data, settings.companyApproval !== undefined) };
   const days = settings.expiryDays;
   if (days !== undefined && (!Number.isInteger(days) || days < MIN_EXPIRY_DAYS || days > MAX_EXPIRY_DAYS)) return off;
-  return { mode: mode.data, approval: approval.data, requiredGroups: [...new Set([floor.data.requiredGroup, projectApproval.data.requiredGroup].filter((g): g is string => g !== undefined))], expiryDays: days,
-    preset: companyPreset?.success === true ? stricterPreset(ownPreset.data, companyPreset.data) : ownPreset.data };
+  const requiredGroups = [...new Set([floor.data.requiredGroup, projectApproval.data.requiredGroup].filter((g): g is string => g !== undefined))];
+  const preset = companyPreset?.success === true ? stricterPreset(ownPreset.data, companyPreset.data) : ownPreset.data;
+  // A trial lesson has no person behind it, so it is allowed only where nothing asks for one: Standard, mode On (Suggest and the company's lock say "every lesson needs a person"), no company approval floor,
+  // no required group, and no two-person requirement.
+  const trialAllowed = preset === "standard" && modeAllows(mode.data, "auto_apply") && settings.companyApproval === undefined && requiredGroups.length === 0
+    && approval.data.tier0 !== "two" && approval.data.tier1 !== "two";
+  return { mode: mode.data, approval: approval.data, requiredGroups, expiryDays: days, preset, trialAllowed };
 }
 
 /**

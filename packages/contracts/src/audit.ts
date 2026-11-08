@@ -269,6 +269,9 @@ export const AUDIT_ACTIONS = [
   "lesson.sole_owner_switch_changed",
   // The company or project learning preset (Standard / Regulated): the ledger records who changed it and between which two values.
   "lesson.preset_changed",
+  // Loosening a preset opens a proposal for a second person (or the sole-owner exception); a trial lesson earning "stable" is a grant (it makes the lesson publishable) and is recorded.
+  "lesson.preset_proposed",
+  "lesson.trial_stable",
   // Lane E (private MCP servers and project Sources): ids, fixed words and flags only. A server's label, address and token, and a source's id, never go in a fact.
   "mcp_server.added",
   "mcp_server.approved",
@@ -602,7 +605,9 @@ export const AUDIT_FACT_KEYS: Record<AuditAction, readonly string[]> = {
   "lesson.sole_owner_switch_proposed": ["fromEnabled", "toEnabled"],
   "lesson.sole_owner_switch_changed": ["fromEnabled", "toEnabled", "mode"],
   // `scope` is `project` or `company`; presets are `standard` or `regulated`.
-  "lesson.preset_changed": ["scope", "fromPreset", "toPreset"],
+  "lesson.preset_changed": ["scope", "fromPreset", "toPreset", "mode"],
+  "lesson.preset_proposed": ["scope", "fromPreset", "toPreset"],
+  "lesson.trial_stable": ["tier"],
   "mcp_server.added": ["transport", "hasCredential"],
   // approved also pins a package-run server's install: the tarball's integrity, the lockfile and bundle hashes, the tools hash the admin saw, how many addresses and secret names it was given, and the secret's version.
   "mcp_server.approved": ["transport", "hasCredential", "integrity", "lockfileHash", "bundleHash", "toolsHash", "destinationCount", "credentialCount", "credentialVersion"],

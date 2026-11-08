@@ -6,7 +6,7 @@ import {
 } from "@agentx/contracts";
 import { globToRegExp } from "./guards.js";
 import { safeScopeLabel } from "./render.js";
-import { approversRequired, modeAllows, resolveLearning, type ApprovalPolicy, type LearningPreset, type LearningSettingsReader } from "./policy.js";
+import { approversRequired, modeAllows, resolveLearning, type ApprovalPolicy, type LearningSettingsReader } from "./policy.js";
 import { isTrialLesson } from "./trial.js";
 import type { Embedder, LessonDeps, LessonVectors } from "./ports.js";
 import type { LessonStore, LoadManifest, LoadManifestEntry, ScopeKey } from "./store.js";
@@ -80,9 +80,10 @@ export function wilsonLower(helpful: number, loaded: number): number {
  * has turned automatic go-live on (and `resolveLearning` reads "auto" as "one" while that is off). A lesson sent back to a person (`reviewRequired`) needs at least one person whatever its tier.
  * This is a second line behind the status: an old row, a hand edit or a bug that left a lesson `active` without its approvals does not reach an agent.
  */
-export function approvedForUse(lesson: Lesson, policy: ApprovalPolicy, member: MemberOf = normId, preset: LearningPreset = "regulated"): boolean {
-  // A lesson live on trial or stable (DECISIONS 24) needs no person, but only while the preset in force is Standard and the lesson is not tier 2: switching to Regulated stops them at once (default: stopped).
-  if (isTrialLesson(lesson)) return preset === "standard" && lesson.tier < 2;
+export function approvedForUse(lesson: Lesson, policy: ApprovalPolicy, member: MemberOf = normId, trialAllowed = false): boolean {
+  // A lesson live on trial or stable (DECISIONS 24) needs no person, but only while every setting in force allows that (`ResolvedLearning.trialAllowed`: Standard, mode On, no company approval floor, no
+  // required group, no two-person requirement) and the lesson is not tier 2. A stricter setting stops them at once (default: stopped).
+  if (isTrialLesson(lesson)) return trialAllowed && lesson.tier < 2;
   const people = new Set(lesson.approvals.filter((a) => a.mode !== "auto" && a.mode !== "trial").map((a) => member(a.by))).size;
   if (lesson.tier === 2) return isTierTwoApproved(lesson, member);
   const needed = Math.max(approversRequired(lesson.tier, policy), lesson.reviewRequired === true ? 1 : 0);
@@ -92,7 +93,12 @@ export function approvedForUse(lesson: Lesson, policy: ApprovalPolicy, member: M
 /** A code citation the broker's own check found stale keeps its lesson out; the worker checks again at the base commit. */
 export const hasStaleCitation = (lesson: Lesson): boolean => (lesson.citationChecks ?? []).some((check) => check.result === "stale");
 
-const isTierTwoApproved = (lesson: Lesson, member: MemberOf = normId): boolean => lesson.tier === 2 && (new Set(lesson.approvals.filter((a) => a.mode !== "auto" && a.mode !== "trial").map((a) => member(a.by))).size >= 2 || lesson.approvals.some((a) => a.mode === "sole_owner_exception"));
+/**
+ * A tier-2 lesson loads after two different people approved it. The audited sole-owner exception stands in for the second person EXCEPT for a lesson that asks for a capability change (more tools,
+ * domains, budget or approvals): that text reaches the agent only after two people, always.
+ */
+const isTierTwoApproved = (lesson: Lesson, member: MemberOf = normId): boolean => lesson.tier === 2 && (new Set(lesson.approvals.filter((a) => a.mode !== "auto" && a.mode !== "trial").map((a) => member(a.by))).size >= 2
+  || (!lesson.tierReasons.includes("capability_request") && lesson.approvals.some((a) => a.mode === "sole_owner_exception")));
 
 /** Which lesson types a stage may load (design §4.7). Reviewer stages get only tier-2-approved review checks. */
 export function stageAllows(lesson: Lesson, stage: LessonStage, member: MemberOf = normId): boolean {
@@ -147,7 +153,7 @@ export async function loadLessonsForStage(deps: LoadDeps, request: LoadRequest):
     deps.metrics?.count("learning_load_skipped", { reason: "members_unavailable" });
     return empty("members_unavailable", setVersion);
   }
-  active = active.filter((l) => approvedForUse(l, resolved.approval, member, resolved.preset));
+  active = active.filter((l) => approvedForUse(l, resolved.approval, member, resolved.trialAllowed));
 
   // The access records, asked now for the places each candidate lesson was learned from (one batch for the whole load). A record that cannot be read loads nothing.
   if ((deps.access as AccessCheckPort | undefined) === undefined) {

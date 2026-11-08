@@ -59,7 +59,7 @@ export interface PullRequestBodyContext {
    * "Lessons used" (DECISIONS 24): the lessons the task loaded, each with the link that opens the task page ready to mark it not helpful (a page that asks, never a link that acts). Titles are the
    * lessons' own words and go through `inertLine`; only lessons of the project's own audience are listed (the description is read by everyone who can see the repository). Absent or empty: no section.
    */
-  lessonsUsed?: readonly LessonUsedEntry[] | undefined;
+  lessonsUsed?: LessonsUsedSection | undefined;
   /**
    * Setup and test health SH18 (only while `vx` is on; the caller builds it with `testingViewOf` and leaves it out otherwise): the Testing view of this code. Present, the description says `## Testing - <result>`
    * with one row per check instead of the `## Tests` lists, and the Proof table starts with the result. Absent, the description is exactly what it was.
@@ -69,12 +69,20 @@ export interface PullRequestBodyContext {
 
 /** One lesson the task loaded, for the description: its title and the https link to the task page that offers "not helpful" for it. */
 export interface LessonUsedEntry { title: string; notHelpfulUrl: string }
+/** The "Lessons used" section: how many lessons the task used, the task page's link, and the lessons themselves only where the repository is known to be private (`entries` is empty otherwise). */
+export interface LessonsUsedSection { count: number; taskUrl: string; entries: readonly LessonUsedEntry[] }
 const SAFE_LINK = /^https:\/\/[^\s()<>[\]\\]{1,500}$/u;
-/** The "Lessons used" section's lines, shrinking with the other lists: `limit` entries, then a count. */
-function lessonsUsedLines(used: readonly LessonUsedEntry[] | undefined, limit: number): string[] {
-  if (used === undefined || used.length === 0) return [];
-  const shown = used.slice(0, limit).map((entry) => `- ${inertLine(entry.title, 100)}${SAFE_LINK.test(entry.notHelpfulUrl) ? ` ([not helpful](${entry.notHelpfulUrl}))` : ""}`);
-  return ["## Lessons used", `Rovara used ${used.length} ${used.length === 1 ? "lesson" : "lessons"} from this project's record. Tell Rovara when one did not help.`, ...shown, ...(used.length > shown.length ? [`- and ${used.length - shown.length} more`] : []), ""];
+/** The "Lessons used" section's lines, shrinking with the other lists: `limit` entries, then a count. Version 1 and version 2 descriptions both use it. */
+export function lessonsUsedLines(used: LessonsUsedSection | undefined, limit: number): string[] {
+  if (used === undefined || used.count <= 0) return [];
+  const noun = used.count === 1 ? "lesson" : "lessons";
+  const link = SAFE_LINK.test(used.taskUrl) ? used.taskUrl : undefined;
+  if (used.entries.length === 0) {
+    // A public repository, or one whose visibility is unknown: no titles, one link (the task page, behind sign-in), so the lessons' words are not published to everyone who can read the code.
+    return ["## Lessons used", `Rovara used ${used.count} ${noun} from this project's record.${link === undefined ? "" : ` Review them, or tell Rovara one did not help, on the [task page](${link}).`}`, ""];
+  }
+  const shown = used.entries.slice(0, limit).map((entry) => `- ${inertLine(entry.title, 100)}${SAFE_LINK.test(entry.notHelpfulUrl) ? ` ([not helpful](${entry.notHelpfulUrl}))` : ""}`);
+  return ["## Lessons used", `Rovara used ${used.count} ${noun} from this project's record. Tell Rovara when one did not help.`, ...shown, ...(used.count > shown.length ? [`- and ${used.count - shown.length} more`] : []), ""];
 }
 
 const byteLength = (text: string) => Buffer.byteLength(text, "utf8");

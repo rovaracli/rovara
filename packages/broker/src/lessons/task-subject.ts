@@ -82,6 +82,8 @@ export function buildTaskReflectSubject(facts: TaskSubjectFacts): ReflectSubject
       // Unknown standing is an outsider's: its words are removed, and it never counts for a lesson.
       trust: authorId === undefined ? "outsider" as const : back.actorTrust ?? "outsider",
       eventId: back.id, ...(authorId === undefined ? {} : { authorId }),
+      // The fixed sentence is code's, not the person's: it is never a correction a lesson can rest on (the trial rule reads this).
+      ...(reason === undefined || reason === "" ? { fixedText: true as const } : {}),
     }];
   });
   // The caller's own `initiatorId` / `revertedBy` / `kind` / `id` (a field the type forbids but a cast could smuggle in) never reach the subject: only the ones computed above do.

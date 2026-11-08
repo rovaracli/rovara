@@ -49,7 +49,7 @@ import { withSpecLink } from "../../spec/link.js";
 import { loadTestingView } from "./testing-view.js";
 import { type WorkflowPublicationAuthority, approvedPlanForPullRequest, proofContextOfTask, pullRequestTitle, workflowPullRequestBody } from "./pull-request-body.js";
 import { recordPublishedCandidateOutcomes } from "./decide.js";
-import { lessonsUsedForTask } from "../../lessons/used-in-pr.js";
+import { lessonsUsedForTask, lessonsUsedSection } from "../../lessons/used-in-pr.js";
 import { stopIfOwnerRefused } from "./owner-stop.js";
 
 type LoadedPublicationProject = NonNullable<Awaited<ReturnType<DeveloperTaskActions["latestProject"]>>>;
@@ -248,10 +248,10 @@ export async function startTaskWorkflowPublicationFromSystem(
   // Setup and test health SH18: the Testing view of this code (only while `vx` is on; otherwise undefined and the description is what it was).
   const testing = rovaraV2 ? await loadTestingView(deps, task, workflow) : undefined;
   // Approve by exception (DECISIONS 24): the lessons this task used, each with a not-helpful link (none where lessons are off).
-  const lessonsUsed = rovaraV2 ? await lessonsUsedForTask({ orgId: deps.orgId, project: task.project, taskId, pageUrl: origin.taskPageUrl }) : [];
+  const lessonsUsed = lessonsUsedSection(await lessonsUsedForTask({ orgId: deps.orgId, project: task.project, taskId, pageUrl: origin.taskPageUrl }));
   const bodyContext: PullRequestBodyContext | undefined = rovaraV2
-    ? { changedFiles: await candidateChangedFiles(deps, task), ...(lessonsUsed.length === 0 ? {} : { lessonsUsed: lessonsUsed.map((l) => ({ title: l.title, notHelpfulUrl: l.notHelpfulUrl })) }), ...(testing === undefined ? {} : { testing }), ...(linearIssueKey === undefined ? {} : { linearIssueKey }), ...(proof === undefined ? {} : { proof }), ...(evidenceRisk === undefined ? {} : { evidenceRisk }), attribution: resolvedAttribution.attribution }
-    : { attribution: resolvedAttribution.attribution };
+    ? { changedFiles: await candidateChangedFiles(deps, task), ...(lessonsUsed === undefined ? {} : { lessonsUsed }), ...(testing === undefined ? {} : { testing }), ...(linearIssueKey === undefined ? {} : { linearIssueKey }), ...(proof === undefined ? {} : { proof }), ...(evidenceRisk === undefined ? {} : { evidenceRisk }), attribution: resolvedAttribution.attribution }
+    : { attribution: resolvedAttribution.attribution, ...(lessonsUsed === undefined ? {} : { lessonsUsed }) };
   const judged = rovaraV2 ? recomputeRisk(workflow, bodyContext?.changedFiles, {}, evidenceRisk) : workflow;
   // Linear reads the title as well as the body, and links a pull request by a bare key in it: no key may stand in a title Rovara writes.
   const title = pullRequestTitle(task.title, rovaraV2);

@@ -4,8 +4,12 @@
 // What this REPLACES for the trial path only: the pilot rule "a person approves every tier-0 lesson" (`TIER0_APPROVAL_DEFAULT` "one"), the cold-start guard (9 person-approved lessons),
 // the corroboration rule (Lesson limits #4) and LR-A1 as a switch-on gate. What stays: spike detection (a held source never trials), the project brake, outsider filtering, citation checks,
 // second-person rules for tier 2, and every escalation (checks, security, authority, spend) going to a person.
+//
+// Fix round 1 (Opus review): the lesson's WORDS must come from the member's correction and the cited code (`lessonClaimsSupported`), every cited span must be a member correction (`memberCorrectionOf`),
+// risky wording families and non-fact/convention/pitfall types never trial (`hasRiskyTrialWording`, `TRIAL_TYPES`), and a trial lesson is live only while every setting in force allows it
+// (`ResolvedLearning.trialAllowed`: Standard, mode On, no company approval floor, no required group, no two-person requirement).
 import { foldForMatching, isMeaningfulAnchor } from "@agentx/contracts";
-import { emitAudit, modeAllows, type LearningPreset, type LearningMode } from "./policy.js";
+import { modeAllows, requireAudit, type LearningPreset, type LearningMode } from "./policy.js";
 import type { LessonDeps } from "./ports.js";
 import { nextVersion, type LessonStore, type ScopeKey } from "./store.js";
 import type { Lesson } from "./types.js";
@@ -26,34 +30,117 @@ const AUTHORITY_OR_SPEND: readonly RegExp[] = [
 ];
 export const touchesAuthorityOrSpend = (...texts: readonly string[]): boolean => texts.map(foldForMatching).some((text) => AUTHORITY_OR_SPEND.some((pattern) => pattern.test(text)));
 
+/** The lesson types that may go on trial: statements of fact, convention and pitfall. A procedure, a preference or a review check is advice about HOW to work, and a person reads that first. */
+export const TRIAL_TYPES: ReadonlySet<Lesson["type"]> = new Set(["fact", "convention", "pitfall"]);
+
+/**
+ * Wording that never goes live on trial, in families (owner decision 24 + controller round 1: a trial lesson has no person, so the wording itself must be harmless). The families: merging, pushing, branches
+ * and history; skipping hooks, verification or CI; disabling tests, linters and type checks; production, credentials and the environment; logging or sending bodies, secrets and personal data; deleting
+ * migrations, data or history; widening permissions. Matching is broad on purpose: a lesson this catches only costs a person one tap. It runs on top of the tier-2 word lists (`guards.ts`).
+ */
+const RISKY_WORDING: readonly RegExp[] = [
+  // merging, pushing, branches and history
+  /\b(merg\w*|rebas\w*|squash\w*|cherry-?pick\w*|force\w*|amend\w*|revert\w*|push\w*|deploy\w*|releas\w*|publish\w*|rollout|roll\s*back|ship(s|ped|ping)?)\b/iu,
+  /(?<![\w./-])(main|master|trunk|develop)\b(?![\w/-]|\.\w)/iu,
+  /\b(default|protected|release|production|upstream|shared)\s+branch(es)?\b/iu,
+  /\bcommit\w*\b[^.\n]{0,40}\b(straight|direct\w*|main|master|trunk|branch|without|skip\w*)\b/iu,
+  /\b(straight|directly)\s+(to|into|on)\b/iu,
+  /\b(anyway|regardless|despite|even\s+if|even\s+when|no\s+matter|at\s+any\s+cost)\b/iu,
+  // hooks, verification, CI
+  /(^|\s)--?no-?[a-z]+|\bno[- ]verify\b|\b(hooks?|pre-?commit|pre-?push|husky|lefthook|verif\w*)\b/iu,
+  /\bci(\/cd)?\b|\bcontinuous\s+integration\b|\bpipelines?\b/iu,
+  // disabling a safeguard (either order)
+  /\b(disabl\w*|skip\w*|bypass\w*|turn(?:ing|s|ed)?\s+off|switch\w*\s+off|silenc\w*|suppress\w*|comment(?:ing|ed)?\s+out|ignor\w*|mut(?:e|ed|ing)|loosen\w*|relax\w*|weaken\w*|remov\w*|delet\w*|drop\w*)\b[^.\n]{0,50}\b(tests?|specs?|lint\w*|eslint|prettier|type[- ]?check\w*|typecheck\w*|tsc|strict\w*|checks?|assert\w*|coverage|guards?|validation|warnings?|safeguards?|protection|signing|verif\w*)\b/iu,
+  /\b(tests?|specs?|lint\w*|eslint|prettier|type[- ]?check\w*|typecheck\w*|tsc|strict\w*|checks?|assert\w*|coverage|guards?|validation|warnings?|safeguards?|protection|signing|verif\w*)\b[^.\n]{0,50}\b(disabl\w*|skip\w*|bypass\w*|off|silenc\w*|suppress\w*|ignor\w*|optional|unnecessary|not\s+needed)\b/iu,
+  /\bts-?(ignore|expect-error|nocheck)\b|@ts-|eslint-disable|\bnoqa\b|\bnolint\b/iu,
+  // production, accounts, credentials, the environment
+  /\b(prod|production|staging|pre-?prod|live\s+(data|database|db|environment|env|system|server|traffic|account|cluster|bucket|table|customers?))\b/iu,
+  /\b(accounts?\s*ids?|aws\s+accounts?|tenants?\s*ids?)\b|\b\d{9,}\b/iu,
+  /\b(environment|envs?)\b|\.env\b|dotenv/iu,
+  /\b(secrets?|credentials?|tokens?|passwords?|passwd|api[-\s]?keys?|private\s+keys?|certificates?|cookies?|bearer)\b/iu,
+  // logging or sending data out
+  /\blog(?:s|ged|ging)?\b[^.\n]{0,60}\b(request|response|body|bodies|payload|headers?|cookies?|users?|customers?|pii|personal|emails?|data|env\w*|stack\s?traces?|secrets?|tokens?|full|entire|whole|all)\b/iu,
+  /\b(requests?|responses?|body|bodies|payloads?|headers?|pii|personal|customers?|stack\s?traces?)\b[^.\n]{0,40}\blog(?:s|ged|ging)?\b/iu,
+  /\b(webhooks?|telemetry|analytics|exfil\w*|third[- ]part(y|ies)|external\s+(service|endpoint|api|server)|upload\w*|export\w*|dump\w*|stack\s?traces?|backtraces?|core\s?dump|heap\s?dump|screenshots?|send\w*\s+(it|them|the|all)\b[^.\n]{0,40}\bto)\b/iu,
+  /\b(customers?|pii|personal(ly)?|gdpr|hipaa|ssn|medical|financial|credit\s+card|real\s+data|sensitive|confidential)\b/iu,
+  // deleting migrations, data, history
+  /\b(delet\w*|drop\w*|truncat\w*|wip(?:e|es|ed|ing)|purg\w*|destroy\w*|eras(?:e|es|ed|ing)|obliterat\w*|nuk(?:e|es|ed|ing)|clobber\w*|overwrit\w*|prun(?:e|es|ed|ing)|rm)\b/iu,
+  /\b(remov\w*|clear\w*|clean\w*)\b[^.\n]{0,40}\b(migrations?|tables?|databases?|data|history|branch\w*|backups?|snapshots?|logs?|records?|rows?|volumes?|buckets?)\b/iu,
+  // widening permissions
+  /\b(permissions?|privileg\w*|iam|roles?|admins?|sudo|root\s+(user|access|account)|chmod|chown|grants?|allow-?lists?|acl|wildcards?|cors|firewall|ingress|egress|security\s+groups?|0\.0\.0\.0|everyone|anonymous|unauthenticated|widen\w*|broaden\w*|escalat\w*)\b/iu,
+  /\bpublic(ly)?\s+(access\w*|read\w*|writ\w*|bucket|url|endpoint|internet)\b|\bopen\s+(up\s+)?to\s+(the\s+)?(world|internet|public|everyone)\b/iu,
+];
+/** Whether any of the lesson's words is in a family no trial lesson may use. */
+export const hasRiskyTrialWording = (...texts: readonly string[]): boolean => texts.map(foldForMatching).some((text) => RISKY_WORDING.some((pattern) => pattern.test(text)));
+
+/**
+ * Key identifiers of a lesson's text: the tokens a reader could check against the correction or the code. A path (has a slash), a file name, a snake_case or camelCase or PascalCase name, an
+ * UPPER_SNAKE constant, a command-line flag. Plain words are not key identifiers.
+ */
+export function keyIdentifiers(...texts: readonly string[]): string[] {
+  const found = new Set<string>();
+  for (const text of texts) {
+    for (const raw of foldForMatching(text).split(/[\s,;:()[\]{}<>"'`]+/u)) {
+      const token = raw.replace(/^[^\w@/.-]+|[.,;:!?)-]+$/gu, "");
+      if (token.length < 3 || token.length > 120 || NOT_IDENTIFIERS.has(token.toLowerCase()) || /^v?\d+(\.\d+)*$/u.test(token)) continue;
+      const identifier = token.includes("/") || /^--?[a-z][\w-]*$/iu.test(token) || /^[\w-]{2,}(\.[\w-]+)+$/u.test(token) || /[A-Za-z0-9]_[A-Za-z0-9]/u.test(token) || /[a-z][A-Z]/u.test(token) || /^[A-Z][a-z0-9]+[A-Z][A-Za-z0-9]*$/u.test(token);
+      if (identifier) found.add(token.toLowerCase());
+    }
+  }
+  return [...found];
+}
+const NOT_IDENTIFIERS: ReadonlySet<string> = new Set(["and/or", "either/or", "w/o", "n/a", "i/o", "etc.", "e.g", "i.e"]);
+/** The literal front part of a path glob (`src/retry/**` gives `src/retry/`), or undefined for a glob with no literal part. */
+const globPrefix = (glob: string): string | undefined => { const literal = glob.split(/[*?[{]/u)[0]!.replace(/^\.\//u, ""); return literal.length >= 2 ? literal.toLowerCase() : undefined; };
+
+/**
+ * Whether the lesson's claims rest on what the member said and the code the lesson cites, and on nothing else (the second half of the trial rule; owner decision 24 accepts planted text that arrives
+ * through a member's correction, not text that arrives from elsewhere). Deterministic: the lesson names at least one key identifier, and EVERY identifier it names (and the literal front of every path
+ * in its scope) appears in the member's correction text or in a cited code path or anchor. A lesson whose key words appear nowhere in those is the model's own, or came from text it read and did not cite.
+ */
+export function lessonClaimsSupported(lesson: { title: string; description: string; body: string; scopePaths?: readonly string[] }, support: { correctionTexts: readonly string[]; code: ReadonlyArray<{ path: string; anchor: string }> }): boolean {
+  const haystack = foldForMatching([...support.correctionTexts, ...support.code.flatMap((c) => [c.path, c.anchor])].join("\n")).toLowerCase();
+  const identifiers = keyIdentifiers(lesson.title, lesson.description, lesson.body);
+  if (identifiers.length === 0 || !identifiers.every((id) => haystack.includes(id))) return false;
+  return (lesson.scopePaths ?? []).every((glob) => { const prefix = globPrefix(glob); return prefix === undefined || haystack.includes(prefix); });
+}
+
 export interface TrialContext {
   /** The preset in force (the stricter of company and project). */
   preset: LearningPreset;
   mode: LearningMode;
+  /** `ResolvedLearning.trialAllowed`: false when a stricter setting (a company approval floor, a required group, a two-person requirement) asks for a person. */
+  trialAllowed: boolean;
   /** The lesson contradicts another, is a refinement, was sent back to a person, is held by a paused source, or the project brake is on: a person decides. */
   contradiction: boolean; refinement: boolean; reviewRequired: boolean; held: boolean; braked: boolean;
 }
 
 /**
  * Why a lesson may not go live on trial, as fixed codes; empty means it may. `tier` is the tier decision already made for the lesson (tier 2 and "never" are people's, whatever else is true).
- * Every code is checked by code, from fields code set: the verified citations, the tier, the cited member sources (`provenance.memberCorrection`) and the lesson's scope and text.
+ * Every code is checked by code, from fields code set: the verified citations, the tier, the cited member sources (`provenance.memberCorrection`), the lesson's claims against them
+ * (`provenance.claimsSupported`), and the lesson's scope, type and text. It is asked twice: when the lesson is settled, and again on the stored lesson just before it goes live.
  */
 export function trialBlockers(lesson: Lesson, tier: Lesson["tier"], context: TrialContext): string[] {
   const why: string[] = [];
   if (context.preset !== "standard") why.push("preset_regulated");
   if (!modeAllows(context.mode, "auto_apply")) why.push("mode_not_on");
+  if (context.preset === "standard" && modeAllows(context.mode, "auto_apply") && !context.trialAllowed) why.push("stricter_setting");
   if (tier === 2) why.push("needs_two_people");
+  if (!TRIAL_TYPES.has(lesson.type)) why.push("type_not_allowed");
   if (lesson.provenance.minTrust === "outsider") why.push("outsider_source");
   if (lesson.provenance.memberCorrection !== true) why.push("not_member_correction");
+  if (lesson.provenance.claimsSupported !== true) why.push("claims_not_supported");
   if (lesson.provenance.audience.kind !== "project") why.push("restricted_source");
   if (lesson.type === "review_check") why.push("review_check");
   const checks = lesson.citationChecks ?? [];
   const code = lesson.citations.flatMap((c, index) => (c.kind === "code" ? [{ c, index }] : []));
   if (code.length === 0) why.push("no_code_citation");
   if (code.some(({ c, index }) => !isMeaningfulAnchor(c.anchor) || !checks.some((check) => check.index === index && check.result === "valid"))) why.push("citations_not_verified");
+  // One repository, and every code citation in it: a check in repository A is no evidence for repository B.
   const repos = lesson.scope.repos ?? [];
-  if (repos.length === 0 || code.some(({ c }) => !repos.includes(c.repo))) why.push("scope_not_repo");
+  if (repos.length !== 1 || code.some(({ c }) => c.repo !== repos[0])) why.push("scope_not_repo");
   if (touchesAuthorityOrSpend(lesson.title, lesson.description, lesson.body, ...(lesson.scope.paths ?? []))) why.push("touches_authority_or_spend");
+  if (hasRiskyTrialWording(lesson.title, lesson.description, lesson.body)) why.push("risky_wording");
   if (context.contradiction) why.push("contradiction");
   if (context.refinement) why.push("refinement");
   if (context.reviewRequired) why.push("review_required");
@@ -80,12 +167,11 @@ export async function promoteIfStable(deps: StableDeps, key: ScopeKey, lessonId:
   for (let attempt = 0; attempt < 3; attempt += 1) {
     const fresh = await deps.store.get(key, lessonId);
     if (fresh === undefined || !trialIsStable(fresh, now)) return false;
+    // Stable is what makes a lesson publishable to a repository, so it is a grant: the ledger entry is written first, and a promotion that cannot be recorded does not happen (it is tried again later).
+    if (!(await requireAudit(deps.audit, { action: "lesson.trial_stable", workspaceId: key.workspaceId, project: key.project, lessonId: fresh.id, facts: { tier: fresh.tier } }))) return false;
     const setVersion = await deps.store.setVersion(key);
     const result = await deps.store.commit(key, setVersion, [{ ...fresh, trial: { ...fresh.trial!, state: "stable", stableAt: now }, version: nextVersion(fresh, await deps.store.versions(key, fresh.id)), updatedAt: now }], now);
-    if (result.ok) {
-      await emitAudit(deps.audit, { action: "lesson.trial_stable", workspaceId: key.workspaceId, project: key.project, lessonId: fresh.id, facts: { tier: fresh.tier } });
-      return true;
-    }
+    if (result.ok) return true;
   }
   return false;
 }
@@ -102,11 +188,14 @@ export async function promoteStableTrials(deps: StableDeps, key: ScopeKey, limit
 }
 
 /**
- * What repository publishing (lane 6) may publish: a lesson that is stable, live, from a task shared with the project and a project-wide source, and whose text names no person. Names are
- * matched against `names` (the display names of the people the lesson names, which the caller reads), and an @handle or an e-mail address always counts as a name. Anything unknown is false.
+ * What repository publishing (lane 6) may publish: a lesson that is stable, live, from a task shared with the project and a project-wide source, still sound (not tier 2, no send-back to a person, no
+ * retire proposal, no thumbs-down or wrong-here mark), and whose text names no person. Names are matched against `names` (REQUIRED: the display names of the people the lesson could name, which the
+ * caller reads; an empty list is a statement that the caller found none), and an @handle or an e-mail address always counts as a name. Anything unknown is false. The caller still checks the preset in
+ * force (`ResolvedLearning.trialAllowed`: under Regulated nothing is published) and that the people who will read the repository may read the lesson (`readVisible`).
  */
-export function isPublishable(lesson: Lesson, names: readonly string[] = []): boolean {
+export function isPublishable(lesson: Lesson, names: readonly string[]): boolean {
   if (lesson.trial?.state !== "stable" || lesson.status !== "active" || lesson.provenance.fromSharedTask !== true || lesson.provenance.audience.kind !== "project") return false;
+  if (lesson.tier >= 2 || lesson.reviewRequired === true || lesson.retireProposedAt !== undefined || lesson.counters.harmful > 0) return false;
   return !namesAPerson([lesson.title, lesson.description, lesson.body].join("\n"), names);
 }
 /** Whether a text names a person: an @handle, an e-mail address, or any of the given display names as a whole word (case and look-alikes folded). */

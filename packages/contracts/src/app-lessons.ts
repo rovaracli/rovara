@@ -156,7 +156,8 @@ export const LoadedLessonRowSchema = z.object({
   /** Live on trial or stable with no approval: the row offers the one-tap thumbs-down. */
   trial: z.enum(["trial", "stable"]).optional(),
 }).strict();
-export const LoadedLessonsSchema = z.object({ lessons: z.array(LoadedLessonRowSchema).max(500) }).strict();
+/** `canThumbsDown`: the caller has a role in the project and may write, so the task page offers the one-tap thumbs-down only to someone it will work for. Absent (an older broker): offered, and the broker decides. */
+export const LoadedLessonsSchema = z.object({ lessons: z.array(LoadedLessonRowSchema).max(500), canThumbsDown: z.boolean().optional() }).strict();
 export const LoadedLessonsReaderSchema = forwardReader(LoadedLessonsSchema);
 
 // ---- request bodies
@@ -173,9 +174,14 @@ export const LessonResumeSourceBodySchema = z.object({ source: z.string().min(1)
 export const LessonResumeAnswerSchema = z.object({ resumed: z.boolean(), settled: z.number().int().min(0) }).strict();
 export const LessonResumeAnswerReaderSchema = forwardReader(LessonResumeAnswerSchema);
 export const LessonFeedbackBodySchema = z.object({ kind: z.enum(["helpful", "wrong_here", "thumbs_down"]) }).strict();
-/** A maintainer makes the project's learning stricter: Regulated means no lesson goes live without a person. Going back to Standard is not offered here (loosening needs the second-person steps). */
-export const LessonPresetBodySchema = z.object({ preset: z.literal("regulated") }).strict();
-export const LessonPresetAnswerSchema = z.object({ preset: z.enum(["standard", "regulated"]), changed: z.boolean() }).strict();
+/**
+ * Sets the preset of a project (a maintainer or admin) or of the company (an admin). Regulated applies at once. Standard is a loosening: it opens a proposal that a different maintainer or admin approves
+ * (or the only eligible person, through the sole-owner exception), like the tier-0 approval setting.
+ */
+export const LessonPresetBodySchema = z.object({ preset: z.enum(["standard", "regulated"]) }).strict();
+export const LessonPresetChangeBodySchema = z.object({ changeId: z.string().min(1).max(100) }).strict();
+/** `needsApproval` with a `changeId`: the change is a proposal waiting for a second person; `preset` is then the value still in force. */
+export const LessonPresetAnswerSchema = z.object({ preset: z.enum(["standard", "regulated"]), changed: z.boolean(), needsApproval: z.boolean().optional(), changeId: z.string().min(1).max(100).optional() }).strict();
 export const LessonPresetAnswerReaderSchema = forwardReader(LessonPresetAnswerSchema);
 
 export const LessonApproveAnswerSchema = z.object({ status: z.enum(["active", "pending"]), needs: z.enum(["nothing", "second_person", "group_member"]) }).strict();

@@ -13,7 +13,7 @@ import { isMeaningfulAnchor } from "@agentx/contracts";
 import type { LessonDraft } from "./reflect.js";
 import { nextVersion, type ScopeKey } from "./store.js";
 import { classifyTier, type TierContext } from "./tier.js";
-import { TRIAL_APPROVER, trialBlockers } from "./trial.js";
+import { TRIAL_APPROVER, trialBlockers, type TrialContext } from "./trial.js";
 import { sameSource, type Lesson } from "./types.js";
 
 export interface ProcessDeps extends CurateDeps {
@@ -99,10 +99,11 @@ export async function settleLesson(deps: ProcessDeps, key: ScopeKey, lessonId: s
     const brakeOn = projectBrakeOn(flags, deps.now());
     // Approve by exception (DECISIONS 24): a low-risk lesson from a member's own correction with verified citations goes live on trial with no approval and no corroboration. Anything the rules
     // send to a person (tier 2, a contradiction, a refinement, a held or braked source, the Regulated preset) is decided by the old rules below.
-    const trialWhy = trialBlockers(verified, decision.tier, {
-      preset: resolved.preset, mode: resolved.mode, contradiction: context.contradiction === true, refinement: current.supersedes !== undefined,
-      reviewRequired: options.noAutoApply === true || current.reviewRequired === true, held, braked: brakeOn,
+    const trialContext = (settings: Pick<typeof resolved, "preset" | "mode" | "trialAllowed">, braked: boolean, heldNow: boolean): TrialContext => ({
+      preset: settings.preset, mode: settings.mode, trialAllowed: settings.trialAllowed, contradiction: context.contradiction === true, refinement: current.supersedes !== undefined,
+      reviewRequired: options.noAutoApply === true || current.reviewRequired === true, held: heldNow, braked,
     });
+    const trialWhy = trialBlockers({ ...verified, ...(decision.tier === 0 && decision.rendered !== undefined ? { title: decision.rendered.title, description: decision.rendered.description, body: decision.rendered.body } : {}) }, decision.tier, trialContext(resolved, brakeOn, held));
     const trial = trialWhy.length === 0;
     const earned = trial || (earnedAttention(verified, decision.tier, decision.reasons) && (!held || current.status === "pending"));
     // The project brake (L7-2): while the volume alert is fresh, a tier-0 lesson that WOULD have applied by itself is sent to a person instead, and stays with a person (no source is paused).
@@ -119,18 +120,29 @@ export async function settleLesson(deps: ProcessDeps, key: ScopeKey, lessonId: s
     if (!result.ok) continue;
     if (next.status === "pending" && current.status !== "pending" && !trial) await emitAudit(deps.audit, { action: "lesson.pending", workspaceId: key.workspaceId, project: key.project, lessonId, facts: { tier: next.tier, ...(decision.reasons.includes("capability_request") ? { reason: "capability_request" } : {}) } });
 
-    // Trial: pending only for the moment it takes to go live; if it cannot (the audit is down, the settings changed, a newer version landed), a person decides it.
+    // Trial: pending only for the moment it takes to go live; if it cannot (the audit is down, the settings changed, the lesson no longer passes, a newer version landed), a person decides it, and
+    // says so in the ledger (`lesson.pending`, which is skipped above for the trial path).
     if (trial && next.status === "pending") {
+      const toPerson = async (reason: string): Promise<Lesson | undefined> => {
+        await emitAudit(deps.audit, { action: "lesson.pending", workspaceId: key.workspaceId, project: key.project, lessonId, facts: { tier: next.tier, reason } });
+        return deps.store.get(key, lessonId);
+      };
+      // The settings are read AGAIN at the moment of go-live, and the trial rules run AGAIN on the lesson as stored: its text (tier 0 text is rendered), its flags, the brake and the pause flags as they are now.
       const again = await resolveLearning(deps.settings, key.workspaceId, key.project);
-      if (again.preset !== "standard" || !modeAllows(again.mode, "auto_apply")) return deps.store.get(key, lessonId);
-      if (projectBrakeOn(await deps.store.flags(key), deps.now())) { deps.metrics?.count("learning_trial_held", { reason: "project_brake" }); return deps.store.get(key, lessonId); }
+      const stored = await deps.store.get(key, lessonId);
+      if (stored === undefined || stored.version !== next.version) return stored;
+      const flagsNow = await deps.store.flags(key);
+      const brakedNow = projectBrakeOn(flagsNow, deps.now());
+      if (brakedNow) deps.metrics?.count("learning_trial_held", { reason: "project_brake" });
+      const recheck = trialBlockers(stored, stored.tier, trialContext(again, brakedNow, isHeldBySource(flagsNow, attributableSources(stored.provenance))));
+      if (recheck.length > 0) return toPerson("trial_recheck");
       try {
-        const live = await activateLesson(deps, key, next, [{ approvalId: `trial-${lessonId}`, by: TRIAL_APPROVER, at: deps.now(), mode: "trial" }], again.expiryDays, "lesson.trial_started", { version: next.version, setVersion: result.setVersion });
+        const live = await activateLesson(deps, key, stored, [{ approvalId: `trial-${lessonId}`, by: TRIAL_APPROVER, at: deps.now(), mode: "trial" }], again.expiryDays, "lesson.trial_started", { version: stored.version, setVersion: result.setVersion });
         if (live !== undefined) return live;
       } catch (error) {
         if (!(error instanceof AuditUnavailable)) throw error;
       }
-      return deps.store.get(key, lessonId);
+      return toPerson("trial_not_started");
     }
 
     // Auto-apply: tier 0, corroborated, not held, not a refinement of an existing lesson, and the policy and mode allow it.

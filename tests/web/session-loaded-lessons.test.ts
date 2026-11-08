@@ -112,6 +112,15 @@ it("a lesson on trial offers a one-tap thumbs-down (not Wrong here); it sends on
  s.close();
 });
 
+it("L6: the thumbs-down is not offered when the broker says it will not work for this person (no role in the project); the rest of the row stays", async () => {
+ const s = setup(async request => rules(request) ?? { status: 200, body: { ...loaded([loadedRow({ trial: "trial" })]), canThumbsDown: false } });
+ await open();
+ const section = await screen.findByRole("region", { name: "Lessons the agent loaded" });
+ expect(section.textContent).toContain("On trial");
+ expect(screen.queryByRole("button", { name: /Not helpful \(thumbs down\)/u })).toBeNull();
+ s.close();
+});
+
 it("the pull request's link (?notHelpful=<lesson>) opens the page asking, and marks nothing by itself", async () => {
  const sent: unknown[] = [];
  const s = setup(async request => {

@@ -413,6 +413,22 @@ describe("approve by exception: trial marks and the preset", () => {
   expect(f.lessonWrites().map(request => request.path)).toEqual([LESSONS_PATH + "/preset"]);
   expect(f.lessonWrites()[0]!.body).toEqual({ preset: "regulated" });
  });
+ it("going back to Standard asks a different maintainer or admin (it is a loosening): the button appears under Regulated, sends the Standard preset and says the change is waiting", async () => {
+  let body: unknown;
+  const f = await openLessons({
+   state: { view: view({ preset: "regulated", presetLockedByCompany: false }) },
+   lessons: (request, url) => { if (request.method === "POST" && url.pathname === LESSONS_PATH + "/preset") { body = request.body;return ok({ preset: "regulated", changed: false, needsApproval: true, changeId: "chg-1" }); }return undefined; },
+  });
+  expect(screen.queryByRole("button", { name: "Require a person for every lesson" })).toBeNull();
+  fireEvent.click(screen.getByRole("button", { name: "Allow lessons on trial again" }));
+  await screen.findByText(/A different maintainer or admin has to approve going back to Standard/u);
+  expect(body).toEqual({ preset: "standard" });
+  expect(f.lessonWrites().map(request => request.path)).toEqual([LESSONS_PATH + "/preset"]);
+ });
+ it("when the company requires Regulated there is no way back from a project", async () => {
+  await openLessons({ state: { view: view({ preset: "regulated", presetLockedByCompany: true }) } });
+  expect(screen.queryByRole("button", { name: "Allow lessons on trial again" })).toBeNull();
+ });
  it("says the company requires Regulated and offers no button; a reader who cannot decide sees the sentence and no button", async () => {
   await openLessons({ state: { view: view({ preset: "regulated", presetLockedByCompany: true }) } });
   expect(screen.getByText(/Regulated: every lesson waits for a person/u)).toBeTruthy();

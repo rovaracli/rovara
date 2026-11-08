@@ -261,7 +261,7 @@ export interface GitHubWebhookRepositoryScope {
   fullName: string;
 }
 
-export interface GitHubRepositoryIdentity { repositoryId: number; fullName: string; defaultBranch?: string }
+export interface GitHubRepositoryIdentity { repositoryId: number; fullName: string; defaultBranch?: string; private?: boolean }
 
 const INSTALLATION_REPOSITORY_PAGES = 10;
 
@@ -457,7 +457,7 @@ export class GitHubAppCredentialProvider {
     if (!Number.isSafeInteger(record.id) || typeof record.full_name !== "string" || record.full_name.toLowerCase() !== expectedFullName.toLowerCase()) {
       throw agentXError("RUNTIME_UNAVAILABLE", "GitHub returned an invalid repository identity");
     }
-    return { repositoryId: record.id as number, fullName: record.full_name, ...(typeof record.default_branch === "string" ? { defaultBranch: record.default_branch } : {}) };
+    return { repositoryId: record.id as number, fullName: record.full_name, ...(typeof record.default_branch === "string" ? { defaultBranch: record.default_branch } : {}), ...(typeof record.private === "boolean" ? { private: record.private } : {}) };
   }
 
   async issueCredentials(

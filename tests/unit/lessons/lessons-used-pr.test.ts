@@ -1,13 +1,15 @@
-// Approve by exception (DECISIONS 24): the pull request description lists the lessons the task used, with a link per lesson to mark it not helpful. The link opens the task page (a page that asks);
-// the list shrinks with the other lists, the markers stay, titles are inert, a restricted lesson is never named.
+// Approve by exception (DECISIONS 24): the pull request description says how many lessons the task used. For a repository KNOWN to be private it lists them, with a link per lesson to mark it not helpful
+// (the link opens the task page, a page that asks); for a public repository or one of unknown visibility it carries only the count and one link (H4). Version 1 and version 2 descriptions both have it (M5).
+// The list shrinks with the other lists, the markers stay, titles are inert, a restricted lesson is never named.
 import { randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import { WorkflowSnapshotSchema, createCandidateManifest, createWorkflowSnapshot } from "../../../packages/contracts/src/task-workflow-node.js";
 import { workflowPullRequestStatusLines } from "../../../packages/broker/src/aws/developer-tasks.js";
 import { rovaraPullRequestBody, ROVARA_STATUS_END, ROVARA_STATUS_START, PULL_REQUEST_BODY_MAX_BYTES } from "../../../packages/broker/src/rovara-code/pull-request-body.js";
-import { lessonsUsedForTask, lessonsUsedReaderOver, notHelpfulUrl, setLessonsUsedReader } from "../../../packages/broker/src/lessons/used-in-pr.js";
+import { repositoryVisibilityOf } from "../../../packages/broker/src/aws/broker/lessons-wiring.js";
+import { lessonsUsedForTask, lessonsUsedReaderOver, lessonsUsedSection, notHelpfulUrl, setLessonsUsedReader, visibilityOfRepositories } from "../../../packages/broker/src/lessons/used-in-pr.js";
 import { InMemoryLessonStore, type LoadManifest } from "../../../packages/broker/src/lessons/store.js";
-import { KEY, PROJECT, WS, allowAllAccess, draft, lessonRecord, seed, settings } from "./lesson-helpers.js";
+import { PROJECT, WS, allowAllAccess, draft, lessonRecord, seed, settings } from "./lesson-helpers.js";
 
 const now = "2026-10-25T12:00:00.000Z";
 const code = createCandidateManifest([{ repositoryId: "payments", commitSha: "1".repeat(40), treeSha: "1".repeat(40), baseCommitSha: "e".repeat(40) }]);
@@ -21,11 +23,12 @@ const workflow = WorkflowSnapshotSchema.parse({
 });
 const PAGE = "https://app.example.test/review/8b579b4b-eaa7-4bf2-87bc-6da86b97c9e6/task";
 const entry = (id: string, title = `Lesson ${id}`) => ({ title, notHelpfulUrl: notHelpfulUrl(PAGE, id)! });
+const section = (entries: Array<{ title: string; notHelpfulUrl: string }>, count = entries.length) => ({ count, taskUrl: PAGE, entries });
 const context = { changedFiles: { files: [{ repository: "payments", path: "src/retry.ts", added: 3, removed: 1 }], complete: true } };
 
 describe("the description's Lessons used section", () => {
   it("lists each lesson with a not-helpful link to the task page, inside the marked block", () => {
-    const body = rovaraPullRequestBody({ summary: ["Retry the call."], fallbackTitle: "t", workflow, context: { ...context, lessonsUsed: [entry("les_aaaa1111", "Retries use withRetry"), entry("les_bbbb2222")] }, reviewLines: () => [], pageUrl: PAGE });
+    const body = rovaraPullRequestBody({ summary: ["Retry the call."], fallbackTitle: "t", workflow, context: { ...context, lessonsUsed: section([entry("les_aaaa1111", "Retries use withRetry"), entry("les_bbbb2222")]) }, reviewLines: () => [], pageUrl: PAGE });
     const block = body.slice(body.indexOf(ROVARA_STATUS_START), body.indexOf(ROVARA_STATUS_END));
     expect(block).toContain("## Lessons used");
     expect(block).toContain(`- Retries use withRetry ([not helpful](${PAGE}?notHelpful=les_aaaa1111))`);
@@ -33,15 +36,37 @@ describe("the description's Lessons used section", () => {
     expect(body.indexOf("## Lessons used")).toBeLessThan(body.indexOf("## Risk"));
   });
 
+  it("H4: with no titles (a public repository, or visibility unknown) the section is the count and ONE link to the task page", () => {
+    const lines = workflowPullRequestStatusLines(workflow, { ...context, lessonsUsed: { count: 3, taskUrl: PAGE, entries: [] } }).join("\n");
+    expect(lines).toContain("## Lessons used");
+    expect(lines).toContain("Rovara used 3 lessons from this project's record.");
+    expect(lines).toContain(`[task page](${PAGE})`);
+    expect(lines).not.toContain("notHelpful");
+    expect(lines.split(PAGE).length - 1).toBe(1);
+    expect(workflowPullRequestStatusLines(workflow, { ...context, lessonsUsed: { count: 1, taskUrl: "http://insecure.test/x", entries: [] } }).join("\n")).not.toContain("http://insecure.test");
+  });
+
+  it("M5: a version 1 description has the section too (same rule)", () => {
+    const v1 = WorkflowSnapshotSchema.parse({ ...workflow, definitionVersion: "1.0.0" });
+    expect(v1.definitionVersion).not.toBe("1.1.0");
+    const withTitles = workflowPullRequestStatusLines(v1, { lessonsUsed: section([entry("les_aaaa1111", "Retries use withRetry")]) }).join("\n");
+    expect(withTitles).toContain("## Lessons used");
+    expect(withTitles).toContain(`- Retries use withRetry ([not helpful](${PAGE}?notHelpful=les_aaaa1111))`);
+    const countOnly = workflowPullRequestStatusLines(v1, { lessonsUsed: { count: 2, taskUrl: PAGE, entries: [] } }).join("\n");
+    expect(countOnly).toContain("Rovara used 2 lessons");
+    expect(countOnly).not.toContain("notHelpful");
+    expect(workflowPullRequestStatusLines(v1, {}).join("\n")).not.toContain("Lessons used");
+  });
+
   it("rewrites with the status block after a fix, and has no section when no lesson was used", () => {
-    expect(workflowPullRequestStatusLines(workflow, { ...context, lessonsUsed: [entry("les_aaaa1111")] }).join("\n")).toContain("## Lessons used");
+    expect(workflowPullRequestStatusLines(workflow, { ...context, lessonsUsed: section([entry("les_aaaa1111")]) }).join("\n")).toContain("## Lessons used");
     expect(workflowPullRequestStatusLines(workflow, context).join("\n")).not.toContain("Lessons used");
-    expect(workflowPullRequestStatusLines(workflow, { ...context, lessonsUsed: [] }).join("\n")).not.toContain("Lessons used");
+    expect(workflowPullRequestStatusLines(workflow, { ...context, lessonsUsed: section([], 0) }).join("\n")).not.toContain("Lessons used");
   });
 
   it("titles are inert (no mention, no link, no hidden comment) and a link that is not https is left out", () => {
     const hostile = "Use <!-- x --> [click](https://evil.example) @mallory";
-    const lines = workflowPullRequestStatusLines(workflow, { ...context, lessonsUsed: [{ title: hostile, notHelpfulUrl: PAGE + "?notHelpful=les_aaaa1111" }, { title: "plain", notHelpfulUrl: "javascript:alert(1)" }] }).join("\n");
+    const lines = workflowPullRequestStatusLines(workflow, { ...context, lessonsUsed: section([{ title: hostile, notHelpfulUrl: PAGE + "?notHelpful=les_aaaa1111" }, { title: "plain", notHelpfulUrl: "javascript:alert(1)" }]) }).join("\n");
     expect(lines).not.toContain("<!--");
     expect(lines).not.toContain("https://evil.example");
     expect(lines).not.toMatch(/@mallory/u);
@@ -51,7 +76,7 @@ describe("the description's Lessons used section", () => {
 
   it("many lessons shrink to fit: the body stays under the cap with its markers", () => {
     const many = Array.from({ length: 300 }, (_, i) => entry(`les_${String(i).padStart(8, "0")}`, "A".repeat(100)));
-    const body = rovaraPullRequestBody({ summary: ["x".repeat(400)], fallbackTitle: "t", workflow, context: { ...context, lessonsUsed: many }, reviewLines: () => [], pageUrl: PAGE });
+    const body = rovaraPullRequestBody({ summary: ["x".repeat(400)], fallbackTitle: "t", workflow, context: { ...context, lessonsUsed: section(many) }, reviewLines: () => [], pageUrl: PAGE });
     expect(Buffer.byteLength(body)).toBeLessThanOrEqual(PULL_REQUEST_BODY_MAX_BYTES);
     expect(body).toContain(ROVARA_STATUS_START);
     expect(body).toContain(ROVARA_STATUS_END);
@@ -64,26 +89,54 @@ describe("the reader behind it", () => {
     taskId: "task-1", workspaceId: WS, project: PROJECT, stage: "IMPLEMENT", round: 1, setVersion: 1, memory: "live", at: 1,
     lessons: ids.map(([id, citation]) => ({ id, version: 1, score: 0.5, why: "scope" as const, citation })), bytes: 10,
   });
-  it("names only lessons that reached the prompt and are open to the project; never a restricted one; none when learning is off", async () => {
+  const input = { orgId: WS, project: PROJECT, taskId: "task-1", pageUrl: PAGE };
+  const names = { memberName: async (_org: unknown, id: string) => ({ ann: "Ann Archer" })[id as "ann"], isErased: async () => false } as never;
+  async function seeded(extra: Parameters<typeof lessonRecord>[0][] = []) {
     const store = new InMemoryLessonStore();
     const restricted = { ...draft().provenance, audience: { kind: "restricted" as const, acl: { source: "slack" as const, scope: "slack:C1", principals: ["U1"], capturedAt: "x", liveCheck: "none" as const } } };
-    await seed(store, lessonRecord({ id: "les_open0001", title: "Open lesson" }), lessonRecord({ id: "les_secret01", title: "Secret lesson", provenance: restricted }), lessonRecord({ id: "les_dropped1", title: "Dropped lesson" }));
+    await seed(store, lessonRecord({ id: "les_open0001", title: "Open lesson", tier: 1 }), lessonRecord({ id: "les_secret01", title: "Secret lesson", provenance: restricted }), lessonRecord({ id: "les_dropped1", title: "Dropped lesson" }), ...extra.map((e) => lessonRecord(e)));
     await store.putManifest(manifest([["les_open0001", "valid"], ["les_secret01", "valid"], ["les_dropped1", "stale_dropped"], ["les_open0001", "moved"], ["les_gone0001", "valid"]]));
-    const read = lessonsUsedReaderOver({ store, settings: settings(), access: allowAllAccess });
-    const input = { orgId: WS, project: PROJECT, taskId: "task-1", pageUrl: PAGE };
-    expect(await read(input)).toEqual([{ id: "les_open0001", title: "Open lesson", notHelpfulUrl: `${PAGE}?notHelpful=les_open0001` }]);
-    expect(await lessonsUsedReaderOver({ store, settings: settings({ mode: "Off" }), access: allowAllAccess })(input)).toEqual([]);
-    expect(await read({ ...input, pageUrl: undefined })).toEqual([]);
-    // Another project's task has nothing.
-    expect(await read({ ...input, project: "other" })).toEqual([]);
-    void KEY;
+    return store;
+  }
+  it("a PRIVATE repository: names only lessons that reached the prompt and are open to the project; never a restricted one; none when learning is off", async () => {
+    const store = await seeded();
+    const read = lessonsUsedReaderOver({ store, settings: settings(), access: allowAllAccess, names, visibility: async () => "private" });
+    expect(await read(input)).toEqual({ count: 1, taskUrl: PAGE, items: [{ id: "les_open0001", title: "Open lesson", notHelpfulUrl: `${PAGE}?notHelpful=les_open0001` }] });
+    expect(await lessonsUsedReaderOver({ store, settings: settings({ mode: "Off" }), access: allowAllAccess, names, visibility: async () => "private" })(input)).toBeUndefined();
+    expect(await read({ ...input, pageUrl: undefined })).toBeUndefined();
+    expect(await read({ ...input, project: "other" })).toBeUndefined();
+    expect(lessonsUsedSection(await read(input))).toEqual({ count: 1, taskUrl: PAGE, entries: [{ title: "Open lesson", notHelpfulUrl: `${PAGE}?notHelpful=les_open0001` }] });
+  });
+
+  it("H4: a PUBLIC repository, an unknown one, a visibility that cannot be read, or no reader at all: the count and the link, never a title", async () => {
+    const store = await seeded();
+    for (const visibility of [async () => "public" as const, async () => "unknown" as const, async (): Promise<"private"> => { throw new Error("down"); }, undefined]) {
+      const read = lessonsUsedReaderOver({ store, settings: settings(), access: allowAllAccess, names, ...(visibility === undefined ? {} : { visibility }) });
+      const out = await read(input);
+      expect(out).toEqual({ count: 1, taskUrl: PAGE, items: [] });
+      expect(JSON.stringify(out)).not.toContain("Open lesson");
+    }
+  });
+
+  it("a private repository still lists no tier-2 or review-check lesson, and no title or body that names a person (or whose authors cannot be named)", async () => {
+    const store = await seeded([
+      { id: "les_tier2001", title: "Tier two lesson", tier: 2 }, { id: "les_check001", title: "Review check lesson", type: "review_check", tier: 1 },
+      { id: "les_named001", title: "Ask @ann first", tier: 1 }, { id: "les_body0001", title: "Plain title", body: "Ann Archer prefers withRetry here.", tier: 1, provenance: { ...draft().provenance, authors: ["ann"] } },
+    ]);
+    await store.putManifest({ ...manifest([["les_tier2001", "valid"], ["les_check001", "valid"], ["les_named001", "valid"], ["les_body0001", "valid"]]), round: 2 });
+    const listed = (await lessonsUsedReaderOver({ store, settings: settings(), access: allowAllAccess, names, visibility: async () => "private" })(input))!;
+    expect(listed.items.map((i) => i.id)).toEqual(["les_open0001"]);
+    expect(listed.count).toBe(5);
+    // Without a names reader nothing can be shown as harmless.
+    const blind = (await lessonsUsedReaderOver({ store, settings: settings(), access: allowAllAccess, visibility: async () => "private" })(input))!;
+    expect(blind.items).toEqual([]);
   });
 
   it("the broker call never throws and is empty without a reader", async () => {
     setLessonsUsedReader(undefined);
-    expect(await lessonsUsedForTask({ orgId: WS, project: PROJECT, taskId: "t", pageUrl: PAGE })).toEqual([]);
+    expect(await lessonsUsedForTask({ orgId: WS, project: PROJECT, taskId: "t", pageUrl: PAGE })).toBeUndefined();
     setLessonsUsedReader(async () => { throw new Error("down"); });
-    expect(await lessonsUsedForTask({ orgId: WS, project: PROJECT, taskId: "t", pageUrl: PAGE })).toEqual([]);
+    expect(await lessonsUsedForTask({ orgId: WS, project: PROJECT, taskId: "t", pageUrl: PAGE })).toBeUndefined();
     setLessonsUsedReader(undefined);
   });
 
@@ -91,5 +144,19 @@ describe("the reader behind it", () => {
     expect(notHelpfulUrl(`${PAGE}?x=1#top`, "les_a1")).toBe(`${PAGE}?notHelpful=les_a1`);
     expect(notHelpfulUrl("http://app.example.test/review/x/task", "les_a1")).toBeUndefined();
     expect(notHelpfulUrl("not a url", "les_a1")).toBeUndefined();
+  });
+});
+
+describe("which repositories count as private", () => {
+  it("private only when the host said so for every repository; one public one makes it public; anything it could not say is unknown", () => {
+    expect(visibilityOfRepositories([{ private: true }, { private: true }])).toBe("private");
+    expect(visibilityOfRepositories([{ private: true }, { private: false }])).toBe("public");
+    expect(visibilityOfRepositories([{ private: true }, {}])).toBe("unknown");
+    expect(visibilityOfRepositories([{ private: true }, undefined])).toBe("unknown");
+    expect(visibilityOfRepositories([])).toBe("unknown");
+  });
+  it("a project the broker cannot read, or a host that fails, is unknown (never private)", async () => {
+    expect(await repositoryVisibilityOf({} as never, WS, PROJECT)).toBe("unknown");
+    expect(await repositoryVisibilityOf({} as never, "not-an-org", PROJECT)).toBe("unknown");
   });
 });

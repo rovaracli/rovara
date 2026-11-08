@@ -72,6 +72,8 @@ export async function activateLesson(deps: LessonDeps & { store: LessonStore }, 
     ...(action === "lesson.trial_started" ? { trial: { state: "trial" as const, startedAt: now } } : {}),
   };
   delete (next as { pendingExpiresAt?: number }).pendingExpiresAt;
+  // A person's go-live (or any other way than trial) is not a trial: a leftover trial record would let one thumbs-down retire an approved lesson and make it publishable without ever having been a trial.
+  if (action !== "lesson.trial_started") delete (next as { trial?: Lesson["trial"] }).trial;
   const writes = [next];
   if (fresh.supersedes !== undefined) {
     const old = await deps.store.get(key, fresh.supersedes);
@@ -171,6 +173,8 @@ export async function approveLesson(deps: ApproveDeps, input: ApproveInput): Pro
       if (mode !== "sole_owner_exception" && !hasNonAuthor(member, [first.by, input.approverId], working.provenance.authors)) return { ok: false, code: "second_person_required" };
     }
 
+    // A lesson that asks for a capability change (more tools, domains, budget or approvals) reaches the agent only after two different people. The sole-owner exception does not stand in for the second.
+    if (mode === "sole_owner_exception" && working.tierReasons.includes("capability_request")) return { ok: false, code: "second_person_required" };
     const now = deps.now();
     const given = { approvalId: (deps.newId ?? randomUUID)(), by: input.approverId, at: now, mode };
     approvals = [...approvals, given];

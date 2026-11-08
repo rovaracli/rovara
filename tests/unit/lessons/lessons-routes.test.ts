@@ -9,7 +9,7 @@ import { InMemoryLessonStore } from "../../../packages/broker/src/lessons/store.
 import type { AccessCheckPort } from "../../../packages/broker/src/team-record/access-port.js";
 import type { DeveloperCaller } from "../../../packages/broker/src/aws/developer-routes.js";
 import type { LessonRouteDependencies as _Deps } from "../../../packages/broker/src/lessons/routes.js";
-import { Alerts, Audit, Clock, KEY, MemoryVectors, PROJECT, ScriptedModel, Spend, WS, allowAllAccess, directory, draft, embedder, facts, Judge, lessonRecord, seed, settings, verifier } from "./lesson-helpers.js";
+import { Alerts, Audit, Clock, KEY, MemoryVectors, PROJECT, ScriptedModel, Spend, WS, allowAllAccess, directory, draft, embedder, facts, Judge, lessonRecord, presetFakes, seed, settings, verifier } from "./lesson-helpers.js";
 import { addSource, world } from "../../support/team-record-core.js";
 import { webRouteAllowed } from "../../../packages/broker/src/aws/web-auth.js";
 
@@ -597,20 +597,88 @@ describe("approve by exception on the routes (DECISIONS 24)", () => {
     expect((await s.store.get(KEY, "les_trial001"))!.status).toBe("active");
   });
 
-  it("a maintainer makes the project Regulated; others are refused; going back is refused; a body with anything else is refused", async () => {
-    const s = setup();
-    const rows = new Map<string, "standard" | "regulated">();
-    (s.deps.lessons as { presets?: unknown }).presets = {
-      store: { read: async (sc: { kind: string }) => rows.get(sc.kind), write: async (sc: { kind: string }, v: "standard" | "regulated", _at: number) => { void _at;rows.set(sc.kind, v); } },
-      audit: s.audit, now: s.clock.now, eligibility: async () => ({ complete: true, eligibleIds: ["owner", "ann"] }),
-    };
+  const withPresets = (options: Parameters<typeof presetFakes>[0] = {}, value: Parameters<typeof setup>[0] = {}) => {
+    const s = setup(value);
+    const fakes = presetFakes(options);
+    (s.deps.lessons as { presets?: unknown }).presets = fakes.deps;
+    return { ...s, ...fakes };
+  };
+
+  it("a maintainer makes the project Regulated at once; others are refused; a body with anything else is refused; a stricter setting does not need learning to be on (L5)", async () => {
+    const s = withPresets({ eligible: ["owner", "ann"] }, { value: { mode: "Off" } });
     expect((await refused(s.call(callerOf("mallory"), "POST", `${base}/preset`, { preset: "regulated" }))).code).toBe("FORBIDDEN");
-    expect((await refused(s.call(callerOf("ann"), "POST", `${base}/preset`, { preset: "standard" }))).code).toBe("CONFIG_INVALID");
+    expect((await refused(s.call(callerOf("ann"), "POST", `${base}/preset`, { preset: "off" }))).code).toBe("CONFIG_INVALID");
     expect((await refused(s.call(callerOf("ann"), "POST", `${base}/preset`, { preset: "regulated", extra: 1 }))).code).toBe("CONFIG_INVALID");
     expect(await s.call(callerOf("ann"), "POST", `${base}/preset`, { preset: "regulated" })).toEqual({ preset: "regulated", changed: true });
-    expect(rows.get("project")).toBe("regulated");
+    expect(s.rows.get("project:" + PROJECT)).toBe("regulated");
     expect(s.audit.events.at(-1)).toMatchObject({ action: "lesson.preset_changed", actor: "ann" });
     expect((await refused(s.call(callerOf("ann", { browserSession: undefined }), "POST", `${base}/preset`, { preset: "regulated" }))).code).toBe("FORBIDDEN");
+  });
+
+  it("H3: going back to Standard opens a proposal; a different maintainer approves it; the proposer cannot approve it while someone else can; the audit names who", async () => {
+    const s = withPresets({ eligible: ["owner", "ann", "bob"] });
+    await s.call(callerOf("ann"), "POST", `${base}/preset`, { preset: "regulated" });
+    const asked = await s.call(callerOf("ann"), "POST", `${base}/preset`, { preset: "standard" }) as { needsApproval: boolean; changeId: string; preset: string };
+    expect(asked).toMatchObject({ preset: "regulated", changed: false, needsApproval: true });
+    expect(s.rows.get("project:" + PROJECT)).toBe("regulated");
+    expect(s.audit.actions()).toContain("lesson.preset_proposed");
+    expect((await refused(s.call(callerOf("ann"), "POST", `${base}/preset`, { preset: "standard" }))).code).toBe("CHANGE_STALE");
+    expect((await refused(s.call(callerOf("ann"), "POST", `${base}/preset/approve`, { changeId: asked.changeId }))).code).toBe("FORBIDDEN");
+    expect((await refused(s.call(callerOf("mallory"), "POST", `${base}/preset/approve`, { changeId: asked.changeId }))).code).toBe("FORBIDDEN");
+    expect(await s.call(callerOf("bob"), "POST", `${base}/preset/approve`, { changeId: asked.changeId })).toEqual({ preset: "standard", changed: true });
+    expect(s.rows.get("project:" + PROJECT)).toBe("standard");
+    expect(s.audit.events.at(-1)).toMatchObject({ action: "lesson.preset_changed", actor: "bob", facts: { from: "regulated", to: "standard", mode: "second_person" } });
+    expect((await refused(s.call(callerOf("bob"), "POST", `${base}/preset/approve`, { changeId: asked.changeId }))).code).toBe("CHANGE_STALE");
+  });
+
+  it("the sole-owner exception: the only eligible person approves their own loosening (audited as such); a company that turned the exception off cannot", async () => {
+    const s = withPresets({ eligible: ["ann"], owners: ["ann"] });
+    await s.call(callerOf("ann"), "POST", `${base}/preset`, { preset: "regulated" });
+    const asked = await s.call(callerOf("ann"), "POST", `${base}/preset`, { preset: "standard" }) as { changeId: string };
+    expect(await s.call(callerOf("ann"), "POST", `${base}/preset/approve`, { changeId: asked.changeId })).toEqual({ preset: "standard", changed: true });
+    expect(s.audit.events.at(-1)).toMatchObject({ action: "lesson.preset_changed", facts: { mode: "sole_owner_exception" } });
+    const off = withPresets({ eligible: ["ann"], owners: ["ann"], sole: false });
+    await off.call(callerOf("ann"), "POST", `${base}/preset`, { preset: "regulated" });
+    const again = await off.call(callerOf("ann"), "POST", `${base}/preset`, { preset: "standard" }) as { changeId: string };
+    expect((await refused(off.call(callerOf("ann"), "POST", `${base}/preset/approve`, { changeId: again.changeId }))).code).toBe("FORBIDDEN");
+    expect(off.rows.get("project:" + PROJECT)).toBe("regulated");
+  });
+
+  it("a proposal can be cancelled by an eligible person, and then cannot be approved", async () => {
+    const s = withPresets({ eligible: ["owner", "ann", "bob"] });
+    await s.call(callerOf("ann"), "POST", `${base}/preset`, { preset: "regulated" });
+    const asked = await s.call(callerOf("ann"), "POST", `${base}/preset`, { preset: "standard" }) as { changeId: string };
+    expect(await s.call(callerOf("ann"), "POST", `${base}/preset/cancel`, { changeId: asked.changeId })).toEqual({ done: true });
+    expect((await refused(s.call(callerOf("bob"), "POST", `${base}/preset/approve`, { changeId: asked.changeId }))).code).toBe("CHANGE_STALE");
+    expect(s.rows.get("project:" + PROJECT)).toBe("regulated");
+  });
+
+  it("the company's preset is a floor: a project cannot go below it, and only a company owner or admin sets it (audited, Regulated at once, Standard through a second admin)", async () => {
+    const s = withPresets({ eligible: ["owner", "ann", "bob"] });
+    const company = "/v1/app/org/lessons/preset";
+    expect((await refused(s.call(callerOf("ann"), "POST", company, { preset: "regulated" }))).code).toBe("FORBIDDEN");
+    expect((await refused(s.call(callerOf("ann", { orgRole: "admin", browserSession: undefined }), "POST", company, { preset: "regulated" }))).code).toBe("FORBIDDEN");
+    expect(await s.call(callerOf("ann", { orgRole: "admin" }), "POST", company, { preset: "regulated" })).toEqual({ preset: "regulated", changed: true });
+    expect(s.rows.get("company:")).toBe("regulated");
+    expect(s.audit.events.at(-1)).toMatchObject({ action: "lesson.preset_changed", actor: "ann", facts: { scope: "company", from: "standard", to: "regulated" } });
+    // A project cannot loosen under it.
+    expect((await refused(s.call(callerOf("bob"), "POST", `${base}/preset`, { preset: "standard" }))).code).toBe("FORBIDDEN");
+    // The company loosens only through a different admin.
+    const asked = await s.call(callerOf("ann", { orgRole: "admin" }), "POST", company, { preset: "standard" }) as { changeId: string; needsApproval: boolean };
+    expect(asked.needsApproval).toBe(true);
+    expect((await refused(s.call(callerOf("ann", { orgRole: "admin" }), "POST", `${company}/approve`, { changeId: asked.changeId }))).code).toBe("FORBIDDEN");
+    expect(await s.call(callerOf("bob", { orgRole: "owner" }), "POST", `${company}/approve`, { changeId: asked.changeId })).toEqual({ preset: "standard", changed: true });
+    expect(s.rows.get("company:")).toBe("standard");
+  });
+
+  it("L6: the task page tells the caller whether the thumbs-down will work for them", async () => {
+    const s = setup();
+    const task = `/v1/app/tasks/${"0".repeat(8)}-0000-0000-0000-${"0".repeat(12)}/lessons`;
+    expect(await s.call(callerOf("ann"), "GET", task)).toMatchObject({ canThumbsDown: true });
+    (s.deps as { projectFor: unknown }).projectFor = async () => { throw agentXError("PROJECT_NOT_FOUND", "No such project."); };
+    expect(await s.call(callerOf("mallory"), "GET", task)).toMatchObject({ canThumbsDown: false });
+    (s.deps as { projectFor: unknown }).projectFor = async (_who: unknown, raw: string) => ({ name: decodeURIComponent(raw), role: "viewer" as const });
+    expect(await s.call(callerOf("ann", { browserSession: undefined }), "GET", task)).toMatchObject({ canThumbsDown: false });
   });
 
   it("the preset route is not there where no preset store is wired", async () => {

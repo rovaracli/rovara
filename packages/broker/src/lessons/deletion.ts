@@ -234,5 +234,8 @@ export function lessonDeletionPort(deps: DeletionDeps): LessonDeletionPort {
 /** A code-supported lesson whose record sources are gone: it needs a person again. A lesson that was only auto-applied goes back to pending with its approval cleared. */
 function backToPerson(l: Lesson, now: number): Lesson {
   const personApproved = l.approvals.some((a) => a.mode !== "auto" && a.mode !== "trial");
-  return { ...l, reviewRequired: true, ...(personApproved || l.status !== "active" ? {} : { status: "pending" as const, approvals: [], pendingExpiresAt: pendingExpiry(now) }) };
+  const back: Lesson = { ...l, reviewRequired: true, ...(personApproved || l.status !== "active" ? {} : { status: "pending" as const, approvals: [], pendingExpiresAt: pendingExpiry(now) }) };
+  // The trial approval is gone, so the trial record goes with it: a lesson a person approves next is not "on trial" (one thumbs-down would retire it, and it could become publishable).
+  if (back.status === "pending" || personApproved) delete (back as { trial?: Lesson["trial"] }).trial;
+  return back;
 }

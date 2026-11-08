@@ -16,7 +16,7 @@ import { breakLinearKeys } from "../../rovara-code/linear-close.js";
 import { inertPlanLine } from "../../rovara-code/inert-text.js";
 import { reviewSameModelOf } from "../../rovara-code/review-model-lines.js";
 import { secondReviewPullRequestLines } from "../../rovara-code/second-review-store.js";
-import { rovaraPullRequestBody, rovaraStatusLines, type PullRequestBodyContext } from "../../rovara-code/pull-request-body.js";
+import { lessonsUsedLines, rovaraPullRequestBody, rovaraStatusLines, type PullRequestBodyContext } from "../../rovara-code/pull-request-body.js";
 import { loadProofContext } from "../../rovara-code/proof-inputs.js";
 import { proofDesignContextOf } from "./design-proof.js";
 import type { DeveloperTaskRouteDependencies } from "./types.js";
@@ -120,6 +120,8 @@ export function workflowPullRequestStatusLines(workflow: WorkflowSnapshot, conte
     ...workflowReviewLines(workflow, WORKFLOW_PULL_REQUEST_ACCEPTED_LISTED),
     ...(context?.secondReviewLines ?? []),
     ...proofLines,
+    // Approve by exception (DECISIONS 24): version 1 descriptions list the lessons used too (same visibility rule as version 2).
+    ...lessonsUsedLines(context?.lessonsUsed, 10),
   ].map((line) => hideEmailAddresses(line));
 }
 

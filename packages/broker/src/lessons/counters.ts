@@ -5,7 +5,7 @@ import { resolveLearning, emitAudit, modeAllows, type LearningSettingsReader } f
 import type { AlertSink, CorrectionJudge, CorrectionKind, LessonDeps } from "./ports.js";
 import { renewLesson } from "./expiry.js";
 import { retireLesson } from "./curate.js";
-import { promoteIfStable } from "./trial.js";
+import { isTrialLesson, promoteIfStable } from "./trial.js";
 import { nextVersion, type LessonStore, type LoadManifest, type ScopeKey } from "./store.js";
 import { cleanForLearning, globToRegExp } from "./guards.js";
 import type { AccessCheckPort } from "../team-record/access-port.js";
@@ -47,7 +47,8 @@ async function addHarmful(deps: CounterDeps, key: ScopeKey, lessonId: string, fo
   const updated = await deps.store.mutate(key, lessonId, (l) => ({ counters: { ...l.counters, harmful: l.counters.harmful + 1 } }));
   if (updated === undefined) return;
   const failing = updated.counters.harmful >= 2 && updated.counters.harmful > updated.counters.helpful;
-  if (failing && updated.tier === 0 && updated.status === "active") {
+  // A lesson live with no person behind it (tier 0, or on trial / stable) retires itself when its marks turn against it; the others go to a person.
+  if (failing && (updated.tier === 0 || isTrialLesson(updated)) && updated.status === "active") {
     await retireLesson(deps, key, lessonId, "harmful_counters", undefined, "lesson.auto_retired");
     return;
   }
@@ -145,20 +146,22 @@ export async function recordFeedback(deps: CounterDeps & { access: AccessCheckPo
 }
 
 /**
- * The one-tap thumbs-down (DECISIONS 24), from the pull request's "Lessons used" link or the task page. A project member's thumbs-down RETIRES a lesson that is live on trial at once, audited
- * (`lesson.trial_retired`, with the person); on any other lesson it is a "wrong here" mark that asks a person to decide. One per person per lesson, and it works whatever else the person marked.
+ * The one-tap thumbs-down (DECISIONS 24), from the pull request's "Lessons used" link or the task page. A project member's thumbs-down RETIRES a lesson that is live on trial or stable at once,
+ * audited (`lesson.trial_retired`, with the person): such a lesson has no person behind it, so one person's "no" is enough. On any other lesson it is a "wrong here" mark that asks a person to decide,
+ * counted under the SAME once-key as Helpful and Wrong here (one mark of any kind per person per lesson), so one person cannot retire an approved lesson alone by marking it twice.
  */
 async function thumbsDown(deps: CounterDeps, key: ScopeKey, lesson: Lesson, input: { taskId: string; lessonId: string; userId: string; projectMember?: boolean }): Promise<{ ok: true } | { ok: false; code: FeedbackFailure }> {
   if (input.projectMember !== true) return { ok: false, code: "not_permitted" };
   const ref = await deps.store.markRef(key, input.userId);
   if (ref === undefined) return { ok: false, code: "not_permitted" };
-  if (!(await deps.store.markOnce(key, `thumbs:${input.lessonId}:${ref}`))) return { ok: false, code: "repeat" };
-  if (lesson.trial?.state === "trial" && lesson.status === "active") {
-    await retireLesson(deps, key, lesson.id, "thumbs_down", input.userId, "lesson.trial_retired");
-  } else {
-    await addHarmful(deps, key, lesson.id, true);
-    await emitAudit(deps.audit, { action: "lesson.wrong_here", workspaceId: key.workspaceId, project: key.project, lessonId: lesson.id, actor: input.userId, facts: { task: input.taskId } });
+  if (isTrialLesson(lesson)) {
+    if (!(await deps.store.markOnce(key, `thumbs:${input.lessonId}:${ref}`))) return { ok: false, code: "repeat" };
+    if (lesson.status === "active") await retireLesson(deps, key, lesson.id, "thumbs_down", input.userId, "lesson.trial_retired");
+    return { ok: true };
   }
+  if (!(await deps.store.markOnce(key, `feedback:${input.lessonId}:${ref}`))) return { ok: false, code: "repeat" };
+  await addHarmful(deps, key, lesson.id, true);
+  await emitAudit(deps.audit, { action: "lesson.wrong_here", workspaceId: key.workspaceId, project: key.project, lessonId: lesson.id, actor: input.userId, facts: { task: input.taskId } });
   return { ok: true };
 }
 

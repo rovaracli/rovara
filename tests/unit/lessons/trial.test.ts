@@ -6,7 +6,7 @@ import { applyLoadReport, recordFeedback, type CounterDeps } from "../../../pack
 import { curateDraft } from "../../../packages/broker/src/lessons/curate.js";
 import { approvedForUse } from "../../../packages/broker/src/lessons/load.js";
 import { DEFAULT_APPROVAL_POLICY, resolveLearning } from "../../../packages/broker/src/lessons/policy.js";
-import { setLearningPreset, type PresetDeps, type PresetStore } from "../../../packages/broker/src/lessons/preset-setting.js";
+import { setLearningPreset, type PresetChange, type PresetDeps } from "../../../packages/broker/src/lessons/preset-setting.js";
 import { processDraft, settleLesson, type ProcessDeps } from "../../../packages/broker/src/lessons/process.js";
 import { memberCorrectionOf, reflectSubject, type LessonDraft, type ReflectDeps } from "../../../packages/broker/src/lessons/reflect.js";
 import { InMemoryLessonStore, type LoadManifest } from "../../../packages/broker/src/lessons/store.js";
@@ -34,7 +34,7 @@ function setup(over: { settings?: ReturnType<typeof settings>; verifier?: Return
 
 /** A draft from a member's own send-back: what the reflector produces for a lesson that cites one member correction. */
 function memberDraft(over: Partial<LessonDraft> = {}, prov: Partial<LessonDraft["provenance"]> = {}): LessonDraft {
-  return draft({ ...over, provenance: { ...draft().provenance, sourceKinds: ["send_back"], memberCorrection: true, fromSharedTask: true, ...prov } });
+  return draft({ ...over, provenance: { ...draft().provenance, sourceKinds: ["send_back"], memberCorrection: true, claimsSupported: true, fromSharedTask: true, ...prov } });
 }
 const loadedManifest = (taskId: string, id: string): LoadManifest => ({
   taskId, workspaceId: WS, project: PROJECT, stage: "IMPLEMENT", round: 1, setVersion: 1, memory: "live", at: 1,
@@ -61,11 +61,11 @@ describe("goes live on trial with no approval", () => {
   it("the loader accepts it under Standard and stops it under Regulated (fail closed when the preset is unknown)", async () => {
     const { deps } = setup();
     const lesson = (await processDraft(deps, KEY, memberDraft())).lesson!;
-    expect(approvedForUse(lesson, DEFAULT_APPROVAL_POLICY, undefined, "standard")).toBe(true);
-    expect(approvedForUse(lesson, DEFAULT_APPROVAL_POLICY, undefined, "regulated")).toBe(false);
+    expect(approvedForUse(lesson, DEFAULT_APPROVAL_POLICY, undefined, true)).toBe(true);
+    expect(approvedForUse(lesson, DEFAULT_APPROVAL_POLICY, undefined, false)).toBe(false);
     expect(approvedForUse(lesson, DEFAULT_APPROVAL_POLICY)).toBe(false);
     // A trial record without its system approval is not enough (an old row, a hand edit).
-    expect(approvedForUse({ ...lesson, approvals: [] }, DEFAULT_APPROVAL_POLICY, undefined, "standard")).toBe(false);
+    expect(approvedForUse({ ...lesson, approvals: [] }, DEFAULT_APPROVAL_POLICY, undefined, true)).toBe(false);
   });
 
   it.each([
@@ -183,8 +183,11 @@ describe("trial eligibility is worked out from what the lesson CITES (a mixed-sp
     expect(processed.lesson).toMatchObject({ status: "active", trial: { state: "trial" } });
   });
 
-  it("citing the send-back together with the plan still qualifies (at least one cited member correction); citing only worker-written spans or the task wording does not", async () => {
-    expect((await reflected(([sb, plan]) => [sb!, plan!])).provenance.memberCorrection).toBe(true);
+  it("EVERY cited span must be a member's correction (H1, allow-list): the send-back together with a plan span goes to a person; worker-written spans or the task wording alone never qualify", async () => {
+    expect((await reflected(([sb]) => [sb!])).provenance.memberCorrection).toBe(true);
+    expect((await reflected(([sb, plan]) => [sb!, plan!])).provenance.memberCorrection).toBe(false);
+    expect((await reflected(([sb, , finding]) => [sb!, finding!])).provenance.memberCorrection).toBe(false);
+    expect((await reflected(([sb, , , intent]) => [sb!, intent!])).provenance.memberCorrection).toBe(false);
     expect((await reflected(([, plan]) => [plan!])).provenance.memberCorrection).toBe(false);
     expect((await reflected(([, plan, finding]) => [plan!, finding!])).provenance.memberCorrection).toBe(false);
     expect((await reflected(([, , , intent]) => [intent!])).provenance.memberCorrection).toBe(false);
@@ -239,16 +242,41 @@ describe("a project member's thumbs-down retires a trial lesson", () => {
     expect((await store.get(KEY, lesson.id))!.status).toBe("retired");
   });
 
-  it("on a stable lesson it is a 'wrong here' mark that asks a person to decide, not a silent retire", async () => {
-    const { deps, store, lesson, clock } = await live();
+  it("M2: on a STABLE lesson (still no person behind it) a thumbs-down retires it at once too; on a person-approved lesson it is a 'wrong here' mark that asks a person to decide", async () => {
+    const { deps, store, lesson, clock, audit } = await live();
     await store.mutate(KEY, lesson.id, (l) => ({ counters: { ...l.counters, loaded: 3 } }));
     clock.advance((TRIAL_STABLE_AFTER_DAYS + 1) * DAY);
     expect(await promoteStableTrials(deps, KEY)).toEqual([lesson.id]);
     await store.putManifest(loadedManifest("task-1", lesson.id));
     expect(await recordFeedback(deps, input(lesson.id))).toEqual({ ok: true });
-    const after = (await store.get(KEY, lesson.id))!;
+    expect((await store.get(KEY, lesson.id))!.status).toBe("retired");
+    expect(audit.events.find((e) => e.action === "lesson.trial_retired")).toMatchObject({ lessonId: lesson.id, actor: "bob" });
+    // A lesson a person approved: no trial record, so a mark asks a person.
+    const approved = await store.get(KEY, lesson.id);
+    const person = lessonRecord({ id: "les_person", status: "active", tier: 1, approvals: [{ approvalId: "a1", by: "ann", at: 1, mode: "one" }] });
+    await store.commit(KEY, await store.setVersion(KEY), [person], 1);
+    void approved;
+    await store.putManifest({ ...loadedManifest("task-1", "les_person"), round: 2 });
+    expect(await recordFeedback(deps, input("les_person"))).toEqual({ ok: true });
+    const after = (await store.get(KEY, "les_person"))!;
     expect(after.status).toBe("active");
     expect(after.retireProposedAt).toBeDefined();
+  });
+
+  it("M1: one person cannot retire a person-approved lesson alone by marking Wrong here and then thumbs-down (one mark of any kind per person per lesson)", async () => {
+    const { deps, store, audit } = await live();
+    const person = lessonRecord({ id: "les_person", status: "active", tier: 0, approvals: [{ approvalId: "a1", by: "ann", at: 1, mode: "one" }] });
+    await store.commit(KEY, await store.setVersion(KEY), [person], 1);
+    await store.putManifest({ ...loadedManifest("task-1", "les_person"), round: 2 });
+    expect(await recordFeedback(deps, input("les_person", { kind: "wrong_here" }))).toEqual({ ok: true });
+    expect(await recordFeedback(deps, input("les_person"))).toEqual({ ok: false, code: "repeat" });
+    const after = (await store.get(KEY, "les_person"))!;
+    expect(after.counters.harmful).toBe(1);
+    expect(after.status).toBe("active");
+    expect(audit.actions()).not.toContain("lesson.auto_retired");
+    // The other order too.
+    expect(await recordFeedback(deps, input("les_person", { userId: "cy" }))).toEqual({ ok: true });
+    expect(await recordFeedback(deps, input("les_person", { userId: "cy", kind: "wrong_here" }))).toEqual({ ok: false, code: "repeat" });
   });
 });
 
@@ -298,7 +326,7 @@ describe("trial becomes stable after 14 days and at least 3 loads with no thumbs
     expect(audit.actions()).toContain("lesson.trial_stable");
     expect(await promoteStableTrials(deps, KEY)).toEqual([]);
     // A stable lesson still loads under Standard.
-    expect(approvedForUse((await store.get(KEY, lesson.id))!, DEFAULT_APPROVAL_POLICY, undefined, "standard")).toBe(true);
+    expect(approvedForUse((await store.get(KEY, lesson.id))!, DEFAULT_APPROVAL_POLICY, undefined, true)).toBe(true);
   });
 
   it("the third load report moves it to stable when the time is up", async () => {
@@ -314,18 +342,24 @@ describe("trial becomes stable after 14 days and at least 3 loads with no thumbs
 describe("isPublishable (what repository publishing may publish)", () => {
   const stable = (over: Partial<Lesson> = {}): Lesson => lessonRecord({ trial: { state: "stable", startedAt: 1, stableAt: 2 }, provenance: { ...draft().provenance, fromSharedTask: true, memberCorrection: true }, ...over });
   it("stable, live, from a shared task, a project-wide source, and no personal name in the text", () => {
-    expect(isPublishable(stable())).toBe(true);
-    expect(isPublishable(lessonRecord({ trial: { state: "trial", startedAt: 1 }, provenance: { ...draft().provenance, fromSharedTask: true } }))).toBe(false);
-    expect(isPublishable(lessonRecord({ provenance: { ...draft().provenance, fromSharedTask: true } }))).toBe(false);
-    expect(isPublishable(stable({ status: "retired" }))).toBe(false);
-    expect(isPublishable(stable({ provenance: { ...draft().provenance, fromSharedTask: false } }))).toBe(false);
-    expect(isPublishable(stable({ provenance: { ...draft().provenance } }))).toBe(false);
-    expect(isPublishable(stable({ provenance: { ...draft().provenance, fromSharedTask: true, audience: { kind: "restricted", acl: { source: "slack", scope: "s", capturedAt: "x", liveCheck: "none" } } } }))).toBe(false);
+    expect(isPublishable(stable(), [])).toBe(true);
+    expect(isPublishable(lessonRecord({ trial: { state: "trial", startedAt: 1 }, provenance: { ...draft().provenance, fromSharedTask: true } }), [])).toBe(false);
+    expect(isPublishable(lessonRecord({ provenance: { ...draft().provenance, fromSharedTask: true } }), [])).toBe(false);
+    expect(isPublishable(stable({ status: "retired" }), [])).toBe(false);
+    expect(isPublishable(stable({ provenance: { ...draft().provenance, fromSharedTask: false } }), [])).toBe(false);
+    expect(isPublishable(stable({ provenance: { ...draft().provenance } }), [])).toBe(false);
+    expect(isPublishable(stable({ provenance: { ...draft().provenance, fromSharedTask: true, audience: { kind: "restricted", acl: { source: "slack", scope: "s", capturedAt: "x", liveCheck: "none" } } } }), [])).toBe(false);
   });
-  it("a person's name, an @handle or an e-mail address in the text is a personal name", () => {
+  it("L4: a lesson that is tier 2, was sent back to a person, has a retire proposal or a wrong-here mark is not publishable", () => {
+    expect(isPublishable(stable({ tier: 2 }), [])).toBe(false);
+    expect(isPublishable(stable({ reviewRequired: true }), [])).toBe(false);
+    expect(isPublishable(stable({ retireProposedAt: 5 }), [])).toBe(false);
+    expect(isPublishable(stable({ counters: { ...lessonRecord().counters, harmful: 1 } }), [])).toBe(false);
+  });
+  it("a person's name, an @handle or an e-mail address in the text is a personal name; the names are required", () => {
     expect(isPublishable(stable({ body: "Ann Lee asked to use withRetry." }), ["Ann Lee"])).toBe(false);
-    expect(isPublishable(stable({ body: "Use withRetry. Ask @ann." }))).toBe(false);
-    expect(isPublishable(stable({ body: "Use withRetry. Mail ann@example.com." }))).toBe(false);
+    expect(isPublishable(stable({ body: "Use withRetry. Ask @ann." }), [])).toBe(false);
+    expect(isPublishable(stable({ body: "Use withRetry. Mail ann@example.com." }), [])).toBe(false);
     expect(isPublishable(stable({ body: "Use withRetry." }), ["Ann Lee"])).toBe(true);
     expect(namesAPerson("the Annex module", ["Ann"])).toBe(false);
     expect(namesAPerson("thanks, ANN!", ["Ann"])).toBe(true);
@@ -349,21 +383,28 @@ describe("presets: Standard by default, Regulated stricter-only, company floor",
 
   function presetDeps(eligible: string[] = ["ann"], complete = true) {
     const rows = new Map<string, "standard" | "regulated">();
+    const changes = new Map<string, PresetChange>();
     const key = (s: { kind: string; project?: string }) => `${s.kind}:${s.project ?? ""}`;
-    const store: PresetStore = { read: async (s) => rows.get(key(s)), write: async (s, v) => { rows.set(key(s), v); } };
     const audit = new Audit();
-    const deps: PresetDeps = { store, audit, now: () => 1, eligibility: async () => ({ complete, eligibleIds: eligible }) };
-    return { deps, rows, audit };
+    const deps: PresetDeps = {
+      settings: { read: async (s) => rows.get(key(s)), write: async (s, v, _meta, from) => { if ((rows.get(key(s)) ?? "standard") !== from) return false; rows.set(key(s), v); return true; } },
+      changes: {
+        create: async (c) => { if (changes.has(c.id)) return false; changes.set(c.id, { ...c }); return true; },
+        get: async (_s, id) => changes.get(id), open: async () => [...changes.values()].find((c) => c.state === "pending"),
+        transition: async (_s, id, from, to) => { const c = changes.get(id); if (c === undefined || c.state !== from) return false; c.state = to; return true; },
+      },
+      audit, now: () => 1, newId: () => "chg-1", soleOwnerLoosening: async () => true,
+      authority: { eligibility: async () => ({ complete, membershipVersion: 1, ownerIds: eligible.slice(0, 1), eligibleIds: eligible, lastEligibleLossAtMs: null }) },
+    };
+    return { deps, rows, audit, changes };
   }
   const project = { kind: "project" as const, workspaceId: WS, project: PROJECT };
-  it("an eligible maintainer makes it stricter at once, audited with who and between which presets; never looser here", async () => {
+  it("an eligible maintainer makes it stricter at once, audited with who and between which presets", async () => {
     const { deps, rows, audit } = presetDeps();
-    expect(await setLearningPreset(deps, { scope: project, value: "regulated", requestedBy: "ann" })).toEqual({ ok: true, changed: true, value: "regulated" });
+    expect(await setLearningPreset(deps, { scope: project, value: "regulated", requestedBy: "ann" })).toEqual({ ok: true, status: "applied", changed: true, value: "regulated" });
     expect(rows.get("project:" + PROJECT)).toBe("regulated");
-    expect(audit.events.at(-1)).toMatchObject({ action: "lesson.preset_changed", actor: "ann", facts: { scope: "project", from: "standard", to: "regulated" } });
-    expect(await setLearningPreset(deps, { scope: project, value: "regulated", requestedBy: "ann" })).toEqual({ ok: true, changed: false, value: "regulated" });
-    expect(await setLearningPreset(deps, { scope: project, value: "standard", requestedBy: "ann" })).toEqual({ ok: false, code: "loosening_not_supported" });
-    expect(rows.get("project:" + PROJECT)).toBe("regulated");
+    expect(audit.events.at(-1)).toMatchObject({ action: "lesson.preset_changed", actor: "ann", facts: { scope: "project", from: "standard", to: "regulated", mode: "direct" } });
+    expect(await setLearningPreset(deps, { scope: project, value: "regulated", requestedBy: "ann" })).toEqual({ ok: true, status: "applied", changed: false, value: "regulated" });
   });
   it("refuses a person who may not decide, an unreadable roster, and a value that is not a preset", async () => {
     expect(await setLearningPreset(presetDeps(["ann"]).deps, { scope: project, value: "regulated", requestedBy: "mallory" })).toEqual({ ok: false, code: "not_eligible" });

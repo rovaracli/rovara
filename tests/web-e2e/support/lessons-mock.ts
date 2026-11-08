@@ -1,6 +1,6 @@
 // The project's lessons routes for the Lessons tab journey: the view, approve, reject, remove and the sources. State lives for one scenario. Bodies are parsed by the contract's strict schemas,
 // as the real routes do, and the one-tap / two-person rules are applied here the way the broker applies them (a second person is a different one; a stale version is refused).
-import { LessonApproveBodySchema, LessonRejectBodySchema, LessonRetireBodySchema, LessonSourcesSchema, LessonViewSchema, LessonsDigestSchema, LessonsViewSchema, SourceWriteBodySchema, SourcesAdminViewSchema } from "@agentx/contracts";
+import { LessonApproveBodySchema, LessonFeedbackBodySchema, LessonPresetBodySchema, LoadedLessonsSchema, LessonRejectBodySchema, LessonRetireBodySchema, LessonSourcesSchema, LessonViewSchema, LessonsDigestSchema, LessonsViewSchema, SourceWriteBodySchema, SourcesAdminViewSchema } from "@agentx/contracts";
 import type { MockExchange } from "./how-we-work-mock.js";
 
 const NOW = Date.parse("2026-11-01T12:00:00.000Z");
@@ -74,7 +74,12 @@ export async function lessonsMock({ url, method, body, json, record }: MockExcha
  if (url.pathname === base && method === "GET") { json(200, view());return true; }
  if (url.pathname === base + "/digest" && method === "GET") { json(200, LessonsDigestSchema.parse({ since: NOW - 7 * 86_400_000, top: [{ id: "les_act00001", title: "Prefer small pull requests", type: "convention", tier: 1, links: [] }], needsReview: [], autoApplied: [], waiting: [], retired: [], staleOrRetireProposed: [], queued: 2, pausedSources: [], pausedSourcesHidden: 0, hidden: 0 }));return true; }
  if (url.pathname === base + "/sources" && method === "GET") { json(200, LessonSourcesSchema.parse({ sources: [{ kind: "github", scope: "github:acme/api", enabled: true, retention: "D", health: "ok", audience: "project", updatedAt: "2026-10-30T10:00:00.000Z", paused: false }, { kind: "slack", enabled: true, retention: "B", health: "ok", audience: "maintainers", updatedAt: "2026-10-30T10:00:00.000Z", paused: true }], otherPaused: 0 }));return true; }
- if (url.pathname === base + "/preset" && method === "POST") { record(await body());state.preset = "regulated";json(200, { preset: "regulated", changed: true });return true; }
+ if (url.pathname === base + "/preset" && method === "POST") {
+  const input = LessonPresetBodySchema.parse(await body());record(input);
+  // Regulated applies at once; going back to Standard is a loosening that waits for a different maintainer or admin (the project stays Regulated meanwhile).
+  if (input.preset === "regulated") { state.preset = "regulated";json(200, { preset: "regulated", changed: true });return true; }
+  json(200, { preset: "regulated", changed: false, needsApproval: true, changeId: "chg-1" });return true;
+ }
  const action = new RegExp(`^${base}/([A-Za-z0-9_-]+)/(approve|reject|retire)$`).exec(url.pathname);
  if (action === null || method !== "POST") return false;
  const item = state.lessons.find(candidate => candidate.id === action[1]);
@@ -88,4 +93,23 @@ export async function lessonsMock({ url, method, body, json, record }: MockExcha
  }
  if (action[2] === "reject") { const parsed = LessonRejectBodySchema.parse(input);if (parsed.expectedVersion !== item.version) { json(409, stale);return true; }item.status = "rejected";item.reason = parsed.reason;json(200, { done: true });return true; }
  LessonRetireBodySchema.parse(input);item.status = "retired";json(200, { done: true });return true;
+}
+
+// The task page's "What the agent loaded" (Pipeline tab): the lessons a task loaded, one on trial and one stable, and the one-tap thumbs-down. State lives for one scenario.
+let taskRetired = new Set<string>();
+export function resetTaskLessons(): void { taskRetired = new Set(); }
+export async function taskLessonsMock({ url, method, body, json, record }: MockExchange): Promise<boolean> {
+ const matched = /^\/v1\/web\/tasks\/([0-9a-f-]{36})\/(loaded-knowledge|lessons)(?:\/([A-Za-z0-9_-]+)\/feedback)?$/u.exec(url.pathname);
+ if (matched === null) return false;
+ if (matched[2] === "loaded-knowledge" && method === "GET") { json(200, { stages: [], requestId: "r" });return true; }
+ if (matched[2] !== "lessons") return false;
+ if (method === "GET" && matched[3] === undefined) {
+  const row = (lessonId: string, title: string, trial: "trial" | "stable") => ({ stage: "IMPLEMENT", round: 1, lessonId, version: 1, why: "scope", citation: "valid", visible: true, title, type: "convention", canMark: true, trial, helpful: 0, harmful: 0 });
+  json(200, LoadedLessonsSchema.parse({ lessons: [row("les_trial001", "Retries use withRetry", "trial"), row("les_stable01", "Money amounts are in cents", "stable")], canThumbsDown: true }));return true;
+ }
+ if (method === "POST" && matched[3] !== undefined) {
+  const input = LessonFeedbackBodySchema.parse(await body());record(input);taskRetired.add(matched[3]);json(200, { done: true });return true;
+  // (The page lists what the task loaded, so a retired lesson stays in the list.)
+ }
+ return false;
 }

@@ -131,6 +131,12 @@ export const LessonProvenanceSchema = z.object({
    * model read, so worker-written spans in the same task (a plan, a review finding, CI text; trust "system" or "rovara") neither take it away nor can make it true. Absent: not a member correction.
    */
   memberCorrection: z.boolean().optional(),
+  /**
+   * Set by code (`lessonClaimsSupported` in trial.ts, worked out in reflect.ts while the correction text is in hand): every key identifier or path the lesson names appears in the cited member
+   * correction or in the cited code, and the lesson names at least one. It is the second half of what lets a lesson go live on trial: the words came from the member's correction and the code, not from text
+   * the model read elsewhere. The correction text itself is never stored. Absent: not supported (a person decides).
+   */
+  claimsSupported: z.boolean().optional(),
   /** Set by code: the task the lesson came from is shared with the project (not the owner's alone). Only such a lesson may be published to a repository (`isPublishable`). Absent: not shared. */
   fromSharedTask: z.boolean().optional(),
   /**
@@ -201,7 +207,7 @@ export const LESSON_AUDIT_ACTIONS = [
   "lesson.sole_owner_exception", "lesson.citation_moved", "lesson.contradiction", "lesson.withdrawn", "lesson.promote_failed", "lesson.held_source_paused",
   "lesson.tier0_setting_proposed", "lesson.tier0_setting_changed", "lesson.tier0_setting_cancelled", "lesson.tier0_setting_refused_retryable",
   "lesson.sole_owner_switch_proposed", "lesson.sole_owner_switch_changed",
-  "lesson.trial_started", "lesson.trial_retired", "lesson.trial_stable", "lesson.preset_changed",
+  "lesson.trial_started", "lesson.trial_retired", "lesson.trial_stable", "lesson.preset_changed", "lesson.preset_proposed",
 ] as const;
 export type LessonAuditAction = (typeof LESSON_AUDIT_ACTIONS)[number];
 

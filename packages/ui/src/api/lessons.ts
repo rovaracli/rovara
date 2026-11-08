@@ -44,6 +44,8 @@ export function createLessonsApi(host: AppHost) {
   loaded: (taskId: string) => api.get(taskBase(taskId), LoadedLessonsReaderSchema),
   /** A maintainer makes this project stricter: every lesson needs a person first (Regulated). */
   async requirePerson(project: string) { return settled(await api.send("POST", base(project) + "/preset", LessonPresetBodySchema.parse({ preset: "regulated" }), LessonPresetAnswerReaderSchema, NEVER)); },
+  /** Going back to Standard is a loosening: it asks a different maintainer or admin to approve (the answer says `needsApproval`), or applies at once for the only person who can decide. */
+  async allowTrial(project: string) { return settled(await api.send("POST", base(project) + "/preset", LessonPresetBodySchema.parse({ preset: "standard" }), LessonPresetAnswerReaderSchema, NEVER)); },
   async mark(taskId: string, lessonId: string, kind: "helpful" | "wrong_here" | "thumbs_down") { return settled(await api.send("POST", taskBase(taskId) + "/" + one(lessonId) + "/feedback", LessonFeedbackBodySchema.parse({ kind }), LessonDoneAnswerReaderSchema, NEVER)); },
  };
 }
