@@ -109,7 +109,8 @@ export const autoSettings = (value: LearningSettings = {}): LearningSettingsRead
 
 export function directory(over: Partial<Awaited<ReturnType<ApproverDirectory["eligibility"]>>> = {}): ApproverDirectory & { value: Awaited<ReturnType<ApproverDirectory["eligibility"]>> } {
   const value = { complete: true, membershipVersion: 1, ownerIds: ["owner"], eligibleIds: ["owner", "ann", "bob"], lastEligibleLossAtMs: null, ...over };
-  return { value, eligibility: async () => value, identity: async () => ({ principals: [], groups: [] }) };
+  return { value, eligibility: async () => value, // As the production directory answers (`lessons/directory.ts#identity`): the reader's developer id rides on the identity, so a person is judged by the live task check as that person, never as nobody in particular.
+  identity: async (_workspaceId, developerId) => ({ principals: [], groups: [], developerId }) };
 }
 
 export const facts = (): FakeFacts => defaultFacts;

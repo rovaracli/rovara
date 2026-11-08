@@ -225,7 +225,8 @@ export async function foldDuplicate(deps: { store: LessonStore; now: () => numbe
   const paused = new Set(Object.keys((await deps.store.flags(key)).pausedSources ?? {}).map(normSource));
   const now = deps.now();
   const merged = mergeInto(target, duplicate, nextVersion(target, await deps.store.versions(key, target.id)), now, paused);
-  return [merged, { ...duplicate, version: nextVersion(duplicate, await deps.store.versions(key, duplicate.id)), status: "retired", updatedAt: now }];
+  // A pending target's earlier approvals were given for the evidence, authors and audience it had: they do not carry over to what the merge made of it (as an edit's do not, approve.ts), so the people decide it again (round 6, R5-2).
+  return [target.status === "pending" ? { ...merged, approvals: [] } : merged, { ...duplicate, version: nextVersion(duplicate, await deps.store.versions(key, duplicate.id)), status: "retired", updatedAt: now }];
 }
 
 export async function curateDraft(deps: CurateDeps, key: ScopeKey, draft: LessonDraft): Promise<CurateOutcome> {
@@ -311,9 +312,11 @@ export async function curateDraft(deps: CurateDeps, key: ScopeKey, draft: Lesson
    * The draft goes to a person with the lesson it contradicts (or, for a rejected lesson, resembles). A rejected lesson the draft's audience cannot read is not named (round 2, N5): the card carries the reason
    * `matches_rejected` and no link, and settling treats that reason like a contradiction.
    */
+  // A draft the judge called "same" as a rejected lesson (not the same advice by structure) is acted on through a live neighbour below as well: the card still says it resembles rejected advice (round 6, R5-1).
+  const rejectedNote: string[] = unconfirmedRejected === undefined ? [] : ["matches_rejected"];
   const toPerson = async (other: Lesson, matchesRejectedLesson: boolean): Promise<CurateOutcome> => {
     const named = !matchesRejectedLesson || visible.has(other.id);
-    const created = newLesson(deps, key, draft, "pending", { ...(named ? { contradictsWith: other.id } : {}), tierReasons: matchesRejectedLesson ? ["contradiction", "matches_rejected"] : ["contradiction"] });
+    const created = newLesson(deps, key, draft, "pending", { ...(named ? { contradictsWith: other.id } : {}), tierReasons: matchesRejectedLesson ? ["contradiction", "matches_rejected"] : ["contradiction", ...rejectedNote] });
     const written = await commitWith(deps, key, async () => [created]);
     if (written === undefined) return drop("conflict");
     await keepVector(sim, key, created, queryVector);
@@ -328,7 +331,7 @@ export async function curateDraft(deps: CurateDeps, key: ScopeKey, draft: Lesson
   const tooMany = chosen !== undefined && (chosen.verdict === "contradicts" || chosen.verdict === "same") ? undefined : acting.find((c) => c.verdict === "same" && !peopleFit(c.lesson, draft));
   if (tooMany !== undefined) {
     await emitAudit(deps.audit, { action: "lesson.refused", workspaceId: key.workspaceId, project: key.project, lessonId: tooMany.lesson.id, facts: { reason: "merge_too_many_people" } });
-    const apart = newLesson(deps, key, draft, "candidate", { reviewRequired: true, tierReasons: ["merge_too_many_people"] });
+    const apart = newLesson(deps, key, draft, "candidate", { reviewRequired: true, tierReasons: ["merge_too_many_people", ...rejectedNote] });
     const written = await commitWith(deps, key, async () => [apart]);
     if (written === undefined) return drop("conflict");
     await keepVector(sim, key, apart, queryVector);
@@ -351,7 +354,7 @@ export async function curateDraft(deps: CurateDeps, key: ScopeKey, draft: Lesson
     if (chosen.verdict === "contradicts") return toPerson(other, false);
     // A possible duplicate (round 4): the draft is its own lesson, linked to the one it may duplicate. It goes to a person (merge, keep both or reject) and is never started on trial or applied by itself while the link stands.
     if (chosen.verdict === "duplicate") {
-      const created = newLesson(deps, key, draft, "pending", { possibleDuplicateOf: other.id, tierReasons: ["possible_duplicate"] });
+      const created = newLesson(deps, key, draft, "pending", { possibleDuplicateOf: other.id, tierReasons: ["possible_duplicate", ...rejectedNote] });
       const written = await commitWith(deps, key, async () => [created]);
       if (written === undefined) return drop("conflict");
       await keepVector(sim, key, created, queryVector);
@@ -359,7 +362,7 @@ export async function curateDraft(deps: CurateDeps, key: ScopeKey, draft: Lesson
       return { outcome: "possible_duplicate", lesson: created, duplicateOf: other.id, judgeEscalate };
     }
     // UPDATE: the refinement is a new lesson that supersedes the old one once a person approves it. The old one stays live until then.
-    const created = newLesson(deps, key, draft, "candidate", { supersedes: other.id });
+    const created = newLesson(deps, key, draft, "candidate", { supersedes: other.id, ...(rejectedNote.length === 0 ? {} : { tierReasons: rejectedNote }) });
     const written = await commitWith(deps, key, async () => [created]);
     if (written === undefined) return drop("conflict");
     await keepVector(sim, key, created, queryVector);

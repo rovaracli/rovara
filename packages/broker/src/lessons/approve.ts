@@ -275,7 +275,7 @@ export const rejectLesson = (deps: ApproveDeps, input: { workspaceId: string; pr
 /**
  * A maintainer merges a pending lesson that is linked as a possible duplicate into the lesson it may duplicate. The person must be eligible to decide lessons here and able to read BOTH lessons (the access records,
  * now). The merge is `foldDuplicate` (all caps, AND-merged trust flags, no lowering of an active lesson's trust or audience): one conditional commit writes the merged lesson and retires the duplicate, so the pair
- * is never half merged. Audited `lesson.merged` on the surviving lesson, by the person (`judged: "person"`).
+ * is never half merged. Audited BEFORE the commit (no record, no merge): `lesson.merged` on the surviving lesson, by the person (`judged: "person"`), and `lesson.retired` on the duplicate. A pending target loses the approvals it had (its evidence, authors and audience changed).
  */
 export async function mergeDuplicate(deps: ApproveDeps, input: { workspaceId: string; project: string; lessonId: string; actorId: string; expectedVersion?: number }): Promise<{ ok: true; lesson: Lesson } | { ok: false; code: ApprovalFailure }> {
   const key: ScopeKey = { workspaceId: input.workspaceId, project: input.project };
@@ -297,10 +297,13 @@ export async function mergeDuplicate(deps: ApproveDeps, input: { workspaceId: st
     if (!(await mayHandle(deps, key, target, input.actorId))) return { ok: false, code: "not_permitted" };
     const writes = await foldDuplicate(deps, key, target, duplicate);
     if (writes === undefined) return { ok: false, code: "cannot_merge" };
+    // The record first (fail closed, as approve does): a merge changes what a live lesson rests on (support tasks, authors, citations), so no record, no merge. The retired duplicate has its own record, under its own id.
+    const merged = await requireAudit(deps.audit, { action: "lesson.merged", workspaceId: key.workspaceId, project: key.project, lessonId: target.id, actor: input.actorId, facts: { tier: target.tier, judged: "person", duplicate: duplicate.id } });
+    const retired = merged && await requireAudit(deps.audit, { action: "lesson.retired", workspaceId: key.workspaceId, project: key.project, lessonId: duplicate.id, actor: input.actorId, facts: { cause: "merged", reason: "merged", into: target.id, tier: duplicate.tier } });
+    if (!retired) return { ok: false, code: "audit_unavailable" };
     const result = await deps.store.commit(key, setVersion, writes, deps.now());
     if (result.ok) {
       await dropVector(deps.vectors, key, duplicate.id);
-      await emitAudit(deps.audit, { action: "lesson.merged", workspaceId: key.workspaceId, project: key.project, lessonId: target.id, actor: input.actorId, facts: { tier: target.tier, judged: "person", duplicate: duplicate.id } });
       return { ok: true, lesson: writes[0]! };
     }
   }

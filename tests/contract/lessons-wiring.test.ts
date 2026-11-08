@@ -8,18 +8,11 @@ import { InMemoryLessonStore } from "../../packages/broker/src/lessons/store.js"
 import { lessonRouteDependenciesOf } from "../../packages/broker/src/aws/developer-routes/lessons.js";
 import { LESSON_RATES } from "../../packages/broker/src/lessons/routes.js";
 import { FakeDynamoDb } from "../support/fake-dynamodb.js";
-import { withLessonAudiences } from "../../packages/broker/src/lessons/task-audience.js";
-import type { AccessCheckPort } from "../../packages/broker/src/team-record/access-port.js";
-import { Alerts, Audit, Clock, MemoryVectors, ScriptedModel, Spend, directory, embedder, facts, Judge, lessonRecord, seed, settings, verifier, wideAudience } from "../unit/lessons/lesson-helpers.js";
+import { Alerts, Audit, Clock, MemoryVectors, ScriptedModel, Spend, allowAllAccess, directory, embedder, facts, Judge, lessonRecord, seed, settings, verifier } from "../unit/lessons/lesson-helpers.js";
 
 const A = "org_aaaaaaaaaaaaaaaaaaaa" as OrgId, me = "a".repeat(64), other = "b".repeat(64), auditorId = "c".repeat(64);
 const BASE = "/v1/app/projects/demo/lessons";
 const names = { memberName: async () => "Priya", isErased: async () => false };
-// Every task is open to the whole project "demo" (the shared fake in lesson-helpers.ts answers for its own project, so the live check of a lesson's source tasks would withhold every lesson here).
-const allowAllAccess: AccessCheckPort = {
-  mayRead: async (_org, _viewer, places) => places.map(() => true),
-  taskVisibility: withLessonAudiences({ read: async (_org, ids) => new Map(ids.map((id) => [id, { kind: "shared" as const }])) }, { read: async (_org, ids) => new Map(ids.map((id) => [id, wideAudience({ project: "demo" })])) }),
-};
 
 function fixture(over: { wired?: boolean; settings?: Parameters<typeof settings>[0] } = {}) {
   const db = new FakeDynamoDb();

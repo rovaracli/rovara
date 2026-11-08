@@ -83,6 +83,7 @@ const REASON_WORDS: Readonly<Record<(typeof LESSON_TIER_REASONS)[number], string
  stage_not_allowed: "It would reach steps beyond building.", contradiction: "It contradicts another lesson.", restricted_source: "It comes from a source only some people can see.",
  supersedes_higher_tier: "It replaces a lesson that needed more care.", cited_fact: "A checked fact about the code.",
  possible_duplicate: "It may say the same as another lesson, so a person decides.",
+ matches_rejected: "It is close to a lesson someone already rejected, so a person decides.",
  capability_request: "It asks Rovara to change tools, access, checks, approvals or limits. A lesson can't do that, so two people decide whether to keep it.",
 };
 /** The words for a tier reason. A reason this build does not know has none: the raw code is never shown. */

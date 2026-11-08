@@ -161,6 +161,14 @@ describe("waiting cards", () => {
   expect(items[6]).toBe("A note in the team record");
  });
 
+ it("a possible duplicate that is also close to a rejected lesson says both", async () => {
+  await openLessons({ state: { view: view({ waiting: [waiting({ possibleDuplicate: "les_aaaa1111", tierReasons: ["possible_duplicate", "matches_rejected"] })] }) } });
+  const card = within(cards()[0]!);
+  expect(card.getByText("It may say the same as another lesson, so a person decides.")).toBeTruthy();
+  expect(card.getByText("It is close to a lesson someone already rejected, so a person decides.")).toBeTruthy();
+  expect(card.getByRole("button", { name: "Merge into the existing lesson" })).toBeTruthy();
+ });
+
  it("a lesson sent back to a person, or one that contradicts another, says so", async () => {
   await openLessons({ state: { view: view({ waiting: [waiting({ reviewRequired: true, contradicts: "les_other001" })] }) } });
   const card = cards()[0]!;
