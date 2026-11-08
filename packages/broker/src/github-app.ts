@@ -327,6 +327,17 @@ interface InstalledRepository {
  * lifetime. There is no account allowlist: only administrators register repositories, and an
  * installation's token reaches only that installation's repositories.
  */
+/** One attempt in the App's webhook delivery history (SRL-5a). `statusCode` is what the broker answered; 0 for a timeout or a refused connection. */
+export interface GitHubWebhookDelivery {
+  id: number;
+  guid: string;
+  deliveredAt: string;
+  redelivery: boolean;
+  event: string;
+  action: string | null;
+  statusCode: number;
+}
+
 export class GitHubAppCredentialProvider {
   private readonly fetchImplementation: typeof fetch;
   private readonly now: () => number;
@@ -2097,6 +2108,44 @@ export class GitHubAppCredentialProvider {
     const body: unknown = await response.json();
     if (!Array.isArray(body)) throw agentXError("RUNTIME_UNAVAILABLE", "GitHub returned an invalid installations response");
     return body.length;
+  }
+
+  /**
+   * SRL-5a: one page of the App's webhook deliveries, newest first (`GET /app/hook/deliveries`, App JWT only). `cursor` is the opaque value of the previous page's `Link: rel="next"`.
+   * An entry GitHub states badly is left out (the sweep never acts on what it cannot read). Throws when GitHub did not answer the list.
+   */
+  async listWebhookDeliveries(input: { cursor?: string; perPage: number }): Promise<{ entries: GitHubWebhookDelivery[]; next?: string }> {
+    const query = new URLSearchParams({ per_page: String(Math.min(Math.max(1, Math.trunc(input.perPage)), 100)) });
+    if (input.cursor !== undefined) query.set("cursor", input.cursor);
+    const response = await this.fetchImplementation(`https://api.github.com/app/hook/deliveries?${query.toString()}`, {
+      headers: await this.appHeaders(), signal: AbortSignal.timeout(8_000), redirect: "error",
+    });
+    if (!response.ok) throw agentXError("RUNTIME_UNAVAILABLE", `GitHub's webhook delivery list failed with HTTP ${response.status}`);
+    const body: unknown = await response.json();
+    if (!Array.isArray(body)) throw agentXError("RUNTIME_UNAVAILABLE", "GitHub returned an invalid webhook delivery list");
+    const entries: GitHubWebhookDelivery[] = [];
+    for (const item of body) {
+      const record = item !== null && typeof item === "object" ? item as Record<string, unknown> : {};
+      if (!Number.isSafeInteger(record.id) || typeof record.guid !== "string" || typeof record.delivered_at !== "string" || Number.isNaN(Date.parse(record.delivered_at))
+        || typeof record.event !== "string" || !Number.isSafeInteger(record.status_code)) continue;
+      entries.push({
+        id: record.id as number, guid: record.guid, deliveredAt: new Date(record.delivered_at).toISOString(), redelivery: record.redelivery === true,
+        event: record.event, action: typeof record.action === "string" ? record.action : null, statusCode: record.status_code as number,
+      });
+    }
+    const next = /<[^>]*[?&]cursor=([^&>]+)[^>]*>;\s*rel="next"/u.exec(response.headers.get("link") ?? "")?.[1];
+    return { entries, ...(next === undefined ? {} : { next: decodeURIComponent(next) }) };
+  }
+
+  /** SRL-5a: asks GitHub to deliver one delivery again (`POST /app/hook/deliveries/{id}/attempts`): `requested` on 202, `gone` when GitHub no longer has it (404, 422), and a throw on anything else. */
+  async redeliverWebhookDelivery(deliveryId: number): Promise<"requested" | "gone"> {
+    if (!Number.isSafeInteger(deliveryId) || deliveryId < 1) throw agentXError("CONFIG_INVALID", "GitHub webhook delivery id must be a positive integer");
+    const response = await this.fetchImplementation(`https://api.github.com/app/hook/deliveries/${deliveryId}/attempts`, {
+      method: "POST", headers: await this.appHeaders(), signal: AbortSignal.timeout(8_000), redirect: "error",
+    });
+    if (response.status === 202) return "requested";
+    if (response.status === 404 || response.status === 422) return "gone";
+    throw agentXError("RUNTIME_UNAVAILABLE", `GitHub's webhook redelivery failed with HTTP ${response.status}`);
   }
 
   private async appHeaders(): Promise<Record<string, string>> {

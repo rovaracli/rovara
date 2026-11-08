@@ -64,6 +64,7 @@ import type { DistillModel } from "./distill.js";
 import type { PurgeDependencies } from "./purge.js";
 import { readOpsFailures, recordOpsFailure, type OpsFailures } from "./ops-failures.js";
 import type { RecordLog, RecordVectorPort, TeamRecordTable } from "./types.js";
+import { runGithubRedelivery, type DeliveriesPort, type RedeliveryState } from "./github-redelivery.js";
 
 type DocClient = TeamRecordTable["documentClient"];
 
@@ -99,6 +100,11 @@ export interface TeamRecordRuntimeInput {
   developerOfSlackUser?: (slackUserId: string) => Promise<string | undefined>;
   /** The dead-letter queue, read only to delete PUT messages (their text) out of it every hour (TRW-5 S1). Absent: no sweep. */
   deadLetters?: DeadLetterPort;
+  /**
+   * SRL-5a: the GitHub App's webhook deliveries (list and redeliver, with the App JWT). Every hour the failed record removals (a comment delete, a repository delete or transfer) are asked for again, so a delete we
+   * failed to process is not lost for good (GitHub never redelivers on its own). Absent: no sweep (an install without a GitHub App).
+   */
+  githubDeliveries?: DeliveriesPort;
   /** A delete that neither the table nor the durable queue accepted goes here: an asynchronous Event invoke of the broker itself (TRW-5 S2). Absent: the failure is thrown, as before. */
   removalFallback?: RemovalFallback;
   /**
@@ -218,6 +224,10 @@ export const JOB_BUDGET_MS = 24_000;
 const PER_ORG_MS = 8_000;
 /** The most the dead-letter sweep may take of one hourly run, so the orgs keep most of the budget. */
 const DLQ_SWEEP_MS = 6_000;
+/** The most the GitHub redelivery sweep (SRL-5a) may take of one hourly run. */
+const GITHUB_REDELIVERY_MS = 5_000;
+/** The sweep's one state item (watermark and gaps), in the directory partition, which no org erase empties. It holds delivery times only: no person, no text. */
+const GITHUB_REDELIVERY_STATE_KEY = { pk: TEAM_RECORD_ORG_DIRECTORY_PK, sk: "GHREDELIVERY#state" } as const;
 /**
  * TRW-5 S4 (fix round 1): a put that read the "open" answer just before an archive or a close can land up to the cache's minute afterwards. So an archive's or a close's erase is run a SECOND time once that
  * minute has passed (with margin), and only that second pass finishes the job (and writes the project's stamp). Until then the hourly job resumes the marker.
@@ -850,6 +860,31 @@ export function createTeamRecordRuntime(input: TeamRecordRuntimeInput): TeamReco
     return deleted;
   }
 
+  /** SRL-5a: asks GitHub to send failed record removals (deleted comments and repositories) again. Never throws; a failure is a fixed log line and a count. */
+  async function sweepGithubRedelivery(budgetMs: number): Promise<Record<string, number>> {
+    const deliveries = input.githubDeliveries;
+    if (deliveries === undefined) return {};
+    try {
+      const outcome = await runGithubRedelivery({
+        deliveries, now, log: (event, fields) => log(event, fields),
+        state: {
+          async load() {
+            const item = ((await table.documentClient.send(new GetCommand({ TableName: table.tableName, Key: GITHUB_REDELIVERY_STATE_KEY, ConsistentRead: true }))) as { Item?: Record<string, unknown> }).Item;
+            if (item === undefined) return undefined;
+            return { ...(typeof item.watermark === "string" ? { watermark: item.watermark } : {}), gaps: Array.isArray(item.gaps) ? item.gaps as RedeliveryState["gaps"] : [] };
+          },
+          async save(next) {
+            await table.documentClient.send(new PutCommand({ TableName: table.tableName, Item: { ...GITHUB_REDELIVERY_STATE_KEY, entityType: "TEAM_RECORD_GITHUB_REDELIVERY", ...(next.watermark === undefined ? {} : { watermark: next.watermark }), gaps: next.gaps, at: new Date(now()).toISOString() } }));
+          },
+        },
+      }, { budgetMs });
+      return { githubRedelivered: outcome.redelivered, githubRedeliveryFailed: outcome.failed + (outcome.status === "failed" ? 1 : 0), githubRedeliveryDeferred: outcome.deferred, githubRedeliveryGaps: outcome.gaps };
+    } catch {
+      log("record.github_redelivery_failed", {});
+      return { githubRedeliveryFailed: 1 };
+    }
+  }
+
   /** Filled in below, where the tracker pieces are built (they need the links, which are defined after the jobs). */
   const trackerSync: { run: (orgId: OrgId, budgetMs: number) => Promise<number> } = { run: async () => 0 };
   const jobs: TeamRecordRuntime["jobs"] = {
@@ -859,6 +894,8 @@ export function createTeamRecordRuntime(input: TeamRecordRuntimeInput): TeamReco
         // The whole run shares ONE budget (the broker's timeout is 30 s): what the dead-letter sweep takes, the orgs do not get.
         const startedAt = now();
         const swept = await sweepDeadLetterText(DLQ_SWEEP_MS);
+        // SRL-5a: a delete webhook we failed to process is asked for again (App-wide, not per org), inside its own small share of the run.
+        const redelivery = await sweepGithubRedelivery(GITHUB_REDELIVERY_MS);
         const summary = await eachOrg(async (orgId, budgetMs) => {
           const deleteBudget: DeleteBudget = { maxRequests: 50, maxItems: 5_000, maxMs: budgetMs };
           const done = await runDeleteWorker(await purgeFor(orgId), orgId, deleteBudget);
@@ -873,6 +910,7 @@ export function createTeamRecordRuntime(input: TeamRecordRuntimeInput): TeamReco
           return { requests: done.requests, finished: done.finished, stillHidden: done.stillHidden, sweepFailed: done.sweepFailed, lakeStatements: lakeDeletes?.statements ?? 0, erasesFinished: erased, projectsSwept, trackersSynced };
         }, JOB_BUDGET_MS - (now() - startedAt));
         summary.details.deadLetterTextDeleted = swept;
+        for (const [key, value] of Object.entries(redelivery)) summary.details[key] = value;
         return summary;
       }
       return eachOrg(async (orgId, budgetMs) => {

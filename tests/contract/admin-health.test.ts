@@ -153,3 +153,43 @@ describe("GET /v1/admin/health, each check's other answers", () => {
     await expect(provider(Response.json({ installations: [] })).installationCount()).rejects.toMatchObject({ code: "RUNTIME_UNAVAILABLE", message: "RUNTIME_UNAVAILABLE: GitHub returned an invalid installations response" });
   });
 });
+
+// SRL-5a: the App's webhook delivery list and redelivery request, with the App's own token.
+describe("the GitHub App's webhook deliveries", () => {
+  const provider = (fetch: typeof globalThis.fetch) => new GitHubAppCredentialProvider({ credentialRef: "github-app", appId: "123", getPrivateKey: async () => TEST_PRIVATE_KEY, fetchImplementation: fetch });
+
+  it("lists a page newest first with the cursor of the next page, and leaves out an entry GitHub states badly", async () => {
+    const good = { id: 11, guid: "00000000-0000-4000-8000-000000000011", delivered_at: "2026-11-08T10:00:00Z", redelivery: false, event: "issue_comment", action: "deleted", status_code: 503, installation_id: 5 };
+    const fetch = vi.fn(async () => new Response(JSON.stringify([good, { ...good, id: "x" }, { ...good, id: 12, status_code: 0, action: null, redelivery: true }, { ...good, id: 13, delivered_at: "never" }]), {
+      status: 200, headers: { link: '<https://api.github.com/app/hook/deliveries?per_page=100&cursor=v1_abc%3D>; rel="next", <https://api.github.com/app/hook/deliveries?per_page=100&cursor=v1_zzz>; rel="prev"' },
+    }));
+    const page = await provider(fetch).listWebhookDeliveries({ perPage: 500, cursor: "v1_prev" });
+    expect(page.entries).toEqual([
+      { id: 11, guid: good.guid, deliveredAt: "2026-11-08T10:00:00.000Z", redelivery: false, event: "issue_comment", action: "deleted", statusCode: 503 },
+      { id: 12, guid: good.guid, deliveredAt: "2026-11-08T10:00:00.000Z", redelivery: true, event: "issue_comment", action: null, statusCode: 0 },
+    ]);
+    expect(page.next).toBe("v1_abc=");
+    const [url, init] = fetch.mock.calls[0] as unknown as [string, RequestInit];
+    expect(url).toBe("https://api.github.com/app/hook/deliveries?per_page=100&cursor=v1_prev");
+    expect(String((init.headers as Record<string, string>).authorization)).toMatch(/^Bearer /u);
+  });
+
+  it("has no next cursor on the last page, and throws (never an empty answer) when GitHub does not answer the list", async () => {
+    expect((await provider((async () => Response.json([]))).listWebhookDeliveries({ perPage: 100 })).next).toBeUndefined();
+    await expect(provider((async () => new Response("no", { status: 401 }))).listWebhookDeliveries({ perPage: 100 })).rejects.toMatchObject({ code: "RUNTIME_UNAVAILABLE" });
+    await expect(provider((async () => Response.json({ not: "a list" }))).listWebhookDeliveries({ perPage: 100 })).rejects.toMatchObject({ code: "RUNTIME_UNAVAILABLE" });
+  });
+
+  it("asks for a redelivery with a POST: 202 is requested, 404 and 422 are gone, anything else throws", async () => {
+    const fetch = vi.fn(async () => new Response("{}", { status: 202 }));
+    expect(await provider(fetch as never).redeliverWebhookDelivery(42)).toBe("requested");
+    const [url, init] = fetch.mock.calls[0] as unknown as [string, RequestInit];
+    expect(url).toBe("https://api.github.com/app/hook/deliveries/42/attempts");
+    expect(init.method).toBe("POST");
+    expect(await provider((async () => new Response("", { status: 404 }))).redeliverWebhookDelivery(42)).toBe("gone");
+    expect(await provider((async () => new Response("", { status: 422 }))).redeliverWebhookDelivery(42)).toBe("gone");
+    await expect(provider((async () => new Response("", { status: 500 }))).redeliverWebhookDelivery(42)).rejects.toMatchObject({ code: "RUNTIME_UNAVAILABLE" });
+    await expect(provider((async () => new Response("", { status: 403 }))).redeliverWebhookDelivery(42)).rejects.toMatchObject({ code: "RUNTIME_UNAVAILABLE" });
+    await expect(provider(fetch as never).redeliverWebhookDelivery(0)).rejects.toMatchObject({ code: "CONFIG_INVALID" });
+  });
+});
