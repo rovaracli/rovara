@@ -12,7 +12,7 @@ const gitfarm = (comments: ChangeRequestFeedback["comments"], diffs?: { compare(
   host: "codehost:gitfarm", codeHost: feedback(comments),
   pullRequestAddress: (url) => { const m = /^https:\/\/gitfarm\.example\/cr\/(\d+)$/u.exec(url); return m === null ? undefined : { host: "codehost:gitfarm", repository: "pkg/api", number: Number(m[1]) }; },
   refOf: (address, url) => ({ repository: { url: `https://gitfarm.example/${address.repository}` }, id: String(address.number), url }),
-  scopeOf: (workspaceId) => ({ orgId: workspaceId as never }), ...(diffs === undefined ? {} : { diffs: diffs as never }),
+  scopeOf: (workspaceId) => ({ orgId: workspaceId }), ...(diffs === undefined ? {} : { diffs: diffs }),
 });
 
 describe("the registry", () => {

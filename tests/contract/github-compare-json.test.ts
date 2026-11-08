@@ -15,7 +15,7 @@ function setup() {
     fetchImplementation: async (input, init) => {
       const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
       if (url.endsWith("/installation")) return Response.json({ id: 123, account: { login: "acme" } });
-      if (url.endsWith("/access_tokens")) { tokenBodies.push(JSON.parse(String(init?.body))); return Response.json({ token: "fake-test-only", expires_at: "2030-01-01T00:00:00Z" }); }
+      if (url.endsWith("/access_tokens")) { tokenBodies.push(JSON.parse(init?.body as string)); return Response.json({ token: "fake-test-only", expires_at: "2030-01-01T00:00:00Z" }); }
       urls.push(url);
       return Response.json({ status: "ahead", files: [] });
     },

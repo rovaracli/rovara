@@ -19,8 +19,8 @@ const baseOf = (over: Partial<TaskSubjectBase["facts"]> = {}): TaskSubjectBase =
     workspaceId: WS, project: PROJECT, taskId: "task-1", repositories: ["api"], baseCommit: BASE, mergedCommit: MERGED, outcome: "merged",
     task: { developerId: "creator", startedBy: { developerId: "starter" }, agent: { agentId: "a" } },
     rest: { initiatorTrust: "member", steeringTrust: ["member"], intentTrust: "member", links: [LINK], spans: [
-      memberSpan("Make retries use the helper", { kind: "intent", authorId: "creator", eventId: undefined }),
-      memberSpan("The agent plan", { kind: "plan", trust: "system", authorId: undefined, eventId: undefined }),
+      { kind: "intent", text: "Make retries use the helper", trust: "member", authorId: "creator" },
+      { kind: "plan", text: "The agent plan", trust: "system" },
       memberSpan("Do not do that", { kind: "send_back", authorId: "starter", eventId: "ev-sb" }),
     ] }, ...over,
   },

@@ -96,9 +96,9 @@ function commentIdOf(kind: PullRequestSurface, id: string): string | undefined {
 export function captureAdapterOf(input: {
   host: string; codeHost: Pick<CodeHost, "feedback">;
   /** The record's name of a pull request URL on this host. */
-  pullRequestAddress(url: string): PullRequestAddress | undefined;
+  pullRequestAddress: (url: string) => PullRequestAddress | undefined;
   /** The repository's address for a full name (see `CodeHostCaptureAdapter.repositoryAddress`). */
-  repositoryAddress?(fullName: string): string | undefined;
+  repositoryAddress?: (fullName: string) => string | undefined;
   /** The port's change request ref for an address. */
   refOf(address: PullRequestAddress, url: string): ChangeRequestRef;
   /** The scope the port's call is made under (the company's own). */

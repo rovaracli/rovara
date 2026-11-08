@@ -121,7 +121,7 @@ describe("a reviewer's comments on the task's pull requests", () => {
   });
 
   it("a comment the record has no row for (a bot, an unlinked account, a deleted comment, an erased author's) gives no span", async () => {
-    const { source } = setup({ comments: { "review_comment:11": comments["review_comment:11"]! }, feedback });
+    const { source } = setup({ comments: { "review_comment:11": comments["review_comment:11"] }, feedback });
     expect((await spansOf(source)).filter((s) => s.kind === "pr_comment")).toHaveLength(1);
   });
 

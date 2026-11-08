@@ -46,7 +46,7 @@ export interface TaskLearningDeps {
   rovara?: Pick<RovaraEmitter, "sendBack">;
   log?: (event: string, fields: Record<string, string | number>) => void;
   /** The checks a human-edit read makes on its authors now (the same readers the subject source uses). Absent: human edits are not learned from. */
-  humanEdit?: { standing(orgId: string, developerId: string, project: string): Promise<"member" | "outsider">; isErased(orgId: string, developerId: string, project: string): Promise<boolean> };
+  humanEdit?: { standing: (orgId: string, developerId: string, project: string) => Promise<"member" | "outsider">; isErased: (orgId: string, developerId: string, project: string) => Promise<boolean> };
 }
 
 const MAX_SEND_BACKS = 50;

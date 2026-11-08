@@ -46,7 +46,7 @@ import { buildRecordCaller, handleRecordRoute, type RecordRouteReply } from "./r
 import { dynamoRateLimiter, type RecordQueryDependencies } from "./query.js";
 import { realRefusalFloor, type SourceRouteDependencies, type SourceWriteContext } from "./source-write.js";
 import { createCaptureModePort, createRecordSink, createSourceConfigPort, NOTES_OPT_IN_FROM_SOURCE_ROW, type RecordSink } from "./sink.js";
-import { createOpConsumer, createQueuedHumanEditJobs, type QueueRecord } from "./sources/queue.js";
+import { createOpConsumer, type QueueRecord } from "./sources/queue.js";
 import { createCaptureAdapters, type CaptureAdapters, type CodeHostCaptureAdapter } from "./sources/capture-adapters.js";
 import { createCodeHostTap, runHumanEdit, type HumanEditExtractorPort, type HumanEditJob } from "./sources/codehost.js";
 import { tableMergeIndex, tableOnceClaims, tablePushIndex, type MergeIndex } from "./capture-indexes.js";

@@ -2,7 +2,7 @@
 // then a merged Rovara pull request queues a job (ids only, never a diff), the job proves the authors, reads the compare live through the host's capture adapter, hands it on once, and keeps nothing.
 import { randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
-import { githubMemberKey, githubInstallationKey, githubRepoProjectKey, projectRevisionKey, developerOrgKey, orgMemberKey, type OrgId } from "@agentx/contracts";
+import { githubMemberKey, githubInstallationKey, githubRepoProjectKey, projectRevisionKey, developerOrgKey, orgMemberKey } from "@agentx/contracts";
 import { createTeamRecordRuntime } from "../../../packages/broker/src/team-record/runtime.js";
 import { SdkUnavailableError } from "../../../packages/broker/src/team-record/aws-adapters.js";
 import { putSourceConfig } from "../../../packages/broker/src/team-record/store.js";
@@ -44,7 +44,7 @@ const envelope = (action: string) => ({ action, installation: { id: 55 }, reposi
 const mergedDelivery = () => ({ eventName: "pull_request", deliveryId: randomUUID(), payload: { ...envelope("closed"), sender: alice, pull_request: {
   number: 5, html_url: "https://github.com/acme/api/pull/5", title: "Fix", body: "x", user: alice, head: { sha: hex(21), ref: "fix" }, base: { ref: "main" }, merged: true, merge_commit_sha: hex(99), updated_at: "2026-10-30T11:00:00Z" } } });
 const addRow = (w: ReturnType<typeof setup>) => putSourceConfig({ documentClient: w.db, tableName: "TeamRecord" }, {
-  workspaceId: ORG_A as OrgId, project: "web", source: "github", scope: `github:repo/${REPO_ID}`, enabled: true, retention: "C", exclude: [], audienceDefault: "project", health: "unknown", addedBy: "dev-1", updatedAt: "2026-10-30T10:00:00.000Z",
+  workspaceId: ORG_A, project: "web", source: "github", scope: `github:repo/${REPO_ID}`, enabled: true, retention: "C", exclude: [], audienceDefault: "project", health: "unknown", addedBy: "dev-1", updatedAt: "2026-10-30T10:00:00.000Z",
 }, { edition: "enterprise" });
 
 describe("a merged Rovara pull request", () => {
@@ -105,7 +105,7 @@ describe("another code host", () => {
     const w = setup([gitfarm]);
     expect(w.runtime.captureAdapters.support()["gitfarm"]).toMatchObject({ humanEdits: false });
     await putSourceConfig({ documentClient: w.db, tableName: "TeamRecord" }, {
-      workspaceId: ORG_A as OrgId, project: "web", source: "codehost:gitfarm", scope: "codehost:gitfarm:repo/7", enabled: true, retention: "C", exclude: [], audienceDefault: "project", health: "unknown", addedBy: "dev-1", updatedAt: "2026-10-30T10:00:00.000Z",
+      workspaceId: ORG_A, project: "web", source: "codehost:gitfarm", scope: "codehost:gitfarm:repo/7", enabled: true, retention: "C", exclude: [], audienceDefault: "project", health: "unknown", addedBy: "dev-1", updatedAt: "2026-10-30T10:00:00.000Z",
     }, { edition: "enterprise" });
     const repo = { host: "gitfarm", id: "7", fullName: "pkg/api", isPrivate: false, workspaceId: ORG_A, project: "web" };
     const result = await w.runtime.taps.codeHost({ type: "comment", repo, prNumber: 3, id: "9", url: "https://git.example.test/pkg/api/cr/3#9", action: "created", surface: "review_comment", body: "Use withRetry", author: { id: "123", login: "maya", isBot: false }, path: "src/a.ts", at: "2026-10-30T10:00:00.000Z", version: "created:1" });

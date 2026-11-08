@@ -48,7 +48,7 @@ const str = (value: unknown, max: number): string | undefined => (typeof value =
 
 export function tableCapturedRows(table: TeamRecordTable, nowSeconds?: () => number): CapturedRowReader {
   async function rows(workspaceId: string, system: string, sourceId: string): Promise<RecordEvent[]> {
-    const found = await bySource(table, workspaceId as never, system, sourceId, MAX_ROWS);
+    const found = await bySource(table, workspaceId, system, sourceId, MAX_ROWS);
     const events: RecordEvent[] = [];
     for (const item of found.items) {
       const event = eventFromItem(item, nowSeconds?.());

@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 import type { PlanDocument } from "@agentx/contracts";
 import { PLAN_FACTS_MAX_FILES, PLAN_FACTS_SUMMARY_MAX, planLoadFacts } from "../../../packages/broker/src/lessons/plan-facts.js";
 
-const plan = (claims: PlanDocument["claims"], title = "Retry failed HTTP calls"): PlanDocument => ({ schemaVersion: 1, title, why: [], claims, notChanging: [], risks: [], decisions: [] }) as PlanDocument;
+const plan = (claims: PlanDocument["claims"], title = "Retry failed HTTP calls"): PlanDocument => ({ schemaVersion: 1, title, why: [], claims, notChanging: [], risks: [], decisions: [] });
 
 describe("planLoadFacts", () => {
   it("the summary is the title and the top-level claims; the files are the cited code and the files named in words, each once", () => {

@@ -66,7 +66,9 @@ describe("the merge commit of a merged Rovara pull request", () => {
     await tap.handle(merged());
     second.prs.list.push(rovaraPr);
     await tap.handle(merged({ merged: false }));
-    await tap.handle(merged({ mergeCommitSha: undefined }));
+    const { mergeCommitSha: _none, ...withoutCommit } = merged() as Extract<CodeHostEvent, { type: "pr" }>;
+    void _none;
+    await tap.handle(withoutCommit);
     await tap.handle(merged({ mergeCommitSha: "xyz" }));
     expect(noted).toEqual([]);
   });
