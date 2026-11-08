@@ -332,7 +332,9 @@ describe("Suite 10c: the plan panel on the task page (OWNER DECISION 18)", () =>
   it("an older version of the plan reads whole but read-only (?version=N): the owner sees it with no rights, a teammate too, another company a missing task, and a bad or unknown version is refused", async () => {
     const { e2e, web, shim } = await waitingPlan();
     // Sam comments on v1, then the owner sends the plan back: v2 is written and v1 is older.
-    expect((await web(SAM, "POST", `${base(e2e)}/comments`, commentBody({ kind: "claim", id: "1" }, "Say which file."))).status).toBe(201);
+    const onV1 = await web(SAM, "POST", `${base(e2e)}/comments`, commentBody({ kind: "claim", id: "1" }, "Say which file."));
+    expect(onV1.status).toBe(201);
+    const v1Id = String((onV1.body.comment as { id: string }).id);
     const sentBack = await cardDecision(shim, OWNER, e2e.taskId(), { decision: "REQUEST_CHANGES", reason: "Name the file." });
     expect(sentBack.status, JSON.stringify(sentBack.body)).toBe(200);
     await e2e.settle();
@@ -348,6 +350,13 @@ describe("Suite 10c: the plan panel on the task page (OWNER DECISION 18)", () =>
     expect((listed.body.comments as Array<{ version: number; text: string }>).filter((comment) => comment.version === 1).map((comment) => comment.text)).toEqual(["Say which file."]);
     // The current version asked for by number is the ordinary view.
     expect((await web(OWNER, "GET", `${base(e2e)}/documents/plan?version=2`)).body).toMatchObject({ current: { version: 2 }, access: { canDecide: true } });
+    // A thread on the older version takes no new reply (the same refusal as a new comment there); its author may still edit and delete their own comment.
+    const reply = await web(OWNER, "POST", `${base(e2e)}/comments`, commentBody({ kind: "claim", id: "1" }, "Which one?", { parentId: v1Id }));
+    expect([reply.status, JSON.stringify(reply.body)]).toEqual([409, expect.stringContaining("This task changed. Refresh the page and try again.")]);
+    expect(peopleComments(e2e).map((comment) => comment.text)).toEqual(["Say which file."]);
+    const edited = await web(SAM, "POST", `${base(e2e)}/comments/${v1Id}/edit`, { rev: 1, text: "Say which file, please." });
+    expect(edited.status, JSON.stringify(edited.body)).toBe(200);
+    expect((await web(SAM, "POST", `${base(e2e)}/comments/${v1Id}/delete`, { rev: 2 })).status).toBe(200);
     // A teammate reads it too, still with no rights; another company reads exactly as a missing task.
     expect((await web(SAM, "GET", `${base(e2e)}/documents/plan?version=1`)).body).toMatchObject({ older: { currentVersion: 2 }, access: { canComment: false } });
     const outsider = await web(OUTSIDER, "GET", `${base(e2e)}/documents/plan?version=1`);

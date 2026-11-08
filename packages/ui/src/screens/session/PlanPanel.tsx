@@ -128,7 +128,7 @@ function VersionPicker({ versions, shown, older, onPick }: { versions: PanelView
   <select id="panel-version" value={shown ?? latest ?? ""} onChange={event => { const picked = Number(event.target.value);onPick(picked === latest ? undefined : picked); }}>
    {[...versions].sort((left, right) => right.version - left.version).map(entry => <option key={entry.version} value={entry.version}>{"v" + entry.version + (entry.current ? " (current)" : "") + (entry.approved ? ", approved" : "")}</option>)}
   </select>
-  {older !== undefined && <p role="status" className="rv-panel-older"><strong>Older version.</strong> You're reading v{shown} read-only. The current version is v{older.currentVersion}. <Button variant="quiet" onClick={() => onPick(undefined)}>Back to the current version</Button></p>}
+  {older !== undefined && <div className="rv-panel-older"><p role="status"><strong>Older version.</strong> You're reading v{shown} read-only. The current version is v{older.currentVersion}.</p> <Button variant="quiet" onClick={() => onPick(undefined)}>Back to the current version</Button></div>}
  </div>;
 }
 

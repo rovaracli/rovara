@@ -20,3 +20,4 @@
 @media(prefers-reduced-motion:reduce){.rv-dialog.rv-plan-panel{animation:none}}
 .rv-panel-versions{display:flex;flex-wrap:wrap;align-items:center;gap:var(--rv-space-2);margin-bottom:var(--rv-space-3)}.rv-panel-versions select{font:inherit}
 .rv-panel-older{flex-basis:100%;margin:0;padding:var(--rv-space-2) var(--rv-space-3);border:1px solid var(--rv-border);border-radius:var(--rv-radius-md,6px)}
+.rv-panel-older p{margin:0 0 var(--rv-space-2)}

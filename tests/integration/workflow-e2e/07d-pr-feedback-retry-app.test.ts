@@ -14,6 +14,7 @@ import { PLAN, atPlanReview, editsOrFix } from "../../support/workflow-e2e-journ
 import { cardDecision } from "../../support/card-decision.js";
 import { taskPeopleDirectory } from "../../support/task-people-directory.js";
 import { developerIdForSlackUser } from "../../../packages/broker/src/aws/admin-actions.js";
+import { FEEDBACK_REVIEW_RETRY_BUSY } from "../../../packages/broker/src/aws/developer-tasks.js";
 import { FEEDBACK_CHANGED, FEEDBACK_NOT_FOUND } from "../../../packages/broker/src/aws/developer-routes/plan-panel.js";
 
 const OWNER: Developer = { ...SLACK_MAYA };
@@ -97,5 +98,20 @@ describe("Suite 7d: Retry review of a PR feedback review on the task page (OWNER
     const none = await web(OWNER, "POST", `/v1/app/tasks/${randomUUID()}/workflow/feedback-retry`, body);
     expect([real.status, real.body]).toEqual([none.status, none.body]);
     expect(e2e.workflow().revision).toBe(revision);
+  }, 180_000);
+
+  it("a workspace that is busy refuses the retry with the busy words, changes nothing, and the same press works once it is idle", async () => {
+    const { e2e, web } = await failedReviewWaiting();
+    const failed = (await web(OWNER, "GET", path(e2e, "feedback"))).body.review as Failed;
+    const workspaceKey = `WORKSPACE#${String((e2e.db.get(`DEVTASK#${e2e.taskId()}`, "META") as { workspaceId: string }).workspaceId)}`;
+    const idle = e2e.db.get(workspaceKey, "META")!;
+    e2e.db.set({ ...idle, status: "BUSY" });
+    const revision = e2e.workflow().revision;
+    const busy = await web(OWNER, "POST", path(e2e, "feedback-retry"), { reviewDigest: failed.reviewDigest });
+    expect([busy.status, JSON.stringify(busy.body)]).toEqual([400, expect.stringContaining(FEEDBACK_REVIEW_RETRY_BUSY)]);
+    expect(e2e.workflow().revision).toBe(revision);
+    e2e.db.set(idle);
+    const retried = await web(OWNER, "POST", path(e2e, "feedback-retry"), { reviewDigest: failed.reviewDigest });
+    expect([retried.status, started(retried.body)]).toEqual([200, { started: true }]);
   }, 180_000);
 });

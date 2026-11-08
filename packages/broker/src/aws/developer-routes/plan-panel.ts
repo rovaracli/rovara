@@ -122,13 +122,14 @@ async function feedbackRefusal<T>(work: () => Promise<T>): Promise<T> {
  * Retry review's refusals as the Slack button says them: not yours or no such task reads "Review not found."; the busy and changed lines (fixed words) and the task-state lines (closed, closing, never
  * started: fixed words too, said only to the task's authorized owner) pass; anything else reads "This review changed."
  */
-async function retryRefusal<T>(work: () => Promise<T>): Promise<T> {
+export async function retryRefusal<T>(work: () => Promise<T>): Promise<T> {
   try { return await work(); } catch (error) {
     const code = (error as { code?: unknown } | undefined)?.code;
     if (typeof code === "string" && HIDDEN.has(code)) throw agentXError("NOT_FOUND", FEEDBACK_NOT_FOUND);
     if (code === "RUNTIME_UNAVAILABLE" || code === "TASK_BUSY" || code === "WORKSPACE_BUSY") throw error;
     const message = (error as { message?: unknown } | undefined)?.message;
-    if (code === "CONFIG_INVALID" && (message === FEEDBACK_REVIEW_RETRY_BUSY || message === FEEDBACK_REVIEW_RETRY_CHANGED)) throw error;
+    // An AgentXError's message reads "CODE: words".
+    if (code === "CONFIG_INVALID" && (message === `CONFIG_INVALID: ${FEEDBACK_REVIEW_RETRY_BUSY}` || message === `CONFIG_INVALID: ${FEEDBACK_REVIEW_RETRY_CHANGED}`)) throw error;
     throw agentXError("IDEMPOTENCY_CONFLICT", FEEDBACK_CHANGED);
   }
 }

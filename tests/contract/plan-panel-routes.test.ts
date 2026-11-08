@@ -2,10 +2,12 @@
 // about a task (a missing one answers the same), and the browser reaches exactly these shapes through /v1/web. What each route does is in tests/integration/workflow-e2e/10c-plan-panel.test.ts.
 import { randomUUID } from "node:crypto";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { PLAN_PANEL_BROWSER_MESSAGE, PLAN_PANEL_ROUTE, planPanelView } from "../../packages/broker/src/aws/developer-routes/plan-panel.js";
+import { FEEDBACK_CHANGED, FEEDBACK_NOT_FOUND, PLAN_PANEL_BROWSER_MESSAGE, PLAN_PANEL_ROUTE, planPanelView, retryRefusal } from "../../packages/broker/src/aws/developer-routes/plan-panel.js";
 import { webRouteAllowed } from "../../packages/broker/src/aws/web-auth.js";
 import { taskPanelLocation } from "../../packages/broker/src/aws/task-web.js";
 import type { TaskDocumentView } from "../../packages/broker/src/aws/task-web.js";
+import { FEEDBACK_REVIEW_RETRY_BUSY, FEEDBACK_REVIEW_RETRY_CHANGED } from "../../packages/broker/src/aws/developer-tasks.js";
+import { agentXError } from "@agentx/contracts";
 import { createDeveloperTaskBroker, MAYA } from "../support/developer-task-broker.js";
 
 const TASK = "11111111-1111-4111-8111-111111111111", COMMENT = "22222222-2222-4222-8222-222222222222";
@@ -90,5 +92,17 @@ describe("plan panel routes: a live browser only", () => {
     }
     expect(() => planPanelView(view, "plan", 7)).toThrow("That version isn't available.");
     expect(() => planPanelView(view, "design", 1)).toThrow("That version isn't available.");
+  });
+
+  it("Retry review's refusals: the busy and changed words pass; not-yours reads as a missing review; infrastructure faults pass; anything else (including the core's own words) reads as changed", async () => {
+    const fail = (code: Parameters<typeof agentXError>[0], message: string) => retryRefusal(async () => { throw agentXError(code, message); });
+    await expect(fail("CONFIG_INVALID", FEEDBACK_REVIEW_RETRY_BUSY)).rejects.toMatchObject({ code: "CONFIG_INVALID", message: `CONFIG_INVALID: ${FEEDBACK_REVIEW_RETRY_BUSY}` });
+    await expect(fail("CONFIG_INVALID", FEEDBACK_REVIEW_RETRY_CHANGED)).rejects.toMatchObject({ code: "CONFIG_INVALID", message: `CONFIG_INVALID: ${FEEDBACK_REVIEW_RETRY_CHANGED}` });
+    for (const code of ["FORBIDDEN", "TASK_NOT_FOUND", "TASK_ACCESS_DENIED", "NOT_FOUND"] as const) await expect(fail(code, "secret detail"), code).rejects.toMatchObject({ code: "NOT_FOUND", message: `NOT_FOUND: ${FEEDBACK_NOT_FOUND}` });
+    for (const code of ["RUNTIME_UNAVAILABLE", "TASK_BUSY", "WORKSPACE_BUSY"] as const) await expect(fail(code, "try later"), code).rejects.toMatchObject({ code });
+    await expect(fail("CONFIG_INVALID", "this review changed; use the latest AgentX message")).rejects.toMatchObject({ code: "IDEMPOTENCY_CONFLICT", message: `IDEMPOTENCY_CONFLICT: ${FEEDBACK_CHANGED}` });
+    await expect(fail("CONFIG_INVALID", "some git error text")).rejects.toMatchObject({ code: "IDEMPOTENCY_CONFLICT", message: `IDEMPOTENCY_CONFLICT: ${FEEDBACK_CHANGED}` });
+    await expect(retryRefusal(async () => { throw new Error("boom"); })).rejects.toMatchObject({ code: "IDEMPOTENCY_CONFLICT", message: `IDEMPOTENCY_CONFLICT: ${FEEDBACK_CHANGED}` });
+    await expect(retryRefusal(async () => ({ started: true }))).resolves.toEqual({ started: true });
   });
 });

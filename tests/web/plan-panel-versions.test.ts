@@ -98,8 +98,9 @@ it("keeps the picker and a way back when an older version cannot be read", async
 const DIGEST = "b".repeat(64);
 const failedReview = { taskId: TASK, title: "Retry failed payments", revision: 9, status: "PENDING", reportStatus: "TIMED_OUT", workflowStatus: "WAITING", workflowStage: "WAIT_FOR_MERGE", reviewDigest: DIGEST, bundleDigests: [],
  candidates: [], findings: [], recommendedFindingIds: [], checks: [], nextAction: "Retry the review from the Slack thread of this task." };
-function mountFeedback(review: Record<string, unknown>, retry: () => ApiResponse) {
- const f = fakeHost(async request => request.method === "GET" ? { status: 200, body: { review } } : request.path === base + "/workflow/feedback-retry" ? retry() : { status: 404, body: {} });
+function mountFeedback(review: Record<string, unknown>, retry: () => ApiResponse, read: (call: number) => ApiResponse = () => ({ status: 200, body: { review } })) {
+ let reads = 0;
+ const f = fakeHost(async request => request.method === "GET" ? read(++reads) : request.path === base + "/workflow/feedback-retry" ? retry() : { status: 404, body: {} });
  renderUi(h(AppHostProvider, { host: f.host, children: h(QueryClientProvider, { client: createQueryClient(), children: h(FeedbackView, { taskId: TASK, onClose: () => undefined }) }) }));
  return { ...f, posts: () => f.request.mock.calls.map(([request]) => request).filter(request => request.method === "POST") };
 }
@@ -138,4 +139,24 @@ it("a finished review has no Retry review", async () => {
  const dialog = await screen.findByRole("dialog", { name: /PR feedback/u });
  await within(dialog).findByText(/Trim it\./u);
  expect(within(dialog).queryByRole("button", { name: "Retry review" })).toBeNull();
+});
+
+it("after a retry the review is read again: the retried review has nothing to show yet, and the page says it is being reviewed, not that none is waiting", async () => {
+ mountFeedback(failedReview, () => ({ status: 200, body: { started: true } }), call => (call === 1 ? { status: 200, body: { review: failedReview } } : { status: 404, body: { error: { code: "NOT_FOUND", message: "Review not found." } } }));
+ const dialog = await screen.findByRole("dialog", { name: /PR feedback/u });
+ fireEvent.click(await within(dialog).findByRole("button", { name: "Retry review" }));
+ await within(dialog).findByText("Reviewing the feedback again. The result will show here.");
+ expect(within(dialog).queryByText(/No PR feedback review is waiting/u)).toBeNull();
+});
+
+it("a new review with a new digest can be retried again: the earlier press no longer disables the button", async () => {
+ const second = { ...failedReview, reviewDigest: "c".repeat(64) };
+ const f = mountFeedback(failedReview, () => ({ status: 200, body: { started: true } }), call => ({ status: 200, body: { review: call === 1 ? failedReview : second } }));
+ const dialog = await screen.findByRole("dialog", { name: /PR feedback/u });
+ fireEvent.click(await within(dialog).findByRole("button", { name: "Retry review" }));
+ await waitFor(() => expect(within(dialog).queryByText(/Reviewing the feedback again\. A new proposal/u)).toBeNull());
+ await waitFor(() => expect(within(dialog).getByRole("button", { name: "Retry review" }).hasAttribute("disabled")).toBe(false));
+ fireEvent.click(within(dialog).getByRole("button", { name: "Retry review" }));
+ await waitFor(() => expect(f.posts()).toHaveLength(2));
+ expect(f.posts().map(request => request.body)).toEqual([{ reviewDigest: DIGEST }, { reviewDigest: "c".repeat(64) }]);
 });
