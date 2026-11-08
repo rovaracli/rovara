@@ -62,6 +62,23 @@ export type RunEstimate = z.infer<typeof RunEstimateSchema>;
 /** Decision journey slice 2: whether approving a coding plan sets a higher run limit than the task has (or its first one). Such an approval is taken only with the limit acknowledged. */
 export const runLimitRaises = (currentUsd: number | undefined, proposedUsd: number): boolean => currentUsd === undefined || proposedUsd > currentUsd;
 
+/**
+ * An amount of US dollars as a person reads it in a run limit: whole dollars without cents ("$12"), cents with two places ("$2.50"), and any finer amount exactly as it is
+ * ("$2.125"), so the figure shown is never a rounded version of the one that is set. A run limit is whole dollars unless the start asked for a lower, fractional one.
+ */
+export const formatRunLimitUsd = (usd: number): string => {
+  if (Number.isInteger(usd)) return `$${String(usd)}`;
+  const cents = Math.round(usd * 100);
+  return Math.abs(usd * 100 - cents) < 1e-9 ? `$${(cents / 100).toFixed(2)}` : `$${String(usd)}`;
+};
+
+/**
+ * 0.5.11 (QA6-12b): the words every surface that is not the web page shows before a coding plan's approval raises the run limit, exactly: "This raises the run limit from $A to $B".
+ * This replaces slice 2's rule that Slack and tools could not show the limit and so were sent to the card: they show it, and the approval carries it.
+ */
+export const runLimitRaiseText = (currentUsd: number, proposedUsd: number): string =>
+  `This raises the run limit from ${formatRunLimitUsd(currentUsd)} to ${formatRunLimitUsd(proposedUsd)}`;
+
 /** How the words a workflow blocks with begin when approving its plan needs a higher tier to accept the run limit (Task 34). */
 export const RUN_LIMIT_BLOCK_PREFIX = "This plan's run limit is $";
 /**

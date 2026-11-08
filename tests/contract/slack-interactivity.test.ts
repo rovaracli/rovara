@@ -1089,6 +1089,53 @@ describe("Slack native workflow review controls", () => {
     const submission = (privateMetadata: unknown, values: Record<string, unknown> = {}, user = requester, team = thread.teamId) => ({
       user: { id: user, team_id: team }, team: { id: team }, view: { private_metadata: privateMetadata, state: { values } } });
 
+    describe("QA6-12b: an Approve that raises the run limit carries the amount its message showed", () => {
+      const raised = (revision: number, runLimitUsd: unknown, decision = "APPROVE") => approve(revision, { value: JSON.stringify({ taskId, revision, digest, decision, runLimitUsd }) });
+      const noChecks = () => {
+        const at = new Date(nowSeconds * 1_000).toISOString();
+        return submitWorkflowArtifact(createWorkflowSnapshot({ taskId, ownerId: "b".repeat(64), now: at, checkPolicy: { required: [], optional: [], selectedOptionalIds: [] } }),
+          { expectedRevision: 1, now: at, artifact: { id: "plan-1", type: "plan", version: 1, sha256: digest, producer: "p", objectKey: "private/o/w/op/plan.md", createdAt: at } });
+      };
+      it("one click: the amount goes to the broker with the decision, and is part of the request id (a different amount is a different decision)", async () => {
+        const plan = noChecks();
+        const submitted: Array<Record<string, unknown>> = [];
+        const handlers = workflowSlackHandlers({ loadTask: async () => ({ ...task, workflow: plan }), openView: async () => undefined, submit: async (input) => { submitted.push(input); } });
+        await handlers.handleAction(raised(plan.revision, 12));
+        await handlers.handleAction(raised(plan.revision, 13));
+        await handlers.handleAction(approve(plan.revision));
+        expect(submitted[0]).toMatchObject({ decision: "APPROVE", acknowledgedRunLimitUsd: 12 });
+        expect(submitted[1]).toMatchObject({ acknowledgedRunLimitUsd: 13 });
+        expect(submitted[2]).not.toHaveProperty("acknowledgedRunLimitUsd");
+        expect(new Set(submitted.map((input) => input.requestId)).size, "three different decisions").toBe(3);
+      });
+      it("Request changes never carries an amount", async () => {
+        const submitted: Array<Record<string, unknown>> = [];
+        let opened: Record<string, unknown> | undefined;
+        const handlers = workflowSlackHandlers({ loadTask: async () => task, openView: async (_t, view) => { opened = view; }, submit: async (input) => { submitted.push(input); } });
+        await handlers.handleAction(raised(workflow.revision, 12, "REQUEST_CHANGES"));
+        await handlers.handleSubmission(submission(opened?.private_metadata, { workflow_feedback: { reason: { value: "Keep the old export." } } }));
+        expect(submitted[0]).toMatchObject({ decision: "REQUEST_CHANGES" });
+        expect(submitted[0]).not.toHaveProperty("acknowledgedRunLimitUsd");
+      });
+      it("the form that chooses checks says the raise first and still sends the amount with the chosen checks", async () => {
+        let opened: Record<string, unknown> | undefined;
+        const submitted: Array<Record<string, unknown>> = [];
+        const handlers = workflowSlackHandlers({ loadTask: async () => ({ ...task, budgetUsd: 2 }), openView: async (trigger, view) => { await strict.openView(trigger, view); opened = view; }, submit: async (input) => { submitted.push(input); } });
+        await handlers.handleAction(raised(workflow.revision, 12));
+        const blocks = opened?.blocks as Array<{ text?: { text: string } }>;
+        expect(blocks[0]!.text!.text).toBe("This raises the run limit from $2 to $12. Approving confirms $12 as the run limit.");
+        await handlers.handleSubmission(submission(opened?.private_metadata, { workflow_checks: { selected_options: { selected_options: [{ value: "coverage" }] } } }));
+        expect(submitted[0]).toMatchObject({ decision: "APPROVE", selectedOptionalCheckIds: ["coverage"], acknowledgedRunLimitUsd: 12 });
+      });
+      it("a button whose amount is not a plain amount is not one of ours", async () => {
+        const plan = noChecks();
+        const submitted: Array<Record<string, unknown>> = [];
+        const handlers = workflowSlackHandlers({ loadTask: async () => ({ ...task, workflow: plan }), openView: async () => undefined, submit: async (input) => { submitted.push(input); } });
+        for (const bad of ["12", -1, null, 100_001, { usd: 1 }]) await expect(handlers.handleAction(raised(plan.revision, bad))).rejects.toThrow();
+        expect(submitted).toEqual([]);
+      });
+    });
+
     it("says \"1 more required check\" when one required check is left off the list", async () => {
       const command = { cwd: "workspace", executable: "npm", args: ["test"], timeoutSeconds: 60 };
       const required = Array.from({ length: 21 }, (_, index) => ({ id: `required-${index + 1}`, label: `npm run check-${index}`, command }));

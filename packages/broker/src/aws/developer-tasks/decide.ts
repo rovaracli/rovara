@@ -5,6 +5,8 @@ import {
   PER_TASK_BUDGET_USD,
   agentXError,
   runLimitRaises,
+  runLimitRaiseText,
+  formatRunLimitUsd,
   redactText,
   type DeveloperTaskView,
   type WorkflowSnapshot,
@@ -547,18 +549,29 @@ export async function decideTaskWorkflow(
   return { task: view };
 }
 
-/** QA6-12: said when the plan's run limit is not the one the person was shown (the estimate was redone, or the project's limits changed, since the page loaded). */
-const runLimitChangedMessage = (shownUsd: number, nowUsd: number): string =>
-  `This plan's run limit is now $${String(nowUsd)}, not the $${String(shownUsd)} you were shown. Refresh the page, check the limit, and approve again.`;
+/**
+ * QA6-12: said when the plan's run limit is not the one the person was shown (the estimate was redone, or the project's limits changed, since the page loaded or the message was posted).
+ * The page says to refresh; every other surface (Slack, a tool, the API) is told the new amount and, when it raises the limit, the raise, so the person sees what they would now agree to.
+ */
+const runLimitChangedMessage = (shownUsd: number, nowUsd: number, currentUsd: number, browser: boolean): string => {
+  const head = `This plan's run limit is now ${formatRunLimitUsd(nowUsd)}, not the ${formatRunLimitUsd(shownUsd)} you were shown.`;
+  if (browser) return `${head} Refresh the page, check the limit, and approve again.`;
+  return `${head} ${runLimitRaisesNote(currentUsd, nowUsd)}Check it and approve again with the run limit acknowledged as ${formatRunLimitUsd(nowUsd)}.`;
+};
+/** The raise as the owner's exact words and a full stop, or nothing when approving would not raise the limit. */
+const runLimitRaisesNote = (currentUsd: number, proposedUsd: number): string => (runLimitRaises(currentUsd, proposedUsd) ? `${runLimitRaiseText(currentUsd, proposedUsd)}. ` : "");
 
-/** Said when an approval that raises the run limit came without the limit acknowledged (Slack, a tool). `link` is the plan's card in Rovara, when this deployment knows its address. */
-export const runLimitAckMessage = (currentUsd: number, proposedUsd: number, link?: string, place: "card" | "page" = "card"): string =>
-  `Approving this plan raises the run limit from $${String(currentUsd)} to $${String(proposedUsd)}. Approve it ${place === "card" ? "on its card in Rovara" : "on the plan review page"}, where you confirm the new limit${link === undefined ? "." : `: ${link}`}`;
+/**
+ * Said when an approval that raises the run limit came without the limit acknowledged. The first sentence is the owner's exact wording ("This raises the run limit from $A to $B"). `link` is the plan's
+ * card in Rovara, when this deployment knows its address. From the web page the person is sent to the card or page, where they tick; from anywhere else (Slack, a tool, the API) the approval is sent again with the amount.
+ */
+export const runLimitAckMessage = (currentUsd: number, proposedUsd: number, link?: string, place: "card" | "page" = "card", browser = true): string =>
+  browser
+    ? `${runLimitRaiseText(currentUsd, proposedUsd)}. Approve it ${place === "card" ? "on its card in Rovara" : "on the plan review page"}, where you confirm the new limit${link === undefined ? "." : `: ${link}`}`
+    : `${runLimitRaiseText(currentUsd, proposedUsd)}. Approve again with the run limit acknowledged as ${formatRunLimitUsd(proposedUsd)} (acknowledgedRunLimitUsd ${String(proposedUsd)})${link === undefined ? "." : `, or approve it in Rovara: ${link}`}`;
 /** Said when a medium or high risk plan is approved from outside a signed-in browser (Slack, a tool, a token). */
 export const planRiskPlaceMessage = (risk: "medium" | "high", link?: string, place: "card" | "page" = "card"): string =>
   `This plan is ${risk} risk, so it is approved ${place === "card" ? "on its card in Rovara" : "on the plan review page"}${risk === "high" ? ", after a sign-in with the email code" : ""}${link === undefined ? "." : `: ${link}`}`;
-/** Said when the run limit is acknowledged from outside a signed-in browser: only a person who saw it there can agree to it. */
-export const RUN_LIMIT_ACK_PLACE_MESSAGE = "A run limit is confirmed only in the Rovara app, by the person who sees it there.";
 
 /**
  * Where a refused approval sends the person: with the decision cards on, the plan's card on its task page (the plan review page when the session is not known); with them off, the plan review page, which
@@ -575,13 +588,12 @@ function planApprovalLink(deps: DeveloperTaskRouteDependencies, task: DeveloperT
 
 /**
  * Who may approve a coding plan from where (decision journey slice 2, owner: "medium and high always open the task-page card", "recent sign-in for high"; low is answered where shown):
- *   - a run limit is acknowledged only from a signed-in browser (the card or the plan review page), never by Slack, a tool or a token;
+ *   - (0.5.11, QA6-12b: this replaces "a run limit is acknowledged only from a signed-in browser". Slack, the tools and the API carry the amount too; `settleRunLimit` requires it on every raise.)
  *   - a medium or high plan (its tier is the card's own, from the plan document: `planRiskOf`) is approved only from a signed-in browser (the card, or the plan review page), and a high one only after a
  *     recent sign-in (REAUTH_REQUIRED). A low plan is approved anywhere, as before. This rule holds while the decision cards are on (the first holds always); the refusal links to the card.
  */
 async function requirePlanApprovalPlace(deps: DeveloperTaskRouteDependencies, caller: DeveloperCaller, task: DeveloperTaskRecord, loaded: Awaited<ReturnType<typeof loadWorkflowDocument>>, request: WorkflowDecisionRequest, page: boolean, decideGrade: boolean): Promise<void> {
   const browser = caller.browserSession === true || page;
-  if (request.acknowledgedRunLimitUsd !== undefined && !browser) throw agentXError("FORBIDDEN", RUN_LIMIT_ACK_PLACE_MESSAGE);
   // NOT YET ALWAYS (see the slice 2 report): enforcing this with the cards off refuses Slack and tool approvals of most plans in every deployment (about 1,000 tests approve such plans that way);
   // the owner decides that rollout. Until then it holds while the decision cards are on.
   if (!decisionCardsEnabled()) return;
@@ -608,18 +620,19 @@ async function settleRunLimit(deps: DeveloperTaskRouteDependencies, caller: Deve
     { ...estimateDependencies(deps), projectMembers: deps.agentRuns?.projectMembers ?? { roleOf: async () => (await deps.checkAccess(task.project)).role } },
     { task, approver: { developerId: caller.developerId, orgRole: caller.orgRole } },
   );
+  // A task with no limit of its own runs on the per-task default, so a raise is measured against that.
+  const currentUsd = task.budgetUsd ?? PER_TASK_BUDGET_USD;
   // QA6-12: both outcomes carry the limit that would be set; a different one than the person was shown is refused before anything is asked or written.
   if (acknowledgedUsd !== undefined && decision.runLimitUsd !== acknowledgedUsd) {
-    throw Object.assign(agentXError("CONFIG_INVALID", runLimitChangedMessage(acknowledgedUsd, decision.runLimitUsd)), { pageReason: "changed" });
+    throw Object.assign(agentXError("CONFIG_INVALID", runLimitChangedMessage(acknowledgedUsd, decision.runLimitUsd, currentUsd, browser)), { pageReason: "changed" });
   }
-  // Decision journey slice 2: an approval that RAISES the run limit (none set yet, or a higher one) is taken only with the limit acknowledged, whoever asks (the decision card's tick, the task page's
-  // tick; never a Slack button or a tool that cannot show it). The limit is the amount the person agrees to spend up to, so it is never raised without them seeing it.
-  // While the decision cards are on (the card and the plan review page both carry the tick; Slack and tools cannot show it). Not yet always: see requirePlanApprovalPlace.
-  // A task with no limit of its own runs on the per-task default, so the raise is measured against that.
-  const currentUsd = task.budgetUsd ?? PER_TASK_BUDGET_USD;
-  // OWNER DECISION 7: from a signed-in browser (the card, or any page) the tick is the SERVER's rule whatever the cards switch says: a raise sent without it is refused, so no page script can skip it.
-  // Slack and tools with the cards off keep the earlier rule until the owner decides that rollout (see requirePlanApprovalPlace).
-  if ((decisionCardsEnabled() || browser) && acknowledgedUsd === undefined && runLimitRaises(currentUsd, decision.runLimitUsd)) { const { link, place } = planApprovalLink(deps, task); throw agentXError("CONFIG_INVALID", runLimitAckMessage(currentUsd, decision.runLimitUsd, link, place)); }
+  // 0.5.11 (QA6-12b; this replaces decision journey slice 2's "never a Slack button or a tool that cannot show it"): an approval that RAISES the run limit (none set yet, or a higher one) is taken only with the limit
+  // acknowledged, from every surface and whatever the decision-cards switch says: the web card and page tick it, a Slack button and the tool's argument carry the amount they showed ("This raises the run limit from
+  // $A to $B"), and the API names it. The limit is the amount the person agrees to spend up to, so it is never raised without them seeing it. An approval that does not raise it needs none.
+  if (acknowledgedUsd === undefined && runLimitRaises(currentUsd, decision.runLimitUsd)) {
+    const { link, place } = planApprovalLink(deps, task);
+    throw agentXError("CONFIG_INVALID", runLimitAckMessage(currentUsd, decision.runLimitUsd, link, place, browser));
+  }
   if (decision.accepted) return { accepted: true, runLimitUsd: decision.runLimitUsd, baselineUsd: await capWindowBaseline(deps, task) ?? 0 };
   const ask = deps.agentRuns?.requestRunLimit;
   let asked = false;

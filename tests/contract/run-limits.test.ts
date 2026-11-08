@@ -10,7 +10,7 @@ import { startAgentRun } from "../../packages/broker/src/agents/runs.js";
 import { getTaskDocumentView, releaseFinishedTask, resumeAfterRunLimitApproval } from "../../packages/broker/src/aws/developer-tasks.js";
 import type { DeveloperTaskRecord } from "../../packages/broker/src/developer/task-records.js";
 import { workflowMessage } from "../../packages/broker/src/developer/workflow-messages.js";
-import { RUN_LIMIT_ACK_PLACE_MESSAGE } from "../../packages/broker/src/aws/developer-tasks/decide.js";
+import { planRunLimitChange } from "../../packages/broker/src/spend/run-limit-change.js";
 import { decideSessionFor, signInApprovalOf } from "../support/decide-sign-in.js";
 import { cardDecision, reviewPagePost } from "../support/card-decision.js";
 import { decideTaskWorkflow } from "../../packages/broker/src/aws/developer-tasks/decide.js";
@@ -25,7 +25,7 @@ import { recipeDigest, type RecipeOverlay } from "../../packages/contracts/src/a
 import type { AgentId } from "../../packages/contracts/src/agent-node.js";
 import type { OrgId, OrgRole } from "../../packages/contracts/src/org-node.js";
 import { agentRunsKey, projectAgentKey, projectAiKey, projectMemberKey, runCostKey } from "../../packages/contracts/src/org-scoped-keys.js";
-import { MAX_RUN_LIMIT_USD, defaultSpendPolicy, runLimitBlockText, type RunEstimate } from "../../packages/contracts/src/spend.js";
+import { MAX_RUN_LIMIT_USD, defaultSpendPolicy, formatRunLimitUsd, runLimitBlockText, runLimitRaiseText, type RunEstimate } from "../../packages/contracts/src/spend.js";
 import type { ProjectRole } from "../../packages/contracts/src/app-projects.js";
 import { MAYA, OMAR, createSingleAnswerPlanBroker, seedMembership, type Developer } from "../support/developer-task-broker.js";
 import { FakeDynamoDb } from "../support/fake-dynamodb.js";
@@ -33,7 +33,7 @@ import { fakeModelAccess } from "../support/fake-model-access.js";
 import { FakeProjectMembers } from "../support/fake-project-members.js";
 import { TEST_ORG } from "../support/orgs.js";
 import { planAnswer, planDocument } from "../support/plan-documents.js";
-import { call, loadSlackBroker } from "../support/slack-broker.js";
+import { SLACK_CHANNEL, SLACK_TEAM, call, loadSlackBroker } from "../support/slack-broker.js";
 
 const ORG_B = "org_bbbbbbbbbbbbbbbbbbbb" as OrgId;
 const PROXY_URL = "http://internal-proxy.example.test:4000";
@@ -367,8 +367,15 @@ async function world(options: { proxy?: boolean; requestRunLimit?: RequestRunLim
     const workflow = meta(taskId).workflow;
     return { digest: workflow.artifacts.at(-1)!.sha256, revision: workflow.revision };
   };
-  const decide = (taskId: string, plan: { digest: string; revision: number }, requestId: string = randomUUID(), decision: "APPROVE" | "REQUEST_CHANGES" = "APPROVE") =>
-    h.dev(MAYA, "POST", `/v1/dev/tasks/${taskId}/workflow/decision`, { requestId, expectedRevision: plan.revision, decision, reason: "Approved", artifactDigest: plan.digest });
+  /**
+   * QA6-12b: an approval that raises the run limit names the amount it was shown (every surface). `ack` is that amount: by default the limit the task's own record says approving sets when it raises the task's
+   * limit (what the tool's argument or the API's field carries), `"none"` to leave it out, or an amount.
+   */
+  const decide = (taskId: string, plan: { digest: string; revision: number }, requestId: string = randomUUID(), decision: "APPROVE" | "REQUEST_CHANGES" = "APPROVE", ack: number | "none" | "auto" = "auto") => {
+    const change = ack === "auto" ? planRunLimitChange(meta(taskId)) : undefined;
+    const acknowledged = ack === "none" ? undefined : ack === "auto" ? (change?.raises === true ? change.proposedUsd : undefined) : ack;
+    return h.dev(MAYA, "POST", `/v1/dev/tasks/${taskId}/workflow/decision`, { requestId, expectedRevision: plan.revision, decision, reason: "Approved", artifactDigest: plan.digest, ...(decision === "APPROVE" && acknowledged !== undefined ? { acknowledgedRunLimitUsd: acknowledged } : {}) });
+  };
   /** A Quick workflow task with its plan made and waiting for the owner. */
   const planned = async (path: "QUICK" | "FULL" = "QUICK", document: Partial<Parameters<typeof planDocument>[0]> = {}, checks?: Parameters<typeof planAnswer>[1]) => {
     const { taskId, workspaceId } = await startTask({ workflow: true, workflowPath: path });
@@ -766,32 +773,6 @@ describe("approving the plan", () => {
     expect(t.meta(started.taskId)).toMatchObject({ budgetUsd: 1 });
   });
 
-  it("slice 2: a run limit is acknowledged only from a signed-in browser; with the cards on, a raise is refused without it (Slack and tools come through this decision) and the page's tick takes it", async () => {
-    const t = await world();
-    seedCosts(t.h.db, "QUICK", [10, 10, 10, 10, 10]);
-    const { taskId, plan } = await t.planned("QUICK");
-    const before = t.meta(taskId) as unknown as { budgetUsd?: number; runEstimate: { runLimitUsd: number } };
-    expect(before.runEstimate.runLimitUsd, "positive control: approving raises the limit").toBeGreaterThan(before.budgetUsd ?? 0);
-    const body = { expectedRevision: plan.revision, decision: "APPROVE", reason: "Approved", artifactDigest: plan.digest };
-    // A token never acknowledges a limit.
-    const token = await t.h.dev(MAYA, "POST", `/v1/dev/tasks/${taskId}/workflow/decision`, { requestId: randomUUID(), ...body, acknowledgedRunLimitUsd: before.runEstimate.runLimitUsd });
-    expect(token.status).toBe(403);
-    expect(token.body).toMatchObject({ error: { code: "FORBIDDEN", message: RUN_LIMIT_ACK_PLACE_MESSAGE } });
-    process.env.DECISION_CARDS_ENABLED = "1";
-    try {
-      // The card without the tick (an older bundle): the raise is refused, and nothing is decided. The old review page takes no decision at all (read-only).
-      expect((await reviewPagePost(t.h, MAYA, taskId, "decision", { expectedRevision: plan.revision, decision: "APPROVE", artifactDigest: plan.digest, answers: [], includedCommentIds: [] })).status).toBe(410);
-      const refused = await cardDecision(t.h, MAYA, taskId, { answers: [{ decisionId: "d1", optionId: "five", opened: true }] });
-      expect(refused.status).toBeGreaterThanOrEqual(400);
-      expect(t.meta(taskId).workflow.decisions).toEqual([]);
-      expect(t.meta(taskId)).toMatchObject({ workflow: { stage: "PLAN_REVIEW", state: "WAITING" } });
-      expect(t.meta(taskId).budgetUsd).toBe(before.budgetUsd);
-      // The card's approval, with the limit it showed, goes on.
-      const approved = await cardDecision(t.h, MAYA, taskId, { acknowledgedRunLimitUsd: before.runEstimate.runLimitUsd, answers: [{ decisionId: "d1", optionId: "five", opened: true }] });
-      expect(approved.status, JSON.stringify(approved.body)).toBe(200);
-    } finally { delete process.env.DECISION_CARDS_ENABLED; }
-  });
-
   it("OWNER DECISION 7: the tick is the server's rule for a signed-in browser even with the cards off: a raise sent without it is refused, and the same approval with the limit goes on", async () => {
     const t = await world();
     seedCosts(t.h.db, "QUICK", [10, 10, 10, 10, 10]);
@@ -811,11 +792,111 @@ describe("approving the plan", () => {
     expect(t.meta(taskId).workflow.decisions).toHaveLength(1);
   });
 
-  it("slice 2: with the cards off, a raise is approved through Slack and tools as before (there is no card to send anyone to)", async () => {
-    const t = await world();
-    seedCosts(t.h.db, "QUICK", [10, 10, 10, 10, 10]);
-    const { taskId, plan } = await t.planned("QUICK");
-    expect((await t.decide(taskId, plan)).status).toBe(200);
+  describe("QA6-12b: every approval surface names the run limit it raises (this replaces slice 2's 'a run limit is acknowledged only from a signed-in browser' and 'with the cards off, Slack and tools approve a raise as before')", () => {
+    /** A Quick plan waiting, whose approval raises the limit from the planning limit ($2) to the plan's. */
+    const raising = async () => {
+      const t = await world();
+      // An admin accepts any amount, so the approval that carries the right amount goes through (a member's tier is tested with the tiers).
+      t.setRole("admin");
+      seedCosts(t.h.db, "QUICK", [10, 10, 10, 10, 10]);
+      const { taskId, plan } = await t.planned("QUICK");
+      const before = t.meta(taskId) as unknown as { budgetUsd: number; runEstimate: { runLimitUsd: number } };
+      expect(before.runEstimate.runLimitUsd, "positive control: approving raises the limit").toBeGreaterThan(before.budgetUsd);
+      return { t, taskId, plan, current: before.budgetUsd, proposed: before.runEstimate.runLimitUsd };
+    };
+    const message = (reply: { body: Record<string, unknown> }) => String((reply.body.error as { message: string }).message);
+
+    it("the API and tools (a token; whatever the decision-cards switch says): a raise without the amount is refused with the exact words, a wrong amount with the new one, the right amount is taken", async () => {
+      const { t, taskId, plan, current, proposed } = await raising();
+      const wording = `This raises the run limit from $${String(current)} to $${String(proposed)}`;
+      const unchanged = () => {
+        expect(t.meta(taskId).workflow.decisions, "nothing decided").toEqual([]);
+        expect(t.meta(taskId).budgetUsd, "nothing set").toBe(current);
+        expect(t.meta(taskId)).toMatchObject({ workflow: { stage: "PLAN_REVIEW", state: "WAITING" } });
+      };
+      // The task view the tools read says what approving does to the limit, before anything is approved.
+      const waiting = await t.h.dev(MAYA, "GET", `/v1/dev/tasks/${taskId}`);
+      expect(waiting.body.task).toMatchObject({ planRunLimit: { currentUsd: current, proposedUsd: proposed, raises: true } });
+      const missing = await t.decide(taskId, plan, randomUUID(), "APPROVE", "none");
+      expect(missing.status).toBe(400);
+      expect(missing.body).toMatchObject({ error: { code: "CONFIG_INVALID" } });
+      expect(message(missing)).toContain(`${wording}.`);
+      unchanged();
+      for (const wrong of [proposed + 1, proposed - 1, 0]) {
+        const refused = await t.decide(taskId, plan, randomUUID(), "APPROVE", wrong);
+        expect(refused.status, `acknowledged ${String(wrong)}`).toBe(400);
+        expect(message(refused)).toContain(`This plan's run limit is now $${String(proposed)}, not the $${String(wrong)} you were shown.`);
+        expect(message(refused)).toContain(`${wording}.`);
+        unchanged();
+      }
+      const approved = await t.decide(taskId, plan, randomUUID(), "APPROVE", proposed);
+      expect(approved.status, JSON.stringify(approved.body)).toBe(200);
+      expect(t.meta(taskId).budgetUsd).toBe(proposed);
+      expect((await t.h.dev(MAYA, "GET", `/v1/dev/tasks/${taskId}`)).body.task, "nothing to approve once decided").not.toHaveProperty("planRunLimit");
+    });
+
+    it("a stale acknowledgement is refused: the amount moved after the person saw it, and the refusal shows the new amount", async () => {
+      const { t, taskId, plan, current, proposed } = await raising();
+      t.h.db.set({ ...t.meta(taskId), runEstimate: { ...t.meta(taskId).runEstimate!, runLimitUsd: proposed + 5 } });
+      const stale = await t.decide(taskId, plan, randomUUID(), "APPROVE", proposed);
+      expect(stale.status).toBe(400);
+      expect(message(stale)).toContain(`This plan's run limit is now $${String(proposed + 5)}, not the $${String(proposed)} you were shown.`);
+      expect(message(stale)).toContain(`This raises the run limit from $${String(current)} to $${String(proposed + 5)}.`);
+      expect(t.meta(taskId).workflow.decisions).toEqual([]);
+      expect((await t.decide(taskId, plan, randomUUID(), "APPROVE", proposed + 5)).status).toBe(200);
+      expect(t.meta(taskId).budgetUsd).toBe(proposed + 5);
+    });
+
+    it("an approval that does not raise the limit needs no amount (and a wrong one is still refused)", async () => {
+      const { t, taskId, plan, proposed } = await raising();
+      // The task already has the limit the plan proposes: approving changes nothing, so there is nothing to confirm.
+      t.h.db.set({ ...t.meta(taskId), budgetUsd: proposed });
+      const wrong = await t.decide(taskId, plan, randomUUID(), "APPROVE", proposed + 1);
+      expect(wrong.status).toBe(400);
+      expect(t.meta(taskId).workflow.decisions).toEqual([]);
+      const approved = await t.decide(taskId, plan, randomUUID(), "APPROVE", "none");
+      expect(approved.status, JSON.stringify(approved.body)).toBe(200);
+      expect(t.meta(taskId).budgetUsd).toBe(proposed);
+    });
+
+    it("the words are exact: whole dollars have no cents, cents have two places, a finer amount is never rounded", () => {
+      expect(runLimitRaiseText(2, 12)).toBe("This raises the run limit from $2 to $12");
+      expect(runLimitRaiseText(2.5, 12.25)).toBe("This raises the run limit from $2.50 to $12.25");
+      expect(runLimitRaiseText(7.125, 8)).toBe("This raises the run limit from $7.125 to $8");
+      expect(formatRunLimitUsd(100000)).toBe("$100000");
+    });
+
+    it("Slack: a press that leaves the amount out (an older button) is refused in Slack's words, a stale button with the new amount, and the button that carries the shown amount is taken", async () => {
+      const t = await world();
+      // A small plan, whose limit the Slack presser (a member) may accept; a larger one waits for a maintainer, as for every surface.
+      seedCosts(t.h.db, "QUICK", [2, 2, 2, 2, 2]);
+      const thread = { teamId: SLACK_TEAM, channelId: SLACK_CHANNEL, threadTs: "1695500000.000077" };
+      const started = await t.h.handler({ source: "agentx.slack-ingress", action: "start-workflow", thread, userId: MAYA.slackUserId, instructions: "Fix the retry bug", workflowPath: "QUICK", requestId: randomUUID() });
+      expect(started.statusCode).toBe(200);
+      const taskId = String((JSON.parse(started.body) as { taskId: string }).taskId);
+      const workspaceId = t.meta(taskId).workspaceId;
+      await t.finishPrepare(workspaceId);
+      const plan = await t.finishPlanning(taskId, workspaceId);
+      const before = t.meta(taskId) as unknown as { budgetUsd: number; runEstimate: { runLimitUsd: number } };
+      const [current, proposed] = [before.budgetUsd, before.runEstimate.runLimitUsd];
+      expect(proposed, "positive control: approving raises the limit").toBeGreaterThan(current);
+      const press = (extra: Record<string, unknown>) => t.h.handler({ source: "agentx.slack-ingress", action: "workflow-decision", taskId, userId: MAYA.slackUserId, thread, requestId: randomUUID(),
+        expectedRevision: plan.revision, artifactDigest: plan.digest, decision: "APPROVE", reason: "Approved in Slack.", selectedOptionalCheckIds: [], ...extra });
+      const untouched = () => { expect(t.meta(taskId).workflow.decisions).toEqual([]); expect(t.meta(taskId).budgetUsd).toBe(current); };
+      const missing = JSON.parse((await press({})).body) as { refused?: boolean; message?: string };
+      expect(missing).toMatchObject({ refused: true });
+      expect(missing.message).toContain(`This raises the run limit from $${String(current)} to $${String(proposed)}.`);
+      untouched();
+      const stale = JSON.parse((await press({ acknowledgedRunLimitUsd: proposed - 1 })).body) as { refused?: boolean; message?: string };
+      expect(stale).toMatchObject({ refused: true });
+      expect(stale.message).toContain(`it is now $${String(proposed)}, not the $${String(proposed - 1)} this button showed`);
+      expect(stale.message).toContain(`This raises the run limit from $${String(current)} to $${String(proposed)}.`);
+      untouched();
+      const approved = await press({ acknowledgedRunLimitUsd: proposed });
+      expect(approved.statusCode).toBe(200);
+      expect(JSON.parse(approved.body)).not.toHaveProperty("refused");
+      expect(t.meta(taskId)).toMatchObject({ budgetUsd: proposed, workflow: { stage: "IMPLEMENT" } });
+    });
   });
 
   it("slice 2: the coding plan is a decision card: it shows the run limit, refuses a raise without the tick, approves with it, and sends the plan back with a reason", async () => {

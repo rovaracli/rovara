@@ -72,6 +72,8 @@ export interface SlackWorkflowDecisionEvent {
   expectedRevision: number;
   artifactDigest: string;
   workBreakdownDigest?: string;
+  /** QA6-12b: the run limit the Approve button showed; sent as `acknowledgedRunLimitUsd`, which the decision checks against the limit approving would set now. */
+  acknowledgedRunLimitUsd?: number;
   decision: "APPROVE" | "REQUEST_CHANGES";
   reason: string;
   selectedOptionalCheckIds: string[];
@@ -315,6 +317,7 @@ export function isSlackWorkflowDecisionEvent(event: unknown): event is SlackWork
     && typeof value.taskId === "string" && typeof value.userId === "string" && typeof value.requestId === "string"
     && Number.isInteger(value.expectedRevision) && typeof value.artifactDigest === "string"
     && (value.workBreakdownDigest === undefined || (typeof value.workBreakdownDigest === "string" && /^[a-f0-9]{64}$/.test(value.workBreakdownDigest)))
+    && (value.acknowledgedRunLimitUsd === undefined || (typeof value.acknowledgedRunLimitUsd === "number" && Number.isFinite(value.acknowledgedRunLimitUsd) && value.acknowledgedRunLimitUsd >= 0 && value.acknowledgedRunLimitUsd <= 100_000))
     && (value.decision === "APPROVE" || value.decision === "REQUEST_CHANGES") && typeof value.reason === "string"
     && Array.isArray(value.selectedOptionalCheckIds);
 }
@@ -398,9 +401,10 @@ export function workflowApplicationRouteDependencies(dependencies: AwsBrokerDepe
 }
 
 /** The route dependencies of a Slack workflow press: the same application wiring as the HTTP routes. */
-function slackWorkflowRouteDependencies(dependencies: AwsBrokerDependencies, tasks: DeveloperTaskActions, developer: NonNullable<AwsBrokerDependencies["developer"]>, caller: DeveloperCaller) {
+function slackWorkflowRouteDependencies(dependencies: AwsBrokerDependencies, tasks: DeveloperTaskActions, developer: NonNullable<AwsBrokerDependencies["developer"]>, caller: DeveloperCaller,
+  /** What only some presses need on top (see `decideSlackWorkflow`). */ extra: Partial<DeveloperRouteDependencies> = {}) {
   return developerTaskRouteDependencies({ documentClient: dependencies.documentClient, tableName: dependencies.tableName, developer, now: Date.now, tasks,
-    ...(dependencies.audit === undefined ? {} : { audit: dependencies.audit }),
+    ...(dependencies.audit === undefined ? {} : { audit: dependencies.audit }), ...extra,
     ...workflowApplicationRouteDependencies(dependencies) }, caller);
 }
 
@@ -613,10 +617,18 @@ export async function keepSlackWorkflowPullRequests(dependencies: AwsBrokerDepen
 export async function decideSlackWorkflow(dependencies: AwsBrokerDependencies, tasks: DeveloperTaskActions, event: SlackWorkflowDecisionEvent) {
   // The same checks as every other Slack press: this Slack workspace, the task's owner, and the task's own thread.
   const { taskId, requestId, caller, developer } = await ownedSlackWorkflowTask(dependencies, event, "decide this plan");
-  const routeDeps = slackWorkflowRouteDependencies(dependencies, tasks, developer, caller);
+  // QA6-12b: approving the coding plan accepts its run limit (by the approver's tier, asking for it when the tier is too low) and checks the amount the Approve button showed. That needs the model proxy
+  // (the planning spend the new window starts from), the cloud edition and the agent wiring (the request for a higher tier's approval), as the HTTP routes have them; without them the press skipped the run limit entirely.
+  const agents = agentRouteDependencies(dependencies, tasks);
+  const routeDeps = slackWorkflowRouteDependencies(dependencies, tasks, developer, caller, {
+    ...(dependencies.modelAccess === undefined ? {} : { modelAccess: dependencies.modelAccess.access }),
+    ...(dependencies.cloud === true ? { cloud: true } : {}),
+    ...(agents === undefined ? {} : { agents }),
+  });
   const body = JSON.stringify({
     requestId, expectedRevision: event.expectedRevision, artifactDigest: event.artifactDigest,
     ...(event.decision === "APPROVE" && event.workBreakdownDigest !== undefined ? { workBreakdownDigest: event.workBreakdownDigest } : {}),
+    ...(event.decision === "APPROVE" && event.acknowledgedRunLimitUsd !== undefined ? { acknowledgedRunLimitUsd: event.acknowledgedRunLimitUsd } : {}),
     decision: event.decision, reason: event.reason, selectedOptionalCheckIds: event.selectedOptionalCheckIds,
   });
   return routeDeveloperTaskRequest(routeDeps, caller, { method: "POST", path: `/v1/dev/tasks/${taskId}/workflow/decision`, headers: {}, requestId, body }, new URL(`/v1/dev/tasks/${taskId}/workflow/decision`, "https://agentx.invalid"));

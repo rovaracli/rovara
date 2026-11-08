@@ -192,3 +192,36 @@ describe("I8: who pressed is the linked Rovara person, never a stand-in", () => 
     expect(memberRole).not.toHaveBeenCalled();
   });
 });
+
+describe("QA6-12b: a Slack plan card that raises the run limit shows it and its Approve carries the amount", () => {
+  const raising = { ...card(lowItem), runLimit: { currentUsd: 2, proposedUsd: 12 } } as DecisionCard;
+  it("says 'This raises the run limit from $A to $B' and puts the amount in the Approve button's value (not in Open's)", () => {
+    const message = slackCardMessage(raising, { cardUrl: URL_, digest: DIGEST });
+    expect(JSON.stringify(message.blocks)).toContain("This raises the run limit from $2 to $12.");
+    const elements = elementsOf(message);
+    expect(elements[0]).toMatchObject({ action_id: DECISION_SLACK_APPROVE_ACTION, value: `approve_plan:plan1|${DIGEST}|12` });
+    expect(elements[1]?.["value"]).toBe(`approve_plan:plan1|${DIGEST}`);
+  });
+  it("a card that does not raise the limit is as before", () => {
+    for (const runLimit of [{ currentUsd: 12, proposedUsd: 12 }, { currentUsd: 12, proposedUsd: 6 }, undefined]) {
+      const message = slackCardMessage({ ...card(lowItem), ...(runLimit === undefined ? {} : { runLimit }) }, { cardUrl: URL_, digest: DIGEST });
+      expect(JSON.stringify(message.blocks)).not.toContain("raises the run limit");
+      expect(elementsOf(message)[0]?.["value"]).toBe(`approve_plan:plan1|${DIGEST}`);
+    }
+  });
+  it("the press sends the amount as acknowledgedRunLimitUsd; a malformed or misplaced amount is not a press", () => {
+    const press = (actionId: string, value: string) => pressToRequest({ actionId, value, actionTs: "1.1" });
+    expect(press(DECISION_SLACK_APPROVE_ACTION, `approve_plan:plan1|${DIGEST}|12`)?.body).toMatchObject({ shownDigest: DIGEST, acknowledgedRunLimitUsd: 12 });
+    expect(press(DECISION_SLACK_APPROVE_ACTION, `approve_plan:plan1|${DIGEST}|12.5`)?.body).toMatchObject({ acknowledgedRunLimitUsd: 12.5 });
+    expect(press(DECISION_SLACK_APPROVE_ACTION, `approve_plan:plan1|${DIGEST}`)?.body).not.toHaveProperty("acknowledgedRunLimitUsd");
+    for (const bad of ["012", "abc", "-1", "1e3", "12.50", "100001", "", "12|13"]) expect(press(DECISION_SLACK_APPROVE_ACTION, `approve_plan:plan1|${DIGEST}|${bad}`), bad).toBeUndefined();
+    expect(press(DECISION_SLACK_REJECT_ACTION, `approve_plan:plan1|${DIGEST}|12`)).toBeUndefined();
+  });
+  it("a refusal over the run limit is said with the amounts (they are numbers in fixed sentences); any other config refusal stays fixed words", () => {
+    expect(refusalText({ code: "CONFIG_INVALID", message: "This plan's run limit is now $15, not the $12 you were shown. This raises the run limit from $2 to $15. Check it and approve again with the run limit acknowledged as $15." }))
+      .toBe("The run limit changed since this message was posted: it is now $15, not the $12 this button showed. This raises the run limit from $2 to $15. Use the latest message in this thread to approve it.");
+    expect(refusalText({ code: "CONFIG_INVALID", message: "This raises the run limit from $2 to $15. Approve again with the run limit acknowledged as $15 (acknowledgedRunLimitUsd 15)." }))
+      .toContain("This raises the run limit from $2 to $15.");
+    expect(refusalText({ code: "CONFIG_INVALID", message: "something <@U1> else" })).toBe(DECISION_SLACK_TEXT.failed);
+  });
+});

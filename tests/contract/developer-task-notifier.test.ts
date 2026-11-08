@@ -7,7 +7,7 @@ import { describe, expect, it, vi } from "vitest";
 import { PER_TASK_BUDGET_USD, orgMemberKey, projectMemberKey, WORKFLOW_AUTO_PUBLISH_FAILED_MESSAGE, WORKFLOW_AUTO_REVIEW_FAILED_MESSAGE, indexExpiresAt, plannerReplyCommentId, planQualityFinding } from "@agentx/contracts";
 import { developerTaskIdentity, plannerRepliesKey } from "../../packages/broker/src/developer/task-records.js";
 import { SlackPostError, chatPostMessage } from "../../packages/broker/src/aws/slack-web.js";
-import { cachedSlackPoster, createNotifierHandler, designCardUrlFor, planOpenFor, retryDelaySeconds, type NotifierDependencies } from "../../packages/broker/src/aws/developer-task-notifier.js";
+import { cachedSlackPoster, createNotifierHandler, designCardUrlFor, runLimitRaiseFor, retryDelaySeconds, type NotifierDependencies } from "../../packages/broker/src/aws/developer-task-notifier.js";
 import { noticesOf, type Notice } from "../../packages/broker/src/developer/notifications.js";
 import { MAYA, OMAR, createSingleAnswerPlanBroker, grantProject, recordStream } from "../support/developer-task-broker.js";
 import { finishPlanningWithMarkdown, planAnswer, planDocument } from "../support/plan-documents.js";
@@ -2690,20 +2690,22 @@ describe("decision journey slice 1: a plan-review message for a design under rev
   });
 });
 
-describe("decision journey slice 2: a coding plan that raises the run limit offers Open in Rovara (from the task record), to the plan review page", () => {
-  const taskId = "11111111-1111-4111-8111-111111111111", page = `https://agentx.example.test/review/${taskId}/task`;
+describe("QA6-12b: a coding plan that raises the run limit shows the raise in Slack (from the task record) and keeps Approve", () => {
   const estimate = (runLimitUsd: number) => ({ lowUsd: 1, highUsd: 3, runLimitUsd, stopAtUsd: runLimitUsd, basis: "default" as const, samples: 0 });
-  const quick = { path: "QUICK" as const, reviewPhase: undefined };
-  it("the plan review page when approving raises the limit: above the task's limit, or above the per-task default when it has none", () => {
-    expect(planOpenFor({ budgetUsd: 2, runEstimate: estimate(6) }, quick, page)).toEqual({ url: page, why: "run_limit" });
-    expect(planOpenFor({ runEstimate: estimate(PER_TASK_BUDGET_USD + 1) }, { path: "FULL", reviewPhase: "IMPLEMENTATION_PLAN" }, page)).toEqual({ url: page, why: "run_limit" });
+  const quick = { path: "QUICK" as const, reviewPhase: undefined, stage: "PLAN_REVIEW" as const, state: "WAITING" as const };
+  it("the raise, from the task's limit or from the per-task default when it has none", () => {
+    expect(runLimitRaiseFor({ budgetUsd: 2, runEstimate: estimate(6) }, quick)).toEqual({ currentUsd: 2, proposedUsd: 6 });
+    expect(runLimitRaiseFor({ runEstimate: estimate(PER_TASK_BUDGET_USD + 1) }, { path: "FULL", reviewPhase: "IMPLEMENTATION_PLAN", stage: "PLAN_REVIEW", state: "WAITING" })).toEqual({ currentUsd: PER_TASK_BUDGET_USD, proposedUsd: PER_TASK_BUDGET_USD + 1 });
   });
-  it("nothing (Approve stays) when the limit does not rise (the start's own lower limit counts), there is no estimate, the document is not the coding plan, or there is no page", () => {
-    expect(planOpenFor({ budgetUsd: 6, runEstimate: estimate(6) }, quick, page)).toBeUndefined();
-    expect(planOpenFor({ runEstimate: estimate(PER_TASK_BUDGET_USD) }, quick, page)).toBeUndefined();
-    expect(planOpenFor({ budgetUsd: 2, runEstimate: estimate(6), requestedRunLimitUsd: 2 }, quick, page)).toBeUndefined();
-    expect(planOpenFor({ budgetUsd: 2 }, quick, page)).toBeUndefined();
-    expect(planOpenFor({ budgetUsd: 2, runEstimate: estimate(6) }, { path: "FULL", reviewPhase: "REQUIREMENTS" }, page)).toBeUndefined();
-    expect(planOpenFor({ budgetUsd: 2, runEstimate: estimate(6) }, quick, undefined)).toBeUndefined();
+  it("a start's own lower limit counts: the plan proposes the lower of its estimate and what the start asked for", () => {
+    expect(runLimitRaiseFor({ budgetUsd: 2, runEstimate: estimate(6), requestedRunLimitUsd: 4 }, quick)).toEqual({ currentUsd: 2, proposedUsd: 4 });
+  });
+  it("nothing when the limit does not rise, there is no estimate, or the document is not the coding plan", () => {
+    expect(runLimitRaiseFor({ budgetUsd: 6, runEstimate: estimate(6) }, quick)).toBeUndefined();
+    expect(runLimitRaiseFor({ runEstimate: estimate(PER_TASK_BUDGET_USD) }, quick)).toBeUndefined();
+    expect(runLimitRaiseFor({ budgetUsd: 2, runEstimate: estimate(6), requestedRunLimitUsd: 2 }, quick)).toBeUndefined();
+    expect(runLimitRaiseFor({ budgetUsd: 2 }, quick)).toBeUndefined();
+    expect(runLimitRaiseFor({ budgetUsd: 2, runEstimate: estimate(6) }, { ...quick, path: "FULL", reviewPhase: "REQUIREMENTS" })).toBeUndefined();
+    expect(runLimitRaiseFor({ budgetUsd: 2, runEstimate: estimate(6) }, { ...quick, path: "FULL", reviewPhase: "DESIGN" })).toBeUndefined();
   });
 });

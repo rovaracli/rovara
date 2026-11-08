@@ -63,6 +63,31 @@ function slackPlanApprovalRefusal(reason: string): string | undefined {
   return /[.!?]$/u.test(sentence) ? sentence : `${sentence}.`;
 }
 
+const USD = "\\$[0-9]+(?:\\.[0-9]+)?";
+const RUN_LIMIT_ACK_MISSING = new RegExp(`^(This raises the run limit from ${USD} to ${USD})\\.`, "u");
+const RUN_LIMIT_CHANGED = new RegExp(`^This plan's run limit is now (${USD}), not the (${USD}) you were shown\\.(?: (This raises the run limit from ${USD} to ${USD})\\.)?`, "u");
+/**
+ * QA6-12b: an approval of a plan that raises the run limit was refused because it came without the amount (an older button) or with an amount that is not the one approving would set now (a stale button, the
+ * plan or the limits changed since the message was posted). The decision's own words are numbers and fixed sentences (built from `runLimitRaiseText`), so they are said, in Slack's terms: the new amount is shown.
+ * Only text of exactly those shapes is said; anything else is not (the presser hears "out of date").
+ */
+export function slackRunLimitRefusal(reason: string): string | undefined {
+  const missing = RUN_LIMIT_ACK_MISSING.exec(reason);
+  if (missing !== null) return `${missing[1]!}. This button does not confirm it. Use the latest message in this thread, or approve the plan in Rovara.`;
+  const changed = RUN_LIMIT_CHANGED.exec(reason);
+  if (changed !== null) return `The run limit changed since this message was posted: it is now ${changed[1]!}, not the ${changed[2]!} this button showed.${changed[3] === undefined ? "" : ` ${changed[3]}.`} Use the latest message in this thread to approve it.`;
+  return undefined;
+}
+
+const RISK_PLACE = /^This plan is (?:medium|high) risk, so it is approved (?:on its card in Rovara|on the plan review page)(?:, after a sign-in with the email code)?(?:\.|: https?:\/\/[^\s<>|]{1,500})$/u;
+/**
+ * A medium or high risk coding plan is approved in the app, not from Slack (`planRiskPlaceMessage`). Its Approve button is offered with the plan (this Lambda cannot tell the risk), so the refusal says
+ * where to approve it, with the link: the sentence is fixed words and our own address. (0.5.11 note: a raise used to hide Approve behind "Open in Rovara" whatever the risk; now Approve is there.)
+ */
+export function slackRiskPlaceRefusal(reason: string): string | undefined {
+  return RISK_PLACE.test(reason) ? reason.replace(/&/gu, "&amp;").replace(/</gu, "&lt;").replace(/>/gu, "&gt;") : undefined;
+}
+
 /** An archived project takes no new work (a plan change, a send-back, a retry, Revise the plan): said plainly to the presser, who can ask an admin to restore it. */
 export const SLACK_PROJECT_ARCHIVED = "This project is archived, so new work can't start. Ask an admin to restore it.";
 
@@ -72,14 +97,14 @@ export const SLACK_REMOVED_FROM_ORG = "You're no longer a member of this organiz
 export function slackRefusalMessage(code: string, outOfDate: string, reason = "", decidedBy?: unknown): string | undefined {
   switch (code) {
     // A refusal the presser can act on is said as it is; any other means the press no longer fits the task.
-    case "CONFIG_INVALID": return SLACK_PLAIN_REFUSALS.get(reason) ?? slackPlanApprovalRefusal(reason) ?? outOfDate;
+    case "CONFIG_INVALID": return SLACK_PLAIN_REFUSALS.get(reason) ?? slackPlanApprovalRefusal(reason) ?? slackRunLimitRefusal(reason) ?? outOfDate;
     // A plan that could not be checked for approval: the reason says to keep the plan and try again, so the presser hears it. Any other is unexpected.
     case "RUNTIME_UNAVAILABLE": return slackPlanApprovalRefusal(reason);
     // A lost race says who decided and when (the owner's name is redacted; Slack's markup characters are escaped).
     case "IDEMPOTENCY_CONFLICT": return LOST_RACE.test(reason) ? slackLostRace(reason, decidedBy) : outOfDate;
     case "WORKSPACE_BUSY":
     case "TASK_BUSY": return "AgentX is still working on the previous step. Try again when it posts.";
-    case "FORBIDDEN": return "Only the task owner can do that.";
+    case "FORBIDDEN": return slackRiskPlaceRefusal(reason) ?? "Only the task owner can do that.";
     case "REMOVED_FROM_ORG": return SLACK_REMOVED_FROM_ORG;
     case "SLACK_ACCOUNT_NOT_LINKED": return SLACK_ACCOUNT_NOT_LINKED_NOTICE;
     case "PROJECT_ARCHIVED": return SLACK_PROJECT_ARCHIVED;

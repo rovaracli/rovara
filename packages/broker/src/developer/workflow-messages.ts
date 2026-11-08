@@ -4,7 +4,7 @@
 import { designClassificationNoteOf } from "../design-review/mode.js";
 import {
   DECISION_LABELS, WORKFLOW_AUTO_IMPLEMENT_FAILED_MESSAGE, WORKFLOW_AUTO_PUBLISH_FAILED_MESSAGE, WORKFLOW_AUTO_REVIEW_FAILED_MESSAGE, WORKFLOW_BLOCK_REASONS, WORKFLOW_HISTORY_REWRITTEN_MESSAGE, WORKFLOW_REVIEW_RESULT_INCOMPLETE_MESSAGE,
-  answeredMessage, formatMinutes, intentQuestionsMessage, isBranchSyncBlockReason, isCiFixBlockReason, isNoCodeChangedReason, isRunLimitBlockReason, workflowAnswer, NO_CODE_CHANGED_LEGACY_REASONS, type NoChangeNeeded, WORKFLOW_KEEP_PULL_REQUESTS_NOTE, WORKFLOW_RESOLVE_FINDINGS_MAX, openReviewFindings, hideEmailAddresses, redactText, workflowKeepPullRequestsOffered, sendBackProblems, workflowIsReviewOnly, workflowReviewsSawPartialDiff, workflowCheckResultBroken, workflowSelectedChecks, workflowSendBackOffered, workflowApplicationEvidenceCodes, workflowReadmitsApplicationRound, workflowReviseOffered, type RunEstimate, type WorkflowSnapshot, FEEDBACK_NOT_RUN_REASON, FEEDBACK_STOPPED_REASON, feedbackDecidedByText,
+  answeredMessage, formatMinutes, formatRunLimitUsd, runLimitRaiseText, intentQuestionsMessage, isBranchSyncBlockReason, isCiFixBlockReason, isNoCodeChangedReason, isRunLimitBlockReason, workflowAnswer, NO_CODE_CHANGED_LEGACY_REASONS, type NoChangeNeeded, WORKFLOW_KEEP_PULL_REQUESTS_NOTE, WORKFLOW_RESOLVE_FINDINGS_MAX, openReviewFindings, hideEmailAddresses, redactText, workflowKeepPullRequestsOffered, sendBackProblems, workflowIsReviewOnly, workflowReviewsSawPartialDiff, workflowCheckResultBroken, workflowSelectedChecks, workflowSendBackOffered, workflowApplicationEvidenceCodes, workflowReadmitsApplicationRound, workflowReviseOffered, type RunEstimate, type WorkflowSnapshot, FEEDBACK_NOT_RUN_REASON, FEEDBACK_STOPPED_REASON, feedbackDecidedByText,
 } from "@agentx/contracts";
 import { E2E_OWNER_SENTENCES } from "../e2e/owner-sentences.js";
 import { critiqueLines } from "../rovara-code/critique-lines.js";
@@ -79,10 +79,15 @@ export interface WorkflowMessageContext {
    */
   designCardUrl?: string | undefined;
   /**
-   * Slice 2: this coding plan is not approved from Slack: approving it raises the run limit (a tick Slack cannot show: `run_limit`), or the plan is medium or high risk (`medium`, `high`: decided in the app,
-   * high after a recent sign-in). The message offers "Open in Rovara" to `url` (the plan review page, which exists whether or not the decision cards are on) in place of Approve.
+   * Slice 2: this coding plan is medium or high risk (`medium`, `high`: decided in the app, high after a recent sign-in). The message offers "Open in Rovara" to `url` (the plan review page, which exists whether or
+   * not the decision cards are on) in place of Approve. (0.5.11, QA6-12b: a plan that raises the run limit is no longer sent to the app; see `runLimitRaise`.)
    */
-  planOpen?: { url: string; why: "run_limit" | "medium" | "high" } | undefined;
+  planOpen?: { url: string; why: "medium" | "high" } | undefined;
+  /**
+   * 0.5.11 (QA6-12b; this replaces `planOpen` with `why: "run_limit"`): approving this coding plan raises the run limit. The message says "This raises the run limit from $A to $B", the Approve button says the new limit and
+   * carries it (`runLimitUsd` in its value), and the broker refuses the press if approving would now set another amount.
+   */
+  runLimitRaise?: { currentUsd: number; proposedUsd: number } | undefined;
 }
 export interface WorkflowMessage { text: string; blocks: Array<Record<string, unknown>> }
 
@@ -489,15 +494,18 @@ function planReview(context: WorkflowMessageContext, exits: ReturnType<typeof ex
   const header = needsE2ECorrection
     ? `*${capitalized(name)}${document === undefined ? "" : ` v${document.version}`} needs changes before approval.* ${plainBlockReason(workflow.blockReason)}`
     : `*${capitalized(name)}${document === undefined ? "" : ` v${document.version}`} is ready for your approval.* ${workflow.candidate === undefined ? "No code has changed yet." : "The existing candidate is retained while this plan is reviewed."}`;
+  // A raise is shown and confirmed only on the coding plan, and not where the design is decided on its card instead.
+  const raise = context.designCardUrl === undefined && workflowDocumentType(workflow) === "plan" ? context.runLimitRaise : undefined;
   const decide = (decision: "APPROVE" | "REQUEST_CHANGES") => JSON.stringify({ taskId: context.taskId, revision: workflow.revision, digest: document?.sha256, decision,
-    ...(decision === "APPROVE" && context.workBreakdownDigest !== undefined ? { workBreakdownDigest: context.workBreakdownDigest } : {}) });
+    ...(decision === "APPROVE" && context.workBreakdownDigest !== undefined ? { workBreakdownDigest: context.workBreakdownDigest } : {}),
+    ...(decision === "APPROVE" && raise !== undefined ? { runLimitUsd: raise.proposedUsd } : {}) });
   // A design under review is approved on its card only: the message links to that card ("Open in Rovara") and never offers an Approve the server refuses. A link button carries no value, so a press is not an action.
   const planOpen = context.designCardUrl === undefined && workflowDocumentType(workflow) === "plan" ? context.planOpen : undefined;
   const cardUrl = context.designCardUrl ?? planOpen?.url;
   const cardOnly = cardUrl !== undefined;
   const approve: Button = cardOnly
     ? { type: "button", action_id: "agentx_open_decision", text: { type: "plain_text", text: DECISION_LABELS.openInRovara }, url: cardUrl, style: "primary" }
-    : exits.button("agentx_workflow_approve", `${DECISION_LABELS.approve} ${name}`, { value: decide("APPROVE"), primary: true });
+    : exits.button("agentx_workflow_approve", raise === undefined ? `${DECISION_LABELS.approve} ${name}` : `${DECISION_LABELS.approve} ${name} and raise the limit to ${formatRunLimitUsd(raise.proposedUsd)}`, { value: decide("APPROVE"), primary: true });
   const decisions = document === undefined ? [exits.close] : needsE2ECorrection ? [
     exits.button("agentx_workflow_changes", DECISION_LABELS.requestChanges, { value: decide("REQUEST_CHANGES") }), exits.close,
   ] : [
@@ -541,9 +549,11 @@ function planReview(context: WorkflowMessageContext, exits: ReturnType<typeof ex
     return { text: lines.join("\n"), buttons: decisions };
   }
   // FR-036: what Approve in Slack takes. A tiny plan (FR-037) is approved in Slack as it is, so its card is unchanged.
-  const lead = cardOnly ? [planOpen === undefined ? `Approve the ${name} on its card in Rovara.` : planOpen.why === "run_limit" ? `Approving it raises the run limit: approve the ${name} in Rovara, where you confirm the new limit.` : `This ${name} is ${planOpen.why} risk: approve it in Rovara${planOpen.why === "high" ? " after signing in again" : ""}.`] : structured.decisionCount > 0
+  const approveLead = cardOnly ? [planOpen === undefined ? `Approve the ${name} on its card in Rovara.` : `This ${name} is ${planOpen.why} risk: approve it in Rovara${planOpen.why === "high" ? " after signing in again" : ""}.`] : structured.decisionCount > 0
     ? [`Approve here uses AgentX's answers for ${plural(structured.decisionCount, "decision")} and includes the open comments (up to 25) from the task page.`]
     : structured.tiny ? [] : ["Approve here includes the open comments (up to 25) from the task page."];
+  // QA6-12b: the raise, in the owner's exact words, before the buttons; pressing Approve here confirms the new limit.
+  const lead = !cardOnly && raise !== undefined ? [`${runLimitRaiseText(raise.currentUsd, raise.proposedUsd)}. Approve here confirms ${formatRunLimitUsd(raise.proposedUsd)} as the run limit.`, ...approveLead] : approveLead;
   tail.unshift(...lead);
   tail.push(context.documentLink === undefined ? unlinked : link(context.documentLink.url, structured.tiny ? `Open the ${name}` : `Open the full ${name}`));
   const buttons: Button[] = context.documentLink === undefined ? decisions

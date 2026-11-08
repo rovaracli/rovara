@@ -12,6 +12,7 @@ import { browserRequests } from "../support/browser-session.js";
 import { runCostKey } from "../../packages/contracts/src/org-scoped-keys.js";
 import { TEST_ORG } from "../support/orgs.js";
 import { planAnswer, planDocument } from "../support/plan-documents.js";
+import { runLimitAck } from "../support/run-limit-ack.js";
 
 /** Maya's Quick task, its plan approved by Maya (a member, through the plan review page's tick): blocked on its $20 run limit, which asks a project maintainer (Ben). */
 async function blocked(): Promise<{ w: World; taskId: string; requestId: string }> {
@@ -30,7 +31,7 @@ async function blocked(): Promise<{ w: World; taskId: string; requestId: string 
   const workflow = w.meta(taskId).workflow as unknown as { revision: number; artifacts: Array<{ sha256: string }> };
   // With the cards off (set per test below), the token approval behaves as it always did and blocks on the limit.
   delete process.env.DECISION_CARDS_ENABLED;
-  const approved = await w.dev(MAYA, "POST", `/v1/dev/tasks/${taskId}/workflow/decision`, { requestId: randomUUID(), expectedRevision: workflow.revision, decision: "APPROVE", reason: "Approved", artifactDigest: workflow.artifacts.at(-1)!.sha256 });
+  const approved = await w.dev(MAYA, "POST", `/v1/dev/tasks/${taskId}/workflow/decision`, { requestId: randomUUID(), expectedRevision: workflow.revision, decision: "APPROVE", reason: "Approved", artifactDigest: workflow.artifacts.at(-1)!.sha256, ...runLimitAck(w.db, taskId) });
   expect(approved.status, JSON.stringify(approved.body)).toBe(200);
   process.env.DECISION_CARDS_ENABLED = "1";
   const request = w.requestOf(taskId, "run_limit")[0]!;

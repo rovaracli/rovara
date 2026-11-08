@@ -41,6 +41,7 @@ import { FAUX_MODEL, fauxModelRuntime } from "./faux-model.js";
 import { goldenUuid, seedGoldenIds } from "./golden-ids.js";
 import { TEST_ORG } from "./orgs.js";
 import { SLACK_CHANNEL, SLACK_TEAM, call, createBroker, ensureWorkspace, finishOperation, loadSlackBroker, markReady, orchestratorPrincipal, registerSlackProject, serviceCall } from "./slack-broker.js";
+import { runLimitAck } from "./run-limit-ack.js";
 
 export { goldenUuid };
 
@@ -440,7 +441,7 @@ async function finishPlanning(broker: DeveloperBroker, taskId: string, workspace
 
 const decide = (broker: DeveloperBroker, taskId: string, plan: { digest: string; revision: number }, decision: "APPROVE" | "REQUEST_CHANGES", reason: string) =>
   broker.harness.dev(MAYA, "POST", `/v1/dev/tasks/${taskId}/workflow/decision`, {
-    requestId: randomUUID(), expectedRevision: plan.revision, decision, reason, artifactDigest: plan.digest,
+    requestId: randomUUID(), expectedRevision: plan.revision, decision, reason, artifactDigest: plan.digest, ...(decision === "APPROVE" ? runLimitAck(broker.harness.db, taskId) : {}),
   });
 
 const REQUIRED_CHECK = { id: "required-1", label: "npm test", command: { cwd: "repo/demo", executable: "npm", args: ["test"], timeoutSeconds: 30 } };

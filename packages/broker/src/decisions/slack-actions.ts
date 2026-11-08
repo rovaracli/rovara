@@ -6,6 +6,7 @@ import { DecisionCardIdSchema, DecisionDigestSchema } from "@agentx/contracts";
 import { DECISION_SLACK_ACTION_IDS, DECISION_SLACK_APPROVE_ACTION, DECISION_SLACK_OPEN_ACTION, DECISION_SLACK_REJECT_ACTION } from "./slack-card.js";
 import { decisionCardPath } from "./project.js";
 import type { StatusReply } from "../aws/status-reply.js";
+import { slackRunLimitRefusal } from "../aws/slack-refusals.js";
 import type { DecisionCaller, DecisionRequest } from "./routes.js";
 
 /** A stable v4-shaped request id from the card and the press's own timestamp, so Slack's retry of one press is one decision. */
@@ -19,8 +20,10 @@ export function pressToRequest(press: { actionId: string; value: string; actionT
   const [rawId, shownDigest, ...rest] = press.value.split("|");
   const id = DecisionCardIdSchema.safeParse(rawId);
   const digest = DecisionDigestSchema.safeParse(shownDigest);
-  if (!id.success || !digest.success || rest.length > 0) return undefined;
-  if (press.actionId === DECISION_SLACK_APPROVE_ACTION) return { method: "POST", pathname: `${decisionCardPath(id.data)}/approve`, searchParams: new URLSearchParams(), body: { requestId: pressRequestId(id.data, press.actionTs), shownDigest: digest.data } };
+  // An approve of a coding plan that raises the run limit carries the amount its message showed, as a third part: a plain amount, written the way `String` writes a number.
+  const acknowledged = rest.length === 1 && press.actionId === DECISION_SLACK_APPROVE_ACTION ? Number(rest[0]) : undefined;
+  if (!id.success || !digest.success || rest.length > 1 || (rest.length === 1 && (acknowledged === undefined || !Number.isFinite(acknowledged) || acknowledged < 0 || acknowledged > 100_000 || String(acknowledged) !== rest[0]))) return undefined;
+  if (press.actionId === DECISION_SLACK_APPROVE_ACTION) return { method: "POST", pathname: `${decisionCardPath(id.data)}/approve`, searchParams: new URLSearchParams(), body: { requestId: pressRequestId(id.data, press.actionTs), shownDigest: digest.data, ...(acknowledged === undefined ? {} : { acknowledgedRunLimitUsd: acknowledged }) } };
   if (press.actionId === DECISION_SLACK_REJECT_ACTION) return { method: "POST", pathname: `${decisionCardPath(id.data)}/reject`, searchParams: new URLSearchParams(), body: { requestId: pressRequestId(id.data, press.actionTs), reason: "not_now" } };
   return undefined;
 }
@@ -45,6 +48,8 @@ export function refusalText(error: unknown): string {
   if (code === "CHANGE_STALE") return message.includes("Open the evidence first") ? DECISION_SLACK_TEXT.openFirst : DECISION_SLACK_TEXT.changed;
   if (code === "NOT_FOUND") return DECISION_SLACK_TEXT.gone;
   if (code === "FORBIDDEN") return DECISION_SLACK_TEXT.forbidden;
+  // QA6-12b: a plan approval refused over its run limit (no amount, or one that is not what approving sets now) is said with the amounts: they are numbers in fixed sentences, never a person's or a model's words.
+  if (code === "CONFIG_INVALID") return slackRunLimitRefusal(message) ?? DECISION_SLACK_TEXT.failed;
   return DECISION_SLACK_TEXT.failed;
 }
 

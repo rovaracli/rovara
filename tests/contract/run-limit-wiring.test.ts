@@ -14,6 +14,7 @@ import { MAYA } from "../support/developer-task-broker.js";
 import { ADA, BEN, DEB, PREPARED, TRIAGE, setup, type World } from "../support/spend-world.js";
 import { TEST_ORG } from "../support/orgs.js";
 import { planAnswer, planDocument } from "../support/plan-documents.js";
+import { runLimitAck } from "../support/run-limit-ack.js";
 
 const BLOCKED_WORDS = "This plan's run limit is $20, which needs a project maintainer's approval. I've asked for it.";
 
@@ -40,7 +41,7 @@ async function blockedPlan(before?: (w: World, taskId: string) => Promise<void>)
   if (before !== undefined) await before(w, taskId);
   const workflow = w.meta(taskId).workflow as unknown as { revision: number; artifacts: Array<{ sha256: string }> };
   const approved = await w.dev(MAYA, "POST", `/v1/dev/tasks/${taskId}/workflow/decision`, {
-    requestId: randomUUID(), expectedRevision: workflow.revision, decision: "APPROVE", reason: "Approved", artifactDigest: workflow.artifacts.at(-1)!.sha256,
+    requestId: randomUUID(), expectedRevision: workflow.revision, decision: "APPROVE", reason: "Approved", artifactDigest: workflow.artifacts.at(-1)!.sha256, ...runLimitAck(w.db, taskId),
   });
   expect(approved.status, JSON.stringify(approved.body)).toBe(200);
   const implementations = () => w.operations(workspaceId).filter((item) => item.workflowMode === "IMPLEMENT");
