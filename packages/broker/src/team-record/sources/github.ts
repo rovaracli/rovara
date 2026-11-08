@@ -14,7 +14,7 @@ const PullRequest = z.object({
   merged: z.boolean().optional(), merge_commit_sha: z.string().regex(/^[0-9a-f]{40}$/).nullish(), updated_at: z.string().max(64),
 }).passthrough();
 const Review = z.object({ id: z.number().int().positive(), html_url: z.string().max(2048), state: z.string().max(40), body: z.string().max(70_000).nullish(), user: Person, submitted_at: z.string().max(64).nullish() }).passthrough();
-const Comment = z.object({ id: z.number().int().positive(), html_url: z.string().max(2048), body: z.string().max(70_000).nullish(), user: Person, path: z.string().max(1000).optional(), updated_at: z.string().max(64) }).passthrough();
+const Comment = z.object({ id: z.number().int().positive(), html_url: z.string().max(2048), body: z.string().max(70_000).nullish(), user: Person, path: z.string().max(1000).optional(), line: z.number().int().positive().nullish().catch(undefined), commit_id: z.string().regex(/^[0-9a-f]{40}$/).nullish().catch(undefined), updated_at: z.string().max(64) }).passthrough();
 const CheckSuite = z.object({ id: z.number().int().positive(), conclusion: z.string().max(40).nullish(), head_sha: z.string().regex(/^[0-9a-f]{40}$/), pull_requests: z.array(z.object({ number: z.number().int().positive() }).passthrough()).max(50).default([]), updated_at: z.string().max(64).optional(), app: z.object({ name: z.string().max(100).optional() }).passthrough().nullish() }).passthrough();
 const WorkflowRun = z.object({ id: z.number().int().positive(), name: z.string().max(200).nullish(), conclusion: z.string().max(40).nullish(), head_sha: z.string().regex(/^[0-9a-f]{40}$/), html_url: z.string().max(2048).optional(), pull_requests: z.array(z.object({ number: z.number().int().positive() }).passthrough()).max(50).default([]), updated_at: z.string().max(64).optional() }).passthrough();
 const Push = z.object({ ref: z.string().max(300), before: z.string().regex(/^[0-9a-f]{40}$/).optional(), after: z.string().regex(/^[0-9a-f]{40}$/).optional(), sender: Person.optional(), commits: z.array(z.object({ id: z.string().regex(/^[0-9a-f]{40}$/), message: z.string().max(20_000) }).passthrough()).max(100).default([]), head_commit: z.object({ timestamp: z.string().max(64).optional() }).passthrough().nullish() }).passthrough();
@@ -160,6 +160,7 @@ export function githubEventsOf(eventName: string, action: string | undefined, pa
       return [{
         type: "comment", repo, prNumber, id: String(comment.data.id), url: comment.data.html_url, action, surface: eventName === "issue_comment" ? "discussion" : "review_comment",
         ...(comment.data.body ? { body: comment.data.body } : {}), author: personOf(comment.data.user), ...editorOf(action, object.sender), ...(changesOf(action, payload).previousBody === undefined ? {} : { previousBody: changesOf(action, payload).previousBody! }), ...(comment.data.path === undefined ? {} : { path: comment.data.path }),
+        ...(comment.data.line == null ? {} : { line: comment.data.line }), ...(comment.data.commit_id == null ? {} : { commitId: comment.data.commit_id }),
         at: isoOrUndefined(comment.data.updated_at) ?? fallbackAt, version: `${action}:${comment.data.updated_at}`,
       }];
     }

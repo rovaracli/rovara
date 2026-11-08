@@ -157,6 +157,11 @@ export interface PushRecord {
   after: string;
   /** The account GitHub authenticated for the push (the signed webhook's `sender`), not anything written in a commit. */
   senderId: string;
+  /**
+   * An index that keeps the person as the company's member instead of the host's account id (`push-index.ts`): the canonical developer id the sender resolved to when the push was seen. Then `senderId` is empty and
+   * the reader asks the member's standing by this id.
+   */
+  senderDeveloperId?: string;
   senderIsBot: boolean;
   at: string;
 }
@@ -229,6 +234,11 @@ export interface TrackRecordPort {
 export interface RovaraPullRequestIndexPort {
   byNumber(input: { workspaceId: string; host: string; repo: string; number: number }): Promise<RovaraPullRequest | undefined>;
   byMergeCommit(input: { workspaceId: string; host: string; repo: string; sha: string }): Promise<RovaraPullRequest | undefined>;
+  /**
+   * A Rovara pull request was merged and the host named the merge commit (the default branch's commit, not the pull request's head). Kept so a revert named by commit finds its task and so the task's lessons can
+   * cite the merged code. Optional: absent, the merge commit is not kept. Holds no person.
+   */
+  recordMerge?(input: { workspaceId: string; host: string; repo: string; number: number; taskId: string; project: string; url: string; mergeCommitSha: string }): Promise<void>;
 }
 
 export interface RovaraPullRequest {

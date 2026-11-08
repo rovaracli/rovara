@@ -21,7 +21,7 @@ export function minTrust(list: readonly TrustClass[]): TrustClass {
 export const trustAtLeast = (trust: TrustClass, floor: TrustClass): boolean => TRUST_RANK[trust] >= TRUST_RANK[floor];
 
 export const AclSnapshotSchema = z.object({
-  source: z.enum(["slack", "github", "linear", "jira", "mcp", "rovara"]), scope: z.string().min(1).max(300),
+  source: z.union([z.enum(["slack", "github", "linear", "jira", "mcp", "rovara"]), z.string().regex(/^codehost:[a-z][a-z0-9-]{0,40}$/)]), scope: z.string().min(1).max(300),
   principals: z.array(z.string().max(100)).max(500).optional(), groups: z.array(z.string().max(100)).max(100).optional(),
   capturedAt: z.string().max(40), liveCheck: z.enum(["none", "on_read"]),
 }).strict();

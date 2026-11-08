@@ -36,7 +36,8 @@ export type CodeHostEvent =
       /** What an `edited` change changed, and the text as it was (GitHub's `changes`). Absent: unknown, and no words of the edit are kept. */ changed?: { title?: boolean; body?: boolean }; previousBody?: string; previousTitle?: string; headSha: string; headRef?: string; mergeCommitSha?: string; baseRef: string; at: string; version: string }
   | { type: "review"; repo: CodeHostRepo; prNumber: number; id: string; url: string; action: "submitted" | "edited" | "dismissed"; state: string; body?: string; author: CodeHostPerson; editor?: CodeHostPerson; previousBody?: string; /** When the delivery was received, for an edit or dismissal that carries no time of its own: it orders the review's changes (it is not part of the row's identity). */ receivedAt?: string; at: string; version: string }
   | { type: "comment"; repo: CodeHostRepo; prNumber: number; id: string; url: string; action: "created" | "edited" | "deleted"; surface: "review_comment" | "discussion";
-      body?: string; author: CodeHostPerson; editor?: CodeHostPerson; previousBody?: string; path?: string; at: string; version: string }
+      body?: string; author: CodeHostPerson; editor?: CodeHostPerson; previousBody?: string; path?: string;
+      /** An inline comment: the line it was made on and the commit it was made on, as the host said them. Kept so a later reader can tell whether the code the comment was about then changed. */ line?: number; commitId?: string; at: string; version: string }
   | { type: "ci"; repo: CodeHostRepo; id: string; name: string; conclusion: string; headSha: string; prNumbers: readonly number[]; url?: string; at: string }
   | { type: "push"; repo: CodeHostRepo; ref: string; commits: ReadonlyArray<{ sha: string; message: string }>; at: string;
       /** The pushed range and the account the host authenticated for the push (the signed delivery's sender): the second way a human commit is vouched for. */
@@ -79,6 +80,8 @@ export interface HumanEditInput {
   /** Every human author was a company member with a live project role (otherwise nothing is handed on). */
   trust: "member";
   authorCount: number;
+  /** The authors as the company's canonical developer ids, each once (never a login or an email): so a lesson built from the edit names them, and their erasure reaches it. */
+  authors: string[];
   files: HumanEditFile[];
   /** The only thing of this input that may be kept. */
   link: string;
@@ -274,7 +277,7 @@ export function createCodeHostTap(deps: CodeHostTapDependencies): { handle(event
             ...base, kind: "github.review_comment", occurredAt: event.at,
             sourceRef: { system: event.repo.host, id: commentId(event), url: event.url, parentId: prId(event.repo, event.prNumber), version: row.version, order: row.order },
             actor: who, trust: who.trust, pieceTrusts: [who.trust], audience: audienceOf(event.repo, event.at), ...(text === undefined ? {} : { text }),
-            structured: scalars({ prNumber: event.prNumber, surface: event.surface, path: event.path }),
+            structured: scalars({ prNumber: event.prNumber, surface: event.surface, path: event.path, line: event.line, commitId: event.commitId, action: event.action }),
             links: linksOf(event.url), retention: config.retention,
           });
           break;
@@ -305,7 +308,10 @@ export function createCodeHostTap(deps: CodeHostTapDependencies): { handle(event
       }
       for (const draft of drafts.slice(0, MAX_DRAFTS_PER_DELIVERY)) await write(draft, result);
       await revertsOf(event, config, result);
-      if (event.type === "pr" && event.action === "closed" && event.merged) await humanEdit(event);
+      if (event.type === "pr" && event.action === "closed" && event.merged) {
+        await noteMerge(event);
+        await humanEdit(event);
+      }
     } catch {
       result.failed += 1;
       log("record.codehost_failed", { host: event.repo.host });
@@ -440,6 +446,18 @@ export function createCodeHostTap(deps: CodeHostTapDependencies): { handle(event
     }
   }
 
+  /** A merged Rovara pull request: its merge commit is kept (once the host names it) for the revert-by-commit match and for the task's lessons. A failure never fails the delivery. */
+  async function noteMerge(event: Extract<CodeHostEvent, { type: "pr" }>): Promise<void> {
+    if (deps.rovaraPrs.recordMerge === undefined || event.mergeCommitSha === undefined || !SHA.test(event.mergeCommitSha)) return;
+    try {
+      const rovara = await deps.rovaraPrs.byNumber({ workspaceId: event.repo.workspaceId, host: event.repo.host, repo: event.repo.fullName, number: event.number });
+      if (rovara === undefined) return;
+      await deps.rovaraPrs.recordMerge({ workspaceId: event.repo.workspaceId, host: event.repo.host, repo: event.repo.fullName, number: event.number, taskId: rovara.taskId, project: rovara.project, url: rovara.url, mergeCommitSha: event.mergeCommitSha });
+    } catch {
+      log("record.merge_not_noted", { host: event.repo.host });
+    }
+  }
+
   /**
    * At merge of a Rovara pull request: finds whether anything was pushed after Rovara's last push and, if so, queues (or runs) the live read. Nothing is
    * written to the record, and the compare and the extractor never run inside the webhook's answer when a job queue is given.
@@ -478,17 +496,19 @@ export async function runHumanEdit(deps: Pick<CodeHostTapDependencies, "actors" 
   //  (1) the host verified the signature AND the committer is the author, a linked member (or the host itself committed it, as for a web-UI edit); or
   //  (2) the commits reached the branch in pushes the host authenticated (the signed delivery's `sender`), the chain of pushes from Rovara's last commit to
   //      the head is complete, and every sender is a linked non-bot member. A gap in the chain, or a push by anyone else, fails closed.
-  const memberOf = async (person: CodeHostPerson | undefined): Promise<boolean> => {
-    if (person === undefined || person.isBot) return false;
+  // A person counts only as a live company member who is not excluded from the source. The result is their canonical developer id (the identity link), or undefined.
+  const memberOf = async (person: CodeHostPerson | undefined): Promise<string | undefined> => {
+    if (person === undefined || person.isBot || isExcluded(config, person.id, person.login)) return undefined;
     const who = await deps.actors.resolve({ workspaceId: job.repo.workspaceId, project: job.project, system: job.repo.host, sourceId: person.id });
-    return who.trust === "member";
+    return who.trust === "member" ? who.developerId : undefined;
   };
-  let vouching = new Map<string, CodeHostPerson>();
+  let vouching = new Map<string, string>();
   let byCommits = diff.commits.length > 0;
   for (const commit of diff.commits) {
     const sameCommitter = commit.webFlow === true || (commit.committer !== undefined && commit.author !== undefined && commit.committer.id === commit.author.id);
-    if (!commit.verified || !sameCommitter || !await memberOf(commit.author)) { byCommits = false; break; }
-    vouching.set(commit.author!.id, commit.author!);
+    const developerId = commit.verified && sameCommitter ? await memberOf(commit.author) : undefined;
+    if (developerId === undefined) { byCommits = false; break; }
+    vouching.set(commit.author!.id, developerId);
   }
   if (!byCommits) {
     vouching = new Map();
@@ -498,21 +518,25 @@ export async function runHumanEdit(deps: Pick<CodeHostTapDependencies, "actors" 
       return "skipped";
     }
     for (const push of chain) {
-      if (push.senderIsBot || !await memberOf({ id: push.senderId, isBot: false })) {
+      let developerId: string | undefined;
+      if (push.senderIsBot) developerId = undefined;
+      else if (push.senderDeveloperId !== undefined) developerId = (await deps.actors.resolveDeveloper({ workspaceId: job.repo.workspaceId, project: job.project, developerId: push.senderDeveloperId })).trust === "member" ? push.senderDeveloperId : undefined;
+      else developerId = await memberOf({ id: push.senderId, isBot: false });
+      if (developerId === undefined) {
         log("human_edit.skipped", { reason: "author_not_member" });
         return "skipped";
       }
-      vouching.set(push.senderId, { id: push.senderId, isBot: false });
+      vouching.set(push.senderDeveloperId ?? push.senderId, developerId);
     }
   }
   if (vouching.size === 0) return "skipped";
-  const authors = vouching;
+  const authorIds = [...new Set(vouching.values())];
   const key = `human_edit#${job.taskId}#${job.headSha}`;
   if (deps.claims !== undefined && !await deps.claims.claim(key)) return "skipped";
   try {
     const outcome = await deps.extractor.extract({
       workspaceId: job.repo.workspaceId, project: job.project, repo: job.repo.fullName, taskId: job.taskId, pullRequest: job.pullRequest,
-      trust: "member", authorCount: authors.size, files: diff.files.slice(0, HUMAN_EDIT_MAX_FILES).map(humanEditFile), link: job.pullRequest.url,
+      trust: "member", authorCount: authorIds.length, authors: authorIds, files: diff.files.slice(0, HUMAN_EDIT_MAX_FILES).map(humanEditFile), link: job.pullRequest.url,
     });
     log("human_edit.handed_on", { files: Math.min(diff.files.length, HUMAN_EDIT_MAX_FILES), candidates: outcome.candidates });
     return "handed_on";
