@@ -21,6 +21,7 @@ import { createLessonsRuntime } from "../../packages/broker/src/lessons/runtime.
 import { learnFromEndedTaskTyped, learningTaskEndHandler, type TaskLearningDeps } from "../../packages/broker/src/lessons/task-end.js";
 import { captureAdapterOf } from "../../packages/broker/src/team-record/sources/capture-adapters.js";
 import type { HumanEditInput } from "../../packages/broker/src/team-record/sources/codehost.js";
+import { noteLearningFault } from "../../packages/broker/src/lessons/learning-deadline.js";
 import { FakeDynamoDb } from "../support/fake-dynamodb.js";
 import { PROJECT, WS, allowAllAccess } from "../unit/lessons/lesson-helpers.js";
 export { PROJECT, WS };
@@ -56,6 +57,8 @@ export class World {
   mode: "Off" | "Collect" | "Suggest" | "On" = "On";
   outsiders = new Set<string>();
   quoteFailures = 0;
+  /** How many of the task's own (non repo-only) reflection calls fail with a model error before one answers. */
+  mainFailures = 0;
   calls: Array<{ purpose: string; repoOnly: boolean; system: string; user: string; maxHoldUsd?: number }> = [];
   private readonly opts: Required<Omit<Options, "rovaraHeadKnown">> & { rovaraHeadKnown: boolean };
   private readonly tasks = new FakeDynamoDb();
@@ -81,6 +84,7 @@ export class World {
       quote: async () => { if (this.quoteFailures > 0) { this.quoteFailures -= 1; throw new Error("quote down"); } return { ok: true, usd: 0.01 }; },
       complete: async (request) => {
         const repoOnly = request.system.includes(REPO_SYSTEM);
+        if (request.purpose === "reflect" && !repoOnly && this.mainFailures > 0) { this.mainFailures -= 1; noteLearningFault("retryable"); throw new Error("provider down"); }
         this.calls.push({ purpose: request.purpose, repoOnly, system: request.system, user: request.user, ...(request.maxHoldUsd === undefined ? {} : { maxHoldUsd: request.maxHoldUsd }) });
         // The curator's judge rides the same model (a different purpose): it answers the duplicate question for every candidate.
         if (request.purpose !== "reflect") {

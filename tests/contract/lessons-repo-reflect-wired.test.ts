@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { loadLessonsForStage } from "../../packages/broker/src/lessons/load.js";
 import { setLearnedLessonsGate } from "../../packages/broker/src/lessons/policy.js";
 import type { PipelineModel } from "../../packages/broker/src/lessons/ports.js";
+import { withLearningAttempt } from "../../packages/broker/src/lessons/learning-deadline.js";
 import { learnFromEndedTaskTyped } from "../../packages/broker/src/lessons/task-end.js";
 import { noteTaskHeld, readTaskHeld } from "../../packages/broker/src/lessons/repo-reflect.js";
 import { allowAllAccess } from "../unit/lessons/lesson-helpers.js";
@@ -256,6 +257,16 @@ describe("review L-f: Public's cap is one total per task across the task end and
     expect(w.calls.length * 0.01).toBeLessThanOrEqual(0.02 + 1e-9);
     expect(w.repoCalls()).toHaveLength(0);
   });
+  it("review L-g (C1): the task end and the job running AT THE SAME TIME never spend more than the cap: every call (reflections, judges, comments, edits) reserves on the shared ladder before it is made", async () => {
+    for (const cap of [0.03, 0.05]) {
+      const w = new World({ mergedHead: PUSHED });
+      (w.learning.reflect as { capsOverride?: { perTaskUsd?: number } }).capsOverride = { perTaskUsd: cap };
+      await Promise.all([w.end(), w.extractor().extract(w.editInput())]);
+      expect(w.calls.length * 0.01, `cap ${String(cap)}`).toBeLessThanOrEqual(cap + 1e-9);
+      expect(w.calls.length).toBeGreaterThanOrEqual(2);
+      expect(await readTaskHeld(w.runtime.store, KEY, TASK, cap)).toBeLessThanOrEqual(cap + 1e-9);
+    }
+  });
   it("what the task end held is on the ladder for the job (and a job that finds the cap used up makes no repo-only call)", async () => {
     const w = new World({ mergedHead: PUSHED });
     await w.end();
@@ -264,5 +275,21 @@ describe("review L-f: Public's cap is one total per task across the task end and
     const before = w.repoCalls().length;
     await w.extractor().extract(w.editInput());
     expect(w.repoCalls()).toHaveLength(before);
+  });
+});
+
+describe("review L-k: the comments reflection does not depend on the first reflection's retry state", () => {
+  const attempt = () => ({ deadlineAt: Date.now() + 60_000 });
+  it("the task's own reflection fails in a way the worker would retry: the result says retry, the comments reflection still runs; the retried delivery runs the first reflection again and does not repeat the comments one", async () => {
+    const w = new World();
+    w.mainFailures = 1;
+    const first = await withLearningAttempt(attempt(), () => learnFromEndedTaskTyped(w.learning, { workspaceId: WS, taskId: TASK }));
+    expect(first.retry).toBe(true);
+    expect(w.mainCalls()).toHaveLength(0);
+    expect(w.repoCalls()).toHaveLength(1);
+    const second = await withLearningAttempt(attempt(), () => learnFromEndedTaskTyped(w.learning, { workspaceId: WS, taskId: TASK }));
+    expect(second.retry).toBe(false);
+    expect(w.mainCalls()).toHaveLength(1);
+    expect(w.repoCalls()).toHaveLength(1);
   });
 });

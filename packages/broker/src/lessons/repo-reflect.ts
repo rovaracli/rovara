@@ -165,6 +165,11 @@ export async function reserveTaskHeld(store: Pick<LessonStore, "seenOnce" | "mar
   return taken >= need;
 }
 
+/** Puts the task's shared cap ledger on its tally (idempotent): every paid call of the task that has the tally reserves its hold on the ladder before it is made. */
+export function attachCapLadder(tally: TaskFailureTally, store: Pick<LessonStore, "seenOnce" | "markOnce">, key: ScopeKey, taskId: string, capUsd: number): void {
+  tally.reserve ??= (usd) => reserveTaskHeld(store, key, taskId, usd, capUsd);
+}
+
 /** Which reflection to run: the comments one (the task end's, the default) or the edits one (the human-edit job's). */
 export interface RepoReflectOptions { kind?: RepoReflectKind }
 
@@ -187,7 +192,8 @@ export async function reflectRepoOnly(deps: RepoReflectDeps, main: ReflectSubjec
     if (!modeAllows((await resolveLearning(deps.settings, main.workspaceId, main.project)).mode, "reflect")) return result;
     const key = { workspaceId: main.workspaceId, project: main.project };
     const pause = withoutOwnRefusals(failuresCountedOncePerTask(deps.reflect.pause, tally));
-    // Review L-f: the task's cap is one total across its runs; start from what they held.
+    // Review L-f, L-g: the task's cap is one total across its runs; start from what they held, and reserve every call on the shared ladder before it is made.
+    if (cap !== undefined) attachCapLadder(tally, store, key, main.id, cap);
     if (cap !== undefined) tally.heldUsd = Math.max(tally.heldUsd, await readTaskHeld(store, key, main.id, cap));
     for (const change of wanted) {
       const attempt = currentLearningAttempt();
@@ -204,11 +210,10 @@ export async function reflectRepoOnly(deps: RepoReflectDeps, main: ReflectSubjec
       // Public's per-task cap is one total: this call is given what the task has left.
       const room = cap === undefined ? undefined : Math.round((cap - tally.heldUsd) * 1e6) / 1e6;
       if (room !== undefined && room < MIN_ROOM_USD) { deps.log?.("learning.repo_reflect_no_room", {}); break; }
-      // Right before the provider is called: the once-key is taken (atomically: of two runs at once only one gets it) and the hold is reserved on the task's ladder. A quote that fails, a refusal or a lost key spends nothing.
+      // Right before the provider is called the hold is reserved on the task's ladder (by `reflectSubject`, through the tally) and then the once-key is taken (atomically: of two runs at once only one gets it). A quote that fails, a refusal or a lost key spends nothing (a lost key leaves its reserved cents on the ladder: conservative).
       let called = false;
       const claiming: PipelineModel = { ...deps.reflect.model, complete: async (request) => {
         if (!(await store.markOnce(key, once))) throw new LearningRefusal("no_provider", "this change request was already reflected on");
-        if (cap !== undefined && !(await reserveTaskHeld(store, key, main.id, request.budgetUsd ?? 0, cap))) throw new LearningRefusal("cost_too_high", "the task's cap is used up");
         called = true;
         return deps.reflect.model.complete(request);
       } };

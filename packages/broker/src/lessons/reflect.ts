@@ -53,7 +53,7 @@ export interface ReflectDeps {
   /** Where "lessons paused" is recorded when learning cannot run, and cleared when a call succeeds. Absent: nothing is recorded. */
   pause?: LessonsPauseStore;
   /** The task's running total of model holds (`TaskFailureTally.heldUsd`): the reflection adds its hold, so the outcome judge that comes after it shares Public's one per-task cap. Absent: nothing is added. */
-  taskBudget?: { heldUsd: number };
+  taskBudget?: { heldUsd: number; reserve?: ((usd: number) => Promise<boolean>) | undefined };
 }
 
 const MAX_OUTPUT_TOKENS = 1800;
@@ -156,6 +156,8 @@ export async function reflectSubject(deps: ReflectDeps, subject: ReflectSubject,
   let reply: { text: string; costUsd: number; model: string };
   try {
     // This call's hold counts against the task's one per-task cap (the outcome judge, which runs after it, is given what is left).
+    // The task's shared cap: the hold is reserved on its ledger before the call (a task with nothing left makes no call).
+    if (deps.taskBudget?.reserve !== undefined && !(await deps.taskBudget.reserve(estimate))) return none("skipped", "task_cap");
     if (deps.taskBudget !== undefined) deps.taskBudget.heldUsd += estimate;
     // The request has no field for tools: a pipeline model can only return text.
     reply = await deps.model.complete({ ...request, budgetUsd: estimate });

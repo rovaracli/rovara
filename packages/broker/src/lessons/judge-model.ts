@@ -79,6 +79,7 @@ export function modelCorrectionJudge(rawDeps: OutcomeJudgeDeps): CorrectionJudge
       }
       // The correction is claimed right before the paid call: a delivery that comes after a worker died here does not pay for it again.
       if (claim !== undefined && !(await claim())) throw new Error("this correction was already paid for");
+      if (task?.tally.reserve !== undefined && !(await task.tally.reserve(estimate))) throw new Error("the outcome judge has used the task's budget");
       if (task !== undefined) task.tally.heldUsd += estimate;
       let reply: Awaited<ReturnType<PipelineModel["complete"]>>;
       try { reply = await deps.model.complete({ ...request, budgetUsd: estimate }); } catch (error) {

@@ -14,7 +14,7 @@ import { currentLearningAttempt } from "./learning-deadline.js";
 import { learningCaps, modeAllows, resolveLearning, type LearningSettingsReader } from "./policy.js";
 import { processDraftRetrying } from "./draft-retry.js";
 import { newTaskFailureTally, withFailuresCountedOnce, type TaskFailureTally } from "./pause.js";
-import { noteTaskHeld, readTaskHeld, reflectRepoOnly, withEdits } from "./repo-reflect.js";
+import { attachCapLadder, noteTaskHeld, readTaskHeld, reflectRepoOnly, withEdits } from "./repo-reflect.js";
 import type { ProcessDeps } from "./process.js";
 import { reflectSubject, type ReflectDeps } from "./reflect.js";
 import type { EvidenceSpan, ReflectSubject } from "./reflect-input.js";
@@ -132,6 +132,7 @@ export function createHumanEditExtractor(deps: HumanEditExtractorDeps): HumanEdi
       const key = { workspaceId: input.workspaceId, project: input.project };
       // The edit's own reflection first; its model failure throws (the job is retried, and so is this).
       const ran = await run(input, tally, async () => {
+        if (cap !== undefined) attachCapLadder(tally, deps.process.store, key, input.taskId, cap);
         if (cap !== undefined) { try { tally.heldUsd = await readTaskHeld(deps.process.store, key, input.taskId, cap); } catch { /* an unreadable total reads as unspent: the cap still bounds each call */ } }
       });
       if (ran.off !== true) await repoOnly(input, ran.edits, tally);

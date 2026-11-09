@@ -45,7 +45,7 @@ export interface CurateDeps extends LessonDeps {
    * The task's running total of model holds (`TaskFailureTally.heldUsd`), review L2 of lane R1b: Public's per-task cap is ONE total for the task's reflections, its curator judge calls and its outcome judge. A judge call is given
    * only what the task has left, and its hold is added; a task with nothing left sends the draft to a person unjudged. Absent: each judge call holds up to the cap on its own.
    */
-  taskBudget?: { heldUsd: number };
+  taskBudget?: { heldUsd: number; reserve?: ((usd: number) => Promise<boolean>) | undefined };
 }
 
 export type Verdict = "same" | "refines" | "contradicts" | "different";
@@ -128,6 +128,7 @@ async function judgeList(deps: CurateDeps, key: ScopeKey, mine: LessonDraft, can
     if (look !== "ok") { const code = pauseOfLook(look); if (code !== undefined) await notePause(deps.pause, key.workspaceId, key.project, code); return undefined; }
     // The model's key holds the estimate in the company's spend ledger and is settled there; a failed call needs nothing given back here.
     let reply: Awaited<ReturnType<PipelineModel["complete"]>>;
+    if (deps.taskBudget?.reserve !== undefined && !(await deps.taskBudget.reserve(estimate))) return undefined;
     if (deps.taskBudget !== undefined) deps.taskBudget.heldUsd += estimate;
     try { reply = await deps.judgeModel.complete({ ...request, budgetUsd: estimate }); } catch (error) {
       if (isLearningRefusal(error)) await notePause(deps.pause, key.workspaceId, key.project, error.code);
