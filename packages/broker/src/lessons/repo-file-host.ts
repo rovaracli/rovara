@@ -7,13 +7,17 @@ import type { PrRow } from "./repo-file-state.js";
 export interface RepoFileTarget { name: string; place: string; repository: RepositoryRef; scope: HostScope; host: CodeHost }
 
 /** The head of a branch, or undefined when the host cannot say (a branch that is gone and a host that is down look the same, and neither is "Rovara's own"). */
-export const headOf = (target: RepoFileTarget, branch: string): Promise<string | undefined> => target.host.baseBranchHead(target.repository, branch, target.scope).then((head) => head, () => undefined);
+export const headOf = (target: RepoFileTarget, branch: string): Promise<string | undefined> => {
+  assertGuarded(target);
+  return target.host.baseBranchHead(target.repository, branch, target.scope).then((head) => head, () => undefined);
+};
 
 /**
  * A branch name nobody has: 12 random hex digits, and asked of the host first. A name that already exists is never used (nothing is adopted, and Rovara must never later delete a branch it did not make); the adapter
  * refuses it as well, so this is the second lock. Undefined after five tries (the caller stops: a conflict).
  */
 export async function freshBranchName(source: { randomHex?(): string }, target: RepoFileTarget): Promise<string | undefined> {
+  assertGuarded(target);
   for (let attempt = 0; attempt < 5; attempt += 1) {
     const branch = `${LESSON_FILE_BRANCH_PREFIX}${source.randomHex?.() ?? randomBytes(6).toString("hex")}`;
     if (await headOf(target, branch) === undefined) return branch;
@@ -48,6 +52,13 @@ async function verifyRaw(target: RepoFileTarget): Promise<Verified> {
 
 /** The verdicts of guarded hosts, by the guarded host: one identity read per guarded target. */
 const verdicts = new WeakMap<object, () => Promise<Verified>>();
+/** The one place a guarded host was checked for: a guarded host is never used for another. */
+const bound = new WeakMap<object, string>();
+
+/** Throws unless the target's host is a guarded one that was checked for THIS target's place. The shared helpers (`headOf`, `freshBranchName`, `readOwnPr`) call it first: they are handed a guarded target, never a raw one. */
+export function assertGuarded(target: Pick<RepoFileTarget, "host" | "place">): void {
+  if (!verdicts.has(target.host) || bound.get(target.host) !== target.place) throw new RepositoryMismatch();
+}
 
 /** The host refused to act because the repository at its address is not the one the place pins. */
 export class RepositoryMismatch extends Error {
@@ -62,7 +73,10 @@ export class RepositoryMismatch extends Error {
  */
 export function verifyRepository(target: RepoFileTarget): Promise<Verified> {
   const guarded = verdicts.get(target.host);
-  return guarded === undefined ? verifyRaw(target) : guarded();
+  if (guarded === undefined) return verifyRaw(target);
+  // A guarded host answers for the place it was checked for, and no other.
+  if (bound.get(target.host) !== target.place) throw new RepositoryMismatch();
+  return guarded();
 }
 
 /**
@@ -71,7 +85,11 @@ export function verifyRepository(target: RepoFileTarget): Promise<Verified> {
  * Capability checks (`host.deleteBranch !== undefined`) see the host's own methods.
  */
 export function guardTarget(target: RepoFileTarget): RepoFileTarget {
-  if (verdicts.has(target.host)) return target;
+  if (verdicts.has(target.host)) {
+    // A guarded target is bound to ONE place: pointing it at another is refused, not answered from the first verdict.
+    if (bound.get(target.host) !== target.place) throw new RepositoryMismatch();
+    return target;
+  }
   const raw = target.host;
   let verdict: Promise<Verified> | undefined;
   const check = (): Promise<Verified> => (verdict ??= verifyRaw({ ...target, host: raw }));
@@ -86,6 +104,7 @@ export function guardTarget(target: RepoFileTarget): RepoFileTarget {
     },
   });
   verdicts.set(host, check);
+  bound.set(host, target.place);
   return { ...target, host };
 }
 
@@ -106,6 +125,7 @@ export class Unconfirmed extends Error {
  * Any other failure to read THROWS `Unconfirmed`: no action, tried again next time. Callers close or delete only on `ours === true`, and only a pull request that is still open needs the answer.
  */
 export async function readOwnPr(target: RepoFileTarget, number: string, branch: string): Promise<{ kind: "gone" } | { kind: "read"; details: ChangeRequestDetails; ours: boolean | undefined }> {
+  assertGuarded(target);
   let details: ChangeRequestDetails;
   try { details = await target.host.getChangeRequest({ repository: target.repository, id: number, url: "" }, target.scope); } catch (error) {
     if (isGone(error)) return { kind: "gone" };
