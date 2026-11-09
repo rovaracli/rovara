@@ -62,10 +62,12 @@ const COMPANIONS: Files = { "src/test/java/AT.java": "class AT {}\n", "tests/tes
 const ALL_BODIES = { ...BODIES, ...KEYWORD_BODIES };
 
 // The limits above are for a developer machine. A shared CI runner running several test files at once is several times slower (0.5.11 CI runs: the same 256 KiB
-// newline parse took 150 ms here and 1.0 to 1.3 s there, against a 1 s limit), and a wall-clock limit cannot tell a slow machine from a slow detector. So each pair is
-// judged against a fixed cap of MAX_SLOWDOWN x its limit, on the faster of two runs. The failures this test exists for took 26 s to minutes against a 1 s limit, so they
-// still fail on any machine.
+// newline parse took 150 ms here and 1.0 to 1.3 s there, against a 1 s limit), and no in-process calibration tracked that (a JS loop read ~1x). So on CI (`CI` set)
+// each pair is judged against a fixed cap of MAX_SLOWDOWN x its limit; on a developer machine (the full local suite runs before every release) against the limit itself,
+// so mild regressions are still caught there. Either way a pair over its bar is timed once more and the faster run is judged. The failures this test exists for took
+// 26 s to minutes, past every bar.
 const MAX_SLOWDOWN = 4;
+const ON_CI = process.env["CI"] !== undefined && process.env["CI"] !== "" && process.env["CI"] !== "false";
 async function timed(files: Files): Promise<number> {
   const started = performance.now();
   await detect(files);
@@ -78,13 +80,10 @@ describe("no detector is slow on a hostile file of the largest size the reader a
       const slow: string[] = [];
       for (const [label, body] of Object.entries(ALL_BODIES)) {
         const files = { ...COMPANIONS, [name]: body };
-        // Judged against the cap only (MAX_SLOWDOWN x the limit): on shared CI runners this work ran ~7x slower than on the owner's Mac while the JS calibration loop
-        // read ~1x, so a stretch from that loop failed 1.0-1.3 s runs that are normal there (CI run 42549353164). The failures this test exists for took 26 s to minutes,
-        // far past the cap. The faster of two runs is judged, so one scheduling hiccup cannot fail it.
         let took = await timed(files);
-        const limit = limitFor(label);
-        if (took > limit * MAX_SLOWDOWN) took = Math.min(took, await timed(files));
-        if (took > limit * MAX_SLOWDOWN) slow.push(`${label}: ${String(Math.round(took))} ms (limit ${String(Math.round(limit * MAX_SLOWDOWN))} ms at most)`);
+        const bar = limitFor(label) * (ON_CI ? MAX_SLOWDOWN : 1);
+        if (took > bar) took = Math.min(took, await timed(files));
+        if (took > bar) slow.push(`${label}: ${String(Math.round(took))} ms (limit ${String(Math.round(bar))} ms${ON_CI ? " on CI" : ""})`);
       }
       expect(slow).toEqual([]);
     }, 3_600_000);

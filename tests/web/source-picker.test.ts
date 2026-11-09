@@ -2,10 +2,13 @@
 // T10: the Add form's Slack, Linear and Jira kinds show a searchable list read from the server (`.../record/sources/options`) instead of asking for a typed id. Unavailable options are disabled with their reason;
 // the typed field stays as "Enter an ID instead" and is what the screen falls back to when the list cannot be read. The server still checks everything on save.
 import { afterEach, describe, expect, it } from "vitest";
-import { cleanup, screen, fireEvent, waitFor, within } from "@testing-library/react";
+import { cleanup, configure, screen, fireEvent, waitFor, within } from "@testing-library/react";
 import { SourceOptionsViewSchema } from "@agentx/contracts/web";
 import { adminView, flat } from "./support/sources-fixture.js";
 import { ok } from "./support/lessons-fixture.js";
+
+// The lazy Sources screen can take over 1 s to render on a loaded CI runner (CI run 42549353164): every findBy/waitFor in this file waits up to 10 s. A passing run is no slower.
+configure({ asyncUtilTimeout: 10_000 });
 import { openSources } from "./support/sources-render.js";
 import { expectNoAxeViolations } from "./support/axe.js";
 
@@ -24,7 +27,7 @@ const SLACK = [
   slackOption("C0NOTIN01", "random", { joined: false }),
 ];
 const pick = (label: string, value: string, scope: HTMLElement = document.body) => fireEvent.change(within(scope).getByLabelText(label), { target: { value } });
-const open = async (options: Parameters<typeof openSources>[0] = {}) => { const f = openSources(options); await screen.findByRole("heading", { name: "Add a source" }, { timeout: 10_000 }); return { f, form: screen.getByRole("region", { name: "Add a source" }) }; };
+const open = async (options: Parameters<typeof openSources>[0] = {}) => { const f = openSources(options); await screen.findByRole("heading", { name: "Add a source" }); return { f, form: screen.getByRole("region", { name: "Add a source" }) }; };
 const radio = (form: HTMLElement, name: RegExp | string) => within(form).getByRole<HTMLInputElement>("radio", { name });
 
 describe("the Slack channel picker", () => {
@@ -211,7 +214,7 @@ describe("the Slack channel picker", () => {
   it("is accessible, light and dark", async () => {
     for (const theme of ["light", "dark"] as const) {
       openSources({ options: () => list("slack", SLACK) }, theme);
-      await screen.findByRole("heading", { name: "Add a source" }, { timeout: 10_000 });
+      await screen.findByRole("heading", { name: "Add a source" });
       const form = screen.getByRole("region", { name: "Add a source" });
       pick("What to add", "slack");
       await within(form).findByRole("radio", { name: /general/u });
