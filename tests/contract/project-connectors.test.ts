@@ -56,7 +56,8 @@ const NOEL = person("5", "Noel"); // org member with no access to web
 const PETE = person("6", "Pete"); // a second maintainer of web
 const orgResolver: OrgResolver = async (subject) => (subject.developerId === OMAR.developerId ? ORG_B : TEST_ORG);
 
-beforeAll(async () => { await loadSlackBroker(); });
+// Loading the Slack broker can take over 10 s on a loaded CI runner (CI run 42549353164).
+beforeAll(async () => { await loadSlackBroker(); }, 60_000);
 afterEach(() => { vi.restoreAllMocks(); vi.useRealTimers(); });
 
 const READ_TOOLS = [{ name: "list_issues", access: "read" }, { name: "get_issue", access: "read" }];

@@ -5,3 +5,6 @@ import { BROKER_SETTINGS, liveInteractionFlagOn } from "@agentx/contracts";
 
 /** Whether approved lessons may be loaded into an agent in this install. Anything but exactly "1" (unset, empty, "true", " 1") is off. */
 export const learnedLessonsEnabled = (env: NodeJS.ProcessEnv = process.env): boolean => liveInteractionFlagOn(env[BROKER_SETTINGS.learnedLessons.variable]);
+
+/** The same switch, failing closed: a read that throws (an unreadable environment) is off. Every model path asks this form (owner decision 47). */
+export const learnedLessonsOn = (env: NodeJS.ProcessEnv = process.env): boolean => { try { return learnedLessonsEnabled(env); } catch { return false; } };

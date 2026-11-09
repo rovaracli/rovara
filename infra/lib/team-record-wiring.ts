@@ -240,6 +240,8 @@ export interface LessonsWorkerProps {
   readonly githubAppPrivateKeySecretArn: string;
   readonly githubAppCredentialRef: string;
   readonly githubAppId: string;
+  /** The install's lessons switch (stack parameter LearnedLessonsEnabled), packed the broker's way. The worker obeys it too (owner decision 47): off or absent, it makes no model call. */
+  readonly learnedLessons?: string;
   /** Whether the worker reserves Lambda concurrency (default true; the same `agentxReservedConcurrency` context as the audit ledger's functions). */
   readonly reservedConcurrency?: boolean;
   /** M5: the install's alarm names and the operator notification the other alarms use. */
@@ -300,6 +302,8 @@ export function attachLessonsWorker(stack: Stack, props: LessonsWorkerProps): { 
   settings.add("teamRecordActive", props.resources.activeSetting);
   settings.add("githubAppCredentialRef", props.githubAppCredentialRef);
   settings.add("githubAppId", props.githubAppId);
+  // Owner decision 47: while the lessons switch is off the worker's reflections make no model call. Absent counts as off (fail closed).
+  if (props.learnedLessons !== undefined) settings.add("learnedLessons", props.learnedLessons);
   if (props.reservedConcurrency !== false) (worker.node.defaultChild as lambda.CfnFunction).reservedConcurrentExecutions = LESSONS_WORKER_RESERVED_CONCURRENCY;
   // grantConsumeMessages (the event source) includes ChangeMessageVisibility, which the retry backoff uses.
   worker.addEventSource(new eventSources.SqsEventSource(queue, { batchSize: 1, maxConcurrency: LESSONS_WORKER_RESERVED_CONCURRENCY, reportBatchItemFailures: true }));

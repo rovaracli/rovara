@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import { approveLesson, listWaiting, rejectLesson, retireByPerson, rollbackLessonSet, type ApproveDeps } from "../../../packages/broker/src/lessons/approve.js";
 import { buildWeeklyDigest } from "../../../packages/broker/src/lessons/digest.js";
 import { promoteToRule, ruleParagraph, type PromoteDeps } from "../../../packages/broker/src/lessons/promote.js";
+import { setLearnedLessonsGate } from "../../../packages/broker/src/lessons/policy.js";
 import { InMemoryLessonStore } from "../../../packages/broker/src/lessons/store.js";
 import { withLessonAudiences } from "../../../packages/broker/src/lessons/task-audience.js";
 import { Audit, Clock, KEY, Publisher, directory, lessonRecord, seed, settings, allSharedTasks, allowAllAccess, wideAudience } from "./lesson-helpers.js";
@@ -19,6 +20,20 @@ function setup(over: { dir?: ReturnType<typeof directory>; settings?: ReturnType
   const deps: ApproveDeps = { access: allowAllAccess, store, directory: dir, settings: over.settings ?? settings(), audit, now: clock.now, newId: () => `ap-${++n}` };
   return { deps, store, audit, clock, dir };
 }
+
+describe("owner decision 47: a person's decision follows the project's own mode, not the install's lessons switch", () => {
+  it("with the switch off, a maintainer can still approve a waiting lesson (no model is involved); a project whose own mode is Collect still cannot", async () => {
+    try {
+      setLearnedLessonsGate(() => false);
+      const on = setup({ settings: settings({ mode: "On" }) });
+      await seed(on.store, base());
+      expect(await approveLesson(on.deps, input("ann"))).toMatchObject({ ok: true, status: "active" });
+      const collect = setup({ settings: settings({ mode: "Collect" }) });
+      await seed(collect.store, base());
+      expect(await approveLesson(collect.deps, input("ann"))).toEqual({ ok: false, code: "mode_off" });
+    } finally { setLearnedLessonsGate(undefined); }
+  });
+});
 
 describe("tier 1: one maintainer", () => {
   it("activates the lesson, sets its expiry, records the approval and audits it", async () => {

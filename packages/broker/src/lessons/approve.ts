@@ -98,7 +98,7 @@ export interface ApproveInput {
 export async function approveLesson(deps: ApproveDeps, input: ApproveInput): Promise<ApprovalResult> {
   const key: ScopeKey = { workspaceId: input.workspaceId, project: input.project };
   const resolved = await resolveLearning(deps.settings, key.workspaceId, key.project);
-  if (!modeAllows(resolved.mode, "load")) return { ok: false, code: "mode_off" };
+  if (!modeAllows(resolved.chosenMode, "load")) return { ok: false, code: "mode_off" };
 
   for (let attempt = 0; attempt < MAX_TRIES; attempt += 1) {
     // Every attempt reads who may approve afresh, with the commit conditions that pin that answer: a person removed since a lost race cannot decide on a retry, and the writes below

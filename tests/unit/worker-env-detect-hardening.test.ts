@@ -61,24 +61,13 @@ const COMPANIONS: Files = { "src/test/java/AT.java": "class AT {}\n", "tests/tes
 // Every file kind gets every body: a detector only reads the kinds it knows, so most pairs are fast, and any pair that is not is a bug.
 const ALL_BODIES = { ...BODIES, ...KEYWORD_BODIES };
 
-// The limits above are for a developer machine. A shared CI runner running several test files at once is several times slower (0.5.11 CI run: the same linear 256 KiB newline parse took 150 ms here and 1.05 to 1.15 s there, against a 1 s limit),
-// and a wall-clock limit cannot tell a slow machine from a slow detector. So a file over its limit is timed again, and judged against the limit stretched by how much slower than this fixture's baseline the machine is right now, measured with a
-// fixed amount of plain JavaScript work. The stretch is capped (MAX_SLOWDOWN), so the failures this test exists for, which took 26 s to minutes against a 1 s limit, still fail on any machine.
-const CALIBRATION_STEPS = 5_000_000;
-const CALIBRATION_BASELINE_MS = 20; // what CALIBRATION_STEPS takes on the owner's Mac
+// The limits above are for a developer machine. A shared CI runner running several test files at once is several times slower (0.5.11 CI runs: the same 256 KiB
+// newline parse took 150 ms here and 1.0 to 1.3 s there, against a 1 s limit), and no in-process calibration tracked that (a JS loop read ~1x). So on CI (`CI` set)
+// each pair is judged against a fixed cap of MAX_SLOWDOWN x its limit; on a developer machine (the full local suite runs before every release) against the limit itself,
+// so mild regressions are still caught there. Either way a pair over its bar is timed once more and the faster run is judged. The failures this test exists for took
+// 26 s to minutes, past every bar.
 const MAX_SLOWDOWN = 4;
-const calibrationSink: number[] = []; // keeps the loop from being optimised away
-function machineSlowdown(): number {
-  let best = Number.POSITIVE_INFINITY;
-  for (let round = 0; round < 3; round += 1) {
-    const started = performance.now();
-    let x = 0;
-    for (let i = 0; i < CALIBRATION_STEPS; i += 1) x = (x * 31 + i) | 0;
-    calibrationSink[0] = x;
-    best = Math.min(best, performance.now() - started);
-  }
-  return Math.min(MAX_SLOWDOWN, Math.max(1, best / CALIBRATION_BASELINE_MS));
-}
+const ON_CI = process.env["CI"] !== undefined && process.env["CI"] !== "" && process.env["CI"] !== "false";
 async function timed(files: Files): Promise<number> {
   const started = performance.now();
   await detect(files);
@@ -92,15 +81,9 @@ describe("no detector is slow on a hostile file of the largest size the reader a
       for (const [label, body] of Object.entries(ALL_BODIES)) {
         const files = { ...COMPANIONS, [name]: body };
         let took = await timed(files);
-        const limit = limitFor(label);
-        if (took > limit * MAX_SLOWDOWN) {
-          slow.push(`${label}: ${String(Math.round(took))} ms (limit ${String(Math.round(limit * MAX_SLOWDOWN))} ms at most)`);
-        } else if (took > limit) {
-          // Over the limit: time it once more and judge the faster run against the limit for this machine's speed right now.
-          const stretch = machineSlowdown();
-          took = Math.min(took, await timed(files));
-          if (took > limit * stretch) slow.push(`${label}: ${String(Math.round(took))} ms (limit ${String(Math.round(limit * stretch))} ms)`);
-        }
+        const bar = limitFor(label) * (ON_CI ? MAX_SLOWDOWN : 1);
+        if (took > bar) took = Math.min(took, await timed(files));
+        if (took > bar) slow.push(`${label}: ${String(Math.round(took))} ms (limit ${String(Math.round(bar))} ms${ON_CI ? " on CI" : ""})`);
       }
       expect(slow).toEqual([]);
     }, 3_600_000);

@@ -16,7 +16,7 @@ import type { TeamRecordTable } from "../team-record/types.js";
 import { revertedTasksSince } from "./task-outcome-rows.js";
 import { sweepExpired } from "./expiry.js";
 import { retireLesson } from "./curate.js";
-import { isTrialLesson, promoteStableTrials, type StableDeps } from "./trial.js";
+import { contradictedByMemberCard, isTrialLesson, memberCardsOf, promoteStableTrials, type StableDeps } from "./trial.js";
 
 /** LP-13: 72 hours. The rows are found by their event time, and a revert can reach the record late (GitHub redelivers for three days); the worker's once-claim on `LEARN#<task>#reverted` makes a repeat free. */
 export const REVERT_WINDOW_MS = 72 * 60 * 60 * 1000;
@@ -147,7 +147,11 @@ export async function lessonsPromoteJob(deps: Pick<LessonsJobDeps, "table" | "se
     let cut = false;
     const stop = (): boolean => { const out = outOfTime(); if (out) cut = true; return out; };
     try {
-      if ((await resolveLearning(deps.settings, org.data, project)).trialAllowed) promoted += (await promoteStableTrials(deps.maintain, { workspaceId: org.data, project }, MAX_PROMOTIONS_PER_PROJECT, stop)).length;
+      if ((await resolveLearning(deps.settings, org.data, project)).trialAllowed) {
+        // A lesson a pending member card contradicts is never made stable (the repair retires it; past its night's cap it waits for the next night, still on trial).
+        const contradicted = await contradictedByMemberCard(deps.maintain.store, { workspaceId: org.data, project });
+        promoted += (await promoteStableTrials(deps.maintain, { workspaceId: org.data, project }, MAX_PROMOTIONS_PER_PROJECT, stop, contradicted)).length;
+      }
     } catch {
       failed += 1;
       deps.log("lessons_job.promote_failed", {});
@@ -160,41 +164,60 @@ export async function lessonsPromoteJob(deps: Pick<LessonsJobDeps, "table" | "se
   return { trialsPromoted: promoted, promoteFailures: failed };
 }
 
-/** The most trial lessons one project's repair retires in a night; the rest go on the next nights. */
+/** The most trial lessons one project's repair actually retires in a night (a retire that did not happen does not use this); the rest go on the next nights. */
 export const MAX_TRIAL_REPAIRS_PER_PROJECT = 20;
+/** The most cards one project's repair looks at in a night, whatever came of them: the hard bound of the pass (the pending cards are read in a rotating order that resumes where the last night stopped, so no card is behind the limit every night). */
+export const MAX_TRIAL_REPAIR_CHECKS = 200;
 
 /**
- * Nightly (LP-13 review L12). A member's correction that contradicts a lesson live on trial makes a card for people and retires that lesson (`curate.ts`, `toPerson`). The retire comes after the card is committed, and a
+ * Nightly (LP-13 review L12, R3). A member's correction that contradicts a lesson live on trial makes a card for people and retires that lesson (`curate.ts`, `toPerson`). The retire comes after the card is committed, and a
  * store fault in it is not allowed to undo the card, so it can be left undone. This repairs it by the same rule: each pending card that names a lesson, from a member's correction, whose named lesson is still
- * live on trial is retired (audited as the contradicted trial retire). It runs before the promotion so a contradicted lesson is not made stable first. Where learning is not Off; bounded in time and in lessons
- * per project; a failure is counted and logged in one fixed line, and the others go on. Returns counts only.
+ * live on trial is retired (audited as the contradicted trial retire). It runs before the promotion, and the promotion skips any lesson such a card names, so a contradicted lesson is never made stable first.
+ * Where learning is not Off. Bounded: at most `MAX_TRIAL_REPAIRS_PER_PROJECT` retires that really happened per project and night, and at most `MAX_TRIAL_REPAIR_CHECKS` cards looked at; the cards are walked from a
+ * saved place (the number of cards looked at moves it on each night, per project), so a retire the store refuses for ever (its erasure fence) cannot keep the same cards first every night and starve the rest. A refusal or a failure is counted and the pass goes on.
+ * Returns counts only.
  */
-export async function lessonsTrialRepairJob(deps: Pick<LessonsJobDeps, "settings" | "maintain" | "now" | "log">, orgId: string, projects: readonly string[], budgetMs: number): Promise<Record<string, number>> {
+export async function lessonsTrialRepairJob(deps: Pick<LessonsJobDeps, "table" | "settings" | "maintain" | "state" | "now" | "log">, orgId: string, projects: readonly string[], budgetMs: number): Promise<Record<string, number>> {
   const org = OrgIdSchema.safeParse(orgId);
   if (!org.success || deps.maintain === undefined) return { trialsRetiredByCard: 0 };
   const started = deps.now();
   const outOfTime = (): boolean => deps.now() - started > budgetMs;
-  let retired = 0, failed = 0;
+  // Where each project's walk resumes is saved (a count per project hash): a state that cannot be read leaves the walk at the top and writes nothing.
+  const store = deps.state ?? tableNightlyState(deps.table);
+  let saved: NightlyPassState = { next: 0, projects: {} };
+  let writable = true;
+  try { saved = await store.read(orgId, "repair"); } catch { writable = false; deps.log("lessons_job.state_unreadable", {}); }
+  let retired = 0, failed = 0, refused = 0, moved = false;
   for (const project of [...new Set(projects)].sort().slice(0, MAX_PROJECTS_PER_JOB)) {
     if (outOfTime()) break;
     try {
       if ((await resolveLearning(deps.settings, org.data, project)).mode === "Off") continue;
       const key = { workspaceId: org.data, project };
-      const cards = (await deps.maintain.store.list(key, { statuses: ["pending"] })).filter((card) => card.contradictsWith !== undefined && card.provenance.memberCorrection === true).sort((a, b) => a.id.localeCompare(b.id));
-      let tried = 0;
-      for (const card of cards) {
-        if (tried >= MAX_TRIAL_REPAIRS_PER_PROJECT || outOfTime()) break;
+      const hash = projectHash(orgId, project);
+      const cards = await memberCardsOf(deps.maintain.store, key);
+      const first = cards.length === 0 ? 0 : (saved.projects[hash]?.cardsNext ?? 0) % cards.length;
+      let done = 0, examined = 0;
+      for (const card of [...cards.slice(first), ...cards.slice(0, first)].slice(0, MAX_TRIAL_REPAIR_CHECKS)) {
+        if (done >= MAX_TRIAL_REPAIRS_PER_PROJECT || outOfTime()) break;
+        examined += 1;
         const other = await deps.maintain.store.get(key, card.contradictsWith!);
         if (other === undefined || !isTrialLesson(other) || other.status !== "active") continue;
-        tried += 1;
-        try { if (await retireLesson(deps.maintain, key, other.id, "contradicted", undefined, "lesson.trial_retired")) retired += 1; } catch { failed += 1; deps.log("lessons_job.trial_repair_failed", {}); }
+        try {
+          if (await retireLesson(deps.maintain, key, other.id, "contradicted", undefined, "lesson.trial_retired")) { retired += 1; done += 1; } else refused += 1;
+        } catch { failed += 1; deps.log("lessons_job.trial_repair_failed", {}); }
       }
+      // Tomorrow starts after the last card looked at, so every card is reached within ceil(cards / looked at per night) nights.
+      if (cards.length > 0) { saved.projects[hash] = { seenAt: deps.now(), cardsNext: (first + examined) % cards.length }; moved = true; }
     } catch {
       failed += 1;
       deps.log("lessons_job.trial_repair_failed", {});
     }
   }
-  return { trialsRetiredByCard: retired, trialRepairFailures: failed };
+  if (writable && moved) {
+    const live = new Set([...new Set(projects)].map((project) => projectHash(orgId, project)));
+    try { await store.write(orgId, "repair", { next: 0, projects: Object.fromEntries(Object.entries(saved.projects).filter(([hash]) => live.has(hash))) }); } catch { deps.log("lessons_job.state_unsaved", {}); }
+  }
+  return { trialsRetiredByCard: retired, trialRepairFailures: failed, trialRepairRefused: refused };
 }
 
 /**

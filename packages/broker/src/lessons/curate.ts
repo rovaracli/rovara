@@ -5,7 +5,7 @@ import { randomUUID } from "node:crypto";
 import { z } from "zod";
 import { firstExpiry } from "./expiry.js";
 import { logRef } from "./log-ref.js";
-import { emitAudit, learningCaps, type Edition } from "./policy.js";
+import { emitAudit, learnedLessonsSwitchOn, learningCaps, type Edition } from "./policy.js";
 import { isLearningRefusal, noteJudgeRecovered, noteModelFailure, notePause, pauseOfLook, spendLook, type LessonsPauseStore } from "./pause.js";
 import type { AlertSink, LearningSpend, LessonDeps, LessonEmbedder, LessonVectors, PipelineModel } from "./ports.js";
 import { relate } from "./copy-match.js";
@@ -98,6 +98,8 @@ function judgePrompt(mine: LessonDraft, candidates: readonly Lesson[]): string {
  * recorded as before: a pause code, or a counted model failure). The call goes through the same pipeline model and spend look as every other learning call (customer pays; no Rovara-paid route).
  */
 async function judgeList(deps: CurateDeps, key: ScopeKey, mine: LessonDraft, candidates: readonly Lesson[]): Promise<{ verdicts: Verdict[]; escalate: boolean } | undefined> {
+  // Owner decision 47, the entry-point defence: while the install's lessons switch is off (or unreadable) there is no judge at all (nothing is quoted, looked at or sent), so a draft that needs one goes to a person.
+  if (!learnedLessonsSwitchOn()) return undefined;
   const user = judgePrompt(mine, candidates);
   const maxHoldUsd = learningCaps(deps.edition ?? "public", deps.capsOverride).perTaskUsd;
   try {
@@ -263,7 +265,8 @@ export async function curateDraft(deps: CurateDeps, key: ScopeKey, draft: Lesson
   await noteCandidateSources(deps, deps.store, key, attributableSources(draft.provenance), deps.alerts, deps.alreadyNoted);
 
   // The neighbours: the project's lessons whose scope overlaps, ranked by the fused matcher (keywords, paths and, where there is one, the embedder). It never fails: an embedder that is down or slow is keywords and paths.
-  const sim = { embedder: deps.embedder, vectors: deps.vectors, log: deps.log, metrics: deps.metrics };
+  // Decision 47: a draft in flight when the lessons switch goes off makes no embedder call (keywords and paths only).
+  const sim = { embedder: learnedLessonsSwitchOn() ? deps.embedder : undefined, vectors: deps.vectors, log: deps.log, metrics: deps.metrics };
   const pool = (await deps.store.list(key, { statuses: ["candidate", "pending", "active", "rejected"] })).filter((l) => scopesOverlap(l.scope, draft.scope));
   const { ranked, queryVector } = await rankLessons(sim, key, pool, docOf(draft), { embedMissing: true, queryKind: "document", timeoutMs: EMBED_TIMEOUT_MS.curate });
   const byId = new Map(pool.map((l) => [l.id, l] as const));

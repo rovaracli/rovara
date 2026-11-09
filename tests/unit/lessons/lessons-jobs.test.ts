@@ -1,7 +1,7 @@
 // Lessons in production, lane 2: the hourly resume of unfinished lesson deletions (WB-7) and the nightly re-reflection of reverted tasks, from the record's `rovara.reverted_by` link rows of the last 72 hours.
 import { describe, expect, it, vi } from "vitest";
 import type { CounterDeps } from "../../../packages/broker/src/lessons/counters.js";
-import { REVERT_WINDOW_MS, lessonsExpireJob, lessonsNightlyJob, lessonsPromoteJob, lessonsResumeJob, lessonsRevertJob, lessonsTrialRepairJob, type LessonsJobDeps } from "../../../packages/broker/src/lessons/jobs.js";
+import { REVERT_WINDOW_MS, lessonsExpireJob, lessonsNightlyJob, lessonsPromoteJob, lessonsResumeJob, lessonsRevertJob, lessonsTrialRepairJob, MAX_TRIAL_REPAIR_CHECKS, type LessonsJobDeps } from "../../../packages/broker/src/lessons/jobs.js";
 import { PENDING_GRACE_MS, projectHash, tableNightlyState, type NightlyPass, type NightlyPassState, type NightlyStateStore } from "../../../packages/broker/src/lessons/nightly-state.js";
 import { REFUSING_JUDGE } from "../../../packages/broker/src/lessons/runtime.js";
 import { sweepExpired } from "../../../packages/broker/src/lessons/expiry.js";
@@ -299,6 +299,66 @@ describe("LP-13 review L12: a trial lesson a member's card contradicts is retire
     let total = first.trialsRetiredByCard!;
     for (let night = 0; night < 5 && total < 25; night += 1) total += (await lessonsTrialRepairJob(many.deps, ORG_A, ["web"], 10_000)).trialsRetiredByCard!;
     expect(total).toBe(25);
+  });
+  it("R3: the cap of 20 counts only retires that happened: 20 permanently refused retires and one real one -> the real one is retired the same night", async () => {
+    const refusedIds = Array.from({ length: 20 }, (_, i) => `les_a${String(i).padStart(2, "0")}`);
+    const lessons = [...refusedIds.map((id) => trialOld({ id })), trialOld({ id: "les_z00" }), ...refusedIds.map((id, i) => card({ id: `les_ca${String(i).padStart(2, "0")}`, contradictsWith: id })), card({ id: "les_cz00", contradictsWith: "les_z00" })];
+    const w = await repair(lessons);
+    const real = w.deps.maintain!.store.commit.bind(w.deps.maintain!.store);
+    // the store refuses these writes for ever (for example its erasure fence)
+    w.deps.maintain!.store.commit = async (...args: Parameters<typeof real>) => (args[2].some((lesson) => refusedIds.includes(lesson.id)) ? { ok: false, reason: "fenced" } : real(...args));
+    const result = await lessonsTrialRepairJob(w.deps, ORG_A, ["web"], 10_000);
+    expect(result).toMatchObject({ trialsRetiredByCard: 1, trialRepairRefused: 20 });
+    expect((await w.store.get(KEYW, "les_z00"))!.status).toBe("retired");
+    expect((await w.store.get(KEYW, "les_a00"))!.status).toBe("active");
+  });
+  it("R3: the pass is bounded by its own hard limit of checks, and a refusal that never ends does not starve the rest for ever: the start moves from night to night", async () => {
+    const refusedIds = Array.from({ length: 250 }, (_, i) => `les_a${String(i).padStart(3, "0")}`);
+    const lessons = [...refusedIds.map((id) => trialOld({ id })), trialOld({ id: "les_z000" }), ...refusedIds.map((id, i) => card({ id: `les_ca${String(i).padStart(3, "0")}`, contradictsWith: id })), card({ id: "les_cz000", contradictsWith: "les_z000" })];
+    let now = NOW;
+    const w = await repair(lessons, { now: () => now });
+    const store = w.deps.maintain!.store;
+    const real = store.commit.bind(store);
+    let commitsTried = 0;
+    store.commit = async (...args: Parameters<typeof real>) => { if (args[2].some((lesson) => refusedIds.includes(lesson.id))) { commitsTried += 1; return { ok: false, reason: "fenced" }; } return real(...args); };
+    const first = await lessonsTrialRepairJob(w.deps, ORG_A, ["web"], 10_000);
+    // a night looks at no more than the hard limit of cards (each refused retire is a few tries of the store)
+    expect(first.trialRepairRefused! + first.trialsRetiredByCard!).toBeLessThanOrEqual(MAX_TRIAL_REPAIR_CHECKS);
+    expect(commitsTried).toBeLessThanOrEqual(MAX_TRIAL_REPAIR_CHECKS * 3);
+    let nights = 1;
+    while ((await store.get(KEYW, "les_z000"))!.status !== "retired" && nights < 12) { now += DAY; await lessonsTrialRepairJob(w.deps, ORG_A, ["web"], 10_000); nights += 1; }
+    expect((await store.get(KEYW, "les_z000"))!.status).toBe("retired");
+  });
+  it("L1: the walk resumes where the last night stopped (saved per project, by how many cards were looked at): 450 pending cards are all reached within ceil(450/200) = 3 nights", async () => {
+    // 449 cards that need nothing (the lesson they name is not live on trial) and, last in the order, one that does
+    const noops = Array.from({ length: 449 }, (_, i) => card({ id: `les_c${String(i).padStart(3, "0")}`, contradictsWith: "les_none" }));
+    const w = await repair([trialOld({ id: "les_z000" }), ...noops, card({ id: "les_cz999", contradictsWith: "les_z000" })]);
+    const nights: string[] = [];
+    let now = NOW;
+    w.deps.now = () => now;
+    for (let night = 1; night <= 3; night += 1) {
+      await lessonsTrialRepairJob(w.deps, ORG_A, ["web"], 10_000);
+      nights.push((await w.store.get(KEYW, "les_z000"))!.status);
+      now += DAY;
+    }
+    expect(nights).toEqual(["active", "active", "retired"]);
+  });
+  it("R3: promotion skips a lesson a pending member card contradicts (the repair may not have reached it yet), and promotes the others", async () => {
+    const ripe = (id: string): Lesson => trialOld({ id, trial: { state: "trial", startedAt: NOW - 15 * DAY }, counters: { loaded: 5, helpful: 0, harmful: 0, citationStale: 0 } });
+    const w = await repair([ripe("les_old1"), ripe("les_old2"), ripe("les_old3"), card(), card({ id: "les_card3", contradictsWith: "les_old3" }, false)]);
+    expect(await lessonsPromoteJob(w.deps, ORG_A, ["web"], 10_000)).toMatchObject({ trialsPromoted: 2 });
+    expect((await w.store.get(KEYW, "les_old1"))!.trial?.state).toBe("trial");
+    expect((await w.store.get(KEYW, "les_old2"))!.trial?.state).toBe("stable");
+    // a card that is not from a member's correction does not hold the lesson back
+    expect((await w.store.get(KEYW, "les_old3"))!.trial?.state).toBe("stable");
+  });
+  it("R3: more contradicted lessons than one night's cap: the ones past the cap stay on trial that night and none is promoted", async () => {
+    const ids = Array.from({ length: 25 }, (_, i) => `les_t${String(i).padStart(2, "0")}`);
+    const w = await repair([...ids.map((id) => trialOld({ id, trial: { state: "trial", startedAt: NOW - 15 * DAY }, counters: { loaded: 5, helpful: 0, harmful: 0, citationStale: 0 } })), ...ids.map((id, i) => card({ id: `les_c${String(i).padStart(2, "0")}`, contradictsWith: id }))]);
+    expect(await lessonsNightlyJob(w.deps, ORG_A, ["web"], 10_000)).toMatchObject({ trialsRetiredByCard: 20, trialsPromoted: 0 });
+    const states = await Promise.all(ids.map(async (id) => (await w.store.get(KEYW, id))!));
+    expect(states.filter((lesson) => lesson.status === "retired")).toHaveLength(20);
+    expect(states.filter((lesson) => lesson.status === "active" && lesson.trial?.state === "trial")).toHaveLength(5);
   });
   it("a retire that fails is counted and the rest go on; nothing a person wrote or an id leaves the job", async () => {
     const w = await repair([trialOld(), trialOld({ id: "les_old2" }), card(), card({ id: "les_card2", contradictsWith: "les_old2" })]);

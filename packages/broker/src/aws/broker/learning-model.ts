@@ -21,6 +21,7 @@ import { randomUUID } from "node:crypto";
 import { AgentXError, LESSONS_BROKER_MODEL_WAIT_SECONDS, OrgIdSchema, ROVARA_CODE_AGENT_ID, forbiddenModelMatcher, type ModelIdentifier, type OrgId } from "@agentx/contracts";
 import { readGuardrails } from "../../agents/guardrails.js";
 import { currentLearningAttempt, learningCallMayStart, noteLearningFault } from "../../lessons/learning-deadline.js";
+import { gatedByLessonsSwitch } from "../../lessons/model-gate.js";
 import { LearningRefusal } from "../../lessons/pause.js";
 import type { Edition } from "../../lessons/policy.js";
 import type { PipelineModel } from "../../lessons/ports.js";
@@ -75,6 +76,8 @@ export interface CustomerLearningModelOptions {
   /** The company's "lessons model" (optional setting; `lessons/model-setting.ts`). Absent, or returning undefined: the cheapest suitable model. A read that throws is read as unset. */
   lessonsModel?: (orgId: OrgId) => Promise<ModelIdentifier | undefined>;
   log?: (event: string, fields: Record<string, string | number>) => void;
+  /** Owner decision 47 (tests): whether the install's lessons switch is on. Default: the switch itself, failing closed. Off: every call is refused before anything is planned, held or sent. */
+  lessonsSwitchOn?: () => boolean;
 }
 
 /** The codes `admitWork` and the mint refuse the company's own budgets with (the org's, the member's, the project's, the agent's, the chain's, the test allowance, the trial, the machine time). Exact codes only: a rate limit or any other code is a plain failure. */
@@ -106,6 +109,10 @@ export function learningFaultOf(error: unknown, callStarted: boolean): "retryabl
 }
 
 export function customerLearningModel(dependencies: LessonsHostDependencies, options: CustomerLearningModelOptions = {}): PipelineModel {
+  return gatedByLessonsSwitch(rawCustomerLearningModel(dependencies, options), options.lessonsSwitchOn);
+}
+
+function rawCustomerLearningModel(dependencies: LessonsHostDependencies, options: CustomerLearningModelOptions): PipelineModel {
   const log = options.log ?? ((event, fields) => console.log(JSON.stringify({ component: "lessons", event, ...fields })));
   const admissionOf = (modelAccess: NonNullable<LessonsHostDependencies["modelAccess"]>) =>
     ({

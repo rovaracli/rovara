@@ -432,6 +432,12 @@ describe("the lessons worker (switch on)", () => {
     expect(main["VisibilityTimeout"]).toBe(LESSONS_REFLECT_VISIBILITY_SECONDS);
   }, 360_000);
 
+  it("owner decision 47: the worker obeys the same lessons switch as the broker (the LearnedLessonsEnabled parameter, packed), so a switched-off install makes no reflection call from the worker either", () => {
+    const settings = brokerSettingsIn(worker().Environment?.Variables);
+    expect(JSON.stringify(settings["learnedLessons"])).toContain("LearnedLessonsEnabled");
+    expect(JSON.stringify(brokerSettingsIn(functionVariables(on, /^Broker[0-9A-F]{8}$/))["learnedLessons"])).toBe(JSON.stringify(settings["learnedLessons"]));
+  }, 360_000);
+
   it("the worker is its own entry, outside the VPC, reserved to two, fed one message at a time with partial-batch answers (M6)", () => {
     const fn = worker();
     expect(fn.Handler).toBe("index.lessonsWorkerHandler");
@@ -450,11 +456,11 @@ describe("the lessons worker (switch on)", () => {
     for (const forbidden of ["CALLBACK_SIGNING_KEY", "OIDC_ISSUER", "ADMIN_CLAIM", "ADMIN_VALUES", "CHATGPT_CONNECTION_KEY_ARN", "AUDIT_INTAKE_QUEUE_URL", "SLACK_REQUEST_QUEUE_URL"]) expect(variables, forbidden).not.toHaveProperty(forbidden);
     expect(JSON.stringify(variables)).not.toMatch(/CallbackSigningKey/u);
     expect(Object.keys(variables).sort()).toEqual(["AGENTX_ACCOUNT_ID", "AGENTX_ENV", "AGENTX_NAMES", "AGENTX_SETTINGS", "GITHUB_APP_PRIVATE_KEY_SECRET_ARN", "ROVARA_EDITION"]);
-    // The packed names are the State table, the artifacts bucket, the sign-in table and the model function (codes in BROKER_NAMES), and the packed settings are the Team record's two and the GitHub App's two.
+    // The packed names are the State table, the artifacts bucket, the sign-in table and the model function (codes in BROKER_NAMES), and the packed settings are the Team record's two, the GitHub App's two and the lessons switch (owner decision 47: the worker makes no model call while it is off).
     const codesOf = (value: unknown): string[] => [...JSON.stringify(value).matchAll(/"?,?([a-z]{2})=/gu)].map((match) => match[1]!);
     const nameCodes = codesOf(variables["AGENTX_NAMES"]);
     expect(nameCodes.sort()).toEqual([BROKER_NAMES.signInTable.code, BROKER_NAMES.stateTable.code, BROKER_NAMES.artifactBucket.code, BROKER_NAMES.modelAccessFunction.code].sort());
-    expect(codesOf(variables["AGENTX_SETTINGS"]).sort()).toEqual([BROKER_SETTINGS.teamRecord.code, BROKER_SETTINGS.teamRecordActive.code, BROKER_SETTINGS.githubAppCredentialRef.code, BROKER_SETTINGS.githubAppId.code].sort());
+    expect(codesOf(variables["AGENTX_SETTINGS"]).sort()).toEqual([BROKER_SETTINGS.teamRecord.code, BROKER_SETTINGS.teamRecordActive.code, BROKER_SETTINGS.githubAppCredentialRef.code, BROKER_SETTINGS.githubAppId.code, BROKER_SETTINGS.learnedLessons.code].sort());
     // Its own entry: the broker module (and so a second broker) is not loaded; the sizes are far inside Lambda's 4 KB.
     expect(JSON.stringify(variables).length).toBeLessThan(2000);
   }, 360_000);

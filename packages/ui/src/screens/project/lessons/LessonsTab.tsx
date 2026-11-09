@@ -52,8 +52,9 @@ export function LessonsTab({ project }: { project: string }) {
   <p className="rv-muted">{T.INTRO}</p>
   {off && <Banner title={T.OFF} tone="warning" />}
   {/* Never silent: when learning cannot run for this project (no provider, the monthly limit, every model forbidden, the budgets), the tab says why in one line. */}
+  {view.lessonsSwitchedOff === true && !off && <Banner title={T.SWITCHED_OFF_COLLECTING} tone="warning" />}
   {!off && view.paused !== undefined && <p role="status" className="rv-lessons-paused" data-testid="lessons-paused"><span data-testid="lessons-paused-line">{lessonsPauseLine(view.paused)}</span> <span className="rv-muted" data-testid="lessons-paused-since">since {dateWords(view.paused.at)}</span></p>}
-  {collecting && <Banner title={T.COLLECT} tone="info" />}
+  {collecting && view.lessonsSwitchedOff !== true && <Banner title={T.COLLECT} tone="info" />}
   {view.lockedByCompany && <p className="rv-muted">{T.LOCKED}</p>}
   {!view.canDecide && <p className="rv-muted">{T.READ_ONLY}</p>}
   {view.canDecide && <LearningModeControl project={project} compact />}

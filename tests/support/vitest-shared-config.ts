@@ -17,5 +17,7 @@ export const sharedVitestSettings = {
   testTimeout: 60_000,
   // v1.2 learning: the install default of the company's master suggestions switch is OFF in production; the existing learning tests exercise suggestions, so the test environment has it on.
   // The switch's own tests (tests/contract/learning-suggestions-switch*.test.ts) set and clear it themselves.
-  env: { LEARNING_SUGGESTIONS_DEFAULT: "on" } as Record<string, string>,
+  // Owner decision 47: with the install's lessons switch (LEARNED_LESSONS_ENABLED) off, learning runs as Collect and makes no model call, and production's default is off; the learning tests exercise the model paths, so the test
+  // environment has it on. The decision's own tests (tests/unit/lessons/collect-while-off*.test.ts) turn it off through `setLearnedLessonsGate` or the variable.
+  env: { LEARNING_SUGGESTIONS_DEFAULT: "on", LEARNED_LESSONS_ENABLED: "1" } as Record<string, string>,
 } as const;

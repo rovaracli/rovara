@@ -1587,7 +1587,7 @@ export class ControlPlaneStack extends Stack {
         attachLessonsWorker(this, {
           env: naming.env, context: props.teamRecord, broker, resources: teamRecordResources, state, artifacts, signInTable: developerSignInTable, modelAccessFunction,
           githubAppPrivateKeySecretArn: githubAppPrivateKeySecretArn.valueAsString,
-          githubAppCredentialRef: githubAppCredentialRef.valueAsString, githubAppId: githubAppId.valueAsString, alarms: { name: (suffix) => naming.alarmName(suffix), action: notifyOperator }, ...(props.reservedConcurrency === false ? { reservedConcurrency: false } : {}),
+          githubAppCredentialRef: githubAppCredentialRef.valueAsString, githubAppId: githubAppId.valueAsString, alarms: { name: (suffix) => naming.alarmName(suffix), action: notifyOperator }, ...(signInParameters === undefined ? {} : { learnedLessons: signInParameters.learnedLessonsEnabled.valueAsString }), ...(props.reservedConcurrency === false ? { reservedConcurrency: false } : {}),
         });
       }
       BrokerNames.of(broker).add("modelAccessFunction", modelAccessFunction.functionName);
