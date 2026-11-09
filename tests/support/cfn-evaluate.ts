@@ -1,7 +1,7 @@
 /**
  * A small evaluator for the CloudFormation intrinsics a synthesised template uses, so a test can say what a policy
  * grants for a given parameter value instead of only matching the template's shape: Ref, Fn::Join, Fn::Split,
- * Fn::Select, Fn::If, Fn::Equals, Fn::Not, Fn::And, Fn::Or and Condition references.
+ * Fn::Select, Fn::Sub (the string form), Fn::If, Fn::Equals, Fn::Not, Fn::And, Fn::Or and Condition references.
  */
 export interface CfnContext {
   parameters: Record<string, string>;
@@ -35,6 +35,10 @@ function evaluateValue(value: unknown, context: CfnContext): unknown {
         return found;
       }
       case "Condition": return evaluateCondition(String(argument), context);
+      case "Fn::Sub": {
+        if (typeof argument !== "string") throw new Error("only the string form of Fn::Sub is supported");
+        return argument.replace(/\$\{([^}]+)\}/gu, (_whole, name: string) => String(evaluate({ Ref: name }, context)));
+      }
       case "Fn::Join": {
         const [delimiter, list] = argument as [string, unknown[]];
         return (evaluate(list, context) as unknown[]).join(delimiter);

@@ -7,6 +7,7 @@ import { buildAgentXApp } from "../../infra/lib/app.js";
 import { evaluate, type CfnContext } from "../support/cfn-evaluate.js";
 import { brokerSettingsIn } from "../support/broker-names-template.js";
 import { customDomainDeployOrder } from "../../packages/cli/src/deploy/deploy-environment.js";
+import { serviceRoleWithSids } from "../support/deployed-service-role.js";
 import { skipLambdaBundling } from "../support/skip-bundling.js";
 
 skipLambdaBundling();
@@ -147,7 +148,7 @@ describe("what moves to the custom domain, and what stays on the API's own addre
 describe("the deploy role's grants for the custom domain (access stack)", () => {
   const statements = (json: Json) => {
     const role = resourcesOf(json, "AWS::IAM::Role").find(([id]) => id === "CloudFormationServiceRole")![1];
-    return (role.Properties.Policies as Array<{ PolicyDocument: { Statement: unknown[] } }>)[0]!.PolicyDocument.Statement;
+    return serviceRoleWithSids((role.Properties.Policies as Array<{ PolicyDocument: { Statement: Array<Record<string, unknown>> } }>)[0]!.PolicyDocument.Statement);
   };
   /** The custom domain's statements as the role has them for these parameter values (an Fn::If that holds NoValue grants nothing). */
   const granted = (json: Json, parameters: Record<string, string>) => statements(json)

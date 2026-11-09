@@ -246,7 +246,6 @@ exports[`named environment templates > agentx-staging-access is unchanged 1`] = 
                   ],
                   "Effect": "Allow",
                   "Resource": "*",
-                  "Sid": "Services",
                 },
                 {
                   "Action": [
@@ -256,7 +255,6 @@ exports[`named environment templates > agentx-staging-access is unchanged 1`] = 
                   "Resource": {
                     "Fn::Sub": "arn:\${AWS::Partition}:events:\${AWS::Region}:\${AWS::AccountId}:rule/agentx-staging-*-service-failures",
                   },
-                  "Sid": "EcsFailureEventsRule",
                 },
                 {
                   "Action": [
@@ -292,7 +290,6 @@ exports[`named environment templates > agentx-staging-access is unchanged 1`] = 
                       ],
                     ],
                   },
-                  "Sid": "AppSyncEvents",
                 },
                 {
                   "Action": [
@@ -308,7 +305,6 @@ exports[`named environment templates > agentx-staging-access is unchanged 1`] = 
                   },
                   "Effect": "Allow",
                   "Resource": "*",
-                  "Sid": "AppSyncEventsCreate",
                 },
                 {
                   "Action": [
@@ -321,7 +317,6 @@ exports[`named environment templates > agentx-staging-access is unchanged 1`] = 
                   },
                   "Effect": "Allow",
                   "Resource": "*",
-                  "Sid": "CloudFrontDistributionCreate",
                 },
                 {
                   "Action": [
@@ -334,7 +329,6 @@ exports[`named environment templates > agentx-staging-access is unchanged 1`] = 
                   },
                   "Effect": "Allow",
                   "Resource": "*",
-                  "Sid": "CloudFrontDistributionTag",
                 },
                 {
                   "Action": [
@@ -368,7 +362,6 @@ exports[`named environment templates > agentx-staging-access is unchanged 1`] = 
                       ],
                     ],
                   },
-                  "Sid": "CloudFrontDistributions",
                 },
                 {
                   "Action": [
@@ -416,7 +409,6 @@ exports[`named environment templates > agentx-staging-access is unchanged 1`] = 
                       ],
                     },
                   ],
-                  "Sid": "CloudFrontPolicies",
                 },
                 {
                   "Action": [
@@ -430,7 +422,6 @@ exports[`named environment templates > agentx-staging-access is unchanged 1`] = 
                   ],
                   "Effect": "Allow",
                   "Resource": "*",
-                  "Sid": "CloudFrontUnscoped",
                 },
                 {
                   "Action": [
@@ -461,7 +452,6 @@ exports[`named environment templates > agentx-staging-access is unchanged 1`] = 
                       ],
                     ],
                   },
-                  "Sid": "CloudFrontKeepEnvironmentTag",
                 },
                 {
                   "Action": [
@@ -477,7 +467,6 @@ exports[`named environment templates > agentx-staging-access is unchanged 1`] = 
                   },
                   "Effect": "Deny",
                   "Resource": "*",
-                  "Sid": "CloudFrontOnlyOwnEnvironmentTag",
                 },
                 {
                   "Action": [
@@ -497,6 +486,7 @@ exports[`named environment templates > agentx-staging-access is unchanged 1`] = 
                     "iam:PutRolePermissionsBoundary",
                     "iam:ListRolePolicies",
                     "iam:ListAttachedRolePolicies",
+                    "iam:PassRole",
                   ],
                   "Effect": "Allow",
                   "Resource": [
@@ -533,7 +523,6 @@ exports[`named environment templates > agentx-staging-access is unchanged 1`] = 
                       ],
                     },
                   ],
-                  "Sid": "IamRoles",
                 },
                 {
                   "Action": [
@@ -708,7 +697,6 @@ exports[`named environment templates > agentx-staging-access is unchanged 1`] = 
                       ],
                     },
                   ],
-                  "Sid": "IamFixedNameRolesNotYetCreated",
                 },
                 {
                   "Action": [
@@ -737,7 +725,6 @@ exports[`named environment templates > agentx-staging-access is unchanged 1`] = 
                       ],
                     ],
                   },
-                  "Sid": "IamInstanceProfiles",
                 },
                 {
                   "Action": [
@@ -769,7 +756,6 @@ exports[`named environment templates > agentx-staging-access is unchanged 1`] = 
                       ],
                     ],
                   },
-                  "Sid": "IamManagedPolicies",
                 },
                 {
                   "Action": [
@@ -830,7 +816,6 @@ exports[`named environment templates > agentx-staging-access is unchanged 1`] = 
                       ],
                     },
                   ],
-                  "Sid": "IamRequireBoundary",
                 },
                 {
                   "Action": [
@@ -871,7 +856,6 @@ exports[`named environment templates > agentx-staging-access is unchanged 1`] = 
                       ],
                     },
                   ],
-                  "Sid": "IamKeepBoundary",
                 },
                 {
                   "Action": [
@@ -894,48 +878,6 @@ exports[`named environment templates > agentx-staging-access is unchanged 1`] = 
                       },
                     ],
                   },
-                  "Sid": "IamKeepBoundaryPolicy",
-                },
-                {
-                  "Action": [
-                    "iam:PassRole",
-                  ],
-                  "Effect": "Allow",
-                  "Resource": [
-                    {
-                      "Fn::Join": [
-                        "",
-                        [
-                          "arn:",
-                          {
-                            "Ref": "AWS::Partition",
-                          },
-                          ":iam::",
-                          {
-                            "Ref": "AWS::AccountId",
-                          },
-                          ":role/agentx/staging/*",
-                        ],
-                      ],
-                    },
-                    {
-                      "Fn::Join": [
-                        "",
-                        [
-                          "arn:",
-                          {
-                            "Ref": "AWS::Partition",
-                          },
-                          ":iam::",
-                          {
-                            "Ref": "AWS::AccountId",
-                          },
-                          ":role/agentx-staging-img-create",
-                        ],
-                      ],
-                    },
-                  ],
-                  "Sid": "PassRoles",
                 },
                 {
                   "Action": [
@@ -968,7 +910,6 @@ exports[`named environment templates > agentx-staging-access is unchanged 1`] = 
                       ],
                     ],
                   },
-                  "Sid": "ServiceLinkedRoles",
                 },
                 {
                   "Action": [
@@ -996,7 +937,6 @@ exports[`named environment templates > agentx-staging-access is unchanged 1`] = 
                       ],
                     ],
                   },
-                  "Sid": "CognitoEmailServiceLinkedRole",
                 },
                 {
                   "Action": [
@@ -1024,7 +964,6 @@ exports[`named environment templates > agentx-staging-access is unchanged 1`] = 
                       ],
                     ],
                   },
-                  "Sid": "EcrTemplateServiceLinkedRole",
                 },
                 {
                   "Action": [
@@ -1051,7 +990,6 @@ exports[`named environment templates > agentx-staging-access is unchanged 1`] = 
                       ],
                     ],
                   },
-                  "Sid": "Budget",
                 },
                 {
                   "Action": [
@@ -1180,7 +1118,6 @@ exports[`named environment templates > agentx-staging-access is unchanged 1`] = 
                       ],
                     },
                   ],
-                  "Sid": "TeamRecordStorage",
                 },
                 {
                   "Action": [
@@ -1190,7 +1127,6 @@ exports[`named environment templates > agentx-staging-access is unchanged 1`] = 
                   ],
                   "Effect": "Allow",
                   "Resource": "*",
-                  "Sid": "TeamRecordLists",
                 },
               ],
               "Version": "2012-10-17",
@@ -6640,6 +6576,9 @@ exports[`named environment templates > agentx-staging-control-plane is unchanged
                     "DEVELOPER#*",
                   ],
                 },
+                "Null": {
+                  "dynamodb:LeadingKeys": "false",
+                },
               },
               "Effect": "Allow",
               "Resource": {
@@ -6769,6 +6708,9 @@ exports[`named environment templates > agentx-staging-control-plane is unchanged
                     "ORG#org_????????????????????",
                     "DEVELOPER_ORG#*",
                   ],
+                },
+                "Null": {
+                  "dynamodb:LeadingKeys": "false",
                 },
               },
               "Effect": "Allow",
