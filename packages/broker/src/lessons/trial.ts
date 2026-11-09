@@ -310,10 +310,10 @@ export async function promoteIfStable(deps: StableDeps, key: ScopeKey, lessonId:
 
 /**
  * Moves every trial lesson that earned it to stable. Idempotent and bounded; returns the ids moved. For the nightly pass (a lesson that is not loaded again would otherwise wait for a load). `stop` is asked before
- * each lesson (the caller's time budget). The lessons are read a page at a time (`PROMOTE_PAGE`), so a large project is never read whole.
+ * each lesson (the caller's time budget); `skip` names lessons that are not moved (the nightly pass: a lesson a pending member card contradicts). The lessons are read a page at a time (`PROMOTE_PAGE`), so a large project is never read whole.
  */
 export const PROMOTE_PAGE = 100;
-export async function promoteStableTrials(deps: StableDeps, key: ScopeKey, limit = 200, stop?: () => boolean): Promise<string[]> {
+export async function promoteStableTrials(deps: StableDeps, key: ScopeKey, limit = 200, stop?: () => boolean, skip: ReadonlySet<string> = new Set()): Promise<string[]> {
   const moved: string[] = [];
   const now = deps.now();
   let after: string | undefined;
@@ -321,7 +321,7 @@ export async function promoteStableTrials(deps: StableDeps, key: ScopeKey, limit
     const page = await deps.store.listPage(key, { statuses: ["active"], limit: PROMOTE_PAGE, ...(after === undefined ? {} : { after }) });
     for (const lesson of page.lessons) {
       if (moved.length >= limit || stop?.() === true) return moved;
-      if (trialIsStable(lesson, now) && (await promoteIfStable(deps, key, lesson.id))) moved.push(lesson.id);
+      if (!skip.has(lesson.id) && trialIsStable(lesson, now) && (await promoteIfStable(deps, key, lesson.id))) moved.push(lesson.id);
     }
     after = page.next;
   } while (after !== undefined);
