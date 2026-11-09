@@ -52,19 +52,19 @@ async function waitingLessons(deps: EraseSweepDeps, key: ScopeKey, rows: readonl
 }
 
 /** Records what the sweep found on the repository's watch row, and only when it changed (an unreachable repository is recorded once). Best effort. */
-async function remember(deps: EraseSweepDeps, key: ScopeKey, place: SweepPlace, found: { unreachable: boolean; strayBranches: number }): Promise<void> {
+async function remember(deps: EraseSweepDeps, key: ScopeKey, place: SweepPlace, found: { unreachable: boolean; strayBranches: number; unconfirmed: number }): Promise<void> {
   const watch = place.watch;
   if (watch === undefined) return;
   const at = deps.now();
-  const { unreachableAt: _a, unreachableLessons: _l, triedAt: _t, strayBranches: _s, ...rest } = watch;
-  void _a; void _l; void _t; void _s;
-  let next: PrRow = { ...rest, ...(found.strayBranches > 0 ? { strayBranches: found.strayBranches } : {}) };
+  const { unreachableAt: _a, unreachableLessons: _l, triedAt: _t, strayBranches: _s, unconfirmedCloses: _u, ...rest } = watch;
+  void _a; void _l; void _t; void _s; void _u;
+  let next: PrRow = { ...rest, ...(found.strayBranches > 0 ? { strayBranches: found.strayBranches } : {}), ...(found.unconfirmed > 0 ? { unconfirmedCloses: found.unconfirmed } : {}) };
   if (found.unreachable) {
     const lessons = await waitingLessons(deps, key, place.rows);
     next = { ...next, unreachableAt: watch.unreachableAt ?? at, unreachableLessons: lessons, triedAt: at };
     if (watch.unreachableAt === undefined) deps.log?.("lessons_repo_file.repository_unreachable", { lessons });
   }
-  const same = watch.unreachableAt === next.unreachableAt && watch.unreachableLessons === next.unreachableLessons && watch.strayBranches === next.strayBranches && (!found.unreachable || watch.triedAt === next.triedAt);
+  const same = watch.unreachableAt === next.unreachableAt && watch.unreachableLessons === next.unreachableLessons && watch.strayBranches === next.strayBranches && watch.unconfirmedCloses === next.unconfirmedCloses && (!found.unreachable || watch.triedAt === next.triedAt);
   if (!same) await deps.rows.putPr(key, next).catch(() => undefined);
 }
 
@@ -79,7 +79,7 @@ export async function sweepProject(runtime: RepoFileRuntime, key: ScopeKey, opti
       const retryAt = place.watch?.unreachableAt === undefined || place.watch.triedAt === undefined ? 0 : place.watch.triedAt + UNREACHABLE_RETRY_MS;
       if (options.hook !== true && deps.now() < retryAt) { counts.skipped += 1; continue; }
       const result: EraseSweepResult = place.target === undefined
-        ? { closed: 0, removalOpened: false, failures: 1, unreachable: true, strayBranches: 0 }
+        ? { closed: 0, removalOpened: false, failures: 1, unreachable: true, strayBranches: 0, unconfirmed: 0 }
         : await sweepErasures(deps, key, place.target, { former: place.former });
       counts.closed += result.closed;
       counts.failures += result.failures;

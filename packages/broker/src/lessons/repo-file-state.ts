@@ -65,6 +65,8 @@ export const PrRowSchema = z.object({
    */
   repoUrl: z.string().min(1).max(500).optional(), repoName: z.string().min(1).max(200).optional(),
   unreachableAt: z.number().optional(), unreachableLessons: z.number().int().min(0).optional(), triedAt: z.number().optional(), strayBranches: z.number().int().min(0).optional(),
+  /** How many open Rovara pull requests the last sweep did NOT close because the host could not show them or did not say Rovara made them. */
+  unconfirmedCloses: z.number().int().min(0).optional(),
   /** A removal pull request: the fingerprint of the default branch's file it was made from. A different file now means it is out of date (closed and made again). */
   fileHash: z.string().max(40).optional(),
 }).strict();
@@ -102,6 +104,8 @@ export const RepoFileStateSchema = z.object({
   declined: z.array(Id).max(MAX_DECLINED),
   held: z.array(Id).max(MAX_RENDERED),
   unmerged: z.number().int().min(0),
+  /** Closings the last pass did NOT make because the pull request could not be read or confirmed as Rovara's (they wait; shown on the status). */
+  closesHeld: z.number().int().min(0).optional(),
   lastPassAt: z.number().optional(),
   open: OpenPrSchema.optional(),
   /** A branch Rovara decided on before it wrote, with the heads Rovara put on it (the base it was made at, and its own commit once written): it is deleted only while it is at one of them. */

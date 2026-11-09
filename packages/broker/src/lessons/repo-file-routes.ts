@@ -39,6 +39,10 @@ export async function repoFileStatus(runtime: RepoFileRuntime, key: ScopeKey): P
   });
   const watches = listed.filter((r) => r.kind === "watch");
   const unreachable = watches.filter((w) => w.unreachableAt !== undefined).map((w) => ({ repo: w.repoName ?? w.place, lessons: w.unreachableLessons ?? 0 }));
+  // Closes that were held back: the sweep's count (watch row) and the pass's (state), by repository.
+  const held = new Map<string, number>();
+  for (const w of watches) if ((w.unconfirmedCloses ?? 0) > 0) held.set(w.repoName ?? w.place, (held.get(w.repoName ?? w.place) ?? 0) + (w.unconfirmedCloses ?? 0));
+  for (const state of states) if ((state.closesHeld ?? 0) > 0) held.set(state.name, (held.get(state.name) ?? 0) + (state.closesHeld ?? 0));
   const stray = watches.filter((w) => (w.strayBranches ?? 0) > 0).map((w) => ({ repo: w.repoName ?? w.place, branches: w.strayBranches ?? 0 }));
   return {
     lessonsOff: !modeAllows(resolved.mode, "load"),
@@ -46,6 +50,7 @@ export async function repoFileStatus(runtime: RepoFileRuntime, key: ScopeKey): P
     repos: rows,
     ...(unreachable.length === 0 ? {} : { unreachable }),
     ...(stray.length === 0 ? {} : { strayBranches: stray }),
+    ...(held.size === 0 ? {} : { closesHeld: [...held].map(([repo, count]) => ({ repo, count })) }),
     available: targets.filter((target) => !shownPlaces.has(target.place) && canWrite(target)).map((target) => target.name),
   };
 }

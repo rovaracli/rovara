@@ -20,7 +20,7 @@ import type { LessonAuditSink } from "./ports.js";
 import { mentionsLessonsFile, pointerTargets, withPointer, type PointerPath } from "./repo-file-pointer.js";
 import { planRepoFile, type RepoFilePlan } from "./repo-file-plan.js";
 import { parseLessonsFile, textHash } from "./repo-file-format.js";
-import { Unconfirmed, freshBranchName, headOf, readOwnPr, repositoryIdOfPlace, verifyRepository, watchRowOf, type RepoFileTarget } from "./repo-file-host.js";
+import { Unconfirmed, freshBranchName, guardTarget, headOf, readOwnPr, repositoryIdOfPlace, verifyRepository, watchRowOf, type RepoFileTarget } from "./repo-file-host.js";
 import { prBody, prTitle } from "./repo-file-pr.js";
 import { MAX_DECLINED, MAX_RENDERED, StateFull, StateUnreadable, additionsPaused, appendOrMark, boundedAppend, provisionalNumber, type OpenPr, type PrRow, type PrRowStore, type RepoFileState, type RepoFileStore } from "./repo-file-state.js";
 import type { LessonStore, ScopeKey } from "./store.js";
@@ -92,10 +92,15 @@ const carriedBy = (open: OpenPr): string[] => [...Object.keys(open.added), ...Ob
  * lessons it carried (never dropped from tracking, and never handed over if it carries erased text: that one is closed). DELETING a branch needs proof it is Rovara's own (review M1): the head is read again right before the
  * delete and the branch goes only while it is still the head Rovara left; a head that cannot be read is not known to be Rovara's, so nothing is deleted and the entry is tried again a few times.
  */
-export async function finishClosings(deps: RepoFileDeps, key: ScopeKey, target: RepoFileTarget, state: RepoFileState): Promise<RepoFileState> {
+export async function finishClosings(deps: RepoFileDeps, key: ScopeKey, rawTarget: RepoFileTarget, state: RepoFileState): Promise<RepoFileState> {
+  const target = guardTarget(rawTarget);
   let current = state;
   const { host, repository, scope } = target;
-  if (current.pending === undefined && current.closing.length === 0) return current;
+  if (current.pending === undefined && current.closing.length === 0) {
+    // Nothing is left to close: a count of closes held back from earlier is cleared.
+    if ((current.closesHeld ?? 0) === 0) return current;
+    try { return await commit(deps, key, current, (s) => without(s, "closesHeld")); } catch (error) { if (error instanceof Abort) throw error; return current; }
+  }
   // THE FIRST CHECK, before any close or delete: the repository at this address is the one the place pins. If it is not (or cannot be asked), nothing is touched; the entries wait.
   if (!(await verifyRepository(target)).ok) return current;
   if (current.pending !== undefined) {
@@ -116,6 +121,7 @@ export async function finishClosings(deps: RepoFileDeps, key: ScopeKey, target: 
       }
     } catch (error) { if (error instanceof Abort) throw error; deps.log?.("lessons_repo_file.pending_cleanup_failed", {}); }
   }
+  let held = 0;
   for (const entry of [...current.closing]) {
     const same = (c: { branch: string; number?: string | undefined }): boolean => c.branch === entry.branch && c.number === entry.number;
     const replace = async (next: typeof entry | undefined): Promise<void> => { current = await commit(deps, key, current, (s) => ({ ...s, closing: next === undefined ? s.closing.filter((c) => !same(c)) : s.closing.map((c) => (same(c) ? next : c)) })); };
@@ -163,14 +169,20 @@ export async function finishClosings(deps: RepoFileDeps, key: ScopeKey, target: 
       await replace(undefined);
     } catch (error) {
       if (error instanceof Abort) throw error;
+      // A pull request that could not be read or confirmed as Rovara's was not closed: counted, so the status says so.
+      if (error instanceof Unconfirmed) held += 1;
       deps.log?.("lessons_repo_file.close_failed", {});
     }
+  }
+  if (held !== (current.closesHeld ?? 0)) {
+    try { current = await commit(deps, key, current, (s) => (held === 0 ? without(s, "closesHeld") : { ...s, closesHeld: held })); } catch (error) { if (error instanceof Abort) throw error; }
   }
   return current;
 }
 
 /** Switching a repository off: the open pull request and its branch come down (when they are still Rovara's own), nothing more is proposed, the merged file stays. Returns the saved state. */
-export async function switchRepoFileOff(deps: RepoFileDeps, key: ScopeKey, target: RepoFileTarget, state: RepoFileState): Promise<RepoFileState> {
+export async function switchRepoFileOff(deps: RepoFileDeps, key: ScopeKey, rawTarget: RepoFileTarget, state: RepoFileState): Promise<RepoFileState> {
+  const target = guardTarget(rawTarget);
   let current = await commit(deps, key, state, { enabled: false });
   if (current.open !== undefined) {
     const open = current.open;
@@ -190,7 +202,8 @@ function mergedState(state: RepoFileState, open: OpenPr): RepoFileState {
 /**
  * One weekly pass for one repository. Never throws: a fault is a `problem` code on the state (shown in the status) and the pass tries again at the next night. `force` skips only the "one a week" gate.
  */
-export async function runRepoFilePass(deps: RepoFileDeps, key: ScopeKey, target: RepoFileTarget, options: { force?: boolean } = {}): Promise<PassResult> {
+export async function runRepoFilePass(deps: RepoFileDeps, key: ScopeKey, rawTarget: RepoFileTarget, options: { force?: boolean } = {}): Promise<PassResult> {
+  const target = guardTarget(rawTarget);
   const { host } = target;
   // Decision 47: while lessons are off (the install's switch, the project's mode) nothing is delivered: no pull request, no close, no read.
   const learning = await resolveLearning(deps.settings, key.workspaceId, key.project);
@@ -217,6 +230,8 @@ export async function runRepoFilePass(deps: RepoFileDeps, key: ScopeKey, target:
     await deps.state.put(key, { ...state, problem: "host_cannot_write" }, state.revision).catch(() => undefined);
     return { status: "problem", problem: "host_cannot_write" };
   }
+  // THE FIRST CHECK, before the pass reads a pull request or saves anything: the repository at this address is the one the place pins. If not, nothing at all is done (the erasure sweep records the repository as not reachable).
+  if (!(await verifyRepository(target)).ok) return { status: "problem", problem: "repository_unreadable" };
   try {
     state = await commit(deps, key, state, (s) => ({ ...without(s, "problem") as RepoFileState, lease: { holder: deps.holder, until: started + LEASE_MS } }));
   } catch { return { status: "skipped", reason: "busy" }; }

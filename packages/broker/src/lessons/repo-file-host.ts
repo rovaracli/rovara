@@ -36,17 +36,57 @@ export function watchRowOf(target: Pick<RepoFileTarget, "place" | "name" | "repo
 /** The repository id a place pins (`github:repo/123` pins `123`), or undefined for a place of any other shape. */
 export const repositoryIdOfPlace = (place: string): string | undefined => /^[a-z][a-z0-9-]*:repo\/([^/\s]+)$/u.exec(place)?.[1];
 
-/**
- * THE FIRST CHECK before any host action on a repository (a read of its file, a branch, a pull request, a delete): the repository that answers at the target's address must BE the one the place pins. Every host call is addressed by
- * owner and name, and an address can come to hold another repository (the old one deleted or renamed, a new one given the name), so the id in the place is compared with the id the host reports. A mismatch, a repository the host
- * will not describe, or a place that pins no id is "not reachable": nothing is read from it and nothing is written to it.
- */
-export async function verifyRepository(target: RepoFileTarget): Promise<{ ok: true; identity: RepositoryIdentity & { defaultBranch: string } } | { ok: false }> {
+type Verified = { ok: true; identity: RepositoryIdentity & { defaultBranch: string } } | { ok: false };
+
+async function verifyRaw(target: RepoFileTarget): Promise<Verified> {
   let identity: RepositoryIdentity | undefined;
   try { identity = await target.host.repositoryIdentity(target.repository, target.scope); } catch { return { ok: false }; }
   const pinned = repositoryIdOfPlace(target.place);
   if (identity === undefined || identity.defaultBranch === undefined || pinned === undefined || String(identity.id) !== pinned) return { ok: false };
   return { ok: true, identity: { ...identity, defaultBranch: identity.defaultBranch } };
+}
+
+/** The verdicts of guarded hosts, by the guarded host: one identity read per guarded target. */
+const verdicts = new WeakMap<object, () => Promise<Verified>>();
+
+/** The host refused to act because the repository at its address is not the one the place pins. */
+export class RepositoryMismatch extends Error {
+  constructor() { super("the repository at this address is not the one this place pins"); this.name = "RepositoryMismatch"; }
+}
+
+/**
+ * THE FIRST CHECK before any host action on a repository (a read of its file, a branch, a pull request, a delete): the repository that answers at the target's address must BE the one the place pins. Every host call is addressed by
+ * owner and name, and an address can come to hold another repository (the old one deleted or renamed, a new one given the name), so the id in the place is compared with the id the host reports. A mismatch, a repository the host
+ * will not describe, or a place that pins no id is "not reachable": nothing is read from it and nothing is written to it.
+ * A guarded target (see `guardTarget`) answers from the one read it made.
+ */
+export function verifyRepository(target: RepoFileTarget): Promise<Verified> {
+  const guarded = verdicts.get(target.host);
+  return guarded === undefined ? verifyRaw(target) : guarded();
+}
+
+/**
+ * STRUCTURE, NOT DISCIPLINE: the target with its host wrapped so that no call but `repositoryIdentity` reaches the host until the repository's id has been checked against the place's (once per guarded target). On a mismatch every
+ * call fails with `RepositoryMismatch` and the host is not called. Every exported function of the lessons file code that takes a `RepoFileTarget` guards it first (a test enumerates them), so a path added later cannot skip the check.
+ * Capability checks (`host.deleteBranch !== undefined`) see the host's own methods.
+ */
+export function guardTarget(target: RepoFileTarget): RepoFileTarget {
+  if (verdicts.has(target.host)) return target;
+  const raw = target.host;
+  let verdict: Promise<Verified> | undefined;
+  const check = (): Promise<Verified> => (verdict ??= verifyRaw({ ...target, host: raw }));
+  const host = new Proxy(raw, {
+    get(inner, property) {
+      const value: unknown = Reflect.get(inner, property, inner);
+      if (typeof value !== "function" || property === "repositoryIdentity") return value;
+      return async (...args: unknown[]): Promise<unknown> => {
+        if (!(await check()).ok) throw new RepositoryMismatch();
+        return (value as (...a: unknown[]) => unknown).apply(inner, args);
+      };
+    },
+  });
+  verdicts.set(host, check);
+  return { ...target, host };
 }
 
 /** The host says there is no such pull request (GitHub: HTTP 404 on the lookup). A failure of any other kind is not "gone". */

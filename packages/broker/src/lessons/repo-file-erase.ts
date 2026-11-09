@@ -12,7 +12,7 @@
 import { randomBytes } from "node:crypto";
 import { LESSON_FILE_MAX_BYTES, LESSON_FILE_PATH } from "@agentx/contracts";
 import { applyFileChanges, parseLessonsFile, textHash } from "./repo-file-format.js";
-import { Unconfirmed, freshBranchName, headOf, readOwnPr, verifyRepository, watchRowOf, type RepoFileTarget } from "./repo-file-host.js";
+import { Unconfirmed, freshBranchName, guardTarget, headOf, readOwnPr, verifyRepository, watchRowOf, type RepoFileTarget } from "./repo-file-host.js";
 import { requireAudit } from "./policy.js";
 import type { LessonAuditSink } from "./ports.js";
 import { isProvisional, provisionalNumber, type PrRow, type PrRowStore } from "./repo-file-state.js";
@@ -31,8 +31,8 @@ export interface EraseSweepDeps {
 export function sweepDepsOf(deps: { store: Pick<LessonStore, "goneOf">; state: PrRowStore; rows?: PrRowStore; audit: LessonAuditSink; now(): number; randomHex?(): string; log?(event: string, fields: Record<string, string | number>): void }): EraseSweepDeps {
   return { store: deps.store, rows: deps.rows ?? deps.state, audit: deps.audit, now: () => deps.now(), randomHex: () => deps.randomHex?.() ?? randomBytes(6).toString("hex"), log: (event, fields) => deps.log?.(event, fields) };
 }
-/** What one repository's sweep did. `unreachable`: the host would not let Rovara read the repository at all (an uninstalled app, a repository that is gone). `strayBranches`: Rovara branches the host cannot match to a pull request. */
-export interface EraseSweepResult { closed: number; removalOpened: boolean; failures: number; unreachable: boolean; strayBranches: number }
+/** What one repository's sweep did. `unreachable`: the host would not let Rovara read the repository at all (an uninstalled app, a repository that is gone). `strayBranches`: Rovara branches the host cannot match to a pull request. `unconfirmed`: open pull requests that were NOT closed because the host could not show them or did not say Rovara made them (shown on the status, tried again). */
+export interface EraseSweepResult { closed: number; removalOpened: boolean; failures: number; unreachable: boolean; strayBranches: number; unconfirmed: number }
 
 /** A closed pull request's row is kept this long, so one a person reopens is found and closed again. */
 export const CLOSED_ROW_KEEP_MS = 90 * 86_400_000;
@@ -109,7 +109,7 @@ async function closeErasedAdds(deps: EraseSweepDeps, key: ScopeKey, target: Repo
   for (const row of adds) {
     if (!row.ids.some((id) => gone.has(id))) continue;
     kept.add(row.number);
-    try { if (await closeRow(deps, key, target, row, "erased") && row.closedAt === undefined) result.closed += 1; } catch { result.failures += 1; deps.log?.("lessons_repo_file.erase_close_failed", {}); }
+    try { if (await closeRow(deps, key, target, row, "erased") && row.closedAt === undefined) result.closed += 1; } catch (error) { result.failures += 1; if (error instanceof Unconfirmed) result.unconfirmed += 1; deps.log?.("lessons_repo_file.erase_close_failed", {}); }
   }
   return kept;
 }
@@ -146,7 +146,7 @@ async function removeErasedBlocks(deps: EraseSweepDeps, key: ScopeKey, target: R
     const read = row.branch === undefined ? { kind: "gone" as const } : await readOwnPr(target, row.number, row.branch).catch(() => undefined);
     const isOpen = read === undefined || (read.kind === "read" && read.details.state === "open" && read.ours !== false);
     if (matches && isOpen) { covered = true; continue; }
-    if (isOpen) { try { await closeRow(deps, key, target, row, "nothing_left"); } catch { result.failures += 1; } }
+    if (isOpen) { try { await closeRow(deps, key, target, row, "nothing_left"); } catch (error) { result.failures += 1; if (error instanceof Unconfirmed) result.unconfirmed += 1; } }
     else if (row.closedAt === undefined) await deps.rows.putPr(key, { ...row, closedAt: deps.now() }).catch(() => undefined);
   }
   if (inFile.length === 0 || covered) return;
@@ -198,8 +198,9 @@ export interface SweepOptions { former?: boolean }
  * One repository's erasure sweep. Each half runs on its own: a failure of one is counted and the other still runs. Never throws. The first thing it does is ask the host for the repository: when the host will not say (the app is
  * uninstalled, the repository is gone) the result says `unreachable` and nothing else is tried.
  */
-export async function sweepErasures(deps: EraseSweepDeps, key: ScopeKey, target: RepoFileTarget, options: SweepOptions = {}): Promise<EraseSweepResult> {
-  const result: EraseSweepResult = { closed: 0, removalOpened: false, failures: 0, unreachable: false, strayBranches: 0 };
+export async function sweepErasures(deps: EraseSweepDeps, key: ScopeKey, rawTarget: RepoFileTarget, options: SweepOptions = {}): Promise<EraseSweepResult> {
+  const target = guardTarget(rawTarget);
+  const result: EraseSweepResult = { closed: 0, removalOpened: false, failures: 0, unreachable: false, strayBranches: 0, unconfirmed: 0 };
   let rows: PrRow[];
   try { rows = (await deps.rows.listPrs(key)).rows.filter((row) => row.place === target.place); } catch { rows = []; result.failures += 1; deps.log?.("lessons_repo_file.erase_rows_unreadable", {}); }
   // A repository Rovara has never written to (no row of any kind) has nothing of its to take out: no host call.
@@ -210,7 +211,7 @@ export async function sweepErasures(deps: EraseSweepDeps, key: ScopeKey, target:
   const reachable = verified.identity;
   try { rows = await resolveProvisional(deps, key, target, rows, result); } catch { result.failures += 1; }
   if (options.former === true) {
-    try { result.closed += await closeRows(deps, key, target, rows.filter((row) => row.kind !== "removal"), "repository_left"); } catch { result.failures += 1; }
+    try { result.closed += await closeRows(deps, key, target, rows.filter((row) => row.kind !== "removal"), "repository_left", result); } catch { result.failures += 1; }
   }
   let keep = new Set<string>();
   try { keep = await closeErasedAdds(deps, key, target, rows, result); } catch { result.failures += 1; deps.log?.("lessons_repo_file.erase_sweep_failed", {}); }
@@ -226,17 +227,20 @@ export async function sweepErasures(deps: EraseSweepDeps, key: ScopeKey, target:
 }
 
 /** Closes the open Rovara pull requests among these rows. Returns how many it closed. */
-async function closeRows(deps: EraseSweepDeps, key: ScopeKey, target: RepoFileTarget, rows: readonly PrRow[], cause: string): Promise<number> {
+async function closeRows(deps: EraseSweepDeps, key: ScopeKey, target: RepoFileTarget, rows: readonly PrRow[], cause: string, result?: EraseSweepResult): Promise<number> {
   let closed = 0;
   for (const row of rows) {
     if (row.kind === "watch" || row.closedAt !== undefined || isProvisional(row)) continue;
-    try { if (await closeRow(deps, key, target, row, cause)) closed += 1; } catch { /* tried again by the next sweep */ }
+    try { if (await closeRow(deps, key, target, row, cause)) closed += 1; } catch (error) { if (result !== undefined && error instanceof Unconfirmed) result.unconfirmed += 1; /* tried again by the next sweep */ }
   }
   return closed;
 }
 
 /** A project is archived: every open Rovara pull request of the repository is closed (nothing is left in the customer's repository that Rovara can still take down). Independent of the publish state, like the sweep. */
-export async function closeAllRovaraPrs(deps: EraseSweepDeps, key: ScopeKey, target: RepoFileTarget): Promise<number> {
+export async function closeAllRovaraPrs(deps: EraseSweepDeps, key: ScopeKey, rawTarget: RepoFileTarget): Promise<number> {
+  const target = guardTarget(rawTarget);
+  // THE FIRST CHECK: the repository at this address is the one the place pins, or nothing is read from it, closed or deleted in it.
+  if (!(await verifyRepository(target)).ok) return 0;
   const listed = await deps.rows.listPrs(key).then((l) => l.rows.filter((row) => row.place === target.place), () => [] as PrRow[]);
   const rows = await resolveProvisional(deps, key, target, listed).catch(() => listed);
   return closeRows(deps, key, target, rows, "switched_off");

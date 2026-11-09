@@ -34,6 +34,8 @@ export const LESSON_FILE_PROBLEM_TEXT: Record<LessonFileProblem, string> = {
 export const unreachableRepoText = (repo: string, lessons: number): string => lessons > 0
   ? `Rovara can't reach ${repo} to remove ${String(lessons)} deleted ${lessons === 1 ? "lesson" : "lessons"}; it tries again every week`
   : `Rovara can't reach ${repo} to check it for deleted lessons; it tries again every week`;
+export const closesHeldText = (repo: string, count: number): string =>
+  `Rovara did not close ${String(count)} of its pull ${count === 1 ? "request" : "requests"} in ${repo} because the code host could not show ${count === 1 ? "it" : "them"} or did not say Rovara made ${count === 1 ? "it" : "them"}; it tries again`;
 export const strayBranchesText = (repo: string, branches: number): string =>
   `${String(branches)} ${branches === 1 ? "branch" : "branches"} Rovara made in ${repo} cannot be matched to a pull request on this code host, so they are not checked for deleted lessons`;
 
@@ -81,6 +83,8 @@ export const LessonsRepoFileStatusSchema = z.object({
   repos: z.array(LessonsRepoFileRowSchema).max(100),
   /** Repositories Rovara cannot reach (the app is uninstalled, the repository is gone or was removed from the project) while deleted lessons may still be in them: recorded once, tried again weekly. */
   unreachable: z.array(z.object({ repo: z.string().min(1).max(200), lessons: z.number().int().min(0) }).strict()).max(100).optional(),
+  /** Open Rovara pull requests that were NOT closed (or taken down) because the code host could not show them or did not say Rovara made them: counted, tried again. */
+  closesHeld: z.array(z.object({ repo: z.string().min(1).max(200), count: z.number().int().min(1) }).strict()).max(100).optional(),
   /** Branches Rovara made that the code host cannot match to a pull request, so Rovara cannot check them for deleted lessons. */
   strayBranches: z.array(z.object({ repo: z.string().min(1).max(200), branches: z.number().int().min(1) }).strict()).max(100).optional(),
   /** The repositories of the project with no row yet (not switched on), so a person can pick them. */

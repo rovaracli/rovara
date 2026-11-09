@@ -1,7 +1,7 @@
 // Lessons in the repo, lane R2, review round 4: the ERASURE SWEEP is independent of the publish state. It reads the default branch's file, the lesson store's tombstones, its own pull request rows and the code host, and nothing else.
 // The invariant at the bottom enumerates every way the publish state can fail and asserts the sweep still takes a gone block out in the same pass, for that repository and for another one in the same project.
 import { afterEach, describe, expect, it } from "vitest";
-import type { CodeHost } from "@agentx/contracts";
+import { closesHeldText, type CodeHost } from "@agentx/contracts";
 import { dynamoRepoFileStore } from "../../../packages/broker/src/lessons/dynamo-repo-file.js";
 import { applyFileChanges, parseLessonsFile, renderLessonsFile } from "../../../packages/broker/src/lessons/repo-file-format.js";
 import { closeProjectRovaraPrs, closeOpenPullRequestFor, repoFileAction, repoFileStatus, repositoriesChanged } from "../../../packages/broker/src/lessons/repo-file-routes.js";
@@ -943,5 +943,113 @@ describe("N11 (b): a pull request is closed only after it is read and confirmed 
     expect(w.host.open).toHaveLength(1);
     expect(noUpdates(w.host)).toEqual([]);
     expect((await w.current()).closing).toEqual([]);
+  });
+});
+
+// ---- round 9: archive and the pass check the id first; held closes are surfaced ----
+describe("archive and the pass check the repository id before any host action", () => {
+  it("R1: a removed repo with another repository at its address and the same file: no write, and no read past the identity, from the hook or archive", async () => {
+    const { w, runtime, project } = wired();
+    await w.seedLessons(repoLesson(X), repoLesson(Y));
+    await w.enable();
+    const r = await w.run();
+    w.host.merge(Number((r as { number: string }).number));
+    project.list = [];
+    const stranger = new FakeRepoHost();
+    stranger.repoId = "4242";
+    stranger.setFile("main", FILE, w.host.file("main", FILE));
+    runtime.reach = async (_ws, _p, former) => ({ ...w.target, place: former.place, repository: { url: former.url }, host: stranger as unknown as CodeHost });
+    await w.store.purge(w.key, X);
+    await closeOpenPullRequestFor(runtime, w.key, X);
+    expect(await closeProjectRovaraPrs(runtime, w.key)).toBe(0);
+    await repositoriesChanged(runtime, w.key);
+    expect(noUpdates(stranger)).toEqual([]);
+    expect(stranger.writes).toEqual([]);
+    expect(stranger.calls.filter((c) => c !== "repositoryIdentity")).toEqual([]);
+  });
+
+  it("A1: archive, with another repository at the address (a mirror kept Rovara's branch at the same head): no branch is deleted and no pull request is read", async () => {
+    const { w, runtime, rows } = wired();
+    await w.seedLessons(repoLesson(X));
+    await w.enable();
+    w.host.failCalls.add("reconcileChangeRequest");
+    await w.run();
+    w.host.failCalls.delete("reconcileChangeRequest");
+    expect(w.host.branchNames).toHaveLength(1);
+    expect((await rows.listPrs(w.key)).rows.some((row) => row.number.startsWith("~") && row.headRevision !== undefined)).toBe(true);
+    w.host.repoId = "9999";
+    w.clock.advance(DAY);
+    w.host.calls.length = 0;
+    expect(await closeProjectRovaraPrs(runtime, w.key)).toBe(0);
+    expect(w.host.writes.filter((x) => x.op === "delete")).toEqual([]);
+    expect(w.host.calls.filter((c) => c !== "repositoryIdentity")).toEqual([]);
+    // The right repository again: archive takes the idle branch down.
+    w.host.repoId = "1001";
+    await closeProjectRovaraPrs(runtime, w.key);
+    expect(w.host.branchNames).toHaveLength(0);
+  });
+
+  it("A2: the pass with the wrong id reads no pull request and saves nothing (no lease, no state change), then works again with the right id", async () => {
+    const w = passSetup();
+    await w.seedLessons(repoLesson(X));
+    await w.enable();
+    await w.run();
+    w.week();
+    const before = JSON.stringify(await w.current());
+    w.host.repoId = "9999";
+    w.host.calls.length = 0;
+    expect(await w.run({ force: true })).toEqual({ status: "problem", problem: "repository_unreadable" });
+    expect(w.host.calls).toEqual(["repositoryIdentity"]);
+    expect(JSON.stringify(await w.current())).toBe(before);
+    w.host.repoId = "1001";
+    expect((await w.run({ force: true })).status).not.toBe("problem");
+  });
+});
+
+describe("closes that were held back are surfaced on the status, in plain words, with a count", () => {
+  async function erased() {
+    const ctx = wired();
+    await ctx.w.seedLessons(repoLesson(X));
+    await ctx.w.enable();
+    await ctx.w.run();
+    await ctx.w.store.purge(ctx.w.key, X);
+    await ctx.w.deps.state.put(ctx.w.key, { ...(await ctx.w.current()) }, (await ctx.w.current()).revision);
+    return ctx;
+  }
+
+  it("the sweep: a pull request the host cannot show, or whose maker it does not say (the App's name could not be read), is counted on the status; it clears once the close is made", async () => {
+    const { w, runtime, rows } = await erased();
+    const raw = w.host.getChangeRequest.bind(w.host);
+    w.host.getChangeRequest = async (ref) => { const { authoredByRovara: _a, ...rest } = await raw(ref); void _a; return rest as never; };
+    await closeOpenPullRequestFor(runtime, w.key, X);
+    expect(w.host.open).toHaveLength(1);
+    expect((await rows.listPrs(w.key)).rows.find((row) => row.kind === "watch")!.unconfirmedCloses).toBe(1);
+    const status = await repoFileStatus(runtime, w.key);
+    expect(status.closesHeld).toEqual([{ repo: w.target.name, count: 1 }]);
+    expect(closesHeldText(w.target.name, 1)).toContain("did not close 1 of its pull request in api");
+    w.host.getChangeRequest = async () => { throw new Error("GitHub HTTP 502"); };
+    await closeOpenPullRequestFor(runtime, w.key, X);
+    expect((await repoFileStatus(runtime, w.key)).closesHeld).toEqual([{ repo: w.target.name, count: 1 }]);
+    w.host.getChangeRequest = raw;
+    await closeOpenPullRequestFor(runtime, w.key, X);
+    expect(w.host.open).toHaveLength(0);
+    expect((await repoFileStatus(runtime, w.key)).closesHeld).toBeUndefined();
+  });
+
+  it("the pass: a closing it could not confirm is counted on the state and the status, and cleared when it is made", async () => {
+    const w = passSetup();
+    await w.seedLessons(repoLesson(X));
+    await w.enable();
+    await w.run();
+    const runtime: RepoFileRuntime = { deps: w.deps, targets: async () => [w.target], newHolder: () => "n" };
+    w.host.failCalls.add("getChangeRequest");
+    await repoFileAction(runtime, w.key, { action: "off", repo: "api" });
+    expect((await w.current()).closesHeld).toBe(1);
+    expect((await repoFileStatus(runtime, w.key)).closesHeld).toEqual([{ repo: w.target.name, count: 1 }]);
+    w.host.failCalls.delete("getChangeRequest");
+    w.clock.advance(DAY);
+    await lessonsRepoFileJob(runtime, w.key.workspaceId, [w.key.project], 3_600_000, 0);
+    expect((await w.current()).closesHeld).toBeUndefined();
+    expect((await repoFileStatus(runtime, w.key)).closesHeld).toBeUndefined();
   });
 });
