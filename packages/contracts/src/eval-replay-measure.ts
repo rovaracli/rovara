@@ -139,7 +139,7 @@ export function loadedLessonDifference(rows: readonly ReplayRunRow[], a: string,
 // The report
 
 /** What learning cost an arm, over the whole replay: building its lesson snapshots (reflector, curator, judge, or the consolidation pass). `off` costs 0. */
-export interface ArmLearningCost { arm: string; usd: number; calls: number }
+export interface ArmLearningCost { arm: string; /** null: this arm's learning cost was not measured (a pipeline read as of a date, not run). */ usd: number | null; calls: number | null }
 export interface ArmLessonSet { arm: string; size: number; duplicates: number; contradictions: number }
 export interface ArmUsefulMarks { arm: string; size: number; marked: number; useful: number }
 /** The repeat-mistake metric's own check of the grader's flags (`sameMistakeTwice` over the arm's frozen lessons). */
@@ -217,7 +217,7 @@ export function buildMeasureReport(input: MeasureInput): MeasureReport {
     }),
     learningCost: comparison.arms.map((arm) => {
       const cost = costs.get(arm);
-      return { arm, usd: cost?.usd ?? null, calls: cost?.calls ?? null, projectDays: days, perProjectDay: cost === undefined ? null : cost.usd / days };
+      return { arm, usd: cost?.usd ?? null, calls: cost?.calls ?? null, projectDays: days, perProjectDay: cost?.usd === undefined || cost.usd === null ? null : cost.usd / days };
     }),
     runCost: comparison.arms.map((arm) => {
       const priced = input.rows.filter((row) => canonicalArm(row.arm) === arm && row.costUsd !== null);

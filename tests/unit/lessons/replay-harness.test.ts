@@ -33,6 +33,8 @@ const grader = (over: Partial<ReplayGraderPort> = {}): ReplayGraderPort & { seen
   return { identity: GRADER, seen, grade: async (request) => { seen.push(request); return { resolved: true, gradedBy: "hidden_tests", mistakes: [] }; }, ...over };
 };
 
+const go = (p: Parameters<typeof runReplay>[0], deps: Omit<Parameters<typeof runReplay>[1], "maxUsd"> & { maxUsd?: number }) => runReplay(p, { maxUsd: 100_000, ...deps });
+
 describe("the plan", () => {
   it("is every task x arm x repeat, 3 repeats, in time order, each marked as an eval run", () => {
     const p = plan(40);
@@ -85,7 +87,7 @@ describe("running", () => {
     const p = plan(40);
     const sink = new Sink();
     const log: Array<{ arm: string; learning: unknown }> = [];
-    const report = await runReplay(p, { executor: executor({}, log), grader: grader(), sink, priorCorrections: async () => [] });
+    const report = await go(p, { executor: executor({}, log), grader: grader(), sink, priorCorrections: async () => [] });
     expect(report).toMatchObject({ ran: 360, skipped: 0, ungraded: 0, stoppedBy: "done" });
     expect(report.costUsd).toBeCloseTo(144, 6);
     expect(sink.rows.size).toBe(360);
@@ -99,7 +101,7 @@ describe("running", () => {
   });
   it("the grader is blind: its request holds no arm, pipeline, memory setting or snapshot", async () => {
     const g = grader();
-    await runReplay(plan(40), { executor: executor(), grader: g, sink: new Sink(), priorCorrections: async () => [] });
+    await go(plan(40), { executor: executor(), grader: g, sink: new Sink(), priorCorrections: async () => [] });
     expect(g.seen.length).toBe(360);
     for (const request of g.seen) {
       expect(Object.keys(request).sort()).toEqual(["evidence", "priorCorrections", "repeat", "task"]);
@@ -111,62 +113,65 @@ describe("running", () => {
     const p = plan(40);
     const first = p.runs.slice(0, 10).map((r) => r.key);
     const sink = new Sink(first);
-    const report = await runReplay(p, { executor: executor(), grader: grader(), sink, priorCorrections: async () => [] });
+    const report = await go(p, { executor: executor(), grader: grader(), sink, priorCorrections: async () => [] });
     expect(report).toMatchObject({ ran: 350, skipped: 10 });
   });
-  it("stops at the cost cap, between runs", async () => {
-    const report = await runReplay(plan(40), { executor: executor(), grader: grader(), sink: new Sink(), priorCorrections: async () => [], costCapUsd: 1 });
-    expect(report.stoppedBy).toBe("cost_cap");
-    expect(report.ran).toBe(3);
+  it("--max-usd is a hard stop: never past the limit, and not before a run that could pass it; a run needs a limit", async () => {
+    const report = await go(plan(40), { executor: executor(), grader: grader(), sink: new Sink(), priorCorrections: async () => [], maxUsd: 1 });
+    expect(report.stoppedBy).toBe("max_usd");
+    expect(report.ran).toBe(2);
+    expect(report.costUsd).toBeLessThanOrEqual(1);
+    await expect(runReplay(plan(40), { executor: executor(), grader: grader(), sink: new Sink(), priorCorrections: async () => [], maxUsd: 0 })).rejects.toThrow(/maximum cost/);
+    await expect(runReplay(plan(40), { executor: executor(), grader: grader(), sink: new Sink(), priorCorrections: async () => [] } as never)).rejects.toThrow(/maximum cost/);
   });
   it("a run that fails is an ungraded row, and the replay goes on", async () => {
     let n = 0;
     const flaky: ReplayExecutor = { run: async () => { n += 1; if (n === 2) throw new Error("worker lost"); return okRun(); } };
     const sink = new Sink();
-    const report = await runReplay(plan(40), { executor: flaky, grader: grader(), sink, priorCorrections: async () => [], costCapUsd: 2 });
+    const report = await go(plan(40), { executor: flaky, grader: grader(), sink, priorCorrections: async () => [], maxUsd: 2 });
     expect(report.ungraded).toBe(1);
     const second = [...sink.rows.values()][1]!;
     expect(second).toMatchObject({ resolved: null, grader: null, gradedBy: null });
   });
   it("stops the whole replay when a task was not marked as an eval run", async () => {
     const sink = new Sink();
-    await expect(runReplay(plan(40), { executor: executor({ evalRunMarked: false }), grader: grader(), sink, priorCorrections: async () => [] })).rejects.toThrow(EvalMarkError);
+    await expect(go(plan(40), { executor: executor({ evalRunMarked: false }), grader: grader(), sink, priorCorrections: async () => [] })).rejects.toThrow(EvalMarkError);
     expect(sink.rows.size).toBe(0);
   });
   it("stops the whole replay when a replay made a learning call (decision 47)", async () => {
     const sink = new Sink();
-    await expect(runReplay(plan(40), { executor: executor({ learningCalls: 1 }), grader: grader(), sink, priorCorrections: async () => [] })).rejects.toThrow(ReplayLearningCallError);
+    await expect(go(plan(40), { executor: executor({ learningCalls: 1 }), grader: grader(), sink, priorCorrections: async () => [] })).rejects.toThrow(ReplayLearningCallError);
     expect(sink.rows.size).toBe(0);
   });
   it("refuses a grader that is not the plan's", async () => {
-    await expect(runReplay(plan(40), { executor: executor(), grader: grader({ identity: { model: "other", version: "v1" } }), sink: new Sink(), priorCorrections: async () => [] })).rejects.toThrow(GraderMismatchError);
+    await expect(go(plan(40), { executor: executor(), grader: grader({ identity: { model: "other", version: "v1" } }), sink: new Sink(), priorCorrections: async () => [] })).rejects.toThrow(GraderMismatchError);
   });
   it("a mistake that names a correction not given before the task makes the run ungraded", async () => {
     const lying = grader({ grade: async () => ({ resolved: true, gradedBy: "rubric", mistakes: ["made-up"] }) });
     const sink = new Sink();
-    await runReplay(plan(40), { executor: executor(), grader: lying, sink, priorCorrections: async () => ["c1"], costCapUsd: 0.5 });
+    await go(plan(40), { executor: executor(), grader: lying, sink, priorCorrections: async () => ["c1"], maxUsd: 0.5 });
     expect([...sink.rows.values()][0]).toMatchObject({ resolved: null });
     const honest = grader({ grade: async () => ({ resolved: false, gradedBy: "rubric", mistakes: ["c1", "c1"] }) });
     const sink2 = new Sink();
-    await runReplay(plan(40), { executor: executor(), grader: honest, sink: sink2, priorCorrections: async () => ["c1"], costCapUsd: 0.5 });
+    await go(plan(40), { executor: executor(), grader: honest, sink: sink2, priorCorrections: async () => ["c1"], maxUsd: 0.5 });
     expect([...sink2.rows.values()][0]).toMatchObject({ resolved: false, mistakes: ["c1"] });
   });
   it("a file or MCP arm refuses to run before anything runs, until its adapter is built (stubs, DECISIONS 50.5)", async () => {
     const p = buildReplayPlan({ tasks: tasks(40), arms: ["off", "file:current", "mcp:current", "on:current"], seed: "s", grader: GRADER, snapshots: snapshotsFor(tasks(40), ["current"]) });
     let ran = 0;
     const counting: ReplayExecutor = { run: async () => { ran += 1; return okRun(); } };
-    await expect(runReplay(p, { executor: counting, grader: grader(), sink: new Sink(), priorCorrections: async () => [] })).rejects.toThrow(ArmNotBuiltError);
-    await expect(runReplay(p, { executor: counting, grader: grader(), sink: new Sink(), priorCorrections: async () => [], deliveries: UNBUILT_DELIVERIES })).rejects.toThrow(/TODO: lane R2/);
+    await expect(go(p, { executor: counting, grader: grader(), sink: new Sink(), priorCorrections: async () => [] })).rejects.toThrow(ArmNotBuiltError);
+    await expect(go(p, { executor: counting, grader: grader(), sink: new Sink(), priorCorrections: async () => [], deliveries: UNBUILT_DELIVERIES })).rejects.toThrow(/TODO: lane R2/);
     expect(ran).toBe(0);
     const built = { file: { kind: "file" as const, built: true }, mcp: { kind: "mcp" as const, built: true } };
-    const report = await runReplay(p, { executor: counting, grader: grader(), sink: new Sink(), priorCorrections: async () => [], deliveries: built, costCapUsd: 1 });
+    const report = await go(p, { executor: counting, grader: grader(), sink: new Sink(), priorCorrections: async () => [], deliveries: built, maxUsd: 1 });
     expect(report.ran).toBeGreaterThan(0);
   });
   it("produces rows the report accepts, end to end", async () => {
     const sink = new Sink();
     let n = 0;
     const varied: ReplayExecutor = { run: async ({ run }) => { n += 1; return okRun({ loaded: run.arm === "on:current" ? ["a", "b"] : run.arm === "on:consolidated" ? ["c", "d"] : [] }); } };
-    await runReplay(plan(40), { executor: varied, grader: grader(), sink, priorCorrections: async () => [] });
+    await go(plan(40), { executor: varied, grader: grader(), sink, priorCorrections: async () => [] });
     const report = buildMeasureReport({ rows: [...sink.rows.values()], compare: { b: "on:current", c: "on:consolidated" }, projectDays: 20, learning: [], lessonSets: [] });
     expect(report.stopped).toBe(false);
     expect(report.results!.pairs).toBe(120);

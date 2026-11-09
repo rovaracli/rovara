@@ -12,6 +12,7 @@ const BROKER = join(ROOT, "packages/broker");
 
 /** Files that read the lesson store and hand nothing back to a viewer (they act on a lesson: count, curate, delete, expire, promote, process). */
 const INTERNAL_LESSON_FILES: Record<string, string> = {
+  "lessons/replay-asof.ts": "the operator replay harness (lane 7): reads the install's own lesson history for a frozen snapshot and returns it to the operator's script, never to a viewer; the loader's snapshot mode (not built yet) must keep the access checks",
   "lessons/counters.ts": "counts loads and outcomes on lessons; returns counters, never a lesson (feedback is gated: see recordFeedback)",
   "lessons/curate.ts": "merges drafts into lessons; returns the result to the pipeline",
   "lessons/deletion.ts": "withdraws and erases lessons; acts on them",

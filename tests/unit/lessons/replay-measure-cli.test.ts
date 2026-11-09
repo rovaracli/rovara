@@ -52,7 +52,7 @@ async function pipeline(sets: typeof DIFFERENT) {
   expect((await run(["select", "--candidates", f("candidates.json"), "--seed", "s1", "--target", "40", "--out", f("selection.json")])).code).toBe(0);
   expect((await run(["snapshots", "--selection", f("selection.json"), "--arms", arms, "--module", f("module.mjs"), "--out-dir", f("out")])).code).toBe(0);
   expect((await run(["plan", "--selection", f("selection.json"), "--arms", arms, "--seed", "s1", "--grader-model", "grader-model", "--grader-version", "v1", "--snapshots", f("out/snapshots.json"), "--out", f("plan.json")])).code).toBe(0);
-  const ran = await run(["run", "--plan", f("plan.json"), "--module", f("module.mjs"), "--corrections", f("corrections.json"), "--results", f("results.jsonl")]);
+  const ran = await run(["run", "--plan", f("plan.json"), "--module", f("module.mjs"), "--corrections", f("corrections.json"), "--results", f("results.jsonl"), "--max-usd", "1000"]);
   expect(ran.code).toBe(0);
   return { dir, f, ran };
 }
@@ -62,7 +62,7 @@ describe("the operator script", () => {
     const { f, ran } = await pipeline(DIFFERENT);
     expect(ran.out).toMatch(/ran 360 runs/);
     expect(readFileSync(f("results.jsonl"), "utf8").trim().split("\n")).toHaveLength(360);
-    const again = await run(["run", "--plan", f("plan.json"), "--module", f("module.mjs"), "--corrections", f("corrections.json"), "--results", f("results.jsonl")]);
+    const again = await run(["run", "--plan", f("plan.json"), "--module", f("module.mjs"), "--corrections", f("corrections.json"), "--results", f("results.jsonl"), "--max-usd", "1000"]);
     expect(again.out).toMatch(/ran 0 runs \(360 already recorded/);
   });
 
@@ -121,9 +121,20 @@ describe("the operator script", () => {
     const { f } = await pipeline(DIFFERENT);
     const arms = "off,on:current,file:current";
     expect((await run(["plan", "--selection", f("selection.json"), "--arms", arms, "--seed", "s1", "--grader-model", "grader-model", "--grader-version", "v1", "--snapshots", f("out/snapshots.json"), "--out", f("plan2.json")])).code).toBe(0);
-    const ran = await run(["run", "--plan", f("plan2.json"), "--module", f("module.mjs"), "--corrections", f("corrections.json"), "--results", f("results2.jsonl")]);
+    const ran = await run(["run", "--plan", f("plan2.json"), "--module", f("module.mjs"), "--corrections", f("corrections.json"), "--results", f("results2.jsonl"), "--max-usd", "1000"]);
     expect(ran.code).toBe(3);
     expect(ran.err).toMatch(/not built/);
+  });
+
+  it("the run step needs --max-usd and stops at it", async () => {
+    const { f } = await pipeline(DIFFERENT);
+    const base = ["run", "--plan", f("plan.json"), "--module", f("module.mjs"), "--corrections", f("corrections.json"), "--results", f("results-capped.jsonl")];
+    const missing = await run(base);
+    expect(missing.code).toBe(1);
+    expect(missing.err).toMatch(/--max-usd is required/);
+    const capped = await run([...base, "--max-usd", "0.35"]);
+    expect(capped.out).toMatch(/stopped by: max_usd/);
+    expect(readFileSync(f("results-capped.jsonl"), "utf8").trim().split("\n")).toHaveLength(3);
   });
 
   it("bad usage is refused with a message, not a crash", async () => {

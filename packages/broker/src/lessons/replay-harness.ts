@@ -130,8 +130,9 @@ export interface SnapshotResult {
   snapshotId: string;
   /** The pipeline's whole lesson set after this day, with simulated timestamps (createdAt/updatedAt at the day's end). */
   lessons: Lesson[];
-  costUsd: number;
-  calls: number;
+  /** null: the pipeline was read as of a date and its cost was not measured. */
+  costUsd: number | null;
+  calls: number | null;
 }
 export interface SnapshotBuilder { build(request: SnapshotRequest): Promise<SnapshotResult> }
 
@@ -145,7 +146,7 @@ export interface BuiltSnapshots {
 }
 
 /** Builds each pipeline's snapshot for each simulated day, in time order, each from the outcomes of tasks before that day. */
-export async function buildSnapshots(input: { tasks: readonly ReplayCandidate[]; arms: readonly string[]; builders: Record<string, SnapshotBuilder> }): Promise<BuiltSnapshots> {
+export async function buildSnapshots(input: { tasks: readonly ReplayCandidate[]; arms: readonly string[]; builders: Record<string, SnapshotBuilder>; /** A hard limit on what the builders may spend in all. */ maxUsd?: number }): Promise<BuiltSnapshots> {
   const tasks = [...input.tasks].sort((a, b) => a.at - b.at || (a.taskId < b.taskId ? -1 : 1));
   const days = [...new Set(tasks.map((t) => dayOf(t.at)))].sort();
   const arms = input.arms.map(canonicalArm);
@@ -154,14 +155,15 @@ export async function buildSnapshots(input: { tasks: readonly ReplayCandidate[];
   for (const pipeline of pipelines) {
     const builder = input.builders[pipeline];
     if (builder === undefined) throw new ArmNotBuiltError(`on:${pipeline}`, `no snapshot builder for pipeline ${pipeline}.`);
-    let usd = 0, calls = 0;
+    let usd: number | null = 0, calls: number | null = 0;
     out.snapshots[pipeline] = {};
     for (const day of days) {
       const historical = tasks.filter((t) => dayOf(t.at) < day);
       const built = await builder.build({ pipeline, day, learningCalls: "explicit", historical });
       out.snapshots[pipeline][day] = built.snapshotId;
-      usd += built.costUsd;
-      calls += built.calls;
+      usd = usd === null || built.costUsd === null ? null : usd + built.costUsd;
+      calls = calls === null || built.calls === null ? null : calls + built.calls;
+      if (input.maxUsd !== undefined && (usd ?? 0) > input.maxUsd) throw new RangeError(`Building the ${pipeline} snapshots cost more than --max-usd ${String(input.maxUsd)}. Stopped.`);
       out.finalLessons[pipeline] = built.lessons;
     }
     out.learning.push({ arm: `on:${pipeline}`, usd, calls });
@@ -208,9 +210,10 @@ export interface RunDeps {
   deliveries?: Partial<Record<"file" | "mcp", LessonDelivery>>;
   /** The ids of the historical corrections from before a task. */
   priorCorrections(task: ReplayCandidate): Promise<string[]>;
-  costCapUsd?: number;
+  /** A HARD limit (US dollars) on what the replay may spend: it stops before a run that could pass it. */
+  maxUsd: number;
 }
-export interface RunReport { ran: number; skipped: number; ungraded: number; costUsd: number; stoppedBy: "done" | "cost_cap" }
+export interface RunReport { ran: number; skipped: number; ungraded: number; costUsd: number; stoppedBy: "done" | "max_usd" }
 
 export async function runReplay(plan: ReplayPlan, deps: RunDeps): Promise<RunReport> {
   if (deps.grader.identity.model !== plan.grader.model || deps.grader.identity.version !== plan.grader.version) {
@@ -226,16 +229,23 @@ export async function runReplay(plan: ReplayPlan, deps: RunDeps): Promise<RunRep
   }
   const byTask = new Map(plan.tasks.map((t) => [t.taskId, t] as const));
   const done = deps.sink.done();
+  if (!Number.isFinite(deps.maxUsd) || deps.maxUsd <= 0) throw new RangeError("A replay run needs a positive maximum cost in US dollars (--max-usd).");
   const report: RunReport = { ran: 0, skipped: 0, ungraded: 0, costUsd: 0, stoppedBy: "done" };
+  let dearest = 0;
   for (const run of plan.runs) {
     if (done.has(run.key)) { report.skipped += 1; continue; }
-    if (deps.costCapUsd !== undefined && report.costUsd >= deps.costCapUsd) { report.stoppedBy = "cost_cap"; return report; }
+    // Hard stop: not past the limit, and not before a run that, if it cost as much as the dearest run so far, would pass it.
+    if (report.costUsd >= deps.maxUsd || report.costUsd + dearest > deps.maxUsd) { report.stoppedBy = "max_usd"; return report; }
     const task = byTask.get(run.task)!;
     const delivery = run.delivery === undefined ? undefined : deps.deliveries?.[run.delivery];
     let executed: ExecutedRun | undefined;
     try {
       executed = await deps.executor.run({ run, task, ...(delivery === undefined ? {} : { delivery }), learning: { lessonsSwitch: "off", calls: "none" } });
-    } catch { executed = undefined; }
+    } catch (error) {
+      // An unmarked task or a learning call ends the whole replay; any other fault is one ungraded run.
+      if (error instanceof EvalMarkError || error instanceof ReplayLearningCallError) throw error;
+      executed = undefined;
+    }
     if (executed !== undefined) {
       if (executed.evalRunMarked !== true) throw new EvalMarkError(run.key);
       if (executed.learningCalls !== 0) throw new ReplayLearningCallError(run.key);
@@ -245,6 +255,7 @@ export async function runReplay(plan: ReplayPlan, deps: RunDeps): Promise<RunRep
     if (executed === undefined) row = ungraded([], null);
     else {
       report.costUsd += executed.costUsd ?? 0;
+      dearest = Math.max(dearest, executed.costUsd ?? 0);
       try {
         const prior = await deps.priorCorrections(task);
         const graded = await deps.grader.grade({ task, repeat: run.repeat, evidence: executed.evidence, priorCorrections: prior });

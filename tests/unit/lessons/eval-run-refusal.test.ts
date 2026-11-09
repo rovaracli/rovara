@@ -9,6 +9,8 @@ import { taskKey, taskOwnerKey } from "../../../packages/broker/src/developer/ta
 import { isEvalRunMark } from "../../../packages/broker/src/lessons/eval-run.js";
 import { createHumanEditExtractor, type HumanEditExtractorDeps } from "../../../packages/broker/src/lessons/human-edit.js";
 import { recordTaskOutcome } from "../../../packages/broker/src/lessons/counters.js";
+import { reflectRepoOnly, type PlacedChangeRequest } from "../../../packages/broker/src/lessons/repo-reflect.js";
+import { newTaskFailureTally } from "../../../packages/broker/src/lessons/pause.js";
 import { reflectNightly } from "../../../packages/broker/src/lessons/reflect-nightly.js";
 import { reflectSubject } from "../../../packages/broker/src/lessons/reflect.js";
 import type { ProcessDeps } from "../../../packages/broker/src/lessons/process.js";
@@ -126,6 +128,32 @@ describe("the reflector itself", () => {
   });
 });
 
+describe("the repo-only reflection (R1b: comments and edits)", () => {
+  const PLACE = "github:repo/1001";
+  const change = (): PlacedChangeRequest => ({
+    place: PLACE, repository: "api", repositoryUrl: "https://github.com/acme/api", link: LINK, linkPrefix: "https://github.com/acme/api/pull/", revision: "9".repeat(40), mergeRevision: MERGED, merged: true, audience: { kind: "project" },
+    comments: [memberSpan("Use withRetry for HTTP retries in api, not a hand-rolled loop.", { kind: "pr_comment", eventId: "acme/api#pr7:review_comment11", authorId: "rae", scopes: [PLACE], audience: { kind: "project" }, paths: ["src/a.ts"] })],
+    edits: [memberSpan("A person changed src/a.ts, +1 -1:\n@@ -1 +1 @@\n-loop\n+await withRetry()", { kind: "human_edit", scopes: [PLACE], audience: { kind: "project" }, authorIds: ["ann"], sourceKey: "human_edit" })],
+  });
+  const main = (evalRun: boolean) => ({ kind: "task" as const, id: "task-1", workspaceId: WS, project: PROJECT, repositories: ["api"], baseCommit: BASE, mergedCommit: MERGED, outcome: "merged" as const, initiatorTrust: "member" as const, steeringTrust: ["member" as const], intentTrust: "member" as const, spans: [], ...(evalRun ? { evalRun: true } : {}) });
+  it("a marked task makes no repo-only call, for either kind; the same call on a real task is made (positive control)", async () => {
+    for (const kind of ["comments", "edits"] as const) {
+      const real = world();
+      expect(await reflectRepoOnly({ reflect: real.reflect, process: real.process, settings: real.configured }, main(false), [change()], newTaskFailureTally(), { kind }), kind).toMatchObject({ calls: 1 });
+      const marked = world();
+      expect(await reflectRepoOnly({ reflect: marked.reflect, process: marked.process, settings: marked.configured }, main(true), [change()], newTaskFailureTally(), { kind }), kind).toEqual({ calls: 0, drafts: 0 });
+      expect(marked.model.calls, kind).toEqual([]);
+      expect(marked.spend.asked, kind).toEqual([]);
+    }
+  });
+  it("the task-end run of a marked task carrying merged change requests makes no repo-only call either", async () => {
+    const w = world({ evalRun: true });
+    const deps = { ...w.deps, source: { read: async () => ({ ...w.base, repoChanges: [change()] }) } };
+    expect(await learnFromEndedTaskTyped(deps, { workspaceId: WS, taskId: "task-1" })).toEqual({ status: "eval_run", retry: false });
+    expect(w.model.calls).toEqual([]);
+  });
+});
+
 describe("the human-edit reflection", () => {
   const edit = {
     workspaceId: WS, project: PROJECT, repo: "acme/api", taskId: "task-1", pullRequest: { number: 7, url: LINK }, trust: "member" as const, authorCount: 1, authors: ["rae"],
@@ -162,6 +190,8 @@ describe("the outcome judge and the counters", () => {
 describe("every place a lesson model is called is accounted for", () => {
   // A new file that calls a learning model (a repo-only reflection, a consolidation pass) must be added here WITH its refusal of a marked task and a test above. The list is the checklist.
   const ACCOUNTED = {
+    "repo-reflect.ts": "the repo-only reflection (R1b, comments and edits): reflectRepoOnly returns first for a marked main subject, and its own subjects carry the mark",
+    "replay-grader.ts": "the replay's own grader model: it reads a finished replay run and writes nothing to the lessons, so it is not a learning call (it is the one model call that SHOULD see a replay run)",
     "reflect.ts": "the reflector: buildReflectorInput refuses evalRun before the request is built; every reflection (task end, human edit, nightly) goes through reflectSubject",
     "curate.ts": "the curator's judge: only receives drafts, and drafts come only from reflectSubject",
     "draft-retry.ts": "wraps the curator's judge; same drafts",

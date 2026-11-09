@@ -4,7 +4,7 @@
 //   npx tsx scripts/lessons-replay-measure.ts select      --candidates <file> --seed <text> [--target 50] [--per-repo-max 15] --out <selection.json>
 //   npx tsx scripts/lessons-replay-measure.ts snapshots   --selection <file> --arms off,on:current,on:consolidated --module <file> --out-dir <dir>
 //   npx tsx scripts/lessons-replay-measure.ts plan        --selection <file> --arms <list> --seed <text> --grader-model <m> --grader-version <v> --snapshots <dir>/snapshots.json --out <plan.json> [--small]
-//   npx tsx scripts/lessons-replay-measure.ts run         --plan <file> --module <file> --corrections <file> --results <results.jsonl> [--cost-cap <usd>]
+//   npx tsx scripts/lessons-replay-measure.ts run         --plan <file> --module <file> --corrections <file> --results <results.jsonl> --max-usd <usd>
 //   npx tsx scripts/lessons-replay-measure.ts blind-sheet --final-lessons <dir>/final-lessons.json --seed <text> --out-sheet <sheet.json> --out-key <key.json>
 //   npx tsx scripts/lessons-replay-measure.ts import-marks --key <key.json> --marks <marks.json> --out <marks-by-arm.json>
 //   npx tsx scripts/lessons-replay-measure.ts report      --results <results.jsonl> --plan <plan.json> --compare on:current,on:consolidated [--dir <dir of snapshots outputs>] [--marks <marks-by-arm.json>] [--corrections <file>] [--json] [--continue-anyway]
@@ -82,16 +82,16 @@ export async function main(argv: readonly string[], io: Io): Promise<number> {
         return 0;
       }
       case "snapshots": {
-        const o = options(rest, ["--selection", "--arms", "--module", "--out-dir"]);
+        const o = options(rest, ["--selection", "--arms", "--module", "--out-dir", "--max-usd"]);
         const tasks = (read(need(o, "--selection")) as { tasks: ReplayCandidate[] }).tasks;
         const mod = await loadModule(need(o, "--module"));
-        const built = await buildSnapshots({ tasks, arms: need(o, "--arms").split(","), builders: mod.builders ?? {} });
+        const built = await buildSnapshots({ tasks, arms: need(o, "--arms").split(","), builders: mod.builders ?? {}, ...(opt(o, "--max-usd") === undefined ? {} : { maxUsd: Number(opt(o, "--max-usd")) }) });
         const dir = need(o, "--out-dir");
         write(path.join(dir, "snapshots.json"), built.snapshots);
         write(path.join(dir, "learning.json"), built.learning);
         write(path.join(dir, "lesson-sets.json"), built.lessonSets);
         write(path.join(dir, "final-lessons.json"), Object.fromEntries(Object.entries(built.finalLessons).map(([pipeline, lessons]) => [`on:${pipeline}`, lessons])));
-        io.out(`built snapshots for ${String(Object.keys(built.snapshots).length)} pipelines; learning cost ${built.learning.map((c) => `${c.arm} $${c.usd.toFixed(2)}`).join(", ")}`);
+        io.out(`built snapshots for ${String(Object.keys(built.snapshots).length)} pipelines; learning cost ${built.learning.map((c) => `${c.arm} $${(c.usd ?? 0).toFixed(2)}`).join(", ")}`);
         return 0;
       }
       case "plan": {
@@ -106,15 +106,15 @@ export async function main(argv: readonly string[], io: Io): Promise<number> {
         return 0;
       }
       case "run": {
-        const o = options(rest, ["--plan", "--module", "--corrections", "--results", "--cost-cap"]);
+        const o = options(rest, ["--plan", "--module", "--corrections", "--results", "--max-usd"]);
         const plan = read(need(o, "--plan")) as ReplayPlan;
         const mod = await loadModule(need(o, "--module"));
         if (mod.executor === undefined || mod.grader === undefined) throw new Error("the --module must provide an executor and a grader (the staging executor is an operator step)");
         const corrections = correctionsFrom(need(o, "--corrections"));
-        const cap = opt(o, "--cost-cap");
+        const maxUsd = Number(need(o, "--max-usd"));
         const report = await runReplay(plan, {
           executor: mod.executor, grader: mod.grader, sink: jsonlSink(need(o, "--results")), ...(mod.deliveries === undefined ? {} : { deliveries: mod.deliveries }),
-          priorCorrections: async (task) => corrections.filter((c) => c.member && c.at < task.at && c.taskId !== task.taskId).map((c) => c.id), ...(cap === undefined ? {} : { costCapUsd: Number(cap) }),
+          priorCorrections: async (task) => corrections.filter((c) => c.member && c.at < task.at && c.taskId !== task.taskId).map((c) => c.id), maxUsd,
         });
         io.out(`ran ${String(report.ran)} runs (${String(report.skipped)} already recorded, ${String(report.ungraded)} ungraded), cost $${report.costUsd.toFixed(2)}, stopped by: ${report.stoppedBy}`);
         return 0;
