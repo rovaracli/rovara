@@ -4,7 +4,7 @@
 // request asks for health; building the probes calls nothing and parses nothing.
 import { DescribeAlarmsCommand, type DescribeAlarmsCommandOutput } from "@aws-sdk/client-cloudwatch";
 import { GetQueueAttributesCommand, type GetQueueAttributesCommandOutput } from "@aws-sdk/client-sqs";
-import { HEALTH_ALARM_CONDITIONAL_SUFFIXES, HEALTH_ALARM_SUFFIXES, MISSING_ALARM_STATE, type SlackAuthCheckResponse } from "@agentx/contracts";
+import { HEALTH_ALARM_CONDITIONAL_SUFFIXES, HEALTH_ALARM_SUFFIXES, HEALTH_ALARM_TEAM_RECORD_SUFFIXES, MISSING_ALARM_STATE, type SlackAuthCheckResponse } from "@agentx/contracts";
 import type { AdminHealthProbes } from "./admin-health.js";
 
 export interface HealthProbeInput {
@@ -20,6 +20,8 @@ export interface HealthProbeInput {
   deadLetterQueues?: string | undefined;
   slackAuthCheck?: (() => Promise<SlackAuthCheckResponse>) | undefined;
   github: { installationCount(): Promise<number> };
+  /** HEALTH-COND-1: the Team record's switch is on in this install, so its lessons worker and record alarms are required (a missing one is MISSING), not conditional. Default: off. */
+  teamRecordOn?: boolean | undefined;
   /** SRL-6: the team record's failure counters; absent where the record is off. */
   teamRecordFailures?: AdminHealthProbes["teamRecordFailures"] | undefined;
   log: (entry: Record<string, unknown>) => void;
@@ -39,7 +41,9 @@ const ALARM_NAMES_PER_CALL = 100;
 
 export function healthProbes(input: HealthProbeInput): AdminHealthProbes {
   const { alarmPrefix: prefix, alarmSuffixes: suffixes = HEALTH_ALARM_SUFFIXES, deadLetterQueues: queues } = input;
-  const conditional = new Set<string>(HEALTH_ALARM_CONDITIONAL_SUFFIXES);
+  // With the Team record on, its own alarms (Lessons*, TeamRecord*) exist and are required; every other conditional alarm stays optional.
+  const recordRequired = input.teamRecordOn === true ? new Set<string>(HEALTH_ALARM_TEAM_RECORD_SUFFIXES) : new Set<string>();
+  const conditional = new Set<string>(HEALTH_ALARM_CONDITIONAL_SUFFIXES.filter((suffix) => !recordRequired.has(suffix)));
   return {
     ...(input.release ? { release: input.release } : {}),
     // Issue 206: by exact name, never by prefix. CloudWatch authorizes a call that names its alarms
@@ -72,6 +76,7 @@ export function healthProbes(input: HealthProbeInput): AdminHealthProbes {
         // A listed alarm CloudWatch did not return was deleted, or never deployed: say so, rather
         // than let the route report fewer alarms as all clear. The throttling alarms exist only
         // on Bedrock, so their absence says nothing (and a deleted one on Bedrock goes unflagged).
+        // The Team record's alarms exist only with its switch on; with it on, a missing one is MISSING.
         const returned = new Set(found.map((alarm) => alarm.name));
         for (const [index, name] of listed.entries()) {
           if (!returned.has(name) && !conditional.has(suffixes[index] ?? "")) found.push({ name, state: MISSING_ALARM_STATE });

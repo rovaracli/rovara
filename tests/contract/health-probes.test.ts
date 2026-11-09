@@ -3,7 +3,7 @@
 import type { DescribeAlarmsCommand, DescribeAlarmsCommandOutput } from "@aws-sdk/client-cloudwatch";
 import type { GetQueueAttributesCommand, GetQueueAttributesCommandOutput } from "@aws-sdk/client-sqs";
 import { describe, expect, it } from "vitest";
-import { HEALTH_ALARM_CONDITIONAL_SUFFIXES, HEALTH_ALARM_SUFFIXES } from "@agentx/contracts";
+import { HEALTH_ALARM_CONDITIONAL_SUFFIXES, HEALTH_ALARM_SUFFIXES, HEALTH_ALARM_TEAM_RECORD_SUFFIXES } from "@agentx/contracts";
 import { healthProbes, type HealthProbeInput } from "../../packages/broker/src/aws/health-probes.js";
 import { createAdminReadBroker } from "../support/admin-read-broker.js";
 
@@ -64,6 +64,42 @@ describe("the broker's production health probes (A13)", () => {
     // A prefix listing is authorized against *, which the broker is not granted; named alarms are
     // authorized against their own ARNs, which its agentx-<env>-* grant covers.
     expect(alarmCalls).toStrictEqual([{ AlarmNames: HEALTH_ALARM_SUFFIXES.map((suffix) => `agentx-live25d-${suffix}`), AlarmTypes: ["MetricAlarm"], MaxRecords: 100 }]);
+  });
+
+  describe("HEALTH-COND-1: the Team record's switch decides whether its alarms are required", () => {
+    const record = [...HEALTH_ALARM_TEAM_RECORD_SUFFIXES].sort();
+    const otherConditional = HEALTH_ALARM_CONDITIONAL_SUFFIXES.filter((suffix) => !record.includes(suffix));
+    const missingNames = async (teamRecordOn: boolean | undefined, returned: string[] = []) => {
+      const { input } = fakes({ pages: [{ $metadata: {}, MetricAlarms: returned.map((suffix) => ({ AlarmName: `agentx-live25d-${suffix}`, StateValue: "OK" })) }] });
+      const found = await healthProbes({ ...input, alarmPrefix: "agentx-live25d-", ...(teamRecordOn === undefined ? {} : { teamRecordOn }) }).alarms?.();
+      return found!.filter((alarm) => alarm.state === "MISSING").map((alarm) => alarm.name.slice("agentx-live25d-".length));
+    };
+
+    it("names the lessons worker's three and the record's six, and nothing else", () => {
+      expect(record).toEqual(["LessonsReflectDeadLetters", "LessonsWorkerErrors", "LessonsWorkerThrottles", "TeamRecordEraseSweepFailed", "TeamRecordRedeliveryStateConflict", "TeamRecordRepoCheckNoTime", "TeamRecordRepoCheckRefused", "TeamRecordSweepProblem", "TeamRecordTombstoneFailed"]);
+      expect(otherConditional).toEqual(["BedrockThrottling", "ClassifierThrottling", "RuntimeRequalifyAgeUnreadable", "RuntimeRequalifyMachineFailures", "RuntimeRequalifyStale", "RuntimeRequalifyStepErrors"]);
+    });
+
+    it("with the record OFF (or not said), none of its alarms is reported missing, and neither is any other conditional one", async () => {
+      for (const teamRecordOn of [false, undefined]) {
+        const missing = await missingNames(teamRecordOn);
+        for (const suffix of HEALTH_ALARM_CONDITIONAL_SUFFIXES) expect(missing, suffix).not.toContain(suffix);
+        expect(missing.length).toBe(HEALTH_ALARM_SUFFIXES.length - HEALTH_ALARM_CONDITIONAL_SUFFIXES.length);
+      }
+    });
+
+    it("with the record ON, each of the nine is reported MISSING when CloudWatch does not return it", async () => {
+      const missing = await missingNames(true);
+      for (const suffix of record) expect(missing, suffix).toContain(suffix);
+      // The Bedrock-only and automatic-renewal alarms stay conditional.
+      for (const suffix of otherConditional) expect(missing, suffix).not.toContain(suffix);
+      expect(missing.length).toBe(HEALTH_ALARM_SUFFIXES.length - otherConditional.length);
+    });
+
+    it("with the record ON, an alarm CloudWatch returns is reported by its state, not as missing", async () => {
+      const missing = await missingNames(true, record.filter((suffix) => suffix !== "TeamRecordSweepProblem"));
+      expect(record.filter((suffix) => missing.includes(suffix))).toEqual(["TeamRecordSweepProblem"]);
+    });
   });
 
   it("reads every page of the named metric alarms, only when asked (issue 206)", async () => {
