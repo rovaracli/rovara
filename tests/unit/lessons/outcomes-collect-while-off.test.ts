@@ -1,7 +1,7 @@
 // Owner decision 47 (collect while off) for the outcomes judge: while the install's lessons switch is off, or cannot be read, a finished task with member comments makes NO judge call and NO model call, and no helpful mark is
 // queued. With the switch on the same task is judged as before. Two locks are tested apart: the capped mode in `recordTaskOutcome`, and the gated model inside `modelCorrectionJudge`.
 import { afterEach, describe, expect, it } from "vitest";
-import { recordTaskOutcome, type CounterDeps } from "../../../packages/broker/src/lessons/counters.js";
+import { recordTaskOutcome, REVERT_WINDOW_MS, settleHelpful, type CounterDeps } from "../../../packages/broker/src/lessons/counters.js";
 import { modelCorrectionJudge } from "../../../packages/broker/src/lessons/judge-model.js";
 import { LESSONS_SWITCHED_OFF } from "../../../packages/broker/src/lessons/model-gate.js";
 import { setLearnedLessonsGate } from "../../../packages/broker/src/lessons/policy.js";
@@ -33,7 +33,7 @@ async function setup(judge: CounterDeps["judge"], mode: "On" | "Suggest" = "On")
   await seed(store, lessonRecord({ expiresAt: clock.now() + 5 * 86_400_000 }));
   await store.putManifest(manifest("task-1"));
   const deps: CounterDeps = { store, judge, settings: settings({ mode }), audit: new Audit(), alerts: new Alerts(), now: clock.now };
-  return { deps, store };
+  return { deps, store, clock };
 }
 
 describe("recordTaskOutcome while the lessons switch is off", () => {
@@ -70,6 +70,32 @@ describe("recordTaskOutcome while the lessons switch is off", () => {
     await expect(judge.rate({ workspaceId: WS, project: PROJECT, lesson: lessonRecord(), correctionKind: "review_comment", correctionText: "x" })).rejects.toThrow();
     expect([model.quotes, model.calls.length]).toEqual([0, 0]);
     expect(LESSONS_SWITCHED_OFF).toContain("switched off");
+  });
+});
+
+describe("a revert while the lessons switch is off still takes back a queued helpful mark", () => {
+  it.each(offStates)("mark queued with the switch on, switch %s, task reverted: settle gives nothing, nothing is judged, and a late merged delivery queues nothing", async (_name, gate) => {
+    setLearnedLessonsGate(() => true);
+    const judge = new Judge("unrelated");
+    const { deps, store, clock } = await setup(judge);
+    expect((await recordTaskOutcome(deps, merged({ corrections: [] }))).queuedHelpful).toEqual(["les_aaaa1111"]);
+    const callsBefore = judge.calls;
+    setLearnedLessonsGate(gate);
+    expect(await recordTaskOutcome(deps, merged({ outcome: "reverted", corrections: [comment] }))).toEqual({ harmful: [], queuedHelpful: [] });
+    expect(judge.calls).toBe(callsBefore);
+    clock.advance(REVERT_WINDOW_MS + 1000);
+    expect(await settleHelpful(deps, KEY)).toBe(0);
+    expect((await store.get(KEY, "les_aaaa1111"))!.counters.helpful).toBe(0);
+    // Back on, a late merged delivery for the reverted task queues nothing.
+    setLearnedLessonsGate(() => true);
+    expect((await recordTaskOutcome(deps, merged({ corrections: [] }))).queuedHelpful).toEqual([]);
+  });
+
+  it("switch off, merged: no mark is queued (unchanged)", async () => {
+    setLearnedLessonsGate(() => false);
+    const { deps, store } = await setup(new Judge("unrelated"));
+    expect((await recordTaskOutcome(deps, merged({ corrections: [] }))).queuedHelpful).toEqual([]);
+    expect(await store.duePending(KEY, Number.MAX_SAFE_INTEGER, 10)).toEqual([]);
   });
 });
 

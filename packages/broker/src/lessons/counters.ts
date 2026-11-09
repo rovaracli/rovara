@@ -126,7 +126,16 @@ export async function recordTaskOutcome(deps: CounterDeps, outcome: TaskOutcome)
   const resolved = await resolveLearning(deps.settings, key.workspaceId, key.project);
   // Owner decision 47: while the install's lessons switch is off (or unreadable) `resolved.mode` is capped at Collect, which does not allow "load", so this returns before anything is judged or queued: no judge call, no spend, and no
   // helpful mark either (a mark without a judge that could have blamed the lesson would fail open). The judge's own model is gated as well (`judge-model.ts`), the second lock.
-  if (!modeAllows(resolved.mode, "load")) return result;
+  if (!modeAllows(resolved.mode, "load")) {
+    // A revert needs no model: while the switch is off it still takes back a helpful mark queued before (and remembers the revert, so a later "merged" delivery queues nothing), so a reverted task keeps no credit. Nothing is judged.
+    if (resolved.switchedOff && outcome.outcome === "reverted") {
+      for (const lessonId of reached(await deps.store.manifests(key, outcome.taskId))) {
+        await deps.store.removePending(key, `helpful:${outcome.taskId}:${lessonId}`);
+        await deps.store.markOnce(key, `reverted:${outcome.taskId}:${lessonId}`);
+      }
+    }
+    return result;
+  }
 
   const loaded = new Set<string>();
   for (const id of reached(await deps.store.manifests(key, outcome.taskId))) loaded.add(id);
