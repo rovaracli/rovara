@@ -259,17 +259,22 @@ describe("SRL-3: the optional backfill", () => {
 });
 
 describe("SRL-3: the backfill command", () => {
-  it("needs a table and a profile, refuses unknown or repeated options, and runs the backfill", async () => {
-    expect(() => parseBackfillArgs(["--profile", "p"])).toThrow(/--table/u);
-    expect(() => parseBackfillArgs(["--table", "State"])).toThrow(/--profile/u);
+  it("needs a table and a region, refuses unknown or repeated options, and runs the backfill", async () => {
+    expect(() => parseBackfillArgs(["--profile", "p"], {})).toThrow(/--table/u);
     expect(() => parseBackfillArgs(["--table", "State", "--profile", "p", "--region", "us-west-2", "--bogus", "1"])).toThrow(/unknown option/u);
     expect(() => parseBackfillArgs(["--table", "State", "--profile", "p", "--region", "us-west-2", "--table", "Other"])).toThrow(/twice/u);
     expect(() => parseBackfillArgs(["--table", "State", "--profile", "p", "--region", "us-west-2", "--max-ms", "soon"])).toThrow(/whole number/u);
     // L4: the region has no default (staging is us-west-2, this Mac defaults to us-east-1).
-    expect(() => parseBackfillArgs(["--table", "State", "--profile", "p"])).toThrow(/--region/u);
+    expect(() => parseBackfillArgs(["--table", "State", "--profile", "p"], {})).toThrow(/--region/u);
+    expect(() => parseBackfillArgs(["--table", "State"], {})).toThrow(/--region/u);
     expect(() => parseBackfillArgs(["--table", "State", "--profile", "p", "--region", "west"])).toThrow(/--region/u);
     const args = parseBackfillArgs(["--table", "State", "--profile", "p", "--region", "us-west-2"]);
     expect(args).toMatchObject({ table: "State", profile: "p", region: "us-west-2" });
+    // Under the release wrapper there is no --profile (the wrapper refuses it) and the region is in the environment.
+    const wrapped = parseBackfillArgs(["--table", "State"], { AWS_REGION: "us-west-2", AWS_PROFILE: "wrapper" });
+    expect(wrapped).toMatchObject({ table: "State", region: "us-west-2" });
+    expect(wrapped).not.toHaveProperty("profile");
+    expect(parseBackfillArgs(["--table", "State", "--region", "eu-west-1"], { AWS_REGION: "us-west-2" }).region).toBe("eu-west-1");
     const db = new FakeDynamoDb();
     seedTask(db);
     db.set({ pk: `ORG#${ORG_A}#OUTCOME#web#review`, sk: "SAMPLE#1", entityType: "OUTCOME_SAMPLE", orgId: ORG_A, taskId: TASK, pr: { repositoryId: "api", number: 7, mergeCommit: MERGE } });

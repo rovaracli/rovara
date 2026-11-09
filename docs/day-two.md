@@ -412,6 +412,47 @@ The API's own address never stops working, so there is no outage to undo. To tak
 
 An upgrade with operator credentials is not possible on a Rovara Cloud install (it is deployed with the cdk engine, which the operator role cannot use), so the access stack is never skipped on these upgrades.
 
+## Operator backfill scripts
+
+Two one-off scripts in this repository fix data written before a release. Both run from a checkout of the release's tag with `npx tsx`, send only the DynamoDB (and, for the first, Lambda) calls named below, print counts and never a name, and can be run again. Run them under the release wrapper, which sets the account, the region and the credentials itself and refuses `--profile` (`~/.local/share/rovara-tools/staging-aws.sh` for staging). Neither script needs `--profile`; the region comes from `--region` or `AWS_REGION`.
+
+### Erase the chosen names of people erased before 0.5.11 (required, 0.5.11)
+
+`scripts/backfill-erased-names.ts`. Required once per install after upgrading to 0.5.11 and before people are told they can pick a new name after an erase. Without it, a person erased before 0.5.11 who signs in again gets the name they chose back into their own "me" name and into invite and SSO emails.
+
+It finds everyone erased from the audit ledger (the `SUBJECT#<developer id>` tombstones in the audit keys table, the only record that still holds the id), then runs the broker's own `nameEraserOf(...).erase` for each: the name item in the State table becomes a tombstone with no name, and the sign-in function clears the name on the sign-in record. It leaves alone anyone already erased, and anyone who was erased and then chose a new name for a new membership. It sends only `Scan` and `BatchGetItem` (dry run), plus `PutItem`, `UpdateItem` and an invoke of the sign-in function (`--apply`).
+
+Dry run first (the default; writes nothing, lists counts and short hashes of ids):
+
+```sh
+~/.local/share/rovara-tools/staging-aws.sh npx tsx scripts/backfill-erased-names.ts \
+  --keys-table <audit keys table> --state-table <state table> --identity-function <sign-in function name>
+```
+
+Then write:
+
+```sh
+~/.local/share/rovara-tools/staging-aws.sh npx tsx scripts/backfill-erased-names.ts \
+  --keys-table <audit keys table> --state-table <state table> --identity-function <sign-in function name> --apply
+```
+
+The table names and function name can be set as `AUDIT_KEYS_TABLE_NAME`, `STATE_TABLE_NAME` and `DEVELOPER_IDENTITY_FUNCTION_NAME` instead (the names the broker uses; see the stack outputs and the broker's environment). `--no-sign-in` is for an install with no sign-in function.
+
+- The summary is one JSON line on stdout and a sentence on stderr: people found, `alreadyErased`, `rejoinedKept`, `toErase`, `erased`, `failed` and `failureCodes`. A second `--apply` prints "Nothing to change" and writes nothing.
+- The exit code is 1 if any person's erase failed, or the run could not read a page; 2 for a bad option. After a failure run it again. If the failure was the sign-in function, the name item is already a tombstone, so add `--redo-erased` to repeat the erase for tombstones too (the item's `eraseRev` goes up; nothing else changes).
+- It is bounded: `--page-size` (default 100), `--max-pages`, `--max-ms` (default 10 minutes) and `--pause-ms` (default 200). A throttled call is retried with a pause. A run stopped by a limit says so: run it again with the same `--cursor-file <path>` to continue. The cursor file holds developer ids, is written with mode 0600 and is removed when the run finishes; a dry-run cursor is refused by an `--apply` run.
+- Someone erased before 0.5.11 who has already chosen a new name before this runs is erased again and must choose again; that is why it runs first.
+
+### Index old merge commits (optional, 0.5.9 and later)
+
+`scripts/backfill-merge-commit-index.ts` indexes the merge commits of pull requests merged before the index existed, so a revert of one of them is recorded. Optional and only for merges whose outcome samples still exist; it reads with a consistent `Scan` and puts missing rows with `attribute_not_exists`.
+
+```sh
+~/.local/share/rovara-tools/staging-aws.sh npx tsx scripts/backfill-merge-commit-index.ts --table <state table>
+```
+
+`--region` (or `AWS_REGION`) is required; `--profile` is optional and only for a run outside the wrapper. A run stopped by `--max-ms` prints the key to resume from (`--resume '<json>'`).
+
 ## GitHub connection requests (Rovara Cloud)
 
 Only the Rovara operator can redeliver an `installation.created` webhook, from the GitHub App's settings (Advanced, Recent Deliveries), and only within about 3 days of the delivery: use it when an approved "ask my GitHub admin" request was not bound because GitHub or the control plane was down (the request stays waiting and a redelivery retries it).

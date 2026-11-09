@@ -1,6 +1,9 @@
 // SRL-3 release step (optional, idempotent, resumable): indexes the merge commits of Rovara pull requests merged before the index existed, so a revert of one of them is recorded.
 //
-//   npx tsx scripts/backfill-merge-commit-index.ts --table <state table> --profile <aws profile> --region <region> [--max-ms <ms>] [--pause-ms <ms>]
+//   npx tsx scripts/backfill-merge-commit-index.ts --table <state table> [--region <region>] [--profile <aws profile>] [--max-ms <ms>] [--pause-ms <ms>]
+//
+// Under the release wrapper (it sets the account, region and credentials itself and refuses --profile) leave --profile out; the region then comes from --region or AWS_REGION:
+//   ~/.local/share/rovara-tools/staging-aws.sh npx tsx scripts/backfill-merge-commit-index.ts --table <state table>
 //
 // It reads the track record's outcome samples that already hold a merge commit GitHub gave, checks each against the task, and puts the missing `GITHUB_MERGE#` row with
 // `attribute_not_exists` (see `rovara-code/merge-commit-index.ts#backfillMergeCommitIndex`). It sends only Scan, Get and Put to the table, prints counts and nothing else, and can be run
@@ -14,9 +17,9 @@ const DEFAULT_PAGE_SIZE = 200;
 const DEFAULT_MAX_MS = 600_000;
 const DEFAULT_PAUSE_MS = 200;
 
-export interface BackfillArgs { table: string; profile: string; region: string; maxMs: number; pauseMs: number; resume?: Record<string, unknown> }
+export interface BackfillArgs { table: string; profile?: string; region: string; maxMs: number; pauseMs: number; resume?: Record<string, unknown> }
 
-export function parseBackfillArgs(argv: readonly string[]): BackfillArgs {
+export function parseBackfillArgs(argv: readonly string[], env: Readonly<Record<string, string | undefined>> = process.env): BackfillArgs {
   const values = new Map<string, string>();
   for (let index = 0; index < argv.length; index += 2) {
     const name = argv[index] ?? "";
@@ -28,10 +31,10 @@ export function parseBackfillArgs(argv: readonly string[]): BackfillArgs {
   }
   const table = values.get("--table");
   if (table === undefined || !/^[A-Za-z0-9_.-]{3,255}$/.test(table)) throw new Error("--table is required and must be a DynamoDB table name (there is no default)");
+  // --profile is optional: the release wrapper sets AWS_PROFILE and the credentials itself, and the SDK reads them.
   const profile = values.get("--profile");
-  if (profile === undefined) throw new Error("--profile is required (the AWS profile to use)");
-  const region = values.get("--region");
-  if (region === undefined || !/^[a-z]{2}(-[a-z]+)+-\d$/.test(region)) throw new Error("--region is required (for example us-west-2 for staging; there is no default)");
+  const region = values.get("--region") ?? env.AWS_REGION ?? env.AWS_DEFAULT_REGION;
+  if (region === undefined || !/^[a-z]{2}(-[a-z]+)+-\d$/.test(region)) throw new Error("--region (or AWS_REGION) is required, for example us-west-2 for staging; there is no default");
   const whole = (name: string, fallback: number): number => {
     const text = values.get(name);
     if (text === undefined) return fallback;
@@ -40,7 +43,7 @@ export function parseBackfillArgs(argv: readonly string[]): BackfillArgs {
   };
   const resumeText = values.get("--resume");
   const resume = resumeText === undefined ? undefined : (JSON.parse(resumeText) as Record<string, unknown>);
-  return { table, profile, region, maxMs: whole("--max-ms", DEFAULT_MAX_MS), pauseMs: whole("--pause-ms", DEFAULT_PAUSE_MS), ...(resume === undefined ? {} : { resume }) };
+  return { table, region, ...(profile === undefined ? {} : { profile }), maxMs: whole("--max-ms", DEFAULT_MAX_MS), pauseMs: whole("--pause-ms", DEFAULT_PAUSE_MS), ...(resume === undefined ? {} : { resume }) };
 }
 
 /** Runs pages until the end or the time given, pausing between pages. */
@@ -50,7 +53,7 @@ export async function runBackfill(args: BackfillArgs, client: { send(command: un
 
 async function main(): Promise<void> {
   const args = parseBackfillArgs(process.argv.slice(2));
-  const client = DynamoDBDocumentClient.from(new DynamoDBClient({ region: args.region, profile: args.profile, maxAttempts: 3 }));
+  const client = DynamoDBDocumentClient.from(new DynamoDBClient({ region: args.region, ...(args.profile === undefined ? {} : { profile: args.profile }), maxAttempts: 3 }));
   const result = await runBackfill(args, client);
   console.log(JSON.stringify(result.finished ? { ...result, resume: undefined } : result));
   if (!result.finished) console.error("stopped by --max-ms; run again with --resume '<the resume key above>'");
