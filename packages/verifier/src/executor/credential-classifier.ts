@@ -79,6 +79,10 @@ export function isSlugOrPath(value: string): boolean {
  * with a short number after it allowed), a digit id of 3 digits or more, a hex id of 8 characters or more, or a version (`v2`). A short piece (`Ko`, `7`, `dl`) says nothing.
  */
 const CAMEL_WORD = /^[A-Za-z][a-z]{2,}(?:[A-Z][a-z]{2,})*\d{0,4}$/;
+/** A word of exactly 3 letters (`api`, `Qoy`): too easy for random characters to make, so it never carries a path on its own. */
+function isShortWord(segment: string): boolean {
+  return segment.length === 3 && CAMEL_WORD.test(segment);
+}
 function isPathSegment(segment: string): boolean {
   return /^\d{3,}$/.test(segment) || /^[0-9a-fA-F]{8,}$/.test(segment) || /^v\d{1,2}$/.test(segment)
     || (CAMEL_WORD.test(segment) && (segment.match(/[A-Z]?[a-z]{2,}/g) ?? []).every((part) => /[aeiouy]/i.test(part)));
@@ -87,12 +91,22 @@ function isPathSegment(segment: string): boolean {
  * A value with `/` in it whose segments are recognisably ids and words (`/api/userProfiles/8423/orderItems/12345`, `/Users/8423/Orders/12345`, `/files/<upper-case hex>`): a path, however its case
  * is mixed. A random standard-base64 token has a few random characters between its slashes; they are almost never a word, a digit id or a hex id. One short piece never decides: with two segments
  * both must say "path"; with more, at least three and half of them.
+ *
+ * Two weaker pieces of evidence never carry a path alone. A 3-letter word is one (random base64 pieces of 3 letters often read as a word: `Qoy`, `fyk`, `Ipt`, `qwi`); and a piece of 4 characters
+ * or more that is NOT recognisable and has only base64 characters (`vkv7zesoatRb5eCCFKuVPauoWV74ODe`, `4e7m`, `v8d6M5s9IYdZecY5Rc2`; a file name or a slug has a `.`, `-` or `_`, and a prefixed number
+ * such as `mcpone000001` is an id) is an opaque piece.
+ * A value with opaque pieces is a path only when it has firm segments (a digit id, a hex id, a version, or a word of 4 letters or more) to vouch for them: two, and one more for each opaque piece.
+ * `939/Qoy/vkv7zesoatRb5eCCFKuVPauoWV74ODe/fyk` has one firm segment and one opaque piece; `Hbihmpi/Lygm/v8d6M5s9IYdZecY5Rc2/0pEXA/Datg` has three and two. A path with one opaque id among words
+ * (`/Users/8423/Orders/12345/Items/Kx9mQ2vL7nR4tYbc`) and a path whose pieces are all recognisable, however many 3-letter words it has (`/api/orders/12345`), are judged as before.
  */
 export function isPathLike(value: string): boolean {
   const segments = value.split("/").filter((segment) => segment.length > 0);
   if (segments.length < 2) return false;
   const meaningful = segments.filter(isPathSegment).length;
-  return segments.length === 2 ? meaningful === 2 : meaningful >= 3 && meaningful / segments.length >= 0.5;
+  if (segments.length === 2) return meaningful === 2;
+  if (meaningful < 3 || meaningful / segments.length < 0.5) return false;
+  const opaque = segments.filter((segment) => segment.length >= 4 && /^[A-Za-z0-9+=]+$/.test(segment) && !/^[A-Za-z]{3,}\d{4,}$/.test(segment) && !isPathSegment(segment)).length;
+  return opaque === 0 || segments.filter((segment) => isPathSegment(segment) && !isShortWord(segment)).length >= 2 + opaque;
 }
 
 /** A single long base64, base64url or hex run with a letter and a digit that is not a UUID, a path or a slug. */

@@ -420,7 +420,9 @@ describe("the pre-pull runs only with test services on, from the install's own r
     const limits = durations(r.calls);
     expect(limits.length).toBeGreaterThanOrEqual(4);
     for (const limit of limits) expect(limit + 10).toBeLessThanOrEqual(100);
-    expect(Math.max(...limits)).toBe(90);
+    // catalog_seconds subtracts the elapsed SECONDS of the boot script (up to a few on a loaded machine), so the longest limit is 90 minus that, never above 90.
+    expect(Math.max(...limits)).toBeGreaterThanOrEqual(85);
+    expect(Math.max(...limits)).toBeLessThanOrEqual(90);
     // Plenty of time left: the limits are as before.
     expect(Math.max(...durations(drive({ env: { AGENTX_TEST_SERVICES: "1", BOOT_DEADLINE: "100000" } }).calls))).toBe(180);
   });
