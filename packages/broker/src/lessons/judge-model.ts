@@ -6,6 +6,7 @@
 // parse counts toward the judge's failures in a row (`model_failed` after three), and a good answer starts that count again. There is no Rovara-paid route: no model, no judgement.
 import { randomBytes } from "node:crypto";
 import { z } from "zod";
+import { gatedByLessonsSwitch } from "./model-gate.js";
 import { learningCaps, type Edition, type LearningCaps } from "./policy.js";
 import { failuresCountedOncePerTask, isLearningRefusal, noteJudgeRecovered, noteModelFailure, notePause, pauseOfLook, spendLook, type LessonsPauseStore, type TaskFailureTally } from "./pause.js";
 import type { CorrectionJudge, LearningSpend, PipelineModel } from "./ports.js";
@@ -44,7 +45,9 @@ export interface OutcomeJudgeDeps {
 /** What one task has used of the judge: the task's tally (its holds are the reflection's and the judge's together: Public holds them to ONE per-task total), and whether a good answer already cleared the pause records. */
 interface TaskState { tally: TaskFailureTally; recovered: boolean }
 
-export function modelCorrectionJudge(deps: OutcomeJudgeDeps): CorrectionJudge {
+export function modelCorrectionJudge(rawDeps: OutcomeJudgeDeps): CorrectionJudge {
+  // Owner decision 47: the judge's model is the gated one, so while the install's lessons switch is off (or cannot be read) no quote and no call reaches the provider, whoever builds this judge. `usable` is then false.
+  const deps: OutcomeJudgeDeps = { ...rawDeps, model: gatedByLessonsSwitch(rawDeps.model) };
   const perTaskUsd = learningCaps(deps.edition ?? "public", deps.capsOverride).perTaskUsd;
   const requestOf = (scope: { workspaceId: string; project: string }, system: string, user: string, maxHoldUsd: number | undefined) =>
     ({ purpose: "outcome" as const, system, user, maxOutputTokens: MAX_OUTPUT_TOKENS, workspaceId: scope.workspaceId, project: scope.project, ...(maxHoldUsd === undefined ? {} : { maxHoldUsd }) });

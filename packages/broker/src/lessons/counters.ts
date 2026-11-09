@@ -124,6 +124,8 @@ export async function recordTaskOutcome(deps: CounterDeps, outcome: TaskOutcome)
   if (outcome.evalRun === true) return result;
   const key: ScopeKey = { workspaceId: outcome.workspaceId, project: outcome.project };
   const resolved = await resolveLearning(deps.settings, key.workspaceId, key.project);
+  // Owner decision 47: while the install's lessons switch is off (or unreadable) `resolved.mode` is capped at Collect, which does not allow "load", so this returns before anything is judged or queued: no judge call, no spend, and no
+  // helpful mark either (a mark without a judge that could have blamed the lesson would fail open). The judge's own model is gated as well (`judge-model.ts`), the second lock.
   if (!modeAllows(resolved.mode, "load")) return result;
 
   const loaded = new Set<string>();
