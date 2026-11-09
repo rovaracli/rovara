@@ -11,10 +11,10 @@
 import { hostRateLimitRetryAt } from "@agentx/contracts";
 import type { HumanEditExtractorPort, HumanEditInput, HumanEditJob } from "../team-record/sources/codehost.js";
 import { currentLearningAttempt } from "./learning-deadline.js";
-import { modeAllows, resolveLearning, type LearningSettingsReader } from "./policy.js";
+import { learningCaps, modeAllows, resolveLearning, type LearningSettingsReader } from "./policy.js";
 import { processDraftRetrying } from "./draft-retry.js";
-import { newTaskFailureTally, withFailuresCountedOnce } from "./pause.js";
-import { reflectRepoOnly, withEdits } from "./repo-reflect.js";
+import { newTaskFailureTally, withFailuresCountedOnce, type TaskFailureTally } from "./pause.js";
+import { noteTaskHeld, readTaskHeld, reflectRepoOnly, withEdits } from "./repo-reflect.js";
 import type { ProcessDeps } from "./process.js";
 import { reflectSubject, type ReflectDeps } from "./reflect.js";
 import type { EvidenceSpan, ReflectSubject } from "./reflect-input.js";
@@ -55,13 +55,14 @@ function editSpan(file: HumanEditInput["files"][number], input: Pick<HumanEditIn
 interface EditRun { result: { candidates: number }; edits: EvidenceSpan[]; /** Learning is off for the project: nothing more is read or called for this edit. */ off?: true }
 
 export function createHumanEditExtractor(deps: HumanEditExtractorDeps): HumanEditExtractorPort {
-  const run = async (input: HumanEditInput): Promise<EditRun> => {
+  const run = async (input: HumanEditInput, tally: TaskFailureTally, onActive: () => Promise<void>): Promise<EditRun> => {
       const none: EditRun = { result: { candidates: 0 }, edits: [] };
       if (input.authors.length === 0 || input.files.length === 0) return none;
       // A lesson names every author and a provenance list holds 20 names: an edit by a crowd is not learned from (no name is ever cut).
       if (input.authors.length > MAX_EDIT_AUTHORS) return none;
       const learning = await resolveLearning(deps.settings, input.workspaceId, input.project);
       if (!modeAllows(learning.mode, "reflect")) return { ...none, off: true };
+      await onActive();
       const base = await deps.source.read({ workspaceId: input.workspaceId, taskId: input.taskId, context: "human_edit" });
       if (base === undefined || base.facts.workspaceId !== input.workspaceId || base.facts.project !== input.project || base.facts.taskId !== input.taskId) return none;
       // Every author, now. Asking all of them (no short cut) so a check that cannot tell is never hidden by an earlier answer.
@@ -81,9 +82,12 @@ export function createHumanEditExtractor(deps: HumanEditExtractorDeps): HumanEdi
       });
       // A lesson from an edit must stand on the edit: a candidate that cites no edit span is dropped (the people named come from everything read, but the lesson is about the lines).
       // LP-10 R8: this edit's failed model calls (the reflection and each draft's judge) count toward `model_failed` once, not once per call.
-      const tally = newTaskFailureTally();
-      const processDeps = withFailuresCountedOnce(deps.process, tally);
-      const result = await reflectSubject(withFailuresCountedOnce(deps.reflect, tally), { ...subject, requireEvidenceKind: "human_edit" });
+      const processDeps = { ...withFailuresCountedOnce(deps.process, tally), taskBudget: tally };
+      // The edit's own reflection is given what is left of the task's one Public cap (the task end may have spent from it); a task with nothing left makes no call.
+      const cap = learningCaps(deps.reflect.edition, deps.reflect.capsOverride).perTaskUsd;
+      const room = cap === undefined ? undefined : Math.round((cap - tally.heldUsd) * 1e6) / 1e6;
+      if (room !== undefined && room < 0.001) return { result: { candidates: 0 }, edits: editSpans };
+      const result = await reflectSubject({ ...withFailuresCountedOnce(deps.reflect, tally), taskBudget: tally, ...(room === undefined ? {} : { capsOverride: { ...deps.reflect.capsOverride, perTaskUsd: room } }) }, { ...subject, requireEvidenceKind: "human_edit" });
       if (result.reason === "model_error" || (result.reason === "spend_refused" && currentLearningAttempt()?.fault === "retryable")) throw new Error("the model call failed");
       if (result.status !== "ok") return { result: { candidates: 0 }, edits: editSpans };
       const key = { workspaceId: input.workspaceId, project: input.project };
@@ -98,37 +102,42 @@ export function createHumanEditExtractor(deps: HumanEditExtractorDeps): HumanEdi
   };
 
   /**
-   * Lessons in the repo (decision 50c, review: one owner per change request). The pull request someone pushed to after Rovara is OURS to reflect on once: its comments and the edits just read, in one call, under the job's own lease
-   * and the same once-key as the task end (which leaves such a pull request to us). A job that could not use the edits (an author not a member, too many authors, a compare that gave nothing) still runs it with the comments alone,
-   * so a pull request never loses its comments because of an edit that cannot be used. The task's facts are read again in full (the comments come with them); a fresh tally is this run's (Public's cap is per run here, as the edit's
-   * own reflection is). Never throws: the edit's own result stands.
+   * Lessons in the repo (decision 50c): a pull request WITH usable human edits gets a second, separate repo-only reflection from this job: the edits, with the pull request's comments for context, under its own once-key (the task
+   * end's comments reflection is its own call and always runs; curate's twin and merge rules dedupe any overlap). The task's facts are read again in full (the comments come with them). `tally` is this run's, started from what the
+   * task's other runs held (Public's cap is one total per task, review L-f). Never throws: the edit's own result stands.
    */
-  const repoOnly = async (target: { workspaceId: string; project: string; taskId: string; link: string }, edit?: { place: string; audience: HumanEditInput["audience"]; spans: readonly EvidenceSpan[] }): Promise<void> => {
+  const repoOnly = async (input: HumanEditInput, edits: readonly EvidenceSpan[], tally: TaskFailureTally): Promise<void> => {
+    if (edits.length === 0) return;
     try {
       // The switch first, before anything is read: Off, Collect and a lessons switch that is off read nothing for this pull request.
-      if (!modeAllows((await resolveLearning(deps.settings, target.workspaceId, target.project)).mode, "reflect")) return;
-      const base = await deps.source.read({ workspaceId: target.workspaceId, taskId: target.taskId });
-      if (base === undefined || base.facts.workspaceId !== target.workspaceId || base.facts.project !== target.project || base.facts.taskId !== target.taskId) return;
-      const found = (base.repoChanges ?? []).find((change) => change.link.toLowerCase() === target.link.toLowerCase());
+      if (!modeAllows((await resolveLearning(deps.settings, input.workspaceId, input.project)).mode, "reflect")) return;
+      const base = await deps.source.read({ workspaceId: input.workspaceId, taskId: input.taskId });
+      if (base === undefined || base.facts.workspaceId !== input.workspaceId || base.facts.project !== input.project || base.facts.taskId !== input.taskId) return;
+      const found = (base.repoChanges ?? []).find((change) => change.link.toLowerCase() === input.link.toLowerCase());
       if (found === undefined) return;
-      const owned = edit === undefined || edit.spans.length === 0 ? found : withEdits(found, edit);
+      const owned = withEdits(found, { place: input.scope, audience: input.audience, spans: edits });
       if (owned === undefined) return;
       const subject = buildTaskReflectSubject({ ...base.facts, sendBacks: [] });
-      await reflectRepoOnly({ reflect: deps.reflect, process: deps.process, settings: deps.settings, ...(deps.log === undefined ? {} : { log: deps.log }) }, subject, [owned], newTaskFailureTally(), { owner: "human_edit" });
+      await reflectRepoOnly({ reflect: deps.reflect, process: deps.process, settings: deps.settings, ...(deps.log === undefined ? {} : { log: deps.log }) }, subject, [owned], tally, { kind: "edits" });
     } catch {
-      deps.log?.("learning.repo_reflect_failed", { taskId: target.taskId });
+      deps.log?.("learning.repo_reflect_failed", { taskId: input.taskId });
     }
   };
 
   return {
     async extract(input) {
+      // One tally for the whole job, started from what the task's other runs held (Public's cap is one total per task): the edit's own reflection, its curator judge and the repo-only edits reflection all draw from it.
+      const tally = newTaskFailureTally();
+      const cap = learningCaps(deps.reflect.edition, deps.reflect.capsOverride).perTaskUsd;
+      const key = { workspaceId: input.workspaceId, project: input.project };
       // The edit's own reflection first; its model failure throws (the job is retried, and so is this).
-      const ran = await run(input);
-      if (ran.off !== true) await repoOnly(input, { place: input.scope, audience: input.audience, spans: ran.edits });
+      const ran = await run(input, tally, async () => {
+        if (cap !== undefined) { try { tally.heldUsd = await readTaskHeld(deps.process.store, key, input.taskId, cap); } catch { /* an unreadable total reads as unspent: the cap still bounds each call */ } }
+      });
+      if (ran.off !== true) await repoOnly(input, ran.edits, tally);
+      if (cap !== undefined && ran.off !== true) { try { await noteTaskHeld(deps.process.store, key, input.taskId, tally.heldUsd, cap); } catch { /* bookkeeping only */ } }
       return ran.result;
     },
-    // The tap calls this when it skips the pull request without calling `extract` (a merge commit, a rebase, a bot, an author who is not a member, no compare, capture off...): the comments are still reflected on.
-    commentsOnly: (input) => repoOnly(input),
   };
 }
 

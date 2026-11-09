@@ -71,6 +71,8 @@ describe("the human-edit extractor", () => {
   it("LP-10 R8: the edit's failed judge calls count toward model_failed once, not once per call", async () => {
     const bodies = ["a client calls", "a service wrapper", "a gateway calls", "a batch calls"].map((tail) => `Use withRetry from src/retry/index.ts for HTTP retries in the api service ${tail}`);
     const model = new ScriptedModel([reply(...bodies.map((body) => candidateJson({ type: "convention", title: "Retries", description: "", body, evidenceSpanIds: ["S1"], citations: [{ kind: "pr", url: LINK }] })))]);
+    // R1b L-f: the job's curator judge calls hold from the task's one Public cap, so the reflection must hold a price that leaves them room (a model that cannot quote holds the whole cap).
+    Object.assign(model, { quote: async () => ({ ok: true as const, usd: 0.01 }) });
     const w = setup({ model });
     const pause: LessonsPauseStore & { count: number } = {
       count: 0, async record() { /* not asked */ }, async clear() { this.count = 0; }, async failed() { this.count += 1; return this.count; }, async read(): Promise<CurrentPause | undefined> { return undefined; },

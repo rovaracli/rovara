@@ -16,11 +16,13 @@
 //   - Off and Collect make no call and read nothing (`modeAllows`); the model itself is behind the lessons switch (`gatedByLessonsSwitch`), so a caller that skipped the mode check still cannot spend (decision 47).
 //   - The customer's own model path, through `reflectSubject`: quote, spend look, hold, key; a refusal records its pause, a failed call counts once per task (`TaskFailureTally`).
 //   - Public's per-task cap is ONE total with the task's other learning calls: the call is given only what the task has left (`capsOverride`), and its hold is added to the same tally (`taskBudget`).
-//   - One call per merged change request: a once-key per task, repository place and change request head is checked before and taken after a call that was made. The worker's lease (`callStartedAt`) is the other lock:
+//   - One call per merged change request and kind: a once-key per kind, task, repository place and change request head is checked before and taken when the call is made. The worker's lease (`callStartedAt`) is the other lock:
 //     a delivery after the call started is never run again. The once-key is taken atomically right before the provider is called (so two runs at once make one call, and a quote that fails takes nothing).
 //   - The repository is proved BEFORE anything is paid (review M1): R1's `repoVisibilityOf` is run over the prompt's spans first; a change request that could not be repo-only makes no call. The proof is the project's registered
 //     repository address, matched to the code host's own identity by the adapter, never the project's name.
-//   - One owner per change request (review, human edits): when the merged head is not the head Rovara last pushed, the human-edit job owns it (comments + edits in one call); otherwise the task end does, comments only.
+//   - Two reflections, no hand-over: the task end ALWAYS runs the comments reflection (kind "comments", once-key `repo-reflect:comments:<task>:<place>:<head>`); the human-edit job, when it really has human edits, runs a separate edits
+//     reflection (kind "edits": the edits, with the same comments for context; once-key `repo-reflect:edits:...`). Curate's twin and merge rules dedupe any overlap. One extra call only on a pull request with real human edits.
+//   - Public's cap is one total per task across both, in any order: each call reserves its hold on the task's shared ladder right before the provider is called (`reserveTaskHeld`).
 //   - Only a change request with at least one repository-visible correction is reflected (a member's review comment that reads as a correction, or a human edit); otherwise no call.
 import { currentLearningAttempt } from "./learning-deadline.js";
 import { looksLikeCorrection } from "./correction-filter.js";
@@ -56,8 +58,6 @@ export interface RepoChangeRequest {
   /** The merge revision on the default branch, when the host said it. */
   mergeRevision?: string | undefined;
   merged: boolean;
-  /** True when the merged head is not the head Rovara last pushed: someone pushed after Rovara, so the human-edit job owns this change request (it runs the reflection with the edits). */
-  humanEditsExpected?: boolean | undefined;
   /** Who may read the change request: the repository's readers. Absent until a comment row or an edit says it. */
   audience?: Audience | undefined;
   /** The repository's review comments and review threads on it (`pr_comment` spans, member text, scope = `place`). */
@@ -84,20 +84,25 @@ const MIN_ROOM_USD = 0.001;
 /** Whether a span is a person's own correction in the repository: a member with a known id, words that are theirs (not chosen by code). */
 const isMemberWords = (span: EvidenceSpan): boolean => span.trust === "member" && span.fixedText !== true && (span.authorId !== undefined || (span.authorIds?.length ?? 0) > 0);
 
-/** Whether the change request has a repository-visible correction: a merged change request with a member's review comment that reads as a correction, or a human edit. Pure. */
-export function hasRepoCorrection(change: RepoChangeRequest): boolean {
+/** The two reflections of a change request: of its review comments (the task end's), and of its human edits with the comments for context (the human-edit job's). */
+export type RepoReflectKind = "comments" | "edits";
+
+/** Whether the change request has a repository-visible correction of that kind: a merged change request with a member's review comment that reads as a correction (comments), or a human edit by a member (edits). Pure. */
+export function hasRepoCorrection(change: RepoChangeRequest, kind: RepoReflectKind = "comments"): boolean {
   if (!change.merged) return false;
-  return change.comments.some((span) => span.kind === "pr_comment" && isMemberWords(span) && looksLikeCorrection(span.text)) || change.edits.some((span) => span.kind === "human_edit" && isMemberWords(span));
+  return kind === "comments"
+    ? change.comments.some((span) => span.kind === "pr_comment" && isMemberWords(span) && looksLikeCorrection(span.text))
+    : change.edits.some((span) => span.kind === "human_edit" && isMemberWords(span));
 }
 
-/** The once-key of one reflection: the task, the repository and the change request's head. */
-export const repoReflectKey = (taskId: string, change: Pick<RepoChangeRequest, "place" | "revision">): string => `repo-reflect:${taskId}:${change.place}:${change.revision}`;
+/** The once-key of one reflection: its kind, the task, the repository and the change request's head. */
+export const repoReflectKey = (taskId: string, change: Pick<RepoChangeRequest, "place" | "revision">, kind: RepoReflectKind = "comments"): string => `repo-reflect:${kind}:${taskId}:${change.place}:${change.revision}`;
 
 /**
  * The subject of the repo-only reflection. It takes from the finished task only who started and steered it (their trust gates the reflection as for the first one, so a task an outsider started or steered teaches nothing
- * here either) and the outcome; nothing of its text. Every span is the repository's. Pure.
+ * here either) and the outcome; nothing of its text. Every span is the repository's. The comments reflection holds the comments; the edits reflection holds the edits and the comments for context, and its lesson must stand on an edit. Pure.
  */
-export function repoOnlySubjectOf(main: ReflectSubject, change: PlacedChangeRequest): ReflectSubject {
+export function repoOnlySubjectOf(main: ReflectSubject, change: PlacedChangeRequest, kind: RepoReflectKind = "comments"): ReflectSubject {
   return {
     kind: "task", id: main.id, workspaceId: main.workspaceId, project: main.project, repositories: [change.repository], outcome: "merged",
     ...(change.mergeRevision === undefined ? {} : { mergedCommit: change.mergeRevision }),
@@ -107,9 +112,9 @@ export function repoOnlySubjectOf(main: ReflectSubject, change: PlacedChangeRequ
     ...(main.intentTrust === undefined ? {} : { intentTrust: main.intentTrust }),
     links: [change.link], audience: change.audience, scopes: [change.place],
     repoInputs: { place: change.place, repository: change.repository, linkPrefix: change.linkPrefix, repositoryUrl: change.repositoryUrl },
-    promptStyle: "repo_only", requireEvidenceKind: ["pr_comment", "human_edit"],
+    promptStyle: "repo_only", requireEvidenceKind: kind === "comments" ? ["pr_comment"] : ["human_edit"],
     ...(main.evalRun === true ? { evalRun: true } : {}),
-    spans: [...change.comments, ...change.edits],
+    spans: kind === "comments" ? [...change.comments] : [...change.comments, ...change.edits],
   };
 }
 
@@ -130,24 +135,38 @@ function withoutOwnRefusals(pause: LessonsPauseStore | undefined): LessonsPauseS
 }
 
 /**
- * Public's per-task cap is one total for the task, across the task-end run and the human-edit job (review L-f). What a run held is remembered as once-keys, one per whole cent (rounded up): `task-held:<task>:<n>` for n = 1..cents.
- * No store method is added; a read counts the steps from 1 until one is missing. The total only grows. Enterprise has no cap and neither reads nor writes it.
+ * Public's per-task cap is one total for the task, across the task-end run and the human-edit job, in any order (review L-f). What the task has held is a ladder of once-keys, one per whole cent (rounded up):
+ * `task-held:<task>:<n>`. No store method is added. A read counts the steps from 1 until one is missing. A call RESERVES its hold by taking the next free steps one at a time (`markOnce` is atomic, so two runs at once never
+ * take the same step), and fails when the cap's steps are used up. Runs whose holds are not reserved call by call (the first reflection, the judges) top the ladder up to their tally when they end (`noteTaskHeld`). The total only
+ * grows, and holds only task ids (nothing about a person). Enterprise has no cap and neither reads nor writes it.
  */
 const HELD_STEP_USD = 0.01;
 const HELD_MAX_STEPS = 100;
 const heldName = (taskId: string, step: number): string => `task-held:${taskId}:${String(step)}`;
-export async function readTaskHeld(store: Pick<LessonStore, "seenOnce">, key: ScopeKey, taskId: string): Promise<number> {
+const stepsOf = (usd: number): number => Math.max(0, Math.ceil(usd / HELD_STEP_USD - 1e-9));
+const maxStepsOf = (capUsd: number | undefined): number => (capUsd === undefined ? HELD_MAX_STEPS : Math.max(1, stepsOf(capUsd)));
+export async function readTaskHeld(store: Pick<LessonStore, "seenOnce">, key: ScopeKey, taskId: string, capUsd?: number): Promise<number> {
   let steps = 0;
-  while (steps < HELD_MAX_STEPS && await store.seenOnce(key, heldName(taskId, steps + 1))) steps += 1;
+  const max = maxStepsOf(capUsd);
+  while (steps < max && await store.seenOnce(key, heldName(taskId, steps + 1))) steps += 1;
   return Math.round(steps * HELD_STEP_USD * 100) / 100;
 }
-export async function noteTaskHeld(store: Pick<LessonStore, "seenOnce" | "markOnce">, key: ScopeKey, taskId: string, usd: number): Promise<void> {
-  const wanted = Math.min(HELD_MAX_STEPS, Math.ceil(usd / HELD_STEP_USD - 1e-9));
-  for (let step = Math.round((await readTaskHeld(store, key, taskId)) / HELD_STEP_USD) + 1; step <= wanted; step += 1) await store.markOnce(key, heldName(taskId, step));
+/** Tops the ladder up to at least `usd`. */
+export async function noteTaskHeld(store: Pick<LessonStore, "seenOnce" | "markOnce">, key: ScopeKey, taskId: string, usd: number, capUsd?: number): Promise<void> {
+  const wanted = Math.min(maxStepsOf(capUsd), stepsOf(usd));
+  for (let step = stepsOf(await readTaskHeld(store, key, taskId, capUsd)) + 1; step <= wanted; step += 1) await store.markOnce(key, heldName(taskId, step));
+}
+/** Reserves `usd` of the task's cap: takes that many free steps. False when the cap's steps run out first (the steps taken stay taken: a refusal is conservative). */
+export async function reserveTaskHeld(store: Pick<LessonStore, "seenOnce" | "markOnce">, key: ScopeKey, taskId: string, usd: number, capUsd: number): Promise<boolean> {
+  const need = stepsOf(usd);
+  const max = maxStepsOf(capUsd);
+  let taken = 0;
+  for (let step = stepsOf(await readTaskHeld(store, key, taskId, capUsd)) + 1; step <= max && taken < need; step += 1) if (await store.markOnce(key, heldName(taskId, step))) taken += 1;
+  return taken >= need;
 }
 
-/** Who runs the reflection of a change request: the task end (comments only) or the human-edit job (comments and edits, for a change request someone pushed to after Rovara). */
-export interface RepoReflectOptions { owner?: "task_end" | "human_edit" }
+/** Which reflection to run: the comments one (the task end's, the default) or the edits one (the human-edit job's). */
+export interface RepoReflectOptions { kind?: RepoReflectKind }
 
 export interface RepoReflectResult { calls: number; drafts: number }
 
@@ -158,43 +177,42 @@ export interface RepoReflectResult { calls: number; drafts: number }
 export async function reflectRepoOnly(deps: RepoReflectDeps, main: ReflectSubject, changes: readonly RepoChangeRequest[], tally: TaskFailureTally, options: RepoReflectOptions = {}): Promise<RepoReflectResult> {
   const result: RepoReflectResult = { calls: 0, drafts: 0 };
   if (main.outcome !== "merged" || main.evalRun === true) return result;
-  const owner = options.owner ?? "task_end";
-  const wanted = changes.filter(hasRepoCorrection).slice(0, MAX_REPO_CHANGES);
+  const kind = options.kind ?? "comments";
+  const wanted = changes.filter((change) => hasRepoCorrection(change, kind)).slice(0, MAX_REPO_CHANGES);
   if (wanted.length === 0) return result;
+  const store = deps.process.store;
+  const cap = learningCaps(deps.reflect.edition, deps.reflect.capsOverride).perTaskUsd;
   try {
     // The switch first: Off, Collect and a lessons switch that is off or unreadable read nothing and call nothing.
     if (!modeAllows((await resolveLearning(deps.settings, main.workspaceId, main.project)).mode, "reflect")) return result;
     const key = { workspaceId: main.workspaceId, project: main.project };
     const pause = withoutOwnRefusals(failuresCountedOncePerTask(deps.reflect.pause, tally));
-    // Review L-f: the human-edit job is a second run for a task whose cap the task end already spent from; it starts from what that run held, and leaves what it holds for any later one.
-    const capped = learningCaps(deps.reflect.edition, deps.reflect.capsOverride).perTaskUsd !== undefined;
-    if (owner === "human_edit" && capped) tally.heldUsd = Math.max(tally.heldUsd, await readTaskHeld(deps.process.store, key, main.id));
+    // Review L-f: the task's cap is one total across its runs; start from what they held.
+    if (cap !== undefined) tally.heldUsd = Math.max(tally.heldUsd, await readTaskHeld(store, key, main.id, cap));
     for (const change of wanted) {
       const attempt = currentLearningAttempt();
       if (attempt?.signal?.aborted === true) break;
       if (!isPlaced(change)) continue;
-      // One owner per change request: someone pushed after Rovara, so the human-edit job runs the reflection with the edits; a job that cannot use them still runs it, comments only.
-      if (owner === "task_end" && change.humanEditsExpected === true) { deps.log?.("learning.repo_reflect_left_to_human_edit", {}); continue; }
-      const once = repoReflectKey(main.id, change);
-      if (await deps.process.store.seenOnce(key, once)) continue;
+      const once = repoReflectKey(main.id, change, kind);
+      if (await store.seenOnce(key, once)) continue;
       // The repository is proved BEFORE anything is paid: a change request whose prompt could not be repo-only makes no call.
-      const subject = repoOnlySubjectOf(main, change);
+      const subject = repoOnlySubjectOf(main, change, kind);
       const built = buildReflectorInput(subject);
       if (!built.eligible) continue;
       const visibility = repoVisibilityOf(subject, built.spans.values());
       if (visibility.repoOnly === undefined) { deps.log?.("learning.repo_reflect_not_repo_only", { codes: visibility.blocked.join(",") }); continue; }
       // Public's per-task cap is one total: this call is given what the task has left.
-      const cap = learningCaps(deps.reflect.edition, deps.reflect.capsOverride).perTaskUsd;
-      const room = cap === undefined ? undefined : cap - tally.heldUsd;
+      const room = cap === undefined ? undefined : Math.round((cap - tally.heldUsd) * 1e6) / 1e6;
       if (room !== undefined && room < MIN_ROOM_USD) { deps.log?.("learning.repo_reflect_no_room", {}); break; }
-      // The once-key is taken right before the provider is called (atomically: of two runs at once only one gets it), and only then: a quote that fails, a refusal or a lost key spends nothing and takes nothing.
+      // Right before the provider is called: the once-key is taken (atomically: of two runs at once only one gets it) and the hold is reserved on the task's ladder. A quote that fails, a refusal or a lost key spends nothing.
       let called = false;
       const claiming: PipelineModel = { ...deps.reflect.model, complete: async (request) => {
-        if (!(await deps.process.store.markOnce(key, once))) throw new LearningRefusal("no_provider", "this change request was already reflected on");
+        if (!(await store.markOnce(key, once))) throw new LearningRefusal("no_provider", "this change request was already reflected on");
+        if (cap !== undefined && !(await reserveTaskHeld(store, key, main.id, request.budgetUsd ?? 0, cap))) throw new LearningRefusal("cost_too_high", "the task's cap is used up");
         called = true;
         return deps.reflect.model.complete(request);
       } };
-      // The lessons switch is checked first (a refusal there takes no key), then the key, then the provider.
+      // The lessons switch is checked first (a refusal there takes no key), then the key and the hold, then the provider.
       const model = gatedByLessonsSwitch(claiming);
       const heldBefore = tally.heldUsd;
       const reflected = await reflectSubject({
@@ -212,7 +230,7 @@ export async function reflectRepoOnly(deps: RepoReflectDeps, main: ReflectSubjec
         } catch { deps.log?.("learning.repo_reflect_draft_failed", {}); }
       }
     }
-    if (owner === "human_edit" && capped) await noteTaskHeld(deps.process.store, key, main.id, tally.heldUsd);
+    if (cap !== undefined) await noteTaskHeld(store, key, main.id, tally.heldUsd, cap);
   } catch {
     deps.log?.("learning.repo_reflect_failed", {});
   }

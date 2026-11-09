@@ -211,7 +211,6 @@ export function learningDepsFor(dependencies: LessonsHostDependencies, runtime: 
       return Object.fromEntries(codeRepositoriesOf(record.definition).map((repository) => [repository.name, repository.url] as const));
     },
     repositoryAddress: (host, fullName) => adapters.forHost(host)?.repositoryAddress?.(fullName),
-    humanEditsSupported: (host) => adapters.forHost(host)?.supports.humanEdits === true,
     pullRequestFeedback: async (input) => adapters.forHost(input.address.host)?.pullRequestFeedback?.({ workspaceId: input.orgId, project: input.project, taskId: input.taskId, address: input.address, url: input.url }),
     mergeCommitOf: ({ orgId, taskId, address }) => teamRecord.mergeIndex.mergeCommitOf({ workspaceId: orgId, host: address.host, repo: address.repository, number: address.number, taskId }),
   });

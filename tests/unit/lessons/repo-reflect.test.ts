@@ -4,7 +4,7 @@
 import { describe, expect, it } from "vitest";
 import { buildReflectorInput, type EvidenceSpan } from "../../../packages/broker/src/lessons/reflect-input.js";
 import { repoVisibilityOf } from "../../../packages/broker/src/lessons/repo-eligibility.js";
-import { hasRepoCorrection, noteTaskHeld, readTaskHeld, reflectRepoOnly, repoOnlySubjectOf, repoReflectKey, type PlacedChangeRequest, type RepoChangeRequest, type RepoReflectDeps } from "../../../packages/broker/src/lessons/repo-reflect.js";
+import { hasRepoCorrection, noteTaskHeld, readTaskHeld, reflectRepoOnly, reserveTaskHeld, repoOnlySubjectOf, repoReflectKey, type PlacedChangeRequest, type RepoChangeRequest, type RepoReflectDeps } from "../../../packages/broker/src/lessons/repo-reflect.js";
 import { setLearnedLessonsGate } from "../../../packages/broker/src/lessons/policy.js";
 import { newTaskFailureTally } from "../../../packages/broker/src/lessons/pause.js";
 import type { ProcessDeps } from "../../../packages/broker/src/lessons/process.js";
@@ -136,9 +136,14 @@ describe("the repo-only subject and its prompt", () => {
 });
 
 describe("hasRepoCorrection: only a change request with a repository-visible correction is reflected", () => {
-  it("a member's review comment that reads as a correction counts; so does a human edit", () => {
+  const humanEdit = memberSpan("A person changed src/a.ts, +1 -1:\n@@", { kind: "human_edit", scopes: [PLACE], audience: { kind: "project" }, authorIds: ["ann"] });
+  it("the comments reflection needs a member's review comment that reads as a correction; the edits reflection needs a human edit by a member (and only they)", () => {
     expect(hasRepoCorrection(change())).toBe(true);
-    expect(hasRepoCorrection(change({ comments: [], edits: [memberSpan("A person changed src/a.ts, +1 -1:\n@@", { kind: "human_edit", scopes: [PLACE], audience: { kind: "project" }, authorIds: ["ann"] })] }))).toBe(true);
+    expect(hasRepoCorrection(change(), "edits")).toBe(false);
+    expect(hasRepoCorrection(change({ comments: [], edits: [humanEdit] }))).toBe(false);
+    expect(hasRepoCorrection(change({ comments: [], edits: [humanEdit] }), "edits")).toBe(true);
+    expect(hasRepoCorrection(change({ edits: [humanEdit] }), "edits")).toBe(true);
+    expect(hasRepoCorrection(change({ comments: [], edits: [memberSpan("x", { kind: "human_edit", trust: "outsider", authorIds: ["ann"] })] }), "edits")).toBe(false);
   });
   it("no comment and no edit, praise only, an outsider's comment, text chosen by code, or a change request that did not merge, count for nothing", () => {
     expect(hasRepoCorrection(change({ comments: [] }))).toBe(false);
@@ -304,26 +309,37 @@ describe("review M1: the repository is proved before anything is paid, from the 
   });
 });
 
-describe("one owner per change request: the human-edit job owns it when someone pushed after Rovara", () => {
-  const edit = memberSpan("A person changed src/a.ts, +1 -1:\n@@ -1 +1 @@\n-loop\n+await withRetry()", { kind: "human_edit", scopes: [PLACE], audience: { kind: "project" }, authorIds: ["ann"], sourceKey: "human_edit" });
-  it("the task-end owner skips a change request whose merged head is not Rovara's last push, and says so; the human-edit owner runs it with comments and edits in one call", async () => {
-    const w = world({ model: new ScriptedModel([reply(candidateJson({ evidenceSpanIds: ["S1"] }))]) });
-    const lines: string[] = [];
-    w.deps.log = (event) => { lines.push(event); };
-    const owned = change({ humanEditsExpected: true, edits: [edit] });
-    expect(await reflectRepoOnly(w.deps, mainSubject(), [{ ...owned, edits: [] }], newTaskFailureTally(), { owner: "task_end" })).toMatchObject({ calls: 0 });
-    expect(lines).toEqual(["learning.repo_reflect_left_to_human_edit"]);
-    expect(await reflectRepoOnly(w.deps, mainSubject(), [owned], newTaskFailureTally(), { owner: "human_edit" })).toMatchObject({ calls: 1 });
-    const prompt = w.model.calls[0]!["user"] as string;
-    expect(prompt).toContain("Use withRetry for HTTP retries in api, not a hand-rolled loop.");
-    expect(prompt).toContain("await withRetry()");
-    // Same once-key: the task-end path (and a second job) find it taken.
-    expect(await reflectRepoOnly(w.deps, mainSubject(), [{ ...owned, humanEditsExpected: false }], newTaskFailureTally(), { owner: "task_end" })).toMatchObject({ calls: 0 });
-    expect(w.model.calls).toHaveLength(1);
+describe("two reflections, no hand-over: the comments one (the task end's) and the edits one (the human-edit job's)", () => {
+  const edit = memberSpan("A person changed src/a.ts, +1 -1:\n@@ -1 +1 @@\n-loop\n+await withRetryEDIT()", { kind: "human_edit", scopes: [PLACE], audience: { kind: "project" }, authorIds: ["ann"], sourceKey: "human_edit" });
+  const answers = () => new ScriptedModel([reply(candidateJson({ evidenceSpanIds: ["S1"] })), reply(candidateJson({ title: "Second", body: "Edits show retries go through withRetry.", evidenceSpanIds: ["S1"] }))]);
+  it("the comments reflection holds the comments and never the edits; the edits reflection holds the edits and the same comments for context; each has its own once-key", async () => {
+    const w = world({ model: answers() });
+    const both = change({ edits: [edit] });
+    expect(repoReflectKey("task-1", both, "comments")).not.toBe(repoReflectKey("task-1", both, "edits"));
+    expect(await reflectRepoOnly(w.deps, mainSubject(), [both], newTaskFailureTally(), { kind: "comments" })).toMatchObject({ calls: 1 });
+    expect(await reflectRepoOnly(w.deps, mainSubject(), [both], newTaskFailureTally(), { kind: "edits" })).toMatchObject({ calls: 1 });
+    const [comments, edits] = w.model.calls.map((call) => call["user"] as string);
+    expect(comments).toContain("Use withRetry for HTTP retries in api, not a hand-rolled loop.");
+    expect(comments).not.toContain("withRetryEDIT");
+    expect(edits).toContain("Use withRetry for HTTP retries in api, not a hand-rolled loop.");
+    expect(edits).toContain("withRetryEDIT");
+    // Each is made once: a second delivery of either makes no call.
+    expect(await reflectRepoOnly(w.deps, mainSubject(), [both], newTaskFailureTally(), { kind: "comments" })).toMatchObject({ calls: 0 });
+    expect(await reflectRepoOnly(w.deps, mainSubject(), [both], newTaskFailureTally(), { kind: "edits" })).toMatchObject({ calls: 0 });
+    expect(w.model.calls).toHaveLength(2);
   });
-  it("a change request nobody pushed to after Rovara is the task-end owner's", async () => {
-    const w = world();
-    expect(await reflectRepoOnly(w.deps, mainSubject(), [change({ humanEditsExpected: false })], newTaskFailureTally(), { owner: "task_end" })).toMatchObject({ calls: 1 });
+  it("a pull request with edits and no comment is reflected by the edits kind only; one with comments and no edits by the comments kind only", async () => {
+    const w = world({ model: answers() });
+    expect(await reflectRepoOnly(w.deps, mainSubject(), [change({ comments: [], edits: [edit] })], newTaskFailureTally(), { kind: "comments" })).toMatchObject({ calls: 0 });
+    expect(await reflectRepoOnly(w.deps, mainSubject(), [change({ comments: [], edits: [edit] })], newTaskFailureTally(), { kind: "edits" })).toMatchObject({ calls: 1 });
+    expect(await reflectRepoOnly(w.deps, mainSubject(), [change({ comments: [comment("Use withRetry for HTTP retries in api, not a hand-rolled loop.", { eventId: "other" })], revision: "8".repeat(40) })], newTaskFailureTally(), { kind: "edits" })).toMatchObject({ calls: 0 });
+  });
+  it("the edits reflection's lesson must stand on an edit (a candidate that cites only a comment is dropped)", async () => {
+    const w = world({ model: new ScriptedModel([reply(candidateJson({ evidenceSpanIds: ["S1"] }))]) });
+    // The comment is span S1 here (edits rank first, so the edit is S1 when present; with a comment only cited, no draft is made).
+    const result = await reflectRepoOnly(w.deps, mainSubject(), [change({ edits: [edit] })], newTaskFailureTally(), { kind: "edits" });
+    expect(result.calls).toBe(1);
+    expect((await w.store.list(key)).every((lesson) => lesson.provenance.sourceKinds.includes("human_edit"))).toBe(true);
   });
 });
 
@@ -355,16 +371,62 @@ describe("review lows", () => {
   });
 });
 
-describe("review L-f: Public's cap is per task, across the task-end run and the human-edit job", () => {
-  it("held amounts are remembered in whole cents (rounded up) and read back; they only grow", async () => {
+describe("review L-f: Public's cap is one total per task across both reflections, in any order", () => {
+  const edit = memberSpan("A person changed src/a.ts, +1 -1:\n@@ -1 +1 @@\n-loop\n+await withRetryEDIT()", { kind: "human_edit", scopes: [PLACE], audience: { kind: "project" }, authorIds: ["ann"], sourceKey: "human_edit" });
+  const quoting = () => { const model = new ScriptedModel([reply(candidateJson({ evidenceSpanIds: ["S1"] })), reply(candidateJson({ evidenceSpanIds: ["S1"] }))]) as ScriptedModel & PipelineModel; model.quote = async () => ({ ok: true as const, usd: 0.01 }); return model; };
+  const capped = (model: ScriptedModel & PipelineModel) => { const w = world({ model, edition: "public" }); w.deps.reflect.capsOverride = { perTaskUsd: 0.03 }; return w; };
+
+  it("held amounts are remembered in whole cents (rounded up) and read back; they only grow; float noise does not add a cent", async () => {
     const store = new InMemoryLessonStore();
     expect(await readTaskHeld(store, key, "task-1")).toBe(0);
     await noteTaskHeld(store, key, "task-1", 0.034);
     expect(await readTaskHeld(store, key, "task-1")).toBeCloseTo(0.04, 6);
     await noteTaskHeld(store, key, "task-1", 0.01);
     expect(await readTaskHeld(store, key, "task-1")).toBeCloseTo(0.04, 6);
-    await noteTaskHeld(store, key, "task-1", 0.15);
-    expect(await readTaskHeld(store, key, "task-1")).toBeCloseTo(0.15, 6);
+    await noteTaskHeld(store, key, "task-1", 0.07 + 0.03);
+    expect(await readTaskHeld(store, key, "task-1")).toBeCloseTo(0.1, 6);
     expect(await readTaskHeld(store, key, "task-2")).toBe(0);
+    // A cap above a dollar is counted in full.
+    await noteTaskHeld(store, key, "task-3", 3, 3);
+    expect(await readTaskHeld(store, key, "task-3", 3)).toBeCloseTo(3, 6);
+  });
+  it("a reservation takes free steps one at a time and fails when the cap's steps run out", async () => {
+    const store = new InMemoryLessonStore();
+    expect(await reserveTaskHeld(store, key, "t", 0.02, 0.03)).toBe(true);
+    expect(await reserveTaskHeld(store, key, "t", 0.02, 0.03)).toBe(false);
+    expect(await reserveTaskHeld(store, key, "u", 0.01, 0.03)).toBe(true);
+    // Two at once never take the same step: of two reservations of the last cent only one wins.
+    const results = await Promise.all([reserveTaskHeld(store, key, "v", 0.03, 0.03), reserveTaskHeld(store, key, "v", 0.01, 0.03)]);
+    expect(results.filter(Boolean)).toHaveLength(1);
+  });
+  for (const [first, second] of [["comments", "edits"], ["edits", "comments"]] as const) {
+    it(`${first} first, then ${second}: the two calls together never exceed the task's cap (here 3 cents, 2 already held by the task's other runs)`, async () => {
+      const model = quoting();
+      const w = capped(model);
+      await noteTaskHeld(w.deps.process.store, key, "task-1", 0.02, 0.03);
+      const both = change({ edits: [edit] });
+      const a = await reflectRepoOnly(w.deps, mainSubject(), [both], newTaskFailureTally(), { kind: first });
+      const b = await reflectRepoOnly(w.deps, mainSubject(), [both], newTaskFailureTally(), { kind: second });
+      expect(a.calls + b.calls).toBe(1);
+      expect(model.calls).toHaveLength(1);
+      expect(await readTaskHeld(w.deps.process.store, key, "task-1", 0.03)).toBeCloseTo(0.03, 6);
+    });
+  }
+  it("both at once: of two reflections racing for the last cent only one is made", async () => {
+    const model = quoting();
+    const w = capped(model);
+    await noteTaskHeld(w.deps.process.store, key, "task-1", 0.02, 0.03);
+    const both = change({ edits: [edit] });
+    await Promise.all([reflectRepoOnly(w.deps, mainSubject(), [both], newTaskFailureTally(), { kind: "comments" }), reflectRepoOnly(w.deps, mainSubject(), [both], newTaskFailureTally(), { kind: "edits" })]);
+    expect(model.calls).toHaveLength(1);
+  });
+  it("with room for both, both are made and the ladder holds both", async () => {
+    const model = quoting();
+    const w = capped(model);
+    const both = change({ edits: [edit] });
+    await reflectRepoOnly(w.deps, mainSubject(), [both], newTaskFailureTally(), { kind: "comments" });
+    await reflectRepoOnly(w.deps, mainSubject(), [both], newTaskFailureTally(), { kind: "edits" });
+    expect(model.calls).toHaveLength(2);
+    expect(await readTaskHeld(w.deps.process.store, key, "task-1", 0.03)).toBeCloseTo(0.02, 6);
   });
 });

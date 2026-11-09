@@ -1,153 +1,17 @@
 // Lessons in the repo, lane R1b (decision 50c): the WIRED path from a merged task's end to a repo-only lesson in the Dynamo store. The real task-end handler sends ids to the queue, the queue's consumer is the real reflect
 // worker (lease, deadline) running `learnFromEndedTaskTyped` with the PRODUCTION subject source (`lessonSubjectSource`) and the real capture adapter over a fake code host, the runtime the broker builds
-// (`createLessonsRuntime`) stores the drafts, and the real human-edit extractor owns a change request someone pushed to after Rovara.
-// Mutation checks (done by hand, see the lane's report): a forbidden input added to the repo-only prompt fails the prompt test; the once-key removed fails the redelivery test; the gate removed fails the switch-off test.
-import { randomUUID } from "node:crypto";
+// (`createLessonsRuntime`) stores the drafts, and the real human-edit extractor runs the edits reflection. The world is `tests/support/lessons-repo-reflect-world.ts`.
+// Mutation checks (done by hand, see the lane's report): the task end skipping its comments reflection fails the first tests; the edits path removed fails the edits tests; the cap reservation removed fails the cap tests.
 import { afterEach, describe, expect, it } from "vitest";
-import type { ChangeRequestFeedback, CodeHost } from "@agentx/contracts";
-import { createWorkflowSnapshot } from "../../packages/contracts/src/task-workflow-node.js";
-import { workflowPullRequestBody } from "../../packages/broker/src/aws/developer-tasks.js";
-import { rovaraPullRequestBody } from "../../packages/broker/src/rovara-code/pull-request-body.js";
-import { lessonSubjectSource } from "../../packages/broker/src/aws/broker/lesson-subject-source.js";
-import { taskKey, taskOwnerKey } from "../../packages/broker/src/developer/task-records.js";
-import type { CapturedWords } from "../../packages/broker/src/lessons/captured-rows.js";
-import { createHumanEditExtractor } from "../../packages/broker/src/lessons/human-edit.js";
-import { noteTaskHeld } from "../../packages/broker/src/lessons/repo-reflect.js";
 import { loadLessonsForStage } from "../../packages/broker/src/lessons/load.js";
 import { setLearnedLessonsGate } from "../../packages/broker/src/lessons/policy.js";
 import type { PipelineModel } from "../../packages/broker/src/lessons/ports.js";
-import { dynamoPauseStore } from "../../packages/broker/src/lessons/pause.js";
-import { dynamoReflectClaims } from "../../packages/broker/src/lessons/reflect-claims.js";
-import type { ReflectQueue, ReflectQueueMessage } from "../../packages/broker/src/lessons/reflect-queue.js";
-import { handleReflectBatch } from "../../packages/broker/src/lessons/reflect-worker.js";
-import { createLessonsRuntime } from "../../packages/broker/src/lessons/runtime.js";
-import { learnFromEndedTaskTyped, learningTaskEndHandler, type TaskLearningDeps } from "../../packages/broker/src/lessons/task-end.js";
-import { captureAdapterOf } from "../../packages/broker/src/team-record/sources/capture-adapters.js";
-import type { HumanEditInput } from "../../packages/broker/src/team-record/sources/codehost.js";
-import { FakeDynamoDb } from "../support/fake-dynamodb.js";
-import { PROJECT, WS, allowAllAccess } from "../unit/lessons/lesson-helpers.js";
+import { learnFromEndedTaskTyped } from "../../packages/broker/src/lessons/task-end.js";
+import { noteTaskHeld, readTaskHeld } from "../../packages/broker/src/lessons/repo-reflect.js";
+import { allowAllAccess } from "../unit/lessons/lesson-helpers.js";
+import { INTENT, KEY, PLACE, PROJECT, PUSHED, TASK, V1_BODY, V2_BODY, WS, World, words } from "../support/lessons-repo-reflect-world.js";
 
 afterEach(() => { setLearnedLessonsGate(undefined); });
-
-const KEY = { workspaceId: WS, project: PROJECT };
-const T0 = 1_800_000_000_000;
-const TASK = randomUUID();
-const CREATOR = "creator-1";
-const HEAD = "d".repeat(40);
-const PUSHED = "e".repeat(40);
-const MERGE = "f".repeat(40);
-const PLACE = "github:repo/9";
-const INTENT = "Make the retries use withRetry";
-const REPO_SYSTEM = "one repository's own review";
-const SLACK_PLAN = "PLANSUMMARY from the Slack ask: customer Initech wants the Q4 churn export";
-
-/** Descriptions as Rovara's own builders write them (version 1 and version 2): plan summary, status block, names, task link. None of it may reach the repo-only prompt. */
-const TASK_ID = "8b579b4b-eaa7-4bf2-87bc-6da86b97c9e6";
-const attribution = { requester: { state: "named" as const, name: "Jane Doe", ref: "a".repeat(16) }, approver: { state: "named" as const, name: "John Roe", ref: "b".repeat(16) } };
-const snapshot = (definitionVersion: string) => createWorkflowSnapshot({ taskId: TASK_ID, ownerId: "a".repeat(64), now: "2026-10-25T12:00:00.000Z", definitionVersion } as never);
-const V2_BODY = rovaraPullRequestBody({ summary: [SLACK_PLAN], fallbackTitle: "Retries", workflow: snapshot("1.1.0"), context: { attribution }, reviewLines: () => [], pageUrl: "https://app.rovara.example/t/abc" });
-const V1_BODY = workflowPullRequestBody({ title: "Retries" } as never, snapshot("1.0.0"), `${SLACK_PLAN}\nmore`, "https://app.rovara.example/t/abc", { attribution });
-
-interface Options { humanEdits?: boolean; prUrl?: string; registeredUrl?: string; pushedHead?: string; mergedHead?: string; body?: string; title?: string; sameText?: boolean; rovaraHeadKnown?: boolean }
-const words = (id: string, who: string, text: string): CapturedWords => ({ id, authorDeveloperId: who, authorSourceId: `acct-${who}`, source: "github", ownText: true, text, audience: { kind: "project" }, scope: PLACE });
-const candidate = (title: string, body: string) => ({ type: "convention", title, description: body, body, scope: { repos: ["api"], paths: ["src/**"] }, stages: ["IMPLEMENT"], citations: [], evidenceSpanIds: ["S1"] });
-
-class World {
-  now = T0;
-  comments: Record<string, CapturedWords> = { "review_comment:11": words("acme/api#pr7:review_comment11", "rae", "Use withRetry for HTTP retries in api, not a hand-rolled loop.") };
-  commentIds: string[] = ["11"];
-  mode: "Off" | "Collect" | "Suggest" | "On" = "On";
-  outsiders = new Set<string>();
-  quoteFailures = 0;
-  calls: Array<{ purpose: string; repoOnly: boolean; system: string; user: string; maxHoldUsd?: number }> = [];
-  private readonly opts: Required<Omit<Options, "rovaraHeadKnown">> & { rovaraHeadKnown: boolean };
-  private readonly tasks = new FakeDynamoDb();
-  private readonly record = new FakeDynamoDb({ indexKeys: { gsi1: { partition: "gsi1pk" }, gsi2: { partition: "gsi2pk" }, gsi3: { partition: "gsi3pk", sort: "gsi3sk" }, gsi4: { partition: "gsi4pk" }, gsi5: { partition: "gsi5pk", sort: "textDueAt" } } });
-  private readonly state = new FakeDynamoDb();
-  readonly table = { documentClient: this.record, tableName: "record" };
-  readonly runtime;
-  readonly learning: TaskLearningDeps;
-
-  constructor(options: Options = {}) {
-    this.opts = { prUrl: "https://github.com/acme/api/pull/7", registeredUrl: "https://github.com/acme/api", pushedHead: HEAD, mergedHead: HEAD, body: V2_BODY, title: "Retries use withRetry", sameText: false, rovaraHeadKnown: true, humanEdits: true, ...options };
-    this.tasks.set({
-      ...taskKey(TASK), entityType: "DEVELOPER_TASK", taskId: TASK, orgId: WS, project: PROJECT, developerId: CREATOR, developerName: "Creator", provider: "oidc", client: "web",
-      requestText: INTENT, title: "Retries", agent: { agentId: "a" }, startedBy: { developerId: CREATOR }, ownerKey: taskOwnerKey(CREATOR, TASK),
-      workflow: {
-        schemaVersion: 1, definitionId: "agentx-task-to-pr", definitionVersion: "1.0.0", taskId: TASK, ownerId: taskOwnerKey(CREATOR, TASK), revision: 3, stage: "WAIT_FOR_MERGE", state: "COMPLETE", outcome: "MERGED",
-        createdAt: "2026-11-01T00:00:00.000Z", updatedAt: "2026-11-01T00:00:00.000Z", artifacts: [], decisions: [],
-        pullRequests: [{ repositoryId: "api", number: 7, url: this.opts.prUrl, ...(this.opts.rovaraHeadKnown ? { headSha: this.opts.pushedHead } : {}), candidateDigest: "b".repeat(64), required: true, state: "MERGED" }],
-      },
-    });
-    const pause = dynamoPauseStore(this.table, () => this.now);
-    const model: PipelineModel = {
-      quote: async () => { if (this.quoteFailures > 0) { this.quoteFailures -= 1; throw new Error("quote down"); } return { ok: true, usd: 0.01 }; },
-      complete: async (request) => {
-        const repoOnly = request.system.includes(REPO_SYSTEM);
-        this.calls.push({ purpose: request.purpose, repoOnly, system: request.system, user: request.user, ...(request.maxHoldUsd === undefined ? {} : { maxHoldUsd: request.maxHoldUsd }) });
-        // The curator's judge rides the same model (a different purpose): it answers the duplicate question for every candidate.
-        if (request.purpose !== "reflect") {
-          const count = (request.user.match(/^\d+\. state=/gmu) ?? []).length;
-          return { text: JSON.stringify({ verdicts: Array.from({ length: count }, (_, i) => ({ n: i + 1, verdict: this.opts.sameText ? "same" : "different" })), escalate: false }), costUsd: 0.001, model: "judge-model" };
-        }
-        const same = this.opts.sameText;
-        const text = JSON.stringify({ candidates: [repoOnly && !same ? candidate("Retries go through withRetry", "Reviewers ask that HTTP retries in api use withRetry, not a hand-rolled loop.") : candidate("Name the retry helper", "The first reflection learned that the retry helper is named withRetry in api.")] });
-        return { text, costUsd: 0.01, model: "reflect-model" };
-      },
-    };
-    this.runtime = createLessonsRuntime({
-      table: this.table, now: () => this.now, reader: { file: async () => undefined }, repositoriesOf: async () => ["api"], pause, model, spend: { admit: async () => true, look: async () => "ok" }, edition: "public",
-      audit: async () => undefined, evidence: { documentClient: this.record, tableName: "state", signInTableName: "signin", now: () => this.now }, linkedAccounts: async () => [], taskVisibility: allowAllAccess.taskVisibility,
-      names: { memberName: async () => "x", isErased: async () => false },
-    });
-    const settings = { read: async () => ({ mode: this.mode, preset: "standard" as const }) };
-    // The real capture adapter over a fake code host: the host's feedback carries the description Rovara wrote; the adapter decides what of it the lessons code sees.
-    const host: Pick<CodeHost, "feedback"> = {
-      feedback: async () => ({
-        comments: this.commentIds.map((id) => ({ id, kind: "review_comment", url: "", author: "x", updatedAt: "2026-11-01T00:00:00.000Z", body: "unused", line: 3 })), threads: [],
-        changeRequest: { ref: {}, state: "merged", sourceBranch: "rovara/x", targetBranch: "main", headRevision: this.opts.mergedHead, mergeRevision: MERGE, title: this.opts.title, body: this.opts.body, headTreeRevision: "a".repeat(40) },
-      }) as unknown as ChangeRequestFeedback,
-    };
-    const adapter = captureAdapterOf({
-      host: "github", codeHost: host, pullRequestAddress: (url) => { const m = /^https:\/\/github\.com\/([\w.-]+)\/([\w.-]+)\/pull\/(\d+)$/u.exec(url); return m === null ? undefined : { host: "github", repository: `${m[1]}/${m[2]}`.toLowerCase(), number: Number(m[3]) }; },
-      repositoryAddress: (fullName) => `https://github.com/${fullName}`, refOf: () => ({}) as never, scopeOf: () => ({ system: "webhook" }) as never,
-    });
-    const source = lessonSubjectSource({
-      documentClient: this.tasks, tableName: "tasks", repositoriesOf: async () => ["api"], standing: async (_org, who) => (this.outsiders.has(who) ? "outsider" : "member"), isErased: async () => false, visibility: async () => ({ kind: "shared" }), now: () => this.now,
-      captured: { rememberedNote: async () => undefined, pullRequestWords: async ({ surface, commentId }) => this.comments[`${surface}:${commentId}`] }, rememberedNoteIds: async () => [], sourceExcluded: async () => false,
-      pullRequestAddress: (url) => adapter.pullRequestAddress(url), pullRequestFeedback: (input) => adapter.pullRequestFeedback!({ workspaceId: input.orgId, project: input.project, taskId: input.taskId, address: input.address, url: input.url }),
-      humanEditsSupported: () => this.opts.humanEdits, repositoryUrlsOf: async () => ({ api: this.opts.registeredUrl }), repositoryAddress: (_host, fullName) => adapter.repositoryAddress?.(fullName),
-    });
-    this.learning = {
-      source, rows: { sendBack: async () => undefined, revertedBy: async () => undefined }, settings,
-      reflect: { model, spend: { admit: async () => true }, audit: this.runtime.routes.audit, settings, edition: "public", now: () => this.now, pause },
-      process: { ...this.runtime.routes, settings },
-    };
-  }
-
-  readonly queue: ReflectQueue = {
-    send: async (message: ReflectQueueMessage) => {
-      const claims = dynamoReflectClaims({ documentClient: this.state, tableName: "state", keysOutcome: async () => "clear" });
-      const result = await handleReflectBatch({ claims, learn: (request) => learnFromEndedTaskTyped(this.learning, request), now: () => this.now, deadlineMs: 60_000, log: () => undefined }, { Records: [{ messageId: `m-${Math.random()}`, body: JSON.stringify(message) }] });
-      expect(result.batchItemFailures).toEqual([]);
-    },
-  };
-  async end(outcome: "merged" | "closed" = "merged"): Promise<void> {
-    await learningTaskEndHandler(() => ({ queue: this.queue }))({} as never, { orgId: WS, taskId: TASK, outcome, runLimitUsd: 1, spentUsd: 0 });
-  }
-  /** The human-edit job's extractor, over the same source, settings, model and store. */
-  extractor = () => createHumanEditExtractor({
-    source: this.learning.source, settings: this.learning.settings, reflect: this.learning.reflect, process: this.learning.process,
-    standing: async (_org, who) => (this.outsiders.has(who) ? "outsider" : "member"), isErased: async () => false,
-  });
-  editInput = (over: Partial<HumanEditInput> = {}): HumanEditInput => ({
-    workspaceId: WS, project: PROJECT, repo: "acme/api", taskId: TASK, pullRequest: { number: 7, url: this.opts.prUrl }, trust: "member", authorCount: 1, authors: ["ann"], audience: { kind: "project" }, scope: PLACE,
-    files: [{ path: "src/fetch.ts", additions: 1, deletions: 1, symbols: ["function load()"], hunks: ["@@ -1,2 +1,2 @@", "-for (;;) { try { fetch() } catch {} }", "+await withRetryEDIT(() => fetch())"] }], link: this.opts.prUrl, ...over,
-  });
-  repoCalls = () => this.calls.filter((call) => call.purpose === "reflect" && call.repoOnly);
-  mainCalls = () => this.calls.filter((call) => call.purpose === "reflect" && !call.repoOnly);
-  lessons = async () => this.runtime.store.list(KEY);
-}
 
 describe("a merged task's pull request is reflected on a second time, over the repository's own words, through the real task-end path into the Dynamo store", () => {
   it("a merged pull request with a member's review comment: one repo-only call, and its lesson is repo-only for that repository; the task's own reflection is unchanged", async () => {
@@ -297,53 +161,49 @@ describe("review M1: the repository is proved from the registered repository URL
   });
 });
 
-describe("one owner per pull request: the human-edit job owns it when someone pushed after Rovara", () => {
-  it("nobody pushed after Rovara: the task end makes the one comment-only call, and a later job finds the key taken (no double call)", async () => {
+describe("two reflections, no hand-over: the task end always reflects on the comments; the human-edit job adds an edits reflection when it has real edits", () => {
+  it("nobody pushed after Rovara: the task end makes the one comments call; a job that happens to run finds nothing to add (no edits, no edits call)", async () => {
     const w = new World();
     await w.end();
     expect(w.repoCalls()).toHaveLength(1);
     expect(w.repoCalls()[0]!.user).not.toContain("withRetryEDIT");
-    await w.extractor().extract(w.editInput());
-    expect(w.repoCalls()).toHaveLength(1);
   });
 
-  it("a person pushed after Rovara: the task end makes no repo-only call; the job makes ONE call with the comments and the edits; a second job makes none", async () => {
+  it("a person pushed after Rovara: the task end STILL makes its comments call (it never defers); the job makes a separate edits call with the edits and the same comments; neither is made twice", async () => {
     const w = new World({ mergedHead: PUSHED });
     await w.end();
-    expect(w.repoCalls()).toHaveLength(0);
-    expect(w.mainCalls()).toHaveLength(1);
-    await w.extractor().extract(w.editInput());
     expect(w.repoCalls()).toHaveLength(1);
-    const prompt = w.repoCalls()[0]!.user;
-    expect(prompt).toContain("Use withRetry for HTTP retries in api, not a hand-rolled loop.");
-    expect(prompt).toContain("withRetryEDIT");
-    expect(prompt).not.toContain(INTENT);
-    const lesson = (await w.lessons()).find((l) => l.provenance.repoOnly !== undefined)!;
-    expect(lesson.provenance.repoOnly).toEqual({ place: PLACE });
-    expect(lesson.provenance.readFrom).toEqual(expect.arrayContaining(["rae", "ann"]));
+    expect(w.repoCalls()[0]!.user).not.toContain("withRetryEDIT");
+    await w.extractor().extract(w.editInput());
+    expect(w.repoCalls()).toHaveLength(2);
+    const edits = w.repoCalls()[1]!.user;
+    expect(edits).toContain("withRetryEDIT");
+    expect(edits).toContain("Use withRetry for HTTP retries in api, not a hand-rolled loop.");
+    expect(edits).not.toContain(INTENT);
+    for (const lesson of await w.lessons()) expect(lesson.provenance.repoBlockCodes ?? []).not.toContain("typed_in_rovara");
+    expect((await w.lessons()).filter((l) => l.provenance.repoOnly !== undefined).length).toBeGreaterThanOrEqual(1);
     await w.extractor().extract(w.editInput());
     await w.end();
-    expect(w.repoCalls()).toHaveLength(1);
+    expect(w.repoCalls()).toHaveLength(2);
   });
 
-  it("the job runs first, then the task end: still one call", async () => {
+  it("the job first, then the task end: the same two calls", async () => {
     const w = new World({ mergedHead: PUSHED });
     await w.extractor().extract(w.editInput());
     await w.end();
-    expect(w.repoCalls()).toHaveLength(1);
+    expect(w.repoCalls()).toHaveLength(2);
   });
 
-  it("the job cannot use the edit (its author is not a member): it still makes the comment-only call, without the edit's lines", async () => {
+  it("the job cannot use the edit (its author is not a member): no edits call; the task end's comments call is untouched", async () => {
     const w = new World({ mergedHead: PUSHED });
     w.outsiders.add("ann");
     await w.end();
     await w.extractor().extract(w.editInput());
     expect(w.repoCalls()).toHaveLength(1);
-    expect(w.repoCalls()[0]!.user).toContain("Use withRetry for HTTP retries in api");
     expect(w.repoCalls()[0]!.user).not.toContain("withRetryEDIT");
   });
 
-  it("a pull request with edits but no review comment is reflected by the job on the edits alone", async () => {
+  it("a pull request with edits but no review comment: no comments call at the task end; the job reflects on the edits alone", async () => {
     const w = new World({ mergedHead: PUSHED });
     w.commentIds = [];
     await w.end();
@@ -352,61 +212,57 @@ describe("one owner per pull request: the human-edit job owns it when someone pu
     expect(w.repoCalls()).toHaveLength(1);
     expect(w.repoCalls()[0]!.user).toContain("withRetryEDIT");
   });
-});
 
-describe("review L-f: Public's cap is per task across the task-end run and the human-edit job", () => {
-  it("the job's repo-only call is asked to hold at most what the task end left of the 0.15 cap (not a fresh 0.15)", async () => {
-    const w = new World({ mergedHead: PUSHED });
-    await w.end();
-    expect(w.mainCalls()[0]!.maxHoldUsd).toBeCloseTo(0.15, 6);
-    await w.extractor().extract(w.editInput());
-    expect(w.repoCalls()).toHaveLength(1);
-    // The first reflection held 0.01 (its quote); that is one whole cent of the task's total.
-    expect(w.repoCalls()[0]!.maxHoldUsd).toBeCloseTo(0.14, 6);
-  });
-  it("a job that finds the task's cap used up makes no call", async () => {
-    const w = new World({ mergedHead: PUSHED });
-    await w.end();
-    await noteTaskHeld(w.runtime.store, KEY, TASK, 0.15);
-    await w.extractor().extract(w.editInput());
-    expect(w.repoCalls()).toHaveLength(0);
-  });
-});
-
-describe("review M-a: the task end leaves a pull request to the human-edit job only on a host that reads human edits", () => {
-  it("a host whose adapter does not support human edits: the task end owns the change request even though the head moved", async () => {
-    const w = new World({ mergedHead: PUSHED, humanEdits: false });
-    await w.end();
-    expect(w.repoCalls()).toHaveLength(1);
-  });
-});
-
-describe("review M-a: the extractor's comment-only fallback (what the tap calls when it skips a pull request)", () => {
-  const skipped = (w: World) => ({ workspaceId: WS, project: PROJECT, taskId: TASK, link: w.editInput().link });
-  it("makes ONE comment-only call for a pull request the task end left to the job, with the same once-key (a second call, or the task end, makes none)", async () => {
-    const w = new World({ mergedHead: PUSHED });
-    await w.end();
-    expect(w.repoCalls()).toHaveLength(0);
-    await w.extractor().commentsOnly!(skipped(w));
-    expect(w.repoCalls()).toHaveLength(1);
-    expect(w.repoCalls()[0]!.user).toContain("Use withRetry for HTTP retries in api, not a hand-rolled loop.");
-    expect(w.repoCalls()[0]!.user).not.toContain("withRetryEDIT");
-    expect((await w.lessons()).find((l) => l.provenance.repoOnly !== undefined)?.provenance.repoOnly).toEqual({ place: PLACE });
-    await w.extractor().commentsOnly!(skipped(w));
-    await w.extractor().extract(w.editInput());
-    await w.end();
-    expect(w.repoCalls()).toHaveLength(1);
-  });
-  it("is gated like every learning call: Off, Collect and a switch that is off make no call and read nothing from the task", async () => {
+  it("Off, Collect and a switch that is off: the job makes no repo-only call", async () => {
     for (const mode of ["Off", "Collect"] as const) {
       const w = new World({ mergedHead: PUSHED });
       w.mode = mode;
-      await w.extractor().commentsOnly!(skipped(w));
+      await w.extractor().extract(w.editInput());
       expect(w.calls, mode).toEqual([]);
     }
     setLearnedLessonsGate(() => false);
     const w = new World({ mergedHead: PUSHED });
-    await w.extractor().commentsOnly!(skipped(w));
+    await w.extractor().extract(w.editInput());
     expect(w.calls).toEqual([]);
+  });
+});
+
+describe("review L-f: Public's cap is one total per task across the task end and the job, in either order", () => {
+  const CAP = 0.06;
+  const spent = (w: World) => w.calls.length * 0.01;
+  for (const order of ["task end first", "job first"] as const) {
+    it(`${order}: every model call of the task together (reflections, judges, comments and edits) stays within the cap`, async () => {
+      const w = new World({ mergedHead: PUSHED });
+      (w.learning.reflect as { capsOverride?: { perTaskUsd?: number } }).capsOverride = { perTaskUsd: CAP };
+      if (order === "task end first") { await w.end(); await w.extractor().extract(w.editInput()); } else { await w.extractor().extract(w.editInput()); await w.end(); }
+      // Four calls would be made with room (the task's own reflection, its comments reflection, the edit's own reflection, the edits reflection): at 1 cent each the cap of 6 cents holds them all; a lower cap must stop the rest.
+      expect(spent(w)).toBeLessThanOrEqual(CAP + 1e-9);
+      expect(w.calls.length).toBeGreaterThanOrEqual(4);
+    });
+    it(`${order}: a cap of 3 cents stops the calls that would go over it`, async () => {
+      const w = new World({ mergedHead: PUSHED });
+      (w.learning.reflect as { capsOverride?: { perTaskUsd?: number } }).capsOverride = { perTaskUsd: 0.03 };
+      if (order === "task end first") { await w.end(); await w.extractor().extract(w.editInput()); } else { await w.extractor().extract(w.editInput()); await w.end(); }
+      expect(spent(w)).toBeLessThanOrEqual(0.03 + 1e-9);
+      expect(w.calls.length).toBeGreaterThanOrEqual(2);
+    });
+  }
+  it("a pull request with edits and no comment: the task end's own reflection still counts against the cap for the job (a cap of 2 cents holds two calls in all)", async () => {
+    const w = new World({ mergedHead: PUSHED });
+    w.commentIds = [];
+    (w.learning.reflect as { capsOverride?: { perTaskUsd?: number } }).capsOverride = { perTaskUsd: 0.02 };
+    await w.end();
+    await w.extractor().extract(w.editInput());
+    expect(w.calls.length * 0.01).toBeLessThanOrEqual(0.02 + 1e-9);
+    expect(w.repoCalls()).toHaveLength(0);
+  });
+  it("what the task end held is on the ladder for the job (and a job that finds the cap used up makes no repo-only call)", async () => {
+    const w = new World({ mergedHead: PUSHED });
+    await w.end();
+    expect(await readTaskHeld(w.runtime.store, KEY, TASK, 0.15)).toBeGreaterThan(0);
+    await noteTaskHeld(w.runtime.store, KEY, TASK, 0.15, 0.15);
+    const before = w.repoCalls().length;
+    await w.extractor().extract(w.editInput());
+    expect(w.repoCalls()).toHaveLength(before);
   });
 });

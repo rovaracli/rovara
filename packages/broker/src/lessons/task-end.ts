@@ -23,7 +23,7 @@ import { reflectSubject, type ReflectDeps } from "./reflect.js";
 import type { ReflectSubject } from "./reflect-input.js";
 import type { RovaraEmitter } from "../team-record/sources/rovara.js";
 import type { ReflectQueue } from "./reflect-queue.js";
-import { noteTaskHeld, reflectRepoOnly, type RepoChangeRequest } from "./repo-reflect.js";
+import { noteTaskHeld, readTaskHeld, reflectRepoOnly, type RepoChangeRequest } from "./repo-reflect.js";
 import type { OutcomeRowReader } from "./task-outcome-rows.js";
 import { lessonTaskRefs } from "./live-visibility.js";
 import type { LessonStore, ScopeKey } from "./store.js";
@@ -234,11 +234,19 @@ export async function learnFromEndedTaskTyped(deps: TaskLearningDeps, input: { w
     // LP-10 R8: this task's failed model calls (the outcome judge, the reflection and each draft's judge) count toward `model_failed` once per kind, not once per call.
     const tally = newTaskFailureTally();
     await countOutcome(deps, base, subject, input, tally, "before");
+    // Review L-f: Public's per-task cap is one total across this run and the human-edit job, in either order: a merged task starts from what the job already held.
+    const taskCap = learningCaps(deps.reflect.edition, deps.reflect.capsOverride).perTaskUsd;
+    if (taskCap !== undefined && subject.outcome === "merged" && (base.repoChanges?.length ?? 0) > 0) {
+      try { tally.heldUsd = Math.max(tally.heldUsd, await readTaskHeld(deps.process.store, { workspaceId: input.workspaceId, project: base.facts.project }, input.taskId, taskCap)); } catch { deps.log?.("learning.task_hold_unreadable", { task: logRef(input.workspaceId, input.taskId) }); }
+    }
     // Review L2: the curator's judge calls for these drafts hold from the same task total as the reflections and the outcome judge.
     const processDeps = { ...withFailuresCountedOnce(deps.process, tally), taskBudget: tally };
     const reflectionOf = async (): Promise<LearnResult> => {
       // The reflection's hold goes on the task's tally, so the outcome judge that follows shares Public's one per-task cap with it.
-      const result = await reflectSubject({ ...withFailuresCountedOnce(deps.reflect, tally), taskBudget: tally }, subject);
+      // Review L-f: the reflection is given what is left of the task's one Public cap (the human-edit job may have spent from it); a task with nothing left makes no call.
+      const room = taskCap === undefined ? undefined : Math.round((taskCap - tally.heldUsd) * 1e6) / 1e6;
+      if (room !== undefined && room < 0.001) return final("not_reflected");
+      const result = await reflectSubject({ ...withFailuresCountedOnce(deps.reflect, tally), taskBudget: tally, ...(room === undefined ? {} : { capsOverride: { ...deps.reflect.capsOverride, perTaskUsd: room } }) }, subject);
       if (result.status !== "ok") {
         // Lane 1b: "learning_paused" is a refusal (no provider, every model forbidden, a price or budget that cannot fit, the month's limit): the reason is already recorded as the project's pause, and trying again changes
         // nothing, so it ends the reflection (final) whatever fault state an earlier step left. A spend look that could not read the counter is "spend_refused" with a retryable fault (nothing was held or sent).
@@ -265,13 +273,13 @@ export async function learnFromEndedTaskTyped(deps: TaskLearningDeps, input: { w
     }
     // Lessons in the repo (decision 50c): a merged pull request's SECOND reflection, over the repository's own words only. After the first one and after the outcome judge (review L3: the judge's marks decide "stable", so the
     // repo-only call takes what is left of the task's budget, not the other way round), in the same attempt and lease, on the same task tally. It never makes the result retry (a retry would run the first reflection again, which the
-    // lease forbids once its call started) and never holds the end of the work back. A pull request someone pushed to after Rovara is the human-edit job's.
+    // lease forbids once its call started) and never holds the end of the work back. The task end ALWAYS runs this (the comments reflection); a pull request with human edits gets a separate edits reflection from the human-edit job, with its own once-key.
     if (!reflected.retry && subject.outcome === "merged" && (base.repoChanges?.length ?? 0) > 0) {
-      await reflectRepoOnly({ reflect: deps.reflect, process: deps.process, settings: deps.settings, ...(deps.log === undefined ? {} : { log: deps.log }) }, subject, base.repoChanges!, tally, { owner: "task_end" });
+      await reflectRepoOnly({ reflect: deps.reflect, process: deps.process, settings: deps.settings, ...(deps.log === undefined ? {} : { log: deps.log }) }, subject, base.repoChanges!, tally, { kind: "comments" });
     }
-    // Review L-f: what this run held counts against the task's one Public cap for the human-edit job too, which runs later as a second run of the same task.
-    if ((base.repoChanges?.length ?? 0) > 0 && learningCaps(deps.reflect.edition, deps.reflect.capsOverride).perTaskUsd !== undefined) {
-      try { await noteTaskHeld(deps.process.store, { workspaceId: input.workspaceId, project: base.facts.project }, input.taskId, tally.heldUsd); } catch { deps.log?.("learning.task_hold_not_noted", { task: logRef(input.workspaceId, input.taskId) }); }
+    // What this run held counts against the task's one Public cap for the human-edit job too, which runs later (or earlier) as another run of the same task.
+    if ((base.repoChanges?.length ?? 0) > 0 && taskCap !== undefined && subject.outcome === "merged") {
+      try { await noteTaskHeld(deps.process.store, { workspaceId: input.workspaceId, project: base.facts.project }, input.taskId, tally.heldUsd, taskCap); } catch { deps.log?.("learning.task_hold_not_noted", { task: logRef(input.workspaceId, input.taskId) }); }
     }
     return reflected;
   } catch {

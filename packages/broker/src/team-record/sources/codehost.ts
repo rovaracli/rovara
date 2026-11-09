@@ -95,11 +95,6 @@ export interface HumanEditInput {
 /** The learning extractor (L1). It reads `files` once and keeps at most lessons and `link`. Never stores `files`. */
 export interface HumanEditExtractorPort {
   extract(input: HumanEditInput): Promise<{ candidates: number }>;
-  /**
-   * Called when the tap skips a pull request someone pushed to after Rovara WITHOUT calling `extract` (a merge commit in the range, a rebase, a bot, an author who is not a member, no compare, capture off): the pull request's
-   * review comments are still reflected on, comment-only (lessons in the repo, review M-a). Never throws. Absent: the skip is only a skip.
-   */
-  commentsOnly?(input: { workspaceId: string; project: string; taskId: string; link: string }): Promise<void>;
 }
 
 /** What reading a human edit needs, small enough to be a queue message: the compare is made later, off the webhook's answer. */
@@ -506,34 +501,22 @@ export function createCodeHostTap(deps: CodeHostTapDependencies): { handle(event
 export async function runHumanEdit(deps: Pick<CodeHostTapDependencies, "actors" | "diffs" | "extractor" | "claims" | "pushes" | "mode" | "config" | "log">, job: HumanEditJob): Promise<"handed_on" | "skipped"> {
   const log: TapLog = deps.log ?? (() => undefined);
   if (deps.diffs === undefined || deps.extractor === undefined) return "skipped";
-  // Every skip below happens BEFORE the extractor is called, and each of them still leaves the pull request's review comments to be reflected on (lessons in the repo, review M-a): the task end left this pull request to us. A claim
-  // already taken is not one of them (another run owns the edit), and neither is a failure (the job is retried whole).
-  const extractor = deps.extractor;
-  const outcome = await humanEditOutcome({ ...deps, diffs: deps.diffs, extractor }, job, log);
-  if (outcome === "skipped_before_extract") {
-    try { await extractor.commentsOnly?.({ workspaceId: job.repo.workspaceId, project: job.project, taskId: job.taskId, link: job.pullRequest.url }); } catch { log("human_edit.comments_only_failed", {}); }
-    return "skipped";
-  }
-  return outcome;
-}
-
-async function humanEditOutcome(deps: Pick<CodeHostTapDependencies, "actors" | "claims" | "pushes" | "mode" | "config"> & { diffs: NonNullable<CodeHostTapDependencies["diffs"]>; extractor: HumanEditExtractorPort }, job: HumanEditJob, log: TapLog): Promise<"handed_on" | "skipped" | "skipped_before_extract"> {
   const config = await gate(deps, { workspaceId: job.repo.workspaceId, project: job.project, source: sourceOf(job.repo), scope: repoScope(job.repo) });
-  if (config === undefined) return "skipped_before_extract";
+  if (config === undefined) return "skipped";
   const diff = await deps.diffs.compare({ repo: job.repo, base: job.candidateHeadSha, head: job.headSha });
   if (diff === undefined) {
     // (A compare the host could not answer for the moment THROWS in the reader and is retried: this is an answer, "no such compare".)
     log("human_edit.skipped", { reason: "compare_unavailable" });
-    return "skipped_before_extract";
+    return "skipped";
   }
-  if (diff.status === "identical" || diff.files.length === 0) return "skipped_before_extract";
+  if (diff.status === "identical" || diff.files.length === 0) return "skipped";
   if (diff.status !== "ahead" || diff.truncated) {
     // A force push or a rebase mixes in Rovara's own code and other people's commits; a cut-short compare has authors nobody checked.
     log("human_edit.skipped", { reason: diff.truncated ? "compare_truncated" : "not_a_clean_delta" });
-    return "skipped_before_extract";
+    return "skipped";
   }
   const proof = await provenAuthors(deps, config, { repo: job.repo, project: job.project, base: job.candidateHeadSha, head: job.headSha, ...(job.headRef === undefined ? {} : { headRef: job.headRef }) }, diff, log);
-  if (!("authors" in proof)) return "skipped_before_extract";
+  if (!("authors" in proof)) return "skipped";
   const authorIds = proof.authors;
   const key = `human_edit#${job.taskId}#${job.headSha}`;
   if (deps.claims !== undefined && !await deps.claims.claim(key)) return "skipped";

@@ -69,18 +69,6 @@ describe("the subject source describes the merged pull request for the repo-only
     expect((await read({}, { repositoryUrlsOf: async () => ({ api: "https://github.com/ACME/api.git/" }) }))?.repoChanges).toHaveLength(1);
   });
 
-  it("review (human edits): a merged head that is not the head Rovara last pushed means the human-edit job owns it; the same head means the task end does; an unknown pushed head says nothing", async () => {
-    expect((await read({ headSha: HEAD }))!.repoChanges![0]!.humanEditsExpected).toBe(false);
-    expect((await read({ headSha: "a".repeat(40) }))!.repoChanges![0]!.humanEditsExpected).toBe(true);
-    expect((await read({ headSha: HEAD.toUpperCase().replace(/D/gu, "d") }))!.repoChanges![0]!.humanEditsExpected).toBe(false);
-    expect((await read())!.repoChanges![0]!.humanEditsExpected).toBeUndefined();
-  });
-
-  it("review M-a: a merged head that moved is left to the human-edit job only on a host whose adapter reads human edits", async () => {
-    expect((await read({ headSha: "a".repeat(40) }, { humanEditsSupported: () => false }))!.repoChanges![0]!.humanEditsExpected).toBe(false);
-    expect((await read({ headSha: "a".repeat(40) }, { humanEditsSupported: () => true }))!.repoChanges![0]!.humanEditsExpected).toBe(true);
-  });
-
   it("a pull request with no comment of this read is still described (an edit may name its place), without a place; one whose comments name two places is not", async () => {
     const none = (await read({ comments: {} }))!.repoChanges![0]!;
     expect(none.place).toBeUndefined();
