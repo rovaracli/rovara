@@ -457,6 +457,26 @@ describe("ec2-ebs delivery", () => {
       expect(await plain.deliver(build, build.invocation)).toBe("DELIVERED");
     });
 
+    it("never sends standing instructions to a worker that does not list task.standingInstructions.v1: the step is refused, not run without the company's rules, and the field is not dropped (lanes I1, I2)", async () => {
+      const standingInstructions = { text: "Standing instructions.\n\n1. Company rules\nRequired (never break these):\n- Never log customer data.", digest: "a".repeat(64), company: { version: "7", text: "Standing instructions.\n\n1. Company rules" } };
+      for (const workflowMode of ["IMPLEMENT", "REVIEW", "PLAN_CRITIQUE"] as const) {
+        const record = taskRecord({ workflowMode, standingInstructions });
+        const base = ["task.workflowMode", "task.workflowReview", "task.workflowPlanCritique"];
+        const older = delivery({ workerFeatures: async () => base });
+        await expect(older.deliver(record, record.invocation), workflowMode).rejects.toMatchObject({ code: "RUNTIME_UNAVAILABLE", message: expect.stringContaining("needs a newer worker") as string });
+        expect(older.post).not.toHaveBeenCalled();
+        const unprobed = delivery();
+        await expect(unprobed.deliver(record, record.invocation), workflowMode).rejects.toMatchObject({ code: "RUNTIME_UNAVAILABLE" });
+        const capable = delivery({ workerFeatures: async () => [...base, "task.standingInstructions.v1"] });
+        expect(await capable.deliver(record, record.invocation), workflowMode).toBe("DELIVERED");
+        expect(postedPayload(capable.post).standingInstructions).toEqual(standingInstructions);
+      }
+      // A step with no block is delivered to either.
+      const build = taskRecord({ workflowMode: "IMPLEMENT" });
+      const plain = delivery({ workerFeatures: async () => ["task.workflowMode"] });
+      expect(await plain.deliver(build, build.invocation)).toBe("DELIVERED");
+    });
+
     it("never sends a deep diagnosis to a worker that does not list task.diagnosis.v1: it is refused, not run as a setup draft, and the marker is not dropped (live interaction F3)", async () => {
       const diagnosis = { diagnosisId: "dgn_aaaaaaaaaaaaaaaaaaaa" };
       const record = taskRecord({ workflowMode: "SETUP_DRAFT", diagnosis });

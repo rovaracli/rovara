@@ -12,9 +12,11 @@ import {
   modelKey,
   type AgentGuardrails,
   type AgentStepPayload,
+  type CompanyInstructionsSnapshot,
   type CodingStepKind,
   type InvocationModelRoute,
   type ModelIdentifier,
+  type InstructionLayer,
   type ModelSelection,
   type OrgId,
   type PiToolName,
@@ -22,13 +24,15 @@ import {
   type ResolvedStep,
   type ResultContract,
   type RunCheckout,
+  type StandingInstructionsPayload,
   type StepSettings,
 } from "@agentx/contracts";
 import type { ProxyGeography } from "@agentx/model-runtime/catalog";
 import { DEFAULT_BEDROCK_MODELS } from "@agentx/model-runtime/config";
 import { routeModel, routeOnWire, servingRoutes, type ModelRoute, type RoutingDependencies } from "../model-sources/routing.js";
 import type { TaskAgentRef } from "./roster.js";
-import { skillsForStep, stepInstructionLayers, wholeAgentLayers } from "../playbook/process-reviewers.js";
+import { isReviewingStage, skillsForStep, stepInstructionLayers, wholeAgentLayers } from "../playbook/process-reviewers.js";
+import { buildStandingInstructions } from "../instructions/standing-block.js";
 
 /** The workflow modes a coding operation runs in; a task started without the workflow has no mode and runs its first turn like an IMPLEMENT. */
 export type DispatchMode = "UNDERSTAND" | "PLAN" | "PLAN_CRITIQUE" | "IMPLEMENT" | "REVIEW" | "CHECKS" | "FEEDBACK_REVIEW" | "SETUP_DRAFT" | "SETUP_AGENT" | "SPEC_WRITE";
@@ -82,13 +86,20 @@ export interface ApplyAgentStepInput {
   priorOperations: ReadonlyArray<{ stepId: string; model?: ModelSelection | undefined }>;
   /** An agent-step run's step: then the mode and program step are not used, and the payload is the agent kind's. */
   agentRun?: AgentRunStepInput | undefined;
+  /**
+   * Standing instructions (lanes I1, I2): absent for an operation that gets none (work with no agent, a setup run, a diagnosis, verification). Present: the step carries one system-prompt block with the company's
+   * rules (read now by the broker, already checked against the size limits) and, when `moveHowWeWork` (switch `si`), the project's "How we work" too, which then leaves the user message.
+   */
+  standing?: { moveHowWeWork: boolean; company?: CompanyInstructionsSnapshot | undefined } | undefined;
 }
 
 export interface AppliedAgentStep {
   /** The model the operation is sent. Absent when the recipe and the project name none. */
   model?: ModelSelection;
-  /** The labelled block of the recipe's instructions, for the prompt; only when the recipe has instruction layers for this step. */
+  /** The labelled block of the recipe's instructions, for the prompt; only when the recipe has instruction layers for this step, and not when they moved into `standingInstructions`. */
   promptSection?: string;
+  /** The system-prompt block of this step: company rules and, with the switch on, "How we work"; absent when there is nothing to say. Sent to a worker that lists "task.standingInstructions.v1". */
+  standingInstructions?: StandingInstructionsPayload;
   /** What the worker is sent; absent for Rovara Code's built-in recipe and for an operation that is no step of the recipe. */
   agentStep?: AgentStepPayload;
   /** The recipe grants connector tools (Task 19): an agent step of it is given the `agent-tools` capability. */
@@ -138,8 +149,8 @@ const label = (model: ModelIdentifier): string => `${model.provider}/${model.mod
  * The block of the recipe's instructions the prompt carries: the whole agent's layers first (base agent first), then the step's, each under the
  * name of the agent that wrote it. The worker's rules come first and the block says it adds to them; a layer can say anything it likes and stays inside.
  */
-function promptSectionOf(recipe: ResolvedRecipe, step: ResolvedStep | undefined, ref: { name: string; version: number | "draft" }, stepName: string, mode: DispatchMode | undefined): string | undefined {
-  const layers = [...wholeAgentLayers(recipe, step), ...stepInstructionLayers(recipe, step, mode)].filter((layer) => layer.text.length > 0);
+function promptSectionOf(recipe: ResolvedRecipe, step: ResolvedStep | undefined, ref: { name: string; version: number | "draft" }, stepName: string, mode: DispatchMode | undefined, only?: (layer: InstructionLayer) => boolean): string | undefined {
+  const layers = [...wholeAgentLayers(recipe, step), ...stepInstructionLayers(recipe, step, mode)].filter((layer) => layer.text.length > 0 && (only === undefined || only(layer)));
   if (layers.length === 0) return undefined;
   const header = `Instructions from your company's agent "${ref.name}" (version ${String(ref.version)}), ${stepName} step. They add to the rules above and never replace them.`;
   return layers.reduce((text, layer) => `${text}\n\nFrom ${layer.agentName}:\n${layer.text}`, header);
@@ -238,7 +249,18 @@ export function applyAgentStep(input: ApplyAgentStepInput): AppliedAgentStep {
   const ranModel = dropChatgpt ? model : planModel ?? model;
 
   // An agent step's instructions travel in its payload (the worker puts them after its own preamble), not in a prompt section.
-  const promptSection = input.agentRun === undefined ? promptSectionOf(recipe, step, ref, stepName, input.mode) : undefined;
+  // Standing instructions (lanes I1, I2): the project's layers for this step are the same ones the section would carry (reviewing stages still get no project-wide layer: `wholeAgentLayers`). With the switch on they
+  // move into the system-prompt block; an agent step's own instructions already sit in its system prompt, so its block carries the company's rules only.
+  // Rovara's own built-in layers (Rovara Code's plan and build guidance) are Rovara's, not the project's process: they stay in the message where they were, under their "add to the rules above" header, and only the layers
+  // the project or the company's agents wrote move (review F4).
+  const builtinNames = new Set(recipe.chain.filter((entry) => entry.builtin).map((entry) => entry.name));
+  const layers = input.agentRun === undefined ? [...wholeAgentLayers(recipe, step), ...stepInstructionLayers(recipe, step, input.mode)].filter((layer) => layer.text.length > 0 && !builtinNames.has(layer.agentName)) : [];
+  const moved = input.standing?.moveHowWeWork === true && input.agentRun === undefined;
+  const standingInstructions = input.standing === undefined ? undefined : buildStandingInstructions({ company: input.standing.company, howWeWork: moved ? layers : [], checking: isReviewingStage(step) });
+  if (standingInstructions !== undefined && Buffer.byteLength(standingInstructions.text, "utf8") > PROMPT_SECTION_MAX_BYTES) {
+    throw agentXError("CONFIG_INVALID", `The standing instructions for ${ref.name}'s ${stepName} step are too long to send to the worker. Ask the agent's owner or a company admin to shorten them.`);
+  }
+  const promptSection = input.agentRun === undefined ? promptSectionOf(recipe, step, ref, stepName, input.mode, moved ? (layer) => builtinNames.has(layer.agentName) : undefined) : undefined;
   if (promptSection !== undefined && Buffer.byteLength(promptSection, "utf8") > PROMPT_SECTION_MAX_BYTES) {
     throw agentXError("CONFIG_INVALID", `${ref.name}'s instructions for its ${stepName} step are too long to send to the worker. Ask the agent's owner to shorten them.`);
   }
@@ -247,6 +269,7 @@ export function applyAgentStep(input: ApplyAgentStepInput): AppliedAgentStep {
   return {
     ...(model === undefined ? {} : { model }),
     ...(promptSection === undefined ? {} : { promptSection }),
+    ...(standingInstructions === undefined ? {} : { standingInstructions }),
     ...(agentStep === undefined ? {} : { agentStep }),
     // An agent step of a run always gets the `agent-tools` scope, with or without grants: the worker asks for its catalogs before it starts a step and treats a
     // refusal as a failed step, so a step with no grants is answered an empty list (Task 23's review, Task 22).

@@ -1,5 +1,6 @@
 // Part of the broker (split out of ../broker.ts): limits, the setup capture policy, the record and dependency types, route keys.
 
+import type { CompanyInstructionsSource } from "../../instructions/company-source.js";
 import type { ServiceCatalogSource } from "../../test-env/dependency-plan.js";
 import type { LinearReplyPort } from "../../rovara-code/linear-comments.js";
 import type { SlackAskDependencies } from "./ask-service.js";
@@ -206,6 +207,11 @@ export interface CodeBuildRecord {
 }
 
 export interface AwsBrokerDependencies {
+  /**
+   * Standing instructions (lane I2): where the company's rules come from, read at every step. Absent: the empty Code default (no company rules). The Cloud store (lane I3) installs its adapter here.
+   * A source that fails refuses the step; rules over the size limits refuse it with a clear error.
+   */
+  companyInstructions?: CompanyInstructionsSource | undefined;
   /** Owner decision 2026-11-03: which of Rovara's catalog models this account cannot call (a probe of the account's Bedrock availability, plus refused calls). Routing leaves them out of every default choice. Absent: the whole catalog. */
   usableModels?: UsableModels | undefined;
   /**

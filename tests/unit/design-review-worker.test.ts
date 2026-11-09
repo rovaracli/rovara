@@ -565,6 +565,29 @@ describe("N2: what the worker records as sent", () => {
     expect(second.firstRequest()).toMatchObject({ systemObserved: false });
     second.dispose();
   });
+
+  it("standing instructions (lanes I1, I2): the company's rules follow the role prompt in the system text, so what pi holds still begins with the role prompt; none sent, none added", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "dr-standing-"));
+    const seen: Array<string | undefined> = [];
+    const adapter: PiSessionAdapter = {
+      async create(input) {
+        seen.push(input.agentRun?.systemPrompt);
+        const sessionFile = join(input.sessionDirectory, "f.jsonl");
+        await writeFile(sessionFile, "");
+        return {
+          sessionFile, conversationId: "f", prompt: async () => undefined, abort: async () => undefined, getModel: () => ({ provider: "p", modelId: "m" }),
+          getSessionStats: () => ({ sessionFile, sessionId: "f", userMessages: 0, assistantMessages: 0, toolCalls: 0, toolResults: 0, totalMessages: 0, tokens: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 }, cost: 0 }),
+          subscribe: () => () => undefined, dispose: () => undefined,
+        };
+      },
+    };
+    const runtimeFor = () => ({ model: { provider: "p", modelId: "m" }, piAdapter: adapter });
+    const open = { purpose: "reviewer" as const, keySlot: "slot-critic", model: { provider: "p", modelId: "m" }, system: "ROLE PROMPT", tools: [...READ_ONLY_TOOLS] };
+    (await createReviewSessionOpener({ rootPath: dir, localFileTools: true, runtimeFor, standingInstructions: "STANDING BLOCK" })(open)).dispose();
+    (await createReviewSessionOpener({ rootPath: dir, localFileTools: true, runtimeFor })(open)).dispose();
+    expect(seen).toEqual(["ROLE PROMPT\n\nSTANDING BLOCK", "ROLE PROMPT"]);
+    expect(seen[0]!.startsWith("ROLE PROMPT")).toBe(true);
+  });
 });
 
 describe("broker side: assembleRoundFindings, fix round 2 (N1, N3, N5)", () => {
