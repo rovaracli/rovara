@@ -117,13 +117,23 @@ describe("the operator script", () => {
     expect(report.err).toMatch(/different graders/);
   });
 
-  it("a file arm refuses to run until its adapter is built", async () => {
+  it("the file arm runs with the day's lessons; the MCP arm refuses until its tool is built", async () => {
     const { f } = await pipeline(DIFFERENT);
-    const arms = "off,on:current,file:current";
-    expect((await run(["plan", "--selection", f("selection.json"), "--arms", arms, "--seed", "s1", "--grader-model", "grader-model", "--grader-version", "v1", "--snapshots", f("out/snapshots.json"), "--out", f("plan2.json")])).code).toBe(0);
-    const ran = await run(["run", "--plan", f("plan2.json"), "--module", f("module.mjs"), "--corrections", f("corrections.json"), "--results", f("results2.jsonl"), "--max-usd", "1000"]);
-    expect(ran.code).toBe(3);
-    expect(ran.err).toMatch(/not built/);
+    const plan = async (arms: string, out: string) => run(["plan", "--selection", f("selection.json"), "--arms", arms, "--seed", "s1", "--grader-model", "grader-model", "--grader-version", "v1", "--snapshots", f("out/snapshots.json"), "--out", f(out)]);
+    expect((await plan("off,on:current,mcp:current", "plan-mcp.json")).code).toBe(0);
+    const refused = await run(["run", "--plan", f("plan-mcp.json"), "--module", f("module.mjs"), "--corrections", f("corrections.json"), "--results", f("results-mcp.jsonl"), "--max-usd", "1000"]);
+    expect(refused.code).toBe(3);
+    expect(refused.err).toMatch(/not built/);
+    expect((await plan("off,file:current", "plan-file.json")).code).toBe(0);
+    const noLessons = await run(["run", "--plan", f("plan-file.json"), "--module", f("module.mjs"), "--corrections", f("corrections.json"), "--results", f("results-file.jsonl"), "--max-usd", "1000"]);
+    expect(noLessons.code).toBe(3);
+    const ok = await run(["run", "--plan", f("plan-file.json"), "--module", f("module.mjs"), "--corrections", f("corrections.json"), "--results", f("results-file.jsonl"), "--max-usd", "1000", "--snapshot-lessons", f("out/snapshot-lessons.json")]);
+    expect(ok.code).toBe(0);
+    const rows = readFileSync(f("results-file.jsonl"), "utf8").trim().split("\n").map((l) => JSON.parse(l) as { row: { arm: string; loaded: string[] } });
+    // The lessons are scoped to the api repository: only tasks of that repository are offered them.
+    const fileRows = rows.filter((r) => r.row.arm === "file:current");
+    expect(fileRows.some((r) => r.row.loaded.length === 2)).toBe(true);
+    expect(fileRows.some((r) => r.row.loaded.length === 0)).toBe(true);
   });
 
   it("the run step needs --max-usd and stops at it", async () => {

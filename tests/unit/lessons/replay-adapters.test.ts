@@ -39,6 +39,13 @@ describe("the staging executor", () => {
     expect(port.requests).toEqual([{ sourceTaskId: "t1", runKey: "k1", evalRun: true, memory: { mode: "snapshot", snapshotId: `snp_${"a".repeat(20)}` } }]);
     expect(result).toEqual({ loaded: [lessonContentKey({ title: "Use withRetry", body: "Use withRetry for HTTP retries." })], costUsd: 0.3, evidence: "pr:7", evalRunMarked: true, learningCalls: 0 });
   });
+  it("the file arm's lessons file and pointer go on the start request, still marked", async () => {
+    const port = new Port();
+    const offer = { path: ".rovara/lessons.md", content: "# lessons", pointerPath: "AGENTS.md" as const, keys: ["k"] };
+    await stagingExecutor(port).run({ run: run({ arm: "file:current", delivery: "file" }), task, lessonsFile: offer, learning: { lessonsSwitch: "off", calls: "none" } } as never);
+    expect(port.requests[0]).toMatchObject({ evalRun: true, delivery: "file", lessonsFile: { path: ".rovara/lessons.md", content: "# lessons", pointerPath: "AGENTS.md" } });
+    expect(port.requests[0]!.lessonsFile).not.toHaveProperty("keys");
+  });
   it("an unmarked start is impossible: a plan without the mark never starts a task", async () => {
     const port = new Port();
     await expect(stagingExecutor(port).run({ run: run({ evalRun: false as never }), task, learning: { lessonsSwitch: "off", calls: "none" } })).rejects.toThrow(EvalMarkError);

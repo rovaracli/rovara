@@ -6,7 +6,7 @@
 // loader does not yet honour `memory: { mode: "snapshot" }`. The existing e2e replay (`aws/workflow-e2e-replay.ts`, `agentx admin task e2e-replay`, `scripts/e2e-replay-round.ts`) re-verifies the recorded UI
 // round of a task with no model; it starts no task and cannot carry a memory input, so it cannot be this port. Its shape (an admin route, a CLI client, a script that polls to the end) is the pattern to copy.
 import { isEvalRunMark } from "./eval-run.js";
-import { EvalMarkError, type ExecutedRun, type PlannedRun, type ReplayExecutor } from "./replay-harness.js";
+import { EvalMarkError, type ExecutedRun, type LessonsFileOffer, type PlannedRun, type ReplayExecutor } from "./replay-harness.js";
 import { lessonContentKey } from "./replay-lessonset.js";
 import type { MemoryInput } from "@agentx/contracts";
 
@@ -18,6 +18,8 @@ export interface ReplayStartRequest {
   runKey: string;
   memory?: MemoryInput;
   delivery?: "file" | "mcp";
+  /** The file arm: the lessons file to place in the checkout (R2's format) and the agent file that gets the one pointer line. */
+  lessonsFile?: { path: string; content: string; pointerPath: "AGENTS.md" };
   evalRun: true;
 }
 export interface ReplayTaskEnd { state: "completed" | "failed"; evidence: string; costUsd: number | null }
@@ -35,10 +37,10 @@ export interface ReplayTaskPort {
 
 export function stagingExecutor(port: ReplayTaskPort): ReplayExecutor {
   return {
-    async run({ run, task }: { run: PlannedRun; task: { taskId: string } }): Promise<ExecutedRun> {
+    async run({ run, task, lessonsFile }: { run: PlannedRun; task: { taskId: string }; lessonsFile?: LessonsFileOffer }): Promise<ExecutedRun> {
       // A plan that was edited by hand to drop the mark is refused before anything starts.
       if ((run as { evalRun?: unknown }).evalRun !== true) throw new EvalMarkError(run.key);
-      const request: ReplayStartRequest = { sourceTaskId: task.taskId, runKey: run.key, evalRun: true, ...(run.memory === undefined ? {} : { memory: run.memory }), ...(run.delivery === undefined ? {} : { delivery: run.delivery }) };
+      const request: ReplayStartRequest = { sourceTaskId: task.taskId, runKey: run.key, evalRun: true, ...(run.memory === undefined ? {} : { memory: run.memory }), ...(run.delivery === undefined ? {} : { delivery: run.delivery }), ...(lessonsFile === undefined ? {} : { lessonsFile: { path: lessonsFile.path, content: lessonsFile.content, pointerPath: lessonsFile.pointerPath } }) };
       const started = await port.start(request);
       // Read the mark back. Exactly `true`: a port that dropped it, or wrote something else, has started a task that could be learned from.
       let mark: unknown;

@@ -5,6 +5,7 @@ import {
   ArmNotBuiltError, EvalMarkError, ReplayLearningCallError, UNBUILT_DELIVERIES, buildReplayPlan, buildSnapshots, dayOf, runReplay,
   type ExecutedRun, type GradeRequest, type ReplayExecutor, type ReplayGraderPort, type RunSink, type SnapshotBuilder,
 } from "../../../packages/broker/src/lessons/replay-harness.js";
+import { FILE_DELIVERY } from "../../../packages/broker/src/lessons/replay-delivery.js";
 import { lessonContentKey, summarizeLessonSet } from "../../../packages/broker/src/lessons/replay-lessonset.js";
 import { repeatMistakeChecks } from "../../../packages/broker/src/lessons/replay-mistakes.js";
 import type { ReplayCandidate } from "../../../packages/broker/src/lessons/replay-select.js";
@@ -156,16 +157,41 @@ describe("running", () => {
     await go(plan(40), { executor: executor(), grader: honest, sink: sink2, priorCorrections: async () => ["c1"], maxUsd: 0.5 });
     expect([...sink2.rows.values()][0]).toMatchObject({ resolved: false, mistakes: ["c1"] });
   });
-  it("a file or MCP arm refuses to run before anything runs, until its adapter is built (stubs, DECISIONS 50.5)", async () => {
-    const p = buildReplayPlan({ tasks: tasks(40), arms: ["off", "file:current", "mcp:current", "on:current"], seed: "s", grader: GRADER, snapshots: snapshotsFor(tasks(40), ["current"]) });
+  it("the MCP arm refuses to run before anything runs (stub); the file arm refuses until it is given its delivery and the day's lessons", async () => {
+    const mcp = buildReplayPlan({ tasks: tasks(40), arms: ["off", "mcp:current", "on:current"], seed: "s", grader: GRADER, snapshots: snapshotsFor(tasks(40), ["current"]) });
     let ran = 0;
     const counting: ReplayExecutor = { run: async () => { ran += 1; return okRun(); } };
-    await expect(go(p, { executor: counting, grader: grader(), sink: new Sink(), priorCorrections: async () => [] })).rejects.toThrow(ArmNotBuiltError);
-    await expect(go(p, { executor: counting, grader: grader(), sink: new Sink(), priorCorrections: async () => [], deliveries: UNBUILT_DELIVERIES })).rejects.toThrow(/TODO: lane R2/);
+    const base = { executor: counting, grader: grader(), sink: new Sink(), priorCorrections: async () => [] };
+    await expect(go(mcp, base)).rejects.toThrow(ArmNotBuiltError);
+    await expect(go(mcp, { ...base, deliveries: { file: FILE_DELIVERY, mcp: UNBUILT_DELIVERIES.mcp } })).rejects.toThrow(/TODO: the MCP lane/);
+    const file = buildReplayPlan({ tasks: tasks(40), arms: ["off", "file:current", "on:current"], seed: "s", grader: GRADER, snapshots: snapshotsFor(tasks(40), ["current"]) });
+    await expect(go(file, base)).rejects.toThrow(ArmNotBuiltError);
+    await expect(go(file, { ...base, deliveries: UNBUILT_DELIVERIES })).rejects.toThrow(ArmNotBuiltError);
+    await expect(go(file, { ...base, deliveries: { file: FILE_DELIVERY } })).rejects.toThrow(/--snapshot-lessons/);
     expect(ran).toBe(0);
-    const built = { file: { kind: "file" as const, built: true }, mcp: { kind: "mcp" as const, built: true } };
-    const report = await go(p, { executor: counting, grader: grader(), sink: new Sink(), priorCorrections: async () => [], deliveries: built, maxUsd: 1 });
-    expect(report.ran).toBeGreaterThan(0);
+  });
+  it("the file arm is offered the day's lessons as R2's repository file, with the pointer, and its row records what the file held", async () => {
+    const lessons = [
+      lessonRecord({ id: "les_aaaa0001", title: "Use withRetry", body: "Use withRetry for HTTP retries.", scope: { repos: ["api"] } }),
+      lessonRecord({ id: "les_aaaa0002", title: "Other repo", body: "Only for the web repository.", scope: { repos: ["web"] } }),
+      lessonRecord({ id: "les_aaaa0003", title: "Old", body: "Retired advice.", status: "retired", scope: { repos: ["api"] } }),
+    ];
+    const p = buildReplayPlan({ tasks: tasks(4), arms: ["off", "file:current", "on:current"], seed: "s", grader: GRADER, snapshots: snapshotsFor(tasks(4), ["current"]), allowSmall: true, repeats: 1 });
+    const offers: Array<{ arm: string; path?: string; content?: string; pointer?: string }> = [];
+    const spying: ReplayExecutor = { run: async ({ run, lessonsFile }) => { offers.push({ arm: run.arm, ...(lessonsFile === undefined ? {} : { path: lessonsFile.path, content: lessonsFile.content, pointer: lessonsFile.pointerPath }) }); return okRun({ loaded: ["from-executor"] }); } };
+    const sink = new Sink();
+    await go(p, { executor: spying, grader: grader(), sink, priorCorrections: async () => [], deliveries: { file: FILE_DELIVERY }, snapshotLessons: async () => lessons });
+    const fileOffers = offers.filter((o) => o.arm === "file:current");
+    expect(fileOffers).toHaveLength(4);
+    expect(offers.filter((o) => o.arm !== "file:current").every((o) => o.path === undefined)).toBe(true);
+    expect(fileOffers[0]).toMatchObject({ path: ".rovara/lessons.md", pointer: "AGENTS.md" });
+    expect(fileOffers[0]!.content).toContain("Use withRetry for HTTP retries.");
+    expect(fileOffers[0]!.content).toContain("<!-- rovara:les_aaaa0001 -->");
+    expect(fileOffers[0]!.content).not.toContain("Only for the web repository");
+    expect(fileOffers[0]!.content).not.toContain("Retired advice");
+    const fileRows = [...sink.rows.values()].filter((r) => r.arm === "file:current");
+    expect(fileRows.every((r) => r.loaded.length === 1 && r.loaded[0] === lessonContentKey(lessons[0]!))).toBe(true);
+    expect([...sink.rows.values()].filter((r) => r.arm === "on:current").every((r) => r.loaded[0] === "from-executor")).toBe(true);
   });
   it("produces rows the report accepts, end to end", async () => {
     const sink = new Sink();

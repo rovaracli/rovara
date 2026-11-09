@@ -7,7 +7,8 @@ What this is: a sanity check of the lesson pipelines (owner decisions 38, 49), n
 | `off` | no lessons (A) |
 | `on:current` | lessons from the current pipeline: reflector, curator, similarity, judge (B) |
 | `on:consolidated` | lessons from the reflector plus the nightly consolidation pass (C; built by lane 8, not on this branch yet) |
-| `file:<label>`, `mcp:<label>` | the same lessons offered to a LOCAL agent through `.rovara/lessons.md` or the MCP tool (decision 50.5). Stubs: the run refuses until lane R2 and the MCP tool exist. |
+| `file:<label>` | the pipeline's lessons offered to a LOCAL agent as the repository file `.rovara/lessons.md` (lane R2's format and renderer) plus the one pointer line in AGENTS.md (decision 50.5). Built: `replay-delivery.ts#FILE_DELIVERY`. |
+| `mcp:<label>` | the same lessons offered through the MCP tool. Stub: the run refuses until the tool exists. |
 
 ## What is real and what is not yet (read this first)
 
@@ -19,7 +20,8 @@ What this is: a sanity check of the lesson pipelines (owner decisions 38, 49), n
 | Executor `stagingExecutor` (`packages/broker/src/lessons/replay-executor.ts`): always starts the task marked `evalRun`, reads the mark back, cancels and stops the replay on an unmarked task | built, tested against a fake port |
 | Rubric grader `rubricGrader` (`replay-grader.ts`): hidden tests where a task has them, else a rubric scored by a model | built, tested with a fake model; needs your model adapter and evidence reader |
 | Pipeline B `asOfSnapshotBuilder` (`replay-asof.ts`): the lessons live at the start of each day, read from the lesson store's version history, no model | built, tested; its learning cost is NOT measured (shown as "not recorded") |
-| Pipeline C (lane 8), `file:` and `mcp:` arms (R2, MCP) | stubs; a run refuses |
+| `file:<label>` arm (`replay-delivery.ts#FILE_DELIVERY`): renders each day's lessons with R2's own `renderLesson` and `renderLessonsFile`, so a lesson R2 would not put in a file is not offered; the executor port places the file and pointer in the checkout | built, tested; the placement is part of the install-side blocker below |
+| Pipeline C (lane 8) and the `mcp:` arm | stubs; a run refuses |
 | **The install side of the executor port (BLOCKER for a real run)** | **missing.** The existing e2e replay (`aws/workflow-e2e-replay.ts`, `agentx admin task e2e-replay`, `scripts/e2e-replay-round.ts`) re-verifies the recorded UI round of a task with no model. It starts no task and cannot carry a memory input, so it cannot be the executor. Needed: (1) an admin route that starts a copy of a past task with a `memory` input and the `evalRun` mark set at creation, (2) the lesson loader honouring `memory: { mode: "snapshot" }` with a pinned snapshot. Copy the e2e replay's shape: admin route, CLI client, a polling script. |
 
 The script `scripts/lessons-replay-measure.ts` makes no AWS call and no model call. Everything that touches staging is an operator module you pass with `--module` (below). Run the script with the pinned Node (22.23.2), for example `npx tsx scripts/lessons-replay-measure.ts <command> ...`.
@@ -66,7 +68,7 @@ The operator module (`--module`) is an ES module whose default export returns `{
 ~/.local/share/rovara-tools/staging-aws.sh npx tsx scripts/lessons-replay-measure.ts snapshots --selection selection.json --arms off,on:current --module ./replay-module.mjs --out-dir replay-out --max-usd 5
 ```
 
-Writes `snapshots.json`, `learning.json` (cost and calls per arm), `lesson-sets.json` (size, duplicates, contradictions) and `final-lessons.json`.
+Writes `snapshots.json`, `snapshot-lessons.json` (each day's lessons, for the file arm), `learning.json` (cost and calls per arm), `lesson-sets.json` (size, duplicates, contradictions) and `final-lessons.json`.
 
 ## 3. Plan
 
@@ -81,8 +83,10 @@ npx tsx scripts/lessons-replay-measure.ts plan --selection selection.json --arms
 Needs the executor and the grader in the module. `executor: stagingExecutor(port)` always starts the task with `evalRun: true`, reads the mark back, and stops the replay on a task that does not carry it; `port` is the install side listed above as the blocker (it must reach staging only through `staging-aws.sh`, account 944937319445, us-west-2). `grader: rubricGrader({ model, evidence, correctionText, tests? })` needs your model adapter (a fixed model and version, recorded in every row) and an evidence reader. Also needs a corrections file: a JSON list of `{ id, taskId, at, kind, member, text? }` (the v1.2 `CORRECTION#` items through `metric-source.ts#v12CorrectionSource`).
 
 ```sh
-~/.local/share/rovara-tools/staging-aws.sh npx tsx scripts/lessons-replay-measure.ts run --plan plan.json --module ./replay-module.mjs --corrections corrections.json --results results.jsonl --max-usd <usd>
+~/.local/share/rovara-tools/staging-aws.sh npx tsx scripts/lessons-replay-measure.ts run --plan plan.json --module ./replay-module.mjs --corrections corrections.json --results results.jsonl --max-usd <usd> [--snapshot-lessons replay-out/snapshot-lessons.json]
 ```
+
+`--snapshot-lessons` is required when the plan has a `file:` arm (it holds each pipeline's lessons for each day).
 
 Resumable: a rerun skips recorded runs (the limit counts what this invocation spends). A run that fails is an ungraded row and the replay goes on; an unmarked task or a learning call stops everything.
 

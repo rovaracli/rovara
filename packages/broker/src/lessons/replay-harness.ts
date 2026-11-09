@@ -142,6 +142,8 @@ export interface BuiltSnapshots {
   learning: ArmLearningCost[];
   /** The last day's lessons per pipeline: the final set. */
   finalLessons: Record<string, Lesson[]>;
+  /** Each pipeline's whole lesson set on each simulated day (what a file arm offers a local agent on that day). */
+  lessonsByDay: Record<string, Record<string, Lesson[]>>;
   lessonSets: ArmLessonSet[];
 }
 
@@ -151,12 +153,13 @@ export async function buildSnapshots(input: { tasks: readonly ReplayCandidate[];
   const days = [...new Set(tasks.map((t) => dayOf(t.at)))].sort();
   const arms = input.arms.map(canonicalArm);
   const pipelines = [...new Set(arms.map((arm) => parseArm(arm)).filter((p) => p.kind !== "off").map((p) => p.label!))];
-  const out: BuiltSnapshots = { snapshots: {}, learning: [], finalLessons: {}, lessonSets: [] };
+  const out: BuiltSnapshots = { snapshots: {}, learning: [], finalLessons: {}, lessonsByDay: {}, lessonSets: [] };
   for (const pipeline of pipelines) {
     const builder = input.builders[pipeline];
     if (builder === undefined) throw new ArmNotBuiltError(`on:${pipeline}`, `no snapshot builder for pipeline ${pipeline}.`);
     let usd: number | null = 0, calls: number | null = 0;
     out.snapshots[pipeline] = {};
+    out.lessonsByDay[pipeline] = {};
     for (const day of days) {
       const historical = tasks.filter((t) => dayOf(t.at) < day);
       const built = await builder.build({ pipeline, day, learningCalls: "explicit", historical });
@@ -165,6 +168,7 @@ export async function buildSnapshots(input: { tasks: readonly ReplayCandidate[];
       calls = calls === null || built.calls === null ? null : calls + built.calls;
       if (input.maxUsd !== undefined && (usd ?? 0) > input.maxUsd) throw new RangeError(`Building the ${pipeline} snapshots cost more than --max-usd ${String(input.maxUsd)}. Stopped.`);
       out.finalLessons[pipeline] = built.lessons;
+      out.lessonsByDay[pipeline][day] = built.lessons;
     }
     out.learning.push({ arm: `on:${pipeline}`, usd, calls });
     out.lessonSets.push(summarizeLessonSet(`on:${pipeline}`, out.finalLessons[pipeline] ?? []));
@@ -177,7 +181,21 @@ export async function buildSnapshots(input: { tasks: readonly ReplayCandidate[];
 // Running
 
 /** How a local agent is offered lessons (DECISIONS 50.5). TODO(R2, MCP): both are stubs until the repository file (`.rovara/lessons.md`) and the MCP tool exist. */
-export interface LessonDelivery { kind: "file" | "mcp"; built: boolean }
+export interface LessonsFileOffer {
+  /** Where the file goes in the task's checkout, its text, and the agent file that gets the one pointer line (`withPointer`). */
+  path: string;
+  content: string;
+  pointerPath: "AGENTS.md";
+  /** The content keys of the lessons the file holds: what the local agent is offered. */
+  keys: string[];
+}
+export interface LessonDelivery {
+  kind: "file" | "mcp";
+  built: boolean;
+  /** The file arm: the repository lessons file (`.rovara/lessons.md`, lane R2's format) for this day's lessons and this task's repository. */
+  render?(lessons: readonly Lesson[], repository: string): LessonsFileOffer;
+}
+/** The MCP arm is still a stub (TODO: the MCP lessons tool). The file arm is `FILE_DELIVERY` in `replay-delivery.ts`. */
 export const UNBUILT_DELIVERIES: Record<"file" | "mcp", LessonDelivery> = { file: { kind: "file", built: false }, mcp: { kind: "mcp", built: false } };
 
 export interface ExecutedRun {
@@ -192,7 +210,7 @@ export interface ExecutedRun {
   learningCalls: number;
 }
 export interface ReplayExecutor {
-  run(input: { run: PlannedRun; task: ReplayCandidate; delivery?: LessonDelivery; learning: { lessonsSwitch: "off"; calls: "none" } }): Promise<ExecutedRun>;
+  run(input: { run: PlannedRun; task: ReplayCandidate; delivery?: LessonDelivery; /** The file arm: the lessons file to place in the checkout, with its pointer. */ lessonsFile?: LessonsFileOffer; learning: { lessonsSwitch: "off"; calls: "none" } }): Promise<ExecutedRun>;
 }
 /** What the grader is shown. NO arm, pipeline or memory setting: it must grade blind. */
 export interface GradeRequest { task: ReplayCandidate; repeat: number; evidence: string; priorCorrections: string[] }
@@ -208,6 +226,8 @@ export interface RunDeps {
   grader: ReplayGraderPort;
   sink: RunSink;
   deliveries?: Partial<Record<"file" | "mcp", LessonDelivery>>;
+  /** The pipeline's lessons on a simulated day, for the file arm. */
+  snapshotLessons?(pipeline: string, day: string): Promise<readonly Lesson[]>;
   /** The ids of the historical corrections from before a task. */
   priorCorrections(task: ReplayCandidate): Promise<string[]>;
   /** A HARD limit (US dollars) on what the replay may spend: it stops before a run that could pass it. */
@@ -224,7 +244,8 @@ export async function runReplay(plan: ReplayPlan, deps: RunDeps): Promise<RunRep
     const kind = parseArm(arm).kind;
     if (kind === "file" || kind === "mcp") {
       const delivery = deps.deliveries?.[kind];
-      if (delivery === undefined || !delivery.built) throw new ArmNotBuiltError(arm, kind === "file" ? "the repository lessons file (.rovara/lessons.md) is not built yet (TODO: lane R2)." : "the MCP lessons tool is not built yet (TODO: the MCP lane).");
+      if (delivery === undefined || !delivery.built) throw new ArmNotBuiltError(arm, kind === "file" ? "no file delivery was given (use FILE_DELIVERY)." : "the MCP lessons tool is not built yet (TODO: the MCP lane).");
+      if (kind === "file" && (delivery.render === undefined || deps.snapshotLessons === undefined)) throw new ArmNotBuiltError(arm, "the file arm needs a file delivery that renders and the pipeline's lessons for each day (--snapshot-lessons).");
     }
   }
   const byTask = new Map(plan.tasks.map((t) => [t.taskId, t] as const));
@@ -239,8 +260,10 @@ export async function runReplay(plan: ReplayPlan, deps: RunDeps): Promise<RunRep
     const task = byTask.get(run.task)!;
     const delivery = run.delivery === undefined ? undefined : deps.deliveries?.[run.delivery];
     let executed: ExecutedRun | undefined;
+    let offer: LessonsFileOffer | undefined;
     try {
-      executed = await deps.executor.run({ run, task, ...(delivery === undefined ? {} : { delivery }), learning: { lessonsSwitch: "off", calls: "none" } });
+      if (run.delivery === "file") offer = delivery!.render!(await deps.snapshotLessons!(parseArm(run.arm).label!, run.day), task.repository);
+      executed = await deps.executor.run({ run, task, ...(delivery === undefined ? {} : { delivery }), ...(offer === undefined ? {} : { lessonsFile: offer }), learning: { lessonsSwitch: "off", calls: "none" } });
     } catch (error) {
       // An unmarked task or a learning call ends the whole replay; any other fault is one ungraded run.
       if (error instanceof EvalMarkError || error instanceof ReplayLearningCallError) throw error;
@@ -261,8 +284,8 @@ export async function runReplay(plan: ReplayPlan, deps: RunDeps): Promise<RunRep
         const graded = await deps.grader.grade({ task, repeat: run.repeat, evidence: executed.evidence, priorCorrections: prior });
         // A mistake must name a correction that was given before the task; anything else is not a repeat.
         if (graded.mistakes.some((id) => !prior.includes(id))) throw new Error("the grader named a correction that was not given before the task");
-        row = ReplayRunRowSchema.parse({ task: run.task, repeat: run.repeat, arm: run.arm, resolved: graded.resolved, grader: deps.grader.identity, gradedBy: graded.gradedBy, loaded: executed.loaded, mistakes: [...new Set(graded.mistakes)], costUsd: executed.costUsd });
-      } catch { row = ungraded(executed.loaded, executed.costUsd); }
+        row = ReplayRunRowSchema.parse({ task: run.task, repeat: run.repeat, arm: run.arm, resolved: graded.resolved, grader: deps.grader.identity, gradedBy: graded.gradedBy, loaded: offer?.keys ?? executed.loaded, mistakes: [...new Set(graded.mistakes)], costUsd: executed.costUsd });
+      } catch { row = ungraded(offer?.keys ?? executed.loaded, executed.costUsd); }
     }
     if (row.resolved === null) report.ungraded += 1;
     await deps.sink.append(run.key, row);
