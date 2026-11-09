@@ -5,6 +5,7 @@ import { APPSYNC_EVENTS_ACTIONS, APPSYNC_EVENTS_UNSCOPED_ACTIONS, CLOUDFRONT_BOU
 import { buildAgentXApp } from "../../infra/lib/app.js";
 import { SERVICE_LINKED_ROLE_SERVICES, SERVICE_ROLE_SERVICES, TEAM_RECORD_BOUNDARY_SERVICES, defaultBoundaryStatements, serviceRoleStatements } from "../../infra/lib/access-policies.js";
 import { boundaryWithSids } from "../support/deployed-boundary.js";
+import { serviceRoleWithSids } from "../support/deployed-service-role.js";
 import { skipLambdaBundling } from "../support/skip-bundling.js";
 
 skipLambdaBundling();
@@ -17,8 +18,9 @@ const resourcesOf = (stack: Stack) => Template.fromStack(stack).toJSON().Resourc
 function roleStatements(resources: Record<string, Resource>): Statement[] {
   /** A statement the hosted cloud's access stack grants only while the custom domain is set is an Fn::If; the check reads the statement it grants. */
   const granted = (statement: Statement | { "Fn::If": [string, Statement, unknown] }): Statement => ("Fn::If" in statement ? statement["Fn::If"][1] : statement);
-  return Object.values(resources).flatMap((r) => {
-    if (r.Type === "AWS::IAM::Role") return ((r.Properties.Policies ?? []) as { PolicyDocument: { Statement: Statement[] } }[]).flatMap((p) => p.PolicyDocument.Statement.map(granted));
+  return Object.entries(resources).flatMap(([id, r]) => {
+    // The access stack's deploy policy carries no Sids when deployed (infra/lib/access.ts); they are put back here by position.
+    if (r.Type === "AWS::IAM::Role") return ((r.Properties.Policies ?? []) as { PolicyName?: string; PolicyDocument: { Statement: Statement[] } }[]).flatMap((p) => (id === "CloudFormationServiceRole" && p.PolicyName === "deploy" ? serviceRoleWithSids(p.PolicyDocument.Statement) : p.PolicyDocument.Statement).map(granted));
     if (r.Type === "AWS::IAM::Policy") return (r.Properties.PolicyDocument as { Statement: Statement[] }).Statement;
     if (r.Type === "AWS::IAM::ManagedPolicy" && /^agentx-.+-broker-/.test((typeof r.Properties.ManagedPolicyName === "string" ? r.Properties.ManagedPolicyName : ""))) return (r.Properties.PolicyDocument as { Statement: Statement[] }).Statement;
     return [];
@@ -128,7 +130,7 @@ describe("access stack", () => {
   it("always emits both boundary Deny statements, naming the effective boundary", () => {
     const roles = Object.values(template.findResources("AWS::IAM::Role", { Properties: { RoleName: "agentx-staging-cloudformation" } }));
     expect(roles).toHaveLength(1);
-    const statements = (roles[0] as { Properties: { Policies: { PolicyDocument: { Statement: Record<string, unknown>[] } }[] } }).Properties.Policies[0]!.PolicyDocument.Statement;
+    const statements = serviceRoleWithSids((roles[0] as { Properties: { Policies: { PolicyDocument: { Statement: Record<string, unknown>[] } }[] } }).Properties.Policies[0]!.PolicyDocument.Statement);
     expect(statements.filter((st) => "Fn::If" in st)).toEqual([]);
     const require = statements.find((st) => st.Sid === "IamRequireBoundary")!;
     expect(require.Effect).toBe("Deny");

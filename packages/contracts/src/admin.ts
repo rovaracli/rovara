@@ -220,6 +220,12 @@ export const HEALTH_ALARM_SUFFIXES = [
 /** The listed alarms an environment creates only on Amazon Bedrock (or, for RuntimeRequalify*, only with the automatic renewal on; or, for Lessons* and TeamRecord*, only with the Team record switch on), so their absence is expected. */
 export const HEALTH_ALARM_CONDITIONAL_SUFFIXES = ["BedrockThrottling", "ClassifierThrottling", "LessonsReflectDeadLetters", "LessonsWorkerErrors", "LessonsWorkerThrottles", "RuntimeRequalifyAgeUnreadable", "RuntimeRequalifyMachineFailures", "RuntimeRequalifyStale", "RuntimeRequalifyStepErrors",
   "TeamRecordEraseSweepFailed", "TeamRecordRedeliveryStateConflict", "TeamRecordRepoCheckNoTime", "TeamRecordRepoCheckRefused", "TeamRecordSweepProblem", "TeamRecordTombstoneFailed"] as const satisfies ReadonlyArray<typeof HEALTH_ALARM_SUFFIXES[number]>;
+/**
+ * HEALTH-COND-1: the conditional alarms the Team record's switch creates (the lessons worker's three and the record's six). With the switch ON they are required, so a missing one shows MISSING on Health; with it OFF they are
+ * not expected. The other conditional alarms (Bedrock-only, the automatic renewal's) stay conditional either way.
+ */
+type TeamRecordAlarmSuffix = Extract<typeof HEALTH_ALARM_CONDITIONAL_SUFFIXES[number], `Lessons${string}` | `TeamRecord${string}`>;
+export const HEALTH_ALARM_TEAM_RECORD_SUFFIXES: readonly TeamRecordAlarmSuffix[] = HEALTH_ALARM_CONDITIONAL_SUFFIXES.filter((suffix): suffix is TeamRecordAlarmSuffix => suffix.startsWith("Lessons") || suffix.startsWith("TeamRecord"));
 /** The state the health route gives a listed alarm CloudWatch did not return. */
 export const MISSING_ALARM_STATE = "MISSING";
 

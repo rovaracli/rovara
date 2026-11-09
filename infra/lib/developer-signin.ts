@@ -245,7 +245,7 @@ export class DeveloperSignIn extends Construct {
     // (IAM authorizes it as ConditionCheckItem). That action on the developer records only; nothing is read or written through it.
     fn.addToRolePolicy(new iam.PolicyStatement({
       actions: ["dynamodb:ConditionCheckItem"], resources: [table.tableArn],
-      conditions: { "ForAllValues:StringLike": { "dynamodb:LeadingKeys": ["DEVELOPER#*"] } },
+      conditions: { "ForAllValues:StringLike": { "dynamodb:LeadingKeys": ["DEVELOPER#*"] }, Null: { "dynamodb:LeadingKeys": "false" } },
     }));
     // Plan 2, Task 8: unlinking a sign-in method (unlinkIdentity, the `unlink-identity` invoke). It lists the developer's own IDENTITY# items
     // (Query on `DEVELOPER#<id>`) and, in one transaction, deletes the one it removes (a transaction's Delete is authorized as DeleteItem; the
@@ -299,7 +299,7 @@ export class DeveloperSignIn extends Construct {
     // pointer (a ConditionCheck on `DEVELOPER_ORG#<id>`); the same action on that one key.
     fn.addToRolePolicy(new iam.PolicyStatement({
       actions: ["dynamodb:ConditionCheckItem"], resources: [props.state.tableArn],
-      conditions: { "ForAllValues:StringLike": { "dynamodb:LeadingKeys": [`ORG#${orgPattern}`, "DEVELOPER_ORG#*"] } },
+      conditions: { "ForAllValues:StringLike": { "dynamodb:LeadingKeys": [`ORG#${orgPattern}`, "DEVELOPER_ORG#*"] }, Null: { "dynamodb:LeadingKeys": "false" } },
     }));
     // A removed member's ban on a single-org install (`ORG#<id>#BAN`): read by a sign-in that would join the install's org (GetItem) and
     // cleared when an invite is accepted (DeleteItem, below). The function never writes a ban; only the broker's removal does.

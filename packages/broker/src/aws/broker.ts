@@ -694,6 +694,8 @@ const brokerInput: AwsBrokerInput = {
       deadLetterQueues: process.env.HEALTH_DEAD_LETTER_QUEUES,
       slackAuthCheck: developer?.slackAuthCheck,
       github: githubCredentials,
+      // HEALTH-COND-1: with the record's switch on its alarms are required, so a missing one shows MISSING on Health.
+      teamRecordOn: teamRecord !== undefined,
       ...(teamRecord === undefined ? {} : { teamRecordFailures: (orgId) => teamRecord.opsFailures(orgId) }),
       log: (entry) => console.log(JSON.stringify({ component: "broker", ...entry })),
     }),

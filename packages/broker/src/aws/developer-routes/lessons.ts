@@ -5,7 +5,7 @@ import { agentXError, orgScoped } from "@agentx/contracts";
 import { LOADED_KNOWLEDGE_PATH, routeLoadedKnowledge } from "../../developer/loaded-knowledge.js";
 import { takeRateAt } from "../../developer/page-comments.js";
 import { resolveTaskAccess } from "../../developer/task-access.js";
-import { resolveLearning, whyLearningOff } from "../../lessons/policy.js";
+import { learnedLessonsSwitchOn, resolveLearning, whyLearningOff } from "../../lessons/policy.js";
 import { COMPANY_PRESET_PATH, LESSONS_PATH, TASK_LESSONS_PATH, routeLessons, type LessonRouteDependencies } from "../../lessons/routes.js";
 import { developerTaskRouteDependencies } from "./dependencies.js";
 import { latestDefinition } from "./project-list.js";
@@ -53,19 +53,29 @@ export async function routeLessonsFor(deps: DeveloperRouteDependencies, caller: 
  */
 export async function routeLoadedKnowledgeFor(deps: DeveloperRouteDependencies, caller: DeveloperCaller, method: string, url: URL): Promise<object | undefined> {
   const matched = LOADED_KNOWLEDGE_PATH.exec(url.pathname);
-  if (method !== "GET" || matched === null || deps.lessons === undefined) return undefined;
+  if (method !== "GET" || matched === null) return undefined;
+  // The install's lessons switch (`ll`) is off: nothing is loaded or recorded here, so the list read says so in a fixed code (still a 404) and the task page can say it plainly. The text read is unchanged.
+  const switchedOff = matched[2] === undefined && !learnedLessonsSwitchOn();
+  if (deps.lessons === undefined) {
+    if (switchedOff) throw agentXError("LESSONS_SWITCHED_OFF", "Lessons are switched off for this installation.");
+    return undefined;
+  }
   const task = developerTaskRouteDependencies(deps, caller), knowledge = deps.loadedKnowledge;
   // The task's project, by the task page's own access check; a task the caller cannot read is refused by the route below exactly as it is today.
   const project = await resolveTaskAccess(task, caller, matched[1]!, "read").then((access) => access.task.project, () => undefined);
   // UX-4b: learning Off says so in a fixed code (the same 404 status as before), so the task page can explain it and offer to turn it on rather than show a dead end.
   if (project !== undefined && (await resolveLearning(deps.lessons.settings, caller.orgId, project)).mode === "Off") {
+    if (switchedOff) throw agentXError("LESSONS_SWITCHED_OFF", "Lessons are switched off for this installation.");
     const why = await whyLearningOff(deps.lessons.settings, caller.orgId, project).catch(() => "unreadable" as const);
     if (why === "locked") throw agentXError("LEARNING_LOCKED", "Learning is off for this project because of a company setting.");
     throw agentXError("LEARNING_OFF", "Learning is off for this project.");
   }
-  return routeLoadedKnowledge({
+  const answer = await routeLoadedKnowledge({
     documentClient: deps.documentClient, tableName: deps.tableName, now: deps.now, log: (entry) => { task.log?.(entry); }, access: task,
     ...(knowledge?.canReadRepository === undefined ? {} : { canReadRepository: (who, input) => knowledge.canReadRepository!(who, input) }),
     ...(knowledge?.readRuleFile === undefined ? {} : { readRuleFile: (input) => knowledge.readRuleFile!(input) }),
   }, caller, { method, path: url.pathname });
+  // With the switch off, records kept from before it went off are still shown; an empty list is the switch, not "nothing was recorded".
+  if (switchedOff && answer !== undefined && "stages" in answer && Array.isArray(answer.stages) && answer.stages.length === 0) throw agentXError("LESSONS_SWITCHED_OFF", "Lessons are switched off for this installation.");
+  return answer;
 }

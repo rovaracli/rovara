@@ -614,7 +614,8 @@ export function serviceRoleStatements(scope: PolicyScope): PolicyStatementJson[]
     ...appsyncEvents(scope),
     ...cloudFrontStatements(scope),
     ...customDomainStatements(scope),
-    { Sid: "IamRoles", Effect: "Allow", Action: [...ROLE_ACTIONS], Resource: withRootRoles },
+    // iam:PassRole is here (it was a statement of its own, PassRoles, on the same two resources with the same Effect and no Condition): the same allowance in less room, as in the boundary's IamRoles.
+    { Sid: "IamRoles", Effect: "Allow", Action: [...ROLE_ACTIONS, "iam:PassRole"], Resource: withRootRoles },
     fixedNameRoleLookupStatement(scope),
     { Sid: "IamInstanceProfiles", Effect: "Allow", Action: [...INSTANCE_PROFILE_ACTIONS], Resource: environmentInstanceProfiles(scope) },
     { Sid: "IamManagedPolicies", Effect: "Allow", Action: [...MANAGED_POLICY_ACTIONS], Resource: agentxManagedPolicies(scope) },
@@ -640,7 +641,6 @@ export function serviceRoleStatements(scope: PolicyScope): PolicyStatementJson[]
     // The boundary in force (a company's own, or the default) is never edited, versioned, tagged or deleted by the deploy (ruling M2
     // review): a new default version of the boundary would lift the ceiling for every role.
     { Sid: "IamKeepBoundaryPolicy", Effect: "Deny", Action: ["iam:CreatePolicyVersion", "iam:DeletePolicyVersion", "iam:SetDefaultPolicyVersion", "iam:DeletePolicy", "iam:TagPolicy", "iam:UntagPolicy"], Resource: boundary },
-    { Sid: "PassRoles", Effect: "Allow", Action: ["iam:PassRole"], Resource: withRootRoles },
     {
       Sid: "ServiceLinkedRoles",
       Effect: "Allow",

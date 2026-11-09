@@ -17,6 +17,7 @@ import { teamRecordTableBucketName, teamRecordVectorBucketName, teamRecordWorkGr
 import { SERVICE_ROLE_SERVICES, TEAM_RECORD_LIST_ACTIONS, teamRecordVectorsRoleName } from "../../infra/lib/access-policies.js";
 import { buildAgentXApp } from "../../infra/lib/app.js";
 import { skipLambdaBundling } from "../support/skip-bundling.js";
+import { serviceRoleWithSids } from "../support/deployed-service-role.js";
 
 skipLambdaBundling();
 // The control plane stack reads the web app's asset directory when it builds; the contents do not matter here (the other infrastructure tests do the same).
@@ -137,7 +138,9 @@ const deployRole = (access: Resources, env = ENV) => {
   const role = Object.values(access).find((resource) => resource.Type === "AWS::IAM::Role" && resource.Properties.RoleName === `agentx-${env}-cloudformation`)!;
   const policy = (role.Properties.Policies as Array<{ PolicyName: string; PolicyDocument: { Statement: Statement[] } }>).find((candidate) => candidate.PolicyName === "deploy")!;
   const flat = resolver(access);
-  return { statements: policy.PolicyDocument.Statement.map((raw) => ("Fn::If" in (raw as object) ? (raw as unknown as { "Fn::If": [string, Statement, unknown] })["Fn::If"][1] : raw)), flat };
+  // The deployed deploy policy carries no Sids (infra/lib/access.ts); they are put back by position.
+  const withSids = serviceRoleWithSids(policy.PolicyDocument.Statement as unknown as Array<Record<string, unknown>>) as unknown as Statement[];
+  return { statements: withSids.map((raw) => ("Fn::If" in (raw as object) ? (raw as unknown as { "Fn::If": [string, Statement, unknown] })["Fn::If"][1] : raw)), flat };
 };
 const boundary = (access: Resources, env = ENV) => {
   const policy = Object.values(access).find((resource) => resource.Type === "AWS::IAM::ManagedPolicy" && resource.Properties.ManagedPolicyName === `agentx-${env}-boundary`)!;

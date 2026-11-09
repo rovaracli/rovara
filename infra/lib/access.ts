@@ -142,9 +142,11 @@ export class AccessStack extends Stack {
       ...(customDomain === undefined ? {} : { customDomain }),
     };
     // The boundary Deny statements always apply and name the effective boundary.
+    // The deployed deploy policy carries no Sids, as the deployed boundary does (withoutSids): a role's inline policies are capped at 10,240 characters (non-whitespace) in all, and with a custom domain the Sids
+    // (about 1,000 characters) were the difference. Sids are optional and grant nothing; the tests find statements by Sid in serviceRoleStatements and put them back by position (tests/support/deployed-service-role.ts).
     const serviceStatements = serviceRoleStatements({ ...policyScope, permissionsBoundaryArn: effectiveBoundaryArn })
       .map((statement) => statement.Sid === "EcsFailureEventsRule" ? { ...statement, Resource: ecsFailureRuleArn } : statement)
-      .map((statement) => customDomainSet !== undefined && statement.Sid.startsWith("CustomDomain") ? Fn.conditionIf(customDomainSet.logicalId, statement, Aws.NO_VALUE) : statement);
+      .map(({ Sid, ...statement }) => customDomainSet !== undefined && Sid.startsWith("CustomDomain") ? Fn.conditionIf(customDomainSet.logicalId, statement, Aws.NO_VALUE) : statement);
 
     // Built before the deploy role, which gains the one statement it needs to read the templates the customer approved.
     const operatorAccessConstruct = operatorAccess === undefined ? undefined : new OperatorAccess(this, "RovaraOperatorAccess", { naming, settings: operatorAccess });
