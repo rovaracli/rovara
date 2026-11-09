@@ -21,7 +21,7 @@ import { mentionsLessonsFile, pointerTargets, withPointer, type PointerPath } fr
 import { planRepoFile, type RepoFilePlan } from "./repo-file-plan.js";
 import { textHash } from "./repo-file-format.js";
 import { prBody, prTitle } from "./repo-file-pr.js";
-import { MAX_DECLINED, MAX_RENDERED, additionsPaused, boundedAppend, type OpenPr, type RepoFileState, type RepoFileStore } from "./repo-file-state.js";
+import { MAX_DECLINED, MAX_RENDERED, additionsPaused, boundedAppend, boundedClosings, boundedTheirs, type Closing, type OpenPr, type RepoFileState, type RepoFileStore } from "./repo-file-state.js";
 import type { LessonStore, ScopeKey } from "./store.js";
 import type { Lesson } from "./types.js";
 
@@ -76,11 +76,15 @@ const headOf = (target: RepoFileTarget, branch: string): Promise<string | undefi
 /** A closing is given up after this many passes in which the branch could not be read. */
 const CLOSING_ATTEMPTS = 3;
 
+/** The lessons an open pull request carries (adds and edits), kept on a closing so a later erasure can still find a pull request that could not be finished. */
+const carriedBy = (open: OpenPr): string[] => [...Object.keys(open.added), ...Object.keys(open.edited)];
+
 /**
- * Closes Rovara's own pull requests and deletes its own branches that are waiting in `closing`, and the branch of a pending write that was never recorded. Each one is audited first; one that fails stays for the next pass.
- * Nothing is deleted that is not provably Rovara's own (review M1): the branch head is read again RIGHT BEFORE the delete and the branch goes only while it is still at the head Rovara left (or, for a write that was never
- * recorded, at a head Rovara itself wrote). A head that moved is a person's: the pull request and the branch are left entirely alone and the entry is dropped. A head that cannot be read is not known to be Rovara's: nothing
- * is touched, and the entry is tried again a few times. `keepBranch` entries only close the pull request (an erasure closes a pull request a person pushed to, which loses no commit).
+ * Closes Rovara's own pull requests and deletes its own branches that are waiting in `closing`, and the branch of a pending write that was never recorded. Each close or delete is audited first; one that fails stays for the next pass.
+ *   - CLOSING a pull request touches no commit, so it is always safe for an erasure (`erased`: closed whatever the branch head is, retried until the host confirms, never dropped). For the other causes it is done only while the head
+ *     is still the one Rovara left; a pull request a person pushed to is theirs and moves to `theirs` (with the lessons it carried), never dropped from tracking.
+ *   - DELETING a branch needs proof it is Rovara's own (review M1): the head is read again right before the delete and the branch goes only while it is still the head Rovara left (for a write that was never recorded, a head Rovara
+ *     itself wrote). A head that moved is a person's and is kept; one that cannot be read is not known to be Rovara's, so nothing is deleted and the entry is tried again a few times.
  */
 export async function finishClosings(deps: RepoFileDeps, key: ScopeKey, target: RepoFileTarget, state: RepoFileState): Promise<RepoFileState> {
   let current = state;
@@ -88,43 +92,60 @@ export async function finishClosings(deps: RepoFileDeps, key: ScopeKey, target: 
   if (current.pending !== undefined) {
     const pending = current.pending;
     const head = await headOf(target, pending.branch);
-    // A branch Rovara decided on before it wrote: it may exist (made and never recorded), at the base it was made at or at its own commit; deleting it also closes any pull request made from it. A branch at any other head, or one
-    // that is gone or unreadable, is not touched (a stray empty branch is the worst that is left).
+    // A branch Rovara decided on before it wrote: it may exist (made and never recorded), at the base it was made at or at its own commit; deleting it also closes any pull request made from it. A branch at any other head is not touched;
+    // one that cannot be read (gone and down look alike) is tried again a few times, not dropped at once.
     const ours = head !== undefined && (head === pending.baseRevision || head === pending.headRevision);
-    if (ours && host.deleteBranch !== undefined && !await audited(deps, key, "lesson.repo_file_pr_closed", { cause: "replaced", pullRequest: 0 })) { /* the ledger is down: tried again next pass */ }
-    else {
-      try {
-        if (ours && host.deleteBranch !== undefined && await headOf(target, pending.branch) === head) await host.deleteBranch(repository, pending.branch, scope);
+    try {
+      if (head === undefined) {
+        const attempts = (pending.attempts ?? 0) + 1;
+        current = await commit(deps, key, current, (s) => (attempts >= CLOSING_ATTEMPTS ? without(s, "pending") : { ...s, pending: { ...pending, attempts } }));
+      } else if (!ours) {
         current = await commit(deps, key, current, (s) => without(s, "pending"));
-      } catch (error) { if (error instanceof Abort) throw error; deps.log?.("lessons_repo_file.pending_cleanup_failed", {}); }
-    }
+      } else if (host.deleteBranch !== undefined && await audited(deps, key, "lesson.repo_file_pr_closed", { cause: "replaced", pullRequest: 0 })) {
+        if (await headOf(target, pending.branch) === head) await host.deleteBranch(repository, pending.branch, scope);
+        current = await commit(deps, key, current, (s) => without(s, "pending"));
+      }
+    } catch (error) { if (error instanceof Abort) throw error; deps.log?.("lessons_repo_file.pending_cleanup_failed", {}); }
   }
   for (const entry of [...current.closing]) {
     const same = (c: { branch: string; number?: string | undefined }): boolean => c.branch === entry.branch && c.number === entry.number;
-    const drop = async (): Promise<void> => { current = await commit(deps, key, current, (s) => { const at = s.closing.findIndex(same); return { ...s, closing: s.closing.filter((_, index) => index !== at) }; }); };
+    const replace = async (next: Closing | undefined): Promise<void> => { current = await commit(deps, key, current, (s) => ({ ...s, closing: next === undefined ? s.closing.filter((c) => !same(c)) : s.closing.map((c) => (same(c) ? next : c)) })); };
+    /** The pull request is the team's now (or cannot be proved Rovara's): tracked in `theirs`, with the lessons it carried. */
+    const handOver = async (): Promise<void> => {
+      current = await commit(deps, key, current, (s) => ({ ...s, closing: s.closing.filter((c) => !same(c)), theirs: entry.number === undefined ? s.theirs : boundedTheirs([...s.theirs, { branch: entry.branch, number: entry.number, url: "", ids: entry.ids ?? [] }]) }));
+    };
     try {
-      if (entry.keepBranch === true) {
-        if (entry.number !== undefined) {
-          if (!await audited(deps, key, "lesson.repo_file_pr_closed", { cause: entry.cause, pullRequest: Number(entry.number) || 0 })) continue;
-          await host.updateChangeRequest({ repository, id: entry.number, url: "" }, { state: "closed" }, scope);
+      let working = entry;
+      // 1. The pull request.
+      if (entry.number !== undefined && entry.closed !== true) {
+        if (entry.cause !== "erased" && entry.keepBranch !== true) {
+          const head = await headOf(target, entry.branch);
+          if (head === undefined) {
+            const attempts = (entry.attempts ?? 0) + 1;
+            if (attempts >= CLOSING_ATTEMPTS) await handOver(); else await replace({ ...entry, attempts });
+            continue;
+          }
+          if (entry.headRevision === undefined || head !== entry.headRevision) { await handOver(); continue; }
         }
-        await drop();
-        continue;
+        if (!await audited(deps, key, "lesson.repo_file_pr_closed", { cause: entry.cause, pullRequest: Number(entry.number) || 0 })) continue;
+        await host.updateChangeRequest({ repository, id: entry.number, url: "" }, { state: "closed" }, scope);
+        working = { ...entry, closed: true };
+        await replace(working);
       }
-      const head = await headOf(target, entry.branch);
+      // 2. The branch.
+      if (working.keepBranch === true || working.headRevision === undefined || host.deleteBranch === undefined) { await replace(undefined); continue; }
+      const head = await headOf(target, working.branch);
       if (head === undefined) {
-        // Not known to be Rovara's: touch nothing, try again a few times, then give up.
-        const attempts = (entry.attempts ?? 0) + 1;
-        current = await commit(deps, key, current, (s) => ({ ...s, closing: attempts >= CLOSING_ATTEMPTS ? s.closing.filter((c) => !same(c)) : s.closing.map((c) => (same(c) ? { ...c, attempts } : c)) }));
+        const attempts = (working.attempts ?? 0) + 1;
+        if (attempts >= CLOSING_ATTEMPTS) await replace(undefined); else await replace({ ...working, attempts });
         continue;
       }
-      // A head that is not the one Rovara left (or that Rovara never recorded) means a person pushed: it is theirs now.
-      if (entry.headRevision === undefined || head !== entry.headRevision) { await drop(); continue; }
-      if (!await audited(deps, key, "lesson.repo_file_pr_closed", { cause: entry.cause, pullRequest: Number(entry.number ?? 0) || 0 })) continue;
-      if (entry.number !== undefined) await host.updateChangeRequest({ repository, id: entry.number, url: "" }, { state: "closed" }, scope);
-      // Read again right before the delete: a push since the read above leaves the branch alone.
-      if (host.deleteBranch !== undefined && await headOf(target, entry.branch) === entry.headRevision) await host.deleteBranch(repository, entry.branch, scope);
-      await drop();
+      if (head === working.headRevision) {
+        if (working.closed !== true && !await audited(deps, key, "lesson.repo_file_pr_closed", { cause: working.cause, pullRequest: 0 })) continue;
+        // Read again right before the delete: a push since the read above leaves the branch alone.
+        if (await headOf(target, working.branch) === working.headRevision) await host.deleteBranch(repository, working.branch, scope);
+      }
+      await replace(undefined);
     } catch (error) {
       if (error instanceof Abort) throw error;
       deps.log?.("lessons_repo_file.close_failed", {});
@@ -139,7 +160,7 @@ export async function switchRepoFileOff(deps: RepoFileDeps, key: ScopeKey, targe
   if (current.open !== undefined) {
     const open = current.open;
     // The closing checks the head again before it touches anything: a pull request a person pushed to is theirs and is left alone.
-    current = await commit(deps, key, current, (s) => ({ ...without(s, "open") as RepoFileState, closing: [...s.closing, { branch: open.branch, number: open.number, cause: "switched_off" as const, headRevision: open.headRevision }] }));
+    current = await commit(deps, key, current, (s) => ({ ...without(s, "open") as RepoFileState, closing: [...s.closing, { branch: open.branch, number: open.number, cause: "switched_off" as const, headRevision: open.headRevision, ids: carriedBy(open) }] }));
   }
   return finishClosings(deps, key, target, current);
 }
@@ -178,7 +199,7 @@ export async function runRepoFilePass(deps: RepoFileDeps, key: ScopeKey, target:
     if (left !== undefined && (left.open !== undefined || left.closing.length > 0 || left.pending !== undefined)) {
       try {
         let current = left;
-        if (current.open !== undefined) { const open = current.open; current = await commit(deps, key, current, (s) => ({ ...without(s, "open") as RepoFileState, closing: [...s.closing, { branch: open.branch, number: open.number, cause: "lessons_off" as const, headRevision: open.headRevision }] })); }
+        if (current.open !== undefined) { const open = current.open; current = await commit(deps, key, current, (s) => ({ ...without(s, "open") as RepoFileState, closing: [...s.closing, { branch: open.branch, number: open.number, cause: "lessons_off" as const, headRevision: open.headRevision, ids: carriedBy(open) }] })); }
         await finishClosings(deps, key, target, current);
       } catch { deps.log?.("lessons_repo_file.lessons_off_close_failed", {}); }
     }
@@ -242,7 +263,7 @@ async function pass(deps: RepoFileDeps, key: ScopeKey, target: RepoFileTarget, l
       // pull request (and only removals while the team's one is open), because a removal must never wait on a branch Rovara may not write (review H2).
       state = await commit(deps, key, state, (s) => ({
         ...without(s, "open") as RepoFileState, unmerged: s.unmerged + 1,
-        theirs: [...s.theirs, { branch: open.branch, number: open.number, url: open.url, ids: [...Object.keys(open.added), ...Object.keys(open.edited)] }].slice(-10),
+        theirs: boundedTheirs([...s.theirs, { branch: open.branch, number: open.number, url: open.url, ids: carriedBy(open) }]),
       }));
     } else stillOpen = true;
     state = await finishClosings(deps, key, target, state);
@@ -251,11 +272,16 @@ async function pass(deps: RepoFileDeps, key: ScopeKey, target: RepoFileTarget, l
   let teamPr = false;
   if (state.theirs.length > 0) {
     const still: typeof state.theirs = [];
+    const merged: string[] = [];
     for (const theirs of state.theirs) {
       let details;
       try { details = await host.getChangeRequest({ repository, id: theirs.number, url: theirs.url }, scope); } catch { throw new Abort("repository_unreadable"); }
       if (details.state === "open") still.push(theirs);
+      // Merged by the team: what it put in the file is Rovara's lessons' text under the team's wording. The ids become known to Rovara (with a fingerprint nothing matches, so the wording is the team's and held), so an erasure that
+      // comes later still reaches the block.
+      else if (details.state === "merged") merged.push(...theirs.ids);
     }
+    if (merged.length > 0) state = await commit(deps, key, state, (s) => ({ ...s, rendered: { ...Object.fromEntries(merged.map((id) => [id, "merged-by-team"])), ...s.rendered } }));
     teamPr = still.length > 0;
     if (still.length !== state.theirs.length) state = await commit(deps, key, state, { theirs: still });
   }
@@ -292,7 +318,7 @@ async function pass(deps: RepoFileDeps, key: ScopeKey, target: RepoFileTarget, l
   const lessons = await deps.store.listAllHeads(key);
   let names: readonly string[];
   try { names = await deps.names(key, lessons); } catch { throw new Abort("names_unreadable"); }
-  const plan = planRepoFile({ place: target.place, repoName: target.name, lessons, names, fileText, rendered: state.rendered, declined: state.declined, addsPaused: additionsPaused({ unmerged }), teamPr, preset });
+  const plan = planRepoFile({ place: target.place, repoName: target.name, lessons, names, fileText, rendered: state.rendered, declined: state.declined, erased: state.erased, addsPaused: additionsPaused({ unmerged }), teamPr, preset });
   // What the plan learned about the file is recorded whatever comes next.
   const rendered = { ...state.rendered, ...plan.adopted };
   for (const id of plan.newlyDeclined) delete rendered[id];
@@ -306,26 +332,31 @@ async function pass(deps: RepoFileDeps, key: ScopeKey, target: RepoFileTarget, l
   const found: PointerPath[] = [];
   const links: PointerPath[] = [];
   const currentOf = new Map<PointerPath, string>();
+  // A failed read of AGENTS.md or CLAUDE.md stops the pointer for this pass (it could hide the very file the pointer belongs in). A Copilot file that cannot be read (say `.github` is a link) only leaves that file out, so one
+  // unreadable path never blocks the pointer for ever.
   let pointerReadFailed = false;
+  const unreadable: PointerPath[] = [];
   for (const path of LESSON_FILE_POINTER_PATHS) {
     try {
       const pathKindOf = await pathKind(repository, path, head, scope);
       if (pathKindOf === "symlink") links.push(path);
       else if (pathKindOf === "file") {
         const text = await host.fileAtRevision(repository, path, head, scope, { maxBytes: 1_000_000 });
-        if (text === undefined) pointerReadFailed = true;
-        else { found.push(path); currentOf.set(path, text); }
-      } else if (pathKindOf === "dir") pointerReadFailed = true;
-    } catch { pointerReadFailed = true; }
+        if (text === undefined) throw new Error("unreadable");
+        found.push(path); currentOf.set(path, text);
+      } else if (pathKindOf === "dir") throw new Error("unreadable");
+    } catch { unreadable.push(path); if (path !== ".github/copilot-instructions.md") pointerReadFailed = true; }
   }
   // A pointer proposed earlier and merged but named nowhere now: shown in the status, never edited again. Said only when every file could be read.
-  const pointerMissing = !pointerReadFailed ? state.pointerProposed && state.open?.pointer !== true && !state.pointerDeclined && [...currentOf.values()].every((text) => !mentionsLessonsFile(text)) : state.pointerMissing;
+  const pointerMissing = unreadable.length === 0 ? state.pointerProposed && state.open?.pointer !== true && !state.pointerDeclined && [...currentOf.values()].every((text) => !mentionsLessonsFile(text)) : state.pointerMissing;
   if (wantsPointer && plan.nextText !== undefined && !pointerReadFailed) {
-    for (const path of pointerTargets(found, state.pointers, links)) {
+    for (const path of pointerTargets(found, state.pointers, [...links, ...unreadable])) {
       const next = withPointer(path, currentOf.get(path));
       if (next !== undefined) pointerFiles.push({ path, text: next, previous: currentOf.get(path) ?? null });
     }
   }
+  // The row says so when the pointer is waiting on a file that cannot be read.
+  const pointerProblem = wantsPointer && pointerReadFailed ? { problem: "pointer_unreadable" as const } : {};
   // The digest covers the file on the default branch and each pointer file it would write: a change the team made there rebuilds a pull request computed on the old text (review M3).
   const digest = `${plan.digest}|f:${textHash(fileText ?? "")}${pointerFiles.map((f) => `|${f.path}:${textHash(f.previous ?? "")}`).join("")}`;
 
@@ -334,25 +365,30 @@ async function pass(deps: RepoFileDeps, key: ScopeKey, target: RepoFileTarget, l
     if (stillOpen) {
       const open = state.open!;
       // A pointer that rode in this pull request was never merged: the next pull request proposes it.
-      state = await commit(deps, key, state, (s) => ({ ...without(s, "open") as RepoFileState, pointerProposed: open.pointer ? false : s.pointerProposed, closing: [...s.closing, { branch: open.branch, number: open.number, cause: "nothing_left" as const, headRevision: open.headRevision }] }));
+      state = await commit(deps, key, state, (s) => ({ ...without(s, "open") as RepoFileState, pointerProposed: open.pointer ? false : s.pointerProposed, closing: [...s.closing, { branch: open.branch, number: open.number, cause: "nothing_left" as const, headRevision: open.headRevision, ids: carriedBy(open) }] }));
       state = await finishClosings(deps, key, target, state);
     }
-    await finish({ pointerMissing });
+    await finish({ pointerMissing, ...pointerProblem });
     return { status: "no_changes" };
   }
-  if (stillOpen && state.open!.digest === digest) { await finish({ pointerMissing }); return { status: "left" }; }
+  if (stillOpen && state.open!.digest === digest) { await finish({ pointerMissing, ...pointerProblem }); return { status: "left" }; }
 
-  return openPullRequest(deps, key, target, state, { plan, pointerFiles, digest, head, defaultBranch, fileText, unmerged, pointerMissing });
+  return openPullRequest(deps, key, target, state, { plan, pointerFiles, digest, head, defaultBranch, fileText, unmerged, pointerMissing, pointerProblem });
 }
 
 async function openPullRequest(
   deps: RepoFileDeps, key: ScopeKey, target: RepoFileTarget, state: RepoFileState,
-  work: { plan: RepoFilePlan; pointerFiles: Array<{ path: PointerPath; text: string; previous: string | null }>; digest: string; head: string; defaultBranch: string; fileText: string | undefined; unmerged: number; pointerMissing: boolean },
+  work: { plan: RepoFilePlan; pointerFiles: Array<{ path: PointerPath; text: string; previous: string | null }>; digest: string; head: string; defaultBranch: string; fileText: string | undefined; unmerged: number; pointerMissing: boolean; pointerProblem: { problem?: "pointer_unreadable" } },
 ): Promise<PassResult> {
   const { host, repository, scope } = target;
   const { plan } = work;
   // The ledger first: if it cannot take the event nothing is written (this week's pull request waits).
   if (!await audited(deps, key, "lesson.repo_file_pr_opened", { removals: plan.removals.length, edits: plan.edits.length, adds: plan.adds.length })) throw new Abort("audit_down");
+  // A leftover pending write the cleanup could not settle yet is not lost: it becomes a closing, tried again like any other.
+  if (state.pending !== undefined) {
+    const stray = state.pending;
+    state = await commit(deps, key, state, (s) => ({ ...without(s, "pending") as RepoFileState, closing: boundedClosings([...s.closing, { branch: stray.branch, cause: "replaced" as const, headRevision: stray.headRevision ?? stray.baseRevision, attempts: stray.attempts ?? 0 }]) }));
+  }
   const branch = await freshBranch(deps, target);
   // The branch is recorded BEFORE it is made, so a crash between the write and the record leaves a name the next pass deletes, never a branch nobody knows.
   state = await commit(deps, key, state, { pending: { branch, at: deps.now(), baseRevision: work.head } });
@@ -384,11 +420,11 @@ async function openPullRequest(
     pointer: work.pointerFiles.length > 0,
   };
   state = await commit(deps, key, state, (s) => ({
-    ...without(s, "pending", "problem") as RepoFileState, open,
+    ...without(s, "pending", "problem") as RepoFileState, ...work.pointerProblem, open,
     pointerProposed: s.pointerProposed || work.pointerFiles.length > 0,
     pointerMissing: work.pointerFiles.length > 0 ? false : work.pointerMissing,
     unmerged: work.unmerged, lastPassAt: deps.now(),
-    closing: previous === undefined ? s.closing : [...s.closing, { branch: previous.branch, number: previous.number, cause: "replaced" as const, headRevision: previous.headRevision }],
+    closing: previous === undefined ? s.closing : [...s.closing, { branch: previous.branch, number: previous.number, cause: "replaced" as const, headRevision: previous.headRevision, ids: carriedBy(previous) }],
   }));
   // The previous Rovara pull request comes down after the new one is up: at most one is open when the pass ends.
   await finishClosings(deps, key, target, state);

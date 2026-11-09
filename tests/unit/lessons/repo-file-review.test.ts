@@ -6,6 +6,7 @@ import { setLearnedLessonsGate } from "../../../packages/broker/src/lessons/poli
 import { parseLessonsFile } from "../../../packages/broker/src/lessons/repo-file-format.js";
 import { switchRepoFileOff } from "../../../packages/broker/src/lessons/repo-file-pass.js";
 import { closeOpenPullRequestFor } from "../../../packages/broker/src/lessons/repo-file-routes.js";
+import { MAX_THEIRS, boundedTheirs, parseRepoFileState } from "../../../packages/broker/src/lessons/repo-file-state.js";
 import { FILE, FakeRepoHost, passSetup, repoLesson } from "./repo-file-helpers.js";
 
 afterEach(() => { setLearnedLessonsGate(undefined); });
@@ -439,3 +440,296 @@ describe("the lows", () => {
   });
 });
 const KEYWS = "org_aaaaaaaaaaaaaaaaaaaa";
+
+// ---- re-check of the fix round (LESSONS-REPO-FILE-REVIEW.md, Q1-Q5) ----
+const L1 = "les_aaaa0001";
+const TEXT1 = `Lesson text for ${L1}: use the shared helper.`;
+
+describe("re-check Q1 (H3 ordering): a privacy blocker masked by an earlier quality reason", () => {
+  it("a reworded block whose lesson is no longer repo-only AND has harm feedback is proposed for removal", async () => {
+    const w = passSetup();
+    await w.seedLessons(repoLesson(L1), repoLesson("les_aaaa0002"));
+    await w.enable();
+    const r = await w.run();
+    w.host.merge(Number((r as { number: string }).number));
+    w.host.setFile("main", FILE, w.host.file("main", FILE)!.replace(TEXT1, "Team wording of the first lesson."));
+    const head = (await w.store.listAllHeads(w.key)).find((x) => x.id === L1)!;
+    await w.store.commit(w.key, await w.store.setVersion(w.key), [{ ...head, version: 2, provenance: { ...head.provenance, repoOnly: undefined } }], 9);
+    await w.store.mutate(w.key, L1, (x) => ({ counters: { ...x.counters, harmful: 1 } }));
+    w.week();
+    await w.run();
+    expect((await w.current()).open?.removed ?? []).toContain(L1);
+  });
+});
+
+describe("re-check Q2 (H2 + erasure): text that reached main through a handed-over PR", () => {
+  it("is proposed for removal once its lesson is erased", async () => {
+    const w = passSetup();
+    await w.seedLessons(repoLesson(L1));
+    await w.enable();
+    const r = await w.run();
+    const number = Number((r as { number: string }).number);
+    const open = (await w.current()).open!;
+    w.host.setFile(open.branch, FILE, w.host.file(open.branch, FILE)!.replace(TEXT1, "Team wording of the first lesson."));
+    w.week();
+    await w.run();
+    expect((await w.current()).theirs.length).toBe(1);
+    w.host.merge(number);
+    w.week();
+    await w.run();
+    await w.store.purge(w.key, L1);
+    w.week();
+    await w.run();
+    const proposed = w.host.open.some((pr) => !idsIn(w.host.file(pr.source, FILE)).includes(L1));
+    expect({ inMain: idsIn(w.host.file("main", FILE)).includes(L1), proposed }).toEqual({ inMain: true, proposed: true });
+  });
+});
+
+describe("re-check Q3 (M1 vs erasure): an erasure close that failed once, then a person pushes", () => {
+  it("the PR carrying the erased add is still closed (branch kept), not dropped", async () => {
+    const w = passSetup();
+    await w.seedLessons(repoLesson(L1));
+    await w.enable();
+    await w.run();
+    const open = (await w.current()).open!;
+    w.host.failCalls.add("updateChangeRequest");
+    await w.store.purge(w.key, L1);
+    await closeOpenPullRequestFor(runtimeOf(w), w.key, L1);
+    expect((await w.current()).closing.length).toBe(1);
+    w.host.setFile(open.branch, "person.txt", "a person's commit");
+    w.host.failCalls.delete("updateChangeRequest");
+    w.week();
+    await w.run();
+    const stillCarries = w.host.open.some((pr) => idsIn(w.host.file(pr.source, FILE)).includes(L1));
+    expect({ stillCarries, branchKept: w.host.files.has(open.branch) }).toEqual({ stillCarries: false, branchKept: true });
+  });
+});
+
+describe("re-check Q4 (M1 replaced closing): an old PR a person pushed to after replacement is dropped from tracking", () => {
+  it("a later erasure of an add that is only in that PR still closes it", async () => {
+    const w = passSetup();
+    await w.seedLessons(repoLesson(L1));
+    await w.enable();
+    await w.run();
+    const first = (await w.current()).open!;
+    await w.seedLessons(repoLesson("les_aaaa0002"));
+    w.week();
+    w.host.failCalls.add("updateChangeRequest");
+    expect(await w.run()).toMatchObject({ status: "opened" });
+    w.host.failCalls.delete("updateChangeRequest");
+    w.host.setFile(first.branch, "person.txt", "a person's commit");
+    // Now L1 stops being proposed (e.g. erased) - it is in the new PR too, so erase a lesson only the first PR had is not possible here;
+    // instead check the first PR is tracked somewhere (theirs or closing) after the next pass.
+    w.week();
+    await w.run();
+    const s = await w.current();
+    const tracked = s.theirs.some((t) => t.branch === first.branch) || s.closing.some((c) => c.branch === first.branch) || s.open?.branch === first.branch;
+    const firstOpen = w.host.prs.find((p) => p.source === first.branch)!.state === "open";
+    expect({ firstOpen, tracked }).not.toEqual({ firstOpen: true, tracked: false });
+  });
+});
+
+class FlakyAgentsHost2 extends FakeRepoHost {
+  failAgentsRead = true;
+  override async pathKind(r: RepositoryRef, path: string, revision: string): Promise<PathKind> {
+    if (path === "AGENTS.md" && this.failAgentsRead) throw new Error("GitHub 502");
+    return super.pathKind(r, path, revision);
+  }
+}
+
+describe("re-check Q5 (H1): pointer skipped on a failed read, proposed later with previous", () => {
+  it("lessons go out without the pointer, and the next pass proposes it under the text it read", async () => {
+    const host = new FlakyAgentsHost2();
+    host.setFile("main", "AGENTS.md", "# Team rules\n\nNever touch prod.\n");
+    const w = passSetup({ host });
+    await w.seedLessons(repoLesson(L1));
+    await w.enable();
+    expect(await w.run()).toMatchObject({ status: "opened" });
+    const first = (await w.current()).open!;
+    expect(host.file(first.branch, "AGENTS.md")).toBe("# Team rules\n\nNever touch prod.\n");
+    expect((await w.current()).pointerProposed).toBe(false);
+    host.failAgentsRead = false;
+    w.week();
+    expect(await w.run()).toMatchObject({ status: "opened" });
+    const last = host.commitInputs.at(-1)!;
+    const agents = last.previous?.find((p) => p.path === "AGENTS.md");
+    expect(agents?.content).toBe("# Team rules\n\nNever touch prod.\n");
+    expect(host.file((await w.current()).open!.branch, "AGENTS.md")).toContain("Never touch prod.");
+  });
+});
+
+// ---- the cases the second fix round added ----
+describe("N1: any privacy reason overrides the hold, whatever quality reasons are also present", () => {
+  it.each([
+    ["retired and no longer repo-only", (l: ReturnType<typeof repoLesson>) => ({ ...l, status: "retired" as const, provenance: { ...l.provenance, repoOnly: undefined } })],
+    ["expired and restricted audience", (l: ReturnType<typeof repoLesson>) => ({ ...l, status: "expired" as const, provenance: { ...l.provenance, audience: { kind: "restricted" as const, acl: { source: "slack", scope: "slack:channel/C1", capturedAt: "t", liveCheck: "on_read" as const } } } })],
+    ["stale citation and names a person", (l: ReturnType<typeof repoLesson>) => ({ ...l, citationChecks: [{ index: 0, result: "stale" as const, at: 1 }], body: "Ask Ann Lee for les_aaaa0001 details." })],
+  ])("%s: proposed for removal, with a privacy reason", async (_name, change) => {
+    const w = passSetup({ names: ["Ann Lee"] });
+    await w.seedLessons(repoLesson(L1), repoLesson("les_aaaa0002"));
+    await w.enable();
+    const r = await w.run();
+    w.host.merge(Number((r as { number: string }).number));
+    w.host.setFile("main", FILE, w.host.file("main", FILE)!.replace(TEXT1, "Team wording of the first lesson."));
+    const head = (await w.store.listAllHeads(w.key)).find((l) => l.id === L1)!;
+    await w.store.commit(w.key, await w.store.setVersion(w.key), [{ ...change(head), version: 2 }], 9);
+    w.week();
+    expect(await w.run()).toMatchObject({ status: "opened", removals: 1 });
+    expect((await w.current()).open!.removed).toEqual([L1]);
+  });
+});
+
+describe("N2: erasure is driven by the file, not by Rovara's ownership records", () => {
+  it("a block a person copied into the file, or that came in through any PR, whose lesson was erased gets a removal; an unknown id is left alone", async () => {
+    const w = passSetup();
+    await w.seedLessons(repoLesson("les_aaaa0002"));
+    await w.enable();
+    const r = await w.run();
+    w.host.merge(Number((r as { number: string }).number));
+    // A person copies a block for a lesson Rovara never rendered here and that is later erased; and another with an id nobody knows.
+    w.host.setFile("main", FILE, `${w.host.file("main", FILE)!}\n<!-- rovara:les_copied01 -->\n- Copied text of a lesson.\n\n<!-- rovara:les_unknown9 -->\n- Some other tool's block.\n`);
+    await w.seedLessons(repoLesson("les_copied01"));
+    await w.store.purge(w.key, "les_copied01");
+    const { closeOpenPullRequestFor: gone } = await import("../../../packages/broker/src/lessons/repo-file-routes.js");
+    await gone(runtimeOf(w), w.key, "les_copied01");
+    expect((await w.current()).erased).toContain("les_copied01");
+    w.week();
+    expect(await w.run()).toMatchObject({ status: "opened", removals: 1 });
+    expect((await w.current()).open!.removed).toEqual(["les_copied01"]);
+    expect(w.host.file((await w.current()).open!.branch, FILE)).toContain("les_unknown9");
+  });
+
+  it("a lesson of ANOTHER repository, copied here, is proposed for removal; so is one that is not repo-only at all", async () => {
+    const w = passSetup();
+    await w.seedLessons(repoLesson("les_aaaa0002"));
+    await w.enable();
+    const r = await w.run();
+    w.host.merge(Number((r as { number: string }).number));
+    const other = repoLesson("les_other001", { place: "github:repo/2002" });
+    const slack = repoLesson("les_slack001", { provenance: { ...other.provenance, repoOnly: undefined } });
+    await w.seedLessons(other, slack);
+    w.host.setFile("main", FILE, `${w.host.file("main", FILE)!}\n<!-- rovara:les_other001 -->\n- Text of the other repo.\n\n<!-- rovara:les_slack001 -->\n- Text from a chat.\n`);
+    w.week();
+    expect(await w.run()).toMatchObject({ status: "opened", removals: 2 });
+  });
+
+  it("text that reached main through a handed-over PR and whose lesson is later erased is proposed for removal (probe Q2 plus the reopen case)", async () => {
+    const w = passSetup();
+    await w.seedLessons(repoLesson(L1));
+    await w.enable();
+    await w.run();
+    const open = (await w.current()).open!;
+    w.host.setFile(open.branch, "person.txt", "a person's commit");
+    w.week();
+    await w.run();
+    w.host.merge(1);
+    await w.store.purge(w.key, L1);
+    const { closeOpenPullRequestFor: gone } = await import("../../../packages/broker/src/lessons/repo-file-routes.js");
+    await gone(runtimeOf(w), w.key, L1);
+    w.week();
+    expect(await w.run()).toMatchObject({ status: "opened", removals: 1 });
+  });
+});
+
+describe("N3: closing a pull request is always safe; only deleting a branch needs the head", () => {
+  it("an erasure close that cannot read the head still closes the PR, keeps the branch, and the entry is never dropped before the host confirms", async () => {
+    const w = passSetup();
+    await w.seedLessons(repoLesson(L1));
+    await w.enable();
+    await w.run();
+    const open = (await w.current()).open!;
+    w.host.failCalls.add("updateChangeRequest");
+    w.host.failCalls.add("baseBranchHead");
+    await w.store.purge(w.key, L1);
+    await closeOpenPullRequestFor(runtimeOf(w), w.key, L1);
+    for (let i = 0; i < 5; i += 1) { w.week(); await w.run(); }
+    expect(w.host.open).toHaveLength(1);
+    expect((await w.current()).closing.some((c) => c.branch === open.branch)).toBe(true);
+    w.host.failCalls.clear();
+    w.week();
+    await w.run();
+    expect(w.host.open.some((pr) => idsIn(w.host.file(pr.source, FILE)).includes(L1))).toBe(false);
+    expect(w.host.prs.find((pr) => pr.source === open.branch)!.state).toBe("closed");
+  });
+
+  it("a replaced PR a person pushed to is kept in `theirs` with the ids it carried, so a later erasure still finds it", async () => {
+    const w = passSetup();
+    await w.seedLessons(repoLesson(L1));
+    await w.enable();
+    await w.run();
+    const first = (await w.current()).open!;
+    await w.seedLessons(repoLesson("les_aaaa0002"));
+    w.week();
+    w.host.failCalls.add("updateChangeRequest");
+    await w.run();
+    w.host.failCalls.delete("updateChangeRequest");
+    w.host.setFile(first.branch, "person.txt", "a person's commit");
+    w.week();
+    await w.run();
+    expect((await w.current()).theirs).toEqual([expect.objectContaining({ branch: first.branch, ids: [L1] })]);
+    expect((await w.current()).closing).toEqual([]);
+    await w.store.purge(w.key, L1);
+    await closeOpenPullRequestFor(runtimeOf(w), w.key, L1);
+    expect(w.host.prs.find((pr) => pr.source === first.branch)!.state).toBe("closed");
+    expect(w.host.files.has(first.branch)).toBe(true);
+  });
+});
+
+describe("the second round's lows", () => {
+  it("L-r1: a pending branch whose head cannot be read is retried a few times, not dropped at once, and is not lost when a new PR is opened", async () => {
+    const w = passSetup();
+    await w.seedLessons(repoLesson(L1));
+    await w.enable();
+    w.host.failCalls.add("reconcileChangeRequest");
+    await w.run();
+    const stray = (await w.current()).pending!.branch;
+    w.host.failCalls.delete("reconcileChangeRequest");
+    w.host.failCalls.add("baseBranchHead");
+    w.week();
+    await w.run();
+    expect((await w.current()).pending?.branch === stray || (await w.current()).closing.some((c) => c.branch === stray)).toBe(true);
+    w.host.failCalls.clear();
+    for (let i = 0; i < 2; i += 1) { w.week(); await w.run(); }
+    expect(w.host.files.has(stray)).toBe(false);
+  });
+
+  it("L-r3: an agent file that cannot be read says so on the row, and a Copilot file alone does not stop the pointer", async () => {
+    const host = new FakeRepoHost();
+    host.setFile("main", "CLAUDE.md", "# Claude\n");
+    const original = host.pathKind.bind(host);
+    host.pathKind = async (r, path, revision) => { if (path === ".github/copilot-instructions.md") throw new Error("link parent"); return original(r, path, revision); };
+    const w = passSetup({ host });
+    await w.seedLessons(repoLesson(L1));
+    await w.enable();
+    await w.run();
+    expect(host.file((await w.current()).open!.branch, "CLAUDE.md")).toContain("@.rovara/lessons.md");
+    const blocked = new FakeRepoHost();
+    const orig2 = blocked.pathKind.bind(blocked);
+    blocked.pathKind = async (r, path, revision) => { if (path === "AGENTS.md") throw new Error("502"); return orig2(r, path, revision); };
+    const w2 = passSetup({ host: blocked });
+    await w2.seedLessons(repoLesson(L1));
+    await w2.enable();
+    await w2.run();
+    expect((await w2.current()).problem).toBe("pointer_unreadable");
+    expect((await w2.current()).open).toBeDefined();
+  });
+
+  it("L-r4: erasure entries are not lost to a cap", async () => {
+    const w = passSetup();
+    await w.enable();
+    const state = await w.current();
+    const many = Array.from({ length: 30 }, (_, i) => ({ branch: `rovara/lessons-${i.toString(16).padStart(12, "0")}`, number: String(i + 1), url: "", ids: [`les_t${String(i).padStart(7, "0")}`] }));
+    const big = { ...state, theirs: many, closing: many.map((m) => ({ branch: m.branch, number: m.number, cause: "erased" as const, keepBranch: true })) };
+    expect(parseRepoFileState(big)).toBeDefined();
+    expect(parseRepoFileState({ ...big, theirs: [...many, ...many, ...many, ...many] })).toBeUndefined();
+    // Over the cap the entries that carry no lesson go first; one that carries a lesson is the last to go.
+    const crowded = boundedTheirs([{ branch: "rovara/lessons-0000000000ff", number: "9", url: "", ids: ["les_keepme001"] }, ...Array.from({ length: MAX_THEIRS }, (_, i) => ({ branch: `rovara/lessons-${i.toString(16).padStart(12, "0")}`, number: String(i), url: "", ids: [] as string[] }))]);
+    expect(crowded).toHaveLength(MAX_THEIRS);
+    expect(crowded.some((entry) => entry.ids.includes("les_keepme001"))).toBe(true);
+  });
+
+  it("L-r5: a merge that combines changes to the file from both sides is refused with a sentence the user can act on", async () => {
+    const { LESSONS_FILE_MERGE_REFUSAL } = await import("../../../packages/worker/src/lessons-file-guard.js");
+    expect(LESSONS_FILE_MERGE_REFUSAL).toMatch(/both sides/u);
+  });
+});

@@ -21,11 +21,6 @@ import type { Lesson } from "./types.js";
 
 export const REMOVAL_REASONS = ["faded", "harm", "retired", "withdrawn", "lesson_erased", "stale_citation", "names_a_person", "no_longer_repo_only", "needs_review", "no_longer_approved"] as const;
 export type RemovalReason = (typeof REMOVAL_REASONS)[number];
-/**
- * The reasons that are about a person or about where a lesson came from, not about how good it is: a lesson erased or withdrawn in Rovara, one that now names a person, one that no longer rests only on this repository's own
- * words. Removing is only a proposal the team merges, so these WIN over the hand-edit hold (review H3). The others (faded, harm, retired, stale citation, needs review, no longer approved) are quality calls the team's own wording beats.
- */
-export const PRIVACY_REMOVAL_REASONS: ReadonlySet<RemovalReason> = new Set<RemovalReason>(["lesson_erased", "withdrawn", "names_a_person", "no_longer_repo_only"]);
 /** The sentence for a reason in the pull request body (fixed words). Only the two reasons that are plainly about the code say why; every other reason is one neutral sentence, so the body tells repo readers nothing about Rovara's people or feedback (review L2). */
 export const NEUTRAL_REMOVAL_TEXT = "Rovara no longer proposes this lesson";
 export const REMOVAL_REASON_TEXT: Record<RemovalReason, string> = {
@@ -95,6 +90,8 @@ export interface PlanInput {
   fileText: string | undefined;
   rendered: Readonly<Record<string, string>>;
   declined: readonly string[];
+  /** Ids of lessons erased or withdrawn in Rovara: a block with one of these ids is proposed for removal however it got into the file. */
+  erased?: readonly string[];
   addsPaused: boolean;
   /** A Rovara pull request a person pushed to is still open: only removals are proposed until it is closed or merged. */
   teamPr?: boolean;
@@ -103,16 +100,25 @@ export interface PlanInput {
 
 /** Why a lesson that is in the file should come out, from the lesson's own state. First match wins. */
 export function removalReasonOf(lesson: Lesson | undefined, blockers: readonly RepoFileBlocker[]): RemovalReason {
+  // A privacy reason is named first, whatever quality reasons are also present: it is the one that decides whether the team's wording can keep the lesson in the file.
+  const privacy = privacyReasonOf(lesson, blockers);
+  if (privacy !== undefined) return privacy;
   if (lesson === undefined) return "lesson_erased";
   if (lesson.status === "expired") return "faded";
-  if (lesson.status === "withdrawn") return "withdrawn";
   if (lesson.status !== "active") return lesson.counters.harmful > 0 || lesson.retiredByHarm !== undefined ? "harm" : "retired";
   if (lesson.counters.harmful > 0 || lesson.retireProposedAt !== undefined) return "harm";
   if (hasStaleCitation(lesson)) return "stale_citation";
-  if (blockers.includes("names_a_person")) return "names_a_person";
-  if (blockers.some((b) => b === "not_repo_only" || b === "other_repo" || b === "restricted_audience" || b === "repo_unknown")) return "no_longer_repo_only";
   if (blockers.includes("needs_review")) return "needs_review";
   return "no_longer_approved";
+}
+
+/** The privacy reason a lesson has for leaving a repository's file, if it has one: gone from Rovara (erased), withdrawn, now names a person, or no longer rests only on this repository's own words. A SET in effect: any one is enough. */
+export function privacyReasonOf(lesson: Lesson | undefined, blockers: readonly RepoFileBlocker[]): RemovalReason | undefined {
+  if (lesson === undefined) return "lesson_erased";
+  if (lesson.status === "withdrawn") return "withdrawn";
+  if (blockers.includes("names_a_person")) return "names_a_person";
+  if (blockers.some((b) => b === "not_repo_only" || b === "other_repo" || b === "restricted_audience" || b === "repo_unknown")) return "no_longer_repo_only";
+  return undefined;
 }
 
 const titleOfBlock = (text: string): string => cleanLessonLine(text).slice(0, 80);
@@ -121,6 +127,8 @@ const titleOfBlock = (text: string): string => cleanLessonLine(text).slice(0, 80
 export function planRepoFile(input: PlanInput): RepoFilePlan {
   const file: ParsedFile | undefined = input.fileText === undefined ? undefined : parseLessonsFile(input.fileText);
   const mine = (lesson: Lesson): boolean => lesson.provenance.repoOnly?.place === input.place || input.rendered[lesson.id] !== undefined;
+  const everyLesson = new Map(input.lessons.map((lesson) => [lesson.id, lesson]));
+  const erasedIds = new Set(input.erased ?? []);
   const byId = new Map(input.lessons.filter(mine).map((lesson) => [lesson.id, lesson]));
   const paused = input.addsPaused || input.teamPr === true;
   const skipped = { unrenderable: 0, capped: 0, ambiguous: 0 };
@@ -132,11 +140,17 @@ export function planRepoFile(input: PlanInput): RepoFilePlan {
   const inFile = new Set((file?.blocks ?? []).map((block) => block.id));
   skipped.ambiguous = file?.duplicates.length ?? 0;
 
-  // Ids Rovara owns that are in the file, in id order.
-  const ownedInFile = [...inFile].filter((id) => !file!.duplicates.includes(id) && (input.rendered[id] !== undefined || byId.has(id))).sort(compareIds);
-  for (const id of ownedInFile) {
+  // Erasure is driven by the FILE: every block that carries a marker of a lesson Rovara knows (or knew and erased) is looked at, however it got there. An id nobody knows is a team block and is left alone.
+  const known = [...inFile].filter((id) => !file!.duplicates.includes(id) && (input.rendered[id] !== undefined || everyLesson.has(id) || erasedIds.has(id))).sort(compareIds);
+  for (const id of known) {
     const block = blockOf(file!, id)!;
-    const lesson = byId.get(id);
+    const lesson = everyLesson.get(id);
+    if (input.rendered[id] === undefined && !byId.has(id)) {
+      // Not Rovara's to edit or hold: only a privacy reason acts (a lesson of another repository, one that is not repo-only, or one that is gone).
+      const reason = privacyReasonOf(lesson, lesson === undefined ? [] : repoFileBlockers(lesson, input.place, input.names));
+      if (reason !== undefined) removals.push({ id, reason, title: titleOfBlock(block.text) });
+      continue;
+    }
     const desired = lesson === undefined ? undefined : renderLesson(lesson, input.repoName);
     const baseline = input.rendered[id] ?? desired?.fingerprint;
     const now = fingerprintOf(block.text, block.heading);
@@ -144,10 +158,8 @@ export function planRepoFile(input: PlanInput): RepoFilePlan {
     if (baseline === undefined || now !== baseline) {
       // The team's wording is theirs, except that a privacy reason (erased, withdrawn, names a person, no longer repo-only) still proposes the removal (review H3).
       const blockers = lesson === undefined ? [] : repoFileBlockers(lesson, input.place, input.names);
-      if (lesson === undefined || lesson.status !== "active" || blockers.length > 0) {
-        const reason = removalReasonOf(lesson, blockers);
-        if (PRIVACY_REMOVAL_REASONS.has(reason)) { removals.push({ id, reason, title: titleOfBlock(block.text), edited: true }); continue; }
-      }
+      const reason = privacyReasonOf(lesson, blockers);
+      if (reason !== undefined) { removals.push({ id, reason, title: titleOfBlock(block.text), edited: true }); continue; }
       held.push(id);
       continue;
     }

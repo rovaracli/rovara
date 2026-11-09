@@ -66,7 +66,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import { afterAll } from "vitest";
-import { assertPushCarriesNoLessonsFile } from "../../packages/worker/src/lessons-file-guard.js";
+import { LESSONS_FILE_MERGE_REFUSAL, assertPushCarriesNoLessonsFile } from "../../packages/worker/src/lessons-file-guard.js";
 import { deleteBranchOn } from "../../packages/broker/src/github-commit-files.js";
 
 const run = promisify(execFile);
@@ -112,7 +112,7 @@ describe("the guard on a push that adds a commit to an existing pull request", (
     // A merge commit whose tree takes the lessons file from neither parent.
     await r.write(".rovara/lessons.md", "third version\n");
     await r.git(["add", "-A"]); await r.git(["commit", "-q", "--amend", "--no-edit"]);
-    await expect(assertPushCarriesNoLessonsFile(r.git, "HEAD")).rejects.toThrow(LESSONS_FILE_REFUSAL);
+    await expect(assertPushCarriesNoLessonsFile(r.git, "HEAD")).rejects.toThrow(LESSONS_FILE_MERGE_REFUSAL);
     expect((await readFile(join(r.dir, ".rovara/lessons.md"), "utf8"))).toBe("third version\n");
   });
 

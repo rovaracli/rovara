@@ -15,6 +15,8 @@ import type { ScopeKey } from "./store.js";
 
 export const MAX_RENDERED = 400;
 export const MAX_DECLINED = 400;
+/** Pull requests handed over, and closings waiting: both carry erasure tracking, so the cap is generous and an entry that carries lessons is the last to go. */
+export const MAX_THEIRS = 100;
 const Id = z.string().regex(/^[A-Za-z0-9_-]{4,64}$/u);
 const Branch = z.string().regex(/^rovara\/lessons-[0-9a-f]{12}$/u);
 
@@ -39,6 +41,10 @@ export type OpenPr = z.infer<typeof OpenPrSchema>;
 export const ClosingSchema = z.object({
   branch: Branch, number: z.string().min(1).max(40).optional(), cause: z.enum(["replaced", "nothing_left", "switched_off", "erased", "merged", "closed_by_team", "lessons_off"]),
   headRevision: z.string().min(7).max(64).optional(), keepBranch: z.boolean().optional(), attempts: z.number().int().min(0).max(10).optional(),
+  /** The lessons the pull request carried (adds and edits): kept when the entry cannot be finished because a person pushed, so a later erasure still finds the pull request. */
+  ids: z.array(Id).max(MAX_RENDERED).optional(),
+  /** The pull request is already closed; only the branch is left. */
+  closed: z.boolean().optional(),
 }).strict();
 export type Closing = z.infer<typeof ClosingSchema>;
 
@@ -61,10 +67,12 @@ export const RepoFileStateSchema = z.object({
   lastPassAt: z.number().optional(),
   open: OpenPrSchema.optional(),
   /** A branch Rovara decided on before it wrote, with the heads Rovara put on it (the base it was made at, and its own commit once written): it is deleted only while it is at one of them. */
-  pending: z.object({ branch: Branch, at: z.number(), baseRevision: z.string().min(7).max(64).optional(), headRevision: z.string().min(7).max(64).optional() }).strict().optional(),
+  pending: z.object({ branch: Branch, at: z.number(), baseRevision: z.string().min(7).max(64).optional(), headRevision: z.string().min(7).max(64).optional(), attempts: z.number().int().min(0).max(10).optional() }).strict().optional(),
+  /** Lessons erased or withdrawn in Rovara, whatever became of them since. Any block in the file that carries one of these ids is proposed for removal, however it got there (Rovara's pull request, one handed over, or a person copying it). */
+  erased: z.array(Id).max(MAX_DECLINED).default([]),
   /** Rovara pull requests a person pushed to (GitHub's "Update branch" counts): they are the team's now and are never touched again, except to be closed by an erasure. While one is open only removals are proposed. */
-  theirs: z.array(z.object({ branch: Branch, number: z.string().min(1).max(40), url: z.string().max(2_048), ids: z.array(Id).max(MAX_RENDERED) }).strict()).max(10).default([]),
-  closing: z.array(ClosingSchema).max(10),
+  theirs: z.array(z.object({ branch: Branch, number: z.string().min(1).max(40), url: z.string().max(2_048), ids: z.array(Id).max(MAX_RENDERED) }).strict()).max(MAX_THEIRS).default([]),
+  closing: z.array(ClosingSchema).max(MAX_THEIRS),
   problem: z.enum(LESSON_FILE_PROBLEMS).optional(),
   /** A pointer was proposed and a later pass found no agent file that names the lessons file. */
   pointerMissing: z.boolean(),
@@ -74,7 +82,7 @@ export const RepoFileStateSchema = z.object({
 export type RepoFileState = z.infer<typeof RepoFileStateSchema>;
 
 export const newRepoFileState = (place: string, name: string): RepoFileState => ({
-  place, name, enabled: false, pointerProposed: false, pointerDeclined: false, fileSeen: false, fileDeleted: false, rendered: {}, declined: [], held: [], unmerged: 0, closing: [], theirs: [], pointerMissing: false, revision: 0,
+  place, name, enabled: false, pointerProposed: false, pointerDeclined: false, fileSeen: false, fileDeleted: false, rendered: {}, declined: [], erased: [], held: [], unmerged: 0, closing: [], theirs: [], pointerMissing: false, revision: 0,
 });
 
 export interface RepoFileStore {
@@ -123,3 +131,17 @@ export function boundedAppend(list: readonly string[], more: readonly string[], 
 }
 
 export type { LessonFileProblem };
+
+/** A bounded list of handed-over pull requests; over the cap, those that carry no lesson go first, then the oldest, so erasure tracking is the last thing lost. */
+export function boundedTheirs<T extends { ids: readonly string[] }>(list: readonly T[]): T[] {
+  const out = [...list];
+  while (out.length > MAX_THEIRS) { const at = out.findIndex((entry) => entry.ids.length === 0); out.splice(at === -1 ? 0 : at, 1); }
+  return out;
+}
+
+/** The same for closings: over the cap, those that carry no lesson and need no close go first, then the oldest. */
+export function boundedClosings(list: readonly Closing[]): Closing[] {
+  const out = [...list];
+  while (out.length > MAX_THEIRS) { const at = out.findIndex((entry) => (entry.ids ?? []).length === 0 && entry.cause !== "erased"); out.splice(at === -1 ? 0 : at, 1); }
+  return out;
+}

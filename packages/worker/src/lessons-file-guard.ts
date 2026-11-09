@@ -6,6 +6,7 @@ import { LESSON_FILE_PATH, agentXError } from "@agentx/contracts";
 
 /** The sentence a task fails with. Fixed words: no path, no repository text. */
 export const LESSONS_FILE_REFUSAL = "This change touches .rovara/lessons.md, which is the team's file and changes only through Rovara's weekly lessons pull request. Take that file out of the change.";
+export const LESSONS_FILE_MERGE_REFUSAL = "This merge combines changes to .rovara/lessons.md that came from both sides (the pull request and the base branch). Resolve the file by taking one side's version of it exactly, then try again.";
 const EMPTY_TREE = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
 
 /** Whether a changed path is the lessons file or would replace it (the file, or `.rovara` as a file or link). */
@@ -42,5 +43,5 @@ export async function assertPushCarriesNoLessonsFile(git: (args: string[]) => Pr
     try { listed = await git(["diff", "--name-only", "-z", "--no-renames", "--ignore-submodules=none", parent, commit]); } catch { throw agentXError("CONFIG_INVALID", "Rovara could not read the list of files this push changes, so it did not push"); }
     for (const path of new Set(listed.split("\0").filter((name) => name !== "" && isLessonsFilePath(name)))) touched.set(path, (touched.get(path) ?? 0) + 1);
   }
-  if ([...touched.values()].some((count) => count === against.length)) throw agentXError("CONFIG_INVALID", LESSONS_FILE_REFUSAL);
+  if ([...touched.values()].some((count) => count === against.length)) throw agentXError("CONFIG_INVALID", against.length > 1 ? LESSONS_FILE_MERGE_REFUSAL : LESSONS_FILE_REFUSAL);
 }

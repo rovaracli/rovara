@@ -7,7 +7,7 @@ import type { LessonsRepoFileBody, LessonsRepoFileRow, LessonsRepoFileStatus } f
 import type { RepoFileRuntime } from "./repo-file-job.js";
 import { finishClosings, switchRepoFileOff, type RepoFileTarget } from "./repo-file-pass.js";
 import { rowOf } from "./repo-file-pr.js";
-import { newRepoFileState, type Closing, type RepoFileState } from "./repo-file-state.js";
+import { MAX_DECLINED, boundedAppend, boundedClosings, newRepoFileState, type Closing, type RepoFileState } from "./repo-file-state.js";
 import type { ScopeKey } from "./store.js";
 
 export type RepoFileActionResult = { ok: true; row: LessonsRepoFileRow } | { ok: false; code: "not_found" | "host_cannot_write" | "audit_unavailable" | "conflict" | "unreadable" };
@@ -68,28 +68,33 @@ export async function repoFileAction(runtime: RepoFileRuntime, key: ScopeKey, bo
  * reaches the default branch. A pull request a person pushed to is theirs and is left. The next weekly pass opens a fresh one. Closing is retried by the next pass when the host or the ledger is down.
  */
 export async function closeOpenPullRequestFor(runtime: RepoFileRuntime, key: ScopeKey, lessonId: string): Promise<void> {
-  const carries = (state: RepoFileState): boolean => (state.open !== undefined && (state.open.added[lessonId] !== undefined || state.open.edited[lessonId] !== undefined)) || state.theirs.some((t) => t.ids.includes(lessonId));
-  const states = (await runtime.deps.state.list(key)).filter(carries);
+  const states = await runtime.deps.state.list(key);
   if (states.length === 0) return;
-  const targets = await runtime.targets(key.workspaceId, key.project);
+  const targets = await runtime.targets(key.workspaceId, key.project).catch(() => [] as RepoFileTarget[]);
   const deps = { ...runtime.deps, holder: runtime.newHolder?.() ?? "erasure" };
-  for (const state of states) {
+  for (let state of states) {
     const target = targets.find((candidate) => candidate.place === state.place);
-    if (target === undefined) continue;
-    const closesOpen = state.open !== undefined && (state.open.added[lessonId] !== undefined || state.open.edited[lessonId] !== undefined);
-    const entries: Closing[] = [];
-    if (state.open !== undefined && closesOpen) {
-      const open = state.open;
-      // Rovara's own, as far as the host can say: close it and take its branch down. A head that moved or cannot be read: close the pull request only (the commits and the branch stay, so nothing is lost).
-      const ours = await target.host.getChangeRequest({ repository: target.repository, id: open.number, url: open.url }, target.scope).then((details) => details.headRevision === open.headRevision, () => false);
-      entries.push(ours ? { branch: open.branch, number: open.number, cause: "erased", headRevision: open.headRevision } : { branch: open.branch, number: open.number, cause: "erased", keepBranch: true });
+    // Every repository of the project remembers the id for good: a block with this marker in its file is proposed for removal however it got there (Rovara's pull request, one handed over, or a person copying it).
+    for (let attempt = 0; attempt < 5; attempt += 1) {
+      const closesOpen = state.open !== undefined && (state.open.added[lessonId] !== undefined || state.open.edited[lessonId] !== undefined);
+      const entries: Closing[] = [];
+      if (state.open !== undefined && closesOpen) {
+        const open = state.open;
+        // Closing a pull request touches no commit, so it is done whatever the branch head is. The branch is taken down only if the host says the head is still the one Rovara left; otherwise (moved, or unreadable) it stays.
+        const ours = target === undefined ? false : await target.host.getChangeRequest({ repository: target.repository, id: open.number, url: open.url }, target.scope).then((details) => details.headRevision === open.headRevision, () => false);
+        entries.push(ours ? { branch: open.branch, number: open.number, cause: "erased", headRevision: open.headRevision } : { branch: open.branch, number: open.number, cause: "erased", keepBranch: true });
+      }
+      for (const theirs of state.theirs.filter((t) => t.ids.includes(lessonId))) entries.push({ branch: theirs.branch, number: theirs.number, cause: "erased", keepBranch: true });
+      // The weekly clock is reset so the next nightly pass opens a fresh pull request without the lesson.
+      const { open: _open, lastPassAt: _last, ...rest } = state;
+      void _open; void _last;
+      const next: RepoFileState = { ...rest, ...(entries.length === 0 || state.lastPassAt === undefined ? (state.lastPassAt === undefined ? {} : { lastPassAt: state.lastPassAt }) : {}), ...(state.open === undefined || closesOpen ? {} : { open: state.open }), erased: boundedAppend(state.erased, [lessonId], MAX_DECLINED), theirs: state.theirs.filter((t) => !t.ids.includes(lessonId)), closing: boundedClosings([...state.closing, ...entries]) };
+      const saved = await deps.state.put(key, next, state.revision);
+      if (saved !== undefined) { if (target !== undefined) await finishClosings(deps, key, target, saved); break; }
+      // A pass wrote first: read the state again and redo it on that.
+      const fresh = await deps.state.get(key, state.place);
+      if (fresh === undefined) break;
+      state = fresh;
     }
-    for (const theirs of state.theirs.filter((t) => t.ids.includes(lessonId))) entries.push({ branch: theirs.branch, number: theirs.number, cause: "erased", keepBranch: true });
-    // The weekly clock is reset so the next nightly pass opens a fresh pull request without the lesson.
-    const { open: _open, lastPassAt: _last, ...rest } = state;
-    void _open; void _last;
-    const next: RepoFileState = { ...rest, ...(state.open === undefined || closesOpen ? {} : { open: state.open }), theirs: state.theirs.filter((t) => !t.ids.includes(lessonId)), closing: [...state.closing, ...entries] };
-    const saved = await deps.state.put(key, next, state.revision);
-    if (saved !== undefined) await finishClosings(deps, key, target, saved);
   }
 }
