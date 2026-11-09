@@ -1,7 +1,7 @@
 // Lessons in the repo, lane R2: builds the lessons file pass's ports from the broker's own dependencies (`lessons/repo-file-job.ts` RepoFileRuntime). It owns the provider-specific parts, so the lessons code stays neutral (decision 51):
 //   - the project's repositories as targets: each with the code host its record names (`hostOfRepository`) and the scope to call it in. A repository on a host this install has not registered, or with no pinned id, is left out.
 //   - the people the lessons could name: the project's members and the lessons' own people, by display name. A name that cannot be read throws, and the pass waits.
-// PORT GAPS (decision 51, listed for the Code port, not refactored here): only a GitHub repository gets a target (`host.kind !== "github"` is left out, and the place is `github:repo/<id>`), and the pass's cleanup of a write whose pull
+// PORT GAPS (decision 51, listed for the Code port, not refactored here): a host must offer `changeRequestForBranch` as well as `commitFiles` and `deleteBranch` to write (a pull request made from a branch is found by its branch, not by a list: the port has no list of change requests, so a host without it gets no target); only a GitHub repository gets a target (`host.kind !== "github"` is left out, and the place is `github:repo/<id>`), and the pass's cleanup of a write whose pull
 // request was never recorded deletes the branch, which closes the pull request on GitHub but not on a host where a merge request outlives its branch. A second host needs a place from the host and a close-by-branch method on the port.
 // The store, settings and audit sink are the lessons runtime's own; the state is the Team record table's `LESSONSET#REPOFILE#` items. Nothing here calls a model.
 import { randomUUID } from "node:crypto";
@@ -43,6 +43,15 @@ export function repoFileRuntimeFor(dependencies: LessonsHostDependencies, runtim
       },
     },
     newHolder: () => `broker-${randomUUID()}`,
+    // A repository the project no longer lists, from what its watch row remembers (decision 51: only GitHub has a place today, `github:repo/<id>`). Whether the installation still reaches it is found out by the first host call.
+    async reach(workspaceId, _project, former) {
+      const id = /^github:repo\/(\d{1,15})$/u.exec(former.place)?.[1];
+      if (id === undefined) return undefined;
+      try {
+        const orgId = OrgIdSchema.parse(workspaceId);
+        return { name: former.name, place: former.place, repository: { url: former.url }, scope: githubScope(dependencies, orgId), host: hostOfRepository(dependencies, { githubRepositoryId: Number(id) }) };
+      } catch { return undefined; }
+    },
     async targets(workspaceId, project) {
       const orgId = OrgIdSchema.parse(workspaceId);
       const record = await requireLatestProject(dependencies, orgId, project);

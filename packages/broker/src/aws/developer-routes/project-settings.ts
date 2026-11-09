@@ -7,6 +7,7 @@ import type { DeveloperCaller, DeveloperRouteDependencies } from "./types.js";
 import { PROJECT_NOT_FOUND_IN_APP } from "./common.js";
 import { latestProjectRecord, repositoryFullName, visibleProjectRoles } from "./project-list.js";
 import { egressDepsOf, getAppProject } from "./project-archive-setup.js";
+import { repositoriesChanged } from "../../lessons/repo-file-routes.js";
 
 /**
  * `GET /v1/app/github/repositories?installation=<id>` (Plan 2, Task 15): the repositories one of the org's installations reaches, each marked with
@@ -48,6 +49,8 @@ export async function putProjectSettings(deps: DeveloperRouteDependencies, calle
     allowedDomainAuthorityConditions: (who, project) => readAllowedDomainActorConditions({ documentClient: deps.documentClient, tableName: deps.tableName, signInTableName: deps.developer?.signInTableName ?? "", now: deps.now }, { orgId: who.orgId, project, actorId: who.developerId }),
     effectiveRole: async (who, project) => (await visibleProjectRoles(deps, who, project)).get(project),
     readProject: (who, project) => getAppProject(deps, who, project),
+    // Lessons in the repo (R2, N10): a repository taken out of the project has its open Rovara pull requests closed at once, and the erasure sweep still reaches it afterwards through its watch row.
+    ...(deps.repoFile === undefined ? {} : { repositoriesRemoved: async (who: DeveloperCaller, project: string) => { await repositoriesChanged(deps.repoFile!, { workspaceId: who.orgId, project }); } }),
   }, caller, name, body, options);
 }
 

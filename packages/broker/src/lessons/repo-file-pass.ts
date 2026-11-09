@@ -20,7 +20,7 @@ import type { LessonAuditSink } from "./ports.js";
 import { mentionsLessonsFile, pointerTargets, withPointer, type PointerPath } from "./repo-file-pointer.js";
 import { planRepoFile, type RepoFilePlan } from "./repo-file-plan.js";
 import { parseLessonsFile, textHash } from "./repo-file-format.js";
-import { freshBranchName, headOf, type RepoFileTarget } from "./repo-file-host.js";
+import { freshBranchName, headOf, watchRowOf, type RepoFileTarget } from "./repo-file-host.js";
 import { prBody, prTitle } from "./repo-file-pr.js";
 import { MAX_DECLINED, MAX_RENDERED, StateFull, StateUnreadable, additionsPaused, appendOrMark, boundedAppend, provisionalNumber, type OpenPr, type PrRow, type PrRowStore, type RepoFileState, type RepoFileStore } from "./repo-file-state.js";
 import type { LessonStore, ScopeKey } from "./store.js";
@@ -397,7 +397,7 @@ async function openPullRequest(
   const carried = [...plan.adds.map((a) => a.id), ...plan.edits.map((e) => e.id)];
   const provisional: PrRow = { place: target.place, kind: "adds", number: provisionalNumber(branch), branch, ids: carried, at: deps.now() };
   try {
-    await rows.putPr(key, { place: target.place, kind: "watch", number: "0", ids: [], at: deps.now() });
+    await rows.putPr(key, watchRowOf(target, deps.now()));
     await rows.putPr(key, provisional);
   } catch { throw new Abort("state_unreadable"); }
   state = await commit(deps, key, state, { pending: { branch, at: deps.now(), baseRevision: work.head } });

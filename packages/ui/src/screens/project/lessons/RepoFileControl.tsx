@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
-import type { LessonsRepoFileBody } from "@agentx/contracts/web";
+import { strayBranchesText, unreachableRepoText, type LessonsRepoFileBody } from "@agentx/contracts/web";
 import { ApiError } from "../../../api/errors.js";
 import { lessonsRepoFileKey, useLessonsRepoFile, useLessonsRepoFileApi, type LessonsRepoFileStatus } from "../../../api/lessons-repo-file.js";
 import { Button } from "../../../design/Button.js";
@@ -29,7 +29,7 @@ export function RepoFileControl({ project, canChange }: { project: string; canCh
  if (read.error instanceof ApiError && read.error.code === "NOT_FOUND") return null;
  if (read.isError || read.data === undefined) return <section className="rv-lessons-repo" aria-label={W.TITLE}><h2>{W.TITLE}</h2><p role="alert">{W.FAILED}</p><Button onClick={() => { void read.refetch(); }}>{W.TRY_AGAIN}</Button></section>;
  const status = read.data;
- if (status.repos.length === 0 && status.available.length === 0) return null;
+ if (status.repos.length === 0 && status.available.length === 0 && status.unreachable === undefined && status.strayBranches === undefined) return null;
  async function act(body: LessonsRepoFileBody) {
   if (busy !== undefined) return;
   setBusy(body.repo + body.action);setError(undefined);
@@ -56,6 +56,8 @@ export function RepoFileControl({ project, canChange }: { project: string; canCh
   <p className="rv-muted">{W.WHY}</p>
   {status.lessonsOff && <p className="rv-muted" role="note">{W.OFF}</p>}
   {status.repos.length === 0 ? <p className="rv-muted">{W.NONE}</p> : <ul className="rv-lessons-repo-rows" aria-label={W.TITLE}>{status.repos.map(rowView)}</ul>}
+  {(status.unreachable ?? []).map(entry => <p key={"u" + entry.repo} role="note" className="rv-muted"><VisibleText text={unreachableRepoText(entry.repo, entry.lessons)} /></p>)}
+  {(status.strayBranches ?? []).map(entry => <p key={"s" + entry.repo} role="note" className="rv-muted"><VisibleText text={strayBranchesText(entry.repo, entry.branches)} /></p>)}
   {status.available.length > 0 && <div className="rv-lessons-repo-on"><p className="rv-muted">{W.AVAILABLE}</p>
    <ul className="rv-lessons-repo-rows">{status.available.map(name => <li key={name}><strong><VisibleText text={name} /></strong> {canChange ? button(W.TURN_ON, { action: "on", repo: name }, true) : <span className="rv-muted">{W.NOT_ALLOWED}</span>}</li>)}</ul></div>}
   {error !== undefined && <p role="alert">{error}</p>}

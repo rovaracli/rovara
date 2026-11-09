@@ -755,6 +755,37 @@ describe("GitHub App repository credentials", () => {
     await expect(answer({ repo: { full_name: "PS06756/Personal-Website-Test" } })).resolves.toMatchObject({ number: 42 });
   });
 
+  it("finds the pull request made from one of Rovara's lessons branches, by branch, with read access only", async () => {
+    const { privateKey } = generateKeyPairSync("rsa", { modulusLength: 2048 });
+    const pem = privateKey.export({ type: "pkcs8", format: "pem" }).toString();
+    const run = async (answer: () => Response, branch = "rovara/lessons-0123456789ab") => {
+      const requests: Array<{ url: string; body: unknown }> = [];
+      const provider = appProvider({
+        credentialRef: "github-agentx-sdlc", appId: "5002502", getPrivateKey: async () => pem,
+        fetchImplementation: async (url, init) => {
+          const requestUrl = typeof url === "string" ? url : url instanceof URL ? url.href : url.url;
+          requests.push({ url: requestUrl, body: init?.body });
+          return requestUrl.endsWith("/access_tokens") ? new Response(JSON.stringify({ token: "lookup-token" }), { status: 201 }) : answer();
+        },
+      });
+      return { requests, found: provider.findLessonsPullRequest("https://github.com/ps06756/personal-website-test", branch, { system: "private-install" }) };
+    };
+    const hit = await run(() => new Response(JSON.stringify([{ number: 7, html_url: "https://github.com/ps06756/personal-website-test/pull/7" }]), { status: 200 }));
+    await expect(hit.found).resolves.toEqual({ number: 7, url: "https://github.com/ps06756/personal-website-test/pull/7" });
+    // Any state (open, closed, merged), the head qualified by the owner, one result, and a token that can only read pull requests.
+    expect(hit.requests[1]?.url).toBe("https://api.github.com/repos/ps06756/personal-website-test/pulls?state=all&head=ps06756%3Arovara%2Flessons-0123456789ab&per_page=1");
+    expect((JSON.parse(String(hit.requests[0]?.body)) as { permissions: unknown }).permissions).toEqual({ pull_requests: "read" });
+    // No pull request from the branch.
+    await expect((await run(() => new Response("[]", { status: 200 }))).found).resolves.toBeUndefined();
+    // A failed lookup throws (it is not "no pull request"): the caller keeps its row and asks again.
+    await expect((await run(() => new Response("{}", { status: 404 }))).found).rejects.toThrow(/HTTP 404/);
+    await expect((await run(() => new Response("{}", { status: 500 }))).found).rejects.toThrow(/HTTP 500/);
+    // A nonsense number is refused rather than believed.
+    await expect((await run(() => new Response(JSON.stringify([{ number: "7" }]), { status: 200 }))).found).rejects.toThrow(/invalid pull request/);
+    // Only Rovara's own branch names are looked up.
+    await expect(run(() => new Response("[]", { status: 200 }), "main").then((out) => out.found)).rejects.toThrow(/branch name is invalid/);
+  });
+
   it("updates metadata and state with pull-request write permission", async () => {
     const { privateKey } = generateKeyPairSync("rsa", { modulusLength: 2048 });
     const pem = privateKey.export({ type: "pkcs8", format: "pem" }).toString();

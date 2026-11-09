@@ -3,9 +3,9 @@
 // Bounded in projects and time; a project that fails never stops the others. Makes no model call (decision 47). Returns counts only.
 import { OrgIdSchema } from "@agentx/contracts";
 import { rotated } from "./nightly-state.js";
-import { sweepDepsOf, sweepErasures } from "./repo-file-erase.js";
 import type { RepoFileTarget } from "./repo-file-host.js";
 import { finishClosings, runRepoFilePass, type RepoFileDeps } from "./repo-file-pass.js";
+import { sweepProject } from "./repo-file-sweep.js";
 
 /** What the job and the routes need beyond the pass's own dependencies: how to find a project's repositories (with their code hosts). */
 export interface RepoFileRuntime {
@@ -13,6 +13,11 @@ export interface RepoFileRuntime {
   /** The project's repositories as targets. Throws when the project definition cannot be read. A repository whose host this install does not know is left out. */
   targets(workspaceId: string, project: string): Promise<RepoFileTarget[]>;
   newHolder?(): string;
+  /**
+   * A repository the project no longer lists, rebuilt from what its watch row remembers (host kind in the place, address, name): the target to sweep it with, or undefined when this install cannot build one (a host it does
+   * not know). It does not say whether the host lets Rovara in: the sweep finds that out.
+   */
+  reach?(workspaceId: string, project: string, former: { place: string; url: string; name: string }): Promise<RepoFileTarget | undefined>;
 }
 
 export const MAX_REPO_FILE_PROJECTS = 200;
@@ -33,10 +38,9 @@ export async function lessonsRepoFileSweepJob(runtime: RepoFileRuntime, orgId: s
     if (runtime.deps.now() - started > budgetMs) { counts.repoFileSkipped += 1; continue; }
     const key = { workspaceId: org.data, project };
     try {
-      const sweepDeps = sweepDepsOf(runtime.deps);
-      const watched = await sweepDeps.rows.listPrs(key).then((listed) => listed.rows.length > 0, () => true);
-      if (!watched) continue;
-      for (const target of await runtime.targets(key.workspaceId, project)) { const swept = await sweepErasures(sweepDeps, key, target); counts.repoFileErasureFailures += swept.failures; counts.repoFileErasuresClosed += swept.closed; }
+      const swept = await sweepProject(runtime, key);
+      counts.repoFileErasureFailures += swept.failures;
+      counts.repoFileErasuresClosed += swept.closed;
     } catch { counts.repoFileFailures += 1; runtime.deps.log?.("lessons_job.repo_file_sweep_failed", {}); }
   }
   return counts;

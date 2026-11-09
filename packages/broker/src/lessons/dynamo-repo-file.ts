@@ -67,6 +67,7 @@ export function dynamoRepoFileStore(table: RepoFileTable, options: { onUnreadabl
       let unreadable = 0;
       for (const item of await query(key, PR)) {
         const row = PrRowSchema.safeParse(item.row);
+        if (row.success && row.data.kind === "lease") continue;
         if (row.success) rows.push(row.data); else { unreadable += 1; options.onUnreadable?.("row"); }
       }
       return { rows, unreadable };
@@ -74,6 +75,21 @@ export function dynamoRepoFileStore(table: RepoFileTable, options: { onUnreadabl
     async putPr(key, row: PrRow) {
       const checked = PrRowSchema.parse(row);
       await table.documentClient.send(new PutCommand({ TableName: table.tableName, Item: { ...prKey(key, checked.place, checked.number), entityType: "LESSON_REPOFILE_PR", row: JSON.parse(JSON.stringify(checked)) as PrRow } }));
+    },
+    async claimPr(key, row: PrRow) {
+      const checked = PrRowSchema.parse(row);
+      try {
+        await table.documentClient.send(new PutCommand({
+          TableName: table.tableName, Item: { ...prKey(key, checked.place, checked.number), entityType: "LESSON_REPOFILE_PR", row: JSON.parse(JSON.stringify(checked)) as PrRow }, ConditionExpression: "attribute_not_exists(pk)",
+        }));
+        return { claimed: true as const };
+      } catch (error) {
+        if ((error as { name?: unknown } | null)?.name !== "ConditionalCheckFailedException") throw error;
+        const held = await table.documentClient.send(new GetCommand({ TableName: table.tableName, Key: prKey(key, checked.place, checked.number), ConsistentRead: true })) as { Item?: { row?: unknown } };
+        const parsed = PrRowSchema.safeParse(held.Item?.row);
+        // A held row that cannot be read is held from now: it is taken over only once it has aged.
+        return { claimed: false as const, heldSince: parsed.success ? parsed.data.at : checked.at };
+      }
     },
     async delPr(key, place, number) {
       await table.documentClient.send(new DeleteCommand({ TableName: table.tableName, Key: prKey(key, place, number) }));

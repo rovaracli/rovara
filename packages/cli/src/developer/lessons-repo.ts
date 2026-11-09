@@ -1,7 +1,7 @@
 // `agentx project lessons-repo <project> [status|on|off|resume|pointer-add|pointer-decline] [--repo <name>]` (lessons in the repo, lane R2; design LESSONS-REPO-FILE-DESIGN.md rev 2 section 9): in Rovara Code, which has no project page,
 // the status of a project's `.rovara/lessons.md` and its weekly pull request is read here, and a maintainer switches a repository on or off from here. It reads and sends through `/v1/app/projects/{p}/lessons/repo`; every line it
 // prints is a fixed sentence from the broker or the table below. Nothing here decides anything: the pull request is merged by a person on the code host.
-import { LessonsRepoFileStatusReaderSchema, agentXError, type LessonsRepoFileRow } from "@agentx/contracts";
+import { LessonsRepoFileStatusReaderSchema, agentXError, strayBranchesText, unreachableRepoText, type LessonsRepoFileRow } from "@agentx/contracts";
 import { appRequest, clean, result, seg, type AppResult } from "./agents.js";
 import type { DeveloperSessionDeps } from "./session.js";
 
@@ -28,6 +28,8 @@ export async function projectLessonsRepo(deps: DeveloperSessionDeps, env: string
       `Lessons file for ${clean(project)}:`,
       ...(data.lessonsOff ? ["  Lessons are off for this project, so Rovara opens no lessons pull request until they are switched on."] : []),
       ...(data.repos.length === 0 ? ["  No repository has the lessons file switched on."] : data.repos.flatMap(rowLines)),
+      ...(data.unreachable ?? []).map((entry) => `  ${clean(unreachableRepoText(clean(entry.repo), entry.lessons))}`),
+      ...(data.strayBranches ?? []).map((entry) => `  ${clean(strayBranchesText(clean(entry.repo), entry.branches))}`),
       ...(data.available.length === 0 ? [] : [`  Can be switched on: ${data.available.map(clean).join(", ")} (agentx project lessons-repo ${clean(project)} on --repo <name>)`]),
       "",
     ];

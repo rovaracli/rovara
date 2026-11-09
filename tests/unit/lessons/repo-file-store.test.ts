@@ -31,6 +31,17 @@ describe.each(stores())("the repo file state store: %s", (_name, make) => {
     expect(await store.get({ ...KEY, project: "proj-3" }, PLACE)).toBeUndefined();
   });
 
+  it("claims a row only if there is none (a lease), says since when another holds it, never lists it, and lets it go", async () => {
+    const store = make();
+    const lease = { place: PLACE, kind: "lease" as const, number: "lease-removal", ids: [], at: 100 };
+    expect(await store.claimPr(KEY, lease)).toEqual({ claimed: true });
+    expect(await store.claimPr(KEY, { ...lease, at: 900 })).toEqual({ claimed: false, heldSince: 100 });
+    await store.putPr(KEY, { place: PLACE, kind: "watch", number: "0", ids: [], at: 1, repoUrl: "https://github.com/o/r", repoName: "api", unreachableAt: 5, unreachableLessons: 2, triedAt: 6, strayBranches: 1 });
+    expect((await store.listPrs(KEY)).rows).toEqual([expect.objectContaining({ kind: "watch", repoUrl: "https://github.com/o/r", repoName: "api", unreachableAt: 5, unreachableLessons: 2, triedAt: 6, strayBranches: 1 })]);
+    await store.delPr(KEY, PLACE, "lease-removal");
+    expect(await store.claimPr(KEY, { ...lease, at: 1_000 })).toEqual({ claimed: true });
+  });
+
   it("drops fields that are undefined (a cleared problem) instead of failing the write", async () => {
     const store = make();
     const saved = await store.put(KEY, { ...newRepoFileState(PLACE, "api"), problem: "file_too_big" }, 0);

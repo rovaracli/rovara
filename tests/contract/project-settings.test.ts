@@ -72,7 +72,7 @@ function seedInstallation(db: FakeDynamoDb, installationId: number, accountLogin
   db.set({ ...githubInstallationKey(installationId), entityType: "GITHUB_INSTALLATION", ...record, orgId: globalOrgId });
 }
 
-async function install(options: { cloud?: boolean; owner?: OrgRole; audit?: AuditCapture } = {}) {
+async function install(options: { cloud?: boolean; owner?: OrgRole; audit?: AuditCapture; repoFile?: unknown } = {}) {
   const github = githubFake();
   const h = await createDeveloperTaskBroker({
     register: false,
@@ -81,6 +81,7 @@ async function install(options: { cloud?: boolean; owner?: OrgRole; audit?: Audi
       ...(options.cloud === false ? {} : { cloud: true }), cloudProjects: CLOUD_PROJECTS,
       githubPullRequests: { reconcilePullRequest: vi.fn(), getPullRequest: vi.fn(), updatePullRequest: vi.fn(), getRepositoryIdentity: github.getRepositoryIdentity },
       checkRepositoryAccess: github.checkRepositoryAccess,
+      ...(options.repoFile === undefined ? {} : { lessons: { routes: {}, repoFile: options.repoFile } }),
     },
   });
   // The atomic website writer requires the outbox and revision to use the same client.
@@ -461,6 +462,18 @@ describe("repositories", () => {
     // Moving the devcontainer away in the same save is allowed.
     expect((await h.put(OMAR, { removeRepositories: ["api"], devcontainer: null, expectedRevision: 4 })).status).toBe(200);
     expect((h.revision(5)!.definition.repositories as Array<{ name: string }>).map((repository) => repository.name)).toEqual(["web"]);
+  });
+
+  it("lessons in the repo: a save that removes a repository runs the erasure sweep at once (a failure there never undoes the save); a save that only adds one does not", async () => {
+    const asked: string[] = [];
+    const rows = { listPrs: async () => { asked.push("rows"); throw new Error("down"); }, putPr: async () => undefined, delPr: async () => undefined, claimPr: async () => ({ claimed: true as const }) };
+    const h = await install({ repoFile: { deps: { rows, state: rows, now: Date.now, store: {}, audit: {} }, targets: async () => [] } });
+    seedInstallation(h.db, 55, "acme");
+    await h.put(OMAR, { addRepositories: ["acme/api", "acme/lib"] });
+    expect(asked).toEqual([]);
+    expect((await h.put(OMAR, { removeRepositories: ["lib"], expectedRevision: 2 })).status).toBe(200);
+    expect(asked).toEqual(["rows"]);
+    expect((h.revision(3)!.definition.repositories as Array<{ name: string }>).map((repository) => repository.name)).toEqual(["web", "api"]);
   });
 
   it("refuses removing the last repository with CONFIG_INVALID, and a repository the project does not have", async () => {

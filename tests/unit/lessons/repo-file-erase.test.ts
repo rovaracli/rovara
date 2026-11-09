@@ -4,8 +4,10 @@ import { afterEach, describe, expect, it } from "vitest";
 import type { CodeHost } from "@agentx/contracts";
 import { dynamoRepoFileStore } from "../../../packages/broker/src/lessons/dynamo-repo-file.js";
 import { applyFileChanges, parseLessonsFile, renderLessonsFile } from "../../../packages/broker/src/lessons/repo-file-format.js";
-import { closeProjectRovaraPrs, closeOpenPullRequestFor, repoFileAction, repoFileStatus } from "../../../packages/broker/src/lessons/repo-file-routes.js";
+import { closeProjectRovaraPrs, closeOpenPullRequestFor, repoFileAction, repoFileStatus, repositoriesChanged } from "../../../packages/broker/src/lessons/repo-file-routes.js";
 import { lessonsRepoFileJob, type RepoFileRuntime } from "../../../packages/broker/src/lessons/repo-file-job.js";
+import { watchRowOf } from "../../../packages/broker/src/lessons/repo-file-host.js";
+import { UNREACHABLE_RETRY_MS } from "../../../packages/broker/src/lessons/repo-file-sweep.js";
 import { setLearnedLessonsGate } from "../../../packages/broker/src/lessons/policy.js";
 import { MAX_THEIRS, InMemoryRepoFileStore, StateFull, newRepoFileState, type RepoFileState, type RepoFileStore } from "../../../packages/broker/src/lessons/repo-file-state.js";
 import { FakeDynamoDb } from "../../support/fake-dynamodb.js";
@@ -29,7 +31,7 @@ async function twoRepos(mode?: (w: ReturnType<typeof passSetup>) => RepoFileStor
   await w.seedLessons(repoLesson(KEEP), repoLesson(GONE));
   await w.store.purge(w.key, GONE);
   const rows = new InMemoryRepoFileStore();
-  for (const place of [PLACE, OTHER_PLACE]) await rows.putPr(w.key, { place, kind: "watch", number: "0", ids: [], at: 1 });
+  for (const each of [w.target, targetB]) await rows.putPr(w.key, watchRowOf(each, 1));
   const state = mode?.(w) ?? new InMemoryRepoFileStore();
   const runtime: RepoFileRuntime = { deps: { ...w.deps, state, rows }, targets: async () => [w.target, targetB], newHolder: () => "n" };
   return { w, second, runtime, rows };
@@ -201,12 +203,12 @@ describe("goneOf, the tombstone lookup: a case for both stores, in chunks, with 
 describe("the sweep does not depend on the publish state, whatever its failure", () => {
   const throwing = (): RepoFileStore => ({
     list: async () => { throw new Error("state down"); }, get: async () => { throw new Error("state down"); }, put: async () => { throw new StateFull(); },
-    listPrs: async () => { throw new Error("state down"); }, putPr: async () => { throw new Error("state down"); }, delPr: async () => { throw new Error("state down"); },
+    listPrs: async () => { throw new Error("state down"); }, putPr: async () => { throw new Error("state down"); }, delPr: async () => { throw new Error("state down"); }, claimPr: async () => { throw new Error("state down"); },
   });
   const full = (): RepoFileStore => {
     const inner = new InMemoryRepoFileStore();
     const fullState = (place: string): RepoFileState => ({ ...newRepoFileState(place, "x"), enabled: true, theirs: Array.from({ length: MAX_THEIRS }, (_, i) => ({ branch: `rovara/lessons-${i.toString(16).padStart(12, "0")}`, number: String(i + 1), url: "", ids: [] })) });
-    return { ...inner, list: async () => [fullState(PLACE), fullState(OTHER_PLACE)], get: async (_k, place) => fullState(place), put: async () => { throw new StateFull(); }, listPrs: inner.listPrs.bind(inner), putPr: inner.putPr.bind(inner), delPr: inner.delPr.bind(inner) };
+    return { ...inner, list: async () => [fullState(PLACE), fullState(OTHER_PLACE)], get: async (_k, place) => fullState(place), put: async () => { throw new StateFull(); }, claimPr: inner.claimPr.bind(inner), listPrs: inner.listPrs.bind(inner), putPr: inner.putPr.bind(inner), delPr: inner.delPr.bind(inner) };
   };
   const unparseable = (): RepoFileStore => {
     const table = new FakeDynamoDb({ indexKeys: {} });
@@ -216,7 +218,7 @@ describe("the sweep does not depend on the publish state, whatever its failure",
   };
   const leased = (): RepoFileStore => {
     const inner = new InMemoryRepoFileStore();
-    return { ...inner, list: async () => [{ ...newRepoFileState(PLACE, "api"), enabled: true, lease: { holder: "someone", until: 9e15 } }], get: async () => ({ ...newRepoFileState(PLACE, "api"), enabled: true, lease: { holder: "someone", until: 9e15 } }), put: async () => undefined, listPrs: inner.listPrs.bind(inner), putPr: inner.putPr.bind(inner), delPr: inner.delPr.bind(inner) };
+    return { ...inner, claimPr: inner.claimPr.bind(inner), list: async () => [{ ...newRepoFileState(PLACE, "api"), enabled: true, lease: { holder: "someone", until: 9e15 } }], get: async () => ({ ...newRepoFileState(PLACE, "api"), enabled: true, lease: { holder: "someone", until: 9e15 } }), put: async () => undefined, listPrs: inner.listPrs.bind(inner), putPr: inner.putPr.bind(inner), delPr: inner.delPr.bind(inner) };
   };
   const modes: Array<[string, () => RepoFileStore]> = [
     ["missing (no state at all)", () => new InMemoryRepoFileStore()],
@@ -465,5 +467,253 @@ describe("round 5 lows", () => {
     await lessonsNightlyJob(deps, w.key.workspaceId, [w.key.project], 3_600_000);
     expect(order[0]).toBe("sweep-write");
     expect(removalOpen(w.host) && removalOpen(second)).toBe(true);
+  });
+});
+
+// ---- round 6 (N10): the sweep visits the WATCH ROWS, not the project's current repository list ----
+
+const X = "les_rc6x0001";
+const Y = "les_rc6y0001";
+const carrying = (host: FakeRepoHost, id: string) => host.open.filter((pr) => idsIn(host.file(pr.source, FILE)).includes(id));
+
+/** One repository, a runtime whose project list can change under it, and a `reach` that rebuilds a repository from its watch row (the installation can be made to refuse). */
+function wired() {
+  const w = passSetup();
+  const rows = new InMemoryRepoFileStore();
+  w.deps.rows = rows;
+  const project = { list: [w.target] };
+  const reached: Array<{ place: string; url: string; name: string }> = [];
+  const runtime: RepoFileRuntime = {
+    deps: w.deps, targets: async () => project.list, newHolder: () => "n",
+    reach: async (_ws, _project, former) => { reached.push(former); return former.place === w.target.place ? w.target : undefined; },
+  };
+  return { w, rows, runtime, project, reached };
+}
+const nightly = (runtime: RepoFileRuntime, w: ReturnType<typeof passSetup>) => lessonsRepoFileJob(runtime, w.key.workspaceId, [w.key.project], 3_600_000, 0);
+
+describe("N10: a repository that left the project, moved host or got a new id is still swept through its watch row", () => {
+  it("a watch row remembers who the repository is: its address, the project's name for it, and the host kind in its place", async () => {
+    const { w, rows } = wired();
+    await w.seedLessons(repoLesson(X));
+    await w.enable();
+    await w.run();
+    const watch = (await rows.listPrs(w.key)).rows.find((row) => row.kind === "watch");
+    expect(watch).toMatchObject({ place: PLACE, repoUrl: w.target.repository.url, repoName: w.target.name });
+    expect(PLACE.startsWith("github:")).toBe(true);
+  });
+
+  it("V1: removed from the project while a Rovara PR adding X is open; X erased: the PR is closed (hook and nightly)", async () => {
+    const { w, runtime, project, reached } = wired();
+    await w.seedLessons(repoLesson(X));
+    await w.enable();
+    await w.run();
+    project.list = [];
+    await w.store.purge(w.key, X);
+    await closeOpenPullRequestFor(runtime, w.key, X);
+    expect(carrying(w.host, X)).toEqual([]);
+    expect(reached.length).toBeGreaterThan(0);
+  });
+
+  it("V1b: the same with the hook lost: the nightly sweep closes it", async () => {
+    const { w, runtime, project } = wired();
+    await w.seedLessons(repoLesson(X));
+    await w.enable();
+    await w.run();
+    project.list = [];
+    await w.store.purge(w.key, X);
+    w.clock.advance(DAY);
+    await nightly(runtime, w);
+    expect(carrying(w.host, X)).toEqual([]);
+  });
+
+  it("V2: removed from the project after X merged on main; X erased: a removal PR is opened", async () => {
+    const { w, runtime, project } = wired();
+    await w.seedLessons(repoLesson(X), repoLesson(Y));
+    await w.enable();
+    const r = await w.run();
+    w.host.merge(Number((r as { number: string }).number));
+    project.list = [];
+    await w.store.purge(w.key, X);
+    await closeOpenPullRequestFor(runtime, w.key, X);
+    expect(w.host.open.some((p) => { const ids = idsIn(w.host.file(p.source, FILE)); return !ids.includes(X) && ids.includes(Y); })).toBe(true);
+  });
+
+  it("the list of the project can not be read at all: the watch rows still carry the sweep", async () => {
+    const { w, runtime } = wired();
+    await w.seedLessons(repoLesson(X));
+    await w.enable();
+    await w.run();
+    runtime.targets = async () => { throw new Error("project unreadable"); };
+    await w.store.purge(w.key, X);
+    await closeOpenPullRequestFor(runtime, w.key, X);
+    expect(carrying(w.host, X)).toEqual([]);
+  });
+
+  it("taking a repository out of the project closes its open Rovara PRs right away, with nothing erased", async () => {
+    const { w, runtime, project } = wired();
+    await w.seedLessons(repoLesson(X));
+    await w.enable();
+    await w.run();
+    expect(w.host.open).toHaveLength(1);
+    project.list = [];
+    await repositoriesChanged(runtime, w.key);
+    expect(w.host.open).toHaveLength(0);
+  });
+
+  it("a repository that is still in the project keeps its open PR when nothing is erased", async () => {
+    const { w, runtime } = wired();
+    await w.seedLessons(repoLesson(X));
+    await w.enable();
+    await w.run();
+    await repositoriesChanged(runtime, w.key);
+    await nightly(runtime, w);
+    expect(w.host.open).toHaveLength(1);
+  });
+
+  it("archive closes the open PRs of a repository that already left", async () => {
+    const { w, runtime, project } = wired();
+    await w.seedLessons(repoLesson(X));
+    await w.enable();
+    await w.run();
+    project.list = [];
+    expect(await closeProjectRovaraPrs(runtime, w.key)).toBe(1);
+    expect(w.host.open).toHaveLength(0);
+  });
+
+  it("a pull request with that number that Rovara did not make from the row's branch is never touched (the address is another repository now)", async () => {
+    const { w, runtime, project } = wired();
+    await w.seedLessons(repoLesson(X));
+    await w.enable();
+    await w.run();
+    const open = (await w.current()).open!;
+    const pr = w.host.prs.find((p) => p.source === open.branch)!;
+    pr.source = "feature/theirs";
+    project.list = [];
+    await w.store.purge(w.key, X);
+    await closeOpenPullRequestFor(runtime, w.key, X);
+    expect(pr.state).toBe("open");
+    expect(w.host.writes.filter((write) => write.op === "update")).toEqual([]);
+  });
+
+  it("a repository Rovara cannot reach is recorded ONCE with how many deleted lessons wait, shown on the status, tried weekly by the nightly job (the hook tries every time), and never stops another repository", async () => {
+    const { w, second, runtime, rows } = await twoRepos();
+    w.host.failCalls.add("repositoryIdentity");
+    await closeOpenPullRequestFor(runtime, w.key, GONE);
+    const watch = () => rows.listPrs(w.key).then((l) => l.rows.find((row) => row.kind === "watch" && row.place === PLACE)!);
+    const first = await watch();
+    expect(first.unreachableAt).toBeDefined();
+    expect(removalOpen(second)).toBe(true); // the other repository was swept regardless
+    // Recorded once: another failure writes nothing new on the row's "since".
+    const since = first.unreachableAt;
+    w.clock.advance(60_000);
+    await closeOpenPullRequestFor(runtime, w.key, GONE);
+    expect((await watch()).unreachableAt).toBe(since);
+    // Nightly: skipped inside the week, tried after it.
+    w.host.calls.length = 0;
+    w.clock.advance(DAY);
+    await nightly(runtime, w);
+    expect(w.host.calls).toEqual([]);
+    w.clock.advance(UNREACHABLE_RETRY_MS);
+    await nightly(runtime, w);
+    expect(w.host.calls).toContain("repositoryIdentity");
+    const state = await w.deps.state.put(w.key, { ...newRepoFileState(PLACE, "api"), enabled: true }, 0);
+    expect(state).toBeDefined();
+    const status = await repoFileStatus(runtime, w.key);
+    expect(status.unreachable).toEqual([{ repo: "api", lessons: 0 }]);
+    // It comes back: the record is cleared.
+    w.host.failCalls.delete("repositoryIdentity");
+    await closeOpenPullRequestFor(runtime, w.key, GONE);
+    expect((await watch()).unreachableAt).toBeUndefined();
+    expect((await repoFileStatus(runtime, w.key)).unreachable).toBeUndefined();
+  });
+
+  it("the unreachable record says how many deleted lessons the repository's rows still stand for", async () => {
+    const { w, runtime, rows } = wired();
+    await w.seedLessons(repoLesson(X));
+    await w.enable();
+    await w.run();
+    await w.store.purge(w.key, X);
+    w.host.failCalls.add("repositoryIdentity");
+    await closeOpenPullRequestFor(runtime, w.key, X);
+    const watch = (await rows.listPrs(w.key)).rows.find((row) => row.kind === "watch")!;
+    expect(watch.unreachableLessons).toBe(1);
+    await w.deps.state.put(w.key, { ...newRepoFileState(PLACE, "api"), enabled: true }, 0);
+    expect((await repoFileStatus(runtime, w.key)).unreachable).toEqual([{ repo: w.target.name, lessons: 1 }]);
+  });
+
+  it("a former repository this install cannot rebuild is recorded as unreachable too, and nothing throws", async () => {
+    const { w, runtime, project, rows } = wired();
+    await w.seedLessons(repoLesson(X));
+    await w.enable();
+    await w.run();
+    project.list = [];
+    delete runtime.reach;
+    await w.store.purge(w.key, X);
+    await expect(closeOpenPullRequestFor(runtime, w.key, X)).resolves.toBeUndefined();
+    expect((await rows.listPrs(w.key)).rows.find((row) => row.kind === "watch")!.unreachableAt).toBeDefined();
+  });
+});
+
+describe("round 6 lows", () => {
+  it("a pull request the host no longer has (404) marks its row closed instead of failing every night", async () => {
+    const { w, runtime, rows } = wired();
+    await w.seedLessons(repoLesson(X));
+    await w.enable();
+    await w.run();
+    const open = (await w.current()).open!;
+    const raw = w.host.getChangeRequest.bind(w.host);
+    w.host.getChangeRequest = async (ref) => { if (ref.id === open.number) throw new Error("GitHub pull request lookup failed with HTTP 404"); return raw(ref); };
+    await w.store.purge(w.key, X);
+    w.clock.advance(DAY);
+    const counts = await nightly(runtime, w);
+    expect(counts.repoFileErasureFailures).toBe(0);
+    expect((await rows.listPrs(w.key)).rows.find((row) => row.kind === "adds" && row.number === open.number)!.closedAt).toBeDefined();
+    const again = await nightly(runtime, w);
+    expect(again.repoFileErasureFailures).toBe(0);
+  });
+
+  it("two sweeps that start together open ONE removal PR (one holds the lease, the other reads the rows again under it)", async () => {
+    const { w, runtime } = await twoRepos();
+    await Promise.all([closeOpenPullRequestFor(runtime, w.key, GONE), closeOpenPullRequestFor(runtime, w.key, GONE), nightly(runtime, w)]);
+    expect(w.host.open.filter((pr) => !idsIn(w.host.file(pr.source, FILE)).includes(GONE))).toHaveLength(1);
+  });
+
+  it("a lease the Lambda died holding is taken over after 15 minutes, not before", async () => {
+    const { w, runtime, rows } = await twoRepos();
+    await rows.claimPr(w.key, { place: PLACE, kind: "lease", number: "lease-removal", ids: [], at: w.clock.now() });
+    await closeOpenPullRequestFor(runtime, w.key, GONE);
+    expect(removalOpen(w.host)).toBe(false);
+    w.clock.advance(16 * 60_000);
+    await closeOpenPullRequestFor(runtime, w.key, GONE);
+    expect(removalOpen(w.host)).toBe(true);
+    expect((await rows.listPrs(w.key)).rows.some((row) => row.kind === "lease")).toBe(false);
+  });
+
+  it("a host that cannot find a pull request by branch cannot be switched on, and a stray branch it holds is shown on the status", async () => {
+    const { w, runtime, rows } = wired();
+    await w.seedLessons(repoLesson(X));
+    await w.enable();
+    const rawReconcile = w.host.reconcileChangeRequest.bind(w.host);
+    w.host.reconcileChangeRequest = async () => { throw new Error("blip"); };
+    await w.run();
+    w.host.reconcileChangeRequest = rawReconcile;
+    expect(w.host.branchNames.length).toBe(1);
+    (w.host as unknown as Record<string, unknown>).changeRequestForBranch = undefined;
+    await w.store.purge(w.key, X);
+    await closeOpenPullRequestFor(runtime, w.key, X);
+    expect((await rows.listPrs(w.key)).rows.find((row) => row.kind === "watch")!.strayBranches).toBe(1);
+    await w.deps.state.put(w.key, { ...newRepoFileState(PLACE, "api"), enabled: true }, 0);
+    const status = await repoFileStatus(runtime, w.key);
+    expect(status.strayBranches).toEqual([{ repo: w.target.name, branches: 1 }]);
+    expect(status.canEnable).toBe(false);
+  });
+
+  it("a switched-off repository with a removal PR waiting still shows it on the status", async () => {
+    const { w, runtime } = await twoRepos();
+    await closeOpenPullRequestFor(runtime, w.key, GONE);
+    const status = await repoFileStatus(runtime, w.key);
+    const row = status.repos.find((r) => r.repo === w.target.name);
+    expect(row).toMatchObject({ enabled: false, erasurePrs: 1 });
+    expect(status.available).toContain(w.target.name);
   });
 });

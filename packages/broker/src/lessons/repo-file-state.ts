@@ -56,8 +56,15 @@ export type Closing = z.infer<typeof ClosingSchema>;
  * left it at (the branch is deleted only while it is still there: closing a pull request touches no commit, deleting a branch can), and `closedAt` once the sweep closed it. Ids and numbers only: no text, no person.
  */
 export const PrRowSchema = z.object({
-  place: z.string().min(3).max(300), kind: z.enum(["adds", "removal", "watch"]), number: z.string().min(1).max(40), branch: Branch.optional(), headRevision: z.string().min(7).max(64).optional(),
+  place: z.string().min(3).max(300), kind: z.enum(["adds", "removal", "watch", "lease"]), number: z.string().min(1).max(40), branch: Branch.optional(), headRevision: z.string().min(7).max(64).optional(),
   ids: z.array(Id).max(MAX_CARRIED), at: z.number(), closedAt: z.number().optional(),
+  /**
+   * A WATCH row remembers who the repository is as of when it was written (the project's name for it and its address; the host kind is the place's prefix), so the sweep can still reach a repository that has since left the project,
+   * moved host or been given a new id, for as long as the installation allows. The same row says when the repository could not be reached (once, and how many deleted lessons were waiting), when the sweep last tried, and how many
+   * Rovara branches it could not match to a pull request.
+   */
+  repoUrl: z.string().min(1).max(500).optional(), repoName: z.string().min(1).max(200).optional(),
+  unreachableAt: z.number().optional(), unreachableLessons: z.number().int().min(0).optional(), triedAt: z.number().optional(), strayBranches: z.number().int().min(0).optional(),
   /** A removal pull request: the fingerprint of the default branch's file it was made from. A different file now means it is out of date (closed and made again). */
   fileHash: z.string().max(40).optional(),
 }).strict();
@@ -75,6 +82,8 @@ export interface PrRowStore {
   /** Records (or re-records) one row. Idempotent. Throws when it cannot write: the caller does not go on as if it had. */
   putPr(key: ScopeKey, row: PrRow): Promise<void>;
   delPr(key: ScopeKey, place: string, number: string): Promise<void>;
+  /** Writes the row only if no row with that place and number exists (a lease: one sweep at a time makes a removal pull request). Says since when the other one has held it. Never listed by `listPrs`. */
+  claimPr(key: ScopeKey, row: PrRow): Promise<{ claimed: true } | { claimed: false; heldSince: number }>;
 }
 
 export const RepoFileStateSchema = z.object({
@@ -147,12 +156,20 @@ export class InMemoryRepoFileStore implements RepoFileStore {
   failPuts = false;
   readonly prs = new Map<string, PrRow>();
   failPrWrites = false;
-  async listPrs(key: ScopeKey): Promise<{ rows: PrRow[]; unreadable: number }> { return { rows: [...this.prs.entries()].filter(([k]) => k.startsWith(`${key.workspaceId}\u0000${key.project}\u0000`)).map(([, v]) => structuredClone(v)), unreadable: 0 }; }
+  async listPrs(key: ScopeKey): Promise<{ rows: PrRow[]; unreadable: number }> { return { rows: [...this.prs.entries()].filter(([k]) => k.startsWith(`${key.workspaceId}\u0000${key.project}\u0000`)).map(([, v]) => structuredClone(v)).filter((row) => row.kind !== "lease"), unreadable: 0 }; }
   async putPr(key: ScopeKey, row: PrRow): Promise<void> {
     if (this.failPrWrites) throw new Error("store down");
     this.prs.set(`${key.workspaceId}\u0000${key.project}\u0000${row.place}\u0000${row.number}`, PrRowSchema.parse(row));
   }
   async delPr(key: ScopeKey, place: string, number: string): Promise<void> { this.prs.delete(`${key.workspaceId}\u0000${key.project}\u0000${place}\u0000${number}`); }
+  async claimPr(key: ScopeKey, row: PrRow): Promise<{ claimed: true } | { claimed: false; heldSince: number }> {
+    if (this.failPrWrites) throw new Error("store down");
+    const id = `${key.workspaceId}\u0000${key.project}\u0000${row.place}\u0000${row.number}`;
+    const held = this.prs.get(id);
+    if (held !== undefined) return { claimed: false, heldSince: held.at };
+    this.prs.set(id, PrRowSchema.parse(row));
+    return { claimed: true };
+  }
   private keyOf(key: ScopeKey, place: string): string { return `${key.workspaceId}\u0000${key.project}\u0000${place}`; }
   async list(key: ScopeKey): Promise<RepoFileState[]> {
     return [...this.items.entries()].filter(([k]) => k.startsWith(`${key.workspaceId}\u0000${key.project}\u0000`)).map(([, v]) => structuredClone(v)).sort((a, b) => a.place.localeCompare(b.place));

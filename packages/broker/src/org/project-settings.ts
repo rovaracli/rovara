@@ -73,6 +73,8 @@ export interface ProjectSettingsDependencies<Caller extends ProjectSettingsCalle
   egress: EgressDomainsDependencies;
   /** What the app shows of the project once the change is saved. */
   readProject(caller: Caller, project: string): Promise<AppProjectDetail>;
+  /** Called once a save has removed repositories from the project (best effort; a failure never undoes the save). Lessons in the repo: the open Rovara pull requests of a repository that left are closed at once. */
+  repositoriesRemoved?(caller: Caller, project: string): Promise<void>;
   /** The credential an added repository uses: the foundation's built-in GitHub App credential. */
   githubCredentialRef?: string;
   /** GitHub's own view of a repository (its spelling and default branch), through the App. Absent when GitHub cannot be asked. */
@@ -399,6 +401,7 @@ export async function updateProjectSettings<Caller extends ProjectSettingsCaller
   if (domainPlan !== undefined) await flushAuditEvents(deps.egress, [domainPlan.event]);
   if (body.description !== undefined && domainPlan === undefined) await writeDescription(deps, caller.orgId, name, body.description);
   warnings.push(...egressWarnings);
+  if (changed && removed.length > 0) await deps.repositoriesRemoved?.(caller, name).catch(() => undefined);
   console.log(JSON.stringify({
     component: "broker", event: "developer.project_settings_changed", orgId: caller.orgId, project: name, revision: changed ? parsed.data.revision : current.revision,
     changed: SETTING_FIELDS.filter((field) => body[field] !== undefined),
