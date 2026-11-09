@@ -226,3 +226,14 @@ export function compareArms(input: readonly ArmRunRow[]): ArmsComparison {
   }
   return { arms: names, pairs, unpaired, perArm, discordant };
 }
+
+
+// ---------------------------------------------------------------------------------------------------------------------------
+// The replay copy of a past task (lane 7): what a copy is told about its memory. Never `live`.
+
+/** The memory of a replay copy: none, or exactly one frozen snapshot. A copy never reads live memory. */
+export const EvalCopyMemorySchema = z.discriminatedUnion("mode", [
+  z.object({ mode: z.literal("off") }).strict(),
+  z.object({ mode: z.literal("snapshot"), snapshotId: z.string().regex(/^snp_[0-9a-f]{20}$/) }).strict(),
+]);
+export type EvalCopyMemory = z.infer<typeof EvalCopyMemorySchema>;

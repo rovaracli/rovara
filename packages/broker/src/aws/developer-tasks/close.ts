@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { refuseReplayCopy } from "../../developer/eval-copy.js";
 import { UpdateCommand } from "@aws-sdk/lib-dynamodb";
 import {
   AgentXError,
@@ -50,6 +51,7 @@ export async function openPullRequest(deps: DeveloperTaskRouteDependencies, call
   const request = parse(DeveloperPullRequestRequestSchema, value, deps, "pull-request");
   const access = await authorizeLegacyTaskAction(deps, caller, taskId, "publish");
   const { task } = access;
+  refuseReplayCopy(task);
   await creatorGuard(deps, task);
   // Task 12: the workflow opens its own draft of the checked code; MCP and Slack follow it, nobody opens another.
   if (task.workflow !== undefined) throw agentXError("CONFIG_INVALID", GATED_TASK_PULL_REQUEST_REFUSAL);

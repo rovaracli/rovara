@@ -7,7 +7,7 @@ import { main as exportCandidates } from "../../../scripts/export-replay-candida
 import { main as measure } from "../../../scripts/lessons-replay-measure.js";
 import { candidatesFromItems } from "../../../packages/broker/src/lessons/replay-candidates.js";
 import { rubricGrader, DEFAULT_RUBRIC, type GraderModel } from "../../../packages/broker/src/lessons/replay-grader.js";
-import { EvalMarkError, buildReplayPlan, buildSnapshots, dayOf, runReplay, type PlannedRun, type ReplayExecutor } from "../../../packages/broker/src/lessons/replay-harness.js";
+import { ArmNotBuiltError, EvalMarkError, buildReplayPlan, buildSnapshots, dayOf, runReplay, type PlannedRun, type ReplayExecutor } from "../../../packages/broker/src/lessons/replay-harness.js";
 import { asOfSnapshotBuilder, lessonsAsOf } from "../../../packages/broker/src/lessons/replay-asof.js";
 import { stagingExecutor, type ReplayStartRequest, type ReplayTaskPort } from "../../../packages/broker/src/lessons/replay-executor.js";
 import { lessonContentKey } from "../../../packages/broker/src/lessons/replay-lessonset.js";
@@ -18,6 +18,7 @@ import { KEY, lessonRecord, seed } from "./lesson-helpers.js";
 const DAY = 86_400_000;
 const T0 = Date.UTC(2026, 8, 1);
 const task: ReplayCandidate = { taskId: "t1", project: "p", repository: "api", at: T0, memberCorrections: 2, outcome: "merged" };
+const OPTIONS = { maxUsdPerRun: 4 };
 const run = (over: Partial<PlannedRun> = {}): PlannedRun => ({ key: "k1", task: "t1", repeat: 1, arm: "on:current", day: "2026-09-01", memory: { mode: "snapshot", snapshotId: `snp_${"a".repeat(20)}` }, evalRun: true, ...over });
 
 class Port implements ReplayTaskPort {
@@ -28,39 +29,38 @@ class Port implements ReplayTaskPort {
   async readMark(): Promise<unknown> { return this.mark; }
   async cancel(taskId: string): Promise<void> { this.cancelled.push(taskId); }
   async waitForEnd(): Promise<{ state: "completed"; evidence: string; costUsd: number }> { return { state: "completed", evidence: "pr:7", costUsd: 0.3 }; }
-  async loadedLessons(): Promise<Array<{ title: string; body: string }>> { return [{ title: "Use withRetry", body: "Use withRetry for HTTP retries." }]; }
+  async loadedKeys(): Promise<string[]> { return [lessonContentKey({ title: "Use withRetry", body: "Use withRetry for HTTP retries." })]; }
   async learningCalls(): Promise<number> { return 0; }
 }
 
 describe("the staging executor", () => {
   it("starts the task marked as an eval run with the arm's memory input, reads the mark back, and returns the load keys", async () => {
     const port = new Port();
-    const result = await stagingExecutor(port).run({ run: run(), task, learning: { lessonsSwitch: "off", calls: "none" } });
-    expect(port.requests).toEqual([{ sourceTaskId: "t1", runKey: "k1", evalRun: true, memory: { mode: "snapshot", snapshotId: `snp_${"a".repeat(20)}` } }]);
+    const result = await stagingExecutor(port, OPTIONS).run({ run: run(), task, learning: { lessonsSwitch: "off", calls: "none" } });
+    expect(port.requests).toEqual([{ sourceTaskId: "t1", runKey: "k1", evalRun: true, maxUsd: 4, memory: { mode: "snapshot", snapshotId: `snp_${"a".repeat(20)}` } }]);
     expect(result).toEqual({ loaded: [lessonContentKey({ title: "Use withRetry", body: "Use withRetry for HTTP retries." })], costUsd: 0.3, evidence: "pr:7", evalRunMarked: true, learningCalls: 0 });
   });
-  it("the file arm's lessons file and pointer go on the start request, still marked", async () => {
+  it("the file arm is refused before anything starts: the install cannot place a lessons file in a copy's checkout yet", async () => {
     const port = new Port();
     const offer = { path: ".rovara/lessons.md", content: "# lessons", pointerPath: "AGENTS.md" as const, keys: ["k"] };
-    await stagingExecutor(port).run({ run: run({ arm: "file:current", delivery: "file" }), task, lessonsFile: offer, learning: { lessonsSwitch: "off", calls: "none" } } as never);
-    expect(port.requests[0]).toMatchObject({ evalRun: true, delivery: "file", lessonsFile: { path: ".rovara/lessons.md", content: "# lessons", pointerPath: "AGENTS.md" } });
-    expect(port.requests[0]!.lessonsFile).not.toHaveProperty("keys");
+    await expect(stagingExecutor(port, OPTIONS).run({ run: run({ arm: "file:current", delivery: "file" }), task, lessonsFile: offer, learning: { lessonsSwitch: "off", calls: "none" } } as never)).rejects.toThrow(ArmNotBuiltError);
+    expect(port.requests).toEqual([]);
   });
   it("an unmarked start is impossible: a plan without the mark never starts a task", async () => {
     const port = new Port();
-    await expect(stagingExecutor(port).run({ run: run({ evalRun: false as never }), task, learning: { lessonsSwitch: "off", calls: "none" } })).rejects.toThrow(EvalMarkError);
+    await expect(stagingExecutor(port, OPTIONS).run({ run: run({ evalRun: false as never }), task, learning: { lessonsSwitch: "off", calls: "none" } })).rejects.toThrow(EvalMarkError);
     expect(port.requests).toEqual([]);
   });
   it("an unmarked start is impossible: a port that dropped, changed or could not show the mark gets the task cancelled and the replay stopped", async () => {
     for (const mark of [undefined, false, "yes", 1, {}]) {
       const port = new Port();
       port.mark = mark;
-      await expect(stagingExecutor(port).run({ run: run(), task, learning: { lessonsSwitch: "off", calls: "none" } }), JSON.stringify(mark)).rejects.toThrow(EvalMarkError);
+      await expect(stagingExecutor(port, OPTIONS).run({ run: run(), task, learning: { lessonsSwitch: "off", calls: "none" } }), JSON.stringify(mark)).rejects.toThrow(EvalMarkError);
       expect(port.cancelled, JSON.stringify(mark)).toEqual(["replay-1"]);
     }
     const unreadable = new Port();
     unreadable.readMark = async () => { throw new Error("down"); };
-    await expect(stagingExecutor(unreadable).run({ run: run(), task, learning: { lessonsSwitch: "off", calls: "none" } })).rejects.toThrow(EvalMarkError);
+    await expect(stagingExecutor(unreadable, OPTIONS).run({ run: run(), task, learning: { lessonsSwitch: "off", calls: "none" } })).rejects.toThrow(EvalMarkError);
     expect(unreadable.cancelled).toHaveLength(1);
   });
   it("through the harness, an unmarked task stops the WHOLE replay instead of becoming one ungraded run", async () => {
@@ -68,7 +68,7 @@ describe("the staging executor", () => {
     const plan = buildReplayPlan({ tasks, arms: ["off", "on:current"], seed: "s", grader: { model: "g", version: "1" }, snapshots: { current: Object.fromEntries(tasks.map((t) => [dayOf(t.at), `snp_${"b".repeat(20)}`])) }, allowSmall: true, repeats: 1 });
     const appended: string[] = [];
     await expect(runReplay(plan, {
-      executor: stagingExecutor(Object.assign(new Port(), { mark: false })), grader: { identity: { model: "g", version: "1" }, grade: async () => ({ resolved: true, gradedBy: "rubric", mistakes: [] }) },
+      executor: stagingExecutor(Object.assign(new Port(), { mark: false }), OPTIONS), grader: { identity: { model: "g", version: "1" }, grade: async () => ({ resolved: true, gradedBy: "rubric", mistakes: [] }) },
       sink: { done: () => new Set(), append: async (k) => { appended.push(k); } }, priorCorrections: async () => [], maxUsd: 100,
     })).rejects.toThrow(EvalMarkError);
     expect(appended).toEqual([]);
@@ -79,7 +79,7 @@ describe("the staging executor", () => {
     const tasks = [task];
     const plan = buildReplayPlan({ tasks, arms: ["off", "on:current"], seed: "s", grader: { model: "g", version: "1" }, snapshots: { current: { [dayOf(T0)]: `snp_${"b".repeat(20)}` } }, allowSmall: true, repeats: 1 });
     const rows: unknown[] = [];
-    const executor: ReplayExecutor = stagingExecutor(port);
+    const executor: ReplayExecutor = stagingExecutor(port, OPTIONS);
     const report = await runReplay(plan, { executor, grader: { identity: { model: "g", version: "1" }, grade: async () => ({ resolved: true, gradedBy: "rubric", mistakes: [] }) }, sink: { done: () => new Set(), append: async (_k, r) => { rows.push(r); } }, priorCorrections: async () => [], maxUsd: 100 });
     expect(report.ungraded).toBe(2);
   });

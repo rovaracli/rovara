@@ -35,6 +35,11 @@ import { getSlackBinding } from "./workspace-preparation.js";
 import { auditOperatorId } from "@agentx/contracts";
 import { developerIdForSlackUser } from "../admin-actions.js";
 import { requirePricedTaskStopAdmission } from "../../org/task-stop-unpriced.js";
+import { TERMINAL_OPERATION_STATUSES } from "@agentx/contracts";
+import { startTask } from "../developer-tasks/start.js";
+import { replayCopyView, startReplayCopy } from "../developer-tasks/lessons-replay.js";
+import { isReplayCopy } from "../../developer/eval-copy.js";
+import { autofixTaskSpendUsd } from "./dispatch.js";
 
 /** Spec 043: the SWE-bench module's dependencies, from the broker's; spec 052 wires its batches into them. */
 export function swebenchDependencies(dependencies: AwsBrokerDependencies): EvalBatchDependencies {
@@ -181,11 +186,10 @@ export async function adminModelChecks(dependencies: AwsBrokerDependencies, meth
 }
 
 /**
- * M1.4 Task 4.6b: the operator's routes for an audit replay of a task's qualified round: `POST /v1/admin/tasks/{taskId}/e2e-replay` (body `{ roundId }`) starts one, `GET` (query `roundId`,
- * default the qualified round) reads the record of each attempt. Both are an administrator's, of the task's project. Neither touches the task: the record is kept apart from it and the
- * task page does not show it in M1.4.
+ * The operator of a task's project, for the admin routes that act on one task (the e2e replay and the lessons replay): the administrator claim, the task in the administrator's own org, and administrator
+ * membership on the task's project. A member, an administrator of another project and a caller of another org are all refused.
  */
-export async function adminTaskE2EReplay(dependencies: AwsBrokerDependencies, identity: AuthenticatedIdentity, taskId: string, method: "POST" | "GET", value: unknown, query: URLSearchParams): Promise<unknown> {
+export async function requireTaskAdmin(dependencies: AwsBrokerDependencies, identity: AuthenticatedIdentity, taskId: string): Promise<{ task: DeveloperTaskRecord; orgId: OrgId }> {
   if (!dependencies.developer) throw agentXError("NOT_FOUND", "developer tasks are not set up in this deployment");
   if (!identity.isAdministrator) throw agentXError("FORBIDDEN", "administrator claim is required");
   if (!TASK_ID_PATTERN.test(taskId)) throw agentXError("TASK_NOT_FOUND", "that is not a task ID");
@@ -196,6 +200,17 @@ export async function adminTaskE2EReplay(dependencies: AwsBrokerDependencies, id
   if (await orgOfRecord(dependencies, task) !== orgId) throw agentXError("TASK_NOT_FOUND", `no task ${taskId}`);
   const membership = await getMembership(dependencies, orgId, identity.ownerKey, task.project);
   if (membership?.role !== "administrator") throw agentXError("FORBIDDEN", "administrator project membership is required");
+  return { task, orgId };
+}
+
+/**
+ * M1.4 Task 4.6b: the operator's routes for an audit replay of a task's qualified round: `POST /v1/admin/tasks/{taskId}/e2e-replay` (body `{ roundId }`) starts one, `GET` (query `roundId`,
+ * default the qualified round) reads the record of each attempt. Both are an administrator's, of the task's project. Neither touches the task: the record is kept apart from it and the
+ * task page does not show it in M1.4.
+ */
+export async function adminTaskE2EReplay(dependencies: AwsBrokerDependencies, identity: AuthenticatedIdentity, taskId: string, method: "POST" | "GET", value: unknown, query: URLSearchParams): Promise<unknown> {
+  const { task, orgId } = await requireTaskAdmin(dependencies, identity, taskId);
+  if (!dependencies.developer) throw agentXError("NOT_FOUND", "developer tasks are not set up in this deployment");
   const store = { documentClient: dependencies.documentClient, tableName: dependencies.tableName };
   if (method === "GET") {
     const asked = query.get("roundId") ?? task.workflow?.e2e?.qualifiedRound?.roundId;
@@ -226,6 +241,48 @@ export async function adminTaskE2EReplay(dependencies: AwsBrokerDependencies, id
   }, caller, undefined, null);
   return { replay: await startReplayApplicationRound(dependencies, routeDependencies, { task, sourceRoundId: roundId,
     admin: { issuer: identity.issuer, subject: identity.subject, ownerKey: identity.ownerKey, ...(claimed === undefined ? {} : { displayName: claimed.trim() }) } }) };
+}
+
+/**
+ * Lane 7: the operator's route for a replay COPY of a past task, to measure the lessons (`aws/developer-tasks/lessons-replay.ts` is the whole logic). `POST /v1/admin/tasks/{taskId}/lessons-replay` starts a copy of the past
+ * task `taskId`; `GET /v1/admin/tasks/{copyTaskId}/lessons-replay` reads a copy (only a task that carries the replay mark). Both are an administrator's, of the task's project, exactly as the e2e replay's; a member is refused.
+ */
+export async function adminTaskLessonsReplay(dependencies: AwsBrokerDependencies, identity: AuthenticatedIdentity, taskId: string, method: "POST" | "GET", value: unknown): Promise<unknown> {
+  const { task, orgId } = await requireTaskAdmin(dependencies, identity, taskId);
+  if (!dependencies.developer) throw agentXError("NOT_FOUND", "developer tasks are not set up in this deployment");
+  const lessons = dependencies.lessons;
+  if (lessons?.snapshots === undefined) throw agentXError("NOT_FOUND", "lessons are not set up in this deployment");
+  if (method === "GET") {
+    // Only a replay copy is read here: any other task answers as if the route did not exist.
+    if (!isReplayCopy(task)) throw agentXError("TASK_NOT_FOUND", `no task ${taskId}`);
+    // Where the copy stands: its latest task operation (none yet: still starting).
+    const operations = (await developerTaskActions(dependencies).operations(task.workspaceId)).filter((operation) => operation.kind === "task").sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+    const latest = operations[0]?.status;
+    const state = latest === undefined || !TERMINAL_OPERATION_STATUSES.has(latest as never) ? "running" : latest === "SUCCEEDED" ? "completed" : "failed";
+    const cost = state === "running" ? null : (await autofixTaskSpendUsd(dependencies, task)) ?? null;
+    return { replay: await replayCopyView({ store: lessons.store }, task, orgId, state, cost) };
+  }
+  await requirePricedTaskStopAdmission(dependencies, { orgId, actor: { kind: "operator", id: auditOperatorId(identity.issuer, identity.subject) }, workKind: "admin-lessons-replay" });
+  if (dependencies.cloud === true) {
+    const trial = { documentClient: dependencies.documentClient, tableName: dependencies.tableName, now: Date.now };
+    await admitTrial(trial, orgId);
+    await admitMachineTime(trial, orgId);
+  }
+  // The copy is owned by the past task's owner, as the e2e replay's round is; the request is the administrator's and is audited as theirs.
+  const owner = personOwnerOf(effectiveTaskOwner(task));
+  const caller: DeveloperCaller = { developerId: owner.developerId, sessionId: "lessons-replay-admin", amr: owner.provider, name: owner.name, orgId,
+    ...(task.slackUserId === undefined ? {} : { slackUserId: task.slackUserId }),
+    orgRole: (await readOrgMember(dependencies, orgId, owner.developerId))?.role ?? "member" };
+  const routeDependencies = developerTaskRouteDependencies({
+    documentClient: dependencies.documentClient, tableName: dependencies.tableName, developer: dependencies.developer,
+    now: Date.now, tasks: developerTaskActions(dependencies), refreshTaskFeedback: (id) => refreshTaskFeedbackForOwnerDecision(dependencies, id),
+    workflowE2EPresentation: input => workflowE2EPresentation(dependencies, input.task, input.operations, input.actor),
+    workflowE2EPublicationChecks: input => workflowE2EPublicationChecks(dependencies, input.task, input.operations),
+  }, caller, undefined, null);
+  return { replay: await startReplayCopy({
+    store: lessons.store, snapshots: lessons.snapshots, audit: lessons.routes.audit, now: Date.now,
+    start: (body, run) => startTask(routeDependencies, caller, body, run),
+  }, { source: task, orgId, operatorId: auditOperatorId(identity.issuer, identity.subject), body: value }) };
 }
 
 /** What the operator reads of a replay record: its state, when, and the broker's own result; never an id of an operation or an object. */

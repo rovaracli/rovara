@@ -1,6 +1,7 @@
 // Spec 025 C7, C8: the notices a shared task's thread hears about, from the state table's stream.
 // Pure: whether the task is shared is decided when a notice is delivered (Task 7).
 import type { AttributeValue } from "@aws-sdk/client-dynamodb";
+import { isEvalRunMark } from "../lessons/eval-run.js";
 import { unmarshall } from "@aws-sdk/util-dynamodb";
 import { WORKFLOW_BLOCK_REASONS, WorkflowSnapshotSchema, type WorkflowSnapshot } from "@agentx/contracts";
 
@@ -273,6 +274,8 @@ export function readStream(records: readonly StreamRecord[]): { notices: Notice[
     if (image === undefined) continue;
     try {
       const next = unmarshall(image) as Record<string, unknown>;
+      // Lane 7: a replay copy of a past task is never announced (no Slack message, no DM, no card).
+      if (isEvalRunMark(next.evalRun)) continue;
       const previous = entry.dynamodb?.OldImage === undefined ? undefined : unmarshall(entry.dynamodb.OldImage) as Record<string, unknown>;
       notices.push(...noticesOf(previous, next, changedAt(next, entry.dynamodb?.ApproximateCreationDateTime), entry.eventID ?? ""));
     } catch {
@@ -292,7 +295,7 @@ export function designWaitArms(records: readonly StreamRecord[]): Array<{ taskId
       const next = unmarshall(image) as Record<string, unknown>;
       const workflow = record(next.workflow);
       // Cheap first: only a task that has a design review at all is parsed.
-      if (next.entityType !== "DEVELOPER_TASK" || workflow?.designReview === undefined || typeof next.taskId !== "string") continue;
+      if (next.entityType !== "DEVELOPER_TASK" || workflow?.designReview === undefined || typeof next.taskId !== "string" || isEvalRunMark(next.evalRun)) continue;
       const parsed = WorkflowSnapshotSchema.safeParse(workflow);
       if (!parsed.success) continue;
       const previous = latest.get(next.taskId);

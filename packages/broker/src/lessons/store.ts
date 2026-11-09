@@ -34,7 +34,7 @@ export interface LoadManifestEntry {
 }
 export interface LoadManifest {
   taskId: string; workspaceId: string; project: string; stage: LessonStage; round: number; setVersion: number;
-  memory: "live" | "off"; at: number; lessons: LoadManifestEntry[]; bytes: number;
+  memory: "live" | "off" | "snapshot"; /** Lane 7: the frozen snapshot a replay copy was given (memory "snapshot"). Such a manifest is an eval load: the live counters never see it. */ snapshotId?: string; at: number; lessons: LoadManifestEntry[]; bytes: number;
 }
 export interface PendingOutcome { key: string; workspaceId: string; project: string; lessonId: string; taskId: string; dueAt: number }
 /** A source paused by spike detection: its lessons are collected but held until a maintainer resumes the source. */

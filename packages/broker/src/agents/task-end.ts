@@ -11,6 +11,7 @@
 // with it, so a call that was cut short is taken up again from the first handler not told. Handlers must still be safe to hear twice: a process can stop
 // between a handler returning and the record being written.
 import { GetCommand, PutCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
+import { isEvalRunMark } from "../lessons/eval-run.js";
 import { PER_TASK_BUDGET_USD, type OrgId, type PauseScope, type SessionBinding } from "@agentx/contracts";
 import { taskKey, type DeveloperTaskRecord } from "../developer/task-records.js";
 import { sessionBindingsOf } from "../rovara-code/session-bindings.js";
@@ -231,7 +232,8 @@ export async function onTaskEnded(
   if (deps.agentRuns?.releaseWorkspace !== undefined) await deps.agentRuns.releaseWorkspace(task.taskId);
   if (record.done === true) return "already_ended";
   const ended = record.outcome ?? outcome;
-  const handlers = [...endHandlers];
+  // Lane 7: a replay copy of a past task tells nobody (no session note, no Team record row, no tracker comment, no Slack, no learning).
+  const handlers = isEvalRunMark(task.evalRun) ? [] : [...endHandlers];
   if (handlers.length > 0) {
     const event = await eventOf(deps, task, ended, detail);
     for (let index = record.handlersTold ?? 0; index < handlers.length; index += 1) {

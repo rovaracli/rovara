@@ -266,7 +266,7 @@ export async function runReplay(plan: ReplayPlan, deps: RunDeps): Promise<RunRep
       executed = await deps.executor.run({ run, task, ...(delivery === undefined ? {} : { delivery }), ...(offer === undefined ? {} : { lessonsFile: offer }), learning: { lessonsSwitch: "off", calls: "none" } });
     } catch (error) {
       // An unmarked task or a learning call ends the whole replay; any other fault is one ungraded run.
-      if (error instanceof EvalMarkError || error instanceof ReplayLearningCallError) throw error;
+      if (error instanceof EvalMarkError || error instanceof ReplayLearningCallError || error instanceof ArmNotBuiltError) throw error;
       executed = undefined;
     }
     if (executed !== undefined) {

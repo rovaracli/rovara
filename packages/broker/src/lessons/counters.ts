@@ -291,6 +291,8 @@ export async function applyLoadReport(deps: CounterDeps, input: { workspaceId: s
   const key: ScopeKey = { workspaceId: input.workspaceId, project: input.project };
   const manifest = (await deps.store.manifests(key, input.taskId)).find((m) => m.stage === input.stage && m.round === input.round);
   if (manifest === undefined || input.report.stage !== input.stage) return;
+  // Lane 7: a replay copy's load (a frozen snapshot) never touches the live lessons: no loaded count, no renewal, no moved citation, no stale mark.
+  if (manifest.memory === "snapshot") return;
   if (!(await deps.store.markOnce(key, `report:${input.taskId}:${input.stage}:${input.round}`))) return;
   const resolved = await resolveLearning(deps.settings, key.workspaceId, key.project);
   const now = deps.now();

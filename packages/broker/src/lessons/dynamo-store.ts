@@ -700,7 +700,7 @@ export class DynamoLessonStore implements LessonStore {
   }
 
   // ---- manifests
-  private manifestKey(m: Pick<LoadManifest, "workspaceId" | "project" | "taskId" | "stage" | "round">) { return loadManifestKey(this.orgOf(m.workspaceId), m.project, m.taskId, m.stage, m.round); }
+  private manifestKey(m: Pick<LoadManifest, "workspaceId" | "project" | "taskId" | "stage" | "round"> & { memory?: LoadManifest["memory"] }) { return loadManifestKey(this.orgOf(m.workspaceId), m.project, m.taskId, m.stage, m.round, m.memory === "snapshot"); }
   private async writeRefs(m: LoadManifest): Promise<void> {
     const key: ScopeKey = { workspaceId: m.workspaceId, project: m.project };
     const manifestSk = this.manifestKey(m).sk;
@@ -714,7 +714,8 @@ export class DynamoLessonStore implements LessonStore {
     return this.put({ ...this.manifestKey(manifest), entityType: "LESSON_LOAD", ...plain(manifest) }, NOT_EXISTS);
   }
   async manifests(key: ScopeKey, taskId: string): Promise<LoadManifest[]> {
-    const items = await this.queryPrefix(key, `LOAD#${taskId}#`, { entityType: "LESSON_LOAD" });
+    // A replay copy's loads are filed under `EVALLOAD#` (so a live counter's scan never meets them); a read for that one task meets both.
+    const items = [...await this.queryPrefix(key, `LOAD#${taskId}#`, { entityType: "LESSON_LOAD" }), ...await this.queryPrefix(key, `EVALLOAD#${taskId}#`, { entityType: "LESSON_LOAD" })];
     return items.map((item) => dropInternal(item) as unknown as LoadManifest).filter((m) => m.taskId === taskId).sort((a, b) => a.at - b.at);
   }
   async updateManifest(manifest: LoadManifest): Promise<void> {

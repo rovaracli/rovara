@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
+import { refuseReplayCopy } from "../../developer/eval-copy.js";
 import { TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
 import {
   AgentXError,
@@ -181,6 +182,7 @@ export async function startTaskWorkflowPublicationFromSystem(
   origin: { taskPageUrl?: string; ownerRetry?: boolean; ownerAccess?: Pick<TaskAccess, "peopleRevision">; ownerActor?: DeveloperCaller },
 ): Promise<"STARTED" | "DUPLICATE" | "STALE" | "WAITING"> {
   const task = await get<DeveloperTaskRecord>(deps, taskKey(taskId));
+  refuseReplayCopy(task);
   const workflow = task?.workflow;
   const ownerRetry = origin.ownerRetry === true;
   if (task === undefined || task.closedAt !== undefined || workflow === undefined || workflow.revision !== expected.workflowRevision
@@ -349,6 +351,7 @@ async function startTaskWorkflowPullRequestUpdate(
   ownerAccess?: Pick<TaskAccess, "peopleRevision">,
   ownerActor?: DeveloperCaller,
 ): Promise<"STARTED" | "DUPLICATE" | "STALE"> {
+  refuseReplayCopy(task);
   if (workflow.e2e?.required === true && currentE2EChecks.length === 0) return "STALE";
   const pullRequest = nextWorkflowPullRequestUpdate(workflow);
   const repository = workflow.candidate.repositories.find((entry) => entry.repositoryId === pullRequest?.repositoryId);
@@ -433,6 +436,7 @@ export async function startTaskWorkflowBranchSyncFromSystem(
   actor?: DeveloperCaller,
 ): Promise<"STARTED" | "DUPLICATE" | "STALE"> {
   const task = await get<DeveloperTaskRecord>(deps, taskKey(taskId));
+  refuseReplayCopy(task);
   const workflow = task?.workflow;
   if (task === undefined || task.closedAt !== undefined || workflow === undefined || workflow.revision !== expected.workflowRevision || workflow.stage !== "WAIT_FOR_MERGE"
     || workflow.state !== "READY" || workflow.branchSync === undefined) return "STALE";

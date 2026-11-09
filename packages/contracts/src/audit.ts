@@ -278,6 +278,8 @@ export const AUDIT_ACTIONS = [
   "lesson.repo_file_pr_opened",
   "lesson.repo_file_pr_closed",
   "lesson.repo_file_switched",
+  // Lane 7: an operator started a replay copy of a past task to measure the lessons (counts, ids and fixed words only), written before the copy starts.
+  "lesson.replay_started",
   // Lane E (private MCP servers and project Sources): ids, fixed words and flags only. A server's label, address and token, and a source's id, never go in a fact.
   "mcp_server.added",
   "mcp_server.approved",
@@ -619,6 +621,8 @@ export const AUDIT_FACT_KEYS: Record<AuditAction, readonly string[]> = {
   "lesson.repo_file_pr_opened": ["removals", "edits", "adds"],
   "lesson.repo_file_pr_closed": ["cause", "pullRequest"],
   "lesson.repo_file_switched": ["enabled"],
+  // `operator` is the opaque `op_` id, `memory` is `off` or `snapshot`, `snapshotLessons` a count, `maxCents` the run's spend limit in whole cents, `sourceTask` the past task's id.
+  "lesson.replay_started": ["operator", "memory", "snapshotLessons", "maxCents", "sourceTask"],
   "mcp_server.added": ["transport", "hasCredential"],
   // approved also pins a package-run server's install: the tarball's integrity, the lockfile and bundle hashes, the tools hash the admin saw, how many addresses and secret names it was given, and the secret's version.
   "mcp_server.approved": ["transport", "hasCredential", "integrity", "lockfileHash", "bundleHash", "toolsHash", "destinationCount", "credentialCount", "credentialVersion"],

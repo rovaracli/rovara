@@ -25,6 +25,7 @@ import { secondPersonTier0Authority } from "./tier0-authority.js";
 import type { PresetDeps } from "./preset-setting.js";
 import { DynamoLessonStore } from "./dynamo-store.js";
 import { modelCorrectionJudge } from "./judge-model.js";
+import { dynamoSnapshotStore, type SnapshotStore } from "./replay-snapshot-store.js";
 import type { LoadDeps } from "./load.js";
 import type { LessonsPauseStore } from "./pause.js";
 import type { ApproverDirectory, CorrectionJudge, LearningSpend, LessonEmbedder, LessonVectors, PipelineModel } from "./ports.js";
@@ -82,6 +83,8 @@ export interface LessonsRuntime {
   readonly directory: ApproverDirectory;
   /** What the dispatch loader needs. */
   readonly load: LoadDeps;
+  /** Lane 7: the frozen snapshots a replay copy reads (`replay-snapshot-store.ts`). */
+  readonly snapshots?: SnapshotStore;
   /** What `applyLoadReport` needs. */
   readonly counters: CounterDeps;
   /** What the lessons routes need. */
@@ -136,5 +139,5 @@ export function createLessonsRuntime(input: LessonsRuntimeInput): LessonsRuntime
       settings: presetStore, changes: presetStore, audit, now: input.now, authority: secondPersonTier0Authority(input.evidence), soleOwnerLoosening: (workspaceId) => new DynamoSoleOwnerSwitch(input.table).read(workspaceId),
     },
   };
-  return { store, settings, access, directory, load, counters, routes };
+  return { store, settings, access, directory, load, counters, routes, snapshots: dynamoSnapshotStore(input.table) };
 }

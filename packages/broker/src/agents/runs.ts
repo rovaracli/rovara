@@ -206,6 +206,11 @@ export interface RunStartOptions {
   nightlyRun?: NightlyRunWire;
   /** The run belongs to a project's system owner (see `AgentRunRequest.automatic`). */
   automatic?: AutomaticRunMark;
+  /**
+   * Lane 7: the task is a COPY of a past task made to measure the lessons (`aws/broker/lessons-replay-route.ts`, the only caller). The task record is created with `evalRun: true` and its memory in the same write, it is never
+   * shared to a channel, and it is refused every publication (`lessons/eval-run.ts`). Nothing else can set the mark at creation.
+   */
+  evalReplay?: { memory: { mode: "off" } | { mode: "snapshot"; snapshotId: string } };
 }
 
 /** What `startAgentRun` needs from the developer API: who the owner is as a caller, and the task start. */

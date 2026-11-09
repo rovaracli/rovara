@@ -241,6 +241,11 @@ export async function startTask(deps: DeveloperTaskRouteDependencies, caller: De
   // An automatic run is MODEL-FREE: it declares a purpose that is, and nothing here may turn it into a workflow that asks a model (which it would never be given a key for, and so could never finish).
   if (systemStart && (run?.automatic?.purpose === "nightly_run") !== (run?.nightlyRun !== undefined)) throw agentXError("CONFIG_INVALID", "an automatic run's purpose must be a model-free one that matches what it was started to run");
   if (systemStart && request.workflow === true) throw agentXError("CONFIG_INVALID", "an automatic run is not a workflow: it asks no model");
+  // Lane 7: a replay copy is a person's plain start with nothing shared anywhere: no channel, no Slack thread, no automatic run, no setup or diagnosis.
+  if (run?.evalReplay !== undefined && (request.shareToChannel === true || request.channel !== undefined || request.shareMode !== undefined || systemStart || run.automatic !== undefined || run.codeIntent !== undefined || run.setupDraft !== undefined
+    || run.diagnosis !== undefined || run.setupAgent !== undefined || run.nightlyRun !== undefined || deps.initialSlackThread !== undefined)) {
+    throw agentXError("CONFIG_INVALID", "a replay copy is not shared and is no other kind of run");
+  }
   const turns = turnTable(deps);
   // Only the Slack workflow's own caller can say "slack": an AI tool that sends that name is still an AI tool.
   // UX5b review I3/N1: a script token's start has the fixed client "Script token", whatever the body says; the token's own name is never used as text.
@@ -524,6 +529,8 @@ export async function startTask(deps: DeveloperTaskRouteDependencies, caller: De
     ...(spendingStop === undefined ? {} : { spendingStop, spendingAdmission: { requestId: request.requestId, actorId: caller.developerId, intentHash: payloadHash } }),
     ...(keepsBudget ? { budgetUsd } : {}), ...(run?.runLimitUsd === undefined || startLimitUsd === undefined ? {} : { requestedRunLimitUsd: run.runLimitUsd }), developerId: caller.developerId, provider: systemStart ? SYSTEM_OWNER_PROVIDER : caller.amr, developerName: caller.name,
     ...(run?.automatic === undefined ? {} : { automatic: run.automatic }),
+    // Lane 7: a replay copy carries the eval mark and its memory from the first write; no other start sets either.
+    ...(run?.evalReplay === undefined ? {} : { evalRun: true as const, evalMemory: run.evalReplay.memory }),
     ...(caller.slackUserId === undefined ? {} : { slackUserId: caller.slackUserId }),
     client, project: request.project, title, workspaceId, ownerKey: identity.ownerKey, conversationId, startingRevision: revision,
     // A workflow task quotes the request in each plan's "why"; every start (Slack and AI tool) comes through here.

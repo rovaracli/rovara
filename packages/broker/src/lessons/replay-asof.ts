@@ -2,7 +2,7 @@
 // history: the snapshot for a simulated day is the set of lessons that were live (active, not expired, created) at the START of that day, at the version they had then. Nothing is reflected, curated or judged
 // here, no model is called, nothing is written. Consequences, stated in the report: its learning cost is NOT measured (null), and it reflects what B did when it ran, not what B would do on the replay's tasks.
 // `pin` (optional) materialises the snapshot so a replayed task can load it; the loader's snapshot mode does not exist yet (see replay-executor.ts), so without a `pin` the snapshot is a plan-only id.
-import { createHash } from "node:crypto";
+import { snapshotIdOf } from "./replay-snapshot-store.js";
 import type { SnapshotBuilder, SnapshotRequest, SnapshotResult } from "./replay-harness.js";
 import type { LessonStore, ScopeKey } from "./store.js";
 import type { Lesson } from "./types.js";
@@ -35,8 +35,8 @@ export function asOfSnapshotBuilder(deps: AsOfDeps): SnapshotBuilder {
       const versions = new Map<string, readonly Lesson[]>();
       for (const head of heads) versions.set(head.id, await deps.store.versions(deps.key, head.id));
       const lessons = lessonsAsOf(versions, t);
-      const digest = createHash("sha256").update(JSON.stringify([request.pipeline, request.day, lessons.map((l) => [l.id, l.version])])).digest("hex").slice(0, 20);
-      const snapshotId = `snp_${digest}`;
+      // The id the install derives from the same lessons (`replay-snapshot-store.ts#snapshotIdOf`), so the snapshot a copy is started on is the one named here.
+      const snapshotId = snapshotIdOf(deps.key, lessons.map((l) => ({ id: l.id, version: l.version })));
       if (deps.pin !== undefined) await deps.pin(snapshotId, lessons);
       return { snapshotId, lessons, costUsd: null, calls: null };
     },

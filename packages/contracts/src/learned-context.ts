@@ -78,16 +78,19 @@ export const LearnedRefsSchema = z.object({
    * live check. Absent on a stage queued before this field: delivery then reads as nobody in particular (only lessons whose every source task is project-wide).
    */
   taskId: z.string().regex(/^[A-Za-z0-9][A-Za-z0-9_-]{0,99}$/u).optional(),
+  /** Lane 7: the frozen snapshot a replay copy was given. Delivery then reads EXACTLY the listed versions, only if the snapshot names them, and never the live set. */
+  snapshotId: z.string().regex(/^snp_[0-9a-f]{20}$/u).optional(),
   lessons: z.array(z.object({ id: z.string().regex(/^[A-Za-z0-9_-]{4,64}$/u), version: z.number().int().min(1) }).strict()).max(LEARNED_CONTEXT_MAX_LESSONS),
   priorLoaded: z.array(z.object({ id: z.string().regex(/^[A-Za-z0-9_-]{4,64}$/u) }).strict()).max(40).optional(),
 }).strict();
 export type LearnedRefs = z.infer<typeof LearnedRefsSchema>;
 
 /** The ids and versions of a loaded context, with who it was loaded for. No text crosses into the result. */
-export function learnedRefsOf(context: LearnedContext, scope: { orgId: string; project: string; audience: LearnedRefs["audience"]; taskId?: string | undefined }): LearnedRefs {
+export function learnedRefsOf(context: LearnedContext, scope: { orgId: string; project: string; audience: LearnedRefs["audience"]; taskId?: string | undefined; snapshotId?: string | undefined }): LearnedRefs {
   return {
     v: 1, orgId: scope.orgId, project: scope.project, setVersion: context.setVersion, stage: context.stage, audience: scope.audience,
     ...(scope.taskId === undefined ? {} : { taskId: scope.taskId }),
+    ...(scope.snapshotId === undefined ? {} : { snapshotId: scope.snapshotId }),
     lessons: context.lessons.map((lesson) => ({ id: lesson.id, version: lesson.version })),
     ...(context.priorLoaded === undefined ? {} : { priorLoaded: context.priorLoaded.map((prior) => ({ id: prior.id })) }),
   };

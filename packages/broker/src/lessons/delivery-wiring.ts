@@ -11,6 +11,7 @@ import { tableLessonAudiencePort, withLessonAudiences } from "./task-audience.js
 import { tableProjectRepoScopes, withProjectRepoScopes } from "./project-repo-audience.js";
 import { dynamoLearningSettings, DynamoTier0Settings } from "./dynamo-settings.js";
 import { DynamoLessonStore } from "./dynamo-store.js";
+import { dynamoSnapshotStore } from "./replay-snapshot-store.js";
 
 export interface LessonDeliveryInput {
   /** The State table's client and name (a developer's linked accounts). */
@@ -37,6 +38,7 @@ export function createLessonDelivery(input: LessonDeliveryInput): ((refs: Learne
     settings: dynamoLearningSettings(table, new DynamoTier0Settings(table)),
     access: createAccessCheckPort(table, { taskVisibility: withProjectRepoScopes(withLessonAudiences(tableTaskVisibilityPort({ documentClient: input.documentClient, tableName: input.stateTable, now }), tableLessonAudiencePort({ documentClient: input.documentClient, tableName: input.stateTable, now })), tableProjectRepoScopes({ documentClient: input.documentClient, tableName: input.stateTable }, { record: table })), ...(input.log === undefined ? {} : { log: input.log }) }),
     now,
+    snapshots: dynamoSnapshotStore(table),
     ...(input.log === undefined ? {} : { log: input.log }),
     // The reader's identity: the accounts the developer linked (a GitHub account, today), as the broker's own directory reads them.
     async identity(workspaceId: string, developerId: string) {
@@ -47,5 +49,6 @@ export function createLessonDelivery(input: LessonDeliveryInput): ((refs: Learne
     },
   };
   const enabled = input.enabled;
-  return async (refs) => (enabled?.() === true ? learnedContextFromRefs(deps, refs) : undefined);
+  // Lane 7: refs that name a frozen snapshot are a replay copy's, delivered whatever the install's switch says (the harness names this); every other ref needs the switch.
+  return async (refs) => (refs.snapshotId !== undefined || enabled?.() === true ? learnedContextFromRefs(deps, refs) : undefined);
 }

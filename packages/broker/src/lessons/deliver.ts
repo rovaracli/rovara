@@ -11,6 +11,7 @@ import type { Clock } from "./ports.js";
 import { createLessonLiveReader } from "./live-visibility.js";
 import { readVisible, type LessonLog } from "./read-visible.js";
 import type { LessonStore, ScopeKey } from "./store.js";
+import type { SnapshotStore } from "./replay-snapshot-store.js";
 import type { IdentitySet, Lesson } from "./types.js";
 
 export interface DeliveryDeps {
@@ -19,6 +20,8 @@ export interface DeliveryDeps {
   identity(workspaceId: string, developerId: string): Promise<IdentitySet>;
   /** Counts approvers as members (a merged developer is the member they became). The dispatcher has no sign-in read, so it leaves this out and the loader's member-aware check (at queue time) stands; where given, a failed lookup delivers nothing. */
   resolveMember?: MemberResolver;
+  /** Lane 7: the frozen snapshots of replay copies. Absent: refs that name a snapshot deliver nothing. */
+  snapshots?: SnapshotStore;
   now: Clock;
   log?: LessonLog;
 }
@@ -35,7 +38,14 @@ export async function learnedContextFromRefs(deps: DeliveryDeps, refs: LearnedRe
   const key: ScopeKey = { workspaceId: refs.orgId, project: refs.project };
   try {
     const resolved = await resolveLearning(deps.settings, key.workspaceId, key.project);
-    if (!modeAllows(resolved.mode, "load")) return undefined;
+    // Lane 7: refs that name a snapshot are a replay copy's: the project's OWN mode decides (the install's switch does not), and the lessons are the snapshot's, at its versions.
+    if (!modeAllows(refs.snapshotId === undefined ? resolved.mode : resolved.chosenMode, "load")) return undefined;
+    let pinned: Map<string, number> | undefined;
+    if (refs.snapshotId !== undefined) {
+      const snapshot = await deps.snapshots?.get(key, refs.snapshotId);
+      if (snapshot === undefined) return undefined;
+      pinned = new Map(snapshot.lessons.map((ref) => [ref.id, ref.version]));
+    }
     const now = deps.now();
     // Decision 31: the reader is the running task's audience, asked again now (the people who can open its session now, not the audience the load saw, and not `task.shared`). A lesson is delivered only if everyone who
     // can see the task can see every source task of the lesson. A stage queued before the task id was carried, or a task whose audience can't be read, gets no lesson that names a task (there is no weaker rule to fall back to). Restricted places and
@@ -45,6 +55,14 @@ export async function learnedContextFromRefs(deps: DeliveryDeps, refs: LearnedRe
 
     const fetched: Lesson[] = [];
     for (const ref of refs.lessons) {
+      if (pinned !== undefined) {
+        // A snapshot lesson: exactly the version the snapshot names (the lesson may have been edited or have expired since); one the snapshot does not name is never delivered.
+        if (pinned.get(ref.id) !== ref.version) continue;
+        const frozen = (await deps.store.versions(key, ref.id)).find((version) => version.version === ref.version);
+        if (frozen === undefined || frozen.status !== "active") continue;
+        fetched.push(frozen);
+        continue;
+      }
       const lesson = await deps.store.get(key, ref.id);
       if (lesson === undefined || lesson.status !== "active" || lesson.version !== ref.version || lesson.expiresAt <= now) continue;
       fetched.push(lesson);

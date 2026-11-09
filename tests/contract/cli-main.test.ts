@@ -26,7 +26,7 @@ describe("AgentX executable command surface", () => {
     expect(admin?.commands.find((command) => command.name() === "eval")?.commands.find((command) => command.name() === "batch")?.commands.map((command) => command.name())).toEqual(["start", "show", "stop", "results"]);
     expect(subcommands(admin, "credential")).toEqual(["register", "authorize", "list"]);
     expect(subcommands(admin, "turns")).toEqual(["export"]);
-    expect(subcommands(admin, "task")).toEqual(["share-mode", "e2e-replay"]);
+    expect(subcommands(admin, "task")).toEqual(["share-mode", "e2e-replay", "lessons-replay"]);
     expect(subcommands(admin, "runtime-installation")).toEqual(["challenge", "register"]);
 
     expect(subcommands(program, "signin")).toEqual(["show", "enable", "disable", "cloud", "check", "unlink", "link"]);
@@ -35,7 +35,7 @@ describe("AgentX executable command surface", () => {
     expect(subcommands(program, "audit")).toEqual(["log", "export", "verify", "open"]);
     expect(subcommands(admin, "audit")).toEqual(["log", "export"]);
     expect(subcommands(program, "mcp")).toEqual(["install"]);
-    expect(subcommands(program, "project")).toEqual(["add", "setup-approve", "model-check", "hooks", "create", "show", "archive", "restore", "code-settings", "check", "members", "add-member", "remove-member", "settings", "agents", "connectors", "ai"]);
+    expect(subcommands(program, "project")).toEqual(["add", "setup-approve", "model-check", "hooks", "create", "show", "archive", "restore", "code-settings", "lessons-repo", "check", "members", "add-member", "remove-member", "settings", "agents", "connectors", "ai"]);
     expect(program.commands.find((command) => command.name() === "project")?.commands.find((command) => command.name() === "model-check")?.commands.map((command) => command.name())).toEqual(["discover", "test", "drive"]);
     expect(subcommands(program, "channel")).toEqual(["add"]);
     expect(subcommands(program, "connector")).toEqual(["add"]);

@@ -10,6 +10,8 @@ import { LEARNED_CONTEXT_FEATURE, codeRepositoriesOf, learnedRefsOf, type Learne
 import type { DeveloperTaskRecord } from "../../developer/task-records.js";
 import { learnedContextForDispatch, type TaskAudience } from "../../lessons/load.js";
 import type { LessonsRuntime } from "../../lessons/runtime.js";
+import { resolveSnapshotLessons } from "../../lessons/replay-snapshot-store.js";
+import type { Lesson } from "../../lessons/types.js";
 import { learnedLessonsEnabled } from "../../lessons/switch.js";
 
 /** The workflow modes that may carry lessons, and the lesson stage each is. Every other mode (checks, setup, spec writing, feedback review) carries none. */
@@ -34,8 +36,12 @@ export async function learnedContextForOperation(
   input: { orgId: string; task: DeveloperTaskRecord | undefined; workflowMode: string | undefined; legacyTask?: boolean | undefined; agentRun?: unknown; definition: Pick<ProjectDefinition, "repositories"> },
   env: NodeJS.ProcessEnv = process.env,
 ): Promise<{ learnedRefs?: LearnedRefs; load?: LearnedLoadRef }> {
+  // Lane 7: a replay copy has its memory set at creation, and it is the only task whose lessons are not decided by the live set or the install switch: "off" loads nothing; a snapshot loads exactly that snapshot's
+  // lessons (the harness names the explicit delivery in its plan, decision 47). Any other value on the mark is a task we cannot place: nothing is loaded (fail closed).
+  const copy = input.task?.evalRun === undefined && input.task?.evalMemory === undefined ? undefined : input.task;
+  if (copy !== undefined && (copy.evalRun !== true || copy.evalMemory?.mode !== "snapshot")) return {};
   // The install switch for lessons reaching an agent (lessons/switch.ts), apart from the Team record's: off, nothing is loaded, recorded or sent.
-  if (!learnedLessonsEnabled(env)) return {};
+  if (copy === undefined && !learnedLessonsEnabled(env)) return {};
   const lessons = host.lessons;
   const stage = lessonStageOf(input.workflowMode);
   const task = input.task;
@@ -50,17 +56,26 @@ export async function learnedContextForOperation(
     const round = task.workflow?.revision ?? 0;
     // What the task is about, not only its title: the request, and from the plan on the plan's summary and the files it names (so path scopes filter). A plan that cannot be read adds nothing; the load goes on.
     const run = (async () => {
+      // The snapshot's lessons, at its versions, from the lesson store's history; a snapshot that cannot be read or is another project's loads nothing.
+      let memory: { mode: "snapshot"; snapshotId: string; lessons: readonly Lesson[] } | undefined;
+      if (copy?.evalMemory?.mode === "snapshot") {
+        const key = { workspaceId: task.orgId!, project: task.project };
+        const snapshot = await lessons.snapshots?.get(key, copy.evalMemory.snapshotId);
+        if (snapshot === undefined) return {};
+        memory = { mode: "snapshot", snapshotId: snapshot.snapshotId, lessons: (await resolveSnapshotLessons(lessons.store, key, snapshot)).lessons };
+      }
       const plan = await lessons.planFacts?.(task).catch(() => undefined);
       return learnedContextForDispatch(lessons.load, {
         workspaceId: task.orgId!, project: task.project, taskId: task.taskId, stage, round, intent: intentOf(task),
         ...(plan === undefined || plan.summary === "" ? {} : { planSummary: plan.summary }),
         repos: codeRepositoriesOf(input.definition as ProjectDefinition).map((repository) => repository.name), files: plan?.files ?? [], languages: [], taskAudience: audience,
+        ...(memory === undefined ? {} : { memory }),
         // The delivery removes the field for a worker that does not list the feature; the loader is asked as for a worker that does.
       }, [LEARNED_CONTEXT_FEATURE]);
     })();
     const result = await Promise.race([run, new Promise<Awaited<typeof run>>((resolve) => { timer = setTimeout(() => resolve({}), LESSON_LOAD_DEADLINE_MS); timer.unref?.(); })]);
     if (result.learnedContext === undefined) return {};
-    const refs = learnedRefsOf(result.learnedContext, { orgId: task.orgId, project: task.project, audience: { kind: "shared" }, taskId: task.taskId });
+    const refs = learnedRefsOf(result.learnedContext, { orgId: task.orgId, project: task.project, audience: { kind: "shared" }, taskId: task.taskId, ...(copy?.evalMemory?.mode === "snapshot" ? { snapshotId: copy.evalMemory.snapshotId } : {}) });
     return { learnedRefs: refs, load: { taskId: task.taskId, project: task.project, stage, round } };
   } catch {
     return {};
