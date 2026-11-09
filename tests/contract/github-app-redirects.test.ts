@@ -1,5 +1,5 @@
-// Redirects and hangs on the GitHub requests that carry an installation or user token (0.5.12, L7A-5). A fake fetch that behaves the way the real one does: a request with
-// `redirect: "error"` that meets a 302 fails; any other request follows it to the other host with the same headers (so the token would leak). A hanging answer ends only when the request's signal aborts.
+// Redirects and hangs on the GitHub requests that carry an installation or user token (0.5.12, L7A-5). A fake fetch that follows a 302 unless the request says `redirect: "error"`, and
+// then forwards the same init to the other host (a real fetch drops Authorization across origins, but a 307/308 still forwards the body, and a same-origin redirect keeps every header). A hanging answer ends only when the request's signal aborts.
 import { generateKeyPairSync } from "node:crypto";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { GitHubAppCredentialProvider } from "../../packages/broker/src/github-app.js";
@@ -48,7 +48,8 @@ function world(modeOf: (method: string, url: string) => Mode) {
     }
     if (url.includes("/pulls?")) return new Response("[]", { status: 200 });
     if (method === "POST") return new Response(JSON.stringify({ number: 43, html_url: "https://github.com/ps06756/personal-website-test/pull/43" }), { status: 201 });
-    if (url.endsWith(`/git/commits/${COMMIT}`)) return new Response(JSON.stringify({ sha: COMMIT, tree: { sha: "d".repeat(40) } }), { status: 200 });
+    const commit = /\/git\/commits\/([a-f0-9]{40})$/.exec(url)?.[1];
+    if (commit) return new Response(JSON.stringify({ sha: commit, tree: { sha: "d".repeat(40) } }), { status: 200 });
     return new Response(JSON.stringify({ ...pullRequest(), ...(method === "PATCH" ? { state: "closed" } : {}) }), { status: 200 });
   }) as typeof fetch;
   const { privateKey } = generateKeyPairSync("rsa", { modulusLength: 2048 });
@@ -69,12 +70,20 @@ afterEach(() => { vi.restoreAllMocks(); });
 
 type Call = (provider: GitHubAppCredentialProvider) => Promise<unknown>;
 const input = { repositoryUrl: REPO, headBranch: "agentx/00000000-0000-4000-8000-000000000001", baseBranch: "main", title: "Publish change" };
+const budget = { signal: new AbortController().signal, beforeRequest: () => undefined };
+const observe: Call = (p) => p.getPullRequestMergeObservation(REPO, 42, budget, SCOPE);
 const methods: Array<{ name: string; call: Call; hit: (method: string, url: string) => boolean; seconds: number }> = [
   { name: "the open pull request lookup (reconcilePullRequest)", call: (p) => p.reconcilePullRequest(input, SCOPE), hit: (m, u) => m === "GET" && u.includes("/pulls?"), seconds: 8 },
   { name: "the pull request create (reconcilePullRequest)", call: (p) => p.reconcilePullRequest(input, SCOPE), hit: (m, u) => m === "POST" && u === `${API}/pulls`, seconds: 15 },
   { name: "the pull request read (getPullRequest)", call: (p) => p.getPullRequest(REPO, 42, SCOPE), hit: (m, u) => m === "GET" && u === `${API}/pulls/42`, seconds: 8 },
   { name: "the pull request update (updatePullRequest)", call: (p) => p.updatePullRequest(REPO, 42, { state: "closed" }, SCOPE), hit: (m) => m === "PATCH", seconds: 15 },
-  { name: "the commit tree read (getCommitTree)", call: (p) => p.getCommitTree(REPO, COMMIT, SCOPE), hit: (_m, u) => u.endsWith(`/git/commits/${COMMIT}`), seconds: 8 },
+  { name: "the commit read (getCommitTree; this path already refused redirects)", call: (p) => p.getCommitTree(REPO, COMMIT, SCOPE), hit: (_m, u) => u.endsWith(`/git/commits/${COMMIT}`), seconds: 8 },
+];
+// The merge observation reads the pull request and the head commit's tree through the provider's bounded fetch, which adds its own 5 second signal on top of the request's
+// (so only the redirect refusal is checked there; the hang is ended by the observation's own deadline).
+const observed: Array<{ name: string; hit: (method: string, url: string) => boolean }> = [
+  { name: "the pull request read inside the merge observation (getPullRequestWithToken)", hit: (m, u) => m === "GET" && u === `${API}/pulls/42` },
+  { name: "the head commit tree read inside the merge observation (getCommitTreeWithToken)", hit: (_m, u) => /\/git\/commits\/[a-f0-9]{40}$/.test(u) },
 ];
 
 describe("GitHub App requests that carry an installation token", () => {
@@ -95,6 +104,26 @@ describe("GitHub App requests that carry an installation token", () => {
         expect(signals.length).toBeGreaterThan(0);
         expect(signals.every((signal) => signal.aborted)).toBe(true);
         expect(asked.get(signals[0]!)).toBe(seconds * 1000);
+      });
+    });
+  }
+
+  for (const { name, hit } of observed) {
+    describe(name, () => {
+      it("refuses a redirect and never sends the token to another host", async () => {
+        const { provider, seen } = world((method, url) => hit(method, url) ? "redirect" : "ok");
+        await expect(observe(provider)).rejects.toThrow();
+        const request = seen.find((entry) => entry.url.startsWith(API) && hit(entry.method, entry.url));
+        expect(request?.redirect).toBe("error");
+        expect(seen.filter((entry) => !entry.url.startsWith("https://api.github.com/") && !entry.url.endsWith("/installation"))).toEqual([]);
+      });
+
+      it("ends a hanging answer", async () => {
+        shortDeadlines();
+        const { provider, signals } = world((method, url) => hit(method, url) ? "hang" : "ok");
+        await expect(observe(provider)).rejects.toThrow();
+        expect(signals.length).toBeGreaterThan(0);
+        expect(signals.every((signal) => signal.aborted)).toBe(true);
       });
     });
   }
