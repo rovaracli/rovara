@@ -539,6 +539,7 @@ export class GitHubAppCredentialProvider {
             ...(body === undefined ? {} : { body }),
             ...(draft === undefined ? {} : { draft }),
           }),
+          redirect: "error", signal: AbortSignal.timeout(15_000), // a redirect would carry the installation token to another host; a hang must end
         },
       );
       let response = await create(input.draft, input.body);
@@ -1777,6 +1778,7 @@ export class GitHubAppCredentialProvider {
           method: "PATCH",
           headers: githubHeaders(token),
           body: JSON.stringify(update),
+          redirect: "error", signal: AbortSignal.timeout(15_000),
         },
       );
       if (response.ok) {
@@ -1800,7 +1802,7 @@ export class GitHubAppCredentialProvider {
   ): Promise<GitHubPullRequestDetails> {
     const response = await this.fetchImplementation(
       pullRequestUrl(repository, number),
-      { headers: githubHeaders(token) },
+      { headers: githubHeaders(token), redirect: "error", signal: AbortSignal.timeout(8_000) },
     );
     if (!response.ok) {
       throw agentXError("RUNTIME_UNAVAILABLE", `GitHub pull request lookup failed with HTTP ${response.status}`);
@@ -1815,7 +1817,7 @@ export class GitHubAppCredentialProvider {
   ): Promise<string> {
     const response = await this.fetchImplementation(
       `https://api.github.com/repos/${encodeURIComponent(repository.owner)}/${encodeURIComponent(repository.name)}/git/commits/${commit}`,
-      { headers: githubHeaders(token) },
+      { headers: githubHeaders(token), redirect: "error", signal: AbortSignal.timeout(8_000) },
     );
     if (!response.ok) throw agentXError("RUNTIME_UNAVAILABLE", `GitHub commit tree lookup failed with HTTP ${response.status}`);
     const value: unknown = await response.json();
@@ -2378,7 +2380,7 @@ export class GitHubAppCredentialProvider {
     });
     const response = await this.fetchImplementation(
       `https://api.github.com/repos/${encodeURIComponent(repository.owner)}/${encodeURIComponent(repository.name)}/pulls?${query.toString()}`,
-      { headers: githubHeaders(token) },
+      { headers: githubHeaders(token), redirect: "error", signal: AbortSignal.timeout(8_000) },
     );
     if (!response.ok) {
       throw agentXError("RUNTIME_UNAVAILABLE", `GitHub pull request lookup failed with HTTP ${response.status}`);

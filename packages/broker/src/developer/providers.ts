@@ -315,18 +315,19 @@ export function githubSignInProvider(input: {
         method: "POST",
         headers: { "content-type": "application/x-www-form-urlencoded", accept: "application/json" },
         body: new URLSearchParams({ client_id: input.clientId, client_secret: secret, code, redirect_uri: redirectUri }).toString(),
+        redirect: "error", // the client secret and the code go to github.com only
       }, "GitHub") as { access_token?: unknown; error?: unknown } | null;
       const accessToken = exchanged?.access_token;
       if (typeof accessToken !== "string" || accessToken === "") {
         return { ok: false, reason: `GitHub refused the sign-in (${errorCode(exchanged?.error)}); run agentx login again` };
       }
       const headers = { ...GITHUB_API_HEADERS, authorization: `Bearer ${accessToken}` };
-      const user = await call(input.fetch, "https://api.github.com/user", { headers }, "GitHub") as { id?: unknown; login?: unknown; name?: unknown } | null;
+      const user = await call(input.fetch, "https://api.github.com/user", { headers, redirect: "error" }, "GitHub") as { id?: unknown; login?: unknown; name?: unknown } | null;
       if (typeof user?.id !== "number" || !Number.isSafeInteger(user.id) || user.id <= 0) {
         return { ok: false, reason: "GitHub's answer names no account; run agentx login again" };
       }
       const githubUserId = String(user.id);
-      const emails = await call(input.fetch, "https://api.github.com/user/emails?per_page=100", { headers }, "GitHub");
+      const emails = await call(input.fetch, "https://api.github.com/user/emails?per_page=100", { headers, redirect: "error" }, "GitHub");
       const primary = Array.isArray(emails)
         ? emails.find((entry): entry is { email: string } => typeof entry === "object" && entry !== null
           && (entry as { primary?: unknown }).primary === true && (entry as { verified?: unknown }).verified === true
