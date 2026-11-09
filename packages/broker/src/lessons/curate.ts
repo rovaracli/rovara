@@ -41,6 +41,11 @@ export interface CurateDeps extends LessonDeps {
   expiryDays?: number;
   /** LP-13 C3: the sources (and the project's volume, `PROJECT_VOLUME_KEY`) an earlier try of the same draft already counted (a retry): they are not counted again, and the ones it did not reach still are. */
   alreadyNoted?: ReadonlySet<string>;
+  /**
+   * The task's running total of model holds (`TaskFailureTally.heldUsd`), review L2 of lane R1b: Public's per-task cap is ONE total for the task's reflections, its curator judge calls and its outcome judge. A judge call is given
+   * only what the task has left, and its hold is added; a task with nothing left sends the draft to a person unjudged. Absent: each judge call holds up to the cap on its own.
+   */
+  taskBudget?: { heldUsd: number };
 }
 
 export type Verdict = "same" | "refines" | "contradicts" | "different";
@@ -102,7 +107,10 @@ async function judgeList(deps: CurateDeps, key: ScopeKey, mine: LessonDraft, can
   // Owner decision 47, the entry-point defence: while the install's lessons switch is off (or unreadable) there is no judge at all (nothing is quoted, looked at or sent), so a draft that needs one goes to a person.
   if (!learnedLessonsSwitchOn()) return undefined;
   const user = judgePrompt(mine, candidates);
-  const maxHoldUsd = learningCaps(deps.edition ?? "public", deps.capsOverride).perTaskUsd;
+  const cap = learningCaps(deps.edition ?? "public", deps.capsOverride).perTaskUsd;
+  const maxHoldUsd = cap === undefined || deps.taskBudget === undefined ? cap : cap - deps.taskBudget.heldUsd;
+  // The task has no room left for a judge: the draft goes to a person, as with no judge at all (nothing is quoted, held or sent).
+  if (maxHoldUsd !== undefined && maxHoldUsd < 0.001) return undefined;
   try {
     const request = { purpose: "judge" as const, system: JUDGE_SYSTEM, user, maxOutputTokens: Math.min(400, 60 + 30 * candidates.length), workspaceId: key.workspaceId, project: key.project,
       // L1: Public's per-task cap goes with the judge call too, so the judge and the reflector choose among the same models (an over-cap "lessons model" is skipped for the cheapest that fits).
@@ -115,10 +123,12 @@ async function judgeList(deps: CurateDeps, key: ScopeKey, mine: LessonDraft, can
       if (!quoted.ok) { await notePause(deps.pause, key.workspaceId, key.project, quoted.code); return undefined; }
       estimate = quoted.usd;
     }
+    if (deps.taskBudget !== undefined && maxHoldUsd !== undefined && estimate > maxHoldUsd + 1e-9) return undefined;
     const look = await spendLook(deps.spend, key.workspaceId, estimate);
     if (look !== "ok") { const code = pauseOfLook(look); if (code !== undefined) await notePause(deps.pause, key.workspaceId, key.project, code); return undefined; }
     // The model's key holds the estimate in the company's spend ledger and is settled there; a failed call needs nothing given back here.
     let reply: Awaited<ReturnType<PipelineModel["complete"]>>;
+    if (deps.taskBudget !== undefined) deps.taskBudget.heldUsd += estimate;
     try { reply = await deps.judgeModel.complete({ ...request, budgetUsd: estimate }); } catch (error) {
       if (isLearningRefusal(error)) await notePause(deps.pause, key.workspaceId, key.project, error.code);
       else await noteModelFailure(deps.pause, key.workspaceId, key.project, "judge");

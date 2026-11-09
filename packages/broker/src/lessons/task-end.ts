@@ -234,7 +234,8 @@ export async function learnFromEndedTaskTyped(deps: TaskLearningDeps, input: { w
     // LP-10 R8: this task's failed model calls (the outcome judge, the reflection and each draft's judge) count toward `model_failed` once per kind, not once per call.
     const tally = newTaskFailureTally();
     await countOutcome(deps, base, subject, input, tally, "before");
-    const processDeps = withFailuresCountedOnce(deps.process, tally);
+    // Review L2: the curator's judge calls for these drafts hold from the same task total as the reflections and the outcome judge.
+    const processDeps = { ...withFailuresCountedOnce(deps.process, tally), taskBudget: tally };
     const reflectionOf = async (): Promise<LearnResult> => {
       // The reflection's hold goes on the task's tally, so the outcome judge that follows shares Public's one per-task cap with it.
       const result = await reflectSubject({ ...withFailuresCountedOnce(deps.reflect, tally), taskBudget: tally }, subject);

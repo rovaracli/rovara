@@ -599,9 +599,11 @@ describe("LP-10 R8 / LP-15: a task's failed model calls count toward model_faile
   ];
   const fourDrafts = () => reply(...bodies.map((body) => candidateJson({ title: "Retries", description: "", body, type: "fact", evidenceSpanIds: ["S1"] })));
   const failingJudge = () => { const calls: string[] = []; return { calls, complete: async () => { calls.push("judge"); throw new Error("provider down"); } }; };
+  // R1b review L2: the curator's judge calls hold from the task's one Public cap, so the reflection must hold a price (0.01) that leaves them room; a model that cannot quote holds the whole cap.
+  const cheaply = (model: ScriptedModel): ScriptedModel => Object.assign(model, { quote: async () => ({ ok: true as const, usd: 0.01 }) });
 
   it("a task with four similar drafts makes several failing judge calls and counts ONE failure, so one short outage does not pause the project", async () => {
-    const w = setup({ model: new ScriptedModel([fourDrafts()]) });
+    const w = setup({ model: cheaply(new ScriptedModel([fourDrafts()])) });
     const pause = new CountingPause();
     const judge = failingJudge();
     w.deps.process = { ...w.deps.process, judgeModel: judge, pause };
@@ -647,7 +649,7 @@ describe("L4 (Lane A review): a judge that always fails still pauses the project
   ];
   const threeDrafts = () => reply(...bodies.map((body) => candidateJson({ title: "Retries", description: "", body, type: "fact", evidenceSpanIds: ["S1"] })));
   const runTask = async (pause: KindPause) => {
-    const w = setup({ model: new ScriptedModel([threeDrafts()]) });
+    const w = setup({ model: Object.assign(new ScriptedModel([threeDrafts()]), { quote: async () => ({ ok: true as const, usd: 0.01 }) }) });
     w.deps.process = { ...w.deps.process, judgeModel: { complete: async () => { throw new Error("provider down"); } }, pause };
     w.deps.reflect = { ...w.deps.reflect, pause };
     await learnFromEndedTask(w.deps, { workspaceId: WS, taskId: "task-1" });

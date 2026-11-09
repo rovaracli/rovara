@@ -388,10 +388,10 @@ describe("L3: one Public per-task cap is shared by the reflection and the outcom
     const reflect = w.deps.reflect.model;
     w.deps.reflect.model = { complete: reflect.complete.bind(reflect), quote: async () => ({ ok: true, usd: 0.1 }) };
     await learnFromEndedTask(w.deps, merged);
-    // 0.15 - 0.10 held by the reflection = 0.05 of room: a 0.06 judge call does not fit.
+    // 0.15 - 0.10 held by the reflection - 0.01 held by the curator's judge call (R1b review L2: it holds from the same total) = 0.04 of room: a 0.06 judge call does not fit.
     expect(judgeModel.calls).toHaveLength(0);
     // (the first quote is the usability probe, asked at the whole cap; the two ratings were asked what is left)
-    expect(judgeModel.quotes.slice(1).map((q) => Number(q["maxHoldUsd"]).toFixed(2))).toEqual(["0.05", "0.05"]);
+    expect(judgeModel.quotes.slice(1).map((q) => Number(q["maxHoldUsd"]).toFixed(2))).toEqual(["0.04", "0.04"]);
     expect(await w.queued()).toEqual([]);
   });
 });

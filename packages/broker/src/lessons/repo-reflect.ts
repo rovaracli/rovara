@@ -190,7 +190,7 @@ export async function reflectRepoOnly(deps: RepoReflectDeps, main: ReflectSubjec
       }, subject);
       if (called) result.calls += 1; else tally.heldUsd = heldBefore;
       if (reflected.status !== "ok") continue;
-      const processDeps = withFailuresCountedOnce(deps.process, tally);
+      const processDeps = { ...withFailuresCountedOnce(deps.process, tally), taskBudget: tally };
       for (const draft of reflected.drafts) {
         if (currentLearningAttempt()?.signal?.aborted === true) { deps.log?.("learning.drafts_cut_at_deadline", {}); break; }
         try {
