@@ -19,6 +19,10 @@ export interface PullRequestFeedbackView {
   /** The pull request's head commit now (after a merge, the last one), and its branch: what a compare from a comment's commit ends at. Absent when the host does not say. */
   headRevision?: string | undefined;
   sourceBranch?: string | undefined;
+  /** The change request's title and description as written on the host, and its merge revision when merged (lessons in the repo, decision 50c: the repo-only reflection reads what the repository says). Absent when the host does not say. */
+  title?: string | undefined;
+  body?: string | undefined;
+  mergeRevision?: string | undefined;
 }
 
 export interface CodeHostCaptureSupport {
@@ -128,7 +132,11 @@ export function captureAdapterOf(input: {
         if (id !== undefined) comments.push({ kind: comment.kind, id, ...(comment.line === undefined ? {} : { line: comment.line }) });
       }
       const head = feedback.changeRequest.headRevision;
-      return { comments, ...(/^[0-9a-f]{40}$/u.test(head) ? { headRevision: head } : {}), ...(feedback.changeRequest.sourceBranch === "" ? {} : { sourceBranch: feedback.changeRequest.sourceBranch }) };
+      const merge = feedback.changeRequest.mergeRevision;
+      return {
+        comments, ...(/^[0-9a-f]{40}$/u.test(head) ? { headRevision: head } : {}), ...(feedback.changeRequest.sourceBranch === "" ? {} : { sourceBranch: feedback.changeRequest.sourceBranch }),
+        title: feedback.changeRequest.title, body: feedback.changeRequest.body, ...(typeof merge === "string" && /^[0-9a-f]{40}$/u.test(merge) ? { mergeRevision: merge } : {}),
+      };
     },
   };
 }

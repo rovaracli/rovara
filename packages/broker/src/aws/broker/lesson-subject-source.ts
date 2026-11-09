@@ -28,10 +28,11 @@ import type { EvidenceSpan } from "../../lessons/reflect-input.js";
 import { taskStartActor } from "../../lessons/task-subject.js";
 import { ownerKeyForSubject } from "../lambda.js";
 import type { SlackWorkspaceScope } from "./lesson-slack-author.js";
-import type { Audience, TrustClass } from "../../lessons/types.js";
+import { narrowestAudience, type Audience, type TrustClass } from "../../lessons/types.js";
 import type { TaskVisibility } from "../../team-record/sources/rovara.js";
 import { cleanForLearning } from "../../lessons/guards.js";
 import type { CapturedRowReader } from "../../lessons/captured-rows.js";
+import type { RepoChangeRequest } from "../../lessons/repo-reflect.js";
 import { githubPullRequestAddress, type PullRequestAddress, type PullRequestFeedbackView, type PullRequestSurface } from "../../team-record/sources/capture-adapters.js";
 
 /** At most this many human send-backs of a task are looked up (the hook reads one row for each). */
@@ -259,6 +260,30 @@ async function slackSteerers(deps: LessonSubjectSourceDeps, orgId: string, task:
   return { persons, unnamed: unnamed || accounts.size > MAX_SLACK_AUTHORS };
 }
 
+/** The start of every change request link of a repository, from one change request's link and number: the link without its number (`https://host/owner/name/pull/` for `.../pull/7`). Undefined when the link does not end in the number. */
+function linkPrefixOf(url: string, number: number): string | undefined {
+  const tail = `/${String(number)}`;
+  return url.endsWith(tail) ? url.slice(0, url.length - tail.length + 1) : undefined;
+}
+
+/**
+ * Lessons in the repo (decision 50c): one merged pull request of the task as a `RepoChangeRequest`, from what the code host's adapter said (`listed`: title, description, head and merge revision) and the comment spans this read
+ * already proved. Undefined (no second reflection for it) unless the pull request merged, the host gave its title and a head revision, there is a comment of this read, and the comments name ONE place with one audience.
+ */
+function repoChangeOf(input: { pullRequest: { repositoryId: string; url: string; state: string }; address: PullRequestAddress; listed: PullRequestFeedbackView | undefined; comments: readonly EvidenceSpan[] }): RepoChangeRequest | undefined {
+  const { pullRequest, listed, comments } = input;
+  if (pullRequest.state !== "MERGED" || listed === undefined || listed.title === undefined || listed.headRevision === undefined || comments.length === 0) return undefined;
+  const places = new Set(comments.flatMap((span) => span.scopes ?? []));
+  const audiences = comments.flatMap((span) => (span.audience === undefined ? [] : [span.audience]));
+  const linkPrefix = linkPrefixOf(pullRequest.url, input.address.number);
+  if (places.size !== 1 || audiences.length !== comments.length || linkPrefix === undefined) return undefined;
+  return {
+    place: [...places][0]!, repository: pullRequest.repositoryId, link: pullRequest.url, linkPrefix, revision: listed.headRevision, merged: true,
+    ...(listed.mergeRevision === undefined ? {} : { mergeRevision: listed.mergeRevision }), title: listed.title, body: listed.body ?? "",
+    audience: narrowestAudience(audiences), comments, edits: [],
+  };
+}
+
 export function lessonSubjectSource(deps: LessonSubjectSourceDeps): TaskSubjectSource {
   return {
     // L4: the project of a task from its record alone (one read), so the learning mode is checked before the plan, standing and erasure state are read. Same rules as `read` for whose task it is.
@@ -474,6 +499,7 @@ export function lessonSubjectSource(deps: LessonSubjectSourceDeps): TaskSubjectS
       }
       const steeringTrust: TrustClass[] = [...steerers, ...(unnamed ? ["outsider" as const] : [])];
 
+      const repoChanges: RepoChangeRequest[] = [];
       // ---- a person's own corrections that the record already holds (no extra work for anyone): "remember this" notes, and reviewers' comments on the task's pull requests. Each is read from the
       // record by its row id; the person is the row's actor, their standing and erasure are read NOW, and an erased person's words are dropped. An outsider's span keeps its class: the reflector removes it.
       // A human-edit read (`context`) needs only the task's own intent and plan, and a task steered by someone unnamed teaches nothing: neither reads the code host (L7).
@@ -501,6 +527,7 @@ export function lessonSubjectSource(deps: LessonSubjectSourceDeps): TaskSubjectS
             try { listed = await deps.pullRequestFeedback({ orgId, project, taskId: task.taskId, address, url: pullRequest.url }); } catch { listed = undefined; }
             // What a person's own commits changed on the branch since a comment's commit, read once per commit (a clean range of members' commits only; Rovara's fix rounds, rebases and restacks are never it).
             const changedSince = new Map<string, ReadonlyArray<{ path: string; patch?: string | undefined }> | undefined>();
+            const spansBefore = spans.length;
             for (const comment of listed?.comments ?? []) {
               if (taken >= MAX_PULL_REQUEST_COMMENTS) break;
               const row = await captured.pullRequestWords({ ...where, host: address.host, repository: address.repository, number: address.number, surface: comment.kind, commentId: comment.id });
@@ -523,6 +550,10 @@ export function lessonSubjectSource(deps: LessonSubjectSourceDeps): TaskSubjectS
                 audience: row.audience, scopes: [row.scope], ...(led ? { ledToChange: true } : {}), ...(place === undefined || place === "" ? {} : { paths: [place] }),
               });
             }
+            // Lessons in the repo (decision 50c): the merged change request, described without naming a host, for the repo-only reflection. The host's adapter gave the title, description and head; the place and the readers are the
+            // comment rows' own (one place or none). Only a merged pull request with at least one comment of this read.
+            const change = repoChangeOf({ pullRequest, address, listed, comments: spans.slice(spansBefore).filter((span) => span.kind === "pr_comment") });
+            if (change !== undefined) repoChanges.push(change);
           }
         }
       }
@@ -563,6 +594,7 @@ export function lessonSubjectSource(deps: LessonSubjectSourceDeps): TaskSubjectS
           },
         },
         sendBackRequestIds,
+        ...(repoChanges.length === 0 ? {} : { repoChanges }),
       };
       return base_;
     },

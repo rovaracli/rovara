@@ -23,6 +23,7 @@ import { reflectSubject, type ReflectDeps } from "./reflect.js";
 import type { ReflectSubject } from "./reflect-input.js";
 import type { RovaraEmitter } from "../team-record/sources/rovara.js";
 import type { ReflectQueue } from "./reflect-queue.js";
+import { reflectRepoOnly, type RepoChangeRequest } from "./repo-reflect.js";
 import type { OutcomeRowReader } from "./task-outcome-rows.js";
 import { lessonTaskRefs } from "./live-visibility.js";
 import type { LessonStore, ScopeKey } from "./store.js";
@@ -34,6 +35,11 @@ export interface TaskSubjectBase {
   facts: Omit<TaskSubjectFacts, "sendBacks" | "revert">;
   /** The request ids of the task's human send-backs (the task's own decision history); each one's row is read for who and what. */
   sendBackRequestIds: readonly string[];
+  /**
+   * Lessons in the repo (decision 50c): the task's merged change requests, each described without naming a code host (`repo-reflect.ts`), produced by the code host's adapter. The repo-only reflection runs on the ones with a
+   * repository-visible correction. Absent or empty: no second reflection.
+   */
+  repoChanges?: readonly RepoChangeRequest[];
 }
 export interface TaskSubjectSource {
   /**
@@ -229,8 +235,7 @@ export async function learnFromEndedTaskTyped(deps: TaskLearningDeps, input: { w
     const tally = newTaskFailureTally();
     await countOutcome(deps, base, subject, input, tally, "before");
     const processDeps = withFailuresCountedOnce(deps.process, tally);
-    // The reflection (and its drafts) come first and are never held back by the counting: whatever they come to, the corrections that need the judge are counted after them (`countOutcome`, "after").
-    try {
+    const reflectionOf = async (): Promise<LearnResult> => {
       // The reflection's hold goes on the task's tally, so the outcome judge that follows shares Public's one per-task cap with it.
       const result = await reflectSubject({ ...withFailuresCountedOnce(deps.reflect, tally), taskBudget: tally }, subject);
       if (result.status !== "ok") {
@@ -249,6 +254,16 @@ export async function learnFromEndedTaskTyped(deps: TaskLearningDeps, input: { w
         try { await processDraftRetrying(processDeps, key, draft, { ...(deps.log === undefined ? {} : { log: (event, fields) => deps.log!(event, { task: logRef(input.workspaceId, input.taskId), ...fields }) }) }); } catch { deps.log?.("learning.draft_failed", { task: logRef(input.workspaceId, input.taskId) }); }
       }
       return final("reflected");
+    };
+    // The reflection (and its drafts) come first and are never held back by the counting: whatever they come to, the corrections that need the judge are counted after them (`countOutcome`, "after").
+    try {
+      const reflected = await reflectionOf();
+      // Lessons in the repo (decision 50c): a merged pull request's SECOND reflection, over the repository's own words only. After the first one, in the same attempt and lease, on the same task tally; it never makes the result
+      // retry (a retry would run the first reflection again, which the lease forbids once its call started) and never holds the end of the work back.
+      if (!reflected.retry && subject.outcome === "merged" && (base.repoChanges?.length ?? 0) > 0) {
+        await reflectRepoOnly({ reflect: deps.reflect, process: deps.process, settings: deps.settings, ...(deps.log === undefined ? {} : { log: deps.log }) }, subject, base.repoChanges!, tally);
+      }
+      return reflected;
     } finally {
       await countOutcome(deps, base, subject, input, tally, "after");
     }

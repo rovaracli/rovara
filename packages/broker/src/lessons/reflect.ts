@@ -233,7 +233,10 @@ async function toDraft(
   // with nothing else behind it is dropped. They still count for trust and audience below (they were read).
   const evidence = cited.filter((s) => s.kind !== "loaded_lesson");
   if (evidence.length === 0) return undefined;
-  if (subject.requireEvidenceKind !== undefined && !evidence.some((s) => s.kind === subject.requireEvidenceKind)) return undefined;
+  if (subject.requireEvidenceKind !== undefined) {
+    const required: readonly string[] = typeof subject.requireEvidenceKind === "string" ? [subject.requireEvidenceKind] : subject.requireEvidenceKind;
+    if (!evidence.some((s) => required.includes(s.kind))) return undefined;
+  }
   const title = cleanForLearning(candidate.title, 80);
   const description = cleanForLearning(candidate.description, 160);
   const body = cleanForLearning(candidate.body, 600);
