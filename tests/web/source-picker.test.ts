@@ -7,10 +7,10 @@ import { SourceOptionsViewSchema } from "@agentx/contracts/web";
 import { adminView, flat } from "./support/sources-fixture.js";
 import { ok } from "./support/lessons-fixture.js";
 
-// The lazy Sources screen can take over 1 s to render on a loaded CI runner (CI run 42549353164): every findBy/waitFor in this file waits up to 10 s. A passing run is no slower.
-configure({ asyncUtilTimeout: 10_000 });
 import { openSources } from "./support/sources-render.js";
 import { expectNoAxeViolations } from "./support/axe.js";
+// The lazy Sources screen can take over 1 s to render on a loaded CI runner (CI run 42549353164): every findBy/waitFor in this file waits up to 10 s. A passing run is no slower.
+configure({ asyncUtilTimeout: 10_000 });
 
 afterEach(() => { cleanup(); });
 type Raw = Record<string, unknown>;
