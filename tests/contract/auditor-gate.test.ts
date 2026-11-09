@@ -34,6 +34,8 @@ const WRITE_ROUTES: ReadonlyArray<[string, string]> = [
   ["POST", "/v1/app/projects/payments/lessons/les_abc12345/approve"], ["POST", "/v1/app/projects/payments/lessons/les_abc12345/reject"], ["POST", "/v1/app/projects/payments/lessons/les_abc12345/merge"], ["POST", "/v1/app/projects/payments/lessons/les_abc12345/retire"],
   ["POST", "/v1/app/projects/payments/lessons/rollback"], ["POST", "/v1/app/projects/payments/lessons"], ["PUT", "/v1/app/projects/payments/lessons"], ["DELETE", "/v1/app/projects/payments/lessons/sources"],
   ["POST", "/v1/app/tasks/11111111-1111-4111-8111-111111111111/lessons/les_abc12345/feedback"],
+  // Lessons in the repo (R2): switching a repository's lessons file on or off, resuming it, answering the pointer.
+  ["POST", "/v1/app/projects/payments/lessons/repo"],
   // The preset: the project's set, approve and cancel, and the company's set, approve and cancel (lessons leftovers sweep, LT-2).
   ["POST", "/v1/app/projects/payments/lessons/preset"], ["POST", "/v1/app/projects/payments/lessons/preset/approve"], ["POST", "/v1/app/projects/payments/lessons/preset/cancel"],
   ["POST", "/v1/app/org/lessons/preset"], ["POST", "/v1/app/org/lessons/preset/approve"], ["POST", "/v1/app/org/lessons/preset/cancel"],

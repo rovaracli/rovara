@@ -1,3 +1,4 @@
+import type { RepoFileRuntime } from "../../lessons/repo-file-job.js";
 import type { ServiceCatalogSource } from "../../test-env/dependency-plan.js";
 import type { TeamRecordRuntime } from "../../team-record/runtime.js";
 import type { EvidenceErase } from "../../rovara-code/evidence-erase.js";
@@ -274,6 +275,8 @@ export interface DeveloperRouteDependencies {
    * citation and code checks, the models rollback and the marks use). Built where the Team record is wired. Absent (the default): the lessons routes answer as they did before lessons existed.
    */
   lessons?: LessonViewDeps & ApproveDeps & ProcessDeps & CounterDeps;
+  /** Lessons in the repo (R2): the lessons file of each repository. Absent: the `/lessons/repo` route is not there. */
+  repoFile?: RepoFileRuntime;
   /** K1: the two reads the rule text of "What the agent loaded" needs. Absent: the records are listed and no rule text is served. */
   loadedKnowledge?: Pick<LoadedKnowledgeRouteDependencies, "canReadRepository" | "readRuleFile">;
   /** Plan 3, Task 7: what the agent routes (`/v1/app/agents*` and the other Plan 3 paths) need. Without it they answer NOT_FOUND. */

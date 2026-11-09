@@ -48,6 +48,9 @@ import { flushAuditEvents } from "../../audit/flush.js";
 import { readProjectRole, readStanding } from "../../learning/standing.js";
 import { requireLatestProject } from "./records.js";
 import { hostOfRepository } from "./repository-hosts.js";
+import { repoFileRuntimeFor } from "./lessons-repo-file-wiring.js";
+import { setLessonGoneListener } from "../../lessons/repo-file-hook.js";
+import { closeOpenPullRequestFor } from "../../lessons/repo-file-routes.js";
 import { githubScope } from "./scope-helpers.js";
 import type { AwsBrokerDependencies, LessonsHostDependencies } from "./definitions.js";
 
@@ -268,6 +271,11 @@ export function installLessons(dependencies: LessonsHostDependencies): void {
   if (built !== undefined) {
     dependencies.lessons = built;
     built.planFacts = planFactsFor(dependencies);
+    // Lessons in the repo (R2): the weekly file pass and its routes ride on the same runtime.
+    const repoAudit = built.routes.audit;
+    const repoFile = repoAudit === undefined ? undefined : repoFileRuntimeFor(dependencies, built, repoAudit);
+    if (repoFile !== undefined) built.repoFile = repoFile;
+    setLessonGoneListener(repoFile === undefined ? undefined : (key, lessonId) => closeOpenPullRequestFor(repoFile, key, lessonId));
   }
   // Learning at the end of a task: only where the lessons runtime AND the model path exist (and a caller did not give its own).
   if (built !== undefined && dependencies.learning === undefined) {
@@ -325,7 +333,7 @@ export function installLessonsJobs(dependencies: LessonsHostDependencies, runtim
   if (runtime === undefined) return;
   const jobs: LessonsJobDeps = {
     table: teamRecord.table, settings: runtime.settings, queue: dependencies.lessonsReflectQueue, maintain: runtime.counters, counters: runtime.counters, resume: (orgId, project) => deletion.resumeAll(orgId, project),
-    now: Date.now, newRequestId: () => `nightly-${randomUUID()}`, log,
+    now: Date.now, newRequestId: () => `nightly-${randomUUID()}`, log, repoFile: runtime.repoFile,
   };
   teamRecord.jobs.extend("nightly", (orgId, projects, budgetMs) => lessonsNightlyJob(jobs, orgId, projects, budgetMs));
 }
@@ -340,6 +348,7 @@ export function recordAndLessonRouteDependencies(dependencies: AwsBrokerDependen
   return {
     ...(dependencies.teamRecord === undefined ? {} : { teamRecord: dependencies.teamRecord }),
     ...(lessons === undefined ? {} : { lessons: lessons.routes }),
+    ...(lessons?.repoFile === undefined ? {} : { repoFile: lessons.repoFile }),
     ...(rules === undefined ? {} : {
       loadedKnowledge: {
         canReadRepository: async (caller: { orgId: OrgId; developerId: string }, input: { project: string; repo: string }): Promise<boolean> => {

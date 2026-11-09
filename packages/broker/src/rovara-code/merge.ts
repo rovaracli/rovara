@@ -58,6 +58,7 @@ import { githubUserOfMember } from "./github-members.js";
 import { codeMilestoneItems, deliverCodeMilestones } from "./milestones.js";
 import { PERMISSION_LOOKUPS_MAX, readBranch, readCi, readMergeTracking, tracksMerge } from "./merge-tracking.js";
 import { approvalReviewsOf, changeRequestRef, changedPathsOf, type ConsumerRepository, type RepositoryResolver } from "./host-port.js";
+import { leavesLessonsFileAlone } from "./lessons-file-guard.js";
 
 /** The rule a merge change names: only the person who pressed Merge decides it, while they can still press it. */
 export const MERGE_RULE = "pull_request_merge";
@@ -470,6 +471,11 @@ async function mergeableNow(
     const status = await home.codeHost.changeRequestStatus(changeRequestRef(url, entry.number), scope);
     if (status.id !== String(entry.number)) throw agentXError("RUNTIME_UNAVAILABLE", "GitHub answered for another pull request");
     if (status.state !== "merged" && status.headRevision !== wanted[index]!.headSha) throw agentXError("MERGE_NOT_READY", M.changedAfterConfirm);
+    // Owner decision 50.4: a task's pull request never changes the team's lessons file. Read fresh from the host, and fail closed on a list that is cut short or cannot be read.
+    if (status.state === "open") {
+      const lessonsFile = await leavesLessonsFileAlone(home.codeHost, changeRequestRef(url, entry.number), scope);
+      if (!lessonsFile.ok) throw agentXError("MERGE_NOT_READY", lessonsFile.reason === "touches" ? M.touchesLessonsFile : M.lessonsFileUnreadable);
+    }
     const item = items.get(key);
     const ci = readCi(status, { checksEverSeen: item?.checksEverSeen ?? status.checks.length > 0, lastRovaraPushAt: item?.lastRovaraPushAt === undefined ? undefined : Date.parse(item.lastRovaraPushAt), now: deps.now() });
     facts.push({

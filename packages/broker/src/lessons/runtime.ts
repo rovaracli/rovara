@@ -6,6 +6,7 @@
 // The model and the payer path are given by the broker's wiring where the company's own model path exists (`customerLearningModel`, `companyLearningSpend`); without them `judgeModel` and `spend` refuse
 // (a curator judgement fails closed: a contradiction goes to a person). The correction judge of the counters rates corrections on the same model and payer path (`judge-model.ts`); without them it refuses too. Lesson similarity (DECISIONS 23: keywords,
 // cited paths and the optional small embedder, fused; the vectors kept with the lessons) plugs in through the one seam `lessonSimilarityFor`.
+import type { RepoFileRuntime } from "./repo-file-job.js";
 import { OrgIdSchema, type OrgId } from "@agentx/contracts";
 import type { AttributionReader } from "../attribution/resolve.js";
 import type { SecondPersonEvidenceDependencies } from "../org/second-person-evidence.js";
@@ -90,6 +91,8 @@ export interface LessonsRuntime {
    * Absent, or a task with no plan yet: the loader asks with the title and the request alone and no files, so no path scope is judged.
    */
   planFacts?: (task: { orgId?: string | undefined; taskId: string; workflow?: unknown }) => Promise<{ summary: string; files: readonly string[] } | undefined>;
+  /** Lessons in the repo (R2): the weekly file pass and its routes. Set by the broker's wiring where the Team record and the sign-in table exist. */
+  repoFile?: RepoFileRuntime;
 }
 
 const noModel = (): never => { throw new Error("no learning model is set up in this install"); };

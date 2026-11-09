@@ -48,6 +48,7 @@ import { loginWithPkce, openSystemBrowser, sanitizeServerText, tokenStoreKey } f
 import { loadProjectConfig } from "./config.js";
 import { checkDeveloperProject, projectCheckText } from "./developer/project-check.js";
 import { projectCodeSettings } from "./developer/code-settings.js";
+import { projectLessonsRepo } from "./developer/lessons-repo.js";
 import { archiveProjectQuestion, archiveProjectText, changeDeveloperProjectArchive, changeDeveloperProjectSettings, createDeveloperProject, restoreProjectText, createProjectText, developerLogout, projectSettingsText, projectShowText, showDeveloperProject, fetchDeveloperProjects, fetchLinkedIdentities, linkSignInMethod, linkText, logoutText, unlinkSignInMethod, unlinkText, whoamiText, type FreshSignIn } from "./developer/commands.js";
 import { readDeveloperConfig, resolveDeveloperEnvironment } from "./developer/config.js";
 import {
@@ -2083,6 +2084,14 @@ export function createCliProgram(dependencies: CliDependencies = {}): Command {
     .option("--merge-method <squash|merge>", "how a pull request is merged")
     .option("--reviewers <names>", "GitHub names Rovara asks for a review, separated by commas (a person, or org/team), or none")
     .action(async (project: string, options: { selfApproval?: string; mergeMethod?: string; reviewers?: string }, command: Command) => printResult(command, await projectCodeSettings(developerSession(), developerEnv(command), project, options)));
+  // Lessons in the repo (R2): the status of a project's `.rovara/lessons.md` and its weekly pull request, and the switch for a repository (a maintainer).
+  projectCommand
+    .command("lessons-repo")
+    .description("show or change a project's lessons file (.rovara/lessons.md) and its weekly pull request: status, on, off, resume (after the team deleted the file), pointer-add, pointer-decline (on, off and the rest need a maintainer)")
+    .argument("<project>", "the project's name")
+    .argument("[action]", "status (the default), on, off, resume, pointer-add or pointer-decline")
+    .option("--repo <name>", "the repository's name in the project (needed for everything but status)")
+    .action(async (project: string, action: string | undefined, options: { repo?: string }, command: Command) => printResult(command, await projectLessonsRepo(developerSession(), developerEnv(command), project, action, options)));
   // Plan 2, Task 22: a maintainer has the project's setup and test commands run on a fresh workspace, and waits for the answer.
   projectCommand
     .command("check")

@@ -12,6 +12,8 @@
 //   POST /v1/app/org/lessons/preset                        a company owner or admin sets the company's preset the same way (a floor for every project)
 //   POST /v1/app/projects/{p}/lessons/rollback
 //   POST /v1/app/projects/{p}/lessons/sources/resume       a maintainer resumes a paused source (UX-4b; `resumeAndResettle`)
+//   GET  /v1/app/projects/{p}/lessons/repo                 the project's repositories with the state of their `.rovara/lessons.md` (R2); answers even while lessons are off
+//   POST /v1/app/projects/{p}/lessons/repo                 a maintainer switches a repository's lessons file on or off, resumes it after the team deleted the file, or answers the pointer (R2; audited)
 //   GET  /v1/app/tasks/{task}/lessons                      the lessons the agent loaded
 //   POST /v1/app/tasks/{task}/lessons/{id}/feedback        "Helpful" / "Wrong here" / thumbs-down
 //
@@ -19,12 +21,14 @@
 // cannot see answer the same way); who may decide is the lesson library's own check (`ApproverDirectory`, the second-person rule, the access records); a write needs a live browser
 // session and a writer role (the Auditor is refused); a refusal is a fixed sentence, never text from a lesson, a row or an error.
 import {
-  LessonApproveBodySchema, LessonFeedbackBodySchema, LessonMergeBodySchema, LessonPresetBodySchema, LessonPresetChangeBodySchema, LessonResumeSourceBodySchema, LessonRejectBodySchema, LessonRetireBodySchema, LessonRollbackBodySchema, agentXError,
+  LessonApproveBodySchema, LessonsRepoFileBodySchema, LessonFeedbackBodySchema, LessonMergeBodySchema, LessonPresetBodySchema, LessonPresetChangeBodySchema, LessonResumeSourceBodySchema, LessonRejectBodySchema, LessonRetireBodySchema, LessonRollbackBodySchema, agentXError,
   type AgentXErrorCode, type ProjectRole,
 } from "@agentx/contracts";
 import type { ZodType } from "zod";
 import type { DeveloperCaller } from "../aws/developer-routes.js";
 import { requireWriterCaller } from "../org/auditor.js";
+import { repoFileAction, repoFileStatus } from "./repo-file-routes.js";
+import type { RepoFileRuntime } from "./repo-file-job.js";
 import { approveLesson, mergeDuplicate, rejectLesson, retireByPerson, type ApprovalFailure, type ApproveDeps } from "./approve.js";
 import { recordFeedback, type CounterDeps } from "./counters.js";
 import { resolveLearning, whyLearningOff } from "./policy.js";
@@ -46,6 +50,8 @@ export interface LessonRouteDependencies {
   projectFor(caller: DeveloperCaller, rawName: string): Promise<{ name: string; role: ProjectRole }>;
   /** The project of a task the caller may read (the task page's own access check), or a throw. */
   taskFor(caller: DeveloperCaller, taskId: string): Promise<{ project: string }>;
+  /** Lessons in the repo (R2): the lessons file of each repository of the project. Absent: the `/lessons/repo` route is not there. */
+  repoFile?: RepoFileRuntime | undefined;
   /**
    * One take from a per-person rate row (the existing `takeRateAt` rows): `bucket` names the row, `limit` is what a person may do in `LESSON_RATE_WINDOW_MS`. True when the take was
    * allowed. A refusal is 429, and a rate row that cannot be read or written refuses the request (fail closed).
@@ -170,6 +176,30 @@ async function readCompanyPreset(deps: LessonRouteDependencies, caller: Develope
   return { preset, ...(proposal === undefined ? {} : { proposal }) };
 }
 
+const REPO_FILE_REFUSALS = {
+  not_found: ["NOT_FOUND", "No such repository in this project."], unreadable: ["RUNTIME_UNAVAILABLE", "Rovara can't read this project's repositories right now. Try again."],
+  host_cannot_write: ["CONFIG_INVALID", "This repository's code host can't take a pull request from Rovara."], audit_unavailable: ["RUNTIME_UNAVAILABLE", "That couldn't be recorded, so nothing changed. Try again."],
+  conflict: ["CHANGE_STALE", "This setting changed while you were looking at it. Reload and try again."],
+} as const satisfies Record<string, readonly [AgentXErrorCode, string]>;
+
+async function routeRepoFile(deps: LessonRouteDependencies, caller: DeveloperCaller, method: string, rawProject: string, body: () => unknown): Promise<object> {
+  if (deps.repoFile === undefined) throw agentXError("NOT_FOUND", "Lessons are not available for this project.");
+  if (method === "GET") {
+    const { name } = await deps.projectFor(caller, rawProject);
+    await takeBudget(deps, caller, "read");
+    try { return await repoFileStatus(deps.repoFile, { workspaceId: caller.orgId, project: name }); } catch { throw agentXError("RUNTIME_UNAVAILABLE", REPO_FILE_REFUSALS.unreadable[1]); }
+  }
+  // A write: a role that can write (the Auditor cannot). Not tied to a browser session, so the command line can use it with the developer's own token.
+  requireWriterCaller(caller);
+  const { name, role } = await deps.projectFor(caller, rawProject);
+  if (role !== "maintainer") throw agentXError("FORBIDDEN", "Only a maintainer of this project can change this.");
+  await takeBudget(deps, caller, "decision");
+  const input = strictBody(LessonsRepoFileBodySchema, body());
+  const result = await repoFileAction(deps.repoFile, { workspaceId: caller.orgId, project: name }, input);
+  if (!result.ok) { const [code, message] = REPO_FILE_REFUSALS[result.code]; throw agentXError(code, message); }
+  return result.row;
+}
+
 export async function routeLessons(deps: LessonRouteDependencies, caller: DeveloperCaller, method: string, url: URL, body: () => unknown): Promise<object | undefined> {
   const company = COMPANY_PRESET_PATH.exec(url.pathname);
   if (company !== null) {
@@ -187,6 +217,9 @@ export async function routeLessons(deps: LessonRouteDependencies, caller: Develo
   if (matched === null) return undefined;
   const [, rawProject, id, action] = matched;
   const who = { orgId: caller.orgId, developerId: caller.developerId };
+
+  // Lessons in the repo (R2): the status answers even while lessons are off (it says so), so a person can see why nothing is happening; the switches need a maintainer.
+  if (id === "repo" && action === undefined && (method === "GET" || method === "POST")) return routeRepoFile(deps, caller, method, rawProject!, body);
 
   // The project, and whether learning is on for it, come first for every path: a path that is not a lessons read or write answers `undefined` only after that.
   if (method === "GET") {

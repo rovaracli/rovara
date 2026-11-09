@@ -61,6 +61,7 @@ export const LessonsRepoFileRowSchema = z.object({
   notices: z.array(z.string().max(300)).max(10),
 }).strict();
 export type LessonsRepoFileRow = z.infer<typeof LessonsRepoFileRowSchema>;
+export const LessonsRepoFileRowReaderSchema = forwardReader(LessonsRepoFileRowSchema);
 
 export const LessonsRepoFileStatusSchema = z.object({
   /** Lessons are switched off or not allowed to load for this project: no pull request is opened while that holds. */

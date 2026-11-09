@@ -23,7 +23,7 @@ export function lessonRouteDependenciesOf(deps: DeveloperRouteDependencies, call
   const lessons = deps.lessons;
   if (lessons === undefined) return undefined;
   return {
-    lessons,
+    lessons, ...(deps.repoFile === undefined ? {} : { repoFile: deps.repoFile }),
     projectFor: async (who, rawName) => {
       if (who.orgId !== caller.orgId || who.developerId !== caller.developerId) throw agentXError("PROJECT_NOT_FOUND", "no such project");
       if (who.orgRole !== "auditor") return projectRoleForRoute(deps, who, rawName);

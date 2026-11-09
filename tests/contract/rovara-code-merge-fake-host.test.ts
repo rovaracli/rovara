@@ -157,6 +157,25 @@ describe("merging on the fake code host", () => {
     expect(await changedPathsOf(host, { repository: { url: URL }, id: crId, url: "" }, { orgId: ORG_A })).toEqual({ paths: ["src/limit.ts", "secure/limit.ts"], complete: true });
   });
 
+  it("never merges a task's pull request that changes the team's lessons file (owner decision 50.4): an add, a rename onto it, an incomplete or unreadable list; a clean one merges", async () => {
+    for (const files of [
+      [{ path: ".rovara/lessons.md", status: "added", additions: 1, deletions: 0 }],
+      [{ path: ".rovara/lessons.md", previousPath: "docs/lessons.md", status: "renamed", additions: 0, deletions: 0 }],
+      [{ path: "docs/old.md", previousPath: ".rovara/lessons.md", status: "renamed", additions: 0, deletions: 0 }],
+    ]) {
+      const { w, model, crId } = await fakeWorld({ host: (m) => { const host = new FakeCodeHost(m); host.changedFiles = async () => ({ files }); return host; } });
+      expect(await codeOf(webPress(w))).toEqual({ code: "MERGE_NOT_READY", message: M.touchesLessonsFile });
+      expect(model.getChangeRequest(crId).state).toBe("open");
+    }
+    const cut = await fakeWorld({ host: (m) => { const host = new FakeCodeHost(m); host.changedFiles = async (_ref, page) => ({ files: [{ path: `src/f${String(page)}.ts`, status: "modified", additions: 1, deletions: 0 }], nextPage: page + 1 }); return host; } });
+    expect(await codeOf(webPress(cut.w))).toEqual({ code: "MERGE_NOT_READY", message: M.lessonsFileUnreadable });
+    const down = await fakeWorld({ host: (m) => { const host = new FakeCodeHost(m); host.changedFiles = async () => { throw new Error("host down"); }; return host; } });
+    expect(await codeOf(webPress(down.w))).toEqual({ code: "MERGE_NOT_READY", message: M.lessonsFileUnreadable });
+    const clean = await fakeWorld({ host: (m) => { const host = new FakeCodeHost(m); host.changedFiles = async () => ({ files: [{ path: ".rovara/project.yaml", status: "modified", additions: 1, deletions: 0 }] }); return host; } });
+    expect((await webPress(clean.w)).status).toBe(200);
+    expect(clean.model.getChangeRequest(clean.crId).state).toBe("merged");
+  });
+
   it("never merges on a host that does not offer merge: it is found before any claim is made", async () => {
     const { w, model, crId } = await fakeWorld({ host: (m) => { const host = new FakeCodeHost(m); Object.defineProperty(host, "merge", { value: undefined }); return host; } });
     const refusal = await codeOf(webPress(w));

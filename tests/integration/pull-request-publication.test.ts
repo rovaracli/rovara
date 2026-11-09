@@ -2,7 +2,7 @@ import { execFile } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { mkdtemp, mkdir, readFile, readdir, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { promisify } from "node:util";
 import { AgentXError, agentXError, createCandidateManifest, type WorkerInvocation, type WorkflowFeedbackBundleRef } from "@agentx/contracts";
@@ -625,6 +625,40 @@ describe("pull request publication", () => {
 });
 
 // #170: a check's output is stored redacted, its last lines kept, and its outcome says what happened.
+describe("a task never pushes a change to the team's lessons file (owner decision 50.4)", () => {
+  const SEED = { ".rovara/lessons.md": "# Team lessons for this repository\n", ".rovara/project.yaml": "name: demo\n" };
+  const refusal = /changes only through Rovara's weekly lessons pull request/;
+
+  async function publishRefused(change: (checkout: string) => Promise<void>) {
+    const fixture = await createFixture(true, "remote.git", { seedFiles: SEED });
+    await change(fixture.checkout);
+    const credentialProvider = vi.fn(async () => ({}));
+    const pullRequestSink = vi.fn();
+    await expect(publishWorkspace({ rootPath: fixture.root, invocation: fixture.invocation, credentialProvider, pullRequestSink })).rejects.toThrow(refusal);
+    expect(pullRequestSink).not.toHaveBeenCalled();
+    // Nothing was pushed.
+    await expect(git(fixture.bare, ["rev-parse", `refs/heads/agentx/${fixture.invocation.operationId}`])).rejects.toThrow();
+  }
+
+  it("refuses an edit of the file", async () => publishRefused((checkout) => writeFile(join(checkout, ".rovara", "lessons.md"), "# Team lessons for this repository\n\n- sneaky\n", "utf8")));
+  it("refuses a deletion of the file", async () => publishRefused((checkout) => rm(join(checkout, ".rovara", "lessons.md"))));
+  it("refuses a rename onto the file, and a rename away from it", async () => {
+    await publishRefused(async (checkout) => { await git(checkout, ["mv", "README.md", ".rovara/other.md"]); await git(checkout, ["mv", ".rovara/lessons.md", "moved.md"]); });
+    await publishRefused(async (checkout) => { await rm(join(checkout, ".rovara", "lessons.md")); await writeFile(join(checkout, ".rovara", "Lessons.MD"), "x\n", "utf8"); });
+  });
+  it("refuses the folder swapped for a link, even one that points at a harmless place", async () => publishRefused(async (checkout) => {
+    await rm(join(checkout, ".rovara"), { recursive: true });
+    await (await import("node:fs/promises")).symlink("docs", join(checkout, ".rovara"));
+  }));
+
+  it("positive control: a change to another file in the same folder is published", async () => {
+    const fixture = await createFixture(true, "remote.git", { seedFiles: SEED });
+    await writeFile(join(fixture.checkout, ".rovara", "project.yaml"), "name: demo2\n", "utf8");
+    const result = await publishWorkspace({ rootPath: fixture.root, invocation: fixture.invocation, credentialProvider: async () => ({}), pullRequestSink: vi.fn(async () => ({ number: 5, url: "https://github.com/example/demo/pull/5", reconciled: false })) });
+    expect(result).toMatchObject({ number: 5 });
+  });
+});
+
 describe("PR feedback review after publication moved HEAD", () => {
   /** A repository with one edit, read as the candidate and then published, so HEAD is the published commit. */
   const published = async () => {
@@ -1482,7 +1516,7 @@ async function createFixture(
   await git(root, ["init", "--bare", "--initial-branch=main", bare]);
   await git(root, ["init", "--initial-branch=main", seed]);
   await writeFile(join(seed, "README.md"), "initial\n", "utf8");
-  for (const [name, content] of Object.entries(options.seedFiles ?? {})) await writeFile(join(seed, name), content, "utf8");
+  for (const [name, content] of Object.entries(options.seedFiles ?? {})) { await mkdir(dirname(join(seed, name)), { recursive: true }); await writeFile(join(seed, name), content, "utf8"); }
   await git(seed, ["add", "README.md", ...Object.keys(options.seedFiles ?? {})]);
   await git(seed, ["-c", "user.name=Fixture", "-c", "user.email=fixture@example.test", "commit", "-m", "initial"]);
   await git(seed, ["remote", "add", "origin", pathToFileURL(bare).href]);
