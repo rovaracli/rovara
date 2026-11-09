@@ -31,6 +31,7 @@ function RulesBody({ taskId, project }: { taskId: string; project: string | unde
  if (query.isPending) return <p className="rv-muted" role="status">Loading</p>;
  // 404: the record is not served for this task (the project's learning is off, or the install does not keep it). That is not a failed load, so it is not shown as one.
  if (query.isError && query.error instanceof ApiError && (query.error.code === "LEARNING_OFF" || query.error.code === "LEARNING_LOCKED")) return <LearningOffNote project={project} locked={query.error.code === "LEARNING_LOCKED"} />;
+ if (query.isError && query.error instanceof ApiError && query.error.code === "LESSONS_SWITCHED_OFF") return <p className="rv-muted" role="status">Lessons are switched off for this installation.</p>;
  if (query.isError) return query.error instanceof ApiError && query.error.status === 404
   ? <p className="rv-muted" role="status">{"What the agent loaded is not recorded for this task: this installation doesn't keep it, or learning was off when this task ran."}</p>
   : <p className="rv-muted" role="alert">This could not be loaded right now.</p>;

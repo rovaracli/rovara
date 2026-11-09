@@ -1,6 +1,7 @@
 // L3b fix round 1, S5: "What the agent loaded" is mounted behind the same switch as the lessons routes: not on an install with no lesson ports, not for a project whose learning is Off.
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type { OrgId } from "@agentx/contracts";
+import { setLearnedLessonsGate } from "../../packages/broker/src/lessons/policy.js";
 
 const access = vi.hoisted(() => ({ project: "demo", deny: false }));
 vi.mock("../../packages/broker/src/developer/task-access.js", () => ({
@@ -20,6 +21,7 @@ const deps = (over: { settings?: unknown; lessons?: boolean } = {}) => ({
 }) as never;
 
 describe("loaded knowledge is behind learning", () => {
+  afterEach(() => { setLearnedLessonsGate(undefined); });
   it("an install with no lesson ports does not mount it", async () => {
     expect(await routeLoadedKnowledgeFor(deps({ lessons: false }), caller, "GET", url)).toBeUndefined();
   });
@@ -29,6 +31,18 @@ describe("loaded knowledge is behind learning", () => {
   });
   it("a project whose learning is on answers the records", async () => {
     expect(await routeLoadedKnowledgeFor(deps({ settings: { mode: "Suggest" } }), caller, "GET", url)).toEqual({ stages: [] });
+  });
+  it("with the install's lessons switch off it says so in a fixed code (404): no lesson ports, a project whose learning is Off, or nothing kept; records kept from before are still shown; the switch on changes nothing", async () => {
+    setLearnedLessonsGate(() => false);
+    await expect(routeLoadedKnowledgeFor(deps({ lessons: false }), caller, "GET", url)).rejects.toMatchObject({ code: "LESSONS_SWITCHED_OFF", statusCode: 404 });
+    await expect(routeLoadedKnowledgeFor(deps({ settings: { mode: "Off" } }), caller, "GET", url)).rejects.toMatchObject({ code: "LESSONS_SWITCHED_OFF", statusCode: 404 });
+    await expect(routeLoadedKnowledgeFor(deps({ settings: { mode: "On" } }), caller, "GET", url)).rejects.toMatchObject({ code: "LESSONS_SWITCHED_OFF", statusCode: 404 });
+    // the text read of one file is not the list read: it is unchanged
+    const text = new URL(`https://cell.example/v1/app/tasks/${TASK}/loaded-knowledge/op1/plan/items/0/text`);
+    expect(await routeLoadedKnowledgeFor(deps({ lessons: false }), caller, "GET", text)).toBeUndefined();
+    setLearnedLessonsGate(() => true);
+    expect(await routeLoadedKnowledgeFor(deps({ lessons: false }), caller, "GET", url)).toBeUndefined();
+    await expect(routeLoadedKnowledgeFor(deps({ settings: { mode: "Off" } }), caller, "GET", url)).rejects.toMatchObject({ code: "LEARNING_OFF" });
   });
   it("a task the caller cannot read goes to the route, which refuses it as it does today", async () => {
     access.deny = true;

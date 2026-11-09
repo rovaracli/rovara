@@ -109,6 +109,16 @@ it("says it is not recorded for this task (not a failed load) when the record is
  s.close();
 });
 
+it("says plainly that lessons are switched off for the installation when the install's lessons switch is off, and keeps the other wording for a plain 404", async () => {
+ const s = setup(async () => ({ status: 404, body: { error: { code: "LESSONS_SWITCHED_OFF", message: "Lessons are switched off for this installation." } } }));
+ const details = (await screen.findByText("What the agent loaded")).closest("details")!;
+ details.open = true; fireEvent(details, new Event("toggle"));
+ await waitFor(() => { expect(screen.getByRole("status").textContent).toBe("Lessons are switched off for this installation."); }, { timeout: 8000 });
+ expect(screen.queryByText(/learning was off/u)).toBeNull();
+ expect(screen.queryByRole("link", { name: "Turn learning on for this project" })).toBeNull();
+ s.close();
+});
+
 it("UX-4b: with learning off for the project it explains why and links to turning learning on, not a dead end", async () => {
  const s = setup(async () => ({ status: 404, body: { error: { code: "LEARNING_OFF", message: "Learning is off for this project." } } }));
  const details = (await screen.findByText("What the agent loaded")).closest("details")!;
