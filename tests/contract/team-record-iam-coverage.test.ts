@@ -139,7 +139,8 @@ const deployRole = (access: Resources, env = ENV) => {
   const policy = (role.Properties.Policies as Array<{ PolicyName: string; PolicyDocument: { Statement: Statement[] } }>).find((candidate) => candidate.PolicyName === "deploy")!;
   const flat = resolver(access);
   // The deployed deploy policy carries no Sids (infra/lib/access.ts); they are put back by position.
-  return { statements: serviceRoleWithSids(policy.PolicyDocument.Statement as unknown as Array<Record<string, unknown>>).map((raw) => ("Fn::If" in (raw as object) ? (raw as unknown as { "Fn::If": [string, Statement, unknown] })["Fn::If"][1] : raw)), flat };
+  const withSids = serviceRoleWithSids(policy.PolicyDocument.Statement as unknown as Array<Record<string, unknown>>) as unknown as Statement[];
+  return { statements: withSids.map((raw) => ("Fn::If" in (raw as object) ? (raw as unknown as { "Fn::If": [string, Statement, unknown] })["Fn::If"][1] : raw)), flat };
 };
 const boundary = (access: Resources, env = ENV) => {
   const policy = Object.values(access).find((resource) => resource.Type === "AWS::IAM::ManagedPolicy" && resource.Properties.ManagedPolicyName === `agentx-${env}-boundary`)!;
