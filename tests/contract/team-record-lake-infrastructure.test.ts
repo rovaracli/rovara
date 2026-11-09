@@ -21,7 +21,7 @@ describe("team record lake", () => {
     const template = lake();
     template.hasResourceProperties("AWS::S3Tables::TableBucket", {
       TableBucketName: "rovara-record-lake",
-      UnreferencedFileRemoval: { Status: "enabled", UnreferencedDays: 2, NoncurrentDays: 3 },
+      UnreferencedFileRemoval: { Status: "Enabled", UnreferencedDays: 2, NoncurrentDays: 3 },
     });
     template.hasResourceProperties("AWS::S3Tables::Namespace", { Namespace: "record" });
     template.resourceCountIs("AWS::S3Tables::Table", 4);
@@ -31,6 +31,20 @@ describe("team record lake", () => {
       expect(table.DeletionPolicy).toBe("Retain");
       expect(table.Properties.OpenTableFormat).toBe("ICEBERG");
       for (const field of table.Properties.IcebergMetadata.IcebergSchema.SchemaFieldList) expect(field.Name).toBe(field.Name.toLowerCase());
+    }
+  });
+
+  // CloudFormation's early validation refused the first staging switch-on for this: the two resource types spell their status enums differently
+  // (TableBucket UnreferencedFileRemoval.Status is "Enabled" | "Disabled"; Table Compaction and SnapshotManagement Status are "enabled" | "disabled").
+  it("spells each status enum the way its resource type's registry schema does", () => {
+    const template = lake();
+    const bucket = Object.values(template.findResources("AWS::S3Tables::TableBucket"))[0] as unknown as { Properties: { UnreferencedFileRemoval: { Status: string } } };
+    expect(bucket.Properties.UnreferencedFileRemoval.Status).toBe("Enabled");
+    const tables = tablesOf(template);
+    expect(tables.length).toBeGreaterThan(0);
+    for (const resource of tables) {
+      expect(resource.Properties.Compaction.Status).toBe("enabled");
+      expect(resource.Properties.SnapshotManagement).toMatchObject({ Status: "enabled" });
     }
   });
 

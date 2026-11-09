@@ -63,7 +63,7 @@ export class TeamRecordLake extends Construct {
     this.tableBucket = new CfnTableBucket(this, "TableBucket", {
       tableBucketName: props.tableBucketName,
       encryptionConfiguration: props.kmsKeyArn === undefined ? { sseAlgorithm: "AES256" } : { sseAlgorithm: "aws:kms", kmsKeyArn: props.kmsKeyArn },
-      unreferencedFileRemoval: { status: "enabled", unreferencedDays: UNREFERENCED_DAYS, noncurrentDays: NONCURRENT_DAYS },
+      unreferencedFileRemoval: { status: "Enabled", unreferencedDays: UNREFERENCED_DAYS, noncurrentDays: NONCURRENT_DAYS },
       ...(tags === undefined ? {} : { tags }),
     });
     this.tableBucket.applyRemovalPolicy(RemovalPolicy.RETAIN);
