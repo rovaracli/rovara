@@ -1044,10 +1044,11 @@ describe("standing instructions through the broker's dispatch", () => {
       expect(block.text, mode).toContain("- Never log customer data.");
       expect(block.text, mode).toContain("- Prefer small commits.");
       expect(block.company.version, mode).toBe("12");
-      expect(String(invocation.payload.prompt), mode).not.toContain("Instructions from your company's agent");
+      expect(String(invocation.payload.prompt), mode).not.toContain("House rules");
       expect(String(invocation.payload.prompt), mode).not.toContain("Never log customer data.");
-      expect((invocation.payload.agentStep as { promptSection?: string }).promptSection, mode).toBeUndefined();
-      expect(operation.standingInstructions, mode).toEqual({ digest: block.digest, companyVersion: "12" });
+      // What the project wrote is in the block only; Rovara's own built-in guidance (if the step has any) stays in the message as before.
+      expect((invocation.payload.agentStep as { promptSection?: string }).promptSection ?? "", mode).not.toContain("House rules");
+      expect(operation.standingInstructions, mode).toEqual({ digest: block.digest, companyVersion: "12", companyDigest: createHash("sha256").update(block.company.text).digest("hex") });
     }
     const build = (await run.accept("IMPLEMENT", "build")).invocation.payload.standingInstructions as { text: string };
     expect(build.text).toContain("House rules: write the tests first.");

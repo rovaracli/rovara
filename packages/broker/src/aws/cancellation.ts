@@ -103,7 +103,7 @@ export interface OperationRecord extends Operation {
   /** SR-1 (switch `cr`): this REVIEW operation carries a second reviewer (another AI company's model, inside the same operation), or records why it could not: the candidate it is about and the plan (or the fixed reason it did not run). The one REVIEW end reads it (`secondOpinionFromReviewResult`); no other lookup does. */
   secondReviewPlan?: SecondReviewOperationPlan;
   /** Standing instructions (lanes I1, I2): the digest of the block this step ran with and the company rules' version in it (absent: the step carried no block, or no company rules). */
-  standingInstructions?: { digest: string; companyVersion?: string };
+  standingInstructions?: { digest: string; companyVersion?: string; /** The digest of the company part alone, which a second reviewer shown only the change ran with. */ companyDigest?: string };
   /** SH30: the company recipes (id and revision) the broker offered this SETUP_DRAFT run when it dispatched it. The run's reported recipe sources are intersected with this (`offeredRecipesNamedBy`). */
   setupRecipeOffers?: Array<{ recipeId: string; revision: number }>;
   /** Plan 6 Task 8: this planning run is the one automatic revision a plan check asked for (no person asked for it: it never pauses the task or asks for money). */

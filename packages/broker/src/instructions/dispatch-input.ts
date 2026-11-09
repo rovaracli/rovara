@@ -1,6 +1,7 @@
 // Standing instructions (lanes I1, I2): what the dispatch of one operation hands `applyAgentStep` for the block: the company's newest rules (read now) and whether the switch moves "How we work" into it.
-import type { CompanyInstructionsSnapshot } from "@agentx/contracts";
+import type { CompanyInstructionsSnapshot, StandingInstructionsPayload } from "@agentx/contracts";
 import type { DispatchMode } from "../agents/dispatch.js";
+import { buildStandingInstructions } from "./standing-block.js";
 import { readCompanyInstructions, type CompanyInstructionsSource } from "./company-source.js";
 import { standingInstructionsEnabled } from "./switch.js";
 
@@ -24,4 +25,15 @@ export async function standingInputFor(
   const moveHowWeWork = standingInstructionsEnabled();
   if (rules === undefined && !moveHowWeWork) return undefined;
   return { moveHowWeWork, ...(rules === undefined ? {} : { company: rules }) };
+}
+
+/**
+ * The block of an operation that has no agent snapshot (a Slack thread operation, an install without agents, a task from before agents): the company's rules alone, since there is no recipe and so no "How we
+ * work" to move. Without this such work would run with no company rules and say nothing (review F3). `undefined` when the operation carries no block or the company has no rules.
+ */
+export async function companyOnlyBlockFor(
+  source: CompanyInstructionsSource | undefined, company: string, mode: DispatchMode | undefined, agentRun: boolean, task: { purpose?: string | undefined } | undefined,
+): Promise<StandingInstructionsPayload | undefined> {
+  const standing = await standingInputFor(source, company, mode, agentRun, task);
+  return standing?.company === undefined ? undefined : buildStandingInstructions({ company: standing.company, checking: mode === "PLAN_CRITIQUE" || mode === "REVIEW" || mode === "FEEDBACK_REVIEW" });
 }

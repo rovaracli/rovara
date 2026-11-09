@@ -1292,7 +1292,7 @@ async function runTask(
           binding: designReviewBinding, artifactSink,
           ports: {
             loadPacket: designReview.loadPacket,
-            openSession: createReviewSessionOpener({ rootPath: dependencies.rootPath, ...reviewFileToolsOf(fileTools), runtimeFor: designReview.runtimeFor(designReviewBinding), onDiagnostic, standingInstructions }),
+            openSession: createReviewSessionOpener({ rootPath: dependencies.rootPath, ...reviewFileToolsOf(fileTools), runtimeFor: designReview.runtimeFor(designReviewBinding), onDiagnostic, ...(companyStandingInstructions === undefined ? {} : { standingInstructions: companyStandingInstructions }) }),
             progress: async (message) => { await emit("progress", { message }); },
           },
           options: { signal: verificationStop.signal },
