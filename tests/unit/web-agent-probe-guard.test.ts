@@ -139,7 +139,7 @@ describe("the app-start guard of web-agent-app-isolation-v1", () => {
       }
     });
 
-    it("latches a hit: requests in flight at the same time are all refused, none is passed to the app or served the guard page", async () => {
+    it("refuses requests in flight at the same time while the socket is mounted: none is passed to the app or served the guard page (the latch itself is pinned by the script check below and the asset digest)", async () => {
       const run = await start({ intervalOff: true, loopOff: true });
       expect((await run.get("/")).status).toBe(200);
       run.mountSocket();
