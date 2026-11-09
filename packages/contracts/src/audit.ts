@@ -615,7 +615,7 @@ export const AUDIT_FACT_KEYS: Record<AuditAction, readonly string[]> = {
   "lesson.preset_proposed": ["scope", "fromPreset", "toPreset"],
   "lesson.trial_stable": ["tier"],
   "lesson.model_set": ["fromModel", "toModel"],
-  // `removals` / `edits` / `adds` are counts (written before the host is asked, so no number yet), `pullRequest` the host's number (0 for a branch with none); `cause` is `replaced`, `nothing_left`, `switched_off`, `erased`, `merged` or `closed_by_team`; `enabled` is the switch after the change.
+  // `removals` / `edits` / `adds` are counts (written before the host is asked, so no number yet), `pullRequest` the host's number (0 for a branch with none); `cause` is `replaced`, `nothing_left`, `switched_off`, `erased`, `merged`, `closed_by_team` or `lessons_off`; `enabled` is the switch after the change.
   "lesson.repo_file_pr_opened": ["removals", "edits", "adds"],
   "lesson.repo_file_pr_closed": ["cause", "pullRequest"],
   "lesson.repo_file_switched": ["enabled"],

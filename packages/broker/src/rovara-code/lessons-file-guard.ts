@@ -2,6 +2,10 @@
 // through Rovara's weekly lessons pull request, which a person merges. This is the broker's check (the worker refuses to push such a diff in the first place: `packages/worker/src/lessons-file-guard.ts`); it is run through the code
 // host's neutral `changedFiles` (via `changedPathsOf`), before a Rovara pull request is marked ready and before it is merged. It fails closed: a list that is incomplete or cannot be read is not "clean".
 // Rovara's own lessons pull requests are not tasks and never come here (they have their own write path).
+//
+// Why there is no check before a pull request is marked ready (design section 8 names one): every Rovara push goes through a worker guard (`publish.ts` for the first push, `maintain-pull-request.ts#push` for every fix, update and
+// base-merge push), so no pull request Rovara pushes can contain a change to the file, and a merge made by hand on the code host cannot introduce one either. A mark-ready check would cost one unbudgeted `changedFiles` read in the
+// budgeted tracking pass for a case the push guard already closes.
 import { LESSON_FILE_PATH, type ChangeRequestRef, type CodeHost, type HostScope } from "@agentx/contracts";
 import { changedPathsOf } from "./host-port.js";
 

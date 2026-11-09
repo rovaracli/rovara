@@ -58,3 +58,78 @@ describe("the worker's check on a diff", () => {
     expect(seen[1]!.slice(-2)).toEqual(["4b825dc642cb6eb9a060e54bf8d69288fbee4904", "c".repeat(40)]);
   });
 });
+
+// ---- review M2: EVERY worker push goes through one guarded function (real git) ----
+import { execFile } from "node:child_process";
+import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { promisify } from "node:util";
+import { afterAll } from "vitest";
+import { assertPushCarriesNoLessonsFile } from "../../packages/worker/src/lessons-file-guard.js";
+import { deleteBranchOn } from "../../packages/broker/src/github-commit-files.js";
+
+const run = promisify(execFile);
+const dirs: string[] = [];
+afterAll(async () => { await Promise.all(dirs.map((dir) => rm(dir, { recursive: true, force: true }))); });
+const GIT_ENV = { ...process.env, GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1", GIT_AUTHOR_NAME: "t", GIT_AUTHOR_EMAIL: "t@example.test", GIT_COMMITTER_NAME: "t", GIT_COMMITTER_EMAIL: "t@example.test" };
+async function repo() {
+  const dir = await mkdtemp(join(tmpdir(), "rovara-guard-"));
+  dirs.push(dir);
+  const git = async (args: string[]): Promise<string> => (await run("git", args, { cwd: dir, env: GIT_ENV })).stdout;
+  await git(["init", "-q", "--initial-branch=main"]);
+  await mkdir(join(dir, ".rovara"), { recursive: true });
+  await writeFile(join(dir, ".rovara/lessons.md"), "base\n");
+  await writeFile(join(dir, "a.txt"), "a\n");
+  await git(["add", "-A"]); await git(["commit", "-q", "-m", "base"]);
+  return { dir, git, write: (path: string, text: string) => writeFile(join(dir, path), text), commit: async (message: string) => { await git(["add", "-A"]); await git(["commit", "-q", "-m", message]); return (await git(["rev-parse", "HEAD"])).trim(); } };
+}
+
+describe("the guard on a push that adds a commit to an existing pull request", () => {
+  it("refuses a commit that edits or deletes the file, and passes one that does not (positive control)", async () => {
+    const r = await repo();
+    await r.write("a.txt", "b\n");
+    await expect(assertPushCarriesNoLessonsFile(r.git, await r.commit("clean"))).resolves.toBeUndefined();
+    await r.write(".rovara/lessons.md", "sneaky\n");
+    await expect(assertPushCarriesNoLessonsFile(r.git, await r.commit("edit"))).rejects.toThrow(LESSONS_FILE_REFUSAL);
+    await rm(join(r.dir, ".rovara/lessons.md"));
+    await expect(assertPushCarriesNoLessonsFile(r.git, await r.commit("delete"))).rejects.toThrow(LESSONS_FILE_REFUSAL);
+  });
+
+  it("a merge of the base that changed the file is not flagged; a person's earlier change on the branch is not flagged; a conflict resolution that differs from both parents is", async () => {
+    const r = await repo();
+    await r.git(["checkout", "-q", "-b", "pr"]);
+    await r.write(".rovara/lessons.md", "a person's change on the pull request\n");
+    await r.write("a.txt", "pr\n");
+    await r.commit("person");
+    await r.git(["checkout", "-q", "main"]);
+    await r.write("b.txt", "main\n");
+    await r.commit("main moves");
+    // The base moves the lessons file; the pull request branch also holds the person's version of it.
+    await r.git(["checkout", "-q", "pr"]);
+    await r.git(["merge", "-q", "--no-edit", "main"]);
+    await expect(assertPushCarriesNoLessonsFile(r.git, "HEAD")).resolves.toBeUndefined();
+    // A merge commit whose tree takes the lessons file from neither parent.
+    await r.write(".rovara/lessons.md", "third version\n");
+    await r.git(["add", "-A"]); await r.git(["commit", "-q", "--amend", "--no-edit"]);
+    await expect(assertPushCarriesNoLessonsFile(r.git, "HEAD")).rejects.toThrow(LESSONS_FILE_REFUSAL);
+    expect((await readFile(join(r.dir, ".rovara/lessons.md"), "utf8"))).toBe("third version\n");
+  });
+
+  it("every push of maintain-pull-request.ts goes through the one guarded function", async () => {
+    const text = await readFile("packages/worker/src/maintain-pull-request.ts", "utf8");
+    expect((text.match(/credentialedGit\([^\n]*\["push"/gu) ?? []).length).toBe(1);
+    expect(text).toMatch(/async function push\([^\n]*\n[^\n]*\n[^\n]*\n\s*await assertPushCarriesNoLessonsFile\(/u);
+    expect((text.match(/"push"/gu) ?? []).length).toBe(1);
+  });
+});
+
+describe("review L3: deleting a branch", () => {
+  const context = (status: number, message?: string) => ({ fetch: (async () => new Response(message === undefined ? null : JSON.stringify({ message }), { status })) as typeof fetch, owner: "acme", name: "api", token: "t" });
+  it("only GitHub's own 'Reference does not exist' means gone; a 404, another 422 or a 403 is a failure the caller tries again", async () => {
+    expect(await deleteBranchOn(context(204), "rovara/lessons-0123456789ab")).toBe("deleted");
+    expect(await deleteBranchOn(context(422, "Reference does not exist"), "rovara/lessons-0123456789ab")).toBe("gone");
+    for (const [status, message] of [[404, "Not Found"], [422, "Something else"], [403, "Resource not accessible"]] as const) await expect(deleteBranchOn(context(status, message), "rovara/lessons-0123456789ab")).rejects.toMatchObject({ code: "RUNTIME_UNAVAILABLE" });
+    await expect(deleteBranchOn(context(204), "main")).rejects.toMatchObject({ code: "CONFIG_INVALID" });
+  });
+});

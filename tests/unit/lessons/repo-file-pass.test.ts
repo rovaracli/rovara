@@ -192,7 +192,7 @@ describe("one open Rovara pull request per repository, nothing adopted", () => {
     expect(w.host.writes.filter((write) => write.id === "99")).toEqual([]);
   });
 
-  it("a pull request a person pushed to is theirs: not closed, its branch kept, nothing new opened beside it", async () => {
+  it("a pull request a person pushed to is theirs: not closed, not written, its branch kept; with nothing to remove nothing new is opened beside it", async () => {
     const w = passSetup();
     await w.seedLessons(repoLesson("les_aaaa0001"));
     await w.enable();
@@ -202,8 +202,9 @@ describe("one open Rovara pull request per repository, nothing adopted", () => {
     await w.seedLessons(repoLesson("les_aaaa0002"));
     w.host.writes.length = 0;
     w.week();
-    expect(await w.run()).toEqual({ status: "waiting_on_team" });
+    expect(await w.run()).toEqual({ status: "no_changes" });
     expect(w.host.writes).toEqual([]);
+    expect((await w.current()).theirs.map((t) => t.branch)).toEqual([open.branch]);
     expect(w.host.open).toHaveLength(1);
     expect(w.host.files.has(open.branch)).toBe(true);
   });
@@ -286,8 +287,8 @@ describe("removals come first, with reasons, and the ignored-PR rule", () => {
     const positions = ["Proposed removals (2)", "Proposed edits (1)", "Proposed new lessons (1)"].map((heading) => body.indexOf(heading));
     expect(positions.every((p) => p > 0)).toBe(true);
     expect([...positions].sort((a, b) => a - b)).toEqual(positions);
-    expect(body).toMatch(/les_aaaa0001.*withdrawn or retired in Rovara/u);
-    expect(body).toMatch(/les_aaaa0002.*marked wrong or harmful/u);
+    expect(body).toMatch(/les_aaaa0001.*Rovara no longer proposes this lesson/u);
+    expect(body).toMatch(/les_aaaa0002.*Rovara no longer proposes this lesson/u);
     const next = w.host.file((await w.current()).open!.branch, FILE)!;
     expect(idsIn(next)).toEqual(["les_aaaa0003", "les_aaaa0004", "les_aaaa0005"]);
     expect(next).toContain("A refined wording of the third lesson.");

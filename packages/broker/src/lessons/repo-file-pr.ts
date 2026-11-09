@@ -10,6 +10,9 @@ const BODY_MAX = 60_000;
 const plural = (count: number, one: string, many: string): string => `${String(count)} ${count === 1 ? one : many}`;
 const code = (text: string): string => `\`${text.replace(/`/gu, "'")}\``;
 
+/** Shown while a Rovara pull request the team pushed to is still open: only removals are proposed meanwhile. */
+export const TEAM_PR_LINE = "Your team is working on an earlier Rovara pull request, so this one proposes removals only";
+
 /** The line shown when new lessons are paused after three pull requests nobody merged. */
 export function pausedLine(removalsWaiting: number): string {
   return `Rovara has paused new lessons until a lessons PR is merged; ${plural(removalsWaiting, "removal is", "removals are")} waiting`;
@@ -31,18 +34,18 @@ function list(heading: string, lines: readonly string[]): string[] {
 }
 
 export function prBody(plan: RepoFilePlan, context: { pointerFiles: readonly string[]; unmerged: number }): string {
-  const removals = plan.removals.map((r) => `- ${code(r.id)} ${code(r.title)}: ${REMOVAL_REASON_TEXT[r.reason]}.`);
+  const removals = plan.removals.map((r) => `- ${code(r.id)} ${code(r.title)}: ${REMOVAL_REASON_TEXT[r.reason]}.${r.edited === true ? " Your team edited this lesson; it is proposed for removal anyway." : ""}`);
   const edits = plan.edits.map((e) => `- ${code(e.id)} ${code(e.title)}${e.moved ? " (moves to another section)" : ""}`);
   const adds = plan.adds.map((a) => `- ${code(a.id)} ${code(a.title)}`);
   const lines = [
     "Rovara's weekly update to `.rovara/lessons.md`: lessons this team's own reviews and commits taught, proposed for you to merge. Nothing changes until a person merges this pull request.",
     "",
     `This pull request has ${plural(plan.removals.length, "removal", "removals")}, ${plural(plan.edits.length, "edit", "edits")} and ${plural(plan.adds.length, "new lesson", "new lessons")}.`,
-    ...(plan.addsPaused ? ["", `${pausedLine(plan.removals.length)}.`] : []),
+    ...(plan.pausedBy === "unmerged" ? ["", `${pausedLine(plan.removals.length)}.`] : plan.pausedBy === "team_pr" ? ["", TEAM_PR_LINE] : []),
     ...list("Proposed removals", removals),
     ...list("Proposed edits", edits),
     ...list("Proposed new lessons", adds),
-    ...(context.pointerFiles.length === 0 ? [] : ["", `This first pull request also adds one pointer line to ${context.pointerFiles.map(code).join(", ")} so local agents read the file. Rovara does not edit those files again.`]),
+    ...(context.pointerFiles.length === 0 ? [] : ["", `This first pull request also adds one pointer line to ${context.pointerFiles.map(code).join(", ")} so local agents read the file. Rovara does not edit those files again.`, "You may want to list `.rovara/lessons.md` (the file only, not the folder) in CODEOWNERS."]),
     ...(plan.held.length === 0 ? [] : ["", `${plural(plan.held.length, "lesson your team edited is", "lessons your team edited are")} left exactly as you wrote them.`]),
     "",
     "Only lessons learned entirely from this repository's own reviews and commits, with no names, are proposed. A merged lesson stays in git history even if it is removed later. Rovara changes this file only through a pull request like this one.",
@@ -59,6 +62,7 @@ export function noticesOf(state: RepoFileState): string[] {
   const waiting = state.open?.removals ?? 0;
   if (additionsPaused(state) && !state.fileDeleted) notices.push(pausedLine(waiting));
   else if (waiting > 0) notices.push(`${plural(waiting, "removal", "removals")} waiting in your lessons PR`);
+  if (state.theirs.length > 0) notices.push(TEAM_PR_LINE.replace("this one proposes removals only", "new lessons wait for it"));
   if (state.held.length > 0) notices.push(`${plural(state.held.length, "lesson your team edited is", "lessons your team edited are")} left as written`);
   if (state.pointerMissing) notices.push("Pointer missing: no agent file names .rovara/lessons.md");
   return notices;

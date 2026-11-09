@@ -131,7 +131,7 @@ export function lessonDeletionPort(deps: DeletionDeps): LessonDeletionPort {
     intent.finished = true;
     await deps.store.putIntent(k, intent);
     // Lessons in the repo (R2): a lesson that is only an add in Rovara's open lessons pull request comes out of it at once.
-    await notifyLessonGone(k, intent.lessonId);
+    if (intent.outcome === "withdraw" || intent.outcome === "purge") await notifyLessonGone(k, intent.lessonId);
     if (intent.outcome === "withdraw" || intent.outcome === "purge") {
       await emitAudit(deps.audit, { action: "lesson.withdrawn", workspaceId: k.workspaceId, project: k.project, lessonId: intent.lessonId, facts: { cause: intent.cause, ...(intent.outcome === "purge" ? { purged: true } : {}) } });
     }

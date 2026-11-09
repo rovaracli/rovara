@@ -172,9 +172,17 @@ export async function commitFilesOn(context: GithubWriteContext, request: Commit
 export async function deleteBranchOn(context: GithubWriteContext, branch: string): Promise<"deleted" | "gone"> {
   if (!LESSON_FILE_BRANCH_PATTERN.test(branch)) throw agentXError("CONFIG_INVALID", "branch name is invalid");
   const response = await send(context, `/git/refs/heads/${encodePath(branch)}`, { method: "DELETE" });
-  // 404 or 422 ("Reference does not exist"): there is nothing to delete.
-  if (response.status === 404 || response.status === 422) { drop(response); return "gone"; }
+  // Only GitHub's own "Reference does not exist" (a 422) means there was nothing to delete. A 404 (the repository or the permission), any other 422 and every other refusal is a failure the caller tries again, never "gone" (review L3).
+  if (response.status === 422 && await doesNotExist(response)) { drop(response); return "gone"; }
   if (!response.ok) return failed("branch deletion", response);
   await response.body?.cancel();
   return "deleted";
+}
+
+/** Whether a 422 answer's message says the reference does not exist. Reads at most 4 KB; anything else is "no". */
+async function doesNotExist(response: Response): Promise<boolean> {
+  try {
+    const message = record(JSON.parse((await response.text()).slice(0, 4096))).message;
+    return typeof message === "string" && /reference does not exist/iu.test(message);
+  } catch { return false; }
 }

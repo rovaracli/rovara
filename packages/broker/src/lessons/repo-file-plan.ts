@@ -19,19 +19,19 @@ import {
 } from "./repo-file-format.js";
 import type { Lesson } from "./types.js";
 
-export const REMOVAL_REASONS = ["faded", "harm", "withdrawn", "lesson_erased", "stale_citation", "names_a_person", "no_longer_repo_only", "needs_review", "no_longer_approved"] as const;
+export const REMOVAL_REASONS = ["faded", "harm", "retired", "withdrawn", "lesson_erased", "stale_citation", "names_a_person", "no_longer_repo_only", "needs_review", "no_longer_approved"] as const;
 export type RemovalReason = (typeof REMOVAL_REASONS)[number];
-/** The sentence for a reason in the pull request body (fixed words). */
+/**
+ * The reasons that are about a person or about where a lesson came from, not about how good it is: a lesson erased or withdrawn in Rovara, one that now names a person, one that no longer rests only on this repository's own
+ * words. Removing is only a proposal the team merges, so these WIN over the hand-edit hold (review H3). The others (faded, harm, retired, stale citation, needs review, no longer approved) are quality calls the team's own wording beats.
+ */
+export const PRIVACY_REMOVAL_REASONS: ReadonlySet<RemovalReason> = new Set<RemovalReason>(["lesson_erased", "withdrawn", "names_a_person", "no_longer_repo_only"]);
+/** The sentence for a reason in the pull request body (fixed words). Only the two reasons that are plainly about the code say why; every other reason is one neutral sentence, so the body tells repo readers nothing about Rovara's people or feedback (review L2). */
+export const NEUTRAL_REMOVAL_TEXT = "Rovara no longer proposes this lesson";
 export const REMOVAL_REASON_TEXT: Record<RemovalReason, string> = {
-  faded: "it has not helped for a long time",
-  harm: "it was marked wrong or harmful",
-  withdrawn: "it was withdrawn or retired in Rovara",
-  lesson_erased: "it was deleted in Rovara",
-  stale_citation: "the code it points to has changed or is gone",
-  names_a_person: "it now names a person",
-  no_longer_repo_only: "it no longer rests only on this repository's own reviews and commits",
-  needs_review: "it needs a person's review again",
-  no_longer_approved: "it is no longer approved",
+  faded: "it has not helped for a long time", stale_citation: "the code it points to has changed or is gone",
+  harm: NEUTRAL_REMOVAL_TEXT, retired: NEUTRAL_REMOVAL_TEXT, withdrawn: NEUTRAL_REMOVAL_TEXT, lesson_erased: NEUTRAL_REMOVAL_TEXT, names_a_person: NEUTRAL_REMOVAL_TEXT,
+  no_longer_repo_only: NEUTRAL_REMOVAL_TEXT, needs_review: NEUTRAL_REMOVAL_TEXT, no_longer_approved: NEUTRAL_REMOVAL_TEXT,
 };
 
 const PATH_TOKEN = /^[A-Za-z0-9_./*@-]{1,100}$/u;
@@ -61,7 +61,11 @@ export function renderLesson(lesson: Pick<Lesson, "id" | "body" | "title" | "sco
 /** The fingerprint of a block as Rovara rendered it: its text in comparison form and its section. A formatter's reflow does not change it; a person's wording or move does. */
 export const fingerprintOf = (text: string, heading: string): string => `${textHash(normalizeBlockText(text))}:${createHash("sha256").update(heading).digest("hex").slice(0, 8)}`;
 
-export interface PlanRemoval { id: string; reason: RemovalReason; /** From the file's own block text, so it is repo content already. */ title: string }
+export interface PlanRemoval {
+  id: string; reason: RemovalReason; /** From the file's own block text, so it is repo content already. */ title: string;
+  /** The team reworded this block: it is proposed for removal anyway (a privacy reason), and the pull request says so. */
+  edited?: true;
+}
 export interface PlanEdit { id: string; title: string; heading: string; text: string; fingerprint: string; moved: boolean }
 export interface PlanAdd { id: string; title: string; heading: string; text: string; fingerprint: string }
 export interface RepoFilePlan {
@@ -74,6 +78,8 @@ export interface RepoFilePlan {
   adopted: Record<string, string>;
   skipped: { unrenderable: number; capped: number; ambiguous: number };
   addsPaused: boolean;
+  /** Why additions and edits stopped: three pull requests nobody merged, or a pull request the team took over is still open. */
+  pausedBy?: "unmerged" | "team_pr";
   /** The file after the changes; undefined when nothing changes in it. */
   nextText: string | undefined;
   digest: string;
@@ -90,6 +96,8 @@ export interface PlanInput {
   rendered: Readonly<Record<string, string>>;
   declined: readonly string[];
   addsPaused: boolean;
+  /** A Rovara pull request a person pushed to is still open: only removals are proposed until it is closed or merged. */
+  teamPr?: boolean;
   preset: "standard" | "regulated";
 }
 
@@ -97,7 +105,8 @@ export interface PlanInput {
 export function removalReasonOf(lesson: Lesson | undefined, blockers: readonly RepoFileBlocker[]): RemovalReason {
   if (lesson === undefined) return "lesson_erased";
   if (lesson.status === "expired") return "faded";
-  if (lesson.status !== "active") return lesson.counters.harmful > 0 || lesson.retiredByHarm !== undefined ? "harm" : "withdrawn";
+  if (lesson.status === "withdrawn") return "withdrawn";
+  if (lesson.status !== "active") return lesson.counters.harmful > 0 || lesson.retiredByHarm !== undefined ? "harm" : "retired";
   if (lesson.counters.harmful > 0 || lesson.retireProposedAt !== undefined) return "harm";
   if (hasStaleCitation(lesson)) return "stale_citation";
   if (blockers.includes("names_a_person")) return "names_a_person";
@@ -113,6 +122,7 @@ export function planRepoFile(input: PlanInput): RepoFilePlan {
   const file: ParsedFile | undefined = input.fileText === undefined ? undefined : parseLessonsFile(input.fileText);
   const mine = (lesson: Lesson): boolean => lesson.provenance.repoOnly?.place === input.place || input.rendered[lesson.id] !== undefined;
   const byId = new Map(input.lessons.filter(mine).map((lesson) => [lesson.id, lesson]));
+  const paused = input.addsPaused || input.teamPr === true;
   const skipped = { unrenderable: 0, capped: 0, ambiguous: 0 };
   const removals: PlanRemoval[] = [];
   const edits: PlanEdit[] = [];
@@ -131,7 +141,16 @@ export function planRepoFile(input: PlanInput): RepoFilePlan {
     const baseline = input.rendered[id] ?? desired?.fingerprint;
     const now = fingerprintOf(block.text, block.heading);
     // A block that is not what Rovara rendered is the team's.
-    if (baseline === undefined || now !== baseline) { held.push(id); continue; }
+    if (baseline === undefined || now !== baseline) {
+      // The team's wording is theirs, except that a privacy reason (erased, withdrawn, names a person, no longer repo-only) still proposes the removal (review H3).
+      const blockers = lesson === undefined ? [] : repoFileBlockers(lesson, input.place, input.names);
+      if (lesson === undefined || lesson.status !== "active" || blockers.length > 0) {
+        const reason = removalReasonOf(lesson, blockers);
+        if (PRIVACY_REMOVAL_REASONS.has(reason)) { removals.push({ id, reason, title: titleOfBlock(block.text), edited: true }); continue; }
+      }
+      held.push(id);
+      continue;
+    }
     if (input.rendered[id] === undefined) adopted[id] = now;
     const blockers = lesson === undefined ? [] : repoFileBlockers(lesson, input.place, input.names);
     const stays = lesson !== undefined && blockers.length === 0 && desired !== undefined;
@@ -141,18 +160,19 @@ export function planRepoFile(input: PlanInput): RepoFilePlan {
       removals.push({ id, reason: removalReasonOf(lesson, blockers), title: titleOfBlock(block.text) });
       continue;
     }
-    if (!input.addsPaused && desired !== undefined && desired.fingerprint !== now) {
+    if (!paused && desired !== undefined && desired.fingerprint !== now) {
       edits.push({ id, title: desired.title, heading: desired.heading, text: desired.text, fingerprint: desired.fingerprint, moved: desired.heading !== block.heading });
     }
   }
 
   // Owned ids Rovara merged before that are gone from the file: the team removed them.
-  for (const id of Object.keys(input.rendered)) if (!inFile.has(id)) newlyDeclined.push(id);
+  // (Only when there is a file to compare with: a repository the team deleted the file of and resumed starts from nothing, and nothing is "removed by the team".)
+  if (file !== undefined) for (const id of Object.keys(input.rendered)) if (!inFile.has(id)) newlyDeclined.push(id);
   const declined = new Set([...input.declined, ...newlyDeclined]);
 
   // Adds.
   let adds: PlanAdd[] = [];
-  if (!input.addsPaused) {
+  if (!paused) {
     const candidates = [...byId.values()]
       .filter((lesson) => !inFile.has(lesson.id) && !declined.has(lesson.id) && lesson.provenance.repoOnly?.place === input.place)
       .filter((lesson) => repoFileBlockers(lesson, input.place, input.names).length === 0 && (input.preset !== "regulated" || hasPersonApproval(lesson)))
@@ -188,5 +208,6 @@ export function planRepoFile(input: PlanInput): RepoFilePlan {
   const digest = createHash("sha256").update(JSON.stringify({
     r: removals.map((r) => [r.id, r.reason]), e: edits.map((e) => [e.id, e.fingerprint]), a: adds.map((a) => [a.id, a.fingerprint]),
   })).digest("hex").slice(0, 32);
-  return { removals, edits, adds, held, newlyDeclined, adopted, skipped, addsPaused: input.addsPaused, nextText: next, digest };
+  const pausedBy = input.teamPr === true ? "team_pr" as const : input.addsPaused ? "unmerged" as const : undefined;
+  return { removals, edits, adds, held, newlyDeclined, adopted, skipped, addsPaused: input.addsPaused || input.teamPr === true, ...(pausedBy === undefined ? {} : { pausedBy }), nextText: next, digest };
 }

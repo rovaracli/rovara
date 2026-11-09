@@ -1,6 +1,8 @@
 // Lessons in the repo, lane R2: builds the lessons file pass's ports from the broker's own dependencies (`lessons/repo-file-job.ts` RepoFileRuntime). It owns the provider-specific parts, so the lessons code stays neutral (decision 51):
 //   - the project's repositories as targets: each with the code host its record names (`hostOfRepository`) and the scope to call it in. A repository on a host this install has not registered, or with no pinned id, is left out.
 //   - the people the lessons could name: the project's members and the lessons' own people, by display name. A name that cannot be read throws, and the pass waits.
+// PORT GAPS (decision 51, listed for the Code port, not refactored here): only a GitHub repository gets a target (`host.kind !== "github"` is left out, and the place is `github:repo/<id>`), and the pass's cleanup of a write whose pull
+// request was never recorded deletes the branch, which closes the pull request on GitHub but not on a host where a merge request outlives its branch. A second host needs a place from the host and a close-by-branch method on the port.
 // The store, settings and audit sink are the lessons runtime's own; the state is the Team record table's `LESSONSET#REPOFILE#` items. Nothing here calls a model.
 import { randomUUID } from "node:crypto";
 import { OrgIdSchema, RepositoryDefinitionSchema, codeRepositoriesOf, repositoryHostOf } from "@agentx/contracts";

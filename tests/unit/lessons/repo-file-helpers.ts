@@ -32,6 +32,8 @@ export class FakeRepoHost {
   /** Every write: a commit, a branch deletion, a change request update. */
   writes: Array<{ op: "commit" | "delete" | "update" | "create"; branch?: string; paths?: string[]; force?: boolean; parent?: string; id?: string; state?: string }> = [];
   failCalls = new Set<string>();
+  /** Every commit the pass asked for, as it asked (paths, `previous`). */
+  commitInputs: CommitFilesInput[] = [];
   /** Runs in the middle of a commit, after the caller read and before the host writes: somebody pushes in between. */
   beforeCommit: (() => void) | undefined;
   private counter = 0;
@@ -91,6 +93,7 @@ export class FakeRepoHost {
   }
   async commitFiles(input: CommitFilesInput) {
     await this.seen("commitFiles");
+    this.commitInputs.push(structuredClone(input));
     // What the real adapter refuses.
     if (!LESSON_FILE_BRANCH_PATTERN.test(input.branch)) throw agentXError("CONFIG_INVALID", "branch name is invalid");
     if (input.files.some((file) => !LESSON_FILE_WRITE_PATHS.includes(file.path))) throw agentXError("CONFIG_INVALID", "file path is not one Rovara writes lessons to");

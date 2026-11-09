@@ -31,7 +31,15 @@ export const OpenPrSchema = z.object({
 }).strict();
 export type OpenPr = z.infer<typeof OpenPrSchema>;
 
-export const ClosingSchema = z.object({ branch: Branch, number: z.string().min(1).max(40).optional(), cause: z.enum(["replaced", "nothing_left", "switched_off", "erased", "merged", "closed_by_team"]), keepBranch: z.boolean().optional() }).strict();
+/**
+ * A pull request or branch Rovara still has to close or delete. `headRevision` is the head Rovara left the branch at: the branch is deleted (and the pull request closed) only while it is STILL there, read again right before the
+ * delete; a head that moved is a person's and is left entirely alone, and a head that cannot be read is not known to be Rovara's, so nothing is deleted (retried `attempts` times, then dropped). `keepBranch` closes the pull
+ * request only (an erasure closes a pull request a person pushed to, which loses no commit).
+ */
+export const ClosingSchema = z.object({
+  branch: Branch, number: z.string().min(1).max(40).optional(), cause: z.enum(["replaced", "nothing_left", "switched_off", "erased", "merged", "closed_by_team", "lessons_off"]),
+  headRevision: z.string().min(7).max(64).optional(), keepBranch: z.boolean().optional(), attempts: z.number().int().min(0).max(10).optional(),
+}).strict();
 export type Closing = z.infer<typeof ClosingSchema>;
 
 export const RepoFileStateSchema = z.object({
@@ -52,7 +60,10 @@ export const RepoFileStateSchema = z.object({
   unmerged: z.number().int().min(0),
   lastPassAt: z.number().optional(),
   open: OpenPrSchema.optional(),
-  pending: z.object({ branch: Branch, at: z.number() }).strict().optional(),
+  /** A branch Rovara decided on before it wrote, with the heads Rovara put on it (the base it was made at, and its own commit once written): it is deleted only while it is at one of them. */
+  pending: z.object({ branch: Branch, at: z.number(), baseRevision: z.string().min(7).max(64).optional(), headRevision: z.string().min(7).max(64).optional() }).strict().optional(),
+  /** Rovara pull requests a person pushed to (GitHub's "Update branch" counts): they are the team's now and are never touched again, except to be closed by an erasure. While one is open only removals are proposed. */
+  theirs: z.array(z.object({ branch: Branch, number: z.string().min(1).max(40), url: z.string().max(2_048), ids: z.array(Id).max(MAX_RENDERED) }).strict()).max(10).default([]),
   closing: z.array(ClosingSchema).max(10),
   problem: z.enum(LESSON_FILE_PROBLEMS).optional(),
   /** A pointer was proposed and a later pass found no agent file that names the lessons file. */
@@ -63,7 +74,7 @@ export const RepoFileStateSchema = z.object({
 export type RepoFileState = z.infer<typeof RepoFileStateSchema>;
 
 export const newRepoFileState = (place: string, name: string): RepoFileState => ({
-  place, name, enabled: false, pointerProposed: false, pointerDeclined: false, fileSeen: false, fileDeleted: false, rendered: {}, declined: [], held: [], unmerged: 0, closing: [], pointerMissing: false, revision: 0,
+  place, name, enabled: false, pointerProposed: false, pointerDeclined: false, fileSeen: false, fileDeleted: false, rendered: {}, declined: [], held: [], unmerged: 0, closing: [], theirs: [], pointerMissing: false, revision: 0,
 });
 
 export interface RepoFileStore {

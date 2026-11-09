@@ -39,7 +39,7 @@ describe("the proposal", () => {
     const cases: Array<[string, Parameters<typeof removalReasonOf>[0], string[], string]> = [
       ["gone from the store", undefined, [], "lesson_erased"],
       ["expired", { ...base, status: "expired" }, ["not_active"], "faded"],
-      ["retired", { ...base, status: "retired" }, ["not_active"], "withdrawn"],
+      ["retired", { ...base, status: "retired" }, ["not_active"], "retired"],
       ["withdrawn", { ...base, status: "withdrawn" }, ["not_active"], "withdrawn"],
       ["retired by harm", { ...base, status: "retired", counters: { ...base.counters, harmful: 2 } }, ["not_active"], "harm"],
       ["thumbs-down while active", { ...base, counters: { ...base.counters, harmful: 1 } }, ["needs_review"], "harm"],
@@ -136,7 +136,7 @@ describe("the pointer", () => {
 describe("the pull request words and the status lines", () => {
   it("put removals first, show the paused line, keep titles in code spans (a mention does nothing) and cap long lists", () => {
     const plan = planRepoFile(input({ lessons: Array.from({ length: 130 }, (_, i) => repoLesson(`les_many${String(i).padStart(4, "0")}`, { title: "Use the retry helper `now`", createdAt: i })) }));
-    const body = prBody({ ...plan, removals: [{ id: "les_old00001", reason: "faded", title: "Old @name text" }], addsPaused: true }, { pointerFiles: ["AGENTS.md"], unmerged: 3 });
+    const body = prBody({ ...plan, removals: [{ id: "les_old00001", reason: "faded", title: "Old @name text" }], addsPaused: true, pausedBy: "unmerged" }, { pointerFiles: ["AGENTS.md"], unmerged: 3 });
     expect(body.indexOf("Proposed removals (1)")).toBeLessThan(body.indexOf("Proposed new lessons"));
     expect(body).toContain("`Old @name text`");
     expect(body).toContain("`Use the retry helper 'now'`");

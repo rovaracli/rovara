@@ -145,7 +145,9 @@ describe("the nightly job", () => {
   it("a failing project does not stop the others, a repository that left is counted, and a switched-off one still finishes its closing", async () => {
     const w = passSetup();
     await w.enable({ closing: [{ branch: "rovara/lessons-0000000000aa", cause: "switched_off" }], pointers: undefined });
-    w.host.setFile("rovara/lessons-0000000000aa", "x", "y");
+    const stray = w.host.setFile("rovara/lessons-0000000000aa", "x", "y");
+    const state = await w.current();
+    await w.state.put(KEY, { ...state, closing: [{ branch: "rovara/lessons-0000000000aa", cause: "switched_off", headRevision: stray }] }, state.revision);
     await w.state.put(KEY, { ...(await w.current()), enabled: false }, (await w.current()).revision);
     const counts = await lessonsRepoFileJob(runtimeOf(w, { targets: async (_ws, project) => { if (project === "bad") throw new Error("boom"); return [w.target]; } }), WS, ["bad", "proj-1"], 10_000, 0);
     expect(counts.repoFileFailures).toBe(0);
@@ -188,7 +190,7 @@ describe("an erased lesson that is only in the open pull request comes out at on
     expect(Object.keys((await w.current()).open!.added)).toEqual(["les_aaaa0001"]);
   });
 
-  it("does nothing for a lesson the open pull request does not carry, and leaves a pull request a person pushed to", async () => {
+  it("does nothing for a lesson the open pull request does not carry; a pull request a person pushed to is closed (their commits and branch stay)", async () => {
     const w = passSetup();
     await w.seedLessons(repoLesson("les_aaaa0001"));
     await w.enable();
@@ -199,7 +201,7 @@ describe("an erased lesson that is only in the open pull request comes out at on
     expect(w.host.open).toHaveLength(1);
     w.host.setFile(open.branch, "notes.txt", "a person's commit");
     await closeOpenPullRequestFor(runtimeOf(w), w.key, "les_aaaa0001");
-    expect(w.host.open).toHaveLength(1);
+    expect(w.host.open).toHaveLength(0);
     expect(w.host.files.has(open.branch)).toBe(true);
   });
 });

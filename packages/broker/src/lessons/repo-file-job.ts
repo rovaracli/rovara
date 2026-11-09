@@ -31,7 +31,9 @@ export async function lessonsRepoFileJob(runtime: RepoFileRuntime, orgId: string
       if (work.length === 0) continue;
       const targets = await runtime.targets(key.workspaceId, project);
       const deps: RepoFileDeps = { ...runtime.deps, holder: runtime.newHolder?.() ?? `nightly-${String(runtime.deps.now())}` };
-      for (const state of work) {
+      // A different repository first each day, like the projects, so a time budget that runs out never cuts off the same ones.
+      const first = work.length === 0 ? 0 : dayNumber % work.length;
+      for (const state of [...work.slice(first), ...work.slice(0, first)]) {
         if (runtime.deps.now() - started > budgetMs) { counts.repoFileSkipped += 1; continue; }
         const target = targets.find((candidate) => candidate.place === state.place);
         if (target === undefined) {
@@ -43,7 +45,7 @@ export async function lessonsRepoFileJob(runtime: RepoFileRuntime, orgId: string
         if (!state.enabled) { await finishClosings(deps, key, target, state); continue; }
         const result = await runRepoFilePass(deps, key, target);
         if (result.status === "opened") counts.repoFilePrsOpened += 1;
-        else if (result.status === "left" || result.status === "waiting_on_team") counts.repoFileLeft += 1;
+        else if (result.status === "left") counts.repoFileLeft += 1;
         else if (result.status === "problem") counts.repoFileProblems += 1;
       }
     } catch {
