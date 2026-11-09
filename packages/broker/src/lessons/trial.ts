@@ -279,13 +279,22 @@ export function trialIsStable(lesson: Lesson, now: number): boolean {
     && lesson.counters.loaded >= TRIAL_STABLE_MIN_LOADS && lesson.counters.harmful === 0 && lesson.retireProposedAt === undefined && !hasStaleCitation(lesson);
 }
 
+/** The pending cards that came from a member's correction and name a lesson, by card id. */
+export async function memberCardsOf(store: StableDeps["store"], key: ScopeKey): Promise<Lesson[]> {
+  return (await store.list(key, { statuses: ["pending"] })).filter((card) => card.contradictsWith !== undefined && card.provenance.memberCorrection === true).sort((a, b) => a.id.localeCompare(b.id));
+}
+/** The ids of the lessons such cards name: a lesson in this set is contradicted by a member's correction that a person has not decided yet. One read of the project's pending lessons. */
+export async function contradictedByMemberCard(store: StableDeps["store"], key: ScopeKey): Promise<ReadonlySet<string>> {
+  return new Set((await memberCardsOf(store, key)).map((card) => card.contradictsWith!));
+}
+
 /**
  * Moves one trial lesson to stable if it has earned it. Idempotent; true when this call moved it.
  * Stable is what makes a lesson publishable to a repository, so it is a grant: the ledger entry is written first (ONCE per call, not once per try), and a promotion that cannot be recorded does not happen (it is tried
- * again later). A lesson that names an erased person is not tried at all (the store's erasure fence would refuse the commit, and the ledger would hold a grant that never happened), and a commit the fence refuses
+ * again later). A lesson a pending member-correction card contradicts is not promoted (`contradictedByMemberCard`). A lesson that names an erased person is not tried at all (the store's erasure fence would refuse the commit, and the ledger would hold a grant that never happened), and a commit the fence refuses
  * ("erased", "fenced") is final: only a lost race ("conflict") is tried again. A commit that fails after the entry was written is followed by a `lesson.promote_failed` bookkeeping line.
  */
-export async function promoteIfStable(deps: StableDeps, key: ScopeKey, lessonId: string): Promise<boolean> {
+export async function promoteIfStable(deps: StableDeps, key: ScopeKey, lessonId: string, contradicted?: ReadonlySet<string>): Promise<boolean> {
   const now = deps.now();
   let audited = false;
   const failed = async (): Promise<false> => {
@@ -295,6 +304,9 @@ export async function promoteIfStable(deps: StableDeps, key: ScopeKey, lessonId:
   for (let attempt = 0; attempt < 3; attempt += 1) {
     const fresh = await deps.store.get(key, lessonId);
     if (fresh === undefined || !trialIsStable(fresh, now)) return failed();
+    // The one eligibility check beyond the lesson's own (the load-time and the nightly path both come through here): a lesson a pending member-correction card contradicts is not made stable (the nightly repair retires it,
+    // or a person decides the card). `contradicted` is the nightly pass's list, read once for the project; asked alone, this reads the project's pending cards once, and only for a lesson that has otherwise earned stable.
+    if ((contradicted ?? await contradictedByMemberCard(deps.store, key)).has(fresh.id)) return failed();
     for (const person of peopleOf(fresh)) if (await deps.store.isErased(key, person)) return failed();
     if (!audited) {
       if (!(await requireAudit(deps.audit, { action: "lesson.trial_stable", workspaceId: key.workspaceId, project: key.project, lessonId: fresh.id, facts: { tier: fresh.tier } }))) return false;
@@ -310,10 +322,10 @@ export async function promoteIfStable(deps: StableDeps, key: ScopeKey, lessonId:
 
 /**
  * Moves every trial lesson that earned it to stable. Idempotent and bounded; returns the ids moved. For the nightly pass (a lesson that is not loaded again would otherwise wait for a load). `stop` is asked before
- * each lesson (the caller's time budget); `skip` names lessons that are not moved (the nightly pass: a lesson a pending member card contradicts). The lessons are read a page at a time (`PROMOTE_PAGE`), so a large project is never read whole.
+ * each lesson (the caller's time budget); `skip` is the lessons a pending member card contradicts, when the caller has read them once for the project (absent: read when a lesson has earned stable). The lessons are read a page at a time (`PROMOTE_PAGE`), so a large project is never read whole.
  */
 export const PROMOTE_PAGE = 100;
-export async function promoteStableTrials(deps: StableDeps, key: ScopeKey, limit = 200, stop?: () => boolean, skip: ReadonlySet<string> = new Set()): Promise<string[]> {
+export async function promoteStableTrials(deps: StableDeps, key: ScopeKey, limit = 200, stop?: () => boolean, skip?: ReadonlySet<string>): Promise<string[]> {
   const moved: string[] = [];
   const now = deps.now();
   let after: string | undefined;
@@ -321,7 +333,7 @@ export async function promoteStableTrials(deps: StableDeps, key: ScopeKey, limit
     const page = await deps.store.listPage(key, { statuses: ["active"], limit: PROMOTE_PAGE, ...(after === undefined ? {} : { after }) });
     for (const lesson of page.lessons) {
       if (moved.length >= limit || stop?.() === true) return moved;
-      if (!skip.has(lesson.id) && trialIsStable(lesson, now) && (await promoteIfStable(deps, key, lesson.id))) moved.push(lesson.id);
+      if (trialIsStable(lesson, now) && (await promoteIfStable(deps, key, lesson.id, skip))) moved.push(lesson.id);
     }
     after = page.next;
   } while (after !== undefined);

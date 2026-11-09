@@ -13,7 +13,7 @@ import { InMemoryLessonStore, type LoadManifest } from "../../../packages/broker
 import { TRIAL_APPROVER, TRIAL_STABLE_AFTER_DAYS, isPublishable, isTrialLesson, namesAPerson, promoteStableTrials, touchesAuthorityOrSpend } from "../../../packages/broker/src/lessons/trial.js";
 import type { Lesson } from "../../../packages/broker/src/lessons/types.js";
 import {
-  Alerts, Audit, Clock, KEY, MemoryVectors, PROJECT, ScriptedModel, Spend, WS, allowAllAccess, candidateJson, directory, draft, embedder, facts, lessonRecord, memberSpan, reply, settings, subject, verifier,
+  Alerts, Audit, Clock, KEY, MemoryVectors, PROJECT, ScriptedModel, Spend, WS, allowAllAccess, candidateJson, directory, draft, embedder, facts, lessonRecord, memberSpan, reply, seed, settings, subject, verifier,
 } from "./lesson-helpers.js";
 
 const DAY = 86_400_000;
@@ -336,6 +336,31 @@ describe("trial becomes stable after 14 days and at least 3 loads with no thumbs
     await store.putManifest(loadedManifest("task-9", lesson.id));
     await applyLoadReport(deps, { ...KEY, taskId: "task-9", stage: "IMPLEMENT", round: 1, report: { v: 1, stage: "IMPLEMENT", lessons: [{ id: lesson.id, version: 1, citation: "valid" }] } as never });
     expect((await store.get(KEY, lesson.id))!.trial?.state).toBe("stable");
+  });
+
+  it("R3: at load time too, a lesson a pending member-correction card contradicts stays on trial (one eligibility check for the load and the nightly pass); a card that is not a member's, or none, does not hold it back", async () => {
+    const card = (member: boolean, over: Partial<Lesson> = {}): Lesson => lessonRecord({
+      id: "les_card9", workspaceId: WS, project: PROJECT, status: "pending", contradictsWith: "les_none", tierReasons: ["contradiction"], provenance: { ...draft().provenance, memberCorrection: member }, ...over,
+    });
+    const third = async (cardOf: ((lessonId: string) => Lesson) | undefined) => {
+      const { deps, store, clock, lesson } = await live();
+      clock.advance(15 * DAY);
+      await store.mutate(KEY, lesson.id, (l) => ({ counters: { ...l.counters, loaded: 2 } }));
+      if (cardOf !== undefined) await seed(store, cardOf(lesson.id));
+      await store.putManifest(loadedManifest("task-9", lesson.id));
+      await applyLoadReport(deps, { ...KEY, taskId: "task-9", stage: "IMPLEMENT", round: 1, report: { v: 1, stage: "IMPLEMENT", lessons: [{ id: lesson.id, version: 1, citation: "valid" }] } as never });
+      return { state: (await store.get(KEY, lesson.id))!.trial?.state, deps, store, lesson, clock };
+    };
+    expect((await third((id) => card(true, { contradictsWith: id }))).state).toBe("trial");
+    expect((await third((id) => card(false, { contradictsWith: id }))).state).toBe("stable");
+    expect((await third((id) => card(true, { contradictsWith: id, status: "rejected" }))).state).toBe("stable");
+    expect((await third(undefined)).state).toBe("stable");
+    // the nightly pass holds it back by the same check, and promotes it once the card is decided
+    const held = await third((id) => card(true, { contradictsWith: id }));
+    expect(await promoteStableTrials(held.deps, KEY)).toEqual([]);
+    const decided = await held.store.get(KEY, "les_card9");
+    await held.store.commit(KEY, await held.store.setVersion(KEY), [{ ...decided!, version: decided!.version + 1, status: "rejected" }], held.clock.now());
+    expect(await promoteStableTrials(held.deps, KEY)).toEqual([held.lesson.id]);
   });
 });
 

@@ -16,8 +16,7 @@ import type { TeamRecordTable } from "../team-record/types.js";
 import { revertedTasksSince } from "./task-outcome-rows.js";
 import { sweepExpired } from "./expiry.js";
 import { retireLesson } from "./curate.js";
-import { isTrialLesson, promoteStableTrials, type StableDeps } from "./trial.js";
-import type { Lesson } from "./types.js";
+import { contradictedByMemberCard, isTrialLesson, memberCardsOf, promoteStableTrials, type StableDeps } from "./trial.js";
 
 /** LP-13: 72 hours. The rows are found by their event time, and a revert can reach the record late (GitHub redelivers for three days); the worker's once-claim on `LEARN#<task>#reverted` makes a repeat free. */
 export const REVERT_WINDOW_MS = 72 * 60 * 60 * 1000;
@@ -151,7 +150,7 @@ export async function lessonsPromoteJob(deps: Pick<LessonsJobDeps, "table" | "se
     try {
       if ((await resolveLearning(deps.settings, org.data, project)).trialAllowed) {
         // A lesson a pending member card contradicts is never made stable (the repair retires it; past its night's cap it waits for the next night, still on trial).
-        const contradicted = new Set((await memberCardsOf(deps.maintain.store, { workspaceId: org.data, project })).map((card) => card.contradictsWith!));
+        const contradicted = await contradictedByMemberCard(deps.maintain.store, { workspaceId: org.data, project });
         promoted += (await promoteStableTrials(deps.maintain, { workspaceId: org.data, project }, MAX_PROMOTIONS_PER_PROJECT, stop, contradicted)).length;
       }
     } catch {
@@ -170,11 +169,6 @@ export async function lessonsPromoteJob(deps: Pick<LessonsJobDeps, "table" | "se
 export const MAX_TRIAL_REPAIRS_PER_PROJECT = 20;
 /** The most cards one project's repair looks at in a night, whatever came of them: the hard bound of the pass (the pending cards are read in a rotating order, so no card is behind the limit every night). */
 export const MAX_TRIAL_REPAIR_CHECKS = 200;
-
-/** The pending cards that came from a member's correction and name a lesson, by id (the order is the card id's). */
-async function memberCardsOf(store: StableDeps["store"], key: { workspaceId: string; project: string }): Promise<Lesson[]> {
-  return (await store.list(key, { statuses: ["pending"] })).filter((card) => card.contradictsWith !== undefined && card.provenance.memberCorrection === true).sort((a, b) => a.id.localeCompare(b.id));
-}
 
 /**
  * Nightly (LP-13 review L12, R3). A member's correction that contradicts a lesson live on trial makes a card for people and retires that lesson (`curate.ts`, `toPerson`). The retire comes after the card is committed, and a
