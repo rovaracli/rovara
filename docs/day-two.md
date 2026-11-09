@@ -412,6 +412,49 @@ The API's own address never stops working, so there is no outage to undo. To tak
 
 An upgrade with operator credentials is not possible on a Rovara Cloud install (it is deployed with the cdk engine, which the operator role cannot use), so the access stack is never skipped on these upgrades.
 
+## Operator backfill scripts
+
+Two one-off scripts in this repository fix data written before a release. Both run from a checkout of the release's tag (`npm ci`, then `npx tsc -b packages/contracts`, then `npx tsx scripts/<name>.ts`), print counts and never a name, and can be run again.
+
+**Who can run them.** They read and write the State and audit tables directly, so they need an install admin's AWS credentials (for the first script: `dynamodb:Scan` on the audit keys table, `dynamodb:BatchGetItem`, `GetItem`, `PutItem` and `UpdateItem` on the State table, and `lambda:InvokeFunction` on the sign-in function). The operator role (`agentx-<env>-operator`) is denied all of these on purpose and cannot run them. Neither script needs `--profile`: set the credentials and `AWS_REGION` in the environment (or pass `--region`), the way a release wrapper does. `--profile` is only for a run outside a wrapper.
+
+### Erase the chosen names of people erased before 0.5.11 (required, 0.5.11)
+
+`scripts/backfill-erased-names.ts`. Required once per install after upgrading to 0.5.11 and before people are told they can pick a new name after an erase. Without it, a person erased before 0.5.11 who signs in again gets the name they chose back into their own "me" name and into invite and SSO emails.
+
+It finds everyone erased from the audit ledger (the `SUBJECT#<developer id>` tombstones in the audit keys table, the only record that still holds the id), then runs the broker's own `nameEraserOf(...).erase` for each: the name item in the State table becomes a tombstone with no name, and the sign-in function clears the name on the sign-in record. It does not touch anyone whose name item is already a tombstone with no name, except to repeat the sign-in function's erase for them (it sets the same placeholder again; nothing changes the second time), because an earlier erase may have stopped between the two steps. It keeps the new name of anyone who was erased and then chose a new name for a new membership.
+
+Dry run first (the default; writes nothing, lists counts and short hashes of ids):
+
+```sh
+npx tsx scripts/backfill-erased-names.ts \
+  --keys-table <audit keys table> --state-table <state table> --identity-function <sign-in function name>
+```
+
+Then write:
+
+```sh
+npx tsx scripts/backfill-erased-names.ts \
+  --keys-table <audit keys table> --state-table <state table> --identity-function <sign-in function name> --apply
+```
+
+The table names and function name can be set as `AUDIT_KEYS_TABLE_NAME`, `STATE_TABLE_NAME` and `DEVELOPER_IDENTITY_FUNCTION_NAME` instead (the names the broker uses; see the stack outputs and the broker's environment). `--no-sign-in` is for an install with no sign-in function.
+
+- The summary is one JSON line on stdout (the broker's own log lines go to stderr) and a sentence on stderr: `people`, `alreadyErased`, `signInConfirmed`, `rejoinedKept`, `toErase`, `erased`, `failed`, `failureCodes`, `shreddedOrgs`. A second `--apply` prints "Nothing to change".
+- Exit codes: 0 only when every page was read and nothing failed; 1 if any erase or read failed (the counts printed are what was done before it; run it again); 2 for a bad option; 3 when it stopped at `--max-pages` or `--max-ms` before the end. The step is not done until a run exits 0.
+- It is bounded: `--page-size` (default 100), `--max-pages`, `--max-ms` (default 10 minutes) and `--pause-ms` (default 200). A throttled call is retried with a pause. After exit 3 run it again with the same `--cursor-file <path>` to continue (counts are per invocation). The cursor file holds developer and company ids: keep it in a private directory, it is written with mode 0600 and removed when the run finishes; delete it yourself after a failed run once the step is done. A page with a failure ends the run (exit 1) with the cursor left at that page, so running it again with the same cursor file retries it; never delete the cursor file to "skip" a failure. A dry-run cursor is refused by an `--apply` run.
+- Known gaps. (1) A company that was closed and shredded has no ledger tombstones left, so people erased only there cannot be found; the summary counts `shreddedOrgs` and the operator checks them by hand. (2) Someone erased before 0.5.11 who has already chosen a new name before this runs is erased again and must choose again, which is why it runs first. (3) With the team record on, the product keeps keyed hashes of an erased person's names for 30 days so the old name cannot be chosen again at once; this backfill keeps none, so a person erased in the last 30 days may type their old name again.
+
+### Index old merge commits (optional, 0.5.9 and later)
+
+`scripts/backfill-merge-commit-index.ts` indexes the merge commits of pull requests merged before the index existed, so a revert of one of them is recorded. Optional and only for merges whose outcome samples still exist; it reads with a consistent `Scan` and puts missing rows with `attribute_not_exists`.
+
+```sh
+npx tsx scripts/backfill-merge-commit-index.ts --table <state table>
+```
+
+`--region` (or `AWS_REGION`) is required; `--profile` is optional. A run stopped by `--max-ms` prints the key to resume from (`--resume '<json>'`).
+
 ## GitHub connection requests (Rovara Cloud)
 
 Only the Rovara operator can redeliver an `installation.created` webhook, from the GitHub App's settings (Advanced, Recent Deliveries), and only within about 3 days of the delivery: use it when an approved "ask my GitHub admin" request was not bound because GitHub or the control plane was down (the request stays waiting and a redelivery retries it).
