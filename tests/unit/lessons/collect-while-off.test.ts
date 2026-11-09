@@ -211,6 +211,20 @@ describe.each(offStates)("with the lessons switch %s: every model path makes zer
 });
 
 describe("the lessons runtime puts the same gate in front of whatever model it is given (the second lock behind customerLearningModel's own)", () => {
+  it.each(offStates)("lessons switch %s: a draft in flight makes no embedder call; with the switch on it does", async (_name, gate) => {
+    const run = async (g: () => boolean) => {
+      setLearnedLessonsGate(g);
+      const before = embedder.calls;
+      const store = new InMemoryLessonStore();
+      let n = 0;
+      const deps = { store, embedder, vectors: new MemoryVectors(), judgeModel: new ScriptedModel(), spend: new Spend(), audit: new Audit(), alerts: new Alerts(), now: new Clock().now, verifier: verifier("valid"), settings: settings(), newId: () => `les_${String(++n).padStart(4, "0")}` };
+      await curateDraft(deps, KEY, draft());
+      return embedder.calls - before;
+    };
+    expect(await run(gate)).toBe(0);
+    expect(await run(() => true)).toBeGreaterThan(0);
+  });
+
   it.each(offStates)("lessons switch %s: runtime.routes.judgeModel refuses and the given model is never reached; with the switch on it is", async (_name, gate) => {
     const inner = new ScriptedModel([{ text: "x", costUsd: 0.01 }]);
     const w = world();

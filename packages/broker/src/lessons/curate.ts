@@ -265,7 +265,8 @@ export async function curateDraft(deps: CurateDeps, key: ScopeKey, draft: Lesson
   await noteCandidateSources(deps, deps.store, key, attributableSources(draft.provenance), deps.alerts, deps.alreadyNoted);
 
   // The neighbours: the project's lessons whose scope overlaps, ranked by the fused matcher (keywords, paths and, where there is one, the embedder). It never fails: an embedder that is down or slow is keywords and paths.
-  const sim = { embedder: deps.embedder, vectors: deps.vectors, log: deps.log, metrics: deps.metrics };
+  // Decision 47: a draft in flight when the lessons switch goes off makes no embedder call (keywords and paths only).
+  const sim = { embedder: learnedLessonsSwitchOn() ? deps.embedder : undefined, vectors: deps.vectors, log: deps.log, metrics: deps.metrics };
   const pool = (await deps.store.list(key, { statuses: ["candidate", "pending", "active", "rejected"] })).filter((l) => scopesOverlap(l.scope, draft.scope));
   const { ranked, queryVector } = await rankLessons(sim, key, pool, docOf(draft), { embedMissing: true, queryKind: "document", timeoutMs: EMBED_TIMEOUT_MS.curate });
   const byId = new Map(pool.map((l) => [l.id, l] as const));
