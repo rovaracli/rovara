@@ -32,7 +32,7 @@ export const oneLineOf = (text: string): string => foldedRuleText(text).replace(
 
 /** Layer text, inert and quoted: every line starts with "> ", so no line of it can read as a section title, a number, the header or the closing line; angle brackets are escaped. */
 const quoted = (text: string): string =>
-  redactText(inertRuleText(text)).replace(/</g, "&lt;").replace(/>/g, "&gt;").split("\n").map((line) => (line === "" ? ">" : `> ${line}`)).join("\n");
+  redactText(inertRuleText(text)).replace(/</g, "&lt;").replace(/>/g, "&gt;").split(/\n|\u2028|\u2029/u).map((line) => (line === "" ? ">" : `> ${line}`)).join("\n");
 
 /** A company rule as one bullet: inert, secrets redacted (checked again at render, not only at save), folded to one line so a rule cannot start a section of its own. */
 const bulletOf = (rule: CompanyRule): string => `- ${redactText(oneLineOf(rule.text))}`;
