@@ -65,6 +65,8 @@ export function createHumanEditExtractor(deps: HumanEditExtractorDeps): HumanEdi
       await onActive();
       const base = await deps.source.read({ workspaceId: input.workspaceId, taskId: input.taskId, context: "human_edit" });
       if (base === undefined || base.facts.workspaceId !== input.workspaceId || base.facts.project !== input.project || base.facts.taskId !== input.taskId) return none;
+      // Lane 7: an edit to an eval or replay run's pull request teaches nothing; refused before any author is looked up.
+      if (base.facts.rest.evalRun === true) return none;
       // Every author, now. Asking all of them (no short cut) so a check that cannot tell is never hidden by an earlier answer.
       let allowed = true;
       for (const developerId of input.authors) {

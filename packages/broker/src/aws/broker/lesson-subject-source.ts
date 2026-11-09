@@ -22,6 +22,7 @@ import { OrgIdSchema, SLACK_OIDC_ISSUER, workflowFindingFingerprint, type Workfl
 import { taskKey, taskOwnerKey, tryEffectiveTaskOwner, type DeveloperTaskRecord } from "../../developer/task-records.js";
 import { loadWorkflowDocument } from "../../developer/plan-artifacts.js";
 import type { TaskSubjectBase, TaskSubjectSource } from "../../lessons/task-end.js";
+import { isEvalRunMark } from "../../lessons/eval-run.js";
 import { isHumanSendBack } from "../../lessons/human-send-backs.js";
 import { logRef } from "../../lessons/log-ref.js";
 import type { EvidenceSpan } from "../../lessons/reflect-input.js";
@@ -306,6 +307,8 @@ export function lessonSubjectSource(deps: LessonSubjectSourceDeps): TaskSubjectS
       const task = ((await deps.documentClient.send(new GetCommand({ TableName: deps.tableName, Key: taskKey(input.taskId), ConsistentRead: true }))) as { Item?: DeveloperTaskRecord }).Item;
       if (task === undefined || task.taskId !== input.taskId || task.orgId !== orgParsed.data) return undefined;
       if (task.automatic !== undefined || task.purpose !== undefined) return undefined;
+      // Lane 7: an eval or replay run teaches nothing (lessons learn only from historical outcomes).
+      if (isEvalRunMark(task.evalRun)) return undefined;
       return task.project;
     },
     async read(input) {
@@ -317,6 +320,8 @@ export function lessonSubjectSource(deps: LessonSubjectSourceDeps): TaskSubjectS
       if (task === undefined || task.taskId !== input.taskId || task.orgId !== orgId) return undefined;
       // Only a person's workflow task teaches: an automatic run has nobody who started it, a setup draft or a diagnosis is not a piece of work.
       if (task.automatic !== undefined || task.purpose !== undefined) return undefined;
+      // Lane 7: an eval or replay run teaches nothing (lessons learn only from historical outcomes).
+      if (isEvalRunMark(task.evalRun)) return undefined;
       const visibility = await deps.visibility(orgId, task.taskId);
       if (visibility === undefined) return undefined;
       const project = task.project;

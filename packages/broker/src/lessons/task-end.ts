@@ -199,7 +199,7 @@ async function countOutcome(deps: TaskLearningDeps, base: TaskSubjectBase, subje
   }
 }
 
-export type LearnStatus = "off" | "no_facts" | "not_reflected" | "reflected";
+export type LearnStatus = "off" | "no_facts" | "not_reflected" | "reflected" | "eval_run";
 /**
  * H1: what a reflection came to, typed. `retry` is true only for a fault that is known to have spent nothing at the moment it happened and may pass: a read of the task, the project's settings or the record failed, the
  * model path failed in a way it marked retryable (a table fault before the call, a refusal by the deadline, a call the in-VPC client refused before sending), or the spend look failed. The worker retries those, and only after it
@@ -224,6 +224,8 @@ export async function learnFromEndedTaskTyped(deps: TaskLearningDeps, input: { w
     }
     const base = await deps.source.read({ workspaceId: input.workspaceId, taskId: input.taskId });
     if (base === undefined || base.facts.workspaceId !== input.workspaceId) return final("no_facts");
+    // Lane 7: an eval or replay run is not learned from: no rows are read, no outcome is counted, no model is called.
+    if (base.facts.rest.evalRun === true) return final("eval_run");
     // The switch again on the project the facts name (the only check for a source that cannot name the project alone; for the others it only repeats the same answer).
     const learning = await resolveLearning(deps.settings, input.workspaceId, base.facts.project);
     if (!modeAllows(learning.mode, "reflect")) return final("off");

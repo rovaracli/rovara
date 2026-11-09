@@ -94,6 +94,8 @@ export interface DeveloperTaskRecord {
   fundingProof?: TaskFundingProof;
   /** Durable receipt of the approved plain-task window; never fresh money. */
   spendingAdmission?: SpendingAdmissionReference;
+  /** Lane 7: set (true) on a task that is an eval or replay run. Lessons never learn from it (`lessons/eval-run.ts#isEvalRunMark`: any value but absent, null or false counts as set). */
+  evalRun?: true;
   /** Ruling R38: the task keys' cumulative spend when its owner last chose Continue; the task's cap counts spend above it. */
   budgetBaselineUsd?: number;
   /** The model proxy keys minted for this task, by key id (a hash, never the key); the next key's cap counts their spend (ruling R30). */
