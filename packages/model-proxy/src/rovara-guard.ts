@@ -160,12 +160,17 @@ def _deep_names(value, path="", out=None):
     return out
 
 
+def _short(where):
+    """A path in a refusal message, capped so a deeply nested body cannot make the 400 body large."""
+    return where if len(where) <= 200 else where[:200] + "..."
+
+
 def _check_tools(route, tools, where="tools"):
     """Refuse any tool that is not a plain function (client-side) tool; the message names the offending type."""
     if tools is None:
         return
     if not isinstance(tools, list):
-        _refuse(f"field {where} (must be a list of function tools)")
+        _refuse(f"field {_short(where)} (must be a list of function tools)")
     allowed = ROUTE_TOOL_TYPES[route]
     for i, tool in enumerate(tools):
         _check_tool(allowed, tool, f"{where}[{i}]")
@@ -173,18 +178,18 @@ def _check_tools(route, tools, where="tools"):
 
 def _check_tool(allowed, tool, where):
     if not isinstance(tool, dict):
-        _refuse(f"{where} is not a function tool")
+        _refuse(f"{_short(where)} is not a function tool")
     kind = tool.get("type")
     if (kind is not None and not isinstance(kind, str)) or kind not in allowed:
         shown = kind[:64] if isinstance(kind, str) else type(kind).__name__
-        _refuse(f"tool type {shown!r} at {where} (only function tools are served: provider-side tools such as web search, code execution, MCP, computer use and file search are refused)")
+        _refuse(f"tool type {shown!r} at {_short(where)} (only function tools are served: provider-side tools such as web search, code execution, MCP, computer use and file search are refused)")
 
 
 def _check_nested_tools(route, body):
     """Tool definitions can also travel inside the conversation: Responses input items (additional_tools, tool_search_output carry a
-    tools list) and Anthropic messages (a tool_addition block carries a tool_definition). Walk input and messages, and hold every such
+    tools list) and Anthropic messages (a tool_addition block carries a tool_definition). Walk input, messages and system, and hold every such
     list or definition to the same rule as the top-level tools. Iterative, so a deeply nested body cannot raise RecursionError."""
-    for field in ("input", "messages"):
+    for field in ("input", "messages", "system"):
         if field not in body:
             continue
         stack = [(field, body[field])]
@@ -195,6 +200,10 @@ def _check_nested_tools(route, body):
             elif isinstance(value, dict):
                 if "tools" in value:
                     _check_tools(route, value["tools"], f"{where}.tools")
+                if value.get("type") == "tool_addition":
+                    tool = value.get("tool")
+                    if not isinstance(tool, dict) or tool.get("type") != "tool_definition":
+                        _refuse(f"tool_addition without a tool_definition at {_short(where)}")
                 if value.get("type") == "tool_definition":
                     _check_tool(ROUTE_TOOL_TYPES["anthropic_messages"], value.get("definition"), f"{where}.definition")
                 skip_input = value.get("type") in ARGUMENT_BLOCKS

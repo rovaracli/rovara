@@ -171,4 +171,32 @@ json.dump(out, sys.stdout)
     expect(verdicts.map((v) => v.status)).toEqual([200, 200, 400, 400, 400, 400, 400, 400]);
     expect(verdicts[2]!.detail).toContain("field include");
   });
+
+  itPython("also walks the Anthropic system field, needs a tool_definition inside every tool_addition, and caps the path in the 400", () => {
+    const addition = (tool: unknown) => ({ type: "tool_addition", tool });
+    const def = (definition: unknown) => ({ type: "tool_definition", definition });
+    const deep = (n: number) => {
+      let value: unknown = [{ type: "tool_definition", definition: { type: "web_search_20250305", name: "w" } }];
+      for (let i = 0; i < n; i++) value = [value];
+      return value;
+    };
+    const run = (messages: unknown, system?: unknown) => ({ call_type: "anthropic_messages", data: { ...base.anthropic_messages, messages, ...(system === undefined ? {} : { system }) } });
+    const verdicts = runGuard([
+      run([], [{ type: "text", text: "t" }, addition(def({ type: "web_search_20250305", name: "w" }))]),        // N1: typed definition in system
+      run([], [{ type: "text", text: "t", tools: [{ type: "web_search_20250305", name: "w" }] }]),               // N1: tools list in system
+      run([], "plain system text"),                                                                              // allowed
+      run([], [{ type: "text", text: "t", cache_control: { type: "ephemeral" } }, addition(def(clientTool))]),   // allowed
+      run([{ role: "system", content: [addition({ type: "web_search_20250305", name: "w" })] }]),                // N2: typed tool placed directly
+      run([{ role: "system", content: [addition({ type: "something_else", definition: clientTool })] }]),       // N2: other wrapper
+      run([{ role: "system", content: [addition(undefined)] }]),                                                 // N2: no tool
+      run([{ role: "system", content: [addition("x")] }]),                                                       // N2: tool not an object
+      run([deep(300)]),                                                                                          // N3: long path
+    ]);
+    expect(verdicts.map((v) => v.status)).toEqual([400, 400, 200, 200, 400, 400, 400, 400, 400]);
+    expect(verdicts[0]!.detail).toContain("tool type 'web_search_20250305' at system[1].tool.definition");
+    expect(verdicts[1]!.detail).toContain("tool type 'web_search_20250305' at system[0].tools[0]");
+    for (const index of [4, 5, 6, 7]) expect(verdicts[index]!.detail).toContain("tool_addition without a tool_definition at messages[0].content[0]");
+    expect(verdicts[8]!.detail!.length).toBeLessThan(600);
+    expect(verdicts[8]!.detail).toContain("...");
+  });
 });
