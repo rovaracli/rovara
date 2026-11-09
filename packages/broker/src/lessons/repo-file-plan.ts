@@ -90,8 +90,8 @@ export interface PlanInput {
   fileText: string | undefined;
   rendered: Readonly<Record<string, string>>;
   declined: readonly string[];
-  /** Ids of lessons erased or withdrawn in Rovara: a block with one of these ids is proposed for removal however it got into the file. */
-  erased?: readonly string[];
+  /** Which of the ids in the file are gone for good in Rovara (the lesson store's own tombstone, one durable row per erased or withdrawn lesson): a block with one of these ids is proposed for removal however it got into the file. */
+  gone?: ReadonlySet<string>;
   addsPaused: boolean;
   /** A Rovara pull request a person pushed to is still open: only removals are proposed until it is closed or merged. */
   teamPr?: boolean;
@@ -128,7 +128,7 @@ export function planRepoFile(input: PlanInput): RepoFilePlan {
   const file: ParsedFile | undefined = input.fileText === undefined ? undefined : parseLessonsFile(input.fileText);
   const mine = (lesson: Lesson): boolean => lesson.provenance.repoOnly?.place === input.place || input.rendered[lesson.id] !== undefined;
   const everyLesson = new Map(input.lessons.map((lesson) => [lesson.id, lesson]));
-  const erasedIds = new Set(input.erased ?? []);
+  const goneIds = input.gone ?? new Set<string>();
   const byId = new Map(input.lessons.filter(mine).map((lesson) => [lesson.id, lesson]));
   const paused = input.addsPaused || input.teamPr === true;
   const skipped = { unrenderable: 0, capped: 0, ambiguous: 0 };
@@ -141,7 +141,7 @@ export function planRepoFile(input: PlanInput): RepoFilePlan {
   skipped.ambiguous = file?.duplicates.length ?? 0;
 
   // Erasure is driven by the FILE: every block that carries a marker of a lesson Rovara knows (or knew and erased) is looked at, however it got there. An id nobody knows is a team block and is left alone.
-  const known = [...inFile].filter((id) => !file!.duplicates.includes(id) && (input.rendered[id] !== undefined || everyLesson.has(id) || erasedIds.has(id))).sort(compareIds);
+  const known = [...inFile].filter((id) => !file!.duplicates.includes(id) && (input.rendered[id] !== undefined || everyLesson.has(id) || goneIds.has(id))).sort(compareIds);
   for (const id of known) {
     const block = blockOf(file!, id)!;
     const lesson = everyLesson.get(id);

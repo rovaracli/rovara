@@ -41,7 +41,7 @@ const OUTSIDE_STORAGE_MODULES: Record<string, string> = {
   "lessons/dynamo-store.ts": "the lessons store",
   "lessons/dynamo-vectors.ts": "the lesson vectors (lane 5, DECISIONS 23): one item beside each lesson head, read by the ids the caller names (a consistent BatchGet, never a scan); a derived vector, a spec and a text hash, no person and no text; removed with the lesson, the project and the workspace",
   "lessons/dynamo-settings.ts": "the learning settings",
-  "lessons/dynamo-repo-file.ts": "lessons in the repo (R2): the per-repository state of the lessons file and its weekly pull request (one item per project and repository under the LESSONSET prefix a project or workspace erase already wipes); ids, fingerprints, counts, branch names and times, never a lesson's text, a person or a host's words; every write conditional on the revision read",
+  "lessons/dynamo-repo-file.ts": "lessons in the repo (R2): the per-repository state of the lessons file and its weekly pull request (one item per project and repository) and the erase rows (one per pull request that adds erased text, until the host confirms the close), all under the LESSONSET prefix a project or workspace erase already wipes; ids, fingerprints, counts, branch names and times, never a lesson's text, a person or a host's words; every write conditional on the revision read",
   "lessons/delivery-wiring.ts": "lesson delivery reads",
   "org/test-environment.ts": "the test-environment row",
   "lessons/nightly-state.ts": "where the nightly lessons passes start tomorrow and which projects they last swept (one item per company and pass in the company's own partition; project hashes and times only, nothing erasable) (lessons connect fix 1)",

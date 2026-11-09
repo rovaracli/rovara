@@ -545,6 +545,12 @@ export class DynamoLessonStore implements LessonStore {
     await this.put({ ...this.sub(key, id, "GONE"), entityType: "LESSON_GONE", mode });
   }
 
+  async goneOf(key: ScopeKey, ids: readonly string[]): Promise<Map<string, "withdrawn" | "purged">> {
+    const unique = [...new Set(ids)];
+    const found = await this.batchGet(unique.map((id) => this.sub(key, id, "GONE")));
+    return new Map(unique.flatMap((id) => { const mode = this.pick(found, this.sub(key, id, "GONE"))?.mode; return mode === "withdrawn" || mode === "purged" ? [[id, mode] as const] : []; }));
+  }
+
   async purge(key: ScopeKey, id: string): Promise<void> {
     // The mark first: from here a rollback skips the lesson and a commit refuses it, whatever happens next. Every step after it can be repeated.
     await this.markGone(key, id, "purged");

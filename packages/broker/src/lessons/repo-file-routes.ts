@@ -5,9 +5,9 @@
 import { resolveLearning, modeAllows, requireAudit } from "./policy.js";
 import type { LessonsRepoFileBody, LessonsRepoFileRow, LessonsRepoFileStatus } from "@agentx/contracts";
 import type { RepoFileRuntime } from "./repo-file-job.js";
-import { finishClosings, switchRepoFileOff, type RepoFileTarget } from "./repo-file-pass.js";
+import { finishErasures, settleErasures, switchRepoFileOff, type RepoFileTarget } from "./repo-file-pass.js";
 import { rowOf } from "./repo-file-pr.js";
-import { MAX_DECLINED, boundedAppend, boundedClosings, newRepoFileState, type Closing, type RepoFileState } from "./repo-file-state.js";
+import { newRepoFileState } from "./repo-file-state.js";
 import type { ScopeKey } from "./store.js";
 
 export type RepoFileActionResult = { ok: true; row: LessonsRepoFileRow } | { ok: false; code: "not_found" | "host_cannot_write" | "audit_unavailable" | "conflict" | "unreadable" };
@@ -64,37 +64,27 @@ export async function repoFileAction(runtime: RepoFileRuntime, key: ScopeKey, bo
 }
 
 /**
- * A lesson was deleted or erased (`repo-file-hook.ts`): if Rovara's open pull request for any repository of the project adds or edits it, that pull request is closed and its branch deleted at once (audited first), so the text never
- * reaches the default branch. A pull request a person pushed to is theirs and is left. The next weekly pass opens a fresh one. Closing is retried by the next pass when the host or the ledger is down.
+ * A lesson was deleted or erased (`repo-file-hook.ts`, called once its deletion finished, so the lesson store's tombstone for it exists): every repository of the project settles its erasures. Each Rovara pull request (open, handed
+ * over, or waiting to be closed) that adds or edits a lesson the store says is gone gets a durable erase row and is closed at once, whatever its branch head is; the branch is taken down only while it is still Rovara's. Nothing is
+ * written to a list that can fill up, and what cannot be done now is done by the next nightly pass, which settles again from the same tombstones.
  */
-export async function closeOpenPullRequestFor(runtime: RepoFileRuntime, key: ScopeKey, lessonId: string): Promise<void> {
-  const states = await runtime.deps.state.list(key);
-  if (states.length === 0) return;
+export async function closeOpenPullRequestFor(runtime: RepoFileRuntime, key: ScopeKey, _lessonId: string): Promise<void> {
+  void _lessonId;
   const targets = await runtime.targets(key.workspaceId, key.project).catch(() => [] as RepoFileTarget[]);
   const deps = { ...runtime.deps, holder: runtime.newHolder?.() ?? "erasure" };
-  for (let state of states) {
+  for (const state of await deps.state.list(key)) {
     const target = targets.find((candidate) => candidate.place === state.place);
-    // Every repository of the project remembers the id for good: a block with this marker in its file is proposed for removal however it got there (Rovara's pull request, one handed over, or a person copying it).
+    if (target === undefined) continue;
+    let current = state;
+    // A pass that wrote first (a lost race) is read again and settled on what it left.
     for (let attempt = 0; attempt < 5; attempt += 1) {
-      const closesOpen = state.open !== undefined && (state.open.added[lessonId] !== undefined || state.open.edited[lessonId] !== undefined);
-      const entries: Closing[] = [];
-      if (state.open !== undefined && closesOpen) {
-        const open = state.open;
-        // Closing a pull request touches no commit, so it is done whatever the branch head is. The branch is taken down only if the host says the head is still the one Rovara left; otherwise (moved, or unreadable) it stays.
-        const ours = target === undefined ? false : await target.host.getChangeRequest({ repository: target.repository, id: open.number, url: open.url }, target.scope).then((details) => details.headRevision === open.headRevision, () => false);
-        entries.push(ours ? { branch: open.branch, number: open.number, cause: "erased", headRevision: open.headRevision } : { branch: open.branch, number: open.number, cause: "erased", keepBranch: true });
+      try { current = await settleErasures(deps, key, target, current); break; } catch (error) {
+        if (!(error instanceof Error) || error.message !== "conflict") throw error;
+        const fresh = await deps.state.get(key, state.place);
+        if (fresh === undefined) break;
+        current = fresh;
       }
-      for (const theirs of state.theirs.filter((t) => t.ids.includes(lessonId))) entries.push({ branch: theirs.branch, number: theirs.number, cause: "erased", keepBranch: true });
-      // The weekly clock is reset so the next nightly pass opens a fresh pull request without the lesson.
-      const { open: _open, lastPassAt: _last, ...rest } = state;
-      void _open; void _last;
-      const next: RepoFileState = { ...rest, ...(entries.length === 0 || state.lastPassAt === undefined ? (state.lastPassAt === undefined ? {} : { lastPassAt: state.lastPassAt }) : {}), ...(state.open === undefined || closesOpen ? {} : { open: state.open }), erased: boundedAppend(state.erased, [lessonId], MAX_DECLINED), theirs: state.theirs.filter((t) => !t.ids.includes(lessonId)), closing: boundedClosings([...state.closing, ...entries]) };
-      const saved = await deps.state.put(key, next, state.revision);
-      if (saved !== undefined) { if (target !== undefined) await finishClosings(deps, key, target, saved); break; }
-      // A pass wrote first: read the state again and redo it on that.
-      const fresh = await deps.state.get(key, state.place);
-      if (fresh === undefined) break;
-      state = fresh;
     }
+    await finishErasures(deps, key, target);
   }
 }

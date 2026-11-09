@@ -178,6 +178,7 @@ describe("an erased lesson that is only in the open pull request comes out at on
     // The lesson is erased in Rovara.
     const erased = (await w.store.listAllHeads(w.key)).find((l) => l.id === "les_aaaa0002")!;
     await w.store.commit(w.key, await w.store.setVersion(w.key), [{ ...erased, version: 2, status: "withdrawn" }], 9);
+    await w.store.markGone(w.key, "les_aaaa0002", "withdrawn");
     const { closeOpenPullRequestFor } = await import("../../../packages/broker/src/lessons/repo-file-routes.js");
     await closeOpenPullRequestFor(runtimeOf(w), w.key, "les_aaaa0002");
     expect(w.host.open).toHaveLength(0);
@@ -200,6 +201,7 @@ describe("an erased lesson that is only in the open pull request comes out at on
     await closeOpenPullRequestFor(runtimeOf(w), w.key, "les_other0001");
     expect(w.host.open).toHaveLength(1);
     w.host.setFile(open.branch, "notes.txt", "a person's commit");
+    await w.store.markGone(w.key, "les_aaaa0001", "withdrawn");
     await closeOpenPullRequestFor(runtimeOf(w), w.key, "les_aaaa0001");
     expect(w.host.open).toHaveLength(0);
     expect(w.host.files.has(open.branch)).toBe(true);

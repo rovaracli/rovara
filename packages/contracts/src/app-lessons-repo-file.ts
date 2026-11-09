@@ -12,7 +12,7 @@ export const LESSON_FILE_UNMERGED_LIMIT = 3;
 
 /** Why Rovara cannot work on a repository's file right now: a fixed code, never host text. */
 export const LESSON_FILE_PROBLEMS = [
-  "host_cannot_write", "repository_unreadable", "file_unreadable", "file_too_big", "file_is_link", "pointer_unreadable", "audit_down", "names_unreadable", "conflict", "write_refused", "repository_gone",
+  "host_cannot_write", "repository_unreadable", "file_unreadable", "file_too_big", "file_is_link", "pointer_unreadable", "audit_down", "names_unreadable", "conflict", "write_refused", "repository_gone", "state_unreadable",
 ] as const;
 export type LessonFileProblem = (typeof LESSON_FILE_PROBLEMS)[number];
 export const LESSON_FILE_PROBLEM_TEXT: Record<LessonFileProblem, string> = {
@@ -27,6 +27,7 @@ export const LESSON_FILE_PROBLEM_TEXT: Record<LessonFileProblem, string> = {
   conflict: "The repository changed while Rovara was writing; it tries again next time",
   write_refused: "The code host refused the write; it tries again next time",
   repository_gone: "This repository is no longer part of the project",
+  state_unreadable: "Rovara's record for this repository is full or unreadable, so it did nothing here; ask for support",
 };
 
 export const LESSON_FILE_POINTER_STATES = ["not_yet", "added", "missing", "declined"] as const;

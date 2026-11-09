@@ -6,7 +6,9 @@ import { setLearnedLessonsGate } from "../../../packages/broker/src/lessons/poli
 import { parseLessonsFile } from "../../../packages/broker/src/lessons/repo-file-format.js";
 import { switchRepoFileOff } from "../../../packages/broker/src/lessons/repo-file-pass.js";
 import { closeOpenPullRequestFor } from "../../../packages/broker/src/lessons/repo-file-routes.js";
-import { MAX_THEIRS, boundedTheirs, parseRepoFileState } from "../../../packages/broker/src/lessons/repo-file-state.js";
+import { MAX_THEIRS, StateFull, StateUnreadable, appended, parseRepoFileState } from "../../../packages/broker/src/lessons/repo-file-state.js";
+import { dynamoRepoFileStore } from "../../../packages/broker/src/lessons/dynamo-repo-file.js";
+import { FakeDynamoDb } from "../../support/fake-dynamodb.js";
 import { FILE, FakeRepoHost, passSetup, repoLesson } from "./repo-file-helpers.js";
 
 afterEach(() => { setLearnedLessonsGate(undefined); });
@@ -244,6 +246,7 @@ describe("H2 principle B: a person's push to Rovara's PR hands it over; removals
     w.week();
     await w.run();
     expect((await w.current()).theirs).toHaveLength(1);
+    await w.store.markGone(w.key, "les_aaaa0001", "withdrawn");
     await closeOpenPullRequestFor(runtimeOf(w), w.key, "les_aaaa0001");
     expect(w.host.prs.find((pr) => pr.source === open.branch)!.state).toBe("closed");
     expect(w.host.files.has(open.branch)).toBe(true);
@@ -495,7 +498,7 @@ describe("re-check Q3 (M1 vs erasure): an erasure close that failed once, then a
     w.host.failCalls.add("updateChangeRequest");
     await w.store.purge(w.key, L1);
     await closeOpenPullRequestFor(runtimeOf(w), w.key, L1);
-    expect((await w.current()).closing.length).toBe(1);
+    expect(await w.state.listErase(w.key)).toHaveLength(1);
     w.host.setFile(open.branch, "person.txt", "a person's commit");
     w.host.failCalls.delete("updateChangeRequest");
     w.week();
@@ -592,7 +595,6 @@ describe("N2: erasure is driven by the file, not by Rovara's ownership records",
     await w.store.purge(w.key, "les_copied01");
     const { closeOpenPullRequestFor: gone } = await import("../../../packages/broker/src/lessons/repo-file-routes.js");
     await gone(runtimeOf(w), w.key, "les_copied01");
-    expect((await w.current()).erased).toContain("les_copied01");
     w.week();
     expect(await w.run()).toMatchObject({ status: "opened", removals: 1 });
     expect((await w.current()).open!.removed).toEqual(["les_copied01"]);
@@ -644,7 +646,7 @@ describe("N3: closing a pull request is always safe; only deleting a branch need
     await closeOpenPullRequestFor(runtimeOf(w), w.key, L1);
     for (let i = 0; i < 5; i += 1) { w.week(); await w.run(); }
     expect(w.host.open).toHaveLength(1);
-    expect((await w.current()).closing.some((c) => c.branch === open.branch)).toBe(true);
+    expect((await w.state.listErase(w.key)).map((row) => row.branch)).toEqual([open.branch]);
     w.host.failCalls.clear();
     w.week();
     await w.run();
@@ -714,22 +716,166 @@ describe("the second round's lows", () => {
     expect((await w2.current()).open).toBeDefined();
   });
 
-  it("L-r4: erasure entries are not lost to a cap", async () => {
+  it("L-r4: bookkeeping lists have a cap and over it the state FAILS LOUDLY; an erasure close is its own row and has none", async () => {
     const w = passSetup();
     await w.enable();
     const state = await w.current();
-    const many = Array.from({ length: 30 }, (_, i) => ({ branch: `rovara/lessons-${i.toString(16).padStart(12, "0")}`, number: String(i + 1), url: "", ids: [`les_t${String(i).padStart(7, "0")}`] }));
-    const big = { ...state, theirs: many, closing: many.map((m) => ({ branch: m.branch, number: m.number, cause: "erased" as const, keepBranch: true })) };
-    expect(parseRepoFileState(big)).toBeDefined();
-    expect(parseRepoFileState({ ...big, theirs: [...many, ...many, ...many, ...many] })).toBeUndefined();
-    // Over the cap the entries that carry no lesson go first; one that carries a lesson is the last to go.
-    const crowded = boundedTheirs([{ branch: "rovara/lessons-0000000000ff", number: "9", url: "", ids: ["les_keepme001"] }, ...Array.from({ length: MAX_THEIRS }, (_, i) => ({ branch: `rovara/lessons-${i.toString(16).padStart(12, "0")}`, number: String(i), url: "", ids: [] as string[] }))]);
-    expect(crowded).toHaveLength(MAX_THEIRS);
-    expect(crowded.some((entry) => entry.ids.includes("les_keepme001"))).toBe(true);
+    const many = (n: number) => Array.from({ length: n }, (_, i) => ({ branch: `rovara/lessons-${i.toString(16).padStart(12, "0")}`, number: String(i + 1), url: "", ids: [`les_t${String(i).padStart(7, "0")}`] }));
+    expect(parseRepoFileState({ ...state, theirs: many(MAX_THEIRS) })).toBeDefined();
+    expect(parseRepoFileState({ ...state, theirs: many(MAX_THEIRS + 1) })).toBeUndefined();
+    expect(() => appended(many(MAX_THEIRS), many(1)[0]!)).toThrow(StateFull);
+    // The store refuses the state that does not fit (it is never stored and later read as absent) and the pass says so on the row.
+    await expect(w.state.put(w.key, { ...state, theirs: many(MAX_THEIRS + 1) }, state.revision)).rejects.toThrow(StateFull);
+    // A state item that exists and does not parse is not 'absent'.
+    const table = new FakeDynamoDb({ indexKeys: {} });
+    const store = dynamoRepoFileStore({ documentClient: table, tableName: "t" });
+    await store.put(w.key, state, 0);
+    const [item] = [...table.items?.values() ?? []];
+    if (item !== undefined) { item.state = { nonsense: true }; await expect(store.get(w.key, state.place)).rejects.toThrow(StateUnreadable); await expect(store.list(w.key)).rejects.toThrow(StateUnreadable); }
   });
 
   it("L-r5: a merge that combines changes to the file from both sides is refused with a sentence the user can act on", async () => {
     const { LESSONS_FILE_MERGE_REFUSAL } = await import("../../../packages/worker/src/lessons-file-guard.js");
     expect(LESSONS_FILE_MERGE_REFUSAL).toMatch(/both sides/u);
+  });
+});
+
+// ---- round 3: erasure never depends on a capped list ----
+import { lessonDeletionPort } from "../../../packages/broker/src/lessons/deletion.js";
+import { setLessonGoneListener } from "../../../packages/broker/src/lessons/repo-file-hook.js";
+import { InMemoryLessonStore } from "../../../packages/broker/src/lessons/store.js";
+import { NO_VECTORS } from "../../../packages/broker/src/lessons/runtime.js";
+import { Audit, Clock, WS as LWS } from "./lesson-helpers.js";
+
+describe("N4: the durable tombstone is one row per lesson, never evicted", () => {
+  it("R1: a copied block of an erased lesson is still proposed for removal after 1000 later erasures", async () => {
+    const w = passSetup();
+    await w.seedLessons(repoLesson("les_aaaa0002"));
+    await w.enable();
+    const r = await w.run();
+    w.host.merge(Number((r as { number: string }).number));
+    w.host.setFile("main", FILE, `${w.host.file("main", FILE)!}\n<!-- rovara:les_copied01 -->\n- Copied text of a lesson.\n`);
+    await w.seedLessons(repoLesson("les_copied01"));
+    await w.store.purge(w.key, "les_copied01");
+    for (let i = 0; i < 1000; i += 1) { await w.store.markGone(w.key, `les_gone${String(i).padStart(5, "0")}`, "purged"); await closeOpenPullRequestFor(runtimeOf(w), w.key, `les_gone${String(i).padStart(5, "0")}`); }
+    w.week();
+    expect(await w.run()).toMatchObject({ status: "opened", removals: 1 });
+    expect((await w.current()).open!.removed).toEqual(["les_copied01"]);
+  });
+
+  it("R2: 1000 pending erasure closes are 1000 rows, none evicted, and the state never grows with them", async () => {
+    const w = passSetup();
+    await w.enable();
+    const before = JSON.stringify(await w.current()).length;
+    for (let i = 0; i < 1000; i += 1) await w.state.putErase(w.key, { place: "github:repo/9", number: String(i + 1), branch: `rovara/lessons-${i.toString(16).padStart(12, "0")}`, keepBranch: true, at: i });
+    expect(await w.state.listErase(w.key)).toHaveLength(1000);
+    expect(JSON.stringify(await w.current()).length).toBe(before);
+    await w.state.putErase(w.key, { place: "github:repo/9", number: "1", branch: "rovara/lessons-000000000000", keepBranch: true, at: 5 });
+    expect(await w.state.listErase(w.key)).toHaveLength(1000);
+    const table = new FakeDynamoDb({ indexKeys: {} });
+    const dynamo = dynamoRepoFileStore({ documentClient: table, tableName: "t" });
+    for (let i = 0; i < 300; i += 1) await dynamo.putErase(w.key, { place: "github:repo/9", number: String(i + 1), branch: `rovara/lessons-${i.toString(16).padStart(12, "0")}`, keepBranch: true, at: i });
+    expect(await dynamo.listErase(w.key)).toHaveLength(300);
+    await dynamo.delErase(w.key, "github:repo/9", "7");
+    expect(await dynamo.listErase(w.key)).toHaveLength(299);
+  });
+
+  it("an erasure whose lesson was erased with the hook never called is still caught by the next pass, from the tombstone alone", async () => {
+    const w = passSetup();
+    await w.seedLessons(repoLesson(L1));
+    await w.enable();
+    await w.run();
+    await w.store.purge(w.key, L1);
+    w.week();
+    await w.run();
+    expect(w.host.open.some((pr) => idsIn(w.host.file(pr.source, FILE)).includes(L1))).toBe(false);
+    expect((await w.current()).open).toBeUndefined();
+  });
+});
+
+describe("N5: an erasure close is decided before any hand-over", () => {
+  it("R3: a replaced PR still in `closing` when its lesson is erased, and a person pushed to it, is closed, not handed over", async () => {
+    const w = passSetup();
+    await w.seedLessons(repoLesson(L1));
+    await w.enable();
+    await w.run();
+    const first = (await w.current()).open!;
+    await w.seedLessons(repoLesson("les_aaaa0002"));
+    w.week();
+    w.host.failCalls.add("updateChangeRequest");
+    await w.run();
+    w.host.failCalls.delete("updateChangeRequest");
+    expect((await w.current()).closing.some((c) => c.branch === first.branch)).toBe(true);
+    w.host.setFile(first.branch, "person.txt", "a person's commit");
+    await w.store.purge(w.key, L1);
+    await closeOpenPullRequestFor(runtimeOf(w), w.key, L1);
+    w.week();
+    await w.run();
+    expect(w.host.open.filter((pr) => idsIn(w.host.file(pr.source, FILE)).includes(L1)).map((pr) => pr.source)).toEqual([]);
+    expect(w.host.files.has(first.branch)).toBe(true);
+    expect((await w.current()).theirs.some((t) => t.branch === first.branch)).toBe(false);
+  });
+
+  it("a hand-over that happens after the erasure (no hook call) closes the pull request instead of tracking it", async () => {
+    const w = passSetup();
+    await w.seedLessons(repoLesson(L1));
+    await w.enable();
+    await w.run();
+    const first = (await w.current()).open!;
+    await w.seedLessons(repoLesson("les_aaaa0002"));
+    w.week();
+    w.host.failCalls.add("updateChangeRequest");
+    await w.run();
+    w.host.failCalls.delete("updateChangeRequest");
+    w.host.setFile(first.branch, "person.txt", "a person's commit");
+    await w.store.markGone(w.key, L1, "withdrawn");
+    w.week();
+    await w.run();
+    expect(w.host.prs.find((pr) => pr.source === first.branch)!.state).toBe("closed");
+    expect((await w.current()).theirs).toEqual([]);
+  });
+});
+
+describe("N6: the tombstone is part of the erasure, retried until written", () => {
+  it("a tombstone write that fails leaves the deletion unfinished (and the file pass not told); the resume writes it, and only then is the hook called", async () => {
+    class FlakyStore extends InMemoryLessonStore {
+      failures = 1;
+      override async markGone(key: { workspaceId: string; project: string }, id: string, mode: "withdrawn" | "purged"): Promise<void> {
+        if (this.failures > 0) { this.failures -= 1; throw new Error("table down"); }
+        return super.markGone(key, id, mode);
+      }
+    }
+    const store = new FlakyStore();
+    const told: string[] = [];
+    setLessonGoneListener(async (_key, id) => { told.push(id); });
+    try {
+      const w = passSetup();
+      void w;
+      const lesson = repoLesson(L1, { status: "active" });
+      await store.commit({ workspaceId: LWS, project: "proj-1" }, 0, [lesson], 1);
+      const port = lessonDeletionPort({ store, vectors: NO_VECTORS, audit: new Audit(), now: new Clock().now });
+      await expect(port.withdraw(LWS, "proj-1", L1, "source_deleted")).rejects.toThrow("table down");
+      expect(told).toEqual([]);
+      expect((await store.goneOf({ workspaceId: LWS, project: "proj-1" }, [L1])).size).toBe(0);
+      expect(await port.resumePending(LWS, "proj-1")).toBeGreaterThan(0);
+      expect((await store.goneOf({ workspaceId: LWS, project: "proj-1" }, [L1])).get(L1)).toBe("withdrawn");
+      expect(told).toEqual([L1]);
+    } finally { setLessonGoneListener(undefined); }
+  });
+
+  it("an erase row that cannot be written stops the settling before anything is taken out of the state, and the next pass settles it", async () => {
+    const w = passSetup();
+    await w.seedLessons(repoLesson(L1));
+    await w.enable();
+    await w.run();
+    const open = (await w.current()).open!;
+    await w.store.purge(w.key, L1);
+    w.state.failEraseWrites = true;
+    await expect(closeOpenPullRequestFor(runtimeOf(w), w.key, L1)).rejects.toThrow();
+    expect((await w.current()).open?.branch).toBe(open.branch);
+    w.state.failEraseWrites = false;
+    w.week();
+    await w.run();
+    expect(w.host.prs.find((pr) => pr.source === open.branch)!.state).toBe("closed");
   });
 });

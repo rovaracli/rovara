@@ -86,6 +86,11 @@ export interface LessonStore {
   scrub(key: ScopeKey, id: string, fn: (lesson: Lesson) => Lesson): Promise<void>;
   /** Marks a lesson as gone for good: a rollback never restores a withdrawn lesson, and skips a purged one. */
   markGone(key: ScopeKey, id: string, mode: "withdrawn" | "purged"): Promise<void>;
+  /**
+   * Which of these ids are gone for good (withdrawn or purged): the durable per-lesson tombstone the erasure itself writes first, one row each, never evicted. A batched read (in chunks); throws when it cannot read, so a caller never
+   * takes "could not look" for "not gone". The lessons file pass decides "this block must come out" from this, not from any list of its own.
+   */
+  goneOf(key: ScopeKey, ids: readonly string[]): Promise<Map<string, "withdrawn" | "purged">>;
   /** Hard delete: the head, every version and every load-manifest reference. The id is remembered as purged so a rollback cannot bring it back. */
   purge(key: ScopeKey, id: string): Promise<void>;
   /** Forgets a source's counters and its pause (erasure of a person, deletion of a channel). */
@@ -258,6 +263,10 @@ export class InMemoryLessonStore implements LessonStore {
     s.versions.set(id, (s.versions.get(id) ?? []).map((v) => LessonSchema.parse({ ...fn(clone(v)), version: v.version })));
   }
   async markGone(key: ScopeKey, id: string, mode: "withdrawn" | "purged"): Promise<void> { this.of(key).gone.set(id, mode); }
+  async goneOf(key: ScopeKey, ids: readonly string[]): Promise<Map<string, "withdrawn" | "purged">> {
+    const gone = this.of(key).gone;
+    return new Map(ids.flatMap((id) => { const mode = gone.get(id); return mode === undefined ? [] : [[id, mode] as const]; }));
+  }
   async purge(key: ScopeKey, id: string): Promise<void> {
     const s = this.of(key);
     s.heads.delete(id);

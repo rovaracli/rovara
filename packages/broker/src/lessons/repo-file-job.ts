@@ -3,7 +3,7 @@
 // Bounded in projects and time; a project that fails never stops the others. Makes no model call (decision 47). Returns counts only.
 import { OrgIdSchema } from "@agentx/contracts";
 import { rotated } from "./nightly-state.js";
-import { finishClosings, runRepoFilePass, type RepoFileDeps, type RepoFileTarget } from "./repo-file-pass.js";
+import { finishClosings, finishErasures, runRepoFilePass, settleErasures, type RepoFileDeps, type RepoFileTarget } from "./repo-file-pass.js";
 
 /** What the job and the routes need beyond the pass's own dependencies: how to find a project's repositories (with their code hosts). */
 export interface RepoFileRuntime {
@@ -27,12 +27,19 @@ export async function lessonsRepoFileJob(runtime: RepoFileRuntime, orgId: string
     const key = { workspaceId: org.data, project };
     try {
       const states = await runtime.deps.state.list(key);
+      // Erasure is not delivery and does not wait on the switches: every repository that has a record settles its erasures (a pull request that adds erased text is closed) and finishes the erase rows still waiting.
+      const erase = await runtime.deps.state.listErase(key);
       const work = states.filter((state) => state.enabled || state.closing.length > 0 || state.pending !== undefined);
-      if (work.length === 0) continue;
+      if (work.length === 0 && states.every((state) => state.open === undefined && state.theirs.length === 0 && state.closing.length === 0) && erase.length === 0) continue;
       const targets = await runtime.targets(key.workspaceId, project);
       const deps: RepoFileDeps = { ...runtime.deps, holder: runtime.newHolder?.() ?? `nightly-${String(runtime.deps.now())}` };
       // A different repository first each day, like the projects, so a time budget that runs out never cuts off the same ones.
       const first = work.length === 0 ? 0 : dayNumber % work.length;
+      for (const state of states) {
+        const target = targets.find((candidate) => candidate.place === state.place);
+        if (target === undefined) continue;
+        try { await settleErasures(deps, key, target, state); await finishErasures(deps, key, target); } catch { counts.repoFileFailures += 1; }
+      }
       for (const state of [...work.slice(first), ...work.slice(0, first)]) {
         if (runtime.deps.now() - started > budgetMs) { counts.repoFileSkipped += 1; continue; }
         const target = targets.find((candidate) => candidate.place === state.place);
@@ -42,7 +49,7 @@ export async function lessonsRepoFileJob(runtime: RepoFileRuntime, orgId: string
           counts.repoFileProblems += 1;
           continue;
         }
-        if (!state.enabled) { await finishClosings(deps, key, target, state); continue; }
+        if (!state.enabled) { await finishClosings(deps, key, target, (await runtime.deps.state.get(key, state.place)) ?? state); continue; }
         const result = await runRepoFilePass(deps, key, target);
         if (result.status === "opened") counts.repoFilePrsOpened += 1;
         else if (result.status === "left") counts.repoFileLeft += 1;
