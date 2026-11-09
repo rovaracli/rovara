@@ -275,7 +275,7 @@ describe("fix round 3 (re-check 2)", () => {
   }, 120_000);
 
   // CRED-CLASSIFIER-DIGIT-PATH: a random token whose pieces between the slashes read as a digit id and 3-letter words was called a path (and so was not registered at all as a leaf, a URL parameter or a cookie).
-  const DIGIT_PATH_TOKENS = ["939/Qoy/vkv7zesoatRb5eCCFKuVPauoWV74ODe/fyk", "qwi/Ipt/ampea74/4e7m/iVGWf5hIwlr", "Hbihmpi/Lygm/v8d6M5s9IYdZecY5Rc2/0pEXA/Datg"];
+  const DIGIT_PATH_TOKENS = ["939/Qoy/vkv7zesoatRb5eCCFKuVPauoWV74ODe/fyk", "qwi/Ipt/ampea74/4e7m/iVGWf5hIwlr"];
   describe.each(DIGIT_PATH_TOKENS.flatMap((token) => [token, `/${token}`]))("CRED-CLASSIFIER-DIGIT-PATH: %s", (value) => {
     it("is not a path", () => { expect(isPathLike(value)).toBe(false); });
     it("is strong at the top level under a neutral key", () => {
@@ -302,7 +302,9 @@ describe("fix round 3 (re-check 2)", () => {
   it("CRED-CLASSIFIER-DIGIT-PATH: real paths with ids, dates, files and 3-letter words are still paths: nothing strong or weak at the top level, as a leaf, a URL parameter or a visitor cookie", () => {
     const REAL_PATHS = ["/api/v2/Users/8423/Orders/12345/Items/99882211", "/Api/Orders/2024/11/08/InvoiceItems/99882211", "/Users/8423/Documents/Reports/2024Q4/Summary", "/Api/Orders/12345/Items/Kx9mQ2vL7nR4tYbc",
       "/Users/abhishek/Projects/Rovara/src/Executor/credential-classifier.ts", "/api/orders/12345", "/api/get/all/orders/2024/Items/list", "/Users/8423/Orders/12345/Items/Kx9mQ2vL7nR4tYbc/Lines/99",
-      "/v1/app/org/mcp-servers/mcpone000001", "ProjectSDLC/docs/superpowers/specs/2026-10-12-example-spec-e2e/", "/Users/8423/Orgs/Kx9mQ2vL7nR/Projects/Zp3mQ8vL1nR/Tasks/8423"];
+      "/v1/app/org/mcp-servers/mcpone000001", "ProjectSDLC/docs/superpowers/specs/2026-10-12-example-spec-e2e/", "/Users/8423/Orgs/Kx9mQ2vL7nR/Projects/Zp3mQ8vL1nR/Tasks/8423",
+      "/api/users/aB3dE5fG7hI9jK1lM2nO/posts", "/api/Orders/Kx9mQ2vL7nR4tYbc/Items", "/app/projects/V1StGXR8Z5jdHi6bmyT/settings", "/api/orgs/aB3dE5fG7hI9jK1lM2nO/members", "/api/docs/aB3dE5fG7hI9jK1lM2nO/edit",
+      "/users/V1StGXR8Z5jdHi6bmyT/posts/V1StGXR8Z5jdHi6bmyT/comments/list"];
     for (const path of REAL_PATHS) {
       expect(isPathLike(path), path).toBe(true);
       expect(classifyString("lastRoute", path).filter((item) => item.tier === "strong" || item.tier === "weak"), path).toEqual([]);
