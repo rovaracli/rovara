@@ -1,6 +1,6 @@
 import { createHash, createSign } from "node:crypto";
 import { commitFilesOn, deleteBranchOn, type CommitFilesRequest } from "./github-commit-files.js";
-import { GitBranchNameSchema, HostRateLimitError, OrgIdSchema, PULL_REQUEST_BODY_MAX_CHARS, agentXError, createCandidateManifest, githubNotConnectedMessage, isSafeE2ESourcePath, redactText, type AgentXError, type E2ESourceSnapshot, type OrgId } from "@agentx/contracts";
+import { GitBranchNameSchema, HostRateLimitError, LESSON_FILE_BRANCH_PATTERN, OrgIdSchema, PULL_REQUEST_BODY_MAX_CHARS, agentXError, createCandidateManifest, githubNotConnectedMessage, isSafeE2ESourcePath, redactText, type AgentXError, type E2ESourceSnapshot, type OrgId } from "@agentx/contracts";
 import type { RepositoryAccess, RepositoryCredential } from "./repository-access.js";
 import type { GithubMergeReadBudget } from "./aws/workflow-merge-recovery.js";
 import { isAllowedLogAddress, logTail, readLogEnd } from "./github-job-log.js";
@@ -1576,6 +1576,24 @@ export class GitHubAppCredentialProvider {
     const repository = await this.installed(parseGitHubRepository(repositoryUrl), scope);
     const token = await this.createInstallationToken(repository, { contents: "write" }, scope);
     return commitFilesOn({ fetch: this.fetchImplementation, owner: repository.owner, name: repository.name, token }, request);
+  }
+
+  /** Lessons in the repo: the pull request (any state) made from one of Rovara's own `rovara/lessons-` branches, or undefined. No other branch name is looked up. */
+  async findLessonsPullRequest(repositoryUrl: string, branch: string, scope: GitHubTokenScope): Promise<{ number: number; url: string } | undefined> {
+    if (!LESSON_FILE_BRANCH_PATTERN.test(branch)) throw agentXError("CONFIG_INVALID", "branch name is invalid");
+    const repository = await this.installed(parseGitHubRepository(repositoryUrl), scope);
+    const token = await this.createInstallationToken(repository, { pull_requests: "read" }, scope);
+    const query = new URLSearchParams({ state: "all", head: `${repository.owner}:${branch}`, per_page: "1" });
+    const response = await this.fetchImplementation(
+      `https://api.github.com/repos/${encodeURIComponent(repository.owner)}/${encodeURIComponent(repository.name)}/pulls?${query.toString()}`,
+      { headers: githubHeaders(token), redirect: "error", signal: AbortSignal.timeout(8_000) },
+    );
+    if (!response.ok) { await response.body?.cancel(); throw agentXError("RUNTIME_UNAVAILABLE", `GitHub pull request lookup failed with HTTP ${response.status}`); }
+    const value: unknown = await response.json();
+    const first = Array.isArray(value) ? (value[0] as { number?: unknown; html_url?: unknown } | undefined) : undefined;
+    if (first === undefined) return undefined;
+    if (typeof first.number !== "number" || !Number.isSafeInteger(first.number)) throw agentXError("RUNTIME_UNAVAILABLE", "GitHub returned an invalid pull request response");
+    return { number: first.number, url: typeof first.html_url === "string" && first.html_url.startsWith("https://") ? first.html_url : "" };
   }
 
   /** Lessons in the repo: deletes one of Rovara's own `rovara/lessons-` branches (no other name is accepted). */

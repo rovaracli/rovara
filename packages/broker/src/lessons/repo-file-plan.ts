@@ -186,7 +186,7 @@ export function planRepoFile(input: PlanInput): RepoFilePlan {
   let adds: PlanAdd[] = [];
   if (!paused) {
     const candidates = [...byId.values()]
-      .filter((lesson) => !inFile.has(lesson.id) && !declined.has(lesson.id) && lesson.provenance.repoOnly?.place === input.place)
+      .filter((lesson) => !inFile.has(lesson.id) && !declined.has(lesson.id) && !goneIds.has(lesson.id) && lesson.provenance.repoOnly?.place === input.place)
       .filter((lesson) => repoFileBlockers(lesson, input.place, input.names).length === 0 && (input.preset !== "regulated" || hasPersonApproval(lesson)))
       .sort((a, b) => a.createdAt - b.createdAt || compareIds(a.id, b.id));
     for (const lesson of candidates) {

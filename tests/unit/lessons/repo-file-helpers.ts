@@ -123,6 +123,12 @@ export class FakeRepoHost {
     for (const pr of this.prs) if (pr.source === branch && pr.state === "open") pr.state = "closed";
     return "deleted";
   }
+  /** The pull request (any state) made from a branch, as the real adapter finds it. */
+  async changeRequestForBranch(_r: RepositoryRef, branch: string): Promise<ChangeRequestRef | undefined> {
+    await this.seen("changeRequestForBranch");
+    const pr = this.prs.find((p) => p.source === branch);
+    return pr === undefined ? undefined : this.refOf(pr);
+  }
   async reconcileChangeRequest(input: ChangeRequestInput) {
     await this.seen("reconcileChangeRequest");
     const open = this.prs.find((pr) => pr.state === "open" && pr.source === input.sourceBranch && pr.target === input.targetBranch);

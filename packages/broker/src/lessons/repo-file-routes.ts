@@ -20,10 +20,14 @@ export async function repoFileStatus(runtime: RepoFileRuntime, key: ScopeKey): P
   const resolved = await resolveLearning(runtime.deps.settings, key.workspaceId, key.project);
   const states = await runtime.deps.state.list(key);
   const targets = await runtime.targets(key.workspaceId, key.project);
+  // Removal pull requests the erasure sweep opened and nobody has merged: shown on the repository's row.
+  const removals = await (runtime.deps.rows ?? runtime.deps.state).listPrs(key).then((listed) => listed.rows.filter((r) => r.kind === "removal" && r.closedAt === undefined && !r.number.startsWith("~")), () => []);
   const rows = states.filter((state) => state.enabled || state.open !== undefined || state.fileDeleted).map((state) => {
     const row = rowOf(state);
+    const waiting = removals.filter((r) => r.place === state.place).length;
     const target = targets.find((candidate) => candidate.place === state.place);
-    return target === undefined ? { ...row, problem: "repository_gone" as const, notices: [...row.notices, "This repository is no longer part of the project"] } : row;
+    const shown = waiting === 0 ? row : { ...row, erasurePrs: waiting, notices: [...row.notices, `${String(waiting)} ${waiting === 1 ? "pull request that removes" : "pull requests that remove"} deleted lessons ${waiting === 1 ? "is" : "are"} waiting for your team`] };
+    return target === undefined ? { ...shown, problem: "repository_gone" as const, notices: [...shown.notices, "This repository is no longer part of the project"] } : shown;
   });
   const shown = new Set(states.filter((state) => state.enabled || state.open !== undefined || state.fileDeleted).map((state) => state.place));
   return {
@@ -37,7 +41,8 @@ export async function repoFileStatus(runtime: RepoFileRuntime, key: ScopeKey): P
 /** One switch or answer for one repository, by the project's name for it. */
 export async function repoFileAction(runtime: RepoFileRuntime, key: ScopeKey, body: LessonsRepoFileBody): Promise<RepoFileActionResult> {
   let target: RepoFileTarget | undefined;
-  try { target = (await runtime.targets(key.workspaceId, key.project)).find((candidate) => candidate.name === body.repo); } catch { return { ok: false, code: "unreadable" }; }
+  let everyTarget: RepoFileTarget[];
+  try { everyTarget = await runtime.targets(key.workspaceId, key.project); target = everyTarget.find((candidate) => candidate.name === body.repo); } catch { return { ok: false, code: "unreadable" }; }
   if (target === undefined) return { ok: false, code: "not_found" };
   const deps = { ...runtime.deps, holder: runtime.newHolder?.() ?? "route" };
   const existing = await deps.state.get(key, target.place);
@@ -47,6 +52,8 @@ export async function repoFileAction(runtime: RepoFileRuntime, key: ScopeKey, bo
     if (body.action === "on") {
       if (!canWrite(target)) return { ok: false, code: "host_cannot_write" };
       if (state.enabled) return { ok: true, row: rowOf(state) };
+      // WRITE AHEAD: when the feature is switched on, the erasure sweep is told about EVERY repository of the project (a watch row each, never deleted while the project exists) before anything else happens. If that cannot be written, nothing changes.
+      try { for (const each of everyTarget) await (deps.rows ?? deps.state).putPr(key, { place: each.place, kind: "watch", number: "0", ids: [], at: deps.now() }); } catch { return { ok: false, code: "unreadable" }; }
       if (!await requireAudit(deps.audit, { action: "lesson.repo_file_switched", workspaceId: key.workspaceId, project: key.project, facts: { enabled: true } })) return { ok: false, code: "audit_unavailable" };
       const saved = await save({ ...state, name: target.name, enabled: true, ...(body.pointers === undefined ? {} : { pointers: body.pointers }) });
       return saved === undefined ? { ok: false, code: "conflict" } : { ok: true, row: rowOf(saved) };

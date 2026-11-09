@@ -22,7 +22,7 @@ import { planRepoFile, type RepoFilePlan } from "./repo-file-plan.js";
 import { parseLessonsFile, textHash } from "./repo-file-format.js";
 import { freshBranchName, headOf, type RepoFileTarget } from "./repo-file-host.js";
 import { prBody, prTitle } from "./repo-file-pr.js";
-import { MAX_DECLINED, MAX_RENDERED, StateFull, StateUnreadable, additionsPaused, appendOrMark, boundedAppend, type OpenPr, type PrRowStore, type RepoFileState, type RepoFileStore } from "./repo-file-state.js";
+import { MAX_DECLINED, MAX_RENDERED, StateFull, StateUnreadable, additionsPaused, appendOrMark, boundedAppend, provisionalNumber, type OpenPr, type PrRow, type PrRowStore, type RepoFileState, type RepoFileStore } from "./repo-file-state.js";
 import type { LessonStore, ScopeKey } from "./store.js";
 import type { Lesson } from "./types.js";
 
@@ -315,7 +315,7 @@ async function pass(deps: RepoFileDeps, key: ScopeKey, target: RepoFileTarget, l
   const lessons = await deps.store.listAllHeads(key);
   // Which of the markers in the file belong to a lesson that is gone for good: the lesson store's own tombstone, one durable row per lesson. A lookup that cannot be made stops the write (never read as 'not gone').
   let gone: Set<string>;
-  try { gone = new Set((await deps.store.goneOf(key, fileText === undefined ? [] : parseLessonsFile(fileText).blocks.map((block) => block.id))).keys()); } catch { throw new Abort("repository_unreadable"); }
+  try { gone = new Set((await deps.store.goneOf(key, [...(fileText === undefined ? [] : parseLessonsFile(fileText).blocks.map((block) => block.id)), ...lessons.filter((lesson) => lesson.provenance.repoOnly?.place === target.place).map((lesson) => lesson.id)])).keys()); } catch { throw new Abort("repository_unreadable"); }
   let names: readonly string[];
   try { names = await deps.names(key, lessons); } catch { throw new Abort("names_unreadable"); }
   const plan = planRepoFile({ place: target.place, repoName: target.name, lessons, names, fileText, rendered: state.rendered, declined: state.declined, gone, addsPaused: additionsPaused({ unmerged }), teamPr, preset });
@@ -391,7 +391,15 @@ async function openPullRequest(
   }
   const branch = await freshBranchName(deps, target);
   if (branch === undefined) throw new Abort("conflict");
-  // The branch is recorded BEFORE it is made, so a crash between the write and the record leaves a name the next pass deletes, never a branch nobody knows.
+  // WRITE AHEAD: the repository's watch row and a row keyed by the new branch (the number is not known yet) come BEFORE anything is written to the host, so a crash or a failed write between any two steps leaves a row the erasure
+  // sweep can find; and if a row cannot be written, no host write is made. The branch is then recorded in the state as well, so the next pass cleans up a write that never got a pull request.
+  const rows = deps.rows ?? deps.state;
+  const carried = [...plan.adds.map((a) => a.id), ...plan.edits.map((e) => e.id)];
+  const provisional: PrRow = { place: target.place, kind: "adds", number: provisionalNumber(branch), branch, ids: carried, at: deps.now() };
+  try {
+    await rows.putPr(key, { place: target.place, kind: "watch", number: "0", ids: [], at: deps.now() });
+    await rows.putPr(key, provisional);
+  } catch { throw new Abort("state_unreadable"); }
   state = await commit(deps, key, state, { pending: { branch, at: deps.now(), baseRevision: work.head } });
   let revision: string;
   try {
@@ -401,6 +409,7 @@ async function openPullRequest(
       previous: [{ path: LESSON_FILE_PATH, content: work.fileText ?? null }, ...work.pointerFiles.map((f) => ({ path: f.path, content: f.previous }))],
     }, scope);
     revision = written.revision;
+    await rows.putPr(key, { ...provisional, headRevision: revision }).catch(() => undefined);
     // The head Rovara itself wrote, so a cleanup of a pull request that was never recorded can tell its own branch from a person's.
     state = await commit(deps, key, state, (s) => ({ ...s, pending: { branch, at: deps.now(), baseRevision: work.head, headRevision: revision } }));
   } catch (error) {
@@ -420,11 +429,11 @@ async function openPullRequest(
     added: Object.fromEntries(plan.adds.map((a) => [a.id, a.fingerprint])), edited: Object.fromEntries(plan.edits.map((e) => [e.id, e.fingerprint])), removed: plan.removals.map((r) => r.id),
     pointer: work.pointerFiles.length > 0,
   };
-  // The row of this pull request, apart from the state, is what the erasure sweep works from. If it cannot be written the state is not changed: the pending branch is cleaned up by the next pass (deleting it closes the pull request).
+  // The numbered row replaces the provisional one. If that cannot be done the provisional row stays, and the erasure sweep finds the pull request by its branch.
   try {
-    await (deps.rows ?? deps.state).putPr(key, { place: target.place, kind: "adds", number: open.number, branch, headRevision: revision, ids: carriedBy(open), at: deps.now() });
-    await (deps.rows ?? deps.state).putPr(key, { place: target.place, kind: "watch", number: "0", ids: [], at: deps.now() });
-  } catch { throw new Abort("state_unreadable"); }
+    await rows.putPr(key, { ...provisional, number: open.number, headRevision: revision });
+    await rows.delPr(key, target.place, provisional.number);
+  } catch { deps.log?.("lessons_repo_file.pr_row_update_failed", {}); }
   state = await commit(deps, key, state, (s) => ({
     ...without(s, "pending", "problem") as RepoFileState, ...(s.problem === "state_unreadable" ? { problem: s.problem } : {}), ...work.pointerProblem, open,
     pointerProposed: s.pointerProposed || work.pointerFiles.length > 0,

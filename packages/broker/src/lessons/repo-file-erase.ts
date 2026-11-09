@@ -11,11 +11,11 @@
 // No model call. Provider-neutral: everything outside lessons code is the `CodeHost` port.
 import { randomBytes } from "node:crypto";
 import { LESSON_FILE_MAX_BYTES, LESSON_FILE_PATH } from "@agentx/contracts";
-import { applyFileChanges, parseLessonsFile } from "./repo-file-format.js";
+import { applyFileChanges, parseLessonsFile, textHash } from "./repo-file-format.js";
 import { freshBranchName, headOf, type RepoFileTarget } from "./repo-file-host.js";
 import { requireAudit } from "./policy.js";
 import type { LessonAuditSink } from "./ports.js";
-import type { PrRow, PrRowStore } from "./repo-file-state.js";
+import { isProvisional, provisionalNumber, type PrRow, type PrRowStore } from "./repo-file-state.js";
 import type { LessonStore, ScopeKey } from "./store.js";
 
 /** What the sweep is handed. Note what is NOT here: no publish state. */
@@ -41,13 +41,18 @@ export const OPEN_ROW_KEEP_MS = 400 * 86_400_000;
 const audited = (deps: EraseSweepDeps, key: ScopeKey, action: "lesson.repo_file_pr_opened" | "lesson.repo_file_pr_closed", facts: Record<string, string | number | boolean>): Promise<boolean> =>
   requireAudit(deps.audit, { action, workspaceId: key.workspaceId, project: key.project, facts });
 
+/** A provisional row nobody has completed after this long is stale: its host write never happened or its pull request never appeared. */
+const PROVISIONAL_STALE_MS = 24 * 3_600_000;
+/** A removal pull request being made by another sweep is left alone this long. */
+const IN_FLIGHT_MS = 30 * 60_000;
+
 /** Closes one row's pull request (and takes its branch down only while it is still Rovara's). True when the pull request is closed or was not open. */
 async function closeRow(deps: EraseSweepDeps, key: ScopeKey, target: RepoFileTarget, row: PrRow, cause: string): Promise<boolean> {
   const { host, repository, scope } = target;
   if (row.branch === undefined) return true;
   const details = await host.getChangeRequest({ repository, id: row.number, url: "" }, scope).then((d) => d, () => undefined);
   if (details !== undefined && details.state !== "open") {
-    // Merged or closed by someone else: nothing to close. Remembered as closed (kept 90 days, so a reopened one is still found); a merged one's text is the file's, taken out by half two.
+    // Merged or closed by someone else: nothing to close. Remembered as closed (a row that carried a gone lesson is kept, so a reopened one is found again); a merged one's text is the file's, taken out by half two.
     if (row.closedAt === undefined) await deps.rows.putPr(key, { ...row, closedAt: deps.now() });
     return true;
   }
@@ -55,22 +60,54 @@ async function closeRow(deps: EraseSweepDeps, key: ScopeKey, target: RepoFileTar
   await host.updateChangeRequest({ repository, id: row.number, url: "" }, { state: "closed" }, scope);
   await deps.rows.putPr(key, { ...row, closedAt: deps.now() });
   // The branch, after the close, and only while it is still the head Rovara left: closing touches no commit, deleting a branch can.
-  if (row.headRevision !== undefined && host.deleteBranch !== undefined && await headOf(target, row.branch) === row.headRevision && await headOf(target, row.branch) === row.headRevision) await host.deleteBranch(repository, row.branch, scope).catch(() => undefined);
+  if (row.headRevision !== undefined && host.deleteBranch !== undefined && await headOf(target, row.branch) === row.headRevision) await host.deleteBranch(repository, row.branch, scope).catch(() => undefined);
   return true;
 }
 
-/** Half one: Rovara pull requests that add a gone lesson are closed. */
-async function closeErasedAdds(deps: EraseSweepDeps, key: ScopeKey, target: RepoFileTarget, rows: readonly PrRow[], result: EraseSweepResult): Promise<void> {
-  const adds = rows.filter((row) => row.kind === "adds" && row.ids.length > 0);
-  if (adds.length === 0) return;
+/**
+ * Rows written ahead of the host (see `provisionalNumber`): the pull request, if the host has one for the branch, gets its number; the numbered row replaces the provisional one. A branch with no pull request yet keeps its row
+ * for a day (the writer may be in the middle of its steps), then it goes. Needs the host's `changeRequestForBranch`; a host without it leaves the row as it is.
+ */
+async function resolveProvisional(deps: EraseSweepDeps, key: ScopeKey, target: RepoFileTarget, rows: readonly PrRow[]): Promise<PrRow[]> {
+  const out: PrRow[] = [];
+  for (const row of rows) {
+    if (!isProvisional(row) || row.branch === undefined) { out.push(row); continue; }
+    const found = await target.host.changeRequestForBranch?.(target.repository, row.branch, target.scope).then((ref) => ref, () => "failed" as const);
+    if (found === "failed" || target.host.changeRequestForBranch === undefined) { out.push(row); continue; }
+    if (found === undefined) {
+      // A branch Rovara wrote but never made a pull request for: once its writer has had time to finish, it is taken down while its head is still the one Rovara left (its text may be an erased lesson's).
+      const idle = deps.now() - row.at > IN_FLIGHT_MS;
+      if (idle && row.headRevision !== undefined && target.host.deleteBranch !== undefined && await headOf(target, row.branch) === row.headRevision) {
+        await target.host.deleteBranch(target.repository, row.branch, target.scope).then(() => deps.rows.delPr(key, row.place, row.number)).catch(() => undefined);
+        continue;
+      }
+      // Stale and the branch is gone: nothing is left to watch. A branch that is still there (its head could not be proven Rovara's) keeps its row for good: a pull request a person opens from it later is found and checked.
+      const gone = deps.now() - row.at > PROVISIONAL_STALE_MS && await headOf(target, row.branch).then((head) => head === undefined, () => false);
+      if (gone) await deps.rows.delPr(key, row.place, row.number).catch(() => undefined); else out.push(row);
+      continue;
+    }
+    const numbered: PrRow = { ...row, number: found.id };
+    try { await deps.rows.putPr(key, numbered); await deps.rows.delPr(key, row.place, row.number); } catch { /* the provisional row stays; resolved again next sweep */ }
+    out.push(numbered);
+  }
+  return out;
+}
+
+/** Half one: Rovara pull requests that add a gone lesson are closed. Returns the numbers of the rows that carry a gone lesson (they are kept for good, so a PR reopened years later is still found). */
+async function closeErasedAdds(deps: EraseSweepDeps, key: ScopeKey, target: RepoFileTarget, rows: readonly PrRow[], result: EraseSweepResult): Promise<Set<string>> {
+  const kept = new Set<string>();
+  const adds = rows.filter((row) => row.kind === "adds" && row.ids.length > 0 && !isProvisional(row));
+  if (adds.length === 0) return kept;
   const gone = await deps.store.goneOf(key, [...new Set(adds.flatMap((row) => row.ids))]);
   for (const row of adds) {
     if (!row.ids.some((id) => gone.has(id))) continue;
+    kept.add(row.number);
     try { if (await closeRow(deps, key, target, row, "erased") && row.closedAt === undefined) result.closed += 1; } catch { result.failures += 1; deps.log?.("lessons_repo_file.erase_close_failed", {}); }
   }
+  return kept;
 }
 
-/** Half two: blocks of gone lessons on the default branch come out through a removal-only pull request. */
+/** Half two: blocks of gone lessons on the default branch come out through a removal-only pull request; one made stale (its blocks are gone from main, or main's file changed under it) is closed and made again. */
 async function removeErasedBlocks(deps: EraseSweepDeps, key: ScopeKey, target: RepoFileTarget, rows: readonly PrRow[], result: EraseSweepResult): Promise<void> {
   const { host, repository, scope } = target;
   if (host.commitFiles === undefined || host.pathKind === undefined) return;
@@ -82,31 +119,42 @@ async function removeErasedBlocks(deps: EraseSweepDeps, key: ScopeKey, target: R
   if (text === undefined) return;
   const parsed = parseLessonsFile(text);
   const ids = [...new Set(parsed.blocks.map((block) => block.id))].filter((id) => !parsed.duplicates.includes(id));
-  if (ids.length === 0) return;
-  const gone = await deps.store.goneOf(key, ids);
+  const gone = ids.length === 0 ? new Map() : await deps.store.goneOf(key, ids);
   const inFile = ids.filter((id) => gone.has(id));
-  if (inFile.length === 0) return;
-  // An open removal pull request that already covers every one of them is enough.
-  for (const row of rows.filter((r) => r.kind === "removal" && r.closedAt === undefined && inFile.every((id) => r.ids.includes(id)))) {
+  const fileHash = textHash(text);
+  const openRemovals = rows.filter((r) => r.kind === "removal" && r.closedAt === undefined && !isProvisional(r));
+  // A removal pull request that no longer matches main is out of date: its blocks are already gone, or main's file changed under it. It is closed (and, if blocks remain, made again below).
+  let covered = false;
+  for (const row of openRemovals) {
+    const matches = inFile.length > 0 && inFile.every((id) => row.ids.includes(id)) && row.fileHash === fileHash;
     const details = await host.getChangeRequest({ repository, id: row.number, url: "" }, scope).then((d) => d, () => undefined);
-    if (details === undefined || details.state === "open") return;
+    const isOpen = details === undefined || details.state === "open";
+    if (matches && isOpen) { covered = true; continue; }
+    if (isOpen) { try { await closeRow(deps, key, target, row, "nothing_left"); } catch { result.failures += 1; } }
+    else if (row.closedAt === undefined) await deps.rows.putPr(key, { ...row, closedAt: deps.now() }).catch(() => undefined);
   }
+  if (inFile.length === 0 || covered) return;
+  // Another sweep may be in the middle of making one (its provisional row is younger than half an hour).
+  if (rows.some((r) => r.kind === "removal" && isProvisional(r) && deps.now() - r.at < IN_FLIGHT_MS)) return;
   const next = applyFileChanges(text, { remove: inFile, replace: [], add: [] });
   if (next === text || host.deleteBranch === undefined) return;
   if (!await audited(deps, key, "lesson.repo_file_pr_opened", { removals: inFile.length, edits: 0, adds: 0 })) return;
   const branch = await freshBranchName(deps, target);
   if (branch === undefined) { result.failures += 1; return; }
+  // WRITE AHEAD: the repository's watch row and a row keyed by the new branch come BEFORE anything is written to the host. If they cannot be written, nothing is.
+  const at = deps.now();
+  const provisional: PrRow = { place: target.place, kind: "removal", number: provisionalNumber(branch), branch, ids: inFile, at, fileHash };
+  await deps.rows.putPr(key, { place: target.place, kind: "watch", number: "0", ids: [], at });
+  await deps.rows.putPr(key, provisional);
   const written = await host.commitFiles({ repository, branch, baseBranch: identity.defaultBranch, message: "Rovara: remove erased lessons", fromBase: true, baseRevision: head, files: [{ path: LESSON_FILE_PATH, content: next }], previous: [{ path: LESSON_FILE_PATH, content: text }] }, scope);
+  await deps.rows.putPr(key, { ...provisional, headRevision: written.revision }).catch(() => undefined);
   const created = await host.reconcileChangeRequest({
     repository, sourceBranch: branch, targetBranch: identity.defaultBranch, title: `Rovara: remove ${String(inFile.length)} erased ${inFile.length === 1 ? "lesson" : "lessons"}`,
     body: `Rovara removes ${String(inFile.length)} ${inFile.length === 1 ? "lesson" : "lessons"} from \`.rovara/lessons.md\` that ${inFile.length === 1 ? "was" : "were"} deleted in Rovara. Nothing else changes. Nothing changes until a person merges this pull request; the lessons stay in git history.`,
   }, scope);
-  const at = deps.now();
-  await deps.rows.putPr(key, { place: target.place, kind: "removal", number: created.ref.id, branch, headRevision: written.revision, ids: inFile, at });
-  await deps.rows.putPr(key, { place: target.place, kind: "watch", number: "0", ids: [], at });
   result.removalOpened = true;
-  // Older removal pull requests this one covers come down (closing is safe; their branches only while still Rovara's).
-  for (const old of rows.filter((r) => r.kind === "removal" && r.closedAt === undefined && r.ids.every((id) => inFile.includes(id)))) { try { await closeRow(deps, key, target, old, "replaced"); } catch { /* tried again next sweep */ } }
+  // The numbered row replaces the provisional one; if that cannot be done the provisional row stays and the next sweep resolves it by branch.
+  try { await deps.rows.putPr(key, { ...provisional, number: created.ref.id, headRevision: written.revision }); await deps.rows.delPr(key, target.place, provisional.number); } catch { deps.log?.("lessons_repo_file.erase_row_update_failed", {}); }
 }
 
 /**
@@ -118,12 +166,14 @@ export async function sweepErasures(deps: EraseSweepDeps, key: ScopeKey, target:
   try { rows = (await deps.rows.listPrs(key)).rows.filter((row) => row.place === target.place); } catch { rows = []; result.failures += 1; deps.log?.("lessons_repo_file.erase_rows_unreadable", {}); }
   // A repository Rovara has never written to (no row of any kind) has nothing of its to take out: no host call.
   if (rows.length === 0) return result;
-  try { await closeErasedAdds(deps, key, target, rows, result); } catch { result.failures += 1; deps.log?.("lessons_repo_file.erase_sweep_failed", {}); }
+  try { rows = await resolveProvisional(deps, key, target, rows); } catch { result.failures += 1; }
+  let keep = new Set<string>();
+  try { keep = await closeErasedAdds(deps, key, target, rows, result); } catch { result.failures += 1; deps.log?.("lessons_repo_file.erase_sweep_failed", {}); }
   try { await removeErasedBlocks(deps, key, target, rows, result); } catch { result.failures += 1; deps.log?.("lessons_repo_file.erase_removal_failed", {}); }
-  // Rows of closed pull requests are kept for 90 days (a reopened one is closed again); older ones, and merged ones (their text is the file's, taken out by half two), go.
+  // Rows of closed pull requests are kept for 90 days (a reopened one is closed again); one never seen closed goes after 400 days; a row that carried a gone lesson, and every watch row, stay for good (a few bytes each).
   try {
     for (const row of rows) {
-      if (row.kind === "watch" || row.branch === undefined) continue;
+      if (row.kind === "watch" || row.branch === undefined || keep.has(row.number) || isProvisional(row)) continue;
       if (deps.now() - (row.closedAt ?? row.at) > (row.closedAt === undefined ? OPEN_ROW_KEEP_MS : CLOSED_ROW_KEEP_MS)) await deps.rows.delPr(key, row.place, row.number);
     }
   } catch { /* bookkeeping only */ }
@@ -133,7 +183,8 @@ export async function sweepErasures(deps: EraseSweepDeps, key: ScopeKey, target:
 /** A project is archived: every open Rovara pull request of the repository is closed (nothing is left in the customer's repository that Rovara can still take down). Independent of the publish state, like the sweep. */
 export async function closeAllRovaraPrs(deps: EraseSweepDeps, key: ScopeKey, target: RepoFileTarget): Promise<number> {
   let closed = 0;
-  const rows = await deps.rows.listPrs(key).then((listed) => listed.rows.filter((row) => row.place === target.place && row.kind !== "watch" && row.closedAt === undefined), () => [] as PrRow[]);
+  const listed = await deps.rows.listPrs(key).then((l) => l.rows.filter((row) => row.place === target.place), () => [] as PrRow[]);
+  const rows = (await resolveProvisional(deps, key, target, listed).catch(() => listed)).filter((row) => row.kind !== "watch" && row.closedAt === undefined && !isProvisional(row));
   for (const row of rows) { try { if (await closeRow(deps, key, target, row, "switched_off")) closed += 1; } catch { /* the project is going away; nothing more to do */ } }
   return closed;
 }

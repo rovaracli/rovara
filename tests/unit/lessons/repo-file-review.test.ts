@@ -857,18 +857,19 @@ describe("N6: the tombstone is part of the erasure, retried until written", () =
     } finally { setLessonGoneListener(undefined); }
   });
 
-  it("a pull request row that cannot be written stops the pass before the state changes; the branch it made is cleaned up, and the next pass opens it again with its row", async () => {
+  it("a pull request row that cannot be written stops the pass before ANY host write; the next pass opens it with its row", async () => {
     const w = passSetup();
     await w.seedLessons(repoLesson(L1));
     await w.enable();
     w.state.failPrWrites = true;
     expect(await w.run()).toEqual({ status: "problem", problem: "state_unreadable" });
     expect((await w.current()).open).toBeUndefined();
-    const stray = (await w.current()).pending!.branch;
+    expect((await w.current()).pending).toBeUndefined();
+    expect(w.host.writes).toEqual([]);
+    expect(w.host.branchNames).toEqual([]);
     w.state.failPrWrites = false;
     w.week();
     expect(await w.run()).toMatchObject({ status: "opened" });
-    expect(w.host.files.has(stray)).toBe(false);
     expect((await w.state.listPrs(w.key)).rows.filter((row) => row.kind === "adds")).toHaveLength(1);
   });
 });

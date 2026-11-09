@@ -433,6 +433,11 @@ export interface CodeHost {
    * branch, never an existing branch for a new change request). Left out by a host that cannot: the lessons file pass then does not run for that repository, and says why.
    */
   commitFiles?(input: CommitFilesInput, scope: HostScope): Promise<CommitFilesResult>;
+  /**
+   * Lessons in the repository (R2): the change request (open, closed or merged) made from a Rovara lessons branch (`rovara/lessons-<12 hex>` only; any other name is refused), or undefined when there is none. The erasure sweep
+   * uses it for a branch it wrote a row for before the host wrote anything: the pull request may exist though its number was never recorded.
+   */
+  changeRequestForBranch?(repository: RepositoryRef, branch: string, scope: HostScope): Promise<ChangeRequestRef | undefined>;
   /** Lessons in the repository (R2): deletes a branch Rovara made (a name `rovara/lessons-<12 hex>` only; any other name is refused). "gone" when there was none. */
   deleteBranch?(repository: RepositoryRef, branch: string, scope: HostScope): Promise<"deleted" | "gone">;
 

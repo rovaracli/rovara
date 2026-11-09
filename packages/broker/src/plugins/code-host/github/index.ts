@@ -33,7 +33,7 @@ export const GITHUB_CODE_HOST_CAPABILITIES: CodeHostCapabilities = {
 /** The provider methods the adapter uses: a narrow type, so a test can stand in for the rest. */
 export type GitHubCodeHostProvider = Pick<GitHubAppCredentialProvider,
   | "getRepositoryIdentity" | "checkRepository" | "getRepositoryStanding" | "resolveWithExpiry" | "getFileAtCommit" | "getPathKindAtCommit" | "getCommitTree" | "getBranchHead" | "listWorkingBranches"
-  | "getCommitParents" | "getDefaultBranchHead" | "getPullRequestMergeObservation" | "commitFilesToBranch" | "deleteLessonsBranch"
+  | "getCommitParents" | "getDefaultBranchHead" | "getPullRequestMergeObservation" | "commitFilesToBranch" | "deleteLessonsBranch" | "findLessonsPullRequest"
   | "installationForRepository" | "readCodeOwners" | "reconcilePullRequest" | "getPullRequest" | "updatePullRequest" | "getPullRequestStatus" | "listPullRequestFiles"
   | "getPullRequestFeedback" | "replyToReviewThread" | "markPullRequestReady" | "requestReviewers" | "mergePullRequest">;
 
@@ -130,6 +130,12 @@ export function githubCodeHost(provider: GitHubCodeHostProvider, options: GitHub
       async commitFiles(input: CommitFilesInput, scope: HostScope): Promise<CommitFilesResult> {
         const parsed = CommitFilesInputSchema.parse(input);
         return provider.commitFilesToBranch(parsed.repository.url, { branch: parsed.branch, baseBranch: parsed.baseBranch, message: parsed.message, files: parsed.files, fromBase: parsed.fromBase, baseRevision: parsed.baseRevision, expectedHead: parsed.expectedHead, previous: parsed.previous }, checkedScope(scope));
+      },
+    }),
+    ...(typeof provider.findLessonsPullRequest !== "function" ? {} : {
+      async changeRequestForBranch(repository: RepositoryRef, branch: string, scope: HostScope): Promise<ChangeRequestRef | undefined> {
+        const found = await provider.findLessonsPullRequest(repository.url, branch, checkedScope(scope));
+        return found === undefined ? undefined : refOf(repository.url, found.number, found.url);
       },
     }),
     ...(typeof provider.deleteLessonsBranch !== "function" ? {} : {

@@ -58,8 +58,16 @@ export type Closing = z.infer<typeof ClosingSchema>;
 export const PrRowSchema = z.object({
   place: z.string().min(3).max(300), kind: z.enum(["adds", "removal", "watch"]), number: z.string().min(1).max(40), branch: Branch.optional(), headRevision: z.string().min(7).max(64).optional(),
   ids: z.array(Id).max(MAX_CARRIED), at: z.number(), closedAt: z.number().optional(),
+  /** A removal pull request: the fingerprint of the default branch's file it was made from. A different file now means it is out of date (closed and made again). */
+  fileHash: z.string().max(40).optional(),
 }).strict();
 export type PrRow = z.infer<typeof PrRowSchema>;
+/**
+ * WRITE AHEAD. A row keyed by the BRANCH name is written before anything is written to the host (the number is not known yet: `~` and the branch's 12 hex digits stand in for it); the numbered row replaces it once the pull request
+ * exists. A crash or a failed write between any two steps therefore leaves a row the erasure sweep can find (it looks the pull request up by branch on the host), and a failed row write means no host write was made.
+ */
+export const provisionalNumber = (branch: string): string => `~${branch.slice(-12)}`;
+export const isProvisional = (row: Pick<PrRow, "number">): boolean => row.number.startsWith("~");
 /** The rows of the erasure sweep. Separate from `RepoFileStore`'s state methods on purpose: the sweep is handed only this. */
 export interface PrRowStore {
   /** Every row of the project that parses, and how many did not (one bad row never hides the others). Throws only when the table cannot be read at all. */

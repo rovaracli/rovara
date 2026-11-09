@@ -55,6 +55,8 @@ export const LessonsRepoFileRowSchema = z.object({
   /** Lessons the team edited in the file: Rovara leaves them exactly as written. */
   held: z.number().int().min(0),
   pointer: z.enum(LESSON_FILE_POINTER_STATES),
+  /** Pull requests that remove deleted lessons (opened by the erasure sweep) and are waiting for the team to merge. */
+  erasurePrs: z.number().int().min(0).optional(),
   pr: LessonsRepoFilePrSchema.optional(),
   lastPassAt: z.number().optional(),
   problem: z.enum(LESSON_FILE_PROBLEMS).optional(),

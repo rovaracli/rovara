@@ -4,12 +4,12 @@ import { afterEach, describe, expect, it } from "vitest";
 import type { CodeHost } from "@agentx/contracts";
 import { dynamoRepoFileStore } from "../../../packages/broker/src/lessons/dynamo-repo-file.js";
 import { applyFileChanges, parseLessonsFile, renderLessonsFile } from "../../../packages/broker/src/lessons/repo-file-format.js";
-import { closeProjectRovaraPrs, closeOpenPullRequestFor } from "../../../packages/broker/src/lessons/repo-file-routes.js";
+import { closeProjectRovaraPrs, closeOpenPullRequestFor, repoFileAction, repoFileStatus } from "../../../packages/broker/src/lessons/repo-file-routes.js";
 import { lessonsRepoFileJob, type RepoFileRuntime } from "../../../packages/broker/src/lessons/repo-file-job.js";
 import { setLearnedLessonsGate } from "../../../packages/broker/src/lessons/policy.js";
 import { MAX_THEIRS, InMemoryRepoFileStore, StateFull, newRepoFileState, type RepoFileState, type RepoFileStore } from "../../../packages/broker/src/lessons/repo-file-state.js";
 import { FakeDynamoDb } from "../../support/fake-dynamodb.js";
-import { FILE, FakeRepoHost, OTHER_PLACE, PLACE, passSetup, repoLesson } from "./repo-file-helpers.js";
+import { DAY, FILE, FakeRepoHost, OTHER_PLACE, PLACE, passSetup, repoLesson } from "./repo-file-helpers.js";
 
 afterEach(() => { setLearnedLessonsGate(undefined); });
 const idsIn = (text: string | undefined): string[] => (text === undefined ? [] : parseLessonsFile(text).blocks.map((b) => b.id));
@@ -249,5 +249,221 @@ describe("the sweep does not depend on the publish state, whatever its failure",
     expect(Object.keys(deps).sort()).toEqual(["audit", "log", "now", "randomHex", "rows", "store"]);
     expect("state" in deps).toBe(false);
     expect("settings" in deps).toBe(false);
+  });
+});
+
+// ---- round 5: write ahead ----
+
+const KILL_L1 = "les_aaaa0001";
+const KILL_L2 = "les_aaaa0002";
+
+/**
+ * Kills "the Lambda" between every pair of steps of opening a pull request: after the Nth write event (a row write or delete, a state write, the commit, the pull request) every later one throws. Returns the wired setup and a way
+ * to bring it back to life.
+ */
+function dying(deadAfter: number) {
+  const w = passSetup();
+  let events = 0;
+  const alive = { on: true };
+  const guard = (): void => { if (alive.on) return; events += 1; if (events > deadAfter) throw new Error("the Lambda died"); };
+  const rows = new InMemoryRepoFileStore();
+  const rawPut = rows.putPr.bind(rows), rawDel = rows.delPr.bind(rows);
+  rows.putPr = async (k, r) => { guard(); return rawPut(k, r); };
+  rows.delPr = async (k, p, n) => { guard(); return rawDel(k, p, n); };
+  const rawStatePut = w.state.put.bind(w.state);
+  w.state.put = async (k, st, e) => { guard(); return rawStatePut(k, st, e); };
+  const rawCommit = w.host.commitFiles.bind(w.host), rawReconcile = w.host.reconcileChangeRequest.bind(w.host);
+  w.host.commitFiles = async (input) => { guard(); const out = await rawCommit(input); guard(); return out; };
+  w.host.reconcileChangeRequest = async (input) => { guard(); const out = await rawReconcile(input); guard(); return out; };
+  w.deps.rows = rows;
+  return { w, rows, arm: () => { alive.on = false; }, revive: () => { alive.on = true; }, events: () => events };
+}
+
+describe("N9: the Lambda dies between any two steps of opening a pull request; the next sweep still takes the erased text out", () => {
+  const runtimeFor = (w: ReturnType<typeof passSetup>): RepoFileRuntime => ({ deps: w.deps, targets: async () => [w.target], newHolder: () => "n" });
+  it.each(Array.from({ length: 14 }, (_, i) => [i]))("dies after event %i: a person pushes to whatever branch exists, the lesson is erased, and no open PR carries it", async (deadAfter) => {
+    const { w, arm, revive } = dying(deadAfter);
+    await w.seedLessons(repoLesson(KILL_L1));
+    await w.enable();
+    arm();
+    await w.run();
+    revive();
+    for (const pr of w.host.prs) w.host.setFile(pr.source, "person.txt", "a person's commit");
+    for (const branch of w.host.branchNames) w.host.setFile(branch, "person.txt", "a person's commit");
+    await w.store.purge(w.key, KILL_L1);
+    const runtime = runtimeFor(w);
+    await closeOpenPullRequestFor(runtime, w.key, KILL_L1);
+    w.clock.advance(DAY);
+    await lessonsRepoFileJob(runtime, w.key.workspaceId, [w.key.project], 3_600_000, 0);
+    expect(w.host.open.filter((pr) => idsIn(w.host.file(pr.source, FILE)).includes(KILL_L1))).toEqual([]);
+  });
+
+  it.each(Array.from({ length: 14 }, (_, i) => [i]))("dies after event %i and the publish state is lost with it: the rows alone are enough to find the pull request or branch and take the erased text out", async (deadAfter) => {
+    const { w, arm, revive } = dying(deadAfter);
+    await w.seedLessons(repoLesson(KILL_L1));
+    await w.enable();
+    arm();
+    await w.run();
+    revive();
+    await w.store.purge(w.key, KILL_L1);
+    const runtime: RepoFileRuntime = { ...runtimeFor(w), deps: { ...w.deps, state: new InMemoryRepoFileStore() } };
+    await closeOpenPullRequestFor(runtime, w.key, KILL_L1);
+    w.clock.advance(3_600_000);
+    await lessonsRepoFileJob(runtime, w.key.workspaceId, [w.key.project], 3_600_000, 0);
+    const carrying = w.host.open.filter((pr) => idsIn(w.host.file(pr.source, FILE)).includes(KILL_L1));
+    expect(carrying).toEqual([]);
+    // No person pushed to them, so they are Rovara's alone: a branch that still carries the text (the Lambda died between the commit and the row that records the head, so the head cannot be proven) keeps its row, and a pull request
+    // a person opens from it afterwards is closed by the next sweep.
+    const left = w.host.branchNames.filter((b) => b !== "main" && idsIn(w.host.file(b, FILE)).includes(KILL_L1));
+    const rowBranches = (await w.deps.rows!.listPrs(w.key)).rows.map((row) => row.branch);
+    for (const branch of left) {
+      expect(rowBranches).toContain(branch);
+      await w.host.reconcileChangeRequest({ repository: w.target.repository, sourceBranch: branch, targetBranch: "main", title: "t", body: "b" });
+    }
+    await closeOpenPullRequestFor(runtime, w.key, KILL_L1);
+    expect(w.host.open.filter((pr) => idsIn(w.host.file(pr.source, FILE)).includes(KILL_L1))).toEqual([]);
+  });
+
+  it.each(Array.from({ length: 14 }, (_, i) => [i]))("dies after event %i: the team merges what exists, the repository is switched off, the lesson is erased: the block is proposed for removal", async (deadAfter) => {
+    const { w, arm, revive } = dying(deadAfter);
+    await w.seedLessons(repoLesson(KILL_L1), repoLesson(KILL_L2));
+    await w.enable();
+    arm();
+    await w.run();
+    revive();
+    const pr = w.host.prs[0];
+    if (pr === undefined) return; // nothing was written to the host: nothing to take out
+    w.host.merge(pr.number);
+    const state = await w.current();
+    await w.state.put(w.key, { ...state, enabled: false }, state.revision);
+    await w.store.purge(w.key, KILL_L1);
+    const runtime = runtimeFor(w);
+    await closeOpenPullRequestFor(runtime, w.key, KILL_L1);
+    w.clock.advance(DAY);
+    await lessonsRepoFileJob(runtime, w.key.workspaceId, [w.key.project], 3_600_000, 0);
+    const mainHas = idsIn(w.host.file("main", FILE)).includes(KILL_L1);
+    const removal = w.host.open.some((p) => { const ids = idsIn(w.host.file(p.source, FILE)); return !ids.includes(KILL_L1) && ids.includes(KILL_L2); });
+    expect({ mainHas, removal }).toSatisfy((r: { mainHas: boolean; removal: boolean }) => !r.mainHas || r.removal);
+  });
+
+  it("a row write that fails means no host write at all", async () => {
+    const w = passSetup();
+    const rows = new InMemoryRepoFileStore();
+    rows.failPrWrites = true;
+    w.deps.rows = rows;
+    await w.seedLessons(repoLesson(KILL_L1));
+    await w.enable();
+    expect(await w.run()).toEqual({ status: "problem", problem: "state_unreadable" });
+    expect(w.host.writes).toEqual([]);
+    expect(w.host.prs).toEqual([]);
+    expect(w.host.branchNames).toEqual([]);
+  });
+
+  it("the erasure sweep makes no removal PR twice when the numbered row could not be written (the branch-keyed row covers it)", async () => {
+    const { w, second, runtime, rows } = await twoRepos();
+    const rawPut = rows.putPr.bind(rows);
+    let numbered = 0;
+    rows.putPr = async (k, r) => { if (r.kind === "removal" && !r.number.startsWith("~")) { numbered += 1; throw new Error("blip"); } return rawPut(k, r); };
+    await closeOpenPullRequestFor(runtime, w.key, GONE);
+    await closeOpenPullRequestFor(runtime, w.key, GONE);
+    expect(numbered).toBeGreaterThan(0);
+    expect(w.host.prs.filter((pr) => pr.state === "open")).toHaveLength(1);
+    expect(second.prs.filter((pr) => pr.state === "open")).toHaveLength(1);
+    // Once the branch's pull request is found by branch, the row gets its number.
+    rows.putPr = rawPut;
+    await closeOpenPullRequestFor(runtime, w.key, GONE);
+    const removalRows = (await rows.listPrs(w.key)).rows.filter((row) => row.kind === "removal" && row.place === PLACE);
+    expect(removalRows.every((row) => !row.number.startsWith("~"))).toBe(true);
+  });
+
+  it("switching the feature on writes a watch row for EVERY repository of the project first; if that fails nothing changes", async () => {
+    const { w, runtime, rows } = await twoRepos();
+    for (const row of (await rows.listPrs(w.key)).rows) await rows.delPr(w.key, row.place, row.number);
+    rows.failPrWrites = true;
+    expect(await repoFileAction(runtime, w.key, { action: "on", repo: "api" })).toEqual({ ok: false, code: "unreadable" });
+    expect(await w.state.get(w.key, PLACE)).toBeUndefined();
+    rows.failPrWrites = false;
+    expect(await repoFileAction(runtime, w.key, { action: "on", repo: "api" })).toMatchObject({ ok: true });
+    expect((await rows.listPrs(w.key)).rows.map((row) => row.place).sort()).toEqual([OTHER_PLACE, PLACE].sort());
+  });
+});
+
+describe("round 5 lows", () => {
+  it("U2: a removal PR made stale by the publish PR's merge is closed", async () => {
+    const w = passSetup();
+    await w.seedLessons(repoLesson("U2a0000001"), repoLesson("U2b0000002"));
+    await w.enable();
+    const r = await w.run();
+    w.host.merge(Number((r as { number: string }).number));
+    await w.store.purge(w.key, "U2a0000001");
+    await w.sweep();
+    const removal = w.host.open.at(-1)!;
+    w.week();
+    const p = await w.run();
+    expect(p.status).toBe("opened");
+    w.host.merge(Number((p as { number: string }).number));
+    expect(idsIn(w.host.file("main", FILE))).not.toContain("U2a0000001");
+    await w.sweep();
+    expect(w.host.prs.find((x) => x.number === removal.number)!.state).not.toBe("open");
+  });
+
+  it("a removal PR that no longer matches main's file (the team edited it meanwhile) is closed and made again", async () => {
+    const { w, runtime } = await twoRepos();
+    await closeOpenPullRequestFor(runtime, w.key, GONE);
+    const first = w.host.open.at(-1)!;
+    w.host.setFile("main", FILE, `${w.host.file("main", FILE)!}\n- A line the team added.\n`);
+    await closeOpenPullRequestFor(runtime, w.key, GONE);
+    expect(w.host.prs.find((p) => p.number === first.number)!.state).toBe("closed");
+    const second = w.host.open.at(-1)!;
+    expect(second.number).not.toBe(first.number);
+    expect(w.host.file(second.source, FILE)).toContain("A line the team added.");
+  });
+
+  it("U3: a PR closed by the sweep and reopened after 91 days is closed again (a row that carried a gone lesson is kept for good)", async () => {
+    const w = passSetup();
+    await w.seedLessons(repoLesson("U3a0000001"));
+    await w.enable();
+    await w.run();
+    const open = (await w.current()).open!;
+    await w.store.purge(w.key, "U3a0000001");
+    await w.sweep();
+    const pr = w.host.prs.find((p) => p.source === open.branch)!;
+    w.clock.advance(400 * DAY);
+    await w.sweep();
+    pr.state = "open";
+    await w.sweep();
+    expect(pr.state).toBe("closed");
+  });
+
+  it("a removal PR is shown on the repository's status row", async () => {
+    const { w, runtime } = await twoRepos();
+    await closeOpenPullRequestFor(runtime, w.key, GONE);
+    await runtime.deps.state.put(w.key, { ...newRepoFileState(PLACE, "api"), enabled: true }, 0);
+    const status = await repoFileStatus(runtime, w.key);
+    expect(status.repos[0]).toMatchObject({ erasurePrs: 1 });
+    expect(status.repos[0]!.notices.join(" ")).toContain("remove");
+  });
+
+  it("an add whose lesson is mid-purge (tombstone written, head not yet removed) is not proposed", async () => {
+    const w = passSetup();
+    await w.seedLessons(repoLesson("mid0000001"), repoLesson("mid0000002"));
+    await w.enable();
+    await w.store.markGone(w.key, "mid0000001", "purged");
+    expect(await w.run()).toMatchObject({ status: "opened", adds: 1 });
+    expect(Object.keys((await w.current()).open!.added)).toEqual(["mid0000002"]);
+  });
+
+  it("the erasure sweep has a slice of the nightly budget of its own and runs first", async () => {
+    const { lessonsNightlyJob } = await import("../../../packages/broker/src/lessons/jobs.js");
+    const { w, second, runtime } = await twoRepos();
+    const order: string[] = [];
+    const rawList = runtime.deps.state.list.bind(runtime.deps.state);
+    runtime.deps.state.list = async (k) => { order.push("publish"); return rawList(k); };
+    const rawCommitFiles = w.host.commitFiles.bind(w.host);
+    w.host.commitFiles = async (input) => { order.push("sweep-write"); return rawCommitFiles(input); };
+    const deps = { table: {} as never, settings: runtime.deps.settings, now: () => Date.now(), newRequestId: () => "x", log: () => undefined, resume: async () => ({ finished: 0, failed: 0 }), repoFile: runtime } as never;
+    await lessonsNightlyJob(deps, w.key.workspaceId, [w.key.project], 3_600_000);
+    expect(order[0]).toBe("sweep-write");
+    expect(removalOpen(w.host) && removalOpen(second)).toBe(true);
   });
 });

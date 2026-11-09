@@ -163,7 +163,7 @@ describe("the nightly job", () => {
     const w = passSetup();
     await w.enable();
     const counts = await lessonsRepoFileJob(runtimeOf(w), WS, ["proj-1"], -1, 0);
-    expect(counts.repoFileSkipped).toBe(1);
+    expect(counts.repoFileSkipped).toBe(2); // the sweep and the publish pass each skip the project
     expect(w.host.calls).toEqual([]);
   });
 });
