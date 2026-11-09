@@ -244,6 +244,7 @@ export async function runEraseBackfill(args: EraseBackfillArgs, ports: EraseBack
         ...(start === undefined ? {} : { ExclusiveStartKey: start }),
       }))) as { Items?: Array<Record<string, unknown>>; LastEvaluatedKey?: Record<string, unknown> };
       summary.pages += 1;
+      const failedBefore = summary.failed;
       const ids: string[] = [];
       for (const item of page.Items ?? []) {
         if (item.sk === "SHREDDED") { summary.shreddedOrgs += 1; continue; }
@@ -289,6 +290,8 @@ export async function runEraseBackfill(args: EraseBackfillArgs, ports: EraseBack
           fail(developerId, error);
         }
       }
+      // A page with a failure ends the run: the cursor stays at the start of that page (it was written after the page before), so a re-run with the same cursor file retries it.
+      if (summary.failed > failedBefore) break;
       start = page.LastEvaluatedKey;
       if (start === undefined) { summary.finished = true; break; }
       await writeCursor(args, { mode: summary.mode, start });
@@ -299,7 +302,7 @@ export async function runEraseBackfill(args: EraseBackfillArgs, ports: EraseBack
     // A read or the cursor write could not go on: what was done before it is still reported.
     summary.abortedBy = failureCodeOf(error);
   }
-  if (summary.finished && args.cursorFile !== undefined) await rm(args.cursorFile, { force: true });
+  if (summary.finished && args.cursorFile !== undefined) await rm(args.cursorFile, { force: true }).catch(() => undefined);
   summary.message = messageOf(summary);
   return summary;
 }

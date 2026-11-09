@@ -173,6 +173,24 @@ describe("the erased-names backfill", () => {
     expect(await readChosenName(w.db, "state", REJOINED)).toBe("Zed Newname");
   });
 
+  it("a page with a failure ends the run and the cursor stays at that page, so a re-run with the same cursor file retries it", async () => {
+    const w = await world();
+    const directory = await mkdtemp(join(tmpdir(), "erase-backfill-"));
+    temporary.push(directory);
+    const cursorFile = join(directory, "cursor.json");
+    // Page size 1: the first tombstone is page 1 (written), the sign-in function is down for the rest of the pages we reach.
+    w.failSignIn();
+    const first = await w.run(["--apply", "--page-size", "1", "--cursor-file", cursorFile]);
+    expect(first.code).toBe(1);
+    expect(first.summary).toMatchObject({ finished: false, failed: 1 });
+    expect((await stat(cursorFile)).isFile()).toBe(true);
+    w.restoreSignIn();
+    const second = await w.run(["--apply", "--page-size", "1", "--cursor-file", cursorFile]);
+    expect(second.code).toBe(0);
+    // Every erased person ends up with the sign-in name cleared, including the one whose page failed.
+    for (const developerId of [OLD_ERASED, ALSO_ERASED, NO_NAME_ITEM]) expect(w.db.get(signInRecordKey(developerId))).toMatchObject({ displayName: placeholderDisplayName(developerId) });
+  });
+
   it("a name item that cannot be read is a failure, not an erase and not a skip", async () => {
     const w = await world();
     w.db.injectFault({ command: "GetCommand", error: { name: "AccessDeniedException" }, times: 100 });
