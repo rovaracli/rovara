@@ -128,10 +128,13 @@ CREDENTIAL_NAMES = {"api_key", "extra_headers", "headers", "api_base", "base_url
                     "aws_secret_access_key", "aws_session_token", "service_tier", "extra_body", "extra_query", "litellm_credential_name", "models", "route"}
 OPENROUTER_PROVIDER_KEYS = {"allow_fallbacks", "require_parameters", "data_collection", "only", "order", "ignore", "sort", "zdr", "max_price", "quantizations"}
 # The one tool type each route accepts. Anthropic: a client tool has no type or "custom"; every typed tool (web_search_*, web_fetch_*,
-# code_execution_*, computer_*, bash_*, text_editor_*, memory_*, tool_search_*, mcp_toolset, ...) is run or defined by the provider.
+# code_execution_*, computer_*, bash_*, text_editor_*, memory_*, tool_search_*, mcp_toolset, ...) is defined by the provider (and most are run by it).
 # OpenAI chat and Responses: "function" only (refuses mcp, web_search*, code_interpreter, file_search, image_generation, computer_use*,
 # local_shell, custom, tool_search, namespace, ...).
 ROUTE_TOOL_TYPES = {"anthropic_messages": {None, "custom"}, "aresponses": {"function"}, "acompletion": {"function"}}
+RESPONSES_INCLUDE = {"reasoning.encrypted_content"}      # the only include value Pi sends; the others only add output of a hosted tool call
+# Blocks whose "input" is the model's own tool arguments (any JSON, may contain a key named "tools"): not tool definitions, not walked.
+ARGUMENT_BLOCKS = {"tool_use", "server_tool_use", "mcp_tool_use"}
 TOOL_CHOICE_TYPES = {"auto", "any", "none", "required", "tool", "function"}
 BANNED_HEADERS = ("openai-organization", "openai-project", "x-api-key-override")
 ALLOWED_BETAS = {"fine-grained-tool-streaming-2025-05-14", "interleaved-thinking-2025-05-14"}
@@ -153,29 +156,62 @@ def _deep_names(value, path="", out=None):
     return out
 
 
-def _check_tools(route, tools):
+def _check_tools(route, tools, where="tools"):
     """Refuse any tool that is not a plain function (client-side) tool; the message names the offending type."""
     if tools is None:
         return
     if not isinstance(tools, list):
-        _refuse("field tools (must be a list of function tools)")
+        _refuse(f"field {where} (must be a list of function tools)")
     allowed = ROUTE_TOOL_TYPES[route]
     for i, tool in enumerate(tools):
-        if not isinstance(tool, dict):
-            _refuse(f"tools[{i}] is not a function tool")
-        kind = tool.get("type")
-        if (kind is not None and not isinstance(kind, str)) or kind not in allowed:
-            shown = kind[:64] if isinstance(kind, str) else type(kind).__name__
-            _refuse(f"tool type {shown!r} at tools[{i}] (only function tools are served: provider-side tools such as web search, code execution, MCP, computer use and file search are refused)")
+        _check_tool(allowed, tool, f"{where}[{i}]")
+
+
+def _check_tool(allowed, tool, where):
+    if not isinstance(tool, dict):
+        _refuse(f"{where} is not a function tool")
+    kind = tool.get("type")
+    if (kind is not None and not isinstance(kind, str)) or kind not in allowed:
+        shown = kind[:64] if isinstance(kind, str) else type(kind).__name__
+        _refuse(f"tool type {shown!r} at {where} (only function tools are served: provider-side tools such as web search, code execution, MCP, computer use and file search are refused)")
+
+
+def _check_nested_tools(route, body):
+    """Tool definitions can also travel inside the conversation: Responses input items (additional_tools, tool_search_output carry a
+    tools list) and Anthropic messages (a tool_addition block carries a tool_definition). Walk input and messages, and hold every such
+    list or definition to the same rule as the top-level tools. Iterative, so a deeply nested body cannot raise RecursionError."""
+    for field in ("input", "messages"):
+        if field not in body:
+            continue
+        stack = [(field, body[field])]
+        while stack:
+            where, value = stack.pop()
+            if isinstance(value, list):
+                stack.extend((f"{where}[{i}]", v) for i, v in enumerate(value))
+            elif isinstance(value, dict):
+                if "tools" in value:
+                    _check_tools(route, value["tools"], f"{where}.tools")
+                if value.get("type") == "tool_definition":
+                    _check_tool(ROUTE_TOOL_TYPES["anthropic_messages"], value.get("definition"), f"{where}.definition")
+                skip_input = value.get("type") in ARGUMENT_BLOCKS
+                stack.extend((f"{where}.{k}", v) for k, v in value.items() if k != "tools" and not (skip_input and k == "input"))
 
 
 def _check_tool_choice(choice):
     """A tool_choice may name a function, never a provider-side tool type."""
     if choice is None or isinstance(choice, str):
         return
-    if not isinstance(choice, dict) or choice.get("type") not in TOOL_CHOICE_TYPES:
-        shown = choice.get("type") if isinstance(choice, dict) and isinstance(choice.get("type"), str) else "unknown"
-        _refuse(f"tool_choice type {shown[:64]!r} (only auto, any, none, required, tool and function are served)")
+    kind = choice.get("type") if isinstance(choice, dict) else None
+    if not isinstance(kind, str) or kind not in TOOL_CHOICE_TYPES:
+        shown = kind[:64] if isinstance(kind, str) else "unknown"
+        _refuse(f"tool_choice type {shown!r} (only auto, any, none, required, tool and function are served)")
+
+
+def _check_include(include):
+    if include is None:
+        return
+    if not isinstance(include, list) or any(not isinstance(v, str) or v not in RESPONSES_INCLUDE for v in include):
+        _refuse("field include (only reasoning.encrypted_content is served)")
 
 
 class RovaraGuard(CustomLogger):
@@ -219,6 +255,9 @@ class RovaraGuard(CustomLogger):
             else:
                 _refuse(f"field {name}")
         _check_tools(route, data.get("tools"))
+        _check_nested_tools(route, data)
+        if route == "aresponses":
+            _check_include(data.get("include"))
         _check_tool_choice(data.get("tool_choice"))
         if route == "acompletion" and "provider" in data:
             p = data["provider"]
