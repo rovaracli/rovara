@@ -34,13 +34,14 @@ for (const [name, context] of CASES) {
   for (const stack of stacks) {
     const file = join(outDir, `${name}.${stack.node.id}.template.json`);
     writeFileSync(file, JSON.stringify(Template.fromStack(stack).toJSON()));
-    const run = spawnSync(linter, ["--format", "parseable", file], { encoding: "utf8" });
+    const run = spawnSync(linter, ["--format", "parseable", file], { encoding: "utf8", maxBuffer: 64 * 1024 * 1024 });
     const lines = `${run.stdout}${run.stderr}`.split("\n").filter((line) => line.trim() !== "");
-    const errors = lines.filter((line) => /:E\d{4}:/.test(line) || (run.error !== undefined));
+    const errors = lines.filter((line) => /:E\d{4}:/.test(line));
     console.log(`${name} / ${stack.node.id}: ${errors.length} errors, ${lines.length - errors.length} other findings`);
     for (const line of lines) console.log(`  ${line}`);
     if (run.error !== undefined) console.log(`  could not run ${linter}: ${run.error.message}`);
-    if (errors.length > 0 || run.status === null) failed = true;
+    // cfn-lint exits with bits: 2 errors, 4 warnings, 8 informational; 1 means the tool itself failed (a crash prints no E line).
+    if (errors.length > 0 || run.status === null || (run.status & 1) !== 0) failed = true;
   }
 }
 console.log(`templates are in ${outDir} (${readdirSync(outDir).length} files)`);
