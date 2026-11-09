@@ -8,13 +8,14 @@
 // The lessons live in the TEAM RECORD table (`agentx-<env>-team-record`), not the State table. The credentials come from the environment (the guard exports them); there is no --profile and no default region.
 //
 // It sends Scan and nothing else (`readOnlyClient` refuses every other command, so a write cannot be sent even by mistake), paces itself (400 items a page, a pause between pages, an abort after 5 throttled pages in a row) and calls
-// no model. The lesson heads it reads hold lesson text; the report keeps none of it: counts and fixed reason codes only (see `packages/broker/src/lessons/repo-eligibility-report.ts`), nothing is logged but page counts on stderr.
+// no model. It reads eventually consistent and asks only for the fields the report needs (a projection: the lesson's status, approvals and counters, its three text fields for the @handle and e-mail check, and five provenance fields; no citations, no people, no other provenance); the report keeps no text: counts and fixed reason codes only (see `packages/broker/src/lessons/repo-eligibility-report.ts`), nothing is logged but page counts on stderr.
 import { pathToFileURL } from "node:url";
 import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
 import { DynamoDBDocumentClient, ScanCommand } from "@aws-sdk/lib-dynamodb";
 import { teamRecordTableName } from "../packages/contracts/src/derived-names.js";
 import { repoEligibilityReport, type RepoEligibilityReport, type ReportInput } from "../packages/broker/src/lessons/repo-eligibility-report.js";
-import { LessonSchema } from "../packages/broker/src/lessons/types.js";
+import { z } from "zod";
+import { LessonProvenanceSchema, LessonSchema } from "../packages/broker/src/lessons/types.js";
 
 const DEFAULT_PAUSE_MS = 200;
 const DEFAULT_SINCE_DAYS = 14;
@@ -23,7 +24,22 @@ const MAX_CONSECUTIVE_THROTTLES = 5;
 const SDK_MAX_ATTEMPTS = 3;
 const DAY = 86_400_000;
 const THROTTLE_ERRORS = new Set(["ProvisionedThroughputExceededException", "ThrottlingException", "RequestLimitExceeded", "ThrottledException"]);
-const INTERNAL = new Set(["pk", "sk", "entityType", "latest", "rev"]);
+
+/** The only fields of a lesson head the report needs, and so the only ones the scan asks for (a projection: no citations, no other provenance, no people). */
+const ReportItemSchema = z.object({
+  workspaceId: LessonSchema.shape.workspaceId, project: LessonSchema.shape.project, status: LessonSchema.shape.status, tier: LessonSchema.shape.tier, trial: LessonSchema.shape.trial, approvals: LessonSchema.shape.approvals,
+  reviewRequired: LessonSchema.shape.reviewRequired, retireProposedAt: LessonSchema.shape.retireProposedAt, counters: LessonSchema.shape.counters, citationChecks: LessonSchema.shape.citationChecks, createdAt: LessonSchema.shape.createdAt,
+  title: LessonSchema.shape.title, description: LessonSchema.shape.description, body: LessonSchema.shape.body,
+  provenance: LessonProvenanceSchema.pick({ audience: true, repoOnly: true, repoBlockCodes: true, sourceScopes: true, reflectorRun: true }),
+}).strict();
+const PROJECTED_PATHS: readonly (readonly string[])[] = [...Object.keys(ReportItemSchema.shape).filter((name) => name !== "provenance").map((name) => [name]), ...["audience", "repoOnly", "repoBlockCodes", "sourceScopes", "reflectorRun"].map((name) => ["provenance", name])];
+/** The scan's projection with every attribute name aliased (some, like `status`, are DynamoDB reserved words). */
+function projection(): { ProjectionExpression: string; names: Record<string, string> } {
+  const names: Record<string, string> = { "#t": "entityType" };
+  const alias = (name: string): string => { const known = Object.entries(names).find(([, value]) => value === name); if (known !== undefined) return known[0]; const key = `#n${Object.keys(names).length}`; names[key] = name; return key; };
+  const expression = PROJECTED_PATHS.map((path) => path.map(alias).join(".")).join(", ");
+  return { ProjectionExpression: expression, names };
+}
 
 /** The only client this script sends through. */
 export interface ReportClient { send(command: ScanCommand): Promise<unknown> }
@@ -83,6 +99,7 @@ export async function readLessonHeads(rawClient: ReportClient, tableName: string
   const sleep = options.sleep ?? defaultSleep;
   const pauseMs = options.pauseMs ?? 0;
   const rows: ReportInput[] = [];
+  const shape = projection();
   let unreadable = 0;
   let startKey: Record<string, unknown> | undefined;
   let pages = 0;
@@ -91,9 +108,10 @@ export async function readLessonHeads(rawClient: ReportClient, tableName: string
   for (;;) {
     let page: { Items?: Item[]; LastEvaluatedKey?: Record<string, unknown> };
     try {
+      // Eventually consistent on purpose: a count does not need the doubled cost of a consistent read.
       page = await client.send(new ScanCommand({
-        TableName: tableName, Limit: PAGE_LIMIT, ConsistentRead: true,
-        FilterExpression: "#t = :lesson", ExpressionAttributeNames: { "#t": "entityType" }, ExpressionAttributeValues: { ":lesson": "LESSON" },
+        TableName: tableName, Limit: PAGE_LIMIT, ProjectionExpression: shape.ProjectionExpression,
+        FilterExpression: "#t = :lesson", ExpressionAttributeNames: shape.names, ExpressionAttributeValues: { ":lesson": "LESSON" },
         ...(startKey === undefined ? {} : { ExclusiveStartKey: startKey }),
       })) as typeof page;
     } catch (error) {
@@ -107,7 +125,7 @@ export async function readLessonHeads(rawClient: ReportClient, tableName: string
     pages += 1;
     for (const item of page.Items ?? []) {
       items += 1;
-      const parsed = LessonSchema.safeParse(Object.fromEntries(Object.entries(item).filter(([name]) => !INTERNAL.has(name))));
+      const parsed = ReportItemSchema.safeParse(item);
       if (parsed.success) rows.push({ workspaceId: parsed.data.workspaceId, project: parsed.data.project, lesson: parsed.data });
       else unreadable += 1;
     }

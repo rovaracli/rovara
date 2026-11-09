@@ -13,7 +13,12 @@
 //   a task's own start and steering that are not spans (typed task text, answers, notes, connections)     -> never, unless the subject source PROVED them repository-visible (`ReflectSubject.repoInputs`)
 import { hasStaleCitation, namesAPerson } from "./trial.js";
 import { REPO_PLACE, repoOnlyScopes } from "./project-repo-audience.js";
-import { REPO_BLOCK_CODES, SPAN_KINDS, type Audience, type Lesson, type LessonProvenance, type RepoBlockCode } from "./types.js";
+import { REPO_BLOCK_CODES, SPAN_KINDS, type Audience, type Lesson, type LessonCitation, type LessonProvenance, type RepoBlockCode } from "./types.js";
+
+/** What the eligibility rule reads of a lesson: a `Lesson` fits, and so does the reduced item the measurement script reads (it never needs the rest). */
+export type RepoEligibilityLesson = Pick<Lesson, "status" | "tier" | "trial" | "approvals" | "reviewRequired" | "retireProposedAt" | "counters" | "citationChecks" | "title" | "description" | "body"> & {
+  provenance: Pick<LessonProvenance, "audience" | "repoOnly" | "repoBlockCodes">;
+};
 
 /** Whether a text is a repository place (`<source>:repo/<id>`), the shape the Team record names a code-host repository with. */
 export const isRepoPlace = (place: string): boolean => REPO_PLACE.test(place);
@@ -22,8 +27,12 @@ export const isRepoPlace = (place: string): boolean => REPO_PLACE.test(place);
 export interface RepoInputSpan {
   kind: string; trust?: string; authorId?: string | undefined; authorIds?: readonly string[] | undefined; audience?: Audience | undefined; scopes?: readonly string[] | undefined;
 }
+/** The proof a subject source gives that a task's own start and steering were repository-visible, and which repository it is: the place, the project's name for it, and its pull request URL prefix. */
+export interface RepoInputsProof { place: string; repository: string; linkPrefix: string }
 export interface RepoInputSubject {
-  kind: string; inheritedTasks?: readonly string[] | undefined; repoInputs?: { place: string } | undefined;
+  kind: string; inheritedTasks?: readonly string[] | undefined; repoInputs?: RepoInputsProof | undefined;
+  /** The prompt header names these repositories and links: they are inputs too. */
+  repositories?: readonly string[] | undefined; links?: readonly string[] | undefined;
 }
 
 const KNOWN_KINDS: ReadonlySet<string> = new Set(SPAN_KINDS);
@@ -48,8 +57,31 @@ function placeOfSpan(span: RepoInputSpan): Placed {
   if (audience === undefined) return { block: "audience_not_repo" };
   if (audience.kind === "project") return { place };
   // Restricted: exactly the readers of this one repository (the code-host row shape: no principals, no groups, the scope is the repository's place).
-  const readers = repoOnlyScopes({ provenance: { audience } as LessonProvenance });
+  const readers = repoOnlyScopes({ provenance: { audience } });
   return readers !== undefined && readers.every((reader) => reader === place) ? { place } : { block: "audience_not_repo" };
+}
+
+/**
+ * The prompt header (`Repositories:`, `Links you may cite:`) names repositories and pull requests, and the reflector reads them: they are inputs. Without a proof it may name nothing (a facts subject); with one it must name exactly the one
+ * repository the place stands for and only that repository's pull requests. A proof with no repository name or URL prefix, or one the header does not match, fails closed.
+ */
+function headerStaysIn(subject: RepoInputSubject): boolean {
+  const repositories = subject.repositories ?? [];
+  const links = subject.links ?? [];
+  const proof = subject.repoInputs;
+  if (proof === undefined) return repositories.length === 0 && links.length === 0;
+  if (proof.repository === "" || proof.linkPrefix === "") return false;
+  return repositories.length === 1 && repositories[0] === proof.repository && links.every((link) => link.startsWith(proof.linkPrefix) && /^\d+$/u.test(link.slice(proof.linkPrefix.length)));
+}
+
+/** Whether every code citation is in the proved repository and every pull request citation is one of its pull requests. Without a proof only record and task citations may stand. Pure. */
+export function citationsStayIn(proof: RepoInputsProof | undefined, citations: readonly LessonCitation[]): boolean {
+  return citations.every((citation) => {
+    if (citation.kind === "record" || citation.kind === "task") return true;
+    if (proof === undefined) return false;
+    if (citation.kind === "code") return citation.repo === proof.repository;
+    return citation.kind === "pr" && citation.url.startsWith(proof.linkPrefix);
+  });
 }
 
 export interface RepoVisibility {
@@ -75,6 +107,8 @@ export function repoVisibilityOf(subject: RepoInputSubject, spans: Iterable<Repo
     else places.add(subject.repoInputs.place);
   } else if (subject.kind !== "facts") blocked.add("unknown_input");
   if ((subject.inheritedTasks ?? []).length > 0) blocked.add("loaded_lesson");
+  // A task with no proof is already blocked above, and says only that; the header is judged when there is a proof to judge it by (and always for a facts subject).
+  if ((subject.kind !== "task" || subject.repoInputs !== undefined) && !headerStaysIn(subject)) blocked.add("other_repo");
   for (const span of spans) {
     const personAuthored = span.authorId !== undefined || (span.authorIds?.length ?? 0) > 0 || span.trust === "member";
     if (!KNOWN_KINDS.has(span.kind)) { blocked.add("unknown_input"); continue; }
@@ -86,10 +120,12 @@ export function repoVisibilityOf(subject: RepoInputSubject, spans: Iterable<Repo
       else blocked.add(placed.block === "missing_place" || placed.block === "other_place" ? "intent_not_repo" : placed.block);
       continue;
     }
-    // The repository's own kinds always need a place. A derived kind (written by Rovara) needs none, but a person's words in it, or a place that is not a repository, block it.
+    // A derived kind (written by Rovara) holds no person's words: a person's name on one is text typed in Rovara, whatever place it carries. The same for a fact or an outcome: the repository's code and host state have no author.
+    if ((DERIVED_KINDS.has(span.kind) || span.kind === "fact" || span.kind === "outcome") && personAuthored) { blocked.add("typed_in_rovara"); continue; }
+    // A derived kind with no place of its own is as visible as the task's inputs, which only a task has (proved by `repoInputs`). For any other subject its origin is unknown.
     const hasPlace = span.scopes !== undefined && span.scopes.length > 0;
     if (DERIVED_KINDS.has(span.kind) && !hasPlace) {
-      if (personAuthored) blocked.add("typed_in_rovara");
+      if (subject.kind !== "task") blocked.add("unknown_input");
       continue;
     }
     if (REPOSITORY_KINDS.has(span.kind) || DERIVED_KINDS.has(span.kind)) {
@@ -132,7 +168,7 @@ export type RepoFileBlocker =
  * Everything that keeps a lesson out of repository `repo`'s file now (empty: eligible). `repo` is its place (`<source>:repo/<id>`); `names` are the display names of the people the lesson could name, REQUIRED as for
  * `isPublishable` (an empty list is a statement that the caller found none; an @handle or an e-mail address always counts). Pure; every doubt is a blocker.
  */
-export function repoFileBlockers(lesson: Lesson, repo: string, names: readonly string[]): RepoFileBlocker[] {
+export function repoFileBlockers(lesson: RepoEligibilityLesson, repo: string, names: readonly string[]): RepoFileBlocker[] {
   const blockers: RepoFileBlocker[] = [];
   if (!isRepoPlace(repo)) return ["repo_unknown"];
   const only = lesson.provenance.repoOnly;
@@ -156,4 +192,24 @@ export function repoFileBlockers(lesson: Lesson, repo: string, names: readonly s
 }
 
 /** Whether the lesson may go into repository `repo`'s `.rovara/lessons.md`. Pure; see `repoFileBlockers` for the reasons. */
-export const isRepoFileEligible = (lesson: Lesson, repo: string, names: readonly string[]): boolean => repoFileBlockers(lesson, repo, names).length === 0;
+export const isRepoFileEligible = (lesson: RepoEligibilityLesson, repo: string, names: readonly string[]): boolean => repoFileBlockers(lesson, repo, names).length === 0;
+
+/**
+ * A person's edit-and-approve (`approve.ts`) is text typed in Rovara: an input that the readers of the repository cannot see (design section 2, "text typed in Rovara: never"). The edited lesson is no longer repository-only,
+ * whatever its inputs were; hand edits come into a repository's file through the read-back, which is repository-visible by construction. Pure.
+ */
+export function afterPersonEdit<P extends Pick<LessonProvenance, "repoOnly" | "repoBlockCodes">>(provenance: P): P {
+  const { repoOnly: _only, repoBlockCodes: earlier, ...rest } = provenance;
+  void _only;
+  return { ...rest, repoBlockCodes: inCodeOrder(new Set<RepoBlockCode>([...(earlier ?? []), "typed_in_rovara"])) } as P;
+}
+
+/**
+ * Whether a draft may merge into `target` without costing the target its place in a repository's file: if the target is eligible for its repository now (every gate except the roster of names), the merged lesson must stay
+ * repository-only for it; otherwise the draft stays its own lesson and both are kept. A target that is not eligible now loses nothing. Pure.
+ */
+export function mergeKeepsFileEligibility(target: RepoEligibilityLesson, draft: { provenance: Pick<LessonProvenance, "repoOnly" | "repoBlockCodes"> }): boolean {
+  const place = target.provenance.repoOnly?.place;
+  if (place === undefined || repoFileBlockers(target, place, []).length > 0) return true;
+  return mergedRepoVisibility(target.provenance, draft.provenance).repoOnly !== undefined;
+}

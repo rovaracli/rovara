@@ -106,20 +106,36 @@ type Row = Record<string, unknown>;
 /** An in-memory table that answers the one Scan this script sends (entityType equality, paged), records every command, and refuses to be written. */
 function fakeTable(items: Row[], pageSize = 2) {
   const commands: string[] = [];
+  const scans: Array<ScanCommand["input"]> = [];
+  /** Applies a projection expression with aliased names (`#n1.#n2` is a nested path), as the table does. */
+  const project = (item: Row, input: ScanCommand["input"]): Row => {
+    const names = input.ExpressionAttributeNames ?? {};
+    const out: Row = {};
+    for (const path of (input.ProjectionExpression ?? "").split(",").map((part) => part.trim().split(".").map((token) => names[token] ?? token))) {
+      let from: unknown = item;
+      for (const key of path) from = (from as Row | undefined)?.[key];
+      if (from === undefined) continue;
+      let into = out;
+      path.slice(0, -1).forEach((key) => { into = (into[key] ??= {}) as Row; });
+      into[path.at(-1)!] = from;
+    }
+    return out;
+  };
   const client: ReportClient = {
     async send(command) {
       commands.push(command.constructor.name);
       if (!(command instanceof ScanCommand)) throw new Error("only Scan");
       const input = command.input;
+      scans.push(input);
       const start = input.ExclusiveStartKey === undefined ? 0 : Number(input.ExclusiveStartKey.at) + 1;
       const slice = items.slice(start, start + Math.min(pageSize, input.Limit ?? pageSize));
       const wanted: unknown = input.ExpressionAttributeValues?.[":lesson"];
-      const matching = slice.filter((item) => item.entityType === wanted);
+      const matching = slice.filter((item) => item.entityType === wanted).map((item) => project(item, input));
       const last = start + slice.length - 1;
       return { Items: matching, ...(last + 1 < items.length ? { LastEvaluatedKey: { at: last } } : {}) };
     },
   };
-  return { client, commands };
+  return { client, commands, scans };
 }
 const head = (l: Lesson): Row => ({ pk: "ORG#x#PROJECT#p", sk: `LESSON#${l.id}`, entityType: "LESSON", latest: 1, rev: 0, ...JSON.parse(JSON.stringify(l)) as Row });
 
@@ -151,10 +167,23 @@ describe("the operator script", () => {
   it("reads every lesson head across pages, skips other items, and counts the ones that do not parse without showing them", async () => {
     const { client, commands } = fakeTable(items);
     const { rows, unreadable } = await readLessonHeads(client, "t");
-    expect(rows.map((r) => r.lesson.id)).toEqual(["les_s1", "les_s2", "les_s3"]);
+    expect(rows.map((r) => r.lesson.title)).toEqual(["TITLE-s1", "TITLE-s2", "TITLE-s3"]);
+    expect(Object.keys(rows[0]!.lesson).sort()).not.toContain("citations");
     expect(unreadable).toBe(1);
     expect(new Set(commands)).toEqual(new Set(["ScanCommand"]));
     expect(commands.length).toBeGreaterThan(1);
+  });
+
+  it("reads eventually consistent and asks for a projection: no citations, no people, no other provenance ever leave the table", async () => {
+    const { client, scans } = fakeTable(items);
+    await readLessonHeads(client, "t");
+    expect(scans.length).toBeGreaterThan(1);
+    for (const scan of scans) {
+      expect(scan.ConsistentRead).toBeUndefined();
+      const names = Object.values(scan.ExpressionAttributeNames ?? {});
+      for (const wanted of ["status", "trial", "approvals", "audience", "repoOnly", "repoBlockCodes", "sourceScopes", "reflectorRun", "title", "body"]) expect(names, wanted).toContain(wanted);
+      for (const never of ["citations", "authors", "readFrom", "sources", "inputSources", "editors", "supportTasks", "sourceEvents", "id"]) expect(names, never).not.toContain(never);
+    }
   });
 
   it("main prints the report as JSON with counts only, sends nothing but Scan, and needs no AWS", async () => {

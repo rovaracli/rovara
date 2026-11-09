@@ -9,7 +9,7 @@ import { emitAudit, learnedLessonsSwitchOn, learningCaps, type Edition } from ".
 import { isLearningRefusal, noteJudgeRecovered, noteModelFailure, notePause, pauseOfLook, spendLook, type LessonsPauseStore } from "./pause.js";
 import type { AlertSink, LearningSpend, LessonDeps, LessonEmbedder, LessonVectors, PipelineModel } from "./ports.js";
 import { relate } from "./copy-match.js";
-import { mergedRepoVisibility } from "./repo-eligibility.js";
+import { mergeKeepsFileEligibility, mergedRepoVisibility } from "./repo-eligibility.js";
 import { readVisible } from "./read-visible.js";
 import type { AccessCheckPort } from "../team-record/access-port.js";
 import { EMBED_TIMEOUT_MS, JUDGE_CANDIDATES, JUDGE_REJECTED, NEIGHBOURS, closeEnoughForSame, docOf, dropVector, isFlippedCopy, isNarrowing, isNearExact, isVerbatim, keepVector, matchesRejected, passesGate, rankLessons, type Ranked, type SimilarityLog } from "./similarity.js";
@@ -238,7 +238,7 @@ const mergeFits = (target: Lesson, draft: LessonDraft): boolean =>
 
 /** A merge into an active lesson may not lower its trust or narrow its audience: that is a different lesson. */
 const mergeAllowed = (target: Lesson, draft: LessonDraft): boolean =>
-  mergeFits(target, draft) && (target.status !== "active" || ((target.trial === undefined || (draft.provenance.memberCorrection === true && draft.provenance.claimsSupported === true)) && trustAtLeast(draft.provenance.minTrust, target.provenance.minTrust)
+  mergeFits(target, draft) && mergeKeepsFileEligibility(target, draft) && (target.status !== "active" || ((target.trial === undefined || (draft.provenance.memberCorrection === true && draft.provenance.claimsSupported === true)) && trustAtLeast(draft.provenance.minTrust, target.provenance.minTrust)
     && JSON.stringify(narrowestAudience([target.provenance.audience, draft.provenance.audience])) === JSON.stringify(target.provenance.audience)));
 
 /** What the structural test is given when the shortlist did not rank a lesson (the test ignores it; equal words are as close as two texts get). */

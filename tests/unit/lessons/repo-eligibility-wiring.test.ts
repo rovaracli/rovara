@@ -11,7 +11,7 @@ import { Alerts, Audit, Clock, KEY, MemoryVectors, PROJECT, ScriptedModel, Spend
 const A = "github:repo/1001";
 const B = "github:repo/2002";
 const inRepo = (over: Partial<EvidenceSpan> = {}): EvidenceSpan => memberSpan("Use withRetry for HTTP retries in api.", { kind: "pr_comment", scopes: [A], audience: { kind: "project" }, ...over });
-const repoTask = { repoInputs: { place: A } };
+const repoTask = { repoInputs: { place: A, repository: "api", linkPrefix: "https://github.com/acme/api/pull/" } };
 
 function reflectDeps(model: ScriptedModel, metrics?: Array<[string, Record<string, string> | undefined]>): ReflectDeps {
   const clock = new Clock();

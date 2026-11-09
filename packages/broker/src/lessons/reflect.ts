@@ -8,7 +8,7 @@ import { emitAudit, learningCaps, modeAllows, resolveLearning, type Edition, typ
 import type { Clock, LearningSpend, LessonAuditSink, Metrics, PipelineModel } from "./ports.js";
 import { repoOnlyScopes } from "./project-repo-audience.js";
 import { buildReflectorInput, type MarkedSpan, type ReflectSubject } from "./reflect-input.js";
-import { repoVisibilityOf, type RepoVisibility } from "./repo-eligibility.js";
+import { citationsStayIn, repoVisibilityOf, type RepoVisibility } from "./repo-eligibility.js";
 import { NO_REASON_TEXT } from "./task-subject.js";
 import { lessonClaimsSupported } from "./trial.js";
 import {
@@ -87,7 +87,7 @@ export function memberCorrectionOf(cited: readonly MarkedSpan[], everythingTrust
  * on trial (`trialBlockers`, "restricted_source", over the narrowest audience of everything the model read), so a repository that is not the project's still keeps the lesson off trial. Any other restriction disqualifies here.
  */
 function restrictedBeyondRepos(audience: Audience | undefined): boolean {
-  return audience?.kind === "restricted" && repoOnlyScopes({ provenance: { audience } as LessonProvenance }) === undefined;
+  return audience?.kind === "restricted" && repoOnlyScopes({ provenance: { audience } }) === undefined;
 }
 
 /** The source key of CI failures, as the subject source writes it. */
@@ -318,7 +318,8 @@ async function toDraft(
       // true: every source was project-wide when reflected; false: it was not (a merge keeps that); unset: not known (never read, or unreadable).
       ...(subject.sharedTask === undefined ? {} : { fromSharedTask: subject.sharedTask }),
       // Lessons in the repo: set only when every input was one repository's; otherwise the fixed codes of what blocked it (never text).
-      ...(visibility.repoOnly === undefined ? { repoBlockCodes: visibility.blocked } : { repoOnly: visibility.repoOnly }),
+      // A kept citation in another repository (or a pull request that is not the repository's) puts the lesson's text beyond that repository's readers: the citations are the model's output, so they are judged here.
+      ...(visibility.repoOnly !== undefined && citationsStayIn(subject.repoInputs, citations) ? { repoOnly: visibility.repoOnly } : { repoBlockCodes: visibility.repoOnly === undefined ? visibility.blocked : ["other_repo" as const] }),
     },
   };
 }

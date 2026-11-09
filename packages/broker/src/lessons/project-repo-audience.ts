@@ -43,7 +43,7 @@ export function projectRepoScopesOf(port: object | undefined): ProjectRepoScopes
 export const REPO_PLACE = /^[a-z][a-z0-9:._-]*:repo\/[^+\s]+$/;
 
 /** The repository places of a lesson whose restriction is exactly "readers of these repositories" (see the top of this file); `undefined` for any other lesson. Pure. */
-export function repoOnlyScopes(lesson: Pick<Lesson, "provenance">): string[] | undefined {
+export function repoOnlyScopes(lesson: { provenance: { audience: Lesson["provenance"]["audience"] } }): string[] | undefined {
   const audience = lesson.provenance.audience;
   if (audience.kind !== "restricted") return undefined;
   const acl = audience.acl;

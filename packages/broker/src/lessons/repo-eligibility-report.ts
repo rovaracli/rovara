@@ -8,8 +8,11 @@
 // that names none is counted in the bucket `(none)`. Each lesson is counted once per repository it names, and a lesson with several reasons is counted under each reason (so reasons add up to more than "not eligible").
 // The roster of display names is not read, so a lesson whose text names a person only by display name counts as eligible; an @handle or an e-mail address is still caught (`rosterChecked: false` says so).
 import { REPO_PLACE, repoOnlyScopes } from "./project-repo-audience.js";
-import { isRepoPlace, repoFileBlockers } from "./repo-eligibility.js";
-import type { Lesson, RepoBlockCode } from "./types.js";
+import { isRepoPlace, repoFileBlockers, type RepoEligibilityLesson } from "./repo-eligibility.js";
+import type { LessonProvenance, RepoBlockCode } from "./types.js";
+
+/** What the report reads of a lesson: the eligibility rule's fields plus when it was made, the places it named and the reflection that made it. The measurement script reads only these (a projection), never a whole item. */
+export type ReportLesson = RepoEligibilityLesson & { createdAt: number; provenance: Pick<LessonProvenance, "sourceScopes" | "reflectorRun"> };
 
 export const NO_REPO_BUCKET = "(none)";
 export type ReportReason = `file:${string}` | `input:${RepoBlockCode}`;
@@ -62,7 +65,7 @@ const NOTES = [
 ];
 
 /** The repositories a lesson names: its repoOnly place, the repository places among its source scopes, and the repository its audience is restricted to. */
-export function reposNamedBy(lesson: Lesson): string[] {
+export function reposNamedBy(lesson: ReportLesson): string[] {
   const places = new Set<string>();
   if (lesson.provenance.repoOnly !== undefined) places.add(lesson.provenance.repoOnly.place);
   for (const scope of lesson.provenance.sourceScopes ?? []) if (REPO_PLACE.test(scope)) places.add(scope);
@@ -76,7 +79,7 @@ const top = (counts: Map<string, number>, limit: number): ReasonCount[] =>
 const bump = (counts: Map<string, number>, reason: string): void => { counts.set(reason, (counts.get(reason) ?? 0) + 1); };
 
 /** Why a lesson's inputs were not repository-only, from the fixed codes it carries; a lesson with none recorded predates the field. */
-function inputReasons(lesson: Lesson): string[] {
+function inputReasons(lesson: ReportLesson): string[] {
   if (lesson.provenance.repoOnly !== undefined) return [];
   const codes = lesson.provenance.repoBlockCodes;
   return (codes === undefined || codes.length === 0 ? ["predates_field"] : codes).map((code) => `input:${code}`);
@@ -85,7 +88,7 @@ function inputReasons(lesson: Lesson): string[] {
 export interface ReportInput {
   workspaceId: string;
   project: string;
-  lesson: Lesson;
+  lesson: ReportLesson;
 }
 export interface ReportOptions {
   /** Reflections count from lessons made at or after this time (ms). */

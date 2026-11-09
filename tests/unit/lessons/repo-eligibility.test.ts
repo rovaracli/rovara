@@ -9,7 +9,10 @@ const B = "github:repo/2002";
 const open: Audience = { kind: "project" };
 const readersOf = (place: string): Audience => ({ kind: "restricted", acl: { source: "github", scope: place, capturedAt: "2026-11-09T00:00:00Z", liveCheck: "on_read" } });
 const span = (kind: string, over: Partial<RepoInputSpan> = {}): RepoInputSpan => ({ kind, trust: "member", scopes: [A], audience: open, ...over });
-const task = { kind: "task", repoInputs: { place: A } } as const;
+const PREFIX = "https://github.com/acme/api/pull/";
+const proof = (place = A) => ({ place, repository: "api", linkPrefix: PREFIX });
+/** A task whose own start and steering are proved repository-visible, and whose header names only that repository and its pull requests. */
+const task = { kind: "task", repoInputs: proof(), repositories: ["api"], links: [`${PREFIX}7`] } as const;
 const good = span("pr_comment");
 
 describe("repoVisibilityOf: every kind of input the reflector can be given", () => {
@@ -18,14 +21,14 @@ describe("repoVisibilityOf: every kind of input the reflector can be given", () 
     { name: "a pull request comment on the repository (public repository, project audience)", spans: [good], ok: true },
     { name: "a pull request comment on a private repository (readers of that one repository)", spans: [span("pr_comment", { audience: readersOf(A) })], ok: true },
     { name: "a person's fix-up commits on the repository's pull request", spans: [span("human_edit", { authorIds: ["ann", "bob"] })], ok: true },
-    { name: "a merge or revert outcome in the repository", spans: [span("outcome")], ok: true },
-    { name: "a fact read from the repository's code", subject: { kind: "facts" }, spans: [span("fact")], ok: true },
+    { name: "a merge or revert outcome in the repository", spans: [span("outcome", { trust: "system" })], ok: true },
+    { name: "a fact read from the repository's code", subject: { kind: "facts" }, spans: [span("fact", { trust: "system" })], ok: true },
     { name: "an intent from a GitHub issue or pull request of the repository (the place is on the span)", spans: [span("intent"), good], ok: true },
     { name: "Rovara's plan, finding and CI text, derived from repository-only inputs", spans: [good, span("plan", { trust: "system", scopes: undefined, audience: undefined }), span("review_finding", { trust: "system", scopes: undefined, audience: undefined }), span("ci_failure", { trust: "system", scopes: undefined, audience: undefined })], ok: true },
     { name: "a CI result that carries the repository's place", spans: [good, span("ci_failure", { trust: "system" })], ok: true },
     // Never.
     { name: "a Slack message (public or private channel)", spans: [good, span("pr_comment", { scopes: ["slack:channel/C123"], audience: readersOf("slack:channel/C123") })], ok: false, blocked: ["other_place"] },
-    { name: "a tracker issue", spans: [good, span("fact", { scopes: ["linear:issue/ENG-1"], audience: open })], ok: false, blocked: ["other_place"] },
+    { name: "a tracker issue", spans: [good, span("fact", { trust: "system", scopes: ["linear:issue/ENG-1"], audience: open })], ok: false, blocked: ["other_place"] },
     { name: "a send-back typed in Rovara, even with a repository place on it", spans: [good, span("send_back")], ok: false, blocked: ["typed_in_rovara"] },
     { name: "a 'remember this' note", spans: [good, span("remembered", { scopes: ["rovara:project/p"] })], ok: false, blocked: ["typed_in_rovara"] },
     { name: "a close reason typed in Rovara", spans: [good, span("close_reason")], ok: false, blocked: ["typed_in_rovara"] },
@@ -47,8 +50,8 @@ describe("repoVisibilityOf: every kind of input the reflector can be given", () 
     { name: "tasks behind loaded lessons (inheritedTasks)", subject: { ...task, inheritedTasks: ["task-9"] }, spans: [good], ok: false, blocked: ["loaded_lesson"] },
     { name: "a span of a kind this build does not know", spans: [good, span("email_thread")], ok: false, blocked: ["unknown_input"] },
     { name: "a task whose own start and steering are not proved repository-visible", subject: { kind: "task" }, spans: [good], ok: false, blocked: ["task_inputs_unproved"] },
-    { name: "a task whose proved inputs are another repository's", subject: { kind: "task", repoInputs: { place: B } }, spans: [good], ok: false, blocked: ["other_repo"] },
-    { name: "a task whose proof names no repository place", subject: { kind: "task", repoInputs: { place: "slack:channel/C1" } }, spans: [good], ok: false, blocked: ["task_inputs_unproved"] },
+    { name: "a task whose proved inputs are another repository's", subject: { ...task, repoInputs: proof(B) }, spans: [good], ok: false, blocked: ["other_repo"] },
+    { name: "a task whose proof names no repository place", subject: { ...task, repoInputs: proof("slack:channel/C1") }, spans: [good], ok: false, blocked: ["task_inputs_unproved"] },
     { name: "a subject of a kind this build does not know", subject: { kind: "digest" }, spans: [good], ok: false, blocked: ["unknown_input"] },
     { name: "only derived text, nothing from a repository", spans: [span("plan", { trust: "system", scopes: undefined, audience: undefined })], ok: false, blocked: ["no_repo_evidence"] },
     { name: "no input at all", spans: [], ok: false, blocked: ["no_repo_evidence"] },
@@ -78,7 +81,7 @@ describe("repoVisibilityOf: every kind of input the reflector can be given", () 
   it("fail closed over random mixes: repoOnly is set exactly when no span is bad and one is from the repository, whatever the order or the number", () => {
     let seed = 7;
     const next = (): number => { seed = (Math.imul(seed, 1103515245) + 12345) >>> 0; return seed / 2 ** 32; };
-    const goodOnes = [good, span("human_edit"), span("outcome"), span("intent"), span("plan", { trust: "system", scopes: undefined, audience: undefined })];
+    const goodOnes = [good, span("human_edit"), span("outcome", { trust: "system" }), span("intent"), span("plan", { trust: "system", scopes: undefined, audience: undefined })];
     const badOnes = [span("send_back"), span("remembered"), span("close_reason"), span("pr_comment", { scopes: ["slack:channel/C1"] }), span("pr_comment", { scopes: [B] }), span("loaded_lesson"), span("email_thread"), span("intent", { scopes: undefined }), span("pr_comment", { audience: undefined })];
     for (let round = 0; round < 300; round += 1) {
       const picked: RepoInputSpan[] = [];

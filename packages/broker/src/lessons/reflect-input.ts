@@ -65,9 +65,9 @@ export interface ReflectSubject {
   inheritedTasks?: readonly string[];
   /**
    * Lessons in the repo (decision 50a): the place (`<source>:repo/<id>`) of the ONE repository whose readers can read everything that started or steered this task apart from its spans: the task text (a GitHub issue or pull request of that
-   * repository, not text typed in Rovara, the CLI or chat), every answer, note and message, every connected source. Set by the subject source only when it has PROVED that; unset is unknown and keeps a task's lessons out of any repository's file.
+   * repository, not text typed in Rovara, the CLI or chat), every answer, note and message, every connected source. Set by the subject source only when it has PROVED that and has mapped the place to the repository's name and pull request URLs (the header names repositories and links, which are inputs too); unset is unknown and keeps a task's lessons out of any repository's file.
    */
-  repoInputs?: { place: string };
+  repoInputs?: { place: string; /** The name the project gives that repository in `repositories` (the prompt header). */ repository: string; /** The start of every pull request URL of that repository (`https://github.com/<owner>/<name>/pull/`): the header's links must all be its pull requests. */ linkPrefix: string };
   /** When set, a candidate must cite at least one span of this kind, or it is dropped (the human-edit extractor: a lesson from an edit must stand on the edit). */
   requireEvidenceKind?: SpanKind;
 }
