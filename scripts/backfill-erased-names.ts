@@ -14,20 +14,24 @@
 // A person erased before the name feature existed, or whose erase did not finish, is erased now. A person who rejoined and chose a name BEFORE this backfill ran has no tombstone and is erased
 // again (the name is lost and they choose again): that is why this runs first (register: ERASE-REJOIN-ASK).
 //
-// DEFAULT is a dry run: Scan and BatchGet only; it prints counts and short hashes of ids, never a name, an email or a raw id. --apply writes. A person whose erase fails is counted and the run
-// goes on; the exit code is 1 if any failed (or the run could not finish its pages), and the summary says how many. After a failure run it again: a person whose name item is already a tombstone
-// but whose sign-in record was not cleared is repeated with --redo-erased (it repeats the erase for tombstones too; the item's `eraseRev` goes up, nothing else changes).
-// --cursor-file keeps where a bounded run (--max-pages, --max-ms) stopped. It holds developer ids: it is written with mode 0600 and removed when the run finishes. A cursor of a dry run is
-// refused by an --apply run and the other way round.
+// DEFAULT is a dry run: Scan and BatchGet/Get only; it prints counts and short hashes of ids, never a name, an email or a raw id. --apply writes. A person whose erase fails is counted and the run
+// goes on. EXIT CODES: 0 finished clean; 1 an erase failed or a read failed (the summary says which, with codes); 2 bad option; 3 the run stopped at --max-pages or --max-ms before the end
+// (a required step is NOT done until a run exits 0).
+// A person whose name item is already a tombstone has the SIGN-IN erase repeated (the broker's own port; it sets the same placeholder again and changes nothing the second time), because the
+// tombstone is written BEFORE the sign-in record is cleared and an erase that failed in between leaves the tombstone alone. The name item is not touched again.
+// KNOWN GAP: when a company is closed and its audit details shredded, its ledger tombstones are deleted, so people erased only there cannot be found. The summary counts `shreddedOrgs` so the
+// operator knows to look at them by hand.
+// --cursor-file keeps where a bounded run (--max-pages, --max-ms) stopped. It holds developer ids and company ids: keep it in a private directory (mode 0600 is set) and delete it afterwards. It is
+// removed when the run finishes. A cursor of a dry run is refused by an --apply run and the other way round.
 import { createHash } from "node:crypto";
 import { chmod, readFile, rm, writeFile } from "node:fs/promises";
 import { pathToFileURL } from "node:url";
 import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
 import { InvokeCommand, LambdaClient } from "@aws-sdk/client-lambda";
-import { DynamoDBDocumentClient, ScanCommand } from "@aws-sdk/lib-dynamodb";
+import { DynamoDBDocumentClient, GetCommand, ScanCommand } from "@aws-sdk/lib-dynamodb";
 import type { EraseDeveloperNameRequest, EraseDeveloperNameResponse } from "@agentx/contracts";
 import { eraseDeveloperNameThroughLambda } from "../packages/broker/src/aws/developer-routes/identity-lambda.js";
-import { readNameItems, rejoinedOf, type ChosenNameClient, type ChosenNameItem } from "../packages/broker/src/developer/chosen-name.js";
+import { chosenNameKey, readNameItems, rejoinedOf, type ChosenNameClient, type ChosenNameItem } from "../packages/broker/src/developer/chosen-name.js";
 import { nameEraserOf } from "../packages/broker/src/developer/erase-name.js";
 
 const DEFAULT_PAGE_SIZE = 100;
@@ -48,7 +52,6 @@ export interface EraseBackfillArgs {
   identityFunction?: string;
   profile?: string;
   apply: boolean;
-  redoErased: boolean;
   pageSize: number;
   /** Stop after this many Scan pages (0: no limit). */
   maxPages: number;
@@ -58,7 +61,7 @@ export interface EraseBackfillArgs {
 }
 
 const VALUE_OPTIONS = ["--keys-table", "--state-table", "--region", "--identity-function", "--profile", "--page-size", "--max-pages", "--max-ms", "--pause-ms", "--cursor-file"];
-const FLAG_OPTIONS = ["--apply", "--dry-run", "--no-sign-in", "--redo-erased"];
+const FLAG_OPTIONS = ["--apply", "--dry-run", "--no-sign-in"];
 
 /** The options, with the table names, the region and the sign-in function also taken from the environment the release wrapper and the broker use. `--profile` is optional: the wrapper sets AWS_PROFILE itself. */
 export function parseEraseBackfillArgs(argv: readonly string[], env: Readonly<Record<string, string | undefined>> = process.env): EraseBackfillArgs {
@@ -103,7 +106,7 @@ export function parseEraseBackfillArgs(argv: readonly string[], env: Readonly<Re
   const profile = values.get("--profile");
   const cursorFile = values.get("--cursor-file");
   return {
-    keysTable, stateTable, region, apply: flags.has("--apply"), redoErased: flags.has("--redo-erased"),
+    keysTable, stateTable, region, apply: flags.has("--apply"),
     pageSize: Math.min(whole("--page-size", DEFAULT_PAGE_SIZE, 1), 1000), maxPages: whole("--max-pages", 0, 0), maxMs: whole("--max-ms", DEFAULT_MAX_MS, 1), pauseMs: whole("--pause-ms", DEFAULT_PAUSE_MS, 0),
     ...(noSignIn || identityFunction === undefined ? {} : { identityFunction }),
     ...(profile === undefined ? {} : { profile }),
@@ -126,6 +129,10 @@ export interface EraseBackfillSummary {
   invalidIds: number;
   /** People whose name item is already a tombstone with no name (nothing to do). */
   alreadyErased: number;
+  /** Already-erased people whose sign-in erase was repeated (apply only). */
+  signInConfirmed: number;
+  /** Companies whose audit details were shredded: the people erased only there cannot be found. */
+  shreddedOrgs: number;
   /** People who were erased and then chose a new name for a new membership (kept). */
   rejoinedKept: number;
   /** People the run would erase (dry run) or tried to erase (apply). */
@@ -139,6 +146,8 @@ export interface EraseBackfillSummary {
   /** The first hashed ids of each group (at most 500). */
   toEraseIds: string[];
   failedIds: string[];
+  /** Set when a read or the cursor write stopped the run: the fixed code. The counts above are what was done before it. */
+  abortedBy?: string;
   message: string;
 }
 
@@ -192,7 +201,7 @@ async function writeCursor(args: EraseBackfillArgs, cursor: Cursor): Promise<voi
 export async function runEraseBackfill(args: EraseBackfillArgs, ports: EraseBackfillPorts): Promise<EraseBackfillSummary> {
   const sleep = ports.sleep ?? defaultSleep;
   const summary: EraseBackfillSummary = {
-    mode: args.apply ? "apply" : "dry-run", tombstones: 0, people: 0, invalidIds: 0, alreadyErased: 0, rejoinedKept: 0, toErase: 0, erased: 0, failed: 0, failureCodes: {},
+    mode: args.apply ? "apply" : "dry-run", tombstones: 0, people: 0, invalidIds: 0, alreadyErased: 0, signInConfirmed: 0, shreddedOrgs: 0, rejoinedKept: 0, toErase: 0, erased: 0, failed: 0, failureCodes: {},
     pages: 0, finished: false, toEraseIds: [], failedIds: [], message: "",
   };
   const retrying = async <T>(work: () => Promise<T>): Promise<T> => {
@@ -210,52 +219,85 @@ export async function runEraseBackfill(args: EraseBackfillArgs, ports: EraseBack
   const deadline = ports.now() + args.maxMs;
   const seen = new Set<string>();
   let start = (await readCursor(args))?.start;
-  for (;;) {
-    const page = await retrying(() => ports.documentClient.send(new ScanCommand({
-      TableName: args.keysTable,
-      FilterExpression: "begins_with(sk, :subject) AND attribute_exists(erasedAt)",
-      ExpressionAttributeValues: { ":subject": "SUBJECT#" },
-      ProjectionExpression: "pk, sk, erasedAt",
-      ConsistentRead: true,
-      Limit: args.pageSize,
-      ...(start === undefined ? {} : { ExclusiveStartKey: start }),
-    }))) as { Items?: Array<Record<string, unknown>>; LastEvaluatedKey?: Record<string, unknown> };
-    summary.pages += 1;
-    const ids: string[] = [];
-    for (const item of page.Items ?? []) {
-      if (typeof item.sk !== "string" || !item.sk.startsWith("SUBJECT#") || typeof item.erasedAt !== "string") continue;
-      summary.tombstones += 1;
-      const developerId = item.sk.slice("SUBJECT#".length);
-      if (!DEVELOPER_ID.test(developerId)) { summary.invalidIds += 1; continue; }
-      if (seen.has(developerId)) continue;
-      seen.add(developerId);
-      summary.people += 1;
-      ids.push(developerId);
-    }
-    let items: Map<string, ChosenNameItem> = new Map();
-    if (ids.length > 0) items = await retrying(() => readNameItems(ports.documentClient, args.stateTable, ids));
-    for (const developerId of ids) {
-      const item = items.get(developerId);
-      if (item?.erased === true && rejoinedOf(item, developerId) !== undefined) { summary.rejoinedKept += 1; continue; }
-      if (item?.erased === true && item.name === undefined && !args.redoErased) { summary.alreadyErased += 1; continue; }
-      summary.toErase += 1;
-      if (summary.toEraseIds.length < LISTED) summary.toEraseIds.push(shortHash(developerId));
-      if (!args.apply) continue;
-      try {
-        await retrying(() => eraser.erase(developerId));
-        summary.erased += 1;
-      } catch (error) {
-        summary.failed += 1;
-        const code = failureCodeOf(error);
-        summary.failureCodes[code] = (summary.failureCodes[code] ?? 0) + 1;
-        if (summary.failedIds.length < LISTED) summary.failedIds.push(shortHash(developerId));
+  /** The name item as it is now, read consistently (the BatchGet may leave keys unprocessed, and "absent" must be a confirmed answer before anything is erased). */
+  const itemOf = async (developerId: string, batch: Map<string, ChosenNameItem>): Promise<ChosenNameItem | undefined> => {
+    const known = batch.get(developerId);
+    if (known !== undefined) return known;
+    const found = await retrying(() => ports.documentClient.send(new GetCommand({ TableName: args.stateTable, Key: chosenNameKey(developerId), ConsistentRead: true }))) as { Item?: ChosenNameItem };
+    return found.Item;
+  };
+  const fail = (developerId: string, error: unknown): void => {
+    summary.failed += 1;
+    const code = failureCodeOf(error);
+    summary.failureCodes[code] = (summary.failureCodes[code] ?? 0) + 1;
+    if (summary.failedIds.length < LISTED) summary.failedIds.push(shortHash(developerId));
+  };
+  try {
+    for (;;) {
+      const page = await retrying(() => ports.documentClient.send(new ScanCommand({
+        TableName: args.keysTable,
+        FilterExpression: "(begins_with(sk, :subject) AND attribute_exists(erasedAt)) OR sk = :shredded",
+        ExpressionAttributeValues: { ":subject": "SUBJECT#", ":shredded": "SHREDDED" },
+        ProjectionExpression: "pk, sk, erasedAt",
+        ConsistentRead: true,
+        Limit: args.pageSize,
+        ...(start === undefined ? {} : { ExclusiveStartKey: start }),
+      }))) as { Items?: Array<Record<string, unknown>>; LastEvaluatedKey?: Record<string, unknown> };
+      summary.pages += 1;
+      const ids: string[] = [];
+      for (const item of page.Items ?? []) {
+        if (item.sk === "SHREDDED") { summary.shreddedOrgs += 1; continue; }
+        if (typeof item.sk !== "string" || !item.sk.startsWith("SUBJECT#") || typeof item.erasedAt !== "string") continue;
+        summary.tombstones += 1;
+        const developerId = item.sk.slice("SUBJECT#".length);
+        if (!DEVELOPER_ID.test(developerId)) { summary.invalidIds += 1; continue; }
+        if (seen.has(developerId)) continue;
+        seen.add(developerId);
+        summary.people += 1;
+        ids.push(developerId);
       }
+      let batch: Map<string, ChosenNameItem> = new Map();
+      if (ids.length > 0) batch = await retrying(() => readNameItems(ports.documentClient, args.stateTable, ids));
+      for (const developerId of ids) {
+        let item: ChosenNameItem | undefined;
+        try {
+          item = await itemOf(developerId, batch);
+        } catch (error) {
+          // Not read: not erased, not skipped. Counted as a failure and left for the next run.
+          fail(developerId, error);
+          continue;
+        }
+        if (item?.erased === true && rejoinedOf(item, developerId) !== undefined) { summary.rejoinedKept += 1; continue; }
+        const bareTombstone = item?.erased === true && item.name === undefined;
+        if (bareTombstone) summary.alreadyErased += 1;
+        else {
+          summary.toErase += 1;
+          if (summary.toEraseIds.length < LISTED) summary.toEraseIds.push(shortHash(developerId));
+        }
+        if (!args.apply) continue;
+        try {
+          if (!bareTombstone) {
+            await retrying(() => eraser.erase(developerId));
+            summary.erased += 1;
+          } else if (ports.eraseSignInName !== undefined) {
+            const answer = await retrying(() => ports.eraseSignInName!({ kind: "erase-developer-name", developerId, at: new Date(ports.now()).toISOString() }));
+            // Not found is an answer: the person never signed in.
+            if (!answer.ok && answer.error !== "not_found") throw new Error(`erase_name_sign_in_${answer.error}`);
+            summary.signInConfirmed += 1;
+          }
+        } catch (error) {
+          fail(developerId, error);
+        }
+      }
+      start = page.LastEvaluatedKey;
+      if (start === undefined) { summary.finished = true; break; }
+      await writeCursor(args, { mode: summary.mode, start });
+      if ((args.maxPages > 0 && summary.pages >= args.maxPages) || ports.now() >= deadline) break;
+      if (args.pauseMs > 0) await sleep(args.pauseMs);
     }
-    start = page.LastEvaluatedKey;
-    if (start === undefined) { summary.finished = true; break; }
-    await writeCursor(args, { mode: summary.mode, start });
-    if ((args.maxPages > 0 && summary.pages >= args.maxPages) || ports.now() >= deadline) break;
-    if (args.pauseMs > 0) await sleep(args.pauseMs);
+  } catch (error) {
+    // A read or the cursor write could not go on: what was done before it is still reported.
+    summary.abortedBy = failureCodeOf(error);
   }
   if (summary.finished && args.cursorFile !== undefined) await rm(args.cursorFile, { force: true });
   summary.message = messageOf(summary);
@@ -263,15 +305,18 @@ export async function runEraseBackfill(args: EraseBackfillArgs, ports: EraseBack
 }
 
 function messageOf(summary: EraseBackfillSummary): string {
-  const where = summary.finished ? "" : " The run stopped at its limit: run it again with the same --cursor-file to continue.";
-  if (summary.failed > 0) return `${String(summary.failed)} of ${String(summary.toErase)} erases failed; run it again (add --redo-erased if a failure was the sign-in record).${where}`;
-  if (summary.mode === "dry-run") return summary.toErase === 0 ? `Nothing to erase: no name would change. Dry run, nothing was written.${where}` : `Dry run, nothing was written: ${String(summary.toErase)} people would be erased. Run again with --apply.${where}`;
-  return summary.erased === 0 ? `Nothing to change: every erased person was already done.${where}` : `Erased ${String(summary.erased)} people.${where}`;
+  const notes = `${summary.invalidIds > 0 ? ` ${String(summary.invalidIds)} ledger ids were not developer ids and were skipped.` : ""}${summary.shreddedOrgs > 0 ? ` ${String(summary.shreddedOrgs)} companies were shredded: people erased only there cannot be found (check them by hand).` : ""}`;
+  if (summary.abortedBy !== undefined) return `The run stopped (${summary.abortedBy}) after ${String(summary.pages)} pages; the counts are what was done before it. Run it again.${notes}`;
+  const where = summary.finished ? "" : " The run stopped at its limit and is NOT done: run it again with the same --cursor-file to continue.";
+  if (summary.failed > 0) return `${String(summary.failed)} erases failed (${Object.keys(summary.failureCodes).join(", ")}); run it again.${where}${notes}`;
+  if (summary.mode === "dry-run") return (summary.toErase === 0 ? "Nothing to erase: no name would change. Dry run, nothing was written." : `Dry run, nothing was written: ${String(summary.toErase)} people would be erased. Run again with --apply.`) + where + notes;
+  return (summary.erased === 0 ? "Nothing to change: every erased person was already done." : `Erased ${String(summary.erased)} people.`) + where + notes;
 }
 
-/** Exit code: 0 for a clean run (a bounded run that stopped early is clean), 1 when any erase failed. */
+/** Exit code: 0 finished clean, 1 any erase or read failed, 3 stopped at a limit before the end (not done). */
 export function exitCodeOf(summary: EraseBackfillSummary): number {
-  return summary.failed > 0 ? 1 : 0;
+  if (summary.failed > 0 || summary.abortedBy !== undefined) return 1;
+  return summary.finished ? 0 : 3;
 }
 
 /** The whole command: parse, run, print one JSON summary on stdout and a sentence on stderr. Returns the exit code; never prints an error's text beyond a code. */
@@ -309,5 +354,8 @@ function clientsOf(args: EraseBackfillArgs): EraseBackfillPorts {
 }
 
 if (process.argv[1] !== undefined && import.meta.url === pathToFileURL(process.argv[1]).href) {
-  void runEraseBackfillCommand(process.argv.slice(2), process.env, clientsOf).then((code) => { process.exitCode = code; });
+  // The broker's own functions log to console.log; stdout carries the one summary line only.
+  const print = console.log.bind(console);
+  console.log = console.error;
+  void runEraseBackfillCommand(process.argv.slice(2), process.env, clientsOf, print).then((code) => { process.exitCode = code; });
 }

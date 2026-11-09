@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import type { EraseDeveloperNameRequest, EraseDeveloperNameResponse } from "../../packages/contracts/src/index.js";
-import { FORMER_MEMBER_NAME, chosenNameKey, readChosenName } from "../../packages/broker/src/developer/chosen-name.js";
+import { FORMER_MEMBER_NAME, chosenNameKey, readChosenName, type ChosenNameClient } from "../../packages/broker/src/developer/chosen-name.js";
 import { placeholderDisplayName } from "../../packages/broker/src/developer/person-name.js";
 import { DeveloperSignInStore } from "../../packages/broker/src/developer/store.js";
 import { parseEraseBackfillArgs, runEraseBackfillCommand, shortHash, type EraseBackfillPorts } from "../../scripts/backfill-erased-names.js";
@@ -65,7 +65,7 @@ async function world() {
     return { code, out, err, summary: out.length === 0 ? undefined : JSON.parse(out[0]!) as Record<string, unknown> };
   };
   const snapshot = () => JSON.stringify([...db.items.entries()]);
-  return { db, signIn, calls, run, snapshot, failSignIn: () => { signInAnswer = "unavailable"; } };
+  return { db, signIn, calls, run, snapshot, failSignIn: () => { signInAnswer = "unavailable"; }, restoreSignIn: () => { signInAnswer = "ok"; } };
 }
 
 describe("the erased-names backfill", () => {
@@ -112,8 +112,9 @@ describe("the erased-names backfill", () => {
     const { code, err, summary } = await w.run(["--apply"]);
     expect(code).toBe(0);
     expect(w.snapshot()).toBe(after);
-    expect(w.calls.length).toBe(callsBefore);
-    expect(summary).toMatchObject({ erased: 0, toErase: 0, alreadyErased: 3, rejoinedKept: 1, failed: 0, finished: true });
+    // The sign-in erase is repeated for the three tombstones (it changes nothing the second time); the name items are not written again.
+    expect(w.calls.length).toBe(callsBefore + 3);
+    expect(summary).toMatchObject({ erased: 0, toErase: 0, alreadyErased: 3, signInConfirmed: 3, rejoinedKept: 1, failed: 0, finished: true });
     expect(err.join("\n")).toMatch(/Nothing to change/u);
   });
 
@@ -130,55 +131,78 @@ describe("the erased-names backfill", () => {
     expect(w.calls.map((request) => request.developerId)).not.toContain(REJOINED);
   });
 
-  it("a failed erase is counted by code, the run goes on, and the exit code is not zero; running again finishes it with --redo-erased", async () => {
+  it("a failed erase is counted by code, the run goes on, and the exit code is 1; a plain re-run then clears the sign-in records the failure left", async () => {
     const w = await world();
     w.failSignIn();
     const failed = await w.run(["--apply"]);
     expect(failed.code).toBe(1);
     expect(failed.summary).toMatchObject({ toErase: 3, erased: 0, failed: 3, failureCodes: { erase_name_sign_in_unavailable: 3 } });
-    expect(failed.err.join("\n")).toMatch(/3 of 3 erases failed/u);
+    expect(failed.err.join("\n")).toMatch(/3 erases failed/u);
     const text = [...failed.out, ...failed.err].join("\n");
     for (const developerId of Object.keys(NAMES)) expect(text).not.toContain(developerId);
     // The tombstones are in place (no reader shows the name), but the sign-in records were not cleared.
     expect(await readChosenName(w.db, "state", OLD_ERASED)).toBe(FORMER_MEMBER_NAME);
     expect(w.db.get(signInRecordKey(OLD_ERASED))).toMatchObject({ displayName: REAL[OLD_ERASED] });
-    // A plain run skips the tombstones; --redo-erased repeats the erase for them.
-    const plain = await w.run(["--apply"]);
-    expect(plain.code).toBe(0);
-    expect(w.db.get(signInRecordKey(OLD_ERASED))).toMatchObject({ displayName: REAL[OLD_ERASED] });
-    w.calls.length = 0;
-    const redo = await w.run(["--apply", "--redo-erased"], undefined, BASE_ENV);
-    expect(redo.code).toBe(1);
+    // A re-run while the sign-in function is still down is not clean either (it does not say 'done').
+    const stillDown = await w.run(["--apply"]);
+    expect(stillDown.code).toBe(1);
+    expect(stillDown.summary).toMatchObject({ alreadyErased: 3, signInConfirmed: 0, failed: 3 });
+    // The sign-in function is back: the plain re-run clears the records and exits 0.
+    w.restoreSignIn();
+    const fixed = await w.run(["--apply"]);
+    expect(fixed.code).toBe(0);
+    expect(fixed.summary).toMatchObject({ alreadyErased: 3, signInConfirmed: 3, failed: 0 });
+    for (const developerId of [OLD_ERASED, ALSO_ERASED, NO_NAME_ITEM]) expect(w.db.get(signInRecordKey(developerId))).toMatchObject({ displayName: placeholderDisplayName(developerId) });
   });
 
-  it("--redo-erased repeats the sign-in erase for a tombstone whose sign-in record was not cleared", async () => {
+  it("an unread BatchGet key is read again by itself, so a rejoined person's new name is never mistaken for 'no item' and wiped", async () => {
     const w = await world();
-    w.failSignIn();
-    await w.run(["--apply"]);
-    // The sign-in function is back.
-    const ok = await (async () => {
-      const calls: EraseDeveloperNameRequest[] = [];
-      const out: string[] = [];
-      const code = await runEraseBackfillCommand(["--apply", "--redo-erased"], BASE_ENV, () => ({
-        documentClient: w.db, now: () => NOW, sleep: async () => undefined,
-        eraseSignInName: async (request) => { calls.push(request); return (await w.signIn.eraseDisplayName(request.developerId, request.at)) === "erased" ? { ok: true } : { ok: false, error: "not_found" }; },
-      }), (line) => out.push(line), () => undefined);
-      return { code, calls, summary: JSON.parse(out[0]!) as Record<string, unknown> };
-    })();
-    expect(ok.code).toBe(0);
-    expect(ok.summary).toMatchObject({ erased: 3, failed: 0 });
-    for (const developerId of [OLD_ERASED, ALSO_ERASED, NO_NAME_ITEM]) expect(w.db.get(signInRecordKey(developerId))).toMatchObject({ displayName: placeholderDisplayName(developerId) });
+    const rejoinedKey = chosenNameKey(REJOINED);
+    const dropping: ChosenNameClient = { send: async (command) => {
+      const answer = await w.db.send(command as never) as { Responses?: Record<string, Array<{ pk: string }>>; UnprocessedKeys?: Record<string, unknown> };
+      if ((command as { constructor: { name: string } }).constructor.name !== "BatchGetCommand") return answer;
+      for (const [table, items] of Object.entries(answer.Responses ?? {})) answer.Responses![table] = items.filter((item) => item.pk !== rejoinedKey.pk);
+      answer.UnprocessedKeys = { state: { Keys: [rejoinedKey] } };
+      return answer;
+    } };
+    const before = JSON.stringify(w.db.get(chosenNameKey(REJOINED)));
+    const { code, summary } = await w.run(["--apply"], { documentClient: dropping });
+    expect(code).toBe(0);
+    expect(summary).toMatchObject({ rejoinedKept: 1, erased: 3 });
+    expect(JSON.stringify(w.db.get(chosenNameKey(REJOINED)))).toBe(before);
+    expect(await readChosenName(w.db, "state", REJOINED)).toBe("Zed Newname");
+  });
+
+  it("a name item that cannot be read is a failure, not an erase and not a skip", async () => {
+    const w = await world();
+    w.db.injectFault({ command: "GetCommand", error: { name: "AccessDeniedException" }, times: 100 });
+    const dropAll: ChosenNameClient = { send: async (command) => (command as { constructor: { name: string } }).constructor.name === "BatchGetCommand" ? { Responses: {} } : w.db.send(command as never) };
+    const before = JSON.stringify([...w.db.items.entries()].filter(([key]) => key.includes("DEVELOPER_NAME")));
+    const { code, summary } = await w.run(["--apply"], { documentClient: dropAll });
+    expect(code).toBe(1);
+    expect(summary).toMatchObject({ erased: 0, failed: 4, failureCodes: { AccessDeniedException: 4 } });
+    expect(JSON.stringify([...w.db.items.entries()].filter(([key]) => key.includes("DEVELOPER_NAME")))).toBe(before);
+  });
+
+  it("counts shredded companies, whose erased people cannot be found, and says so", async () => {
+    const w = await world();
+    w.db.set({ pk: "ORG#org_shredded00000000000000", sk: "SHREDDED", at: ERASED_AT });
+    const { code, summary, err } = await w.run(["--apply"]);
+    expect(code).toBe(0);
+    expect(summary).toMatchObject({ shreddedOrgs: 1, erased: 3 });
+    expect(err.join("\n")).toMatch(/1 companies were shredded/u);
   });
 
   it("a failure of the Scan (not a person) stops the run with a non-zero exit and prints a code, not the error text", async () => {
     const w = await world();
     w.db.injectFault({ command: "ScanCommand", error: { name: "AccessDeniedException", message: `secret ${NAMES[OLD_ERASED]!} ${OLD_ERASED}` }, times: 10 });
-    const { code, out, err } = await w.run(["--apply"]);
+    const { code, out, err, summary } = await w.run(["--apply"]);
     expect(code).toBe(1);
-    expect(out).toEqual([]);
-    expect(err.join("\n")).toContain("AccessDeniedException");
-    expect(err.join("\n")).not.toContain(NAMES[OLD_ERASED]!);
-    expect(err.join("\n")).not.toContain(OLD_ERASED);
+    expect(summary).toMatchObject({ abortedBy: "AccessDeniedException", finished: false, erased: 0 });
+    const text = [...out, ...err].join("\n");
+    expect(text).toContain("AccessDeniedException");
+    expect(text).not.toContain(NAMES[OLD_ERASED]!);
+    expect(text).not.toContain(OLD_ERASED);
   });
 
   it("retries throttling with a pause, on the Scan and on an erase", async () => {
@@ -198,9 +222,10 @@ describe("the erased-names backfill", () => {
     temporary.push(directory);
     const cursorFile = join(directory, "cursor.json");
     const first = await w.run(["--apply", "--page-size", "1", "--max-pages", "2", "--cursor-file", cursorFile]);
-    expect(first.code).toBe(0);
+    // Stopped at its limit: not done, so not exit 0.
+    expect(first.code).toBe(3);
     expect(first.summary).toMatchObject({ finished: false, pages: 2 });
-    expect(first.err.join("\n")).toMatch(/run it again with the same --cursor-file/u);
+    expect(first.err.join("\n")).toMatch(/NOT done: run it again with the same --cursor-file/u);
     expect((await stat(cursorFile)).mode & 0o777).toBe(0o600);
     expect(JSON.parse(await readFile(cursorFile, "utf8"))).toMatchObject({ mode: "apply" });
     let erasedSoFar = Number(first.summary?.erased);
@@ -210,14 +235,29 @@ describe("the erased-names backfill", () => {
       erasedSoFar += Number(last.summary?.erased);
     }
     expect(last.summary?.finished).toBe(true);
+    expect(last.code).toBe(0);
     expect(erasedSoFar).toBe(3);
     await expect(stat(cursorFile)).rejects.toThrow();
     // A cursor left by a dry run is refused by an apply run.
     const dry = await w.run(["--page-size", "1", "--max-pages", "1", "--cursor-file", cursorFile]);
     expect(dry.summary?.finished).toBe(false);
+    expect(dry.code).toBe(3);
     const mixed = await w.run(["--apply", "--cursor-file", cursorFile]);
     expect(mixed.code).toBe(1);
     expect(mixed.err.join("\n")).toMatch(/belongs to a dry-run run/u);
+  });
+
+  it("a run stopped by --max-ms exits 3, and an unwritable cursor file stops the run with exit 1 and the counts so far", async () => {
+    const w = await world();
+    let clock = NOW;
+    const slow = await w.run(["--apply", "--page-size", "1", "--max-ms", "1", "--pause-ms", "0"], { now: () => (clock += 1000) });
+    expect(slow.code).toBe(3);
+    expect(slow.summary).toMatchObject({ finished: false });
+    const directory = await mkdtemp(join(tmpdir(), "erase-backfill-"));
+    temporary.push(directory);
+    const unwritable = await w.run(["--page-size", "1", "--cursor-file", join(directory, "missing", "cursor.json")]);
+    expect(unwritable.code).toBe(1);
+    expect(unwritable.summary).toMatchObject({ abortedBy: "Error", finished: false });
   });
 
   it("counts a tombstone whose id the sign-in function would refuse, and leaves it alone", async () => {
@@ -239,7 +279,7 @@ describe("the erased-names backfill", () => {
 describe("the backfill's options", () => {
   it("does not need --profile, reads the tables, the region and the sign-in function from the environment, and takes flags over it", () => {
     const args = parseEraseBackfillArgs([], BASE_ENV);
-    expect(args).toMatchObject({ keysTable: "keys", stateTable: "state", region: "us-west-2", identityFunction: "signin-fn", apply: false, redoErased: false });
+    expect(args).toMatchObject({ keysTable: "keys", stateTable: "state", region: "us-west-2", identityFunction: "signin-fn", apply: false });
     expect(args).not.toHaveProperty("profile");
     expect(parseEraseBackfillArgs(["--keys-table", "keys2", "--state-table", "state2", "--region", "eu-west-1", "--identity-function", "fn2", "--apply"], BASE_ENV)).toMatchObject({ keysTable: "keys2", stateTable: "state2", region: "eu-west-1", identityFunction: "fn2", apply: true });
     expect(parseEraseBackfillArgs(["--profile", "p"], BASE_ENV)).toMatchObject({ profile: "p" });
