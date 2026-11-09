@@ -262,6 +262,15 @@ Some steps need a person, so do these by hand before tagging, in a throwaway acc
    computer and a new AWS account, with no help, and gets a Slack reply. Record every place they
    get stuck, and fix it.
 
+### Before a release: run cfn-lint on the synthesized templates (record on and off)
+
+CloudFormation refuses a template whose enum spelling or property is wrong only at deploy time (early validation), and the CDK types and contract tests do not see it. cfn-lint ships the CloudFormation resource schemas offline. It needs Python, so it is not in CI: install it in a throwaway venv, never in the repo, and run it from the repository root on the control-plane stacks synthesized with the Team record off and on, for Public cloud and Enterprise. It must report no E-coded finding.
+
+```sh
+python3 -m venv /tmp/cfn-lint-venv && /tmp/cfn-lint-venv/bin/pip install cfn-lint
+CFN_LINT=/tmp/cfn-lint-venv/bin/cfn-lint npx tsx scripts/release/cfn-lint-templates.ts   # exit 0 = no errors
+```
+
 ## Release notes
 
 Changes a person using Rovara will notice, newest first. One line each; the full story is in the commit.
