@@ -5,7 +5,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { LESSON_FILE_BRANCH_PATTERN } from "@agentx/contracts";
 import { setLearnedLessonsGate } from "../../../packages/broker/src/lessons/policy.js";
 import { parseLessonsFile } from "../../../packages/broker/src/lessons/repo-file-format.js";
-import { DAY, FILE, OTHER_PLACE, PLACE, passSetup, personApproved, repoLesson, FakeRepoHost } from "./repo-file-helpers.js";
+import { DAY, FILE, OTHER_PLACE, passSetup, personApproved, repoLesson } from "./repo-file-helpers.js";
 
 afterEach(() => { setLearnedLessonsGate(undefined); });
 const idsIn = (text: string | undefined): string[] => (text === undefined ? [] : parseLessonsFile(text).blocks.map((b) => b.id));
@@ -81,7 +81,7 @@ describe("only eligible lessons ever appear", () => {
     expect(idsIn(w.host.file(state.open!.branch, FILE))).toEqual(["les_good0001"]);
     const body = w.host.open[0]!.body;
     for (const lesson of bad) { expect(body).not.toContain(lesson.id); expect(JSON.stringify(w.host.writes)).not.toContain(lesson.id); }
-    expect(state.open!.added).toEqual({ les_good0001: expect.any(String) });
+    expect(Object.keys(state.open!.added)).toEqual(["les_good0001"]);
   });
 
   it("proposes nothing, and opens no pull request, when nothing is eligible", async () => {
@@ -114,7 +114,7 @@ describe("an unchanged set opens nothing", () => {
     expect(await w.run()).toEqual({ status: "no_changes" });
     expect(w.host.writes.filter((write) => write.op === "commit" || write.op === "create")).toEqual([]);
     expect(w.host.file("main", FILE)).toBe(merged);
-    expect((await w.current()).rendered).toEqual({ les_aaaa0001: expect.any(String), les_aaaa0002: expect.any(String) });
+    expect(Object.keys((await w.current()).rendered).sort()).toEqual(["les_aaaa0001", "les_aaaa0002"]);
   });
 
   it("the same proposals as the open pull request leave it alone (no new branch, no close)", async () => {

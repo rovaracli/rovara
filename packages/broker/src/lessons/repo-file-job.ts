@@ -24,7 +24,7 @@ export async function lessonsRepoFileJob(runtime: RepoFileRuntime, orgId: string
   // A different starting project each day, so a time budget that runs out never cuts off the same projects every night.
   for (const project of rotated(capped, capped.length === 0 ? 0 : dayNumber % capped.length)) {
     if (runtime.deps.now() - started > budgetMs) { counts.repoFileSkipped += 1; continue; }
-    const key = { workspaceId: org.data as string, project };
+    const key = { workspaceId: org.data, project };
     try {
       const states = await runtime.deps.state.list(key);
       const work = states.filter((state) => state.enabled || state.closing.length > 0 || state.pending !== undefined);

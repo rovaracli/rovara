@@ -81,7 +81,7 @@ export async function finishClosings(deps: RepoFileDeps, key: ScopeKey, target: 
     const branch = current.pending.branch;
     // A branch Rovara decided on before it wrote (it may exist, with a pull request): deleting it closes any pull request made from it. Nothing else is touched.
     if (host.deleteBranch !== undefined && await audited(deps, key, "lesson.repo_file_pr_closed", { cause: "replaced", pullRequest: 0 })) {
-      try { await host.deleteBranch(repository, branch, scope); current = await commit(deps, key, current, (s) => without(s, "pending") as RepoFileState); } catch (error) { if (error instanceof Abort) throw error; deps.log?.("lessons_repo_file.pending_cleanup_failed", {}); }
+      try { await host.deleteBranch(repository, branch, scope); current = await commit(deps, key, current, (s) => without(s, "pending")); } catch (error) { if (error instanceof Abort) throw error; deps.log?.("lessons_repo_file.pending_cleanup_failed", {}); }
     }
   }
   for (const entry of current.closing) {
@@ -118,8 +118,8 @@ export async function switchRepoFileOff(deps: RepoFileDeps, key: ScopeKey, targe
 async function freshBranch(deps: RepoFileDeps, target: RepoFileTarget): Promise<string> {
   for (let attempt = 0; attempt < 5; attempt += 1) {
     const branch = `${LESSON_FILE_BRANCH_PREFIX}${deps.randomHex?.() ?? randomBytes(6).toString("hex")}`;
-    let exists = false;
-    try { await target.host.baseBranchHead(target.repository, branch, target.scope); exists = true; } catch { exists = false; }
+    // The host answers for a branch that exists and throws for one that does not.
+    const exists = await target.host.baseBranchHead(target.repository, branch, target.scope).then(() => true, () => false);
     if (!exists) return branch;
   }
   throw new Abort("conflict");
@@ -136,7 +136,7 @@ function mergedState(state: RepoFileState, open: OpenPr): RepoFileState {
  * One weekly pass for one repository. Never throws: a fault is a `problem` code on the state (shown in the status) and the pass tries again at the next night. `force` skips only the "one a week" gate.
  */
 export async function runRepoFilePass(deps: RepoFileDeps, key: ScopeKey, target: RepoFileTarget, options: { force?: boolean } = {}): Promise<PassResult> {
-  const { host, repository, scope } = target;
+  const { host } = target;
   // Decision 47: while lessons are off (the install's switch, the project's mode) nothing is delivered: no pull request, no close, no read.
   const learning = await resolveLearning(deps.settings, key.workspaceId, key.project);
   if (!modeAllows(learning.mode, "load")) return { status: "skipped", reason: "lessons_off" };
@@ -314,7 +314,7 @@ async function openPullRequest(
   } catch { throw new Abort("write_refused"); }
   const previous = state.open;
   const open: OpenPr = {
-    branch: branch as OpenPr["branch"], number: created.ref.id, url: created.ref.url, headRevision: revision, baseRevision: work.head, digest: work.digest, openedAt: deps.now(),
+    branch, number: created.ref.id, url: created.ref.url, headRevision: revision, baseRevision: work.head, digest: work.digest, openedAt: deps.now(),
     removals: plan.removals.length, edits: plan.edits.length, adds: plan.adds.length,
     added: Object.fromEntries(plan.adds.map((a) => [a.id, a.fingerprint])), edited: Object.fromEntries(plan.edits.map((e) => [e.id, e.fingerprint])), removed: plan.removals.map((r) => r.id),
     pointer: work.pointerFiles.length > 0,

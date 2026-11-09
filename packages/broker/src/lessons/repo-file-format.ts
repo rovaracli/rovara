@@ -53,6 +53,7 @@ function cutGraphemes(text: string, max: number): string {
  * text), runs of spaces collapsed, cut at 600 code points on a grapheme boundary. Empty when nothing is left.
  */
 export function cleanLessonLine(raw: string): string {
+  // eslint-disable-next-line no-control-regex -- line breaks, tabs and the vertical tab and form feed are exactly what is turned into spaces
   let text = raw.normalize("NFC").replace(/[\r\n\t\u000b\u000c\u0085\u2028\u2029]/gu, " ");
   text = text.replace(BIDI_AND_ZERO_WIDTH, "").replace(/[\p{Cc}\p{Cf}]/gu, "");
   text = text.replace(/<!--|-->/gu, " ").replace(/\s+/gu, " ").trim();
@@ -198,14 +199,12 @@ function insertBlock(units: Unit[], add: { id: string; heading: string; text: st
   const block: Unit = { kind: "block", id: add.id, lines: blockLines(add.id, add.text) };
   const blank: Unit = { kind: "line", text: "" };
   // Find the section.
-  let at = -1;
   const sectionStarts: Array<{ index: number; heading: string }> = [];
   units.forEach((unit, index) => {
     const heading = headingOf(unit);
     if (heading !== undefined) sectionStarts.push({ index, heading });
   });
-  if (add.heading !== WHOLE_REPOSITORY) at = sectionStarts.find((s) => s.heading === add.heading)?.index ?? -1;
-  else at = sectionStarts.find((s) => s.heading === WHOLE_REPOSITORY)?.index ?? -1;
+  const at = sectionStarts.find((s) => s.heading === add.heading)?.index ?? -1;
   if (at === -1) {
     // A new section, before the first existing section that sorts after it.
     const later = sectionStarts.find((s) => compareHeadings(s.heading, add.heading) > 0);

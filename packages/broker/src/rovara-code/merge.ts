@@ -471,11 +471,6 @@ async function mergeableNow(
     const status = await home.codeHost.changeRequestStatus(changeRequestRef(url, entry.number), scope);
     if (status.id !== String(entry.number)) throw agentXError("RUNTIME_UNAVAILABLE", "GitHub answered for another pull request");
     if (status.state !== "merged" && status.headRevision !== wanted[index]!.headSha) throw agentXError("MERGE_NOT_READY", M.changedAfterConfirm);
-    // Owner decision 50.4: a task's pull request never changes the team's lessons file. Read fresh from the host, and fail closed on a list that is cut short or cannot be read.
-    if (status.state === "open") {
-      const lessonsFile = await leavesLessonsFileAlone(home.codeHost, changeRequestRef(url, entry.number), scope);
-      if (!lessonsFile.ok) throw agentXError("MERGE_NOT_READY", lessonsFile.reason === "touches" ? M.touchesLessonsFile : M.lessonsFileUnreadable);
-    }
     const item = items.get(key);
     const ci = readCi(status, { checksEverSeen: item?.checksEverSeen ?? status.checks.length > 0, lastRovaraPushAt: item?.lastRovaraPushAt === undefined ? undefined : Date.parse(item.lastRovaraPushAt), now: deps.now() });
     facts.push({
@@ -497,6 +492,12 @@ async function mergeableNow(
     pullRequests: facts, approvals, workflow: task.workflow, recordedBases: bases, presser, allowSelfApproval: settings.allowSelfApproval, requesterName: requesterNameOf(task), codeOwners, secondReviewWait: secondReviewMergeWait(task),
   });
   if (!readiness.ready) throw agentXError("MERGE_NOT_READY", readiness.message);
+  // Owner decision 50.4: a task's pull request never changes the team's lessons file. Read fresh from the host, after the other readiness words, and failing closed on a list that is cut short or cannot be read.
+  for (const [index, step] of plan.entries()) {
+    if (facts[index]!.state !== "open") continue;
+    const lessonsFile = await leavesLessonsFileAlone(step.codeHost, changeRequestRef(step.url, step.entry.number), host.scope(task.orgId));
+    if (!lessonsFile.ok) throw agentXError("MERGE_NOT_READY", lessonsFile.reason === "touches" ? M.touchesLessonsFile : M.lessonsFileUnreadable);
+  }
   return { plan: plan.filter((_, index) => facts[index]!.state !== "merged"), settings, alreadyMerged: false, mergedBefore, entries };
 }
 

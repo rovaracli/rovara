@@ -170,7 +170,7 @@ export function passSetup(over: { host?: FakeRepoHost; preset?: "standard" | "re
   const spyModel = { calls: 0 };
   const deps: RepoFileDeps = {
     store, state, settings: settings({ preset: over.preset ?? "standard", mode: over.mode ?? "On" }), audit: sink, now: clock.now, holder: "pass-1",
-    names: async () => { if (names.throws) throw new Error("names down"); return names.value; }, randomHex: undefined,
+    names: async () => { if (names.throws) throw new Error("names down"); return names.value; },
   };
   const hex = { next: 0 };
   deps.randomHex = () => { hex.next += 1; return hex.next.toString(16).padStart(12, "0"); };

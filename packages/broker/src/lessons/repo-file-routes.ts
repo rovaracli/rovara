@@ -76,8 +76,7 @@ export async function closeOpenPullRequestFor(runtime: RepoFileRuntime, key: Sco
     const target = targets.find((candidate) => candidate.place === state.place);
     if (target === undefined || state.open === undefined) continue;
     const open = state.open;
-    let moved = false;
-    try { moved = (await target.host.getChangeRequest({ repository: target.repository, id: open.number, url: open.url }, target.scope)).headRevision !== open.headRevision; } catch { moved = false; }
+    const moved = await target.host.getChangeRequest({ repository: target.repository, id: open.number, url: open.url }, target.scope).then((details) => details.headRevision !== open.headRevision, () => false);
     if (moved) continue;
     const { open: _open, lastPassAt: _last, ...rest } = state;
     void _open; void _last;

@@ -7,7 +7,7 @@ import { KEY, PLACE, OTHER_PLACE } from "./repo-file-helpers.js";
 
 const stores = (): Array<[string, () => InMemoryRepoFileStore | ReturnType<typeof dynamoRepoFileStore>]> => [
   ["in memory", () => new InMemoryRepoFileStore()],
-  ["dynamo", () => dynamoRepoFileStore({ documentClient: new FakeDynamoDb({ indexKeys: {} }) as never, tableName: "t" })],
+  ["dynamo", () => dynamoRepoFileStore({ documentClient: new FakeDynamoDb({ indexKeys: {} }), tableName: "t" })],
 ];
 
 describe.each(stores())("the repo file state store: %s", (_name, make) => {

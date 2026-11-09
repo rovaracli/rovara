@@ -37,6 +37,8 @@ export async function mergeButtonBroker(options: MergeButtonOptions = {}) {
         verifyWebhookRepository: async () => true,
         getPullRequestStatus: (url: string, number: number) => github.getPullRequestStatus(url, number),
         getRepositoryPermission: (url: string, login: string) => github.getRepositoryPermission(url, login),
+        // Owner decision 50.4: the merge lists the files a pull request changes before it presses merge.
+        listPullRequestFiles: (url: string, number: number, options: { page: number }) => github.listPullRequestFiles(url, number, options),
         mergePullRequest: (url: string, number: number, input: { sha: string; method: "squash" | "merge" }) => github.mergePullRequest(url, number, input),
         getPullRequestMergeObservation: async () => ({
           number: 7, url: "https://github.com/example/demo/pull/7", state: observed.state, headBranch: "agentx/limit", baseBranch: "main", headCommit: HEAD_A, headTreeSha: "d".repeat(40), title: "Rovara: Limit open tasks", body: "",

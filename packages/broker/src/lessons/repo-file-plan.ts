@@ -173,16 +173,14 @@ export function planRepoFile(input: PlanInput): RepoFilePlan {
   const within = (text: string): boolean => byteLength(text) <= LESSON_FILE_MAX_BYTES && parseLessonsFile(text).blocks.length <= LESSON_FILE_MAX_LESSONS;
   let next = removals.length + edits.length + adds.length === 0 ? undefined : change(adds);
   if (next !== undefined && adds.length > 0 && !within(next)) {
-    let keep = adds.length;
-    // Halve, then walk back: at most a few dozen applies.
+    // The most adds that fit, by bisection: at most a few dozen applies.
     let low = 0, high = adds.length;
     while (low < high) {
       const mid = Math.ceil((low + high) / 2);
       if (within(change(adds.slice(0, mid)))) low = mid; else high = mid - 1;
     }
-    keep = low;
-    skipped.capped = adds.length - keep;
-    adds = adds.slice(0, keep);
+    skipped.capped = adds.length - low;
+    adds = adds.slice(0, low);
     next = removals.length + edits.length + adds.length === 0 ? undefined : change(adds);
   }
   if (next !== undefined && next === input.fileText) next = undefined;
