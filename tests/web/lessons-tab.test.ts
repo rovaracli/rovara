@@ -93,6 +93,15 @@ describe("learning mode", () => {
   await openLessons({ state: { view: view({ mode: "Collect" }) } });
   expect(screen.getByText(/collecting what the team does/u)).toBeTruthy();
  });
+ it("owner decision 47: while the install's lessons switch is off, the people who decide are told what Rovara really does, and the project's own setting stays visible", async () => {
+  await openLessons({ state: { view: view({ mode: "On", lessonsSwitchedOff: true }) } });
+  expect(screen.getByText(/Lessons are switched off for this install: Rovara collects evidence but writes no lessons and makes no model calls/u)).toBeTruthy();
+  expect(screen.queryByText(/collecting what the team does/u)).toBeNull();
+ });
+ it("says nothing about the install's switch when it is on or the viewer does not decide", async () => {
+  await openLessons({ state: { view: view({ mode: "On" }) } });
+  expect(screen.queryByText(/switched off for this install/u)).toBeNull();
+ });
  it("says when the company's lock made the mode stricter", async () => {
   await openLessons({ state: { view: view({ mode: "Suggest", lockedByCompany: true }) } });
   expect(screen.getByText(/Your company set this to be stricter/u)).toBeTruthy();

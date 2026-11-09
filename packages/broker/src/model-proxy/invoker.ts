@@ -6,6 +6,7 @@ import { InvokeCommand, LambdaClient, type InvokeCommandOutput, type LambdaClien
 import { AgentXErrorCodeSchema, agentXError, type AgentXError, type OrgId } from "@agentx/contracts";
 import { z } from "zod";
 import { LearningNotForwarded, type KeyAudit, type LearningCompletion, type LearningCompletionInput, type MemberSpend, type MintKeyInput, type MintedKey, type ModelAccess, type SourceCheck, type SpendFigures, type UpsertSourceInput } from "./access.js";
+import { learnedLessonsOn } from "../lessons/switch.js";
 import { KeyAuditResultSchema, KeySpendResultSchema, LearningCompletionResultSchema, MintedKeyResultSchema, RegisteredSourcesResultSchema, SourceCheckResultSchema, SpendFiguresSchema, SpendResultSchema, type ModelAccessRequest } from "./protocol.js";
 
 const DEFAULT_TIMEOUT_MS = 25_000;
@@ -24,7 +25,12 @@ export const singleAttemptLambda = (configuration: LambdaClientConfig = {}): Lam
 /** What a learning call is refused with when the invoker was built without a single-attempt client (fixed words). Nothing was sent, so it is a `LearningNotForwarded`. */
 export const LEARNING_NEEDS_SINGLE_ATTEMPT = "learning calls need a Lambda client that sends once";
 
+/** What a learning call is refused with while the install's lessons switch is off or unreadable (owner decision 47; fixed words). Nothing was sent, so it is a `LearningNotForwarded`. */
+export const LEARNING_SWITCHED_OFF = "lessons are switched off for this install, so no learning call is made";
+
 export interface ModelAccessInvokerInput {
+  /** Tests: whether the install's lessons switch is on. Default: the switch itself (LEARNED_LESSONS_ENABLED), failing closed. */
+  lessonsSwitchOn?: () => boolean;
   /** The function's name or ARN (env MODEL_ACCESS_FUNCTION_NAME). */
   functionName: string;
   lambda: { send(command: InvokeCommand, options?: { abortSignal?: AbortSignal }): Promise<InvokeCommandOutput> };
@@ -106,6 +112,9 @@ export class ModelAccessInvoker implements ModelAccess {
 
   async learningCompletion(input: LearningCompletionInput): Promise<LearningCompletion> {
     const { key, purpose, system, user, maxOutputTokens, model, api, reasoningEffort, signal } = input;
+    // Owner decision 47, the last lock before the wire: a switched-off (or unreadable) lessons switch sends nothing, on any path that reached here.
+    const on = ((): boolean => { try { return (this.input.lessonsSwitchOn ?? (() => learnedLessonsOn(process.env)))() === true; } catch { return false; } })();
+    if (!on) throw new LearningNotForwarded(LEARNING_SWITCHED_OFF);
     // F1: the retrying client would re-run a call the first attempt already started (two provider calls under one key). No single-attempt client: nothing is sent, on any construction path.
     if (this.input.learningLambda === undefined) throw new LearningNotForwarded(LEARNING_NEEDS_SINGLE_ATTEMPT);
     return this.parseResult(await this.invoke({ op: "learningCompletion", args: { key, purpose, system, user, maxOutputTokens, model, api, ...(reasoningEffort === undefined ? {} : { reasoningEffort }) } }, LEARNING_INVOKE_TIMEOUT_MS, this.input.learningLambda, signal), LearningCompletionResultSchema);

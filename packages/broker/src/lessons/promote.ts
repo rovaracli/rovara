@@ -42,7 +42,7 @@ export type PromoteResult =
 export async function promoteToRule(deps: PromoteDeps, input: { workspaceId: string; project: string; lessonId: string; approverId: string }): Promise<PromoteResult> {
   const key: ScopeKey = { workspaceId: input.workspaceId, project: input.project };
   const resolved = await resolveLearning(deps.settings, key.workspaceId, key.project);
-  if (!modeAllows(resolved.mode, "load")) return { ok: false, code: "mode_off" };
+  if (!modeAllows(resolved.chosenMode, "load")) return { ok: false, code: "mode_off" };
   const group = await deps.directory.eligibility(key.workspaceId, key.project).catch(() => undefined);
   if (group === undefined || !group.complete) return { ok: false, code: "eligibility_unavailable" };
   if (!idIn(group.eligibleIds, input.approverId)) return { ok: false, code: "not_eligible" };

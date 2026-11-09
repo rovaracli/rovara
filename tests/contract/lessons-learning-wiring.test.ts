@@ -10,6 +10,8 @@ import { createLessonsWorkerHandler } from "../../packages/broker/src/aws/broker
 import { installLessons, lessonSimilarityFor, pauseStillAppliesFor } from "../../packages/broker/src/aws/broker/lessons-wiring.js";
 import { installTeamRecordEmitter, uninstallTeamRecordEmitter } from "../../packages/broker/src/aws/broker/team-record-wiring.js";
 import { readOpsFailures } from "../../packages/broker/src/team-record/ops-failures.js";
+import { LESSONS_SWITCHED_OFF } from "../../packages/broker/src/lessons/model-gate.js";
+import { setLearnedLessonsGate } from "../../packages/broker/src/lessons/policy.js";
 import { announceHumanSendBack } from "../../packages/broker/src/lessons/send-back-events.js";
 import type { LessonEmbedder } from "../../packages/broker/src/lessons/ports.js";
 import { DENYING_SPEND, NO_VECTORS, REFUSING_JUDGE, REFUSING_MODEL } from "../../packages/broker/src/lessons/runtime.js";
@@ -51,6 +53,28 @@ describe("the learning dependencies", () => {
     expect(learning.counters).toBe(runtime.counters);
     expect(runtime.counters.judge).toBe(REFUSING_JUDGE);
   });
+  it("owner decision 47: the model the reflector and the curator's judge share is gated by the install's lessons switch in production wiring: switch off (or unreadable), no quote, no call and nothing reaches learningCompletion", async () => {
+    const { dependencies } = install();
+    let reached = 0;
+    (dependencies["modelAccess"] as { access: { learningCompletion: unknown } }).access.learningCompletion = async () => { reached += 1; return { text: "{}", model: "m" }; };
+    installLessons(dependencies as never);
+    const learning = dependencies["learning"] as NonNullable<ReturnType<typeof learningDepsFor>>;
+    const request = { purpose: "reflect" as const, system: "s", user: "u", maxOutputTokens: 100, workspaceId: TEST_ORG, project: "web" };
+    try {
+      for (const gate of [() => false, () => { throw new Error("unreadable"); }]) {
+        setLearnedLessonsGate(gate);
+        for (const model of [learning.reflect.model, learning.process.judgeModel]) {
+          await expect(model.complete(request)).rejects.toThrow(LESSONS_SWITCHED_OFF);
+          expect(await model.quote!(request)).toEqual({ ok: false, code: "no_provider" });
+        }
+      }
+      expect(reached).toBe(0);
+      // Positive control: with the switch on the same call goes past the gate (this fake install has no routing, so it ends in its own refusal, not the switch's).
+      setLearnedLessonsGate(() => true);
+      await expect(learning.reflect.model.complete(request)).rejects.not.toThrow(LESSONS_SWITCHED_OFF);
+    } finally { setLearnedLessonsGate(undefined); }
+  });
+
   it("lessons connect fix 1 (M4): the production subject source reads project-wide visibility live (decision 32) next to the strict Team record reader, which is left as it was", () => {
     const wiring = readFileSync(new URL("../../packages/broker/src/aws/broker/lessons-wiring.ts", import.meta.url), "utf8");
     expect(wiring).toContain("projectWide: (orgId, taskId) => resolveTaskProjectWide({ ...state, now: Date.now }, orgId, taskId)");

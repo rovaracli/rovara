@@ -112,6 +112,8 @@ export const LessonsViewSchema = z.object({
   project: z.string().min(1).max(100),
   /** The learning mode in force (the stricter of the project's own choice and the company's lock), and whether the company's lock is the reason. */
   mode: LessonLearningModeSchema, lockedByCompany: z.boolean(),
+  /** For people who decide: the install's lessons switch is off (or cannot be read), so whatever `mode` says Rovara only collects evidence, writes no lessons and makes no model calls (owner decision 47). Absent: the switch is on, or the viewer does not decide. */
+  lessonsSwitchedOff: z.literal(true).optional(),
   /** How many people each tier needs before a lesson is used. */
   approval: z.object({ tier0: z.enum(["auto", "one", "two"]), tier1: z.enum(["one", "two"]), requiredGroups: z.array(z.string().max(100)).max(10) }).strict(),
   expiryDays: z.number().int().min(14).max(365).optional(),

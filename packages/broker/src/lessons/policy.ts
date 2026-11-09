@@ -2,6 +2,7 @@
 import { z } from "zod";
 import { approversRequired as sharedApproversRequired } from "../org/approval-by-risk.js";
 import type { LessonAuditEvent, LessonAuditSink } from "./ports.js";
+import { learnedLessonsOn } from "./switch.js";
 import type { Tier } from "./types.js";
 
 /** Off: nothing is captured or loaded. Collect: the record is filled, nothing is loaded. Suggest: lessons are made and every one needs a person. On: lessons are made and loaded; a tier-0 lesson goes live by itself ONLY if the project sets `tier0Approval: "auto"`, otherwise one person approves it first. */
@@ -94,6 +95,17 @@ export function resolveLoadBudget(setting: LoadBudgetSetting | undefined, caps: 
   };
 }
 
+/**
+ * Owner decision 47: while lessons delivery is switched off for the install (`ll`, LEARNED_LESSONS_ENABLED not exactly "1"), learning makes NO model call, whatever a project chose. The effective mode is then capped at
+ * Collect (evidence is captured; nothing is reflected, loaded or auto-applied, so no model or embedder is used). The cap is applied in `resolveLearning` only; the stored project and company modes are never touched, so turning
+ * `ll` on gives every project its own mode back. The switch is read at every resolve and FAILS CLOSED: a read that throws counts as off. Tests swap the reader with `setLearnedLessonsGate`.
+ */
+export const OFF_SWITCH_CAP: LearningMode = "Collect";
+let lessonsSwitchGate: () => boolean = () => learnedLessonsOn(process.env);
+export function setLearnedLessonsGate(gate: (() => boolean) | undefined): void { lessonsSwitchGate = gate ?? (() => learnedLessonsOn(process.env)); }
+/** Whether the install's lessons switch is on now; an unreadable switch is off. */
+export function learnedLessonsSwitchOn(): boolean { try { return lessonsSwitchGate() === true; } catch { return false; } }
+
 export interface LearningSettings {
   /** The project's own choice; absent means the default. */
   mode?: LearningMode;
@@ -116,7 +128,13 @@ export interface LearningSettingsReader { read(workspaceId: string, project: str
 
 /** `requiredGroups` holds every group that must be among the approvers: the company floor's and the project's own, both. */
 export interface ResolvedLearning {
-  mode: LearningMode; approval: ApprovalPolicy; requiredGroups: string[]; expiryDays: number | undefined;
+  /** The mode the pipeline runs with: the project's own choice (after the company's lock), capped at Collect while the install's lessons switch is off. Every model path asks THIS. */
+  mode: LearningMode;
+  /** The project's own choice after the company's lock, before the install's switch caps it. For showing the setting, and for decisions people make (approve, promote): they call no model. */
+  chosenMode: LearningMode;
+  /** True while the install's lessons switch is off (or unreadable): `mode` is then capped at Collect. */
+  switchedOff: boolean;
+  approval: ApprovalPolicy; requiredGroups: string[]; expiryDays: number | undefined;
   /** The preset in force: the stricter of the company's and the project's. A setting that does not read gives Regulated (and mode Off). */
   preset: LearningPreset;
   /**
@@ -159,7 +177,8 @@ export function clampAutoApply(settings: LearningSettings): LearningSettings {
 
 /** Reads the settings and fails closed: a reader that throws, or settings that do not parse, give mode Off. */
 export async function resolveLearning(reader: LearningSettingsReader, workspaceId: string, project: string): Promise<ResolvedLearning> {
-  const off: ResolvedLearning = { mode: "Off", approval: DEFAULT_APPROVAL_POLICY, requiredGroups: [], expiryDays: undefined, preset: "regulated", trialAllowed: false };
+  const switchedOff = !learnedLessonsSwitchOn();
+  const off: ResolvedLearning = { mode: "Off", chosenMode: "Off", switchedOff, approval: DEFAULT_APPROVAL_POLICY, requiredGroups: [], expiryDays: undefined, preset: "regulated", trialAllowed: false };
   let settings: LearningSettings;
   // No settings row is the default (an undefined result), not a failure; a reader that throws fails closed.
   try { settings = (await reader.read(workspaceId, project)) ?? {}; } catch { return off; }
@@ -183,7 +202,9 @@ export async function resolveLearning(reader: LearningSettingsReader, workspaceI
   // no required group, and no two-person requirement.
   const trialAllowed = preset === "standard" && modeAllows(mode.data, "auto_apply") && settings.companyApproval === undefined && requiredGroups.length === 0
     && approval.data.tier0 !== "two" && approval.data.tier1 !== "two";
-  return { mode: mode.data, approval: approval.data, requiredGroups, expiryDays: days, preset, trialAllowed, ...(settings.loadBudget === undefined ? {} : { loadBudget: settings.loadBudget }) };
+  // Decision 47: the install's switch is off, so the pipeline runs as Collect at most. `trialAllowed` above is read from the chosen mode on purpose: it is a fact about the settings (nightly promotion of lessons already on trial
+  // makes no model call), not a licence to draft new lessons, which `mode` now forbids.
+  return { mode: switchedOff ? stricterMode(mode.data, OFF_SWITCH_CAP) : mode.data, chosenMode: mode.data, switchedOff, approval: approval.data, requiredGroups, expiryDays: days, preset, trialAllowed, ...(settings.loadBudget === undefined ? {} : { loadBudget: settings.loadBudget }) };
 }
 
 /**

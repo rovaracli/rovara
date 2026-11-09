@@ -172,7 +172,7 @@ export async function buildLessonsView(deps: LessonViewDeps, caller: LessonCalle
   const lockedByCompany = lock.success && own.success && stricterMode(own.data, lock.data) !== own.data;
 
   // Why learning is paused is for the people who decide here (the same rule as Home): it names the company's budget state, which a reader has no use for. A reason whose cause has gone is cleared, not shown.
-  let paused = resolved.mode === "Off" || !state.canDecide ? undefined : await deps.pause?.read(key.workspaceId, key.project).catch(() => undefined);
+  let paused = resolved.mode === "Off" || resolved.switchedOff || !state.canDecide ? undefined : await deps.pause?.read(key.workspaceId, key.project).catch(() => undefined);
   if (paused !== undefined && deps.pauseStillApplies !== undefined && !(await deps.pauseStillApplies(key.workspaceId, key.project, paused.code).catch(() => true))) {
     // Only the reason that was shown: one a learning call recorded since is not deleted.
     await deps.pause?.clear(key.workspaceId, key.project, paused.scope, paused.code).catch(() => undefined);
@@ -216,7 +216,8 @@ export async function buildLessonsView(deps: LessonViewDeps, caller: LessonCalle
   if (activeAll.length > ACTIVE_MAX || cut.has("active")) truncated.push("active");
   if (removedAll.length > REMOVED_MAX || cut.has("removed")) truncated.push("removed");
   return {
-    project, mode: resolved.mode, lockedByCompany, preset: resolved.preset, presetLockedByCompany: companyPresetLocks(raw),
+    // `mode` is the project's own setting (after the company's lock); while the install's lessons switch is off the pipeline runs as Collect whatever it says (owner decision 47), which `lessonsSwitchedOff` tells the people who decide.
+    project, mode: resolved.chosenMode, lockedByCompany, ...(resolved.switchedOff && state.canDecide ? { lessonsSwitchedOff: true as const } : {}), preset: resolved.preset, presetLockedByCompany: companyPresetLocks(raw),
     approval: { tier0: resolved.approval.tier0, tier1: resolved.approval.tier1, requiredGroups: [...resolved.requiredGroups] },
     ...(resolved.expiryDays === undefined ? {} : { expiryDays: resolved.expiryDays }),
     canDecide: state.canDecide,

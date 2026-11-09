@@ -5,6 +5,7 @@ import { describe, expect, it } from "vitest";
 import { AgentXError, agentXError, LESSON_TIER_REASONS, LESSON_VIEW_STATUSES, LessonCompanyPresetReaderSchema, LessonsViewReaderSchema, type OrgId } from "@agentx/contracts";
 import { LESSON_STATUSES } from "../../../packages/broker/src/lessons/types.js";
 import { routeLessons, type LessonRouteDependencies } from "../../../packages/broker/src/lessons/routes.js";
+import { setLearnedLessonsGate } from "../../../packages/broker/src/lessons/policy.js";
 import { InMemoryLessonStore } from "../../../packages/broker/src/lessons/store.js";
 import type { AccessCheckPort } from "../../../packages/broker/src/team-record/access-port.js";
 import type { DeveloperCaller } from "../../../packages/broker/src/aws/developer-routes.js";
@@ -148,6 +149,26 @@ describe("the Lessons tab read", () => {
     expect(LessonsViewReaderSchema.parse(await call(callerOf("ann"), "GET", base))).toMatchObject({ mode: "Suggest", lockedByCompany: true });
     const own = setup({ value: { mode: "Suggest", companyLock: "On" } });
     expect(LessonsViewReaderSchema.parse(await own.call(callerOf("ann"), "GET", base))).toMatchObject({ mode: "Suggest", lockedByCompany: false });
+  });
+
+  it("owner decision 47: while the install's lessons switch is off the tab keeps the project's own mode, and tells the people who decide (only them) that Rovara collects and makes no model calls; no pause is read", async () => {
+    try {
+      setLearnedLessonsGate(() => false);
+      const { call, deps } = setup({ value: { mode: "On" } });
+      let pauseReads = 0;
+      (deps.lessons as { pause?: unknown }).pause = { record: async () => undefined, clear: async () => undefined, read: async () => { pauseReads += 1; return { code: "no_provider", at: 1, scope: "project" }; } };
+      const decider = LessonsViewReaderSchema.parse(await call(callerOf("ann"), "GET", base));
+      expect(decider).toMatchObject({ mode: "On", lessonsSwitchedOff: true });
+      expect(decider.paused).toBeUndefined();
+      expect(pauseReads).toBe(0);
+      expect(LessonsViewReaderSchema.parse(await call(callerOf("mallory"), "GET", base)).lessonsSwitchedOff).toBeUndefined();
+      setLearnedLessonsGate(() => true);
+      const back = LessonsViewReaderSchema.parse(await call(callerOf("ann"), "GET", base));
+      expect(back).toMatchObject({ mode: "On" });
+      expect(back.lessonsSwitchedOff).toBeUndefined();
+      // Positive control: with the switch on the same tab does read the pause.
+      expect(pauseReads).toBeGreaterThan(0);
+    } finally { setLearnedLessonsGate(undefined); }
   });
 
   it("answers undefined for a path it does not own", async () => {
