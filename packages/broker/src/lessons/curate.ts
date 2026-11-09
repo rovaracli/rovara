@@ -9,6 +9,7 @@ import { emitAudit, learnedLessonsSwitchOn, learningCaps, type Edition } from ".
 import { isLearningRefusal, noteJudgeRecovered, noteModelFailure, notePause, pauseOfLook, spendLook, type LessonsPauseStore } from "./pause.js";
 import type { AlertSink, LearningSpend, LessonDeps, LessonEmbedder, LessonVectors, PipelineModel } from "./ports.js";
 import { relate } from "./copy-match.js";
+import { mergedRepoVisibility } from "./repo-eligibility.js";
 import { readVisible } from "./read-visible.js";
 import type { AccessCheckPort } from "../team-record/access-port.js";
 import { EMBED_TIMEOUT_MS, JUDGE_CANDIDATES, JUDGE_REJECTED, NEIGHBOURS, closeEnoughForSame, docOf, dropVector, isFlippedCopy, isNarrowing, isNearExact, isVerbatim, keepVector, matchesRejected, passesGate, rankLessons, type Ranked, type SimilarityLog } from "./similarity.js";
@@ -164,10 +165,10 @@ async function commitWith(deps: CurateDeps, key: ScopeKey, build: () => Promise<
   return undefined;
 }
 
-/** The provenance without the three flags a merge may only narrow (they are put back below by their own rules). */
+/** The provenance without the flags a merge may only narrow (they are put back below by their own rules): the three trust flags and the repository-visibility pair (`mergedRepoVisibility`). */
 function withoutNarrowingFlags(provenance: Lesson["provenance"]): Lesson["provenance"] {
-  const { memberCorrection: _member, claimsSupported: _claims, fromSharedTask: _shared, ...rest } = provenance;
-  void _member; void _claims; void _shared;
+  const { memberCorrection: _member, claimsSupported: _claims, fromSharedTask: _shared, repoOnly: _repo, repoBlockCodes: _repoWhy, ...rest } = provenance;
+  void _member; void _claims; void _shared; void _repo; void _repoWhy;
   return rest;
 }
 
@@ -203,6 +204,8 @@ function mergeInto(target: Lesson, draft: LessonDraft, version: number, now: num
       ...(target.provenance.memberCorrection === true && draft.provenance.memberCorrection === true ? { memberCorrection: true } : {}),
       ...(target.provenance.claimsSupported === true && draft.provenance.claimsSupported === true ? { claimsSupported: true } : {}),
       ...mergedSharedMark(target.provenance.fromSharedTask, draft.provenance.fromSharedTask),
+      // Lessons in the repo (decision 50a.1): the merged lesson is repository-only only when BOTH sides are, for the same repository; an unset side reads as false.
+      ...mergedRepoVisibility(target.provenance, draft.provenance),
       ...(people.readFrom.length === 0 ? {} : { readFrom: people.readFrom }), ...(people.coAuthored.length === 0 ? {} : { coAuthored: people.coAuthored }),
       minTrust: minTrust([target.provenance.minTrust, draft.provenance.minTrust]), audience: narrowestAudience([target.provenance.audience, draft.provenance.audience]),
       ...(target.provenance.sourceScopes === undefined && draft.provenance.sourceScopes === undefined ? {} : { sourceScopes: union(target.provenance.sourceScopes ?? [], draft.provenance.sourceScopes ?? [], 50) }),
