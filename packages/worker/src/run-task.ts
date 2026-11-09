@@ -290,9 +290,13 @@ async function runTask(
     stepSkills = pinnedSkills(await dependencies.agentSkills(), step.skills);
   }
   // What a step adds to every session of the operation, the reviewers' too; nothing without agentStep.
+  // Standing instructions (lanes I1, I2): the broker-built block goes in the SYSTEM prompt of every session of the operation, the reviewers' too; the company part alone is for the second reviewer shown only the change.
+  const standingInstructions = invocation.payload.standingInstructions?.text;
+  const companyStandingInstructions = invocation.payload.standingInstructions?.company?.text;
   const stepSession = {
     ...(agentStep?.tools === undefined ? {} : { agentTools: agentStep.tools }),
     ...(stepSkills === undefined ? {} : { skills: stepSkills }),
+    ...(standingInstructions === undefined ? {} : { standingInstructions }),
   };
   // The step's own time limit replaces the default one of each review.
   const reviewTimeoutMs = agentStep?.timeoutMs ?? dependencies.timeouts?.reviewMs;
@@ -390,6 +394,7 @@ async function runTask(
       workspace: { rootPath: dependencies.rootPath, ...(fileTools !== undefined ? { fileTools } : localShell ? { localFileTools: true } : {}) },
       modelAccess: { model: dependencies.model, ...(dependencies.piAdapter === undefined ? {} : { piAdapter: dependencies.piAdapter }) },
       ...(stepSkills === undefined ? {} : { skills: stepSkills }),
+      ...(standingInstructions === undefined ? {} : { standingInstructions }),
       eventSink: dependencies.eventSink, artifactSink: dependencies.artifactSink,
       ...(dependencies.cancellationController === undefined ? {} : { cancellationController: dependencies.cancellationController }),
       ...hooks,
@@ -429,6 +434,7 @@ async function runTask(
         ...(collected.taskChecks === undefined ? {} : { taskChecks: collected.taskChecks }),
         ...(feedbackTimeoutMs === undefined ? {} : { timeoutMs: feedbackTimeoutMs }),
         ...(agentStep?.promptSection === undefined ? {} : { promptSection: agentStep.promptSection }),
+        ...(standingInstructions === undefined ? {} : { standingInstructions }),
         ...(agentStep?.tools === undefined ? {} : { tools: agentStep.tools }),
         ...(stepSkills === undefined ? {} : { skills: stepSkills }),
         ...(dependencies.piAdapter === undefined ? {} : { piAdapter: dependencies.piAdapter }), signal: stop.signal,
@@ -1286,7 +1292,7 @@ async function runTask(
           binding: designReviewBinding, artifactSink,
           ports: {
             loadPacket: designReview.loadPacket,
-            openSession: createReviewSessionOpener({ rootPath: dependencies.rootPath, ...reviewFileToolsOf(fileTools), runtimeFor: designReview.runtimeFor(designReviewBinding), onDiagnostic }),
+            openSession: createReviewSessionOpener({ rootPath: dependencies.rootPath, ...reviewFileToolsOf(fileTools), runtimeFor: designReview.runtimeFor(designReviewBinding), onDiagnostic, standingInstructions }),
             progress: async (message) => { await emit("progress", { message }); },
           },
           options: { signal: verificationStop.signal },
@@ -1555,6 +1561,8 @@ async function runTask(
           ...(dependencies.secondReviewer === undefined || invocation.payload.workflowSecondReviewer === undefined ? {} : { secondReviewer: dependencies.secondReviewer, onSecondReview: (result: SecondReviewResult) => { secondReview = result; } }),
           ...(reviewTimeoutMs === undefined ? {} : { timeoutMs: reviewTimeoutMs }),
           ...(agentStep?.promptSection === undefined ? {} : { promptSection: agentStep.promptSection }),
+          ...(standingInstructions === undefined ? {} : { standingInstructions }),
+          ...(companyStandingInstructions === undefined ? {} : { companyStandingInstructions }),
           ...(agentStep?.tools === undefined ? {} : { tools: agentStep.tools }),
           ...(stepSkills === undefined ? {} : { skills: stepSkills }),
           signal: verificationStop.signal,

@@ -18,6 +18,7 @@ import {
   DIAGNOSIS_WORKER_FEATURE,
   SETUP_AGENT_FEATURE,
   NIGHTLY_RUN_FEATURE,
+  STANDING_INSTRUCTIONS_FEATURE,
   SETUP_RECIPES_FEATURE,
   EVIDENCE_CAPTURE_FEATURE,
   TEST_ENV_COVERAGE_PATH_FEATURE,
@@ -416,10 +417,12 @@ async function forWorkerFeatures(
   const carriesContextSources = invocation.kind === "task" && invocation.payload.contextSources === true;
   const carriesOwnerRedirect = invocation.kind === "task" && invocation.payload.ownerRedirect !== undefined;
   // Learning v2: advice from approved lessons. An older worker is sent the stage without it (never refused), so it runs as it would without memory.
+  // Standing instructions (lanes I1, I2): the company's rules and "How we work" in the system prompt. An older worker would run the step without them and say nothing, so it is refused (the field is never dropped).
+  const carriesStandingInstructions = invocation.kind === "task" && invocation.payload.standingInstructions !== undefined;
   const carriesLearnedContext = invocation.kind === "task" && (invocation.payload.learnedContext !== undefined || invocation.payload.learnedRefs !== undefined);
   // Test environment and test services: a preparation that carries `testServices`, or a task that carries `testEnvironment`, reaches the feature gates below even when it carries nothing else (the gates are never skipped for it).
   const carriesTestServices = (invocation.kind === "task" && invocation.payload.testEnvironment !== undefined) || (invocation.kind === "prepare" && invocation.payload.testServices !== undefined);
-  if (requestedThinkingLevel === undefined && !carriesSavedEnv && !carriesSavedEnvBuild && !carriesChatGpt && !carriesReadiness && !carriesReviewChecks && !carriesWorkflowMode && !carriesWorkflowBase && !carriesStructuredPlans && !carriesCodeAnchors && !carriesPlanQuality && !carriesApplicationPlans && !carriesApplicationAdmission && !carriesAgentSteps && !carriesCaptureExtras && !carriesReportChecks && !carriesCandidateTree && !carriesPublicationMode && !carriesPublishBase && !carriesAttribution && !carriesPullRequestUpdate && !carriesBranchSync && !carriesWorkflowDependencies && !carriesProjectSetupSmoke && !carriesAgentStep && !carriesModelRoute && !carriesReviewers && !carriesFix && !carriesContextSources && !carriesOwnerRedirect && !carriesFeedbackAutonomy && !carriesCheckout && !carriesMeta && !carriesRegistries && !carriesPins && !carriesCredentialKinds && !carriesModelPolicy && !carriesSpec && !carriesLearnedContext && !carriesTestServices) return invocation;
+  if (requestedThinkingLevel === undefined && !carriesSavedEnv && !carriesSavedEnvBuild && !carriesChatGpt && !carriesReadiness && !carriesReviewChecks && !carriesWorkflowMode && !carriesWorkflowBase && !carriesStructuredPlans && !carriesCodeAnchors && !carriesPlanQuality && !carriesApplicationPlans && !carriesApplicationAdmission && !carriesAgentSteps && !carriesCaptureExtras && !carriesReportChecks && !carriesCandidateTree && !carriesPublicationMode && !carriesPublishBase && !carriesAttribution && !carriesPullRequestUpdate && !carriesBranchSync && !carriesWorkflowDependencies && !carriesProjectSetupSmoke && !carriesAgentStep && !carriesModelRoute && !carriesReviewers && !carriesFix && !carriesContextSources && !carriesOwnerRedirect && !carriesFeedbackAutonomy && !carriesCheckout && !carriesMeta && !carriesRegistries && !carriesPins && !carriesCredentialKinds && !carriesModelPolicy && !carriesSpec && !carriesLearnedContext && !carriesTestServices && !carriesStandingInstructions) return invocation;
   let features: readonly string[] = [];
   if (workerFeatures !== undefined) {
     try {
@@ -459,6 +462,9 @@ async function forWorkerFeatures(
   }
   // Live interaction F3: a deep diagnosis is never sent to a worker that does not list it: an older worker would run the look as a setup draft and answer a proposal this broker does not read.
   if (invocation.kind === "task" && invocation.payload.diagnosis !== undefined && !features.includes(DIAGNOSIS_WORKER_FEATURE)) {
+    throw agentXError("RUNTIME_UNAVAILABLE", AGENT_WORKER_OUTDATED);
+  }
+  if (carriesStandingInstructions && !features.includes(STANDING_INSTRUCTIONS_FEATURE)) {
     throw agentXError("RUNTIME_UNAVAILABLE", AGENT_WORKER_OUTDATED);
   }
   // Test environment: a verification run that carries the environment's plan is never sent to a worker that does not list it (it would run the whole suite under another budget and say nothing of it), and the field is never dropped.

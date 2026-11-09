@@ -113,6 +113,7 @@ function parentRemainderDigest(template: TemplateJson): string {
   delete remainder.Parameters?.SetupAgentEnabled;
   delete remainder.Parameters?.SavedEnvEnabled;
   delete remainder.Parameters?.ScriptTokensEnabled;
+  delete remainder.Parameters?.StandingInstructionsEnabled;
   // Test services (TS37): three switches, parameters and packed settings, no part of the proof-only addition.
   delete remainder.Parameters?.TestServicesEnabled;
   delete remainder.Parameters?.TestAccountsEnabled;
@@ -387,18 +388,20 @@ describe("the named TEST proof-only installation gate", () => {
     // Checked first: with the two infra files as they were before, this test passes; legacy did not move.
     // integ/0511 merge: the named and foreign digests were retaken from the values the test reports, after the lanes' intended infra changes were merged together: p1-slack-link-atomic's ConditionCheckItem on DEVELOPER#* for the sign-in
     // function and DEVELOPER_ORG#* for the broker, and p1-runlimit-ack's read-only notifier grants (already recorded above). The named-templates snapshot shows exactly those statements. Legacy did not move.
+    // 2026-11-09 (lane I1, standing instructions): the named and foreign digests were retaken from the values the test reports, after one intended change: the `si` entry of the broker\'s packed AGENTX_SETTINGS
+    // (the StandingInstructionsEnabled parameter itself is taken out of the remainder like the other switches). The named-templates snapshot shows exactly that parameter and that entry. Legacy did not move.
     const digestCases = [
       {
         label: "named",
         template: named,
-        withRoute: "0d64aae778eccecda78386f9b6c07e62526718b720ccf06985ca51a7e7d05dbc",
-        withoutRoute: "7e9a8954de677a110e2a5d8ecf2cc21e8530fc0901dca629a77d51d03c91aa6f",
+        withRoute: "469745ab7fc044912de70e53c8541a2c034cc4059c082e5823f5b558bc248bd7",
+        withoutRoute: "631bc0454c7490f3319bde2836f4fed03cee6bad22bd3e04caccd6947a792146",
       },
       {
         label: "foreign",
         template: foreign,
-        withRoute: "c880c6e407f8d46d4b6b1883d79f6b557cdc181ac5f9a379628b772e72315e31",
-        withoutRoute: "202e87563b531e3fcfe6c75abde806db2426a19e27f4adde648fbebadebba064",
+        withRoute: "24d0e591af9f26d2fd10ba490636c05654f4c65f78fc24db134ba089bd797079",
+        withoutRoute: "e9d111624f02fcb925511ce51eee247f8483a55b5d2735d81710ae196a0658bc",
       },
       {
         label: "legacy",

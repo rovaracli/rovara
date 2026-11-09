@@ -4,6 +4,7 @@ import { fixtureDigestsOfPlan } from "../../test-env/fixture-lookup.js";
 import { fixtureStoreForRoutes } from "../../test-env/fixture-store-aws.js";
 import { prepareSecondReview } from "../../rovara-code/second-review-start.js";
 import { learnedContextForOperation } from "./lessons-dispatch.js";
+import { standingInputFor } from "../../instructions/dispatch-input.js";
 import { proofEvidenceEnabled } from "../../proof/switch.js";
 import { readTurnActorChecks } from "../../model-selection/turn-authority.js";
 import { turnStagesForMode, prepareTurnModelPolicy } from "../../model-selection/turn-policy.js";
@@ -154,6 +155,8 @@ async function dispatchAgentStep(
   // A run of agent steps is driven by the engine alone: any other task operation (a legacy turn from whichever route) would run a full coding session in its workspace.
   if (input.agentRun === undefined && recipeRunner(frozen.recipe) === "agent_steps") throw agentXError("CONFIG_INVALID", "an agent run takes no follow-up; start a new run instead");
   const guardrails = await readGuardrails(dependencies, orgId);
+  // Standing instructions (lanes I1, I2): the company's newest approved rules, read now so a running task picks up a change at its next step (decision 57.5). A source that fails or rules over the limits refuse the step.
+  const standing = await standingInputFor(dependencies.companyInstructions, orgId, input.workflowMode, input.agentRun !== undefined, task);
   if(frozen.modelPolicyPin!==undefined&&input.agentRun===undefined&&recipeRunner(frozen.recipe)==="coding") {
     const mode=input.workflowMode??"IMPLEMENT",stages=STAGE_OPERATION_MAPPING[mode].stages;
     if(stages.length>0) {
@@ -170,7 +173,7 @@ async function dispatchAgentStep(
       const recipe=ResolvedRecipeSchema.parse({...frozen.recipe,steps:frozen.recipe.steps.map(candidate=>candidate.id===step?.id?{...candidate,settings:{...candidate.settings,model,thinkingLevel:decision.thinkingLevel}}:candidate)});
       const stepIds=priorStepIds({recipe,mode,programStepId:input.programStepId,guardrails});
       const priorOperations=stepIds.length===0?[]:await priorStepModels(dependencies,workspace.id,recipe,stepIds);
-      const applied=applyAgentStep({recipe,ref:task.agent,mode,programStepId:input.programStepId,guardrails,project:workspace.projectName,projectModel:model,projectApproved:frozen.modelPolicyPin.frozenInputs?.projectModels?.approved,chatgptModel:decision.sourceId==="personal-chatgpt"?model:undefined,priorOperations});
+      const applied=applyAgentStep({recipe,ref:task.agent,mode,programStepId:input.programStepId,guardrails,project:workspace.projectName,projectModel:model,projectApproved:frozen.modelPolicyPin.frozenInputs?.projectModels?.approved,chatgptModel:decision.sourceId==="personal-chatgpt"?model:undefined,priorOperations,standing});
       return {...applied,model,ranModel:model,...(decision.fallback?.reasonCode==="DEFAULT_MODEL_UNAVAILABLE"&&(mode==="PLAN_CRITIQUE"?priorModels.plan!==undefined&&canonicalModelName(model)===canonicalModelName(priorModels.plan):mode==="REVIEW"&&priorModels.build!==undefined&&canonicalModelName(model)===canonicalModelName(priorModels.build))?(mode==="PLAN_CRITIQUE"?{criticSameModel:true as const}:mode==="REVIEW"?{reviewSameModel:true as const}:{}):{}),dropChatgpt:decision.sourceId!=="personal-chatgpt",stepName:stepNameOf(recipe,mode,input.programStepId),modelDecision:decision,modelCompanyRevision:frozen.modelPolicyPin.policy.revision,modelPolicy:{version:1,stage:stages[0]!,companyRevision:frozen.modelPolicyPin.policy.revision,recipeDigest:frozen.digest}};
     }
   }
@@ -185,7 +188,7 @@ async function dispatchAgentStep(
   const priorOperations = stepIds.length === 0 ? [] : await priorStepModels(dependencies, workspace.id, recipe, stepIds);
   const applied = applyAgentStep({
     recipe, ref: task.agent, mode: input.workflowMode, programStepId: input.programStepId, guardrails, project: workspace.projectName,
-    projectModel, projectApproved: settings.definition.models?.approved, chatgptModel, priorOperations, agentRun: input.agentRun,
+    projectModel, projectApproved: settings.definition.models?.approved, chatgptModel, priorOperations, agentRun: input.agentRun, standing,
   });
   return { ...applied, stepName: input.agentRun?.step.name ?? stepNameOf(recipe, input.workflowMode, input.programStepId), ...(critic?.sameModelAsPlanner === true ? { criticSameModel: true as const } : {}), ...(reviewer?.sameModelAsBuilder === true ? { reviewSameModel: true as const } : {}) };
 }
@@ -449,6 +452,8 @@ export async function taskOperationParts(
   // The plan check likewise (recorded on its operation; the review's note is the one the task page says).
   if (input.workflowMode === "PLAN_CRITIQUE" && applied?.modelDecision?.noOtherCompany === true) operation.criticNoOtherCompany = true;
   if (secondReview.record !== undefined) operation.secondReviewPlan = secondReview.record;
+  // Standing instructions: which block this step ran with (its digest) and, when company rules are in it, the company version (decision 57.5), so the task page can say which rules each step followed.
+  if (applied?.standingInstructions !== undefined) operation.standingInstructions = { digest: applied.standingInstructions.digest, ...(applied.standingInstructions.company === undefined ? {} : { companyVersion: applied.standingInstructions.company.version }) };
   // Plan 6 Task 8: the one revision a plan check asked for. No person asked for it, so it may never pause the task or ask for money (see handleModelAccess and the budget-stop paths).
   if (input.planRevision === true) operation.planRevision = true;
   // The model this operation runs on, kept so a later step that must differ in company from this one can be compared with it.
@@ -635,6 +640,8 @@ export async function taskOperationParts(
       ...(chatgpt === undefined ? {} : { chatgpt: { model: chatgpt.model } }),
       ...(routed?.wire === undefined ? {} : { modelRoute: routed.wire }),
       ...(setupRunStepOf(input.workflowMode, applied?.agentStep) === undefined ? {} : { agentStep: applied!.agentStep }),
+      // Standing instructions (lanes I1, I2): the company's rules and, with switch `si` on, "How we work", for the worker's system prompt. A worker without "task.standingInstructions.v1" is refused the step at delivery, never sent it without the field.
+      ...(applied?.standingInstructions === undefined ? {} : { standingInstructions: applied.standingInstructions }),
       // Learning v2: advice from the team's approved lessons; a worker without "task.learnedContext.v1" has it removed at delivery (it is never refused for it).
       ...learned,
       // Spec 051 (P-1): the checks the worker reruns when the agent finishes. The latest revision's readiness, as

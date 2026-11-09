@@ -1,3 +1,5 @@
+import type { CompanyInstructionsSource } from "../../packages/broker/src/instructions/company-source.js";
+import { fakeCompanyInstructionsSource } from "../support/company-instructions-fake.js";
 import type {TransactItem} from "../../packages/broker/src/agents/table-writes.js";
 import {AuditKeyring} from "../../packages/broker/src/audit/keyring.js";
 import {processAuditBatch} from "../../packages/broker/src/audit/appender-handler.js";
@@ -403,7 +405,7 @@ function recipeWithReview(settings: Record<string, unknown>, base: RecipeOverlay
   return { ...base, sequence: base.sequence!.map((step) => (step.id === "review" ? { ...step, settings } : step)) };
 }
 
-interface SetupOptions { models?: boolean; chatgpt?: Record<string, ChatGptConnectionView>;chatgptView?:(developerId:string)=>ChatGptConnectionView }
+interface SetupOptions { companyInstructions?: CompanyInstructionsSource; models?: boolean; chatgpt?: Record<string, ChatGptConnectionView>;chatgptView?:(developerId:string)=>ChatGptConnectionView }
 
 async function setup(options: SetupOptions = {}) {
   const chatgptViews = options.chatgpt;
@@ -416,7 +418,7 @@ async function setup(options: SetupOptions = {}) {
     refreshModels: async () => undefined,
   } as unknown as ChatGptConnections;
   const audit=capturingAuditDeps(),modelAccess=fakeModelAccess();
-  const h = await createSingleAnswerPlanBroker({ audit, register: false, brokerExtra: { agents: { servableModels: async () => SERVABLE,modelSources:{launch:{kinds:["anthropic","openai"]}} },modelAccess:{access:modelAccess,proxyUrl:"http://test-proxy.invalid:4000"}, ...(chatgpt === undefined ? {} : { chatgpt }) } });
+  const h = await createSingleAnswerPlanBroker({ audit, register: false, brokerExtra: { agents: { servableModels: async () => SERVABLE,modelSources:{launch:{kinds:["anthropic","openai"]}} },modelAccess:{access:modelAccess,proxyUrl:"http://test-proxy.invalid:4000"}, ...(chatgpt === undefined ? {} : { chatgpt }), ...(options.companyInstructions === undefined ? {} : { companyInstructions: options.companyInstructions }) } });
   // Real stored-source shape: fixture credentials are presence metadata only, never key values.
   const anthropic="src_aaaaaaaaaaaaaaaaaaaa",openai="src_bbbbbbbbbbbbbbbbbbbb";
   h.db.set({...modelSourcesKey(TEST_ORG),revision:1,credentials:[anthropic,openai],removing:[],order:["personal-chatgpt",anthropic,openai,"rovara"],sources:[
@@ -1010,4 +1012,78 @@ it("C53 refuses a personal-source transition during dispatch instead of silently
  expect(reads).toBeGreaterThanOrEqual(3);
  expect(t.operations(pending.workspaceId).filter(row=>row.workflowMode==="PLAN")).toHaveLength(0);
  expect(pending.meta().modelFallbacks).toBeUndefined();expect(t.audit.recordedBy("model.fallback_used")).toHaveLength(0);expect(t.modelAccess.mintKey).not.toHaveBeenCalled();
+});
+
+// Standing instructions (lanes I1, I2): the same dispatch, end to end through the broker, with the switch `si` off and on and a company rules source.
+describe("standing instructions through the broker's dispatch", () => {
+  const COMPANY = { version: "12", rules: [{ text: "Never log customer data.", priority: "required" as const }, { text: "Prefer small commits.", priority: "preferred" as const }] };
+  const withSwitch = async <T>(value: string | undefined, body: () => Promise<T>): Promise<T> => {
+    const before = process.env.STANDING_INSTRUCTIONS_ENABLED;
+    if (value === undefined) delete process.env.STANDING_INSTRUCTIONS_ENABLED; else process.env.STANDING_INSTRUCTIONS_ENABLED = value;
+    try { return await body(); } finally { if (before === undefined) delete process.env.STANDING_INSTRUCTIONS_ENABLED; else process.env.STANDING_INSTRUCTIONS_ENABLED = before; }
+  };
+
+  it("OFF and no company rules: the build step is exactly as before (How we work in the user message, no block, nothing recorded)", () => withSwitch(undefined, async () => {
+    const t = await setup();
+    const run = await t.start(await t.agentOf(CODER));
+    const { invocation, operation } = await run.accept("IMPLEMENT", "build");
+    expect(String(invocation.payload.prompt)).toContain("Instructions from your company's agent");
+    expect(invocation.payload.standingInstructions).toBeUndefined();
+    expect((invocation.payload.agentStep as { promptSection?: string }).promptSection).toContain("House rules: write the tests first.");
+    expect(operation.standingInstructions).toBeUndefined();
+  }));
+
+  it("ON, company rules: the block carries the company rules and How we work; the user message and the step payload carry neither; the company version is recorded on the step", () => withSwitch("1", async () => {
+    const source = fakeCompanyInstructionsSource([COMPANY]);
+    const t = await setup({ companyInstructions: source });
+    const run = await t.start(await t.agentOf(CODER));
+    for (const [mode, step] of [["IMPLEMENT", "build"], ["REVIEW", "review"]] as const) {
+      const { invocation, operation } = await run.accept(mode, step);
+      const block = invocation.payload.standingInstructions as { text: string; digest: string; company: { version: string; text: string } };
+      expect(block.text, mode).toContain("1. Company rules (set by your company's admins)");
+      expect(block.text, mode).toContain("- Never log customer data.");
+      expect(block.text, mode).toContain("- Prefer small commits.");
+      expect(block.company.version, mode).toBe("12");
+      expect(String(invocation.payload.prompt), mode).not.toContain("Instructions from your company's agent");
+      expect(String(invocation.payload.prompt), mode).not.toContain("Never log customer data.");
+      expect((invocation.payload.agentStep as { promptSection?: string }).promptSection, mode).toBeUndefined();
+      expect(operation.standingInstructions, mode).toEqual({ digest: block.digest, companyVersion: "12" });
+    }
+    const build = (await run.accept("IMPLEMENT", "build")).invocation.payload.standingInstructions as { text: string };
+    expect(build.text).toContain("House rules: write the tests first.");
+    // The company key the source is asked for is the caller's organisation.
+    expect(source.asked.every((asked) => asked === TEST_ORG)).toBe(true);
+  }));
+
+  it("OFF with company rules: the rules are in the block, and How we work stays in the user message", () => withSwitch(undefined, async () => {
+    const t = await setup({ companyInstructions: fakeCompanyInstructionsSource([COMPANY]) });
+    const run = await t.start(await t.agentOf(CODER));
+    const { invocation } = await run.accept("IMPLEMENT", "build");
+    const block = invocation.payload.standingInstructions as { text: string };
+    expect(block.text).toContain("Never log customer data.");
+    expect(block.text).not.toContain("House rules: write the tests first.");
+    expect(String(invocation.payload.prompt)).toContain("House rules: write the tests first.");
+  }));
+
+  it("a running task uses the newest approved version at its next step (decision 57.5)", () => withSwitch(undefined, async () => {
+    const t = await setup({ companyInstructions: fakeCompanyInstructionsSource([COMPANY, COMPANY, { version: "13", rules: [{ text: "Never touch infra/prod.", priority: "required" }] }]) });
+    const run = await t.start(await t.agentOf(CODER));
+    const first = (await run.accept("IMPLEMENT", "build")).operation.standingInstructions as { companyVersion: string };
+    const second = await run.accept("REVIEW", "review");
+    expect(first.companyVersion).toBe("12");
+    expect((second.operation.standingInstructions as { companyVersion: string }).companyVersion).toBe("13");
+    expect((second.invocation.payload.standingInstructions as { text: string }).text).toContain("Never touch infra/prod.");
+    expect((second.invocation.payload.standingInstructions as { text: string }).text).not.toContain("Never log customer data.");
+  }));
+
+  it("fails the step closed, starting nothing, when the company rules cannot be read or are over the limits", () => withSwitch(undefined, async () => {
+    const broken = await setup({ companyInstructions: fakeCompanyInstructionsSource([COMPANY, new Error("store down")]) });
+    const run = await broken.start(await broken.agentOf(CODER));
+    const before = broken.operations(run.workspaceId).length;
+    await expect(run.accept("IMPLEMENT", "build")).rejects.toMatchObject({ code: "RUNTIME_UNAVAILABLE", message: expect.stringContaining("company rules could not be read") as string });
+    expect(broken.operations(run.workspaceId)).toHaveLength(before);
+    const huge = await setup({ companyInstructions: fakeCompanyInstructionsSource([COMPANY, { version: "1", rules: Array.from({ length: 31 }, () => ({ text: "x", priority: "required" as const })) }]) });
+    const second = await huge.start(await huge.agentOf(CODER));
+    await expect(second.accept("IMPLEMENT", "build")).rejects.toMatchObject({ code: "CONFIG_INVALID", message: expect.stringContaining("Company rules exceed the size budget") as string });
+  }));
 });
