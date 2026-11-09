@@ -390,18 +390,20 @@ describe("the named TEST proof-only installation gate", () => {
     // function and DEVELOPER_ORG#* for the broker, and p1-runlimit-ack's read-only notifier grants (already recorded above). The named-templates snapshot shows exactly those statements. Legacy did not move.
     // 2026-11-09 (lane I1, standing instructions): the named and foreign digests were retaken from the values the test reports, after one intended change: the `si` entry of the broker\'s packed AGENTX_SETTINGS
     // (the StandingInstructionsEnabled parameter itself is taken out of the remainder like the other switches). The named-templates snapshot shows exactly that parameter and that entry. Legacy did not move.
+    // 2026-11-09, integ/0512 merge of I1+I2 onto fix/0512-small: the four named and foreign digests were retaken from the values the test reports, after ONE intended change the fix lane had not re-pinned:
+    // the sign-in function's two ConditionCheckItem statements gain `Null: { dynamodb:LeadingKeys: false }`. Checked first: with only those two lines undone, all five tests pass on the lane's pins. Legacy did not move.
     const digestCases = [
       {
         label: "named",
         template: named,
-        withRoute: "469745ab7fc044912de70e53c8541a2c034cc4059c082e5823f5b558bc248bd7",
-        withoutRoute: "631bc0454c7490f3319bde2836f4fed03cee6bad22bd3e04caccd6947a792146",
+        withRoute: "17321a5ab87a658b6241accee3bb2553f616ed01ab59c13a5093096b4080b185",
+        withoutRoute: "057566e25b02835efed7c6a23432ce50bc7c4d7c5b0edae6269b6a71fee3560b",
       },
       {
         label: "foreign",
         template: foreign,
-        withRoute: "24d0e591af9f26d2fd10ba490636c05654f4c65f78fc24db134ba089bd797079",
-        withoutRoute: "e9d111624f02fcb925511ce51eee247f8483a55b5d2735d81710ae196a0658bc",
+        withRoute: "460c00d8e5a7a41b71eea352eede33b1d78b3474860ff8a25ef546e91c18a2d4",
+        withoutRoute: "96462c08b8753953a4ed0e4104f8639c4cb1610280033cea7bc435bafe959e8a",
       },
       {
         label: "legacy",
