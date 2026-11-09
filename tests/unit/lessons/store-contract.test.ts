@@ -271,6 +271,17 @@ describe.each(factories)("the lesson store contract (%s)", (_name, make) => {
     expect(Object.keys((await store.flags(KEY)).pausedSources ?? {})).toEqual(["slack:C1"]);
     expect(await make().store.flags(KEY)).toEqual({});
   });
+  it("goneOf: answers withdrawn and purged for the ids that are gone, nothing for an unknown id, in chunks past 100 ids, and keeps projects apart", async () => {
+    const { store } = make();
+    const ids = Array.from({ length: 250 }, (_, i) => `les_g${String(i).padStart(7, "0")}`);
+    await store.markGone(KEY, ids[3]!, "withdrawn");
+    await store.markGone(KEY, ids[199]!, "purged");
+    await store.purge(KEY, ids[249]!);
+    const found = await store.goneOf(KEY, [...ids, "les_unknown1", ids[3]!]);
+    expect([...found.entries()].sort()).toEqual([[ids[3], "withdrawn"], [ids[199], "purged"], [ids[249], "purged"]]);
+    expect((await store.goneOf(OTHER, ids)).size).toBe(0);
+    expect((await store.goneOf(KEY, [])).size).toBe(0);
+  });
 });
 
 describe("the DynamoDB lesson store only", () => {
@@ -546,4 +557,5 @@ describe("the DynamoDB lesson store only", () => {
     expect(result).toEqual({ ok: true, setVersion: 2 });
     expect(await store.get(KEY, "les_a0000001")).toMatchObject({ title: "Edited", counters: { loaded: 7 } });
   });
+
 });

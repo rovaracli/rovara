@@ -7,6 +7,7 @@ import { parseLessonsFile } from "../../../packages/broker/src/lessons/repo-file
 import { switchRepoFileOff } from "../../../packages/broker/src/lessons/repo-file-pass.js";
 import { closeOpenPullRequestFor } from "../../../packages/broker/src/lessons/repo-file-routes.js";
 import { MAX_THEIRS, StateFull, StateUnreadable, appended, parseRepoFileState } from "../../../packages/broker/src/lessons/repo-file-state.js";
+import { lessonsRepoFileJob } from "../../../packages/broker/src/lessons/repo-file-job.js";
 import { dynamoRepoFileStore } from "../../../packages/broker/src/lessons/dynamo-repo-file.js";
 import { FakeDynamoDb } from "../../support/fake-dynamodb.js";
 import { FILE, FakeRepoHost, passSetup, repoLesson } from "./repo-file-helpers.js";
@@ -250,7 +251,7 @@ describe("H2 principle B: a person's push to Rovara's PR hands it over; removals
     await closeOpenPullRequestFor(runtimeOf(w), w.key, "les_aaaa0001");
     expect(w.host.prs.find((pr) => pr.source === open.branch)!.state).toBe("closed");
     expect(w.host.files.has(open.branch)).toBe(true);
-    expect((await w.current()).theirs).toEqual([]);
+    expect((await w.state.listPrs(w.key)).rows.find((row) => row.branch === open.branch)?.closedAt).toBeDefined();
   });
 });
 
@@ -498,11 +499,10 @@ describe("re-check Q3 (M1 vs erasure): an erasure close that failed once, then a
     w.host.failCalls.add("updateChangeRequest");
     await w.store.purge(w.key, L1);
     await closeOpenPullRequestFor(runtimeOf(w), w.key, L1);
-    expect(await w.state.listErase(w.key)).toHaveLength(1);
+    expect(w.host.open).toHaveLength(1);
     w.host.setFile(open.branch, "person.txt", "a person's commit");
     w.host.failCalls.delete("updateChangeRequest");
-    w.week();
-    await w.run();
+    await w.sweep();
     const stillCarries = w.host.open.some((pr) => idsIn(w.host.file(pr.source, FILE)).includes(L1));
     expect({ stillCarries, branchKept: w.host.files.has(open.branch) }).toEqual({ stillCarries: false, branchKept: true });
   });
@@ -644,12 +644,11 @@ describe("N3: closing a pull request is always safe; only deleting a branch need
     w.host.failCalls.add("baseBranchHead");
     await w.store.purge(w.key, L1);
     await closeOpenPullRequestFor(runtimeOf(w), w.key, L1);
-    for (let i = 0; i < 5; i += 1) { w.week(); await w.run(); }
+    for (let i = 0; i < 5; i += 1) { w.week(); await w.sweep(); }
     expect(w.host.open).toHaveLength(1);
-    expect((await w.state.listErase(w.key)).map((row) => row.branch)).toEqual([open.branch]);
+    expect((await w.state.listPrs(w.key)).rows.filter((row) => row.kind === "adds" && row.closedAt === undefined).map((row) => row.branch)).toEqual([open.branch]);
     w.host.failCalls.clear();
-    w.week();
-    await w.run();
+    await w.sweep();
     expect(w.host.open.some((pr) => idsIn(w.host.file(pr.source, FILE)).includes(L1))).toBe(false);
     expect(w.host.prs.find((pr) => pr.source === open.branch)!.state).toBe("closed");
   });
@@ -731,7 +730,7 @@ describe("the second round's lows", () => {
     const store = dynamoRepoFileStore({ documentClient: table, tableName: "t" });
     await store.put(w.key, state, 0);
     const [item] = [...table.items?.values() ?? []];
-    if (item !== undefined) { item.state = { nonsense: true }; await expect(store.get(w.key, state.place)).rejects.toThrow(StateUnreadable); await expect(store.list(w.key)).rejects.toThrow(StateUnreadable); }
+    if (item !== undefined) { item.state = { nonsense: true }; await expect(store.get(w.key, state.place)).rejects.toThrow(StateUnreadable); expect(await store.list(w.key)).toEqual([]); }
   });
 
   it("L-r5: a merge that combines changes to the file from both sides is refused with a sentence the user can act on", async () => {
@@ -763,21 +762,19 @@ describe("N4: the durable tombstone is one row per lesson, never evicted", () =>
     expect((await w.current()).open!.removed).toEqual(["les_copied01"]);
   });
 
-  it("R2: 1000 pending erasure closes are 1000 rows, none evicted, and the state never grows with them", async () => {
+  it("R2: 1000 pull request rows are 1000 rows, none evicted, and the state never grows with them", async () => {
     const w = passSetup();
     await w.enable();
     const before = JSON.stringify(await w.current()).length;
-    for (let i = 0; i < 1000; i += 1) await w.state.putErase(w.key, { place: "github:repo/9", number: String(i + 1), branch: `rovara/lessons-${i.toString(16).padStart(12, "0")}`, keepBranch: true, at: i });
-    expect(await w.state.listErase(w.key)).toHaveLength(1000);
+    for (let i = 0; i < 1000; i += 1) await w.state.putPr(w.key, { place: "github:repo/9", kind: "adds", number: String(i + 1), branch: `rovara/lessons-${i.toString(16).padStart(12, "0")}`, ids: ["les_x0000001"], at: i });
+    expect((await w.state.listPrs(w.key)).rows).toHaveLength(1000);
     expect(JSON.stringify(await w.current()).length).toBe(before);
-    await w.state.putErase(w.key, { place: "github:repo/9", number: "1", branch: "rovara/lessons-000000000000", keepBranch: true, at: 5 });
-    expect(await w.state.listErase(w.key)).toHaveLength(1000);
     const table = new FakeDynamoDb({ indexKeys: {} });
     const dynamo = dynamoRepoFileStore({ documentClient: table, tableName: "t" });
-    for (let i = 0; i < 300; i += 1) await dynamo.putErase(w.key, { place: "github:repo/9", number: String(i + 1), branch: `rovara/lessons-${i.toString(16).padStart(12, "0")}`, keepBranch: true, at: i });
-    expect(await dynamo.listErase(w.key)).toHaveLength(300);
-    await dynamo.delErase(w.key, "github:repo/9", "7");
-    expect(await dynamo.listErase(w.key)).toHaveLength(299);
+    for (let i = 0; i < 300; i += 1) await dynamo.putPr(w.key, { place: "github:repo/9", kind: "adds", number: String(i + 1), branch: `rovara/lessons-${i.toString(16).padStart(12, "0")}`, ids: [], at: i });
+    expect((await dynamo.listPrs(w.key)).rows).toHaveLength(300);
+    await dynamo.delPr(w.key, "github:repo/9", "7");
+    expect((await dynamo.listPrs(w.key)).rows).toHaveLength(299);
   });
 
   it("an erasure whose lesson was erased with the hook never called is still caught by the next pass, from the tombstone alone", async () => {
@@ -786,10 +783,8 @@ describe("N4: the durable tombstone is one row per lesson, never evicted", () =>
     await w.enable();
     await w.run();
     await w.store.purge(w.key, L1);
-    w.week();
-    await w.run();
+    await lessonsRepoFileJob({ deps: w.deps, targets: async () => [w.target], newHolder: () => "n" }, w.key.workspaceId, [w.key.project], 3_600_000, 0);
     expect(w.host.open.some((pr) => idsIn(w.host.file(pr.source, FILE)).includes(L1))).toBe(false);
-    expect((await w.current()).open).toBeUndefined();
   });
 });
 
@@ -816,7 +811,7 @@ describe("N5: an erasure close is decided before any hand-over", () => {
     expect((await w.current()).theirs.some((t) => t.branch === first.branch)).toBe(false);
   });
 
-  it("a hand-over that happens after the erasure (no hook call) closes the pull request instead of tracking it", async () => {
+  it("a pull request waiting in `closing` that a person pushed to is closed by the sweep from its row, with no hook call", async () => {
     const w = passSetup();
     await w.seedLessons(repoLesson(L1));
     await w.enable();
@@ -829,10 +824,9 @@ describe("N5: an erasure close is decided before any hand-over", () => {
     w.host.failCalls.delete("updateChangeRequest");
     w.host.setFile(first.branch, "person.txt", "a person's commit");
     await w.store.markGone(w.key, L1, "withdrawn");
-    w.week();
-    await w.run();
+    await w.sweep();
     expect(w.host.prs.find((pr) => pr.source === first.branch)!.state).toBe("closed");
-    expect((await w.current()).theirs).toEqual([]);
+    expect(w.host.files.has(first.branch)).toBe(true);
   });
 });
 
@@ -863,19 +857,18 @@ describe("N6: the tombstone is part of the erasure, retried until written", () =
     } finally { setLessonGoneListener(undefined); }
   });
 
-  it("an erase row that cannot be written stops the settling before anything is taken out of the state, and the next pass settles it", async () => {
+  it("a pull request row that cannot be written stops the pass before the state changes; the branch it made is cleaned up, and the next pass opens it again with its row", async () => {
     const w = passSetup();
     await w.seedLessons(repoLesson(L1));
     await w.enable();
-    await w.run();
-    const open = (await w.current()).open!;
-    await w.store.purge(w.key, L1);
-    w.state.failEraseWrites = true;
-    await expect(closeOpenPullRequestFor(runtimeOf(w), w.key, L1)).rejects.toThrow();
-    expect((await w.current()).open?.branch).toBe(open.branch);
-    w.state.failEraseWrites = false;
+    w.state.failPrWrites = true;
+    expect(await w.run()).toEqual({ status: "problem", problem: "state_unreadable" });
+    expect((await w.current()).open).toBeUndefined();
+    const stray = (await w.current()).pending!.branch;
+    w.state.failPrWrites = false;
     w.week();
-    await w.run();
-    expect(w.host.prs.find((pr) => pr.source === open.branch)!.state).toBe("closed");
+    expect(await w.run()).toMatchObject({ status: "opened" });
+    expect(w.host.files.has(stray)).toBe(false);
+    expect((await w.state.listPrs(w.key)).rows.filter((row) => row.kind === "adds")).toHaveLength(1);
   });
 });

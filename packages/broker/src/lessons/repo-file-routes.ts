@@ -5,7 +5,9 @@
 import { resolveLearning, modeAllows, requireAudit } from "./policy.js";
 import type { LessonsRepoFileBody, LessonsRepoFileRow, LessonsRepoFileStatus } from "@agentx/contracts";
 import type { RepoFileRuntime } from "./repo-file-job.js";
-import { finishErasures, settleErasures, switchRepoFileOff, type RepoFileTarget } from "./repo-file-pass.js";
+import { closeAllRovaraPrs, sweepDepsOf, sweepErasures } from "./repo-file-erase.js";
+import type { RepoFileTarget } from "./repo-file-host.js";
+import { switchRepoFileOff } from "./repo-file-pass.js";
 import { rowOf } from "./repo-file-pr.js";
 import { newRepoFileState } from "./repo-file-state.js";
 import type { ScopeKey } from "./store.js";
@@ -64,27 +66,17 @@ export async function repoFileAction(runtime: RepoFileRuntime, key: ScopeKey, bo
 }
 
 /**
- * A lesson was deleted or erased (`repo-file-hook.ts`, called once its deletion finished, so the lesson store's tombstone for it exists): every repository of the project settles its erasures. Each Rovara pull request (open, handed
- * over, or waiting to be closed) that adds or edits a lesson the store says is gone gets a durable erase row and is closed at once, whatever its branch head is; the branch is taken down only while it is still Rovara's. Nothing is
- * written to a list that can fill up, and what cannot be done now is done by the next nightly pass, which settles again from the same tombstones.
+ * A lesson was deleted or erased (`repo-file-hook.ts`, called once its deletion finished, so the lesson store's tombstone for it exists): every repository of the project runs the erasure sweep at once. The sweep reads no publish
+ * state (see `repo-file-erase.ts`), so nothing about a repository's state can stop it, and one repository failing never touches another. What cannot be done now is done by the nightly job, which sweeps first of all.
  */
 export async function closeOpenPullRequestFor(runtime: RepoFileRuntime, key: ScopeKey, _lessonId: string): Promise<void> {
   void _lessonId;
-  const targets = await runtime.targets(key.workspaceId, key.project).catch(() => [] as RepoFileTarget[]);
-  const deps = { ...runtime.deps, holder: runtime.newHolder?.() ?? "erasure" };
-  for (const state of await deps.state.list(key)) {
-    const target = targets.find((candidate) => candidate.place === state.place);
-    if (target === undefined) continue;
-    let current = state;
-    // A pass that wrote first (a lost race) is read again and settled on what it left.
-    for (let attempt = 0; attempt < 5; attempt += 1) {
-      try { current = await settleErasures(deps, key, target, current); break; } catch (error) {
-        if (!(error instanceof Error) || error.message !== "conflict") throw error;
-        const fresh = await deps.state.get(key, state.place);
-        if (fresh === undefined) break;
-        current = fresh;
-      }
-    }
-    await finishErasures(deps, key, target);
-  }
+  for (const target of await runtime.targets(key.workspaceId, key.project)) await sweepErasures(sweepDepsOf(runtime.deps), key, target);
+}
+
+/** A project is archived: every open Rovara pull request of its repositories is closed before the project's rows go (nothing is left in the customer's repository that Rovara could still take down). Best effort, per repository. */
+export async function closeProjectRovaraPrs(runtime: RepoFileRuntime, key: ScopeKey): Promise<number> {
+  let closed = 0;
+  for (const target of await runtime.targets(key.workspaceId, key.project)) closed += await closeAllRovaraPrs(sweepDepsOf(runtime.deps), key, target);
+  return closed;
 }

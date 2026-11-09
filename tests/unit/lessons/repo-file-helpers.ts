@@ -6,6 +6,7 @@ import {
 } from "@agentx/contracts";
 import { setLearnedLessonsGate } from "../../../packages/broker/src/lessons/policy.js";
 import type { LessonAuditEvent } from "../../../packages/broker/src/lessons/ports.js";
+import { sweepDepsOf, sweepErasures } from "../../../packages/broker/src/lessons/repo-file-erase.js";
 import { runRepoFilePass, type RepoFileDeps, type RepoFileTarget } from "../../../packages/broker/src/lessons/repo-file-pass.js";
 import { InMemoryRepoFileStore, newRepoFileState } from "../../../packages/broker/src/lessons/repo-file-state.js";
 import { InMemoryLessonStore } from "../../../packages/broker/src/lessons/store.js";
@@ -184,6 +185,8 @@ export function passSetup(over: { host?: FakeRepoHost; preset?: "standard" | "re
     seedLessons: (...lessons: Lesson[]) => seed(store, ...lessons),
     enable: async (extra: Partial<ReturnType<typeof newRepoFileState>> = {}) => { const next = { ...newRepoFileState(PLACE, "api"), enabled: true, ...extra }; await state.put(key, next, 0); },
     run: (options: { force?: boolean } = {}) => runRepoFilePass(deps, key, target, options),
+    /** The erasure sweep for the repository, as the nightly job and the erasure hook run it. */
+    sweep: () => sweepErasures(sweepDepsOf(deps), key, target),
     current: async () => (await state.get(key, PLACE))!,
     week: () => clock.advance(7 * DAY),
   };

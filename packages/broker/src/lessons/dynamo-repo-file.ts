@@ -1,22 +1,22 @@
 // Lessons in the repo, lane R2: the Dynamo side of `RepoFileStore` (repo-file-state.ts). Items on the Team record table, all under the LESSONSET prefix a project or workspace erase already wipes:
 //   - one STATE item per project and repository: pk of the project (`teamRecordPk(workspace, project)`), sk `LESSONSET#REPOFILE#<16 hex of the repository place>`; attributes `state` and `revision`;
-//   - one ERASE row per (repository, pull request) that adds erased text and must be closed: sk `LESSONSET#REPOFILEPR#<16 hex of the place>#<number>`. Never part of a capped list; removed only when the host confirmed the close.
+//   - one PR row per Rovara-made pull request (and one `watch` row per repository Rovara has written to): sk `LESSONSET#REPOFILEPR#<16 hex of the place>#<number>`. Read by the erasure sweep alone, apart from the state; never part of a capped list.
 // They hold ids, fingerprints, counts, branch names and times: never a lesson's text, a person or a host's words. A state write is conditional on the revision read and is checked against its schema and size first; an item that exists
 // and does not parse THROWS when read (it is never "absent", which would let a pass write a fresh state over it). The table is taken structurally so this file imports nothing from the Team record.
 import { createHash } from "node:crypto";
 import { DeleteCommand, GetCommand, PutCommand, QueryCommand } from "@aws-sdk/lib-dynamodb";
 import { teamRecordPk } from "@agentx/contracts";
-import { EraseCloseSchema, StateUnreadable, checkedState, parseRepoFileState, type EraseClose, type RepoFileState, type RepoFileStore } from "./repo-file-state.js";
+import { PrRowSchema, StateUnreadable, checkedState, parseRepoFileState, type PrRow, type RepoFileState, type RepoFileStore } from "./repo-file-state.js";
 import type { ScopeKey } from "./store.js";
 
 export interface RepoFileTable { documentClient: { send(command: unknown): Promise<unknown> }; tableName: string }
 const STATE = "LESSONSET#REPOFILE#";
-const ERASE = "LESSONSET#REPOFILEPR#";
+const PR = "LESSONSET#REPOFILEPR#";
 const hash = (place: string): string => createHash("sha256").update(place).digest("hex").slice(0, 16);
 const stateKey = (key: ScopeKey, place: string) => ({ pk: teamRecordPk(key.workspaceId, key.project), sk: `${STATE}${hash(place)}` });
-const eraseKey = (key: ScopeKey, place: string, number: string) => ({ pk: teamRecordPk(key.workspaceId, key.project), sk: `${ERASE}${hash(place)}#${number}` });
+const prKey = (key: ScopeKey, place: string, number: string) => ({ pk: teamRecordPk(key.workspaceId, key.project), sk: `${PR}${hash(place)}#${number}` });
 
-export function dynamoRepoFileStore(table: RepoFileTable): RepoFileStore {
+export function dynamoRepoFileStore(table: RepoFileTable, options: { onUnreadable?: (what: "state" | "row") => void } = {}): RepoFileStore {
   const read = (item: { state?: unknown; revision?: unknown }): RepoFileState => {
     const state = parseRepoFileState(item.state);
     if (state === undefined || typeof item.revision !== "number") throw new StateUnreadable();
@@ -37,7 +37,12 @@ export function dynamoRepoFileStore(table: RepoFileTable): RepoFileStore {
     return found;
   };
   return {
-    async list(key) { return (await query(key, STATE)).map(read).sort((a, b) => a.place.localeCompare(b.place)); },
+    async list(key) {
+      // One item that does not parse (a newer build wrote it, or it was edited by hand) is reported and skipped: it never hides the other repositories.
+      const states: RepoFileState[] = [];
+      for (const item of await query(key, STATE)) { try { states.push(read(item)); } catch { options.onUnreadable?.("state"); } }
+      return states.sort((a, b) => a.place.localeCompare(b.place));
+    },
     async get(key, place) {
       const out = await table.documentClient.send(new GetCommand({ TableName: table.tableName, Key: stateKey(key, place), ConsistentRead: true })) as { Item?: { state?: unknown; revision?: unknown } };
       return out.Item === undefined ? undefined : read(out.Item);
@@ -57,20 +62,21 @@ export function dynamoRepoFileStore(table: RepoFileTable): RepoFileStore {
         throw error;
       }
     },
-    async listErase(key) {
-      return (await query(key, ERASE)).map((item) => {
-        const row = EraseCloseSchema.safeParse(item.row);
-        // A row that does not parse is not "no row": reading throws, so the erasure is never forgotten silently.
-        if (!row.success) throw new StateUnreadable();
-        return row.data;
-      });
+    async listPrs(key) {
+      const rows: PrRow[] = [];
+      let unreadable = 0;
+      for (const item of await query(key, PR)) {
+        const row = PrRowSchema.safeParse(item.row);
+        if (row.success) rows.push(row.data); else { unreadable += 1; options.onUnreadable?.("row"); }
+      }
+      return { rows, unreadable };
     },
-    async putErase(key, row: EraseClose) {
-      const checked = EraseCloseSchema.parse(row);
-      await table.documentClient.send(new PutCommand({ TableName: table.tableName, Item: { ...eraseKey(key, checked.place, checked.number), entityType: "LESSON_REPOFILE_ERASE", row: JSON.parse(JSON.stringify(checked)) as EraseClose } }));
+    async putPr(key, row: PrRow) {
+      const checked = PrRowSchema.parse(row);
+      await table.documentClient.send(new PutCommand({ TableName: table.tableName, Item: { ...prKey(key, checked.place, checked.number), entityType: "LESSON_REPOFILE_PR", row: JSON.parse(JSON.stringify(checked)) as PrRow } }));
     },
-    async delErase(key, place, number) {
-      await table.documentClient.send(new DeleteCommand({ TableName: table.tableName, Key: eraseKey(key, place, number) }));
+    async delPr(key, place, number) {
+      await table.documentClient.send(new DeleteCommand({ TableName: table.tableName, Key: prKey(key, place, number) }));
     },
   };
 }

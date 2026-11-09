@@ -183,10 +183,10 @@ describe("an erased lesson that is only in the open pull request comes out at on
     await closeOpenPullRequestFor(runtimeOf(w), w.key, "les_aaaa0002");
     expect(w.host.open).toHaveLength(0);
     expect(w.host.files.has(open.branch)).toBe(false);
-    expect((await w.current()).open).toBeUndefined();
     expect(w.audit.events.at(-1)).toMatchObject({ action: "lesson.repo_file_pr_closed", facts: { cause: "erased" } });
     expect(w.host.file("main", ".rovara/lessons.md")).toBeUndefined();
-    // The next nightly pass (the weekly clock was reset) rebuilds without it.
+    // The next weekly pass sees its pull request closed and rebuilds without the lesson.
+    w.week();
     expect(await w.run()).toMatchObject({ status: "opened", adds: 1 });
     expect(Object.keys((await w.current()).open!.added)).toEqual(["les_aaaa0001"]);
   });

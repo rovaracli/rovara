@@ -1,3 +1,4 @@
+import { closeProjectRovaraPrs } from "../../lessons/repo-file-routes.js";
 import { candidateDependencyPlan } from "../../test-env/candidate-plan.js";
 import { testEnvironmentEnabled } from "../../test-env/switch.js";
 import { proposalReplacesLists, readApprovedSeedFiles, readApprovedTestEnvironment } from "../../org/test-environment.js";
@@ -149,6 +150,8 @@ export async function changeProjectArchive(deps: DeveloperRouteDependencies, cal
     }
   }
   const answered = [...warnings];
+  // Lessons in the repo (R2): every open Rovara lessons pull request of the project is closed first, while its rows still exist. Best effort; the archive is not undone by it.
+  if (!replayed && change === "archive" && deps.repoFile !== undefined) await closeProjectRovaraPrs(deps.repoFile, { workspaceId: caller.orgId, project: name }).then(() => undefined, () => { logDeveloperEvent({ event: "developer.project_archived_repo_file_failed", orgId: caller.orgId, project: name }); });
   if (!replayed && change === "archive") await clearArchivedProjectLearning(deps, caller.orgId, name, () => { answered.push(EVIDENCE_ERASE_PENDING_WARNING); });
   return { project: await getAppProject(deps, caller, name), warnings: answered };
 }

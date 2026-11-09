@@ -3,7 +3,9 @@
 // Bounded in projects and time; a project that fails never stops the others. Makes no model call (decision 47). Returns counts only.
 import { OrgIdSchema } from "@agentx/contracts";
 import { rotated } from "./nightly-state.js";
-import { finishClosings, finishErasures, runRepoFilePass, settleErasures, type RepoFileDeps, type RepoFileTarget } from "./repo-file-pass.js";
+import { sweepDepsOf, sweepErasures } from "./repo-file-erase.js";
+import type { RepoFileTarget } from "./repo-file-host.js";
+import { finishClosings, runRepoFilePass, type RepoFileDeps } from "./repo-file-pass.js";
 
 /** What the job and the routes need beyond the pass's own dependencies: how to find a project's repositories (with their code hosts). */
 export interface RepoFileRuntime {
@@ -17,7 +19,7 @@ export const MAX_REPO_FILE_PROJECTS = 200;
 
 export async function lessonsRepoFileJob(runtime: RepoFileRuntime, orgId: string, projects: readonly string[], budgetMs: number, dayNumber: number): Promise<Record<string, number>> {
   const org = OrgIdSchema.safeParse(orgId);
-  const counts = { repoFilePrsOpened: 0, repoFileLeft: 0, repoFileProblems: 0, repoFileFailures: 0, repoFileSkipped: 0 };
+  const counts = { repoFilePrsOpened: 0, repoFileLeft: 0, repoFileProblems: 0, repoFileFailures: 0, repoFileSkipped: 0, repoFileErasureFailures: 0, repoFileErasuresClosed: 0 };
   if (!org.success) return counts;
   const started = runtime.deps.now();
   const capped = [...new Set(projects)].sort().slice(0, MAX_REPO_FILE_PROJECTS);
@@ -25,21 +27,25 @@ export async function lessonsRepoFileJob(runtime: RepoFileRuntime, orgId: string
   for (const project of rotated(capped, capped.length === 0 ? 0 : dayNumber % capped.length)) {
     if (runtime.deps.now() - started > budgetMs) { counts.repoFileSkipped += 1; continue; }
     const key = { workspaceId: org.data, project };
+    // 1. The erasure sweep, for every repository of the project Rovara has written to, BEFORE and APART from the publish pass: it reads no publish state, so whatever fails there cannot reach it, and one repository's failure never touches another's.
+    let targets: RepoFileTarget[] | undefined;
+    try {
+      const sweepDeps = sweepDepsOf(runtime.deps);
+      const watched = await sweepDeps.rows.listPrs(key).then((listed) => listed.rows.length > 0, () => true);
+      if (watched) {
+        targets = await runtime.targets(key.workspaceId, project);
+        for (const target of targets) { const swept = await sweepErasures(sweepDeps, key, target); counts.repoFileErasureFailures += swept.failures; counts.repoFileErasuresClosed += swept.closed; }
+      }
+    } catch { counts.repoFileFailures += 1; runtime.deps.log?.("lessons_job.repo_file_sweep_failed", {}); }
+    // 2. The publish pass.
     try {
       const states = await runtime.deps.state.list(key);
-      // Erasure is not delivery and does not wait on the switches: every repository that has a record settles its erasures (a pull request that adds erased text is closed) and finishes the erase rows still waiting.
-      const erase = await runtime.deps.state.listErase(key);
       const work = states.filter((state) => state.enabled || state.closing.length > 0 || state.pending !== undefined);
-      if (work.length === 0 && states.every((state) => state.open === undefined && state.theirs.length === 0 && state.closing.length === 0) && erase.length === 0) continue;
-      const targets = await runtime.targets(key.workspaceId, project);
+      if (work.length === 0) continue;
+      targets ??= await runtime.targets(key.workspaceId, project);
       const deps: RepoFileDeps = { ...runtime.deps, holder: runtime.newHolder?.() ?? `nightly-${String(runtime.deps.now())}` };
       // A different repository first each day, like the projects, so a time budget that runs out never cuts off the same ones.
       const first = work.length === 0 ? 0 : dayNumber % work.length;
-      for (const state of states) {
-        const target = targets.find((candidate) => candidate.place === state.place);
-        if (target === undefined) continue;
-        try { await settleErasures(deps, key, target, state); await finishErasures(deps, key, target); } catch { counts.repoFileFailures += 1; }
-      }
       for (const state of [...work.slice(first), ...work.slice(0, first)]) {
         if (runtime.deps.now() - started > budgetMs) { counts.repoFileSkipped += 1; continue; }
         const target = targets.find((candidate) => candidate.place === state.place);

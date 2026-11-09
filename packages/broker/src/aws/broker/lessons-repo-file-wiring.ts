@@ -31,7 +31,7 @@ export function repoFileRuntimeFor(dependencies: LessonsHostDependencies, runtim
   const log = (event: string, fields: Record<string, string | number>): void => console.log(JSON.stringify({ component: "lessons", event, ...fields }));
   return {
     deps: {
-      store: runtime.store, state: dynamoRepoFileStore(teamRecord.table), settings: runtime.settings, audit, now: Date.now, log,
+      store: runtime.store, state: dynamoRepoFileStore(teamRecord.table, { onUnreadable: (what) => log("lessons_repo_file.item_unreadable", { what }) }), settings: runtime.settings, audit, now: Date.now, log,
       names: async (key, lessons) => {
         const orgId = OrgIdSchema.parse(key.workspaceId);
         const ids = new Set((await members.list(orgId, key.project)).map((member) => member.developerId));

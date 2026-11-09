@@ -15,6 +15,8 @@ import type { ScopeKey } from "./store.js";
 
 export const MAX_RENDERED = 400;
 export const MAX_DECLINED = 400;
+/** The most lesson ids one pull request can carry (adds and edits; at most the file's 300 lessons plus the ones it adds). */
+export const MAX_CARRIED = 700;
 /** Pull requests handed over, and closings waiting. These are bookkeeping, not erasure: an erasure close is its own durable row. Over the cap the state FAILS LOUDLY (`StateFull`), it never drops an entry. */
 export const MAX_THEIRS = 20;
 const Id = z.string().regex(/^[A-Za-z0-9_-]{4,64}$/u);
@@ -42,21 +44,30 @@ export const ClosingSchema = z.object({
   branch: Branch, number: z.string().min(1).max(40).optional(), cause: z.enum(["replaced", "nothing_left", "switched_off", "merged", "closed_by_team", "lessons_off"]),
   headRevision: z.string().min(7).max(64).optional(), attempts: z.number().int().min(0).max(10).optional(),
   /** The lessons the pull request carried (adds and edits): kept when the entry cannot be finished because a person pushed, so a later erasure still finds the pull request. */
-  ids: z.array(Id).max(MAX_RENDERED).optional(),
+  ids: z.array(Id).max(MAX_CARRIED).optional(),
   /** The pull request is already closed; only the branch is left. */
   closed: z.boolean().optional(),
 }).strict();
 export type Closing = z.infer<typeof ClosingSchema>;
 
 /**
- * A pull request that adds erased text and must be CLOSED: one durable row per (repository, pull request), written the moment it is known and removed only when the host confirms the pull request is closed (or no longer open).
- * Never part of a capped list. `headRevision` is the head Rovara left its own branch at: the branch is deleted after the close only while it is still there (closing a pull request touches no commit; deleting a branch can).
- * `keepBranch` is for a pull request a person pushed to. Ids and numbers only: no lesson text, no person.
+ * One durable row per Rovara-made pull request (and one `watch` row per repository Rovara has written to), kept in its own items APART from the repository's publish state. The erasure sweep (`repo-file-erase.ts`) works from
+ * these rows alone: it never reads the state, so no bookkeeping fault can reach it. A row holds the lesson ids the pull request carries (adds and edits; for a removal pull request, the ids it removes), the branch and the head Rovara
+ * left it at (the branch is deleted only while it is still there: closing a pull request touches no commit, deleting a branch can), and `closedAt` once the sweep closed it. Ids and numbers only: no text, no person.
  */
-export const EraseCloseSchema = z.object({
-  place: z.string().min(3).max(300), number: z.string().min(1).max(40), branch: Branch, headRevision: z.string().min(7).max(64).optional(), keepBranch: z.boolean(), at: z.number(),
+export const PrRowSchema = z.object({
+  place: z.string().min(3).max(300), kind: z.enum(["adds", "removal", "watch"]), number: z.string().min(1).max(40), branch: Branch.optional(), headRevision: z.string().min(7).max(64).optional(),
+  ids: z.array(Id).max(MAX_CARRIED), at: z.number(), closedAt: z.number().optional(),
 }).strict();
-export type EraseClose = z.infer<typeof EraseCloseSchema>;
+export type PrRow = z.infer<typeof PrRowSchema>;
+/** The rows of the erasure sweep. Separate from `RepoFileStore`'s state methods on purpose: the sweep is handed only this. */
+export interface PrRowStore {
+  /** Every row of the project that parses, and how many did not (one bad row never hides the others). Throws only when the table cannot be read at all. */
+  listPrs(key: ScopeKey): Promise<{ rows: PrRow[]; unreadable: number }>;
+  /** Records (or re-records) one row. Idempotent. Throws when it cannot write: the caller does not go on as if it had. */
+  putPr(key: ScopeKey, row: PrRow): Promise<void>;
+  delPr(key: ScopeKey, place: string, number: string): Promise<void>;
+}
 
 export const RepoFileStateSchema = z.object({
   place: z.string().min(3).max(300),
@@ -79,7 +90,7 @@ export const RepoFileStateSchema = z.object({
   /** A branch Rovara decided on before it wrote, with the heads Rovara put on it (the base it was made at, and its own commit once written): it is deleted only while it is at one of them. */
   pending: z.object({ branch: Branch, at: z.number(), baseRevision: z.string().min(7).max(64).optional(), headRevision: z.string().min(7).max(64).optional(), attempts: z.number().int().min(0).max(10).optional() }).strict().optional(),
   /** Rovara pull requests a person pushed to (GitHub's "Update branch" counts): they are the team's now and are never touched again, except to be closed by an erasure. While one is open only removals are proposed. */
-  theirs: z.array(z.object({ branch: Branch, number: z.string().min(1).max(40), url: z.string().max(2_048), ids: z.array(Id).max(MAX_RENDERED) }).strict()).max(MAX_THEIRS).default([]),
+  theirs: z.array(z.object({ branch: Branch, number: z.string().min(1).max(40), url: z.string().max(2_048), ids: z.array(Id).max(MAX_CARRIED) }).strict()).max(MAX_THEIRS).default([]),
   closing: z.array(ClosingSchema).max(MAX_THEIRS),
   problem: z.enum(LESSON_FILE_PROBLEMS).optional(),
   /** A pointer was proposed and a later pass found no agent file that names the lessons file. */
@@ -93,18 +104,13 @@ export const newRepoFileState = (place: string, name: string): RepoFileState => 
   place, name, enabled: false, pointerProposed: false, pointerDeclined: false, fileSeen: false, fileDeleted: false, rendered: {}, declined: [], held: [], unmerged: 0, closing: [], theirs: [], pointerMissing: false, revision: 0,
 });
 
-export interface RepoFileStore {
-  /** Every repository of the project that has a state. */
+export interface RepoFileStore extends PrRowStore {
+  /** The repositories of the project that have a readable state. An item that does not parse is skipped (and reported through the store's `onUnreadable`), never allowed to hide the others. */
   list(key: ScopeKey): Promise<RepoFileState[]>;
+  /** The state, or undefined when there is none. An item that exists and does not parse THROWS `StateUnreadable` (never "absent"). */
   get(key: ScopeKey, place: string): Promise<RepoFileState | undefined>;
   /** Writes the state if the stored revision is `expected` (0: nothing stored yet). Returns the saved copy (revision + 1), or undefined when somebody else wrote first. Throws when the store cannot be reached. */
   put(key: ScopeKey, state: RepoFileState, expected: number): Promise<RepoFileState | undefined>;
-  /** The erasure closes still waiting, one row each, for the whole project. Throws when it cannot read. */
-  listErase(key: ScopeKey): Promise<EraseClose[]>;
-  /** Records (or re-records) one erasure close. Idempotent. Throws when it cannot write: the caller does not call the erasure done. */
-  putErase(key: ScopeKey, row: EraseClose): Promise<void>;
-  /** Removes a row once the host confirmed the pull request is closed (or was never open). */
-  delErase(key: ScopeKey, place: string, number: string): Promise<void>;
 }
 
 /** A state that cannot be written as it is (over a cap, or a field that no longer fits its schema): the pass skips the repository and records it, never storing a state it would later read as absent. */
@@ -129,16 +135,16 @@ export function parseRepoFileState(value: unknown): RepoFileState | undefined {
 
 export class InMemoryRepoFileStore implements RepoFileStore {
   readonly items = new Map<string, RepoFileState>();
-  readonly erase = new Map<string, EraseClose>();
-  failEraseWrites = false;
-  async listErase(key: ScopeKey): Promise<EraseClose[]> { return [...this.erase.entries()].filter(([k]) => k.startsWith(`${key.workspaceId}\u0000${key.project}\u0000`)).map(([, v]) => structuredClone(v)); }
-  async putErase(key: ScopeKey, row: EraseClose): Promise<void> {
-    if (this.failEraseWrites) throw new Error("store down");
-    this.erase.set(`${key.workspaceId}\u0000${key.project}\u0000${row.place}\u0000${row.number}`, EraseCloseSchema.parse(row));
-  }
-  async delErase(key: ScopeKey, place: string, number: string): Promise<void> { this.erase.delete(`${key.workspaceId}\u0000${key.project}\u0000${place}\u0000${number}`); }
   /** Fail the next writes (a test of a store that is down). */
   failPuts = false;
+  readonly prs = new Map<string, PrRow>();
+  failPrWrites = false;
+  async listPrs(key: ScopeKey): Promise<{ rows: PrRow[]; unreadable: number }> { return { rows: [...this.prs.entries()].filter(([k]) => k.startsWith(`${key.workspaceId}\u0000${key.project}\u0000`)).map(([, v]) => structuredClone(v)), unreadable: 0 }; }
+  async putPr(key: ScopeKey, row: PrRow): Promise<void> {
+    if (this.failPrWrites) throw new Error("store down");
+    this.prs.set(`${key.workspaceId}\u0000${key.project}\u0000${row.place}\u0000${row.number}`, PrRowSchema.parse(row));
+  }
+  async delPr(key: ScopeKey, place: string, number: string): Promise<void> { this.prs.delete(`${key.workspaceId}\u0000${key.project}\u0000${place}\u0000${number}`); }
   private keyOf(key: ScopeKey, place: string): string { return `${key.workspaceId}\u0000${key.project}\u0000${place}`; }
   async list(key: ScopeKey): Promise<RepoFileState[]> {
     return [...this.items.entries()].filter(([k]) => k.startsWith(`${key.workspaceId}\u0000${key.project}\u0000`)).map(([, v]) => structuredClone(v)).sort((a, b) => a.place.localeCompare(b.place));
@@ -172,4 +178,14 @@ export type { LessonFileProblem };
 export function appended<T>(list: readonly T[], entry: T, max = MAX_THEIRS): T[] {
   if (list.length >= max) throw new StateFull();
   return [...list, entry];
+}
+
+/**
+ * Adds to a capped bookkeeping list WITHOUT stopping the pass: when the list is full the entry is not added and the state's row says `state_unreadable` (loud, and the next pass tries again). Bookkeeping is never allowed to block
+ * the work that matters (removals, and the erasure sweep, which does not use this state at all).
+ */
+export function appendOrMark<K extends "closing" | "theirs">(state: RepoFileState, field: K, entry: RepoFileState[K][number]): Pick<RepoFileState, K> & { problem?: "state_unreadable" } {
+  const list: unknown[] = state[field];
+  if (list.length >= MAX_THEIRS) return { [field]: list, problem: "state_unreadable" } as unknown as Pick<RepoFileState, K> & { problem: "state_unreadable" };
+  return { [field]: [...list, entry] } as unknown as Pick<RepoFileState, K>;
 }
