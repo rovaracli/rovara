@@ -15,56 +15,79 @@ const PR = "https://github.com/Acme/Api/pull/7";
 const HEAD = "d".repeat(40);
 const MERGE = "e".repeat(40);
 
-function record(state: string) {
+function record(state: string, headSha?: string) {
   return {
     ...taskKey(TASK), entityType: "DEVELOPER_TASK", taskId: TASK, orgId: WS, project: PROJECT, developerId: CREATOR, developerName: "Creator", provider: "oidc", client: "web",
     requestText: "Make the retries use withRetry", title: "Retries", agent: { agentId: "a" }, startedBy: { developerId: CREATOR }, ownerKey: taskOwnerKey(CREATOR, TASK),
     workflow: {
       schemaVersion: 1, definitionId: "agentx-task-to-pr", definitionVersion: "1.0.0", taskId: TASK, ownerId: taskOwnerKey(CREATOR, TASK), revision: 3, stage: "WAIT_FOR_MERGE", state: "COMPLETE", outcome: "MERGED",
       createdAt: "2026-11-01T00:00:00.000Z", updatedAt: "2026-11-01T00:00:00.000Z", artifacts: [], decisions: [],
-      pullRequests: [{ repositoryId: "api", number: 7, url: PR, candidateDigest: "b".repeat(64), required: true, state }],
+      pullRequests: [{ repositoryId: "api", number: 7, url: PR, ...(headSha === undefined ? {} : { headSha }), candidateDigest: "b".repeat(64), required: true, state }],
     },
   };
 }
 const words = (id: string, who: string, text: string, over: Partial<CapturedWords> = {}): CapturedWords => ({ id, authorDeveloperId: who, authorSourceId: `acct-${who}`, source: "github", ownText: true, text, audience: { kind: "project" }, scope: "github:repo/9", ...over });
 const feedback = (over: Partial<PullRequestFeedbackView> = {}): PullRequestFeedbackView => ({
-  comments: [{ kind: "review_comment", id: "11" }, { kind: "discussion", id: "13" }], headRevision: HEAD, title: "Retries use withRetry", body: "Moves retries.\n\n## Lessons used\nRovara used 1 lesson.", mergeRevision: MERGE, ...over,
+  comments: [{ kind: "review_comment", id: "11" }, { kind: "discussion", id: "13" }], headRevision: HEAD, title: "Retries use withRetry", mergeRevision: MERGE, ...over,
 });
 const comments: Record<string, CapturedWords> = {
   "review_comment:11": words("acme/api#pr7:review_comment11", "rae", "Use withRetry", { path: "src/a.ts" }),
   "discussion:13": words("acme/api#pr7:discussion13", "sam", "Please add a test"),
 };
 
-function read(options: { state?: string; feedback?: PullRequestFeedbackView | undefined; comments?: Record<string, CapturedWords> } = {}, over: Partial<LessonSubjectSourceDeps> = {}) {
+function read(options: { state?: string; feedback?: PullRequestFeedbackView | undefined; comments?: Record<string, CapturedWords>; headSha?: string } = {}, over: Partial<LessonSubjectSourceDeps> = {}) {
   const db = new FakeDynamoDb();
-  db.set(record(options.state ?? "MERGED"));
+  db.set(record(options.state ?? "MERGED", options.headSha));
   const captured: CapturedRowReader = { rememberedNote: async () => undefined, pullRequestWords: async ({ surface, commentId }) => (options.comments ?? comments)[`${surface}:${commentId}`] };
   const source = lessonSubjectSource({
     documentClient: db, tableName: "state", repositoriesOf: async () => ["api"], standing: async () => "member", isErased: async () => false, visibility: async () => ({ kind: "shared" }), now: () => 1_800_000_000_000,
-    captured, rememberedNoteIds: async () => [], sourceExcluded: async () => false, pullRequestFeedback: async () => ("feedback" in options ? options.feedback : feedback()), ...over,
+    captured, rememberedNoteIds: async () => [], sourceExcluded: async () => false, pullRequestFeedback: async () => ("feedback" in options ? options.feedback : feedback()),
+    repositoryUrlsOf: async () => ({ api: "https://github.com/Acme/Api" }), repositoryAddress: (_host, fullName) => `https://github.com/${fullName}`, ...over,
   });
   return source.read({ workspaceId: WS, taskId: TASK });
 }
 
 describe("the subject source describes the merged pull request for the repo-only reflection", () => {
-  it("gives the place and readers of the comment rows, the project's name for the repository, the link and its prefix, the head and merge revisions, the title and the description", async () => {
+  it("gives the place and readers of the comment rows, the project's name and registered address for the repository, the link and its prefix, the head and merge revisions and the title (never the description)", async () => {
     const base = await read();
     expect(base?.repoChanges).toHaveLength(1);
     const change = base!.repoChanges![0]!;
-    expect(change).toMatchObject({ place: "github:repo/9", repository: "api", link: PR, linkPrefix: "https://github.com/Acme/Api/pull/", revision: HEAD, mergeRevision: MERGE, merged: true, title: "Retries use withRetry", audience: { kind: "project" }, edits: [] });
-    expect(change.body).toContain("Moves retries.");
+    expect(change).toMatchObject({ place: "github:repo/9", repository: "api", repositoryUrl: "https://github.com/Acme/Api", link: PR, linkPrefix: "https://github.com/Acme/Api/pull/", revision: HEAD, mergeRevision: MERGE, merged: true, title: "Retries use withRetry", audience: { kind: "project" }, edits: [] });
+    expect(change).not.toHaveProperty("body");
     expect(change.comments.map((span) => [span.kind, span.authorId, span.scopes])).toEqual([["pr_comment", "rae", ["github:repo/9"]], ["pr_comment", "sam", ["github:repo/9"]]]);
     // The same comment spans are in the first reflection's subject: nothing more is read from the host for it.
     expect(base!.facts.rest.spans!.filter((span) => span.kind === "pr_comment")).toEqual([...change.comments]);
   });
 
-  it("gives none for a pull request that did not merge, a host that gave no title or head, no comment of this read, or comments from two places", async () => {
+  it("review M1: the repository must be PROVED, by the registered address equalling the code host's own address for the pull request's repository (without case); otherwise no change request is described", async () => {
+    expect((await read({}, { repositoryUrlsOf: async () => ({ api: "https://github.com/acme/other" }) }))?.repoChanges).toBeUndefined();
+    expect((await read({}, { repositoryUrlsOf: async () => ({}) }))?.repoChanges).toBeUndefined();
+    expect((await read({}, { repositoryUrlsOf: undefined }))?.repoChanges).toBeUndefined();
+    expect((await read({}, { repositoryAddress: undefined }))?.repoChanges).toBeUndefined();
+    expect((await read({}, { repositoryAddress: () => undefined }))?.repoChanges).toBeUndefined();
+    expect((await read({}, { repositoryUrlsOf: async () => ({ api: "https://github.com/ACME/api.git/" }) }))?.repoChanges).toHaveLength(1);
+  });
+
+  it("review (human edits): a merged head that is not the head Rovara last pushed means the human-edit job owns it; the same head means the task end does; an unknown pushed head says nothing", async () => {
+    expect((await read({ headSha: HEAD }))!.repoChanges![0]!.humanEditsExpected).toBe(false);
+    expect((await read({ headSha: "a".repeat(40) }))!.repoChanges![0]!.humanEditsExpected).toBe(true);
+    expect((await read({ headSha: HEAD.toUpperCase().replace(/D/gu, "d") }))!.repoChanges![0]!.humanEditsExpected).toBe(false);
+    expect((await read())!.repoChanges![0]!.humanEditsExpected).toBeUndefined();
+  });
+
+  it("a pull request with no comment of this read is still described (an edit may name its place), without a place; one whose comments name two places is not", async () => {
+    const none = (await read({ comments: {} }))!.repoChanges![0]!;
+    expect(none.place).toBeUndefined();
+    expect(none.audience).toBeUndefined();
+    expect(none.comments).toEqual([]);
+    expect((await read({ comments: { ...comments, "discussion:13": words("acme/api#pr7:discussion13", "sam", "Please add a test", { scope: "github:repo/77" }) } }))?.repoChanges).toBeUndefined();
+  });
+
+  it("gives none for a pull request that did not merge, or a host that gave no title or head", async () => {
     expect((await read({ state: "OPEN" }))?.repoChanges).toBeUndefined();
     expect((await read({ feedback: feedback({ title: undefined }) }))?.repoChanges).toBeUndefined();
     expect((await read({ feedback: feedback({ headRevision: undefined }) }))?.repoChanges).toBeUndefined();
-    expect((await read({ comments: {} }))?.repoChanges).toBeUndefined();
     expect((await read({ feedback: undefined }))?.repoChanges).toBeUndefined();
-    expect((await read({ comments: { ...comments, "discussion:13": words("acme/api#pr7:discussion13", "sam", "Please add a test", { scope: "github:repo/77" }) } }))?.repoChanges).toBeUndefined();
   });
 
   it("a link that does not end in the pull request's number has no prefix, so none is described (the adapter's address is the only parser)", async () => {

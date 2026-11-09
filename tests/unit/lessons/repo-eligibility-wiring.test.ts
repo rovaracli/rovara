@@ -103,20 +103,36 @@ describe("the curator's merge ANDs repoOnly", () => {
     };
     return { deps, store };
   }
-  const matrix: Array<[string, LessonDraft, LessonDraft, { place: string } | undefined]> = [
+  // R1b (review H1): a merge is allowed only when it keeps repoOnly (both sides repo-only for the same repository) or when neither side has it. Across that line the draft stays its own lesson, linked both ways as a possible duplicate.
+  const matrix: Array<[string, LessonDraft, LessonDraft, { place: string } | undefined | "apart"]> = [
     ["both repository-only for the same repository", withRepo({ place: A }), withRepo({ place: A }), { place: A }],
-    ["the draft is not repository-only", withRepo({ place: A }), withRepo(undefined, ["typed_in_rovara"]), undefined],
-    ["the existing lesson is not repository-only", withRepo(undefined, ["other_place"]), withRepo({ place: A }), undefined],
-    ["two different repositories", withRepo({ place: A }), withRepo({ place: B }), undefined],
-    ["the existing lesson predates the field", withRepo(undefined), withRepo({ place: A }), undefined],
-    ["the draft has the field unset", withRepo({ place: A }), withRepo(undefined), undefined],
+    ["the draft is not repository-only", withRepo({ place: A }), withRepo(undefined, ["typed_in_rovara"]), "apart"],
+    ["the existing lesson is not repository-only", withRepo(undefined, ["other_place"]), withRepo({ place: A }), "apart"],
+    ["two different repositories", withRepo({ place: A }), withRepo({ place: B }), "apart"],
+    ["the existing lesson predates the field", withRepo(undefined), withRepo({ place: A }), "apart"],
+    ["the draft has the field unset", withRepo({ place: A }), withRepo(undefined), "apart"],
     ["neither is", withRepo(undefined, ["other_place"]), withRepo(undefined, ["typed_in_rovara"]), undefined],
   ];
   for (const [name, first, second, expected] of matrix) {
     it(`curateDraft: ${name}`, async () => {
       const { deps, store } = setup();
       await curateDraft(deps, KEY, first);
-      expect((await curateDraft(deps, KEY, second)).outcome).toBe("merged");
+      const outcome = await curateDraft(deps, KEY, second);
+      if (expected === "apart") {
+        expect(outcome.outcome).toBe("possible_duplicate");
+        const lessons = await store.list(KEY);
+        expect(lessons).toHaveLength(2);
+        const target = lessons.find((l) => l.possibleDuplicateOf === undefined)!;
+        const apart = lessons.find((l) => l.possibleDuplicateOf !== undefined)!;
+        // Linked both ways, and neither lost or gained repoOnly by the encounter.
+        expect(apart.possibleDuplicateOf).toBe(target.id);
+        expect(target.repoTwins).toEqual([apart.id]);
+        expect(target.provenance.repoOnly).toEqual(first.provenance.repoOnly);
+        expect(apart.provenance.repoOnly).toEqual(second.provenance.repoOnly);
+        for (const lesson of lessons) expect(LessonSchema.safeParse(lesson).success).toBe(true);
+        return;
+      }
+      expect(outcome.outcome).toBe("merged");
       const [only] = await store.list(KEY);
       expect(only!.provenance.repoOnly).toEqual(expected);
       if (expected === undefined) expect(only!.provenance.repoBlockCodes!.length).toBeGreaterThan(0);
@@ -125,25 +141,17 @@ describe("the curator's merge ANDs repoOnly", () => {
     });
   }
 
-  it("a person's merge (foldDuplicate) follows the same rule", async () => {
-    for (const [first, second, expected] of [[{ place: A }, { place: A }, { place: A }], [{ place: A }, undefined, undefined], [undefined, { place: A }, undefined], [{ place: A }, { place: B }, undefined]] as const) {
+  it("a person's merge (foldDuplicate) follows the same rule: only a pair that keeps repoOnly, or has none on either side, folds", async () => {
+    for (const [first, second, folds, expected] of [[{ place: A }, { place: A }, true, { place: A }], [{ place: A }, undefined, false, undefined], [undefined, { place: A }, false, undefined], [{ place: A }, { place: B }, false, undefined], [undefined, undefined, true, undefined]] as const) {
       const store = new InMemoryLessonStore();
       const mk = (id: string, repoOnly: { place: string } | undefined) => lessonRecord({ id, provenance: { ...lessonRecord().provenance, authors: ["ann"], ...(repoOnly === undefined ? {} : { repoOnly }) } });
       const target = mk("les_targ0001", first);
       const duplicate = { ...mk("les_dup00001", second), status: "pending" as const };
       await seed(store, target, duplicate);
       const writes = await foldDuplicate({ store, now: () => 5 }, KEY, target, duplicate);
+      if (!folds) { expect(writes).toBeUndefined(); continue; }
       expect(writes![0]!.provenance.repoOnly).toEqual(expected);
     }
-  });
-
-  it("a lesson learned before the field (no repoOnly, no reasons) merged with a repository-only draft is not repository-only and says predates_field", async () => {
-    const { deps, store } = setup();
-    await curateDraft(deps, KEY, withRepo(undefined));
-    await curateDraft(deps, KEY, withRepo({ place: A }));
-    const [only] = await store.list(KEY);
-    expect(only!.provenance.repoOnly).toBeUndefined();
-    expect(only!.provenance.repoBlockCodes).toEqual(["predates_field"]);
   });
 
   it("the rest of a merge is unchanged (the three narrowing flags still AND, the new fields do not leak into other fields)", async () => {

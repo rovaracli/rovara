@@ -117,6 +117,10 @@ export interface LessonSubjectSourceDeps {
   mergeCommitOf?: ((input: { orgId: string; taskId: string; address: PullRequestAddress }) => Promise<string | undefined>) | undefined;
   /** The record's name of a pull request URL. Default: GitHub's. */
   pullRequestAddress?: ((url: string) => PullRequestAddress | undefined) | undefined;
+  /** The project's REGISTERED repository addresses (the URL in the project definition), by the project's name for each. With `repositoryAddress` it proves a pull request is in a registered repository. Absent: no repo-only reflection. */
+  repositoryUrlsOf?: ((orgId: string, project: string) => Promise<Readonly<Record<string, string>>>) | undefined;
+  /** The address of a repository as the project's repository record spells it, from the code host's own identity of it (the host and the full name the pull request's address carries); undefined when the host cannot say. */
+  repositoryAddress?: ((host: string, fullName: string) => string | undefined) | undefined;
 }
 
 /** Who may read a lesson made from this task: the task's own visibility (the same rule as the rows the record keeps for it, `audienceOfVisibility`). */
@@ -266,21 +270,33 @@ function linkPrefixOf(url: string, number: number): string | undefined {
   return url.endsWith(tail) ? url.slice(0, url.length - tail.length + 1) : undefined;
 }
 
+/** A repository address without a trailing slash or `.git`, lower-cased: the code host's names are case-insensitive. */
+const addressKey = (url: string): string => url.trim().replace(/\/+$/u, "").replace(/\.git$/u, "").toLowerCase();
+
 /**
- * Lessons in the repo (decision 50c): one merged pull request of the task as a `RepoChangeRequest`, from what the code host's adapter said (`listed`: title, description, head and merge revision) and the comment spans this read
- * already proved. Undefined (no second reflection for it) unless the pull request merged, the host gave its title and a head revision, there is a comment of this read, and the comments name ONE place with one audience.
+ * Lessons in the repo (decision 50c): one merged pull request of the task as a `RepoChangeRequest`, from what the code host's adapter said (`listed`: title, head and merge revision) and the comment spans this read already
+ * proved. Undefined (no second reflection for it) unless the pull request merged, the host gave its title and a head revision, the repository is PROVED (the project's registered address for the repository equals the address
+ * the code host's own identity gives for the pull request's repository, without case) and the comments name at most ONE place with one audience.
+ * `pushedHead` is the head Rovara last pushed; a merged head that differs means someone pushed after Rovara, so the human-edit job owns the change request.
  */
-function repoChangeOf(input: { pullRequest: { repositoryId: string; url: string; state: string }; address: PullRequestAddress; listed: PullRequestFeedbackView | undefined; comments: readonly EvidenceSpan[] }): RepoChangeRequest | undefined {
+function repoChangeOf(input: {
+  pullRequest: { repositoryId: string; url: string; state: string; headSha?: string | undefined }; address: PullRequestAddress; listed: PullRequestFeedbackView | undefined; comments: readonly EvidenceSpan[];
+  registered: string | undefined; hostAddress: string | undefined;
+}): RepoChangeRequest | undefined {
   const { pullRequest, listed, comments } = input;
-  if (pullRequest.state !== "MERGED" || listed === undefined || listed.title === undefined || listed.headRevision === undefined || comments.length === 0) return undefined;
+  if (pullRequest.state !== "MERGED" || listed === undefined || listed.title === undefined || listed.headRevision === undefined) return undefined;
+  if (input.registered === undefined || input.hostAddress === undefined || addressKey(input.registered) !== addressKey(input.hostAddress)) return undefined;
   const places = new Set(comments.flatMap((span) => span.scopes ?? []));
   const audiences = comments.flatMap((span) => (span.audience === undefined ? [] : [span.audience]));
   const linkPrefix = linkPrefixOf(pullRequest.url, input.address.number);
-  if (places.size !== 1 || audiences.length !== comments.length || linkPrefix === undefined) return undefined;
+  if (places.size > 1 || audiences.length !== comments.length || linkPrefix === undefined) return undefined;
+  const place = [...places][0];
+  const pushed = pullRequest.headSha;
   return {
-    place: [...places][0]!, repository: pullRequest.repositoryId, link: pullRequest.url, linkPrefix, revision: listed.headRevision, merged: true,
-    ...(listed.mergeRevision === undefined ? {} : { mergeRevision: listed.mergeRevision }), title: listed.title, body: listed.body ?? "",
-    audience: narrowestAudience(audiences), comments, edits: [],
+    ...(place === undefined ? {} : { place }), repository: pullRequest.repositoryId, repositoryUrl: input.registered, link: pullRequest.url, linkPrefix, revision: listed.headRevision, merged: true,
+    ...(listed.mergeRevision === undefined ? {} : { mergeRevision: listed.mergeRevision }), title: listed.title,
+    ...(pushed === undefined ? {} : { humanEditsExpected: pushed.toLowerCase() !== listed.headRevision.toLowerCase() }),
+    ...(audiences.length === 0 ? {} : { audience: narrowestAudience(audiences) }), comments, edits: [],
   };
 }
 
@@ -500,6 +516,8 @@ export function lessonSubjectSource(deps: LessonSubjectSourceDeps): TaskSubjectS
       const steeringTrust: TrustClass[] = [...steerers, ...(unnamed ? ["outsider" as const] : [])];
 
       const repoChanges: RepoChangeRequest[] = [];
+      let registered: Readonly<Record<string, string>> | undefined;
+      const registeredUrls = async (): Promise<Readonly<Record<string, string>>> => (registered ??= (await deps.repositoryUrlsOf?.(orgId, project)) ?? {});
       // ---- a person's own corrections that the record already holds (no extra work for anyone): "remember this" notes, and reviewers' comments on the task's pull requests. Each is read from the
       // record by its row id; the person is the row's actor, their standing and erasure are read NOW, and an erased person's words are dropped. An outsider's span keeps its class: the reflector removes it.
       // A human-edit read (`context`) needs only the task's own intent and plan, and a task steered by someone unnamed teaches nothing: neither reads the code host (L7).
@@ -552,7 +570,10 @@ export function lessonSubjectSource(deps: LessonSubjectSourceDeps): TaskSubjectS
             }
             // Lessons in the repo (decision 50c): the merged change request, described without naming a host, for the repo-only reflection. The host's adapter gave the title, description and head; the place and the readers are the
             // comment rows' own (one place or none). Only a merged pull request with at least one comment of this read.
-            const change = repoChangeOf({ pullRequest, address, listed, comments: spans.slice(spansBefore).filter((span) => span.kind === "pr_comment") });
+            const change = repoChangeOf({
+              pullRequest, address, listed, comments: spans.slice(spansBefore).filter((span) => span.kind === "pr_comment"),
+              registered: (await registeredUrls())[pullRequest.repositoryId], hostAddress: deps.repositoryAddress?.(address.host, address.repository),
+            });
             if (change !== undefined) repoChanges.push(change);
           }
         }

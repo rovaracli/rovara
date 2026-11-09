@@ -28,7 +28,14 @@ export interface RepoInputSpan {
   kind: string; trust?: string; authorId?: string | undefined; authorIds?: readonly string[] | undefined; audience?: Audience | undefined; scopes?: readonly string[] | undefined;
 }
 /** The proof a subject source gives that a task's own start and steering were repository-visible, and which repository it is: the place, the project's name for it, and its pull request URL prefix. */
-export interface RepoInputsProof { place: string; repository: string; linkPrefix: string }
+export interface RepoInputsProof {
+  place: string; repository: string; linkPrefix: string;
+  /**
+   * The project's REGISTERED repository address (its URL in the project definition), proved by the code host's own identity to be the repository the place stands for. When given, the link prefix is judged against it, without case
+   * (a host's name may have capitals and the project's name may differ from the host's); when absent, the older rule applies: the prefix's repository segment is the project's name, exactly.
+   */
+  repositoryUrl?: string;
+}
 export interface RepoInputSubject {
   kind: string; inheritedTasks?: readonly string[] | undefined; repoInputs?: RepoInputsProof | undefined;
   /** The prompt header names these repositories and links: they are inputs too. */
@@ -65,11 +72,19 @@ function placeOfSpan(span: RepoInputSpan): Placed {
  * The prompt header (`Repositories:`, `Links you may cite:`) names repositories and pull requests, and the reflector reads them: they are inputs. Without a proof it may name nothing (a facts subject); with one it must name exactly the one
  * repository the place stands for and only that repository's pull requests. A proof with no repository name or URL prefix, or one the header does not match, fails closed.
  */
-/** The proof's URL prefix must be exactly `https://<host>/<owner>/<repository>/pull/` for the proved repository, so `.../api` can never accept `.../api7/pull/3`. */
+/** The registered address without a trailing slash or `.git`, lower-cased (a host's names are case-insensitive). */
+const addressKey = (url: string): string => url.trim().replace(/\/+$/u, "").replace(/\.git$/u, "").toLowerCase();
+
+/**
+ * The proof's URL prefix must have the shape `https://<host>/<owner>/<repository>/pull/`. With the registered repository address it must be exactly that address plus `/pull/`, compared without case, so `.../api` can never
+ * accept `.../api7/pull/3`. Without it the prefix's repository segment must equal the project's name exactly.
+ */
 function linkPrefixIsOf(proof: RepoInputsProof): boolean {
   if (proof.repository === "" || !/^[^/\s]+$/u.test(proof.repository)) return false;
   const match = /^https:\/\/[^/\s]+\/[^/\s]+\/([^/\s]+)\/pull\/$/u.exec(proof.linkPrefix);
-  return match !== null && match[1] === proof.repository;
+  if (match === null) return false;
+  if (proof.repositoryUrl !== undefined) return /^https:\/\/[^/\s]+\/[^/\s]+\/[^/\s]+$/u.test(addressKey(proof.repositoryUrl)) && `${addressKey(proof.repositoryUrl)}/pull/` === proof.linkPrefix.toLowerCase();
+  return match[1] === proof.repository;
 }
 
 function headerStaysIn(subject: RepoInputSubject): boolean {
@@ -212,11 +227,12 @@ export function afterPersonEdit<P extends Pick<LessonProvenance, "repoOnly" | "r
 }
 
 /**
- * Whether a draft may merge into `target` without costing the target its place in a repository's file: if the target is eligible for its repository now (every gate except the roster of names), the merged lesson must stay
- * repository-only for it; otherwise the draft stays its own lesson and both are kept. A target that is not eligible now loses nothing. Pure.
+ * Whether a draft may merge into `target` without costing a repo-only lesson its mark (review H1 of lane R1b): the merge must KEEP `repoOnly` (both sides repo-only for the same repository) or neither side may have it.
+ * Across that line the draft stays its own lesson and the pair is linked both ways as possible duplicates, whatever state the target is in (on trial, retired or live: a repo-only lesson on trial is just as easily cleared). Pure.
  */
-export function mergeKeepsFileEligibility(target: RepoEligibilityLesson, draft: { provenance: Pick<LessonProvenance, "repoOnly" | "repoBlockCodes"> }): boolean {
-  const place = target.provenance.repoOnly?.place;
-  if (place === undefined || repoFileBlockers(target, place, []).length > 0) return true;
-  return mergedRepoVisibility(target.provenance, draft.provenance).repoOnly !== undefined;
+export function mergeKeepsRepoOnly(target: { provenance: Pick<LessonProvenance, "repoOnly"> }, draft: { provenance: Pick<LessonProvenance, "repoOnly"> }): boolean {
+  const mine = target.provenance.repoOnly;
+  const theirs = draft.provenance.repoOnly;
+  if (mine === undefined && theirs === undefined) return true;
+  return mine !== undefined && theirs !== undefined && mine.place === theirs.place;
 }

@@ -4,7 +4,7 @@
 import { describe, expect, it } from "vitest";
 import { buildReflectorInput, type EvidenceSpan } from "../../../packages/broker/src/lessons/reflect-input.js";
 import { repoVisibilityOf } from "../../../packages/broker/src/lessons/repo-eligibility.js";
-import { hasRepoCorrection, reflectRepoOnly, repoOnlySubjectOf, repoReflectKey, type RepoChangeRequest, type RepoReflectDeps } from "../../../packages/broker/src/lessons/repo-reflect.js";
+import { hasRepoCorrection, reflectRepoOnly, repoOnlySubjectOf, repoReflectKey, type PlacedChangeRequest, type RepoChangeRequest, type RepoReflectDeps } from "../../../packages/broker/src/lessons/repo-reflect.js";
 import { setLearnedLessonsGate } from "../../../packages/broker/src/lessons/policy.js";
 import { newTaskFailureTally } from "../../../packages/broker/src/lessons/pause.js";
 import type { ProcessDeps } from "../../../packages/broker/src/lessons/process.js";
@@ -20,11 +20,10 @@ const LINK = "https://github.com/acme/api/pull/7";
 const PREFIX = "https://github.com/acme/api/pull/";
 const HEAD = "9".repeat(40);
 const comment = (text: string, over: Record<string, unknown> = {}) => memberSpan(text, { kind: "pr_comment", eventId: "acme/api#pr7:review_comment11", authorId: "rae", scopes: [PLACE], audience: { kind: "project" }, paths: ["src/a.ts"], ...over });
-const change = (over: Partial<RepoChangeRequest> = {}): RepoChangeRequest => ({
-  place: PLACE, repository: "api", link: LINK, linkPrefix: PREFIX, revision: HEAD, mergeRevision: MERGED, merged: true, title: "Make retries use withRetry",
-  body: "Moves the HTTP retries onto withRetry.\n\n## Lessons used\nRovara used 2 lessons. [task page](https://rovara.example/t/1)\n\n## Testing\nRan the unit tests.",
+const change = (over: Partial<RepoChangeRequest> = {}): PlacedChangeRequest => ({
+  place: PLACE, repository: "api", repositoryUrl: "https://github.com/acme/api", link: LINK, linkPrefix: PREFIX, revision: HEAD, mergeRevision: MERGED, merged: true, title: "Make retries use withRetry",
   audience: { kind: "project" }, comments: [comment("Use withRetry for HTTP retries in api, not a hand-rolled loop.")], edits: [], ...over,
-});
+}) as PlacedChangeRequest;
 
 /** The task's own subject, as the main reflection sees it: everything a repo-only prompt must NOT hold is here. */
 const FORBIDDEN = {
@@ -54,11 +53,10 @@ describe("the repo-only subject and its prompt", () => {
   const built = () => repoOnlySubjectOf(mainSubject(), change());
   const prompt = () => { const input = buildReflectorInput(built()); if (!input.eligible) throw new Error(`not eligible: ${input.reason}`); return input; };
 
-  it("holds the repository's review comment, the merge fact, the change request link and its title and description, and nothing else", () => {
+  it("holds the repository's review comment, the merge fact, the change request link and its title, and nothing else", () => {
     const { user, system } = prompt();
     expect(user).toContain("Use withRetry for HTTP retries in api, not a hand-rolled loop.");
     expect(user).toContain("Make retries use withRetry");
-    expect(user).toContain("Moves the HTTP retries onto withRetry.");
     expect(user).toContain(MERGED);
     expect(user).toContain(LINK);
     expect(user).toContain("Repositories: api");
@@ -67,13 +65,11 @@ describe("the repo-only subject and its prompt", () => {
     expect(user).not.toContain("secret-b");
     expect(user).not.toContain(BASE);
     expect(user).not.toContain("task-9");
-    expect(user).not.toContain("Rovara used 2 lessons");
-    expect(user).toContain("Ran the unit tests.");
   });
 
   it("the subject is exactly the one repository's: repoInputs for that place, one repository, one link, no inherited tasks, no task text", () => {
     const s = built();
-    expect(s.repoInputs).toEqual({ place: PLACE, repository: "api", linkPrefix: PREFIX });
+    expect(s.repoInputs).toEqual({ place: PLACE, repository: "api", linkPrefix: PREFIX, repositoryUrl: "https://github.com/acme/api" });
     expect(s.repositories).toEqual(["api"]);
     expect(s.links).toEqual([LINK]);
     expect(s.inheritedTasks).toBeUndefined();
@@ -102,10 +98,24 @@ describe("the repo-only subject and its prompt", () => {
     expect(input.user).not.toContain("<<span S9");
   });
 
-  it("the title and description are as written in the repository, minus Rovara's own 'Lessons used' section (a loaded lesson is not an input)", () => {
-    const { user } = prompt();
-    expect(user).not.toContain("Lessons used");
-    expect(user).not.toContain("task page");
+  it("review M2: only the title is sent, as its own span labelled as written by Rovara; a description (Rovara's own text: plan summary, names, links) never reaches the prompt, whatever the caller passes", () => {
+    const smuggled = repoOnlySubjectOf(mainSubject(), { ...change(), body: "BODY-SECRET Requested by: Jane Doe, from the Slack ask of customer Initech" } as never);
+    const input = buildReflectorInput(smuggled);
+    if (!input.eligible) throw new Error("not eligible");
+    expect(input.user).not.toContain("BODY-SECRET");
+    expect(input.user).not.toContain("Jane Doe");
+    const written = [...input.spans.values()].filter((span) => span.kind === "fact");
+    expect(written).toHaveLength(1);
+    expect(written[0]!.text).toBe("Change request title (written by Rovara): Make retries use withRetry");
+    expect(written[0]!.trust).toBe("system");
+  });
+
+  it("review M2 (P3b): a title is kept even when it begins like a quotation, and the prompt never says 'pull request' (host words stay out of the core)", () => {
+    const input = buildReflectorInput(repoOnlySubjectOf(mainSubject(), change({ title: "Make retries use withRetry" })));
+    if (!input.eligible) throw new Error("not eligible");
+    expect(input.user).toContain("Make retries use withRetry");
+    expect(input.user).not.toMatch(/pull request/iu);
+    expect(input.system).not.toMatch(/pull request/iu);
   });
 
   it("every span it builds passes R1's repoVisibilityOf (the draft is repo-only by construction), and a forbidden input added to the prompt fails it (negative control)", () => {
@@ -223,11 +233,14 @@ describe("reflectRepoOnly", () => {
     }
   });
 
-  it("a caller whose settings say On still makes no call while the install's switch is off (the switch is checked by the reflector and by the model wrapper as well)", async () => {
-    setLearnedLessonsGate(() => false);
+  it("review P5: the model's own lock is the only lock left once both mode reads said On and the switch then turned off: zero calls", async () => {
     const w = world();
-    const direct = { ...w.deps, settings: settings({ mode: "On" }) };
-    await reflectRepoOnly(direct, mainSubject(), [change()], newTaskFailureTally());
+    let reads = 0;
+    const flipping = { read: async () => { reads += 1; if (reads === 2) setLearnedLessonsGate(() => false); return { mode: "On" as const, preset: "standard" as const }; } };
+    w.deps.settings = flipping;
+    w.deps.reflect.settings = flipping;
+    expect(await reflectRepoOnly(w.deps, mainSubject(), [change()], newTaskFailureTally())).toMatchObject({ calls: 0 });
+    expect(reads).toBeGreaterThanOrEqual(2);
     expect(w.model.calls).toEqual([]);
   });
 
@@ -265,5 +278,90 @@ describe("reflectRepoOnly", () => {
     await expect(reflectRepoOnly(w.deps, mainSubject(), [change()], newTaskFailureTally())).resolves.toMatchObject({ calls: 1 });
     expect(await reflectRepoOnly(w.deps, mainSubject(), [change()], newTaskFailureTally())).toMatchObject({ calls: 0 });
     expect(w.model.calls).toHaveLength(1);
+  });
+});
+
+describe("review M1: the repository is proved before anything is paid, from the registered repository URL", () => {
+  const withUrl = (repositoryUrl: string, over: Partial<RepoChangeRequest> = {}): PlacedChangeRequest => change({ repositoryUrl, ...over });
+  const visible = (c: PlacedChangeRequest) => { const input = buildReflectorInput(repoOnlySubjectOf(mainSubject(), c)); if (!input.eligible) throw new Error("not eligible"); return repoVisibilityOf(repoOnlySubjectOf(mainSubject(), c), input.spans.values()).repoOnly; };
+
+  it("P2a: the project's name for the repository may differ from the host's name; the registered URL is the proof", () => {
+    const backend = withUrl("https://github.com/acme/backend-api", { repository: "api", link: "https://github.com/acme/backend-api/pull/7", linkPrefix: "https://github.com/acme/backend-api/pull/" });
+    expect(visible(backend)).toEqual({ place: PLACE });
+  });
+  it("P2b: capitals in the host's name match the registered URL without case", () => {
+    const capitals = withUrl("https://github.com/Acme/Api", { link: "https://github.com/Acme/Api/pull/7", linkPrefix: "https://github.com/Acme/Api/pull/" });
+    expect(visible(capitals)).toEqual({ place: PLACE });
+    expect(visible(withUrl("https://github.com/acme/api/", { link: "https://github.com/ACME/API/pull/7", linkPrefix: "https://github.com/ACME/API/pull/" }))).toEqual({ place: PLACE });
+  });
+  it("a change request that is not in the registered repository is not repo-only (another owner, another name, a name that merely starts the same)", () => {
+    for (const url of ["https://github.com/acme/other", "https://github.com/evil/api", "https://github.com/acme/ap", "https://github.com/acme/api7"]) expect(visible(withUrl(url)), url).toBeUndefined();
+  });
+
+  it("no call is paid for a change request whose repository cannot be proved; one fixed line says why (no ids, no text)", async () => {
+    const w = world();
+    const lines: Array<[string, Record<string, string | number>]> = [];
+    w.deps.log = (event, fields) => { lines.push([event, fields]); };
+    expect(await reflectRepoOnly(w.deps, mainSubject(), [withUrl("https://github.com/acme/other")], newTaskFailureTally())).toMatchObject({ calls: 0 });
+    expect(w.model.calls).toEqual([]);
+    expect(lines).toEqual([["learning.repo_reflect_not_repo_only", { codes: "other_repo" }]]);
+    // The once-key is untouched: a corrected proof later is still reflected.
+    expect(await reflectRepoOnly(w.deps, mainSubject(), [change()], newTaskFailureTally())).toMatchObject({ calls: 1 });
+  });
+  it("a change request with no place (no comment row named one) is not reflected until an edit names it", async () => {
+    const w = world();
+    expect(await reflectRepoOnly(w.deps, mainSubject(), [change({ place: undefined, audience: undefined })], newTaskFailureTally())).toMatchObject({ calls: 0 });
+    expect(w.model.calls).toEqual([]);
+  });
+});
+
+describe("one owner per change request: the human-edit job owns it when someone pushed after Rovara", () => {
+  const edit = memberSpan("A person changed src/a.ts, +1 -1:\n@@ -1 +1 @@\n-loop\n+await withRetry()", { kind: "human_edit", scopes: [PLACE], audience: { kind: "project" }, authorIds: ["ann"], sourceKey: "human_edit" });
+  it("the task-end owner skips a change request whose merged head is not Rovara's last push, and says so; the human-edit owner runs it with comments and edits in one call", async () => {
+    const w = world({ model: new ScriptedModel([reply(candidateJson({ evidenceSpanIds: ["S1"] }))]) });
+    const lines: string[] = [];
+    w.deps.log = (event) => { lines.push(event); };
+    const owned = change({ humanEditsExpected: true, edits: [edit] });
+    expect(await reflectRepoOnly(w.deps, mainSubject(), [{ ...owned, edits: [] }], newTaskFailureTally(), { owner: "task_end" })).toMatchObject({ calls: 0 });
+    expect(lines).toEqual(["learning.repo_reflect_left_to_human_edit"]);
+    expect(await reflectRepoOnly(w.deps, mainSubject(), [owned], newTaskFailureTally(), { owner: "human_edit" })).toMatchObject({ calls: 1 });
+    const prompt = w.model.calls[0]!["user"] as string;
+    expect(prompt).toContain("Use withRetry for HTTP retries in api, not a hand-rolled loop.");
+    expect(prompt).toContain("await withRetry()");
+    // Same once-key: the task-end path (and a second job) find it taken.
+    expect(await reflectRepoOnly(w.deps, mainSubject(), [{ ...owned, humanEditsExpected: false }], newTaskFailureTally(), { owner: "task_end" })).toMatchObject({ calls: 0 });
+    expect(w.model.calls).toHaveLength(1);
+  });
+  it("a change request nobody pushed to after Rovara is the task-end owner's", async () => {
+    const w = world();
+    expect(await reflectRepoOnly(w.deps, mainSubject(), [change({ humanEditsExpected: false })], newTaskFailureTally(), { owner: "task_end" })).toMatchObject({ calls: 1 });
+  });
+});
+
+describe("review lows", () => {
+  it("L1 (P4): a quote that fails before any call spends nothing and takes no once-key, so the change request is still reflected later", async () => {
+    const model = new ScriptedModel([reply(candidateJson({ evidenceSpanIds: ["S1"] }))]) as ScriptedModel & PipelineModel;
+    let quotes = 0;
+    model.quote = async () => { quotes += 1; if (quotes === 1) throw new Error("quote down"); return { ok: true as const, usd: 0.01 }; };
+    const w = world({ model });
+    expect(await reflectRepoOnly(w.deps, mainSubject(), [change()], newTaskFailureTally())).toMatchObject({ calls: 0 });
+    expect(model.calls).toEqual([]);
+    expect(await reflectRepoOnly(w.deps, mainSubject(), [change()], newTaskFailureTally())).toMatchObject({ calls: 1 });
+  });
+  it("L5: two runs at once for one change request make one call (the once-key is taken atomically, right before the call)", async () => {
+    const w = world({ model: new ScriptedModel([reply(candidateJson({ evidenceSpanIds: ["S1"] })), reply(candidateJson({ evidenceSpanIds: ["S1"] }))]) });
+    await Promise.all([reflectRepoOnly(w.deps, mainSubject(), [change()], newTaskFailureTally()), reflectRepoOnly(w.deps, mainSubject(), [change()], newTaskFailureTally())]);
+    expect(w.model.calls).toHaveLength(1);
+  });
+  it("L4: a switch that turns off mid-run leaves no 'no provider' pause on the project; a cost problem of the task's remaining room is not recorded either", async () => {
+    const recorded: string[] = [];
+    const w = world();
+    w.deps.reflect.pause = { record: async (_w, _p, code) => { recorded.push(code); }, clear: async () => undefined, read: async () => undefined };
+    let reads = 0;
+    const flipping = { read: async () => { reads += 1; if (reads === 2) setLearnedLessonsGate(() => false); return { mode: "On" as const, preset: "standard" as const }; } };
+    w.deps.settings = flipping;
+    w.deps.reflect.settings = flipping;
+    await reflectRepoOnly(w.deps, mainSubject(), [change()], newTaskFailureTally());
+    expect(recorded).toEqual([]);
   });
 });

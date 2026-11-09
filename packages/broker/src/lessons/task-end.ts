@@ -256,17 +256,19 @@ export async function learnFromEndedTaskTyped(deps: TaskLearningDeps, input: { w
       return final("reflected");
     };
     // The reflection (and its drafts) come first and are never held back by the counting: whatever they come to, the corrections that need the judge are counted after them (`countOutcome`, "after").
+    let reflected: LearnResult;
     try {
-      const reflected = await reflectionOf();
-      // Lessons in the repo (decision 50c): a merged pull request's SECOND reflection, over the repository's own words only. After the first one, in the same attempt and lease, on the same task tally; it never makes the result
-      // retry (a retry would run the first reflection again, which the lease forbids once its call started) and never holds the end of the work back.
-      if (!reflected.retry && subject.outcome === "merged" && (base.repoChanges?.length ?? 0) > 0) {
-        await reflectRepoOnly({ reflect: deps.reflect, process: deps.process, settings: deps.settings, ...(deps.log === undefined ? {} : { log: deps.log }) }, subject, base.repoChanges!, tally);
-      }
-      return reflected;
+      reflected = await reflectionOf();
     } finally {
       await countOutcome(deps, base, subject, input, tally, "after");
     }
+    // Lessons in the repo (decision 50c): a merged pull request's SECOND reflection, over the repository's own words only. After the first one and after the outcome judge (review L3: the judge's marks decide "stable", so the
+    // repo-only call takes what is left of the task's budget, not the other way round), in the same attempt and lease, on the same task tally. It never makes the result retry (a retry would run the first reflection again, which the
+    // lease forbids once its call started) and never holds the end of the work back. A pull request someone pushed to after Rovara is the human-edit job's.
+    if (!reflected.retry && subject.outcome === "merged" && (base.repoChanges?.length ?? 0) > 0) {
+      await reflectRepoOnly({ reflect: deps.reflect, process: deps.process, settings: deps.settings, ...(deps.log === undefined ? {} : { log: deps.log }) }, subject, base.repoChanges!, tally, { owner: "task_end" });
+    }
+    return reflected;
   } catch {
     deps.log?.("learning.task_end_failed", { task: logRef(input.workspaceId, input.taskId) });
     // Outside a worker nothing is retried. Inside one, a fault here is a read that failed, before any model key was minted by this call (or one the model path marked itself).

@@ -14,6 +14,7 @@ import { currentLearningAttempt } from "./learning-deadline.js";
 import { modeAllows, resolveLearning, type LearningSettingsReader } from "./policy.js";
 import { processDraftRetrying } from "./draft-retry.js";
 import { newTaskFailureTally, withFailuresCountedOnce } from "./pause.js";
+import { reflectRepoOnly, withEdits } from "./repo-reflect.js";
 import type { ProcessDeps } from "./process.js";
 import { reflectSubject, type ReflectDeps } from "./reflect.js";
 import type { EvidenceSpan, ReflectSubject } from "./reflect-input.js";
@@ -50,15 +51,17 @@ function editSpan(file: HumanEditInput["files"][number], input: Pick<HumanEditIn
   };
 }
 
+/** What the edit's own reflection came to, and the edit's lines as spans when they were usable (every author a live member): the repo-only reflection of the pull request is given those and no others. */
+interface EditRun { result: { candidates: number }; edits: EvidenceSpan[]; /** Learning is off for the project: nothing more is read or called for this edit. */ off?: true }
+
 export function createHumanEditExtractor(deps: HumanEditExtractorDeps): HumanEditExtractorPort {
-  return {
-    async extract(input) {
-      const none = { candidates: 0 };
+  const run = async (input: HumanEditInput): Promise<EditRun> => {
+      const none: EditRun = { result: { candidates: 0 }, edits: [] };
       if (input.authors.length === 0 || input.files.length === 0) return none;
       // A lesson names every author and a provenance list holds 20 names: an edit by a crowd is not learned from (no name is ever cut).
       if (input.authors.length > MAX_EDIT_AUTHORS) return none;
       const learning = await resolveLearning(deps.settings, input.workspaceId, input.project);
-      if (!modeAllows(learning.mode, "reflect")) return none;
+      if (!modeAllows(learning.mode, "reflect")) return { ...none, off: true };
       const base = await deps.source.read({ workspaceId: input.workspaceId, taskId: input.taskId, context: "human_edit" });
       if (base === undefined || base.facts.workspaceId !== input.workspaceId || base.facts.project !== input.project || base.facts.taskId !== input.taskId) return none;
       // Every author, now. Asking all of them (no short cut) so a check that cannot tell is never hidden by an earlier answer.
@@ -69,11 +72,12 @@ export function createHumanEditExtractor(deps: HumanEditExtractorDeps): HumanEdi
         if (erased || standing !== "member") allowed = false;
       }
       if (!allowed) return none;
+      const editSpans = input.files.map((file) => editSpan(file, input));
       const context = (base.facts.rest.spans ?? []).filter((span) => CONTEXT_KINDS.has(span.kind));
       const links = [...new Set([...(base.facts.rest.links ?? []), input.link])];
       const subject: ReflectSubject = buildTaskReflectSubject({
         ...base.facts, sendBacks: [],
-        rest: { ...base.facts.rest, links, spans: [...context, ...input.files.map((file) => editSpan(file, input))] },
+        rest: { ...base.facts.rest, links, spans: [...context, ...editSpans] },
       });
       // A lesson from an edit must stand on the edit: a candidate that cites no edit span is dropped (the people named come from everything read, but the lesson is about the lines).
       // LP-10 R8: this edit's failed model calls (the reflection and each draft's judge) count toward `model_failed` once, not once per call.
@@ -81,7 +85,7 @@ export function createHumanEditExtractor(deps: HumanEditExtractorDeps): HumanEdi
       const processDeps = withFailuresCountedOnce(deps.process, tally);
       const result = await reflectSubject(withFailuresCountedOnce(deps.reflect, tally), { ...subject, requireEvidenceKind: "human_edit" });
       if (result.reason === "model_error" || (result.reason === "spend_refused" && currentLearningAttempt()?.fault === "retryable")) throw new Error("the model call failed");
-      if (result.status !== "ok") return none;
+      if (result.status !== "ok") return { result: { candidates: 0 }, edits: editSpans };
       const key = { workspaceId: input.workspaceId, project: input.project };
       let kept = 0;
       const signal = currentLearningAttempt()?.signal;
@@ -90,7 +94,38 @@ export function createHumanEditExtractor(deps: HumanEditExtractorDeps): HumanEdi
         if (signal?.aborted === true) { deps.log?.("learning.drafts_cut_at_deadline", { taskId: input.taskId }); break; }
         try { await processDraftRetrying(processDeps, key, draft, { ...(deps.log === undefined ? {} : { log: (event, fields) => deps.log!(event, { taskId: input.taskId, ...fields }) }) }); kept += 1; } catch { deps.log?.("learning.draft_failed", { taskId: input.taskId }); }
       }
-      return { candidates: kept };
+      return { result: { candidates: kept }, edits: editSpans };
+  };
+
+  /**
+   * Lessons in the repo (decision 50c, review: one owner per change request). The pull request someone pushed to after Rovara is OURS to reflect on once: its comments and the edits just read, in one call, under the job's own lease
+   * and the same once-key as the task end (which leaves such a pull request to us). A job that could not use the edits (an author not a member, too many authors, a compare that gave nothing) still runs it with the comments alone,
+   * so a pull request never loses its comments because of an edit that cannot be used. The task's facts are read again in full (the comments come with them); a fresh tally is this run's (Public's cap is per run here, as the edit's
+   * own reflection is). Never throws: the edit's own result stands.
+   */
+  const repoOnly = async (input: HumanEditInput, edits: readonly EvidenceSpan[]): Promise<void> => {
+    try {
+      // The switch first, before anything is read: Off, Collect and a lessons switch that is off read nothing for this pull request.
+      if (!modeAllows((await resolveLearning(deps.settings, input.workspaceId, input.project)).mode, "reflect")) return;
+      const base = await deps.source.read({ workspaceId: input.workspaceId, taskId: input.taskId });
+      if (base === undefined || base.facts.workspaceId !== input.workspaceId || base.facts.project !== input.project || base.facts.taskId !== input.taskId) return;
+      const found = (base.repoChanges ?? []).find((change) => change.link.toLowerCase() === input.link.toLowerCase());
+      if (found === undefined) return;
+      const owned = edits.length === 0 ? found : withEdits(found, { place: input.scope, audience: input.audience, spans: edits });
+      if (owned === undefined) return;
+      const subject = buildTaskReflectSubject({ ...base.facts, sendBacks: [] });
+      await reflectRepoOnly({ reflect: deps.reflect, process: deps.process, settings: deps.settings, ...(deps.log === undefined ? {} : { log: deps.log }) }, subject, [owned], newTaskFailureTally(), { owner: "human_edit" });
+    } catch {
+      deps.log?.("learning.repo_reflect_failed", { taskId: input.taskId });
+    }
+  };
+
+  return {
+    async extract(input) {
+      // The edit's own reflection first; its model failure throws (the job is retried, and so is this).
+      const ran = await run(input);
+      if (ran.off !== true) await repoOnly(input, ran.edits);
+      return ran.result;
     },
   };
 }

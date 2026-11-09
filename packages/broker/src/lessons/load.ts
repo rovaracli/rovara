@@ -129,6 +129,34 @@ export function toLearned(lesson: Lesson): LearnedLesson {
 }
 const sizeOf = (lesson: LearnedLesson): number => Buffer.byteLength(JSON.stringify(lesson), "utf8");
 
+/**
+ * Lessons in the repo (lane R1b, review H1): two lessons kept apart as twins (`possibleDuplicateOf` on one, `repoTwins` on the other, either direction) say the same advice, so a task is given only one of them: the repo-only one when
+ * exactly one of the pair is repo-only, otherwise the one ranked higher (the list is in rank order). Pure; lessons with no twin in the list are untouched and keep their order.
+ */
+export function withoutTwins(ranked: readonly Lesson[]): Lesson[] {
+  const present = new Set(ranked.map((lesson) => lesson.id));
+  const linked = new Map<string, Set<string>>();
+  const link = (a: string, b: string): void => { if (a !== b && present.has(a) && present.has(b)) { (linked.get(a) ?? linked.set(a, new Set()).get(a)!).add(b); (linked.get(b) ?? linked.set(b, new Set()).get(b)!).add(a); } };
+  for (const lesson of ranked) {
+    if (lesson.possibleDuplicateOf !== undefined) link(lesson.id, lesson.possibleDuplicateOf);
+    for (const twin of lesson.repoTwins ?? []) link(lesson.id, twin);
+  }
+  if (linked.size === 0) return [...ranked];
+  const byId = new Map(ranked.map((lesson) => [lesson.id, lesson] as const));
+  const dropped = new Set<string>();
+  for (const lesson of ranked) {
+    if (dropped.has(lesson.id)) continue;
+    for (const otherId of linked.get(lesson.id) ?? []) {
+      if (dropped.has(otherId)) continue;
+      // `lesson` ranks above `other` (the list is in rank order), so `other` goes unless it is repo-only and `lesson` is not.
+      const other = byId.get(otherId)!;
+      if (other.provenance.repoOnly !== undefined && lesson.provenance.repoOnly === undefined) { dropped.add(lesson.id); break; }
+      dropped.add(otherId);
+    }
+  }
+  return ranked.filter((lesson) => !dropped.has(lesson.id));
+}
+
 export async function loadLessonsForStage(deps: LoadDeps, request: LoadRequest): Promise<LoadResult> {
   const key: ScopeKey = { workspaceId: request.workspaceId, project: request.project };
   const now = deps.now();
@@ -202,9 +230,9 @@ export async function loadLessonsForStage(deps: LoadDeps, request: LoadRequest):
   let bytes = 0;
   // At most the project's budget (default 5 lessons and 2 KB), never above the caps.
   const budget = resolveLoadBudget(resolved.loadBudget, { lessons: LOAD_MAX_LESSONS, bytes: LOAD_MAX_BYTES });
-  const choose = (lessons: readonly Lesson[]): void => {
+  const choose = (candidates: readonly Lesson[]): void => {
     chosen.length = 0; entries.length = 0; bytes = 0;
-    for (const lesson of lessons) {
+    for (const lesson of withoutTwins(candidates)) {
       if (chosen.length >= budget.lessons) break;
       const picked = rank.get(lesson.id)!;
       const learned = toLearned(lesson);

@@ -233,6 +233,11 @@ export const LessonSchema = z.object({
   contradictsWith: z.string().max(64).optional(),
   /** The lesson this one may duplicate (round 4): a judge or the word test took the two for the same advice but they are not the same by structure, so they were NOT merged. A person decides; nothing starts it on trial or applies it while this stands. */
   possibleDuplicateOf: z.string().max(64).optional(),
+  /**
+   * Lessons in the repo (lane R1b): the lessons that name THIS one in `possibleDuplicateOf` only because merging them would have cost a repository-only lesson its mark (`mergeKeepsRepoOnly`). Informational: it changes nothing
+   * about this lesson's own trial or approval; the loader reads it (both directions of the link) so a task is given only one of two twins.
+   */
+  repoTwins: z.array(z.string().max(64)).max(10).optional(),
   /** Set when harmful marks call for a retire and a person has to decide (tier 1 and 2 lessons). */
   retireProposedAt: z.number().optional(),
   /** Set only on the version that harmful marks auto-retired (the number of THAT version): the lesson is exactly this retirement while it is still the head, retired, and this equals its version. Any later change makes a new version, so nothing else is ever mistaken for it. */

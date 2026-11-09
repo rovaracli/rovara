@@ -5,7 +5,7 @@ import { approveLesson, type ApproveDeps } from "../../../packages/broker/src/le
 import { curateDraft, foldDuplicate, type CurateDeps } from "../../../packages/broker/src/lessons/curate.js";
 import { reflectSubject, type LessonDraft, type ReflectDeps } from "../../../packages/broker/src/lessons/reflect.js";
 import type { EvidenceSpan } from "../../../packages/broker/src/lessons/reflect-input.js";
-import { afterPersonEdit, citationsStayIn, isRepoFileEligible, mergeKeepsFileEligibility, repoVisibilityOf } from "../../../packages/broker/src/lessons/repo-eligibility.js";
+import { afterPersonEdit, citationsStayIn, isRepoFileEligible, mergeKeepsRepoOnly, repoVisibilityOf } from "../../../packages/broker/src/lessons/repo-eligibility.js";
 import { InMemoryLessonStore } from "../../../packages/broker/src/lessons/store.js";
 import { Alerts, Audit, Clock, KEY, MemoryVectors, ScriptedModel, Spend, allowAllAccess, candidateJson, codeCite, directory, draft, embedder, lessonRecord, memberSpan, reply, seed, settings, subject, verifier } from "./lesson-helpers.js";
 
@@ -142,15 +142,16 @@ describe("L4: an ineligible draft may not merge a repository-file lesson out of 
   const fileLesson = (over: Partial<ReturnType<typeof lessonRecord>> = {}) => lessonRecord({ id: "les_file0001", trial: stable, ...over, provenance: { ...lessonRecord().provenance, repoOnly: only, ...over.provenance } });
   const draftWith = (prov: Record<string, unknown>): LessonDraft => { const { repoOnly: _o, repoBlockCodes: _b, ...rest } = draft().provenance; void _o; void _b; return draft({ provenance: { ...rest, memberCorrection: true, claimsSupported: true, ...prov } }); };
 
-  it("pure rule: allowed when the target is not eligible now, or the merge stays repository-only; refused when it would lose eligibility", () => {
-    expect(mergeKeepsFileEligibility(fileLesson(), draftWith({ repoOnly: only }))).toBe(true);
-    expect(mergeKeepsFileEligibility(fileLesson(), draftWith({ repoBlockCodes: ["typed_in_rovara"] }))).toBe(false);
-    expect(mergeKeepsFileEligibility(fileLesson(), draftWith({}))).toBe(false);
-    expect(mergeKeepsFileEligibility(fileLesson(), draftWith({ repoOnly: { place: "github:repo/2002" } }))).toBe(false);
-    // The target is not eligible now (on trial, retired, not repository-only): nothing to lose.
-    expect(mergeKeepsFileEligibility(fileLesson({ trial: { state: "trial", startedAt: 1 } }), draftWith({}))).toBe(true);
-    expect(mergeKeepsFileEligibility(fileLesson({ status: "retired" }), draftWith({}))).toBe(true);
-    expect(mergeKeepsFileEligibility(lessonRecord({ trial: stable }), draftWith({}))).toBe(true);
+  it("pure rule: allowed when the merge stays repository-only or neither side is; refused across that line", () => {
+    expect(mergeKeepsRepoOnly(fileLesson(), draftWith({ repoOnly: only }))).toBe(true);
+    expect(mergeKeepsRepoOnly(fileLesson(), draftWith({ repoBlockCodes: ["typed_in_rovara"] }))).toBe(false);
+    expect(mergeKeepsRepoOnly(fileLesson(), draftWith({}))).toBe(false);
+    expect(mergeKeepsRepoOnly(fileLesson(), draftWith({ repoOnly: { place: "github:repo/2002" } }))).toBe(false);
+    // R1b (review H1): the target's state no longer matters; a repo-only target on trial or retired is protected the same way, and a pair with no repoOnly on either side is free to merge.
+    expect(mergeKeepsRepoOnly(fileLesson({ trial: { state: "trial", startedAt: 1 } }), draftWith({}))).toBe(false);
+    expect(mergeKeepsRepoOnly(fileLesson({ status: "retired" }), draftWith({}))).toBe(false);
+    expect(mergeKeepsRepoOnly(lessonRecord({ trial: stable }), draftWith({}))).toBe(true);
+    expect(mergeKeepsRepoOnly(lessonRecord({ trial: stable }), draftWith({ repoOnly: only }))).toBe(false);
   });
 
   function setup() {
@@ -172,7 +173,8 @@ describe("L4: an ineligible draft may not merge a repository-file lesson out of 
     // L6: kept apart, but linked to the lesson it may duplicate, so a person sees it (merge, keep both or reject).
     expect(outcome).toMatchObject({ outcome: "possible_duplicate", duplicateOf: target.id });
     expect((await store.list(KEY)).find((l) => l.id !== target.id)).toMatchObject({ status: "pending", possibleDuplicateOf: target.id });
-    expect((await store.get(KEY, target.id))).toMatchObject({ version: 1, provenance: { repoOnly: only } });
+    // Linked both ways: the target's text and mark are untouched, it only learns who its twin is.
+    expect((await store.get(KEY, target.id))).toMatchObject({ version: 2, repoTwins: [(await store.list(KEY)).find((l) => l.id !== target.id)!.id], provenance: { repoOnly: only } });
     expect((await store.list(KEY)).length).toBe(2);
     const second = setup();
     await seed(second.store, target);

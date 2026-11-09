@@ -205,6 +205,12 @@ export function learningDepsFor(dependencies: LessonsHostDependencies, runtime: 
       project: input.project, base: input.base, head: input.head, ...(input.headRef === undefined ? {} : { headRef: input.headRef }),
     }),
     pullRequestAddress: (url) => adapters.addressOf(url)?.address,
+    // Lessons in the repo (decision 50c): the repository a pull request is in is proved by the project's REGISTERED repository address equalling the one the code host's own adapter gives for the pull request's repository.
+    repositoryUrlsOf: async (orgId, project) => {
+      const record = await requireLatestProject(dependencies, OrgIdSchema.parse(orgId), project);
+      return Object.fromEntries(codeRepositoriesOf(record.definition).map((repository) => [repository.name, repository.url] as const));
+    },
+    repositoryAddress: (host, fullName) => adapters.forHost(host)?.repositoryAddress?.(fullName),
     pullRequestFeedback: async (input) => adapters.forHost(input.address.host)?.pullRequestFeedback?.({ workspaceId: input.orgId, project: input.project, taskId: input.taskId, address: input.address, url: input.url }),
     mergeCommitOf: ({ orgId, taskId, address }) => teamRecord.mergeIndex.mergeCommitOf({ workspaceId: orgId, host: address.host, repo: address.repository, number: address.number, taskId }),
   });

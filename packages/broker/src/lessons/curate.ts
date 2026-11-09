@@ -9,7 +9,7 @@ import { emitAudit, learnedLessonsSwitchOn, learningCaps, type Edition } from ".
 import { isLearningRefusal, noteJudgeRecovered, noteModelFailure, notePause, pauseOfLook, spendLook, type LessonsPauseStore } from "./pause.js";
 import type { AlertSink, LearningSpend, LessonDeps, LessonEmbedder, LessonVectors, PipelineModel } from "./ports.js";
 import { relate } from "./copy-match.js";
-import { mergeKeepsFileEligibility, mergedRepoVisibility } from "./repo-eligibility.js";
+import { mergeKeepsRepoOnly, mergedRepoVisibility } from "./repo-eligibility.js";
 import { readVisible } from "./read-visible.js";
 import type { AccessCheckPort } from "../team-record/access-port.js";
 import { EMBED_TIMEOUT_MS, JUDGE_CANDIDATES, JUDGE_REJECTED, NEIGHBOURS, closeEnoughForSame, docOf, dropVector, isFlippedCopy, isNarrowing, isNearExact, isVerbatim, keepVector, matchesRejected, passesGate, rankLessons, type Ranked, type SimilarityLog } from "./similarity.js";
@@ -238,7 +238,7 @@ const mergeFits = (target: Lesson, draft: LessonDraft): boolean =>
 
 /** A merge into an active lesson may not lower its trust or narrow its audience: that is a different lesson. */
 const mergeAllowed = (target: Lesson, draft: LessonDraft): boolean =>
-  mergeFits(target, draft) && mergeKeepsFileEligibility(target, draft) && (target.status !== "active" || ((target.trial === undefined || (draft.provenance.memberCorrection === true && draft.provenance.claimsSupported === true)) && trustAtLeast(draft.provenance.minTrust, target.provenance.minTrust)
+  mergeFits(target, draft) && mergeKeepsRepoOnly(target, draft) && (target.status !== "active" || ((target.trial === undefined || (draft.provenance.memberCorrection === true && draft.provenance.claimsSupported === true)) && trustAtLeast(draft.provenance.minTrust, target.provenance.minTrust)
     && JSON.stringify(narrowestAudience([target.provenance.audience, draft.provenance.audience])) === JSON.stringify(target.provenance.audience)));
 
 /** What the structural test is given when the shortlist did not rank a lesson (the test ignores it; equal words are as close as two texts get). */
@@ -333,8 +333,8 @@ export async function curateDraft(deps: CurateDeps, key: ScopeKey, draft: Lesson
       else if (isNarrowing(c.ranked, body, lessonBody)) verdicts.set(c.lesson.id, "refines");
     }
   }
-  // Lessons in the repo (L4/L6): a "same" that cannot merge only because the merge would cost a repository-file lesson its place is a possible duplicate: the draft stays its own lesson, linked to it, for a person to see.
-  for (const c of live) if (verdicts.get(c.lesson.id) === "same" && !mergeKeepsFileEligibility(c.lesson, draft)) verdicts.set(c.lesson.id, "duplicate");
+  // Lessons in the repo (L4/L6, review H1 of R1b): a "same" that cannot merge only because the merge would cost a repo-only lesson its mark is a possible duplicate: the draft stays its own lesson, linked both ways, for a person to see.
+  for (const c of live) if (verdicts.get(c.lesson.id) === "same" && !mergeKeepsRepoOnly(c.lesson, draft)) verdicts.set(c.lesson.id, "duplicate");
   // A refinement or a contradiction names the other lesson: it is acted on only when that lesson's audience is at least as broad as the draft's (review M4).
   const broadEnough = (other: Lesson): boolean => JSON.stringify(narrowestAudience([other.provenance.audience, draft.provenance.audience])) === JSON.stringify(draft.provenance.audience);
   const acting = live.flatMap((c) => { const verdict = verdicts.get(c.lesson.id); return verdict === undefined || verdict === "different" || ((verdict === "refines" || verdict === "contradicts") && !broadEnough(c.lesson)) ? [] : [{ ...c, verdict }]; });
@@ -391,7 +391,14 @@ export async function curateDraft(deps: CurateDeps, key: ScopeKey, draft: Lesson
     // A possible duplicate (round 4): the draft is its own lesson, linked to the one it may duplicate. It goes to a person (merge, keep both or reject) and is never started on trial or applied by itself while the link stands.
     if (chosen.verdict === "duplicate") {
       const created = newLesson(deps, key, draft, "pending", { possibleDuplicateOf: other.id, tierReasons: ["possible_duplicate", ...rejectedNote] });
-      const written = await commitWith(deps, key, async () => [created]);
+      // Lessons in the repo (R1b, review H1): when the pair stays apart because merging would cross the repo-only line, the other lesson learns its twin too (linked both ways; its text, mark and trial are untouched), and the loader gives a task only one of the two.
+      const twinned = !mergeKeepsRepoOnly(other, draft);
+      const written = await commitWith(deps, key, async () => {
+        if (!twinned) return [created];
+        const fresh = await deps.store.get(key, other.id);
+        if (fresh === undefined) return [created];
+        return [created, { ...fresh, version: nextVersion(fresh, await deps.store.versions(key, fresh.id)), repoTwins: [...new Set([...(fresh.repoTwins ?? []), created.id])].slice(-10), updatedAt: deps.now() }];
+      });
       if (written === undefined) return drop("conflict");
       await keepVector(sim, key, created, queryVector);
       await emitAudit(deps.audit, { action: "lesson.candidate_created", workspaceId: key.workspaceId, project: key.project, lessonId: created.id, facts: { type: created.type, possibleDuplicateOf: other.id, judged: judgedBy.has(other.id) } });
