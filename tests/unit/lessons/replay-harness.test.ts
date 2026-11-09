@@ -244,6 +244,6 @@ describe("the repeat-mistake metric on the replay (CONNECT-2)", () => {
     expect(checks.find((c) => c.arm === "off")).toMatchObject({ confirmed: 1, split: { lessonLoaded: 0, lessonNotLoaded: 0, noLesson: 1 } });
   });
   it("the real signature matcher is wired behind the same port", () => {
-    expect(typeof signatureMatcher({ orgId: "org_aaaaaaaaaaaaaaaaaaaa", project: "p", projectCreatedAt: "2026-01-01T00:00:00.000Z" } as never).sameAsCorrection).toBe("function");
+    expect(typeof signatureMatcher({ orgId: "org_aaaaaaaaaaaaaaaaaaaa", project: "p", projectCreatedAt: "2026-01-01T00:00:00.000Z" }).sameAsCorrection).toBe("function");
   });
 });

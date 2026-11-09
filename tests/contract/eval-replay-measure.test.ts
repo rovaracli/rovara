@@ -34,7 +34,7 @@ describe("reading run rows", () => {
     expect(() => readReplayRunRows([{ task: "a", arm: "off", resolved: null, repeat: 1, grader: GRADER, gradedBy: "rubric" }])).toThrow();
     expect(() => readReplayRunRows([{ task: "a", arm: "off", resolved: true, repeat: 0 }])).toThrow();
     expect(() => readReplayRunRows([{ task: "a", arm: "off", resolved: true, extra: 1 }])).toThrow();
-    expect(() => readReplayRunRows({} as never)).toThrow();
+    expect(() => readReplayRunRows({})).toThrow();
   });
 });
 

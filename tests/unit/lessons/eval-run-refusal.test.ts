@@ -88,18 +88,19 @@ describe("the task-end reflection", () => {
     const w = world();
     expect(await learnFromEndedTask(w.deps, { workspaceId: WS, taskId: "task-1" })).toBe("reflected");
     expect(w.model.calls).toHaveLength(1);
+    expect(w.spend.asked.length).toBeGreaterThan(0);
   });
   it("a marked task reads no rows, calls no model, spends nothing, writes no lesson and counts no outcome", async () => {
     const w = world({ evalRun: true });
     const counters = { store: w.store, judge: new Judge(), settings: w.configured, audit: w.audit, alerts: new Alerts(), now: new Clock().now };
     await seed(w.store, lessonRecord());
-    const result = await learnFromEndedTaskTyped({ ...w.deps, counters: counters as never }, { workspaceId: WS, taskId: "task-1" });
+    const result = await learnFromEndedTaskTyped({ ...w.deps, counters: counters }, { workspaceId: WS, taskId: "task-1" });
     expect(result).toEqual({ status: "eval_run", retry: false });
     expect(w.model.calls).toEqual([]);
     expect(w.judgeModel.calls).toEqual([]);
     expect(counters.judge.calls).toBe(0);
     expect(w.rows.asked).toEqual([]);
-    expect(w.spend.calls ?? []).toEqual([]);
+    expect(w.spend.asked).toEqual([]);
     expect((await w.store.listAllHeads(KEY)).map((l) => l.id)).toEqual(["les_aaaa1111"]);
     expect((await w.store.get(KEY, "les_aaaa1111"))!.counters).toMatchObject({ helpful: 0, harmful: 0 });
   });

@@ -12,7 +12,6 @@
 // The grader is FIXED: every graded run names the grader (model and version) and how it graded (hidden tests, or a written rubric scored blind to the arm). Runs graded differently are refused, never compared.
 import { z } from "zod";
 import { ARM_NAME_ERROR, canonicalArm, compareArms, type ArmRunRow } from "./eval-memory.js";
-import { wilsonInterval } from "./eval-stats.js";
 
 /** Each task is run this many times in each arm (DECISIONS 49). */
 export const REPLAY_REPEATS = 3;
