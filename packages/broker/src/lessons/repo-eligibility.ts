@@ -65,12 +65,19 @@ function placeOfSpan(span: RepoInputSpan): Placed {
  * The prompt header (`Repositories:`, `Links you may cite:`) names repositories and pull requests, and the reflector reads them: they are inputs. Without a proof it may name nothing (a facts subject); with one it must name exactly the one
  * repository the place stands for and only that repository's pull requests. A proof with no repository name or URL prefix, or one the header does not match, fails closed.
  */
+/** The proof's URL prefix must be exactly `https://<host>/<owner>/<repository>/pull/` for the proved repository, so `.../api` can never accept `.../api7/pull/3`. */
+function linkPrefixIsOf(proof: RepoInputsProof): boolean {
+  if (proof.repository === "" || !/^[^/\s]+$/u.test(proof.repository)) return false;
+  const match = /^https:\/\/[^/\s]+\/[^/\s]+\/([^/\s]+)\/pull\/$/u.exec(proof.linkPrefix);
+  return match !== null && match[1] === proof.repository;
+}
+
 function headerStaysIn(subject: RepoInputSubject): boolean {
   const repositories = subject.repositories ?? [];
   const links = subject.links ?? [];
   const proof = subject.repoInputs;
   if (proof === undefined) return repositories.length === 0 && links.length === 0;
-  if (proof.repository === "" || proof.linkPrefix === "") return false;
+  if (!linkPrefixIsOf(proof)) return false;
   return repositories.length === 1 && repositories[0] === proof.repository && links.every((link) => link.startsWith(proof.linkPrefix) && /^\d+$/u.test(link.slice(proof.linkPrefix.length)));
 }
 
@@ -78,7 +85,7 @@ function headerStaysIn(subject: RepoInputSubject): boolean {
 export function citationsStayIn(proof: RepoInputsProof | undefined, citations: readonly LessonCitation[]): boolean {
   return citations.every((citation) => {
     if (citation.kind === "record" || citation.kind === "task") return true;
-    if (proof === undefined) return false;
+    if (proof === undefined || !linkPrefixIsOf(proof)) return false;
     if (citation.kind === "code") return citation.repo === proof.repository;
     return citation.kind === "pr" && citation.url.startsWith(proof.linkPrefix);
   });
@@ -121,7 +128,7 @@ export function repoVisibilityOf(subject: RepoInputSubject, spans: Iterable<Repo
       continue;
     }
     // A derived kind (written by Rovara) holds no person's words: a person's name on one is text typed in Rovara, whatever place it carries. The same for a fact or an outcome: the repository's code and host state have no author.
-    if ((DERIVED_KINDS.has(span.kind) || span.kind === "fact" || span.kind === "outcome") && personAuthored) { blocked.add("typed_in_rovara"); continue; }
+    if ((DERIVED_KINDS.has(span.kind) || span.kind === "fact" || span.kind === "outcome") && personAuthored) { blocked.add(span.kind === "ci_failure" ? "ci_author" : "typed_in_rovara"); continue; }
     // A derived kind with no place of its own is as visible as the task's inputs, which only a task has (proved by `repoInputs`). For any other subject its origin is unknown.
     const hasPlace = span.scopes !== undefined && span.scopes.length > 0;
     if (DERIVED_KINDS.has(span.kind) && !hasPlace) {

@@ -129,10 +129,10 @@ export const MAX_CO_AUTHORED = 20;
  * `task_inputs_unproved` the task's own start and steering are not proved repository-visible (typed task text, a connected source), `typed_in_rovara` a send-back, "remember this" note, close reason or a person's text in a plan or finding,
  * `intent_not_repo` the task description / start message is not from a repository place, `other_place` a span from a place that is not a repository (Slack, a tracker, MCP, Rovara itself), `missing_place` a repository kind of span with no place,
  * `other_repo` inputs from more than one repository, `audience_not_repo` a repository span whose readers are narrower than the repository's, `loaded_lesson` a lesson was loaded into the task, `no_repo_evidence` nothing that came from a repository,
- * `unknown_input` an input of a kind this build does not know, `predates_field` learned before this field existed.
+ * `unknown_input` an input of a kind this build does not know, `ci_author` a CI result tied to a person (who pushed the failing revision), `predates_field` learned before this field existed.
  */
 export const REPO_BLOCK_CODES = [
-  "task_inputs_unproved", "typed_in_rovara", "intent_not_repo", "other_place", "missing_place", "other_repo", "audience_not_repo", "loaded_lesson", "no_repo_evidence", "unknown_input", "predates_field",
+  "task_inputs_unproved", "typed_in_rovara", "intent_not_repo", "other_place", "missing_place", "other_repo", "audience_not_repo", "loaded_lesson", "no_repo_evidence", "unknown_input", "predates_field", "ci_author",
 ] as const;
 export type RepoBlockCode = (typeof REPO_BLOCK_CODES)[number];
 

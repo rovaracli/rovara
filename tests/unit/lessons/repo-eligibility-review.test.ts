@@ -36,6 +36,17 @@ describe("M1: the prompt header and the citations are inputs", () => {
   it("a proof with no repository name or no pull request prefix fails closed", () => {
     for (const bad of [{ ...proof, repository: "" }, { ...proof, linkPrefix: "" }]) expect(repoVisibilityOf({ kind: "task", repoInputs: bad, repositories: ["api"], links: [] }, [inRepo()]).repoOnly).toBeUndefined();
   });
+  it("L5: the proof's URL prefix must be exactly https://<host>/<owner>/<repository>/pull/ for the proved repository (a prefix ending in the name would accept api7)", () => {
+    const header = { repositories: ["api"], links: ["https://github.com/acme/api7"] };
+    for (const linkPrefix of ["https://github.com/acme/api", "https://github.com/acme/api/", "https://github.com/acme/api/pull", "https://github.com/acme/api7/pull/", "https://github.com/api/pull/", "http://github.com/acme/api/pull/", "https://github.com/acme/api/pulls/", "https://github.com/acme/api/pull/ "]) {
+      const v = repoVisibilityOf({ kind: "task", repoInputs: { ...proof, linkPrefix }, ...header }, [inRepo()]);
+      expect(v.repoOnly, linkPrefix).toBeUndefined();
+      expect(v.blocked, linkPrefix).toContain("other_repo");
+      expect(citationsStayIn({ ...proof, linkPrefix }, [{ kind: "pr", url: `${linkPrefix}7` }]), `citation ${linkPrefix}`).toBe(false);
+    }
+    expect(repoVisibilityOf({ kind: "task", repoInputs: proof, repositories: ["api"], links: ["https://github.com/acme/api7"] }, [inRepo()]).blocked).toContain("other_repo");
+    expect(repoVisibilityOf({ kind: "task", repoInputs: proof, repositories: ["api"], links: [`${PREFIX}7`] }, [inRepo()]).repoOnly).toEqual({ place: A });
+  });
   it("a facts subject may name no repository and no link", () => {
     expect(repoVisibilityOf({ kind: "facts" }, [inRepo()]).repoOnly).toEqual({ place: A });
     expect(repoVisibilityOf({ kind: "facts", repositories: ["api"] }, [inRepo()]).blocked).toContain("other_repo");
@@ -69,7 +80,9 @@ describe("M3, L1, L2: derived and repository text of unknown or personal origin"
     for (const kind of ["plan", "review_finding", "ci_failure"]) {
       for (const person of [{ authorId: "ann", trust: "system" }, { authorIds: ["ann", "bob"], trust: "system" }, { trust: "member" }]) {
         const v = repoVisibilityOf({ kind: "task", repoInputs: proof, repositories: ["api"], links: [] }, [inRepo(), { kind, ...withPlace, ...person }]);
-        expect(v.blocked, `${kind} ${JSON.stringify(person)}`).toContain("typed_in_rovara");
+        // L7: a CI result tied to a person (who pushed the failing revision) has its own code; it still blocks.
+        expect(v.repoOnly, `${kind} ${JSON.stringify(person)}`).toBeUndefined();
+        expect(v.blocked, `${kind} ${JSON.stringify(person)}`).toEqual([kind === "ci_failure" ? "ci_author" : "typed_in_rovara"]);
       }
     }
   });
@@ -156,7 +169,9 @@ describe("L4: an ineligible draft may not merge a repository-file lesson out of 
     await seed(store, target);
     await vectors.upsert(target.workspaceId, target.project, target.id, await embedder.embed(`${target.title}\n${target.description}\n${target.body}`), { status: "active" });
     const outcome = await curateDraft(deps, KEY, draftWith({ repoBlockCodes: ["typed_in_rovara"] }));
-    expect(outcome.outcome).not.toBe("merged");
+    // L6: kept apart, but linked to the lesson it may duplicate, so a person sees it (merge, keep both or reject).
+    expect(outcome).toMatchObject({ outcome: "possible_duplicate", duplicateOf: target.id });
+    expect((await store.list(KEY)).find((l) => l.id !== target.id)).toMatchObject({ status: "pending", possibleDuplicateOf: target.id });
     expect((await store.get(KEY, target.id))).toMatchObject({ version: 1, provenance: { repoOnly: only } });
     expect((await store.list(KEY)).length).toBe(2);
     const second = setup();

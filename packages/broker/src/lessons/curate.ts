@@ -333,6 +333,8 @@ export async function curateDraft(deps: CurateDeps, key: ScopeKey, draft: Lesson
       else if (isNarrowing(c.ranked, body, lessonBody)) verdicts.set(c.lesson.id, "refines");
     }
   }
+  // Lessons in the repo (L4/L6): a "same" that cannot merge only because the merge would cost a repository-file lesson its place is a possible duplicate: the draft stays its own lesson, linked to it, for a person to see.
+  for (const c of live) if (verdicts.get(c.lesson.id) === "same" && !mergeKeepsFileEligibility(c.lesson, draft)) verdicts.set(c.lesson.id, "duplicate");
   // A refinement or a contradiction names the other lesson: it is acted on only when that lesson's audience is at least as broad as the draft's (review M4).
   const broadEnough = (other: Lesson): boolean => JSON.stringify(narrowestAudience([other.provenance.audience, draft.provenance.audience])) === JSON.stringify(draft.provenance.audience);
   const acting = live.flatMap((c) => { const verdict = verdicts.get(c.lesson.id); return verdict === undefined || verdict === "different" || ((verdict === "refines" || verdict === "contradicts") && !broadEnough(c.lesson)) ? [] : [{ ...c, verdict }]; });
