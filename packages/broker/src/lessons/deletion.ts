@@ -244,9 +244,10 @@ export function lessonDeletionPort(deps: DeletionDeps): LessonDeletionPort {
       }
       await deps.store.forgetSource(k, `member:${erased.developerId}`);
       // The harmful marks that this person's own corrections (a pull request comment, a note, a send-back) caused are taken back: a correction whose author is erased is no longer evidence against a lesson.
-      await deps.store.takeBackHarm(k, erased.developerId, async (lessonId) => {
-        await deps.store.mutate(k, lessonId, (l) => ({ counters: { ...l.counters, harmful: Math.max(0, l.counters.harmful - 1) } }));
-        // ...and if their mark was what retired the lesson (or asked a person to), and the rest no longer justify it, the lesson is live again.
+      await deps.store.takeBackHarm(k, erased.developerId, async (lessonId, ref) => {
+        // The decrement is made once per (person, lesson) however often the erasure is retried: a crash between this and the row's deletion cannot take a second mark off. (A crash between the key and the decrement leaves
+        // the lesson one mark higher than it should be: the safe side.) What the lesson was made into is read from its state, so it is checked every time.
+        if (await deps.store.markOnce(k, `harm-undone:${ref}:${lessonId}`)) await deps.store.mutate(k, lessonId, (l) => ({ counters: { ...l.counters, harmful: Math.max(0, l.counters.harmful - 1) } }));
         await reverseHarm({ store: deps.store, audit: deps.audit, now: deps.now }, k, lessonId);
       });
       // The link from the person to the reference their Helpful / Wrong here marks were made with: those marks stay as counts and name nobody.

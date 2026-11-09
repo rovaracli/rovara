@@ -106,10 +106,10 @@ export interface LessonStore {
   /** Remembers that the person behind `ref` (from `markRef`) caused one harmful mark on the lesson through a correction they made, so erasing the person can take it back (`takeBackHarm`). Idempotent. */
   noteHarm(key: ScopeKey, ref: string, lessonId: string): Promise<void>;
   /**
-   * Erasure: hands each lesson whose harmful mark this person's corrections caused to `apply`, and forgets it only after `apply` returned (a crash between the two leaves it for the retry, never loses it). The reference is
+   * Erasure: hands each lesson whose harmful mark this person's corrections caused to `apply` (with the person's random reference, for an idempotency key), and forgets it only after `apply` returned (a crash between the two leaves it for the retry, never loses it). The reference is
    * read without being made; a person who never made one has none. Returns the lessons handed over. Call before `forgetMarkRef`.
    */
-  takeBackHarm(key: ScopeKey, person: string, apply: (lessonId: string) => Promise<void>): Promise<string[]>;
+  takeBackHarm(key: ScopeKey, person: string, apply: (lessonId: string, ref: string) => Promise<void>): Promise<string[]>;
   /** Whether a person is fenced (erased). Ids are compared case-insensitively. */
   isErased(key: ScopeKey, person: string): Promise<boolean>;
   putIntent(key: ScopeKey, intent: DeletionIntent): Promise<void>;
@@ -299,11 +299,11 @@ export class InMemoryLessonStore implements LessonStore {
     const s = this.of(key);
     (s.harms.get(ref) ?? s.harms.set(ref, new Set()).get(ref)!).add(lessonId);
   }
-  async takeBackHarm(key: ScopeKey, person: string, apply: (lessonId: string) => Promise<void>): Promise<string[]> {
+  async takeBackHarm(key: ScopeKey, person: string, apply: (lessonId: string, ref: string) => Promise<void>): Promise<string[]> {
     const s = this.of(key), ref = s.markRefs.get(normId(person));
     if (ref === undefined) return [];
     const ids = [...(s.harms.get(ref) ?? [])];
-    for (const id of ids) { await apply(id); s.harms.get(ref)?.delete(id); }
+    for (const id of ids) { await apply(id, ref); s.harms.get(ref)?.delete(id); }
     return ids;
   }
   async putIntent(key: ScopeKey, intent: DeletionIntent): Promise<void> { this.of(key).intents.set(intent.id, clone(intent)); }

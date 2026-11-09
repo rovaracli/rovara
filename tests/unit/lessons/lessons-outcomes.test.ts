@@ -405,44 +405,90 @@ describe("L13: the initiator is matched as an id is everywhere (case and Unicode
   });
 });
 
-describe("L12: erasing a commenter also reverses what their marks caused", () => {
+describe("L12 (simplified): erasing a commenter undoes exactly the retirement their marks caused, and only as a card for a person", () => {
   async function erased(over: Partial<Parameters<typeof lessonRecord>[0]> = {}, authors: string[] = ["erin", "fay"]) {
     const { lessonDeletionPort } = await import("../../../packages/broker/src/lessons/deletion.js");
     const w = await counted(authors.map((authorId, i) => span("pr_comment", `Please don't use this helper here, number ${i}`, { authorId })), new RecordingJudge("caused"), { lesson: { tier: 0, ...over } });
     await learnFromEndedTask(w.deps, merged);
     const audit = new Audit();
     const port = lessonDeletionPort({ store: w.store, vectors: new MemoryVectors(), audit, now: w.clock.now });
-    return { w, port, audit };
+    const erase = (who: string) => port.erasePerson(WS, PROJECT, { developerId: who }, new Set());
+    const lesson = async () => (await w.store.get(KEY, "les_used0001"))!;
+    return { w, audit, erase, lesson };
   }
-  it("a tier-0 lesson the two marks retired is active again, with an audit line, once the erased person's mark is gone (it no longer meets the rule); a lesson a person retired is left alone", async () => {
-    const { w, port, audit } = await erased();
-    expect((await w.store.get(KEY, "les_used0001"))!.status).toBe("retired");
-    await port.erasePerson(WS, PROJECT, { developerId: "erin" }, new Set());
-    expect((await w.store.get(KEY, "les_used0001"))!).toMatchObject({ status: "active", counters: { harmful: 1 } });
-    expect(audit.actions()).toContain("lesson.harm_reversed");
-    // A second erasure changes nothing more.
-    await port.erasePerson(WS, PROJECT, { developerId: "erin" }, new Set());
-    expect((await w.store.get(KEY, "les_used0001"))!.status).toBe("active");
-    // A lesson a person retired is not brought back, whatever happens to the marks.
+  it("the reviewer's probe: two commenters retire a tier-0 lesson; erasing the first brings it back as a PENDING card for a person (never live); a person retires it; erasing the second does nothing", async () => {
+    const { w, audit, erase, lesson } = await erased();
+    expect(await lesson()).toMatchObject({ status: "retired", counters: { harmful: 2 } });
+    expect((await lesson()).retiredByHarm).toBe((await lesson()).version);
+    await erase("erin");
+    expect(await lesson()).toMatchObject({ status: "pending", reviewRequired: true, approvals: [], counters: { harmful: 1 } });
+    expect((await lesson()).retiredByHarm).toBeUndefined();
+    expect((await lesson()).pendingExpiresAt).toBeGreaterThan(w.clock.now());
+    expect(audit.actions().filter((a) => a === "lesson.harm_reversed")).toHaveLength(1);
     const { retireLesson } = await import("../../../packages/broker/src/lessons/curate.js");
-    const kept = await counted([span("pr_comment", "This is wrong, avoid this helper", { authorId: "erin" })], new RecordingJudge("caused"), { lesson: { tier: 0 } });
-    await learnFromEndedTask(kept.deps, merged);
-    expect(await retireLesson({ store: kept.store, audit: new Audit(), now: kept.clock.now }, KEY, "les_used0001", "person", "ann")).toBe(true);
-    const { lessonDeletionPort } = await import("../../../packages/broker/src/lessons/deletion.js");
-    await lessonDeletionPort({ store: kept.store, vectors: new MemoryVectors(), audit: new Audit(), now: kept.clock.now }).erasePerson(WS, PROJECT, { developerId: "erin" }, new Set());
-    expect((await kept.store.get(KEY, "les_used0001"))!).toMatchObject({ status: "retired", counters: { harmful: 0 } });
+    expect(await retireLesson({ store: w.store, audit: new Audit(), now: w.clock.now }, KEY, "les_used0001", "person", "ann")).toBe(true);
+    await erase("fay");
+    expect(await lesson()).toMatchObject({ status: "retired", counters: { harmful: 0 } });
+    expect(audit.actions().filter((a) => a === "lesson.harm_reversed")).toHaveLength(1);
   });
-  it("a lesson that still meets the rule without the erased person's mark stays retired; a retire proposal those marks caused is withdrawn when the rule no longer holds", async () => {
-    const stays = await erased({}, ["erin", "fay", "gus"]);
-    expect((await stays.w.store.get(KEY, "les_used0001"))!.status).toBe("retired");
-    expect((await stays.w.store.get(KEY, "les_used0001"))!.counters.harmful).toBe(3);
-    await stays.port.erasePerson(WS, PROJECT, { developerId: "erin" }, new Set());
-    expect((await stays.w.store.get(KEY, "les_used0001"))!).toMatchObject({ status: "retired", counters: { harmful: 2 } });
-    expect((await stays.w.store.get(KEY, "les_used0001"))!.status).toBe("retired");
-    const proposed = await erased({ tier: 1, approvals: [{ approvalId: "a", by: "ann", at: 1, mode: "one" }] });
-    expect((await proposed.w.store.get(KEY, "les_used0001"))!.retireProposedAt).toBeDefined();
-    await proposed.port.erasePerson(WS, PROJECT, { developerId: "erin" }, new Set());
-    expect((await proposed.w.store.get(KEY, "les_used0001"))!).toMatchObject({ status: "active", counters: { harmful: 1 } });
-    expect((await proposed.w.store.get(KEY, "les_used0001"))!.retireProposedAt).toBeUndefined();
+  it("a lesson that was retired by the marks and then changed (replaced, edited, expired: any newer version) is not brought back", async () => {
+    const { w, audit, erase, lesson } = await erased();
+    const retired = await lesson();
+    const setVersion = await w.store.setVersion(KEY);
+    expect((await w.store.commit(KEY, setVersion, [{ ...retired, version: retired.version + 1, updatedAt: w.clock.now() + 1 }], w.clock.now())).ok).toBe(true);
+    await erase("erin");
+    expect(await lesson()).toMatchObject({ status: "retired", counters: { harmful: 1 } });
+    expect(audit.actions()).not.toContain("lesson.harm_reversed");
+  });
+  it("a lesson that still meets the rule without the erased person's mark stays retired", async () => {
+    const { erase, lesson } = await erased({}, ["erin", "fay", "gus"]);
+    expect(await lesson()).toMatchObject({ status: "retired", counters: { harmful: 3 } });
+    await erase("erin");
+    expect(await lesson()).toMatchObject({ status: "retired", counters: { harmful: 2 } });
+  });
+  it("L16/L15: a retire proposal stays while any harmful mark is left behind it, and is withdrawn (with an audit line) when none is", async () => {
+    const { erase, lesson, audit } = await erased({ tier: 1, approvals: [{ approvalId: "a", by: "ann", at: 1, mode: "one" }] });
+    expect((await lesson()).retireProposedAt).toBeDefined();
+    await erase("erin");
+    expect((await lesson()).retireProposedAt).toBeDefined();
+    expect(audit.actions()).not.toContain("lesson.proposal_withdrawn");
+    await erase("fay");
+    expect(await lesson()).toMatchObject({ status: "active", counters: { harmful: 0 } });
+    expect((await lesson()).retireProposedAt).toBeUndefined();
+    expect(audit.actions()).toContain("lesson.proposal_withdrawn");
+  });
+  it("L14: an erasure cut between a decrement and the row's deletion takes the mark off once, however often it is retried", async () => {
+    const { lessonDeletionPort } = await import("../../../packages/broker/src/lessons/deletion.js");
+    const w = await counted([span("pr_comment", "Please don't use this helper here", { authorId: "erin" }), span("pr_comment", "Do not call this helper, it breaks retries", { authorId: "fay" }), span("pr_comment", "Avoid this helper in the handler code", { authorId: "gus" })], new RecordingJudge("caused"), { lesson: { tier: 1, approvals: [{ approvalId: "a", by: "ann", at: 1, mode: "one" }] } });
+    await learnFromEndedTask(w.deps, merged);
+    expect((await w.store.get(KEY, "les_used0001"))!.counters.harmful).toBe(3);
+    let crash = true;
+    const real = w.store;
+    const flaky = Object.assign(Object.create(real) as InMemoryLessonStore, { takeBackHarm: (key: typeof KEY, person: string, apply: Parameters<InMemoryLessonStore["takeBackHarm"]>[2]) => real.takeBackHarm(key, person, async (id, ref) => { await apply(id, ref); if (crash) { crash = false; throw new Error("worker died before the row was deleted"); } }) });
+    const port = lessonDeletionPort({ store: flaky, vectors: new MemoryVectors(), audit: new Audit(), now: w.clock.now });
+    await expect(port.erasePerson(WS, PROJECT, { developerId: "erin" }, new Set())).rejects.toThrow();
+    await port.erasePerson(WS, PROJECT, { developerId: "erin" }, new Set());
+    expect((await w.store.get(KEY, "les_used0001"))!.counters.harmful).toBe(2);
+  });
+});
+
+describe("L17: a claim that was refused makes no call and uses no call slot", () => {
+  it("corrections already paid for by an earlier delivery do not eat the task's 20 calls", async () => {
+    const { recordTaskOutcome } = await import("../../../packages/broker/src/lessons/counters.js");
+    const ids = Array.from({ length: 5 }, (_, i) => `les_slot${String(i).padStart(4, "0")}`);
+    const store = new InMemoryLessonStore();
+    const clock = new Clock();
+    await seed(store, ...ids.map((id) => lessonRecord({ id })));
+    await store.putManifest({ taskId: "task-1", workspaceId: WS, project: PROJECT, stage: "IMPLEMENT", round: 1, setVersion: 1, memory: "live", at: 1, lessons: ids.map((id) => ({ id, version: 1, score: 0.5, why: "scope" as const, citation: "valid" as const })), bytes: 10 });
+    const corrections = Array.from({ length: 5 }, (_, i) => ({ kind: "review_comment" as const, paths: [], text: `Please avoid helper number ${i}`, at: 1, authorId: `dev-${i}` }));
+    let asked = 0, rated = 0;
+    const dies = { rate: async (input: Parameters<CorrectionJudge["rate"]>[0]): Promise<CorrectionRating> => { await input.claim!(); throw new Error("worker died"); } };
+    const answers = { rate: async (input: Parameters<CorrectionJudge["rate"]>[0]): Promise<CorrectionRating> => { asked += 1; if (!(await input.claim!())) throw new Error("already paid"); rated += 1; return "unrelated"; } };
+    const base = { store, settings: settings({ mode: "On" }), audit: new Audit(), now: clock.now };
+    await recordTaskOutcome({ ...base, judge: dies }, { ...KEY, taskId: "task-1", outcome: "merged", sendBacks: 0, corrections });
+    await recordTaskOutcome({ ...base, judge: answers }, { ...KEY, taskId: "task-1", outcome: "merged", sendBacks: 0, corrections });
+    // 25 corrections in all: the first 20 were claimed (and died) the first time, the last 5 were never reached. Second time the 20 claims are refused (no slot used) and the other 5 are paid for.
+    expect(asked).toBe(25);
+    expect(rated).toBe(5);
   });
 });

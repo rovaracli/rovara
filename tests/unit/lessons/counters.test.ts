@@ -208,6 +208,27 @@ describe("harmful: judged corrections and the two buttons", () => {
   });
 });
 
+describe("what retired a lesson is remembered only when corrections did it", () => {
+  it("the version that harmful marks of corrections auto-retired says so; one that two people's 'Wrong here' buttons retired does not", async () => {
+    const byCorrections = setup(new Judge("caused"));
+    await seed(byCorrections.store, lessonRecord());
+    for (const [task, authorId] of [["t1", "dev-ann"], ["t2", "dev-bob"]] as const) {
+      await byCorrections.store.putManifest(manifest(task, ["les_aaaa1111"]));
+      await recordTaskOutcome(byCorrections.deps, outcome({ taskId: task, corrections: [correction({ authorId })] }));
+    }
+    const retired = (await byCorrections.store.get(KEY, "les_aaaa1111"))!;
+    expect(retired).toMatchObject({ status: "retired" });
+    expect(retired.retiredByHarm).toBe(retired.version);
+    const byButtons = setup();
+    await seed(byButtons.store, lessonRecord());
+    await byButtons.store.putManifest(manifest("task-1", ["les_aaaa1111"]));
+    for (const userId of ["dev-ann", "dev-bob"]) await recordFeedback(byButtons.deps, { ...KEY, taskId: "task-1", lessonId: "les_aaaa1111", userId, viewer: { principals: [], groups: [], developerId: userId }, kind: "wrong_here" });
+    const pressed = (await byButtons.store.get(KEY, "les_aaaa1111"))!;
+    expect(pressed.status).toBe("retired");
+    expect(pressed.retiredByHarm).toBeUndefined();
+  });
+});
+
 describe("Helpful and Wrong here buttons", () => {
   it("count once per person and lesson, only for a lesson loaded into the task; Wrong here opens a retire suggestion", async () => {
     const { deps, store, audit } = setup();

@@ -4,7 +4,7 @@
 import { createHash } from "node:crypto";
 import { resolveLearning, emitAudit, modeAllows, type LearningSettingsReader } from "./policy.js";
 import type { AlertSink, CorrectionJudge, CorrectionKind, CorrectionRating, LessonDeps, LessonVectors } from "./ports.js";
-import { renewLesson } from "./expiry.js";
+import { pendingExpiry, renewLesson } from "./expiry.js";
 import { retireLesson } from "./curate.js";
 import { isTrialLesson, promoteIfStable } from "./trial.js";
 import { nextVersion, type LessonStore, type LoadManifest, type ScopeKey } from "./store.js";
@@ -61,23 +61,33 @@ const inScope = (lesson: Lesson, correction: TaskCorrection): boolean => {
 const meetsRetireRule = (lesson: Lesson): boolean => lesson.counters.harmful >= 2 && lesson.counters.harmful > lesson.counters.helpful;
 
 /**
- * Erasure of a commenter took one of their harmful marks back (`deletion.ts`). If the marks had retired the lesson on their own (the `autoretired` record; never a lesson a person retired) or had made a retire proposal, and
- * the lesson no longer meets the retire rule without that mark, the lesson is live again (a new version, an audit line `lesson.harm_reversed`) and the proposal is withdrawn. A lesson that still meets the rule stays as it is.
+ * Erasure of a commenter took one of their harmful marks back (`deletion.ts`). Only two things are undone, each only while the lesson is exactly what the marks made it:
+ *  - the retirement the marks caused: the lesson is retired, it is still the head, and it is the very version that auto-retired it (`retiredByHarm`). If the remaining marks no longer meet the retire rule the lesson goes
+ *    to PENDING for a person ("brought back after an erasure: check it", `reviewRequired`), never straight back to live: a person's approval re-checks everything the normal way. Any later change (a person retired it,
+ *    something replaced it, it expired, was edited or rejected) is a newer version and nothing is done;
+ *  - a retire proposal, when no harmful mark at all is left behind it.
+ * Idempotent: it reads the lesson's state, so a second call (a retried erasure) does nothing more.
  */
 export async function reverseHarm(deps: LessonDeps & { store: LessonStore }, key: ScopeKey, lessonId: string): Promise<void> {
-  const lesson = await deps.store.get(key, lessonId);
-  if (lesson === undefined || meetsRetireRule(lesson)) return;
-  if (lesson.status === "retired" && await deps.store.seenOnce(key, `autoretired:${lessonId}`)) {
-    for (let attempt = 0; attempt < 3; attempt += 1) {
-      const fresh = await deps.store.get(key, lessonId);
-      if (fresh === undefined || fresh.status !== "retired" || meetsRetireRule(fresh)) return;
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    const lesson = await deps.store.get(key, lessonId);
+    if (lesson === undefined) return;
+    if (lesson.status === "retired") {
+      if (lesson.retiredByHarm === undefined || lesson.retiredByHarm !== lesson.version || meetsRetireRule(lesson)) return;
       const setVersion = await deps.store.setVersion(key);
-      const result = await deps.store.commit(key, setVersion, [{ ...fresh, status: "active", version: nextVersion(fresh, await deps.store.versions(key, lessonId)), updatedAt: deps.now() }], deps.now());
-      if (result.ok) { await emitAudit(deps.audit, { action: "lesson.harm_reversed", workspaceId: key.workspaceId, project: key.project, lessonId, facts: { tier: fresh.tier, type: fresh.type } }); return; }
+      const back: Lesson = { ...lesson, status: "pending", reviewRequired: true, approvals: [], pendingExpiresAt: pendingExpiry(deps.now()), version: nextVersion(lesson, await deps.store.versions(key, lessonId)), updatedAt: deps.now() };
+      delete (back as { retiredByHarm?: number }).retiredByHarm;
+      delete (back as { trial?: Lesson["trial"] }).trial;
+      if ((await deps.store.commit(key, setVersion, [back], deps.now())).ok) await emitAudit(deps.audit, { action: "lesson.harm_reversed", workspaceId: key.workspaceId, project: key.project, lessonId, facts: { tier: lesson.tier, type: lesson.type } });
+      else continue;
+      return;
+    }
+    if (lesson.status === "active" && lesson.retireProposedAt !== undefined && lesson.counters.harmful === 0) {
+      await deps.store.mutate(key, lessonId, () => ({ retireProposedAt: undefined as unknown as number }));
+      await emitAudit(deps.audit, { action: "lesson.proposal_withdrawn", workspaceId: key.workspaceId, project: key.project, lessonId, facts: { tier: lesson.tier } });
     }
     return;
   }
-  if (lesson.status === "active" && lesson.retireProposedAt !== undefined && await deps.store.seenOnce(key, `harm-proposed:${lessonId}`)) await deps.store.mutate(key, lessonId, () => ({ retireProposedAt: undefined as unknown as number }));
 }
 
 /** Adds one harmful mark and runs the auto-retire rule: harmful at least 2 and more than helpful. Tier 0 retires at once; others go to a person. */
@@ -87,13 +97,12 @@ async function addHarmful(deps: CounterDeps, key: ScopeKey, lessonId: string, fo
   const failing = meetsRetireRule(updated);
   // A lesson live with no person behind it (tier 0, or on trial / stable) retires itself when its marks turn against it; the others go to a person.
   if (failing && (updated.tier === 0 || isTrialLesson(updated)) && updated.status === "active") {
-    // The retirement is remembered as the marks' doing, so erasing a commenter whose mark it rested on can bring the lesson back (`reverseHarm`).
-    if (await retireLesson(deps, key, lessonId, "harmful_counters", undefined, "lesson.auto_retired") && !forceProposal) await deps.store.markOnce(key, `autoretired:${lessonId}`);
+    // The new version says the marks did it (`retiredByHarm`), so erasing a commenter whose mark it rested on can undo exactly this retirement (`reverseHarm`); a button's mark does not.
+    await retireLesson(deps, key, lessonId, "harmful_counters", undefined, "lesson.auto_retired", { byHarm: !forceProposal });
     return;
   }
   if ((failing || forceProposal) && updated.status === "active" && updated.retireProposedAt === undefined) {
     await deps.store.mutate(key, lessonId, () => ({ retireProposedAt: deps.now() }));
-    if (!forceProposal) await deps.store.markOnce(key, `harm-proposed:${lessonId}`);
     await emitAudit(deps.audit, { action: "lesson.retire_proposed", workspaceId: key.workspaceId, project: key.project, lessonId, facts: { harmful: updated.counters.harmful, helpful: updated.counters.helpful } });
     try { await deps.alerts?.alert(key.workspaceId, key.project, "retire_proposed"); } catch { /* the proposal is stored */ }
   }
@@ -153,9 +162,12 @@ export async function recordTaskOutcome(deps: CounterDeps, outcome: TaskOutcome)
       if (rating === undefined) {
         if (deps.mayCall?.() === false) { unjudged = true; result.deferred = true; continue; }
         judgeCalls += 1;
+        let refused = false;
         try {
-          rating = await deps.judge.rate({ workspaceId: key.workspaceId, project: key.project, claim: () => deps.store.markOnce(key, `judged:${outcome.taskId}:${lessonId}:${id}`), lesson, correctionKind: correction.kind, correctionText: cleanForLearning(correction.text, 1500) });
+          rating = await deps.judge.rate({ workspaceId: key.workspaceId, project: key.project, claim: async () => { const fresh = await deps.store.markOnce(key, `judged:${outcome.taskId}:${lessonId}:${id}`); refused = !fresh; return fresh; }, lesson, correctionKind: correction.kind, correctionText: cleanForLearning(correction.text, 1500) });
         } catch { rating = undefined; }
+        // A claim that was refused (this correction was paid for before) made no call: it does not use one of the task's call slots.
+        if (refused) judgeCalls -= 1;
         if (rating !== undefined) await deps.store.markOnce(key, rated(rating));
       }
       if (rating === undefined) { unjudged = true; continue; }

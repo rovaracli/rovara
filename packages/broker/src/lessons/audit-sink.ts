@@ -43,8 +43,8 @@ const MAP: Partial<Record<LessonAuditEvent["action"], Mapped>> = {
   "lesson.trial_retired": { action: "lesson.retired", facts: (e) => ({ cause: word(e.facts["reason"], "thumbs_down"), tier: num(e.facts["tier"]) }) },
   "lesson.preset_changed": { action: "lesson.preset_changed", facts: (e) => ({ scope: word(e.facts["scope"], "project"), fromPreset: word(e.facts["from"], "unknown"), toPreset: word(e.facts["to"], "unknown"), mode: word(e.facts["mode"], "direct") }) },
   "lesson.preset_proposed": { action: "lesson.preset_proposed", facts: (e) => ({ scope: word(e.facts["scope"], "project"), fromPreset: word(e.facts["from"], "unknown"), toPreset: word(e.facts["to"], "unknown") }) },
-  // Erasing a commenter took back the harmful mark that retired a lesson, and the lesson no longer meets the retire rule: it is live again with no person's act, so it is a go-live with `auto: true`.
-  "lesson.harm_reversed": { action: "lesson.activated", facts: (e) => ({ lessonType: word(e.facts["type"], "unknown"), tier: num(e.facts["tier"]), auto: true }) },
+  // Erasing a commenter took back the harmful mark that retired a lesson, and the rest no longer justify it: the lesson goes back to a person as a pending card (never live by itself), recorded as a proposal.
+  "lesson.harm_reversed": { action: "lesson.proposed", facts: (e) => ({ lessonType: word(e.facts["type"], "unknown"), tier: num(e.facts["tier"]) }) },
   // Stable makes a lesson publishable to a repository, so it is on the ledger.
   "lesson.trial_stable": { action: "lesson.trial_stable", facts: (e) => ({ tier: num(e.facts["tier"]) }) },
   "lesson.sole_owner_switch_proposed": { action: "lesson.sole_owner_switch_proposed", facts: (e) => ({ fromEnabled: e.facts["from"] === true, toEnabled: e.facts["to"] === true }) },
@@ -56,7 +56,7 @@ const MAP: Partial<Record<LessonAuditEvent["action"], Mapped>> = {
 /** Actions with no ledger name on purpose: bookkeeping that grants nothing. Under `emitAudit` they are skipped; under `requireAudit` they would fail, so a grant never uses one. */
 export const BOOKKEEPING: readonly LessonAuditAction[] = [
   "lesson.stale", "lesson.retire_proposed", "lesson.wrong_here", "lesson.helpful", "lesson.source_paused", "lesson.source_resumed", "lesson.volume_spike",
-  "lesson.contradiction", "lesson.promote_failed", "lesson.held_source_paused", "lesson.tier0_setting_cancelled",
+  "lesson.contradiction", "lesson.promote_failed", "lesson.held_source_paused", "lesson.tier0_setting_cancelled", "lesson.proposal_withdrawn",
 ];
 /** The actions that have a ledger name. */
 export const LEDGERED: readonly LessonAuditAction[] = Object.keys(MAP) as LessonAuditAction[];

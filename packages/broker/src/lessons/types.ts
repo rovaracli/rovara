@@ -215,6 +215,8 @@ export const LessonSchema = z.object({
   possibleDuplicateOf: z.string().max(64).optional(),
   /** Set when harmful marks call for a retire and a person has to decide (tier 1 and 2 lessons). */
   retireProposedAt: z.number().optional(),
+  /** Set only on the version that harmful marks auto-retired (the number of THAT version): the lesson is exactly this retirement while it is still the head, retired, and this equals its version. Any later change makes a new version, so nothing else is ever mistaken for it. */
+  retiredByHarm: z.number().int().optional(),
   rejectedReason: z.string().max(200).optional(),
   createdAt: z.number(), updatedAt: z.number(),
 }).strict();
@@ -242,7 +244,7 @@ export const LESSON_AUDIT_ACTIONS = [
   "lesson.sole_owner_exception", "lesson.citation_moved", "lesson.contradiction", "lesson.withdrawn", "lesson.promote_failed", "lesson.held_source_paused",
   "lesson.tier0_setting_proposed", "lesson.tier0_setting_changed", "lesson.tier0_setting_cancelled", "lesson.tier0_setting_refused_retryable",
   "lesson.sole_owner_switch_proposed", "lesson.sole_owner_switch_changed", "lesson.model_set",
-  "lesson.trial_started", "lesson.trial_retired", "lesson.trial_stable", "lesson.harm_reversed", "lesson.preset_changed", "lesson.preset_proposed",
+  "lesson.trial_started", "lesson.trial_retired", "lesson.trial_stable", "lesson.harm_reversed", "lesson.proposal_withdrawn", "lesson.preset_changed", "lesson.preset_proposed",
 ] as const;
 export type LessonAuditAction = (typeof LESSON_AUDIT_ACTIONS)[number];
 

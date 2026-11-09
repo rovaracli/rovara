@@ -662,14 +662,14 @@ export class DynamoLessonStore implements LessonStore {
     if (!/^[0-9a-f]{24}$/u.test(ref)) throw unavailable("the mark reference is not valid");
     await this.put({ ...this.k(key, `LESSONSET#HARM#${ref}#${lessonId}`), entityType: "LESSON_HARM", lessonId });
   }
-  async takeBackHarm(key: ScopeKey, person: string, apply: (lessonId: string) => Promise<void>): Promise<string[]> {
+  async takeBackHarm(key: ScopeKey, person: string, apply: (lessonId: string, ref: string) => Promise<void>): Promise<string[]> {
     const ref = (await this.getItem(this.markRefKey(key, person)))?.ref;
     if (typeof ref !== "string") return [];
     const items = await this.queryPrefix(key, `LESSONSET#HARM#${ref}#`, { entityType: "LESSON_HARM" });
     const ids: string[] = [];
     for (const item of items) {
       if (typeof item.lessonId !== "string") continue;
-      await apply(item.lessonId);
+      await apply(item.lessonId, ref);
       await this.del({ pk: String(item.pk), sk: String(item.sk) });
       ids.push(item.lessonId);
     }

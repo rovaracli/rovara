@@ -426,12 +426,13 @@ async function visibleToDraft(deps: CurateDeps, key: ScopeKey, draft: LessonDraf
 }
 
 /** RETIRE as a delta: one conditional commit that retires a lesson. Used by approvals, auto-retire and supersede. */
-export async function retireLesson(deps: LessonDeps & { store: LessonStore; vectors?: LessonVectors }, key: ScopeKey, id: string, reason: string, actor: string | undefined, action: "lesson.retired" | "lesson.auto_retired" | "lesson.trial_retired" = "lesson.retired"): Promise<boolean> {
+export async function retireLesson(deps: LessonDeps & { store: LessonStore; vectors?: LessonVectors }, key: ScopeKey, id: string, reason: string, actor: string | undefined, action: "lesson.retired" | "lesson.auto_retired" | "lesson.trial_retired" = "lesson.retired", options: { /** Harmful marks did this: the new version says so (`retiredByHarm`), so only an erasure that takes those marks back can undo exactly this retirement. */ byHarm?: boolean } = {}): Promise<boolean> {
   for (let attempt = 0; attempt < MAX_COMMIT_TRIES; attempt += 1) {
     const lesson = await deps.store.get(key, id);
     if (lesson === undefined || lesson.status === "retired" || lesson.status === "rejected" || lesson.status === "withdrawn") return false;
     const setVersion = await deps.store.setVersion(key);
-    const result = await deps.store.commit(key, setVersion, [{ ...lesson, version: nextVersion(lesson, await deps.store.versions(key, id)), status: "retired", updatedAt: deps.now() }], deps.now());
+    const version = nextVersion(lesson, await deps.store.versions(key, id));
+    const result = await deps.store.commit(key, setVersion, [{ ...lesson, version, status: "retired", updatedAt: deps.now(), ...(options.byHarm === true ? { retiredByHarm: version } : {}) }], deps.now());
     if (result.ok) {
       // A retired lesson is no neighbour of anything: its vector goes with it.
       await dropVector(deps.vectors, key, id);
