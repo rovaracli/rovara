@@ -10,8 +10,8 @@ import { GetCommand, PutCommand } from "@aws-sdk/lib-dynamodb";
 import { teamRecordPk } from "@agentx/contracts";
 import type { TeamRecordTable } from "../team-record/types.js";
 
-export type NightlyPass = "expire" | "promote";
-export interface NightlyProjectState { seenAt: number; graceUntil?: number; /** The night found learning Off for the project: its next night with learning On opens the grace window. */ off?: true }
+export type NightlyPass = "expire" | "promote" | "repair";
+export interface NightlyProjectState { seenAt: number; graceUntil?: number; /** The trial repair (`repair` pass): where in the project's sorted pending cards tomorrow's walk starts (a count, never a card or lesson id). */ cardsNext?: number; /** The night found learning Off for the project: its next night with learning On opens the grace window. */ off?: true }
 export interface NightlyPassState { next: number; projects: Record<string, NightlyProjectState> }
 export interface NightlyStateStore {
   /** Throws when the item cannot be read (the pass then neither rotates nor writes). */
@@ -35,8 +35,8 @@ export function tableNightlyState(table: TeamRecordTable): NightlyStateStore {
       const projects: Record<string, NightlyProjectState> = {};
       if (typeof item.projects === "object" && item.projects !== null) {
         for (const [hash, value] of Object.entries(item.projects as Record<string, unknown>).slice(0, MAX_PROJECT_STATES)) {
-          const v = value as { seenAt?: unknown; graceUntil?: unknown; off?: unknown };
-          if (typeof v?.seenAt === "number") projects[hash] = { seenAt: v.seenAt, ...(typeof v.graceUntil === "number" ? { graceUntil: v.graceUntil } : {}), ...(v.off === true ? { off: true as const } : {}) };
+          const v = value as { seenAt?: unknown; graceUntil?: unknown; off?: unknown; cardsNext?: unknown };
+          if (typeof v?.seenAt === "number") projects[hash] = { seenAt: v.seenAt, ...(typeof v.graceUntil === "number" ? { graceUntil: v.graceUntil } : {}), ...(v.off === true ? { off: true as const } : {}), ...(typeof v.cardsNext === "number" && Number.isInteger(v.cardsNext) && v.cardsNext >= 0 ? { cardsNext: v.cardsNext } : {}) };
         }
       }
       return { next, projects };

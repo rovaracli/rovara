@@ -306,7 +306,10 @@ export async function promoteIfStable(deps: StableDeps, key: ScopeKey, lessonId:
     if (fresh === undefined || !trialIsStable(fresh, now)) return failed();
     // The one eligibility check beyond the lesson's own (the load-time and the nightly path both come through here): a lesson a pending member-correction card contradicts is not made stable (the nightly repair retires it,
     // or a person decides the card). `contradicted` is the nightly pass's list, read once for the project; asked alone, this reads the project's pending cards once, and only for a lesson that has otherwise earned stable.
-    if ((contradicted ?? await contradictedByMemberCard(deps.store, key)).has(fresh.id)) return failed();
+    // A read that fails holds back this promotion only (fail closed): the lesson stays on trial and is looked at again at its next load or in the nightly pass; the caller's other work goes on.
+    let held: boolean;
+    try { held = (contradicted ?? await contradictedByMemberCard(deps.store, key)).has(fresh.id); } catch { return failed(); }
+    if (held) return failed();
     for (const person of peopleOf(fresh)) if (await deps.store.isErased(key, person)) return failed();
     if (!audited) {
       if (!(await requireAudit(deps.audit, { action: "lesson.trial_stable", workspaceId: key.workspaceId, project: key.project, lessonId: fresh.id, facts: { tier: fresh.tier } }))) return false;

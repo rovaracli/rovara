@@ -329,6 +329,20 @@ describe("LP-13 review L12: a trial lesson a member's card contradicts is retire
     while ((await store.get(KEYW, "les_z000"))!.status !== "retired" && nights < 12) { now += DAY; await lessonsTrialRepairJob(w.deps, ORG_A, ["web"], 10_000); nights += 1; }
     expect((await store.get(KEYW, "les_z000"))!.status).toBe("retired");
   });
+  it("L1: the walk resumes where the last night stopped (saved per project, by how many cards were looked at): 450 pending cards are all reached within ceil(450/200) = 3 nights", async () => {
+    // 449 cards that need nothing (the lesson they name is not live on trial) and, last in the order, one that does
+    const noops = Array.from({ length: 449 }, (_, i) => card({ id: `les_c${String(i).padStart(3, "0")}`, contradictsWith: "les_none" }));
+    const w = await repair([trialOld({ id: "les_z000" }), ...noops, card({ id: "les_cz999", contradictsWith: "les_z000" })]);
+    const nights: string[] = [];
+    let now = NOW;
+    w.deps.now = () => now;
+    for (let night = 1; night <= 3; night += 1) {
+      await lessonsTrialRepairJob(w.deps, ORG_A, ["web"], 10_000);
+      nights.push((await w.store.get(KEYW, "les_z000"))!.status);
+      now += DAY;
+    }
+    expect(nights).toEqual(["active", "active", "retired"]);
+  });
   it("R3: promotion skips a lesson a pending member card contradicts (the repair may not have reached it yet), and promotes the others", async () => {
     const ripe = (id: string): Lesson => trialOld({ id, trial: { state: "trial", startedAt: NOW - 15 * DAY }, counters: { loaded: 5, helpful: 0, harmful: 0, citationStale: 0 } });
     const w = await repair([ripe("les_old1"), ripe("les_old2"), ripe("les_old3"), card(), card({ id: "les_card3", contradictsWith: "les_old3" }, false)]);

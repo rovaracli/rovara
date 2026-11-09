@@ -338,6 +338,26 @@ describe("trial becomes stable after 14 days and at least 3 loads with no thumbs
     expect((await store.get(KEY, lesson.id))!.trial?.state).toBe("stable");
   });
 
+  it("L2: a pending-card read that fails at load time holds back that lesson's promotion only (fail closed); the rest of the load report is still applied", async () => {
+    const { deps, store, clock, lesson } = await live();
+    const other = lessonRecord({ id: "les_other9", workspaceId: WS, project: PROJECT, status: "active", approvals: [{ approvalId: "p1", by: "ann", at: 1, mode: "one" }] });
+    await seed(store, other);
+    clock.advance(15 * DAY);
+    await store.mutate(KEY, lesson.id, (l) => ({ counters: { ...l.counters, loaded: 2 } }));
+    await store.putManifest({ ...loadedManifest("task-9", lesson.id), lessons: [...loadedManifest("task-9", lesson.id).lessons, { id: other.id, version: 1, score: 0.5, why: "scope", citation: "valid" }] });
+    const realList = store.list.bind(store);
+    store.list = async (...args: Parameters<typeof realList>) => { if (args[1]?.statuses?.includes("pending") === true) throw new Error("table down"); return realList(...args); };
+    await applyLoadReport(deps, { ...KEY, taskId: "task-9", stage: "IMPLEMENT", round: 1, report: { v: 1, stage: "IMPLEMENT", lessons: [{ id: lesson.id, version: 1, citation: "valid" }, { id: other.id, version: 1, citation: "valid" }] } as never });
+    // not made stable (it could not be checked), but counted as loaded; and the second lesson of the report was applied too
+    expect((await store.get(KEY, lesson.id))!.trial?.state).toBe("trial");
+    expect((await store.get(KEY, lesson.id))!.counters.loaded).toBe(3);
+    expect((await store.get(KEY, other.id))!.counters.loaded).toBe(1);
+    // the next load, with the read back, promotes it
+    store.list = realList;
+    await store.putManifest({ ...loadedManifest("task-10", lesson.id) });
+    await applyLoadReport(deps, { ...KEY, taskId: "task-10", stage: "IMPLEMENT", round: 1, report: { v: 1, stage: "IMPLEMENT", lessons: [{ id: lesson.id, version: 1, citation: "valid" }] } as never });
+    expect((await store.get(KEY, lesson.id))!.trial?.state).toBe("stable");
+  });
   it("R3: at load time too, a lesson a pending member-correction card contradicts stays on trial (one eligibility check for the load and the nightly pass); a card that is not a member's, or none, does not hold it back", async () => {
     const card = (member: boolean, over: Partial<Lesson> = {}): Lesson => lessonRecord({
       id: "les_card9", workspaceId: WS, project: PROJECT, status: "pending", contradictsWith: "les_none", tierReasons: ["contradiction"], provenance: { ...draft().provenance, memberCorrection: member }, ...over,
