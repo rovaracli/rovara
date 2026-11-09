@@ -216,6 +216,11 @@ export interface GitHubPullRequestDetails {
   mergedBy?: string;
   title: string;
   body: string;
+  /** The login of the account that created it, and the id of the repository it is against, when GitHub says. */
+  authorLogin?: string;
+  baseRepositoryId?: string;
+  /** Whether that account is this App's own bot (set by `getPullRequest` only; absent when the App's login cannot be read). */
+  authoredByApp?: boolean;
 }
 
 /** What a merge came to (Plan 6 Task 19): merged (by the method asked, or the other one when the repository does not allow it), merged already, or refused for a fixed reason. */
@@ -570,7 +575,11 @@ export class GitHubAppCredentialProvider {
       contents: "read",
       pull_requests: "read",
     }, scope);
-    return this.getPullRequestWithToken(repository, number, token);
+    const details = await this.getPullRequestWithToken(repository, number, token);
+    // Whose pull request it is: only asked when GitHub named an author (the App's own login is a lookup of its own).
+    if (details.authorLogin === undefined) return details;
+    const own = await this.ownBotLogin();
+    return own === undefined ? details : { ...details, authoredByApp: details.authorLogin.toLowerCase() === own };
   }
 
   /**
@@ -2604,6 +2613,17 @@ function mergedByLogin(value: unknown): string | undefined {
   return typeof login === "string" && /^[A-Za-z0-9](?:[A-Za-z0-9]|-(?=[A-Za-z0-9])){0,38}(?:\[bot\])?$/u.test(login) ? login : undefined;
 }
 
+/** The login of the account in a pull request's `user`, when GitHub gives one. */
+function userLoginOf(user: unknown): string | undefined {
+  const login = user !== null && typeof user === "object" ? (user as Record<string, unknown>).login : undefined;
+  return typeof login === "string" && login.length > 0 && login.length <= 100 ? login : undefined;
+}
+/** The id of a repository object (`base.repo`), as text, when GitHub gives a whole number. */
+function repositoryIdOf(repo: unknown): string | undefined {
+  const id = repo !== null && typeof repo === "object" ? (repo as Record<string, unknown>).id : undefined;
+  return typeof id === "number" && Number.isSafeInteger(id) && id > 0 ? String(id) : undefined;
+}
+
 function parsePullRequestDetails(
   value: unknown,
   repository: InstalledRepository,
@@ -2645,6 +2665,8 @@ function parsePullRequestDetails(
     ...(candidate.merged === true && typeof mergedByLogin(candidate.merged_by) === "string" ? { mergedBy: mergedByLogin(candidate.merged_by)! } : {}),
     title: candidate.title,
     body: candidate.body ?? "",
+    ...(userLoginOf(candidate.user) === undefined ? {} : { authorLogin: userLoginOf(candidate.user)! }),
+    ...(repositoryIdOf((base as Record<string, unknown>).repo) === undefined ? {} : { baseRepositoryId: repositoryIdOf((base as Record<string, unknown>).repo)! }),
   };
 }
 

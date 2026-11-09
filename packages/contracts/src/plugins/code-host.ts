@@ -192,6 +192,10 @@ export const ChangeRequestDetailsSchema = z.object({
   mergedBy: z.string().min(1).max(200).optional(),
   title: z.string().max(500),
   body: z.string().max(65_536),
+  /** Lessons in the repository (R2): whether Rovara's own host account created this change request. Absent when the host does not say (or the account cannot be read): never taken as a yes. */
+  authoredByRovara: z.boolean().optional(),
+  /** Lessons in the repository (R2): the id of the repository the change request is against (the one it targets), as the host numbers it. Absent when the host does not say. */
+  baseRepositoryId: ExternalIdSchema.optional(),
 }).strict();
 export type ChangeRequestDetails = z.infer<typeof ChangeRequestDetailsSchema>;
 

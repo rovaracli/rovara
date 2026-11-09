@@ -12,7 +12,7 @@
 import { randomBytes } from "node:crypto";
 import { LESSON_FILE_MAX_BYTES, LESSON_FILE_PATH } from "@agentx/contracts";
 import { applyFileChanges, parseLessonsFile, textHash } from "./repo-file-format.js";
-import { freshBranchName, headOf, watchRowOf, type RepoFileTarget } from "./repo-file-host.js";
+import { Unconfirmed, freshBranchName, headOf, readOwnPr, verifyRepository, watchRowOf, type RepoFileTarget } from "./repo-file-host.js";
 import { requireAudit } from "./policy.js";
 import type { LessonAuditSink } from "./ports.js";
 import { isProvisional, provisionalNumber, type PrRow, type PrRowStore } from "./repo-file-state.js";
@@ -52,20 +52,15 @@ async function closeRow(deps: EraseSweepDeps, key: ScopeKey, target: RepoFileTar
   const { host, repository, scope } = target;
   if (row.branch === undefined) return true;
   const remember = async (): Promise<void> => { if (row.closedAt === undefined) await deps.rows.putPr(key, { ...row, closedAt: deps.now() }); };
-  let details: Awaited<ReturnType<typeof host.getChangeRequest>> | undefined;
-  try { details = await host.getChangeRequest({ repository, id: row.number, url: "" }, scope); } catch (error) {
-    // The host no longer has it (deleted, or the repository was re-created): nothing to close, and the row must not fail every night for ever.
-    if (isGone(error)) { await remember(); return true; }
-    // The host could not be read right now: closing is tried anyway (closing is always safe, and the update says whether the host is there).
-    details = undefined;
-  }
-  // A pull request with that number that was not made from this row's branch is not Rovara's (the repository behind the address is another one now): it is never touched.
-  if (details !== undefined && details.sourceBranch !== row.branch) { await remember(); return true; }
-  if (details !== undefined && details.state !== "open") {
-    // Merged or closed by someone else: nothing to close. Remembered as closed (a row that carried a gone lesson is kept, so a reopened one is found again); a merged one's text is the file's, taken out by half two.
-    await remember();
-    return true;
-  }
+  // READ AND CONFIRM first. A pull request the host cannot show (any failure but a confirmed 404) is not touched: this throws and the next sweep tries again.
+  const read = await readOwnPr(target, row.number, row.branch);
+  // The host no longer has it (deleted): nothing to close, and the row must not fail every night for ever.
+  if (read.kind === "gone") { await remember(); return true; }
+  // Merged or closed by someone else: nothing to close. Remembered as closed (a row that carried a gone lesson is kept, so a reopened one is found again); a merged one's text is the file's, taken out by half two.
+  if (read.details.state !== "open") { await remember(); return true; }
+  // Open: closed only if Rovara made it. One that someone else made (another branch, another account, another repository behind the address) is never touched; one whose maker the host did not say is tried again.
+  if (read.ours === false) { await remember(); return true; }
+  if (read.ours === undefined) throw new Unconfirmed();
   if (!await audited(deps, key, "lesson.repo_file_pr_closed", { cause, pullRequest: Number(row.number) || 0 })) return false;
   await host.updateChangeRequest({ repository, id: row.number, url: "" }, { state: "closed" }, scope);
   await deps.rows.putPr(key, { ...row, closedAt: deps.now() });
@@ -73,9 +68,6 @@ async function closeRow(deps: EraseSweepDeps, key: ScopeKey, target: RepoFileTar
   if (row.headRevision !== undefined && host.deleteBranch !== undefined && await headOf(target, row.branch) === row.headRevision) await host.deleteBranch(repository, row.branch, scope).catch(() => undefined);
   return true;
 }
-
-/** The host says there is no such pull request (GitHub: HTTP 404 on the lookup). A failure of any other kind is not "gone". */
-const isGone = (error: unknown): boolean => (error as { code?: unknown } | null)?.code === "NOT_FOUND" || /\bHTTP 404\b/u.test(error instanceof Error ? error.message : "");
 
 /**
  * Rows written ahead of the host (see `provisionalNumber`): the pull request, if the host has one for the branch, gets its number; the numbered row replaces the provisional one. A branch with no pull request yet keeps its row
@@ -150,8 +142,9 @@ async function removeErasedBlocks(deps: EraseSweepDeps, key: ScopeKey, target: R
   let covered = false;
   for (const row of openRemovals) {
     const matches = inFile.length > 0 && inFile.every((id) => row.ids.includes(id)) && row.fileHash === fileHash;
-    const details = await host.getChangeRequest({ repository, id: row.number, url: "" }, scope).then((d) => d, (error: unknown) => (isGone(error) ? "gone" as const : undefined));
-    const isOpen = details === undefined || (details !== "gone" && details.state === "open");
+    // Read and confirm: gone (404) or someone else's pull request is not an open removal pull request of ours; one that cannot be read is taken as open (it only stops a duplicate).
+    const read = row.branch === undefined ? { kind: "gone" as const } : await readOwnPr(target, row.number, row.branch).catch(() => undefined);
+    const isOpen = read === undefined || (read.kind === "read" && read.details.state === "open" && read.ours !== false);
     if (matches && isOpen) { covered = true; continue; }
     if (isOpen) { try { await closeRow(deps, key, target, row, "nothing_left"); } catch { result.failures += 1; } }
     else if (row.closedAt === undefined) await deps.rows.putPr(key, { ...row, closedAt: deps.now() }).catch(() => undefined);
@@ -211,10 +204,10 @@ export async function sweepErasures(deps: EraseSweepDeps, key: ScopeKey, target:
   try { rows = (await deps.rows.listPrs(key)).rows.filter((row) => row.place === target.place); } catch { rows = []; result.failures += 1; deps.log?.("lessons_repo_file.erase_rows_unreadable", {}); }
   // A repository Rovara has never written to (no row of any kind) has nothing of its to take out: no host call.
   if (rows.length === 0) return result;
-  let identity: { defaultBranch?: string | undefined } | undefined;
-  try { identity = await target.host.repositoryIdentity(target.repository, target.scope); } catch { identity = undefined; }
-  if (identity?.defaultBranch === undefined) { result.unreachable = true; result.failures += 1; return result; }
-  const reachable = identity;
+  // THE FIRST CHECK: the repository at this address must be the one the place pins (its id), or nothing is read from it or written to it.
+  const verified = await verifyRepository(target);
+  if (!verified.ok) { result.unreachable = true; result.failures += 1; return result; }
+  const reachable = verified.identity;
   try { rows = await resolveProvisional(deps, key, target, rows, result); } catch { result.failures += 1; }
   if (options.former === true) {
     try { result.closed += await closeRows(deps, key, target, rows.filter((row) => row.kind !== "removal"), "repository_left"); } catch { result.failures += 1; }

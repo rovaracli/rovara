@@ -19,7 +19,7 @@ export const OTHER_PLACE = "github:repo/2002";
 export const DAY = 86_400_000;
 export const FILE = ".rovara/lessons.md";
 const SHA0 = "a".repeat(40);
-interface FakePr { number: number; source: string; target: string; baseRevision: string; title: string; body: string; state: "open" | "closed" | "merged"; mergeRevision?: string }
+interface FakePr { number: number; source: string; target: string; baseRevision: string; title: string; body: string; state: "open" | "closed" | "merged"; mergeRevision?: string; /** A person made it (default: Rovara's own account did). */ byPerson?: boolean }
 
 /** A repository: branches with files, a head per branch, change requests. It records every write so a test can see what was and was not written, and refuses what the real adapter refuses. */
 export class FakeRepoHost {
@@ -33,6 +33,8 @@ export class FakeRepoHost {
   /** Every write: a commit, a branch deletion, a change request update. */
   writes: Array<{ op: "commit" | "delete" | "update" | "create"; branch?: string; paths?: string[]; force?: boolean; parent?: string; id?: string; state?: string }> = [];
   failCalls = new Set<string>();
+  /** The id this repository has on the host (the id a place pins). */
+  repoId = "1001";
   /** Every commit the pass asked for, as it asked (paths, `previous`). */
   commitInputs: CommitFilesInput[] = [];
   /** Runs in the middle of a commit, after the caller read and before the host writes: somebody pushes in between. */
@@ -77,7 +79,7 @@ export class FakeRepoHost {
   /** The branches that exist besides main. */
   get branchNames(): string[] { return [...this.files.keys()].filter((name) => name !== "main").sort(); }
 
-  async repositoryIdentity() { await this.seen("repositoryIdentity"); return { id: "1001", fullName: "acme/api", defaultBranch: "main" }; }
+  async repositoryIdentity() { await this.seen("repositoryIdentity"); return { id: this.repoId, fullName: "acme/api", defaultBranch: "main" }; }
   async baseBranchHead(_r: RepositoryRef, branch: string): Promise<string> { await this.seen("baseBranchHead"); const head = this.heads.get(branch); if (head === undefined) throw new Error("no such branch"); return head; }
   private filesAt(revision: string): Map<string, string> | undefined { return this.snapshots.get(revision); }
   async fileAtRevision(_r: RepositoryRef, path: string, revision: string, _s: unknown, options?: { maxBytes?: number }): Promise<string | undefined> {
@@ -145,7 +147,7 @@ export class FakeRepoHost {
   async getChangeRequest(ref: ChangeRequestRef) {
     await this.seen("getChangeRequest");
     const pr = this.prs.find((p) => String(p.number) === ref.id)!;
-    return { ref, state: pr.state, sourceBranch: pr.source, targetBranch: pr.target, headRevision: this.heads.get(pr.source) ?? "f".repeat(40), ...(pr.mergeRevision === undefined ? {} : { mergeRevision: pr.mergeRevision }), title: pr.title, body: pr.body };
+    return { ref, state: pr.state, sourceBranch: pr.source, targetBranch: pr.target, headRevision: this.heads.get(pr.source) ?? "f".repeat(40), ...(pr.mergeRevision === undefined ? {} : { mergeRevision: pr.mergeRevision }), title: pr.title, body: pr.body, authoredByRovara: pr.byPerson !== true, baseRepositoryId: this.repoId };
   }
   async updateChangeRequest(ref: ChangeRequestRef, update: { title?: string; body?: string; state?: "open" | "closed" }) {
     await this.seen("updateChangeRequest");

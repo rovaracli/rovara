@@ -44,6 +44,19 @@ describe("the GitHub adapter's pathKind", () => {
   });
 });
 
+describe("the GitHub adapter's change request details (lessons in the repo: read and confirm before a close)", () => {
+  it("carries whether Rovara's own account made it and the id of the repository it is against, and says nothing when the provider did not", async () => {
+    const details = { number: 7, url: "https://github.com/acme/api/pull/7", state: "open" as const, headBranch: "rovara/lessons-0123456789ab", baseBranch: "main", headCommit: "a".repeat(40), title: "t", body: "b" };
+    const host = (answer: object) => githubCodeHost({ getPullRequest: async () => ({ ...details, ...answer }) } as never, { credentialRef: "ref" });
+    const read = (h: ReturnType<typeof host>) => h.getChangeRequest({ repository: { url: "https://github.com/acme/api.git" }, id: "7", url: "" }, { system: "private-install" });
+    expect(await read(host({ authoredByApp: true, baseRepositoryId: "1001" }))).toMatchObject({ authoredByRovara: true, baseRepositoryId: "1001" });
+    expect(await read(host({ authoredByApp: false }))).toMatchObject({ authoredByRovara: false });
+    const silent = await read(host({}));
+    expect(silent.authoredByRovara).toBeUndefined();
+    expect(silent.baseRepositoryId).toBeUndefined();
+  });
+});
+
 describe("pathExists through a host that has pathKind", () => {
   const facts = (host: Pick<FakeCodeHost, "fileAtRevision" | "pathKind"> | { fileAtRevision: FakeCodeHost["fileAtRevision"]; pathKind?: undefined }) => createCodeFacts({
     reader: codeHostFactsReader(host as never, async () => ({ repository: { url: URL }, scope: SCOPE })), repositoriesOf: async () => ["api"],

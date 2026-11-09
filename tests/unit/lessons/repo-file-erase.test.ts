@@ -26,6 +26,7 @@ const removalOpen = (host: FakeRepoHost): boolean => host.open.some((pr) => { co
 async function twoRepos(mode?: (w: ReturnType<typeof passSetup>) => RepoFileStore) {
   const w = passSetup();
   const second = new FakeRepoHost();
+  second.repoId = "2002";
   for (const host of [w.host, second]) host.setFile("main", FILE, file(KEEP, GONE));
   const targetB = { ...w.target, name: "web", place: OTHER_PLACE, host: second as unknown as CodeHost };
   await w.seedLessons(repoLesson(KEEP), repoLesson(GONE));
@@ -715,5 +716,232 @@ describe("round 6 lows", () => {
     const row = status.repos.find((r) => r.repo === w.target.name);
     expect(row).toMatchObject({ enabled: false, erasurePrs: 1 });
     expect(status.available).toContain(w.target.name);
+  });
+});
+
+// ---- round 7 (N11): the repository behind an address is the one the place pins; read and confirm before any destructive call ----
+/** A different repository that now answers at the same address (the old one was deleted or renamed and a new one took its name; the installation still covers it). */
+class Recreated extends FakeRepoHost {
+  override async repositoryIdentity() { this.calls.push("repositoryIdentity"); return { id: "9999", fullName: "acme/api", defaultBranch: "main" }; }
+}
+const noUpdates = (host: FakeRepoHost) => host.writes.filter((write) => write.op === "update" || write.op === "delete");
+const person = (host: FakeRepoHost, branch = "feature/theirs") => host.reconcileChangeRequest({ repository: { url: "x" }, sourceBranch: branch, targetBranch: "main", title: "theirs", body: "" });
+
+describe("N11 (a): every host action first checks the id the host reports against the id in the place", () => {
+  async function removed() {
+    const ctx = wired();
+    await ctx.w.seedLessons(repoLesson(X), repoLesson(Y));
+    await ctx.w.enable();
+    const r = await ctx.w.run();
+    ctx.w.host.merge(Number((r as { number: string }).number));
+    ctx.project.list = [];
+    const stranger = new Recreated();
+    stranger.setFile("main", FILE, ctx.w.host.file("main", FILE));
+    const reachHost = { host: stranger };
+    ctx.runtime.reach = async (_ws, _p, former) => ({ ...ctx.w.target, place: former.place, repository: { url: former.url }, host: reachHost.host as unknown as CodeHost });
+    return { ...ctx, stranger, reachHost };
+  }
+
+  it("R1: a removed repo whose address now holds another repository with the same file: nothing is written there, and it is recorded as not reachable", async () => {
+    const { w, runtime, stranger, rows } = await removed();
+    await w.store.purge(w.key, X);
+    await closeOpenPullRequestFor(runtime, w.key, X);
+    expect(stranger.writes).toEqual([]);
+    expect(stranger.prs).toEqual([]);
+    expect(stranger.calls).toEqual(["repositoryIdentity"]);
+    expect((await rows.listPrs(w.key)).rows.find((row) => row.kind === "watch")!.unreachableAt).toBeDefined();
+  });
+
+  it("a CURRENT target whose address was re-pointed to another repository is not written to either (the check is on the place, not on reach)", async () => {
+    const { w, runtime, project } = wired();
+    await w.seedLessons(repoLesson(X), repoLesson(Y));
+    await w.enable();
+    const r = await w.run();
+    w.host.merge(Number((r as { number: string }).number));
+    const stranger = new Recreated();
+    stranger.setFile("main", FILE, w.host.file("main", FILE));
+    project.list = [{ ...w.target, host: stranger as unknown as CodeHost }];
+    await w.store.purge(w.key, X);
+    await closeOpenPullRequestFor(runtime, w.key, X);
+    expect(stranger.writes).toEqual([]);
+  });
+
+  it("the weekly pass writes nothing into a repository whose id is not the one the place pins, and says it could not read it", async () => {
+    const w = passSetup();
+    await w.seedLessons(repoLesson(X));
+    await w.enable();
+    w.host.repoId = "9999";
+    expect(await w.run()).toEqual({ status: "problem", problem: "repository_unreadable" });
+    expect(w.host.writes).toEqual([]);
+    expect(w.host.branchNames).toEqual([]);
+  });
+
+  it("the pass's close-and-delete of what it left (a closing entry, a pending branch) is held back in a repository that is not the pinned one", async () => {
+    const w = passSetup();
+    await w.seedLessons(repoLesson(X));
+    await w.enable();
+    await w.run();
+    const open = (await w.current()).open!;
+    const state = await w.current();
+    await w.state.put(w.key, { ...state, enabled: false, open: undefined, closing: [{ branch: open.branch, number: open.number, headRevision: open.headRevision, cause: "switched_off" as const }] }, state.revision);
+    w.host.repoId = "9999";
+    const { finishClosings } = await import("../../../packages/broker/src/lessons/repo-file-pass.js");
+    await finishClosings({ ...w.deps, holder: "h" }, w.key, w.target, (await w.current()));
+    expect(noUpdates(w.host)).toEqual([]);
+    expect(w.host.open).toHaveLength(1);
+    w.host.repoId = "1001";
+    await finishClosings({ ...w.deps, holder: "h" }, w.key, w.target, (await w.current()));
+    expect(w.host.open).toHaveLength(0);
+  });
+
+  it("a Rovara branch with no pull request is not deleted in a repository that is not the pinned one", async () => {
+    const { w, runtime, rows } = wired();
+    await w.seedLessons(repoLesson(X));
+    await w.enable();
+    w.host.failCalls.add("reconcileChangeRequest");
+    await w.run();
+    w.host.failCalls.delete("reconcileChangeRequest");
+    expect(w.host.branchNames).toHaveLength(1);
+    w.host.repoId = "9999";
+    w.clock.advance(DAY);
+    await closeOpenPullRequestFor(runtime, w.key, X);
+    expect(w.host.branchNames).toHaveLength(1);
+    expect(noUpdates(w.host)).toEqual([]);
+    expect((await rows.listPrs(w.key)).rows.some((row) => row.number.startsWith("~"))).toBe(true);
+    w.host.repoId = "1001";
+    await closeOpenPullRequestFor(runtime, w.key, X);
+    expect(w.host.branchNames).toHaveLength(0);
+  });
+});
+
+describe("N11 (b): a pull request is closed only after it is read and confirmed to be Rovara's", () => {
+  /** An open Rovara PR that adds X, X erased, the project's list empty (so the sweep treats the repository as a former one, which closes every open row). */
+  async function erased() {
+    const ctx = wired();
+    await ctx.w.seedLessons(repoLesson(X));
+    await ctx.w.enable();
+    await ctx.w.run();
+    const open = (await ctx.w.current()).open!;
+    await ctx.w.store.purge(ctx.w.key, X);
+    return { ...ctx, open, pr: ctx.w.host.prs.find((p) => p.source === open.branch)! };
+  }
+
+  it("R2: the pull request read fails (not a 404): it is not closed, a PR of a person's in a recreated repository stays open, and the next sweep that can read it closes it", async () => {
+    const { w, runtime, open, pr } = await erased();
+    w.host.failCalls.add("getChangeRequest");
+    await closeOpenPullRequestFor(runtime, w.key, X);
+    expect(pr.state).toBe("open");
+    expect(noUpdates(w.host)).toEqual([]);
+    w.host.failCalls.delete("getChangeRequest");
+    await closeOpenPullRequestFor(runtime, w.key, X);
+    expect(w.host.prs.find((p) => p.source === open.branch)!.state).toBe("closed");
+  });
+
+  it("R2: in a recreated repository, PR #1 there is a person's and the read fails once: it is not closed", async () => {
+    const { w, runtime, project } = wired();
+    await w.seedLessons(repoLesson(X));
+    await w.enable();
+    await w.run();
+    project.list = [];
+    const mine = new FakeRepoHost();
+    await person(mine);
+    mine.failCalls.add("getChangeRequest");
+    runtime.reach = async (_ws, _p, former) => ({ ...w.target, place: former.place, repository: { url: former.url }, host: mine as unknown as CodeHost });
+    await w.store.purge(w.key, X);
+    await closeOpenPullRequestFor(runtime, w.key, X);
+    expect(mine.prs[0]!.state).toBe("open");
+    expect(noUpdates(mine)).toEqual([]);
+  });
+
+  it("R3: taking a repository out of the project (every open row is closed) does not close a pull request it cannot read", async () => {
+    const { w, runtime, project, pr } = await erased();
+    project.list = [];
+    w.host.failCalls.add("getChangeRequest");
+    await repositoriesChanged(runtime, w.key);
+    expect(pr.state).toBe("open");
+    w.host.failCalls.delete("getChangeRequest");
+    await repositoriesChanged(runtime, w.key);
+    expect(pr.state).toBe("closed");
+  });
+
+  it.each([
+    ["made by an account that is not Rovara's", (pr: { byPerson?: boolean }) => { pr.byPerson = true; }],
+    ["made from another branch", (pr: { source: string }) => { pr.source = "feature/theirs"; }],
+  ])("a pull request %s is never closed or deleted, and its row is remembered as closed", async (_what, change) => {
+    const { w, runtime, pr, rows, open } = await erased();
+    change(pr);
+    await closeOpenPullRequestFor(runtime, w.key, X);
+    expect(pr.state).toBe("open");
+    expect(noUpdates(w.host)).toEqual([]);
+    expect((await rows.listPrs(w.key)).rows.find((row) => row.number === open.number)!.closedAt).toBeDefined();
+  });
+
+  it("a pull request against another repository (its base id is not the pinned one) is never closed", async () => {
+    const { w, runtime, pr } = await erased();
+    const raw = w.host.getChangeRequest.bind(w.host);
+    w.host.getChangeRequest = async (ref) => ({ ...(await raw(ref)), baseRepositoryId: "7777" });
+    await closeOpenPullRequestFor(runtime, w.key, X);
+    expect(pr.state).toBe("open");
+    expect(noUpdates(w.host)).toEqual([]);
+  });
+
+  it("a host that does not say who made the pull request, or what it is against, is not taken as a yes: nothing is closed, and it is tried again", async () => {
+    for (const missing of ["authoredByRovara", "baseRepositoryId"] as const) {
+      const { w, runtime, pr } = await erased();
+      const raw = w.host.getChangeRequest.bind(w.host);
+      w.host.getChangeRequest = async (ref) => { const { [missing]: _drop, ...rest } = await raw(ref); void _drop; return rest as never; };
+      const before = await lessonsRepoFileJob(runtime, w.key.workspaceId, [w.key.project], 3_600_000, 0);
+      expect(pr.state).toBe("open");
+      expect(before.repoFileErasureFailures).toBeGreaterThan(0);
+      w.host.getChangeRequest = raw;
+      await closeOpenPullRequestFor(runtime, w.key, X);
+      expect(pr.state).toBe("closed");
+    }
+  });
+
+  it("a stale removal pull request that cannot be read is not closed (and no second one is made beside it)", async () => {
+    const { w, runtime } = await twoRepos();
+    await closeOpenPullRequestFor(runtime, w.key, GONE);
+    const first = w.host.open.at(-1)!;
+    w.host.setFile("main", FILE, `${w.host.file("main", FILE)!}\n- A line the team added.\n`);
+    w.host.failCalls.add("getChangeRequest");
+    await closeOpenPullRequestFor(runtime, w.key, GONE);
+    expect(w.host.prs.find((p) => p.number === first.number)!.state).toBe("open");
+    expect(noUpdates(w.host)).toEqual([]);
+    w.host.failCalls.delete("getChangeRequest");
+    await closeOpenPullRequestFor(runtime, w.key, GONE);
+    expect(w.host.prs.find((p) => p.number === first.number)!.state).toBe("closed");
+  });
+
+  it("the pass's close (switching a repository off) reads and confirms first: an unreadable pull request is left open and finished later; one that is not Rovara's is dropped untouched", async () => {
+    const w = passSetup();
+    await w.seedLessons(repoLesson(X));
+    await w.enable();
+    await w.run();
+    const open = (await w.current()).open!;
+    const runtime: RepoFileRuntime = { deps: w.deps, targets: async () => [w.target], newHolder: () => "n" };
+    w.host.failCalls.add("getChangeRequest");
+    expect(await repoFileAction(runtime, w.key, { action: "off", repo: "api" })).toMatchObject({ ok: true });
+    expect(w.host.open).toHaveLength(1);
+    expect(noUpdates(w.host)).toEqual([]);
+    w.host.failCalls.delete("getChangeRequest");
+    w.clock.advance(DAY);
+    await lessonsRepoFileJob(runtime, w.key.workspaceId, [w.key.project], 3_600_000, 0);
+    expect(w.host.open).toHaveLength(0);
+    expect(w.host.files.has(open.branch)).toBe(false);
+  });
+
+  it("the pass's close does not touch a pull request that is not Rovara's", async () => {
+    const w = passSetup();
+    await w.seedLessons(repoLesson(X));
+    await w.enable();
+    await w.run();
+    const open = (await w.current()).open!;
+    w.host.prs.find((p) => p.source === open.branch)!.byPerson = true;
+    const runtime: RepoFileRuntime = { deps: w.deps, targets: async () => [w.target], newHolder: () => "n" };
+    await repoFileAction(runtime, w.key, { action: "off", repo: "api" });
+    expect(w.host.open).toHaveLength(1);
+    expect(noUpdates(w.host)).toEqual([]);
+    expect((await w.current()).closing).toEqual([]);
   });
 });

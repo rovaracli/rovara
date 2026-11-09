@@ -20,7 +20,7 @@ import type { LessonAuditSink } from "./ports.js";
 import { mentionsLessonsFile, pointerTargets, withPointer, type PointerPath } from "./repo-file-pointer.js";
 import { planRepoFile, type RepoFilePlan } from "./repo-file-plan.js";
 import { parseLessonsFile, textHash } from "./repo-file-format.js";
-import { freshBranchName, headOf, watchRowOf, type RepoFileTarget } from "./repo-file-host.js";
+import { Unconfirmed, freshBranchName, headOf, readOwnPr, repositoryIdOfPlace, verifyRepository, watchRowOf, type RepoFileTarget } from "./repo-file-host.js";
 import { prBody, prTitle } from "./repo-file-pr.js";
 import { MAX_DECLINED, MAX_RENDERED, StateFull, StateUnreadable, additionsPaused, appendOrMark, boundedAppend, provisionalNumber, type OpenPr, type PrRow, type PrRowStore, type RepoFileState, type RepoFileStore } from "./repo-file-state.js";
 import type { LessonStore, ScopeKey } from "./store.js";
@@ -95,6 +95,9 @@ const carriedBy = (open: OpenPr): string[] => [...Object.keys(open.added), ...Ob
 export async function finishClosings(deps: RepoFileDeps, key: ScopeKey, target: RepoFileTarget, state: RepoFileState): Promise<RepoFileState> {
   let current = state;
   const { host, repository, scope } = target;
+  if (current.pending === undefined && current.closing.length === 0) return current;
+  // THE FIRST CHECK, before any close or delete: the repository at this address is the one the place pins. If it is not (or cannot be asked), nothing is touched; the entries wait.
+  if (!(await verifyRepository(target)).ok) return current;
   if (current.pending !== undefined) {
     const pending = current.pending;
     const head = await headOf(target, pending.branch);
@@ -133,8 +136,14 @@ export async function finishClosings(deps: RepoFileDeps, key: ScopeKey, target: 
           continue;
         }
         if (entry.headRevision === undefined || head !== entry.headRevision) { await handOver(); continue; }
-        if (!await audited(deps, key, "lesson.repo_file_pr_closed", { cause: entry.cause, pullRequest: Number(entry.number) || 0 })) continue;
-        await host.updateChangeRequest({ repository, id: entry.number, url: "" }, { state: "closed" }, scope);
+        // READ AND CONFIRM before the close: a pull request that cannot be read (any failure but a confirmed 404) is left alone and tried again; one that is not Rovara's is dropped from the list untouched.
+        const read = await readOwnPr(target, entry.number, entry.branch);
+        if (read.kind === "read" && read.ours === false) { await replace(undefined); continue; }
+        if (read.kind === "read" && read.details.state === "open") {
+          if (read.ours !== true) throw new Unconfirmed();
+          if (!await audited(deps, key, "lesson.repo_file_pr_closed", { cause: entry.cause, pullRequest: Number(entry.number) || 0 })) continue;
+          await host.updateChangeRequest({ repository, id: entry.number, url: "" }, { state: "closed" }, scope);
+        }
         working = { ...entry, closed: true };
         await replace(working);
       }
@@ -294,6 +303,8 @@ async function pass(deps: RepoFileDeps, key: ScopeKey, target: RepoFileTarget, l
     const identity = await host.repositoryIdentity(repository, scope);
     if (identity === undefined) throw new Abort("repository_gone");
     if (identity.defaultBranch === undefined) throw new Abort("repository_unreadable");
+    // The repository at this address must be the one the place pins; anything else is never written to.
+    if (String(identity.id) !== repositoryIdOfPlace(target.place)) throw new Abort("repository_unreadable");
     defaultBranch = identity.defaultBranch;
     head = await host.baseBranchHead(repository, defaultBranch, scope);
   } catch (error) { throw error instanceof Abort ? error : new Abort("repository_unreadable"); }

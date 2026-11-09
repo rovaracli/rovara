@@ -1,6 +1,6 @@
 // Lessons in the repo, lane R2: the few host reads the publish pass and the erasure sweep share. A repository as the lessons code sees it is a `CodeHost` (the neutral port), a repository reference and a scope.
 import { randomBytes } from "node:crypto";
-import { LESSON_FILE_BRANCH_PREFIX, type CodeHost, type HostScope, type RepositoryRef } from "@agentx/contracts";
+import { LESSON_FILE_BRANCH_PREFIX, type ChangeRequestDetails, type CodeHost, type HostScope, type RepositoryIdentity, type RepositoryRef } from "@agentx/contracts";
 import type { PrRow } from "./repo-file-state.js";
 
 /** One repository of a project, with the code host that serves it and the scope to call it in. Provider-neutral: the host is the `CodeHost` port. */
@@ -31,4 +31,48 @@ export const hostKindOfPlace = (place: string): string => place.slice(0, Math.ma
 export function watchRowOf(target: Pick<RepoFileTarget, "place" | "name" | "repository">, at: number, previous?: PrRow): PrRow {
   const url = target.repository.url;
   return { ...(previous ?? {}), place: target.place, kind: "watch", number: "0", ids: [], at: previous?.at ?? at, ...(url.length > 0 && url.length <= 500 ? { repoUrl: url } : {}), repoName: target.name.slice(0, 200) };
+}
+
+/** The repository id a place pins (`github:repo/123` pins `123`), or undefined for a place of any other shape. */
+export const repositoryIdOfPlace = (place: string): string | undefined => /^[a-z][a-z0-9-]*:repo\/([^/\s]+)$/u.exec(place)?.[1];
+
+/**
+ * THE FIRST CHECK before any host action on a repository (a read of its file, a branch, a pull request, a delete): the repository that answers at the target's address must BE the one the place pins. Every host call is addressed by
+ * owner and name, and an address can come to hold another repository (the old one deleted or renamed, a new one given the name), so the id in the place is compared with the id the host reports. A mismatch, a repository the host
+ * will not describe, or a place that pins no id is "not reachable": nothing is read from it and nothing is written to it.
+ */
+export async function verifyRepository(target: RepoFileTarget): Promise<{ ok: true; identity: RepositoryIdentity & { defaultBranch: string } } | { ok: false }> {
+  let identity: RepositoryIdentity | undefined;
+  try { identity = await target.host.repositoryIdentity(target.repository, target.scope); } catch { return { ok: false }; }
+  const pinned = repositoryIdOfPlace(target.place);
+  if (identity === undefined || identity.defaultBranch === undefined || pinned === undefined || String(identity.id) !== pinned) return { ok: false };
+  return { ok: true, identity: { ...identity, defaultBranch: identity.defaultBranch } };
+}
+
+/** The host says there is no such pull request (GitHub: HTTP 404 on the lookup). A failure of any other kind is not "gone". */
+export const isGone = (error: unknown): boolean => (error as { code?: unknown } | null)?.code === "NOT_FOUND" || /\bHTTP 404\b/u.test(error instanceof Error ? error.message : "");
+
+/** A pull request that could not be read, or whose maker could not be confirmed: nothing is done to it, and it is tried again at the next sweep or pass. */
+export class Unconfirmed extends Error {
+  constructor() { super("the pull request could not be read or confirmed as Rovara's"); this.name = "Unconfirmed"; }
+}
+
+/**
+ * READ AND CONFIRM BEFORE ANY DESTRUCTIVE CALL on a pull request. What the host says about change request `number`:
+ *   - `gone`: a confirmed 404 (the only read failure that means anything);
+ *   - `read` with `ours` true: Rovara made it (the host account is Rovara's own, its source branch is the row's branch, and it is against the repository the place pins);
+ *   - `read` with `ours` false: it is someone else's (never touched);
+ *   - `read` with `ours` undefined: the host did not say who made it or what it is against (never taken as a yes).
+ * Any other failure to read THROWS `Unconfirmed`: no action, tried again next time. Callers close or delete only on `ours === true`, and only a pull request that is still open needs the answer.
+ */
+export async function readOwnPr(target: RepoFileTarget, number: string, branch: string): Promise<{ kind: "gone" } | { kind: "read"; details: ChangeRequestDetails; ours: boolean | undefined }> {
+  let details: ChangeRequestDetails;
+  try { details = await target.host.getChangeRequest({ repository: target.repository, id: number, url: "" }, target.scope); } catch (error) {
+    if (isGone(error)) return { kind: "gone" };
+    throw new Unconfirmed();
+  }
+  const pinned = repositoryIdOfPlace(target.place);
+  if (details.sourceBranch !== branch || details.authoredByRovara === false || (pinned !== undefined && details.baseRepositoryId !== undefined && details.baseRepositoryId !== pinned)) return { kind: "read", details, ours: false };
+  if (details.authoredByRovara !== true || details.baseRepositoryId === undefined || pinned === undefined) return { kind: "read", details, ours: undefined };
+  return { kind: "read", details, ours: true };
 }

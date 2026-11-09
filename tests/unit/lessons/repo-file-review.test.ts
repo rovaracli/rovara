@@ -217,7 +217,7 @@ describe("H2 principle B: a person's push to Rovara's PR hands it over; removals
     expect(Object.keys((await w.current()).open!.added).length).toBeGreaterThan(0);
   });
 
-  it("an erased add in a PR a person pushed to: the PR is closed (its commits and branch stay), whether or not the host can be read", async () => {
+  it("an erased add in a PR a person pushed to: the PR is closed (its commits and branch stay); when the host cannot show the PR nothing is closed, and the next sweep that can read it closes it", async () => {
     for (const unreadable of [false, true]) {
       const w = passSetup();
       await w.seedLessons(repoLesson("les_aaaa0001"));
@@ -227,9 +227,14 @@ describe("H2 principle B: a person's push to Rovara's PR hands it over; removals
       w.host.setFile(open.branch, "person.txt", "a person's commit");
       if (unreadable) w.host.failCalls.add("getChangeRequest");
       await w.store.purge(w.key, "les_aaaa0001");
-      w.host.failCalls.delete("nothing");
       await closeOpenPullRequestFor(runtimeOf(w), w.key, "les_aaaa0001");
-      w.host.failCalls.delete("getChangeRequest");
+      if (unreadable) {
+        // Read and confirm before any close: an unreadable pull request is left alone.
+        expect(w.host.open).toHaveLength(1);
+        expect(w.host.writes.filter((write) => write.op === "update")).toEqual([]);
+        w.host.failCalls.delete("getChangeRequest");
+        await closeOpenPullRequestFor(runtimeOf(w), w.key, "les_aaaa0001");
+      }
       expect(w.host.open).toHaveLength(0);
       expect(w.host.files.has(open.branch)).toBe(true);
       expect(w.host.file(open.branch, "person.txt")).toBe("a person's commit");

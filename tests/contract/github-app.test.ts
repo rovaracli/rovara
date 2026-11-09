@@ -755,6 +755,31 @@ describe("GitHub App repository credentials", () => {
     await expect(answer({ repo: { full_name: "PS06756/Personal-Website-Test" } })).resolves.toMatchObject({ number: 42 });
   });
 
+  it("says who made a pull request and which repository it is against: Rovara's own bot account or not, and the base repository's id", async () => {
+    const { privateKey } = generateKeyPairSync("rsa", { modulusLength: 2048 });
+    const pem = privateKey.export({ type: "pkcs8", format: "pem" }).toString();
+    const read = (extra: Record<string, unknown>, secret: string | undefined = JSON.stringify({ slug: "rovara-test" })) => appProvider({
+      credentialRef: "github-agentx-sdlc", appId: "5002502", getPrivateKey: async () => pem,
+      ...(secret === undefined ? {} : { getAppSecret: async () => secret }),
+      fetchImplementation: async (url) => {
+        const requestUrl = typeof url === "string" ? url : url instanceof URL ? url.href : url.url;
+        if (requestUrl.endsWith("/access_tokens")) return new Response(JSON.stringify({ token: "lookup-token" }), { status: 201 });
+        if (requestUrl === "https://api.github.com/app") return new Response("{}", { status: 500 });
+        const fixture = pullRequestFixture();
+        const base = fixture.base as Record<string, unknown>;
+        return new Response(JSON.stringify({ ...fixture, ...extra, base: { ...base, repo: { id: 1001 } } }), { status: 200 });
+      },
+    }).getPullRequest("https://github.com/ps06756/personal-website-test.git", 42, { system: "private-install" });
+    await expect(read({ user: { login: "Rovara-Test[bot]" } })).resolves.toMatchObject({ authorLogin: "Rovara-Test[bot]", authoredByApp: true, baseRepositoryId: "1001" });
+    await expect(read({ user: { login: "someone" } })).resolves.toMatchObject({ authorLogin: "someone", authoredByApp: false, baseRepositoryId: "1001" });
+    // The App's own login cannot be read: no answer (never a yes).
+    const unknown = await read({ user: { login: "rovara-test[bot]" } }, JSON.stringify({}));
+    expect(unknown.authorLogin).toBe("rovara-test[bot]");
+    expect(unknown.authoredByApp).toBeUndefined();
+    // GitHub names no author: nothing is claimed.
+    expect((await read({})).authoredByApp).toBeUndefined();
+  });
+
   it("finds the pull request made from one of Rovara's lessons branches, by branch, with read access only", async () => {
     const { privateKey } = generateKeyPairSync("rsa", { modulusLength: 2048 });
     const pem = privateKey.export({ type: "pkcs8", format: "pem" }).toString();
