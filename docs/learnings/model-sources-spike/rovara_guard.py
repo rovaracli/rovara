@@ -1,7 +1,9 @@
 """Rovara proxy guard: loaded by LiteLLM as a callback module (litellm_settings.callbacks: rovara_guard.proxy_handler_instance).
 
 1. Per-route allow-list of request body fields (anything else is refused with HTTP 400), recursing into fallback
-   targets, plus refusal of x-litellm-* and billing/identity request headers.
+   targets, plus refusal of x-litellm-* and billing/identity request headers. Inside "tools", only plain function tools
+   pass: a provider-side tool (web search, code execution, MCP, computer use, file search, image generation) would reach
+   the internet from the provider's side, outside the worker's egress allow-list, and is billed outside token usage.
 2. In-process no-redirect patch: every httpx client send is forced to follow_redirects=False.
 3. Start-up self-test: the proxy refuses to start if a redirect would still be followed.
 """
@@ -125,6 +127,12 @@ FALLBACK_FIELDS = ("fallbacks", "context_window_fallbacks", "content_policy_fall
 CREDENTIAL_NAMES = {"api_key", "extra_headers", "headers", "api_base", "base_url", "organization", "aws_region_name", "aws_access_key_id",
                     "aws_secret_access_key", "aws_session_token", "service_tier", "extra_body", "extra_query", "litellm_credential_name", "models", "route"}
 OPENROUTER_PROVIDER_KEYS = {"allow_fallbacks", "require_parameters", "data_collection", "only", "order", "ignore", "sort", "zdr", "max_price", "quantizations"}
+# The one tool type each route accepts. Anthropic: a client tool has no type or "custom"; every typed tool (web_search_*, web_fetch_*,
+# code_execution_*, computer_*, bash_*, text_editor_*, memory_*, tool_search_*, mcp_toolset, ...) is run or defined by the provider.
+# OpenAI chat and Responses: "function" only (refuses mcp, web_search*, code_interpreter, file_search, image_generation, computer_use*,
+# local_shell, custom, tool_search, namespace, ...).
+ROUTE_TOOL_TYPES = {"anthropic_messages": {None, "custom"}, "aresponses": {"function"}, "acompletion": {"function"}}
+TOOL_CHOICE_TYPES = {"auto", "any", "none", "required", "tool", "function"}
 BANNED_HEADERS = ("openai-organization", "openai-project", "x-api-key-override")
 ALLOWED_BETAS = {"fine-grained-tool-streaming-2025-05-14", "interleaved-thinking-2025-05-14"}
 
@@ -143,6 +151,31 @@ def _deep_names(value, path="", out=None):
     elif isinstance(value, list):
         for i, v in enumerate(value): _deep_names(v, f"{path}{i}.", out)
     return out
+
+
+def _check_tools(route, tools):
+    """Refuse any tool that is not a plain function (client-side) tool; the message names the offending type."""
+    if tools is None:
+        return
+    if not isinstance(tools, list):
+        _refuse("field tools (must be a list of function tools)")
+    allowed = ROUTE_TOOL_TYPES[route]
+    for i, tool in enumerate(tools):
+        if not isinstance(tool, dict):
+            _refuse(f"tools[{i}] is not a function tool")
+        kind = tool.get("type")
+        if (kind is not None and not isinstance(kind, str)) or kind not in allowed:
+            shown = kind[:64] if isinstance(kind, str) else type(kind).__name__
+            _refuse(f"tool type {shown!r} at tools[{i}] (only function tools are served: provider-side tools such as web search, code execution, MCP, computer use and file search are refused)")
+
+
+def _check_tool_choice(choice):
+    """A tool_choice may name a function, never a provider-side tool type."""
+    if choice is None or isinstance(choice, str):
+        return
+    if not isinstance(choice, dict) or choice.get("type") not in TOOL_CHOICE_TYPES:
+        shown = choice.get("type") if isinstance(choice, dict) and isinstance(choice.get("type"), str) else "unknown"
+        _refuse(f"tool_choice type {shown[:64]!r} (only auto, any, none, required, tool and function are served)")
 
 
 class RovaraGuard(CustomLogger):
@@ -185,6 +218,8 @@ class RovaraGuard(CustomLogger):
                     _refuse("metadata")
             else:
                 _refuse(f"field {name}")
+        _check_tools(route, data.get("tools"))
+        _check_tool_choice(data.get("tool_choice"))
         if route == "acompletion" and "provider" in data:
             p = data["provider"]
             if not isinstance(p, dict) or set(p) - OPENROUTER_PROVIDER_KEYS or p.get("allow_fallbacks") is not False:
