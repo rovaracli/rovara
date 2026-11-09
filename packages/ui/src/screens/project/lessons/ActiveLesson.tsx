@@ -36,7 +36,7 @@ export function ActiveLesson({ project, lesson, now, onDone }: { project: string
   {stale && <Banner title={T.STALE} tone="warning" />}
   {lesson.retireProposed === true && <Banner title={T.RETIRE_PROPOSED} tone="warning" />}
   {lesson.reviewRequired === true && <p className="rv-muted">{T.SENT_BACK}</p>}
-  <p className="rv-lessons-counts"><span>{T.HELPFUL}: {lesson.counters.helpful}</span> · <span>{T.WRONG}: {lesson.counters.harmful}</span> · <span>Loaded {lesson.counters.loaded} {lesson.counters.loaded === 1 ? "time" : "times"}</span>{lesson.lastUsedAt !== undefined && <> · <span>{T.LAST_HELPED} {agoWords(lesson.lastUsedAt, now)}</span></>} · <span>{expiryWords(lesson.expiresAt, now)}</span></p>
+  <p className="rv-lessons-counts" title={T.MARKS_ONCE}><span>{T.HELPFUL}: {lesson.counters.helpful}</span> · <span>{T.WRONG}: {lesson.counters.harmful}</span> · <span>Loaded {lesson.counters.loaded} {lesson.counters.loaded === 1 ? "time" : "times"}</span>{lesson.lastUsedAt !== undefined && <> · <span>{T.LAST_HELPED} {agoWords(lesson.lastUsedAt, now)}</span></>} · <span>{expiryWords(lesson.expiresAt, now)}</span></p>
   <details><summary>{T.WHERE_FROM}</summary>
    {lesson.from.length > 0 && <p>{T.FROM_PEOPLE} <VisibleText text={lesson.from.map(person => person.name).join(", ")} /></p>}
    {lesson.measured && <p>{T.MEASURED}</p>}

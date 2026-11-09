@@ -3,7 +3,7 @@
 // answers a fixed code; it can only add a harmful mark or withhold a helpful one, never approve or lower a tier.
 import { createHash } from "node:crypto";
 import { resolveLearning, emitAudit, modeAllows, type LearningSettingsReader } from "./policy.js";
-import type { AlertSink, CorrectionJudge, CorrectionKind, LessonDeps, LessonVectors } from "./ports.js";
+import type { AlertSink, CorrectionJudge, CorrectionKind, CorrectionRating, LessonDeps, LessonVectors } from "./ports.js";
 import { renewLesson } from "./expiry.js";
 import { retireLesson } from "./curate.js";
 import { isTrialLesson, promoteIfStable } from "./trial.js";
@@ -19,6 +19,7 @@ export const REVERT_WINDOW_MS = 14 * DAY;
 export const STALE_WINDOW_MS = 14 * DAY;
 export const STALE_LIMIT = 3;
 const MAX_JUDGE_CALLS_PER_TASK = 20;
+const RATINGS: readonly CorrectionRating[] = ["caused", "contradicts", "unrelated", "same_ignored"];
 const MAX_CORRECTIONS_PER_LESSON = 5;
 
 /** Only a lesson the worker reported as having reached the prompt counts for anything: loaded, helpful, harmful. A dropped or unreported lesson never ran. */
@@ -56,18 +57,43 @@ const inScope = (lesson: Lesson, correction: TaskCorrection): boolean => {
   return correction.paths.some((p) => expressions.some((re) => re.test(p)));
 };
 
+/** The auto-retire rule: harmful at least 2 and more than helpful. */
+const meetsRetireRule = (lesson: Lesson): boolean => lesson.counters.harmful >= 2 && lesson.counters.harmful > lesson.counters.helpful;
+
+/**
+ * Erasure of a commenter took one of their harmful marks back (`deletion.ts`). If the marks had retired the lesson on their own (the `autoretired` record; never a lesson a person retired) or had made a retire proposal, and
+ * the lesson no longer meets the retire rule without that mark, the lesson is live again (a new version, an audit line `lesson.harm_reversed`) and the proposal is withdrawn. A lesson that still meets the rule stays as it is.
+ */
+export async function reverseHarm(deps: LessonDeps & { store: LessonStore }, key: ScopeKey, lessonId: string): Promise<void> {
+  const lesson = await deps.store.get(key, lessonId);
+  if (lesson === undefined || meetsRetireRule(lesson)) return;
+  if (lesson.status === "retired" && await deps.store.seenOnce(key, `autoretired:${lessonId}`)) {
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      const fresh = await deps.store.get(key, lessonId);
+      if (fresh === undefined || fresh.status !== "retired" || meetsRetireRule(fresh)) return;
+      const setVersion = await deps.store.setVersion(key);
+      const result = await deps.store.commit(key, setVersion, [{ ...fresh, status: "active", version: nextVersion(fresh, await deps.store.versions(key, lessonId)), updatedAt: deps.now() }], deps.now());
+      if (result.ok) { await emitAudit(deps.audit, { action: "lesson.harm_reversed", workspaceId: key.workspaceId, project: key.project, lessonId, facts: { tier: fresh.tier, type: fresh.type } }); return; }
+    }
+    return;
+  }
+  if (lesson.status === "active" && lesson.retireProposedAt !== undefined && await deps.store.seenOnce(key, `harm-proposed:${lessonId}`)) await deps.store.mutate(key, lessonId, () => ({ retireProposedAt: undefined as unknown as number }));
+}
+
 /** Adds one harmful mark and runs the auto-retire rule: harmful at least 2 and more than helpful. Tier 0 retires at once; others go to a person. */
 async function addHarmful(deps: CounterDeps, key: ScopeKey, lessonId: string, forceProposal: boolean): Promise<void> {
   const updated = await deps.store.mutate(key, lessonId, (l) => ({ counters: { ...l.counters, harmful: l.counters.harmful + 1 } }));
   if (updated === undefined) return;
-  const failing = updated.counters.harmful >= 2 && updated.counters.harmful > updated.counters.helpful;
+  const failing = meetsRetireRule(updated);
   // A lesson live with no person behind it (tier 0, or on trial / stable) retires itself when its marks turn against it; the others go to a person.
   if (failing && (updated.tier === 0 || isTrialLesson(updated)) && updated.status === "active") {
-    await retireLesson(deps, key, lessonId, "harmful_counters", undefined, "lesson.auto_retired");
+    // The retirement is remembered as the marks' doing, so erasing a commenter whose mark it rested on can bring the lesson back (`reverseHarm`).
+    if (await retireLesson(deps, key, lessonId, "harmful_counters", undefined, "lesson.auto_retired") && !forceProposal) await deps.store.markOnce(key, `autoretired:${lessonId}`);
     return;
   }
   if ((failing || forceProposal) && updated.status === "active" && updated.retireProposedAt === undefined) {
     await deps.store.mutate(key, lessonId, () => ({ retireProposedAt: deps.now() }));
+    if (!forceProposal) await deps.store.markOnce(key, `harm-proposed:${lessonId}`);
     await emitAudit(deps.audit, { action: "lesson.retire_proposed", workspaceId: key.workspaceId, project: key.project, lessonId, facts: { harmful: updated.counters.harmful, helpful: updated.counters.helpful } });
     try { await deps.alerts?.alert(key.workspaceId, key.project, "retire_proposed"); } catch { /* the proposal is stored */ }
   }
@@ -98,7 +124,8 @@ export async function recordTaskOutcome(deps: CounterDeps, outcome: TaskOutcome)
   // mark back is the safe direction and must not wait for a model.
   if (loaded.size === 0) return result;
   const canJudge = deps.judge.usable === undefined || await deps.judge.usable(key);
-  if (!canJudge && outcome.outcome !== "reverted") return result;
+  // (`deferred`: nothing was counted, so the task is not counted for good and a later delivery, when a model is usable, counts it.)
+  if (!canJudge && outcome.outcome !== "reverted") { result.deferred = true; return result; }
   // The lessons, in the order the judge's calls are spent: those a correction names a file of first (a comment on src/a.ts is about the lessons that reach src/a.ts), then the rest in an order that changes from task to
   // task, so the 20-call limit never favours the same lessons every time.
   const lessons: Lesson[] = [];
@@ -117,10 +144,20 @@ export async function recordTaskOutcome(deps: CounterDeps, outcome: TaskOutcome)
       // Words chosen by code are counted, never rated.
       if (correction.fixed === true) { unjudged = true; continue; }
       if (!canJudge || judgeCalls >= MAX_JUDGE_CALLS_PER_TASK) { unjudged = true; continue; }
-      if (deps.mayCall?.() === false) { unjudged = true; result.deferred = true; continue; }
-      judgeCalls += 1;
-      let rating: Awaited<ReturnType<CorrectionJudge["rate"]>> | undefined;
-      try { rating = await deps.judge.rate({ workspaceId: key.workspaceId, project: key.project, lesson, correctionKind: correction.kind, correctionText: cleanForLearning(correction.text, 1500) }); } catch { rating = undefined; }
+      // A correction is paid for at most once, whatever happens to the worker: its rating is on record once it came back (a delivery after a time cut reuses it), and the judge claims the correction right before the
+      // paid call (a delivery after a worker died there finds it claimed and leaves the correction unjudged).
+      const id = createHash("sha256").update(`${correction.kind}\u0000${correction.authorId ?? ""}\u0000${correction.text}`).digest("hex").slice(0, 16);
+      const rated = (rating: CorrectionRating): string => `rated:${outcome.taskId}:${lessonId}:${id}:${rating}`;
+      let rating: CorrectionRating | undefined;
+      for (const known of RATINGS) if (rating === undefined && await deps.store.seenOnce(key, rated(known))) rating = known;
+      if (rating === undefined) {
+        if (deps.mayCall?.() === false) { unjudged = true; result.deferred = true; continue; }
+        judgeCalls += 1;
+        try {
+          rating = await deps.judge.rate({ workspaceId: key.workspaceId, project: key.project, claim: () => deps.store.markOnce(key, `judged:${outcome.taskId}:${lessonId}:${id}`), lesson, correctionKind: correction.kind, correctionText: cleanForLearning(correction.text, 1500) });
+        } catch { rating = undefined; }
+        if (rating !== undefined) await deps.store.markOnce(key, rated(rating));
+      }
       if (rating === undefined) { unjudged = true; continue; }
       if (rating === "caused" || rating === "contradicts") { blamed = true; if (correction.authorId !== undefined) blamers.add(correction.authorId); }
       if (rating === "same_ignored") { ignored = true; deps.metrics?.count("learning.loaded_but_ignored"); }
@@ -128,6 +165,8 @@ export async function recordTaskOutcome(deps: CounterDeps, outcome: TaskOutcome)
     if (blamed) {
       // The task's record that this lesson was blamed: harm wins, so a later pass that rates the same task differently queues no helpful mark for it.
       await deps.store.markOnce(key, `harmful:${outcome.taskId}:${lessonId}`);
+      // A person's thumbs and their corrections count ONCE per lesson, together (the same `feedback:` key serves both): a person who pressed Helpful on a lesson cannot also have a correction counted against it, and
+      // one whose correction counted against it finds their later Helpful / Wrong here answered `repeat`. Both fail safe (the lesson is never marked twice by one person), and the Lessons tab says so (`MARKS_ONCE`).
       // A harmful mark is one PERSON's, once per lesson ever, under the same key as that person's Helpful / Wrong here / thumbs-down marks: a person who is rude to a lesson on ten tasks marks it once, and two
       // marks (the most a tier-0 or trial lesson needs to retire itself) are two different people. A correction with no known author blames nobody.
       let marked = false;

@@ -41,18 +41,18 @@ export interface OutcomeJudgeDeps {
   capsOverride?: LearningCaps | undefined;
 }
 
-/** What one task has used of the judge: the holds its calls were quoted at (Public holds them to ONE per-task total), and whether a good answer already cleared the pause records. */
-interface TaskState { heldUsd: number; recovered: boolean }
+/** What one task has used of the judge: the task's tally (its holds are the reflection's and the judge's together: Public holds them to ONE per-task total), and whether a good answer already cleared the pause records. */
+interface TaskState { tally: TaskFailureTally; recovered: boolean }
 
 export function modelCorrectionJudge(deps: OutcomeJudgeDeps): CorrectionJudge {
   const perTaskUsd = learningCaps(deps.edition ?? "public", deps.capsOverride).perTaskUsd;
   const requestOf = (scope: { workspaceId: string; project: string }, system: string, user: string, maxHoldUsd: number | undefined) =>
     ({ purpose: "outcome" as const, system, user, maxOutputTokens: MAX_OUTPUT_TOKENS, workspaceId: scope.workspaceId, project: scope.project, ...(maxHoldUsd === undefined ? {} : { maxHoldUsd }) });
   const build = (pause: LessonsPauseStore | undefined, task: TaskState | undefined): CorrectionJudge => ({
-    async rate({ workspaceId, project, lesson, correctionKind, correctionText }) {
+    async rate({ workspaceId, project, claim, lesson, correctionKind, correctionText }) {
       // Public's per-task cap is the TOTAL of the task's holds (the curator's rule, kept per task here): what the task has already held is taken off what this call may hold. A task out of room asks for nothing,
       // records nothing and is not a failure: the correction is simply unjudged.
-      const room = perTaskUsd === undefined || task === undefined ? perTaskUsd : perTaskUsd - task.heldUsd;
+      const room = perTaskUsd === undefined || task === undefined ? perTaskUsd : perTaskUsd - task.tally.heldUsd;
       if (room !== undefined && room < MIN_HOLD_USD) throw new Error("the outcome judge has used the task's budget");
       const nonce = randomBytes(8).toString("hex");
       const user = `<<lesson ${nonce}>>\n(${lesson.type}) ${fenceText(lesson.title)}\n${fenceText(lesson.description)}\n${fenceText(lesson.body)}\n<</lesson ${nonce}>>\n<<correction ${nonce} kind=${correctionKind}>>\n${fenceText(correctionText)}\n<</correction ${nonce}>>`;
@@ -62,7 +62,7 @@ export function modelCorrectionJudge(deps: OutcomeJudgeDeps): CorrectionJudge {
         let quoted: Awaited<ReturnType<NonNullable<PipelineModel["quote"]>>>;
         try { quoted = await deps.model.quote(request); } catch (error) { await noteModelFailure(pause, workspaceId, project, "judge"); throw error; }
         // A task that has held part of its total and finds no model that fits the rest is out of budget, not a reason to pause the project.
-        if (!quoted.ok && quoted.code === "cost_too_high" && task !== undefined && task.heldUsd > 0) throw new Error("the outcome judge has used the task's budget");
+        if (!quoted.ok && quoted.code === "cost_too_high" && task !== undefined && task.tally.heldUsd > 0) throw new Error("the outcome judge has used the task's budget");
         if (!quoted.ok) { await notePause(pause, workspaceId, project, quoted.code); throw new Error("the outcome judge has no usable model"); }
         if (room !== undefined && quoted.usd > room + 1e-9) throw new Error("the outcome judge has used the task's budget");
         estimate = quoted.usd;
@@ -74,7 +74,9 @@ export function modelCorrectionJudge(deps: OutcomeJudgeDeps): CorrectionJudge {
         if (code !== undefined) await notePause(pause, workspaceId, project, code);
         throw new Error("the outcome judge has no room in the learning month");
       }
-      if (task !== undefined) task.heldUsd += estimate;
+      // The correction is claimed right before the paid call: a delivery that comes after a worker died here does not pay for it again.
+      if (claim !== undefined && !(await claim())) throw new Error("this correction was already paid for");
+      if (task !== undefined) task.tally.heldUsd += estimate;
       let reply: Awaited<ReturnType<PipelineModel["complete"]>>;
       try { reply = await deps.model.complete({ ...request, budgetUsd: estimate }); } catch (error) {
         if (isLearningRefusal(error)) await notePause(pause, workspaceId, project, error.code);
@@ -98,7 +100,7 @@ export function modelCorrectionJudge(deps: OutcomeJudgeDeps): CorrectionJudge {
         return (await spendLook(deps.spend, scope.workspaceId, JUDGE_ESTIMATE_USD)) === "ok";
       } catch { return false; }
     },
-    forTask: (tally: TaskFailureTally) => build(failuresCountedOncePerTask(deps.pause, tally), { heldUsd: 0, recovered: false }),
+    forTask: (tally: TaskFailureTally) => build(failuresCountedOncePerTask(deps.pause, tally), { tally, recovered: false }),
   });
   return build(deps.pause, undefined);
 }

@@ -170,18 +170,24 @@ describe.each(factories)("the lesson store contract (%s)", (_name, make) => {
     expect(await store.getIntent(KEY, "int-1")).toMatchObject({ finished: true, done: ["a"] });
     expect(await store.getIntent(KEY, "nope")).toBeUndefined();
   });
-  it("noteHarm / takeBackHarm: the lessons a person's corrections marked harmful are handed back once and forgotten; a person with no reference, or another person, has none", async () => {
+  it("noteHarm / takeBackHarm: the lessons a person's corrections marked harmful are handed to `apply` once each and forgotten only after it returned; a failing `apply` keeps the rest; a person with no reference, or another person, has none", async () => {
     const { store } = make();
     const ann = (await store.markRef(KEY, "ann"))!, bob = (await store.markRef(KEY, "bob"))!;
     await store.noteHarm(KEY, ann, "les_a0000001");
     await store.noteHarm(KEY, ann, "les_a0000001");
     await store.noteHarm(KEY, ann, "les_b0000001");
     await store.noteHarm(KEY, bob, "les_a0000001");
-    expect((await store.takeBackHarm(KEY, "ann")).sort()).toEqual(["les_a0000001", "les_b0000001"]);
-    expect(await store.takeBackHarm(KEY, "ann")).toEqual([]);
-    expect(await store.takeBackHarm(KEY, "nobody")).toEqual([]);
-    expect(await store.takeBackHarm(OTHER, "bob")).toEqual([]);
-    expect(await store.takeBackHarm(KEY, "bob")).toEqual(["les_a0000001"]);
+    const seen: string[] = [];
+    await expect(store.takeBackHarm(KEY, "ann", async (id) => { seen.push(id); if (id === "les_b0000001") throw new Error("crash"); })).rejects.toThrow();
+    expect(seen).toEqual(["les_a0000001", "les_b0000001"]);
+    // The one that was applied is forgotten; the one whose apply failed is still there for the retry.
+    const again: string[] = [];
+    expect(await store.takeBackHarm(KEY, "ann", async (id) => { again.push(id); })).toEqual(["les_b0000001"]);
+    expect(again).toEqual(["les_b0000001"]);
+    expect(await store.takeBackHarm(KEY, "ann", async () => undefined)).toEqual([]);
+    expect(await store.takeBackHarm(KEY, "nobody", async () => undefined)).toEqual([]);
+    expect(await store.takeBackHarm(OTHER, "bob", async () => undefined)).toEqual([]);
+    expect(await store.takeBackHarm(KEY, "bob", async () => undefined)).toEqual(["les_a0000001"]);
   });
   it("scrub rewrites the head AND every stored version; a purged lesson stays gone, with its manifest entries, once-keys and pending outcomes", async () => {
     const { store } = make();

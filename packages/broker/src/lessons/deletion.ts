@@ -12,6 +12,7 @@
 // Person erasure (cause "person_erased"; privacy wins over reproducibility, as for snapshots in §4.13): every lesson the person wrote, or that rests ONLY on
 // their rows, is hard-deleted whatever its code citations say (head, all versions, vector, load-manifest references). Lessons others also support lose the
 // person's id and rows from every version and are kept.
+import { reverseHarm } from "./counters.js";
 import { emitAudit } from "./policy.js";
 import type { LessonAuditSink, LessonVectors } from "./ports.js";
 import { pendingExpiry } from "./expiry.js";
@@ -243,7 +244,11 @@ export function lessonDeletionPort(deps: DeletionDeps): LessonDeletionPort {
       }
       await deps.store.forgetSource(k, `member:${erased.developerId}`);
       // The harmful marks that this person's own corrections (a pull request comment, a note, a send-back) caused are taken back: a correction whose author is erased is no longer evidence against a lesson.
-      for (const lessonId of await deps.store.takeBackHarm(k, erased.developerId)) await deps.store.mutate(k, lessonId, (l) => ({ counters: { ...l.counters, harmful: Math.max(0, l.counters.harmful - 1) } }));
+      await deps.store.takeBackHarm(k, erased.developerId, async (lessonId) => {
+        await deps.store.mutate(k, lessonId, (l) => ({ counters: { ...l.counters, harmful: Math.max(0, l.counters.harmful - 1) } }));
+        // ...and if their mark was what retired the lesson (or asked a person to), and the rest no longer justify it, the lesson is live again.
+        await reverseHarm({ store: deps.store, audit: deps.audit, now: deps.now }, k, lessonId);
+      });
       // The link from the person to the reference their Helpful / Wrong here marks were made with: those marks stay as counts and name nobody.
       await deps.store.forgetMarkRef(k, erased.developerId);
       return { purged, scrubbed };

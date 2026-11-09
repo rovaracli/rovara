@@ -160,7 +160,9 @@ describe("a task's outcome reaches the lessons it loaded, through the real task-
     w.judgeModel.replies.push('{"rating":"caused"}');
     await w.end("merged");
     expect(w.judgeModel.calls).toHaveLength(1);
-    expect(w.judgeModel.calls[0]).toMatchObject({ purpose: "outcome", workspaceId: WS, project: PROJECT, maxHoldUsd: 0.15, budgetUsd: 0.003 });
+    // Public's one per-task cap ($0.15) less what the reflection held ($0.01): the judge is asked for what is left.
+    expect(w.judgeModel.calls[0]).toMatchObject({ purpose: "outcome", workspaceId: WS, project: PROJECT, budgetUsd: 0.003 });
+    expect(Number(w.judgeModel.calls[0]!["maxHoldUsd"])).toBeCloseTo(0.14, 6);
     expect((await w.lesson()).counters.harmful).toBe(1);
     expect(await w.queued()).toEqual([]);
   });

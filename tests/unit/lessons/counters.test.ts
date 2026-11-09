@@ -168,7 +168,7 @@ describe("harmful: judged corrections and the two buttons", () => {
       const { deps, store, judge } = setup(new Judge("unrelated"));
       await seed(store, ...ids.map((id) => lessonRecord({ id })));
       await store.putManifest(manifest(taskId, ids));
-      const r = await recordTaskOutcome(deps, outcome({ taskId, corrections: [correction({ authorId: "a" }), correction({ authorId: "b" })] }));
+      const r = await recordTaskOutcome(deps, outcome({ taskId, corrections: [correction({ authorId: "a", text: "first" }), correction({ authorId: "b", text: "second" })] }));
       expect(judge.calls).toBe(20);
       return r.queuedHelpful;
     };
@@ -180,7 +180,7 @@ describe("harmful: judged corrections and the two buttons", () => {
     const { deps, store, judge } = setup(new Judge("unrelated"));
     await seed(store, ...ids.map((id) => lessonRecord({ id, scope: { repos: ["api"] } })), lessonRecord({ id: "les_zzzzzzzz", scope: { repos: ["api"], paths: ["src/**"] } }));
     await store.putManifest(manifest("task-9", [...ids, "les_zzzzzzzz"]));
-    await recordTaskOutcome(deps, outcome({ taskId: "task-9", corrections: Array.from({ length: 5 }, () => correction({ paths: ["src/a.ts"] })) }));
+    await recordTaskOutcome(deps, outcome({ taskId: "task-9", corrections: Array.from({ length: 5 }, (_, i) => correction({ paths: ["src/a.ts"], text: `fix ${i}` })) }));
     expect(judge.calls).toBe(20);
     expect(judge.lessons.slice(0, 5)).toEqual(Array(5).fill("les_zzzzzzzz"));
   });
@@ -203,7 +203,7 @@ describe("harmful: judged corrections and the two buttons", () => {
     const ids = Array.from({ length: 12 }, (_, i) => `les_cap${String(i).padStart(5, "0")}`);
     await seed(store, ...ids.map((id) => lessonRecord({ id })));
     await store.putManifest(manifest("task-1", ids));
-    await recordTaskOutcome(deps, outcome({ corrections: [correction(), correction(), correction()] }));
+    await recordTaskOutcome(deps, outcome({ corrections: [correction({ text: "one more" }), correction({ text: "two more" }), correction({ text: "three more" })] }));
     expect(judge.calls).toBe(20);
   });
 });

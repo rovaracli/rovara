@@ -43,6 +43,8 @@ const MAP: Partial<Record<LessonAuditEvent["action"], Mapped>> = {
   "lesson.trial_retired": { action: "lesson.retired", facts: (e) => ({ cause: word(e.facts["reason"], "thumbs_down"), tier: num(e.facts["tier"]) }) },
   "lesson.preset_changed": { action: "lesson.preset_changed", facts: (e) => ({ scope: word(e.facts["scope"], "project"), fromPreset: word(e.facts["from"], "unknown"), toPreset: word(e.facts["to"], "unknown"), mode: word(e.facts["mode"], "direct") }) },
   "lesson.preset_proposed": { action: "lesson.preset_proposed", facts: (e) => ({ scope: word(e.facts["scope"], "project"), fromPreset: word(e.facts["from"], "unknown"), toPreset: word(e.facts["to"], "unknown") }) },
+  // Erasing a commenter took back the harmful mark that retired a lesson, and the lesson no longer meets the retire rule: it is live again with no person's act, so it is a go-live with `auto: true`.
+  "lesson.harm_reversed": { action: "lesson.activated", facts: (e) => ({ lessonType: word(e.facts["type"], "unknown"), tier: num(e.facts["tier"]), auto: true }) },
   // Stable makes a lesson publishable to a repository, so it is on the ledger.
   "lesson.trial_stable": { action: "lesson.trial_stable", facts: (e) => ({ tier: num(e.facts["tier"]) }) },
   "lesson.sole_owner_switch_proposed": { action: "lesson.sole_owner_switch_proposed", facts: (e) => ({ fromEnabled: e.facts["from"] === true, toEnabled: e.facts["to"] === true }) },

@@ -127,8 +127,12 @@ export async function spendLook(spend: LearningSpend, workspaceId: string, estim
 export const pauseOfLook = (look: "month_full" | "too_large" | "unreadable"): LessonsPauseCode | undefined => (look === "month_full" ? "monthly_limit" : look === "too_large" ? "cost_too_high" : undefined);
 
 /** What one task's learning has counted so far, per kind (shared by the reflector's and the curator's pause handles of that task). */
-export interface TaskFailureTally { counted: Set<FailureKind> }
-export const newTaskFailureTally = (): TaskFailureTally => ({ counted: new Set() });
+export interface TaskFailureTally {
+  counted: Set<FailureKind>;
+  /** What the task's learning calls have held so far (the reflection's quote, then the outcome judge's): Public's per-task cap is one total for them together. */
+  heldUsd: number;
+}
+export const newTaskFailureTally = (): TaskFailureTally => ({ counted: new Set(), heldUsd: 0 });
 /**
  * LP-10 R8 / LP-15: a pause handle that counts failed model calls toward `model_failed` ONCE per kind for a task (or one draft set), not once per call. A task whose reflection is judged against several neighbours, draft
  * by draft, could otherwise reach the three failures that pause the project from one short outage. After the first failure of a kind the rest of the task's failures of that kind are not counted (the reason and the clear are

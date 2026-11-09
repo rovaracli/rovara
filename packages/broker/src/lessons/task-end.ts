@@ -26,6 +26,7 @@ import type { ReflectQueue } from "./reflect-queue.js";
 import type { OutcomeRowReader } from "./task-outcome-rows.js";
 import { lessonTaskRefs } from "./live-visibility.js";
 import type { LessonStore, ScopeKey } from "./store.js";
+import { sameId } from "./types.js";
 import { buildTaskReflectSubject, type SendBackFact, type TaskSubjectFacts } from "./task-subject.js";
 
 /** What the task record side knows: the subject's facts without the parts that live in the Team record, and the requests of the task's human send-backs. */
@@ -143,7 +144,7 @@ function correctionsOf(base: TaskSubjectBase, subject: ReflectSubject, at: numbe
   });
   for (const span of subject.spans) {
     if (span.kind !== "pr_comment" && span.kind !== "remembered") continue;
-    if (span.trust !== "member" || span.fixedText === true || span.authorId === undefined || span.authorId === subject.initiatorId || looksQuoted(span.text)) continue;
+    if (span.trust !== "member" || span.fixedText === true || span.authorId === undefined || (subject.initiatorId !== undefined && sameId(span.authorId, subject.initiatorId)) || looksQuoted(span.text)) continue;
     if (span.kind === "pr_comment" && !looksLikeCorrection(span.text)) continue;
     corrections.push({ kind: "review_comment", paths: span.paths ?? [], text: span.text, at, authorId: span.authorId });
   }
@@ -230,7 +231,8 @@ export async function learnFromEndedTaskTyped(deps: TaskLearningDeps, input: { w
     const processDeps = withFailuresCountedOnce(deps.process, tally);
     // The reflection (and its drafts) come first and are never held back by the counting: whatever they come to, the corrections that need the judge are counted after them (`countOutcome`, "after").
     try {
-      const result = await reflectSubject(withFailuresCountedOnce(deps.reflect, tally), subject);
+      // The reflection's hold goes on the task's tally, so the outcome judge that follows shares Public's one per-task cap with it.
+      const result = await reflectSubject({ ...withFailuresCountedOnce(deps.reflect, tally), taskBudget: tally }, subject);
       if (result.status !== "ok") {
         // Lane 1b: "learning_paused" is a refusal (no provider, every model forbidden, a price or budget that cannot fit, the month's limit): the reason is already recorded as the project's pause, and trying again changes
         // nothing, so it ends the reflection (final) whatever fault state an earlier step left. A spend look that could not read the counter is "spend_refused" with a retryable fault (nothing was held or sent).

@@ -120,7 +120,7 @@ export type CorrectionRating = "caused" | "contradicts" | "unrelated" | "same_ig
 /** Rates one correction against one lesson that was loaded for the task (no tools; the answer is a fixed code). */
 export interface CorrectionJudge {
   /** Rates one correction. Throws when it cannot (no model, a refusal, a failed call, an answer that does not parse): the caller leaves the correction unjudged, which gives no helpful mark. */
-  rate(input: { workspaceId: string; project: string; lesson: Pick<Lesson, "id" | "title" | "description" | "body" | "type">; correctionKind: CorrectionKind; correctionText: string }): Promise<CorrectionRating>;
+  rate(input: { workspaceId: string; project: string; /** Called once, right before the paid model call: false means this very correction was already paid for (by an earlier delivery), so the call is not made. */ claim?: () => Promise<boolean>; lesson: Pick<Lesson, "id" | "title" | "description" | "body" | "type">; correctionKind: CorrectionKind; correctionText: string }): Promise<CorrectionRating>;
   /** Whether outcomes can be rated now: a usable model on the company's own provider and room in the learning month. Reads and records nothing. Absent: assumed usable. */
   usable?(scope: { workspaceId: string; project: string }): Promise<boolean>;
   /** The same judge counting its failed calls toward `model_failed` once for this task (`failuresCountedOncePerTask`). Absent: the judge counts as it is. */

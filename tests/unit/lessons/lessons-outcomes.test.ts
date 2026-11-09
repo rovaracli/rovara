@@ -48,12 +48,12 @@ const baseOf = (spans: EvidenceSpan[], over: Partial<TaskSubjectBase["facts"]> =
   sendBackRequestIds: [],
 });
 
-async function counted(spans: EvidenceSpan[], judge: CorrectionJudge, over: { settings?: ReturnType<typeof settings>; base?: TaskSubjectBase } = {}) {
+async function counted(spans: EvidenceSpan[], judge: CorrectionJudge, over: { settings?: ReturnType<typeof settings>; base?: TaskSubjectBase; lesson?: Parameters<typeof lessonRecord>[0] } = {}) {
   const store = new InMemoryLessonStore();
   const audit = new Audit();
   const clock = new Clock();
   const configured = over.settings ?? settings({ mode: "On" });
-  await seed(store, lessonRecord({ id: "les_used0001" }));
+  await seed(store, lessonRecord({ id: "les_used0001", ...over.lesson }));
   await store.putManifest({ taskId: "task-1", workspaceId: WS, project: PROJECT, stage: "IMPLEMENT", round: 1, setVersion: 1, memory: "live", at: 1, lessons: [{ id: "les_used0001", version: 1, score: 0.5, why: "scope", citation: "valid" }], bytes: 10 });
   const rows = new Rows();
   const process: ProcessDeps = {
@@ -63,7 +63,7 @@ async function counted(spans: EvidenceSpan[], judge: CorrectionJudge, over: { se
   const counters: CounterDeps = { store, judge, settings: configured, audit, now: clock.now };
   const deps: TaskLearningDeps = {
     source: { read: async () => over.base ?? baseOf(spans) }, rows, settings: configured, counters,
-    reflect: { model: new ScriptedModel([reply(candidateJson({ type: "fact", evidenceSpanIds: ["S1"] }))]), spend: new Spend(), audit, settings: configured, edition: "public", now: clock.now }, process,
+    reflect: { model: Object.assign(new ScriptedModel([reply(candidateJson({ type: "fact", evidenceSpanIds: ["S1"] }))]), { quote: async () => ({ ok: true as const, usd: 0.02 }) }), spend: new Spend(), audit, settings: configured, edition: "public", now: clock.now }, process,
   };
   const queued = async () => (await store.duePending(KEY, clock.now() + 30 * DAY, 100)).map((entry) => entry.key);
   return { deps, store, rows, clock, queued, counters };
@@ -234,23 +234,19 @@ describe("M1: only a correction that is really about a lesson harms it", () => {
   });
   it("the file a comment was made on goes with it: a lesson that does not reach the file is not judged against it, one that does is", async () => {
     const judge = new RecordingJudge("caused");
-    const w = await counted([span("pr_comment", "This contradicts the lesson, say the opposite", { paths: ["docs/README.md"] })], judge);
-    await seed(w.store, lessonRecord({ id: "les_used0001", scope: { repos: ["api"], paths: ["src/retry/**"] } }));
+    const w = await counted([span("pr_comment", "This contradicts the lesson, say the opposite", { paths: ["docs/README.md"] })], judge, { lesson: { scope: { repos: ["api"], paths: ["src/retry/**"] } } });
     await learnFromEndedTask(w.deps, merged);
     expect(judge.asked).toEqual([]);
     expect((await w.store.get(KEY, "les_used0001"))!.counters.harmful).toBe(0);
-    const reached = await counted([span("pr_comment", "This contradicts the lesson, say the opposite", { paths: ["src/retry/a.ts"] })], new RecordingJudge("caused"));
-    await seed(reached.store, lessonRecord({ id: "les_used0001", scope: { repos: ["api"], paths: ["src/retry/**"] } }));
+    const reached = await counted([span("pr_comment", "This contradicts the lesson, say the opposite", { paths: ["src/retry/a.ts"] })], new RecordingJudge("caused"), { lesson: { scope: { repos: ["api"], paths: ["src/retry/**"] } } });
     await learnFromEndedTask(reached.deps, merged);
     expect((await reached.store.get(KEY, "les_used0001"))!.counters.harmful).toBe(1);
   });
   it("two different members' comments are two harmful marks and retire a tier-0 lesson; one member's two comments are one mark", async () => {
-    const two = await counted([span("pr_comment", "This is wrong, avoid this helper", { authorId: "ann" }), span("pr_comment", "Please don't use this helper here", { authorId: "bob" })], new RecordingJudge("caused"));
-    await seed(two.store, lessonRecord({ id: "les_used0001", tier: 0 }));
+    const two = await counted([span("pr_comment", "This is wrong, avoid this helper", { authorId: "ann" }), span("pr_comment", "Please don't use this helper here", { authorId: "bob" })], new RecordingJudge("caused"), { lesson: { tier: 0 } });
     await learnFromEndedTask(two.deps, merged);
     expect((await two.store.get(KEY, "les_used0001"))!).toMatchObject({ status: "retired", counters: { harmful: 2 } });
-    const one = await counted([span("pr_comment", "This is wrong, avoid this helper", { authorId: "ann" }), span("pr_comment", "Please don't use this helper here", { authorId: "ann" })], new RecordingJudge("caused"));
-    await seed(one.store, lessonRecord({ id: "les_used0001", tier: 0 }));
+    const one = await counted([span("pr_comment", "This is wrong, avoid this helper", { authorId: "ann" }), span("pr_comment", "Please don't use this helper here", { authorId: "ann" })], new RecordingJudge("caused"), { lesson: { tier: 0 } });
     await learnFromEndedTask(one.deps, merged);
     expect((await one.store.get(KEY, "les_used0001"))!).toMatchObject({ status: "active", counters: { harmful: 1 } });
   });
@@ -310,9 +306,9 @@ describe("M3: the reflection comes first; judging has its own time and its own l
     expect(await w.queued()).toEqual([]);
     w.clock.advance(61_000);
     judge.rate = rate;
-    // Nothing was counted for good, so the redelivery judges everything (all three) and now queues the mark.
+    // Nothing was counted for good, so the redelivery goes on: the two corrections already rated are not paid for again (L11), only the third is, and now the mark is queued.
     await learnFromEndedTask(w.deps, merged);
-    expect(judge.asked).toHaveLength(2 + 3);
+    expect(judge.asked).toHaveLength(2 + 1);
     expect(await w.queued()).toEqual([MARK]);
   });
   it("a task judged to the end is counted for good: a reflection tried again does not pay for the judging again", async () => {
@@ -339,8 +335,7 @@ describe("L7: erasing a commenter takes back the harmful marks their corrections
   it("their marks are removed (once, floor zero), another member's mark stays, and a mark made by a button is left as the existing rule has it; the person can make no new mark", async () => {
     const { lessonDeletionPort } = await import("../../../packages/broker/src/lessons/deletion.js");
     const judge = new RecordingJudge("caused");
-    const w = await counted([span("pr_comment", "This is wrong, avoid this helper", { authorId: "erin" }), span("pr_comment", "Please don't use this helper here", { authorId: "fay" })], judge);
-    await seed(w.store, lessonRecord({ id: "les_used0001", tier: 1 }));
+    const w = await counted([span("pr_comment", "This is wrong, avoid this helper", { authorId: "erin" }), span("pr_comment", "Please don't use this helper here", { authorId: "fay" })], judge, { lesson: { tier: 1 } });
     await learnFromEndedTask(w.deps, merged);
     expect((await w.store.get(KEY, "les_used0001"))!.counters.harmful).toBe(2);
     const port = lessonDeletionPort({ store: w.store, vectors: new MemoryVectors(), audit: new Audit(), now: w.clock.now });
@@ -350,6 +345,104 @@ describe("L7: erasing a commenter takes back the harmful marks their corrections
     await port.erasePerson(WS, PROJECT, { developerId: "erin" }, new Set());
     expect((await w.store.get(KEY, "les_used0001"))!.counters.harmful).toBe(1);
     expect(await w.store.markRef(KEY, "erin")).toBeUndefined();
-    expect(await w.store.takeBackHarm(KEY, "fay")).toEqual(["les_used0001"]);
+    expect(await w.store.takeBackHarm(KEY, "fay", async () => undefined)).toEqual(["les_used0001"]);
+  });
+});
+
+describe("L11: a correction is paid for at most once, whatever happens to the worker", () => {
+  const comments = [span("pr_comment", "You should use the shared helper here", { authorId: "ann" }), span("pr_comment", "Please avoid this loop, use withRetry", { authorId: "bob" })];
+  const quoting = (replies: Array<string | Error>) => Object.assign(new ScriptedModel(replies), { quote: async () => ({ ok: true as const, usd: 0.004 }) });
+  it("a worker that dies after a paid call started (no rating came back) does not pay again on the next delivery: the correction stays unjudged, the others are rated", async () => {
+    const model = quoting([new Error("worker died"), '{"rating":"unrelated"}']);
+    const w = await counted(comments, modelCorrectionJudge({ model, spend: new Spend() }));
+    // The worker dies before the task's "counted for good" mark is written: the next delivery runs the whole judging again.
+    const real = w.store;
+    w.deps.counters = { ...w.deps.counters!, store: Object.assign(Object.create(real) as InMemoryLessonStore, { markOnce: async (key: typeof KEY, name: string) => { if (name.startsWith("outcome-counted:")) throw new Error("worker died"); return real.markOnce(key, name); } }) };
+    await learnFromEndedTask(w.deps, merged);
+    expect(model.calls).toHaveLength(2);
+    expect(await w.queued()).toEqual([]);
+    model.replies.push('{"rating":"unrelated"}', '{"rating":"unrelated"}');
+    await learnFromEndedTask(w.deps, merged);
+    // The first correction was claimed before its call, so it is not called again; the second has its rating on record and is not called again either.
+    expect(model.calls).toHaveLength(2);
+    expect(await w.queued()).toEqual([]);
+  });
+  it("a refusal before any call (no budget left, no usable model) claims nothing, so a later delivery can still pay for the correction", async () => {
+    const model = quoting(['{"rating":"unrelated"}', '{"rating":"unrelated"}']);
+    const judge = modelCorrectionJudge({ model, spend: Object.assign(new Spend(), { admitted: false }) });
+    const w = await counted(comments, judge);
+    await learnFromEndedTask(w.deps, merged);
+    expect(model.calls).toHaveLength(0);
+    w.deps.counters = { ...w.deps.counters!, judge: modelCorrectionJudge({ model, spend: new Spend() }) };
+    await learnFromEndedTask(w.deps, merged);
+    expect(model.calls).toHaveLength(2);
+    expect(await w.queued()).toEqual([MARK]);
+  });
+});
+
+describe("L3: one Public per-task cap is shared by the reflection and the outcome judge", () => {
+  it("the judge's room is the cap less what the reflection held; a call that does not fit is refused before the model, and no pause is recorded", async () => {
+    const comments = [span("pr_comment", "You should use the shared helper here", { authorId: "ann" }), span("pr_comment", "Please avoid this loop, use withRetry", { authorId: "bob" })];
+    const judgeModel = Object.assign(new ScriptedModel(['{"rating":"unrelated"}', '{"rating":"unrelated"}']), { quotes: [] as Array<Record<string, unknown>>, quote: async function (this: { quotes: Array<Record<string, unknown>> }, request: Record<string, unknown>) { this.quotes.push({ ...request }); return { ok: true as const, usd: 0.06 }; } });
+    const w = await counted(comments, modelCorrectionJudge({ model: judgeModel, spend: new Spend(), edition: "public" }));
+    const reflect = w.deps.reflect.model;
+    w.deps.reflect.model = { complete: reflect.complete.bind(reflect), quote: async () => ({ ok: true, usd: 0.1 }) };
+    await learnFromEndedTask(w.deps, merged);
+    // 0.15 - 0.10 held by the reflection = 0.05 of room: a 0.06 judge call does not fit.
+    expect(judgeModel.calls).toHaveLength(0);
+    // (the first quote is the usability probe, asked at the whole cap; the two ratings were asked what is left)
+    expect(judgeModel.quotes.slice(1).map((q) => Number(q["maxHoldUsd"]).toFixed(2))).toEqual(["0.05", "0.05"]);
+    expect(await w.queued()).toEqual([]);
+  });
+});
+
+describe("L13: the initiator is matched as an id is everywhere (case and Unicode form)", () => {
+  it("an initiator's comment under another spelling of their id is still skipped", async () => {
+    const judge = new RecordingJudge("caused");
+    const w = await counted([span("pr_comment", "You should use the shared helper here", { authorId: "STARTER" })], judge);
+    await learnFromEndedTask(w.deps, merged);
+    expect(judge.asked).toEqual([]);
+  });
+});
+
+describe("L12: erasing a commenter also reverses what their marks caused", () => {
+  async function erased(over: Partial<Parameters<typeof lessonRecord>[0]> = {}, authors: string[] = ["erin", "fay"]) {
+    const { lessonDeletionPort } = await import("../../../packages/broker/src/lessons/deletion.js");
+    const w = await counted(authors.map((authorId, i) => span("pr_comment", `Please don't use this helper here, number ${i}`, { authorId })), new RecordingJudge("caused"), { lesson: { tier: 0, ...over } });
+    await learnFromEndedTask(w.deps, merged);
+    const audit = new Audit();
+    const port = lessonDeletionPort({ store: w.store, vectors: new MemoryVectors(), audit, now: w.clock.now });
+    return { w, port, audit };
+  }
+  it("a tier-0 lesson the two marks retired is active again, with an audit line, once the erased person's mark is gone (it no longer meets the rule); a lesson a person retired is left alone", async () => {
+    const { w, port, audit } = await erased();
+    expect((await w.store.get(KEY, "les_used0001"))!.status).toBe("retired");
+    await port.erasePerson(WS, PROJECT, { developerId: "erin" }, new Set());
+    expect((await w.store.get(KEY, "les_used0001"))!).toMatchObject({ status: "active", counters: { harmful: 1 } });
+    expect(audit.actions()).toContain("lesson.harm_reversed");
+    // A second erasure changes nothing more.
+    await port.erasePerson(WS, PROJECT, { developerId: "erin" }, new Set());
+    expect((await w.store.get(KEY, "les_used0001"))!.status).toBe("active");
+    // A lesson a person retired is not brought back, whatever happens to the marks.
+    const { retireLesson } = await import("../../../packages/broker/src/lessons/curate.js");
+    const kept = await counted([span("pr_comment", "This is wrong, avoid this helper", { authorId: "erin" })], new RecordingJudge("caused"), { lesson: { tier: 0 } });
+    await learnFromEndedTask(kept.deps, merged);
+    expect(await retireLesson({ store: kept.store, audit: new Audit(), now: kept.clock.now }, KEY, "les_used0001", "person", "ann")).toBe(true);
+    const { lessonDeletionPort } = await import("../../../packages/broker/src/lessons/deletion.js");
+    await lessonDeletionPort({ store: kept.store, vectors: new MemoryVectors(), audit: new Audit(), now: kept.clock.now }).erasePerson(WS, PROJECT, { developerId: "erin" }, new Set());
+    expect((await kept.store.get(KEY, "les_used0001"))!).toMatchObject({ status: "retired", counters: { harmful: 0 } });
+  });
+  it("a lesson that still meets the rule without the erased person's mark stays retired; a retire proposal those marks caused is withdrawn when the rule no longer holds", async () => {
+    const stays = await erased({}, ["erin", "fay", "gus"]);
+    expect((await stays.w.store.get(KEY, "les_used0001"))!.status).toBe("retired");
+    expect((await stays.w.store.get(KEY, "les_used0001"))!.counters.harmful).toBe(3);
+    await stays.port.erasePerson(WS, PROJECT, { developerId: "erin" }, new Set());
+    expect((await stays.w.store.get(KEY, "les_used0001"))!).toMatchObject({ status: "retired", counters: { harmful: 2 } });
+    expect((await stays.w.store.get(KEY, "les_used0001"))!.status).toBe("retired");
+    const proposed = await erased({ tier: 1, approvals: [{ approvalId: "a", by: "ann", at: 1, mode: "one" }] });
+    expect((await proposed.w.store.get(KEY, "les_used0001"))!.retireProposedAt).toBeDefined();
+    await proposed.port.erasePerson(WS, PROJECT, { developerId: "erin" }, new Set());
+    expect((await proposed.w.store.get(KEY, "les_used0001"))!).toMatchObject({ status: "active", counters: { harmful: 1 } });
+    expect((await proposed.w.store.get(KEY, "les_used0001"))!.retireProposedAt).toBeUndefined();
   });
 });
