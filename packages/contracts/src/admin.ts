@@ -224,7 +224,8 @@ export const HEALTH_ALARM_CONDITIONAL_SUFFIXES = ["BedrockThrottling", "Classifi
  * HEALTH-COND-1: the conditional alarms the Team record's switch creates (the lessons worker's three and the record's six). With the switch ON they are required, so a missing one shows MISSING on Health; with it OFF they are
  * not expected. The other conditional alarms (Bedrock-only, the automatic renewal's) stay conditional either way.
  */
-export const HEALTH_ALARM_TEAM_RECORD_SUFFIXES: readonly string[] = HEALTH_ALARM_CONDITIONAL_SUFFIXES.filter((suffix) => suffix.startsWith("Lessons") || suffix.startsWith("TeamRecord"));
+type TeamRecordAlarmSuffix = Extract<typeof HEALTH_ALARM_CONDITIONAL_SUFFIXES[number], `Lessons${string}` | `TeamRecord${string}`>;
+export const HEALTH_ALARM_TEAM_RECORD_SUFFIXES: readonly TeamRecordAlarmSuffix[] = HEALTH_ALARM_CONDITIONAL_SUFFIXES.filter((suffix): suffix is TeamRecordAlarmSuffix => suffix.startsWith("Lessons") || suffix.startsWith("TeamRecord"));
 /** The state the health route gives a listed alarm CloudWatch did not return. */
 export const MISSING_ALARM_STATE = "MISSING";
 

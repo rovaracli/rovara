@@ -44,6 +44,20 @@ describe("loaded knowledge is behind learning", () => {
     expect(await routeLoadedKnowledgeFor(deps({ lessons: false }), caller, "GET", url)).toBeUndefined();
     await expect(routeLoadedKnowledgeFor(deps({ settings: { mode: "Off" } }), caller, "GET", url)).rejects.toMatchObject({ code: "LEARNING_OFF" });
   });
+  it("with the switch off, records kept from before are returned as they are (only an empty list becomes the switched-off code)", async () => {
+    setLearnedLessonsGate(() => false);
+    const D = "a".repeat(64);
+    const manifest = {
+      schemaVersion: 1, stage: "plan", repos: [{ name: "engine", commit: "f".repeat(40), readAt: "base" }],
+      items: [{ layer: "repo", repo: "engine", path: ".kiro/steering/product.md", scopeDir: "", format: "kiro_steering", activation: "always", bytes: 10, digest: D, fileDigest: D, readAt: "base", status: "loaded", why: { kind: "always" } }],
+      omitted: { skipped: 0, available: 0 }, skills: [], skippedSkills: [], sources: [],
+      budget: { alwaysOnBytes: 10, alwaysOnLimitBytes: 131072, additionsBytes: 0, additionsLimitBytes: 131072, skipped: 0 },
+    };
+    const kept = { tableName: "state", now: () => 1, developer: { signInTableName: "signin" }, lessons: { settings: { read: async () => ({ mode: "On" }) } },
+      documentClient: { send: async () => ({ Items: [{ operationId: "op1", recordedAt: "2026-10-30T12:00:00.000Z", manifest }] }) } } as never;
+    const answer = await routeLoadedKnowledgeFor(kept, caller, "GET", url) as { stages: Array<{ operationId: string }> };
+    expect(answer.stages.map((record) => record.operationId)).toEqual(["op1"]);
+  });
   it("a task the caller cannot read goes to the route, which refuses it as it does today", async () => {
     access.deny = true;
     await expect(routeLoadedKnowledgeFor(deps(), caller, "GET", url)).rejects.toBeDefined();

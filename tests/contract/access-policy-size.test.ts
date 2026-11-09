@@ -26,9 +26,9 @@ function accessTemplate(env: string): Json {
 }
 
 /** Every inline policy of every role, and every managed policy, as IAM receives them once the stack is deployed with these parameter values and no company boundary. */
-function resolved(json: Json, env: string, parameters: { CustomDomainName: string; CustomDomainHostedZoneId: string }) {
+function resolved(json: Json, env: string, parameters: { CustomDomainName: string; CustomDomainHostedZoneId: string }, companyBoundary = "") {
   const context: CfnContext = {
-    parameters: { ...parameters, PermissionsBoundaryArn: "", OperatorPrincipalArn: "", DefaultPermissionsBoundary: defaultBoundaryArn({ env, partition: "aws", account: "123456789012" }) },
+    parameters: { ...parameters, PermissionsBoundaryArn: companyBoundary, OperatorPrincipalArn: "", DefaultPermissionsBoundary: defaultBoundaryArn({ env, partition: "aws", account: "123456789012" }) },
     conditions: json.Conditions,
     pseudo: { "AWS::Region": "ap-southeast-2" },
   };
@@ -88,5 +88,20 @@ describe("the trimming of the deploy policy changed no allowance", () => {
     // The same two resources the boundary Deny statements name: nothing was widened.
     expect(statements.find((statement) => statement.Sid === "IamKeepBoundary")!.Resource).toEqual(roles.Resource);
     expect(statements.some((statement) => statement.Sid === "PassRoles")).toBe(false);
+  });
+});
+
+describe("with a company's own permissions boundary", () => {
+  // The boundary's ARN appears twice in the deploy policy (IamRequireBoundary's condition and IamKeepBoundaryPolicy's resource), so a long one costs twice its length. The worst case above has 117 characters
+  // to spare with the default boundary (DEFERRED-CHECKS, DEPLOY-POLICY-SIZE-CD): a company boundary ARN more than about 58 characters longer than the default, with the longest environment AND domain, would not fit.
+  it("a realistic one (100 characters) fits with a realistic name, and with the longest environment, domain name and zone id", () => {
+    const boundary = `arn:aws:iam::123456789012:policy/${"c".repeat(100 - "arn:aws:iam::123456789012:policy/".length)}`;
+    expect(boundary).toHaveLength(100);
+    for (const { env, parameters } of CASES) {
+      const { roles } = resolved(accessTemplate(env), env, parameters, boundary);
+      const deploy = roles.find((role) => role.id === "CloudFormationServiceRole")!;
+      expect(JSON.stringify(deploy.policies)).toContain(boundary);
+      expect(deploy.policies.reduce((total, policy) => total + size(policy.document), 0), env).toBeLessThan(INLINE_ROLE_LIMIT);
+    }
   });
 });

@@ -139,9 +139,21 @@ describe("the app-start guard of web-agent-app-isolation-v1", () => {
       }
     });
 
+    it("latches a hit: requests in flight at the same time are all refused, none is passed to the app or served the guard page", async () => {
+      const run = await start({ intervalOff: true, loopOff: true });
+      expect((await run.get("/")).status).toBe(200);
+      run.mountSocket();
+      const replies = await Promise.all([run.get("/orders"), run.get(GUARD_PAGE_PATH), run.get("/orders")].map((reply) => reply.then((answer) => answer.status, () => "closed")));
+      // Each is the guard's 500 or a connection the ending app closed; never a 200 (the app's, or the guard page with its marker).
+      for (const reply of replies) expect([500, "closed"]).toContain(reply);
+      expect(replies).toContain(500);
+      expect(await run.exited(5_000)).toBe(3);
+    });
+
     it("ends the app only after the response has finished: the pinned script does not exit in the same step as the 500", () => {
       expect(script).toContain("u.once('finish',x)");
       expect(script).toContain("u.once('close',x)");
+      expect(script).toContain("if(z||h){z=1;");
       expect(script).not.toMatch(/\.end\(\);x\(\)/);
     });
 

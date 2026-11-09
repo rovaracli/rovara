@@ -67,7 +67,7 @@ describe("the broker's production health probes (A13)", () => {
   });
 
   describe("HEALTH-COND-1: the Team record's switch decides whether its alarms are required", () => {
-    const record = [...HEALTH_ALARM_TEAM_RECORD_SUFFIXES].sort();
+    const record: string[] = [...HEALTH_ALARM_TEAM_RECORD_SUFFIXES].sort();
     const otherConditional = HEALTH_ALARM_CONDITIONAL_SUFFIXES.filter((suffix) => !record.includes(suffix));
     const missingNames = async (teamRecordOn: boolean | undefined, returned: string[] = []) => {
       const { input } = fakes({ pages: [{ $metadata: {}, MetricAlarms: returned.map((suffix) => ({ AlarmName: `agentx-live25d-${suffix}`, StateValue: "OK" })) }] });
