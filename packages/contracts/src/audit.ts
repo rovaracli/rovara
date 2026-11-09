@@ -274,6 +274,10 @@ export const AUDIT_ACTIONS = [
   "lesson.trial_stable",
   // The company set (or cleared) the model its lesson learning runs on. `fromModel` / `toModel` are `provider/modelId` or `default` (the cheapest suitable model).
   "lesson.model_set",
+  // Lessons in the repository (R2): a weekly lessons pull request opened (counts and its number), one Rovara closed (a fixed cause: replaced, nothing left, switched off, erased lesson), and the project's switch for a repository.
+  "lesson.repo_file_pr_opened",
+  "lesson.repo_file_pr_closed",
+  "lesson.repo_file_switched",
   // Lane E (private MCP servers and project Sources): ids, fixed words and flags only. A server's label, address and token, and a source's id, never go in a fact.
   "mcp_server.added",
   "mcp_server.approved",
@@ -611,6 +615,10 @@ export const AUDIT_FACT_KEYS: Record<AuditAction, readonly string[]> = {
   "lesson.preset_proposed": ["scope", "fromPreset", "toPreset"],
   "lesson.trial_stable": ["tier"],
   "lesson.model_set": ["fromModel", "toModel"],
+  // `removals` / `edits` / `adds` are counts (written before the host is asked, so no number yet), `pullRequest` the host's number (0 for a branch with none); `cause` is `replaced`, `nothing_left`, `switched_off`, `erased`, `merged` or `closed_by_team`; `enabled` is the switch after the change.
+  "lesson.repo_file_pr_opened": ["removals", "edits", "adds"],
+  "lesson.repo_file_pr_closed": ["cause", "pullRequest"],
+  "lesson.repo_file_switched": ["enabled"],
   "mcp_server.added": ["transport", "hasCredential"],
   // approved also pins a package-run server's install: the tarball's integrity, the lockfile and bundle hashes, the tools hash the admin saw, how many addresses and secret names it was given, and the secret's version.
   "mcp_server.approved": ["transport", "hasCredential", "integrity", "lockfileHash", "bundleHash", "toolsHash", "destinationCount", "credentialCount", "credentialVersion"],

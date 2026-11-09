@@ -48,7 +48,9 @@ export function codeHostFactsReader(
       async kind(input) {
         const target = await resolve(input.workspaceId, input.project, input.repo);
         if (target === undefined) return undefined;
-        return host.pathKind!(target.repository, input.path, input.commit, target.scope, { timeoutMs: input.timeoutMs });
+        const kind = await host.pathKind!(target.repository, input.path, input.commit, target.scope, { timeoutMs: input.timeoutMs });
+        // A symbolic link may point at a file, a directory or nothing: a lesson reader cannot tell, so it is not claimed to be any of them.
+        return kind === "symlink" ? undefined : kind;
       },
     }),
   };

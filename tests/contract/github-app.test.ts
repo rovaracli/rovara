@@ -354,7 +354,9 @@ describe("GitHub App repository credentials", () => {
     expect(await kind("src/a.ts/below")).toBe("none");
     // L7: a symbolic link is not claimed to be a file (it may point at a directory); an unknown type, a full listing that does not name the path, a huge answer and a GitHub error are "cannot tell".
     // R6: a parent that is a symbolic link (it may point at a directory that holds the name) or a submodule is "cannot tell" too, never "none"; a plain file as parent stays "none" (above).
-    for (const path of ["linkdir/x", "submod/x", "src/link", "src/weird", "big/missing", "huge/x", "broken/x"]) await expect(kind(path), path).rejects.toMatchObject({ code: "RUNTIME_UNAVAILABLE" });
+    // R2: a symbolic link AT the path is reported as one (the lessons pass never writes to it; a lesson reader treats it as "cannot tell").
+    expect(await kind("src/link")).toBe("symlink");
+    for (const path of ["linkdir/x", "submod/x", "src/weird", "big/missing", "huge/x", "broken/x"]) await expect(kind(path), path).rejects.toMatchObject({ code: "RUNTIME_UNAVAILABLE" });
     expect(await kind("big/f7")).toBe("file");
     // The same rules as a file read: a full commit id and a clean repository-relative path, with the contents-read token and the ordinary (JSON) media type.
     await expect(provider.getPathKindAtCommit(url, "src", "main", { system: "private-install" })).rejects.toMatchObject({ code: "CONFIG_INVALID" });

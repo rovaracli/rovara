@@ -307,6 +307,46 @@ export const ChangeRequestFeedbackSchema = z.object({
 }).strict();
 export type ChangeRequestFeedback = z.infer<typeof ChangeRequestFeedbackSchema>;
 
+/**
+ * Lessons in the repository (owner decisions 50, 50a; LESSONS-REPO-FILE-DESIGN.md section 5): a code host that can open change requests can also be asked to put files on a branch Rovara owns. The write is small and bounded (a few
+ * text files), idempotent (the same content on the same branch changes nothing) and never touches the base branch: it only ever writes the named working branch. `fromBase` starts a new change request: the branch must not
+ * exist and is created at the base revision; a branch that exists, at the base or anywhere else, is refused (a conflict) and never written to or moved, so nothing somebody pushed is built on or discarded and nothing is
+ * "adopted". false keeps what the branch holds (a fast-forward of `expectedHead` only, so a commit pushed in between is a conflict). Every adapter holds the write to the allowlist below: its branch prefix and its paths.
+ */
+export const COMMIT_FILES_MAX = 10;
+export const COMMIT_FILE_MAX_BYTES = 1_000_000;
+/** The branches Rovara's lessons pull requests are made on: a prefix and 12 random hex digits. The adapters write to, and delete, no other branch name. */
+export const LESSON_FILE_BRANCH_PREFIX = "rovara/lessons-";
+export const LESSON_FILE_BRANCH_PATTERN = /^rovara\/lessons-[0-9a-f]{12}$/u;
+/** The one file Rovara owns, and the agent instruction files the first pull request may add one pointer line to. A write to any other path is refused by the adapter. */
+export const LESSON_FILE_PATH = ".rovara/lessons.md";
+export const LESSON_FILE_POINTER_PATHS = ["AGENTS.md", "CLAUDE.md", ".github/copilot-instructions.md"] as const;
+export const LESSON_FILE_WRITE_PATHS: readonly string[] = [LESSON_FILE_PATH, ...LESSON_FILE_POINTER_PATHS];
+/** The fixed sentences an adapter's `commitFiles` refuses with, so a caller can tell a lost race from a refused write without reading the host's words. */
+export const COMMIT_CONFLICT_MESSAGE = "the repository changed since Rovara read it";
+export const COMMIT_SYMLINK_MESSAGE = "the file is a symbolic link, which Rovara does not write to";
+export const CommitFilesInputSchema = z.object({
+  repository: RepositoryRefSchema,
+  branch: BranchNameSchema,
+  baseBranch: BranchNameSchema,
+  message: z.string().min(1).max(500),
+  files: z.array(z.object({ path: z.string().min(1).max(512), content: z.string().max(COMMIT_FILE_MAX_BYTES) }).strict()).min(1).max(COMMIT_FILES_MAX),
+  fromBase: z.boolean(),
+  /**
+   * What the caller computed the files FROM. `baseRevision` is the base head the new branch is created at (`fromBase`), `expectedHead` the head the working branch must still have (an open change request being updated), and
+   * `previous` the text each file had there (null: no such file). A mismatch is refused (nothing is written, the caller tries again at its next pass), so a push made between the read and the write is never overwritten.
+   */
+  baseRevision: RevisionSchema.optional(),
+  expectedHead: RevisionSchema.optional(),
+  previous: z.array(z.object({ path: z.string().min(1).max(512), content: z.string().max(COMMIT_FILE_MAX_BYTES).nullable() }).strict()).max(COMMIT_FILES_MAX).optional(),
+}).strict();
+export type CommitFilesInput = z.infer<typeof CommitFilesInputSchema>;
+/** `changed` is false when every file already held the content asked for. */
+export const CommitFilesResultSchema = z.object({ revision: RevisionSchema, changed: z.boolean() }).strict();
+export type CommitFilesResult = z.infer<typeof CommitFilesResultSchema>;
+/** What a path is at a revision: a file, a directory, a symbolic link (never written to), or nothing. */
+export type PathKind = "file" | "dir" | "symlink" | "none";
+
 export const MergeMethodSchema = z.enum(["squash", "merge"]);
 export type MergeMethod = z.infer<typeof MergeMethodSchema>;
 export const MERGE_REFUSAL_REASONS = ["head_changed", "not_mergeable", "closed", "forbidden"] as const;
@@ -374,10 +414,11 @@ export interface CodeHost {
    */
   fileAtRevision(repository: RepositoryRef, path: string, revision: string, scope: HostScope, options?: { untilLine?: number; timeoutMs?: number; maxBytes?: number }): Promise<string | undefined>;
   /**
-   * Lessons in production (lane 2, WB-7): what a path is at a revision: a file, a directory, or nothing there. Optional: a host that cannot tell leaves it out, and a reader then knows only that a readable file exists
-   * (a directory, or the literal directory prefix of a glob, is then not verified). Same path rules as `fileAtRevision`; a host that cannot answer THROWS (it never answers "none" for an error).
+   * What a path is at a revision (a full commit id): a file, a directory, a symbolic link (never written to), or nothing there. Optional: a host that cannot tell leaves it out, and a lesson reader then knows only that a
+   * readable file exists (a directory, or the literal directory prefix of a glob, is then not verified), and the lessons file pass does not run. Same path rules as `fileAtRevision`; a host that cannot answer THROWS (it never
+   * answers "none" for an error, or for a path below a symbolic link or a submodule).
    */
-  pathKind?(repository: RepositoryRef, path: string, revision: string, scope: HostScope, options?: { timeoutMs?: number }): Promise<"file" | "dir" | "none">;
+  pathKind?(repository: RepositoryRef, path: string, revision: string, scope: HostScope, options?: { timeoutMs?: number }): Promise<PathKind>;
   /** The id of the tree a revision holds. */
   tree(repository: RepositoryRef, revision: string, scope: HostScope): Promise<string>;
   branchHead(repository: RepositoryRef, branch: string, scope: HostScope): Promise<string>;
@@ -387,6 +428,13 @@ export interface CodeHost {
   commitParents(repository: RepositoryRef, revision: string, scope: HostScope): Promise<string[]>;
   listBranches(repository: RepositoryRef, page: number, scope: HostScope): Promise<BranchPage>;
   codeOwners?(repository: RepositoryRef, branch: string, scope: HostScope): Promise<string | undefined>;
+  /**
+   * Lessons in the repository (R2; a plug-in interface addition, decisions 42 and 51): puts text files on a working branch Rovara owns (see `CommitFilesInput`: allowlisted branch name and paths, `force: false`, never the base
+   * branch, never an existing branch for a new change request). Left out by a host that cannot: the lessons file pass then does not run for that repository, and says why.
+   */
+  commitFiles?(input: CommitFilesInput, scope: HostScope): Promise<CommitFilesResult>;
+  /** Lessons in the repository (R2): deletes a branch Rovara made (a name `rovara/lessons-<12 hex>` only; any other name is refused). "gone" when there was none. */
+  deleteBranch?(repository: RepositoryRef, branch: string, scope: HostScope): Promise<"deleted" | "gone">;
 
   // change requests
   /** Idempotent create or update: the same source and target branches never make two change requests. */

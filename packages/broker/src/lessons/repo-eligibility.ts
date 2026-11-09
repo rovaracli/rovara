@@ -183,6 +183,9 @@ export function mergedRepoVisibility(target: Pick<LessonProvenance, "repoOnly" |
 /** The approvals a PERSON gave (not the trial's or the automatic path's): decision 50b's "person-approved". */
 const PERSON_APPROVAL_MODES: ReadonlySet<string> = new Set(["one", "second_person", "sole_owner_exception"]);
 
+/** Whether a PERSON approved the lesson (decision 50b's "person-approved": not the trial, not the automatic path). The Regulated preset proposes only these. */
+export const hasPersonApproval = (lesson: Pick<Lesson, "approvals">): boolean => lesson.approvals.some((approval) => PERSON_APPROVAL_MODES.has(approval.mode));
+
 export type RepoFileBlocker =
   | "repo_unknown" | "not_repo_only" | "other_repo" | "not_active" | "on_trial" | "not_stable_or_approved" | "restricted_audience" | "names_a_person" | "needs_review";
 

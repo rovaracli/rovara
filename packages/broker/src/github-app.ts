@@ -1,4 +1,5 @@
 import { createHash, createSign } from "node:crypto";
+import { commitFilesOn, deleteBranchOn, type CommitFilesRequest } from "./github-commit-files.js";
 import { GitBranchNameSchema, HostRateLimitError, OrgIdSchema, PULL_REQUEST_BODY_MAX_CHARS, agentXError, createCandidateManifest, githubNotConnectedMessage, isSafeE2ESourcePath, redactText, type AgentXError, type E2ESourceSnapshot, type OrgId } from "@agentx/contracts";
 import type { RepositoryAccess, RepositoryCredential } from "./repository-access.js";
 import type { GithubMergeReadBudget } from "./aws/workflow-merge-recovery.js";
@@ -1570,13 +1571,28 @@ export class GitHubAppCredentialProvider {
     return new TextDecoder().decode(Buffer.concat(chunks));
   }
 
+  /** Lessons in the repo: puts text files on a `rovara/lessons-` working branch with the same `contents: write` scope a worker's push uses (`github-commit-files.ts`). */
+  async commitFilesToBranch(repositoryUrl: string, request: CommitFilesRequest, scope: GitHubTokenScope): Promise<{ revision: string; changed: boolean }> {
+    const repository = await this.installed(parseGitHubRepository(repositoryUrl), scope);
+    const token = await this.createInstallationToken(repository, { contents: "write" }, scope);
+    return commitFilesOn({ fetch: this.fetchImplementation, owner: repository.owner, name: repository.name, token }, request);
+  }
+
+  /** Lessons in the repo: deletes one of Rovara's own `rovara/lessons-` branches (no other name is accepted). */
+  async deleteLessonsBranch(repositoryUrl: string, branch: string, scope: GitHubTokenScope): Promise<"deleted" | "gone"> {
+    const repository = await this.installed(parseGitHubRepository(repositoryUrl), scope);
+    const token = await this.createInstallationToken(repository, { contents: "write" }, scope);
+    return deleteBranchOn({ fetch: this.fetchImplementation, owner: repository.owner, name: repository.name, token }, branch);
+  }
+
   /**
-   * What a path is at a commit: "file", "dir" (a directory or a submodule) or "none" (GitHub's 404, a name its parent directory does not list, or a parent that is a plain file). Throws when GitHub cannot answer (never "none" for an error)
-   * and for a symbolic link, at the path or as its parent directory (what it points to is not known here). Same commit and path rules as `getFileAtCommit`.
+   * What a path is at a commit: "file", "dir" (a directory or a submodule), "symlink" (a symbolic link at the path itself; what it points to is not known here, so it is not claimed to be a file or a directory) or "none"
+   * (GitHub's 404, a name its parent directory does not list, or a parent that is a plain file). Throws when GitHub cannot answer (never "none" for an error), when a symbolic link or a submodule is the path's PARENT
+   * (the link may point at a directory that holds the name) and for a type it does not know. Same commit and path rules as `getFileAtCommit`.
    * L7: it lists the path's PARENT directory and reads the entry's type, so no file's bytes are fetched just to learn what it is (a listing is at most 1,000 entries; a listing that is full and does not name the
    * path cannot say "none").
    */
-  async getPathKindAtCommit(repositoryUrl: string, path: string, commitSha: string, scope: GitHubTokenScope, options?: { timeoutMs?: number }): Promise<"file" | "dir" | "none"> {
+  async getPathKindAtCommit(repositoryUrl: string, path: string, commitSha: string, scope: GitHubTokenScope, options?: { timeoutMs?: number }): Promise<"file" | "dir" | "symlink" | "none"> {
     if (!/^[a-f0-9]{40}$/u.test(commitSha)) throw agentXError("CONFIG_INVALID", "commit identity is invalid");
     const segments = path.split("/");
     if (path.length === 0 || path.length > 512 || path.includes("\\") || segments.some((segment) => segment === "" || segment === "." || segment === "..")) {
@@ -1611,8 +1627,9 @@ export class GitHubAppCredentialProvider {
     }
     if (entry.type === "dir" || entry.type === "submodule") return "dir";
     if (entry.type === "file") return "file";
-    // A symbolic link may point at a file, a directory or nothing; it is not claimed to be any of them.
-    throw agentXError("RUNTIME_UNAVAILABLE", entry.type === "symlink" ? "GitHub reports a symbolic link at this path" : "GitHub returned an unexpected path answer");
+    // A symbolic link may point at a file, a directory or nothing; it is not claimed to be any of them. The reader says what it is, and each caller decides (a lesson reader cannot tell; the lessons pass never writes to it).
+    if (entry.type === "symlink") return "symlink";
+    throw agentXError("RUNTIME_UNAVAILABLE", "GitHub returned an unexpected path answer");
   }
 
   /**

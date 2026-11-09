@@ -74,7 +74,9 @@ export function codeFileReader(dependencies: LessonsHostDependencies, maxBytes =
       if (repository === undefined) return undefined;
       const host = hostOfRepository(dependencies, repository);
       if (host.pathKind === undefined) return undefined;
-      return host.pathKind({ url: repository.url }, input.path, input.commit, githubScope(dependencies, orgId), { timeoutMs: input.timeoutMs });
+      const kind = await host.pathKind({ url: repository.url }, input.path, input.commit, githubScope(dependencies, orgId), { timeoutMs: input.timeoutMs });
+      // A symbolic link may point at a file, a directory or nothing: a lesson reader cannot tell, so it is not claimed to be any of them.
+      return kind === "symlink" ? undefined : kind;
     },
   };
 }

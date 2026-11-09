@@ -8,8 +8,8 @@
 //  - `reply` posts Rovara's own fixed text only (200 characters, one line, no mention).
 //  - `events.normalise` (task P6, `events.ts`) exists only when the adapter is given the install's webhook secret; without one it verifies nothing and offers no normaliser.
 import {
-  agentXError, ChangeRequestInputSchema, ChangeRequestUpdateSchema, HostScopeSchema,
-  type BranchPage, type ChangeRequestDetails, type ChangeRequestFeedback, type ChangeRequestFilesPage, type ChangeRequestInput, type ChangeRequestReconciled, type ChangeRequestRef,
+  agentXError, ChangeRequestInputSchema, ChangeRequestUpdateSchema, CommitFilesInputSchema, HostScopeSchema,
+  type BranchPage, type CommitFilesInput, type CommitFilesResult, type PathKind, type ChangeRequestDetails, type ChangeRequestFeedback, type ChangeRequestFilesPage, type ChangeRequestInput, type ChangeRequestReconciled, type ChangeRequestRef,
   type ChangeRequestStatus, type ChangeRequestUpdate, type CodeHost, type CodeHostCapabilities, type GitAccess, type GitCredential, type HostAccount, type HostScope,
   type HostStanding, type MergeMethod, type MergeObservation, type MergeResult, type ReadBudget, type RepositoryIdentity, type RepositoryRef,
 } from "@agentx/contracts";
@@ -33,7 +33,7 @@ export const GITHUB_CODE_HOST_CAPABILITIES: CodeHostCapabilities = {
 /** The provider methods the adapter uses: a narrow type, so a test can stand in for the rest. */
 export type GitHubCodeHostProvider = Pick<GitHubAppCredentialProvider,
   | "getRepositoryIdentity" | "checkRepository" | "getRepositoryStanding" | "resolveWithExpiry" | "getFileAtCommit" | "getPathKindAtCommit" | "getCommitTree" | "getBranchHead" | "listWorkingBranches"
-  | "getCommitParents" | "getDefaultBranchHead" | "getPullRequestMergeObservation"
+  | "getCommitParents" | "getDefaultBranchHead" | "getPullRequestMergeObservation" | "commitFilesToBranch" | "deleteLessonsBranch"
   | "installationForRepository" | "readCodeOwners" | "reconcilePullRequest" | "getPullRequest" | "updatePullRequest" | "getPullRequestStatus" | "listPullRequestFiles"
   | "getPullRequestFeedback" | "replyToReviewThread" | "markPullRequestReady" | "requestReviewers" | "mergePullRequest">;
 
@@ -91,7 +91,7 @@ export function githubCodeHost(provider: GitHubCodeHostProvider, options: GitHub
 
     // Only where the provider can tell (a partial provider of a harness cannot): a host without `kind` leaves a directory unverified.
     ...(typeof provider.getPathKindAtCommit !== "function" ? {} : {
-      async pathKind(repository: RepositoryRef, path: string, revision: string, scope: HostScope, kindOptions?: { timeoutMs?: number }): Promise<"file" | "dir" | "none"> {
+      async pathKind(repository: RepositoryRef, path: string, revision: string, scope: HostScope, kindOptions?: { timeoutMs?: number }): Promise<PathKind> {
         return provider.getPathKindAtCommit(repository.url, path, revision, checkedScope(scope), kindOptions);
       },
     }),
@@ -125,6 +125,18 @@ export function githubCodeHost(provider: GitHubCodeHostProvider, options: GitHub
     async codeOwners(repository: RepositoryRef, branch: string, scope: HostScope): Promise<string | undefined> {
       return provider.readCodeOwners(repository.url, branch, checkedScope(scope));
     },
+
+    ...(typeof provider.commitFilesToBranch !== "function" ? {} : {
+      async commitFiles(input: CommitFilesInput, scope: HostScope): Promise<CommitFilesResult> {
+        const parsed = CommitFilesInputSchema.parse(input);
+        return provider.commitFilesToBranch(parsed.repository.url, { branch: parsed.branch, baseBranch: parsed.baseBranch, message: parsed.message, files: parsed.files, fromBase: parsed.fromBase, baseRevision: parsed.baseRevision, expectedHead: parsed.expectedHead, previous: parsed.previous }, checkedScope(scope));
+      },
+    }),
+    ...(typeof provider.deleteLessonsBranch !== "function" ? {} : {
+      async deleteBranch(repository: RepositoryRef, branch: string, scope: HostScope): Promise<"deleted" | "gone"> {
+        return provider.deleteLessonsBranch(repository.url, branch, checkedScope(scope));
+      },
+    }),
 
     async reconcileChangeRequest(input: ChangeRequestInput, scope: HostScope): Promise<ChangeRequestReconciled> {
       const parsed = ChangeRequestInputSchema.parse(input);

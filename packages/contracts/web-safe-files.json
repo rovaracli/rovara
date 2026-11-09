@@ -10,6 +10,7 @@
   "packages/contracts/src/app-allowed-websites.ts",
   "packages/contracts/src/app-design-review-company.ts",
   "packages/contracts/src/app-known-failing.ts",
+  "packages/contracts/src/app-lessons-repo-file.ts",
   "packages/contracts/src/app-lessons.ts",
   "packages/contracts/src/app-nav.ts",
   "packages/contracts/src/app-project-slack.ts",

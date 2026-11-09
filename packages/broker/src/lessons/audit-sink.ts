@@ -45,6 +45,10 @@ const MAP: Partial<Record<LessonAuditEvent["action"], Mapped>> = {
   "lesson.preset_proposed": { action: "lesson.preset_proposed", facts: (e) => ({ scope: word(e.facts["scope"], "project"), fromPreset: word(e.facts["from"], "unknown"), toPreset: word(e.facts["to"], "unknown") }) },
   // Erasing a commenter took back the harmful mark that retired a lesson, and the rest no longer justify it: the lesson goes back to a person as a pending card (never live by itself), recorded as a proposal.
   "lesson.harm_reversed": { action: "lesson.proposed", facts: (e) => ({ lessonType: word(e.facts["type"], "unknown"), tier: num(e.facts["tier"]) }) },
+  // Lessons in the repo (R2): a weekly pull request about to be opened (counts), one Rovara closes (a fixed cause and the number), and a repository's switch. Written BEFORE the host is asked.
+  "lesson.repo_file_pr_opened": { action: "lesson.repo_file_pr_opened", facts: (e) => ({ removals: num(e.facts["removals"]), edits: num(e.facts["edits"]), adds: num(e.facts["adds"]) }) },
+  "lesson.repo_file_pr_closed": { action: "lesson.repo_file_pr_closed", facts: (e) => ({ cause: word(e.facts["cause"], "replaced"), pullRequest: num(e.facts["pullRequest"]) }) },
+  "lesson.repo_file_switched": { action: "lesson.repo_file_switched", facts: (e) => ({ enabled: e.facts["enabled"] === true }) },
   // Stable makes a lesson publishable to a repository, so it is on the ledger.
   "lesson.trial_stable": { action: "lesson.trial_stable", facts: (e) => ({ tier: num(e.facts["tier"]) }) },
   "lesson.sole_owner_switch_proposed": { action: "lesson.sole_owner_switch_proposed", facts: (e) => ({ fromEnabled: e.facts["from"] === true, toEnabled: e.facts["to"] === true }) },
