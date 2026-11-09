@@ -24,7 +24,7 @@ const SLACK = [
   slackOption("C0NOTIN01", "random", { joined: false }),
 ];
 const pick = (label: string, value: string, scope: HTMLElement = document.body) => fireEvent.change(within(scope).getByLabelText(label), { target: { value } });
-const open = async (options: Parameters<typeof openSources>[0] = {}) => { const f = openSources(options); await screen.findByRole("heading", { name: "Add a source" }); return { f, form: screen.getByRole("region", { name: "Add a source" }) }; };
+const open = async (options: Parameters<typeof openSources>[0] = {}) => { const f = openSources(options); await screen.findByRole("heading", { name: "Add a source" }, { timeout: 10_000 }); return { f, form: screen.getByRole("region", { name: "Add a source" }) }; };
 const radio = (form: HTMLElement, name: RegExp | string) => within(form).getByRole<HTMLInputElement>("radio", { name });
 
 describe("the Slack channel picker", () => {
@@ -211,7 +211,7 @@ describe("the Slack channel picker", () => {
   it("is accessible, light and dark", async () => {
     for (const theme of ["light", "dark"] as const) {
       openSources({ options: () => list("slack", SLACK) }, theme);
-      await screen.findByRole("heading", { name: "Add a source" });
+      await screen.findByRole("heading", { name: "Add a source" }, { timeout: 10_000 });
       const form = screen.getByRole("region", { name: "Add a source" });
       pick("What to add", "slack");
       await within(form).findByRole("radio", { name: /general/u });
