@@ -12,6 +12,7 @@ import { lessonSubjectSource } from "../../packages/broker/src/aws/broker/lesson
 import { taskKey, taskOwnerKey } from "../../packages/broker/src/developer/task-records.js";
 import type { CapturedWords } from "../../packages/broker/src/lessons/captured-rows.js";
 import { createHumanEditExtractor } from "../../packages/broker/src/lessons/human-edit.js";
+import { noteTaskHeld } from "../../packages/broker/src/lessons/repo-reflect.js";
 import { loadLessonsForStage } from "../../packages/broker/src/lessons/load.js";
 import { setLearnedLessonsGate } from "../../packages/broker/src/lessons/policy.js";
 import type { PipelineModel } from "../../packages/broker/src/lessons/ports.js";
@@ -47,7 +48,7 @@ const snapshot = (definitionVersion: string) => createWorkflowSnapshot({ taskId:
 const V2_BODY = rovaraPullRequestBody({ summary: [SLACK_PLAN], fallbackTitle: "Retries", workflow: snapshot("1.1.0"), context: { attribution }, reviewLines: () => [], pageUrl: "https://app.rovara.example/t/abc" });
 const V1_BODY = workflowPullRequestBody({ title: "Retries" } as never, snapshot("1.0.0"), `${SLACK_PLAN}\nmore`, "https://app.rovara.example/t/abc", { attribution });
 
-interface Options { prUrl?: string; registeredUrl?: string; pushedHead?: string; mergedHead?: string; body?: string; title?: string; sameText?: boolean; rovaraHeadKnown?: boolean }
+interface Options { humanEdits?: boolean; prUrl?: string; registeredUrl?: string; pushedHead?: string; mergedHead?: string; body?: string; title?: string; sameText?: boolean; rovaraHeadKnown?: boolean }
 const words = (id: string, who: string, text: string): CapturedWords => ({ id, authorDeveloperId: who, authorSourceId: `acct-${who}`, source: "github", ownText: true, text, audience: { kind: "project" }, scope: PLACE });
 const candidate = (title: string, body: string) => ({ type: "convention", title, description: body, body, scope: { repos: ["api"], paths: ["src/**"] }, stages: ["IMPLEMENT"], citations: [], evidenceSpanIds: ["S1"] });
 
@@ -68,7 +69,7 @@ class World {
   readonly learning: TaskLearningDeps;
 
   constructor(options: Options = {}) {
-    this.opts = { prUrl: "https://github.com/acme/api/pull/7", registeredUrl: "https://github.com/acme/api", pushedHead: HEAD, mergedHead: HEAD, body: V2_BODY, title: "Retries use withRetry", sameText: false, rovaraHeadKnown: true, ...options };
+    this.opts = { prUrl: "https://github.com/acme/api/pull/7", registeredUrl: "https://github.com/acme/api", pushedHead: HEAD, mergedHead: HEAD, body: V2_BODY, title: "Retries use withRetry", sameText: false, rovaraHeadKnown: true, humanEdits: true, ...options };
     this.tasks.set({
       ...taskKey(TASK), entityType: "DEVELOPER_TASK", taskId: TASK, orgId: WS, project: PROJECT, developerId: CREATOR, developerName: "Creator", provider: "oidc", client: "web",
       requestText: INTENT, title: "Retries", agent: { agentId: "a" }, startedBy: { developerId: CREATOR }, ownerKey: taskOwnerKey(CREATOR, TASK),
@@ -115,7 +116,7 @@ class World {
       documentClient: this.tasks, tableName: "tasks", repositoriesOf: async () => ["api"], standing: async (_org, who) => (this.outsiders.has(who) ? "outsider" : "member"), isErased: async () => false, visibility: async () => ({ kind: "shared" }), now: () => this.now,
       captured: { rememberedNote: async () => undefined, pullRequestWords: async ({ surface, commentId }) => this.comments[`${surface}:${commentId}`] }, rememberedNoteIds: async () => [], sourceExcluded: async () => false,
       pullRequestAddress: (url) => adapter.pullRequestAddress(url), pullRequestFeedback: (input) => adapter.pullRequestFeedback!({ workspaceId: input.orgId, project: input.project, taskId: input.taskId, address: input.address, url: input.url }),
-      repositoryUrlsOf: async () => ({ api: this.opts.registeredUrl }), repositoryAddress: (_host, fullName) => adapter.repositoryAddress?.(fullName),
+      humanEditsSupported: () => this.opts.humanEdits, repositoryUrlsOf: async () => ({ api: this.opts.registeredUrl }), repositoryAddress: (_host, fullName) => adapter.repositoryAddress?.(fullName),
     });
     this.learning = {
       source, rows: { sendBack: async () => undefined, revertedBy: async () => undefined }, settings,
@@ -166,7 +167,7 @@ describe("a merged task's pull request is reflected on a second time, over the r
     expect(w.mainCalls()[0]!.user).toContain(INTENT);
   });
 
-  it("review M2 (P3a/P3b, real description shapes): the prompt holds the repository's comment, the merge fact, the link and the TITLE; none of the description (plan summary from Slack, names, task link) and none of the task's own text", async () => {
+  it("review M2 and L-b (P3a/P3b, real description shapes): the prompt holds the repository's comment, the merge fact and the link; no description, no title (plan summary from Slack, names, task link) and none of the task's own text", async () => {
     for (const body of [V1_BODY, V2_BODY]) {
       // Positive control: Rovara's own description really holds what must not reach the prompt (the quoted plan summary, the names, the task link).
       for (const planted of ["PLANSUMMARY", "Jane Doe", "John Roe", "app.rovara.example"]) expect(body, planted).toContain(planted);
@@ -174,7 +175,8 @@ describe("a merged task's pull request is reflected on a second time, over the r
       await w.end();
       const { user, system } = w.repoCalls()[0]!;
       expect(user).toContain("Use withRetry for HTTP retries in api, not a hand-rolled loop.");
-      expect(user).toContain("Retries use withRetry");
+      // review L-b: no Rovara-written text at all, the title included (the host's title here is "Retries use withRetry").
+      expect(user).not.toContain("Retries use withRetry");
       expect(user).toContain("https://github.com/acme/api/pull/7");
       expect(user).toContain("outcome merged");
       for (const forbidden of [INTENT, "PLANSUMMARY", "Initech", "Jane Doe", "John Roe", "app.rovara.example", "Requested by"]) expect(user, forbidden).not.toContain(forbidden);
@@ -349,5 +351,62 @@ describe("one owner per pull request: the human-edit job owns it when someone pu
     await w.extractor().extract(w.editInput());
     expect(w.repoCalls()).toHaveLength(1);
     expect(w.repoCalls()[0]!.user).toContain("withRetryEDIT");
+  });
+});
+
+describe("review L-f: Public's cap is per task across the task-end run and the human-edit job", () => {
+  it("the job's repo-only call is asked to hold at most what the task end left of the 0.15 cap (not a fresh 0.15)", async () => {
+    const w = new World({ mergedHead: PUSHED });
+    await w.end();
+    expect(w.mainCalls()[0]!.maxHoldUsd).toBeCloseTo(0.15, 6);
+    await w.extractor().extract(w.editInput());
+    expect(w.repoCalls()).toHaveLength(1);
+    // The first reflection held 0.01 (its quote); that is one whole cent of the task's total.
+    expect(w.repoCalls()[0]!.maxHoldUsd).toBeCloseTo(0.14, 6);
+  });
+  it("a job that finds the task's cap used up makes no call", async () => {
+    const w = new World({ mergedHead: PUSHED });
+    await w.end();
+    await noteTaskHeld(w.runtime.store, KEY, TASK, 0.15);
+    await w.extractor().extract(w.editInput());
+    expect(w.repoCalls()).toHaveLength(0);
+  });
+});
+
+describe("review M-a: the task end leaves a pull request to the human-edit job only on a host that reads human edits", () => {
+  it("a host whose adapter does not support human edits: the task end owns the change request even though the head moved", async () => {
+    const w = new World({ mergedHead: PUSHED, humanEdits: false });
+    await w.end();
+    expect(w.repoCalls()).toHaveLength(1);
+  });
+});
+
+describe("review M-a: the extractor's comment-only fallback (what the tap calls when it skips a pull request)", () => {
+  const skipped = (w: World) => ({ workspaceId: WS, project: PROJECT, taskId: TASK, link: w.editInput().link });
+  it("makes ONE comment-only call for a pull request the task end left to the job, with the same once-key (a second call, or the task end, makes none)", async () => {
+    const w = new World({ mergedHead: PUSHED });
+    await w.end();
+    expect(w.repoCalls()).toHaveLength(0);
+    await w.extractor().commentsOnly!(skipped(w));
+    expect(w.repoCalls()).toHaveLength(1);
+    expect(w.repoCalls()[0]!.user).toContain("Use withRetry for HTTP retries in api, not a hand-rolled loop.");
+    expect(w.repoCalls()[0]!.user).not.toContain("withRetryEDIT");
+    expect((await w.lessons()).find((l) => l.provenance.repoOnly !== undefined)?.provenance.repoOnly).toEqual({ place: PLACE });
+    await w.extractor().commentsOnly!(skipped(w));
+    await w.extractor().extract(w.editInput());
+    await w.end();
+    expect(w.repoCalls()).toHaveLength(1);
+  });
+  it("is gated like every learning call: Off, Collect and a switch that is off make no call and read nothing from the task", async () => {
+    for (const mode of ["Off", "Collect"] as const) {
+      const w = new World({ mergedHead: PUSHED });
+      w.mode = mode;
+      await w.extractor().commentsOnly!(skipped(w));
+      expect(w.calls, mode).toEqual([]);
+    }
+    setLearnedLessonsGate(() => false);
+    const w = new World({ mergedHead: PUSHED });
+    await w.extractor().commentsOnly!(skipped(w));
+    expect(w.calls).toEqual([]);
   });
 });

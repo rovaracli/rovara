@@ -130,31 +130,54 @@ export function toLearned(lesson: Lesson): LearnedLesson {
 const sizeOf = (lesson: LearnedLesson): number => Buffer.byteLength(JSON.stringify(lesson), "utf8");
 
 /**
- * Lessons in the repo (lane R1b, review H1): two lessons kept apart as twins (`possibleDuplicateOf` on one, `repoTwins` on the other, either direction) say the same advice, so a task is given only one of them: the repo-only one when
- * exactly one of the pair is repo-only, otherwise the one ranked higher (the list is in rank order). Pure; lessons with no twin in the list are untouched and keep their order.
+ * Lessons in the repo (lane R1b, review H1, L-a, L-c): two lessons kept apart as twins say the same advice, so a task is given only one of them. A pair is a twin pair ONLY when one lesson lists the other in `repoTwins`
+ * (never by `possibleDuplicateOf` alone: a person's "keep both" on an ordinary duplicate loads both). Of a pair the repo-only one is preferred when exactly one is, otherwise the one ranked higher (the list is in rank order).
+ * Returns, for each non-preferred twin, the lesson that is preferred over it (both present in `ranked`). Pure.
  */
-export function withoutTwins(ranked: readonly Lesson[]): Lesson[] {
-  const present = new Set(ranked.map((lesson) => lesson.id));
-  const linked = new Map<string, Set<string>>();
-  const link = (a: string, b: string): void => { if (a !== b && present.has(a) && present.has(b)) { (linked.get(a) ?? linked.set(a, new Set()).get(a)!).add(b); (linked.get(b) ?? linked.set(b, new Set()).get(b)!).add(a); } };
-  for (const lesson of ranked) {
-    if (lesson.possibleDuplicateOf !== undefined) link(lesson.id, lesson.possibleDuplicateOf);
-    for (const twin of lesson.repoTwins ?? []) link(lesson.id, twin);
-  }
-  if (linked.size === 0) return [...ranked];
+export function twinPreference(ranked: readonly Lesson[]): Map<string, string> {
+  const position = new Map(ranked.map((lesson, index) => [lesson.id, index] as const));
   const byId = new Map(ranked.map((lesson) => [lesson.id, lesson] as const));
-  const dropped = new Set<string>();
+  const preferred = new Map<string, string>();
   for (const lesson of ranked) {
-    if (dropped.has(lesson.id)) continue;
-    for (const otherId of linked.get(lesson.id) ?? []) {
-      if (dropped.has(otherId)) continue;
-      // `lesson` ranks above `other` (the list is in rank order), so `other` goes unless it is repo-only and `lesson` is not.
-      const other = byId.get(otherId)!;
-      if (other.provenance.repoOnly !== undefined && lesson.provenance.repoOnly === undefined) { dropped.add(lesson.id); break; }
-      dropped.add(otherId);
+    for (const twinId of lesson.repoTwins ?? []) {
+      const twin = byId.get(twinId);
+      if (twin === undefined || twin.id === lesson.id) continue;
+      const lessonOnly = lesson.provenance.repoOnly !== undefined;
+      const twinOnly = twin.provenance.repoOnly !== undefined;
+      const lessonWins = lessonOnly !== twinOnly ? lessonOnly : position.get(lesson.id)! < position.get(twin.id)!;
+      const [winner, loser] = lessonWins ? [lesson, twin] : [twin, lesson];
+      if (!preferred.has(loser.id)) preferred.set(loser.id, winner.id);
     }
   }
-  return ranked.filter((lesson) => !dropped.has(lesson.id));
+  return preferred;
+}
+
+/** The lessons with each twin pair reduced to its preferred lesson; `fits` says whether a lesson can still be chosen (the byte budget): if the preferred twin does not fit the other is tried, so a pair never loses both. */
+export function chooseWithTwins(ranked: readonly Lesson[], fits: (lesson: Lesson) => boolean): Lesson[] {
+  const preferred = twinPreference(ranked);
+  const byId = new Map(ranked.map((lesson) => [lesson.id, lesson] as const));
+  const losersOf = new Map<string, Lesson[]>();
+  for (const [loserId, winnerId] of preferred) (losersOf.get(winnerId) ?? losersOf.set(winnerId, []).get(winnerId)!).push(byId.get(loserId)!);
+  const decided = new Set<string>();
+  const out: Lesson[] = [];
+  const take = (lesson: Lesson): boolean => { if (!fits(lesson)) return false; out.push(lesson); return true; };
+  for (const lesson of ranked) {
+    if (decided.has(lesson.id)) continue;
+    decided.add(lesson.id);
+    const winnerId = preferred.get(lesson.id);
+    const winner = winnerId === undefined ? undefined : byId.get(winnerId);
+    if (winner !== undefined && !decided.has(winner.id)) {
+      // A non-preferred twin ranks first: its preferred twin gets the place, and this one only if that one does not fit.
+      decided.add(winner.id);
+      if (!take(winner)) take(lesson);
+      continue;
+    }
+    if (winner !== undefined) continue;
+    const losers = losersOf.get(lesson.id) ?? [];
+    for (const loser of losers) decided.add(loser.id);
+    if (!take(lesson)) { for (const loser of losers) if (take(loser)) break; }
+  }
+  return out;
 }
 
 export async function loadLessonsForStage(deps: LoadDeps, request: LoadRequest): Promise<LoadResult> {
@@ -232,16 +255,18 @@ export async function loadLessonsForStage(deps: LoadDeps, request: LoadRequest):
   const budget = resolveLoadBudget(resolved.loadBudget, { lessons: LOAD_MAX_LESSONS, bytes: LOAD_MAX_BYTES });
   const choose = (candidates: readonly Lesson[]): void => {
     chosen.length = 0; entries.length = 0; bytes = 0;
-    for (const lesson of withoutTwins(candidates)) {
-      if (chosen.length >= budget.lessons) break;
+    // Twins are reduced to one, preferring the repo-only one, and the other twin is tried when the preferred one does not fit the bytes left.
+    chooseWithTwins(candidates, (lesson) => {
+      if (chosen.length >= budget.lessons) return false;
       const picked = rank.get(lesson.id)!;
       const learned = toLearned(lesson);
       const size = sizeOf(learned);
-      if (bytes + size > budget.bytes) continue;
+      if (bytes + size > budget.bytes) return false;
       chosen.push(learned);
       entries.push({ id: lesson.id, version: lesson.version, score: Math.round(picked.score * 1000) / 1000, why: picked.why, citation: "unchecked", taskIds: lessonTaskRefs(lesson).taskIds });
       bytes += size;
-    }
+      return true;
+    });
   };
   try {
     const checked = await readVisibleRanked({

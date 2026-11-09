@@ -93,6 +93,14 @@ describe("the Lessons tab read", () => {
     expect(view.waiting.find((l) => l.id === "les_pend0001")!.possibleDuplicate).toBeUndefined();
   });
 
+  it("R1b L-d: a twin card (kept apart only because merging would cost a repo-only lesson its mark) says it cannot be merged, in plain words; an ordinary duplicate card does not", async () => {
+    const { store, call } = setup();
+    await seed(store, pending({ id: "les_twin0001", possibleDuplicateOf: "les_pend0001", tierReasons: ["possible_duplicate", "repo_twin"] }), pending({ id: "les_dup00001", possibleDuplicateOf: "les_pend0001", tierReasons: ["possible_duplicate"] }), pending({ id: "les_pend0001" }));
+    const view = LessonsViewReaderSchema.parse(await call(callerOf("bob"), "GET", base));
+    expect(view.waiting.find((l) => l.id === "les_twin0001")).toMatchObject({ possibleDuplicate: "les_pend0001", mergeBlocked: true });
+    expect(view.waiting.find((l) => l.id === "les_dup00001")!.mergeBlocked).toBeUndefined();
+  });
+
   it("shows a maintainer what waits, with who approved first and how many people are needed, and shows the active list with counts and expiry", async () => {
     const { store, call } = setup();
     await seed(store, pending({ id: "les_tier2001", tier: 2, tierReasons: ["reviewer_stage"], stages: ["REVIEW"], type: "review_check", approvals: [{ approvalId: "a1", by: "ann", at: 5, mode: "one" }] }), pending(), lessonRecord({ id: "les_act00001", counters: { loaded: 4, helpful: 3, harmful: 1, citationStale: 0 } }));

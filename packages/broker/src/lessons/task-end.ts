@@ -10,7 +10,7 @@
 import { randomUUID } from "node:crypto";
 import { LESSONS_BROKER_MODEL_WAIT_SECONDS } from "@agentx/contracts";
 import { registerTaskEndHandler, type TaskEndHandler, type TaskEndOutcome } from "../agents/task-end.js";
-import { modeAllows, resolveLearning, type LearningSettingsReader } from "./policy.js";
+import { learningCaps, modeAllows, resolveLearning, type LearningSettingsReader } from "./policy.js";
 import { currentLearningAttempt, learningCallMayStart, withLearningAttempt } from "./learning-deadline.js";
 import { looksLikeCorrection } from "./correction-filter.js";
 import { looksQuoted } from "./guards.js";
@@ -23,7 +23,7 @@ import { reflectSubject, type ReflectDeps } from "./reflect.js";
 import type { ReflectSubject } from "./reflect-input.js";
 import type { RovaraEmitter } from "../team-record/sources/rovara.js";
 import type { ReflectQueue } from "./reflect-queue.js";
-import { reflectRepoOnly, type RepoChangeRequest } from "./repo-reflect.js";
+import { noteTaskHeld, reflectRepoOnly, type RepoChangeRequest } from "./repo-reflect.js";
 import type { OutcomeRowReader } from "./task-outcome-rows.js";
 import { lessonTaskRefs } from "./live-visibility.js";
 import type { LessonStore, ScopeKey } from "./store.js";
@@ -268,6 +268,10 @@ export async function learnFromEndedTaskTyped(deps: TaskLearningDeps, input: { w
     // lease forbids once its call started) and never holds the end of the work back. A pull request someone pushed to after Rovara is the human-edit job's.
     if (!reflected.retry && subject.outcome === "merged" && (base.repoChanges?.length ?? 0) > 0) {
       await reflectRepoOnly({ reflect: deps.reflect, process: deps.process, settings: deps.settings, ...(deps.log === undefined ? {} : { log: deps.log }) }, subject, base.repoChanges!, tally, { owner: "task_end" });
+    }
+    // Review L-f: what this run held counts against the task's one Public cap for the human-edit job too, which runs later as a second run of the same task.
+    if ((base.repoChanges?.length ?? 0) > 0 && learningCaps(deps.reflect.edition, deps.reflect.capsOverride).perTaskUsd !== undefined) {
+      try { await noteTaskHeld(deps.process.store, { workspaceId: input.workspaceId, project: base.facts.project }, input.taskId, tally.heldUsd); } catch { deps.log?.("learning.task_hold_not_noted", { task: logRef(input.workspaceId, input.taskId) }); }
     }
     return reflected;
   } catch {

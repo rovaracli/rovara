@@ -344,7 +344,9 @@ export async function curateDraft(deps: CurateDeps, key: ScopeKey, draft: Lesson
     }
   }
   // Lessons in the repo (L4/L6, review H1 of R1b): a "same" that cannot merge only because the merge would cost a repo-only lesson its mark is a possible duplicate: the draft stays its own lesson, linked both ways, for a person to see.
-  for (const c of live) if (verdicts.get(c.lesson.id) === "same" && !mergeKeepsRepoOnly(c.lesson, draft)) verdicts.set(c.lesson.id, "duplicate");
+  // Review L-e: a refinement across the same line would supersede the other lesson once approved (and retire a restricted lesson other repositories use), so it is a possible duplicate for a person too; and a contradiction
+  // (below) never retires a trial lesson across it.
+  for (const c of live) { const verdict = verdicts.get(c.lesson.id); if ((verdict === "same" || verdict === "refines") && !mergeKeepsRepoOnly(c.lesson, draft)) verdicts.set(c.lesson.id, "duplicate"); }
   // A refinement or a contradiction names the other lesson: it is acted on only when that lesson's audience is at least as broad as the draft's (review M4).
   const broadEnough = (other: Lesson): boolean => JSON.stringify(narrowestAudience([other.provenance.audience, draft.provenance.audience])) === JSON.stringify(draft.provenance.audience);
   const acting = live.flatMap((c) => { const verdict = verdicts.get(c.lesson.id); return verdict === undefined || verdict === "different" || ((verdict === "refines" || verdict === "contradicts") && !broadEnough(c.lesson)) ? [] : [{ ...c, verdict }]; });
@@ -366,7 +368,7 @@ export async function curateDraft(deps: CurateDeps, key: ScopeKey, draft: Lesson
     // A later contradicting correction by a member retires a lesson that is live on trial (DECISIONS 24); the new lesson waits for a person. Audited by the retire.
     // The card is already committed, so a fault here never reaches the caller (a retry would curate the draft a second time and make a second card): the trial lesson stays live, one fixed line says so, and the
     // person who decides the card (or the lesson's own fade) settles it.
-    if (!matchesRejectedLesson && isTrialLesson(other) && other.status === "active" && draft.provenance.memberCorrection === true) {
+    if (!matchesRejectedLesson && isTrialLesson(other) && other.status === "active" && draft.provenance.memberCorrection === true && mergeKeepsRepoOnly(other, draft)) {
       try { await retireLesson(deps, key, other.id, "contradicted", undefined, "lesson.trial_retired"); } catch { deps.log?.("lessons.trial_retire_deferred", { lesson: logRef(key.workspaceId, other.id) }); }
     }
     try { await deps.alerts?.alert(key.workspaceId, key.project, "lesson_contradiction"); } catch { /* the card is already in the queue */ }
@@ -400,9 +402,9 @@ export async function curateDraft(deps: CurateDeps, key: ScopeKey, draft: Lesson
     if (chosen.verdict === "contradicts") return toPerson(other, false);
     // A possible duplicate (round 4): the draft is its own lesson, linked to the one it may duplicate. It goes to a person (merge, keep both or reject) and is never started on trial or applied by itself while the link stands.
     if (chosen.verdict === "duplicate") {
-      const created = newLesson(deps, key, draft, "pending", { possibleDuplicateOf: other.id, tierReasons: ["possible_duplicate", ...rejectedNote] });
-      // Lessons in the repo (R1b, review H1): when the pair stays apart because merging would cross the repo-only line, the other lesson learns its twin too (linked both ways; its text, mark and trial are untouched), and the loader gives a task only one of the two.
+      // Lessons in the repo (R1b, review H1): when the pair stays apart because merging would cross the repo-only line, the other lesson learns its twin too (linked both ways; its text, mark and trial are untouched), and the loader gives a task only one of the two. The card says it cannot be merged (L-d).
       const twinned = !mergeKeepsRepoOnly(other, draft);
+      const created = newLesson(deps, key, draft, "pending", { possibleDuplicateOf: other.id, tierReasons: ["possible_duplicate", ...(twinned ? ["repo_twin"] : []), ...rejectedNote] });
       const written = await commitWith(deps, key, async () => {
         if (!twinned) return [created];
         const fresh = await deps.store.get(key, other.id);

@@ -103,20 +103,20 @@ export function createHumanEditExtractor(deps: HumanEditExtractorDeps): HumanEdi
    * so a pull request never loses its comments because of an edit that cannot be used. The task's facts are read again in full (the comments come with them); a fresh tally is this run's (Public's cap is per run here, as the edit's
    * own reflection is). Never throws: the edit's own result stands.
    */
-  const repoOnly = async (input: HumanEditInput, edits: readonly EvidenceSpan[]): Promise<void> => {
+  const repoOnly = async (target: { workspaceId: string; project: string; taskId: string; link: string }, edit?: { place: string; audience: HumanEditInput["audience"]; spans: readonly EvidenceSpan[] }): Promise<void> => {
     try {
       // The switch first, before anything is read: Off, Collect and a lessons switch that is off read nothing for this pull request.
-      if (!modeAllows((await resolveLearning(deps.settings, input.workspaceId, input.project)).mode, "reflect")) return;
-      const base = await deps.source.read({ workspaceId: input.workspaceId, taskId: input.taskId });
-      if (base === undefined || base.facts.workspaceId !== input.workspaceId || base.facts.project !== input.project || base.facts.taskId !== input.taskId) return;
-      const found = (base.repoChanges ?? []).find((change) => change.link.toLowerCase() === input.link.toLowerCase());
+      if (!modeAllows((await resolveLearning(deps.settings, target.workspaceId, target.project)).mode, "reflect")) return;
+      const base = await deps.source.read({ workspaceId: target.workspaceId, taskId: target.taskId });
+      if (base === undefined || base.facts.workspaceId !== target.workspaceId || base.facts.project !== target.project || base.facts.taskId !== target.taskId) return;
+      const found = (base.repoChanges ?? []).find((change) => change.link.toLowerCase() === target.link.toLowerCase());
       if (found === undefined) return;
-      const owned = edits.length === 0 ? found : withEdits(found, { place: input.scope, audience: input.audience, spans: edits });
+      const owned = edit === undefined || edit.spans.length === 0 ? found : withEdits(found, edit);
       if (owned === undefined) return;
       const subject = buildTaskReflectSubject({ ...base.facts, sendBacks: [] });
       await reflectRepoOnly({ reflect: deps.reflect, process: deps.process, settings: deps.settings, ...(deps.log === undefined ? {} : { log: deps.log }) }, subject, [owned], newTaskFailureTally(), { owner: "human_edit" });
     } catch {
-      deps.log?.("learning.repo_reflect_failed", { taskId: input.taskId });
+      deps.log?.("learning.repo_reflect_failed", { taskId: target.taskId });
     }
   };
 
@@ -124,9 +124,11 @@ export function createHumanEditExtractor(deps: HumanEditExtractorDeps): HumanEdi
     async extract(input) {
       // The edit's own reflection first; its model failure throws (the job is retried, and so is this).
       const ran = await run(input);
-      if (ran.off !== true) await repoOnly(input, ran.edits);
+      if (ran.off !== true) await repoOnly(input, { place: input.scope, audience: input.audience, spans: ran.edits });
       return ran.result;
     },
+    // The tap calls this when it skips the pull request without calling `extract` (a merge commit, a rebase, a bot, an author who is not a member, no compare, capture off...): the comments are still reflected on.
+    commentsOnly: (input) => repoOnly(input),
   };
 }
 

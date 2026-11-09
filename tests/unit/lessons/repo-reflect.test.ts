@@ -4,7 +4,7 @@
 import { describe, expect, it } from "vitest";
 import { buildReflectorInput, type EvidenceSpan } from "../../../packages/broker/src/lessons/reflect-input.js";
 import { repoVisibilityOf } from "../../../packages/broker/src/lessons/repo-eligibility.js";
-import { hasRepoCorrection, reflectRepoOnly, repoOnlySubjectOf, repoReflectKey, type PlacedChangeRequest, type RepoChangeRequest, type RepoReflectDeps } from "../../../packages/broker/src/lessons/repo-reflect.js";
+import { hasRepoCorrection, noteTaskHeld, readTaskHeld, reflectRepoOnly, repoOnlySubjectOf, repoReflectKey, type PlacedChangeRequest, type RepoChangeRequest, type RepoReflectDeps } from "../../../packages/broker/src/lessons/repo-reflect.js";
 import { setLearnedLessonsGate } from "../../../packages/broker/src/lessons/policy.js";
 import { newTaskFailureTally } from "../../../packages/broker/src/lessons/pause.js";
 import type { ProcessDeps } from "../../../packages/broker/src/lessons/process.js";
@@ -21,7 +21,7 @@ const PREFIX = "https://github.com/acme/api/pull/";
 const HEAD = "9".repeat(40);
 const comment = (text: string, over: Record<string, unknown> = {}) => memberSpan(text, { kind: "pr_comment", eventId: "acme/api#pr7:review_comment11", authorId: "rae", scopes: [PLACE], audience: { kind: "project" }, paths: ["src/a.ts"], ...over });
 const change = (over: Partial<RepoChangeRequest> = {}): PlacedChangeRequest => ({
-  place: PLACE, repository: "api", repositoryUrl: "https://github.com/acme/api", link: LINK, linkPrefix: PREFIX, revision: HEAD, mergeRevision: MERGED, merged: true, title: "Make retries use withRetry",
+  place: PLACE, repository: "api", repositoryUrl: "https://github.com/acme/api", link: LINK, linkPrefix: PREFIX, revision: HEAD, mergeRevision: MERGED, merged: true,
   audience: { kind: "project" }, comments: [comment("Use withRetry for HTTP retries in api, not a hand-rolled loop.")], edits: [], ...over,
 }) as PlacedChangeRequest;
 
@@ -53,10 +53,9 @@ describe("the repo-only subject and its prompt", () => {
   const built = () => repoOnlySubjectOf(mainSubject(), change());
   const prompt = () => { const input = buildReflectorInput(built()); if (!input.eligible) throw new Error(`not eligible: ${input.reason}`); return input; };
 
-  it("holds the repository's review comment, the merge fact, the change request link and its title, and nothing else", () => {
+  it("holds the repository's review comment, the merge fact and the change request link, and nothing else", () => {
     const { user, system } = prompt();
     expect(user).toContain("Use withRetry for HTTP retries in api, not a hand-rolled loop.");
-    expect(user).toContain("Make retries use withRetry");
     expect(user).toContain(MERGED);
     expect(user).toContain(LINK);
     expect(user).toContain("Repositories: api");
@@ -76,7 +75,7 @@ describe("the repo-only subject and its prompt", () => {
     expect(s.baseCommit).toBeUndefined();
     expect(s.mergedCommit).toBe(MERGED);
     expect(s.outcome).toBe("merged");
-    expect(s.spans.map((span) => span.kind).sort()).toEqual(["fact", "pr_comment"]);
+    expect(s.spans.map((span) => span.kind).sort()).toEqual(["pr_comment"]);
   });
 
   it("wraps every repository text in blocks that carry a random nonce the texts cannot know, and says so in the system text", () => {
@@ -98,22 +97,12 @@ describe("the repo-only subject and its prompt", () => {
     expect(input.user).not.toContain("<<span S9");
   });
 
-  it("review M2: only the title is sent, as its own span labelled as written by Rovara; a description (Rovara's own text: plan summary, names, links) never reaches the prompt, whatever the caller passes", () => {
-    const smuggled = repoOnlySubjectOf(mainSubject(), { ...change(), body: "BODY-SECRET Requested by: Jane Doe, from the Slack ask of customer Initech" } as never);
+  it("review L-b: no Rovara-written text at all: not the description, not the title; only human comments and edits are spans, whatever the caller passes", () => {
+    const smuggled = repoOnlySubjectOf(mainSubject(), { ...change(), title: "TITLE-SECRET Rovara: fix retries", body: "BODY-SECRET Requested by: Jane Doe, from the Slack ask of customer Initech" } as never);
     const input = buildReflectorInput(smuggled);
     if (!input.eligible) throw new Error("not eligible");
-    expect(input.user).not.toContain("BODY-SECRET");
-    expect(input.user).not.toContain("Jane Doe");
-    const written = [...input.spans.values()].filter((span) => span.kind === "fact");
-    expect(written).toHaveLength(1);
-    expect(written[0]!.text).toBe("Change request title (written by Rovara): Make retries use withRetry");
-    expect(written[0]!.trust).toBe("system");
-  });
-
-  it("review M2 (P3b): a title is kept even when it begins like a quotation, and the prompt never says 'pull request' (host words stay out of the core)", () => {
-    const input = buildReflectorInput(repoOnlySubjectOf(mainSubject(), change({ title: "Make retries use withRetry" })));
-    if (!input.eligible) throw new Error("not eligible");
-    expect(input.user).toContain("Make retries use withRetry");
+    for (const secret of ["BODY-SECRET", "TITLE-SECRET", "Jane Doe", "Initech"]) expect(input.user, secret).not.toContain(secret);
+    expect([...input.spans.values()].map((span) => span.kind)).toEqual(["pr_comment"]);
     expect(input.user).not.toMatch(/pull request/iu);
     expect(input.system).not.toMatch(/pull request/iu);
   });
@@ -363,5 +352,19 @@ describe("review lows", () => {
     w.deps.reflect.settings = flipping;
     await reflectRepoOnly(w.deps, mainSubject(), [change()], newTaskFailureTally());
     expect(recorded).toEqual([]);
+  });
+});
+
+describe("review L-f: Public's cap is per task, across the task-end run and the human-edit job", () => {
+  it("held amounts are remembered in whole cents (rounded up) and read back; they only grow", async () => {
+    const store = new InMemoryLessonStore();
+    expect(await readTaskHeld(store, key, "task-1")).toBe(0);
+    await noteTaskHeld(store, key, "task-1", 0.034);
+    expect(await readTaskHeld(store, key, "task-1")).toBeCloseTo(0.04, 6);
+    await noteTaskHeld(store, key, "task-1", 0.01);
+    expect(await readTaskHeld(store, key, "task-1")).toBeCloseTo(0.04, 6);
+    await noteTaskHeld(store, key, "task-1", 0.15);
+    expect(await readTaskHeld(store, key, "task-1")).toBeCloseTo(0.15, 6);
+    expect(await readTaskHeld(store, key, "task-2")).toBe(0);
   });
 });

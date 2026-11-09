@@ -50,7 +50,7 @@ export function LessonCard({ project, lesson, now, onDone }: Props) {
   {needs !== undefined && needs.groups.length > 0 && <p className="rv-muted">{T.GROUP_NEEDS} <VisibleText text={needs.groups.join(", ")} />.</p>}
   {lesson.reviewRequired === true && <Banner title={T.SENT_BACK} tone="warning" />}
   {lesson.contradicts !== undefined && <Banner title={T.CONTRADICTS} tone="warning" />}
-  {lesson.possibleDuplicate !== undefined && <Banner title={T.POSSIBLE_DUPLICATE} tone="warning" />}
+  {lesson.possibleDuplicate !== undefined && <Banner title={lesson.mergeBlocked === true ? T.TWIN_NO_MERGE : T.POSSIBLE_DUPLICATE} tone="warning" />}
   {lesson.supersedes !== undefined && <p className="rv-muted">{T.REPLACES}</p>}
   <section aria-label={T.WHERE_FROM} className="rv-lessons-from">
    <h4>{T.WHERE_FROM}</h4>
@@ -70,7 +70,7 @@ export function LessonCard({ project, lesson, now, onDone }: Props) {
    <div className="rv-lessons-actions"><Button variant="danger" busy={busy} disabled={reason.trim() === ""} onClick={() => { void reject(); }}>{T.REJECT_SEND}</Button><Button onClick={() => setMode("none")}>{T.CANCEL}</Button></div>
   </fieldset>}
   {mode === "none" && (lesson.canApprove || lesson.canReject) && <div className="rv-lessons-actions">
-   {lesson.canReject && lesson.possibleDuplicate !== undefined && <Button busy={busy} onClick={() => { void merge(); }}>{T.MERGE}</Button>}
+   {lesson.canReject && lesson.possibleDuplicate !== undefined && lesson.mergeBlocked !== true && <Button busy={busy} onClick={() => { void merge(); }}>{T.MERGE}</Button>}
    {lesson.canApprove && <Button variant="primary" busy={busy} onClick={() => { void approve(false); }}>{T.APPROVE}</Button>}
    {lesson.canApprove && <Button disabled={busy} onClick={() => setMode("edit")}>{T.APPROVE_EDIT}</Button>}
    {lesson.canReject && <Button disabled={busy} onClick={() => setMode("reject")}>{T.REJECT}</Button>}

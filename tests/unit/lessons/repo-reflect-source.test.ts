@@ -28,7 +28,7 @@ function record(state: string, headSha?: string) {
 }
 const words = (id: string, who: string, text: string, over: Partial<CapturedWords> = {}): CapturedWords => ({ id, authorDeveloperId: who, authorSourceId: `acct-${who}`, source: "github", ownText: true, text, audience: { kind: "project" }, scope: "github:repo/9", ...over });
 const feedback = (over: Partial<PullRequestFeedbackView> = {}): PullRequestFeedbackView => ({
-  comments: [{ kind: "review_comment", id: "11" }, { kind: "discussion", id: "13" }], headRevision: HEAD, title: "Retries use withRetry", mergeRevision: MERGE, ...over,
+  comments: [{ kind: "review_comment", id: "11" }, { kind: "discussion", id: "13" }], headRevision: HEAD, mergeRevision: MERGE, ...over,
 });
 const comments: Record<string, CapturedWords> = {
   "review_comment:11": words("acme/api#pr7:review_comment11", "rae", "Use withRetry", { path: "src/a.ts" }),
@@ -48,12 +48,13 @@ function read(options: { state?: string; feedback?: PullRequestFeedbackView | un
 }
 
 describe("the subject source describes the merged pull request for the repo-only reflection", () => {
-  it("gives the place and readers of the comment rows, the project's name and registered address for the repository, the link and its prefix, the head and merge revisions and the title (never the description)", async () => {
+  it("gives the place and readers of the comment rows, the project's name and registered address for the repository, the link and its prefix, the head and merge revisions (no title, no description: Rovara writes them)", async () => {
     const base = await read();
     expect(base?.repoChanges).toHaveLength(1);
     const change = base!.repoChanges![0]!;
-    expect(change).toMatchObject({ place: "github:repo/9", repository: "api", repositoryUrl: "https://github.com/Acme/Api", link: PR, linkPrefix: "https://github.com/Acme/Api/pull/", revision: HEAD, mergeRevision: MERGE, merged: true, title: "Retries use withRetry", audience: { kind: "project" }, edits: [] });
+    expect(change).toMatchObject({ place: "github:repo/9", repository: "api", repositoryUrl: "https://github.com/Acme/Api", link: PR, linkPrefix: "https://github.com/Acme/Api/pull/", revision: HEAD, mergeRevision: MERGE, merged: true, audience: { kind: "project" }, edits: [] });
     expect(change).not.toHaveProperty("body");
+    expect(change).not.toHaveProperty("title");
     expect(change.comments.map((span) => [span.kind, span.authorId, span.scopes])).toEqual([["pr_comment", "rae", ["github:repo/9"]], ["pr_comment", "sam", ["github:repo/9"]]]);
     // The same comment spans are in the first reflection's subject: nothing more is read from the host for it.
     expect(base!.facts.rest.spans!.filter((span) => span.kind === "pr_comment")).toEqual([...change.comments]);
@@ -75,6 +76,11 @@ describe("the subject source describes the merged pull request for the repo-only
     expect((await read())!.repoChanges![0]!.humanEditsExpected).toBeUndefined();
   });
 
+  it("review M-a: a merged head that moved is left to the human-edit job only on a host whose adapter reads human edits", async () => {
+    expect((await read({ headSha: "a".repeat(40) }, { humanEditsSupported: () => false }))!.repoChanges![0]!.humanEditsExpected).toBe(false);
+    expect((await read({ headSha: "a".repeat(40) }, { humanEditsSupported: () => true }))!.repoChanges![0]!.humanEditsExpected).toBe(true);
+  });
+
   it("a pull request with no comment of this read is still described (an edit may name its place), without a place; one whose comments name two places is not", async () => {
     const none = (await read({ comments: {} }))!.repoChanges![0]!;
     expect(none.place).toBeUndefined();
@@ -83,9 +89,8 @@ describe("the subject source describes the merged pull request for the repo-only
     expect((await read({ comments: { ...comments, "discussion:13": words("acme/api#pr7:discussion13", "sam", "Please add a test", { scope: "github:repo/77" }) } }))?.repoChanges).toBeUndefined();
   });
 
-  it("gives none for a pull request that did not merge, or a host that gave no title or head", async () => {
+  it("gives none for a pull request that did not merge, or a host that gave no head", async () => {
     expect((await read({ state: "OPEN" }))?.repoChanges).toBeUndefined();
-    expect((await read({ feedback: feedback({ title: undefined }) }))?.repoChanges).toBeUndefined();
     expect((await read({ feedback: feedback({ headRevision: undefined }) }))?.repoChanges).toBeUndefined();
     expect((await read({ feedback: undefined }))?.repoChanges).toBeUndefined();
   });

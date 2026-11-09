@@ -19,8 +19,7 @@ export interface PullRequestFeedbackView {
   /** The pull request's head commit now (after a merge, the last one), and its branch: what a compare from a comment's commit ends at. Absent when the host does not say. */
   headRevision?: string | undefined;
   sourceBranch?: string | undefined;
-  /** The change request's title (bounded) and its merge revision when merged (lessons in the repo, decision 50c: the repo-only reflection reads what the repository says). Never the description: Rovara writes it itself. Absent when the host does not say. */
-  title?: string | undefined;
+  /** The change request's merge revision when merged (lessons in the repo, decision 50c). Never its title or description: Rovara writes them, and the repo-only reflection carries no text Rovara wrote. Absent when the host does not say. */
   mergeRevision?: string | undefined;
 }
 
@@ -134,7 +133,7 @@ export function captureAdapterOf(input: {
       const merge = feedback.changeRequest.mergeRevision;
       return {
         comments, ...(/^[0-9a-f]{40}$/u.test(head) ? { headRevision: head } : {}), ...(feedback.changeRequest.sourceBranch === "" ? {} : { sourceBranch: feedback.changeRequest.sourceBranch }),
-        ...(typeof feedback.changeRequest.title === "string" && feedback.changeRequest.title.trim() !== "" ? { title: feedback.changeRequest.title.trim().slice(0, 300) } : {}), ...(typeof merge === "string" && /^[0-9a-f]{40}$/u.test(merge) ? { mergeRevision: merge } : {}),
+        ...(typeof merge === "string" && /^[0-9a-f]{40}$/u.test(merge) ? { mergeRevision: merge } : {}),
       };
     },
   };

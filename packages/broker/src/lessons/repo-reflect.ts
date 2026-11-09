@@ -5,7 +5,7 @@
 //   - the repository's review comments and review threads on that pull request (the captured rows the first reflection already read: a member's own words, `ownText`, written in the repository),
 //   - the human fix-up edits on that pull request (`human_edit`, handed over in memory by the code-host tap; never stored),
 //   - the merge fact (the outcome word and the merge revision),
-//   - the change request's TITLE (review M2: not the description, which Rovara writes itself from the plan, the names of the requester and approver and the task link).
+//   Nothing Rovara wrote is in it (review M2, L-b): not the description (Rovara writes it from the plan, the names of the requester and approver and the task link) and not the title (it comes from the Slack request).
 // It holds no Slack, no tracker, no session message, no task description, no plan, no finding, no loaded lesson, no other repository. Its subject sets `repoInputs` ({place, repository, linkPrefix}) for exactly that repository, so
 // R1's `repoVisibilityOf` marks every draft `repoOnly` BY CONSTRUCTION; the drafts then go through the normal curate, trial and eligibility rules (decision 50b: stable or person-approved before a weekly pull request).
 //
@@ -33,6 +33,7 @@ import { reflectSubject, type ReflectDeps } from "./reflect.js";
 import type { PipelineModel } from "./ports.js";
 import { buildReflectorInput, type EvidenceSpan, type ReflectSubject } from "./reflect-input.js";
 import { repoVisibilityOf } from "./repo-eligibility.js";
+import type { LessonStore, ScopeKey } from "./store.js";
 import type { Audience } from "./types.js";
 
 /**
@@ -55,8 +56,6 @@ export interface RepoChangeRequest {
   /** The merge revision on the default branch, when the host said it. */
   mergeRevision?: string | undefined;
   merged: boolean;
-  /** The title. Nothing else the host calls the description is carried: Rovara writes it from the plan, the names of the people involved and the task link. */
-  title: string;
   /** True when the merged head is not the head Rovara last pushed: someone pushed after Rovara, so the human-edit job owns this change request (it runs the reflection with the edits). */
   humanEditsExpected?: boolean | undefined;
   /** Who may read the change request: the repository's readers. Absent until a comment row or an edit says it. */
@@ -81,7 +80,6 @@ export function withEdits(change: RepoChangeRequest, edit: { place: string; audi
 export const MAX_REPO_CHANGES = 5;
 /** Less room than this in the task's budget is none. */
 const MIN_ROOM_USD = 0.001;
-const TITLE_MAX = 300;
 
 /** Whether a span is a person's own correction in the repository: a member with a known id, words that are theirs (not chosen by code). */
 const isMemberWords = (span: EvidenceSpan): boolean => span.trust === "member" && span.fixedText !== true && (span.authorId !== undefined || (span.authorIds?.length ?? 0) > 0);
@@ -100,11 +98,6 @@ export const repoReflectKey = (taskId: string, change: Pick<RepoChangeRequest, "
  * here either) and the outcome; nothing of its text. Every span is the repository's. Pure.
  */
 export function repoOnlySubjectOf(main: ReflectSubject, change: PlacedChangeRequest): ReflectSubject {
-  // The title only (review M2), as its own span and labelled for what it is: Rovara writes it, anyone with write access may edit it, so it is `system` text and a lesson that cites it alone is no correction.
-  const written: EvidenceSpan = {
-    kind: "fact", trust: "system", sourceKey: "change_request_title", audience: change.audience, scopes: [change.place],
-    text: `Change request title (written by Rovara): ${change.title.slice(0, TITLE_MAX)}`,
-  };
   return {
     kind: "task", id: main.id, workspaceId: main.workspaceId, project: main.project, repositories: [change.repository], outcome: "merged",
     ...(change.mergeRevision === undefined ? {} : { mergedCommit: change.mergeRevision }),
@@ -116,7 +109,7 @@ export function repoOnlySubjectOf(main: ReflectSubject, change: PlacedChangeRequ
     repoInputs: { place: change.place, repository: change.repository, linkPrefix: change.linkPrefix, repositoryUrl: change.repositoryUrl },
     promptStyle: "repo_only", requireEvidenceKind: ["pr_comment", "human_edit"],
     ...(main.evalRun === true ? { evalRun: true } : {}),
-    spans: [written, ...change.comments, ...change.edits],
+    spans: [...change.comments, ...change.edits],
   };
 }
 
@@ -134,6 +127,23 @@ export interface RepoReflectDeps {
  */
 function withoutOwnRefusals(pause: LessonsPauseStore | undefined): LessonsPauseStore | undefined {
   return pause === undefined ? undefined : { ...pause, record: async (workspaceId, project, code) => { if (code !== "cost_too_high" && code !== "no_provider") await pause.record(workspaceId, project, code); } };
+}
+
+/**
+ * Public's per-task cap is one total for the task, across the task-end run and the human-edit job (review L-f). What a run held is remembered as once-keys, one per whole cent (rounded up): `task-held:<task>:<n>` for n = 1..cents.
+ * No store method is added; a read counts the steps from 1 until one is missing. The total only grows. Enterprise has no cap and neither reads nor writes it.
+ */
+const HELD_STEP_USD = 0.01;
+const HELD_MAX_STEPS = 100;
+const heldName = (taskId: string, step: number): string => `task-held:${taskId}:${String(step)}`;
+export async function readTaskHeld(store: Pick<LessonStore, "seenOnce">, key: ScopeKey, taskId: string): Promise<number> {
+  let steps = 0;
+  while (steps < HELD_MAX_STEPS && await store.seenOnce(key, heldName(taskId, steps + 1))) steps += 1;
+  return Math.round(steps * HELD_STEP_USD * 100) / 100;
+}
+export async function noteTaskHeld(store: Pick<LessonStore, "seenOnce" | "markOnce">, key: ScopeKey, taskId: string, usd: number): Promise<void> {
+  const wanted = Math.min(HELD_MAX_STEPS, Math.ceil(usd / HELD_STEP_USD - 1e-9));
+  for (let step = Math.round((await readTaskHeld(store, key, taskId)) / HELD_STEP_USD) + 1; step <= wanted; step += 1) await store.markOnce(key, heldName(taskId, step));
 }
 
 /** Who runs the reflection of a change request: the task end (comments only) or the human-edit job (comments and edits, for a change request someone pushed to after Rovara). */
@@ -156,6 +166,9 @@ export async function reflectRepoOnly(deps: RepoReflectDeps, main: ReflectSubjec
     if (!modeAllows((await resolveLearning(deps.settings, main.workspaceId, main.project)).mode, "reflect")) return result;
     const key = { workspaceId: main.workspaceId, project: main.project };
     const pause = withoutOwnRefusals(failuresCountedOncePerTask(deps.reflect.pause, tally));
+    // Review L-f: the human-edit job is a second run for a task whose cap the task end already spent from; it starts from what that run held, and leaves what it holds for any later one.
+    const capped = learningCaps(deps.reflect.edition, deps.reflect.capsOverride).perTaskUsd !== undefined;
+    if (owner === "human_edit" && capped) tally.heldUsd = Math.max(tally.heldUsd, await readTaskHeld(deps.process.store, key, main.id));
     for (const change of wanted) {
       const attempt = currentLearningAttempt();
       if (attempt?.signal?.aborted === true) break;
@@ -199,6 +212,7 @@ export async function reflectRepoOnly(deps: RepoReflectDeps, main: ReflectSubjec
         } catch { deps.log?.("learning.repo_reflect_draft_failed", {}); }
       }
     }
+    if (owner === "human_edit" && capped) await noteTaskHeld(deps.process.store, key, main.id, tally.heldUsd);
   } catch {
     deps.log?.("learning.repo_reflect_failed", {});
   }

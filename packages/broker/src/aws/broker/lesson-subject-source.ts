@@ -119,6 +119,8 @@ export interface LessonSubjectSourceDeps {
   pullRequestAddress?: ((url: string) => PullRequestAddress | undefined) | undefined;
   /** The project's REGISTERED repository addresses (the URL in the project definition), by the project's name for each. With `repositoryAddress` it proves a pull request is in a registered repository. Absent: no repo-only reflection. */
   repositoryUrlsOf?: ((orgId: string, project: string) => Promise<Readonly<Record<string, string>>>) | undefined;
+  /** Whether the code host's adapter reads human edits (a fix-up job exists for its pull requests). Absent: yes. A host that does not leaves every pull request to the task end. */
+  humanEditsSupported?: ((host: string) => boolean) | undefined;
   /** The address of a repository as the project's repository record spells it, from the code host's own identity of it (the host and the full name the pull request's address carries); undefined when the host cannot say. */
   repositoryAddress?: ((host: string, fullName: string) => string | undefined) | undefined;
 }
@@ -274,17 +276,17 @@ function linkPrefixOf(url: string, number: number): string | undefined {
 const addressKey = (url: string): string => url.trim().replace(/\/+$/u, "").replace(/\.git$/u, "").toLowerCase();
 
 /**
- * Lessons in the repo (decision 50c): one merged pull request of the task as a `RepoChangeRequest`, from what the code host's adapter said (`listed`: title, head and merge revision) and the comment spans this read already
- * proved. Undefined (no second reflection for it) unless the pull request merged, the host gave its title and a head revision, the repository is PROVED (the project's registered address for the repository equals the address
+ * Lessons in the repo (decision 50c): one merged pull request of the task as a `RepoChangeRequest`, from what the code host's adapter said (`listed`: head and merge revision) and the comment spans this read already
+ * proved. Undefined (no second reflection for it) unless the pull request merged, the host gave a head revision, the repository is PROVED (the project's registered address for the repository equals the address
  * the code host's own identity gives for the pull request's repository, without case) and the comments name at most ONE place with one audience.
  * `pushedHead` is the head Rovara last pushed; a merged head that differs means someone pushed after Rovara, so the human-edit job owns the change request.
  */
 function repoChangeOf(input: {
   pullRequest: { repositoryId: string; url: string; state: string; headSha?: string | undefined }; address: PullRequestAddress; listed: PullRequestFeedbackView | undefined; comments: readonly EvidenceSpan[];
-  registered: string | undefined; hostAddress: string | undefined;
+  registered: string | undefined; hostAddress: string | undefined; /** The host's adapter reads human edits, so a moved head means the fix-up job runs. */ humanEditsRead: boolean;
 }): RepoChangeRequest | undefined {
   const { pullRequest, listed, comments } = input;
-  if (pullRequest.state !== "MERGED" || listed === undefined || listed.title === undefined || listed.headRevision === undefined) return undefined;
+  if (pullRequest.state !== "MERGED" || listed === undefined || listed.headRevision === undefined) return undefined;
   if (input.registered === undefined || input.hostAddress === undefined || addressKey(input.registered) !== addressKey(input.hostAddress)) return undefined;
   const places = new Set(comments.flatMap((span) => span.scopes ?? []));
   const audiences = comments.flatMap((span) => (span.audience === undefined ? [] : [span.audience]));
@@ -294,8 +296,8 @@ function repoChangeOf(input: {
   const pushed = pullRequest.headSha;
   return {
     ...(place === undefined ? {} : { place }), repository: pullRequest.repositoryId, repositoryUrl: input.registered, link: pullRequest.url, linkPrefix, revision: listed.headRevision, merged: true,
-    ...(listed.mergeRevision === undefined ? {} : { mergeRevision: listed.mergeRevision }), title: listed.title,
-    ...(pushed === undefined ? {} : { humanEditsExpected: pushed.toLowerCase() !== listed.headRevision.toLowerCase() }),
+    ...(listed.mergeRevision === undefined ? {} : { mergeRevision: listed.mergeRevision }),
+    ...(pushed === undefined ? {} : { humanEditsExpected: input.humanEditsRead && pushed.toLowerCase() !== listed.headRevision.toLowerCase() }),
     ...(audiences.length === 0 ? {} : { audience: narrowestAudience(audiences) }), comments, edits: [],
   };
 }
@@ -568,11 +570,11 @@ export function lessonSubjectSource(deps: LessonSubjectSourceDeps): TaskSubjectS
                 audience: row.audience, scopes: [row.scope], ...(led ? { ledToChange: true } : {}), ...(place === undefined || place === "" ? {} : { paths: [place] }),
               });
             }
-            // Lessons in the repo (decision 50c): the merged change request, described without naming a host, for the repo-only reflection. The host's adapter gave the title, description and head; the place and the readers are the
+            // Lessons in the repo (decision 50c): the merged change request, described without naming a host, for the repo-only reflection. The host's adapter gave the head; the place and the readers are the
             // comment rows' own (one place or none). Only a merged pull request with at least one comment of this read.
             const change = repoChangeOf({
               pullRequest, address, listed, comments: spans.slice(spansBefore).filter((span) => span.kind === "pr_comment"),
-              registered: (await registeredUrls())[pullRequest.repositoryId], hostAddress: deps.repositoryAddress?.(address.host, address.repository),
+              registered: (await registeredUrls())[pullRequest.repositoryId], hostAddress: deps.repositoryAddress?.(address.host, address.repository), humanEditsRead: deps.humanEditsSupported?.(address.host) ?? true,
             });
             if (change !== undefined) repoChanges.push(change);
           }
