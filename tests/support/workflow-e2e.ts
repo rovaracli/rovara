@@ -878,7 +878,7 @@ export async function createWorkflowE2E(options: {
   let checkTaskPerson = options.taskPeople?.checkTaskPerson;
   let productionDispatcherDelivery: ((record: DurableOutboxRecord, receiveCount: number) => Promise<WorkerInvocation | undefined>) | undefined;
   let beforeNextFeatureProbe: (() => void | Promise<void>) | undefined;
-  const dispatchReceipts: Array<{ operationId: string; phase: "DISPATCH_GUARD" | "EC2_GUARD" | "FEATURE_PROBE" | "POST"; outcome?: "ALLOWED" | "PARKED" }> = [];
+  const dispatchReceipts: Array<{ operationId: string; phase: "DISPATCH_GUARD" | "EC2_GUARD" | "FEATURE_PROBE" | "POST"; outcome?: "ALLOWED" | "PARKED" | "CLOSED" }> = [];
   const resultRewrites: Array<{ kind: E2EInvocationKind; rewrite: (result: unknown) => unknown }> = [];
   /** Per run, in order: its kind and mode, and how many owner decisions and feedback approvals the task held when it started. */
   const ledger: JourneyLedgerEntry[] = [];
@@ -1007,7 +1007,7 @@ export async function createWorkflowE2E(options: {
     const features = workerFeatureList ?? WORKER_INVOCATION_FEATURES;
     const guarded = (phase: "DISPATCH_GUARD" | "EC2_GUARD"): TaskDispatchGuard => async (record) => {
       const outcome = await guardTaskDispatch({ documentClient: db, tableName: "state", ...(checkTaskPerson === undefined ? {} : { checkTaskPerson }) }, record);
-      dispatchReceipts.push({ operationId: record.operationId, phase, outcome });
+      dispatchReceipts.push({ operationId: record.operationId, phase, outcome: typeof outcome === "object" ? "CLOSED" : outcome });
       return outcome;
     };
     const dispatch = createDispatcherHandler({

@@ -2117,6 +2117,106 @@ describe("the dispatcher with ec2-ebs records", () => {
     expect(markDispatching).not.toHaveBeenCalled();
   });
 
+  const closedActive = { outcome: "CLOSED" as const, reason: "workflow merged", operationStatus: "DISPATCHING" };
+  const closedEnded = { outcome: "CLOSED" as const, reason: "operation cancelled", operationStatus: "CANCELLED" };
+
+  it("fails the operation of a dispatch for a closed task while the operation is still active: workspace freed, no machine, no retry, one info line with the real reason", async () => {
+    const record = recordFor();
+    const markDispatching = vi.fn(async () => true);
+    const markDelivered = vi.fn(async () => undefined);
+    const markFailed = vi.fn(async () => undefined);
+    const deliverEc2 = vi.fn(async () => "DELIVERED" as const);
+    const log = vi.fn();
+    const handler = createDispatcherHandler({
+      markDispatching, markDelivered, markFailed, deliverEc2, log,
+      guardTaskDispatch: async () => closedActive,
+      maxAttempts: 5,
+    });
+
+    await expect(handler({ Records: [{ messageId: "closed", body: JSON.stringify(record), attributes: { ApproximateReceiveCount: "1" } }] }))
+      .resolves.toEqual({ batchItemFailures: [] });
+    expect(markDispatching).not.toHaveBeenCalled();
+    expect(deliverEc2).not.toHaveBeenCalled();
+    expect(markDelivered).not.toHaveBeenCalled();
+    expect(markFailed).toHaveBeenCalledExactlyOnceWith(record, expect.stringContaining("TASK_CLOSED"), { whileOutboxIn: ["QUEUED", "PENDING", "WAITING_FOR_SESSION", "WAITING_FOR_TASK_ACCESS"] });
+    expect(log).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ level: "info", event: "dispatch.closed_task_acked", operationId: record.operationId, outboxId: record.id }));
+    expect((log.mock.calls[0]![0] as { reason?: string }).reason).toMatch(/workflow merged/);
+  });
+
+  it("only marks the outbox item delivered (while it is still waiting) when the operation has already ended", async () => {
+    const record = recordFor();
+    const markDelivered = vi.fn(async () => undefined);
+    const markFailed = vi.fn(async () => undefined);
+    const log = vi.fn();
+    const handler = createDispatcherHandler({
+      markDispatching: async () => true, markDelivered, markFailed, deliverEc2: async () => "DELIVERED", log,
+      guardTaskDispatch: async () => closedEnded,
+    });
+
+    await expect(handler({ Records: [{ messageId: "ended", body: JSON.stringify(record) }] })).resolves.toEqual({ batchItemFailures: [] });
+    expect(markFailed).not.toHaveBeenCalled();
+    expect(markDelivered).toHaveBeenCalledExactlyOnceWith(record.id, { whileOutboxIn: ["QUEUED", "PENDING", "WAITING_FOR_SESSION", "WAITING_FOR_TASK_ACCESS"] });
+    expect((log.mock.calls[0]![0] as { reason?: string }).reason).toMatch(/operation cancelled/);
+  });
+
+  it.each([
+    ["every reason a failed condition or none", [{ Code: "ConditionalCheckFailed" }, { Code: "None" }, { Code: "ConditionalCheckFailed" }], true],
+    ["a transaction conflict among the reasons", [{ Code: "ConditionalCheckFailed" }, { Code: "TransactionConflict" }], false],
+    ["throttling among the reasons", [{ Code: "ThrottlingError" }, { Code: "None" }], false],
+    ["no reasons at all", undefined, false],
+  ] as const)("a fenced write cancelled with %s: %s", async (_label, reasons, settled) => {
+    const record = recordFor();
+    const log = vi.fn();
+    const failure = Object.assign(new Error("cancelled"), { name: "TransactionCanceledException", ...(reasons === undefined ? {} : { CancellationReasons: reasons }) });
+    const handler = createDispatcherHandler({
+      markDispatching: async () => true, markDelivered: async () => undefined, markFailed: async () => { throw failure; }, deliverEc2: async () => "DELIVERED", log,
+      guardTaskDispatch: async () => closedActive,
+    });
+    const result = await handler({ Records: [{ messageId: "raced", body: JSON.stringify(record) }] });
+    // Settled (only failed conditions): acknowledged with its info line. Anything else is retried, like any other failure.
+    if (settled) {
+      expect(result).toEqual({ batchItemFailures: [] });
+      expect(log).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ event: "dispatch.closed_task_acked" }));
+    } else {
+      expect(result).toEqual({ batchItemFailures: [{ itemIdentifier: "raced" }] });
+      expect(log).not.toHaveBeenCalledWith(expect.objectContaining({ event: "dispatch.closed_task_acked" }));
+    }
+  });
+
+  it("retries any other failure of the fenced write", async () => {
+    const record = recordFor();
+    const broken = createDispatcherHandler({
+      markDispatching: async () => true, markDelivered: async () => undefined, markFailed: async () => { throw new Error("throttled"); }, deliverEc2: async () => "DELIVERED", log: () => undefined,
+      guardTaskDispatch: async () => closedActive,
+    });
+    await expect(broken({ Records: [{ messageId: "broken", body: JSON.stringify(record) }] })).resolves.toEqual({ batchItemFailures: [{ itemIdentifier: "broken" }] });
+  });
+
+  it("acknowledges a dispatch whose task closed while compute was starting, the same way", async () => {
+    const record = recordFor();
+    const markDelivered = vi.fn(async () => undefined);
+    const markFailed = vi.fn(async () => undefined);
+    const log = vi.fn();
+    const handler = createDispatcherHandler({
+      markDispatching: async () => true, markDelivered, markFailed, deliverEc2: async () => ({ taskClosed: closedActive }), log, maxAttempts: 5,
+    });
+
+    await expect(handler({ Records: [{ messageId: "closed-late", body: JSON.stringify(record) }] })).resolves.toEqual({ batchItemFailures: [] });
+    expect(markDelivered).not.toHaveBeenCalled();
+    expect(markFailed).toHaveBeenCalledExactlyOnceWith(record, expect.stringContaining("TASK_CLOSED"), { whileOutboxIn: ["QUEUED", "PENDING", "WAITING_FOR_SESSION", "WAITING_FOR_TASK_ACCESS"] });
+    expect(log).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ level: "info", event: "dispatch.closed_task_acked", operationId: record.operationId }));
+  });
+
+  it("sends nothing to the worker when the guard says the task closed after compute was ready", async () => {
+    const signInvocation = vi.fn(kmsSign);
+    const { deliver, post } = delivery({ sign: signInvocation, guardTaskDispatch: async () => closedActive });
+    const record = recordFor();
+
+    await expect(deliver(record, record.invocation)).resolves.toEqual({ taskClosed: closedActive });
+    expect(signInvocation).not.toHaveBeenCalled();
+    expect(post).not.toHaveBeenCalled();
+  });
+
   it("acknowledges a parked record without marking it delivered or using a retry", async () => {
     const { handler, markDelivered } = dispatcher(async () => "WAITING_FOR_SESSION");
     const record = recordFor();

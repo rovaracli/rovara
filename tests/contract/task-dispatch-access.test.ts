@@ -5,6 +5,9 @@ import { describe, expect, it, vi } from "vitest";
 import { agentXError, type OrgId } from "../../packages/contracts/src/index.js";
 import type { Ec2OutboxRecord } from "../../packages/broker/src/aws/lambda.js";
 import { guardTaskDispatch, isTaskDispatchGuardRetryError, resumeTaskDispatch } from "../../packages/broker/src/aws/task-dispatch-access.js";
+import { createDispatcherHandler, markDeliveredCommand } from "../../packages/broker/src/aws/dispatcher.js";
+import { failOutboxOperation } from "../../packages/broker/src/aws/outbox-failure.js";
+import { createEc2Delivery } from "../../packages/broker/src/aws/ec2-delivery.js";
 import { createTaskAuthorityAdmission } from "../../packages/broker/src/aws/task-authority-admission.js";
 import type { DeveloperTaskRecord } from "../../packages/broker/src/developer/task-records.js";
 import { taskOwnerKey } from "../../packages/broker/src/developer/task-records.js";
@@ -403,13 +406,83 @@ describe("task dispatch access", () => {
     expect(h.db.get(`OUTBOX#${h.outbox.id}`, "TASK_ACCESS_PAUSE")).toBeUndefined();
   });
 
-  it("refuses normal delivery while a terminal workflow awaits its closedAt write", async () => {
+  it("acknowledges as closed, without retry, pause or write, a terminal workflow that still awaits its closedAt write", async () => {
     const h = harness();
     h.db.set({ ...h.current, workflow: { revision: 8, stage: "CLOSED", state: "COMPLETE", outcome: "REJECTED" } });
 
-    await expect(guardTaskDispatch({ documentClient: h.db, tableName: "state", checkTaskPerson: h.checkTaskPerson }, h.outbox))
-      .rejects.toMatchObject({ code: "RUNTIME_UNAVAILABLE" });
+    await expect(guardTaskDispatch({ documentClient: h.db, tableName: "state", checkTaskPerson: h.checkTaskPerson }, h.outbox)).resolves.toMatchObject({ outcome: "CLOSED", reason: "workflow closed", operationStatus: "DISPATCHING" });
     expect(h.db.get(`OUTBOX#${h.outbox.id}`, "OUTBOX")?.status).toBe("QUEUED");
+    expect(h.db.get(`OUTBOX#${h.outbox.id}`, "TASK_ACCESS_PAUSE")).toBeUndefined();
+    expect(h.checkTaskPerson).not.toHaveBeenCalled();
+  });
+
+  it("acknowledges as closed a task that was closed (closedAt) after the message was queued", async () => {
+    const h = harness();
+    h.db.set({ ...h.current, closedAt: "2026-10-11T11:00:00.000Z" });
+    await expect(guardTaskDispatch({ documentClient: h.db, tableName: "state", checkTaskPerson: h.checkTaskPerson }, h.outbox)).resolves.toMatchObject({ outcome: "CLOSED", reason: "task closed" });
+    expect(h.checkTaskPerson).not.toHaveBeenCalled();
+  });
+
+  describe("a race while the access is verified", () => {
+    /** Runs `change` just before the Nth final State fence (the TransactWrite), so the fence sees what changed. */
+    function racing(h: ReturnType<typeof harness>, change: (fence: number) => void) {
+      let fences = 0;
+      const transactions = vi.fn();
+      return {
+        transactions,
+        documentClient: {
+          async send(command: unknown): Promise<unknown> {
+            if (command instanceof TransactWriteCommand) { fences += 1; transactions(); change(fences); }
+            return h.db.send(command as never);
+          },
+        },
+      };
+    }
+    const reviseTask = (h: ReturnType<typeof harness>) => h.db.set({ ...h.db.get(`DEVTASK#${TASK_ID}`, "META")!, workflow: { revision: Number((h.db.get(`DEVTASK#${TASK_ID}`, "META") as { workflow: { revision: number } }).workflow.revision) + 1, stage: "IMPLEMENT", state: "RUNNING" } });
+
+    it("a transient change and then open is dispatched", async () => {
+      const h = harness();
+      const r = racing(h, (fence) => { if (fence === 1) reviseTask(h); });
+      await expect(guardTaskDispatch({ documentClient: r.documentClient, tableName: "state", checkTaskPerson: h.checkTaskPerson }, h.outbox)).resolves.toBe("ALLOWED");
+      expect(r.transactions).toHaveBeenCalledTimes(2);
+    });
+
+    it("a change and then the task closing is acknowledged as closed", async () => {
+      const h = harness();
+      const r = racing(h, (fence) => { if (fence === 1) h.db.set({ ...h.db.get(`DEVTASK#${TASK_ID}`, "META")!, closedAt: "2026-10-11T11:00:00.000Z" }); });
+      await expect(guardTaskDispatch({ documentClient: r.documentClient, tableName: "state", checkTaskPerson: h.checkTaskPerson }, h.outbox)).resolves.toMatchObject({ outcome: "CLOSED", reason: "task closed" });
+      expect(r.transactions).toHaveBeenCalledTimes(1);
+    });
+
+    it("a change and then the operation ending (cancelled) with the task still open is acknowledged as closed", async () => {
+      const h = harness();
+      const operation = { pk: `WORKSPACE#${WORKSPACE_ID}`, sk: `OPERATION#${h.outbox.operationId}` };
+      const r = racing(h, (fence) => { if (fence === 1) h.db.set({ ...h.db.get(operation.pk, operation.sk)!, status: "CANCELLED" }); });
+      await expect(guardTaskDispatch({ documentClient: r.documentClient, tableName: "state", checkTaskPerson: h.checkTaskPerson }, h.outbox)).resolves.toMatchObject({ outcome: "CLOSED", reason: "operation cancelled", operationStatus: "CANCELLED" });
+    });
+
+    it("an operation whose row is gone is acknowledged as closed", async () => {
+      const h = harness();
+      h.db.delete(`WORKSPACE#${WORKSPACE_ID}`, `OPERATION#${h.outbox.operationId}`);
+      await expect(guardTaskDispatch({ documentClient: h.db, tableName: "state", checkTaskPerson: h.checkTaskPerson }, h.outbox)).resolves.toMatchObject({ outcome: "CLOSED", reason: "operation row gone" });
+    });
+
+    it("a task that closes during the last pass is found by the final re-read and acknowledged as closed", async () => {
+      const h = harness();
+      const r = racing(h, (fence) => { if (fence < 3) reviseTask(h); else h.db.set({ ...h.db.get(`DEVTASK#${TASK_ID}`, "META")!, closedAt: "2026-10-11T11:00:00.000Z" }); });
+      await expect(guardTaskDispatch({ documentClient: r.documentClient, tableName: "state", checkTaskPerson: h.checkTaskPerson }, h.outbox)).resolves.toMatchObject({ outcome: "CLOSED", reason: "task closed" });
+      expect(r.transactions).toHaveBeenCalledTimes(3);
+    });
+
+    it("a task that keeps changing but stays open is still retried (the guard's own retryable error)", async () => {
+      const h = harness();
+      const r = racing(h, () => reviseTask(h));
+      const caught = await guardTaskDispatch({ documentClient: r.documentClient, tableName: "state", checkTaskPerson: h.checkTaskPerson }, h.outbox).catch((error: unknown) => error);
+      expect(isTaskDispatchGuardRetryError(caught)).toBe(true);
+      expect(caught).toMatchObject({ code: "RUNTIME_UNAVAILABLE" });
+      expect(String((caught as Error).message)).toContain("access changed while it was being verified");
+      expect(h.db.get(`OUTBOX#${h.outbox.id}`, "OUTBOX")?.status).toBe("QUEUED");
+    });
   });
 
   it("durably parks PEOPLE work when proof is unconfigured and preserves operation identity", async () => {
@@ -506,5 +579,157 @@ describe("task dispatch access", () => {
     await expect(resumeTaskDispatch({ documentClient: h.db, tableName: "state", now: () => Date.parse("2026-10-11T10:05:00.000Z") }, input as never)).resolves.toBe(true);
     current = false;
     await expect(resumeTaskDispatch({ documentClient: h.db, tableName: "state", now: () => Date.parse("2026-10-11T10:05:00.000Z") }, input as never)).rejects.toThrow("caller revoked");
+  });
+});
+
+
+describe("a dispatch for a task that closed meanwhile, through the real guard and the dispatcher's writes", () => {
+  const WAITING = ["QUEUED", "PENDING", "WAITING_FOR_SESSION"] as const;
+  const opKey = (h: ReturnType<typeof harness>) => ({ pk: `WORKSPACE#${WORKSPACE_ID}`, sk: `OPERATION#${h.outbox.operationId}` });
+  const merge = (h: ReturnType<typeof harness>) => h.db.set({ ...h.current, workflow: { revision: 9, stage: "MERGED", state: "COMPLETE", outcome: "MERGED" } });
+
+  /** The production wiring of the dispatcher's writes, over the fake table. */
+  function dispatcherOver(h: ReturnType<typeof harness>, extra: Partial<Parameters<typeof createDispatcherHandler>[0]> = {}) {
+    const markDispatching = vi.fn(async () => true);
+    const deliverEc2 = vi.fn(async () => "DELIVERED" as const);
+    const log = vi.fn();
+    const handler = createDispatcherHandler({
+      guardTaskDispatch: (record) => guardTaskDispatch({ documentClient: h.db, tableName: "state", checkTaskPerson: h.checkTaskPerson }, record),
+      markDispatching, deliverEc2, log,
+      markDelivered: async (id, options) => { try { await h.db.send(markDeliveredCommand("state", id, "2026-11-10T00:00:00.000Z", options?.whileOutboxIn)); } catch (error) { if (!(error instanceof Error && error.name === "ConditionalCheckFailedException")) throw error; } },
+      markFailed: async (record, error, options) => failOutboxOperation(h.db as never, "state", record, error, options?.whileOutboxIn === undefined ? undefined : { statusIn: options.whileOutboxIn }),
+      ...extra,
+    });
+    const run = () => handler({ Records: [{ messageId: "m1", body: JSON.stringify(h.outbox), attributes: { ApproximateReceiveCount: "1" } }] });;
+    return { run, markDispatching, deliverEc2, log };
+  }
+
+  it("M1: a merge while the fix is in flight (workflow MERGED/COMPLETE, operation DISPATCHING) fails the operation, frees the workspace, and launches nothing", async () => {
+    const h = harness();
+    merge(h);
+    h.db.set({ ...h.db.get(`OUTBOX#${h.outbox.id}`, "OUTBOX")!, status: "WAITING_FOR_SESSION" });
+    const d = dispatcherOver(h);
+
+    await expect(d.run()).resolves.toEqual({ batchItemFailures: [] });
+    expect(h.db.get(opKey(h).pk, opKey(h).sk)).toMatchObject({ status: "FAILED" });
+    expect(String(h.db.get(opKey(h).pk, opKey(h).sk)?.error)).toContain("TASK_CLOSED");
+    const meta = h.db.get(`WORKSPACE#${WORKSPACE_ID}`, "META")!;
+    expect(meta.status).toBe("READY");
+    expect(meta).not.toHaveProperty("activeOperationId");
+    expect(h.db.get(`OUTBOX#${h.outbox.id}`, "OUTBOX")?.status).toBe("FAILED");
+    expect(d.markDispatching).not.toHaveBeenCalled();
+    expect(d.deliverEc2).not.toHaveBeenCalled();
+    expect(d.log).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ level: "info", event: "dispatch.closed_task_acked", operationId: h.outbox.operationId }));
+    expect((d.log.mock.calls[0]![0] as { reason: string }).reason).toMatch(/^workflow merged; operation failed/);
+  });
+
+  it("L1: a closed-task ack never overwrites an outbox item that is no longer waiting (FAILED stays FAILED, the operation is untouched)", async () => {
+    const h = harness();
+    merge(h);
+    h.db.set({ ...h.db.get(`OUTBOX#${h.outbox.id}`, "OUTBOX")!, status: "FAILED" });
+    const d = dispatcherOver(h);
+    await expect(d.run()).resolves.toEqual({ batchItemFailures: [] });
+    expect(h.db.get(`OUTBOX#${h.outbox.id}`, "OUTBOX")?.status).toBe("FAILED");
+    expect(h.db.get(opKey(h).pk, opKey(h).sk)).toMatchObject({ status: "DISPATCHING" });
+    expect(h.db.get(`WORKSPACE#${WORKSPACE_ID}`, "META")).toMatchObject({ activeOperationId: h.outbox.operationId });
+  });
+
+  it.each(["RUNNING", "SUCCEEDED", "CANCELLED", "FAILED", "CANCEL_REQUESTED"])("an operation that is %s (task still open) is acknowledged as done: outbox delivered, operation and workspace untouched, the status in the log", async (status) => {
+    const h = harness();
+    h.db.set({ ...h.db.get(opKey(h).pk, opKey(h).sk)!, status });
+    const d = dispatcherOver(h);
+    await expect(d.run()).resolves.toEqual({ batchItemFailures: [] });
+    expect(h.db.get(`OUTBOX#${h.outbox.id}`, "OUTBOX")?.status).toBe("DELIVERED");
+    expect(h.db.get(opKey(h).pk, opKey(h).sk)).toMatchObject({ status });
+    expect(h.db.get(`WORKSPACE#${WORKSPACE_ID}`, "META")).toMatchObject({ activeOperationId: h.outbox.operationId });
+    expect(d.deliverEc2).not.toHaveBeenCalled();
+    expect((d.log.mock.calls[0]![0] as { reason: string }).reason).toMatch(new RegExp(`^operation ${status.toLowerCase()}; delivered`));
+  });
+
+  it("an ACCEPTED operation on a task that is still open is not closed (it goes on)", async () => {
+    const h = harness();
+    h.db.set({ ...h.db.get(opKey(h).pk, opKey(h).sk)!, status: "ACCEPTED" });
+    await expect(guardTaskDispatch({ documentClient: h.db, tableName: "state", checkTaskPerson: h.checkTaskPerson }, h.outbox)).resolves.toBe("ALLOWED");
+  });
+
+  it("L3: a task that closes while compute is starting is caught by the real guard's post-compute recheck: nothing is signed or posted, and the operation is failed", async () => {
+    const h = harness();
+    const resume = { protocolVersion: 1 as const, kind: "resume" as const, operationId: h.outbox.operationId, workspaceId: WORKSPACE_ID, fence: 4, projectRevision: 1, callbackCapability: "c".repeat(64), payload: {} };
+    const outbox = { ...h.outbox, invocation: resume } as Ec2OutboxRecord;
+    h.db.set({ pk: `OUTBOX#${outbox.id}`, sk: "OUTBOX", ...outbox, status: "WAITING_FOR_SESSION" });
+    const sign = vi.fn(async () => new Uint8Array(64));
+    const post = vi.fn(async () => ({ status: 202, body: "" }));
+    const deliver = createEc2Delivery({
+      applicationPlanNotNegotiated: async () => undefined, planQualityNotNegotiated: async () => undefined, setupRecipesNotNegotiated: async () => undefined,
+      sessions: { ensureSession: async () => { merge(h); return { ready: true as const, generation: 1, privateIp: "10.0.0.9" }; } },
+      binding: async () => ({ deploymentMode: "ec2-ebs" }) as never,
+      sign, post, progress: async () => undefined, now: () => 0,
+      guardTaskDispatch: (record) => guardTaskDispatch({ documentClient: h.db, tableName: "state", checkTaskPerson: h.checkTaskPerson }, record),
+    });
+    const markDispatching = vi.fn(async () => true);
+    const handler = createDispatcherHandler({
+      markDispatching, deliverEc2: deliver, log: () => undefined,
+      guardTaskDispatch: async () => "ALLOWED",
+      markDelivered: async () => undefined,
+      markFailed: async (record, error, options) => failOutboxOperation(h.db as never, "state", record, error, options?.whileOutboxIn === undefined ? undefined : { statusIn: options.whileOutboxIn }),
+    });
+
+    await expect(handler({ Records: [{ messageId: "late", body: JSON.stringify(outbox), attributes: { ApproximateReceiveCount: "1" } }] })).resolves.toEqual({ batchItemFailures: [] });
+    expect(sign).not.toHaveBeenCalled();
+    expect(post).not.toHaveBeenCalled();
+    expect(h.db.get(opKey(h).pk, opKey(h).sk)).toMatchObject({ status: "FAILED" });
+    expect(h.db.get(`WORKSPACE#${WORKSPACE_ID}`, "META")).not.toHaveProperty("activeOperationId");
+    expect(h.db.get(`OUTBOX#${outbox.id}`, "OUTBOX")?.status).toBe("FAILED");
+  });
+
+  it("N2: an empty status list is refused, so no empty condition is ever built", async () => {
+    const h = harness();
+    await expect(failOutboxOperation(h.db as never, "state", h.outbox, "x", { statusIn: [] })).rejects.toThrow(/at least one status/);
+    expect(h.db.get(opKey(h).pk, opKey(h).sk)).toMatchObject({ status: "DISPATCHING" });
+    expect(() => markDeliveredCommand("state", "x", "now", [])).toThrow(/at least one status/);
+    // One status and several statuses both work.
+    await failOutboxOperation(h.db as never, "state", h.outbox, "x", { statusIn: ["QUEUED"] });
+    expect(h.db.get(opKey(h).pk, opKey(h).sk)).toMatchObject({ status: "FAILED" });
+  });
+
+  it("N3: an item parked for task access whose task merged or closed gets the closed handling, not PARKED", async () => {
+    const h = harness();
+    merge(h);
+    h.db.set({ ...h.db.get(`OUTBOX#${h.outbox.id}`, "OUTBOX")!, status: "WAITING_FOR_TASK_ACCESS" });
+    await expect(guardTaskDispatch({ documentClient: h.db, tableName: "state", checkTaskPerson: h.checkTaskPerson }, h.outbox))
+      .resolves.toMatchObject({ outcome: "CLOSED", reason: "workflow merged", operationStatus: "DISPATCHING" });
+    const d = dispatcherOver(h);
+    await expect(d.run()).resolves.toEqual({ batchItemFailures: [] });
+    expect(h.db.get(opKey(h).pk, opKey(h).sk)).toMatchObject({ status: "FAILED" });
+    expect(h.db.get(`WORKSPACE#${WORKSPACE_ID}`, "META")).not.toHaveProperty("activeOperationId");
+    expect(h.db.get(`OUTBOX#${h.outbox.id}`, "OUTBOX")?.status).toBe("FAILED");
+    expect(d.deliverEc2).not.toHaveBeenCalled();
+  });
+
+  it("N3: an item parked for task access on a task that is still open stays PARKED", async () => {
+    const h = harness();
+    h.db.set({ ...h.db.get(`OUTBOX#${h.outbox.id}`, "OUTBOX")!, status: "WAITING_FOR_TASK_ACCESS" });
+    await expect(guardTaskDispatch({ documentClient: h.db, tableName: "state", checkTaskPerson: h.checkTaskPerson }, h.outbox)).resolves.toBe("PARKED");
+    const d = dispatcherOver(h);
+    await expect(d.run()).resolves.toEqual({ batchItemFailures: [] });
+    expect(h.db.get(opKey(h).pk, opKey(h).sk)).toMatchObject({ status: "DISPATCHING" });
+    expect(h.db.get(`OUTBOX#${h.outbox.id}`, "OUTBOX")?.status).toBe("WAITING_FOR_TASK_ACCESS");
+  });
+
+  it("L1: a FAILED outbox item whose operation already ended stays FAILED (the delivered mark is conditioned), and a waiting one becomes DELIVERED", async () => {
+    for (const [outboxStatus, expected] of [["FAILED", "FAILED"], ["DELIVERED", "DELIVERED"], ["WAITING_FOR_SESSION", "DELIVERED"], ["QUEUED", "DELIVERED"]] as const) {
+      const h = harness();
+      h.db.set({ ...h.db.get(opKey(h).pk, opKey(h).sk)!, status: "CANCELLED" });
+      h.db.set({ ...h.db.get(`OUTBOX#${h.outbox.id}`, "OUTBOX")!, status: outboxStatus });
+      const d = dispatcherOver(h);
+      await expect(d.run(), outboxStatus).resolves.toEqual({ batchItemFailures: [] });
+      expect(h.db.get(`OUTBOX#${h.outbox.id}`, "OUTBOX")?.status, outboxStatus).toBe(expected);
+      expect(h.db.get(opKey(h).pk, opKey(h).sk)).toMatchObject({ status: "CANCELLED" });
+    }
+  });
+
+  it("markDeliveredCommand without a status list keeps its old condition", () => {
+    expect(markDeliveredCommand("state", "x", "now").input.ConditionExpression).toBe("attribute_exists(pk)");
+    expect(markDeliveredCommand("state", "x", "now", WAITING).input.ConditionExpression).toBe("attribute_exists(pk) AND (#status = :while0 OR #status = :while1 OR #status = :while2)");
   });
 });
