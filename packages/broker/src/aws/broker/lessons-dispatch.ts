@@ -75,7 +75,11 @@ export async function learnedContextForOperation(
     })();
     const result = await Promise.race([run, new Promise<Awaited<typeof run>>((resolve) => { timer = setTimeout(() => resolve({}), LESSON_LOAD_DEADLINE_MS); timer.unref?.(); })]);
     if (result.learnedContext === undefined) return {};
-    const refs = learnedRefsOf(result.learnedContext, { orgId: task.orgId, project: task.project, audience: { kind: "shared" }, taskId: task.taskId, ...(copy?.evalMemory?.mode === "snapshot" ? { snapshotId: copy.evalMemory.snapshotId } : {}) });
+    // The file arm (lane 7): the lessons are placed as `.rovara/lessons.md` in the copy's checkout of its first code repository, not sent as a prompt block (delivery builds the file from the snapshot).
+    const fileRepository = copy?.evalLessonsFile === true ? codeRepositoriesOf(input.definition as ProjectDefinition)[0]?.name : undefined;
+    if (copy?.evalLessonsFile === true && fileRepository === undefined) return {};
+    const fileArm = fileRepository === undefined ? {} : { file: { repository: fileRepository } };
+    const refs = learnedRefsOf(result.learnedContext, { orgId: task.orgId, project: task.project, audience: { kind: "shared" }, taskId: task.taskId, ...(copy?.evalMemory?.mode === "snapshot" ? { snapshotId: copy.evalMemory.snapshotId } : {}), ...fileArm });
     return { learnedRefs: refs, load: { taskId: task.taskId, project: task.project, stage, round } };
   } catch {
     return {};

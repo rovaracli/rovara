@@ -118,7 +118,7 @@ describe("the operator script", () => {
   it("refuses a results file graded by a second grader", async () => {
     const { f } = await pipeline(DIFFERENT);
     const lines = readFileSync(f("results.jsonl"), "utf8").trim().split("\n").map((l) => JSON.parse(l) as { key: string; row: { grader: { model: string } | null } });
-    lines[5]!.row.grader = { model: "someone-else" } as never;
+    lines[5]!.row.grader = { model: "someone-else" };
     (lines[5]!.row.grader as { version?: string }).version = "v9";
     writeFileSync(f("results.jsonl"), `${lines.map((l) => JSON.stringify(l)).join("\n")}\n`);
     const report = await run(["report", "--results", f("results.jsonl"), "--plan", f("plan.json"), "--compare", "on:current,on:consolidated", "--dir", f("out")]);

@@ -3,6 +3,7 @@
 import { randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import { startTaskWorkflowBranchSyncFromSystem, startTaskWorkflowPublicationFromSystem } from "../../packages/broker/src/aws/developer-tasks/publication.js";
+import { tableTaskVisibilityPort } from "../../packages/broker/src/team-record/live-audience-port.js";
 import { ownerKeyForSubject } from "../../packages/broker/src/aws/lambda.js";
 import { InMemoryEvalSnapshotStore, InMemorySnapshotStore, buildEvalSnapshot } from "../../packages/broker/src/lessons/replay-snapshot-store.js";
 import { NO_VECTORS } from "../../packages/broker/src/lessons/runtime.js";
@@ -115,5 +116,19 @@ describe("a copy that reached the end of its checks is never published", () => {
     expect(await startTaskWorkflowPublicationFromSystem(deps, id, { workflowRevision: 1, candidateDigest: "a".repeat(64) }, {})).toBe("STALE");
     expect(await startTaskWorkflowBranchSyncFromSystem(deps, id, { workflowRevision: 1 })).toBe("STALE");
     expect(w.ops(workspaceId)).toHaveLength(before);
+  });
+});
+
+describe("who can see a copy (L5)", () => {
+  it("a copy is private to the operator who started it: no more visible than its source, whoever the source was shared with, and a source whose people list was narrowed stays narrow", async () => {
+    const w = await world();
+    const id = await w.copy({ mode: "off" });
+    const port = tableTaskVisibilityPort({ documentClient: w.h.db, tableName: "state", now: Date.now });
+    const read = async (taskId: string) => (await port.read(TEST_ORG, [taskId])).get(taskId);
+    const operator = ownerKeyForSubject(issuer, "admin-subject");
+    expect(await read(id)).toEqual({ kind: "private", ownerDeveloperId: operator });
+    // The source's own people list is narrowed to one person (MAYA only): the copy is still not shared with anyone else.
+    w.h.db.set({ pk: `DEVTASK#${w.sourceId}`, sk: "PEOPLE", schemaVersion: 1, revision: 1, orphaned: false, people: [{ developerId: MAYA.developerId, slackUserId: "U0PERSON00", name: MAYA.name, role: "denied" }] });
+    expect(await read(id)).toEqual({ kind: "private", ownerDeveloperId: operator });
   });
 });

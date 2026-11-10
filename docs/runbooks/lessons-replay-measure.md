@@ -1,44 +1,77 @@
 # Lessons replay A/B: operator runbook
 
-What this is: a sanity check of the lesson pipelines (owner decisions 38, 49), not proof. It replays 40-60 past tasks from repositories with many member corrections, 3 runs each, under three arms, and reports numbers. **It gives no verdict. The owner decides.**
+What this is: a sanity check of the lesson pipelines (owner decisions 38, 49, 68), not proof. It replays 40-60 past tasks from repositories with many member corrections, 3 runs each, under several arms, and reports numbers. **It gives no verdict. The owner decides.**
 
 | Arm | Meaning |
 |---|---|
 | `off` | no lessons (A) |
-| `on:current` | lessons from the current pipeline: reflector, curator, similarity, judge (B) |
-| `on:consolidated` | lessons from the reflector plus the nightly consolidation pass (C; built by lane 8, not on this branch yet) |
-| `file:<label>` | the pipeline's lessons offered to a LOCAL agent as the repository file `.rovara/lessons.md` (lane R2's format and renderer) plus the one pointer line in AGENTS.md (decision 50.5). Built: `replay-delivery.ts#FILE_DELIVERY`. |
-| `mcp:<label>` | the same lessons offered through the MCP tool. Stub: the run refuses until the tool exists. |
+| `on:current` | lessons from the current pipeline: reflector and curator (B), built offline over the same past tasks, delivered to the copy as a prompt block |
+| `on:consolidated` | lessons from the reflector plus the nightly consolidation pass (C; lane 8; **stub: the run refuses by name until lane 8's builder is ported**) |
+| `file:<label>` | the pipeline's lessons offered to the agent as the repository file `.rovara/lessons.md` (lane R2's format and renderer) plus the one pointer line in `AGENTS.md` (decision 50.5), placed in the copy's checkout only |
+| `mcp:<label>` | the same lessons offered through the MCP tool. **Stub**: the run refuses before anything starts until the tool exists. |
 
-## What is real and what is not yet (read this first)
+## What is real and what is not (read this first)
 
 | Piece | State |
 |---|---|
-| Contracts, report, STOP line, blind sheet, fixed grader rule, eval-run refusal in every learning path (including R1b comments and edits) | built, tested |
-| Candidates exporter `scripts/export-replay-candidates.ts` (ranks by member corrections) and `select` | built, tested; the Team record counts (comments, edits, reverts) are an optional extra input |
-| Harness: plan, run, resume, `--max-usd` hard stop, grader blind to the arm | built, tested with fakes |
-| Executor `stagingExecutor` (`packages/broker/src/lessons/replay-executor.ts`): always starts the task marked `evalRun`, reads the mark back, cancels and stops the replay on an unmarked task | built, tested against a fake port |
-| Rubric grader `rubricGrader` (`replay-grader.ts`): hidden tests where a task has them, else a rubric scored by a model | built, tested with a fake model; needs your model adapter and evidence reader |
-| Pipeline B `asOfSnapshotBuilder` (`replay-asof.ts`): the lessons live at the start of each day, read from the lesson store's version history, no model | built, tested; its learning cost is NOT measured (shown as "not recorded") |
-| `file:<label>` arm, rendering (`replay-delivery.ts#FILE_DELIVERY`): each day's lessons with R2's own `renderLesson` and `renderLessonsFile` | built, tested; the placement on the install is the missing piece below |
+| Contracts, report, STOP lines, blind sheet, fixed grader rule, eval-run refusal in every learning path | built, tested |
+| Candidates exporter `scripts/export-replay-candidates.ts` and `select` | built, tested |
+| Harness: plan, run, resume, grader blind to the arm | built, tested with fakes |
+| **`--max-usd` is a hard stop** | built, tested. Every run is charged what it cost, or the reserved hold when it failed or could not be priced; grading and the building of the arms' lessons count in the same limit; a run starts only if its hold still fits; when the limit is crossed the copies in flight are cancelled and closed |
+| **The install side** `POST/GET /v1/admin/tasks/{taskId}/lessons-replay` (+ `/approve`, `/close`, `GET /evidence`), `agentx admin task lessons-replay start|approve|close|evidence|show` | built, tested through the real handler. A copy is a **workflow task** (the same shape as the candidates) started from the past task's request, **billed to the company or project as a test run** (never the past task's member, never a member's personal plan), **marked `evalRun` at creation**, never shared, readable and closable only by the operator who started it, refused every pull request and update, never announced (no Slack, DM, card, Team record row or tracker comment), never learned from, one audit line `lesson.replay_started` written first |
+| **Who may start a copy** | a **company owner or admin** only (decision 68). Not a project admin without a company role, not a member, not Rovara staff on Cloud. Tested for each role |
+| **Plan approval** | automatic **only** for an `evalRun` copy, through `POST .../lessons-replay/approve` by its own operator. A normal task cannot reach that path. A copy is reported `completed` only when it really ended |
+| The loader's snapshot mode | built, tested. A copy's memory is `off` or one frozen snapshot (lesson ids and versions, or imported lesson texts): the dispatch and delivery load those lessons and never the live set; the project's own learning mode decides, the install's lessons switch (`ll`) does not (decision 68 covers delivery while `ll` is off); the loads are eval loads and never touch the live counters |
+| Imported snapshots | `POST /v1/admin/projects/{p}/lessons-replay/snapshots`: lesson texts for a frozen snapshot that is **not in the live lesson store**. Stored separately (14 days, at most 80 lessons and 300 KB), never merged with live lessons |
+| **Offline pipeline B** (`replay-offline.ts`) | built, tested. Runs the current reflector and curator over the SAME historical tasks' outcomes, in time order, in an in-memory store, through the install's `.../lessons-replay/model` and `.../subjects/{taskId}` routes (the company's own model, same fixed quote and spend checks, purpose "judge"). Its model calls count in the run budget. See the approximations below |
 | Pipeline C (lane 8) and the `mcp:` arm | stubs; a run refuses |
-| The install side of the executor: `POST/GET /v1/admin/tasks/{taskId}/lessons-replay` (`agentx admin task lessons-replay start|show`), administrator of the task's project only | built, tested through the real handler. A copy is a plain start of the past task's request in its project, owned by its owner, **marked `evalRun` at creation by the start itself** (no field or flag can start one unmarked), never shared, refused every pull request and update, never announced (no Slack, DM, card, Team record row or tracker comment: the stream, the task end and the record events skip it), never learned from, spend limited to `--max-usd`, one audit line `lesson.replay_started` written first |
-| The loader's snapshot mode | built, tested. A copy's memory is `off` or exactly one frozen snapshot (ids and versions, derived from content): the dispatch and delivery load those lessons at those versions and never the live set; the install's lessons switch does not decide it (the plan says so), the project's own mode still does; its loads are filed as eval loads and never counted on the live lessons |
-| **The `file:` arm on the install** | **not built**: the worker cannot yet write a file into a checkout. The route and the executor refuse it by name (`file-arm-not-built`). Needs a worker feature to place `.rovara/lessons.md` and the pointer in the copy's checkout only. |
+| **The `file:` arm on the install** | built, tested. The broker renders the file from the copy's frozen snapshot at delivery and sends it as `evalFiles` (worker feature `task.evalFiles.v1`; a worker without it is refused the step, so the arm never runs silently without its file). The worker writes `.rovara/lessons.md` and the pointer into the copy's checkout and hides both from the candidate (diff, review, commits). **Not exercised against a real EC2 worker yet**: the rehearsal below proves it |
+| The grader (`rubricGrader` over `cliGraderModel` and `cliEvidenceReader`) | built, tested. It sees the task's **request**, the attempt's diff and the merged reference diff, each as data, never the arm. Model: the company's own connected model through the install's `.../lessons-replay/model` route. **Gate: decision 47 forbids lesson-learning calls with `ll` at 0; grading is not learning, so this route is not behind the lessons switch, but it is operator-only, quote-checked and counted in the budget** |
 
-The script `scripts/lessons-replay-measure.ts` makes no AWS call and no model call. Everything that touches staging is an operator module you pass with `--module` (below). Run the script with the pinned Node (22.23.2), for example `npx tsx scripts/lessons-replay-measure.ts <command> ...`.
+The script `scripts/lessons-replay-measure.ts` makes no AWS call and no model call itself. Everything that touches staging is an operator module (`scripts/lessons-replay-staging-module.ts` for a real run) that talks to the install **through the `agentx` CLI as the signed-in company owner or admin**. Run the script with the pinned Node (22.23.2), for example `npx tsx scripts/lessons-replay-measure.ts <command> ...`.
+
+### Approximations to know before you read a result
+
+- **Pipeline B is rebuilt offline, not replayed live.** Every lesson the reflector and curator propose (active, pending or candidate) is exported as active with an offline approval, so the arm is not held back by the human approval the live system would wait for. There is no embedder (no similarity merge) and the citation verifier answers "unknown", so citations are not re-checked at build time (the worker re-checks them at the base commit when the lesson is delivered).
+- **A task whose plan is rated high risk stalls.** Plan approval is automated, but the decide-grade gate for HIGH-risk plans is left intact, so such a copy stops at the plan and is recorded as ungraded. This is deliberate: nothing weakens a normal gate.
+- **`learningCalls` per copy is not measured** by the install (shown as "not recorded"). Every learning path refuses a copy, and a test proves it for each model-calling path, so the count would be zero.
+- **The file arm's recorded load keys** are the snapshot's lessons that passed the loader's checks; a lesson R2's renderer would not put in a file (no text, a scope naming only other repositories) is dropped from the file but not from that list. The report's loaded-lesson difference can therefore overstate the file arm slightly.
 
 ## Rules the harness enforces
 
-- **Replays never feed learning.** Every replayed task carries `evalRun` on its task record; the task source, the task-end and human-edit reflections, the reflector, the nightly job and the outcome counters all refuse it. The executor must confirm the marker on every run or the whole replay stops (`EvalMarkError`).
-- **Decision 47.** Replays run with the install's lessons switch (`ll`) at 0 and make no learning calls; a run that reports one stops the replay. The lesson snapshots are built offline by the harness, with learning calls named in the plan (`snapshotBuilds: explicit`), never through the install's switch. The report prints this.
-- **Lessons learn only from historical outcomes**, in time order: the snapshot for a simulated day is built from tasks that finished before that day, never from a replay.
+- **Replays never feed learning.** Every copy carries `evalRun` on its task record; the task source, the task-end and human-edit reflections, the reflector, the nightly job and the outcome counters all refuse it. The executor must confirm the marker on every run or the whole replay stops (`EvalMarkError`).
+- **An arm that ran nothing fails loudly.** An arm with no completed run, or one that loaded nothing on more than half of its completed runs, prints its own STOP line. It is never a pass.
+- **Decision 47 and 68.** Replays deliver the frozen snapshot with the install's `ll` switch at 0. The arms' lessons are built offline and counted in the budget; they never touch the live lessons.
+- **Lessons learn only from historical outcomes**, in time order: the lessons for a simulated day are built from tasks that finished before that day, never from a replay.
 - **One fixed grader.** Its model and version are in the plan and in every graded row. The grader is shown no arm. Runs graded differently, or one task graded by tests in one arm and by a rubric in another, are refused (`GraderMismatchError`).
-- **Same mistake** = the grader flags a mistake that a historical correction given before that task already named. The flag must name such a correction. The repeat-mistake metric (`sameMistakeTwice`) then checks it and splits it: lesson loaded / lesson not loaded / no lesson.
+- **Same mistake** = the grader flags a mistake that a historical correction given before that task already named. The flag must name such a correction.
 
-## 0. Rehearse small first, then run the full replay
+## Before you start (once)
 
-Do the whole sequence twice: first as a **rehearsal** (steps 2 to 4 with `--small` on `plan`, a selection of 4 to 8 tasks, 1 repeat, `--max-usd 25`), then the **full replay** (40-60 tasks, 3 repeats, a `--max-usd` you chose from the rehearsal's cost per run times 450, plus 20%). Do not read a rehearsal as a result. Every step that spends takes a **hard `--max-usd`**: `snapshots` stops when its builders have spent more than the limit, and `run` refuses to start without one, never passes it, and does not start a run that would pass it if it cost as much as the dearest run so far.
+1. Sign in as a **company owner or admin**: `agentx --env <env> login --admin`. A project admin, a member or Rovara staff cannot start a copy.
+2. In **Spending**, raise the per-test cap above the copies' per-run limit (default $2) and, for the full run, the testing allowance (default $10). A copy is billed to the company or project as a test run, so these two limits apply to it. The rehearsal below fits inside the defaults.
+3. The project's **learning mode** must be On (the project's own mode decides snapshot loads; the install switch does not).
+4. Pick a staging project whose repositories the install can clone. The copies use the project's own checkout settings.
+5. The `items.json` you export in step 1 holds real task text (titles, requests, summaries). **Keep it in a private temp folder, not in the repository, and delete it when the replay is done.** The same goes for `replay-out/`, `results.jsonl` and `corrections.json`.
+6. Environment for the staging module (no secret among them):
+
+```sh
+export LESSONS_REPLAY_ENV=<cli environment name> LESSONS_REPLAY_ORG=<company id> LESSONS_REPLAY_PROJECT=<project>
+export LESSONS_REPLAY_PER_RUN_USD=1 LESSONS_REPLAY_GRADER_MODEL=<model> LESSONS_REPLAY_GRADER_VERSION=<version>
+export LESSONS_REPLAY_GRADE_HOLD_USD=0.25 LESSONS_REPLAY_LEARN_HOLD_USD=0.25 LESSONS_REPLAY_REPOSITORIES=<repo name>[,<repo name>]
+```
+
+## 0. Rehearse small and paid first, then run the full replay
+
+**The paid rehearsal: 3 tasks, 1 repeat, `--max-usd 10`, arms `off,on:current,file:current` (9 runs).** It proves the parts nothing but a real worker can: that a copy reaches PLAN with its lessons, is approved, finishes, is graded and closed; that the file arm's file is placed and is not in the diff; and what a run really costs. Do steps 1 to 6 with a selection of 3 tasks, `--target 3`, `plan ... --small`, and `--max-usd 10 --per-run-usd 1` on `snapshots` and `run`. Check, in this order:
+
+1. The `snapshots` step reports its spend (the offline pipeline's model calls) and `import-snapshots` reports the same count of snapshots it planned.
+2. One `off` copy ends `completed` with a graded row. Open its evidence (`agentx admin task lessons-replay evidence <copy id>`) and check the diff is the task's change and nothing else.
+3. One `file:current` copy: the evidence shows `.rovara/lessons.md` and the `AGENTS.md` pointer are **not** in the diff, and the run's report lists loaded lessons.
+4. Each arm's `ran` count is non-zero. An arm with `ran 0` prints a STOP line: stop and find out why before spending more.
+5. Note the real cost per run, per arm. The full run's limit is `450 x cost per run x 1.2` plus the building of the lessons.
+
+Then the **full replay** (40-60 tasks, 3 repeats). Do not read a rehearsal as a result. Every step that spends takes a **hard `--max-usd`**: `snapshots` stops when its builders have spent more than the limit, and `run` refuses to start without `--max-usd` and `--per-run-usd`, counts failed and unpriced runs at the reserved hold, counts grading and the building spend, and never starts a run that would pass the limit.
 
 ## 1. Choose the tasks
 
@@ -48,7 +81,7 @@ Export the finished tasks' `META` items from the State table exactly as `scripts
 ~/.local/share/rovara-tools/staging-aws.sh aws dynamodb query --table-name <state table> --key-condition-expression 'pk = :pk' --expression-attribute-values '{":pk":{"S":"DEVTASK#<taskId>"}}' --output json
 ```
 
-Put the items in `items.json` (`{ "items": [...] }`, or the CLI's typed JSON with `--marshalled`). A task's member corrections are its human send-backs, counted by the lessons' own rule (Rovara's automatic send-backs never count). Review comments that read as corrections, human edits and reverts live in the Team record: add their counts per task as `"corrections": { "<taskId>": { "prComments": n, "humanEdits": n, "reverts": n } }` next to `items` (optional; without it only send-backs are counted).
+Put the items in `items.json` (`{ "items": [...] }`, or the CLI's typed JSON with `--marshalled`) in a private temp folder. A task's member corrections are its human send-backs, counted by the lessons' own rule (Rovara's automatic send-backs never count). Review comments that read as corrections, human edits and reverts live in the Team record: add their counts per task as `"corrections": { "<taskId>": { "prComments": n, "humanEdits": n, "reverts": n } }` next to `items` (optional).
 
 ```sh
 npx tsx scripts/export-replay-candidates.ts --input items.json --out candidates.json --org <org id>
@@ -60,50 +93,51 @@ It skips (and counts) automatic runs, unfinished tasks, tasks with no repository
 npx tsx scripts/lessons-replay-measure.ts select --candidates candidates.json --seed <text> --target 50 --out selection.json
 ```
 
-It takes the repositories with the most member corrections first, at most 15 tasks per repository (lifted only if the pool is too concentrated), highest-correction tasks first, and returns them in time order.
+A replay is of **one project**: the selection must hold tasks of one project (`snapshots` refuses a mix).
 
-## 2. Build the frozen snapshots (the lesson pipelines)
+## 2. Build and import the frozen snapshots (the lesson pipelines)
 
-The operator module (`--module`) is an ES module whose default export returns `{ builders, executor, grader, deliveries? }` (types in `packages/broker/src/lessons/replay-harness.ts`). `builders` maps each pipeline label to a `SnapshotBuilder`: for `current` use `asOfSnapshotBuilder({ store, key, pin })` (the lessons the install held at the start of each simulated day, read from the lesson store; no model, so no learning cost is recorded for it); pipeline C is lane 8 and has no builder yet, so run `--arms off,on:current` until it lands (the plan needs two arms; the report's B-versus-C section then says "not comparable").
+`snapshots` runs each arm's pipeline over the SAME historical tasks, in time order, and writes the lessons of each simulated day as a frozen snapshot. Its model calls go through the install's `.../lessons-replay/model` route and are counted in the budget.
 
 ```sh
-~/.local/share/rovara-tools/staging-aws.sh npx tsx scripts/lessons-replay-measure.ts snapshots --selection selection.json --arms off,on:current --module ./replay-module.mjs --out-dir replay-out --max-usd 5
+~/.local/share/rovara-tools/staging-aws.sh npx tsx scripts/lessons-replay-measure.ts snapshots --selection selection.json --arms off,on:current --module scripts/lessons-replay-staging-module.ts --workspace <org id> --out-dir replay-out --max-usd 5
+~/.local/share/rovara-tools/staging-aws.sh npx tsx scripts/lessons-replay-measure.ts import-snapshots --dir replay-out --module scripts/lessons-replay-staging-module.ts
 ```
 
-Writes `snapshots.json`, `snapshot-lessons.json` (each day's lessons, for the file arm), `learning.json` (cost and calls per arm), `lesson-sets.json` (size, duplicates, contradictions) and `final-lessons.json`.
+`snapshots` writes `snapshots.json`, `snapshot-lessons.json`, `learning.json` (cost and calls per arm), `lesson-sets.json` and `final-lessons.json`. `import-snapshots` sends each day's lessons to the install as a frozen snapshot (not in the live store; never merged with it) and checks that the id the install derived is the id the plan will name. Pipeline C has no builder until lane 8 is ported: run `--arms off,on:current` (plus `file:current` at plan time).
 
 ## 3. Plan
 
 ```sh
-npx tsx scripts/lessons-replay-measure.ts plan --selection selection.json --arms off,on:current,on:consolidated --seed <text> --grader-model <model> --grader-version <version> --snapshots replay-out/snapshots.json --out plan.json
+npx tsx scripts/lessons-replay-measure.ts plan --selection selection.json --arms off,on:current,file:current --seed <text> --grader-model <model> --grader-version <version> --snapshots replay-out/snapshots.json --out plan.json [--small]
 ```
 
-450 runs for 50 tasks (50 x 3 arms x 3 repeats). The plan refuses fewer than 40 or more than 60 tasks, other repeat counts, and a missing snapshot.
+450 runs for 50 tasks and 3 arms (50 x 3 x 3). The plan refuses fewer than 40 or more than 60 tasks and other repeat counts unless `--small` (1 repeat), and a missing snapshot.
 
 ## 4. Run and grade
 
-Needs the executor and the grader in the module. `executor: stagingExecutor(cliReplayPort(realCliPortOptions({ env, repoRoot })), { maxUsdPerRun, snapshotRefs })` (`scripts/lessons-replay-port.ts`) makes each copy through `agentx admin task lessons-replay start` as the signed-in administrator, reads the mark back, cancels the copy and stops the replay on a task that does not carry it. `snapshotRefs` maps each snapshot id to the lesson ids and versions it names (from `snapshot-lessons.json`), so the install can create a snapshot it has not seen. Run the script through `staging-aws.sh` (account 944937319445, us-west-2) after `agentx --env <env> login --admin`. `grader: rubricGrader({ model, evidence, correctionText, tests? })` needs your model adapter (a fixed model and version, recorded in every row) and an evidence reader. Also needs a corrections file: a JSON list of `{ id, taskId, at, kind, member, text? }` (the v1.2 `CORRECTION#` items through `metric-source.ts#v12CorrectionSource`).
+Needs a corrections file: a JSON list of `{ id, taskId, at, kind, member, text? }` (the v1.2 `CORRECTION#` items through `metric-source.ts#v12CorrectionSource`).
 
 ```sh
-~/.local/share/rovara-tools/staging-aws.sh npx tsx scripts/lessons-replay-measure.ts run --plan plan.json --module ./replay-module.mjs --corrections corrections.json --results results.jsonl --max-usd <usd> [--snapshot-lessons replay-out/snapshot-lessons.json]
+~/.local/share/rovara-tools/staging-aws.sh npx tsx scripts/lessons-replay-measure.ts run --plan plan.json --module scripts/lessons-replay-staging-module.ts --corrections corrections.json --results results.jsonl --max-usd <usd> --per-run-usd 1 --dir replay-out
 ```
 
-`--snapshot-lessons` is required when the plan has a `file:` arm (it holds each pipeline's lessons for each day).
+`--per-run-usd` must equal `LESSONS_REPLAY_PER_RUN_USD`. `--dir` lets the run count the snapshots' building spend (`learning.json`) in the same limit. The executor starts each copy, approves its plan through the guarded route, waits for it to end, reads the mark back, takes its evidence, and closes it.
 
-Resumable: a rerun skips recorded runs (the limit counts what this invocation spends). A run that fails is an ungraded row and the replay goes on; an unmarked task or a learning call stops everything.
+Resumable: a rerun skips recorded runs (the limit counts what the earlier runs charged). A run that fails is an ungraded row charged at what it cost or its hold, and the replay goes on; an unmarked task or a learning call stops everything, and so does crossing the limit.
 
 ## 5. Report
 
 ```sh
-npx tsx scripts/lessons-replay-measure.ts report --results results.jsonl --plan plan.json --compare on:current,on:consolidated --dir replay-out --corrections corrections.json [--marks marks-by-arm.json] [--json]
+npx tsx scripts/lessons-replay-measure.ts report --results results.jsonl --plan plan.json --compare on:current,file:current --dir replay-out --corrections corrections.json [--marks marks-by-arm.json] [--json]
 ```
 
 Reads in this order:
 
-1. **Loaded-lesson difference between B and C.** If fewer than 10% of the (task, lesson) loads differ, or neither arm loaded anything, the report prints a STOP line and nothing more (`--continue-anyway` prints the rest after it). Lessons are matched by their words, so a reworded lesson counts as different.
-2. Pass rate per arm with a Wilson 95% interval, over runs graded in every arm; the tasks only one arm of a pair solved.
+1. **Loaded-lesson difference between the two compared arms.** If fewer than 10% of the (task, lesson) loads differ, or an arm did not run, or an arm loaded nothing on more than half its runs, the report prints a STOP line naming which, and nothing more (`--continue-anyway` prints the rest after it). Only (task, repeat) pairs graded in both arms count. Lessons are matched by their words.
+2. Pass rate per arm with a Wilson 95% interval, over runs graded in every arm; the tasks only one arm of a pair solved; each arm's per-task intervals.
 3. Same-mistake count per arm and the metric's split.
-4. Learning cost per project-day (a project-day is a project and a UTC day with at least one replayed task) and mean run cost.
+4. Learning cost per project-day and mean run cost.
 5. Final lesson set: size, duplicates, unresolved contradictions.
 6. Reviewer "useful" marks, blind to the arm.
 
@@ -121,4 +155,8 @@ npx tsx scripts/lessons-replay-measure.ts import-marks --key key.json --marks ma
 
 ## Estimated cost (estimates, measure the rehearsal first)
 
-For 50 tasks: 450 runs. The runs dominate. At an assumed $1-3 per replayed task (check staging's recent cost per task) that is about $450-1,350. Grading: free for hidden tests, about $0.05 per run for a rubric grader, about $20. Pipeline B's learning is about $0.03 per historical task (reflection plus judge), about $2. Pipeline C adds one consolidation call per simulated day, about $1-2. Budget the full replay at roughly $500-1,500, and set `--max-usd` for the run step from the rehearsal's measured cost per run.
+For 50 tasks and 3 arms: 450 runs. The runs dominate. At an assumed $1-3 per replayed task (check the rehearsal) that is about $450-1,350. Grading: about $0.05 per run, about $20. The offline pipeline B: about $0.03 per historical task, about $2 (counted in the limit). Budget the full replay at roughly $500-1,500, and set `--max-usd` for the run step from the rehearsal's measured cost per run. The copies are test runs: raise the testing allowance and the per-test cap in Spending first (see "Before you start").
+
+## Cleaning up
+
+Copies are closed by the executor. Imported snapshots expire after 14 days. Delete `items.json`, `candidates.json`, `corrections.json`, `replay-out/` and `results.jsonl` from your temp folder when done: they hold real task text.

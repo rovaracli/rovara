@@ -192,6 +192,8 @@ describe("every place a lesson model is called is accounted for", () => {
   const ACCOUNTED = {
     "repo-reflect.ts": "the repo-only reflection (R1b, comments and edits): reflectRepoOnly returns first for a marked main subject, and its own subjects carry the mark",
     "replay-grader.ts": "the replay's own grader model: it reads a finished replay run and writes nothing to the lessons, so it is not a learning call (it is the one model call that SHOULD see a replay run)",
+    "eval-model.ts": "the operator-only company-model route for the replay (grading and the offline pipeline): it is not a learning call on live lessons, writes nothing, takes no marked task, and is quote-checked, size-limited and counted in the run budget (decision 68)",
+    "replay-offline.ts": "the replay's offline pipeline B: runs reflectSubject and the curator over HISTORICAL subjects in an in-memory store with a metered model; it never reads or writes the live lessons, and its subjects are past tasks (never a copy)",
     "reflect.ts": "the reflector: buildReflectorInput refuses evalRun before the request is built; every reflection (task end, human edit, nightly) goes through reflectSubject",
     "curate.ts": "the curator's judge: only receives drafts, and drafts come only from reflectSubject",
     "draft-retry.ts": "wraps the curator's judge; same drafts",

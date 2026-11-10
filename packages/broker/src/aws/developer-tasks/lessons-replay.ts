@@ -10,7 +10,8 @@
 // What a copy is given: `memory` off (no lessons), or EXACTLY one frozen snapshot (`lessons/replay-snapshot-store.ts`): the dispatch loads that snapshot's lessons and nothing else (`lessons/load.ts`, `deliver.ts`).
 // One audit line is written BEFORE the copy starts (ids, fixed words and counts only); if it cannot be written the copy is not started.
 import { z } from "zod";
-import { EvalCopyMemorySchema, agentXError } from "@agentx/contracts";
+import type { EvalCopyMemorySchema} from "@agentx/contracts";
+import { agentXError } from "@agentx/contracts";
 import type { RunStartOptions } from "../../agents/runs.js";
 import type { DeveloperTaskRecord } from "../../developer/task-records.js";
 import { isEvalRunMark } from "../../lessons/eval-run.js";

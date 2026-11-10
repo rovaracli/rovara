@@ -44,6 +44,7 @@ import { pinnedSkills, withStepTimeout, type AgentSkillFile } from "./agent-step
 import { loadedKnowledgePayload } from "./knowledge/manifest.js";
 import { LEARNED_LOAD_REPORT_FIELD, type NightlyResultCallbackBody, type SecondReviewContext, type SecondReviewResult } from "@agentx/contracts";
 import { prepareLearnedContext, withLearnedBlock } from "./learned-run.js";
+import { placeEvalFiles } from "./eval-files.js";
 import { runAgentStep, type AgentStepResult, type RunAgentStepInput } from "./agent-run/run-agent-step.js";
 import {
   createWorkspacePiSession,
@@ -970,6 +971,8 @@ async function runTask(
     if (dependencies.cancellationController?.isCancelled(invocation.operationId)) throw new WorkerOperationCancelledError(invocation.operationId);
     // Learning v2: the approved lessons the broker chose for this stage, re-checked against the base commit and framed as labelled, inert advice (learned-run.ts). Absent, or for an older broker's
     // invocation, there is nothing: the stage runs as it would without memory. The report says which lessons reached the prompt; a failure to send it loses only a counter.
+    // Lessons replay, the file arm (lane 7): the lessons file and pointer the broker built for this test copy are placed in its checkout, kept out of the candidate. Only a replay copy's stage carries them.
+    if (invocation.payload.evalFiles !== undefined) await placeEvalFiles(invocation.payload.evalFiles, candidateInputs(manifest, canonicalRoot, invocation.payload.workflowBase));
     const learned = await prepareLearnedContext({ raw: invocation.payload.learnedContext, mode: payloadMode, repositories: candidateInputs(manifest, canonicalRoot, invocation.payload.workflowBase) });
     if (learned.report !== undefined) await emit("progress", { [LEARNED_LOAD_REPORT_FIELD]: learned.report }).catch(() => undefined);
     // Stop & redirect (steer-invocation.ts): the owner's instruction that stopped the previous run is taken from the owner and framed after the broker's prompt (coding only; absent for every other step).

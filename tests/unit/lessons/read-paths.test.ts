@@ -14,7 +14,8 @@ const BROKER = join(ROOT, "packages/broker");
 const INTERNAL_LESSON_FILES: Record<string, string> = {
   "lessons/replay-snapshot-store.ts": "resolves a replay copy's frozen snapshot to the lessons and versions it names, for the loader and delivery, which then run every lesson through the access checks (`readVisible`) before anything reaches an agent; returns nothing to a viewer",
   "aws/developer-tasks/lessons-replay.ts": "the operator-only replay route (administrator of the task's project): checks that the lesson versions a snapshot names exist, and reads what a copy loaded as content hashes; it returns no lesson text and no lesson to any viewer",
-  "lessons/replay-asof.ts": "the operator replay harness (lane 7): reads the install's own lesson history for a frozen snapshot and returns it to the operator's script, never to a viewer; the loader's snapshot mode (not built yet) must keep the access checks",
+  "lessons/replay-asof.ts": "the operator replay harness (lane 7): reads the install's own lesson history for a frozen snapshot and returns it to the operator's script, never to a viewer; the loader's snapshot mode keeps the access checks",
+  "lessons/replay-offline.ts": "the replay's offline pipeline (lane 7): lists its OWN in-memory store (built from historical subjects in this run) to export the lessons it proposed; it never reads the live lesson store and returns lessons only to the operator's script",
   "lessons/counters.ts": "counts loads and outcomes on lessons; returns counters, never a lesson (feedback is gated: see recordFeedback)",
   "lessons/curate.ts": "merges drafts into lessons; returns the result to the pipeline",
   "lessons/deletion.ts": "withdraws and erases lessons; acts on them",

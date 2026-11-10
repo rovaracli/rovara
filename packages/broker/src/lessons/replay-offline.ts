@@ -11,8 +11,7 @@ import { InMemoryLessonStore, type ScopeKey } from "./store.js";
 import { reflectSubject, type ReflectDeps } from "./reflect.js";
 import type { ReflectSubject } from "./reflect-input.js";
 import type { LearningSettingsReader } from "./policy.js";
-import type { CitationVerifier, CodeFacts, LearningSpend, LessonAuditSink, PipelineModel } from "./ports.js";
-import { NO_VECTORS } from "./runtime.js";
+import type { CitationVerifier, CodeFacts, LearningSpend, LessonAuditSink, LessonVectors, PipelineModel } from "./ports.js";
 import type { ReplayCandidate } from "./replay-select.js";
 import { EVAL_SNAPSHOT_MAX_LESSONS } from "./replay-snapshot-store.js";
 
@@ -29,6 +28,7 @@ export interface OfflineBuilderDeps {
 }
 
 const DAY = 86_400_000;
+const NO_VECTORS: LessonVectors = { get: async () => new Map(), put: async () => undefined, remove: async () => undefined };
 const NO_AUDIT: LessonAuditSink = { emit: async () => undefined };
 const UNLIMITED: LearningSpend = { admit: async () => true, look: async () => "ok" };
 const UNCHECKED: CitationVerifier = { verify: async () => ({ result: "unknown" }) as never };

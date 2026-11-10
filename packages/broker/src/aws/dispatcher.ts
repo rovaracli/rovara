@@ -15,7 +15,7 @@ import { createEc2Delivery } from "./ec2-delivery.js";
 import { leaseForDispatch } from "../test-env/saved-env.js";
 import { dynamoSavedEnvStore } from "../test-env/saved-env-store.js";
 import { savedEnvEnabled } from "../test-env/saved-env-switch.js";
-import { createLessonDelivery } from "../lessons/delivery-wiring.js";
+import { createEvalFilesDelivery, createLessonDelivery } from "../lessons/delivery-wiring.js";
 import { learnedLessonsEnabled } from "../lessons/switch.js";
 import { createWorkflowE2EAdmissionAgentStepsReader, createWorkflowE2EAdmissionModelChoiceReader, createWorkflowE2EAdmissionNeedsModelFreeLimitsReader, createWorkflowE2EAdmissionSchemaReader } from "./workflow-e2e-admission-schema.js";
 import { appendOperationEvent } from "./operation-events.js";
@@ -731,9 +731,12 @@ const deliverEc2 = createEc2Delivery({
   }),
   guardTaskDispatch: taskDispatchGuard,
   // WL-6: a stage is queued with lesson ids and versions only; the lessons' text is built from the lesson store here, as it is at delivery (none where the Team record's table is not set).
-  ...((): { learnedFromRefs?: NonNullable<ReturnType<typeof createLessonDelivery>> } => {
-    const learnedFromRefs = createLessonDelivery({ documentClient, stateTable: tableName ?? process.env.STATE_TABLE_NAME ?? "", recordTable: process.env.TEAM_RECORD_TABLE_NAME, enabled: () => learnedLessonsEnabled(process.env), log: (event, fields) => console.log(JSON.stringify({ component: "dispatcher", event, ...fields })) });
-    return learnedFromRefs === undefined ? {} : { learnedFromRefs };
+  ...((): { learnedFromRefs?: NonNullable<ReturnType<typeof createLessonDelivery>>; evalFilesFromRefs?: NonNullable<ReturnType<typeof createEvalFilesDelivery>> } => {
+    const delivery = { documentClient, stateTable: tableName ?? process.env.STATE_TABLE_NAME ?? "", recordTable: process.env.TEAM_RECORD_TABLE_NAME, enabled: () => learnedLessonsEnabled(process.env), log: (event: string, fields: Record<string, unknown>) => console.log(JSON.stringify({ component: "dispatcher", event, ...fields })) };
+    const learnedFromRefs = createLessonDelivery(delivery);
+    // Lane 7: a replay copy's file arm (the file is built from the copy's frozen snapshot at delivery).
+    const evalFilesFromRefs = createEvalFilesDelivery(delivery);
+    return { ...(learnedFromRefs === undefined ? {} : { learnedFromRefs }), ...(evalFilesFromRefs === undefined ? {} : { evalFilesFromRefs }) };
   })(),
   applicationPlanNotNegotiated: createApplicationPlanNegotiationRecorder({ documentClient, ...(tableName === undefined ? {} : { tableName }) }),
   planQualityNotNegotiated: createPlanQualityNegotiationRecorder({ documentClient, ...(tableName === undefined ? {} : { tableName }) }),

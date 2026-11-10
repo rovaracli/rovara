@@ -125,7 +125,7 @@ describe("running", () => {
     expect(report.stoppedBy).toBe("max_usd");
     expect(report.ran).toBe(2);
     expect(report.costUsd).toBeLessThanOrEqual(1);
-    await expect(runReplay(plan(40), { executor: executor(), grader: grader(), sink: new Sink(), priorCorrections: async () => [], maxUsd: 0 })).rejects.toThrow(/maximum cost/);
+    await expect(runReplay(plan(40), { executor: executor(), grader: grader(), sink: new Sink(), priorCorrections: async () => [], maxUsd: 0, holdPerRunUsd: 1 })).rejects.toThrow(/maximum cost/);
     await expect(runReplay(plan(40), { executor: executor(), grader: grader(), sink: new Sink(), priorCorrections: async () => [] } as never)).rejects.toThrow(/maximum cost/);
   });
   it("a run that fails is an ungraded row, and the replay goes on", async () => {

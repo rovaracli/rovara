@@ -137,7 +137,7 @@ export class InMemoryEvalSnapshotStore implements EvalSnapshotStore {
   }
 }
 
-export function dynamoEvalSnapshotStore(table: TeamRecordTable, orgOf: (workspaceId: string) => OrgId = (id) => id as OrgId, now: () => number = Date.now): EvalSnapshotStore {
+export function dynamoEvalSnapshotStore(table: TeamRecordTable, orgOf: (workspaceId: string) => OrgId = (id) => id, now: () => number = Date.now): EvalSnapshotStore {
   const keyOf = (workspaceId: string, project: string, id: string) => memorySnapshotKey(orgOf(workspaceId), project, id);
   return {
     async put(snapshot) {

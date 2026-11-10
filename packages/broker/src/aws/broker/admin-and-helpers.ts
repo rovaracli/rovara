@@ -35,7 +35,6 @@ import { getSlackBinding } from "./workspace-preparation.js";
 import { auditOperatorId } from "@agentx/contracts";
 import { developerIdForSlackUser } from "../admin-actions.js";
 import { requirePricedTaskStopAdmission } from "../../org/task-stop-unpriced.js";
-import { TERMINAL_OPERATION_STATUSES } from "@agentx/contracts";
 import { startTask } from "../developer-tasks/start.js";
 import { copyStateOf, planWaitingOf, replayCopyView, startReplayCopy } from "../developer-tasks/lessons-replay.js";
 import { decideTaskWorkflow } from "../developer-tasks/decide.js";
@@ -300,7 +299,7 @@ export async function adminTaskLessonsReplay(dependencies: AwsBrokerDependencies
   if ((action === "approve" || action === "close") && method === "GET" || action === "evidence" && method === "POST") throw agentXError("NOT_FOUND", "no such route");
   if (action !== "copy" || method === "GET") {
     // Every route but the start is about a COPY: any other task answers as if the route did not exist.
-    if (!isReplayCopy(task) || task.developerId !== identity.ownerKey) throw agentXError("TASK_NOT_FOUND", `no task ${taskId}`);
+    if (!isReplayCopy(task) || personOwnerOf(effectiveTaskOwner(task)).developerId !== identity.ownerKey) throw agentXError("TASK_NOT_FOUND", `no task ${taskId}`);
   }
   if (method === "GET" && action === "copy") {
     const cost = copyStateOf(task) === "running" ? null : (await autofixTaskSpendUsd(dependencies, task)) ?? null;

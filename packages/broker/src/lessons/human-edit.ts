@@ -16,6 +16,7 @@ import { processDraftRetrying } from "./draft-retry.js";
 import { newTaskFailureTally, withFailuresCountedOnce, type TaskFailureTally } from "./pause.js";
 import { attachCapLadder, noteTaskHeld, readTaskHeld, reflectRepoOnly, withEdits } from "./repo-reflect.js";
 import type { ProcessDeps } from "./process.js";
+import { isEvalRunMark } from "./eval-run.js";
 import { reflectSubject, type ReflectDeps } from "./reflect.js";
 import type { EvidenceSpan, ReflectSubject } from "./reflect-input.js";
 import type { LearnResult, TaskSubjectSource } from "./task-end.js";
@@ -66,7 +67,7 @@ export function createHumanEditExtractor(deps: HumanEditExtractorDeps): HumanEdi
       const base = await deps.source.read({ workspaceId: input.workspaceId, taskId: input.taskId, context: "human_edit" });
       if (base === undefined || base.facts.workspaceId !== input.workspaceId || base.facts.project !== input.project || base.facts.taskId !== input.taskId) return none;
       // Lane 7: an edit to an eval or replay run's pull request teaches nothing; refused before any author is looked up.
-      if (base.facts.rest.evalRun === true) return none;
+      if (isEvalRunMark(base.facts.rest.evalRun)) return none;
       // Every author, now. Asking all of them (no short cut) so a check that cannot tell is never hidden by an earlier answer.
       let allowed = true;
       for (const developerId of input.authors) {

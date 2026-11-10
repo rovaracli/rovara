@@ -19,6 +19,7 @@ import { recordTaskOutcome, type CounterDeps, type TaskCorrection } from "./coun
 import { processDraftRetrying } from "./draft-retry.js";
 import { newTaskFailureTally, withFailuresCountedOnce, type TaskFailureTally } from "./pause.js";
 import type { ProcessDeps } from "./process.js";
+import { isEvalRunMark } from "./eval-run.js";
 import { reflectSubject, type ReflectDeps } from "./reflect.js";
 import type { ReflectSubject } from "./reflect-input.js";
 import type { RovaraEmitter } from "../team-record/sources/rovara.js";
@@ -225,7 +226,7 @@ export async function learnFromEndedTaskTyped(deps: TaskLearningDeps, input: { w
     const base = await deps.source.read({ workspaceId: input.workspaceId, taskId: input.taskId });
     if (base === undefined || base.facts.workspaceId !== input.workspaceId) return final("no_facts");
     // Lane 7: an eval or replay run is not learned from: no rows are read, no outcome is counted, no model is called.
-    if (base.facts.rest.evalRun === true) return final("eval_run");
+    if (isEvalRunMark(base.facts.rest.evalRun)) return final("eval_run");
     // The switch again on the project the facts name (the only check for a source that cannot name the project alone; for the others it only repeats the same answer).
     const learning = await resolveLearning(deps.settings, input.workspaceId, base.facts.project);
     if (!modeAllows(learning.mode, "reflect")) return final("off");

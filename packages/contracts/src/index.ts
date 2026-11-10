@@ -284,6 +284,7 @@ export * from "./service-mock-additions.js";
 export * from "./test-env-nightly.js";
 export * from "./nightly-run.js";
 export * from "./standing-instructions.js";
+export * from "./eval-files.js";
 export * from "./system-owner.js";
 export * from "./test-id.js";
 export * from "./verification-result.js";

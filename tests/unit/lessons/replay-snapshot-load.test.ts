@@ -98,6 +98,14 @@ describe("the dispatch", () => {
     expect(await ask(h, taskOf(), {})).toEqual({});
     expect((await ask(h, taskOf(), { LEARNED_LESSONS_ENABLED: "1" })).learnedRefs?.lessons.length).toBe(3);
   });
+  it("the file arm's refs name the repository whose checkout gets the file; without the mark they do not, and a project with no code repository sends nothing", async () => {
+    const { host: h, snapshot } = await host();
+    const memory = { mode: "snapshot", snapshotId: snapshot.snapshotId };
+    expect((await ask(h, taskOf({ evalRun: true, evalMemory: memory, evalLessonsFile: true }), {})).learnedRefs).toMatchObject({ snapshotId: snapshot.snapshotId, file: { repository: "api" } });
+    expect((await ask(h, taskOf({ evalRun: true, evalMemory: memory }), {})).learnedRefs).not.toHaveProperty("file");
+    const none = await learnedContextForOperation(h, { orgId: WS, task: taskOf({ evalRun: true, evalMemory: memory, evalLessonsFile: true }) as never, workflowMode: "IMPLEMENT", definition: { repositories: [] } }, {});
+    expect(none).toEqual({});
+  });
   it("a copy with memory off, a mark with no memory, a snapshot that does not exist, and a bad memory all get nothing", async () => {
     const { host: h } = await host();
     expect(await ask(h, taskOf({ evalRun: true, evalMemory: { mode: "off" } }), { LEARNED_LESSONS_ENABLED: "1" })).toEqual({});
