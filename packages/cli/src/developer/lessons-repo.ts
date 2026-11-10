@@ -1,7 +1,7 @@
 // `agentx project lessons-repo <project> [status|on|off|resume|pointer-add|pointer-decline] [--repo <name>]` (lessons in the repo, lane R2; design LESSONS-REPO-FILE-DESIGN.md rev 2 section 9): in Rovara Code, which has no project page,
 // the status of a project's `.rovara/lessons.md` and its weekly pull request is read here, and a maintainer switches a repository on or off from here. It reads and sends through `/v1/app/projects/{p}/lessons/repo`; every line it
 // prints is a fixed sentence from the broker or the table below. Nothing here decides anything: the pull request is merged by a person on the code host.
-import { LessonsRepoFileStatusReaderSchema, agentXError, closesHeldText, strayBranchesText, unreachableRepoText, type LessonsRepoFileRow } from "@agentx/contracts";
+import { LessonsRepoFileStatusReaderSchema, agentXError, closesHeldText, lessonFileWaitingText, strayBranchesText, unreachableRepoText, type LessonsRepoFileRow } from "@agentx/contracts";
 import { appRequest, clean, result, seg, type AppResult } from "./agents.js";
 import type { DeveloperSessionDeps } from "./session.js";
 
@@ -9,10 +9,10 @@ const UNEXPECTED = "AgentX answered with something unexpected; upgrade the comma
 export const LESSONS_REPO_ACTIONS = ["status", "on", "off", "resume", "pointer-add", "pointer-decline"] as const;
 const BODY_ACTION: Record<Exclude<(typeof LESSONS_REPO_ACTIONS)[number], "status">, string> = { on: "on", off: "off", resume: "resume", "pointer-add": "pointer_add", "pointer-decline": "pointer_decline" };
 
-function rowLines(row: Pick<LessonsRepoFileRow, "repo" | "enabled" | "unmerged" | "notices" | "pr">): string[] {
+function rowLines(row: Pick<LessonsRepoFileRow, "repo" | "enabled" | "unmerged" | "notices" | "pr"> & { waitingFor?: string | undefined }): string[] {
   const state = row.enabled ? "on" : "off";
   const pr = row.pr === undefined ? "no pull request open" : `pull request #${clean(row.pr.number)} open (${String(row.pr.removals)} removals, ${String(row.pr.edits)} edits, ${String(row.pr.adds)} new)`;
-  return [`  ${clean(row.repo)}: ${state}; ${pr}; ${String(row.unmerged)} unmerged in a row`, ...row.notices.map((notice) => `    ${clean(notice)}`)];
+  return [`  ${clean(row.repo)}: ${state}; ${pr}; ${String(row.unmerged)} unmerged in a row`, ...(lessonFileWaitingText(row.waitingFor) === undefined ? [] : [`    ${lessonFileWaitingText(row.waitingFor) ?? ""}`]), ...row.notices.map((notice) => `    ${clean(notice)}`)];
 }
 
 export async function projectLessonsRepo(deps: DeveloperSessionDeps, env: string | undefined, project: string, action: string | undefined, options: { repo?: string | undefined }): Promise<AppResult> {

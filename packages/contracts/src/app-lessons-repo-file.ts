@@ -39,6 +39,16 @@ export const closesHeldText = (repo: string, count: number): string =>
 export const strayBranchesText = (repo: string, branches: number): string =>
   `${String(branches)} ${branches === 1 ? "branch" : "branches"} Rovara made in ${repo} cannot be matched to a pull request on this code host, so they are not checked for deleted lessons`;
 
+/** Why a switched-on repository does nothing yet: lessons are off for the whole installation, or only for this project. The choice is recorded either way, so the file starts later with nothing lost. */
+export const LESSON_FILE_WAITING_FOR = ["install", "project"] as const;
+export type LessonFileWaitingFor = (typeof LESSON_FILE_WAITING_FOR)[number];
+export const LESSON_FILE_WAITING_TEXT: Record<LessonFileWaitingFor, string> = {
+  install: "The lessons file starts when lessons are switched on for this installation.",
+  project: "The lessons file starts when lessons are switched on for this project.",
+};
+/** The sentence for a row's `waitingFor`; a value this reader does not know (a newer server) shows nothing. */
+export const lessonFileWaitingText = (waitingFor: string | undefined): string | undefined => waitingFor === "install" || waitingFor === "project" ? LESSON_FILE_WAITING_TEXT[waitingFor] : undefined;
+
 export const LESSON_FILE_POINTER_STATES = ["not_yet", "added", "missing", "declined"] as const;
 export type LessonFilePointerState = (typeof LESSON_FILE_POINTER_STATES)[number];
 
@@ -66,6 +76,8 @@ export const LessonsRepoFileRowSchema = z.object({
   pointer: z.enum(LESSON_FILE_POINTER_STATES),
   /** Pull requests that remove deleted lessons (opened by the erasure sweep) and are waiting for the team to merge. */
   erasurePrs: z.number().int().min(0).optional(),
+  /** Present on a switched-on repository while lessons are off: the choice is recorded and the file starts when lessons are switched on for the installation or for the project. The text is `LESSON_FILE_WAITING_TEXT`. */
+  waitingFor: z.enum(LESSON_FILE_WAITING_FOR).optional(),
   pr: LessonsRepoFilePrSchema.optional(),
   lastPassAt: z.number().optional(),
   problem: z.enum(LESSON_FILE_PROBLEMS).optional(),

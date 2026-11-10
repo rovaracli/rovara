@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
-import { closesHeldText, strayBranchesText, unreachableRepoText, type LessonsRepoFileBody } from "@agentx/contracts/web";
+import { closesHeldText, lessonFileWaitingText, strayBranchesText, unreachableRepoText, type LessonsRepoFileBody } from "@agentx/contracts/web";
 import { ApiError } from "../../../api/errors.js";
 import { lessonsRepoFileKey, useLessonsRepoFile, useLessonsRepoFileApi, type LessonsRepoFileStatus } from "../../../api/lessons-repo-file.js";
 import { Button } from "../../../design/Button.js";
@@ -43,6 +43,7 @@ export function RepoFileControl({ project, canChange }: { project: string; canCh
   return <li key={row.repo}>
    <strong><VisibleText text={row.repo} /></strong>: {row.enabled ? W.ON : W.OFF_STATE}{" "}
    {row.pr === undefined ? <span className="rv-muted">{W.NO_PR}</span> : url === undefined ? null : <a href={url} target="_blank" rel="noopener noreferrer" aria-label={W.OPEN_PR + ": " + row.repo}>{W.OPEN_PR}</a>}
+   {lessonFileWaitingText(row.waitingFor) !== undefined && <p role="note" className="rv-muted" data-testid="lessons-repo-waiting"><VisibleText text={lessonFileWaitingText(row.waitingFor) ?? ""} /></p>}
    {row.notices.map(notice => <p key={notice} role="note" className="rv-muted"><VisibleText text={notice} /></p>)}
    {canChange && <div className="rv-lessons-actions">
     {row.fileDeleted && button(W.RESUME, { action: "resume", repo: row.repo }, true)}
