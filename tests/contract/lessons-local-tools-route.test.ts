@@ -283,7 +283,7 @@ describe("the two switches (decision 46b): who may read and set them, and what t
     expect(await w.company(ADA, "POST", { stays: true })).toMatchObject({ status: 200, body: { stays: true } });
     expect(await w.ask(MAYA)).toMatchObject({ status: 200, body: { status: "off", reason: "company_stays", lessons: [] } });
     expect(await w.project(OMAR, "GET")).toMatchObject({ body: { enabled: false, reason: "company_stays", companyStays: true } });
-    expect(w.audit.recordedBy("lesson.local_tools_switched")).toEqual([expect.objectContaining({ facts: { scope: "company", enabled: true } })]);
+    expect(w.audit.recordedBy("lesson.local_tools_switched")).toEqual([expect.objectContaining({ facts: { scope: "company", enabled: false } })]);
     await w.company(ADA, "POST", { stays: false });
     expect(w.ids(await w.ask(MAYA))).toEqual(["les_route00001"]);
     // a bearer sign-in (the command line) cannot change the company's switch: it needs a live browser session

@@ -29,7 +29,7 @@ export async function setProjectLocalTools(deps: { localTools: LocalToolsSetting
 export async function setCompanyLocalTools(deps: { localTools: LocalToolsSettingsStore; audit: LessonAuditSink; now: () => number }, input: { workspaceId: string; stays: boolean; by: string }): Promise<LocalToolsSetResult> {
   let before: boolean;
   try { before = await deps.localTools.readCompany(input.workspaceId); } catch { return { ok: false, code: "unreadable" }; }
-  if (!await requireAudit(deps.audit, { action: "lesson.local_tools_switched", workspaceId: input.workspaceId, project: "_workspace", actor: input.by, facts: { scope: "company", enabled: input.stays } })) return { ok: false, code: "audit_unavailable" };
+  if (!await requireAudit(deps.audit, { action: "lesson.local_tools_switched", workspaceId: input.workspaceId, project: "_workspace", actor: input.by, facts: { scope: "company", enabled: !input.stays } })) return { ok: false, code: "audit_unavailable" };
   try { await deps.localTools.setCompany(input.workspaceId, input.stays, deps.now()); } catch { return { ok: false, code: "unreadable" }; }
   return { ok: true, changed: before !== input.stays };
 }

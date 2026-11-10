@@ -35,7 +35,7 @@ describe("a change is audited first", () => {
     const audit = new Audit(), { s, state } = store();
     expect(await setProjectLocalTools({ localTools: s, audit, now: () => 5 }, { workspaceId: WS, project: PROJECT, enabled: false, by: "pia" })).toEqual({ ok: true, changed: true });
     expect(await setCompanyLocalTools({ localTools: s, audit, now: () => 5 }, { workspaceId: WS, stays: true, by: "ada" })).toEqual({ ok: true, changed: true });
-    expect(audit.events.map((e: LessonAuditEvent) => [e.action, e.actor, e.facts])).toEqual([["lesson.local_tools_switched", "pia", { scope: "project", enabled: false }], ["lesson.local_tools_switched", "ada", { scope: "company", enabled: true }]]);
+    expect(audit.events.map((e: LessonAuditEvent) => [e.action, e.actor, e.facts])).toEqual([["lesson.local_tools_switched", "pia", { scope: "project", enabled: false }], ["lesson.local_tools_switched", "ada", { scope: "company", enabled: false }]]);
     expect(state.writes).toEqual(["project:false", "company:true"]);
     // the same value again is not a change
     expect(await setProjectLocalTools({ localTools: s, audit, now: () => 6 }, { workspaceId: WS, project: PROJECT, enabled: false, by: "pia" })).toEqual({ ok: true, changed: false });
