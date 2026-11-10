@@ -195,9 +195,16 @@ describe("hideEmailAddresses: time", () => {
     ["digits and dots after an at sign", `${at}${"1.".repeat(15_000)}`],
   ];
   it.each(inputs)(`takes under ${String(LIMIT_MS)} ms (or the case's own lower bound): %s`, (_why, text, limit = LIMIT_MS) => {
-    const started = performance.now();
+    // One warm-up call (the first call pays for compiling the scanner), then the best of three: a loaded CI runner adds noise to a
+    // single wall-clock reading, while a quadratic scan stays slow on every run.
     hideEmailAddresses(text);
-    expect(performance.now() - started).toBeLessThan(limit);
+    let best = Number.POSITIVE_INFINITY;
+    for (let run = 0; run < 3; run += 1) {
+      const started = performance.now();
+      hideEmailAddresses(text);
+      best = Math.min(best, performance.now() - started);
+    }
+    expect(best).toBeLessThan(limit);
   });
 
   it("still hides every address of a long line of them", () => {

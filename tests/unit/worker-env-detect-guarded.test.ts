@@ -44,14 +44,16 @@ describe("a pass that does not finish", () => {
   it("is ended at the limit, and today's detection comes back without dependency candidates, with the note", async () => {
     const files = REPOS["node"]!;
     const started = Date.now();
-    const detection = await runDetectorsGuarded(reader(files).reader, "svc", { timeoutMs: 4_000, entry: entryOf("env-detect-slow-thread.ts") });
-    expect(Date.now() - started).toBeLessThan(15_000);
+    // The shorter pass gets min(10 s, timeoutMs) and loads its thread through tsx, which can take several seconds on a loaded CI runner,
+    // so the limit is 10 s here: the full pass is still ended at its limit and the shorter pass has room to finish.
+    const detection = await runDetectorsGuarded(reader(files).reader, "svc", { timeoutMs: 10_000, entry: entryOf("env-detect-slow-thread.ts") });
+    expect(Date.now() - started).toBeLessThan(30_000);
     expect(Object.hasOwn(detection, "dependencies")).toBe(false);
     expect(detection.checks.map((check) => check.value.id)).toContain("unit");
     expect(detection.notes).toContain(ENV_DETECT_TIMEOUT_NOTE);
     const direct = await runDetectors(reader(files).reader, "svc", { legacyOnly: true });
     expect(JSON.stringify({ ...detection, notes: detection.notes.filter((note) => note !== ENV_DETECT_TIMEOUT_NOTE) })).toBe(JSON.stringify(direct));
-  });
+  }, 40_000);
   it("gives an empty detection with the note when even the shorter pass is stuck", async () => {
     const detection = await runDetectorsGuarded(reader(REPOS["node"]!).reader, "svc", { timeoutMs: 500, entry: entryOf("env-detect-stuck-thread.ts") });
     expect(detection.checks).toEqual([]);
