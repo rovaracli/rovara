@@ -20,8 +20,8 @@
 // Exit status: 0 no problem (a skipped check is not a problem), 1 problems, 2 the check could not run. Node runs this file directly; it imports Node's own
 // modules and `yaml` (a workspace dependency, present in CI after `npm ci`).
 import { spawnSync } from "node:child_process";
-import { existsSync, lstatSync, readFileSync, readdirSync, readlinkSync } from "node:fs";
-import { join, resolve, sep } from "node:path";
+import { existsSync, lstatSync, readFileSync, readdirSync, readlinkSync, realpathSync } from "node:fs";
+import { join, posix, sep } from "node:path";
 import YAML from "yaml";
 
 export interface Problem { where: string; message: string }
@@ -43,6 +43,13 @@ export const VERIFY_SCRIPT = "scripts/vendor/verify-rovara-code.ts";
 /** W0-1's generated layer: shims that re-export Code's packages, and the links Code's own imports resolve through. */
 export const SHIMS_DIR = "vendor/rovara-code-shims";
 export const LINKS_DIR = "vendor/node_modules";
+/**
+ * The only links W0-1 puts under vendor/node_modules besides the `@agentx/<pkg>` ones (its THIRD_PARTY_LINKS): name -> the exact link text. Any other link, or
+ * a real file or folder there, is refused. If W0-1 adds one, this list changes with it (the check fails closed until it does).
+ */
+export const ALLOWED_THIRD_PARTY_LINKS: Readonly<Record<string, string>> = {
+  "playwright-core": "../../node_modules/@e2e-dev/web/node_modules/playwright-core",
+};
 /** A job that publishes must run only in the public repository (the Cloud repository's CI is off, and its copy rovaracli/rovara is not this name). */
 export const PUBLIC_REPO_GUARD = "github.repository == 'PrepLabsAI/Rovara'";
 /** The four generic adapters the owners made public (decision 72, O2). A different list needs both owners, not just a data edit. */
@@ -54,6 +61,7 @@ export const EXPECTED_PUBLIC_ADAPTERS: readonly string[] = ["dynamodb", "s3", "s
  */
 export const GRANDFATHERED_PUBLISH_CLOSURE: Readonly<Record<string, string>> = {
   "@preplabsai/rovara-code -> @rovara/audit-verifier": "the Cloud CLI's audit export; publish runs only from the public repository (PUBLIC_REPO_GUARD), whose CLI has no such dependency",
+  "@preplabsai/rovara-code -> @agentx/design-tokens": "the Cloud broker's server-rendered pages use the design tokens; publish runs only from the public repository (PUBLIC_REPO_GUARD), whose CLI has no such dependency",
 };
 
 // ---------------------------------------------------------------------------------------------------------------------------------
@@ -64,6 +72,10 @@ export interface BoundaryData {
   cloudOnlyPackagePatterns: string[];
   publicAwsAdapters: { package: string; dir: string; adapters: Array<{ id: string; port: string; sdk: string[] }> };
   awsSdkPublicPaths: string[];
+  /** Keys the Code guard also reads (sanctioned plug-in clients, fixture paths, known history); this check does not use them. */
+  awsSdkSanctioned?: unknown;
+  awsImportFixturePaths?: unknown;
+  knownHistory?: unknown;
   publicNpmPackages: Array<{ name: string; source: string }>;
 }
 
@@ -108,7 +120,9 @@ export function isCloudOnlyName(data: BoundaryData, name: string): boolean {
 }
 
 /** A Cloud-only package directory, whatever its name says (the web app, its UI, the audit verifier, any cloud-*). */
-const CLOUD_ONLY_DIR = /^(?:vendor\/rovara-code\/)?packages\/(?:ui|web|audit-verifier|cloud-[^/]+)$/i;
+const CLOUD_ONLY_DIR = /^(?:vendor\/rovara-code\/)?packages\/(?:ui|web|audit-verifier|model-proxy|design-tokens|cloud(?:-[^/]+)?)$/i;
+/** The same, for a path that may go on below the package folder. */
+const CLOUD_ONLY_PATH = /^(?:vendor\/rovara-code\/)?packages\/(?:ui|web|audit-verifier|model-proxy|design-tokens|cloud(?:-[^/]+)?)(\/|$)/i;
 
 // ---------------------------------------------------------------------------------------------------------------------------------
 // Files.
@@ -149,11 +163,9 @@ export function readVendor(root: string): { entries: Map<string, Buffer>; symlin
   return { entries, symlinks };
 }
 
-export function checkVendorPin(root: string): CheckResult {
+export function checkVendorPin(root: string, options: { node?: string } = {}): CheckResult {
   const result: CheckResult = { check: "vendor-pin", status: "ok", problems: [] };
-  if (!existsSync(join(root, VENDOR_DIR))) {
-    return { ...result, status: "skipped", note: `${VENDOR_DIR} does not exist yet (lane W0-1 builds it); nothing to compare with a pin` };
-  }
+  if (!existsSync(join(root, VENDOR_DIR))) return absentVendor(root, result, `${VENDOR_DIR} does not exist yet (lane W0-1 builds it); nothing to compare with a pin`);
   if (!existsSync(join(root, PIN_FILE))) {
     result.problems.push({ where: PIN_FILE, message: "the vendored copy has no PIN file; a copy with no pin cannot be checked" });
   }
@@ -162,9 +174,11 @@ export function checkVendorPin(root: string): CheckResult {
   }
   if (result.problems.length > 0) return { ...result, status: "failed" };
   // The verifier finds the repository from its working directory; offline (no --remote), so this check needs no network. CI's own step adds --remote.
-  const run = spawnSync(process.execPath, [VERIFY_SCRIPT], { cwd: root, encoding: "utf8", maxBuffer: 1 << 26 });
+  const run = spawnSync(options.node ?? process.execPath, [VERIFY_SCRIPT], { cwd: root, encoding: "utf8", maxBuffer: 1 << 26 });
   if (run.error !== undefined) throw new CheckError(`could not run ${VERIFY_SCRIPT}: ${run.error.message}`);
-  if (run.status !== 0) {
+  if (run.signal !== null) {
+    result.problems.push({ where: VENDOR_DIR, message: `the vendor verifier was stopped by ${run.signal} before it answered, so the copy was not checked` });
+  } else if (run.status !== 0) {
     const detail = (run.stderr ?? "").split("\n").map((line) => line.trim()).filter((line) => line !== "");
     if (detail.length === 0) detail.push(`the verifier exited ${String(run.status)} with no message`);
     for (const line of detail) result.problems.push({ where: VENDOR_DIR, message: line });
@@ -178,12 +192,14 @@ export function checkVendorPin(root: string): CheckResult {
 const SPECIFIER = /\bfrom\s*(['"`])([^'"`\n$]+)\1|\bimport\s*\(\s*(['"`])([^'"`\n$]+)\3|\brequire(?:\.resolve)?\s*\(\s*(['"`])([^'"`\n$]+)\5|(?:^|[\s;{}])import\s+(['"`])([^'"`\n$]+)\7/g;
 const CODE = /\.[cm]?[jt]sx?$/i;
 
-export function specifiers(source: string): Array<{ specifier: string; line: number }> {
-  const out: Array<{ specifier: string; line: number }> = [];
+export function specifiers(source: string): Array<{ specifier: string; line: number; inString: boolean }> {
+  const out: Array<{ specifier: string; line: number; inString: boolean }> = [];
   for (const match of source.matchAll(SPECIFIER)) {
     const specifier = match[2] ?? match[4] ?? match[6] ?? match[8];
     if (specifier === undefined) continue;
-    out.push({ specifier, line: source.slice(0, match.index + match[0].lastIndexOf(specifier)).split("\n").length });
+    const at = match.index + match[0].lastIndexOf(specifier);
+    const before = source.slice(source.lastIndexOf("\n", match.index - 1) + 1, match.index);
+    out.push({ specifier, line: source.slice(0, at).split("\n").length, inString: (before.match(/['"`]/g)?.length ?? 0) % 2 === 1 });
   }
   return out;
 }
@@ -195,17 +211,23 @@ const packageBase = (specifier: string): string => (specifier.startsWith("@") ? 
 
 export function checkVendorClean(root: string): CheckResult {
   const result: CheckResult = { check: "vendor-clean", status: "ok", problems: [] };
-  if (!existsSync(join(root, VENDOR_DIR))) return { ...result, status: "skipped", note: `${VENDOR_DIR} does not exist yet (lane W0-1 builds it)` };
+  if (!existsSync(join(root, VENDOR_DIR))) return absentVendor(root, result, `${VENDOR_DIR} does not exist yet (lane W0-1 builds it)`);
   const data = readBoundary(root);
-  const { entries } = readVendor(root);
+  const { entries, symlinks } = readVendor(root);
+  // Code holds no symlinks: one inside the copy could point anywhere, and a link chain through it would hide where vendor/node_modules really leads.
+  for (const link of symlinks) result.problems.push({ where: `${VENDOR_DIR}/${link}`, message: "a symlink inside the vendored copy (Code holds none; a link can point outside it)" });
   for (const [path, bytes] of entries) {
     const where = `${VENDOR_DIR}/${path}`;
     if (path.split("/").includes("vendor")) result.problems.push({ where, message: "a vendor/ folder inside the vendored copy (Code holds none)" });
-    if (/^packages\/(?:ui|web|audit-verifier|cloud-[^/]+)(\/|$)/i.test(path)) result.problems.push({ where, message: "a Cloud-only package inside the vendored copy of Code" });
+    if (/^packages\/(?:ui|web|audit-verifier|model-proxy|design-tokens|cloud(?:-[^/]+)?)(\/|$)/i.test(path)) result.problems.push({ where, message: "a Cloud-only package inside the vendored copy of Code" });
     if (!CODE.test(path)) continue;
-    for (const { specifier, line } of specifiers(bytes.toString("utf8"))) {
+    const testFile = /(^|\/)(tests?|__tests__)\//i.test(path) || /\.test\.[cm]?[jt]sx?$/i.test(path);
+    for (const { specifier, line, inString } of specifiers(bytes.toString("utf8"))) {
       if (!specifier.startsWith(".") && isCloudOnlyName(data, packageBase(specifier))) {
         result.problems.push({ where: `${where}:${line}`, message: `Code imports a Cloud-only package (${packageBase(specifier)}); Code never imports Cloud` });
+      } else if (specifier.startsWith(".") && !inString && !testFile && posix.normalize(posix.join(posix.dirname(path), specifier)).startsWith("..")) {
+        // Resolved from where the copy sits, a path that climbs out of it lands in Cloud's own code.
+        result.problems.push({ where: `${where}:${line}`, message: "a relative import that leaves the vendored copy (it would reach Cloud's own code)" });
       }
     }
   }
@@ -214,32 +236,66 @@ export function checkVendorClean(root: string): CheckResult {
 }
 
 /**
- * The links W0-1 commits under vendor/node_modules (so Code's own `@agentx/*` imports reach Code's packages) are Cloud's layer, not Code: each must
- * point inside vendor/rovara-code, and not at a Cloud-only package. A link anywhere else could pull Cloud code into what Code's files resolve.
+ * vendor/node_modules is W0-1's layer, not Code: it holds the scope folder `@agentx` with one relative link per vendored package, and the links in
+ * ALLOWED_THIRD_PARTY_LINKS; nothing else. Each `@agentx/<pkg>` link must resolve (realpath, through any chain) to exactly vendor/rovara-code/packages/<pkg>;
+ * a link anywhere else (Cloud's node_modules/@agentx/*, a Cloud package, another link), a real file or folder, or a third-party link with other text, is refused.
  */
 export function vendorLinkProblems(root: string): Problem[] {
   const problems: Problem[] = [];
   const base = join(root, LINKS_DIR);
   if (!existsSync(base)) return problems;
-  const vendorRoot = join(root, VENDOR_DIR);
-  const visit = (dir: string): void => {
-    for (const entry of readdirSync(dir, { withFileTypes: true })) {
-      const full = join(dir, entry.name);
-      const where = `${LINKS_DIR}/${full.slice(base.length + 1)}`;
-      if (entry.isSymbolicLink()) {
-        const target = resolve(dir, readlinkSync(full));
-        const relative = target.startsWith(`${root}${sep}`) ? target.slice(root.length + 1).split(sep).join("/") : target;
-        if (target === vendorRoot || target.startsWith(`${vendorRoot}${sep}`)) {
-          if (CLOUD_ONLY_DIR.test(relative)) problems.push({ where, message: "a link that points at a Cloud-only package" });
-        } else if (!relative.split("/").includes("node_modules")) {
-          // Outside the copy only another installed npm package may be linked (W0-1's THIRD_PARTY_LINKS, Code's own dependency pins).
-          problems.push({ where, message: `a link that points outside ${VENDOR_DIR} and is not an installed npm package (${relative})` });
+  const vendorReal = existsSync(join(root, VENDOR_DIR)) ? realpathSync(join(root, VENDOR_DIR)) : join(root, VENDOR_DIR);
+  const rootReal = realpathSync(root);
+  const relativeToRoot = (path: string): string => (path.startsWith(`${rootReal}${sep}`) ? path.slice(rootReal.length + 1).split(sep).join("/") : path);
+  for (const entry of readdirSync(base, { withFileTypes: true })) {
+    const where = `${LINKS_DIR}/${entry.name}`;
+    if (entry.name === "@agentx" && entry.isDirectory()) {
+      for (const inner of readdirSync(join(base, entry.name), { withFileTypes: true })) {
+        const innerWhere = `${where}/${inner.name}`;
+        const full = join(base, entry.name, inner.name);
+        if (!inner.isSymbolicLink()) {
+          problems.push({ where: innerWhere, message: "not a link: only links to vendored packages belong under vendor/node_modules/@agentx (a real folder could hold code that is not Code)" });
+          continue;
         }
-      } else if (entry.isDirectory()) visit(full);
+        let real: string;
+        try {
+          real = realpathSync(full);
+        } catch {
+          problems.push({ where: innerWhere, message: "a link that does not resolve" });
+          continue;
+        }
+        const wanted = join(vendorReal, "packages", inner.name);
+        if (real !== wanted) {
+          const note = CLOUD_ONLY_PATH.test(relativeToRoot(real)) ? "a Cloud-only package" : relativeToRoot(real);
+          problems.push({ where: innerWhere, message: `a link that does not resolve to ${VENDOR_DIR}/packages/${inner.name} (it resolves to ${note})` });
+        } else if (readlinkSync(full) !== `../../rovara-code/packages/${inner.name}`) {
+          problems.push({ where: innerWhere, message: "a link that reaches the vendored package by a chain or a roundabout path (W0-1 writes one direct relative link)" });
+        }
+      }
+    } else if (entry.isSymbolicLink() && ALLOWED_THIRD_PARTY_LINKS[entry.name] !== undefined) {
+      if (readlinkSync(join(base, entry.name)) !== ALLOWED_THIRD_PARTY_LINKS[entry.name]) {
+        problems.push({ where, message: "a third-party link whose target is not the one W0-1 records" });
+      } else {
+        try {
+          const real = relativeToRoot(realpathSync(join(base, entry.name)));
+          if (CLOUD_ONLY_PATH.test(real)) problems.push({ where, message: "a third-party link that resolves into a Cloud-only package" });
+        } catch {
+          // not installed here (a checkout before npm ci): the link text is the check
+        }
+      }
+    } else {
+      problems.push({ where, message: entry.isSymbolicLink() ? "a link that is not one W0-1 creates (only the vendored @agentx packages and its recorded third-party links)" : "a real file or folder under vendor/node_modules (only W0-1's links belong there)" });
     }
-  };
-  visit(base);
+  }
   return problems;
+}
+
+/** The vendored folder is absent: skipped while W0-1 has not landed, a failure once its verifier is here (deleting the copy must not pass). */
+function absentVendor(root: string, result: CheckResult, note: string): CheckResult {
+  if (existsSync(join(root, VERIFY_SCRIPT))) {
+    return { ...result, status: "failed", problems: [{ where: VENDOR_DIR, message: `${VENDOR_DIR} is missing, but the vendor verifier (${VERIFY_SCRIPT}) is here, so the pinned copy must be too` }] };
+  }
+  return { ...result, status: "skipped", note };
 }
 
 // ---------------------------------------------------------------------------------------------------------------------------------
@@ -276,14 +332,44 @@ export function workspaceDirs(root: string): string[] {
   return dirs.sort();
 }
 
-interface WorkflowJob { if?: string; steps?: Array<{ run?: string }> }
+interface WorkflowStep { run?: string; uses?: string }
+interface WorkflowJob { if?: unknown; uses?: string; steps?: WorkflowStep[] }
 
-/** A publish command at the start of a command (a line, or after `;`, `&&`, `||`, `|`, then, do, else), so that an echo or a comment that names one is not read as one. */
-const COMMAND_START = "(?:^|[;&|]\\s*|\\b(?:then|do|else)\\s+)";
-const PUBLISH_COMMAND = new RegExp(`${COMMAND_START}(?:(?:npm|pnpm|yarn)\\s+(?:publish|release)|(?:npx\\s+)?changeset\\s+publish|lerna\\s+publish|npx\\s+(?:semantic-release|release-it))\\b`);
+/** A publish by any of the usual tools, wherever it sits on a line (in a `bash -c "..."`, after an `env X=y` prefix, inside `node -e`). `npm pack` is read as one too. */
+const PUBLISH_ANYWHERE = /\b(?:npm|pnpm|yarn)\s+(?:publish|release)\b|\bchangeset\s+publish\b|\blerna\s+publish\b|\b(?:semantic-release|release-it)\b/;
+const PACK_ANYWHERE = /\b(?:npm|pnpm|yarn)\s+pack\b/;
+const RUN_SCRIPT = /\b(?:npm|pnpm)\s+(?:run|run-script)\s+(?:--\s+)?([^\s;&|]+)|\byarn\s+(?:run\s+)?([a-z][^\s;&|]*)/g;
+/** The one publish line allowed: `npm publish <tarball> [--access public] [--provenance] [--tag x]`, nothing before it and no other flag. */
+const PUBLISH_SHAPE = /^npm\s+publish\s+(\S+\.tgz)(?:\s+--access\s+public|\s+--provenance|\s+--tag\s+\S+)*$/;
 
-/** Problems in the workflows: any publish must be the packed CLI tarball, from a job that runs only in the public repository. */
-export function workflowPublishProblems(file: string, text: string): Problem[] {
+/** The lines of a run block that count, without comments, and without the text inside quotes on an echo or printf line (the real workflow echoes "skipping npm publish"). */
+function commandLines(run: string): string[] {
+  return run
+    .split("\n")
+    .map((row) => row.trim())
+    .filter((row) => row !== "" && !row.startsWith("#"))
+    .map((row) => (/^(?:echo|printf)\b/.test(row) ? row.replace(/"[^"]*"|'[^']*'/g, '""') : row));
+}
+
+/** True when a command line publishes: a publish command anywhere, or `npm run <script>` of a script whose name or body publishes. */
+function linePublishes(line: string, scripts: Readonly<Record<string, string>>): boolean {
+  if (PUBLISH_ANYWHERE.test(line)) return true;
+  for (const match of line.matchAll(RUN_SCRIPT)) {
+    const name = match[1] ?? match[2] ?? "";
+    const body = scripts[name] ?? "";
+    if (/publish/i.test(name) || PUBLISH_ANYWHERE.test(body)) return true;
+  }
+  return false;
+}
+
+/** The guard a publishing job must carry: exactly the public-repository test, or that test and more with `&&` (never an `||`, which `|| true` would open). */
+function guardHolds(raw: unknown): boolean {
+  const guard = String(raw ?? "").replace(/^\s*\$\{\{/, "").replace(/\}\}\s*$/, "").trim();
+  return guard === PUBLIC_REPO_GUARD || guard.startsWith(`${PUBLIC_REPO_GUARD} && `);
+}
+
+/** Problems in one workflow: nothing publishes except the packed CLI tarball, from a job that runs only in the public repository. */
+export function workflowPublishProblems(file: string, text: string, scripts: Readonly<Record<string, string>> = {}): Problem[] {
   const problems: Problem[] = [];
   let parsed: { jobs?: Record<string, WorkflowJob> };
   try {
@@ -292,25 +378,73 @@ export function workflowPublishProblems(file: string, text: string): Problem[] {
     return [{ where: file, message: "the workflow is not valid YAML, so what it publishes cannot be read" }];
   }
   for (const [jobName, job] of Object.entries(parsed?.jobs ?? {})) {
-    const runs = (job.steps ?? []).map((step) => step.run ?? "");
-    const publishing = runs.filter((run) => run.split("\n").some((row) => !row.trim().startsWith("#") && PUBLISH_COMMAND.test(row.trim())));
-    if (publishing.length === 0) continue;
     const where = `${file} job ${jobName}`;
-    const guard = String(job.if ?? "");
-    if (!(guard === PUBLIC_REPO_GUARD || guard.startsWith(`${PUBLIC_REPO_GUARD} `))) {
-      problems.push({ where, message: `a job that publishes must run only in the public repository (its "if" must start with ${PUBLIC_REPO_GUARD})` });
+    const steps = job.steps ?? [];
+    const lines = steps.flatMap((step) => commandLines(step.run ?? ""));
+    const publishLines = lines.filter((line) => linePublishes(line, scripts));
+    const actions = [job.uses, ...steps.map((step) => step.uses)].filter((name): name is string => typeof name === "string" && /publish/i.test(name));
+    if (publishLines.length === 0 && actions.length === 0) continue;
+    if (!guardHolds(job.if)) {
+      problems.push({ where, message: `a job that publishes must run only in the public repository (its "if" must be ${PUBLIC_REPO_GUARD}, or start with it followed by &&)` });
     }
-    for (const run of publishing) {
-      for (const line of run.split("\n").filter((row) => !row.trim().startsWith("#") && PUBLISH_COMMAND.test(row.trim()))) {
-        const npmPublish = new RegExp(`${COMMAND_START}npm\\s+publish\\b`).test(line.trim());
-        if (!npmPublish) problems.push({ where, message: `publishes with something other than "npm publish" of the packed CLI (${line.trim().split(/\s+/).slice(0, 2).join(" ")})` });
-        else if (/\s(?:-w|--workspaces?)(?:\s|=|$)/.test(line)) problems.push({ where, message: "npm publish of workspace packages would publish Cloud-only ones" });
-        else if (!/\.tgz\b/.test(line)) problems.push({ where, message: "npm publish must name the tarball that release:pack-cli builds, not a folder" });
+    for (const action of actions) problems.push({ where, message: `a publish action (${action}) is not allowed; the only publish is "npm publish" of the packed CLI` });
+    const out = /release:pack-cli[^\n]*?--out\s+("[^"]+"|'[^']+'|\S+)/.exec(lines.join("\n"))?.[1]?.replace(/^["']|["']$/g, "");
+    if (publishLines.length > 0 && out === undefined) {
+      problems.push({ where, message: "a publish without release:pack-cli --out in the same job (the only package that may be published is the packed CLI)" });
+    }
+    for (const line of publishLines) {
+      const shape = PUBLISH_SHAPE.exec(line.replace(/"/g, "").replace(/'/g, ""));
+      if (shape === null) {
+        problems.push({ where, message: `publishes in a way other than "npm publish <tarball> --access public" on a line of its own (${line.split(/\s+/).slice(0, 3).join(" ")} ...)` });
+      } else if (out !== undefined && shape[1]!.slice(0, shape[1]!.lastIndexOf("/")) !== out) {
+        problems.push({ where, message: `the tarball published is not one release:pack-cli wrote (it must be in the --out folder ${out})` });
       }
-      if (!runs.some((r) => r.includes("release:pack-cli"))) problems.push({ where, message: "npm publish without release:pack-cli in the same job (the only package that may be published is the packed CLI)" });
+    }
+    if (publishLines.length > 0 && lines.some((line) => PACK_ANYWHERE.test(line))) {
+      problems.push({ where, message: "npm pack in a job that publishes: the tarball must come from release:pack-cli, not from a package of this repository" });
     }
   }
   return problems;
+}
+
+/** A composite action (.github/actions/**) that publishes would be called from jobs this check does not follow: refuse it. */
+export function compositeActionProblems(file: string, text: string, scripts: Readonly<Record<string, string>> = {}): Problem[] {
+  let parsed: { runs?: { steps?: WorkflowStep[] } };
+  try {
+    parsed = YAML.parse(text) as { runs?: { steps?: WorkflowStep[] } };
+  } catch {
+    return [{ where: file, message: "the action file is not valid YAML, so what it runs cannot be read" }];
+  }
+  const steps = parsed?.runs?.steps ?? [];
+  const publishes = steps.some((step) => commandLines(step.run ?? "").some((line) => linePublishes(line, scripts) || PACK_ANYWHERE.test(line)) || (typeof step.uses === "string" && /publish/i.test(step.uses)));
+  return publishes ? [{ where: file, message: "a composite action that publishes or packs; publishing belongs in the workflow job that carries the public-repository guard" }] : [];
+}
+
+/** The workspace package folder a path inside the repository belongs to, by longest matching folder. */
+function owningPackage(dirs: ReadonlyMap<string, string>, path: string): string | undefined {
+  let best: string | undefined;
+  for (const dir of dirs.keys()) if ((path === dir || path.startsWith(`${dir}/`)) && (best === undefined || dir.length > best.length)) best = dir;
+  return best === undefined ? undefined : dirs.get(best);
+}
+
+/** The packages one package's source actually imports (what esbuild would follow), from its non-test source files, by package name and by relative path. */
+export function importedPackages(root: string, dir: string, dirToName: ReadonlyMap<string, string>): Set<string> {
+  const found = new Set<string>();
+  const srcDir = join(root, dir, "src");
+  if (!existsSync(srcDir)) return found;
+  const { files } = walk(srcDir);
+  for (const file of files) {
+    if (!/\.[cm]?[jt]sx?$/.test(file) || /\.test\.[cm]?[jt]sx?$/.test(file) || /(^|\/)(tests?|__tests__)\//.test(file)) continue;
+    const path = `${dir}/src/${file}`;
+    for (const { specifier, inString } of specifiers(readFileSync(join(srcDir, file), "utf8"))) {
+      if (inString) continue;
+      if (specifier.startsWith(".")) {
+        const owner = owningPackage(dirToName, posix.normalize(posix.join(posix.dirname(path), specifier)));
+        if (owner !== undefined && dirToName.get(dir) !== owner) found.add(owner);
+      } else if (!specifier.startsWith("node:")) found.add(packageBase(specifier));
+    }
+  }
+  return found;
 }
 
 export function checkPublishedPackages(root: string): CheckResult {
@@ -342,13 +476,22 @@ export function checkPublishedPackages(root: string): CheckResult {
       result.problems.push({ where: file, message: `${name || dir} is publishable but the boundary data does not list it as public; mark it private, or list it (both owners)` });
     }
   }
+  const scripts = (JSON.parse(readFileSync(join(root, "package.json"), "utf8")) as { scripts?: Record<string, string> }).scripts ?? {};
   const workflows = join(root, ".github/workflows");
   if (existsSync(workflows)) {
     for (const file of readdirSync(workflows).filter((name) => /\.ya?ml$/i.test(name)).sort()) {
-      result.problems.push(...workflowPublishProblems(`.github/workflows/${file}`, readFileSync(join(workflows, file), "utf8")));
+      result.problems.push(...workflowPublishProblems(`.github/workflows/${file}`, readFileSync(join(workflows, file), "utf8"), scripts));
     }
   }
-  // What the published CLI reaches through workspace dependencies. Cloud-only packages are reached only through the grandfathered, public-repo-gated route.
+  const actions = join(root, ".github/actions");
+  if (existsSync(actions)) {
+    for (const file of walk(actions).files.filter((name) => /(^|\/)action\.ya?ml$/i.test(name))) {
+      result.problems.push(...compositeActionProblems(`.github/actions/${file}`, readFileSync(join(actions, file), "utf8"), scripts));
+    }
+  }
+  // What the published CLI reaches: through its dependencies AND through what its source really imports (esbuild follows imports, so an undeclared one is
+  // bundled all the same). Cloud-only packages are reached only through the grandfathered, public-repo-gated route.
+  const dirToName = new Map(manifests.filter((entry) => entry.manifest.name !== undefined).map((entry) => [entry.dir, entry.manifest.name!] as const));
   const reached = new Set<string>();
   for (const published of data.publicNpmPackages) {
     const start = [...byName.values()].find((entry) => entry.dir === published.source);
@@ -361,8 +504,11 @@ export function checkPublishedPackages(root: string): CheckResult {
       seen.add(name);
       const entry = byName.get(name);
       if (entry === undefined) continue;
-      const deps = { ...entry.manifest.dependencies, ...entry.manifest.optionalDependencies, ...entry.manifest.peerDependencies };
-      for (const dep of Object.keys(deps)) {
+      const deps = new Set([
+        ...Object.keys({ ...entry.manifest.dependencies, ...entry.manifest.optionalDependencies, ...entry.manifest.peerDependencies }),
+        ...importedPackages(root, entry.dir, dirToName),
+      ]);
+      for (const dep of deps) {
         if (isCloudOnlyName(data, dep) || (byName.has(dep) && CLOUD_ONLY_DIR.test(byName.get(dep)!.dir))) reached.add(`${published.name} -> ${dep}`);
         else if (byName.has(dep)) queue.push(dep);
       }

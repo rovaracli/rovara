@@ -12,7 +12,10 @@ import {
   SHIMS_DIR,
   VERIFY_SCRIPT,
   VENDOR_DIR,
+  ALLOWED_THIRD_PARTY_LINKS,
   checkAwsAllowList,
+  compositeActionProblems,
+  importedPackages,
   checkPublishedPackages,
   checkVendorClean,
   checkVendorPin,
@@ -52,10 +55,12 @@ class Repo {
     git(this.dir, "init", "-q", "-b", "main");
     cpSync(BOUNDARY_FILE, join(this.dir, BOUNDARY_FILE), { recursive: true });
     this.json("package.json", { name: "root", private: true, workspaces: ["packages/*"] });
-    this.json("packages/cli/package.json", { name: "@agentx/cli", private: true, dependencies: { "@agentx/contracts": "0.1.0", "@rovara/audit-verifier": "0.1.0" } });
+    this.json("packages/cli/package.json", { name: "@agentx/cli", private: true, dependencies: { "@agentx/contracts": "0.1.0", "@rovara/audit-verifier": "0.1.0", "@agentx/design-tokens": "0.1.0" } });
+    this.json("packages/design-tokens/package.json", { name: "@agentx/design-tokens", private: true });
     this.json("packages/contracts/package.json", { name: "@agentx/contracts", private: true });
     this.json("packages/audit-verifier/package.json", { name: "@rovara/audit-verifier", private: true });
     this.json("packages/ui/package.json", { name: "@agentx/ui", private: true });
+    this.json("packages/model-proxy/package.json", { name: "@agentx/model-proxy", private: true });
     this.write(
       ".github/workflows/release.yml",
       [
@@ -64,7 +69,7 @@ class Repo {
         "    if: github.repository == 'PrepLabsAI/Rovara' && (vars.PUBLISH == 'true')",
         "    steps:",
         "      - run: |",
-        "          npm run release:pack-cli -- --out out",
+        "          npm run release:pack-cli -- --version 1 --out \"$RUNNER_TEMP/cli\"",
         '          echo "skipping npm publish"',
         "          # npm publish is the next line",
         '          npm publish "$RUNNER_TEMP"/cli/*.tgz --access public',
@@ -107,7 +112,7 @@ describe("this repository", () => {
   });
 
   it("names every Cloud-only workspace package as private and publishes only the packed CLI", () => {
-    expect(Object.keys(GRANDFATHERED_PUBLISH_CLOSURE)).toEqual(["@preplabsai/rovara-code -> @rovara/audit-verifier"]);
+    expect(Object.keys(GRANDFATHERED_PUBLISH_CLOSURE)).toEqual(["@preplabsai/rovara-code -> @rovara/audit-verifier", "@preplabsai/rovara-code -> @agentx/design-tokens"]);
     for (const file of ["packages/ui/package.json", "packages/web/package.json", "packages/audit-verifier/package.json"]) {
       expect((JSON.parse(readFileSync(file, "utf8")) as { private?: boolean }).private, file).toBe(true);
     }
@@ -150,6 +155,23 @@ describe("vendor-pin: vendor/rovara-code equals its pin (W0-1's verifier decides
     const result = checkVendorPin(new Repo().dir);
     expect(result.status).toBe("skipped");
     expect(result.problems).toEqual([]);
+  });
+
+  it("fails, rather than skipping, when the folder is gone but W0-1's verifier is here (deleting the copy must not pass)", () => {
+    const repo = vendored();
+    rmSync(join(repo.dir, VENDOR_DIR), { recursive: true });
+    expect(messages(checkVendorPin(repo.dir))).toEqual([expect.stringContaining("is missing, but the vendor verifier")]);
+    expect(messages(checkVendorClean(repo.dir))).toEqual([expect.stringContaining("is missing, but the vendor verifier")]);
+  });
+
+  it("(B20) stops with an error, not a pass, when the verifier cannot even be started", () => {
+    expect(() => checkVendorPin(vendored().dir, { node: join(tmpdir(), "no-such-node-binary") })).toThrow(/could not run scripts\/vendor\/verify-rovara-code\.ts/);
+  });
+
+  it("(B21) fails when the verifier is killed by a signal before it answers", () => {
+    const repo = vendored();
+    repo.write(VERIFY_SCRIPT, 'process.kill(process.pid, "SIGKILL");\n');
+    expect(messages(checkVendorPin(repo.dir))).toEqual([expect.stringContaining("stopped by SIGKILL before it answered")]);
   });
 
   it("passes when the verifier is satisfied, and runs it from the repository root", () => {
@@ -202,7 +224,8 @@ describe("vendor-clean: Code in the vendored copy holds no Cloud", () => {
     expect(messages(checkVendorClean(repo.dir))).toEqual([expect.stringContaining("Code never imports Cloud")]);
   });
 
-  it("leaves W0-1's generated shims and its vendor/node_modules links alone, and still catches a real Cloud-only import inside the copy", () => {
+  /** A repository with a vendored copy of two packages and the links W0-1 writes (the good ones; tests then break one thing at a time). */
+  function linked(): Repo {
     const repo = new Repo();
     repo.write(`${VENDOR_DIR}/packages/contracts/src/index.ts`, "export const a = 1;\n");
     repo.write(`${VENDOR_DIR}/packages/worker/src/run.ts`, 'import { a } from "@agentx/contracts";\nexport const r = a;\n');
@@ -211,24 +234,93 @@ describe("vendor-clean: Code in the vendored copy holds no Cloud", () => {
     mkdirSync(join(repo.dir, LINKS_DIR, "@agentx"), { recursive: true });
     symlinkSync("../../rovara-code/packages/contracts", join(repo.dir, LINKS_DIR, "@agentx/contracts"));
     symlinkSync("../../rovara-code/packages/worker", join(repo.dir, LINKS_DIR, "@agentx/worker"));
-    mkdirSync(join(repo.dir, "node_modules/playwright-core"), { recursive: true });
-    symlinkSync("../../node_modules/playwright-core", join(repo.dir, LINKS_DIR, "playwright-core"));
+    mkdirSync(join(repo.dir, "node_modules/@e2e-dev/web/node_modules/playwright-core"), { recursive: true });
+    symlinkSync(ALLOWED_THIRD_PARTY_LINKS["playwright-core"]!, join(repo.dir, LINKS_DIR, "playwright-core"));
+    return repo;
+  }
+
+  it("leaves W0-1's generated shims and its vendor/node_modules links alone, and still catches a real Cloud-only import inside the copy", () => {
+    const repo = linked();
     expect(messages(checkVendorClean(repo.dir))).toEqual([]);
     repo.write(`${VENDOR_DIR}/packages/worker/src/run.ts`, 'import { App } from "@agentx/ui";\nexport const r = App;\n');
     expect(messages(checkVendorClean(repo.dir))).toEqual([`${VENDOR_DIR}/packages/worker/src/run.ts:1: Code imports a Cloud-only package (@agentx/ui); Code never imports Cloud`]);
   });
 
-  it("fails a vendor/node_modules link that points at Cloud's own code, at a Cloud-only package inside the copy, or anywhere else outside", () => {
-    const repo = new Repo();
-    repo.write(`${VENDOR_DIR}/packages/ui/package.json`, "{}\n");
-    mkdirSync(join(repo.dir, LINKS_DIR, "@agentx"), { recursive: true });
-    symlinkSync("../../../packages/contracts", join(repo.dir, LINKS_DIR, "@agentx/contracts"));
-    symlinkSync("../../rovara-code/packages/ui", join(repo.dir, LINKS_DIR, "@agentx/ui"));
-    symlinkSync("../../../scripts", join(repo.dir, LINKS_DIR, "elsewhere"));
+  it("(B-M1 escape 1) refuses a link into Cloud's own node_modules/@agentx/*, which is a workspace link to a Cloud package", () => {
+    const repo = linked();
+    mkdirSync(join(repo.dir, "node_modules/@agentx"), { recursive: true });
+    mkdirSync(join(repo.dir, "packages/web"), { recursive: true });
+    symlinkSync("../../packages/web", join(repo.dir, "node_modules/@agentx/web"));
+    symlinkSync("../../../node_modules/@agentx/web", join(repo.dir, LINKS_DIR, "@agentx/evil"));
+    expect(messages(checkVendorClean(repo.dir)).join("\n")).toContain(`${LINKS_DIR}/@agentx/evil: a link that does not resolve to ${VENDOR_DIR}/packages/evil (it resolves to a Cloud-only package)`);
+  });
+
+  it("(B-M1 escape 2) refuses a chained link: a link whose target is a link inside the copy that leads to Cloud's code", () => {
+    const repo = linked();
+    mkdirSync(join(repo.dir, "packages/web"), { recursive: true });
+    symlinkSync("../../../packages/web", join(repo.dir, VENDOR_DIR, "packages/hop"));
+    symlinkSync("../../rovara-code/packages/hop", join(repo.dir, LINKS_DIR, "@agentx/hop"));
     const text = messages(checkVendorClean(repo.dir)).join("\n");
-    expect(text).toContain(`${LINKS_DIR}/@agentx/contracts: a link that points outside ${VENDOR_DIR} and is not an installed npm package (packages/contracts)`);
-    expect(text).toContain(`${LINKS_DIR}/@agentx/ui: a link that points at a Cloud-only package`);
-    expect(text).toContain(`${LINKS_DIR}/elsewhere: a link that points outside`);
+    expect(text).toContain(`${VENDOR_DIR}/packages/hop: a symlink inside the vendored copy`);
+    expect(text).toContain(`${LINKS_DIR}/@agentx/hop: a link that does not resolve to ${VENDOR_DIR}/packages/hop (it resolves to a Cloud-only package)`);
+  });
+
+  it("(B-M1 escape 2b) refuses a vendored package folder that is itself a link, even to a harmless place", () => {
+    const repo = linked();
+    mkdirSync(join(repo.dir, "elsewhere"), { recursive: true });
+    rmSync(join(repo.dir, VENDOR_DIR, "packages/worker"), { recursive: true });
+    symlinkSync("../../../elsewhere", join(repo.dir, VENDOR_DIR, "packages/worker"));
+    const text = messages(checkVendorClean(repo.dir)).join("\n");
+    expect(text).toContain(`${VENDOR_DIR}/packages/worker: a symlink inside the vendored copy`);
+    expect(text).toContain(`${LINKS_DIR}/@agentx/worker: a link that does not resolve to`);
+  });
+
+  it("(B-M1 escape 3) refuses a real folder with code under vendor/node_modules, at the top and inside @agentx", () => {
+    const repo = linked();
+    repo.write(`${LINKS_DIR}/left-pad/index.js`, "module.exports = 1;\n");
+    repo.write(`${LINKS_DIR}/@agentx/injected/index.js`, "module.exports = 1;\n");
+    repo.write(`${LINKS_DIR}/stray.js`, "module.exports = 1;\n");
+    const text = messages(checkVendorClean(repo.dir)).join("\n");
+    expect(text).toContain(`${LINKS_DIR}/left-pad: a real file or folder under vendor/node_modules`);
+    expect(text).toContain(`${LINKS_DIR}/stray.js: a real file or folder under vendor/node_modules`);
+    expect(text).toContain(`${LINKS_DIR}/@agentx/injected: not a link`);
+  });
+
+  it("(B-M1 escape 4) refuses a relative import that leaves the copy and lands in Cloud's code, but not one that stays inside, in a test, or in a string", () => {
+    const repo = linked();
+    repo.write(`${VENDOR_DIR}/packages/worker/src/deep/a.ts`, 'import { x } from "../../../../../packages/web/src/a.js";\nimport { y } from "../../../contracts/src/index.js";\nexport const r = [x, y];\n');
+    repo.write(`${VENDOR_DIR}/packages/worker/tests/b.test.ts`, 'import { x } from "../../../../../packages/web/src/a.js";\n');
+    repo.write(`${VENDOR_DIR}/packages/worker/src/c.ts`, "const t = 'import { x } from \"../../../../../packages/web/src/a.js\"';\n");
+    expect(messages(checkVendorClean(repo.dir))).toEqual([`${VENDOR_DIR}/packages/worker/src/deep/a.ts:1: a relative import that leaves the vendored copy (it would reach Cloud's own code)`]);
+  });
+
+  it("(B-M1 escape 5) refuses the model proxy and the design tokens as Cloud-only, by import and by folder", () => {
+    const repo = linked();
+    repo.write(`${VENDOR_DIR}/packages/worker/src/run.ts`, 'import { p } from "@agentx/model-proxy";\nimport { t } from "@agentx/design-tokens";\nexport const r = [p, t];\n');
+    repo.write(`${VENDOR_DIR}/packages/model-proxy/src/a.ts`, "export {};\n");
+    const text = messages(checkVendorClean(repo.dir)).join("\n");
+    expect(text).toContain("run.ts:1: Code imports a Cloud-only package (@agentx/model-proxy)");
+    expect(text).toContain("run.ts:2: Code imports a Cloud-only package (@agentx/design-tokens)");
+    expect(text).toContain("a Cloud-only package inside the vendored copy of Code");
+  });
+
+  it("refuses a third-party link with other text than W0-1 records, a link not in its list, and a vendored link that resolves into a Cloud-only package", () => {
+    const repo = linked();
+    rmSync(join(repo.dir, LINKS_DIR, "playwright-core"));
+    symlinkSync("../../node_modules/playwright-core", join(repo.dir, LINKS_DIR, "playwright-core"));
+    symlinkSync("../../node_modules/zod", join(repo.dir, LINKS_DIR, "zod"));
+    const text = messages(checkVendorClean(repo.dir)).join("\n");
+    expect(text).toContain(`${LINKS_DIR}/playwright-core: a third-party link whose target is not the one W0-1 records`);
+    expect(text).toContain(`${LINKS_DIR}/zod: a link that is not one W0-1 creates`);
+  });
+
+  it("refuses a third-party link that resolves into a Cloud-only package", () => {
+    const repo = linked();
+    rmSync(join(repo.dir, "node_modules/@e2e-dev/web"), { recursive: true });
+    mkdirSync(join(repo.dir, "packages/ui/node_modules/playwright-core"), { recursive: true });
+    mkdirSync(join(repo.dir, "node_modules/@e2e-dev"), { recursive: true });
+    symlinkSync("../../packages/ui", join(repo.dir, "node_modules/@e2e-dev/web"));
+    expect(messages(checkVendorClean(repo.dir)).join("\n")).toContain(`${LINKS_DIR}/playwright-core: a third-party link that resolves into a Cloud-only package`);
   });
 
   it("fails a Cloud-only package folder and a nested vendor folder inside the copy", () => {
@@ -281,40 +373,110 @@ describe("published-packages: nothing Cloud-only is published", () => {
   });
 
   describe("workflows", () => {
-    const publishJob = (guard: string, run: string): string => `jobs:\n  npm:\n    if: ${guard}\n    steps:\n      - run: |\n${run.split("\n").map((line) => `          ${line}`).join("\n")}\n`;
+    const publishJob = (guard: string, run: string, extra = ""): string =>
+      `jobs:\n  npm:\n    if: ${JSON.stringify(guard)}\n    steps:\n${extra}      - run: |\n${run.split("\n").map((line) => `          ${line}`).join("\n")}\n`;
     const guard = "github.repository == 'PrepLabsAI/Rovara' && (vars.PUBLISH == 'true')";
-    const good = 'npm run release:pack-cli -- --out out\nnpm publish "$RUNNER_TEMP"/cli/*.tgz --access public';
+    const OUT = 'npm run release:pack-cli -- --version 1 --out "$RUNNER_TEMP/cli"';
+    const good = `${OUT}\nnpm publish "$RUNNER_TEMP"/cli/*.tgz --access public`;
+    const problems = (yaml: string, scripts: Record<string, string> = {}): string => workflowPublishProblems("w.yml", yaml, scripts).map((p) => p.message).join("\n");
 
-    it("accepts the packed CLI published from a job that runs only in the public repository", () => {
+    it("accepts the packed CLI published from a job that runs only in the public repository, as the real release workflow does", () => {
       expect(workflowPublishProblems("w.yml", publishJob(guard, good))).toEqual([]);
+      expect(workflowPublishProblems("w.yml", publishJob("github.repository == 'PrepLabsAI/Rovara'", good))).toEqual([]);
+      expect(workflowPublishProblems("w.yml", publishJob("${{ github.repository == 'PrepLabsAI/Rovara' }}", good))).toEqual([]);
+      expect(workflowPublishProblems("w.yml", publishJob(guard, `${OUT}\necho "skipping npm publish"\n# npm publish -w x\nnpm publish "$RUNNER_TEMP"/cli/*.tgz --access public --provenance`))).toEqual([]);
     });
 
     it("is not fooled by an echo or a comment that names a publish, and reads no job that does not publish", () => {
       expect(workflowPublishProblems("w.yml", publishJob("true", 'echo "run npm publish later"\n# npm publish -w packages/ui'))).toEqual([]);
     });
 
+    it("fails a job with no guard, a guard that an OR opens, and a guard that is only a prefix of another test", () => {
+      expect(problems(publishJob("true", good))).toContain("must run only in the public repository");
+      expect(problems(publishJob(`vars.X == 'y' || ${guard}`, good))).toContain("must run only in the public repository");
+      expect(problems(publishJob("github.repository == 'PrepLabsAI/Rovara' || true", good))).toContain("must run only in the public repository");
+      expect(problems(publishJob("github.repository == 'PrepLabsAI/Rovara' ||true", good))).toContain("must run only in the public repository");
+      expect(problems(publishJob("github.repository == 'PrepLabsAI/Rovara-fork'", good))).toContain("must run only in the public repository");
+    });
+
     it.each([
-      ["a job with no public-repository guard", "true", good, "must run only in the public repository"],
-      ["a guard that is only part of an OR", `vars.X == 'y' || ${guard}`, good, "must run only in the public repository"],
-      ["a workspace publish", guard, 'npm run release:pack-cli\nnpm publish -w packages/ui "$T"/a.tgz', "workspace packages"],
-      ["a workspaces publish", guard, "npm run release:pack-cli\nnpm publish --workspaces x.tgz", "workspace packages"],
-      ["a publish of a folder", guard, "npm run release:pack-cli\nnpm publish packages/cli", "must name the tarball"],
-      ["a publish after another command on the line", guard, "npm run release:pack-cli\ncd x && npm publish .", "must name the tarball"],
-      ["a publish with no pack step", guard, 'npm publish "$T"/a.tgz', "without release:pack-cli"],
-      ["a different publisher", guard, "npm run release:pack-cli\nyarn publish", "something other than"],
-      ["changesets", guard, "npm run release:pack-cli\nnpx changeset publish", "something other than"],
-    ])("fails %s", (_name, g, run, expected) => {
-      expect(workflowPublishProblems("w.yml", publishJob(g, run)).map((p) => p.message).join("\n")).toContain(expected);
+      ["npm run of a script that publishes (by name)", `${OUT}\nnpm run publish:all`, { "publish:all": "echo x" }, "other than"],
+      ["npm run of a script that publishes (by body)", `${OUT}\nnpm run ship`, { ship: "npm publish --workspaces" }, "other than"],
+      ["bash -c", `${OUT}\nbash -c "npm publish --workspaces"`, {}, "other than"],
+      ["an env prefix", `${OUT}\nenv NODE_AUTH_TOKEN=x npm publish packages/web`, {}, "other than"],
+      ["an assignment prefix", `${OUT}\nNODE_AUTH_TOKEN=x npm publish "$RUNNER_TEMP"/cli/*.tgz`, {}, "other than"],
+      ["node -e", `${OUT}\nnode -e "require('child_process').execSync('npm publish packages/web')"`, {}, "other than"],
+      ["another publisher", `${OUT}\nyarn publish`, {}, "other than"],
+      ["changesets", `${OUT}\nnpx changeset publish`, {}, "other than"],
+      ["a workspace publish", `${OUT}\nnpm publish -w packages/ui "$RUNNER_TEMP"/cli/a.tgz`, {}, "other than"],
+      ["a workspaces publish", `${OUT}\nnpm publish --workspaces x.tgz`, {}, "other than"],
+      ["a folder", `${OUT}\nnpm publish packages/cli`, {}, "other than"],
+      ["an extra flag", `${OUT}\nnpm publish "$RUNNER_TEMP"/cli/*.tgz --registry https://example.test`, {}, "other than"],
+      ["a publish after another command on the line", `${OUT}\ncd x && npm publish "$RUNNER_TEMP"/cli/a.tgz`, {}, "other than"],
+      ["a Cloud tarball", `${OUT}\nnpm pack ./packages/web && npm publish ./agentx-web-0.1.0.tgz`, {}, "other than"],
+      ["a tarball from somewhere else", `${OUT}\nnpm publish ./agentx-web-0.1.0.tgz --access public`, {}, "not one release:pack-cli wrote"],
+      ["a tarball in a sibling folder", `${OUT}\nnpm publish "$RUNNER_TEMP"/cli2/a.tgz`, {}, "not one release:pack-cli wrote"],
+      ["a pack of a Cloud package next to the real publish", `${OUT}\nnpm pack ./packages/web --pack-destination "$RUNNER_TEMP/cli"\nnpm publish "$RUNNER_TEMP"/cli/*.tgz`, {}, "npm pack in a job that publishes"],
+      ["a publish with no pack step", 'npm publish "$T"/a.tgz', {}, "without release:pack-cli --out"],
+    ])("fails %s", (_name, run, scripts, expected) => {
+      expect(problems(publishJob(guard, run), scripts)).toContain(expected);
+    });
+
+    it("fails a publish action, in the guarded job or in another one, and a reusable workflow job that names one", () => {
+      expect(problems(publishJob(guard, good, "      - uses: JS-DevTools/npm-publish@v3\n"))).toContain("a publish action (JS-DevTools/npm-publish@v3)");
+      expect(problems("jobs:\n  other:\n    steps:\n      - uses: pypa/gh-action-pypi-publish@release/v1\n")).toContain("must run only in the public repository");
+      expect(problems("jobs:\n  other:\n    uses: ./.github/workflows/publish-all.yml\n")).toContain("a publish action (./.github/workflows/publish-all.yml)");
     });
 
     it("fails a workflow it cannot parse", () => {
       expect(workflowPublishProblems("w.yml", "jobs: [")[0]!.message).toContain("not valid YAML");
     });
 
-    it("reads every workflow in the repository", () => {
+    it("reads every workflow in the repository, and every composite action", () => {
       const repo = new Repo();
-      repo.write(".github/workflows/other.yml", publishJob("true", 'npm run release:pack-cli\nnpm publish "$T"/a.tgz'));
-      expect(messages(checkPublishedPackages(repo.dir)).join("\n")).toContain(".github/workflows/other.yml job npm");
+      repo.write(".github/workflows/other.yml", publishJob("true", `${OUT}\nnpm publish "$T"/a.tgz`));
+      repo.write(".github/actions/ship/action.yml", "runs:\n  using: composite\n  steps:\n    - shell: bash\n      run: npm publish ./packages/web\n");
+      const text = messages(checkPublishedPackages(repo.dir)).join("\n");
+      expect(text).toContain(".github/workflows/other.yml job npm");
+      expect(text).toContain(".github/actions/ship/action.yml: a composite action that publishes or packs");
+    });
+
+    it("reads a composite action by what it runs and uses, and passes one that does neither", () => {
+      expect(compositeActionProblems("a.yml", "runs:\n  steps:\n    - run: npm run build\n")).toEqual([]);
+      expect(compositeActionProblems("a.yml", "runs:\n  steps:\n    - run: npm pack ./packages/web\n")).toHaveLength(1);
+      expect(compositeActionProblems("a.yml", "runs:\n  steps:\n    - uses: x/npm-publish@v1\n")).toHaveLength(1);
+      expect(compositeActionProblems("a.yml", "runs:\n  steps:\n    - run: npm run ship\n", { ship: "npm publish" })).toHaveLength(1);
+      expect(compositeActionProblems("a.yml", "runs: [")[0]!.message).toContain("not valid YAML");
+    });
+  });
+
+  describe("what the published CLI really bundles (its imports, not only its package.json)", () => {
+    it("reads imports: an undeclared import of a Cloud-only package, a relative path into one, and an import through another package", () => {
+      const repo = new Repo();
+      repo.json("packages/cli/package.json", { name: "@agentx/cli", private: true, dependencies: { "@agentx/contracts": "0.1.0", "@rovara/audit-verifier": "0.1.0", "@agentx/design-tokens": "0.1.0" } });
+      repo.write("packages/cli/src/a.ts", 'import { m } from "@agentx/model-proxy";\nexport const a = m;\n');
+      let text = messages(checkPublishedPackages(repo.dir)).join("\n");
+      expect(text).toContain("@preplabsai/rovara-code -> @agentx/model-proxy");
+      rmSync(join(repo.dir, "packages/cli/src/a.ts"));
+      repo.write("packages/cli/src/b.ts", 'import { w } from "../../web/src/app.js";\nexport const b = w;\n');
+      repo.json("packages/web/package.json", { name: "@agentx/web", private: true });
+      text = messages(checkPublishedPackages(repo.dir)).join("\n");
+      expect(text).toContain("@preplabsai/rovara-code -> @agentx/web");
+      rmSync(join(repo.dir, "packages/cli/src/b.ts"));
+      repo.write("packages/contracts/src/c.ts", 'import { u } from "@agentx/ui";\nexport const c = u;\n');
+      text = messages(checkPublishedPackages(repo.dir)).join("\n");
+      expect(text).toContain("@preplabsai/rovara-code -> @agentx/ui");
+    });
+
+    it("does not read tests or text inside strings as imports, and reports what a package imports by name", () => {
+      const repo = new Repo();
+      repo.write("packages/cli/src/a.test.ts", 'import { m } from "@agentx/model-proxy";\n');
+      repo.write("packages/cli/src/tests/b.ts", 'import { m } from "@agentx/model-proxy";\n');
+      repo.write("packages/cli/src/c.ts", "const t = 'import { m } from \"@agentx/model-proxy\"';\nimport { z } from \"zod\";\nimport \"node:fs\";\n");
+      expect(messages(checkPublishedPackages(repo.dir))).toEqual([]);
+      const dirToName = new Map([["packages/cli", "@agentx/cli"], ["packages/contracts", "@agentx/contracts"]]);
+      repo.write("packages/cli/src/d.ts", 'import { a } from "../../contracts/src/index.js";\nimport { b } from "./c.js";\n');
+      expect([...importedPackages(repo.dir, "packages/cli", dirToName)].sort()).toEqual(["@agentx/contracts", "zod"]);
     });
   });
 });
@@ -391,10 +553,10 @@ describe("import reading", () => {
     const source = 'import a from "one";\nconst b = await import("two");\nconst c = require("three");\nimport "four";\nconst s = "five";\n';
     expect(specifiers(source)).toEqual(
       expect.arrayContaining([
-        { specifier: "one", line: 1 },
-        { specifier: "two", line: 2 },
-        { specifier: "three", line: 3 },
-        { specifier: "four", line: 4 },
+        { specifier: "one", line: 1, inString: false },
+        { specifier: "two", line: 2, inString: false },
+        { specifier: "three", line: 3, inString: false },
+        { specifier: "four", line: 4, inString: false },
       ]),
     );
     expect(specifiers(source).some((s) => s.specifier === "five")).toBe(false);
