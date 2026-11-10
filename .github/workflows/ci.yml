@@ -118,6 +118,9 @@ jobs:
           node-version-file: .node-version
           cache: npm
       - run: npm ci
+      # vendor/rovara-code is the pinned copy of public Rovara Code (vendor/README.md): its files must be byte for byte the tree of the sha in its PIN, read from the public repository.
+      - name: The pinned copy of Rovara Code matches its sha
+        run: node scripts/vendor/verify-rovara-code.ts --remote
       - run: npm run typecheck
         env:
           # tsc -b needs more than the default ~2 GB heap; per step, so test workers keep the default.

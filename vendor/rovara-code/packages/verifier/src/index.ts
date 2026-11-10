@@ -1,0 +1,86 @@
+/** Protocol-only verifier workspace foundation. Runtime packages are introduced in later tasks. */
+export const VERIFIER_PROTOCOL = "trusted-e2e/v1" as const;
+export { compileE2EScenarios } from "./scenarios.js";
+export type { E2ECompiledSuite, E2EImmutableCompilationContext } from "./scenarios.js";
+export { compileE2EApplicationScenarios, e2eCompiledRuntime, validateE2ECompiledApplicationAdmission, createE2EApplicationPortableChildBindings,
+  encodeE2EApplicationExecutionAdmission, decodeE2EApplicationExecutionAdmission, validateE2EApplicationExecutionAdmission,
+  e2eApplicationGroupAgentSteps, e2eApplicationGroupUsesModel } from "./application-scenarios.js";
+export type { E2EApplicationCompilationContext, E2ECompiledApplicationSuite, ValidatedE2EApplicationAdmission } from "./application-scenarios.js";
+export { createE2EApplicationSelectionPacket, compareE2EApplicationPublicList } from "./application-identity.js";
+export { buildE2EApplication } from "./application-build.js";
+export { encodeE2EApplicationBuildSourceArchive, materializeE2EApplicationBuildSource, validateE2EApplicationBuildSourceManifest } from "./application-build-source.js";
+export { runIsolatedE2E } from "./runtime.js";
+// Proof and evidence B4: the trace scrub (node:zlib only), so the broker can re-scrub a worker's trace before it keeps one.
+export { scrubTrace, scrubTraceZip, scrubTraceLines } from "./executor/trace-scrub.js";
+export type { ScrubStats, ScrubOptions } from "./executor/trace-scrub.js";
+// Proof and evidence (wire-proof): the synthetic data guard, so the broker can scan the evidence it is about to store or post.
+export { scanText, DataGuardInputTooLarge, DATA_GUARD_MAX_BYTES } from "./data-guard.js";
+export type { DataGuardFindingKind } from "./data-guard.js";
+export type { E2EIndependentAssertionReceipt } from "./runtime-assertions.js";
+export { evaluateE2EAssertions } from "./runtime-assertions.js";
+export { E2E_RUNTIME_ASSET_VERSION, createE2ERuntimeAssets, createE2ERuntimeLaunchId, parseE2EFirstPartyCapture } from "./runtime-assets.js";
+export type { E2ERuntimeAssets, E2EFirstPartyCapture, E2EFirstPartyCaptureResult } from "./runtime-assets.js";
+export { createE2EWorkerSession } from "./runtime-session.js";
+export type { E2EWorkerSession, E2EWorkerSessionReadback } from "./runtime-session.js";
+export { createE2EAppAdapterPacket } from "./runtime-adapter.js";
+export type { E2EAppAdapterPacket } from "./runtime-adapter.js";
+export { runE2EActualCli } from "./runtime-cli.js";
+export type { E2EActualCliRun } from "./runtime-cli.js";
+export { E2E_APPLICATION_RUNTIME_ASSET_VERSION, createE2EApplicationRuntimeAssets } from "./application-runtime-assets.js";
+export type { E2EApplicationRuntimeAssets } from "./application-runtime-assets.js";
+export { registerE2EApplicationCliHost, installE2EApplicationCliBridge, prepareE2EApplicationCliConfig,
+  readE2EApplicationCliSupervisorReadback } from "./application-runtime-bootstrap.js";
+export type { E2EApplicationCliHost, E2EApplicationCliLaunchContext } from "./application-runtime-bootstrap.js";
+export { runE2EApplicationActualCli } from "./application-runtime-cli.js";
+export { createInstalledE2EApplicationSupervisorReadbackClient } from "./application-runtime-cli.js";
+export type { E2EActualApplicationCliInput, E2EApplicationSupervisorReadbackExpected, E2EApplicationSupervisorReadbackClient } from "./application-runtime-cli.js";
+export { E2EApplicationReportSchema, E2E_APPLICATION_REPORT_MAX_BYTES, parseE2EApplicationReport } from "./application-report-schema.js";
+export type { E2EApplicationReport, ParsedE2EApplicationReport } from "./application-report-schema.js";
+export { E2EApplicationProducerSchema, E2EApplicationProofBytesSchema, E2EApplicationSupervisorReadbackSchema,
+  E2EApplicationOwnedSubjectSchema, E2EApplicationCaseCaptureSchema, readE2EApplicationSupervisorProof,
+  E2EApplicationCollectionSchema, E2EApplicationCollectionOracleSchema, E2EApplicationGroupResultEnvelopeSchema,
+  e2eApplicationPrivateTransferMaxBytes, e2eApplicationAggregateRunUsage, createE2EApplicationCollectionOracleFromCompiledSuite,
+  qualifyE2EApplicationCollection, mapE2EApplicationGroupResult, UNMOCKED_EXTERNAL_CALL_REASON, e2eApplicationHostedMockOrigins, e2eApplicationSchemaReason, e2eApplicationErrorReason } from "./application-result-adapter.js";
+export type { E2EApplicationProducer, E2EApplicationProofBytes, E2EApplicationSupervisorReadback, E2EApplicationOwnedSubject, E2EApplicationCaseCapture,
+  E2EApplicationMockConsumption, E2EApplicationCollection, E2EApplicationCollectionOracle, E2EApplicationGroupResultEnvelope, E2EApplicationMockSummary,
+  E2EApplicationQualification, E2EApplicationCaseFacts, E2EApplicationUnmockedCall } from "./application-result-adapter.js";
+export { collectE2EApplicationRun } from "./application-collection.js";
+export { E2E_AGENT_CONFIG_MAX_INPUT_TOKENS, E2E_REPLAY_EXECUTOR_NAME, E2E_REPLAY_EXECUTOR_VERSION } from "./application-templates.js";
+export { E2E_AGENT_TRACE_BASE64_MAX, evaluateE2EAgentCase, E2EAgentModelEvidenceSchema, E2E_AGENT_UNKNOWN_CODES, E2E_FAILURE_CLASS_AGENT_CODE, E2E_AGENT_LEDGER_MAX_BYTES, E2E_AGENT_MODEL_EVIDENCE_SCHEMA_VERSION } from "./application-agent-result.js";
+export { agentInstructionDigest, mapAgentTraceToStep, reviewAgentTraceFile, selectAgentTraceUploads, verifiedAgentCaseLedger } from "./application-agent-traces.js";
+export type { E2EAgentTraceCase, E2EAgentTraceReview, E2EAgentTraceUpload } from "./application-agent-traces.js";
+export type { E2EAgentModelEvidence, E2EAgentUnknownCode, E2EAgentCaseVerdict, E2EAgentCaseInput, E2EAgentCaseResult, E2EAgentTranscriptDigest } from "./application-agent-result.js";
+export type { E2EActualApplicationRun, E2EActualApplicationShard } from "./application-collection.js";
+export { runIsolatedE2EApplication } from "./application-runtime.js";
+export type { E2EApplicationRuntimePorts, E2EIsolatedApplicationRun } from "./application-runtime.js";
+export { CONTAINED_IMAGE, CONTAINED_RUNTIME_PROFILE, CONTAINED_SOCKET, containedRuntimeProfileForHost, inspectContainedRuntimeReadiness, inspectContainedRuntimeReadinessForHost } from "./contained-candidate.js";
+export type { ContainedRuntimeProfile } from "./container-envelope.js";
+export type { ContainedRuntimeReadiness } from "./contained-runtime-readiness.js";
+export { observeInstalledRuntimeManifestForHost } from "./installed-runtime-manifest.js";
+export type { InstalledRuntimeManifest } from "./installed-runtime-manifest.js";
+export { collectE2EActualCliRun, e2eSnapshotSourceDigest } from "./runtime-collection.js";
+export type { E2EActualCollectionResult } from "./runtime-collection.js";
+export { qualifyInstalledP0Runtime, qualifyInstalledWebApiRuntime, WebApiQualificationRejected, type WebApiQualificationEnvironment } from "./install-qualification.js";
+export { ROVARA_HTTP_ENGINE_DESCRIPTOR } from "./rovara-http-engine-descriptor.js";
+export { verifyE2ECompiledFileInventory, expectedE2EConfigDigest } from "./identity.js";
+export { E2EReportSchema, type E2EReport } from "./report-schema.js";
+export { E2E_REPORT_MAX_BYTES, E2E_APP_RPC_FRAME_MAX_BYTES, E2E_APP_LITERAL_MAX_BYTES, E2E_APP_LITERAL_MAX_DEPTH, E2E_COLLECTION_ORACLE_MAX_CARRIER_BYTES, e2ePrivateTransferMaxBytes, E2E_MODULE_EXPORT_INVENTORY_PROTOCOL, E2E_MODULE_EXPORT_PROJECTION_VERSION, parseE2EReport, qualifyE2EReport, createE2ECollectionOracleFromCompiledSuite, qualifyE2ECollection, projectE2EModuleExportNames, type E2EReportMapping, type E2EReportExpectation, type ParsedE2EReport, type E2ECollectionOracle, type E2ECollection, type E2EObservedReceipt, type E2ECaseObservation, type E2EStructuralQualification } from "./result-adapter.js";
+export { E2E_EXECUTOR_HOST_PROFILE_ID, E2E_EXECUTOR_HOST_ENTRY_POINT_ID, E2E_EXECUTOR_HOST_MODULE_PATH, E2E_EXECUTOR_HOST_ENTRY_SOURCE, E2E_EXECUTOR_HOST_DESCRIPTOR, verifyExecutorHostRegistration } from "./executor/host-registry.js";
+export { E2E_WEB_ENGINE_CAPABILITIES, E2E_EXECUTOR_LAUNCH_FACTORY_ID, webApiApplicationLaunchTarget, webEngineCapabilities } from "./web-api-launch-target.js";
+export type { E2EWebRuntimePorts } from "./web-runtime.js";
+export { createAPIApplicationCliHost } from "./api-runtime.js";
+export { installedE2EApplicationStateProbeAsset, e2eApplicationStateProbeManifestDigest } from "./application-state-probes.js";
+export type { E2EApiRuntimePorts, E2EApiRuntimeResponse } from "./api-runtime.js";
+export { prepareE2EApplicationEnvironment, sealE2EApplicationEnvironment } from "./application-services.js";
+export type { E2EApplicationPreparationInputs, E2EApplicationEnvironmentPorts } from "./application-services.js";
+export { createDockerApplicationHost, createProcessDockerCli, sweepStaleRovaraRuns, dockerOwnedResourceInventory, dockerOwnedResourceInventoryDigest, dockerOwnedCleanupReceipt,
+  e2eRunNetworks, e2eModelSocketPath, MODEL_SOCKET_PATH_MAX_BYTES, ROVARA_RUN_LABEL, ROVARA_CREATED_LABEL, STALE_RUN_SWEEP_AGE_MS, DEFAULT_DEADLINE_GRACE_MS, WEB_API_BUILD_IMAGE } from "./host/docker-application-host.js";
+export { E2EModelChannelClosedSchema, agentTraceGroupOf, buildE2EAgentModelEvidence, type E2EModelChannelClosed } from "./host/agent-model-evidence.js";
+export type { DockerCli, DockerApplicationHost, DockerApplicationHostDeps, DockerApplicationModelChannel, DockerApplicationUnavailableReason, DockerBuildResult } from "./host/docker-application-host.js";
+export { executorContainerArgs } from "./host/executor-container.js";
+export { installedExecutorSeccompProfilePath, verifyExecutorSeccompProfile } from "./host/executor-seccomp.js";
+export { deriveWebApiProbeObservation, verifyWebApiProbeRecord, type WebApiProbeDerivation } from "./web-api-probe-evidence.js";
+export { DRIVING_TEST_LIMITS, DRIVING_TEST_SCENARIO_ID, webApiDrivingTestPlan } from "./host/web-api-probe-plan.js";
+export { createDrivingNavigator, lastFailureOf, reasonCodeOf, runModelDrivingTest } from "./host/model-driving-test.js";
+export type { DrivingChannelRequest, DrivingNavigatorDependencies, DrivingShape, DrivingTestDependencies, DrivingTestOutcome, NavigationOutcome } from "./host/model-driving-test.js";
+export type { WebApiProbeModelChannelFactory, WebApiProbeModelChannelRequest } from "./host/web-api-probe-runner.js";

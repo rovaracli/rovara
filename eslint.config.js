@@ -34,6 +34,9 @@ export default tseslint.config(
       "tests/fixtures/e2e-midstep-carriers/**",
       "tests/fixtures/e2e-inferred-web-app/**",
       "tests/fixtures/orders-web-m13/**",
+      // The pinned copy of public Rovara Code and its generated shims (vendor/README.md): not Cloud's code, checked by scripts/vendor/verify-rovara-code.ts instead.
+      "vendor/rovara-code/**",
+      "vendor/rovara-code-shims/**",
       "eslint.config.js",
       ...alreadyLinted,
     ],

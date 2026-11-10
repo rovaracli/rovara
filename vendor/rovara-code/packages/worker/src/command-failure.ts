@@ -1,0 +1,91 @@
+import { DEVELOPER_FAILURE_MESSAGE_MAX, redactSecrets, redactText, type ProjectCommand } from "@agentx/contracts";
+import type { CommandResult } from "./readiness.js";
+import { MAX_COMMAND_OUTPUT_BYTES, redactedTail, withoutSplitPair } from "./collected-process.js";
+
+/** #154: how much of the command, and of its error output, a failure message shows. */
+export const COMMAND_SHOWN_MAX = 120;
+const CWD_SHOWN_MAX = 80;
+const TAIL_LINES = 20;
+const TAIL_HEADING = "\nLast lines:\n";
+const FIRST_ERROR_HEADING = "\nFirst error line: ";
+const FIRST_ERROR_MAX = 200;
+/** What an error line looks like in the output of installers, shells and test runners (npm ERR!, "vitest: not found", "Cannot find module"). */
+const ERROR_LINE = /\bnot found\b|\bcannot find\b|\bno such file\b|\berr!|(?<!\b0 )\berrors?\b|\bE(?:NOENT|ACCES|404|TIMEDOUT|RESOLVE)\b|\bTraceback\b|\bfatal:/iu;
+
+export type CommandStage = "setup step" | "readiness check";
+
+/**
+ * Says which setup step or readiness check failed, and why (#154): its command (redacted and
+ * capped), its directory, whether it timed out, was killed or exited, and the last lines of its
+ * output (#225: its printed output's too, before its error output's). Everything shown is redacted first and cut afterward, so a secret that straddles a
+ * cut cannot leave a fragment that no longer matches its pattern. The message fits the developer
+ * task view's failure message (DEVELOPER_FAILURE_MESSAGE_MAX), so that cap never cuts the tail.
+ */
+export function describeCommandFailure(
+  stage: CommandStage,
+  index: number,
+  command: ProjectCommand,
+  result: CommandResult,
+  suffix = "",
+): string {
+  const how = result.timedOut === true
+    ? `timed out after ${command.timeoutSeconds} s`
+    : result.signal !== undefined
+      ? `was killed by ${result.signal}`
+      : result.exitCode >= 0
+        ? `exited ${result.exitCode}`
+        : "could not run";
+  const head = `${stage} ${index} (${shownCommand(command)} in ${cut(redactText(command.cwd), CWD_SHOWN_MAX)}) ${how}${suffix}`;
+  const stdout = redactText(result.stdout);
+  const stderr = redactText(result.stderr);
+  const room = DEVELOPER_FAILURE_MESSAGE_MAX - head.length - TAIL_HEADING.length;
+  let tail = lastLines(stdout, stderr, room);
+  if (tail === "") return head;
+  // The first error line, when the last lines cut it off: "vitest: not found" says more than an installer's final chatter (Bug F).
+  const first = firstErrorLine(stdout, stderr);
+  if (first === undefined || tail.split("\n").includes(first)) return `${head}${TAIL_HEADING}${tail}`;
+  const shown = `${FIRST_ERROR_HEADING}${cut(first, FIRST_ERROR_MAX)}`;
+  tail = lastLines(stdout, stderr, room - shown.length);
+  return tail === "" ? head : `${head}${shown}${TAIL_HEADING}${tail}`;
+}
+
+/** The executable and its arguments, redacted as an argv array (so `--token x` hides x) and as text. */
+function shownCommand(command: ProjectCommand): string {
+  const argv = redactSecrets([command.executable, ...command.args]) as unknown[];
+  return cut(redactText(argv.map(String).join(" ").replace(/\s+/g, " ").trim()), COMMAND_SHOWN_MAX);
+}
+
+function cut(text: string, limit: number): string {
+  if (text.length <= limit) return text;
+  return `${withoutSplitPair(text.slice(0, limit - 3), "end")}...`;
+}
+
+const nonBlankLines = (text: string): string[] => text.split(/\r?\n/).map((line) => line.trimEnd()).filter((line) => line !== "");
+
+/** The first line that looks like an error, from the error output, else from the printed output; whole, redacted, unbounded. */
+function firstErrorLine(stdout: string, stderr: string): string | undefined {
+  return nonBlankLines(stderr).find((line) => ERROR_LINE.test(line)) ?? nonBlankLines(stdout).find((line) => ERROR_LINE.test(line));
+}
+
+/**
+ * The last TAIL_LINES non-blank lines of the error output, preceded by as many of the printed
+ * output's last lines as still fit in TAIL_LINES (#225: a step such as `echo npm ci failed; exit 1`
+ * says why only on stdout), then at most `limit` characters from their end.
+ */
+function lastLines(stdout: string, stderr: string, limit: number): string {
+  if (limit <= 0) return "";
+  const errors = nonBlankLines(stderr).slice(-TAIL_LINES);
+  const room = TAIL_LINES - errors.length;
+  const printed = room === 0 ? [] : nonBlankLines(stdout).slice(-room);
+  const joined = [...printed, ...errors].join("\n");
+  if (joined.length <= limit) return joined;
+  return withoutSplitPair(joined.slice(joined.length - limit), "start");
+}
+
+/**
+ * A command's output as the worker stores it (#170): redacted first, then cut to at most its last
+ * `limit` bytes (so also characters), from a whole line, so a secret straddling the cut leaves no fragment behind.
+ */
+export function storedCommandOutput(text: string, limit = MAX_COMMAND_OUTPUT_BYTES): string {
+  return redactedTail(text, limit);
+}

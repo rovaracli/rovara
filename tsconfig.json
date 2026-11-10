@@ -2,6 +2,27 @@
   "files": [],
   "references": [
     {
+      "path": "vendor/rovara-code/packages/contracts"
+    },
+    {
+      "path": "vendor/rovara-code/packages/gateway"
+    },
+    {
+      "path": "vendor/rovara-code/packages/local-adapters"
+    },
+    {
+      "path": "vendor/rovara-code/packages/model-runtime"
+    },
+    {
+      "path": "vendor/rovara-code/packages/verifier"
+    },
+    {
+      "path": "vendor/rovara-code/packages/broker"
+    },
+    {
+      "path": "vendor/rovara-code/packages/worker"
+    },
+    {
       "path": "packages/audit-verifier"
     },
     {
