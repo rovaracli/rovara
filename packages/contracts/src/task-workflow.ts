@@ -64,7 +64,7 @@ export const WORKFLOW_BLOCK_REASONS = {
   fixChangedNothing: "The approved fix didn't change any code, so nothing was pushed.",
   codeChangedAfterChecks: "The code changed after its checks ran. Run the checks again on the latest code.",
   /** The base branch was merged into the pull request's branch: the merged code is a new candidate, so its checks and reviews run again before the task waits for the merge (a merge is not trusted on its parents alone). */
-  baseMergedRecheck: "The base branch was merged into this pull request, so the merged code needs its checks and reviews again before it is called ready. Choose Retry checks to run them.",
+  baseMergedRecheck: "The base branch was merged into this pull request, so the merged code needs its checks and reviews again before it is called ready. Rovara re-runs them by itself where it may act on its own; otherwise choose Retry checks.",
   /** A rerun of the checks of code a pull request already holds ran on other code than the code the pull request shows. */
   checkedOtherCode: "The checks ran on other code than the code on the pull request. Send the task back to coding, or close it.",
   startUnrecorded: "AgentX could not record where this change started. Close the task and start a new one.",

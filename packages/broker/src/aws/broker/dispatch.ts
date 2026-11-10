@@ -658,6 +658,9 @@ async function runAutofixDispatch(dependencies: AwsBrokerDependencies, item: Acc
     const blockedByEnvironment = blockedByEnvironmentHook({ documentClient: dependencies.documentClient, tableName: dependencies.tableName, now: Date.now, ...(dependencies.audit === undefined ? {} : { audit: dependencies.audit }) });
     const deps: AutofixDependencies = {
       config, route, store: { documentClient: dependencies.documentClient, tableName: dependencies.tableName },
+      // Decision 70(c): read again where a merged base's checks would be re-run by themselves (a task with no org, or an unreadable recipe, reads as `suggest`).
+      autonomy: (current) => current.orgId === undefined ? Promise.resolve("suggest" as const)
+        : taskAutonomy(() => readTaskRecipe(dependencies, current.taskId, current.orgId!), (event, fields) => console.log(JSON.stringify({ component: "broker", event, ...fields })), () => companyAutonomyLimit(dependencies, current.orgId!)),
       taskSpendUsd: (current) => autofixTaskSpendUsd(dependencies, current),
       dayBudgetHasRoom: (current) => autofixDayBudgetHasRoom(dependencies, current),
       scenarioResults: async (current) => loadWorkflowE2EScenarioResults(dependencies, current, [], "owner").catch(() => undefined),

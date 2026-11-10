@@ -346,7 +346,10 @@ function isCurrentMessage(journey: JourneyView, task: Item, workflow: WorkflowSn
   return variants.some((variant) => {
     const expected = workflowMessage(variant);
     if (expected === undefined) return false;
-    return merge ? message.text === expected.text && unrevised(message.blocks) === unrevised(expected.blocks) : sameMessage(message, expected);
+    // Automatic fixing adds its own lines to the card of a blocked step (what Rovara already tried, why it asks): the card is the step's message with those lines after it, and the same buttons.
+    const withAutofixLines = ["\n*What Rovara already tried:*", "\n*Why I'm asking you:*"].some((marker) => message.text.startsWith(`${expected.text}${marker}`))
+      && JSON.stringify(buttons(message)).replace(/\\"revision\\":\d+/g, "") === JSON.stringify(buttons(expected)).replace(/\\"revision\\":\d+/g, "");
+    return withAutofixLines || (merge ? message.text === expected.text && unrevised(message.blocks) === unrevised(expected.blocks) : sameMessage(message, expected));
   });
 }
 

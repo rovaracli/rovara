@@ -44,6 +44,8 @@ export const AUTO_FIX_CODES = [
   // DISPATCHEXHAUST: why a block was written outside a finished run (see `AutoFixBlockCause`): the start was tried until its budget ran out and the run was lost (Rovara's side, transient),
   // or the owner stopped the run (a person's choice, never retried).
   "dispatch-exhausted", "run-lost", "owner-stopped",
+  // Decision 70(c): the base branch was merged into the pull request (a new candidate): its checks run again by themselves (one automatic retry per candidate), never a fault of the code.
+  "base-merged",
   // Unclear fault.
   "e2e-evidence-unknown", "check-result-unknown", "check-failed-cause-unknown",
 ] as const;
@@ -59,6 +61,8 @@ export const AUTO_FIX_PERSON_GROUP_CODES = ["runtime-expired", "model-environmen
 /** Why Rovara asks instead of acting. The limit reasons name the limit the ask card tells the person about. */
 export const AUTO_FIX_ASK_REASONS = [
   "needs-a-person", "original-code-also-fails", "unclear-fault", "owner-stopped",
+  // Decision 70(c): Rovara is set to suggest, so it does not re-run the checks on a merged base by itself.
+  "autonomy-suggest",
   "send-back-limit", "retry-limit", "total-limit", "spend-cap", "day-budget", "history-full", "inputs-missing",
 ] as const;
 export type AutoFixAskReason = (typeof AUTO_FIX_ASK_REASONS)[number];
@@ -73,7 +77,7 @@ export type GroupOriginalResult = OriginalCodeResult | "skipped" | "pending" | "
  * DISPATCHEXHAUST: how a block that no finished run wrote came about, recorded on the block's AUTOFIX row in the same write as the block (the block text alone cannot tell a lost run from a failed one).
  * `dispatch-exhausted` and `run-lost` are infrastructure faults (one automatic retry, then an ask, never a send back to coding); `owner-stopped` is the owner's choice (never retried).
  */
-export const AUTO_FIX_BLOCK_CAUSES = ["dispatch-exhausted", "run-lost", "owner-stopped"] as const;
+export const AUTO_FIX_BLOCK_CAUSES = ["dispatch-exhausted", "run-lost", "owner-stopped", "base-merged"] as const;
 export type AutoFixBlockCause = (typeof AUTO_FIX_BLOCK_CAUSES)[number];
 
 /** What the caller knows that the workflow does not store. Every member is optional: what is missing is unknown, and unknown never counts as a pass. */
@@ -248,7 +252,8 @@ function blockSignals(workflow: WorkflowSnapshot, facts: AutoFixFacts): Signal[]
   if (facts.setupFailedInTask === true) signals.push(transient("setup-failed-in-task"));
   if (facts.hostBlocked === true) signals.push(transient("host-blocked"));
   if (facts.buildHostOffline === true) signals.push(transient("build-host-offline"));
-  if ((workflow.pullRequests?.length ?? 0) > 0) signals.push(person("pull-request-open"));
+  // The merge of the base into an open pull request is the one cause whose block is looked at while the pull request is open: its re-run is exactly the pull request's own checks (decision 70(c)).
+  if ((workflow.pullRequests?.length ?? 0) > 0 && facts.blockCause !== "base-merged") signals.push(person("pull-request-open"));
   // A blocked workflow with nothing readable is a person's: nothing is ever read as a pass.
   if (signals.length === 0) signals.push(person("unreadable"));
   return signals;
@@ -268,7 +273,7 @@ export const AUTO_FIX_CODE_CLASS: Readonly<Record<AutoFixCode, AutoFixClass>> = 
   "runtime-expired": "person", "runtime-environment-drifted": "transient", "model-environment-unsafe": "person", "login-failed": "person", "model-route-changed-reapprove": "person", "agent-route-not-approved": "person",
   "model-route-not-tested": "person", "runtime-unusable": "person", "selection-changed": "person", "accounts-changed": "person", "plan-not-approvable": "person", "history-rewritten": "person", "cancelled-by-owner": "person",
   "check-broken": "person", "fails-on-original-code": "person", "review-unusable": "person", "rule-files-unverified": "person", "leftover-processes": "person", "setup-changed-files": "person", "pull-request-open": "person",
-  "unknown-group-code": "person", "unreadable": "person", "dispatch-exhausted": "transient", "run-lost": "transient", "owner-stopped": "person",
+  "unknown-group-code": "person", "unreadable": "person", "dispatch-exhausted": "transient", "run-lost": "transient", "owner-stopped": "person", "base-merged": "transient",
   "e2e-evidence-unknown": "unclear", "check-result-unknown": "unclear", "check-failed-cause-unknown": "unclear",
 };
 

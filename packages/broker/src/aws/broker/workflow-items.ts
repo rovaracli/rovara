@@ -459,6 +459,10 @@ export async function completedBranchSyncItems(
     taskUpdate(recheck),
     // The task now waits for the owner: said in the milestone feed ("needs you"), not only in the thread.
     ...milestone("stuck", WORKFLOW_BLOCK_REASONS.baseMergedRecheck, recheck.revision),
+    // Decision 70(c): the checks re-run by themselves. The AUTOFIX row (cause `base-merged`) commits with the block; the policy reads the autonomy again (`suggest` asks), the spend and the day budget, and
+    // allows one automatic retry per candidate, counted in the automatic action limit, so a base that keeps moving cannot loop sync and recheck. A task that needs E2E is not synced (and its conflict
+    // merge, were it clean, stays the owner's Retry): its recheck has no source export.
+    ...(dependencies.autofix?.enabled === true && recheck.e2e?.required !== true ? autofixBlockRows(dependencies.tableName, recheck, "base-merged", now) : []),
     ...await candidateRekeyItems(dependencies, task, project, workflow, outcome.workflow, now),
     ...(record !== undefined && record.expectedHeadCommit !== outcome.headSha ? [{ Update: {
       TableName: dependencies.tableName,

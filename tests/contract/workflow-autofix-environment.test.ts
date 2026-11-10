@@ -76,6 +76,7 @@ const SOURCES: Record<Exclude<AutoFixCode, "pull-request-open">, () => [Workflow
   "setup-changed-files": () => [blocked("VERIFY", WORKFLOW_BLOCK_REASONS.setupChangedFiles)], "leftover-processes": () => [blocked("VERIFY", WORKFLOW_BLOCK_REASONS.leftoverProcesses)],
   "unknown-group-code": () => [verifyE2e(incomplete("g1: brand-new-code"))], unreadable: () => [blocked("VERIFY", "a block reason nobody has ever seen")],
   "dispatch-exhausted": () => [blocked("VERIFY", "x"), { blockCause: "dispatch-exhausted" }], "run-lost": () => [blocked("VERIFY", "x"), { blockCause: "run-lost" }], "owner-stopped": () => [blocked("VERIFY", "x"), { blockCause: "owner-stopped" }],
+  "base-merged": () => [blocked("VERIFY", "x"), { blockCause: "base-merged" }],
   "e2e-evidence-unknown": () => [verifyE2e(`${WORKFLOW_APPLICATION_EVIDENCE_INCOMPLETE_PREFIX} (evidence floor unmet)`)],
   "check-result-unknown": () => [blocked("VERIFY", undefined, results([{ checkId: "c", status: "UNKNOWN" }]))],
   "check-failed-cause-unknown": () => [blocked("VERIFY", undefined, results([{ checkId: "c", status: "FAILED" }]))],

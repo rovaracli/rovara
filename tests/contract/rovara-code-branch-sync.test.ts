@@ -6,7 +6,7 @@ import {
   BRANCH_SYNC_UNSURE_MESSAGE, SYNC_BACKOFF_MINUTES, SYNC_FAILURES_MAX, branchSyncGiveUpMessage, isBranchSyncGiveUpReason,
   branchConflictAskMessage, isBranchConflictAskReason, retryWorkflowBranchSync,
   BRANCH_SYNCS_PER_DAY_MAX, BRANCH_WORKFLOW_FILES_MESSAGE, CONFLICT_ROUNDS_MAX, WorkflowSnapshotSchema, WorkflowTransitionError, blockWorkflowBranchSync, branchConflictStopMessage, createCandidateManifest,
-  createWorkflowSnapshot, endWorkflowBranchSync, holdWorkflowCandidateOnPullRequests, WORKFLOW_AUTO_PUBLISH_FAILED_MESSAGE, isBranchSyncBlockReason, observeWorkflowPullRequest, recordWorkflowBranchSync, recordWorkflowPullRequestUpdate, recordWorkflowSyncConflict,
+  createWorkflowSnapshot, endWorkflowBranchSync, autoFixDecision, wholeTaskSpendUsd, WORKFLOW_BLOCK_REASONS, WORKFLOW_AGENTX_ACTOR_ID, WORKFLOW_AUTO_ACTION_LIMIT, workflowAutoActionRequestId, holdWorkflowCandidateOnPullRequests, WORKFLOW_AUTO_PUBLISH_FAILED_MESSAGE, isBranchSyncBlockReason, observeWorkflowPullRequest, recordWorkflowBranchSync, recordWorkflowPullRequestUpdate, recordWorkflowSyncConflict,
   recordWorkflowVerification, startWorkflowBranchSync, startWorkflowBranchSyncRun, startWorkflowFix, workflowFollowsOnlyMerge, type WorkflowProgram, type WorkflowSnapshot,
 } from "@agentx/contracts";
 import { mergeTrackingKey } from "../../packages/contracts/src/org-scoped-keys.js";
@@ -616,6 +616,39 @@ describe("whether the candidate is the code the pull requests hold (the refusal 
     // One repository's pull request holds other code (a fix did not reach it): a rerun whose digest differs is not "other code than the pull requests".
     expect(candidateIsOnPullRequest(two("4".repeat(40)))).toBe(false);
     expect(candidateIsOnPullRequest({ ...waiting(), pullRequests: [] })).toBe(false);
+  });
+});
+
+describe("the checks re-run by themselves after a merge of the base (decision 70(c)): the policy", () => {
+  const { verification: _v, reviews: _r, ...base } = waiting();
+  void _v; void _r;
+  const recheck = (decisions: unknown[] = []) => WorkflowSnapshotSchema.parse({ ...base, stage: "VERIFY", state: "BLOCKED", blockReason: WORKFLOW_BLOCK_REASONS.baseMergedRecheck, decisions });
+  const retryFor = (digest: string, n: number) => ({ requestId: workflowAutoActionRequestId(TASK_ID, 100 + n, "AUTO_RETRY"), workflowRevision: 100 + n, decision: "REQUEST_CHANGES", actorId: WORKFLOW_AGENTX_ACTOR_ID,
+    actorRole: "AGENTX", reason: "Rovara retried the checks by itself.", source: "AUTO_RETRY", auto: { stage: "VERIFY", candidateDigest: digest }, at });
+  const budget = (over: Partial<Parameters<typeof autoFixDecision>[2]> = {}): Parameters<typeof autoFixDecision>[2] => ({ enabled: true, spend: { spentUsd: wholeTaskSpendUsd(1), roundEstimateUsd: 3, capUsd: 15 }, dayBudgetHasRoom: true, baselineRequests: 0, ...over });
+  const cause = { blockCause: "base-merged" as const };
+
+  it("retries the checks once for the merged candidate, while a pull request is open (any other block with one open asks a person)", () => {
+    expect(autoFixDecision(recheck(), cause, budget())).toEqual({ action: "RETRY", stage: "VERIFY", codes: ["base-merged"] });
+    const without = autoFixDecision(recheck(), {}, budget());
+    expect(without).toMatchObject({ action: "ASK", reason: "needs-a-person" });
+    expect("codes" in without && without.codes).toContain("pull-request-open");
+  });
+
+  it("asks when the spend is over the cap, cannot be read, or the day budget has no room", () => {
+    expect(autoFixDecision(recheck(), cause, budget({ spend: { spentUsd: wholeTaskSpendUsd(14), roundEstimateUsd: 3, capUsd: 15 } }))).toMatchObject({ action: "ASK", reason: "spend-cap" });
+    expect(autoFixDecision(recheck(), cause, budget({ spend: { spentUsd: wholeTaskSpendUsd(Number.NaN), roundEstimateUsd: 3, capUsd: 15 } }))).toMatchObject({ action: "ASK", reason: "inputs-missing" });
+    expect(autoFixDecision(recheck(), cause, budget({ dayBudgetHasRoom: false }))).toMatchObject({ action: "ASK", reason: "day-budget" });
+  });
+
+  it("allows one automatic retry per candidate, and counts every one in the automatic action limit, so a base that keeps moving cannot loop sync and recheck", () => {
+    const digest = candidate.digest;
+    // The retry was already used for this code: the second asks.
+    expect(autoFixDecision(recheck([retryFor(digest, 0)]), cause, budget())).toMatchObject({ action: "ASK", reason: "retry-limit" });
+    // Another candidate (the base moved again) has its own retry, until the task's automatic actions run out.
+    const others = Array.from({ length: WORKFLOW_AUTO_ACTION_LIMIT - 1 }, (_, n) => retryFor(`${String(n + 1).repeat(64)}`.slice(0, 64), n));
+    expect(autoFixDecision(recheck(others), cause, budget())).toEqual({ action: "RETRY", stage: "VERIFY", codes: ["base-merged"] });
+    expect(autoFixDecision(recheck([...others, retryFor("a".repeat(64), 50)]), cause, budget())).toMatchObject({ action: "ASK", reason: "total-limit" });
   });
 });
 

@@ -354,6 +354,8 @@ export async function createWorkflowE2E(options: {
    * confirms in a browser (`e2e.confirm`), not a People commit; without this the take-over answers "isn't available right now".
    */
   agentSessions?: boolean;
+  /** Decision 70(c): automatic fixing of blocked checks and reviews (the broker's `autofix` setting). Absent: off, as in the deployed broker's harnesses. */
+  autofix?: { enabled: boolean; capUsd: number; roundEstimateUsd: number };
   trackingGithub?: Partial<Pick<GitHubAppCredentialProvider, "getPullRequestStatus" | "getRepositoryPermission" | "getRepositoryStanding" | "markPullRequestReady" | "requestReviewers" | "getJobLogTail">>;
 } = {}) {
   const github = new FakeGitHub(options.github?.realism === undefined ? {} : { realism: options.github.realism });
@@ -401,6 +403,7 @@ export async function createWorkflowE2E(options: {
       ...(options.agentSessions === true ? { agents: {}, decide: {} } : {}),
       ...(options.environmentName === undefined ? {} : { environmentName: options.environmentName }),
       githubPullRequests,
+      ...(options.autofix === undefined ? {} : { autofix: options.autofix }),
       startPlanEvidenceJob: async (event: PlanEvidenceEvent) => { planEvidenceJobs.push(event); },
       githubWebhookSecret,
       ...(options.descriptionUpdateMaxMs === undefined ? {} : { descriptionUpdateMaxMs: options.descriptionUpdateMaxMs }),

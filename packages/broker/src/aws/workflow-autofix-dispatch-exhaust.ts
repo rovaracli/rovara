@@ -45,12 +45,14 @@ const blockedStep = (current: Step): Step => ({ taskId: current.taskId, revision
 export function autofixBlockRows(tableName: string, blocked: Step, cause: AutoFixBlockCause | undefined, now: string): PutItem[] {
   if (blocked.stage !== "VERIFY" && blocked.stage !== "REVIEW") return [];
   // Cloud (Plan 6): a block inside one of Plan 6's fix rounds, or after a pull request exists, is Plan 6's to word; the automatic-fix policy does not look at it (whatever wrote the block).
-  if (blocked.fixSource !== undefined || (blocked.pullRequests?.length ?? 0) > 0) return [];
+  // The one exception is a merge of the base into an open pull request (decision 70(c)): its block is the pull request's own recheck, which the policy retries once per candidate.
+  if (blocked.fixSource !== undefined || ((blocked.pullRequests?.length ?? 0) > 0 && cause !== "base-merged")) return [];
   const row = workflowDispatchItem(tableName, blocked.taskId, blocked.revision, "AUTOFIX", blocked.candidate?.digest ?? "0".repeat(64), now);
   if (cause === undefined) return [row];
   const item = (row as { Put: { Item: Record<string, unknown> } }).Put.Item;
   item.autofixCause = cause;
-  if (cause !== "owner-stopped") {
+  // The two infrastructure causes wait for a lost runner to come back; the owner's stop is never retried; a merged base is rechecked at once (the sync's machine has ended, and a busy one is tried again each minute).
+  if (cause !== "owner-stopped" && cause !== "base-merged") {
     const holdUntil = new Date(Date.parse(now) + DISPATCH_EXHAUST_RETRY_DELAY_MS).toISOString();
     item.autofixNotBefore = holdUntil;
     item.nextAttemptAt = holdUntil;

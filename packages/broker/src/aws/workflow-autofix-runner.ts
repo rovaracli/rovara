@@ -63,6 +63,11 @@ export interface AutofixDependencies {
   baselineSourceReady(task: DeveloperTaskRecord): Promise<boolean>;
   /** Whether the owner stopped the task's latest checks. */
   ownerCancelledChecks(task: DeveloperTaskRecord): Promise<boolean>;
+  /**
+   * Decision 70(c): the task's autonomy now, read again where a merged base's checks would be re-run by themselves (`suggest` asks the owner; `prepare` and above retry). Absent or unreadable reads as `suggest`
+   * (the retry is not started).
+   */
+  autonomy?(task: DeveloperTaskRecord): Promise<"suggest" | "prepare" | "run" | undefined>;
   /** The text at an object key (a plan's stored self-check record), or undefined. */
   readArtifactText(objectKey: string): Promise<string | undefined>;
   /** Setup and test health (SH28, only while `nh` is on): told when Rovara gives up on a task and the faults are the environment's, so the project's count of tasks blocked by the environment goes up. Advisory: a failure is logged and changes nothing. */
@@ -246,6 +251,9 @@ export async function runWorkflowAutofix(deps: AutofixDependencies, task: Develo
   };
   /** A guard in the system move refused although the policy allowed it (the limits or the money read differently): nobody else will look, so the owner is asked. It is not "spend unreadable" (`inputs-missing`): the spend was read. */
   const guardRefused = async (askCodes: readonly AutoFixCode[]): Promise<AutofixOutcome> => ((await blockedHere()) ? ask("needs-a-person", askCodes) : "STALE");
+
+  // Decision 70(c): a merged base's checks are re-run by Rovara itself only where it may act: the autonomy is read again here, and `suggest` (or unreadable) asks the owner instead.
+  if (cause === "base-merged" && (await deps.autonomy?.(task).catch(() => undefined) ?? "suggest") === "suggest") return ask("autonomy-suggest", ["base-merged"]);
 
   // The original-code result decides send back or ask (owner rule). A round that was requested at approval but never started can still run: the first CHECKS dispatch after a retry runs it
   // before the candidate's checks. So when its code is exported, the one automatic Retry checks (counted as this stage's retry) is used, and the next block is decided with the result.
