@@ -28,7 +28,7 @@
 //
 // A TEXT TOO LONG FOR THE FUNCTION (0.5.13 lane fix/0513-embedder-3gb). The embedder runs at 3,008 MB (about 1.7 vCPUs); a text near the model's 2,048-token limit takes about 17 s there under Docker, and the
 // run has 25 s. So (1) a LONG row (`LONG_TEXT_CHARS`) is started only when a whole cold-start wait (`callMs`) is left, so the try is a fair one, and at most one fits in a run; (2) a long row whose call
-// TIMED OUT is counted on the row (`embedTimeouts`), and does NOT count toward the "two failures in a row" stop, so two long rows side by side cannot stop a workspace's backlog; (3) at the second timeout the
+// TIMED OUT (any row, not only a long one) is counted on the row (`embedTimeouts`), and does NOT count toward the "two failures in a row" stop, so two long rows side by side cannot stop a workspace's backlog; (3) at the second timeout the
 // row is marked `embedSkip` = "<spec>:<TOO_LONG_RETRY_EPOCH>" and logged once as `record.embed_too_long`: the job leaves it alone (it stays keyword-searchable, its text expires as always), until the
 // spec changes or the epoch is bumped (raise it when the function gets faster: a bigger account limit, a faster image); deleting `embedSkip` and `embedTimeouts` from a row by hand tries it again;
 // (4) a call cut by the RUN'S end (`timing: deadline`) is nobody's failure and counts for nothing. The text is NOT cut to a shorter prefix to fit: the spec pins the model's token limit, and a vector of a
@@ -298,8 +298,11 @@ export async function reembedRows(deps: ReembedDependencies, orgId: OrgId, budge
         const timing = error instanceof EmbedUnavailableError ? error.timing : undefined;
         // The run's end cut the call: nobody's failure (the loop ends at its next row).
         if (timing === "deadline") continue;
-        // A long text that the function did not finish in its whole wait is that row's problem, not the embedder's: counted on the row, and it does not stop the run.
-        if (long && timing === "timeout") {
+        // A call the function did not finish in its whole wait is counted on the ROW, whatever its length (the cost is tokens, not characters: a 3,000-character CJK, code or log row can hit the
+        // 2,048-token cap too), and it does not stop the run: a timed-out call has used its whole wait, which ends the run anyway, so an embedder that is down (refused, 5xx) is still told apart by
+        // the failures below and nothing is lost. A cold start can make the first timeout unfair to the row; the broker cannot tell a cold container from a warm one (the function's init report
+        // does not reach it), so the second timeout, made on a later run, is what marks the row. Staging check 5 (cold against warm long-text times) says whether that is enough.
+        if (timing === "timeout") {
           await recordLongTimeout(deps, event, numberOr0(item.embedTimeouts), spec);
           continue;
         }
