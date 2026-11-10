@@ -62,10 +62,7 @@
       "reason": "The Bedrock model-provider plug-in assumes a role in the customer's own account to call Bedrock; it is a sanctioned AWS adapter outside the four generic ones, limited to this one client and this one folder."
     }
   ],
-  "awsImportFixturePaths": [
-    "tests/unit/worker-env-detect-",
-    "tests/fixtures/"
-  ],
+  "awsImportFixturePaths": [],
   "knownHistory": [
     {
       "commit": "45eb9a7dd7c279e3a5002ab7d9c8909af3ffddf6",
