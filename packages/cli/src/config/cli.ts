@@ -4,6 +4,7 @@ import { agentXError } from "@agentx/contracts";
 import { BudgetsClient } from "@aws-sdk/client-budgets";
 import { CloudFormationClient } from "@aws-sdk/client-cloudformation";
 import { CloudWatchClient } from "@aws-sdk/client-cloudwatch";
+import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
 import { SecretsManagerClient } from "@aws-sdk/client-secrets-manager";
 import { SNSClient } from "@aws-sdk/client-sns";
 import { STSClient } from "@aws-sdk/client-sts";
@@ -20,6 +21,7 @@ import { formatSuccess } from "../output.js";
 import { awsAlertsApi } from "../setup/alerts.js";
 import { secretSource } from "../signin/cli.js";
 import { runConfigGet, runConfigList, runConfigSet, type ConfigRow, type ConfigServices } from "./commands.js";
+import { dynamoTeamRecordProbe } from "../deploy/team-record-probe.js";
 import { CONFIG_KEYS } from "./keys.js";
 
 export interface ConfigCommandContext {
@@ -64,6 +66,7 @@ export function registerConfigCommands(program: Command, context: ConfigCommandC
       ...(overrides.pollMs === undefined ? {} : { pollMs: overrides.pollMs }),
       ...(adminSession === undefined ? {} : { adminSession }),
       fetch: overrides.fetch ?? context.fetch,
+      teamRecordProbe: overrides.teamRecordProbe ?? dynamoTeamRecordProbe(new DynamoDBClient(aws)),
       ...(change === undefined ? {} : { canAsk: overrides.canAsk ?? change.canAsk }),
     };
   };

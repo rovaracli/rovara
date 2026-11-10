@@ -1,7 +1,8 @@
 // agentx upgrade (FR-042 to FR-044): read the environment's version and engine from SSM, show the
 // target release's notes and every change, deploy in upgrade order (stopping at the first failure,
 // which leaves earlier stacks upgraded and is safe to re-run), then run doctor.
-import { teamRecordRecordedOrUnknown, teamRecordRefusalHint } from "../deploy/team-record-switch.js";
+import { TEAM_RECORD_PARAMETER, readTeamRecordRecord, teamRecordRecordedOrUnknown, teamRecordRefusalHint } from "../deploy/team-record-switch.js";
+import { teamRecordPreflight, type TeamRecordProbe } from "../deploy/team-record-preflight.js";
 import { GetTemplateCommand } from "@aws-sdk/client-cloudformation";
 import { agentXError, environmentStackName, isRovaraOperatorArn } from "@agentx/contracts";
 import { CONFIG_KEYS } from "../config/keys.js";
@@ -71,6 +72,8 @@ export interface UpgradeDependencies {
   now: () => number;
   /** This agentx's own release (RELEASE_VERSION); undefined for a build from source. */
   cliVersion: string | undefined;
+  /** Read-only check for a table left over by a rolled-back Team record build, run before the first build (team-record-preflight.ts). Absent: not checked. */
+  teamRecordProbe?: TeamRecordProbe;
 }
 
 export interface UpgradeResult { env: string; from: string; to: string; parts: DeployPart[]; exported?: string; doctor?: { failed: number; warned: number } }
@@ -326,7 +329,14 @@ async function runVerifiedUpgrade(options: UpgradeOptions, deps: UpgradeDependen
     // Prepared before the dropped keys are named: the cdk engine's synth of the source (issue 152)
     // says which parameters the deploy can send, and so which it drops.
     // The embedder image the stack runs now, for a release that names none (a --source or --worker-image upgrade): kept, not refused. Read live, as the answers are.
-    const runningEmbedder = (await deps.stacks.describe(settings.stacks["control-plane"]))?.parameters.EmbedderImageUri;
+    const runningControlPlane = await deps.stacks.describe(settings.stacks["control-plane"]);
+    const runningEmbedder = runningControlPlane?.parameters.EmbedderImageUri;
+    // The first build of the Team record (recorded as on, not yet in the stack): what an earlier, rolled-back try left behind would fail it (team-record-preflight.ts). Before anything is prepared or changed.
+    if ((await readTeamRecordRecord(deps.store, env))?.enabled === true) {
+      const preflight = await teamRecordPreflight({ env, built: runningControlPlane?.parameters[TEAM_RECORD_PARAMETER] !== undefined, probe: deps.teamRecordProbe });
+      for (const line of preflight.warnings) deps.write(`Warning: ${line}`);
+      if (preflight.refusals.length > 0) throw agentXError("CONFIG_INVALID", `upgrade stopped before anything changed: ${preflight.refusals.join(" ")}`);
+    }
     const prepared = await deps.prepare({
       settings, release, ...(options.source === undefined ? {} : { source: options.source }), ...(options.reservedConcurrency === false ? { reservedConcurrency: false as const } : {}),
       ...(options.images?.embedder === undefined ? {} : { embedderImage: options.images.embedder }),

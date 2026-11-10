@@ -22,6 +22,7 @@ import { CLI_VERSION } from "../version.js";
 import type { DeployPart } from "../deploy/parameters.js";
 import { TEAM_RECORD_PARAMETER, parseTeamRecordOptions, readTeamRecordRecord, writeTeamRecordRecord } from "../deploy/team-record-switch.js";
 import { resolveDeployEdition } from "../deploy/edition.js";
+import { NEW_RESOURCE_RUNBOOK, teamRecordPreflight, type TeamRecordProbe } from "../deploy/team-record-preflight.js";
 import { CONFIG_KEYS, configKey, embedderImageHome, whereText, type ConfigKey, type ModelRole } from "./keys.js";
 import { KEYED_MODEL_PROVIDERS, MODEL_FALLBACK_NONE, eligibleE2EAgentModel, isKeyedModelProvider, type ModelProvider } from "@agentx/contracts";
 
@@ -46,6 +47,8 @@ export interface ConfigServices {
   fetch?: typeof fetch;
   /** False when nobody can answer a prompt (no terminal): a workspace limits change then needs --yes. */
   canAsk?: boolean;
+  /** Read-only check for a table left over by a rolled-back Team record build (team-record-preflight.ts). Absent: not checked. */
+  teamRecordProbe?: TeamRecordProbe;
 }
 
 export interface ConfigRow { key: string; value: string; where: string; description: string }
@@ -328,9 +331,14 @@ async function recordTeamRecord(services: ConfigServices, env: string, settings:
     if (recorded?.options === undefined) throw agentXError("CONFIG_INVALID", `teamRecord.enabled: first confirm the Team record's storage options with agentx --env ${env} config set teamRecord.options default (or name them); nothing changed`);
     if (effective === "enterprise" && recorded.options.enterpriseWorkspaceId === undefined) throw agentXError("CONFIG_INVALID", `teamRecord.enabled: an Enterprise install needs enterpriseWorkspaceId in teamRecord.options; nothing changed`);
     if (effective === "public" && (recorded.options.enterpriseWorkspaceId !== undefined || recorded.options.athenaUsers !== undefined)) throw agentXError("CONFIG_INVALID", `teamRecord.enabled: enterpriseWorkspaceId and athenaUsers are for Enterprise only; change teamRecord.options; nothing changed`);
+    // Before the choice is recorded (and on a retry after a rollback, when it already is): what an earlier try left behind (team-record-preflight.ts).
+    const built = (await services.stacks.describe(environmentStackName(env, "control-plane")))?.parameters[TEAM_RECORD_PARAMETER] !== undefined;
+    const preflight = await teamRecordPreflight({ env, built, probe: services.teamRecordProbe });
+    for (const line of preflight.warnings) services.write(`Warning: ${line}`);
+    if (preflight.refusals.length > 0) throw agentXError("CONFIG_INVALID", `teamRecord.enabled: ${preflight.refusals.join(" ")}`);
     if (recorded.enabled) { services.write(`teamRecord.enabled is already recorded as 1; run agentx --env ${env} upgrade to build it`); return { changed: false }; }
     await writeTeamRecordRecord(services.store, env, { enabled: true, options: recorded.options });
-    services.write(`teamRecord.enabled: recorded as 1. The next agentx --env ${env} upgrade builds the Team record's storage, and every upgrade after it keeps it. The release you upgrade to must carry the embedder image (the Team record cannot search without it); an upgrade to a release that does not is refused before anything changes.`);
+    services.write(`teamRecord.enabled: recorded as 1. The next agentx --env ${env} upgrade builds the Team record's storage, and every upgrade after it keeps it. The release you upgrade to must carry the embedder image (the Team record cannot search without it); an upgrade to a release that does not is refused before anything changes. Also confirm that the account's limits take the resources it creates (the embedder function's memory above all): ${NEW_RESOURCE_RUNBOOK}.`);
     return { changed: true };
   });
 }

@@ -179,6 +179,30 @@ def visible_cpus() -> int:
     return len(getter(0)) if getter is not None else (os.cpu_count() or 1)
 
 
+# Memory (lane fix/0513-embedder-3gb): the function runs at 3,008 MB, the most this account's Lambda allows. The Qwen weights are 2.4 GB of fp32, so how onnxruntime holds them decides
+# whether a 2,048-token text fits. Measured on linux/arm64 with 3,008 MB and 2 threads: with the defaults, onnxruntime PREPACKS every weight matrix into a second layout (about 1.8 GB of private
+# memory) and its arena grows in powers of two; the peak private memory of a 2,048-token text was 2.9 GB, 2% under the limit. With prepacking off, the weights stay memory-mapped
+# straight from the model file (clean pages the kernel can drop and read again, never a reason to be killed) and with the arena growing by what is asked, the peak private memory is
+# about 0.8 GB and the speed is the same as with the defaults. None of this changes a single weight or graph node: the model files, the vectors and the spec are what they were.
+DISABLE_PREPACKING = "session.disable_prepacking"
+ARENA_EXTEND_STRATEGY = "kSameAsRequested"
+# A text this short touches every layer's weights, so a warm-up at init pages the memory-mapped weights in before the first request instead of during it.
+WARM_UP_TEXT = "warm up"
+
+
+def session_options(onnxruntime: Any, threads: int) -> Any:
+    """The session options of both models: threads as given, one op at a time, and the memory settings above."""
+    options = onnxruntime.SessionOptions()
+    options.intra_op_num_threads = max(1, threads)
+    options.inter_op_num_threads = 1
+    options.add_session_config_entry(DISABLE_PREPACKING, "1")
+    return options
+
+
+def cpu_providers() -> list[Any]:
+    return [("CPUExecutionProvider", {"arena_extend_strategy": ARENA_EXTEND_STRATEGY})]
+
+
 def load_from_disk(root: Path, name: str) -> LoadedModel:
     """Opens one baked-in model. Everything is read from the image; there is no download path in this module."""
     try:
@@ -189,11 +213,9 @@ def load_from_disk(root: Path, name: str) -> LoadedModel:
         manifest = json.loads((folder / "manifest.json").read_text(encoding="utf-8"))
         if manifest.get("name") != name:
             raise EmbedError("MODEL_UNAVAILABLE")
-        options = onnxruntime.SessionOptions()
         threads = int(os.environ.get("EMBEDDER_THREADS", "0")) or visible_cpus()
-        options.intra_op_num_threads = max(1, threads)
-        options.inter_op_num_threads = 1
-        session = onnxruntime.InferenceSession(str(folder / "model.onnx"), options, providers=["CPUExecutionProvider"])
+        options = session_options(onnxruntime, threads)
+        session = onnxruntime.InferenceSession(str(folder / "model.onnx"), options, providers=cpu_providers())
         tokenizer = Tokenizer.from_file(str(folder / "tokenizer.json"))
         special: dict[str, int] = {}
         for token in [*manifest["prefix"], *manifest["suffix"]]:
@@ -233,13 +255,19 @@ class Embedder:
         self._models: dict[str, LoadedModel] = {}
 
     def preload(self, names: Sequence[str]) -> None:
-        """Loads models ahead of the first request (the init phase of a cold start). A model that cannot be loaded is left for the first request, which then answers MODEL_UNAVAILABLE."""
+        """Loads models ahead of the first request (the init phase of a cold start) and runs one short text through each, so the memory-mapped weights are read in now. A model that cannot be
+        loaded is left for the first request, which then answers MODEL_UNAVAILABLE; a warm-up that fails is ignored (the model is kept, the first request reports any real fault)."""
         for name in names:
             if name in self._models:
                 continue
             try:
-                self._models[name] = self._loader(self._root, name)
+                loaded = self._loader(self._root, name)
             except Exception:  # not logged: the first request reports it with a fixed code
+                continue
+            self._models[name] = loaded
+            try:
+                embed_texts(loaded, "document", [WARM_UP_TEXT])
+            except Exception:  # not logged either
                 continue
 
     def handle(self, event: Any) -> dict[str, Any]:

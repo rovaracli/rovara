@@ -18,13 +18,15 @@
 // kms:Decrypt on the key; the image pull by CreateFunction was not tested against a customer-managed key (needs a staging run with an image in such a repository).
 import { ArnFormat, CfnParameter, CfnRule, Duration, Fn, RemovalPolicy, type Stack, aws_ec2 as ec2, aws_iam as iam, aws_lambda as lambda, aws_logs as logs } from "aws-cdk-lib";
 import { embedderFunctionName } from "@agentx/contracts";
+import { ASSUMED_LAMBDA_MEMORY_LIMIT_MB } from "./account-limits.js";
 import { defaultProductionAvailabilityZoneIds } from "./production-foundation.js";
 
 /**
- * The most Lambda gives (10 GB, about 5.8 vCPUs): the models run in fp32 (the Qwen weights are 2.4 GB on disk and in memory), and a long text is real compute (the record model reads up
- * to 2,048 tokens). Nothing is billed while idle. Not measured on a real arm64 Lambda yet (see the lane report): the memory is the one knob that buys speed.
+ * 3,008 MB, the most this account's Lambda allows (about 1.7 vCPUs; the 0.5.12 switch-on asked for 10,240 MB and CloudFormation refused the function, see infra/lib/account-limits.ts). It fits
+ * because of how the image loads the models (environments/embedder/app/embedder_core.py): the fp32 weights (2.4 GB for the record model) stay memory-mapped from the model file and are never
+ * copied, so a 2,048-token text needs about 0.8 GB of private memory and the process is not killed even at 2 GB. A long text is real compute at this size (about 17 s for 2,048 tokens under Docker at 1.7 CPUs; a search query, about 50 tokens, takes under a second). Nothing is billed while idle.
  */
-export const EMBEDDER_MEMORY_MB = 10240;
+export const EMBEDDER_MEMORY_MB = ASSUMED_LAMBDA_MEMORY_LIMIT_MB;
 /** A cold start loads the model (seconds); one text of 2,048 tokens takes seconds more; a batch is at most 16 texts. The broker waits for less (EMBEDDER_WAIT_MS), and the function carries on and warms. */
 export const EMBEDDER_TIMEOUT_SECONDS = 180;
 /** Modest on purpose: a burst of ingest cannot take the account's concurrency. The broker retries the rows it could not embed. */

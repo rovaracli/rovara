@@ -2,6 +2,7 @@
 import { readTeamRecordSwitch } from "../deploy/team-record-switch.js";
 import { CloudFormationClient, GetTemplateCommand } from "@aws-sdk/client-cloudformation";
 import { SecretsManagerClient } from "@aws-sdk/client-secrets-manager";
+import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
 import { ECRClient } from "@aws-sdk/client-ecr";
 import { InvokeCommand, LambdaClient } from "@aws-sdk/client-lambda";
 import { DeleteObjectCommand, PutObjectCommand, S3Client } from "@aws-sdk/client-s3";
@@ -11,6 +12,7 @@ import { agentXError, bundleTrustParameter, type ApprovalRecord } from "@agentx/
 import type { Command } from "commander";
 import { cdkDiff } from "../deploy/cdk-engine.js";
 import { resolveDeployEdition } from "../deploy/edition.js";
+import { dynamoTeamRecordProbe } from "../deploy/team-record-probe.js";
 import { prepareDeployment, readlineAsk, realCommandRunner, type DeployCliDependencies } from "../deploy/commands.js";
 import { loadRelease } from "../deploy/release.js";
 import { realDoctorServices } from "../doctor/aws.js";
@@ -193,6 +195,7 @@ export function registerUpgradeCommand(program: Command, context: UpgradeCommand
         doctor: overrides.doctor ?? ((env) => runDoctor({ env, store, services: (settings) => realDoctorServices({ settings, store, fetch: context.fetch, home: context.home, configDir: globals.configDir, stderr: context.stderr }) })),
         write,
         now: overrides.now ?? Date.now,
+        teamRecordProbe: overrides.teamRecordProbe ?? dynamoTeamRecordProbe(new DynamoDBClient(aws)),
         cliVersion: "cliVersion" in overrides ? overrides.cliVersion : RELEASE_VERSION,
       };
       const images = options.workerImage === undefined && options.slackImage === undefined && options.embedderImage === undefined && options.bootStage2Sha256 === undefined ? undefined : {
