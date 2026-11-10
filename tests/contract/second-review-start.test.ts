@@ -671,7 +671,9 @@ describe("H2: the merge waits for the owner's acknowledgement", () => {
 describe("L1: the model that is named is the model that answers (no router fallbacks)", () => {
   it("Rovara's own proxy config writes no router fallbacks, so a failing second-review alias is never answered by another model", () => {
     const config = litellmConfig({ region: "us-east-1", models: [{ id: "us.anthropic.claude-sonnet-4-6" }] });
-    expect(config).not.toMatch(/fallbacks|router_settings/u);
+    expect(config).not.toMatch(/fallbacks/u);
+    // The only router setting is num_retries: 0 (the guard's budget hold is sized for one attempt); no router fallback can be configured.
+    expect(config.slice(config.indexOf("router_settings:"))).toBe("router_settings:\n  num_retries: 0\n");
     expect(config).toContain("model_list:");
   });
   // DEFERRED CHECK (SR-1 L1): the broker cannot read a company source's router config at mint time, so for company sources "no router fallbacks on the alias" is checked by hand at setup (listed in the report).
