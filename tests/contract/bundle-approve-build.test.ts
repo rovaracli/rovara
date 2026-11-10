@@ -275,6 +275,21 @@ describe("agentx bundle approve, Enterprise", () => {
     expect(world.puts.length).toBeGreaterThan(3);
   });
 
+  // Lane fix/0513-embedder-3gb (L6): `bundle approve` finds a table left by a rolled-back Team record build before anything is built, loaded or written.
+  it("runs the before-build check first: a refusal builds, loads and writes nothing, and a pass goes on", async () => {
+    const world = await EnterpriseWorld.create(made);
+    await world.deployAsBuilt();
+    let loaded = 0;
+    await refused(world.approve({ beforeBuild: async () => { throw new Error("the DynamoDB table is left over"); }, beforeApproval: async () => { loaded += 1; } }), /left over/);
+    expect(loaded).toBe(0);
+    expect(world.puts).toEqual([]);
+    expect(world.output).toEqual([]);
+    let checks = 0;
+    await world.approve({ beforeBuild: async () => { checks += 1; } });
+    expect(checks).toBe(1);
+    expect(world.puts.length).toBeGreaterThan(3);
+  });
+
   it("never loads images or writes a thing for a refused build, and refuses an approval whose settings changed while it was built", async () => {
     const world = await EnterpriseWorld.create(made);
     await world.deployAsBuilt();
