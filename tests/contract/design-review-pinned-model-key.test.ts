@@ -6,7 +6,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   DesignReviewBindingSchema, WorkflowSnapshotSchema, canonicalModelName, createWorkflowSnapshot, decideWorkflow, enableDesignReview, submitWorkflowArtifact,
-  DesignReviewWorkerResultSchema, modelFailureCodeOf, type InvocationModelRoute, type WorkflowArtifact, type WorkflowProgram, type WorkflowSnapshot,
+  DesignReviewWorkerResultSchema, MODEL_NOT_ENABLED_CODE, modelFailureCodeOf, type InvocationModelRoute, type WorkflowArtifact, type WorkflowProgram, type WorkflowSnapshot,
 } from "../../packages/contracts/src/index.js";
 import { WORKFLOW_NO_CANDIDATE_DIGEST, workflowDispatchItem } from "../../packages/broker/src/aws/broker-shared.js";
 import { builtinSettingsKey } from "../../packages/contracts/src/org-scoped-keys.js";
@@ -17,6 +17,9 @@ import { lazyModelProxy, modelAccessSource } from "../../packages/worker/src/mod
 import { modelUnusableRound, operationModelProxy, slotRuntimeFor } from "../../packages/worker/src/design-review-sessions.js";
 import { resolveTaskSessionModel } from "../../packages/worker/src/task-model.js";
 import { workerModelRuntime } from "../../packages/worker/src/pi-session.js";
+import { createConfiguredModelRuntime } from "../../packages/model-runtime/src/index.js";
+import { sanitizeModelCallEvent } from "../../packages/worker/src/model-call-monitor.js";
+import { assistantOutcome, failedTurn } from "../../packages/worker/src/session-events.js";
 import { TEST_ORG } from "../support/orgs.js";
 import { seedDesignReviewCompany } from "../support/design-review-company.js";
 
@@ -188,5 +191,34 @@ describe("a design review of a task with a pinned model policy", () => {
       expect(reply.status, `${slot}: ${reply.body}`).toBe(200);
     }
     expect(capability).not.toBe(capabilityOf(w, String(rounds[1]!.id)));
+  });
+  // 0.5.13: the budget-reserve guard answers 403 `model_not_priced` for a model it has no price for (today Haiku 5.5). At 0.5.12 the refusal was Bedrock's and marked the model unusable; the round must move on now too.
+  it("a round whose reviewers' model the guard refused as not priced is tried again on the next usable model, and that round runs", async () => {
+    const learned = new Set<string>();
+    const w = await world({ learned });
+    const { operation, binding } = reviewOperation(w);
+    const first = DesignReviewBindingSchema.parse(operation.designReview).reviewers[0]!.model;
+    // What every reviewer session throws: the proxy's real 403 body for the guard's refusal, through the real proxied runtime and the worker's own reading of the failed call.
+    const body = JSON.stringify({ error: { message: "this model has no price, so the task budget cannot be held", type: "model_not_priced", param: null, code: "403" } });
+    const runtime = await createConfiguredModelRuntime({ provider: "amazon-bedrock", modelId: first.modelId }, { fetch: async () => new Response(body, { status: 403, headers: { "content-type": "application/json" } }), proxy: { baseUrl: PROXY_URL, apiKey: async () => "proxy-key-for-test" } });
+    const message = await runtime.streamSimple(runtime.getModel("amazon-bedrock", first.modelId)!, { messages: [{ role: "user", content: "hello", timestamp: 0 }] }, { maxTokens: 16, maxRetries: 0 }).result();
+    const event = { type: "message_end", message };
+    const refused = failedTurn(assistantOutcome(event), { note: sanitizeModelCallEvent(event)?.modelCall });
+    expect(modelFailureCodeOf(refused)).toBe(MODEL_NOT_ENABLED_CODE);
+    const result = {
+      version: 1, round: binding.round, merge: { status: "skipped", tokensIn: 0, tokensOut: 0, costUsd: 0 }, findings: [], mergeSource: "code", omitted: 0, droppedCitations: [], droppedFindings: [], stageTimedOut: false,
+      reviewers: binding.reviewers.map((entry) => ({ role: entry.role, keySlot: entry.keySlot, status: "no_result", failure: modelFailureCodeOf(refused) === MODEL_NOT_ENABLED_CODE ? "model_not_enabled" : "model_failed", retried: false, tokensIn: 0, tokensOut: 0, costUsd: 0, startedAt: "2026-11-03T12:10:00.000Z", endedAt: "2026-11-03T12:10:01.000Z" })),
+    };
+    const ended = modelUnusableRound(DesignReviewWorkerResultSchema.parse(result));
+    expect(ended).toBeDefined();
+    await w.artifact(w.workspaceId, String(operation.id), "design-review.json", JSON.stringify(result));
+    await w.finish(w.workspaceId, String(operation.id), "FAILED", { error: ended!.message, result: { modelFailureCode: modelFailureCodeOf(ended) } });
+    expect(learned).toEqual(new Set([canonicalModelName(first)]));
+    // The same round again (not "did not run"), on another model.
+    const rounds = w.operations().sort((a, b) => String(a.createdAt).localeCompare(String(b.createdAt)));
+    expect(w.task().workflow.designReview).toMatchObject({ status: "running", rounds: [] });
+    expect(w.task().workflow.designReview?.notRunReason).toBeUndefined();
+    expect(rounds).toHaveLength(2);
+    expect(canonicalModelName(DesignReviewBindingSchema.parse(rounds[1]!.designReview).reviewers[0]!.model)).not.toBe(canonicalModelName(first));
   });
 });
