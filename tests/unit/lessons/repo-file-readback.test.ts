@@ -3,12 +3,13 @@
 // The mutation checks (retire on a parse failure, resurrect a gone id, let formatter churn make edits) are recorded in the lane report.
 import { afterEach, describe, expect, it } from "vitest";
 import { setLearnedLessonsGate } from "../../../packages/broker/src/lessons/policy.js";
-import { parseLessonsFile } from "../../../packages/broker/src/lessons/repo-file-format.js";
+import { bodyHashOf, parseLessonsFile } from "../../../packages/broker/src/lessons/repo-file-format.js";
 import { readBackFile, scopeOfHeading } from "../../../packages/broker/src/lessons/repo-file-readback.js";
 import { lessonDeletionPort } from "../../../packages/broker/src/lessons/deletion.js";
 import { noticesOf } from "../../../packages/broker/src/lessons/repo-file-pr.js";
 import { settings } from "./lesson-helpers.js";
-import { FILE, passSetup, repoLesson } from "./repo-file-helpers.js";
+import { DAY, FILE, passSetup, repoLesson } from "./repo-file-helpers.js";
+import { newRepoFileState } from "../../../packages/broker/src/lessons/repo-file-state.js";
 
 afterEach(() => { setLearnedLessonsGate(undefined); });
 type W = ReturnType<typeof passSetup>;
@@ -529,17 +530,6 @@ describe("review round 1 (rr3b)", () => {
       expect((await w.store.listAllHeads(w.key)).filter((l) => l.provenance.reflectorRun === "repo_file")).toEqual([]);
       expect((await lesson(w, "les_aaaa0002"))!.status).toBe("active");
     });
-    it("the store's tombstone of the text covers a block whose fingerprint Rovara never had (merged by the team)", async () => {
-      const w = await merged();
-      await pass(w);
-      const state = await w.current();
-      expect(await w.state.put(w.key, { ...state, rendered: { ...state.rendered, les_aaaa0001: "merged-by-team" } }, state.revision)).toBeDefined();
-      await erased(w);
-      changeFile(w, (t) => t.replace("<!-- rovara:les_aaaa0001 -->\n", ""));
-      await pass(w);
-      expect(Object.values((await w.current()).refused ?? {})).toEqual(["gone_text"]);
-      expect((await w.store.listAllHeads(w.key)).filter((l) => l.provenance.reflectorRun === "repo_file")).toEqual([]);
-    });
     it("a deliberate re-paste after the block was removed (no id line was ever stripped) is the team's new lesson (decision 76.3)", async () => {
       const w = await merged();
       await erased(w);
@@ -571,7 +561,7 @@ describe("review round 1 (rr3b)", () => {
       const state = await w.current();
       expect(state.readBackHeld).toMatchObject({ missing: 7 });
       expect(state.declined).toEqual([]);
-      expect(noticesOf(state).join(" ")).toContain("7 lessons are missing from the file");
+      expect(noticesOf(state).join(" ")).toContain("7 lessons are missing from the lessons file");
     });
     it("the file restored at the next pass: nothing happened", async () => {
       const w = await eight();
@@ -626,6 +616,181 @@ describe("review round 1 (rr3b)", () => {
       await pass(w);
       expect(w.host.open.map((pr) => pr.body).join("\n")).not.toContain("Proposed removals");
       expect((await w.current()).held).toContain("les_aaaa0001");
+    });
+  });
+});
+
+describe("review round 2 (rr3c)", () => {
+  const goneHash = (text: string): string => bodyHashOf(text);
+  const mark = async (w: W, text = FIRST): Promise<boolean> => (await w.store.goneTextOf(w.key, [goneHash(text)])).size === 1;
+  const port = (w: W) => lessonDeletionPort({ store: w.store, vectors: { get: async () => new Map(), put: async () => undefined, remove: async () => undefined }, audit: w.deps.audit, now: w.clock.now });
+  /** Merges a repository with the lesson les_aaaa0001 written by "mallory" from source E1, and les_aaaa0002. */
+  async function withMallory(): Promise<W> {
+    const w = passSetup();
+    const a = repoLesson("les_aaaa0001");
+    await w.seedLessons({ ...a, provenance: { ...a.provenance, sourceEvents: ["E1"], authors: ["mallory"] } }, repoLesson("les_aaaa0002"));
+    await w.enable();
+    const result = await w.run();
+    w.host.merge(Number((result as { number: string }).number));
+    return w;
+  }
+  const reimported = async (w: W) => (await w.store.listAllHeads(w.key)).filter((l) => l.body === FIRST && l.id !== "les_aaaa0001");
+
+  describe("HIGH: every way a lesson is deleted keeps its erased text from coming back through a stripped id line", () => {
+    const ways: Array<[string, (w: W) => Promise<void>]> = [
+      ["withdrawn (its sources were deleted)", (w) => port(w).withdraw(w.key.workspaceId, w.key.project, "les_aaaa0001", "sources_deleted")],
+      ["person erasure (the head is hard-deleted)", async (w) => { await port(w).erasePerson(w.key.workspaceId, w.key.project, { developerId: "mallory" }, new Set(["E1"])); }],
+      ["withdraw with the cause person_erased (a purge)", (w) => port(w).withdraw(w.key.workspaceId, w.key.project, "les_aaaa0001", "person_erased")],
+    ];
+    it.each(ways)("%s: the id line is stripped; the erased words are not imported, now or ever after (refused, marked)", async (_name, erase) => {
+      const w = await withMallory();
+      await erase(w);
+      changeFile(w, (t) => t.replace("<!-- rovara:les_aaaa0001 -->\n", ""));
+      await pass(w);
+      expect(await reimported(w)).toEqual([]);
+      expect(Object.values((await w.current()).refused ?? {})).toEqual(["gone_text"]);
+      for (let i = 0; i < 3; i += 1) await pass(w);
+      expect(await reimported(w)).toEqual([]);
+      expect(await mark(w)).toBe(true);
+    });
+    it("a formatter that strips EVERY id line at the same time as a person erasure: nothing of the erased text returns, the other lesson is kept", async () => {
+      const w = await withMallory();
+      await port(w).erasePerson(w.key.workspaceId, w.key.project, { developerId: "mallory" }, new Set(["E1"]));
+      changeFile(w, (t) => t.replace(/<!--[^>]*-->\n/gu, ""));
+      await pass(w);
+      expect(await reimported(w)).toEqual([]);
+      expect((await lesson(w, "les_aaaa0002"))!.status).toBe("active");
+    });
+    it("the mark stays while a stripped copy is in the file (Rovara keeps the block's fingerprint for it), the sweep takes the copy out, and after that a re-paste is the team's new lesson", async () => {
+      const w = await withMallory();
+      await pass(w);
+      await port(w).withdraw(w.key.workspaceId, w.key.project, "les_aaaa0001", "sources_deleted");
+      changeFile(w, (t) => t.replace("<!-- rovara:les_aaaa0001 -->\n", ""));
+      await pass(w);
+      await pass(w);
+      expect(Object.keys((await w.current()).rendered)).toContain("les_aaaa0001");
+      expect(await mark(w)).toBe(true);
+      expect(await reimported(w)).toEqual([]);
+      // The erasure sweep removes the copy (it matches the mark, not an id).
+      const swept = await w.sweep();
+      expect(swept.removalOpened).toBe(true);
+      const removal = w.host.open.find((pr) => pr.title.includes("remove"))!;
+      expect(w.host.file(removal.source, FILE)).not.toContain(FIRST);
+      w.host.merge(removal.number);
+      await pass(w);
+      expect(await mark(w)).toBe(false);
+      expect(Object.keys((await w.current()).rendered)).not.toContain("les_aaaa0001");
+      changeFile(w, (t) => `${t.trimEnd()}\n\n- ${FIRST}\n`);
+      await pass(w);
+      expect(await reimported(w)).toHaveLength(1);
+    });
+    it("the mark alone is enough: with Rovara's record of the block and of the refusal both lost, the stripped copy is still refused", async () => {
+      const w = await withMallory();
+      await pass(w);
+      await port(w).withdraw(w.key.workspaceId, w.key.project, "les_aaaa0001", "sources_deleted");
+      changeFile(w, (t) => t.replace("<!-- rovara:les_aaaa0001 -->\n", ""));
+      await pass(w);
+      expect(await mark(w)).toBe(true);
+      const state = await w.current();
+      const { les_aaaa0001: _lost, ...rendered } = state.rendered;
+      void _lost;
+      const { refused: _refused, ...rest } = state;
+      void _refused;
+      expect(await w.state.put(w.key, { ...rest, rendered }, state.revision)).toBeDefined();
+      await pass(w);
+      expect(await reimported(w)).toEqual([]);
+      expect(Object.values((await w.current()).refused ?? {})).toEqual(["gone_text"]);
+    });
+    it("a lesson that was never in a repository file leaves no mark, and the same words written by the team are a new lesson", async () => {
+      const w = await merged();
+      await w.seedLessons(repoLesson("les_zzzz0001", { body: "A lesson that never reached the repository file." }));
+      await port(w).withdraw(w.key.workspaceId, w.key.project, "les_zzzz0001", "sources_deleted");
+      changeFile(w, (t) => `${t.trimEnd()}\n\n- A lesson that never reached the repository file.\n`);
+      await pass(w);
+      expect(await mark(w, "A lesson that never reached the repository file.")).toBe(false);
+      expect((await w.store.listAllHeads(w.key)).filter((l) => l.provenance.reflectorRun === "repo_file" && l.status === "active")).toHaveLength(1);
+    });
+    it("a refusal of erased text is never the one dropped when the record is full", async () => {
+      const w = passSetup();
+      await w.seedLessons();
+      const text = ["# Team lessons", "", "## Whole repository", "", `- ${FIRST}`, ...Array.from({ length: 105 }, (_, i) => `- Ping @user${String(i)} about it.`)].join("\n\n");
+      const hash = bodyHashOf(FIRST);
+      const result = await readBackFile({ store: w.store, audit: w.deps.audit, now: w.clock.now }, {
+        key: w.key, place: "github:repo/1001", repoName: "api", fileText: text, rendered: {}, refused: { [hash]: "gone_text" }, lessons: [], gone: new Set(), names: [],
+      });
+      expect(result.refused[hash]).toBe("gone_text");
+      expect(Object.keys(result.refused).length).toBeLessThanOrEqual(101);
+    });
+  });
+
+  describe("M1: a bulk disappearance is held a week by the clock", () => {
+    async function eight(): Promise<W> {
+      const w = passSetup();
+      await w.seedLessons(...Array.from({ length: 8 }, (_, i) => repoLesson(`les_bbbb000${String(i + 1)}`)));
+      await w.enable();
+      const result = await w.run();
+      w.host.merge(Number((result as { number: string }).number));
+      return w;
+    }
+    const retired = async (w: W) => (await w.store.listAllHeads(w.key)).filter((l) => l.status === "retired").length;
+    it("passes that fail, or run every night, never shorten it: retired only 7 days after the first sighting", async () => {
+      const w = await eight();
+      changeFile(w, (t) => `${t.slice(0, t.indexOf("<!-- rovara:les_bbbb0002 -->"))}\n- A new bullet so the pass has something to write.\n`);
+      w.host.failCalls.add("commitFiles");
+      w.week();
+      for (let day = 0; day < 6; day += 1) {
+        const result = await w.run({ force: true });
+        expect(["problem", "opened", "no_changes"]).toContain(result.status);
+        expect(await retired(w)).toBe(0);
+        expect((await w.current()).readBackHeld).toMatchObject({ missing: 7 });
+        w.clock.advance(DAY);
+      }
+      w.clock.advance(DAY);
+      await w.run({ force: true });
+      expect(await retired(w)).toBe(7);
+      expect((await w.current()).readBackHeld).toBeUndefined();
+    });
+    it("shows the date on the status the whole time", async () => {
+      const w = await eight();
+      changeFile(w, (t) => t.slice(0, t.indexOf("<!-- rovara:les_bbbb0002 -->")));
+      await pass(w);
+      const state = await w.current();
+      const date = new Date(state.readBackHeld!.at + 7 * DAY).toISOString().slice(0, 10);
+      expect(noticesOf(state).join(" ")).toContain(`7 lessons are missing from the lessons file; they will be retired on or after ${date} unless they are restored`);
+    });
+    it("a different set missing starts the week again", async () => {
+      const w = await eight();
+      const whole = w.host.file("main", FILE)!;
+      changeFile(w, (t) => t.slice(0, t.indexOf("<!-- rovara:les_bbbb0002 -->")));
+      await pass(w);
+      const first = (await w.current()).readBackHeld!;
+      w.host.setFile("main", FILE, whole.slice(0, whole.indexOf("<!-- rovara:les_bbbb0003 -->")));
+      await pass(w);
+      expect((await w.current()).readBackHeld).toMatchObject({ missing: 6 });
+      expect((await w.current()).readBackHeld!.at).toBeGreaterThan(first.at);
+      expect(await retired(w)).toBe(0);
+    });
+  });
+
+  describe("lows", () => {
+    it("a lesson that waited for the approver group and expired with no decision keeps the team's block (no removal); a rejection is a decision", async () => {
+      const w = await merged();
+      w.deps.settings = settings({ preset: "standard", mode: "On", approval: { requiredGroup: "security" } });
+      changeFile(w, (t) => t.replace(FIRST, "Reworded and waiting for the group."));
+      await pass(w);
+      const head = (await lesson(w, "les_aaaa0001"))!;
+      expect(head.status).toBe("pending");
+      await w.store.commit(w.key, await w.store.setVersion(w.key), [{ ...head, version: head.version + 1, status: "expired" }], 9);
+      expect(await pass(w)).toMatchObject({ status: "no_changes" });
+      expect((await w.current()).held).toContain("les_aaaa0001");
+      const expired = (await lesson(w, "les_aaaa0001"))!;
+      await w.store.commit(w.key, await w.store.setVersion(w.key), [{ ...expired, version: expired.version + 1, status: "rejected" }], 10);
+      expect(await pass(w)).toMatchObject({ status: "opened", removals: 1 });
+    });
+    it("the refusal notice names every reason", () => {
+      const notice = noticesOf({ ...newRepoFileState("github:repo/1001", "api"), refused: { "0123456789abcdef": "gone_text" } }).join(" ");
+      expect(notice).toContain("repeat the text of an erased lesson");
+      expect(notice).toContain("not allowed");
     });
   });
 });

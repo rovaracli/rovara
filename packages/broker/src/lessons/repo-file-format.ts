@@ -213,6 +213,8 @@ export interface FileChanges {
   add: ReadonlyArray<{ id: string; heading: string; text: string }>;
   /** Put an id line before a bullet the team wrote without one: the FIRST such bullet whose text in comparison form hashes to `textHash` (`textHash(normalizeBlockText(...))`). The bullet's own bytes are not touched. */
   tag?: ReadonlyArray<{ id: string; textHash: string }>;
+  /** Remove every bullet the team wrote without an id line whose text in comparison form hashes to one of these (a stripped copy of an erased lesson). */
+  removeLoose?: readonly string[];
 }
 
 const isBlank = (unit: Unit | undefined): boolean => unit?.kind === "line" && unit.text.trim() === "";
@@ -284,6 +286,16 @@ export function applyFileChanges(existing: string | undefined, changes: FileChan
   for (const replacement of changes.replace) {
     const index = indexOfBlock(replacement.id);
     if (index >= 0) units[index] = { kind: "block", id: replacement.id, lines: blockLines(replacement.id, replacement.text) };
+  }
+  if ((changes.removeLoose ?? []).length > 0) {
+    const wanted = new Set(changes.removeLoose);
+    const items = looseItems({ ...parsed, units }).filter((item) => wanted.has(textHash(normalizeBlockText(item.text))));
+    for (const item of items.sort((a, b) => b.index - a.index)) {
+      // The blank line that separates it goes with it, as for a block.
+      if (isBlank(units[item.index - 1])) units.splice(item.index - 1, item.lines + 1);
+      else if (isBlank(units[item.index + item.lines])) units.splice(item.index, item.lines + 1);
+      else units.splice(item.index, item.lines);
+    }
   }
   // Tagging: an id line goes before the team's own bullet. Done after the removals above (which move units) and from the last item to the first, so the earlier positions stay right.
   if ((changes.tag ?? []).length > 0) {

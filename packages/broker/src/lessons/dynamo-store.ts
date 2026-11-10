@@ -4,7 +4,8 @@
 // Items (sort key):
 //   LESSON#<id>                    the head: the lesson as last written, plus `latest` (the highest version ever written) and `rev` (bumped by every in-place change)
 //   LESSON#<id>#V#<version>        every version, kept for rollback
-//   LESSONSET#GONETEXT#<hash>      the hash of a gone lesson's text (R3: a stripped id line never brings erased words back)
+//   LESSONSET#GONETEXT#<hmac>      a mark on the text of a gone lesson that is still in a repository's lessons file, keyed by an HMAC under the project's own secret (R3: a stripped id line never brings erased words back)
+//   LESSONSET#GONETEXTKEY          that secret (wiped with the project)
 //   LESSON#<id>#GONE               the withdrawn / purged mark (a rollback skips a purged lesson, a commit refuses it)
 //   LESSON#<id>#REF#<hash>         a load manifest that names the lesson (so a purge finds the manifests without scanning)
 //   LESSON#<id>#ONCE#<hash>        an idempotency key whose name holds the lesson id (a purge removes them)
@@ -26,7 +27,7 @@
 //     open intent). A rollback that restores more heads than one transaction holds writes the extra heads first, each conditional and each pending and fenced; the set is then flipped by
 //     the final transaction, which is the same size as any other rollback. A rewrite before the flip only makes a lesson pending, and a retry rewrites the same content.
 //   - Bounded: a set holds at most MAX_SET_MEMBERS lessons and a commit at most MAX_COMMIT_WRITES lessons; beyond that the call throws (fail closed), it never writes part of a commit.
-import { createHash, randomUUID } from "node:crypto";
+import { createHash, createHmac, randomBytes, randomUUID } from "node:crypto";
 import { BatchGetCommand, DeleteCommand, GetCommand, PutCommand, QueryCommand, TransactWriteCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
 import { AgentXError, INDEX_EXPIRY_ATTRIBUTE, agentXError, lessonKey, lessonSetKey, lessonVersionKey, loadManifestKey, type OrgId } from "@agentx/contracts";
 import { NOT_EXISTS, errorName, failedIndexes, isTransactionConflict, type Item, type TransactItem } from "../agents/table-writes.js";
@@ -552,14 +553,32 @@ export class DynamoLessonStore implements LessonStore {
     return new Map(unique.flatMap((id) => { const mode = this.pick(found, this.sub(key, id, "GONE"))?.mode; return mode === "withdrawn" || mode === "purged" ? [[id, mode] as const] : []; }));
   }
 
-  private goneTextKey(key: ScopeKey, hash: string) { return this.k(key, `LESSONSET#GONETEXT#${hash}`); }
+  /** The project's secret for the gone-text marks (`LessonStore.markGoneText`): made on first use, never read by anything else, wiped with the project (`LESSONSET#...`). */
+  private async textSecret(key: ScopeKey, create: boolean): Promise<Buffer | undefined> {
+    const at = this.k(key, "LESSONSET#GONETEXTKEY");
+    const read = async (): Promise<Buffer | undefined> => { const secret = (await this.getItem(at))?.["secret"]; return typeof secret === "string" ? Buffer.from(secret, "base64") : undefined; };
+    const found = await read();
+    if (found !== undefined || !create) return found;
+    await this.put({ ...at, entityType: "LESSON_GONE_TEXT_KEY", secret: randomBytes(32).toString("base64") }, "attribute_not_exists(pk)");
+    const made = await read();
+    if (made === undefined) throw unavailable("the lessons' text marks could not be keyed");
+    return made;
+  }
+  private goneTextKey(key: ScopeKey, secret: Buffer, hash: string) { return this.k(key, `LESSONSET#GONETEXT#${createHmac("sha256", secret).update(hash).digest("hex")}`); }
   async markGoneText(key: ScopeKey, hash: string): Promise<void> {
-    await this.put({ ...this.goneTextKey(key, hash), entityType: "LESSON_GONE_TEXT" });
+    const secret = (await this.textSecret(key, true))!;
+    await this.put({ ...this.goneTextKey(key, secret, hash), entityType: "LESSON_GONE_TEXT" });
   }
   async goneTextOf(key: ScopeKey, hashes: readonly string[]): Promise<Set<string>> {
+    const secret = await this.textSecret(key, false);
+    if (secret === undefined) return new Set();
     const unique = [...new Set(hashes)];
-    const found = await this.batchGet(unique.map((hash) => this.goneTextKey(key, hash)));
-    return new Set(unique.filter((hash) => this.pick(found, this.goneTextKey(key, hash)) !== undefined));
+    const found = await this.batchGet(unique.map((hash) => this.goneTextKey(key, secret, hash)));
+    return new Set(unique.filter((hash) => this.pick(found, this.goneTextKey(key, secret, hash)) !== undefined));
+  }
+  async clearGoneText(key: ScopeKey, hash: string): Promise<void> {
+    const secret = await this.textSecret(key, false);
+    if (secret !== undefined) await this.del(this.goneTextKey(key, secret, hash));
   }
 
   async purge(key: ScopeKey, id: string): Promise<void> {

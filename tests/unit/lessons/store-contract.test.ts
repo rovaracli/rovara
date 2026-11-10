@@ -47,14 +47,23 @@ describe.each(factories)("the lesson store contract (%s)", (_name, make) => {
     expect((await store.versions(KEY, "les_a0000001")).map((v) => v.title)).toEqual(["Retries use withRetry", "Second"]);
     expect((await store.snapshots(KEY)).map((s) => [s.setVersion, s.members.length])).toEqual([[0, 0], [1, 1], [2, 1]]);
   });
-  it("remembers the hash of a gone lesson's text, durably and per project (R3, review H2): a batched read says which hashes are gone, and nothing else", async () => {
-    const { store } = make();
+  it("marks the text of a gone lesson that is still in a repository file (R3, review H2): keyed by an HMAC under the project's own secret, per project, and cleared when the text is out of the file", async () => {
+    const { store, db } = make();
     const other = { ...KEY, project: "other" };
+    expect([...await store.goneTextOf(KEY, ["0123456789abcdef"])]).toEqual([]);
     await store.markGoneText(KEY, "0123456789abcdef");
     await store.markGoneText(KEY, "0123456789abcdef");
     expect([...await store.goneTextOf(KEY, ["0123456789abcdef", "fedcba9876543210"])]).toEqual(["0123456789abcdef"]);
     expect([...await store.goneTextOf(other, ["0123456789abcdef"])]).toEqual([]);
+    await store.markGoneText(other, "0123456789abcdef");
+    expect([...await store.goneTextOf(other, ["0123456789abcdef"])]).toEqual(["0123456789abcdef"]);
+    await store.clearGoneText(KEY, "0123456789abcdef");
+    await store.clearGoneText(KEY, "0123456789abcdef");
+    expect([...await store.goneTextOf(KEY, ["0123456789abcdef"])]).toEqual([]);
+    expect([...await store.goneTextOf(other, ["0123456789abcdef"])]).toEqual(["0123456789abcdef"]);
     expect([...await store.goneTextOf(KEY, [])]).toEqual([]);
+    // The table holds no bare hash: the row's key is an HMAC (the secret is a row of the project's partition, wiped with it).
+    if (db !== undefined) for (const item of db.items.values()) expect(JSON.stringify(item).includes("0123456789abcdef")).toBe(false);
   });
   it("listPage walks the set in id order a page at a time, filtered by status, and says where the next page starts (lessons connect fix 1, L6)", async () => {
     const { store } = make();

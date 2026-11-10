@@ -344,7 +344,7 @@ async function pass(deps: RepoFileDeps, key: ScopeKey, target: RepoFileTarget, l
   let lessons = await deps.store.listAllHeads(key);
   // Which of the markers in the file belong to a lesson that is gone for good: the lesson store's own tombstone, one durable row per lesson. A lookup that cannot be made stops the write (never read as 'not gone').
   let gone: Set<string>;
-  try { gone = new Set((await deps.store.goneOf(key, [...(fileText === undefined ? [] : parseLessonsFile(fileText).blocks.map((block) => block.id)), ...lessons.filter((lesson) => lesson.provenance.repoOnly?.place === target.place).map((lesson) => lesson.id)])).keys()); } catch { throw new Abort("repository_unreadable"); }
+  try { gone = new Set((await deps.store.goneOf(key, [...(fileText === undefined ? [] : parseLessonsFile(fileText).blocks.map((block) => block.id)), ...lessons.filter((lesson) => lesson.provenance.repoOnly?.place === target.place).map((lesson) => lesson.id), ...Object.keys(state.rendered)])).keys()); } catch { throw new Abort("repository_unreadable"); }
   let names: readonly string[];
   try { names = await deps.names(key, lessons); } catch { throw new Abort("names_unreadable"); }
   // 5b. READ-BACK (R3, one way: file -> Rovara), on the file this pass just read, before anything is planned: the team's corrections become the lessons' text, ids the team removed are retired, bullets the team wrote become new
@@ -354,7 +354,7 @@ async function pass(deps: RepoFileDeps, key: ScopeKey, target: RepoFileTarget, l
     try {
       readBack = await readBackFile({ store: deps.store, audit: deps.audit, now: () => deps.now(), ...(deps.newLessonId === undefined ? {} : { newId: deps.newLessonId }) }, {
         key, place: target.place, repoName: target.name, fileText, rendered: state.rendered, refused: state.refused ?? {}, lessons, gone, names, requireGroup,
-        ...(state.readBackHeld === undefined ? {} : { held: { digest: state.readBackHeld.digest } }),
+        ...(state.readBackHeld === undefined ? {} : { held: { digest: state.readBackHeld.digest, at: state.readBackHeld.at } }),
       });
     } catch (error) {
       if (error instanceof ReadBackFailure) throw new Abort(error.problem);
@@ -372,7 +372,7 @@ async function pass(deps: RepoFileDeps, key: ScopeKey, target: RepoFileTarget, l
           ...next,
           ...(done.counts.edited + done.counts.retired + done.counts.imported > 0 ? { readBack: { at: deps.now(), edited: done.counts.edited, retired: done.counts.retired, imported: done.counts.imported } } : {}),
           ...(Object.keys(done.refused).length > 0 ? { refused: done.refused } : {}),
-          ...(done.held === undefined ? {} : { readBackHeld: { missing: done.held.missing, digest: done.held.digest, at: deps.now() } }),
+          ...(done.held === undefined ? {} : { readBackHeld: { missing: done.held.missing, digest: done.held.digest, at: done.held.at } }),
         };
       });
       // The lessons as read-back left them are what the plan works from.
@@ -382,7 +382,9 @@ async function pass(deps: RepoFileDeps, key: ScopeKey, target: RepoFileTarget, l
   const plan = planRepoFile({ place: target.place, repoName: target.name, lessons, names, fileText, rendered: state.rendered, declined: state.declined, gone, addsPaused: additionsPaused({ unmerged }), teamPr, preset, ...(readBack?.held === undefined ? {} : { heldIds: new Set(readBack.held.ids) }) });
   // What the plan learned about the file is recorded whatever comes next.
   const rendered = { ...state.rendered, ...plan.adopted };
-  for (const id of plan.newlyDeclined) delete rendered[id];
+  // The fingerprint of an erased lesson's block is kept while its text is still in the file (read-back needs it to clear the text's mark once the copy is gone); every other declined id is forgotten here.
+  const pinned = new Set(readBack?.pinned ?? []);
+  for (const id of plan.newlyDeclined) if (!pinned.has(id)) delete rendered[id];
   const bounded = Object.fromEntries(Object.entries(rendered).slice(-MAX_RENDERED));
   state = await commit(deps, key, state, { rendered: bounded, declined: boundedAppend(state.declined, plan.newlyDeclined, MAX_DECLINED), held: plan.held.slice(0, MAX_RENDERED) });
 

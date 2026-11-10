@@ -5,7 +5,7 @@
 //   - every lesson version is kept, and every set version records which lesson versions it held, so a rollback restores a past set;
 //   - counters and expiry bookkeeping change in place (`mutate`) without a new version.
 // Every key carries the workspace and the project, so one workspace's call can never read or change another's lessons.
-import { randomUUID } from "node:crypto";
+import { createHmac, randomBytes, randomUUID } from "node:crypto";
 import { applyWriteFence, planRollback, withUsageOf, type FenceView } from "./store-rules.js";
 import { LessonSchema, normId, normSource, type Lesson, type LessonStatus, type VOLATILE_FIELDS } from "./types.js";
 import type { LessonStage } from "@agentx/contracts";
@@ -92,12 +92,16 @@ export interface LessonStore {
    */
   goneOf(key: ScopeKey, ids: readonly string[]): Promise<Map<string, "withdrawn" | "purged">>;
   /**
-   * Lessons in the repo (R3, review H2): remembers the HASH of a gone lesson's text (`bodyHashOf`: a hash, never the text), durably, one row per hash, written by the deletion BEFORE it scrubs anything. Read-back refuses a bullet of
-   * the repository's file with that text when the lesson's id line is stripped (a formatter, a deleted comment): erased words do not come back as a new lesson. Idempotent.
+   * Lessons in the repo (R3, review H2): marks the text of a GONE lesson that is still in a repository's lessons file (`hash` is `bodyHashOf`'s comparison hash of its text). Only the lessons file's read-back writes it, and only for a lesson
+   * that was once merged into a file, so a lesson that never was in a repository leaves nothing. The row is keyed by an HMAC of the hash with a secret of the PROJECT (made on first use, kept in the project's partition), so it
+   * holds no text and no bare hash, and is wiped with the project. Read-back refuses a bullet with a marked text (a formatter or a deleted comment stripped its id line: erased words do not come back as a new lesson) and the
+   * erasure sweep takes it out of the file; once the text is out of the file read-back clears the mark. Idempotent.
    */
   markGoneText(key: ScopeKey, hash: string): Promise<void>;
-  /** Which of these text hashes belong to a gone lesson (`markGoneText`). A batched read; throws when it cannot read (never "not gone" for "could not look"). */
+  /** Which of these text hashes are marked (`markGoneText`). A batched read; throws when it cannot read (never "not marked" for "could not look"). */
   goneTextOf(key: ScopeKey, hashes: readonly string[]): Promise<Set<string>>;
+  /** Removes a mark: the erased text is out of the file, so a person who writes the same words again is the team's new lesson (decision 76.3). Idempotent. */
+  clearGoneText(key: ScopeKey, hash: string): Promise<void>;
   /** Hard delete: the head, every version and every load-manifest reference. The id is remembered as purged so a rollback cannot bring it back. */
   purge(key: ScopeKey, id: string): Promise<void>;
   /** Forgets a source's counters and its pause (erasure of a person, deletion of a channel). */
@@ -141,7 +145,7 @@ interface ProjectState {
   heads: Map<string, Lesson>; versions: Map<string, Lesson[]>; members: Map<string, number>; sets: SetSnapshot[];
   manifests: Map<string, LoadManifest>; once: Set<string>; pending: Map<string, PendingOutcome>; flags: ProjectFlags;
   sourceEvents: Array<{ at: number; source: string }>;
-  gone: Map<string, "withdrawn" | "purged">; goneTexts: Set<string>;
+  gone: Map<string, "withdrawn" | "purged">; goneTexts: Set<string>; textSecret?: Buffer;
   erased: Set<string>; markRefs: Map<string, string>; harms: Map<string, Set<string>>; erasedSources: Set<string>; deletedIds: Set<string>; intents: Map<string, DeletionIntent>;
 }
 
@@ -270,8 +274,14 @@ export class InMemoryLessonStore implements LessonStore {
     s.versions.set(id, (s.versions.get(id) ?? []).map((v) => LessonSchema.parse({ ...fn(clone(v)), version: v.version })));
   }
   async markGone(key: ScopeKey, id: string, mode: "withdrawn" | "purged"): Promise<void> { this.of(key).gone.set(id, mode); }
-  async markGoneText(key: ScopeKey, hash: string): Promise<void> { this.of(key).goneTexts.add(hash); }
-  async goneTextOf(key: ScopeKey, hashes: readonly string[]): Promise<Set<string>> { const known = this.of(key).goneTexts; return new Set(hashes.filter((hash) => known.has(hash))); }
+  private textMark(key: ScopeKey, hash: string, create: boolean): string | undefined {
+    const s = this.of(key);
+    if (s.textSecret === undefined) { if (!create) return undefined; s.textSecret = randomBytes(32); }
+    return createHmac("sha256", s.textSecret).update(hash).digest("hex");
+  }
+  async markGoneText(key: ScopeKey, hash: string): Promise<void> { this.of(key).goneTexts.add(this.textMark(key, hash, true)!); }
+  async goneTextOf(key: ScopeKey, hashes: readonly string[]): Promise<Set<string>> { const known = this.of(key).goneTexts; return new Set(hashes.filter((hash) => { const mark = this.textMark(key, hash, false); return mark !== undefined && known.has(mark); })); }
+  async clearGoneText(key: ScopeKey, hash: string): Promise<void> { const mark = this.textMark(key, hash, false); if (mark !== undefined) this.of(key).goneTexts.delete(mark); }
   async goneOf(key: ScopeKey, ids: readonly string[]): Promise<Map<string, "withdrawn" | "purged">> {
     const gone = this.of(key).gone;
     return new Map(ids.flatMap((id) => { const mode = gone.get(id); return mode === undefined ? [] : [[id, mode] as const]; }));

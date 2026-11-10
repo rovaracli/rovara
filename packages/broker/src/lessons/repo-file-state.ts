@@ -25,6 +25,8 @@ const Branch = z.string().regex(/^rovara\/lessons-[0-9a-f]{12}$/u);
 /** Why a line the team wrote in the file was not taken in as a lesson (or an edit of one): fixed codes. `names_a_person` is the check every lesson text passes before it goes in a repository's file. */
 export const READ_BACK_REFUSALS = ["names_a_person", "capability_request", "empty", "not_allowed", "gone_text"] as const;
 export type ReadBackRefusal = (typeof READ_BACK_REFUSALS)[number];
+/** How long a bulk disappearance from the file is held before the missing lessons are retired (by the clock, from the first time it was seen). */
+export const READ_BACK_HOLD_MS = 7 * 86_400_000;
 /** The most refused lines kept on one repository's record. */
 export const MAX_REFUSED = 100;
 
@@ -130,7 +132,7 @@ export const RepoFileStateSchema = z.object({
   readBack: z.object({ at: z.number(), edited: z.number().int().min(0), retired: z.number().int().min(0), imported: z.number().int().min(0) }).strict().optional(),
   /**
    * Read-back (R3, review M1): lessons Rovara knew in the file that a change took out, more than a few at once, so none was retired yet. `digest` names exactly which ones; if the SAME ones are still missing at the next pass the team
-   * meant it and they are retired then (a week of grace), if the file changed back nothing happens. Count and fingerprint only.
+   * meant it and they are retired then (a week of grace), if the file changed back nothing happens. Count and fingerprint only. `at` is when it was FIRST seen: the hold lasts READ_BACK_HOLD_MS from then, however many passes (or failed passes) come between.
    */
   readBackHeld: z.object({ missing: z.number().int().min(1), digest: z.string().regex(/^[0-9a-f]{16}$/u), at: z.number() }).strict().optional(),
   /** Lines of the file read-back did not take in as lessons, by a fingerprint of the line's text (never the text) and a fixed reason: it keeps the pass from recording the same line every week. Newest last, bounded. */

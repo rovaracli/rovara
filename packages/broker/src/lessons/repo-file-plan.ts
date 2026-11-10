@@ -162,7 +162,9 @@ export function planRepoFile(input: PlanInput): RepoFilePlan {
     const block = blockOf(file!, id)!;
     const lesson = everyLesson.get(id);
     // A lesson that only waits for the company's approver group with the team's own text (read-back, review M3) is the team's block: not an add, not a removal for "not active", left as written until the group decides.
-    if (lesson !== undefined && lesson.status === "pending" && lesson.tierReasons.includes(TEAM_FILE_TEXT) && lesson.provenance.repoOnly?.place === input.place) { held.push(id); continue; }
+    // (A group that never decided in time is not a decision: the lesson expires with no approval ever given, and the team's block stays as written. A group's rejection is one, and a removal is proposed then.)
+    if (lesson !== undefined && lesson.tierReasons.includes(TEAM_FILE_TEXT) && lesson.provenance.repoOnly?.place === input.place
+      && (lesson.status === "pending" || (lesson.status === "expired" && lesson.approvals.length === 0))) { held.push(id); continue; }
     if (input.rendered[id] === undefined && !byId.has(id)) {
       // Not Rovara's to edit or hold: only a privacy reason acts (a lesson of another repository, one that is not repo-only, or one that is gone).
       const reason = privacyReasonOf(lesson, lesson === undefined ? [] : repoFileBlockers(lesson, input.place, input.names));

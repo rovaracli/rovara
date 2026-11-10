@@ -23,7 +23,7 @@ import { TEAM_FILE_TEXT } from "./repo-eligibility.js";
 import {
   WHOLE_REPOSITORY, bodyHashOf, cleanLessonLine, looseItems, normalizeBlockText, parseLessonsFile, textHash, textPartOfFingerprint, type LooseItem,
 } from "./repo-file-format.js";
-import { MAX_REFUSED, type ReadBackRefusal } from "./repo-file-state.js";
+import { MAX_REFUSED, READ_BACK_HOLD_MS, type ReadBackRefusal } from "./repo-file-state.js";
 import { nextVersion, type LessonStore, type ScopeKey } from "./store.js";
 import { classifyTier } from "./tier.js";
 import { namesAPerson } from "./trial.js";
@@ -76,8 +76,8 @@ export interface ReadBackInput {
   names: readonly string[];
   /** The company or the project requires an approver group: a lesson written in the repository waits for that group instead of being active (review M3). */
   requireGroup?: boolean;
-  /** The lessons missing from the file at the last pass, when that many were held (`RepoFileState.readBackHeld`). */
-  held?: { digest: string };
+  /** The lessons missing from the file when that many were first held (`RepoFileState.readBackHeld`): which ones (a digest) and when it was first seen. */
+  held?: { digest: string; at: number };
 }
 
 export interface ReadBackResult {
@@ -89,7 +89,9 @@ export interface ReadBackResult {
   refused: Record<string, ReadBackRefusal>;
   counts: { edited: number; retired: number; imported: number; refused: number };
   /** A bulk disappearance held for a pass (review M1): how many are missing and which ones (a digest). Absent: nothing is held. */
-  held?: { missing: number; digest: string; ids: string[] };
+  /** Erased lessons whose text is still in the file: their fingerprints are kept so the mark on the text can be cleared when the last copy is gone. */
+  pinned: string[];
+  held?: { missing: number; digest: string; ids: string[]; /** First seen: the hold lasts READ_BACK_HOLD_MS from here. */ at: number };
 }
 
 const hashOfBody = bodyHashOf;
@@ -228,7 +230,7 @@ async function importLesson(deps: ReadBackDeps, input: ReadBackInput, item: Loos
  * pass completes the rest without doing anything twice).
  */
 export async function readBackFile(deps: ReadBackDeps, input: ReadBackInput): Promise<ReadBackResult> {
-  const nothing: ReadBackResult = { unreadable: false, rendered: {}, refused: { ...input.refused }, counts: { edited: 0, retired: 0, imported: 0, refused: 0 } };
+  const nothing: ReadBackResult = { unreadable: false, rendered: {}, refused: { ...input.refused }, counts: { edited: 0, retired: 0, imported: 0, refused: 0 }, pinned: [] };
   if (isMalformed(input.fileText)) return { ...nothing, unreadable: true };
   const { key } = input;
   const file = parseLessonsFile(input.fileText);
@@ -281,9 +283,12 @@ export async function readBackFile(deps: ReadBackDeps, input: ReadBackInput): Pr
   }).sort();
   let retire = true;
   if (missing.length > bulkLimit(expected.length)) {
-    // One bad merge or a truncated file must not retire most of the lessons at once: hold them for this pass. The same ones still missing at the next pass were removed on purpose (the file did not change back).
+    // One bad merge or a truncated file must not retire most of the lessons at once: they are held for at least a week BY THE CLOCK, from the first time this same set was seen (a pass that fails or runs again changes nothing). The
+    // same ones still missing after that were removed on purpose; a file that changed back, or another set missing, starts over.
     const digest = createHash("sha256").update(missing.join("\n")).digest("hex").slice(0, 16);
-    if (input.held?.digest !== digest) { retire = false; result.held = { missing: missing.length, digest, ids: missing }; }
+    const same = input.held?.digest === digest;
+    const since = same ? input.held!.at : deps.now();
+    if (!same || deps.now() - since < READ_BACK_HOLD_MS) { retire = false; result.held = { missing: missing.length, digest, ids: missing, at: since }; }
   }
   if (retire) {
     for (const id of missing) {
@@ -301,9 +306,18 @@ export async function readBackFile(deps: ReadBackDeps, input: ReadBackInput): Pr
   // line was refused for it before (kept while the line stays), or when the store's tombstone knows the text and the block's fingerprint is not known. A re-paste after the block was removed has none of these: it is the team's new lesson.
   const goneIds = Object.keys(input.rendered).filter((id) => input.gone.has(id));
   const staleGone = new Set(goneIds.map((id) => textPartOfFingerprint(input.rendered[id])).filter((h): h is string => h !== undefined));
-  const staleUnknown = goneIds.some((id) => textPartOfFingerprint(input.rendered[id]) === undefined);
+  // The text of an erased lesson that Rovara once merged is MARKED while any copy is still in the file (written here, from the fingerprint it remembers, so only a lesson that was ever in a file leaves a mark) and the mark is cleared
+  // when no copy is left, so a re-paste after that is the team's new lesson. Every bullet is then judged against the marks, whatever happened to the lesson's record (a purge left no head to read).
+  const copies = new Set([...looseHashes, ...file.blocks.map((block) => hashOfBlock(block.text))]);
   let goneTexts: Set<string>;
-  try { goneTexts = staleUnknown ? await deps.store.goneTextOf(key, [...looseHashes]) : new Set(); } catch { throw new ReadBackFailure("repository_unreadable"); }
+  try {
+    for (const id of goneIds) {
+      const hash = textPartOfFingerprint(input.rendered[id]);
+      if (hash === undefined) continue;
+      if (inFile.has(id) || copies.has(hash)) { await deps.store.markGoneText(key, hash); result.pinned.push(id); } else await deps.store.clearGoneText(key, hash);
+    }
+    goneTexts = await deps.store.goneTextOf(key, [...looseHashes]);
+  } catch { throw new ReadBackFailure("repository_unreadable"); }
   let imports = 0;
   for (const item of loose) {
     const hash = hashOfBlock(item.text);
@@ -327,7 +341,9 @@ export async function readBackFile(deps: ReadBackDeps, input: ReadBackInput): Pr
 
   // Refusals are kept only while the line is in the file (a line that was taken out and put back is judged again), and bounded.
   const present = new Set([...looseHashes, ...file.blocks.map((block) => hashOfBlock(block.text))]);
-  result.refused = Object.fromEntries(Object.entries(result.refused).filter(([hash]) => present.has(hash)).slice(-MAX_REFUSED));
+  // The refusals of erased text are never the ones dropped to stay within the bound.
+  const kept = Object.entries(result.refused).filter(([hash]) => present.has(hash));
+  result.refused = Object.fromEntries([...kept.filter(([, reason]) => reason !== "gone_text").slice(-MAX_REFUSED), ...kept.filter(([, reason]) => reason === "gone_text")]);
   // A refusal is told once, in the ledger, fixed words only (best effort: it grants nothing).
   if (result.counts.refused > 0) await emitAudit(deps.audit, { action: "lesson.refused", workspaceId: key.workspaceId, project: key.project, actor: REPOSITORY_EDIT_ACTOR, facts: { reason: "repository_text_not_taken", count: result.counts.refused } });
   return result;

@@ -3,7 +3,7 @@
 // The removals come FIRST, each with its reason, then edits, then new lessons.
 import { LESSON_FILE_PROBLEM_TEXT, type LessonsRepoFileRow } from "@agentx/contracts";
 import { REMOVAL_REASON_TEXT, type RepoFilePlan } from "./repo-file-plan.js";
-import { additionsPaused, type RepoFileState } from "./repo-file-state.js";
+import { READ_BACK_HOLD_MS, additionsPaused, type RepoFileState } from "./repo-file-state.js";
 
 const SECTION_MAX = 100;
 const BODY_MAX = 60_000;
@@ -59,7 +59,7 @@ export function noticesOf(state: RepoFileState): string[] {
   const notices: string[] = [];
   if (state.fileDeleted) notices.push("The lessons file was deleted, so Rovara stopped proposing. Resume to start again.");
   if (state.problem !== undefined) notices.push(state.problem === "file_unreadable" ? `${LESSON_FILE_PROBLEM_TEXT[state.problem]}. If your team changed it on purpose, fix any broken text or merge-conflict lines and keep at least one \`<!-- rovara:... -->\` line (or delete the file to pause Rovara here)` : LESSON_FILE_PROBLEM_TEXT[state.problem]);
-  if (state.readBackHeld !== undefined) notices.push(`${plural(state.readBackHeld.missing, "lesson is", "lessons are")} missing from the file. Check the last change: if they are still missing at the next weekly check Rovara retires them`);
+  if (state.readBackHeld !== undefined) notices.push(`${plural(state.readBackHeld.missing, "lesson is", "lessons are")} missing from the lessons file; ${state.readBackHeld.missing === 1 ? "it" : "they"} will be retired on or after ${new Date(state.readBackHeld.at + READ_BACK_HOLD_MS).toISOString().slice(0, 10)} unless ${state.readBackHeld.missing === 1 ? "it is" : "they are"} restored`);
   const waiting = state.open?.removals ?? 0;
   if (additionsPaused(state) && !state.fileDeleted) notices.push(pausedLine(waiting));
   else if (waiting > 0) notices.push(`${plural(waiting, "removal", "removals")} waiting in your lessons PR`);
@@ -67,7 +67,7 @@ export function noticesOf(state: RepoFileState): string[] {
   const back = state.readBack;
   if (back !== undefined && back.edited + back.retired + back.imported > 0) notices.push(`The lessons file changed on the default branch and was read back as ${plural(back.edited, "correction", "corrections")}, ${String(back.retired)} retired and ${plural(back.imported, "new lesson", "new lessons")}`);
   const refusedCount = Object.keys(state.refused ?? {}).length;
-  if (refusedCount > 0) notices.push(`${plural(refusedCount, "line in the lessons file was", "lines in the lessons file were")} not read as lessons because they name a person, ask for more access or are empty`);
+  if (refusedCount > 0) notices.push(`${plural(refusedCount, "line in the lessons file was", "lines in the lessons file were")} not read as lessons because they name a person, ask for more access, are empty or not allowed, or repeat the text of an erased lesson`);
   if (state.held.length > 0) notices.push(`${plural(state.held.length, "lesson your team edited is", "lessons your team edited are")} left as written`);
   if (state.pointerMissing) notices.push("Pointer missing: no agent file names .rovara/lessons.md");
   return notices;
