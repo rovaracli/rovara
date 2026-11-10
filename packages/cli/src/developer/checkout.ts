@@ -3,7 +3,7 @@
 import { execFile } from "node:child_process";
 import { lstat } from "node:fs/promises";
 import { join } from "node:path";
-import { LOCAL_LESSONS_REPO_FILE } from "@agentx/contracts";
+import { LOCAL_LESSONS_REPO_FILE, withoutCredentials } from "@agentx/contracts";
 
 export interface Checkout {
   /** The `origin` remote, without credentials. Absent outside a checkout or with no `origin`. */
@@ -17,18 +17,7 @@ const runGit: GitRunner = (args, cwd) => new Promise((resolve) => {
   execFile("git", [...args], { cwd, timeout: 5_000, maxBuffer: 64 * 1024, env: { ...process.env, GIT_TERMINAL_PROMPT: "0" } }, (error, stdout) => resolve(error === null ? stdout.trim() : undefined));
 });
 
-/** The address with no user name or password. An address that is not a URL (scp style `git@host:owner/name`, a path) is returned as it is: it carries no password. */
-export function withoutCredentials(remote: string): string {
-  if (!/^[a-z][a-z0-9+.-]*:\/\//iu.test(remote)) return remote;
-  try {
-    const url = new URL(remote);
-    url.username = "";
-    url.password = "";
-    return url.toString();
-  } catch {
-    return remote;
-  }
-}
+export { withoutCredentials };
 
 export async function readCheckout(cwd: string, git: GitRunner = runGit): Promise<Checkout> {
   const top = await git(["rev-parse", "--show-toplevel"], cwd);

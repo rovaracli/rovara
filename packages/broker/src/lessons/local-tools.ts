@@ -14,8 +14,7 @@
 //
 // Lessons that are repo-file eligible live in the merged `.rovara/lessons.md` (decision 50a). A tool that reads that file asks with `skipRepoFile` and gets only the lessons NOT already merged into that repository's file;
 // without it the lessons in the file are returned and marked `inRepoFile`, so a tool that reads both can drop the duplicates. A failed read of the file's state leaves the lesson in (a repeat is harmless; a gap is not).
-import { LOCAL_LESSONS_UNAVAILABLE_LINE, OrgIdSchema, cleanLessonText, type LearnedLesson, type LessonStage } from "@agentx/contracts";
-import type { AttributionReader } from "../attribution/resolve.js";
+import { LOCAL_LESSONS_NOTES_LINE, LOCAL_LESSONS_UNAVAILABLE_LINE, OrgIdSchema, cleanLessonText, type LearnedLesson, type LessonStage } from "@agentx/contracts";
 import { LOAD_MAX_BYTES, LOAD_MAX_LESSONS, hasStaleCitation, selectLessons, type LoadDeps } from "./load.js";
 import { learnedLessonsSwitchOn, modeAllows, resolveLearning, resolveLoadBudget, type LearningSettingsReader, type LoadBudget } from "./policy.js";
 import { mayNameInRepository, projectRepoScopesOf } from "./project-repo-audience.js";
@@ -58,13 +57,23 @@ export interface LocalToolsSettingsReader {
   /** Read now, never cached. Throws when a stored value cannot be read or is not valid (the caller fails closed). */
   read(workspaceId: string, project: string): Promise<LocalToolsSettings>;
 }
+/** The reader and the two writers (`local-tools-setting.ts` audits each change before it calls them). */
+export interface LocalToolsSettingsStore extends LocalToolsSettingsReader {
+  /** The company's switch alone (true: lessons stay in Rovara). Throws when it cannot be read or is not valid. */
+  readCompany(workspaceId: string): Promise<boolean>;
+  setProject(workspaceId: string, project: string, enabled: boolean, at: number): Promise<void>;
+  setCompany(workspaceId: string, stays: boolean, at: number): Promise<void>;
+}
 /** The day's count for one person and project, with no text: calls, lessons returned, and a fixed refusal code. A failure to count never blocks the answer. */
 export interface LocalToolsCounter { count(event: { orgId: string; project: string; developerId: string; lessons: number; refusal?: string | undefined }): Promise<void> }
 
 export interface LocalLessonsDeps {
   store: LessonStore; settings: LearningSettingsReader; access: LoadDeps["access"]; localTools: LocalToolsSettingsReader;
-  /** Display names of a lesson's authors, so a lesson that names one is left out. Absent: no lesson is returned (fail closed). */
-  names?: AttributionReader | undefined;
+  /**
+   * The display names of the people a lesson could name: the project's members and the people of the lessons asked about (the repo-file pass's rule), read now. Throws when a name cannot be read or there are too many to look up; absent:
+   * the call is "unavailable". A lesson whose text holds any of them (or an @handle or an e-mail address) is left out.
+   */
+  names?: ((key: ScopeKey, lessons: readonly Lesson[]) => Promise<readonly string[]>) | undefined;
   resolveMember?: LoadDeps["resolveMember"] | undefined;
   now: () => number;
   log?: ((event: string, fields: Record<string, unknown>) => void) | undefined;
@@ -95,6 +104,13 @@ export class LocalLessonsUnavailable extends Error { constructor(readonly code: 
 /** The stable lessons and the person-approved ones (decision 46b). A lesson on trial, or live with no person behind it, is not given to a local tool. */
 export const stableOrPersonApproved = (lesson: Pick<Lesson, "trial" | "approvals">): boolean => lesson.trial?.state !== "trial" && (lesson.trial?.state === "stable" || hasPersonApproval(lesson));
 
+/**
+ * Text that leaves Rovara is held to the repo file's soundness (`repo-eligibility.ts`): a lesson sent back to a person, one proposed for retirement, one with a thumbs-down and a tier-2 lesson that is not a review check
+ * (a review check approved by two people is what the review stage is for) stay in Rovara.
+ */
+export const soundForLeaving = (lesson: Pick<Lesson, "tier" | "type" | "reviewRequired" | "retireProposedAt" | "counters">): boolean =>
+  lesson.reviewRequired !== true && lesson.retireProposedAt === undefined && lesson.counters.harmful === 0 && (lesson.tier < 2 || lesson.type === "review_check");
+
 const URL_LIKE = /\b[a-z][a-z0-9+.-]*:\/\/\S+|\brovara:task[/:]\S+|\b(?:www\.)\S+/giu;
 const TASK_ID = /\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b/giu;
 /** One line of lesson text for a tool: hygiene as everywhere, no link and no task id, whitespace folded, cut at `LOCAL_TEXT_MAX`. */
@@ -123,10 +139,12 @@ export function renderLocalLessons(input: { project: string; repo?: string | und
   const when = new Date(input.at).toISOString().slice(0, 16).replace("T", " ");
   if (input.note !== undefined) return `${header(`Rovara lessons for ${where}. Checked ${when} UTC.`)}\n${oneLine(input.note, 400)}\n`;
   if (input.lessons.length === 0) return `${header(`Rovara lessons for ${where}. No lessons fit this change. Checked ${when} UTC.`)}\n`;
-  const lines = input.lessons.map((lesson) => `- [${lesson.id}] ${lesson.advice}${lesson.why === undefined ? "" : ` Why: ${lesson.why}`}${lesson.citation === undefined ? "" : ` See ${lesson.citation}`}${lesson.inRepoFile === true ? " (also in .rovara/lessons.md)" : ""}`);
+  // Each lesson is one quoted line (data from the team, not a command), after the fixed notes line.
+  const lines = input.lessons.map((lesson) => `> - [${lesson.id}] ${lesson.advice}${lesson.why === undefined ? "" : ` Why: ${lesson.why}`}${lesson.citation === undefined ? "" : ` See ${lesson.citation}`}${lesson.inRepoFile === true ? " (also in .rovara/lessons.md)" : ""}`);
   return [
     header(`Rovara lessons for ${where}. ${String(input.lessons.length)} ${input.lessons.length === 1 ? "lesson fits" : "lessons fit"} this change. Checked ${when} UTC.${input.complete ? "" : " Some lessons could not be checked in time."}`),
     "## Team lessons (from Rovara; follow them unless the task says otherwise)",
+    LOCAL_LESSONS_NOTES_LINE,
     ...lines, "",
   ].join("\n");
 }
@@ -136,43 +154,14 @@ const refuse = (input: LocalLessonsInput, deps: LocalLessonsDeps, reason: LocalO
   answer: { status: "off", reason, message: LOCAL_OFF_MESSAGES[reason], project: input.project, lessons: [], markdown: renderLocalLessons({ project: input.project, lessons: [], at: deps.now(), complete: true, note: LOCAL_OFF_MESSAGES[reason] }), complete: true },
 });
 
-/** Whether a lesson's text names a person: through its authors' and editors' display names, looked up once each per call. Unknown (no reader, a lookup that fails) is "names someone". */
-function namesNobody(names: AttributionReader | undefined, orgId: string): (lesson: Lesson) => Promise<boolean> {
-  const known = new Map<string, Promise<string | undefined>>();
-  const nameOf = (id: string): Promise<string | undefined> => {
-    let found = known.get(id);
-    if (found === undefined) { found = names!.memberName(OrgIdSchema.parse(orgId), id); known.set(id, found); }
-    return found;
-  };
-  return async (lesson) => {
-    if (names === undefined) return false;
-    try {
-      const display: string[] = [];
-      for (const id of new Set([...lesson.provenance.authors, ...(lesson.provenance.editors ?? [])])) {
-        const name = await nameOf(id);
-        if (name !== undefined) display.push(name);
-      }
-      return !namesAPerson([lesson.title, lesson.description, lesson.body].join("\n"), display);
-    } catch { return false; }
-  };
-}
-
 /**
  * The lessons for a local tool, or why there are none. Throws `LocalLessonsUnavailable` when a read fails (the project's settings, the store, the project's repositories); returns `unknown_repo` when the remote is not one of the
  * project's repositories. The caller (the route) has already checked the person and the project's roster. Never writes, never calls a model.
  */
 export async function lessonsForLocalTool(deps: LocalLessonsDeps, input: LocalLessonsInput): Promise<LocalLessonsOutcome> {
   const key: ScopeKey = { workspaceId: input.orgId, project: input.project };
-  // Decision 47: the install's lessons switch is off, so nothing is read at all (not even a setting).
-  if (!learnedLessonsSwitchOn()) return refuse(input, deps, "install_switch");
-  let local: Awaited<ReturnType<LocalToolsSettingsReader["read"]>>;
-  try { local = await deps.localTools.read(key.workspaceId, key.project); } catch { throw new LocalLessonsUnavailable("settings"); }
-  if (local.companyStays) return refuse(input, deps, "company_stays");
-  const resolved = await resolveLearning(deps.settings, key.workspaceId, key.project);
-  if (!modeAllows(resolved.chosenMode, "load")) return refuse(input, deps, "learning_off");
-  if (resolved.preset === "regulated") return refuse(input, deps, "regulated");
-  if (local.projectOn === false) return refuse(input, deps, "project_setting");
-
+  // The repository is proved FIRST (it reads only the project's own definition): an address that is not one of this project's repositories is "no such repository" whatever is switched off, so a client that asks every project
+  // meets another project's "off" never, and only the project that holds the repository can say "off".
   // Which repository: the remote is proved against the project's registered repositories; one that is not theirs is "no such repository", with nothing else said.
   let repo: { name: string; place?: string | undefined } | undefined;
   if (input.remote !== undefined) {
@@ -185,6 +174,16 @@ export async function lessonsForLocalTool(deps: LocalLessonsDeps, input: LocalLe
     if (repo === undefined) return { kind: "unknown_repo" };
   }
 
+  // Decision 47: the install's lessons switch is off, so no lesson and no setting is read at all.
+  if (!learnedLessonsSwitchOn()) return refuse(input, deps, "install_switch");
+  let local: Awaited<ReturnType<LocalToolsSettingsReader["read"]>>;
+  try { local = await deps.localTools.read(key.workspaceId, key.project); } catch { throw new LocalLessonsUnavailable("settings"); }
+  if (local.companyStays) return refuse(input, deps, "company_stays");
+  const resolved = await resolveLearning(deps.settings, key.workspaceId, key.project);
+  if (!modeAllows(resolved.chosenMode, "load")) return refuse(input, deps, "learning_off");
+  if (resolved.preset === "regulated") return refuse(input, deps, "regulated");
+  if (local.projectOn === false) return refuse(input, deps, "project_setting");
+
   let active: Lesson[];
   try {
     const now = deps.now();
@@ -196,13 +195,18 @@ export async function lessonsForLocalTool(deps: LocalLessonsDeps, input: LocalLe
   if (repo?.place !== undefined && deps.repoFileIds !== undefined) {
     try { inFile = await deps.repoFileIds(key, repo.place); } catch { inFile = undefined; }
   }
-  const nobodyNamed = namesNobody(deps.names, key.workspaceId);
   const place = repo?.place;
+  let namesUnknown = false;
   const prefilter = async (eligible: readonly Lesson[]): Promise<Lesson[]> => {
-    const fits = eligible.filter((lesson) => stableOrPersonApproved(lesson) && mayNameInRepository(lesson, place) && !(input.skipRepoFile === true && inFile?.has(lesson.id) === true));
-    const kept: Lesson[] = [];
-    for (const lesson of fits) if (await nobodyNamed(lesson)) kept.push(lesson);
-    return kept;
+    const fits = eligible.filter((lesson) => stableOrPersonApproved(lesson) && soundForLeaving(lesson) && mayNameInRepository(lesson, place) && !(input.skipRepoFile === true && inFile?.has(lesson.id) === true));
+    if (fits.length === 0) return [];
+    // The names are read only when some lesson could go out. A roster that cannot be read, or one too large to look up, withholds EVERYTHING (never "no names").
+    let names: readonly string[];
+    try {
+      if (deps.names === undefined) throw new Error("no names reader");
+      names = await deps.names(key, fits);
+    } catch { namesUnknown = true; return []; }
+    return fits.filter((lesson) => !namesAPerson([lesson.title, lesson.description, lesson.body].join("\n"), names));
   };
 
   const all = input.all === true;
@@ -218,6 +222,7 @@ export async function lessonsForLocalTool(deps: LocalLessonsDeps, input: LocalLe
     key, stage, resolved, active, intent: (input.task ?? "").slice(0, LOCAL_TASK_TEXT_MAX), repos: repo === undefined ? [] : [repo.name], files, languages: [],
     reader: {}, where: "local_tools", budget, prefilter, ...(all ? { pageSize: ALL_PAGE } : {}),
   });
+  if (namesUnknown) throw new LocalLessonsUnavailable("names");
   if (!selected.ok) throw new LocalLessonsUnavailable(selected.skipped);
   // The last line before anything leaves Rovara: what was picked goes through the one read path again, as for nobody in particular, with the same reader (so no task is read twice). It can only remove a lesson.
   let allowed: ReadonlySet<string>;

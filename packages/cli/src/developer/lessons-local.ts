@@ -5,10 +5,10 @@
 // Every line printed is the broker's block or a fixed sentence from `@agentx/contracts`; the project's and the lessons' words pass through the same terminal-safe cleaning as everything else this CLI shows.
 import {
   CLI_PACKAGE_NAME, LOCAL_LESSONS_AMBIGUOUS_LINE, LOCAL_LESSONS_NOT_FOUND_LINE, LOCAL_LESSONS_NO_PROJECT_LINE, LOCAL_LESSONS_STAGES, LOCAL_LESSONS_UNAVAILABLE_LINE, LocalLessonsResponseReaderSchema,
-  agentXError, lessonsAcrossProjects, type LocalLessonsAsk, type LocalLessonsBody, type LocalLessonsRead,
+  agentXError, lessonsAcrossProjects, withNotesLine, LocalToolsStateReaderSchema, type LocalLessonsAsk, type LocalLessonsBody, type LocalLessonsRead,
 } from "@agentx/contracts";
 import { z } from "zod";
-import { clean, seg, type AppResult } from "./agents.js";
+import { appRequest, clean, result as appResult, seg, type AppResult } from "./agents.js";
 import { jsonSafe } from "./audit.js";
 import { readCheckout, withoutCredentials, type Checkout } from "./checkout.js";
 import { developerAccessToken, type DeveloperSessionDeps } from "./session.js";
@@ -45,7 +45,7 @@ function result(status: string, text: string, data: Body = {}): AppResult {
   return { env: "", url: "", data: jsonSafe({ status, ...data }) as Body, text: text.endsWith("\n") ? text : `${text}\n` };
 }
 const lessonsData = (project: string, response: LocalLessonsRead): Body => ({
-  status: response.status, project, lessons: response.lessons.map((l) => ({ id: l.id, advice: l.advice, ...(l.why === undefined ? {} : { why: l.why }), ...(l.citation === undefined ? {} : { citation: l.citation }), ...(l.inRepoFile === true ? { inRepoFile: true } : {}) })), markdown: response.markdown,
+  status: response.status, project, lessons: response.lessons.map((l) => ({ id: l.id, advice: l.advice, ...(l.why === undefined ? {} : { why: l.why }), ...(l.citation === undefined ? {} : { citation: l.citation }), ...(l.inRepoFile === true ? { inRepoFile: true } : {}) })), markdown: withNotesLine(response.markdown),
 });
 
 export async function localLessons(deps: LocalLessonsCliDeps, env: string | undefined, input: LocalLessonsCliInput): Promise<AppResult> {
@@ -60,7 +60,7 @@ export async function localLessons(deps: LocalLessonsCliDeps, env: string | unde
   };
   const hint: { signIn?: string } = {};
   const unavailable = (): AppResult => result("unavailable", [LOCAL_LESSONS_UNAVAILABLE_LINE, ...(hint.signIn === undefined ? [] : [hint.signIn])].join("\n"));
-  const shown = (project: string, response: LocalLessonsRead): AppResult => ({ ...result(response.status, clean(response.markdown), lessonsData(project, response)), env: "", url: "" });
+  const shown = (project: string, response: LocalLessonsRead): AppResult => ({ ...result(response.status, clean(withNotesLine(response.markdown)), lessonsData(project, response)), env: "", url: "" });
 
   if (input.project !== undefined) {
     const answer = await ask(deps, env, input.project, body, hint);
@@ -87,4 +87,29 @@ export async function localLessons(deps: LocalLessonsCliDeps, env: string | unde
     case "ambiguous": return result("ambiguous", LOCAL_LESSONS_AMBIGUOUS_LINE);
     case "unavailable": return unavailable();
   }
+}
+
+export const LOCAL_TOOLS_ACTIONS = ["status", "on", "off"] as const;
+const UNEXPECTED = "AgentX answered with something unexpected; upgrade the command and try again";
+
+/**
+ * `agentx lessons local [status|on|off] --project <name>`: whether local coding tools get a project's lessons, and why not; a maintainer switches the project's own choice (the company's "lessons stay in Rovara" is an
+ * owner's or admin's setting in the app). The default is on under the Standard preset and off under Regulated. Every sentence is fixed here; the broker decides who may change it and audits the change.
+ */
+export async function localToolsSetting(deps: DeveloperSessionDeps, env: string | undefined, project: string | undefined, action: string | undefined): Promise<AppResult> {
+  const what = action ?? "status";
+  if (!(LOCAL_TOOLS_ACTIONS as readonly string[]).includes(what)) throw agentXError("CONFIG_INVALID", `the action is one of ${LOCAL_TOOLS_ACTIONS.join(", ")}`);
+  if (project === undefined || project.trim() === "") throw agentXError("CONFIG_INVALID", "--project <name> is required: the project's name");
+  const path = `/v1/app/projects/${seg(project)}/lessons/local-tools`;
+  const answer = what === "status" ? await appRequest(deps, env, path) : await appRequest(deps, env, path, { method: "POST", body: { enabled: what === "on" } });
+  const state = LocalToolsStateReaderSchema.safeParse(answer.body);
+  if (!state.success) throw agentXError("RUNTIME_UNAVAILABLE", UNEXPECTED);
+  const s = state.data;
+  const why = s.reason === "company_stays" ? "your company keeps lessons inside Rovara" : s.reason === "regulated" ? "the project uses the Regulated preset" : s.reason === "project_setting" ? "the project switched it off" : undefined;
+  const own = s.own === undefined ? "not set (on under Standard, off under Regulated)" : s.own ? "on" : "off";
+  const lines = [
+    `Local coding tools for ${clean(project)}: ${s.enabled ? "on" : "off"}${why === undefined ? "" : ` (${why})`}`,
+    `  The project's own choice: ${own}`, `  Preset: ${s.preset}`, `  The company keeps lessons inside Rovara: ${s.companyStays ? "yes" : "no"}`, "",
+  ];
+  return appResult(answer, { localTools: s }, lines.join("\n"));
 }

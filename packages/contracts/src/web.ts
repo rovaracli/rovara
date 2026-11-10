@@ -151,6 +151,7 @@ export { SetupDraftResponseSchema, type SetupDraftResponse, SetupDraftResponseRe
 // Learning v2 L3b: the Lessons tab, the Sources tab and the task page's lessons list.
 export * from "./app-lessons.js";
 export * from "./app-lessons-repo-file.js";
+export * from "./lessons-local-tools.js";
 // Team record source rows (learning v2): the Sources tab editor's bodies and views.
 export * from "./team-record-sources.js";
 // UX-4b: the project's learning mode, read and set on the project page.

@@ -13,7 +13,7 @@ import { createLessonLiveReader, LESSON_LIVE_TIMEOUT_MS } from "./live-visibilit
 import { readVisible, readVisibleRanked, type LessonLog } from "./read-visible.js";
 import type { ApproverDirectory } from "./ports.js";
 import type { LessonsPauseStore } from "./pause.js";
-import type { LocalToolsSettingsReader } from "./local-tools.js";
+import type { LocalToolsSettingsStore } from "./local-tools.js";
 import type { LessonStore, ScopeKey } from "./store.js";
 import { ERASED_MARK, idIn, normId, normSource, sameId, type IdentitySet, type Lesson } from "./types.js";
 import { lessonValue } from "./value.js";
@@ -27,7 +27,7 @@ export interface LessonViewDeps {
   /** The Team record table, for the Sources tab. Absent: the sources route answers "not set up". */
   sources?: { table: TeamRecordTable };
   /** Lessons for local coding tools (decision 46b): the project's and the company's settings, read on every call. Absent: the local-tools route cannot answer (it fails closed). */
-  localTools?: LocalToolsSettingsReader;
+  localTools?: LocalToolsSettingsStore;
   /** Why learning cannot run for the project right now (lessons in production, lane 1b). Absent: the tab says nothing about it. */
   pause?: LessonsPauseStore;
   /** Whether a recorded reason still holds (true), or its cause is gone (false: a provider was connected, the budget was raised). A reason whose cause is gone is cleared when it is read. Absent: every reason is shown until a learning call succeeds. */

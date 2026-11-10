@@ -9,7 +9,7 @@ import {
   INTENT_NOT_WAITING_MESSAGE, INTENT_QUESTIONS_MAX, SessionIdSchema, CRITIC_NOT_CHECKED_LINE, CRITIC_STOPPED_AT_LIMIT_LINE, CRITIC_STOPPED_AT_SPENDING_LIMIT_LINE, formatMinutes, type WorkflowCritique,
   sessionTaskStatus, taskStatusNext, taskStatusText, formatRunLimitUsd, runLimitRaiseText,
   LOCAL_LESSONS_AMBIGUOUS_LINE, LOCAL_LESSONS_NOT_FOUND_LINE, LOCAL_LESSONS_NO_PROJECT_LINE, LOCAL_LESSONS_STAGES, LOCAL_LESSONS_TASK_MAX, LOCAL_LESSONS_FILES_MAX, LOCAL_LESSONS_TOOL_DESCRIPTION, LOCAL_LESSONS_UNAVAILABLE_LINE,
-  lessonsAcrossProjects, type LocalLessonsAsk, type LocalLessonsBody, type LocalLessonsRead,
+  lessonsAcrossProjects, withNotesLine, withoutCredentials, type LocalLessonsAsk, type LocalLessonsBody, type LocalLessonsRead,
 } from "@agentx/contracts";
 import { z } from "zod";
 import type { AdminControlPlaneClient } from "./admin-client.js";
@@ -653,9 +653,9 @@ function localLessonsResult(outcome: LocalLessonsOutcome): ToolResult {
     structured: {
       status: response.status, project: outcome.project,
       lessons: response.lessons.map((lesson) => ({ id: lesson.id, advice: lesson.advice, ...(lesson.why === undefined ? {} : { why: lesson.why }), ...(lesson.citation === undefined ? {} : { citation: lesson.citation }), ...(lesson.inRepoFile === true ? { in_repo_file: true } : {}) })),
-      markdown: response.markdown,
+      markdown: withNotesLine(response.markdown),
     },
-    text: response.markdown,
+    text: withNotesLine(response.markdown),
   };
 }
 
@@ -1646,11 +1646,14 @@ export const DEVELOPER_TOOLS: readonly ToolDefinition[] = [
     outputSchema: LocalLessonsOutputShape,
     async handler(context, input) {
       const checkout = await context.localCheckout?.().catch(() => undefined);
-      const repo = (input.repo as string | undefined) ?? checkout?.remote;
+      // An address the agent gives goes without a user name or password, as the command line's does; and the checkout's own lessons file only counts when the repository asked about IS the checkout's.
+      const given = input.repo === undefined ? undefined : withoutCredentials(input.repo as string);
+      const repo = given ?? checkout?.remote;
+      const ownCheckout = checkout !== undefined && (given === undefined || given === checkout.remote);
       const body: LocalLessonsBody = {
         ...(repo === undefined ? {} : { repo }), ...(input.task === undefined ? {} : { task: input.task as string }),
         ...(input.files === undefined ? {} : { files: input.files as string[] }), ...(input.stage === undefined ? {} : { stage: input.stage as LocalLessonsBody["stage"] }),
-        ...(checkout?.hasLessonsFile === true ? { skipRepoFile: true } : {}),
+        ...(ownCheckout && checkout.hasLessonsFile ? { skipRepoFile: true } : {}),
       };
       return localLessonsResult(await askLocalLessons(context, input.project as string | undefined, repo, body));
     },

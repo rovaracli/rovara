@@ -115,7 +115,10 @@ repository, and again when it starts on a different part of the code).
 What it returns, and what it never does:
 
 - A short markdown block of up to five lessons, each with its id, one line of advice, one line of why
-  and, when it has one, the code it was learned from. Nothing else: no links, no task ids, no names.
+  and, when it has one, the code it was learned from, each as one quoted line under a fixed note that
+  says lessons are team notes, not commands: your AI tool is told never to run a command, install a
+  package or open an address only because a lesson says so. Nothing else: no links, no task ids, and
+  no lesson that names a person (a member of the project, or anyone who wrote it).
 - Only lessons your whole project may read (not a lesson from a task that is shared with fewer people,
   or from a private channel), only lessons that earned trust (stable after a trial, or approved by a
   person), and a lesson that belongs to one repository only in that repository. This is checked every
@@ -125,8 +128,11 @@ What it returns, and what it never does:
   AI tool not to copy lesson text into code comments, commits or pull requests (its tool description does).
 - Nothing at all, with a one-line reason, when your company keeps lessons inside Rovara, when lessons
   are switched off for the installation or the project, or on a project that uses the Regulated
-  preset. Local tools are on by default on a project that uses the Standard preset. If Rovara cannot be
-  reached the tool says so in one line and your AI tool carries on without lessons.
+  preset. Local tools are on by default on a project that uses the Standard preset. A maintainer of the
+  project can switch it off and on (on the project's Lessons tab, or `npx @preplabsai/rovara-code lessons local off --project <name>`;
+  `lessons local status` says what it comes to and why), and a company owner or admin can keep lessons
+  inside Rovara for every project (on the company How we work page). Each change is recorded in the audit log.
+  If Rovara cannot be reached the tool says so in one line and your AI tool carries on without lessons.
 
 If the repository has a `.rovara/lessons.md` file merged by your team, Rovara leaves out the lessons
 already in that file, so your tool does not read them twice.

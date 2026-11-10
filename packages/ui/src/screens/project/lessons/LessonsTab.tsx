@@ -11,6 +11,7 @@ import { VisibleText } from "../../../design/VisibleText.js";
 import { ActiveLesson } from "./ActiveLesson.js";
 import { LearningModeControl } from "./LearningModeControl.js";
 import { PresetControl } from "./PresetControl.js";
+import { LocalToolsControl } from "./LocalToolsControl.js";
 import { RepoFileControl } from "./RepoFileControl.js";
 import { useLearningMode } from "../../../api/learning-mode.js";
 import { Digest } from "./Digest.js";
@@ -61,6 +62,7 @@ export function LessonsTab({ project }: { project: string }) {
   {view.canDecide && <LearningModeControl project={project} compact />}
   {!off && <PresetControl project={project} view={view} />}
   {!off && <RepoFileControl project={project} canChange={view.canDecide} />}
+  {!off && <LocalToolsControl project={project} canChange={view.canDecide} />}
   {notice !== undefined && <p role="status">{notice}</p>}
 
   {view.canDecide && <section aria-label={T.WAITING} className="rv-lessons-section">

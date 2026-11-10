@@ -14,6 +14,10 @@
 //   POST /v1/app/projects/{p}/lessons/sources/resume       a maintainer resumes a paused source (UX-4b; `resumeAndResettle`)
 //   GET  /v1/app/projects/{p}/lessons/repo                 the project's repositories with the state of their `.rovara/lessons.md` (R2); answers even while lessons are off
 //   POST /v1/app/projects/{p}/lessons/repo                 a maintainer switches a repository's lessons file on or off, resumes it after the team deleted the file, or answers the pointer (R2; audited)
+//   GET  /v1/app/projects/{p}/lessons/local-tools          whether local coding tools get this project's lessons now, and why not (any member; decision 46b)
+//   POST /v1/app/projects/{p}/lessons/local-tools          a maintainer switches it on or off for the project (audited; not tied to a browser session, so the command line can use it)
+//   GET  /v1/app/org/lessons/local-tools                   an owner or admin reads the company's "lessons stay in Rovara" switch
+//   POST /v1/app/org/lessons/local-tools                   an owner or admin sets it (audited; a live browser session)
 //   GET  /v1/app/tasks/{task}/lessons                      the lessons the agent loaded
 //   POST /v1/app/tasks/{task}/lessons/{id}/feedback        "Helpful" / "Wrong here" / thumbs-down
 //
@@ -21,13 +25,14 @@
 // cannot see answer the same way); who may decide is the lesson library's own check (`ApproverDirectory`, the second-person rule, the access records); a write needs a live browser
 // session and a writer role (the Auditor is refused); a refusal is a fixed sentence, never text from a lesson, a row or an error.
 import {
-  LessonApproveBodySchema, LessonsRepoFileBodySchema, LessonFeedbackBodySchema, LessonMergeBodySchema, LessonPresetBodySchema, LessonPresetChangeBodySchema, LessonResumeSourceBodySchema, LessonRejectBodySchema, LessonRetireBodySchema, LessonRollbackBodySchema, agentXError,
+  LessonApproveBodySchema, LessonsRepoFileBodySchema, LocalToolsCompanyBodySchema, LocalToolsProjectBodySchema, LessonFeedbackBodySchema, LessonMergeBodySchema, LessonPresetBodySchema, LessonPresetChangeBodySchema, LessonResumeSourceBodySchema, LessonRejectBodySchema, LessonRetireBodySchema, LessonRollbackBodySchema, agentXError,
   type AgentXErrorCode, type ProjectRole,
 } from "@agentx/contracts";
 import type { ZodType } from "zod";
 import type { DeveloperCaller } from "../aws/developer-routes.js";
 import { requireWriterCaller } from "../org/auditor.js";
 import { repoFileAction, repoFileStatus } from "./repo-file-routes.js";
+import { readLocalToolsState, setCompanyLocalTools, setProjectLocalTools, type LocalToolsSetResult } from "./local-tools-setting.js";
 import type { RepoFileRuntime } from "./repo-file-job.js";
 import { approveLesson, mergeDuplicate, rejectLesson, retireByPerson, type ApprovalFailure, type ApproveDeps } from "./approve.js";
 import { recordFeedback, type CounterDeps } from "./counters.js";
@@ -41,6 +46,8 @@ import type { ScopeKey } from "./store.js";
 export const LESSONS_PATH = /^\/v1\/app\/projects\/([^/]+)\/lessons(?:\/([A-Za-z0-9_-]{1,64})(?:\/(approve|reject|merge|retire|history|resume|cancel))?)?$/u;
 /** The company's preset (an owner or admin): `POST` sets it, `POST .../approve` and `.../cancel` decide a proposal to loosen it. */
 export const COMPANY_PRESET_PATH = /^\/v1\/app\/org\/lessons\/preset(?:\/(approve|cancel))?$/u;
+/** The company's "lessons stay in Rovara" switch (decision 46b): an owner or admin reads and sets it. */
+export const COMPANY_LOCAL_TOOLS_PATH = /^\/v1\/app\/org\/lessons\/local-tools$/u;
 export const TASK_LESSONS_PATH = /^\/v1\/app\/tasks\/([0-9a-f-]{36})\/lessons(?:\/([A-Za-z0-9_-]{4,64})\/feedback)?$/u;
 
 export interface LessonRouteDependencies {
@@ -200,7 +207,46 @@ async function routeRepoFile(deps: LessonRouteDependencies, caller: DeveloperCal
   return result.row;
 }
 
+const LOCAL_TOOLS_REFUSALS = {
+  unreadable: ["RUNTIME_UNAVAILABLE", "Rovara can't read this setting right now. Try again."], audit_unavailable: ["RUNTIME_UNAVAILABLE", "That couldn't be recorded, so nothing changed. Try again."],
+} as const satisfies Record<string, readonly [AgentXErrorCode, string]>;
+function settled(result: LocalToolsSetResult): void {
+  if (!result.ok) { const [code, message] = LOCAL_TOOLS_REFUSALS[result.code]; throw agentXError(code, message); }
+}
+const noLocalTools = () => agentXError("NOT_FOUND", "Lessons are not available for this project.");
+
+/** Local coding tools' access to a project's lessons (decision 46b): any member reads what it comes to; a maintainer sets the project's own choice. Answers even while lessons are off (it is a setting about delivery). */
+async function routeLocalTools(deps: LessonRouteDependencies, caller: DeveloperCaller, method: string, rawProject: string, body: () => unknown): Promise<object> {
+  const store = deps.lessons.localTools;
+  if (store === undefined) throw noLocalTools();
+  const { name, role } = await deps.projectFor(caller, rawProject);
+  const read = async (): Promise<object> => { try { return await readLocalToolsState({ localTools: store, settings: deps.lessons.settings }, caller.orgId, name); } catch { throw agentXError(...LOCAL_TOOLS_REFUSALS.unreadable); } };
+  if (method === "GET") { await takeBudget(deps, caller, "read"); return read(); }
+  requireWriterCaller(caller);
+  if (role !== "maintainer") throw agentXError("FORBIDDEN", "Only a maintainer of this project can change this.");
+  await takeBudget(deps, caller, "decision");
+  const input = strictBody(LocalToolsProjectBodySchema, body());
+  settled(await setProjectLocalTools({ localTools: store, audit: deps.lessons.audit, now: deps.lessons.now }, { workspaceId: caller.orgId, project: name, enabled: input.enabled, by: caller.developerId }));
+  return read();
+}
+
+/** The company's switch: only an owner or admin reads or sets it, and a change needs a live browser session like the company's preset. */
+async function routeCompanyLocalTools(deps: LessonRouteDependencies, caller: DeveloperCaller, method: string, body: () => unknown): Promise<object | undefined> {
+  const store = deps.lessons.localTools;
+  if (store === undefined) throw noLocalTools();
+  if (method !== "GET" && method !== "POST") return undefined;
+  if (method === "POST") requireWrite(caller);
+  if (caller.orgRole !== "owner" && caller.orgRole !== "admin") throw agentXError("FORBIDDEN", "Only a company owner or admin can change this.");
+  const read = async (): Promise<object> => { try { return { stays: await store.readCompany(caller.orgId) }; } catch { throw agentXError(...LOCAL_TOOLS_REFUSALS.unreadable); } };
+  if (method === "GET") { await takeBudget(deps, caller, "read"); return read(); }
+  await takeBudget(deps, caller, "decision");
+  const input = strictBody(LocalToolsCompanyBodySchema, body());
+  settled(await setCompanyLocalTools({ localTools: store, audit: deps.lessons.audit, now: deps.lessons.now }, { workspaceId: caller.orgId, stays: input.stays, by: caller.developerId }));
+  return read();
+}
+
 export async function routeLessons(deps: LessonRouteDependencies, caller: DeveloperCaller, method: string, url: URL, body: () => unknown): Promise<object | undefined> {
+  if (COMPANY_LOCAL_TOOLS_PATH.test(url.pathname)) return routeCompanyLocalTools(deps, caller, method, body);
   const company = COMPANY_PRESET_PATH.exec(url.pathname);
   if (company !== null) {
     // The read: the company's preset and the proposal waiting on it, for the people who could decide it (an owner or admin).
@@ -220,6 +266,7 @@ export async function routeLessons(deps: LessonRouteDependencies, caller: Develo
 
   // Lessons in the repo (R2): the status answers even while lessons are off (it says so), so a person can see why nothing is happening; the switches need a maintainer.
   if (id === "repo" && action === undefined && (method === "GET" || method === "POST")) return routeRepoFile(deps, caller, method, rawProject!, body);
+  if (id === "local-tools" && action === undefined && (method === "GET" || method === "POST")) return routeLocalTools(deps, caller, method, rawProject!, body);
 
   // The project, and whether learning is on for it, come first for every path: a path that is not a lessons read or write answers `undefined` only after that.
   if (method === "GET") {

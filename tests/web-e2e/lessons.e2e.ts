@@ -229,6 +229,47 @@ test("the company page shows the company's lessons setting: an owner requires a 
  await expect(box.getByRole("status").filter({ hasText: "Approved. Low-risk lessons from a team member's correction go live on trial again." })).toBeVisible();
  expect(posts.map(item => [item.path, item.body])).toEqual([["/v1/web/org/lessons/preset", { preset: "regulated" }], ["/v1/web/org/lessons/preset/approve", { changeId: "chg-9" }]]);
 });
+test("the Lessons tab shows whether coding tools get this project's lessons, and a maintainer switches it off and on", async ({ page, context, request, baseURL }) => {
+ await openTab(page, context, request, baseURL);
+ const box = page.getByRole("region", { name: "Lessons in coding tools" });
+ await expect(box.getByText("On: coding tools can fetch this project's lessons.")).toBeVisible();
+ await checkA11y(page, { theme: "light" });
+ await box.getByRole("button", { name: "Turn off for this project" }).click();
+ await expect(box.getByText("Off: coding tools get no lessons from this project.")).toBeVisible();
+ await expect(box.getByRole("status").filter({ hasText: "Saved." })).toBeVisible();
+ await checkA11y(page, { theme: "dark" });
+ await box.getByRole("button", { name: "Turn on for this project" }).click();
+ await expect(box.getByText("On: coding tools can fetch this project's lessons.")).toBeVisible();
+ await page.setViewportSize({ width: 390, height: 900 });
+ expect(await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth)).toBeLessThanOrEqual(0);
+ await evidenceShot(page, { path: ".test-build/web-e2e/lessons-local-tools-phone.png", fullPage: true });
+ const sent = ((await (await request.get("/__mock/requests")).json()) as Sent).filter(item => item.method === "POST" && item.path === BASE + "/local-tools");
+ expect(sent.map(item => item.body)).toEqual([{ enabled: false }, { enabled: true }]);
+});
+test("the company page lets an owner keep lessons inside Rovara, and allow coding tools again", async ({ page, context, request, baseURL }) => {
+ await request.post("/__mock/scenario", { data: { name: "admin" } });
+ await context.addCookies([{ name: "__Host-agentx_review_session", value: "11111111-1111-4111-8111-111111111111", url: baseURL!, secure: true, httpOnly: true, sameSite: "Strict" }]);
+ await page.route("**/v1/web/org/model-sources", route => route.fulfill({ json: { sources: [], order: ["rovara"] } }));
+ const company = { stays: false };
+ const posts: unknown[] = [];
+ await page.route("**/v1/web/org/lessons/local-tools", async route => {
+  if (route.request().method() === "POST") { const body = route.request().postDataJSON() as { stays: boolean };posts.push(body);company.stays = body.stays; }
+  await route.fulfill({ json: company });
+ });
+ await page.setViewportSize({ width: 1280, height: 900 });
+ await page.goto("/app/admin/how-we-work");
+ const box = page.getByRole("region", { name: "Lessons: stay in Rovara" });
+ await expect(box.getByText(/Coding tools can fetch lessons: a project's team can turn that off/u)).toBeVisible();
+ await box.getByRole("button", { name: "Keep lessons in Rovara" }).click();
+ await expect(box.getByText(/Lessons stay in Rovara: coding tools on your team's computers/u)).toBeVisible();
+ await checkA11y(page, { theme: "light" });await checkA11y(page, { theme: "dark" });
+ await page.setViewportSize({ width: 390, height: 900 });
+ expect(await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth)).toBeLessThanOrEqual(0);
+ await evidenceShot(page, { path: ".test-build/web-e2e/lessons-stay-in-rovara-phone.png", fullPage: true });
+ await box.getByRole("button", { name: "Allow coding tools to fetch lessons" }).click();
+ await expect(box.getByText(/Coding tools can fetch lessons: a project's team can turn that off/u)).toBeVisible();
+ expect(posts).toEqual([{ stays: true }, { stays: false }]);
+});
 test("approve by exception: the task page lists the lessons a task loaded with their trial marks, and one tap on thumbs-down removes a lesson on trial", async ({ page, context, request, baseURL }) => {
  await request.post("/__mock/scenario", { data: { name: "workspace" } });
  await context.addCookies([{ name: "__Host-agentx_review_session", value: "11111111-1111-4111-8111-111111111111", url: baseURL!, secure: true, httpOnly: true, sameSite: "Strict" }]);

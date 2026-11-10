@@ -1,12 +1,12 @@
 // The project's lessons routes for the Lessons tab journey: the view, approve, reject, remove and the sources. State lives for one scenario. Bodies are parsed by the contract's strict schemas,
 // as the real routes do, and the one-tap / two-person rules are applied here the way the broker applies them (a second person is a different one; a stale version is refused).
-import { LessonApproveBodySchema, LessonPresetChangeBodySchema, LessonFeedbackBodySchema, LessonMergeBodySchema, LessonPresetBodySchema, LoadedLessonsSchema, LessonRejectBodySchema, LessonRetireBodySchema, LessonSourcesSchema, LessonViewSchema, LessonsDigestSchema, LessonsViewSchema, SourceWriteBodySchema, SourcesAdminViewSchema } from "@agentx/contracts";
+import { LessonApproveBodySchema, LessonPresetChangeBodySchema, LessonFeedbackBodySchema, LessonMergeBodySchema, LessonPresetBodySchema, LocalToolsProjectBodySchema, LoadedLessonsSchema, LessonRejectBodySchema, LessonRetireBodySchema, LessonSourcesSchema, LessonViewSchema, LessonsDigestSchema, LessonsViewSchema, SourceWriteBodySchema, SourcesAdminViewSchema } from "@agentx/contracts";
 import type { MockExchange } from "./how-we-work-mock.js";
 
 const NOW = Date.parse("2026-11-01T12:00:00.000Z");
 interface Mock { id: string; version: number; title: string; body: string; tier: 1 | 2; status: "pending" | "active" | "retired" | "rejected"; first?: string; duplicateOf?: string; reason?: string; trial?: "trial" | "stable"; reasons?: string[] }
 let state = fresh();
-function fresh() { return { preset: "standard" as "standard" | "regulated", proposal: false, lessons: [
+function fresh() { return { preset: "standard" as "standard" | "regulated", proposal: false, localTools: undefined as boolean | undefined, lessons: [
  { id: "les_one00001", version: 1, title: "Use the shared retry helper", body: "Call withRetry for HTTP calls in the api repository.", tier: 1, status: "pending" },
  { id: "les_two00001", version: 1, title: "Reviewers check auth on new routes", body: "Review every new route for an authorization check.", tier: 2, status: "pending", first: "Ann Archer" },
  { id: "les_thr00001", version: 1, title: "Skip flaky integration tests on branches", body: "Branch builds may skip the flaky integration suite.", tier: 2, status: "pending" },
@@ -86,6 +86,12 @@ export async function lessonsMock({ url, method, body, json, record }: MockExcha
  if (url.pathname === base && method === "GET") { json(200, view());return true; }
  if (url.pathname === base + "/digest" && method === "GET") { json(200, LessonsDigestSchema.parse({ since: NOW - 7 * 86_400_000, top: [{ id: "les_act00001", title: "Prefer small pull requests", type: "convention", tier: 1, links: [] }], needsReview: [], autoApplied: [], waiting: [], retired: [], staleOrRetireProposed: [], queued: 2, pausedSources: [], pausedSourcesHidden: 0, hidden: 0 }));return true; }
  if (url.pathname === base + "/sources" && method === "GET") { json(200, LessonSourcesSchema.parse({ sources: [{ kind: "github", scope: "github:acme/api", enabled: true, retention: "D", health: "ok", audience: "project", updatedAt: "2026-10-30T10:00:00.000Z", paused: false }, { kind: "slack", enabled: true, retention: "B", health: "ok", audience: "maintainers", updatedAt: "2026-10-30T10:00:00.000Z", paused: true }], otherPaused: 0 }));return true; }
+ // Decision 46b: whether coding tools get this project's lessons: any member reads it, a maintainer sets the project's own choice.
+ if (url.pathname === base + "/local-tools") {
+  if (method === "POST") { const input = LocalToolsProjectBodySchema.parse(await body());record(input);state.localTools = input.enabled; }
+  const enabled = state.localTools !== false && state.preset === "standard";
+  json(200, { enabled, ...(state.localTools === undefined ? {} : { own: state.localTools }), ...(enabled ? {} : { reason: state.preset === "regulated" ? "regulated" : "project_setting" }), preset: state.preset, companyStays: false });return true;
+ }
  if (url.pathname === base + "/preset" && method === "POST") {
   const input = LessonPresetBodySchema.parse(await body());record(input);
   // Regulated applies at once; going back to Standard is a loosening that waits for a different maintainer or admin (the project stays Regulated meanwhile).

@@ -282,7 +282,7 @@ export async function selectLessons(deps: LoadDeps, input: SelectInput): Promise
     });
     choose(checked.kept);
     complete = checked.complete;
-    if (!checked.complete) { deps.log?.("learning.load_visibility_budget", { checked: checked.checked, ranked: scored.length }); deps.metrics?.count("learning_load_budget_hit"); }
+    if (!checked.complete) { deps.log?.(input.where === "load" ? "learning.load_visibility_budget" : `learning.${input.where}_visibility_budget`, { checked: checked.checked, ranked: scored.length }); deps.metrics?.count("learning_load_budget_hit"); }
   } catch {
     deps.metrics?.count("learning_load_skipped", { reason: "access_unavailable" });
     return { ok: false, skipped: "access_unavailable" };

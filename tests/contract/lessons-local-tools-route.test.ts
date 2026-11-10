@@ -18,6 +18,8 @@ import { draft, lessonRecord } from "../unit/lessons/lesson-helpers.js";
 type Reply = { status: number; body: Record<string, unknown> };
 const ORIGIN = new URL(DEV_ISSUER).origin;
 const ZED: Developer = { developerId: "f".repeat(64), name: "Zed Park", provider: "oidc", sessionId: "s-zed" };
+const PIA: Developer = { developerId: "a".repeat(64), name: "Pia Rao", provider: "oidc", sessionId: "s-pia" };
+const ADA: Developer = { developerId: "9".repeat(64), name: "Ada Admin", provider: "oidc", sessionId: "s-ada" };
 const OTHER_ORG = "org_zzzzzzzzzzzzzzzzzzzz" as OrgId;
 const at = "2026-11-08T00:00:00.000Z";
 const API = "https://github.com/acme/api";
@@ -62,9 +64,17 @@ async function world() {
   h.db.set({ pk: `SESSION#${ZED.sessionId}`, sk: "META", sessionId: ZED.sessionId, developerId: ZED.developerId, amr: ZED.provider, startedAt: new Date(Date.now() - 60_000).toISOString(), endsAt: Math.floor(Date.now() / 1000) + 604_800 });
   h.db.set({ pk: `DEVELOPER#${ZED.developerId}`, sk: "META", developerId: ZED.developerId, provider: ZED.provider, displayName: ZED.name, firstSignInAt: "x", lastSignInAt: "x", revoked: false });
   seedMembership(h.db, ZED.developerId, { orgId: TEST_ORG, role: "member" });
+  // PIA is a maintainer of the project; ADA is a company admin (and so a maintainer of every project).
+  for (const [who, orgRole] of [[PIA, "member"], [ADA, "admin"]] as const) {
+    h.db.set({ pk: `SESSION#${who.sessionId}`, sk: "META", sessionId: who.sessionId, developerId: who.developerId, amr: who.provider, startedAt: new Date(Date.now() - 60_000).toISOString(), endsAt: Math.floor(Date.now() / 1000) + 604_800 });
+    h.db.set({ pk: `DEVELOPER#${who.developerId}`, sk: "META", developerId: who.developerId, provider: who.provider, displayName: who.name, firstSignInAt: "x", lastSignInAt: "x", revoked: false });
+    seedMembership(h.db, who.developerId, { orgId: TEST_ORG, role: orgRole });
+  }
+  h.db.set({ ...projectMemberKey(TEST_ORG, PIA.developerId, "payments"), entityType: "MEMBERSHIP", ownerKey: PIA.developerId, projectName: "payments", grantId: randomUUID(), role: "developer", projectRole: "maintainer", source: "grant", grantedAt: at });
   h.db.set({ ...projectMemberKey(TEST_ORG, OMAR.developerId, "payments"), entityType: "MEMBERSHIP", ownerKey: OMAR.developerId, projectName: "payments", grantId: randomUUID(), role: "developer", projectRole: "contributor", source: "grant", grantedAt: at });
   // The production lessons runtime on this table, handed to the handler.
   const dependencies = {
+    audit: audit.audit,
     documentClient: h.db, tableName: "state", agents: {}, developer: { signInTableName: "signin" }, artifactBucketName: "artifacts", s3: { send: async () => ({}) },
     teamRecord: { table: { documentClient: h.db, tableName: "record" }, edition: "public", emitter: { sendBack: async () => undefined }, taskVisibility: async () => ({ kind: "shared" }) },
   } as Record<string, unknown>;
@@ -86,9 +96,11 @@ async function world() {
     id, workspaceId: TEST_ORG, project: "payments", type: "convention", tier: 1, stages: ["UNDERSTAND", "PLAN", "IMPLEMENT"], approvals: [{ approvalId: "ap", by: "ann", at: 1, mode: "one" }],
     title: `Quarantined advice ${id}`, description: `Quarantined why ${id}`, scope: { repos: ["api"] }, provenance: { ...draft().provenance, supportTasks: [source] }, ...over,
   } as never);
+  const project = (who: Developer, method: string, body?: unknown) => h.dev(who, method, "/v1/app/projects/payments/lessons/local-tools", body);
+  const company = (who: Developer, method: string, body?: unknown) => who === ADA ? web(who, method, "/v1/app/org/lessons/local-tools", body) : h.dev(who, method, "/v1/app/org/lessons/local-tools", body);
   const ask = (who: Developer, body: Record<string, unknown> = { repo: API }, project = "payments") => h.dev(who, "POST", `/v1/dev/projects/${project}/lessons`, body);
   const ids = (reply: Reply) => ((reply.body.lessons as Array<{ id: string }> | undefined) ?? []).map((l) => l.id).sort();
-  return { ...h, audit, web, script, token, key, commit, startTask, source, deny, pin, teach, ask, ids };
+  return { ...h, audit, web, script, token, key, commit, startTask, source, deny, pin, teach, ask, ids, project, company };
 }
 
 describe("a project member's own sign-in", () => {
@@ -201,6 +213,81 @@ describe("a project member's own sign-in", () => {
     expect(JSON.stringify(bad.body)).not.toContain("other");
     expect((await w.ask(OMAR, { task: "x".repeat(2_001) })).status).toBe(400);
     expect((await w.ask(OMAR, { stage: "deploy" })).status).toBe(400);
+  });
+});
+
+describe("a lesson that names a project member who did not write it (review M1)", () => {
+  it("is left out: the names come from the project's roster and not only from the lesson's authors; an @handle is left out too", async () => {
+    const w = await world();
+    w.pin(2, pinned("api", 1));
+    await w.commit(w.teach("les_namesomar1", { title: "Ask Omar Diaz before changing refunds" }), w.teach("les_namesmaya1", { title: "Ping Maya Chen on schema changes" }), w.teach("les_handle0001", { title: "Ask @omar before merging" }), w.teach("les_fine00001"));
+    expect(w.ids(await w.ask(MAYA))).toEqual(["les_fine00001"]);
+  });
+});
+
+describe("the repository is proved before anything is switched off (review M2)", () => {
+  it("a project whose own switch is off answers 404 for an address that is not its repository, and 'off' for the one it holds", async () => {
+    const w = await world();
+    w.pin(2, pinned("api", 1));
+    w.db.set({ pk: teamRecordPk(TEST_ORG, "payments"), sk: "LESSONSET#LOCALTOOLS", entityType: "LESSON_SETTINGS", enabled: false });
+    const foreign = await w.ask(MAYA, { repo: "https://github.com/other-co/secret-repo" });
+    expect(foreign.status).toBe(404);
+    expect(await w.ask(MAYA)).toMatchObject({ status: 200, body: { status: "off", reason: "project_setting" } });
+    vi.stubEnv("LEARNED_LESSONS_ENABLED", "0");
+    expect((await w.ask(MAYA, { repo: "https://github.com/other-co/secret-repo" })).status).toBe(404);
+    expect(await w.ask(MAYA)).toMatchObject({ status: 200, body: { status: "off", reason: "install_switch" } });
+  });
+});
+
+describe("the two switches (decision 46b): who may read and set them, and what they do", () => {
+  it("any member reads what the project's switch comes to; the default is on under Standard", async () => {
+    const w = await world();
+    expect(await w.project(OMAR, "GET")).toMatchObject({ status: 200, body: { enabled: true, preset: "standard", companyStays: false } });
+    expect((await w.project(OMAR, "GET")).body.own).toBeUndefined();
+    expect((await w.project(ZED, "GET")).status).toBe(404);
+  });
+
+  it("a maintainer switches the project off and on, audited with the new value only; a contributor and a person outside the project cannot; the change is live on the next ask", async () => {
+    const w = await world();
+    w.pin(2, pinned("api", 1));
+    await w.commit(w.teach("les_route00001"));
+    expect(w.ids(await w.ask(MAYA))).toEqual(["les_route00001"]);
+    expect((await w.project(OMAR, "POST", { enabled: false })).status).toBe(403);
+    expect((await w.project(ZED, "POST", { enabled: false })).status).toBe(404);
+    expect(w.audit.recordedBy("lesson.local_tools_switched")).toEqual([]);
+    const off = await w.project(PIA, "POST", { enabled: false });
+    expect(off).toMatchObject({ status: 200, body: { enabled: false, own: false, reason: "project_setting" } });
+    expect(await w.ask(MAYA)).toMatchObject({ status: 200, body: { status: "off", reason: "project_setting", lessons: [] } });
+    expect(w.audit.recordedBy("lesson.local_tools_switched")).toEqual([expect.objectContaining({ actor: { kind: "member", id: PIA.developerId }, facts: { scope: "project", enabled: false } })]);
+    expect(await w.project(PIA, "POST", { enabled: true })).toMatchObject({ status: 200, body: { enabled: true, own: true } });
+    expect(w.ids(await w.ask(MAYA))).toEqual(["les_route00001"]);
+    // a company admin counts as a maintainer; a field the route does not take is refused
+    expect((await w.project(ADA, "POST", { enabled: true })).status).toBe(200);
+    expect((await w.project(PIA, "POST", { enabled: true, extra: 1 })).status).toBe(400);
+  });
+
+  it("a Regulated project is off whatever the project chose, and says so", async () => {
+    const w = await world();
+    w.db.set({ pk: teamRecordPk(TEST_ORG, "payments"), sk: "LESSONSET#PRESET", entityType: "LESSON_SETTINGS", preset: "regulated" });
+    await w.project(PIA, "POST", { enabled: true });
+    expect(await w.project(OMAR, "GET")).toMatchObject({ body: { enabled: false, own: true, reason: "regulated", preset: "regulated" } });
+  });
+
+  it("an owner or admin reads and sets the company's 'lessons stay in Rovara' switch from a live browser session; a member cannot read or set it; it turns every project's local read off at once, audited", async () => {
+    const w = await world();
+    w.pin(2, pinned("api", 1));
+    await w.commit(w.teach("les_route00001"));
+    expect((await w.company(PIA, "GET")).status).toBe(403);
+    expect((await w.company(PIA, "POST", { stays: true })).status).toBe(403);
+    expect(await w.company(ADA, "GET")).toMatchObject({ status: 200, body: { stays: false } });
+    expect(await w.company(ADA, "POST", { stays: true })).toMatchObject({ status: 200, body: { stays: true } });
+    expect(await w.ask(MAYA)).toMatchObject({ status: 200, body: { status: "off", reason: "company_stays", lessons: [] } });
+    expect(await w.project(OMAR, "GET")).toMatchObject({ body: { enabled: false, reason: "company_stays", companyStays: true } });
+    expect(w.audit.recordedBy("lesson.local_tools_switched")).toEqual([expect.objectContaining({ facts: { scope: "company", enabled: true } })]);
+    await w.company(ADA, "POST", { stays: false });
+    expect(w.ids(await w.ask(MAYA))).toEqual(["les_route00001"]);
+    // a bearer sign-in (the command line) cannot change the company's switch: it needs a live browser session
+    expect((await w.dev(ADA, "POST", "/v1/app/org/lessons/local-tools", { stays: true })).status).toBe(403);
   });
 });
 
