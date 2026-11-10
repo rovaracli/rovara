@@ -96,6 +96,23 @@ export function checkImports(layout: Layout): string[] {
   return problems;
 }
 
+const BUILD_OUTPUT_PATH = /^vendor\/rovara-code\/packages\/[^/]+\/(?:(?:dist|node_modules)(?:\/|$)|tsconfig\.tsbuildinfo$)/;
+
+/**
+ * The offline hash skips the build output `tsc -b` writes (packages/<pkg>/dist, node_modules, tsconfig.tsbuildinfo), so a force-added file there would hash clean
+ * while `tsc -b` keeps it and the shims load it. Git must not track any path there. Reads the index, so it also holds in CI's fresh checkout. Skipped when the
+ * root is not a git work tree (a tarball, a test fixture).
+ */
+export function trackedBuildOutput(layout: Layout): string[] {
+  let listed: string;
+  try {
+    listed = git(layout.root, ["ls-files", "-z", "--", CODE_DIR]);
+  } catch {
+    return [];
+  }
+  return listed.split("\0").filter((path) => BUILD_OUTPUT_PATH.test(path));
+}
+
 export interface VerifyResult { ok: boolean; problems: string[]; sha?: string }
 
 export function verifyRovaraCode(layout: Layout, options: { remote?: boolean } = {}): VerifyResult {
@@ -131,6 +148,9 @@ export function verifyRovaraCode(layout: Layout, options: { remote?: boolean } =
       problems.push(error instanceof Error ? error.message : String(error));
     }
   }
+
+  const tracked = trackedBuildOutput(layout);
+  if (tracked.length > 0) problems.push(`git tracks build output inside the copy, which tsc -b would keep and the shims would load: ${tracked.slice(0, 5).join(", ")}${tracked.length > 5 ? ", ..." : ""} (git rm --cached them)`);
 
   // The generated layer is Cloud's own, so it is compared with what the generator would write now.
   if (local.problems.length === 0 && existsSync(join(layout.root, CODE_DIR, "packages"))) {

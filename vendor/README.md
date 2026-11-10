@@ -62,7 +62,7 @@ node scripts/vendor/verify-rovara-code.ts --remote   # also fetches the pinned s
 
 Nothing in `PIN` except the sha and the hash. The repository (`https://github.com/PrepLabsAI/Rovara.git`) and the include list are constants in
 `scripts/vendor/rovara-code-vendor.ts`, and `verify` fails if `PIN` names anything else; there is no environment override. Only `packages/<pkg>/dist`,
-`packages/<pkg>/node_modules` and `packages/<pkg>/tsconfig.tsbuildinfo` (what `tsc -b` writes) are skipped when hashing; a file of the same name anywhere else counts.
+`packages/<pkg>/node_modules` and `packages/<pkg>/tsconfig.tsbuildinfo` (what `tsc -b` writes) are skipped when hashing; a file of the same name anywhere else counts. `verify` also fails if git tracks any path in those build-output locations (a force-added `dist/` file), which it reads from the index, so it holds in CI too.
 
 ## Rules
 

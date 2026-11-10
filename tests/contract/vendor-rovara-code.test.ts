@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { afterAll, describe, expect, it } from "vitest";
 import YAML from "yaml";
 import { updateRovaraCode } from "../../scripts/vendor/update-rovara-code.js";
-import { checkImports, packageOfSpecifier, verifyRovaraCode } from "../../scripts/vendor/verify-rovara-code.js";
+import { checkImports, packageOfSpecifier, trackedBuildOutput, verifyRovaraCode } from "../../scripts/vendor/verify-rovara-code.js";
 import {
   CODE_DIR, INCLUDE, PIN_FILE, PUBLIC_REPO_URL, SHIMMED_PACKAGES, SHIMS_DIR, blobId, defaultLayout, diffManifests, formatPin, localManifest, manifestDigest, parsePin, planShims, type Layout,
 } from "../../scripts/vendor/rovara-code-vendor.js";
@@ -202,6 +202,29 @@ describe("the vendor scripts, on a fixture repository", () => {
     // A package's top-level dist as a link is not build output either.
     symlinkSync("src", join(pkg, "dist"));
     expect(verifyRovaraCode(layout).ok).toBe(false);
+  });
+
+  it("fails when git tracks build output inside the copy (a force-added dist file or tsbuildinfo), though the hash skips those paths", () => {
+    const { layout, root } = pinned();
+    run(root, "init", "-q");
+    run(root, "add", "-A");
+    expect(verifyRovaraCode(layout).problems).toEqual([]);
+    expect(trackedBuildOutput(layout)).toEqual([]);
+    const pkg = join(root, CODE_DIR, "packages/alpha");
+    mkdirSync(join(pkg, "dist"), { recursive: true });
+    writeFileSync(join(pkg, "dist/index.js"), "export const tampered = true;\n");
+    writeFileSync(join(pkg, "tsconfig.tsbuildinfo"), "{}");
+    mkdirSync(join(pkg, "node_modules/x"), { recursive: true });
+    writeFileSync(join(pkg, "node_modules/x/index.js"), "x\n");
+    // Not tracked yet: ignored by the hash, so the copy still verifies (this is build output).
+    expect(verifyRovaraCode(layout).problems).toEqual([]);
+    run(root, "add", "-f", "--", CODE_DIR);
+    const result = verifyRovaraCode(layout);
+    expect(result.ok).toBe(false);
+    expect(result.problems.join("\n")).toContain("git tracks build output");
+    expect(trackedBuildOutput(layout).sort()).toEqual([`${CODE_DIR}/packages/alpha/dist/index.js`, `${CODE_DIR}/packages/alpha/node_modules/x/index.js`, `${CODE_DIR}/packages/alpha/tsconfig.tsbuildinfo`]);
+    run(root, "rm", "-q", "-r", "--cached", "--", `${CODE_DIR}/packages/alpha/dist`, `${CODE_DIR}/packages/alpha/node_modules`, `${CODE_DIR}/packages/alpha/tsconfig.tsbuildinfo`);
+    expect(verifyRovaraCode(layout).problems).toEqual([]);
   });
 
   it("fails when Code's source imports an @agentx package that is not linked, or a package it does not declare", () => {
