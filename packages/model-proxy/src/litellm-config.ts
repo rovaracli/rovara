@@ -49,6 +49,10 @@ export function litellmConfig(input: LitellmConfigInput): string {
     // per process here (there is no Redis), so it does not bound two replicas, and it refuses a call that only other calls' holds block with a 422
     // budget_exceeded, which the worker reads as a spent budget and ends the task on. Its read-time check (spend over max_budget) still runs.
     "  disable_budget_reservation: true",
+    // LiteLLM's router retries a failed call itself (twice by default) under the same call id, after the guard's hold was taken once: a retry would
+    // run beside a hold sized for one attempt. Off: Pi and the provider SDKs retry, and each of their retries takes its own hold.
+    "router_settings:",
+    "  num_retries: 0",
     "",
   ].join("\n");
 }

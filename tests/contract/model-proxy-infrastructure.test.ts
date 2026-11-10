@@ -105,6 +105,8 @@ describe("model proxy infrastructure (named environments)", () => {
     expect(text).toContain("  user_api_key_cache_ttl: 10\n");
     // the guard holds each call's worst case in a ledger every replica shares; LiteLLM's own per-replica reservation is off (it 422s on holds alone)
     expect(text).toContain("  disable_budget_reservation: true\n");
+    // the router does not retry under the call id the guard holds for once
+    expect(text).toContain("router_settings:\n  num_retries: 0\n");
     expect(text).not.toMatch(/configurable_clientside_auth_params|allow_client_side_credentials|forward_client_headers_to_llm_api|forward_traceparent/);
     // The module written next to the config is the one the spike verified.
     expect(definition.Environment).toContainEqual({ Name: "ROVARA_GUARD_PY", Value: ROVARA_GUARD_PY });

@@ -22,6 +22,8 @@ general_settings:
   database_url: os.environ/DATABASE_URL
   user_api_key_cache_ttl: 10
   disable_budget_reservation: true
+router_settings:
+  num_retries: 0
 `);
   });
 
@@ -30,6 +32,7 @@ general_settings:
       model_list: models.map(({ id }) => ({ model_name: id, litellm_params: { model: `bedrock/${id}`, aws_region_name: "eu-west-1" } })),
       litellm_settings: { callbacks: "rovara_guard.proxy_handler_instance" },
       general_settings: { master_key: "os.environ/LITELLM_MASTER_KEY", database_url: "os.environ/DATABASE_URL", user_api_key_cache_ttl: 10, disable_budget_reservation: true },
+      router_settings: { num_retries: 0 },
     });
   });
 

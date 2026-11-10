@@ -1,8 +1,11 @@
 # Fake model upstream for the budget spike: Anthropic Messages, OpenAI chat completions and Responses, streamed or not.
 # Used by tests/integration/model-proxy-budget-docker.test.ts. A path that starts with /slow streams one delta every 0.5 s for 5 s (so a client can cut it);
-# /fail answers 400. Usage: input = request bytes / 4, output = min(200, the request's output limit). Logs one JSON line per request.
+# /fail answers 400; /flaky answers 500 to every odd request. Usage: input = request bytes / 4, output = min(200, the request's output limit). Logs one JSON line per request.
 import json, sys, time, uuid
+import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+FLAKY, FLAKY_LOCK = [0], threading.Lock()  # /flaky answers 500 to every odd request
 
 
 
@@ -35,6 +38,13 @@ class H(BaseHTTPRequestHandler):
         path = self.path[5:] if slow else self.path
         stream = bool(body.get("stream"))
         log(path=self.path, model=body.get("model"), stream=stream, max_tokens=body.get("max_tokens") or body.get("max_output_tokens") or body.get("max_completion_tokens"))
+        if self.path.startswith("/flaky"):
+            with FLAKY_LOCK:
+                FLAKY[0] += 1
+                odd = FLAKY[0] % 2 == 1
+            if odd:
+                return self._json({"error": {"type": "server_error", "message": "fake upstream hiccup"}}, 500)
+            path = self.path[len("/flaky"):]
         if self.path.startswith("/fail"):
             return self._json({"error": {"type": "invalid_request_error", "message": "refused by fake upstream"}}, 400)
         steps = 10 if slow else 3

@@ -243,37 +243,40 @@ _MICROS = 1_000_000
 # Every per-token rate a call's tokens could be billed at (long-context tiers and the 1-hour cache write included, batch-only rates excluded by the max).
 _INPUT_RATE = re.compile(r"^(input_cost_per_token|cache_creation_input_token_cost)(_above_[a-z0-9_]+)?$")
 _OUTPUT_RATE = re.compile(r"^output_cost_per_(token|reasoning_token)(_above_[a-z0-9_]+)?$")
+_PER_CALL = re.compile(r"^(input_|output_)?cost_per_request$")
+# Its own schema, outside the public schema LiteLLM's Prisma migrations manage, so no LiteLLM migration can drop it.
 _SCHEMA = (
-    "CREATE TABLE IF NOT EXISTS rovara_budget_keys (key_hash text PRIMARY KEY, charged_micros bigint NOT NULL DEFAULT 0,"
+    "CREATE SCHEMA IF NOT EXISTS rovara_budget",
+    "CREATE TABLE IF NOT EXISTS rovara_budget.keys (key_hash text PRIMARY KEY, charged_micros bigint NOT NULL DEFAULT 0,"
     " held_micros bigint NOT NULL DEFAULT 0, updated_at timestamptz NOT NULL DEFAULT now())",
-    "CREATE TABLE IF NOT EXISTS rovara_budget_holds (call_id text PRIMARY KEY, key_hash text NOT NULL, reserved_micros bigint NOT NULL,"
+    "CREATE TABLE IF NOT EXISTS rovara_budget.holds (call_id text PRIMARY KEY, key_hash text NOT NULL, reserved_micros bigint NOT NULL,"
     " expires_at timestamptz NOT NULL)",
-    "CREATE INDEX IF NOT EXISTS rovara_budget_holds_key ON rovara_budget_holds (key_hash, expires_at)",
+    "CREATE INDEX IF NOT EXISTS holds_key ON rovara_budget.holds (key_hash, expires_at)",
 )
 # An orphan (older than HOLD_SECONDS) leaves the holds and is added to what its key has been charged. One statement: a hold is moved once.
 _SQL_SWEEP = (
-    "WITH gone AS (DELETE FROM rovara_budget_holds WHERE key_hash = $1::text AND expires_at < now() RETURNING reserved_micros),"
+    "WITH gone AS (DELETE FROM rovara_budget.holds WHERE key_hash = $1::text AND expires_at < now() RETURNING reserved_micros),"
     " s AS (SELECT COALESCE(SUM(reserved_micros), 0)::bigint AS n FROM gone)"
-    " UPDATE rovara_budget_keys k SET charged_micros = k.charged_micros + s.n, held_micros = k.held_micros - s.n, updated_at = now()"
+    " UPDATE rovara_budget.keys k SET charged_micros = k.charged_micros + s.n, held_micros = k.held_micros - s.n, updated_at = now()"
     " FROM s WHERE k.key_hash = $1::text AND s.n > 0")
 _SQL_SWEEP_ALL = (
-    "WITH gone AS (DELETE FROM rovara_budget_holds WHERE expires_at < now() RETURNING key_hash, reserved_micros),"
+    "WITH gone AS (DELETE FROM rovara_budget.holds WHERE expires_at < now() RETURNING key_hash, reserved_micros),"
     " s AS (SELECT key_hash, SUM(reserved_micros)::bigint AS n FROM gone GROUP BY key_hash)"
-    " UPDATE rovara_budget_keys k SET charged_micros = k.charged_micros + s.n, held_micros = k.held_micros - s.n, updated_at = now()"
+    " UPDATE rovara_budget.keys k SET charged_micros = k.charged_micros + s.n, held_micros = k.held_micros - s.n, updated_at = now()"
     " FROM s WHERE k.key_hash = s.key_hash")
-_SQL_FORGET = "DELETE FROM rovara_budget_keys WHERE held_micros = 0 AND updated_at < now() - interval '45 days'"
-_SQL_ENSURE = "INSERT INTO rovara_budget_keys (key_hash) VALUES ($1::text) ON CONFLICT (key_hash) DO NOTHING"
+_SQL_FORGET = "DELETE FROM rovara_budget.keys WHERE held_micros = 0 AND updated_at < now() - interval '45 days'"
+_SQL_ENSURE = "INSERT INTO rovara_budget.keys (key_hash) VALUES ($1::text) ON CONFLICT (key_hash) DO NOTHING"
 # The take: the key's row is locked by the UPDATE, so two replicas taking at once are serialised and the second sees the first's hold.
 _SQL_TAKE = (
-    "WITH k AS (UPDATE rovara_budget_keys SET held_micros = held_micros + $2::bigint, updated_at = now()"
+    "WITH k AS (UPDATE rovara_budget.keys SET held_micros = held_micros + $2::bigint, updated_at = now()"
     " WHERE key_hash = $1::text AND GREATEST(charged_micros, $3::bigint) + held_micros + $2::bigint <= $4::bigint RETURNING key_hash)"
-    " INSERT INTO rovara_budget_holds (call_id, key_hash, reserved_micros, expires_at)"
+    " INSERT INTO rovara_budget.holds (call_id, key_hash, reserved_micros, expires_at)"
     " SELECT $5::text, key_hash, $2::bigint, now() + make_interval(secs => $6::int) FROM k RETURNING call_id")
-_SQL_READ = "SELECT charged_micros, held_micros FROM rovara_budget_keys WHERE key_hash = $1::text"
+_SQL_READ = "SELECT charged_micros, held_micros FROM rovara_budget.keys WHERE key_hash = $1::text"
 # Settle: the hold leaves and its key is charged the call's cost ($2), or the whole hold when $2 is negative. Settling twice charges once.
 _SQL_SETTLE = (
-    "WITH h AS (DELETE FROM rovara_budget_holds WHERE call_id = $1::text RETURNING key_hash, reserved_micros)"
-    " UPDATE rovara_budget_keys k SET held_micros = k.held_micros - h.reserved_micros,"
+    "WITH h AS (DELETE FROM rovara_budget.holds WHERE call_id = $1::text RETURNING key_hash, reserved_micros)"
+    " UPDATE rovara_budget.keys k SET held_micros = k.held_micros - h.reserved_micros,"
     " charged_micros = k.charged_micros + CASE WHEN $2::bigint < 0 THEN h.reserved_micros ELSE $2::bigint END, updated_at = now()"
     " FROM h WHERE k.key_hash = h.key_hash RETURNING k.charged_micros")
 
@@ -303,18 +306,26 @@ class _PostgresLedger:
     async def take(self, key, call_id, worst, spent, cap):
         """'ok' (held), 'exceeded' (the spend leaves no room for this call) or 'held' (only other calls' holds are in the way)."""
         db = await self._db()
-        await db.execute_raw(_SQL_ENSURE, key)
-        await db.execute_raw(_SQL_SWEEP, key)
-        if await db.query_raw(_SQL_TAKE, key, worst, spent, cap, call_id, HOLD_SECONDS):
-            return "ok"
-        rows = await db.query_raw(_SQL_READ, key)
+        try:
+            await db.execute_raw(_SQL_ENSURE, key)
+            await db.execute_raw(_SQL_SWEEP, key)
+            if await db.query_raw(_SQL_TAKE, key, worst, spent, cap, call_id, HOLD_SECONDS):
+                return "ok"
+            rows = await db.query_raw(_SQL_READ, key)
+        except Exception:
+            self._ready = False                             # the tables are created again on the next call if they went
+            raise
         charged = int(rows[0]["charged_micros"]) if rows else 0
         return "exceeded" if max(charged, spent) + worst > cap else "held"
 
     async def settle(self, call_id, cost):
         """Ends a hold: its key is charged cost micro-dollars, or the whole hold when cost is None."""
         db = await self._db()
-        await db.query_raw(_SQL_SETTLE, call_id, -1 if cost is None else cost)
+        try:
+            await db.query_raw(_SQL_SETTLE, call_id, -1 if cost is None else cost)
+        except Exception:
+            self._ready = False
+            raise
 
 
 _LEDGER = _PostgresLedger()
@@ -334,18 +345,21 @@ def _micros_up(usd):
 
 
 def _rates(entries):
-    """(input rate, output rate, max output tokens, max input tokens) over the given price dicts: the dearest rate any of them names."""
+    """(input rate, output rate, max output tokens, max input tokens, fixed price per call) over the given price dicts: the dearest rate any of them
+    names; every per-request price is added once at its dearest."""
     rate_in = rate_out = 0.0
     max_out = max_in = None
+    per_call = {}
     for entry in entries:
         for name, value in entry.items():
             if not isinstance(value, (int, float)) or isinstance(value, bool):
                 continue
-            if _INPUT_RATE.match(name): rate_in = max(rate_in, float(value))
+            if _PER_CALL.match(name): per_call[name] = max(per_call.get(name, 0.0), float(value))
+            elif _INPUT_RATE.match(name): rate_in = max(rate_in, float(value))
             elif _OUTPUT_RATE.match(name): rate_out = max(rate_out, float(value))
             elif name == "max_output_tokens" and value > 0: max_out = int(value) if max_out is None else min(max_out, int(value))
             elif name == "max_input_tokens" and value > 0: max_in = int(value) if max_in is None else min(max_in, int(value))
-    return rate_in, rate_out, max_out, max_in
+    return rate_in, rate_out, max_out, max_in, sum(per_call.values())
 
 
 def _prices_for(alias):
@@ -364,14 +378,15 @@ def _prices_for(alias):
             except Exception: pass
             mapped = litellm.model_cost.get(model) or litellm.model_cost.get(model.split("/", 1)[-1])
             if isinstance(mapped, dict): entries.append(mapped)
-        rate_in, rate_out, max_out, max_in = _rates(entries)
+        rate_in, rate_out, max_out, max_in, per_call = _rates(entries)
         if rate_in <= 0 or rate_out <= 0:
             return None
         if found is None:
-            found = (rate_in, rate_out, max_out, max_in)
+            found = (rate_in, rate_out, max_out, max_in, per_call)
         else:
             found = (max(found[0], rate_in), max(found[1], rate_out),
-                     None if found[2] is None or max_out is None else max(found[2], max_out), None if found[3] is None or max_in is None else max(found[3], max_in))
+                     None if found[2] is None or max_out is None else max(found[2], max_out), None if found[3] is None or max_in is None else max(found[3], max_in),
+                     max(found[4], per_call))
     return found
 
 
@@ -380,30 +395,49 @@ def _request_bytes(data):
     return len(json.dumps(sent, ensure_ascii=False, default=str).encode("utf-8"))
 
 
+_REMOTE_KEYS = ("url", "image_url", "file_url")
+
+
+def _remote_media(data):
+    """Whether the request names media by reference (an image or document URL, a file id) instead of carrying it: the provider (or LiteLLM) fetches it
+    after this hook, so its size, and its tokens, are not in the request's bytes. The model's own tool arguments are not walked."""
+    stack = [v for k, v in data.items() if k not in INJECTED_TOP and k not in ("metadata", "litellm_metadata")]
+    while stack:
+        value = stack.pop()
+        if isinstance(value, list):
+            stack.extend(value)
+        elif isinstance(value, dict):
+            for key, inner in value.items():
+                if isinstance(inner, str) and ((key in _REMOTE_KEYS and not inner.startswith("data:")) or key == "file_id"):
+                    return True
+            skip_input = value.get("type") in ARGUMENT_BLOCKS
+            stack.extend(v for k, v in value.items() if not (skip_input and k == "input"))
+    return False
+
+
 def _worst_case_micros(data, prices):
-    """The most this call could cost: its output limit (or the model's, or 64,000) at the dearest output rate, plus one input token per byte of the request
-    (no tokenizer makes more tokens than bytes; at most the model's input limit) at the dearer of the input and cache-write rates."""
-    rate_in, rate_out, max_out, max_in = prices
-    asked = next((v for v in (data.get("max_tokens"), data.get("max_output_tokens"), data.get("max_completion_tokens"))
-                  if isinstance(v, (int, float)) and not isinstance(v, bool) and v > 0), None)
-    output = int(asked) if asked is not None else (max_out or ASSUMED_MAX_OUTPUT_TOKENS)
-    if max_out is not None:
-        output = min(output, max_out)
-    output = min(output, 1_000_000)
-    tokens_in = min(_request_bytes(data), max_in or ASSUMED_MAX_INPUT_TOKENS, ASSUMED_MAX_INPUT_TOKENS)
-    return _micros_up(output * rate_out + tokens_in * rate_in)
+    """The most this call could cost: its output limit (the largest it names; else the model's, else 64,000) at the dearest output rate, plus one input
+    token per byte of the request (no tokenizer makes more tokens than bytes; the model's whole input limit when it names media by reference) at the
+    dearer of the input and cache-write rates, plus any fixed price per call."""
+    rate_in, rate_out, max_out, max_in, per_call = prices
+    asked = [int(v) for v in (data.get("max_tokens"), data.get("max_output_tokens"), data.get("max_completion_tokens"))
+             if isinstance(v, (int, float)) and not isinstance(v, bool) and v > 0]
+    output = min(max(asked) if asked else (max_out or ASSUMED_MAX_OUTPUT_TOKENS), 1_000_000)
+    whole_input = min(max_in or ASSUMED_MAX_INPUT_TOKENS, ASSUMED_MAX_INPUT_TOKENS)
+    tokens_in = whole_input if _remote_media(data) else min(_request_bytes(data), whole_input)
+    return _micros_up(output * rate_out + tokens_in * rate_in + per_call)
 
 
 def _timed_out(exc):
-    """A failure after the provider may have started generating: a timeout or a cancellation. Any other failure is an error answer, which is not billed."""
+    """A failure after the provider may have started generating: a timeout or a cancellation (499: the client went away). Any other failure is an error answer, which is not billed."""
     name = type(exc).__name__
-    return getattr(exc, "status_code", None) == 408 or "Timeout" in name or "Cancelled" in name
+    return getattr(exc, "status_code", None) in (408, 499) or "Timeout" in name or "Cancelled" in name
 
 
 class RovaraGuard(CustomLogger):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        self._calls = {}        # litellm_call_id -> this replica's open holds: {"stream", "started", "ended", "cost", "at"}
+        self._calls = {}        # litellm_call_id -> this replica's open holds: {"stream", "started", "ended", "cost", "at", "worst", "timed_out"}
         self._tasks = set()
 
     def _spawn(self, coro):
@@ -412,10 +446,12 @@ class RovaraGuard(CustomLogger):
         task.add_done_callback(self._tasks.discard)
 
     async def _finish(self, call_id, cost_usd):
-        """Settles this replica's hold for the call once: to its cost, or to the whole hold when cost_usd is None."""
-        if self._calls.pop(call_id, None) is None:
+        """Settles this replica's hold for the call once: to its cost, or to the whole hold when cost_usd is None. A cost after an attempt that timed out
+        (and may have been billed) is charged with the whole hold on top."""
+        state = self._calls.pop(call_id, None)
+        if state is None:
             return
-        cost = None if cost_usd is None else max(0, _micros_up(cost_usd))
+        cost = None if cost_usd is None else max(0, _micros_up(cost_usd)) + (state["worst"] if state["timed_out"] else 0)
         try:
             await _LEDGER.settle(call_id, cost)
         except Exception as e:
@@ -455,7 +491,7 @@ class RovaraGuard(CustomLogger):
         if verdict == "held":
             raise _proxy_error(route, 429, "budget_held", "other model calls of this task hold its budget for now; try again shortly",
                                {"retry-after": str(HELD_RETRY_AFTER_SECONDS)})
-        self._calls[call_id] = {"stream": data.get("stream") is True, "started": False, "ended": None, "cost": None, "at": now}
+        self._calls[call_id] = {"stream": data.get("stream") is True, "started": False, "ended": None, "cost": None, "at": now, "worst": worst, "timed_out": False}
 
 
     async def async_pre_call_hook(self, user_api_key_dict, cache, data, call_type):
@@ -552,17 +588,19 @@ class RovaraGuard(CustomLogger):
             return
         await self._finish(call_id, cost)
 
-    async def _failed(self, call_id, exc):
+    async def async_log_failure_event(self, kwargs, response_obj, start_time, end_time):
+        """One ATTEMPT failed. LiteLLM may still retry under the same call id, so nothing is settled here: only whether an attempt timed out is noted."""
+        state = self._calls.get(kwargs.get("litellm_call_id"))
+        if state is not None and _timed_out(kwargs.get("exception")):
+            state["timed_out"] = True
+
+    async def async_post_call_failure_hook(self, request_data, original_exception, user_api_key_dict, traceback_str=None):
+        """The CALL failed (every attempt). An error answer is not billed and is released; a call one of whose attempts timed out is charged its hold."""
+        call_id = request_data.get("litellm_call_id") if isinstance(request_data, dict) else None
         state = self._calls.get(call_id)
         if state is None or state["started"]:
             return                                          # a stream that had begun answering is settled by its wrapper
-        await self._finish(call_id, None if _timed_out(exc) else 0)
-
-    async def async_log_failure_event(self, kwargs, response_obj, start_time, end_time):
-        await self._failed(kwargs.get("litellm_call_id"), kwargs.get("exception"))
-
-    async def async_post_call_failure_hook(self, request_data, original_exception, user_api_key_dict, traceback_str=None):
-        await self._failed(request_data.get("litellm_call_id") if isinstance(request_data, dict) else None, original_exception)
+        await self._finish(call_id, None if state["timed_out"] or _timed_out(original_exception) else 0)
 
 
 proxy_handler_instance = RovaraGuard()

@@ -215,7 +215,8 @@ class ProxyException(Exception):
         self.message, self.type, self.code, self.headers = message, type, str(code), headers or {}
 PRICED = {"m-anth": {"litellm_params": {"model": "bedrock/us.anthropic.claude-x"}, "model_info": {}},
           "m-own": {"litellm_params": {"model": "openai/own", "input_cost_per_token": 0.000003, "output_cost_per_token": 0.000015}, "model_info": {}},
-          "m-free": {"litellm_params": {"model": "bedrock/us.anthropic.claude-free"}, "model_info": {}}}
+          "m-free": {"litellm_params": {"model": "bedrock/us.anthropic.claude-free"}, "model_info": {}},
+          "m-percall": {"litellm_params": {"model": "openai/own", "input_cost_per_token": 0.000003, "output_cost_per_token": 0.000015, "input_cost_per_request": 0.01}, "model_info": {}}}
 COST_MAP = {"us.anthropic.claude-x": {"input_cost_per_token": 0.000003, "output_cost_per_token": 0.000015, "cache_creation_input_token_cost": 0.00000375,
             "input_cost_per_token_above_200k_tokens": 0.000006, "output_cost_per_token_above_200k_tokens": 0.0000225, "output_cost_per_token_batches": 0.0000075,
             "max_output_tokens": 64000, "max_input_tokens": 1000000},
@@ -338,15 +339,27 @@ async def settling():
     before_grace = state(ledger)
     await asyncio.sleep(0.1)
     out["cut"] = {"before_grace": before_grace, "after_grace": state(ledger), "each": worst(cut)}
-    # errors: an error answer is not billed, a timeout is charged in full, a refusal by the guard holds nothing
+    # errors: an error answer is not billed, a timeout is charged in full; a failed ATTEMPT settles nothing (LiteLLM may retry it under the same call id)
     ledger = ns["_LEDGER"] = Ledger(); g = guard()
     e400, timeout = req(), req()
     for d in (e400, timeout): await pre(g, Key(cap=1.0), d)
     class BadRequest(Exception): status_code = 400
+    class Upstream(Exception): status_code = 500
     class Timeout(Exception): status_code = 408
     await g.async_log_failure_event({"litellm_call_id": e400["litellm_call_id"], "exception": BadRequest()}, None, None, None)
+    attempt_only = state(ledger)
+    await g.async_post_call_failure_hook(e400, BadRequest(), None)
     await g.async_post_call_failure_hook(timeout, Timeout(), None)
-    out["errors"] = dict(state(ledger), each=worst(timeout))
+    out["errors"] = dict(state(ledger), each=worst(timeout), attempt_only=attempt_only)
+    # a failed attempt and then a retry that answers: its cost, plus the whole hold when the failed attempt timed out (it may have been billed)
+    ledger = ns["_LEDGER"] = Ledger(); g = guard()
+    plain, slow = req(), req()
+    for d in (plain, slow): await pre(g, Key(cap=1.0), d)
+    await g.async_log_failure_event({"litellm_call_id": plain["litellm_call_id"], "exception": Upstream()}, None, None, None)
+    await g.async_log_success_event({"litellm_call_id": plain["litellm_call_id"], "response_cost": 0.003}, None, None, None)
+    await g.async_log_failure_event({"litellm_call_id": slow["litellm_call_id"], "exception": Timeout()}, None, None, None)
+    await g.async_log_success_event({"litellm_call_id": slow["litellm_call_id"], "response_cost": 0.003}, None, None, None)
+    out["retried"] = dict(state(ledger), each=worst(slow))
     # an orphan (its replica died) is charged its whole hold once it is older than HOLD_SECONDS, at the key's next take
     ledger = ns["_LEDGER"] = Ledger(); g1, g2 = guard(), guard()
     lost = req(); await pre(g1, Key(cap=1.0), lost)
@@ -360,8 +373,16 @@ async def worst_cases():
     def w(**k):
         data = dict({"model": "m-anth", "messages": [], "litellm_call_id": "c", "metadata": {"user_api_key_hash": "h"}}, **k)
         return [ns["_worst_case_micros"](data, p), ns["_request_bytes"](data)]     # injected fields are not part of the request's size
+    url_image = [{"role": "user", "content": [{"type": "image", "source": {"type": "url", "url": "https://example.com/a.png"}}]}]
+    inline = [{"role": "user", "content": [{"type": "image_url", "image_url": {"url": "data:image/png;base64,AAAA"}}]}]
+    argument = [{"role": "assistant", "content": [{"type": "tool_use", "id": "t", "name": "fetch", "input": {"url": "https://example.com"}}]}]
+    per_call = ns["_prices_for"]("m-percall")
     return {"prices": p, "own": own, "named": w(max_tokens=1000), "none": w(), "over_model": w(max_tokens=10_000_000), "responses": w(max_output_tokens=1000),
             "completion": w(max_completion_tokens=1000), "big": w(max_tokens=1000, messages=[{"role": "user", "content": "x" * 100_000}]),
+            "both": w(max_tokens=100, max_completion_tokens=1000), "remote": w(max_tokens=1000, messages=url_image),
+            "file_id": w(max_tokens=1000, messages=[{"role": "user", "content": [{"type": "input_file", "file_id": "f1"}]}]),
+            "inline": w(max_tokens=1000, messages=inline), "argument": w(max_tokens=1000, messages=argument),
+            "per_call": [ns["_worst_case_micros"]({"model": "m-percall", "max_tokens": 1000}, per_call), ns["_request_bytes"]({"model": "m-percall", "max_tokens": 1000})],
             "plain_size": len(json.dumps({"model": "m-anth", "messages": [], "max_tokens": 1000}, ensure_ascii=False))}
 
 which = json.load(sys.stdin)
@@ -372,10 +393,12 @@ json.dump({name: asyncio.run(globals()[name]()) for name in which}, sys.stdout)
   type Answer = { status: number; type?: string; message?: string; headers?: Record<string, string> };
   type Priced = [number, number];
   interface BudgetResults {
-    worst_cases: { prices: Array<number | null>; own: Array<number | null>; plain_size: number } & Record<"named" | "none" | "over_model" | "responses" | "completion" | "big", Priced>;
+    worst_cases: { prices: Array<number | null>; own: Array<number | null>; plain_size: number }
+      & Record<"named" | "none" | "over_model" | "responses" | "completion" | "big" | "both" | "remote" | "file_id" | "inline" | "argument" | "per_call", Priced>;
     parallel: { codes: number[]; types: string[]; retry_after: string[]; held: LedgerRow; after: LedgerRow; one: number; cap: number };
     refusals: Record<"spent" | "charged" | "too_big" | "anth" | "unpriced" | "unknown" | "no_budget" | "no_key_object", Answer> & { ledger_keys: string[] };
-    settling: { plain: LedgerRow; streams: LedgerRow; cut: { before_grace: LedgerRow; after_grace: LedgerRow; each: number }; errors: LedgerRow & { each: number };
+    settling: { plain: LedgerRow; streams: LedgerRow; cut: { before_grace: LedgerRow; after_grace: LedgerRow; each: number }; errors: LedgerRow & { each: number; attempt_only: LedgerRow };
+      retried: LedgerRow & { each: number };
       orphan: { young: LedgerRow; old: LedgerRow; each: number } };
   }
   function runBudget<K extends keyof BudgetResults>(scenario: K): BudgetResults[K] {
@@ -391,14 +414,23 @@ json.dump({name: asyncio.run(globals()[name]()) for name in which}, sys.stdout)
   itPython("prices a call's worst case at the dearest rate it could be billed at, its output limit or the model's, and one input token per request byte", () => {
     const w = runBudget("worst_cases");
     // the dearest input rate (the 200k tier, above the cache-write rate) and output rate (the 200k tier, never the cheaper batch rate)
-    expect(w.prices).toEqual([0.000006, 0.0000225, 64000, 1000000]);
-    expect(w.own).toEqual([0.000003, 0.000015, null, null]);
+    expect(w.prices).toEqual([0.000006, 0.0000225, 64000, 1000000, 0]);
+    expect(w.own).toEqual([0.000003, 0.000015, null, null, 0]);
     const at = (output: number, input: number) => Math.ceil((output * 0.0000225 + input * 0.000006) * 1e6 - 1e-6);
     expect(w.named[1]).toBe(w.plain_size);
     for (const name of ["named", "responses", "completion", "big"] as const) expect(w[name][0], name).toBe(at(1000, w[name][1]));
     expect(w.none[0]).toBe(at(64000, w.none[1]));                  // no limit named: the model's own
-    expect(w.over_model[0]).toBe(at(64000, w.over_model[1]));      // a limit above the model's: the model's
+    // a limit as asked, even above the cost map's (the map disagrees with itself across ids); at most 1,000,000
+    expect(w.over_model[0]).toBe(at(1_000_000, w.over_model[1]));
+    expect(w.both[0]).toBe(at(1000, w.both[1]));                   // max_tokens 100 beside max_completion_tokens 1000: the larger
     expect(w.big[1]).toBeGreaterThan(100_000);
+    // media named by reference (a URL, a file id) is fetched after the hook: the model's whole input limit is held; inline data and tool arguments are bytes
+    expect(w.remote[0]).toBe(at(1000, 1_000_000));
+    expect(w.file_id[0]).toBe(at(1000, 1_000_000));
+    expect(w.inline[0]).toBe(at(1000, w.inline[1]));
+    expect(w.argument[0]).toBe(at(1000, w.argument[1]));
+    // a fixed price per call is added
+    expect(w.per_call[0]).toBe(Math.ceil((1000 * 0.000015 + w.per_call[1] * 0.000003 + 0.01) * 1e6 - 1e-6));
   });
 
   itPython("8 parallel calls over two replicas on a budget that fits one worst case: one is held, seven get 429 budget_held, nothing overshoots", () => {
@@ -439,7 +471,9 @@ json.dump({name: asyncio.run(globals()[name]()) for name in which}, sys.stdout)
     // the cut and the broken stream are charged in full at once; the silent one is charged in full after the grace
     expect(s.cut.before_grace).toEqual({ charged: 2 * s.cut.each, held: s.cut.each, holds: 1 });
     expect(s.cut.after_grace).toEqual({ charged: 3 * s.cut.each, held: 0, holds: 0 });
+    expect(s.errors.attempt_only).toEqual({ charged: 0, held: 2 * s.errors.each, holds: 2 });
     expect(s.errors).toMatchObject({ charged: s.errors.each, held: 0, holds: 0 });
+    expect(s.retried).toMatchObject({ charged: 3000 + 3000 + s.retried.each, held: 0, holds: 0 });
     expect(s.orphan.young).toEqual({ charged: 0, held: 2 * s.orphan.each, holds: 2 });
     expect(s.orphan.old).toEqual({ charged: s.orphan.each, held: 2 * s.orphan.each, holds: 2 });
   });

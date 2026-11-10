@@ -1,6 +1,6 @@
 // The guard's task-budget holds (rovara_guard.py section 4) against the REAL pinned LiteLLM: two replicas sharing one Postgres, the guard written
 // next to the config and loaded as a callback exactly as the stack's start command does, and a fake model upstream (no provider key). Checks:
-// every route settles to its cost; a cut stream is charged its whole hold; an error answer is released; 8 parallel calls over both replicas on a
+// every route settles to its cost (equal to LiteLLM's own key spend); an upstream 500 is not retried under the held call id; a cut stream is charged its whole hold; an error answer is released; 8 parallel calls over both replicas on a
 // budget that fits 2 give 2 x 200 and 6 x 429 budget_held (no overshoot); 429 and 422 bodies keep their error type on all three routes; an orphan
 // becomes spent. Runs only where Docker answers and the pinned image is already present (it never pulls), so CI skips it; run it after a LiteLLM bump.
 import { execFileSync, spawnSync } from "node:child_process";
@@ -70,7 +70,7 @@ describe.skipIf(!usable)("model proxy task budget against the pinned LiteLLM (do
       const lines = result.stdout.trim().split("\n").filter((line) => line.startsWith("{")).map((line) => JSON.parse(line) as { check?: string; ok?: boolean; failed?: string[] });
       expect(lines.filter((line) => line.check !== undefined && line.ok !== true), result.stdout + result.stderr).toEqual([]);
       expect(lines.filter((line) => line.check !== undefined).map((line) => line.check)).toEqual([
-        "routes_settle_to_cost", "cut_streams_charged_in_full", "error_answer_released", "parallel_no_overshoot", "held_429_every_route", "spent_422_every_route", "orphan_becomes_spent",
+        "routes_settle_to_cost", "charged_matches_litellm_spend", "upstream_error_not_retried_under_hold", "cut_streams_charged_in_full", "error_answer_released", "parallel_no_overshoot", "held_429_every_route", "spent_422_every_route", "orphan_becomes_spent",
       ]);
       expect(result.status).toBe(0);
     } finally {

@@ -30,7 +30,7 @@ def sql(query):
 
 
 def mint(budget):
-    s, _, b = post(P0, "/key/generate", {"max_budget": budget, "models": ["anth", "anth-slow", "oai", "oai-slow", "oai-fail"]}, MASTER)
+    s, _, b = post(P0, "/key/generate", {"max_budget": budget, "models": ["anth", "anth-slow", "oai", "oai-slow", "oai-fail", "oai-flaky"]}, MASTER)
     assert s == 200, b
     info = json.loads(b)
     return info["key"], info["token"]
@@ -62,8 +62,8 @@ def cut(base, route, model, key, after_bytes=300):
 
 
 def ledger(token):
-    rows = sql(f"SELECT charged_micros, held_micros FROM rovara_budget_keys WHERE key_hash = '{token}'")
-    holds = sql(f"SELECT count(*) FROM rovara_budget_holds WHERE key_hash = '{token}'")
+    rows = sql(f"SELECT charged_micros, held_micros FROM rovara_budget.keys WHERE key_hash = '{token}'")
+    holds = sql(f"SELECT count(*) FROM rovara_budget.holds WHERE key_hash = '{token}'")
     return (int(rows[0][0]), int(rows[0][1]), int(holds[0][0])) if rows else (None, None, None)
 
 
@@ -85,6 +85,43 @@ for i, (route, model) in enumerate((("messages", "anth"), ("chat", "oai"), ("res
         statuses.append(s)
 charged, held, holds = settled(token)
 check("routes_settle_to_cost", statuses == [200] * 8 and held == 0 and holds == 0 and 0 < charged < 8 * 20_000, statuses=statuses, charged=charged, held=held, holds=holds)
+
+def litellm_spend_micros(key, wait=30):
+    """LiteLLM's own spend for the key once its batch writer has flushed everything (it writes about every 10 s): the first value that stays the same
+    for 12 s."""
+    def read():
+        s, _, b = post_get(f"/key/info?key={key}")
+        return int(round(float((json.loads(b).get("info") or {}).get("spend") or 0) * 1e6)) if s == 200 else -1
+    end, last, since = time.time() + wait + 15, read(), time.time()
+    while time.time() < end:
+        time.sleep(1)
+        now = read()
+        if now != last: last, since = now, time.time()
+        elif now > 0 and time.time() - since >= 12: return now
+    return last
+
+
+def post_get(path):
+    req = urllib.request.Request(P0 + path, headers={"Authorization": f"Bearer {MASTER}"})
+    try:
+        with urllib.request.urlopen(req, timeout=30) as r:
+            return r.status, None, r.read().decode()
+    except urllib.error.HTTPError as e:
+        return e.code, None, e.read().decode()
+
+
+litellm = litellm_spend_micros(key)
+check("charged_matches_litellm_spend", abs(litellm - charged) <= 8, charged=charged, litellm=litellm)
+
+# 1b. an upstream 500 then 200 (a provider hiccup): the router does not retry under the held call id, so the first call fails and is released, and the
+# second is charged its cost, which LiteLLM's own spend agrees with (a router retry would run with no hold and never reach the ledger)
+key, token = mint(100.0)
+first, _, _ = post(P0, *body("chat", "oai-flaky", False), key)
+second, _, _ = post(P0, *body("chat", "oai-flaky", False), key)
+charged, held, holds = settled(token)
+spent = litellm_spend_micros(key)
+check("upstream_error_not_retried_under_hold", first == 500 and second == 200 and held == 0 and holds == 0 and charged > 0 and abs(spent - charged) <= 8,
+      first=first, second=second, charged=charged, litellm=spent)
 
 # 2. a stream the client cuts is charged its whole hold, on all three routes (LiteLLM itself logs only a partial cost, or none on Responses)
 key, token = mint(100.0)
@@ -113,13 +150,13 @@ check("parallel_no_overshoot", codes.count(200) == 2 and codes.count(429) == 6 a
 
 # 5. 429 and 422 bodies on every route: a held budget, then a spent one
 key, token = mint(0.02)
-sql(f"INSERT INTO rovara_budget_keys (key_hash) VALUES ('{token}') ON CONFLICT DO NOTHING")
-sql(f"INSERT INTO rovara_budget_holds (call_id, key_hash, reserved_micros, expires_at) VALUES ('blocker-{token[:8]}', '{token}', 18000, now() + interval '1 hour')")
-sql(f"UPDATE rovara_budget_keys SET held_micros = held_micros + 18000 WHERE key_hash = '{token}'")
+sql(f"INSERT INTO rovara_budget.keys (key_hash) VALUES ('{token}') ON CONFLICT DO NOTHING")
+sql(f"INSERT INTO rovara_budget.holds (call_id, key_hash, reserved_micros, expires_at) VALUES ('blocker-{token[:8]}', '{token}', 18000, now() + interval '1 hour')")
+sql(f"UPDATE rovara_budget.keys SET held_micros = held_micros + 18000 WHERE key_hash = '{token}'")
 held_answers = {route: post(P0, *body(route, "oai" if route != "messages" else "anth", False), key) for route in ("messages", "chat", "responses")}
 check("held_429_every_route", all(a[0] == 429 and json.loads(a[2])["error"]["type"] == "budget_held" and a[1].get("retry-after") == "2" for a in held_answers.values()),
       answers={r: (a[0], a[2][:160], a[1].get("retry-after")) for r, a in held_answers.items()})
-sql(f"UPDATE rovara_budget_keys SET charged_micros = 19000 WHERE key_hash = '{token}'")
+sql(f"UPDATE rovara_budget.keys SET charged_micros = 19000 WHERE key_hash = '{token}'")
 spent_answers = {route: post(P1, *body(route, "oai" if route != "messages" else "anth", False), key) for route in ("messages", "chat", "responses")}
 check("spent_422_every_route", all(a[0] == 422 and json.loads(a[2])["error"]["type"] == "budget_exceeded" and json.loads(a[2])["error"]["message"].startswith("Budget has been exceeded! Key=")
                                    for a in spent_answers.values()), answers={r: (a[0], a[2][:200]) for r, a in spent_answers.items()})
@@ -128,8 +165,8 @@ check("spent_422_every_route", all(a[0] == 422 and json.loads(a[2])["error"]["ty
 key, token = mint(1.0)
 post(P0, *body("chat", "oai", False), key)
 before, _, _ = settled(token)
-sql(f"INSERT INTO rovara_budget_holds (call_id, key_hash, reserved_micros, expires_at) VALUES ('orphan-{token[:8]}', '{token}', 500000, now() - interval '1 second')")
-sql(f"UPDATE rovara_budget_keys SET held_micros = held_micros + 500000 WHERE key_hash = '{token}'")
+sql(f"INSERT INTO rovara_budget.holds (call_id, key_hash, reserved_micros, expires_at) VALUES ('orphan-{token[:8]}', '{token}', 500000, now() - interval '1 second')")
+sql(f"UPDATE rovara_budget.keys SET held_micros = held_micros + 500000 WHERE key_hash = '{token}'")
 s, _, _ = post(P1, *body("chat", "oai", False), key)
 after, held, holds = settled(token)
 check("orphan_becomes_spent", s == 200 and held == 0 and holds == 0 and after >= before + 500000, before=before, after=after)

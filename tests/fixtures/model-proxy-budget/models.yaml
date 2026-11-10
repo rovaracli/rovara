@@ -10,3 +10,5 @@ model_list:
     litellm_params: { model: openai/gpt-fake, api_base: "http://upstream:9000/slow/v1", api_key: not-a-real-key, input_cost_per_token: 0.000003, output_cost_per_token: 0.000015 }
   - model_name: oai-fail
     litellm_params: { model: openai/gpt-fake, api_base: "http://upstream:9000/fail/v1", api_key: not-a-real-key, input_cost_per_token: 0.000003, output_cost_per_token: 0.000015 }
+  - model_name: oai-flaky
+    litellm_params: { model: openai/gpt-fake, api_base: "http://upstream:9000/flaky/v1", api_key: not-a-real-key, input_cost_per_token: 0.000003, output_cost_per_token: 0.000015 }
