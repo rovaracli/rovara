@@ -34,6 +34,27 @@ export function budgetScopeOfProxyBody(status: number, body: string): ModelBudge
   return undefined;
 }
 
+/**
+ * Whether a proxy answer is its 429 `budget_held`: the task's budget has room, but other model calls of the task hold it until they settle
+ * (rovara_guard.py, section 4). It is waited out and sent again, never read as a rate limit or a spent budget. Both error envelopes carry the type in
+ * `error.type` (OpenAI's on the OpenAI routes, Anthropic's on /v1/messages). Nothing of the body is kept.
+ */
+export function budgetHeldBody(status: number, body: string): boolean {
+  if (status !== 429) return false;
+  let error: unknown;
+  try { error = (JSON.parse(body) as { error?: unknown }).error; } catch { return false; }
+  return error !== null && typeof error === "object" && (error as { type?: unknown }).type === "budget_held";
+}
+
+/** How long a call waits out held budget in all: longer than the proxy's 1,000 s orphan expiry, so a hold whose replica died is spent (or freed) first. */
+export const BUDGET_HELD_MAX_WAIT_MS = 1_200_000;
+
+/** The wait before sending a held call again: the proxy's retry-after (seconds), kept within 0.25 to 30 s; 2 s when it names none. */
+export function budgetHeldDelayMs(retryAfter: string | null): number {
+  const seconds = retryAfter === null || retryAfter.trim() === "" ? Number.NaN : Number(retryAfter);
+  return Number.isFinite(seconds) ? Math.min(30_000, Math.max(250, Math.round(seconds * 1000))) : 2_000;
+}
+
 const MARKER = /^AI budget exhausted \((org|member|task|project|agent|chain|test)\)$/u;
 
 /** What a stream's error message says when the budget ran out: Pi carries only text, so the scope travels in it. */

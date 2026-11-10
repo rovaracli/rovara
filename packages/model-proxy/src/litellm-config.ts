@@ -45,6 +45,10 @@ export function litellmConfig(input: LitellmConfigInput): string {
     "  database_url: os.environ/DATABASE_URL",
     // A revoked key stops working on every replica within this many seconds (the stock default is 60).
     `  user_api_key_cache_ttl: ${String(USER_API_KEY_CACHE_TTL_SECONDS)}`,
+    // The guard holds every call's worst case in a ledger all replicas share (rovara_guard.py, section 4). LiteLLM's own optimistic reservation is
+    // per process here (there is no Redis), so it does not bound two replicas, and it refuses a call that only other calls' holds block with a 422
+    // budget_exceeded, which the worker reads as a spent budget and ends the task on. Its read-time check (spend over max_budget) still runs.
+    "  disable_budget_reservation: true",
     "",
   ].join("\n");
 }

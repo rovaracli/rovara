@@ -8,6 +8,7 @@ import { describe, expect, it, vi } from "vitest";
 import type { Context } from "@earendil-works/pi-ai";
 import { BUDGET_EXHAUSTED_FAILURE_MESSAGE, DeveloperTaskFailureCategorySchema } from "../../packages/contracts/src/index.js";
 import { ModelBudgetExhaustedError, budgetExhaustedFromMarker, createConfiguredModelRuntime } from "../../packages/model-runtime/src/index.js";
+import { BUDGET_HELD_MAX_WAIT_MS, budgetHeldBody, budgetHeldDelayMs } from "../../packages/model-runtime/src/budget.js";
 import { failureCategory } from "../../packages/broker/src/developer/task-records.js";
 import { modelAccessSource } from "../../packages/worker/src/model-access.js";
 import { createDefaultPiSessionAdapter } from "../../packages/worker/src/pi-session.js";
@@ -110,6 +111,60 @@ describe("the model runtime meets the proxy's budget refusal", () => {
     const result = await runtime.streamSimple(model, context, { maxTokens: 64 }).result();
     expect(result).toMatchObject({ stopReason: "error", errorMessage: `AI budget exhausted (${scope})` });
     expect(budgetExhaustedFromMarker(result.errorMessage)).toMatchObject({ name: "ModelBudgetExhaustedError", scope, message: BUDGET_EXHAUSTED_FAILURE_MESSAGE });
+  });
+
+  // The proxy's 429 budget_held (rovara_guard.py, section 4): the budget has room but the task's other calls hold it. Both envelopes the proxy answers with.
+  const HELD_OPENAI = { error: { message: "other model calls of this task hold its budget for now; try again shortly", type: "budget_held", param: null, code: "429" } };
+  const HELD_ANTHROPIC = { type: "error", error: { type: "budget_held", message: "other model calls of this task hold its budget for now; try again shortly" } };
+  const held = (body: unknown, retryAfter = "0") => new Response(JSON.stringify(body), { status: 429, headers: { "content-type": "application/json", "retry-after": retryAfter } });
+  const answered = () => sse([
+    { type: "message_start", message: { id: "m", type: "message", role: "assistant", model: BEDROCK_MODEL, content: [], stop_reason: null, usage: { input_tokens: 10, output_tokens: 1, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 } } },
+    { type: "content_block_start", index: 0, content_block: { type: "text", text: "" } },
+    { type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "hi" } },
+    { type: "content_block_stop", index: 0 },
+    { type: "message_delta", delta: { stop_reason: "end_turn" }, usage: { output_tokens: 2 } },
+    { type: "message_stop" },
+  ]);
+
+  it("waits out a 429 budget_held and sends the same request again, never reading it as a rate limit or a spent budget", async () => {
+    const bodies: string[] = [];
+    let n = 0;
+    const transport = vi.fn<typeof fetch>(async (_input, init) => {
+      bodies.push(typeof init?.body === "string" ? init.body : "not text");
+      n += 1;
+      return n === 1 ? held(HELD_ANTHROPIC) : n === 2 ? held(HELD_OPENAI) : answered();
+    });
+    const { runtime, model } = await proxiedRuntime(transport);
+    const started = Date.now();
+    const result = await runtime.streamSimple(model, context, { maxTokens: 64 }).result();
+    expect(result.stopReason).toBe("stop");
+    expect(transport).toHaveBeenCalledTimes(3);
+    expect(new Set(bodies).size).toBe(1);
+    // retry-after 0 is held to the 0.25 s floor, so the proxy cannot be hammered
+    expect(Date.now() - started).toBeGreaterThanOrEqual(450);
+  });
+
+  it("stops waiting for held budget when the call is cancelled", async () => {
+    const controller = new AbortController();
+    const transport = vi.fn<typeof fetch>(async () => held(HELD_OPENAI, "30"));
+    const { runtime, model } = await proxiedRuntime(transport);
+    const stream = runtime.streamSimple(model, context, { maxTokens: 64, signal: controller.signal });
+    setTimeout(() => controller.abort(), 100);
+    const result = await stream.result();
+    expect(result.stopReason).toBe("aborted");
+    expect(transport).toHaveBeenCalledTimes(1);
+  });
+
+  it("tells a held budget only by its type: a rate limit, a spent budget or a non-JSON 429 is not one", () => {
+    expect(budgetHeldBody(429, JSON.stringify(HELD_OPENAI))).toBe(true);
+    expect(budgetHeldBody(429, JSON.stringify(HELD_ANTHROPIC))).toBe(true);
+    expect(budgetHeldBody(422, JSON.stringify(HELD_OPENAI))).toBe(false);
+    expect(budgetHeldBody(429, JSON.stringify({ type: "error", error: { type: "rate_limit_error", message: "slow down" } }))).toBe(false);
+    expect(budgetHeldBody(429, JSON.stringify(KEY_BODY))).toBe(false);
+    expect(budgetHeldBody(429, "budget_held")).toBe(false);
+    expect([budgetHeldDelayMs("2"), budgetHeldDelayMs(null), budgetHeldDelayMs("0"), budgetHeldDelayMs("9999"), budgetHeldDelayMs("soon")]).toEqual([2_000, 2_000, 250, 30_000, 2_000]);
+    // longer than the guard's 1,000 s orphan expiry, so a hold whose replica died is spent first
+    expect(BUDGET_HELD_MAX_WAIT_MS).toBeGreaterThan(1_000_000);
   });
 
   it("refuses a runtime whose first key is already refused for budget, as the budget and not as a proxy fault", async () => {

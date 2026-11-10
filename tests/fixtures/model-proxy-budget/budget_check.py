@@ -1,0 +1,138 @@
+# Budget hold checks against real LiteLLM replicas sharing one Postgres, with the Rovara guard loaded as Cloud loads it.
+# Used by tests/integration/model-proxy-budget-docker.test.ts (models: tests/fixtures/model-proxy-budget/models.yaml, upstream: upstream.py).
+# Usage: python3 -I budget_check.py <proxy0 url> <proxy1 url> <postgres container>, SPIKE_MASTER_KEY set. Prints JSON lines; exits 1 on a failed check.
+import concurrent.futures, json, os, socket, subprocess, sys, time, urllib.request
+
+P0, P1, PG = sys.argv[1], sys.argv[2], sys.argv[3]
+MASTER = os.environ["SPIKE_MASTER_KEY"]
+FAILED = []
+
+
+def check(name, ok, **detail):
+    print(json.dumps({"check": name, "ok": bool(ok), **detail}), flush=True)
+    if not ok:
+        FAILED.append(name)
+
+
+def post(base, path, body, key, timeout=60):
+    req = urllib.request.Request(base + path, data=json.dumps(body).encode(), method="POST",
+                                 headers={"Content-Type": "application/json", "Authorization": f"Bearer {key}", "x-api-key": key})
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            return r.status, {k.lower(): v for k, v in r.headers.items()}, r.read().decode()
+    except urllib.error.HTTPError as e:
+        return e.code, {k.lower(): v for k, v in e.headers.items()}, e.read().decode()
+
+
+def sql(query):
+    out = subprocess.run(["docker", "exec", PG, "psql", "-U", "litellm", "-d", "litellm", "-At", "-F", "|", "-c", query], capture_output=True, text=True, check=True)
+    return [line.split("|") for line in out.stdout.strip().splitlines() if line]
+
+
+def mint(budget):
+    s, _, b = post(P0, "/key/generate", {"max_budget": budget, "models": ["anth", "anth-slow", "oai", "oai-slow", "oai-fail"]}, MASTER)
+    assert s == 200, b
+    info = json.loads(b)
+    return info["key"], info["token"]
+
+
+def body(route, model, stream, max_tokens=256):
+    if route == "messages":
+        return "/v1/messages", {"model": model, "max_tokens": max_tokens, "stream": stream, "messages": [{"role": "user", "content": "hi"}]}
+    if route == "chat":
+        b = {"model": model, "max_tokens": max_tokens, "stream": stream, "messages": [{"role": "user", "content": "hi"}]}
+        if stream: b["stream_options"] = {"include_usage": True}
+        return "/v1/chat/completions", b
+    return "/v1/responses", {"model": model, "max_output_tokens": max_tokens, "stream": stream, "input": "hi"}
+
+
+def cut(base, route, model, key, after_bytes=300):
+    path, b = body(route, model, True)
+    host, port = base.split("//")[1].split(":")
+    data = json.dumps(b).encode()
+    s = socket.create_connection((host, int(port)))
+    s.sendall((f"POST {path} HTTP/1.1\r\nHost: {host}\r\nContent-Type: application/json\r\nAuthorization: Bearer {key}\r\nx-api-key: {key}\r\nContent-Length: {len(data)}\r\n\r\n").encode() + data)
+    got = b""
+    while len(got) < after_bytes:
+        chunk = s.recv(4096)
+        if not chunk: break
+        got += chunk
+    s.close()
+    return got.split(b" ", 2)[1].decode() if got else "?"
+
+
+def ledger(token):
+    rows = sql(f"SELECT charged_micros, held_micros FROM rovara_budget_keys WHERE key_hash = '{token}'")
+    holds = sql(f"SELECT count(*) FROM rovara_budget_holds WHERE key_hash = '{token}'")
+    return (int(rows[0][0]), int(rows[0][1]), int(holds[0][0])) if rows else (None, None, None)
+
+
+def settled(token, wait=15):
+    end = time.time() + wait
+    while time.time() < end:
+        c, h, n = ledger(token)
+        if h == 0 and n == 0: return c, h, n
+        time.sleep(0.5)
+    return ledger(token)
+
+
+# 1. every route, streamed and not, settles to its real cost (no hold left), on either replica
+key, token = mint(100.0)
+statuses = []
+for i, (route, model) in enumerate((("messages", "anth"), ("chat", "oai"), ("responses", "oai"), ("messages", "oai"))):
+    for stream in (False, True):
+        s, _, _ = post(P0 if i % 2 == 0 else P1, *body(route, model, stream), key)
+        statuses.append(s)
+charged, held, holds = settled(token)
+check("routes_settle_to_cost", statuses == [200] * 8 and held == 0 and holds == 0 and 0 < charged < 8 * 20_000, statuses=statuses, charged=charged, held=held, holds=holds)
+
+# 2. a stream the client cuts is charged its whole hold, on all three routes (LiteLLM itself logs only a partial cost, or none on Responses)
+key, token = mint(100.0)
+cuts = [cut(P0, "messages", "anth-slow", key), cut(P1, "chat", "oai-slow", key), cut(P0, "responses", "oai-slow", key)]
+charged, held, holds = settled(token)
+check("cut_streams_charged_in_full", cuts == ["200"] * 3 and held == 0 and holds == 0 and charged > 3 * 4_000, cuts=cuts, charged=charged)
+
+# 3. an error answer is not billed: the hold is released
+key, token = mint(100.0)
+s, _, _ = post(P1, *body("chat", "oai-fail", False), key)
+charged, held, holds = settled(token)
+check("error_answer_released", s == 400 and charged == 0 and held == 0 and holds == 0, status=s, charged=charged)
+
+# 4. eight parallel calls over both replicas on a budget that fits two worst cases: two run, six get 429 budget_held, nothing overshoots
+key, token = mint(0.04)
+def one(i):
+    return post(P0 if i % 2 == 0 else P1, *body("chat", "oai-slow", True, 1000), key)
+with concurrent.futures.ThreadPoolExecutor(8) as pool:
+    results = list(pool.map(one, range(8)))
+codes = sorted(r[0] for r in results)
+held_bodies = [json.loads(r[2]) for r in results if r[0] == 429]
+charged, held, holds = settled(token)
+check("parallel_no_overshoot", codes.count(200) == 2 and codes.count(429) == 6 and charged <= 40_000
+      and all(b["error"]["type"] == "budget_held" for b in held_bodies) and all(r[1].get("retry-after") == "2" for r in results if r[0] == 429),
+      codes=codes, charged=charged, sample=held_bodies[:1], retry_after=[r[1].get("retry-after") for r in results if r[0] == 429][:1])
+
+# 5. 429 and 422 bodies on every route: a held budget, then a spent one
+key, token = mint(0.02)
+sql(f"INSERT INTO rovara_budget_keys (key_hash) VALUES ('{token}') ON CONFLICT DO NOTHING")
+sql(f"INSERT INTO rovara_budget_holds (call_id, key_hash, reserved_micros, expires_at) VALUES ('blocker-{token[:8]}', '{token}', 18000, now() + interval '1 hour')")
+sql(f"UPDATE rovara_budget_keys SET held_micros = held_micros + 18000 WHERE key_hash = '{token}'")
+held_answers = {route: post(P0, *body(route, "oai" if route != "messages" else "anth", False), key) for route in ("messages", "chat", "responses")}
+check("held_429_every_route", all(a[0] == 429 and json.loads(a[2])["error"]["type"] == "budget_held" and a[1].get("retry-after") == "2" for a in held_answers.values()),
+      answers={r: (a[0], a[2][:160], a[1].get("retry-after")) for r, a in held_answers.items()})
+sql(f"UPDATE rovara_budget_keys SET charged_micros = 19000 WHERE key_hash = '{token}'")
+spent_answers = {route: post(P1, *body(route, "oai" if route != "messages" else "anth", False), key) for route in ("messages", "chat", "responses")}
+check("spent_422_every_route", all(a[0] == 422 and json.loads(a[2])["error"]["type"] == "budget_exceeded" and json.loads(a[2])["error"]["message"].startswith("Budget has been exceeded! Key=")
+                                   for a in spent_answers.values()), answers={r: (a[0], a[2][:200]) for r, a in spent_answers.items()})
+
+# 6. an orphan (older than 1,000 s) becomes spent at the next call on its key
+key, token = mint(1.0)
+post(P0, *body("chat", "oai", False), key)
+before, _, _ = settled(token)
+sql(f"INSERT INTO rovara_budget_holds (call_id, key_hash, reserved_micros, expires_at) VALUES ('orphan-{token[:8]}', '{token}', 500000, now() - interval '1 second')")
+sql(f"UPDATE rovara_budget_keys SET held_micros = held_micros + 500000 WHERE key_hash = '{token}'")
+s, _, _ = post(P1, *body("chat", "oai", False), key)
+after, held, holds = settled(token)
+check("orphan_becomes_spent", s == 200 and held == 0 and holds == 0 and after >= before + 500000, before=before, after=after)
+
+print(json.dumps({"failed": FAILED}), flush=True)
+sys.exit(1 if FAILED else 0)

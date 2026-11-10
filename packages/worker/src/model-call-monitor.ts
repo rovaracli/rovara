@@ -81,6 +81,8 @@ const TRANSPORT_DETAILS: ReadonlyMap<string, { classify: number; report?: number
   ["check the model ID and that the key's organization can use it", { classify: 404, report: 404 }],
   ["rate limited; wait before retrying", { classify: 429, report: 429 }],
   ["rate limited or out of credits; check the key's usage limits before retrying", { classify: 429, report: 429 }],
+  // The model proxy's 429 budget_held still answered after the worker waited it out (model-runtime BUDGET_HELD_MAX_WAIT_MS): the task's own calls hold its budget.
+  ["the task's other model calls hold its budget; try again shortly", { classify: 429, report: 429 }],
   ["the provider is overloaded; wait before retrying", { classify: 529, report: 529 }],
   ["upstream unavailable; check provider status before retrying", { classify: 500 }],
   ["the request was refused; check the model's context and output limits", { classify: 400 }],

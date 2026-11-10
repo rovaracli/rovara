@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { ROVARA_GUARD_PY } from "../../packages/model-proxy/src/rovara-guard.js";
+import { litellmConfig } from "../../packages/model-proxy/src/litellm-config.js";
 
 // A missing python3 must show as skipped, never as green: the refusal checks below run the real Python hook.
 const hasPython = spawnSync("python3", ["-I", "-c", "pass"]).status === 0;
@@ -198,5 +199,254 @@ json.dump(out, sys.stdout)
     for (const index of [4, 5, 6, 7]) expect(verdicts[index]!.detail).toContain("tool_addition without a tool_definition at messages[0].content[0]");
     expect(verdicts[8]!.detail!.length).toBeLessThan(600);
     expect(verdicts[8]!.detail).toContain("...");
+  });
+
+  // Section 4 (task budget holds) run as Python. LiteLLM's modules are replaced by small fakes (its router and cost map, ProxyException), and the
+  // Postgres ledger by an in-memory one with the same statements' meaning: an atomic take, a settle that charges once, orphans past HOLD_SECONDS
+  // charged on the key's next take. The SQL itself is run against the real LiteLLM and Postgres in tests/integration/model-proxy-budget-docker.test.ts.
+  const BUDGET_HARNESS = String.raw`
+import asyncio, json, random, sys, types
+class HTTPException(Exception):
+    def __init__(self, status_code, detail): self.status_code, self.detail = status_code, detail
+class CustomLogger:
+    def __init__(self, *a, **k): pass
+class ProxyException(Exception):
+    def __init__(self, message, type, param, code=None, headers=None):
+        self.message, self.type, self.code, self.headers = message, type, str(code), headers or {}
+PRICED = {"m-anth": {"litellm_params": {"model": "bedrock/us.anthropic.claude-x"}, "model_info": {}},
+          "m-own": {"litellm_params": {"model": "openai/own", "input_cost_per_token": 0.000003, "output_cost_per_token": 0.000015}, "model_info": {}},
+          "m-free": {"litellm_params": {"model": "bedrock/us.anthropic.claude-free"}, "model_info": {}}}
+COST_MAP = {"us.anthropic.claude-x": {"input_cost_per_token": 0.000003, "output_cost_per_token": 0.000015, "cache_creation_input_token_cost": 0.00000375,
+            "input_cost_per_token_above_200k_tokens": 0.000006, "output_cost_per_token_above_200k_tokens": 0.0000225, "output_cost_per_token_batches": 0.0000075,
+            "max_output_tokens": 64000, "max_input_tokens": 1000000},
+            "us.anthropic.claude-free": {"input_cost_per_token": 0, "output_cost_per_token": 0, "max_output_tokens": 64000}}
+litellm = types.ModuleType("litellm"); litellm.model_cost = COST_MAP
+def get_model_info(model): return COST_MAP[model.split("/", 1)[-1]]
+litellm.get_model_info = get_model_info
+proxy = types.ModuleType("litellm.proxy"); server = types.ModuleType("litellm.proxy.proxy_server"); ptypes = types.ModuleType("litellm.proxy._types")
+class Router:
+    def get_model_list(self, model_name=None): return [dict(PRICED[model_name], model_name=model_name)] if model_name in PRICED else None
+server.llm_router = Router(); server.prisma_client = None; ptypes.ProxyException = ProxyException
+sys.modules.update({"litellm": litellm, "litellm.proxy": proxy, "litellm.proxy.proxy_server": server, "litellm.proxy._types": ptypes})
+text = open(sys.argv[1]).read()
+ns = {"HTTPException": HTTPException, "CustomLogger": CustomLogger, "__name__": "guard_section"}
+exec(compile(text[text.index("# ---------------------------------------------------------------- 1. request allow-list"):], "guard", "exec"), ns)
+
+class Ledger:
+    """The Postgres ledger's meaning, in memory. clock is moved by the scenarios to age holds."""
+    def __init__(self): self.keys, self.holds, self.clock, self.lock = {}, {}, 0.0, asyncio.Lock()
+    async def take(self, key, call_id, worst, spent, cap):
+        await asyncio.sleep(random.random() / 1000)         # replicas reach the database in any order
+        async with self.lock:
+            row = self.keys.setdefault(key, {"charged": 0, "held": 0})
+            for cid, h in list(self.holds.items()):
+                if h["key"] == key and h["expires"] < self.clock:
+                    del self.holds[cid]; row["held"] -= h["r"]; row["charged"] += h["r"]
+            if max(row["charged"], spent) + row["held"] + worst <= cap:
+                row["held"] += worst; self.holds[call_id] = {"key": key, "r": worst, "expires": self.clock + ns["HOLD_SECONDS"]}
+                return "ok"
+            return "exceeded" if max(row["charged"], spent) + worst > cap else "held"
+    async def settle(self, call_id, cost):
+        async with self.lock:
+            h = self.holds.pop(call_id, None)
+            if h is None: return
+            row = self.keys[h["key"]]; row["held"] -= h["r"]; row["charged"] += h["r"] if cost is None else cost
+ns["SETTLE_GRACE_SECONDS"] = 0.05
+
+class Key:
+    def __init__(self, cap, spend=0.0, token="k1"): self.max_budget, self.spend, self.token = cap, spend, token
+
+def guard(): return ns["RovaraGuard"]()
+call_n = [0]
+def req(model="m-own", stream=False, max_tokens=1000, route="acompletion"):
+    call_n[0] += 1
+    body = {"model": model, "messages": [{"role": "user", "content": "hi"}], "max_tokens": max_tokens, "stream": stream} if route != "aresponses" \
+        else {"model": model, "input": "hi", "max_output_tokens": max_tokens, "stream": stream}
+    if max_tokens is None: body.pop("max_tokens", None); body.pop("max_output_tokens", None)
+    return dict(body, litellm_call_id=f"call-{call_n[0]}")
+async def pre(g, key, data, route="acompletion"):
+    try:
+        await g.async_pre_call_hook(key, None, data, route); return {"status": 200}
+    except ProxyException as e:
+        return {"status": int(e.code), "type": e.type, "message": e.message, "headers": e.headers}
+async def chunks(n, fail=False):
+    for i in range(n):
+        await asyncio.sleep(0); yield i
+    if fail: raise RuntimeError("provider cut the stream")
+def state(ledger, key="k1"): return dict(ledger.keys.get(key, {"charged": 0, "held": 0}), holds=len([h for h in ledger.holds.values() if h["key"] == key]))
+def worst(data): return ns["_worst_case_micros"](data, ns["_prices_for"](data["model"]))
+
+async def parallel():
+    ledger = ns["_LEDGER"] = Ledger(); g1, g2 = guard(), guard()   # two replicas, one shared ledger
+    calls = [req() for _ in range(8)]; one = worst(calls[0])
+    key = Key(cap=(one * 1.5) / 1e6)                                  # room for one call's worst case, not two
+    answers = await asyncio.gather(*(pre(g1 if i % 2 else g2, key, c) for i, c in enumerate(calls)))
+    held = dict(state(ledger))
+    for c, a in zip(calls, answers):
+        if a["status"] == 200: await (g1 if g1._calls.get(c["litellm_call_id"]) else g2).async_log_success_event({"litellm_call_id": c["litellm_call_id"], "response_cost": 0.003}, None, None, None)
+    return {"codes": sorted(a["status"] for a in answers), "types": sorted({a.get("type") for a in answers if a["status"] != 200}),
+            "retry_after": sorted({a.get("headers", {}).get("retry-after") for a in answers if a["status"] == 429}), "held": held, "after": state(ledger), "one": one, "cap": int(key.max_budget * 1e6)}
+
+async def refusals():
+    ledger = ns["_LEDGER"] = Ledger(); g = guard()
+    data = req(); one = worst(data)
+    spent = await pre(g, Key(cap=0.05, spend=0.05 - one / 2e6), data)                      # LiteLLM's own spend leaves less than this call
+    ledger.keys["k2"] = {"charged": 50000 - one // 2, "held": 0}
+    charged = await pre(g, Key(cap=0.05, token="k2"), req())                               # the guard's charged figure leaves less (LiteLLM's lags)
+    too_big = await pre(g, Key(cap=one / 2e6, token="k3"), req())                           # one call alone cannot fit
+    anth = await pre(g, Key(cap=0.0001, token="k4"), req(model="m-anth", route="anthropic_messages"), "anthropic_messages")
+    unpriced = await pre(g, Key(cap=1.0, token="k5"), req(model="m-free"))
+    unknown = await pre(g, Key(cap=1.0, token="k5"), req(model="m-nowhere"))
+    no_budget = await pre(g, Key(cap=None, token="k6"), req(model="m-nowhere"))
+    no_key_object = await pre(g, {}, req())
+    return {"spent": spent, "charged": charged, "too_big": too_big, "anth": anth, "unpriced": unpriced, "unknown": unknown, "no_budget": no_budget,
+            "no_key_object": no_key_object, "ledger_keys": sorted(ledger.keys)}
+
+async def settling():
+    out = {}
+    ledger = ns["_LEDGER"] = Ledger(); g = guard()
+    d = req(); await pre(g, Key(cap=1.0), d); w = worst(d)
+    await g.async_post_call_success_hook(d, None, "response")
+    await g.async_log_success_event({"litellm_call_id": d["litellm_call_id"], "response_cost": 0.0042}, None, None, None)
+    await g.async_log_success_event({"litellm_call_id": d["litellm_call_id"], "response_cost": 0.5}, None, None, None)     # a repeat changes nothing
+    out["plain"] = dict(state(ledger), reserved=w)
+    # a stream that completes, its cost arriving after the stream ended, and one whose cost arrives first
+    ledger = ns["_LEDGER"] = Ledger(); g = guard()
+    a, b = req(stream=True), req(stream=True)
+    for d in (a, b): await pre(g, Key(cap=1.0), d)
+    async for _ in g.async_post_call_streaming_iterator_hook(None, chunks(3), a): pass
+    await g.async_log_success_event({"litellm_call_id": a["litellm_call_id"], "response_cost": 0.001}, None, None, None)
+    it = g.async_post_call_streaming_iterator_hook(None, chunks(3), b)
+    await it.__anext__()
+    await g.async_log_success_event({"litellm_call_id": b["litellm_call_id"], "response_cost": 0.002}, None, None, None)
+    async for _ in it: pass
+    await asyncio.sleep(0.01)
+    out["streams"] = state(ledger)
+    # a stream the worker cuts (LiteLLM then logs a partial cost), one the provider breaks, and one that ends with no cost ever arriving
+    ledger = ns["_LEDGER"] = Ledger(); g = guard()
+    cut, broken, silent = req(stream=True), req(stream=True), req(stream=True)
+    for d in (cut, broken, silent): await pre(g, Key(cap=1.0), d)
+    it = g.async_post_call_streaming_iterator_hook(None, chunks(10), cut)
+    await it.__anext__(); await it.aclose()
+    await g.async_log_success_event({"litellm_call_id": cut["litellm_call_id"], "response_cost": 0.00001}, None, None, None)
+    try:
+        async for _ in g.async_post_call_streaming_iterator_hook(None, chunks(2, fail=True), broken): pass
+    except RuntimeError: pass
+    await g.async_log_failure_event({"litellm_call_id": broken["litellm_call_id"], "exception": RuntimeError("x")}, None, None, None)
+    async for _ in g.async_post_call_streaming_iterator_hook(None, chunks(2), silent): pass
+    await asyncio.sleep(0.01)
+    before_grace = state(ledger)
+    await asyncio.sleep(0.1)
+    out["cut"] = {"before_grace": before_grace, "after_grace": state(ledger), "each": worst(cut)}
+    # errors: an error answer is not billed, a timeout is charged in full, a refusal by the guard holds nothing
+    ledger = ns["_LEDGER"] = Ledger(); g = guard()
+    e400, timeout = req(), req()
+    for d in (e400, timeout): await pre(g, Key(cap=1.0), d)
+    class BadRequest(Exception): status_code = 400
+    class Timeout(Exception): status_code = 408
+    await g.async_log_failure_event({"litellm_call_id": e400["litellm_call_id"], "exception": BadRequest()}, None, None, None)
+    await g.async_post_call_failure_hook(timeout, Timeout(), None)
+    out["errors"] = dict(state(ledger), each=worst(timeout))
+    # an orphan (its replica died) is charged its whole hold once it is older than HOLD_SECONDS, at the key's next take
+    ledger = ns["_LEDGER"] = Ledger(); g1, g2 = guard(), guard()
+    lost = req(); await pre(g1, Key(cap=1.0), lost)
+    ledger.clock += ns["HOLD_SECONDS"] - 1; await pre(g2, Key(cap=1.0), req()); young = state(ledger)
+    ledger.clock += 2; await pre(g2, Key(cap=1.0), req()); old = state(ledger)
+    out["orphan"] = {"young": young, "old": old, "each": worst(lost)}
+    return out
+
+async def worst_cases():
+    p = ns["_prices_for"]("m-anth"); own = ns["_prices_for"]("m-own")
+    def w(**k):
+        data = dict({"model": "m-anth", "messages": [], "litellm_call_id": "c", "metadata": {"user_api_key_hash": "h"}}, **k)
+        return [ns["_worst_case_micros"](data, p), ns["_request_bytes"](data)]     # injected fields are not part of the request's size
+    return {"prices": p, "own": own, "named": w(max_tokens=1000), "none": w(), "over_model": w(max_tokens=10_000_000), "responses": w(max_output_tokens=1000),
+            "completion": w(max_completion_tokens=1000), "big": w(max_tokens=1000, messages=[{"role": "user", "content": "x" * 100_000}]),
+            "plain_size": len(json.dumps({"model": "m-anth", "messages": [], "max_tokens": 1000}, ensure_ascii=False))}
+
+which = json.load(sys.stdin)
+json.dump({name: asyncio.run(globals()[name]()) for name in which}, sys.stdout)
+`;
+
+  type LedgerRow = { charged: number; held: number; holds: number };
+  type Answer = { status: number; type?: string; message?: string; headers?: Record<string, string> };
+  type Priced = [number, number];
+  interface BudgetResults {
+    worst_cases: { prices: Array<number | null>; own: Array<number | null>; plain_size: number } & Record<"named" | "none" | "over_model" | "responses" | "completion" | "big", Priced>;
+    parallel: { codes: number[]; types: string[]; retry_after: string[]; held: LedgerRow; after: LedgerRow; one: number; cap: number };
+    refusals: Record<"spent" | "charged" | "too_big" | "anth" | "unpriced" | "unknown" | "no_budget" | "no_key_object", Answer> & { ledger_keys: string[] };
+    settling: { plain: LedgerRow; streams: LedgerRow; cut: { before_grace: LedgerRow; after_grace: LedgerRow; each: number }; errors: LedgerRow & { each: number };
+      orphan: { young: LedgerRow; old: LedgerRow; each: number } };
+  }
+  function runBudget<K extends keyof BudgetResults>(scenario: K): BudgetResults[K] {
+    const directory = mkdtempSync(join(tmpdir(), "rovara-guard-budget-"));
+    const guard = join(directory, "rovara_guard.py");
+    const harness = join(directory, "harness.py");
+    writeFileSync(guard, ROVARA_GUARD_PY);
+    writeFileSync(harness, BUDGET_HARNESS);
+    const out = JSON.parse(execFileSync("python3", ["-I", harness, guard], { input: JSON.stringify([scenario]), stdio: ["pipe", "pipe", "pipe"] }).toString()) as Pick<BudgetResults, K>;
+    return out[scenario];
+  }
+
+  itPython("prices a call's worst case at the dearest rate it could be billed at, its output limit or the model's, and one input token per request byte", () => {
+    const w = runBudget("worst_cases");
+    // the dearest input rate (the 200k tier, above the cache-write rate) and output rate (the 200k tier, never the cheaper batch rate)
+    expect(w.prices).toEqual([0.000006, 0.0000225, 64000, 1000000]);
+    expect(w.own).toEqual([0.000003, 0.000015, null, null]);
+    const at = (output: number, input: number) => Math.ceil((output * 0.0000225 + input * 0.000006) * 1e6 - 1e-6);
+    expect(w.named[1]).toBe(w.plain_size);
+    for (const name of ["named", "responses", "completion", "big"] as const) expect(w[name][0], name).toBe(at(1000, w[name][1]));
+    expect(w.none[0]).toBe(at(64000, w.none[1]));                  // no limit named: the model's own
+    expect(w.over_model[0]).toBe(at(64000, w.over_model[1]));      // a limit above the model's: the model's
+    expect(w.big[1]).toBeGreaterThan(100_000);
+  });
+
+  itPython("8 parallel calls over two replicas on a budget that fits one worst case: one is held, seven get 429 budget_held, nothing overshoots", () => {
+    const parallel = runBudget("parallel");
+    expect(parallel.codes).toEqual([200, 429, 429, 429, 429, 429, 429, 429]);
+    expect(parallel.types).toEqual(["budget_held"]);
+    expect(parallel.retry_after).toEqual(["2"]);
+    expect(parallel.held).toEqual({ charged: 0, held: parallel.one, holds: 1 });
+    expect(parallel.held.held).toBeLessThanOrEqual(parallel.cap);
+    expect(parallel.after).toEqual({ charged: 3000, held: 0, holds: 0 });
+  });
+
+  itPython("answers 422 budget_exceeded when the spend leaves no room for the call, in the shape the worker reads, and 403 for a model with no price", () => {
+    const r = runBudget("refusals");
+    for (const name of ["spent", "charged", "too_big"] as const) {
+      expect(r[name].status, name).toBe(422);
+      expect(r[name].type, name).toBe("budget_exceeded");
+      expect(r[name].message, name).toMatch(/^Budget has been exceeded! Key=/u);
+    }
+    // /v1/messages rewrites an error by its status unless the message is already an Anthropic error body: so it is one, keeping the type
+    expect(r.anth.status).toBe(422);
+    const anthropic = JSON.parse(r.anth.message ?? "") as { type: string; error: { type: string; message: string } };
+    expect(anthropic.type).toBe("error");
+    expect(anthropic.error.type).toBe("budget_exceeded");
+    expect(anthropic.error.message).toMatch(/^Budget has been exceeded! Key=task /u);
+    expect(r.unpriced).toMatchObject({ status: 403, type: "model_not_priced" });
+    expect(r.unknown).toMatchObject({ status: 403, type: "model_not_priced" });
+    // a key with no budget (or no key object) is not held at all
+    expect(r.no_budget).toEqual({ status: 200 });
+    expect(r.no_key_object).toEqual({ status: 200 });
+    expect(r.ledger_keys).not.toContain("k6");
+  });
+
+  itPython("settles to the real cost, charges a cut or broken stream its whole hold, releases an error answer, and charges an orphan after HOLD_SECONDS", () => {
+    const s = runBudget("settling");
+    expect(s.plain).toMatchObject({ charged: 4200, held: 0, holds: 0 });
+    expect(s.streams).toEqual({ charged: 3000, held: 0, holds: 0 });
+    // the cut and the broken stream are charged in full at once; the silent one is charged in full after the grace
+    expect(s.cut.before_grace).toEqual({ charged: 2 * s.cut.each, held: s.cut.each, holds: 1 });
+    expect(s.cut.after_grace).toEqual({ charged: 3 * s.cut.each, held: 0, holds: 0 });
+    expect(s.errors).toMatchObject({ charged: s.errors.each, held: 0, holds: 0 });
+    expect(s.orphan.young).toEqual({ charged: 0, held: 2 * s.orphan.each, holds: 2 });
+    expect(s.orphan.old).toEqual({ charged: s.orphan.each, held: 2 * s.orphan.each, holds: 2 });
+  });
+
+  it("keeps the budget hold's limits: an orphan outlives the proxy's request timeout, and LiteLLM's own per-replica reservation is off", () => {
+    expect(ROVARA_GUARD_PY).toContain("HOLD_SECONDS = 1000");
+    expect(ROVARA_GUARD_PY).toContain("HELD_RETRY_AFTER_SECONDS = 2");
+    expect(litellmConfig({ region: "us-west-2", models: [{ id: "m" }] })).toContain("  disable_budget_reservation: true\n");
   });
 });
