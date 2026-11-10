@@ -160,3 +160,40 @@ describe("the pull request words and the status lines", () => {
     expect(noticesOf({ ...newRepoFileState(PLACE, "api"), unmerged: 1, open: { ...state.open, removals: 2 } })).toEqual(["2 removals waiting in your lessons PR"]);
   });
 });
+
+describe("bullets the team wrote (R3)", () => {
+  const text = (lesson: string): string => `${renderLessonsFile([])}\n## Whole repository\n\n- ${lesson}\n`;
+  it("a lesson whose text is already a bullet in the file gets an id line (a tag edit), not a second copy", () => {
+    const lesson = repoLesson("les_aaaa0001", { body: "Use the shared helper." });
+    const plan = planRepoFile(input({ lessons: [lesson], fileText: text("Use the shared helper.") }));
+    expect(plan.adds).toEqual([]);
+    expect(plan.edits).toMatchObject([{ id: "les_aaaa0001", tag: true, moved: false }]);
+    expect(plan.nextText).toContain("<!-- rovara:les_aaaa0001 -->\n- Use the shared helper.");
+    expect(plan.nextText!.match(/Use the shared helper\./gu)).toHaveLength(1);
+  });
+  it("an id Rovara merged whose line a tool stripped is not declined while its text is there: it is tagged; without the text it is declined", () => {
+    const lesson = repoLesson("les_aaaa0001", { body: "Use the shared helper." });
+    const other = repoLesson("les_aaaa0002", { body: "Another lesson." });
+    const stripped = `${text("Use the shared helper.")}\n<!-- rovara:les_aaaa0002 -->\n- Another lesson.\n`;
+    const plan = planRepoFile(input({ lessons: [lesson, other], fileText: stripped, rendered: { les_aaaa0001: "x:y", les_aaaa0002: "x:y" } }));
+    expect(plan.newlyDeclined).toEqual([]);
+    expect(plan.edits.filter((e) => e.tag === true).map((e) => e.id)).toEqual(["les_aaaa0001"]);
+    expect(planRepoFile(input({ lessons: [lesson, other], fileText: `${text("Something else.")}\n<!-- rovara:les_aaaa0002 -->\n- Another lesson.\n`, rendered: { les_aaaa0001: "x:y", les_aaaa0002: "x:y" } })).newlyDeclined).toEqual(["les_aaaa0001"]);
+  });
+  it("a file with no marker at all declines nothing (it says nothing about who was removed)", () => {
+    const lesson = repoLesson("les_aaaa0001");
+    expect(planRepoFile(input({ lessons: [lesson], fileText: text("Unrelated."), rendered: { les_aaaa0001: "x:y" } })).newlyDeclined).toEqual([]);
+  });
+  it("while additions wait, nothing is tagged (and nothing declined for a stripped id)", () => {
+    const lesson = repoLesson("les_aaaa0001", { body: "Use the shared helper." });
+    const plan = planRepoFile(input({ lessons: [lesson], fileText: `${text("Use the shared helper.")}\n<!-- rovara:les_zzzz9999 -->\n- Other.\n`, rendered: { les_aaaa0001: "x:y" }, addsPaused: true }));
+    expect(plan.edits).toEqual([]);
+    expect(plan.newlyDeclined).toEqual([]);
+  });
+  it("a tag edit is worded in the pull request and counted as an edit", () => {
+    const lesson = repoLesson("les_aaaa0001", { body: "Use the shared helper." });
+    const plan = planRepoFile(input({ lessons: [lesson], fileText: text("Use the shared helper.") }));
+    expect(prBody(plan, { pointerFiles: [], unmerged: 0 })).toContain("puts the id line before the bullet your team wrote");
+    expect(prTitle(plan)).toContain("1 edit");
+  });
+});

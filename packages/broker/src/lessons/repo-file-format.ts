@@ -25,6 +25,9 @@ export const WRAP_WIDTH = 80;
 const ID_LINE = /^<!--\s*rovara:([A-Za-z0-9_-]{4,64})\s*-->\s*$/u;
 const HEADING = /^##\s+(\S.*?)\s*$/u;
 const ANY_HEADING = /^#{1,6}(?:\s|$)/u;
+/** A line that starts a list item at the left edge (an indented bullet is a sub-item, part of the item above): the start of a block's text, and of the next item. */
+const FENCE = /^\s*(?:`{3,}|~{3,})/u;
+const BULLET_START = /^ ?[-*+]\s+\S/u;
 /** A word a formatter would read as the start of a list item, heading, quote, rule, table or code fence when it begins a line. */
 const LINE_START_HAZARD = /^(?:[-+*#>=<|~]|\d{1,9}[.)]|`{3,})/u;
 
@@ -138,6 +141,8 @@ export function parseLessonsFile(text: string): ParsedFile {
       while (i + 1 < lines.length) {
         const next = lines[i + 1]!;
         if (next.trim() === "" || ANY_HEADING.test(next) || ID_LINE.test(next)) break;
+        // One bullet per block: a second bullet at the left edge is the next item (a lesson of the team's own, or one still to be marked), never more text of this one.
+        if (BULLET_START.test(next) && body.slice(1).some((line) => BULLET_START.test(line))) break;
         body.push(next);
         i += 1;
       }
@@ -161,6 +166,38 @@ export function blockOf(file: ParsedFile, id: string): ParsedBlock | undefined {
   return file.blocks.find((block) => block.id === id);
 }
 
+/** A bullet the team wrote with no id line: a lesson without a marker yet. `index` is where its first line is in `units`; `lines` is how many lines it has. */
+export interface LooseItem { index: number; lines: number; heading: string; /** Its text in comparison form (`normalizeBlockText`). */ text: string }
+
+/**
+ * The list items outside every id block: a bullet at the left edge, with the indented or plain lines after it (up to a blank line, a heading, an id line or the next bullet at the left edge). Items inside a code fence are not
+ * lessons. Header and free paragraphs are not items. Pure; never throws.
+ */
+export function looseItems(file: ParsedFile): LooseItem[] {
+  const items: LooseItem[] = [];
+  let heading = WHOLE_REPOSITORY;
+  let fenced = false;
+  for (let i = 0; i < file.units.length; i += 1) {
+    const unit = file.units[i]!;
+    if (unit.kind === "block") continue;
+    if (FENCE.test(unit.text)) { fenced = !fenced; continue; }
+    if (fenced) continue;
+    const section = HEADING.exec(unit.text);
+    if (section !== null) { heading = section[1]!; continue; }
+    if (ANY_HEADING.test(unit.text) && /^#\s/u.test(unit.text)) { heading = WHOLE_REPOSITORY; continue; }
+    if (!BULLET_START.test(unit.text)) continue;
+    const lines = [unit.text];
+    while (i + 1 < file.units.length) {
+      const next = file.units[i + 1]!;
+      if (next.kind !== "line" || next.text.trim() === "" || ANY_HEADING.test(next.text) || BULLET_START.test(next.text) || FENCE.test(next.text)) break;
+      lines.push(next.text);
+      i += 1;
+    }
+    items.push({ index: i - lines.length + 1, lines: lines.length, heading, text: normalizeBlockText(lines.join(" ")) });
+  }
+  return items;
+}
+
 // ---- surgical change
 
 export interface FileChanges {
@@ -169,6 +206,8 @@ export interface FileChanges {
   replace: ReadonlyArray<{ id: string; text: string }>;
   /** Add a block under a section (created when absent, at its place in the order). A moved block is a remove and an add. */
   add: ReadonlyArray<{ id: string; heading: string; text: string }>;
+  /** Put an id line before a bullet the team wrote without one: the FIRST such bullet whose text in comparison form hashes to `textHash` (`textHash(normalizeBlockText(...))`). The bullet's own bytes are not touched. */
+  tag?: ReadonlyArray<{ id: string; textHash: string }>;
 }
 
 const isBlank = (unit: Unit | undefined): boolean => unit?.kind === "line" && unit.text.trim() === "";
@@ -240,6 +279,20 @@ export function applyFileChanges(existing: string | undefined, changes: FileChan
   for (const replacement of changes.replace) {
     const index = indexOfBlock(replacement.id);
     if (index >= 0) units[index] = { kind: "block", id: replacement.id, lines: blockLines(replacement.id, replacement.text) };
+  }
+  // Tagging: an id line goes before the team's own bullet. Done after the removals above (which move units) and from the last item to the first, so the earlier positions stay right.
+  if ((changes.tag ?? []).length > 0) {
+    const items = looseItems({ ...parsed, units });
+    const taken = new Set<number>();
+    const placed: Array<{ at: number; id: string }> = [];
+    for (const wanted of changes.tag!) {
+      if (units.some((unit) => unit.kind === "block" && unit.id === wanted.id) || placed.some((p) => p.id === wanted.id)) continue;
+      const item = items.find((candidate) => !taken.has(candidate.index) && textHash(candidate.text) === wanted.textHash);
+      if (item === undefined) continue;
+      taken.add(item.index);
+      placed.push({ at: item.index, id: wanted.id });
+    }
+    for (const { at, id } of placed.sort((a, b) => b.at - a.at)) units.splice(at, 0, { kind: "line", text: idLine(id) });
   }
   dropEmptySections(units);
   for (const add of [...changes.add].sort((a, b) => compareHeadings(a.heading, b.heading) || compareIds(a.id, b.id))) {

@@ -22,6 +22,12 @@ export const MAX_THEIRS = 20;
 const Id = z.string().regex(/^[A-Za-z0-9_-]{4,64}$/u);
 const Branch = z.string().regex(/^rovara\/lessons-[0-9a-f]{12}$/u);
 
+/** Why a line the team wrote in the file was not taken in as a lesson (or an edit of one): fixed codes. `names_a_person` is the check every lesson text passes before it goes in a repository's file. */
+export const READ_BACK_REFUSALS = ["names_a_person", "capability_request", "empty", "not_allowed"] as const;
+export type ReadBackRefusal = (typeof READ_BACK_REFUSALS)[number];
+/** The most refused lines kept on one repository's record. */
+export const MAX_REFUSED = 100;
+
 export const OpenPrSchema = z.object({
   branch: Branch, number: z.string().min(1).max(40), url: z.string().max(2_048),
   /** The branch head Rovara left it at: a different head later means a person pushed to it, and it is theirs. */
@@ -117,6 +123,13 @@ export const RepoFileStateSchema = z.object({
   /** A pointer was proposed and a later pass found no agent file that names the lessons file. */
   pointerMissing: z.boolean(),
   lease: z.object({ holder: z.string().min(1).max(100), until: z.number() }).strict().optional(),
+  /**
+   * Read-back (R3): what the last pass took in from the team's own edits of the file, as counts (no text, no person): lessons whose wording became the team's, lessons the team removed, new lessons the team wrote. Shown in the
+   * status ("file changed on main, read back as N corrections / M retired"). Replaced by the next pass that reads something back.
+   */
+  readBack: z.object({ at: z.number(), edited: z.number().int().min(0), retired: z.number().int().min(0), imported: z.number().int().min(0) }).strict().optional(),
+  /** Lines of the file read-back did not take in as lessons, by a fingerprint of the line's text (never the text) and a fixed reason: it keeps the pass from recording the same line every week. Newest last, bounded. */
+  refused: z.record(z.string().regex(/^[0-9a-f]{16}$/u), z.enum(READ_BACK_REFUSALS)).optional(),
   revision: z.number().int().min(0),
 }).strict();
 export type RepoFileState = z.infer<typeof RepoFileStateSchema>;

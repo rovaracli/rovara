@@ -261,24 +261,22 @@ describe("H2 principle B: a person's push to Rovara's PR hands it over; removals
 });
 
 describe("H3: a privacy removal beats the hand-edit hold; Rovara's own edits and quality removals do not", () => {
-  async function reworded(over: (w: ReturnType<typeof passSetup>) => Promise<void>) {
+  async function reworded(over: (w: ReturnType<typeof passSetup>) => Promise<void>, options: { readBack?: boolean; text?: string } = {}) {
     const w = passSetup({ names: ["Ann Lee"] });
     await w.seedLessons(repoLesson("les_aaaa0001"), repoLesson("les_aaaa0002"));
     await w.enable();
     await runAndMerge(w);
-    w.host.setFile("main", FILE, w.host.file("main", FILE)!.replace("Lesson text for les_aaaa0001: use the shared helper.", "Team wording of the first lesson."));
+    w.host.setFile("main", FILE, w.host.file("main", FILE)!.replace("Lesson text for les_aaaa0001: use the shared helper.", options.text ?? "Team wording of the first lesson."));
+    // R3: by default the team's wording is read back first (a pass with nothing else to do), so the change below happens to a lesson that already has the team's text.
+    if (options.readBack === true) { w.week(); expect(await w.run()).toMatchObject({ status: "no_changes" }); }
     await over(w);
     w.week();
     return w;
   }
   const head = async (w: ReturnType<typeof passSetup>, id: string) => (await w.store.listAllHeads(w.key)).find((l) => l.id === id)!;
 
-  it.each([
-    ["withdrawn by an erasure", async (w: ReturnType<typeof passSetup>) => { const l = await head(w, "les_aaaa0001"); await w.store.commit(w.key, await w.store.setVersion(w.key), [{ ...l, version: 2, status: "withdrawn" }], 9); }],
-    ["now names a person", async (w: ReturnType<typeof passSetup>) => { w.names.value = ["for les_aaaa0001"]; }],
-    ["no longer repo-only", async (w: ReturnType<typeof passSetup>) => { const l = await head(w, "les_aaaa0001"); await w.store.commit(w.key, await w.store.setVersion(w.key), [{ ...l, version: 2, provenance: { ...l.provenance, repoOnly: undefined } }], 9); }],
-  ])("%s: proposed for removal, with the note that the team edited it", async (_name, change) => {
-    const w = await reworded(change);
+  it("withdrawn by an erasure: proposed for removal, with the note that the team edited it (the lesson takes no wording in, so the block is still the team's)", async () => {
+    const w = await reworded(async (x) => { const l = await head(x, "les_aaaa0001"); await x.store.commit(x.key, await x.store.setVersion(x.key), [{ ...l, version: 2, status: "withdrawn" }], 9); });
     expect(await w.run()).toMatchObject({ status: "opened", removals: 1 });
     const state = await w.current();
     expect(state.open!.removed).toEqual(["les_aaaa0001"]);
@@ -288,14 +286,43 @@ describe("H3: a privacy removal beats the hand-edit hold; Rovara's own edits and
   });
 
   it.each([
+    ["now names a person", async (w: ReturnType<typeof passSetup>) => { w.names.value = ["first lesson"]; }],
+    ["no longer repo-only", async (w: ReturnType<typeof passSetup>) => { const l = await head(w, "les_aaaa0001"); await w.store.commit(w.key, await w.store.setVersion(w.key), [{ ...l, version: l.version + 1, provenance: { ...l.provenance, repoOnly: undefined } }], 9); }],
+  ])("%s, after the team's wording was read back: proposed for removal (a privacy reason still wins)", async (_name, change) => {
+    const w = await reworded(change, { readBack: true });
+    expect(await w.run()).toMatchObject({ status: "opened", removals: 1 });
+    const state = await w.current();
+    expect(state.open!.removed).toEqual(["les_aaaa0001"]);
+    expect(state.held).toEqual([]);
+    expect(idsIn(w.host.file(state.open!.branch, FILE))).toEqual(["les_aaaa0002"]);
+  });
+
+  it("a rewording that names a person is not taken in: the block stays as the team wrote it and is held (the lesson's own text is untouched)", async () => {
+    const w = await reworded(async () => undefined, { text: "Ask Ann Lee about the first lesson." });
+    expect(await w.run()).toMatchObject({ status: "no_changes" });
+    expect((await w.current()).held).toEqual(["les_aaaa0001"]);
+    expect((await head(w, "les_aaaa0001")).body).toBe("Lesson text for les_aaaa0001: use the shared helper.");
+  });
+
+  it.each([
     ["retired", async (w: ReturnType<typeof passSetup>) => { const l = await head(w, "les_aaaa0001"); await w.store.commit(w.key, await w.store.setVersion(w.key), [{ ...l, version: 2, status: "retired" }], 9); }],
     ["expired", async (w: ReturnType<typeof passSetup>) => { const l = await head(w, "les_aaaa0001"); await w.store.commit(w.key, await w.store.setVersion(w.key), [{ ...l, version: 2, status: "expired" }], 9); }],
-    ["thumbs-down", async (w: ReturnType<typeof passSetup>) => { await w.store.mutate(w.key, "les_aaaa0001", (l) => ({ counters: { ...l.counters, harmful: 1 } })); }],
-    ["Rovara's own new wording", async (w: ReturnType<typeof passSetup>) => { const l = await head(w, "les_aaaa0001"); await w.store.commit(w.key, await w.store.setVersion(w.key), [{ ...l, version: 2, body: "Rovara's other wording." }], 9); }],
-  ])("%s: still held, left as the team wrote it", async (_name, change) => {
+  ])("%s: still held, left as the team wrote it (a lesson Rovara is not using takes no wording in)", async (_name, change) => {
     const w = await reworded(change);
     expect(await w.run()).toMatchObject({ status: "no_changes" });
     expect((await w.current()).held).toEqual(["les_aaaa0001"]);
+  });
+
+  it.each([
+    ["thumbs-down", async (w: ReturnType<typeof passSetup>) => { await w.store.mutate(w.key, "les_aaaa0001", (l) => ({ counters: { ...l.counters, harmful: 1 } })); }],
+    ["Rovara's own new wording", async (w: ReturnType<typeof passSetup>) => { const l = await head(w, "les_aaaa0001"); await w.store.commit(w.key, await w.store.setVersion(w.key), [{ ...l, version: 2, body: "Rovara's other wording." }], 9); }],
+  ])("%s before the team's wording is read: the team's wording wins and is read back (harm marks from before the edit are cleared)", async (_name, change) => {
+    const w = await reworded(change);
+    expect(await w.run()).toMatchObject({ status: "no_changes" });
+    const lesson = await head(w, "les_aaaa0001");
+    expect(lesson.body).toBe("Team wording of the first lesson.");
+    expect(lesson.counters.harmful).toBe(0);
+    expect((await w.current()).held).toEqual([]);
   });
 });
 

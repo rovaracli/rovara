@@ -35,7 +35,7 @@ function list(heading: string, lines: readonly string[]): string[] {
 
 export function prBody(plan: RepoFilePlan, context: { pointerFiles: readonly string[]; unmerged: number }): string {
   const removals = plan.removals.map((r) => `- ${code(r.id)} ${code(r.title)}: ${REMOVAL_REASON_TEXT[r.reason]}.${r.edited === true ? " Your team edited this lesson; it is proposed for removal anyway." : ""}`);
-  const edits = plan.edits.map((e) => `- ${code(e.id)} ${code(e.title)}${e.moved ? " (moves to another section)" : ""}`);
+  const edits = plan.edits.map((e) => `- ${code(e.id)} ${code(e.title)}${e.tag === true ? " (puts the id line before the bullet your team wrote; the bullet is not changed)" : e.moved ? " (moves to another section)" : ""}`);
   const adds = plan.adds.map((a) => `- ${code(a.id)} ${code(a.title)}`);
   const lines = [
     "Rovara's weekly update to `.rovara/lessons.md`: lessons this team's own reviews and commits taught, proposed for you to merge. Nothing changes until a person merges this pull request.",
@@ -63,6 +63,10 @@ export function noticesOf(state: RepoFileState): string[] {
   if (additionsPaused(state) && !state.fileDeleted) notices.push(pausedLine(waiting));
   else if (waiting > 0) notices.push(`${plural(waiting, "removal", "removals")} waiting in your lessons PR`);
   if (state.theirs.length > 0) notices.push(TEAM_PR_LINE.replace("this one proposes removals only", "new lessons wait for it"));
+  const back = state.readBack;
+  if (back !== undefined && back.edited + back.retired + back.imported > 0) notices.push(`The lessons file changed on the default branch and was read back as ${plural(back.edited, "correction", "corrections")}, ${String(back.retired)} retired and ${plural(back.imported, "new lesson", "new lessons")}`);
+  const refusedCount = Object.keys(state.refused ?? {}).length;
+  if (refusedCount > 0) notices.push(`${plural(refusedCount, "line in the lessons file was", "lines in the lessons file were")} not read as lessons because they name a person, ask for more access or are empty`);
   if (state.held.length > 0) notices.push(`${plural(state.held.length, "lesson your team edited is", "lessons your team edited are")} left as written`);
   if (state.pointerMissing) notices.push("Pointer missing: no agent file names .rovara/lessons.md");
   return notices;

@@ -22,6 +22,7 @@ import { planRepoFile, type RepoFilePlan } from "./repo-file-plan.js";
 import { parseLessonsFile, textHash } from "./repo-file-format.js";
 import { Unconfirmed, freshBranchName, guardTarget, headOf, readOwnPr, repositoryIdOfPlace, verifyRepository, watchRowOf, type RepoFileTarget } from "./repo-file-host.js";
 import { prBody, prTitle } from "./repo-file-pr.js";
+import { ReadBackFailure, readBackFile, type ReadBackResult } from "./repo-file-readback.js";
 import { MAX_DECLINED, MAX_RENDERED, StateFull, StateUnreadable, additionsPaused, appendOrMark, boundedAppend, provisionalNumber, type OpenPr, type PrRow, type PrRowStore, type RepoFileState, type RepoFileStore } from "./repo-file-state.js";
 import type { LessonStore, ScopeKey } from "./store.js";
 import type { Lesson } from "./types.js";
@@ -42,6 +43,10 @@ export interface RepoFileDeps {
   holder: string;
   /** 12 random lower-case hex digits for a branch name; the default is the platform's random bytes. */
   randomHex?(): string;
+  /** Read-back (R3): the member who made the commit a file's text came from, when the install can tie the commit's author to one (the code-host port has no such read yet, so by default nobody: the actor is "repository edit"). */
+  editorOf?: (place: string, revision: string) => Promise<string | undefined>;
+  /** A new lesson id (read-back makes lessons from the team's own bullets); the default is the lessons' own random id. */
+  newLessonId?: () => string;
   log?(event: string, fields: Record<string, string | number>): void;
 }
 
@@ -338,12 +343,37 @@ async function pass(deps: RepoFileDeps, key: ScopeKey, target: RepoFileTarget, l
   if (fileText !== undefined && !state.fileSeen) state = await commit(deps, key, state, { fileSeen: true });
 
   // 5. The proposal.
-  const lessons = await deps.store.listAllHeads(key);
+  let lessons = await deps.store.listAllHeads(key);
   // Which of the markers in the file belong to a lesson that is gone for good: the lesson store's own tombstone, one durable row per lesson. A lookup that cannot be made stops the write (never read as 'not gone').
   let gone: Set<string>;
   try { gone = new Set((await deps.store.goneOf(key, [...(fileText === undefined ? [] : parseLessonsFile(fileText).blocks.map((block) => block.id)), ...lessons.filter((lesson) => lesson.provenance.repoOnly?.place === target.place).map((lesson) => lesson.id)])).keys()); } catch { throw new Abort("repository_unreadable"); }
   let names: readonly string[];
   try { names = await deps.names(key, lessons); } catch { throw new Abort("names_unreadable"); }
+  // 5b. READ-BACK (R3, one way: file -> Rovara), on the file this pass just read, before anything is planned: the team's corrections become the lessons' text, ids the team removed are retired, bullets the team wrote become new
+  // lessons. A file that cannot be trusted as read changes nothing and stops the pass (nothing is planned, declined or retired on it). No model, no further read.
+  let readBack: ReadBackResult | undefined;
+  if (fileText !== undefined) {
+    try {
+      readBack = await readBackFile({ store: deps.store, audit: deps.audit, now: () => deps.now(), ...(deps.newLessonId === undefined ? {} : { newId: deps.newLessonId }), ...(deps.editorOf === undefined ? {} : { editorOf: deps.editorOf }) }, {
+        key, place: target.place, repoName: target.name, fileText, revision: head, rendered: state.rendered, refused: state.refused ?? {}, lessons, gone, names,
+      });
+    } catch (error) {
+      if (error instanceof ReadBackFailure) throw new Abort(error.problem);
+      throw new Abort("repository_unreadable");
+    }
+    if (readBack.unreadable) throw new Abort("file_unreadable");
+    const done = readBack;
+    const changed = Object.keys(done.rendered).length > 0 || done.counts.retired + done.counts.imported + done.counts.refused > 0;
+    if (changed) {
+      state = await commit(deps, key, state, (s) => ({
+        ...s, rendered: { ...s.rendered, ...done.rendered },
+        ...(done.counts.edited + done.counts.retired + done.counts.imported > 0 ? { readBack: { at: deps.now(), edited: done.counts.edited, retired: done.counts.retired, imported: done.counts.imported } } : {}),
+        ...(Object.keys(done.refused).length > 0 ? { refused: done.refused } : {}),
+      }));
+      // The lessons as read-back left them are what the plan works from.
+      lessons = await deps.store.listAllHeads(key);
+    }
+  }
   const plan = planRepoFile({ place: target.place, repoName: target.name, lessons, names, fileText, rendered: state.rendered, declined: state.declined, gone, addsPaused: additionsPaused({ unmerged }), teamPr, preset });
   // What the plan learned about the file is recorded whatever comes next.
   const rendered = { ...state.rendered, ...plan.adopted };
