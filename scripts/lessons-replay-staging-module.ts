@@ -44,7 +44,7 @@ export default function make(): OperatorModule {
     executor: stagingExecutor(cliReplayPort(options), { maxUsdPerRun: perRunUsd, planningLimitUsd }),
     grader,
     builders: {
-      current: offlinePipelineBuilder({ key: { workspaceId: org, project }, subjectOf: cliSubjectOf(options, project), model: cliPipelineModel(options, { project, holdUsd: learnHold }), repositories, settings: { read: async () => rules.settings }, autoApply: rules.autoApply, ...(code === undefined ? {} : { code }) }),
+      current: offlinePipelineBuilder({ key: { workspaceId: org, project }, subjectOf: cliSubjectOf(options, project), model: cliPipelineModel(options, { project, holdUsd: learnHold }), repositories, settings: { read: async () => rules.settings }, autoApply: rules.autoApply, installHasEmbedder: rules.embedder, ...(code === undefined ? {} : { code }) }),
       consolidated: consolidatedBuilderStub,
     },
     importSnapshot: (pipeline: string, day: string, lessons: readonly Lesson[]) => importSnapshot(options, { project, pipeline, day, lessons }),

@@ -1,10 +1,11 @@
 // Lane 7: the operator script end to end with a fake operator module: select, snapshots, import, plan, run, blind sheet, marks, report. No AWS, no model.
-import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
 import { lockResults, main } from "../../../scripts/lessons-replay-measure.js";
-import { parseRepoDirs, gitFactsReader } from "../../../scripts/lessons-replay-git.js";
+import { gitCode, gitFactsReader, parseRepoDirs } from "../../../scripts/lessons-replay-git.js";
 import { lessonContentKey } from "../../../packages/broker/src/lessons/replay-lessonset.js";
 import type { ReplayCandidate } from "../../../packages/broker/src/lessons/replay-select.js";
 import { WS, lessonRecord } from "./lesson-helpers.js";
@@ -25,7 +26,7 @@ function moduleSource(sets: Record<string, Array<{ title: string; body: string }
 const lessons = ${JSON.stringify(lessons)};
 const keys = ${JSON.stringify(keys)};
 export default function make() {
-  const builder = (pipeline) => ({ build: async () => ({ snapshotId: "ignored", lessons: lessons[pipeline], costUsd: 0.25, calls: 3, export: { rule: "active-without-a-person/v1", proposed: lessons[pipeline].length, needsPerson: 0, truncated: 0, droppedCalls: 0 } }) });
+  const builder = (pipeline) => ({ build: async () => ({ snapshotId: "ignored", lessons: lessons[pipeline], costUsd: 0.25, calls: 3, export: { rule: "active-without-a-person/v1", proposed: lessons[pipeline].length, needsPerson: 0, truncated: 0, droppedCalls: 0, unverified: 0, overrides: [] } }) });
   let solved = 0;
   const ids = process.env.L7_IDS ? JSON.parse(process.env.L7_IDS) : {};
   return {
@@ -184,29 +185,126 @@ describe("one invocation at a time on a results file", () => {
     const release = lockResults(results);
     expect(readFileSync(`${results}.lock`, "utf8")).toBe(String(process.pid));
     release();
+    expect(existsSync(`${results}.lock`)).toBe(false);
     writeFileSync(`${results}.lock`, "999999991");
     const taken = lockResults(results);
     taken();
-    expect(() => readFileSync(`${results}.lock`, "utf8")).toThrow();
+    expect(existsSync(`${results}.lock`)).toBe(false);
     // Another live process (the parent) holds it: refused.
     writeFileSync(`${results}.lock`, String(process.ppid));
     expect(() => lockResults(results)).toThrow(/another replay run is using/);
   });
+  it("a second lock taken in the SAME process is refused too (a second run of the same script would double-spend), and a refused taker never removes the holder's lock", () => {
+    const dir = mkdtempSync(path.join(tmpdir(), "l7-lock-"));
+    const results = path.join(dir, "results.jsonl");
+    const first = lockResults(results);
+    expect(() => lockResults(results)).toThrow(/another replay run is using/);
+    expect(readFileSync(`${results}.lock`, "utf8")).toBe(String(process.pid));
+    first();
+  });
+  it("takes a dead holder's lock atomically: of several takers racing for one stale lock exactly one gets it", () => {
+    const dir = mkdtempSync(path.join(tmpdir(), "l7-lock-"));
+    const results = path.join(dir, "results.jsonl");
+    writeFileSync(`${results}.lock`, "999999991");
+    const releases: Array<() => void> = [];
+    let refused = 0;
+    for (let i = 0; i < 5; i += 1) { try { releases.push(lockResults(results)); } catch { refused += 1; } }
+    expect(releases).toHaveLength(1);
+    expect(refused).toBe(4);
+    releases[0]!();
+  });
+  it("a takeover never removes a lock another taker created in the meantime: it re-reads under the takeover file and refuses when the lock is a live process's now", () => {
+    const dir = mkdtempSync(path.join(tmpdir(), "l7-lock-"));
+    const results = path.join(dir, "results.jsonl");
+    writeFileSync(`${results}.lock`, "999999991");
+    // After this taker decided the lock is stale, another taker replaces it with a live process's lock.
+    expect(() => lockResults(results, () => writeFileSync(`${results}.lock`, String(process.ppid)))).toThrow(/another replay run is using/);
+    expect(readFileSync(`${results}.lock`, "utf8")).toBe(String(process.ppid));
+    expect(existsSync(`${results}.lock.takeover`)).toBe(false);
+    // A taker that finds another taker mid-takeover waits its turn rather than racing it.
+    writeFileSync(`${results}.lock`, "999999991");
+    writeFileSync(`${results}.lock.takeover`, String(process.ppid));
+    expect(() => lockResults(results)).toThrow(/taking over/);
+    expect(readFileSync(`${results}.lock`, "utf8")).toBe("999999991");
+  });
+  it("the run command takes the lock: a run on a results file another process holds is refused before anything starts, and the lock is gone when the run ends", async () => {
+    const { dir, f } = setupDir(DIFFERENT);
+    const arms = "off,on:current,on:consolidated";
+    expect((await run(["select", "--candidates", f("candidates.json"), "--seed", "s1", "--target", "40", "--out", f("selection.json")])).code).toBe(0);
+    expect((await run(["snapshots", "--selection", f("selection.json"), "--arms", arms, "--module", f("module.mjs"), "--workspace", WS, "--out-dir", f("out"), "--max-usd", "100"])).code).toBe(0);
+    const ids = JSON.parse(readFileSync(f("out/snapshots.json"), "utf8")) as Record<string, Record<string, string>>;
+    process.env["L7_IDS"] = JSON.stringify(ids);
+    expect((await run(["plan", "--selection", f("selection.json"), "--arms", arms, "--seed", "s1", "--grader-model", "grader-model", "--grader-version", "v1", "--snapshots", f("out/snapshots.json"), "--out", f("plan.json")])).code).toBe(0);
+    const args = ["run", "--plan", f("plan.json"), "--module", f("module.mjs"), "--corrections", f("corrections.json"), "--results", f("results.jsonl"), "--max-usd", "1000", "--per-run-usd", "0.5", "--planning-usd", "0"];
+    writeFileSync(f("results.jsonl.lock"), String(process.ppid));
+    const refused = await run(args);
+    expect(refused.code).toBe(1);
+    expect(refused.err).toMatch(/another replay run is using/);
+    expect(existsSync(f("results.jsonl"))).toBe(false);
+    unlinkSync(f("results.jsonl.lock"));
+    expect((await run(args)).code).toBe(0);
+    expect(existsSync(f("results.jsonl.lock"))).toBe(false);
+    void dir;
+  });
 });
 
-describe("the citation check over the operator's clones", () => {
+describe("the citation check over the operator's clones (a clone that cannot tell never says STALE)", () => {
+  const COMMIT = "a".repeat(40);
+  const input = { workspaceId: "w", project: "p", repo: "api", commit: COMMIT, path: "src/a.ts", timeoutMs: 1000 };
+  /** A git that answers like the real one for: the commit, the tree entry of a path, a blob's size and its text. */
+  const fakeGit = (over: { commit?: boolean; entry?: string; size?: string; blob?: string | Error } = {}) => (directory: string, args: string[]): string => {
+    void directory;
+    if (args[0] === "cat-file" && args[1] === "-e") { if (over.commit === false) throw new Error("fatal: Not a valid object name"); return ""; }
+    if (args[0] === "ls-tree") return over.entry ?? `100644 blob ${"b".repeat(40)}\t${input.path}\n`;
+    if (args[0] === "cat-file" && args[1] === "-s") return over.size ?? "12\n";
+    if (args[0] === "cat-file" && args[1] === "blob") { if (over.blob instanceof Error) throw over.blob; return over.blob ?? "export const retry = withRetry;\n"; }
+    throw new Error(`unexpected git ${args.join(" ")}`);
+  };
+  const readerOf = (over: Parameters<typeof fakeGit>[0] = {}) => gitFactsReader({ api: "/clones/api" }, fakeGit(over));
+
   it("reads a file and its kind at the cited commit from the named clone only, and refuses a bad map", async () => {
-    const asked: string[][] = [];
-    const reader = gitFactsReader({ api: "/clones/api" }, (directory, args) => { asked.push([directory, ...args]); if (args[0] === "cat-file" && args[1] === "-t") return "blob\n"; return "line one\n"; });
-    const input = { workspaceId: "w", project: "p", repo: "api", commit: "a".repeat(40), path: "src/a.ts", timeoutMs: 1000 };
-    expect(await reader.file(input)).toBe("line one\n");
+    const reader = readerOf();
+    expect(await reader.file(input)).toBe("export const retry = withRetry;\n");
     expect(await reader.kind!(input)).toBe("file");
-    expect(asked[0]).toEqual(["/clones/api", "cat-file", "blob", `${"a".repeat(40)}:src/a.ts`]);
     expect(await reader.file({ ...input, repo: "other" })).toBeUndefined();
     expect(parseRepoDirs("api=/a, web=/b")).toEqual({ api: "/a", web: "/b" });
     expect(() => parseRepoDirs("api")).toThrow(/name=directory/);
-    const missing = gitFactsReader({ api: "/clones/api" }, () => { throw new Error("no such blob"); });
-    expect(await missing.file(input)).toBeUndefined();
-    expect(await missing.kind!(input)).toBe("none");
+  });
+  it("answers 'no such file' (undefined, so the verifier says stale) ONLY when the commit is there and the path is not in its tree", async () => {
+    const reader = readerOf({ entry: "" });
+    expect(await reader.file(input)).toBeUndefined();
+    expect(await reader.kind!(input)).toBe("none");
+  });
+  it("THROWS (so the verifier says unknown, not stale) for a commit the clone does not have, a file over 1 MB, and any other git error", async () => {
+    await expect(readerOf({ commit: false }).file(input)).rejects.toThrow();
+    await expect(readerOf({ commit: false }).kind!(input)).rejects.toThrow();
+    await expect(readerOf({ size: "2000000\n" }).file(input)).rejects.toThrow(/over 1 MB/);
+    await expect(readerOf({ blob: new Error("fatal: unable to read") }).file(input)).rejects.toThrow();
+  });
+  it("end to end with the live verifier's rules: a missing commit, a big file and a git error are 'unknown'; a missing path is 'stale'; a matching anchor is 'valid'", async () => {
+    const citation = { workspaceId: "w", project: "p", repo: "api", commit: COMMIT, path: "src/a.ts", startLine: 1, endLine: 1, anchor: "export const retry = withRetry;" };
+    const verdict = async (over: Parameters<typeof fakeGit>[0]) => (await gitCode({ api: "/clones/api" }, ["api"], fakeGit(over)).verifier.verify(citation)).result;
+    expect(await verdict({})).toBe("valid");
+    expect(await verdict({ commit: false })).toBe("unknown");
+    expect(await verdict({ size: "2000000\n" })).toBe("unknown");
+    expect(await verdict({ blob: new Error("boom") })).toBe("unknown");
+    expect(await verdict({ entry: "" })).toBe("stale");
+  });
+  it("against a real git repository: valid at its commit, stale for a path that is not in it, unknown for a commit it does not have", async () => {
+    const repo = mkdtempSync(path.join(tmpdir(), "l7-git-"));
+    const git = (...args: string[]): string => execFileSync("git", ["-C", repo, ...args], { encoding: "utf8" });
+    git("init", "--quiet");
+    git("config", "user.email", "t@example.invalid");
+    git("config", "user.name", "t");
+    mkdirSync(path.join(repo, "src"));
+    writeFileSync(path.join(repo, "src/a.ts"), "export const retry = withRetry;\n");
+    git("add", "-A");
+    git("commit", "--quiet", "-m", "one");
+    const commit = git("rev-parse", "HEAD").trim();
+    const { verifier } = gitCode({ api: repo }, ["api"]);
+    const cite = (over: Record<string, unknown>) => ({ workspaceId: "w", project: "p", repo: "api", commit, path: "src/a.ts", startLine: 1, endLine: 1, anchor: "export const retry = withRetry;", ...over });
+    expect((await verifier.verify(cite({}))).result).toBe("valid");
+    expect((await verifier.verify(cite({ path: "src/gone.ts" }))).result).toBe("stale");
+    expect((await verifier.verify(cite({ commit: "c".repeat(40) }))).result).toBe("unknown");
   });
 });

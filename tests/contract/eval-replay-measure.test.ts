@@ -135,6 +135,18 @@ describe("loaded-lesson difference between B and C", () => {
     expect(loadedLessonDifference(some, "on:current", "on:consolidated")).toMatchObject({ completedPairs: 6, plannedPairs: 10, ungradedB: 4, ungradedA: 0, loadedRunsB: 4, nearlySame: false });
     expect(renderMeasureReport(buildMeasureReport({ rows, compare: { b: "on:current", c: "on:consolidated" }, projectDays: 5, learning: [], lessonSets: [] }))).toMatch(/STOP: on:consolidated loaded no lesson on more than half/);
   });
+  it("the report states every override in force for each arm, even when it stops, and counts the citations that could not be verified", () => {
+    const rows: ReplayRunRow[] = [];
+    for (let t = 0; t < 10; t += 1) { rows.push(run(`t${String(t)}`, "on:current", true, { loaded: ["k1"] })); rows.push(run(`t${String(t)}`, "on:consolidated", true, { loaded: ["k1"] })); }
+    const learning = [{ arm: "on:current", usd: 1, calls: 4, proposed: 9, needsPerson: 7, unverified: 3, truncated: 0, droppedCalls: 1, overrides: ["no embedder: similar lessons are not merged", "the lessons switch is assumed on"] }, { arm: "on:consolidated", usd: 1, calls: 4 }];
+    const stopped = buildMeasureReport({ rows, compare: { b: "on:current", c: "on:consolidated" }, projectDays: 5, learning, lessonSets: [] });
+    expect(stopped.stopped).toBe(true);
+    const text = renderMeasureReport(stopped);
+    expect(text).toMatch(/Overrides in force.*\n.*on:current: no embedder: similar lessons are not merged; the lessons switch is assumed on/u);
+    const full = renderMeasureReport(buildMeasureReport({ rows, compare: { b: "on:current", c: "on:consolidated" }, projectDays: 5, learning, lessonSets: [], continueAnyway: true }));
+    expect(full).toMatch(/3 had a citation that could not be verified/u);
+    expect(JSON.stringify(buildMeasureReport({ rows, compare: { b: "on:current", c: "on:consolidated" }, projectDays: 5, learning, lessonSets: [], continueAnyway: true }))).toContain('"unverified":3');
+  });
   it("the STOP floor: fewer than half of the planned pairs completed in both arms is a STOP that says how many, and an arm's stalls are its own outcome (neither a pass nor a miss)", () => {
     const rows: ReplayRunRow[] = [];
     // 40 planned pairs; B completed all, C only 1 (the rest stalled): one completed pair is not a comparison.

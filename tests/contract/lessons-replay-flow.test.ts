@@ -2,6 +2,7 @@
 // approved by the one guarded route, the state follows the workflow and not the latest operation, and the copy is closed after grading.
 import { randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
+import { decideTaskWorkflow } from "../../packages/broker/src/aws/developer-tasks/decide.js";
 import { startTaskWorkflowBranchSyncFromSystem, startTaskWorkflowPublicationFromSystem } from "../../packages/broker/src/aws/developer-tasks/publication.js";
 import { tableTaskVisibilityPort } from "../../packages/broker/src/team-record/live-audience-port.js";
 import { ownerKeyForSubject } from "../../packages/broker/src/aws/lambda.js";
@@ -133,19 +134,25 @@ describe("approving the plan of a copy whose run limit is above the planning lim
     expect((w.meta(id) as { budgetUsd?: number }).budgetUsd).toBeLessThanOrEqual(8);
     expect(((await w.get(id)).body.replay as { state: string }).state).toBe("running");
   });
-  it("a normal task's raise of the run limit still needs the amount acknowledged (the copy's path is not a way round it)", async () => {
+  it("the copy-only check is inside the decision itself: even called with the option, a normal task's raise of the run limit is refused without the amount, while the same call on a copy is accepted", async () => {
     const w = await world({ proxy: { perTestCapUsd: 20 } });
-    const workspaceId = w.meta(w.sourceId).workspaceId;
-    await w.h.finish(workspaceId, w.opWhere(workspaceId, (item) => item.kind === "prepare"), "SUCCEEDED", PREPARED);
-    const planOp = w.opWhere(workspaceId, (item) => item.workflowMode === "PLAN" && item.status !== "SUCCEEDED");
-    await w.h.artifact(workspaceId, planOp, "plan.md", planAnswer(planDocument({})));
-    await w.h.finish(workspaceId, planOp, "SUCCEEDED", { result: { workflowMode: "PLAN" } });
-    const workflow = w.meta(w.sourceId).workflow as unknown as { revision: number; artifacts: Array<{ sha256: string }> };
-    const decided = await w.h.dev(MAYA, "POST", `/v1/dev/tasks/${w.sourceId}/workflow/decision`, { requestId: randomUUID(), expectedRevision: workflow.revision, decision: "APPROVE", reason: "ok", artifactDigest: workflow.artifacts.at(-1)!.sha256 });
-    // Either the plan needs no raise (then it is approved) or the raise is refused without the amount; it is never approved past an unacknowledged raise.
-    const meta = w.meta(w.sourceId) as { budgetUsd?: number; runEstimate?: { runLimitUsd: number } };
-    if (decided.status !== 200) expect(String((decided.body as { error?: { message?: string } }).error?.message)).toMatch(/run limit/iu);
-    else expect(meta.budgetUsd ?? 2).toBeGreaterThanOrEqual(2);
+    const deciding = async (taskId: string, withOption: boolean) => {
+      const workspaceId = w.meta(taskId).workspaceId;
+      await w.h.finish(workspaceId, w.opWhere(workspaceId, (item) => item.kind === "prepare"), "SUCCEEDED", PREPARED);
+      const planOp = w.opWhere(workspaceId, (item) => item.workflowMode === "PLAN" && item.status !== "SUCCEEDED");
+      await w.h.artifact(workspaceId, planOp, "plan.md", planAnswer(planDocument({})));
+      await w.h.finish(workspaceId, planOp, "SUCCEEDED", { result: { workflowMode: "PLAN" } });
+      const workflow = (w.h.db.get(`DEVTASK#${taskId}`, "META") as unknown as { workflow: { revision: number; artifacts: Array<{ sha256: string }> } }).workflow;
+      const deps = { documentClient: w.h.db, tableName: "state", actions: w.h.actions, log: () => undefined, orgId: TEST_ORG, modelAccess: w.access,
+        checkAccess: async () => ({ revision: 1, policy: {} as never, access: "granted" as const, channelIds: [], role: "contributor" as const }), projectChannelIds: async () => [], now: () => Date.now() };
+      const owner = (w.h.db.get(`DEVTASK#${taskId}`, "META") as unknown as { developerId: string }).developerId;
+      const caller = { orgId: TEST_ORG, developerId: owner, orgRole: "owner", name: "Owner", amr: "oidc", sessionId: "s" };
+      return decideTaskWorkflow(deps as never, caller as never, taskId, { requestId: randomUUID(), expectedRevision: workflow.revision, decision: "APPROVE", reason: "ok", artifactDigest: workflow.artifacts.at(-1)!.sha256 }, withOption ? { acceptCopyRunLimit: true } : {});
+    };
+    await expect(deciding(w.sourceId, true)).rejects.toMatchObject({ message: expect.stringMatching(/raises the run limit/u) as unknown });
+    const copy = await w.copy({ mode: "off" }, 8);
+    await expect(deciding(copy, true)).resolves.toBeDefined();
+    expect(w.meta(copy).workflow.stage).toBe("IMPLEMENT");
   });
 });
 

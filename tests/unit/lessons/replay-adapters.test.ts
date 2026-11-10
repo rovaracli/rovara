@@ -8,18 +8,14 @@ import { main as measure } from "../../../scripts/lessons-replay-measure.js";
 import { candidatesFromItems } from "../../../packages/broker/src/lessons/replay-candidates.js";
 import { rubricGrader, DEFAULT_RUBRIC, type GraderModel } from "../../../packages/broker/src/lessons/replay-grader.js";
 import { EvalMarkError, ReplayLimitError, ReplayRunFailed, buildReplayPlan, copyWorstCaseUsd, buildSnapshots, dayOf, runReplay, type PlannedRun, type ReplayExecutor } from "../../../packages/broker/src/lessons/replay-harness.js";
-import { asOfSnapshotBuilder, lessonsAsOf } from "../../../packages/broker/src/lessons/replay-asof.js";
 import { stagingExecutor, type ReplayStartRequest, type ReplayTaskPort } from "../../../packages/broker/src/lessons/replay-executor.js";
 import { lessonContentKey } from "../../../packages/broker/src/lessons/replay-lessonset.js";
 import type { ReplayCandidate } from "../../../packages/broker/src/lessons/replay-select.js";
-import { InMemoryLessonStore } from "../../../packages/broker/src/lessons/store.js";
-import { KEY, lessonRecord, seed } from "./lesson-helpers.js";
+import { KEY } from "./lesson-helpers.js";
 
 const DAY = 86_400_000;
 const T0 = Date.UTC(2026, 8, 1);
 const task: ReplayCandidate = { taskId: "t1", project: "p", repository: "api", at: T0, memberCorrections: 2, outcome: "merged" };
-/** A policy under which a lesson with its approvals is delivered without further people (the as-of builder exports by the one rule every arm uses). */
-const RULES = { approval: { tier0: "auto" as const, tier1: "one" as const }, trialAllowed: true };
 const OPTIONS = { maxUsdPerRun: 4, planningLimitUsd: 2 };
 const run = (over: Partial<PlannedRun> = {}): PlannedRun => ({ key: "k1", task: "t1", repeat: 1, arm: "on:current", day: "2026-09-01", memory: { mode: "snapshot", snapshotId: `snp_${"a".repeat(20)}` }, evalRun: true, ...over });
 
@@ -162,47 +158,9 @@ describe("the rubric grader", () => {
   });
 });
 
-describe("pipeline B as of a date (read only)", () => {
-  const lesson = (id: string, over: Record<string, unknown> = {}) => lessonRecord({ id, createdAt: T0 - 10 * DAY, updatedAt: T0 - 10 * DAY, expiresAt: T0 + 100 * DAY, ...over });
-  it("keeps the lessons live at the start of the day at the version they had then", () => {
-    const v1 = lesson("les_a", { version: 1, body: "old words" });
-    const v2 = lesson("les_a", { version: 2, body: "new words", updatedAt: T0 + 2 * DAY });
-    const later = lesson("les_b", { createdAt: T0 + DAY, updatedAt: T0 + DAY });
-    const expired = lesson("les_c", { expiresAt: T0 - DAY });
-    const retired = lesson("les_d", { status: "retired" });
-    const versions = new Map([["les_a", [v1, v2]], ["les_b", [later]], ["les_c", [expired]], ["les_d", [retired]]]);
-    expect(lessonsAsOf(versions, T0).map((l) => `${l.id}:${l.body}`)).toEqual(["les_a:old words"]);
-    expect(lessonsAsOf(versions, T0 + 3 * DAY).map((l) => `${l.id}:${l.body}`)).toEqual(["les_a:new words", "les_b:" + later.body]);
-  });
-  it("is a snapshot builder: a deterministic id, no model, cost not measured, and the harness reads it", async () => {
-    const store = new InMemoryLessonStore();
-    await seed(store, lesson("les_a"), lesson("les_b", { title: "Lint first", body: "Run lint before tests." }));
-    const pinned: string[] = [];
-    const builder = asOfSnapshotBuilder({ store, key: KEY, rules: RULES, pin: async (id, lessons) => { pinned.push(`${id}:${String(lessons.length)}`); } });
-    const request = { pipeline: "current", day: dayOf(T0), learningCalls: "explicit" as const, historical: [] };
-    const a = await builder.build(request);
-    const b = await builder.build(request);
-    expect(a.snapshotId).toBe(b.snapshotId);
-    expect(a.snapshotId).toMatch(/^snp_[0-9a-f]{20}$/);
-    expect(a).toMatchObject({ costUsd: null, calls: null });
-    expect(a.lessons).toHaveLength(2);
-    expect(pinned).toHaveLength(2);
-    const tasks = [task, { ...task, taskId: "t2", at: T0 + DAY }];
-    const built = await buildSnapshots({ key: KEY, tasks, arms: ["off", "on:current"], builders: { current: builder } });
-    expect(built.learning).toEqual(expect.arrayContaining([expect.objectContaining({ arm: "on:current", usd: null, calls: null }), { arm: "off", usd: 0, calls: 0 }]));
-    expect(built.lessonSets[0]).toMatchObject({ arm: "on:current", size: 2 });
-  });
-  it("a store from another project gives nothing", async () => {
-    const store = new InMemoryLessonStore();
-    await seed(store, lesson("les_a"));
-    const builder = asOfSnapshotBuilder({ store, key: { workspaceId: KEY.workspaceId, project: "other" }, rules: RULES });
-    expect((await builder.build({ pipeline: "current", day: dayOf(T0), learningCalls: "explicit", historical: [] })).lessons).toEqual([]);
-  });
-});
-
 describe("the --max-usd limit on building snapshots", () => {
   it("stops when the builders spend more than the limit", async () => {
-    const dear = { build: async () => ({ snapshotId: `snp_${"c".repeat(20)}`, lessons: [], costUsd: 3, calls: 1, export: { rule: "active-without-a-person/v1", proposed: 0, needsPerson: 0, truncated: 0, droppedCalls: 0 } }) };
+    const dear = { build: async () => ({ snapshotId: `snp_${"c".repeat(20)}`, lessons: [], costUsd: 3, calls: 1, export: { rule: "active-without-a-person/v1", proposed: 0, needsPerson: 0, truncated: 0, droppedCalls: 0, unverified: 0, overrides: [] } }) };
     const tasks = [task, { ...task, taskId: "t2", at: T0 + DAY }, { ...task, taskId: "t3", at: T0 + 2 * DAY }];
     await expect(buildSnapshots({ key: KEY, tasks, arms: ["off", "on:current"], builders: { current: dear }, maxUsd: 5 })).rejects.toThrow(/max-usd/);
     await expect(buildSnapshots({ key: KEY, tasks, arms: ["off", "on:current"], builders: { current: dear }, maxUsd: 50 })).resolves.toBeDefined();

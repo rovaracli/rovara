@@ -66,26 +66,40 @@ async function loadModule(file: string): Promise<OperatorModule> {
 }
 
 /** A results file: one JSON object per line, { key, row }. */
-/** Takes the results file's lock (`<file>.lock`, holding this process's id) or refuses; a lock whose process is gone is taken over. Returns the release. */
-export function lockResults(file: string): () => void {
-  const lock = `${file}.lock`;
+/**
+ * Takes the results file's lock (`<file>.lock`, holding this process's id) or refuses. The lock is created with O_EXCL (`wx`), so exactly one taker creates it. A lock held by a live process, THIS ONE included, refuses: two runs
+ * of the script on one results file would each spend up to the limit. A lock whose process is gone is taken over under a second exclusive file (`<file>.lock.takeover`): the taker that holds it re-reads the lock and replaces it
+ * only if it is still the dead holder's, so a lock another taker has just created is never removed. (`between` is for a test: it runs after the taker decided the lock is stale and before it holds the takeover file.)
+ */
+export function lockResults(file: string, between?: () => void): () => void {
+  const lock = `${file}.lock`, guard = `${file}.lock.takeover`;
   mkdirSync(path.dirname(path.resolve(file)), { recursive: true });
-  for (let attempt = 0; attempt < 2; attempt += 1) {
-    let exists: boolean;
-    try {
-      writeFileSync(lock, String(process.pid), { flag: "wx" });
-      return () => { try { unlinkSync(lock); } catch { /* already gone */ } };
-    } catch (error) {
+  const create = (): (() => void) | undefined => {
+    try { writeFileSync(lock, String(process.pid), { flag: "wx" }); } catch (error) { if ((error as NodeJS.ErrnoException).code === "EEXIST") return undefined; throw error; }
+    return () => { try { unlinkSync(lock); } catch { /* already gone */ } };
+  };
+  const holderOf = (): number | undefined => { try { return Number(readFileSync(lock, "utf8").trim()); } catch { return undefined; } };
+  const aliveOf = (pid: number): boolean => { try { process.kill(pid, 0); return true; } catch (error) { return (error as NodeJS.ErrnoException).code === "EPERM"; } };
+  const refusal = (pid: number): Error => new Error(`another replay run is using ${file} (process ${String(pid)}); two runs on one results file would each spend up to the limit`);
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    const made = create();
+    if (made !== undefined) return made;
+    const holder = holderOf();
+    if (holder === undefined) continue; // released between the two calls: try again
+    if (aliveOf(holder)) throw refusal(holder);
+    between?.();
+    // The holder is dead: take over under the exclusive takeover file.
+    let busy = false;
+    try { writeFileSync(guard, String(process.pid), { flag: "wx" }); } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
-      exists = true;
+      busy = true;
     }
-    if (exists) {
-      const holder = Number(readFileSync(lock, "utf8").trim());
-      let alive = true;
-      try { process.kill(holder, 0); } catch { alive = false; }
-      if (alive && holder !== process.pid) throw new Error(`another replay run is using ${file} (process ${String(holder)}); two runs on one results file would each spend up to the limit`);
-      try { unlinkSync(lock); } catch { /* raced with another taker: the next attempt decides */ }
-    }
+    if (busy) throw new Error(`another replay run is taking over ${file}.lock; try again in a moment (if ${guard} is left over from a crash, remove it)`);
+    try {
+      const again = holderOf();
+      if (again !== undefined && aliveOf(again)) throw refusal(again); // someone took it over first: it is theirs
+      try { unlinkSync(lock); } catch { /* already gone */ }
+    } finally { try { unlinkSync(guard); } catch { /* already gone */ } }
   }
   throw new Error(`could not take the lock on ${file}`);
 }

@@ -2,7 +2,7 @@
 import { describe, expect, it } from "vitest";
 import { GraderMismatchError, REPLAY_REPEATS, buildMeasureReport, type ReplayRunRow } from "@agentx/contracts";
 import {
-  ArmNotBuiltError, EvalMarkError, ReplayLearningCallError, ReplayRunFailed, buildReplayPlan, copyWorstCaseUsd, buildSnapshots, dayOf, runReplay,
+  ArmNotBuiltError, EvalMarkError, GraderModelChangedError, ReplayLearningCallError, ReplayLimitError, ReplayRunFailed, buildReplayPlan, copyWorstCaseUsd, buildSnapshots, dayOf, runReplay,
   type ExecutedRun, type GradeRequest, type ReplayExecutor, type ReplayGraderPort, type RunSink, type SnapshotBuilder,
 } from "../../../packages/broker/src/lessons/replay-harness.js";
 import { lessonContentKey, summarizeLessonSet } from "../../../packages/broker/src/lessons/replay-lessonset.js";
@@ -145,6 +145,30 @@ describe("running", () => {
     await go(plan(40), { executor: dear, grader: grader({ holdUsd: 0.1 }), sink: new Sink(), priorCorrections: async () => [], maxUsd: worst + 0.09, holdPerRunUsd: worst });
     expect(started).toBe(0);
   });
+  it("a grader whose model changed under the run STOPS the replay (no more spend); the grading that was paid for is charged and recorded first", async () => {
+    const sink = new Sink();
+    let graded = 0;
+    const changed = grader({ holdUsd: 0.2, grade: async () => { graded += 1; throw new GraderModelChangedError("declared-model", "other-model"); } });
+    await expect(go(plan(40), { executor: { run: async () => okRun({ costUsd: 1 }) }, grader: changed, sink, priorCorrections: async () => [], maxUsd: 100, holdPerRunUsd: 2 })).rejects.toThrow(GraderModelChangedError);
+    expect(graded).toBe(1);
+    expect([...sink.rows.values()].map((r) => r.resolved)).toEqual([null]);
+    expect(sink.charges).toEqual([1.2]); // the copy's cost and the grading's hold
+    // An ordinary grading failure is still one ungraded run and the replay goes on.
+    const ordinary = new Sink();
+    let n = 0;
+    const flaky = grader({ holdUsd: 0.2, grade: async () => { n += 1; if (n === 1) throw new Error("not JSON"); return { resolved: true, gradedBy: "hidden_tests" as const, mistakes: [] }; } });
+    const report = await go(plan(40), { executor: { run: async () => okRun({ costUsd: 1 }) }, grader: flaky, sink: ordinary, priorCorrections: async () => [], maxUsd: 100, holdPerRunUsd: 2 });
+    expect(report.ungraded).toBe(1);
+    expect(report.ran).toBeGreaterThan(1);
+  });
+  it("a copy stopped by the limit check (it started under a limit the budget did not reserve for) is charged its reserved hold in the ledger before the replay stops", async () => {
+    const sink = new Sink();
+    await expect(go(plan(40), { executor: { run: async () => { throw new ReplayLimitError("k", "no limit"); } }, grader: grader(), sink, priorCorrections: async () => [], maxUsd: 100, holdPerRunUsd: 2.5 })).rejects.toThrow(ReplayLimitError);
+    expect(sink.charges).toEqual([2.5]);
+    expect([...sink.rows.values()].map((r) => r.resolved)).toEqual([null]);
+    // And a rerun on the same ledger counts it: the money is not forgotten.
+    expect(sink.spentUsd()).toBe(2.5);
+  });
   it("a run that fails is an ungraded row, and the replay goes on", async () => {
     let n = 0;
     const flaky: ReplayExecutor = { run: async () => { n += 1; if (n === 2) throw new Error("worker lost"); return okRun(); } };
@@ -206,7 +230,7 @@ describe("building the snapshots (historical outcomes only)", () => {
   const lesson = (title: string, body: string) => lessonRecord({ id: `les_${lessonContentKey({ title, body }).slice(0, 8)}`, title, body, description: "d" });
   it("builds each pipeline for each day in time order, from tasks before that day only, with learning calls named explicitly; off costs nothing", async () => {
     const calls: Array<{ pipeline: string; day: string; historical: number; learningCalls: string }> = [];
-    const builder = (usd: number): SnapshotBuilder => ({ build: async (req) => { calls.push({ pipeline: req.pipeline, day: req.day, historical: req.historical.length, learningCalls: req.learningCalls }); return { snapshotId: `snp_${req.day.replace(/-/gu, "").padEnd(20, "0")}`, lessons: [lesson(`L ${req.day}`, `Always run lint ${req.day}`)], costUsd: usd, calls: 2, export: { rule: "active-without-a-person/v1", proposed: 0, needsPerson: 0, truncated: 0, droppedCalls: 0 } }; } });
+    const builder = (usd: number): SnapshotBuilder => ({ build: async (req) => { calls.push({ pipeline: req.pipeline, day: req.day, historical: req.historical.length, learningCalls: req.learningCalls }); return { snapshotId: `snp_${req.day.replace(/-/gu, "").padEnd(20, "0")}`, lessons: [lesson(`L ${req.day}`, `Always run lint ${req.day}`)], costUsd: usd, calls: 2, export: { rule: "active-without-a-person/v1", proposed: 0, needsPerson: 0, truncated: 0, droppedCalls: 0, unverified: 0, overrides: [] } }; } });
     const t = tasks(6);
     const built = await buildSnapshots({ key: KEY, tasks: t, arms: ARMS, builders: { current: builder(0.5), consolidated: builder(0.25) } });
     const days = [...new Set(t.map((x) => dayOf(x.at)))].sort();

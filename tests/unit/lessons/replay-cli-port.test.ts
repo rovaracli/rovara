@@ -1,6 +1,7 @@
 // Lane 7: the executor, the grader's model and evidence, and the importer over the `agentx` CLI. A fake CLI answers in the CLI's `--json` envelope; nothing runs, no network.
 import { describe, expect, it } from "vitest";
 import { cliEvidenceReader, cliGraderModel, cliPipelineModel, cliProjectSettings, cliReplayPort, cliSubjectOf, importSnapshot, uuidOf, type CliResult } from "../../../scripts/lessons-replay-port.js";
+import { GraderModelChangedError } from "../../../packages/broker/src/lessons/replay-harness.js";
 import { stagingExecutor } from "../../../packages/broker/src/lessons/replay-executor.js";
 import { ReplayRunFailed } from "../../../packages/broker/src/lessons/replay-harness.js";
 import { lessonRecord } from "./lesson-helpers.js";
@@ -111,8 +112,10 @@ describe("the grader's model, the evidence, the importer and the offline pipelin
     expect(model.holdUsd).toBe(0.2);
     // The grading must come from the declared model: an answer from another one (the company changed its lessons model mid-run), or one that names none, fails that grading.
     const switched = cliGraderModel({ ...options, cli: () => ok({ text: "x", costUsd: 0.03, model: "another-model" }) }, { project: "payments", model: "grader", version: "1", holdUsd: 0.2 });
+    await expect(switched.complete({ system: "s", user: "u" })).rejects.toThrow(GraderModelChangedError);
     await expect(switched.complete({ system: "s", user: "u" })).rejects.toThrow(/answered as another-model, not the declared grader/);
     const unnamed = cliGraderModel({ ...options, cli: () => ok({ text: "x", costUsd: 0.03 }) }, { project: "payments", model: "grader", version: "1", holdUsd: 0.2 });
+    await expect(unnamed.complete({ system: "s", user: "u" })).rejects.toThrow(GraderModelChangedError);
     await expect(unnamed.complete({ system: "s", user: "u" })).rejects.toThrow(/unnamed model/);
     const refusing = cliGraderModel({ ...options, cli: () => refused("month full") }, { project: "payments", model: "g", version: "1", holdUsd: 0.2 });
     await expect(refusing.complete({ system: "s", user: "u" })).rejects.toThrow(/refused: month full/);

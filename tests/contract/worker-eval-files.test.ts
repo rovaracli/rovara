@@ -10,6 +10,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { agentsFileWithPointer, placeEvalFiles } from "../../packages/worker/src/eval-files.js";
 import { WORKER_IMPLEMENTED_FEATURES } from "../../packages/worker/src/implemented-features.js";
 import { readCandidateRepositories } from "../../packages/worker/src/verification/candidate.js";
+import { HIDDEN_WORK_TREES_MAX, hiddenWorkTreeCount, hideFromCandidate } from "../../packages/worker/src/isolated-git.js";
 
 const execFile = promisify(execFileCallback);
 const roots: string[] = [];
@@ -90,5 +91,16 @@ describe("the worker places a replay copy's lessons file", () => {
   it("refuses a lessons file bigger than the contract allows", () => {
     expect(EvalFilesPayloadSchema.safeParse({ ...payload(), lessonsFile: { path: ".rovara/lessons.md", content: "x".repeat(100_001) } }).success).toBe(false);
     expect(EvalFilesPayloadSchema.safeParse({ ...payload(), lessonsFile: { path: "elsewhere.md", content: "x" } }).success).toBe(false);
+  });
+});
+
+describe("the hidden-path registry is bounded", () => {
+  it("never holds more work trees than the bound, and the oldest are the ones dropped", () => {
+    for (let i = 0; i < HIDDEN_WORK_TREES_MAX + 20; i += 1) hideFromCandidate(`/work/${String(i)}`, ".rovara/lessons.md");
+    expect(hiddenWorkTreeCount()).toBeLessThanOrEqual(HIDDEN_WORK_TREES_MAX);
+    expect(hiddenWorkTreeCount()).toBe(HIDDEN_WORK_TREES_MAX);
+    // Re-registering a work tree already held does not evict another.
+    hideFromCandidate(`/work/${String(HIDDEN_WORK_TREES_MAX + 19)}`, "AGENTS.md");
+    expect(hiddenWorkTreeCount()).toBe(HIDDEN_WORK_TREES_MAX);
   });
 });

@@ -125,13 +125,45 @@ describe("the one export rule (the port contract every arm, C included, goes thr
     expect(exported.truncated).toBe(5);
     expect(exported.lessons[0]!.createdAt).toBeGreaterThan(exported.lessons.at(-1)!.createdAt);
   });
-  it("the harness refuses a builder (C included) that does not export by that rule", async () => {
-    const other: SnapshotBuilder = { build: async () => ({ snapshotId: "", lessons: [], costUsd: 0, calls: 0, export: { rule: "approve-everything", proposed: 3, needsPerson: 0, truncated: 0, droppedCalls: 0 } }) };
-    await expect(buildSnapshots({ key, tasks, arms: ["off", "on:consolidated"], builders: { consolidated: other } })).rejects.toThrow(ReplayExportRuleError);
-    const missing = { build: async () => ({ snapshotId: "", lessons: [], costUsd: 0, calls: 0 }) } as unknown as SnapshotBuilder;
-    await expect(buildSnapshots({ key, tasks, arms: ["off", "on:consolidated"], builders: { consolidated: missing } })).rejects.toThrow(ReplayExportRuleError);
-    const ours: SnapshotBuilder = { build: async () => { const e = exportWithoutAPerson({ lessons: [], approval: DEFAULT_APPROVAL_POLICY, trialAllowed: true }); return { snapshotId: "", lessons: e.lessons, costUsd: 0, calls: 0, export: { rule: e.rule, proposed: e.proposed, needsPerson: e.needsPerson, truncated: e.truncated, droppedCalls: 0 } }; } };
-    await expect(buildSnapshots({ key, tasks, arms: ["off", "on:consolidated"], builders: { consolidated: ours } })).resolves.toBeDefined();
+  it("the harness checks the BEHAVIOUR of a builder's export, not its name: a builder that carries the rule's label but exports a made-up person approval, a pending lesson as active, or no label at all is refused; an honest one is accepted", async () => {
+    const label = { rule: REPLAY_EXPORT_RULE, proposed: 1, needsPerson: 0, truncated: 0, droppedCalls: 0, unverified: 0, overrides: [] as string[] };
+    const builderOf = (lessons: ReturnType<typeof lessonRecord>[], exportInfo: unknown = label): SnapshotBuilder => ({ build: async () => ({ snapshotId: "", lessons, costUsd: 0, calls: 0, export: exportInfo as never }) });
+    const run = (builder: SnapshotBuilder) => buildSnapshots({ key, tasks, arms: ["off", "on:consolidated"], builders: { consolidated: builder } });
+    const faked = lessonRecord({ id: "les_cccccccccccccccccc01", status: "active", tier: 1, approvals: [{ approvalId: "x", by: "offline-replay", at: 1, mode: "one" }] });
+    const second = lessonRecord({ id: "les_cccccccccccccccccc02", status: "active", tier: 2, approvals: [{ approvalId: "x", by: "a", at: 1, mode: "second_person" }] });
+    const exception = lessonRecord({ id: "les_cccccccccccccccccc03", status: "active", approvals: [{ approvalId: "x", by: "a", at: 1, mode: "sole_owner_exception" }] });
+    const pendingAsActive = lessonRecord({ id: "les_cccccccccccccccccc04", status: "pending", approvals: [] });
+    for (const bad of [faked, second, exception, pendingAsActive]) await expect(run(builderOf([bad])), bad.id).rejects.toThrow(ReplayExportRuleError);
+    await expect(run(builderOf([], { ...label, rule: "approve-everything" }))).rejects.toThrow(ReplayExportRuleError);
+    await expect(run({ build: async () => ({ snapshotId: "", lessons: [], costUsd: 0, calls: 0 }) } as unknown as SnapshotBuilder)).rejects.toThrow(ReplayExportRuleError);
+    // An honest export: no lesson carries a person's approval (a trial lesson, or an automatic one).
+    const trialLesson = lessonRecord({ id: "les_cccccccccccccccccc05", status: "active", tier: 0, approvals: [{ approvalId: "t", by: TRIAL_APPROVER, at: 1, mode: "trial" }] });
+    const auto = lessonRecord({ id: "les_cccccccccccccccccc06", status: "active", tier: 0, approvals: [{ approvalId: "a", by: "system:auto", at: 1, mode: "auto" }] });
+    await expect(run(builderOf([trialLesson, auto]))).resolves.toBeDefined();
+    const e = exportWithoutAPerson({ lessons: [], approval: DEFAULT_APPROVAL_POLICY, trialAllowed: true });
+    await expect(run(builderOf(e.lessons, { rule: e.rule, proposed: 0, needsPerson: 0, truncated: 0, droppedCalls: 0, unverified: 0, overrides: [] }))).resolves.toBeDefined();
+  });
+  it("counts the proposed lessons whose citations could not be verified (a clone that could not tell), under the live rule: they are kept out of the trial path and wait for a person", async () => {
+    const unknown = setup([one(), one()], { code: { verifier: verifier("unknown"), facts: facts() } });
+    const built = await unknown.builder.build({ pipeline: "current", day: dayOf(T0 + 3 * DAY), learningCalls: "explicit", historical: tasks.slice(0, 2) });
+    expect(built.lessons).toEqual([]);
+    expect(built.export.needsPerson).toBe(built.export.proposed);
+    expect(built.export.unverified).toBe(built.export.proposed);
+    expect(built.export.unverified).toBeGreaterThan(0);
+    const valid = setup([one(), one()], { code: { verifier: verifier("valid"), facts: facts() } });
+    expect((await valid.builder.build({ pipeline: "current", day: dayOf(T0 + 3 * DAY), learningCalls: "explicit", historical: tasks.slice(0, 2) })).export.unverified).toBe(0);
+  });
+  it("states every override in force: no embedder, citations unchecked, the lessons switch assumed on, and the auto-apply switch as the install has it", async () => {
+    const bare = setup([one()]);
+    const a = await bare.builder.build({ pipeline: "current", day: dayOf(T0 + DAY), learningCalls: "explicit", historical: tasks.slice(0, 1) });
+    expect(a.export.overrides).toEqual(expect.arrayContaining([expect.stringMatching(/no embedder/u), expect.stringMatching(/citations are not checked/u), expect.stringMatching(/lessons switch is assumed on/u), expect.stringMatching(/auto-apply switch is on/u)]));
+    const full = setup([one()], { code: { verifier: verifier("valid"), facts: facts() }, autoApply: false });
+    const b = await full.builder.build({ pipeline: "current", day: dayOf(T0 + DAY), learningCalls: "explicit", historical: tasks.slice(0, 1) });
+    expect(b.export.overrides.some((o) => /citations are not checked/u.test(o))).toBe(false);
+    expect(b.export.overrides).toEqual(expect.arrayContaining([expect.stringMatching(/auto-apply switch is off/u), expect.stringMatching(/lessons switch is assumed on/u)]));
+    // The harness carries them to the arm's learning record (and so to the report).
+    const built = await buildSnapshots({ key, tasks, arms: ["off", "on:current"], builders: { current: bare.builder } });
+    expect(built.learning.find((c) => c.arm === "on:current")!.overrides).toEqual(expect.arrayContaining([expect.stringMatching(/no embedder/u)]));
   });
 });
 

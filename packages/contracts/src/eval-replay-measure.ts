@@ -181,6 +181,10 @@ export interface ArmLearningCost {
   arm: string; /** null: this arm's learning cost was not measured (a pipeline read as of a date, not run). */ usd: number | null; calls: number | null;
   /** Lessons the pipeline proposed over the whole replay (active, pending or candidate at the end of each day, summed over days' last set), how many of them would have needed a person under the project's real rules (so were NOT delivered), how many the 80-lesson cap cut, and how many model calls failed and were left out. Absent: not recorded (an older result). */
   proposed?: number; needsPerson?: number; truncated?: number; droppedCalls?: number;
+  /** Of the proposed lessons, how many had a code citation that could not be verified (they wait for a person under the live rule). */
+  unverified?: number;
+  /** Every way the arm's lessons were built differently from live (no embedder, citations unchecked, the lessons switch assumed on, ...). */
+  overrides?: string[];
 }
 export interface ArmLessonSet { arm: string; size: number; duplicates: number; contradictions: number }
 export interface ArmUsefulMarks { arm: string; size: number; marked: number; useful: number }
@@ -211,7 +215,7 @@ export interface MeasureResults {
   arms: Array<{ arm: string; runs: number; resolved: number; rate: number | null; low: number; high: number; /** The same over tasks: each task counted once (solved when most of its repeats resolved). */ tasks: { tasks: number; solved: number; rate: number | null; low: number; high: number } }>;
   discordant: Array<{ a: string; b: string; onlyA: string[]; onlyB: string[] }>;
   sameMistakes: Array<{ arm: string; runs: number; runsWithRepeat: number; repeats: number; confirmed: number | null; unjudged: number | null; split: ArmSameMistakeCheck["split"] | null }>;
-  learningCost: Array<{ arm: string; usd: number | null; calls: number | null; projectDays: number; perProjectDay: number | null; proposed: number | null; needsPerson: number | null; truncated: number | null; droppedCalls: number | null }>;
+  learningCost: Array<{ arm: string; usd: number | null; calls: number | null; projectDays: number; perProjectDay: number | null; proposed: number | null; needsPerson: number | null; unverified: number | null; truncated: number | null; droppedCalls: number | null }>;
   /** Per arm: the runs the plan had, how many were graded and how many were left ungraded (a stalled plan, a failure, a failed grading): their own outcome. */
   outcomes: Array<{ arm: string; runs: number; graded: number; ungraded: number }>;
   runCost: Array<{ arm: string; runs: number; meanUsd: number | null }>;
@@ -226,6 +230,8 @@ export interface MeasureReport {
   stopped: boolean;
   continuedAnyway: boolean;
   learningCalls?: LearningCallsNote;
+  /** Every override in force, per arm, stated even when the report stops. */
+  overrides?: Array<{ arm: string; overrides: string[] }>;
   results?: MeasureResults;
 }
 
@@ -234,7 +240,8 @@ export function buildMeasureReport(input: MeasureInput): MeasureReport {
   const grader = assertOneGrader(input.rows);
   const loadedDifference = loadedLessonDifference(input.rows, input.compare.b, input.compare.c);
   const stopped = loadedDifference.nearlySame;
-  const base: MeasureReport = { version: 1, grader, loadedDifference, nearlySameLine: LOADED_DIFFERENCE_NEARLY_SAME, stopped, continuedAnyway: stopped && input.continueAnyway === true, ...(input.learningCalls === undefined ? {} : { learningCalls: input.learningCalls }) };
+  const base: MeasureReport = { version: 1, grader, loadedDifference, nearlySameLine: LOADED_DIFFERENCE_NEARLY_SAME, stopped, continuedAnyway: stopped && input.continueAnyway === true, ...(input.learningCalls === undefined ? {} : { learningCalls: input.learningCalls }),
+    ...(input.learning.some((cost) => (cost.overrides ?? []).length > 0) ? { overrides: input.learning.filter((cost) => (cost.overrides ?? []).length > 0).map((cost) => ({ arm: canonicalArm(cost.arm), overrides: cost.overrides! })) } : {}) };
   if (stopped && input.continueAnyway !== true) return base;
 
   const armRows: ArmRunRow[] = input.rows.map((row) => ({ task: row.task, repeat: row.repeat, arm: row.arm, resolved: row.resolved ?? undefined }));
@@ -262,7 +269,7 @@ export function buildMeasureReport(input: MeasureInput): MeasureReport {
     learningCost: comparison.arms.map((arm) => {
       const cost = costs.get(arm);
       return { arm, usd: cost?.usd ?? null, calls: cost?.calls ?? null, projectDays: days, perProjectDay: cost?.usd === undefined || cost.usd === null ? null : cost.usd / days,
-        proposed: cost?.proposed ?? null, needsPerson: cost?.needsPerson ?? null, truncated: cost?.truncated ?? null, droppedCalls: cost?.droppedCalls ?? null };
+        proposed: cost?.proposed ?? null, needsPerson: cost?.needsPerson ?? null, unverified: cost?.unverified ?? null, truncated: cost?.truncated ?? null, droppedCalls: cost?.droppedCalls ?? null };
     }),
     outcomes: comparison.arms.map((arm) => {
       const mine = input.rows.filter((row) => canonicalArm(row.arm) === arm);
@@ -314,6 +321,11 @@ export function renderMeasureReport(report: MeasureReport): string {
     out.push("");
     out.push(`Learning calls (decision 47): lessons switch: ${calls.lessonsSwitch}; replays made ${String(calls.replayLearningCalls)} learning calls; lesson snapshots were built by the harness with the learning calls named in the plan (${calls.snapshotBuilds}), not by the install.`);
   }
+  if (report.overrides !== undefined) {
+    out.push("");
+    out.push("Overrides in force (how this replay differs from live):");
+    for (const o of report.overrides) out.push(`   ${o.arm}: ${o.overrides.join("; ")}`);
+  }
   const results = report.results;
   if (results !== undefined) {
     out.push("");
@@ -338,7 +350,7 @@ export function renderMeasureReport(report: MeasureReport): string {
     for (const cost of results.learningCost) {
       const run = results.runCost.find((r) => r.arm === cost.arm);
       out.push(`   ${cost.arm}: learning ${usd(cost.perProjectDay)} per project-day (${usd(cost.usd)} in ${cost.calls === null ? "an unrecorded number of" : String(cost.calls)} calls); a run cost ${usd(run?.meanUsd ?? null)} on average`);
-      if (cost.proposed !== null) out.push(`      lessons proposed ${String(cost.proposed)}: ${String(cost.needsPerson ?? 0)} would have needed a person under the project's rules and were not delivered; ${String(cost.truncated ?? 0)} cut at the ${String(80)}-lesson cap; ${String(cost.droppedCalls ?? 0)} model calls failed and were left out`);
+      if (cost.proposed !== null) out.push(`      lessons proposed ${String(cost.proposed)}: ${String(cost.needsPerson ?? 0)} would have needed a person under the project's rules and were not delivered (${String(cost.unverified ?? 0)} had a citation that could not be verified); ${String(cost.truncated ?? 0)} cut at the ${String(80)}-lesson cap; ${String(cost.droppedCalls ?? 0)} model calls failed and were left out`);
     }
     out.push("");
     out.push("5. The final lesson set:");

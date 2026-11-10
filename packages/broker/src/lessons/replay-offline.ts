@@ -32,6 +32,8 @@ export interface OfflineBuilderDeps {
   similarity?: { embedder: LessonEmbedder; vectors: LessonVectors };
   /** The real citation check and code facts, over a checkout at the cited commit. Absent: citations are "unknown" (so nothing is tier 0 on a verified citation) and the report says so. */
   code?: { verifier: CitationVerifier; facts: CodeFacts };
+  /** The install has an embedder the offline run cannot use (the operator accepted that): said in the report. */
+  installHasEmbedder?: boolean;
 }
 
 const DAY = 86_400_000;
@@ -67,6 +69,13 @@ export function offlinePipelineBuilder(deps: OfflineBuilderDeps): SnapshotBuilde
     store, embedder: deps.similarity?.embedder, vectors: deps.similarity?.vectors ?? NO_VECTORS, judgeModel: model, spend: UNLIMITED, audit: NO_AUDIT, now, verifier: deps.code?.verifier ?? UNCHECKED, facts,
     settings: deps.settings, newId: () => `les_${(++counter).toString(16).padStart(20, "0")}`,
   };
+  // Every way this offline run differs from live, in words (the report states them for the arm).
+  const overrides = [
+    "the lessons switch is assumed on offline (that is the question the replay asks)",
+    `the install's auto-apply switch is ${deps.autoApply ? "on" : "off"}, as the install has it`,
+    ...(deps.similarity === undefined ? [deps.installHasEmbedder === true ? "no embedder offline although the install has one (accepted by the operator): similar lessons are not merged by meaning" : "no embedder: similar lessons are matched by keywords and cited paths only"] : []),
+    ...(deps.code === undefined ? ["citations are not checked: no clone of the repositories was given, so no lesson can go live on a verified citation"] : []),
+  ];
   return {
     build: (request: SnapshotRequest): Promise<SnapshotResult> => underInstallGates(deps.autoApply, async () => {
       const resolved = await resolveLearning(deps.settings, deps.key.workspaceId, deps.key.project);
@@ -89,7 +98,7 @@ export function offlinePipelineBuilder(deps: OfflineBuilderDeps): SnapshotBuilde
       clock = dayStart;
       const exported = exportWithoutAPerson({ lessons: await store.list(deps.key), approval: resolved.approval, trialAllowed: resolved.trialAllowed });
       return { snapshotId: "", lessons: exported.lessons, costUsd: usd - before.usd, calls: calls - before.calls,
-        export: { rule: exported.rule, proposed: exported.proposed, needsPerson: exported.needsPerson, truncated: exported.truncated, droppedCalls: dropped - before.dropped } };
+        export: { rule: exported.rule, proposed: exported.proposed, needsPerson: exported.needsPerson, truncated: exported.truncated, droppedCalls: dropped - before.dropped, unverified: exported.unverified, overrides } };
     }),
   };
 }

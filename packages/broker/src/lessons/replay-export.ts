@@ -21,11 +21,29 @@ export interface ReplayExport {
   needsPerson: number;
   /** Lessons that qualified but were cut at the snapshot cap. */
   truncated: number;
+  /** Proposed lessons with a code citation that was not verified (checked "unknown", or not checked at all): under the live rule they do not go live on trial, so they wait for a person. */
+  unverified: number;
+}
+
+/** Whether a proposed lesson has a code citation nobody verified. A check is recorded only when the verifier could tell (valid, moved or stale); "unknown" leaves none. A citation found stale is a known answer, not an unverified one. */
+const hasUnverifiedCitation = (lesson: Lesson): boolean => lesson.citations.some((citation, index) => citation.kind === "code" && !(lesson.citationChecks ?? []).some((check) => check.index === index));
+
+/**
+ * What an offline pipeline's delivered lessons must look like, whatever the builder says about itself: each is ACTIVE, and none carries the approval of a person (offline there are none; a trial or automatic approval is the
+ * pipeline's own). A builder that exports pending lessons as active, or makes up a person's approval, fails here. Pure.
+ */
+export function exportViolations(lessons: readonly Lesson[]): string[] {
+  const out: string[] = [];
+  for (const lesson of lessons) {
+    if (lesson.status !== "active") out.push(`${lesson.id}: not active`);
+    if (lesson.approvals.some((approval) => approval.mode !== "auto" && approval.mode !== "trial")) out.push(`${lesson.id}: carries a person's approval`);
+  }
+  return out;
 }
 
 export function exportWithoutAPerson(input: { lessons: readonly Lesson[]; approval: ApprovalPolicy; trialAllowed: boolean }): ReplayExport {
   const proposed = input.lessons.filter((lesson) => lesson.status === "active" || lesson.status === "pending" || lesson.status === "candidate");
   const qualified = proposed.filter((lesson) => lesson.status === "active" && !hasStaleCitation(lesson) && approvedForUse(lesson, input.approval, (id) => id, input.trialAllowed));
   const ordered = [...qualified].sort((a, b) => b.createdAt - a.createdAt || (a.id < b.id ? -1 : 1));
-  return { rule: REPLAY_EXPORT_RULE, lessons: ordered.slice(0, EVAL_SNAPSHOT_MAX_LESSONS), proposed: proposed.length, needsPerson: proposed.length - qualified.length, truncated: Math.max(0, ordered.length - EVAL_SNAPSHOT_MAX_LESSONS) };
+  return { rule: REPLAY_EXPORT_RULE, lessons: ordered.slice(0, EVAL_SNAPSHOT_MAX_LESSONS), proposed: proposed.length, needsPerson: proposed.length - qualified.length, truncated: Math.max(0, ordered.length - EVAL_SNAPSHOT_MAX_LESSONS), unverified: proposed.filter(hasUnverifiedCitation).length };
 }

@@ -10,6 +10,7 @@ import { createHash } from "node:crypto";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { GraderModelChangedError } from "../packages/broker/src/lessons/replay-harness.js";
 import type { EvidenceReader, GradedEvidence, GraderModel } from "../packages/broker/src/lessons/replay-grader.js";
 import type { ReplayStartRequest, ReplayTaskEnd, ReplayTaskPort } from "../packages/broker/src/lessons/replay-executor.js";
 import type { PipelineModel } from "../packages/broker/src/lessons/ports.js";
@@ -127,7 +128,7 @@ export function cliGraderModel(options: CliPortOptions, input: { project: string
       const body = answerOf(answered);
       if (typeof body?.["text"] !== "string") throw new Error(`the grader's model call was refused: ${refusal(answered)}`);
       // The grading must come from the model the replay declared: the company's route can change under a long run (its lessons model is a setting), and gradings by different models are not comparable.
-      if (body["model"] !== input.model) throw new Error(`the grader answered as ${typeof body["model"] === "string" ? body["model"] : "an unnamed model"}, not the declared ${input.model}; the replay's grader must not change`);
+      if (body["model"] !== input.model) throw new GraderModelChangedError(input.model, typeof body["model"] === "string" ? body["model"] : undefined);
       return { text: body["text"], costUsd: typeof body["costUsd"] === "number" ? body["costUsd"] : null };
     },
   };

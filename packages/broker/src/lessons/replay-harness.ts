@@ -13,7 +13,7 @@ import {
   GraderMismatchError, REPLAY_REPEATS, REPLAY_TASKS_MAX, REPLAY_TASKS_MIN, ReplayRunRowSchema, canonicalArm, memoryInputForArm, parseArm,
   type ArmLearningCost, type ArmLessonSet, type LearningCallsNote, type MemoryInput, type ReplayGradedBy, type ReplayGrader, type ReplayRunRow,
 } from "@agentx/contracts";
-import { REPLAY_EXPORT_RULE } from "./replay-export.js";
+import { REPLAY_EXPORT_RULE, exportViolations } from "./replay-export.js";
 import { lessonContentKey, summarizeLessonSet } from "./replay-lessonset.js";
 import { evalSnapshotIdOf } from "./replay-snapshot-store.js";
 import type { ReplayCandidate } from "./replay-select.js";
@@ -139,7 +139,7 @@ export class ReplayExportRuleError extends Error {
 export interface SnapshotResult {
   snapshotId: string;
   /** How the lessons were exported (`replay-export.ts`): the rule's name (every arm must carry the same one) and what the day's export counted. Required: a builder that does not say is refused. */
-  export: { rule: string; proposed: number; needsPerson: number; truncated: number; /** Model calls of this build that failed and were left out. */ droppedCalls: number };
+  export: { rule: string; proposed: number; needsPerson: number; truncated: number; /** Model calls of this build that failed and were left out. */ droppedCalls: number; /** Proposed lessons with a code citation that could not be verified (the clone could not tell, or none was given). */ unverified: number; /** Every way this pipeline's run differs from live, in words; the report states them. */ overrides: string[] };
   /** The pipeline's whole lesson set after this day, with simulated timestamps (createdAt/updatedAt at the day's end). */
   lessons: Lesson[];
   /** null: the pipeline was read as of a date and its cost was not measured. */
@@ -176,7 +176,8 @@ export async function buildSnapshots(input: { key: { workspaceId: string; projec
     for (const day of days) {
       const historical = tasks.filter((t) => dayOf(t.at) < day);
       const built = await builder.build({ pipeline, day, learningCalls: "explicit", historical });
-      if (built.export?.rule !== REPLAY_EXPORT_RULE) throw new ReplayExportRuleError(pipeline);
+      // The rule is checked by what the builder DELIVERED, not by its name: offline there are no people, so a lesson that is not active, or that carries a person's approval, was not made by the pipeline under the rule.
+      if (built.export?.rule !== REPLAY_EXPORT_RULE || exportViolations(built.lessons).length > 0) throw new ReplayExportRuleError(pipeline);
       last = built.export;
       dropped += built.export.droppedCalls;
       // The id the install derives from the lessons themselves, so the snapshot a copy is started on is exactly the one imported (not a name the builder chose).
@@ -187,7 +188,7 @@ export async function buildSnapshots(input: { key: { workspaceId: string; projec
       out.finalLessons[pipeline] = built.lessons;
       out.lessonsByDay[pipeline][day] = built.lessons;
     }
-    out.learning.push({ arm: `on:${pipeline}`, usd, calls, ...(last === undefined ? {} : { proposed: last.proposed, needsPerson: last.needsPerson, truncated: last.truncated, droppedCalls: dropped }) });
+    out.learning.push({ arm: `on:${pipeline}`, usd, calls, ...(last === undefined ? {} : { proposed: last.proposed, needsPerson: last.needsPerson, truncated: last.truncated, droppedCalls: dropped, unverified: last.unverified, overrides: last.overrides }) });
     out.lessonSets.push(summarizeLessonSet(`on:${pipeline}`, out.finalLessons[pipeline] ?? []));
   }
   if (arms.includes("off")) out.learning.push({ arm: "off", usd: 0, calls: 0 });
@@ -211,6 +212,10 @@ export interface ExecutedRun {
   learningCalls: number;
   /** Called after the run is graded (or when grading failed): closes the copy. Never throws into the replay. */
   cleanup?: () => Promise<void>;
+}
+/** The company's route answered a grading as another model than the one the replay declared (its lessons model is a setting that can change under a long run): gradings by two models are not comparable, so the replay stops. */
+export class GraderModelChangedError extends Error {
+  constructor(readonly declared: string, readonly answered: string | undefined) { super(`the grader answered as ${answered ?? "an unnamed model"}, not the declared ${declared}; the replay's grader must not change`); this.name = "GraderModelChangedError"; }
 }
 /** A copy that started under a spend limit the replay's budget did not reserve for (more planning allowance than declared, or none at all): its worst case cannot be bounded, so the whole replay stops. */
 export class ReplayLimitError extends Error {
@@ -277,11 +282,14 @@ export async function runReplay(plan: ReplayPlan, deps: RunDeps): Promise<RunRep
     const task = byTask.get(run.task)!;
     let executed: ExecutedRun | undefined;
     let charge = 0;
+    const ungraded = (loaded: string[], costUsd: number | null): ReplayRunRow => ReplayRunRowSchema.parse({ task: run.task, repeat: run.repeat, arm: run.arm, resolved: null, loaded, costUsd });
     try {
       executed = await deps.executor.run({ run, task, learning: { lessonsSwitch: "off", calls: "none" } });
     } catch (error) {
+      // A copy stopped by the limit check was started (and cancelled): its reserved hold is charged in the ledger before the replay stops, so a rerun does not forget the money.
+      if (error instanceof ReplayLimitError) { await deps.sink.append(run.key, ungraded([], null), deps.holdPerRunUsd); throw error; }
       // An unmarked task or a learning call ends the whole replay; any other fault is one ungraded run, counted at what the copy cost, or at its hold when that is not known.
-      if (error instanceof EvalMarkError || error instanceof ReplayLearningCallError || error instanceof ArmNotBuiltError || error instanceof ReplayLimitError) throw error;
+      if (error instanceof EvalMarkError || error instanceof ReplayLearningCallError || error instanceof ArmNotBuiltError) throw error;
       charge += error instanceof ReplayRunFailed && error.costUsd !== null ? error.costUsd : deps.holdPerRunUsd;
       executed = undefined;
     }
@@ -289,8 +297,8 @@ export async function runReplay(plan: ReplayPlan, deps: RunDeps): Promise<RunRep
       if (executed.evalRunMarked !== true) throw new EvalMarkError(run.key);
       if (executed.learningCalls !== 0) throw new ReplayLearningCallError(run.key);
     }
-    const ungraded = (loaded: string[], costUsd: number | null): ReplayRunRow => ReplayRunRowSchema.parse({ task: run.task, repeat: run.repeat, arm: run.arm, resolved: null, loaded, costUsd });
     let row: ReplayRunRow;
+    let graderChanged: GraderModelChangedError | undefined;
     if (executed === undefined) row = ungraded([], null);
     else {
       charge += executed.costUsd ?? deps.holdPerRunUsd;
@@ -301,10 +309,12 @@ export async function runReplay(plan: ReplayPlan, deps: RunDeps): Promise<RunRep
         // A mistake must name a correction that was given before the task; anything else is not a repeat.
         if (graded.mistakes.some((id) => !prior.includes(id))) throw new Error("the grader named a correction that was not given before the task");
         row = ReplayRunRowSchema.parse({ task: run.task, repeat: run.repeat, arm: run.arm, resolved: graded.resolved, grader: deps.grader.identity, gradedBy: graded.gradedBy, loaded: executed.loaded, mistakes: [...new Set(graded.mistakes)], costUsd: executed.costUsd });
-      } catch {
+      } catch (error) {
         // A grading that failed may still have been paid for: it is counted at its hold.
         charge += deps.grader.holdUsd ?? 0;
         row = ungraded(executed.loaded, executed.costUsd);
+        // The grader's model changed under the run: gradings by two models are not comparable, so the replay stops after this one is recorded.
+        if (error instanceof GraderModelChangedError) graderChanged = error;
       }
       await executed.cleanup?.().catch(() => undefined);
     }
@@ -313,6 +323,7 @@ export async function runReplay(plan: ReplayPlan, deps: RunDeps): Promise<RunRep
     report.costUsd += charge;
     await deps.sink.append(run.key, row, charge);
     report.ran += 1;
+    if (graderChanged !== undefined) throw graderChanged;
   }
   return report;
 }

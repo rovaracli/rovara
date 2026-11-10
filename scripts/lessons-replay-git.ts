@@ -20,24 +20,46 @@ export function parseRepoDirs(text: string): Record<string, string> {
   return out;
 }
 
-export function gitFactsReader(dirs: Record<string, string>, run: (directory: string, args: string[]) => string = (directory, args) => execFileSync("git", ["-C", directory, ...args], { encoding: "utf8", maxBuffer: MAX_BYTES + 1, stdio: ["ignore", "pipe", "ignore"] })): CodeFactsReader {
+/** What `git` answers for one call in a clone: the text, or a throw. */
+export type GitRun = (directory: string, args: string[]) => string;
+const realGit: GitRun = (directory, args) => execFileSync("git", ["-C", directory, ...args], { encoding: "utf8", maxBuffer: MAX_BYTES + 1, stdio: ["ignore", "pipe", "ignore"] });
+
+/**
+ * Answers "there is no such file" (undefined / "none", which the live verifier reads as STALE) ONLY when the clone HAS the cited commit and that commit's tree has no such path. Anything else the clone cannot tell (the commit is not in
+ * the clone, a file over 1 MB, any git error) THROWS, which the verifier and the code facts read as "not verified": the lesson then stays under the live rule for an unverified citation (it does not go live on trial), and is never
+ * marked stale for a fault of the clone.
+ */
+export function gitFactsReader(dirs: Record<string, string>, run: GitRun = realGit): CodeFactsReader {
   const directoryOf = (repo: string): string | undefined => (Object.hasOwn(dirs, repo) ? dirs[repo] : undefined);
+  /** The tree entry of the path at the commit: undefined when the commit is there and the path is not in its tree. Throws when the commit is not in the clone or git fails. */
+  const entryOf = (directory: string, commit: string, path: string): { type: string } | undefined => {
+    run(directory, ["cat-file", "-e", `${commit}^{commit}`]);
+    const listed = run(directory, ["ls-tree", commit, "--", path]).trim();
+    if (listed === "") return undefined;
+    const match = /^[0-7]+ (\w+) [0-9a-f]+\t/u.exec(listed);
+    if (match === null) throw new Error("git listed the path in a form this reader does not know");
+    return { type: match[1]! };
+  };
   return {
     async file(input) {
       const directory = directoryOf(input.repo);
       if (directory === undefined) return undefined;
-      try { return run(directory, ["cat-file", "blob", `${input.commit}:${input.path}`]); } catch { return undefined; }
+      const entry = entryOf(directory, input.commit, input.path);
+      if (entry === undefined || entry.type !== "blob") return undefined;
+      if (Number(run(directory, ["cat-file", "-s", `${input.commit}:${input.path}`]).trim()) > MAX_BYTES) throw new Error("the file is over 1 MB, which this reader does not read");
+      return run(directory, ["cat-file", "blob", `${input.commit}:${input.path}`]);
     },
     async kind(input) {
       const directory = directoryOf(input.repo);
       if (directory === undefined) return undefined;
-      try { const type = run(directory, ["cat-file", "-t", `${input.commit}:${input.path}`]).trim(); return type === "blob" ? "file" : type === "tree" ? "dir" : undefined; } catch { return "none"; }
+      const entry = entryOf(directory, input.commit, input.path);
+      return entry === undefined ? "none" : entry.type === "blob" ? "file" : entry.type === "tree" ? "dir" : undefined;
     },
   };
 }
 
-export function gitCode(dirs: Record<string, string>, repositories: readonly string[]): { verifier: CitationVerifier; facts: CodeFacts } {
-  const reader = gitFactsReader(dirs);
+export function gitCode(dirs: Record<string, string>, repositories: readonly string[], run?: GitRun): { verifier: CitationVerifier; facts: CodeFacts } {
+  const reader = gitFactsReader(dirs, run);
   const repositoriesOf = async (): Promise<readonly string[]> => repositories;
   return { verifier: createCitationVerifier({ reader, repositoriesOf }), facts: createCodeFacts({ reader, repositoriesOf }) };
 }
