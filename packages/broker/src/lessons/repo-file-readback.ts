@@ -38,6 +38,8 @@ export const REMOVED_IN_REPOSITORY = "removed_in_repository";
 /** New lessons taken in from one file in one pass (the rest wait for the next pass). */
 export const MAX_IMPORTS_PER_PASS = 50;
 const MAX_TRIES = 3;
+/** The most blocks of one id read back (and fingerprinted); a file with more is unreadable. */
+export const MAX_BLOCKS_PER_ID = 4;
 /** More lessons than this (the larger of three and a quarter of the known ones) missing in one change are held, not retired (review M1). */
 const bulkLimit = (known: number): number => Math.max(3, Math.ceil(known * 0.25));
 /** A rewrite is substantial when the words of the two texts overlap by less than 80% (and at least three words differ): only then does it clear what the old wording earned (decision 76.2). */
@@ -232,22 +234,6 @@ async function importLesson(deps: ReadBackDeps, input: ReadBackInput, item: Loos
 }
 
 /**
- * A repository leaves the project: the marks on the erased texts of ITS file go with it (they are scoped to the repository's place), and so do the fingerprints Rovara recorded for them. Returns the state's `seen` without the gone
- * lessons. Throws when a lookup or a clear fails (the next night tries again).
- */
-export async function releaseMarks(store: Pick<LessonStore, "goneOf" | "clearGoneFingerprint">, key: ScopeKey, seen: Readonly<Record<string, readonly string[]>> | undefined): Promise<Record<string, string[]> | undefined> {
-  if (seen === undefined) return undefined;
-  const gone = await store.goneOf(key, Object.keys(seen));
-  if (gone.size === 0) return Object.fromEntries(Object.entries(seen).map(([id, fps]) => [id, [...fps]]));
-  const kept: Record<string, string[]> = {};
-  for (const [id, fps] of Object.entries(seen)) {
-    if (!gone.has(id)) { kept[id] = [...fps]; continue; }
-    for (const fp of fps) await store.clearGoneFingerprint(key, fp);
-  }
-  return kept;
-}
-
-/**
  * Reads the team's edits of the merged file back into Rovara (see the header). Never calls a model or a host. Throws `ReadBackFailure` when it could not finish safely; what it finished stays (each step is repeatable, so the next
  * pass completes the rest without doing anything twice).
  */
@@ -256,6 +242,10 @@ export async function readBackFile(deps: ReadBackDeps, input: ReadBackInput): Pr
   if (isMalformed(input.fileText)) return { ...nothing, unreadable: true };
   const { key } = input;
   const file = parseLessonsFile(input.fileText);
+  // More than four blocks of one id cannot be fingerprinted for erasure within the record's bounds, so such a file is not read at all (it fails loudly, with the status saying what to do) rather than dropping fingerprints.
+  const perId = new Map<string, number>();
+  for (const block of file.blocks) perId.set(block.id, (perId.get(block.id) ?? 0) + 1);
+  if ([...perId.values()].some((count) => count > MAX_BLOCKS_PER_ID)) return { ...nothing, unreadable: true };
   const loose = looseItems(file);
   const looseHashes = new Set(loose.map((item) => hashOfBlock(item.text)));
   const mine = input.lessons.filter((lesson) => lesson.provenance.repoOnly?.place === input.place || input.rendered[lesson.id] !== undefined);
@@ -341,12 +331,16 @@ export async function readBackFile(deps: ReadBackDeps, input: ReadBackInput): Pr
     const copyFps = new Set([...looseHashes, ...file.blocks.map((block) => hashOfBlock(block.text))].map(fp));
     const known = (id: string): boolean => byId.has(id) || input.rendered[id] !== undefined || input.gone.has(id);
     const blockFps = new Map<string, string[]>();
-    for (const block of file.blocks) if (known(block.id)) blockFps.set(block.id, [...(blockFps.get(block.id) ?? []), fp(hashOfBlock(block.text))].slice(0, 4));
-    const aliveIds = new Set(alive.map((lesson) => lesson.id));
+    for (const block of file.blocks) if (known(block.id)) blockFps.set(block.id, [...(blockFps.get(block.id) ?? []), fp(hashOfBlock(block.text))]);
     const seen: Record<string, string[]> = {};
     // Live lessons: the fingerprint of the block as it is in the file now (replaced when the text changes), else the one recorded before.
     for (const [id, fps] of blockFps) if (!input.gone.has(id)) seen[id] = fps;
-    for (const [id, fps] of Object.entries(input.seen ?? {})) if (seen[id] === undefined && aliveIds.has(id)) seen[id] = [...fps];
+    // A live lesson of this repository whose id line is gone but whose text is still a bullet: that bullet's fingerprint. Nothing else is carried over, so `seen` holds only what the file holds now (bounded by the file's own cap).
+    for (const lesson of alive) {
+      if (!byId.has(lesson.id) || seen[lesson.id] !== undefined) continue;
+      const hash = [hashOfBody(lesson.body), textPartOfFingerprint(input.rendered[lesson.id])].find((candidate) => candidate !== undefined && looseHashes.has(candidate));
+      if (hash !== undefined) seen[lesson.id] = [fp(hash)];
+    }
     // Gone lessons: every block of the id in the file is marked as it is; fingerprints recorded earlier that no copy has any more are cleared (a block reworded in place, a duplicate that was removed); the id is pinned while a copy is there.
     const goneToCheck = new Set([...input.gone].filter((id) => blockFps.has(id) || input.rendered[id] !== undefined || input.seen?.[id] !== undefined));
     for (const id of goneToCheck) {
@@ -358,7 +352,7 @@ export async function readBackFile(deps: ReadBackDeps, input: ReadBackInput): Pr
         if (inBlocks.includes(mark)) continue;
         if (copyFps.has(mark)) { await deps.store.markGoneFingerprint(key, mark); pinnedHere = true; } else await deps.store.clearGoneFingerprint(key, mark);
       }
-      const keep = [...new Set([...inBlocks, ...earlier.filter((mark) => copyFps.has(mark))])].slice(0, 4);
+      const keep = [...new Set([...inBlocks, ...earlier.filter((mark) => copyFps.has(mark))])];
       if (keep.length > 0) seen[id] = keep;
       if (pinnedHere) {
         if (!result.pinned.includes(id)) result.pinned.push(id);

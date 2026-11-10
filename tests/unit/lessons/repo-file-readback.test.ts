@@ -9,7 +9,8 @@ import { lessonDeletionPort } from "../../../packages/broker/src/lessons/deletio
 import { noticesOf } from "../../../packages/broker/src/lessons/repo-file-pr.js";
 import { settings } from "./lesson-helpers.js";
 import { DAY, FILE, passSetup, repoLesson } from "./repo-file-helpers.js";
-import { lessonsRepoFilePublishJob } from "../../../packages/broker/src/lessons/repo-file-job.js";
+import { lessonsRepoFileJob, type RepoFileRuntime } from "../../../packages/broker/src/lessons/repo-file-job.js";
+import { sweepProject } from "../../../packages/broker/src/lessons/repo-file-sweep.js";
 import { newRepoFileState } from "../../../packages/broker/src/lessons/repo-file-state.js";
 
 afterEach(() => { setLearnedLessonsGate(undefined); });
@@ -1031,20 +1032,61 @@ describe("round 4 (rr3e): fingerprints are recorded on every successful pass, be
     expect((await w.current()).duplicateIds).toBeUndefined();
   });
 
-  it("a repository that leaves the project drops the marks of its erased texts with its record", async () => {
-    const w = passSetup();
-    await w.seedLessons(mallory(), repoLesson("les_aaaa0002"));
-    await w.enable();
-    const r = await w.run();
-    w.host.merge(Number((r as { number: string }).number));
+  describe("a repository that left the project keeps its marks until a sweep of it finds no copy left (M-r5)", () => {
+    const runtimeOf = (w: W, listed: boolean): RepoFileRuntime => ({ deps: w.deps, targets: async () => (listed ? [w.target] : []), reach: async () => w.target, newHolder: () => "n" });
+    const closedRemovals = (w: W) => w.host.prs.filter((pr) => pr.title.includes("remove") && pr.state === "closed");
+    async function erasedAndStripped(): Promise<W> {
+      const w = passSetup();
+      await w.seedLessons(mallory(), repoLesson("les_aaaa0002"));
+      await w.enable();
+      const r = await w.run();
+      w.host.merge(Number((r as { number: string }).number));
+      await pass(w);
+      await ways[0]![1](w);
+      strip(w);
+      await pass(w);
+      return w;
+    }
+    it("the repository leaves after the first sweep opened the removal: the next sweep keeps it open, and once it is merged and a sweep finds no copy the mark is released", async () => {
+      const w = await erasedAndStripped();
+      await sweepProject(runtimeOf(w, true), w.key);
+      const removal = w.host.open.find((pr) => pr.title.includes("remove"))!;
+      expect((await w.state.listPrs(w.key)).rows.find((row) => row.kind === "watch")?.marks).toHaveLength(1);
+      await lessonsRepoFileJob(runtimeOf(w, false), w.key.workspaceId, [w.key.project], 3_600_000, 0);
+      await lessonsRepoFileJob(runtimeOf(w, false), w.key.workspaceId, [w.key.project], 3_600_000, 1);
+      expect(closedRemovals(w)).toEqual([]);
+      expect(await marked(w, FIRST)).toBe(true);
+      w.host.merge(removal.number);
+      await sweepProject(runtimeOf(w, false), w.key, { hook: true });
+      expect(await marked(w, FIRST)).toBe(false);
+      expect((await w.state.listPrs(w.key)).rows.find((row) => row.kind === "watch")?.marks).toBeUndefined();
+    });
+    it("the repository leaves before any sweep: its sweep still takes the stripped copy out", async () => {
+      const w = await erasedAndStripped();
+      expect(await marked(w, FIRST)).toBe(true);
+      await sweepProject(runtimeOf(w, false), w.key, { hook: true });
+      const removal = w.host.open.find((pr) => pr.title.includes("remove"));
+      expect(removal).toBeDefined();
+      expect(w.host.file(removal!.source, FILE)).not.toContain(FIRST);
+      expect(await marked(w, FIRST)).toBe(true);
+    });
+  });
+
+  it("L-k: more than four blocks of one id make the file unreadable (nothing is dropped silently)", async () => {
+    const w = await merged();
+    changeFile(w, (t) => `${t.trimEnd()}\n${Array.from({ length: 5 }, (_, i) => `\n<!-- rovara:les_aaaa0001 -->\n- A copy number ${String(i)} of the block.`).join("\n")}\n`);
+    expect(await pass(w)).toEqual({ status: "problem", problem: "file_unreadable" });
+  });
+
+  it("L-l: `seen` holds only what the file holds now: no entry for lessons of another repository or for lessons whose block and text are gone, and a record that does not fit fails loudly", async () => {
+    const w = await merged();
+    await w.seedLessons(repoLesson("les_other001", { place: "github:repo/2002", body: "A lesson of another repository." }));
+    changeFile(w, (t) => t.replace(/<!-- rovara:les_aaaa0002 -->\n- [^\n]*\n\n?/u, ""));
     await pass(w);
-    await ways[0]![1](w);
-    await pass(w);
-    expect(await marked(w, FIRST)).toBe(true);
-    await lessonsRepoFilePublishJob({ deps: w.deps, targets: async () => [], newHolder: () => "n" }, w.key.workspaceId, [w.key.project], 3_600_000, 0);
-    expect(await marked(w, FIRST)).toBe(false);
-    expect((await w.current()).seen?.["les_aaaa0001"]).toBeUndefined();
-    expect((await w.current()).seen?.["les_aaaa0002"]).toBeDefined();
+    expect(Object.keys((await w.current()).seen ?? {})).toEqual(["les_aaaa0001"]);
+    const state = await w.current();
+    const huge = Object.fromEntries(Array.from({ length: 6000 }, (_, i) => [`les_huge${String(i).padStart(5, "0")}`, ["0123456789abcdef0123456789abcdef"]]));
+    await expect(w.state.put(w.key, { ...state, seen: huge }, state.revision)).rejects.toThrow();
   });
 });
 

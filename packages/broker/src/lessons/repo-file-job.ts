@@ -5,7 +5,6 @@ import { OrgIdSchema } from "@agentx/contracts";
 import { rotated } from "./nightly-state.js";
 import type { RepoFileTarget } from "./repo-file-host.js";
 import { finishClosings, runRepoFilePass, type RepoFileDeps } from "./repo-file-pass.js";
-import { releaseMarks } from "./repo-file-readback.js";
 import { sweepProject } from "./repo-file-sweep.js";
 
 /** What the job and the routes need beyond the pass's own dependencies: how to find a project's repositories (with their code hosts). */
@@ -71,12 +70,7 @@ export async function lessonsRepoFilePublishJob(runtime: RepoFileRuntime, orgId:
         const target = targets.find((candidate) => candidate.place === state.place);
         if (target === undefined) {
           // The repository left the project: say so on the row instead of failing silently.
-          // The repository left the project: the marks on erased texts of its file are dropped with it (never blocking the rest).
-          let seen = state.seen;
-          try { seen = await releaseMarks(runtime.deps.store, key, state.seen); } catch { runtime.deps.log?.("lessons_repo_file.release_marks_failed", {}); }
-          const { seen: _was, ...rest } = state;
-          void _was;
-          if (state.enabled || JSON.stringify(seen) !== JSON.stringify(state.seen)) await runtime.deps.state.put(key, { ...rest, ...(seen === undefined || Object.keys(seen).length === 0 ? {} : { seen }), ...(state.enabled ? { problem: "repository_gone" as const } : {}) }, state.revision).catch(() => undefined);
+          if (state.enabled) await runtime.deps.state.put(key, { ...state, problem: "repository_gone" }, state.revision).catch(() => undefined);
           counts.repoFileProblems += 1;
           continue;
         }
