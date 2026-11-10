@@ -397,6 +397,10 @@ describe("published-packages: nothing Cloud-only is published", () => {
       expect(problems(publishJob("github.repository == 'PrepLabsAI/Rovara' || true", good))).toContain("must run only in the public repository");
       expect(problems(publishJob("github.repository == 'PrepLabsAI/Rovara' ||true", good))).toContain("must run only in the public repository");
       expect(problems(publishJob("github.repository == 'PrepLabsAI/Rovara-fork'", good))).toContain("must run only in the public repository");
+      expect(problems(publishJob("github.repository == 'PrepLabsAI/Rovara' && github.event_name == 'push' || true", good))).toContain("must run only in the public repository");
+      expect(problems(publishJob("github.repository == 'PrepLabsAI/Rovara' && (github.ref == 'x' || github.ref == 'y')", good))).toContain("must run only in the public repository");
+      expect(problems(publishJob("${{ github.repository == 'PrepLabsAI/Rovara' && vars.A == 'b' || vars.C }}", good))).toContain("must run only in the public repository");
+      expect(problems(publishJob(`${guard}`, good))).toBe("");
     });
 
     it.each([
@@ -417,6 +421,17 @@ describe("published-packages: nothing Cloud-only is published", () => {
       ["a tarball from somewhere else", `${OUT}\nnpm publish ./agentx-web-0.1.0.tgz --access public`, {}, "not one release:pack-cli wrote"],
       ["a tarball in a sibling folder", `${OUT}\nnpm publish "$RUNNER_TEMP"/cli2/a.tgz`, {}, "not one release:pack-cli wrote"],
       ["a pack of a Cloud package next to the real publish", `${OUT}\nnpm pack ./packages/web --pack-destination "$RUNNER_TEMP/cli"\nnpm publish "$RUNNER_TEMP"/cli/*.tgz`, {}, "npm pack in a job that publishes"],
+      ["npm -w before the verb", `${OUT}\nnpm -w packages/web publish "$RUNNER_TEMP"/cli/a.tgz`, {}, "other than"],
+      ["npm --workspace= before the verb", `${OUT}\nnpm --workspace=packages/web publish`, {}, "other than"],
+      ["npm --prefix before the verb", `${OUT}\nnpm --prefix packages/web publish`, {}, "other than"],
+      ["pnpm -r publish", `${OUT}\npnpm -r publish`, {}, "other than"],
+      ["pnpm --filter before the verb", `${OUT}\npnpm --filter web publish --no-git-checks`, {}, "other than"],
+      ["a backslash-continued line", `${OUT}\nnpm \\\n  publish \\\n  packages/web`, {}, "other than"],
+      ["a backslash-continued flag line", `${OUT}\nnpm --prefix packages/web \\\n  publish`, {}, "other than"],
+      ["npx np", `${OUT}\nnpx np patch`, {}, "other than"],
+      ["npx with a flag then np", `${OUT}\nnpx --yes np`, {}, "other than"],
+      ["a variable standing for the tool", `${OUT}\n$NPM publish packages/web`, {}, "other than"],
+      ["a pack with a flag before the verb, next to the real publish", `${OUT}\nnpm --prefix packages/web pack --pack-destination "$RUNNER_TEMP/cli"\nnpm publish "$RUNNER_TEMP"/cli/*.tgz`, {}, "npm pack in a job that publishes"],
       ["a publish with no pack step", 'npm publish "$T"/a.tgz', {}, "without release:pack-cli --out"],
     ])("fails %s", (_name, run, scripts, expected) => {
       expect(problems(publishJob(guard, run), scripts)).toContain(expected);

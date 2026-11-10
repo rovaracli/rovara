@@ -336,8 +336,11 @@ interface WorkflowStep { run?: string; uses?: string }
 interface WorkflowJob { if?: unknown; uses?: string; steps?: WorkflowStep[] }
 
 /** A publish by any of the usual tools, wherever it sits on a line (in a `bash -c "..."`, after an `env X=y` prefix, inside `node -e`). `npm pack` is read as one too. */
-const PUBLISH_ANYWHERE = /\b(?:npm|pnpm|yarn)\s+(?:publish|release)\b|\bchangeset\s+publish\b|\blerna\s+publish\b|\b(?:semantic-release|release-it)\b/;
-const PACK_ANYWHERE = /\b(?:npm|pnpm|yarn)\s+pack\b/;
+// The verb may follow flags (`npm -w pkg publish`, `npm --prefix x publish`, `pnpm -r publish`, `pnpm --filter web publish`), so any word `publish` after the tool on a
+// command line counts; so does `npx np` (a publisher), and a shell variable standing for the tool (`$NPM publish`).
+const PUBLISH_ANYWHERE =
+  /\b(?:npm|pnpm|yarn)\b[^\n;&|]*\s(?:publish|release)(?=\s|$)|\$\{?\w+\}?\s+publish\b|\bchangeset\s+publish\b|\blerna\s+publish\b|\bnpx\s+(?:-\S+\s+)*np\b|\b(?:semantic-release|release-it)\b/;
+const PACK_ANYWHERE = /\b(?:npm|pnpm|yarn)\b[^\n;&|]*\spack(?=\s|$)/;
 const RUN_SCRIPT = /\b(?:npm|pnpm)\s+(?:run|run-script)\s+(?:--\s+)?([^\s;&|]+)|\byarn\s+(?:run\s+)?([a-z][^\s;&|]*)/g;
 /** The one publish line allowed: `npm publish <tarball> [--access public] [--provenance] [--tag x]`, nothing before it and no other flag. */
 const PUBLISH_SHAPE = /^npm\s+publish\s+(\S+\.tgz)(?:\s+--access\s+public|\s+--provenance|\s+--tag\s+\S+)*$/;
@@ -345,6 +348,7 @@ const PUBLISH_SHAPE = /^npm\s+publish\s+(\S+\.tgz)(?:\s+--access\s+public|\s+--p
 /** The lines of a run block that count, without comments, and without the text inside quotes on an echo or printf line (the real workflow echoes "skipping npm publish"). */
 function commandLines(run: string): string[] {
   return run
+    .replace(/\\\r?\n\s*/g, " ") // a line that ends in a backslash continues on the next one
     .split("\n")
     .map((row) => row.trim())
     .filter((row) => row !== "" && !row.startsWith("#"))
@@ -365,6 +369,8 @@ function linePublishes(line: string, scripts: Readonly<Record<string, string>>):
 /** The guard a publishing job must carry: exactly the public-repository test, or that test and more with `&&` (never an `||`, which `|| true` would open). */
 function guardHolds(raw: unknown): boolean {
   const guard = (typeof raw === "string" ? raw : "").replace(/^\s*\$\{\{/, "").replace(/\}\}\s*$/, "").trim();
+  // No `||` anywhere: `G && x || true` and `G && (a || b)` both run the job outside the public repository.
+  if (guard.includes("||")) return false;
   return guard === PUBLIC_REPO_GUARD || guard.startsWith(`${PUBLIC_REPO_GUARD} && `);
 }
 
