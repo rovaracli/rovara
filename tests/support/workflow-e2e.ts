@@ -1007,7 +1007,7 @@ export async function createWorkflowE2E(options: {
     const features = workerFeatureList ?? WORKER_INVOCATION_FEATURES;
     const guarded = (phase: "DISPATCH_GUARD" | "EC2_GUARD"): TaskDispatchGuard => async (record) => {
       const outcome = await guardTaskDispatch({ documentClient: db, tableName: "state", ...(checkTaskPerson === undefined ? {} : { checkTaskPerson }) }, record);
-      dispatchReceipts.push({ operationId: record.operationId, phase, outcome });
+      dispatchReceipts.push({ operationId: record.operationId, phase, outcome: typeof outcome === "object" ? "CLOSED" : outcome });
       return outcome;
     };
     const dispatch = createDispatcherHandler({

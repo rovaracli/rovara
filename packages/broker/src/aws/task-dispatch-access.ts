@@ -30,9 +30,19 @@ export interface TaskDispatchAccessDependencies {
 
 /**
  * ALLOWED: go on. PARKED: durably paused, acknowledge. CLOSED: the task (or this operation) is definitively over, so the message is acknowledged as done: nothing is
- * launched, nothing is retried, and nothing waits for access. A closed task is not an error; retrying it only fills the Dispatch DLQ.
+ * launched, nothing is retried, and nothing waits for access. An operation that is still active is failed by the caller so the workspace is freed. A closed task is not an error; retrying it only fills the Dispatch DLQ.
  */
-export type TaskDispatchOutcome = "ALLOWED" | "PARKED" | "CLOSED";
+export type TaskDispatchOutcome = "ALLOWED" | "PARKED" | TaskDispatchClosed;
+
+/**
+ * The answer "this dispatch is over". `reason` says why, for the log (task closed, workflow merged, operation <status>, operation row gone). `operationStatus` is the operation's status when
+ * it was judged (undefined: its row is gone): an operation still ACCEPTED or DISPATCHING holds the workspace and must be failed to free it; one that has ended needs nothing more.
+ */
+export interface TaskDispatchClosed {
+  outcome: "CLOSED";
+  reason: string;
+  operationStatus?: string;
+}
 
 export type TaskDispatchGuard = (record: DurableOutboxRecord) => Promise<TaskDispatchOutcome>;
 
@@ -284,8 +294,7 @@ async function guardTaskDispatchCore(deps: TaskDispatchAccessDependencies, recor
     }
     // A task closed (or finished) since the message was queued is over: acknowledge it as done. Throwing here retried it until the Dispatch DLQ. No machine is launched either way.
     if (!taskOpen(task) || task.workflow?.state === "COMPLETE") {
-      deps.admission?.assertOpen();
-      return "CLOSED";
+      return closedOutcome(guardDeps, deps, record, taskClosedReason(task));
     }
     // Plan 5 Task 12a: a task whose owner can't be read has no one to judge by: it pauses, never falls back to its creator.
     if (tryEffectiveTaskOwner(task) === undefined) {
@@ -323,7 +332,8 @@ async function guardTaskDispatchCore(deps: TaskDispatchAccessDependencies, recor
         deps.admission?.assertOpen();
         return "ALLOWED";
       }
-      if (await operationEnded(guardDeps, record)) return closedOutcome(deps);
+      const ended = await operationEnded(guardDeps, record);
+      if (ended !== undefined) return closedOutcome(guardDeps, deps, record, ended.reason);
       continue;
     }
     const access = await resolveTaskDispatchPeople(guardDeps, task);
@@ -358,7 +368,8 @@ async function guardTaskDispatchCore(deps: TaskDispatchAccessDependencies, recor
         deps.admission?.assertOpen();
         return "ALLOWED";
       }
-      if (await operationEnded(guardDeps, record)) return closedOutcome(deps);
+      const ended = await operationEnded(guardDeps, record);
+      if (ended !== undefined) return closedOutcome(guardDeps, deps, record, ended.reason);
       continue;
     }
     if (deps.remainingTimeMs !== undefined && deps.remainingTimeMs() <= TASK_PAUSE_RESERVE_MS) {
@@ -371,20 +382,34 @@ async function guardTaskDispatchCore(deps: TaskDispatchAccessDependencies, recor
   // the race is genuinely transient and the message is retried.
   const finalPointer = await get<DeveloperTaskPointerRecord>(guardDeps, taskPointerKey(record.workspaceId));
   const finalTask = finalPointer === undefined ? undefined : await get<DeveloperTaskRecord>(guardDeps, taskKey(finalPointer.taskId));
-  if ((finalTask !== undefined && finalTask.workspaceId === record.workspaceId && (!taskOpen(finalTask) || finalTask.workflow?.state === "COMPLETE"))
-    || await operationEnded(guardDeps, record)) return closedOutcome(deps);
+  if (finalTask !== undefined && finalTask.workspaceId === record.workspaceId && (!taskOpen(finalTask) || finalTask.workflow?.state === "COMPLETE")) {
+    return closedOutcome(guardDeps, deps, record, taskClosedReason(finalTask));
+  }
+  const ended = await operationEnded(guardDeps, record);
+  if (ended !== undefined) return closedOutcome(guardDeps, deps, record, ended.reason);
   throw agentXError("RUNTIME_UNAVAILABLE", "task dispatch access changed while it was being verified");
 }
 
-function closedOutcome(deps: TaskDispatchAccessDependencies): "CLOSED" {
-  deps.admission?.assertOpen();
-  return "CLOSED";
+/** Why a task is over, for the log. */
+function taskClosedReason(task: DeveloperTaskRecord): string {
+  if (task.closedAt !== undefined) return "task closed";
+  if (task.workflow?.stage === "MERGED") return "workflow merged";
+  if (task.workflow?.stage === "CLOSED") return "workflow closed";
+  return "workflow complete";
 }
 
-/** Whether this dispatch's operation is over (cancelled, ended, failed) or its row is gone: a dispatch for it can never be delivered, so it is done rather than retried. */
-async function operationEnded(deps: TaskDispatchAccessDependencies, record: DurableOutboxRecord): Promise<boolean> {
+/** The CLOSED answer, with the operation's status as it is now (undefined: the row is gone), so the caller can free a workspace an active operation still holds. */
+async function closedOutcome(guardDeps: TaskDispatchAccessDependencies, deps: TaskDispatchAccessDependencies, record: DurableOutboxRecord, reason: string): Promise<TaskDispatchClosed> {
+  const operation = await get<{ status?: string }>(guardDeps, { pk: `WORKSPACE#${record.workspaceId}`, sk: `OPERATION#${record.operationId}` });
+  deps.admission?.assertOpen();
+  return { outcome: "CLOSED", reason, ...(operation?.status === undefined ? {} : { operationStatus: operation.status }) };
+}
+
+/** Whether this dispatch's operation is over (cancelled, ended, failed, delivered) or its row is gone: a dispatch for it can never be delivered, so it is done rather than retried. Undefined: still active. */
+async function operationEnded(deps: TaskDispatchAccessDependencies, record: DurableOutboxRecord): Promise<{ reason: string } | undefined> {
   const operation = await get<{ status?: string }>(deps, { pk: `WORKSPACE#${record.workspaceId}`, sk: `OPERATION#${record.operationId}` });
-  return operation === undefined || (operation.status !== "ACCEPTED" && operation.status !== "DISPATCHING");
+  if (operation === undefined) return { reason: "operation row gone" };
+  return operation.status === "ACCEPTED" || operation.status === "DISPATCHING" ? undefined : { reason: `operation ${String(operation.status).toLowerCase()}` };
 }
 
 /**

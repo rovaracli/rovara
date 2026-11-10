@@ -7,7 +7,7 @@ import { GetCommand, QueryCommand, DynamoDBDocumentClient, TransactWriteCommand,
 import { randomUUID } from "node:crypto";
 import { Ec2RuntimeBindingSchema, ProjectSetupExecutionSchema, ProjectSetupOperationSchema, ProjectSetupSessionSchema, SlackTeamIdSchema, WORKER_PING_FEATURES_FIELD, WorkerInvocationSchema, agentXError, isDispatcherPeekEvent, type DispatcherPeekEvent, type DispatcherPeekReply, projectSetupExecutionKey, projectSetupOperationKey, projectSetupSessionKey, workspaceSessionKey, MEMBER_GRANT_SK_PREFIX, PROJECT_REVISION_SK_PREFIX, memberGrantsPk, orgMemberKey, projectMemberKey, projectPk, projectRevisionKey, projectSetupApprovalKey, slackBindingPk, SLACK_BINDING_SK_PREFIX, type OrgId, type SlackChannelBinding, type WorkerInvocation } from "@agentx/contracts";
 import { installOrgIdFromEnvironment, orgOf } from "../org/resolve.js";
-import { requiredEnvironment, type DurableOutboxRecord, type Ec2OutboxRecord } from "./lambda.js";
+import { requiredEnvironment, type DurableOutboxRecord, type Ec2OutboxRecord, type OutboxStatus } from "./lambda.js";
 import type { Ec2Delivery } from "./ec2-delivery.js";
 import { failOutboxOperation } from "./outbox-failure.js";
 import { REMOVE_STORED_LESSONS } from "./outbox-lessons.js";
@@ -21,7 +21,7 @@ import { createWorkflowE2EAdmissionAgentStepsReader, createWorkflowE2EAdmissionM
 import { appendOperationEvent } from "./operation-events.js";
 import { ProjectSetupSessionManager, SessionManager, workspaceBinding } from "./sessions.js";
 import { admitProjectSetupRuntime, projectSetupRuntimeKey, ProjectSetupRuntimeRecordSchema } from "./project-setup-runtime-catalog.js";
-import { guardTaskDispatch, isTaskDispatchGuardRetryError } from "./task-dispatch-access.js";
+import { guardTaskDispatch, isTaskDispatchGuardRetryError, type TaskDispatchClosed } from "./task-dispatch-access.js";
 import { createTaskAuthorityAdmission } from "./task-authority-admission.js";
 import { createTaskPersonRuntime, stateAuthorityWitnessForDispatch, type TaskPersonDeveloperRecordProjection, type TaskPersonRuntimePorts } from "./task-person-runtime.js";
 import { taskPersonProofThroughLambda } from "./task-person-proof-transport.js";
@@ -259,13 +259,14 @@ export interface DispatchLogEntry {
 
 export function createDispatcherHandler(dependencies: {
   /** Strongly checks and durably parks PEOPLE-backed work before any dispatch state or worker side effect. */
-  guardTaskDispatch?: (record: DurableOutboxRecord, context?: { remainingTimeMs: () => number }) => Promise<"ALLOWED" | "PARKED" | "CLOSED">;
+  guardTaskDispatch?: (record: DurableOutboxRecord, context?: { remainingTimeMs: () => number }) => Promise<"ALLOWED" | "PARKED" | TaskDispatchClosed>;
   /** Setup work is authorized from its own stored proposal/execution namespace, never a feature task. */
   guardProjectSetupDispatch?: (record: DurableOutboxRecord, context?: { remainingTimeMs: () => number }) => Promise<"ALLOWED" | "PARKED">;
   projectSetupLifecycle?: ProjectSetupDispatchLifecycle;
   markDispatching: (record: DurableOutboxRecord) => Promise<boolean | void>;
-  markDelivered: (id: string) => Promise<void>;
-  markFailed: (record: DurableOutboxRecord, error: string) => Promise<void>;
+  /** `options.whileOutboxIn`: marks the item only while its status is one of these (a duplicate that raced a park or a failure leaves it alone). */
+  markDelivered: (id: string, options?: { whileOutboxIn?: readonly OutboxStatus[] }) => Promise<void>;
+  markFailed: (record: DurableOutboxRecord, error: string, options?: { whileOutboxIn?: readonly OutboxStatus[] }) => Promise<void>;
   /** Completes only a broker-marked E2E compute-readiness resume after the exact session is READY. */
   completeWorkflowE2EReadiness?: (record: DurableOutboxRecord, generation: number) => Promise<void>;
   /** Delivers an ec2-ebs record; without it such records fail like any undeliverable one. */
@@ -288,12 +289,31 @@ export function createDispatcherHandler(dependencies: {
   queueArn?: string;
   log?: (entry: DispatchLogEntry) => void;
 }) {
-  /** A dispatch for a task that closed meanwhile is done, not a failure: the outbox item is marked delivered (it drops stored lessons), one info line says why, and the message is acknowledged. */
-  const acknowledgeClosedTask = async (record: DurableOutboxRecord, messageId: string, attempt: number, maxAttempts: number, reason: string): Promise<void> => {
-    await dependencies.markDelivered(record.id);
+  /**
+   * A dispatch for a task that closed meanwhile is done, not a failure, and it is never retried. What it leaves behind depends on the operation:
+   * - still ACCEPTED or DISPATCHING: it holds the workspace (BUSY) and may have a machine an earlier pass started, so it is failed (`markFailed`, fenced, frees the workspace, fails the outbox item);
+   * - already ended or gone: the outbox item is only marked delivered (it drops stored lessons).
+   * Both writes are conditioned on the outbox item still waiting to be delivered, and a miss means someone else already settled it. One info line says why.
+   */
+  const acknowledgeClosedTask = async (record: DurableOutboxRecord, messageId: string, attempt: number, maxAttempts: number, closed: TaskDispatchClosed): Promise<void> => {
+    const waiting: readonly OutboxStatus[] = ["QUEUED", "PENDING", "WAITING_FOR_SESSION"];
+    const active = closed.operationStatus === "ACCEPTED" || closed.operationStatus === "DISPATCHING";
+    let settled = "delivered";
+    if (active) {
+      try {
+        await dependencies.markFailed(record, `TASK_CLOSED: the task closed before this step could start (${closed.reason})`, { whileOutboxIn: waiting });
+        settled = "operation failed";
+      } catch (error) {
+        // The operation moved on, or the item was settled, between the judgement and this write: nothing is left to free.
+        if (!(error instanceof Error && error.name === "TransactionCanceledException")) throw error;
+        settled = "already settled";
+      }
+    } else {
+      await dependencies.markDelivered(record.id, { whileOutboxIn: waiting });
+    }
     logDispatchFailure(dependencies.log, {
       level: "info", event: "dispatch.closed_task_acked", operationId: record.operationId, workspaceId: record.workspaceId, outboxId: record.id,
-      messageId, attempt, maxAttempts, terminal: false, reason,
+      messageId, attempt, maxAttempts, terminal: false, reason: `${closed.reason}; ${settled}`,
     });
   };
   const handleBatch = async (event: SqsEvent, context?: DispatcherLambdaContext): Promise<{ batchItemFailures: Array<{ itemIdentifier: string }> }> => {
@@ -336,8 +356,8 @@ export function createDispatcherHandler(dependencies: {
         } else {
           const guarded = await dependencies.guardTaskDispatch?.(record, { remainingTimeMs });
           if (guarded === "PARKED") continue;
-          if (guarded === "CLOSED") {
-            await acknowledgeClosedTask(record, message.messageId, attempt, maxAttempts, "the task or its operation is closed");
+          if (typeof guarded === "object") {
+            await acknowledgeClosedTask(record, message.messageId, attempt, maxAttempts, guarded);
             continue;
           }
         }
@@ -352,15 +372,15 @@ export function createDispatcherHandler(dependencies: {
           if (dependencies.deliverEc2 === undefined) throw agentXError("RUNTIME_UNAVAILABLE", "this dispatcher cannot reach ec2-ebs workers");
           // A record parked until its session is ready is acknowledged without using an attempt.
           const delivery = await dependencies.deliverEc2(record, invocation, { remainingTimeMs });
+          if (typeof delivery === "object" && "taskClosed" in delivery) {
+            await acknowledgeClosedTask(record, message.messageId, attempt, maxAttempts, delivery.taskClosed);
+            continue;
+          }
           if (typeof delivery === "object") {
             if (invocation.kind !== "resume" || dependencies.completeWorkflowE2EReadiness === undefined) {
               throw agentXError("RUNTIME_UNAVAILABLE", "an internal readiness dispatch is not authorized");
             }
             await dependencies.completeWorkflowE2EReadiness(record, delivery.readinessGeneration);
-            continue;
-          }
-          if (delivery === "TASK_CLOSED") {
-            await acknowledgeClosedTask(record, message.messageId, attempt, maxAttempts, "the task or its operation closed while compute was starting");
             continue;
           }
           if (delivery === "DELIVERED") {
@@ -854,12 +874,12 @@ export const handler = createDispatcherHandler({
       throw error;
     }
   },
-  async markDelivered(id) {
+  async markDelivered(id, options) {
     // An item that no longer exists (for example an org purge between dispatch and the mark) is already done: it is not made again, and a retry would only loop.
-    try { await documentClient.send(markDeliveredCommand(tableName ?? requiredEnvironment("STATE_TABLE_NAME"), id, new Date().toISOString())); } catch (error) { if (!(error instanceof Error && error.name === "ConditionalCheckFailedException")) throw error; }
+    try { await documentClient.send(markDeliveredCommand(tableName ?? requiredEnvironment("STATE_TABLE_NAME"), id, new Date().toISOString(), options?.whileOutboxIn)); } catch (error) { if (!(error instanceof Error && error.name === "ConditionalCheckFailedException")) throw error; }
   },
-  async markFailed(record, error) {
-    await failOutboxOperation(documentClient, tableName ?? requiredEnvironment("STATE_TABLE_NAME"), record, error);
+  async markFailed(record, error, options) {
+    await failOutboxOperation(documentClient, tableName ?? requiredEnvironment("STATE_TABLE_NAME"), record, error, options?.whileOutboxIn === undefined ? undefined : { statusIn: options.whileOutboxIn });
   },
   completeWorkflowE2EReadiness: createWorkflowE2EReadinessCompleter({ documentClient, ...(tableName === undefined ? {} : { tableName }) }),
 });
@@ -869,15 +889,15 @@ export const handler = createDispatcherHandler({
  * The update that marks an outbox item delivered. It also drops the lessons the stage carried (`invocation.payload.learnedContext`): once the worker has them, the stored copy is not needed
  * (nothing is delivered twice), and a lesson's text must not outlive the lesson in a record nobody sweeps. Lesson erasure then has nothing to find here. A no-op for an item without them.
  */
-export function markDeliveredCommand(tableName: string, id: string, deliveredAt: string): UpdateCommand {
+export function markDeliveredCommand(tableName: string, id: string, deliveredAt: string, whileStatusIn?: readonly OutboxStatus[]): UpdateCommand {
   return new UpdateCommand({
     TableName: tableName,
     Key: { pk: `OUTBOX#${id}`, sk: "OUTBOX" },
     UpdateExpression: `SET #status = :delivered, deliveredAt = :now ${REMOVE_STORED_LESSONS}`,
     // The item must exist: the REMOVE path is invalid on a missing item (DynamoDB refuses it), which would turn a delivered stage into a retry loop.
-    ConditionExpression: "attribute_exists(pk)",
+    ConditionExpression: whileStatusIn === undefined || whileStatusIn.length === 0 ? "attribute_exists(pk)" : `attribute_exists(pk) AND (${whileStatusIn.map((_, index) => `#status = :while${index}`).join(" OR ")})`,
     ExpressionAttributeNames: { "#status": "status" },
-    ExpressionAttributeValues: { ":delivered": "DELIVERED", ":now": deliveredAt },
+    ExpressionAttributeValues: { ":delivered": "DELIVERED", ":now": deliveredAt, ...Object.fromEntries((whileStatusIn ?? []).map((status, index) => [`:while${index}`, status])) },
   });
 }
 

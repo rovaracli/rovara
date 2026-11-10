@@ -60,6 +60,7 @@ import { asksForApplicationPlan, asksForCodeAnchors, asksForPlanQuality, without
 import type { Ec2OutboxRecord } from "./lambda.js";
 import { serialWorkerCanResume } from "../rovara-code/parallel-parts.js";
 import type { SessionManager } from "./sessions.js";
+import type { TaskDispatchClosed } from "./task-dispatch-access.js";
 
 /** The worker's port; its /invocations accepts only KMS-signed tokens (#80). */
 const WORKER_PORT = 8080;
@@ -69,8 +70,8 @@ const TOKEN_LIFETIME_SECONDS = 60;
 export const CREDENTIAL_KIND_FEATURE_MISSING = "This repository's code host needs a newer worker. Ask an admin to upgrade Rovara.";
 export const STARTING_COMPUTE_MESSAGE = "Starting workspace compute";
 
-/** `TASK_CLOSED`: the guard found the task (or its operation) definitively closed; nothing was sent, and the caller acknowledges the message as done. */
-export type Ec2Delivery = "DELIVERED" | "WAITING_FOR_SESSION" | "WAITING_FOR_TASK_ACCESS" | "TASK_CLOSED" | { readinessGeneration: number };
+/** `taskClosed`: the guard found the task (or its operation) definitively closed; nothing was sent, and the caller acknowledges the message as done (failing the operation if it is still active). */
+export type Ec2Delivery = "DELIVERED" | "WAITING_FOR_SESSION" | "WAITING_FOR_TASK_ACCESS" | { taskClosed: TaskDispatchClosed } | { readinessGeneration: number };
 
 export interface ProjectSetupSessionPort {
   ensureSession(input: { setupExecutionId: string; subjectId: string; approvalRevision: number; transportCorrelationId: string; binding: Ec2RuntimeBinding; waitingOutboxId: string }):
@@ -138,7 +139,7 @@ export interface Ec2DeliveryDependencies {
    */
   workflowE2EAdmissionNeedsModelFreeLimits?: (reference: E2EWorkflowAdmissionRef) => Promise<boolean | undefined>;
   /** Rechecks fresh PEOPLE authority after compute is ready, immediately before signing and POST. */
-  guardTaskDispatch?: (record: Ec2OutboxRecord, context?: { remainingTimeMs: () => number }) => Promise<"ALLOWED" | "PARKED" | "CLOSED">;
+  guardTaskDispatch?: (record: Ec2OutboxRecord, context?: { remainingTimeMs: () => number }) => Promise<"ALLOWED" | "PARKED" | TaskDispatchClosed>;
   /** Loads and validates the durable internal readiness marker before any session provisioning. */
   validateWorkflowE2EReadiness?: (record: Ec2OutboxRecord, invocation: WorkerInvocation) => Promise<"ORDINARY" | "READINESS" | "PARKED">;
   /** Rechecks stored project setup authority independently from feature-task access. */
@@ -181,9 +182,9 @@ export function createEc2Delivery(dependencies: Ec2DeliveryDependencies) {
       return dependencies.guardTaskDispatch?.(record, remainingTimeMs === undefined ? undefined : { remainingTimeMs });
     };
     // A guard that stops the delivery says why: parked (acknowledged, waits for access) or closed (acknowledged as done).
-    const stoppedByGuard = async (): Promise<"WAITING_FOR_TASK_ACCESS" | "TASK_CLOSED" | undefined> => {
+    const stoppedByGuard = async (): Promise<"WAITING_FOR_TASK_ACCESS" | { taskClosed: TaskDispatchClosed } | undefined> => {
       const outcome = await guardCurrentAuthority();
-      return outcome === "PARKED" ? "WAITING_FOR_TASK_ACCESS" : outcome === "CLOSED" ? "TASK_CLOSED" : undefined;
+      return outcome === "PARKED" ? "WAITING_FOR_TASK_ACCESS" : typeof outcome === "object" ? { taskClosed: outcome } : undefined;
     };
     const workflowE2EReadiness = storedReadiness === "READINESS";
     if (workflowE2EReadiness) {
