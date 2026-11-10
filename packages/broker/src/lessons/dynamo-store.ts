@@ -4,7 +4,7 @@
 // Items (sort key):
 //   LESSON#<id>                    the head: the lesson as last written, plus `latest` (the highest version ever written) and `rev` (bumped by every in-place change)
 //   LESSON#<id>#V#<version>        every version, kept for rollback
-//   LESSONSET#GONETEXT#<hmac>      a mark on the text of a gone lesson that is still in a repository's lessons file, keyed by an HMAC under the project's own secret (R3: a stripped id line never brings erased words back)
+//   LESSONSET#GONETEXT#<hmac>      a mark on the text of a gone lesson that is still in a repository's lessons file, keyed by an HMAC of the text and the repository under the project's own secret (R3: a stripped id line never brings erased words back)
 //   LESSONSET#GONETEXTKEY          that secret (wiped with the project)
 //   LESSON#<id>#GONE               the withdrawn / purged mark (a rollback skips a purged lesson, a commit refuses it)
 //   LESSON#<id>#REF#<hash>         a load manifest that names the lesson (so a purge finds the manifests without scanning)
@@ -564,22 +564,21 @@ export class DynamoLessonStore implements LessonStore {
     if (made === undefined) throw unavailable("the lessons' text marks could not be keyed");
     return made;
   }
-  private goneTextKey(key: ScopeKey, secret: Buffer, hash: string) { return this.k(key, `LESSONSET#GONETEXT#${createHmac("sha256", secret).update(hash).digest("hex")}`); }
-  async markGoneText(key: ScopeKey, hash: string): Promise<void> {
+  private goneTextKey(key: ScopeKey, fingerprint: string) { return this.k(key, `LESSONSET#GONETEXT#${fingerprint}`); }
+  async textFingerprints(key: ScopeKey, place: string, hashes: readonly string[]): Promise<Map<string, string>> {
     const secret = (await this.textSecret(key, true))!;
-    await this.put({ ...this.goneTextKey(key, secret, hash), entityType: "LESSON_GONE_TEXT" });
+    return new Map([...new Set(hashes)].map((hash) => [hash, createHmac("sha256", secret).update(`${place}\u0000${hash}`).digest("hex").slice(0, 32)] as const));
   }
-  async goneTextOf(key: ScopeKey, hashes: readonly string[]): Promise<Set<string>> {
-    const secret = await this.textSecret(key, false);
-    if (secret === undefined) return new Set();
-    const unique = [...new Set(hashes)];
-    const found = await this.batchGet(unique.map((hash) => this.goneTextKey(key, secret, hash)));
-    return new Set(unique.filter((hash) => this.pick(found, this.goneTextKey(key, secret, hash)) !== undefined));
+  async markGoneFingerprint(key: ScopeKey, fingerprint: string): Promise<void> {
+    await this.put({ ...this.goneTextKey(key, fingerprint), entityType: "LESSON_GONE_TEXT" });
   }
-  async clearGoneText(key: ScopeKey, hash: string): Promise<void> {
-    const secret = await this.textSecret(key, false);
-    if (secret !== undefined) await this.del(this.goneTextKey(key, secret, hash));
+  async goneFingerprintsOf(key: ScopeKey, fingerprints: readonly string[]): Promise<Set<string>> {
+    const unique = [...new Set(fingerprints)];
+    if (unique.length === 0) return new Set();
+    const found = await this.batchGet(unique.map((fp) => this.goneTextKey(key, fp)));
+    return new Set(unique.filter((fp) => this.pick(found, this.goneTextKey(key, fp)) !== undefined));
   }
+  async clearGoneFingerprint(key: ScopeKey, fingerprint: string): Promise<void> { await this.del(this.goneTextKey(key, fingerprint)); }
 
   async purge(key: ScopeKey, id: string): Promise<void> {
     // The mark first: from here a rollback skips the lesson and a commit refuses it, whatever happens next. Every step after it can be repeated.

@@ -68,6 +68,7 @@ export function noticesOf(state: RepoFileState): string[] {
   if (back !== undefined && back.edited + back.retired + back.imported > 0) notices.push(`The lessons file changed on the default branch and was read back as ${plural(back.edited, "correction", "corrections")}, ${String(back.retired)} retired and ${plural(back.imported, "new lesson", "new lessons")}`);
   const refusedCount = Object.keys(state.refused ?? {}).length;
   if (refusedCount > 0) notices.push(`${plural(refusedCount, "line in the lessons file was", "lines in the lessons file were")} not read as lessons because they name a person, ask for more access, are empty or not allowed, or repeat the text of an erased lesson`);
+  if ((state.duplicateIds ?? 0) > 0) notices.push(`${plural(state.duplicateIds ?? 0, "lesson id appears", "lesson ids appear")} twice in the lessons file; Rovara leaves those blocks as written`);
   if (state.held.length > 0) notices.push(`${plural(state.held.length, "lesson your team edited is", "lessons your team edited are")} left as written`);
   if (state.pointerMissing) notices.push("Pointer missing: no agent file names .rovara/lessons.md");
   return notices;

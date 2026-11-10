@@ -9,6 +9,7 @@ import { lessonDeletionPort } from "../../../packages/broker/src/lessons/deletio
 import { noticesOf } from "../../../packages/broker/src/lessons/repo-file-pr.js";
 import { settings } from "./lesson-helpers.js";
 import { DAY, FILE, passSetup, repoLesson } from "./repo-file-helpers.js";
+import { lessonsRepoFilePublishJob } from "../../../packages/broker/src/lessons/repo-file-job.js";
 import { newRepoFileState } from "../../../packages/broker/src/lessons/repo-file-state.js";
 
 afterEach(() => { setLearnedLessonsGate(undefined); });
@@ -622,7 +623,7 @@ describe("review round 1 (rr3b)", () => {
 
 describe("review round 2 (rr3c)", () => {
   const goneHash = (text: string): string => bodyHashOf(text);
-  const mark = async (w: W, text = FIRST): Promise<boolean> => (await w.store.goneTextOf(w.key, [goneHash(text)])).size === 1;
+  const mark = async (w: W, text = FIRST): Promise<boolean> => { const fp = (await w.store.textFingerprints(w.key, "github:repo/1001", [goneHash(text)])).get(goneHash(text))!; return (await w.store.goneFingerprintsOf(w.key, [fp])).size === 1; };
   const port = (w: W) => lessonDeletionPort({ store: w.store, vectors: { get: async () => new Map(), put: async () => undefined, remove: async () => undefined }, audit: w.deps.audit, now: w.clock.now });
   /** Merges a repository with the lesson les_aaaa0001 written by "mallory" from source E1, and les_aaaa0002. */
   async function withMallory(): Promise<W> {
@@ -796,7 +797,7 @@ describe("review round 2 (rr3c)", () => {
 });
 
 describe("round 3 (rr3d): the mark is taken from the file, whatever way the block got there", () => {
-  const mark = async (w: W, text: string): Promise<boolean> => (await w.store.goneTextOf(w.key, [bodyHashOf(text)])).size === 1;
+  const mark = async (w: W, text: string): Promise<boolean> => { const fp = (await w.store.textFingerprints(w.key, "github:repo/1001", [bodyHashOf(text)])).get(bodyHashOf(text))!; return (await w.store.goneFingerprintsOf(w.key, [fp])).size === 1; };
   const port = (w: W) => lessonDeletionPort({ store: w.store, vectors: { get: async () => new Map(), put: async () => undefined, remove: async () => undefined }, audit: w.deps.audit, now: w.clock.now });
   const ways: Array<[string, (w: W) => Promise<void>]> = [
     ["withdraw", (w) => port(w).withdraw(w.key.workspaceId, w.key.project, "les_aaaa0001", "sources_deleted")],
@@ -905,6 +906,145 @@ describe("round 3 (rr3d): the mark is taken from the file, whatever way the bloc
     expect(await w.state.put(w.key, { ...state, rendered: { ...state.rendered, ...filler } }, state.revision)).toBeDefined();
     await pass(w);
     expect(Object.keys((await w.current()).rendered)).toContain("les_aaaa0001");
+  });
+});
+
+describe("round 4 (rr3e): fingerprints are recorded on every successful pass, before anything is erased", () => {
+  const place = "github:repo/1001";
+  const fpOf = async (w: W, text: string): Promise<string> => (await w.store.textFingerprints(w.key, place, [bodyHashOf(text)])).get(bodyHashOf(text))!;
+  const marked = async (w: W, text: string): Promise<boolean> => (await w.store.goneFingerprintsOf(w.key, [await fpOf(w, text)])).size === 1;
+  const port = (w: W) => lessonDeletionPort({ store: w.store, vectors: { get: async () => new Map(), put: async () => undefined, remove: async () => undefined }, audit: w.deps.audit, now: w.clock.now });
+  const ways: Array<[string, (w: W) => Promise<void>]> = [
+    ["withdraw", (w) => port(w).withdraw(w.key.workspaceId, w.key.project, "les_aaaa0001", "sources_deleted")],
+    ["person erasure", async (w) => { await port(w).erasePerson(w.key.workspaceId, w.key.project, { developerId: "mallory" }, new Set(["E1"])); }],
+    ["purge", (w) => port(w).withdraw(w.key.workspaceId, w.key.project, "les_aaaa0001", "person_erased")],
+  ];
+  const mallory = (): ReturnType<typeof repoLesson> => { const a = repoLesson("les_aaaa0001"); return { ...a, provenance: { ...a.provenance, sourceEvents: ["E1"], authors: ["mallory"] } }; };
+  const imported = async (w: W, text: string) => (await w.store.listAllHeads(w.key)).filter((l) => l.body === text && l.id !== "les_aaaa0001" && l.status === "active");
+  const strip = (w: W): void => changeFile(w, (t) => t.replace("<!-- rovara:les_aaaa0001 -->\n", ""));
+
+  const paths: Array<[string, () => Promise<{ w: W; text: string }>]> = [
+    ["handed over to the team and merged", async () => {
+      const w = passSetup();
+      await w.seedLessons(mallory(), repoLesson("les_aaaa0002"));
+      await w.enable();
+      await w.run();
+      const open = (await w.current()).open!;
+      w.host.setFile(open.branch, "person.txt", "a person's commit");
+      await w.seedLessons(repoLesson("les_aaaa0003"));
+      w.week();
+      await w.run();
+      w.host.merge(w.host.prs.find((pr) => pr.source === open.branch)!.number);
+      await pass(w);
+      expect((await w.current()).rendered["les_aaaa0001"]).toBe("merged-by-team");
+      return { w, text: FIRST };
+    }],
+    ["reworded by the team under an expired lesson", async () => {
+      const w = passSetup();
+      await w.seedLessons(mallory(), repoLesson("les_aaaa0002"));
+      await w.enable();
+      const r = await w.run();
+      w.host.merge(Number((r as { number: string }).number));
+      const head = (await lesson(w, "les_aaaa0001"))!;
+      await w.store.commit(w.key, await w.store.setVersion(w.key), [{ ...head, version: head.version + 1, status: "expired" }], 9);
+      changeFile(w, (t) => t.replace(FIRST, "The team's own wording under an expired lesson."));
+      await pass(w);
+      return { w, text: "The team's own wording under an expired lesson." };
+    }],
+  ];
+  for (const [pathName, build] of paths) {
+    for (const [wayName, erase] of ways) {
+      it(`${pathName} x ${wayName}: erased and stripped before any pass looks: the text never comes back (the fingerprint was recorded while the lesson was live)`, async () => {
+        const { w, text } = await build();
+        await erase(w);
+        strip(w);
+        await pass(w);
+        for (let i = 0; i < 2; i += 1) await pass(w);
+        expect(await imported(w, text)).toEqual([]);
+        expect(Object.values((await w.current()).refused ?? {})).toContain("gone_text");
+      });
+      it(`${pathName} x ${wayName}: reads of the file fail for a week after the erasure, the id line is stripped meanwhile: the text never comes back`, async () => {
+        const { w, text } = await build();
+        await erase(w);
+        w.host.failCalls.add("fileAtRevision");
+        w.week();
+        for (let day = 0; day < 7; day += 1) { expect((await w.run({ force: true })).status).toBe("problem"); w.clock.advance(DAY); }
+        strip(w);
+        w.host.failCalls.delete("fileAtRevision");
+        await w.run({ force: true });
+        expect(await imported(w, text)).toEqual([]);
+      });
+    }
+  }
+
+  it("records the fingerprint of every marked block on each successful pass, replaced when its text changes, dropped when the lesson is neither live nor gone with a copy in the file", async () => {
+    const w = passSetup();
+    await w.seedLessons(mallory(), repoLesson("les_aaaa0002"));
+    await w.enable();
+    const r = await w.run();
+    w.host.merge(Number((r as { number: string }).number));
+    await pass(w);
+    expect(Object.keys((await w.current()).seen ?? {}).sort()).toEqual(["les_aaaa0001", "les_aaaa0002"]);
+    expect((await w.current()).seen!["les_aaaa0001"]).toEqual([await fpOf(w, FIRST)]);
+    changeFile(w, (t) => t.replace(FIRST, "The team's own, different wording of the first lesson."));
+    await pass(w);
+    expect((await w.current()).seen!["les_aaaa0001"]).toEqual([await fpOf(w, "The team's own, different wording of the first lesson.")]);
+    // Erased, then the block is removed: nothing of it is kept.
+    await ways[0]![1](w);
+    expect((await w.sweep()).removalOpened).toBe(true);
+    w.host.merge(w.host.open.find((pr) => pr.title.includes("remove"))!.number);
+    await pass(w);
+    expect(Object.keys((await w.current()).seen ?? {})).toEqual(["les_aaaa0002"]);
+  });
+
+  it("L-h: a gone block reworded in place while it is still in the file: the new text is marked and the old text's mark is cleared", async () => {
+    const w = passSetup();
+    await w.seedLessons(mallory(), repoLesson("les_aaaa0002"));
+    await w.enable();
+    const r = await w.run();
+    w.host.merge(Number((r as { number: string }).number));
+    await ways[0]![1](w);
+    await pass(w);
+    expect(await marked(w, FIRST)).toBe(true);
+    changeFile(w, (t) => t.replace(FIRST, "Reworded in place after the erasure."));
+    await pass(w);
+    expect(await marked(w, "Reworded in place after the erasure.")).toBe(true);
+    expect(await marked(w, FIRST)).toBe(false);
+  });
+
+  it("L-i: an id in two blocks: both texts are marked, both are cleared when the blocks are gone, and the status says so", async () => {
+    const w = passSetup();
+    await w.seedLessons(mallory(), repoLesson("les_aaaa0002"));
+    await w.enable();
+    const r = await w.run();
+    w.host.merge(Number((r as { number: string }).number));
+    await ways[0]![1](w);
+    changeFile(w, (t) => `${t.trimEnd()}\n\n<!-- rovara:les_aaaa0001 -->\n- A second block under the same id.\n`);
+    await pass(w);
+    expect(await marked(w, FIRST)).toBe(true);
+    expect(await marked(w, "A second block under the same id.")).toBe(true);
+    expect(noticesOf(await w.current()).join(" ")).toContain("1 lesson id appears twice in the lessons file");
+    changeFile(w, (t) => t.replace(/<!-- rovara:les_aaaa0001 -->\n- [^\n]*\n\n?/gu, ""));
+    await pass(w);
+    expect(await marked(w, FIRST)).toBe(false);
+    expect(await marked(w, "A second block under the same id.")).toBe(false);
+    expect((await w.current()).duplicateIds).toBeUndefined();
+  });
+
+  it("a repository that leaves the project drops the marks of its erased texts with its record", async () => {
+    const w = passSetup();
+    await w.seedLessons(mallory(), repoLesson("les_aaaa0002"));
+    await w.enable();
+    const r = await w.run();
+    w.host.merge(Number((r as { number: string }).number));
+    await pass(w);
+    await ways[0]![1](w);
+    await pass(w);
+    expect(await marked(w, FIRST)).toBe(true);
+    await lessonsRepoFilePublishJob({ deps: w.deps, targets: async () => [], newHolder: () => "n" }, w.key.workspaceId, [w.key.project], 3_600_000, 0);
+    expect(await marked(w, FIRST)).toBe(false);
+    expect((await w.current()).seen?.["les_aaaa0001"]).toBeUndefined();
+    expect((await w.current()).seen?.["les_aaaa0002"]).toBeDefined();
   });
 });
 

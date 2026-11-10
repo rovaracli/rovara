@@ -92,16 +92,17 @@ export interface LessonStore {
    */
   goneOf(key: ScopeKey, ids: readonly string[]): Promise<Map<string, "withdrawn" | "purged">>;
   /**
-   * Lessons in the repo (R3, review H2): marks the text of a GONE lesson that is still in a repository's lessons file (`hash` is `bodyHashOf`'s comparison hash of its text). Only the lessons file's read-back writes it, and only for a lesson
-   * that was once merged into a file, so a lesson that never was in a repository leaves nothing. The row is keyed by an HMAC of the hash with a secret of the PROJECT (made on first use, kept in the project's partition), so it
-   * holds no text and no bare hash, and is wiped with the project. Read-back refuses a bullet with a marked text (a formatter or a deleted comment stripped its id line: erased words do not come back as a new lesson) and the
-   * erasure sweep takes it out of the file; once the text is out of the file read-back clears the mark. Idempotent.
+   * Lessons in the repo (R3, review H2): the FINGERPRINT of a text in one repository's lessons file: an HMAC (32 hex) of the text's comparison hash (`bodyHashOf`) and the repository's place, under a secret of the PROJECT (made on first
+   * use, kept in the project's partition, wiped with it). It holds no text and no bare hash, and cannot be worked out without the secret. Read-back records the fingerprint of every marked block on every successful pass (while the
+   * lesson is live), so that erasure finds a fingerprint ready, and marks the fingerprint of an erased lesson's text while a copy is in the file (`markGoneFingerprint`).
    */
-  markGoneText(key: ScopeKey, hash: string): Promise<void>;
-  /** Which of these text hashes are marked (`markGoneText`). A batched read; throws when it cannot read (never "not marked" for "could not look"). */
-  goneTextOf(key: ScopeKey, hashes: readonly string[]): Promise<Set<string>>;
+  textFingerprints(key: ScopeKey, place: string, hashes: readonly string[]): Promise<Map<string, string>>;
+  /** Marks a fingerprint: the text of a GONE lesson that is still in a repository's file. Read-back refuses a bullet with a marked fingerprint (a formatter or a deleted comment stripped its id line: erased words do not come back as a new lesson) and the erasure sweep takes it out of the file. Idempotent. */
+  markGoneFingerprint(key: ScopeKey, fingerprint: string): Promise<void>;
+  /** Which of these fingerprints are marked. A batched read; throws when it cannot read (never "not marked" for "could not look"). */
+  goneFingerprintsOf(key: ScopeKey, fingerprints: readonly string[]): Promise<Set<string>>;
   /** Removes a mark: the erased text is out of the file, so a person who writes the same words again is the team's new lesson (decision 76.3). Idempotent. */
-  clearGoneText(key: ScopeKey, hash: string): Promise<void>;
+  clearGoneFingerprint(key: ScopeKey, fingerprint: string): Promise<void>;
   /** Hard delete: the head, every version and every load-manifest reference. The id is remembered as purged so a rollback cannot bring it back. */
   purge(key: ScopeKey, id: string): Promise<void>;
   /** Forgets a source's counters and its pause (erasure of a person, deletion of a channel). */
@@ -274,14 +275,14 @@ export class InMemoryLessonStore implements LessonStore {
     s.versions.set(id, (s.versions.get(id) ?? []).map((v) => LessonSchema.parse({ ...fn(clone(v)), version: v.version })));
   }
   async markGone(key: ScopeKey, id: string, mode: "withdrawn" | "purged"): Promise<void> { this.of(key).gone.set(id, mode); }
-  private textMark(key: ScopeKey, hash: string, create: boolean): string | undefined {
-    const s = this.of(key);
-    if (s.textSecret === undefined) { if (!create) return undefined; s.textSecret = randomBytes(32); }
-    return createHmac("sha256", s.textSecret).update(hash).digest("hex");
+  private textSecretOf(key: ScopeKey): Buffer { const s = this.of(key); return (s.textSecret ??= randomBytes(32)); }
+  async textFingerprints(key: ScopeKey, place: string, hashes: readonly string[]): Promise<Map<string, string>> {
+    const secret = this.textSecretOf(key);
+    return new Map([...new Set(hashes)].map((hash) => [hash, createHmac("sha256", secret).update(`${place}\u0000${hash}`).digest("hex").slice(0, 32)] as const));
   }
-  async markGoneText(key: ScopeKey, hash: string): Promise<void> { this.of(key).goneTexts.add(this.textMark(key, hash, true)!); }
-  async goneTextOf(key: ScopeKey, hashes: readonly string[]): Promise<Set<string>> { const known = this.of(key).goneTexts; return new Set(hashes.filter((hash) => { const mark = this.textMark(key, hash, false); return mark !== undefined && known.has(mark); })); }
-  async clearGoneText(key: ScopeKey, hash: string): Promise<void> { const mark = this.textMark(key, hash, false); if (mark !== undefined) this.of(key).goneTexts.delete(mark); }
+  async markGoneFingerprint(key: ScopeKey, fingerprint: string): Promise<void> { this.of(key).goneTexts.add(fingerprint); }
+  async goneFingerprintsOf(key: ScopeKey, fingerprints: readonly string[]): Promise<Set<string>> { const known = this.of(key).goneTexts; return new Set(fingerprints.filter((fp) => known.has(fp))); }
+  async clearGoneFingerprint(key: ScopeKey, fingerprint: string): Promise<void> { this.of(key).goneTexts.delete(fingerprint); }
   async goneOf(key: ScopeKey, ids: readonly string[]): Promise<Map<string, "withdrawn" | "purged">> {
     const gone = this.of(key).gone;
     return new Map(ids.flatMap((id) => { const mode = gone.get(id); return mode === undefined ? [] : [[id, mode] as const]; }));

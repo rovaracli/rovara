@@ -20,7 +20,7 @@ import type { LessonStore, ScopeKey } from "./store.js";
 
 /** What the sweep is handed. Note what is NOT here: no publish state. */
 export interface EraseSweepDeps {
-  store: Pick<LessonStore, "goneOf" | "goneTextOf">;
+  store: Pick<LessonStore, "goneOf" | "textFingerprints" | "goneFingerprintsOf">;
   rows: PrRowStore;
   audit: LessonAuditSink;
   now(): number;
@@ -28,7 +28,7 @@ export interface EraseSweepDeps {
   log?(event: string, fields: Record<string, string | number>): void;
 }
 /** The sweep's dependencies out of the pass's: only the lesson store's tombstone lookup, the pull request rows, the ledger and the clock. The publish state is left behind on purpose. */
-export function sweepDepsOf(deps: { store: Pick<LessonStore, "goneOf" | "goneTextOf">; state: PrRowStore; rows?: PrRowStore; audit: LessonAuditSink; now(): number; randomHex?(): string; log?(event: string, fields: Record<string, string | number>): void }): EraseSweepDeps {
+export function sweepDepsOf(deps: { store: Pick<LessonStore, "goneOf" | "textFingerprints" | "goneFingerprintsOf">; state: PrRowStore; rows?: PrRowStore; audit: LessonAuditSink; now(): number; randomHex?(): string; log?(event: string, fields: Record<string, string | number>): void }): EraseSweepDeps {
   return { store: deps.store, rows: deps.rows ?? deps.state, audit: deps.audit, now: () => deps.now(), randomHex: () => deps.randomHex?.() ?? randomBytes(6).toString("hex"), log: (event, fields) => deps.log?.(event, fields) };
 }
 /** What one repository's sweep did. `unreachable`: the host would not let Rovara read the repository at all (an uninstalled app, a repository that is gone). `strayBranches`: Rovara branches the host cannot match to a pull request. `unconfirmed`: open pull requests that were NOT closed because the host could not show them or did not say Rovara made them (shown on the status, tried again). */
@@ -138,8 +138,9 @@ async function removeErasedBlocks(deps: EraseSweepDeps, key: ScopeKey, target: R
   // A copy of an erased lesson's text whose id line was stripped (a formatter, a deleted comment) is found by the mark read-back put on the text (`LessonStore.markGoneText`): it comes out too. Its "id" in the rows is `txt_<hash>`.
   const loose = looseItems(parsed);
   const looseHashes = [...new Set(loose.map((item) => textHash(normalizeBlockText(item.text))))];
-  const marked = looseHashes.length === 0 ? new Set<string>() : await deps.store.goneTextOf(key, looseHashes);
-  const looseGone = looseHashes.filter((hash) => marked.has(hash));
+  const fingerprints = looseHashes.length === 0 ? new Map<string, string>() : await deps.store.textFingerprints(key, target.place, looseHashes);
+  const marked = fingerprints.size === 0 ? new Set<string>() : await deps.store.goneFingerprintsOf(key, [...fingerprints.values()]);
+  const looseGone = looseHashes.filter((hash) => marked.has(fingerprints.get(hash) ?? "-"));
   const inFile = [...ids.filter((id) => gone.has(id)), ...looseGone.map((hash) => `txt_${hash}`)];
   const fileHash = textHash(text);
   const openRemovals = rows.filter((r) => r.kind === "removal" && r.closedAt === undefined && !isProvisional(r));

@@ -354,6 +354,7 @@ async function pass(deps: RepoFileDeps, key: ScopeKey, target: RepoFileTarget, l
     try {
       readBack = await readBackFile({ store: deps.store, audit: deps.audit, now: () => deps.now(), ...(deps.newLessonId === undefined ? {} : { newId: deps.newLessonId }) }, {
         key, place: target.place, repoName: target.name, fileText, rendered: state.rendered, refused: state.refused ?? {}, lessons, gone, names, requireGroup,
+        ...(state.seen === undefined ? {} : { seen: state.seen }),
         ...(state.readBackHeld === undefined ? {} : { held: { digest: state.readBackHeld.digest, at: state.readBackHeld.at } }),
       });
     } catch (error) {
@@ -364,12 +365,15 @@ async function pass(deps: RepoFileDeps, key: ScopeKey, target: RepoFileTarget, l
     const done = readBack;
     const sameRefused = JSON.stringify(done.refused) === JSON.stringify(state.refused ?? {});
     const heldChanged = (done.held?.digest ?? "") !== (state.readBackHeld?.digest ?? "");
-    const changed = Object.keys(done.rendered).length > 0 || done.counts.retired + done.counts.imported > 0 || !sameRefused || heldChanged;
+    const seenChanged = JSON.stringify(done.seen) !== JSON.stringify(state.seen ?? {}) || done.duplicateIds !== (state.duplicateIds ?? 0);
+    const changed = Object.keys(done.rendered).length > 0 || done.counts.retired + done.counts.imported > 0 || !sameRefused || heldChanged || seenChanged;
     if (changed) {
       state = await commit(deps, key, state, (s) => {
-        const next = { ...without(s, "readBackHeld", "refused") as RepoFileState, rendered: { ...s.rendered, ...done.rendered } };
+        const next = { ...without(s, "readBackHeld", "refused", "seen", "duplicateIds") as RepoFileState, rendered: { ...s.rendered, ...done.rendered } };
         return {
           ...next,
+          ...(Object.keys(done.seen).length > 0 ? { seen: done.seen } : {}),
+          ...(done.duplicateIds > 0 ? { duplicateIds: done.duplicateIds } : {}),
           ...(done.counts.edited + done.counts.retired + done.counts.imported > 0 ? { readBack: { at: deps.now(), edited: done.counts.edited, retired: done.counts.retired, imported: done.counts.imported } } : {}),
           ...(Object.keys(done.refused).length > 0 ? { refused: done.refused } : {}),
           ...(done.held === undefined ? {} : { readBackHeld: { missing: done.held.missing, digest: done.held.digest, at: done.held.at } }),

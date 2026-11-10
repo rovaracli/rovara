@@ -135,6 +135,14 @@ export const RepoFileStateSchema = z.object({
    * meant it and they are retired then (a week of grace), if the file changed back nothing happens. Count and fingerprint only. `at` is when it was FIRST seen: the hold lasts READ_BACK_HOLD_MS from then, however many passes (or failed passes) come between.
    */
   readBackHeld: z.object({ missing: z.number().int().min(1), digest: z.string().regex(/^[0-9a-f]{16}$/u), at: z.number() }).strict().optional(),
+  /**
+   * Read-back (R3): for each Rovara-marked block seen in the file on the last successful pass, the per-project FINGERPRINT (an HMAC under the project's secret, `LessonStore.textFingerprints`; no text, no bare hash) of its text, one per
+   * block of that id. Replaced when the text changes, so that when a lesson is erased a fingerprint is already there for the block whatever happens to the file next. Kept while the lesson is live, or gone with a copy still in the file;
+   * dropped after that.
+   */
+  seen: z.record(Id, z.array(z.string().regex(/^[0-9a-f]{32}$/u)).min(1).max(4)).optional(),
+  /** How many ids appear in more than one block of the file on the last successful pass (Rovara reads neither block back and leaves them as written). */
+  duplicateIds: z.number().int().min(0).optional(),
   /** Lines of the file read-back did not take in as lessons, by a fingerprint of the line's text (never the text) and a fixed reason: it keeps the pass from recording the same line every week. Newest last, bounded. */
   refused: z.record(z.string().regex(/^[0-9a-f]{16}$/u), z.enum(READ_BACK_REFUSALS)).optional(),
   revision: z.number().int().min(0),

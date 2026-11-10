@@ -76,6 +76,8 @@ export interface ReadBackInput {
   names: readonly string[];
   /** The company or the project requires an approver group: a lesson written in the repository waits for that group instead of being active (review M3). */
   requireGroup?: boolean;
+  /** The fingerprints of marked blocks recorded on the last successful pass (`RepoFileState.seen`). */
+  seen?: Readonly<Record<string, readonly string[]>>;
   /** The lessons missing from the file when that many were first held (`RepoFileState.readBackHeld`): which ones (a digest) and when it was first seen. */
   held?: { digest: string; at: number };
 }
@@ -89,6 +91,10 @@ export interface ReadBackResult {
   refused: Record<string, ReadBackRefusal>;
   counts: { edited: number; retired: number; imported: number; refused: number };
   /** A bulk disappearance held for a pass (review M1): how many are missing and which ones (a digest). Absent: nothing is held. */
+  /** The fingerprints of every marked block seen in the file on this successful pass, by id (`RepoFileState.seen`). */
+  seen: Record<string, string[]>;
+  /** How many ids are in more than one block of the file. */
+  duplicateIds: number;
   /** Erased lessons whose text is still in the file: their fingerprints are kept so the mark on the text can be cleared when the last copy is gone. */
   pinned: string[];
   held?: { missing: number; digest: string; ids: string[]; /** First seen: the hold lasts READ_BACK_HOLD_MS from here. */ at: number };
@@ -226,11 +232,27 @@ async function importLesson(deps: ReadBackDeps, input: ReadBackInput, item: Loos
 }
 
 /**
+ * A repository leaves the project: the marks on the erased texts of ITS file go with it (they are scoped to the repository's place), and so do the fingerprints Rovara recorded for them. Returns the state's `seen` without the gone
+ * lessons. Throws when a lookup or a clear fails (the next night tries again).
+ */
+export async function releaseMarks(store: Pick<LessonStore, "goneOf" | "clearGoneFingerprint">, key: ScopeKey, seen: Readonly<Record<string, readonly string[]>> | undefined): Promise<Record<string, string[]> | undefined> {
+  if (seen === undefined) return undefined;
+  const gone = await store.goneOf(key, Object.keys(seen));
+  if (gone.size === 0) return Object.fromEntries(Object.entries(seen).map(([id, fps]) => [id, [...fps]]));
+  const kept: Record<string, string[]> = {};
+  for (const [id, fps] of Object.entries(seen)) {
+    if (!gone.has(id)) { kept[id] = [...fps]; continue; }
+    for (const fp of fps) await store.clearGoneFingerprint(key, fp);
+  }
+  return kept;
+}
+
+/**
  * Reads the team's edits of the merged file back into Rovara (see the header). Never calls a model or a host. Throws `ReadBackFailure` when it could not finish safely; what it finished stays (each step is repeatable, so the next
  * pass completes the rest without doing anything twice).
  */
 export async function readBackFile(deps: ReadBackDeps, input: ReadBackInput): Promise<ReadBackResult> {
-  const nothing: ReadBackResult = { unreadable: false, rendered: {}, refused: { ...input.refused }, counts: { edited: 0, retired: 0, imported: 0, refused: 0 }, pinned: [] };
+  const nothing: ReadBackResult = { unreadable: false, rendered: {}, refused: { ...input.refused }, counts: { edited: 0, retired: 0, imported: 0, refused: 0 }, pinned: [], seen: {}, duplicateIds: 0 };
   if (isMalformed(input.fileText)) return { ...nothing, unreadable: true };
   const { key } = input;
   const file = parseLessonsFile(input.fileText);
@@ -306,30 +328,50 @@ export async function readBackFile(deps: ReadBackDeps, input: ReadBackInput): Pr
   // line was refused for it before (kept while the line stays), or when the store's tombstone knows the text and the block's fingerprint is not known. A re-paste after the block was removed has none of these: it is the team's new lesson.
   const goneIds = Object.keys(input.rendered).filter((id) => input.gone.has(id));
   const staleGone = new Set(goneIds.map((id) => textPartOfFingerprint(input.rendered[id])).filter((h): h is string => h !== undefined));
-  // The text of an erased lesson that Rovara once merged is MARKED while any copy is still in the file (written here, from the fingerprint it remembers, so only a lesson that was ever in a file leaves a mark) and the mark is cleared
-  // when no copy is left, so a re-paste after that is the team's new lesson. Every bullet is then judged against the marks, whatever happened to the lesson's record (a purge left no head to read).
-  const copies = new Set([...looseHashes, ...file.blocks.map((block) => hashOfBlock(block.text))]);
+  // The text of an erased lesson that was once in the file is MARKED while any copy is still there, and the mark is cleared when no copy is left, so a re-paste after that is the team's new lesson. A text is marked by its per-project
+  // FINGERPRINT (`LessonStore.textFingerprints`: an HMAC, no text, no bare hash), taken from the FILE: every block of a gone id that is in the file, however it got there, with the text it actually has. For a gone id whose block is no
+  // longer there (the id line was stripped before anything looked) the fingerprint recorded on an earlier successful pass stands in: on EVERY successful pass the fingerprint of every marked block is recorded (`seen`, replaced when the
+  // text changes), so erasure always finds one ready for a block that was ever seen. Every bullet is then judged against the marks, whatever happened to the lesson's record (a purge left no head to read).
+  const hashes = new Set<string>([...looseHashes, ...file.blocks.map((block) => hashOfBlock(block.text)), ...[...staleGone]]);
+  let fingerprints: Map<string, string>;
   let goneTexts: Set<string>;
   try {
-    // The mark is taken from the FILE, not from Rovara's records: every block of a gone id that is in the file, however it got there (Rovara's pull request, one the team took over, a rewording of an expired lesson's block), is marked
-    // with the text it actually has, and that fingerprint is recorded (it pins the id, so the mark can be cleared when the last copy is gone).
-    for (const block of file.blocks) {
-      if (!input.gone.has(block.id)) continue;
-      const hash = hashOfBlock(block.text);
-      await deps.store.markGoneText(key, hash);
-      const fingerprint = `${hash}:${hashOfHeading(block.heading)}`;
-      if (input.rendered[block.id] !== fingerprint) result.rendered[block.id] = fingerprint;
-      if (!result.pinned.includes(block.id)) result.pinned.push(block.id);
+    fingerprints = await deps.store.textFingerprints(key, input.place, [...hashes]);
+    const fp = (hash: string): string => fingerprints.get(hash)!;
+    const copyFps = new Set([...looseHashes, ...file.blocks.map((block) => hashOfBlock(block.text))].map(fp));
+    const known = (id: string): boolean => byId.has(id) || input.rendered[id] !== undefined || input.gone.has(id);
+    const blockFps = new Map<string, string[]>();
+    for (const block of file.blocks) if (known(block.id)) blockFps.set(block.id, [...(blockFps.get(block.id) ?? []), fp(hashOfBlock(block.text))].slice(0, 4));
+    const aliveIds = new Set(alive.map((lesson) => lesson.id));
+    const seen: Record<string, string[]> = {};
+    // Live lessons: the fingerprint of the block as it is in the file now (replaced when the text changes), else the one recorded before.
+    for (const [id, fps] of blockFps) if (!input.gone.has(id)) seen[id] = fps;
+    for (const [id, fps] of Object.entries(input.seen ?? {})) if (seen[id] === undefined && aliveIds.has(id)) seen[id] = [...fps];
+    // Gone lessons: every block of the id in the file is marked as it is; fingerprints recorded earlier that no copy has any more are cleared (a block reworded in place, a duplicate that was removed); the id is pinned while a copy is there.
+    const goneToCheck = new Set([...input.gone].filter((id) => blockFps.has(id) || input.rendered[id] !== undefined || input.seen?.[id] !== undefined));
+    for (const id of goneToCheck) {
+      const inBlocks = blockFps.get(id) ?? [];
+      const earlier = [...(input.seen?.[id] ?? []), ...(textPartOfFingerprint(input.rendered[id]) === undefined || inFile.has(id) ? [] : [fp(textPartOfFingerprint(input.rendered[id])!)])];
+      for (const mark of inBlocks) await deps.store.markGoneFingerprint(key, mark);
+      let pinnedHere = inBlocks.length > 0;
+      for (const mark of new Set(earlier)) {
+        if (inBlocks.includes(mark)) continue;
+        if (copyFps.has(mark)) { await deps.store.markGoneFingerprint(key, mark); pinnedHere = true; } else await deps.store.clearGoneFingerprint(key, mark);
+      }
+      const keep = [...new Set([...inBlocks, ...earlier.filter((mark) => copyFps.has(mark))])].slice(0, 4);
+      if (keep.length > 0) seen[id] = keep;
+      if (pinnedHere) {
+        if (!result.pinned.includes(id)) result.pinned.push(id);
+        // A block of the gone id in the file: its fingerprint pins the id in Rovara's record (the id is not forgotten while the text is there).
+        const block = file.blocks.find((candidate) => candidate.id === id);
+        if (block !== undefined) { const stamp = `${hashOfBlock(block.text)}:${hashOfHeading(block.heading)}`; if (input.rendered[id] !== stamp) result.rendered[id] = stamp; }
+      }
     }
-    // A gone id Rovara remembers whose block is no longer in the file: its remembered text stays marked while a copy of it is there (the id line was stripped), and the mark goes when none is left.
-    for (const id of goneIds) {
-      if (inFile.has(id)) continue;
-      const hash = textPartOfFingerprint(input.rendered[id]);
-      if (hash === undefined) continue;
-      if (copies.has(hash)) { await deps.store.markGoneText(key, hash); result.pinned.push(id); } else await deps.store.clearGoneText(key, hash);
-    }
-    goneTexts = await deps.store.goneTextOf(key, [...looseHashes]);
+    result.seen = seen;
+    const marked = await deps.store.goneFingerprintsOf(key, [...looseHashes].map(fp));
+    goneTexts = new Set([...looseHashes].filter((hash) => marked.has(fp(hash))));
   } catch { throw new ReadBackFailure("repository_unreadable"); }
+  result.duplicateIds = file.duplicates.length;
   let imports = 0;
   for (const item of loose) {
     const hash = hashOfBlock(item.text);
