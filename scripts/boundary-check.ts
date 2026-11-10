@@ -364,7 +364,7 @@ function linePublishes(line: string, scripts: Readonly<Record<string, string>>):
 
 /** The guard a publishing job must carry: exactly the public-repository test, or that test and more with `&&` (never an `||`, which `|| true` would open). */
 function guardHolds(raw: unknown): boolean {
-  const guard = String(raw ?? "").replace(/^\s*\$\{\{/, "").replace(/\}\}\s*$/, "").trim();
+  const guard = (typeof raw === "string" ? raw : "").replace(/^\s*\$\{\{/, "").replace(/\}\}\s*$/, "").trim();
   return guard === PUBLIC_REPO_GUARD || guard.startsWith(`${PUBLIC_REPO_GUARD} && `);
 }
 
