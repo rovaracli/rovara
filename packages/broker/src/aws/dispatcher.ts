@@ -296,7 +296,7 @@ export function createDispatcherHandler(dependencies: {
    * Both writes are conditioned on the outbox item still waiting to be delivered, and a miss means someone else already settled it. One info line says why.
    */
   const acknowledgeClosedTask = async (record: DurableOutboxRecord, messageId: string, attempt: number, maxAttempts: number, closed: TaskDispatchClosed): Promise<void> => {
-    const waiting: readonly OutboxStatus[] = ["QUEUED", "PENDING", "WAITING_FOR_SESSION"];
+    const waiting: readonly OutboxStatus[] = ["QUEUED", "PENDING", "WAITING_FOR_SESSION", "WAITING_FOR_TASK_ACCESS"];
     const active = closed.operationStatus === "ACCEPTED" || closed.operationStatus === "DISPATCHING";
     let settled = "delivered";
     if (active) {
@@ -304,8 +304,9 @@ export function createDispatcherHandler(dependencies: {
         await dependencies.markFailed(record, `TASK_CLOSED: the task closed before this step could start (${closed.reason})`, { whileOutboxIn: waiting });
         settled = "operation failed";
       } catch (error) {
-        // The operation moved on, or the item was settled, between the judgement and this write: nothing is left to free.
-        if (!(error instanceof Error && error.name === "TransactionCanceledException")) throw error;
+        // The operation moved on, or the item was settled, between the judgement and this write: nothing is left to free. Only a cancellation whose every reason is a failed condition (or none) says so;
+        // a conflict or throttling is a fault to retry.
+        if (!conditionOnlyCancellation(error)) throw error;
         settled = "already settled";
       }
     } else {
@@ -441,6 +442,13 @@ export function createDispatcherHandler(dependencies: {
   const dispatch = (async (event: SqsEvent | DispatcherPeekEvent, context?: DispatcherLambdaContext) =>
     isDispatcherPeekEvent(event) ? (dependencies.peek === undefined ? { outcome: "unavailable" } : await dependencies.peek(event)) : handleBatch(event, context)) as DispatcherHandler;
   return dispatch;
+}
+
+/** Whether a failed transaction was cancelled only because a condition no longer held (every reason is ConditionalCheckFailed or None); a conflict, throttling or a missing reason list is not. */
+export function conditionOnlyCancellation(error: unknown): boolean {
+  if (!(error instanceof Error) || error.name !== "TransactionCanceledException") return false;
+  const reasons = (error as { CancellationReasons?: Array<{ Code?: string }> }).CancellationReasons;
+  return Array.isArray(reasons) && reasons.length > 0 && reasons.every((reason) => reason.Code === "ConditionalCheckFailed" || reason.Code === "None");
 }
 
 /** The dispatcher Lambda's entry: the queue's batch, or a direct `task-peek` event from the broker. */
@@ -890,12 +898,13 @@ export const handler = createDispatcherHandler({
  * (nothing is delivered twice), and a lesson's text must not outlive the lesson in a record nobody sweeps. Lesson erasure then has nothing to find here. A no-op for an item without them.
  */
 export function markDeliveredCommand(tableName: string, id: string, deliveredAt: string, whileStatusIn?: readonly OutboxStatus[]): UpdateCommand {
+  if (whileStatusIn !== undefined && whileStatusIn.length === 0) throw new Error("markDeliveredCommand: whileStatusIn needs at least one status");
   return new UpdateCommand({
     TableName: tableName,
     Key: { pk: `OUTBOX#${id}`, sk: "OUTBOX" },
     UpdateExpression: `SET #status = :delivered, deliveredAt = :now ${REMOVE_STORED_LESSONS}`,
     // The item must exist: the REMOVE path is invalid on a missing item (DynamoDB refuses it), which would turn a delivered stage into a retry loop.
-    ConditionExpression: whileStatusIn === undefined || whileStatusIn.length === 0 ? "attribute_exists(pk)" : `attribute_exists(pk) AND (${whileStatusIn.map((_, index) => `#status = :while${index}`).join(" OR ")})`,
+    ConditionExpression: whileStatusIn === undefined ? "attribute_exists(pk)" : `attribute_exists(pk) AND (${whileStatusIn.map((_, index) => `#status = :while${index}`).join(" OR ")})`,
     ExpressionAttributeNames: { "#status": "status" },
     ExpressionAttributeValues: { ":delivered": "DELIVERED", ":now": deliveredAt, ...Object.fromEntries((whileStatusIn ?? []).map((status, index) => [`:while${index}`, status])) },
   });

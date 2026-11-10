@@ -682,6 +682,52 @@ describe("a dispatch for a task that closed meanwhile, through the real guard an
     expect(h.db.get(`OUTBOX#${outbox.id}`, "OUTBOX")?.status).toBe("FAILED");
   });
 
+  it("N2: an empty status list is refused, so no empty condition is ever built", async () => {
+    const h = harness();
+    await expect(failOutboxOperation(h.db as never, "state", h.outbox, "x", { statusIn: [] })).rejects.toThrow(/at least one status/);
+    expect(h.db.get(opKey(h).pk, opKey(h).sk)).toMatchObject({ status: "DISPATCHING" });
+    expect(() => markDeliveredCommand("state", "x", "now", [])).toThrow(/at least one status/);
+    // One status and several statuses both work.
+    await failOutboxOperation(h.db as never, "state", h.outbox, "x", { statusIn: ["QUEUED"] });
+    expect(h.db.get(opKey(h).pk, opKey(h).sk)).toMatchObject({ status: "FAILED" });
+  });
+
+  it("N3: an item parked for task access whose task merged or closed gets the closed handling, not PARKED", async () => {
+    const h = harness();
+    merge(h);
+    h.db.set({ ...h.db.get(`OUTBOX#${h.outbox.id}`, "OUTBOX")!, status: "WAITING_FOR_TASK_ACCESS" });
+    await expect(guardTaskDispatch({ documentClient: h.db, tableName: "state", checkTaskPerson: h.checkTaskPerson }, h.outbox))
+      .resolves.toMatchObject({ outcome: "CLOSED", reason: "workflow merged", operationStatus: "DISPATCHING" });
+    const d = dispatcherOver(h);
+    await expect(d.run()).resolves.toEqual({ batchItemFailures: [] });
+    expect(h.db.get(opKey(h).pk, opKey(h).sk)).toMatchObject({ status: "FAILED" });
+    expect(h.db.get(`WORKSPACE#${WORKSPACE_ID}`, "META")).not.toHaveProperty("activeOperationId");
+    expect(h.db.get(`OUTBOX#${h.outbox.id}`, "OUTBOX")?.status).toBe("FAILED");
+    expect(d.deliverEc2).not.toHaveBeenCalled();
+  });
+
+  it("N3: an item parked for task access on a task that is still open stays PARKED", async () => {
+    const h = harness();
+    h.db.set({ ...h.db.get(`OUTBOX#${h.outbox.id}`, "OUTBOX")!, status: "WAITING_FOR_TASK_ACCESS" });
+    await expect(guardTaskDispatch({ documentClient: h.db, tableName: "state", checkTaskPerson: h.checkTaskPerson }, h.outbox)).resolves.toBe("PARKED");
+    const d = dispatcherOver(h);
+    await expect(d.run()).resolves.toEqual({ batchItemFailures: [] });
+    expect(h.db.get(opKey(h).pk, opKey(h).sk)).toMatchObject({ status: "DISPATCHING" });
+    expect(h.db.get(`OUTBOX#${h.outbox.id}`, "OUTBOX")?.status).toBe("WAITING_FOR_TASK_ACCESS");
+  });
+
+  it("L1: a FAILED outbox item whose operation already ended stays FAILED (the delivered mark is conditioned), and a waiting one becomes DELIVERED", async () => {
+    for (const [outboxStatus, expected] of [["FAILED", "FAILED"], ["DELIVERED", "DELIVERED"], ["WAITING_FOR_SESSION", "DELIVERED"], ["QUEUED", "DELIVERED"]] as const) {
+      const h = harness();
+      h.db.set({ ...h.db.get(opKey(h).pk, opKey(h).sk)!, status: "CANCELLED" });
+      h.db.set({ ...h.db.get(`OUTBOX#${h.outbox.id}`, "OUTBOX")!, status: outboxStatus });
+      const d = dispatcherOver(h);
+      await expect(d.run(), outboxStatus).resolves.toEqual({ batchItemFailures: [] });
+      expect(h.db.get(`OUTBOX#${h.outbox.id}`, "OUTBOX")?.status, outboxStatus).toBe(expected);
+      expect(h.db.get(opKey(h).pk, opKey(h).sk)).toMatchObject({ status: "CANCELLED" });
+    }
+  });
+
   it("markDeliveredCommand without a status list keeps its old condition", () => {
     expect(markDeliveredCommand("state", "x", "now").input.ConditionExpression).toBe("attribute_exists(pk)");
     expect(markDeliveredCommand("state", "x", "now", WAITING).input.ConditionExpression).toBe("attribute_exists(pk) AND (#status = :while0 OR #status = :while1 OR #status = :while2)");

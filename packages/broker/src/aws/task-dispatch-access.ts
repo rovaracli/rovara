@@ -279,7 +279,11 @@ async function guardTaskDispatchCore(deps: TaskDispatchAccessDependencies, recor
   };
   deps.admission?.assertOpen();
   const stored = await get<{ status?: string }>(guardDeps, outboxKey(record.id));
-  if (stored?.status === "WAITING_FOR_TASK_ACCESS") return "PARKED";
+  if (stored?.status === "WAITING_FOR_TASK_ACCESS") {
+    // An item parked for access is still over if its task closed (or merged) or its operation ended meanwhile: it is then closed, not left parked for ever.
+    const over = await settledReason(guardDeps, record);
+    return over === undefined ? "PARKED" : closedOutcome(guardDeps, deps, record, over);
+  }
   for (let attempt = 0; attempt < 3; attempt += 1) {
     const pointer = await get<DeveloperTaskPointerRecord>(guardDeps, taskPointerKey(record.workspaceId));
     if (pointer === undefined) {
@@ -380,14 +384,17 @@ async function guardTaskDispatchCore(deps: TaskDispatchAccessDependencies, recor
   }
   // Every pass saw the task move under it. Read once more and decide: if it closed (or its operation ended) meanwhile, that is the answer; if it is still open and nothing ended,
   // the race is genuinely transient and the message is retried.
-  const finalPointer = await get<DeveloperTaskPointerRecord>(guardDeps, taskPointerKey(record.workspaceId));
-  const finalTask = finalPointer === undefined ? undefined : await get<DeveloperTaskRecord>(guardDeps, taskKey(finalPointer.taskId));
-  if (finalTask !== undefined && finalTask.workspaceId === record.workspaceId && (!taskOpen(finalTask) || finalTask.workflow?.state === "COMPLETE")) {
-    return closedOutcome(guardDeps, deps, record, taskClosedReason(finalTask));
-  }
-  const ended = await operationEnded(guardDeps, record);
-  if (ended !== undefined) return closedOutcome(guardDeps, deps, record, ended.reason);
+  const over = await settledReason(guardDeps, record);
+  if (over !== undefined) return closedOutcome(guardDeps, deps, record, over);
   throw agentXError("RUNTIME_UNAVAILABLE", "task dispatch access changed while it was being verified");
+}
+
+/** Reads the task and the operation once more: why this dispatch is definitively over (task closed or finished, operation ended or gone), or undefined when it is not. */
+async function settledReason(guardDeps: TaskDispatchAccessDependencies, record: DurableOutboxRecord): Promise<string | undefined> {
+  const pointer = await get<DeveloperTaskPointerRecord>(guardDeps, taskPointerKey(record.workspaceId));
+  const task = pointer === undefined ? undefined : await get<DeveloperTaskRecord>(guardDeps, taskKey(pointer.taskId));
+  if (task !== undefined && task.workspaceId === record.workspaceId && (!taskOpen(task) || task.workflow?.state === "COMPLETE")) return taskClosedReason(task);
+  return (await operationEnded(guardDeps, record))?.reason;
 }
 
 /** Why a task is over, for the log. */

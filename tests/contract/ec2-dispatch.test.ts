@@ -2138,7 +2138,7 @@ describe("the dispatcher with ec2-ebs records", () => {
     expect(markDispatching).not.toHaveBeenCalled();
     expect(deliverEc2).not.toHaveBeenCalled();
     expect(markDelivered).not.toHaveBeenCalled();
-    expect(markFailed).toHaveBeenCalledExactlyOnceWith(record, expect.stringContaining("TASK_CLOSED"), { whileOutboxIn: ["QUEUED", "PENDING", "WAITING_FOR_SESSION"] });
+    expect(markFailed).toHaveBeenCalledExactlyOnceWith(record, expect.stringContaining("TASK_CLOSED"), { whileOutboxIn: ["QUEUED", "PENDING", "WAITING_FOR_SESSION", "WAITING_FOR_TASK_ACCESS"] });
     expect(log).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ level: "info", event: "dispatch.closed_task_acked", operationId: record.operationId, outboxId: record.id }));
     expect((log.mock.calls[0]![0] as { reason?: string }).reason).toMatch(/workflow merged/);
   });
@@ -2155,21 +2155,36 @@ describe("the dispatcher with ec2-ebs records", () => {
 
     await expect(handler({ Records: [{ messageId: "ended", body: JSON.stringify(record) }] })).resolves.toEqual({ batchItemFailures: [] });
     expect(markFailed).not.toHaveBeenCalled();
-    expect(markDelivered).toHaveBeenCalledExactlyOnceWith(record.id, { whileOutboxIn: ["QUEUED", "PENDING", "WAITING_FOR_SESSION"] });
+    expect(markDelivered).toHaveBeenCalledExactlyOnceWith(record.id, { whileOutboxIn: ["QUEUED", "PENDING", "WAITING_FOR_SESSION", "WAITING_FOR_TASK_ACCESS"] });
     expect((log.mock.calls[0]![0] as { reason?: string }).reason).toMatch(/operation cancelled/);
   });
 
-  it("treats a failed fenced write (the operation or item moved on meanwhile) as settled, and still acknowledges", async () => {
+  it.each([
+    ["every reason a failed condition or none", [{ Code: "ConditionalCheckFailed" }, { Code: "None" }, { Code: "ConditionalCheckFailed" }], true],
+    ["a transaction conflict among the reasons", [{ Code: "ConditionalCheckFailed" }, { Code: "TransactionConflict" }], false],
+    ["throttling among the reasons", [{ Code: "ThrottlingError" }, { Code: "None" }], false],
+    ["no reasons at all", undefined, false],
+  ] as const)("a fenced write cancelled with %s: %s", async (_label, reasons, settled) => {
     const record = recordFor();
     const log = vi.fn();
-    const markFailed = vi.fn(async () => { throw Object.assign(new Error("cancelled"), { name: "TransactionCanceledException" }); });
+    const failure = Object.assign(new Error("cancelled"), { name: "TransactionCanceledException", ...(reasons === undefined ? {} : { CancellationReasons: reasons }) });
     const handler = createDispatcherHandler({
-      markDispatching: async () => true, markDelivered: async () => undefined, markFailed, deliverEc2: async () => "DELIVERED", log,
+      markDispatching: async () => true, markDelivered: async () => undefined, markFailed: async () => { throw failure; }, deliverEc2: async () => "DELIVERED", log,
       guardTaskDispatch: async () => closedActive,
     });
-    await expect(handler({ Records: [{ messageId: "raced", body: JSON.stringify(record) }] })).resolves.toEqual({ batchItemFailures: [] });
-    expect(log).toHaveBeenCalledTimes(1);
-    // Any other failure is retried like before.
+    const result = await handler({ Records: [{ messageId: "raced", body: JSON.stringify(record) }] });
+    // Settled (only failed conditions): acknowledged with its info line. Anything else is retried, like any other failure.
+    if (settled) {
+      expect(result).toEqual({ batchItemFailures: [] });
+      expect(log).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ event: "dispatch.closed_task_acked" }));
+    } else {
+      expect(result).toEqual({ batchItemFailures: [{ itemIdentifier: "raced" }] });
+      expect(log).not.toHaveBeenCalledWith(expect.objectContaining({ event: "dispatch.closed_task_acked" }));
+    }
+  });
+
+  it("retries any other failure of the fenced write", async () => {
+    const record = recordFor();
     const broken = createDispatcherHandler({
       markDispatching: async () => true, markDelivered: async () => undefined, markFailed: async () => { throw new Error("throttled"); }, deliverEc2: async () => "DELIVERED", log: () => undefined,
       guardTaskDispatch: async () => closedActive,
@@ -2188,7 +2203,7 @@ describe("the dispatcher with ec2-ebs records", () => {
 
     await expect(handler({ Records: [{ messageId: "closed-late", body: JSON.stringify(record) }] })).resolves.toEqual({ batchItemFailures: [] });
     expect(markDelivered).not.toHaveBeenCalled();
-    expect(markFailed).toHaveBeenCalledExactlyOnceWith(record, expect.stringContaining("TASK_CLOSED"), { whileOutboxIn: ["QUEUED", "PENDING", "WAITING_FOR_SESSION"] });
+    expect(markFailed).toHaveBeenCalledExactlyOnceWith(record, expect.stringContaining("TASK_CLOSED"), { whileOutboxIn: ["QUEUED", "PENDING", "WAITING_FOR_SESSION", "WAITING_FOR_TASK_ACCESS"] });
     expect(log).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ level: "info", event: "dispatch.closed_task_acked", operationId: record.operationId }));
   });
 

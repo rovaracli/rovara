@@ -26,6 +26,8 @@ export async function failOutboxOperation(
 ): Promise<void> {
   const now = new Date().toISOString();
   const expectedStatuses = whileOutbox === undefined ? [] : "statusIn" in whileOutbox ? whileOutbox.statusIn : [whileOutbox.status];
+  // An empty list would build an empty condition (or none): refuse it rather than fail every outbox item unconditionally.
+  if (whileOutbox !== undefined && expectedStatuses.length === 0) throw new Error("failOutboxOperation: whileOutbox needs at least one status");
   const expected = expectedStatuses.length === 0 ? { expression: "", values: {} }
     : expectedStatuses.length === 1 ? { expression: "#status = :expected", values: { ":expected": expectedStatuses[0] } }
     : { expression: `(${expectedStatuses.map((_, index) => `#status = :expected${index}`).join(" OR ")})`, values: Object.fromEntries(expectedStatuses.map((status, index) => [`:expected${index}`, status])) };
