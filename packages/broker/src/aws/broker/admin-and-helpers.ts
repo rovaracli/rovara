@@ -36,18 +36,19 @@ import { auditOperatorId } from "@agentx/contracts";
 import { developerIdForSlackUser } from "../admin-actions.js";
 import { requirePricedTaskStopAdmission } from "../../org/task-stop-unpriced.js";
 import { startTask } from "../developer-tasks/start.js";
+import { routeEditionDependencies } from "../../wiring/enterprise-identity.js";
 import { copyStateOf, planWaitingOf, replayCopyView, startReplayCopy } from "../developer-tasks/lessons-replay.js";
 import { decideTaskWorkflow } from "../developer-tasks/decide.js";
 import { closeTask } from "../developer-tasks/close.js";
 import { candidateDiffText } from "../developer-tasks/task-view.js";
 import { readSpendPolicy } from "../../spend/settings.js";
 import { LessonSchema, type Lesson } from "../../lessons/types.js";
-import { requireAudit } from "../../lessons/policy.js";
+import { autoApplyOn, requireAudit } from "../../lessons/policy.js";
 import { subjectForTask } from "../../lessons/task-end.js";
 import { EVAL_MODEL_OUTPUT_MAX_TOKENS, EvalModelRefusal, evalModelCall } from "../../lessons/eval-model.js";
 import { EVAL_SNAPSHOT_MAX_LESSONS, buildEvalSnapshot } from "../../lessons/replay-snapshot-store.js";
 import { isReplayCopy } from "../../developer/eval-copy.js";
-import { autofixTaskSpendUsd } from "./dispatch.js";
+import { replayCopySpendUsd } from "./dispatch.js";
 
 /** Spec 043: the SWE-bench module's dependencies, from the broker's; spec 052 wires its batches into them. */
 export function swebenchDependencies(dependencies: AwsBrokerDependencies): EvalBatchDependencies {
@@ -293,6 +294,10 @@ export async function adminTaskLessonsReplay(dependencies: AwsBrokerDependencies
   const routeDependencies = () => developerTaskRouteDependencies({
     documentClient: dependencies.documentClient, tableName: dependencies.tableName, developer: dependencies.developer!,
     now: Date.now, tasks, ...(agents === undefined ? {} : { agents }), refreshTaskFeedback: (id) => refreshTaskFeedbackForOwnerDecision(dependencies, id),
+    // The copy runs under the same spend limits as any task: with a model proxy it starts at the planning limit and settles its run limit at the plan's approval (lane 7 re-check, N1).
+    ...(dependencies.modelAccess === undefined ? {} : { modelAccess: dependencies.modelAccess.access }),
+    ...(dependencies.cloud === true ? { cloud: true } : {}),
+    ...routeEditionDependencies(dependencies),
     workflowE2EPresentation: input => workflowE2EPresentation(dependencies, input.task, input.operations, input.actor),
     workflowE2EPublicationChecks: input => workflowE2EPublicationChecks(dependencies, input.task, input.operations),
   }, caller, undefined, null);
@@ -302,7 +307,8 @@ export async function adminTaskLessonsReplay(dependencies: AwsBrokerDependencies
     if (!isReplayCopy(task) || personOwnerOf(effectiveTaskOwner(task)).developerId !== identity.ownerKey) throw agentXError("TASK_NOT_FOUND", `no task ${taskId}`);
   }
   if (method === "GET" && action === "copy") {
-    const cost = copyStateOf(task) === "running" ? null : (await autofixTaskSpendUsd(dependencies, task)) ?? null;
+    // What the copy has cost so far, whatever it is doing (the harness stops a copy that passes its worst case): every stage, checks included, and the proxy's own figure.
+    const cost = (await replayCopySpendUsd(dependencies, task)) ?? null;
     return { replay: await replayCopyView({ store: lessons.store, evalSnapshots: lessons.evalSnapshots }, task, orgId, cost) };
   }
   if (action === "evidence") {
@@ -316,7 +322,7 @@ export async function adminTaskLessonsReplay(dependencies: AwsBrokerDependencies
     const waiting = planWaitingOf(task);
     if (waiting === undefined) throw agentXError("CONFIG_INVALID", "no plan is waiting for approval on this copy");
     // The decision is the copy's owner's (the operator); the same workflow decision a person makes, with its own checks (a plan that needs more than this, a raise of the run limit, a high-risk plan, is refused and the copy stays put).
-    const decided = await decideTaskWorkflow(routeDependencies(), caller, task.taskId, { requestId: replayRequestId(`${task.taskId}:plan:${String(waiting.revision)}`), expectedRevision: waiting.revision, decision: "APPROVE", reason: "Approved for the lessons replay", artifactDigest: waiting.digest });
+    const decided = await decideTaskWorkflow(routeDependencies(), caller, task.taskId, { requestId: replayRequestId(`${task.taskId}:plan:${String(waiting.revision)}`), expectedRevision: waiting.revision, decision: "APPROVE", reason: "Approved for the lessons replay", artifactDigest: waiting.digest }, { acceptCopyRunLimit: true });
     return { approved: { revision: waiting.revision, state: copyStateOf((await getItem<DeveloperTaskRecord>(dependencies, taskKey(task.taskId))) ?? task), decided: decided.task.taskId === task.taskId } };
   }
   if (action === "close") {
@@ -324,6 +330,8 @@ export async function adminTaskLessonsReplay(dependencies: AwsBrokerDependencies
     return { closed: closing.closed === true, ...(closing.closed === true ? {} : { message: closing.message }) };
   }
   // ---- start
+  // A copy is billed to the project as a test. Without the agent runtime the start falls back to the operator as the payer, and the operator's own plan could pay: refuse instead.
+  if (agents === undefined) throw agentXError("RUNTIME_UNAVAILABLE", "agent runs are not set up in this deployment, so a replay copy cannot be billed to the project");
   await requirePricedTaskStopAdmission(dependencies, { orgId, actor: { kind: "operator", id: operatorId }, workKind: "admin-lessons-replay" });
   if (dependencies.cloud === true) {
     const trial = { documentClient: dependencies.documentClient, tableName: dependencies.tableName, now: Date.now };
@@ -331,11 +339,14 @@ export async function adminTaskLessonsReplay(dependencies: AwsBrokerDependencies
     await admitMachineTime(trial, orgId);
   }
   const deps = routeDependencies();
-  return { replay: await startReplayCopy({
+  const started = await startReplayCopy({
     store: lessons.store, snapshots: lessons.snapshots, evalSnapshots: lessons.evalSnapshots, audit: lessons.routes.audit, now: Date.now,
     perTestCapUsd: async () => (await readSpendPolicy({ documentClient: dependencies.documentClient, tableName: dependencies.tableName }, orgId)).perTestCapUsd,
     start: (body, run) => startTask(deps, caller, body, run),
-  }, { source: task, orgId, operatorId, operatorDeveloperId: identity.ownerKey, body: value }) };
+  }, { source: task, orgId, operatorId, operatorDeveloperId: identity.ownerKey, body: value });
+  // The limit the copy started under (its planning limit; none where there is no model proxy to enforce one): the harness reserves planning plus the run limit for it, and stops the replay on a copy that started under more, or under none.
+  const record = await getItem<DeveloperTaskRecord>(dependencies, taskKey(started.taskId));
+  return { replay: { ...started, startLimitUsd: dependencies.modelAccess === undefined ? null : record?.budgetUsd ?? null } };
 }
 
 /**
@@ -371,15 +382,17 @@ export async function adminLessonsReplaySnapshot(dependencies: AwsBrokerDependen
  * budget. Body: `{ purpose, system, user, maxOutputTokens, maxUsd }`; answer: `{ text, costUsd }`.
  */
 export async function adminLessonsReplayModel(dependencies: AwsBrokerDependencies, identity: AuthenticatedIdentity, project: string, value: unknown): Promise<unknown> {
-  const { orgId } = await requireReplayOperator(dependencies, identity, undefined);
+  const { orgId, operatorId } = await requireReplayOperator(dependencies, identity, undefined);
   const evalModel = dependencies.lessons?.evalModel;
   if (evalModel === undefined) throw agentXError("NOT_FOUND", "no learning model path is set up in this deployment");
   await requireLatestProject(dependencies, orgId, project);
   const body = z.object({ purpose: z.enum(["grade", "learn"]), system: z.string().min(1), user: z.string().min(1), maxOutputTokens: z.number().int().min(1).max(EVAL_MODEL_OUTPUT_MAX_TOKENS), maxUsd: z.number().positive().max(50) }).strict().safeParse(value);
   if (!body.success) throw agentXError("CONFIG_INVALID", "the replay model call is not valid");
+  // The audit line first (ids, a fixed word and the hold in cents only): a call that cannot be recorded is not made.
+  await requireReplayRead(dependencies, { orgId, project, operatorId, what: body.data.purpose === "grade" ? "model_grade" : "model_learn", maxCents: Math.round(body.data.maxUsd * 100) });
   try {
     const answer = await evalModelCall(evalModel, { workspaceId: orgId, project, system: body.data.system, user: body.data.user, maxOutputTokens: body.data.maxOutputTokens, maxHoldUsd: body.data.maxUsd });
-    return { text: answer.text, costUsd: answer.costUsd };
+    return { text: answer.text, costUsd: answer.costUsd, model: answer.model };
   } catch (error) {
     if (!(error instanceof EvalModelRefusal)) throw error;
     throw agentXError(error.code === "too_large" ? "CONFIG_INVALID" : "RUNTIME_UNAVAILABLE", error.message);
@@ -391,13 +404,36 @@ export async function adminLessonsReplayModel(dependencies: AwsBrokerDependencie
  * owner or admin. The task must be a real past task of this project: a replay copy, an automatic run and a task of another project or company answer as if there were none (the subject source refuses them).
  */
 export async function adminLessonsReplaySubject(dependencies: AwsBrokerDependencies, identity: AuthenticatedIdentity, project: string, taskId: string): Promise<unknown> {
-  const { orgId } = await requireReplayOperator(dependencies, identity, undefined);
+  const { orgId, operatorId } = await requireReplayOperator(dependencies, identity, undefined);
   const learning = dependencies.learning;
   if (learning === undefined) throw agentXError("NOT_FOUND", "learning is not set up in this deployment");
   if (!TASK_ID_PATTERN.test(taskId)) throw agentXError("TASK_NOT_FOUND", "that is not a task ID");
+  // A past task's private content is read: the read is recorded first (the operator and the task id, nothing of the content).
+  await requireReplayRead(dependencies, { orgId, project, operatorId, what: "subject", target: taskId });
   const subject = await subjectForTask(learning, { workspaceId: orgId, taskId });
   if (subject === undefined || subject.project !== project || subject.evalRun === true) throw agentXError("TASK_NOT_FOUND", `no task ${taskId}`);
   return { subject };
+}
+
+/**
+ * Lane 7 (DECISIONS 68; re-check N-f): `GET /v1/admin/projects/{project}/lessons-replay/settings`, the project's learning settings as the live pipeline reads them (mode, preset, approval, the company's floor and lock), whether the
+ * install's auto-apply switch is on, and whether an embedder is set up, so the offline pipeline runs under the project's REAL rules and not a preset of its own. A company owner or admin; the read is recorded. No lesson text.
+ */
+export async function adminLessonsReplaySettings(dependencies: AwsBrokerDependencies, identity: AuthenticatedIdentity, project: string): Promise<unknown> {
+  const { orgId, operatorId } = await requireReplayOperator(dependencies, identity, undefined);
+  const lessons = dependencies.lessons;
+  if (lessons === undefined) throw agentXError("NOT_FOUND", "lessons are not set up in this deployment");
+  await requireLatestProject(dependencies, orgId, project);
+  await requireReplayRead(dependencies, { orgId, project, operatorId, what: "settings" });
+  return { settings: (await lessons.settings.read(orgId, project)) ?? {}, autoApply: autoApplyOn(), embedder: lessons.load.embedder !== undefined };
+}
+
+/** The replay's reads and model calls leave one audit line each (counts and ids only); a read that cannot be recorded is not made. */
+async function requireReplayRead(dependencies: AwsBrokerDependencies, input: { orgId: string; project: string; operatorId: string; what: "subject" | "settings" | "model_grade" | "model_learn"; maxCents?: number; target?: string }): Promise<void> {
+  const audit = dependencies.lessons?.routes.audit;
+  if (audit === undefined) throw agentXError("RUNTIME_UNAVAILABLE", "the replay could not be recorded in the audit ledger, so it was not made");
+  const written = await requireAudit(audit, { action: "lesson.replay_read", workspaceId: input.orgId, project: input.project, facts: { operator: input.operatorId, what: input.what, maxCents: input.maxCents ?? 0, target: input.target ?? "none" } });
+  if (!written) throw agentXError("RUNTIME_UNAVAILABLE", "the replay could not be recorded in the audit ledger, so it was not made");
 }
 
 const REPLAY_EVIDENCE_MAX_CHARS = 40_000;

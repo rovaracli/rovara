@@ -13,6 +13,7 @@ import {
   GraderMismatchError, REPLAY_REPEATS, REPLAY_TASKS_MAX, REPLAY_TASKS_MIN, ReplayRunRowSchema, canonicalArm, memoryInputForArm, parseArm,
   type ArmLearningCost, type ArmLessonSet, type LearningCallsNote, type MemoryInput, type ReplayGradedBy, type ReplayGrader, type ReplayRunRow,
 } from "@agentx/contracts";
+import { REPLAY_EXPORT_RULE } from "./replay-export.js";
 import { lessonContentKey, summarizeLessonSet } from "./replay-lessonset.js";
 import { evalSnapshotIdOf } from "./replay-snapshot-store.js";
 import type { ReplayCandidate } from "./replay-select.js";
@@ -131,8 +132,14 @@ export interface SnapshotRequest {
   /** The tasks that finished BEFORE this day, with their original (historical) outcomes: the only things a pipeline learns from. Replayed runs are never among them. */
   historical: ReplayCandidate[];
 }
+/** A pipeline's builder exported its lessons by some other rule than `exportWithoutAPerson`: it cannot be an arm, because the arms would not be comparable. */
+export class ReplayExportRuleError extends Error {
+  constructor(readonly pipeline: string) { super(`The ${pipeline} pipeline did not export its lessons by the one rule every arm uses (active, and delivered without a person under the project's rules). It cannot be an arm.`); this.name = "ReplayExportRuleError"; }
+}
 export interface SnapshotResult {
   snapshotId: string;
+  /** How the lessons were exported (`replay-export.ts`): the rule's name (every arm must carry the same one) and what the day's export counted. Required: a builder that does not say is refused. */
+  export: { rule: string; proposed: number; needsPerson: number; truncated: number; /** Model calls of this build that failed and were left out. */ droppedCalls: number };
   /** The pipeline's whole lesson set after this day, with simulated timestamps (createdAt/updatedAt at the day's end). */
   lessons: Lesson[];
   /** null: the pipeline was read as of a date and its cost was not measured. */
@@ -162,12 +169,16 @@ export async function buildSnapshots(input: { key: { workspaceId: string; projec
   for (const pipeline of pipelines) {
     const builder = input.builders[pipeline];
     if (builder === undefined) throw new ArmNotBuiltError(`on:${pipeline}`, `no snapshot builder for pipeline ${pipeline}.`);
-    let usd: number | null = 0, calls: number | null = 0;
+    let usd: number | null = 0, calls: number | null = 0, dropped = 0;
+    let last: SnapshotResult["export"] | undefined;
     out.snapshots[pipeline] = {};
     out.lessonsByDay[pipeline] = {};
     for (const day of days) {
       const historical = tasks.filter((t) => dayOf(t.at) < day);
       const built = await builder.build({ pipeline, day, learningCalls: "explicit", historical });
+      if (built.export?.rule !== REPLAY_EXPORT_RULE) throw new ReplayExportRuleError(pipeline);
+      last = built.export;
+      dropped += built.export.droppedCalls;
       // The id the install derives from the lessons themselves, so the snapshot a copy is started on is exactly the one imported (not a name the builder chose).
       out.snapshots[pipeline][day] = evalSnapshotIdOf(input.key, built.lessons);
       usd = usd === null || built.costUsd === null ? null : usd + built.costUsd;
@@ -176,7 +187,7 @@ export async function buildSnapshots(input: { key: { workspaceId: string; projec
       out.finalLessons[pipeline] = built.lessons;
       out.lessonsByDay[pipeline][day] = built.lessons;
     }
-    out.learning.push({ arm: `on:${pipeline}`, usd, calls });
+    out.learning.push({ arm: `on:${pipeline}`, usd, calls, ...(last === undefined ? {} : { proposed: last.proposed, needsPerson: last.needsPerson, truncated: last.truncated, droppedCalls: dropped }) });
     out.lessonSets.push(summarizeLessonSet(`on:${pipeline}`, out.finalLessons[pipeline] ?? []));
   }
   if (arms.includes("off")) out.learning.push({ arm: "off", usd: 0, calls: 0 });
@@ -201,6 +212,13 @@ export interface ExecutedRun {
   /** Called after the run is graded (or when grading failed): closes the copy. Never throws into the replay. */
   cleanup?: () => Promise<void>;
 }
+/** A copy that started under a spend limit the replay's budget did not reserve for (more planning allowance than declared, or none at all): its worst case cannot be bounded, so the whole replay stops. */
+export class ReplayLimitError extends Error {
+  constructor(readonly runKey: string, detail: string) { super(`The copy for ${runKey} started under a spend limit the replay did not reserve for (${detail}); the replay stopped.`); this.name = "ReplayLimitError"; }
+}
+/** The most one copy can cost: what planning may spend before the plan is approved, plus the run limit the approval then sets (the run limit's window restarts at what planning spent). A run is not started unless the budget has room for this. */
+export const copyWorstCaseUsd = (limits: { planningLimitUsd: number; runLimitUsd: number }): number => limits.planningLimitUsd + limits.runLimitUsd;
+
 /** A run that started a copy and did not finish it. The copy was cancelled; `costUsd` is what it had cost (null: not known, counted at its hold). */
 export class ReplayRunFailed extends Error {
   constructor(readonly costUsd: number | null, message = "the replayed task did not finish") { super(message); this.name = "ReplayRunFailed"; }
@@ -232,7 +250,7 @@ export interface RunDeps {
   priorCorrections(task: ReplayCandidate): Promise<string[]>;
   /** A HARD limit (US dollars) on what the whole replay may spend. */
   maxUsd: number;
-  /** What one copy may cost at most (its own spend limit): a run is not started unless the limit has room for it, and a run that fails or is unpriced is counted at this. */
+  /** The WORST CASE of one copy (`copyWorstCaseUsd`: planning allowance plus run limit): a run is not started unless the limit has room for all of it and the grading, and a run that fails or is unpriced is counted at this. */
   holdPerRunUsd: number;
   /** Spent before this replay's runs: building the lessons of the arms (their model calls). */
   alreadySpentUsd?: number;
@@ -263,7 +281,7 @@ export async function runReplay(plan: ReplayPlan, deps: RunDeps): Promise<RunRep
       executed = await deps.executor.run({ run, task, learning: { lessonsSwitch: "off", calls: "none" } });
     } catch (error) {
       // An unmarked task or a learning call ends the whole replay; any other fault is one ungraded run, counted at what the copy cost, or at its hold when that is not known.
-      if (error instanceof EvalMarkError || error instanceof ReplayLearningCallError || error instanceof ArmNotBuiltError) throw error;
+      if (error instanceof EvalMarkError || error instanceof ReplayLearningCallError || error instanceof ArmNotBuiltError || error instanceof ReplayLimitError) throw error;
       charge += error instanceof ReplayRunFailed && error.costUsd !== null ? error.costUsd : deps.holdPerRunUsd;
       executed = undefined;
     }

@@ -3,7 +3,8 @@ import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
-import { main } from "../../../scripts/lessons-replay-measure.js";
+import { lockResults, main } from "../../../scripts/lessons-replay-measure.js";
+import { parseRepoDirs, gitFactsReader } from "../../../scripts/lessons-replay-git.js";
 import { lessonContentKey } from "../../../packages/broker/src/lessons/replay-lessonset.js";
 import type { ReplayCandidate } from "../../../packages/broker/src/lessons/replay-select.js";
 import { WS, lessonRecord } from "./lesson-helpers.js";
@@ -24,11 +25,11 @@ function moduleSource(sets: Record<string, Array<{ title: string; body: string }
 const lessons = ${JSON.stringify(lessons)};
 const keys = ${JSON.stringify(keys)};
 export default function make() {
-  const builder = (pipeline) => ({ build: async () => ({ snapshotId: "ignored", lessons: lessons[pipeline], costUsd: 0.25, calls: 3 }) });
+  const builder = (pipeline) => ({ build: async () => ({ snapshotId: "ignored", lessons: lessons[pipeline], costUsd: 0.25, calls: 3, export: { rule: "active-without-a-person/v1", proposed: lessons[pipeline].length, needsPerson: 0, truncated: 0, droppedCalls: 0 } }) });
   let solved = 0;
   const ids = process.env.L7_IDS ? JSON.parse(process.env.L7_IDS) : {};
   return {
-    perRunUsd: ${String(perRunUsd)},
+    perRunUsd: ${String(perRunUsd)}, planningLimitUsd: 0,
     builders: { current: builder("current"), consolidated: builder("consolidated") },
     importSnapshot: (pipeline, day) => (process.env.L7_WRONG ? "snp_" + "0".repeat(20) : ids[pipeline][day]),
     executor: { run: async ({ run }) => ({ loaded: run.arm === "off" ? [] : keys[run.arm.replace(/^[a-z]+:/, "")] ?? [], costUsd: 0.1, evidence: "ev:" + run.key.length, evalRunMarked: run.evalRun === true, learningCalls: 0 }) },
@@ -59,7 +60,7 @@ async function pipeline(sets: typeof DIFFERENT) {
   process.env["L7_IDS"] = JSON.stringify(ids);
   expect((await run(["import-snapshots", "--dir", f("out"), "--module", f("module.mjs")])).code).toBe(0);
   expect((await run(["plan", "--selection", f("selection.json"), "--arms", arms, "--seed", "s1", "--grader-model", "grader-model", "--grader-version", "v1", "--snapshots", f("out/snapshots.json"), "--out", f("plan.json")])).code).toBe(0);
-  const ran = await run(["run", "--plan", f("plan.json"), "--module", f("module.mjs"), "--corrections", f("corrections.json"), "--results", f("results.jsonl"), "--max-usd", "1000", "--per-run-usd", "0.5", "--dir", f("out")]);
+  const ran = await run(["run", "--plan", f("plan.json"), "--module", f("module.mjs"), "--corrections", f("corrections.json"), "--results", f("results.jsonl"), "--max-usd", "1000", "--per-run-usd", "0.5", "--planning-usd", "0", "--dir", f("out")]);
   expect(ran.code, ran.err).toBe(0);
   return { dir, f, ran };
 }
@@ -70,7 +71,7 @@ describe("the operator script", () => {
     expect(ran.out).toMatch(/ran 360 runs/);
     expect(ran.out).toMatch(/and \$[0-9.]+ building the arms' lessons/);
     expect(readFileSync(f("results.jsonl"), "utf8").trim().split("\n")).toHaveLength(360);
-    const again = await run(["run", "--plan", f("plan.json"), "--module", f("module.mjs"), "--corrections", f("corrections.json"), "--results", f("results.jsonl"), "--max-usd", "1000", "--per-run-usd", "0.5", "--dir", f("out")]);
+    const again = await run(["run", "--plan", f("plan.json"), "--module", f("module.mjs"), "--corrections", f("corrections.json"), "--results", f("results.jsonl"), "--max-usd", "1000", "--per-run-usd", "0.5", "--planning-usd", "0", "--dir", f("out")]);
     expect(again.out).toMatch(/ran 0 runs \(360 already recorded/);
   });
 
@@ -129,7 +130,7 @@ describe("the operator script", () => {
   it("the MCP arm refuses to run (code 3); the file arm is planned and runs", async () => {
     const { f } = await pipeline(DIFFERENT);
     const plan = async (arms: string, out: string) => run(["plan", "--selection", f("selection.json"), "--arms", arms, "--seed", "s1", "--grader-model", "grader-model", "--grader-version", "v1", "--snapshots", f("out/snapshots.json"), "--out", f(out)]);
-    const runArgs = (planFile: string, results: string) => ["run", "--plan", f(planFile), "--module", f("module.mjs"), "--corrections", f("corrections.json"), "--results", f(results), "--max-usd", "1000", "--per-run-usd", "0.5"];
+    const runArgs = (planFile: string, results: string) => ["run", "--plan", f(planFile), "--module", f("module.mjs"), "--corrections", f("corrections.json"), "--results", f(results), "--max-usd", "1000", "--per-run-usd", "0.5", "--planning-usd", "0"];
     expect((await plan("off,on:current,mcp:current", "plan-mcp.json")).code).toBe(0);
     const refused = await run(runArgs("plan-mcp.json", "results-mcp.jsonl"));
     expect(refused.code).toBe(3);
@@ -146,15 +147,15 @@ describe("the operator script", () => {
     const base = ["run", "--plan", f("plan.json"), "--module", f("module.mjs"), "--corrections", f("corrections.json"), "--results", f("results-capped.jsonl")];
     expect((await run(base)).err).toMatch(/--max-usd is required/);
     expect((await run([...base, "--max-usd", "5"])).err).toMatch(/--per-run-usd is required/);
-    const wrong = await run([...base, "--max-usd", "5", "--per-run-usd", "0.9"]);
+    const wrong = await run([...base, "--max-usd", "5", "--per-run-usd", "0.9", "--planning-usd", "0"]);
     expect(wrong.code).toBe(1);
     expect(wrong.err).toMatch(/not the limit the module holds/);
-    const capped = await run([...base, "--max-usd", "1.6", "--per-run-usd", "0.5"]);
+    const capped = await run([...base, "--max-usd", "1.6", "--per-run-usd", "0.5", "--planning-usd", "0"]);
     expect(capped.out).toMatch(/stopped by: max_usd/);
     // Each run is 0.1 + 0.02 of spend and a run starts only if the limit has room for its hold (0.5): 10 runs, then the 11th cannot start (1.2 + 0.5 > 1.6).
     expect(readFileSync(f("results-capped.jsonl"), "utf8").trim().split("\n")).toHaveLength(10);
     // With the arms' lessons counted (the module's builders spent $10), the same limit leaves room for nothing.
-    const withBuild = await run(["run", "--plan", f("plan.json"), "--module", f("module.mjs"), "--corrections", f("corrections.json"), "--results", f("results-built.jsonl"), "--max-usd", "1.6", "--per-run-usd", "0.5", "--dir", f("out")]);
+    const withBuild = await run(["run", "--plan", f("plan.json"), "--module", f("module.mjs"), "--corrections", f("corrections.json"), "--results", f("results-built.jsonl"), "--max-usd", "1.6", "--per-run-usd", "0.5", "--planning-usd", "0", "--dir", f("out")]);
     expect(withBuild.out).toMatch(/ran 0 runs/);
     expect(withBuild.out).toMatch(/stopped by: max_usd/);
   });
@@ -173,5 +174,39 @@ describe("the operator script", () => {
     expect((await run([])).code).toBe(2);
     expect((await run(["select", "--nope", "x"])).code).toBe(1);
     expect((await run(["select", "--seed"])).code).toBe(1);
+  });
+});
+
+describe("one invocation at a time on a results file", () => {
+  it("another live process holding the results file refuses a second run (two would each spend up to the limit), a lock whose process is gone is taken over, and the lock is released", () => {
+    const dir = mkdtempSync(path.join(tmpdir(), "l7-lock-"));
+    const results = path.join(dir, "results.jsonl");
+    const release = lockResults(results);
+    expect(readFileSync(`${results}.lock`, "utf8")).toBe(String(process.pid));
+    release();
+    writeFileSync(`${results}.lock`, "999999991");
+    const taken = lockResults(results);
+    taken();
+    expect(() => readFileSync(`${results}.lock`, "utf8")).toThrow();
+    // Another live process (the parent) holds it: refused.
+    writeFileSync(`${results}.lock`, String(process.ppid));
+    expect(() => lockResults(results)).toThrow(/another replay run is using/);
+  });
+});
+
+describe("the citation check over the operator's clones", () => {
+  it("reads a file and its kind at the cited commit from the named clone only, and refuses a bad map", async () => {
+    const asked: string[][] = [];
+    const reader = gitFactsReader({ api: "/clones/api" }, (directory, args) => { asked.push([directory, ...args]); if (args[0] === "cat-file" && args[1] === "-t") return "blob\n"; return "line one\n"; });
+    const input = { workspaceId: "w", project: "p", repo: "api", commit: "a".repeat(40), path: "src/a.ts", timeoutMs: 1000 };
+    expect(await reader.file(input)).toBe("line one\n");
+    expect(await reader.kind!(input)).toBe("file");
+    expect(asked[0]).toEqual(["/clones/api", "cat-file", "blob", `${"a".repeat(40)}:src/a.ts`]);
+    expect(await reader.file({ ...input, repo: "other" })).toBeUndefined();
+    expect(parseRepoDirs("api=/a, web=/b")).toEqual({ api: "/a", web: "/b" });
+    expect(() => parseRepoDirs("api")).toThrow(/name=directory/);
+    const missing = gitFactsReader({ api: "/clones/api" }, () => { throw new Error("no such blob"); });
+    expect(await missing.file(input)).toBeUndefined();
+    expect(await missing.kind!(input)).toBe("none");
   });
 });

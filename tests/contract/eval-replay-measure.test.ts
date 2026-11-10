@@ -130,10 +130,28 @@ describe("loaded-lesson difference between B and C", () => {
     }
     const d = loadedLessonDifference(rows, "on:current", "on:consolidated");
     expect(d).toMatchObject({ comparable: true, completedPairs: 10, loadedRunsA: 10, loadedRunsB: 4, armLoadedNothing: "on:consolidated", nearlySame: true });
-    // Six runs ungraded in the empty arm: they are not part of the comparison, and the four that completed loaded lessons.
-    const some = rows.map((r, i) => (r.arm === "on:consolidated" && i >= 8 ? { ...r, resolved: null, grader: null, gradedBy: null } : r));
-    expect(loadedLessonDifference(some, "on:current", "on:consolidated")).toMatchObject({ completedPairs: 4, loadedRunsB: 4, nearlySame: false });
+    // Four runs ungraded in the empty arm: they are not part of the comparison, and the six that completed loaded lessons in four of them.
+    const some = rows.map((r, i) => (r.arm === "on:consolidated" && i >= 12 ? { ...r, resolved: null, grader: null, gradedBy: null } : r));
+    expect(loadedLessonDifference(some, "on:current", "on:consolidated")).toMatchObject({ completedPairs: 6, plannedPairs: 10, ungradedB: 4, ungradedA: 0, loadedRunsB: 4, nearlySame: false });
     expect(renderMeasureReport(buildMeasureReport({ rows, compare: { b: "on:current", c: "on:consolidated" }, projectDays: 5, learning: [], lessonSets: [] }))).toMatch(/STOP: on:consolidated loaded no lesson on more than half/);
+  });
+  it("the STOP floor: fewer than half of the planned pairs completed in both arms is a STOP that says how many, and an arm's stalls are its own outcome (neither a pass nor a miss)", () => {
+    const rows: ReplayRunRow[] = [];
+    // 40 planned pairs; B completed all, C only 1 (the rest stalled): one completed pair is not a comparison.
+    for (let t = 0; t < 40; t += 1) {
+      rows.push(run(`t${String(t)}`, "on:current", true, { loaded: ["k1"] }));
+      rows.push(t === 0 ? run(`t${String(t)}`, "on:consolidated", false, { loaded: ["k2"] }) : { ...run(`t${String(t)}`, "on:consolidated", true, { loaded: [] }), resolved: null, grader: null, gradedBy: null });
+    }
+    const d = loadedLessonDifference(rows, "on:current", "on:consolidated");
+    expect(d).toMatchObject({ completedPairs: 1, plannedPairs: 40, ungradedB: 39, ungradedA: 0, thinPairs: true, nearlySame: true });
+    const text = renderMeasureReport(buildMeasureReport({ rows, compare: { b: "on:current", c: "on:consolidated" }, projectDays: 5, learning: [], lessonSets: [] }));
+    expect(text).toMatch(/STOP: only 1 of 40 planned runs completed in both arms \(ungraded: on:current 0, on:consolidated 39\)/);
+    // Exactly half is enough to report.
+    const half = rows.map((r, i) => (r.arm === "on:consolidated" && i < 40 ? { ...r, resolved: true, grader: { model: "grader-model", version: "2026-11-01" }, gradedBy: "hidden_tests" as const, loaded: ["k2"] } : r));
+    expect(loadedLessonDifference(half, "on:current", "on:consolidated")).toMatchObject({ completedPairs: 20, plannedPairs: 40, nearlySame: false });
+    const shown = renderMeasureReport(buildMeasureReport({ rows: half, compare: { b: "on:current", c: "on:consolidated" }, projectDays: 5, learning: [], lessonSets: [] }));
+    expect(shown).toMatch(/Runs by outcome/);
+    expect(shown).toMatch(/on:consolidated: 40 runs, 20 graded, 20 ungraded/);
   });
   it("an arm that is absent from the rows is reported as not comparable, not as a stop", () => {
     const d = loadedLessonDifference([loads("on:current", "t1", ["a"])], "on:current", "on:consolidated");

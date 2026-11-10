@@ -4,6 +4,8 @@
 // `pin` (optional) materialises the snapshot so a replayed task can load it; the loader's snapshot mode does not exist yet (see replay-executor.ts), so without a `pin` the snapshot is a plan-only id.
 import { snapshotIdOf } from "./replay-snapshot-store.js";
 import type { SnapshotBuilder, SnapshotRequest, SnapshotResult } from "./replay-harness.js";
+import { exportWithoutAPerson } from "./replay-export.js";
+import type { ApprovalPolicy } from "./policy.js";
 import type { LessonStore, ScopeKey } from "./store.js";
 import type { Lesson } from "./types.js";
 
@@ -24,6 +26,8 @@ export interface AsOfDeps {
   key: ScopeKey;
   /** Stores the snapshot under its id so a task can load it. Absent: the id only names it. */
   pin?(snapshotId: string, lessons: readonly Lesson[]): Promise<void>;
+  /** The project's real approval policy and trial rule: the lessons live on the day are exported by the one rule every arm uses (only what is delivered without a person under them). */
+  rules: { approval: ApprovalPolicy; trialAllowed: boolean };
 }
 
 export function asOfSnapshotBuilder(deps: AsOfDeps): SnapshotBuilder {
@@ -34,11 +38,12 @@ export function asOfSnapshotBuilder(deps: AsOfDeps): SnapshotBuilder {
       const heads = (await deps.store.listAllHeads(deps.key)).filter((h) => h.workspaceId === deps.key.workspaceId && h.project === deps.key.project);
       const versions = new Map<string, readonly Lesson[]>();
       for (const head of heads) versions.set(head.id, await deps.store.versions(deps.key, head.id));
-      const lessons = lessonsAsOf(versions, t);
+      const exported = exportWithoutAPerson({ lessons: lessonsAsOf(versions, t), approval: deps.rules.approval, trialAllowed: deps.rules.trialAllowed });
+      const lessons = exported.lessons;
       // The id the install derives from the same lessons (`replay-snapshot-store.ts#snapshotIdOf`), so the snapshot a copy is started on is the one named here.
       const snapshotId = snapshotIdOf(deps.key, lessons.map((l) => ({ id: l.id, version: l.version })));
       if (deps.pin !== undefined) await deps.pin(snapshotId, lessons);
-      return { snapshotId, lessons, costUsd: null, calls: null };
+      return { snapshotId, lessons, costUsd: null, calls: null, export: { rule: exported.rule, proposed: exported.proposed, needsPerson: exported.needsPerson, truncated: exported.truncated, droppedCalls: 0 } };
     },
   };
 }

@@ -51,6 +51,7 @@ const MAP: Partial<Record<LessonAuditEvent["action"], Mapped>> = {
   "lesson.repo_file_switched": { action: "lesson.repo_file_switched", facts: (e) => ({ enabled: e.facts["enabled"] === true }) },
   // Lane 7: an operator starts a replay copy of a past task (ids, fixed words and counts only; written BEFORE the copy is started), and a frozen snapshot is created for it.
   "lesson.replay_started": { action: "lesson.replay_started", facts: (e) => ({ operator: modelWord(e.facts["operator"]), memory: word(e.facts["memory"], "off"), snapshotLessons: num(e.facts["snapshotLessons"]), maxCents: num(e.facts["maxCents"]), sourceTask: modelWord(e.facts["sourceTask"]) }) },
+  "lesson.replay_read": { action: "lesson.replay_read", facts: (e) => ({ operator: modelWord(e.facts["operator"]), what: word(e.facts["what"], "subject"), maxCents: num(e.facts["maxCents"]), target: modelWord(e.facts["target"]) }) },
   "lesson.snapshot_created": { action: "lesson.snapshot_created", facts: (e) => ({ lessonSetVersion: num(e.facts["lessonSetVersion"]), lessonCount: num(e.facts["lessonCount"]) }) },
   // Stable makes a lesson publishable to a repository, so it is on the ledger.
   "lesson.trial_stable": { action: "lesson.trial_stable", facts: (e) => ({ tier: num(e.facts["tier"]) }) },

@@ -61,6 +61,17 @@ describe("the loader", () => {
     const frozen = [conv(A, { expiresAt: 5 }), conv(B, { status: "retired" }), conv(C, { project: "other" })];
     expect(ids(await loadLessonsForStage(w.deps, request({ memory: { mode: "snapshot", snapshotId: `snp_${"a".repeat(20)}`, lessons: frozen } })))).toEqual([A]);
   });
+  it("a snapshot lesson is held to the SAME approval rule as a live one: with no approval it is not loaded (no bypass), a trial lesson loads only while the project's settings allow trials", async () => {
+    const w = await world();
+    const unapproved = conv(A, { approvals: [] });
+    const trial = conv(B, { approvals: [{ approvalId: "t", by: "system:trial", at: 1, mode: "trial" }], trial: { state: "trial", startedAt: 1 } as never, tier: 0 });
+    const asked = (lessons: Lesson[], deps = w.deps) => loadLessonsForStage(deps, request({ memory: { mode: "snapshot", snapshotId: `snp_${"a".repeat(20)}`, lessons } }));
+    expect(ids(await asked([unapproved]))).toEqual([]);
+    expect(ids(await asked([unapproved, conv(C)]))).toEqual([C]);
+    // Standard + On allows the trial lesson; a stricter preset stops it.
+    expect(ids(await asked([trial], { ...w.deps, settings: settings({ mode: "On", preset: "standard" }) }))).toEqual([B]);
+    expect(ids(await asked([trial], { ...w.deps, settings: settings({ mode: "On", preset: "regulated" }) }))).toEqual([]);
+  });
   it("a copy's load report never touches the live lessons", async () => {
     const w = await world();
     const lessons = await snapshotOf(w.store, [A]);
@@ -142,6 +153,15 @@ describe("delivery", () => {
     expect(await learnedContextFromRefs(w.deps, w.refs({ lessons: [{ id: A, version: 2 }] }))).toBeUndefined();
     expect(await learnedContextFromRefs(w.deps, w.refs({ snapshotId: `snp_${"9".repeat(20)}` }))).toBeUndefined();
     expect(await learnedContextFromRefs((({ snapshots: _snapshots, ...rest }) => { void _snapshots; return rest; })(w.deps), w.refs())).toBeUndefined();
+  });
+  it("an unapproved lesson in the snapshot is not delivered either (no bypass at delivery)", async () => {
+    const w = await delivery();
+    const store = new InMemoryLessonStore();
+    await seed(store, conv(A, { approvals: [] }));
+    const snapshots = new InMemorySnapshotStore();
+    const snapshot = buildSnapshot({ key: KEY, refs: [{ id: A, version: 1 }], createdBy: "op", at: "2026-11-01T00:00:00.000Z" });
+    await snapshots.put(snapshot);
+    expect(await learnedContextFromRefs({ ...w.deps, store, snapshots }, w.refs({ snapshotId: snapshot.snapshotId }))).toBeUndefined();
   });
   it("the project's own mode still decides", async () => {
     const w = await delivery();

@@ -5,20 +5,20 @@
 //   npx tsx scripts/lessons-replay-measure.ts snapshots   --selection <file> --arms off,on:current --module <file> --workspace <org id> --out-dir <dir> --max-usd <usd>
 //   npx tsx scripts/lessons-replay-measure.ts import-snapshots --dir <dir> --module <file>
 //   npx tsx scripts/lessons-replay-measure.ts plan        --selection <file> --arms <list> --seed <text> --grader-model <m> --grader-version <v> --snapshots <dir>/snapshots.json --out <plan.json> [--small]
-//   npx tsx scripts/lessons-replay-measure.ts run         --plan <file> --module <file> --corrections <file> --results <results.jsonl> --max-usd <usd> --per-run-usd <usd> [--dir <dir>]
+//   npx tsx scripts/lessons-replay-measure.ts run         --plan <file> --module <file> --corrections <file> --results <results.jsonl> --max-usd <usd> --per-run-usd <usd> --planning-usd <usd> [--dir <dir>]
 //   npx tsx scripts/lessons-replay-measure.ts blind-sheet --final-lessons <dir>/final-lessons.json --seed <text> --out-sheet <sheet.json> --out-key <key.json>
 //   npx tsx scripts/lessons-replay-measure.ts import-marks --key <key.json> --marks <marks.json> --out <marks-by-arm.json>
 //   npx tsx scripts/lessons-replay-measure.ts report      --results <results.jsonl> --plan <plan.json> --compare on:current,on:consolidated [--dir <dir of snapshots outputs>] [--marks <marks-by-arm.json>] [--corrections <file>] [--json] [--continue-anyway]
 //
 // The operator module (--module) is an ES module whose default export is a function returning OperatorModule (below). `scripts/lessons-replay-staging-module.ts` is the one for a real staging run; tests pass their own.
 // The MCP arm is not built: a plan with one refuses by name.
-import { existsSync, mkdirSync, readFileSync, writeFileSync, appendFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync, appendFileSync, unlinkSync } from "node:fs";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { blindSheet, buildMeasureReport, importMarks, readReplayRunRows, renderMeasureReport, type ArmLessonSet, type ArmLearningCost, type ArmUsefulMarks, type BlindKey, type ReplayRunRow } from "@agentx/contracts";
 import { fusedMatcher } from "../packages/broker/src/lessons/metric-source.js";
 import type { CorrectionRecord, CorrectionSource } from "../packages/broker/src/lessons/metric.js";
-import { ArmNotBuiltError, buildReplayPlan, buildSnapshots, runReplay, type ReplayExecutor, type ReplayGraderPort, type ReplayPlan, type RunSink, type SnapshotBuilder } from "../packages/broker/src/lessons/replay-harness.js";
+import { ArmNotBuiltError, buildReplayPlan, copyWorstCaseUsd, buildSnapshots, runReplay, type ReplayExecutor, type ReplayGraderPort, type ReplayPlan, type RunSink, type SnapshotBuilder } from "../packages/broker/src/lessons/replay-harness.js";
 import { repeatMistakeChecks } from "../packages/broker/src/lessons/replay-mistakes.js";
 import { selectReplayTasks, type ReplayCandidate } from "../packages/broker/src/lessons/replay-select.js";
 import { LessonSchema, type Lesson } from "../packages/broker/src/lessons/types.js";
@@ -28,8 +28,10 @@ export interface OperatorModule {
   builders?: Record<string, SnapshotBuilder>;
   executor?: ReplayExecutor;
   grader?: ReplayGraderPort;
-  /** What one copy may spend: the same number the executor holds its copies to. */
+  /** What one copy may spend once its plan is approved: the same number the executor holds its copies to. */
   perRunUsd?: number;
+  /** What a copy may spend planning, before approval: the project's planning limit for the workflow path. The budget reserves planning plus the run limit for every copy. */
+  planningLimitUsd?: number;
   /** Imports an arm's lessons for a day as a frozen snapshot of the project; answers the id the install derived. */
   importSnapshot?: (pipeline: string, day: string, lessons: readonly Lesson[]) => string;
   /** Hands the grader the text of the historical corrections it judges repeats by. */
@@ -64,6 +66,30 @@ async function loadModule(file: string): Promise<OperatorModule> {
 }
 
 /** A results file: one JSON object per line, { key, row }. */
+/** Takes the results file's lock (`<file>.lock`, holding this process's id) or refuses; a lock whose process is gone is taken over. Returns the release. */
+export function lockResults(file: string): () => void {
+  const lock = `${file}.lock`;
+  mkdirSync(path.dirname(path.resolve(file)), { recursive: true });
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    let exists: boolean;
+    try {
+      writeFileSync(lock, String(process.pid), { flag: "wx" });
+      return () => { try { unlinkSync(lock); } catch { /* already gone */ } };
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+      exists = true;
+    }
+    if (exists) {
+      const holder = Number(readFileSync(lock, "utf8").trim());
+      let alive = true;
+      try { process.kill(holder, 0); } catch { alive = false; }
+      if (alive && holder !== process.pid) throw new Error(`another replay run is using ${file} (process ${String(holder)}); two runs on one results file would each spend up to the limit`);
+      try { unlinkSync(lock); } catch { /* raced with another taker: the next attempt decides */ }
+    }
+  }
+  throw new Error(`could not take the lock on ${file}`);
+}
+
 function jsonlSink(file: string): RunSink {
   const done = new Set<string>();
   let spent = 0;
@@ -147,21 +173,30 @@ export async function main(argv: readonly string[], io: Io): Promise<number> {
         return 0;
       }
       case "run": {
-        const o = options(rest, ["--plan", "--module", "--corrections", "--results", "--max-usd", "--per-run-usd", "--dir"]);
+        const o = options(rest, ["--plan", "--module", "--corrections", "--results", "--max-usd", "--per-run-usd", "--planning-usd", "--dir"]);
         const plan = read(need(o, "--plan")) as ReplayPlan;
         const mod = await loadModule(need(o, "--module"));
         if (mod.executor === undefined || mod.grader === undefined) throw new Error("the --module must provide an executor and a grader");
-        const maxUsd = Number(need(o, "--max-usd")), perRunUsd = Number(need(o, "--per-run-usd"));
+        const maxUsd = Number(need(o, "--max-usd")), perRunUsd = Number(need(o, "--per-run-usd")), planningUsd = Number(need(o, "--planning-usd"));
         if (mod.perRunUsd !== undefined && mod.perRunUsd !== perRunUsd) throw new Error(`--per-run-usd ${String(perRunUsd)} is not the limit the module holds its copies to (${String(mod.perRunUsd)})`);
+        if (mod.planningLimitUsd !== undefined && mod.planningLimitUsd !== planningUsd) throw new Error(`--planning-usd ${String(planningUsd)} is not the planning limit the module reserves for (${String(mod.planningLimitUsd)})`);
+        if (!Number.isFinite(planningUsd) || planningUsd < 0) throw new Error("--planning-usd must be the project's planning limit in dollars (zero or more)");
         const corrections = correctionsFrom(need(o, "--corrections"));
         mod.setCorrectionTexts?.(new Map(corrections.flatMap((c) => (c.text === undefined ? [] : [[c.id, c.text] as const]))));
         // What building the arms' lessons spent counts in the same limit.
         const dir = opt(o, "--dir");
         const built = dir === undefined || !existsSync(path.join(dir, "learning.json")) ? 0 : (read(path.join(dir, "learning.json")) as ArmLearningCost[]).reduce((sum, c) => sum + (c.usd ?? 0), 0);
-        const report = await runReplay(plan, {
-          executor: mod.executor, grader: mod.grader, sink: jsonlSink(need(o, "--results")), maxUsd, holdPerRunUsd: perRunUsd, alreadySpentUsd: built,
-          priorCorrections: async (task) => corrections.filter((c) => c.member && c.at < task.at && c.taskId !== task.taskId).map((c) => c.id),
-        });
+        // One invocation at a time on a results file: two would each read the spent total once and together pass the limit.
+        const results = need(o, "--results");
+        const unlock = lockResults(results);
+        let report: Awaited<ReturnType<typeof runReplay>>;
+        try {
+          report = await runReplay(plan, {
+            // Every copy is reserved at its WORST CASE: what planning may spend plus the run limit its approval sets.
+            executor: mod.executor, grader: mod.grader, sink: jsonlSink(results), maxUsd, holdPerRunUsd: copyWorstCaseUsd({ planningLimitUsd: planningUsd, runLimitUsd: perRunUsd }), alreadySpentUsd: built,
+            priorCorrections: async (task) => corrections.filter((c) => c.member && c.at < task.at && c.taskId !== task.taskId).map((c) => c.id),
+          });
+        } finally { unlock(); }
         io.out(`ran ${String(report.ran)} runs (${String(report.skipped)} already recorded, ${String(report.ungraded)} ungraded), cost $${report.costUsd.toFixed(2)} (and $${built.toFixed(2)} building the arms' lessons), stopped by: ${report.stoppedBy}`);
         return 0;
       }

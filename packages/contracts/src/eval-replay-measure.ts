@@ -112,6 +112,13 @@ export interface LoadedDifference {
   loadedRunsB: number;
   /** The arms loaded nothing at all. */
   nothingLoaded: boolean;
+  /** (task, repeat) pairs the plan had in either arm, and the share of them that completed in both. A replay where fewer than `MIN_COMPLETED_PAIR_SHARE` of them did says too little to compare (a stall in one arm is not a loss for the other). */
+  plannedPairs: number;
+  /** Runs each arm left ungraded (a stalled plan, a failure, a grading that failed): their own outcome, never a pass or a miss. */
+  ungradedA: number;
+  ungradedB: number;
+  /** Fewer than `MIN_COMPLETED_PAIR_SHARE` of the planned pairs completed in both arms. */
+  thinPairs?: true;
   /** An arm that has runs in the results but none completed: it did not run, and nothing can be said of it. */
   armDidNotRun?: string;
   /** An arm that loaded no lesson on more than half of its completed runs: its pipeline gave the replay nothing to measure. */
@@ -124,13 +131,19 @@ export interface LoadedDifference {
  * Per completed (task, repeat) pair, the lessons each arm loaded; over a task, the union of its repeats. Lessons are compared by their content key, so a reworded lesson is a different one. Only runs that COMPLETED
  * in both arms count: an arm whose runs all failed is reported as not having run, never as having loaded "different" (nothing) lessons.
  */
+/** The least share of the planned (task, repeat) pairs that must have completed in BOTH arms for the comparison to be reported. */
+export const MIN_COMPLETED_PAIR_SHARE = 0.5;
+
 export function loadedLessonDifference(rows: readonly ReplayRunRow[], a: string, b: string): LoadedDifference {
   const armA = canonicalArm(a), armB = canonicalArm(b);
   const mine = (arm: string): ReplayRunRow[] => rows.filter((row) => canonicalArm(row.arm) === arm);
   const rowsA = mine(armA), rowsB = mine(armB);
   const done = (list: ReplayRunRow[]): Map<string, ReplayRunRow> => new Map(list.filter((row) => row.resolved !== null).map((row) => [JSON.stringify([row.task, row.repeat]), row] as const));
   const doneA = done(rowsA), doneB = done(rowsB);
-  const base = { a: armA, b: armB, identical: 0, onlyA: 0, onlyB: 0, differ: null, loadedRunsA: 0, loadedRunsB: 0, nothingLoaded: false, completedPairs: 0, tasksCompared: 0 };
+  const pairKey = (row: ReplayRunRow): string => JSON.stringify([row.task, row.repeat]);
+  const plannedPairs = new Set([...rowsA, ...rowsB].map(pairKey)).size;
+  const ungradedA = rowsA.filter((row) => row.resolved === null).length, ungradedB = rowsB.filter((row) => row.resolved === null).length;
+  const base = { a: armA, b: armB, identical: 0, onlyA: 0, onlyB: 0, differ: null, loadedRunsA: 0, loadedRunsB: 0, nothingLoaded: false, completedPairs: 0, tasksCompared: 0, plannedPairs, ungradedA, ungradedB };
   // An arm with rows and no completed run did not run; an arm with no rows at all is just not part of these results.
   const armDidNotRun = rowsA.length > 0 && doneA.size === 0 ? armA : rowsB.length > 0 && doneB.size === 0 ? armB : undefined;
   if (armDidNotRun !== undefined) return { ...base, comparable: false, armDidNotRun, nearlySame: true };
@@ -155,15 +168,20 @@ export function loadedLessonDifference(rows: readonly ReplayRunRow[], a: string,
   const differ = total === 0 ? null : (onlyA + onlyB) / total;
   const nothingLoaded = comparable && total === 0;
   const armLoadedNothing = !comparable ? undefined : loadedRunsA * 2 < keys.length ? armA : loadedRunsB * 2 < keys.length ? armB : undefined;
-  return { a: armA, b: armB, comparable, completedPairs: keys.length, tasksCompared: perTaskA.size, identical, onlyA, onlyB, differ, loadedRunsA, loadedRunsB, nothingLoaded, ...(armLoadedNothing === undefined ? {} : { armLoadedNothing }),
-    nearlySame: comparable && (nothingLoaded || armLoadedNothing !== undefined || (differ ?? 1) < LOADED_DIFFERENCE_NEARLY_SAME) };
+  const thinPairs = comparable && keys.length < plannedPairs * MIN_COMPLETED_PAIR_SHARE;
+  return { a: armA, b: armB, comparable, completedPairs: keys.length, tasksCompared: perTaskA.size, identical, onlyA, onlyB, differ, loadedRunsA, loadedRunsB, nothingLoaded, plannedPairs, ungradedA, ungradedB, ...(armLoadedNothing === undefined ? {} : { armLoadedNothing }), ...(thinPairs ? { thinPairs: true as const } : {}),
+    nearlySame: comparable && (nothingLoaded || armLoadedNothing !== undefined || thinPairs || (differ ?? 1) < LOADED_DIFFERENCE_NEARLY_SAME) };
 }
 
 // ---------------------------------------------------------------------------------------------------------------------------
 // The report
 
 /** What learning cost an arm, over the whole replay: building its lesson snapshots (reflector, curator, judge, or the consolidation pass). `off` costs 0. */
-export interface ArmLearningCost { arm: string; /** null: this arm's learning cost was not measured (a pipeline read as of a date, not run). */ usd: number | null; calls: number | null }
+export interface ArmLearningCost {
+  arm: string; /** null: this arm's learning cost was not measured (a pipeline read as of a date, not run). */ usd: number | null; calls: number | null;
+  /** Lessons the pipeline proposed over the whole replay (active, pending or candidate at the end of each day, summed over days' last set), how many of them would have needed a person under the project's real rules (so were NOT delivered), how many the 80-lesson cap cut, and how many model calls failed and were left out. Absent: not recorded (an older result). */
+  proposed?: number; needsPerson?: number; truncated?: number; droppedCalls?: number;
+}
 export interface ArmLessonSet { arm: string; size: number; duplicates: number; contradictions: number }
 export interface ArmUsefulMarks { arm: string; size: number; marked: number; useful: number }
 /** The repeat-mistake metric's own check of the grader's flags (`sameMistakeTwice` over the arm's frozen lessons). */
@@ -193,7 +211,9 @@ export interface MeasureResults {
   arms: Array<{ arm: string; runs: number; resolved: number; rate: number | null; low: number; high: number; /** The same over tasks: each task counted once (solved when most of its repeats resolved). */ tasks: { tasks: number; solved: number; rate: number | null; low: number; high: number } }>;
   discordant: Array<{ a: string; b: string; onlyA: string[]; onlyB: string[] }>;
   sameMistakes: Array<{ arm: string; runs: number; runsWithRepeat: number; repeats: number; confirmed: number | null; unjudged: number | null; split: ArmSameMistakeCheck["split"] | null }>;
-  learningCost: Array<{ arm: string; usd: number | null; calls: number | null; projectDays: number; perProjectDay: number | null }>;
+  learningCost: Array<{ arm: string; usd: number | null; calls: number | null; projectDays: number; perProjectDay: number | null; proposed: number | null; needsPerson: number | null; truncated: number | null; droppedCalls: number | null }>;
+  /** Per arm: the runs the plan had, how many were graded and how many were left ungraded (a stalled plan, a failure, a failed grading): their own outcome. */
+  outcomes: Array<{ arm: string; runs: number; graded: number; ungraded: number }>;
   runCost: Array<{ arm: string; runs: number; meanUsd: number | null }>;
   lessonSets: ArmLessonSet[];
   usefulMarks: ArmUsefulMarks[];
@@ -241,7 +261,12 @@ export function buildMeasureReport(input: MeasureInput): MeasureReport {
     }),
     learningCost: comparison.arms.map((arm) => {
       const cost = costs.get(arm);
-      return { arm, usd: cost?.usd ?? null, calls: cost?.calls ?? null, projectDays: days, perProjectDay: cost?.usd === undefined || cost.usd === null ? null : cost.usd / days };
+      return { arm, usd: cost?.usd ?? null, calls: cost?.calls ?? null, projectDays: days, perProjectDay: cost?.usd === undefined || cost.usd === null ? null : cost.usd / days,
+        proposed: cost?.proposed ?? null, needsPerson: cost?.needsPerson ?? null, truncated: cost?.truncated ?? null, droppedCalls: cost?.droppedCalls ?? null };
+    }),
+    outcomes: comparison.arms.map((arm) => {
+      const mine = input.rows.filter((row) => canonicalArm(row.arm) === arm);
+      return { arm, runs: mine.length, graded: mine.filter((row) => row.resolved !== null).length, ungraded: mine.filter((row) => row.resolved === null).length };
     }),
     runCost: comparison.arms.map((arm) => {
       const priced = input.rows.filter((row) => canonicalArm(row.arm) === arm && row.costUsd !== null);
@@ -269,11 +294,14 @@ export function renderMeasureReport(report: MeasureReport): string {
   else {
     out.push(`   Over ${String(d.completedPairs)} runs completed in both arms (${String(d.tasksCompared)} tasks), ${String(d.identical)} (task, lesson) loads were the same in both, ${String(d.onlyA)} only in ${d.a}, ${String(d.onlyB)} only in ${d.b}: ${pct(d.differ)} differ.`);
     out.push(`   Runs that loaded at least one lesson: ${d.a} ${String(d.loadedRunsA)} of ${String(d.completedPairs)}, ${d.b} ${String(d.loadedRunsB)} of ${String(d.completedPairs)}.`);
+    out.push(`   Runs left ungraded (a stalled plan, a failure): ${d.a} ${String(d.ungradedA)}, ${d.b} ${String(d.ungradedB)} of ${String(d.plannedPairs)} planned.`);
     out.push(`   "Nearly the same" means fewer than ${String(report.nearlySameLine * 100)}% of the loads differ. Lessons are matched by their words, so a reworded lesson counts as different.`);
   }
   if (report.stopped) {
     out.push(d.armDidNotRun !== undefined
       ? `   STOP: ${d.armDidNotRun} did not run (every run of it failed or went ungraded). The replay says nothing about the two pipelines.`
+      : d.thinPairs === true
+        ? `   STOP: only ${String(d.completedPairs)} of ${String(d.plannedPairs)} planned runs completed in both arms (ungraded: ${d.a} ${String(d.ungradedA)}, ${d.b} ${String(d.ungradedB)}); fewer than ${String(MIN_COMPLETED_PAIR_SHARE * 100)}% is too few to compare. The replay says nothing about the two pipelines.`
       : d.armLoadedNothing !== undefined
         ? `   STOP: ${d.armLoadedNothing} loaded no lesson on more than half of its completed runs. The replay says nothing about the two pipelines.`
         : d.nothingLoaded
@@ -291,6 +319,9 @@ export function renderMeasureReport(report: MeasureReport): string {
     out.push("");
     out.push(`Grader: ${report.grader === null ? "not recorded (old result)" : `${report.grader.model} ${report.grader.version}`}, the same for every graded run.`);
     out.push("");
+    out.push("Runs by outcome (a stalled or failed run is ungraded: neither a pass nor a miss):");
+    for (const o of results.outcomes) out.push(`   ${o.arm}: ${String(o.runs)} runs, ${String(o.graded)} graded, ${String(o.ungraded)} ungraded`);
+    out.push("");
     out.push(`2. Pass rate, with a 95% interval (Wilson), over ${String(results.pairs)} runs graded in every arm (${String(results.unpaired)} runs left out). With this many tasks luck moves a rate by more than 10 points, so read the intervals, not the middle numbers.`);
     for (const arm of results.arms) out.push(`   ${arm.arm}: ${String(arm.resolved)} of ${String(arm.runs)} = ${pct(arm.rate)} (95% interval ${pct(arm.low)} to ${pct(arm.high)}); by task (the repeats of a task are not independent, so this interval is the honest one): ${String(arm.tasks.solved)} of ${String(arm.tasks.tasks)} = ${pct(arm.tasks.rate)} (95% interval ${pct(arm.tasks.low)} to ${pct(arm.tasks.high)})`);
     out.push("");
@@ -307,6 +338,7 @@ export function renderMeasureReport(report: MeasureReport): string {
     for (const cost of results.learningCost) {
       const run = results.runCost.find((r) => r.arm === cost.arm);
       out.push(`   ${cost.arm}: learning ${usd(cost.perProjectDay)} per project-day (${usd(cost.usd)} in ${cost.calls === null ? "an unrecorded number of" : String(cost.calls)} calls); a run cost ${usd(run?.meanUsd ?? null)} on average`);
+      if (cost.proposed !== null) out.push(`      lessons proposed ${String(cost.proposed)}: ${String(cost.needsPerson ?? 0)} would have needed a person under the project's rules and were not delivered; ${String(cost.truncated ?? 0)} cut at the ${String(80)}-lesson cap; ${String(cost.droppedCalls ?? 0)} model calls failed and were left out`);
     }
     out.push("");
     out.push("5. The final lesson set:");

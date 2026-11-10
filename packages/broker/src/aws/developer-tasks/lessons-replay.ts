@@ -29,7 +29,7 @@ export const LessonsReplayStartSchema = z.object({
     z.object({ mode: z.literal("off") }).strict(),
     z.object({ mode: z.literal("snapshot"), snapshotId: z.string().regex(/^snp_[0-9a-f]{20}$/u), lessons: z.array(LessonRefSchema).max(300).optional() }).strict(),
   ]),
-  /** The run's own spend limit in US dollars: the copy cannot spend more. */
+  /** The run's own spend limit in US dollars: what the copy may spend once its plan is approved. Planning, before the approval, is held to the project's planning limit, so a copy's worst case is the two together (the harness reserves both). */
   maxUsd: z.number().positive().max(1000),
   /** The file arm: the install places the lessons file itself from the snapshot (`file: true`); a file's text is never accepted from the request. */
   file: z.literal(true).optional(),

@@ -1,6 +1,6 @@
 // Lane 7: the executor, the grader's model and evidence, and the importer over the `agentx` CLI. A fake CLI answers in the CLI's `--json` envelope; nothing runs, no network.
 import { describe, expect, it } from "vitest";
-import { cliEvidenceReader, cliGraderModel, cliPipelineModel, cliReplayPort, cliSubjectOf, importSnapshot, uuidOf, type CliResult } from "../../../scripts/lessons-replay-port.js";
+import { cliEvidenceReader, cliGraderModel, cliPipelineModel, cliProjectSettings, cliReplayPort, cliSubjectOf, importSnapshot, uuidOf, type CliResult } from "../../../scripts/lessons-replay-port.js";
 import { stagingExecutor } from "../../../packages/broker/src/lessons/replay-executor.js";
 import { ReplayRunFailed } from "../../../packages/broker/src/lessons/replay-harness.js";
 import { lessonRecord } from "./lesson-helpers.js";
@@ -19,7 +19,7 @@ function fake(over: { startAnswer?: CliResult; views?: unknown[] } = {}) {
     env: "stg", now: () => clock, sleep: async (ms: number) => { clock += ms; }, pollSeconds: 1, timeoutMinutes: 1,
     cli: (args: readonly string[]): CliResult => {
       calls.push([...args]);
-      if (args[0] === "admin" && args[1] === "task" && args[3] === "start") return over.startAnswer ?? ok({ replay: { taskId: COPY, evalRun: true, memory: "off" } });
+      if (args[0] === "admin" && args[1] === "task" && args[3] === "start") return over.startAnswer ?? ok({ replay: { taskId: COPY, evalRun: true, memory: "off", startLimitUsd: 1 } });
       if (args[3] === "show") return ok({ replay: views.length > 1 ? views.shift() : views[0] });
       return ok({});
     },
@@ -30,7 +30,7 @@ function fake(over: { startAnswer?: CliResult; views?: unknown[] } = {}) {
 describe("the CLI port", () => {
   it("starts a copy with the run's own limit and memory, the same request id for the same run, and the file flag for the file arm", async () => {
     const w = fake();
-    expect(await w.port.start({ sourceTaskId: "past-1", runKey: "run-1", evalRun: true, maxUsd: 2.5, memory: { mode: "snapshot", snapshotId: SNAP }, file: true })).toEqual({ taskId: COPY });
+    expect(await w.port.start({ sourceTaskId: "past-1", runKey: "run-1", evalRun: true, maxUsd: 2.5, memory: { mode: "snapshot", snapshotId: SNAP }, file: true })).toEqual({ taskId: COPY, startLimitUsd: 1 });
     expect(w.calls[0]).toEqual(expect.arrayContaining(["--task", "past-1", "--max-usd", "2.5", "--memory", `snapshot:${SNAP}`, "--request-id", uuidOf("run-1"), "--file"]));
     expect(uuidOf("run-1")).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-8[0-9a-f]{3}-[0-9a-f]{12}$/);
     const off = fake();
@@ -72,12 +72,12 @@ describe("the CLI port", () => {
   });
   it("with the executor: an install that does not show the mark gets the copy cancelled and the replay stopped; a copy that fails is a failed run with its cost", async () => {
     const w = fake({ views: [{ taskId: COPY, workspaceId: "ws-1", state: "running" }] });
-    const executor = stagingExecutor(w.port, { maxUsdPerRun: 2 });
+    const executor = stagingExecutor(w.port, { maxUsdPerRun: 2, planningLimitUsd: 1 });
     const run = { key: "r1", task: "t", repeat: 1, arm: "off", day: "2026-09-01", memory: { mode: "off" as const }, evalRun: true as const };
     await expect(executor.run({ run, task: { taskId: "t" } as never, learning: { lessonsSwitch: "off", calls: "none" } })).rejects.toThrow(/not marked/);
     expect(w.calls.some((c) => c[1] === "cancel")).toBe(true);
     const failing = fake({ views: [view({ state: "failed", costUsd: 1.7 })] });
-    const failure = await stagingExecutor(failing.port, { maxUsdPerRun: 2 }).run({ run, task: { taskId: "t" } as never, learning: { lessonsSwitch: "off", calls: "none" } }).catch((e: unknown) => e);
+    const failure = await stagingExecutor(failing.port, { maxUsdPerRun: 2, planningLimitUsd: 1 }).run({ run, task: { taskId: "t" } as never, learning: { lessonsSwitch: "off", calls: "none" } }).catch((e: unknown) => e);
     expect(failure).toBeInstanceOf(ReplayRunFailed);
     expect((failure as ReplayRunFailed).costUsd).toBe(1.7);
     expect(failing.calls.some((c) => c[1] === "cancel")).toBe(true);
@@ -85,14 +85,35 @@ describe("the CLI port", () => {
   });
 });
 
+describe("the project's settings and a running copy's cost", () => {
+  it("reads the project's learning settings, the auto-apply switch and the embedder from the install, and refuses an answer that is not that", () => {
+    const options = { env: "stg", now: () => 0, sleep: async () => undefined, cli: (args: readonly string[]): CliResult => (args[2] === "settings" ? ok({ settings: { mode: "On", preset: "standard" }, autoApply: true, embedder: false }) : ok({})) };
+    expect(cliProjectSettings(options, "payments")).toEqual({ settings: { mode: "On", preset: "standard" }, autoApply: true, embedder: false });
+    expect(() => cliProjectSettings({ ...options, cli: () => ok({ oops: 1 }) }, "payments")).toThrow(/could not be read/);
+    expect(() => cliProjectSettings({ ...options, cli: () => refused("a company owner or admin is required") }, "payments")).toThrow(/owner or admin/);
+  });
+  it("a copy that is still running is cancelled when its cost read from the install reaches the limit it was given (its worst case)", async () => {
+    const w = fake({ views: [view({ state: "running", costUsd: 1.2 }), view({ state: "running", costUsd: 6.1 })] });
+    await w.port.readMark(COPY);
+    const end = await w.port.waitForEnd(COPY, { maxUsd: 6 });
+    expect(end).toMatchObject({ state: "failed", costUsd: 6.1 });
+    expect(w.calls.some((c) => c[0] === "admin" && c[1] === "cancel")).toBe(true);
+  });
+});
+
 describe("the grader's model, the evidence, the importer and the offline pipeline's calls", () => {
   it("a grading is one call on the company's model path with the label and the hold; its reply carries the cost", async () => {
     const seen: string[][] = [];
-    const options = { env: "stg", now: () => 0, sleep: async () => undefined, cli: (args: readonly string[]) => { seen.push([...args]); return ok({ text: "{\"resolved\":true,\"mistakes\":[]}", costUsd: 0.03 }); } };
+    const options = { env: "stg", now: () => 0, sleep: async () => undefined, cli: (args: readonly string[]) => { seen.push([...args]); return ok({ text: "{\"resolved\":true,\"mistakes\":[]}", costUsd: 0.03, model: "grader" }); } };
     const model = cliGraderModel(options, { project: "payments", model: "grader", version: "1", holdUsd: 0.2 });
     expect(await model.complete({ system: "s", user: "u" })).toEqual({ text: "{\"resolved\":true,\"mistakes\":[]}", costUsd: 0.03 });
     expect(seen[0]).toEqual(expect.arrayContaining(["admin", "lessons-replay", "model", "--project", "payments"]));
     expect(model.holdUsd).toBe(0.2);
+    // The grading must come from the declared model: an answer from another one (the company changed its lessons model mid-run), or one that names none, fails that grading.
+    const switched = cliGraderModel({ ...options, cli: () => ok({ text: "x", costUsd: 0.03, model: "another-model" }) }, { project: "payments", model: "grader", version: "1", holdUsd: 0.2 });
+    await expect(switched.complete({ system: "s", user: "u" })).rejects.toThrow(/answered as another-model, not the declared grader/);
+    const unnamed = cliGraderModel({ ...options, cli: () => ok({ text: "x", costUsd: 0.03 }) }, { project: "payments", model: "grader", version: "1", holdUsd: 0.2 });
+    await expect(unnamed.complete({ system: "s", user: "u" })).rejects.toThrow(/unnamed model/);
     const refusing = cliGraderModel({ ...options, cli: () => refused("month full") }, { project: "payments", model: "g", version: "1", holdUsd: 0.2 });
     await expect(refusing.complete({ system: "s", user: "u" })).rejects.toThrow(/refused: month full/);
   });

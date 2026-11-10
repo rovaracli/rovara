@@ -9,6 +9,9 @@ import { InMemoryEvalSnapshotStore, InMemorySnapshotStore, buildEvalSnapshot } f
 import { NO_VECTORS } from "../../packages/broker/src/lessons/runtime.js";
 import { InMemoryLessonStore } from "../../packages/broker/src/lessons/store.js";
 import { orgMemberKey } from "../../packages/contracts/src/org-node.js";
+import { defaultSpendPolicy } from "../../packages/contracts/src/spend.js";
+import { orgSettingsKey } from "../../packages/contracts/src/org-scoped-keys.js";
+import { fakeModelAccess } from "../support/fake-model-access.js";
 import { Audit, Clock, allowAllAccess, lessonRecord, settings } from "../unit/lessons/lesson-helpers.js";
 import { MAYA, createSingleAnswerPlanBroker } from "../support/developer-task-broker.js";
 import { planAnswer, planDocument } from "../support/plan-documents.js";
@@ -18,19 +21,25 @@ import { call, issuer } from "../support/slack-broker.js";
 const ADMIN = { subject: "admin-subject", admin: true };
 const PREPARED = { result: { preparedBase: [{ repositoryId: "demo", baseCommitSha: "e".repeat(40) }] } };
 
-async function world() {
+async function world(options: { proxy?: { perTestCapUsd: number } } = {}) {
   const audit = new Audit();
   const store = new InMemoryLessonStore();
   const evalSnapshots = new InMemoryEvalSnapshotStore();
   const snapshots = new InMemorySnapshotStore();
   const clock = new Clock();
   const load = { store, vectors: NO_VECTORS, settings: settings({ mode: "On" }), access: allowAllAccess, audit, now: clock.now };
-  const h = await createSingleAnswerPlanBroker({ brokerExtra: { agents: {}, lessons: { store, snapshots, evalSnapshots, load, routes: { audit } } } });
+  const access = options.proxy === undefined ? undefined : fakeModelAccess();
+  const h = await createSingleAnswerPlanBroker({ brokerExtra: { agents: {}, lessons: { store, snapshots, evalSnapshots, load, routes: { audit } }, ...(access === undefined ? {} : { modelAccess: { access, proxyUrl: "https://proxy.test" }, cloud: true }) } });
+  if (access !== undefined) {
+    access.setMemberSpent(TEST_ORG, MAYA.developerId, 0);
+    access.setOrgSpent(TEST_ORG, 0);
+    h.db.set({ ...orgSettingsKey(TEST_ORG, "SPEND_POLICY"), entityType: "ORG_SPEND_POLICY", ...defaultSpendPolicy(), perTestCapUsd: options.proxy?.perTestCapUsd ?? 2, revision: 1, updatedBy: "test", updatedAt: "2026-11-01T00:00:00.000Z" });
+  }
   const started = await h.dev(MAYA, "POST", "/v1/dev/tasks", { requestId: randomUUID(), project: "payments", instructions: "Retry failed HTTP calls in the api service", client: "claude-code", workflow: true, workflowPath: "QUICK" });
   const sourceId = (started.body.task as { taskId: string }).taskId;
   const operator = ownerKeyForSubject(issuer, "admin-subject");
   h.db.set({ ...orgMemberKey(TEST_ORG, operator), entityType: "ORG_MEMBER", orgId: TEST_ORG, developerId: operator, role: "owner", joinedAt: "2026-01-01T00:00:00.000Z" });
-  const lesson = lessonRecord({ id: "les_dddddddddddddddddd01", workspaceId: TEST_ORG, project: "payments", type: "convention", tier: 1, stages: ["UNDERSTAND", "PLAN", "IMPLEMENT"], scope: {}, title: "Retries go through withRetry", body: "Use withRetry for HTTP retries." });
+  const lesson = lessonRecord({ id: "les_dddddddddddddddddd01", workspaceId: TEST_ORG, project: "payments", type: "convention", tier: 1, stages: ["UNDERSTAND", "PLAN", "IMPLEMENT"], scope: {}, approvals: [{ approvalId: "ap-ann", by: "ann", at: 1, mode: "one" }], title: "Retries go through withRetry", body: "Use withRetry for HTTP retries." });
   const snapshot = buildEvalSnapshot({ key: { workspaceId: TEST_ORG, project: "payments" }, pipeline: "consolidated", day: "2026-09-01", lessons: [lesson], createdBy: "op", at: "2026-11-01T00:00:00.000Z" });
   await evalSnapshots.put(snapshot);
   const post = (id: string, body: unknown, sub = "") => call(h.handler, { method: "POST", path: `/v1/admin/tasks/${id}/lessons-replay${sub}`, user: ADMIN, body });
@@ -38,12 +47,12 @@ async function world() {
   const meta = (id: string) => h.db.get(`DEVTASK#${id}`, "META") as Record<string, unknown> & { workspaceId: string; workflow: { stage: string; state: string; revision: number } };
   const ops = (workspaceId: string) => h.db.find((item) => item.pk === `WORKSPACE#${workspaceId}` && item.entityType === "OPERATION");
   const opWhere = (workspaceId: string, predicate: (item: Record<string, unknown>) => boolean) => { const found = ops(workspaceId).filter(predicate).at(-1); if (found === undefined) throw new Error("no such operation"); return String(found.id); };
-  const copy = async (memory: unknown) => {
-    const made = await post(sourceId, { requestId: randomUUID(), memory, maxUsd: 2 });
+  const copy = async (memory: unknown, maxUsd = 2) => {
+    const made = await post(sourceId, { requestId: randomUUID(), memory, maxUsd });
     expect(made.status, JSON.stringify(made.body)).toBe(202);
     return (made.body.replay as { taskId: string }).taskId;
   };
-  return { h, audit, snapshot, post, get, meta, ops, opWhere, copy, sourceId };
+  return { h, audit, snapshot, post, get, meta, ops, opWhere, copy, sourceId, access };
 }
 
 describe("a workflow copy through its first dispatches", () => {
@@ -103,6 +112,77 @@ describe("approving the plan, and where the copy stands", () => {
     const evidence = (await w.get(id, "/evidence")).body.evidence as { request: string };
     expect(evidence.request).toContain("Retry failed HTTP calls");
     expect(JSON.stringify(evidence)).not.toContain("withRetry");
+  });
+});
+
+describe("approving the plan of a copy whose run limit is above the planning limit (a model proxy is set up, so the limit is settled)", () => {
+  it("the approval accepts the plan's run limit, which the copy's own limit already caps, so the copy goes on to implementation instead of waiting for a raise", async () => {
+    const w = await world({ proxy: { perTestCapUsd: 20 } });
+    const id = await w.copy({ mode: "off" }, 8);
+    const workspaceId = w.meta(id).workspaceId;
+    expect(w.meta(id)).toMatchObject({ budgetUsd: 2, requestedRunLimitUsd: 8 });
+    await w.h.finish(workspaceId, w.opWhere(workspaceId, (item) => item.kind === "prepare"), "SUCCEEDED", PREPARED);
+    const planOp = w.opWhere(workspaceId, (item) => item.workflowMode === "PLAN" && item.status !== "SUCCEEDED");
+    await w.h.artifact(workspaceId, planOp, "plan.md", planAnswer(planDocument({})));
+    await w.h.finish(workspaceId, planOp, "SUCCEEDED", { result: { workflowMode: "PLAN" } });
+    const approved = await w.post(id, {}, "/approve");
+    expect(approved.status, JSON.stringify(approved.body)).toBe(202);
+    expect(w.meta(id).workflow.stage, JSON.stringify(w.meta(id).workflow)).toBe("IMPLEMENT");
+    expect(w.meta(id).workflow.state).not.toBe("BLOCKED");
+    // The limit it runs under is the copy's own, never more.
+    expect((w.meta(id) as { budgetUsd?: number }).budgetUsd).toBeLessThanOrEqual(8);
+    expect(((await w.get(id)).body.replay as { state: string }).state).toBe("running");
+  });
+  it("a normal task's raise of the run limit still needs the amount acknowledged (the copy's path is not a way round it)", async () => {
+    const w = await world({ proxy: { perTestCapUsd: 20 } });
+    const workspaceId = w.meta(w.sourceId).workspaceId;
+    await w.h.finish(workspaceId, w.opWhere(workspaceId, (item) => item.kind === "prepare"), "SUCCEEDED", PREPARED);
+    const planOp = w.opWhere(workspaceId, (item) => item.workflowMode === "PLAN" && item.status !== "SUCCEEDED");
+    await w.h.artifact(workspaceId, planOp, "plan.md", planAnswer(planDocument({})));
+    await w.h.finish(workspaceId, planOp, "SUCCEEDED", { result: { workflowMode: "PLAN" } });
+    const workflow = w.meta(w.sourceId).workflow as unknown as { revision: number; artifacts: Array<{ sha256: string }> };
+    const decided = await w.h.dev(MAYA, "POST", `/v1/dev/tasks/${w.sourceId}/workflow/decision`, { requestId: randomUUID(), expectedRevision: workflow.revision, decision: "APPROVE", reason: "ok", artifactDigest: workflow.artifacts.at(-1)!.sha256 });
+    // Either the plan needs no raise (then it is approved) or the raise is refused without the amount; it is never approved past an unacknowledged raise.
+    const meta = w.meta(w.sourceId) as { budgetUsd?: number; runEstimate?: { runLimitUsd: number } };
+    if (decided.status !== 200) expect(String((decided.body as { error?: { message?: string } }).error?.message)).toMatch(/run limit/iu);
+    else expect(meta.budgetUsd ?? 2).toBeGreaterThanOrEqual(2);
+  });
+});
+
+describe("what a copy has cost, and the limit it started under (the harness reserves planning plus the run limit)", () => {
+  it("the start answers the planning limit the copy started under, and says none when there is no model proxy", async () => {
+    const withProxy = await world({ proxy: { perTestCapUsd: 20 } });
+    const made = await withProxy.post(withProxy.sourceId, { requestId: randomUUID(), memory: { mode: "off" }, maxUsd: 8 });
+    expect((made.body.replay as { startLimitUsd: number | null }).startLimitUsd).toBe(2);
+    const bare = await world();
+    const plain = await bare.post(bare.sourceId, { requestId: randomUUID(), memory: { mode: "off" }, maxUsd: 2 });
+    expect((plain.body.replay as { startLimitUsd: number | null }).startLimitUsd, "an install with no proxy bounds nothing: the executor stops the replay on null").toBeNull();
+  });
+  it("a copy that is still running shows what it has cost over every stage (checks included) and the proxy's own figure, whichever is larger", async () => {
+    const w = await world({ proxy: { perTestCapUsd: 20 } });
+    const id = await w.copy({ mode: "off" }, 4);
+    const workspaceId = w.meta(id).workspaceId;
+    await w.h.finish(workspaceId, w.opWhere(workspaceId, (item) => item.kind === "prepare"), "SUCCEEDED", PREPARED);
+    // A usage record on the planning step; then the same step seen as a CHECKS step (a checks run that calls a model costs money too, and one that recorded nothing costs nothing, not a round's estimate).
+    const planOp = w.opWhere(workspaceId, (item) => item.workflowMode === "PLAN" && item.status !== "SUCCEEDED");
+    const opItem = w.h.db.find((item) => item.id === planOp && item.entityType === "OPERATION")[0]!;
+    const shown = async () => ((await w.get(id)).body.replay as { state: string; costUsd: number | null });
+    w.h.db.set({ pk: `OPERATION#${planOp}`, sk: "EVENT#0001", type: "usage", payload: { costUsd: 0.75 } });
+    const first = await shown();
+    expect(first.state).toBe("running");
+    expect(first.costUsd, JSON.stringify(first)).toBeCloseTo(0.75);
+    w.h.db.set({ ...opItem, workflowMode: "CHECKS" });
+    expect((await shown()).costUsd).toBeCloseTo(0.75);
+    w.h.db.set({ pk: `OPERATION#${planOp}`, sk: "EVENT#0001", type: "other", payload: {} });
+    expect((await shown()).costUsd, "a checks step with no usage record is free, not a round's estimate").toBeCloseTo(0);
+    w.h.db.set({ pk: `OPERATION#${planOp}`, sk: "EVENT#0001", type: "usage", payload: { costUsd: 0.75 } });
+    // The proxy says more than the records (they lag): the larger is shown.
+    w.h.db.set({ ...w.meta(id), modelKeyIds: ["key-1"] });
+    w.access!.keySpend.mockResolvedValue(3.1);
+    expect((await shown()).costUsd).toBeCloseTo(3.1);
+    // And when the proxy cannot say, the records stand.
+    w.access!.keySpend.mockRejectedValue(new Error("proxy down"));
+    expect((await shown()).costUsd).toBeCloseTo(0.75);
   });
 });
 

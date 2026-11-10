@@ -164,6 +164,8 @@ function stricterApproval(project: ApprovalPolicy, floor: ApprovalPolicy, hasFlo
  */
 let autoApplyGate: () => boolean = () => false;
 export function setAutoApplyGate(gate: () => boolean): void { autoApplyGate = gate; }
+/** Whether the install's auto-apply switch is on now; an unreadable switch is off. */
+export function autoApplyOn(): boolean { try { return autoApplyGate() === true; } catch { return false; } }
 const clampAuto = <T extends string | undefined>(level: T): T | "one" => (level === "auto" ? "one" : level);
 /** The settings with every tier-0 "auto" read as "one". Pure. */
 export function clampAutoApply(settings: LearningSettings): LearningSettings {

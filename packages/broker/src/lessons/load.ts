@@ -216,8 +216,8 @@ export async function loadLessonsForStage(deps: LoadDeps, request: LoadRequest):
     deps.metrics?.count("learning_load_skipped", { reason: "members_unavailable" });
     return empty("members_unavailable", setVersion);
   }
-  // A snapshot's lessons were active under the arm's own pipeline when frozen: the live approval policy does not re-decide them (the project's mode, the access checks and the stage rules still do).
-  if (snapshot === undefined) active = active.filter((l) => approvedForUse(l, resolved.approval, member, resolved.trialAllowed));
+  // A snapshot's lessons are held to the SAME approval rule as live ones (no bypass): the arm's export already kept only what is delivered without a person, and the project's own rules decide it again here.
+  active = active.filter((l) => approvedForUse(l, resolved.approval, member, resolved.trialAllowed));
 
   // The access records, asked now for the places each candidate lesson was learned from (one batch for the whole load). A record that cannot be read loads nothing.
   if ((deps.access as AccessCheckPort | undefined) === undefined) {

@@ -6,7 +6,7 @@
 // `agentx admin task lessons-replay` and `scripts/lessons-replay-port.ts`. The route sets the mark itself at creation; the check here is a second lock, from outside. The file arm is not built on the install (the worker
 // places a file arm's lessons file itself, from the snapshot).
 import { isEvalRunMark } from "./eval-run.js";
-import { EvalMarkError, ReplayRunFailed, type ExecutedRun, type PlannedRun, type ReplayExecutor } from "./replay-harness.js";
+import { EvalMarkError, ReplayLimitError, ReplayRunFailed, copyWorstCaseUsd, type ExecutedRun, type PlannedRun, type ReplayExecutor } from "./replay-harness.js";
 
 /** What the install is asked to start. `evalRun` is always the literal true. */
 export interface ReplayStartRequest {
@@ -24,12 +24,13 @@ export interface ReplayStartRequest {
 }
 export interface ReplayTaskEnd { state: "completed" | "failed"; evidence: string; costUsd: number | null }
 export interface ReplayTaskPort {
-  start(request: ReplayStartRequest): Promise<{ taskId: string }>;
+  /** `startLimitUsd`: the spend limit the copy started under (its planning limit); null when it started with none. */
+  start(request: ReplayStartRequest): Promise<{ taskId: string; startLimitUsd?: number | null }>;
   /** The `evalRun` field of the started task's record, as stored. */
   readMark(taskId: string): Promise<unknown>;
   cancel(taskId: string): Promise<void>;
   /**
-   * Waits for the copy to end: approves its plan when one waits (the install's guarded route), and CANCELS it and returns failed when its cost reaches `limits.maxUsd` or the wait runs out. `costUsd` is what it cost,
+   * Waits for the copy to end: approves its plan when one waits (the install's guarded route), and CANCELS it and returns failed when its cost reaches `limits.maxUsd` (the copy's worst case: planning allowance plus run limit) or the wait runs out. `costUsd` is what it cost,
    * read from the install even when it failed.
    */
   waitForEnd(taskId: string, limits: { maxUsd: number }): Promise<ReplayTaskEnd>;
@@ -44,12 +45,16 @@ export interface ReplayTaskPort {
 }
 
 export interface StagingExecutorOptions {
-  /** The most one copy may spend, in US dollars. */
+  /** The run limit of one copy, in US dollars (what it may spend once its plan is approved). */
   maxUsdPerRun: number;
+  /** What a copy may spend planning, before its plan is approved: the project's planning limit for the workflow path (Spending > Projects). The copy's real total is up to this plus the run limit, and the replay's budget reserves that. */
+  planningLimitUsd: number;
 }
 
 export function stagingExecutor(port: ReplayTaskPort, options: StagingExecutorOptions): ReplayExecutor {
   if (!Number.isFinite(options.maxUsdPerRun) || options.maxUsdPerRun <= 0) throw new RangeError("A staging executor needs a positive spend limit for each copy.");
+  if (!Number.isFinite(options.planningLimitUsd) || options.planningLimitUsd < 0) throw new RangeError("A staging executor needs the project's planning limit (zero or more) to reserve each copy's worst case.");
+  const worstCaseUsd = copyWorstCaseUsd({ planningLimitUsd: options.planningLimitUsd, runLimitUsd: options.maxUsdPerRun });
   return {
     async run({ run, task }: { run: PlannedRun; task: { taskId: string } }): Promise<ExecutedRun> {
       // A plan that was edited by hand to drop the mark is refused before anything starts.
@@ -58,6 +63,12 @@ export function stagingExecutor(port: ReplayTaskPort, options: StagingExecutorOp
         ...(run.memory === undefined ? {} : { memory: run.memory.mode === "snapshot" ? { mode: "snapshot" as const, snapshotId: run.memory.snapshotId } : { mode: "off" as const } }),
         ...(run.delivery === "file" ? { file: true as const } : {}) };
       const started = await port.start(request);
+      // The copy must have started under the planning limit the budget reserved for, and under some limit at all: otherwise its worst case is not bounded and the whole replay stops.
+      if (started.startLimitUsd === undefined || started.startLimitUsd === null || started.startLimitUsd > options.planningLimitUsd + 1e-9) {
+        await port.cancel(started.taskId).catch(() => undefined);
+        await port.close(started.taskId).catch(() => undefined);
+        throw new ReplayLimitError(run.key, started.startLimitUsd === undefined || started.startLimitUsd === null ? "no limit" : `$${String(started.startLimitUsd)} against $${String(options.planningLimitUsd)} planned`);
+      }
       // Read the mark back. Exactly `true`: a port that dropped it, or wrote something else, has started a task that could be learned from.
       let mark: unknown;
       try { mark = await port.readMark(started.taskId); } catch { mark = undefined; }
@@ -67,7 +78,7 @@ export function stagingExecutor(port: ReplayTaskPort, options: StagingExecutorOp
       }
       let end: ReplayTaskEnd;
       try {
-        end = await port.waitForEnd(started.taskId, { maxUsd: options.maxUsdPerRun });
+        end = await port.waitForEnd(started.taskId, { maxUsd: worstCaseUsd });
         if (end.state !== "completed") throw new ReplayRunFailed(end.costUsd);
       } catch (error) {
         // A copy that did not finish is stopped, and what it cost is read from the install before it is counted.

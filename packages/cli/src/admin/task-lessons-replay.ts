@@ -47,6 +47,11 @@ export const importLessonsReplaySnapshot = (input: { controlPlaneUrl: string; ac
 export const callLessonsReplayModel = (input: { controlPlaneUrl: string; accessToken: string; project: string; body: { purpose: "grade" | "learn"; system: string; user: string; maxOutputTokens: number; maxUsd: number } }, fetchImplementation: typeof fetch = fetch): Promise<unknown> =>
   post(`${projectBase(input.controlPlaneUrl, input.project)}/model`, input.accessToken, input.body, fetchImplementation);
 
+/** The project's learning settings as the live pipeline reads them (and whether auto-apply and an embedder are on), so the offline pipeline runs under the project's real rules. */
+export async function settingsLessonsReplay(input: { controlPlaneUrl: string; accessToken: string; project: string }, fetchImplementation: typeof fetch = fetch): Promise<unknown> {
+  return adminResponseBody(await fetchImplementation(`${projectBase(input.controlPlaneUrl, input.project)}/settings`, { method: "GET", headers: { authorization: `Bearer ${input.accessToken}` } }));
+}
+
 /** A historical task as the reflector sees it, for an arm's offline pipeline. */
 export async function subjectLessonsReplay(input: { controlPlaneUrl: string; accessToken: string; project: string; taskId: string }, fetchImplementation: typeof fetch = fetch): Promise<unknown> {
   return adminResponseBody(await fetchImplementation(`${projectBase(input.controlPlaneUrl, input.project)}/subjects/${encodeURIComponent(input.taskId)}`, { method: "GET", headers: { authorization: `Bearer ${input.accessToken}` } }));

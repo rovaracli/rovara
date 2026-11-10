@@ -2,7 +2,7 @@
 import { describe, expect, it } from "vitest";
 import { GraderMismatchError, REPLAY_REPEATS, buildMeasureReport, type ReplayRunRow } from "@agentx/contracts";
 import {
-  ArmNotBuiltError, EvalMarkError, ReplayLearningCallError, ReplayRunFailed, buildReplayPlan, buildSnapshots, dayOf, runReplay,
+  ArmNotBuiltError, EvalMarkError, ReplayLearningCallError, ReplayRunFailed, buildReplayPlan, copyWorstCaseUsd, buildSnapshots, dayOf, runReplay,
   type ExecutedRun, type GradeRequest, type ReplayExecutor, type ReplayGraderPort, type RunSink, type SnapshotBuilder,
 } from "../../../packages/broker/src/lessons/replay-harness.js";
 import { lessonContentKey, summarizeLessonSet } from "../../../packages/broker/src/lessons/replay-lessonset.js";
@@ -128,6 +128,23 @@ describe("running", () => {
     await expect(runReplay(plan(40), { executor: executor(), grader: grader(), sink: new Sink(), priorCorrections: async () => [], maxUsd: 0, holdPerRunUsd: 1 })).rejects.toThrow(/maximum cost/);
     await expect(runReplay(plan(40), { executor: executor(), grader: grader(), sink: new Sink(), priorCorrections: async () => [] } as never)).rejects.toThrow(/maximum cost/);
   });
+  it("reserves each copy's full worst case (planning plus run limit) before it starts: a probe that would exceed --max-usd never starts, and the total never passes it even when every copy costs its worst case", async () => {
+    const worst = copyWorstCaseUsd({ planningLimitUsd: 1.6, runLimitUsd: 2 }); // 3.6
+    expect(worst).toBeCloseTo(3.6);
+    let started = 0;
+    const dear: ReplayExecutor = { run: async () => { started += 1; return okRun({ costUsd: worst }); } };
+    const report = await go(plan(40), { executor: dear, grader: grader({ holdUsd: 0.1 }), sink: new Sink(), priorCorrections: async () => [], maxUsd: 25, holdPerRunUsd: worst });
+    expect(report.stoppedBy).toBe("max_usd");
+    expect(report.costUsd).toBeLessThanOrEqual(25);
+    // 25 / (3.6 + 0.05 grading) fits six copies; the seventh would need 6 x 3.65 + 3.6 + 0.1 > 25 in the worst case, and is not started.
+    expect(started).toBe(6);
+    // Exactly at the edge: room for one copy and its grading starts it; a cent less does not.
+    const exact = await go(plan(40), { executor: { run: async () => okRun({ costUsd: 0.1 }) }, grader: grader({ holdUsd: 0.1 }), sink: new Sink(), priorCorrections: async () => [], maxUsd: worst + 0.1, holdPerRunUsd: worst });
+    expect(exact.ran).toBeGreaterThanOrEqual(1);
+    started = 0;
+    await go(plan(40), { executor: dear, grader: grader({ holdUsd: 0.1 }), sink: new Sink(), priorCorrections: async () => [], maxUsd: worst + 0.09, holdPerRunUsd: worst });
+    expect(started).toBe(0);
+  });
   it("a run that fails is an ungraded row, and the replay goes on", async () => {
     let n = 0;
     const flaky: ReplayExecutor = { run: async () => { n += 1; if (n === 2) throw new Error("worker lost"); return okRun(); } };
@@ -189,14 +206,14 @@ describe("building the snapshots (historical outcomes only)", () => {
   const lesson = (title: string, body: string) => lessonRecord({ id: `les_${lessonContentKey({ title, body }).slice(0, 8)}`, title, body, description: "d" });
   it("builds each pipeline for each day in time order, from tasks before that day only, with learning calls named explicitly; off costs nothing", async () => {
     const calls: Array<{ pipeline: string; day: string; historical: number; learningCalls: string }> = [];
-    const builder = (usd: number): SnapshotBuilder => ({ build: async (req) => { calls.push({ pipeline: req.pipeline, day: req.day, historical: req.historical.length, learningCalls: req.learningCalls }); return { snapshotId: `snp_${req.day.replace(/-/gu, "").padEnd(20, "0")}`, lessons: [lesson(`L ${req.day}`, `Always run lint ${req.day}`)], costUsd: usd, calls: 2 }; } });
+    const builder = (usd: number): SnapshotBuilder => ({ build: async (req) => { calls.push({ pipeline: req.pipeline, day: req.day, historical: req.historical.length, learningCalls: req.learningCalls }); return { snapshotId: `snp_${req.day.replace(/-/gu, "").padEnd(20, "0")}`, lessons: [lesson(`L ${req.day}`, `Always run lint ${req.day}`)], costUsd: usd, calls: 2, export: { rule: "active-without-a-person/v1", proposed: 0, needsPerson: 0, truncated: 0, droppedCalls: 0 } }; } });
     const t = tasks(6);
     const built = await buildSnapshots({ key: KEY, tasks: t, arms: ARMS, builders: { current: builder(0.5), consolidated: builder(0.25) } });
     const days = [...new Set(t.map((x) => dayOf(x.at)))].sort();
     expect(calls.filter((c) => c.pipeline === "current").map((c) => c.day)).toEqual(days);
     expect(calls.filter((c) => c.pipeline === "current").map((c) => c.historical)).toEqual([0, 2, 4]);
     expect(calls.every((c) => c.learningCalls === "explicit")).toBe(true);
-    expect(built.learning).toEqual(expect.arrayContaining([{ arm: "on:current", usd: 1.5, calls: 6 }, { arm: "on:consolidated", usd: 0.75, calls: 6 }, { arm: "off", usd: 0, calls: 0 }]));
+    expect(built.learning).toEqual(expect.arrayContaining([expect.objectContaining({ arm: "on:current", usd: 1.5, calls: 6 }), expect.objectContaining({ arm: "on:consolidated", usd: 0.75, calls: 6 }), { arm: "off", usd: 0, calls: 0 }]));
     expect(built.snapshots["current"]![days[0]!]).toMatch(/^snp_/);
     expect(built.lessonSets.map((s) => s.arm).sort()).toEqual(["on:consolidated", "on:current"]);
   });

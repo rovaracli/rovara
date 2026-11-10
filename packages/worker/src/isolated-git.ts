@@ -250,7 +250,10 @@ export const CANDIDATE_EXCLUDE_PYTHON_USER_SITE_PATHSPEC = ":(top,exclude,litera
  * sends the files again with every stage of a copy, so a restarted worker registers them again before the agent starts.
  */
 const hiddenFromCandidate = new Map<string, Set<string>>();
+const HIDDEN_WORK_TREES_MAX = 64;
 export function hideFromCandidate(workTree: string, path: string): void {
+  // A work tree is one task's checkout (its path is per workspace), so the entries are few; the oldest are dropped past a bound so a long-lived worker never grows the map.
+  if (!hiddenFromCandidate.has(workTree) && hiddenFromCandidate.size >= HIDDEN_WORK_TREES_MAX) hiddenFromCandidate.delete(hiddenFromCandidate.keys().next().value!);
   const paths = hiddenFromCandidate.get(workTree) ?? new Set<string>();
   paths.add(path);
   hiddenFromCandidate.set(workTree, paths);

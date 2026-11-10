@@ -2,7 +2,7 @@
 
 import { nightlyHeadDependencies } from "./nightly-head.js";
 import { DeleteCommand, GetCommand, PutCommand, QueryCommand, TransactWriteCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
-import { AgentXError, WorkflowTransitionError, stopWorkflowStepNotRun, isSystemOwnerId, BUDGET_EXHAUSTED_FAILURE_MESSAGE, type IntentAssessment, UNDERSTAND_ARTIFACT_MAX_BYTES, UNDERSTAND_ARTIFACT_NAME, endStuckUnderstand, readIntentArtifact, agentXError, type WorkflowSnapshot, E2E_MODEL_ROUTE_DEFAULT_BUDGETS } from "@agentx/contracts";
+import { AgentXError, WorkflowTransitionError, stopWorkflowStepNotRun, isSystemOwnerId, BUDGET_EXHAUSTED_FAILURE_MESSAGE, type IntentAssessment, UNDERSTAND_ARTIFACT_MAX_BYTES, UNDERSTAND_ARTIFACT_NAME, endStuckUnderstand, readIntentArtifact, agentXError, type WorkflowSnapshot, E2E_MODEL_ROUTE_DEFAULT_BUDGETS, TERMINAL_OPERATION_STATUSES } from "@agentx/contracts";
 import { withDesignReviewPorts } from "../../design-review/wiring.js";
 import { designResolveDue } from "../../design-review/resolve-run.js";
 import { StoredBaselineSourceSchema } from "../baseline-source.js";
@@ -581,6 +581,30 @@ export async function autofixTaskSpendUsd(dependencies: AwsBrokerDependencies, t
     }
     return total;
   } catch { return undefined; }
+}
+
+/**
+ * Lessons replay (lane 7, re-check N2): what a replay COPY has cost so far, over EVERY stage and every run of the task, checks included (a checks run that calls a model is counted; one with no usage record counts as nothing, not as a
+ * round's estimate), and the larger of that and what the model proxy says the task's keys spent (the proxy is the authority, and the usage records can lag it). Undefined when neither can be read.
+ */
+export async function replayCopySpendUsd(dependencies: AwsBrokerDependencies, task: DeveloperTaskRecord): Promise<number | undefined> {
+  let recorded: number | undefined;
+  try {
+    let total = 0;
+    for (const operation of (await developerTaskActions(dependencies).operations(task.workspaceId)).filter((candidate) => candidate.kind === "task")) {
+      const usage = await autofixOperationUsage(dependencies, operation.id);
+      if (usage === undefined) { total = Number.NaN; break; }
+      // A finished model run with no usage record counts as one round's estimate (never as free); a run still going, and a checks run, count what they have recorded.
+      total += usage.records === 0 && operation.workflowMode !== "CHECKS" && (TERMINAL_OPERATION_STATUSES as ReadonlySet<string>).has(operation.status) ? AUTOFIX_ROUND_ESTIMATE_USD : usage.total;
+    }
+    recorded = Number.isNaN(total) ? undefined : total;
+  } catch { recorded = undefined; }
+  let proxy: number | undefined;
+  const access = dependencies.modelAccess?.access;
+  if (access !== undefined && (task.modelKeyIds?.length ?? 0) > 0) {
+    try { proxy = await access.keySpend(task.modelKeyIds!); } catch { proxy = undefined; }
+  }
+  return recorded === undefined && proxy === undefined ? undefined : Math.max(recorded ?? 0, proxy ?? 0);
 }
 
 /** AUTOFIX: whether the project's AI-navigation day budget has room for one more call; true where the task uses no AI navigation. Undefined when unreadable. */

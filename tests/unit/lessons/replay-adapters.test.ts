@@ -7,7 +7,7 @@ import { main as exportCandidates } from "../../../scripts/export-replay-candida
 import { main as measure } from "../../../scripts/lessons-replay-measure.js";
 import { candidatesFromItems } from "../../../packages/broker/src/lessons/replay-candidates.js";
 import { rubricGrader, DEFAULT_RUBRIC, type GraderModel } from "../../../packages/broker/src/lessons/replay-grader.js";
-import { EvalMarkError, ReplayRunFailed, buildReplayPlan, buildSnapshots, dayOf, runReplay, type PlannedRun, type ReplayExecutor } from "../../../packages/broker/src/lessons/replay-harness.js";
+import { EvalMarkError, ReplayLimitError, ReplayRunFailed, buildReplayPlan, copyWorstCaseUsd, buildSnapshots, dayOf, runReplay, type PlannedRun, type ReplayExecutor } from "../../../packages/broker/src/lessons/replay-harness.js";
 import { asOfSnapshotBuilder, lessonsAsOf } from "../../../packages/broker/src/lessons/replay-asof.js";
 import { stagingExecutor, type ReplayStartRequest, type ReplayTaskPort } from "../../../packages/broker/src/lessons/replay-executor.js";
 import { lessonContentKey } from "../../../packages/broker/src/lessons/replay-lessonset.js";
@@ -18,7 +18,9 @@ import { KEY, lessonRecord, seed } from "./lesson-helpers.js";
 const DAY = 86_400_000;
 const T0 = Date.UTC(2026, 8, 1);
 const task: ReplayCandidate = { taskId: "t1", project: "p", repository: "api", at: T0, memberCorrections: 2, outcome: "merged" };
-const OPTIONS = { maxUsdPerRun: 4 };
+/** A policy under which a lesson with its approvals is delivered without further people (the as-of builder exports by the one rule every arm uses). */
+const RULES = { approval: { tier0: "auto" as const, tier1: "one" as const }, trialAllowed: true };
+const OPTIONS = { maxUsdPerRun: 4, planningLimitUsd: 2 };
 const run = (over: Partial<PlannedRun> = {}): PlannedRun => ({ key: "k1", task: "t1", repeat: 1, arm: "on:current", day: "2026-09-01", memory: { mode: "snapshot", snapshotId: `snp_${"a".repeat(20)}` }, evalRun: true, ...over });
 
 class Port implements ReplayTaskPort {
@@ -27,10 +29,12 @@ class Port implements ReplayTaskPort {
   closed: string[] = [];
   end: { state: "completed" | "failed"; evidence: string; costUsd: number | null } = { state: "completed", evidence: "pr:7", costUsd: 0.3 };
   constructor(public mark: unknown = true) {}
-  async start(request: ReplayStartRequest): Promise<{ taskId: string }> { this.requests.push(request); return { taskId: `replay-${String(this.requests.length)}` }; }
+  startLimitUsd: number | null | undefined = 2;
+  async start(request: ReplayStartRequest): Promise<{ taskId: string; startLimitUsd?: number | null }> { this.requests.push(request); return { taskId: `replay-${String(this.requests.length)}`, ...(this.startLimitUsd === undefined ? {} : { startLimitUsd: this.startLimitUsd }) }; }
   async readMark(): Promise<unknown> { return this.mark; }
   async cancel(taskId: string): Promise<void> { this.cancelled.push(taskId); }
-  async waitForEnd(): Promise<{ state: "completed" | "failed"; evidence: string; costUsd: number | null }> { return this.end; }
+  waitLimits: number[] = [];
+  async waitForEnd(_taskId?: string, limits?: { maxUsd: number }): Promise<{ state: "completed" | "failed"; evidence: string; costUsd: number | null }> { if (limits !== undefined) this.waitLimits.push(limits.maxUsd); return this.end; }
   async costOf(): Promise<number | null> { return 0.9; }
   async loadedKeys(): Promise<string[]> { return [lessonContentKey({ title: "Use withRetry", body: "Use withRetry for HTTP retries." })]; }
   async learningCalls(): Promise<number> { return 0; }
@@ -51,6 +55,25 @@ describe("the staging executor", () => {
     await stagingExecutor(port, OPTIONS).run({ run: run({ arm: "file:current", delivery: "file" }), task, learning: { lessonsSwitch: "off", calls: "none" } });
     expect(port.requests[0]).toMatchObject({ evalRun: true, file: true, memory: { mode: "snapshot" } });
     await expect(stagingExecutor(new Port(), OPTIONS).run({ run: run({ memory: { mode: "live" } as never }), task, learning: { lessonsSwitch: "off", calls: "none" } })).rejects.toThrow(EvalMarkError);
+  });
+  it("reserves a copy's WORST CASE: the wait is bounded by planning plus the run limit, and a copy that started under more planning allowance than declared, or under none, stops the whole replay", async () => {
+    const port = new Port();
+    await stagingExecutor(port, OPTIONS).run({ run: run(), task, learning: { lessonsSwitch: "off", calls: "none" } });
+    expect(port.waitLimits).toEqual([copyWorstCaseUsd({ planningLimitUsd: 2, runLimitUsd: 4 })]);
+    expect(copyWorstCaseUsd({ planningLimitUsd: 2, runLimitUsd: 4 })).toBe(6);
+    for (const startLimitUsd of [5, null, undefined]) {
+      const loose = new Port();
+      loose.startLimitUsd = startLimitUsd;
+      await expect(stagingExecutor(loose, OPTIONS).run({ run: run(), task, learning: { lessonsSwitch: "off", calls: "none" } }), String(startLimitUsd)).rejects.toThrow(ReplayLimitError);
+      expect(loose.cancelled).toEqual(["replay-1"]);
+      expect(loose.closed).toEqual(["replay-1"]);
+    }
+    // Through the harness it is not one ungraded run: nothing more starts.
+    const tasks = Array.from({ length: 4 }, (_, i) => ({ ...task, taskId: `t${String(i)}`, at: T0 + i * DAY }));
+    const plan = buildReplayPlan({ tasks, arms: ["off", "on:current"], seed: "s", grader: { model: "g", version: "1" }, snapshots: { current: Object.fromEntries(tasks.map((t) => [dayOf(t.at), `snp_${"b".repeat(20)}`])) }, allowSmall: true, repeats: 1 });
+    const loose = Object.assign(new Port(), { startLimitUsd: null });
+    await expect(runReplay(plan, { executor: stagingExecutor(loose, OPTIONS), grader: { identity: { model: "g", version: "1" }, grade: async () => ({ resolved: true, gradedBy: "rubric", mistakes: [] }) }, sink: { done: () => new Set(), spentUsd: () => 0, append: async () => undefined }, priorCorrections: async () => [], maxUsd: 100, holdPerRunUsd: 6 })).rejects.toThrow(ReplayLimitError);
+    expect(loose.requests).toHaveLength(1);
   });
   it("a copy that fails is cancelled, closed and reported with what it cost; a copy that cannot be priced is counted by the harness at its hold", async () => {
     const port = new Port();
@@ -155,7 +178,7 @@ describe("pipeline B as of a date (read only)", () => {
     const store = new InMemoryLessonStore();
     await seed(store, lesson("les_a"), lesson("les_b", { title: "Lint first", body: "Run lint before tests." }));
     const pinned: string[] = [];
-    const builder = asOfSnapshotBuilder({ store, key: KEY, pin: async (id, lessons) => { pinned.push(`${id}:${String(lessons.length)}`); } });
+    const builder = asOfSnapshotBuilder({ store, key: KEY, rules: RULES, pin: async (id, lessons) => { pinned.push(`${id}:${String(lessons.length)}`); } });
     const request = { pipeline: "current", day: dayOf(T0), learningCalls: "explicit" as const, historical: [] };
     const a = await builder.build(request);
     const b = await builder.build(request);
@@ -166,20 +189,20 @@ describe("pipeline B as of a date (read only)", () => {
     expect(pinned).toHaveLength(2);
     const tasks = [task, { ...task, taskId: "t2", at: T0 + DAY }];
     const built = await buildSnapshots({ key: KEY, tasks, arms: ["off", "on:current"], builders: { current: builder } });
-    expect(built.learning).toEqual(expect.arrayContaining([{ arm: "on:current", usd: null, calls: null }, { arm: "off", usd: 0, calls: 0 }]));
+    expect(built.learning).toEqual(expect.arrayContaining([expect.objectContaining({ arm: "on:current", usd: null, calls: null }), { arm: "off", usd: 0, calls: 0 }]));
     expect(built.lessonSets[0]).toMatchObject({ arm: "on:current", size: 2 });
   });
   it("a store from another project gives nothing", async () => {
     const store = new InMemoryLessonStore();
     await seed(store, lesson("les_a"));
-    const builder = asOfSnapshotBuilder({ store, key: { workspaceId: KEY.workspaceId, project: "other" } });
+    const builder = asOfSnapshotBuilder({ store, key: { workspaceId: KEY.workspaceId, project: "other" }, rules: RULES });
     expect((await builder.build({ pipeline: "current", day: dayOf(T0), learningCalls: "explicit", historical: [] })).lessons).toEqual([]);
   });
 });
 
 describe("the --max-usd limit on building snapshots", () => {
   it("stops when the builders spend more than the limit", async () => {
-    const dear = { build: async () => ({ snapshotId: `snp_${"c".repeat(20)}`, lessons: [], costUsd: 3, calls: 1 }) };
+    const dear = { build: async () => ({ snapshotId: `snp_${"c".repeat(20)}`, lessons: [], costUsd: 3, calls: 1, export: { rule: "active-without-a-person/v1", proposed: 0, needsPerson: 0, truncated: 0, droppedCalls: 0 } }) };
     const tasks = [task, { ...task, taskId: "t2", at: T0 + DAY }, { ...task, taskId: "t3", at: T0 + 2 * DAY }];
     await expect(buildSnapshots({ key: KEY, tasks, arms: ["off", "on:current"], builders: { current: dear }, maxUsd: 5 })).rejects.toThrow(/max-usd/);
     await expect(buildSnapshots({ key: KEY, tasks, arms: ["off", "on:current"], builders: { current: dear }, maxUsd: 50 })).resolves.toBeDefined();

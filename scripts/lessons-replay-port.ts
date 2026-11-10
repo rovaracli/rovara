@@ -14,6 +14,7 @@ import type { EvidenceReader, GradedEvidence, GraderModel } from "../packages/br
 import type { ReplayStartRequest, ReplayTaskEnd, ReplayTaskPort } from "../packages/broker/src/lessons/replay-executor.js";
 import type { PipelineModel } from "../packages/broker/src/lessons/ports.js";
 import type { ReflectSubject } from "../packages/broker/src/lessons/reflect-input.js";
+import type { LearningSettings } from "../packages/broker/src/lessons/policy.js";
 import type { Lesson } from "../packages/broker/src/lessons/types.js";
 
 export type CliResult = { status: number; stdout: string; stderr: string };
@@ -71,7 +72,7 @@ export function cliReplayPort(options: CliPortOptions): ReplayTaskPort {
       const started = options.cli(args);
       const replay = answerOf(started)?.["replay"] as Json | undefined;
       if (typeof replay?.["taskId"] !== "string") throw new Error(`the replay copy was not started: ${refusal(started)}`);
-      return { taskId: replay["taskId"] };
+      return { taskId: replay["taskId"], startLimitUsd: typeof replay["startLimitUsd"] === "number" ? replay["startLimitUsd"] : null };
     },
     async readMark(taskId) {
       const shown = view(taskId);
@@ -125,6 +126,8 @@ export function cliGraderModel(options: CliPortOptions, input: { project: string
       const answered = withFile({ purpose: "grade", system, user, maxOutputTokens: input.maxOutputTokens ?? 600, maxUsd: input.holdUsd }, (file) => options.cli(["admin", "lessons-replay", "model", "--project", input.project, "--file", file]));
       const body = answerOf(answered);
       if (typeof body?.["text"] !== "string") throw new Error(`the grader's model call was refused: ${refusal(answered)}`);
+      // The grading must come from the model the replay declared: the company's route can change under a long run (its lessons model is a setting), and gradings by different models are not comparable.
+      if (body["model"] !== input.model) throw new Error(`the grader answered as ${typeof body["model"] === "string" ? body["model"] : "an unnamed model"}, not the declared ${input.model}; the replay's grader must not change`);
       return { text: body["text"], costUsd: typeof body["costUsd"] === "number" ? body["costUsd"] : null };
     },
   };
@@ -141,6 +144,15 @@ export function cliPipelineModel(options: CliPortOptions, input: { project: stri
       return { text: body["text"], costUsd: typeof body["costUsd"] === "number" ? body["costUsd"] : input.holdUsd, model: "company" };
     },
   };
+}
+
+/** The project's learning settings as the live pipeline reads them, whether the install's auto-apply switch is on and whether it has an embedder, through the install (a company owner or admin). */
+export function cliProjectSettings(options: CliPortOptions, project: string): { settings: LearningSettings; autoApply: boolean; embedder: boolean } {
+  const answered = options.cli(["admin", "lessons-replay", "settings", "--project", project]);
+  const body = answerOf(answered);
+  const settings = body?.["settings"];
+  if (typeof settings !== "object" || settings === null || Array.isArray(settings) || typeof body?.["autoApply"] !== "boolean") throw new Error(`the project's learning settings could not be read: ${refusal(answered)}`);
+  return { settings: settings, autoApply: body["autoApply"], embedder: body["embedder"] === true };
 }
 
 /** A historical task as the reflector sees it at its end, through the install (a replay copy, or a task of another project, is not found). */

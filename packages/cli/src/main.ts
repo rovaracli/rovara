@@ -39,7 +39,7 @@ import { bindSlackChannel, connectSlackTeam, disconnectSlackTeam, unbindSlackCha
 import { stopWorkspace } from "./admin/stop.js";
 import { setTaskShareMode } from "./admin/task-share-mode.js";
 import { showTaskE2EReplays, startTaskE2EReplay } from "./admin/task-e2e-replay.js";
-import { approveTaskLessonsReplay, callLessonsReplayModel, closeTaskLessonsReplay, evidenceTaskLessonsReplay, importLessonsReplaySnapshot, showTaskLessonsReplay, startTaskLessonsReplay, subjectLessonsReplay } from "./admin/task-lessons-replay.js";
+import { approveTaskLessonsReplay, callLessonsReplayModel, closeTaskLessonsReplay, evidenceTaskLessonsReplay, importLessonsReplaySnapshot, settingsLessonsReplay, showTaskLessonsReplay, startTaskLessonsReplay, subjectLessonsReplay } from "./admin/task-lessons-replay.js";
 import { cancelWorkspaceTask } from "./admin/cancel.js";
 import { askToApply, exportChanges, runCliChange } from "./admin/changes.js";
 import { batchResultsOutput, evalBatchShowText, evalBatchStartText, fetchEvalBatchResults, showEvalBatch, startEvalBatch, stopEvalBatch } from "./admin/eval-batch.js";
@@ -1972,6 +1972,14 @@ export function createCliProgram(dependencies: CliDependencies = {}): Command {
       const { settings, accessToken } = await authenticate(globals, services.tokenStore);
       const lessons = JSON.parse(await readFile(options.file, "utf8")) as unknown[];
       services.stdout.write(formatSuccess(await importLessonsReplaySnapshot({ controlPlaneUrl: settings.controlPlaneUrl, accessToken, project: options.project, body: { pipeline: options.pipeline, day: options.day, lessons } }, services.fetchImplementation), globals.json));
+    });
+  lessonsReplay.command("settings")
+    .description("read the project's learning settings as the live pipeline reads them, for the arms' offline pipeline")
+    .requiredOption("--project <project>", "the project")
+    .action(async (options: { project: string }, command: Command) => {
+      const globals = globalOptions(command);
+      const { settings, accessToken } = await authenticate(globals, services.tokenStore);
+      services.stdout.write(formatSuccess(await settingsLessonsReplay({ controlPlaneUrl: settings.controlPlaneUrl, accessToken, project: options.project }, services.fetchImplementation), globals.json));
     });
   lessonsReplay.command("subject")
     .description("read a historical task as the reflector sees it at its end, for an arm's offline pipeline (a replay copy is not found)")

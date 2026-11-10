@@ -53,6 +53,16 @@ describe("who may start a copy (DECISIONS 68)", () => {
     w.setRole("company-admin", "admin");
     expect((await w.post(w.taskId, { subject: "company-admin", admin: true }, w.ok())).status).toBe(202);
   });
+  it("refuses to start a copy where the agent runtime is not set up (the start would fall back to the operator as payer, and their own plan could pay)", async () => {
+    const audit = new Audit();
+    const h = await createSingleAnswerPlanBroker({ brokerExtra: { lessons: { store: new InMemoryLessonStore(), snapshots: new InMemorySnapshotStore(), evalSnapshots: new InMemoryEvalSnapshotStore(), routes: { audit } } } });
+    const started = await h.dev(MAYA, "POST", "/v1/dev/tasks", { requestId: randomUUID(), project: "payments", instructions: "Fix the retry bug", client: "claude-code", workflow: true, workflowPath: "FULL" });
+    const taskId = (started.body.task as { taskId: string }).taskId;
+    h.db.set({ ...orgMemberKey(TEST_ORG, roleOf("admin-subject")), entityType: "ORG_MEMBER", orgId: TEST_ORG, developerId: roleOf("admin-subject"), role: "owner", joinedAt: "2026-01-01T00:00:00.000Z" });
+    const reply = await call(h.handler, { method: "POST", path: `/v1/admin/tasks/${taskId}/lessons-replay`, user: ADMIN, body: { requestId: randomUUID(), memory: { mode: "off" }, maxUsd: 2 } });
+    expect(reply.body.error).toMatchObject({ code: "RUNTIME_UNAVAILABLE" });
+    expect(audit.actions()).toEqual([]);
+  });
   it("answers nothing where lessons are not set up", async () => {
     const w = await world(false);
     expect((await w.post(w.taskId, ADMIN, w.ok())).body.error).toMatchObject({ code: "NOT_FOUND" });
@@ -179,6 +189,21 @@ describe("the replay's model call (grading and offline pipelines)", () => {
     }
     expect(m.calls).toHaveLength(1);
   });
+  it("writes one audit line before the call (ids, a fixed word, the hold in cents), names the model that answered, and makes no call when the line cannot be written", async () => {
+    const m = fakeModel();
+    const w = await world(true, { model: m.model, spend: spend() });
+    const asked = await call(w.handler, { method: "POST", path, user: ADMIN, body });
+    expect(asked.body).toMatchObject({ model: "m" });
+    const line = w.audit.events.find((e) => e.action === "lesson.replay_read")!;
+    expect(line).toMatchObject({ workspaceId: TEST_ORG, project: "payments", facts: { what: "model_grade", maxCents: 50 } });
+    expect(JSON.stringify(line)).not.toContain("You grade");
+    await call(w.handler, { method: "POST", path, user: ADMIN, body: { ...body, purpose: "learn" } });
+    expect(w.audit.events.filter((e) => e.action === "lesson.replay_read").map((e) => e.facts["what"])).toEqual(["model_grade", "model_learn"]);
+    const broken = await world(true, { model: m.model, spend: spend() });
+    broken.audit.emit = async () => { throw new Error("ledger down"); };
+    expect((await call(broken.handler, { method: "POST", path, user: ADMIN, body })).body.error).toMatchObject({ code: "RUNTIME_UNAVAILABLE" });
+    expect(m.calls).toHaveLength(2);
+  });
   it("refuses before the call when there is no model, it is too dear, the learning month is full, or the request is malformed", async () => {
     const none = fakeModel({ quote: { ok: false, code: "no_provider" } });
     expect((await call((await world(true, { model: none.model, spend: spend() })).handler, { method: "POST", path, user: ADMIN, body })).body.error).toMatchObject({ code: "RUNTIME_UNAVAILABLE" });
@@ -203,11 +228,12 @@ describe("a historical task as the reflector sees it (offline pipelines)", () =>
     const base = { facts: { workspaceId: TEST_ORG, project, taskId: TASK, repositories: ["api"], outcome: "merged", task: { developerId: "creator", startedBy: { developerId: "starter" }, agent: { agentId: "a" } },
       rest: { initiatorTrust: "member", steeringTrust: ["member"], intentTrust: "member", spans: [{ kind: "send_back", text: "Use withRetry.", trust: "member", authorId: "rae", eventId: "ev-1" }], ...rest } }, sendBackRequestIds: [] };
     const learning = { source: { read: async () => base }, rows: { sendBack: async () => undefined, revertedBy: async () => undefined }, process: { store }, settings: { read: async () => ({ mode: "On" }) } };
-    const h = await createSingleAnswerPlanBroker({ brokerExtra: { agents: {}, learning, lessons: { store, snapshots: new InMemorySnapshotStore(), evalSnapshots: new InMemoryEvalSnapshotStore(), routes: { audit } } } });
+    const h = await createSingleAnswerPlanBroker({ brokerExtra: { agents: {}, learning, lessons: { store, snapshots: new InMemorySnapshotStore(), evalSnapshots: new InMemoryEvalSnapshotStore(), routes: { audit }, settings: { read: async () => ({ mode: "On" }) }, load: {} } } });
     const operator = roleOf("admin-subject");
     h.db.set({ ...orgMemberKey(TEST_ORG, operator), entityType: "ORG_MEMBER", orgId: TEST_ORG, developerId: operator, role: "owner", joinedAt: "2026-01-01T00:00:00.000Z" });
     const read = (user: { subject: string; admin?: boolean } = ADMIN) => call(h.handler, { method: "GET", path: `/v1/admin/projects/payments/lessons-replay/subjects/${TASK}`, user });
-    return { read };
+    const settings = (user: { subject: string; admin?: boolean } = ADMIN, project = "payments") => call(h.handler, { method: "GET", path: `/v1/admin/projects/${project}/lessons-replay/settings`, user });
+    return { read, settings, audit };
   }
   it("a company owner or admin reads a real past task's subject; anyone else does not", async () => {
     const w = await withLearning();
@@ -216,6 +242,23 @@ describe("a historical task as the reflector sees it (offline pipelines)", () =>
     expect(answered.body.subject).toMatchObject({ id: TASK, project: "payments", outcome: "merged" });
     expect((await w.read({ subject: "someone", admin: false })).body.error).toMatchObject({ code: "FORBIDDEN" });
     expect((await w.read({ subject: "rovara-staff", admin: true })).body.error).toMatchObject({ code: "FORBIDDEN" });
+  });
+  it("reading a past task's private content leaves an audit line with the operator and the task id and nothing of the content, and is not made if the line cannot be written", async () => {
+    const w = await withLearning();
+    await w.read();
+    expect(w.audit.events.filter((e) => e.action === "lesson.replay_read")).toEqual([expect.objectContaining({ facts: expect.objectContaining({ what: "subject", target: TASK }) as unknown })]);
+    expect(JSON.stringify(w.audit.events)).not.toContain("Use withRetry");
+    w.audit.emit = async () => { throw new Error("ledger down"); };
+    expect((await w.read()).body.error).toMatchObject({ code: "RUNTIME_UNAVAILABLE" });
+  });
+  it("the project's learning settings are read by a company owner or admin only, with whether auto-apply and an embedder are on, and the read is audited", async () => {
+    const w = await withLearning();
+    const asked = await w.settings();
+    expect(asked.status, JSON.stringify(asked.body)).toBe(200);
+    expect(asked.body).toMatchObject({ settings: { mode: "On" }, autoApply: expect.any(Boolean) as unknown, embedder: false });
+    expect(w.audit.events.some((e) => e.action === "lesson.replay_read" && e.facts["what"] === "settings")).toBe(true);
+    for (const user of [{ subject: "someone", admin: false }, { subject: "rovara-staff", admin: true }]) expect((await w.settings(user)).body.error, JSON.stringify(user)).toMatchObject({ code: "FORBIDDEN" });
+    expect((await w.settings(ADMIN, "other")).body.error).toBeDefined();
   });
   it("a replay copy's subject, and a task of another project, answer as if there were none", async () => {
     expect((await (await withLearning({ evalRun: true })).read()).body.error).toMatchObject({ code: "TASK_NOT_FOUND" });

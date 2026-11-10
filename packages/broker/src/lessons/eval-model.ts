@@ -13,7 +13,7 @@ export class EvalModelRefusal extends Error {
   constructor(readonly code: "no_model" | "too_dear" | "month_full" | "too_large" | "failed") { super(`the replay model call was refused (${code})`); this.name = "EvalModelRefusal"; }
 }
 
-export async function evalModelCall(deps: { model: PipelineModel; spend: LearningSpend }, input: { workspaceId: string; project: string; system: string; user: string; maxOutputTokens: number; maxHoldUsd: number }): Promise<{ text: string; costUsd: number }> {
+export async function evalModelCall(deps: { model: PipelineModel; spend: LearningSpend }, input: { workspaceId: string; project: string; system: string; user: string; maxOutputTokens: number; maxHoldUsd: number }): Promise<{ text: string; costUsd: number; /** The model that answered, as the company's route names it (a grading is only comparable across runs when this does not change). */ model: string }> {
   if (input.system.length + input.user.length > EVAL_MODEL_INPUT_MAX_CHARS || input.maxOutputTokens > EVAL_MODEL_OUTPUT_MAX_TOKENS || input.maxOutputTokens < 1) throw new EvalModelRefusal("too_large");
   const request = { purpose: "judge" as const, system: input.system, user: input.user, maxOutputTokens: input.maxOutputTokens, workspaceId: input.workspaceId, project: input.project, maxHoldUsd: input.maxHoldUsd };
   let estimate = input.maxHoldUsd;
@@ -26,6 +26,6 @@ export async function evalModelCall(deps: { model: PipelineModel; spend: Learnin
   if ((await spendLook(deps.spend, input.workspaceId, estimate)) !== "ok") throw new EvalModelRefusal("month_full");
   try {
     const reply = await deps.model.complete({ ...request, budgetUsd: estimate });
-    return { text: reply.text, costUsd: reply.costUsd };
+    return { text: reply.text, costUsd: reply.costUsd, model: reply.model };
   } catch { throw new EvalModelRefusal("failed"); }
 }

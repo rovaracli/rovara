@@ -114,8 +114,8 @@ async function deliveredLessons(deps: DeliveryDeps, refs: LearnedRefs): Promise<
     if (member === undefined) return undefined;
     const live: Lesson[] = [];
     for (const lesson of fetched) {
-      // A snapshot's lessons were active under the arm's own pipeline when frozen: the live approval policy does not re-decide them (the project's mode, the access checks, erasure and the stage rules still do).
-      if ((pinned === undefined && !approvedForUse(lesson, resolved.approval, member, resolved.trialAllowed)) || hasStaleCitation(lesson) || !stageAllows(lesson, refs.stage, member)) continue;
+      // A snapshot's lessons are held to the same approval rule as live ones (no bypass), and the mode, the access checks, erasure and the stage rules too.
+      if (!approvedForUse(lesson, resolved.approval, member, resolved.trialAllowed) || hasStaleCitation(lesson) || !stageAllows(lesson, refs.stage, member)) continue;
       if (!(await notErased(deps.store, key, lesson))) continue;
       live.push(lesson);
     }
