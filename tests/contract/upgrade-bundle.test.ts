@@ -11,6 +11,7 @@ import { readEnvironmentSettings, writeEnvironmentSettings } from "../../package
 import { installedBundleParameter, restorePointParameter } from "../../packages/cli/src/upgrade/bundle/restore-point.js";
 import { verifyBundle } from "../../packages/cli/src/upgrade/bundle/verify.js";
 import { runUpgrade, type UpgradeDependencies } from "../../packages/cli/src/upgrade/run.js";
+import { writeTeamRecordRecord } from "../../packages/cli/src/deploy/team-record-switch.js";
 import { builtBundle, newTestKey, type BuiltBundle } from "../support/bundle-fixture.js";
 import { SETTINGS } from "../support/doctor-fakes.js";
 import { allStackOutputs, memoryInitSecrets, scriptedDeployer, T0 } from "../support/init-fakes.js";
@@ -377,6 +378,23 @@ describe("rovara upgrade --bundle", () => {
       const h = await cdkHarness(bundle);
       await expect(runUpgrade(options(bundle, { reservedConcurrency: false }), h.deps)).rejects.toThrow(/recorded for it/);
       expect(h.calls).toEqual([]);
+    });
+
+    // Lane fix/0513-embedder-3gb: a table left by a rolled-back Team record build would fail the customer's deployer on "already exists"; the bundle path checks like the main path, before the approval.
+    it("stops on a left-over Team record table before the build is approved, and goes on when the account is clear", async () => {
+      const bundle = await build();
+      const stopped = await cdkHarness(bundle);
+      await writeTeamRecordRecord(stopped.store, "staging", { enabled: true, options: {} });
+      const asked: string[] = [];
+      stopped.deps.teamRecordProbe = { tableState: async (name) => { asked.push(name); return { exists: true, itemCount: 0, deletionProtected: true }; } };
+      await expect(runUpgrade(options(bundle, { approveBuild: true }), stopped.deps)).rejects.toThrow(/upgrade stopped before anything changed.*agentx-staging-team-record exists/s);
+      expect(asked).toEqual(["agentx-staging-team-record"]);
+      expect(stopped.calls).toEqual([]);
+      const clear = await cdkHarness(bundle);
+      await writeTeamRecordRecord(clear.store, "staging", { enabled: true, options: {} });
+      clear.deps.teamRecordProbe = { tableState: async () => ({ exists: false }) };
+      await runUpgrade(options(bundle, { approveBuild: true }), clear.deps);
+      expect(clear.calls).toHaveLength(1);
     });
 
     it("refuses when this agentx cannot build at approval, when the deployer did not finish, and a downgrade; and the Rovara operator still cannot run it", async () => {

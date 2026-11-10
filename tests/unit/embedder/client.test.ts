@@ -13,6 +13,20 @@ const awsError = (code: string) => Object.assign(new Error("secret request text"
 const codeOf = async (run: () => Promise<unknown>): Promise<string> => { try { await run(); return "no error"; } catch (error) { return error instanceof EmbedderError ? error.code : `other: ${String(error)}`; } };
 const fast = { sleep: async () => undefined, baseDelayMs: 1 };
 
+describe("why a call ended (the re-embed job tells a long text's timeout from a fault)", () => {
+  const timingOf = async (run: () => Promise<unknown>): Promise<string | undefined> => { try { await run(); return "no error"; } catch (error) { return error instanceof EmbedderError ? (error.timing ?? "none") : "other"; } };
+  const clientFailingWith = (code: string, extra: { now?: () => number } = {}) => createEmbedderClient({ ...fast, ...extra, spec: TEAM_RECORD_EMBEDDER, invoke: async () => { throw awsError(code); } });
+
+  it("says timeout for the function's own wait, deadline for a run that had no time, and nothing for any other fault", async () => {
+    expect(await timingOf(() => clientFailingWith("AbortError").embed("a", "document"))).toBe("timeout");
+    expect(await timingOf(() => clientFailingWith("DeadlineAbort").embed("a", "document"))).toBe("deadline");
+    expect(await timingOf(() => clientFailingWith("DeadlineElapsed").embed("a", "document"))).toBe("deadline");
+    expect(await timingOf(() => clientFailingWith("AccessDeniedException").embed("a", "document"))).toBe("none");
+    // A run already over before the call: nothing is sent, and it says deadline.
+    expect(await timingOf(() => clientFailingWith("AbortError", { now: () => 1_000 }).embed("a", "document", { deadline: 1_000 }))).toBe("deadline");
+  });
+});
+
 describe("the embedder client", () => {
   it("sends the model, the kind and the cleaned text, and returns the vector", async () => {
     const seen: EmbedderRequest[] = [];

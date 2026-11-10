@@ -1,8 +1,8 @@
 // agentx upgrade (FR-042 to FR-044): read the environment's version and engine from SSM, show the
 // target release's notes and every change, deploy in upgrade order (stopping at the first failure,
 // which leaves earlier stacks upgraded and is safe to re-run), then run doctor.
-import { TEAM_RECORD_PARAMETER, readTeamRecordRecord, teamRecordRecordedOrUnknown, teamRecordRefusalHint } from "../deploy/team-record-switch.js";
-import { teamRecordPreflight, type TeamRecordProbe } from "../deploy/team-record-preflight.js";
+import { teamRecordRecordedOrUnknown, teamRecordRefusalHint } from "../deploy/team-record-switch.js";
+import { enforceTeamRecordPreflight, type TeamRecordProbe } from "../deploy/team-record-preflight.js";
 import { GetTemplateCommand } from "@aws-sdk/client-cloudformation";
 import { agentXError, environmentStackName, isRovaraOperatorArn } from "@agentx/contracts";
 import { CONFIG_KEYS } from "../config/keys.js";
@@ -332,11 +332,7 @@ async function runVerifiedUpgrade(options: UpgradeOptions, deps: UpgradeDependen
     const runningControlPlane = await deps.stacks.describe(settings.stacks["control-plane"]);
     const runningEmbedder = runningControlPlane?.parameters.EmbedderImageUri;
     // The first build of the Team record (recorded as on, not yet in the stack): what an earlier, rolled-back try left behind would fail it (team-record-preflight.ts). Before anything is prepared or changed.
-    if ((await readTeamRecordRecord(deps.store, env))?.enabled === true) {
-      const preflight = await teamRecordPreflight({ env, built: runningControlPlane?.parameters[TEAM_RECORD_PARAMETER] !== undefined, probe: deps.teamRecordProbe });
-      for (const line of preflight.warnings) deps.write(`Warning: ${line}`);
-      if (preflight.refusals.length > 0) throw agentXError("CONFIG_INVALID", `upgrade stopped before anything changed: ${preflight.refusals.join(" ")}`);
-    }
+    await enforceTeamRecordPreflight({ env, store: deps.store, controlPlaneParameters: runningControlPlane?.parameters, probe: deps.teamRecordProbe, write: deps.write, stoppedMessage: "upgrade stopped before anything changed" });
     const prepared = await deps.prepare({
       settings, release, ...(options.source === undefined ? {} : { source: options.source }), ...(options.reservedConcurrency === false ? { reservedConcurrency: false as const } : {}),
       ...(options.images?.embedder === undefined ? {} : { embedderImage: options.images.embedder }),
@@ -427,6 +423,8 @@ async function runBuiltBundleUpgrade(input: { options: UpgradeOptions; deps: Upg
   refusePrereleaseTarget(target);
   upgradeDirection(first.env, first.version, target);
   if (deps.approveAndDeploy === undefined) throw agentXError("CONFIG_INVALID", "this agentx cannot build an install's templates at approval; the bundle was refused and nothing was changed");
+  // The same check as the main path, before the approval is written or the deployer started: a table left by a rolled-back Team record build would fail the deployer on "already exists".
+  await enforceTeamRecordPreflight({ env: first.env, store: deps.store, controlPlaneParameters: (await deps.stacks.describe(first.stacks["control-plane"]))?.parameters, probe: deps.teamRecordProbe, write: deps.write, stoppedMessage: "upgrade stopped before anything changed" });
   deps.write(`Upgrading ${first.env} from ${first.version} to ${target} with bundle ${bundle.bundleId}: its templates are built from the settings recorded for this install, then installed by your own deployer`);
   // `--yes` answers the upgrade's own questions; it does not approve a build nobody read. Only `--approve-build` does that.
   const outcome = await deps.approveAndDeploy({ bundle, settings: first, yes: options.approveBuild === true });

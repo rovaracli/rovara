@@ -180,12 +180,14 @@ def visible_cpus() -> int:
 
 
 # Memory (lane fix/0513-embedder-3gb): the function runs at 3,008 MB, the most this account's Lambda allows. The Qwen weights are 2.4 GB of fp32, so how onnxruntime holds them decides
-# whether a 2,048-token text fits. Measured on linux/arm64 with 3,008 MB and 2 threads: with the defaults, onnxruntime PREPACKS every weight matrix into a second layout (about 1.8 GB of private
-# memory) and its arena grows in powers of two; the peak private memory of a 2,048-token text was 2.9 GB, 2% under the limit. With prepacking off, the weights stay memory-mapped
-# straight from the model file (clean pages the kernel can drop and read again, never a reason to be killed) and with the arena growing by what is asked, the peak private memory is
-# about 0.8 GB and the speed is the same as with the defaults. None of this changes a single weight or graph node: the model files, the vectors and the spec are what they were.
+# whether a 2,048-token text fits. Measured on linux/arm64 under Docker with 3,008 MB, 2 threads and 1.7 CPUs, one 2,048-token text after shorter ones, then the lesson model:
+#   defaults                    peak process memory 2.94 GB, of which 2.9 GB private (2% under the limit; killed at a 2.5 GB limit)
+#   prepacking off              2.95 GB, of which about 1.2 GB private at the peak (the weights stay memory-mapped: clean pages the kernel can drop and read again)
+#   prepacking off + no arena   2.5 to 2.8 GB, of which about 0.8 GB private at the peak and 0.15 to 0.3 GB after the run; about 10 to 25% slower on long texts, about 7% on a short one
+# Both of the last two survive a 2 GB limit. The arena is turned off too: it keeps the temporary buffers of a 2,048-token text (about 0.9 GB) for the life of the container, and the
+# slower long text is the lesser cost (the re-embed job already gives a text that cannot finish in time up, see reembed.ts). None of this changes a weight or a graph node: the model files,
+# the vectors and the spec are what they were. (`arena_extend_strategy` as a provider option is ignored by the CPU execution provider, so it is not used.)
 DISABLE_PREPACKING = "session.disable_prepacking"
-ARENA_EXTEND_STRATEGY = "kSameAsRequested"
 # A text this short touches every layer's weights, so a warm-up at init pages the memory-mapped weights in before the first request instead of during it.
 WARM_UP_TEXT = "warm up"
 
@@ -196,11 +198,8 @@ def session_options(onnxruntime: Any, threads: int) -> Any:
     options.intra_op_num_threads = max(1, threads)
     options.inter_op_num_threads = 1
     options.add_session_config_entry(DISABLE_PREPACKING, "1")
+    options.enable_cpu_mem_arena = False
     return options
-
-
-def cpu_providers() -> list[Any]:
-    return [("CPUExecutionProvider", {"arena_extend_strategy": ARENA_EXTEND_STRATEGY})]
 
 
 def load_from_disk(root: Path, name: str) -> LoadedModel:
@@ -215,7 +214,7 @@ def load_from_disk(root: Path, name: str) -> LoadedModel:
             raise EmbedError("MODEL_UNAVAILABLE")
         threads = int(os.environ.get("EMBEDDER_THREADS", "0")) or visible_cpus()
         options = session_options(onnxruntime, threads)
-        session = onnxruntime.InferenceSession(str(folder / "model.onnx"), options, providers=cpu_providers())
+        session = onnxruntime.InferenceSession(str(folder / "model.onnx"), options, providers=["CPUExecutionProvider"])
         tokenizer = Tokenizer.from_file(str(folder / "tokenizer.json"))
         special: dict[str, int] = {}
         for token in [*manifest["prefix"], *manifest["suffix"]]:
@@ -256,7 +255,7 @@ class Embedder:
 
     def preload(self, names: Sequence[str]) -> None:
         """Loads models ahead of the first request (the init phase of a cold start) and runs one short text through each, so the memory-mapped weights are read in now. A model that cannot be
-        loaded is left for the first request, which then answers MODEL_UNAVAILABLE; a warm-up that fails is ignored (the model is kept, the first request reports any real fault)."""
+        loaded is left for the first request, which then answers MODEL_UNAVAILABLE; a warm-up that fails is logged as one fixed line and otherwise ignored (the model is kept, the first request reports any real fault)."""
         for name in names:
             if name in self._models:
                 continue
@@ -267,8 +266,8 @@ class Embedder:
             self._models[name] = loaded
             try:
                 embed_texts(loaded, "document", [WARM_UP_TEXT])
-            except Exception:  # not logged either
-                continue
+            except Exception:  # the reason is not logged (it can echo text); one fixed line says init did not go as usual
+                print(json.dumps({"event": "embedder.warmup", "model": name, "ok": False}), flush=True)
 
     def handle(self, event: Any) -> dict[str, Any]:
         try:

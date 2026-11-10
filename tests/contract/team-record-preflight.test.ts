@@ -22,8 +22,9 @@ describe("teamRecordPreflight", () => {
     expect(probe.asked).toEqual([TABLE]);
     expect(result.warnings).toEqual([]);
     expect(result.refusals).toHaveLength(1);
-    expect(result.refusals[0]).toContain(`${TABLE} exists (0 items, deletion protection on)`);
-    expect(result.refusals[0]).toMatch(/left over from an earlier try.*turn off its deletion protection.*if it holds data, do not delete it/s);
+    expect(result.refusals[0]).toContain(`${TABLE} exists (about 0 items; DynamoDB refreshes this count only about every six hours, so it may be out of date, deletion protection on)`);
+    expect(result.refusals[0]).toContain(`aws dynamodb scan --table-name ${TABLE} --max-items 1`);
+    expect(result.refusals[0]).toMatch(/left over from an earlier try.*turns off its deletion protection.*if it holds data, do not delete it/s);
   });
 
   it("passes when the table is absent, and does not even ask when the record is built (the table is the record's own)", async () => {
@@ -39,6 +40,7 @@ describe("teamRecordPreflight", () => {
       expect(result.refusals).toEqual([]);
       expect(result.warnings).toHaveLength(1);
       expect(result.warnings[0]).toContain(NEW_RESOURCE_RUNBOOK);
+      expect(result.warnings[0]).toMatch(/operator role is not.*agentx upgrade.*admin credentials checks again.*describe-table --table-name agentx-staging-team-record/s);
     }
   });
 });

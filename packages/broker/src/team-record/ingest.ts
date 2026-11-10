@@ -393,7 +393,7 @@ export async function embedWithFlag(embedder: RecordEmbedder, text: string, call
 export async function markRowEmbedded(table: TeamRecordTable, event: Pick<RecordEvent, "id" | "occurredAt" | "workspaceId" | "project">, input: { spec: string | undefined; truncated: boolean; onlyWithText?: boolean }): Promise<void> {
   const aliases = new Aliases();
   const sets = [`${aliases.name("embeddingRef")} = ${aliases.value(eventVectorKey(event.id))}`];
-  const removes = [aliases.name("embedPending")];
+  const removes = [aliases.name("embedPending"), aliases.name("embedTimeouts"), aliases.name("embedSkip")];
   if (input.spec !== undefined) sets.push(`${aliases.name("embeddingSpec")} = ${aliases.value(input.spec)}`);
   else removes.push(aliases.name("embeddingSpec"));
   if (input.truncated) sets.push(`${aliases.name("embeddingTruncated")} = ${aliases.value(true)}`);

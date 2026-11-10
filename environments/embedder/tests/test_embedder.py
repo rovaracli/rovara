@@ -228,14 +228,18 @@ class Embedding(unittest.TestCase):
         failing.run = lambda ids: (_ for _ in ()).throw(RuntimeError("cannot run"))
         models = {"record": fake_model("record", seen), "lesson": failing}
         embedder = core.Embedder(Path("/unused"), loader=lambda root, name: models[name])
-        embedder.preload(["record", "lesson"])
+        out = io.StringIO()
+        with redirect_stdout(out):
+            embedder.preload(["record", "lesson"])
         self.assertEqual(seen, [core.WARM_UP_TEXT])
+        # one fixed line for the failed warm-up, no message text, nothing for the good one
+        self.assertEqual([json.loads(line) for line in out.getvalue().splitlines()], [{"event": "embedder.warmup", "model": "lesson", "ok": False}])
         self.assertEqual(sorted(embedder._models), ["lesson", "record"])  # the failed warm-up did not drop the model; the first request reports the fault
         self.assertEqual(embedder.handle({"model": "lesson", "kind": "document", "texts": ["a"]}), {"ok": False, "code": "INTERNAL"})
 
-    def test_the_session_keeps_the_weights_memory_mapped_and_the_arena_small(self):
-        # Lane fix/0513-embedder-3gb: the function has 3,008 MB. Prepacking copies every weight matrix into private memory (about 1.8 GB for the record model) and the default arena doubles its
-        # chunks; both are off. A stand-in onnxruntime records what the loader asks for.
+    def test_the_session_keeps_the_weights_memory_mapped_and_has_no_arena(self):
+        # Lane fix/0513-embedder-3gb: the function has 3,008 MB. Prepacking copies every weight matrix into private memory (about 1.8 GB for the record model) and the arena keeps every temporary buffer; both are off. A stand-in onnxruntime
+        # records what the loader asks for.
         class Options:
             def __init__(self) -> None:
                 self.entries: dict[str, str] = {}
@@ -249,8 +253,8 @@ class Embedding(unittest.TestCase):
         options = core.session_options(FakeOnnxruntime, 2)
         self.assertEqual((options.intra_op_num_threads, options.inter_op_num_threads), (2, 1))
         self.assertEqual(options.entries, {"session.disable_prepacking": "1"})
+        self.assertIs(options.enable_cpu_mem_arena, False)
         self.assertEqual(core.session_options(FakeOnnxruntime, 0).intra_op_num_threads, 1)
-        self.assertEqual(core.cpu_providers(), [("CPUExecutionProvider", {"arena_extend_strategy": "kSameAsRequested"})])
 
     def test_a_zero_vector_is_refused(self):
         loaded = fake_model("lesson")

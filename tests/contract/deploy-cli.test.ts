@@ -16,6 +16,7 @@ import type { SecretValueStore } from "../../packages/cli/src/deploy/signing-key
 import { progressLine, runDeploy, type DeployCliDependencies } from "../../packages/cli/src/deploy/commands.js";
 import { assertReleaseCoversRegion, releaseRegionProblem } from "../../packages/cli/src/deploy/release.js";
 import type { TemplatesEngineClients } from "../../packages/cli/src/deploy/templates-engine.js";
+import { writeTeamRecordRecord } from "../../packages/cli/src/deploy/team-record-switch.js";
 import { executeCli } from "../../packages/cli/src/main.js";
 import { writeEnvironmentSettings } from "../../packages/cli/src/environments/settings.js";
 import type { IAMClient } from "@aws-sdk/client-iam";
@@ -668,6 +669,35 @@ describe("agentx deploy", () => {
 
     expect(code).not.toBe(0);
     expect(io.err.join("")).toContain("CDK is not bootstrapped in");
+  });
+
+  // Lane fix/0513-embedder-3gb: a table left by a rolled-back Team record build fails the deploy on "already exists"; the deploy checks before it writes anything.
+  it("--engine cdk with the Team record recorded as on stops on a left-over record table before deploying, and deploys when the account is clear", async () => {
+    for (const [probeAnswer, expectedCode] of [[{ exists: true, itemCount: 0, deletionProtected: true }, 1], [{ exists: false }, 0]] as const) {
+      const releaseDir = await emptyReleaseDir();
+      // The Team record needs the release's embedder image (the check for that comes first).
+      const manifest = JSON.parse(await readFile(join(releaseDir, "release.json"), "utf8")) as { images: Record<string, string> };
+      manifest.images.embedder = `public.ecr.aws/rovara/embedder@sha256:${"a".repeat(64)}`;
+      await writeFile(join(releaseDir, "release.json"), JSON.stringify(manifest));
+      const answersPath = await writeAnswers();
+      const store = new MemoryParameterStore();
+      await store.put("/cdk-bootstrap/hnb659fds/version", "21");
+      await writeTeamRecordRecord(store, ENV, { enabled: true, options: {} });
+      const runner = cleanCdkRunner(scriptedOutputs());
+      const io = capture();
+      const asked: string[] = [];
+      const code = await executeCli(
+        ["deploy", "--mode", "install", "--engine", "cdk", "--release", releaseDir, "--answers", answersPath, "--source", "/some/source", "--yes"],
+        { ...io, deploy: safeDeployDeps({ identity: fakeIdentity, store, secrets: memorySecrets(), commandRunner: runner, iam: passRolePresentIam(), teamRecordProbe: { tableState: async (name) => { asked.push(name); return probeAnswer; } } }) },
+      );
+      expect(asked, io.err.join("")).toEqual([`agentx-${ENV}-team-record`]);
+      if (expectedCode === 0) expect(code, io.err.join("")).toBe(0);
+      else {
+        expect(code).not.toBe(0);
+        expect(io.err.join("")).toMatch(/deploy stopped before anything changed.*team-record exists/s);
+        expect(runner.outputsDir).toBeUndefined();
+      }
+    }
   });
 
   it("--engine cdk removes its outputs temp directory after the deploy finishes", async () => {

@@ -24,7 +24,7 @@ import { defaultProductionAvailabilityZoneIds } from "./production-foundation.js
 /**
  * 3,008 MB, the most this account's Lambda allows (about 1.7 vCPUs; the 0.5.12 switch-on asked for 10,240 MB and CloudFormation refused the function, see infra/lib/account-limits.ts). It fits
  * because of how the image loads the models (environments/embedder/app/embedder_core.py): the fp32 weights (2.4 GB for the record model) stay memory-mapped from the model file and are never
- * copied, so a 2,048-token text needs about 0.8 GB of private memory and the process is not killed even at 2 GB. A long text is real compute at this size (about 17 s for 2,048 tokens under Docker at 1.7 CPUs; a search query, about 50 tokens, takes under a second). Nothing is billed while idle.
+ * copied, and the arena is off, so a 2,048-token text needs about 0.8 GB of private memory at its peak (peak process memory about 2.5 to 2.8 GB counting the mapped weights) and the process is not killed even at a 2 GB limit. A long text is real compute at this size (about 17 s for 2,048 tokens under Docker at 1.7 CPUs; a search query, about 50 tokens, takes under a second). Nothing is billed while idle.
  */
 export const EMBEDDER_MEMORY_MB = ASSUMED_LAMBDA_MEMORY_LIMIT_MB;
 /** A cold start loads the model (seconds); one text of 2,048 tokens takes seconds more; a batch is at most 16 texts. The broker waits for less (EMBEDDER_WAIT_MS), and the function carries on and warms. */

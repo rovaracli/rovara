@@ -26,13 +26,22 @@
 // NOT FOR A WORKSPACE THAT IS CLOSING (N5). `reembedRun` skips a workspace with a whole-workspace erase job or a close in progress (it must not write vectors or state that the erase would then leave behind);
 // the hourly job deletes leftover `REEMBED#` rows (`sweepReembedState`, bounded in time and in workspaces per run: EMB-7 M1).
 //
+// A TEXT TOO LONG FOR THE FUNCTION (0.5.13 lane fix/0513-embedder-3gb). The embedder runs at 3,008 MB (about 1.7 vCPUs); a text near the model's 2,048-token limit takes about 17 s there under Docker, and the
+// run has 25 s. So (1) a LONG row (`LONG_TEXT_CHARS`) is started only when a whole cold-start wait (`callMs`) is left, so the try is a fair one, and at most one fits in a run; (2) a long row whose call
+// TIMED OUT is counted on the row (`embedTimeouts`), and does NOT count toward the "two failures in a row" stop, so two long rows side by side cannot stop a workspace's backlog; (3) at the second timeout the
+// row is marked `embedSkip` = "<spec>:<TOO_LONG_RETRY_EPOCH>" and logged once as `record.embed_too_long`: the job leaves it alone (it stays keyword-searchable, its text expires as always), until the
+// spec changes or the epoch is bumped (raise it when the function gets faster: a bigger account limit, a faster image); deleting `embedSkip` and `embedTimeouts` from a row by hand tries it again;
+// (4) a call cut by the RUN'S end (`timing: deadline`) is nobody's failure and counts for nothing. The text is NOT cut to a shorter prefix to fit: the spec pins the model's token limit, and a vector of a
+// different prefix is outside what the parity gate checks.
+//
 // Quiet: two failures in a row stop the run (the embedder is down or cold: the next run tries again). It never logs text or an error message, only counts.
 // Order of writes per row: embed, put the vector, mark the row. A row that was erased or lost its text meanwhile refuses the mark (condition on the text and on no tombstone), and the vector
 // just put is deleted again, so a vector never outlives its row because of this job.
-import { GetCommand, PutCommand, QueryCommand, DeleteCommand } from "@aws-sdk/lib-dynamodb";
-import { OrgIdSchema, TEAM_RECORD_GSI5, TEAM_RECORD_ORG_DIRECTORY_PK, recordTextDueIndexValue, type OrgId } from "@agentx/contracts";
+import { GetCommand, PutCommand, QueryCommand, DeleteCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
+import { OrgIdSchema, TEAM_RECORD_GSI5, TEAM_RECORD_ORG_DIRECTORY_PK, recordEventKey, recordTextDueIndexValue, type OrgId, type RecordEvent } from "@agentx/contracts";
 import { errorName, type Item } from "../agents/table-writes.js";
 import { embedWithFlag, eventVectorItem, eventVectorKey, markRowEmbedded } from "./ingest.js";
+import { EmbedUnavailableError } from "./embed.js";
 import { eventFromItem } from "./store.js";
 import type { RecordEmbedder, RecordLog, RecordVectorPort, TeamRecordTable } from "./types.js";
 
@@ -79,6 +88,12 @@ export const MIN_SHARE_MS = 3_000;
 /** A workspace whose whole pass found nothing to do is not read again for this long. */
 export const REEMBED_IDLE_MS = 60 * 60_000;
 const MAX_ORGS = 5_000;
+/** A text of this many characters or more (about 1,500 tokens) is a LONG row: it needs the whole `callMs` left in the run, and a timeout is counted against the row, not the embedder. */
+export const LONG_TEXT_CHARS = 6_000;
+/** Timeouts of a long row before the job gives up on it for this embedder. */
+export const EMBED_TIMEOUTS_BEFORE_SKIP = 2;
+/** Part of the value a skipped row carries. Raise it (with the spec unchanged) when the function became faster, so every skipped row is tried again. */
+export const TOO_LONG_RETRY_EPOCH = "0513";
 
 export interface ReembedResult {
   embedded: number;
@@ -160,10 +175,31 @@ export async function dropReembedState(table: TeamRecordTable, orgId: OrgId): Pr
 /** Rows that need a vector: pending, or with a vector of another spec. Evaluated by DynamoDB after it reads each page of the index. */
 function filterFor(spec: string): { FilterExpression: string; ExpressionAttributeNames: Record<string, string>; ExpressionAttributeValues: Record<string, unknown> } {
   return {
-    FilterExpression: "attribute_not_exists(#tombstone) AND (#pending = :yes OR (attribute_exists(#ref) AND (attribute_not_exists(#spec) OR #spec <> :spec)))",
-    ExpressionAttributeNames: { "#tombstone": "tombstone", "#pending": "embedPending", "#ref": "embeddingRef", "#spec": "embeddingSpec" },
-    ExpressionAttributeValues: { ":yes": true, ":spec": spec },
+    // A row marked too long for this spec and epoch is left alone (see "A TEXT TOO LONG" above).
+    FilterExpression: "attribute_not_exists(#tombstone) AND (attribute_not_exists(#skip) OR #skip <> :skip) AND (#pending = :yes OR (attribute_exists(#ref) AND (attribute_not_exists(#spec) OR #spec <> :spec)))",
+    ExpressionAttributeNames: { "#tombstone": "tombstone", "#pending": "embedPending", "#ref": "embeddingRef", "#spec": "embeddingSpec", "#skip": "embedSkip" },
+    ExpressionAttributeValues: { ":yes": true, ":spec": spec, ":skip": skipValue(spec) },
   };
+}
+const skipValue = (spec: string): string => `${spec}:${TOO_LONG_RETRY_EPOCH}`;
+
+/** Counts one timeout of a long row on the row, and marks the row skipped at the second. Never throws: a row that could not be written to is tried again next pass. */
+async function recordLongTimeout(deps: ReembedDependencies, event: Pick<RecordEvent, "id" | "occurredAt" | "workspaceId" | "project" | "kind">, timeouts: number, spec: string): Promise<void> {
+  const count = timeouts + 1;
+  const skip = count >= EMBED_TIMEOUTS_BEFORE_SKIP;
+  try {
+    await deps.table.documentClient.send(new UpdateCommand({
+      TableName: deps.table.tableName,
+      Key: recordEventKey(event.workspaceId, event.project, event.occurredAt, event.id),
+      UpdateExpression: skip ? "SET #n = :n, #skip = :skip" : "SET #n = :n",
+      ConditionExpression: "attribute_exists(#text) AND attribute_not_exists(#tombstone)",
+      ExpressionAttributeNames: { "#n": "embedTimeouts", "#text": "text", "#tombstone": "tombstone", ...(skip ? { "#skip": "embedSkip" } : {}) },
+      ExpressionAttributeValues: { ":n": count, ...(skip ? { ":skip": skipValue(spec) } : {}) },
+    }));
+    if (skip) deps.log?.("record.embed_too_long", { kind: event.kind });
+  } catch {
+    deps.log?.("record.reembed_timeout_unsaved", {});
+  }
 }
 
 /** One workspace's turn: continues its pass from the stored cursor, embeds what needs a vector within the budget, and stores where it stopped. */
@@ -229,11 +265,13 @@ export async function reembedRows(deps: ReembedDependencies, orgId: OrgId, budge
     }
     result.scanned += page.ScannedCount ?? (page.Items ?? []).length;
     for (const item of page.Items ?? []) {
-      const needed = run.warm ? budget.warmCallMs : budget.callMs;
-      // A call starts only if its whole wait fits in the run (and in this workspace's share of it); the rest of the page stays for the next turn.
-      if (result.embedded >= budget.maxRows || now() >= turnEnd || now() + needed > run.deadline) { result.more = true; return finish(); }
       const event = eventFromItem(item, Math.floor(now() / 1000));
       if (event === undefined || event.text === undefined) continue;
+      const long = event.text.length >= LONG_TEXT_CHARS;
+      // A long row needs a whole cold wait left (a fair try, and so at most one per run); any other waits for what its call needs.
+      const needed = long || !run.warm ? budget.callMs : budget.warmCallMs;
+      // A call starts only if its whole wait fits in the run (and in this workspace's share of it); the rest of the page stays for the next turn.
+      if (result.embedded >= budget.maxRows || now() >= turnEnd || now() + needed > run.deadline) { result.more = true; return finish(); }
       try {
         calledEmbedder = true;
         const { vector, truncated } = await embedWithFlag(deps.embedder, event.text, { deadline: run.deadline });
@@ -254,9 +292,17 @@ export async function reembedRows(deps: ReembedDependencies, orgId: OrgId, budge
         if (truncated) deps.log?.("record.embed_truncated", { kind: event.kind });
         result.embedded += 1;
         run.failuresInARow = 0;
-      } catch {
+      } catch (error) {
         // No message: an embedding error can echo the text. Two failures in a row (over all workspaces) mean the embedder (or the index) is not answering: stop and let the next run try.
         result.failed += 1;
+        const timing = error instanceof EmbedUnavailableError ? error.timing : undefined;
+        // The run's end cut the call: nobody's failure (the loop ends at its next row).
+        if (timing === "deadline") continue;
+        // A long text that the function did not finish in its whole wait is that row's problem, not the embedder's: counted on the row, and it does not stop the run.
+        if (long && timing === "timeout") {
+          await recordLongTimeout(deps, event, numberOr0(item.embedTimeouts), spec);
+          continue;
+        }
         run.failuresInARow += 1;
         if (run.failuresInARow >= 2) { result.more = true; deps.log?.("record.reembed_stopped", { failed: result.failed }); return finish(); }
       }
