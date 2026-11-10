@@ -16,7 +16,7 @@ import { Skeleton } from "../../design/Skeleton.js";
 import { TextField } from "../../design/TextField.js";
 import { VisibleText } from "../../design/VisibleText.js";
 
-const PERMISSION_WORDS: Readonly<Record<ScriptTokenPermission, string>> = { read: "Read tasks", start: "Start tasks" };
+const PERMISSION_WORDS: Readonly<Record<ScriptTokenPermission, string>> = { read: "Read tasks", start: "Start tasks", lessons: "Read team lessons" };
 const STATUS_WORDS: Readonly<Record<string, string>> = { active: "Active", expired: "Expired", revoked: "Revoked" };
 const LIFETIMES = [7, SCRIPT_TOKEN_DEFAULT_DAYS, 60, SCRIPT_TOKEN_MAX_DAYS].map(days => ({ value: String(days), label: `${days} days` }));
 const day = (value: string) => new Date(value).toLocaleDateString("en-US", { timeZone: "UTC", year: "numeric", month: "short", day: "numeric" }) + " UTC";
@@ -55,7 +55,7 @@ export function ScriptTokensScreen() {
   <form onSubmit={event => { event.preventDefault();if (canCreate) void create(); }} aria-label="Make a script token">
    <TextField label="Name" hint="What uses it, for example the deploy job." value={name} onChange={event => { setName(event.target.value); }} maxLength={SCRIPT_TOKEN_NAME_MAX} autoComplete="off" />
    <fieldset><legend>Projects</legend>{nav.isPending ? <Skeleton label="Loading your projects" /> : projectNames.length === 0 ? <p className="rv-muted">You have no projects yet.</p> : projectNames.map(project => <Checkbox key={project} label={project} checked={projects.includes(project)} onCheckedChange={checked => { setProjects(list => toggle(list, project, checked === true)); }} />)}</fieldset>
-   <fieldset><legend>It may</legend>{(["read", "start"] as const).map(permission => <Checkbox key={permission} label={PERMISSION_WORDS[permission]} checked={permissions.includes(permission)} onCheckedChange={checked => { setPermissions(list => toggle(list, permission, checked === true)); }} />)}</fieldset>
+   <fieldset><legend>It may</legend>{(["read", "start", "lessons"] as const).map(permission => <Checkbox key={permission} label={PERMISSION_WORDS[permission]} checked={permissions.includes(permission)} onCheckedChange={checked => { setPermissions(list => toggle(list, permission, checked === true)); }} />)}</fieldset>
    <Select label="Expires after" value={days} onValueChange={setDays} options={LIFETIMES} />
    <p className="rv-muted">A token can never make tokens, change people, roles, billing, company settings or secrets, or approve or decide anything for you.</p>
    <Button type="submit" variant="primary" busy={busy === "create"} disabled={!canCreate}>Make token</Button>

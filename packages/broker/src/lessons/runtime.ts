@@ -20,7 +20,7 @@ import { createCitationVerifier } from "./citation-verifier.js";
 import { createCodeFacts, type CodeFactsReader } from "./code-facts.js";
 import type { CounterDeps } from "./counters.js";
 import { createApproverDirectory } from "./directory.js";
-import { dynamoLearningSettings, DynamoPresetStore, DynamoSoleOwnerSwitch, DynamoTier0Settings } from "./dynamo-settings.js";
+import { dynamoLearningSettings, DynamoLocalToolsSettings, DynamoPresetStore, DynamoSoleOwnerSwitch, DynamoTier0Settings } from "./dynamo-settings.js";
 import { secondPersonTier0Authority } from "./tier0-authority.js";
 import type { PresetDeps } from "./preset-setting.js";
 import { DynamoLessonStore } from "./dynamo-store.js";
@@ -129,7 +129,7 @@ export function createLessonsRuntime(input: LessonsRuntimeInput): LessonsRuntime
   const counters: CounterDeps = { ...base, store, judge: outcomeJudge, settings, vectors: similarity.vectors };
   const presetStore = new DynamoPresetStore(input.table);
   const routes: LessonRouteDeps = {
-    ...base, store, directory, settings, access, names: input.names, sources: { table: input.table },
+    ...base, store, directory, settings, access, names: input.names, sources: { table: input.table }, localTools: new DynamoLocalToolsSettings(input.table),
     embedder: similarity.embedder, vectors: similarity.vectors, judgeModel: input.model === undefined ? REFUSING_MODEL : gatedByLessonsSwitch(input.model), spend: input.spend ?? DENYING_SPEND, ...(input.edition === undefined ? {} : { edition: input.edition }), ...(input.pause === undefined ? {} : { pause: input.pause }), ...(input.pauseStillApplies === undefined ? {} : { pauseStillApplies: input.pauseStillApplies }), verifier, facts, judge: REFUSING_JUDGE,
     // Owner decision 34: the project's own repositories, read live when a lesson is tiered or put on trial; no port or an unreadable definition is "not known", which leaves a repository-restricted lesson restricted.
     projectRepos: async (key) => {
