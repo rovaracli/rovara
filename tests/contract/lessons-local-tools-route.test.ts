@@ -128,13 +128,13 @@ describe("a project member's own sign-in", () => {
       expect(reply.body.error, repo).toEqual(missing.body.error);
     }
     // the same project of another company: a person of another company has no such project
-    const rows = w.db.find((item) => typeof item.pk === "string" && (item.pk as string).includes(OTHER_ORG));
+    const rows = w.db.find((item) => typeof item.pk === "string" && (item.pk).includes(OTHER_ORG));
     expect(rows).toEqual([]);
   });
 
   it("a lesson whose source task is narrowed by a People denial is not returned; once the task is open it is; an erased lesson is gone on the next call", async () => {
     const w = await world();
-    const open = w.source, narrowed = await w.startTask(OMAR);
+    const narrowed = await w.startTask(OMAR);
     w.pin(2, pinned("api", 1));
     await w.commit(w.teach("les_open000001"), w.teach("les_narrow0001", { provenance: { ...draft().provenance, supportTasks: [narrowed] } }));
     expect(w.ids(await w.ask(MAYA))).toEqual(["les_narrow0001", "les_open000001"]);
@@ -254,7 +254,7 @@ describe("nothing a lesson, a task, a file or a repository says is kept", () => 
     expect(counters[0]).toMatchObject({ calls: 3, lessonsReturned: 1, refused_unknown_repo: 1, refused_install_switch: 1, day: new Date().toISOString().slice(0, 10) });
     expect(String(counters[0]!.sk)).toContain(MAYA.developerId);
     const rows = JSON.stringify(w.db.find((item) => item.entityType === "LESSON_LOCAL_DAY"));
-    const everything = JSON.stringify([lines, w.audit.recorded(), rows, w.db.find((item) => item.entityType !== "LESSON" && item.entityType !== "LESSON_HEAD" && !String(item.sk ?? "").startsWith("LESSON"))]);
+    const everything = JSON.stringify([lines, w.audit.recorded(), rows, w.db.find((item) => item.entityType !== "LESSON" && item.entityType !== "LESSON_HEAD" && !(typeof item.sk === "string" && item.sk.startsWith("LESSON")))]);
     for (const secret of [SECRET_TASK, "secret-payments", "secret-repo", "other-co", "Quarantined"]) expect(everything, secret).not.toContain(secret);
   });
 });

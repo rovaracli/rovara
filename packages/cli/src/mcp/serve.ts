@@ -10,12 +10,17 @@ import {
   ADMIN_AUDIT_TOOLS, ADMIN_CHANGE_TOOLS, ADMIN_READ_TOOLS, NEXT_STEPS, NOT_OFFERED, REQUIRED_CHANGE_ADMIN_MINOR, UPGRADE_AGENTX_STEP, ToolError, adminApiFits, adminSignInExpiredError, adminSignInNotice,
   compatibilityChecker, createAgentXMcpServer, httpAdminClient, httpControlPlaneClient, type AdminOffer, type AdminSession, type Compatibility, type ControlPlaneClient,
 } from "@agentx/mcp";
+import { readCheckout, type Checkout } from "../developer/checkout.js";
 import { developerAccessToken, type DeveloperSessionDeps } from "../developer/session.js";
 import { cliCommandLine, currentCliInvocation, type CliInvocation } from "../init/cli-command.js";
 import { CLI_VERSION } from "../version.js";
 
 export interface McpServeDeps extends DeveloperSessionDeps {
   env?: string;
+  /** The directory the lessons tool reads the git checkout from (decision 46b); the process's own by default. */
+  cwd?: string;
+  /** Tests: what the checkout holds. */
+  checkout?: (cwd: string) => Promise<Checkout>;
   adminSignedIn(env: string | undefined): Promise<boolean>;
   /** Spec 025 A14: this computer's unexpired admin sign-in for the environment, or undefined. Never refreshed (Q4). */
   adminSession(env: string | undefined): Promise<AdminSession | undefined>;
@@ -162,6 +167,7 @@ export function agentxMcpServer(deps: McpServeDeps): McpServer {
       adminSignedIn: () => deps.adminSignedIn(deps.env),
       adminSignInNotice: async () => adminSignInNotice(await storedAdmin(), now(), commandFor),
       compatibility,
+      localCheckout: () => (deps.checkout ?? readCheckout)(deps.cwd ?? process.cwd()),
       admin,
       now,
       sleep: (ms: number, signal: AbortSignal) => (deps.clock === undefined ? abortableSleep(ms, signal) : deps.clock.sleep(ms, signal)),

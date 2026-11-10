@@ -274,7 +274,7 @@ export async function selectLessons(deps: LoadDeps, input: SelectInput): Promise
       return true;
     });
   };
-  let complete = true;
+  let complete: boolean;
   try {
     const checked = await readVisibleRanked({
       access: deps.access, key, viewer, where: input.where, log, live, ranked: scored.map((entry) => entry.lesson), pageSize: input.pageSize ?? CHECK_PAGE,

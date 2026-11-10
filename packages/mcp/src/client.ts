@@ -10,6 +10,7 @@ import {
   DeveloperPullRequestResponseSchema,
   DeveloperTaskListResponseSchema,
   DeveloperTaskResponseSchema,
+  LocalLessonsResponseReaderSchema,
   TASK_VIEW_HEADER,
   TASK_VIEW_VERSION,
   SessionListReaderSchema,
@@ -26,6 +27,8 @@ import {
   type DeveloperPullRequestResponse,
   type DeveloperTaskListItem,
   type DeveloperTaskStatus,
+  type LocalLessonsBody,
+  type LocalLessonsRead,
   type DeveloperTaskClientView,
   type ShareDeveloperTaskRequest,
   type RunInput,
@@ -68,6 +71,9 @@ function pinnedLink(value: unknown, baseUrl: string): string {
   }
 }
 
+/** The longest the lessons tool waits for Rovara before it says lessons are not available and the agent carries on. */
+export const LOCAL_LESSONS_DEADLINE_MS = 8_000;
+
 export interface ControlPlaneSession { baseUrl: string; accessToken: string; signInCommand: string }
 
 /** For a read inside a wait: its own deadline, and the tool call's signal, so a cancel ends it at once. */
@@ -92,6 +98,8 @@ export interface ControlPlaneClient {
   /** The environment's agentx-configuration, read without a token. */
   configuration(): Promise<{ env: string; apiVersion: string; baseUrl: string; adminApiVersion?: string; confirm?: AgentXConfigurationConfirm }>;
   projects(): Promise<DeveloperProjectsResponse>;
+  /** Decision 46b: the project-wide team lessons for one repository of `project` (POST /v1/dev/projects/{project}/lessons). Never cached; a refusal is a ToolError (PROJECT_NOT_FOUND for a repository that is not the project's). */
+  localLessons(project: string, body: LocalLessonsBody, options?: CallOptions): Promise<LocalLessonsRead>;
   startTask(request: StartDeveloperTaskRequest): Promise<DeveloperTaskClientView>;
   getTask(taskId: string, events: number, options?: CallOptions): Promise<DeveloperTaskClientView>;
   /** PLANFULLDOC: one stored version of the task's plan, whole (the latest when `version` is left out). */
@@ -345,6 +353,8 @@ export function httpControlPlaneClient(options: {
       };
     },
     projects: () => call(DeveloperProjectsResponseSchema, "GET", "/v1/dev/projects"),
+    // The agent waits on this call before it plans: a short deadline, and a few tries at most (an outage is the tool's "not available right now").
+    localLessons: (project, body, options = {}) => call(LocalLessonsResponseReaderSchema, "POST", `/v1/dev/projects/${encodeURIComponent(project)}/lessons`, body, true, { deadlineMs: LOCAL_LESSONS_DEADLINE_MS, ...options }),
     startTask: async (request) => task(await call(DeveloperTaskResponseSchema, "POST", "/v1/dev/tasks", request, true, { busyStep: START_BUSY_STEP })),
     getTask: async (taskId, events, options) => task(await call(DeveloperTaskResponseSchema, "GET", path(taskId, `?events=${events}`), undefined, true, options)),
     getTaskPlan: async (taskId, query) => {

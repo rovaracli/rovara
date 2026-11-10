@@ -5,7 +5,7 @@ describe("AgentX executable command surface", () => {
   it("exposes administration and developer sign-in; developer tasks come from AI tools", () => {
     const program = createCliProgram();
 
-    expect(program.commands.map((command) => command.name())).toEqual(["login", "logout", "whoami", "workspaces", "chatgpt", "audit", "org", "connections", "chains", "sessions", "session", "home", "agents", "skills", "approvals", "spend-requests", "task", "github", "sso", "signin", "config", "loop", "doctor", "upgrade", "bundle", "destroy", "admin", "slack", "project", "channel", "connector", "alerts", "env", "deploy", "init", "mcp"]);
+    expect(program.commands.map((command) => command.name())).toEqual(["login", "logout", "whoami", "workspaces", "chatgpt", "audit", "org", "connections", "lessons", "chains", "sessions", "session", "home", "agents", "skills", "approvals", "spend-requests", "task", "github", "sso", "signin", "config", "loop", "doctor", "upgrade", "bundle", "destroy", "admin", "slack", "project", "channel", "connector", "alerts", "env", "deploy", "init", "mcp"]);
 
     expect(subcommands(program, "org")).toEqual(["members", "role", "remove", "leave", "comment-triggers", "spend", "guardrails", "sources"]);
     // Plan 3, Task 14b: the opt-outs of the comment rule are listed here and set on the confirmation page; no command sets one.

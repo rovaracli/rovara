@@ -14,11 +14,12 @@
 //
 // Lessons that are repo-file eligible live in the merged `.rovara/lessons.md` (decision 50a). A tool that reads that file asks with `skipRepoFile` and gets only the lessons NOT already merged into that repository's file;
 // without it the lessons in the file are returned and marked `inRepoFile`, so a tool that reads both can drop the duplicates. A failed read of the file's state leaves the lesson in (a repeat is harmless; a gap is not).
-import { OrgIdSchema, cleanLessonText, type LearnedLesson, type LessonStage } from "@agentx/contracts";
+import { LOCAL_LESSONS_UNAVAILABLE_LINE, OrgIdSchema, cleanLessonText, type LearnedLesson, type LessonStage } from "@agentx/contracts";
 import type { AttributionReader } from "../attribution/resolve.js";
 import { LOAD_MAX_BYTES, LOAD_MAX_LESSONS, hasStaleCitation, selectLessons, type LoadDeps } from "./load.js";
 import { learnedLessonsSwitchOn, modeAllows, resolveLearning, resolveLoadBudget, type LearningSettingsReader, type LoadBudget } from "./policy.js";
 import { mayNameInRepository, projectRepoScopesOf } from "./project-repo-audience.js";
+import { readVisible } from "./read-visible.js";
 import { normalizeRemote } from "./repo-remote.js";
 import { hasPersonApproval } from "./repo-eligibility.js";
 import type { LessonStore, ScopeKey } from "./store.js";
@@ -49,7 +50,7 @@ export const LOCAL_OFF_MESSAGES: Readonly<Record<LocalOffReason, string>> = {
   project_setting: "Local coding tools are switched off for this project's lessons.",
 };
 /** What a tool says when Rovara cannot answer (the CLI and the MCP tool print this, and carry on). */
-export const LOCAL_UNAVAILABLE_LINE = "Rovara lessons are not available right now. Continue without them.";
+export const LOCAL_UNAVAILABLE_LINE = LOCAL_LESSONS_UNAVAILABLE_LINE;
 
 /** The two settings of decision 46b. `projectOn` is the project's own choice (absent: on, because the default is on under Standard); `companyStays` is the company's "lessons stay in Rovara" switch (absent: off). */
 export interface LocalToolsSettings { projectOn?: boolean | undefined; companyStays: boolean }
@@ -218,7 +219,10 @@ export async function lessonsForLocalTool(deps: LocalLessonsDeps, input: LocalLe
     reader: {}, where: "local_tools", budget, prefilter, ...(all ? { pageSize: ALL_PAGE } : {}),
   });
   if (!selected.ok) throw new LocalLessonsUnavailable(selected.skipped);
-  const lessons = selected.picked.map((lesson, index) => localLesson(lesson, selected.chosen[index]!, inFile?.has(lesson.id) === true));
+  // The last line before anything leaves Rovara: what was picked goes through the one read path again, as for nobody in particular, with the same reader (so no task is read twice). It can only remove a lesson.
+  let allowed: ReadonlySet<string>;
+  try { allowed = new Set((await readVisible({ access: deps.access, key, viewer: undefined, live: selected.live, lessons: selected.picked, where: "local_tools", log: deps.log })).map((lesson) => lesson.id)); } catch { throw new LocalLessonsUnavailable("access"); }
+  const lessons = selected.picked.flatMap((lesson, index) => (allowed.has(lesson.id) ? [localLesson(lesson, selected.chosen[index]!, inFile?.has(lesson.id) === true)] : []));
   const markdown = renderLocalLessons({ project: input.project, ...(repo === undefined ? {} : { repo: normalizeRemote(input.remote!)! }), lessons, at: deps.now(), complete: selected.complete });
   return { kind: "answer", answer: { status: "ok", message: "", project: input.project, ...(repo === undefined ? {} : { repo: normalizeRemote(input.remote!)! }), lessons, markdown, complete: selected.complete } };
 }

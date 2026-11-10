@@ -103,6 +103,54 @@ To see the exact entry without changing anything, use
 
 Remove it: delete the `agentx` entry under `"mcpServers"` in `~/.cursor/mcp.json`.
 
+## Team lessons in your AI tool
+
+Rovara learns short rules from your team's reviews and fixes ("amounts are integer cents", "run the
+migration before the integration tests"). Your own AI tool can ask for the ones that apply to the
+repository it is working in, before it plans or writes code. There is nothing more to install: the
+`rovara_lessons` tool arrives with the MCP server you set up above, in Claude Code, Codex and Cursor
+alike, and its description tells the AI tool when to call it (once before it plans or writes code in a
+repository, and again when it starts on a different part of the code).
+
+What it returns, and what it never does:
+
+- A short markdown block of up to five lessons, each with its id, one line of advice, one line of why
+  and, when it has one, the code it was learned from. Nothing else: no links, no task ids, no names.
+- Only lessons your whole project may read (not a lesson from a task that is shared with fewer people,
+  or from a private channel), only lessons that earned trust (stable after a trial, or approved by a
+  person), and a lesson that belongs to one repository only in that repository. This is checked every
+  time, so a lesson that is erased or narrowed is gone on the next call. Rovara keeps no copy on your
+  computer and makes no model call to answer.
+- Text your tool has already shown stays in that tool's chat history: Rovara cannot recall it. Ask your
+  AI tool not to copy lesson text into code comments, commits or pull requests (its tool description does).
+- Nothing at all, with a one-line reason, when your company keeps lessons inside Rovara, when lessons
+  are switched off for the installation or the project, or on a project that uses the Regulated
+  preset. Local tools are on by default on a project that uses the Standard preset. If Rovara cannot be
+  reached the tool says so in one line and your AI tool carries on without lessons.
+
+If the repository has a `.rovara/lessons.md` file merged by your team, Rovara leaves out the lessons
+already in that file, so your tool does not read them twice.
+
+Ask your AI tool for them by name ("get the Rovara lessons for this change") or add one line to the
+repository's `AGENTS.md`, `CLAUDE.md` or Cursor rules, so every session asks:
+
+```
+Before planning or writing code, call the rovara_lessons tool (or run `npx @preplabsai/rovara-code lessons --task '<one-line summary>'`) and follow the lessons unless my request says otherwise.
+```
+
+For a tool with no MCP support, or a script, the same answer is one command, run in a checkout of the
+repository. It reads the repository's `origin` remote (it only reads: nothing is written to git) and
+prints the block, and it prints one line and exits 0 when no lesson applies or Rovara cannot be reached:
+
+```
+npx @preplabsai/rovara-code lessons --task "add refund endpoint" --files src/refunds/handler.ts
+```
+
+Useful options: `--project <name>` when the repository is in more than one of your projects,
+`--stage plan|code|review` (code by default), `--repo <git remote>` outside a checkout, `--all` for the
+whole set for the repository in one block (up to 300 lessons), and `--json`. A script with its own
+script token can ask for the same answer; see [script-tokens.md](script-tokens.md).
+
 ## Your first task
 
 Start a new session of your AI tool and ask, for example:

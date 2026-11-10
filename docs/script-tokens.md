@@ -9,6 +9,9 @@ It is off until an operator turns it on (`agentx config set scriptTokens.enabled
 2. Give it a name (what uses it), pick the projects, and pick what it may do:
    - **Read tasks**: read your own tasks on those projects (one task, its events, the list for one project).
    - **Start tasks**: start a task on one of those projects.
+   - **Read team lessons**: read the project-wide team lessons for one repository of those projects, for a local
+     coding tool or script (see "Team lessons" below). A token made before this permission existed has only
+     **Read tasks** and **Start tasks** and cannot read lessons; make a new one.
 3. Pick how long it lasts: 30 days unless you choose, 90 days at most.
 4. Press **Make token** and copy it. Making a token needs a recent sign-in; if yours is older, Rovara asks you to
    sign in again first. Rovara shows it once and keeps only a hash of it. If you lose it, revoke it
@@ -51,3 +54,22 @@ curl -sS "$ROVARA_URL/v1/dev/tasks?project=payments" -H "Authorization: Bearer $
 
 Answers: `401` the token isn't valid, expired, was revoked or stopped (the message says which); `403` the token
 may not do that; `404` no such task on the token's projects; `429` too many requests, try again later.
+
+## Team lessons
+
+A token with **Read team lessons** can ask for the team lessons of one repository of its projects. It gets only
+what every member of the project may read, never more than you could see yourself, and nothing at all while lessons
+are switched off or your company keeps lessons inside Rovara. Send the repository's git remote (never one with a
+password in it); the task text and file names go in the body, so they stay out of any address.
+
+```sh
+curl -sS -X POST "$ROVARA_URL/v1/dev/projects/payments/lessons" \
+  -H "Authorization: Bearer $ROVARA_TOKEN" -H "content-type: application/json" \
+  -d '{"repo":"https://github.com/acme/payments-api","task":"add refund endpoint","files":["src/refunds/handler.ts"],"stage":"code"}'
+```
+
+The answer has `status` (`ok`, or `off` with a `reason` and a plain `message`), the `lessons`, and a ready-made
+`markdown` block. A repository that is not one of the project's, and a project you have no role in, both answer `404`;
+a token without the permission answers `403`. At most 60 requests a minute per person on this route. Nothing is
+cached, so an erased lesson is gone on the next request; Rovara records only how many times you asked, and how many
+lessons it returned, each day.

@@ -8,6 +8,8 @@ import {
   TaskPeopleRoleSchema, RUN_CONTEXT_KINDS, RUN_INPUT_TEXT_MAX_BYTES, ApprovalIdSchema, RunInputSchema, type RunInput, type StartAgentSelection,
   INTENT_NOT_WAITING_MESSAGE, INTENT_QUESTIONS_MAX, SessionIdSchema, CRITIC_NOT_CHECKED_LINE, CRITIC_STOPPED_AT_LIMIT_LINE, CRITIC_STOPPED_AT_SPENDING_LIMIT_LINE, formatMinutes, type WorkflowCritique,
   sessionTaskStatus, taskStatusNext, taskStatusText, formatRunLimitUsd, runLimitRaiseText,
+  LOCAL_LESSONS_AMBIGUOUS_LINE, LOCAL_LESSONS_NOT_FOUND_LINE, LOCAL_LESSONS_NO_PROJECT_LINE, LOCAL_LESSONS_STAGES, LOCAL_LESSONS_TASK_MAX, LOCAL_LESSONS_FILES_MAX, LOCAL_LESSONS_TOOL_DESCRIPTION, LOCAL_LESSONS_UNAVAILABLE_LINE,
+  lessonsAcrossProjects, type LocalLessonsAsk, type LocalLessonsBody, type LocalLessonsRead,
 } from "@agentx/contracts";
 import { z } from "zod";
 import type { AdminControlPlaneClient } from "./admin-client.js";
@@ -43,6 +45,11 @@ export interface ToolContext {
    * client that declared form elicitation. Absent, no change can be confirmed.
    */
   confirmation?(): Promise<{ elicitation: boolean; slack: boolean }>;
+  /**
+   * Decision 46b: the git checkout this server was started in, read when `rovara_lessons` is called: the `origin` remote (read only) and whether the checkout holds `.rovara/lessons.md`. Absent, or a checkout with no remote:
+   * the tool needs `repo` and `project` from the agent.
+   */
+  localCheckout?(): Promise<{ remote?: string | undefined; hasLessonsFile: boolean }>;
 }
 export interface ToolCall {
   signal: AbortSignal;
@@ -64,6 +71,11 @@ export interface ToolDefinition {
   inputSchema: z.ZodRawShape;
   outputSchema: z.ZodRawShape;
   handler(context: ToolContext, input: Record<string, unknown>, call: ToolCall): Promise<ToolResult>;
+  /**
+   * A tool an agent calls before it works, whose failure must never stop it (decision 46b): any error, the version check included, is answered with this result instead of an error result, and the version check
+   * is not made first. The result says plainly that nothing was returned.
+   */
+  unavailable?(failure: ToolError): ToolResult;
 }
 
 const taskIdInput = z.string().min(1).max(100).describe("the task ID that agentx_start_task or agentx_list_tasks gave");
@@ -595,6 +607,56 @@ function sessionText(session: SessionViewRead): string {
   const link = out.link === undefined ? "" : ` Link: ${out.link as string}.`;
   const waiting = session.approvals.length === 0 ? "" : ` Waiting for the person: ${session.approvals.map((approval) => `${plainText(approval.title, "a decision")}${approval.confirmUrl === "" ? "" : ` (${plainText(approval.confirmUrl, "")})`}`).join("; ")}. You cannot decide these: give the person each link.`;
   return `Session ${session.sessionId} "${out.title as string}"${out.project === undefined ? "" : ` on ${out.project as string}`} is "${out.status_text as string}"${out.step === undefined ? "" : `: ${out.step as string}`}. Owner: ${out.owner as string}. You have ${plainText(session.you.level, "view")} access.${link}${waiting} ${SESSION_DATA_NOTE}`;
+}
+
+const LocalLessonsOutputShape = {
+  status: z.enum(["ok", "off", "not_found", "no_project", "ambiguous", "unavailable"]).describe("ok: lessons (possibly none) for this repository; off: lessons are switched off for it and the text says why; the rest: nothing was returned and the text says why"),
+  project: z.string().optional(),
+  lessons: z.array(z.object({ id: z.string(), advice: z.string(), why: z.string().optional(), citation: z.string().optional(), in_repo_file: z.boolean().optional() })),
+  markdown: z.string().describe("the lessons as a short markdown block, or the one line that says why there are none"),
+};
+
+type LocalLessonsOutcome = { kind: "answer"; project: string; response: LocalLessonsRead } | { kind: "not_found" | "no_project" | "ambiguous" | "unavailable" };
+
+/** One project's answer for the repository, as the tool tells it: a refusal of the repository is "not found", any other failure is "unavailable" (never a guess, never a stale copy). */
+async function askProject(context: ToolContext, project: string, body: LocalLessonsBody): Promise<LocalLessonsAsk> {
+  try {
+    return { kind: "answer", response: await context.client.localLessons(project, body) };
+  } catch (error) {
+    return error instanceof ToolError && error.code === "PROJECT_NOT_FOUND" ? { kind: "not_found" } : { kind: "unavailable" };
+  }
+}
+
+async function askLocalLessons(context: ToolContext, project: string | undefined, repo: string | undefined, body: LocalLessonsBody): Promise<LocalLessonsOutcome> {
+  if (project !== undefined) {
+    const answer = await askProject(context, project, body);
+    return answer.kind === "answer" ? { kind: "answer", project, response: answer.response } : { kind: answer.kind };
+  }
+  if (repo === undefined) return { kind: "no_project" };
+  let names: string[];
+  try { names = (await context.client.projects()).projects.map((p) => p.name); } catch { return { kind: "unavailable" }; }
+  const across = await lessonsAcrossProjects(names, (name) => askProject(context, name, body));
+  return across.kind === "answer" ? across : across.kind === "none" ? { kind: "not_found" } : { kind: across.kind };
+}
+
+const LOCAL_LESSONS_LINES = { not_found: LOCAL_LESSONS_NOT_FOUND_LINE, no_project: LOCAL_LESSONS_NO_PROJECT_LINE, ambiguous: LOCAL_LESSONS_AMBIGUOUS_LINE, unavailable: LOCAL_LESSONS_UNAVAILABLE_LINE } as const;
+
+function localLessonsResult(outcome: LocalLessonsOutcome): ToolResult {
+  if (outcome.kind !== "answer") {
+    const line = LOCAL_LESSONS_LINES[outcome.kind];
+    return { structured: { status: outcome.kind, lessons: [], markdown: line }, text: line };
+  }
+  const { response } = outcome;
+  // A status this client does not know (a newer server): nothing is assumed, and the person is told to upgrade rather than shown text it cannot judge.
+  if (response.status !== "ok" && response.status !== "off") return localLessonsResult({ kind: "unavailable" });
+  return {
+    structured: {
+      status: response.status, project: outcome.project,
+      lessons: response.lessons.map((lesson) => ({ id: lesson.id, advice: lesson.advice, ...(lesson.why === undefined ? {} : { why: lesson.why }), ...(lesson.citation === undefined ? {} : { citation: lesson.citation }), ...(lesson.inRepoFile === true ? { in_repo_file: true } : {}) })),
+      markdown: response.markdown,
+    },
+    text: response.markdown,
+  };
 }
 
 export const DEVELOPER_TOOLS: readonly ToolDefinition[] = [
@@ -1569,5 +1631,29 @@ export const DEVELOPER_TOOLS: readonly ToolDefinition[] = [
       const first = typeof session.nothingRunning === "string" ? plainText(session.nothingRunning, "Nothing was running to stop.") : "Stop requested.";
       return { structured: sessionOutput(session), text: `${first} ${sessionText(session)}` };
     },
+  },
+  {
+    name: "rovara_lessons",
+    title: "Get your team's Rovara lessons for this repository",
+    description: LOCAL_LESSONS_TOOL_DESCRIPTION,
+    inputSchema: {
+      task: z.string().max(LOCAL_LESSONS_TASK_MAX).optional().describe("a one-line summary of what you are about to do; it only ranks the lessons and is never stored"),
+      files: z.array(z.string().min(1).max(400)).max(LOCAL_LESSONS_FILES_MAX).optional().describe("the files you expect to change, relative to the repository"),
+      stage: z.enum(LOCAL_LESSONS_STAGES).optional().describe("plan, code (the default) or review"),
+      repo: z.string().min(1).max(400).optional().describe("the repository's git remote; read from the checkout this server runs in when left out"),
+      project: z.string().min(1).max(100).optional().describe("the Rovara project; found from the repository when left out"),
+    },
+    outputSchema: LocalLessonsOutputShape,
+    async handler(context, input) {
+      const checkout = await context.localCheckout?.().catch(() => undefined);
+      const repo = (input.repo as string | undefined) ?? checkout?.remote;
+      const body: LocalLessonsBody = {
+        ...(repo === undefined ? {} : { repo }), ...(input.task === undefined ? {} : { task: input.task as string }),
+        ...(input.files === undefined ? {} : { files: input.files as string[] }), ...(input.stage === undefined ? {} : { stage: input.stage as LocalLessonsBody["stage"] }),
+        ...(checkout?.hasLessonsFile === true ? { skipRepoFile: true } : {}),
+      };
+      return localLessonsResult(await askLocalLessons(context, input.project as string | undefined, repo, body));
+    },
+    unavailable: () => localLessonsResult({ kind: "unavailable" }),
   },
 ];

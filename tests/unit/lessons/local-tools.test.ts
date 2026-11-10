@@ -291,7 +291,7 @@ describe("when nothing is returned, and why", () => {
     settingsDown.deps.localTools = { read: async () => { throw new Error("down"); } };
     await expect(ask(settingsDown)).rejects.toBeInstanceOf(LocalLessonsUnavailable);
     const storeDown = world();
-    storeDown.deps.store = { ...storeDown.deps.store, list: async () => { throw new Error("down"); } } as never;
+    storeDown.deps.store = { ...storeDown.deps.store, list: async () => { throw new Error("down"); } };
     await expect(ask(storeDown)).rejects.toBeInstanceOf(LocalLessonsUnavailable);
     const rosterDown = world();
     rosterDown.deps.resolveMember = async () => { throw new Error("down"); };

@@ -37,7 +37,7 @@ export function dayCounter(deps: Pick<DeveloperRouteDependencies, "documentClien
       const day = new Date(deps.now()).toISOString().slice(0, 10);
       const refused = event.refusal === undefined ? undefined : `refused_${event.refusal.replace(/[^a-z_]/gu, "").slice(0, 40)}`;
       await deps.documentClient.send(new UpdateCommand({
-        TableName: deps.tableName, Key: { pk: orgScoped(event.orgId as never, DAY_BUCKET), sk: `${event.project}#${event.developerId}#${day}` },
+        TableName: deps.tableName, Key: { pk: orgScoped(event.orgId, DAY_BUCKET), sk: `${event.project}#${event.developerId}#${day}` },
         UpdateExpression: `SET entityType = :type, #day = :day, #expires = :expires ADD calls :one, lessonsReturned :lessons${refused === undefined ? "" : ", #refused :one"}`,
         ExpressionAttributeNames: { "#day": "day", "#expires": INDEX_EXPIRY_ATTRIBUTE, ...(refused === undefined ? {} : { "#refused": refused }) },
         ExpressionAttributeValues: { ":type": "LESSON_LOCAL_DAY", ":day": day, ":expires": indexExpiresAt(new Date(deps.now()).toISOString()), ":one": 1, ":lessons": event.lessons },

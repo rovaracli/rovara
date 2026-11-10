@@ -36,3 +36,45 @@ export const LocalLessonsResponseSchema = z.object({
 export type LocalLessonsResponse = z.infer<typeof LocalLessonsResponseSchema>;
 /** What a client reads of the answer: a newer server's extra fields are kept, not refused. */
 export const LocalLessonsResponseReaderSchema = forwardReader(LocalLessonsResponseSchema);
+export type LocalLessonsRead = z.output<typeof LocalLessonsResponseReaderSchema>;
+
+/** What a local tool says, and then carries on, when Rovara cannot answer (offline, a failed read, too many requests). Never a stale copy of earlier lessons. */
+export const LOCAL_LESSONS_UNAVAILABLE_LINE = "Rovara lessons are not available right now. Continue without them.";
+/** What a tool says when the repository is not one of the project's (the broker's answer is the same as for a missing project). */
+export const LOCAL_LESSONS_NOT_FOUND_LINE = "No Rovara lessons: this repository is not one of your Rovara project's repositories. Continue without them.";
+/** The tool's own words when it cannot tell which project: no checkout remote and no project given, or several projects that hold the repository. */
+export const LOCAL_LESSONS_NO_PROJECT_LINE = "No Rovara lessons: say which Rovara project this is (pass the project), or run in a git checkout of one of its repositories. Continue without them.";
+export const LOCAL_LESSONS_AMBIGUOUS_LINE = "No Rovara lessons: this repository is in more than one of your Rovara projects. Pass the project you mean. Continue without them.";
+/** The most projects a client asks, one by one, when it was not told which project the checkout belongs to. */
+export const LOCAL_LESSONS_PROJECTS_MAX = 25;
+/** The lessons file a team merges into a repository (decision 50a); a tool that finds it in the checkout asks for the lessons that are not already in it. */
+export const LOCAL_LESSONS_REPO_FILE = ".rovara/lessons.md";
+
+/**
+ * The description given to AI tools for the lessons tool (MCP) and the line for AGENTS.md (decision 51's setup lines). One text in one place, so the tool, the docs and a test say the same thing.
+ */
+export const LOCAL_LESSONS_TOOL_DESCRIPTION = `Get your team's lessons for this repository from Rovara: short rules learned from past reviews and fixes (conventions, pitfalls, facts about this code). `
+  + `Call it once before you plan or write code in a repository, and again when you start on a different part of the code. Pass a one-line summary of the task and the files you expect to change. `
+  + `Follow the lessons unless the user's request says otherwise. It returns nothing when no lesson fits or Rovara can't be reached; then continue normally. `
+  + `Do not copy lesson text into code comments, commits or pull requests.`;
+
+/** What one project said to a client that asked it for a repository's lessons. */
+export type LocalLessonsAsk = { kind: "answer"; response: LocalLessonsRead } | { kind: "not_found" } | { kind: "unavailable" };
+export type LocalLessonsAcross =
+  | { kind: "answer"; project: string; response: LocalLessonsRead }
+  | { kind: "none" } | { kind: "ambiguous" } | { kind: "unavailable" };
+/**
+ * A client that was not told the project asks each project the person is on, one at a time, and keeps the one whose registered repositories hold the checkout's remote (the broker answers "not found" for the others,
+ * exactly as for a project that does not exist). Two projects holding the repository is `ambiguous`: the person names one. A failure of any ask is `unavailable`, never a guess. Pure over `ask`.
+ */
+export async function lessonsAcrossProjects(projects: readonly string[], ask: (project: string) => Promise<LocalLessonsAsk>): Promise<LocalLessonsAcross> {
+  let found: { project: string; response: LocalLessonsRead } | undefined;
+  for (const project of projects.slice(0, LOCAL_LESSONS_PROJECTS_MAX)) {
+    const answer = await ask(project);
+    if (answer.kind === "unavailable") return { kind: "unavailable" };
+    if (answer.kind === "not_found") continue;
+    if (found !== undefined) return { kind: "ambiguous" };
+    found = { project, response: answer.response };
+  }
+  return found === undefined ? { kind: "none" } : { kind: "answer", ...found };
+}
