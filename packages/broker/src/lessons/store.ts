@@ -91,6 +91,13 @@ export interface LessonStore {
    * takes "could not look" for "not gone". The lessons file pass decides "this block must come out" from this, not from any list of its own.
    */
   goneOf(key: ScopeKey, ids: readonly string[]): Promise<Map<string, "withdrawn" | "purged">>;
+  /**
+   * Lessons in the repo (R3, review H2): remembers the HASH of a gone lesson's text (`bodyHashOf`: a hash, never the text), durably, one row per hash, written by the deletion BEFORE it scrubs anything. Read-back refuses a bullet of
+   * the repository's file with that text when the lesson's id line is stripped (a formatter, a deleted comment): erased words do not come back as a new lesson. Idempotent.
+   */
+  markGoneText(key: ScopeKey, hash: string): Promise<void>;
+  /** Which of these text hashes belong to a gone lesson (`markGoneText`). A batched read; throws when it cannot read (never "not gone" for "could not look"). */
+  goneTextOf(key: ScopeKey, hashes: readonly string[]): Promise<Set<string>>;
   /** Hard delete: the head, every version and every load-manifest reference. The id is remembered as purged so a rollback cannot bring it back. */
   purge(key: ScopeKey, id: string): Promise<void>;
   /** Forgets a source's counters and its pause (erasure of a person, deletion of a channel). */
@@ -134,7 +141,7 @@ interface ProjectState {
   heads: Map<string, Lesson>; versions: Map<string, Lesson[]>; members: Map<string, number>; sets: SetSnapshot[];
   manifests: Map<string, LoadManifest>; once: Set<string>; pending: Map<string, PendingOutcome>; flags: ProjectFlags;
   sourceEvents: Array<{ at: number; source: string }>;
-  gone: Map<string, "withdrawn" | "purged">;
+  gone: Map<string, "withdrawn" | "purged">; goneTexts: Set<string>;
   erased: Set<string>; markRefs: Map<string, string>; harms: Map<string, Set<string>>; erasedSources: Set<string>; deletedIds: Set<string>; intents: Map<string, DeletionIntent>;
 }
 
@@ -147,7 +154,7 @@ export class InMemoryLessonStore implements LessonStore {
     const id = scopeId(key);
     let value = this.state.get(id);
     if (value === undefined) {
-      value = { heads: new Map(), versions: new Map(), members: new Map(), sets: [{ setVersion: 0, at: 0, members: [] }], manifests: new Map(), once: new Set(), pending: new Map(), flags: {}, sourceEvents: [], gone: new Map(), markRefs: new Map(), harms: new Map(), erased: new Set(), erasedSources: new Set(), deletedIds: new Set(), intents: new Map() };
+      value = { heads: new Map(), versions: new Map(), members: new Map(), sets: [{ setVersion: 0, at: 0, members: [] }], manifests: new Map(), once: new Set(), pending: new Map(), flags: {}, sourceEvents: [], gone: new Map(), goneTexts: new Set(), markRefs: new Map(), harms: new Map(), erased: new Set(), erasedSources: new Set(), deletedIds: new Set(), intents: new Map() };
       this.state.set(id, value);
     }
     return value;
@@ -263,6 +270,8 @@ export class InMemoryLessonStore implements LessonStore {
     s.versions.set(id, (s.versions.get(id) ?? []).map((v) => LessonSchema.parse({ ...fn(clone(v)), version: v.version })));
   }
   async markGone(key: ScopeKey, id: string, mode: "withdrawn" | "purged"): Promise<void> { this.of(key).gone.set(id, mode); }
+  async markGoneText(key: ScopeKey, hash: string): Promise<void> { this.of(key).goneTexts.add(hash); }
+  async goneTextOf(key: ScopeKey, hashes: readonly string[]): Promise<Set<string>> { const known = this.of(key).goneTexts; return new Set(hashes.filter((hash) => known.has(hash))); }
   async goneOf(key: ScopeKey, ids: readonly string[]): Promise<Map<string, "withdrawn" | "purged">> {
     const gone = this.of(key).gone;
     return new Map(ids.flatMap((id) => { const mode = gone.get(id); return mode === undefined ? [] : [[id, mode] as const]; }));

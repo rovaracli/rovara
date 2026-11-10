@@ -16,9 +16,9 @@
 import { createHash } from "node:crypto";
 import { LESSON_FILE_MAX_BYTES, LESSON_FILE_MAX_LESSONS } from "@agentx/contracts";
 import { hasStaleCitation } from "./trial.js";
-import { hasPersonApproval, repoFileBlockers, type RepoFileBlocker } from "./repo-eligibility.js";
+import { TEAM_FILE_TEXT, hasPersonApproval, repoFileBlockers, type RepoFileBlocker } from "./repo-eligibility.js";
 import {
-  WHOLE_REPOSITORY, applyFileChanges, blockOf, byteLength, cleanLessonLine, compareIds, looseItems, normalizeBlockText, parseLessonsFile, textHash, type ParsedFile,
+  WHOLE_REPOSITORY, applyFileChanges, blockOf, byteLength, cleanLessonLine, compareIds, looseItems, normalizeBlockText, parseLessonsFile, textHash, textPartOfFingerprint, type ParsedFile,
 } from "./repo-file-format.js";
 import type { Lesson } from "./types.js";
 
@@ -103,6 +103,8 @@ export interface PlanInput {
   /** A Rovara pull request a person pushed to is still open: only removals are proposed until it is closed or merged. */
   teamPr?: boolean;
   preset: "standard" | "regulated";
+  /** Ids read-back holds for a pass (a bulk disappearance from the file, review M1): not declined, not removed and not added back until the next pass decides. */
+  heldIds?: ReadonlySet<string>;
 }
 
 /** Why a lesson that is in the file should come out, from the lesson's own state. First match wins. */
@@ -150,7 +152,8 @@ export function planRepoFile(input: PlanInput): RepoFilePlan {
   const loose = file === undefined ? [] : looseItems(file);
   const looseByHash = new Map<string, (typeof loose)[number]>();
   for (const item of loose) if (!looseByHash.has(textHash(item.text))) looseByHash.set(textHash(item.text), item);
-  const looseOf = (lesson: Lesson): (typeof loose)[number] | undefined => looseByHash.get(textHash(normalizeBlockText(cleanLessonLine(lesson.body))));
+  // By the lesson's own text, or by the line it was made from (read-back remembers it: the cleaned text can differ from the team's line).
+  const looseOf = (lesson: Lesson): (typeof loose)[number] | undefined => looseByHash.get(textHash(normalizeBlockText(cleanLessonLine(lesson.body)))) ?? looseByHash.get(textPartOfFingerprint(input.rendered[lesson.id]) ?? "-");
   const tagged = new Set<string>();
 
   // Erasure is driven by the FILE: every block that carries a marker of a lesson Rovara knows (or knew and erased) is looked at, however it got there. An id nobody knows is a team block and is left alone.
@@ -158,6 +161,8 @@ export function planRepoFile(input: PlanInput): RepoFilePlan {
   for (const id of known) {
     const block = blockOf(file!, id)!;
     const lesson = everyLesson.get(id);
+    // A lesson that only waits for the company's approver group with the team's own text (read-back, review M3) is the team's block: not an add, not a removal for "not active", left as written until the group decides.
+    if (lesson !== undefined && lesson.status === "pending" && lesson.tierReasons.includes(TEAM_FILE_TEXT) && lesson.provenance.repoOnly?.place === input.place) { held.push(id); continue; }
     if (input.rendered[id] === undefined && !byId.has(id)) {
       // Not Rovara's to edit or hold: only a privacy reason acts (a lesson of another repository, one that is not repo-only, or one that is gone).
       const reason = privacyReasonOf(lesson, lesson === undefined ? [] : repoFileBlockers(lesson, input.place, input.names));
@@ -195,7 +200,7 @@ export function planRepoFile(input: PlanInput): RepoFilePlan {
   // A file with no marker at all says nothing about who was removed (read-back treats it as unreadable unless every text is still there; the plan never declines on it).
   if (file !== undefined && file.blocks.length > 0) {
     for (const id of Object.keys(input.rendered)) {
-      if (inFile.has(id)) continue;
+      if (inFile.has(id) || (input.heldIds?.has(id) ?? false)) continue;
       const lesson = everyLesson.get(id);
       // The id line is gone but the text is still a bullet: a formatter stripped it, the team did not remove the lesson. The pull request puts the line back (unless additions wait), and nothing is declined.
       const item = lesson === undefined || goneIds.has(id) ? undefined : looseOf(lesson);
@@ -209,7 +214,7 @@ export function planRepoFile(input: PlanInput): RepoFilePlan {
   let adds: PlanAdd[] = [];
   if (!paused) {
     const candidates = [...byId.values()]
-      .filter((lesson) => !inFile.has(lesson.id) && !declined.has(lesson.id) && !goneIds.has(lesson.id) && lesson.provenance.repoOnly?.place === input.place)
+      .filter((lesson) => !inFile.has(lesson.id) && !declined.has(lesson.id) && !(input.heldIds?.has(lesson.id) ?? false) && !goneIds.has(lesson.id) && lesson.provenance.repoOnly?.place === input.place)
       .filter((lesson) => repoFileBlockers(lesson, input.place, input.names).length === 0 && (input.preset !== "regulated" || hasPersonApproval(lesson)))
       .sort((a, b) => a.createdAt - b.createdAt || compareIds(a.id, b.id));
     for (const lesson of candidates) {

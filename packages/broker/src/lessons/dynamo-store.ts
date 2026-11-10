@@ -4,6 +4,7 @@
 // Items (sort key):
 //   LESSON#<id>                    the head: the lesson as last written, plus `latest` (the highest version ever written) and `rev` (bumped by every in-place change)
 //   LESSON#<id>#V#<version>        every version, kept for rollback
+//   LESSONSET#GONETEXT#<hash>      the hash of a gone lesson's text (R3: a stripped id line never brings erased words back)
 //   LESSON#<id>#GONE               the withdrawn / purged mark (a rollback skips a purged lesson, a commit refuses it)
 //   LESSON#<id>#REF#<hash>         a load manifest that names the lesson (so a purge finds the manifests without scanning)
 //   LESSON#<id>#ONCE#<hash>        an idempotency key whose name holds the lesson id (a purge removes them)
@@ -549,6 +550,16 @@ export class DynamoLessonStore implements LessonStore {
     const unique = [...new Set(ids)];
     const found = await this.batchGet(unique.map((id) => this.sub(key, id, "GONE")));
     return new Map(unique.flatMap((id) => { const mode = this.pick(found, this.sub(key, id, "GONE"))?.mode; return mode === "withdrawn" || mode === "purged" ? [[id, mode] as const] : []; }));
+  }
+
+  private goneTextKey(key: ScopeKey, hash: string) { return this.k(key, `LESSONSET#GONETEXT#${hash}`); }
+  async markGoneText(key: ScopeKey, hash: string): Promise<void> {
+    await this.put({ ...this.goneTextKey(key, hash), entityType: "LESSON_GONE_TEXT" });
+  }
+  async goneTextOf(key: ScopeKey, hashes: readonly string[]): Promise<Set<string>> {
+    const unique = [...new Set(hashes)];
+    const found = await this.batchGet(unique.map((hash) => this.goneTextKey(key, hash)));
+    return new Set(unique.filter((hash) => this.pick(found, this.goneTextKey(key, hash)) !== undefined));
   }
 
   async purge(key: ScopeKey, id: string): Promise<void> {

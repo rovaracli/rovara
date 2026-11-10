@@ -197,3 +197,13 @@ describe("bullets the team wrote (R3)", () => {
     expect(prTitle(plan)).toContain("1 edit");
   });
 });
+
+describe("what the status says about read-back (R3)", () => {
+  it("an unreadable file says what to do, a bulk disappearance says what Rovara will do, and a refused line is counted without its text", () => {
+    const state = { ...newRepoFileState(PLACE, "api"), problem: "file_unreadable" as const, readBackHeld: { missing: 4, digest: "0123456789abcdef", at: 1 }, refused: { "0123456789abcdef": "names_a_person" as const } };
+    const notices = noticesOf(state).join("\n");
+    expect(notices).toContain("delete the file to pause Rovara here");
+    expect(notices).toContain("4 lessons are missing from the file");
+    expect(notices).toContain("1 line in the lessons file was not read as lessons");
+  });
+});

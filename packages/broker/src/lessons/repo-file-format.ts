@@ -68,6 +68,11 @@ export function normalizeBlockText(raw: string): string {
   return raw.normalize("NFC").replace(/^\s*[-*+]\s+/u, "").replace(/\s+/gu, " ").trim();
 }
 
+/** The hash of a lesson's text as the file shows it (cleaned, comparison form): what read-back and the tombstone of a gone lesson both keep. A hash, never the text. */
+export const bodyHashOf = (body: string): string => textHash(normalizeBlockText(cleanLessonLine(body)));
+/** The text part of a block fingerprint (`<16 hex>:<8 hex>`), or undefined for a placeholder such as `merged-by-team`. */
+export const textPartOfFingerprint = (fingerprint: string | undefined): string | undefined => (fingerprint === undefined ? undefined : /^([0-9a-f]{16}):[0-9a-f]{8}$/u.exec(fingerprint)?.[1]);
+
 /** A short stable fingerprint of a text, for "did the team change it" (never shown, never a secret). */
 export const textHash = (normalized: string): string => createHash("sha256").update(normalized).digest("hex").slice(0, 16);
 

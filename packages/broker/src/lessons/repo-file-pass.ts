@@ -43,8 +43,6 @@ export interface RepoFileDeps {
   holder: string;
   /** 12 random lower-case hex digits for a branch name; the default is the platform's random bytes. */
   randomHex?(): string;
-  /** Read-back (R3): the member who made the commit a file's text came from, when the install can tie the commit's author to one (the code-host port has no such read yet, so by default nobody: the actor is "repository edit"). */
-  editorOf?: (place: string, revision: string) => Promise<string | undefined>;
   /** A new lesson id (read-back makes lessons from the team's own bullets); the default is the lessons' own random id. */
   newLessonId?: () => string;
   log?(event: string, fields: Record<string, string | number>): void;
@@ -243,7 +241,7 @@ export async function runRepoFilePass(deps: RepoFileDeps, key: ScopeKey, rawTarg
 
   let result: PassResult;
   try {
-    result = await pass(deps, key, target, state, learning.preset === "standard" ? "standard" : "regulated");
+    result = await pass(deps, key, target, state, learning.preset === "standard" ? "standard" : "regulated", learning.requiredGroups.length > 0);
   } catch (error) {
     const problem: LessonFileProblem = error instanceof Abort ? error.problem : "repository_unreadable";
     if (!(error instanceof Abort)) deps.log?.("lessons_repo_file.pass_failed", {});
@@ -257,7 +255,7 @@ export async function runRepoFilePass(deps: RepoFileDeps, key: ScopeKey, rawTarg
   return result;
 }
 
-async function pass(deps: RepoFileDeps, key: ScopeKey, target: RepoFileTarget, leased: RepoFileState, preset: "standard" | "regulated"): Promise<PassResult> {
+async function pass(deps: RepoFileDeps, key: ScopeKey, target: RepoFileTarget, leased: RepoFileState, preset: "standard" | "regulated", requireGroup: boolean): Promise<PassResult> {
   const { host, repository, scope } = target;
   const pathKind = host.pathKind!.bind(host);
   let state = leased;
@@ -354,8 +352,9 @@ async function pass(deps: RepoFileDeps, key: ScopeKey, target: RepoFileTarget, l
   let readBack: ReadBackResult | undefined;
   if (fileText !== undefined) {
     try {
-      readBack = await readBackFile({ store: deps.store, audit: deps.audit, now: () => deps.now(), ...(deps.newLessonId === undefined ? {} : { newId: deps.newLessonId }), ...(deps.editorOf === undefined ? {} : { editorOf: deps.editorOf }) }, {
-        key, place: target.place, repoName: target.name, fileText, revision: head, rendered: state.rendered, refused: state.refused ?? {}, lessons, gone, names,
+      readBack = await readBackFile({ store: deps.store, audit: deps.audit, now: () => deps.now(), ...(deps.newLessonId === undefined ? {} : { newId: deps.newLessonId }) }, {
+        key, place: target.place, repoName: target.name, fileText, rendered: state.rendered, refused: state.refused ?? {}, lessons, gone, names, requireGroup,
+        ...(state.readBackHeld === undefined ? {} : { held: { digest: state.readBackHeld.digest } }),
       });
     } catch (error) {
       if (error instanceof ReadBackFailure) throw new Abort(error.problem);
@@ -363,18 +362,24 @@ async function pass(deps: RepoFileDeps, key: ScopeKey, target: RepoFileTarget, l
     }
     if (readBack.unreadable) throw new Abort("file_unreadable");
     const done = readBack;
-    const changed = Object.keys(done.rendered).length > 0 || done.counts.retired + done.counts.imported + done.counts.refused > 0;
+    const sameRefused = JSON.stringify(done.refused) === JSON.stringify(state.refused ?? {});
+    const heldChanged = (done.held?.digest ?? "") !== (state.readBackHeld?.digest ?? "");
+    const changed = Object.keys(done.rendered).length > 0 || done.counts.retired + done.counts.imported > 0 || !sameRefused || heldChanged;
     if (changed) {
-      state = await commit(deps, key, state, (s) => ({
-        ...s, rendered: { ...s.rendered, ...done.rendered },
-        ...(done.counts.edited + done.counts.retired + done.counts.imported > 0 ? { readBack: { at: deps.now(), edited: done.counts.edited, retired: done.counts.retired, imported: done.counts.imported } } : {}),
-        ...(Object.keys(done.refused).length > 0 ? { refused: done.refused } : {}),
-      }));
+      state = await commit(deps, key, state, (s) => {
+        const next = { ...without(s, "readBackHeld", "refused") as RepoFileState, rendered: { ...s.rendered, ...done.rendered } };
+        return {
+          ...next,
+          ...(done.counts.edited + done.counts.retired + done.counts.imported > 0 ? { readBack: { at: deps.now(), edited: done.counts.edited, retired: done.counts.retired, imported: done.counts.imported } } : {}),
+          ...(Object.keys(done.refused).length > 0 ? { refused: done.refused } : {}),
+          ...(done.held === undefined ? {} : { readBackHeld: { missing: done.held.missing, digest: done.held.digest, at: deps.now() } }),
+        };
+      });
       // The lessons as read-back left them are what the plan works from.
       lessons = await deps.store.listAllHeads(key);
     }
   }
-  const plan = planRepoFile({ place: target.place, repoName: target.name, lessons, names, fileText, rendered: state.rendered, declined: state.declined, gone, addsPaused: additionsPaused({ unmerged }), teamPr, preset });
+  const plan = planRepoFile({ place: target.place, repoName: target.name, lessons, names, fileText, rendered: state.rendered, declined: state.declined, gone, addsPaused: additionsPaused({ unmerged }), teamPr, preset, ...(readBack?.held === undefined ? {} : { heldIds: new Set(readBack.held.ids) }) });
   // What the plan learned about the file is recorded whatever comes next.
   const rendered = { ...state.rendered, ...plan.adopted };
   for (const id of plan.newlyDeclined) delete rendered[id];

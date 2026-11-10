@@ -5,6 +5,8 @@ import { afterEach, describe, expect, it } from "vitest";
 import { setLearnedLessonsGate } from "../../../packages/broker/src/lessons/policy.js";
 import { parseLessonsFile } from "../../../packages/broker/src/lessons/repo-file-format.js";
 import { readBackFile, scopeOfHeading } from "../../../packages/broker/src/lessons/repo-file-readback.js";
+import { lessonDeletionPort } from "../../../packages/broker/src/lessons/deletion.js";
+import { noticesOf } from "../../../packages/broker/src/lessons/repo-file-pr.js";
 import { settings } from "./lesson-helpers.js";
 import { FILE, passSetup, repoLesson } from "./repo-file-helpers.js";
 
@@ -53,23 +55,32 @@ describe("a changed block under a known id is the team's correction", () => {
     expect((await lesson(w, "les_aaaa0002"))!.version).toBe(1);
   });
 
-  it("the actor is the commit's author when the install can map one to a member (recorded as an editor), else 'repository edit'", async () => {
+  it("a SUBSTANTIAL rewrite clears the thumbs-down and the pending removal from before it; help counts are kept (decision 76.2)", async () => {
     const w = await merged();
-    w.deps.editorOf = async () => "member-ann";
-    changeFile(w, (t) => t.replace(FIRST, "Reworded by a member of the team."));
-    await pass(w);
-    expect(w.audit.events.find((e) => e.action === "lesson.updated")).toMatchObject({ actor: "member-ann" });
+    await w.store.mutate(w.key, "les_aaaa0001", (l) => ({ counters: { ...l.counters, helpful: 3, harmful: 1 }, retireProposedAt: 5 }));
+    changeFile(w, (t) => t.replace(FIRST, "Prefer the retry wrapper in the http client and give up after three tries."));
+    expect(await pass(w)).toEqual({ status: "no_changes" });
     const after = (await lesson(w, "les_aaaa0001"))!;
-    expect(after.provenance.editors).toEqual(["member-ann"]);
-    expect(after.approvals[0]).toMatchObject({ by: "member-ann", mode: "one" });
+    expect(after.counters).toMatchObject({ helpful: 3, harmful: 0 });
+    expect(after.retireProposedAt).toBeUndefined();
   });
 
-  it("a thumbs-down from before the edit is cleared, help counts are kept", async () => {
+  it("a SMALL edit (one word) keeps the thumbs-down and the pending removal: a tiny change does not reset a lesson's record", async () => {
     const w = await merged();
-    await w.store.mutate(w.key, "les_aaaa0001", (l) => ({ counters: { ...l.counters, helpful: 3, harmful: 1 } }));
-    changeFile(w, (t) => t.replace(FIRST, "A rewritten lesson the team stands behind."));
-    expect(await pass(w)).toEqual({ status: "no_changes" });
-    expect((await lesson(w, "les_aaaa0001"))!.counters).toMatchObject({ helpful: 3, harmful: 0 });
+    await w.store.mutate(w.key, "les_aaaa0001", (l) => ({ counters: { ...l.counters, helpful: 3, harmful: 4 }, retireProposedAt: 5 }));
+    changeFile(w, (t) => t.replace(FIRST, `${FIRST.replace(/\.$/u, "")} now.`));
+    await pass(w);
+    const after = (await lesson(w, "les_aaaa0001"))!;
+    expect(after.body).toContain("now.");
+    expect(after.counters).toMatchObject({ helpful: 3, harmful: 4 });
+    expect(after.retireProposedAt).toBe(5);
+  });
+
+  it("the approval a read-back gives is honest: its approver is the repository edit, not a person", async () => {
+    const w = await merged();
+    changeFile(w, (t) => t.replace(FIRST, "Reworded by someone who can write to the repository."));
+    await pass(w);
+    expect((await lesson(w, "les_aaaa0001"))!.approvals).toMatchObject([{ by: "system:repository-edit", mode: "one" }]);
   });
 
   it("a team rewording that names a person, or asks for more access, is not taken in: recorded once with a fixed reason, the block stays held", async () => {
@@ -452,6 +463,173 @@ describe("idempotent, one way, and only where the file is switched on", () => {
   });
 });
 
+describe("review round 1 (rr3b)", () => {
+  const TEAM = "Never read the config file before the logger is ready.";
+  const strip = (id: string) => (t: string) => t.replace(new RegExp(`<!-- rovara:${id} -->\\n- [^\\n]*\\n\\n?`, "u"), "");
+  const active = async (w: W, body: string) => (await w.store.listAllHeads(w.key)).filter((l) => l.body === body && l.status === "active");
+
+  describe("H1: an imported bullet is tracked from the moment it is imported", () => {
+    it("A: deleted before the id-line pull request merges: retired, never proposed back, no live copy", async () => {
+      const w = await merged();
+      changeFile(w, (t) => `${t.trimEnd()}\n\n- ${TEAM}\n`);
+      expect(await pass(w)).toMatchObject({ status: "opened", edits: 1 });
+      changeFile(w, (t) => t.replace(`\n- ${TEAM}\n`, ""));
+      const result = await pass(w);
+      expect(await active(w, TEAM)).toEqual([]);
+      const state = await w.current();
+      expect(state.readBack).toMatchObject({ retired: 1 });
+      expect(result.status).not.toBe("opened");
+      expect(w.host.open.map((pr) => pr.body).join("\n")).not.toContain("new lesson");
+    });
+    it("A2: reworded before the id-line pull request merges: the old lesson is retired and exactly one live lesson has the new text", async () => {
+      const w = await merged();
+      changeFile(w, (t) => `${t.trimEnd()}\n\n- ${TEAM}\n`);
+      await pass(w);
+      changeFile(w, (t) => t.replace(TEAM, "Read the config file only after the logger is ready."));
+      await pass(w);
+      expect(await active(w, TEAM)).toEqual([]);
+      expect(await active(w, "Read the config file only after the logger is ready.")).toHaveLength(1);
+      expect((await w.store.listAllHeads(w.key)).filter((l) => l.provenance.reflectorRun === "repo_file" && l.status === "active")).toHaveLength(1);
+    });
+    it("records the imported bullet's fingerprint as rendered, and a bullet whose cleaned text differs from the line is not retired or imported twice", async () => {
+      const w = await merged();
+      const messy = "Call the helper <b>twice</b> before the first retry.";
+      changeFile(w, (t) => `${t.trimEnd()}\n\n- ${messy}\n`);
+      await pass(w);
+      const made = (await w.store.listAllHeads(w.key)).filter((l) => l.provenance.reflectorRun === "repo_file");
+      expect(made).toHaveLength(1);
+      expect(Object.keys((await w.current()).rendered)).toContain(made[0]!.id);
+      await pass(w);
+      await pass(w);
+      expect((await w.store.listAllHeads(w.key)).filter((l) => l.provenance.reflectorRun === "repo_file" && l.status === "active")).toHaveLength(1);
+    });
+  });
+
+  describe("H2: erased words do not come back as a new lesson when the id line is stripped", () => {
+    async function erased(w: W, id = "les_aaaa0001"): Promise<void> {
+      const port = lessonDeletionPort({ store: w.store, vectors: { get: async () => new Map(), put: async () => undefined, remove: async () => undefined }, audit: w.deps.audit, now: w.clock.now });
+      await port.withdraw(w.key.workspaceId, w.key.project, id, "sources_deleted");
+    }
+    it("D: only the erased lesson's id line is deleted: its text is not imported, now or at any later pass (refused once, recorded)", async () => {
+      const w = await merged();
+      await erased(w);
+      changeFile(w, (t) => t.replace("<!-- rovara:les_aaaa0001 -->\n", ""));
+      await pass(w);
+      expect((await w.store.listAllHeads(w.key)).filter((l) => l.body === FIRST && l.status === "active" && l.id !== "les_aaaa0001")).toEqual([]);
+      expect(Object.values((await w.current()).refused ?? {})).toEqual(["gone_text"]);
+      await pass(w);
+      await pass(w);
+      expect((await w.store.listAllHeads(w.key)).filter((l) => l.provenance.reflectorRun === "repo_file")).toEqual([]);
+    });
+    it("D2: a formatter strips EVERY comment while one lesson is erased: the others are kept and re-marked, the erased text is not imported", async () => {
+      const w = await merged();
+      await erased(w);
+      changeFile(w, (t) => t.replace(/<!--[^>]*-->\n/gu, ""));
+      await pass(w);
+      expect((await w.store.listAllHeads(w.key)).filter((l) => l.provenance.reflectorRun === "repo_file")).toEqual([]);
+      expect((await lesson(w, "les_aaaa0002"))!.status).toBe("active");
+    });
+    it("the store's tombstone of the text covers a block whose fingerprint Rovara never had (merged by the team)", async () => {
+      const w = await merged();
+      await pass(w);
+      const state = await w.current();
+      expect(await w.state.put(w.key, { ...state, rendered: { ...state.rendered, les_aaaa0001: "merged-by-team" } }, state.revision)).toBeDefined();
+      await erased(w);
+      changeFile(w, (t) => t.replace("<!-- rovara:les_aaaa0001 -->\n", ""));
+      await pass(w);
+      expect(Object.values((await w.current()).refused ?? {})).toEqual(["gone_text"]);
+      expect((await w.store.listAllHeads(w.key)).filter((l) => l.provenance.reflectorRun === "repo_file")).toEqual([]);
+    });
+    it("a deliberate re-paste after the block was removed (no id line was ever stripped) is the team's new lesson (decision 76.3)", async () => {
+      const w = await merged();
+      await erased(w);
+      // The removal pull request for the erased block is merged by the team.
+      const swept = await w.sweep();
+      expect(swept.removalOpened).toBe(true);
+      w.host.merge(w.host.open.find((pr) => pr.source.startsWith("rovara/lessons-"))!.number);
+      await pass(w);
+      changeFile(w, (t) => `${t.trimEnd()}\n\n- ${FIRST}\n`);
+      await pass(w);
+      expect((await w.store.listAllHeads(w.key)).filter((l) => l.body === FIRST && l.status === "active" && l.provenance.reflectorRun === "repo_file")).toHaveLength(1);
+    });
+  });
+
+  describe("M1: a bulk disappearance is held, not retired", () => {
+    async function eight(): Promise<W> {
+      const w = passSetup();
+      await w.seedLessons(...Array.from({ length: 8 }, (_, i) => repoLesson(`les_bbbb000${String(i + 1)}`)));
+      await w.enable();
+      const result = await w.run();
+      w.host.merge(Number((result as { number: string }).number));
+      return w;
+    }
+    it("a file cut after the first block retires nothing, says so on the status, and is not declined", async () => {
+      const w = await eight();
+      changeFile(w, (t) => t.slice(0, t.indexOf("<!-- rovara:les_bbbb0002 -->")));
+      await pass(w);
+      expect((await w.store.listAllHeads(w.key)).filter((l) => l.status === "retired")).toEqual([]);
+      const state = await w.current();
+      expect(state.readBackHeld).toMatchObject({ missing: 7 });
+      expect(state.declined).toEqual([]);
+      expect(noticesOf(state).join(" ")).toContain("7 lessons are missing from the file");
+    });
+    it("the file restored at the next pass: nothing happened", async () => {
+      const w = await eight();
+      const whole = w.host.file("main", FILE)!;
+      changeFile(w, (t) => t.slice(0, t.indexOf("<!-- rovara:les_bbbb0002 -->")));
+      await pass(w);
+      w.host.setFile("main", FILE, whole);
+      await pass(w);
+      expect((await w.store.listAllHeads(w.key)).filter((l) => l.status === "retired")).toEqual([]);
+      expect((await w.current()).readBackHeld).toBeUndefined();
+    });
+    it("the same lessons still missing at the next pass: the team meant it, they are retired then", async () => {
+      const w = await eight();
+      changeFile(w, (t) => t.slice(0, t.indexOf("<!-- rovara:les_bbbb0002 -->")));
+      await pass(w);
+      await pass(w);
+      expect((await w.store.listAllHeads(w.key)).filter((l) => l.status === "retired")).toHaveLength(7);
+      expect((await w.current()).readBackHeld).toBeUndefined();
+    });
+    it("up to max(3, 25%) removed at once are retired right away", async () => {
+      const w = await eight();
+      changeFile(w, (t) => ["les_bbbb0001", "les_bbbb0002"].reduce((text, id) => strip(id)(text), t));
+      await pass(w);
+      expect((await w.store.listAllHeads(w.key)).filter((l) => l.status === "retired")).toHaveLength(2);
+    });
+  });
+
+  describe("M2: merge-conflict markers are unreadable", () => {
+    it("a file with conflict markers changes nothing", async () => {
+      const w = await merged();
+      changeFile(w, (t) => `<<<<<<< HEAD\n${t}=======\n${t.replace(FIRST, "Their side.")}>>>>>>> branch\n\n- ${TEAM}\n`);
+      expect(await pass(w)).toEqual({ status: "problem", problem: "file_unreadable" });
+      expect((await w.store.listAllHeads(w.key)).length).toBe(2);
+    });
+    it("a line of equals signs or a fenced example is not a conflict", async () => {
+      const w = await merged();
+      changeFile(w, (t) => `${t.trimEnd()}\n\nHeading\n=======\n\n\`\`\`\n<<<<<<< HEAD\n\`\`\`\n`);
+      expect((await pass(w)).status).not.toBe("problem");
+    });
+  });
+
+  describe("M3: the company's required approver group is honoured", () => {
+    it("with a required group, a team bullet and a team edit wait for that group (pending, review required), and the team's block is neither added back nor removed", async () => {
+      const w = await merged();
+      w.deps.settings = settings({ preset: "standard", mode: "On", approval: { requiredGroup: "security" } });
+      changeFile(w, (t) => `${t.replace(FIRST, "Reworded and waiting for the group.")}\n- ${TEAM}\n`);
+      await pass(w);
+      const edited = (await lesson(w, "les_aaaa0001"))!;
+      expect(edited).toMatchObject({ status: "pending", body: "Reworded and waiting for the group.", reviewRequired: true, approvals: [] });
+      const created = (await w.store.listAllHeads(w.key)).find((l) => l.body === TEAM)!;
+      expect(created).toMatchObject({ status: "pending", reviewRequired: true, approvals: [] });
+      await pass(w);
+      expect(w.host.open.map((pr) => pr.body).join("\n")).not.toContain("Proposed removals");
+      expect((await w.current()).held).toContain("les_aaaa0001");
+    });
+  });
+});
+
 describe("readBackFile, called directly (pure over its inputs)", () => {
   it("an id of another repository's lesson is not read back into this one", async () => {
     const w = passSetup();
@@ -459,7 +637,7 @@ describe("readBackFile, called directly (pure over its inputs)", () => {
     await w.seedLessons(other);
     const text = "# Team lessons\n\n## Whole repository\n\n<!-- rovara:les_other001 -->\n- The team reworded it here.\n";
     const result = await readBackFile({ store: w.store, audit: w.deps.audit, now: w.clock.now }, {
-      key: w.key, place: "github:repo/1001", repoName: "api", fileText: text, revision: "r".repeat(40), rendered: {}, refused: {}, lessons: await w.store.listAllHeads(w.key), gone: new Set(), names: [],
+      key: w.key, place: "github:repo/1001", repoName: "api", fileText: text, rendered: {}, refused: {}, lessons: await w.store.listAllHeads(w.key), gone: new Set(), names: [],
     });
     expect(result.counts).toEqual({ edited: 0, retired: 0, imported: 0, refused: 0 });
     expect((await w.store.get(w.key, "les_other001"))!.body).not.toContain("reworded");

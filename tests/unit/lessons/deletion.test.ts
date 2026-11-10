@@ -1,6 +1,7 @@
 // Fix round 3 (record-core re-check): forgetSources prunes provenance and record citations; a lesson with nothing left to rest on is withdrawn.
 import { describe, expect, it } from "vitest";
 import { lessonDeletionPort } from "../../../packages/broker/src/lessons/deletion.js";
+import { bodyHashOf } from "../../../packages/broker/src/lessons/repo-file-format.js";
 import { InMemoryLessonStore } from "../../../packages/broker/src/lessons/store.js";
 import type { Lesson } from "../../../packages/broker/src/lessons/types.js";
 import { Audit, Clock, KEY, MemoryVectors, PROJECT, WS, codeCite, embedder, lessonRecord, seed } from "./lesson-helpers.js";
@@ -31,6 +32,18 @@ describe("lesson deletion port (learning side)", () => {
     await add(resting("les_f0000001", ["A"], { project: "proj-2" }));
     const found = await port.affected(WS, PROJECT, gone("A"));
     expect(found.map((l) => l.id).sort()).toEqual(["les_a0000001", "les_c0000001", "les_d0000001"]);
+  });
+
+  it("a lesson that goes away (withdrawn, or hard-deleted by an erasure) leaves the HASH of its text behind, written before anything is scrubbed; a lesson that only loses a source does not", async () => {
+    const { port, add, store } = setup();
+    await add(resting("les_a0000001", ["A"], { body: "Text of the withdrawn lesson." }));
+    await add(resting("les_b0000001", ["B"], { body: "Text of the lesson that keeps a source.", provenance: { ...lessonRecord().provenance, sourceEvents: ["B", "C"] } }));
+    await port.forgetSources(WS, PROJECT, "les_a0000001", gone("A"));
+    await port.forgetSources(WS, PROJECT, "les_b0000001", gone("B"));
+    expect([...await store.goneTextOf(KEY, [bodyHashOf("Text of the withdrawn lesson."), bodyHashOf("Text of the lesson that keeps a source.")])]).toEqual([bodyHashOf("Text of the withdrawn lesson.")]);
+    await add(resting("les_c0000001", ["D"], { body: "Text of the erased person's lesson." }));
+    await port.erasePerson(WS, PROJECT, { developerId: "mallory" }, gone("D"));
+    expect((await store.goneTextOf(KEY, [bodyHashOf("Text of the erased person's lesson.")])).size).toBe(1);
   });
 
   it("forgetSources prunes the deleted ids from provenance.sourceEvents AND record citations (a new version); counters survive", async () => {

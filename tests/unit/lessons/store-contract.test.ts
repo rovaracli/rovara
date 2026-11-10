@@ -47,6 +47,15 @@ describe.each(factories)("the lesson store contract (%s)", (_name, make) => {
     expect((await store.versions(KEY, "les_a0000001")).map((v) => v.title)).toEqual(["Retries use withRetry", "Second"]);
     expect((await store.snapshots(KEY)).map((s) => [s.setVersion, s.members.length])).toEqual([[0, 0], [1, 1], [2, 1]]);
   });
+  it("remembers the hash of a gone lesson's text, durably and per project (R3, review H2): a batched read says which hashes are gone, and nothing else", async () => {
+    const { store } = make();
+    const other = { ...KEY, project: "other" };
+    await store.markGoneText(KEY, "0123456789abcdef");
+    await store.markGoneText(KEY, "0123456789abcdef");
+    expect([...await store.goneTextOf(KEY, ["0123456789abcdef", "fedcba9876543210"])]).toEqual(["0123456789abcdef"]);
+    expect([...await store.goneTextOf(other, ["0123456789abcdef"])]).toEqual([]);
+    expect([...await store.goneTextOf(KEY, [])]).toEqual([]);
+  });
   it("listPage walks the set in id order a page at a time, filtered by status, and says where the next page starts (lessons connect fix 1, L6)", async () => {
     const { store } = make();
     for (let i = 1; i <= 5; i += 1) await commit(store, mk(`les_a000000${i}`, i === 3 ? { status: "retired" } : {}));

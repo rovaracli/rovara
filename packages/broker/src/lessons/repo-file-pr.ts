@@ -58,7 +58,8 @@ export function prBody(plan: RepoFilePlan, context: { pointerFiles: readonly str
 export function noticesOf(state: RepoFileState): string[] {
   const notices: string[] = [];
   if (state.fileDeleted) notices.push("The lessons file was deleted, so Rovara stopped proposing. Resume to start again.");
-  if (state.problem !== undefined) notices.push(LESSON_FILE_PROBLEM_TEXT[state.problem]);
+  if (state.problem !== undefined) notices.push(state.problem === "file_unreadable" ? `${LESSON_FILE_PROBLEM_TEXT[state.problem]}. If your team changed it on purpose, fix any broken text or merge-conflict lines and keep at least one \`<!-- rovara:... -->\` line (or delete the file to pause Rovara here)` : LESSON_FILE_PROBLEM_TEXT[state.problem]);
+  if (state.readBackHeld !== undefined) notices.push(`${plural(state.readBackHeld.missing, "lesson is", "lessons are")} missing from the file. Check the last change: if they are still missing at the next weekly check Rovara retires them`);
   const waiting = state.open?.removals ?? 0;
   if (additionsPaused(state) && !state.fileDeleted) notices.push(pausedLine(waiting));
   else if (waiting > 0) notices.push(`${plural(waiting, "removal", "removals")} waiting in your lessons PR`);

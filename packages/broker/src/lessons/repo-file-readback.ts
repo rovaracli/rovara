@@ -1,32 +1,35 @@
-// Lessons in the repo, lane R3 (owner decisions 50, 50a, 50b; LESSONS-REPO-FILE-DESIGN.md rev 2 section 6): read-back. The merged `.rovara/lessons.md` is the team's, so what the team does to it in git is taken into Rovara, ONE WAY
+// Lessons in the repo, lane R3 (owner decisions 50, 50a, 50b, 76; LESSONS-REPO-FILE-DESIGN.md rev 2 section 6): read-back. The merged `.rovara/lessons.md` is the team's, so what the team does to it in git is taken into Rovara, ONE WAY
 // (file -> Rovara), once per weekly pass, from the file the pass already read on the default branch (no new read, no new loop). It is pure text: NO model call (decision 47), no host, no clock but the one it is given.
-//   - A block whose text changed under a known id is the team's CORRECTION: the lesson's text becomes theirs, as a person edit (audited; actor is the commit author when the install can map one to a member, else "repository edit").
-//     The lesson stays repository-only for this repository (the text is repository content), harm marks from before the edit are cleared, help counts kept, and R2's hand-edit hold is released (the fingerprint Rovara
-//     remembers for the block becomes the team's, so Rovara treats the wording as its own and never overwrites it).
-//   - A known id missing from the file is RETIRED BY THE TEAM (reason "removed in the repository", audited). R2 never proposes it back.
-//   - A bullet with no id line is a NEW lesson, person-approved, repository-only for this repository, made from the text (cleaned, capped). A text that names a person, asks for a capability change, or is empty is NOT taken in; the
-//     line's fingerprint and a fixed reason are recorded (once). The next weekly pull request puts an id line before the team's bullet (`repo-file-plan.ts`), and does not touch the bullet.
-//   - An id that is gone for good in Rovara (erased, withdrawn, purged) is NEVER touched here, whatever the file says: the erasure sweep owns it, independently (a block carrying it is for R2/the sweep to remove).
+//   - A block whose text changed under a known id is the team's CORRECTION: the lesson's text becomes theirs, as a person edit (audited, actor "repository edit": the code host does not say who wrote it and read-back never needs to
+//     know, section 6). The lesson stays repository-only for this repository (the text is repository content) and R2's hand-edit hold is released (the fingerprint Rovara remembers for the block becomes the team's). A
+//     SUBSTANTIAL rewrite (`isSubstantialRewrite`) also clears harm marks and a pending removal from before it, help counts are kept; a small edit keeps them (decision 76.2).
+//   - A known id missing from the file is RETIRED BY THE TEAM (cause "removed_in_repository", audited). R2 never proposes it back. More than max(3, 25%) of the known ids missing in one change is held for a week instead (review M1).
+//   - A bullet with no id line is a NEW lesson, PERSON-APPROVED (decision 76.1: whoever can write to the repository is trusted, as with AGENTS.md; the approval is recorded honestly as the repository edit), repository-only for this
+//     repository. It is tracked from the moment it is made (its fingerprint goes in `rendered`, review H1), so deleting or rewording it before R2's id-line pull request merges is a normal retire/edit. A text that names a person, asks
+//     for a capability change, is empty, or is the text of an ERASED lesson whose id line was stripped (review H2) is NOT taken in; the line's fingerprint and a fixed reason are recorded. Where the company requires an approver group
+//     the lesson waits for that group (pending, review required) instead of being active (review M3).
+//   - An id that is gone for good in Rovara (erased, withdrawn, purged) is NEVER touched here, whatever the file says: the erasure sweep owns it, independently. A deliberate re-paste of erased text AFTER its block was removed is the
+//     team's new lesson (decision 76.3); a stripped id line is told apart from it because Rovara still remembers the block (`rendered`) or already refused that very line (`refused`, kept while the line stays).
 //   - Formatters are tolerated: texts are compared in normal form (whitespace, wrapping, bullet marker, CRLF, NFC); a change only in those is not an edit. Ids stripped by a tool that drops HTML comments are re-attached by exact text
-//     (nothing is retired). A file that cannot be trusted as read (not valid text, or one that lost EVERY marker while Rovara expects some) is UNREADABLE: nothing at all is changed this pass.
+//     (nothing is retired). A file that cannot be trusted as read (not valid text, merge-conflict markers, or one that lost EVERY marker while Rovara expects some) is UNREADABLE: nothing at all is changed this pass.
 //   - It acts only on what it can prove: a lookup that fails throws and changes nothing further; a lesson changed between the read and the write is a conflict that ends the pass (nothing is half-recorded: every step is repeatable).
 import { createHash } from "node:crypto";
 import { cleanForLearning, requestsCapabilityChange } from "./guards.js";
 import { defaultLessonId, retireLesson } from "./curate.js";
-import { firstExpiry } from "./expiry.js";
+import { firstExpiry, pendingExpiry } from "./expiry.js";
 import { emitAudit, requireAudit } from "./policy.js";
 import type { LessonAuditSink } from "./ports.js";
 import { TEAM_FILE_TEXT } from "./repo-eligibility.js";
 import {
-  WHOLE_REPOSITORY, cleanLessonLine, looseItems, normalizeBlockText, parseLessonsFile, textHash, type LooseItem,
+  WHOLE_REPOSITORY, bodyHashOf, cleanLessonLine, looseItems, normalizeBlockText, parseLessonsFile, textHash, textPartOfFingerprint, type LooseItem,
 } from "./repo-file-format.js";
 import { MAX_REFUSED, type ReadBackRefusal } from "./repo-file-state.js";
 import { nextVersion, type LessonStore, type ScopeKey } from "./store.js";
 import { classifyTier } from "./tier.js";
 import { namesAPerson } from "./trial.js";
-import { LessonSchema, distinctIds, type Lesson } from "./types.js";
+import { LessonSchema, type Lesson } from "./types.js";
 
-/** The actor of an edit or a retirement the install cannot tie to a member. */
+/** The actor of an edit, a retirement or a new lesson read back: the code host does not say who wrote the text. */
 export const REPOSITORY_EDIT_ACTOR = "repository edit";
 /** The `by` of the approval a read-back gives (not a person's id: it names no one and is never counted as a person to erase). */
 const APPROVAL_BY = "system:repository-edit";
@@ -35,6 +38,17 @@ export const REMOVED_IN_REPOSITORY = "removed_in_repository";
 /** New lessons taken in from one file in one pass (the rest wait for the next pass). */
 export const MAX_IMPORTS_PER_PASS = 50;
 const MAX_TRIES = 3;
+/** More lessons than this (the larger of three and a quarter of the known ones) missing in one change are held, not retired (review M1). */
+const bulkLimit = (known: number): number => Math.max(3, Math.ceil(known * 0.25));
+/** A rewrite is substantial when the words of the two texts overlap by less than 80% (and at least three words differ): only then does it clear what the old wording earned (decision 76.2). */
+export function isSubstantialRewrite(before: string, after: string): boolean {
+  const words = (text: string): Set<string> => new Set(text.toLowerCase().split(/[^\p{L}\p{N}]+/u).filter((word) => word !== ""));
+  const a = words(before);
+  const b = words(after);
+  const shared = [...a].filter((word) => b.has(word)).length;
+  const union = a.size + b.size - shared;
+  return union - shared >= 3 && shared / Math.max(1, union) < 0.8;
+}
 const INERT = new Set<Lesson["status"]>(["retired", "rejected", "withdrawn"]);
 const FINGERPRINT = /^([0-9a-f]{16}):([0-9a-f]{8})$/u;
 
@@ -46,14 +60,12 @@ export interface ReadBackDeps {
   audit: LessonAuditSink;
   now: () => number;
   newId?: () => string;
-  /** The member (canonical developer id) who made the commit the file's text came from, when the install can tie it to one: undefined otherwise. Never throws into the read-back. */
-  editorOf?: (place: string, revision: string) => Promise<string | undefined>;
 }
 
 export interface ReadBackInput {
   key: ScopeKey; place: string; repoName: string;
-  /** The default branch's file text, and the revision it was read at. */
-  fileText: string; revision: string;
+  /** The default branch's file text. */
+  fileText: string;
   /** What Rovara remembers: the fingerprints of the blocks it merged, and the lines it already refused. */
   rendered: Readonly<Record<string, string>>; refused: Readonly<Record<string, ReadBackRefusal>>;
   /** Every lesson of the project (any status); lessons of other repositories are ignored. */
@@ -62,6 +74,10 @@ export interface ReadBackInput {
   gone: ReadonlySet<string>;
   /** The people the text could name (display names). */
   names: readonly string[];
+  /** The company or the project requires an approver group: a lesson written in the repository waits for that group instead of being active (review M3). */
+  requireGroup?: boolean;
+  /** The lessons missing from the file at the last pass, when that many were held (`RepoFileState.readBackHeld`). */
+  held?: { digest: string };
 }
 
 export interface ReadBackResult {
@@ -72,14 +88,26 @@ export interface ReadBackResult {
   /** The refused lines after this pass (old ones kept, bounded). */
   refused: Record<string, ReadBackRefusal>;
   counts: { edited: number; retired: number; imported: number; refused: number };
+  /** A bulk disappearance held for a pass (review M1): how many are missing and which ones (a digest). Absent: nothing is held. */
+  held?: { missing: number; digest: string; ids: string[] };
 }
 
-/** The hash of a lesson's text as the file shows it. */
-const hashOfBody = (body: string): string => textHash(normalizeBlockText(cleanLessonLine(body)));
+const hashOfBody = bodyHashOf;
 const hashOfBlock = (text: string): string => textHash(normalizeBlockText(text));
 
-/** The text the file does not make safe: bytes that were not valid text come out as U+FFFD, and NUL is never in a text file. */
-const isMalformed = (text: string): boolean => text.includes("\u0000") || text.includes("�");
+/**
+ * The text the file does not make safe: bytes that were not valid text come out as U+FFFD, NUL is never in a text file, and a merge that was committed with its conflict markers (`<<<<<<<` or `>>>>>>>`, outside a code fence; a lone line of equals signs is a heading underline) holds two versions of
+ * the file at once.
+ */
+export function isMalformed(text: string): boolean {
+  if (text.includes("\u0000") || text.includes("\ufffd")) return true;
+  let fenced = false;
+  for (const line of text.split(/\r?\n/u)) {
+    if (/^\s*(?:`{3,}|~{3,})/u.test(line)) { fenced = !fenced; continue; }
+    if (!fenced && /^(?:<{7}|>{7})(?: |$)/u.test(line)) return true;
+  }
+  return false;
+}
 
 /** The scope a section heading names, the reverse of `sectionOf`: the whole repository, `Languages: a, b`, `path, path` and `path (lang, lang)`. A heading of the team's own is the whole repository. */
 export function scopeOfHeading(heading: string, repoName: string): Lesson["scope"] {
@@ -119,70 +147,80 @@ async function audited(deps: ReadBackDeps, event: Parameters<typeof requireAudit
   if (!await requireAudit(deps.audit, event)) throw new ReadBackFailure("audit_down");
 }
 
-async function editorOf(deps: ReadBackDeps, place: string, revision: string): Promise<string | undefined> {
-  if (deps.editorOf === undefined) return undefined;
-  try { return await deps.editorOf(place, revision); } catch { return undefined; }
-}
-
 /** The lessons that must be in the file: Rovara merged them and they are alive. A lesson that is gone, retired or unknown is not expected (nothing of it is lost if its marker is). */
 function expectedIds(input: ReadBackInput, byId: ReadonlyMap<string, Lesson>): string[] {
   return Object.keys(input.rendered).filter((id) => { const lesson = byId.get(id); return lesson !== undefined && !INERT.has(lesson.status) && !input.gone.has(id); });
 }
 
-async function editLesson(deps: ReadBackDeps, key: ScopeKey, id: string, body: string, actor: string, member: string | undefined): Promise<boolean> {
+/** A lesson Rovara may take the team's wording into: one it is using, or one that only waits for an approver group with the team's own text. */
+const editable = (lesson: Lesson): boolean => lesson.status === "active" || (lesson.status === "pending" && lesson.tierReasons.includes(TEAM_FILE_TEXT));
+
+/** What a lesson written in the repository is: person-approved by the repository edit (decision 76.1), or, where an approver group is required, waiting for that group (pending, review required, no approval). */
+function approvalOf(deps: ReadBackDeps, now: number, requireGroup: boolean): Pick<Lesson, "status" | "approvals"> & Partial<Pick<Lesson, "reviewRequired" | "pendingExpiresAt">> {
+  if (requireGroup) return { status: "pending", approvals: [], reviewRequired: true, pendingExpiresAt: pendingExpiry(now) };
+  return { status: "active", approvals: [{ approvalId: (deps.newId ?? defaultLessonId)(), by: APPROVAL_BY, at: now, mode: "one" }] };
+}
+
+async function editLesson(deps: ReadBackDeps, key: ScopeKey, id: string, body: string, requireGroup: boolean): Promise<boolean> {
   for (let attempt = 0; attempt < MAX_TRIES; attempt += 1) {
     const fresh = await deps.store.get(key, id);
-    if (fresh === undefined || fresh.status !== "active") return false;
+    if (fresh === undefined || !editable(fresh)) return false;
+    // Repeating a finished edit (the state was not saved after it): nothing more to do.
+    if (fresh.body === body && fresh.tierReasons.includes(TEAM_FILE_TEXT)) return true;
     const now = deps.now();
-    if (fresh.body === body && fresh.approvals.some((a) => a.by === APPROVAL_BY || a.by === member) && fresh.tierReasons.includes(TEAM_FILE_TEXT)) return true;
-    const title = titleOf(body);
-    const working: Lesson = { ...fresh, title, description: "", body };
+    const working: Lesson = { ...fresh, title: titleOf(body), description: "", body };
     // The tier is worked out again on the team's words (an edit can raise a tier, never lower it); the lesson keeps being the team's text (`TEAM_FILE_TEXT`), so R2 never takes the block out for its tier.
-    const decision = classifyTier({ ...working, provenance: working.provenance }, { contradiction: fresh.contradictsWith !== undefined }, { tier: fresh.tier, reasons: fresh.tierReasons.filter((r) => r !== TEAM_FILE_TEXT) });
+    const decision = classifyTier(working, { contradiction: fresh.contradictsWith !== undefined }, { tier: fresh.tier, reasons: fresh.tierReasons.filter((r) => r !== TEAM_FILE_TEXT) });
     if (decision.tier === "never") return false;
-    // A person's edit is a new text: the approvals given to the old text do not carry over. The team's merge is the approval, and a trial it was on is over.
-    const approval = { approvalId: (deps.newId ?? defaultLessonId)(), by: member ?? APPROVAL_BY, at: now, mode: "one" as const };
-    const provenance = { ...fresh.provenance, ...(member === undefined ? {} : { editors: distinctIds([...(fresh.provenance.editors ?? []), member]) }) };
+    // A person's edit is a new text: the approvals given to the old text do not carry over. The repository edit is the approval, and a trial the lesson was on is over. `reviewRequired` is never cleared here: only a person does that.
     const next: Lesson = {
       ...working, version: nextVersion(fresh, await deps.store.versions(key, id)), tier: decision.tier, tierReasons: [...new Set([...decision.reasons, TEAM_FILE_TEXT])].slice(0, 12),
-      approvals: [approval], provenance, updatedAt: now,
+      ...approvalOf(deps, now, requireGroup), updatedAt: now,
     };
     delete (next as { trial?: Lesson["trial"] }).trial;
-    delete (next as { reviewRequired?: boolean }).reviewRequired;
-    await audited(deps, { action: "lesson.updated", workspaceId: key.workspaceId, project: key.project, lessonId: id, actor, facts: { tier: decision.tier, fromTier: fresh.tier, cause: "repository_edit" } });
+    // A lesson that only waited for a group (no group is required any more) goes live on the repository edit; one a person marked for review keeps the mark.
+    if (!requireGroup && fresh.status === "pending") { delete (next as { reviewRequired?: boolean }).reviewRequired; delete (next as { pendingExpiresAt?: number }).pendingExpiresAt; }
+    await audited(deps, requireGroup
+      ? { action: "lesson.pending", workspaceId: key.workspaceId, project: key.project, lessonId: id, actor: REPOSITORY_EDIT_ACTOR, facts: { tier: decision.tier, cause: "repository_edit" } }
+      : { action: "lesson.updated", workspaceId: key.workspaceId, project: key.project, lessonId: id, actor: REPOSITORY_EDIT_ACTOR, facts: { tier: decision.tier, fromTier: fresh.tier, cause: "repository_edit" } });
+    // A substantial rewrite clears harm marks and a pending removal from before it (help counts are kept). Done BEFORE the new version, so a crash between the two leaves the same decision to repeat (the text still differs).
+    if (isSubstantialRewrite(fresh.body, body) && (fresh.counters.harmful > 0 || fresh.retireProposedAt !== undefined)) {
+      delete (next as { retireProposedAt?: number }).retireProposedAt;
+      await deps.store.mutate(key, id, (l) => ({ ...(l.counters.harmful > 0 ? { counters: { ...l.counters, harmful: 0 } } : {}), ...(l.retireProposedAt === undefined ? {} : { retireProposedAt: undefined as unknown as number }) }));
+    }
     const result = await deps.store.commit(key, await deps.store.setVersion(key), [next], now);
-    if (!result.ok) continue;
-    // Harm marks from before the edit are cleared (the team has read and reworded it), help counts are kept.
-    await deps.store.mutate(key, id, (l) => ({ ...(l.counters.harmful > 0 ? { counters: { ...l.counters, harmful: 0 } } : {}), ...(l.retireProposedAt === undefined ? {} : { retireProposedAt: undefined as unknown as number }) }));
-    return true;
+    if (result.ok) return true;
   }
   return false;
 }
 
-async function importLesson(deps: ReadBackDeps, input: ReadBackInput, item: LooseItem, body: string, actor: string, member: string | undefined): Promise<boolean> {
+/** Makes the lesson of one bullet the team wrote. Returns its id, or undefined when it could not be written (conflict) or the text is never allowed. */
+async function importLesson(deps: ReadBackDeps, input: ReadBackInput, item: LooseItem, body: string): Promise<string | undefined> {
   const { key } = input;
   const now = deps.now();
   const title = titleOf(body);
   const scope = scopeOfHeading(item.heading, input.repoName);
   const stages: Lesson["stages"] = ["UNDERSTAND", "PLAN", "IMPLEMENT"];
   const decision = classifyTier({ type: "convention", stages, scope, citations: [], title, description: "", body, provenance: { minTrust: "member", audience: { kind: "project" } } });
-  if (decision.tier === "never") return false;
+  if (decision.tier === "never") return undefined;
   for (let attempt = 0; attempt < MAX_TRIES; attempt += 1) {
     const lesson: Lesson = LessonSchema.parse({
       id: (deps.newId ?? defaultLessonId)(), version: 1, workspaceId: key.workspaceId, project: key.project, scope, type: "convention", stages, title, description: "", body, citations: [],
       provenance: {
-        sourceEvents: [], sourceKinds: [], authors: [], ...(member === undefined ? {} : { editors: [member] }), supportTasks: [], sources: [], inputSources: [], measured: false, minTrust: "member", audience: { kind: "project" },
+        sourceEvents: [], sourceKinds: [], authors: [], supportTasks: [], sources: [], inputSources: [], measured: false, minTrust: "member", audience: { kind: "project" },
         reflectorRun: "repo_file", model: "none", memberSignal: true, sourceScopes: [input.place], repoOnly: { place: input.place },
       },
-      tier: decision.tier, tierReasons: [...new Set([...decision.reasons, TEAM_FILE_TEXT])].slice(0, 12), status: "active",
-      counters: { loaded: 0, helpful: 0, harmful: 0, citationStale: 0 }, staleAt: [], expiresAt: firstExpiry("convention", now, undefined),
-      approvals: [{ approvalId: (deps.newId ?? defaultLessonId)(), by: member ?? APPROVAL_BY, at: now, mode: "one" }], createdAt: now, updatedAt: now,
+      tier: decision.tier, tierReasons: [...new Set([...decision.reasons, TEAM_FILE_TEXT])].slice(0, 12),
+      counters: { loaded: 0, helpful: 0, harmful: 0, citationStale: 0 }, staleAt: [], expiresAt: firstExpiry("convention", now, undefined), createdAt: now, updatedAt: now,
+      ...approvalOf(deps, now, input.requireGroup === true),
     });
-    await audited(deps, { action: "lesson.activated", workspaceId: key.workspaceId, project: key.project, lessonId: lesson.id, actor, facts: { tier: lesson.tier, type: lesson.type, approvals: 1, cause: "repository_edit" } });
+    await audited(deps, lesson.status === "pending"
+      ? { action: "lesson.pending", workspaceId: key.workspaceId, project: key.project, lessonId: lesson.id, actor: REPOSITORY_EDIT_ACTOR, facts: { tier: lesson.tier, type: lesson.type, cause: "repository_edit" } }
+      : { action: "lesson.activated", workspaceId: key.workspaceId, project: key.project, lessonId: lesson.id, actor: REPOSITORY_EDIT_ACTOR, facts: { tier: lesson.tier, type: lesson.type, approvals: 1, cause: "repository_edit" } });
     const result = await deps.store.commit(key, await deps.store.setVersion(key), [lesson], now);
-    if (result.ok) return true;
+    if (result.ok) return lesson.id;
   }
-  return false;
+  return undefined;
 }
 
 /**
@@ -195,15 +233,17 @@ export async function readBackFile(deps: ReadBackDeps, input: ReadBackInput): Pr
   const { key } = input;
   const file = parseLessonsFile(input.fileText);
   const loose = looseItems(file);
-  const looseHashes = new Set(loose.map((item) => textHash(item.text)));
+  const looseHashes = new Set(loose.map((item) => hashOfBlock(item.text)));
   const mine = input.lessons.filter((lesson) => lesson.provenance.repoOnly?.place === input.place || input.rendered[lesson.id] !== undefined);
   const byId = new Map(mine.map((lesson) => [lesson.id, lesson]));
   const inFile = new Set(file.blocks.map((block) => block.id));
+  /** Whether a lesson's text is still in the file as a bullet: by its own text, or by the line it was made from (the cleaned text can differ from the line). */
+  const textStillThere = (lesson: Lesson): boolean => looseHashes.has(hashOfBody(lesson.body)) || looseHashes.has(textPartOfFingerprint(input.rendered[lesson.id]) ?? "-");
 
   // A file with NO marker left while Rovara expects some is a file a tool stripped (or an emptied one): readable only if every expected lesson's own text is still there as a bullet (the next pull request puts the ids back).
   // Anything else is unreadable: "the team retired everything" is never concluded from a file that lost all its markers.
   const expected = expectedIds(input, byId);
-  if (file.blocks.length === 0 && expected.length > 0 && !expected.every((id) => looseHashes.has(hashOfBody(byId.get(id)!.body)))) return { ...nothing, unreadable: true };
+  if (file.blocks.length === 0 && expected.length > 0 && !expected.every((id) => textStillThere(byId.get(id)!))) return { ...nothing, unreadable: true };
 
   const result = nothing;
   const refuse = (hash: string, reason: ReadBackRefusal): void => {
@@ -212,22 +252,13 @@ export async function readBackFile(deps: ReadBackDeps, input: ReadBackInput): Pr
     result.refused[hash] = reason;
     result.counts.refused += 1;
   };
-  const actors = new Map<string, { actor: string; member: string | undefined }>();
-  const actorFor = async (): Promise<{ actor: string; member: string | undefined }> => {
-    const cached = actors.get(input.revision);
-    if (cached !== undefined) return cached;
-    const member = await editorOf(deps, input.place, input.revision);
-    const found = { actor: member ?? REPOSITORY_EDIT_ACTOR, member };
-    actors.set(input.revision, found);
-    return found;
-  };
 
   // 1. Changed text under a known id: the team's correction.
   for (const block of file.blocks) {
     if (file.duplicates.includes(block.id) || input.gone.has(block.id)) continue;
     const lesson = byId.get(block.id);
-    // Only a lesson Rovara is using takes the team's wording in; one that is expired, stale or retired keeps its block exactly as the team wrote it (R2's hold) and Rovara's own reasons for it stay as they are.
-    if (lesson === undefined || lesson.status !== "active") continue;
+    // Only a lesson Rovara is using (or one waiting for its group with the team's text) takes the team's wording in; one that is expired, stale or retired keeps its block exactly as the team wrote it (R2's hold).
+    if (lesson === undefined || !editable(lesson)) continue;
     const remembered = input.rendered[block.id];
     const match = remembered === undefined ? null : FINGERPRINT.exec(remembered);
     const baseline = match === null ? hashOfBody(lesson.body) : match[1]!;
@@ -237,47 +268,66 @@ export async function readBackFile(deps: ReadBackDeps, input: ReadBackInput): Pr
     const headingPart = match === null ? undefined : match[2]!;
     const decision = admit(block.text, input.names);
     if (!decision.ok) { refuse(now, decision.reason); continue; }
-    const { actor, member } = await actorFor();
-    if (!await editLesson(deps, key, block.id, decision.body, actor, member)) throw new ReadBackFailure("conflict");
+    if (!await editLesson(deps, key, block.id, decision.body, input.requireGroup === true)) throw new ReadBackFailure("conflict");
     result.rendered[block.id] = `${now}:${headingPart ?? hashOfHeading(block.heading)}`;
     result.counts.edited += 1;
   }
 
   // 2. A known id the file no longer has: retired by the team. Not when its text is still there as a bullet (a tool stripped the marker), and never a lesson that is gone for good (the erasure sweep's).
-  for (const id of Object.keys(input.rendered)) {
-    if (inFile.has(id) || input.gone.has(id)) continue;
+  const missing = Object.keys(input.rendered).filter((id) => {
+    if (inFile.has(id) || input.gone.has(id)) return false;
     const lesson = byId.get(id);
-    if (lesson === undefined || INERT.has(lesson.status)) continue;
-    if (looseHashes.has(hashOfBody(lesson.body))) continue;
-    const { actor } = await actorFor();
-    await retireLesson({ store: deps.store, now: deps.now, audit: deps.audit }, key, id, REMOVED_IN_REPOSITORY, actor, "lesson.retired", { cause: REMOVED_IN_REPOSITORY });
-    const after = await deps.store.get(key, id);
-    if (after !== undefined && !INERT.has(after.status)) throw new ReadBackFailure("conflict");
-    result.counts.retired += 1;
+    return lesson !== undefined && !INERT.has(lesson.status) && !textStillThere(lesson);
+  }).sort();
+  let retire = true;
+  if (missing.length > bulkLimit(expected.length)) {
+    // One bad merge or a truncated file must not retire most of the lessons at once: hold them for this pass. The same ones still missing at the next pass were removed on purpose (the file did not change back).
+    const digest = createHash("sha256").update(missing.join("\n")).digest("hex").slice(0, 16);
+    if (input.held?.digest !== digest) { retire = false; result.held = { missing: missing.length, digest, ids: missing }; }
+  }
+  if (retire) {
+    for (const id of missing) {
+      await retireLesson({ store: deps.store, now: deps.now, audit: deps.audit }, key, id, REMOVED_IN_REPOSITORY, REPOSITORY_EDIT_ACTOR, "lesson.retired", { cause: REMOVED_IN_REPOSITORY });
+      const after = await deps.store.get(key, id);
+      if (after !== undefined && !INERT.has(after.status)) throw new ReadBackFailure("conflict");
+      result.counts.retired += 1;
+    }
   }
 
   // 3. A bullet with no id: a new lesson the team wrote.
-  const aliveTexts = new Set(input.lessons.filter((lesson) => !INERT.has(lesson.status) && !input.gone.has(lesson.id)).map((lesson) => hashOfBody(lesson.body)));
+  const alive = input.lessons.filter((lesson) => !INERT.has(lesson.status) && !input.gone.has(lesson.id));
+  const aliveTexts = new Set(alive.flatMap((lesson) => [hashOfBody(lesson.body), textPartOfFingerprint(input.rendered[lesson.id])].filter((h): h is string => h !== undefined)));
+  // Erased words do not come back through a stripped id line. A bullet is the text of an erased lesson when Rovara still remembers that lesson's block as merged (its marker was in the file at the last pass and is not now), when this very
+  // line was refused for it before (kept while the line stays), or when the store's tombstone knows the text and the block's fingerprint is not known. A re-paste after the block was removed has none of these: it is the team's new lesson.
+  const goneIds = Object.keys(input.rendered).filter((id) => input.gone.has(id));
+  const staleGone = new Set(goneIds.map((id) => textPartOfFingerprint(input.rendered[id])).filter((h): h is string => h !== undefined));
+  const staleUnknown = goneIds.some((id) => textPartOfFingerprint(input.rendered[id]) === undefined);
+  let goneTexts: Set<string>;
+  try { goneTexts = staleUnknown ? await deps.store.goneTextOf(key, [...looseHashes]) : new Set(); } catch { throw new ReadBackFailure("repository_unreadable"); }
   let imports = 0;
   for (const item of loose) {
-    const hash = textHash(item.text);
-    if (aliveTexts.has(hash) || input.refused[hash] !== undefined) continue;
+    const hash = hashOfBlock(item.text);
+    if (aliveTexts.has(hash)) continue;
+    if (staleGone.has(hash) || input.refused[hash] === "gone_text" || goneTexts.has(hash)) { refuse(hash, "gone_text"); continue; }
+    if (input.refused[hash] !== undefined) continue;
     if (imports >= MAX_IMPORTS_PER_PASS) break;
     const decision = admit(item.text, input.names);
     if (!decision.ok) { refuse(hash, decision.reason); continue; }
     // The cleaned text may differ from the line (redaction, markup): a lesson with that text already is the same advice.
     const cleanedHash = hashOfBody(decision.body);
     if (aliveTexts.has(cleanedHash)) continue;
-    const { actor, member } = await actorFor();
-    if (!await importLesson(deps, input, item, decision.body, actor, member)) throw new ReadBackFailure("conflict");
+    const id = await importLesson(deps, input, item, decision.body);
+    if (id === undefined) throw new ReadBackFailure("conflict");
+    // Tracked from now on, like a block Rovara merged: deleting or rewording the bullet before the id-line pull request merges is a retirement or an edit, never a second copy (review H1).
+    result.rendered[id] = `${hash}:${hashOfHeading(item.heading)}`;
     aliveTexts.add(hash); aliveTexts.add(cleanedHash);
     imports += 1;
     result.counts.imported += 1;
   }
 
-  // Refusals are recorded once and bounded: the oldest go first.
-  const entries = Object.entries(result.refused);
-  if (entries.length > MAX_REFUSED) result.refused = Object.fromEntries(entries.slice(-MAX_REFUSED));
+  // Refusals are kept only while the line is in the file (a line that was taken out and put back is judged again), and bounded.
+  const present = new Set([...looseHashes, ...file.blocks.map((block) => hashOfBlock(block.text))]);
+  result.refused = Object.fromEntries(Object.entries(result.refused).filter(([hash]) => present.has(hash)).slice(-MAX_REFUSED));
   // A refusal is told once, in the ledger, fixed words only (best effort: it grants nothing).
   if (result.counts.refused > 0) await emitAudit(deps.audit, { action: "lesson.refused", workspaceId: key.workspaceId, project: key.project, actor: REPOSITORY_EDIT_ACTOR, facts: { reason: "repository_text_not_taken", count: result.counts.refused } });
   return result;

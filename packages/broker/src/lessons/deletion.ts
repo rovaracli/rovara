@@ -12,6 +12,7 @@
 // Person erasure (cause "person_erased"; privacy wins over reproducibility, as for snapshots in §4.13): every lesson the person wrote, or that rests ONLY on
 // their rows, is hard-deleted whatever its code citations say (head, all versions, vector, load-manifest references). Lessons others also support lose the
 // person's id and rows from every version and are kept.
+import { bodyHashOf } from "./repo-file-format.js";
 import { reverseHarm } from "./counters.js";
 import { emitAudit } from "./policy.js";
 import type { LessonAuditSink, LessonVectors } from "./ports.js";
@@ -141,6 +142,11 @@ export function lessonDeletionPort(deps: DeletionDeps): LessonDeletionPort {
     // A deletion that was started and not finished is finished first, as it was decided.
     for (const open of await deps.store.listIntents(k, { finished: false })) if (open.lessonId === partial.lessonId) await execute(k, open);
     await deps.store.fence(k, { ...(partial.erased === undefined ? {} : { people: [partial.erased] }), ids: partial.deleted });
+    // Lessons in the repo (R3): the hash of the text of a lesson that is going away is kept before anything is scrubbed, so a bullet of the repository's file with that text and no id line is not read back as a new lesson.
+    if (partial.outcome === "withdraw" || partial.outcome === "purge") {
+      const head = await deps.store.getHead(k, partial.lessonId);
+      if (head !== undefined) await deps.store.markGoneText(k, bodyHashOf(head.body));
+    }
     const intent: DeletionIntent = { ...partial, id: (deps.newId ?? randomUUID)(), done: [], finished: false, at: deps.now() };
     await deps.store.putIntent(k, intent);
     await execute(k, intent);
