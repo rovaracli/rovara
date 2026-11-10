@@ -245,8 +245,8 @@ class Ledger:
                     del self.holds[cid]; row["held"] -= h["r"]; row["charged"] += h["r"]
             if max(row["charged"], spent) + row["held"] + worst <= cap:
                 row["held"] += worst; self.holds[call_id] = {"key": key, "r": worst, "expires": self.clock + ns["HOLD_SECONDS"]}
-                return "ok"
-            return "exceeded" if max(row["charged"], spent) + worst > cap else "held"
+                return "ok", None
+            return ("exceeded" if max(row["charged"], spent) + worst > cap else "held"), row["charged"]
     async def settle(self, call_id, cost):
         async with self.lock:
             h = self.holds.pop(call_id, None)
@@ -300,8 +300,13 @@ async def refusals():
     unknown = await pre(g, Key(cap=1.0, token="k5"), req(model="m-nowhere"))
     no_budget = await pre(g, Key(cap=None, token="k6"), req(model="m-nowhere"))
     no_key_object = await pre(g, {}, req())
+    # room for about 10,000 output tokens, 64,000 asked: the largest affordable limit is offered, and the call sent again with it is held
+    big = req(max_tokens=64000); room = worst(dict(big, max_tokens=10_000))
+    hint = await pre(g, Key(cap=room / 1e6, token="k7"), big)
+    again = await pre(g, Key(cap=room / 1e6, token="k7"), dict(req(max_tokens=int(hint["headers"]["x-rovara-max-tokens"]))))
+    hint_anth = await pre(g, Key(cap=room / 1e6, token="k8"), req(model="m-own", route="anthropic_messages", max_tokens=64000), "anthropic_messages")
     return {"spent": spent, "charged": charged, "too_big": too_big, "anth": anth, "unpriced": unpriced, "unknown": unknown, "no_budget": no_budget,
-            "no_key_object": no_key_object, "ledger_keys": sorted(ledger.keys)}
+            "no_key_object": no_key_object, "ledger_keys": sorted(ledger.keys), "hint": hint, "again": again, "hint_anth": hint_anth}
 
 async def settling():
     out = {}
@@ -360,6 +365,16 @@ async def settling():
     await g.async_log_failure_event({"litellm_call_id": slow["litellm_call_id"], "exception": Timeout()}, None, None, None)
     await g.async_log_success_event({"litellm_call_id": slow["litellm_call_id"], "response_cost": 0.003}, None, None, None)
     out["retried"] = dict(state(ledger), each=worst(slow))
+    # N1: a failed attempt whose call never reaches the failure hook is settled after the grace (released), not held until it expires; a 499 is charged
+    ledger = ns["_LEDGER"] = Ledger(); g = guard()
+    lone, gone = req(), req()
+    for d in (lone, gone): await pre(g, Key(cap=1.0), d)
+    await g.async_log_failure_event({"litellm_call_id": lone["litellm_call_id"], "exception": Upstream()}, None, None, None)
+    class ClientGone(Exception): status_code = 499
+    await g.async_post_call_failure_hook(gone, ClientGone(), None)
+    before = state(ledger)
+    await asyncio.sleep(0.1)
+    out["lone_failure"] = {"before": before, "after": state(ledger), "each": worst(gone)}
     # an orphan (its replica died) is charged its whole hold once it is older than HOLD_SECONDS, at the key's next take
     ledger = ns["_LEDGER"] = Ledger(); g1, g2 = guard(), guard()
     lost = req(); await pre(g1, Key(cap=1.0), lost)
@@ -367,6 +382,28 @@ async def settling():
     ledger.clock += 2; await pre(g2, Key(cap=1.0), req()); old = state(ledger)
     out["orphan"] = {"young": young, "old": old, "each": worst(lost)}
     return out
+
+class FakeDb:
+    """Records the statements the Postgres ledger sends; answers a take as held. fail_next makes the next statement raise once."""
+    def __init__(self): self.sent, self.fail_next = [], False
+    async def _go(self, sql):
+        await asyncio.sleep(0.001)
+        if self.fail_next: self.fail_next = False; raise RuntimeError("relation does not exist")
+        self.sent.append(sql.split(" (")[0][:60])
+    async def execute_raw(self, sql, *args): await self._go(sql); return 1
+    async def query_raw(self, sql, *args): await self._go(sql); return [{"call_id": args[4]}] if "INSERT INTO rovara_budget.holds" in sql else []
+
+async def postgres():
+    db = FakeDb(); server.prisma_client = types.SimpleNamespace(db=db); ledger = ns["_PostgresLedger"]()
+    await asyncio.gather(*(ledger.take("k", f"c{i}", 1, 0, 100) for i in range(5)))
+    first = list(db.sent)
+    db.fail_next = True
+    try: await ledger.take("k", "c9", 1, 0, 100); failed = False
+    except RuntimeError: failed = True
+    after_error = ledger._ready
+    db.sent.clear(); await ledger.take("k", "c10", 1, 0, 100)
+    return {"schema_runs": sum(1 for s in first if s.startswith("CREATE SCHEMA")), "first": first[:6], "failed": failed, "ready_after_error": after_error,
+            "again": db.sent[:2], "statements": [ns[n] for n in ("_SQL_TAKE", "_SQL_SETTLE", "_SQL_SWEEP")]}
 
 async def worst_cases():
     p = ns["_prices_for"]("m-anth"); own = ns["_prices_for"]("m-own")
@@ -377,11 +414,15 @@ async def worst_cases():
     inline = [{"role": "user", "content": [{"type": "image_url", "image_url": {"url": "data:image/png;base64,AAAA"}}]}]
     argument = [{"role": "assistant", "content": [{"type": "tool_use", "id": "t", "name": "fetch", "input": {"url": "https://example.com"}}]}]
     per_call = ns["_prices_for"]("m-percall")
+    citation = [{"role": "assistant", "content": [{"type": "text", "text": "see", "citations": [{"type": "web_search_result_location", "url": "https://example.com/x"}]}]}]
+    file_uri = [{"role": "user", "content": [{"type": "file", "file": {"file_uri": "gs://bucket/a.pdf"}}]}]
+    s3 = [{"role": "user", "content": [{"image": {"format": "png", "source": {"s3Location": {"uri": "s3://bucket/a.png"}}}}]}]
     return {"prices": p, "own": own, "named": w(max_tokens=1000), "none": w(), "over_model": w(max_tokens=10_000_000), "responses": w(max_output_tokens=1000),
             "completion": w(max_completion_tokens=1000), "big": w(max_tokens=1000, messages=[{"role": "user", "content": "x" * 100_000}]),
             "both": w(max_tokens=100, max_completion_tokens=1000), "remote": w(max_tokens=1000, messages=url_image),
             "file_id": w(max_tokens=1000, messages=[{"role": "user", "content": [{"type": "input_file", "file_id": "f1"}]}]),
             "inline": w(max_tokens=1000, messages=inline), "argument": w(max_tokens=1000, messages=argument),
+            "citation": w(max_tokens=1000, messages=citation), "file_uri": w(max_tokens=1000, messages=file_uri), "s3": w(max_tokens=1000, messages=s3),
             "per_call": [ns["_worst_case_micros"]({"model": "m-percall", "max_tokens": 1000}, per_call), ns["_request_bytes"]({"model": "m-percall", "max_tokens": 1000})],
             "plain_size": len(json.dumps({"model": "m-anth", "messages": [], "max_tokens": 1000}, ensure_ascii=False))}
 
@@ -394,11 +435,12 @@ json.dump({name: asyncio.run(globals()[name]()) for name in which}, sys.stdout)
   type Priced = [number, number];
   interface BudgetResults {
     worst_cases: { prices: Array<number | null>; own: Array<number | null>; plain_size: number }
-      & Record<"named" | "none" | "over_model" | "responses" | "completion" | "big" | "both" | "remote" | "file_id" | "inline" | "argument" | "per_call", Priced>;
+      & Record<"named" | "none" | "over_model" | "responses" | "completion" | "big" | "both" | "remote" | "file_id" | "inline" | "argument" | "per_call" | "citation" | "file_uri" | "s3", Priced>;
     parallel: { codes: number[]; types: string[]; retry_after: string[]; held: LedgerRow; after: LedgerRow; one: number; cap: number };
-    refusals: Record<"spent" | "charged" | "too_big" | "anth" | "unpriced" | "unknown" | "no_budget" | "no_key_object", Answer> & { ledger_keys: string[] };
+    refusals: Record<"spent" | "charged" | "too_big" | "anth" | "unpriced" | "unknown" | "no_budget" | "no_key_object" | "hint" | "again" | "hint_anth", Answer> & { ledger_keys: string[] };
+    postgres: { schema_runs: number; first: string[]; failed: boolean; ready_after_error: boolean; again: string[]; statements: string[] };
     settling: { plain: LedgerRow; streams: LedgerRow; cut: { before_grace: LedgerRow; after_grace: LedgerRow; each: number }; errors: LedgerRow & { each: number; attempt_only: LedgerRow };
-      retried: LedgerRow & { each: number };
+      retried: LedgerRow & { each: number }; lone_failure: { before: LedgerRow; after: LedgerRow; each: number };
       orphan: { young: LedgerRow; old: LedgerRow; each: number } };
   }
   function runBudget<K extends keyof BudgetResults>(scenario: K): BudgetResults[K] {
@@ -429,6 +471,10 @@ json.dump({name: asyncio.run(globals()[name]()) for name in which}, sys.stdout)
     expect(w.file_id[0]).toBe(at(1000, 1_000_000));
     expect(w.inline[0]).toBe(at(1000, w.inline[1]));
     expect(w.argument[0]).toBe(at(1000, w.argument[1]));
+    // only references inside a media block count: a citation's URL is text; a Gemini file_uri and a Bedrock S3 location are media (N4)
+    expect(w.citation[0]).toBe(at(1000, w.citation[1]));
+    expect(w.file_uri[0]).toBe(at(1000, 1_000_000));
+    expect(w.s3[0]).toBe(at(1000, 1_000_000));
     // a fixed price per call is added
     expect(w.per_call[0]).toBe(Math.ceil((1000 * 0.000015 + w.per_call[1] * 0.000003 + 0.01) * 1e6 - 1e-6));
   });
@@ -462,6 +508,11 @@ json.dump({name: asyncio.run(globals()[name]()) for name in which}, sys.stdout)
     expect(r.no_budget).toEqual({ status: 200 });
     expect(r.no_key_object).toEqual({ status: 200 });
     expect(r.ledger_keys).not.toContain("k6");
+    // a room too small for the output limit asked, but enough for a smaller one: 422 budget_max_tokens with the largest affordable limit, not a spent budget
+    expect(r.hint).toMatchObject({ status: 422, type: "budget_max_tokens", headers: { "x-rovara-max-tokens": "10000" } });
+    expect(r.again).toEqual({ status: 200 });
+    expect(r.hint_anth).toMatchObject({ status: 422, type: "budget_max_tokens" });
+    expect((JSON.parse(r.hint_anth.message ?? "") as { error: { type: string } }).error.type).toBe("budget_max_tokens");
   });
 
   itPython("settles to the real cost, charges a cut or broken stream its whole hold, releases an error answer, and charges an orphan after HOLD_SECONDS", () => {
@@ -474,8 +525,23 @@ json.dump({name: asyncio.run(globals()[name]()) for name in which}, sys.stdout)
     expect(s.errors.attempt_only).toEqual({ charged: 0, held: 2 * s.errors.each, holds: 2 });
     expect(s.errors).toMatchObject({ charged: s.errors.each, held: 0, holds: 0 });
     expect(s.retried).toMatchObject({ charged: 3000 + 3000 + s.retried.each, held: 0, holds: 0 });
+    expect(s.lone_failure.before).toEqual({ charged: s.lone_failure.each, held: s.lone_failure.each, holds: 1 });
+    expect(s.lone_failure.after).toEqual({ charged: s.lone_failure.each, held: 0, holds: 0 });
     expect(s.orphan.young).toEqual({ charged: 0, held: 2 * s.orphan.each, holds: 2 });
     expect(s.orphan.old).toEqual({ charged: s.orphan.each, held: 2 * s.orphan.each, holds: 2 });
+  });
+
+  itPython("sets the Postgres ledger up once per replica even under concurrent calls, in its own schema, and again after a database error", () => {
+    const pg = runBudget("postgres");
+    expect(pg.schema_runs).toBe(1);
+    expect(pg.first.slice(0, 4)).toEqual(["CREATE SCHEMA IF NOT EXISTS rovara_budget", "CREATE TABLE IF NOT EXISTS rovara_budget.keys", "CREATE TABLE IF NOT EXISTS rovara_budget.holds", "CREATE INDEX IF NOT EXISTS holds_key ON rovara_budget.holds"]);
+    expect(pg.failed).toBe(true);
+    expect(pg.ready_after_error).toBe(false);
+    expect(pg.again[0]).toBe("CREATE SCHEMA IF NOT EXISTS rovara_budget");
+    for (const statement of pg.statements) {
+      expect(statement).toContain("rovara_budget.");
+      expect(statement).not.toMatch(/\brovara_budget_(keys|holds)\b/u);
+    }
   });
 
   it("keeps the budget hold's limits: an orphan outlives the proxy's request timeout, and LiteLLM's own per-replica reservation is off", () => {

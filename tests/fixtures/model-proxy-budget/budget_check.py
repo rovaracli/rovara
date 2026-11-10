@@ -86,9 +86,9 @@ for i, (route, model) in enumerate((("messages", "anth"), ("chat", "oai"), ("res
 charged, held, holds = settled(token)
 check("routes_settle_to_cost", statuses == [200] * 8 and held == 0 and holds == 0 and 0 < charged < 8 * 20_000, statuses=statuses, charged=charged, held=held, holds=holds)
 
-def litellm_spend_micros(key, wait=30):
+def litellm_spend_micros(key, wait=60):
     """LiteLLM's own spend for the key once its batch writer has flushed everything (it writes about every 10 s): the first value that stays the same
-    for 12 s."""
+    for 25 s (each replica flushes its own)."""
     def read():
         s, _, b = post_get(f"/key/info?key={key}")
         return int(round(float((json.loads(b).get("info") or {}).get("spend") or 0) * 1e6)) if s == 200 else -1
@@ -97,7 +97,7 @@ def litellm_spend_micros(key, wait=30):
         time.sleep(1)
         now = read()
         if now != last: last, since = now, time.time()
-        elif now > 0 and time.time() - since >= 12: return now
+        elif now > 0 and time.time() - since >= 25: return now
     return last
 
 
@@ -160,6 +160,16 @@ sql(f"UPDATE rovara_budget.keys SET charged_micros = 19000 WHERE key_hash = '{to
 spent_answers = {route: post(P1, *body(route, "oai" if route != "messages" else "anth", False), key) for route in ("messages", "chat", "responses")}
 check("spent_422_every_route", all(a[0] == 422 and json.loads(a[2])["error"]["type"] == "budget_exceeded" and json.loads(a[2])["error"]["message"].startswith("Budget has been exceeded! Key=")
                                    for a in spent_answers.values()), answers={r: (a[0], a[2][:200]) for r, a in spent_answers.items()})
+
+# 5b. a room too small for the output limit asked but enough for a smaller one: 422 budget_max_tokens with the largest affordable limit (both envelopes),
+# and the same call sent again with it is served
+key, token = mint(0.2)
+hinted = {route: post(P0 if route != "chat" else P1, *body(route, "oai" if route != "messages" else "anth", False, 16000), key) for route in ("messages", "chat")}
+limits = {route: a[1].get("x-rovara-max-tokens") for route, a in hinted.items()}
+served, _, _ = post(P1, *body("chat", "oai", False, int(limits["chat"] or 0)), key)
+check("max_tokens_hint_every_route", all(a[0] == 422 and json.loads(a[2])["error"]["type"] == "budget_max_tokens" for a in hinted.values())
+      and all(v is not None and int(v) >= 4096 for v in limits.values()) and served == 200, limits=limits, served=served,
+      answers={r: (a[0], a[2][:160]) for r, a in hinted.items()})
 
 # 6. an orphan (older than 1,000 s) becomes spent at the next call on its key
 key, token = mint(1.0)

@@ -233,6 +233,8 @@ import asyncio, json, math, re, sys, time as _time, uuid as _uuid
 HOLD_SECONDS = 1000                 # longer than the proxy's 900 s REQUEST_TIMEOUT: an older hold is an orphan (its replica died) and counts as spent
 SETTLE_GRACE_SECONDS = 60           # a call that ended but whose cost never arrived is charged its whole hold after this long
 HELD_RETRY_AFTER_SECONDS = 2
+MIN_AFFORDABLE_OUTPUT_TOKENS = 4_096  # below this a smaller output limit is not offered: the spend leaves no room for a useful call (422)
+MAX_TOKENS_HINT_HEADER = "x-rovara-max-tokens"
 ASSUMED_MAX_OUTPUT_TOKENS = 64_000  # a request that names no output limit, for a model whose limit is not known (as the Code proxy assumes)
 ASSUMED_MAX_INPUT_TOKENS = 2_000_000
 _MICROS = 1_000_000
@@ -282,6 +284,7 @@ class _PostgresLedger:
 
     def __init__(self):
         self._ready = False
+        self._init = None                                   # one schema set-up at a time on this replica (a lock, made on first use)
 
     async def _db(self):
         from litellm.proxy.proxy_server import prisma_client
@@ -289,30 +292,34 @@ class _PostgresLedger:
             raise RuntimeError("the proxy has no database")
         db = prisma_client.db
         if not self._ready:
-            for statement in _SCHEMA:
-                try:
-                    await db.execute_raw(statement)
-                except Exception:
-                    await db.execute_raw(statement)     # the other replica created it in the same instant: IF NOT EXISTS holds now
-            await db.execute_raw(_SQL_SWEEP_ALL)
-            await db.execute_raw(_SQL_FORGET)
-            self._ready = True
+            if self._init is None:
+                self._init = asyncio.Lock()
+            async with self._init:
+                if not self._ready:                         # another call set it up while this one waited
+                    for statement in _SCHEMA:
+                        try:
+                            await db.execute_raw(statement)
+                        except Exception:
+                            await db.execute_raw(statement)     # the other replica created it in the same instant: IF NOT EXISTS holds now
+                    await db.execute_raw(_SQL_SWEEP_ALL)
+                    await db.execute_raw(_SQL_FORGET)
+                    self._ready = True
         return db
 
     async def take(self, key, call_id, worst, spent, cap):
-        """'ok' (held), 'exceeded' (the spend leaves no room for this call) or 'held' (only other calls' holds are in the way)."""
+        """('ok' | 'exceeded' | 'held', charged micros): held; the spend leaves no room for this call; only other calls' holds are in the way."""
         db = await self._db()
         try:
             await db.execute_raw(_SQL_ENSURE, key)
             await db.execute_raw(_SQL_SWEEP, key)
             if await db.query_raw(_SQL_TAKE, key, worst, spent, cap, call_id, HOLD_SECONDS):
-                return "ok"
+                return "ok", None
             rows = await db.query_raw(_SQL_READ, key)
         except Exception:
             self._ready = False                             # the tables are created again on the next call if they went
             raise
         charged = int(rows[0]["charged_micros"]) if rows else 0
-        return "exceeded" if max(charged, spent) + worst > cap else "held"
+        return ("exceeded" if max(charged, spent) + worst > cap else "held"), charged
 
     async def settle(self, call_id, cost):
         """Ends a hold: its key is charged cost micro-dollars, or the whole hold when cost is None."""
@@ -391,23 +398,26 @@ def _request_bytes(data):
     return len(json.dumps(sent, ensure_ascii=False, default=str).encode("utf-8"))
 
 
-_REMOTE_KEYS = ("url", "image_url", "file_url")
+# Media containers (by their type, or by the key that holds them) and the keys that name media by reference inside one.
+_MEDIA = frozenset({"image", "document", "image_url", "input_image", "input_file", "file", "input_audio", "audio", "video", "file_data"})
+_MEDIA_REFERENCES = frozenset({"url", "image_url", "file_url", "file_uri", "uri", "file_id"})
 
 
 def _remote_media(data):
-    """Whether the request names media by reference (an image or document URL, a file id) instead of carrying it: the provider (or LiteLLM) fetches it
-    after this hook, so its size, and its tokens, are not in the request's bytes. The model's own tool arguments are not walked."""
-    stack = [v for k, v in data.items() if k not in INJECTED_TOP and k not in ("metadata", "litellm_metadata")]
+    """Whether the request names media by reference (an image or document URL, a file id or URI, an S3 location) instead of carrying it: the provider
+    (or LiteLLM) fetches it after this hook, so its size, and its tokens, are not in the request's bytes. Only references inside a media block count, so a
+    URL in text, a citation or the model's own tool arguments does not."""
+    stack = [(v, False) for k, v in data.items() if k not in INJECTED_TOP and k not in ("metadata", "litellm_metadata")]
     while stack:
-        value = stack.pop()
+        value, in_media = stack.pop()
         if isinstance(value, list):
-            stack.extend(value)
+            stack.extend((v, in_media) for v in value)
         elif isinstance(value, dict):
-            for key, inner in value.items():
-                if isinstance(inner, str) and ((key in _REMOTE_KEYS and not inner.startswith("data:")) or key == "file_id"):
-                    return True
+            media = in_media or value.get("type") in _MEDIA
+            if media and any(isinstance(v, str) and k in _MEDIA_REFERENCES and not v.startswith("data:") for k, v in value.items()):
+                return True
             skip_input = value.get("type") in ARGUMENT_BLOCKS
-            stack.extend(v for k, v in value.items() if not (skip_input and k == "input"))
+            stack.extend((v, media or k in _MEDIA) for k, v in value.items() if not (skip_input and k == "input"))
     return False
 
 
@@ -422,6 +432,22 @@ def _worst_case_micros(data, prices):
     whole_input = min(max_in or ASSUMED_MAX_INPUT_TOKENS, ASSUMED_MAX_INPUT_TOKENS)
     tokens_in = whole_input if _remote_media(data) else min(_request_bytes(data), whole_input)
     return _micros_up(output * rate_out + tokens_in * rate_in + per_call)
+
+
+def _affordable_output(data, prices, room):
+    """The largest output limit, in whole thousands of tokens, whose worst case fits in room (micro-dollars) when the request is sent again with it, or None
+    when that is under MIN_AFFORDABLE_OUTPUT_TOKENS."""
+    rate_out = prices[1]
+    if rate_out <= 0:
+        return None
+    limits = ("max_tokens", "max_output_tokens", "max_completion_tokens")
+    named = [f for f in limits if f in data] or ["max_tokens"]
+    again = lambda tokens: dict(data, **{f: tokens for f in named})
+    fixed = _worst_case_micros(again(1), prices) - _micros_up(rate_out)
+    tokens = int((room - fixed) / (rate_out * _MICROS)) // 1000 * 1000
+    while tokens >= MIN_AFFORDABLE_OUTPUT_TOKENS and _worst_case_micros(again(tokens), prices) > room:
+        tokens -= 1000
+    return tokens if tokens >= MIN_AFFORDABLE_OUTPUT_TOKENS else None
 
 
 def _timed_out(exc):
@@ -476,18 +502,26 @@ class RovaraGuard(CustomLogger):
         if not isinstance(call_id, str) or not call_id:
             call_id = data["litellm_call_id"] = str(_uuid.uuid4())
         try:
-            verdict = await _LEDGER.take(key, call_id, worst, spent, limit)
+            verdict, charged = await _LEDGER.take(key, call_id, worst, spent, limit)
         except Exception as e:
             print(f"rovara_guard: budget hold failed ({type(e).__name__}); the call is refused", file=sys.stderr, flush=True)
             raise _proxy_error(route, 503, "budget_unavailable", "the task budget could not be checked; try again shortly")
         if verdict == "exceeded":
+            asked = max([int(v) for v in (data.get("max_tokens"), data.get("max_output_tokens"), data.get("max_completion_tokens"))
+                         if isinstance(v, (int, float)) and not isinstance(v, bool) and v > 0] or [0])
+            fits = _affordable_output(data, prices, limit - max(charged or 0, spent))
+            if fits is not None and (asked == 0 or fits < asked):
+                # The room left cannot pay for the output limit asked, but can for a smaller one: say which, so the worker sends the call again with it
+                # instead of ending the task while the budget still has room for useful work.
+                raise _proxy_error(route, 422, "budget_max_tokens", f"the task budget left pays for at most {fits} output tokens on this call; send it again with that limit",
+                                   {MAX_TOKENS_HINT_HEADER: str(fits)})
             # The shape the worker reads as "the task's budget is spent" (model-runtime budget.ts): 422, budget_exceeded, "Budget has been exceeded! Key=".
             raise _proxy_error(route, 422, "budget_exceeded", f"Budget has been exceeded! Key=task Max budget: {limit / _MICROS:.6f}, "
                                f"this call could cost up to {worst / _MICROS:.6f}")
         if verdict == "held":
             raise _proxy_error(route, 429, "budget_held", "other model calls of this task hold its budget for now; try again shortly",
                                {"retry-after": str(HELD_RETRY_AFTER_SECONDS)})
-        self._calls[call_id] = {"stream": data.get("stream") is True, "started": False, "ended": None, "cost": None, "at": now, "worst": worst, "timed_out": False}
+        self._calls[call_id] = {"stream": data.get("stream") is True, "started": False, "ended": None, "cost": None, "at": now, "worst": worst, "timed_out": False, "failed": False}
 
 
     async def async_pre_call_hook(self, user_api_key_dict, cache, data, call_type):
@@ -586,9 +620,23 @@ class RovaraGuard(CustomLogger):
 
     async def async_log_failure_event(self, kwargs, response_obj, start_time, end_time):
         """One ATTEMPT failed. LiteLLM may still retry under the same call id, so nothing is settled here: only whether an attempt timed out is noted."""
-        state = self._calls.get(kwargs.get("litellm_call_id"))
-        if state is not None and _timed_out(kwargs.get("exception")):
+        call_id = kwargs.get("litellm_call_id")
+        state = self._calls.get(call_id)
+        if state is None:
+            return
+        if _timed_out(kwargs.get("exception")):
             state["timed_out"] = True
+        if not state["failed"]:
+            state["failed"] = True
+            self._spawn(self._settle_failed_later(call_id))
+
+    async def _settle_failed_later(self, call_id):
+        """A failed attempt whose call never reaches async_post_call_failure_hook (nor a success): settled after the grace as that hook would settle it,
+        released for an error answer, charged in full when an attempt timed out, instead of being held until it expires."""
+        await asyncio.sleep(SETTLE_GRACE_SECONDS)
+        state = self._calls.get(call_id)
+        if state is not None and not state["started"]:
+            await self._finish(call_id, None if state["timed_out"] else 0)
 
     async def async_post_call_failure_hook(self, request_data, original_exception, user_api_key_dict, traceback_str=None):
         """The CALL failed (every attempt). An error answer is not billed and is released; a call one of whose attempts timed out is charged its hold."""

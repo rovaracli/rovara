@@ -7,8 +7,8 @@ import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import type { Context } from "@earendil-works/pi-ai";
 import { BUDGET_EXHAUSTED_FAILURE_MESSAGE, DeveloperTaskFailureCategorySchema } from "../../packages/contracts/src/index.js";
-import { ModelBudgetExhaustedError, budgetExhaustedFromMarker, createConfiguredModelRuntime } from "../../packages/model-runtime/src/index.js";
-import { BUDGET_HELD_MAX_WAIT_MS, budgetHeldBody, budgetHeldDelayMs } from "../../packages/model-runtime/src/budget.js";
+import { ModelBudgetExhaustedError, PROXY_DEFAULT_MAX_OUTPUT_TOKENS, budgetExhaustedFromMarker, createConfiguredModelRuntime } from "../../packages/model-runtime/src/index.js";
+import { BUDGET_HELD_MAX_WAIT_MS, budgetHeldBody, budgetHeldDelayMs, budgetMaxTokensHint, withOutputLimit } from "../../packages/model-runtime/src/budget.js";
 import { failureCategory } from "../../packages/broker/src/developer/task-records.js";
 import { modelAccessSource } from "../../packages/worker/src/model-access.js";
 import { createDefaultPiSessionAdapter } from "../../packages/worker/src/pi-session.js";
@@ -165,6 +165,56 @@ describe("the model runtime meets the proxy's budget refusal", () => {
     expect([budgetHeldDelayMs("2"), budgetHeldDelayMs(null), budgetHeldDelayMs("0"), budgetHeldDelayMs("9999"), budgetHeldDelayMs("soon")]).toEqual([2_000, 2_000, 250, 30_000, 2_000]);
     // longer than the guard's 1,000 s orphan expiry, so a hold whose replica died is spent first
     expect(BUDGET_HELD_MAX_WAIT_MS).toBeGreaterThan(1_000_000);
+  });
+
+  it("asks the proxy for a realistic output limit: 32,000 tokens unless the caller or the step set one", async () => {
+    const sent: number[] = [];
+    const transport = vi.fn<typeof fetch>(async (_input, init) => {
+      sent.push((JSON.parse(typeof init?.body === "string" ? init.body : "{}") as { max_tokens: number }).max_tokens);
+      return answered();
+    });
+    const { runtime, model } = await proxiedRuntime(transport);
+    expect(model.maxTokens).toBeGreaterThan(PROXY_DEFAULT_MAX_OUTPUT_TOKENS);
+    await runtime.streamSimple(model, context).result();                                   // nothing named: the proxy default
+    await runtime.streamSimple(model, context, { maxTokens: 64 }).result();                // the caller's
+    await runtime.streamSimple({ ...model, maxTokens: 50_000 }, context).result();         // a step that lowered the model's limit (pi-session maxOutputTokens)
+    await runtime.streamSimple({ ...model, maxTokens: 8_000 }, context).result();
+    expect(sent).toEqual([PROXY_DEFAULT_MAX_OUTPUT_TOKENS, 64, 50_000, 8_000]);
+  });
+
+  it("sends a call again with the output limit the budget can still pay for (422 budget_max_tokens) instead of ending the task", async () => {
+    const sent: Array<Record<string, unknown>> = [];
+    const hint = (body: unknown) => new Response(JSON.stringify(body), { status: 422, headers: { "content-type": "application/json", "x-rovara-max-tokens": "10000" } });
+    const transport = vi.fn<typeof fetch>(async (_input, init) => {
+      sent.push(JSON.parse(typeof init?.body === "string" ? init.body : "{}") as Record<string, unknown>);
+      return sent.length === 1 ? hint({ type: "error", error: { type: "budget_max_tokens", message: "the task budget left pays for at most 10000 output tokens" } }) : answered();
+    });
+    const { runtime, model } = await proxiedRuntime(transport);
+    const result = await runtime.streamSimple(model, context, { maxTokens: 64_000 }).result();
+    expect(result.stopReason).toBe("stop");
+    expect(sent.map((body) => body.max_tokens)).toEqual([64_000, 10_000]);
+    expect(budgetExhaustedFromMarker(result.errorMessage)).toBeUndefined();
+    // the OpenAI envelope too; a hint that never helps stops after two lowered sends and is not read as a spent budget
+    const stubborn = vi.fn<typeof fetch>(async () => hint({ error: { type: "budget_max_tokens", message: "m", param: null, code: "422" } }));
+    const again = await proxiedRuntime(stubborn);
+    const failed = await again.runtime.streamSimple(again.model, context, { maxTokens: 64_000 }).result();
+    expect(stubborn).toHaveBeenCalledTimes(3);
+    expect(failed.stopReason).toBe("error");
+    expect(budgetExhaustedFromMarker(failed.errorMessage)).toBeUndefined();
+  });
+
+  it("reads a max-tokens hint only from its own answer, and keeps a thinking budget under the lowered limit", () => {
+    const body = JSON.stringify({ error: { type: "budget_max_tokens" } });
+    expect(budgetMaxTokensHint(422, body, "10000")).toBe(10_000);
+    expect(budgetMaxTokensHint(422, body, null)).toBeUndefined();
+    expect(budgetMaxTokensHint(422, body, "lots")).toBeUndefined();
+    expect(budgetMaxTokensHint(422, JSON.stringify(KEY_BODY), "10000")).toBeUndefined();
+    expect(budgetMaxTokensHint(429, body, "10000")).toBeUndefined();
+    expect(JSON.parse(withOutputLimit(JSON.stringify({ max_tokens: 64_000, thinking: { type: "enabled", budget_tokens: 20_000 } }), 10_000)!)).toEqual({ max_tokens: 10_000, thinking: { type: "enabled", budget_tokens: 8_976 } });
+    expect(JSON.parse(withOutputLimit(JSON.stringify({ max_tokens: 64_000, thinking: { type: "enabled", budget_tokens: 4_000 } }), 10_000)!)).toEqual({ max_tokens: 10_000, thinking: { type: "enabled", budget_tokens: 4_000 } });
+    expect(JSON.parse(withOutputLimit(JSON.stringify({ max_output_tokens: 64_000, max_completion_tokens: 100 }), 10_000)!)).toEqual({ max_output_tokens: 10_000, max_completion_tokens: 100 });
+    expect(JSON.parse(withOutputLimit(JSON.stringify({ model: "m" }), 10_000)!)).toEqual({ model: "m", max_tokens: 10_000 });
+    expect(withOutputLimit("not json", 10_000)).toBeUndefined();
   });
 
   it("refuses a runtime whose first key is already refused for budget, as the budget and not as a proxy fault", async () => {

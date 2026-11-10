@@ -3,7 +3,7 @@ import { openRouterRouting, readProviderKey, requireKeyedModel } from "./config.
 import { ROUTE_PROVIDER, bedrockClaudeModelIds, catalogModel, catalogModelByName, proxyGeographyOfModelId } from "./catalog.js";
 export { ROUTE_PROVIDER };
 import { TRANSPORTS, requestCompat } from "./transport.js";
-import { BUDGET_HELD_MAX_WAIT_MS, ModelBudgetExhaustedError, ModelNotAllowedError, budgetExhaustedMarker, budgetHeldBody, budgetHeldDelayMs, budgetScopeOfProxyBody, modelNotAllowedMarker, type ModelBudgetScope } from "./budget.js";
+import { BUDGET_HELD_MAX_WAIT_MS, ModelBudgetExhaustedError, ModelNotAllowedError, budgetExhaustedMarker, budgetHeldBody, budgetHeldDelayMs, budgetMaxTokensHint, budgetScopeOfProxyBody, modelNotAllowedMarker, withOutputLimit, type ModelBudgetScope } from "./budget.js";
 export { ModelBudgetExhaustedError, ModelNotAllowedError, budgetExhaustedFromMarker, modelNotAllowedFromMarker, type ModelBudgetScope } from "./budget.js";
 export { readOpenRouterKey, readProviderKey, openRouterRouting, openRouterModel, requireKeyedModel } from "./config.js";
 // The governed e2e model route (M1.4): its own surface, never reached through the coding-task fallback above.
@@ -247,15 +247,30 @@ async function createProxiedModelRuntime(selected: ModelIdentifier & { thinkingL
     throw proxyKeyUnavailable(error);
   });
   const api = "anthropic-messages";
+  const catalogLimits = new Map(runtime.getModels(selected.provider).map((entry) => [entry.id, entry.maxTokens]));
   runtime.registerProvider(selected.provider, {
     baseUrl: proxy.baseUrl, api,
     models: runtime.getModels(selected.provider).filter((entry) => served.has(entry.id))
       .map((entry) => ({ ...entry, api, baseUrl: proxy.baseUrl, compat: requestCompat("anthropic", undefined) })),
-    streamSimple: (entry, context, streamOptions) => safeProviderStream("anthropic", entry, context, streamOptions, undefined, options.fetch, options.onUsage, undefined, requestKey, undefined, true),
+    streamSimple: (entry, context, streamOptions) => safeProviderStream("anthropic", entry, context, withProxyOutputLimit(streamOptions, entry.maxTokens, catalogLimits.get(entry.id) ?? entry.maxTokens), undefined, options.fetch, options.onUsage, undefined, requestKey, undefined, true),
   });
   try { await runtime.setRuntimeApiKey(selected.provider, initialKey); }
   catch { throw agentXError("RUNTIME_UNAVAILABLE", "the model proxy key could not be initialized"); }
   return runtime;
+}
+
+/**
+ * The output limit a call through the model proxy asks for when the caller named none: the model's own limit (128,000 tokens for current Claude models)
+ * makes the proxy hold that whole output's price against the task budget for every call, so a task would stop with a large part of its budget unused
+ * and run fewer calls at once. 32,000 tokens covers a turn's practical output; a step that set its own limit (pi-session's maxOutputTokens, which lowers
+ * the model's limit) keeps it, larger or smaller.
+ */
+export const PROXY_DEFAULT_MAX_OUTPUT_TOKENS = 32_000;
+
+/** The stream options with an output limit: the caller's, else a limit a step set on the model, else the proxy default within the model's limit. */
+function withProxyOutputLimit<T extends { maxTokens?: number } | undefined>(options: T, modelLimit: number, catalogLimit: number): T & { maxTokens: number } {
+  const limit = options?.maxTokens ?? (modelLimit < catalogLimit ? modelLimit : Math.min(modelLimit, PROXY_DEFAULT_MAX_OUTPUT_TOKENS));
+  return { ...(options ?? {}), maxTokens: limit } as T & { maxTokens: number };
 }
 
 /** What a model the installed catalogs do not know (a company's own) is given: no reasoning, no images, a modest window. */
@@ -288,7 +303,7 @@ async function createRoutedModelRuntime(selected: ModelIdentifier & { thinkingLe
       ...(catalog?.promptCache === undefined ? {} : { promptCache: catalog.promptCache }),
       compat: routeCompat(route.api, catalog?.api === route.api ? catalog.compat : undefined),
     }],
-    streamSimple: (entry, context, streamOptions) => safeProviderStream(route.api === "anthropic-messages" ? "anthropic" : "openai", entry, context, streamOptions, undefined, options.fetch, options.onUsage, undefined, requestKey, { api: route.api, identity }, true),
+    streamSimple: (entry, context, streamOptions) => safeProviderStream(route.api === "anthropic-messages" ? "anthropic" : "openai", entry, context, withProxyOutputLimit(streamOptions, entry.maxTokens, base.maxTokens), undefined, options.fetch, options.onUsage, undefined, requestKey, { api: route.api, identity }, true),
   });
   try { await runtime.setRuntimeApiKey(ROUTE_PROVIDER, initialKey); }
   catch { throw agentXError("RUNTIME_UNAVAILABLE", "the model proxy key could not be initialized"); }
@@ -346,9 +361,25 @@ function safeProviderStream(provider: KeyedModelProvider, model: Model<Api>, con
     // The proxy's 429 budget_held (rovara_guard.py, section 4): the task's budget has room but its other calls hold it for now. The same request is
     // sent again after the proxy's retry-after until the holds settle, so Pi never reads it as a rate limit. Only a proxy call with a body that can be
     // sent twice, and never past BUDGET_HELD_MAX_WAIT_MS or a cancellation.
+    // The proxy's 422 budget_max_tokens: the budget left cannot pay for the output limit asked, but can for the smaller one it names; the request is sent
+    // again with that limit (at most twice) instead of ending the task while the budget still has room.
     if (proxied && plan === undefined && resendable(input, init)) {
       const until = Date.now() + BUDGET_HELD_MAX_WAIT_MS;
-      while (response.status === 429 && budgetHeldBody(429, (await response.clone().text().catch(() => "")).slice(0, 65_536))) {
+      let lowered = 0;
+      for (;;) {
+        if (response.status === 422 && lowered < 2 && typeof init?.body === "string") {
+          const limit = budgetMaxTokensHint(422, (await response.clone().text().catch(() => "")).slice(0, 65_536), response.headers.get("x-rovara-max-tokens"));
+          const body = limit === undefined ? undefined : withOutputLimit(init.body, limit);
+          if (body === undefined) break;
+          lowered += 1;
+          const headers = new Headers(init.headers);
+          headers.delete("content-length");
+          init = { ...init, body, headers };
+          await response.body?.cancel().catch(() => undefined);
+          response = await transport(input, init);
+          continue;
+        }
+        if (response.status !== 429 || !budgetHeldBody(429, (await response.clone().text().catch(() => "")).slice(0, 65_536))) break;
         const wait = budgetHeldDelayMs(response.headers.get("retry-after"));
         if (Date.now() + wait > until || init?.signal?.aborted === true || !(await pause(wait, init?.signal ?? undefined))) {
           held = true;
