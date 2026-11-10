@@ -16,12 +16,12 @@ import { call, issuer } from "../support/slack-broker.js";
 const ADMIN = { subject: "admin-subject", admin: true };
 const roleOf = (subject: string) => ownerKeyForSubject(issuer, subject);
 
-async function world(withLessons = true) {
+async function world(withLessons = true, evalModel?: { model: unknown; spend: unknown }) {
   const audit = new Audit();
   const store = new InMemoryLessonStore();
   const snapshots = new InMemorySnapshotStore();
   const evalSnapshots = new InMemoryEvalSnapshotStore();
-  const h = await createSingleAnswerPlanBroker({ brokerExtra: { agents: {}, ...(withLessons ? { lessons: { store, snapshots, evalSnapshots, routes: { audit } } } : {}) } });
+  const h = await createSingleAnswerPlanBroker({ brokerExtra: { agents: {}, ...(withLessons ? { lessons: { store, snapshots, evalSnapshots, routes: { audit }, ...(evalModel === undefined ? {} : { evalModel }) } } : {}) } });
   const started = await h.dev(MAYA, "POST", "/v1/dev/tasks", { requestId: randomUUID(), project: "payments", instructions: "Fix the retry bug", client: "claude-code", workflow: true, workflowPath: "FULL" });
   expect(started.status, JSON.stringify(started.body)).toBe(200);
   const taskId = (started.body.task as { taskId: string }).taskId;
@@ -155,5 +155,70 @@ describe("the snapshot import (DECISIONS 68)", () => {
     const started = await w.post(w.taskId, ADMIN, { requestId: randomUUID(), memory: { mode: "snapshot", snapshotId }, maxUsd: 2 });
     expect(started.status, JSON.stringify(started.body)).toBe(202);
     expect(w.db.get(`DEVTASK#${(started.body.replay as { taskId: string }).taskId}`, "META")).toMatchObject({ evalMemory: { mode: "snapshot", snapshotId } });
+  });
+});
+
+describe("the replay's model call (grading and offline pipelines)", () => {
+  const fakeModel = (over: { quote?: unknown; text?: string } = {}) => {
+    const calls: Array<Record<string, unknown>> = [];
+    return { calls, model: { quote: async () => over.quote ?? { ok: true, usd: 0.1 }, complete: async (request: Record<string, unknown>) => { calls.push(request); return { text: over.text ?? "{\"resolved\":true,\"mistakes\":[]}", costUsd: 0.07, model: "m" }; } } };
+  };
+  const spend = (answer: "ok" | "month_full" = "ok") => ({ admit: async () => answer === "ok", look: async () => answer });
+  const path = "/v1/admin/projects/payments/lessons-replay/model";
+  const body = { purpose: "grade", system: "You grade.", user: "<<data x>>hi<</data x>>", maxOutputTokens: 300, maxUsd: 0.5 };
+
+  it("answers the text and the cost, for a company owner or admin only, with the install's lessons switch OFF (a grading is not learning)", async () => {
+    const m = fakeModel();
+    const w = await world(true, { model: m.model, spend: spend() });
+    const asked = await call(w.handler, { method: "POST", path, user: ADMIN, body });
+    expect(asked.status, JSON.stringify(asked.body)).toBe(200);
+    expect(asked.body).toMatchObject({ text: expect.stringContaining("resolved") as unknown, costUsd: 0.07 });
+    expect(m.calls[0]).toMatchObject({ workspaceId: TEST_ORG, project: "payments", budgetUsd: 0.1, maxHoldUsd: 0.5 });
+    for (const user of [{ subject: "someone", admin: false }, { subject: "rovara-staff", admin: true }]) {
+      expect((await call(w.handler, { method: "POST", path, user, body })).body.error, JSON.stringify(user)).toMatchObject({ code: "FORBIDDEN" });
+    }
+    expect(m.calls).toHaveLength(1);
+  });
+  it("refuses before the call when there is no model, it is too dear, the learning month is full, or the request is malformed", async () => {
+    const none = fakeModel({ quote: { ok: false, code: "no_provider" } });
+    expect((await call((await world(true, { model: none.model, spend: spend() })).handler, { method: "POST", path, user: ADMIN, body })).body.error).toMatchObject({ code: "RUNTIME_UNAVAILABLE" });
+    const dear = fakeModel({ quote: { ok: true, usd: 9 } });
+    expect((await call((await world(true, { model: dear.model, spend: spend() })).handler, { method: "POST", path, user: ADMIN, body })).body.error).toMatchObject({ code: "RUNTIME_UNAVAILABLE" });
+    const full = fakeModel();
+    expect((await call((await world(true, { model: full.model, spend: spend("month_full") })).handler, { method: "POST", path, user: ADMIN, body })).body.error).toMatchObject({ code: "RUNTIME_UNAVAILABLE" });
+    expect(none.calls.length + dear.calls.length + full.calls.length).toBe(0);
+    const ok = await world(true, { model: fakeModel().model, spend: spend() });
+    for (const bad of [{ ...body, purpose: "other" }, { ...body, maxOutputTokens: 100_000 }, { ...body, maxUsd: 500 }, { ...body, extra: 1 }, { ...body, user: "" }]) {
+      expect((await call(ok.handler, { method: "POST", path, user: ADMIN, body: bad })).body.error, JSON.stringify(bad).slice(0, 60)).toMatchObject({ code: "CONFIG_INVALID" });
+    }
+    expect((await call((await world(true)).handler, { method: "POST", path, user: ADMIN, body })).body.error).toMatchObject({ code: "NOT_FOUND" });
+  });
+});
+
+describe("a historical task as the reflector sees it (offline pipelines)", () => {
+  const TASK = "11111111-1111-4111-8111-111111111111";
+  async function withLearning(rest: Record<string, unknown> = {}, project = "payments") {
+    const audit = new Audit();
+    const store = new InMemoryLessonStore();
+    const base = { facts: { workspaceId: TEST_ORG, project, taskId: TASK, repositories: ["api"], outcome: "merged", task: { developerId: "creator", startedBy: { developerId: "starter" }, agent: { agentId: "a" } },
+      rest: { initiatorTrust: "member", steeringTrust: ["member"], intentTrust: "member", spans: [{ kind: "send_back", text: "Use withRetry.", trust: "member", authorId: "rae", eventId: "ev-1" }], ...rest } }, sendBackRequestIds: [] };
+    const learning = { source: { read: async () => base }, rows: { sendBack: async () => undefined, revertedBy: async () => undefined }, process: { store }, settings: { read: async () => ({ mode: "On" }) } };
+    const h = await createSingleAnswerPlanBroker({ brokerExtra: { agents: {}, learning, lessons: { store, snapshots: new InMemorySnapshotStore(), evalSnapshots: new InMemoryEvalSnapshotStore(), routes: { audit } } } });
+    const operator = roleOf("admin-subject");
+    h.db.set({ ...orgMemberKey(TEST_ORG, operator), entityType: "ORG_MEMBER", orgId: TEST_ORG, developerId: operator, role: "owner", joinedAt: "2026-01-01T00:00:00.000Z" });
+    const read = (user: { subject: string; admin?: boolean } = ADMIN) => call(h.handler, { method: "GET", path: `/v1/admin/projects/payments/lessons-replay/subjects/${TASK}`, user });
+    return { read };
+  }
+  it("a company owner or admin reads a real past task's subject; anyone else does not", async () => {
+    const w = await withLearning();
+    const answered = await w.read();
+    expect(answered.status, JSON.stringify(answered.body)).toBe(200);
+    expect(answered.body.subject).toMatchObject({ id: TASK, project: "payments", outcome: "merged" });
+    expect((await w.read({ subject: "someone", admin: false })).body.error).toMatchObject({ code: "FORBIDDEN" });
+    expect((await w.read({ subject: "rovara-staff", admin: true })).body.error).toMatchObject({ code: "FORBIDDEN" });
+  });
+  it("a replay copy's subject, and a task of another project, answer as if there were none", async () => {
+    expect((await (await withLearning({ evalRun: true })).read()).body.error).toMatchObject({ code: "TASK_NOT_FOUND" });
+    expect((await (await withLearning({}, "other")).read()).body.error).toMatchObject({ code: "TASK_NOT_FOUND" });
   });
 });

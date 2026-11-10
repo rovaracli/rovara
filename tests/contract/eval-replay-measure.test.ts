@@ -86,7 +86,7 @@ describe("loaded-lesson difference between B and C", () => {
   it("takes the union over a task's repeats, so a lesson loaded in any repeat counts once", () => {
     const rows = [
       { ...loads("on:current", "t1", ["a"]), repeat: 1 }, { ...loads("on:current", "t1", ["a", "b"]), repeat: 2 },
-      { ...loads("on:consolidated", "t1", ["a", "b"]), repeat: 1 },
+      { ...loads("on:consolidated", "t1", ["a", "b"]), repeat: 1 }, { ...loads("on:consolidated", "t1", ["a"]), repeat: 2 },
     ];
     expect(loadedLessonDifference(rows, "on:current", "on:consolidated")).toMatchObject({ identical: 2, onlyA: 0, onlyB: 0, differ: 0 });
   });
@@ -108,6 +108,32 @@ describe("loaded-lesson difference between B and C", () => {
     const d = loadedLessonDifference([loads("on:current", "t1", ["a"]), loads("on:consolidated", "t1", ["a"]), loads("on:current", "t2", ["q"])], "on:current", "on:consolidated");
     expect(d.tasksCompared).toBe(1);
     expect(d.differ).toBe(0);
+  });
+  it("only runs completed in BOTH arms are compared: an arm whose runs all failed did not run, and that is a STOP, not a pass", () => {
+    const rows: ReplayRunRow[] = [];
+    for (let t = 0; t < 40; t += 1) for (let r = 1; r <= 3; r += 1) {
+      rows.push({ ...run(`t${String(t)}`, "on:current", true, { loaded: ["k1", "k2"] }), repeat: r });
+      rows.push({ ...run(`t${String(t)}`, "on:consolidated", null, { loaded: [] }), repeat: r });
+    }
+    const d = loadedLessonDifference(rows, "on:current", "on:consolidated");
+    expect(d).toMatchObject({ comparable: false, armDidNotRun: "on:consolidated", nearlySame: true });
+    const report = buildMeasureReport({ rows, compare: { b: "on:current", c: "on:consolidated" }, projectDays: 20, learning: [], lessonSets: [] });
+    expect(report.stopped).toBe(true);
+    expect(report.results).toBeUndefined();
+    expect(renderMeasureReport(report)).toMatch(/STOP: on:consolidated did not run/);
+  });
+  it("an arm that loaded nothing on more than half of its completed runs is a STOP; ungraded runs are left out of the comparison", () => {
+    const rows: ReplayRunRow[] = [];
+    for (let t = 0; t < 10; t += 1) {
+      rows.push(run(`t${String(t)}`, "on:current", true, { loaded: [`a${String(t)}`] }));
+      rows.push(run(`t${String(t)}`, "on:consolidated", true, { loaded: t < 4 ? [`b${String(t)}`] : [] }));
+    }
+    const d = loadedLessonDifference(rows, "on:current", "on:consolidated");
+    expect(d).toMatchObject({ comparable: true, completedPairs: 10, loadedRunsA: 10, loadedRunsB: 4, armLoadedNothing: "on:consolidated", nearlySame: true });
+    // Six runs ungraded in the empty arm: they are not part of the comparison, and the four that completed loaded lessons.
+    const some = rows.map((r, i) => (r.arm === "on:consolidated" && i >= 8 ? { ...r, resolved: null, grader: null, gradedBy: null } : r));
+    expect(loadedLessonDifference(some, "on:current", "on:consolidated")).toMatchObject({ completedPairs: 4, loadedRunsB: 4, nearlySame: false });
+    expect(renderMeasureReport(buildMeasureReport({ rows, compare: { b: "on:current", c: "on:consolidated" }, projectDays: 5, learning: [], lessonSets: [] }))).toMatch(/STOP: on:consolidated loaded no lesson on more than half/);
   });
   it("an arm that is absent from the rows is reported as not comparable, not as a stop", () => {
     const d = loadedLessonDifference([loads("on:current", "t1", ["a"])], "on:current", "on:consolidated");
@@ -154,7 +180,9 @@ describe("the report", () => {
     expect(report.stopped).toBe(false);
     const results = report.results!;
     const current = results.arms.find((a) => a.arm === "on:current")!;
-    expect(current).toMatchObject({ runs: 12, resolved: 9, rate: 0.75 });
+    expect(current).toMatchObject({ runs: 12, resolved: 9, rate: 0.75, tasks: { tasks: 4, solved: 3, rate: 0.75 } });
+    // By task there are 4 observations, not 12: the interval is wider.
+    expect(current.tasks.high - current.tasks.low).toBeGreaterThan(current.high - current.low);
     expect(current.low).toBeCloseTo(wilsonInterval(9, 12).low, 9);
     expect(current.high).toBeCloseTo(wilsonInterval(9, 12).high, 9);
     expect(results.discordant.find((d) => d.a === "on:consolidated" && d.b === "on:current")).toMatchObject({ onlyB: ["t2"] });

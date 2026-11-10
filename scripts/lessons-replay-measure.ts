@@ -2,29 +2,39 @@
 // grader) is an operator MODULE you pass with --module; this script plans, orders, records and reports. The report states numbers and gives no verdict: the owner decides. See docs/runbooks/lessons-replay-measure.md.
 //
 //   npx tsx scripts/lessons-replay-measure.ts select      --candidates <file> --seed <text> [--target 50] [--per-repo-max 15] --out <selection.json>
-//   npx tsx scripts/lessons-replay-measure.ts snapshots   --selection <file> --arms off,on:current,on:consolidated --module <file> --out-dir <dir>
+//   npx tsx scripts/lessons-replay-measure.ts snapshots   --selection <file> --arms off,on:current --module <file> --workspace <org id> --out-dir <dir> --max-usd <usd>
+//   npx tsx scripts/lessons-replay-measure.ts import-snapshots --dir <dir> --module <file>
 //   npx tsx scripts/lessons-replay-measure.ts plan        --selection <file> --arms <list> --seed <text> --grader-model <m> --grader-version <v> --snapshots <dir>/snapshots.json --out <plan.json> [--small]
-//   npx tsx scripts/lessons-replay-measure.ts run         --plan <file> --module <file> --corrections <file> --results <results.jsonl> --max-usd <usd> [--snapshot-lessons <dir>/snapshot-lessons.json]
+//   npx tsx scripts/lessons-replay-measure.ts run         --plan <file> --module <file> --corrections <file> --results <results.jsonl> --max-usd <usd> --per-run-usd <usd> [--dir <dir>]
 //   npx tsx scripts/lessons-replay-measure.ts blind-sheet --final-lessons <dir>/final-lessons.json --seed <text> --out-sheet <sheet.json> --out-key <key.json>
 //   npx tsx scripts/lessons-replay-measure.ts import-marks --key <key.json> --marks <marks.json> --out <marks-by-arm.json>
 //   npx tsx scripts/lessons-replay-measure.ts report      --results <results.jsonl> --plan <plan.json> --compare on:current,on:consolidated [--dir <dir of snapshots outputs>] [--marks <marks-by-arm.json>] [--corrections <file>] [--json] [--continue-anyway]
 //
-// The operator module (--module) is an ES module whose default export is a function returning { builders?: Record<pipeline, SnapshotBuilder>, executor?: ReplayExecutor, grader?: ReplayGraderPort, deliveries?: ... }
-// (the types are in packages/broker/src/lessons/replay-harness.ts). File and MCP deliveries are stubs until their lanes land.
+// The operator module (--module) is an ES module whose default export is a function returning OperatorModule (below). `scripts/lessons-replay-staging-module.ts` is the one for a real staging run; tests pass their own.
+// The MCP arm is not built: a plan with one refuses by name.
 import { existsSync, mkdirSync, readFileSync, writeFileSync, appendFileSync } from "node:fs";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { blindSheet, buildMeasureReport, importMarks, readReplayRunRows, renderMeasureReport, type ArmLessonSet, type ArmLearningCost, type ArmUsefulMarks, type BlindKey, type ReplayRunRow } from "@agentx/contracts";
 import { fusedMatcher } from "../packages/broker/src/lessons/metric-source.js";
 import type { CorrectionRecord, CorrectionSource } from "../packages/broker/src/lessons/metric.js";
-import { FILE_DELIVERY } from "../packages/broker/src/lessons/replay-delivery.js";
-import { ArmNotBuiltError, buildReplayPlan, buildSnapshots, runReplay, type ReplayExecutor, type ReplayGraderPort, type ReplayPlan, type RunSink, type SnapshotBuilder, type LessonDelivery } from "../packages/broker/src/lessons/replay-harness.js";
+import { ArmNotBuiltError, buildReplayPlan, buildSnapshots, runReplay, type ReplayExecutor, type ReplayGraderPort, type ReplayPlan, type RunSink, type SnapshotBuilder } from "../packages/broker/src/lessons/replay-harness.js";
 import { repeatMistakeChecks } from "../packages/broker/src/lessons/replay-mistakes.js";
 import { selectReplayTasks, type ReplayCandidate } from "../packages/broker/src/lessons/replay-select.js";
 import { LessonSchema, type Lesson } from "../packages/broker/src/lessons/types.js";
 
 export interface Io { out(text: string): void; err(text: string): void }
-export interface OperatorModule { builders?: Record<string, SnapshotBuilder>; executor?: ReplayExecutor; grader?: ReplayGraderPort; deliveries?: Partial<Record<"file" | "mcp", LessonDelivery>> }
+export interface OperatorModule {
+  builders?: Record<string, SnapshotBuilder>;
+  executor?: ReplayExecutor;
+  grader?: ReplayGraderPort;
+  /** What one copy may spend: the same number the executor holds its copies to. */
+  perRunUsd?: number;
+  /** Imports an arm's lessons for a day as a frozen snapshot of the project; answers the id the install derived. */
+  importSnapshot?: (pipeline: string, day: string, lessons: readonly Lesson[]) => string;
+  /** Hands the grader the text of the historical corrections it judges repeats by. */
+  setCorrectionTexts?: (texts: ReadonlyMap<string, string>) => void;
+}
 
 const read = (file: string): unknown => { try { return JSON.parse(readFileSync(file, "utf8")); } catch { throw new Error(`cannot read ${file} as JSON`); } };
 const write = (file: string, value: unknown): void => { mkdirSync(path.dirname(path.resolve(file)), { recursive: true }); writeFileSync(file, `${JSON.stringify(value, null, 2)}\n`); };
@@ -56,8 +66,16 @@ async function loadModule(file: string): Promise<OperatorModule> {
 /** A results file: one JSON object per line, { key, row }. */
 function jsonlSink(file: string): RunSink {
   const done = new Set<string>();
-  if (existsSync(file)) for (const line of readFileSync(file, "utf8").split("\n")) if (line.trim() !== "") done.add((JSON.parse(line) as { key: string }).key);
-  return { done: () => done, append: async (key, row) => { appendFileSync(file, `${JSON.stringify({ key, row })}\n`); done.add(key); } };
+  let spent = 0;
+  if (existsSync(file)) {
+    for (const line of readFileSync(file, "utf8").split("\n")) {
+      if (line.trim() === "") continue;
+      const entry = JSON.parse(line) as { key: string; charge?: number };
+      done.add(entry.key);
+      spent += typeof entry.charge === "number" ? entry.charge : 0;
+    }
+  }
+  return { done: () => done, spentUsd: () => spent, append: async (key, row, charge) => { appendFileSync(file, `${JSON.stringify({ key, row, charge })}\n`); done.add(key); spent += charge; } };
 }
 const readResults = (file: string): ReplayRunRow[] => readReplayRunRows(readFileSync(file, "utf8").split("\n").filter((line) => line.trim() !== "").map((line) => (JSON.parse(line) as { row: unknown }).row));
 
@@ -83,10 +101,12 @@ export async function main(argv: readonly string[], io: Io): Promise<number> {
         return 0;
       }
       case "snapshots": {
-        const o = options(rest, ["--selection", "--arms", "--module", "--out-dir", "--max-usd"]);
+        const o = options(rest, ["--selection", "--arms", "--module", "--out-dir", "--max-usd", "--workspace"]);
         const tasks = (read(need(o, "--selection")) as { tasks: ReplayCandidate[] }).tasks;
         const mod = await loadModule(need(o, "--module"));
-        const built = await buildSnapshots({ tasks, arms: need(o, "--arms").split(","), builders: mod.builders ?? {}, ...(opt(o, "--max-usd") === undefined ? {} : { maxUsd: Number(opt(o, "--max-usd")) }) });
+        const project = tasks[0]?.project;
+        if (project === undefined || tasks.some((t) => t.project !== project)) throw new Error("a replay is of one project: the selection holds tasks of several");
+        const built = await buildSnapshots({ key: { workspaceId: need(o, "--workspace"), project }, tasks, arms: need(o, "--arms").split(","), builders: mod.builders ?? {}, ...(opt(o, "--max-usd") === undefined ? {} : { maxUsd: Number(opt(o, "--max-usd")) }) });
         const dir = need(o, "--out-dir");
         write(path.join(dir, "snapshots.json"), built.snapshots);
         write(path.join(dir, "learning.json"), built.learning);
@@ -94,6 +114,25 @@ export async function main(argv: readonly string[], io: Io): Promise<number> {
         write(path.join(dir, "snapshot-lessons.json"), built.lessonsByDay);
         write(path.join(dir, "final-lessons.json"), Object.fromEntries(Object.entries(built.finalLessons).map(([pipeline, lessons]) => [`on:${pipeline}`, lessons])));
         io.out(`built snapshots for ${String(Object.keys(built.snapshots).length)} pipelines; learning cost ${built.learning.map((c) => `${c.arm} $${(c.usd ?? 0).toFixed(2)}`).join(", ")}`);
+        return 0;
+      }
+      case "import-snapshots": {
+        const o = options(rest, ["--dir", "--module"]);
+        const mod = await loadModule(need(o, "--module"));
+        if (mod.importSnapshot === undefined) throw new Error("the --module must provide importSnapshot");
+        const dir = need(o, "--dir");
+        const ids = read(path.join(dir, "snapshots.json")) as Record<string, Record<string, string>>;
+        const lessons = read(path.join(dir, "snapshot-lessons.json")) as Record<string, Record<string, unknown[]>>;
+        let imported = 0;
+        for (const [pipeline, days] of Object.entries(lessons)) {
+          for (const [day, list] of Object.entries(days)) {
+            const id = mod.importSnapshot(pipeline, day, list.map((l) => LessonSchema.parse(l)));
+            // The id the install derived must be the one the plan will name: a difference means the lessons changed on the way, and the replay would run on something else.
+            if (id !== ids[pipeline]?.[day]) throw new Error(`the install derived snapshot ${id} for ${pipeline} on ${day}, not the planned ${String(ids[pipeline]?.[day])}`);
+            imported += 1;
+          }
+        }
+        io.out(`imported ${String(imported)} frozen snapshots`);
         return 0;
       }
       case "plan": {
@@ -108,20 +147,22 @@ export async function main(argv: readonly string[], io: Io): Promise<number> {
         return 0;
       }
       case "run": {
-        const o = options(rest, ["--plan", "--module", "--corrections", "--results", "--max-usd", "--snapshot-lessons"]);
+        const o = options(rest, ["--plan", "--module", "--corrections", "--results", "--max-usd", "--per-run-usd", "--dir"]);
         const plan = read(need(o, "--plan")) as ReplayPlan;
         const mod = await loadModule(need(o, "--module"));
-        if (mod.executor === undefined || mod.grader === undefined) throw new Error("the --module must provide an executor and a grader (the staging executor is an operator step)");
+        if (mod.executor === undefined || mod.grader === undefined) throw new Error("the --module must provide an executor and a grader");
+        const maxUsd = Number(need(o, "--max-usd")), perRunUsd = Number(need(o, "--per-run-usd"));
+        if (mod.perRunUsd !== undefined && mod.perRunUsd !== perRunUsd) throw new Error(`--per-run-usd ${String(perRunUsd)} is not the limit the module holds its copies to (${String(mod.perRunUsd)})`);
         const corrections = correctionsFrom(need(o, "--corrections"));
-        const maxUsd = Number(need(o, "--max-usd"));
-        const lessonsFile = opt(o, "--snapshot-lessons");
-        const snapshotLessons = lessonsFile === undefined ? undefined : read(lessonsFile) as Record<string, Record<string, unknown[]>>;
+        mod.setCorrectionTexts?.(new Map(corrections.flatMap((c) => (c.text === undefined ? [] : [[c.id, c.text] as const]))));
+        // What building the arms' lessons spent counts in the same limit.
+        const dir = opt(o, "--dir");
+        const built = dir === undefined || !existsSync(path.join(dir, "learning.json")) ? 0 : (read(path.join(dir, "learning.json")) as ArmLearningCost[]).reduce((sum, c) => sum + (c.usd ?? 0), 0);
         const report = await runReplay(plan, {
-          executor: mod.executor, grader: mod.grader, sink: jsonlSink(need(o, "--results")), deliveries: { file: FILE_DELIVERY, ...mod.deliveries },
-          ...(snapshotLessons === undefined ? {} : { snapshotLessons: async (pipeline: string, day: string) => (snapshotLessons[pipeline]?.[day] ?? []).map((l) => LessonSchema.parse(l)) }),
-          priorCorrections: async (task) => corrections.filter((c) => c.member && c.at < task.at && c.taskId !== task.taskId).map((c) => c.id), maxUsd,
+          executor: mod.executor, grader: mod.grader, sink: jsonlSink(need(o, "--results")), maxUsd, holdPerRunUsd: perRunUsd, alreadySpentUsd: built,
+          priorCorrections: async (task) => corrections.filter((c) => c.member && c.at < task.at && c.taskId !== task.taskId).map((c) => c.id),
         });
-        io.out(`ran ${String(report.ran)} runs (${String(report.skipped)} already recorded, ${String(report.ungraded)} ungraded), cost $${report.costUsd.toFixed(2)}, stopped by: ${report.stoppedBy}`);
+        io.out(`ran ${String(report.ran)} runs (${String(report.skipped)} already recorded, ${String(report.ungraded)} ungraded), cost $${report.costUsd.toFixed(2)} (and $${built.toFixed(2)} building the arms' lessons), stopped by: ${report.stoppedBy}`);
         return 0;
       }
       case "blind-sheet": {
@@ -166,7 +207,7 @@ export async function main(argv: readonly string[], io: Io): Promise<number> {
         return 0;
       }
       default:
-        io.err("usage: lessons-replay-measure.ts <select|snapshots|plan|run|blind-sheet|import-marks|report> [options]; see the header of this file");
+        io.err("usage: lessons-replay-measure.ts <select|snapshots|import-snapshots|plan|run|blind-sheet|import-marks|report> [options]; see the header of this file");
         return 2;
     }
   } catch (error) {

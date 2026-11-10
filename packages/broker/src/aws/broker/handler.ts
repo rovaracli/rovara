@@ -89,7 +89,7 @@ import { handleSavedEnvFallback } from "./saved-env-lease.js";
 import { runSavedEnvPoll, savedEnvBeforeNightly, savedEnvPushQueue } from "./saved-env-triggers.js";
 import { sweepSavedEnvBuilds } from "./saved-env-sweep.js";
 import { savedEnvEnabled } from "../../test-env/saved-env-switch.js";
-import { HOOK_DELIVERY_PATH, HOOK_ROUTE_KEY, adminModelChecks, adminTaskE2EReplay, adminLessonsReplaySnapshot, adminTaskLessonsReplay, adminTaskShareMode, connectedAwsAccountsOf, exchangeRepositoryCredential, hookMemoryOf, hookReply, optional, parseBody, routeEvalBatch, routeStartEvalBatch, routeSwebenchChannel, swebenchDependencies, swebenchSlackContext } from "./admin-and-helpers.js";
+import { HOOK_DELIVERY_PATH, HOOK_ROUTE_KEY, adminModelChecks, adminTaskE2EReplay, adminLessonsReplayModel, adminLessonsReplaySnapshot, adminLessonsReplaySubject, adminTaskLessonsReplay, adminTaskShareMode, connectedAwsAccountsOf, exchangeRepositoryCredential, hookMemoryOf, hookReply, optional, parseBody, routeEvalBatch, routeStartEvalBatch, routeSwebenchChannel, swebenchDependencies, swebenchSlackContext } from "./admin-and-helpers.js";
 import { handleCallback } from "./callbacks.js";
 import { APP_ROUTE_KEY, DEVELOPER_ROUTE_KEY, DOT_SEGMENT, FEEDBACK_REVIEW_ROUTE_KEY, MAX_SETUP_PROPOSAL_BYTES, WEB_ROUTE_KEY, plannedAgentRoute, projectSetupPolicy, untestedAgentRouteNote, type AwsBrokerInput } from "./definitions.js";
 import { installLearningTaskEnd } from "./learning-wiring.js";
@@ -1233,6 +1233,10 @@ export function createAwsBrokerHandler(input: AwsBrokerInput) {
       // Lane 7 (DECISIONS 68): the lessons an arm's pipeline built offline, imported as a frozen snapshot (a company owner or admin).
       const replaySnapshot = /^\/v1\/admin\/projects\/([a-z][a-z0-9-]{0,62})\/lessons-replay\/snapshots$/.exec(url.pathname);
       if (request.method === "POST" && replaySnapshot?.[1]) return json(await adminLessonsReplaySnapshot(dependencies, identity, replaySnapshot[1], body), request.requestId, 201);
+      const replaySubject = /^\/v1\/admin\/projects\/([a-z][a-z0-9-]{0,62})\/lessons-replay\/subjects\/([^/]+)$/.exec(url.pathname);
+      if (request.method === "GET" && replaySubject?.[1] && replaySubject[2]) return json(await adminLessonsReplaySubject(dependencies, identity, replaySubject[1], replaySubject[2]), request.requestId);
+      const replayModel = /^\/v1\/admin\/projects\/([a-z][a-z0-9-]{0,62})\/lessons-replay\/model$/.exec(url.pathname);
+      if (request.method === "POST" && replayModel?.[1]) return json(await adminLessonsReplayModel(dependencies, identity, replayModel[1], body), request.requestId);
       const taskShareMode = /^\/v1\/admin\/tasks\/([^/]+)\/share-mode$/.exec(url.pathname);
       if (request.method === "POST" && taskShareMode?.[1]) {
         return json(await adminTaskShareMode(dependencies, identity, taskShareMode[1], body, tasks), request.requestId);

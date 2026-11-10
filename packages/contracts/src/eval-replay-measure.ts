@@ -96,43 +96,67 @@ export function assertOneGrader(rows: readonly ReplayRunRow[]): ReplayGrader | n
 export interface LoadedDifference {
   a: string;
   b: string;
-  /** Both arms have runs on at least one common task. */
+  /** Both arms have COMPLETED (graded) runs on at least one common (task, repeat). */
   comparable: boolean;
+  /** Runs completed in both arms (a task's repeat), and the tasks they cover. */
+  completedPairs: number;
   tasksCompared: number;
-  /** (task, lesson) loads made by both arms, by only `a`, by only `b`. */
+  /** (task, lesson) loads made by both arms, by only `a`, by only `b`, over the completed pairs only. */
   identical: number;
   onlyA: number;
   onlyB: number;
   /** The share of (task, lesson) loads that only one arm made; null when no lesson was loaded by either. */
   differ: number | null;
+  /** Of the completed pairs, in how many each arm loaded at least one lesson. */
+  loadedRunsA: number;
+  loadedRunsB: number;
   /** The arms loaded nothing at all. */
   nothingLoaded: boolean;
-  /** Fewer than LOADED_DIFFERENCE_NEARLY_SAME of the loads differ (or nothing was loaded): the replay says nothing about the two pipelines. */
+  /** An arm that has runs in the results but none completed: it did not run, and nothing can be said of it. */
+  armDidNotRun?: string;
+  /** An arm that loaded no lesson on more than half of its completed runs: its pipeline gave the replay nothing to measure. */
+  armLoadedNothing?: string;
+  /** Fewer than LOADED_DIFFERENCE_NEARLY_SAME of the loads differ, or an arm did not run or loaded nothing, or nothing was loaded: the replay says nothing about the two pipelines, and the report stops. */
   nearlySame: boolean;
 }
 
-/** Per task, the union over its repeats of the lessons each arm loaded; lessons are compared by their content key, so a reworded lesson is a different one. */
+/**
+ * Per completed (task, repeat) pair, the lessons each arm loaded; over a task, the union of its repeats. Lessons are compared by their content key, so a reworded lesson is a different one. Only runs that COMPLETED
+ * in both arms count: an arm whose runs all failed is reported as not having run, never as having loaded "different" (nothing) lessons.
+ */
 export function loadedLessonDifference(rows: readonly ReplayRunRow[], a: string, b: string): LoadedDifference {
   const armA = canonicalArm(a), armB = canonicalArm(b);
-  const sets = (arm: string): Map<string, Set<string>> => {
-    const out = new Map<string, Set<string>>();
-    for (const row of rows) if (canonicalArm(row.arm) === arm) { const set = out.get(row.task) ?? new Set<string>(); for (const key of row.loaded) set.add(key); out.set(row.task, set); }
-    return out;
-  };
-  const left = sets(armA), right = sets(armB);
-  let identical = 0, onlyA = 0, onlyB = 0, tasksCompared = 0;
-  for (const [task, lessonsA] of left) {
-    const lessonsB = right.get(task);
-    if (lessonsB === undefined) continue;
-    tasksCompared += 1;
+  const mine = (arm: string): ReplayRunRow[] => rows.filter((row) => canonicalArm(row.arm) === arm);
+  const rowsA = mine(armA), rowsB = mine(armB);
+  const done = (list: ReplayRunRow[]): Map<string, ReplayRunRow> => new Map(list.filter((row) => row.resolved !== null).map((row) => [JSON.stringify([row.task, row.repeat]), row] as const));
+  const doneA = done(rowsA), doneB = done(rowsB);
+  const base = { a: armA, b: armB, identical: 0, onlyA: 0, onlyB: 0, differ: null, loadedRunsA: 0, loadedRunsB: 0, nothingLoaded: false, completedPairs: 0, tasksCompared: 0 };
+  // An arm with rows and no completed run did not run; an arm with no rows at all is just not part of these results.
+  const armDidNotRun = rowsA.length > 0 && doneA.size === 0 ? armA : rowsB.length > 0 && doneB.size === 0 ? armB : undefined;
+  if (armDidNotRun !== undefined) return { ...base, comparable: false, armDidNotRun, nearlySame: true };
+  const keys = [...doneA.keys()].filter((key) => doneB.has(key));
+  const perTaskA = new Map<string, Set<string>>(), perTaskB = new Map<string, Set<string>>();
+  let loadedRunsA = 0, loadedRunsB = 0;
+  for (const key of keys) {
+    const left = doneA.get(key)!, right = doneB.get(key)!;
+    if (left.loaded.length > 0) loadedRunsA += 1;
+    if (right.loaded.length > 0) loadedRunsB += 1;
+    perTaskA.set(left.task, new Set([...(perTaskA.get(left.task) ?? []), ...left.loaded]));
+    perTaskB.set(right.task, new Set([...(perTaskB.get(right.task) ?? []), ...right.loaded]));
+  }
+  let identical = 0, onlyA = 0, onlyB = 0;
+  for (const [task, lessonsA] of perTaskA) {
+    const lessonsB = perTaskB.get(task)!;
     for (const key of lessonsA) if (lessonsB.has(key)) identical += 1; else onlyA += 1;
     for (const key of lessonsB) if (!lessonsA.has(key)) onlyB += 1;
   }
   const total = identical + onlyA + onlyB;
-  const comparable = tasksCompared > 0;
+  const comparable = keys.length > 0;
   const differ = total === 0 ? null : (onlyA + onlyB) / total;
   const nothingLoaded = comparable && total === 0;
-  return { a: armA, b: armB, comparable, tasksCompared, identical, onlyA, onlyB, differ, nothingLoaded, nearlySame: comparable && (nothingLoaded || (differ ?? 1) < LOADED_DIFFERENCE_NEARLY_SAME) };
+  const armLoadedNothing = !comparable ? undefined : loadedRunsA * 2 < keys.length ? armA : loadedRunsB * 2 < keys.length ? armB : undefined;
+  return { a: armA, b: armB, comparable, completedPairs: keys.length, tasksCompared: perTaskA.size, identical, onlyA, onlyB, differ, loadedRunsA, loadedRunsB, nothingLoaded, ...(armLoadedNothing === undefined ? {} : { armLoadedNothing }),
+    nearlySame: comparable && (nothingLoaded || armLoadedNothing !== undefined || (differ ?? 1) < LOADED_DIFFERENCE_NEARLY_SAME) };
 }
 
 // ---------------------------------------------------------------------------------------------------------------------------
@@ -166,7 +190,7 @@ export interface MeasureResults {
   /** Task runs graded in every arm, and runs left out. */
   pairs: number;
   unpaired: number;
-  arms: Array<{ arm: string; runs: number; resolved: number; rate: number | null; low: number; high: number }>;
+  arms: Array<{ arm: string; runs: number; resolved: number; rate: number | null; low: number; high: number; /** The same over tasks: each task counted once (solved when most of its repeats resolved). */ tasks: { tasks: number; solved: number; rate: number | null; low: number; high: number } }>;
   discordant: Array<{ a: string; b: string; onlyA: string[]; onlyB: string[] }>;
   sameMistakes: Array<{ arm: string; runs: number; runsWithRepeat: number; repeats: number; confirmed: number | null; unjudged: number | null; split: ArmSameMistakeCheck["split"] | null }>;
   learningCost: Array<{ arm: string; usd: number | null; calls: number | null; projectDays: number; perProjectDay: number | null }>;
@@ -205,7 +229,7 @@ export function buildMeasureReport(input: MeasureInput): MeasureReport {
   const days = Math.max(1, Math.round(input.projectDays));
   const results: MeasureResults = {
     pairs: comparison.pairs, unpaired: comparison.unpaired,
-    arms: comparison.arms.map((arm) => ({ arm, ...comparison.perArm[arm]! })),
+    arms: comparison.arms.map((arm) => { const t = comparison.perArmTasks[arm]!; return { arm, ...comparison.perArm[arm]!, tasks: { tasks: t.runs, solved: t.resolved, rate: t.rate, low: t.low, high: t.high } }; }),
     discordant: comparison.discordant,
     sameMistakes: comparison.arms.map((arm) => {
       const mine = input.rows.filter((row) => canonicalArm(row.arm) === arm && common.has(runKey(row)));
@@ -240,15 +264,21 @@ export function renderMeasureReport(report: MeasureReport): string {
   out.push("Lessons replay: a sanity check of the lesson pipelines, not proof. The owner decides.");
   out.push("");
   out.push(`1. Did ${d.a} and ${d.b} load different lessons?`);
-  if (!d.comparable) out.push(`   Not comparable: the results hold no common task for ${d.a} and ${d.b}.`);
+  if (d.armDidNotRun !== undefined) out.push(`   ${d.armDidNotRun} has runs in the results but none completed: it did not run.`);
+  else if (!d.comparable) out.push(`   Not comparable: no run completed in both ${d.a} and ${d.b}.`);
   else {
-    out.push(`   Over ${String(d.tasksCompared)} tasks, ${String(d.identical)} (task, lesson) loads were the same in both, ${String(d.onlyA)} only in ${d.a}, ${String(d.onlyB)} only in ${d.b}: ${pct(d.differ)} differ.`);
+    out.push(`   Over ${String(d.completedPairs)} runs completed in both arms (${String(d.tasksCompared)} tasks), ${String(d.identical)} (task, lesson) loads were the same in both, ${String(d.onlyA)} only in ${d.a}, ${String(d.onlyB)} only in ${d.b}: ${pct(d.differ)} differ.`);
+    out.push(`   Runs that loaded at least one lesson: ${d.a} ${String(d.loadedRunsA)} of ${String(d.completedPairs)}, ${d.b} ${String(d.loadedRunsB)} of ${String(d.completedPairs)}.`);
     out.push(`   "Nearly the same" means fewer than ${String(report.nearlySameLine * 100)}% of the loads differ. Lessons are matched by their words, so a reworded lesson counts as different.`);
   }
   if (report.stopped) {
-    out.push(d.nothingLoaded
-      ? `   STOP: neither ${d.a} nor ${d.b} loaded any lesson. The replay says nothing about the two pipelines.`
-      : `   STOP: ${d.a} and ${d.b} loaded nearly the same lessons. The replay says nothing about the two pipelines.`);
+    out.push(d.armDidNotRun !== undefined
+      ? `   STOP: ${d.armDidNotRun} did not run (every run of it failed or went ungraded). The replay says nothing about the two pipelines.`
+      : d.armLoadedNothing !== undefined
+        ? `   STOP: ${d.armLoadedNothing} loaded no lesson on more than half of its completed runs. The replay says nothing about the two pipelines.`
+        : d.nothingLoaded
+          ? `   STOP: neither ${d.a} nor ${d.b} loaded any lesson. The replay says nothing about the two pipelines.`
+          : `   STOP: ${d.a} and ${d.b} loaded nearly the same lessons. The replay says nothing about the two pipelines.`);
     if (!report.continuedAnyway) out.push("   Nothing further is reported. Run the report again with --continue-anyway to see the rest.");
   }
   if (report.learningCalls !== undefined) {
@@ -262,7 +292,7 @@ export function renderMeasureReport(report: MeasureReport): string {
     out.push(`Grader: ${report.grader === null ? "not recorded (old result)" : `${report.grader.model} ${report.grader.version}`}, the same for every graded run.`);
     out.push("");
     out.push(`2. Pass rate, with a 95% interval (Wilson), over ${String(results.pairs)} runs graded in every arm (${String(results.unpaired)} runs left out). With this many tasks luck moves a rate by more than 10 points, so read the intervals, not the middle numbers.`);
-    for (const arm of results.arms) out.push(`   ${arm.arm}: ${String(arm.resolved)} of ${String(arm.runs)} = ${pct(arm.rate)} (95% interval ${pct(arm.low)} to ${pct(arm.high)})`);
+    for (const arm of results.arms) out.push(`   ${arm.arm}: ${String(arm.resolved)} of ${String(arm.runs)} = ${pct(arm.rate)} (95% interval ${pct(arm.low)} to ${pct(arm.high)}); by task (the repeats of a task are not independent, so this interval is the honest one): ${String(arm.tasks.solved)} of ${String(arm.tasks.tasks)} = ${pct(arm.tasks.rate)} (95% interval ${pct(arm.tasks.low)} to ${pct(arm.tasks.high)})`);
     out.push("");
     out.push("   Tasks only one arm of a pair solved (more than half of its repeats resolved):");
     for (const pair of results.discordant) out.push(`   ${pair.a} against ${pair.b}: only ${pair.a} solved ${String(pair.onlyA.length)} (${list(pair.onlyA)}); only ${pair.b} solved ${String(pair.onlyB.length)} (${list(pair.onlyB)})`);

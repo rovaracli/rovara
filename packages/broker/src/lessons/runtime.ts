@@ -87,6 +87,8 @@ export interface LessonsRuntime {
   readonly snapshots?: SnapshotStore;
   /** Lane 7 (DECISIONS 68): the lessons an arm's own pipeline built offline, imported as frozen snapshots; separate from the live lessons. */
   readonly evalSnapshots?: EvalSnapshotStore;
+  /** Lane 7 (DECISIONS 68): the company's model path and learning month WITHOUT the lessons switch, for the replay's gradings and offline pipelines only (`eval-model.ts`). Absent: no model path. */
+  readonly evalModel?: { model: PipelineModel; spend: LearningSpend };
   /** What `applyLoadReport` needs. */
   readonly counters: CounterDeps;
   /** What the lessons routes need. */
@@ -141,5 +143,5 @@ export function createLessonsRuntime(input: LessonsRuntimeInput): LessonsRuntime
       settings: presetStore, changes: presetStore, audit, now: input.now, authority: secondPersonTier0Authority(input.evidence), soleOwnerLoosening: (workspaceId) => new DynamoSoleOwnerSwitch(input.table).read(workspaceId),
     },
   };
-  return { store, settings, access, directory, load, counters, routes, snapshots: dynamoSnapshotStore(input.table), evalSnapshots: dynamoEvalSnapshotStore(input.table, undefined, input.now) };
+  return { store, settings, access, directory, load, counters, routes, snapshots: dynamoSnapshotStore(input.table), evalSnapshots: dynamoEvalSnapshotStore(input.table, undefined, input.now), ...(input.model === undefined || input.spend === undefined ? {} : { evalModel: { model: input.model, spend: input.spend } }) };
 }

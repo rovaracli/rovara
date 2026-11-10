@@ -14,6 +14,7 @@ import {
   type ArmLearningCost, type ArmLessonSet, type LearningCallsNote, type MemoryInput, type ReplayGradedBy, type ReplayGrader, type ReplayRunRow,
 } from "@agentx/contracts";
 import { lessonContentKey, summarizeLessonSet } from "./replay-lessonset.js";
+import { evalSnapshotIdOf } from "./replay-snapshot-store.js";
 import type { ReplayCandidate } from "./replay-select.js";
 import type { Lesson } from "./types.js";
 
@@ -103,7 +104,11 @@ export function buildReplayPlan(input: PlanInput): ReplayPlan {
         const day = dayOf(task.at);
         const run: PlannedRun = { key: JSON.stringify([task.taskId, repeat, arm]), task: task.taskId, repeat, arm, day, evalRun: true };
         if (parsed.kind === "off" || parsed.kind === "on") run.memory = memoryInputForArm(arm, parsed.kind === "on" ? snapshots[pipelineOf(arm)!]![day]! : undefined);
-        else run.delivery = parsed.kind;
+        else {
+          // The file arm: the install places the snapshot's lessons as a file in the copy's checkout (and loads nothing else); the MCP arm is not built.
+          run.delivery = parsed.kind;
+          if (parsed.kind === "file") run.memory = { mode: "snapshot", snapshotId: snapshots[pipelineOf(arm)!]![day]! };
+        }
         runs.push(run);
       }
     }
@@ -148,7 +153,7 @@ export interface BuiltSnapshots {
 }
 
 /** Builds each pipeline's snapshot for each simulated day, in time order, each from the outcomes of tasks before that day. */
-export async function buildSnapshots(input: { tasks: readonly ReplayCandidate[]; arms: readonly string[]; builders: Record<string, SnapshotBuilder>; /** A hard limit on what the builders may spend in all. */ maxUsd?: number }): Promise<BuiltSnapshots> {
+export async function buildSnapshots(input: { key: { workspaceId: string; project: string }; tasks: readonly ReplayCandidate[]; arms: readonly string[]; builders: Record<string, SnapshotBuilder>; /** A hard limit on what the builders may spend in all. */ maxUsd?: number }): Promise<BuiltSnapshots> {
   const tasks = [...input.tasks].sort((a, b) => a.at - b.at || (a.taskId < b.taskId ? -1 : 1));
   const days = [...new Set(tasks.map((t) => dayOf(t.at)))].sort();
   const arms = input.arms.map(canonicalArm);
@@ -163,7 +168,8 @@ export async function buildSnapshots(input: { tasks: readonly ReplayCandidate[];
     for (const day of days) {
       const historical = tasks.filter((t) => dayOf(t.at) < day);
       const built = await builder.build({ pipeline, day, learningCalls: "explicit", historical });
-      out.snapshots[pipeline][day] = built.snapshotId;
+      // The id the install derives from the lessons themselves, so the snapshot a copy is started on is exactly the one imported (not a name the builder chose).
+      out.snapshots[pipeline][day] = evalSnapshotIdOf(input.key, built.lessons);
       usd = usd === null || built.costUsd === null ? null : usd + built.costUsd;
       calls = calls === null || built.calls === null ? null : calls + built.calls;
       if (input.maxUsd !== undefined && (usd ?? 0) > input.maxUsd) throw new RangeError(`Building the ${pipeline} snapshots cost more than --max-usd ${String(input.maxUsd)}. Stopped.`);
@@ -181,57 +187,55 @@ export async function buildSnapshots(input: { tasks: readonly ReplayCandidate[];
 // Running
 
 /** How a local agent is offered lessons (DECISIONS 50.5). TODO(R2, MCP): both are stubs until the repository file (`.rovara/lessons.md`) and the MCP tool exist. */
-export interface LessonsFileOffer {
-  /** Where the file goes in the task's checkout, its text, and the agent file that gets the one pointer line (`withPointer`). */
-  path: string;
-  content: string;
-  pointerPath: "AGENTS.md";
-  /** The content keys of the lessons the file holds: what the local agent is offered. */
-  keys: string[];
-}
-export interface LessonDelivery {
-  kind: "file" | "mcp";
-  built: boolean;
-  /** The file arm: the repository lessons file (`.rovara/lessons.md`, lane R2's format) for this day's lessons and this task's repository. */
-  render?(lessons: readonly Lesson[], repository: string): LessonsFileOffer;
-}
-/** The MCP arm is still a stub (TODO: the MCP lessons tool). The file arm is `FILE_DELIVERY` in `replay-delivery.ts`. */
-export const UNBUILT_DELIVERIES: Record<"file" | "mcp", LessonDelivery> = { file: { kind: "file", built: false }, mcp: { kind: "mcp", built: false } };
-
 export interface ExecutedRun {
   /** Content keys (`lessonContentKey`) of the lessons the run was given, from its load records. */
   loaded: string[];
+  /** What the copy cost, or null when unpriced (it is then counted at its hold, never at 0). */
   costUsd: number | null;
-  /** An opaque reference the grader reads the run's result from (a branch, a pull request, an evidence id). */
+  /** An opaque reference the grader reads the run's result from (a task id). */
   evidence: string;
   /** The executor confirms the task it made carries the eval marker. */
   evalRunMarked: boolean;
   /** Learning calls the run made: always 0. */
   learningCalls: number;
+  /** Called after the run is graded (or when grading failed): closes the copy. Never throws into the replay. */
+  cleanup?: () => Promise<void>;
+}
+/** A run that started a copy and did not finish it. The copy was cancelled; `costUsd` is what it had cost (null: not known, counted at its hold). */
+export class ReplayRunFailed extends Error {
+  constructor(readonly costUsd: number | null, message = "the replayed task did not finish") { super(message); this.name = "ReplayRunFailed"; }
 }
 export interface ReplayExecutor {
-  run(input: { run: PlannedRun; task: ReplayCandidate; delivery?: LessonDelivery; /** The file arm: the lessons file to place in the checkout, with its pointer. */ lessonsFile?: LessonsFileOffer; learning: { lessonsSwitch: "off"; calls: "none" } }): Promise<ExecutedRun>;
+  run(input: { run: PlannedRun; task: ReplayCandidate; learning: { lessonsSwitch: "off"; calls: "none" } }): Promise<ExecutedRun>;
 }
 /** What the grader is shown. NO arm, pipeline or memory setting: it must grade blind. */
 export interface GradeRequest { task: ReplayCandidate; repeat: number; evidence: string; priorCorrections: string[] }
-export interface GradeResult { resolved: boolean; gradedBy: ReplayGradedBy; mistakes: string[] }
-export interface ReplayGraderPort { identity: ReplayGrader; grade(request: GradeRequest): Promise<GradeResult> }
+export interface GradeResult { resolved: boolean; gradedBy: ReplayGradedBy; mistakes: string[]; /** What the grading cost (the grader's model); counted in the budget. */ costUsd?: number }
+export interface ReplayGraderPort {
+  identity: ReplayGrader;
+  /** The most one grading may cost: a grading that throws is counted at this (it may have been paid for). */
+  holdUsd?: number;
+  grade(request: GradeRequest): Promise<GradeResult>;
+}
 export interface RunSink {
   /** The keys of runs already recorded (a replay resumes where it stopped). */
   done(): ReadonlySet<string>;
-  append(key: string, row: ReplayRunRow): Promise<void>;
+  /** What the recorded runs cost (copies and gradings, failed ones included): a resumed replay starts from it, so its limit holds across invocations. */
+  spentUsd(): number;
+  append(key: string, row: ReplayRunRow, chargeUsd: number): Promise<void>;
 }
 export interface RunDeps {
   executor: ReplayExecutor;
   grader: ReplayGraderPort;
   sink: RunSink;
-  deliveries?: Partial<Record<"file" | "mcp", LessonDelivery>>;
-  /** The pipeline's lessons on a simulated day, for the file arm. */
-  snapshotLessons?(pipeline: string, day: string): Promise<readonly Lesson[]>;
   /** The ids of the historical corrections from before a task. */
   priorCorrections(task: ReplayCandidate): Promise<string[]>;
-  /** A HARD limit (US dollars) on what the replay may spend: it stops before a run that could pass it. */
+  /** A HARD limit (US dollars) on what the whole replay may spend. */
   maxUsd: number;
+  /** What one copy may cost at most (its own spend limit): a run is not started unless the limit has room for it, and a run that fails or is unpriced is counted at this. */
+  holdPerRunUsd: number;
+  /** Spent before this replay's runs: building the lessons of the arms (their model calls). */
+  alreadySpentUsd?: number;
 }
 export interface RunReport { ran: number; skipped: number; ungraded: number; costUsd: number; stoppedBy: "done" | "max_usd" }
 
@@ -239,34 +243,28 @@ export async function runReplay(plan: ReplayPlan, deps: RunDeps): Promise<RunRep
   if (deps.grader.identity.model !== plan.grader.model || deps.grader.identity.version !== plan.grader.version) {
     throw new GraderMismatchError(`The plan names grader ${plan.grader.model} ${plan.grader.version} but the grader given is ${deps.grader.identity.model} ${deps.grader.identity.version}.`);
   }
-  // Before anything runs: a file or MCP arm needs a built adapter.
-  for (const arm of plan.arms) {
-    const kind = parseArm(arm).kind;
-    if (kind === "file" || kind === "mcp") {
-      const delivery = deps.deliveries?.[kind];
-      if (delivery === undefined || !delivery.built) throw new ArmNotBuiltError(arm, kind === "file" ? "no file delivery was given (use FILE_DELIVERY)." : "the MCP lessons tool is not built yet (TODO: the MCP lane).");
-      if (kind === "file" && (delivery.render === undefined || deps.snapshotLessons === undefined)) throw new ArmNotBuiltError(arm, "the file arm needs a file delivery that renders and the pipeline's lessons for each day (--snapshot-lessons).");
-    }
-  }
+  // Before anything runs: the MCP arm is not built.
+  for (const arm of plan.arms) if (parseArm(arm).kind === "mcp") throw new ArmNotBuiltError(arm, "the MCP lessons tool is not built yet (TODO: the MCP lane).");
   const byTask = new Map(plan.tasks.map((t) => [t.taskId, t] as const));
   const done = deps.sink.done();
   if (!Number.isFinite(deps.maxUsd) || deps.maxUsd <= 0) throw new RangeError("A replay run needs a positive maximum cost in US dollars (--max-usd).");
+  if (!Number.isFinite(deps.holdPerRunUsd) || deps.holdPerRunUsd <= 0) throw new RangeError("A replay run needs the most one copy may cost, in US dollars.");
   const report: RunReport = { ran: 0, skipped: 0, ungraded: 0, costUsd: 0, stoppedBy: "done" };
-  let dearest = 0;
+  // The whole replay's spend: what was spent before it (the arms' lessons), what earlier invocations recorded, and what this one spends.
+  let spent = (deps.alreadySpentUsd ?? 0) + deps.sink.spentUsd();
   for (const run of plan.runs) {
     if (done.has(run.key)) { report.skipped += 1; continue; }
-    // Hard stop: not past the limit, and not before a run that, if it cost as much as the dearest run so far, would pass it.
-    if (report.costUsd >= deps.maxUsd || report.costUsd + dearest > deps.maxUsd) { report.stoppedBy = "max_usd"; return report; }
+    // A HARD stop: a run starts only if the limit has room for the most it may cost, and for the grading that follows.
+    if (spent + deps.holdPerRunUsd + (deps.grader.holdUsd ?? 0) > deps.maxUsd) { report.stoppedBy = "max_usd"; return report; }
     const task = byTask.get(run.task)!;
-    const delivery = run.delivery === undefined ? undefined : deps.deliveries?.[run.delivery];
     let executed: ExecutedRun | undefined;
-    let offer: LessonsFileOffer | undefined;
+    let charge = 0;
     try {
-      if (run.delivery === "file") offer = delivery!.render!(await deps.snapshotLessons!(parseArm(run.arm).label!, run.day), task.repository);
-      executed = await deps.executor.run({ run, task, ...(delivery === undefined ? {} : { delivery }), ...(offer === undefined ? {} : { lessonsFile: offer }), learning: { lessonsSwitch: "off", calls: "none" } });
+      executed = await deps.executor.run({ run, task, learning: { lessonsSwitch: "off", calls: "none" } });
     } catch (error) {
-      // An unmarked task or a learning call ends the whole replay; any other fault is one ungraded run.
+      // An unmarked task or a learning call ends the whole replay; any other fault is one ungraded run, counted at what the copy cost, or at its hold when that is not known.
       if (error instanceof EvalMarkError || error instanceof ReplayLearningCallError || error instanceof ArmNotBuiltError) throw error;
+      charge += error instanceof ReplayRunFailed && error.costUsd !== null ? error.costUsd : deps.holdPerRunUsd;
       executed = undefined;
     }
     if (executed !== undefined) {
@@ -277,18 +275,25 @@ export async function runReplay(plan: ReplayPlan, deps: RunDeps): Promise<RunRep
     let row: ReplayRunRow;
     if (executed === undefined) row = ungraded([], null);
     else {
-      report.costUsd += executed.costUsd ?? 0;
-      dearest = Math.max(dearest, executed.costUsd ?? 0);
+      charge += executed.costUsd ?? deps.holdPerRunUsd;
       try {
         const prior = await deps.priorCorrections(task);
         const graded = await deps.grader.grade({ task, repeat: run.repeat, evidence: executed.evidence, priorCorrections: prior });
+        charge += graded.costUsd ?? 0;
         // A mistake must name a correction that was given before the task; anything else is not a repeat.
         if (graded.mistakes.some((id) => !prior.includes(id))) throw new Error("the grader named a correction that was not given before the task");
-        row = ReplayRunRowSchema.parse({ task: run.task, repeat: run.repeat, arm: run.arm, resolved: graded.resolved, grader: deps.grader.identity, gradedBy: graded.gradedBy, loaded: offer?.keys ?? executed.loaded, mistakes: [...new Set(graded.mistakes)], costUsd: executed.costUsd });
-      } catch { row = ungraded(offer?.keys ?? executed.loaded, executed.costUsd); }
+        row = ReplayRunRowSchema.parse({ task: run.task, repeat: run.repeat, arm: run.arm, resolved: graded.resolved, grader: deps.grader.identity, gradedBy: graded.gradedBy, loaded: executed.loaded, mistakes: [...new Set(graded.mistakes)], costUsd: executed.costUsd });
+      } catch {
+        // A grading that failed may still have been paid for: it is counted at its hold.
+        charge += deps.grader.holdUsd ?? 0;
+        row = ungraded(executed.loaded, executed.costUsd);
+      }
+      await executed.cleanup?.().catch(() => undefined);
     }
     if (row.resolved === null) report.ungraded += 1;
-    await deps.sink.append(run.key, row);
+    spent += charge;
+    report.costUsd += charge;
+    await deps.sink.append(run.key, row, charge);
     report.ran += 1;
   }
   return report;

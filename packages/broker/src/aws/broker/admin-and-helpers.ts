@@ -44,6 +44,8 @@ import { candidateDiffText } from "../developer-tasks/task-view.js";
 import { readSpendPolicy } from "../../spend/settings.js";
 import { LessonSchema, type Lesson } from "../../lessons/types.js";
 import { requireAudit } from "../../lessons/policy.js";
+import { subjectForTask } from "../../lessons/task-end.js";
+import { EVAL_MODEL_OUTPUT_MAX_TOKENS, EvalModelRefusal, evalModelCall } from "../../lessons/eval-model.js";
 import { EVAL_SNAPSHOT_MAX_LESSONS, buildEvalSnapshot } from "../../lessons/replay-snapshot-store.js";
 import { isReplayCopy } from "../../developer/eval-copy.js";
 import { autofixTaskSpendUsd } from "./dispatch.js";
@@ -362,6 +364,41 @@ export async function adminLessonsReplaySnapshot(dependencies: AwsBrokerDependen
   }
   await lessons.evalSnapshots.put(snapshot);
   return { snapshot: { snapshotId: snapshot.snapshotId, lessons: snapshot.lessons.length, pipeline: snapshot.pipeline, day: snapshot.day } };
+}
+
+/**
+ * Lane 7 (DECISIONS 47, 68): `POST /v1/admin/projects/{project}/lessons-replay/model`, one model call on the company's own model path for the replay: a grading of a replayed copy or a call of an arm's offline
+ * lesson pipeline (`lessons/eval-model.ts` says why it is not behind the lessons switch). A company owner or admin; the call's cost is counted in the company's learning month and answered, so the caller keeps the run's
+ * budget. Body: `{ purpose, system, user, maxOutputTokens, maxUsd }`; answer: `{ text, costUsd }`.
+ */
+export async function adminLessonsReplayModel(dependencies: AwsBrokerDependencies, identity: AuthenticatedIdentity, project: string, value: unknown): Promise<unknown> {
+  const { orgId } = await requireReplayOperator(dependencies, identity, undefined);
+  const evalModel = dependencies.lessons?.evalModel;
+  if (evalModel === undefined) throw agentXError("NOT_FOUND", "no learning model path is set up in this deployment");
+  await requireLatestProject(dependencies, orgId, project);
+  const body = z.object({ purpose: z.enum(["grade", "learn"]), system: z.string().min(1), user: z.string().min(1), maxOutputTokens: z.number().int().min(1).max(EVAL_MODEL_OUTPUT_MAX_TOKENS), maxUsd: z.number().positive().max(50) }).strict().safeParse(value);
+  if (!body.success) throw agentXError("CONFIG_INVALID", "the replay model call is not valid");
+  try {
+    const answer = await evalModelCall(evalModel, { workspaceId: orgId, project, system: body.data.system, user: body.data.user, maxOutputTokens: body.data.maxOutputTokens, maxHoldUsd: body.data.maxUsd });
+    return { text: answer.text, costUsd: answer.costUsd };
+  } catch (error) {
+    if (!(error instanceof EvalModelRefusal)) throw error;
+    throw agentXError(error.code === "too_large" ? "CONFIG_INVALID" : "RUNTIME_UNAVAILABLE", error.message);
+  }
+}
+
+/**
+ * Lane 7 (DECISIONS 68): `GET /v1/admin/projects/{project}/lessons-replay/subjects/{taskId}`, a HISTORICAL task as the reflector sees it at its end (its spans, trusts and outcome), for an arm's offline pipeline. A company
+ * owner or admin. The task must be a real past task of this project: a replay copy, an automatic run and a task of another project or company answer as if there were none (the subject source refuses them).
+ */
+export async function adminLessonsReplaySubject(dependencies: AwsBrokerDependencies, identity: AuthenticatedIdentity, project: string, taskId: string): Promise<unknown> {
+  const { orgId } = await requireReplayOperator(dependencies, identity, undefined);
+  const learning = dependencies.learning;
+  if (learning === undefined) throw agentXError("NOT_FOUND", "learning is not set up in this deployment");
+  if (!TASK_ID_PATTERN.test(taskId)) throw agentXError("TASK_NOT_FOUND", "that is not a task ID");
+  const subject = await subjectForTask(learning, { workspaceId: orgId, taskId });
+  if (subject === undefined || subject.project !== project || subject.evalRun === true) throw agentXError("TASK_NOT_FOUND", `no task ${taskId}`);
+  return { subject };
 }
 
 const REPLAY_EVIDENCE_MAX_CHARS = 40_000;

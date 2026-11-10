@@ -2,10 +2,9 @@
 import { describe, expect, it } from "vitest";
 import { GraderMismatchError, REPLAY_REPEATS, buildMeasureReport, type ReplayRunRow } from "@agentx/contracts";
 import {
-  ArmNotBuiltError, EvalMarkError, ReplayLearningCallError, UNBUILT_DELIVERIES, buildReplayPlan, buildSnapshots, dayOf, runReplay,
+  ArmNotBuiltError, EvalMarkError, ReplayLearningCallError, ReplayRunFailed, buildReplayPlan, buildSnapshots, dayOf, runReplay,
   type ExecutedRun, type GradeRequest, type ReplayExecutor, type ReplayGraderPort, type RunSink, type SnapshotBuilder,
 } from "../../../packages/broker/src/lessons/replay-harness.js";
-import { FILE_DELIVERY } from "../../../packages/broker/src/lessons/replay-delivery.js";
 import { lessonContentKey, summarizeLessonSet } from "../../../packages/broker/src/lessons/replay-lessonset.js";
 import { repeatMistakeChecks } from "../../../packages/broker/src/lessons/replay-mistakes.js";
 import type { ReplayCandidate } from "../../../packages/broker/src/lessons/replay-select.js";
@@ -24,9 +23,11 @@ const plan = (n = 40, arms = ARMS) => buildReplayPlan({ tasks: tasks(n), arms, s
 
 class Sink implements RunSink {
   rows = new Map<string, ReplayRunRow>();
-  constructor(private readonly already: string[] = []) {}
+  charges: number[] = [];
+  constructor(private readonly already: string[] = [], private readonly before = 0) {}
   done(): ReadonlySet<string> { return new Set([...this.already, ...this.rows.keys()]); }
-  async append(key: string, row: ReplayRunRow): Promise<void> { this.rows.set(key, row); }
+  spentUsd(): number { return this.before + this.charges.reduce((a, b) => a + b, 0); }
+  async append(key: string, row: ReplayRunRow, charge: number): Promise<void> { this.rows.set(key, row); this.charges.push(charge); }
 }
 const okRun = (over: Partial<ExecutedRun> = {}): ExecutedRun => ({ loaded: ["k1"], costUsd: 0.4, evidence: "ev", evalRunMarked: true, learningCalls: 0, ...over });
 const grader = (over: Partial<ReplayGraderPort> = {}): ReplayGraderPort & { seen: GradeRequest[] } => {
@@ -34,7 +35,7 @@ const grader = (over: Partial<ReplayGraderPort> = {}): ReplayGraderPort & { seen
   return { identity: GRADER, seen, grade: async (request) => { seen.push(request); return { resolved: true, gradedBy: "hidden_tests", mistakes: [] }; }, ...over };
 };
 
-const go = (p: Parameters<typeof runReplay>[0], deps: Omit<Parameters<typeof runReplay>[1], "maxUsd"> & { maxUsd?: number }) => runReplay(p, { maxUsd: 100_000, ...deps });
+const go = (p: Parameters<typeof runReplay>[0], deps: Omit<Parameters<typeof runReplay>[1], "maxUsd" | "holdPerRunUsd"> & { maxUsd?: number; holdPerRunUsd?: number }) => runReplay(p, { maxUsd: 100_000, holdPerRunUsd: 0.5, ...deps });
 
 describe("the plan", () => {
   it("is every task x arm x repeat, 3 repeats, in time order, each marked as an eval run", () => {
@@ -77,8 +78,10 @@ describe("the plan", () => {
     const p = buildReplayPlan({ tasks: tasks(40), arms: ["off", "on:current", "file:current", "mcp:current"], seed: "s", grader: GRADER, snapshots: snapshotsFor(tasks(40), ["current"]) });
     const file = p.runs.find((r) => r.arm === "file:current")!;
     expect(file).toMatchObject({ delivery: "file" });
-    expect(file.memory).toBeUndefined();
+    // The file arm reads its snapshot (the install places the lessons file from it, and pushes nothing); the MCP arm has no memory input.
+    expect(file.memory).toMatchObject({ mode: "snapshot" });
     expect(p.runs.find((r) => r.arm === "mcp:current")).toMatchObject({ delivery: "mcp" });
+    expect(p.runs.find((r) => r.arm === "mcp:current")!.memory).toBeUndefined();
   });
 });
 
@@ -157,41 +160,18 @@ describe("running", () => {
     await go(plan(40), { executor: executor(), grader: honest, sink: sink2, priorCorrections: async () => ["c1"], maxUsd: 0.5 });
     expect([...sink2.rows.values()][0]).toMatchObject({ resolved: false, mistakes: ["c1"] });
   });
-  it("the MCP arm refuses to run before anything runs (stub); the file arm refuses until it is given its delivery and the day's lessons", async () => {
+  it("the MCP arm refuses to run before anything runs (stub); the file arm is planned with its snapshot and the install places the file", async () => {
     const mcp = buildReplayPlan({ tasks: tasks(40), arms: ["off", "mcp:current", "on:current"], seed: "s", grader: GRADER, snapshots: snapshotsFor(tasks(40), ["current"]) });
     let ran = 0;
     const counting: ReplayExecutor = { run: async () => { ran += 1; return okRun(); } };
-    const base = { executor: counting, grader: grader(), sink: new Sink(), priorCorrections: async () => [] };
-    await expect(go(mcp, base)).rejects.toThrow(ArmNotBuiltError);
-    await expect(go(mcp, { ...base, deliveries: { file: FILE_DELIVERY, mcp: UNBUILT_DELIVERIES.mcp } })).rejects.toThrow(/TODO: the MCP lane/);
-    const file = buildReplayPlan({ tasks: tasks(40), arms: ["off", "file:current", "on:current"], seed: "s", grader: GRADER, snapshots: snapshotsFor(tasks(40), ["current"]) });
-    await expect(go(file, base)).rejects.toThrow(ArmNotBuiltError);
-    await expect(go(file, { ...base, deliveries: UNBUILT_DELIVERIES })).rejects.toThrow(ArmNotBuiltError);
-    await expect(go(file, { ...base, deliveries: { file: FILE_DELIVERY } })).rejects.toThrow(/--snapshot-lessons/);
+    await expect(go(mcp, { executor: counting, grader: grader(), sink: new Sink(), priorCorrections: async () => [] })).rejects.toThrow(/TODO: the MCP lane/);
     expect(ran).toBe(0);
-  });
-  it("the file arm is offered the day's lessons as R2's repository file, with the pointer, and its row records what the file held", async () => {
-    const lessons = [
-      lessonRecord({ id: "les_aaaa0001", title: "Use withRetry", body: "Use withRetry for HTTP retries.", scope: { repos: ["api"] } }),
-      lessonRecord({ id: "les_aaaa0002", title: "Other repo", body: "Only for the web repository.", scope: { repos: ["web"] } }),
-      lessonRecord({ id: "les_aaaa0003", title: "Old", body: "Retired advice.", status: "retired", scope: { repos: ["api"] } }),
-    ];
     const p = buildReplayPlan({ tasks: tasks(4), arms: ["off", "file:current", "on:current"], seed: "s", grader: GRADER, snapshots: snapshotsFor(tasks(4), ["current"]), allowSmall: true, repeats: 1 });
-    const offers: Array<{ arm: string; path?: string; content?: string; pointer?: string }> = [];
-    const spying: ReplayExecutor = { run: async ({ run, lessonsFile }) => { offers.push({ arm: run.arm, ...(lessonsFile === undefined ? {} : { path: lessonsFile.path, content: lessonsFile.content, pointer: lessonsFile.pointerPath }) }); return okRun({ loaded: ["from-executor"] }); } };
+    const file = p.runs.find((r) => r.arm === "file:current")!;
+    expect(file).toMatchObject({ delivery: "file", memory: { mode: "snapshot" } });
     const sink = new Sink();
-    await go(p, { executor: spying, grader: grader(), sink, priorCorrections: async () => [], deliveries: { file: FILE_DELIVERY }, snapshotLessons: async () => lessons });
-    const fileOffers = offers.filter((o) => o.arm === "file:current");
-    expect(fileOffers).toHaveLength(4);
-    expect(offers.filter((o) => o.arm !== "file:current").every((o) => o.path === undefined)).toBe(true);
-    expect(fileOffers[0]).toMatchObject({ path: ".rovara/lessons.md", pointer: "AGENTS.md" });
-    expect(fileOffers[0]!.content).toContain("Use withRetry for HTTP retries.");
-    expect(fileOffers[0]!.content).toContain("<!-- rovara:les_aaaa0001 -->");
-    expect(fileOffers[0]!.content).not.toContain("Only for the web repository");
-    expect(fileOffers[0]!.content).not.toContain("Retired advice");
-    const fileRows = [...sink.rows.values()].filter((r) => r.arm === "file:current");
-    expect(fileRows.every((r) => r.loaded.length === 1 && r.loaded[0] === lessonContentKey(lessons[0]!))).toBe(true);
-    expect([...sink.rows.values()].filter((r) => r.arm === "on:current").every((r) => r.loaded[0] === "from-executor")).toBe(true);
+    await go(p, { executor: { run: async ({ run }) => okRun({ loaded: run.delivery === "file" ? ["from-the-file"] : ["pushed"] }) }, grader: grader(), sink, priorCorrections: async () => [] });
+    expect([...sink.rows.values()].filter((r) => r.arm === "file:current").every((r) => r.loaded[0] === "from-the-file")).toBe(true);
   });
   it("produces rows the report accepts, end to end", async () => {
     const sink = new Sink();
@@ -211,7 +191,7 @@ describe("building the snapshots (historical outcomes only)", () => {
     const calls: Array<{ pipeline: string; day: string; historical: number; learningCalls: string }> = [];
     const builder = (usd: number): SnapshotBuilder => ({ build: async (req) => { calls.push({ pipeline: req.pipeline, day: req.day, historical: req.historical.length, learningCalls: req.learningCalls }); return { snapshotId: `snp_${req.day.replace(/-/gu, "").padEnd(20, "0")}`, lessons: [lesson(`L ${req.day}`, `Always run lint ${req.day}`)], costUsd: usd, calls: 2 }; } });
     const t = tasks(6);
-    const built = await buildSnapshots({ tasks: t, arms: ARMS, builders: { current: builder(0.5), consolidated: builder(0.25) } });
+    const built = await buildSnapshots({ key: KEY, tasks: t, arms: ARMS, builders: { current: builder(0.5), consolidated: builder(0.25) } });
     const days = [...new Set(t.map((x) => dayOf(x.at)))].sort();
     expect(calls.filter((c) => c.pipeline === "current").map((c) => c.day)).toEqual(days);
     expect(calls.filter((c) => c.pipeline === "current").map((c) => c.historical)).toEqual([0, 2, 4]);
@@ -221,7 +201,7 @@ describe("building the snapshots (historical outcomes only)", () => {
     expect(built.lessonSets.map((s) => s.arm).sort()).toEqual(["on:consolidated", "on:current"]);
   });
   it("a pipeline with no builder is refused, not skipped", async () => {
-    await expect(buildSnapshots({ tasks: tasks(4), arms: ARMS, builders: {} })).rejects.toThrow(ArmNotBuiltError);
+    await expect(buildSnapshots({ key: KEY, tasks: tasks(4), arms: ARMS, builders: {} })).rejects.toThrow(ArmNotBuiltError);
   });
 });
 
@@ -276,5 +256,60 @@ describe("the repeat-mistake metric on the replay (CONNECT-2)", () => {
   });
   it("the real signature matcher is wired behind the same port", () => {
     expect(typeof signatureMatcher({ orgId: "org_aaaaaaaaaaaaaaaaaaaa", project: "p", projectCreatedAt: "2026-01-01T00:00:00.000Z" }).sameAsCorrection).toBe("function");
+  });
+});
+
+describe("--max-usd is a true hard stop (M2)", () => {
+  const executor = (): ReplayExecutor => ({ run: async () => okRun() });
+  const failing = (cost: number | null | undefined): ReplayExecutor => ({ run: async () => { throw cost === undefined ? new Error("worker lost") : new ReplayRunFailed(cost); } });
+  const base = (executor: ReplayExecutor, over: Record<string, unknown> = {}) => ({ executor, grader: grader(), sink: new Sink(), priorCorrections: async () => [] as string[], ...over });
+
+  it("counts a failed run at its hold when its cost is not known: 240 failing runs cannot pass a $25 limit", async () => {
+    let started = 0;
+    const sink = new Sink();
+    const report = await go(plan(40), { ...base({ run: async () => { started += 1; throw new Error("the replayed task did not complete"); } }, { sink }), maxUsd: 25, holdPerRunUsd: 3 });
+    expect(report.stoppedBy).toBe("max_usd");
+    expect(started).toBe(8); // 8 x 3 = 24; a ninth could reach 27
+    expect(report.costUsd).toBe(24);
+    expect(sink.spentUsd()).toBe(24);
+  });
+  it("counts a failed run at the cost the install read for it, and a run with no price at its hold", async () => {
+    const dear = await go(plan(40), { ...base(failing(2), { sink: new Sink() }), maxUsd: 10, holdPerRunUsd: 3 });
+    expect(dear.ran).toBe(4); // 4 x 2 = 8; a fifth needs 8 + 3 > 10
+    const unpriced = await go(plan(40), { ...base({ run: async () => okRun({ costUsd: null }) }, { sink: new Sink() }), maxUsd: 10, holdPerRunUsd: 3 });
+    expect(unpriced.costUsd).toBe(9);
+    expect(unpriced.ran).toBe(3);
+  });
+  it("counts the grader's spend, and a grading that failed at its hold", async () => {
+    const priced = grader({ holdUsd: 0.5, grade: async () => ({ resolved: true, gradedBy: "rubric", mistakes: [], costUsd: 0.2 }) });
+    const a = await go(plan(40), { ...base(executor(), { grader: priced, sink: new Sink() }), maxUsd: 3, holdPerRunUsd: 0.5 });
+    expect(a.costUsd).toBeCloseTo(2.4, 6); // 4 x (0.4 + 0.2); a fifth needs 2.4 + 0.5 + 0.5 = 3.4 > 3
+    const broken = grader({ holdUsd: 1, grade: async () => { throw new Error("model down"); } });
+    const b = await go(plan(40), { ...base(executor(), { grader: broken, sink: new Sink() }), maxUsd: 5, holdPerRunUsd: 0.5 });
+    expect(b.ungraded).toBe(b.ran);
+    expect(b.costUsd).toBeCloseTo(b.ran * 1.4, 6);
+    expect(b.costUsd).toBeLessThanOrEqual(5);
+  });
+  it("a resumed replay starts from what it already spent, and from what building the arms' lessons spent", async () => {
+    const p = plan(40);
+    const resumed = await go(p, { ...base(executor(), { sink: new Sink([], 8) }), maxUsd: 10, holdPerRunUsd: 0.5 });
+    expect(resumed.ran).toBeLessThan(6); // 8 already spent: 0.4 each until 8 + n x 0.4 + 0.5 > 10
+    expect(8 + resumed.costUsd).toBeLessThanOrEqual(10);
+    const built = await go(p, { ...base(executor(), { sink: new Sink() }), maxUsd: 10, holdPerRunUsd: 0.5, alreadySpentUsd: 9.6 });
+    expect(built.ran).toBe(0);
+    expect(built.stoppedBy).toBe("max_usd");
+  });
+  it("closes a copy after it is graded, and whether or not the grading worked", async () => {
+    let closed = 0;
+    const cleaning: ReplayExecutor = { run: async () => ({ ...okRun(), cleanup: async () => { closed += 1; } }) };
+    await go(plan(40), { ...base(cleaning, { sink: new Sink() }), maxUsd: 1.5, holdPerRunUsd: 0.5 });
+    expect(closed).toBeGreaterThan(0);
+    const before = closed;
+    await go(plan(40), { ...base(cleaning, { grader: grader({ grade: async () => { throw new Error("no"); } }), sink: new Sink() }), maxUsd: 1.5, holdPerRunUsd: 0.5 });
+    expect(closed).toBeGreaterThan(before);
+  });
+  it("a limit and a hold are required", async () => {
+    await expect(runReplay(plan(40), { ...base(executor()), maxUsd: 5, holdPerRunUsd: 0 })).rejects.toThrow(/most one copy/);
+    await expect(runReplay(plan(40), { ...base(executor()), maxUsd: 0, holdPerRunUsd: 1 })).rejects.toThrow(/maximum cost/);
   });
 });

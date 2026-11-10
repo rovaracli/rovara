@@ -177,6 +177,11 @@ export interface ArmsComparison {
   /** Task runs left out because an arm was missing or did not grade them. */
   unpaired: number;
   perArm: Record<string, ArmResult>;
+  /**
+   * Per ARM, the same over TASKS (a task is solved by an arm when more than half of its graded repeats resolved). The repeats of one task are not independent, so the run-level interval above is narrower than the truth;
+   * this one counts each task once.
+   */
+  perArmTasks: Record<string, ArmResult>;
   /** Every pair of arms, with the tasks only one of them solved. A task is solved by an arm when MORE than half of its graded repeats resolved (a tie is not solved). */
   discordant: ArmsDiscordance[];
 }
@@ -217,6 +222,8 @@ export function compareArms(input: readonly ArmRunRow[]): ArmsComparison {
   for (const name of names) perArm[name] = result(resolved.get(name) ?? 0, pairs);
   const solved = (arm: string, task: string): boolean => { const t = solvedBy.get(arm)!.get(task); return t !== undefined && t.resolved * 2 > t.graded; };
   const tasks = [...new Set([...runs.values()].filter((run) => names.every((name) => run.byArm.get(name) !== undefined)).map((run) => run.task))].sort();
+  const perArmTasks: Record<string, ArmResult> = {};
+  for (const name of names) perArmTasks[name] = result(tasks.filter((task) => solved(name, task)).length, tasks.length);
   const discordant: ArmsDiscordance[] = [];
   for (let i = 0; i < names.length; i += 1) {
     for (let j = i + 1; j < names.length; j += 1) {
@@ -224,7 +231,7 @@ export function compareArms(input: readonly ArmRunRow[]): ArmsComparison {
       discordant.push({ a, b, onlyA: tasks.filter((task) => solved(a, task) && !solved(b, task)), onlyB: tasks.filter((task) => solved(b, task) && !solved(a, task)) });
     }
   }
-  return { arms: names, pairs, unpaired, perArm, discordant };
+  return { arms: names, pairs, unpaired, perArm, perArmTasks, discordant };
 }
 
 
