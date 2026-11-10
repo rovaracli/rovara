@@ -5389,7 +5389,35 @@ describe("pushing an approved PR feedback fix to the same pull request (item 7)"
     }
   });
 
-  it("rolls the record back to the head Rovara had when the end of the operation refuses a push the callback took", async () => {
+  // Review M1: the callback checked the host's parents and the reviewed tree before it wrote, so a fix the end of the operation then refuses (a result that is lost, a read that fails) keeps that head: the next
+  // GitHub event adopts the push even when it is a conflict round's merge commit (parents: recorded head, base commit), which `landedFix` alone would not take.
+  it("keeps the head the callback checked when the end refuses a fix, so the next GitHub event adopts it (a conflict round's merge commit included)", async () => {
+    const t = await fixPassed();
+    await t.pass();
+    const [maintain] = maintainOf(t.harness, t.workspaceId);
+    t.gh.state.branch = PUSHED;
+    t.gh.state.tree = FIX_TREE;
+    t.gh.state.parent = "d".repeat(40);
+    await t.harness.callback(t.workspaceId, maintain!.id, "pull-request-update", updateCallback(maintain!));
+    expect(pullRequestRecord(t).expectedHeadCommit).toBe(PUSHED);
+    // The run is lost; GitHub still shows the old head and cannot say what the branch holds: the end refuses the push (blocked) ...
+    t.gh.gateway.getBranchHead.mockRejectedValue(new Error("GitHub is down"));
+    await t.harness.finish(t.workspaceId, maintain!.id, "FAILED", { error: "RUNTIME_UNAVAILABLE: worker callback pull-request-update failed with HTTP 409" });
+    expect(taskWorkflow(t.harness, t.taskId)).toMatchObject({ stage: "WAIT_FOR_MERGE", state: "BLOCKED", pullRequests: [{ headSha: "d".repeat(40), candidateDigest: t.first.digest }] });
+    // ... but the head the callback verified is still the record's.
+    expect(pullRequestRecord(t).expectedHeadCommit).toBe(PUSHED);
+    expect(t.harness.db.refusals).toEqual([]);
+    // GitHub now shows the push as a merge commit of the recorded head and a base commit (the shape of a conflict round's fix): the recorded head is what adopts it.
+    t.gh.gateway.getBranchHead.mockImplementation(async () => PUSHED);
+    t.gh.state.branch = undefined;
+    t.gh.state.head = PUSHED;
+    t.gh.gateway.getCommitParents.mockImplementation(async (_url: string, commit: string) => [...(commit === PUSHED ? ["d".repeat(40), "7".repeat(40)] : ["e".repeat(40)])]);
+    await pullRequestEvent(t.harness, "synchronize");
+    expect(taskWorkflow(t.harness, t.taskId)).toMatchObject({ stage: "WAIT_FOR_MERGE", state: "WAITING", pullRequests: [{ headSha: PUSHED, headTreeSha: FIX_TREE, candidateDigest: t.fix.digest }] });
+    expect(pullRequestRecord(t).expectedHeadCommit).toBe(PUSHED);
+  });
+
+  it("keeps the checked head when the result reports another tree than the reviewed one: the task is blocked, the host was checked", async () => {
     const t = await fixPassed();
     await t.pass();
     const [maintain] = maintainOf(t.harness, t.workspaceId);
@@ -5397,37 +5425,9 @@ describe("pushing an approved PR feedback fix to the same pull request (item 7)"
     t.gh.state.tree = FIX_TREE;
     t.gh.state.parent = "d".repeat(40);
     await t.harness.callback(t.workspaceId, maintain!.id, "pull-request-update", updateCallback(maintain!));
+    await t.harness.finish(t.workspaceId, maintain!.id, "SUCCEEDED", { result: { ...appendResult(maintain!).result, treeSha: "9".repeat(40) } });
+    expect(taskWorkflow(t.harness, t.taskId)).toMatchObject({ state: "BLOCKED", pullRequests: [{ headSha: "d".repeat(40) }] });
     expect(pullRequestRecord(t).expectedHeadCommit).toBe(PUSHED);
-    // The run ends FAILED, and by then the host shows another tree on the pull request: the end refuses the push.
-    t.gh.state.tree = "9".repeat(40);
-    await t.harness.finish(t.workspaceId, maintain!.id, "FAILED", { error: "RUNTIME_UNAVAILABLE: worker callback pull-request-update failed with HTTP 409" });
-    expect(taskWorkflow(t.harness, t.taskId)).toMatchObject({ stage: "WAIT_FOR_MERGE", state: "BLOCKED", pullRequests: [{ headSha: "d".repeat(40), candidateDigest: t.first.digest }] });
-    expect(pullRequestRecord(t).expectedHeadCommit).toBe("d".repeat(40));
-    expect(t.harness.db.refusals).toEqual([]);
-  });
-
-  it("rolls the record back when the result reports another tree than the reviewed one, and keeps it when the push is recorded", async () => {
-    const refused = await fixPassed();
-    await refused.pass();
-    const [maintainRefused] = maintainOf(refused.harness, refused.workspaceId);
-    refused.gh.state.head = PUSHED;
-    refused.gh.state.tree = FIX_TREE;
-    refused.gh.state.parent = "d".repeat(40);
-    await refused.harness.callback(refused.workspaceId, maintainRefused!.id, "pull-request-update", updateCallback(maintainRefused!));
-    await refused.harness.finish(refused.workspaceId, maintainRefused!.id, "SUCCEEDED", { result: { ...appendResult(maintainRefused!).result, treeSha: "9".repeat(40) } });
-    expect(taskWorkflow(refused.harness, refused.taskId)).toMatchObject({ state: "BLOCKED", pullRequests: [{ headSha: "d".repeat(40) }] });
-    expect(pullRequestRecord(refused).expectedHeadCommit).toBe("d".repeat(40));
-    // Positive control: the same sequence with the right result keeps the head.
-    const kept = await fixPassed();
-    await kept.pass();
-    const [maintainKept] = maintainOf(kept.harness, kept.workspaceId);
-    kept.gh.state.head = PUSHED;
-    kept.gh.state.tree = FIX_TREE;
-    kept.gh.state.parent = "d".repeat(40);
-    await kept.harness.callback(kept.workspaceId, maintainKept!.id, "pull-request-update", updateCallback(maintainKept!));
-    await kept.harness.finish(kept.workspaceId, maintainKept!.id, "SUCCEEDED", appendResult(maintainKept!));
-    expect(taskWorkflow(kept.harness, kept.taskId)).toMatchObject({ stage: "WAIT_FOR_MERGE", state: "WAITING", pullRequests: [{ headSha: PUSHED }] });
-    expect(pullRequestRecord(kept).expectedHeadCommit).toBe(PUSHED);
   });
 
   it("says in the broker log why it refuses a fix's update callback", async () => {

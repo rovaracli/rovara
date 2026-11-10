@@ -6,7 +6,7 @@ import {
   BRANCH_SYNC_UNSURE_MESSAGE, SYNC_BACKOFF_MINUTES, SYNC_FAILURES_MAX, branchSyncGiveUpMessage, isBranchSyncGiveUpReason,
   branchConflictAskMessage, isBranchConflictAskReason, retryWorkflowBranchSync,
   BRANCH_SYNCS_PER_DAY_MAX, BRANCH_WORKFLOW_FILES_MESSAGE, CONFLICT_ROUNDS_MAX, WorkflowSnapshotSchema, WorkflowTransitionError, blockWorkflowBranchSync, branchConflictStopMessage, createCandidateManifest,
-  createWorkflowSnapshot, endWorkflowBranchSync, isBranchSyncBlockReason, observeWorkflowPullRequest, recordWorkflowBranchSync, recordWorkflowPullRequestUpdate, recordWorkflowSyncConflict,
+  createWorkflowSnapshot, endWorkflowBranchSync, holdWorkflowCandidateOnPullRequests, WORKFLOW_AUTO_PUBLISH_FAILED_MESSAGE, isBranchSyncBlockReason, observeWorkflowPullRequest, recordWorkflowBranchSync, recordWorkflowPullRequestUpdate, recordWorkflowSyncConflict,
   recordWorkflowVerification, startWorkflowBranchSync, startWorkflowBranchSyncRun, startWorkflowFix, workflowFollowsOnlyMerge, type WorkflowProgram, type WorkflowSnapshot,
 } from "@agentx/contracts";
 import { mergeTrackingKey } from "../../packages/contracts/src/org-scoped-keys.js";
@@ -16,6 +16,7 @@ import {
   branchSyncRequestId, bumpSyncs, classifySyncFailure, conflictDecider, decideBranchSync, decideConflict, installBranchSyncDeciders, isWorkflowFilesRefusal, planBranchSyncOutcome, syncDecider, syncsToday,
   uninstallBranchSyncDeciders, utcDay,
 } from "../../packages/broker/src/rovara-code/branch-sync.js";
+import { candidateIsOnPullRequest } from "../../packages/broker/src/aws/broker/workflow-items.js";
 import { workflowMessage } from "../../packages/broker/src/developer/workflow-messages.js";
 import { taskViewForClient } from "../../packages/broker/src/rovara-code/task-view-compat.js";
 import { blockWorkflowPullRequestUpdate } from "@agentx/contracts";
@@ -576,6 +577,61 @@ describe("the deciders are the slots'", () => {
   });
 });
 
+describe("every open pull request already holds the candidate (a merge of the base that was checked and reviewed again)", () => {
+  const atPullRequest = (extra: Record<string, unknown> = {}) => WorkflowSnapshotSchema.parse({ ...waiting(), stage: "PULL_REQUEST", state: "READY", ...extra });
+
+  it("moves the task to waiting for the merge, with a fix round finished and a publication block lifted", () => {
+    const ready = holdWorkflowCandidateOnPullRequests(atPullRequest(), at);
+    expect(ready).toMatchObject({ stage: "WAIT_FOR_MERGE", state: "WAITING", revision: 10 });
+    expect(ready.blockReason).toBeUndefined();
+    // The owner's Retry at a publication block does the same (it is not left blocked, nor refused).
+    const blocked = holdWorkflowCandidateOnPullRequests(atPullRequest({ state: "BLOCKED", blockReason: WORKFLOW_AUTO_PUBLISH_FAILED_MESSAGE }), at);
+    expect(blocked).toMatchObject({ stage: "WAIT_FOR_MERGE", state: "WAITING" });
+    expect(blocked.blockReason).toBeUndefined();
+    const fixed = holdWorkflowCandidateOnPullRequests(atPullRequest({ fixSource: "ci", fixProblems: ["test"] }), at);
+    expect(fixed.fixSource).toBeUndefined();
+  });
+
+  it("is refused when any open pull request holds other code, when a merge of the base is marked, when none is open, or when the step is not a publication", () => {
+    const other = { ...PULL_REQUEST, candidateDigest: "7".repeat(64) };
+    expect(() => holdWorkflowCandidateOnPullRequests(atPullRequest({ pullRequests: [other] }), at)).toThrow(WorkflowTransitionError);
+    expect(() => holdWorkflowCandidateOnPullRequests(atPullRequest({ pullRequests: [{ ...PULL_REQUEST, headTreeSha: "8".repeat(40) }] }), at)).toThrow(WorkflowTransitionError);
+    expect(() => holdWorkflowCandidateOnPullRequests(atPullRequest({ pullRequests: [{ ...PULL_REQUEST, state: "MERGED" as const }] }), at)).toThrow(WorkflowTransitionError);
+    expect(() => holdWorkflowCandidateOnPullRequests(atPullRequest({ pullRequests: [PULL_REQUEST, { ...PULL_REQUEST, repositoryId: "other", number: 8, candidateDigest: "7".repeat(64) }] }), at)).toThrow(WorkflowTransitionError);
+    expect(() => holdWorkflowCandidateOnPullRequests(waiting(), at)).toThrow(WorkflowTransitionError);
+    expect(() => holdWorkflowCandidateOnPullRequests(atPullRequest({ state: "RUNNING" }), at)).toThrow(WorkflowTransitionError);
+  });
+});
+
+describe("whether the candidate is the code the pull requests hold (the refusal of checks that ran on other code)", () => {
+  const two = (secondHead: string) => {
+    const candidate2 = createCandidateManifest([
+      { repositoryId: "payments", commitSha: HEAD_A, treeSha: "b".repeat(40), baseCommitSha: BASE_OLD },
+      { repositoryId: "ledger", commitSha: "5".repeat(40), treeSha: "6".repeat(40), baseCommitSha: BASE_OLD },
+    ]);
+    return { ...waiting(), candidate: candidate2, pullRequests: [PULL_REQUEST, { ...PULL_REQUEST, repositoryId: "ledger", number: 8, headSha: secondHead }] } as unknown as WorkflowSnapshot;
+  };
+  it("needs every open pull request to be on the candidate's commit, not just one of them", () => {
+    expect(candidateIsOnPullRequest(two("5".repeat(40)))).toBe(true);
+    // One repository's pull request holds other code (a fix did not reach it): a rerun whose digest differs is not "other code than the pull requests".
+    expect(candidateIsOnPullRequest(two("4".repeat(40)))).toBe(false);
+    expect(candidateIsOnPullRequest({ ...waiting(), pullRequests: [] })).toBe(false);
+  });
+});
+
+describe("a task whose changes need browser or API checks", () => {
+  const settings = { allowSelfApproval: false, mergeMethod: "squash" as const, codeReviewers: [], revision: 0 };
+  const behindInput = (workflow: WorkflowSnapshot) => ({ item: { ...trackingBase(), branch: "behind" as const }, workflow, settings, autonomy: "prepare" as const, now: NOW,
+    context: { orgId: "org_aaaaaaaaaaaaaaaaaaaa" as never, tableName: "state", taskId: TASK_ID, repositoryId: "payments", pullRequestNumber: 7, pullRequestUrl: PULL_REQUEST.url, headSha: HEAD_A, failing: [], behindRequired: true } });
+
+  it("is not brought up to date by Rovara: its merged code could not be checked again (0.5.13), while the same task without that need is", () => {
+    // The decider reads only whether E2E is required (the full qualified-round shape is the schema's business, not this rule's).
+    const e2eRequired = { ...waiting(), e2e: { required: true } } as unknown as WorkflowSnapshot;
+    expect(syncDecider(behindInput(e2eRequired)), "e2e required").toBeUndefined();
+    expect(syncDecider(behindInput(waiting()))?.slot, "no e2e").toBe("sync");
+  });
+});
+
 function trackingBase(): MergeTrackingItem {
   return {
     orgId: "org_aaaaaaaaaaaaaaaaaaaa", taskId: TASK_ID, repositoryId: "payments", number: 7, version: 1, headSha: HEAD_A, draft: false, state: "open", baseBranch: "main", ci: "passing", ciBasis: "all_checks",
@@ -608,19 +664,22 @@ describe("what a finished merge of the base is", () => {
     expect(outcome).toMatchObject({ headSha: MERGE, headTreeSha: MERGED_TREE, previousHeadSha: HEAD_A, baseCommitSha: BASE_NEW });
   });
 
-  it("is not recorded when the run did not succeed, even if GitHub shows exactly the merge: nothing proves Rovara's checks passed on it (decision 67b)", () => {
+  it("is a merge even when the worker's result was lost, if GitHub shows exactly [recorded head, asked base]: the same new candidate, but no head is kept for an approval to carry from (decision 67b)", () => {
     for (const status of ["FAILED", "INTERRUPTED", "CANCELLED"] as never[]) {
-      const lost = plan({ status, error: "RUNTIME_UNAVAILABLE: compute lost", result: undefined });
-      expect(lost.kind, status).toBe("unchanged");
-      expect(lost.workflow.pullRequests?.[0]?.headSha, status).toBe(HEAD_A);
-      expect(lost.workflow.branchSync, status).toBeUndefined();
+      const outcome = plan({ status, error: "RUNTIME_UNAVAILABLE: compute lost", result: undefined });
+      expect(outcome.kind, status).toBe("synced");
+      if (outcome.kind !== "synced") continue;
+      expect(outcome.workflow.pullRequests?.[0], status).toMatchObject({ headSha: MERGE });
+      expect(outcome.workflow.pullRequests?.[0]?.syncedFrom, status).toBeUndefined();
+      expect(outcome.workflow.candidate?.repositories[0], status).toMatchObject({ commitSha: MERGE, baseCommitSha: BASE_NEW });
     }
-    // A failed run that did return a result is not recorded either, and a head GitHub shows is not counted as a failure of the merge.
-    const failed = plan({ status: "FAILED", error: "CONFIG_INVALID: one or more registered readiness checks failed" });
-    expect(failed.kind).toBe("unchanged");
-    expect(failed.workflow.syncFailures).toBeUndefined();
-    // Positive control: the same merge from a run that succeeded is recorded.
-    expect(plan({}).kind).toBe("synced");
+    // The same merge with its result in hand is one Rovara's checks passed on.
+    const verified = plan({});
+    expect(verified.kind === "synced" && verified.workflow.pullRequests?.[0]?.syncedFrom).toBe(HEAD_A);
+    // A failed run is still not recorded when GitHub does not show exactly that merge.
+    for (const bad of [{ parents: [HEAD_A] }, { parents: [HEAD_A, "1".repeat(40)] }, { parents: undefined }]) {
+      expect(plan({ status: "FAILED", error: "RUNTIME_UNAVAILABLE: compute lost", result: undefined, github: github(bad) }).kind, JSON.stringify(bad)).toBe("unchanged");
+    }
   });
 
   it("is refused when the merge commit's second parent is not the base commit, or its first is not the recorded head, or the tree is not the one reported", () => {

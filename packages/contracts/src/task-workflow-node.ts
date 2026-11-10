@@ -1112,6 +1112,26 @@ export function startWorkflowPullRequestUpdate(currentInput: unknown, now: strin
 }
 
 /**
+ * Every open pull request already holds the current candidate (its digest and, per repository, its tree): a merge of the base that was checked and reviewed again (decision 67b), or a fix whose push
+ * landed before its result. There is nothing to push, so the task waits for the merge, its fix round finished and any publication block lifted. Allowed where a publication step stands: PULL_REQUEST/READY,
+ * or the owner's Retry at a publication block. Refused when a merge of the base is marked, when no pull request is open, or when any open one holds other code.
+ */
+export function holdWorkflowCandidateOnPullRequests(currentInput: unknown, now: string): WorkflowSnapshot {
+  const current = validSnapshot(currentInput);
+  const candidate = current.candidate;
+  const open = (current.pullRequests ?? []).filter((pullRequest) => pullRequest.state === "OPEN" || pullRequest.state === "UNKNOWN");
+  if (candidate === undefined || !workflowPublicationRetryable(current) || current.branchSync !== undefined || open.length === 0
+    || !open.every((pullRequest) => pullRequest.candidateDigest === candidate.digest
+      && pullRequest.headTreeSha !== undefined && pullRequest.headTreeSha === candidate.repositories.find((repository) => repository.repositoryId === pullRequest.repositoryId)?.treeSha)) {
+    throw new WorkflowTransitionError("the pull requests do not all hold the workflow's candidate");
+  }
+  const { blockReason: _blockReason, pullRequestUpdateFailure: _failure, ...unblocked } = current;
+  void _blockReason;
+  void _failure;
+  return WorkflowSnapshotSchema.parse({ ...withoutFix(unblocked), revision: current.revision + 1, stage: "WAIT_FOR_MERGE", state: "WAITING", updatedAt: now });
+}
+
+/**
  * The fix was pushed: each updated pull request now holds the current candidate, as GitHub confirmed (its head commit, and
  * that commit's tree, which must be the reviewed tree). Once every open pull request holds it the task waits for the merge
  * again, its feedback round finished (the owner's decisions are kept); until then the next push is due. A task blocked
@@ -1463,7 +1483,8 @@ export function recordWorkflowSyncConflict(currentInput: unknown, input: { paths
 /**
  * The base branch is merged into a pull request's branch and the merge is on GitHub. The pull request holds the merge, and the candidate is the same change on the new base: its repository entry has the
  * merge commit, its tree and the new base commit, so the next review and the next fix see only Rovara's change (Finding 8). Everything bound to the old candidate's digest (checks, reviews, accepted
- * findings, risk, the pull requests that held it) is kept for the new one: a merge of the base changes none of what they judged. Two ways to get here:
+ * findings, risk, the pull requests that held it) is renamed to the new one here; the caller that makes a merge of the base a NEW CANDIDATE (decision 67b) drops the checks, reviews and accepted findings again, so
+ * a merge is checked and reviewed before the task waits for it. Two ways to get here:
  * - a clean merge, which the worker pushed (WAIT_FOR_MERGE/RUNNING with the merge marked): `previousHeadSha` is the head before it, and the pull request's `syncedFrom` names the head before the run of
  *   clean merges, so a person's approval of that head can carry (the rule is Task 19's). The reviewed tree is the merge's;
  * - a conflict round's fix, which was pushed as a merge commit and recorded as any fix (`recordWorkflowPullRequestUpdate`): the pull request already holds the head. It was code Rovara wrote, so
@@ -2201,6 +2222,9 @@ export function workflowSendBackOffered(workflow: {
   if (workflow.stage === "VERIFY") {
     // Review only: a rerun of the agent's own tests regressed, and no result was recorded for it.
     if (workflow.blockReason === WORKFLOW_BLOCK_REASONS.regressionFound) return true;
+    // The base branch was merged into the pull request and the merged code needs its checks again: a coding run on the workspace that holds the merge may leave the code as it is, and exports it so the checks (a
+    // required E2E round included) can run on it. It is the way on where Retry checks cannot.
+    if (workflow.blockReason === WORKFLOW_BLOCK_REASONS.baseMergedRecheck) return true;
     // Blocks that only an administrator qualifying the runtime, or approving the plan again, can fix: new code cannot, even for a task with no checks.
     if (workflow.blockReason?.startsWith(WORKFLOW_APPLICATION_RUNTIME_UNUSABLE_PREFIX) === true || workflow.blockReason?.startsWith(WORKFLOW_APPLICATION_SELECTION_CHANGED_PREFIX) === true
       || workflow.blockReason?.startsWith(WORKFLOW_APPLICATION_ACCOUNTS_CHANGED_PREFIX) === true || workflow.blockReason?.startsWith(WORKFLOW_APPLICATION_RUNTIME_RENEWED_PREFIX) === true) return false;

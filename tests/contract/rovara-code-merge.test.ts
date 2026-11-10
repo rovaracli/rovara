@@ -3,7 +3,7 @@
 // before it claims and merges them, in order, once.
 import { describe, expect, it } from "vitest";
 import {
-  MERGE_NOT_READY_MESSAGES as M, MergeViewSchema, NeedsConfirmationReaderSchema, NeedsConfirmationSchema, agentXError, githubMemberKey, memberGithubKey, mergeTrackingKey, orgMemberKey,
+  MERGE_NOT_READY_MESSAGES as M, WORKFLOW_BLOCK_REASONS, MergeViewSchema, NeedsConfirmationReaderSchema, NeedsConfirmationSchema, agentXError, githubMemberKey, memberGithubKey, mergeTrackingKey, orgMemberKey,
 } from "../../packages/contracts/src/index.js";
 import type { PullRequestReview } from "../../packages/broker/src/github-pull-status.js";
 import { getApprovalSubjectHandler, getAnyApproval, mayDecideApproval } from "../../packages/broker/src/agents/approvals.js";
@@ -152,6 +152,16 @@ describe("mergeReadiness", () => {
     expect(readiness({ pullRequests: [facts({ ci: "pending" })] })).toEqual(notReady(M.checks));
     expect(readiness({ pullRequests: [facts({ branch: "conflicted" })] })).toEqual(notReady(M.conflicted("main")));
     expect(readiness({ pullRequests: [facts({ branch: "behind", behindRequired: true })] })).toEqual(notReady(M.behind("main")));
+  });
+
+  it("tells a task that needs browser or API checks to update its branch itself (Rovara does not merge the base in), and a merged base that needs its checks again to Retry checks", () => {
+    const behind = { pullRequests: [facts({ branch: "behind", behindRequired: true })] };
+    expect(readiness({ ...behind, workflow: { stage: "WAIT_FOR_MERGE", state: "WAITING", e2e: { required: true } } })).toEqual(notReady(M.behindByHand("main")));
+    expect(M.behindByHand("main")).not.toContain("I'm bringing it up to date");
+    expect(readiness({ ...behind, workflow: { stage: "WAIT_FOR_MERGE", state: "WAITING", e2e: { required: false } } })).toEqual(notReady(M.behind("main")));
+    // The base was merged in: not "still changing", but the owner's Retry checks.
+    expect(readiness({ workflow: { stage: "VERIFY", state: "BLOCKED", blockReason: WORKFLOW_BLOCK_REASONS.baseMergedRecheck } })).toEqual(notReady(M.baseMerged));
+    expect(readiness({ workflow: { stage: "VERIFY", state: "BLOCKED", blockReason: "checks failed" } })).toEqual(notReady(M.changing));
   });
 
   it("does not know a pull request's base without Rovara's own record of it, and so does not merge it", () => {

@@ -167,7 +167,7 @@ async function blockFailedWorkflowRun(documentClient: Pick<DynamoDBDocumentClien
 async function blockFailedPullRequestUpdate(documentClient: Pick<DynamoDBDocumentClient, "send">, tableName: string, workspaceId: string, operationId: string, error: string): Promise<void> {
   try {
     const read = async (key: { pk: string; sk: string }) => (await documentClient.send(new GetCommand({ TableName: tableName, Key: key }))).Item;
-    const operation = await read({ pk: `WORKSPACE#${workspaceId}`, sk: `OPERATION#${operationId}` }) as { maintenance?: { repository?: string; pullRequestNumber?: number; expectedHeadCommit?: string; workflowCandidate?: { candidateDigest?: string }; workflowSync?: { expectedHeadCommit?: string } } } | undefined;
+    const operation = await read({ pk: `WORKSPACE#${workspaceId}`, sk: `OPERATION#${operationId}` }) as { maintenance?: { repository?: string; pullRequestNumber?: number; workflowCandidate?: { candidateDigest?: string }; workflowSync?: { expectedHeadCommit?: string } } } | undefined;
     const binding = operation?.maintenance?.workflowCandidate;
     const sync = operation?.maintenance?.workflowSync;
     if (binding === undefined && sync === undefined) return;
@@ -191,21 +191,13 @@ async function blockFailedPullRequestUpdate(documentClient: Pick<DynamoDBDocumen
     const now = new Date().toISOString();
     const next = blockWorkflowPullRequestUpdate(workflow.data, { numbers: [operation.maintenance.pullRequestNumber],
       ...(error.includes(WORKFLOW_PULL_REQUEST_UPDATE_WORKER_OUTDATED) ? { cause: "WORKER_OUTDATED" as const } : {}), now });
-    // A push the update callback took before the run was lost goes back to the head Rovara had (review M2), in the same write: a head Rovara never accepted is never read as Rovara's.
-    const recordKey = { pk: `WORKSPACE#${workspaceId}`, sk: `PULL_REQUEST#${operation.maintenance.repository}#${String(operation.maintenance.pullRequestNumber).padStart(12, "0")}` };
-    const held = workflow.data.pullRequests?.find((entry) => entry.repositoryId === operation.maintenance?.repository && entry.number === operation.maintenance.pullRequestNumber)?.headSha;
-    const recorded = held !== undefined && held === operation.maintenance.expectedHeadCommit ? (await read(recordKey)) as { expectedHeadCommit?: string } | undefined : undefined;
-    const restore = recorded?.expectedHeadCommit !== undefined && recorded.expectedHeadCommit !== held ? [{ Update: {
-      TableName: tableName, Key: recordKey, UpdateExpression: "SET expectedHeadCommit = :head, updatedAt = :now", ConditionExpression: "expectedHeadCommit = :current",
-      ExpressionAttributeValues: { ":head": held, ":now": now, ":current": recorded.expectedHeadCommit },
-    } }] : [];
-    await documentClient.send(new TransactWriteCommand({ TransactItems: [{ Update: {
+    await documentClient.send(new UpdateCommand({
       TableName: tableName, Key: taskKey(pointer.taskId),
       UpdateExpression: "SET workflow = :workflow, updatedAt = :now",
       ConditionExpression: "workflow.revision = :revision AND workflow.#stage = :stage AND workflow.#state = :running AND attribute_not_exists(closedAt)",
       ExpressionAttributeNames: { "#stage": "stage", "#state": "state" },
       ExpressionAttributeValues: { ":workflow": next, ":now": now, ":revision": workflow.data.revision, ":stage": "PULL_REQUEST", ":running": "RUNNING" },
-    } }, ...restore] }));
+    }));
   } catch (failure) {
     console.log(JSON.stringify({ component: "broker", event: "workflow.pull_request_update_block_failed", operationId, error: failure instanceof Error ? failure.name : "unknown" }));
   }

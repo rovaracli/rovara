@@ -146,14 +146,15 @@ export function isWorkflowDispatchRecoveryEvent(event: unknown): event is { sour
   return event !== null && typeof event === "object" && (event as { source?: unknown }).source === "agentx.workflow-dispatch-recovery";
 }
 
-/** Whether the workflow's candidate is the code an open pull request holds now: some open pull request's head is the commit the candidate has for its repository. */
-function candidateIsOnPullRequest(workflow: WorkflowSnapshot): boolean {
-  return (workflow.pullRequests ?? []).some((pullRequest) => (pullRequest.state === "OPEN" || pullRequest.state === "UNKNOWN") && pullRequest.headSha !== undefined
+/** Whether the workflow's candidate is the code the open pull requests hold now: every open pull request's head is the commit the candidate has for its repository (and at least one is open). */
+export function candidateIsOnPullRequest(workflow: WorkflowSnapshot): boolean {
+  const open = (workflow.pullRequests ?? []).filter((pullRequest) => pullRequest.state === "OPEN" || pullRequest.state === "UNKNOWN");
+  return open.length > 0 && open.every((pullRequest) => pullRequest.headSha !== undefined
     && workflow.candidate?.repositories.some((repository) => repository.repositoryId === pullRequest.repositoryId && repository.commitSha === pullRequest.headSha) === true);
 }
 
 /**
- * A push the update callback took but the end of the operation refused (its tree was not the reviewed one, the run failed, the merge was not recorded): the pull request's record goes back to the
+ * A merge of the base the update callback took but the end of the operation did not record (a person pushed over it, a conflict, a stop): the pull request's record goes back to the
  * head Rovara had, so a head Rovara never accepted is never read as Rovara's by merge tracking. Only while the workflow still holds the old head (a push that was recorded is not undone), and only
  * the record's own value (a head some other writer set is left to it). One conditional update, in the transaction that ends the operation.
  */
@@ -207,9 +208,9 @@ async function completedPullRequestUpdateItems(
     ExpressionAttributeNames: { "#stage": "stage", "#state": "state" },
     ExpressionAttributeValues: { ":workflow": next, ":now": now, ":revision": workflow.revision, ":stage": "PULL_REQUEST", ":running": "RUNNING" },
   } });
-  // A push the update callback took but this end refuses goes back to the head Rovara had (review M2): a head Rovara never accepted is never read as Rovara's.
-  const failed = async (cause?: WorkflowPullRequestUpdateCause): Promise<TransactItems> => [taskUpdate(blockWorkflowPullRequestUpdate(workflow, { numbers: [pullRequest.number], cause, now })),
-    ...await restoreRecordHeadItems(dependencies, task, workflow, maintenance, now)];
+  // A head the update callback recorded stays: the callback checked the host's parents and the reviewed tree before it wrote, so a fix this end then refuses (a lost result, a read that failed) still leaves a
+  // head Rovara pushed and verified, which the next GitHub event adopts (`landedFix`). Only a merge of the base, whose tree is not checked by the callback, is rolled back (see the sync paths below).
+  const failed = async (cause?: WorkflowPullRequestUpdateCause): Promise<TransactItems> => [taskUpdate(blockWorkflowPullRequestUpdate(workflow, { numbers: [pullRequest.number], cause, now }))];
   // Why the push failed, by the worker's own error: it could not take a reviewed fix; the pull request's head moved or the
   // push was not a fast-forward; or anything else on the way to GitHub (a CodeBuild gate included) stopped it.
   const cause: WorkflowPullRequestUpdateCause = terminalStatus === "SUCCEEDED" ? "PUSH_REFUSED"
@@ -393,6 +394,7 @@ export async function completedBranchSyncItems(
   const reported = parsed?.success === true && parsed.data.repository === maintenance.repository ? parsed.data : undefined;
   // What GitHub shows now. A merge the worker says it pushed is never judged without it (the result is then recorded by the next attempt); for a merge that failed, an unreadable GitHub shows nothing.
   let github: BranchSyncGithub | undefined;
+  let parentsFailure: Error | undefined;
   try {
     if (repository === undefined || host === undefined || !canReadFeedback(dependencies, host)) throw agentXError("RUNTIME_UNAVAILABLE", "cannot verify the merged pull request against the merge");
     const scope = await githubScopeOf(dependencies, task);
@@ -412,10 +414,13 @@ export async function completedBranchSyncItems(
       }
     }
     const sameRequest = current.pullRequest.number === pullRequest.number && current.pullRequest.url === pullRequest.url;
-    const parents = head !== binding.expectedHeadCommit && canReadParents(dependencies, host) ? await host.commitParents(repositoryRefOf(repository.url), head, scope).catch(() => undefined) : undefined;
+    // A parents read that fails is not "no merge": the merge is judged on them, so the failure is retried by the next attempt (the lost-run row backs off and gives up with a visible stop).
+    const parents = head !== binding.expectedHeadCommit && canReadParents(dependencies, host)
+      ? await host.commitParents(repositoryRefOf(repository.url), head, scope).catch((failure: unknown) => { parentsFailure = failure instanceof Error ? failure : new Error("the merge's parents could not be read"); return undefined; }) : undefined;
+    if (parentsFailure !== undefined) throw parentsFailure;
     if (sameRequest) github = { state: current.pullRequest.state, headBranch: current.pullRequest.headBranch, headCommit: head, headTreeSha: headTree, parents };
   } catch (error) {
-    if (options.lost === true || (reported !== undefined && reported.commit !== binding.expectedHeadCommit)) throw error;
+    if (options.lost === true || parentsFailure !== undefined || (reported !== undefined && reported.commit !== binding.expectedHeadCommit)) throw error;
   }
   // Autonomy is read again where the paid round would start: set to suggest by now, and not started by a person's go-ahead, a conflict is asked about instead.
   const askFirst = reported?.conflicts !== undefined && marker.approved !== true && task.orgId !== undefined
@@ -452,6 +457,8 @@ export async function completedBranchSyncItems(
   const recheck = WorkflowSnapshotSchema.parse({ ...merged, stage: "VERIFY", state: "BLOCKED", blockReason: WORKFLOW_BLOCK_REASONS.baseMergedRecheck, updatedAt: now });
   return [
     taskUpdate(recheck),
+    // The task now waits for the owner: said in the milestone feed ("needs you"), not only in the thread.
+    ...milestone("stuck", WORKFLOW_BLOCK_REASONS.baseMergedRecheck, recheck.revision),
     ...await candidateRekeyItems(dependencies, task, project, workflow, outcome.workflow, now),
     ...(record !== undefined && record.expectedHeadCommit !== outcome.headSha ? [{ Update: {
       TableName: dependencies.tableName,
@@ -909,7 +916,10 @@ export async function completedWorkflowItems(
         // with what each pull request holds, never with the latest candidate: after a fix that failed its checks and a
         // Send back, the latest candidate is that failed fix.
         const pullRequestTrees = workflowPullRequestTrees(task.workflow);
-        if (operation.workflowMode === "IMPLEMENT" && pullRequestTrees !== undefined
+        // Not a Send back from the recheck of a merge of the base (no fix is under way and the candidate is what the pull requests hold): that coding run exports the merged code so its checks (E2E included)
+        // can run on it, and it may leave the code as it is.
+        const sentBackFromRecheck = task.workflow.fixSource === undefined && candidateIsOnPullRequest(task.workflow);
+        if (operation.workflowMode === "IMPLEMENT" && pullRequestTrees !== undefined && !sentBackFromRecheck
           && candidate.repositories.every((repository) => pullRequestTrees.get(repository.repositoryId) === repository.treeSha)) {
           verificationFailure = WORKFLOW_BLOCK_REASONS.fixChangedNothing;
           throw new Error("the fix left the pull request's code as it was");
