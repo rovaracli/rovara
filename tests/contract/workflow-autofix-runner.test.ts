@@ -1,15 +1,15 @@
 // T8 AUTOFIX-WIRING, the unclear browser-and-API fault: each UNKNOWN scenario is settled by its OWN result on the original code (the baseline record of the approved plan). The system moves are
 // replaced by spies here, so this file shows what the runner decides and asks, not how the broker starts a coding run (workflow-autofix-flow.test.ts does that for real).
 import { describe, expect, it, vi } from "vitest";
-import { agentXError, type WorkflowSnapshot } from "@agentx/contracts";
+import { BASE_MERGED_NEEDS_YOU_MILESTONE, BASE_MERGED_RETRY_REASON, WORKFLOW_BLOCK_REASONS, agentXError, type WorkflowSnapshot } from "@agentx/contracts";
 
 const moves = vi.hoisted(() => ({ sendBack: vi.fn(async () => "STARTED" as const), retryChecks: vi.fn(async () => "STARTED" as const), retryReviews: vi.fn(async () => "STARTED" as const) }));
 vi.mock("../../packages/broker/src/aws/developer-tasks.js", () => ({
   autoSendBackToCodingFromSystem: moves.sendBack, autoRetryChecksFromSystem: moves.retryChecks, autoRetryReviewsFromSystem: moves.retryReviews,
 }));
 
-import { runWorkflowAutofix, type AutofixDependencies } from "../../packages/broker/src/aws/workflow-autofix-runner.js";
-import { AutoFixAskSchema, autoFixCardLines } from "../../packages/broker/src/developer/autofix-messages.js";
+import { openPullRequestHeadMoved, runWorkflowAutofix, type AutofixDependencies } from "../../packages/broker/src/aws/workflow-autofix-runner.js";
+import { AutoFixAskSchema, autoFixAskReasonSentence, autoFixCardLines } from "../../packages/broker/src/developer/autofix-messages.js";
 import { autofixDayBudgetNeed } from "../../packages/broker/src/aws/workflow-autofix-runner.js";
 import type { DeveloperTaskRecord } from "../../packages/broker/src/developer/task-records.js";
 
@@ -222,5 +222,124 @@ describe("AUTOREQUALIFY: the worker is recycled before the one retry of a kernel
     const { deps: d } = deps({ baseline: { state: "REQUESTED" }, unknown: ["a"], sourceReady: true, recycle });
     expect(await run(d)).toBe("RETRIED");
     expect(recycle).not.toHaveBeenCalled();
+  });
+});
+
+describe("decision 70(c): the re-run of a merged base's checks, by the runner", () => {
+  const mergedTask = (): DeveloperTaskRecord => ({
+    taskId: TASK, workspaceId: "w", closedAt: undefined,
+    workflow: {
+      stage: "VERIFY", state: "BLOCKED", revision: 9, updatedAt: "2026-10-25T10:00:00.000Z", decisions: [], artifacts: [], blockReason: WORKFLOW_BLOCK_REASONS.baseMergedRecheck,
+      candidate: { digest: "d".repeat(64), repositories: [] }, pullRequests: [{ repositoryId: "demo", number: 7, state: "OPEN", candidateDigest: "d".repeat(64) }],
+    },
+  } as unknown as DeveloperTaskRecord);
+  const runMerged = (d: AutofixDependencies) => runWorkflowAutofix(d, mergedTask(), { expectedRevision: 9, startedAt: "2026-10-25T10:00:00.000Z", cause: "base-merged" });
+  /** The runner's dependencies with the task of this suite, and the autonomy and guards a test chooses. */
+  const merged = (extra: Partial<AutofixDependencies> = {}) => {
+    const base = deps({ baseline: undefined, unknown: [] });
+    base.deps.store = { tableName: "t", documentClient: { send: async (command: { constructor: { name: string }; input: Record<string, unknown> }) => {
+      if (command.constructor.name === "GetCommand") return { Item: mergedTask() };
+      base.writes.push(command.input);
+      return {};
+    } } as never };
+    return { writes: base.writes, deps: { ...base.deps, autonomy: async () => ({ autonomy: "prepare" as const }), ...extra } as AutofixDependencies };
+  };
+
+  it("re-runs the checks where Rovara may act, with the re-run's own reason, once the company's allowance is claimed", async () => {
+    for (const autonomy of ["prepare", "run"] as const) {
+      moves.retryChecks.mockClear();
+      const claim = vi.fn(async () => true);
+      const { deps: d, writes } = merged({ autonomy: async () => ({ autonomy }), claimBaseMergedStart: claim });
+      expect(await runMerged(d), autonomy).toBe("RETRIED");
+      expect(moves.retryChecks).toHaveBeenCalledWith(expect.anything(), TASK, expect.objectContaining({ reason: BASE_MERGED_RETRY_REASON, expectedRevision: 9 }));
+      expect(claim).toHaveBeenCalledTimes(1);
+      expect(writes).toEqual([]);
+    }
+  });
+
+  it("asks with the sentence that is true when autonomy is suggest, cannot be read, throws, is absent, or the task has no company, and starts nothing", async () => {
+    const cases: Array<[string, Partial<AutofixDependencies>, string]> = [
+      ["suggest", { autonomy: async () => ({ autonomy: "suggest" }) }, "autonomy-suggest"],
+      ["unreadable", { autonomy: async () => ({ autonomy: "suggest", unreadable: true }) }, "autonomy-unreadable"],
+      ["throws", { autonomy: async () => { throw new Error("recipe store down"); } }, "autonomy-unreadable"],
+      ["no company", { autonomy: async () => ({ autonomy: "suggest", noCompany: true }) }, "autonomy-no-company"],
+      ["absent", { autonomy: undefined as never }, "autonomy-suggest"],
+    ];
+    for (const [name, extra, reason] of cases) {
+      moves.retryChecks.mockClear();
+      const needsYou = vi.fn(async () => undefined);
+      const { deps: d, writes } = merged({ ...extra, needsYou });
+      expect(await runMerged(d), name).toBe("ASKED");
+      expect(asked(writes), name).toMatchObject({ reason, codes: ["base-merged"] });
+      expect(moves.retryChecks, name).not.toHaveBeenCalled();
+      // The "needs you" line is written for this ask, and only here.
+      expect(needsYou, name).toHaveBeenCalledWith(expect.anything(), BASE_MERGED_NEEDS_YOU_MILESTONE);
+    }
+    // The three sentences are different, and none says "set to suggest" falsely.
+    const sentences = ["autonomy-suggest", "autonomy-unreadable", "autonomy-no-company"].map((reason) => autoFixAskReasonSentence(reason as never));
+    expect(new Set(sentences).size).toBe(3);
+    expect(sentences[1]).not.toMatch(/set to suggest/u);
+    expect(sentences[2]).not.toMatch(/set to suggest/u);
+  });
+
+  it("ends the re-run, asking, when a person pushed to the pull request since the merge; the checks are not started", async () => {
+    moves.retryChecks.mockClear();
+    const { deps: d, writes } = merged({ pullRequestHeadMoved: async () => true });
+    expect(await runMerged(d)).toBe("ASKED");
+    expect(asked(writes)).toMatchObject({ reason: "head-moved", codes: ["base-merged"] });
+    expect(moves.retryChecks).not.toHaveBeenCalled();
+  });
+
+  it("asks at once (needs a person, nothing started) when the pull request's head cannot be read, instead of looping through the look-failed retries", async () => {
+    moves.retryChecks.mockClear();
+    const { deps: d, writes } = merged({ pullRequestHeadMoved: async () => { throw new Error("GitHub is down"); } });
+    expect(await runMerged(d)).toBe("ASKED");
+    expect(asked(writes)).toMatchObject({ reason: "needs-a-person", codes: ["base-merged"] });
+    expect(moves.retryChecks).not.toHaveBeenCalled();
+  });
+
+  it("waits (deferred, nothing started, no ask) when the company's allowance of re-runs for these ten minutes is used", async () => {
+    moves.retryChecks.mockClear();
+    const { deps: d, writes } = merged({ claimBaseMergedStart: async () => false });
+    expect(await runMerged(d)).toBe("DEFERRED");
+    expect(moves.retryChecks).not.toHaveBeenCalled();
+    expect(writes).toEqual([]);
+  });
+
+  it("asks at once, never looping once a minute, when the move is refused for a reason the same call would repeat (no check is selected to run)", async () => {
+    moves.retryChecks.mockClear();
+    moves.retryChecks.mockRejectedValueOnce(agentXError("CONFIG_INVALID", "choose at least one check"));
+    const { deps: d, writes } = merged();
+    expect(await runMerged(d)).toBe("ASKED");
+    expect(asked(writes)).toMatchObject({ reason: "needs-a-person", codes: ["base-merged"] });
+    // Any other failure is still the caller's to retry.
+    const outage = new Error("temporary backend failure");
+    moves.retryChecks.mockRejectedValueOnce(outage);
+    await expect(runMerged(merged().deps)).rejects.toBe(outage);
+  });
+});
+
+describe("decision 70(c): whether a person pushed since the merge (every open pull request is looked at)", () => {
+  const pr = (repositoryId: string, number: number, headSha: string | undefined, state = "OPEN") => ({ repositoryId, number, headSha, state });
+  const heads: Record<string, string> = { "demo#1": "a".repeat(40), "ledger#2": "b".repeat(40) };
+  const read = async (pullRequest: { repositoryId: string; number: number }) => heads[`${pullRequest.repositoryId}#${String(pullRequest.number)}`]!;
+
+  it("says moved when the host's head is not the recorded one, and not moved when it is", async () => {
+    expect(await openPullRequestHeadMoved({ pullRequests: [pr("demo", 1, "a".repeat(40)) as never] }, read)).toBe(false);
+    expect(await openPullRequestHeadMoved({ pullRequests: [pr("demo", 1, "9".repeat(40)) as never] }, read)).toBe(true);
+  });
+
+  it("looks at every open pull request, not just the first: a second repository's pull request that moved counts", async () => {
+    const moved = { pullRequests: [pr("demo", 1, "a".repeat(40)), pr("ledger", 2, "9".repeat(40))] as never };
+    expect(await openPullRequestHeadMoved(moved, read)).toBe(true);
+    expect(await openPullRequestHeadMoved({ pullRequests: [pr("demo", 1, "a".repeat(40)), pr("ledger", 2, "b".repeat(40))] as never }, read)).toBe(false);
+    // A merged or closed pull request, and one recorded without a head, are not judged.
+    expect(await openPullRequestHeadMoved({ pullRequests: [pr("demo", 1, "9".repeat(40), "MERGED"), pr("ledger", 2, undefined)] as never }, read)).toBe(false);
+  });
+
+  it("lets a head that cannot be read throw (the runner then asks), and judges nothing for a task with no pull request", async () => {
+    await expect(openPullRequestHeadMoved({ pullRequests: [pr("demo", 1, "a".repeat(40)) as never] }, async () => { throw new Error("GitHub is down"); })).rejects.toThrow("GitHub is down");
+    expect(await openPullRequestHeadMoved({ pullRequests: [] }, read)).toBe(false);
+    expect(await openPullRequestHeadMoved(undefined, read)).toBe(false);
   });
 });

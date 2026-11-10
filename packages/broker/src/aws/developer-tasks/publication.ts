@@ -16,6 +16,7 @@ import {
   type WorkflowSnapshot,
   E2EPolicySchema,
   WorkflowTransitionError,
+  holdWorkflowCandidateOnPullRequests,
   WorkflowPublishRetryRequestSchema,
   canonicalJson,
   unblockWorkflowPublication,
@@ -212,9 +213,28 @@ export async function startTaskWorkflowPublicationFromSystem(
   if (repository === undefined) {
     // Plan 6 Task 16: before the fix of a round Rovara decided itself is pushed, the autonomy is read again (an owner's own retry is their go-ahead).
     if (!ownerRetry && workflow.state === "READY" && workflowPullRequestUpdateDue(workflow) && await stoppedByLoweredAutonomy(deps, task, workflow)) return "STALE";
-    return workflow.state === "READY" && workflowPullRequestUpdateDue(workflow)
-      ? startTaskWorkflowPullRequestUpdate(deps, task, { ...workflow, candidate: workflow.candidate }, expected, currentE2EChecks, dispatchAccess, origin.ownerActor)
-      : "STALE";
+    if (workflow.state === "READY" && workflowPullRequestUpdateDue(workflow)) {
+      return startTaskWorkflowPullRequestUpdate(deps, task, { ...workflow, candidate: workflow.candidate }, expected, currentE2EChecks, dispatchAccess, origin.ownerActor);
+    }
+    // Every open pull request already holds the candidate (a merge of the base that was checked and reviewed again, or a fix whose push landed before its result): there is nothing to push, and the task
+    // waits for the merge. The owner's Retry at a publication block does the same, so a repeat finds it done (the revision moved on) and an unrepeated one is not left blocked.
+    let held: WorkflowSnapshot | undefined;
+    try { held = holdWorkflowCandidateOnPullRequests(workflow, iso(deps)); } catch (error) { if (!(error instanceof WorkflowTransitionError)) throw error; }
+    if (held !== undefined) {
+      try {
+        await deps.actions.transact([{ Update: { TableName: deps.tableName, Key: taskKey(taskId), UpdateExpression: "SET workflow = :workflow, updatedAt = :now",
+          ConditionExpression: "workflow.revision = :revision AND workflow.#stage = :stage AND workflow.#state = :state AND attribute_not_exists(closedAt)",
+          ExpressionAttributeNames: { "#stage": "stage", "#state": "state" },
+          ExpressionAttributeValues: { ":workflow": held, ":now": held.updatedAt, ":revision": workflow.revision, ":stage": "PULL_REQUEST", ":state": workflow.state } } },
+        ...currentE2EChecks,
+        ...(dispatchAccess === undefined ? [] : [taskAccessFence(deps.tableName, taskId, dispatchAccess.peopleRevision)])]);
+      } catch (error) {
+        if (!isConditional(error)) throw error;
+        return "STALE";
+      }
+      return "STARTED";
+    }
+    return "STALE";
   }
   const attempt = 1 + await deps.actions.failedPublications(task.workspaceId, { repositoryId: repository.repositoryId, candidateDigest: expected.candidateDigest, treeSha: repository.treeSha });
   if (attempt > 1 && !ownerRetry) return "STALE";

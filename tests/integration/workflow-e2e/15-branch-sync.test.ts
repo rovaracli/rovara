@@ -2,13 +2,15 @@
 // schedule's tracking pass queues a merge of the base, the dispatch sweep starts it, the worker (real Git) merges exactly the base commit, and the broker records what GitHub shows. A clean merge keeps
 // the pull request's head a fast-forward and moves the candidate to the new base; a conflict becomes one coding round, checked, reviewed and pushed as a merge commit whose parents are the old head and
 // the base commit; GitHub refusing workflow files stops with its text. Nothing is rebased, nothing is force-pushed, and a person's push wins.
+import { writeFile } from "node:fs/promises";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { CI_OUTPUT_BLOCK_HEADER, BRANCH_SYNC_UNSURE_MESSAGE, BRANCH_WORKFLOW_FILES_MESSAGE, branchSyncGiveUpMessage, branchConflictAskMessage, CONFLICT_PATHS_BLOCK_HEADER, EMPTY_RECIPE, WorkflowSnapshotSchema, branchConflictStopMessage, type WorkflowProgram } from "@agentx/contracts";
+import { CI_OUTPUT_BLOCK_HEADER, BRANCH_SYNC_UNSURE_MESSAGE, BRANCH_WORKFLOW_FILES_MESSAGE, branchSyncGiveUpMessage, branchConflictAskMessage, CONFLICT_PATHS_BLOCK_HEADER, EMPTY_RECIPE, BASE_MERGED_NEEDS_YOU_MILESTONE, BASE_MERGED_RECHECKING_MILESTONE, WORKFLOW_BLOCK_REASONS, WorkflowSnapshotSchema, branchConflictStopMessage, type ProjectCommand, type WorkflowProgram } from "@agentx/contracts";
 import { taskRecipeKey } from "../../../packages/broker/src/developer/task-records.js";
 import { TEST_ORG } from "../../support/orgs.js";
 import { mergeTrackingKey } from "../../../packages/contracts/src/org-scoped-keys.js";
-import { createWorkflowE2E, type WorkflowE2E } from "../../support/workflow-e2e.js";
-import { EDITS, FIXED, PLAN, TASK_LINK_MERGE, TASK_LINK_RETRY, atPlanReview, journeySuite, said } from "../../support/workflow-e2e-journeys.js";
+import { E2E_CHECK, createWorkflowE2E, type WorkflowE2E } from "../../support/workflow-e2e.js";
+import { EDITS, FIXED, PLAN, TASK_LINK_RETRY, actionIds, atPlanReview, journeySuite, said } from "../../support/workflow-e2e-journeys.js";
 
 const PROGRAM: WorkflowProgram = { steps: [
   { id: "plan", kind: "plan" }, { id: "plan_critic", kind: "plan_critic" }, { id: "build", kind: "build" }, { id: "check", kind: "check" },
@@ -20,6 +22,7 @@ const BASE_GREETING = "export function greet(name: string): string {\n  return '
 const task = (e2e: WorkflowE2E) => e2e.db.get(`DEVTASK#${e2e.taskId()}`, "META")!;
 const dispatchRows = (e2e: WorkflowE2E) => e2e.db.find((item) => item.pk === "WORKFLOW_DISPATCH");
 const milestones = (e2e: WorkflowE2E, kind: string) => e2e.db.find((item) => item.entityType === "CODE_MILESTONE" && item.kind === kind);
+const pullRequestRecord = (e2e: WorkflowE2E) => e2e.db.get(`WORKSPACE#${String(task(e2e).workspaceId)}`, `PULL_REQUEST#demo#${String(e2e.github.pullRequests[0]!.number).padStart(12, "0")}`) as { expectedHeadCommit: string };
 const tracking = (e2e: WorkflowE2E) => {
   const key = mergeTrackingKey(e2e.taskId(), "demo", e2e.github.pullRequests[0]!.number);
   return e2e.db.get(key.pk, key.sk);
@@ -54,13 +57,15 @@ function syncGithub(e2e: () => WorkflowE2E) {
 }
 
 /** A version 2 task through its first pull request (waiting for the merge), with its program in place. */
-async function waitingForMerge(options: { resolves?: boolean } = {}) {
+async function waitingForMerge(options: { resolves?: boolean; autofix?: { enabled: boolean; capUsd: number; roundEstimateUsd: number; baseMergedPerTenMinutes?: number }; checkResult?: (command: ProjectCommand) => { exitCode: number | null; stdout: string; stderr: string } | undefined } = {}) {
   const holder: { e2e?: WorkflowE2E } = {};
   const github = syncGithub(() => holder.e2e!);
   const prompts: string[] = [];
   const e2e = (holder.e2e = await createWorkflowE2E({
     model: { plan: PLAN, edits: (latest) => { prompts.push(latest); return latest.includes(CONFLICT_PATHS_BLOCK_HEADER) && options.resolves !== false ? RESOLVED : latest.includes(CI_OUTPUT_BLOCK_HEADER) ? FIXED : EDITS; } },
     trackingGithub: github.methods,
+    ...(options.autofix === undefined ? {} : { autofix: options.autofix }),
+    ...(options.checkResult === undefined ? {} : { checkResult: options.checkResult }),
   }));
   await atPlanReview(e2e);
   const stored = task(e2e);
@@ -75,6 +80,17 @@ async function waitingForMerge(options: { resolves?: boolean } = {}) {
   e2e.clock.advance(60_000);
   await e2e.runMergeRecovery();
   return { e2e, github, prompts, pullRequest: e2e.github.pullRequests[0]! };
+}
+
+/** The owner presses Retry checks with the same checks, and the checks, the reviews and the move to waiting for the merge are run to the end. */
+async function retryChecks(e2e: WorkflowE2E): Promise<void> {
+  await e2e.click("agentx_workflow_retry_checks");
+  await e2e.submitView({ workflow_checks: { selected_options: { selected_options: [] } } });
+  await e2e.settle();
+  for (let round = 0; round < 4; round += 1) {
+    await e2e.runRecovery();
+    await e2e.settle();
+  }
 }
 
 /** The schedule's tracking pass, then the dispatch sweep that starts what it queued, then the worker, and so on until the task is quiet. */
@@ -102,7 +118,8 @@ describe("Suite 15: keeping the branch up to date", () => {
     await trackAndRun(e2e);
 
     const after = e2e.workflow();
-    expect(after).toMatchObject({ stage: "WAIT_FOR_MERGE", state: "WAITING" });
+    // The merge is a NEW CANDIDATE (decision 67b): the task is not waiting for the merge until the merged code is checked and reviewed again.
+    expect(after).toMatchObject({ stage: "VERIFY", state: "BLOCKED", blockReason: WORKFLOW_BLOCK_REASONS.baseMergedRecheck });
     expect(after.branchSync).toBeUndefined();
     // GitHub shows the merge: the old head first, the base commit second; nothing else was pushed, to no other branch.
     const merged = pullRequest.commit;
@@ -116,21 +133,40 @@ describe("Suite 15: keeping the branch up to date", () => {
     expect(after.candidate!.digest).not.toBe(beforeDigest);
     expect(after.candidate!.repositories[0]).toMatchObject({ commitSha: merged, baseCommitSha: base });
     expect(after.reviewBase).toEqual([{ repositoryId: "demo", baseCommitSha: base }]);
-    expect(after.verification?.candidateDigest).toBe(after.candidate!.digest);
-    expect(after.reviews?.every((review) => review.candidateDigest === after.candidate!.digest)).toBe(true);
+    // The earlier checks and reviews are not carried over to the merged code.
+    expect(after.verification).toBeUndefined();
+    expect(after.reviews ?? []).toEqual([]);
+    expect(after.acceptedFindings ?? []).toEqual([]);
     // The day's merge is counted once, the row is gone, no fix round was used and nothing was said as stuck.
     expect(dispatchRows(e2e).filter((row) => row.kind === "SYNC")).toEqual([]);
     expect(after.fixRounds).toBeUndefined();
-    expect(milestones(e2e, "stuck")).toEqual([]);
-    // The thread says so once, in its own words (a merge of the base is not a fix).
-    expect(said(e2e).at(-1)).toBe(`Brought PR #${pullRequest.number} up to date with its base branch. Approve the PR on GitHub, then press Merge in Rovara; I'll finish this task when it's merged.${TASK_LINK_MERGE}`);
+    // The task now waits for the owner: the milestone feed says so (a "needs you" line), once.
+    expect(milestones(e2e, "stuck")).toEqual([expect.objectContaining({ text: BASE_MERGED_NEEDS_YOU_MILESTONE })]);
+    // The thread says why the task is not waiting for the merge yet, and offers the checks again.
+    expect(said(e2e).at(-1)).toBe(WORKFLOW_BLOCK_REASONS.baseMergedRecheck);
+    expect(actionIds(e2e.slack.posts.at(-1)!)).toEqual(expect.arrayContaining(["agentx_workflow_retry_checks", "agentx_workflow_close"]));
     // The workspace is on the merge, with the base's file.
     expect(await e2e.repoFile("upstream.ts")).toBe("export const upstream = 1;\n");
-    // It does not merge again: the next pass reads a branch that has the base, on a head that is Rovara's.
+    // The pull request is not called ready, and no second merge starts, while the merged code is unchecked.
     const rows = dispatchRows(e2e).length;
     await trackAndRun(e2e, 2);
-    expect(tracking(e2e)).toMatchObject({ syncs: { count: 1 }, headSha: merged, branch: "up_to_date", headByRovara: true });
+    expect(e2e.workflow()).toMatchObject({ stage: "VERIFY", state: "BLOCKED" });
     expect(dispatchRows(e2e)).toHaveLength(rows);
+    expect(e2e.github.pushLog.slice(pushesBefore)).toHaveLength(1);
+
+    // The owner's Retry checks runs the checks on the merged code (the candidate the host shows), then the reviews run again; only then does the task wait for the merge.
+    await retryChecks(e2e);
+    const rechecked = e2e.workflow();
+    expect(rechecked).toMatchObject({ stage: "WAIT_FOR_MERGE", state: "WAITING" });
+    expect(rechecked.candidate!.digest).toBe(after.candidate!.digest);
+    expect(rechecked.verification?.candidateDigest).toBe(after.candidate!.digest);
+    expect(rechecked.reviews?.length).toBeGreaterThan(0);
+    expect(rechecked.reviews?.every((review) => review.candidateDigest === after.candidate!.digest)).toBe(true);
+    expect(rechecked.pullRequests?.[0]).toMatchObject({ headSha: merged, candidateDigest: after.candidate!.digest });
+    // Nothing more was pushed (the pull request already held the candidate), and the next pass reads a branch that has the base, on a head that is Rovara's.
+    expect(e2e.github.pushLog.slice(pushesBefore)).toHaveLength(1);
+    await trackAndRun(e2e, 2);
+    expect(tracking(e2e)).toMatchObject({ syncs: { count: 1 }, headSha: merged, branch: "up_to_date", headByRovara: true });
     expect(e2e.github.pushLog.slice(pushesBefore)).toHaveLength(1);
   });
 
@@ -410,7 +446,7 @@ describe("Suite 15: keeping the branch up to date", () => {
     expect(conflictRun?.kind === "task" && conflictRun.payload.workflowFix).toEqual({ source: "conflict" });
   }, 240_000);
 
-  it("15.8 a merge whose machine is lost after its push is judged from what GitHub shows: the merge is recorded as Rovara's own (with no approval to carry), and nothing false is said", async () => {
+  it("15.8 a merge whose machine is lost after its push is judged from what GitHub shows: exactly [recorded head, asked base] is recorded as the new candidate (decision 67b), with no approval to carry, and checked again", async () => {
     const { e2e, github, pullRequest } = await waitingForMerge();
     const before = pullRequest.commit;
     const base = await e2e.advanceBase("upstream.ts", "export const upstream = 1;\n");
@@ -428,17 +464,296 @@ describe("Suite 15: keeping the branch up to date", () => {
     await e2e.runRecovery();
     await e2e.settle();
     const after = e2e.workflow();
-    expect(after).toMatchObject({ stage: "WAIT_FOR_MERGE", state: "WAITING" });
+    // Rovara's own merge is on the pull request: it is the new candidate, blocked until its checks and reviews run again, and the head is Rovara's (not "someone else pushed").
+    expect(after).toMatchObject({ stage: "VERIFY", state: "BLOCKED", blockReason: WORKFLOW_BLOCK_REASONS.baseMergedRecheck });
     expect(after.branchSync).toBeUndefined();
     expect(after.pullRequests?.[0]).toMatchObject({ headSha: pullRequest.commit, candidateDigest: after.candidate!.digest });
     expect(after.pullRequests?.[0]?.syncedFrom).toBeUndefined();
     expect(after.candidate!.repositories[0]).toMatchObject({ commitSha: pullRequest.commit, baseCommitSha: base });
-    // The head is Rovara's own: the thread never says someone else pushed, and a red CI on it is fixed.
+    expect(after.verification).toBeUndefined();
+    expect(pullRequestRecord(e2e).expectedHeadCommit).toBe(pullRequest.commit);
     await trackAndRun(e2e, 1);
     expect(tracking(e2e)).toMatchObject({ headByRovara: true, headSha: pullRequest.commit });
     expect(said(e2e).some((text) => text.startsWith("Someone else pushed"))).toBe(false);
-    github.state.red = true;
-    await trackAndRun(e2e);
-    expect(e2e.workflow().fixRounds).toMatchObject({ ci: 1 });
+    // The owner's Retry checks and the reviews follow, then the task waits for the merge.
+    await retryChecks(e2e);
+    expect(e2e.workflow()).toMatchObject({ stage: "WAIT_FOR_MERGE", state: "WAITING" });
   });
+
+  it("15.8b a lost merge GitHub does not show as exactly the merge asked for is not recorded: the record keeps the head, and the head is read as someone else's", async () => {
+    const { e2e, github, pullRequest } = await waitingForMerge();
+    const before = pullRequest.commit;
+    const beforeDigest = e2e.workflow().candidate!.digest;
+    await e2e.advanceBase("upstream.ts", "export const upstream = 1;\n");
+    github.state.baseAhead = true;
+    e2e.worker.crashNext("maintain", { afterPush: true });
+    e2e.clock.advance(16 * 60_000);
+    await e2e.runMergeRecovery();
+    await e2e.runRecovery();
+    await e2e.settle();
+    // GitHub shows the pushed commit with another second parent.
+    e2e.github.parents.set(pullRequest.commit, [before, "e".repeat(40)]);
+    await e2e.runRecovery();
+    await e2e.runRecovery();
+    await e2e.settle();
+    const after = e2e.workflow();
+    expect(after).toMatchObject({ stage: "WAIT_FOR_MERGE", state: "WAITING" });
+    expect(after.pullRequests?.[0]).toMatchObject({ headSha: before, candidateDigest: beforeDigest });
+    expect(pullRequestRecord(e2e).expectedHeadCommit).toBe(before);
+    await trackAndRun(e2e, 1);
+    expect(tracking(e2e)).toMatchObject({ headByRovara: false, headSha: pullRequest.commit });
+  });
+
+  it("15.19 a Send back from the recheck of a merged base is a coding run that may leave the code as it is: it is not refused as a fix that changed nothing, and it is checked, reviewed and waits for the merge", async () => {
+    const { e2e, github, pullRequest } = await waitingForMerge();
+    const base = await e2e.advanceBase("upstream.ts", "export const upstream = 1;\n");
+    github.state.baseAhead = true;
+    await trackAndRun(e2e);
+    const merged = e2e.workflow();
+    expect(merged).toMatchObject({ stage: "VERIFY", state: "BLOCKED", blockReason: WORKFLOW_BLOCK_REASONS.baseMergedRecheck });
+    const mergedCommit = pullRequest.commit;
+    expect(actionIds(e2e.slack.posts.at(-1)!)).toEqual(["agentx_workflow_send_back", "agentx_workflow_retry_checks", "agentx_workflow_close"]);
+    const pushes = e2e.github.pushLog.length;
+    await e2e.click("agentx_workflow_send_back");
+    if (e2e.slack.views.length > 0) await e2e.submitView({});
+    await e2e.settle();
+    for (let round = 0; round < 4; round += 1) { await e2e.runRecovery(); await e2e.settle(); }
+    const after = e2e.workflow();
+    // Not "the approved fix didn't change any code": the coding run, its checks and its reviews ran, and the task waits for the merge with the pull request holding the code it holds.
+    expect(after.blockReason).not.toBe(WORKFLOW_BLOCK_REASONS.fixChangedNothing);
+    expect(after).toMatchObject({ stage: "WAIT_FOR_MERGE", state: "WAITING" });
+    expect(after.pullRequests?.[0]).toMatchObject({ headSha: mergedCommit, candidateDigest: after.candidate!.digest });
+    expect(after.verification?.candidateDigest).toBe(after.candidate!.digest);
+    expect(e2e.github.pushLog).toHaveLength(pushes);
+    expect(base).toBeDefined();
+  });
+
+  it("15.16 a merge of the base is not called ready before its checks and reviews pass again: a draft stays a draft until then", async () => {
+    const { e2e, github, pullRequest } = await waitingForMerge();
+    await e2e.advanceBase("upstream.ts", "export const upstream = 1;\n");
+    github.state.baseAhead = true;
+    await trackAndRun(e2e);
+    expect(e2e.workflow()).toMatchObject({ stage: "VERIFY", state: "BLOCKED", blockReason: WORKFLOW_BLOCK_REASONS.baseMergedRecheck });
+    // The pull request is a draft that was not marked ready yet (undone here, as a pull request that never had its first pass).
+    const { readyAt: _readyAt, ...rest } = tracking(e2e)! as Record<string, unknown>;
+    void _readyAt;
+    e2e.db.set(rest);
+    pullRequest.draft = true;
+    // Green CI on the merged head, a head that is Rovara's: still a draft, while the merged code is unchecked.
+    await trackAndRun(e2e, 2);
+    expect(pullRequest.draft).toBe(true);
+    expect(tracking(e2e)).toMatchObject({ headByRovara: true });
+    // The checks pass, the reviews pass, the task waits for the merge: the next pass takes it out of draft.
+    await retryChecks(e2e);
+    expect(e2e.workflow()).toMatchObject({ stage: "WAIT_FOR_MERGE", state: "WAITING" });
+    await trackAndRun(e2e, 2);
+    expect(pullRequest.draft).toBe(false);
+  });
+
+  it("15.17 the merged code is checked on the code the host shows: a workspace that holds other code than the merge is refused, and nothing is recorded as checked", async () => {
+    const { e2e, github } = await waitingForMerge();
+    await e2e.advanceBase("upstream.ts", "export const upstream = 1;\n");
+    github.state.baseAhead = true;
+    await trackAndRun(e2e);
+    const merged = e2e.workflow();
+    expect(merged).toMatchObject({ stage: "VERIFY", state: "BLOCKED", blockReason: WORKFLOW_BLOCK_REASONS.baseMergedRecheck });
+    // Extra changes the merge on the host does not have are in the workspace.
+    await writeFile(join(e2e.repoDirectory, "extra.ts"), "export const extra = 1;\n");
+    await retryChecks(e2e);
+    const after = e2e.workflow();
+    expect(after).toMatchObject({ stage: "VERIFY", state: "BLOCKED", blockReason: WORKFLOW_BLOCK_REASONS.checkedOtherCode });
+    expect(after.candidate!.digest).toBe(merged.candidate!.digest);
+    expect(after.verification).toBeUndefined();
+    expect(after.reviews ?? []).toEqual([]);
+  });
+
+  it("15.18 a merge pushed with parents that are not the recorded head and the base commit is refused at the callback: the record keeps the head, and nothing is recorded", async () => {
+    const { e2e, github, pullRequest } = await waitingForMerge();
+    const before = pullRequest.commit;
+    const beforeDigest = e2e.workflow().candidate!.digest;
+    await e2e.advanceBase("upstream.ts", "export const upstream = 1;\n");
+    github.state.baseAhead = true;
+    // GitHub shows the pushed merge with another second parent.
+    e2e.worker.rewriteNextResult("maintain", (result) => {
+      e2e.github.parents.set((result as { commit: string }).commit, [before, "e".repeat(40)]);
+      return result;
+    });
+    e2e.clock.advance(16 * 60_000);
+    await e2e.runMergeRecovery();
+    for (let round = 0; round < 4; round += 1) { await e2e.runRecovery(); await e2e.settle(); }
+    expect(pullRequestRecord(e2e).expectedHeadCommit).toBe(before);
+    const after = e2e.workflow();
+    expect(after.pullRequests?.[0]).toMatchObject({ headSha: before, candidateDigest: beforeDigest });
+    expect(after.candidate!.digest).toBe(beforeDigest);
+    expect(after.stage).not.toBe("VERIFY");
+  });
+
+  // ---- decision 70(c): the checks re-run by themselves after a merge of the base
+
+  const ON = { enabled: true, capUsd: 15, roundEstimateUsd: 3 };
+  const autoRetries = (e2e: WorkflowE2E) => e2e.workflow().decisions.filter((decision) => decision.source === "AUTO_RETRY");
+  const autofixRows = (e2e: WorkflowE2E) => dispatchRows(e2e).filter((row) => row.kind === "AUTOFIX");
+  const checkRuns = (e2e: WorkflowE2E) => e2e.invocations.filter((invocation) => invocation.kind === "task" && invocation.payload.workflowMode === "CHECKS");
+
+  it("15.20 where Rovara may act, the merged code's checks re-run by themselves, then the reviews, then the task waits for the merge, with one automatic retry recorded", async () => {
+    const { e2e, github, pullRequest } = await waitingForMerge({ autofix: ON });
+    freezeAutonomy(e2e, "run");
+    const before = e2e.workflow().candidate!.digest;
+    const base = await e2e.advanceBase("upstream.ts", "export const upstream = 1;\n");
+    github.state.baseAhead = true;
+    const pushesBefore = e2e.github.pushLog.length;
+    const checksBefore = checkRuns(e2e).length;
+    await trackAndRun(e2e);
+    // No owner press: the block committed with its AUTOFIX row, the look ran right after, the checks and the reviews followed.
+    const after = e2e.workflow();
+    expect(after).toMatchObject({ stage: "WAIT_FOR_MERGE", state: "WAITING" });
+    expect(after.candidate!.digest).not.toBe(before);
+    expect(after.candidate!.repositories[0]).toMatchObject({ commitSha: pullRequest.commit, baseCommitSha: base });
+    expect(after.verification?.candidateDigest).toBe(after.candidate!.digest);
+    expect(after.reviews?.length).toBeGreaterThan(0);
+    expect(after.reviews?.every((review) => review.candidateDigest === after.candidate!.digest)).toBe(true);
+    expect(checkRuns(e2e).length).toBeGreaterThan(checksBefore);
+    // One automatic retry, as Rovara, for the merged candidate; nothing was pushed but the merge.
+    expect(autoRetries(e2e)).toHaveLength(1);
+    expect(autoRetries(e2e)[0]).toMatchObject({ actorRole: "AGENTX", decision: "REQUEST_CHANGES", auto: { stage: "VERIFY", candidateDigest: after.candidate!.digest } });
+    expect(autofixRows(e2e)).toEqual([]);
+    expect(e2e.github.pushLog.slice(pushesBefore)).toHaveLength(1);
+    // The feed says Rovara is re-checking (information), never "needs you", while it acts.
+    expect(milestones(e2e, "fixing")).toEqual([expect.objectContaining({ text: BASE_MERGED_RECHECKING_MILESTONE })]);
+    expect(milestones(e2e, "stuck")).toEqual([]);
+    // The pull request may now be called ready (only here), and the head is Rovara's.
+    await trackAndRun(e2e, 2);
+    expect(tracking(e2e)).toMatchObject({ headByRovara: true, headSha: pullRequest.commit });
+  });
+
+  it("15.21 set to suggest when the merge lands, Rovara asks and does not re-run the checks; the owner's Retry still does", async () => {
+    const { e2e, github } = await waitingForMerge({ autofix: ON });
+    freezeAutonomy(e2e, "run");
+    await e2e.advanceBase("upstream.ts", "export const upstream = 1;\n");
+    github.state.baseAhead = true;
+    // The merge was queued where Rovara may act; by the time its result lands the autonomy is lowered (the autonomy is read again where the re-run would start).
+    e2e.worker.rewriteNextResult("maintain", (result) => { freezeAutonomy(e2e, "suggest"); return result; });
+    const checksBefore = checkRuns(e2e).length;
+    await trackAndRun(e2e);
+    const asked = e2e.workflow();
+    expect(asked).toMatchObject({ stage: "VERIFY", state: "BLOCKED", blockReason: WORKFLOW_BLOCK_REASONS.baseMergedRecheck });
+    expect(task(e2e).autofixAsk).toMatchObject({ reason: "autonomy-suggest", codes: ["base-merged"] });
+    expect(checkRuns(e2e)).toHaveLength(checksBefore);
+    expect(autoRetries(e2e)).toEqual([]);
+    expect(autofixRows(e2e)).toEqual([]);
+    // The row was written (Rovara meant to re-check: "re-checking"), and when it asked instead, the feed says the task needs the owner, once.
+    expect(milestones(e2e, "fixing")).toEqual([expect.objectContaining({ text: BASE_MERGED_RECHECKING_MILESTONE })]);
+    expect(milestones(e2e, "stuck")).toEqual([expect.objectContaining({ text: BASE_MERGED_NEEDS_YOU_MILESTONE })]);
+    // The owner's own Retry runs them, as before.
+    await retryChecks(e2e);
+    expect(e2e.workflow()).toMatchObject({ stage: "WAIT_FOR_MERGE", state: "WAITING" });
+  });
+
+  it("15.22 with the task's spend at the automatic cap, Rovara asks (spend) and does not re-run the checks", async () => {
+    const { e2e, github } = await waitingForMerge({ autofix: { enabled: true, capUsd: 0, roundEstimateUsd: 3 } });
+    freezeAutonomy(e2e, "run");
+    await e2e.advanceBase("upstream.ts", "export const upstream = 1;\n");
+    github.state.baseAhead = true;
+    const checksBefore = checkRuns(e2e).length;
+    await trackAndRun(e2e);
+    expect(e2e.workflow()).toMatchObject({ stage: "VERIFY", state: "BLOCKED", blockReason: WORKFLOW_BLOCK_REASONS.baseMergedRecheck });
+    expect(task(e2e).autofixAsk).toMatchObject({ reason: "spend-cap", codes: ["base-merged"] });
+    expect(checkRuns(e2e)).toHaveLength(checksBefore);
+    expect(autoRetries(e2e)).toEqual([]);
+  });
+
+  it("15.23 a re-run that fails is the normal rules: no second automatic retry for the same code, the owner decides", async () => {
+    let failing = false;
+    const { e2e, github } = await waitingForMerge({ autofix: ON, checkResult: (command) => (failing && JSON.stringify(command) === JSON.stringify(E2E_CHECK) ? { exitCode: 1, stdout: "", stderr: "AssertionError: the merged code fails\n" } : undefined) });
+    freezeAutonomy(e2e, "run");
+    await e2e.advanceBase("upstream.ts", "export const upstream = 1;\n");
+    github.state.baseAhead = true;
+    failing = true;
+    await trackAndRun(e2e);
+    const after = e2e.workflow();
+    expect(after).toMatchObject({ stage: "VERIFY", state: "BLOCKED" });
+    expect(after.blockReason).not.toBe(WORKFLOW_BLOCK_REASONS.baseMergedRecheck);
+    // The one automatic retry was spent on this code; the failed re-run is blocked with no further automatic move (a pull request is open: the owner decides).
+    expect(autoRetries(e2e)).toHaveLength(1);
+    const runsBefore = checkRuns(e2e).length;
+    await trackAndRun(e2e, 3);
+    expect(checkRuns(e2e)).toHaveLength(runsBefore);
+    expect(autoRetries(e2e)).toHaveLength(1);
+    expect(e2e.workflow()).toMatchObject({ stage: "VERIFY", state: "BLOCKED" });
+  });
+
+  it("15.24 with automatic fixing off nothing re-runs by itself: the owner's Retry is the way, as before", async () => {
+    const { e2e, github } = await waitingForMerge();
+    freezeAutonomy(e2e, "run");
+    await e2e.advanceBase("upstream.ts", "export const upstream = 1;\n");
+    github.state.baseAhead = true;
+    const checksBefore = checkRuns(e2e).length;
+    await trackAndRun(e2e);
+    expect(e2e.workflow()).toMatchObject({ stage: "VERIFY", state: "BLOCKED", blockReason: WORKFLOW_BLOCK_REASONS.baseMergedRecheck });
+    expect(checkRuns(e2e)).toHaveLength(checksBefore);
+    expect(autofixRows(e2e)).toEqual([]);
+  });
+
+
+  it("15.25 the company's allowance of re-runs after a merge of the base for ten minutes is used: the row waits (nothing starts, no ask), and runs in the next window", async () => {
+    const { e2e, github } = await waitingForMerge({ autofix: { ...ON, baseMergedPerTenMinutes: 2 } });
+    freezeAutonomy(e2e, "run");
+    await e2e.advanceBase("upstream.ts", "export const upstream = 1;\n");
+    github.state.baseAhead = true;
+    // The tracking pass runs at the heartbeat; the company has already started its two re-runs for the ten minutes it lands in.
+    e2e.clock.advance(16 * 60_000);
+    e2e.db.set({ pk: `AUTOFIX_BASE_MERGED#${TEST_ORG}`, sk: `WINDOW#${String(Math.floor(Date.now() / 600_000))}`, count: 2 });
+    const checksBefore = checkRuns(e2e).length;
+    await e2e.runMergeRecovery();
+    for (let round = 0; round < 6; round += 1) { await e2e.runRecovery(); await e2e.settle(); }
+    expect(e2e.workflow()).toMatchObject({ stage: "VERIFY", state: "BLOCKED", blockReason: WORKFLOW_BLOCK_REASONS.baseMergedRecheck });
+    expect(checkRuns(e2e)).toHaveLength(checksBefore);
+    expect(autoRetries(e2e)).toEqual([]);
+    expect(task(e2e).autofixAsk).toBeUndefined();
+    // The row is still there, waiting between one and three minutes (the jitter), its attempts not used up.
+    const [row] = autofixRows(e2e);
+    expect(row).toBeDefined();
+    const wait = Date.parse(String(row!.nextAttemptAt)) - Date.now();
+    expect(wait).toBeGreaterThanOrEqual(0);
+    expect(wait).toBeLessThanOrEqual(180_000);
+    expect(row!.attempts ?? 0).toBe(0);
+    // Eleven minutes later the window is a new one: the re-run starts, the reviews follow, the task waits for the merge.
+    e2e.clock.advance(11 * 60_000);
+    for (let round = 0; round < 6; round += 1) { await e2e.runRecovery(); await e2e.settle(); }
+    expect(e2e.workflow()).toMatchObject({ stage: "WAIT_FOR_MERGE", state: "WAITING" });
+    expect(autoRetries(e2e)).toHaveLength(1);
+  });
+
+  it("15.26 the reviews that follow an automatic re-run read the autonomy again: lowered to suggest meanwhile, they do not start and the task says why", async () => {
+    const { e2e, github } = await waitingForMerge({ autofix: ON });
+    freezeAutonomy(e2e, "run");
+    await e2e.advanceBase("upstream.ts", "export const upstream = 1;\n");
+    github.state.baseAhead = true;
+    // The first task run after the merge is the checks' re-run; the company lowers the autonomy while it runs.
+    e2e.worker.rewriteNextResult("task", (result) => { freezeAutonomy(e2e, "suggest"); return result; });
+    const reviewsBefore = e2e.invocations.filter((invocation) => invocation.kind === "task" && invocation.payload.workflowMode === "REVIEW").length;
+    await trackAndRun(e2e);
+    expect(e2e.workflow()).toMatchObject({ stage: "REVIEW", state: "BLOCKED", blockReason: WORKFLOW_BLOCK_REASONS.recheckAutonomyLowered });
+    expect(e2e.invocations.filter((invocation) => invocation.kind === "task" && invocation.payload.workflowMode === "REVIEW")).toHaveLength(reviewsBefore);
+    expect(autoRetries(e2e)).toHaveLength(1);
+  });
+
+  it("15.27 a task recipe that cannot be read asks the owner (it does not read as permission), says so truthfully, and starts no checks", async () => {
+    const { e2e, github } = await waitingForMerge({ autofix: ON });
+    freezeAutonomy(e2e, "run");
+    await e2e.advanceBase("upstream.ts", "export const upstream = 1;\n");
+    github.state.baseAhead = true;
+    // By the time the merge's result lands the task's recipe is unreadable (the sync itself was queued under a readable one).
+    e2e.worker.rewriteNextResult("maintain", (result) => {
+      e2e.db.set({ ...taskRecipeKey(e2e.taskId()), entityType: "TASK_RECIPE", orgId: TEST_ORG, recipe: { not: "a recipe" }, digest: "d".repeat(64) });
+      return result;
+    });
+    const checksBefore = checkRuns(e2e).length;
+    await trackAndRun(e2e);
+    expect(e2e.workflow()).toMatchObject({ stage: "VERIFY", state: "BLOCKED", blockReason: WORKFLOW_BLOCK_REASONS.baseMergedRecheck });
+    expect(task(e2e).autofixAsk).toMatchObject({ reason: "autonomy-unreadable", codes: ["base-merged"] });
+    expect(checkRuns(e2e)).toHaveLength(checksBefore);
+    expect(autoRetries(e2e)).toEqual([]);
+  });
+
 });

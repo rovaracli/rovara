@@ -18,6 +18,9 @@ import {
   FEEDBACK_STOPPED_REASON,
   stopWorkflowFeedbackRound,
   isRunLimitBlockReason,
+  blockWorkflow,
+  isBaseMergedRetry,
+  WORKFLOW_BLOCK_REASONS,
 } from "@agentx/contracts";
 import type { z } from "zod";
 import type { EstimateDependencies } from "../../spend/estimate.js";
@@ -165,12 +168,25 @@ function isAutomaticFeedbackRound(workflow: WorkflowSnapshot): boolean {
 }
 
 /**
- * Before each paid step of a round Rovara decided itself (a send-back run, a review, the push): how far Rovara may go on its own is read again (the stricter of the frozen recipe and the company's
+ * Whether the task is at the reviews of a merged base's automatic re-run (decision 70(c)): the newest decision is Rovara's re-run after a merge of the base, for the candidate now at REVIEW, which an open pull
+ * request holds. The reviews that follow are paid work of a round Rovara decided itself.
+ */
+function isBaseMergedRecheckRound(workflow: WorkflowSnapshot): boolean {
+  const candidate = workflow.candidate;
+  const last = workflow.decisions.at(-1);
+  return workflow.stage === "REVIEW" && workflow.state === "WAITING" && workflow.fixSource === undefined && candidate !== undefined && last !== undefined && isBaseMergedRetry(last)
+    && last.auto?.candidateDigest === candidate.digest
+    && (workflow.pullRequests ?? []).some((pullRequest) => (pullRequest.state === "OPEN" || pullRequest.state === "UNKNOWN") && pullRequest.candidateDigest === candidate.digest);
+}
+
+/**
+ * Before each paid step of a round Rovara decided itself (a send-back run, a review, the push; the reviews after an automatic re-run of a merged base's checks too): how far Rovara may go on its own is read again (the stricter of the frozen recipe and the company's
  * limit now). If it has been lowered to `suggest`, the round stops here, cleanly: the workflow is blocked at the step it was at, with a message that says why, and nothing more is run, paid for or
  * pushed. The owner's Retry is their own go-ahead. Answers whether it stopped; a task that is not in such a round, or a dependency that is not wired, is never stopped.
  */
 export async function stoppedByLoweredAutonomy(deps: DeveloperTaskRouteDependencies, task: DeveloperTaskRecord, workflow: WorkflowSnapshot): Promise<boolean> {
-  if (!isAutomaticFeedbackRound(workflow) || deps.taskAutonomyNow === undefined) return false;
+  const recheck = isBaseMergedRecheckRound(workflow);
+  if ((!isAutomaticFeedbackRound(workflow) && !recheck) || deps.taskAutonomyNow === undefined) return false;
   const now = await deps.taskAutonomyNow(task);
   if (now === "prepare" || now === "run") return false;
   const at = iso(deps);
@@ -178,7 +194,8 @@ export async function stoppedByLoweredAutonomy(deps: DeveloperTaskRouteDependenc
     await deps.actions.transact([{ Update: {
       TableName: deps.tableName, Key: taskKey(task.taskId), UpdateExpression: "SET workflow = :workflow, updatedAt = :now",
       ConditionExpression: "workflow.revision = :revision AND attribute_not_exists(closedAt)",
-      ExpressionAttributeValues: { ":workflow": stopWorkflowFeedbackRound(workflow, FEEDBACK_STOPPED_REASON, at), ":now": at, ":revision": workflow.revision },
+      // A merged base's re-run stops before its paid reviews, blocked at the review step; a feedback round stops as it always did.
+      ExpressionAttributeValues: { ":workflow": recheck ? blockWorkflow(workflow, WORKFLOW_BLOCK_REASONS.recheckAutonomyLowered, at) : stopWorkflowFeedbackRound(workflow, FEEDBACK_STOPPED_REASON, at), ":now": at, ":revision": workflow.revision },
     } }]);
   } catch (error) {
     // Someone else moved the task: it is theirs now, and this step does not run on the revision read.

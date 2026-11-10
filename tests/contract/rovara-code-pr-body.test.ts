@@ -863,7 +863,8 @@ describe("a pushed fix on a version 2 task", () => {
       getPullRequest: vi.fn(async (_url: string, number: number) => details(number)),
       updatePullRequest: vi.fn(async (_url: string, number: number, change: { body?: string }) => { if (change.body !== undefined) state.body = change.body; return { ...details(number), state: "closed" as const }; }),
       getPullRequestFeedback: vi.fn(async (_url: string, number: number) => ({ pullRequest: { ...details(number), headTreeSha: state.tree }, comments: [], threads: [] })),
-      getCommitParents: vi.fn(async (_url: string, commit: string) => [commit === state.head ? "e".repeat(40) : "d".repeat(40)]),
+      // A commit's parents as GitHub shows them: the pushed fix is a fast-forward of the first head (d), which sits on the base (e).
+      getCommitParents: vi.fn(async (_url: string, commit: string) => [commit === PUSHED ? "d".repeat(40) : "e".repeat(40)]),
       getBranchHead: vi.fn(async () => state.head),
       getCommitTree: vi.fn(async (_url: string, commit: string) => commit === state.head ? state.tree : commit === PUSHED ? FIX_TREE : "b".repeat(40)),
     };
