@@ -85,6 +85,20 @@ describe("the lessons file rows", () => {
   expect(readers.queryByRole("button", { name: "Turn on" })).toBeNull();
  });
 
+ it("says what a switched-on repository waits for while lessons are off, and nothing when they are on", async () => {
+  setup({ lessons: serving(status({ repos: [row({ waitingFor: "install" }), row({ repo: "web", waitingFor: "project" })] })) });
+  const region = await section();
+  expect(region.getAllByTestId("lessons-repo-waiting").map(node => node.textContent)).toEqual([
+   "The lessons file starts when lessons are switched on for this installation.", "The lessons file starts when lessons are switched on for this project."]);
+ });
+
+ it("shows no waiting note when lessons are on", async () => {
+  setup({ lessons: serving(status({ repos: [row()] })) });
+  const region = await section();
+  expect(region.getByText("api")).toBeTruthy();
+  expect(region.queryByTestId("lessons-repo-waiting")).toBeNull();
+ });
+
  it("says when lessons are off", async () => {
   setup({ lessons: serving(status({ lessonsOff: true, repos: [row({ enabled: false })] })) });
   const region = await section();

@@ -2,7 +2,7 @@
 //   status:  every repository of the project with its row (switched on or not, the open pull request, unmerged count, removals waiting, held lessons, pointer, problem, notices) and the repositories not yet switched on.
 //   actions: on / off (the open pull request is closed and its branch deleted; the merged file stays), resume (after the team deleted the file), pointer_add ("add it back"), pointer_decline ("don't ask again").
 // Switching on or off is audited BEFORE it changes. Nothing here calls a host except `off` (closing Rovara's own pull request); the first pull request is opened by the next nightly pass, within a day.
-import { resolveLearning, modeAllows, requireAudit } from "./policy.js";
+import { resolveLearning, modeAllows, requireAudit, type ResolvedLearning } from "./policy.js";
 import type { LessonsRepoFileBody, LessonsRepoFileRow, LessonsRepoFileStatus } from "@agentx/contracts";
 import type { RepoFileRuntime } from "./repo-file-job.js";
 import { closeProjectPrs, sweepProject } from "./repo-file-sweep.js";
@@ -13,6 +13,11 @@ import { newRepoFileState } from "./repo-file-state.js";
 import type { ScopeKey } from "./store.js";
 
 export type RepoFileActionResult = { ok: true; row: LessonsRepoFileRow } | { ok: false; code: "not_found" | "host_cannot_write" | "audit_unavailable" | "conflict" | "unreadable" };
+
+/** Why a switched-on repository does nothing yet: the install's lessons switch is off, else the project's mode does not let lessons load. Absent when lessons are on. */
+const waitingOf = (resolved: ResolvedLearning): { waitingFor: "install" | "project" } | Record<string, never> =>
+  resolved.switchedOff ? { waitingFor: "install" } : !modeAllows(resolved.mode, "load") ? { waitingFor: "project" } : {};
+const withWaiting = (row: LessonsRepoFileRow, resolved: ResolvedLearning): LessonsRepoFileRow => row.enabled ? { ...row, ...waitingOf(resolved) } : row;
 
 const canWrite = (target: RepoFileTarget): boolean => target.host.commitFiles !== undefined && target.host.deleteBranch !== undefined && target.host.pathKind !== undefined && target.host.changeRequestForBranch !== undefined;
 
@@ -34,7 +39,7 @@ export async function repoFileStatus(runtime: RepoFileRuntime, key: ScopeKey): P
     const row = rowOf(state);
     const waiting = removals.filter((r) => r.place === state.place).length;
     const target = targets.find((candidate) => candidate.place === state.place);
-    const shown = waiting === 0 ? row : { ...row, erasurePrs: waiting, notices: [...row.notices, `${String(waiting)} ${waiting === 1 ? "pull request that removes" : "pull requests that remove"} deleted lessons ${waiting === 1 ? "is" : "are"} waiting for your team`] };
+    const shown = waiting === 0 ? withWaiting(row, resolved) : { ...withWaiting(row, resolved), erasurePrs: waiting, notices: [...row.notices, `${String(waiting)} ${waiting === 1 ? "pull request that removes" : "pull requests that remove"} deleted lessons ${waiting === 1 ? "is" : "are"} waiting for your team`] };
     return target === undefined ? { ...shown, problem: "repository_gone" as const, notices: [...shown.notices, "This repository is no longer part of the project"] } : shown;
   });
   const watches = listed.filter((r) => r.kind === "watch");
@@ -68,12 +73,13 @@ export async function repoFileAction(runtime: RepoFileRuntime, key: ScopeKey, bo
   try {
     if (body.action === "on") {
       if (!canWrite(target)) return { ok: false, code: "host_cannot_write" };
-      if (state.enabled) return { ok: true, row: rowOf(state) };
+      const resolved = await resolveLearning(deps.settings, key.workspaceId, key.project);
+      if (state.enabled) return { ok: true, row: withWaiting(rowOf(state), resolved) };
       // WRITE AHEAD: when the feature is switched on, the erasure sweep is told about EVERY repository of the project (a watch row each, never deleted while the project exists) before anything else happens. If that cannot be written, nothing changes.
       try { for (const each of everyTarget) await (deps.rows ?? deps.state).putPr(key, watchRowOf(each, deps.now())); } catch { return { ok: false, code: "unreadable" }; }
       if (!await requireAudit(deps.audit, { action: "lesson.repo_file_switched", workspaceId: key.workspaceId, project: key.project, facts: { enabled: true } })) return { ok: false, code: "audit_unavailable" };
       const saved = await save({ ...state, name: target.name, enabled: true, ...(body.pointers === undefined ? {} : { pointers: body.pointers }) });
-      return saved === undefined ? { ok: false, code: "conflict" } : { ok: true, row: rowOf(saved) };
+      return saved === undefined ? { ok: false, code: "conflict" } : { ok: true, row: withWaiting(rowOf(saved), resolved) };
     }
     if (existing === undefined) return { ok: false, code: "not_found" };
     if (body.action === "off") {

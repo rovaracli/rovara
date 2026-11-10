@@ -50,6 +50,36 @@ describe("the switches", () => {
     expect(w.audit.events).toHaveLength(1);
   });
 
+  it("turning on while lessons are off still records the choice (watch rows, state, audit) with no host call, and says what it waits for", async () => {
+    const cases = [
+      { name: "install switch off", w: () => { const w = passSetup(); setLearnedLessonsGate(() => false); return w; }, waitingFor: "install" },
+      { name: "install switch unreadable", w: () => { const w = passSetup(); setLearnedLessonsGate(() => { throw new Error("unreadable"); }); return w; }, waitingFor: "install" },
+      { name: "project mode off", w: () => passSetup({ mode: "Off" }), waitingFor: "project" },
+    ] as const;
+    for (const c of cases) {
+      const w = c.w();
+      const on = await repoFileAction(runtimeOf(w), KEY, { action: "on", repo: "api" });
+      expect(on, c.name).toMatchObject({ ok: true, row: { repo: "api", enabled: true, waitingFor: c.waitingFor } });
+      expect(w.audit.events.map((e) => [e.action, e.facts]), c.name).toEqual([["lesson.repo_file_switched", { enabled: true }]]);
+      expect((await w.state.get(KEY, PLACE))?.enabled, c.name).toBe(true);
+      expect((await w.state.listPrs(KEY)).rows.filter((r) => r.kind === "watch").length, c.name).toBe(1);
+      expect(w.host.calls, c.name).toEqual([]);
+      expect(w.host.writes, c.name).toEqual([]);
+      // Switching on again, and the status, say the same thing.
+      expect(await repoFileAction(runtimeOf(w), KEY, { action: "on", repo: "api" }), c.name).toMatchObject({ ok: true, row: { waitingFor: c.waitingFor } });
+      expect((await repoFileStatus(runtimeOf(w), KEY)).repos[0], c.name).toMatchObject({ enabled: true, waitingFor: c.waitingFor });
+      setLearnedLessonsGate(undefined);
+    }
+  });
+
+  it("turning on while lessons are on carries no waiting note, in the answer or the status", async () => {
+    const w = passSetup({ mode: "On" });
+    const on = await repoFileAction(runtimeOf(w), KEY, { action: "on", repo: "api" });
+    expect(on).toMatchObject({ ok: true, row: { enabled: true } });
+    expect(on.ok && "waitingFor" in on.row).toBe(false);
+    expect("waitingFor" in (await repoFileStatus(runtimeOf(w), KEY)).repos[0]!).toBe(false);
+  });
+
   it("refuses an unknown repository and a host that cannot write", async () => {
     const w = passSetup();
     expect(await repoFileAction(runtimeOf(w), KEY, { action: "on", repo: "nope" })).toEqual({ ok: false, code: "not_found" });
