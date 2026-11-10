@@ -684,6 +684,9 @@ describe("agentx deploy", () => {
       await store.put("/cdk-bootstrap/hnb659fds/version", "21");
       await writeTeamRecordRecord(store, ENV, { enabled: true, options: {} });
       const runner = cleanCdkRunner(scriptedOutputs());
+      const commands: string[] = [];
+      const inner = runner.run.bind(runner);
+      runner.run = async (command, args, options) => { commands.push(`${command} ${args.join(" ")}`); return inner(command, args, options); };
       const io = capture();
       const asked: string[] = [];
       const code = await executeCli(
@@ -691,11 +694,18 @@ describe("agentx deploy", () => {
         { ...io, deploy: safeDeployDeps({ identity: fakeIdentity, store, secrets: memorySecrets(), commandRunner: runner, iam: passRolePresentIam(), teamRecordProbe: { tableState: async (name) => { asked.push(name); return probeAnswer; } } }) },
       );
       expect(asked, io.err.join("")).toEqual([`agentx-${ENV}-team-record`]);
-      if (expectedCode === 0) expect(code, io.err.join("")).toBe(0);
-      else {
+      if (expectedCode === 0) {
+        expect(code, io.err.join("")).toBe(0);
+        expect(commands.some((line) => !line.startsWith("git "))).toBe(true);
+        expect(runner.synthDirs.length).toBeGreaterThan(0);
+      } else {
         expect(code).not.toBe(0);
-        expect(io.err.join("")).toMatch(/deploy stopped before anything changed.*team-record exists/s);
+        expect(io.err.join("")).toMatch(/deploy stopped before anything was built or changed.*team-record exists/s);
         expect(runner.outputsDir).toBeUndefined();
+        // Before the local build and the synth: only the cheap git checks ran (positive control below: a clear account does build and synth).
+        expect(commands.length).toBeGreaterThan(0);
+        expect(commands.every((line) => line.startsWith("git "))).toBe(true);
+        expect(runner.synthDirs).toEqual([]);
       }
     }
   });

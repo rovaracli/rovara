@@ -637,6 +637,13 @@ async function deployCommand(options: DeployCommandOptions, deps: DeployCliDepen
     ...(answers.edition === undefined ? {} : { edition: answers.edition }),
     release,
     ...(options.source === undefined ? {} : { source: options.source }),
+    // A Team record recorded as on but not yet built: a table left by a rolled-back build stops the deploy before the local build and the synth, and before any AWS write.
+    ...(options.engine === "cdk" ? {
+      beforeBuild: async (store: ParameterStore) => enforceTeamRecordPreflight({
+        env: answers.env, store, controlPlaneParameters: await (deps.stackParameters ?? cloudFormationParametersReader(new CloudFormationClient({ region: answers.region })))(environmentStackName(answers.env, "control-plane")),
+        probe: deps.teamRecordProbe ?? dynamoTeamRecordProbe(new DynamoDBClient({ region: answers.region })), write: (line) => services.stderr.write(`${line}\n`), stoppedMessage: "deploy stopped before anything was built or changed",
+      }),
+    } : {}),
     deps,
     stderr: services.stderr,
   });
@@ -644,14 +651,7 @@ async function deployCommand(options: DeployCommandOptions, deps: DeployCliDepen
   const onEvent = (event: DeployEvent) => services.stderr.write(`${progressLine(event)}\n`);
 
   try {
-    // A Team record recorded as on but not yet built: a table left by a rolled-back build stops the deploy before any AWS write.
     const parametersOf = deps.stackParameters ?? cloudFormationParametersReader(new CloudFormationClient({ region: answers.region }));
-    if (options.engine === "cdk") {
-      await enforceTeamRecordPreflight({
-        env: answers.env, store: prepared.store, controlPlaneParameters: await parametersOf(environmentStackName(answers.env, "control-plane")),
-        probe: deps.teamRecordProbe ?? dynamoTeamRecordProbe(new DynamoDBClient({ region: answers.region })), write: (line) => services.stderr.write(`${line}\n`), stoppedMessage: "deploy stopped before anything changed",
-      });
-    }
     const result = await deployEnvironment({
       mode: options.mode,
       engine: options.engine,
@@ -739,6 +739,8 @@ export async function prepareDeployment(input: {
   embedderImage?: string;
   /** The EmbedderImageUri the control plane stack runs now: kept when the release names no image and none is passed. */
   deployedEmbedderImage?: string;
+  /** Runs once the store is open and the cheap checks passed, before the source is built or synthesized (the cdk engine). A refusal stops everything. */
+  beforeBuild?: (store: ParameterStore) => Promise<void>;
   deps: DeployCliDependencies;
   stderr: Writer;
 }): Promise<PreparedDeployment> {
@@ -793,6 +795,7 @@ export async function prepareDeployment(input: {
       try { embedderImage = embedderImageUri({ release: release.manifest, edition, env: input.env, account: input.account, region, partition, override: input.embedderImage, deployed: input.deployedEmbedderImage }); }
       catch (error) { throw agentXError("CONFIG_INVALID", `${error instanceof Error ? error.message : "the embedder image could not be named"}. Nothing was deployed`); }
     }
+    await input.beforeBuild?.(store);
     // After the cheap checks, before any cdk deploy: infra/dist is gitignored, so only a fresh
     // install and build guarantees `cdk deploy` synthesizes the tagged source.
     // The catalog flavor of what is built: staging only for env "staging" in the staging account (the account STS says the credentials in use belong to), release in every other case.
