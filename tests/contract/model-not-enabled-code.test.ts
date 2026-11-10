@@ -2,13 +2,17 @@
 // structured code (`modelFailureCode`), which the broker's learning keys on. Staging's plan check on Haiku 5.5 read "key-rejected attempt 1" and taught nothing: the proxy's body was dropped and the transport
 // sentence said only "check the API key and its permissions".
 import { describe, expect, it } from "vitest";
+import { GetCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
 import type { Context } from "@earendil-works/pi-ai";
 import { MODEL_NOT_ENABLED_CODE, modelFailureCodeOf, type DesignReviewWorkerResult } from "../../packages/contracts/src/index.js";
 import { createConfiguredModelRuntime, modelNotEnabledBody } from "../../packages/model-runtime/src/index.js";
 import { describeModelCallNote, sanitizeModelCallEvent } from "../../packages/worker/src/model-call-monitor.js";
 import { assistantOutcome, failedTurn } from "../../packages/worker/src/session-events.js";
 import { modelUnusableRound } from "../../packages/worker/src/design-review-sessions.js";
-import { modelsNotEnabled } from "../../packages/broker/src/model-sources/learn-not-enabled.js";
+import { learnModelNotEnabled, modelsNotEnabled } from "../../packages/broker/src/model-sources/learn-not-enabled.js";
+import { createUsableModels } from "../../packages/broker/src/model-sources/usable-models.js";
+import { servableModels } from "../../packages/broker/src/model-sources/routing.js";
+import type { OrgId } from "../../packages/contracts/src/org.js";
 import { criticModelUnusable } from "../../packages/broker/src/rovara-code/critic.js";
 
 const PROXY_URL = "http://internal-proxy.example.test:4000";
@@ -96,5 +100,95 @@ describe("a design-review round whose reviewers' model cannot be used", () => {
     expect(modelUnusableRound(round(["model_not_enabled", "timeout", "model_not_enabled"]))).toBeUndefined();
     expect(modelUnusableRound(round(["model_failed", "model_failed", "model_failed"]))).toBeUndefined();
     expect(modelUnusableRound(round([]))).toBeUndefined();
+  });
+});
+
+// 0.5.13: the budget-reserve guard answers 403 `model_not_priced` for a model it has no price for (today only Haiku 5.5) on a budgeted key. That is read like Bedrock's refusal, so the broker learns it and the
+// plan check, reviewers, second review, diagnosis and design review move on instead of losing one attempt (or a whole design-review round) on it every time.
+describe("the guard's 403 model_not_priced is learned like a model the account may not use", () => {
+  const org = "org_aaaaaaaaaaaaaaaaaaaa" as OrgId;
+  const haiku = { provider: "amazon-bedrock", modelId: HAIKU };
+  const NOT_PRICED = "this model has no price, so the task budget cannot be held";
+  /** /v1/chat/completions and /v1/messages as LiteLLM answers the guard's ProxyException: the error type is the guard's own token. */
+  const openAiShape = JSON.stringify({ error: { message: NOT_PRICED, type: "model_not_priced", param: null, code: "403" } });
+  const anthropicShape = JSON.stringify({ error: { message: JSON.stringify({ type: "error", error: { type: "model_not_priced", message: NOT_PRICED } }), type: null, param: null, code: "403" } });
+  const anthropicBare = JSON.stringify({ type: "error", error: { type: "model_not_priced", message: NOT_PRICED } });
+
+  /** One-item DynamoDB stand-in for the usability record (the same shape usable-models.test.ts uses). */
+  function usableModels() {
+    const item: Record<string, unknown> = {};
+    const writes: number[] = [];
+    const client = {
+      async send(command: unknown) {
+        if (command instanceof GetCommand) return { Item: Object.keys(item).length === 0 ? undefined : { ...item } };
+        if (command instanceof UpdateCommand) {
+          writes.push(1);
+          const names = command.input.ExpressionAttributeNames as Record<string, string>;
+          const values = command.input.ExpressionAttributeValues as Record<string, unknown>;
+          for (const part of String(command.input.UpdateExpression).replace(/^SET /u, "").split(", ")) { const [name, value] = part.split(" = ") as [string, string]; item[names[name]!] = values[value]; }
+          return {};
+        }
+        throw new Error("unexpected command");
+      },
+    };
+    const models = createUsableModels({ documentClient: client, tableName: "t", now: () => 1, geography: "us", probe: async () => ({ agreement: "AVAILABLE", authorization: "AUTHORIZED" }) });
+    return { models, writes };
+  }
+  const canPick = async (models: ReturnType<typeof usableModels>["models"]) => (await servableModels({ usableModels: models }, org)).some((model) => model.modelId === HAIKU);
+
+  it("is read as key-rejected ModelNotEnabled with the structured code, on every shape the proxy answers in, and the plan check still moves on", async () => {
+    for (const body of [openAiShape, anthropicShape, anthropicBare]) {
+      const { message, note, monitored, plain } = await refusedCall(body);
+      expect(message.errorMessage, body).toMatch(/request failed; the model is not available for this account$/u);
+      expect(note, body).toMatchObject({ outcome: "failed", class: "key-rejected", signal: MODEL_NOT_ENABLED_CODE, status: 403 });
+      expect(modelFailureCodeOf(monitored), body).toBe(MODEL_NOT_ENABLED_CODE);
+      expect(modelFailureCodeOf(plain), body).toBe(MODEL_NOT_ENABLED_CODE);
+      expect(criticModelUnusable(monitored?.message), body).toBe(true);
+      expect(modelsNotEnabled({ model: haiku }, "FAILED", monitored?.message, { modelFailureCode: modelFailureCodeOf(monitored) })).toEqual([haiku]);
+    }
+  });
+
+  it("marks the model unusable through the usability record, so the next pick skips it", async () => {
+    const { models, writes } = usableModels();
+    expect(await canPick(models)).toBe(true);
+    const before = writes.length;
+    const { monitored } = await refusedCall(openAiShape);
+    await learnModelNotEnabled(models, { model: haiku }, "FAILED", monitored?.message, { modelFailureCode: modelFailureCodeOf(monitored) });
+    expect(writes.length).toBe(before + 1);
+    expect(await canPick(models)).toBe(false);
+  });
+
+  it("keeps the scope of the existing learning: a company's own model source is another account and teaches nothing", async () => {
+    const { monitored } = await refusedCall(openAiShape);
+    const result = { modelFailureCode: modelFailureCodeOf(monitored) };
+    expect(modelsNotEnabled({ model: haiku, modelRoute: { sourceId: "src_abcdefghijklmnopqrst" } }, "FAILED", monitored?.message, result)).toEqual([]);
+    expect(modelsNotEnabled({ model: haiku, modelRoute: { sourceId: "rovara" } }, "FAILED", monitored?.message, result)).toEqual([haiku]);
+  });
+
+  it("an ordinary 403 (a budget, a refused key, a missing permission, or text that only mentions the token) does NOT mark the model unusable", async () => {
+    const bodies = [
+      JSON.stringify({ error: { message: "Budget has been exceeded! Key=task Max budget: 1.000000", type: "budget_exceeded", param: null, code: "403" } }),
+      JSON.stringify({ error: { message: "Authentication Error, invalid api key", type: "auth_error", param: null, code: "403" } }),
+      JSON.stringify({ error: { message: "key not allowed to access model", type: "key_model_access_denied", param: null, code: "403" } }),
+      // The token appears only in a message, never as the error type: not read as the guard's refusal.
+      proxyError("litellm.AuthenticationError: the caller said model_not_priced"),
+      proxyError(IAM_TEXT),
+    ];
+    const { models, writes } = usableModels();
+    expect(await canPick(models)).toBe(true);
+    const before = writes.length;
+    for (const body of bodies) {
+      const { message, note, monitored, plain } = await refusedCall(body);
+      expect(message.errorMessage, body).toMatch(/request failed; check the API key and its permissions$/u);
+      expect(note, body).toMatchObject({ class: "key-rejected", signal: null });
+      expect(modelFailureCodeOf(monitored), body).toBeUndefined();
+      expect(modelFailureCodeOf(plain), body).toBeUndefined();
+      expect(modelsNotEnabled({ model: haiku }, "FAILED", monitored?.message, { modelFailureCode: modelFailureCodeOf(monitored) }), body).toEqual([]);
+      await learnModelNotEnabled(models, { model: haiku }, "FAILED", monitored?.message, { modelFailureCode: modelFailureCodeOf(monitored) });
+    }
+    expect(writes.length).toBe(before);
+    expect(await canPick(models)).toBe(true);
+    expect(modelNotEnabledBody(openAiShape)).toBe(true);
+    expect(modelNotEnabledBody(bodies[0]!)).toBe(false);
   });
 });
