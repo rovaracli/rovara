@@ -403,13 +403,83 @@ describe("task dispatch access", () => {
     expect(h.db.get(`OUTBOX#${h.outbox.id}`, "TASK_ACCESS_PAUSE")).toBeUndefined();
   });
 
-  it("refuses normal delivery while a terminal workflow awaits its closedAt write", async () => {
+  it("acknowledges as closed, without retry, pause or write, a terminal workflow that still awaits its closedAt write", async () => {
     const h = harness();
     h.db.set({ ...h.current, workflow: { revision: 8, stage: "CLOSED", state: "COMPLETE", outcome: "REJECTED" } });
 
-    await expect(guardTaskDispatch({ documentClient: h.db, tableName: "state", checkTaskPerson: h.checkTaskPerson }, h.outbox))
-      .rejects.toMatchObject({ code: "RUNTIME_UNAVAILABLE" });
+    await expect(guardTaskDispatch({ documentClient: h.db, tableName: "state", checkTaskPerson: h.checkTaskPerson }, h.outbox)).resolves.toBe("CLOSED");
     expect(h.db.get(`OUTBOX#${h.outbox.id}`, "OUTBOX")?.status).toBe("QUEUED");
+    expect(h.db.get(`OUTBOX#${h.outbox.id}`, "TASK_ACCESS_PAUSE")).toBeUndefined();
+    expect(h.checkTaskPerson).not.toHaveBeenCalled();
+  });
+
+  it("acknowledges as closed a task that was closed (closedAt) after the message was queued", async () => {
+    const h = harness();
+    h.db.set({ ...h.current, closedAt: "2026-10-11T11:00:00.000Z" });
+    await expect(guardTaskDispatch({ documentClient: h.db, tableName: "state", checkTaskPerson: h.checkTaskPerson }, h.outbox)).resolves.toBe("CLOSED");
+    expect(h.checkTaskPerson).not.toHaveBeenCalled();
+  });
+
+  describe("a race while the access is verified", () => {
+    /** Runs `change` just before the Nth final State fence (the TransactWrite), so the fence sees what changed. */
+    function racing(h: ReturnType<typeof harness>, change: (fence: number) => void) {
+      let fences = 0;
+      const transactions = vi.fn();
+      return {
+        transactions,
+        documentClient: {
+          async send(command: unknown): Promise<unknown> {
+            if (command instanceof TransactWriteCommand) { fences += 1; transactions(); change(fences); }
+            return h.db.send(command as never);
+          },
+        },
+      };
+    }
+    const reviseTask = (h: ReturnType<typeof harness>) => h.db.set({ ...h.db.get(`DEVTASK#${TASK_ID}`, "META")!, workflow: { revision: Number((h.db.get(`DEVTASK#${TASK_ID}`, "META") as { workflow: { revision: number } }).workflow.revision) + 1, stage: "IMPLEMENT", state: "RUNNING" } });
+
+    it("a transient change and then open is dispatched", async () => {
+      const h = harness();
+      const r = racing(h, (fence) => { if (fence === 1) reviseTask(h); });
+      await expect(guardTaskDispatch({ documentClient: r.documentClient, tableName: "state", checkTaskPerson: h.checkTaskPerson }, h.outbox)).resolves.toBe("ALLOWED");
+      expect(r.transactions).toHaveBeenCalledTimes(2);
+    });
+
+    it("a change and then the task closing is acknowledged as closed", async () => {
+      const h = harness();
+      const r = racing(h, (fence) => { if (fence === 1) h.db.set({ ...h.db.get(`DEVTASK#${TASK_ID}`, "META")!, closedAt: "2026-10-11T11:00:00.000Z" }); });
+      await expect(guardTaskDispatch({ documentClient: r.documentClient, tableName: "state", checkTaskPerson: h.checkTaskPerson }, h.outbox)).resolves.toBe("CLOSED");
+      expect(r.transactions).toHaveBeenCalledTimes(1);
+    });
+
+    it("a change and then the operation ending (cancelled) with the task still open is acknowledged as closed", async () => {
+      const h = harness();
+      const operation = { pk: `WORKSPACE#${WORKSPACE_ID}`, sk: `OPERATION#${h.outbox.operationId}` };
+      const r = racing(h, (fence) => { if (fence === 1) h.db.set({ ...h.db.get(operation.pk, operation.sk)!, status: "CANCELLED" }); });
+      await expect(guardTaskDispatch({ documentClient: r.documentClient, tableName: "state", checkTaskPerson: h.checkTaskPerson }, h.outbox)).resolves.toBe("CLOSED");
+    });
+
+    it("an operation whose row is gone is acknowledged as closed", async () => {
+      const h = harness();
+      h.db.delete(`WORKSPACE#${WORKSPACE_ID}`, `OPERATION#${h.outbox.operationId}`);
+      await expect(guardTaskDispatch({ documentClient: h.db, tableName: "state", checkTaskPerson: h.checkTaskPerson }, h.outbox)).resolves.toBe("CLOSED");
+    });
+
+    it("a task that closes during the last pass is found by the final re-read and acknowledged as closed", async () => {
+      const h = harness();
+      const r = racing(h, (fence) => { if (fence < 3) reviseTask(h); else h.db.set({ ...h.db.get(`DEVTASK#${TASK_ID}`, "META")!, closedAt: "2026-10-11T11:00:00.000Z" }); });
+      await expect(guardTaskDispatch({ documentClient: r.documentClient, tableName: "state", checkTaskPerson: h.checkTaskPerson }, h.outbox)).resolves.toBe("CLOSED");
+      expect(r.transactions).toHaveBeenCalledTimes(3);
+    });
+
+    it("a task that keeps changing but stays open is still retried (the guard's own retryable error)", async () => {
+      const h = harness();
+      const r = racing(h, () => reviseTask(h));
+      const caught = await guardTaskDispatch({ documentClient: r.documentClient, tableName: "state", checkTaskPerson: h.checkTaskPerson }, h.outbox).catch((error: unknown) => error);
+      expect(isTaskDispatchGuardRetryError(caught)).toBe(true);
+      expect(caught).toMatchObject({ code: "RUNTIME_UNAVAILABLE" });
+      expect(String((caught as Error).message)).toContain("access changed while it was being verified");
+      expect(h.db.get(`OUTBOX#${h.outbox.id}`, "OUTBOX")?.status).toBe("QUEUED");
+    });
   });
 
   it("durably parks PEOPLE work when proof is unconfigured and preserves operation identity", async () => {

@@ -28,7 +28,13 @@ export interface TaskDispatchAccessDependencies {
   stateAuthorityWitnessForOwnerActor?: (task: DeveloperTaskRecord, ownerActorId: string) => Promise<(ProjectAuthorityWitness & { taskId: string; developerId: string; project: string }) | undefined>;
 }
 
-export type TaskDispatchGuard = (record: DurableOutboxRecord) => Promise<"ALLOWED" | "PARKED">;
+/**
+ * ALLOWED: go on. PARKED: durably paused, acknowledge. CLOSED: the task (or this operation) is definitively over, so the message is acknowledged as done: nothing is
+ * launched, nothing is retried, and nothing waits for access. A closed task is not an error; retrying it only fills the Dispatch DLQ.
+ */
+export type TaskDispatchOutcome = "ALLOWED" | "PARKED" | "CLOSED";
+
+export type TaskDispatchGuard = (record: DurableOutboxRecord) => Promise<TaskDispatchOutcome>;
 
 class TaskDispatchGuardRetryError extends Error {
   readonly code?: string;
@@ -238,7 +244,7 @@ async function allowedStillCurrent(
  * PEOPLE work is allowed only with a freshly qualified effective owner; every other result is
  * durably parked while preserving the original operation, invocation and charge.
  */
-async function guardTaskDispatchCore(deps: TaskDispatchAccessDependencies, record: DurableOutboxRecord): Promise<"ALLOWED" | "PARKED"> {
+async function guardTaskDispatchCore(deps: TaskDispatchAccessDependencies, record: DurableOutboxRecord): Promise<TaskDispatchOutcome> {
   // Terminal cleanup is independent of owner availability. It must be able to release compute,
   // workspace slots and charge after the last owner departs.
   if (record.invocation.kind === "close" || record.invocation.kind === "cancel") return "ALLOWED";
@@ -276,8 +282,10 @@ async function guardTaskDispatchCore(deps: TaskDispatchAccessDependencies, recor
     if (task === undefined || task.workspaceId !== record.workspaceId) {
       throw agentXError("RUNTIME_UNAVAILABLE", "task dispatch state could not be verified");
     }
+    // A task closed (or finished) since the message was queued is over: acknowledge it as done. Throwing here retried it until the Dispatch DLQ. No machine is launched either way.
     if (!taskOpen(task) || task.workflow?.state === "COMPLETE") {
-      throw agentXError("RUNTIME_UNAVAILABLE", "task dispatch is no longer open");
+      deps.admission?.assertOpen();
+      return "CLOSED";
     }
     // Plan 5 Task 12a: a task whose owner can't be read has no one to judge by: it pauses, never falls back to its creator.
     if (tryEffectiveTaskOwner(task) === undefined) {
@@ -315,6 +323,7 @@ async function guardTaskDispatchCore(deps: TaskDispatchAccessDependencies, recor
         deps.admission?.assertOpen();
         return "ALLOWED";
       }
+      if (await operationEnded(guardDeps, record)) return closedOutcome(deps);
       continue;
     }
     const access = await resolveTaskDispatchPeople(guardDeps, task);
@@ -349,6 +358,7 @@ async function guardTaskDispatchCore(deps: TaskDispatchAccessDependencies, recor
         deps.admission?.assertOpen();
         return "ALLOWED";
       }
+      if (await operationEnded(guardDeps, record)) return closedOutcome(deps);
       continue;
     }
     if (deps.remainingTimeMs !== undefined && deps.remainingTimeMs() <= TASK_PAUSE_RESERVE_MS) {
@@ -357,7 +367,24 @@ async function guardTaskDispatchCore(deps: TaskDispatchAccessDependencies, recor
     await park(guardDeps, record, pointer, task, access.peopleRevision, access.status === "OWNERLESS" ? "OWNERLESS" : "PROOF_UNAVAILABLE");
     return "PARKED";
   }
+  // Every pass saw the task move under it. Read once more and decide: if it closed (or its operation ended) meanwhile, that is the answer; if it is still open and nothing ended,
+  // the race is genuinely transient and the message is retried.
+  const finalPointer = await get<DeveloperTaskPointerRecord>(guardDeps, taskPointerKey(record.workspaceId));
+  const finalTask = finalPointer === undefined ? undefined : await get<DeveloperTaskRecord>(guardDeps, taskKey(finalPointer.taskId));
+  if ((finalTask !== undefined && finalTask.workspaceId === record.workspaceId && (!taskOpen(finalTask) || finalTask.workflow?.state === "COMPLETE"))
+    || await operationEnded(guardDeps, record)) return closedOutcome(deps);
   throw agentXError("RUNTIME_UNAVAILABLE", "task dispatch access changed while it was being verified");
+}
+
+function closedOutcome(deps: TaskDispatchAccessDependencies): "CLOSED" {
+  deps.admission?.assertOpen();
+  return "CLOSED";
+}
+
+/** Whether this dispatch's operation is over (cancelled, ended, failed) or its row is gone: a dispatch for it can never be delivered, so it is done rather than retried. */
+async function operationEnded(deps: TaskDispatchAccessDependencies, record: DurableOutboxRecord): Promise<boolean> {
+  const operation = await get<{ status?: string }>(deps, { pk: `WORKSPACE#${record.workspaceId}`, sk: `OPERATION#${record.operationId}` });
+  return operation === undefined || (operation.status !== "ACCEPTED" && operation.status !== "DISPATCHING");
 }
 
 /**
@@ -380,7 +407,7 @@ export async function creatorIsProjectViewer(deps: TaskDispatchAccessDependencie
 }
 
 /** Marks only an incomplete core authority decision so the dispatcher retries the same durable operation. */
-export async function guardTaskDispatch(deps: TaskDispatchAccessDependencies, record: DurableOutboxRecord): Promise<"ALLOWED" | "PARKED"> {
+export async function guardTaskDispatch(deps: TaskDispatchAccessDependencies, record: DurableOutboxRecord): Promise<TaskDispatchOutcome> {
   try {
     return await guardTaskDispatchCore(deps, record);
   } catch (error) {

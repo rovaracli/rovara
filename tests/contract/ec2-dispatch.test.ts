@@ -2102,7 +2102,7 @@ describe("the dispatcher with ec2-ebs records", () => {
 
   it("passes invocation remaining time into the initial pre-compute guard", async () => {
     const record = recordFor();
-    const guardTaskDispatch = vi.fn<(record: DurableOutboxRecord, context?: { remainingTimeMs: () => number }) => Promise<"ALLOWED" | "PARKED">>(async () => "PARKED");
+    const guardTaskDispatch = vi.fn<(record: DurableOutboxRecord, context?: { remainingTimeMs: () => number }) => Promise<"ALLOWED" | "PARKED" | "CLOSED">>(async () => "PARKED");
     const markDispatching = vi.fn(async () => true);
     const handler = createDispatcherHandler({
       markDispatching, markDelivered: async () => undefined, markFailed: async () => undefined,
@@ -2115,6 +2115,54 @@ describe("the dispatcher with ec2-ebs records", () => {
     expect(guardTaskDispatch).toHaveBeenCalledTimes(1);
     expect(typeof guardTaskDispatch.mock.calls[0]?.[1]?.remainingTimeMs).toBe("function");
     expect(markDispatching).not.toHaveBeenCalled();
+  });
+
+  it("acknowledges a dispatch for a closed task as done: marked delivered, one info line, no operation mark, no machine, no retry", async () => {
+    const record = recordFor();
+    const markDispatching = vi.fn(async () => true);
+    const markDelivered = vi.fn(async () => undefined);
+    const markFailed = vi.fn(async () => undefined);
+    const deliverEc2 = vi.fn(async () => "DELIVERED" as const);
+    const log = vi.fn();
+    const handler = createDispatcherHandler({
+      markDispatching, markDelivered, markFailed, deliverEc2, log,
+      guardTaskDispatch: async () => "CLOSED",
+      maxAttempts: 5,
+    });
+
+    await expect(handler({ Records: [{ messageId: "closed", body: JSON.stringify(record), attributes: { ApproximateReceiveCount: "1" } }] }))
+      .resolves.toEqual({ batchItemFailures: [] });
+    expect(markDispatching).not.toHaveBeenCalled();
+    expect(deliverEc2).not.toHaveBeenCalled();
+    expect(markFailed).not.toHaveBeenCalled();
+    expect(markDelivered).toHaveBeenCalledExactlyOnceWith(record.id);
+    expect(log).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ level: "info", event: "dispatch.closed_task_acked", operationId: record.operationId, outboxId: record.id }));
+    expect((log.mock.calls[0]![0] as { reason?: string }).reason).toMatch(/closed/);
+  });
+
+  it("acknowledges a dispatch whose task closed while compute was starting, the same way", async () => {
+    const record = recordFor();
+    const markDelivered = vi.fn(async () => undefined);
+    const markFailed = vi.fn(async () => undefined);
+    const log = vi.fn();
+    const handler = createDispatcherHandler({
+      markDispatching: async () => true, markDelivered, markFailed, deliverEc2: async () => "TASK_CLOSED", log, maxAttempts: 5,
+    });
+
+    await expect(handler({ Records: [{ messageId: "closed-late", body: JSON.stringify(record) }] })).resolves.toEqual({ batchItemFailures: [] });
+    expect(markFailed).not.toHaveBeenCalled();
+    expect(markDelivered).toHaveBeenCalledExactlyOnceWith(record.id);
+    expect(log).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ level: "info", event: "dispatch.closed_task_acked", operationId: record.operationId }));
+  });
+
+  it("sends nothing to the worker when the guard says the task closed after compute was ready", async () => {
+    const signInvocation = vi.fn(kmsSign);
+    const { deliver, post } = delivery({ sign: signInvocation, guardTaskDispatch: async () => "CLOSED" });
+    const record = recordFor();
+
+    await expect(deliver(record, record.invocation)).resolves.toBe("TASK_CLOSED");
+    expect(signInvocation).not.toHaveBeenCalled();
+    expect(post).not.toHaveBeenCalled();
   });
 
   it("acknowledges a parked record without marking it delivered or using a retry", async () => {

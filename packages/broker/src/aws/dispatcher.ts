@@ -240,8 +240,8 @@ export function createProjectSetupBindingReader(input: { documentClient: DynamoD
 }
 
 export interface DispatchLogEntry {
-  level: "warn" | "error";
-  event: "dispatch.attempt_failed" | "dispatch.terminal_transition_failed" | "dispatch.live_steer_unconfigured";
+  level: "info" | "warn" | "error";
+  event: "dispatch.closed_task_acked" | "dispatch.attempt_failed" | "dispatch.terminal_transition_failed" | "dispatch.live_steer_unconfigured";
   operationId?: string;
   workspaceId?: string;
   outboxId?: string;
@@ -249,7 +249,9 @@ export interface DispatchLogEntry {
   attempt: number;
   maxAttempts: number;
   terminal: boolean;
-  errorName: string;
+  /** `dispatch.closed_task_acked` only: why the message was acknowledged without delivery. */
+  reason?: string;
+  errorName?: string;
   errorCode?: string;
   httpStatusCode?: number;
   errorMessage?: string;
@@ -257,7 +259,7 @@ export interface DispatchLogEntry {
 
 export function createDispatcherHandler(dependencies: {
   /** Strongly checks and durably parks PEOPLE-backed work before any dispatch state or worker side effect. */
-  guardTaskDispatch?: (record: DurableOutboxRecord, context?: { remainingTimeMs: () => number }) => Promise<"ALLOWED" | "PARKED">;
+  guardTaskDispatch?: (record: DurableOutboxRecord, context?: { remainingTimeMs: () => number }) => Promise<"ALLOWED" | "PARKED" | "CLOSED">;
   /** Setup work is authorized from its own stored proposal/execution namespace, never a feature task. */
   guardProjectSetupDispatch?: (record: DurableOutboxRecord, context?: { remainingTimeMs: () => number }) => Promise<"ALLOWED" | "PARKED">;
   projectSetupLifecycle?: ProjectSetupDispatchLifecycle;
@@ -286,6 +288,14 @@ export function createDispatcherHandler(dependencies: {
   queueArn?: string;
   log?: (entry: DispatchLogEntry) => void;
 }) {
+  /** A dispatch for a task that closed meanwhile is done, not a failure: the outbox item is marked delivered (it drops stored lessons), one info line says why, and the message is acknowledged. */
+  const acknowledgeClosedTask = async (record: DurableOutboxRecord, messageId: string, attempt: number, maxAttempts: number, reason: string): Promise<void> => {
+    await dependencies.markDelivered(record.id);
+    logDispatchFailure(dependencies.log, {
+      level: "info", event: "dispatch.closed_task_acked", operationId: record.operationId, workspaceId: record.workspaceId, outboxId: record.id,
+      messageId, attempt, maxAttempts, terminal: false, reason,
+    });
+  };
   const handleBatch = async (event: SqsEvent, context?: DispatcherLambdaContext): Promise<{ batchItemFailures: Array<{ itemIdentifier: string }> }> => {
     if (dependencies.queueArn !== undefined) {
       const queueArn = dependencies.queueArn;
@@ -323,7 +333,14 @@ export function createDispatcherHandler(dependencies: {
           if (dependencies.guardProjectSetupDispatch === undefined) throw agentXError("RUNTIME_UNAVAILABLE", "project setup smoke authority is not configured");
           if (dependencies.projectSetupLifecycle === undefined) throw agentXError("RUNTIME_UNAVAILABLE", "project setup operation storage is not configured");
           if (await dependencies.guardProjectSetupDispatch(record, { remainingTimeMs }) === "PARKED") continue;
-        } else if (await dependencies.guardTaskDispatch?.(record, { remainingTimeMs }) === "PARKED") continue;
+        } else {
+          const guarded = await dependencies.guardTaskDispatch?.(record, { remainingTimeMs });
+          if (guarded === "PARKED") continue;
+          if (guarded === "CLOSED") {
+            await acknowledgeClosedTask(record, message.messageId, attempt, maxAttempts, "the task or its operation is closed");
+            continue;
+          }
+        }
         const setup = invocation.kind === "project-setup-smoke" ? dependencies.projectSetupLifecycle : undefined;
         const shouldInvoke = await (setup?.markDispatching(record) ?? dependencies.markDispatching(record));
         if (shouldInvoke === false) {
@@ -340,6 +357,10 @@ export function createDispatcherHandler(dependencies: {
               throw agentXError("RUNTIME_UNAVAILABLE", "an internal readiness dispatch is not authorized");
             }
             await dependencies.completeWorkflowE2EReadiness(record, delivery.readinessGeneration);
+            continue;
+          }
+          if (delivery === "TASK_CLOSED") {
+            await acknowledgeClosedTask(record, message.messageId, attempt, maxAttempts, "the task or its operation closed while compute was starting");
             continue;
           }
           if (delivery === "DELIVERED") {

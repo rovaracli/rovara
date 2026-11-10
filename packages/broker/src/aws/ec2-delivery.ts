@@ -69,7 +69,8 @@ const TOKEN_LIFETIME_SECONDS = 60;
 export const CREDENTIAL_KIND_FEATURE_MISSING = "This repository's code host needs a newer worker. Ask an admin to upgrade Rovara.";
 export const STARTING_COMPUTE_MESSAGE = "Starting workspace compute";
 
-export type Ec2Delivery = "DELIVERED" | "WAITING_FOR_SESSION" | "WAITING_FOR_TASK_ACCESS" | { readinessGeneration: number };
+/** `TASK_CLOSED`: the guard found the task (or its operation) definitively closed; nothing was sent, and the caller acknowledges the message as done. */
+export type Ec2Delivery = "DELIVERED" | "WAITING_FOR_SESSION" | "WAITING_FOR_TASK_ACCESS" | "TASK_CLOSED" | { readinessGeneration: number };
 
 export interface ProjectSetupSessionPort {
   ensureSession(input: { setupExecutionId: string; subjectId: string; approvalRevision: number; transportCorrelationId: string; binding: Ec2RuntimeBinding; waitingOutboxId: string }):
@@ -137,7 +138,7 @@ export interface Ec2DeliveryDependencies {
    */
   workflowE2EAdmissionNeedsModelFreeLimits?: (reference: E2EWorkflowAdmissionRef) => Promise<boolean | undefined>;
   /** Rechecks fresh PEOPLE authority after compute is ready, immediately before signing and POST. */
-  guardTaskDispatch?: (record: Ec2OutboxRecord, context?: { remainingTimeMs: () => number }) => Promise<"ALLOWED" | "PARKED">;
+  guardTaskDispatch?: (record: Ec2OutboxRecord, context?: { remainingTimeMs: () => number }) => Promise<"ALLOWED" | "PARKED" | "CLOSED">;
   /** Loads and validates the durable internal readiness marker before any session provisioning. */
   validateWorkflowE2EReadiness?: (record: Ec2OutboxRecord, invocation: WorkerInvocation) => Promise<"ORDINARY" | "READINESS" | "PARKED">;
   /** Rechecks stored project setup authority independently from feature-task access. */
@@ -179,8 +180,16 @@ export function createEc2Delivery(dependencies: Ec2DeliveryDependencies) {
       }
       return dependencies.guardTaskDispatch?.(record, remainingTimeMs === undefined ? undefined : { remainingTimeMs });
     };
+    // A guard that stops the delivery says why: parked (acknowledged, waits for access) or closed (acknowledged as done).
+    const stoppedByGuard = async (): Promise<"WAITING_FOR_TASK_ACCESS" | "TASK_CLOSED" | undefined> => {
+      const outcome = await guardCurrentAuthority();
+      return outcome === "PARKED" ? "WAITING_FOR_TASK_ACCESS" : outcome === "CLOSED" ? "TASK_CLOSED" : undefined;
+    };
     const workflowE2EReadiness = storedReadiness === "READINESS";
-    if (workflowE2EReadiness && await guardCurrentAuthority() === "PARKED") return "WAITING_FOR_TASK_ACCESS";
+    if (workflowE2EReadiness) {
+      const stopped = await stoppedByGuard();
+      if (stopped !== undefined) return stopped;
+    }
     if (invocation.kind === "project-setup-smoke" && await guardCurrentAuthority() === "PARKED") return "WAITING_FOR_TASK_ACCESS";
     const admissionSchemaVersion = await checkAdmissionKind(invocation, dependencies.workflowE2EAdmissionSchemaVersion);
     await checkAdmissionAgentSteps(invocation, dependencies.workflowE2EAdmissionUsesAgentSteps);
@@ -211,13 +220,17 @@ export function createEc2Delivery(dependencies: Ec2DeliveryDependencies) {
     // immutable feature-E2E deadline. A resume invocation is an internal readiness signal only;
     // it must never reach the worker.
     if (workflowE2EReadiness) {
-      if (await guardCurrentAuthority() === "PARKED") return "WAITING_FOR_TASK_ACCESS";
+      const stopped = await stoppedByGuard();
+      if (stopped !== undefined) return stopped;
       if (await dependencies.validateWorkflowE2EReadiness?.(record, invocation) !== "READINESS") {
         throw agentXError("CALLBACK_FORBIDDEN", "the stored E2E readiness operation changed while compute was starting");
       }
       return { readinessGeneration: session.generation };
     }
-    if (await guardCurrentAuthority() === "PARKED") return "WAITING_FOR_TASK_ACCESS";
+    {
+      const stopped = await stoppedByGuard();
+      if (stopped !== undefined) return stopped;
+    }
     const applicationAdmission = invocation.kind === "task" && invocation.payload.workflowE2EAdmission?.kind === "application" ? invocation.payload.workflowE2EAdmission : undefined;
     const modelChoice = applicationAdmission === undefined || dependencies.workflowE2EAdmissionNeedsModelChoice === undefined ? undefined
       : () => dependencies.workflowE2EAdmissionNeedsModelChoice!(applicationAdmission);
@@ -246,7 +259,10 @@ export function createEc2Delivery(dependencies: Ec2DeliveryDependencies) {
       }
       await dependencies.planQualityNotNegotiated(record);
     }
-    if (await guardCurrentAuthority() === "PARKED") return "WAITING_FOR_TASK_ACCESS";
+    {
+      const stopped = await stoppedByGuard();
+      if (stopped !== undefined) return stopped;
+    }
     // Saved project images: the lease token goes into what the worker is sent, not into what is stored.
     let outgoing: WorkerInvocation = sent;
     if (sent.kind === "prepare" && sent.payload.savedEnvBuild !== undefined) {
