@@ -109,6 +109,10 @@ export function autoFixAskReasonSentence(reason: AutoFixAskReason, capUsd?: numb
     case "unclear-fault": return "I could not tell whether the code or the setup is at fault.";
     case "owner-stopped": return "You stopped this, so I did not retry it by myself.";
     case "autonomy-suggest": return "Rovara is set to suggest, so it doesn't re-run the checks on the merged code by itself.";
+    case "autonomy-unreadable": return "Rovara couldn't read how far it may act on its own for this task, so it didn't re-run the checks on the merged code by itself.";
+    case "autonomy-no-company": return "This task has no company, so Rovara doesn't re-run the checks on the merged code by itself.";
+    case "head-moved": return "Someone pushed to this pull request after the base branch was merged into it, so I didn't re-run the checks on code it no longer holds.";
+    case "base-merged-limit": return "I already re-ran the checks after a base branch merge three times for this task today, which is my limit.";
     case "send-back-limit": return "I already sent this back to coding twice for this plan, which is my limit.";
     case "retry-limit": return "I already retried this once for this code, which is my limit.";
     case "total-limit": return "I reached my limit of 6 automatic actions on this task.";

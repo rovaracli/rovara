@@ -1,6 +1,6 @@
 import { GetCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
 import {
-  AgentXError, AUTO_FIX_DEFAULT_CAP_USD, WORKFLOW_AUTO_ACTION_LIMIT, autoFixAskCard, autoFixDecision, classifyBlockedWorkflow, wholeTaskSpendUsd, workflowAutoFixCounts, workflowAutoSpendRefusal,
+  AgentXError, AUTO_FIX_DEFAULT_CAP_USD, BASE_MERGED_NEEDS_YOU_MILESTONE, BASE_MERGED_RETRY_REASON, WORKFLOW_AUTO_ACTION_LIMIT, autoFixAskCard, autoFixDecision, classifyBlockedWorkflow, wholeTaskSpendUsd, workflowAutoFixCounts, workflowAutoSpendRefusal,
   type AutoFixAskReason, type AutoFixBlockCause, type AutoFixCode, type AutoFixDecision, type AutoFixFacts, type E2EScenarioResults, type GroupOriginalResult, type OriginalCodeResult, type WorkflowAutoSpend,
 } from "@agentx/contracts";
 import { AUTOFIX_ASK_GROUPS_MAX, AutoFixAskSchema, autoFixRetryReason, autoFixSendBackReason, type AutoFixAsk } from "../developer/autofix-messages.js";
@@ -27,7 +27,15 @@ export interface AutofixConfig {
   capUsd: number;
   /** What one more automatic round is expected to cost, in US dollars (planning excluded: a send back is one coding run, checks and reviews). */
   roundEstimateUsd: number;
+  /**
+   * Decision 70(c): how many re-runs after a merge of the base one company may start in ten minutes (default 5; `AUTOFIX_BASE_MERGED_PER_10_MIN`, an installation setting: the guardrails document is strict and
+   * reader-first, so a field there would break an older reader). Money backstops, in order: the per-task cap read before each start, and the model-budget reservation (fix/0513-model-budget-reserve); this only spreads the starts.
+   */
+  baseMergedPerTenMinutes?: number | undefined;
 }
+
+/** The default company allowance of re-runs after a merge of the base per ten minutes. */
+export const BASE_MERGED_PER_TEN_MINUTES_DEFAULT = 5;
 
 /** One more automatic round: a coding run, the checks and two reviews. A deliberately high figure; the cap is checked against spend plus this. */
 export const AUTOFIX_ROUND_ESTIMATE_USD = 3;
@@ -45,6 +53,7 @@ export function autofixConfigFromEnvironment(env: Readonly<Record<string, string
     // A cap that is not a number is no cap at all: the policy then asks (inputs-missing) instead of acting.
     capUsd: Number.isFinite(cap) && cap >= 0 ? cap : Number.NaN,
     roundEstimateUsd: AUTOFIX_ROUND_ESTIMATE_USD,
+    baseMergedPerTenMinutes: Number.isInteger(Number(env.AUTOFIX_BASE_MERGED_PER_10_MIN)) && Number(env.AUTOFIX_BASE_MERGED_PER_10_MIN) > 0 ? Number(env.AUTOFIX_BASE_MERGED_PER_10_MIN) : BASE_MERGED_PER_TEN_MINUTES_DEFAULT,
   };
 }
 
@@ -64,10 +73,19 @@ export interface AutofixDependencies {
   /** Whether the owner stopped the task's latest checks. */
   ownerCancelledChecks(task: DeveloperTaskRecord): Promise<boolean>;
   /**
-   * Decision 70(c): the task's autonomy now, read again where a merged base's checks would be re-run by themselves (`suggest` asks the owner; `prepare` and above retry). Absent or unreadable reads as `suggest`
-   * (the retry is not started).
+   * Decision 70(c): the task's autonomy now, read again where a merged base's checks would be re-run by themselves (`suggest` asks the owner; `prepare` and above retry). Absent reads as `suggest`
+   * (the retry is not started); `unreadable` and `noCompany` say why a `suggest` is not the owner's setting, so the ask is true.
    */
-  autonomy?(task: DeveloperTaskRecord): Promise<"suggest" | "prepare" | "run" | undefined>;
+  autonomy?(task: DeveloperTaskRecord): Promise<{ autonomy: "suggest" | "prepare" | "run"; unreadable?: true; noCompany?: true }>;
+  /** Decision 70(c): whether the pull request still holds the merged candidate's head (false: a person pushed since the merge). Undefined (not wired) never stops the re-run; a failed read throws and the row is looked at again. */
+  pullRequestHeadMoved?(task: DeveloperTaskRecord): Promise<boolean>;
+  /**
+   * Decision 70(c), the fleet guard: claims one of the company's re-runs after a merge of the base for this ten minutes. `false`: the company's allowance for the window is used, the row waits (with jitter) instead
+   * of starting together with the others. The per-task cap (the spend read before each start) and the model-budget reservation (fix/0513-model-budget-reserve) are the money backstops; this bounds how many start at once.
+   */
+  claimBaseMergedStart?(task: DeveloperTaskRecord): Promise<boolean>;
+  /** Decision 70(c): the milestone line "needs you", written when Rovara asks instead of re-running a merged base's checks (best effort). */
+  needsYou?(task: DeveloperTaskRecord, text: string): Promise<void>;
   /** The text at an object key (a plan's stored self-check record), or undefined. */
   readArtifactText(objectKey: string): Promise<string | undefined>;
   /** Setup and test health (SH28, only while `nh` is on): told when Rovara gives up on a task and the faults are the environment's, so the project's count of tasks blocked by the environment goes up. Advisory: a failure is logged and changes nothing. */
@@ -85,7 +103,8 @@ export interface AutofixDependencies {
   log(entry: Record<string, unknown>): void;
 }
 
-export type AutofixOutcome = "DISABLED" | "STALE" | "NONE" | "SENT_BACK" | "RETRIED" | "DUPLICATE" | "WAITING" | "ASKED";
+/** `DEFERRED`: the company's allowance of re-runs after a merge of the base is used for now; the row waits (with jitter) and is looked at again. */
+export type AutofixOutcome = "DISABLED" | "STALE" | "NONE" | "SENT_BACK" | "RETRIED" | "DUPLICATE" | "WAITING" | "ASKED" | "DEFERRED";
 
 /** The original-code result of an UNKNOWN row of the current round, from the baseline record of the approved plan. */
 async function unknownGroupResults(deps: AutofixDependencies, task: DeveloperTaskRecord): Promise<{ groups: Record<string, GroupOriginalResult>; baselineRequests: number; recordState: string | undefined }> {
@@ -146,14 +165,14 @@ export async function recordAutofixGiveUpAsk(store: WorkflowE2EBaselineStore, ta
 }
 
 /** The original-code round is not in yet: look again in a minute (the row moves out of the head of the due index, so waiting rows never crowd out other recovery). */
-export async function postponeAutofixRow(store: WorkflowE2EBaselineStore, row: { pk: string; sk: string; attempts?: number | undefined }, nowMs: number): Promise<void> {
-  const next = new Date(nowMs + 60_000).toISOString();
+export async function postponeAutofixRow(store: WorkflowE2EBaselineStore, row: { pk: string; sk: string; attempts?: number | undefined }, nowMs: number, options: { delayMs?: number; countAttempt?: boolean } = {}): Promise<void> {
+  const next = new Date(nowMs + (options.delayMs ?? 60_000)).toISOString();
   try {
     await store.documentClient.send(new UpdateCommand({
       TableName: store.tableName, Key: { pk: row.pk, sk: row.sk },
       UpdateExpression: "SET attempts = :attempts, nextAttemptAt = :next, dispatchDueSk = :due",
       ConditionExpression: "attribute_exists(pk)",
-      ExpressionAttributeValues: { ":attempts": (row.attempts ?? 0) + 1, ":next": next, ":due": `${next}#${row.sk}` },
+      ExpressionAttributeValues: { ":attempts": (row.attempts ?? 0) + (options.countAttempt === false ? 0 : 1), ":next": next, ":due": `${next}#${row.sk}` },
     }));
   } catch (error) { if (!isConditional(error)) throw error; }
 }
@@ -208,7 +227,7 @@ export async function runWorkflowAutofix(deps: AutofixDependencies, task: Develo
 
   const [spent, room] = await Promise.all([deps.taskSpendUsd(task), deps.dayBudgetHasRoom(task)]);
   const spend: WorkflowAutoSpend = { spentUsd: wholeTaskSpendUsd(spent ?? Number.NaN), roundEstimateUsd: config.roundEstimateUsd, capUsd: config.capUsd };
-  const first = autoFixDecision(workflow, facts, { enabled: true, spend, dayBudgetHasRoom: room as boolean, baselineRequests });
+  const first = autoFixDecision(workflow, facts, { enabled: true, spend, dayBudgetHasRoom: room as boolean, baselineRequests, nowMs: deps.now() });
   // The wait for the original-code round is bounded: after it, the owner is asked. The original-code round is requested once, when the plan is approved, and started with the first checks;
   // asking for it now cannot start it, so an unclear fault with no such round is the owner's to settle.
   const decision: AutoFixDecision = first.action === "WAIT_FOR_BASELINE" && deps.now() - Date.parse(input.startedAt) > AUTOFIX_BASELINE_WAIT_MS ? { action: "ASK", reason: "unclear-fault", codes: first.codes }
@@ -225,6 +244,8 @@ export async function runWorkflowAutofix(deps: AutofixDependencies, task: Develo
     });
     if (deps.blockedByEnvironment !== undefined) await deps.blockedByEnvironment(task, askCodes).catch((error: unknown) => deps.log({ event: "autofix.health_note_failed", taskId: task.taskId, error: error instanceof Error ? error.name : "unknown" }));
     log("ASK", { reason, codes: [...askCodes] });
+    // Decision 70(c): a merged base's checks Rovara does not re-run by itself wait for the owner: the milestone feed says so (it said "re-checking" when the row was written, never "needs you" while Rovara acts).
+    if (written && cause === "base-merged") await deps.needsYou?.(task, BASE_MERGED_NEEDS_YOU_MILESTONE).catch((error: unknown) => deps.log({ event: "autofix.needs_you_failed", taskId: task.taskId, error: error instanceof Error ? error.name : "unknown" }));
     // Setup and test health (SH17): an ask about the test environment is also the project's Fix setup card (only while `vx` is on: `fixSetup` is absent otherwise). Never changes the outcome.
     if (written && deps.fixSetup !== undefined && autoFixAskCard({ reason, codes: askCodes }, stage) === "fix_setup") {
       try { await deps.fixSetup.record(task, { reason, codes: askCodes, stage }); }
@@ -236,7 +257,7 @@ export async function runWorkflowAutofix(deps: AutofixDependencies, task: Develo
     const fresh = await deps.store.documentClient.send(new GetCommand({ TableName: deps.store.tableName, Key: taskKey(task.taskId), ConsistentRead: true })) as unknown as { Item?: DeveloperTaskRecord };
     return fresh.Item?.workflow?.revision === workflow.revision && fresh.Item.workflow.state === "BLOCKED" && fresh.Item.closedAt === undefined;
   };
-  const moved = async (error: unknown): Promise<AutofixOutcome> => {
+  const moved = async (error: unknown, askCodes: readonly AutoFixCode[] = []): Promise<AutofixOutcome> => {
     // The owner pressed first (the revision moved): theirs stands and nothing else is done. An archive refusal ends this dispatch; other failures are the caller's to retry.
     if (!await blockedHere()) {
       log("RACE_LOST");
@@ -247,13 +268,20 @@ export async function runWorkflowAutofix(deps: AutofixDependencies, task: Develo
       log("NONE", { reason: "PROJECT_ARCHIVED" });
       return "NONE";
     }
+    // A refusal the same call would repeat (CONFIG_INVALID: no check selected to run, a setting that does not hold) is not an infrastructure failure to retry every minute: the owner is asked at once.
+    if (error instanceof AgentXError && error.code === "CONFIG_INVALID") return guardRefused(askCodes);
     throw error;
   };
   /** A guard in the system move refused although the policy allowed it (the limits or the money read differently): nobody else will look, so the owner is asked. It is not "spend unreadable" (`inputs-missing`): the spend was read. */
   const guardRefused = async (askCodes: readonly AutoFixCode[]): Promise<AutofixOutcome> => ((await blockedHere()) ? ask("needs-a-person", askCodes) : "STALE");
 
-  // Decision 70(c): a merged base's checks are re-run by Rovara itself only where it may act: the autonomy is read again here, and `suggest` (or unreadable) asks the owner instead.
-  if (cause === "base-merged" && (await deps.autonomy?.(task).catch(() => undefined) ?? "suggest") === "suggest") return ask("autonomy-suggest", ["base-merged"]);
+  // Decision 70(c): a merged base's checks are re-run by Rovara itself only where it may act: the autonomy is read again here, and `suggest` (or a setting that cannot be read, or no company) asks the owner
+  // instead, with the sentence that is true. A person who pushed since the merge ends the re-run too: the checks would be of code the pull request no longer holds.
+  if (cause === "base-merged") {
+    const autonomy: Awaited<ReturnType<NonNullable<AutofixDependencies["autonomy"]>>> = await deps.autonomy?.(task).catch(() => ({ autonomy: "suggest" as const, unreadable: true as const })) ?? { autonomy: "suggest" as const };
+    if (autonomy.autonomy === "suggest") return ask(autonomy.noCompany === true ? "autonomy-no-company" : autonomy.unreadable === true ? "autonomy-unreadable" : "autonomy-suggest", ["base-merged"]);
+    if (await deps.pullRequestHeadMoved?.(task) === true) return ask("head-moved", ["base-merged"]);
+  }
 
   // The original-code result decides send back or ask (owner rule). A round that was requested at approval but never started can still run: the first CHECKS dispatch after a retry runs it
   // before the candidate's checks. So when its code is exported, the one automatic Retry checks (counted as this stage's retry) is used, and the next block is decided with the result.
@@ -284,11 +312,13 @@ export async function runWorkflowAutofix(deps: AutofixDependencies, task: Develo
     }
     case "RETRY": {
       if (decision.codes.includes("runtime-environment-drifted")) await deps.recycleWorker?.(task);
-      const input2 = { expectedRevision: workflow.revision, spend, reason: autoFixRetryReason(decision.stage, decision.codes) };
+      // A re-run after a merge of the base starts only inside the company's allowance for these ten minutes; the rest wait (with jitter) instead of starting together.
+      if (cause === "base-merged" && deps.claimBaseMergedStart !== undefined && !await deps.claimBaseMergedStart(task)) { log("DEFERRED", { reason: "company-allowance" }); return "DEFERRED"; }
+      const input2 = { expectedRevision: workflow.revision, spend, reason: cause === "base-merged" ? BASE_MERGED_RETRY_REASON : autoFixRetryReason(decision.stage, decision.codes) };
       let outcome: Awaited<ReturnType<typeof autoRetryChecksFromSystem>>;
       try {
         outcome = decision.stage === "VERIFY" ? await autoRetryChecksFromSystem(deps.route, task.taskId, input2) : await autoRetryReviewsFromSystem(deps.route, task.taskId, input2);
-      } catch (error) { return moved(error); }
+      } catch (error) { return moved(error, decision.codes); }
       log("RETRY", { result: outcome, retryStage: decision.stage, codes: decision.codes });
       return outcome === "STARTED" ? "RETRIED" : outcome === "DUPLICATE" ? "DUPLICATE" : guardRefused(decision.codes);
     }

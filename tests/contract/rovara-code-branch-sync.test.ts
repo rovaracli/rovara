@@ -6,7 +6,7 @@ import {
   BRANCH_SYNC_UNSURE_MESSAGE, SYNC_BACKOFF_MINUTES, SYNC_FAILURES_MAX, branchSyncGiveUpMessage, isBranchSyncGiveUpReason,
   branchConflictAskMessage, isBranchConflictAskReason, retryWorkflowBranchSync,
   BRANCH_SYNCS_PER_DAY_MAX, BRANCH_WORKFLOW_FILES_MESSAGE, CONFLICT_ROUNDS_MAX, WorkflowSnapshotSchema, WorkflowTransitionError, blockWorkflowBranchSync, branchConflictStopMessage, createCandidateManifest,
-  createWorkflowSnapshot, endWorkflowBranchSync, autoFixDecision, wholeTaskSpendUsd, WORKFLOW_BLOCK_REASONS, WORKFLOW_AGENTX_ACTOR_ID, WORKFLOW_AUTO_ACTION_LIMIT, workflowAutoActionRequestId, holdWorkflowCandidateOnPullRequests, WORKFLOW_AUTO_PUBLISH_FAILED_MESSAGE, isBranchSyncBlockReason, observeWorkflowPullRequest, recordWorkflowBranchSync, recordWorkflowPullRequestUpdate, recordWorkflowSyncConflict,
+  createWorkflowSnapshot, endWorkflowBranchSync, autoFixDecision, wholeTaskSpendUsd, WORKFLOW_BLOCK_REASONS, BASE_MERGED_RETRY_REASON, BASE_MERGED_RETRIES_PER_DAY, baseMergedRetriesToday, WORKFLOW_AGENTX_ACTOR_ID, WORKFLOW_AUTO_ACTION_LIMIT, workflowAutoActionRequestId, holdWorkflowCandidateOnPullRequests, WORKFLOW_AUTO_PUBLISH_FAILED_MESSAGE, isBranchSyncBlockReason, observeWorkflowPullRequest, recordWorkflowBranchSync, recordWorkflowPullRequestUpdate, recordWorkflowSyncConflict,
   recordWorkflowVerification, startWorkflowBranchSync, startWorkflowBranchSyncRun, startWorkflowFix, workflowFollowsOnlyMerge, type WorkflowProgram, type WorkflowSnapshot,
 } from "@agentx/contracts";
 import { mergeTrackingKey } from "../../packages/contracts/src/org-scoped-keys.js";
@@ -16,7 +16,8 @@ import {
   branchSyncRequestId, bumpSyncs, classifySyncFailure, conflictDecider, decideBranchSync, decideConflict, installBranchSyncDeciders, isWorkflowFilesRefusal, planBranchSyncOutcome, syncDecider, syncsToday,
   uninstallBranchSyncDeciders, utcDay,
 } from "../../packages/broker/src/rovara-code/branch-sync.js";
-import { candidateIsOnPullRequest } from "../../packages/broker/src/aws/broker/workflow-items.js";
+import { baseMergedRechecksItself, candidateIsOnPullRequest } from "../../packages/broker/src/aws/broker/workflow-items.js";
+import { autofixBlockRows } from "../../packages/broker/src/aws/workflow-autofix-dispatch-exhaust.js";
 import { workflowMessage } from "../../packages/broker/src/developer/workflow-messages.js";
 import { taskViewForClient } from "../../packages/broker/src/rovara-code/task-view-compat.js";
 import { blockWorkflowPullRequestUpdate } from "@agentx/contracts";
@@ -641,14 +642,60 @@ describe("the checks re-run by themselves after a merge of the base (decision 70
     expect(autoFixDecision(recheck(), cause, budget({ dayBudgetHasRoom: false }))).toMatchObject({ action: "ASK", reason: "day-budget" });
   });
 
-  it("allows one automatic retry per candidate, and counts every one in the automatic action limit, so a base that keeps moving cannot loop sync and recheck", () => {
+  it("allows one automatic retry per candidate (a base that keeps moving is bounded by the re-run's daily allowance below)", () => {
     const digest = candidate.digest;
     // The retry was already used for this code: the second asks.
     expect(autoFixDecision(recheck([retryFor(digest, 0)]), cause, budget())).toMatchObject({ action: "ASK", reason: "retry-limit" });
     // Another candidate (the base moved again) has its own retry, until the task's automatic actions run out.
     const others = Array.from({ length: WORKFLOW_AUTO_ACTION_LIMIT - 1 }, (_, n) => retryFor(`${String(n + 1).repeat(64)}`.slice(0, 64), n));
     expect(autoFixDecision(recheck(others), cause, budget())).toEqual({ action: "RETRY", stage: "VERIFY", codes: ["base-merged"] });
-    expect(autoFixDecision(recheck([...others, retryFor("a".repeat(64), 50)]), cause, budget())).toMatchObject({ action: "ASK", reason: "total-limit" });
+    // The task's lifetime automatic actions (its send backs and ordinary retries) are not the re-run's: with them used up a merged base still has its own daily allowance, while any other transient block asks.
+    const lifetime = [...others, retryFor("a".repeat(64), 50)];
+    expect(autoFixDecision(recheck(lifetime), cause, budget())).toEqual({ action: "RETRY", stage: "VERIFY", codes: ["base-merged"] });
+    expect(autoFixDecision({ ...recheck(lifetime), pullRequests: [] }, { blockCause: "run-lost" }, budget())).toMatchObject({ action: "ASK", reason: "total-limit" });
+  });
+});
+
+describe("the re-run's own allowance and its row writer (decision 70(c))", () => {
+  const { verification: _v, reviews: _r, ...base } = waiting();
+  void _v; void _r;
+  const recheck = (decisions: unknown[] = []) => WorkflowSnapshotSchema.parse({ ...base, stage: "VERIFY", state: "BLOCKED", blockReason: WORKFLOW_BLOCK_REASONS.baseMergedRecheck, decisions });
+  const merged = (n: number, hoursAgo: number, digest = candidate.digest) => ({ requestId: workflowAutoActionRequestId(TASK_ID, 200 + n, "AUTO_RETRY"), workflowRevision: 200 + n, decision: "REQUEST_CHANGES", actorId: WORKFLOW_AGENTX_ACTOR_ID,
+    actorRole: "AGENTX", reason: BASE_MERGED_RETRY_REASON, source: "AUTO_RETRY", auto: { stage: "VERIFY", candidateDigest: digest }, at: new Date(Date.parse(at) - hoursAgo * 3_600_000).toISOString() });
+  const budget = (): Parameters<typeof autoFixDecision>[2] => ({ enabled: true, spend: { spentUsd: wholeTaskSpendUsd(1), roundEstimateUsd: 3, capUsd: 15 }, dayBudgetHasRoom: true, baselineRequests: 0, nowMs: Date.parse(at) });
+  const cause = { blockCause: "base-merged" as const };
+
+  it("gives a task three re-runs a day, of its own: they do not use the task's lifetime automatic actions, and a day later the allowance is back", () => {
+    const three = [0, 1, 2].map((n) => merged(n, n + 1, `${String(n + 1).repeat(64)}`.slice(0, 64)));
+    expect(baseMergedRetriesToday(recheck(three).decisions, Date.parse(at))).toBe(BASE_MERGED_RETRIES_PER_DAY);
+    // The third is the last: the fourth in the same day asks, with its own reason (not "total-limit").
+    expect(autoFixDecision(recheck(three), cause, budget())).toMatchObject({ action: "ASK", reason: "base-merged-limit" });
+    expect(autoFixDecision(recheck(three.slice(0, 2)), cause, budget())).toEqual({ action: "RETRY", stage: "VERIFY", codes: ["base-merged"] });
+    // Re-runs older than a day are not counted.
+    const old = [0, 1, 2].map((n) => merged(n, 25 + n, `${String(n + 1).repeat(64)}`.slice(0, 64)));
+    expect(autoFixDecision(recheck(old), cause, budget())).toEqual({ action: "RETRY", stage: "VERIFY", codes: ["base-merged"] });
+    // Many re-runs over many days never use the task's six lifetime actions: the lifetime limit does not ask here.
+    const many = Array.from({ length: 10 }, (_, n) => merged(n, 25 + n, `${String(n % 9 + 1).repeat(64)}`.slice(0, 64)));
+    expect(autoFixDecision(recheck(many), cause, budget())).toEqual({ action: "RETRY", stage: "VERIFY", codes: ["base-merged"] });
+  });
+
+  it("writes the AUTOFIX row only where Rovara re-runs by itself: automatic fixing on and no E2E (a clean conflict merge on an E2E task stays the owner's)", () => {
+    const e2e = { e2e: { required: true } } as never;
+    expect(baseMergedRechecksItself({ autofix: { enabled: true, capUsd: 15, roundEstimateUsd: 3 } }, {})).toBe(true);
+    expect(baseMergedRechecksItself({ autofix: { enabled: true, capUsd: 15, roundEstimateUsd: 3 } }, e2e)).toBe(false);
+    expect(baseMergedRechecksItself({ autofix: { enabled: false, capUsd: 15, roundEstimateUsd: 3 } }, {})).toBe(false);
+    expect(baseMergedRechecksItself({}, {})).toBe(false);
+  });
+
+  it("the row carries the cause, is due at once, and is written while a pull request is open (the one exception)", () => {
+    const rows = autofixBlockRows("state", recheck(), "base-merged", at);
+    expect(rows).toHaveLength(1);
+    const item = (rows[0] as { Put: { Item: Record<string, unknown> } }).Put.Item;
+    expect(item).toMatchObject({ kind: "AUTOFIX", autofixCause: "base-merged", workflowRevision: recheck().revision });
+    expect(item.autofixNotBefore).toBeUndefined();
+    // Any other cause, or none, writes nothing for a task with an open pull request.
+    expect(autofixBlockRows("state", recheck(), undefined, at)).toEqual([]);
+    expect(autofixBlockRows("state", recheck(), "run-lost", at)).toEqual([]);
   });
 });
 

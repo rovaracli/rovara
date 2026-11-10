@@ -355,7 +355,7 @@ export async function createWorkflowE2E(options: {
    */
   agentSessions?: boolean;
   /** Decision 70(c): automatic fixing of blocked checks and reviews (the broker's `autofix` setting). Absent: off, as in the deployed broker's harnesses. */
-  autofix?: { enabled: boolean; capUsd: number; roundEstimateUsd: number };
+  autofix?: { enabled: boolean; capUsd: number; roundEstimateUsd: number; baseMergedPerTenMinutes?: number };
   trackingGithub?: Partial<Pick<GitHubAppCredentialProvider, "getPullRequestStatus" | "getRepositoryPermission" | "getRepositoryStanding" | "markPullRequestReady" | "requestReviewers" | "getJobLogTail">>;
 } = {}) {
   const github = new FakeGitHub(options.github?.realism === undefined ? {} : { realism: options.github.realism });
@@ -1335,7 +1335,7 @@ export async function createWorkflowE2E(options: {
       }
     },
     db, s3, handler, slack, github, mergeObservationRequests, repoDirectory, baseCommit, baseTree: github.commits.get(baseCommit)!, prompts, turns, chatQueue, taskQuestions, taskQuestionRoutes, taskAnswerTurns, checkRuns, agentCheckRuns, invocations, brokerCalls, brokerEvents, credentialAttempts, routeCalls, routeLogs, dispatchReceipts, slackActionTimestamps,
-    ledger, reviewedTrees, briefLimit, pushedWorkflows, reviewUrlBase: REVIEW_URL_BASE, canvasesDeleted,
+    ledger, reviewedTrees, briefLimit, pushedWorkflows, reviewUrlBase: REVIEW_URL_BASE, canvasesDeleted, autofix: options.autofix?.enabled === true,
     /** The broker's EC2 session deleter: each call removes one workspace's compute. */
     deleteEc2Session,
     /** The table's stream as the notifier reads it (`duplicateNext()` delivers the next record twice). */

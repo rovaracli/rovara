@@ -4,7 +4,7 @@ import {
   E2E_APPLICATION_SEND_BACK_CODES, WORKFLOW_APPLICATION_ACCOUNTS_CHANGED_PREFIX, WORKFLOW_APPLICATION_EVIDENCE_INCOMPLETE_PREFIX, WORKFLOW_APPLICATION_PLAN_NOT_APPROVABLE_PREFIX,
   WORKFLOW_APPLICATION_ROUND_REFUSED_PREFIX, WORKFLOW_APPLICATION_RUNTIME_RENEWED_PREFIX, WORKFLOW_APPLICATION_RUNTIME_UNUSABLE_PREFIX, WORKFLOW_APPLICATION_SELECTION_CHANGED_PREFIX, WORKFLOW_AUTO_ACTION_LIMIT,
   WORKFLOW_AUTO_REVIEW_FAILED_MESSAGE, WORKFLOW_AUTO_RETRY_LIMIT, WORKFLOW_AUTO_SEND_BACK_LIMIT, WORKFLOW_BLOCK_REASONS, WORKFLOW_HISTORY_REWRITTEN_MESSAGE,
-  WORKFLOW_REVIEW_RESULT_INCOMPLETE_MESSAGE, blockingFindings, workflowApplicationEvidenceCodes, workflowAutoFixCounts, workflowAutoSpendRefusal, workflowCheckResultBroken,
+  WORKFLOW_REVIEW_RESULT_INCOMPLETE_MESSAGE, BASE_MERGED_RETRIES_PER_DAY, baseMergedRetriesToday, blockingFindings, workflowApplicationEvidenceCodes, workflowAutoFixCounts, workflowAutoSpendRefusal, workflowCheckResultBroken,
   type WorkflowAutoSpend, type WorkflowSnapshot,
 } from "./task-workflow-node.js";
 
@@ -61,8 +61,8 @@ export const AUTO_FIX_PERSON_GROUP_CODES = ["runtime-expired", "model-environmen
 /** Why Rovara asks instead of acting. The limit reasons name the limit the ask card tells the person about. */
 export const AUTO_FIX_ASK_REASONS = [
   "needs-a-person", "original-code-also-fails", "unclear-fault", "owner-stopped",
-  // Decision 70(c): Rovara is set to suggest, so it does not re-run the checks on a merged base by itself.
-  "autonomy-suggest",
+  // Decision 70(c), a merged base's re-run: Rovara is set to suggest; the setting could not be read; the task has no company; someone pushed after the merge; the day's allowance is used.
+  "autonomy-suggest", "autonomy-unreadable", "autonomy-no-company", "head-moved", "base-merged-limit",
   "send-back-limit", "retry-limit", "total-limit", "spend-cap", "day-budget", "history-full", "inputs-missing",
 ] as const;
 export type AutoFixAskReason = (typeof AUTO_FIX_ASK_REASONS)[number];
@@ -129,6 +129,8 @@ export interface AutoFixBudget {
   dayBudgetHasRoom: boolean;
   /** How many original-code (baseline) rounds were already requested for the approved plan. At most one is. */
   baselineRequests: number;
+  /** The time now, in ms: the re-runs after a merge of the base are counted per day. Absent: the clock. */
+  nowMs?: number;
 }
 
 /** The default per-task cap for automatic fixing, in US dollars (owner decision 6). */
@@ -345,11 +347,15 @@ export function autoFixDecision(workflow: WorkflowSnapshot, facts: AutoFixFacts,
   if (inputsMissing(budget)) return ask("inputs-missing");
 
   const counts = workflowAutoFixCounts(workflow.decisions);
+  const baseMerged = facts.blockCause === "base-merged";
   const limitRefusal = (kind: "send-back" | "retry"): AutoFixAskReason | undefined => {
     if (workflow.decisions.length >= 100) return "history-full";
     if (kind === "send-back" && counts.sendBacksSincePlanApproval >= WORKFLOW_AUTO_SEND_BACK_LIMIT) return "send-back-limit";
     if (kind === "retry" && counts.retriesFor(stage, workflow.candidate?.digest) >= WORKFLOW_AUTO_RETRY_LIMIT) return "retry-limit";
-    if (counts.actions >= WORKFLOW_AUTO_ACTION_LIMIT) return "total-limit";
+    // A re-run after a merge of the base has its own allowance per task per day; it does not use the task's lifetime automatic actions.
+    if (baseMerged && kind === "retry") {
+      if (baseMergedRetriesToday(workflow.decisions, budget.nowMs ?? Date.now()) >= BASE_MERGED_RETRIES_PER_DAY) return "base-merged-limit";
+    } else if (counts.actions >= WORKFLOW_AUTO_ACTION_LIMIT) return "total-limit";
     return budgetRefusal(budget);
   };
   const sendBack = (): AutoFixDecision => {

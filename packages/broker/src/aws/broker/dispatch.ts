@@ -2,7 +2,7 @@
 
 import { nightlyHeadDependencies } from "./nightly-head.js";
 import { DeleteCommand, GetCommand, PutCommand, QueryCommand, TransactWriteCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
-import { AgentXError, WorkflowTransitionError, stopWorkflowStepNotRun, isSystemOwnerId, BUDGET_EXHAUSTED_FAILURE_MESSAGE, type IntentAssessment, UNDERSTAND_ARTIFACT_MAX_BYTES, UNDERSTAND_ARTIFACT_NAME, endStuckUnderstand, readIntentArtifact, agentXError, type WorkflowSnapshot, E2E_MODEL_ROUTE_DEFAULT_BUDGETS, TERMINAL_OPERATION_STATUSES } from "@agentx/contracts";
+import { AgentXError, WorkflowTransitionError, stopWorkflowStepNotRun, isSystemOwnerId, BUDGET_EXHAUSTED_FAILURE_MESSAGE, type IntentAssessment, UNDERSTAND_ARTIFACT_MAX_BYTES, UNDERSTAND_ARTIFACT_NAME, endStuckUnderstand, readIntentArtifact, agentXError, type WorkflowSnapshot, E2E_MODEL_ROUTE_DEFAULT_BUDGETS, TERMINAL_OPERATION_STATUSES, INDEX_EXPIRY_ATTRIBUTE } from "@agentx/contracts";
 import { withDesignReviewPorts } from "../../design-review/wiring.js";
 import { designResolveDue } from "../../design-review/resolve-run.js";
 import { StoredBaselineSourceSchema } from "../baseline-source.js";
@@ -27,8 +27,9 @@ import { PlanCheckUnavailableError } from "../../rovara-code/critic.js";
 import { developerTaskRouteDependencies } from "../developer-routes.js";
 import type { EndTold } from "../developer-tasks.js";
 import { startTaskWorkflowPlanRevisionFromSystem, finishedReleaseMarkItem, noteTaskEnded, startTaskWorkflowImplementationFromSystem, startTaskWorkflowPlanFromSystem, startTaskWorkflowPublicationFromSystem, startTaskWorkflowUnderstandFromSystem, startTaskWorkflowPlanCritiqueFromSystem, startTaskWorkflowBranchSyncFromSystem, startTaskWorkflowCriticRevisionFromSystem, startTaskWorkflowReviewFromSystem, workflowEndOutcome, taskPageUrl } from "../developer-tasks.js";
-import { AUTOFIX_ROUND_ESTIMATE_USD, autofixDayBudgetNeed, postponeAutofixRow, recordAutofixGiveUpAsk, runWorkflowAutofix, type AutofixDependencies } from "../workflow-autofix-runner.js";
+import { AUTOFIX_ROUND_ESTIMATE_USD, BASE_MERGED_PER_TEN_MINUTES_DEFAULT, autofixDayBudgetNeed, postponeAutofixRow, recordAutofixGiveUpAsk, runWorkflowAutofix, type AutofixDependencies } from "../workflow-autofix-runner.js";
 import { taskAutonomy } from "../../rovara-code/ci-fix.js";
+import { codeMilestoneItems } from "../../rovara-code/milestones.js";
 import { blockedByEnvironmentHook } from "../../test-env/health-wiring.js";
 import { autofixBlockCauseOf, autofixRowHeld } from "../workflow-autofix-dispatch-exhaust.js";
 import { cancelRunningTask } from "./acceptance.js";
@@ -658,9 +659,52 @@ async function runAutofixDispatch(dependencies: AwsBrokerDependencies, item: Acc
     const blockedByEnvironment = blockedByEnvironmentHook({ documentClient: dependencies.documentClient, tableName: dependencies.tableName, now: Date.now, ...(dependencies.audit === undefined ? {} : { audit: dependencies.audit }) });
     const deps: AutofixDependencies = {
       config, route, store: { documentClient: dependencies.documentClient, tableName: dependencies.tableName },
-      // Decision 70(c): read again where a merged base's checks would be re-run by themselves (a task with no org, or an unreadable recipe, reads as `suggest`).
-      autonomy: (current) => current.orgId === undefined ? Promise.resolve("suggest" as const)
-        : taskAutonomy(() => readTaskRecipe(dependencies, current.taskId, current.orgId!), (event, fields) => console.log(JSON.stringify({ component: "broker", event, ...fields })), () => companyAutonomyLimit(dependencies, current.orgId!)),
+      // Decision 70(c): read again where a merged base's checks would be re-run by themselves. A task with no org reads as `suggest` (and says so); a recipe or company limit that cannot be read reads as `suggest`
+      // (and says so); a task with no frozen recipe reads as `prepare`, the default (see `taskAutonomyBinding`).
+      autonomy: async (current) => {
+        if (current.orgId === undefined) return { autonomy: "suggest" as const, noCompany: true as const };
+        let unreadable = false;
+        const found = await taskAutonomy(
+          () => readTaskRecipe(dependencies, current.taskId, current.orgId!).catch((error: unknown) => { unreadable = true; throw error; }),
+          (event, fields) => console.log(JSON.stringify({ component: "broker", event, ...fields })),
+          () => companyAutonomyLimit(dependencies, current.orgId!).catch((error: unknown) => { unreadable = true; throw error; }));
+        return unreadable ? { autonomy: "suggest" as const, unreadable: true as const } : { autonomy: found };
+      },
+      // Decision 70(c): a person who pushed since the merge ends the re-run (the checks are of the merge candidate; the pull request no longer holds it).
+      pullRequestHeadMoved: async (current) => {
+        const pullRequest = current.workflow?.pullRequests?.find((entry) => entry.state === "OPEN" || entry.state === "UNKNOWN");
+        if (pullRequest === undefined || pullRequest.headSha === undefined) return false;
+        const url = await webhookRepositoryUrl(dependencies)(current.project, current.startingRevision, pullRequest.repositoryId, current.orgId);
+        if (url === undefined) throw agentXError("CONFIG_INVALID", "the pull request's repository is not in the task's project");
+        const host = await hostOfTaskRepository(dependencies, current, { name: pullRequest.repositoryId, url });
+        const remote = await host.getChangeRequest(changeRequestRef(url, pullRequest.number), await githubScopeOf(dependencies, current));
+        return remote.headRevision !== pullRequest.headSha;
+      },
+      // Decision 70(c): the company's allowance of re-runs after a merge of the base per ten minutes (one counter item per company and window, claimed conditionally).
+      claimBaseMergedStart: async (current) => {
+        const allowance = config.baseMergedPerTenMinutes ?? BASE_MERGED_PER_TEN_MINUTES_DEFAULT;
+        const windowStart = Math.floor(Date.now() / 600_000);
+        try {
+          await dependencies.documentClient.send(new UpdateCommand({
+            TableName: dependencies.tableName, Key: { pk: `AUTOFIX_BASE_MERGED#${String(current.orgId ?? "none")}`, sk: `WINDOW#${String(windowStart)}` },
+            UpdateExpression: "SET #count = if_not_exists(#count, :zero) + :one, #expires = :expires",
+            ConditionExpression: "attribute_not_exists(#count) OR #count < :allowance",
+            ExpressionAttributeNames: { "#count": "count", "#expires": INDEX_EXPIRY_ATTRIBUTE },
+            ExpressionAttributeValues: { ":zero": 0, ":one": 1, ":allowance": allowance, ":expires": (windowStart + 3) * 600 },
+          }));
+          return true;
+        } catch (error) {
+          if (!isConditional(error)) throw error;
+          return false;
+        }
+      },
+      needsYou: async (current, text) => {
+        const pullRequest = current.workflow?.pullRequests?.find((entry) => entry.state === "OPEN" || entry.state === "UNKNOWN");
+        if (current.orgId === undefined || current.workflow === undefined || pullRequest === undefined) return;
+        const items = codeMilestoneItems({ tableName: dependencies.tableName }, { kind: "stuck", orgId: current.orgId, taskId: current.taskId, ...(current.sessionId === undefined ? {} : { sessionId: current.sessionId }),
+          at: new Date().toISOString(), text: text.slice(0, 500), pullRequests: [{ repository: pullRequest.repositoryId, number: pullRequest.number, url: pullRequest.url }] }, current.workflow.revision);
+        try { await dependencies.documentClient.send(new TransactWriteCommand({ TransactItems: items })); } catch (error) { if (!isConditional(error) && !(error instanceof Error && error.name === "TransactionCanceledException")) throw error; }
+      },
       taskSpendUsd: (current) => autofixTaskSpendUsd(dependencies, current),
       dayBudgetHasRoom: (current) => autofixDayBudgetHasRoom(dependencies, current),
       scenarioResults: async (current) => loadWorkflowE2EScenarioResults(dependencies, current, [], "owner").catch(() => undefined),
@@ -687,6 +731,8 @@ async function runAutofixDispatch(dependencies: AwsBrokerDependencies, item: Acc
       log: (entry) => console.log(JSON.stringify({ component: "broker", ...entry })),
     };
     const outcome = await runWorkflowAutofix(deps, task, { expectedRevision: item.workflowRevision, startedAt: item.createdAt, cause: autofixBlockCauseOf(item.autofixCause) });
+    // Decision 70(c): the company's allowance of re-runs after a merge of the base is used for now: the row waits a minute plus up to two (so a herd of syncs spreads out), and no attempt is counted.
+    if (outcome === "DEFERRED") { await postponeAutofixRow(store, item, Date.now(), { delayMs: 60_000 + Math.floor(Math.random() * 120_000), countAttempt: false }); return "RETRY"; }
     if (outcome !== "WAITING") { await remove(); return outcome === "STALE" || outcome === "DISABLED" ? "STALE" : "DISPATCHED"; }
   } catch (error) {
     console.log(JSON.stringify({ component: "broker", event: "autofix.look_failed", taskId: item.taskId, attempt: (item.attempts ?? 0) + 1, error: error instanceof AgentXError ? error.code : error instanceof Error ? error.name : "unknown" }));

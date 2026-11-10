@@ -3,7 +3,7 @@
 import { createHash } from "node:crypto";
 import { QueryCommand } from "@aws-sdk/lib-dynamodb";
 import { GetObjectCommand, PutObjectCommand } from "@aws-sdk/client-s3";
-import { AgentXError, CheckReportSchema, skipPlanRevision, canonicalJson, type PlanEvidenceBundle, workflowIsReviewOnly, workflowPullRequestTrees, workflowSelectedChecks, blockWorkflow, endWorkflowCiFixUnrelated, WorkflowDependencyResultSchema, WorkflowSnapshotSchema, taskGraphOrder, workflowDependencyAttemptTerminalProgress, completeWorkflowFeedbackReview, createCandidateManifest, WORKFLOW_HISTORY_REWRITTEN_MESSAGE, FEEDBACK_NOT_RUN_REASON, WORKFLOW_NO_CODE_CHANGE_MESSAGE, noChangeFindingsFrom, WORKFLOW_RULE_FILES_UNVERIFIED_MESSAGE, WORKFLOW_LEFTOVER_PROCESSES_MESSAGE, WORKFLOW_SETUP_CHANGED_FILES_MESSAGE, WORKFLOW_LIVE_STEER_REAPPROVAL_MESSAGE, WORKFLOW_BLOCK_REASONS, blockingFindings, secondReviewBlockFinding, BUDGET_EXHAUSTED_FAILURE_MESSAGE, type IntentAssessment, UNDERSTAND_UNREADABLE_MESSAGE, answerWorkflowIntent, recordIntentAssessment, WORKFLOW_MISSING_COMMITTED_SOURCE_EXPORT_REASON, WORKFLOW_DISPATCH_DUE_INDEX, WORKFLOW_REVIEW_RESULT_INCOMPLETE_MESSAGE, WorkflowReviewBaseSchema as PreparedBaseSchema, recordWorkflowVerification, completeWorkflowBuild, nextProgramStep, workflowReviewRoles, submitWorkflowReview, registerWorkflowPullRequest, blockWorkflowPullRequestUpdate, recordWorkflowPullRequestUpdate, recordWorkflowBranchSync, CONFLICT_ROUNDS_MAX, observeWorkflowPullRequestMergedWithFix, workflowPullRequestUpdateDue, WORKFLOW_PULL_REQUEST_UPDATE_WORKER_OUTDATED, WORKFLOW_FIX_DROPS_BASE_CHANGES, type WorkflowPullRequestUpdateCause, PullRequestLifecycleResultSchema, PullRequestResultSchema, agentXError, type OperationStatus, type WorkflowSnapshot, type CandidateRepository, WorkflowFeedbackBundleRefSchema, WorkflowFeedbackReviewReportSchema, WorkflowFeedbackReviewRefSchema, INDEX_EXPIRY_ATTRIBUTE, WORKFLOW_APPLICATION_RUNTIME_UNUSABLE_PREFIX, WORKFLOW_APPLICATION_SELECTION_CHANGED_PREFIX, WORKFLOW_APPLICATION_ACCOUNTS_CHANGED_PREFIX, ROVARA_CODE_AGENT_ID, type RunEstimate, codeRepositoriesOf } from "@agentx/contracts";
+import { AgentXError, CheckReportSchema, skipPlanRevision, canonicalJson, type PlanEvidenceBundle, workflowIsReviewOnly, workflowPullRequestTrees, workflowSelectedChecks, blockWorkflow, endWorkflowCiFixUnrelated, WorkflowDependencyResultSchema, WorkflowSnapshotSchema, taskGraphOrder, workflowDependencyAttemptTerminalProgress, completeWorkflowFeedbackReview, createCandidateManifest, WORKFLOW_HISTORY_REWRITTEN_MESSAGE, FEEDBACK_NOT_RUN_REASON, WORKFLOW_NO_CODE_CHANGE_MESSAGE, noChangeFindingsFrom, WORKFLOW_RULE_FILES_UNVERIFIED_MESSAGE, WORKFLOW_LEFTOVER_PROCESSES_MESSAGE, WORKFLOW_SETUP_CHANGED_FILES_MESSAGE, WORKFLOW_LIVE_STEER_REAPPROVAL_MESSAGE, WORKFLOW_BLOCK_REASONS, BASE_MERGED_RECHECKING_MILESTONE, BASE_MERGED_NEEDS_YOU_MILESTONE, blockingFindings, secondReviewBlockFinding, BUDGET_EXHAUSTED_FAILURE_MESSAGE, type IntentAssessment, UNDERSTAND_UNREADABLE_MESSAGE, answerWorkflowIntent, recordIntentAssessment, WORKFLOW_MISSING_COMMITTED_SOURCE_EXPORT_REASON, WORKFLOW_DISPATCH_DUE_INDEX, WORKFLOW_REVIEW_RESULT_INCOMPLETE_MESSAGE, WorkflowReviewBaseSchema as PreparedBaseSchema, recordWorkflowVerification, completeWorkflowBuild, nextProgramStep, workflowReviewRoles, submitWorkflowReview, registerWorkflowPullRequest, blockWorkflowPullRequestUpdate, recordWorkflowPullRequestUpdate, recordWorkflowBranchSync, CONFLICT_ROUNDS_MAX, observeWorkflowPullRequestMergedWithFix, workflowPullRequestUpdateDue, WORKFLOW_PULL_REQUEST_UPDATE_WORKER_OUTDATED, WORKFLOW_FIX_DROPS_BASE_CHANGES, type WorkflowPullRequestUpdateCause, PullRequestLifecycleResultSchema, PullRequestResultSchema, agentXError, type OperationStatus, type WorkflowSnapshot, type CandidateRepository, WorkflowFeedbackBundleRefSchema, WorkflowFeedbackReviewReportSchema, WorkflowFeedbackReviewRefSchema, INDEX_EXPIRY_ATTRIBUTE, WORKFLOW_APPLICATION_RUNTIME_UNUSABLE_PREFIX, WORKFLOW_APPLICATION_SELECTION_CHANGED_PREFIX, WORKFLOW_APPLICATION_ACCOUNTS_CHANGED_PREFIX, ROVARA_CODE_AGENT_ID, type RunEstimate, codeRepositoriesOf } from "@agentx/contracts";
 import { resultsWithStoredArtifacts, storeWorkflowE2EArtifacts } from "../workflow-e2e-artifacts.js";
 import { queryAllItems } from "../admin-reads.js";
 import type { z } from "zod";
@@ -352,6 +352,14 @@ async function candidateRekeyItems(
 }
 
 /**
+ * Whether Rovara re-runs the checks of a merged base by itself (decision 70(c)): automatic fixing is on and the task does not need E2E (its recheck has no source export, so it stays the owner's Retry).
+ * It decides the AUTOFIX row (cause `base-merged`) and which milestone is written: "re-checking" when it does, "needs you" when it does not.
+ */
+export function baseMergedRechecksItself(dependencies: Pick<AwsBrokerDependencies, "autofix">, recheck: Pick<WorkflowSnapshot, "e2e">): boolean {
+  return dependencies.autofix?.enabled === true && recheck.e2e?.required !== true;
+}
+
+/**
  * Plan 6 Task 17: the result of the merge of the base branch into a workflow task's pull request branch. Only the merge the task is waiting on counts: it must still be at WAIT_FOR_MERGE/RUNNING with this exact
  * merge marked; anything else (the pull request merged meanwhile, the task closed or moved on) is dropped. What the merge is comes from what GitHub shows (the head is a new commit whose parents are the head the
  * task recorded and the base commit it merged, on the task's own branch, with the tree the worker reported), never from the worker's word alone: see `planBranchSyncOutcome`. A clean merge is recorded as the
@@ -455,14 +463,16 @@ export async function completedBranchSyncItems(
   const { verification: _verification, reviews: _reviews, acceptedFindings: _accepted, ...merged } = outcome.workflow;
   void _verification; void _reviews; void _accepted;
   const recheck = WorkflowSnapshotSchema.parse({ ...merged, stage: "VERIFY", state: "BLOCKED", blockReason: WORKFLOW_BLOCK_REASONS.baseMergedRecheck, updatedAt: now });
+  const rechecksItself = baseMergedRechecksItself(dependencies, recheck);
   return [
     taskUpdate(recheck),
-    // The task now waits for the owner: said in the milestone feed ("needs you"), not only in the thread.
-    ...milestone("stuck", WORKFLOW_BLOCK_REASONS.baseMergedRecheck, recheck.revision),
+    // Said in the milestone feed once, truthfully: Rovara re-checking by itself (information), or the task waiting for the owner (needs you). When the row is written Rovara may still end up asking (the autonomy, the
+    // spend, the company's allowance are read at the look): that ask writes the "needs you" line then.
+    ...milestone(rechecksItself ? "fixing" : "stuck", rechecksItself ? BASE_MERGED_RECHECKING_MILESTONE : BASE_MERGED_NEEDS_YOU_MILESTONE, recheck.revision),
     // Decision 70(c): the checks re-run by themselves. The AUTOFIX row (cause `base-merged`) commits with the block; the policy reads the autonomy again (`suggest` asks), the spend and the day budget, and
-    // allows one automatic retry per candidate, counted in the automatic action limit, so a base that keeps moving cannot loop sync and recheck. A task that needs E2E is not synced (and its conflict
-    // merge, were it clean, stays the owner's Retry): its recheck has no source export.
-    ...(dependencies.autofix?.enabled === true && recheck.e2e?.required !== true ? autofixBlockRows(dependencies.tableName, recheck, "base-merged", now) : []),
+    // allows one automatic retry per candidate and three a day per task (its own allowance, not the task's lifetime automatic actions); the runner holds the company's allowance per ten minutes. A task that needs
+    // E2E is not synced (and its conflict merge, were it clean, stays the owner's Retry): its recheck has no source export.
+    ...(rechecksItself ? autofixBlockRows(dependencies.tableName, recheck, "base-merged", now) : []),
     ...await candidateRekeyItems(dependencies, task, project, workflow, outcome.workflow, now),
     ...(record !== undefined && record.expectedHeadCommit !== outcome.headSha ? [{ Update: {
       TableName: dependencies.tableName,

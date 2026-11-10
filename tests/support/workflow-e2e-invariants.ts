@@ -87,6 +87,8 @@ export interface JourneyView {
   reviewUrlBase?: string | undefined;
   /** The thread brief limit in force, if any. */
   briefLimit?: number | undefined;
+  /** Automatic fixing is on in this journey: a blocked step's card may carry its "what Rovara already tried" and "why I'm asking you" lines after the step's message. Only the journeys that turn it on get this. */
+  autofix?: boolean | undefined;
 }
 
 export class JourneyInvariantError extends Error {
@@ -347,7 +349,7 @@ function isCurrentMessage(journey: JourneyView, task: Item, workflow: WorkflowSn
     const expected = workflowMessage(variant);
     if (expected === undefined) return false;
     // Automatic fixing adds its own lines to the card of a blocked step (what Rovara already tried, why it asks): the card is the step's message with those lines after it, and the same buttons.
-    const withAutofixLines = ["\n*What Rovara already tried:*", "\n*Why I'm asking you:*"].some((marker) => message.text.startsWith(`${expected.text}${marker}`))
+    const withAutofixLines = journey.autofix === true && ["\n*What Rovara already tried:*", "\n*Why I'm asking you:*"].some((marker) => message.text.startsWith(`${expected.text}${marker}`))
       && JSON.stringify(buttons(message)).replace(/\\"revision\\":\d+/g, "") === JSON.stringify(buttons(expected)).replace(/\\"revision\\":\d+/g, "");
     return withAutofixLines || (merge ? message.text === expected.text && unrevised(message.blocks) === unrevised(expected.blocks) : sameMessage(message, expected));
   });
