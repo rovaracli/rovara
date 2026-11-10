@@ -3,11 +3,12 @@
 // may be published. The Code side is scripts/port-guard.ts in the public repository, which reads the same data file as this check
 // (scripts/boundary-allowlist.json, kept byte-identical in both repositories). Four checks, each printed with its problems:
 //
-//   vendor-pin          vendor/rovara-code is byte-identical to its pin: a pin file (see PIN_FILES) names a public code/next commit and the sha256 of the copy's
-//                       content (and `paths`, when only part of the repository is vendored). When the pinned commit is in this clone, every file is also
-//                       compared with the commit's own blob, so a changed, missing or extra file is named. Skipped while the folder does not exist (W0-1
-//                       builds it). `--print-vendor-digest` prints the digest to put in the pin.
-//   vendor-clean        nothing in the vendored copy imports a Cloud-only package or sits in a nested vendor/ folder (Code never imports Cloud).
+//   vendor-pin          vendor/rovara-code is the pinned public Code, byte for byte. W0-1 owns the pin (vendor/rovara-code/PIN) and its verifier
+//                       (scripts/vendor/verify-rovara-code.ts); this check runs that verifier offline and reports its answer, so there is one definition of
+//                       "matches the pin". A missing PIN, or a missing verifier, fails once vendor/rovara-code exists. Skipped while the folder does not exist.
+//   vendor-clean        nothing in the vendored copy imports a Cloud-only package or sits in a nested vendor/ folder (Code never imports Cloud). W0-1's
+//                       generated shims (vendor/rovara-code-shims, which re-export Code's packages) and the vendor/node_modules links are Cloud's own layer: the
+//                       shims are not read as Code, and every link must point into vendor/rovara-code and never at a Cloud-only package.
 //   published-packages  Cloud-only packages (the data's names and patterns, and the web, UI and audit-verifier directories) are private with no publish config;
 //                       no workspace package is publishable unless the data lists it; the only npm publish in a workflow is the packed CLI tarball, from
 //                       a job that runs only in the public repository; and what the published CLI bundles reaches no Cloud-only package, except the
@@ -19,9 +20,8 @@
 // Exit status: 0 no problem (a skipped check is not a problem), 1 problems, 2 the check could not run. Node runs this file directly; it imports Node's own
 // modules and `yaml` (a workspace dependency, present in CI after `npm ci`).
 import { spawnSync } from "node:child_process";
-import { createHash } from "node:crypto";
-import { existsSync, lstatSync, readFileSync, readdirSync } from "node:fs";
-import { join } from "node:path";
+import { existsSync, lstatSync, readFileSync, readdirSync, readlinkSync } from "node:fs";
+import { join, resolve, sep } from "node:path";
 import YAML from "yaml";
 
 export interface Problem { where: string; message: string }
@@ -37,8 +37,12 @@ export class CheckError extends Error {}
 
 export const BOUNDARY_FILE = "scripts/boundary-allowlist.json";
 export const VENDOR_DIR = "vendor/rovara-code";
-/** Where the pin lives: beside the vendor folder or inside it (a pin inside the folder is left out of the digest). The first one that exists is read. */
-export const PIN_FILES: readonly string[] = ["vendor/rovara-code.pin.json", "vendor/rovara-code/PIN.json"];
+/** W0-1's pin file and its offline verifier (the interface this check codes against: exit 0 when the copy matches, else 1 with the problems on stderr). */
+export const PIN_FILE = "vendor/rovara-code/PIN";
+export const VERIFY_SCRIPT = "scripts/vendor/verify-rovara-code.ts";
+/** W0-1's generated layer: shims that re-export Code's packages, and the links Code's own imports resolve through. */
+export const SHIMS_DIR = "vendor/rovara-code-shims";
+export const LINKS_DIR = "vendor/node_modules";
 /** A job that publishes must run only in the public repository (the Cloud repository's CI is off, and its copy rovaracli/rovara is not this name). */
 export const PUBLIC_REPO_GUARD = "github.repository == 'PrepLabsAI/Rovara'";
 /** The four generic adapters the owners made public (decision 72, O2). A different list needs both owners, not just a data edit. */
@@ -130,97 +134,40 @@ export function walk(dir: string): Walked {
   return { files: files.sort(), symlinks: symlinks.sort() };
 }
 
-const sha256 = (bytes: Buffer | string): string => createHash("sha256").update(bytes).digest("hex");
-/** The sha git gives a blob. */
-const gitBlobSha = (bytes: Buffer): string => createHash("sha1").update(`blob ${bytes.length}\0`).update(bytes).digest("hex");
-
-/** The digest a pin holds: sha256 over `path NUL sha256(file) NL` for every file, in path order. */
-export function contentDigest(entries: ReadonlyMap<string, Buffer>): string {
-  const hash = createHash("sha256");
-  for (const path of [...entries.keys()].sort()) hash.update(`${path}\0${sha256(entries.get(path)!)}\n`);
-  return hash.digest("hex");
-}
-
-function git(root: string, args: string[]): { ok: boolean; out: Buffer } {
-  const result = spawnSync("git", args, { cwd: root, maxBuffer: 1 << 30 });
-  return { ok: result.status === 0, out: result.stdout ?? Buffer.alloc(0) };
-}
-
 // ---------------------------------------------------------------------------------------------------------------------------------
-// Check 1: vendor/rovara-code equals its pin.
+// Check 1: vendor/rovara-code equals its pin (W0-1's verifier decides).
 
-export interface Pin { commit: string; contentSha256: string; paths?: string[] }
-
-export function parsePin(text: string, from: string): Pin {
-  let raw: unknown;
-  try {
-    raw = JSON.parse(text);
-  } catch {
-    throw new CheckError(`${from} is not valid JSON`);
-  }
-  const pin = raw as Partial<Pin> | null;
-  if (pin === null || typeof pin !== "object" || typeof pin.commit !== "string" || !/^[0-9a-f]{40}$/.test(pin.commit)) {
-    throw new CheckError(`${from} needs "commit": the 40-character sha of the public code/next commit that was vendored`);
-  }
-  if (typeof pin.contentSha256 !== "string" || !/^[0-9a-f]{64}$/.test(pin.contentSha256)) {
-    throw new CheckError(`${from} needs "contentSha256": the 64-character digest of the vendored content (node scripts/boundary-check.ts --print-vendor-digest)`);
-  }
-  if (pin.paths !== undefined && (!isStrings(pin.paths) || pin.paths.some((p) => p === "" || p.startsWith("/") || p.split("/").includes("..")))) {
-    throw new CheckError(`${from} has "paths" that are not repository-relative folders`);
-  }
-  return { commit: pin.commit, contentSha256: pin.contentSha256, ...(pin.paths === undefined ? {} : { paths: pin.paths }) };
-}
-
-/** The vendored copy's files (without the pin file when it sits inside), with their bytes. */
+/** The vendored copy's files (without W0-1's PIN file) with their bytes, and any symlinks in it. */
 export function readVendor(root: string): { entries: Map<string, Buffer>; symlinks: string[] } {
   const base = join(root, VENDOR_DIR);
   const { files, symlinks } = walk(base);
   const entries = new Map<string, Buffer>();
   for (const file of files) {
-    if (PIN_FILES.includes(`${VENDOR_DIR}/${file}`)) continue;
+    if (`${VENDOR_DIR}/${file}` === PIN_FILE) continue;
     entries.set(file, readFileSync(join(base, file)));
   }
   return { entries, symlinks };
 }
-
-const inPaths = (path: string, paths: readonly string[] | undefined): boolean =>
-  paths === undefined || paths.some((prefix) => path === prefix || path.startsWith(`${prefix.replace(/\/+$/, "")}/`));
 
 export function checkVendorPin(root: string): CheckResult {
   const result: CheckResult = { check: "vendor-pin", status: "ok", problems: [] };
   if (!existsSync(join(root, VENDOR_DIR))) {
     return { ...result, status: "skipped", note: `${VENDOR_DIR} does not exist yet (lane W0-1 builds it); nothing to compare with a pin` };
   }
-  const pinFile = PIN_FILES.find((file) => existsSync(join(root, file)));
-  if (pinFile === undefined) {
-    result.problems.push({ where: VENDOR_DIR, message: `the vendored copy has no pin file (one of ${PIN_FILES.join(", ")}); a copy with no pin cannot be checked` });
-    return { ...result, status: "failed" };
+  if (!existsSync(join(root, PIN_FILE))) {
+    result.problems.push({ where: PIN_FILE, message: "the vendored copy has no PIN file; a copy with no pin cannot be checked" });
   }
-  const pin = parsePin(readFileSync(join(root, pinFile), "utf8"), pinFile);
-  const { entries, symlinks } = readVendor(root);
-  for (const link of symlinks) result.problems.push({ where: `${VENDOR_DIR}/${link}`, message: "a symlink in the vendored copy (a link can point outside it)" });
-  if (contentDigest(entries) !== pin.contentSha256) {
-    result.problems.push({ where: pinFile, message: "the vendored content does not match the pin's contentSha256 (someone edited the vendored copy, or the pin was not updated with it)" });
+  if (!existsSync(join(root, VERIFY_SCRIPT))) {
+    result.problems.push({ where: VERIFY_SCRIPT, message: "the vendor verifier is missing, so the copy cannot be compared with its pin" });
   }
-  const have = git(root, ["cat-file", "-e", `${pin.commit}^{commit}`]).ok;
-  if (!have) {
-    result.note = `the pinned commit ${pin.commit.slice(0, 12)} is not in this clone; checked the content digest only (fetch the public repository to compare file by file)`;
-  } else {
-    const tree = git(root, ["ls-tree", "-r", "-z", "--full-tree", pin.commit]).out.toString("utf8").split("\0").filter((row) => row !== "");
-    const upstream = new Map<string, string>();
-    for (const row of tree) {
-      const match = /^(\d+) (\w+) ([0-9a-f]{40})\t(.+)$/s.exec(row);
-      if (match !== null && match[2] === "blob" && inPaths(match[4]!, pin.paths)) upstream.set(match[4]!, match[3]!);
-    }
-    const bad: string[] = [];
-    for (const [path, sha] of upstream) {
-      const mine = entries.get(path);
-      if (mine === undefined) bad.push(`missing: ${path}`);
-      else if (gitBlobSha(mine) !== sha) bad.push(`changed: ${path}`);
-    }
-    for (const path of entries.keys()) if (!upstream.has(path)) bad.push(`extra: ${path}`);
-    for (const line of bad.slice(0, 25)) result.problems.push({ where: `${VENDOR_DIR}`, message: `differs from commit ${pin.commit.slice(0, 12)} (${line})` });
-    if (bad.length > 25) result.problems.push({ where: VENDOR_DIR, message: `... and ${bad.length - 25} more files differ from the pinned commit` });
+  if (result.problems.length > 0) return { ...result, status: "failed" };
+  // The verifier finds the repository from its working directory; offline (no --remote), so this check needs no network. CI's own step adds --remote.
+  const run = spawnSync(process.execPath, [VERIFY_SCRIPT], { cwd: root, encoding: "utf8", maxBuffer: 1 << 26 });
+  if (run.error !== undefined) throw new CheckError(`could not run ${VERIFY_SCRIPT}: ${run.error.message}`);
+  if (run.status !== 0) {
+    const detail = (run.stderr ?? "").split("\n").map((line) => line.trim()).filter((line) => line !== "");
+    if (detail.length === 0) detail.push(`the verifier exited ${String(run.status)} with no message`);
+    for (const line of detail) result.problems.push({ where: VENDOR_DIR, message: line });
   }
   return { ...result, status: result.problems.length === 0 ? "ok" : "failed" };
 }
@@ -262,7 +209,37 @@ export function checkVendorClean(root: string): CheckResult {
       }
     }
   }
+  result.problems.push(...vendorLinkProblems(root));
   return { ...result, status: result.problems.length === 0 ? "ok" : "failed" };
+}
+
+/**
+ * The links W0-1 commits under vendor/node_modules (so Code's own `@agentx/*` imports reach Code's packages) are Cloud's layer, not Code: each must
+ * point inside vendor/rovara-code, and not at a Cloud-only package. A link anywhere else could pull Cloud code into what Code's files resolve.
+ */
+export function vendorLinkProblems(root: string): Problem[] {
+  const problems: Problem[] = [];
+  const base = join(root, LINKS_DIR);
+  if (!existsSync(base)) return problems;
+  const vendorRoot = join(root, VENDOR_DIR);
+  const visit = (dir: string): void => {
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      const full = join(dir, entry.name);
+      const where = `${LINKS_DIR}/${full.slice(base.length + 1)}`;
+      if (entry.isSymbolicLink()) {
+        const target = resolve(dir, readlinkSync(full));
+        const relative = target.startsWith(`${root}${sep}`) ? target.slice(root.length + 1).split(sep).join("/") : target;
+        if (target === vendorRoot || target.startsWith(`${vendorRoot}${sep}`)) {
+          if (CLOUD_ONLY_DIR.test(relative)) problems.push({ where, message: "a link that points at a Cloud-only package" });
+        } else if (!relative.split("/").includes("node_modules")) {
+          // Outside the copy only another installed npm package may be linked (W0-1's THIRD_PARTY_LINKS, Code's own dependency pins).
+          problems.push({ where, message: `a link that points outside ${VENDOR_DIR} and is not an installed npm package (${relative})` });
+        }
+      } else if (entry.isDirectory()) visit(full);
+    }
+  };
+  visit(base);
+  return problems;
 }
 
 // ---------------------------------------------------------------------------------------------------------------------------------
@@ -277,13 +254,14 @@ interface Manifest {
   peerDependencies?: Record<string, string>;
 }
 
-/** The workspace package folders: the root's `workspaces` (a folder, or `folder/*`), and the same under the vendored copy. */
+/** The workspace package folders: the root's `workspaces` (a folder, or `folder/*`). */
 export function workspaceDirs(root: string): string[] {
   const manifestPath = join(root, "package.json");
   if (!existsSync(manifestPath)) throw new CheckError("there is no package.json at the root");
   const globs = ((JSON.parse(readFileSync(manifestPath, "utf8")) as { workspaces?: unknown }).workspaces ?? []) as string[];
   const dirs: string[] = [];
-  for (const prefix of ["", `${VENDOR_DIR}/`]) {
+  // Only Cloud's own workspaces: the vendored copy is not an npm workspace (its package names repeat Cloud's), and W0-1's shims are listed in `workspaces`.
+  for (const prefix of [""]) {
     for (const glob of globs) {
       const pattern = `${prefix}${glob}`;
       if (pattern.endsWith("/*")) {
@@ -470,7 +448,6 @@ export function formatResult(result: CheckResult): string[] {
 
 export function main(argv: readonly string[]): number {
   let root = process.cwd();
-  let printDigest = false;
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i]!;
     if (arg === "--root") {
@@ -481,9 +458,8 @@ export function main(argv: readonly string[]): number {
       }
       root = value;
       i += 1;
-    } else if (arg === "--print-vendor-digest") printDigest = true;
-    else if (arg === "--help" || arg === "-h") {
-      console.log("usage: node scripts/boundary-check.ts [--root <repository>] [--print-vendor-digest]");
+    } else if (arg === "--help" || arg === "-h") {
+      console.log("usage: node scripts/boundary-check.ts [--root <repository>]");
       return 0;
     } else {
       console.error(`boundary-check: unknown argument ${arg}`);
@@ -491,11 +467,6 @@ export function main(argv: readonly string[]): number {
     }
   }
   try {
-    if (printDigest) {
-      if (!existsSync(join(root, VENDOR_DIR))) throw new CheckError(`${VENDOR_DIR} does not exist`);
-      console.log(contentDigest(readVendor(root).entries));
-      return 0;
-    }
     const results = runAll(root);
     for (const result of results) for (const line of formatResult(result)) (result.problems.length > 0 ? console.error : console.log)(line);
     const failed = results.filter((result) => result.status === "failed");

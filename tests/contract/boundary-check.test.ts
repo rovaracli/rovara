@@ -7,18 +7,19 @@ import {
   BOUNDARY_FILE,
   EXPECTED_PUBLIC_ADAPTERS,
   GRANDFATHERED_PUBLISH_CLOSURE,
-  PIN_FILES,
+  LINKS_DIR,
+  PIN_FILE,
+  SHIMS_DIR,
+  VERIFY_SCRIPT,
   VENDOR_DIR,
   checkAwsAllowList,
   checkPublishedPackages,
   checkVendorClean,
   checkVendorPin,
-  contentDigest,
   main,
   parseBoundary,
   type BoundaryData,
   readBoundary,
-  readVendor,
   runAll,
   specifiers,
   workflowPublishProblems,
@@ -125,78 +126,60 @@ describe("the command line", () => {
   });
 });
 
-describe("vendor-pin: vendor/rovara-code equals its pin", () => {
-  /** A "public" repository commit with two files, then the same files vendored with a pin. */
-  function vendored(options: { pinInside?: boolean } = {}): { repo: Repo; commit: string; digest: string } {
+describe("vendor-pin: vendor/rovara-code equals its pin (W0-1's verifier decides)", () => {
+  /** A repository with a vendored folder, a PIN and a stand-in for W0-1's verifier: it exits 1 with a message on stderr when the PIN says "stale". */
+  function vendored(): Repo {
     const repo = new Repo();
-    repo.write("packages/contracts/src/index.ts", "export const a = 1;\n");
-    repo.write("packages/worker/src/run.ts", 'import { a } from "@agentx/contracts";\nexport const r = a;\n');
-    const commit = repo.commit();
-    const files = git(repo.dir, "ls-files", "packages/contracts", "packages/worker").split("\n");
-    for (const file of files) repo.write(`${VENDOR_DIR}/${file}`, repo.read(file));
-    const digest = contentDigest(readVendor(repo.dir).entries);
-    const pin = JSON.stringify({ commit, contentSha256: digest, paths: ["packages/contracts", "packages/worker"] });
-    repo.write(options.pinInside === true ? PIN_FILES[1]! : PIN_FILES[0]!, `${pin}\n`);
-    return { repo, commit, digest };
+    repo.write(`${VENDOR_DIR}/packages/contracts/src/index.ts`, "export const a = 1;\n");
+    repo.write(PIN_FILE, "sha=1c3880cbe4320f05680e99bc35cf1565efc58eb9\nfiles=1\n");
+    repo.write(
+      VERIFY_SCRIPT,
+      [
+        'import { readFileSync } from "node:fs";',
+        'if (readFileSync("vendor/rovara-code/PIN", "utf8").includes("stale")) {',
+        '  console.error("vendor/rovara-code does not match its pin:\\n  the copy files do not hash to the manifest in PIN");',
+        "  process.exit(1);",
+        "}",
+        "",
+      ].join("\n"),
+    );
+    return repo;
   }
 
   it("is skipped, with a note, while the folder does not exist", () => {
     const result = checkVendorPin(new Repo().dir);
-    expect(result).toMatchObject({ check: "vendor-pin", status: "skipped" });
+    expect(result.status).toBe("skipped");
     expect(result.problems).toEqual([]);
   });
 
-  it.each([false, true])("passes an exact copy, with the pin beside the folder or inside it (inside: %s)", (pinInside) => {
-    const { repo } = vendored({ pinInside });
-    expect(messages(checkVendorPin(repo.dir))).toEqual([]);
+  it("passes when the verifier is satisfied, and runs it from the repository root", () => {
+    expect(messages(checkVendorPin(vendored().dir))).toEqual([]);
   });
 
-  it("fails a copy with no pin file", () => {
-    const { repo } = vendored();
-    rmSync(join(repo.dir, PIN_FILES[0]!));
-    expect(messages(checkVendorPin(repo.dir))).toEqual([expect.stringContaining("has no pin file")]);
+  it("fails a vendored copy with no PIN file", () => {
+    const repo = vendored();
+    rmSync(join(repo.dir, PIN_FILE));
+    expect(messages(checkVendorPin(repo.dir))).toEqual([`${PIN_FILE}: the vendored copy has no PIN file; a copy with no pin cannot be checked`]);
   });
 
-  it("names an edited file, a missing file and an extra file, against the pinned commit", () => {
-    const { repo } = vendored();
-    repo.write(`${VENDOR_DIR}/packages/contracts/src/index.ts`, "export const a = 2;\n");
-    rmSync(join(repo.dir, VENDOR_DIR, "packages/worker/src/run.ts"));
-    repo.write(`${VENDOR_DIR}/packages/worker/src/extra.ts`, "export {};\n");
+  it("fails when the verifier script is missing, rather than passing unchecked", () => {
+    const repo = vendored();
+    rmSync(join(repo.dir, VERIFY_SCRIPT));
+    expect(messages(checkVendorPin(repo.dir))).toEqual([expect.stringContaining("the vendor verifier is missing")]);
+  });
+
+  it("reports the verifier's own words when it refuses the copy", () => {
+    const repo = vendored();
+    repo.write(PIN_FILE, "stale\n");
     const text = messages(checkVendorPin(repo.dir)).join("\n");
-    expect(text).toContain("does not match the pin's contentSha256");
-    expect(text).toContain("changed: packages/contracts/src/index.ts");
-    expect(text).toContain("missing: packages/worker/src/run.ts");
-    expect(text).toContain("extra: packages/worker/src/extra.ts");
+    expect(text).toContain("vendor/rovara-code does not match its pin");
+    expect(text).toContain("do not hash to the manifest in PIN");
   });
 
-  it("fails an edit even when the pinned commit is not in this clone (the digest alone catches it), and says what it could not compare", () => {
-    const { repo, digest } = vendored();
-    repo.write(PIN_FILES[0]!, `${JSON.stringify({ commit: "a".repeat(40), contentSha256: digest })}\n`);
-    const noted = checkVendorPin(repo.dir);
-    expect(noted.status).toBe("ok");
-    expect(noted.note).toContain("not in this clone");
-    repo.write(`${VENDOR_DIR}/packages/contracts/src/index.ts`, "export const a = 3;\n");
-    expect(messages(checkVendorPin(repo.dir))).toEqual([expect.stringContaining("contentSha256")]);
-  });
-
-  it("fails a pin that was not updated with the copy, and a symlink in the copy", () => {
-    const { repo, commit } = vendored();
-    repo.write(PIN_FILES[0]!, `${JSON.stringify({ commit, contentSha256: "0".repeat(64), paths: ["packages/contracts", "packages/worker"] })}\n`);
-    symlinkSync("/etc/hosts", join(repo.dir, VENDOR_DIR, "link"));
-    const text = messages(checkVendorPin(repo.dir)).join("\n");
-    expect(text).toContain("contentSha256");
-    expect(text).toContain("a symlink in the vendored copy");
-  });
-
-  it.each([
-    ["a pin that is not JSON", "{"],
-    ["a pin with a short commit", JSON.stringify({ commit: "abc", contentSha256: "0".repeat(64) })],
-    ["a pin with no digest", JSON.stringify({ commit: "a".repeat(40) })],
-    ["a pin whose paths climb out", JSON.stringify({ commit: "a".repeat(40), contentSha256: "0".repeat(64), paths: ["../x"] })],
-  ])("refuses %s", (_name, text) => {
-    const { repo } = vendored();
-    repo.write(PIN_FILES[0]!, text);
-    expect(() => checkVendorPin(repo.dir)).toThrow();
+  it("fails a verifier that exits without saying why", () => {
+    const repo = vendored();
+    repo.write(VERIFY_SCRIPT, "process.exit(3);\n");
+    expect(messages(checkVendorPin(repo.dir))).toEqual([expect.stringContaining("exited 3 with no message")]);
   });
 });
 
@@ -217,6 +200,35 @@ describe("vendor-clean: Code in the vendored copy holds no Cloud", () => {
     const repo = new Repo();
     repo.write(`${VENDOR_DIR}/packages/worker/src/run.ts`, source);
     expect(messages(checkVendorClean(repo.dir))).toEqual([expect.stringContaining("Code never imports Cloud")]);
+  });
+
+  it("leaves W0-1's generated shims and its vendor/node_modules links alone, and still catches a real Cloud-only import inside the copy", () => {
+    const repo = new Repo();
+    repo.write(`${VENDOR_DIR}/packages/contracts/src/index.ts`, "export const a = 1;\n");
+    repo.write(`${VENDOR_DIR}/packages/worker/src/run.ts`, 'import { a } from "@agentx/contracts";\nexport const r = a;\n');
+    repo.write(`${SHIMS_DIR}/contracts/index.js`, 'export * from "@agentx/contracts";\n');
+    repo.write(`${SHIMS_DIR}/contracts/package.json`, '{ "name": "@rovara-code/contracts", "private": true }\n');
+    mkdirSync(join(repo.dir, LINKS_DIR, "@agentx"), { recursive: true });
+    symlinkSync("../../rovara-code/packages/contracts", join(repo.dir, LINKS_DIR, "@agentx/contracts"));
+    symlinkSync("../../rovara-code/packages/worker", join(repo.dir, LINKS_DIR, "@agentx/worker"));
+    mkdirSync(join(repo.dir, "node_modules/playwright-core"), { recursive: true });
+    symlinkSync("../../node_modules/playwright-core", join(repo.dir, LINKS_DIR, "playwright-core"));
+    expect(messages(checkVendorClean(repo.dir))).toEqual([]);
+    repo.write(`${VENDOR_DIR}/packages/worker/src/run.ts`, 'import { App } from "@agentx/ui";\nexport const r = App;\n');
+    expect(messages(checkVendorClean(repo.dir))).toEqual([`${VENDOR_DIR}/packages/worker/src/run.ts:1: Code imports a Cloud-only package (@agentx/ui); Code never imports Cloud`]);
+  });
+
+  it("fails a vendor/node_modules link that points at Cloud's own code, at a Cloud-only package inside the copy, or anywhere else outside", () => {
+    const repo = new Repo();
+    repo.write(`${VENDOR_DIR}/packages/ui/package.json`, "{}\n");
+    mkdirSync(join(repo.dir, LINKS_DIR, "@agentx"), { recursive: true });
+    symlinkSync("../../../packages/contracts", join(repo.dir, LINKS_DIR, "@agentx/contracts"));
+    symlinkSync("../../rovara-code/packages/ui", join(repo.dir, LINKS_DIR, "@agentx/ui"));
+    symlinkSync("../../../scripts", join(repo.dir, LINKS_DIR, "elsewhere"));
+    const text = messages(checkVendorClean(repo.dir)).join("\n");
+    expect(text).toContain(`${LINKS_DIR}/@agentx/contracts: a link that points outside ${VENDOR_DIR} and is not an installed npm package (packages/contracts)`);
+    expect(text).toContain(`${LINKS_DIR}/@agentx/ui: a link that points at a Cloud-only package`);
+    expect(text).toContain(`${LINKS_DIR}/elsewhere: a link that points outside`);
   });
 
   it("fails a Cloud-only package folder and a nested vendor folder inside the copy", () => {
