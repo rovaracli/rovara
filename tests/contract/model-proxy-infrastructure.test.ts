@@ -103,9 +103,19 @@ describe("model proxy infrastructure (named environments)", () => {
     const text = yaml["Fn::Join"]![1].map((part) => (typeof part === "string" ? part : "us-east-1")).join("");
     expect(text).toContain("litellm_settings:\n  callbacks: rovara_guard.proxy_handler_instance\n");
     expect(text).toContain("  user_api_key_cache_ttl: 10\n");
+    // the guard holds each call's worst case in a ledger every replica shares; LiteLLM's own per-replica reservation is off (it 422s on holds alone)
+    expect(text).toContain("  disable_budget_reservation: true\n");
+    // the router does not retry under the call id the guard holds for once
+    expect(text).toContain("router_settings:\n  num_retries: 0\n");
     expect(text).not.toMatch(/configurable_clientside_auth_params|allow_client_side_credentials|forward_client_headers_to_llm_api|forward_traceparent/);
     // The module written next to the config is the one the spike verified.
     expect(definition.Environment).toContainEqual({ Name: "ROVARA_GUARD_PY", Value: ROVARA_GUARD_PY });
+  });
+
+  it("keeps the task definition well inside ECS's 64 KiB limit with the guard (and its budget section) carried as an environment value", () => {
+    // ECS refuses a task definition over 64 KiB; the guard is the bulk of it. The region token stands in for the deploy-time value.
+    const size = Buffer.byteLength(JSON.stringify(taskDefinition().Properties.ContainerDefinitions));
+    expect(size).toBeLessThan(56 * 1024);
   });
 
   it("keeps models in the database, bounds a request's time at the load balancer's idle timeout, and puts no provider or AWS credential in the environment", () => {

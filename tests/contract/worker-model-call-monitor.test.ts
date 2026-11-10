@@ -111,6 +111,8 @@ describe("sanitizeModelCallEvent on a keyed provider's failure", () => {
       text: "Anthropic request failed; the API key was refused; check that it is valid and has not expired" },
     { name: "AgentX transport: fixed text for a 429", provider: "openai", cls: "limit-or-rate-limited", signal: null, status: 429, action: /rate limit/u, secret: "zzz",
       text: "OpenAI request failed; rate limited or out of credits; check the key's usage limits before retrying" },
+    { name: "AgentX transport: the proxy still held the task's budget after the whole wait", provider: "anthropic", cls: "limit-or-rate-limited", signal: null, status: 429, action: /rate limit/u, secret: "zzz",
+      text: "Anthropic request failed; the task's other model calls hold its budget; try again shortly" },
     { name: "AgentX transport: fixed text for an upstream 5xx", provider: "openrouter", cls: "provider-outage", signal: null, action: /retry/u, secret: "zzz",
       text: "OpenRouter request failed; upstream unavailable; check provider status before retrying" },
     { name: "AgentX transport: ChatGPT plan, connection refused", provider: "openai", cls: "key-rejected", signal: null, action: /connect ChatGPT again/u, secret: "zzz",

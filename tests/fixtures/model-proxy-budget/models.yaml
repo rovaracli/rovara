@@ -1,0 +1,14 @@
+# Fake models for tests/integration/model-proxy-budget-docker.test.ts: priced from LiteLLM's cost map (anth) or by the deployment (oai), all served by upstream.py.
+model_list:
+  - model_name: anth
+    litellm_params: { model: anthropic/claude-sonnet-4-5-20250929, api_base: "http://upstream:9000", api_key: not-a-real-key }
+  - model_name: anth-slow
+    litellm_params: { model: anthropic/claude-sonnet-4-5-20250929, api_base: "http://upstream:9000/slow", api_key: not-a-real-key }
+  - model_name: oai
+    litellm_params: { model: openai/gpt-fake, api_base: "http://upstream:9000/v1", api_key: not-a-real-key, input_cost_per_token: 0.000003, output_cost_per_token: 0.000015 }
+  - model_name: oai-slow
+    litellm_params: { model: openai/gpt-fake, api_base: "http://upstream:9000/slow/v1", api_key: not-a-real-key, input_cost_per_token: 0.000003, output_cost_per_token: 0.000015 }
+  - model_name: oai-fail
+    litellm_params: { model: openai/gpt-fake, api_base: "http://upstream:9000/fail/v1", api_key: not-a-real-key, input_cost_per_token: 0.000003, output_cost_per_token: 0.000015 }
+  - model_name: oai-flaky
+    litellm_params: { model: openai/gpt-fake, api_base: "http://upstream:9000/flaky/v1", api_key: not-a-real-key, input_cost_per_token: 0.000003, output_cost_per_token: 0.000015 }
