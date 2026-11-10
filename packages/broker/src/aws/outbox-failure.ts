@@ -14,7 +14,7 @@ import { endedRunRows } from "./workflow-autofix-dispatch-exhaust.js";
  * Fails an outbox record's operation for good: the operation becomes FAILED, the workspace is
  * released (PREPARATION_FAILED after a prepare, READY otherwise; a cancel holds no workspace), and
  * the outbox record becomes FAILED, all in one transaction fenced on the invocation's fence.
- * `whileOutbox` adds a condition on the outbox record's current status. A failed prepare's
+ * `whileOutbox` adds a condition on the outbox record's current status (one status, or any of a list). A failed prepare's
  * workspace then stops counting toward the workspace limits (#213).
  */
 export async function failOutboxOperation(
@@ -22,9 +22,15 @@ export async function failOutboxOperation(
   tableName: string,
   record: DurableOutboxRecord,
   error: string,
-  whileOutbox?: { status: DurableOutboxRecord["status"] },
+  whileOutbox?: { status: DurableOutboxRecord["status"] } | { statusIn: readonly DurableOutboxRecord["status"][] },
 ): Promise<void> {
   const now = new Date().toISOString();
+  const expectedStatuses = whileOutbox === undefined ? [] : "statusIn" in whileOutbox ? whileOutbox.statusIn : [whileOutbox.status];
+  // An empty list would build an empty condition (or none): refuse it rather than fail every outbox item unconditionally.
+  if (whileOutbox !== undefined && expectedStatuses.length === 0) throw new Error("failOutboxOperation: whileOutbox needs at least one status");
+  const expected = expectedStatuses.length === 0 ? { expression: "", values: {} }
+    : expectedStatuses.length === 1 ? { expression: "#status = :expected", values: { ":expected": expectedStatuses[0] } }
+    : { expression: `(${expectedStatuses.map((_, index) => `#status = :expected${index}`).join(" OR ")})`, values: Object.fromEntries(expectedStatuses.map((status, index) => [`:expected${index}`, status])) };
   const releaseWorkspace = record.invocation.kind !== "cancel";
   const workspaceStatus = record.invocation.kind === "prepare" ? "PREPARATION_FAILED" : "READY";
   await documentClient.send(new TransactWriteCommand({
@@ -67,13 +73,13 @@ export async function failOutboxOperation(
         Key: { pk: `OUTBOX#${record.id}`, sk: "OUTBOX" },
         // A failed item has no time limit: it keeps no lessons (outbox-lessons.ts).
         UpdateExpression: `SET #status = :failed, failedAt = :now, #error = :error${storedLessonsOf(record) ? ` ${REMOVE_STORED_LESSONS}` : ""}`,
-        ...(whileOutbox === undefined ? {} : { ConditionExpression: "#status = :expected" }),
+        ...(whileOutbox === undefined ? {} : { ConditionExpression: expected.expression }),
         ExpressionAttributeNames: { "#status": "status", "#error": "error" },
         ExpressionAttributeValues: {
           ":failed": "FAILED",
           ":now": now,
           ":error": error,
-          ...(whileOutbox === undefined ? {} : { ":expected": whileOutbox.status }),
+          ...expected.values,
         },
       } },
     ],
