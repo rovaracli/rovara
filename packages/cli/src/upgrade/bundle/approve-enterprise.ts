@@ -37,6 +37,8 @@ export interface ApproveEnterpriseInput {
   confirmFlag?: string;
   /** The release this install runs now, to tell an upgrade's changes from drift. */
   installedVersion?: string;
+  /** Runs first, before the build is made or anything is read for it: a refusal (a left-over Team record table, say) stops the approval with nothing built, loaded or written. */
+  beforeBuild?(): Promise<void>;
   /** Runs after the approver confirmed and before anything is placed: loads the bundle's images into the install's registry. A refused build never reaches it. */
   beforeApproval?(): Promise<void>;
 }
@@ -49,6 +51,7 @@ export async function installIsEnterprise(store: ParameterStore, env: string): P
 export async function approveEnterpriseBundle(input: ApproveEnterpriseInput): Promise<{ record: ApprovalRecord; build: BuiltBundle }> {
   const { bundle, install, store } = input;
   if (!(await installIsEnterprise(store, install.env))) throw agentXError("CONFIG_INVALID", `${install.env} is not recorded as an Enterprise install; a build made at approval is for Enterprise installs only. Nothing was approved`);
+  await input.beforeBuild?.();
   const settings = await readSynthSettings(store, install);
   const build = await buildAtApproval({ bundle, settings, runner: input.runner });
 

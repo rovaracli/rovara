@@ -30,7 +30,11 @@ export type EmbedderErrorCode = (typeof EMBEDDER_ERROR_CODES)[number];
 
 /** A refusal or failure with a fixed code. The message is the code, so it is safe to log. */
 export class EmbedderError extends Error {
-  constructor(readonly code: EmbedderErrorCode) {
+  /**
+   * Why an UNREACHABLE call ended, when this side knows: `timeout` = the function was given its full wait and did not answer (a slow or cold function, or a long text); `deadline` = the caller's run
+   * had too little time left, so the function was never really asked. Absent: any other fault (throttling, a service error, a refusal).
+   */
+  constructor(readonly code: EmbedderErrorCode, readonly timing?: "timeout" | "deadline") {
     super(`embedder: ${code}`);
     this.name = "EmbedderError";
   }
@@ -165,7 +169,7 @@ export function createEmbedderClient(options: EmbedderClientOptions): EmbedderCl
       if (clock() < coolUntil) throw new EmbedderError("UNREACHABLE");
       const left = call?.deadline === undefined ? undefined : call.deadline - clock();
       // The caller's run is over (or too short for this call): nothing is sent.
-      if (left !== undefined && left < (attempt === 1 ? 1 : MIN_RETRY_WINDOW_MS)) throw new EmbedderError("UNREACHABLE");
+      if (left !== undefined && left < (attempt === 1 ? 1 : MIN_RETRY_WINDOW_MS)) throw new EmbedderError("UNREACHABLE", "deadline");
       let reply: unknown;
       try {
         reply = await invoke({ model: spec.model, kind, texts }, left === undefined ? undefined : { timeoutMs: left });
@@ -176,7 +180,7 @@ export function createEmbedderClient(options: EmbedderClientOptions): EmbedderCl
           await sleep(baseDelayMs * 2 ** (attempt - 1));
           continue;
         }
-        throw new EmbedderError("UNREACHABLE");
+        throw new EmbedderError("UNREACHABLE", code === TIMED_OUT ? "timeout" : code === "DeadlineAbort" || code === "DeadlineElapsed" ? "deadline" : undefined);
       }
       return checkEmbedderReply(reply, spec, texts.length);
     }

@@ -17,10 +17,13 @@ export type EmbedPurpose = "document" | "query";
 export class EmbedUnavailableError extends Error {
   /** One of the fixed embedder codes (safe to log), when the failure came from the embedder. */
   readonly reason: EmbedderErrorCode | undefined;
-  constructor(reason?: EmbedderErrorCode) {
+  /** `timeout`: the function had its full wait and did not answer; `deadline`: the caller's run left it too little time (EmbedderError.timing). Absent: any other fault. */
+  readonly timing: "timeout" | "deadline" | undefined;
+  constructor(reason?: EmbedderErrorCode, timing?: "timeout" | "deadline") {
     super("team-record: embedding unavailable");
     this.name = "EmbedUnavailableError";
     this.reason = reason;
+    this.timing = timing;
   }
 }
 
@@ -57,7 +60,7 @@ export function createEmbedder(config: EmbedConfig): Embedder {
       return { vector, truncated: truncated || trimmed.length > input.length };
     } catch (error) {
       // Every failure (the function, the network, a different model) is one fixed outcome; no text from the error leaves.
-      throw new EmbedUnavailableError(error instanceof EmbedderError ? error.code : undefined);
+      throw new EmbedUnavailableError(error instanceof EmbedderError ? error.code : undefined, error instanceof EmbedderError ? error.timing : undefined);
     }
   }
   return {

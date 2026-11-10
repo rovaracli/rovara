@@ -174,7 +174,7 @@ describe("the switch on: Public cloud", () => {
     const embedder = Object.entries(resources).filter(([, resource]) => resource.Type === "AWS::Lambda::Function" && resource.Properties.FunctionName === "agentx-staging-embedder");
     expect(embedder).toHaveLength(1);
     const properties = embedder[0]![1].Properties;
-    expect(properties).toMatchObject({ PackageType: "Image", Architectures: ["arm64"], MemorySize: 10240, Timeout: 180, ReservedConcurrentExecutions: 4, Code: { ImageUri: { Ref: "EmbedderImageUri" } } });
+    expect(properties).toMatchObject({ PackageType: "Image", Architectures: ["arm64"], MemorySize: 3008, Timeout: 180, ReservedConcurrentExecutions: 4, Code: { ImageUri: { Ref: "EmbedderImageUri" } } });
     expect(properties).not.toHaveProperty("Environment");
     expect((embedder[0]![1] as unknown as { Condition?: string }).Condition).toBeUndefined();
     // NO NETWORK: the function sits in two subnets of a VPC of its own with no gateway, no endpoint and no route but the local one, behind a security group with no egress rule (review H3).

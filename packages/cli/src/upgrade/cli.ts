@@ -2,6 +2,7 @@
 import { readTeamRecordSwitch } from "../deploy/team-record-switch.js";
 import { CloudFormationClient, GetTemplateCommand } from "@aws-sdk/client-cloudformation";
 import { SecretsManagerClient } from "@aws-sdk/client-secrets-manager";
+import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
 import { ECRClient } from "@aws-sdk/client-ecr";
 import { InvokeCommand, LambdaClient } from "@aws-sdk/client-lambda";
 import { DeleteObjectCommand, PutObjectCommand, S3Client } from "@aws-sdk/client-s3";
@@ -11,6 +12,8 @@ import { agentXError, bundleTrustParameter, type ApprovalRecord } from "@agentx/
 import type { Command } from "commander";
 import { cdkDiff } from "../deploy/cdk-engine.js";
 import { resolveDeployEdition } from "../deploy/edition.js";
+import { enforceTeamRecordPreflight, type TeamRecordProbe } from "../deploy/team-record-preflight.js";
+import { dynamoTeamRecordProbe } from "../deploy/team-record-probe.js";
 import { prepareDeployment, readlineAsk, realCommandRunner, type DeployCliDependencies } from "../deploy/commands.js";
 import { loadRelease } from "../deploy/release.js";
 import { realDoctorServices } from "../doctor/aws.js";
@@ -56,6 +59,8 @@ export interface UpgradeCommandContext {
   approvalStore?: (bucket: string, region: string) => ApprovalStore;
   /** Tests: runs the bundle's synthesis kit. */
   synthRunner?: SynthRunner;
+  /** Tests: the read-only check for a table left by a rolled-back Team record build (`bundle approve`). */
+  teamRecordProbe?: TeamRecordProbe;
 }
 
 function lambdaInvoker(client: LambdaClient): DeployerInvoker {
@@ -80,7 +85,7 @@ function s3ApprovalStore(client: S3Client, bucket: string): ApprovalStore {
 }
 
 /** An Enterprise install's approval: build the install's templates at approval from its recorded settings, show them, and write the approval that pins the result. */
-async function enterpriseApproval(context: UpgradeCommandContext, input: { bundle: VerifiedBundle; install: EnvironmentSettings; store: ParameterStore; aws: { region?: string }; caller: string; parameters: unknown; rollback: boolean; yes: boolean; beforeApproval: () => Promise<void>; approvalStore: ApprovalStore; writeBuildTo?: string; confirmFlag?: string }): Promise<ApprovalRecord> {
+async function enterpriseApproval(context: UpgradeCommandContext, input: { beforeBuild?: () => Promise<void>; bundle: VerifiedBundle; install: EnvironmentSettings; store: ParameterStore; aws: { region?: string }; caller: string; parameters: unknown; rollback: boolean; yes: boolean; beforeApproval: () => Promise<void>; approvalStore: ApprovalStore; writeBuildTo?: string; confirmFlag?: string }): Promise<ApprovalRecord> {
   const cloudFormation = new CloudFormationClient(input.aws);
   const { record } = await approveEnterpriseBundle({
     bundle: input.bundle, install: input.install, store: input.store, runner: context.synthRunner ?? nodeSynthRunner, approvalStore: input.approvalStore, approvedBy: input.caller, parameters: input.parameters,
@@ -93,7 +98,7 @@ async function enterpriseApproval(context: UpgradeCommandContext, input: { bundl
         throw error;
       }
     },
-    beforeApproval: input.beforeApproval,
+    ...(input.beforeBuild === undefined ? {} : { beforeBuild: input.beforeBuild }), beforeApproval: input.beforeApproval,
     ...(input.writeBuildTo === undefined ? {} : { writeBuildTo: input.writeBuildTo }), ...(input.confirmFlag === undefined ? {} : { confirmFlag: input.confirmFlag }),
   });
   return record;
@@ -193,6 +198,7 @@ export function registerUpgradeCommand(program: Command, context: UpgradeCommand
         doctor: overrides.doctor ?? ((env) => runDoctor({ env, store, services: (settings) => realDoctorServices({ settings, store, fetch: context.fetch, home: context.home, configDir: globals.configDir, stderr: context.stderr }) })),
         write,
         now: overrides.now ?? Date.now,
+        teamRecordProbe: overrides.teamRecordProbe ?? dynamoTeamRecordProbe(new DynamoDBClient(aws)),
         cliVersion: "cliVersion" in overrides ? overrides.cliVersion : RELEASE_VERSION,
       };
       const images = options.workerImage === undefined && options.slackImage === undefined && options.embedderImage === undefined && options.bootStage2Sha256 === undefined ? undefined : {
@@ -256,7 +262,12 @@ export function registerUpgradeCommand(program: Command, context: UpgradeCommand
         if (await installIsEnterprise(store, globals.env)) {
           // Owner decision 2026-10-31 (option A): an Enterprise install's templates are built here, at approval, from its own recorded settings. No option of this command
           // reaches the build; the only inputs are the verified bundle and the install's records.
-          record = await enterpriseApproval(context, { bundle, install: settings, store, aws, caller: caller.arn, parameters, rollback: options.rollback, yes: options.yes, beforeApproval: loadImages, approvalStore: store_, ...(options.writeBuild === undefined ? {} : { writeBuildTo: options.writeBuild }) });
+          // The same check as `agentx upgrade`: a table left by a rolled-back Team record build would fail the customer's deployer on "already exists", so it is found before the build is made and approved.
+          const beforeBuild = async () => enforceTeamRecordPreflight({
+            env: globals.env, store, controlPlaneParameters: (await cloudFormationStackReader(new CloudFormationClient(aws)).describe(settings.stacks["control-plane"]))?.parameters,
+            probe: context.teamRecordProbe ?? dynamoTeamRecordProbe(new DynamoDBClient(aws)), write: (line) => { context.stderr.write(`${line}\n`); }, stoppedMessage: "approval stopped before anything was built or approved",
+          });
+          record = await enterpriseApproval(context, { beforeBuild, bundle, install: settings, store, aws, caller: caller.arn, parameters, rollback: options.rollback, yes: options.yes, beforeApproval: loadImages, approvalStore: store_, ...(options.writeBuild === undefined ? {} : { writeBuildTo: options.writeBuild }) });
         } else {
           await loadImages();
           record = await approveBundle({ bundle, approvedBy: caller.arn, parameters, rollback: options.rollback, store: store_, now: Date.now });

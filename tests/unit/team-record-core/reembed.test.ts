@@ -2,7 +2,8 @@
 // outlives its row because of the job. Plus what ingest records on a row it embeds (the spec, a cut).
 import { describe, expect, it } from "vitest";
 import { TEAM_RECORD_EMBEDDER } from "@agentx/contracts";
-import { REEMBED_IDLE_MS, REEMBED_SWEEP_CURSOR_KEY, REEMBED_SWEEP_MAX_CHECKS, readReembedStates, reembedRows, reembedRun, sweepReembedState, sweepReembedStateRun, type ReembedBudget, type ReembedRun } from "../../../packages/broker/src/team-record/reembed.js";
+import { EMBED_TIMEOUTS_BEFORE_SKIP, LONG_TEXT_CHARS, REEMBED_IDLE_MS, TOO_LONG_RETRY_EPOCH, REEMBED_SWEEP_CURSOR_KEY, REEMBED_SWEEP_MAX_CHECKS, readReembedStates, reembedRows, reembedRun, sweepReembedState, sweepReembedStateRun, type ReembedBudget, type ReembedRun } from "../../../packages/broker/src/team-record/reembed.js";
+import { EmbedUnavailableError } from "../../../packages/broker/src/team-record/embed.js";
 import { eventFromItem } from "../../../packages/broker/src/team-record/store.js";
 import { expireRawText } from "../../../packages/broker/src/team-record/text-expiry.js";
 import type { RecordEmbedder } from "../../../packages/broker/src/team-record/types.js";
@@ -614,5 +615,170 @@ describe("one deadline for the whole run (review R3)", () => {
     // the next run continues with the rows that are left
     const next = jobEmbedder();
     expect(await runAll(w, next, BUDGET, 25_000)).toMatchObject({ details: { embedded: 3 } });
+  });
+});
+
+
+// Lane fix/0513-embedder-3gb: at 3,008 MB a text near the model's limit takes longer than the run. A long row must never stall a workspace's backlog, never hold more than one call, and never be tried forever.
+describe("a text too long for the function", () => {
+  const LONG = (tag: string) => `${tag} ${"x".repeat(LONG_TEXT_CHARS)}`;
+  /** An embedder that fails with the given timing for texts the predicate picks and embeds the rest; `concurrent` is the most calls in flight at once. */
+  function timingEmbedder(failFor: (text: string) => "timeout" | "deadline" | "other" | undefined, afterCall?: () => void) {
+    const base = jobEmbedder();
+    const state = { inFlight: 0, concurrent: 0, calls: base.calls };
+    const embedder = {
+      spec: SPEC, calls: base.calls, state,
+      async embed(text: string) { return (await embedder.embedWithInfo(text)).vector; },
+      async embedWithInfo(text: string) {
+        base.calls.push(text);
+        state.inFlight += 1;
+        state.concurrent = Math.max(state.concurrent, state.inFlight);
+        await Promise.resolve();
+        state.inFlight -= 1;
+        afterCall?.();
+        const failure = failFor(text);
+        if (failure === "other") throw new EmbedUnavailableError("UNREACHABLE");
+        if (failure !== undefined) throw new EmbedUnavailableError("UNREACHABLE", failure);
+        return { vector: [0.4, 0.5, 0.6], truncated: false };
+      },
+    };
+    return embedder;
+  }
+  const isLong = (text: string): boolean => text.length >= LONG_TEXT_CHARS;
+  const pendingRow = async (w: World, id: string, text: string) => { w.deps.embedder = jobEmbedder({ fail: true }); await put(w, id, { text }); };
+
+  it("counts each timeout on the row, does not stop the run for two long rows side by side, and keeps the short rows flowing", async () => {
+    const w = await setup();
+    await pendingRow(w, "long-1", LONG("one"));
+    await pendingRow(w, "long-2", LONG("two"));
+    await pendingRow(w, "short", "a short text");
+    const job = timingEmbedder((text) => (isLong(text) ? "timeout" : undefined));
+    const shared: ReembedRun = { deadline: w.clock.ms + DAY, warm: false, failuresInARow: 0 };
+    expect(await run(w, job, BUDGET, shared)).toMatchObject({ embedded: 1, failed: 2, more: false });
+    expect(shared.failuresInARow).toBe(0);
+    expect(w.logs.some((entry) => entry.event === "record.reembed_stopped")).toBe(false);
+    expect(stored(w, "short")).toMatchObject({ embeddingSpec: SPEC });
+    for (const id of ["long-1", "long-2"]) {
+      expect(stored(w, id)).toMatchObject({ embedPending: true, embedTimeouts: 1 });
+      expect(stored(w, id)).not.toHaveProperty("embedSkip");
+      expect(eventFromItem(stored(w, id))).toBeDefined(); // the strict schema still reads the row
+    }
+  });
+
+  it("marks a long row skipped at its second timeout, logs record.embed_too_long once, and then never asks for it again", async () => {
+    const w = await setup();
+    await pendingRow(w, "long-1", LONG("one"));
+    const job = timingEmbedder(() => "timeout");
+    await run(w, job);
+    await run(w, job);
+    expect(EMBED_TIMEOUTS_BEFORE_SKIP).toBe(2);
+    expect(stored(w, "long-1")).toMatchObject({ embedPending: true, embedTimeouts: 2, embedSkip: `${SPEC}:${TOO_LONG_RETRY_EPOCH}` });
+    expect(w.logs.filter((entry) => entry.event === "record.embed_too_long")).toEqual([{ event: "record.embed_too_long", fields: { kind: expect.any(String) as string } }]);
+    const asked = job.calls.length;
+    await run(w, job);
+    await run(w, job);
+    expect(job.calls.length).toBe(asked);
+    expect(w.logs.filter((entry) => entry.event === "record.embed_too_long")).toHaveLength(1);
+    // The row is still there and still reads (keyword search finds it), and its text is intact.
+    expect(eventFromItem(stored(w, "long-1"))).toMatchObject({ text: LONG("one") });
+  });
+
+  it("tries a skipped row again after a spec change or a new retry epoch, and a vector clears the marks", async () => {
+    const w = await setup();
+    await pendingRow(w, "long-1", LONG("one"));
+    const row = stored(w, "long-1");
+    row.embedTimeouts = 2;
+    row.embedSkip = `0123456789abcdef:${TOO_LONG_RETRY_EPOCH}`; // another spec
+    w.db.set(row);
+    const job = timingEmbedder(() => undefined);
+    expect(await run(w, job)).toMatchObject({ embedded: 1 });
+    expect(stored(w, "long-1")).toMatchObject({ embeddingSpec: SPEC });
+    expect(stored(w, "long-1")).not.toHaveProperty("embedTimeouts");
+    expect(stored(w, "long-1")).not.toHaveProperty("embedSkip");
+    expect(stored(w, "long-1")).not.toHaveProperty("embedPending");
+  });
+
+  it("does not skip a long row for a timeout that only a short row would also have had: other faults and a deadline cut mark nothing", async () => {
+    const w = await setup();
+    await pendingRow(w, "long-1", LONG("one"));
+    for (const failure of ["other", "deadline"] as const) {
+      const shared: ReembedRun = { deadline: w.clock.ms + DAY, warm: false, failuresInARow: 0 };
+      await run(w, timingEmbedder(() => failure), BUDGET, shared);
+      expect(stored(w, "long-1")).not.toHaveProperty("embedTimeouts");
+      expect(shared.failuresInARow).toBe(failure === "other" ? 1 : 0);
+    }
+  });
+
+  it("a call cut by the run's end counts for nothing: two of them do not stop the run", async () => {
+    const w = await setup();
+    for (const id of ["a", "b", "c"]) await pendingRow(w, id, `text ${id}`);
+    let cut = 0;
+    const job = timingEmbedder(() => (cut++ < 2 ? "deadline" : undefined));
+    const shared: ReembedRun = { deadline: w.clock.ms + DAY, warm: false, failuresInARow: 0 };
+    expect(await run(w, job, BUDGET, shared)).toMatchObject({ embedded: 1, failed: 2 });
+    expect(w.logs.some((entry) => entry.event === "record.reembed_stopped")).toBe(false);
+  });
+
+  it("two 3,000-character rows that time out side by side are counted, then skipped at the second timeout, and the run and its cursor move on", async () => {
+    // Under the long-row size, but 3,000 characters of CJK, code or a log can reach the 2,048-token cap: the cost is tokens, not characters.
+    const w = await setup();
+    const heavy = (tag: string) => `${tag} ${"x".repeat(3_000)}`;
+    await pendingRow(w, "heavy-1", heavy("one"));
+    await pendingRow(w, "heavy-2", heavy("two"));
+    await pendingRow(w, "after", "a short text behind them");
+    const job = timingEmbedder((text) => (text.includes("x".repeat(3_000)) ? "timeout" : undefined));
+    const shared = (): ReembedRun => ({ deadline: w.clock.ms + DAY, warm: false, failuresInARow: 0 });
+    const first = shared();
+    expect(await run(w, job, BUDGET, first)).toMatchObject({ embedded: 1, failed: 2, more: false });
+    expect(first.failuresInARow).toBe(0);
+    expect(w.logs.some((entry) => entry.event === "record.reembed_stopped")).toBe(false);
+    for (const id of ["heavy-1", "heavy-2"]) expect(stored(w, id)).toMatchObject({ embedPending: true, embedTimeouts: 1 });
+    expect(stored(w, "after")).toMatchObject({ embeddingSpec: SPEC });
+    // The pass reached its end: the cursor is not held at the page that the two rows are on.
+    expect((await readReembedStates(w.table)).get(ORG_A)).toMatchObject({ passWork: 0 });
+    await run(w, job, BUDGET, shared());
+    for (const id of ["heavy-1", "heavy-2"]) expect(stored(w, id)).toMatchObject({ embedTimeouts: 2, embedSkip: `${SPEC}:${TOO_LONG_RETRY_EPOCH}` });
+    expect(w.logs.filter((entry) => entry.event === "record.embed_too_long")).toHaveLength(2);
+    const asked = job.calls.length;
+    await run(w, job, BUDGET, shared());
+    expect(job.calls.length).toBe(asked);
+  });
+
+  it("an embedder that is down (refused, a 5xx: not a timeout) still stops the run after two failures, and marks no row", async () => {
+    const w = await setup();
+    for (const id of ["a", "b", "c"]) await pendingRow(w, id, `text ${id}`);
+    const job = timingEmbedder(() => "other");
+    expect(await run(w, job)).toMatchObject({ failed: 2, more: true });
+    expect(w.logs.some((entry) => entry.event === "record.reembed_stopped")).toBe(true);
+    for (const id of ["a", "b", "c"]) expect(stored(w, id)).not.toHaveProperty("embedTimeouts");
+  });
+
+  it("starts a long row only when a whole cold wait is left, so at most one long call fits in a run, and never two at once", async () => {
+    const w = await setup();
+    await pendingRow(w, "long-1", LONG("one"));
+    await pendingRow(w, "long-2", LONG("two"));
+    const budget: ReembedBudget = { ...BUDGET, callMs: 20_000, warmCallMs: 1_000 };
+    // Not enough left for a long row, although the function is warm: nothing is asked and the page stays for the next run.
+    const tight = timingEmbedder(() => undefined);
+    expect(await run(w, tight, budget, { deadline: w.clock.ms + 10_000, warm: true, failuresInARow: 0 })).toMatchObject({ embedded: 0, more: true });
+    expect(tight.calls).toEqual([]);
+    // Enough for one: the first call takes 15 s of the run, which leaves too little for the second.
+    const one = timingEmbedder(() => undefined, () => { w.clock.ms += 15_000; });
+    expect(await run(w, one, budget, { deadline: w.clock.ms + 30_000, warm: false, failuresInARow: 0 })).toMatchObject({ embedded: 1, more: true });
+    expect(one.calls).toHaveLength(1);
+    expect(one.state.concurrent).toBe(1);
+  });
+
+  it("the raw-text expiry removes the marks with the text", async () => {
+    const w = await setup();
+    await pendingRow(w, "long-1", LONG("one"));
+    const row = stored(w, "long-1");
+    row.embedTimeouts = 2;
+    row.embedSkip = `${SPEC}:${TOO_LONG_RETRY_EPOCH}`;
+    w.db.set(row);
+    w.clock.ms += 40 * DAY;
+    expect(await expireRawText({ table: w.table, vectors: w.vectors, now: () => w.clock.ms }, ORG_A)).toMatchObject({ expired: 1 });
+    expect(stored(w, "long-1")).not.toHaveProperty("embedSkip");
+    expect(stored(w, "long-1")).not.toHaveProperty("embedTimeouts");
   });
 });

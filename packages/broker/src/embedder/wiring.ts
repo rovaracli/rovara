@@ -7,7 +7,7 @@ import { createEmbedderClient, type EmbedderCall, type EmbedderClient, type Embe
 /**
  * The longest the broker waits for the function on the SEARCH path: a person is waiting, and the broker's own limit is 30 s. A cold start loads the model on the first call; the function keeps
  * running when the wait ends and is warm for a later call. The search does NOT try again at once (review R4): the first call is still busy in its container, a Lambda environment serves one
- * request at a time, so a second call would start a second cold container (10 GB) and take a second of the function's few reserved slots. A search whose wait ran out answers by keyword, and for
+ * request at a time, so a second call would start a second cold container (3,008 MB) and take a second of the function's few reserved slots. A search whose wait ran out answers by keyword, and for
  * `EMBEDDER_SEARCH_COOLDOWN_MS` afterwards THIS broker container sends the function no more search calls. The pause is per container (a Lambda environment serves one request at a time, so searches
  * that arrive together run in different containers, each with its own pause): it stops one container from starting a second cold embedder for the same person, but a burst of simultaneous cold searches
  * can still start several (up to the function's reserved slots). The remedy for that is keeping the function warm (provisioned concurrency), not this pause.
@@ -71,7 +71,7 @@ export function lessonEmbedderOver(client: EmbedderClient): LessonEmbedder {
  * The lessons' wait (round 2, N4). Lessons use the embedder inside a dispatch (the loader races it for 300 ms) and in the curator (5 s), and both pass their race down as the call's deadline, so a call never waits past
  * its race whatever this is; this is the ceiling for a caller that passes none (the nightly measure). A container still loading its models is NOT asked again: after a timeout this broker container sends the function no
  * more lesson calls for `EMBEDDER_LESSON_COOLDOWN_MS` (the lessons rank by keywords and paths meanwhile), because the abandoned call keeps its cold container busy and a second call would start another
- * (10 GB) and take another of the function's few reserved slots, which the Team record's search and ingest share. The load path has no throttle retry: a retry needs a second of the call's deadline, and the load's is 300 ms.
+ * cold container and take another of the function's few reserved slots, which the Team record's search and ingest share. The load path has no throttle retry: a retry needs a second of the call's deadline, and the load's is 300 ms.
  */
 export const EMBEDDER_LESSON_WAIT_MS = 5_000;
 export const EMBEDDER_LESSON_COOLDOWN_MS = 20_000;

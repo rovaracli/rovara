@@ -197,6 +197,10 @@ export const RecordEventSchema = z.object({
   /** True when the text was longer than the model's token budget and the vector stands for the part that fit. Never a silent cut. */
   embeddingTruncated: z.boolean().optional(),
   embedPending: z.boolean().optional(),
+  /** Re-embed job: how many times a LONG text (reembed.ts LONG_TEXT_CHARS) timed out in the embedder. Two mark the row `embedSkip`. Cleared when the vector is made. */
+  embedTimeouts: z.number().int().min(0).max(100).optional(),
+  /** Re-embed job: "<spec>:<retry epoch>" of the embedder the row was too long for. The job skips the row while this equals the current value (it stays keyword-searchable); a new spec or a new retry epoch (reembed.ts) tries it again. */
+  embedSkip: z.string().min(1).max(80).optional(),
   retention: RetentionModeSchema,
   textExpiresAt: EpochSeconds.optional(),
   hotExpiresAt: EpochSeconds,

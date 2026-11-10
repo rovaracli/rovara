@@ -27,6 +27,15 @@ describe("the Team record's embedding model", () => {
   });
 });
 
+describe("the Team record's embedder reports why a call ended", () => {
+  it("carries the client's timing (timeout, deadline) to the caller, and none for any other fault", async () => {
+    const through = async (code: string): Promise<EmbedUnavailableError> => createEmbedder({ client: clientOver(async () => { throw Object.assign(new Error("secret text"), { code }); }) }).embed("a").then(() => { throw new Error("expected a refusal"); }, (error: unknown) => error as EmbedUnavailableError);
+    expect(await through("AbortError")).toMatchObject({ name: "EmbedUnavailableError", timing: "timeout" });
+    expect(await through("DeadlineAbort")).toMatchObject({ timing: "deadline" });
+    expect((await through("AccessDeniedException")).timing).toBeUndefined();
+  });
+});
+
 describe("the Team record's embedder", () => {
   it("embeds a document or a query through the function and exposes the model, revision and spec", async () => {
     const seen: Array<{ kind: string; texts: string[] }> = [];

@@ -9,6 +9,7 @@ import type { DoctorReport } from "../../packages/cli/src/doctor/checks.js";
 import type { StackDescription } from "../../packages/cli/src/environments/adopt.js";
 import { lockParameterName } from "../../packages/cli/src/environments/lock.js";
 import { readEnvironmentSettings, writeEnvironmentSettings } from "../../packages/cli/src/environments/settings.js";
+import { writeTeamRecordRecord } from "../../packages/cli/src/deploy/team-record-switch.js";
 import { writeSlackTeamId } from "../../packages/cli/src/signin/settings.js";
 import { executeCli } from "../../packages/cli/src/main.js";
 import { prepareDeployment } from "../../packages/cli/src/deploy/commands.js";
@@ -534,6 +535,35 @@ describe("agentx upgrade with the cdk engine", () => {
       h.deps.prepare = async (input) => { seen.push({ ...(input.embedderImage === undefined ? {} : { embedderImage: input.embedderImage }), ...(input.deployedEmbedderImage === undefined ? {} : { deployedEmbedderImage: input.deployedEmbedderImage }) }); return prepare(input); };
       await runUpgrade({ ...options, source: "/src", ...(images === undefined ? {} : { images }) }, h.deps);
       expect(seen, stackValue).toEqual([expected]);
+    }
+  });
+
+  // Lane fix/0513-embedder-3gb: a table left by a rolled-back Team record build fails the next build on "already exists"; the first build is refused before anything is prepared or changed.
+  it("before the first Team record build, stops on a left-over record table and changes nothing; a built record or a clear account is not stopped", async () => {
+    const base = { GitHubAppId: "123", GitHubAppPrivateKeySecretArn: "arn:aws:secretsmanager:us-east-1:123456789012:secret:agentx/staging/github-app-AbCdEf", BudgetMonthlyUsd: "250", CallbackSigningKey: "****" };
+    for (const [controlPlane, probeAnswer, expectation] of [
+      [base, { exists: true, itemCount: 0, deletionProtected: true }, "refused"],
+      [base, { exists: false }, "ran"],
+      [{ ...base, TeamRecordEnabled: "1" }, { exists: true, itemCount: 12 }, "ran"],
+    ] as const) {
+      const asked: string[] = [];
+      const h = await cdk({ cliVersion: undefined, controlPlane, sourceRelease: async () => release("1.3.0") });
+      await writeTeamRecordRecord(h.store, "staging", { enabled: true, options: {} });
+      h.deps.teamRecordProbe = { tableState: async (name) => { asked.push(name); return probeAnswer; } };
+      const prepared: string[] = [];
+      const prepare = h.deps.prepare.bind(h.deps);
+      h.deps.prepare = async (input) => { prepared.push("prepare"); return prepare(input); };
+      const run = runUpgrade({ ...options, source: "/src" }, h.deps);
+      if (expectation === "refused") {
+        await expect(run).rejects.toThrow(/agentx-staging-team-record exists.*left over from an earlier try/s);
+        expect(prepared).toEqual([]);
+        expect(h.deployer.deployed).toEqual([]);
+        expect(asked).toEqual(["agentx-staging-team-record"]);
+      } else {
+        await run;
+        expect(prepared).toEqual(["prepare"]);
+        expect(asked).toEqual(controlPlane === base ? ["agentx-staging-team-record"] : []);
+      }
     }
   });
 
