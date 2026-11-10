@@ -49,6 +49,10 @@ const MAP: Partial<Record<LessonAuditEvent["action"], Mapped>> = {
   "lesson.repo_file_pr_opened": { action: "lesson.repo_file_pr_opened", facts: (e) => ({ removals: num(e.facts["removals"]), edits: num(e.facts["edits"]), adds: num(e.facts["adds"]) }) },
   "lesson.repo_file_pr_closed": { action: "lesson.repo_file_pr_closed", facts: (e) => ({ cause: word(e.facts["cause"], "replaced"), pullRequest: num(e.facts["pullRequest"]) }) },
   "lesson.repo_file_switched": { action: "lesson.repo_file_switched", facts: (e) => ({ enabled: e.facts["enabled"] === true }) },
+  // Lane 7: an operator starts a replay copy of a past task (ids, fixed words and counts only; written BEFORE the copy is started), and a frozen snapshot is created for it.
+  "lesson.replay_started": { action: "lesson.replay_started", facts: (e) => ({ operator: modelWord(e.facts["operator"]), memory: word(e.facts["memory"], "off"), snapshotLessons: num(e.facts["snapshotLessons"]), maxCents: num(e.facts["maxCents"]), sourceTask: modelWord(e.facts["sourceTask"]) }) },
+  "lesson.replay_read": { action: "lesson.replay_read", facts: (e) => ({ operator: modelWord(e.facts["operator"]), what: word(e.facts["what"], "subject"), maxCents: num(e.facts["maxCents"]), target: modelWord(e.facts["target"]) }) },
+  "lesson.snapshot_created": { action: "lesson.snapshot_created", facts: (e) => ({ lessonSetVersion: num(e.facts["lessonSetVersion"]), lessonCount: num(e.facts["lessonCount"]) }) },
   // Stable makes a lesson publishable to a repository, so it is on the ledger.
   "lesson.trial_stable": { action: "lesson.trial_stable", facts: (e) => ({ tier: num(e.facts["tier"]) }) },
   "lesson.sole_owner_switch_proposed": { action: "lesson.sole_owner_switch_proposed", facts: (e) => ({ fromEnabled: e.facts["from"] === true, toEnabled: e.facts["to"] === true }) },

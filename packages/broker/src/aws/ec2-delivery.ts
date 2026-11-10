@@ -6,6 +6,7 @@ import {
   AGENT_STEP_FEATURE,
   AGENT_WORKER_OUTDATED,
   LEARNED_CONTEXT_FEATURE,
+  EVAL_FILES_FEATURE,
   MODEL_ROUTE_FEATURE,
   E2E_AGENT_MODEL_CHOICE_FEATURE,
   E2E_AGENT_STEPS_FEATURE,
@@ -50,6 +51,7 @@ import {
   workflowPublicationContextDigest,
   type E2EWorkflowAdmissionRef,
   type Ec2RuntimeBinding,
+  type EvalFilesPayload,
   type LearnedContext,
   type LearnedRefs,
   type WorkerInvocation,
@@ -146,6 +148,8 @@ export interface Ec2DeliveryDependencies {
    * is no lessons (the stage still runs, as without memory). Without it no lessons are sent.
    */
   learnedFromRefs?: (refs: LearnedRefs) => Promise<LearnedContext | undefined>;
+  /** Lane 7, the file arm: builds the files a replay copy's checkout is given, from its refs, at delivery. Without it a copy that asks for files is not sent (see `withLearnedContext`). */
+  evalFilesFromRefs?: (refs: LearnedRefs) => Promise<EvalFilesPayload | undefined>;
   remainingTimeMs?: () => number;
   now?: () => number;
 }
@@ -217,7 +221,7 @@ export function createEc2Delivery(dependencies: Ec2DeliveryDependencies) {
     const applicationAdmission = invocation.kind === "task" && invocation.payload.workflowE2EAdmission?.kind === "application" ? invocation.payload.workflowE2EAdmission : undefined;
     const modelChoice = applicationAdmission === undefined || dependencies.workflowE2EAdmissionNeedsModelChoice === undefined ? undefined
       : () => dependencies.workflowE2EAdmissionNeedsModelChoice!(applicationAdmission);
-    const sent = await forWorker(invocation, `http://${session.privateIp}:${WORKER_PORT}/ping`, dependencies.workerFeatures, admissionSchemaVersion, needsModelFreeLimits, modelChoice, dependencies.learnedFromRefs);
+    const sent = await forWorker(invocation, `http://${session.privateIp}:${WORKER_PORT}/ping`, dependencies.workerFeatures, admissionSchemaVersion, needsModelFreeLimits, modelChoice, dependencies.learnedFromRefs, dependencies.evalFilesFromRefs);
     if (invocation.kind === "task" && invocation.payload.workflowE2EPlanVersion !== undefined
       && !(sent.kind === "task" && sent.payload.workflowE2EPlanVersion !== undefined)) {
       // Without the recorder the operation record would keep saying version 2 was offered while the worker was sent a portable-only run, so the broker would
@@ -351,9 +355,10 @@ async function forWorker(
   needsModelFreeLimits = false,
   modelChoice?: () => Promise<boolean | undefined>,
   learnedFromRefs?: Ec2DeliveryDependencies["learnedFromRefs"],
+  evalFilesFromRefs?: Ec2DeliveryDependencies["evalFilesFromRefs"],
 ): Promise<WorkerInvocation> {
   // The CLI's stored model check results (`lastCheck`) are not for workers, and a worker built before them refuses the whole invocation for an unknown key: they never go out.
-  return forWorkerFeatures(withoutLastCheck(invocation), pingUrl, workerFeatures, admissionSchemaVersion, needsModelFreeLimits, modelChoice, learnedFromRefs);
+  return forWorkerFeatures(withoutLastCheck(invocation), pingUrl, workerFeatures, admissionSchemaVersion, needsModelFreeLimits, modelChoice, learnedFromRefs, evalFilesFromRefs);
 }
 
 async function forWorkerFeatures(
@@ -364,6 +369,7 @@ async function forWorkerFeatures(
   needsModelFreeLimits = false,
   modelChoice?: () => Promise<boolean | undefined>,
   learnedFromRefs?: Ec2DeliveryDependencies["learnedFromRefs"],
+  evalFilesFromRefs?: Ec2DeliveryDependencies["evalFilesFromRefs"],
 ): Promise<WorkerInvocation> {
   const requestedThinkingLevel = carriedThinkingLevel(invocation);
   const carriesReadiness = invocation.kind === "task" && invocation.payload.readiness !== undefined;
@@ -858,7 +864,7 @@ async function forWorkerFeatures(
       workspaceId: invocation.workspaceId,
     }));
   }
-  const withLessons = await withLearnedContext(sent, features, learnedFromRefs);
+  const withLessons = await withLearnedContext(sent, features, learnedFromRefs, evalFilesFromRefs);
   if (withLessons.omitted) {
     console.log(JSON.stringify({ component: "dispatcher", event: "dispatch.learned_context_omitted", reason: withLessons.reason, operationId: invocation.operationId, workspaceId: invocation.workspaceId }));
   }
@@ -871,7 +877,7 @@ async function forWorkerFeatures(
  * without lessons, which is safe. A lookup that fails sends no lessons: the stage still runs, as without memory. A stage queued before this change may still carry a stored `learnedContext` (lesson text in the queue):
  * it is dropped, never delivered unchecked.
  */
-export async function withLearnedContext(invocation: WorkerInvocation, features: readonly string[], resolve?: Ec2DeliveryDependencies["learnedFromRefs"]): Promise<{ invocation: WorkerInvocation; omitted: boolean; reason: string }> {
+export async function withLearnedContext(invocation: WorkerInvocation, features: readonly string[], resolve?: Ec2DeliveryDependencies["learnedFromRefs"], resolveFiles?: Ec2DeliveryDependencies["evalFilesFromRefs"]): Promise<{ invocation: WorkerInvocation; omitted: boolean; reason: string }> {
   if (invocation.kind !== "task") return { invocation, omitted: false, reason: "" };
   const { learnedRefs: refs, ...payload } = invocation.payload;
   if (refs === undefined) {
@@ -884,6 +890,15 @@ export async function withLearnedContext(invocation: WorkerInvocation, features:
   // The refs never go to a worker, and nothing the refs replace is kept: the lessons are the resolved ones or none.
   const { learnedContext: _stored, ...rest } = payload;
   void _stored;
+  // Lane 7, the file arm: a replay copy's lessons are a file in its checkout, not a prompt block. The step is sent only to a worker that places it (an older one would run the arm with no file and say nothing), and only with the
+  // file built NOW from the copy's frozen snapshot; a file that cannot be built is no lessons (the arm records that it loaded nothing).
+  if (refs.file !== undefined) {
+    if (!features.includes(EVAL_FILES_FEATURE)) throw agentXError("RUNTIME_UNAVAILABLE", AGENT_WORKER_OUTDATED);
+    let files: EvalFilesPayload | undefined;
+    try { files = resolveFiles === undefined ? undefined : await resolveFiles(refs); } catch { files = undefined; }
+    if (files === undefined) return { invocation: { ...invocation, payload: rest }, omitted: true, reason: "no_lessons_at_delivery" };
+    return { invocation: { ...invocation, payload: { ...rest, evalFiles: files } }, omitted: false, reason: "" };
+  }
   if (!features.includes(LEARNED_CONTEXT_FEATURE)) return { invocation: { ...invocation, payload: rest }, omitted: true, reason: "worker_lacks_feature" };
   let context: LearnedContext | undefined;
   try { context = resolve === undefined ? undefined : await resolve(refs); } catch { context = undefined; }

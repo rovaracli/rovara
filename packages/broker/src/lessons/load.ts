@@ -36,7 +36,7 @@ export interface LoadRequest {
   repos: readonly string[]; files: readonly string[]; languages: readonly string[];
   taskAudience: TaskAudience;
   /** Only an eval-batch dispatch may ask for `off`; the broker route refuses it from production (design §4.13, task L8). */
-  memory?: { mode: "off" | "live" };
+  memory?: { mode: "off" | "live" } | { mode: "snapshot"; snapshotId: string; /** EXACTLY these lessons (the snapshot's, at its versions): the live set is never read. The caller (a replay copy's dispatch) resolved them. */ lessons: readonly Lesson[] };
 }
 export type LoadSkip = "mode" | "stage" | "memory_off" | "index_unreachable" | "no_lessons" | "access_unavailable" | "members_unavailable";
 export interface LoadResult { context?: LearnedContext; manifest: LoadManifest; skipped?: LoadSkip }
@@ -190,13 +190,20 @@ export async function loadLessonsForStage(deps: LoadDeps, request: LoadRequest):
   if (request.stage === "CHECKS") return empty("stage");
   const stage = request.stage;
   const resolved = await resolveLearning(deps.settings, key.workspaceId, key.project);
-  if (!modeAllows(resolved.mode, "load")) return empty("mode");
+  // Lane 7: a replay copy given a frozen snapshot is explicitly delivered those lessons whatever the install's lessons switch says (the harness names this in its plan, decision 47), but the project's OWN mode still
+  // decides (a project with lessons Off gets none). The live set is never read for it.
+  const snapshot = request.memory?.mode === "snapshot" ? request.memory : undefined;
+  if (!modeAllows(snapshot === undefined ? resolved.mode : resolved.chosenMode, "load")) return empty("mode");
 
   let setVersion = 0;
   let active: Lesson[];
   try {
-    setVersion = await deps.store.setVersion(key);
-    active = (await deps.store.list(key, { statuses: ["active"] })).filter((l) => l.expiresAt > now && !hasStaleCitation(l));
+    if (snapshot !== undefined) {
+      active = snapshot.lessons.filter((l) => l.workspaceId === key.workspaceId && l.project === key.project && l.status === "active" && !hasStaleCitation(l));
+    } else {
+      setVersion = await deps.store.setVersion(key);
+      active = (await deps.store.list(key, { statuses: ["active"] })).filter((l) => l.expiresAt > now && !hasStaleCitation(l));
+    }
   } catch {
     // Fail closed: with the store unreachable the task runs as it would without memory.
     deps.metrics?.count("learning_load_skipped", { reason: "index_unreachable" });
@@ -209,6 +216,7 @@ export async function loadLessonsForStage(deps: LoadDeps, request: LoadRequest):
     deps.metrics?.count("learning_load_skipped", { reason: "members_unavailable" });
     return empty("members_unavailable", setVersion);
   }
+  // A snapshot's lessons are held to the SAME approval rule as live ones (no bypass): the arm's export already kept only what is delivered without a person, and the project's own rules decide it again here.
   active = active.filter((l) => approvedForUse(l, resolved.approval, member, resolved.trialAllowed));
 
   // The access records, asked now for the places each candidate lesson was learned from (one batch for the whole load). A record that cannot be read loads nothing.
@@ -297,7 +305,7 @@ export async function loadLessonsForStage(deps: LoadDeps, request: LoadRequest):
     priorLoaded = [...seen.values()].filter((entry) => shown.has(entry.id));
   }
 
-  const manifest: LoadManifest = { taskId: request.taskId, workspaceId: key.workspaceId, project: key.project, stage, round: request.round, setVersion, memory: "live", at: now, lessons: entries, bytes };
+  const manifest: LoadManifest = { taskId: request.taskId, workspaceId: key.workspaceId, project: key.project, stage, round: request.round, setVersion, memory: snapshot === undefined ? "live" : "snapshot", ...(snapshot === undefined ? {} : { snapshotId: snapshot.snapshotId }), at: now, lessons: entries, bytes };
   await deps.store.putManifest(manifest);
   // `loaded` is counted when the worker reports the lesson reached the prompt (applyLoadReport), not here: a lesson the worker dropped was never loaded.
   if (chosen.length === 0 && priorLoaded === undefined) return { manifest, skipped: "no_lessons" };

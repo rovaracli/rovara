@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { randomUUID } from "node:crypto";
 import { realpathSync } from "node:fs";
-import { open, rename, rm } from "node:fs/promises";
+import { open, readFile, rename, rm } from "node:fs/promises";
 import { homedir } from "node:os";
 import { basename, dirname, extname, join, resolve } from "node:path";
 import { createInterface } from "node:readline";
@@ -39,6 +39,7 @@ import { bindSlackChannel, connectSlackTeam, disconnectSlackTeam, unbindSlackCha
 import { stopWorkspace } from "./admin/stop.js";
 import { setTaskShareMode } from "./admin/task-share-mode.js";
 import { showTaskE2EReplays, startTaskE2EReplay } from "./admin/task-e2e-replay.js";
+import { approveTaskLessonsReplay, callLessonsReplayModel, closeTaskLessonsReplay, evidenceTaskLessonsReplay, importLessonsReplaySnapshot, settingsLessonsReplay, showTaskLessonsReplay, startTaskLessonsReplay, subjectLessonsReplay } from "./admin/task-lessons-replay.js";
 import { cancelWorkspaceTask } from "./admin/cancel.js";
 import { askToApply, exportChanges, runCliChange } from "./admin/changes.js";
 import { batchResultsOutput, evalBatchShowText, evalBatchStartText, fetchEvalBatchResults, showEvalBatch, startEvalBatch, stopEvalBatch } from "./admin/eval-batch.js";
@@ -1913,6 +1914,90 @@ export function createCliProgram(dependencies: CliDependencies = {}): Command {
       const { settings, accessToken } = await authenticate(globals, services.tokenStore);
       const result = await showTaskE2EReplays({ controlPlaneUrl: settings.controlPlaneUrl, accessToken, taskId: options.task, ...(options.round === undefined ? {} : { roundId: options.round }) }, services.fetchImplementation);
       services.stdout.write(formatSuccess(result, globals.json));
+    });
+
+  // Lane 7: a replay COPY of a past task, to measure the lessons (marked at creation, never shared or published, its spend held to --max-usd).
+  const taskLessonsReplay = adminTask.command("lessons-replay").description("make a replay copy of a past task to measure the lessons: marked at creation, never shared or published, with no lessons or one frozen snapshot");
+  taskLessonsReplay.command("start")
+    .description("start a copy of the past task")
+    .requiredOption("--task <task-id>", "the past task")
+    .requiredOption("--request-id <id>", "an ID for this start (a repeat of it starts nothing new)")
+    .requiredOption("--memory <memory>", "off, or snapshot:<snapshot id>")
+    .requiredOption("--max-usd <usd>", "the most the copy may spend, in US dollars")
+    .option("--lessons <file>", "a JSON list of { id, version } that makes a snapshot of the install's live lessons, when it does not exist yet")
+    .option("--file", "the file arm: the install places the snapshot's lessons as .rovara/lessons.md (and its pointer) in the copy's checkout, and pushes nothing")
+    .action(async (options: { task: string; requestId: string; memory: string; maxUsd: string; lessons?: string; file?: boolean }, command: Command) => {
+      if (!uuidPattern.test(options.task) || !uuidPattern.test(options.requestId)) throw agentXError("CONFIG_INVALID", "--task and --request-id must be IDs, such as 44444444-4444-4444-8444-444444444444");
+      const snapshot = /^snapshot:(snp_[0-9a-f]{20})$/.exec(options.memory);
+      if (options.memory !== "off" && snapshot === null) throw agentXError("CONFIG_INVALID", "--memory is off or snapshot:<snapshot id>");
+      const maxUsd = Number(options.maxUsd);
+      if (!Number.isFinite(maxUsd) || maxUsd <= 0) throw agentXError("CONFIG_INVALID", "--max-usd must be a positive number");
+      const lessons = options.lessons === undefined ? undefined : JSON.parse(await readFile(options.lessons, "utf8")) as Array<{ id: string; version: number }>;
+      if (lessons !== undefined && snapshot === null) throw agentXError("CONFIG_INVALID", "--lessons goes with --memory snapshot:<id>");
+      const globals = globalOptions(command);
+      const { settings, accessToken } = await authenticate(globals, services.tokenStore);
+      const body = { requestId: options.requestId, maxUsd, memory: snapshot === null ? { mode: "off" as const } : { mode: "snapshot" as const, snapshotId: snapshot[1]!, ...(lessons === undefined ? {} : { lessons }) }, ...(options.file === true ? { file: true as const } : {}) };
+      const result = await startTaskLessonsReplay({ controlPlaneUrl: settings.controlPlaneUrl, accessToken, taskId: options.task, body }, services.fetchImplementation);
+      services.stdout.write(formatSuccess(result, globals.json));
+    });
+  const replayTask = (name: string, description: string, run: (input: { controlPlaneUrl: string; accessToken: string; taskId: string }, fetchImplementation: typeof fetch) => Promise<unknown>) => taskLessonsReplay.command(name)
+    .description(description).requiredOption("--task <task-id>", "the replay copy")
+    .action(async (options: { task: string }, command: Command) => {
+      if (!uuidPattern.test(options.task)) throw agentXError("CONFIG_INVALID", "--task must be an ID, such as 44444444-4444-4444-8444-444444444444");
+      const globals = globalOptions(command);
+      const { settings, accessToken } = await authenticate(globals, services.tokenStore);
+      services.stdout.write(formatSuccess(await run({ controlPlaneUrl: settings.controlPlaneUrl, accessToken, taskId: options.task }, services.fetchImplementation), globals.json));
+    });
+  replayTask("approve", "approve the copy's waiting plan (a replay copy and nothing else)", approveTaskLessonsReplay);
+  replayTask("close", "close a replay copy once it is graded", closeTaskLessonsReplay);
+  replayTask("evidence", "read what a grader needs of a copy: its request, its change and the past task's merged change", evidenceTaskLessonsReplay);
+  taskLessonsReplay.command("show")
+    .description("read a replay copy (a task that is not a copy is not found)")
+    .requiredOption("--task <task-id>", "the copy")
+    .action(async (options: { task: string }, command: Command) => {
+      if (!uuidPattern.test(options.task)) throw agentXError("CONFIG_INVALID", "--task must be an ID, such as 44444444-4444-4444-8444-444444444444");
+      const globals = globalOptions(command);
+      const { settings, accessToken } = await authenticate(globals, services.tokenStore);
+      const result = await showTaskLessonsReplay({ controlPlaneUrl: settings.controlPlaneUrl, accessToken, taskId: options.task }, services.fetchImplementation);
+      services.stdout.write(formatSuccess(result, globals.json));
+    });
+
+  // Lane 7 (DECISIONS 68): the replay's project-level calls (a company owner or admin).
+  const lessonsReplay = admin.command("lessons-replay").description("the lessons replay: import an arm's offline lessons as a frozen snapshot, and make one model call for a grading or an offline pipeline");
+  lessonsReplay.command("import-snapshot")
+    .description("import the lessons an arm's pipeline built offline (a JSON list of lessons) as one frozen snapshot of the project; prints the snapshot id")
+    .requiredOption("--project <project>", "the project").requiredOption("--pipeline <label>", "the pipeline's label, such as current").requiredOption("--day <date>", "the simulated day, YYYY-MM-DD").requiredOption("--file <path>", "the lessons, JSON")
+    .action(async (options: { project: string; pipeline: string; day: string; file: string }, command: Command) => {
+      const globals = globalOptions(command);
+      const { settings, accessToken } = await authenticate(globals, services.tokenStore);
+      const lessons = JSON.parse(await readFile(options.file, "utf8")) as unknown[];
+      services.stdout.write(formatSuccess(await importLessonsReplaySnapshot({ controlPlaneUrl: settings.controlPlaneUrl, accessToken, project: options.project, body: { pipeline: options.pipeline, day: options.day, lessons } }, services.fetchImplementation), globals.json));
+    });
+  lessonsReplay.command("settings")
+    .description("read the project's learning settings as the live pipeline reads them, for the arms' offline pipeline")
+    .requiredOption("--project <project>", "the project")
+    .action(async (options: { project: string }, command: Command) => {
+      const globals = globalOptions(command);
+      const { settings, accessToken } = await authenticate(globals, services.tokenStore);
+      services.stdout.write(formatSuccess(await settingsLessonsReplay({ controlPlaneUrl: settings.controlPlaneUrl, accessToken, project: options.project }, services.fetchImplementation), globals.json));
+    });
+  lessonsReplay.command("subject")
+    .description("read a historical task as the reflector sees it at its end, for an arm's offline pipeline (a replay copy is not found)")
+    .requiredOption("--project <project>", "the project").requiredOption("--task <task-id>", "the past task")
+    .action(async (options: { project: string; task: string }, command: Command) => {
+      if (!uuidPattern.test(options.task)) throw agentXError("CONFIG_INVALID", "--task must be an ID, such as 44444444-4444-4444-8444-444444444444");
+      const globals = globalOptions(command);
+      const { settings, accessToken } = await authenticate(globals, services.tokenStore);
+      services.stdout.write(formatSuccess(await subjectLessonsReplay({ controlPlaneUrl: settings.controlPlaneUrl, accessToken, project: options.project, taskId: options.task }, services.fetchImplementation), globals.json));
+    });
+  lessonsReplay.command("model")
+    .description("one model call on the company's own model path, for a grading or an offline pipeline; prints the text and the cost")
+    .requiredOption("--project <project>", "the project").requiredOption("--file <path>", "the request, JSON: { purpose, system, user, maxOutputTokens, maxUsd }")
+    .action(async (options: { project: string; file: string }, command: Command) => {
+      const globals = globalOptions(command);
+      const { settings, accessToken } = await authenticate(globals, services.tokenStore);
+      const body = JSON.parse(await readFile(options.file, "utf8")) as Parameters<typeof callLessonsReplayModel>[0]["body"];
+      services.stdout.write(formatSuccess(await callLessonsReplayModel({ controlPlaneUrl: settings.controlPlaneUrl, accessToken, project: options.project, body }, services.fetchImplementation), globals.json));
     });
 
   // Spec 025 FR-052: registered after the existing admin commands, so their order is unchanged.

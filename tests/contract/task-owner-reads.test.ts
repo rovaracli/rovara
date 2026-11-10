@@ -96,6 +96,8 @@ const ROWS: readonly Row[] = [
   ["aws/developer-tasks/task-view.ts", "candidateChangedFiles", "principal", ".ownerKey"],
   ["aws/developer-tasks/feedback-review.ts", "submitWorkflowFeedbackDecision", "principal", ".ownerKey"],
   ["aws/developer-tasks/task-view.ts", "ownArtifactKey", "principal", ".ownerKey"],
+  // Lane 7: the grader's evidence is the copy's candidate diff, read only from the copy's own artifact path (the same rule as `candidateChangedFiles`)
+  ["aws/developer-tasks/task-view.ts", "candidateDiffText", "principal", ".ownerKey"],
   ["aws/developer-tasks/task-view.ts", "taskView", "history", ".developerName"],
   ["aws/developer-tasks/start.ts", "startTask", "history", ".ownerKey", ".developerId", ".developerName"],
   ["aws/developer-tasks/task-index.ts", "ownerIndexRowOf", "index", ".developerId"],

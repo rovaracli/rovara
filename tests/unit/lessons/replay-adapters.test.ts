@@ -1,0 +1,203 @@
+// Lane 7: the pieces that sit between the harness and a real install: the executor that cannot start an unmarked task, the blind rubric grader, pipeline B read as of a date, and the candidates exporter.
+import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import path from "node:path";
+import { describe, expect, it } from "vitest";
+import { main as exportCandidates } from "../../../scripts/export-replay-candidates.js";
+import { main as measure } from "../../../scripts/lessons-replay-measure.js";
+import { candidatesFromItems } from "../../../packages/broker/src/lessons/replay-candidates.js";
+import { rubricGrader, DEFAULT_RUBRIC, type GraderModel } from "../../../packages/broker/src/lessons/replay-grader.js";
+import { EvalMarkError, ReplayLimitError, ReplayRunFailed, buildReplayPlan, copyWorstCaseUsd, buildSnapshots, dayOf, runReplay, type PlannedRun, type ReplayExecutor } from "../../../packages/broker/src/lessons/replay-harness.js";
+import { stagingExecutor, type ReplayStartRequest, type ReplayTaskPort } from "../../../packages/broker/src/lessons/replay-executor.js";
+import { lessonContentKey } from "../../../packages/broker/src/lessons/replay-lessonset.js";
+import type { ReplayCandidate } from "../../../packages/broker/src/lessons/replay-select.js";
+import { KEY } from "./lesson-helpers.js";
+
+const DAY = 86_400_000;
+const T0 = Date.UTC(2026, 8, 1);
+const task: ReplayCandidate = { taskId: "t1", project: "p", repository: "api", at: T0, memberCorrections: 2, outcome: "merged" };
+const OPTIONS = { maxUsdPerRun: 4, planningLimitUsd: 2 };
+const run = (over: Partial<PlannedRun> = {}): PlannedRun => ({ key: "k1", task: "t1", repeat: 1, arm: "on:current", day: "2026-09-01", memory: { mode: "snapshot", snapshotId: `snp_${"a".repeat(20)}` }, evalRun: true, ...over });
+
+class Port implements ReplayTaskPort {
+  requests: ReplayStartRequest[] = [];
+  cancelled: string[] = [];
+  closed: string[] = [];
+  end: { state: "completed" | "failed"; evidence: string; costUsd: number | null } = { state: "completed", evidence: "pr:7", costUsd: 0.3 };
+  constructor(public mark: unknown = true) {}
+  startLimitUsd: number | null | undefined = 2;
+  async start(request: ReplayStartRequest): Promise<{ taskId: string; startLimitUsd?: number | null }> { this.requests.push(request); return { taskId: `replay-${String(this.requests.length)}`, ...(this.startLimitUsd === undefined ? {} : { startLimitUsd: this.startLimitUsd }) }; }
+  async readMark(): Promise<unknown> { return this.mark; }
+  async cancel(taskId: string): Promise<void> { this.cancelled.push(taskId); }
+  waitLimits: number[] = [];
+  async waitForEnd(_taskId?: string, limits?: { maxUsd: number }): Promise<{ state: "completed" | "failed"; evidence: string; costUsd: number | null }> { if (limits !== undefined) this.waitLimits.push(limits.maxUsd); return this.end; }
+  async costOf(): Promise<number | null> { return 0.9; }
+  async loadedKeys(): Promise<string[]> { return [lessonContentKey({ title: "Use withRetry", body: "Use withRetry for HTTP retries." })]; }
+  async learningCalls(): Promise<number> { return 0; }
+  async close(taskId: string): Promise<void> { this.closed.push(taskId); }
+}
+
+describe("the staging executor", () => {
+  it("starts the task marked as an eval run with the arm's memory input, reads the mark back, and returns the load keys", async () => {
+    const port = new Port();
+    const result = await stagingExecutor(port, OPTIONS).run({ run: run(), task, learning: { lessonsSwitch: "off", calls: "none" } });
+    expect(port.requests).toEqual([{ sourceTaskId: "t1", runKey: "k1", evalRun: true, maxUsd: 4, memory: { mode: "snapshot", snapshotId: `snp_${"a".repeat(20)}` } }]);
+    expect(result).toMatchObject({ loaded: [lessonContentKey({ title: "Use withRetry", body: "Use withRetry for HTTP retries." })], costUsd: 0.3, evidence: "pr:7", evalRunMarked: true, learningCalls: 0 });
+    await result.cleanup!();
+    expect(port.closed).toEqual(["replay-1"]);
+  });
+  it("the file arm asks the install to place the lessons file from the snapshot, and nothing is pushed; a live memory input is refused", async () => {
+    const port = new Port();
+    await stagingExecutor(port, OPTIONS).run({ run: run({ arm: "file:current", delivery: "file" }), task, learning: { lessonsSwitch: "off", calls: "none" } });
+    expect(port.requests[0]).toMatchObject({ evalRun: true, file: true, memory: { mode: "snapshot" } });
+    await expect(stagingExecutor(new Port(), OPTIONS).run({ run: run({ memory: { mode: "live" } as never }), task, learning: { lessonsSwitch: "off", calls: "none" } })).rejects.toThrow(EvalMarkError);
+  });
+  it("reserves a copy's WORST CASE: the wait is bounded by planning plus the run limit, and a copy that started under more planning allowance than declared, or under none, stops the whole replay", async () => {
+    const port = new Port();
+    await stagingExecutor(port, OPTIONS).run({ run: run(), task, learning: { lessonsSwitch: "off", calls: "none" } });
+    expect(port.waitLimits).toEqual([copyWorstCaseUsd({ planningLimitUsd: 2, runLimitUsd: 4 })]);
+    expect(copyWorstCaseUsd({ planningLimitUsd: 2, runLimitUsd: 4 })).toBe(6);
+    for (const startLimitUsd of [5, null, undefined]) {
+      const loose = new Port();
+      loose.startLimitUsd = startLimitUsd;
+      await expect(stagingExecutor(loose, OPTIONS).run({ run: run(), task, learning: { lessonsSwitch: "off", calls: "none" } }), String(startLimitUsd)).rejects.toThrow(ReplayLimitError);
+      expect(loose.cancelled).toEqual(["replay-1"]);
+      expect(loose.closed).toEqual(["replay-1"]);
+    }
+    // Through the harness it is not one ungraded run: nothing more starts.
+    const tasks = Array.from({ length: 4 }, (_, i) => ({ ...task, taskId: `t${String(i)}`, at: T0 + i * DAY }));
+    const plan = buildReplayPlan({ tasks, arms: ["off", "on:current"], seed: "s", grader: { model: "g", version: "1" }, snapshots: { current: Object.fromEntries(tasks.map((t) => [dayOf(t.at), `snp_${"b".repeat(20)}`])) }, allowSmall: true, repeats: 1 });
+    const loose = Object.assign(new Port(), { startLimitUsd: null });
+    await expect(runReplay(plan, { executor: stagingExecutor(loose, OPTIONS), grader: { identity: { model: "g", version: "1" }, grade: async () => ({ resolved: true, gradedBy: "rubric", mistakes: [] }) }, sink: { done: () => new Set(), spentUsd: () => 0, append: async () => undefined }, priorCorrections: async () => [], maxUsd: 100, holdPerRunUsd: 6 })).rejects.toThrow(ReplayLimitError);
+    expect(loose.requests).toHaveLength(1);
+  });
+  it("a copy that fails is cancelled, closed and reported with what it cost; a copy that cannot be priced is counted by the harness at its hold", async () => {
+    const port = new Port();
+    port.end = { state: "failed", evidence: "", costUsd: 1.4 };
+    const failure = await stagingExecutor(port, OPTIONS).run({ run: run(), task, learning: { lessonsSwitch: "off", calls: "none" } }).catch((e: unknown) => e);
+    expect(failure).toBeInstanceOf(ReplayRunFailed);
+    expect((failure as ReplayRunFailed).costUsd).toBe(1.4);
+    expect(port.cancelled).toEqual(["replay-1"]);
+    expect(port.closed).toEqual(["replay-1"]);
+    const thrown = new Port();
+    thrown.waitForEnd = async () => { throw new Error("cli down"); };
+    const second = await stagingExecutor(thrown, OPTIONS).run({ run: run(), task, learning: { lessonsSwitch: "off", calls: "none" } }).catch((e: unknown) => e);
+    expect((second as ReplayRunFailed).costUsd).toBe(0.9); // read from the install after the cancel
+  });
+  it("an unmarked start is impossible: a plan without the mark never starts a task", async () => {
+    const port = new Port();
+    await expect(stagingExecutor(port, OPTIONS).run({ run: run({ evalRun: false as never }), task, learning: { lessonsSwitch: "off", calls: "none" } })).rejects.toThrow(EvalMarkError);
+    expect(port.requests).toEqual([]);
+  });
+  it("an unmarked start is impossible: a port that dropped, changed or could not show the mark gets the task cancelled and the replay stopped", async () => {
+    for (const mark of [undefined, false, "yes", 1, {}]) {
+      const port = new Port();
+      port.mark = mark;
+      await expect(stagingExecutor(port, OPTIONS).run({ run: run(), task, learning: { lessonsSwitch: "off", calls: "none" } }), JSON.stringify(mark)).rejects.toThrow(EvalMarkError);
+      expect(port.cancelled, JSON.stringify(mark)).toEqual(["replay-1"]);
+    }
+    const unreadable = new Port();
+    unreadable.readMark = async () => { throw new Error("down"); };
+    await expect(stagingExecutor(unreadable, OPTIONS).run({ run: run(), task, learning: { lessonsSwitch: "off", calls: "none" } })).rejects.toThrow(EvalMarkError);
+    expect(unreadable.cancelled).toHaveLength(1);
+  });
+  it("through the harness, an unmarked task stops the WHOLE replay instead of becoming one ungraded run", async () => {
+    const tasks = Array.from({ length: 4 }, (_, i) => ({ ...task, taskId: `t${String(i)}`, at: T0 + i * DAY }));
+    const plan = buildReplayPlan({ tasks, arms: ["off", "on:current"], seed: "s", grader: { model: "g", version: "1" }, snapshots: { current: Object.fromEntries(tasks.map((t) => [dayOf(t.at), `snp_${"b".repeat(20)}`])) }, allowSmall: true, repeats: 1 });
+    const appended: string[] = [];
+    await expect(runReplay(plan, {
+      executor: stagingExecutor(Object.assign(new Port(), { mark: false }), OPTIONS), grader: { identity: { model: "g", version: "1" }, grade: async () => ({ resolved: true, gradedBy: "rubric", mistakes: [] }) },
+      sink: { done: () => new Set(), spentUsd: () => 0, append: async (k) => { appended.push(k); } }, priorCorrections: async () => [], maxUsd: 100, holdPerRunUsd: 4,
+    })).rejects.toThrow(EvalMarkError);
+    expect(appended).toEqual([]);
+  });
+  it("a task that does not complete is one ungraded run, not a stop", async () => {
+    const port = new Port();
+    port.end = { state: "failed", evidence: "", costUsd: 0 };
+    const tasks = [task];
+    const plan = buildReplayPlan({ tasks, arms: ["off", "on:current"], seed: "s", grader: { model: "g", version: "1" }, snapshots: { current: { [dayOf(T0)]: `snp_${"b".repeat(20)}` } }, allowSmall: true, repeats: 1 });
+    const rows: unknown[] = [];
+    const executor: ReplayExecutor = stagingExecutor(port, OPTIONS);
+    const report = await runReplay(plan, { executor, grader: { identity: { model: "g", version: "1" }, grade: async () => ({ resolved: true, gradedBy: "rubric", mistakes: [] }) }, sink: { done: () => new Set(), spentUsd: () => 0, append: async (_k, r) => { rows.push(r); } }, priorCorrections: async () => [], maxUsd: 100, holdPerRunUsd: 4 });
+    expect(report.ungraded).toBe(2);
+  });
+});
+
+describe("the rubric grader", () => {
+  const model = (reply: string, seen: Array<{ system: string; user: string }> = [], costUsd: number | null = 0.02): GraderModel => ({ model: "grader-model", version: "2026-11", holdUsd: 0.1, complete: async (input) => { seen.push(input); return { text: reply, costUsd }; } });
+  const deps = (m: GraderModel, extra: Record<string, unknown> = {}) => ({ model: m, evidence: { read: async () => ({ request: "Make HTTP calls retry through the helper", attempt: "diff: replaced the loop with withRetry", reference: "diff: the merged change" }) }, correctionText: (id: string) => (id === "c1" ? "use withRetry for retries" : undefined), nonce: () => "n0nce", ...extra });
+  const request = { task, repeat: 1, evidence: "pr:7", priorCorrections: ["c1"] };
+
+  it("reads a strict JSON reply; its identity is the model, version and a digest of the rubric; the prompt holds the data in markers and no arm", async () => {
+    const seen: Array<{ system: string; user: string }> = [];
+    const grader = rubricGrader(deps(model('{"resolved":true,"mistakes":["c1","c1"]}', seen)));
+    expect(await grader.grade(request)).toEqual({ resolved: true, gradedBy: "rubric", mistakes: ["c1"], costUsd: 0.02 });
+    expect(grader.holdUsd).toBe(0.1);
+    // The grader reads what the task ASKED, the attempt and the merged reference, each as data.
+    expect(seen[0]!.user).toContain("Make HTTP calls retry through the helper");
+    expect(seen[0]!.user).toContain("diff: replaced the loop with withRetry");
+    expect(seen[0]!.user).toContain("diff: the merged change");
+    expect(grader.identity.model).toBe("grader-model");
+    expect(grader.identity.version).toMatch(/^2026-11\+rubric-[0-9a-f]{8}$/);
+    expect(seen[0]!.system).toBe(DEFAULT_RUBRIC);
+    expect(seen[0]!.user).toContain("<<data n0nce id=c1>>");
+    expect(seen[0]!.user).not.toMatch(/on:|off|snapshot|memory/);
+    const other = rubricGrader(deps(model("{}"), { rubric: `${DEFAULT_RUBRIC}\nBe strict.` }));
+    expect(other.identity.version).not.toBe(grader.identity.version);
+  });
+  it("hidden tests decide 'resolved' where the task has them; the mistakes still come from the rubric", async () => {
+    const tests = { run: async (t: ReplayCandidate) => (t.taskId === "t1" ? false : undefined) };
+    const grader = rubricGrader(deps(model('{"resolved":true,"mistakes":["c1"]}'), { tests }));
+    expect(await grader.grade(request)).toEqual({ resolved: false, gradedBy: "hidden_tests", mistakes: ["c1"], costUsd: 0.02 });
+    expect(await grader.grade({ ...request, task: { ...task, taskId: "t2" } })).toMatchObject({ gradedBy: "rubric", resolved: true });
+  });
+  it("refuses a reply that is not JSON, has the wrong shape, or names a correction that was not listed", async () => {
+    for (const bad of ["resolved yes", '{"resolved":"yes","mistakes":[]}', '{"resolved":true}', '{"resolved":true,"mistakes":["zzz"]}', '{"resolved":true,"mistakes":[1]}']) {
+      await expect(rubricGrader(deps(model(bad))).grade(request), bad).rejects.toThrow();
+    }
+  });
+});
+
+describe("the --max-usd limit on building snapshots", () => {
+  it("stops when the builders spend more than the limit", async () => {
+    const dear = { build: async () => ({ snapshotId: `snp_${"c".repeat(20)}`, lessons: [], costUsd: 3, calls: 1, export: { rule: "active-without-a-person/v1", proposed: 0, needsPerson: 0, truncated: 0, droppedCalls: 0, unverified: 0, overrides: [] } }) };
+    const tasks = [task, { ...task, taskId: "t2", at: T0 + DAY }, { ...task, taskId: "t3", at: T0 + 2 * DAY }];
+    await expect(buildSnapshots({ key: KEY, tasks, arms: ["off", "on:current"], builders: { current: dear }, maxUsd: 5 })).rejects.toThrow(/max-usd/);
+    await expect(buildSnapshots({ key: KEY, tasks, arms: ["off", "on:current"], builders: { current: dear }, maxUsd: 50 })).resolves.toBeDefined();
+  });
+});
+
+describe("the candidates exporter", () => {
+  const meta = (taskId: string, over: Record<string, unknown> = {}, workflow: Record<string, unknown> = {}) => ({
+    pk: `DEVTASK#${taskId}`, sk: "META", taskId, orgId: "org_a", project: "proj-1", createdAt: new Date(T0).toISOString(),
+    workflow: { outcome: "MERGED", pullRequests: [{ repositoryId: "api" }], decisions: [{ source: "SEND_BACK", decision: "REQUEST_CHANGES", actorRole: "TASK_OWNER" }, { source: "SEND_BACK", decision: "REQUEST_CHANGES", actorRole: "TASK_OWNER" }, { source: "AUTO_FIX", decision: "REQUEST_CHANGES", actorRole: "AGENTX" }], ...workflow }, ...over,
+  });
+  it("counts the human send-backs (never Rovara's own) plus the Team record's counts, and says why it skipped a task", () => {
+    const out = candidatesFromItems({
+      items: [meta("a"), meta("b", { automatic: { job: "x" } }), meta("c", { evalRun: true }), meta("d", {}, { outcome: "OPEN" }), meta("e", {}, { pullRequests: [] }), meta("f", { orgId: "org_b" }), meta("g", { createdAt: "soon" }), { pk: "OTHER#1", sk: "x" }, meta("h", { evalRun: "yes" }), meta("i", {}, { outcome: "CLOSED" })],
+      corrections: { a: { prComments: 3, humanEdits: 1, reverts: 1 }, i: { prComments: 1 } },
+    }, { orgId: "org_a" });
+    expect(out.candidates.map((c) => [c.taskId, c.memberCorrections, c.outcome])).toEqual([["a", 7, "merged"], ["i", 3, "closed"]]);
+    expect(out.skipped).toMatchObject({ not_a_work_task: 1, eval_run: 2, not_finished: 1, no_repository: 1, wrong_org: 1, no_time: 1 });
+    expect(out.ignoredItems).toBe(1);
+  });
+  it("feeds selection end to end: export, select, with the files the runbook names", () => {
+    const dir = mkdtempSync(path.join(tmpdir(), "l7-cand-"));
+    const items = Array.from({ length: 70 }, (_, i) => meta(`t${String(i).padStart(2, "0")}`, { createdAt: new Date(T0 + i * DAY).toISOString() }, { pullRequests: [{ repositoryId: ["api", "web", "infra"][i % 3] }], decisions: Array.from({ length: 1 + (i % 4) }, () => ({ source: "SEND_BACK", decision: "REQUEST_CHANGES", actorRole: "TASK_OWNER" })) }));
+    writeFileSync(path.join(dir, "items.json"), JSON.stringify({ items }));
+    const lines: string[] = [];
+    expect(exportCandidates(["--input", path.join(dir, "items.json"), "--out", path.join(dir, "candidates.json"), "--org", "org_a"], { out: (t) => lines.push(t), err: (t) => lines.push(t) })).toBe(0);
+    expect(lines[0]).toMatch(/70 candidates/);
+    expect(JSON.parse(readFileSync(path.join(dir, "candidates.json"), "utf8"))).toHaveLength(70);
+    const out: string[] = [];
+    return measure(["select", "--candidates", path.join(dir, "candidates.json"), "--seed", "s", "--target", "40", "--out", path.join(dir, "selection.json")], { out: (t) => out.push(t), err: (t) => out.push(t) }).then((code) => {
+      expect(code).toBe(0);
+      expect(out[0]).toMatch(/selected 40 tasks/);
+    });
+  });
+  it("refuses bad usage with a message", () => {
+    const lines: string[] = [];
+    expect(exportCandidates(["--nope"], { out: (t) => lines.push(t), err: (t) => lines.push(t) })).toBe(1);
+    expect(exportCandidates(["--input", "x"], { out: (t) => lines.push(t), err: (t) => lines.push(t) })).toBe(1);
+  });
+});

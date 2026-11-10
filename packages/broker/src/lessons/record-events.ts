@@ -6,6 +6,7 @@
 // working when the budget ends, is logged with a fixed code (`record.emit_failed`) and the caller goes on. (A write that outlives the budget finishes on its own; the row is keyed by the task
 // and the item, so a repeat is the same row.)
 import { GetCommand } from "@aws-sdk/lib-dynamodb";
+import { isEvalRunMark } from "./eval-run.js";
 import type { TaskEndHandler, TaskEndOutcome } from "../agents/task-end.js";
 import { taskKey, type DeveloperTaskRecord } from "../developer/task-records.js";
 import type { RovaraEmitter, RovaraEventBase, TaskVisibility } from "../team-record/sources/rovara.js";
@@ -65,10 +66,10 @@ export async function announceRovaraEvent(kind: RovaraRecordEvent["kind"], build
 }
 
 /** The task as an announcement names it: where it is. A `DeveloperTaskRecord` fits. A task with no org (from before orgs) has no Team record to write to. */
-export interface RecordedTask { orgId?: string | undefined; project: string; taskId: string }
+export interface RecordedTask { orgId?: string | undefined; project: string; taskId: string; /** Lane 7: a replay copy records nothing in the Team record. */ evalRun?: unknown }
 
 const baseOf = (task: RecordedTask, at: string): Base | undefined =>
-  task.orgId === undefined ? undefined : { workspaceId: task.orgId, project: task.project, taskId: task.taskId, at };
+  task.orgId === undefined || isEvalRunMark(task.evalRun) ? undefined : { workspaceId: task.orgId, project: task.project, taskId: task.taskId, at };
 
 /** A note was remembered (the first time only). `actorDeveloperId` is the author of the words: the row is theirs, so an erase of them takes it. */
 export const announceRemembered = (task: RecordedTask, input: { noteId: string; text: string; actorDeveloperId: string; at: string; origin?: "slack" | undefined }, options?: { log?: RecordEmitLog }): Promise<void> =>

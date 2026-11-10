@@ -2,15 +2,16 @@
 // Team record is on, read access to the record's table (infra grants it and sets TEAM_RECORD_TABLE_NAME there). Without that table name nothing is built (no lessons are delivered), so an install with the
 // Team record off does nothing here. It reads; it never writes.
 import { GetCommand } from "@aws-sdk/lib-dynamodb";
-import { OrgIdSchema, memberGithubKey, type LearnedContext, type LearnedRefs } from "@agentx/contracts";
+import { OrgIdSchema, memberGithubKey, type EvalFilesPayload, type LearnedContext, type LearnedRefs } from "@agentx/contracts";
 import { createAccessCheckPort } from "../team-record/access-port.js";
 import { tableTaskVisibilityPort } from "../team-record/live-audience-port.js";
 import type { TeamRecordTable } from "../team-record/types.js";
-import { learnedContextFromRefs } from "./deliver.js";
+import { evalFilesFromRefs, learnedContextFromRefs, type DeliveryDeps } from "./deliver.js";
 import { tableLessonAudiencePort, withLessonAudiences } from "./task-audience.js";
 import { tableProjectRepoScopes, withProjectRepoScopes } from "./project-repo-audience.js";
 import { dynamoLearningSettings, DynamoTier0Settings } from "./dynamo-settings.js";
 import { DynamoLessonStore } from "./dynamo-store.js";
+import { dynamoEvalSnapshotStore, dynamoSnapshotStore } from "./replay-snapshot-store.js";
 
 export interface LessonDeliveryInput {
   /** The State table's client and name (a developer's linked accounts). */
@@ -29,14 +30,31 @@ export interface LessonDeliveryInput {
 
 /** The lesson reader for delivery, or undefined where the install has no Team record table. */
 export function createLessonDelivery(input: LessonDeliveryInput): ((refs: LearnedRefs) => Promise<LearnedContext | undefined>) | undefined {
+  const deps = deliveryDeps(input);
+  if (deps === undefined) return undefined;
+  const enabled = input.enabled;
+  // Lane 7: refs that name a frozen snapshot are a replay copy's, delivered whatever the install's switch says (the harness names this); every other ref needs the switch.
+  return async (refs) => (refs.snapshotId !== undefined || enabled?.() === true ? learnedContextFromRefs(deps, refs) : undefined);
+}
+
+/** Lane 7, the file arm: the files a replay copy's checkout is given, built from the copy's frozen snapshot at delivery. Only refs that name a snapshot and a repository get any. */
+export function createEvalFilesDelivery(input: LessonDeliveryInput): ((refs: LearnedRefs) => Promise<EvalFilesPayload | undefined>) | undefined {
+  const deps = deliveryDeps(input);
+  if (deps === undefined) return undefined;
+  return async (refs) => (refs.snapshotId !== undefined && refs.file !== undefined ? evalFilesFromRefs(deps, refs) : undefined);
+}
+
+function deliveryDeps(input: LessonDeliveryInput): DeliveryDeps | undefined {
   if (input.recordTable === undefined || input.recordTable === "") return undefined;
   const now = input.now ?? Date.now;
   const table: TeamRecordTable = { documentClient: input.documentClient, tableName: input.recordTable };
-  const deps = {
+  const deps: DeliveryDeps = {
     store: new DynamoLessonStore(table, now),
     settings: dynamoLearningSettings(table, new DynamoTier0Settings(table)),
     access: createAccessCheckPort(table, { taskVisibility: withProjectRepoScopes(withLessonAudiences(tableTaskVisibilityPort({ documentClient: input.documentClient, tableName: input.stateTable, now }), tableLessonAudiencePort({ documentClient: input.documentClient, tableName: input.stateTable, now })), tableProjectRepoScopes({ documentClient: input.documentClient, tableName: input.stateTable }, { record: table })), ...(input.log === undefined ? {} : { log: input.log }) }),
     now,
+    snapshots: dynamoSnapshotStore(table),
+    evalSnapshots: dynamoEvalSnapshotStore(table, undefined, now),
     ...(input.log === undefined ? {} : { log: input.log }),
     // The reader's identity: the accounts the developer linked (a GitHub account, today), as the broker's own directory reads them.
     async identity(workspaceId: string, developerId: string) {
@@ -46,6 +64,5 @@ export function createLessonDelivery(input: LessonDeliveryInput): ((refs: Learne
       return { principals: typeof item?.githubUserId === "string" ? [item.githubUserId] : [], groups: [] as string[] };
     },
   };
-  const enabled = input.enabled;
-  return async (refs) => (enabled?.() === true ? learnedContextFromRefs(deps, refs) : undefined);
+  return deps;
 }

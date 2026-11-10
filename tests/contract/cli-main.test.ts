@@ -16,7 +16,7 @@ describe("AgentX executable command surface", () => {
     expect(subcommands(program, "github")).toEqual(["oauth", "connect", "list", "disconnect"]);
 
     const admin = program.commands.find((command) => command.name() === "admin");
-    expect(admin?.commands.map((command) => command.name())).toEqual(["project", "runtime-installation", "workspace", "budget", "egress", "slack", "eval", "credential", "turns", "task", "changes", "audit"]);
+    expect(admin?.commands.map((command) => command.name())).toEqual(["project", "runtime-installation", "workspace", "budget", "egress", "slack", "eval", "credential", "turns", "task", "lessons-replay", "changes", "audit"]);
     expect(subcommands(admin, "project")).toEqual(["register", "grant", "revoke"]);
     expect(subcommands(admin, "workspace")).toEqual(["list", "cancel", "stop"]);
     expect(subcommands(admin, "budget")).toEqual(["set"]);
@@ -26,7 +26,9 @@ describe("AgentX executable command surface", () => {
     expect(admin?.commands.find((command) => command.name() === "eval")?.commands.find((command) => command.name() === "batch")?.commands.map((command) => command.name())).toEqual(["start", "show", "stop", "results"]);
     expect(subcommands(admin, "credential")).toEqual(["register", "authorize", "list"]);
     expect(subcommands(admin, "turns")).toEqual(["export"]);
-    expect(subcommands(admin, "task")).toEqual(["share-mode", "e2e-replay"]);
+    expect(subcommands(admin, "task")).toEqual(["share-mode", "e2e-replay", "lessons-replay"]);
+    expect(subcommands(admin?.commands.find((c) => c.name() === "task"), "lessons-replay")).toEqual(["start", "approve", "close", "evidence", "show"]);
+    expect(subcommands(admin, "lessons-replay")).toEqual(["import-snapshot", "settings", "subject", "model"]);
     expect(subcommands(admin, "runtime-installation")).toEqual(["challenge", "register"]);
 
     expect(subcommands(program, "signin")).toEqual(["show", "enable", "disable", "cloud", "check", "unlink", "link"]);

@@ -89,7 +89,7 @@ import { handleSavedEnvFallback } from "./saved-env-lease.js";
 import { runSavedEnvPoll, savedEnvBeforeNightly, savedEnvPushQueue } from "./saved-env-triggers.js";
 import { sweepSavedEnvBuilds } from "./saved-env-sweep.js";
 import { savedEnvEnabled } from "../../test-env/saved-env-switch.js";
-import { HOOK_DELIVERY_PATH, HOOK_ROUTE_KEY, adminModelChecks, adminTaskE2EReplay, adminTaskShareMode, connectedAwsAccountsOf, exchangeRepositoryCredential, hookMemoryOf, hookReply, optional, parseBody, routeEvalBatch, routeStartEvalBatch, routeSwebenchChannel, swebenchDependencies, swebenchSlackContext } from "./admin-and-helpers.js";
+import { HOOK_DELIVERY_PATH, HOOK_ROUTE_KEY, adminModelChecks, adminTaskE2EReplay, adminLessonsReplayModel, adminLessonsReplaySettings, adminLessonsReplaySnapshot, adminLessonsReplaySubject, adminTaskLessonsReplay, adminTaskShareMode, connectedAwsAccountsOf, exchangeRepositoryCredential, hookMemoryOf, hookReply, optional, parseBody, routeEvalBatch, routeStartEvalBatch, routeSwebenchChannel, swebenchDependencies, swebenchSlackContext } from "./admin-and-helpers.js";
 import { handleCallback } from "./callbacks.js";
 import { APP_ROUTE_KEY, DEVELOPER_ROUTE_KEY, DOT_SEGMENT, FEEDBACK_REVIEW_ROUTE_KEY, MAX_SETUP_PROPOSAL_BYTES, WEB_ROUTE_KEY, plannedAgentRoute, projectSetupPolicy, untestedAgentRouteNote, type AwsBrokerInput } from "./definitions.js";
 import { installLearningTaskEnd } from "./learning-wiring.js";
@@ -1225,6 +1225,20 @@ export function createAwsBrokerHandler(input: AwsBrokerInput) {
       if ((request.method === "POST" || request.method === "GET") && taskE2EReplay?.[1]) {
         return json(await adminTaskE2EReplay(dependencies, identity, taskE2EReplay[1], request.method, body, url.searchParams), request.requestId, request.method === "POST" ? 202 : 200);
       }
+      // Lane 7: the replay copy of a past task, to measure the lessons. The same operator's route as the e2e replay's (administrator of the task's project).
+      const taskLessonsReplay = /^\/v1\/admin\/tasks\/([^/]+)\/lessons-replay(?:\/(approve|close|evidence))?$/.exec(url.pathname);
+      if ((request.method === "POST" || request.method === "GET") && taskLessonsReplay?.[1]) {
+        return json(await adminTaskLessonsReplay(dependencies, identity, taskLessonsReplay[1], request.method, body, (taskLessonsReplay[2] as "approve" | "close" | "evidence" | undefined) ?? "copy"), request.requestId, request.method === "POST" ? 202 : 200);
+      }
+      // Lane 7 (DECISIONS 68): the lessons an arm's pipeline built offline, imported as a frozen snapshot (a company owner or admin).
+      const replaySnapshot = /^\/v1\/admin\/projects\/([a-z][a-z0-9-]{0,62})\/lessons-replay\/snapshots$/.exec(url.pathname);
+      if (request.method === "POST" && replaySnapshot?.[1]) return json(await adminLessonsReplaySnapshot(dependencies, identity, replaySnapshot[1], body), request.requestId, 201);
+      const replaySubject = /^\/v1\/admin\/projects\/([a-z][a-z0-9-]{0,62})\/lessons-replay\/subjects\/([^/]+)$/.exec(url.pathname);
+      if (request.method === "GET" && replaySubject?.[1] && replaySubject[2]) return json(await adminLessonsReplaySubject(dependencies, identity, replaySubject[1], replaySubject[2]), request.requestId);
+      const replaySettings = /^\/v1\/admin\/projects\/([a-z][a-z0-9-]{0,62})\/lessons-replay\/settings$/.exec(url.pathname);
+      if (request.method === "GET" && replaySettings?.[1]) return json(await adminLessonsReplaySettings(dependencies, identity, replaySettings[1]), request.requestId);
+      const replayModel = /^\/v1\/admin\/projects\/([a-z][a-z0-9-]{0,62})\/lessons-replay\/model$/.exec(url.pathname);
+      if (request.method === "POST" && replayModel?.[1]) return json(await adminLessonsReplayModel(dependencies, identity, replayModel[1], body), request.requestId);
       const taskShareMode = /^\/v1\/admin\/tasks\/([^/]+)\/share-mode$/.exec(url.pathname);
       if (request.method === "POST" && taskShareMode?.[1]) {
         return json(await adminTaskShareMode(dependencies, identity, taskShareMode[1], body, tasks), request.requestId);

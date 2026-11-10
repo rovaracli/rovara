@@ -1,4 +1,5 @@
 import { WORKFLOW_ACTIONABLE_REFUSALS, WORKFLOW_BREAKDOWN_REFUSALS } from "../../developer/workflow-actions.js";
+import { isReplayCopy } from "../../developer/eval-copy.js";
 import { createHash, randomUUID } from "node:crypto";
 import {
   AgentXError,
@@ -170,7 +171,7 @@ export const DESIGN_CARD_ONLY_MESSAGE = "This design is approved from its design
 export async function decideTaskWorkflow(
   deps: DeveloperTaskRouteDependencies, caller: DeveloperCaller, taskId: string, value: unknown,
   /** `changeText`: Stop & redirect on a plan that waits for approval (LR-2): the owner's whole instruction (up to the redirect limit), for the planner's prompt. The decision keeps `reason`, held to its own 500 characters. */
-  options: { via?: "PAGE"; /** Security review (2026-11-06): set only by the plan card's press under the decide-grade sign-in (`withCardDecideGrade`); a HIGH plan is approved with nothing less. */ decideGrade?: true; note?: string; changeText?: string; /** Design review (DR7 slice C): the items an approved design adds to its own transaction (approval record, membership fence, audit). Only `design-decision.ts` passes it. */ designApproval?: { items: TransactItems; /** The person who really pressed Approve. When it is not the owner whose seat the commit uses, the decision is recorded under THIS person, as a project approver's (`PROJECT_ADMIN`), never as the owner's. */ approverId: string } } = {},
+  options: { via?: "PAGE"; /** Lessons replay (lane 7, re-check N1): set only by the replay approve route. For a replay COPY (`isReplayCopy`) and nothing else, approving accepts the plan's run limit without the amount being acknowledged: the limit is already capped at the copy's own `maxUsd`, so the operator has agreed to it. */ acceptCopyRunLimit?: true; /** Security review (2026-11-06): set only by the plan card's press under the decide-grade sign-in (`withCardDecideGrade`); a HIGH plan is approved with nothing less. */ decideGrade?: true; note?: string; changeText?: string; /** Design review (DR7 slice C): the items an approved design adds to its own transaction (approval record, membership fence, audit). Only `design-decision.ts` passes it. */ designApproval?: { items: TransactItems; /** The person who really pressed Approve. When it is not the owner whose seat the commit uses, the decision is recorded under THIS person, as a project approver's (`PROJECT_ADMIN`), never as the owner's. */ approverId: string } } = {},
 ): Promise<{ task: DeveloperTaskView }> {
   const request = parse(WorkflowDecisionRequestSchema, value, deps, "workflow-decision");
   // What the planner is told as the requested changes: the decision's reason, or the whole instruction when a redirect brought one.
@@ -441,7 +442,7 @@ export async function decideTaskWorkflow(
   // limit is raised, starts what the approval would have started.
   // QA6-12: an approval that names the limit it was shown (the task page does) is checked against the limit `acceptRunLimit` itself works out, inside `settleRunLimit`, so the limit
   // written is exactly the one acknowledged (a second, separate recompute could differ if the estimate's history or the spend policy changed in between).
-  const runLimit = request.decision === "APPROVE" && mode === "IMPLEMENT" && deps.modelAccess !== undefined ? await settleRunLimit(deps, caller, task, request.requestId, request.acknowledgedRunLimitUsd, caller.browserSession === true || options.via === "PAGE") : undefined;
+  const runLimit = request.decision === "APPROVE" && mode === "IMPLEMENT" && deps.modelAccess !== undefined ? await settleRunLimit(deps, caller, task, request.requestId, request.acknowledgedRunLimitUsd, caller.browserSession === true || options.via === "PAGE", options.acceptCopyRunLimit === true && isReplayCopy(task)) : undefined;
   // The corrected plan's approval ends the E2E correction fence, whether coding starts now or waits for the run limit.
   const correctedPlan = correction !== undefined && request.decision === "APPROVE" && documentType === "plan"
     && currentPlan.sha256 !== correction.artifactSha256 && workflow.candidate?.digest === correction.candidateDigest
@@ -613,7 +614,7 @@ type RunLimitOutcome = { accepted: true; runLimitUsd: number; baselineUsd: numbe
  * (a proxy that can't say refuses the approval, as a Continue is). Not accepted: the `run_limit` request is made through Task 32's seam before anything is
  * written, so a workflow is never blocked on a request that was not made; without the seam (until Task 32 is wired) no request is made and the words are the same.
  */
-async function settleRunLimit(deps: DeveloperTaskRouteDependencies, caller: DeveloperCaller, task: DeveloperTaskRecord, requestId: string, acknowledgedUsd: number | undefined, browser: boolean): Promise<RunLimitOutcome> {
+async function settleRunLimit(deps: DeveloperTaskRouteDependencies, caller: DeveloperCaller, task: DeveloperTaskRecord, requestId: string, acknowledgedUsd: number | undefined, browser: boolean, copyAcceptsLimit = false): Promise<RunLimitOutcome> {
   const decision = await acceptRunLimit(
     // The approver's project role is read now: from the project's people where agents are set up, else through the caller's own project access.
     { ...estimateDependencies(deps), projectMembers: deps.agentRuns?.projectMembers ?? { roleOf: async () => (await deps.checkAccess(task.project)).role } },
@@ -628,7 +629,7 @@ async function settleRunLimit(deps: DeveloperTaskRouteDependencies, caller: Deve
   // 0.5.11 (QA6-12b; this replaces decision journey slice 2's "never a Slack button or a tool that cannot show it"): an approval that RAISES the run limit (none set yet, or a higher one) is taken only with the limit
   // acknowledged, from every surface and whatever the decision-cards switch says: the web card and page tick it, a Slack button and the tool's argument carry the amount they showed ("This raises the run limit from
   // $A to $B"), and the API names it. The limit is the amount the person agrees to spend up to, so it is never raised without them seeing it. An approval that does not raise it needs none.
-  if (acknowledgedUsd === undefined && runLimitRaises(currentUsd, decision.runLimitUsd)) {
+  if (acknowledgedUsd === undefined && !copyAcceptsLimit && runLimitRaises(currentUsd, decision.runLimitUsd)) {
     const { link, place } = planApprovalLink(deps, task);
     throw agentXError("CONFIG_INVALID", runLimitAckMessage(currentUsd, decision.runLimitUsd, link, place, browser));
   }
