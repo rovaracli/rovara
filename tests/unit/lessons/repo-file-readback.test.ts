@@ -3,7 +3,7 @@
 // The mutation checks (retire on a parse failure, resurrect a gone id, let formatter churn make edits) are recorded in the lane report.
 import { afterEach, describe, expect, it } from "vitest";
 import { setLearnedLessonsGate } from "../../../packages/broker/src/lessons/policy.js";
-import { bodyHashOf, parseLessonsFile } from "../../../packages/broker/src/lessons/repo-file-format.js";
+import { applyFileChanges, bodyHashOf, parseLessonsFile } from "../../../packages/broker/src/lessons/repo-file-format.js";
 import { readBackFile, scopeOfHeading } from "../../../packages/broker/src/lessons/repo-file-readback.js";
 import { lessonDeletionPort } from "../../../packages/broker/src/lessons/deletion.js";
 import { noticesOf } from "../../../packages/broker/src/lessons/repo-file-pr.js";
@@ -1072,10 +1072,16 @@ describe("round 4 (rr3e): fingerprints are recorded on every successful pass, be
     });
   });
 
-  it("L-k: more than four blocks of one id make the file unreadable (nothing is dropped silently)", async () => {
+  it("L-k: more than sixteen blocks of one id make the file unreadable (nothing is dropped silently); sixteen are read", async () => {
+    const copies = (n: number) => (t: string) => `${t.trimEnd()}\n${Array.from({ length: n }, (_, i) => `\n<!-- rovara:les_aaaa0001 -->\n- A copy number ${String(i)} of the block.`).join("\n")}\n`;
     const w = await merged();
-    changeFile(w, (t) => `${t.trimEnd()}\n${Array.from({ length: 5 }, (_, i) => `\n<!-- rovara:les_aaaa0001 -->\n- A copy number ${String(i)} of the block.`).join("\n")}\n`);
+    changeFile(w, copies(17));
     expect(await pass(w)).toEqual({ status: "problem", problem: "file_unreadable" });
+    const ok = await merged();
+    changeFile(ok, copies(15));
+    expect((await pass(ok)).status).not.toBe("problem");
+    expect(Object.keys((await ok.current()).seen ?? {})).toContain("les_aaaa0001");
+    expect((await ok.current()).seen!["les_aaaa0001"]).toHaveLength(16);
   });
 
   it("L-l: `seen` holds only what the file holds now: no entry for lessons of another repository or for lessons whose block and text are gone, and a record that does not fit fails loudly", async () => {
@@ -1087,6 +1093,42 @@ describe("round 4 (rr3e): fingerprints are recorded on every successful pass, be
     const state = await w.current();
     const huge = Object.fromEntries(Array.from({ length: 6000 }, (_, i) => [`les_huge${String(i).padStart(5, "0")}`, ["0123456789abcdef0123456789abcdef"]]));
     await expect(w.state.put(w.key, { ...state, seen: huge }, state.revision)).rejects.toThrow();
+  });
+});
+
+describe("round 6 (rr3g): the erasure sweep removes every block of a gone id, however many copies", () => {
+  const port = (w: W) => lessonDeletionPort({ store: w.store, vectors: { get: async () => new Map(), put: async () => undefined, remove: async () => undefined }, audit: w.deps.audit, now: w.clock.now });
+  const copies = (id: string, n: number): string => Array.from({ length: n }, (_, i) => `<!-- rovara:${id} -->\n- A copy number ${String(i)} of the erased block.`).join("\n\n");
+  it.each([2, 5, 50])("%i copies of a gone id: one removal change takes out every one of them, and the other lessons stay", async (n) => {
+    const w = await merged();
+    changeFile(w, (t) => `${t.trimEnd()}\n\n${copies("les_aaaa0001", n - 1)}\n`);
+    await port(w).withdraw(w.key.workspaceId, w.key.project, "les_aaaa0001", "sources_deleted");
+    const swept = await w.sweep();
+    expect(swept).toMatchObject({ removalOpened: true, failures: 0 });
+    const removals = w.host.open.filter((pr) => pr.title.includes("remove"));
+    expect(removals).toHaveLength(1);
+    const next = w.host.file(removals[0]!.source, FILE)!;
+    expect(next).not.toContain("les_aaaa0001");
+    expect(next).not.toContain("copy number");
+    expect(next).not.toContain(FIRST);
+    expect(next).toContain("les_aaaa0002");
+  });
+  it("a duplicated LIVE id is untouched by the sweep, while the gone id's blocks beside it come out", async () => {
+    const w = await merged();
+    changeFile(w, (t) => `${t.trimEnd()}\n\n${copies("les_aaaa0002", 2)}\n\n${copies("les_aaaa0001", 2)}\n`);
+    await port(w).withdraw(w.key.workspaceId, w.key.project, "les_aaaa0001", "sources_deleted");
+    await w.sweep();
+    const next = w.host.file(w.host.open.find((pr) => pr.title.includes("remove"))!.source, FILE)!;
+    expect(next).not.toContain("les_aaaa0001");
+    expect(next.match(/rovara:les_aaaa0002/gu)).toHaveLength(3);
+    expect(next).toContain("A copy number 0 of the erased block.");
+  });
+  it("applyFileChanges: remove leaves a duplicated id alone, removeAll takes every block of it", () => {
+    const text = "## Whole repository\n\n<!-- rovara:les_dupe0001 -->\n- One.\n\n<!-- rovara:les_dupe0001 -->\n- Two.\n\n<!-- rovara:les_keep0001 -->\n- Kept.\n";
+    expect(applyFileChanges(text, { remove: ["les_dupe0001"], replace: [], add: [] })).toBe(text);
+    const out = applyFileChanges(text, { remove: [], removeAll: ["les_dupe0001"], replace: [], add: [] });
+    expect(out).not.toContain("les_dupe0001");
+    expect(out).toContain("- Kept.");
   });
 });
 

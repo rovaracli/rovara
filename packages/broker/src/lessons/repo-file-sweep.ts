@@ -70,7 +70,7 @@ async function remember(deps: EraseSweepDeps, key: ScopeKey, place: SweepPlace, 
     if (watch.unreachableAt === undefined) deps.log?.("lessons_repo_file.repository_unreachable", { lessons });
   }
   const same = watch.unreachableAt === next.unreachableAt && watch.unreachableLessons === next.unreachableLessons && watch.strayBranches === next.strayBranches && watch.unconfirmedCloses === next.unconfirmedCloses && JSON.stringify(watch.marks ?? []) === JSON.stringify(next.marks ?? []) && (!found.unreachable || watch.triedAt === next.triedAt);
-  if (!same) await deps.rows.putPr(key, next).catch(() => undefined);
+  if (!same) await deps.rows.putPr(key, next).catch(() => { deps.log?.("lessons_repo_file.watch_row_not_saved", {}); });
 }
 
 /**

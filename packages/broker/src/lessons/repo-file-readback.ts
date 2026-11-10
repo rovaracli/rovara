@@ -39,7 +39,7 @@ export const REMOVED_IN_REPOSITORY = "removed_in_repository";
 export const MAX_IMPORTS_PER_PASS = 50;
 const MAX_TRIES = 3;
 /** The most blocks of one id read back (and fingerprinted); a file with more is unreadable. */
-export const MAX_BLOCKS_PER_ID = 4;
+export const MAX_BLOCKS_PER_ID = 16;
 /** More lessons than this (the larger of three and a quarter of the known ones) missing in one change are held, not retired (review M1). */
 const bulkLimit = (known: number): number => Math.max(3, Math.ceil(known * 0.25));
 /** A rewrite is substantial when the words of the two texts overlap by less than 80% (and at least three words differ): only then does it clear what the old wording earned (decision 76.2). */
@@ -242,7 +242,7 @@ export async function readBackFile(deps: ReadBackDeps, input: ReadBackInput): Pr
   if (isMalformed(input.fileText)) return { ...nothing, unreadable: true };
   const { key } = input;
   const file = parseLessonsFile(input.fileText);
-  // More than four blocks of one id cannot be fingerprinted for erasure within the record's bounds, so such a file is not read at all (it fails loudly, with the status saying what to do) rather than dropping fingerprints.
+  // More than sixteen blocks of one id cannot be fingerprinted for erasure within the record's bounds, so such a file is not read at all (it fails loudly, with the status saying what to do) rather than dropping fingerprints.
   const perId = new Map<string, number>();
   for (const block of file.blocks) perId.set(block.id, (perId.get(block.id) ?? 0) + 1);
   if ([...perId.values()].some((count) => count > MAX_BLOCKS_PER_ID)) return { ...nothing, unreadable: true };
@@ -353,6 +353,8 @@ export async function readBackFile(deps: ReadBackDeps, input: ReadBackInput): Pr
         if (copyFps.has(mark)) { await deps.store.markGoneFingerprint(key, mark); pinnedHere = true; } else await deps.store.clearGoneFingerprint(key, mark);
       }
       const keep = [...new Set([...inBlocks, ...earlier.filter((mark) => copyFps.has(mark))])];
+      // Never cut silently: a record of one id that would not fit stops the pass (loudly) instead.
+      if (keep.length > MAX_BLOCKS_PER_ID) throw new ReadBackFailure("repository_unreadable");
       if (keep.length > 0) seen[id] = keep;
       if (pinnedHere) {
         if (!result.pinned.includes(id)) result.pinned.push(id);

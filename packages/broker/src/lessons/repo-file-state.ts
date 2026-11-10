@@ -79,7 +79,7 @@ export const PrRowSchema = z.object({
    * A WATCH row remembers the fingerprints (`LessonStore.textFingerprints`; no text) of the marked copies of erased texts the last successful sweep found in the repository's file. A mark is released only when a later successful
    * sweep of the same repository finds no copy left, however the repository stands with the project (a repository that left it keeps its marks, so its stripped copies still come out).
    */
-  marks: z.array(z.string().regex(/^[0-9a-f]{32}$/u)).max(100).optional(),
+  marks: z.array(z.string().regex(/^[0-9a-f]{32}$/u)).max(1_500).optional(),
   /** A removal pull request: the fingerprint of the default branch's file it was made from. A different file now means it is out of date (closed and made again). */
   fileHash: z.string().max(40).optional(),
 }).strict();
@@ -145,7 +145,7 @@ export const RepoFileStateSchema = z.object({
    * block of that id. Replaced when the text changes, so that when a lesson is erased a fingerprint is already there for the block whatever happens to the file next. Kept while the lesson is live, or gone with a copy still in the file;
    * dropped after that.
    */
-  seen: z.record(Id, z.array(z.string().regex(/^[0-9a-f]{32}$/u)).min(1).max(8)).optional(),
+  seen: z.record(Id, z.array(z.string().regex(/^[0-9a-f]{32}$/u)).min(1).max(16)).optional(),
   /** How many ids appear in more than one block of the file on the last successful pass (Rovara reads neither block back and leaves them as written). */
   duplicateIds: z.number().int().min(0).optional(),
   /** Lines of the file read-back did not take in as lessons, by a fingerprint of the line's text (never the text) and a fixed reason: it keeps the pass from recording the same line every week. Newest last, bounded. */

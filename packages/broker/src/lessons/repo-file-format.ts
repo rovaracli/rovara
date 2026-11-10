@@ -215,6 +215,8 @@ export interface FileChanges {
   tag?: ReadonlyArray<{ id: string; textHash: string }>;
   /** Remove every bullet the team wrote without an id line whose text in comparison form hashes to one of these (a stripped copy of an erased lesson). */
   removeLoose?: readonly string[];
+  /** Remove EVERY block that carries one of these ids, however many there are (the erasure sweep: a gone lesson's text comes out of every copy, a duplicated id never shields it). `remove` still leaves a duplicated id alone. */
+  removeAll?: readonly string[];
 }
 
 const isBlank = (unit: Unit | undefined): boolean => unit?.kind === "line" && unit.text.trim() === "";
@@ -286,6 +288,10 @@ export function applyFileChanges(existing: string | undefined, changes: FileChan
   for (const replacement of changes.replace) {
     const index = indexOfBlock(replacement.id);
     if (index >= 0) units[index] = { kind: "block", id: replacement.id, lines: blockLines(replacement.id, replacement.text) };
+  }
+  for (const id of changes.removeAll ?? []) {
+    // One at a time from the end: removing a block also removes the blank line beside it, which moves the units after it.
+    for (let index = units.findLastIndex((unit) => unit.kind === "block" && unit.id === id); index >= 0; index = units.findLastIndex((unit) => unit.kind === "block" && unit.id === id)) removeBlockAt(units, index);
   }
   if ((changes.removeLoose ?? []).length > 0) {
     const wanted = new Set(changes.removeLoose);

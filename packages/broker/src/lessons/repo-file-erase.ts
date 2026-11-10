@@ -142,7 +142,8 @@ async function removeErasedBlocks(deps: EraseSweepDeps, key: ScopeKey, target: R
   const text = await host.fileAtRevision(repository, LESSON_FILE_PATH, head, scope, { maxBytes: LESSON_FILE_MAX_BYTES });
   if (text === undefined) return;
   const parsed = parseLessonsFile(text);
-  const ids = [...new Set(parsed.blocks.map((block) => block.id))].filter((id) => !parsed.duplicates.includes(id));
+  // Every id in the file, a duplicated one too: a gone lesson's text comes out of every block that carries its id.
+  const ids = [...new Set(parsed.blocks.map((block) => block.id))];
   const gone = ids.length === 0 ? new Map() : await deps.store.goneOf(key, ids);
   // A copy of an erased lesson's text whose id line was stripped (a formatter, a deleted comment) is found by the mark read-back put on the text (`LessonStore.markGoneText`): it comes out too. Its "id" in the rows is `txt_<hash>`.
   const loose = looseItems(parsed);
@@ -154,7 +155,7 @@ async function removeErasedBlocks(deps: EraseSweepDeps, key: ScopeKey, target: R
   // The file was read: a mark this repository's earlier sweeps recorded that no copy has any more is released; the ones with a copy stay (and are what the row remembers now).
   const present = new Set(copyHashes.map((hash) => fingerprints.get(hash)!));
   await releaseMarks(deps, key, earlier, present);
-  result.marks = [...new Set([...earlier.filter((fp) => present.has(fp)), ...[...marked].filter((fp) => present.has(fp))])].slice(0, 100);
+  result.marks = [...new Set([...earlier.filter((fp) => present.has(fp)), ...[...marked].filter((fp) => present.has(fp))])]
   const inFile = [...ids.filter((id) => gone.has(id)), ...looseGone.map((hash) => `txt_${hash}`)];
   const fileHash = textHash(text);
   const openRemovals = rows.filter((r) => r.kind === "removal" && r.closedAt === undefined && !isProvisional(r));
@@ -172,7 +173,7 @@ async function removeErasedBlocks(deps: EraseSweepDeps, key: ScopeKey, target: R
   if (inFile.length === 0 || covered) return;
   // Another sweep may be in the middle of making one (its provisional row is younger than half an hour).
   if (rows.some((r) => isProvisional(r) && coversRow(r, inFile, fileHash, deps.now()))) return;
-  const next = applyFileChanges(text, { remove: inFile.filter((id) => !id.startsWith("txt_")), removeLoose: looseGone, replace: [], add: [] });
+  const next = applyFileChanges(text, { remove: [], removeAll: inFile.filter((id) => !id.startsWith("txt_")), removeLoose: looseGone, replace: [], add: [] });
   if (next === text || host.deleteBranch === undefined) return;
   // ONE SWEEP AT A TIME makes a removal pull request: a lease row is claimed (written only if there is none), and the rows are read again under it, so two sweeps that started together cannot open two. A lease nobody released
   // (the Lambda died) is taken over after 15 minutes.
