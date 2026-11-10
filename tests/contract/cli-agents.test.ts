@@ -360,8 +360,9 @@ describe("agentx approvals (R66: the CLI never decides)", () => {
     // The operator's review of egress domains (an admin sign-in, not a person's agent approval) predates the agent platform and stays. So does the administrator's approval of a
     // project's E2E setup (`project setup-approve`, M1.3: an admin sign-in deciding a project's test setup, not an agent's approval). So does the customer administrators' approval
     // of a signed release bundle (`bundle approve`, Enterprise upgrades): a human administrator on their own install, with their own AWS credentials, pinning the hash of what the Rovara
-    // operator may deploy. It decides nothing for an agent and carries no agent approval id.
-    expect(names.filter((name) => /\b(approve|decline|deny|decide|reject|accept)\b/.test(name))).toEqual(["bundle approve", "admin egress approve", "admin egress reject", "project setup-approve"]);
+    // operator may deploy. It decides nothing for an agent and carries no agent approval id. So does `admin task lessons-replay approve` (lane 7): an administrator's sign-in approving the waiting plan
+    // of a marked replay copy made to measure the lessons (the route refuses anything that is not a replay copy). It is not an agent's approval and carries no agent approval id.
+    expect(names.filter((name) => /\b(approve|decline|deny|decide|reject|accept)\b/.test(name))).toEqual(["bundle approve", "admin egress approve", "admin egress reject", "admin task lessons-replay approve", "project setup-approve"]);
     expect(names.filter((name) => name.startsWith("approvals ")).sort()).toEqual(["approvals list", "approvals open", "approvals show"]);
     expect(names.filter((name) => name.startsWith("project connectors comment-triggers ")).sort()).toEqual(["project connectors comment-triggers opt-out", "project connectors comment-triggers show"]);
   });
