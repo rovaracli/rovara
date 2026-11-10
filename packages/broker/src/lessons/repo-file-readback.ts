@@ -311,10 +311,22 @@ export async function readBackFile(deps: ReadBackDeps, input: ReadBackInput): Pr
   const copies = new Set([...looseHashes, ...file.blocks.map((block) => hashOfBlock(block.text))]);
   let goneTexts: Set<string>;
   try {
+    // The mark is taken from the FILE, not from Rovara's records: every block of a gone id that is in the file, however it got there (Rovara's pull request, one the team took over, a rewording of an expired lesson's block), is marked
+    // with the text it actually has, and that fingerprint is recorded (it pins the id, so the mark can be cleared when the last copy is gone).
+    for (const block of file.blocks) {
+      if (!input.gone.has(block.id)) continue;
+      const hash = hashOfBlock(block.text);
+      await deps.store.markGoneText(key, hash);
+      const fingerprint = `${hash}:${hashOfHeading(block.heading)}`;
+      if (input.rendered[block.id] !== fingerprint) result.rendered[block.id] = fingerprint;
+      if (!result.pinned.includes(block.id)) result.pinned.push(block.id);
+    }
+    // A gone id Rovara remembers whose block is no longer in the file: its remembered text stays marked while a copy of it is there (the id line was stripped), and the mark goes when none is left.
     for (const id of goneIds) {
+      if (inFile.has(id)) continue;
       const hash = textPartOfFingerprint(input.rendered[id]);
       if (hash === undefined) continue;
-      if (inFile.has(id) || copies.has(hash)) { await deps.store.markGoneText(key, hash); result.pinned.push(id); } else await deps.store.clearGoneText(key, hash);
+      if (copies.has(hash)) { await deps.store.markGoneText(key, hash); result.pinned.push(id); } else await deps.store.clearGoneText(key, hash);
     }
     goneTexts = await deps.store.goneTextOf(key, [...looseHashes]);
   } catch { throw new ReadBackFailure("repository_unreadable"); }

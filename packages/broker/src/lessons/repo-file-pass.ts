@@ -385,7 +385,9 @@ async function pass(deps: RepoFileDeps, key: ScopeKey, target: RepoFileTarget, l
   // The fingerprint of an erased lesson's block is kept while its text is still in the file (read-back needs it to clear the text's mark once the copy is gone); every other declined id is forgotten here.
   const pinned = new Set(readBack?.pinned ?? []);
   for (const id of plan.newlyDeclined) if (!pinned.has(id)) delete rendered[id];
-  const bounded = Object.fromEntries(Object.entries(rendered).slice(-MAX_RENDERED));
+  // Bounded to the newest MAX_RENDERED, except an erased lesson's pinned fingerprint: it goes only after no copy of its text remains (its mark is cleared first).
+  const keepEntries = Object.entries(rendered);
+  const bounded = Object.fromEntries([...keepEntries.filter(([id]) => !pinned.has(id)).slice(-MAX_RENDERED), ...keepEntries.filter(([id]) => pinned.has(id))]);
   state = await commit(deps, key, state, { rendered: bounded, declined: boundedAppend(state.declined, plan.newlyDeclined, MAX_DECLINED), held: plan.held.slice(0, MAX_RENDERED) });
 
   // 6. The pointer: carried by the pull request that proposes it until that one is merged; proposed once. Every agent file is read, and a read that FAILS is never "absent" (review H1): a pass that could not read one of them

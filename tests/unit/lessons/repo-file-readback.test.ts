@@ -795,6 +795,119 @@ describe("review round 2 (rr3c)", () => {
   });
 });
 
+describe("round 3 (rr3d): the mark is taken from the file, whatever way the block got there", () => {
+  const mark = async (w: W, text: string): Promise<boolean> => (await w.store.goneTextOf(w.key, [bodyHashOf(text)])).size === 1;
+  const port = (w: W) => lessonDeletionPort({ store: w.store, vectors: { get: async () => new Map(), put: async () => undefined, remove: async () => undefined }, audit: w.deps.audit, now: w.clock.now });
+  const ways: Array<[string, (w: W) => Promise<void>]> = [
+    ["withdraw", (w) => port(w).withdraw(w.key.workspaceId, w.key.project, "les_aaaa0001", "sources_deleted")],
+    ["person erasure", async (w) => { await port(w).erasePerson(w.key.workspaceId, w.key.project, { developerId: "mallory" }, new Set(["E1"])); }],
+    ["purge", (w) => port(w).withdraw(w.key.workspaceId, w.key.project, "les_aaaa0001", "person_erased")],
+  ];
+  const mallory = (): ReturnType<typeof repoLesson> => { const a = repoLesson("les_aaaa0001"); return { ...a, provenance: { ...a.provenance, sourceEvents: ["E1"], authors: ["mallory"] } }; };
+  const copies = async (w: W, text: string) => (await w.store.listAllHeads(w.key)).filter((l) => l.body === text && l.id !== "les_aaaa0001" && l.status === "active");
+
+  /** How the block reached main: Rovara's own pull request, one a person pushed to (the team's now), or Rovara's then reworded by the team under a lesson that expired. */
+  const paths: Array<[string, () => Promise<{ w: W; text: string }>]> = [
+    ["Rovara-merged", async () => {
+      const w = passSetup();
+      await w.seedLessons(mallory(), repoLesson("les_aaaa0002"));
+      await w.enable();
+      const r = await w.run();
+      w.host.merge(Number((r as { number: string }).number));
+      return { w, text: FIRST };
+    }],
+    ["handed over to the team and merged", async () => {
+      const w = passSetup();
+      await w.seedLessons(mallory(), repoLesson("les_aaaa0002"));
+      await w.enable();
+      await w.run();
+      const open = (await w.current()).open!;
+      w.host.setFile(open.branch, "person.txt", "a person's commit");
+      await w.seedLessons(repoLesson("les_aaaa0003"));
+      w.week();
+      await w.run();
+      expect((await w.current()).theirs).toHaveLength(1);
+      w.host.merge(w.host.prs.find((pr) => pr.source === open.branch)!.number);
+      w.week();
+      await w.run();
+      expect((await w.current()).rendered["les_aaaa0001"]).toBe("merged-by-team");
+      return { w, text: FIRST };
+    }],
+    ["reworded by the team under an expired lesson", async () => {
+      const w = passSetup();
+      await w.seedLessons(mallory(), repoLesson("les_aaaa0002"));
+      await w.enable();
+      const r = await w.run();
+      w.host.merge(Number((r as { number: string }).number));
+      const head = (await lesson(w, "les_aaaa0001"))!;
+      await w.store.commit(w.key, await w.store.setVersion(w.key), [{ ...head, version: head.version + 1, status: "expired" }], 9);
+      changeFile(w, (t) => t.replace(FIRST, "The team's own wording under an expired lesson."));
+      await pass(w);
+      expect((await w.current()).held).toContain("les_aaaa0001");
+      return { w, text: "The team's own wording under an expired lesson." };
+    }],
+  ];
+  for (const [pathName, build] of paths) {
+    for (const [wayName, erase] of ways) {
+      it(`${pathName} x ${wayName}: a pass sees the block, then its id line is stripped: the text it HAS in the file never comes back`, async () => {
+        const { w, text } = await build();
+        await erase(w);
+        await pass(w);
+        expect(await mark(w, text)).toBe(true);
+        changeFile(w, (t) => t.replace("<!-- rovara:les_aaaa0001 -->\n", ""));
+        await pass(w);
+        for (let i = 0; i < 2; i += 1) await pass(w);
+        expect(await copies(w, text)).toEqual([]);
+        expect(Object.values((await w.current()).refused ?? {})).toContain("gone_text");
+      });
+    }
+  }
+  it("a gone block the sweep sees only as a stripped copy (a pass marked it first) is removed by the sweep, even for a handed-over lesson", async () => {
+    const { w, text } = await paths[1]![1]();
+    await ways[0]![1](w);
+    await pass(w);
+    changeFile(w, (t) => t.replace("<!-- rovara:les_aaaa0001 -->\n", ""));
+    await pass(w);
+    const swept = await w.sweep();
+    expect(swept.removalOpened).toBe(true);
+    expect(w.host.file(w.host.open.find((pr) => pr.title.includes("remove"))!.source, FILE)).not.toContain(text);
+  });
+
+  describe("L-e: when the erased block was the file's last marker, a later re-paste is the team's new lesson", () => {
+    it("the record of the erased id goes with the block (not kept for ever because no marker is left), so the mark is cleared and the re-paste is accepted", async () => {
+      const w = passSetup();
+      await w.seedLessons(mallory());
+      await w.enable();
+      const r = await w.run();
+      w.host.merge(Number((r as { number: string }).number));
+      await ways[0]![1](w);
+      expect((await w.sweep()).removalOpened).toBe(true);
+      w.host.merge(w.host.open.find((pr) => pr.title.includes("remove"))!.number);
+      await pass(w);
+      expect(Object.keys((await w.current()).rendered)).not.toContain("les_aaaa0001");
+      expect(await mark(w, FIRST)).toBe(false);
+      changeFile(w, (t) => `${t.trimEnd()}\n\n- ${FIRST}\n`);
+      await pass(w);
+      expect(await copies(w, FIRST)).toHaveLength(1);
+    });
+  });
+
+  it("L-f: the pinned fingerprint of an erased lesson is kept when the record is bounded, until its text is gone", async () => {
+    const w = passSetup();
+    await w.seedLessons(mallory(), repoLesson("les_aaaa0002"));
+    await w.enable();
+    const r = await w.run();
+    w.host.merge(Number((r as { number: string }).number));
+    await ways[0]![1](w);
+    await pass(w);
+    const state = await w.current();
+    const filler = Object.fromEntries(Array.from({ length: 450 }, (_, i) => [`les_fill${String(i).padStart(4, "0")}`, "0123456789abcdef:01234567"]));
+    expect(await w.state.put(w.key, { ...state, rendered: { ...state.rendered, ...filler } }, state.revision)).toBeDefined();
+    await pass(w);
+    expect(Object.keys((await w.current()).rendered)).toContain("les_aaaa0001");
+  });
+});
+
 describe("readBackFile, called directly (pure over its inputs)", () => {
   it("an id of another repository's lesson is not read back into this one", async () => {
     const w = passSetup();

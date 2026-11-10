@@ -200,10 +200,12 @@ export function planRepoFile(input: PlanInput): RepoFilePlan {
   // Owned ids Rovara merged before that are gone from the file: the team removed them.
   // (Only when there is a file to compare with: a repository the team deleted the file of and resumed starts from nothing, and nothing is "removed by the team".)
   // A file with no marker at all says nothing about who was removed (read-back treats it as unreadable unless every text is still there; the plan never declines on it).
-  if (file !== undefined && file.blocks.length > 0) {
+  if (file !== undefined) {
     for (const id of Object.keys(input.rendered)) {
       if (inFile.has(id) || (input.heldIds?.has(id) ?? false)) continue;
       const lesson = everyLesson.get(id);
+      // (An erased lesson is declined whatever the file holds, so its record does not outlive the last block: a re-paste afterwards is the team's new lesson.)
+      if (file.blocks.length === 0 && lesson !== undefined && !goneIds.has(id)) continue;
       // The id line is gone but the text is still a bullet: a formatter stripped it, the team did not remove the lesson. The pull request puts the line back (unless additions wait), and nothing is declined.
       const item = lesson === undefined || goneIds.has(id) ? undefined : looseOf(lesson);
       if (item === undefined) { newlyDeclined.push(id); continue; }
