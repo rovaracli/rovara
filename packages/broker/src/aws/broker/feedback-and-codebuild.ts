@@ -26,7 +26,7 @@ import { requirePullRequest } from "./records.js";
 import { githubScope, githubScopeOfWorkspace, orgOfRecord, webhookRepositoryUrl } from "./scope-helpers.js";
 import { consumerRepositoryResolver } from "./consumer-hosts.js";
 import { GITHUB_HOST_KIND } from "../../plugins/code-host/github/index.js";
-import { changeRequestRef, hostNameOf, hostOfTaskRepository, hostOfWorkspaceRepository, repositoryRefOf } from "./repository-hosts.js";
+import { canReadParents, canReadTree, changeRequestRef, hostNameOf, hostOfTaskRepository, hostOfWorkspaceRepository, repositoryRefOf } from "./repository-hosts.js";
 
 export function projectSetupDomainRecord(item: Record<string, unknown> | undefined, key: { pk: string; sk: string }, entityType: string): Record<string, unknown> {
   if (!item) return {};
@@ -594,6 +594,21 @@ export async function reconcilePullRequestUpdate(
     remote.targetBranch !== record.baseBranch || (remote.headRevision !== input.commit && !await branchHoldsUpdate())
   ) {
     throw agentXError("STALE_FENCE", `${hostNameOf(host)} pull request state does not match the worker update`);
+  }
+  // The record says whose head this is, and merge tracking reads it as Rovara's: so it learns a head only after the host shows that head is what this operation was asked to push (review M2).
+  // A fix: exactly the reviewed tree, as a fast-forward of the recorded head (a conflict round's: the recorded head first and the base commit it merged second). A merge of the base: a commit of
+  // exactly the recorded head and the base commit it was asked for; what its tree holds beyond them is judged by the checks and reviews that follow it, never by this callback.
+  if (expected.workflowCandidate !== undefined || expected.workflowSync !== undefined) {
+    if (!canReadParents(dependencies, host) || (expected.action === "append" && !canReadTree(dependencies, host))) {
+      throw agentXError("RUNTIME_UNAVAILABLE", "cannot verify the pushed commit against what this operation was asked for");
+    }
+    const parents = await host.commitParents(repositoryRefOf(record.repositoryUrl), input.commit, scope);
+    const wanted = expected.action === "sync" ? [expected.expectedHeadCommit, expected.workflowSync?.baseCommit ?? ""]
+      : expected.workflowCandidate?.mergeBaseCommit === undefined ? [expected.expectedHeadCommit] : [expected.expectedHeadCommit, expected.workflowCandidate.mergeBaseCommit];
+    if (JSON.stringify(parents) !== JSON.stringify(wanted)) throw agentXError("STALE_FENCE", "the pushed commit is not built on the head and base this operation was asked for");
+    if (expected.action === "append" && await host.tree(repositoryRefOf(record.repositoryUrl), input.commit, scope) !== expected.workflowCandidate?.treeSha) {
+      throw agentXError("CALLBACK_FORBIDDEN", "the pushed tree is not the reviewed tree");
+    }
   }
   await dependencies.documentClient.send(new UpdateCommand({
     TableName: dependencies.tableName,

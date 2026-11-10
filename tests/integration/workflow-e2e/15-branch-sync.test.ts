@@ -2,13 +2,15 @@
 // schedule's tracking pass queues a merge of the base, the dispatch sweep starts it, the worker (real Git) merges exactly the base commit, and the broker records what GitHub shows. A clean merge keeps
 // the pull request's head a fast-forward and moves the candidate to the new base; a conflict becomes one coding round, checked, reviewed and pushed as a merge commit whose parents are the old head and
 // the base commit; GitHub refusing workflow files stops with its text. Nothing is rebased, nothing is force-pushed, and a person's push wins.
+import { writeFile } from "node:fs/promises";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { CI_OUTPUT_BLOCK_HEADER, BRANCH_SYNC_UNSURE_MESSAGE, BRANCH_WORKFLOW_FILES_MESSAGE, branchSyncGiveUpMessage, branchConflictAskMessage, CONFLICT_PATHS_BLOCK_HEADER, EMPTY_RECIPE, WorkflowSnapshotSchema, branchConflictStopMessage, type WorkflowProgram } from "@agentx/contracts";
+import { CI_OUTPUT_BLOCK_HEADER, BRANCH_SYNC_UNSURE_MESSAGE, BRANCH_WORKFLOW_FILES_MESSAGE, branchSyncGiveUpMessage, branchConflictAskMessage, CONFLICT_PATHS_BLOCK_HEADER, EMPTY_RECIPE, WORKFLOW_BLOCK_REASONS, WorkflowSnapshotSchema, branchConflictStopMessage, type WorkflowProgram } from "@agentx/contracts";
 import { taskRecipeKey } from "../../../packages/broker/src/developer/task-records.js";
 import { TEST_ORG } from "../../support/orgs.js";
 import { mergeTrackingKey } from "../../../packages/contracts/src/org-scoped-keys.js";
 import { createWorkflowE2E, type WorkflowE2E } from "../../support/workflow-e2e.js";
-import { EDITS, FIXED, PLAN, TASK_LINK_MERGE, TASK_LINK_RETRY, atPlanReview, journeySuite, said } from "../../support/workflow-e2e-journeys.js";
+import { EDITS, FIXED, PLAN, TASK_LINK_RETRY, actionIds, atPlanReview, journeySuite, said } from "../../support/workflow-e2e-journeys.js";
 
 const PROGRAM: WorkflowProgram = { steps: [
   { id: "plan", kind: "plan" }, { id: "plan_critic", kind: "plan_critic" }, { id: "build", kind: "build" }, { id: "check", kind: "check" },
@@ -20,6 +22,7 @@ const BASE_GREETING = "export function greet(name: string): string {\n  return '
 const task = (e2e: WorkflowE2E) => e2e.db.get(`DEVTASK#${e2e.taskId()}`, "META")!;
 const dispatchRows = (e2e: WorkflowE2E) => e2e.db.find((item) => item.pk === "WORKFLOW_DISPATCH");
 const milestones = (e2e: WorkflowE2E, kind: string) => e2e.db.find((item) => item.entityType === "CODE_MILESTONE" && item.kind === kind);
+const pullRequestRecord = (e2e: WorkflowE2E) => e2e.db.get(`WORKSPACE#${String(task(e2e).workspaceId)}`, `PULL_REQUEST#demo#${String(e2e.github.pullRequests[0]!.number).padStart(12, "0")}`) as { expectedHeadCommit: string };
 const tracking = (e2e: WorkflowE2E) => {
   const key = mergeTrackingKey(e2e.taskId(), "demo", e2e.github.pullRequests[0]!.number);
   return e2e.db.get(key.pk, key.sk);
@@ -77,6 +80,17 @@ async function waitingForMerge(options: { resolves?: boolean } = {}) {
   return { e2e, github, prompts, pullRequest: e2e.github.pullRequests[0]! };
 }
 
+/** The owner presses Retry checks with the same checks, and the checks, the reviews and the move to waiting for the merge are run to the end. */
+async function retryChecks(e2e: WorkflowE2E): Promise<void> {
+  await e2e.click("agentx_workflow_retry_checks");
+  await e2e.submitView({ workflow_checks: { selected_options: { selected_options: [] } } });
+  await e2e.settle();
+  for (let round = 0; round < 4; round += 1) {
+    await e2e.runRecovery();
+    await e2e.settle();
+  }
+}
+
 /** The schedule's tracking pass, then the dispatch sweep that starts what it queued, then the worker, and so on until the task is quiet. */
 async function trackAndRun(e2e: WorkflowE2E, rounds = 6): Promise<void> {
   // A quiet task is looked at again at the heartbeat; a webhook would wake it sooner.
@@ -102,7 +116,8 @@ describe("Suite 15: keeping the branch up to date", () => {
     await trackAndRun(e2e);
 
     const after = e2e.workflow();
-    expect(after).toMatchObject({ stage: "WAIT_FOR_MERGE", state: "WAITING" });
+    // The merge is a NEW CANDIDATE (decision 67b): the task is not waiting for the merge until the merged code is checked and reviewed again.
+    expect(after).toMatchObject({ stage: "VERIFY", state: "BLOCKED", blockReason: WORKFLOW_BLOCK_REASONS.baseMergedRecheck });
     expect(after.branchSync).toBeUndefined();
     // GitHub shows the merge: the old head first, the base commit second; nothing else was pushed, to no other branch.
     const merged = pullRequest.commit;
@@ -116,21 +131,39 @@ describe("Suite 15: keeping the branch up to date", () => {
     expect(after.candidate!.digest).not.toBe(beforeDigest);
     expect(after.candidate!.repositories[0]).toMatchObject({ commitSha: merged, baseCommitSha: base });
     expect(after.reviewBase).toEqual([{ repositoryId: "demo", baseCommitSha: base }]);
-    expect(after.verification?.candidateDigest).toBe(after.candidate!.digest);
-    expect(after.reviews?.every((review) => review.candidateDigest === after.candidate!.digest)).toBe(true);
+    // The earlier checks and reviews are not carried over to the merged code.
+    expect(after.verification).toBeUndefined();
+    expect(after.reviews ?? []).toEqual([]);
+    expect(after.acceptedFindings ?? []).toEqual([]);
     // The day's merge is counted once, the row is gone, no fix round was used and nothing was said as stuck.
     expect(dispatchRows(e2e).filter((row) => row.kind === "SYNC")).toEqual([]);
     expect(after.fixRounds).toBeUndefined();
     expect(milestones(e2e, "stuck")).toEqual([]);
-    // The thread says so once, in its own words (a merge of the base is not a fix).
-    expect(said(e2e).at(-1)).toBe(`Brought PR #${pullRequest.number} up to date with its base branch. Approve the PR on GitHub, then press Merge in Rovara; I'll finish this task when it's merged.${TASK_LINK_MERGE}`);
+    // The thread says why the task is not waiting for the merge yet, and offers the checks again.
+    expect(said(e2e).at(-1)).toBe(WORKFLOW_BLOCK_REASONS.baseMergedRecheck);
+    expect(actionIds(e2e.slack.posts.at(-1)!)).toEqual(expect.arrayContaining(["agentx_workflow_retry_checks", "agentx_workflow_close"]));
     // The workspace is on the merge, with the base's file.
     expect(await e2e.repoFile("upstream.ts")).toBe("export const upstream = 1;\n");
-    // It does not merge again: the next pass reads a branch that has the base, on a head that is Rovara's.
+    // The pull request is not called ready, and no second merge starts, while the merged code is unchecked.
     const rows = dispatchRows(e2e).length;
     await trackAndRun(e2e, 2);
-    expect(tracking(e2e)).toMatchObject({ syncs: { count: 1 }, headSha: merged, branch: "up_to_date", headByRovara: true });
+    expect(e2e.workflow()).toMatchObject({ stage: "VERIFY", state: "BLOCKED" });
     expect(dispatchRows(e2e)).toHaveLength(rows);
+    expect(e2e.github.pushLog.slice(pushesBefore)).toHaveLength(1);
+
+    // The owner's Retry checks runs the checks on the merged code (the candidate the host shows), then the reviews run again; only then does the task wait for the merge.
+    await retryChecks(e2e);
+    const rechecked = e2e.workflow();
+    expect(rechecked).toMatchObject({ stage: "WAIT_FOR_MERGE", state: "WAITING" });
+    expect(rechecked.candidate!.digest).toBe(after.candidate!.digest);
+    expect(rechecked.verification?.candidateDigest).toBe(after.candidate!.digest);
+    expect(rechecked.reviews?.length).toBeGreaterThan(0);
+    expect(rechecked.reviews?.every((review) => review.candidateDigest === after.candidate!.digest)).toBe(true);
+    expect(rechecked.pullRequests?.[0]).toMatchObject({ headSha: merged, candidateDigest: after.candidate!.digest });
+    // Nothing more was pushed (the pull request already held the candidate), and the next pass reads a branch that has the base, on a head that is Rovara's.
+    expect(e2e.github.pushLog.slice(pushesBefore)).toHaveLength(1);
+    await trackAndRun(e2e, 2);
+    expect(tracking(e2e)).toMatchObject({ syncs: { count: 1 }, headSha: merged, branch: "up_to_date", headByRovara: true });
     expect(e2e.github.pushLog.slice(pushesBefore)).toHaveLength(1);
   });
 
@@ -410,9 +443,10 @@ describe("Suite 15: keeping the branch up to date", () => {
     expect(conflictRun?.kind === "task" && conflictRun.payload.workflowFix).toEqual({ source: "conflict" });
   }, 240_000);
 
-  it("15.8 a merge whose machine is lost after its push is judged from what GitHub shows: the merge is recorded as Rovara's own (with no approval to carry), and nothing false is said", async () => {
+  it("15.8 a merge whose machine is lost after its push is not recorded (decision 67b): nothing proves Rovara's checks passed on it, so the head is not Rovara's and the record goes back", async () => {
     const { e2e, github, pullRequest } = await waitingForMerge();
     const before = pullRequest.commit;
+    const beforeDigest = e2e.workflow().candidate!.digest;
     const base = await e2e.advanceBase("upstream.ts", "export const upstream = 1;\n");
     github.state.baseAhead = true;
     // The worker pushes, then its machine is lost: no callback of any kind.
@@ -428,17 +462,78 @@ describe("Suite 15: keeping the branch up to date", () => {
     await e2e.runRecovery();
     await e2e.settle();
     const after = e2e.workflow();
+    // The merge is judged from what GitHub shows and found to be unproven: the task waits for the merge as it did, holding the head and the code it had.
     expect(after).toMatchObject({ stage: "WAIT_FOR_MERGE", state: "WAITING" });
     expect(after.branchSync).toBeUndefined();
-    expect(after.pullRequests?.[0]).toMatchObject({ headSha: pullRequest.commit, candidateDigest: after.candidate!.digest });
-    expect(after.pullRequests?.[0]?.syncedFrom).toBeUndefined();
-    expect(after.candidate!.repositories[0]).toMatchObject({ commitSha: pullRequest.commit, baseCommitSha: base });
-    // The head is Rovara's own: the thread never says someone else pushed, and a red CI on it is fixed.
+    expect(after.pullRequests?.[0]).toMatchObject({ headSha: before, candidateDigest: beforeDigest });
+    expect(after.candidate!.digest).toBe(beforeDigest);
+    expect(after.verification?.candidateDigest).toBe(beforeDigest);
+    expect(pullRequestRecord(e2e).expectedHeadCommit).toBe(before);
+    // The head on GitHub is not one Rovara recorded: merge tracking reads it as someone else's, and no red CI on it is fixed by Rovara.
     await trackAndRun(e2e, 1);
-    expect(tracking(e2e)).toMatchObject({ headByRovara: true, headSha: pullRequest.commit });
-    expect(said(e2e).some((text) => text.startsWith("Someone else pushed"))).toBe(false);
+    expect(tracking(e2e)).toMatchObject({ headByRovara: false, headSha: pullRequest.commit });
     github.state.red = true;
     await trackAndRun(e2e);
-    expect(e2e.workflow().fixRounds).toMatchObject({ ci: 1 });
+    expect(e2e.workflow().fixRounds?.ci ?? 0).toBe(0);
+  });
+
+  it("15.16 a merge of the base is not called ready before its checks and reviews pass again: a draft stays a draft until then", async () => {
+    const { e2e, github, pullRequest } = await waitingForMerge();
+    await e2e.advanceBase("upstream.ts", "export const upstream = 1;\n");
+    github.state.baseAhead = true;
+    await trackAndRun(e2e);
+    expect(e2e.workflow()).toMatchObject({ stage: "VERIFY", state: "BLOCKED", blockReason: WORKFLOW_BLOCK_REASONS.baseMergedRecheck });
+    // The pull request is a draft that was not marked ready yet (undone here, as a pull request that never had its first pass).
+    const { readyAt: _readyAt, ...rest } = tracking(e2e)! as Record<string, unknown>;
+    void _readyAt;
+    e2e.db.set(rest);
+    pullRequest.draft = true;
+    // Green CI on the merged head, a head that is Rovara's: still a draft, while the merged code is unchecked.
+    await trackAndRun(e2e, 2);
+    expect(pullRequest.draft).toBe(true);
+    expect(tracking(e2e)).toMatchObject({ headByRovara: true });
+    // The checks pass, the reviews pass, the task waits for the merge: the next pass takes it out of draft.
+    await retryChecks(e2e);
+    expect(e2e.workflow()).toMatchObject({ stage: "WAIT_FOR_MERGE", state: "WAITING" });
+    await trackAndRun(e2e, 2);
+    expect(pullRequest.draft).toBe(false);
+  });
+
+  it("15.17 the merged code is checked on the code the host shows: a workspace that holds other code than the merge is refused, and nothing is recorded as checked", async () => {
+    const { e2e, github } = await waitingForMerge();
+    await e2e.advanceBase("upstream.ts", "export const upstream = 1;\n");
+    github.state.baseAhead = true;
+    await trackAndRun(e2e);
+    const merged = e2e.workflow();
+    expect(merged).toMatchObject({ stage: "VERIFY", state: "BLOCKED", blockReason: WORKFLOW_BLOCK_REASONS.baseMergedRecheck });
+    // Extra changes the merge on the host does not have are in the workspace.
+    await writeFile(join(e2e.repoDirectory, "extra.ts"), "export const extra = 1;\n");
+    await retryChecks(e2e);
+    const after = e2e.workflow();
+    expect(after).toMatchObject({ stage: "VERIFY", state: "BLOCKED", blockReason: WORKFLOW_BLOCK_REASONS.checkedOtherCode });
+    expect(after.candidate!.digest).toBe(merged.candidate!.digest);
+    expect(after.verification).toBeUndefined();
+    expect(after.reviews ?? []).toEqual([]);
+  });
+
+  it("15.18 a merge pushed with parents that are not the recorded head and the base commit is refused at the callback: the record keeps the head, and nothing is recorded", async () => {
+    const { e2e, github, pullRequest } = await waitingForMerge();
+    const before = pullRequest.commit;
+    const beforeDigest = e2e.workflow().candidate!.digest;
+    await e2e.advanceBase("upstream.ts", "export const upstream = 1;\n");
+    github.state.baseAhead = true;
+    // GitHub shows the pushed merge with another second parent.
+    e2e.worker.rewriteNextResult("maintain", (result) => {
+      e2e.github.parents.set((result as { commit: string }).commit, [before, "e".repeat(40)]);
+      return result;
+    });
+    e2e.clock.advance(16 * 60_000);
+    await e2e.runMergeRecovery();
+    for (let round = 0; round < 4; round += 1) { await e2e.runRecovery(); await e2e.settle(); }
+    expect(pullRequestRecord(e2e).expectedHeadCommit).toBe(before);
+    const after = e2e.workflow();
+    expect(after.pullRequests?.[0]).toMatchObject({ headSha: before, candidateDigest: beforeDigest });
+    expect(after.candidate!.digest).toBe(beforeDigest);
+    expect(after.stage).not.toBe("VERIFY");
   });
 });

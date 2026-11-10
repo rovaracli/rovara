@@ -608,16 +608,19 @@ describe("what a finished merge of the base is", () => {
     expect(outcome).toMatchObject({ headSha: MERGE, headTreeSha: MERGED_TREE, previousHeadSha: HEAD_A, baseCommitSha: BASE_NEW });
   });
 
-  it("is a merge even when the worker's result was lost, if GitHub shows it: but Rovara's checks are unproven then, so no head is kept for an approval to carry from", () => {
-    const outcome = plan({ status: "FAILED", error: "RUNTIME_UNAVAILABLE: compute lost", result: undefined });
-    expect(outcome.kind).toBe("synced");
-    if (outcome.kind !== "synced") return;
-    expect(outcome.workflow.pullRequests?.[0]).toMatchObject({ headSha: MERGE });
-    expect(outcome.workflow.pullRequests?.[0]?.syncedFrom).toBeUndefined();
-    expect(outcome.workflow.candidate?.repositories[0]).toMatchObject({ commitSha: MERGE, baseCommitSha: BASE_NEW });
-    // The same merge with its result in hand is one Rovara's checks passed on.
-    const verified = plan({});
-    expect(verified.kind === "synced" && verified.workflow.pullRequests?.[0]?.syncedFrom).toBe(HEAD_A);
+  it("is not recorded when the run did not succeed, even if GitHub shows exactly the merge: nothing proves Rovara's checks passed on it (decision 67b)", () => {
+    for (const status of ["FAILED", "INTERRUPTED", "CANCELLED"] as never[]) {
+      const lost = plan({ status, error: "RUNTIME_UNAVAILABLE: compute lost", result: undefined });
+      expect(lost.kind, status).toBe("unchanged");
+      expect(lost.workflow.pullRequests?.[0]?.headSha, status).toBe(HEAD_A);
+      expect(lost.workflow.branchSync, status).toBeUndefined();
+    }
+    // A failed run that did return a result is not recorded either, and a head GitHub shows is not counted as a failure of the merge.
+    const failed = plan({ status: "FAILED", error: "CONFIG_INVALID: one or more registered readiness checks failed" });
+    expect(failed.kind).toBe("unchanged");
+    expect(failed.workflow.syncFailures).toBeUndefined();
+    // Positive control: the same merge from a run that succeeded is recorded.
+    expect(plan({}).kind).toBe("synced");
   });
 
   it("is refused when the merge commit's second parent is not the base commit, or its first is not the recorded head, or the tree is not the one reported", () => {

@@ -16,6 +16,7 @@ import {
   type WorkflowSnapshot,
   E2EPolicySchema,
   WorkflowTransitionError,
+  WorkflowSnapshotSchema,
   WorkflowPublishRetryRequestSchema,
   canonicalJson,
   unblockWorkflowPublication,
@@ -161,6 +162,14 @@ export async function currentWorkflowPublicationModeForTask(
   return (await currentWorkflowPublicationAuthorityForTask(deps, task))?.mode;
 }
 
+/** Whether every open pull request holds exactly the workflow's candidate (its digest and, per repository, its tree) and at least one is open. */
+function pullRequestsHoldCandidate(workflow: WorkflowSnapshot & { candidate?: NonNullable<WorkflowSnapshot["candidate"]> | undefined }): boolean {
+  const candidate = workflow.candidate;
+  const open = (workflow.pullRequests ?? []).filter((entry) => entry.state === "OPEN" || entry.state === "UNKNOWN");
+  return candidate !== undefined && open.length > 0 && open.every((entry) => entry.candidateDigest === candidate.digest
+    && entry.headTreeSha === candidate.repositories.find((repository) => repository.repositoryId === entry.repositoryId)?.treeSha);
+}
+
 /**
  * Task 12: open the draft pull request of exactly the candidate whose checks and both reviews passed, with no one asking.
  * Answers STALE unless the task is open and ready to publish at the expected revision with that candidate. One
@@ -212,9 +221,29 @@ export async function startTaskWorkflowPublicationFromSystem(
   if (repository === undefined) {
     // Plan 6 Task 16: before the fix of a round Rovara decided itself is pushed, the autonomy is read again (an owner's own retry is their go-ahead).
     if (!ownerRetry && workflow.state === "READY" && workflowPullRequestUpdateDue(workflow) && await stoppedByLoweredAutonomy(deps, task, workflow)) return "STALE";
-    return workflow.state === "READY" && workflowPullRequestUpdateDue(workflow)
-      ? startTaskWorkflowPullRequestUpdate(deps, task, { ...workflow, candidate: workflow.candidate }, expected, currentE2EChecks, dispatchAccess, origin.ownerActor)
-      : "STALE";
+    if (workflow.state === "READY" && workflowPullRequestUpdateDue(workflow)) {
+      return startTaskWorkflowPullRequestUpdate(deps, task, { ...workflow, candidate: workflow.candidate }, expected, currentE2EChecks, dispatchAccess, origin.ownerActor);
+    }
+    // Every open pull request already holds the candidate (a merge of the base that was checked and reviewed again, or a fix whose push landed before its result): there is nothing to push, and the task
+    // waits for the merge.
+    if (workflow.state === "READY" && !ownerRetry && pullRequestsHoldCandidate(workflow)) {
+      const { blockReason: _blockReason, ...rest } = workflow;
+      void _blockReason;
+      const now = iso(deps);
+      try {
+        await deps.actions.transact([{ Update: { TableName: deps.tableName, Key: taskKey(taskId), UpdateExpression: "SET workflow = :workflow, updatedAt = :now",
+          ConditionExpression: "workflow.revision = :revision AND workflow.#stage = :stage AND workflow.#state = :state AND attribute_not_exists(closedAt)",
+          ExpressionAttributeNames: { "#stage": "stage", "#state": "state" },
+          ExpressionAttributeValues: { ":workflow": WorkflowSnapshotSchema.parse({ ...rest, revision: workflow.revision + 1, stage: "WAIT_FOR_MERGE", state: "WAITING", updatedAt: now }),
+            ":now": now, ":revision": workflow.revision, ":stage": "PULL_REQUEST", ":state": "READY" } } },
+        ...(dispatchAccess === undefined ? [] : [taskAccessFence(deps.tableName, taskId, dispatchAccess.peopleRevision)])]);
+      } catch (error) {
+        if (!isConditional(error)) throw error;
+        return "STALE";
+      }
+      return "STARTED";
+    }
+    return "STALE";
   }
   const attempt = 1 + await deps.actions.failedPublications(task.workspaceId, { repositoryId: repository.repositoryId, candidateDigest: expected.candidateDigest, treeSha: repository.treeSha });
   if (attempt > 1 && !ownerRetry) return "STALE";

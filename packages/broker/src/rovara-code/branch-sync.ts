@@ -135,8 +135,8 @@ const SHA = /^[a-f0-9]{40}$/u;
 
 /**
  * What a finished merge of the base is, from what GitHub shows (never from the worker's word alone):
- * - the merge is on the branch when the head is a new commit with exactly two parents, the head Rovara recorded first and the base commit it merged second, on the task's own branch, with the tree
- *   the worker reported (when it reported one); it is recorded even when the worker's result was lost;
+ * - the merge is on the branch when the run succeeded and the head is a new commit with exactly two parents, the head Rovara recorded first and the base commit it merged second, on the task's own branch, with the tree
+ *   the worker reported (when it reported one); a merge of a run that did not succeed (a lost result included) is never recorded;
  * - a conflict (nothing pushed) starts a conflict round, or stops when the rounds are used up;
  * - GitHub refusing the push of workflow files stops, and is not a conflict round;
  * - anything else (a failed check, a head that moved, a lost machine, a branch that already had the base) ends the merge with nothing recorded.
@@ -162,7 +162,9 @@ export function planBranchSyncOutcome(input: {
   const resultFits = result === undefined || (result.action === "sync" && result.number === binding.number);
   if (!resultFits) return unchanged();
 
-  const landed = github !== undefined && github.state === "open" && github.headBranch === input.recordedBranch && github.headCommit !== binding.expectedHeadCommit
+  // A merge from a run that did not succeed is not recorded (owner decision 67b): nothing proves Rovara's checks passed on it, so the task waits for the merge as it did, and a head that is not the one
+  // recorded is read by merge tracking as someone else's.
+  const landed = input.terminalStatus === "SUCCEEDED" && github !== undefined && github.state === "open" && github.headBranch === input.recordedBranch && github.headCommit !== binding.expectedHeadCommit
     && SHA.test(github.headCommit) && SHA.test(github.headTreeSha)
     && github.parents?.length === 2 && github.parents[0] === binding.expectedHeadCommit && github.parents[1] === binding.baseCommit
     && (result === undefined || (result.conflicts === undefined && result.commit === github.headCommit && result.treeSha === github.headTreeSha));
@@ -171,8 +173,6 @@ export function planBranchSyncOutcome(input: {
       const next = recordWorkflowBranchSync(workflow, {
         repositoryId: binding.repositoryId, number: binding.number, headSha: github.headCommit, headTreeSha: github.headTreeSha, baseCommitSha: binding.baseCommit,
         previousHeadSha: binding.expectedHeadCommit, now: input.now,
-        // Only a merge whose result came back has Rovara's checks behind it (the worker pushes only after they pass).
-        unverified: input.terminalStatus !== "SUCCEEDED",
       });
       return { kind: "synced", workflow: next, headSha: github.headCommit, headTreeSha: github.headTreeSha, previousHeadSha: binding.expectedHeadCommit, baseCommitSha: binding.baseCommit };
     } catch (error) {
