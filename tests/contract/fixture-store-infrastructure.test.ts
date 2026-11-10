@@ -97,9 +97,9 @@ describe("the service role and the default boundary are untouched", () => {
   const scope = (env: string): PolicyScope => ({
     env, partition: "aws", region: "ap-southeast-2", account: "944937319445", cloudFormationRoleName: `agentx-${env}-cloudformation`, artifactBucketArn: `arn:aws:s3:::agentx-${env}-access-artifactbucket-abcdefghijkl`, rovaraOrganizationId: `o-${"a".repeat(32)}`,
   } as PolicyScope);
-  it("the service role's inline policy is 9,198 of 10,240 in the worst case (7,864 before TR-SWITCH-B1/B2 added the Team record's storage grants, 1,334) (the service role already allows s3, kms and dynamodb on the stack)", () => {
+  it("the service role's inline policy is 9,002 of 10,240 in the worst case (9,198 before fix/0512-small folded PassRoles into IamRoles; 7,864 before TR-SWITCH-B1/B2 added the Team record's storage grants, 1,334) (the service role already allows s3, kms and dynamodb on the stack)", () => {
     const longest = scope("a".repeat(20));
-    expect(size(serviceRoleStatements(longest))).toBe(9198);
+    expect(size(serviceRoleStatements(longest))).toBe(9002);
     const statements = serviceRoleStatements(longest);
     expect(JSON.stringify(statements)).not.toContain("fixtures");
     const services = statements.find((statement) => statement.Sid === "Services")!.Action;
