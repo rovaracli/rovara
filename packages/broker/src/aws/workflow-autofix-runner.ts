@@ -1,7 +1,7 @@
 import { GetCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
 import {
   AgentXError, AUTO_FIX_DEFAULT_CAP_USD, BASE_MERGED_NEEDS_YOU_MILESTONE, BASE_MERGED_RETRY_REASON, WORKFLOW_AUTO_ACTION_LIMIT, autoFixAskCard, autoFixDecision, classifyBlockedWorkflow, wholeTaskSpendUsd, workflowAutoFixCounts, workflowAutoSpendRefusal,
-  type AutoFixAskReason, type AutoFixBlockCause, type AutoFixCode, type AutoFixDecision, type AutoFixFacts, type E2EScenarioResults, type GroupOriginalResult, type OriginalCodeResult, type WorkflowAutoSpend,
+  type AutoFixAskReason, type AutoFixBlockCause, type WorkflowSnapshot, type AutoFixCode, type AutoFixDecision, type AutoFixFacts, type E2EScenarioResults, type GroupOriginalResult, type OriginalCodeResult, type WorkflowAutoSpend,
 } from "@agentx/contracts";
 import { AUTOFIX_ASK_GROUPS_MAX, AutoFixAskSchema, autoFixRetryReason, autoFixSendBackReason, type AutoFixAsk } from "../developer/autofix-messages.js";
 import { loadPlanSelfCheck } from "../developer/plan-self-check.js";
@@ -32,6 +32,18 @@ export interface AutofixConfig {
    * reader-first, so a field there would break an older reader). Money backstops, in order: the per-task cap read before each start, and the model-budget reservation (fix/0513-model-budget-reserve); this only spreads the starts.
    */
   baseMergedPerTenMinutes?: number | undefined;
+}
+
+/**
+ * Decision 70(c): whether ANY open pull request of the task no longer holds the head Rovara recorded for it (a person pushed since the merge). Every open pull request is looked at, not just the first; a head
+ * that cannot be read throws, and the caller asks instead of starting. A pull request recorded without a head is not judged.
+ */
+export async function openPullRequestHeadMoved(workflow: { pullRequests?: WorkflowSnapshot["pullRequests"] | undefined } | undefined, readHead: (pullRequest: NonNullable<WorkflowSnapshot["pullRequests"]>[number]) => Promise<string>): Promise<boolean> {
+  for (const pullRequest of workflow?.pullRequests ?? []) {
+    if ((pullRequest.state !== "OPEN" && pullRequest.state !== "UNKNOWN") || pullRequest.headSha === undefined) continue;
+    if (await readHead(pullRequest) !== pullRequest.headSha) return true;
+  }
+  return false;
 }
 
 /** The default company allowance of re-runs after a merge of the base per ten minutes. */
@@ -280,7 +292,10 @@ export async function runWorkflowAutofix(deps: AutofixDependencies, task: Develo
   if (cause === "base-merged") {
     const autonomy: Awaited<ReturnType<NonNullable<AutofixDependencies["autonomy"]>>> = await deps.autonomy?.(task).catch(() => ({ autonomy: "suggest" as const, unreadable: true as const })) ?? { autonomy: "suggest" as const };
     if (autonomy.autonomy === "suggest") return ask(autonomy.noCompany === true ? "autonomy-no-company" : autonomy.unreadable === true ? "autonomy-unreadable" : "autonomy-suggest", ["base-merged"]);
-    if (await deps.pullRequestHeadMoved?.(task) === true) return ask("head-moved", ["base-merged"]);
+    // A head that cannot be read is not "not moved": the owner is asked at once (the same ask as any move the broker cannot make), not left to the look-failed retry loop.
+    let headMoved: boolean;
+    try { headMoved = await deps.pullRequestHeadMoved?.(task) ?? false; } catch { return guardRefused(["base-merged"]); }
+    if (headMoved) return ask("head-moved", ["base-merged"]);
   }
 
   // The original-code result decides send back or ask (owner rule). A round that was requested at approval but never started can still run: the first CHECKS dispatch after a retry runs it

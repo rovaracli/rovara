@@ -8,7 +8,7 @@ vi.mock("../../packages/broker/src/aws/developer-tasks.js", () => ({
   autoSendBackToCodingFromSystem: moves.sendBack, autoRetryChecksFromSystem: moves.retryChecks, autoRetryReviewsFromSystem: moves.retryReviews,
 }));
 
-import { runWorkflowAutofix, type AutofixDependencies } from "../../packages/broker/src/aws/workflow-autofix-runner.js";
+import { openPullRequestHeadMoved, runWorkflowAutofix, type AutofixDependencies } from "../../packages/broker/src/aws/workflow-autofix-runner.js";
 import { AutoFixAskSchema, autoFixAskReasonSentence, autoFixCardLines } from "../../packages/broker/src/developer/autofix-messages.js";
 import { autofixDayBudgetNeed } from "../../packages/broker/src/aws/workflow-autofix-runner.js";
 import type { DeveloperTaskRecord } from "../../packages/broker/src/developer/task-records.js";
@@ -290,6 +290,14 @@ describe("decision 70(c): the re-run of a merged base's checks, by the runner", 
     expect(moves.retryChecks).not.toHaveBeenCalled();
   });
 
+  it("asks at once (needs a person, nothing started) when the pull request's head cannot be read, instead of looping through the look-failed retries", async () => {
+    moves.retryChecks.mockClear();
+    const { deps: d, writes } = merged({ pullRequestHeadMoved: async () => { throw new Error("GitHub is down"); } });
+    expect(await runMerged(d)).toBe("ASKED");
+    expect(asked(writes)).toMatchObject({ reason: "needs-a-person", codes: ["base-merged"] });
+    expect(moves.retryChecks).not.toHaveBeenCalled();
+  });
+
   it("waits (deferred, nothing started, no ask) when the company's allowance of re-runs for these ten minutes is used", async () => {
     moves.retryChecks.mockClear();
     const { deps: d, writes } = merged({ claimBaseMergedStart: async () => false });
@@ -308,5 +316,30 @@ describe("decision 70(c): the re-run of a merged base's checks, by the runner", 
     const outage = new Error("temporary backend failure");
     moves.retryChecks.mockRejectedValueOnce(outage);
     await expect(runMerged(merged().deps)).rejects.toBe(outage);
+  });
+});
+
+describe("decision 70(c): whether a person pushed since the merge (every open pull request is looked at)", () => {
+  const pr = (repositoryId: string, number: number, headSha: string | undefined, state = "OPEN") => ({ repositoryId, number, headSha, state });
+  const heads: Record<string, string> = { "demo#1": "a".repeat(40), "ledger#2": "b".repeat(40) };
+  const read = async (pullRequest: { repositoryId: string; number: number }) => heads[`${pullRequest.repositoryId}#${String(pullRequest.number)}`]!;
+
+  it("says moved when the host's head is not the recorded one, and not moved when it is", async () => {
+    expect(await openPullRequestHeadMoved({ pullRequests: [pr("demo", 1, "a".repeat(40)) as never] }, read)).toBe(false);
+    expect(await openPullRequestHeadMoved({ pullRequests: [pr("demo", 1, "9".repeat(40)) as never] }, read)).toBe(true);
+  });
+
+  it("looks at every open pull request, not just the first: a second repository's pull request that moved counts", async () => {
+    const moved = { pullRequests: [pr("demo", 1, "a".repeat(40)), pr("ledger", 2, "9".repeat(40))] as never };
+    expect(await openPullRequestHeadMoved(moved, read)).toBe(true);
+    expect(await openPullRequestHeadMoved({ pullRequests: [pr("demo", 1, "a".repeat(40)), pr("ledger", 2, "b".repeat(40))] as never }, read)).toBe(false);
+    // A merged or closed pull request, and one recorded without a head, are not judged.
+    expect(await openPullRequestHeadMoved({ pullRequests: [pr("demo", 1, "9".repeat(40), "MERGED"), pr("ledger", 2, undefined)] as never }, read)).toBe(false);
+  });
+
+  it("lets a head that cannot be read throw (the runner then asks), and judges nothing for a task with no pull request", async () => {
+    await expect(openPullRequestHeadMoved({ pullRequests: [pr("demo", 1, "a".repeat(40)) as never] }, async () => { throw new Error("GitHub is down"); })).rejects.toThrow("GitHub is down");
+    expect(await openPullRequestHeadMoved({ pullRequests: [] }, read)).toBe(false);
+    expect(await openPullRequestHeadMoved(undefined, read)).toBe(false);
   });
 });

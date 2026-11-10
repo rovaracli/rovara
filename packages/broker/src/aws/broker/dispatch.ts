@@ -27,7 +27,7 @@ import { PlanCheckUnavailableError } from "../../rovara-code/critic.js";
 import { developerTaskRouteDependencies } from "../developer-routes.js";
 import type { EndTold } from "../developer-tasks.js";
 import { startTaskWorkflowPlanRevisionFromSystem, finishedReleaseMarkItem, noteTaskEnded, startTaskWorkflowImplementationFromSystem, startTaskWorkflowPlanFromSystem, startTaskWorkflowPublicationFromSystem, startTaskWorkflowUnderstandFromSystem, startTaskWorkflowPlanCritiqueFromSystem, startTaskWorkflowBranchSyncFromSystem, startTaskWorkflowCriticRevisionFromSystem, startTaskWorkflowReviewFromSystem, workflowEndOutcome, taskPageUrl } from "../developer-tasks.js";
-import { AUTOFIX_ROUND_ESTIMATE_USD, BASE_MERGED_PER_TEN_MINUTES_DEFAULT, autofixDayBudgetNeed, postponeAutofixRow, recordAutofixGiveUpAsk, runWorkflowAutofix, type AutofixDependencies } from "../workflow-autofix-runner.js";
+import { AUTOFIX_ROUND_ESTIMATE_USD, BASE_MERGED_PER_TEN_MINUTES_DEFAULT, autofixDayBudgetNeed, openPullRequestHeadMoved, postponeAutofixRow, recordAutofixGiveUpAsk, runWorkflowAutofix, type AutofixDependencies } from "../workflow-autofix-runner.js";
 import { taskAutonomy } from "../../rovara-code/ci-fix.js";
 import { codeMilestoneItems } from "../../rovara-code/milestones.js";
 import { blockedByEnvironmentHook } from "../../test-env/health-wiring.js";
@@ -671,15 +671,12 @@ async function runAutofixDispatch(dependencies: AwsBrokerDependencies, item: Acc
         return unreadable ? { autonomy: "suggest" as const, unreadable: true as const } : { autonomy: found };
       },
       // Decision 70(c): a person who pushed since the merge ends the re-run (the checks are of the merge candidate; the pull request no longer holds it).
-      pullRequestHeadMoved: async (current) => {
-        const pullRequest = current.workflow?.pullRequests?.find((entry) => entry.state === "OPEN" || entry.state === "UNKNOWN");
-        if (pullRequest === undefined || pullRequest.headSha === undefined) return false;
+      pullRequestHeadMoved: (current) => openPullRequestHeadMoved(current.workflow, async (pullRequest) => {
         const url = await webhookRepositoryUrl(dependencies)(current.project, current.startingRevision, pullRequest.repositoryId, current.orgId);
         if (url === undefined) throw agentXError("CONFIG_INVALID", "the pull request's repository is not in the task's project");
         const host = await hostOfTaskRepository(dependencies, current, { name: pullRequest.repositoryId, url });
-        const remote = await host.getChangeRequest(changeRequestRef(url, pullRequest.number), await githubScopeOf(dependencies, current));
-        return remote.headRevision !== pullRequest.headSha;
-      },
+        return (await host.getChangeRequest(changeRequestRef(url, pullRequest.number), await githubScopeOf(dependencies, current))).headRevision;
+      }),
       // Decision 70(c): the company's allowance of re-runs after a merge of the base per ten minutes (one counter item per company and window, claimed conditionally).
       claimBaseMergedStart: async (current) => {
         const allowance = config.baseMergedPerTenMinutes ?? BASE_MERGED_PER_TEN_MINUTES_DEFAULT;

@@ -6,7 +6,7 @@ import {
   BRANCH_SYNC_UNSURE_MESSAGE, SYNC_BACKOFF_MINUTES, SYNC_FAILURES_MAX, branchSyncGiveUpMessage, isBranchSyncGiveUpReason,
   branchConflictAskMessage, isBranchConflictAskReason, retryWorkflowBranchSync,
   BRANCH_SYNCS_PER_DAY_MAX, BRANCH_WORKFLOW_FILES_MESSAGE, CONFLICT_ROUNDS_MAX, WorkflowSnapshotSchema, WorkflowTransitionError, blockWorkflowBranchSync, branchConflictStopMessage, createCandidateManifest,
-  createWorkflowSnapshot, endWorkflowBranchSync, autoFixDecision, wholeTaskSpendUsd, WORKFLOW_BLOCK_REASONS, BASE_MERGED_RETRY_REASON, BASE_MERGED_RETRIES_PER_DAY, baseMergedRetriesToday, WORKFLOW_AGENTX_ACTOR_ID, WORKFLOW_AUTO_ACTION_LIMIT, workflowAutoActionRequestId, holdWorkflowCandidateOnPullRequests, WORKFLOW_AUTO_PUBLISH_FAILED_MESSAGE, isBranchSyncBlockReason, observeWorkflowPullRequest, recordWorkflowBranchSync, recordWorkflowPullRequestUpdate, recordWorkflowSyncConflict,
+  createWorkflowSnapshot, endWorkflowBranchSync, autoFixDecision, workflowAutomaticRetryDecision, workflowAutoFixCounts, wholeTaskSpendUsd, WORKFLOW_BLOCK_REASONS, BASE_MERGED_RETRY_REASON, BASE_MERGED_RETRIES_PER_DAY, baseMergedRetriesToday, WORKFLOW_AGENTX_ACTOR_ID, WORKFLOW_AUTO_ACTION_LIMIT, workflowAutoActionRequestId, holdWorkflowCandidateOnPullRequests, WORKFLOW_AUTO_PUBLISH_FAILED_MESSAGE, isBranchSyncBlockReason, observeWorkflowPullRequest, recordWorkflowBranchSync, recordWorkflowPullRequestUpdate, recordWorkflowSyncConflict,
   recordWorkflowVerification, startWorkflowBranchSync, startWorkflowBranchSyncRun, startWorkflowFix, workflowFollowsOnlyMerge, type WorkflowProgram, type WorkflowSnapshot,
 } from "@agentx/contracts";
 import { mergeTrackingKey } from "../../packages/contracts/src/org-scoped-keys.js";
@@ -677,6 +677,25 @@ describe("the re-run's own allowance and its row writer (decision 70(c))", () =>
     // Many re-runs over many days never use the task's six lifetime actions: the lifetime limit does not ask here.
     const many = Array.from({ length: 10 }, (_, n) => merged(n, 25 + n, `${String(n % 9 + 1).repeat(64)}`.slice(0, 64)));
     expect(autoFixDecision(recheck(many), cause, budget())).toEqual({ action: "RETRY", stage: "VERIFY", codes: ["base-merged"] });
+  });
+
+  it("does not count the re-runs in the task's lifetime automatic actions: later ordinary actions still have all six", () => {
+    const three = [0, 1, 2].map((n) => merged(n, n + 1, `${String(n + 1).repeat(64)}`.slice(0, 64)));
+    // Five ordinary automatic retries of other candidates (the task's lifetime actions: five of six).
+    const ordinary = Array.from({ length: 5 }, (_, n) => ({ ...merged(10 + n, 30 + n, `${String(n + 4).repeat(64)}`.slice(0, 64)), reason: "Rovara retried the checks by itself." }));
+    const decisions = recheck([...three, ...ordinary]).decisions;
+    expect(workflowAutoFixCounts(decisions).actions).toBe(5);
+    // An ordinary transient block still gets its action (5 < 6); with the three re-runs counted it would have 8 and ask.
+    expect(autoFixDecision({ ...recheck([...three, ...ordinary]), pullRequests: [] }, { blockCause: "run-lost" }, budget())).toEqual({ action: "RETRY", stage: "VERIFY", codes: ["run-lost"] });
+  });
+
+  it("holds the daily allowance again in the system move: a fourth re-run in 24 hours is refused there too, an ordinary retry is not", () => {
+    const three = [0, 1, 2].map((n) => merged(n, n + 1, `${String(n + 1).repeat(64)}`.slice(0, 64)));
+    const input = (reason: string) => ({ expectedRevision: recheck(three).revision, stage: "VERIFY" as const, reason, spend: { spentUsd: wholeTaskSpendUsd(1), roundEstimateUsd: 3, capUsd: 15 }, now: at });
+    expect(() => workflowAutomaticRetryDecision(recheck(three), input(BASE_MERGED_RETRY_REASON))).toThrow(/used up for today/u);
+    expect(workflowAutomaticRetryDecision(recheck(three), input("Rovara retried the checks by itself.")).source).toBe("AUTO_RETRY");
+    // Two earlier today: the third is allowed.
+    expect(workflowAutomaticRetryDecision(recheck(three.slice(0, 2)), { ...input(BASE_MERGED_RETRY_REASON), expectedRevision: recheck(three.slice(0, 2)).revision }).reason).toBe(BASE_MERGED_RETRY_REASON);
   });
 
   it("writes the AUTOFIX row only where Rovara re-runs by itself: automatic fixing on and no E2E (a clean conflict merge on an E2E task stays the owner's)", () => {
