@@ -3,10 +3,11 @@ import { chmodSync, cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlin
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, describe, expect, it } from "vitest";
+import YAML from "yaml";
 import { updateRovaraCode } from "../../scripts/vendor/update-rovara-code.js";
-import { verifyRovaraCode } from "../../scripts/vendor/verify-rovara-code.js";
+import { checkImports, packageOfSpecifier, verifyRovaraCode } from "../../scripts/vendor/verify-rovara-code.js";
 import {
-  CODE_DIR, INCLUDE, PIN_FILE, SHIMMED_PACKAGES, SHIMS_DIR, blobId, defaultLayout, diffManifests, formatPin, localManifest, manifestDigest, parsePin, planShims, type Layout,
+  CODE_DIR, INCLUDE, PIN_FILE, PUBLIC_REPO_URL, SHIMMED_PACKAGES, SHIMS_DIR, blobId, defaultLayout, diffManifests, formatPin, localManifest, manifestDigest, parsePin, planShims, type Layout,
 } from "../../scripts/vendor/rovara-code-vendor.js";
 
 // The pinned copy of public Rovara Code in vendor/rovara-code (convergence plan W0-1, owner decision 72 O1). The real tree is checked offline against the manifest in
@@ -21,7 +22,7 @@ const GIT = ["-c", "user.name=Fixture", "-c", "user.email=fixture@example.com"];
 const run = (cwd: string, ...args: string[]): string => execFileSync("git", [...GIT, ...args], { cwd, encoding: "utf8" });
 
 /** A stand-in for the public repository: two packages (one with subpaths and a deep folder), the root tsconfig, a licence, and one executable. */
-function fixtureRepo(): { url: string; sha: string; dir: string } {
+function fixtureRepo(options: { alphaSource?: string } = {}): { url: string; sha: string; dir: string } {
   const dir = temp("vendor-fixture-repo-");
   const put = (path: string, text: string, mode?: number): void => {
     mkdirSync(join(dir, path, ".."), { recursive: true });
@@ -31,7 +32,7 @@ function fixtureRepo(): { url: string; sha: string; dir: string } {
   put("LICENSE", "fixture licence\n");
   put("tsconfig.base.json", "{}\n");
   put("packages/alpha/package.json", JSON.stringify({ name: "@agentx/alpha", version: "1.2.3", exports: { ".": "./dist/index.js", "./extra": "./dist/extra.js" } }));
-  put("packages/alpha/src/index.ts", "export const alpha = 1;\n");
+  put("packages/alpha/src/index.ts", options.alphaSource ?? "export const alpha = 1;\n");
   put("packages/alpha/src/core/one/index.ts", "export const one = 1;\n");
   put("packages/alpha/src/core/two/other.ts", "export const two = 2;\n");
   put("packages/beta/package.json", JSON.stringify({ name: "@agentx/beta", version: "0.1.0", exports: { ".": { types: "./dist/index.d.ts", default: "./dist/index.js" } } }));
@@ -46,7 +47,7 @@ function fixtureRepo(): { url: string; sha: string; dir: string } {
 
 function fixtureLayout(url: string): { layout: Layout; root: string } {
   const root = temp("vendor-fixture-root-");
-  return { root, layout: { root, include: ["LICENSE", "packages/alpha", "packages/beta", "tsconfig.base.json"], repoUrl: url, shimmed: ["alpha", "beta"], thirdPartyLinks: {} } };
+  return { root, layout: { root, include: ["LICENSE", "packages/alpha", "packages/beta", "tsconfig.base.json"], repoUrl: url, shimmed: ["alpha", "beta"], thirdPartyLinks: {}, undeclaredImports: {} } };
 }
 
 describe("the pinned copy of Rovara Code in vendor/rovara-code", () => {
@@ -80,6 +81,34 @@ describe("the pinned copy of Rovara Code in vendor/rovara-code", () => {
     expect(shimNames).toEqual(SHIMMED_PACKAGES.map((n) => `@rovara-code/${n}`));
   });
 
+  it("takes the repository from the scripts, never from the environment or from PIN", () => {
+    const saved = process.env["ROVARA_CODE_REPO_URL"];
+    process.env["ROVARA_CODE_REPO_URL"] = "file:///elsewhere";
+    try {
+      expect(defaultLayout(REAL_ROOT)).toMatchObject({ repoUrl: PUBLIC_REPO_URL, include: [...INCLUDE] });
+    } finally {
+      if (saved === undefined) delete process.env["ROVARA_CODE_REPO_URL"]; else process.env["ROVARA_CODE_REPO_URL"] = saved;
+    }
+  });
+
+  it("is checked by a CI step that skips where there is no PIN (ci.yml also lives on the public repository)", () => {
+    const workflow = YAML.parse(readFileSync(join(REAL_ROOT, ".github/workflows/ci.yml"), "utf8")) as { jobs: Record<string, { steps: { name?: string; if?: string; run?: string }[] }> };
+    const step = workflow.jobs["checks"]!.steps.find((candidate) => candidate.run === "node scripts/vendor/verify-rovara-code.ts --remote");
+    expect(step?.if).toBe("hashFiles('vendor/rovara-code/PIN') != ''");
+  });
+
+  it("has shims that import Code by relative path, never by a bare @agentx name", () => {
+    for (const file of planShims(REAL_ROOT)) {
+      if (!file.path.endsWith(".js") && !file.path.endsWith(".d.ts")) continue;
+      expect(file.content, file.path).not.toMatch(/from "@agentx\//);
+      expect(file.content, file.path).toMatch(/export \* from "(\.\.\/)+rovara-code\/packages\/[a-z-]+\/dist\//);
+    }
+  });
+
+  it("holds Code's imports to the linked @agentx packages and the dependencies Code declares", () => {
+    expect(checkImports(real)).toEqual([]);
+  });
+
   it.skipIf(process.env["ROVARA_VENDOR_VERIFY_REMOTE"] !== "1")("is byte for byte the tree of the pinned sha in the public repository", () => {
     const result = verifyRovaraCode(real, { remote: true });
     expect(result.problems).toEqual([]);
@@ -107,7 +136,8 @@ describe("the vendor scripts, on a fixture repository", () => {
     const alpha = JSON.parse(readFileSync(join(root, SHIMS_DIR, "alpha/package.json"), "utf8")) as { name: string; exports: Record<string, unknown> };
     expect(alpha.name).toBe("@rovara-code/alpha");
     expect(Object.keys(alpha.exports)).toEqual([".", "./extra"]);
-    expect(readFileSync(join(root, SHIMS_DIR, "alpha/extra.js"), "utf8")).toContain('export * from "@agentx/alpha/extra";');
+    expect(readFileSync(join(root, SHIMS_DIR, "alpha/extra.js"), "utf8")).toContain('export * from "../../rovara-code/packages/alpha/dist/extra.js";');
+    expect(readFileSync(join(root, SHIMS_DIR, "beta/index.d.ts"), "utf8")).toContain('export * from "../../rovara-code/packages/beta/dist/index.js";');
     expect(readFileSync(join(root, "vendor/node_modules/@agentx/beta/package.json"), "utf8")).toContain("@agentx/beta");
   });
 
@@ -131,6 +161,72 @@ describe("the vendor scripts, on a fixture repository", () => {
     expect(result.problems.join("\n")).toMatch(/do not hash to the manifest/);
     // With --remote the file is named.
     expect(verifyRovaraCode(layout, { remote: true }).problems.join("\n")).toContain("packages/alpha/src/index.ts");
+  });
+
+  it("fails a copy made from another repository, even when PIN and the files agree with each other (the review's probe)", () => {
+    // Another repository with one edited line in a vendored file, updated into a copy, then checked the way CI checks the real tree: with the scripts' own repository.
+    const other = fixtureRepo({ alphaSource: "export const alpha = 666;\n" });
+    const { layout, root } = fixtureLayout(other.url);
+    updateRovaraCode(layout, other.sha);
+    expect(verifyRovaraCode(layout).problems).toEqual([]); // it verifies against itself...
+    const strict = { ...layout, repoUrl: fixture.url };
+    expect(verifyRovaraCode(strict).problems.join("\n")).toContain(`PIN names the repository ${other.url}`);
+    expect(verifyRovaraCode(strict, { remote: true }).ok).toBe(false);
+    expect(readFileSync(join(root, CODE_DIR, "packages/alpha/src/index.ts"), "utf8")).toContain("666");
+  });
+
+  it("fails a PIN whose repository is rewritten, and one whose include list is changed", () => {
+    const repo = pinned();
+    const pinPath = join(repo.root, PIN_FILE);
+    const good = readFileSync(pinPath, "utf8");
+    writeFileSync(pinPath, good.replace(/repo=.*/, "repo=https://example.test/other.git"));
+    expect(verifyRovaraCode(repo.layout).problems.join("\n")).toContain("PIN names the repository https://example.test/other.git");
+    writeFileSync(pinPath, good.replace(/include=.*/, "include=LICENSE"));
+    expect(verifyRovaraCode(repo.layout).problems.join("\n")).toContain("include list is not the one");
+    writeFileSync(pinPath, good);
+    expect(verifyRovaraCode(repo.layout).problems).toEqual([]);
+  });
+
+  it("skips build output only where tsc -b writes it, and counts the same names anywhere else", () => {
+    const { layout, root } = pinned();
+    const pkg = join(root, CODE_DIR, "packages/alpha");
+    for (const [path, text, undo] of [["src/dist/evil.js", "x\n", "src/dist"], ["src/evil.tsbuildinfo", "{}", "src/evil.tsbuildinfo"], ["src/node_modules/x/y.js", "x\n", "src/node_modules"], ["other.tsbuildinfo", "{}", "other.tsbuildinfo"], ["dist-extra/x.js", "x\n", "dist-extra"]] as const) {
+      mkdirSync(join(pkg, path, ".."), { recursive: true });
+      writeFileSync(join(pkg, path), text);
+      const result = verifyRovaraCode(layout);
+      expect(result.ok, path).toBe(false);
+      expect(result.problems.join("\n"), path).toMatch(/do not hash to the manifest/);
+      rmSync(join(pkg, undo), { recursive: true, force: true });
+      expect(verifyRovaraCode(layout).problems, `${path} removed`).toEqual([]);
+    }
+    // A package's top-level dist as a link is not build output either.
+    symlinkSync("src", join(pkg, "dist"));
+    expect(verifyRovaraCode(layout).ok).toBe(false);
+  });
+
+  it("fails when Code's source imports an @agentx package that is not linked, or a package it does not declare", () => {
+    const { layout, root } = pinned();
+    const source = join(root, CODE_DIR, "packages/alpha/src/index.ts");
+    const original = readFileSync(source, "utf8");
+    const imports = (text: string): string[] => { writeFileSync(source, `${original}${text}`); return checkImports(layout); };
+    expect(imports('import { x } from "@agentx/orchestrator";\n').join("\n")).toContain("alpha imports @agentx/orchestrator (src/index.ts), which is not one of the vendored packages");
+    expect(imports('export * from "left-pad/lib";\n').join("\n")).toContain("imports left-pad");
+    expect(imports('const m = await import("@scope/dyn");\n').join("\n")).toContain("imports @scope/dyn");
+    expect(imports('const r = require("leftpad2");\n').join("\n")).toContain("imports leftpad2");
+    // Fine: the linked packages, node's own modules, relative paths, comments, strings and method calls that only look like imports.
+    expect(imports('import { b } from "@agentx/beta";\nimport fs from "node:fs";\nimport path from "path";\nimport "./side.js";\nconst names = ["--import", "tsx"];\nregistry.require("storage");\n// import x from "commented"\n/* export * from "block" */\n')).toEqual([]);
+    writeFileSync(join(root, CODE_DIR, "packages/alpha/package.json"), JSON.stringify({ name: "@agentx/alpha", version: "1.2.3", exports: { ".": "./dist/index.js" }, dependencies: { "left-pad": "1.0.0" } }));
+    expect(imports('import pad from "left-pad";\n')).toEqual([]);
+    // The tolerated list is per package, and stays visible.
+    expect(checkImports({ ...layout, undeclaredImports: { alpha: ["leftpad2"] } }).join("\n")).not.toContain("leftpad2");
+  });
+
+  it("generates shims that fail to load once copied out of the vendor layout", async () => {
+    const { root } = pinned();
+    const copied = temp("vendor-shim-copy-");
+    const dir = join(copied, "node_modules/@rovara-code/alpha");
+    cpSync(join(root, SHIMS_DIR, "alpha"), dir, { recursive: true });
+    await expect(import(/* @vite-ignore */ join(dir, "index.js"))).rejects.toThrow();
   });
 
   it("fails when a file is added or removed", () => {
@@ -207,6 +303,10 @@ describe("the vendor scripts, on a fixture repository", () => {
 });
 
 describe("the manifest helpers", () => {
+  it("name the package of an import specifier", () => {
+    expect(["@agentx/contracts", "@agentx/model-runtime/catalog", "zod", "zod/v4", "node:fs", "fs", "./x.js", "../y", "/abs"].map(packageOfSpecifier)).toEqual(["@agentx/contracts", "@agentx/model-runtime", "zod", "zod", undefined, undefined, undefined, undefined, undefined]);
+  });
+
   it("hash a blob the way git does", () => {
     expect(blobId(Buffer.from("hello\n"))).toBe("ce013625030ba8dba906f756967f9e9ca394464a");
     expect(blobId(Buffer.alloc(0))).toBe("e69de29bb2d1d6434b8b29ae775ad8c2e48c5391");

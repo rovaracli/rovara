@@ -119,7 +119,9 @@ jobs:
           cache: npm
       - run: npm ci
       # vendor/rovara-code is the pinned copy of public Rovara Code (vendor/README.md): its files must be byte for byte the tree of the sha in its PIN, read from the public repository.
+      # This file lives on both repositories; the copy and its script exist only on Cloud (and its public CI copy), so the step skips where there is no PIN.
       - name: The pinned copy of Rovara Code matches its sha
+        if: hashFiles('vendor/rovara-code/PIN') != ''
         run: node scripts/vendor/verify-rovara-code.ts --remote
       - run: npm run typecheck
         env:

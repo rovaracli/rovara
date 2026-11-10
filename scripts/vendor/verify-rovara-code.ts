@@ -3,7 +3,8 @@
 //   --remote: also fetches the tree of the pinned sha from the public repository and compares it with `git ls-tree -r` of that sha, file by file.
 // Exit 0 when everything matches, 1 otherwise. Node runs this file directly, so only erasable syntax.
 //   node scripts/vendor/verify-rovara-code.ts [--remote]
-import { existsSync, readFileSync, readdirSync } from "node:fs";
+import { builtinModules } from "node:module";
+import { existsSync, lstatSync, readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import {
   CODE_DIR, CODE_SCOPE, PIN_FILE, SHIMS_DIR, defaultLayout, describeDiff, diffManifests, fetchSha, git, localManifest, manifestDigest, parsePin,
@@ -34,6 +35,67 @@ export function checkDependencies(layout: Layout): string[] {
   return problems;
 }
 
+const SOURCE_FILE = /\.(?:[cm]?[jt]sx?)$/;
+const IMPORT_SPECIFIER = /\b(?:import|export)\s[^;'"`]*?\bfrom\s*["']([^"'\n]+)["']|(?<![\w"'`.-])import\s*["']([^"'\n]+)["']|\bimport\(\s*["']([^"'\n]+)["']\s*\)|(?<![.\w])require\(\s*["']([^"'\n]+)["']\s*\)/g;
+const NODE_BUILTINS: ReadonlySet<string> = new Set(builtinModules.flatMap((name) => [name, `node:${name}`]));
+
+/**
+ * Imports Code's source makes without declaring them in the importing package's package.json (found by this check at the pin 1c3880cbe). They resolve from Cloud's root
+ * node_modules by hoisting, which works today because Cloud installs the same versions. Upstream owed: Code declares them, then this list shrinks to nothing.
+ * Anything not listed here and not declared fails.
+ */
+export const UNDECLARED_IMPORTS: Readonly<Record<string, readonly string[]>> = { broker: ["typescript"], verifier: ["zod"] };
+
+/** The package a bare import specifier names: `@scope/name` or `name`, without a subpath. Undefined for a relative, absolute or node: specifier. */
+export function packageOfSpecifier(specifier: string): string | undefined {
+  if (specifier.startsWith(".") || specifier.startsWith("/") || specifier.startsWith("node:") || NODE_BUILTINS.has(specifier)) return undefined;
+  const parts = specifier.split("/");
+  return specifier.startsWith("@") ? parts.slice(0, 2).join("/") : parts[0];
+}
+
+/**
+ * Code's source may import only the vendored `@agentx/*` packages (the ones vendor/node_modules links) and the third-party packages its own package.json declares.
+ * An `@agentx/<name>` that Cloud also publishes but vendor/ does not link (orchestrator, mcp, ...) would resolve to Cloud's package without a word, and an undeclared
+ * package would resolve by hoisting luck. Build output (dist, node_modules) is not scanned.
+ */
+export function checkImports(layout: Layout): string[] {
+  const problems: string[] = [];
+  const packagesDir = join(layout.root, CODE_DIR, "packages");
+  if (!existsSync(packagesDir)) return problems;
+  const linked = new Set(planLinks(layout.root, layout.thirdPartyLinks).map((link) => link.name).filter((name) => name.startsWith(`${CODE_SCOPE}/`)));
+  for (const name of readdirSync(packagesDir).sort()) {
+    const manifestPath = join(packagesDir, name, "package.json");
+    if (!existsSync(manifestPath)) continue;
+    const manifest = JSON.parse(readFileSync(manifestPath, "utf8")) as Record<string, Record<string, string> | undefined>;
+    const declared = new Set([...["dependencies", "devDependencies", "peerDependencies", "optionalDependencies"].flatMap((key) => Object.keys(manifest[key] ?? {})), ...(layout.undeclaredImports ?? UNDECLARED_IMPORTS)[name] ?? []]);
+    const bad = new Map<string, Set<string>>();
+    const walk = (dir: string, rel: string): void => {
+      for (const entry of readdirSync(dir).sort()) {
+        const path = join(dir, entry);
+        const stat = lstatSync(path);
+        if (stat.isDirectory()) {
+          if (rel === "" && (entry === "dist" || entry === "node_modules")) continue;
+          walk(path, rel === "" ? entry : `${rel}/${entry}`);
+        } else if (stat.isFile() && SOURCE_FILE.test(entry)) {
+          const text = readFileSync(path, "utf8").replace(/\/\*[\s\S]*?\*\//g, "").replace(/(^|\s)\/\/[^\n]*/g, "$1");
+          for (const match of text.matchAll(IMPORT_SPECIFIER)) {
+            const pkg = packageOfSpecifier(match[1] ?? match[2] ?? match[3] ?? match[4] ?? "");
+            if (pkg === undefined) continue;
+            const ok = pkg.startsWith(`${CODE_SCOPE}/`) ? linked.has(pkg) : declared.has(pkg);
+            if (!ok) (bad.get(pkg) ?? bad.set(pkg, new Set()).get(pkg)!).add(`${rel === "" ? "" : `${rel}/`}${entry}`);
+          }
+        }
+      }
+    };
+    walk(join(packagesDir, name), "");
+    for (const [pkg, files] of bad) {
+      const why = pkg.startsWith(`${CODE_SCOPE}/`) ? "is not one of the vendored packages that vendor/node_modules links, so it would resolve to Cloud's package of that name" : "is not a dependency Code's package.json declares";
+      problems.push(`Code's ${name} imports ${pkg} (${[...files].slice(0, 3).join(", ")}${files.size > 3 ? ", ..." : ""}), which ${why}`);
+    }
+  }
+  return problems;
+}
+
 export interface VerifyResult { ok: boolean; problems: string[]; sha?: string }
 
 export function verifyRovaraCode(layout: Layout, options: { remote?: boolean } = {}): VerifyResult {
@@ -44,6 +106,10 @@ export function verifyRovaraCode(layout: Layout, options: { remote?: boolean } =
   if (parsed.pin === undefined) return { ok: false, problems: parsed.problems };
   const pin = parsed.pin;
   const sha = pin.sha;
+  // The repository and the include list are the scripts' own constants, never whatever PIN says: otherwise a change that edits the vendored files and PIN together
+  // (PIN naming another repository, or a shorter include list) would verify against itself.
+  if (pin.repo !== layout.repoUrl) problems.push(`PIN names the repository ${pin.repo}, but the copy may only come from ${layout.repoUrl}`);
+  if (JSON.stringify(pin.include) !== JSON.stringify(layout.include)) problems.push("PIN's include list is not the one in scripts/vendor/rovara-code-vendor.ts (INCLUDE)");
 
   const local = localManifest(join(layout.root, CODE_DIR), new Set(["PIN"]));
   problems.push(...local.problems);
@@ -52,9 +118,9 @@ export function verifyRovaraCode(layout: Layout, options: { remote?: boolean } =
 
   if (options.remote === true) {
     try {
-      const fetched = fetchSha(pin.repo, sha, { blobs: false });
+      const fetched = fetchSha(layout.repoUrl, sha, { blobs: false });
       try {
-        const expected = remoteManifest(fetched.gitDir, sha, pin.include);
+        const expected = remoteManifest(fetched.gitDir, sha, layout.include);
         const diff = diffManifests(expected, local.entries);
         problems.push(...describeDiff(diff));
         if (manifestDigest(expected) !== pin.manifestSha256) problems.push(`the public tree of ${sha} does not hash to the manifest in PIN`);
@@ -76,7 +142,7 @@ export function verifyRovaraCode(layout: Layout, options: { remote?: boolean } =
     const links = JSON.stringify(readLinks(layout.root));
     if (links !== JSON.stringify(planLinks(layout.root, layout.thirdPartyLinks))) problems.push("vendor/node_modules/@agentx links are missing or stale (run update-rovara-code.ts)");
   }
-  if (local.problems.length === 0) problems.push(...checkDependencies(layout));
+  if (local.problems.length === 0) problems.push(...checkImports(layout), ...checkDependencies(layout));
   return { ok: problems.length === 0, problems, sha };
 }
 
