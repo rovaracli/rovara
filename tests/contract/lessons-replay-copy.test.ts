@@ -32,7 +32,7 @@ async function world() {
   const meta = (taskId: string) => h.db.get(`DEVTASK#${taskId}`, "META") as unknown as DeveloperTaskRecord & Record<string, unknown>;
   const copy = async (extra: Record<string, unknown> = {}, memory: { mode: "off" } | { mode: "snapshot"; snapshotId: string } = { mode: "off" }, runLimitUsd = 2) =>
     starter.startTask(caller, { requestId: randomUUID(), project: "payments", instructions: "Fix the retry bug", client: "claude-code", ...extra },
-      { origin: "cli", autonomous: false, startedBy: { developerId: MAYA.developerId }, runLimitUsd, evalReplay: { memory } });
+      { origin: "cli", autonomous: false, startedBy: { developerId: MAYA.developerId }, runLimitUsd, evalReplay: { memory, sourceTaskId: "past-1" } });
   const ordinary = async () => starter.startTask(caller, { requestId: randomUUID(), project: "payments", instructions: "Fix the retry bug", client: "claude-code", shareToChannel: true },
     { origin: "cli", autonomous: false, startedBy: { developerId: MAYA.developerId } });
   return { h, starter, caller, stream, meta, copy, ordinary };
@@ -43,7 +43,7 @@ describe("starting a copy", () => {
     const w = await world();
     const started = await w.copy({}, { mode: "snapshot", snapshotId: `snp_${"c".repeat(20)}` }, 1.5);
     const record = w.meta(started.task.taskId);
-    expect(record).toMatchObject({ evalRun: true, evalMemory: { mode: "snapshot", snapshotId: `snp_${"c".repeat(20)}` }, shared: false });
+    expect(record).toMatchObject({ evalRun: true, evalSource: "past-1", evalMemory: { mode: "snapshot", snapshotId: `snp_${"c".repeat(20)}` }, shared: false });
     expect(record.share).toBeUndefined();
     expect(started.run.runLimitUsd).toBeLessThanOrEqual(1.5);
   });

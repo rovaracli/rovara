@@ -11,7 +11,7 @@ import { tableLessonAudiencePort, withLessonAudiences } from "./task-audience.js
 import { tableProjectRepoScopes, withProjectRepoScopes } from "./project-repo-audience.js";
 import { dynamoLearningSettings, DynamoTier0Settings } from "./dynamo-settings.js";
 import { DynamoLessonStore } from "./dynamo-store.js";
-import { dynamoSnapshotStore } from "./replay-snapshot-store.js";
+import { dynamoEvalSnapshotStore, dynamoSnapshotStore } from "./replay-snapshot-store.js";
 
 export interface LessonDeliveryInput {
   /** The State table's client and name (a developer's linked accounts). */
@@ -39,6 +39,7 @@ export function createLessonDelivery(input: LessonDeliveryInput): ((refs: Learne
     access: createAccessCheckPort(table, { taskVisibility: withProjectRepoScopes(withLessonAudiences(tableTaskVisibilityPort({ documentClient: input.documentClient, tableName: input.stateTable, now }), tableLessonAudiencePort({ documentClient: input.documentClient, tableName: input.stateTable, now })), tableProjectRepoScopes({ documentClient: input.documentClient, tableName: input.stateTable }, { record: table })), ...(input.log === undefined ? {} : { log: input.log }) }),
     now,
     snapshots: dynamoSnapshotStore(table),
+    evalSnapshots: dynamoEvalSnapshotStore(table, undefined, now),
     ...(input.log === undefined ? {} : { log: input.log }),
     // The reader's identity: the accounts the developer linked (a GitHub account, today), as the broker's own directory reads them.
     async identity(workspaceId: string, developerId: string) {

@@ -98,6 +98,10 @@ export interface DeveloperTaskRecord {
   evalRun?: true;
   /** Lane 7: a replay copy's memory, set with `evalRun` at creation: none, or exactly one frozen snapshot (never live memory). */
   evalMemory?: { mode: "off" } | { mode: "snapshot"; snapshotId: string };
+  /** Lane 7: the past task this replay copy replays (for the grader's reference diff). Set with `evalRun`. */
+  evalSource?: string;
+  /** Lane 7: the file arm: the worker places `.rovara/lessons.md` (and the pointer) from the copy's snapshot in its checkout only. */
+  evalLessonsFile?: true;
   /** Ruling R38: the task keys' cumulative spend when its owner last chose Continue; the task's cap counts spend above it. */
   budgetBaselineUsd?: number;
   /** The model proxy keys minted for this task, by key id (a hash, never the key); the next key's cap counts their spend (ruling R30). */

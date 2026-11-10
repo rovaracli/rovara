@@ -30,7 +30,8 @@ export const INSTALL_OPERATOR_ROUTES: readonly RegExp[] = [
   // Second review (switch `cr`): the evidence that lets a model block is written by the install's administrator here, by Rovara staff on the hosted cloud.
   /^\/v1\/admin\/org\/second-review\/(?:replay|verdict)$/,
   /^\/v1\/admin\/egress\/(?:pending|approve|reject)$/,
-  /^\/v1\/admin\/tasks\/[^/]+\/(?:e2e-replay|lessons-replay|share-mode)$/,
+  /^\/v1\/admin\/projects\/[a-z][a-z0-9-]{0,62}\/lessons-replay\/snapshots$/,
+  /^\/v1\/admin\/tasks\/[^/]+\/(?:e2e-replay|lessons-replay(?:\/(?:approve|close|evidence))?|share-mode)$/,
   new RegExp(`^/v1/admin/github/webhook-deliveries/${UUID}/retry$`),
 ];
 

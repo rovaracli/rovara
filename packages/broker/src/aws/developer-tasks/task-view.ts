@@ -137,6 +137,28 @@ export async function candidateChangedFiles(
   return undefined;
 }
 
+/**
+ * Lane 7: the raw text of the task's newest workspace diff (the same operation and the same artifact `candidateChangedFiles` reads), redacted and cut to `maxChars`, for the lessons replay's grader. Undefined when
+ * there is none or it cannot be read. Never throws.
+ */
+export async function candidateDiffText(
+  deps: Pick<DeveloperTaskRouteDependencies, "actions" | "log">, task: Pick<DeveloperTaskRecord, "taskId" | "workspaceId" | "ownerKey">, maxChars: number,
+): Promise<string | undefined> {
+  try {
+    const operations = (await deps.actions.operations(task.workspaceId)).filter((operation) => operation.kind === "task").sort(byCreated).reverse().slice(0, CANDIDATE_DIFF_OPERATIONS);
+    for (const operation of operations) {
+      const diff = (await deps.actions.artifacts(task.workspaceId, operation.id)).find((artifact) => artifact.name === DIFF_ARTIFACT);
+      if (diff === undefined) continue;
+      if (diff.size === 0) return "";
+      if (!ownArtifactKey({ ownerKey: task.ownerKey, workspaceId: task.workspaceId } as DeveloperTaskRecord, operation.id, diff.objectKey)) continue;
+      return redactText(await deps.actions.readArtifact(diff.objectKey, DIFF_READ_BYTES)).slice(0, maxChars);
+    }
+  } catch (error) {
+    log(deps, { event: "developer.task_diff_text_unavailable", taskId: task.taskId, errorName: error instanceof Error ? error.name : "unknown" });
+  }
+  return undefined;
+}
+
 /** R18: what the latest task operation left, and the task's pull requests. Callers load the owned task first. */
 async function taskDetails(deps: DeveloperTaskRouteDependencies, task: DeveloperTaskRecord, operations: readonly Operation[]): Promise<TaskDetails> {
   const pullRequests = await deps.actions.pullRequests(task.workspaceId);

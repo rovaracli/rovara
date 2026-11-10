@@ -530,7 +530,7 @@ export async function startTask(deps: DeveloperTaskRouteDependencies, caller: De
     ...(keepsBudget ? { budgetUsd } : {}), ...(run?.runLimitUsd === undefined || startLimitUsd === undefined ? {} : { requestedRunLimitUsd: run.runLimitUsd }), developerId: caller.developerId, provider: systemStart ? SYSTEM_OWNER_PROVIDER : caller.amr, developerName: caller.name,
     ...(run?.automatic === undefined ? {} : { automatic: run.automatic }),
     // Lane 7: a replay copy carries the eval mark and its memory from the first write; no other start sets either.
-    ...(run?.evalReplay === undefined ? {} : { evalRun: true as const, evalMemory: run.evalReplay.memory }),
+    ...(run?.evalReplay === undefined ? {} : { evalRun: true as const, evalMemory: run.evalReplay.memory, evalSource: run.evalReplay.sourceTaskId, ...(run.evalReplay.lessonsFile === true ? { evalLessonsFile: true as const } : {}) }),
     ...(caller.slackUserId === undefined ? {} : { slackUserId: caller.slackUserId }),
     client, project: request.project, title, workspaceId, ownerKey: identity.ownerKey, conversationId, startingRevision: revision,
     // A workflow task quotes the request in each plan's "why"; every start (Slack and AI tool) comes through here.

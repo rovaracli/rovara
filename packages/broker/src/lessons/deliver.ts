@@ -11,7 +11,7 @@ import type { Clock } from "./ports.js";
 import { createLessonLiveReader } from "./live-visibility.js";
 import { readVisible, type LessonLog } from "./read-visible.js";
 import type { LessonStore, ScopeKey } from "./store.js";
-import type { SnapshotStore } from "./replay-snapshot-store.js";
+import { resolveAnySnapshot, type EvalSnapshotStore, type SnapshotStore } from "./replay-snapshot-store.js";
 import type { IdentitySet, Lesson } from "./types.js";
 
 export interface DeliveryDeps {
@@ -22,6 +22,8 @@ export interface DeliveryDeps {
   resolveMember?: MemberResolver;
   /** Lane 7: the frozen snapshots of replay copies. Absent: refs that name a snapshot deliver nothing. */
   snapshots?: SnapshotStore;
+  /** Lane 7 (DECISIONS 68): imported eval snapshots. */
+  evalSnapshots?: EvalSnapshotStore;
   now: Clock;
   log?: LessonLog;
 }
@@ -40,11 +42,12 @@ export async function learnedContextFromRefs(deps: DeliveryDeps, refs: LearnedRe
     const resolved = await resolveLearning(deps.settings, key.workspaceId, key.project);
     // Lane 7: refs that name a snapshot are a replay copy's: the project's OWN mode decides (the install's switch does not), and the lessons are the snapshot's, at its versions.
     if (!modeAllows(refs.snapshotId === undefined ? resolved.mode : resolved.chosenMode, "load")) return undefined;
-    let pinned: Map<string, number> | undefined;
+    // The snapshot's own lessons (imported by an operator, or the live versions it names), looked up by id and version. A snapshot that is missing or not this project's delivers nothing.
+    let pinned: Map<string, Lesson> | undefined;
     if (refs.snapshotId !== undefined) {
-      const snapshot = await deps.snapshots?.get(key, refs.snapshotId);
+      const snapshot = await resolveAnySnapshot({ snapshots: deps.snapshots, evalSnapshots: deps.evalSnapshots, store: deps.store }, key, refs.snapshotId);
       if (snapshot === undefined) return undefined;
-      pinned = new Map(snapshot.lessons.map((ref) => [ref.id, ref.version]));
+      pinned = new Map(snapshot.lessons.map((lesson) => [`${lesson.id}@${String(lesson.version)}`, lesson]));
     }
     const now = deps.now();
     // Decision 31: the reader is the running task's audience, asked again now (the people who can open its session now, not the audience the load saw, and not `task.shared`). A lesson is delivered only if everyone who
@@ -57,8 +60,7 @@ export async function learnedContextFromRefs(deps: DeliveryDeps, refs: LearnedRe
     for (const ref of refs.lessons) {
       if (pinned !== undefined) {
         // A snapshot lesson: exactly the version the snapshot names (the lesson may have been edited or have expired since); one the snapshot does not name is never delivered.
-        if (pinned.get(ref.id) !== ref.version) continue;
-        const frozen = (await deps.store.versions(key, ref.id)).find((version) => version.version === ref.version);
+        const frozen = pinned.get(`${ref.id}@${String(ref.version)}`);
         if (frozen === undefined || frozen.status !== "active") continue;
         fetched.push(frozen);
         continue;
@@ -71,7 +73,8 @@ export async function learnedContextFromRefs(deps: DeliveryDeps, refs: LearnedRe
     if (member === undefined) return undefined;
     const live: Lesson[] = [];
     for (const lesson of fetched) {
-      if (!approvedForUse(lesson, resolved.approval, member, resolved.trialAllowed) || hasStaleCitation(lesson) || !stageAllows(lesson, refs.stage, member)) continue;
+      // A snapshot's lessons were active under the arm's own pipeline when frozen: the live approval policy does not re-decide them (the project's mode, the access checks, erasure and the stage rules still do).
+      if ((pinned === undefined && !approvedForUse(lesson, resolved.approval, member, resolved.trialAllowed)) || hasStaleCitation(lesson) || !stageAllows(lesson, refs.stage, member)) continue;
       if (!(await notErased(deps.store, key, lesson))) continue;
       live.push(lesson);
     }

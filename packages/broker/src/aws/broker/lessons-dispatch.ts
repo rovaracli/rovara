@@ -10,7 +10,7 @@ import { LEARNED_CONTEXT_FEATURE, codeRepositoriesOf, learnedRefsOf, type Learne
 import type { DeveloperTaskRecord } from "../../developer/task-records.js";
 import { learnedContextForDispatch, type TaskAudience } from "../../lessons/load.js";
 import type { LessonsRuntime } from "../../lessons/runtime.js";
-import { resolveSnapshotLessons } from "../../lessons/replay-snapshot-store.js";
+import { resolveAnySnapshot } from "../../lessons/replay-snapshot-store.js";
 import type { Lesson } from "../../lessons/types.js";
 import { learnedLessonsEnabled } from "../../lessons/switch.js";
 
@@ -60,9 +60,9 @@ export async function learnedContextForOperation(
       let memory: { mode: "snapshot"; snapshotId: string; lessons: readonly Lesson[] } | undefined;
       if (copy?.evalMemory?.mode === "snapshot") {
         const key = { workspaceId: task.orgId!, project: task.project };
-        const snapshot = await lessons.snapshots?.get(key, copy.evalMemory.snapshotId);
+        const snapshot = await resolveAnySnapshot({ snapshots: lessons.snapshots, evalSnapshots: lessons.evalSnapshots, store: lessons.store }, key, copy.evalMemory.snapshotId);
         if (snapshot === undefined) return {};
-        memory = { mode: "snapshot", snapshotId: snapshot.snapshotId, lessons: (await resolveSnapshotLessons(lessons.store, key, snapshot)).lessons };
+        memory = { mode: "snapshot", snapshotId: copy.evalMemory.snapshotId, lessons: snapshot.lessons };
       }
       const plan = await lessons.planFacts?.(task).catch(() => undefined);
       return learnedContextForDispatch(lessons.load, {
