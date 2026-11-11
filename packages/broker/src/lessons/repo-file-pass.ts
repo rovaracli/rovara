@@ -196,6 +196,12 @@ export async function switchRepoFileOff(deps: RepoFileDeps, key: ScopeKey, rawTa
 }
 
 /** The state after Rovara's open pull request was seen merged: what it put in the file is now Rovara's rendered record. */
+/** The answer a person gave for a held set: the stored one when it is for the same set (it may be newer than what this pass read), else what the pass read. */
+function heldAnswer(stored: RepoFileState["readBackHeld"], read: { digest: string; verdict?: "retire" | "keep"; decidedAt?: number }): { verdict?: "retire" | "keep"; decidedAt?: number } {
+  const from = stored !== undefined && stored.digest === read.digest && stored.verdict !== undefined ? stored : read;
+  return { ...(from.verdict === undefined ? {} : { verdict: from.verdict }), ...(from.decidedAt === undefined ? {} : { decidedAt: from.decidedAt }) };
+}
+
 function mergedState(state: RepoFileState, open: OpenPr): RepoFileState {
   const rendered = { ...state.rendered, ...open.added, ...open.edited };
   for (const id of open.removed) delete rendered[id];
@@ -355,7 +361,7 @@ async function pass(deps: RepoFileDeps, key: ScopeKey, target: RepoFileTarget, l
       readBack = await readBackFile({ store: deps.store, audit: deps.audit, now: () => deps.now(), ...(deps.newLessonId === undefined ? {} : { newId: deps.newLessonId }) }, {
         key, place: target.place, repoName: target.name, fileText, rendered: state.rendered, refused: state.refused ?? {}, lessons, gone, names, requireGroup,
         ...(state.seen === undefined ? {} : { seen: state.seen }),
-        ...(state.readBackHeld === undefined ? {} : { held: { digest: state.readBackHeld.digest, at: state.readBackHeld.at } }),
+        ...(state.readBackHeld === undefined ? {} : { held: { digest: state.readBackHeld.digest, at: state.readBackHeld.at, ...(state.readBackHeld.verdict === undefined ? {} : { verdict: state.readBackHeld.verdict }), ...(state.readBackHeld.decidedAt === undefined ? {} : { decidedAt: state.readBackHeld.decidedAt }) } }),
       });
     } catch (error) {
       if (error instanceof ReadBackFailure) throw new Abort(error.problem);
@@ -376,14 +382,15 @@ async function pass(deps: RepoFileDeps, key: ScopeKey, target: RepoFileTarget, l
           ...(done.duplicateIds > 0 ? { duplicateIds: done.duplicateIds } : {}),
           ...(done.counts.edited + done.counts.retired + done.counts.imported > 0 ? { readBack: { at: deps.now(), edited: done.counts.edited, retired: done.counts.retired, imported: done.counts.imported } } : {}),
           ...(Object.keys(done.refused).length > 0 ? { refused: done.refused } : {}),
-          ...(done.held === undefined ? {} : { readBackHeld: { missing: done.held.missing, digest: done.held.digest, at: done.held.at } }),
+          // A person's answer recorded while this pass ran (the route does not take the lease) is kept, never written over.
+          ...(done.held === undefined ? {} : { readBackHeld: { missing: done.held.missing, digest: done.held.digest, at: done.held.at, ...heldAnswer(s.readBackHeld, done.held) } }),
         };
       });
       // The lessons as read-back left them are what the plan works from.
       lessons = await deps.store.listAllHeads(key);
     }
   }
-  const plan = planRepoFile({ place: target.place, repoName: target.name, lessons, names, fileText, rendered: state.rendered, declined: state.declined, gone, addsPaused: additionsPaused({ unmerged }), teamPr, preset, ...(readBack?.held === undefined ? {} : { heldIds: new Set(readBack.held.ids) }) });
+  const plan = planRepoFile({ place: target.place, repoName: target.name, lessons, names, fileText, rendered: state.rendered, declined: state.declined, gone, addsPaused: additionsPaused({ unmerged }), teamPr, preset, ...(readBack?.held === undefined ? {} : readBack.held.verdict === "keep" ? { keepIds: new Set(readBack.held.ids) } : { heldIds: new Set(readBack.held.ids) }) });
   // What the plan learned about the file is recorded whatever comes next.
   const rendered = { ...state.rendered, ...plan.adopted };
   // The fingerprint of an erased lesson's block is kept while its text is still in the file (read-back needs it to clear the text's mark once the copy is gone); every other declined id is forgotten here.

@@ -105,6 +105,11 @@ export interface PlanInput {
   preset: "standard" | "regulated";
   /** Ids read-back holds for a pass (a bulk disappearance from the file, review M1): not declined, not removed and not added back until the next pass decides. */
   heldIds?: ReadonlySet<string>;
+  /**
+   * Ids a person chose to KEEP after they went missing from the file (owner decision 78): never declined, never removed, and proposed back into the file as additions (they respect the pause after unmerged pull requests like any
+   * addition).
+   */
+  keepIds?: ReadonlySet<string>;
 }
 
 /** Why a lesson that is in the file should come out, from the lesson's own state. First match wins. */
@@ -202,7 +207,7 @@ export function planRepoFile(input: PlanInput): RepoFilePlan {
   // A file with no marker at all says nothing about who was removed (read-back treats it as unreadable unless every text is still there; the plan never declines on it).
   if (file !== undefined) {
     for (const id of Object.keys(input.rendered)) {
-      if (inFile.has(id) || (input.heldIds?.has(id) ?? false)) continue;
+      if (inFile.has(id) || (input.heldIds?.has(id) ?? false) || (input.keepIds?.has(id) ?? false)) continue;
       const lesson = everyLesson.get(id);
       // (An erased lesson is declined whatever the file holds, so its record does not outlive the last block: a re-paste afterwards is the team's new lesson.)
       if (file.blocks.length === 0 && lesson !== undefined && !goneIds.has(id)) continue;

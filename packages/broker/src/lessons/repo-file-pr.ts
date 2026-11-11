@@ -54,12 +54,25 @@ export function prBody(plan: RepoFilePlan, context: { pointerFiles: readonly str
   return body.length <= BODY_MAX ? body : `${body.slice(0, BODY_MAX)}\n\n(shortened)`;
 }
 
+/** Lessons that went missing from the file in one change, held a week, and now wait for a person's answer (owner decision 78). `now` is the broker's clock. */
+export const awaitingRetireConfirm = (state: Pick<RepoFileState, "readBackHeld">, now: number): boolean =>
+  state.readBackHeld !== undefined && state.readBackHeld.verdict === undefined && now - state.readBackHeld.at >= READ_BACK_HOLD_MS;
+
+const dateOf = (at: number): string => new Date(at).toISOString().slice(0, 10);
+
 /** The fixed lines that say how a repository's file is doing. Shared by the Lessons tab, the API and the CLI. */
-export function noticesOf(state: RepoFileState): string[] {
+export function noticesOf(state: RepoFileState, now: number): string[] {
   const notices: string[] = [];
   if (state.fileDeleted) notices.push("The lessons file was deleted, so Rovara stopped proposing. Resume to start again.");
   if (state.problem !== undefined) notices.push(state.problem === "file_unreadable" ? `${LESSON_FILE_PROBLEM_TEXT[state.problem]}. If your team changed it on purpose, fix any broken text or merge-conflict lines and keep at least one \`<!-- rovara:... -->\` line (or delete the file to pause Rovara here)` : LESSON_FILE_PROBLEM_TEXT[state.problem]);
-  if (state.readBackHeld !== undefined) notices.push(`${plural(state.readBackHeld.missing, "lesson is", "lessons are")} missing from the lessons file; ${state.readBackHeld.missing === 1 ? "it" : "they"} will be retired on or after ${new Date(state.readBackHeld.at + READ_BACK_HOLD_MS).toISOString().slice(0, 10)} unless ${state.readBackHeld.missing === 1 ? "it is" : "they are"} restored`);
+  const missing = state.readBackHeld;
+  if (missing !== undefined) {
+    const them = missing.missing === 1 ? "it" : "them";
+    if (missing.verdict === "keep") notices.push(`${plural(missing.missing, "missing lesson was", "missing lessons were")} kept; Rovara proposes ${them} back in your lessons PR`);
+    else if (missing.verdict === "retire") notices.push(`Retiring ${plural(missing.missing, "missing lesson", "missing lessons")} was confirmed; Rovara retires ${them} in its next pass`);
+    else if (awaitingRetireConfirm(state, now)) notices.push(`${plural(missing.missing, "lesson has", "lessons have")} been missing from the lessons file since ${dateOf(missing.at)}. Confirm to retire ${them}, or keep ${them}`);
+    else notices.push(`${plural(missing.missing, "lesson is", "lessons are")} missing from the lessons file; on or after ${dateOf(missing.at + READ_BACK_HOLD_MS)} a person will be asked to confirm retiring ${them} unless ${missing.missing === 1 ? "it is" : "they are"} restored`);
+  }
   const waiting = state.open?.removals ?? 0;
   if (additionsPaused(state) && !state.fileDeleted) notices.push(pausedLine(waiting));
   else if (waiting > 0) notices.push(`${plural(waiting, "removal", "removals")} waiting in your lessons PR`);
@@ -74,13 +87,14 @@ export function noticesOf(state: RepoFileState): string[] {
   return notices;
 }
 
-export function rowOf(state: RepoFileState): LessonsRepoFileRow {
+export function rowOf(state: RepoFileState, now: number): LessonsRepoFileRow {
   return {
     repo: state.name, enabled: state.enabled, fileDeleted: state.fileDeleted, unmerged: state.unmerged, additionsPaused: additionsPaused(state), removalsWaiting: state.open?.removals ?? 0, held: state.held.length,
     pointer: state.pointerDeclined ? "declined" : state.pointerMissing ? "missing" : state.pointerProposed ? "added" : "not_yet",
     ...(state.open === undefined ? {} : { pr: { number: state.open.number, url: state.open.url, removals: state.open.removals, edits: state.open.edits, adds: state.open.adds, openedAt: state.open.openedAt } }),
     ...(state.lastPassAt === undefined ? {} : { lastPassAt: state.lastPassAt }),
     ...(state.problem === undefined ? {} : { problem: state.problem }),
-    notices: noticesOf(state),
+    ...(state.readBackHeld === undefined || !awaitingRetireConfirm(state, now) ? {} : { retireConfirm: { missing: state.readBackHeld.missing, since: state.readBackHeld.at, digest: state.readBackHeld.digest } }),
+    notices: noticesOf(state, now),
   };
 }

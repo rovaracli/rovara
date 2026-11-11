@@ -184,7 +184,7 @@ describe("the event catalog", () => {
       "lesson.activated", "lesson.approved", "lesson.edited", "lesson.rejected", "lesson.retired", "lesson.expired", "lesson.withdrawn", "lesson.refused",
       "lesson.promoted", "lesson.rolled_back", "lesson.snapshot_created",
       "lesson.tier0_setting_proposed", "lesson.tier0_setting_changed", "lesson.sole_owner_switch_proposed", "lesson.sole_owner_switch_changed", "lesson.preset_changed", "lesson.preset_proposed", "lesson.trial_stable", "lesson.model_set",
-      "lesson.repo_file_pr_opened", "lesson.repo_file_pr_closed", "lesson.repo_file_switched", "lesson.replay_started", "lesson.replay_read",
+      "lesson.repo_file_pr_opened", "lesson.repo_file_pr_closed", "lesson.repo_file_switched", "lesson.repo_file_retire_decided", "lesson.replay_started", "lesson.replay_read",
       // Lane E (private MCP servers, project Sources)
       "mcp_server.added", "mcp_server.approved", "mcp_server.disabled", "mcp_server.removed", "mcp_server.token_changed",
       // Stdio MCP host (T10): replaces nothing; the new package-run facts

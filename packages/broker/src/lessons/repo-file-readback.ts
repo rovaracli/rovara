@@ -81,7 +81,7 @@ export interface ReadBackInput {
   /** The fingerprints of marked blocks recorded on the last successful pass (`RepoFileState.seen`). */
   seen?: Readonly<Record<string, readonly string[]>>;
   /** The lessons missing from the file when that many were first held (`RepoFileState.readBackHeld`): which ones (a digest) and when it was first seen. */
-  held?: { digest: string; at: number };
+  held?: { digest: string; at: number; verdict?: "retire" | "keep"; decidedAt?: number };
 }
 
 export interface ReadBackResult {
@@ -99,7 +99,7 @@ export interface ReadBackResult {
   duplicateIds: number;
   /** Erased lessons whose text is still in the file: their fingerprints are kept so the mark on the text can be cleared when the last copy is gone. */
   pinned: string[];
-  held?: { missing: number; digest: string; ids: string[]; /** First seen: the hold lasts READ_BACK_HOLD_MS from here. */ at: number };
+  held?: { missing: number; digest: string; ids: string[]; /** First seen: the hold lasts READ_BACK_HOLD_MS from here. */ at: number; /** A person's answer for this very set (owner decision 78); `keep`: the lessons stay live and are proposed back. */ verdict?: "retire" | "keep"; decidedAt?: number };
 }
 
 const hashOfBody = bodyHashOf;
@@ -295,12 +295,17 @@ export async function readBackFile(deps: ReadBackDeps, input: ReadBackInput): Pr
   }).sort();
   let retire = true;
   if (missing.length > bulkLimit(expected.length)) {
-    // One bad merge or a truncated file must not retire most of the lessons at once: they are held for at least a week BY THE CLOCK, from the first time this same set was seen (a pass that fails or runs again changes nothing). The
-    // same ones still missing after that were removed on purpose; a file that changed back, or another set missing, starts over.
+    // One bad merge or a truncated file must not retire most of the lessons at once: they are held for at least a week BY THE CLOCK, from the first time this same set was seen (a pass that fails or runs again changes nothing).
+    // After that the same ones still missing are NOT retired by themselves (owner decision 78): a person is asked, and only a "retire" answer for exactly this set retires them. A file that changed back, or another set missing,
+    // starts over.
     const digest = createHash("sha256").update(missing.join("\n")).digest("hex").slice(0, 16);
     const same = input.held?.digest === digest;
     const since = same ? input.held!.at : deps.now();
-    if (!same || deps.now() - since < READ_BACK_HOLD_MS) { retire = false; result.held = { missing: missing.length, digest, ids: missing, at: since }; }
+    const verdict = same ? input.held!.verdict : undefined;
+    if (!(same && verdict === "retire" && deps.now() - since >= READ_BACK_HOLD_MS)) {
+      retire = false;
+      result.held = { missing: missing.length, digest, ids: missing, at: since, ...(verdict === undefined ? {} : { verdict }), ...(same && input.held!.decidedAt !== undefined ? { decidedAt: input.held!.decidedAt } : {}) };
+    }
   }
   if (retire) {
     for (const id of missing) {

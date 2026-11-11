@@ -104,4 +104,30 @@ describe("the lessons file rows", () => {
   const region = await section();
   expect(region.getByText(/Lessons are off for this project/u)).toBeTruthy();
  });
+
+ it("lessons missing from the file: a person who can decide sees Retire and Keep, each sends the digest in one strict body, and a stale answer says to reload", async () => {
+  const retire = { missing: 7, since: 1, digest: "0123456789abcdef" };
+  const notice = "7 lessons have been missing from the lessons file since 2026-10-24. Confirm to retire them, or keep them";
+  let stale = false;
+  const f = setup({ lessons: (request, url) => (url.pathname === REPO_FILE_PATH ? (request.method === "POST" ? (stale ? refusal("CHANGE_STALE", "x") : ok(row())) : ok(status({ repos: [row({ retireConfirm: retire, notices: [notice] })] }))) : undefined) });
+  const region = await section();
+  expect(region.getByText(notice)).toBeTruthy();
+  fireEvent.click(region.getByRole("button", { name: "Retire them" }));
+  await waitFor(() => expect(writes(f)).toHaveLength(1));
+  expect(LessonsRepoFileBodySchema.parse(writes(f)[0]!.body)).toEqual({ action: "retire_confirm", repo: "api", held: "0123456789abcdef" });
+  stale = true;
+  fireEvent.click(region.getByRole("button", { name: "Keep them" }));
+  await waitFor(() => expect(writes(f)).toHaveLength(2));
+  expect(LessonsRepoFileBodySchema.parse(writes(f)[1]!.body)).toEqual({ action: "retire_keep", repo: "api", held: "0123456789abcdef" });
+  expect((await region.findByRole("alert")).textContent).toContain("This changed while you were looking at it. Reload and try again.");
+ });
+
+ it("a reader (cannot decide) sees the sentence about missing lessons and no Retire or Keep", async () => {
+  const notice = "7 lessons have been missing from the lessons file since 2026-10-24. Confirm to retire them, or keep them";
+  setup({ state: { view: view({ canDecide: false }) }, lessons: serving(status({ repos: [row({ retireConfirm: { missing: 7, since: 1, digest: "0123456789abcdef" }, notices: [notice] })] })) });
+  const readers = await section();
+  expect(readers.getByText(notice)).toBeTruthy();
+  expect(readers.queryByRole("button", { name: "Retire them" })).toBeNull();
+  expect(readers.queryByRole("button", { name: "Keep them" })).toBeNull();
+ });
 });

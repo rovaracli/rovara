@@ -278,6 +278,8 @@ export const AUDIT_ACTIONS = [
   "lesson.repo_file_pr_opened",
   "lesson.repo_file_pr_closed",
   "lesson.repo_file_switched",
+  // Lessons in the repository (R3, owner decision 78): a person confirmed retiring, or kept, the lessons that went missing from the file in one change (written before the answer is recorded).
+  "lesson.repo_file_retire_decided",
   // Lane 7: an operator started a replay copy of a past task to measure the lessons (counts, ids and fixed words only), written before the copy starts.
   "lesson.replay_started",
   // Lane 7 re-check L-f: an operator read a past task for the offline pipeline, read the project's learning settings, or made one model call for the replay (ids, fixed words and counts only).
@@ -623,6 +625,8 @@ export const AUDIT_FACT_KEYS: Record<AuditAction, readonly string[]> = {
   "lesson.repo_file_pr_opened": ["removals", "edits", "adds"],
   "lesson.repo_file_pr_closed": ["cause", "pullRequest"],
   "lesson.repo_file_switched": ["enabled"],
+  // `verdict` is `retire` or `keep`; `missing` is how many lessons the answer covers.
+  "lesson.repo_file_retire_decided": ["verdict", "missing"],
   // `operator` is the opaque `op_` id, `memory` is `off` or `snapshot`, `snapshotLessons` a count, `maxCents` the run's spend limit in whole cents, `sourceTask` the past task's id.
   "lesson.replay_started": ["operator", "memory", "snapshotLessons", "maxCents", "sourceTask"],
   // `operator` is the opaque `op_` id, `what` one of `subject`, `settings`, `model_grade`, `model_learn`, `maxCents` the call's hold in whole cents (0 for a read), `target` the past task's id for a subject read.

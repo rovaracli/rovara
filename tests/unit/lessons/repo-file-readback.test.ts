@@ -6,7 +6,7 @@ import { setLearnedLessonsGate } from "../../../packages/broker/src/lessons/poli
 import { applyFileChanges, bodyHashOf, parseLessonsFile } from "../../../packages/broker/src/lessons/repo-file-format.js";
 import { readBackFile, scopeOfHeading } from "../../../packages/broker/src/lessons/repo-file-readback.js";
 import { lessonDeletionPort } from "../../../packages/broker/src/lessons/deletion.js";
-import { noticesOf } from "../../../packages/broker/src/lessons/repo-file-pr.js";
+import { noticesOf, rowOf } from "../../../packages/broker/src/lessons/repo-file-pr.js";
 import { settings } from "./lesson-helpers.js";
 import { DAY, FILE, passSetup, repoLesson } from "./repo-file-helpers.js";
 import { lessonsRepoFileJob, type RepoFileRuntime } from "../../../packages/broker/src/lessons/repo-file-job.js";
@@ -563,7 +563,7 @@ describe("review round 1 (rr3b)", () => {
       const state = await w.current();
       expect(state.readBackHeld).toMatchObject({ missing: 7 });
       expect(state.declined).toEqual([]);
-      expect(noticesOf(state).join(" ")).toContain("7 lessons are missing from the lessons file");
+      expect(noticesOf(state, w.clock.now()).join(" ")).toContain("7 lessons are missing from the lessons file");
     });
     it("the file restored at the next pass: nothing happened", async () => {
       const w = await eight();
@@ -575,13 +575,13 @@ describe("review round 1 (rr3b)", () => {
       expect((await w.store.listAllHeads(w.key)).filter((l) => l.status === "retired")).toEqual([]);
       expect((await w.current()).readBackHeld).toBeUndefined();
     });
-    it("the same lessons still missing at the next pass: the team meant it, they are retired then", async () => {
+    it("the same lessons still missing after the week: NOT retired by themselves (decision 78); a person is asked, and the hold stays", async () => {
       const w = await eight();
       changeFile(w, (t) => t.slice(0, t.indexOf("<!-- rovara:les_bbbb0002 -->")));
       await pass(w);
       await pass(w);
-      expect((await w.store.listAllHeads(w.key)).filter((l) => l.status === "retired")).toHaveLength(7);
-      expect((await w.current()).readBackHeld).toBeUndefined();
+      expect((await w.store.listAllHeads(w.key)).filter((l) => l.status === "retired")).toEqual([]);
+      expect((await w.current()).readBackHeld).toMatchObject({ missing: 7 });
     });
     it("up to max(3, 25%) removed at once are retired right away", async () => {
       const w = await eight();
@@ -735,7 +735,7 @@ describe("review round 2 (rr3c)", () => {
       return w;
     }
     const retired = async (w: W) => (await w.store.listAllHeads(w.key)).filter((l) => l.status === "retired").length;
-    it("passes that fail, or run every night, never shorten it: retired only 7 days after the first sighting", async () => {
+    it("passes that fail, or run every night, never shorten it: a person is asked only 7 days after the first sighting, and nothing is retired", async () => {
       const w = await eight();
       changeFile(w, (t) => `${t.slice(0, t.indexOf("<!-- rovara:les_bbbb0002 -->"))}\n- A new bullet so the pass has something to write.\n`);
       w.host.failCalls.add("commitFiles");
@@ -749,8 +749,10 @@ describe("review round 2 (rr3c)", () => {
       }
       w.clock.advance(DAY);
       await w.run({ force: true });
-      expect(await retired(w)).toBe(7);
-      expect((await w.current()).readBackHeld).toBeUndefined();
+      // After the week nothing retires by itself: the hold stays, waiting for a person's answer (decision 78).
+      expect(await retired(w)).toBe(0);
+      expect((await w.current()).readBackHeld).toMatchObject({ missing: 7 });
+      expect(rowOf(await w.current(), w.clock.now())).toMatchObject({ retireConfirm: { missing: 7 } });
     });
     it("shows the date on the status the whole time", async () => {
       const w = await eight();
@@ -758,7 +760,7 @@ describe("review round 2 (rr3c)", () => {
       await pass(w);
       const state = await w.current();
       const date = new Date(state.readBackHeld!.at + 7 * DAY).toISOString().slice(0, 10);
-      expect(noticesOf(state).join(" ")).toContain(`7 lessons are missing from the lessons file; they will be retired on or after ${date} unless they are restored`);
+      expect(noticesOf(state, w.clock.now()).join(" ")).toContain(`7 lessons are missing from the lessons file; on or after ${date} a person will be asked to confirm retiring them unless they are restored`);
     });
     it("a different set missing starts the week again", async () => {
       const w = await eight();
@@ -790,7 +792,7 @@ describe("review round 2 (rr3c)", () => {
       expect(await pass(w)).toMatchObject({ status: "opened", removals: 1 });
     });
     it("the refusal notice names every reason", () => {
-      const notice = noticesOf({ ...newRepoFileState("github:repo/1001", "api"), refused: { "0123456789abcdef": "gone_text" } }).join(" ");
+      const notice = noticesOf({ ...newRepoFileState("github:repo/1001", "api"), refused: { "0123456789abcdef": "gone_text" } }, 0).join(" ");
       expect(notice).toContain("repeat the text of an erased lesson");
       expect(notice).toContain("not allowed");
     });
@@ -1024,7 +1026,7 @@ describe("round 4 (rr3e): fingerprints are recorded on every successful pass, be
     await pass(w);
     expect(await marked(w, FIRST)).toBe(true);
     expect(await marked(w, "A second block under the same id.")).toBe(true);
-    expect(noticesOf(await w.current()).join(" ")).toContain("1 lesson id appears twice in the lessons file");
+    expect(noticesOf(await w.current(), w.clock.now()).join(" ")).toContain("1 lesson id appears twice in the lessons file");
     changeFile(w, (t) => t.replace(/<!-- rovara:les_aaaa0001 -->\n- [^\n]*\n\n?/gu, ""));
     await pass(w);
     expect(await marked(w, FIRST)).toBe(false);

@@ -1,6 +1,6 @@
 // The project's lessons routes for the Lessons tab journey: the view, approve, reject, remove and the sources. State lives for one scenario. Bodies are parsed by the contract's strict schemas,
 // as the real routes do, and the one-tap / two-person rules are applied here the way the broker applies them (a second person is a different one; a stale version is refused).
-import { LessonApproveBodySchema, LessonPresetChangeBodySchema, LessonFeedbackBodySchema, LessonMergeBodySchema, LessonPresetBodySchema, LoadedLessonsSchema, LessonRejectBodySchema, LessonRetireBodySchema, LessonSourcesSchema, LessonViewSchema, LessonsDigestSchema, LessonsViewSchema, SourceWriteBodySchema, SourcesAdminViewSchema } from "@agentx/contracts";
+import { LessonApproveBodySchema, LessonsRepoFileBodySchema, LessonsRepoFileStatusSchema, LessonPresetChangeBodySchema, LessonFeedbackBodySchema, LessonMergeBodySchema, LessonPresetBodySchema, LoadedLessonsSchema, LessonRejectBodySchema, LessonRetireBodySchema, LessonSourcesSchema, LessonViewSchema, LessonsDigestSchema, LessonsViewSchema, SourceWriteBodySchema, SourcesAdminViewSchema } from "@agentx/contracts";
 import type { MockExchange } from "./how-we-work-mock.js";
 
 const NOW = Date.parse("2026-11-01T12:00:00.000Z");
@@ -15,7 +15,19 @@ function fresh() { return { preset: "standard" as "standard" | "regulated", prop
 /** Lanes 1b: why learning is paused for the project (a fixed code), or nothing. */
 let paused: string | undefined;
 export function setLessonsPaused(code: string | undefined): void { paused = code; }
-export function resetLessons(): void { state = fresh();sources = freshSources();paused = undefined; }
+export function resetLessons(): void { state = fresh();sources = freshSources();paused = undefined;repoRetire = undefined; }
+
+/** Owner decision 78: the project's one repository has lessons missing from its file, held a week, and now waits for a person (the card with Retire and Keep). Off until a scenario asks for it. */
+const RETIRE_DIGEST = "0123456789abcdef";
+const RETIRE_NOTICE = "7 lessons have been missing from the lessons file since 2026-10-24. Confirm to retire them, or keep them";
+let repoRetire: { decided?: "retire" | "keep" } | undefined;
+export function setRepoRetire(): void { repoRetire = {}; }
+function repoRow() {
+ const decided = repoRetire?.decided;
+ return { repo: "api", enabled: true, fileDeleted: false, unmerged: 0, additionsPaused: false, removalsWaiting: 0, held: 0, pointer: "added" as const,
+  ...(decided === undefined ? { retireConfirm: { missing: 7, since: NOW - 8 * 86_400_000, digest: RETIRE_DIGEST } } : {}),
+  notices: [decided === "keep" ? "7 missing lessons were kept; Rovara proposes them back in your lessons PR" : decided === "retire" ? "Retiring 7 missing lessons was confirmed; Rovara retires them in its next pass" : RETIRE_NOTICE] };
+}
 /** Approve by exception: an active lesson on trial, one that is stable, and one waiting with the capability reason. */
 export function setTrialLessons(): void {
  state.lessons.push(
@@ -84,6 +96,12 @@ export async function lessonsMock({ url, method, body, json, record }: MockExcha
  const base = "/v1/web/projects/payments/lessons";
  if (url.pathname === "/v1/web/projects/payments/record/sources") { await sourcesRoute({ url, method, body, json, record });return true; }
  if (url.pathname === base && method === "GET") { json(200, view());return true; }
+ if (repoRetire !== undefined && url.pathname === base + "/repo") {
+  if (method === "GET") { json(200, LessonsRepoFileStatusSchema.parse({ lessonsOff: false, canEnable: true, repos: [repoRow()], available: [] }));return true; }
+  const input = LessonsRepoFileBodySchema.parse(await body());record(input);
+  if ((input.action !== "retire_confirm" && input.action !== "retire_keep") || input.held !== RETIRE_DIGEST) { json(409, stale);return true; }
+  repoRetire.decided ??= input.action === "retire_confirm" ? "retire" : "keep";json(200, repoRow());return true;
+ }
  if (url.pathname === base + "/digest" && method === "GET") { json(200, LessonsDigestSchema.parse({ since: NOW - 7 * 86_400_000, top: [{ id: "les_act00001", title: "Prefer small pull requests", type: "convention", tier: 1, links: [] }], needsReview: [], autoApplied: [], waiting: [], retired: [], staleOrRetireProposed: [], queued: 2, pausedSources: [], pausedSourcesHidden: 0, hidden: 0 }));return true; }
  if (url.pathname === base + "/sources" && method === "GET") { json(200, LessonSourcesSchema.parse({ sources: [{ kind: "github", scope: "github:acme/api", enabled: true, retention: "D", health: "ok", audience: "project", updatedAt: "2026-10-30T10:00:00.000Z", paused: false }, { kind: "slack", enabled: true, retention: "B", health: "ok", audience: "maintainers", updatedAt: "2026-10-30T10:00:00.000Z", paused: true }], otherPaused: 0 }));return true; }
  if (url.pathname === base + "/preset" && method === "POST") {

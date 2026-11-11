@@ -1,0 +1,284 @@
+// Lessons in the repo, lane R3 (owner decision 78): lessons that went missing from `.rovara/lessons.md` in one change (more than max(3, 25%) of the known ones) are held a week, and then a PERSON is asked: the company owner or
+// someone who can approve lessons confirms the retire, or keeps the lessons (they stay live and R2 proposes their blocks back). A small number still retires at once. Nothing retires by itself after the week.
+import { afterEach, describe, expect, it } from "vitest";
+import { LessonsRepoFileBodySchema } from "@agentx/contracts";
+import { setLearnedLessonsGate } from "../../../packages/broker/src/lessons/policy.js";
+import type { RepoFileRuntime } from "../../../packages/broker/src/lessons/repo-file-job.js";
+import { rowOf } from "../../../packages/broker/src/lessons/repo-file-pr.js";
+import { repoFileAction, repoFileStatus } from "../../../packages/broker/src/lessons/repo-file-routes.js";
+import { parseLessonsFile } from "../../../packages/broker/src/lessons/repo-file-format.js";
+import { routeLessons, type LessonRouteDependencies } from "../../../packages/broker/src/lessons/routes.js";
+import { DAY, FILE, WS, passSetup, repoLesson } from "./repo-file-helpers.js";
+
+afterEach(() => { setLearnedLessonsGate(undefined); });
+type W = ReturnType<typeof passSetup>;
+const WHO = { developerId: "a".repeat(64) };
+const runtimeOf = (w: W): RepoFileRuntime => ({ deps: w.deps, targets: async () => [w.target], newHolder: () => "job-1" });
+const act = (w: W, action: "retire_confirm" | "retire_keep", held: string | undefined, decider: { developerId: string } | null = WHO) =>
+  repoFileAction(runtimeOf(w), w.key, { action, repo: "api", ...(held === undefined ? {} : { held }) }, decider ?? undefined);
+const retired = async (w: W) => (await w.store.listAllHeads(w.key)).filter((l) => l.status === "retired");
+const cutAfterFirst = (w: W): void => { const text = w.host.file("main", FILE)!; w.host.setFile("main", FILE, text.slice(0, text.indexOf("<!-- rovara:les_bbbb0002 -->"))); };
+
+/** Eight merged lessons, then a change that takes seven of them out of the file; the second pass is a week later, so a person is being asked. */
+async function awaiting(): Promise<{ w: W; digest: string }> {
+  const w = passSetup();
+  await w.seedLessons(...Array.from({ length: 8 }, (_, i) => repoLesson(`les_bbbb000${String(i + 1)}`)));
+  await w.enable();
+  const result = await w.run();
+  w.host.merge(Number((result as { number: string }).number));
+  cutAfterFirst(w);
+  w.week();
+  await w.run();
+  w.week();
+  await w.run();
+  return { w, digest: (await w.current()).readBackHeld!.digest };
+}
+
+describe("a mass disappearance after its week", () => {
+  it("is not retired: the row says a person is asked (retireConfirm and the fixed notice), and before the week it says when", async () => {
+    const w = passSetup();
+    await w.seedLessons(...Array.from({ length: 8 }, (_, i) => repoLesson(`les_bbbb000${String(i + 1)}`)));
+    await w.enable();
+    const result = await w.run();
+    w.host.merge(Number((result as { number: string }).number));
+    cutAfterFirst(w);
+    w.week();
+    await w.run();
+    const first = await w.current();
+    const early = rowOf(first, w.clock.now());
+    expect(early.retireConfirm).toBeUndefined();
+    const date = new Date(first.readBackHeld!.at + 7 * DAY).toISOString().slice(0, 10);
+    expect(early.notices).toContain(`7 lessons are missing from the lessons file; on or after ${date} a person will be asked to confirm retiring them unless they are restored`);
+
+    w.week();
+    await w.run();
+    const state = await w.current();
+    expect(await retired(w)).toEqual([]);
+    expect(state.readBackHeld).toMatchObject({ missing: 7 });
+    expect(state.readBackHeld!.verdict).toBeUndefined();
+    const row = rowOf(state, w.clock.now());
+    expect(row.retireConfirm).toEqual({ missing: 7, since: first.readBackHeld!.at, digest: state.readBackHeld!.digest });
+    const since = new Date(first.readBackHeld!.at).toISOString().slice(0, 10);
+    expect(row.notices).toContain(`7 lessons have been missing from the lessons file since ${since}. Confirm to retire them, or keep them`);
+    // Still waiting a month later, and still nothing retired: it stays that way until a person decides.
+    for (let i = 0; i < 4; i += 1) { w.week(); await w.run(); }
+    expect(await retired(w)).toEqual([]);
+    expect((await w.current()).readBackHeld!.at).toBe(first.readBackHeld!.at);
+    expect((await repoFileStatus(runtimeOf(w), w.key)).repos[0]!.retireConfirm).toMatchObject({ missing: 7 });
+    for (const notice of row.notices) expect(notice.length).toBeLessThanOrEqual(300);
+  });
+
+  it("a small number missing still retires at once, with no person asked", async () => {
+    const w = passSetup();
+    await w.seedLessons(...Array.from({ length: 8 }, (_, i) => repoLesson(`les_bbbb000${String(i + 1)}`)));
+    await w.enable();
+    const result = await w.run();
+    w.host.merge(Number((result as { number: string }).number));
+    const text = w.host.file("main", FILE)!;
+    w.host.setFile("main", FILE, ["les_bbbb0001", "les_bbbb0002"].reduce((t, id) => t.replace(new RegExp(`<!-- rovara:${id} -->\\n[^\\n]*\\n`, "u"), ""), text));
+    w.week();
+    await w.run();
+    expect(await retired(w)).toHaveLength(2);
+    expect((await w.current()).readBackHeld).toBeUndefined();
+    expect(rowOf(await w.current(), w.clock.now()).retireConfirm).toBeUndefined();
+  });
+});
+
+describe("confirming the retire", () => {
+  it("is audited before the state changes, then the pass retires the missing lessons (cause removed_in_repository)", async () => {
+    const { w, digest } = await awaiting();
+    const answer = await act(w, "retire_confirm", digest);
+    expect(answer.ok).toBe(true);
+    const decided = w.audit.events.filter((e) => e.action === "lesson.repo_file_retire_decided");
+    expect(decided).toEqual([expect.objectContaining({ actor: WHO.developerId, facts: { verdict: "retire", missing: 7 } })]);
+    expect(await retired(w)).toHaveLength(7);
+    const state = await w.current();
+    expect(state.readBackHeld).toBeUndefined();
+    expect(state.readBack).toMatchObject({ retired: 7 });
+    expect(w.audit.events.filter((e) => e.action === "lesson.retired" && e.facts["cause"] === "removed_in_repository")).toHaveLength(7);
+    // The decision line is in the ledger before the first retirement.
+    const order = w.audit.actions();
+    expect(order.indexOf("lesson.repo_file_retire_decided")).toBeLessThan(order.lastIndexOf("lesson.retired"));
+    expect(state.declined.length).toBe(7);
+    expect(JSON.stringify(state)).not.toContain(WHO.developerId);
+  });
+
+  it("a ledger that is down changes nothing: no verdict, nothing retired", async () => {
+    const { w, digest } = await awaiting();
+    const before = await w.current();
+    w.failAudit.on = true;
+    expect(await act(w, "retire_confirm", digest)).toEqual({ ok: false, code: "audit_unavailable" });
+    expect(await w.current()).toEqual(before);
+    expect(await retired(w)).toEqual([]);
+  });
+
+  it("when the file changes after the confirm (before the pass retires anything), nothing is retired and the hold starts over", async () => {
+    const { w, digest } = await awaiting();
+    // The forced pass cannot reach the repository, so the answer is recorded and the retire waits for a later pass.
+    w.host.failCalls.add("repositoryIdentity");
+    expect(await act(w, "retire_confirm", digest)).toMatchObject({ ok: true });
+    w.host.failCalls.clear();
+    expect((await w.current()).readBackHeld).toMatchObject({ verdict: "retire" });
+    expect(await retired(w)).toEqual([]);
+    // The team puts one lesson back: a different set is missing now.
+    const text = w.host.file("main", FILE)!;
+    w.host.setFile("main", FILE, `${text}\n### Whole repository\n\n<!-- rovara:les_bbbb0002 -->\n- Lesson text for les_bbbb0002: use the shared helper.\n`);
+    w.week();
+    await w.run();
+    expect(await retired(w)).toEqual([]);
+    const state = await w.current();
+    expect(state.readBackHeld).toMatchObject({ missing: 6 });
+    expect(state.readBackHeld!.verdict).toBeUndefined();
+    expect(state.readBackHeld!.digest).not.toBe(digest);
+  });
+
+  it("with the same set still missing, the nightly pass finishes a confirm the forced pass could not", async () => {
+    const { w, digest } = await awaiting();
+    w.host.failCalls.add("repositoryIdentity");
+    await act(w, "retire_confirm", digest);
+    w.host.failCalls.clear();
+    w.week();
+    await w.run();
+    expect(await retired(w)).toHaveLength(7);
+  });
+});
+
+describe("keeping the lessons", () => {
+  it("they stay live and are not declined, the next pull request proposes their blocks back, and the hold clears once the file has them", async () => {
+    const { w, digest } = await awaiting();
+    expect(await act(w, "retire_keep", digest)).toMatchObject({ ok: true });
+    expect(w.audit.events.filter((e) => e.action === "lesson.repo_file_retire_decided")).toEqual([expect.objectContaining({ facts: { verdict: "keep", missing: 7 } })]);
+    expect(await retired(w)).toEqual([]);
+    const live = (await w.store.listAllHeads(w.key)).filter((l) => l.status === "active");
+    expect(live).toHaveLength(8);
+    expect((await w.current()).declined).toEqual([]);
+    const kept = rowOf(await w.current(), w.clock.now());
+    expect(kept.retireConfirm).toBeUndefined();
+    expect(kept.notices).toContain("7 missing lessons were kept; Rovara proposes them back in your lessons PR");
+    // The next pass proposes them back as additions; nothing is retired or declined while the same set is missing.
+    w.week();
+    const result = await w.run();
+    expect(result).toMatchObject({ status: "opened", adds: 7, removals: 0 });
+    expect(await retired(w)).toEqual([]);
+    expect((await w.current()).declined).toEqual([]);
+    expect((await w.current()).readBackHeld).toMatchObject({ verdict: "keep" });
+    w.host.merge(Number((result as { number: string }).number));
+    w.week();
+    await w.run();
+    expect(parseLessonsFile(w.host.file("main", FILE)!).blocks).toHaveLength(8);
+    expect((await w.current()).readBackHeld).toBeUndefined();
+    expect(await retired(w)).toEqual([]);
+    // Removing them again is a new disappearance: a new hold and a new card, after another week.
+    cutAfterFirst(w);
+    w.week();
+    await w.run();
+    const again = await w.current();
+    expect(again.readBackHeld).toMatchObject({ missing: 7 });
+    expect(again.readBackHeld!.verdict).toBeUndefined();
+    expect(rowOf(again, w.clock.now()).retireConfirm).toBeUndefined();
+    w.week();
+    await w.run();
+    expect(rowOf(await w.current(), w.clock.now()).retireConfirm).toMatchObject({ missing: 7 });
+  });
+
+  it("while the keep stands and nothing else changes, no card comes and nothing retires, however many passes run", async () => {
+    const { w, digest } = await awaiting();
+    await act(w, "retire_keep", digest);
+    w.host.failCalls.add("commitFiles");
+    for (let i = 0; i < 3; i += 1) { w.week(); await w.run(); }
+    expect(await retired(w)).toEqual([]);
+    expect(rowOf(await w.current(), w.clock.now()).retireConfirm).toBeUndefined();
+  });
+});
+
+describe("what is refused", () => {
+  it("a missing or different digest, a hold not yet a week old, and nothing held are all a conflict", async () => {
+    const { w, digest } = await awaiting();
+    const other = digest === "0".repeat(16) ? "1".repeat(16) : "0".repeat(16);
+    expect(await act(w, "retire_confirm", other)).toEqual({ ok: false, code: "conflict" });
+    expect(await act(w, "retire_keep", undefined)).toEqual({ ok: false, code: "conflict" });
+    expect(w.audit.actions()).not.toContain("lesson.repo_file_retire_decided");
+    expect((await w.current()).readBackHeld!.verdict).toBeUndefined();
+
+    // Not yet a week: a fresh sighting.
+    const fresh = passSetup();
+    await fresh.seedLessons(...Array.from({ length: 8 }, (_, i) => repoLesson(`les_bbbb000${String(i + 1)}`)));
+    await fresh.enable();
+    const opened = await fresh.run();
+    fresh.host.merge(Number((opened as { number: string }).number));
+    cutAfterFirst(fresh);
+    fresh.week();
+    await fresh.run();
+    const early = (await fresh.current()).readBackHeld!.digest;
+    expect(await act(fresh, "retire_confirm", early)).toEqual({ ok: false, code: "conflict" });
+    expect(await retired(fresh)).toEqual([]);
+    // Nothing held at all.
+    const none = passSetup();
+    await none.enable();
+    expect(await act(none, "retire_confirm", "0".repeat(16))).toEqual({ ok: false, code: "conflict" });
+  });
+
+  it("an answer for a set that already has one returns the row unchanged and writes nothing more", async () => {
+    const { w, digest } = await awaiting();
+    await act(w, "retire_keep", digest);
+    const revision = (await w.current()).revision;
+    const events = w.audit.events.length;
+    const again = await act(w, "retire_confirm", digest);
+    expect(again).toMatchObject({ ok: true, row: { repo: "api" } });
+    expect((await w.current()).revision).toBe(revision);
+    expect((await w.current()).readBackHeld!.verdict).toBe("keep");
+    expect(w.audit.events.length).toBe(events);
+  });
+
+  it("without a decider the action is refused (the route is the one that checks who may answer)", async () => {
+    const { w, digest } = await awaiting();
+    expect(await act(w, "retire_confirm", digest, null)).toEqual({ ok: false, code: "not_permitted" });
+    expect((await w.current()).readBackHeld!.verdict).toBeUndefined();
+  });
+
+  it("the body needs held for these two actions and refuses it for every other", () => {
+    expect(LessonsRepoFileBodySchema.safeParse({ action: "retire_confirm", repo: "api" }).success).toBe(false);
+    expect(LessonsRepoFileBodySchema.safeParse({ action: "retire_keep", repo: "api", held: "0123456789abcdef" }).success).toBe(true);
+    expect(LessonsRepoFileBodySchema.safeParse({ action: "off", repo: "api", held: "0123456789abcdef" }).success).toBe(false);
+    expect(LessonsRepoFileBodySchema.safeParse({ action: "retire_keep", repo: "api", held: "nope" }).success).toBe(false);
+  });
+});
+
+describe("who may answer, at the route", () => {
+  const caller = (over: Record<string, unknown> = {}) => ({ orgId: WS, developerId: WHO.developerId, orgRole: "member", browserSession: false, ...over }) as never;
+  const url = new URL("https://x.example/v1/app/projects/proj-1/lessons/repo");
+  const depsOf = (w: W, group: { complete: boolean; eligibleIds: string[] } | "throws", role: "maintainer" | "viewer" = "maintainer"): LessonRouteDependencies => ({
+    lessons: { directory: { eligibility: async () => { if (group === "throws") throw new Error("roster down"); return { complete: group.complete, membershipVersion: 1, ownerIds: [], eligibleIds: group.eligibleIds, lastEligibleLossAtMs: null }; } } } as never,
+    repoFile: runtimeOf(w), projectFor: async () => ({ name: "proj-1", role }), taskFor: async () => ({ project: "proj-1" }), rate: async () => true,
+  });
+
+  it("a maintainer who is neither the owner nor an approver is refused and nothing changes", async () => {
+    const { w, digest } = await awaiting();
+    const before = await w.current();
+    const body = { action: "retire_confirm", repo: "api", held: digest };
+    await expect(routeLessons(depsOf(w, { complete: true, eligibleIds: ["b".repeat(64)] }), caller(), "POST", url, () => body)).rejects.toMatchObject({ code: "FORBIDDEN" });
+    await expect(routeLessons(depsOf(w, { complete: false, eligibleIds: [WHO.developerId] }), caller(), "POST", url, () => body)).rejects.toMatchObject({ code: "RUNTIME_UNAVAILABLE" });
+    await expect(routeLessons(depsOf(w, "throws"), caller(), "POST", url, () => body)).rejects.toMatchObject({ code: "RUNTIME_UNAVAILABLE" });
+    await expect(routeLessons(depsOf(w, { complete: true, eligibleIds: [WHO.developerId] }), caller({ orgRole: "auditor" }), "POST", url, () => body)).rejects.toBeTruthy();
+    expect(await w.current()).toEqual(before);
+    expect(await retired(w)).toEqual([]);
+  });
+
+  it("the company owner may, and so may a person eligible to approve who is only a viewer of the project's settings", async () => {
+    const owner = await awaiting();
+    const answer = await routeLessons(depsOf(owner.w, { complete: true, eligibleIds: [] }, "viewer"), caller({ orgRole: "owner" }), "POST", url, () => ({ action: "retire_keep", repo: "api", held: owner.digest }));
+    expect(answer).toMatchObject({ repo: "api" });
+    expect((answer as { notices: string[] }).notices).toContain("7 missing lessons were kept; Rovara proposes them back in your lessons PR");
+    expect(owner.w.audit.events.find((e) => e.action === "lesson.repo_file_retire_decided")).toMatchObject({ actor: WHO.developerId });
+
+    const approver = await awaiting();
+    await routeLessons(depsOf(approver.w, { complete: true, eligibleIds: [WHO.developerId] }, "viewer"), caller(), "POST", url, () => ({ action: "retire_confirm", repo: "api", held: approver.digest }));
+    expect(await retired(approver.w)).toHaveLength(7);
+  });
+
+  it("every other action keeps the maintainer rule, and a held digest on one of them is refused", async () => {
+    const { w } = await awaiting();
+    await expect(routeLessons(depsOf(w, { complete: true, eligibleIds: [WHO.developerId] }, "viewer"), caller({ orgRole: "owner" }), "POST", url, () => ({ action: "off", repo: "api" }))).rejects.toMatchObject({ code: "FORBIDDEN" });
+    await expect(routeLessons(depsOf(w, { complete: true, eligibleIds: [] }), caller(), "POST", url, () => ({ action: "off", repo: "api", held: "0123456789abcdef" }))).rejects.toMatchObject({ code: "CONFIG_INVALID" });
+  });
+});
