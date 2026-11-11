@@ -28,7 +28,8 @@ async function cloud() {
 }
 
 type World = Awaited<ReturnType<typeof cloud>>;
-const SCENARIOS: Array<{ name: string; slackUser: string; member: boolean; arrange: (h: World, native: string) => void }> = [
+// `dispatcherMember`: what the dispatcher's reader decides when it differs from everyone else's. It may read a developer's own sign-in row and nothing else, so an identity link (a row of its own) is invisible to it.
+const SCENARIOS: Array<{ name: string; slackUser: string; member: boolean; dispatcherMember?: boolean; arrange: (h: World, native: string) => void }> = [
   { name: "a Slack person who never joined", slackUser: "U0AGREE001", member: false, arrange: () => undefined },
   { name: "an explicit member", slackUser: "U0AGREE002", member: true, arrange: (h, native) => seedMembership(h.db, native, { orgId: TEST_ORG, role: "member" }) },
   { name: "an owner", slackUser: "U0AGREE003", member: true, arrange: (h, native) => seedMembership(h.db, native, { orgId: TEST_ORG, role: "owner" }) },
@@ -48,10 +49,16 @@ const SCENARIOS: Array<{ name: string; slackUser: string; member: boolean; arran
     h.db.set({ pk: `DEVELOPER#${native}`, sk: "META", developerId: native, provider: "slack", mergedInto: other, revoked: false });
     h.db.set({ pk: `DEVELOPER#${other}`, sk: "META", developerId: other, provider: "oidc", mergedInto: native, revoked: false });
   } },
+  { name: "an identity linked to a member with no merge (broker and Slack routes: a member; dispatcher: not a member, because it cannot read link rows, so it fails closed)", slackUser: "U0AGREE008", member: true, dispatcherMember: false, arrange: (h, native) => {
+    const survivor = "5".repeat(64);
+    seedMembership(h.db, survivor, { orgId: TEST_ORG, role: "member" });
+    // The identity link Sign in with Slack writes: the Slack identity belongs to the developer it names, and nothing was merged.
+    h.db.set({ pk: `SIGNIN_IDENTITY#${native}`, sk: "META", developerId: survivor });
+  } },
 ];
 
 describe("the Slack routes and the task person checks use one explicit-member rule", () => {
-  it.each(SCENARIOS)("agree about $name", async ({ slackUser, member, arrange }) => {
+  it.each(SCENARIOS)("agree about $name", async ({ slackUser, member, dispatcherMember, arrange }) => {
     const h = await cloud();
     const native = developerIdForSlackUser(slackUser);
     arrange(h, native);
@@ -63,7 +70,8 @@ describe("the Slack routes and the task person checks use one explicit-member ru
     const dispatcherReader = signInReaderFromRecords(async (id) => h.db.get(`DEVELOPER#${id}`, "META"));
     for (const [label, readSignIn] of [["broker", brokerReader], ["dispatcher", dispatcherReader]] as const) {
       const role = await explicitMemberRole({ documentClient: h.db, tableName: "state", readSignIn }, TEST_ORG, native).catch((error: { code?: string }) => error.code);
-      expect(typeof role === "string" && role !== "FORBIDDEN", `${label} reader: a member (${String(role)})`).toBe(member);
+      const expected = label === "dispatcher" ? dispatcherMember ?? member : member;
+      expect(typeof role === "string" && role !== "FORBIDDEN", `${label} reader: a member (${String(role)})`).toBe(expected);
     }
   });
 });

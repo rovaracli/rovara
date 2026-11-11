@@ -47,7 +47,10 @@ export interface StoppedRunTask { closedAt?: string | undefined; workspaceId: st
 
 /** Why a step stopped when its run was stopped or released: fixed text, the same words a failed result records. */
 export function stoppedStepReason(mode: WorkflowMode, endedAs: string): string {
-  return mode === "FEEDBACK_REVIEW" ? WORKFLOW_BLOCK_REASONS.feedbackReviewFailed : workflowRunEndedReason(mode, endedAs);
+  // A feedback review that FAILED keeps its one fixed reason. One that was stopped or never confirmed its stop keeps the older "<step> operation ended <status>" wording (`workflow-messages.ts` shows it as the same
+  // sentence, so nothing a person reads changes) so that a stop can be told from a failure (work events, U3).
+  if (mode === "FEEDBACK_REVIEW") return endedAs.toUpperCase() === "FAILED" ? WORKFLOW_BLOCK_REASONS.feedbackReviewFailed : `PR feedback review operation ended ${endedAs.toLowerCase()}`;
+  return workflowRunEndedReason(mode, endedAs);
 }
 
 /**

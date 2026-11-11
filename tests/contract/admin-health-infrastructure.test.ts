@@ -331,6 +331,10 @@ describe("the health route's grants (A13)", () => {
       "packages/broker/src/org/slack-explicit-members.ts",
       // 2026-11-11, G-04 company rules: a DECIDED proposal (rejected, cancelled, expired, or the one that became a version) is kept 400 days for the history list and then removed by the TTL. The durable record is the version row (never given the attribute), and neither a waiting proposal, the head nor the file link carries it; only company-rules/store.ts writes it.
       "packages/broker/src/company-rules/store.ts",
+      // Work events (U3): one row per flow fact of a task, expiring 13 months after its month (WORK_EVENT_RETENTION_MONTHS). Not a durable record of the work itself.
+      "packages/broker/src/work-events/store.ts",
+      // Approval place (U4): the owner's "your plan was decided" Slack direct message row (2 days, the same TASK_ATTENTION_DM row the notifier posts); a working row, not a durable record, and only owner-notice.ts writes it.
+      "packages/broker/src/approval-place/owner-notice.ts",
     ]);
     const found = execFileSync("grep", ["-rl", "indexExpiresAt\\|INDEX_EXPIRY_ATTRIBUTE", "packages", "infra/lib", "--include=*.ts", "--exclude-dir=dist", "--exclude-dir=node_modules"], { encoding: "utf8" }).trim().split("\n").filter((file) => file !== "");
     expect(found.filter((file) => !allowed.has(file))).toEqual([]);

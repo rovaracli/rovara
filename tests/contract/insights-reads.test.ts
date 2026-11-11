@@ -11,6 +11,7 @@ import { routeInsights, type InsightsDependencies } from "../../packages/broker/
 import { grantHolds } from "../../packages/broker/src/insights/scope.js";
 import { chosenNameKey } from "../../packages/broker/src/developer/chosen-name.js";
 import { changeInsightsAccess } from "../../packages/broker/src/insights/access-grant.js";
+import { insightsRowKeyOf, opaqueRowId } from "../../packages/broker/src/insights/row-id.js";
 import type { LiveDependencies } from "../../packages/broker/src/agent-sessions/live.js";
 import { capturingAuditDeps } from "../support/audit-capture.js";
 import { ARJUN, CELL, MAX, MIA, OLA, ORG_A, ORG_B, PRIYA, T0, ZED, sessionWorld } from "../support/agent-session-world.js";
@@ -21,6 +22,9 @@ afterEach(() => { delete process.env.INSIGHTS_ENABLED; });
 
 const OWNER = "1".repeat(64), AUDITOR = "2".repeat(64), BO_ADMIN = "3".repeat(64), STRANGER = "4".repeat(64), BO = "9".repeat(64);
 const HOUR = 3_600_000;
+const ROW_KEY = insightsRowKeyOf("k".repeat(64));
+/** The opaque id a metadata row carries for a session or a spending request (company A unless said). */
+const opaque = (rawId: string, orgId: OrgId = ORG_A) => opaqueRowId(ROW_KEY, orgId, rawId);
 const ON = { INSIGHTS_ENABLED: "1" } as NodeJS.ProcessEnv;
 type Item = Record<string, unknown>;
 type Extra = { [K in keyof InsightsDependencies]?: InsightsDependencies[K] | undefined };
@@ -47,7 +51,7 @@ function company() {
     documentClient: client, tableName: "state", now: () => w.clock.now, projectMembers: w.members, signInStore: w.signInStore, origin: CELL, cursorKey: "k".repeat(64), taskView: async () => ({}) as never,
   });
   const deps = (extra: Extra = {}): InsightsDependencies => ({
-    documentClient: client, tableName: "state", now: () => w.clock.now, signInTableName: "state", projectMembers: w.members, sessions: sessions(), audit: { ...audit.audit, tableName: "state" }, ...extra,
+    documentClient: client, tableName: "state", now: () => w.clock.now, signInTableName: "state", projectMembers: w.members, sessions: sessions(), rowKey: ROW_KEY, audit: { ...audit.audit, tableName: "state" }, ...extra,
   }) as InsightsDependencies;
   let minute = 0;
   const seed = (o: { owner?: string; project?: string | null; status?: SessionStatus; needs?: string[]; pending?: number; kind?: "task" | "local"; ageHours: number; orgId?: OrgId; ended?: boolean; people?: Array<{ developerId: string; role: "owner" | "commenter" | "viewer" | "denied" }>; title?: string; step?: string }) => {
@@ -155,7 +159,8 @@ describe("stuck work", () => {
     const { c, s1, s2, s3, s4, running, ended, other } = stuckWorld();
     const body = InsightsStuckSchema.parse(ok(await c.call(c.who.admin, "GET", "/v1/app/insights/stuck")));
     // Positive control: the list is not empty, the sessions that need someone are on it, and the one that is running or ended is not.
-    expect(ids(body)).toEqual([s2.sessionId, s1.sessionId, s4.sessionId, s3.sessionId]);
+    // The admin opens the task sessions (raw id) but not the one on someone's Mac (s4: a metadata row, opaque id).
+    expect(ids(body)).toEqual([s2.sessionId, s1.sessionId, opaque(s4.sessionId), s3.sessionId]);
     expect(ids(body)).not.toContain(running.sessionId);
     expect(ids(body)).not.toContain(ended.sessionId);
     // Company B's session and its words never appear for company A, and A's never for B.
@@ -177,39 +182,42 @@ describe("stuck work", () => {
     const byId = (body: Record<string, any>) => Object.fromEntries(rows(body).map((item) => [item.itemId, item]));
     expect(byId(admin)[s1.sessionId]).toMatchObject({ visibility: "full", title: "Retry the payment webhook", link: `${CELL}/app/sessions/${s1.sessionId}`, nextActor: { kind: "person", name: "Arjun" }, owner: { id: PRIYA, name: "Priya" } });
     expect(byId(admin)[s2.sessionId]).toMatchObject({ visibility: "full", title: "Fix the ops deploy", nextActor: { kind: "person", name: "Priya", role: "owner" } });
-    const local = byId(admin)[s4.sessionId];
+    const local = byId(admin)[opaque(s4.sessionId)];
     expect(local).toMatchObject({ visibility: "metadata", owner: { id: PRIYA, name: "Priya" }, nextActor: { kind: "person", name: "Priya", role: "owner" }, project: "No project" });
     for (const field of CONTENT) expect(local, field).not.toHaveProperty(field);
     // A viewer-grant member has no project role: EVERY row is metadata, and every row still names who owns it and who it waits on. Not one word of content, anywhere in the answer.
     const viewer = ok(await c.call(c.who.viewer, "GET", "/v1/app/insights/stuck"));
-    expect(ids(viewer)).toEqual(ids(admin));
+    // Every viewer row carries the opaque id (stable: the same work reads the same for the admin's metadata row), never the session id, and the raw id appears nowhere in the answer.
+    expect(ids(viewer)).toEqual([s2, s1, s4, s3].map((seeded) => opaque(seeded.sessionId)));
+    for (const seeded of [s1, s2, s3, s4]) expect(JSON.stringify(viewer), seeded.sessionId).not.toContain(seeded.sessionId);
     for (const item of rows(viewer)) {
       expect(item.visibility, item.itemId).toBe("metadata");
       for (const field of CONTENT) expect(item, `${item.itemId} ${field}`).not.toHaveProperty(field);
       expect(item.owner.name, item.itemId).toMatch(/^(Priya|Arjun)$/u);
       expect(item.nextActor.kind, item.itemId).not.toBe("unknown");
     }
-    expect(byId(viewer)[s1.sessionId]).toMatchObject({ nextActor: { kind: "person", name: "Arjun" }, owner: { name: "Priya" } });
-    expect(byId(viewer)[s3.sessionId]).toMatchObject({ owner: { name: "Arjun" }, blocker: "budget", nextActor: { kind: "role", role: "approver" } });
+    expect(byId(viewer)[opaque(s1.sessionId)]).toMatchObject({ nextActor: { kind: "person", name: "Arjun" }, owner: { name: "Priya" } });
+    expect(byId(viewer)[opaque(s3.sessionId)]).toMatchObject({ owner: { name: "Arjun" }, blocker: "budget", nextActor: { kind: "role", role: "approver" } });
     for (const phrase of ["Retry the payment webhook", "Fix the ops deploy", "Backfill the invoices", "Local experiment", "app/sessions"]) expect(JSON.stringify(viewer)).not.toContain(phrase);
   });
 
   it("scopes a maintainer to their projects, and a maintainer the task denies sees metadata only", async () => {
     const { c, s1, s2, s3, s4 } = stuckWorld();
     const body = ok(await c.call(c.who.maintainer, "GET", "/v1/app/insights/stuck"));
-    expect(ids(body).sort()).toEqual([s1.sessionId, s3.sessionId].sort());
-    expect(ids(body)).not.toContain(s2.sessionId);
-    expect(ids(body)).not.toContain(s4.sessionId);
+    // s1 the maintainer can open (raw id); s3 is denied to them by a Task People entry (a metadata row, opaque id).
+    expect(ids(body).sort()).toEqual([s1.sessionId, opaque(s3.sessionId)].sort());
+    expect(JSON.stringify(body)).not.toContain(s3.sessionId);
+    for (const out of [s2, s4]) for (const id of [out.sessionId, opaque(out.sessionId)]) expect(ids(body)).not.toContain(id);
     expect(body.summary.total).toBe(2);
     const by = Object.fromEntries(rows(body).map((item) => [item.itemId, item]));
     expect(by[s1.sessionId]).toMatchObject({ visibility: "full", title: "Retry the payment webhook" });
     // Max is denied on the task of s3 (a Task People entry): the row stays, with names, without content.
-    expect(by[s3.sessionId]).toMatchObject({ visibility: "metadata", owner: { name: "Arjun" } });
-    for (const field of CONTENT) expect(by[s3.sessionId]).not.toHaveProperty(field);
+    expect(by[opaque(s3.sessionId)]).toMatchObject({ visibility: "metadata", owner: { name: "Arjun" } });
+    for (const field of CONTENT) expect(by[opaque(s3.sessionId)]).not.toHaveProperty(field);
     expect(JSON.stringify(body)).not.toContain("Backfill the invoices");
     // A project outside the scope is refused with one sentence whether or not it exists; inside it, the list narrows.
     for (const project of ["ops", "nope", "Not A Name"]) expect(code(await c.call(c.who.maintainer, "GET", `/v1/app/insights/stuck?project=${encodeURIComponent(project)}`)), project).toBe("FORBIDDEN");
-    expect(ids(ok(await c.call(c.who.maintainer, "GET", "/v1/app/insights/stuck?project=web"))).sort()).toEqual([s1.sessionId, s3.sessionId].sort());
+    expect(ids(ok(await c.call(c.who.maintainer, "GET", "/v1/app/insights/stuck?project=web"))).sort()).toEqual([s1.sessionId, opaque(s3.sessionId)].sort());
     // A company reader: an unknown project is not found; a known one narrows.
     expect(code(await c.call(c.who.admin, "GET", "/v1/app/insights/stuck?project=nope"))).toBe("PROJECT_NOT_FOUND");
     expect(ids(ok(await c.call(c.who.admin, "GET", "/v1/app/insights/stuck?project=ops")))).toEqual([s2.sessionId]);
@@ -230,12 +238,19 @@ describe("stuck work", () => {
   it("pages with an opaque cursor, the summary covering the whole list, and refuses a bad parameter", async () => {
     const { c, s1, s2, s3, s4 } = stuckWorld();
     const first = ok(await c.call(c.who.admin, "GET", "/v1/app/insights/stuck?limit=3"));
-    expect(ids(first)).toEqual([s2.sessionId, s1.sessionId, s4.sessionId]);
+    expect(ids(first)).toEqual([s2.sessionId, s1.sessionId, opaque(s4.sessionId)]);
     expect(first.summary.total).toBe(4);
     expect(typeof first.next).toBe("string");
     const second = ok(await c.call(c.who.admin, "GET", `/v1/app/insights/stuck?limit=3&cursor=${first.next as string}`));
     expect(ids(second)).toEqual([s3.sessionId]);
     expect(second.next).toBeUndefined();
+    // A viewer pages the same list: the cursor handed out names the opaque id of the last row, never a session id, and the second page continues from it.
+    const v1 = ok(await c.call(c.who.viewer, "GET", "/v1/app/insights/stuck?limit=2"));
+    const cursorText = Buffer.from(v1.next as string, "base64url").toString("utf8");
+    for (const seeded of [s1, s2, s3, s4]) expect(cursorText, seeded.sessionId).not.toContain(seeded.sessionId);
+    expect(cursorText).toContain(opaque(s1.sessionId));
+    const v2 = ok(await c.call(c.who.viewer, "GET", `/v1/app/insights/stuck?limit=2&cursor=${v1.next as string}`));
+    expect([...ids(v1), ...ids(v2)]).toEqual([s2, s1, s4, s3].map((seeded) => opaque(seeded.sessionId)));
     expect(ids(ok(await c.call(c.who.admin, "GET", "/v1/app/insights/stuck?minAgeHours=24")))).toEqual([s2.sessionId, s1.sessionId]);
     for (const query of ["limit=0", "limit=101", "limit=x", "minAgeHours=-1", "cursor=nonsense", "limit=2.5"]) expect(code(await c.call(c.who.admin, "GET", `/v1/app/insights/stuck?${query}`)), query).toBe("CONFIG_INVALID");
   });
@@ -255,13 +270,39 @@ describe("stuck work", () => {
     const by = Object.fromEntries(rows(body).map((item) => [item.itemId, item]));
     // The session's own row, now with the request as its blocker and the older of the two times.
     expect(by[s3.sessionId]).toMatchObject({ blocker: "spend", sinceKind: "state", ageHours: 20, nextActor: { kind: "role", role: "admin" }, visibility: "full" });
-    expect(by["spr_00000000000000000002"]).toMatchObject({ visibility: "metadata", project: "ops", blocker: "spend", state: "unknown", stateWords: "Waiting for a budget decision", nextActor: { kind: "role", role: "maintainer" } });
-    expect(Object.keys(by)).not.toContain("spr_00000000000000000003");
+    expect(by[opaque("spr_00000000000000000002")]).toMatchObject({ visibility: "metadata", project: "ops", blocker: "spend", state: "unknown", stateWords: "Waiting for a budget decision", nextActor: { kind: "role", role: "maintainer" } });
+    // The budget request that belongs to no session is a metadata row: its opaque id, and the spending request id appears nowhere in the answer (for the admin, or for a viewer).
+    expect(Object.keys(by)).not.toContain("spr_00000000000000000002");
+    expect(JSON.stringify(body)).not.toContain("spr_0000000000000000000");
+    expect(JSON.stringify(ok(await c.call(c.who.viewer, "GET", "/v1/app/insights/stuck")))).not.toContain("spr_0000000000000000000");
+    expect(Object.keys(by)).not.toContain(opaque("spr_00000000000000000003"));
     expect(body.summary.byBlocker.spend).toBe(2);
     // A maintainer of web sees the request that rides on their session; the month request names ops, so not that one.
     const mine = ok(await c.call(c.who.maintainer, "GET", "/v1/app/insights/stuck"));
-    expect(ids(mine)).not.toContain("spr_00000000000000000002");
-    expect(rows(mine).find((item) => item.itemId === s3.sessionId)?.blocker).toBe("spend");
+    expect(ids(mine)).not.toContain(opaque("spr_00000000000000000002"));
+    expect(rows(mine).find((item) => item.itemId === opaque(s3.sessionId))?.blocker).toBe("spend");
+  });
+
+  it("makes the opaque id stable, different in every company and for every row, and refuses to list without its key", async () => {
+    const { c, s1, s2, other } = stuckWorld();
+    // Stable across requests, and the same work has the same id for every reader who cannot open it.
+    const first = ids(ok(await c.call(c.who.viewer, "GET", "/v1/app/insights/stuck")));
+    expect(ids(ok(await c.call(c.who.viewer, "GET", "/v1/app/insights/stuck")))).toEqual(first);
+    expect(new Set(first).size).toBe(first.length);
+    for (const id of first) expect(id).toMatch(/^itm_[0-9a-f]{32}$/u);
+    // Different in every company (the same raw id in another company gives another token) and under another install key.
+    expect(opaque(s1.sessionId, ORG_B)).not.toBe(opaque(s1.sessionId));
+    expect(opaqueRowId(insightsRowKeyOf("j".repeat(64)), ORG_A, s1.sessionId)).not.toBe(opaque(s1.sessionId));
+    expect(opaque(s1.sessionId)).not.toBe(opaque(s2.sessionId));
+    // Company B's viewer-level reader would see B's own token for B's work, which company A's list never holds.
+    expect(first).not.toContain(opaque(other.sessionId, ORG_B));
+    // No key, no list: a metadata row must never fall back to the raw id.
+    for (const rowKey of [undefined, ""]) {
+      const answer = ok(await c.call(c.who.admin, "GET", "/v1/app/insights/stuck", undefined, { rowKey }));
+      expect(InsightsStuckSchema.parse(answer), String(rowKey)).toMatchObject({ status: "unavailable", items: [], summary: { total: 0 } });
+      expect(JSON.stringify(answer)).not.toContain(s1.sessionId);
+    }
+    expect(() => insightsRowKeyOf(undefined)).toThrow();
   });
 
   it("says when a source is missing instead of failing, and answers unavailable with nothing to read", async () => {
@@ -422,10 +463,12 @@ describe("the viewer grant", () => {
     expect(code(await c.call(c.who.admin, "POST", PATH, body(MAX, "revoke")))).toBe("CONFIG_INVALID");
     expect(c.db.get(orgMemberKey(ORG_A, MIA))).not.toHaveProperty("insightsViewer");
     expect(c.db.get(orgMemberKey(ORG_A, MAX))).toHaveProperty("insightsViewer", true);
-    // A new request for a grant already held, and a revoke of one not held, are 200 and write nothing.
+    // A new request for a grant already held, and a revoke of one not held, are 200: no member changes and no audit event is written (only the request item is: see the no-op test).
+    const memberNow = { ...c.db.get(orgMemberKey(ORG_A, MAX))! }, miaNow = { ...c.db.get(orgMemberKey(ORG_A, MIA))! };
     ok(await c.call(c.who.admin, "POST", PATH, body(MAX, "grant", "22222222-2222-4222-8222-222222222222")));
     ok(await c.call(c.who.admin, "POST", PATH, body(MIA, "revoke", "33333333-3333-4333-8333-333333333333")));
-    expect(writes(c)).toBe(done);
+    expect(c.db.get(orgMemberKey(ORG_A, MAX))).toEqual(memberNow);
+    expect(c.db.get(orgMemberKey(ORG_A, MIA))).toEqual(miaNow);
     expect(events(c)).toHaveLength(audited);
     // A late replay of the first request after the opposite action changes nothing.
     ok(await c.call(c.who.admin, "POST", PATH, body(MAX, "revoke", "44444444-4444-4444-8444-444444444444")));
@@ -434,6 +477,37 @@ describe("the viewer grant", () => {
     ok(await c.call(c.who.admin, "POST", PATH, body(MAX)));
     expect(writes(c)).toBe(afterRevoke);
     expect(c.db.get(orgMemberKey(ORG_A, MAX))).not.toHaveProperty("insightsViewer");
+  });
+
+  it("takes the request id for a no-op too: a grant already held and a revoke of one not held replay with the same body and are refused with another", async () => {
+    const { c } = stuckWorld();
+    const requestItem = (id: string) => c.db.get({ pk: `ORG#${ORG_A}#INSIGHTS_ACCESS_REQUEST`, sk: id });
+    const GRANT_NOOP = "55555555-5555-4555-8555-555555555555", REVOKE_NOOP = "66666666-6666-4666-8666-666666666666";
+    const zed = { ...c.db.get(orgMemberKey(ORG_A, ZED))! }, mia = { ...c.db.get(orgMemberKey(ORG_A, MIA))! };
+    const audited = events(c).length;
+    // ZED already holds the grant; MIA does not. Both are no-ops: 200, the list as it is, no member change, no audit event, but the id is recorded.
+    expect(ok(await c.call(c.who.admin, "POST", PATH, body(ZED, "grant", GRANT_NOOP))).viewers).toHaveLength(1);
+    ok(await c.call(c.who.admin, "POST", PATH, body(MIA, "revoke", REVOKE_NOOP)));
+    expect(requestItem(GRANT_NOOP)).toMatchObject({ action: "grant", requestId: GRANT_NOOP });
+    expect(requestItem(REVOKE_NOOP)).toMatchObject({ action: "revoke", requestId: REVOKE_NOOP });
+    expect(c.db.get(orgMemberKey(ORG_A, ZED))).toEqual(zed);
+    expect(c.db.get(orgMemberKey(ORG_A, MIA))).toEqual(mia);
+    expect(events(c)).toHaveLength(audited);
+    // Positive control: the id with the same body replays (200, nothing more written) ...
+    const done = writes(c);
+    ok(await c.call(c.who.admin, "POST", PATH, body(ZED, "grant", GRANT_NOOP)));
+    ok(await c.call(c.who.admin, "POST", PATH, body(MIA, "revoke", REVOKE_NOOP)));
+    expect(writes(c)).toBe(done);
+    // ... and with another person or another action it is refused, and the grant that would have followed does not happen.
+    expect(code(await c.call(c.who.admin, "POST", PATH, body(MIA, "grant", GRANT_NOOP)))).toBe("CONFIG_INVALID");
+    expect(code(await c.call(c.who.admin, "POST", PATH, body(ZED, "revoke", GRANT_NOOP)))).toBe("CONFIG_INVALID");
+    expect(code(await c.call(c.who.admin, "POST", PATH, body(MIA, "grant", REVOKE_NOOP)))).toBe("CONFIG_INVALID");
+    expect(c.db.get(orgMemberKey(ORG_A, MIA))).not.toHaveProperty("insightsViewer");
+    expect(c.db.get(orgMemberKey(ORG_A, ZED))).toHaveProperty("insightsViewer", true);
+    // The no-op does not skip the actor's live check: a demoted actor writes nothing.
+    c.db.set({ ...c.db.get(orgMemberKey(ORG_A, OLA))!, role: "member" });
+    expect(code(await c.call(c.who.admin, "POST", PATH, body(ZED, "grant", "77777777-7777-4777-8777-777777777777")))).toBe("FORBIDDEN");
+    expect(requestItem("77777777-7777-4777-8777-777777777777")).toBeUndefined();
   });
 
   it("revokes at the next request and audits it", async () => {

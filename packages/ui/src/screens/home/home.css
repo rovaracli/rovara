@@ -25,7 +25,8 @@
 .rv-hv2-main h3 a{display:inline-flex;align-items:center;min-height:44px}
 .rv-hv2-line{margin:var(--rv-space-1) 0 0;max-width:64ch;color:var(--rv-text-muted);overflow-wrap:anywhere}
 .rv-hv2-meta{overflow-wrap:anywhere}
-.rv-hv2-state{display:inline-flex;align-items:center;gap:var(--rv-space-2);padding:2px var(--rv-space-3);border:1px solid var(--rv-border-strong);border-radius:var(--rv-radius-lg);background:var(--rv-bg-sunken);color:var(--rv-text);font-weight:600;white-space:nowrap}
+/* A plain state is status text (a dot and words), not a bordered pill: nothing about it looks pressable. */
+.rv-hv2-state{display:inline-flex;align-items:center;gap:var(--rv-space-2);color:var(--rv-text);font-weight:600;white-space:nowrap}
 .rv-hv2-dot{width:8px;height:8px;border-radius:50%;background:var(--rv-status-stopped);flex-shrink:0}
 .rv-hv2-state[data-tone=attention] .rv-hv2-dot{background:var(--rv-status-needs-you)}
 .rv-hv2-state[data-tone=danger] .rv-hv2-dot{background:var(--rv-status-failed)}

@@ -5,8 +5,9 @@ import { INSIGHTS_ACCESS_BROWSER_MESSAGE, INSIGHTS_ACCESS_PATH, isInsightsPath, 
 import type { StatusReply } from "../status-reply.js";
 import type { AdaptedHttpRequest } from "../lambda.js";
 import { ledgerGrantLookup } from "../../insights/granters.js";
+import { insightsRowKeyOf } from "../../insights/row-id.js";
 import { projectMembersOf } from "./project-list.js";
-import { sessionReadDependencies } from "./dependencies.js";
+import { sessionDependenciesOf, sessionReadDependencies } from "./dependencies.js";
 import type { DeveloperCaller, DeveloperRouteDependencies } from "./types.js";
 
 export { INSIGHTS_ACCESS_BROWSER_MESSAGE, INSIGHTS_ACCESS_PATH };
@@ -14,9 +15,13 @@ export { INSIGHTS_ACCESS_BROWSER_MESSAGE, INSIGHTS_ACCESS_PATH };
 export function insightsDependenciesOf(deps: DeveloperRouteDependencies, caller: DeveloperCaller): InsightsDependencies {
   let sessions: InsightsDependencies["sessions"];
   try { sessions = sessionReadDependencies(deps, caller); } catch { sessions = undefined; }
+  // The key for a metadata row's opaque id comes from the same install secret the session list cursor is sealed with; with none, the stuck list refuses (never falls back to raw ids).
+  const secret = sessionDependenciesOf(deps)?.cursorKey;
+  let rowKey: string | undefined;
+  try { rowKey = insightsRowKeyOf(secret); } catch { rowKey = undefined; }
   return {
     documentClient: deps.documentClient, tableName: deps.tableName, now: deps.now, signInTableName: deps.developer.signInTableName,
-    projectMembers: deps.agents?.projectMembers ?? projectMembersOf(deps), sessions,
+    projectMembers: deps.agents?.projectMembers ?? projectMembersOf(deps), sessions, rowKey,
     ...(deps.audit === undefined ? {} : { audit: deps.audit }), ...(deps.auditLedger === undefined ? {} : { grantedBy: ledgerGrantLookup(deps.auditLedger) }), ...(deps.cloud === true ? { cloud: true } : {}),
   };
 }

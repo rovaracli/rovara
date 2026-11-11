@@ -229,6 +229,8 @@ export const BROKER_SETTINGS = {
   webFeatures: { code: "wf", variable: "WEB_FEATURES" },
   // 0.5.7: the hosted cloud's custom domain name (empty when none). With a name the broker takes `https://<name>/v1/auth` as the sign-in issuer and the API's own address as the previous one.
   customDomain: { code: "cd", variable: "DEVELOPER_CUSTOM_DOMAIN" },
+  // Lane U5 (runtime UI flags): the install operator's override, stack parameter UiFlagsForceOff (`none` by default; `all`, or flag names joined by `-`). It forces those screens off for every company and wins over a company's own switch and over previews (contracts/ui-flags.ts `uiFlagsForcedOff`).
+  uiFlagsForceOff: { code: "uo", variable: "UI_FLAGS_FORCE_OFF" },
   // Billing (lane srv/trial-reads, decision 91, switch `bl`): the owner and admin billing routes (`/v1/app/org/billing*`). The broker reads BILLING_ENABLED and it is on only when it is exactly "1"; off (absent, empty, anything else) every billing path answers not found. The infrastructure half (a stack parameter BillingEnabled, "0" by default, packed into AGENTX_SETTINGS; see the feature-switch recipe in docs/architecture/code-map.md) is NOT wired yet, so a deployed install reads it as off. Do not turn this on before the billing provider exists: the routes would answer `available: false`.
   billing: { code: "bl", variable: "BILLING_ENABLED" },
 } as const satisfies Record<string, BrokerSettingSpec>;

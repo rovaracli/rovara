@@ -8,6 +8,7 @@
 // decided, needs the confirmation page (a fresh sign-in), or refused. Only a decided answer is recorded and reported as approved; a surface never says "Approved" for anything else.
 // Mounting is one call (routeDecisionCards).
 import { DECISION_CARDS_MAX, DECISION_RUN_LIMIT_KINDS, DecisionApproveBodySchema, DecisionCardIdSchema, DecisionOpenedBodySchema, DecisionRejectBodySchema, DecisionRequestChangesBodySchema, agentXError, approveReasonProblem, planChoicesProblem, type DecisionPlanAnswer, type DecisionAnswered, type DecisionCard, type DecisionCardsView, type DecisionEvidenceOpenedAnswer, type DecisionNeedsConfirmation, type DecisionRefusalReason, type DecisionRejectReason, type DecisionTab, type DecisionTabId } from "@rovara-code/contracts";
+import { DecisionDismissBodySchema, type DecisionDismissed } from "@agentx/cloud-contracts";
 import { StatusReply } from "../aws/status-reply.js";
 import { decisionMadeMeasure, type DecisionMeasure } from "./measures.js";
 import { projectDecisionCards, type DecisionItem, type Projection, type Subject } from "./project.js";
@@ -78,9 +79,13 @@ export interface DecisionRouteDependencies<C extends DecisionCaller = DecisionCa
   onEvidenceOpened?: ((caller: C, subject: Subject) => Promise<void>) | undefined;
 }
 
-export interface DecisionRequest { method: string; pathname: string; searchParams: URLSearchParams; body: unknown }
+export interface DecisionRequest {
+  method: string; pathname: string; searchParams: URLSearchParams; body: unknown;
+  /** Approval place (U4): set ONLY by the Slack press (`pressToRequest`), never by a client body: the press came from a chat. A medium coding plan may then be approved from the message itself (the message shows its evidence; the policy checks the person is linked and recently signed in) and "Not now" is a dismissal. */
+  surface?: "chat";
+}
 
-const PATH = /^\/v1\/app\/decisions(?:\/([a-z_]+\/[A-Za-z0-9_-]{1,150})\/(approve|reject|evidence-opened|request-changes))?$/u;
+const PATH = /^\/v1\/app\/decisions(?:\/([a-z_]+\/[A-Za-z0-9_-]{1,150})\/(approve|reject|evidence-opened|request-changes|dismiss))?$/u;
 const ISSUE = (error: { issues: ReadonlyArray<{ path: PropertyKey[]; message: string }> }): never => {
   const issue = error.issues[0];
   // Field names only: the values are the caller's.
@@ -223,6 +228,10 @@ export async function routeDecisionCards<C extends DecisionCaller>(deps: Decisio
     }
     const pending = pendingCard(await project(deps, caller), cardId);
     const { card, tabs } = pending;
+    // A chat press may approve a MEDIUM coding plan (the policy then checks the person is linked and recently signed in); any other medium card is approved in the app, as before.
+    const inChat = request.surface === "chat";
+    // Slack says "open the evidence on the web first, then approve it there", which is true of these.
+    if (inChat && card.risk === "medium" && card.kind !== "approve_plan") throw agentXError("CHANGE_STALE", DECISION_OPEN_FIRST_MESSAGE);
     // High: there is no approve route for it, whatever the card or a client says; except a kind whose handler asks for the recent sign-in itself (`highOnCard`), decided on its card on the task page.
     const highOnCard = card.risk === "high" && deps.highOnCard?.has(card.kind) === true;
     if ((card.risk === "high" && !highOnCard) || (!highOnCard && !card.actions.some((action2) => action2.kind === "approve"))) throw agentXError("NOT_FOUND", DECISION_FULL_PAGE_MESSAGE);
@@ -241,7 +250,8 @@ export async function routeDecisionCards<C extends DecisionCaller>(deps: Decisio
     if (body.data.acknowledgedRunLimitUsd !== undefined && !DECISION_RUN_LIMIT_KINDS.includes(acting.item.kind)) throw agentXError("CONFIG_INVALID", "acknowledgedRunLimitUsd: this card sets no run limit");
     let openedAt: string | undefined;
     // A high card decided on its card has the recent sign-in as its check (its handler asks for it), not the evidence record a medium card needs.
-    if (card.friction.expandEvidenceFirst && (!highOnCard || deps.evidenceFirstOnHigh?.has(card.kind) === true)) {
+    // The Slack message of a coding plan shows the evidence itself, so a chat press has nothing to open first (the only medium card a chat press gets this far with); every other press does.
+    if (card.friction.expandEvidenceFirst && !inChat && (!highOnCard || deps.evidenceFirstOnHigh?.has(card.kind) === true)) {
       openedAt = await deps.store.evidenceOpenedAt({ ...who, cardId, tab: body.data.tab }, pending.digest);
       if (openedAt === undefined) throw agentXError("CHANGE_STALE", DECISION_OPEN_FIRST_MESSAGE);
     }
@@ -252,6 +262,17 @@ export async function routeDecisionCards<C extends DecisionCaller>(deps: Decisio
     await remember(deps, { ...who, cardId: acting.card.id, kind: acting.card.kind, risk: acting.card.risk, outcome: "approved", tab: body.data.tab, requestId: body.data.requestId, createdAt: acting.card.createdAt, openedAt, decidedAt });
     emit(deps, decisionMadeMeasure(who, acting.card, { outcome: "approved", createdAt: acting.card.createdAt, at: decidedAt }));
     const answer: DecisionAnswered = { cardId, outcome: "approved", ...(body.data.tab === undefined ? {} : { tab: body.data.tab }), remainingTabs: tabsPending(tabs).filter((tab) => tab !== body.data.tab) };
+    return new StatusReply(200, answer);
+  }
+
+  if (action === "dismiss") {
+    // "Not now" from a chat (approval place, A-49): the card stays waiting; only the person's dismissal is remembered. It needs the card to be the caller's, pending and as shown, but no authority to decide it, and it never reaches a performer.
+    const body = DecisionDismissBodySchema.safeParse(request.body);
+    if (!body.success) return ISSUE(body.error);
+    const pending = pendingCard(await project(deps, caller), cardId);
+    if (body.data.shownDigest !== pending.digest) throw agentXError("CHANGE_STALE", DECISION_CHANGED_MESSAGE);
+    await deps.store.recordDismissal?.({ ...who, cardId, digest: pending.digest, requestId: body.data.requestId, at: nowIso() });
+    const answer: DecisionDismissed = { cardId, outcome: "dismissed" };
     return new StatusReply(200, answer);
   }
 

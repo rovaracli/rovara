@@ -3,6 +3,7 @@
 // field and the cell's own Origin authorize them, all checked by `requireDecideSession`. A bearer token reaching either route gets
 // REAUTH_REQUIRED with a ticketed confirmUrl, as JSON, from the broker's usual error answer.
 import { AgentXError, agentXError, type OrgId } from "@rovara-code/contracts";
+import { AGENT_PUBLISH_NOTE_MAX } from "@agentx/cloud-contracts";
 import { confirmPage, decidedPage, forbiddenPage, notFoundPage, reauthPage, refusedPage, resultPage, type PageResponse } from "../developer/confirm-page.js";
 import { kindPrefixOf, mayDecide, type DecideKind } from "../developer/decide-kinds.js";
 import {
@@ -13,7 +14,8 @@ import type { AdaptedHttpRequest } from "./lambda.js";
 import { decisionCardsEnabled } from "../proof/switch.js";
 
 const APPROVE_PATH = /^\/v1\/app\/approve\/([^/]+)$/;
-const MAX_FORM_BYTES = 2_048;
+// Room for the decline reason (300 characters, up to 12 bytes each once percent-encoded) beside the decision and the CSRF field.
+const MAX_FORM_BYTES = 8_192;
 const NO_STORE = { "cache-control": "no-store", "referrer-policy": "same-origin", "cross-origin-opener-policy": "same-origin" };
 
 /** Whether the path belongs to the confirmation page (`/v1/app/approve/...`); the caller answers anything else. */
@@ -95,9 +97,24 @@ async function showPage(context: DecideRequestContext, request: DecideRequest, a
   return confirmPage(inspection.view, { approvalId, csrf: csrfTokenFor(cookie) });
 }
 
+/**
+ * The decline reason from the form: no reason when empty, not valid when longer than 300 characters (code points) or holding a control or format character other than a line
+ * break or a tab (line breaks and tabs become spaces).
+ */
+function reasonOf(raw: string | null): { valid: true; reason?: string } | { valid: false } {
+  if (raw === null) return { valid: true };
+  const folded = raw.replace(/\r\n|[\r\n\t]/gu, " ").trim();
+  if (folded === "") return { valid: true };
+  if ([...folded].length > AGENT_PUBLISH_NOTE_MAX || /[\p{Cc}\p{Cf}]/u.test(folded)) return { valid: false };
+  return { valid: true, reason: folded };
+}
+
 async function decide(context: DecideRequestContext, request: DecideRequest, approvalId: string): Promise<PageResponse> {
   if (request.body === undefined || Buffer.byteLength(request.body, "utf8") > MAX_FORM_BYTES) return refusedPage(400, "Nothing was decided", "The form is missing or too large. Open the approval again.");
-  const decision = new URLSearchParams(request.body).get("decision");
+  const form = new URLSearchParams(request.body);
+  const decision = form.get("decision");
+  const given = reasonOf(form.get("reason"));
+  const reason = given.valid ? given.reason : undefined;
   let authority: Awaited<ReturnType<typeof requireDecideSession>>;
   try {
     authority = await requireDecideSession(context, request);
@@ -112,6 +129,8 @@ async function decide(context: DecideRequestContext, request: DecideRequest, app
   let end: DecisionEnd = "refused";
   try {
     if (decision !== "approve" && decision !== "decline") return refusedPage(400, "Nothing was decided", "Choose Approve or Decline. Open the approval again.");
+    // The reason is read only for a decline: whatever the text area holds never blocks an approval.
+    if (decision === "decline" && !given.valid) return refusedPage(400, "Nothing was decided", `The reason can be at most ${String(AGENT_PUBLISH_NOTE_MAX)} characters of plain text. Go back, shorten it and decide again.`);
     const target = { orgId: authority.orgId, developerId: authority.developerId, approvalId };
     const prefix = kindPrefixOf(approvalId);
     const kind: DecideKind | undefined = prefix === undefined ? undefined : context.kinds[prefix];
@@ -122,7 +141,8 @@ async function decide(context: DecideRequestContext, request: DecideRequest, app
     if (inspection.status === "decided" || inspection.status === "expired") return decidedPage(endedWords(inspection), inspection.status);
     if (await cardDecisionReturn(context, target) !== undefined) return refusedPage(409, "Nothing was decided", "Decide this on its card in the task.");
     try {
-      const outcome = await kind.decide(target, decision, authority.proof);
+      // Only a decline carries the reason; on an approval it is ignored.
+      const outcome = await kind.decide(target, decision, authority.proof, decision === "decline" && reason !== undefined ? { reason } : undefined);
       end = "decided";
       return resultPage(outcome.title ?? (decision === "approve" ? "Approved" : "Declined"), outcome.message,outcome.refusal?.fixHref);
     } catch (error) {

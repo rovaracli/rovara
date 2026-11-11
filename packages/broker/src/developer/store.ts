@@ -74,7 +74,10 @@ export type SignInTransactItem = NonNullable<ConstructorParameters<typeof Transa
  */
 export interface IdentityLinkRecord {
   developerId: string; provider: DeveloperSignInMethod; issuer: string; subject: string; email?: string; login?: string;
-  linkedAt: string; lastSignInAt: string; unlinkedFrom?: string; unlinkedAt?: string;
+  linkedAt: string; lastSignInAt: string;
+  /** When the provider says the person last authenticated THERE (its `auth_time` claim, as an ISO time never later than the sign-in), when it sends one. `lastSignInAt` is touched at every completed sign-in, a silent single sign-on renewal included; this is not, so it is what a company sign-in counts as a recent sign-in (approval place). Absent: the provider sent none. */
+  lastAuthTime?: string;
+  unlinkedFrom?: string; unlinkedAt?: string;
   /** Plan 2, Task 8b: set when the person added the identity back: who (the developer, under their fresh session), when, and the method that session signed in with. */
   relinkedBy?: string; relinkedAt?: string; relinkedWith?: DeveloperSignInMethod;
 }
@@ -729,6 +732,26 @@ export class DeveloperSignInStore {
     return link === undefined || (link.unlinkedFrom !== undefined && link.developerId !== ownerKeyForSubject(SLACK_OIDC_ISSUER, slackUserId)) ? undefined : link.developerId;
   }
 
+  /**
+   * Approval place (U4, A-09): when the person last signed in INTERACTIVELY to Rovara by one of `methods`, as an ISO time, or undefined. Per active identity link of those methods the time is:
+   *   - an email-code sign-in (`cloud`): `lastSignInAt`, written at a completed sign-in and never by a refresh (the person typed a fresh code);
+   *   - a company sign-in (`oidc`, `saml`): `lastAuthTime`, the provider's own `auth_time`, because `lastSignInAt` is touched by a silent single sign-on renewal too. A provider that sent no `auth_time` leaves none, and then the sign-in
+   *     does not count: the person is asked to sign in again (fail closed).
+   * Any other method counts `lastSignInAt` (the caller's list decides what counts at all; Slack and GitHub are not in it: decision Q3). An unlinked identity does not count (`activeIdentityItems`); an unreadable time is skipped.
+   */
+  async lastInteractiveSignInAt(developerId: string, methods: readonly DeveloperSignInMethod[]): Promise<string | undefined> {
+    let newest: { at: number; iso: string } | undefined;
+    for (const link of await this.activeIdentityItems(developerId)) {
+      if (!methods.includes(link.provider)) continue;
+      const stamp = link.provider === "oidc" || link.provider === "saml" ? link.lastAuthTime : link.lastSignInAt;
+      if (stamp === undefined) continue;
+      const at = Date.parse(stamp);
+      if (!Number.isFinite(at)) continue;
+      if (newest === undefined || at > newest.at) newest = { at, iso: new Date(at).toISOString() };
+    }
+    return newest?.iso;
+  }
+
   /** The identities linked to a developer, oldest link first. Issuer and subject never leave the store. */
   async identitiesOf(developerId: string): Promise<LinkedIdentity[]> {
     return (await this.activeIdentityItems(developerId)).map((link) => ({
@@ -973,13 +996,15 @@ export class DeveloperSignInStore {
   }
 
   /** Records a sign-in on the identity's link, on both items. Nothing happens for an identity with no active link. */
-  async touchIdentity(identityKey: string): Promise<void> {
+  async touchIdentity(identityKey: string, providerAuthTime?: number): Promise<void> {
     const link = await this.getIdentityLink(identityKey);
     if (link === undefined || !isActiveLink(link, identityKey)) return;
     const at = this.iso();
+    // The provider's own `auth_time` (epoch seconds), never later than now; one that is not a plain number is none (a link keeps the last good one).
+    const authAt = typeof providerAuthTime === "number" && Number.isFinite(providerAuthTime) && providerAuthTime > 0 ? new Date(Math.min(Date.parse(at), Math.round(providerAuthTime * 1000))).toISOString() : undefined;
     const update = (key: { pk: string; sk: string }) => ({ Update: {
-      TableName: this.input.tableName, Key: key, UpdateExpression: "SET lastSignInAt = :at",
-      ConditionExpression: "attribute_exists(pk) AND developerId = :d", ExpressionAttributeValues: { ":at": at, ":d": link.developerId },
+      TableName: this.input.tableName, Key: key, UpdateExpression: authAt === undefined ? "SET lastSignInAt = :at" : "SET lastSignInAt = :at, lastAuthTime = :auth",
+      ConditionExpression: "attribute_exists(pk) AND developerId = :d", ExpressionAttributeValues: { ":at": at, ":d": link.developerId, ...(authAt === undefined ? {} : { ":auth": authAt }) },
     } });
     try {
       await this.input.documentClient.send(new TransactWriteCommand({

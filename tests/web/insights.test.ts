@@ -10,7 +10,7 @@ import { createQueryClient } from "../../packages/ui/src/api/query.js";
 import { ThemeProvider } from "../../packages/ui/src/theme.js";
 import { isInsightsOn, INSIGHTS_STORAGE_KEY } from "../../packages/ui/src/screens/insights/insights-flags.js";
 import { ageWords, barPercent, durationWords, nextActorWords, notCoveredWords, notReadyWords, rateWords, recentMonths } from "../../packages/ui/src/screens/insights/insights-format.js";
-import { InsightsOverviewReaderSchema, InsightsSpendReaderSchema, InsightsStuckReaderSchema } from "../../packages/ui/src/api/insights.js";
+import { InsightsOverviewReaderSchema, InsightsSpendReaderSchema, InsightsStuckReaderSchema } from "@agentx/cloud-contracts/web";
 import { currentDestination, destinationsFor } from "../../packages/ui/src/shell/destinations.js";
 import { fakeHost } from "./support/fake-host.js";
 import { renderUi } from "./support/render.js";
@@ -20,6 +20,9 @@ import { expectNoAxeViolations } from "./support/axe.js";
 const features = { localAgents: false, usage: false, admin: true, chains: false, notices: false, describe: false };
 const ME = "a".repeat(64), MAYA = "b".repeat(64), SAM = "c".repeat(64), DANA = "d".repeat(64);
 const ASOF = "2026-11-11T12:00:00.000Z";
+// What the server sends: a session id on a row the reader can open, an opaque `itm_...` id on a metadata row (never a session id), and a link only on an openable row, in the server's `/app/sessions/<id>` shape.
+const SES_A = "ses_" + "a".repeat(20), SES_B = "ses_" + "b".repeat(20), OPAQUE_B = "itm_" + "e".repeat(32), SPR = "spr_" + "1".repeat(20);
+const LINK_A = "https://app.example/app/sessions/" + SES_A;
 const nav = (orgRole = "owner"): AppNav => AppNavSchema.parse({ me: { developerId: ME, name: "Priya", orgRole }, org: { name: "Acme" }, homeCount: 0, projects: [], shared: { agents: [], sessions: [] }, features });
 const coverage = { sources: ["sessions"], notCovered: ["plan_reviews", "merge_readiness"], partial: false, truncated: false };
 type Via = "owner" | "admin" | "viewer_grant" | "maintainer";
@@ -30,15 +33,18 @@ function overview(options: { role?: string; via?: Via[]; projects?: string[]; sh
   capture: { workEvents: "off", since: null, retentionMonths: 13 }, asOf: ASOF };
 }
 const stuck = (extra: Record<string, unknown> = {}) => ({ status: "ready", asOf: ASOF, coverage, summary: { total: 2, over24h: 2, over72h: 1, byNextActorKind: { person: 2, unknown: 0 }, byBlocker: { review: 1, decision: 1 } }, items: [
- { itemId: "ses_" + "a".repeat(20), project: "payments", blocker: "decision", state: "needs_you", stateWords: "Needs you", nextActor: { kind: "person", name: "Maya Chen", role: "reviewer" }, since: "2026-11-10T10:00:00.000Z", sinceKind: "last_update", ageHours: 26, visibility: "full", title: "Retry the payment webhook", reason: "the checks didn't pass", link: "https://app.example/s/ses_" + "a".repeat(20), owner: { id: ME, name: "Priya Shah" } },
- { itemId: "ses_" + "b".repeat(20), project: "web", blocker: "review", state: "needs_you", stateWords: "Needs you", nextActor: { kind: "person", name: "Dana Wu" }, since: "2026-11-07T10:00:00.000Z", sinceKind: "last_update", ageHours: 98, visibility: "metadata", owner: { id: SAM, name: "Sam Lee" } },
+ { itemId: SES_A, project: "payments", blocker: "decision", state: "needs_you", stateWords: "Needs you", nextActor: { kind: "person", name: "Maya Chen", role: "reviewer" }, since: "2026-11-10T10:00:00.000Z", sinceKind: "last_update", ageHours: 26, visibility: "full", title: "Retry the payment webhook", reason: "the checks didn't pass", link: LINK_A, owner: { id: ME, name: "Priya Shah" } },
+ { itemId: OPAQUE_B, project: "web", blocker: "review", state: "needs_you", stateWords: "Needs you", nextActor: { kind: "person", name: "Dana Wu" }, since: "2026-11-07T10:00:00.000Z", sinceKind: "last_update", ageHours: 98, visibility: "metadata", owner: { id: SAM, name: "Sam Lee" } },
  ], ...extra });
-const shippedAnswer = { status: "collecting", collectingSince: "2026-11-16T00:00:00.000Z", weeks: [{ weekStart: "2026-11-09", shipped: 12, byProject: [{ project: "payments", shipped: 7, items: [{ itemId: "ses_" + "a".repeat(20), mergedAt: "2026-11-10T09:00:00.000Z", visibility: "full", title: "Fix refunds", prs: [{ repository: "acme/api", number: 412, url: "https://github.com/acme/api/pull/412" }], tickets: [{ key: "PAY-9", url: "https://linear.app/acme/issue/PAY-9" }] }, { itemId: "ses_" + "b".repeat(20), mergedAt: "2026-11-10T10:00:00.000Z", visibility: "metadata" }] }] }] };
+const shippedAnswer = { status: "collecting", collectingSince: "2026-11-16T00:00:00.000Z", weeks: [{ weekStart: "2026-11-09", shipped: 12, byProject: [{ project: "payments", shipped: 7, items: [{ itemId: SES_A, mergedAt: "2026-11-10T09:00:00.000Z", visibility: "full", title: "Fix refunds", prs: [{ repository: "acme/api", number: 412, url: "https://github.com/acme/api/pull/412" }], tickets: [{ key: "PAY-9", url: "https://linear.app/acme/issue/PAY-9" }] }, { itemId: OPAQUE_B, mergedAt: "2026-11-10T10:00:00.000Z", visibility: "metadata" }] }] }] };
 const spendAnswer = (extra: Record<string, unknown> = {}) => ({ month: "2026-11", status: "ready", scope: "company", totals: { spentUsd: 412.5, committedUsd: 431, limitUsd: 500 }, byProject: [{ project: "payments", spentUsd: 210.2, committedUsd: 218, limitUsd: 300, people: 1, shipped: null, costPerShippedUsd: null }, { project: "web", spentUsd: 100, committedUsd: 100, people: null, shipped: null, costPerShippedUsd: null }], outcomes: { status: "collecting" }, ...extra });
+/** A maintainer's spend answer as the server sends it: `totals` and `byPerson` are ABSENT (not empty, not undefined). */
+const maintainerSpend = () => { const answer: Record<string, unknown> = spendAnswer({ scope: "projects" }); delete answer["totals"]; return answer; };
 const person = [{ developerId: MAYA, name: "Maya Chen", spentUsd: 88.1, limitUsd: 29 }];
-const flowAnswer = { days: 30, status: "collecting", collectingSince: "2026-11-01T00:00:00.000Z", minSamples: 5, company: { items: 3, enough: false }, byProject: [] };
+// The server answers `unavailable` with NO company block until the work-event capture exists; a block (with `enough`) comes only with status "ready".
+const flowAnswer = { days: 30, status: "unavailable", collectingSince: null, minSamples: 5, byProject: [] };
 const members = { members: [{ developerId: ME, name: "Priya", role: "owner" }, { developerId: MAYA, name: "Maya Chen", role: "member" }, { developerId: SAM, name: "Sam Lee", role: "member" }, { developerId: DANA, name: "Dana Wu", role: "auditor" }] };
-const accessList = (viewers: Array<{ id: string; name: string }>) => ({ viewers: viewers.map(v => ({ person: v, grantedBy: { id: ME, name: "Priya" }, grantedAt: "2026-11-10T09:00:00.000Z" })), eligibleCount: 2 });
+const accessList = (viewers: Array<{ id: string; name: string }>, grantedBy: { id: string; name: string } | null = { id: ME, name: "Priya" }) => ({ viewers: viewers.map(v => ({ person: v, ...(grantedBy === null ? {} : { grantedBy }), grantedAt: "2026-11-10T09:00:00.000Z" })), eligibleCount: 2 });
 type Answer = ApiResponse | ((request: ApiRequest) => ApiResponse);
 type Answers = Record<string, Answer>;
 const forbidden: ApiResponse = { status: 403, body: { error: { code: "FORBIDDEN", message: "You can't see Insights." } } };
@@ -150,7 +156,7 @@ describe("who sees what (role scopes)", () => {
   }
  });
  it("maintainer: their projects, with a project filter that narrows every read", async () => {
-  const f = mount({ role: "member", overview: { role: "member", via: ["maintainer"], projects: ["payments", "web"], perPerson: false }, answers: { "/v1/app/insights/spend": { status: 200, body: spendAnswer({ scope: "projects", totals: undefined }) } } });
+  const f = mount({ role: "member", overview: { role: "member", via: ["maintainer"], projects: ["payments", "web"], perPerson: false }, answers: { "/v1/app/insights/spend": { status: 200, body: maintainerSpend() } } });
   try {
    await screen.findByRole("heading", { name: "Stuck work" });
    expect(screen.getByText(/Showing the projects you maintain: payments, web\./)).toBeTruthy();
@@ -209,8 +215,31 @@ describe("stuck work", () => {
    await stuckPanel.findByText("You can see that it exists and its state, not its content.");
    const links = stuckPanel.getAllByRole("link");
    expect(links).toHaveLength(1);
-   expect(links[0]!.getAttribute("href")).toBe("/app/sessions/ses_" + "a".repeat(20));
+   expect(links[0]!.getAttribute("href")).toBe("/app/sessions/" + SES_A);
    expect(screen.getAllByText("You can see that it exists and its state, not its content.")).toHaveLength(1);
+  } finally { f.close(); }
+ });
+ it("never builds a session link from an item id: only the row's own link, and only on a row the reader can open", async () => {
+  const full = stuck().items[0]!, metadata = stuck().items[1]!;
+  const rows = [
+   { ...full, itemId: "itm_" + "f".repeat(32), title: "Opaque id, own link" },                       // the id is no session id: the link comes from `link`
+   { ...full, itemId: SES_B, title: "Session id, no link", link: undefined },                        // a valid session id but no link: no link
+   { ...metadata, itemId: SES_A, link: LINK_A },                                                      // metadata with a link (defensive) and a session-id-shaped id: no link
+   { ...metadata, itemId: SPR, project: "No project" },                                               // a spending request row: shown, no link
+   { ...full, itemId: "itm_" + "1".repeat(32), title: "Own link off the app's session pages", link: "https://app.example/app/projects/payments" },
+   { ...full, itemId: "itm_" + "2".repeat(32), title: "Own link not http", link: "javascript:alert(1)" },
+   { ...full, itemId: "itm_" + "3".repeat(32), title: "Own link with a query", link: LINK_A + "?next=//evil.example" },
+  ];
+  const f = mount({ answers: { "/v1/app/insights/stuck": { status: 200, body: stuck({ items: rows }) } } });
+  try {
+   const stuckPanel = await panel("Stuck work");
+   await stuckPanel.findByText("Opaque id, own link");
+   const links = stuckPanel.getAllByRole("link");
+   expect(links.map(link => link.getAttribute("href"))).toEqual(["/app/sessions/" + SES_A]);
+   expect(links[0]!.closest("li")!.textContent).toContain("Opaque id, own link");
+   // Every row is still there: the ones without a link are shown without one.
+   expect(stuckPanel.getAllByRole("listitem").filter(row => row.classList.contains("rv-ins-row"))).toHaveLength(rows.length);
+   expect(stuckPanel.getByText("Session id, no link")).toBeTruthy();
   } finally { f.close(); }
  });
  it("a row whose visibility the screen does not know is treated as metadata (no content shown)", async () => {
@@ -229,7 +258,7 @@ describe("stuck work", () => {
   try {
    const stuckPanel = await panel("Stuck work");
    await stuckPanel.findByText("Not known yet", { selector: "dd" });
-   expect(stuckPanel.getByText("Not shown yet")).toBeTruthy();
+   expect(stuckPanel.getByText("No owner recorded")).toBeTruthy();
    expect(stuckPanel.getByText("Does not include: plan reviews, merge readiness.")).toBeTruthy();
    expect(stuckPanel.getByText(/Some sources did not answer/)).toBeTruthy();
    expect(stuckPanel.getByText(/more open work than Rovara can list/)).toBeTruthy();
@@ -273,6 +302,20 @@ describe("spend vs outcomes", () => {
    // The one-person project gets its "1 person" note, not a name.
    expect(spend.getAllByText("1 person").length).toBeGreaterThan(0);
    expect(spend.getByText(/total is that one person's spend/)).toBeTruthy();
+  } finally { f.close(); }
+ });
+ it("a maintainer's answer has no totals and no byPerson: the project table only, no person column, no company line", async () => {
+  expect("totals" in maintainerSpend()).toBe(false);
+  expect("byPerson" in InsightsSpendReaderSchema.parse(maintainerSpend())).toBe(false);
+  expect("totals" in InsightsSpendReaderSchema.parse(maintainerSpend())).toBe(false);
+  const f = mount({ role: "member", overview: { role: "member", via: ["maintainer"], projects: ["payments", "web"], perPerson: false }, answers: { "/v1/app/insights/spend": { status: 200, body: maintainerSpend() } } });
+  try {
+   const spend = await panel("Spend vs outcomes");
+   const table = await spend.findByRole("table", { name: "Spending and outcomes by project" });
+   expect(within(table).getByText("payments")).toBeTruthy();
+   expect(spend.queryByRole("table", { name: "Spending by person" })).toBeNull();
+   expect(spend.queryByText("Person", { selector: "th" })).toBeNull();
+   expect(spend.queryByText("Held for work in progress", { selector: "dt" })).toBeNull();
   } finally { f.close(); }
  });
  it("draws the person table when byPerson is present", async () => {
@@ -362,13 +405,36 @@ describe("shipped outcomes and flow health: collecting and unavailable", () => {
   } finally { f.close(); }
  });
  it("flow health with too few items says 'Not enough work yet' and draws no figures", async () => {
-  const f = mount({ overview: { flow: "collecting" } });
+  const f = mount({ overview: { flow: "ready" }, answers: { "/v1/app/insights/flow": { status: 200, body: { ...flowAnswer, status: "ready", company: { items: 3, enough: false } } } } });
   try {
    const flow = await panel("Flow health");
-   await flow.findByText(/Collecting data since Nov 1, 2026/);
+   await flow.findByText(/3 items so far/);
    expect(flow.getAllByText("Not enough work yet").length).toBe(5);
    expect(flow.queryByText(/0 of 0|NaN/)).toBeNull();
    expect(flow.queryByRole("list", { name: /Typical wait/ })).toBeNull();
+  } finally { f.close(); }
+ });
+ it("flow and shipped answers the server really gives while the capture is not built: unavailable, no company block, no weeks; the honest state is shown and no figure", async () => {
+  const f = mount({ overview: { flow: "ready", shipped: "ready", since: "2026-11-01T00:00:00.000Z" }, answers: { "/v1/app/insights/shipped": { status: 200, body: { status: "unavailable", collectingSince: null, weeks: [] } } } });
+  try {
+   const flow = await panel("Flow health");
+   await waitFor(() => { expect(calls(f, "/v1/app/insights/flow").length).toBe(1); });
+   await flow.findByText("Not available yet.");
+   expect(flow.queryByRole("definition")).toBeNull();
+   expect(flow.queryByText(/of \d|NaN|undefined|Not enough work yet/)).toBeNull();
+   expect(flow.queryByRole("table")).toBeNull();
+   const shipped = await panel("Shipped outcomes");
+   await shipped.findByText("Not available yet.");
+   expect(shipped.queryByRole("list", { name: "Work shipped per week" })).toBeNull();
+  } finally { f.close(); }
+ });
+ it("flow health that is collecting without a company block shows the collecting line and draws nothing from the missing block", async () => {
+  const f = mount({ overview: { flow: "collecting" }, answers: { "/v1/app/insights/flow": { status: 200, body: { ...flowAnswer, status: "collecting", collectingSince: "2026-11-01T00:00:00.000Z" } } } });
+  try {
+   const flow = await panel("Flow health");
+   await flow.findByText(/Collecting data since Nov 1, 2026/);
+   expect(flow.queryByText("Not enough work yet")).toBeNull();
+   expect(flow.queryByText(/NaN|undefined|0 of 0/)).toBeNull();
   } finally { f.close(); }
  });
  it("flow health with enough work shows cycle time, review wait, wait by next actor and rates", async () => {
@@ -409,6 +475,17 @@ describe("the Insights viewer grant", () => {
    expect(options).not.toContain("Priya");        // owner
    expect(options).not.toContain("Dana Wu");      // auditor
    expect(access.getByText("2 people could be given access.")).toBeTruthy();
+  } finally { f.close(); }
+ });
+ it("a viewer whose granter the ledger could not name reads 'Granted <date>', with no name and no gap", async () => {
+  const f = mount({ answers: { "/v1/app/org/insights-access": { status: 200, body: accessList([{ id: MAYA, name: "Maya Chen" }], null) } } });
+  try {
+   const access = await panel("Who can see Insights");
+   const list = await access.findByRole("list", { name: "Insights viewers" });
+   expect(list.textContent).toContain("Maya Chen");
+   expect(list.textContent).toContain("Granted Nov 10, 2026");
+   expect(list.textContent).not.toContain("given access by");
+   expect(list.textContent).not.toMatch(/undefined|Unknown/);
   } finally { f.close(); }
  });
  it("grant: posts action, requestId and developerId once, then shows the answer's list", async () => {
@@ -492,8 +569,9 @@ describe("words and numbers", () => {
   expect(nextActorWords({ kind: "unknown" })).toBe("Not known yet");
  });
  it("coverage, rates, collecting lines and months", () => {
-  expect(notCoveredWords({ ...coverage, notCovered: [] })).toBeUndefined();
-  expect(notCoveredWords({ ...coverage, notCovered: ["change_approvals", "zzz"] })).toBe("Does not include: change approvals, other sources.");
+  const covered = (notCovered: string[]) => ({ ...coverage, notCovered }) as unknown as Parameters<typeof notCoveredWords>[0];   // a newer server's word reads as "unknown" through the reader
+  expect(notCoveredWords(covered([]))).toBeUndefined();
+  expect(notCoveredWords(covered(["change_approvals", "zzz"]))).toBe("Does not include: change approvals, other sources.");
   expect(rateWords(4, 38)).toBe("4 of 38 (11%)");expect(rateWords(0, 0)).toBe("Not enough work yet");
   const now = Date.parse(ASOF);
   expect(notReadyWords("unavailable", null, now)).toBe("Not available yet.");

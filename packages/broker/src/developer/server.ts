@@ -878,8 +878,8 @@ function createIssuerHandler(deps: DeveloperIdentityDependencies) {
         ...(slackUserId === undefined ? {} : { slackUserId }),
       });
     }
-    // A link written just now already carries this sign-in's time.
-    if (resolved.link === "existing") await store.touchIdentity(identityKey);
+    // A link written just now already carries this sign-in's time. The provider's own `auth_time`, when it sends one, is kept beside it (it is what a recent sign-in for approvals counts for a company sign-in), for a new link too.
+    if (resolved.link === "existing" || identity.authTime !== undefined) await store.touchIdentity(identityKey, identity.authTime);
     // A method newly linked to an existing account tells that account's address, so a person who did not do it can remove it at once.
     if (resolved.link === "new-linked") await noticeNewMethod(method, identity, existing?.email);
     // A first sign-in puts the person in an org (ruling R2); the tokens and the browser session carry it from here. A join read the

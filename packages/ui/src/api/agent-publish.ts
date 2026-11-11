@@ -1,90 +1,19 @@
 import { useMemo } from "react";
 import { useInfiniteQuery, useQuery } from "@tanstack/react-query";
 import { z } from "zod";
-import { AgentAccessLevelSchema, AgentIdSchema, AgentOwnerSchema, ProjectOverviewProjectSchema, forwardReader } from "@agentx/cloud-contracts/web";
+import { AGENT_PUBLISH_NOTE_MAX, AgentIdSchema, AgentPublicationReaderSchema, AgentPublishAnswerReaderSchema, AgentPublishRequestBodySchema, AgentPublishRequestListReaderSchema, AgentPublishRequestReaderSchema, AgentPublishWithdrawnReaderSchema, FavouriteAgentsBodySchema, FavouriteAgentsReaderSchema, MAX_FAVOURITE_AGENTS, MyAgentsReaderSchema, ProjectOverviewProjectSchema, PublishTargetSchema } from "@agentx/cloud-contracts/web";
 import { useAppHost, type AppHost } from "../host.js";
 import { ApiError } from "./errors.js";
 import { createApiClient } from "./client.js";
 
 /**
- * Agent publish requests, favourite agents and suggested agents (experience lane exp/agent-publish).
- *
- * LOCAL SCHEMAS, TO BE REPLACED. Everything between the two LOCAL SCHEMAS markers matches `briefs/agent-publish-api.md` (v1 of the shape, 2026-11-11) EXACTLY and nothing more.
- * The server lane will publish the same schemas in `packages/contracts/src/app-agent-publish.ts` (exported from `@agentx/contracts/web`): `AgentPublishRequestReaderSchema`, `AgentPublishRequestListReaderSchema`,
- * `AgentPublishRequestBodySchema`, `AgentPublishAnswerReaderSchema`, `AgentPublicationReaderSchema`, `MyAgentsReaderSchema`, `FavouriteAgentsBodySchema`. When that file lands, delete this block and import those
- * names here under the names exported below; nothing outside this file changes.
+ * Agent publish requests, favourite agents and suggested agents (experience decisions 23 and 24). The shapes are the server's (`packages/cloud-contracts/src/app-agent-publish.ts`, exported from
+ * `@agentx/cloud-contracts/web`). Decisions are never posted from here: every Approve and Decline is made on the request's confirmation page (`approval.confirmUrl`), with a fresh sign-in.
  */
-// ---- LOCAL SCHEMAS (start): replace with the import from @agentx/contracts/web ----
-const Person = z.object({ id: z.string().regex(/^[a-f0-9]{64}$/u), name: z.string() }).strict();
-export const PublishTargetSchema = z.discriminatedUnion("kind", [z.object({ kind: z.literal("project"), project: z.string().min(1) }).strict(), z.object({ kind: z.literal("company") }).strict()]);
-const AgentSummary = z.object({
- steps: z.number().int().nonnegative(),
- tools: z.array(z.object({ connector: z.string(), access: z.enum(["read", "read_write"]) }).strict()),
- autonomy: z.enum(["suggest", "prepare", "run"]),
- triggers: z.array(z.enum(["manual", "schedule", "event"])),
- skills: z.number().int().nonnegative(),
- monthlyBudgetUsd: z.number().finite().nonnegative().optional(),
- maxPerRunUsd: z.number().finite().nonnegative().optional(),
- extends: z.object({ agentId: AgentIdSchema, version: z.number().int().positive() }).strict().optional(),
- lessSafe: z.array(z.string()),
-}).strict();
-const PublishRequest = z.object({
- requestId: z.string().uuid(),
- approvalId: z.string().regex(/^apr_[0-9a-z]{20}$/u),
- agent: z.object({ agentId: AgentIdSchema, name: z.string(), description: z.string() }).strict(),
- target: PublishTargetSchema,
- version: z.number().int().positive(), digest: z.string().regex(/^[a-f0-9]{64}$/u),
- state: z.enum(["pending", "approved", "declined", "withdrawn", "expired", "stale", "failed"]),
- requestedBy: Person, requestedAt: z.string(), expiresAt: z.string(),
- note: z.string().nullable(),
- decidedBy: Person.nullable(), decidedAt: z.string().nullable(),
- summary: AgentSummary,
- effect: z.string(),
- approval: z.object({
-  canDecide: z.boolean(),
-  reason: z.enum(["you_requested", "not_a_maintainer", "not_an_admin", "stale", "expired"]).nullable(),
-  freshSignInNeeded: z.boolean(),
-  confirmUrl: z.string().nullish(),
- }).strict(),
- // Added by section 4 of the doc (a decline reason) and section 3 (APPROVED_FAILED): both optional.
- declineReason: z.string().nullish(),
- failureText: z.string().nullish(),
-}).strict();
-const Publication = z.object({
- level: z.enum(["personal", "project", "company"]),
- projects: z.array(z.string()),
- pending: z.object({ requestId: z.string().uuid(), target: PublishTargetSchema, requestedAt: z.string() }).strict().nullable(),
-}).strict();
-const REASONS = ["favourite", "project_roster", "used_by_you", "popular_in_company", "starter"] as const;
-const AgentCard = z.object({
- agentId: AgentIdSchema, name: z.string(), description: z.string(), builtin: z.boolean(), status: z.enum(["active", "archived"]), access: AgentAccessLevelSchema,
- currentVersion: z.number().int().positive().optional(), owner: AgentOwnerSchema.optional(), publication: Publication,
- reason: z.enum(REASONS),
-}).strict();
-const AgentPublishAnswer = z.discriminatedUnion("status", [
- z.object({ status: z.literal("NEEDS_CONFIRMATION"), confirmUrl: z.string().optional(), changes: z.array(z.string()), request: PublishRequest }).strict(),
- // The doc names the agent an `AgentView`; the web entry does not export that schema yet, so only what this page reads is typed.
- z.object({ status: z.literal("published"), agent: z.object({ agentId: AgentIdSchema, name: z.string() }).strict(), request: z.null() }).strict(),
-]);
-const MyAgents = z.object({ favourites: z.array(AgentCard), suggested: z.array(AgentCard), limits: z.object({ maxFavourites: z.number().int().positive(), maxSuggested: z.number().int().positive() }).strict(), revision: z.number().int().nonnegative() }).strict();
-export const AgentPublishRequestBodySchema = z.object({ requestId: z.string().uuid(), target: PublishTargetSchema, version: z.number().int().positive(), note: z.string().refine(value => [...value].length <= 300, "up to 300 characters").optional() }).strict();
-export const FavouriteAgentsBodySchema = z.object({ requestId: z.string().uuid(), expectedRevision: z.number().int().nonnegative(), agentIds: z.array(AgentIdSchema).max(12) }).strict();
-const AgentPublishRequestList = z.object({ requests: z.array(PublishRequest), next: z.string().optional() }).strict();
-const Favourited = z.object({ favourites: z.array(AgentCard), revision: z.number().int().nonnegative() }).strict();
-const Withdrawn = z.object({ request: PublishRequest }).strict();
-// The decide route's body today is `{ requestId, decision }` plus the NEW optional `reason` (plain text, up to 300 characters). Its answer is not described in the doc: any object is read as "decided", and the lists are read again.
-export const ApprovalDecideBodySchema = z.object({ requestId: z.string().uuid(), decision: z.enum(["APPROVE", "DECLINE"]), reason: z.string().refine(value => [...value].length <= 300, "up to 300 characters").optional() }).strict();
-const DecideAnswer = z.looseObject({});
-export const AgentPublishRequestReaderSchema = forwardReader(PublishRequest);
-export const AgentPublishRequestListReaderSchema = forwardReader(AgentPublishRequestList);
-export const AgentPublishAnswerReaderSchema = forwardReader(AgentPublishAnswer);
-export const AgentPublicationReaderSchema = forwardReader(Publication);
-export const MyAgentsReaderSchema = forwardReader(MyAgents);
-export const FavouritesReaderSchema = forwardReader(Favourited);
-export const WithdrawnReaderSchema = forwardReader(Withdrawn);
-export const ApprovalDecideReaderSchema = DecideAnswer;
-export const MAX_FAVOURITES = 12, MAX_NOTE_CHARACTERS = 300;
-// ---- LOCAL SCHEMAS (end) ----
+export { PublishTargetSchema, AgentPublishRequestBodySchema, FavouriteAgentsBodySchema, AgentPublishRequestReaderSchema, AgentPublishRequestListReaderSchema, AgentPublishAnswerReaderSchema, AgentPublicationReaderSchema, MyAgentsReaderSchema };
+export const FavouritesReaderSchema = FavouriteAgentsReaderSchema;
+export const WithdrawnReaderSchema = AgentPublishWithdrawnReaderSchema;
+export const MAX_FAVOURITES = MAX_FAVOURITE_AGENTS, MAX_NOTE_CHARACTERS = AGENT_PUBLISH_NOTE_MAX;
 
 export type ReadPublishRequest = ReturnType<typeof AgentPublishRequestReaderSchema.parse>;
 export type ReadAgentSummary = ReadPublishRequest["summary"];
@@ -119,11 +48,6 @@ export function createAgentPublishApi(host: AppHost) {
   forAgent: (agentId: string) => api.get(agentPath(agentId) + "/publish-requests", AgentPublishRequestListReaderSchema),
   list: (query: RequestQuery, cursor?: string) => api.get("/v1/app/agent-publish-requests?" + queryString(query, { limit: "20", ...(cursor === undefined ? {} : { cursor }) }), AgentPublishRequestListReaderSchema),
   withdraw: (requestId: string) => { const id = z.string().uuid().parse(requestId);return api.sendAnswer("POST", "/v1/app/agent-publish-requests/" + id + "/withdraw", { requestId: crypto.randomUUID() }, WithdrawnReaderSchema); },
-  /** The existing decide route: browser only, with a recent sign-in. A token, or a browser without one, is refused with REAUTH_REQUIRED. */
-  decide: (approvalId: string, decision: "APPROVE" | "DECLINE", reason?: string) => {
-   if (!/^apr_[0-9a-z]{20}$/u.test(approvalId)) throw new ApiError(404, "NOT_FOUND", "Not found.");
-   return api.sendAnswer("POST", "/v1/app/approvals/" + approvalId + "/decide", ApprovalDecideBodySchema.parse({ requestId: crypto.randomUUID(), decision, ...(reason === undefined || reason.trim() === "" ? {} : { reason: reason.trim() }) }), ApprovalDecideReaderSchema, { retry: "never" });
-  },
   myAgents: (project?: string) => api.get("/v1/app/me/agents" + (project === undefined ? "" : "?" + new URLSearchParams({ project: ProjectOverviewProjectSchema.shape.name.parse(project) }).toString()), MyAgentsReaderSchema),
   setFavourites: (agentIds: readonly string[], expectedRevision: number) => api.sendAnswer("PUT", "/v1/app/me/agents/favourites", FavouriteAgentsBodySchema.parse({ requestId: crypto.randomUUID(), expectedRevision, agentIds }), FavouritesReaderSchema),
  };

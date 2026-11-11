@@ -13,7 +13,7 @@ import type { PageCommentInput, PageDecisionInput, PageRetryInput, PageSuggestio
 import { pageCommentViews, type CommentViewContext, type PageCommentView } from "../plan-page/comments.js";
 import { loadPlanSelfCheck } from "../../developer/plan-self-check.js";
 import type { PlanAnchor } from "../plan-page/render-plan.js";
-import { can, pageAccess, projectWorkAllowed, requireProjectWorkRole, resolveTaskAccess, type TaskAccess } from "../../developer/task-access.js";
+import { can, pageAccess, projectWorkAllowed, requireProjectWorkRole, resolveTaskAccess, resolveTaskApprover, type TaskAccess } from "../../developer/task-access.js";
 import { designReviewEnabled } from "../../design-review/switch.js";
 import { getTaskPeoplePresentation } from "../../developer/task-people.js";
 import { getTaskPeopleCapabilities as readTaskPeopleCapabilities } from "../../developer/task-people.js";
@@ -57,6 +57,17 @@ async function mergeViewForWords(deps: Pick<DeveloperTaskRouteDependencies, "doc
   } catch {
     return undefined;
   }
+}
+
+/**
+ * Approval place (U4, owner decision Q7): whether this reader is a project maintainer (not the owner) who may decide the plan the task waits on now. Only while the task waits on its coding plan (not requirements or a design),
+ * and only for the seat `resolveTaskApprover` gives (decision cards on, live project role, People list). The page shows Approve and Request changes for them; the decision route checks it all again.
+ */
+async function maintainerMayDecidePlan(deps: DeveloperTaskRouteDependencies, caller: DeveloperCaller, task: DeveloperTaskRecord): Promise<boolean> {
+  const workflow = task.workflow;
+  if (workflow === undefined || workflow.stage !== "PLAN_REVIEW" || workflow.state !== "WAITING" || task.closedAt !== undefined) return false;
+  if (workflow.path === "FULL" && (workflow.reviewPhase === "REQUIREMENTS" || workflow.reviewPhase === "DESIGN")) return false;
+  return (await resolveTaskApprover(deps, caller, task.taskId)) !== undefined;
 }
 
 /**
@@ -248,13 +259,14 @@ export async function getTaskPageState(deps: DeveloperTaskRouteDependencies, cal
   });
   const counter = await deps.documentClient.send(new GetCommand({ TableName: deps.tableName, Key: commentCounterKey(taskId), ConsistentRead: true })) as { Item?: { seq?: unknown } };
   const permissions = pageAccess(access, await projectWorkAllowed(deps, task, caller));
+  const approver = permissions.canDecide ? false : await maintainerMayDecidePlan(deps, caller, task);
   // v1.2 learning loop: only for a person with standing in the project; absent for everyone else, and when it can't be worked out in time.
   const flags = await commentLearningFlags(deps, { caller, access }, taskId, []);
   return {
     revision: workflow?.revision ?? 0, waiting: workflow?.stage === "PLAN_REVIEW" && workflow.state === "WAITING" && task.closedAt === undefined,
     stage: taskPageStep(workflow, task.closedAt !== undefined), documents, commentSeq: typeof counter.Item?.seq === "number" ? counter.Item.seq : 0,
     ...(capabilities.peopleRevision === undefined ? {} : { peopleRevision: capabilities.peopleRevision }), canRead: true,
-    canComment: permissions.canComment, canSuggest: permissions.canSuggest, canDecide: permissions.canDecide,
+    canComment: permissions.canComment, canSuggest: permissions.canSuggest, canDecide: permissions.canDecide || approver, ...(approver ? { decideAs: "maintainer" as const } : permissions.canDecide ? { decideAs: "owner" as const } : {}),
     canAsk: permissions.canAsk && await commentAnswersAvailable(deps, task),
     canManagePeople: capabilities.canManagePeople, canTakeOwnership: capabilities.canTakeOwnership,
     ...(flags === undefined ? {} : { canRemember: flags.canRemember }),
