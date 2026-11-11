@@ -218,10 +218,23 @@ describe("the company's pending approvals, at a glance", () => {
       const id = `apr_${String(n).padStart(20, "0")}`;
       t.db.set({ pk: "OPEN_APPROVALS", sk: `2026-01-01T00:00:00.000Z#${ORG_B}#${id}`, entityType: "OPEN_APPROVAL", orgId: ORG_B, approvalId: id });
     }
+    // Every read of an approval record is counted: another company's items are skipped on the index item alone, so no record is read for any of them.
+    const recordReads: string[] = [];
+    const original = t.db.send.bind(t.db) as (command: unknown) => Promise<unknown>;
+    (t.db as unknown as { send: (command: unknown) => Promise<unknown> }).send = async (command: unknown) => {
+      const input = (command as { input?: { Key?: { pk?: unknown } } }).input;
+      if (typeof input?.Key?.pk === "string" && input.Key.pk.includes("#APPROVAL#")) recordReads.push(input.Key.pk);
+      return original(command);
+    };
     const summary = OrgPendingApprovalsSummarySchema.parse(bodyOf(await t.get(ADA)));
     expect(summary.truncated).toBe(true);
     expect(summary.total).toBe(0);
     expect(summary.approvals).toEqual([]);
+    expect(recordReads).toEqual([]);
+    // Positive control: with the scan not full, our own approval's record is read (the counter sees reads).
+    for (let n = 0; n < ORG_PENDING_SCAN_MAX + 5; n += 1) t.db.delete({ pk: "OPEN_APPROVALS", sk: `2026-01-01T00:00:00.000Z#${ORG_B}#apr_${String(n).padStart(20, "0")}` });
+    expect(OrgPendingApprovalsSummarySchema.parse(bodyOf(await t.get(ADA))).total).toBe(1);
+    expect(recordReads.length).toBeGreaterThan(0);
     expect(mine.status).toBe("PENDING");
   });
 });
