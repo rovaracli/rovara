@@ -116,8 +116,15 @@ describe("how a finished session ended", () => {
  it("has plain words for each finishedAs, and none for a session an older server sent without it", () => {
   expect(Object.fromEntries(Object.entries(FINISHED_AS_WORDS).map(([key, state]) => [key, state.label]))).toEqual({ merged: "Merged", closed: "Closed", finished_no_code: "Finished (no code)", finished: "Finished" });
   const own = { label: "Failed", tone: "danger" as const };
+  // A failed run is never hidden by a word that reads as success or as a tidy ending; only a merged pull request outranks it.
+  for (const word of ["closed", "finished_no_code", "finished", "unknown"]) expect(finishedState(word, own), word).toBe(own);
+  expect(finishedState("merged", own)).toEqual({ label: "Merged", tone: "success" });
   expect(finishedState(undefined, own)).toBe(own);expect(finishedState("unknown", own)).toBe(own);expect(finishedState("finished", own)).toBe(own);expect(finishedState("merged", own)).toEqual({ label: "Merged", tone: "success" });
   expect(rowFromFinished(finishedFixture({ finishedAs: "finished_no_code" }), NOW).state).toEqual({ label: "Finished (no code)", tone: "success" });
+  const failed = { ...finishedFixture().summary, status: "failed" as const };
+  expect(rowFromFinished(finishedFixture({ finishedAs: "closed", summary: failed }), NOW).state).toEqual({ label: "Failed", tone: "danger" });
+  expect(rowFromFinished(finishedFixture({ finishedAs: "finished_no_code", summary: failed }), NOW).state).toEqual({ label: "Failed", tone: "danger" });
+  expect(rowFromFinished(finishedFixture({ finishedAs: "merged", summary: failed }), NOW).state).toEqual({ label: "Merged", tone: "success" });
  });
 });
 
@@ -193,6 +200,16 @@ describe("the screen", () => {
   const word = (title: string) => within((screen.getByRole("heading", { name: title }).closest("li")) as HTMLElement).getByText(/^(Merged|Closed|Finished \(no code\)|Finished|Failed)$/u).textContent;
   expect([word("Merged one"), word("Closed one"), word("Answered one"), word("Plain one"), word("Failed one"), word("Older server")]).toEqual(["Merged", "Closed", "Finished (no code)", "Finished", "Failed", "Closed"]);
   f.close();
+ });
+ it("keeps the company-wide Finished list and a project that is literally named company apart in the cache", async () => {
+  const keys = (f: ReturnType<typeof setup>) => f.query.getQueryCache().findAll({ queryKey: ["live", "finished"] }).map(entry => entry.queryKey[2]);
+  const project = setup({ path: "/app/live?view=finished&project=company", ended: [finishedFixture()] });await screen.findByRole("heading", { name: "Fix duplicate refunds" });
+  expect(keys(project)).toEqual([{ project: "company" }]);expect(project.calls()).toContain("/v1/app/sessions?project=company&status=ended");expect(project.calls().some(path => path.includes("scope=company"))).toBe(false);project.close();
+  const whole = setup({ path: "/app/live?view=finished", ended: [finishedFixture()] });await screen.findByRole("heading", { name: "Fix duplicate refunds" });
+  expect(keys(whole)).toEqual([{ scope: "company" }]);expect(whole.calls()).toContain("/v1/app/sessions?scope=company&status=ended");
+  // A realtime notice that refreshes Live (the ["live"] prefix) still refreshes it.
+  const before = whole.calls().filter(path => path.startsWith("/v1/app/sessions?")).length;await whole.query.invalidateQueries({ queryKey: ["live"] });
+  await waitFor(() => expect(whole.calls().filter(path => path.startsWith("/v1/app/sessions?")).length).toBeGreaterThan(before));whole.close();
  });
  it("says some projects are left out when the answer says so, and only on the all-projects Finished list", async () => {
   const f = setup({ path: "/app/live?view=finished", ended: [finishedFixture()], cut: true });await screen.findByRole("heading", { name: "Fix duplicate refunds" });

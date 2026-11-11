@@ -297,13 +297,24 @@ describe("the admin overview", () => {
    expect(called(f, "/v1/app/org/approvals/pending-summary")).toBe(0);expect(called(f, "/v1/app/spend-requests")).toBe(0);expect(called(f, "/v1/app/connections")).toBe(0);
   } finally { f.close(); }
  });
+ it("on, owner: each Open to review button is named for its own approval and opens that approval's page", async () => {
+  const entry = (id: string, title: string) => ({ approvalId: id, kind: "change", title, createdAt: "2026-11-10T10:00:00.000Z", confirmUrl: "https://cell.example/v1/app/approve/" + id });
+  const f = mount({ path: "/app/admin", override: { "/v1/app/org/approvals/pending-summary": { status: 200, body: { total: 2, approvals: [entry("apr_aaaaaaaaaaaaaaaaaaaa", "Raise the agent spending guardrail"), entry("apr_bbbbbbbbbbbbbbbbbbbb", "Publish the refunds agent")] } } } });
+  try {
+   const section = (await screen.findByRole("heading", { name: "What needs an admin" })).closest("section")!;
+   const second = await within(section).findByRole("button", { name: "Open to review: Publish the refunds agent" });
+   expect(within(section).getByRole("button", { name: "Open to review: Raise the agent spending guardrail" })).toBeTruthy();
+   expect(within(section).getAllByRole("button", { name: /^Open to review: / })).toHaveLength(2);expect(second.textContent).toBe("Open to review");
+   fireEvent.click(second);expect(f.host.openExternal).toHaveBeenCalledTimes(1);expect(f.host.openExternal).toHaveBeenCalledWith("https://cell.example/v1/app/approve/apr_bbbbbbbbbbbbbbbbbbbb");
+  } finally { f.close(); }
+ });
  it("on, owner: an approval whose link is not this app's own confirmation address is not opened from the list; the waiting list is offered instead", async () => {
   const f = mount({ path: "/app/admin", override: { "/v1/app/org/approvals/pending-summary": { status: 200, body: { total: 1, approvals: [{ approvalId: "apr_aaaaaaaaaaaaaaaaaaaa", kind: "change", title: "Loosen the company's design review rules", createdAt: "2026-11-10T10:00:00.000Z", confirmUrl: "https://elsewhere.example/v1/app/approve/apr_aaaaaaaaaaaaaaaaaaaa" }] } } } });
   try {
    const section = (await screen.findByRole("heading", { name: "What needs an admin" })).closest("section")!;
    await waitFor(() => expect(within(section).getByText("Loosen the company's design review rules")).toBeTruthy());
    expect(within(section).getByText("1 approval is waiting in the company.")).toBeTruthy();expect(within(section).queryByText(/may be incomplete/)).toBeNull();
-   expect(within(section).queryByRole("button", { name: "Open to review" })).toBeNull();
+   expect(within(section).queryByRole("button", { name: /^Open to review/ })).toBeNull();
   } finally { f.close(); }
  });
  it("on, owner: What needs an admin lists the waiting items with links, and the health counts link to the Health page", async () => {
@@ -314,7 +325,7 @@ describe("the admin overview", () => {
    await waitFor(() => expect(within(section).getByText("Loosen the company's design review rules")).toBeTruthy());
    expect(within(section).getByText("2 approvals are waiting in the company. The list may be incomplete.")).toBeTruthy();
    expect(within(section).getByText(/Asked by Maya/)).toBeTruthy();
-   fireEvent.click(within(section).getByRole("button", { name: "Open to review" }));
+   fireEvent.click(within(section).getByRole("button", { name: /^Open to review: Loosen the company's design review rules$/ }));
    expect(f.host.openExternal).toHaveBeenCalledWith("https://cell.example/v1/app/approve/apr_aaaaaaaaaaaaaaaaaaaa");
    expect(within(section).getByText("Spending request: More monthly budget")).toBeTruthy();
    expect(within(section).getByText("Tracker: Linear or Jira")).toBeTruthy();expect(within(section).getByText("Test environment: payments")).toBeTruthy();

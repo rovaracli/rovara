@@ -14,7 +14,7 @@ export type ReadFinishedTile = ReadFinishedPage["sessions"][number];
  */
 export function useFinishedWork(project: string | undefined, enabled: boolean) {
  const host = useAppHost(), api = useMemo(() => createApiClient(host), [host]);
- return useInfiniteQuery({ queryKey: ["live", "finished", project ?? "company"], enabled, initialPageParam: undefined as string | undefined,
+ return useInfiniteQuery({ queryKey: ["live", "finished", project === undefined ? { scope: "company" } : { project }], enabled, initialPageParam: undefined as string | undefined,
   queryFn: ({ pageParam }) => {
    const params = new URLSearchParams(project === undefined ? { scope: "company" } : { project });params.set("status", "ended");if (pageParam !== undefined) params.set("cursor", pageParam);
    return api.get("/v1/app/sessions?" + params.toString(), SessionListReaderSchema);

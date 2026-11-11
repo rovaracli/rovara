@@ -99,13 +99,13 @@ export function rowFromLive(tile: ReadLiveTile, now: number): WorkRow {
 /** How an ended session ended, in words (`finishedAs` on its tile). */
 export const FINISHED_AS_WORDS: Readonly<Record<FinishedAs, PlainState>> = { merged: { label: "Merged", tone: "success" }, closed: { label: "Closed", tone: "neutral" }, finished_no_code: { label: "Finished (no code)", tone: "success" }, finished: { label: "Finished", tone: "neutral" } };
 /**
- * The state a finished row says: the server's `finishedAs` where the tile has one that this version knows. The server's "finished" is its word for everything else, so a run that failed keeps its own more exact state ("Failed")
- * instead of reading as a plain "Finished". A tile without `finishedAs` (an older server) says what it said before.
+ * The state a finished row says: the server's `finishedAs` where the tile has one that this version knows. The server's "finished" is its word for everything else, and a run that failed keeps its own state ("Failed", the danger tone) for every word but "merged": a merged pull request is the outcome that stands, but "Closed", "Finished (no code)" or
+ * "Finished" must never hide a failure. A tile without `finishedAs` (an older server) says what it said before.
  */
 export function finishedState(finishedAs: string | undefined, own: PlainState): PlainState {
  // A word a newer server adds (the reader keeps it as "unknown") is not guessed at: the row says what it said before.
  const words = finishedAs === undefined || !Object.hasOwn(FINISHED_AS_WORDS, finishedAs) ? undefined : FINISHED_AS_WORDS[finishedAs as FinishedAs];
- return words === undefined || (finishedAs === "finished" && own.tone === "danger") ? own : words;
+ return words === undefined || (finishedAs !== "merged" && own.tone === "danger") ? own : words;
 }
 
 /** A finished session from the sessions list. It carries no controls and no "waiting on you" flag, so it is never marked as needing attention and names nobody who acts next. */
