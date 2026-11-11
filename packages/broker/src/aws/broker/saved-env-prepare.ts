@@ -4,7 +4,7 @@
 // What is sent, and when: the field is a REFERENCE (repository, digest, revision, key, the task's pinned revision). It is stored with the invocation (outbox, stream, queue), so it holds no credential: the worker
 // asks for the pull login at pull time (`exchangeSavedEnvLogin`). Only a developer task's start (and the continue of a held start) sends the task's approved-environment pin; a preparation without one (a thread
 // workspace, project registration, a setup draft, a run that runs none of the project's code) is sent nothing.
-import type { PrepareSavedEnv } from "@rovara-code/contracts";
+import type { PrepareSavedEnv } from "@agentx/cloud-contracts";
 import { savedEnvEnabled } from "../../test-env/saved-env-switch.js";
 import { savedEnvForPrepare, savedEnvPullLogin } from "../../test-env/saved-env.js";
 import type { AwsBrokerDependencies, RegisteredProjectRecord } from "./definitions.js";

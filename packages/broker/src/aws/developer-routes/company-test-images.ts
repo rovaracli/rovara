@@ -13,9 +13,11 @@ import { agentXError, type OrgId } from "@rovara-code/contracts";
 import { logDeveloperEvent } from "../../developer/log.js";
 import { requireLiveCompanyAdmin } from "../../org/company-authority.js";
 import { dynamoCompanyImageStore } from "../../org/company-test-image-store.js";
-import { approveImage, listImages, proposeImageAsAdmin, revokeImage, type CompanyImageCaller, type CompanyImageDeps } from "../../org/company-test-images.js";
+import { addRegistry, approveImage, listImages, proposeImageAsAdmin, removeRegistry, revokeImage, type CompanyImageCaller, type CompanyImageDeps } from "../../org/company-test-images.js";
 import { COMPANY_IMAGE_DEFAULT_REGISTRY, isOfficialUpstream, type CompanyImage } from "../../test-env/company-images.js";
 import { registryDigestResolver, type CompanyImageDigestResolver } from "../../test-env/company-image-resolver.js";
+import { readMirrorState } from "../../test-env/company-image-mirror-state.js";
+import { mirrorStarterFromEnvironment } from "../../test-env/company-image-mirrors.js";
 import { projectImagesEnabled, testServicesEnabled } from "../../test-env/test-services-switch.js";
 import { StatusReply } from "../status-reply.js";
 import type { AdaptedHttpRequest } from "../lambda.js";
@@ -38,6 +40,9 @@ const BodySchema = z.discriminatedUnion("action", [
   z.object({ action: z.literal("add"), image: z.string().min(1).max(300) }).strict(),
   z.object({ action: z.literal("approve"), imageId: ImageId, expectedRevision: Revision, expectedDigest: Digest }).strict(),
   z.object({ action: z.literal("revoke"), imageId: ImageId, expectedRevision: Revision }).strict(),
+  // The company's own list of extra registries: an admin from a live browser session with a fresh sign-in, audited. `expectedRevision` is the list's revision the admin saw (0: never written).
+  z.object({ action: z.literal("add_registry"), host: z.string().min(4).max(253), expectedRevision: z.number().int().min(0).max(999_999_999) }).strict(),
+  z.object({ action: z.literal("remove_registry"), host: z.string().min(4).max(253), expectedRevision: Revision }).strict(),
 ]);
 
 /** The digest lookup (`registryDigestResolver`, global fetch) unless a test gives one through the route's dependencies. */
@@ -55,6 +60,7 @@ export function companyImageDepsOf(deps: DeveloperRouteDependencies, env: NodeJS
       try { return await getSignIn<{ authTime?: string; developerId: string; revokedAt?: string }>(deps, `SESSION#${sessionId}`); } catch { return undefined; }
     },
     resolveDigest: resolverOf(deps),
+    startMirror: deps.companyImageMirrorStart ?? mirrorStarterFromEnvironment(env),
     catalog: async () => deps.serviceCatalog?.(),
     edition: env[EDITION_ENV_VAR] === "enterprise" ? "enterprise" : "public",
     now: () => new Date(deps.now()),
@@ -64,11 +70,12 @@ export function companyImageDepsOf(deps: DeveloperRouteDependencies, env: NodeJS
 const callerOf = (caller: DeveloperCaller): CompanyImageCaller => ({ orgId: caller.orgId, developerId: caller.developerId, sessionId: caller.sessionId });
 
 /** An image as the admin's card shows it: what it is, where it comes from, and the digest an approval pins. */
-function imageView(image: CompanyImage, context: { caller: DeveloperCaller; people: ReadonlyMap<string, string> }) {
+function imageView(image: CompanyImage, context: { caller: DeveloperCaller; people: ReadonlyMap<string, string>; copies: ReadonlyMap<string, "ready" | "copying" | "failed" | "none"> }) {
   const name = image.registry === COMPANY_IMAGE_DEFAULT_REGISTRY && image.repository.startsWith("library/") ? image.repository.slice("library/".length) : image.repository;
   return {
     imageId: image.imageId, revision: image.revision, status: image.status, image: `${name}:${image.tag}`, registry: image.registry, /** False for any image that is not a Docker Hub official one: the card then says who publishes it is for the admin to judge. */ official: isOfficialUpstream(`${image.registry}/${image.repository}`), digest: image.digest, family: image.family, version: image.version,
     origin: image.origin, ...(image.project === undefined ? {} : { project: image.project }), proposedBy: context.people.get(image.proposedBy) ?? "Unknown", proposedByYou: image.proposedBy === context.caller.developerId,
+    /** Whether the approved image has been copied into the install's own registry yet (`none`: not started or not known). Only a `ready` image is served. */ copy: image.status === "approved" ? (context.copies.get(image.imageId) ?? "none") : "none",
     proposedAt: image.proposedAt, ...(image.approvedAt === undefined ? {} : { approvedAt: image.approvedAt }), updatedAt: image.updatedAt,
   };
 }
@@ -80,9 +87,16 @@ async function stateOf(deps: DeveloperRouteDependencies, caller: DeveloperCaller
   const found = ids.length === 0 ? new Map<string, unknown>() : await signInStoreOf(deps).getDevelopers(ids).catch(() => new Map<string, unknown>());
   const people = new Map(ids.map((id) => [id, (found.get(id) as { displayName?: string } | undefined)?.displayName ?? "Unknown"] as const));
   const order = { proposed: 0, approved: 1 } as const;
+  const copies = new Map<string, "ready" | "copying" | "failed" | "none">();
+  await Promise.all(images.filter((image) => image.status === "approved").map(async (image) => {
+    const state = await readMirrorState({ documentClient: deps.documentClient, tableName: deps.tableName }, caller.orgId, image.imageId).catch(() => undefined);
+    copies.set(image.imageId, state !== undefined && state.digest === image.digest ? state.state : "none");
+  }));
+  const registries = await imageDeps.store.registries(caller.orgId).catch(() => ({ revision: 0, hosts: [] as string[] }));
   const kinds = catalog === undefined ? [] : [...new Set(catalog.entries.filter((entry) => entry.backing === "local" && entry.status !== "retired").map((entry) => entry.family))].sort();
   return {
-    images: images.sort((a, b) => order[a.status] - order[b.status] || (a.updatedAt < b.updatedAt ? 1 : -1)).map((image) => imageView(image, { caller, people })),
+    images: images.sort((a, b) => order[a.status] - order[b.status] || (a.updatedAt < b.updatedAt ? 1 : -1)).map((image) => imageView(image, { caller, people, copies })),
+    registries,
     catalogAvailable: catalog !== undefined, kinds,
   };
 }
@@ -104,6 +118,8 @@ export async function routeCompanyTestImages(deps: DeveloperRouteDependencies, c
     case "add": await proposeImageAsAdmin(imageDeps, who, { image: input.image }); break;
     case "approve": await approveImage(imageDeps, who, input); break;
     case "revoke": await revokeImage(imageDeps, who, input); break;
+    case "add_registry": await addRegistry(imageDeps, who, input); break;
+    case "remove_registry": await removeRegistry(imageDeps, who, input); break;
   }
   logDeveloperEvent({ event: "developer.company_images_changed", orgId, action: input.action });
   return new StatusReply(200, { status: "done", ...(await stateOf(deps, caller, imageDeps)) });

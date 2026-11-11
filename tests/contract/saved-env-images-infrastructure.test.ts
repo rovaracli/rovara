@@ -4,7 +4,8 @@
 import { App, Stack, aws_iam as iam } from "aws-cdk-lib";
 import { Template } from "aws-cdk-lib/assertions";
 import { describe, expect, it } from "vitest";
-import { SAVED_ENV_PULL_ACTIONS, SAVED_ENV_PUSH_ACTIONS, savedEnvManageSessionPolicy, savedEnvPullRoleName, savedEnvPullSessionPolicy, savedEnvPushRoleName, savedEnvPushSessionPolicy, savedEnvRepositoryName, savedEnvRepositoryPolicy, savedEnvManageRoleName, savedEnvCreateRoleName, savedEnvScanSessionPolicy, SAVED_ENV_PUSH_SESSION_SECONDS } from "@rovara-code/contracts";
+import { SAVED_ENV_PULL_ACTIONS, SAVED_ENV_PUSH_ACTIONS, savedEnvPullRoleName, savedEnvPushRoleName, savedEnvRepositoryName, savedEnvManageRoleName, savedEnvCreateRoleName, SAVED_ENV_PUSH_SESSION_SECONDS } from "@rovara-code/contracts";
+import { savedEnvManageSessionPolicy, savedEnvPullSessionPolicy, savedEnvPushSessionPolicy, savedEnvRepositoryPolicy, savedEnvScanSessionPolicy } from "@agentx/cloud-contracts";
 import { SavedEnvImages } from "../../infra/lib/saved-env-images.js";
 import { buildAgentXApp } from "../../infra/lib/app.js";
 import { skipLambdaBundling } from "../support/skip-bundling.js";
@@ -344,7 +345,7 @@ describe("the whole named install", () => {
   const stacks = buildAgentXApp({ agentxEnv: "staging" }).node.children.filter((child): child is Stack => Stack.isStack(child));
   const templates = stacks.map((stack) => ({ name: stack.stackName, json: Template.fromStack(stack).toJSON() as { Resources: Record<string, Resource> } }));
 
-  it("only the three saved environment roles hold a right on the saved environment repositories: the worker's instance role, the broker, and every other role hold none", () => {
+  it("only the saved environment roles (and the company image mirror's own role, on mirror repositories alone) hold a right on the saved environment repositories: the worker's instance role, the broker, and every other role hold none", () => {
     const holders: Array<{ stack: string; role: string }> = [];
     for (const { name, json } of templates) {
       for (const resource of Object.values(json.Resources)) {
@@ -355,8 +356,8 @@ describe("the whole named install", () => {
         }
       }
     }
-    expect(holders).toHaveLength(4);
-    for (const holder of holders) expect(holder.role).toMatch(/^SavedEnvImages(Push|Pull|Manage|Create)Role/u);
+    expect(holders).toHaveLength(5);
+    for (const holder of holders) expect(holder.role).toMatch(/^(SavedEnvImages(Push|Pull|Manage|Create)Role|CompanyImageMirrorMirrorRole)/u);
   });
 
   it("no inline or managed policy gives anyone ecr rights on every repository of the account for a named install (the worker's pull stays limited to its one worker image)", () => {

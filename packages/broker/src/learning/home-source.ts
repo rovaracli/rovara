@@ -101,7 +101,7 @@ export const learningHomeSource: HomeCardSource = {
     const cards: HomeSourceCard[] = visible.filter(({ state }) => !switchedOff && state.openSuggestions > 0).map(({ project, state }) => {
       const n = state.openSuggestions;
       return {
-        cardId: `rule_suggestion:${hashOf(orgId, project)}`, kind: "rule_suggestion", title: `Suggested rules for ${quoted(project)}`,
+        project, cardId: `rule_suggestion:${hashOf(orgId, project)}`, kind: "rule_suggestion", title: `Suggested rules for ${quoted(project)}`,
         reason: fit(`${String(n)} suggested ${n === 1 ? "rule" : "rules"} to review in ${quoted(project)}`, ""), at: state.lastGroupedAt ?? state.projectCreatedAt,
         buttons: [{ label: "Review", action: "open" as const, href: `${origin}/app/projects/${encodeURIComponent(project)}?tab=how-we-work`, method: "GET" as const }],
       };

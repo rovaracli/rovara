@@ -35,7 +35,9 @@ import { createHash, randomBytes } from "node:crypto";
 import { cp, lstat, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { ImageDigestSchema, SAVED_ENV_IMAGE_MANIFEST_PATH, SAVED_ENV_IMAGE_SEED_PATH, SAVED_ENV_LABEL_KEY, SAVED_ENV_LABEL_PROVE, SAVED_ENV_LABEL_REVISION, SavedEnvImageManifestSchema, SavedEnvManifestSchema, HostedSavedEnvRegistryAuthSchema, TestEnvironmentBodySchema, canonicalJson, isSavedEnvRepositoryName, testEnvDigest, testEnvIsProved, type SavedEnvBuildFailure, type SavedEnvBuildResult, type SavedEnvImageManifest, type SavedEnvRegistryAuth, type TestEnvironmentBody } from "@rovara-code/contracts";
+import { ImageDigestSchema, SAVED_ENV_IMAGE_MANIFEST_PATH, SAVED_ENV_IMAGE_SEED_PATH, SAVED_ENV_LABEL_KEY, SAVED_ENV_LABEL_PROVE, SAVED_ENV_LABEL_REVISION, SavedEnvImageManifestSchema, SavedEnvManifestSchema, TestEnvironmentBodySchema, canonicalJson, isSavedEnvRepositoryName, testEnvDigest, testEnvIsProved, type SavedEnvBuildFailure, type SavedEnvBuildResult, type SavedEnvImageManifest, type TestEnvironmentBody } from "@rovara-code/contracts";
+import { SavedEnvRegistryAuthSchema } from "@agentx/cloud-contracts";
+import { type SavedEnvRegistryAuth } from "@agentx/cloud-contracts";
 import { proveEnvironment } from "../prove.js";
 import { defaultRealPath, sharesWorkspace, type FreshSandbox } from "../setup-agent-prove.js";
 import { runIsolatedGit } from "../isolated-repository.js";
@@ -336,7 +338,7 @@ export async function proveAndBuildSavedImage(input: SavedEnvBuildInput, ports: 
 
     // 11. The push login, for this repository, used for the push alone.
     const login = await ports.pushSession({ repository: input.repository }).catch(() => undefined);
-    const auth = HostedSavedEnvRegistryAuthSchema.safeParse(login);
+    const auth = SavedEnvRegistryAuthSchema.safeParse(login);
     if (!auth.success || auth.data.repository !== input.repository || Date.parse(auth.data.expiresAt) <= ports.now() + 60_000) return fail("no_push_session");
     docker = await ports.temporaryFolder();
     await writeFile(path.join(docker.path, "config.json"), JSON.stringify({ auths: { [auth.data.registry]: { auth: Buffer.from(`${auth.data.username}:${auth.data.password}`).toString("base64") } } }), { mode: 0o600 });

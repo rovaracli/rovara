@@ -44,6 +44,25 @@
       "reason": "Decision 78 (retireConfirm, retire_confirm and retire_keep) is in Cloud only."
     },
     {
+      "file": "app-projects.ts",
+      "names": [
+        "AppProjectDetail",
+        "AppProjectDetailSchema",
+        "AppProjectSummary",
+        "AppProjectSummarySchema",
+        "AppProjectsResponse",
+        "AppProjectsResponseSchema",
+        "ProjectArchiveResponse",
+        "ProjectArchiveResponseSchema",
+        "ProjectSettingsResponse",
+        "ProjectSettingsResponseSchema",
+        "ProjectSetupCheckResponse",
+        "ProjectSetupCheckResponseSchema"
+      ],
+      "owedUntil": "2026-11-25",
+      "reason": "The project summary names the project's meta repository (`metaRepository`, additive, lane srv/needs-broker-ui batch 1), and the detail and every answer that carries the summary or the detail (list, archive, setup check, settings) follow it. Code's summary does not have the field yet, and a Code schema would strip it from the answer; the Code lane that adds it lets these entries go. Same text as Code's apart from that one field."
+    },
+    {
       "file": "audit.ts",
       "names": [
         "AuditActor"
@@ -249,6 +268,25 @@
       "reason": "MergeTrackingItem keeps approval.githubUserId in stored merge records; Code writes hostUserId. Adopting needs a dual read and a migration first (DEFERRED-CHECKS: CONVERGENCE-W0-3-CONTRACTS)."
     },
     {
+      "file": "saved-env-image.ts",
+      "names": [
+        "PrepareSavedEnv",
+        "PrepareSavedEnvSchema",
+        "SavedEnvRegistryAuth",
+        "SavedEnvRegistryAuthSchema",
+        "SavedEnvUse",
+        "SavedEnvUseSchema",
+        "savedEnvManageSessionPolicy",
+        "savedEnvPullSessionPolicy",
+        "savedEnvPushSessionPolicy",
+        "savedEnvRepositoryArn",
+        "savedEnvRepositoryPolicy",
+        "savedEnvScanSessionPolicy"
+      ],
+      "owedUntil": "2026-11-25",
+      "reason": "A company-approved image's mirror repository (`rovara-env/<env>/o<org>/c<image>`, company-images-worker, 0.5.15) is accepted beside a saved environment's repository: the repository name checks, the session policies, the repository policy (the mirror's own role) and the login, prepare and use shapes. Code's text only knows the saved environment's name. SavedEnvRegistryAuthSchema here is the hosted one (the cloud registry's host and the user AWS only), so the loopback registry of Code's laptop adapter is refused where Cloud reads a login. The other new names in this file (isCompanyImageRepositoryName, companyImageMirror*, COMPANY_IMAGE_MIRROR_ACTIONS, companyImageRepositoriesArn) are Cloud's only."
+    },
+    {
       "file": "saved-env-key-files.ts",
       "names": [
         "SAVED_ENV_FIXED_KEY_GLOBS",
@@ -316,6 +354,15 @@
       ],
       "owedUntil": "2026-11-25",
       "reason": "Decision 70(c) workflow shapes (the re-run of the checks after a merge of the base, its daily allowance, the base-merged block and auto-fix codes) are in Cloud only. Two Code port lanes are building it (fix/code-base-merged-recheck, fix/code-owed-small).SessionView holds the task view and the chain step view."
+    },
+    {
+      "file": "setup-proposal.ts",
+      "names": [
+        "SetupApplyResponse",
+        "SetupApplyResponseSchema"
+      ],
+      "owedUntil": "2026-11-25",
+      "reason": "The setup apply answer carries the project detail, which names its meta repository in Cloud (see app-projects.ts). Same text as Code's with Cloud's detail."
     },
     {
       "file": "task-response.ts",

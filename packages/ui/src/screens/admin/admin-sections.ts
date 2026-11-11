@@ -1,7 +1,7 @@
 // UX3: the map of company settings. One list drives both the navigation and the overview, so every setting has one home and nothing is listed twice.
 // Pages that change nothing (health, audit, agents) sit under the group they belong to. Who may open a page is decided by the page and the server, not here.
 import type { SettingsAreaId } from "./settings-text.js";
-export interface AdminLinkItem { to: string; label: string; area: SettingsAreaId; blurb: string; action: string; end?: true; ownerOnly?: true; needsSecondReview?: true; needsBilling?: true }
+export interface AdminLinkItem { to: string; label: string; area: SettingsAreaId; blurb: string; action: string; end?: true; ownerOnly?: true; needsSecondReview?: true; needsBilling?: true; needsCompanyRules?: true }
 export interface AdminSection { id: string; title: string; items: readonly AdminLinkItem[] }
 export const ADMIN_SECTIONS: readonly AdminSection[] = [
   { id: "people", title: "People and access", items: [
@@ -19,6 +19,7 @@ export const ADMIN_SECTIONS: readonly AdminSection[] = [
     { to: "/app/admin/billing", label: "Billing", area: "billing", blurb: "The trial allowance, auto-billing, the payment method and invoices.", action: "Open billing", needsBilling: true },
   ] },
   { id: "work", title: "How work runs", items: [
+    { to: "/app/admin/company-rules", label: "Company rules", area: "company-rules", blurb: "The standing instructions every agent follows: Required and Preferred rules, changed with a second admin's approval.", action: "Review company rules", needsCompanyRules: true },
     { to: "/app/admin/how-we-work", label: "How we work", area: "how-we-work", blurb: "Company defaults for steps and models, design review and learning, and the locks projects can't change.", action: "Review how we work" },
     { to: "/app/admin/projects", label: "Projects", area: "projects", blurb: "Each project's repositories, people, Slack links and working branches.", action: "Review projects" },
     { to: "/app/admin/agents", label: "Agents", area: "agents", blurb: "Agent versions and the company's agent guardrails.", action: "Review agents" },
@@ -30,7 +31,7 @@ export const ADMIN_SECTIONS: readonly AdminSection[] = [
     { to: "/app/admin/health", label: "Health", area: "health", blurb: "Review stored, shared runtime qualification. No active checks run here.", action: "Review Rovara service status" },
   ] },
 ];
-/** The items a viewer is offered: the owner-only page only to an owner, the second opinion page only while it exists on this install, the Billing page only while the device's billing switch is on. */
-export function visibleSections(role: "owner" | "admin" | "member", secondReviewOff: boolean, billingOn = false): AdminSection[] {
-  return ADMIN_SECTIONS.map(section => ({ ...section, items: section.items.filter(item => !(item.ownerOnly === true && role !== "owner") && !(item.needsSecondReview === true && secondReviewOff) && !(item.needsBilling === true && !billingOn)) })).filter(section => section.items.length > 0);
+/** The items a viewer is offered: the owner-only page only to an owner, the second opinion page only while it exists on this install, the Billing page only while the device's billing switch is on, Company rules only while the nav answer says its switch (`si`) is on. */
+export function visibleSections(role: "owner" | "admin" | "member", secondReviewOff: boolean, billingOn = false, companyRulesOn = false): AdminSection[] {
+  return ADMIN_SECTIONS.map(section => ({ ...section, items: section.items.filter(item => !(item.ownerOnly === true && role !== "owner") && !(item.needsSecondReview === true && secondReviewOff) && !(item.needsBilling === true && !billingOn) && !(item.needsCompanyRules === true && !companyRulesOn)) })).filter(section => section.items.length > 0);
 }

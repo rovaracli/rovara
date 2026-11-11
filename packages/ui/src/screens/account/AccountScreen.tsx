@@ -8,6 +8,7 @@ import { Button } from "../../design/Button.js";
 import { PageHeader } from "../../design/PageHeader.js";
 import { Skeleton } from "../../design/Skeleton.js";
 import { VisibleText } from "../../design/VisibleText.js";
+import { CompanyRulesLink } from "../admin/company-rules/CompanyRulesLink.js";
 
 const CHOICES: ReadonlyArray<{ value: NotifyChannel; label: string }> = [{ value: "slack", label: "Slack direct message" }, { value: "email", label: "Email" }, { value: "both", label: "Both" }];
 
@@ -43,5 +44,6 @@ export function AccountScreen() {
    {error && <p role="alert"><VisibleText text={error} /></p>}
    {saved && <p role="status"><VisibleText text={saved} /></p>}
   </section>
+  <CompanyRulesLink />
  </section>;
 }

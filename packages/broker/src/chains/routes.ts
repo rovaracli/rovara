@@ -12,7 +12,7 @@ import {
   confirmUrlFor, createPendingChange, registerApprovalSubjectHandler, registerApproverRule,
   type ApprovalDependencies, type ApprovalRecord, type ApproverSpec, type ChainChangeSubject,
 } from "../agents/approvals.js";
-import { orgAdmins } from "../agents/changes.js";
+import { orgAdmins, orgOwnerOrAdmin } from "../agents/changes.js";
 import { lessSafeChanges } from "../agents/less-safe.js";
 import { holdingOwnerCap, jsonBody, logRecheckFailed, markRequest, parseBody, waitingReplay, type AgentRouteDependencies } from "../agents/routes.js";
 import { resolveAgent, type RecipeProblemsError } from "../agents/store.js";
@@ -154,12 +154,40 @@ async function chainApprovers(deps: ChainRouteDependencies, chain: ChainRecord):
   return { kind: "rule", rule: "chain_publish", candidates: [...candidates] };
 }
 
+/** Whether the chain has a company-wide share stored now (read live). */
+export async function chainHasCompanyShare(deps: { chains?: ChainStore }, orgId: OrgId, chainId: string): Promise<boolean> {
+  if (deps.chains === undefined) return false;
+  return (await deps.chains.listShares(orgId, chainId)).some((share) => (share.principal as { kind?: unknown } | undefined)?.kind === "org");
+}
+
+/** What a company-wide chain share request is bound to besides the share set: the version that runs when it is asked (0 = none yet) and its digest (as for an agent's). */
+async function chainVersionBinding(chains: ChainStore, chain: ChainRecord): Promise<{ expectedCurrentVersion: number; versionDigest?: string }> {
+  if (chain.currentVersion === undefined) return { expectedCurrentVersion: 0 };
+  const digest = (await chains.getVersion(chain.orgId, chain.chainId, chain.currentVersion))?.digest;
+  return { expectedCurrentVersion: chain.currentVersion, ...(digest === undefined ? {} : { versionDigest: digest }) };
+}
+
+/** Refuses applying a publish or rollback decided by someone who is not an org owner or admin once the chain has been shared company-wide (owner decision 92). */
+async function requireOwnerOrAdminWhileShared(deps: ChainApprovalDeps, record: ApprovalRecord, chainId: string, by: string): Promise<void> {
+  if (!await chainHasCompanyShare(deps, record.orgId, chainId)) return;
+  const role = await orgRoleOf(deps, record.orgId, by);
+  if (role !== "owner" && role !== "admin") throw stale("The chain was shared with your company after this was decided, so an organization owner or admin has to confirm it. Ask again.");
+}
+
+/**
+ * Who is asked to confirm a company-wide share of a chain: the org's owners and admins only (owner decision 92). The chain's own member owner and a
+ * project's maintainers ask; they never decide. The rule `chain_company_share` is the live org owner-or-admin check.
+ */
+async function companyShareApprovers(deps: ChainRouteDependencies, chain: ChainRecord): Promise<ApproverSpec> {
+  return { kind: "rule", rule: "chain_company_share", candidates: await orgAdmins(deps, chain.orgId) };
+}
+
 async function waitForPerson(
-  deps: ChainRouteDependencies, caller: AgentCaller, chain: ChainRecord, requestId: string, subject: ChainChangeSubject, changes: string[],
+  deps: ChainRouteDependencies, caller: AgentCaller, chain: ChainRecord, requestId: string, subject: ChainChangeSubject, changes: string[], approvers?: ApproverSpec,
 ): Promise<StatusReply> {
   // A change that needs a person can't be confirmed on an archived chain, so it is not asked for.
   if (chain.status === "archived") throw agentXError("CHAIN_UNAVAILABLE", `${chain.name} is archived, so a change that needs confirmation can't be made. Unarchive it first, then ask again.`);
-  const record = await createPendingChange(deps, { orgId: caller.orgId, requestId, requestedBy: caller.developerId, subject, changes, approvers: await chainApprovers(deps, chain) });
+  const record = await createPendingChange(deps, { orgId: caller.orgId, requestId, requestedBy: caller.developerId, subject, changes, approvers: approvers ?? (await chainHasCompanyShare(deps, chain.orgId, chain.chainId) ? await companyShareApprovers(deps, chain) : await chainApprovers(deps, chain)) });
   // A replay of a request that was decided since is not waiting any more.
   if (record.status !== "PENDING") throw agentXError("APPROVAL_CLOSED", "this request was already decided");
   return waiting({ confirmUrl: confirmUrlFor(deps, record), changes: record.changes });
@@ -387,8 +415,8 @@ async function putShares(deps: ChainRouteDependencies, caller: AgentCaller, chai
   if (widens) {
     // Sharing with everyone, or letting everyone do more, waits for a person on the page, as an agent's does.
     const can = { view: "see", use: "run", edit: "change" }[wanted.level];
-    const subject: ChainChangeSubject = { kind: "chain_share", chainId: chain.chainId, shares, expectedSharesRevision: chain.sharesRevision ?? 0 };
-    return waitForPerson(deps, caller, chain, input.requestId, subject, [`Shares ${chain.name} with everyone in your company, who can then ${can} it`]);
+    const subject: ChainChangeSubject = { kind: "chain_share", chainId: chain.chainId, shares, expectedSharesRevision: chain.sharesRevision ?? 0, ...await chainVersionBinding(deps.chains, chain) };
+    return waitForPerson(deps, caller, chain, input.requestId, subject, [`Shares ${chain.name} with everyone in your company, who can then ${can} it`], await companyShareApprovers(deps, chain));
   }
   return { shares: await setChainShares(accessOf(deps), { orgId: chain.orgId, chainId: chain.chainId, shares, by: caller.developerId, request: mark }) };
 }
@@ -603,6 +631,7 @@ async function confirmPublish(deps: ChainApprovalDeps, record: ApprovalRecord): 
   const [problem] = checked.problems;
   if (problem !== undefined) throw agentXError("CONFIG_INVALID", formatChainProblem(problem));
   if (chainDigest(checked.pinned) !== subject.digest) throw stale(STALE_DRAFT);
+  await requireOwnerOrAdminWhileShared(deps, record, chain.chainId, by);
   await chains.publish({
     orgId: record.orgId, chainId: chain.chainId, expectedDraftRevision: subject.draftRevision, pinned: checked.pinned, digest: subject.digest,
     guardrailsRevision: checked.guardrailsRevision, by, expectedCurrentVersion: subject.expectedCurrentVersion ?? null, safety: "less_safe",
@@ -624,6 +653,7 @@ async function confirmRollback(deps: ChainApprovalDeps, record: ApprovalRecord):
   const checked = await validatePinnedChainForOrg(deps, asker, record.orgId, target.definition);
   const [problem] = checked.problems;
   if (problem !== undefined) throw agentXError("CONFIG_INVALID", formatChainProblem(problem));
+  await requireOwnerOrAdminWhileShared(deps, record, chain.chainId, by);
   await chains.rollback({ orgId: record.orgId, chainId: chain.chainId, version: subject.version, expectedCurrentVersion: subject.expectedCurrentVersion, guardrailsRevision: checked.guardrailsRevision, by });
   await deps.chainTriggers?.recheckTriggersForTarget(record.orgId, { kind: "chain", chainId: chain.chainId });
 }
@@ -633,6 +663,9 @@ async function confirmShare(deps: ChainApprovalDeps, record: ApprovalRecord): Pr
   const subject = record.subject as Extract<ChainChangeSubject, { kind: "chain_share" }>;
   const chain = await liveChain(deps, record, subject.chainId);
   if ((chain.sharesRevision ?? 0) !== subject.expectedSharesRevision) throw stale("Who this chain is shared with changed after this was asked. Share again.");
+  // Bound to the version the person was shown (as for an agent's share): one published since, or a request asked before it was bound, is asked again.
+  const binding = await chainVersionBinding(chainsOf(deps), chain);
+  if (subject.expectedCurrentVersion !== binding.expectedCurrentVersion || subject.versionDigest !== binding.versionDigest) throw stale("The chain changed since this was asked. Share again.");
   await setChainShares({ ...deps, store: chainsOf(deps) }, { orgId: record.orgId, chainId: chain.chainId, shares: subject.shares, by });
 }
 
@@ -646,7 +679,16 @@ async function managesChain(deps: ChainApprovalDeps, record: ApprovalRecord, cal
 
 /** Registers what Task 4 makes confirmable: the `chain_publish` rule and the handlers for a publish and a rollback. Safe to call more than once. */
 export function registerChainApprovals(): void {
-  registerApproverRule("chain_publish", (deps, record, caller) => managesChain(deps, record as ApprovalRecord, caller));
+  // A company-wide chain share is decided by an org owner or admin only (owner decision 92). A request asked before this, under `chain_publish`, is held to the same
+  // check, judged now, so the chain's owner or a maintainer in its stored candidates can't decide it.
+  registerApproverRule("chain_publish", async (deps, record, caller) => {
+    const subject = (record as ApprovalRecord).subject as { kind?: unknown; chainId?: unknown };
+    if (subject.kind === "chain_share") return orgOwnerOrAdmin(deps, record, caller);
+    // A publish or rollback of a chain the whole company can use is decided by an org owner or admin, judged now (owner decision 92), as for an agent.
+    if ((subject.kind === "chain_publish" || subject.kind === "chain_rollback") && typeof subject.chainId === "string" && record.orgId === caller.orgId && await chainHasCompanyShare(deps, record.orgId, subject.chainId)) return orgOwnerOrAdmin(deps, record, caller);
+    return managesChain(deps, record as ApprovalRecord, caller);
+  });
+  registerApproverRule("chain_company_share", (deps, record, caller) => orgOwnerOrAdmin(deps, record, caller));
   registerApprovalSubjectHandler("chain_publish", (deps, record) => confirmPublish(deps, record as ApprovalRecord));
   registerApprovalSubjectHandler("chain_rollback", (deps, record) => confirmRollback(deps, record as ApprovalRecord));
   registerApprovalSubjectHandler("chain_share", (deps, record) => confirmShare(deps, record as ApprovalRecord));

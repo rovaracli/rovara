@@ -2,7 +2,8 @@
 // deployment without approvals, and an error that must not be swallowed.
 import { randomUUID } from "node:crypto";
 import { describe, expect, it, vi, type Mock } from "vitest";
-import { agentXError, setupDraftKey, setupItemsOf as itemsOf, type AppProjectDetail, type SetupProposal, sanitizeSetupProposal } from "@rovara-code/contracts";
+import { agentXError, setupDraftKey, setupItemsOf as itemsOf, type SetupProposal, sanitizeSetupProposal } from "@rovara-code/contracts";
+import { type AppProjectDetail } from "@agentx/cloud-contracts";
 import { StoredProjectDefinitionSchema } from "@agentx/cloud-contracts";
 import { ManagedByFileError } from "../../packages/broker/src/org/project-settings.js";
 import { DRAFT_PROPOSE_WORDS, applySetupDraft, type SetupDraftDependencies } from "../../packages/broker/src/rovara-code/setup-draft.js";

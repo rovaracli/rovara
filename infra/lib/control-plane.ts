@@ -8,6 +8,7 @@ import { mergeRoleStatementsOnSynth } from "./merge-role-statements.js";
 import { EgressAlarms } from "./egress-alarms.js";
 import { attachLessonsWorker, attachTeamRecord } from "./team-record-wiring.js";
 import { attachSavedEnvImages } from "./saved-env-images.js";
+import { CompanyImageMirror } from "./company-image-mirror.js";
 import { attachServiceCatalogImages } from "./service-catalog-images.js";
 import { attachProjectRegistries } from "./registry-wiring.js";
 import type { RegistryDomain } from "./registry-access.js";
@@ -1176,7 +1177,15 @@ export class ControlPlaneStack extends Stack {
     // Team record (wire-team-record): the whole record, behind the switch `agentxTeamRecord=enabled` (off by default: this block does not run and nothing changes).
     const teamRecordResources = props?.teamRecord !== undefined && naming.env !== undefined ? attachTeamRecord(this, { env: naming.env, region: props.deploymentRegion ?? "us-east-1", context: props.teamRecord, broker, slackIngress, dispatcher, scheduleRole: githubRecoveryRole, alarms: { name: (suffix) => naming.alarmName(suffix), action: notifyOperator, metricsNamespace: naming.metricsNamespace }, ...(props.reservedConcurrency === false ? { reservedConcurrency: false } : {}) }) : undefined;
     // Saved environment images (SH22): the registry side (KMS, creation template, push/pull/manage roles). Nothing pushes until the broker's `sv` setting is on.
-    if (naming.env !== undefined) BrokerNames.of(broker).add("savedEnvKey", attachSavedEnvImages(this, { env: naming.env, brokerRole: broker.role!, cloudFormationRoleName: naming.cloudFormationRoleName, ...(props?.savedEnv?.kmsKeyArn === undefined ? {} : { kmsKeyArn: props.savedEnv.kmsKeyArn }), ...(props?.savedEnv?.registryScan === true ? { registryScanning: "basic" as const } : {}) }).kmsKeyId);
+    if (naming.env !== undefined) {
+      // Company-approved images (0.5.15, switch `pj`): the mirror function copies an approved image into a repository of this registry. Its own role (not the push or manage role) is the only one it assumes, and the template's repository policy names that role.
+      const companyImageMirror = new CompanyImageMirror(this, "CompanyImageMirror", { env: naming.env, account: this.account, region: this.region, partition: this.partition, state });
+      const savedEnvImages = attachSavedEnvImages(this, { env: naming.env, brokerRole: broker.role!, cloudFormationRoleName: naming.cloudFormationRoleName, mirrorRoleArn: companyImageMirror.role.roleArn, ...(props?.savedEnv?.kmsKeyArn === undefined ? {} : { kmsKeyArn: props.savedEnv.kmsKeyArn }), ...(props?.savedEnv?.registryScan === true ? { registryScanning: "basic" as const } : {}) });
+      BrokerNames.of(broker).add("savedEnvKey", savedEnvImages.kmsKeyId);
+      companyImageMirror.function.addEnvironment("SAVED_ENV_KMS_KEY_ARN", savedEnvImages.kmsKeyArn);
+      companyImageMirror.function.grantInvoke(broker);
+      BrokerNames.of(broker).add("companyImageMirrorFunction", companyImageMirror.function.functionName);
+    }
     // Test services (TS19): the catalog's image repositories and their key. NOT behind `TestServicesEnabled` (switch `tx`): the repositories have fixed names and are retained, so a condition would break turning the switch on, off and on again.
     if (naming.env !== undefined) attachServiceCatalogImages(this, { env: naming.env, repositories: SERVICE_CATALOG_REPOSITORIES });
     // N9 (INTG2): a project's private package registries, behind `rovaraCodeArtifactDomains` (off by default: this does not run and nothing changes).

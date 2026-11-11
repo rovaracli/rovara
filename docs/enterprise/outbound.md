@@ -30,7 +30,7 @@ Enterprise: An Enterprise install calls the customer's own Bedrock through a VPC
 
 Enterprise: These names are in the default DNS firewall allow-list that agent machines use, which today is the same list on every install that runs the firewall. An Enterprise install should replace it with a list built from its own settings (registries, code host, build system); that is a follow-up (the list is not yet built from settings).
 
-- The default list of package, image and OS mirror hosts agent machines may resolve. (Docker Hub's registry host is also named by the company image reader, which folds it into docker.io, and by the tag lookup that asks it.) (only in `vendor/rovara-code/packages/contracts/src/default-allow-domains.ts`, `packages/broker/src/test-env/company-images.ts`, `packages/broker/src/test-env/company-image-resolver.ts`)
+- The default list of package, image and OS mirror hosts agent machines may resolve. (GitHub's, Docker Hub's token and API hosts are also the company image registry allowlist's, in the file named for it.) (only in `vendor/rovara-code/packages/contracts/src/default-allow-domains.ts`, `packages/cloud-contracts/src/company-image-mirror.ts`, `packages/broker/src/test-env/company-images.ts`)
   `*.crates.io`, `*.data.mcr.microsoft.com`, `*.ghcr.io`, `*.githubusercontent.com`, `*.rubygems.org`, `archive.ubuntu.com`, `auth.docker.io`, `crates.io`, `deb.debian.org`, `dl-cdn.alpinelinux.org`, `docker-images-prod.6aa30f8b08e16409b46e0173d6de2f56.r2.cloudflarestorage.com`, `files.pythonhosted.org`, `ghcr.io`, `mcr.microsoft.com`, `ports.ubuntu.com`, `production.cloudflare.docker.com`, `production.cloudfront.docker.com`, `proxy.golang.org`, `pypi.org`, `registry-1.docker.io`, `registry.yarnpkg.com`, `repo1.maven.org`, `rubygems.org`, `security.debian.org`, `security.ubuntu.com`, `sum.golang.org`
 - Maven Central: in the default list, and the usual wrapper download host the environment detector compares a repository's wrapper properties with. (only in `vendor/rovara-code/packages/contracts/src/default-allow-domains.ts`, `packages/worker/src/env-detect/java.ts`)
   `repo.maven.apache.org`
@@ -79,15 +79,15 @@ Enterprise: Reached by the release pipeline, the installer or the CLI at build o
   `awscli.amazonaws.com`, `nodejs.org`
 - GitHub Actions' OIDC issuer, named as the federated provider in the release bundle-signing role's trust policy (an issuer name in a condition key, not a call; 2026-11-03: 0.5.2 batch). (only in `infra/lib/bundle-signing.ts`)
   `token.actions.githubusercontent.com`
-- The upstream registry of the image pull-through cache rule. (only in `infra/lib/access.ts`)
+- The upstream registry of the image pull-through cache rule, and one of the registries a company-approved test image may be copied from (the allowlist names it). (only in `infra/lib/access.ts`, `packages/cloud-contracts/src/company-image-mirror.ts`)
   `public.ecr.aws`
 
 ## Registries company-approved test images are copied from
 
-Enterprise: The broker's lookup of an image tag contacts these registries (and a company's own extra registries, added by a company admin and kept per company) only when an admin names or approves an image, and only the host the allowlist names for each registry, after the name has resolved to public addresses only. A worker never contacts them. An install whose control plane cannot reach the public internet cannot use images from these registries.
+Enterprise: The broker's lookup of an image tag and the company image mirror function's copy contact these registries, and a company's own extra registries (added by a company admin, kept per company), only when an admin names or approves an image, and only the host the allowlist names for each registry and its token service, after the name has resolved to public addresses only. A worker never contacts them: it pulls the copy from the install's own registry. An install whose control plane cannot reach the public internet cannot use images from these registries.
 
-- Docker Hub, the default registry of a company-approved test image (`postgres:18` is `docker.io/library/postgres:18`), and the other spelling of it the reader folds into `docker.io` (the admin screen shows it as Docker Hub). (only in `packages/broker/src/test-env/company-images.ts`, `packages/ui/src/screens/admin/how-we-work/CompanyImagesScreen.tsx`)
-  `docker.io`, `index.docker.io`
+- The registries a company-approved test image may come from (Docker Hub and Quay, beside GitHub's above and Amazon's public registry below), by name, and the other spellings of Docker Hub that are refused as not another registry. (only in `packages/cloud-contracts/src/company-image-mirror.ts`, `packages/broker/src/test-env/company-images.ts`, `packages/ui/src/screens/admin/how-we-work/CompanyImagesScreen.tsx`)
+  `docker.io`, `hub.docker.com`, `index.docker.io`, `quay.io`, `registry.docker.io`
 
 ## Benchmark tooling
 
@@ -141,3 +141,4 @@ Enterprise: Not hosts written in the code but names a customer gives it. Each lo
 - Connector endpoints: the check that a company's MCP connector address resolves to public addresses only, before the broker saves it or calls it. (only in `packages/broker/src/connections/endpoint-check.ts`)
 - The gateway's endpoint check: the same public-address test for the address a connector call goes to. (only in `packages/gateway/src/endpoint.ts`)
 - Test accounts (switch `ta`, off by default): the test-account proxy of a sealed check round resolves the one name a CONNECT asks for, only if it is on that run's list of the customer's own test account hosts (at most 8), and refuses it when any answer is a private, loopback, link-local or metadata address. The proxy then connects to the address it checked, on port 443 only. Nothing else is asked, and nothing is sent to Rovara. (only in `packages/worker/src/test-account-proxy.ts`)
+- Company-approved test images (switch `pj`): the check that a registry's name (and its token service, and a blob host it redirects to) resolves to public addresses only, before the broker looks a tag up or the mirror function copies an image. A name that resolves to a private, loopback, link-local or metadata address, or to nothing, is refused, and nothing is sent to it. (only in `packages/broker/src/aws/company-image-mirror-handler.ts`, `packages/broker/src/test-env/company-image-resolver.ts`)

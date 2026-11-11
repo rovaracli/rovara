@@ -14,8 +14,8 @@
 // is an ordinary approval. The caller (the confirmation page route) fences the two people's live authority in its own transaction; this module checks only what it is handed.
 import { createHash } from "node:crypto";
 import { DeleteCommand, GetCommand, PutCommand, TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
+import { EDITION_ENV_VAR, type CompanyImageMirrorJob } from "@agentx/cloud-contracts";
 import { INDEX_EXPIRY_ATTRIBUTE, SetupValueSourceSchema, TestEnvProveReportSchema, TestEnvironmentBodySchema, TestEnvironmentSchema, agentXError, mediaTierAllowed, projectAllows, projectMetaKey, projectPk, testEnvApprovalRisk, testEnvDigest, testEnvIsProved, testEnvLessSafeChanges, testEnvProdDenyViolations, type DecisionRisk, type OrgId, type ProjectRole, type TestEnvLessSafeField, type TestEnvironment, type TestEnvironmentBody, type TestEnvSeedTrust, catalogEntryById, type VerifiedCatalog } from "@rovara-code/contracts";
-import { EDITION_ENV_VAR } from "@agentx/cloud-contracts";
 import { auditOccurrence, auditProjectTestEnvChanged } from "../audit/events.js";
 import { flushAuditEvents } from "../audit/flush.js";
 import { auditPending, tryAuditEvent, type AuditDeps, type TransactItem } from "../audit/outbox.js";
@@ -50,6 +50,8 @@ export interface TestEnvDeps extends AuditDeps {
   env?: NodeJS.ProcessEnv;
   /** Slice 3: the install's fixture store (a factory over the production list). A fake is proposed and approved only for a set it says is approved for the company; without it none is. */
   fixtureStore?: FixtureStoreFactory | undefined;
+  /** Company images (`pj`): starts the copier for an approved image with no finished copy. Absent: the broker's own setting (`COMPANY_IMAGE_MIRROR_FUNCTION_NAME`), which an install without the mirror does not have. */
+  companyImageMirrorStart?: ((job: CompanyImageMirrorJob) => Promise<void>) | undefined;
 }
 
 /**

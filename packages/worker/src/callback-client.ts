@@ -98,6 +98,8 @@ export function createWorkerCallbackSinks(input: {
   nightlyResult: (body: unknown) => Promise<unknown>;
   /** Test services (slice 3): a fresh read address of an approved fixture set the run's plan names (`{ digest }` in, the broker's answer out, unparsed). The address is a credential for 15 minutes: only fixture-delivery.ts handles the answer. */
   fixtureSet: (body: { digest: string }) => Promise<unknown>;
+  /** Company-approved images (switch `pj`): the pull login of a mirrored image the run's plan names (`{ imageId }` in, the broker's answer out, unparsed). The login is a registry credential: it is never logged. */
+  companyImageLogin: (body: { imageId: string }) => Promise<unknown>;
   authorizeModelFallback:(request:TaskModelFallbackRequest)=>Promise<TaskModelFallbackAuthorization>;
   /** #342: tells the control plane why the task stopped using its owner's ChatGPT plan. */
   chatGptFallback: (reason: "limit" | "revoked" | "model") => Promise<void>;
@@ -247,6 +249,7 @@ export function createWorkerCallbackSinks(input: {
     setupAgent: async (body) => postForResult("setup-agent", body),
     nightlyResult: async (body) => postForResult("nightly-result", body),
     fixtureSet: async (body) => postForResult("fixture-set", body),
+    companyImageLogin: async (body) => postForResult("company-image-login", body),
     authorizeModelFallback:async(raw)=>{
       const request=TaskModelFallbackRequestSchema.parse(raw),binding=input.invocation.kind==="task"?input.invocation.payload.modelPolicy:undefined;
       if(binding===undefined||!taskModelPolicyBindingsMatch(request.binding,binding))throw agentXError("RUNTIME_UNAVAILABLE","The task's fallback authorization binding is unavailable.");

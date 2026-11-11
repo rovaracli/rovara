@@ -79,7 +79,7 @@ describe("confirming a company-wide agent share (decision 91)", () => {
     expect((await w.call(MAYA, "PUT", `/v1/app/agents/${agentId}/shares`, { shares: [COMPANY] })).status).toBe(202);
     const [approval] = w.approvals();
     const refused = await w.approveOnPage(MAYA, approval!.approvalId);
-    expect(refused.statusCode, refused.body).not.toBe(200);
+    expect(refused.statusCode, refused.body).toBe(403);
     expect(w.status(approval!.approvalId)).toBe("PENDING");
     expect(await w.store.listShares(TEST_ORG, agentId)).toEqual([]);
   });
@@ -90,7 +90,7 @@ describe("confirming a company-wide agent share (decision 91)", () => {
     expect((await w.call(MAX, "PUT", `/v1/app/agents/${agentId}/shares`, { shares: [COMPANY] })).status).toBe(202);
     const [approval] = w.approvals();
     const refused = await w.approveOnPage(MAX, approval!.approvalId);
-    expect(refused.statusCode, refused.body).not.toBe(200);
+    expect(refused.statusCode, refused.body).toBe(403);
     expect(w.status(approval!.approvalId)).toBe("PENDING");
     expect(await w.store.listShares(TEST_ORG, agentId)).toEqual([]);
   });
@@ -110,7 +110,7 @@ describe("confirming a company-wide agent share (decision 91)", () => {
     expect(token.status).toBe(401);
     expect(token.body.error).toMatchObject({ code: "REAUTH_REQUIRED" });
     // A sign-in from eleven minutes ago is too old.
-    expect((await w.approveOnPage(DANA, id, 11 * 60)).statusCode).not.toBe(200);
+    expect((await w.approveOnPage(DANA, id, 11 * 60)).statusCode).toBe(401);
     expect(w.status(id)).toBe("PENDING");
     expect(await w.store.listShares(TEST_ORG, agentId)).toEqual([]);
     // A fresh sign-in on the page confirms it.
@@ -136,5 +136,107 @@ describe("confirming a company-wide agent share (decision 91)", () => {
     expect(saved.status, JSON.stringify(saved.body)).toBe(200);
     expect(await w.store.listShares(TEST_ORG, agentId)).toHaveLength(2);
     expect(w.approvals()).toHaveLength(0);
+  });
+});
+
+describe("decision 92: a company-shared agent's change and a company-wide chain share", () => {
+  const WRITE: RecipeOverlay = { ...SAFE, tools: [{ connector: { type: "linear" }, access: "read_write" }] };
+  const putDraft = async (w: Awaited<ReturnType<typeof world>>, who: Developer, agentId: AgentId, overlay: RecipeOverlay) => {
+    const draft = await w.call(who, "GET", `/v1/app/agents/${agentId}/draft`);
+    return w.call(who, "PUT", `/v1/app/agents/${agentId}/draft`, { expectedRevision: (draft.body.draft as { revision: number }).revision, overlay });
+  };
+  const publish = async (w: Awaited<ReturnType<typeof world>>, who: Developer, agentId: AgentId) => {
+    const draft = await w.call(who, "GET", `/v1/app/agents/${agentId}/draft`);
+    return w.call(who, "POST", `/v1/app/agents/${agentId}/publish`, { expectedRevision: (draft.body.draft as { revision: number }).revision });
+  };
+  /** An agent of `who`'s with version 1 published and the company share an admin confirmed earlier stored. */
+  const sharedAgentOf = async (w: Awaited<ReturnType<typeof world>>, who: Developer) => {
+    const agentId = await w.agentOf(who);
+    expect((await publish(w, who, agentId)).status).toBe(200);
+    await w.store.replaceShares({ orgId: TEST_ORG, agentId, upsert: [{ principal: { kind: "org" }, level: "use" }], remove: [], expectedSharesRevision: 0, by: DANA.developerId });
+    return agentId;
+  };
+
+  it("a non-admin author and a maintainer are refused on the page for a shared agent's less-safe publish", async () => {
+    const w = await world();
+    const agentId = await sharedAgentOf(w, MAYA);
+    expect((await putDraft(w, MAYA, agentId, WRITE)).status).toBe(200);
+    expect((await publish(w, MAYA, agentId)).status).toBe(202);
+    const [approval] = w.approvals();
+    const refused = await w.approveOnPage(MAYA, approval!.approvalId);
+    expect(refused.statusCode, refused.body).toBe(403);
+    expect(w.status(approval!.approvalId)).toBe("PENDING");
+    expect((await w.store.get(TEST_ORG, agentId))?.currentVersion).toBe(1);
+    // A maintainer of web who owns a project's shared agent is refused the same way.
+    const web = await w.agentOf(MAX, { owner: { kind: "project", project: "web" }, accountable: { developerId: MAX.developerId } });
+    expect((await publish(w, MAX, web)).status).toBe(200);
+    await w.store.replaceShares({ orgId: TEST_ORG, agentId: web, upsert: [{ principal: { kind: "org" }, level: "use" }], remove: [], expectedSharesRevision: 0, by: DANA.developerId });
+    expect((await putDraft(w, MAX, web, WRITE)).status).toBe(200);
+    expect((await publish(w, MAX, web)).status).toBe(202);
+    const webApproval = w.approvals().find((record) => record.approvalId !== approval!.approvalId)!;
+    expect((await w.approveOnPage(MAX, webApproval.approvalId)).statusCode).toBe(403);
+    expect((await w.store.get(TEST_ORG, web))?.currentVersion).toBe(1);
+  });
+
+  it("an admin author applies their own less-safe change to a shared agent only on the page with a fresh sign-in", async () => {
+    const w = await world();
+    const agentId = await sharedAgentOf(w, DANA);
+    expect((await putDraft(w, DANA, agentId, WRITE)).status).toBe(200);
+    const asked = await publish(w, DANA, agentId);
+    expect(asked.status, JSON.stringify(asked.body)).toBe(202);
+    const id = w.approvals()[0]!.approvalId;
+    const token = await w.call(DANA, "POST", `/v1/app/approvals/${id}/decide`, { decision: "APPROVE" });
+    expect(token.status).toBe(401);
+    expect(token.body.error).toMatchObject({ code: "REAUTH_REQUIRED" });
+    expect((await w.approveOnPage(DANA, id, 11 * 60)).statusCode).toBe(401);
+    expect((await w.store.get(TEST_ORG, agentId))?.currentVersion).toBe(1);
+    const done = await w.approveOnPage(DANA, id);
+    expect(done.statusCode, done.body).toBe(200);
+    expect(w.status(id)).toBe("APPROVED_DONE");
+    expect((await w.store.get(TEST_ORG, agentId))?.currentVersion).toBe(2);
+  });
+
+  it("an unshared agent's author still confirms their own less-safe publish on the page, as before", async () => {
+    const w = await world();
+    const agentId = await w.agentOf(MAYA);
+    expect((await publish(w, MAYA, agentId)).status).toBe(200);
+    expect((await putDraft(w, MAYA, agentId, WRITE)).status).toBe(200);
+    expect((await publish(w, MAYA, agentId)).status).toBe(202);
+    expect((await w.approveOnPage(MAYA, w.approvals()[0]!.approvalId)).statusCode).toBe(200);
+    expect((await w.store.get(TEST_ORG, agentId))?.currentVersion).toBe(2);
+  });
+
+  const chainOf = async (w: Awaited<ReturnType<typeof world>>, who: Developer, extra: Record<string, unknown> = {}) => {
+    const created = await w.call(who, "POST", "/v1/app/chains", { name: `Chain ${randomUUID().slice(0, 8)}`, ...extra });
+    expect(created.status, JSON.stringify(created.body)).toBe(201);
+    return (created.body.chain as { chainId: string }).chainId;
+  };
+
+  it("a non-admin chain author and a maintainer are refused on the page for a company-wide chain share", async () => {
+    const w = await world();
+    const mine = await chainOf(w, MAYA);
+    expect((await w.call(MAYA, "PUT", `/v1/app/chains/${mine}/shares`, { shares: [COMPANY] })).status).toBe(202);
+    const web = await chainOf(w, MAX, { owner: { kind: "project", project: "web" }, accountable: { developerId: MAX.developerId } });
+    expect((await w.call(MAX, "PUT", `/v1/app/chains/${web}/shares`, { shares: [COMPANY] })).status).toBe(202);
+    const [mineApproval, webApproval] = w.approvals();
+    expect((await w.approveOnPage(MAYA, mineApproval!.approvalId)).statusCode).toBe(403);
+    expect((await w.approveOnPage(MAX, webApproval!.approvalId)).statusCode).toBe(403);
+    expect(w.approvals().map((record) => record.status)).toEqual(["PENDING", "PENDING"]);
+  });
+
+  it("an admin chain author confirms their own company-wide share only on the page with a fresh sign-in", async () => {
+    const w = await world();
+    const chainId = await chainOf(w, DANA);
+    const asked = await w.call(DANA, "PUT", `/v1/app/chains/${chainId}/shares`, { shares: [COMPANY] });
+    expect(asked.status, JSON.stringify(asked.body)).toBe(202);
+    const id = w.approvals()[0]!.approvalId;
+    const token = await w.call(DANA, "POST", `/v1/app/approvals/${id}/decide`, { decision: "APPROVE" });
+    expect(token.status).toBe(401);
+    expect(token.body.error).toMatchObject({ code: "REAUTH_REQUIRED" });
+    expect((await w.approveOnPage(DANA, id, 11 * 60)).statusCode).toBe(401);
+    expect(w.status(id)).toBe("PENDING");
+    const done = await w.approveOnPage(DANA, id);
+    expect(done.statusCode, done.body).toBe(200);
+    expect(w.status(id)).toBe("APPROVED_DONE");
   });
 });

@@ -42,7 +42,7 @@ export const waitingTicketHomeSource: HomeCardSource = {
       const base = `${origin}/v1/app/projects/${encodeURIComponent(project)}/intake`;
       for (const item of waiting) {
         cards.push({
-          cardId: `waiting_ticket:${hashOf(caller.orgId, project)}_${item.itemId}`, kind: "waiting_ticket",
+          project, cardId: `waiting_ticket:${hashOf(caller.orgId, project)}_${item.itemId}`, kind: "waiting_ticket",
           title: fit(`${trackerName(item.system)} ${item.id}: `, item.title === "" ? "(no title)" : item.title),
           reason: fit(`Waiting to start in ${quoted(project)}. `, reasonWords(item.reason ?? "outsider")),
           at: item.since,
@@ -88,7 +88,7 @@ export const intakeSourceHomeSource: HomeCardSource = {
         const code = source.lastError ?? "SEARCH_FAILED";
         const words = Object.hasOwn(INTAKE_SOURCE_ERROR_WORDS, code) ? INTAKE_SOURCE_ERROR_WORDS[code]! : INTAKE_SOURCE_ERROR_WORDS["SEARCH_FAILED"]!;
         cards.push({
-          cardId: `intake_source:${hashOf(caller.orgId, project)}_${source.sourceId}`, kind: "intake_source",
+          project, cardId: `intake_source:${hashOf(caller.orgId, project)}_${source.sourceId}`, kind: "intake_source",
           title: fit(`Rovara can't read the ${trackerName(intakeSystemOf(source.ref))} tickets for `, quoted(project)),
           reason: fit("", `${words} Nothing was started, and nothing will be started twice.`),
           at: new Date(source.failingSince).toISOString(),

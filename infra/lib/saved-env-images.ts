@@ -25,7 +25,8 @@
 // or what is in an image (the worker's build). With the feature off nothing pushes, and the empty template and roles cost nothing.
 import { Aws, CfnOutput, Duration, Stack, Token, aws_ecr as ecr, aws_iam as iam, aws_kms as kms } from "aws-cdk-lib";
 import { Construct } from "constructs";
-import { SAVED_ENV_KEEP_DEFAULT, SAVED_ENV_PUSH_SESSION_SECONDS, savedEnvCreateRoleName, savedEnvLifecyclePolicy, savedEnvManageRoleName, savedEnvPullRoleName, savedEnvPushRoleName, savedEnvRepositoriesArn, savedEnvRepositoryPolicy, savedEnvRepositoryPrefix, SAVED_ENV_MANAGE_ACTIONS, SAVED_ENV_PULL_ACTIONS, SAVED_ENV_PUSH_ACTIONS } from "@rovara-code/contracts";
+import { SAVED_ENV_KEEP_DEFAULT, SAVED_ENV_PUSH_SESSION_SECONDS, savedEnvCreateRoleName, savedEnvLifecyclePolicy, savedEnvManageRoleName, savedEnvPullRoleName, savedEnvPushRoleName, savedEnvRepositoriesArn, savedEnvRepositoryPrefix, SAVED_ENV_MANAGE_ACTIONS, SAVED_ENV_PULL_ACTIONS, SAVED_ENV_PUSH_ACTIONS } from "@rovara-code/contracts";
+import { savedEnvRepositoryPolicy } from "@agentx/cloud-contracts";
 
 const KEEP_ON_ROLLBACK_METADATA = "agentx:retain-on-create-rollback";
 
@@ -52,6 +53,11 @@ export interface SavedEnvImagesProps {
    * Default "none".
    */
   readonly registryScanning?: "basic" | "none";
+  /**
+   * The company image mirror's own role (infra/lib/company-image-mirror.ts): the repository policy lets it read, write and delete in the repositories its IAM policy reaches (`o?/c?`, mirror repositories only).
+   * The push and manage roles stay the broker's alone.
+   */
+  readonly mirrorRoleArn?: string;
 }
 
 export class SavedEnvImages extends Construct {
@@ -167,7 +173,7 @@ export class SavedEnvImages extends Construct {
 
     // ---- the creation template
     // The roles' real ARNs (the push, pull and manage roles carry the environment's path, wherever the aspect puts them), so the policy names exactly the roles created here.
-    const policy = savedEnvRepositoryPolicy({ pushRoleArn: this.pushRole.roleArn, pullRoleArn: this.pullRole.roleArn, manageRoleArn: this.manageRole.roleArn });
+    const policy = savedEnvRepositoryPolicy({ pushRoleArn: this.pushRole.roleArn, pullRoleArn: this.pullRole.roleArn, manageRoleArn: this.manageRole.roleArn, ...(props.mirrorRoleArn === undefined ? {} : { mirrorRoleArn: props.mirrorRoleArn }) });
     this.template = new ecr.CfnRepositoryCreationTemplate(this, "CreationTemplate", {
       prefix,
       appliedFor: ["CREATE_ON_PUSH"],

@@ -3,7 +3,8 @@
 import { readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { PrepareSavedEnvSchema, savedEnvRepositoryName, type SavedEnvManifest } from "@rovara-code/contracts";
+import { savedEnvRepositoryName, type SavedEnvManifest } from "@rovara-code/contracts";
+import { PrepareSavedEnvSchema } from "@agentx/cloud-contracts";
 import {
   ARCHIVE_POLICY, SAVED_ENV_FAILURE_BACKOFF_MS, SAVED_ENV_JOB_LEASE_MS, authorizeLease, checkRebuild, imageForTask, leaseForDispatch, lightSetup, markStale, mintPushForJob, savedEnvForPrepare, savedEnvPullLogin, sweepDeleted, SAVED_ENV_TASK_CHECK_MS, SAVED_ENV_RESET_COOLDOWN_MS, onProjectRegistered, onProjectArchived, onProjectDeleted, rebuildReason, recordBuild, reportFailure, requestReset, walk,
   type RegistryImage, type RegistryPort, type SavedEnvDeps, type SavedEnvImageRecord, type SavedEnvState,

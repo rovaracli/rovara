@@ -3,7 +3,7 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { dynamoCompanyImageStore, readCompanyImages } from "../../packages/broker/src/org/company-test-image-store.js";
 import { companyImagesOf, serviceImageServed, type CompanyImage } from "../../packages/broker/src/test-env/company-images.js";
-import { TaskDependencyPlanSchema } from "@agentx/cloud-contracts";
+import { TaskDependencyPlanSchema, companyImageRepositoryName, type CompanyImageMirrorJob } from "@agentx/cloud-contracts";
 import { taskDependencyPlansOf } from "../../packages/broker/src/test-env/dependency-plan.js";
 import { capturingAuditDeps } from "../support/audit-capture.js";
 import { MAYA, OMAR, type Developer } from "../support/developer-task-broker.js";
@@ -18,15 +18,17 @@ const catalog = verifiedCatalog(pinnedCatalog());
 
 /** The registry's answers by `registry/repository:tag`. A test moves a tag by changing the map. */
 function registry() {
-  const digests = new Map<string, string>([["docker.io/library/postgres:18", sha("postgres-18-a")], ["docker.io/library/postgres:18.1", sha("postgres-18-b")]]);
-  return { digests, resolve: async (image: { registry: string; repository: string; tag: string }) => digests.get(`${image.registry}/${image.repository}:${image.tag}`) };
+  const digests = new Map<string, string>([["docker.io/library/postgres:18", sha("postgres-18-a")], ["docker.io/library/postgres:18.1", sha("postgres-18-b")], ["registry.example.com/acme/postgres:18", sha("own-postgres-18")]]);
+  const asked: Array<{ registry: string; extra: readonly string[] | undefined }> = [];
+  return { digests, asked, resolve: async (image: { registry: string; repository: string; tag: string }, extra?: readonly string[]) => { asked.push({ registry: image.registry, extra }); return digests.get(`${image.registry}/${image.repository}:${image.tag}`); } };
 }
 async function bench(options: { maya?: "admin" | "member" } = {}) {
   const audit = capturingAuditDeps();
   const lookup = registry();
-  const t = await setupWizardBench({ audit, brokerExtra: { serviceCatalog: async () => catalog, companyImageResolver: lookup.resolve } });
+  const jobs: CompanyImageMirrorJob[] = [];
+  const t = await setupWizardBench({ audit, brokerExtra: { serviceCatalog: async () => catalog, companyImageResolver: lookup.resolve, companyImageMirrorStart: async (job: CompanyImageMirrorJob) => { jobs.push(job); } } });
   if (options.maya !== undefined) await t.person(MAYA, options.maya);
-  return { t, audit, lookup };
+  return { t, audit, lookup, jobs };
 }
 const events = (audit: ReturnType<typeof capturingAuditDeps>, prefix = "company_image.") => audit.recorded().filter((event) => event.action.startsWith(prefix));
 const get = (t: Bench, who: Developer = OMAR) => t.web(who, "GET", PATH);
@@ -96,6 +98,72 @@ describe("who may", () => {
     const { t } = await bench();
     on();
     for (const body of [{ action: "approve", imageId: "nope" }, { action: "add", image: "postgres:18", extra: 1 }, { action: "shrug" }, { action: "add", image: "" }]) expect((await post(t, body)).status).toBe(400);
+  });
+});
+
+describe("the company's own registries and the copy into the install's registry", () => {
+  const registries = async (t: Bench, who: Developer = OMAR) => ((await get(t, who)).body as unknown as { registries: { revision: number; hosts: string[] } }).registries;
+
+  it("an image from a registry that is not on the company's list is refused before any lookup; an admin adds the registry from a live browser session, and then it can be named", async () => {
+    const { t, audit, lookup } = await bench();
+    on();
+    expect(await registries(t)).toEqual({ revision: 0, hosts: [] });
+    const refused = await post(t, { action: "add", image: "registry.example.com/acme/postgres:18" });
+    expect(refused.status).toBe(400);
+    expect(JSON.stringify(refused.body)).toContain("not on your company's list");
+    expect((await post(t, { action: "add", image: "ghcr.io.evil.example.com/acme/postgres:18" })).status).toBe(400);
+    expect(lookup.asked).toEqual([]);
+    expect((await post(t, { action: "add_registry", host: "registry.example.com", expectedRevision: 0 })).status).toBe(200);
+    expect(await registries(t)).toEqual({ revision: 1, hosts: ["registry.example.com"] });
+    expect((await post(t, { action: "add", image: "registry.example.com/acme/postgres:18" })).status).toBe(200);
+    expect(lookup.asked).toEqual([{ registry: "registry.example.com", extra: ["registry.example.com"] }]);
+    expect((await list(t)).images.map((row) => row.status)).toEqual(["proposed"]);
+    expect(events(audit, "company_image.registries_changed").map((event) => event.facts)).toEqual([{ registryCount: 1, authority: "fresh_sign_in" }]);
+    expect((await post(t, { action: "remove_registry", host: "registry.example.com", expectedRevision: 1 })).status).toBe(200);
+    expect(await registries(t)).toEqual({ revision: 2, hosts: [] });
+  });
+
+  it("a member, a token and the API cannot change the registry list; a bad host, a stale revision and an unknown host are refused; nothing is stored or audited for any of them", async () => {
+    const { t, audit } = await bench({ maya: "member" });
+    on();
+    await post(t, { action: "add_registry", host: "registry.example.com", expectedRevision: 0 });
+    const before = JSON.stringify(t.db.find((item) => item.sk === "TESTIMAGE_REGISTRIES"));
+    const eventsBefore = events(audit, "company_image.registries_changed").length;
+    for (const body of [{ action: "add_registry", host: "other.example.com", expectedRevision: 1 }, { action: "remove_registry", host: "registry.example.com", expectedRevision: 1 }]) {
+      expect((await post(t, body, MAYA)).status, JSON.stringify(body)).toBe(403);
+      const api = await t.dev(OMAR, "POST", PATH, body);
+      expect(api.status).toBe(403);
+      expect(JSON.stringify(api.body)).toContain("Use a live browser session");
+    }
+    expect((await get(t, MAYA)).status).toBe(403);
+    for (const body of [{ action: "add_registry", host: "https://registry.example.com", expectedRevision: 1 }, { action: "add_registry", host: "10.0.0.1", expectedRevision: 1 }, { action: "add_registry", host: "ghcr.io", expectedRevision: 1 }]) expect((await post(t, body)).status, JSON.stringify(body)).toBe(400);
+    expect((await post(t, { action: "add_registry", host: "other.example.com", expectedRevision: 0 })).status).toBe(409);
+    expect((await post(t, { action: "remove_registry", host: "unknown.example.com", expectedRevision: 1 })).status).toBe(404);
+    expect((await post(t, { action: "remove_registry", host: "registry.example.com", expectedRevision: 7 })).status).toBe(409);
+    expect((await post(t, { action: "add_registry", host: "x.example.com", expectedRevision: 1, extra: true })).status).toBe(400);
+    expect(JSON.stringify(t.db.find((item) => item.sk === "TESTIMAGE_REGISTRIES"))).toBe(before);
+    expect(events(audit, "company_image.registries_changed")).toHaveLength(eventsBefore);
+  });
+
+  it("approving starts the copy and the card says so until it is finished; revoking deletes the copy", async () => {
+    const { t, jobs } = await bench();
+    on();
+    const approved = await approvePostgres(t);
+    expect(jobs.map((job) => job.action)).toEqual(["copy"]);
+    expect(jobs[0]).toMatchObject({ imageId: approved.imageId, registry: "docker.io", extraRegistries: [] });
+    expect((await list(t)).images[0]).toMatchObject({ status: "approved", copy: "none" });
+    const key = { pk: `COMPANY_IMAGE_MIRROR#${TEST_ORG}`, sk: approved.imageId };
+    const base = { ...key, entityType: "COMPANY_IMAGE_MIRROR", digest: approved.digest, repository: `rovara-env/staging/o${"1".repeat(32)}/c${"2".repeat(32)}`, attempts: 1, startedAt: "2026-11-11T10:00:00.000Z", updatedAt: "2026-11-11T10:00:00.000Z" };
+    for (const state of ["copying", "failed", "ready"] as const) {
+      t.db.set({ ...base, state, ...(state === "failed" ? { reason: "no_arm64" } : {}) });
+      expect((await list(t)).images[0], state).toMatchObject({ copy: state });
+    }
+    // A state for another digest says nothing about this image.
+    t.db.set({ ...base, state: "ready", digest: sha("another") });
+    expect((await list(t)).images[0]).toMatchObject({ copy: "none" });
+    const revoked = await post(t, { action: "revoke", imageId: approved.imageId, expectedRevision: approved.revision });
+    expect(revoked.status).toBe(200);
+    expect(jobs.at(-1)).toMatchObject({ action: "delete", imageId: approved.imageId });
   });
 });
 
@@ -242,8 +310,11 @@ describe("what a run is told", () => {
     id: "db", name: "Postgres", kind: "database", family: "postgres", found: [{ path: "docker-compose.yml", line: 4 }], usedBy: ["integration"], backing: { kind: "project_image", imageId },
     connect: { env: [{ name: "DATABASE_URL", template: "postgres://{user}:{password}@{host}:{port}/{db}" }], hostAliases: ["postgres"] }, seeds: [], reset: "fresh_per_round",
   });
-  const plan = (imageId: string, companyImages: readonly CompanyImage[] | undefined, edition: "public" | "enterprise" = "public") => taskDependencyPlansOf({
-    body: draftBody({ dependencies: [dependency(imageId)] }), catalog, edition, projectId: "web", ...(companyImages === undefined ? {} : { companyImages }),
+  // The finished copies of the approved images in the install's registry (what the mirror records), by image id.
+  const mirrorsOf = (images: readonly CompanyImage[] | undefined): Map<string, { repository: string; digest: string }> =>
+    new Map((images ?? []).filter((image) => image.status === "approved").map((image) => [image.imageId, { repository: companyImageRepositoryName({ env: "staging", orgId: TEST_ORG, imageId: image.imageId }), digest: image.digest }]));
+  const plan = (imageId: string, companyImages: readonly CompanyImage[] | undefined, edition: "public" | "enterprise" = "public", mirrors: ReadonlyMap<string, { repository: string; digest: string }> | undefined = mirrorsOf(companyImages)) => taskDependencyPlansOf({
+    body: draftBody({ dependencies: [dependency(imageId)] }), catalog, edition, projectId: "web", ...(companyImages === undefined ? {} : { companyImages }), companyMirrors: mirrors,
   });
 
   it("serves the catalog as before, and an approved image with the approved digest and the catalog's own run profile", async () => {
@@ -256,13 +327,19 @@ describe("what a run is told", () => {
     expect(planned, JSON.stringify(planned)).toMatchObject({ ok: true });
     const [entry] = (planned as { dependencies: Array<{ backing: string; catalogId: string; repository: string; digest: string; company?: unknown }> }).dependencies;
     // The profile is the signed catalog's postgres entry; the digest is the approved one; and the plan says in its own words that it is a COMPANY image, from where, under which approval: never a catalog plan.
-    expect(entry).toMatchObject({ backing: "company", catalogId: "postgres@16", repository: "svc/postgres", digest: approved.digest, company: { imageId: approved.imageId, registry: "docker.io", repository: "library/postgres", digest: approved.digest } });
+    expect(entry).toMatchObject({ backing: "company", catalogId: "postgres@16", repository: "svc/postgres", digest: approved.digest, company: { imageId: approved.imageId, registry: "docker.io", repository: "library/postgres", digest: approved.digest, mirror: { repository: companyImageRepositoryName({ env: "staging", orgId: TEST_ORG, imageId: approved.imageId }), digest: approved.digest } } });
     expect(TaskDependencyPlanSchema.safeParse(entry).success).toBe(true);
     // A company block on a catalog plan, a company plan with no block, and one that runs another digest than the approved one are not plans at all.
     const withCatalog = { ...(entry as object), backing: "local" };
     const withoutBlock = { ...(entry as object), company: undefined };
     const otherDigest = { ...(entry as { digest: string }), digest: sha("tampered") };
-    expect([withCatalog, withoutBlock, otherDigest].map((plan) => TaskDependencyPlanSchema.safeParse(plan).success)).toEqual([false, false, false]);
+    // The mirrored copy must be exactly the approved digest too.
+    const company = (entry as unknown as { company: { mirror: object } }).company;
+    const otherMirror = { ...(entry as object), company: { ...company, mirror: { ...company.mirror, digest: sha("another copy") } } };
+    expect([withCatalog, withoutBlock, otherDigest, otherMirror].map((plan) => TaskDependencyPlanSchema.safeParse(plan).success)).toEqual([false, false, false, false]);
+    // Approved but not copied into the install's registry yet (no finished copy, or a copy of another digest): no plan, in the words "still being copied". The worker never pulls from the source.
+    expect(plan(approved.imageId, images, "public", new Map())).toEqual({ ok: false, reason: "image_copying" });
+    expect(plan(approved.imageId, images, "public", new Map([[approved.imageId, { repository: companyImageRepositoryName({ env: "staging", orgId: TEST_ORG, imageId: approved.imageId }), digest: sha("old copy") }]]))).toEqual({ ok: false, reason: "image_copying" });
   });
 
   it("refuses an image that is waiting, never approved, revoked, changed, or has no list at all; and a catalog that cannot be read", async () => {
@@ -275,6 +352,8 @@ describe("what a run is told", () => {
     expect(plan(waiting!.imageId, [])).toEqual({ ok: false, reason: "image_not_approved" });
     // With pj off no list is given at all: a company image is "not available yet", as before company images existed.
     expect(plan(waiting!.imageId, undefined)).toEqual({ ok: false, reason: "not_available_yet" });
+    // ... even with a finished copy on record: pj off means no company image, and no plan reads the mirror's state.
+    expect(plan(waiting!.imageId, undefined, "public", new Map([[waiting!.imageId, { repository: companyImageRepositoryName({ env: "staging", orgId: TEST_ORG, imageId: waiting!.imageId }), digest: waiting!.digest }]]))).toEqual({ ok: false, reason: "not_available_yet" });
     const approved = await approvePostgres(t);
     expect(plan(approved.imageId, await stored(t))).toMatchObject({ ok: true });
     await post(t, { action: "revoke", imageId: approved.imageId, expectedRevision: approved.revision });

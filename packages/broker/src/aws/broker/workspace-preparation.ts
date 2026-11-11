@@ -1,7 +1,7 @@
 // Part of the broker (split out of ../broker.ts): workspace preparation, Slack identities, shared threads and Slack bindings.
 
 import { nameResolverOf, resolveStoredName } from "../../developer/name-resolver.js";
-import { fixtureDigestsOfPlan } from "../../test-env/fixture-lookup.js";
+import { companyImageIdsOfPlan, fixtureDigestsOfPlan } from "../../test-env/fixture-lookup.js";
 import { approvalGrantChange } from "../../org/approval-membership.js";
 import { randomUUID } from "node:crypto";
 import { TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
@@ -164,6 +164,8 @@ export async function newWorkspacePreparation(
   // Test services (slice 3): a candidate check whose plan has a fake may ask for that set's read address and no other (the capability has the action only then).
   const fixtureDigests = fixtureDigestsOfPlan({ dependencies: options.testServices });
   if (fixtureDigests.length > 0) operation.fixtureSetDigests = fixtureDigests;
+  const companyImageIds = companyImageIdsOfPlan({ dependencies: options.testServices });
+  if (companyImageIds.length > 0) operation.companyImageIds = companyImageIds;
   // The proposal's own production list (the project may have no approved environment yet): the fixture-set callback scans with the union of this and the approved environment's.
   if (fixtureDigests.length > 0 && options.testServicesDeny !== undefined) operation.fixtureProdDeny = options.testServicesDeny;
   const invocation: WorkerInvocation = {
@@ -173,7 +175,7 @@ export async function newWorkspacePreparation(
     workspaceId,
     fence: workspace.fence,
     projectRevision,
-    callbackCapability: issueCapability(dependencies, workspaceId, operationId, workspace.fence, fixtureDigests.length > 0 ? { fixtureDelivery: true } : {}),
+    callbackCapability: issueCapability(dependencies, workspaceId, operationId, workspace.fence, { ...(fixtureDigests.length > 0 ? { fixtureDelivery: true } : {}), ...(companyImageIds.length > 0 ? { companyImageLogin: true } : {}) }),
     payload: {
       project: workerProjectDefinition(project.definition, options.setupDraft === true ? { includeMeta: true } : {}),
       repositoryGrant: issueRepositoryGrant(

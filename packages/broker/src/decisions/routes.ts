@@ -107,9 +107,9 @@ async function project<C extends DecisionCaller>(deps: DecisionRouteDependencies
 }
 
 /** UX2 slice 2 item 2: the caller's pending cards as Home counts them (id, kind, task): the one "needs you" count and Home's de-duplication read them. Only what THIS caller may decide now. */
-export async function pendingDecisionRefs<C extends DecisionCaller>(deps: DecisionRouteDependencies<C>, caller: C): Promise<Array<{ cardId: string; kind: string; taskId?: string }>> {
+export async function pendingDecisionRefs<C extends DecisionCaller>(deps: DecisionRouteDependencies<C>, caller: C): Promise<Array<{ cardId: string; kind: string; taskId?: string; project?: string }>> {
   const projection = await project(deps, caller);
-  return projection.cards.filter((card) => card.status === "pending").map((card) => ({ cardId: card.id, kind: card.kind, ...(card.taskId === undefined ? {} : { taskId: card.taskId }) }));
+  return projection.cards.filter((card) => card.status === "pending").map((card) => ({ cardId: card.id, kind: card.kind, ...(card.taskId === undefined ? {} : { taskId: card.taskId }), ...(card.project === "" ? {} : { project: card.project }) }));
 }
 
 interface Pending { card: DecisionCard; subject: Subject; tabs: DecisionTab[] | undefined; digest: string; projection: Projection }

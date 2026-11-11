@@ -2,7 +2,8 @@
 // refusals that belong where new work starts, and the app's project list and detail.
 import { createHash, randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
-import { AppProjectDetailSchema, AppProjectsResponseSchema, PROJECT_PERMISSIONS, ProjectSetupStatusSchema, agentXError, formatCommandLine, parseCommandLine, projectAllows, projectMetaKey, type OrgId, type ProjectCommand, type ProjectPermission, type ProjectRole } from "@rovara-code/contracts";
+import { PROJECT_PERMISSIONS, ProjectSetupStatusSchema, agentXError, formatCommandLine, parseCommandLine, projectAllows, projectMetaKey, type OrgId, type ProjectCommand, type ProjectPermission, type ProjectRole } from "@rovara-code/contracts";
+import { AppProjectDetailSchema, AppProjectsResponseSchema } from "@agentx/cloud-contracts";
 import { type OrgRole } from "@agentx/cloud-contracts";
 import { orgMemberKey as orgMemberKeyOf } from "../../packages/cloud-contracts/src/org-node.js";
 import { orgProjectCatalogKey, projectMemberKey, projectRevisionKey } from "@rovara-code/contracts";
@@ -25,7 +26,7 @@ const BINDING = {
 } as const;
 
 /** A project written the way registration writes it (revision, catalog entry), for a list or detail test. */
-function seedProject(db: FakeDynamoDb, orgId: OrgId, name: string, options: { branch?: string; repository?: string; description?: string; status?: "active" | "archived"; meta?: boolean; revision?: number } = {}): void {
+function seedProject(db: FakeDynamoDb, orgId: OrgId, name: string, options: { branch?: string; repository?: string; description?: string; status?: "active" | "archived"; meta?: boolean; revision?: number; repositories?: Array<Record<string, unknown>> } = {}): void {
   const revision = options.revision ?? 1;
   const repository = options.repository ?? `acme/${name}`;
   const command = (executable: string, args: string[], timeoutSeconds: number) => ({ cwd: "repo/web", executable, args, timeoutSeconds });
@@ -33,7 +34,7 @@ function seedProject(db: FakeDynamoDb, orgId: OrgId, name: string, options: { br
     ...projectRevisionKey(orgId, name, revision), entityType: "PROJECT", registeredBy: "seed", registeredAt: "2026-10-01T00:00:00.000Z", runtimeBinding: BINDING,
     definition: {
       name, revision,
-      repositories: [{ name: "web", url: `https://github.com/${repository}.git`, path: "repo/web", defaultBranch: options.branch ?? "main", credentialRef: "github-app" }],
+      repositories: options.repositories ?? [{ name: "web", url: `https://github.com/${repository}.git`, path: "repo/web", defaultBranch: options.branch ?? "main", credentialRef: "github-app" }],
       setup: [command("npm", ["ci"], 900)], readiness: [command("npm", ["test", "--", "--run"], 1800)],
       orchestratorInstructions: "Delegate work.",
     },
@@ -176,6 +177,38 @@ describe("GET /v1/app/projects", () => {
     }
     seedProject(h.db, TEST_ORG, "web", { revision: 2 });
     expect(await status()).toMatchObject({ status: "outdated", checkedRevision: 1 });
+  });
+});
+
+describe("the project's meta repository in the list and the detail", () => {
+  const repo = (name: string, extra: Record<string, unknown> = {}) => ({ name, url: `https://github.com/acme/${name}.git`, path: `repo/${name}`, defaultBranch: "main", credentialRef: "github-app", ...extra });
+  it("names a separate meta repository, a project's own meta repository, and none for a project that predates meta repos", async () => {
+    const h = await createSingleAnswerPlanBroker();
+    setRole(h.db, OMAR, "owner");
+    seedProject(h.db, TEST_ORG, "split", { repositories: [repo("api"), repo("split-meta", { role: "meta", defaultBranch: "trunk" })] });
+    seedProject(h.db, TEST_ORG, "solo", { repositories: [repo("solo", { role: "meta", alsoCode: true })] });
+    const projects = AppProjectsResponseSchema.parse((await h.dev(OMAR, "GET", "/v1/app/projects")).body).projects;
+    const by = (name: string) => projects.find((project) => project.name === name)!;
+    expect(by("split").metaRepository).toEqual({ name: "split-meta", fullName: "acme/split-meta", defaultBranch: "trunk" });
+    expect(by("split").repositories.map((repository) => repository.name)).toEqual(["api", "split-meta"]);
+    expect(by("solo").metaRepository).toEqual({ name: "solo", fullName: "acme/solo", defaultBranch: "main", alsoCode: true });
+    // A project with no meta repository carries no field at all, so an older reader sees exactly what it did.
+    expect("metaRepository" in by("payments")).toBe(false);
+    const detail = AppProjectDetailSchema.parse((await h.dev(OMAR, "GET", "/v1/app/projects/split")).body);
+    expect(detail.metaRepository).toEqual({ name: "split-meta", fullName: "acme/split-meta", defaultBranch: "trunk" });
+  });
+
+  it("shows it only to a caller who may see the project, from the caller's own org", async () => {
+    const h = await createSingleAnswerPlanBroker();
+    seedProject(h.db, TEST_ORG, "split", { repositories: [repo("api"), repo("split-meta", { role: "meta" })] });
+    seedProject(h.db, OTHER_ORG, "secret", { repositories: [repo("secret-meta", { role: "meta" })] });
+    // OMAR holds no grant on split: it is not listed to him, and its detail is 404 (positive control: the grant lifts both).
+    expect((await listed(h, OMAR))!.map((project) => project.name)).toEqual([]);
+    expect((await h.dev(OMAR, "GET", "/v1/app/projects/split")).status).toBe(404);
+    expect((await h.dev(OMAR, "GET", "/v1/app/projects/secret")).status).toBe(404);
+    grantProject(h.db, OMAR, "split");
+    const projects = (await h.dev(OMAR, "GET", "/v1/app/projects")).body.projects as Array<{ name: string; metaRepository?: { name: string } }>;
+    expect(projects.map((project) => [project.name, project.metaRepository?.name])).toEqual([["split", "split-meta"]]);
   });
 });
 

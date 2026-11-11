@@ -15,7 +15,7 @@ export interface AppNavSources {
  projects(caller: NavCaller): Promise<Array<{ name: string }>>;
  rosters(caller: NavCaller, projects: string[]): Promise<Array<NavAgent & { project: string }>>;
  live(caller: NavCaller): Promise<LiveRow[]>;
- home(caller: NavCaller): Promise<{ total: number; needsYou?: number | undefined }>;
+ home(caller: NavCaller): Promise<{ total: number; needsYou?: number | undefined; /** How many of those same items are about each project (the caller's own); absent where the source does not say. */ byProject?: Readonly<Record<string, number>> | undefined }>;
  sharedAgents(caller: NavCaller): Promise<NavAgent[]>;
  sharedSessions(caller: NavCaller): Promise<NavSession[]>;
  org(caller: NavCaller): Promise<{ name: string; plan: "trial" | "team"; createdBy?: string; trialUnlockedAt?: number; trialGithubUsedAt?: number }>;
@@ -43,7 +43,7 @@ export function appNav(deps: AppNavDependencies, caller: NavCaller): Promise<App
  org: { name: org.name, ...(deps.hideTrial === true || orgTrial(org) === undefined ? {} : { trial: orgTrial(org) }) },
  // UX2 slice 2: the ONE "needs you" count, the same number Home shows (its cards plus pending decision cards).
  homeCount: home.needsYou ?? home.total,
- projects: names.map(name => ({ name, agents: rosters.filter(agent => agent.project === name).map(agent => ({ agentId: agent.agentId, name: agent.name, running: live.filter(session => session.project === name && session.agentId === agent.agentId && session.running).length, needsYou: live.filter(session => session.project === name && session.agentId === agent.agentId && session.needsYou).length })) })),
+ projects: names.map(name => ({ name, ...(home.byProject === undefined ? {} : { needsYou: Object.hasOwn(home.byProject, name) ? home.byProject[name]! : 0 }), agents: rosters.filter(agent => agent.project === name).map(agent => ({ agentId: agent.agentId, name: agent.name, running: live.filter(session => session.project === name && session.agentId === agent.agentId && session.running).length, needsYou: live.filter(session => session.project === name && session.agentId === agent.agentId && session.needsYou).length })) })),
  shared: { agents: sharedAgents.slice(0, 20).map(agent => ({ agentId: agent.agentId, name: agent.name })), sessions: sharedSessions.filter(session => session.endedAt === undefined).slice(0, 10).map(session => ({ sessionId: session.sessionId, title: session.title })) },
  ...(deps.release !== undefined && /^\d{1,4}\.\d{1,4}\.\d{1,4}$/u.test(deps.release) ? { release: deps.release } : {}),
  features: { localAgents: deps.localAgents, usage: features.has("usage"), admin: features.has("admin") && (caller.orgRole === "owner" || caller.orgRole === "admin"), chains: features.has("chains"), notices: features.has("notices"), describe: features.has("describe"), ...(scriptTokensEnabled() ? { scriptTokens: true as const } : {}), ...(decisionCardsEnabled() ? { decisionCards: true as const } : {}), ...(standingInstructionsEnabled() ? { companyRules: true as const } : {}) },

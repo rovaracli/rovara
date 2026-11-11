@@ -5,7 +5,8 @@
 import { randomUUID } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
 import { developerOrgKey, githubInstallationKey, orgGithubInstallationKey, orgMemberKey, type GithubInstallationRecord } from "@agentx/cloud-contracts";
-import { orgProjectCatalogKey, projectMemberKey, projectMetaKey, projectRevisionKey, type AppProjectDetail } from "@rovara-code/contracts";
+import { orgProjectCatalogKey, projectMemberKey, projectMetaKey, projectRevisionKey } from "@rovara-code/contracts";
+import { type AppProjectDetail } from "@agentx/cloud-contracts";
 import { createNotifierHandler, type NotifierDependencies } from "../../packages/broker/src/aws/developer-task-notifier.js";
 import { noticesOf, type Notice } from "../../packages/broker/src/developer/notifications.js";
 import { settingsProofKey } from "../../packages/broker/src/org/settings-proof.js";

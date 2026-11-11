@@ -4,7 +4,7 @@
 import { describe, expect, it, vi } from "vitest";
 import type { DecisionAnswered } from "@rovara-code/contracts";
 import { DecisionCardsViewSchema, DecisionNeedsConfirmationSchema } from "@rovara-code/contracts";
-import { routeDecisionCards, type DecisionCaller, type DecisionPerformer, type DecisionRequest, type DecisionSources, type PerformOutcome } from "../../packages/broker/src/decisions/routes.js";
+import { pendingDecisionRefs, routeDecisionCards, type DecisionCaller, type DecisionPerformer, type DecisionRequest, type DecisionSources, type PerformOutcome } from "../../packages/broker/src/decisions/routes.js";
 import { decisionCardPath, type DecisionItem, type ItemBase } from "../../packages/broker/src/decisions/project.js";
 import { inMemoryDecisionStore } from "../../packages/broker/src/decisions/store.js";
 import { summarizeDecisionMeasures, type DecisionMeasure } from "../../packages/broker/src/decisions/measures.js";
@@ -37,6 +37,16 @@ function setup(items: DecisionItem[] = [low(), medium(), high()], now = { ms: Da
   const approve = async (cardId: string, n: number, extra: Record<string, unknown> = {}, digest?: string) => call(ME, "POST", path(cardId, "approve"), { requestId: REQ(n), shownDigest: digest ?? await shown(cardId), ...extra });
   return { state, sources, performer, store, measures, deps, call, path, now, shown, open, approve };
 }
+
+describe("pendingDecisionRefs (the navigation's per-project count reads the project)", () => {
+  it("names each pending card's project, for the caller only", async () => {
+    const t = setup([low(), { ...medium(), project: "ledger" }]);
+    const refs = await pendingDecisionRefs(t.deps, ME);
+    expect(refs.map((ref) => [ref.kind, ref.project]).sort()).toEqual([["approve_dependency", "ledger"], ["approve_plan", "payments"]]);
+    // Positive control above: ME has cards. Nobody else's partition leaks into another caller's refs.
+    expect(await pendingDecisionRefs(t.deps, OTHER)).toEqual([]);
+  });
+});
 
 describe("GET /v1/app/decisions", () => {
   it("lists the caller's cards, high first, with a digest, evidence detail and the dropped count, and nobody else's", async () => {

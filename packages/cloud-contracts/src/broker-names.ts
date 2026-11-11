@@ -98,6 +98,8 @@ export const BROKER_NAMES = {
   slackThreadsTable: { code: "sl", variable: "SLACK_THREADS_TABLE_NAME", kind: "name" },
   turnRecordsTable: { code: "tr", variable: "TURN_RECORDS_TABLE_NAME", kind: "name" },
   planEvidenceFunction: { code: "pe", variable: "PLAN_EVIDENCE_FUNCTION_NAME", kind: "name" },
+  // Company-approved images (0.5.15, `pj`): the mirror function the broker starts when an admin approves an image and when a plan finds an approved image with no finished copy. The broker holds lambda:InvokeFunction on this one function.
+  companyImageMirrorFunction: { code: "cm", variable: "COMPANY_IMAGE_MIRROR_FUNCTION_NAME", kind: "name" },
   // Live interaction A2 (peek): the dispatcher the broker invokes to read a running task's working tree for an Ask. The broker holds lambda:InvokeFunction on this one function and nothing else (control-plane.ts).
   dispatcherFunction: { code: "dp", variable: "DISPATCHER_FUNCTION_ARN", kind: "lambdaFunctionArn" },
   modelAccessFunction: { code: "ma", variable: "MODEL_ACCESS_FUNCTION_NAME", kind: "name" },
@@ -227,6 +229,8 @@ export const BROKER_SETTINGS = {
   webFeatures: { code: "wf", variable: "WEB_FEATURES" },
   // 0.5.7: the hosted cloud's custom domain name (empty when none). With a name the broker takes `https://<name>/v1/auth` as the sign-in issuer and the API's own address as the previous one.
   customDomain: { code: "cd", variable: "DEVELOPER_CUSTOM_DOMAIN" },
+  // Billing (lane srv/trial-reads, decision 91, switch `bl`): the owner and admin billing routes (`/v1/app/org/billing*`). The broker reads BILLING_ENABLED and it is on only when it is exactly "1"; off (absent, empty, anything else) every billing path answers not found. The infrastructure half (a stack parameter BillingEnabled, "0" by default, packed into AGENTX_SETTINGS; see the feature-switch recipe in docs/architecture/code-map.md) is NOT wired yet, so a deployed install reads it as off. Do not turn this on before the billing provider exists: the routes would answer `available: false`.
+  billing: { code: "bl", variable: "BILLING_ENABLED" },
 } as const satisfies Record<string, BrokerSettingSpec>;
 
 export type BrokerSettingKey = keyof typeof BROKER_SETTINGS;

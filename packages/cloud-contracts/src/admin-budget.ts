@@ -11,6 +11,11 @@ export const AdminBudgetSettingsSchema = z.object({
  orgMonthly: AdminMonthlyBaseLimitSchema,
  memberDefaultMonthly: AdminMonthlyBaseLimitSchema,
  memberOverrideCount: z.number().int().min(0).max(500),
+ /**
+  * Each person's own monthly allowance, where one is set (the same rows the count above counts), sorted by person id. Owners and admins only, like the rest of this read.
+  * Absent when nobody has one, so the answer for such a company is unchanged. An id may belong to someone no longer in the company (`memberOverrideCoverage`).
+  */
+ memberOverrides: z.array(z.object({ developerId: z.string().regex(/^[a-f0-9]{64}$/), microdollars: AdminBudgetMicrodollarsSchema }).strict()).max(500).optional(),
  memberOverrideCoverage: z.literal("configured_only_membership_not_checked"),
  topUps: z.literal("not_checked"),
  usage: z.literal("not_checked"),

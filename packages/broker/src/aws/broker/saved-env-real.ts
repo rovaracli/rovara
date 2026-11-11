@@ -9,7 +9,6 @@
 //                    nothing (`no_key`): it fails closed;
 //   keep / lightAfterIdleDays  the defaults (the company settings are not stored yet);
 //   onQueued         starts the job the registry queued (saved-env-triggers.ts).
-import { awsPartitionOf } from "../broker-environment.js";
 import { readWorkerSettings } from "../worker-settings-read.js";
 import { imageDigestOfReference, testEnvDigest, testEnvIsProved, type TestEnvironmentBody, SAVED_ENV_KEEP_DEFAULT, SAVED_ENV_LIGHT_AFTER_IDLE_DAYS_DEFAULT, type OrgId } from "@rovara-code/contracts";
 import { workerProjectDefinition } from "@agentx/cloud-contracts";
@@ -27,23 +26,8 @@ import { KeyListingCache, expectedEnvironmentKey, type KeyHost } from "../../tes
 import { GITHUB_HOST_KIND } from "../../plugins/code-host/github/index.js";
 import type { SavedEnvBuildInputs } from "./saved-env-rebuild.js";
 
-const ACCOUNT = /^[0-9]{12}$/u;
-const KMS_KEY_ARN = /^arn:aws[a-z-]*:kms:[a-z0-9-]+:[0-9]{12}:key\/(?:mrk-[0-9a-f]{32}|[0-9a-f-]{36})$/u;
-
-/** The environment the registry's config is read from. Undefined (with the missing name logged) when the install cannot run it. */
-export function savedEnvConfigOf(env: NodeJS.ProcessEnv): { env: string; scope: { partition: string; region: string; account: string }; kmsKeyArn: string } | undefined {
-  const name = env["AGENTX_ENV"];
-  const region = env["AWS_REGION"];
-  const account = env["AGENTX_ACCOUNT_ID"];
-  const kmsKeyArn = env["SAVED_ENV_KMS_KEY_ARN"];
-  const missing = [["AGENTX_ENV", name !== undefined && name !== ""], ["AWS_REGION", region !== undefined && region !== ""], ["AGENTX_ACCOUNT_ID", account !== undefined && ACCOUNT.test(account)], ["SAVED_ENV_KMS_KEY_ARN", kmsKeyArn !== undefined && KMS_KEY_ARN.test(kmsKeyArn)]]
-    .filter(([, present]) => present !== true).map(([variable]) => variable);
-  if (missing.length > 0) {
-    console.log(JSON.stringify({ component: "broker", event: "saved_env.not_installed", missing }));
-    return undefined;
-  }
-  return { env: name!, scope: { partition: awsPartitionOf(region!), region: region!, account: account! }, kmsKeyArn: kmsKeyArn! };
-}
+export { savedEnvConfigOf } from "./saved-env-config.js";
+import { savedEnvConfigOf } from "./saved-env-config.js";
 
 const testEnvDepsOf = (dependencies: AwsBrokerDependencies): TestEnvDeps => ({ documentClient: dependencies.documentClient, tableName: dependencies.tableName, now: Date.now, ...(dependencies.audit === undefined ? {} : { audit: dependencies.audit }) });
 

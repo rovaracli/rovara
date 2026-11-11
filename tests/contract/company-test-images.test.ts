@@ -7,7 +7,6 @@ import { dependencyEvidenceOf } from "../../packages/broker/src/rovara-code/depe
 import { proposeTestEnvironment } from "../../packages/broker/src/org/test-environment.js";
 import { proposeImagesFromSetup, approveImage, revokeImage, type CompanyImageAuditEntry, type CompanyImageDeps } from "../../packages/broker/src/org/company-test-images.js";
 import { COMPANY_IMAGES_MAX, COMPANY_IMAGES_MAX_WAITING, companyImageIdOf, readCompanyImage, companyImageStanding, serviceImageServed, type CompanyImage } from "../../packages/broker/src/test-env/company-images.js";
-import { registryDigestResolver } from "../../packages/broker/src/test-env/company-image-resolver.js";
 import { capturingAuditDeps } from "../support/audit-capture.js";
 import { OMAR } from "../support/developer-task-broker.js";
 import { pinnedCatalog, sha, verifiedCatalog } from "../support/catalog-pinning.js";
@@ -39,47 +38,7 @@ describe("reading an image reference", () => {
   });
 });
 
-describe("the registry lookup", () => {
-  type Reply = { status: number; headers: { get(name: string): string | null }; text(): Promise<string> };
-  const reply = (status: number, headers: Record<string, string> = {}, body = ""): Reply => ({ status, headers: { get: (name) => headers[name.toLowerCase()] ?? null }, text: async () => body });
-  const image = { registry: "docker.io", repository: "library/postgres", tag: "18" };
-  const digest = sha("manifest");
-
-  it("asks for a pull token when the registry does, then reads the digest header, over https with no redirect followed", async () => {
-    const calls: Array<{ url: string; redirect?: string; auth?: string }> = [];
-    const resolve = registryDigestResolver(async (url, init) => {
-      calls.push({ url, ...(init?.redirect === undefined ? {} : { redirect: init.redirect }), ...(init?.headers?.authorization === undefined ? {} : { auth: init.headers.authorization }) });
-      if (url.startsWith("https://auth.docker.io/")) return reply(200, {}, JSON.stringify({ token: "t0k" }));
-      return init?.headers?.authorization === undefined ? reply(401, { "www-authenticate": 'Bearer realm="https://auth.docker.io/token",service="registry.docker.io"' }) : reply(200, { "docker-content-digest": `sha256:${digest}` });
-    });
-    expect(await resolve(image)).toBe(digest);
-    expect(calls.map((call) => call.url)).toEqual([
-      "https://registry-1.docker.io/v2/library/postgres/manifests/18", "https://auth.docker.io/token?scope=repository%3Alibrary%2Fpostgres%3Apull&service=registry.docker.io", "https://registry-1.docker.io/v2/library/postgres/manifests/18",
-    ]);
-    expect(calls.every((call) => call.redirect === "manual")).toBe(true);
-    expect(calls[2]!.auth).toBe("Bearer t0k");
-  });
-
-  it("says nothing for a failure of any kind: a redirect, a bad digest header, a token address that is not a public https name, an error, a thrown fetch", async () => {
-    const answers: Array<(url: string) => Reply | Promise<Reply>> = [
-      () => reply(302, { location: "https://elsewhere.example.org/" }),
-      () => reply(200, { "docker-content-digest": "sha256:abc" }),
-      () => reply(200, { "docker-content-digest": `sha512:${digest}` }),
-      () => reply(200),
-      () => reply(401, { "www-authenticate": 'Bearer realm="http://auth.example.org/token"' }),
-      () => reply(401, { "www-authenticate": 'Bearer realm="https://169.254.169.254/token"' }),
-      () => reply(401, { "www-authenticate": 'Bearer realm="https://auth.corp.internal/token"' }),
-      () => reply(401, { "www-authenticate": 'Basic realm="x"' }),
-      () => reply(500),
-      () => { throw new Error("socket closed with a secret in it"); },
-    ];
-    for (const answer of answers) expect(await registryDigestResolver(async (url) => answer(url))(image)).toBeUndefined();
-    // A private registry name is never asked.
-    let asked = 0;
-    expect(await registryDigestResolver(async () => { asked += 1; return reply(200, { "docker-content-digest": `sha256:${digest}` }); })({ registry: "registry.corp.internal", repository: "acme/postgres", tag: "18" })).toBeUndefined();
-    expect(asked).toBe(0);
-  });
-});
+// The registry lookup (allowlist, resolved addresses, platform digest) is tested in company-image-registry.test.ts.
 
 const NOW = Date.parse("2026-11-11T10:00:00.000Z");
 const ADMIN = "a".repeat(64);

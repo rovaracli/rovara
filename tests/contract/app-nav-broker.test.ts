@@ -18,6 +18,26 @@ it("serves the production navigation route with canonical Home total and visible
  expect(home.body.total).toBe(1);expect(nav.homeCount).toBe(home.body.total);expect(nav.projects.map(project => project.name)).toContain("payments");expect(nav.org.trial?.state).toBe("locked");expect(nav.features).toEqual({ localAgents: false, usage: false, admin: false, chains: false, notices: false, describe: false });
  } finally { remove(); }
 });
+it("gives each project the caller's own needs-you count from Home's own cards, and no one else's", async () => {
+ const { registerHomeCardSource } = await import("../../packages/broker/src/agent-sessions/home.js");
+ const card = (id: string, project: string | undefined) => ({ cardId: `offer:${id}`, kind: "offer" as const, title: `Offer ${id}`, reason: "A teammate shared this.", at: "2026-10-23T12:00:00Z", buttons: [], ...(project === undefined ? {} : { project }) });
+ // Three of Maya's cards are about payments, one about a project she cannot see, one about no project; Omar has none of his own.
+ const remove = registerHomeCardSource({ kind: "offer", list: async (_deps, caller) => caller.developerId === MAYA.developerId ? [card("a", "payments"), card("b", "payments"), card("c", "payments"), card("d", "not-hers"), card("e", undefined)] : [] });
+ try {
+ const h = await setup();
+ const read = async (who: typeof MAYA) => { const response = await h.dev(who, "GET", "/v1/app/nav");expect(response.status).toBe(200);const body = { ...response.body };delete body.requestId;return AppNavSchema.parse(body); };
+ const maya = await read(MAYA), home = await h.dev(MAYA, "GET", "/v1/app/home");
+ expect(maya.homeCount).toBe(5);expect(home.body.total).toBe(5);
+ expect(maya.projects.find(project => project.name === "payments")?.needsYou).toBe(3);
+ // The project she cannot see is in her count but never named; the project counts add up to less than the whole.
+ expect(maya.projects.some(project => project.name === "not-hers")).toBe(false);
+ expect(maya.projects.reduce((sum, project) => sum + (project.needsYou ?? 0), 0)).toBe(3);
+ // The project is for counting only: Home's own answer never carries it.
+ expect((home.body.cards as Array<Record<string, unknown>>).every(entry => !("project" in entry))).toBe(true);
+ const omar = await read(OMAR);
+ expect(omar.homeCount).toBe(0);expect(omar.projects).toEqual([]);
+ } finally { remove(); }
+});
 it("adds the authoritative trial state and default-name flag to me", async () => {
  const h = await setup();
  expect((await h.dev(MAYA, "GET", "/v1/app/me")).body).toMatchObject({ org: { trial: { state: "locked" }, nameIsDefault: true } });

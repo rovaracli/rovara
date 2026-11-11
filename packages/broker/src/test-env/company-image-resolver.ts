@@ -1,77 +1,50 @@
-// Company-approved extra test-service images: looking up the digest of a tag, so an approval pins what a registry said and not what a person typed. The registry is asked with the standard registry API (an anonymous
-// pull token when the registry asks for one), over https only, to a public DNS name only (never an address, a port or a private-looking name: the reference reader refuses those first, and the token address is checked here
-// the same way), with no redirect followed, a time limit and a size limit. A lookup that fails for any reason says nothing but `undefined`: the caller then proposes nothing. Nothing here throws.
-import { COMPANY_IMAGE_DEFAULT_REGISTRY, type CompanyImageName } from "./company-images.js";
+// Company-approved extra test-service images: looking up the digest of a tag, so an approval pins what a registry said and not what a person typed. The registry is read through the closed registry client
+// (`company-image-registry-client.ts`): only an allowed registry (the four built-in ones and the company's own extra list), at the host the allowlist names, over https with no redirect, to hosts that resolve to public
+// addresses only, with a time limit and a size limit. A lookup that fails for any reason says nothing but `undefined`: the caller then proposes nothing. Nothing here throws.
 
-/** The port the authority uses: the digest (64 hex) of an image's tag, or undefined when it could not be looked up. */
-export type CompanyImageDigestResolver = (image: CompanyImageName) => Promise<string | undefined>;
+import { lookup as dnsLookup } from "node:dns/promises";
+import { type CompanyImageName } from "./company-images.js";
+import { configIsPlatform, manifestKindOf, platformDigestOf, readImageManifest, sha256Of } from "./company-image-manifest.js";
+import { createRegistryClient, globalRegistryFetch, type RegistryFetch } from "./company-image-registry-client.js";
+import type { AddressLookup } from "./public-address.js";
+
+/**
+ * The port the authority uses: the digest (64 hex) an image's tag has FOR linux/arm64, or undefined when it could not be looked up, the registry is not allowed, or the image has no linux/arm64 build.
+ * `extraRegistries` is the company's own list (the four built-in registries are always allowed).
+ */
+export type CompanyImageDigestResolver = (image: CompanyImageName, extraRegistries?: readonly string[]) => Promise<string | undefined>;
 
 export const RESOLVER_TIMEOUT_MS = 8_000;
-const TOKEN_MAX_BYTES = 16 * 1024;
-const MANIFEST_ACCEPT = [
-  "application/vnd.oci.image.index.v1+json", "application/vnd.docker.distribution.manifest.list.v2+json",
-  "application/vnd.oci.image.manifest.v1+json", "application/vnd.docker.distribution.manifest.v2+json",
-].join(", ");
+/**
+ * THE PIN: this is the digest of the image's linux/arm64 MANIFEST, not of the OCI index a multi-architecture tag points at (the worker runs linux/arm64; see contracts `company-image-mirror.ts` for the whole decision).
+ * `docker-content-digest` of the manifest itself is what the registry says for that manifest, and it must equal the sha256 of the bytes we read; Rovara works the digest out from the bytes and uses the header only to
+ * refuse a registry that disagrees with its own bytes. The mirror copies exactly this manifest and the worker pulls exactly this digest, so one number is approved, verified and run.
+ */
 const DIGEST_HEADER = /^sha256:([a-f0-9]{64})$/u;
-const PUBLIC_HOST = /^(?=.{4,253}$)[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+$/u;
-const PRIVATE_SUFFIX = /(?:^|\.)(?:local|localhost|internal|lan|home|corp|intranet|test|invalid|example)$/u;
 
-/** The host of an https address that is a public-looking DNS name with no port, credentials or fragment, or undefined. */
-function publicHttpsHost(address: string): string | undefined {
-  try {
-    const url = new URL(address);
-    if (url.protocol !== "https:" || url.port !== "" || url.username !== "" || url.password !== "" || url.hash !== "") return undefined;
-    const host = url.hostname.toLowerCase();
-    return PUBLIC_HOST.test(host) && !/^[0-9.]+$/u.test(host) && !PRIVATE_SUFFIX.test(host) ? host : undefined;
-  } catch {
-    return undefined;
-  }
-}
+const toAsync = (lookup: typeof dnsLookup): AddressLookup => async (host) => lookup(host, { all: true, verbatim: true });
 
-/** `realm="https://auth.docker.io/token",service="registry.docker.io"` as a map. Only the three keys a pull token needs are read. */
-function challengeOf(header: string | null): { realm: string; service?: string } | undefined {
-  if (header === null || !/^Bearer\s/iu.test(header)) return undefined;
-  const fields = new Map<string, string>();
-  for (const match of header.slice(7).matchAll(/([a-z]+)="([^"]*)"/giu)) fields.set(match[1]!.toLowerCase(), match[2]!);
-  const realm = fields.get("realm");
-  if (realm === undefined || publicHttpsHost(realm) === undefined) return undefined;
-  const service = fields.get("service");
-  return { realm, ...(service === undefined || service.length > 200 ? {} : { service }) };
-}
-
-type Fetch = (input: string, init?: { method?: string; headers?: Record<string, string>; redirect?: "manual" | "error" | "follow"; signal?: AbortSignal }) => Promise<{ status: number; headers: { get(name: string): string | null }; text(): Promise<string> }>;
-
-/** The digest resolver over a registry's API. `fetchImpl` is global `fetch` in production; tests give a fake. */
-export function registryDigestResolver(fetchImpl: Fetch = fetch): CompanyImageDigestResolver {
-  return async (image) => {
+/** The digest resolver over a registry's API. `fetchImpl` is global `fetch` in production; tests give a fake, and a fake name lookup. */
+export function registryDigestResolver(fetchImpl: RegistryFetch = globalRegistryFetch, lookup: AddressLookup = toAsync(dnsLookup)): CompanyImageDigestResolver {
+  return async (image, extraRegistries = []) => {
     try {
-      const host = image.registry === COMPANY_IMAGE_DEFAULT_REGISTRY ? "registry-1.docker.io" : image.registry;
-      if (publicHttpsHost(`https://${host}/`) === undefined) return undefined;
-      const manifest = `https://${host}/v2/${image.repository}/manifests/${encodeURIComponent(image.tag)}`;
-      const head = async (token?: string) => fetchImpl(manifest, {
-        method: "HEAD", redirect: "manual", signal: AbortSignal.timeout(RESOLVER_TIMEOUT_MS),
-        headers: { accept: MANIFEST_ACCEPT, ...(token === undefined ? {} : { authorization: `Bearer ${token}` }) },
-      });
-      let reply = await head();
-      if (reply.status === 401) {
-        const challenge = challengeOf(reply.headers.get("www-authenticate"));
-        if (challenge === undefined) return undefined;
-        const address = new URL(challenge.realm);
-        address.searchParams.set("scope", `repository:${image.repository}:pull`);
-        if (challenge.service !== undefined) address.searchParams.set("service", challenge.service);
-        const tokenReply = await fetchImpl(address.toString(), { redirect: "manual", signal: AbortSignal.timeout(RESOLVER_TIMEOUT_MS), headers: { accept: "application/json" } });
-        if (tokenReply.status !== 200) return undefined;
-        const text = await tokenReply.text();
-        if (text.length > TOKEN_MAX_BYTES) return undefined;
-        const parsed = JSON.parse(text) as { token?: unknown; access_token?: unknown };
-        const token = typeof parsed.token === "string" ? parsed.token : typeof parsed.access_token === "string" ? parsed.access_token : undefined;
-        if (token === undefined || token.length === 0 || token.length > 8_000) return undefined;
-        reply = await head(token);
-      }
-      if (reply.status !== 200) return undefined;
-      return DIGEST_HEADER.exec(reply.headers.get("docker-content-digest") ?? "")?.[1];
+      const client = createRegistryClient({ registry: image.registry, extra: extraRegistries, repository: image.repository, fetchImpl, lookup, timeoutMs: RESOLVER_TIMEOUT_MS });
+      const top = await client.manifest(image.tag);
+      const kind = manifestKindOf(top.bytes, top.mediaType);
+      if (kind === "index") return platformDigestOf(top.bytes);
+      if (kind !== "image") return undefined;
+      // A single image: its digest is the digest of the bytes read, the registry's own header (when it sends one) must agree, and its config must say linux/arm64.
+      const digest = sha256Of(top.bytes);
+      if (top.digestHeader !== undefined && DIGEST_HEADER.exec(top.digestHeader)?.[1] !== digest) return undefined;
+      const read = readImageManifest(top.bytes);
+      if (!read.ok) return undefined;
+      const config = await client.smallBlob(read.manifest.config.digest, 1024 * 1024);
+      if (sha256Of(config) !== read.manifest.config.digest.slice("sha256:".length) || !configIsPlatform(config)) return undefined;
+      return digest;
     } catch {
       return undefined;
     }
   };
 }
+
+

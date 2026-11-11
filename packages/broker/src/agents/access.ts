@@ -370,6 +370,10 @@ async function withSurvivors(lookups: Lookups, shares: AgentShare[]): Promise<Ag
  * Makes `shares` the agent's whole share set, in one transaction with the share-index items and a `shared` event. The caller needs
  * `manage`; an unknown member or project is `CONFIG_INVALID`. A set that is already the agent's writes nothing. One save changes
  * at most 48 shares (a transaction's size), so replacing a full set of 50 takes two.
+ *
+ * NO CONFIRMATION: this applies any set, a company-wide share included, to a caller who holds `manage`. No route or tool may call it: a company-wide
+ * share goes through `shareAgent` and waits for an org owner or admin on the page (owner decisions 91, 92). `tests/contract/share-writers-gated.test.ts`
+ * fails when anything but this file refers to it.
  */
 export async function setShares(deps: AgentAccessDeps, caller: AgentCaller, agentId: AgentId, shares: AgentShare[]): Promise<AgentShare[]> {
   if (isBuiltinAgentId(agentId)) throw invalid("Built-in agents belong to the whole company and can't be shared.");

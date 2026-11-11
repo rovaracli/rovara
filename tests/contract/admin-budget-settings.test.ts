@@ -22,7 +22,8 @@ it("reports existing cloud defaults as base settings only without a configured r
  const f = fixture();const result = await f.call();expect(result.status).toBe(200);expect(result.body).toEqual({ orgId: A, checkedAt: "2026-10-27T12:00:00.000Z", coverage: "monthly_base_settings_only", orgMonthly: { kind: "limited", microdollars: 500_000_000, source: "cloud_default" }, memberDefaultMonthly: { kind: "limited", microdollars: 29_000_000, source: "cloud_default" }, memberOverrideCount: 0, memberOverrideCoverage: "configured_only_membership_not_checked", topUps: "not_checked", usage: "not_checked", enforcement: "not_checked" });expect(f.db.transactions().length).toBe(0);
 });
 it("distinguishes private unlimited from an explicit zero and converts exact USD microdollars", async () => {
- const f = fixture("owner", false);expect((await f.call()).body?.orgMonthly).toEqual({ kind: "unlimited", source: "unset" });f.settings({ orgMonthlyUsd: 0, memberDefaultMonthlyUsd: 1.000001, memberOverrides: { [other]: 0.01 } });const result = await f.call();expect(result.status).toBe(200);expect(result.body?.orgMonthly).toEqual({ kind: "limited", microdollars: 0, source: "configured" });expect(result.body?.memberDefaultMonthly).toEqual({ kind: "limited", microdollars: 1_000_001, source: "configured" });expect(result.body?.memberOverrideCount).toBe(1);expect(JSON.stringify(result.body).includes(other)).toBe(false);
+ const f = fixture("owner", false);expect((await f.call()).body?.orgMonthly).toEqual({ kind: "unlimited", source: "unset" });f.settings({ orgMonthlyUsd: 0, memberDefaultMonthlyUsd: 1.000001, memberOverrides: { [other]: 0.01 } });const result = await f.call();expect(result.status).toBe(200);expect(result.body?.orgMonthly).toEqual({ kind: "limited", microdollars: 0, source: "configured" });expect(result.body?.memberDefaultMonthly).toEqual({ kind: "limited", microdollars: 1_000_001, source: "configured" });expect(result.body?.memberOverrideCount).toBe(1);// This replaces the old rule that no person id appears: each person's own allowance is now shown to owners and admins (it is the members list's own id).
+ expect(result.body?.memberOverrides).toEqual([{ developerId: other, microdollars: 10_000 }]);
 });
 it("uses the existing per-field cloud default for absent fields but never replaces an explicit zero", async () => { const f = fixture();f.settings({ orgMonthlyUsd: 0 });expect((await f.call()).body?.memberDefaultMonthly).toEqual({ kind: "limited", microdollars: 29_000_000, source: "cloud_default" });expect((await f.call()).body?.orgMonthly).toEqual({ kind: "limited", microdollars: 0, source: "configured" }); });
 for (const value of [undefined, -1, NaN, Infinity, 1_000_000.000001, 0.0000001, 1.0000001, "500", null]) for (const field of ["orgMonthlyUsd", "memberDefaultMonthlyUsd", "override"] as const) it(`refuses corrupt ${field} money ${String(value)} instead of defaults`, async () => { const f = fixture();f.settings(field === "override" ? { memberOverrides: { [other]: value } } : { [field]: value });expect((await f.call()).status).toBe(503); });
@@ -33,7 +34,7 @@ for (const field of ["closingAt", "closedAt", "member-person", "member-org", "po
 });
 it("does not trust query orgId or disclose another company's settings", async () => { const f = fixture();f.settings({ orgMonthlyUsd: 123 }, B);expect((await f.call(f.caller, "?orgId=" + B)).body?.orgMonthly).toEqual({ kind: "limited", microdollars: 500_000_000, source: "cloud_default" });f.member(B, "owner");expect((await f.call()).status).toBe(403);expect((await f.call({ ...f.caller, orgId: B })).body?.orgMonthly).toEqual({ kind: "limited", microdollars: 123_000_000, source: "configured" }); });
 it("uses consistent reads and refuses demotion after reading the monthly settings", async () => { const f = fixture("owner", true, true);f.settings({ orgMonthlyUsd: 12 });const send = f.db.send.bind(f.db);f.db.send = async command => { expect(command.constructor.name).toBe("GetCommand");const input = command.input as { Key: { pk: string; sk: string }; ConsistentRead?: boolean };expect(input.ConsistentRead).toBe(true);const result = await send(command);if (input.Key.pk === orgSettingsKey(A, "BUDGET").pk && input.Key.sk === orgSettingsKey(A, "BUDGET").sk) f.member(A, "member");return result; };expect((await f.call()).status).toBe(403); });
-it("never writes, syncs a proxy, or returns stored metadata or secret-like fields", async () => { const f = fixture();f.settings({ orgMonthlyUsd: 10, updatedBy: who, internalDetail: "private metadata fixture" });const send = f.db.send.bind(f.db);f.db.send = async command => { expect(command.constructor.name).toBe("GetCommand");return send(command); };const result = await f.call();expect(result.status).toBe(200);const text = JSON.stringify(result.body);expect(text.includes("private metadata fixture") || text.includes(who)).toBe(false);expect(result.body?.usage).toBe("not_checked");expect(result.body?.enforcement).toBe("not_checked");expect(result.body?.topUps).toBe("not_checked"); });
+it("never writes, syncs a proxy, or returns stored metadata or secret-like fields", async () => { const f = fixture();f.settings({ orgMonthlyUsd: 10, updatedBy: who, internalDetail: "private metadata fixture" });const send = f.db.send.bind(f.db);f.db.send = async command => { expect(command.constructor.name).toBe("GetCommand");return send(command); };const result = await f.call();expect(result.status).toBe(200);const text = JSON.stringify(result.body ?? null) ?? "";expect(text.includes("private metadata fixture") || text.includes(who)).toBe(false);expect(result.body?.usage).toBe("not_checked");expect(result.body?.enforcement).toBe("not_checked");expect(result.body?.topUps).toBe("not_checked"); });
 it("fails closed with a fixed message on storage failure", async () => { const f = fixture();f.db.injectFault({ command: "GetCommand", error: { name: "ServiceUnavailable", message: "private storage fixture" } });const result = await f.call();expect(result.status).toBe(503);expect(JSON.stringify(result).includes("private storage fixture")).toBe(false); });
 
 it("exports a strict browser-safe bounded monthly-base DTO",async()=>{const f=fixture();const r=await f.call();expect(AdminBudgetSettingsSchema.safeParse(r.body).success).toBe(true);for(const amount of [-1,0.1,NaN,Infinity,1_000_000_000_001])expect(AdminBudgetMicrodollarsSchema.safeParse(amount).success).toBe(false);for(const amount of [0,1,1_000_000_000_000])expect(AdminBudgetMicrodollarsSchema.safeParse(amount).success).toBe(true);for(const extra of [{usage:0},{enforcement:"enforced"},{remainingMicrodollars:0},{orgId:B,unknownField:true},{memberOverrideCount:501}])expect(AdminBudgetSettingsSchema.safeParse({...r.body,...extra}).success).toBe(false);});
@@ -46,3 +47,32 @@ for (const scope of ["pointer", "org", "budget"] as const) it(`refuses a misboun
 it("refuses actual committed demotion even when the database can return prior authority rows",async()=>{const f=fixture("owner",true,true);f.settings({orgMonthlyUsd:12});const send=f.db.send.bind(f.db);let changed=false;f.db.send=async command=>{const result=await send(command);const key=(command.input as {Key?:{pk?:string;sk?:string}}).Key;if(!changed&&key?.pk===orgSettingsKey(A,"BUDGET").pk&&key.sk===orgSettingsKey(A,"BUDGET").sk){changed=true;await send(new TransactWriteCommand({TransactItems:[orgMemberKey(A,who),developerOrgKey(who)].map(Key=>({Update:{TableName:"state",Key,UpdateExpression:"SET #role = :role",ExpressionAttributeNames:{"#role":"role"},ExpressionAttributeValues:{":role":"member"}}}))}));}return result;};expect((await f.call()).status).toBe(403);expect(changed).toBe(true);expect(f.db.get(orgMemberKey(A,who))?.role).toBe("member");});
 
 for(const row of ["member","pointer"] as const)it(`refuses monthly settings when the actor ${row} row was deleted`,async()=>{const f=fixture();f.settings({orgMonthlyUsd:10});f.db.delete(row==="member"?orgMemberKey(A,who):developerOrgKey(who));expect((await f.call()).status).toBe(403);});
+
+// Each person's own monthly allowance (additive `memberOverrides`): owners and admins only, from the caller's own company.
+const third = "c".repeat(64);
+for (const role of ["owner", "admin"]) it(`shows a live ${role} each person's own allowance, sorted by person, in exact microdollars`, async () => {
+ const f = fixture(role);f.settings({ memberOverrides: { [third]: 12.5, [other]: 0 } });
+ const result = await f.call();expect(result.status).toBe(200);
+ expect(result.body?.memberOverrides).toEqual([{ developerId: other, microdollars: 0 }, { developerId: third, microdollars: 12_500_000 }]);
+ expect(result.body?.memberOverrideCount).toBe(2);expect(AdminBudgetSettingsSchema.safeParse(result.body).success).toBe(true);
+});
+for (const role of ["maintainer", "member", "viewer", "auditor"]) it(`gives a ${role} neither the allowances nor a person id`, async () => {
+ const f = fixture(role);f.settings({ memberOverrides: { [third]: 12.5, [other]: 7 } });
+ const result = await f.call();
+ expect(result.status).toBe(403);
+ const text = JSON.stringify(result.body ?? null) ?? "";
+ expect(text.includes(third) || text.includes(other) || text.includes("memberOverrides")).toBe(false);
+ // Positive control: the same stored rows reach an owner, so the refusal above is the role check and not an empty fixture.
+ const owner = fixture("owner");owner.settings({ memberOverrides: { [third]: 12.5, [other]: 7 } });
+ expect((await owner.call()).body?.memberOverrides).toHaveLength(2);
+});
+it("leaves the field out when nobody has their own allowance, and never shows another company's", async () => {
+ const f = fixture();
+ expect("memberOverrides" in ((await f.call()).body ?? {})).toBe(false);
+ f.settings({ memberOverrides: { [third]: 99 } }, B);
+ const result = await f.call(f.caller, "?orgId=" + B);
+ expect("memberOverrides" in (result.body ?? {})).toBe(false);
+ expect(JSON.stringify(result.body).includes(third)).toBe(false);
+ f.settings({ memberOverrides: { [other]: 3 } });
+ expect((await f.call(f.caller, "?orgId=" + B)).body?.memberOverrides).toEqual([{ developerId: other, microdollars: 3_000_000 }]);
+});

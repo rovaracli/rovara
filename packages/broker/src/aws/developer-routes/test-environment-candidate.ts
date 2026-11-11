@@ -1,6 +1,7 @@
 // TE-2: a test-environment proposal's candidate check, as the routes use it. The check is prepared from the commands the proposal would put in the settings, run on a fresh workspace BEFORE they are applied; its
 // result is stored for (project, digest, settings revision). The Prove reads it, and the approval writes into the settings only the commands it ran. See org/test-env-candidate.ts for what is stored.
-import { agentXError, testEnvDigest, type AppProjectSummary, type OrgId, type ProjectCommand, type TestEnvironmentBody } from "@rovara-code/contracts";
+import { agentXError, testEnvDigest, type OrgId, type ProjectCommand, type TestEnvironmentBody } from "@rovara-code/contracts";
+import { type AppProjectSummary } from "@agentx/cloud-contracts";
 import { workerProjectDefinition } from "@agentx/cloud-contracts";
 import { setupStateOfCheck } from "../../org/project-setup-check.js";
 import { readCandidateCheck, type CandidateCheck } from "../../org/test-env-candidate.js";

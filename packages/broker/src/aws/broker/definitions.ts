@@ -2,6 +2,8 @@
 
 import type { CompanyImageDigestResolver } from "../../test-env/company-image-resolver.js";
 import type { CompanyRulesRepositories } from "../../company-rules/sync.js";
+import type { CompanyImageMirrorJob } from "@agentx/cloud-contracts";
+import type { SavedEnvSessionConfig, SavedEnvSessionPorts } from "../../test-env/saved-env-session.js";
 import type { CompanyInstructionsSource } from "../../instructions/company-source.js";
 import type { ServiceCatalogSource } from "../../test-env/dependency-plan.js";
 import type { LinearReplyPort } from "../../rovara-code/linear-comments.js";
@@ -16,7 +18,8 @@ import type { LessonEmbedder } from "../../lessons/ports.js";
 import type { DynamoDBDocumentClient } from "@aws-sdk/lib-dynamodb";
 import type { S3Client } from "@aws-sdk/client-s3";
 import type { RegistryTokenSource } from "../../project-registries/mint.js";
-import { E2EPolicySchema, type PrepareSavedEnv, type SavedEnvRegistryAuth, type CodeBuildCheckResult, type SlackRequester, type ModelIdentifier, type ProjectRole, type AdminChangeOutcome, type E2ESourceSnapshot, type E2ESetupProposal, E2E_DEFAULT_MODEL_ROUTE_ID, E2E_MODEL_FREE_LIMITS, type HookSource } from "@rovara-code/contracts";
+import { E2EPolicySchema, type CodeBuildCheckResult, type SlackRequester, type ModelIdentifier, type ProjectRole, type AdminChangeOutcome, type E2ESourceSnapshot, type E2ESetupProposal, E2E_DEFAULT_MODEL_ROUTE_ID, E2E_MODEL_FREE_LIMITS, type HookSource } from "@rovara-code/contracts";
+import { type PrepareSavedEnv, type SavedEnvRegistryAuth } from "@agentx/cloud-contracts";
 import { type ProjectDefinition } from "@agentx/cloud-contracts";
 import { type EditionPolicy } from "@agentx/cloud-contracts";
 import { e2ePrivateTransferMaxBytes } from "@agentx/verifier";
@@ -388,6 +391,10 @@ export interface AwsBrokerDependencies {
   companyImageResolver?: CompanyImageDigestResolver;
   /** Company rules (G-04, switch `si`): how the file sync reaches a repository. Absent: built from the install's GitHub connection (`company-rules-wiring.ts`). A test gives a fake. */
   companyRulesRepositories?: CompanyRulesRepositories;
+  /** Company-approved extra images (switch `pj`): the registry sessions of the mirror (pull logins for the worker). Absent: built from the broker's settings (`companyImageSessionsOf`); a test gives a fake. */
+  companyImageSessions?: { config: SavedEnvSessionConfig; ports: SavedEnvSessionPorts };
+  /** Company-approved extra images: starts the mirror copier. Absent: the broker's setting (`COMPANY_IMAGE_MIRROR_FUNCTION_NAME`). A test gives a fake. */
+  companyImageMirrorStart?: (job: CompanyImageMirrorJob) => Promise<void>;
   /** Lane E: the MCP context sources' servers, Team record hooks and result keeper (`/v1/internal/context-tools*`). Absent: the routes answer that no sources are set up. */
   contextSources?: ContextSourcesRuntime;
   /** Learning v2 wiring (WA-2): the terminal-task hook's dependencies. Absent (the pilot default): no hook is registered and learning reads and writes nothing at a task's end. */

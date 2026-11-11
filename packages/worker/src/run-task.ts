@@ -92,6 +92,7 @@ import { SANDBOX_TARGET, executionFor } from "./execution-target.js";
 import { localBashOperations, taskSandboxFor, taskShellSelection, type TaskSandbox, type TaskShellSelection } from "./task-sandbox.js";
 import { startTaskTestServices, withTestServices, type TestServicesConfig } from "./test-services-run.js";
 import type { FixtureSetCallback } from "./fixture-delivery.js";
+import type { CompanyImageLoginCallback } from "./company-image-pull.js";
 
 export interface TaskInvocationResult {
   /** The broker-issued conversation ID, which stays the same for every turn of one conversation. */
@@ -207,6 +208,8 @@ export interface TaskInvocationDependencies {
   testServices?: TestServicesConfig;
   /** Test services (slice 3): the run's `fixture-set` callback (callback-client.ts), for a plan with a fake. */
   fixtureSet?: FixtureSetCallback;
+  /** Company-approved images (switch `pj`): the run's `company-image-login` callback, for a plan with a company image. */
+  companyImageLogin?: CompanyImageLoginCallback;
 }
 
 export async function runTaskInvocation(
@@ -359,7 +362,7 @@ async function runTask(
   }
   // Test services (slice 1): a plan with dependencies starts them now, for the whole task. Nothing at all happens for a plan without them. Torn down by the sandbox's dispose, on every exit path.
   const testServices = await startTaskTestServices({ plan: step?.kind === "agent" ? undefined : invocation.payload.testEnvironment, mode, sandbox, devcontainer: devcontainer !== undefined, nightly: invocation.payload.nightlyRun !== undefined, operationId: invocation.operationId, rootPath: canonicalRoot,
-    repositoryPaths: manifest.repositories.map((repository) => resolve(canonicalRoot, repository.path)), config: dependencies.testServices, artifactSink: dependencies.artifactSink, cancellation: dependencies.cancellationController, fixtureSet: dependencies.fixtureSet })
+    repositoryPaths: manifest.repositories.map((repository) => resolve(canonicalRoot, repository.path)), config: dependencies.testServices, artifactSink: dependencies.artifactSink, cancellation: dependencies.cancellationController, fixtureSet: dependencies.fixtureSet, companyImageLogin: dependencies.companyImageLogin })
     .catch((error: unknown) => reportFeedbackReviewStartFailure(error));
   // R56: the agent's file tools run in the same container as its shell, never in the worker (sandbox-file-tools.ts), for every
   // Pi session of this task: the main ones, the feedback review and the critic and security reviews.

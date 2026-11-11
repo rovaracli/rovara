@@ -853,6 +853,9 @@ describe("I4: the builders", () => {
     ["auditRecordTrackerAutolinkChanged", (occurrence) => builders.auditRecordTrackerAutolinkChanged({ ...base, occurrence, details, enabled: true })],
     ["auditSetupRecipeChange", (occurrence) => builders.auditSetupRecipeChange({ ...base, occurrence, details, action: "setup_recipe.approved", facts: { recipeId: "rcp_" + "1".repeat(20), revision: 2, bodyDigest: "a".repeat(64), authority: "fresh_sign_in" } })],
     ["auditCompanyImageChange", (occurrence) => builders.auditCompanyImageChange({ ...base, occurrence, details, action: "company_image.approved", imageId: "img_" + "1".repeat(20), digest: "a".repeat(64), authority: "fresh_sign_in" })],
+    // Company rules (G-04): the builder has no case on integ/0514, so this lane's run of the catalog test found it.
+    ["auditCompanyRules", (occurrence) => builders.auditCompanyRules({ ...base, occurrence, details, action: "company_rules.proposed", facts: { proposalId: "prop_1", baseVersion: 1, ruleCount: 3, digest: "a".repeat(64), source: "rovara" } })],
+    ["auditCompanyImageRegistriesChanged", (occurrence) => builders.auditCompanyImageRegistriesChanged({ ...base, occurrence, details, registryCount: 2, authority: "fresh_sign_in" })],
     ["auditSavedEnvChanged", (occurrence) => builders.auditSavedEnvChanged({ ...base, occurrence, details, projectName: "Secret Project", change: "build_recorded", cause: "no_image", digest: "sha256:" + "a".repeat(64) })],
     ["auditSavedEnvSettingChanged", (occurrence) => builders.auditSavedEnvSettingChanged({ ...base, occurrence, details, projectName: "Secret Project", enabled: true })],
     ["auditTestAccountChange", (occurrence) => builders.auditTestAccountChange({ ...base, occurrence, details, action: "test_account.approved", accountId: "ta-0000000000000001", facts: { digest: "a".repeat(64), approvalMode: "second_person", approvals: 2, expiresInDays: 90 } })],

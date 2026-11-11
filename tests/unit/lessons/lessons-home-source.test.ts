@@ -12,6 +12,8 @@ function deps(projects: Array<{ project: string; role: string }>) {
 }
 afterEach(() => { setLessonsHomeReader(undefined); });
 
+const withoutProject = ({ project: _project, ...card }: { project?: string | undefined; [key: string]: unknown }) => card; // eslint-disable-line @typescript-eslint/no-unused-vars -- taken off, as Home does before it answers
+
 describe("the Lessons waiting card", () => {
   it("makes one card per maintained project with lessons waiting for this person, linking to the Lessons tab", async () => {
     const asked: string[] = [];
@@ -19,7 +21,9 @@ describe("the Lessons waiting card", () => {
     const cards = await lessonsHomeSource.list(deps([{ project: "web", role: "maintainer" }, { project: "api", role: "maintainer" }, { project: "docs", role: "viewer" }]), caller, {} as never);
     expect(cards).toHaveLength(1);
     expect(cards[0]).toMatchObject({ kind: "lesson_waiting", title: "Lessons waiting in \"web\"", reason: "2 lessons wait for a maintainer's OK in \"web\"", at: "2026-11-06T00:00:00.000Z", buttons: [{ label: "Review", action: "open", method: "GET", href: "https://cell.example/app/projects/web?tab=lessons" }] });
-    expect(HomeCardSchema.safeParse(cards[0]).success).toBe(true);
+    // The project is for the navigation's per-project count: Home takes it off before it answers, so the card's own shape is what the schema reads.
+    expect(cards[0]!.project).toBe("web");
+    expect(HomeCardSchema.safeParse(withoutProject(cards[0]!)).success).toBe(true);
     // Only projects this person maintains are read; a viewer's project is not.
     expect(asked.sort()).toEqual([`${ORG}/${ME}/api`, `${ORG}/${ME}/web`]);
     expect(cards[0]!.cardId).not.toContain("web");
@@ -40,7 +44,8 @@ describe("the Lessons waiting card", () => {
     expect(cards).toHaveLength(2);
     expect(web).toMatchObject({ kind: "lesson_waiting", title: "Lessons paused in \"web\"", reason: "Lessons paused: monthly learning limit reached", at: "2026-11-07T01:00:00.000Z" });
     expect(api.reason).toBe("2 lessons wait for a maintainer's OK in \"api\". Lessons paused: no AI provider is connected for this project");
-    for (const card of cards) expect(HomeCardSchema.safeParse(card).success).toBe(true);
+    expect(cards.map((card) => card.project).sort()).toEqual(["api", "web"]);
+    for (const card of cards) expect(HomeCardSchema.safeParse(withoutProject(card)).success).toBe(true);
     expect(web.cardId).not.toBe(api.cardId);
   });
 

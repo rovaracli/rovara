@@ -115,7 +115,7 @@ export type AgentChangeSubject =
   /** Move the org's pin of a built-in to `version`, while it is still `expectedPinnedVersion`. */
   | { kind: "builtin_adopt"; agentId: AgentId; version: number; digest: string; expectedPinnedVersion: number }
   /** Make `shares` the agent's share set (it includes a company-wide share), while it is still at `expectedSharesRevision`. */
-  | { kind: "agent_share"; agentId: AgentId; shares: AgentShare[]; expectedSharesRevision: number }
+  | { kind: "agent_share"; agentId: AgentId; shares: AgentShare[]; expectedSharesRevision: number; expectedCurrentVersion?: number; versionDigest?: string }
   /** Make `next` the company's agent guardrails, while they are still at `expectedRevision`. */
   | { kind: "guardrails"; next: AgentGuardrails; expectedRevision: number }
   | {kind:"model_selection_policy";body:ModelSelectionPolicyPut;sourcesRevision:number;guardrailsRevision:number}
@@ -201,7 +201,7 @@ export type ChainChangeSubject =
   | { kind: "chain_publish"; chainId: string; draftRevision: number; digest: string; expectedCurrentVersion?: number; note?: string }
   | { kind: "chain_rollback"; chainId: string; version: number; digest: string; expectedCurrentVersion: number }
   /** Make `shares` the chain's share set (it includes a company-wide share, or a wider one than there is), while it is still at `expectedSharesRevision`. */
-  | { kind: "chain_share"; chainId: string; shares: AgentShare[]; expectedSharesRevision: number };
+  | { kind: "chain_share"; chainId: string; shares: AgentShare[]; expectedSharesRevision: number; expectedCurrentVersion?: number; versionDigest?: string };
 
 /**
  * Plan 4 Task 18: turning a trigger on is a person's decision (N6). The approval is bound to the digest of the spec the person was shown, so a trigger edited in between
@@ -422,7 +422,7 @@ const ChangeSubjectSchema = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("agent_rollback"), modelContext:z.object({companyRevision:z.number().int().min(0),sourcesRevision:z.number().int().min(0),registeredAt:z.string().datetime(),tupleDigest:Hex64.optional()}).strict().optional(), agentId: AgentIdSchema, version: z.number().int(), digest: Hex64, expectedCurrentVersion: z.number().int() }).strict(),
   z.object({ kind: z.literal("builtin_adopt"), agentId: AgentIdSchema, version: z.number().int(), digest: Hex64, expectedPinnedVersion: z.number().int() }).strict(),
   z.object({
-    kind: z.literal("agent_share"), agentId: AgentIdSchema, expectedSharesRevision: z.number().int(),
+    kind: z.literal("agent_share"), agentId: AgentIdSchema, expectedSharesRevision: z.number().int(), expectedCurrentVersion: z.number().int().min(0).optional(), versionDigest: Hex64.optional(),
     shares: z.array(z.object({ principal: AgentPrincipalSchema, level: z.enum(["view", "use", "edit"]) }).strict()),
   }).strict(),
   z.object({kind:z.literal("model_selection_policy"),body:ModelSelectionPolicyPutSchema,sourcesRevision:z.number().int().min(0),guardrailsRevision:z.number().int().min(0)}).strict(),
@@ -430,7 +430,7 @@ const ChangeSubjectSchema = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("chain_publish"), chainId: ChainIdSchema, draftRevision: z.number().int(), digest: Hex64, expectedCurrentVersion: z.number().int().optional(), note: z.string().optional() }).strict(),
   z.object({ kind: z.literal("chain_rollback"), chainId: ChainIdSchema, version: z.number().int(), digest: Hex64, expectedCurrentVersion: z.number().int() }).strict(),
   z.object({
-    kind: z.literal("chain_share"), chainId: ChainIdSchema, expectedSharesRevision: z.number().int(),
+    kind: z.literal("chain_share"), chainId: ChainIdSchema, expectedSharesRevision: z.number().int(), expectedCurrentVersion: z.number().int().min(0).optional(), versionDigest: Hex64.optional(),
     shares: z.array(z.object({ principal: AgentPrincipalSchema, level: z.enum(["view", "use", "edit"]) }).strict()),
   }).strict(),
   z.object({ kind: z.literal("session_share_org"), sessionId: SessionIdSchema, level: SessionLevelSchema }).strict(),
