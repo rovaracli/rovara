@@ -17,9 +17,13 @@ import { Skeleton } from "../../design/Skeleton.js";
 import { Tabs } from "../../design/Tabs.js";
 import { VisibleText } from "../../design/VisibleText.js";
 import { SessionTile } from "./SessionTile.js";
+import { isWorkListOn } from "./work-list-flags.js";
+import { WorkListScreen } from "./WorkListScreen.js";
 import "./live.css";
 const LABELS = { all: "All", mine: "Mine", team: "Team", needs_me: "Needs me", failed: "Failed" } as const;
-export function LiveScreen() {
+/** The Live list. With the Work list switch on (`rovara.work`, see work-list-flags.ts) the same route shows the Work list instead; off, it is today's list, unchanged. */
+export function LiveScreen() { return isWorkListOn(useAppHost()) ? <WorkListScreen /> : <TodaysLiveScreen />; }
+function TodaysLiveScreen() {
  const host = useAppHost(), query = useQueryClient(), api = useMemo(() => createApiClient(host), [host]), [params, setParams] = useSearchParams(), announce = useAnnounce();
  const parsedFilter = LiveFilterSchema.safeParse(params.get("filter")), filter = parsedFilter.success ? parsedFilter.data : "all", parsedProject = ProjectOverviewProjectSchema.shape.name.safeParse(params.get("project")), project = parsedProject.success ? parsedProject.data : undefined;
  const live = useLive(filter, project), nav = useQuery({ queryKey: ["nav"], queryFn: () => api.get("/v1/app/nav", AppNavReaderSchema) }), ready = live.data !== undefined && !live.isError;

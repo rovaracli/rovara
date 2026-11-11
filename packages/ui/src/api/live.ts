@@ -11,9 +11,9 @@ export function acceptLivePage(previous: ReadLivePage | undefined, next: ReadLiv
  const old = new Map(previous?.tiles.map(tile => [tile.sessionId, tile]));
  return { ...next, tiles: next.tiles.map(tile => { const earlier = old.get(tile.sessionId);return earlier !== undefined && Date.parse(tile.updatedAt) < Date.parse(earlier.updatedAt) ? earlier : tile; }) };
 }
-export function useLive(filter: LiveFilter, project?: string) {
+export function useLive(filter: LiveFilter, project?: string, options: { enabled?: boolean } = {}) {
  const host = useAppHost(), api = useMemo(() => createApiClient(host), [host]), query = useQueryClient(), key = ["live", filter, project];
- return useInfiniteQuery({ queryKey: key, initialPageParam: undefined as string | undefined, queryFn: async ({ pageParam }) => {
+ return useInfiniteQuery({ queryKey: key, enabled: options.enabled ?? true, initialPageParam: undefined as string | undefined, queryFn: async ({ pageParam }) => {
   const params = new URLSearchParams({ filter });if (project !== undefined) params.set("project", project);if (pageParam !== undefined) params.set("cursor", pageParam);
   const next = await api.get("/v1/app/live?" + params.toString(), LiveResponseReaderSchema);
   // Read the cache after awaiting: a newer response may have settled while this one was in flight.
