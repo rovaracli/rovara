@@ -18,6 +18,18 @@ import type { SessionReadCaller, SessionReadDependencies } from "./read.js";
 
 type Item = Record<string, unknown>;
 
+/** The contract's cap on the failing step. A step stored before the writer kept to it is cut here, so one long error never takes the page down. */
+const FAILED_STEP_MAX = 300;
+const clampedStep = (text: string): string => {
+  if (text.length <= FAILED_STEP_MAX) return text;
+  let kept = "";
+  for (const character of text) {
+    if (kept.length + character.length > FAILED_STEP_MAX - 1) break;
+    kept += character;
+  }
+  return `${kept.trimEnd()}…`;
+};
+
 /** The project's card, as the project code knows it: the part of the page that is not about sessions, money or agents. */
 export interface ProjectPageParts {
   name: string;
@@ -135,7 +147,7 @@ export async function projectOverview(deps: ProjectOverviewDependencies, caller:
       repositories: page.repositories.map(({ fullName, defaultBranch }) => ({ fullName, defaultBranch })),
       setup: {
         status: page.setup.status, ...(page.setup.checkedRevision === undefined ? {} : { checkedRevision: page.setup.checkedRevision }),
-        ...(page.setup.checkedAt === undefined ? {} : { checkedAt: page.setup.checkedAt }), ...(page.setup.failedStep === undefined ? {} : { failedStep: page.setup.failedStep }),
+        ...(page.setup.checkedAt === undefined ? {} : { checkedAt: page.setup.checkedAt }), ...(page.setup.failedStep === undefined ? {} : { failedStep: clampedStep(page.setup.failedStep) }),
       },
       channels: page.channels,
     },
@@ -147,6 +159,11 @@ export async function projectOverview(deps: ProjectOverviewDependencies, caller:
     running: wall.tiles,
   };
   const checked = ProjectOverviewSchema.safeParse(answer);
-  if (!checked.success) throw agentXError("RUNTIME_UNAVAILABLE", "This project's page can't be shown right now.");
+  if (!checked.success) {
+    // Which fields failed, never what they held or what the project is called: the paths and the codes only.
+    const issues = checked.error.issues.map((issue) => ({ path: issue.path.join("."), code: issue.code }));
+    (deps.log ?? ((entry: Record<string, unknown>) => console.log(JSON.stringify({ component: "broker", ...entry }))))({ event: "project_overview.invalid", issues });
+    throw agentXError("RUNTIME_UNAVAILABLE", "This project's page can't be shown right now.");
+  }
   return checked.data;
 }
