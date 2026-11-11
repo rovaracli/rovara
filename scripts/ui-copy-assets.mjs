@@ -14,6 +14,8 @@ for (const path of ["design/design.css", "look-v2.css", "shell/shell.css", "scre
  "screens/admin/health/health.css",
  // Trial page, trial banner and Settings > Billing (switch rovara.billing = v2).
  "screens/billing/trial-billing.css",
+ // Working agreement panel (switch rovara.agreement = v2).
+ "screens/agreement/agreement.css",
  // Lane C2: owned audit filter styles.
  "screens/admin/audit/audit.css",
  // Lane C12: owned Connections guidance styles.
