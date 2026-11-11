@@ -37,7 +37,7 @@ export function navigatePath(answer: BillingAnswer): string | undefined {
  return action?.kind === "navigate" && typeof action.href === "string" && safeAppPath(action.href) ? action.href : undefined;
 }
 
-/** The contract takes a plain path inside the app as the page the hosted page returns to (no query, no fragment). Anything else (a path with a query, a page outside `/app`) returns to the Billing page. */
+/** The contract takes a plain path inside the app as the page the hosted page returns to (no query, no fragment). A path with a query or fragment keeps its path and loses the rest; anything else (a page outside `/app`, a malformed or over-long path) returns to the Billing page. */
 export function billingReturnPath(path: string): string {
  const plain = path.split(/[?#]/u, 1)[0] ?? "";
  return /^\/app(?:\/[A-Za-z0-9._~-]+)*\/?$/u.test(plain) && plain.length <= 300 && !plain.split("/").some(part => part === "." || part === "..") ? plain : "/app/admin/billing";
