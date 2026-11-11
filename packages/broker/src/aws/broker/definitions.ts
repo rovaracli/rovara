@@ -1,6 +1,7 @@
 // Part of the broker (split out of ../broker.ts): limits, the setup capture policy, the record and dependency types, route keys.
 
 import type { CompanyImageDigestResolver } from "../../test-env/company-image-resolver.js";
+import type { CompanyRulesRepositories } from "../../company-rules/sync.js";
 import type { CompanyInstructionsSource } from "../../instructions/company-source.js";
 import type { ServiceCatalogSource } from "../../test-env/dependency-plan.js";
 import type { LinearReplyPort } from "../../rovara-code/linear-comments.js";
@@ -383,6 +384,8 @@ export interface AwsBrokerDependencies {
   serviceCatalog?: ServiceCatalogSource;
   /** Company-approved extra images (switch `pj`): the digest lookup of a tag. Absent: the registry API over global fetch. A test gives a fake. */
   companyImageResolver?: CompanyImageDigestResolver;
+  /** Company rules (G-04, switch `si`): how the file sync reaches a repository. Absent: built from the install's GitHub connection (`company-rules-wiring.ts`). A test gives a fake. */
+  companyRulesRepositories?: CompanyRulesRepositories;
   /** Lane E: the MCP context sources' servers, Team record hooks and result keeper (`/v1/internal/context-tools*`). Absent: the routes answer that no sources are set up. */
   contextSources?: ContextSourcesRuntime;
   /** Learning v2 wiring (WA-2): the terminal-task hook's dependencies. Absent (the pilot default): no hook is registered and learning reads and writes nothing at a task's end. */

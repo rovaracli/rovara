@@ -169,7 +169,8 @@ const RepositoryName = z.string().min(3).max(200).regex(/^[A-Za-z0-9][A-Za-z0-9.
 export const CompanyRulesBodySchema = z.discriminatedUnion("action", [
   z.object({
     action: z.literal("propose"), requestId: z.string().uuid(), baseVersion: z.number().int().min(0).max(999_999_999),
-    rules: z.array(CompanyRuleViewSchema).min(1).max(COMPANY_RULES_APP_LIMITS.maxRules), note: z.string().max(COMPANY_RULES_NOTE_MAX).optional(),
+    /** Up to 200 are read so that the server, not the schema, says which limit a list is over (30 rules). */
+    rules: z.array(CompanyRuleViewSchema).min(1).max(200), note: z.string().max(COMPANY_RULES_NOTE_MAX).optional(),
   }).strict(),
   z.object({ action: z.literal("approve"), proposalId: ProposalId, expectedDigest: Digest, soleOwnerAcknowledged: z.literal(true).optional() }).strict(),
   z.object({ action: z.literal("reject"), proposalId: ProposalId, expectedDigest: Digest }).strict(),
