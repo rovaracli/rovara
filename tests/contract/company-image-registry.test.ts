@@ -338,7 +338,7 @@ describe("a company's own registry sends its blobs through a redirect (decision 
         seen.push(host);
         const step = host === apiHost ? 0 : hosts.indexOf(host) + 1;
         if (step < redirects) return reply(307, { location: `https://${hosts[step]}/blob` });
-        return reply(200, {}, image.layers[0]!);
+        return reply(200, {}, image.layers[0]);
       };
       const client = createRegistryClient({ registry, extra: ["registry.example.com"], repository: registry === "docker.io" ? "library/postgres" : "acme/postgres", fetchImpl, lookup: fakeLookup({ ...PUBLIC_HOSTS, ...table }).lookup });
       return { client, seen };
@@ -363,7 +363,7 @@ describe("a company's own registry sends its blobs through a redirect (decision 
         const host = new URL(url).host;
         seen.push(host);
         const step = host === "registry-1.docker.io" ? 0 : names.indexOf(host) + 1;
-        return step < redirects ? reply(307, { location: `https://${names[step]}/blob` }) : reply(200, {}, image.layers[0]!);
+        return step < redirects ? reply(307, { location: `https://${names[step]}/blob` }) : reply(200, {}, image.layers[0]);
       };
       return { seen, client: createRegistryClient({ registry: "docker.io", extra: [], repository: "library/postgres", fetchImpl, lookup: fakeLookup({ ...PUBLIC_HOSTS, ...Object.fromEntries(names.map((name) => [name, ["54.5.5.5"]])) }).lookup }) };
     };

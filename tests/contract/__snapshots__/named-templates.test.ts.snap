@@ -692,6 +692,22 @@ exports[`named environment templates > agentx-staging-access is unchanged 1`] = 
                           {
                             "Ref": "AWS::AccountId",
                           },
+                          ":role/agentx-staging-img-mirror",
+                        ],
+                      ],
+                    },
+                    {
+                      "Fn::Join": [
+                        "",
+                        [
+                          "arn:",
+                          {
+                            "Ref": "AWS::Partition",
+                          },
+                          ":iam::",
+                          {
+                            "Ref": "AWS::AccountId",
+                          },
                           ":role/agentx-staging-record-vectors-data",
                         ],
                       ],
@@ -1585,54 +1601,6 @@ exports[`named environment templates > agentx-staging-access is unchanged 1`] = 
                       {
                         "Ref": "AWS::AccountId",
                       },
-                      ":role/agentx-staging-img-push",
-                    ],
-                  ],
-                },
-                {
-                  "Fn::Join": [
-                    "",
-                    [
-                      "arn:",
-                      {
-                        "Ref": "AWS::Partition",
-                      },
-                      ":iam::",
-                      {
-                        "Ref": "AWS::AccountId",
-                      },
-                      ":role/agentx-staging-img-pull",
-                    ],
-                  ],
-                },
-                {
-                  "Fn::Join": [
-                    "",
-                    [
-                      "arn:",
-                      {
-                        "Ref": "AWS::Partition",
-                      },
-                      ":iam::",
-                      {
-                        "Ref": "AWS::AccountId",
-                      },
-                      ":role/agentx-staging-img-manage",
-                    ],
-                  ],
-                },
-                {
-                  "Fn::Join": [
-                    "",
-                    [
-                      "arn:",
-                      {
-                        "Ref": "AWS::Partition",
-                      },
-                      ":iam::",
-                      {
-                        "Ref": "AWS::AccountId",
-                      },
                       ":role/agentx-staging-record-vectors-data",
                     ],
                   ],
@@ -1650,6 +1618,22 @@ exports[`named environment templates > agentx-staging-access is unchanged 1`] = 
                         "Ref": "AWS::AccountId",
                       },
                       ":role/agentx-staging-connector-secrets*",
+                    ],
+                  ],
+                },
+                {
+                  "Fn::Join": [
+                    "",
+                    [
+                      "arn:",
+                      {
+                        "Ref": "AWS::Partition",
+                      },
+                      ":iam::",
+                      {
+                        "Ref": "AWS::AccountId",
+                      },
+                      ":role/agentx-staging-img-*",
                     ],
                   ],
                 },

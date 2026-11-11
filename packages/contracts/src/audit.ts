@@ -384,6 +384,8 @@ export const AUDIT_ACTIONS = [
   "company_image.proposed",
   "company_image.approved",
   "company_image.revoked",
+  // The company's own list of extra registries an image may come from: the number of registries and the authority are facts; the hosts go in `details`.
+  "company_image.registries_changed",
   // Company rules (G-04, decisions 57 and 85, switch `si`): ids, versions, counts, digests and fixed words only. The rules' own text is never a fact: the versions in the store are the record of it.
   "company_rules.proposed",
   "company_rules.adopted",
@@ -395,8 +397,6 @@ export const AUDIT_ACTIONS = [
   "company_rules.written_back",
   "company_rules.sync_connected",
   "company_rules.sync_disconnected",
-  // The company's own list of extra registries an image may come from: the number of registries and the authority are facts; the hosts go in `details`.
-  "company_image.registries_changed",
 ] as const;
 
 export const AuditActionSchema = z.enum(AUDIT_ACTIONS);
