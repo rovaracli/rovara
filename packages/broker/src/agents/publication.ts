@@ -267,6 +267,15 @@ export function withdrawnEvent(record: ApprovalRecord & { subject: AgentPublicat
 
 // ---- what approving does
 
+/**
+ * Decision 92: an agent the whole company can use (a stored company share) changes owner only by an org owner or admin, on every path that moves it (a `PUT owner`, a
+ * publish request applied at once, an approved project request). `role` is the mover's live org role.
+ */
+export async function requireOwnerOrAdminToMoveShared(deps: ApprovalDependencies, orgId: OrgId, agentId: AgentId, role: string | undefined): Promise<void> {
+  if (isOrgAdmin(role) || !await agentHasCompanyShare(deps, orgId, agentId)) return;
+  throw agentXError("FORBIDDEN", "This agent is shared with your whole company, so only an organization owner or admin can change who owns it.");
+}
+
 /** Refuses a project that is not in the company's catalog (`PROJECT_NOT_FOUND`) or that is archived (`PROJECT_ARCHIVED`). */
 export async function requireOpenProject(deps: ApprovalDependencies, orgId: OrgId, project: string): Promise<void> {
   const listed = await deps.documentClient.send(new GetCommand({ TableName: deps.tableName, Key: orgProjectCatalogKey(orgId, project), ConsistentRead: true })) as { Item?: unknown };
@@ -304,12 +313,14 @@ async function confirmPublication(deps: ApprovalDependencies, record: AnyApprova
       if (subject.expectedOwner.kind === "member") await keepAuthorEditing(deps, record.orgId, by, agent.agentId, subject.expectedOwner.developerId, agent.accountable.developerId);
       return;
     }
+    // Bound to the share set that was shown too, as a company request is: the approver decided about who could use it then.
+    if ((agent.sharesRevision ?? 0) !== subject.expectedSharesRevision) throw stale("Who this agent is shared with changed after this was asked. Ask again.");
     await requireBound(deps, record, agent);
     await requireOpenProject(deps, record.orgId, project);
     // The approver must still maintain the project (the store's write fences the same grant at commit) and answers for the agent from now on.
     const accountable = await requireAccountable(deps, record.orgId, project, by).catch(() => { throw agentXError("FORBIDDEN", `You are no longer a maintainer of ${project}, so this can't be applied.`); });
     // Decision 92: an agent the whole company can use changes hands only by an org owner or admin.
-    if (!isOrgAdmin(role) && await agentHasCompanyShare(deps, record.orgId, agent.agentId)) throw stale("The agent is shared with your company, so an organization owner or admin has to approve this. Ask again.");
+    await requireOwnerOrAdminToMoveShared(deps, record.orgId, agent.agentId, role);
     const owner = { kind: "project" as const, project };
     const { accountable: _before, ...kept } = agent; // eslint-disable-line @typescript-eslint/no-unused-vars -- the new owner decides it
     // The cap reads only the store, the table and the owner counters; the approval's dependencies are the agent routes' own at run time (their extra fields are optional).

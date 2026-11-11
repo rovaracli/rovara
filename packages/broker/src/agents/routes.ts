@@ -65,7 +65,7 @@ import {
 import { isApprovalRoute, routeApprovalRequest } from "./approval-routes.js";
 import { PUBLISH_REQUESTS_PATH, routeAgentPublishRequests, routePublishRequests } from "./publication-routes.js";
 import { isMyAgentsRoute, routeMyAgents } from "./favourites.js";
-import { publicationOf, registerPublicationApprovals } from "./publication.js";
+import { publicationOf, registerPublicationApprovals, requireOwnerOrAdminToMoveShared } from "./publication.js";
 import { COMMENT_TRIGGERS_PATH, routeCommentTriggers } from "./comment-trigger-routes.js";
 import { CONTEXT_SOURCES_PATH, routeContextSources, type ContextSourceRouteDependencies } from "../context-sources/settings-routes.js";
 import { MCP_SERVERS_PATH, routeMcpServers } from "../context-sources/mcp-server-routes.js";
@@ -640,6 +640,8 @@ async function putOwner(deps: AgentRouteDependencies, caller: AgentCaller, agent
   if (!("owner" in agent)) throw agentXError("CONFIG_INVALID", `${deps.store.builtinName(agentId)} is built in and belongs to the whole company`);
   const { mark, replay } = await markRequest(deps, caller, "owner", agentId, input);
   if (replay !== undefined) return waitingReplay(replay.result) ?? { agent: customView(replay.result as AgentRecord, access) };
+  // Decision 92: a company-shared agent changes owner only by an org owner or admin.
+  await requireOwnerOrAdminToMoveShared(deps, caller.orgId, agentId, caller.orgRole);
   // Store the owner this returns, not the one asked for: a member who was merged into another is named by the survivor.
   const owner = await requireOwnerAllowed(deps, caller, input.owner, agent.owner);
   const accountable = input.accountable === undefined ? undefined : owner.kind === "project" ? await requireAccountable(deps, caller.orgId, owner.project, input.accountable.developerId) : input.accountable;

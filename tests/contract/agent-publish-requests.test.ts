@@ -11,6 +11,8 @@ import { decideSpendRequest } from "../../packages/broker/src/spend/requests.js"
 import { capturingAuditDeps } from "../support/audit-capture.js";
 import { DECIDE_COOKIE, DecideStore, csrfTokenFor } from "../../packages/broker/src/developer/decide-session.js";
 import { approvalKey, orgProjectCatalogKey, projectMemberKey } from "../../packages/contracts/src/org-scoped-keys.js";
+import { orgMemberKey } from "../../packages/contracts/src/org-node.js";
+import { getApprovalSubjectHandler } from "../../packages/broker/src/agents/approvals-store.js";
 import type { OrgId, OrgRole } from "../../packages/contracts/src/org.js";
 import type { AgentId } from "../../packages/contracts/src/agent-node.js";
 import type { RecipeOverlay } from "../../packages/contracts/src/agent-recipe-node.js";
@@ -94,7 +96,13 @@ async function world() {
   const pageFor = async (who: Developer, approvalId: string) => raw("GET", `/v1/app/approve/${approvalId}`, { cookie: `${DECIDE_COOKIE}=${await session(who, approvalId, 30)}` });
   const record = (approvalId: string) => h.db.get(approvalKey(TEST_ORG, approvalId).pk, approvalKey(TEST_ORG, approvalId).sk) as { status: string; failure?: string; declineReason?: string; withdrawnBy?: string };
   const requestOf = (reply: { body: Record<string, unknown> }) => AgentPublishRequestSchema.parse(reply.body.request);
-  return { ...h, store, members, call, publishedAgent, ask, onPage, pageFor, record, requestOf };
+  /** Adds a share straight in the store (as a confirmed one would be). */
+  const addShare = async (agentId: AgentId, principal: { kind: "org" } | { kind: "member"; developerId: string }, level: "view" | "use" | "edit" = "use") => {
+    const agent = await store.get(TEST_ORG, agentId);
+    await store.replaceShares({ orgId: TEST_ORG, agentId, upsert: [{ principal, level }], remove: [], expectedSharesRevision: agent?.sharesRevision ?? 0, by: "seed" });
+  };
+  const deps = (): ApprovalDependencies => ({ store, projectMembers: members, documentClient: h.db, tableName: "state", now: Date.now, confirmOrigin: CELL, signInStore: new DeveloperSignInStore({ documentClient: h.db, tableName: "signin", now: Date.now }) });
+  return { ...h, store, members, call, publishedAgent, ask, onPage, pageFor, record, requestOf, addShare, deps };
 }
 
 describe("asking to publish an agent", () => {
@@ -278,6 +286,102 @@ describe("deciding a company request (decision 91: owners and admins only)", () 
     expect(capture.recordedBy("agent_publication.declined")).toMatchObject([{ target: { kind: "agent", id: agentId }, facts: { approvalId: request.approvalId, targetKind: "company", version: 1, explained: true } }]);
     const mine = await w.call(MAYA, "GET", `/v1/app/agents/${agentId}/publish-requests`);
     expect(mine.body.requests).toEqual([expect.objectContaining({ state: "declined", declineReason: "Please add a test step first." })]);
+  });
+});
+
+describe("v3 review fixes", () => {
+  it("an author who left while the cap held the move: the admin's approval still moves the agent, and no edit share is written (M1)", async () => {
+    const w = await world();
+    const mayas = await w.publishedAgent(MAYA);
+    expect((await w.call(MAYA, "PUT", `/v1/app/agents/${mayas}/budget`, { monthlyUsd: 50 })).status).toBe(200);
+    expect((await w.call(DANA, "PUT", "/v1/app/org/spend-policy", { ownerAgentBudgetCapUsd: 10 })).status).toBe(200);
+    const held = await w.ask(DANA, mayas, WEB);
+    expect(held.body).toMatchObject({ status: "NEEDS_ADMIN_APPROVAL" });
+    const member = orgMemberKey(TEST_ORG, MAYA.developerId);
+    w.db.delete(member.pk, member.sk);
+    await decideSpendRequest(w.deps(), { orgId: TEST_ORG, developerId: OWEN.developerId, orgRole: "owner" }, held.body.spendRequestId as string, { requestId: randomUUID(), decision: "APPROVE" });
+    expect(await w.store.get(TEST_ORG, mayas)).toMatchObject({ owner: WEB, accountable: { developerId: DANA.developerId } });
+    expect(await w.store.listShares(TEST_ORG, mayas)).toEqual([]);
+  });
+
+  it("decision 92 on every move: a maintainer can't move a company-shared agent at once or by PUT owner; an admin can", async () => {
+    const w = await world();
+    const shared = await w.publishedAgent(MAX);
+    await w.addShare(shared, { kind: "org" });
+    expect((await w.ask(MAX, shared, WEB)).body.error).toMatchObject({ code: "FORBIDDEN" });
+    expect((await w.call(MAX, "PUT", `/v1/app/agents/${shared}/owner`, { owner: WEB, accountable: { developerId: MAX.developerId } })).body.error).toMatchObject({ code: "FORBIDDEN" });
+    expect(await w.store.get(TEST_ORG, shared)).toMatchObject({ owner: { kind: "member", developerId: MAX.developerId } });
+    expect((await w.ask(DANA, shared, WEB)).status).toBe(200);
+    expect(await w.store.get(TEST_ORG, shared)).toMatchObject({ owner: WEB, accountable: { developerId: DANA.developerId } });
+  });
+
+  it("decision 92 when a project request is approved: a maintainer's approval of a company-shared agent is not applied; an admin's is (M6)", async () => {
+    const w = await world();
+    const shared = await w.publishedAgent(MAYA);
+    await w.addShare(shared, { kind: "org" });
+    const first = w.requestOf(await w.ask(MAYA, shared, WEB));
+    expect((await w.onPage(MAX, first.approvalId)).statusCode).toBe(200);
+    expect(w.record(first.approvalId).status).toBe("APPROVED_FAILED");
+    expect(await w.store.get(TEST_ORG, shared)).toMatchObject({ owner: { kind: "member", developerId: MAYA.developerId } });
+    const second = w.requestOf(await w.ask(MAYA, shared, WEB));
+    await w.onPage(DANA, second.approvalId);
+    expect(w.record(second.approvalId).status).toBe("APPROVED_DONE");
+    expect(await w.store.get(TEST_ORG, shared)).toMatchObject({ owner: WEB });
+  });
+
+  it("a project request is bound to the share set: a share changed since makes it fail", async () => {
+    const w = await world();
+    const agentId = await w.publishedAgent(MAYA);
+    const request = w.requestOf(await w.ask(MAYA, agentId, WEB));
+    await w.addShare(agentId, { kind: "member", developerId: PAT.developerId }, "view");
+    await w.onPage(MAX, request.approvalId);
+    expect(w.record(request.approvalId).status).toBe("APPROVED_FAILED");
+    expect(await w.store.get(TEST_ORG, agentId)).toMatchObject({ owner: { kind: "member", developerId: MAYA.developerId } });
+  });
+
+  it("a company request is bound to the share set: a share changed since makes it fail, and no company share is written (M5)", async () => {
+    const w = await world();
+    const agentId = await w.publishedAgent(MAYA);
+    const request = w.requestOf(await w.ask(MAYA, agentId, COMPANY));
+    await w.addShare(agentId, { kind: "member", developerId: PAT.developerId }, "view");
+    await w.onPage(DANA, request.approvalId);
+    expect(w.record(request.approvalId).status).toBe("APPROVED_FAILED");
+    expect((await w.store.listShares(TEST_ORG, agentId)).some((share) => (share.principal as { kind: string }).kind === "org")).toBe(false);
+  });
+
+  it("applying a company request re-checks the decider's live role: one who is no longer an admin writes nothing (M7)", async () => {
+    const w = await world();
+    const agentId = await w.publishedAgent(MAYA);
+    const request = w.requestOf(await w.ask(MAYA, agentId, COMPANY));
+    const stored = w.record(request.approvalId) as unknown as Parameters<NonNullable<ReturnType<typeof getApprovalSubjectHandler>>>[1];
+    // Decided by Dana, who was demoted before it was applied (the sweep's redrive reads her role then).
+    seedMembership(w.db, DANA.developerId, { orgId: TEST_ORG, role: "member" });
+    await expect(getApprovalSubjectHandler("agent_publication")!(w.deps(), { ...stored, status: "EXECUTING", decidedBy: DANA.developerId } as never)).rejects.toMatchObject({ code: "FORBIDDEN" });
+    expect(await w.store.listShares(TEST_ORG, agentId)).toEqual([]);
+  });
+
+  it("a repeat of a move applied at once repairs the author's edit share lost to a crash after the move", async () => {
+    const w = await world();
+    const mayas = await w.publishedAgent(MAYA);
+    const requestId = randomUUID();
+    expect((await w.ask(DANA, mayas, WEB, { requestId })).status).toBe(200);
+    // The crash: the move committed, the share write after it never happened.
+    const agent = await w.store.get(TEST_ORG, mayas);
+    await w.store.replaceShares({ orgId: TEST_ORG, agentId: mayas, upsert: [], remove: [{ kind: "member", developerId: MAYA.developerId }], expectedSharesRevision: agent!.sharesRevision ?? 0, by: "seed" });
+    expect(await w.store.listShares(TEST_ORG, mayas)).toEqual([]);
+    expect((await w.ask(DANA, mayas, WEB, { requestId })).status).toBe(200);
+    expect(await w.store.listShares(TEST_ORG, mayas)).toEqual([expect.objectContaining({ principal: { kind: "member", developerId: MAYA.developerId }, level: "edit" })]);
+  });
+
+  it("a junk reason never blocks an approval: 400 characters or a control character with Approve still approves", async () => {
+    const w = await world();
+    for (const reason of ["x".repeat(400), "bad\u0007text"]) {
+      const agentId = await w.publishedAgent(MAYA);
+      const request = w.requestOf(await w.ask(MAYA, agentId, COMPANY));
+      const approved = await w.onPage(DANA, request.approvalId, "approve", 30, { reason });
+      expect(approved.statusCode, approved.body).toBe(200);
+      expect(w.record(request.approvalId).status).toBe("APPROVED_DONE");
+    }
   });
 });
 

@@ -128,7 +128,8 @@ async function decide(context: DecideRequestContext, request: DecideRequest, app
   let end: DecisionEnd = "refused";
   try {
     if (decision !== "approve" && decision !== "decline") return refusedPage(400, "Nothing was decided", "Choose Approve or Decline. Open the approval again.");
-    if (!given.valid) return refusedPage(400, "Nothing was decided", `The reason can be at most ${String(AGENT_PUBLISH_NOTE_MAX)} characters of plain text. Go back, shorten it and decide again.`);
+    // The reason is read only for a decline: whatever the text area holds never blocks an approval.
+    if (decision === "decline" && !given.valid) return refusedPage(400, "Nothing was decided", `The reason can be at most ${String(AGENT_PUBLISH_NOTE_MAX)} characters of plain text. Go back, shorten it and decide again.`);
     const target = { orgId: authority.orgId, developerId: authority.developerId, approvalId };
     const prefix = kindPrefixOf(approvalId);
     const kind: DecideKind | undefined = prefix === undefined ? undefined : context.kinds[prefix];

@@ -29,7 +29,7 @@ import { sameMember } from "./lifecycle.js";
 import { confirmUrlFor, createPendingChange, getApproval, pendingChangeFor, type AgentPublicationSubject, type ApprovalRecord } from "./approvals-store.js";
 import { requireActiveForConfirmation, requireWithinGuardrails, resolveRecipe } from "./changes.js";
 import {
-  agentShares, effectOf, isPublicationRecord, keepAuthorEditing, maintainsProject, maySeeRequest, publicationApprovers, publicationIndexItems, publicationOf, publishRequestView,
+  agentShares, effectOf, isPublicationRecord, keepAuthorEditing, requireOwnerOrAdminToMoveShared, maintainsProject, maySeeRequest, publicationApprovers, publicationIndexItems, publicationOf, publishRequestView,
   requestedEvent, requireOpenProject, summaryOf, waitingFor, withdrawnEvent,
 } from "./publication.js";
 import { holdingOwnerCap, jsonBody, markRequest, parseBody, view, type AgentRouteDependencies } from "./routes.js";
@@ -104,7 +104,11 @@ async function askToPublish(deps: AgentRouteDependencies, caller: AgentCaller, a
     if (error instanceof AgentXError && error.code === "CONFIG_INVALID") throw conflict();
     throw error;
   });
-  if (marked.replay !== undefined) return publishedAnswer(deps, caller, agentId);
+  if (marked.replay !== undefined) {
+    // A repeat of a move applied at once makes sure of the author's edit share, which is written after the move's own transaction: a crash in between is repaired here.
+    await repairAuthorShare(deps, caller, agentId);
+    return publishedAnswer(deps, caller, agentId);
+  }
 
   if (agent.status === "archived") throw agentXError("AGENT_UNAVAILABLE", `${agent.name} is archived, so it can't be published. Unarchive it first, then ask again.`);
   if (agent.currentVersion === undefined) throw agentXError("CONFIG_INVALID", `${agent.name} has no published version`);
@@ -126,6 +130,8 @@ async function askToPublish(deps: AgentRouteDependencies, caller: AgentCaller, a
 
   // A maintainer of the target project (an org owner or admin is one everywhere) publishes there at once: exactly `PUT owner`'s write, held to the same cap.
   if (target.kind === "project" && await maintainsProject(deps, caller.orgId, target.project, caller.developerId)) {
+    // Decision 92: a company-shared agent changes owner only by an org owner or admin, here as on every other path.
+    await requireOwnerOrAdminToMoveShared(deps, caller.orgId, agentId, caller.orgRole);
     const owner = await requireOwnerAllowed(deps, caller, { kind: "project", project: target.project }, agent.owner);
     const accountable = await requireAccountable(deps, caller.orgId, target.project, caller.developerId);
     const { accountable: _before, ...kept } = agent; // eslint-disable-line @typescript-eslint/no-unused-vars -- the new owner decides it
@@ -162,6 +168,19 @@ async function askToPublish(deps: AgentRouteDependencies, caller: AgentCaller, a
   if (!isPublicationRecord(record)) throw conflict();
   if (record.status !== "PENDING") throw agentXError("APPROVAL_CLOSED", "this request was already decided");
   return waitingAnswer(deps, caller, record);
+}
+
+/**
+ * The author's edit share of an agent a publish request moved at once, made sure of again: the agent's own `owner_changed` event names whom it moved from (a member) and to
+ * (the project, with its accountable maintainer). Only while the agent is still where that move put it.
+ */
+async function repairAuthorShare(deps: AgentRouteDependencies, caller: AgentCaller, agentId: AgentId): Promise<void> {
+  const agent = await deps.store.get(caller.orgId, agentId);
+  if (agent === undefined || agent.owner.kind !== "project" || agent.accountable === undefined) return;
+  const moves = (await deps.store.listEvents(caller.orgId, agentId)).filter((event) => event.kind === "owner_changed") as Array<{ from?: { kind?: unknown; developerId?: unknown }; to?: { kind?: unknown; project?: unknown } }>;
+  const last = moves.at(-1);
+  if (last?.from?.kind !== "member" || typeof last.from.developerId !== "string" || last.to?.kind !== "project" || last.to.project !== agent.owner.project) return;
+  await keepAuthorEditing(deps, caller.orgId, caller.developerId, agentId, last.from.developerId, agent.accountable.developerId);
 }
 
 function parseProject(raw: string): string {

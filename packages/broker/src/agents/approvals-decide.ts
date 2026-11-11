@@ -219,7 +219,7 @@ export async function runApprovalDecision(deps: ApprovalDependencies, caller: Ap
   const fields = {
     status, decidedBy: caller.developerId, decidedAt: at, decision: body.decision, decisionRequestId: body.requestId, decisionProof: proof,
     // Only a change record keeps a decline's reason (it is for the person who asked); a step or a write ignores it.
-    ...(body.decision === "DECLINE" && body.reason !== undefined && record.kind === "change" ? { declineReason: body.reason } : {}),
+    ...(body.decision === "DECLINE" && body.reason !== undefined && record.kind === "change" && record.subject.kind === "agent_publication" ? { declineReason: body.reason } : {}),
     ...(status === "EXECUTING" ? { executingAt: at, attempts: 1 } : {}),
     ...(status === "EXECUTING" ? {} : { handlerDone: !handler, ...(handler ? { handlerClaimedAt: at, handlerDueAt: iso(now + RETRY_MS) } : {}) }),
   };

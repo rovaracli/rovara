@@ -1422,8 +1422,12 @@ async function recheckedChange(deps: SpendRequestDependencies, decider: AgentCal
   const accountableId = change.accountable === undefined ? undefined : await member(change.accountable.developerId);
   const owner = await (forChain ? requireChainOwnerAllowed(deps, decider, named, agent?.owner) : requireOwnerAllowed(deps, decider, named, agent?.owner));
   const accountable = accountableId === undefined ? undefined : owner.kind === "project" ? await accountableOf(owner.project, accountableId) : { developerId: accountableId };
-  // The author who keeps editing an agent a publish request moved is read as their survivor; one who left keeps nothing.
-  const keepEditing = forChain || change.keepEditing === undefined ? undefined : await member(change.keepEditing.developerId).catch(() => undefined);
+  // The author who keeps editing an agent a publish request moved is read as their survivor. One who has left keeps nothing, and the move still applies: their absence
+  // never ends the request (only the people the move itself names do, through `member`).
+  const keepEditing = forChain || change.keepEditing === undefined ? undefined : await (async () => {
+    const survivor = await resolveSurvivor(deps, record.orgId, change.keepEditing!.developerId);
+    return await orgRoleOf(deps, record.orgId, survivor) === undefined ? undefined : survivor;
+  })();
   return { op: "set_owner", owner, ...(accountable === undefined ? {} : { accountable }), ...(keepEditing === undefined ? {} : { keepEditing: { developerId: keepEditing } }) };
 }
 
