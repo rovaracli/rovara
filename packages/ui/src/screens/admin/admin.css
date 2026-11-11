@@ -47,3 +47,40 @@
 .rv-admin-nav-heading{margin:0;font-size:var(--rv-font-sm);color:var(--rv-text-muted);text-transform:none;font-weight:600}
 .rv-admin-overview-list{list-style:none;padding:0;margin:0;display:grid;gap:var(--rv-space-4)}
 .rv-admin-overview-list h3{margin:0}.rv-admin-overview-list p{margin:var(--rv-space-1) 0}
+/* D25: company settings on a phone. Everything below sits inside a narrow-screen query (or the nav's own compact flag, set below 1024px), so the desktop layout is untouched. */
+.rv-admin-nav[data-compact] .rv-admin-nav-toggle{width:100%;justify-content:space-between}
+.rv-admin-nav[data-compact] .rv-admin-nav-list{display:grid;gap:var(--rv-space-4);margin-top:var(--rv-space-3);max-height:min(70vh,36rem);overflow-y:auto;overscroll-behavior:contain}
+.rv-admin-nav[data-compact] .rv-admin-nav-list[hidden]{display:none}
+.rv-admin-nav[data-compact] .rv-admin-nav-group{display:grid;gap:0;align-items:stretch}
+.rv-admin-nav[data-compact] .rv-admin-nav-heading{padding-block:var(--rv-space-1)}
+.rv-admin-nav[data-compact] .rv-admin-nav-list a{display:flex;align-items:center;min-height:44px;padding-inline:var(--rv-space-3);border-bottom:1px solid var(--rv-border);overflow-wrap:anywhere}
+@media(max-width:767px){
+ .rv-admin-surface{min-width:0}
+ .rv-admin-surface .rv-page-header a,.rv-admin-surface nav[aria-label="AI models"] a,.rv-admin-overview-list a,.rv-admin-surface .rv-table td a,.rv-admin-surface .rv-admin-b1-link{display:inline-flex;align-items:center;min-height:44px}
+ .rv-admin-surface nav[aria-label="AI models"]{display:flex;flex-wrap:wrap;gap:0 var(--rv-space-3);align-items:center}
+ .rv-admin-dialog-links{display:flex;flex-wrap:wrap;align-items:center;gap:0 var(--rv-space-3)}
+ .rv-admin-link-row a{display:inline-flex;align-items:center;min-height:44px}
+ .rv-hww-company-card{grid-template-columns:minmax(0,1fr)}
+ .rv-hww-company-card h2,.rv-hww-company-card ul,.rv-hww-company-card li,.rv-hww-company-card code{overflow-wrap:anywhere;min-width:0}
+ /* A checkbox is the same: 24px box drawn inside a 44px touch area, pulled back so the label stays where it was. */
+ .rv-admin-surface .rv-checkbox{position:relative;isolation:isolate;display:inline-flex;align-items:center;justify-content:center;flex:none;width:44px;height:44px;margin:-10px;border-color:transparent;background:transparent;color:var(--rv-text)}
+ .rv-admin-surface .rv-checkbox[data-state]{background:transparent;border-color:transparent}
+ .rv-admin-surface .rv-checkbox::before{content:"";position:absolute;z-index:-1;left:10px;top:10px;width:24px;height:24px;box-sizing:border-box;border:1px solid var(--rv-border-strong);border-radius:var(--rv-radius-sm);background:var(--rv-bg-raised)}
+ .rv-admin-surface .rv-checkbox[data-state=checked]{color:var(--rv-on-accent)}
+ .rv-admin-surface .rv-checkbox[data-state=checked]::before,.rv-admin-surface .rv-checkbox[data-state=indeterminate]::before{background:var(--rv-accent);border-color:var(--rv-accent)}
+ .rv-admin-dialog-links a{display:inline-flex;align-items:center;min-height:44px}
+ .rv-admin-surface select,.rv-admin-surface input:not([type=checkbox]):not([type=radio]){min-height:44px;max-width:100%;box-sizing:border-box}
+ .rv-admin-surface .rv-admin-search,.rv-admin-surface .rv-audit-filters .rv-field{max-width:none}
+ .rv-admin-surface .rv-audit-filters{display:grid;grid-template-columns:minmax(0,1fr)}
+ .rv-admin-surface .rv-audit-filters input{width:100%}
+ .rv-admin-surface .rv-admin-role-actions,.rv-admin-surface .rv-audit-pagination,.rv-admin-surface .rv-hww-company-actions{display:grid;grid-template-columns:minmax(0,1fr)}
+ .rv-admin-surface .rv-admin-role-actions>.rv-button,.rv-admin-surface .rv-audit-pagination>.rv-button,.rv-admin-surface .rv-hww-company-actions>.rv-button{width:100%}
+ .rv-admin-surface .rv-admin-record{grid-template-columns:minmax(0,1fr)}
+ .rv-admin-surface .rv-admin-roles{grid-template-columns:minmax(0,1fr);gap:var(--rv-space-1)}
+ .rv-admin-surface .rv-admin-roles dd{margin-bottom:var(--rv-space-3)}
+ /* A switch keeps its look but gets a 44px touch area: the button is the tall transparent box, its track is drawn behind the thumb. */
+ .rv-admin-surface .rv-switch{position:relative;isolation:isolate;display:flex;align-items:center;height:44px;padding:0 3px;border-color:transparent;background:transparent}
+ .rv-admin-surface .rv-switch[data-state]{background:transparent}
+ .rv-admin-surface .rv-switch::before{content:"";position:absolute;z-index:-1;left:-1px;right:-1px;top:8px;height:26px;box-sizing:border-box;border:1px solid var(--rv-border-strong);border-radius:var(--rv-radius-lg);background:var(--rv-bg-sunken)}
+ .rv-admin-surface .rv-switch[data-state=checked]::before{background:var(--rv-accent)}
+}
