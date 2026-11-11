@@ -312,7 +312,7 @@ describe("who made the act fails closed when the history is not the whole story 
       const bodies: Array<{ query: string; variables: Record<string, unknown> }> = [];
       let next = 0;
       const fetch = vi.fn(async (_url: string, init: RequestInit) => {
-        const body = JSON.parse(String(init.body)) as { query: string; variables: Record<string, unknown> };
+        const body = JSON.parse(init.body as string) as { query: string; variables: Record<string, unknown> };
         bodies.push(body);
         if (body.query.includes("viewer")) return Response.json({ data: { viewer: { id: "rovara-user" }, issues: { nodes: [{ id: "u1", identifier: "ENG-9", title: "T", url: "https://linear.app/acme/issue/ENG-9/t", labels: { nodes: [{ id: "lab-1", name: "rovara" }] }, history: first }] } } });
         const page = pages[next++];
