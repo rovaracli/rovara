@@ -9,6 +9,7 @@ import { DecisionCardsViewSchema } from "@agentx/cloud-contracts/web";
 import { HomeScreen } from "../../packages/ui/src/screens/home/HomeScreen.js";
 import { HOME_STORAGE_KEY, isNewHomeOn } from "../../packages/ui/src/screens/home/home-flags.js";
 import { HOME_LIST_MAX, continueRows, decisionState, finishedRows, homeCardState, needsYouSessions, nextLine, pickAgents, rowStatus } from "../../packages/ui/src/screens/home/home-rows.js";
+import { withFailureSession } from "../../packages/ui/src/screens/home/HomeCardRow.js";
 import { PLAIN_STATE_LABELS } from "../../packages/ui/src/screens/session/task-plain-state.js";
 import { readDecisions } from "../../packages/ui/src/api/decisions.js";
 import { AppHostProvider } from "../../packages/ui/src/host.js";
@@ -65,6 +66,16 @@ it("with the switch off, Home is today's Home: the start box above the old cards
  expect(screen.queryByText("Continue")).toBeNull();
  expect(screen.queryByText("Finished recently")).toBeNull();
  f.close();
+});
+
+it("with the new navigation on (and the new Home off), the empty state points to Work; navigation off it says Live", async () => {
+ for (const nav of [true, false]) {
+  const f = render({});if (nav) f.storage.set("rovara.nav", "v2");
+  expect(await screen.findByText("Nothing needs you right now")).toBeTruthy();
+  expect(f.container.textContent).toContain("Find ongoing sessions in " + (nav ? "Work" : "Live") + ".");expect(f.container.textContent).not.toContain("in " + (nav ? "Live" : "Work") + ".");
+  expect(screen.getByRole("link", { name: "See work in progress" }).getAttribute("href")).toBe(nav ? "/app/work" : "/app/live");
+  f.close();
+ }
 });
 
 it("with the switch off and cards present, the old attention list shows and none of the new rows", async () => {
@@ -191,8 +202,31 @@ it("a card's lead action is chosen by what it does and a dismissal never leads",
  expect(controls[0]).toEqual(["Retry", true]);
  expect(controls.filter(control => control[1] === true)).toHaveLength(1);
  expect(controls.find(control => control[0] === "Not now")?.[1]).toBe(false);
+ // This card's button is another card's dismissal, so it is refused; its session (from `failure:<id>`) is its primary.
  const second = screen.getByRole("heading", { name: "Only dismissable" }).closest("li")!;
- expect(second.querySelectorAll(".rv-button-primary")).toHaveLength(0);
+ expect([...second.querySelectorAll(".rv-hv2-actions > *")].map(node => [node.textContent, node.className.includes("rv-button-primary")])).toEqual([["Open session", true]]);
+ f.close();
+});
+
+it("a failure card with no Retry still leads with Open: a dismissal-only card with its session, and a card that arrives without its sessionId (taken from its id)", async () => {
+ const dismiss = (id: string) => ({ label: "Not now", action: "dismiss", method: "POST", href: origin + "/v1/app/home/cards/" + encodeURIComponent("failure:" + id) + "/dismiss?occurrence=1" });
+ const retry = (id: string) => ({ label: "Retry", action: "retry", method: "POST", href: origin + "/v1/app/sessions/" + id + "/retry" });
+ const a = homeSessionId(310), b = homeSessionId(311), c = homeSessionId(312);
+ const f = render({ on: true, cards: [
+  { cardId: "failure:" + a, kind: "failure", title: "Dismiss and session", reason: "x", sessionId: a, at, buttons: [dismiss(a)] },
+  { cardId: "failure:" + b, kind: "failure", title: "No sessionId, no buttons", reason: "x", at, buttons: [] },
+  { cardId: "failure:" + c, kind: "failure", title: "No sessionId, retry and dismiss", reason: "x", at, buttons: [dismiss(c), retry(c)] },
+  { cardId: "failure:verification", kind: "failure", title: "Nothing to open", reason: "x", at, buttons: [dismiss("verification")] },
+ ] });
+ const row = async (title: string) => (await screen.findByRole("heading", { name: title })).closest("li")!;
+ const controls = (li: Element) => [...li.querySelectorAll(".rv-hv2-actions > *")].map(node => [node.textContent, node.className.includes("rv-button-primary")]);
+ expect(controls(await row("Dismiss and session"))).toEqual([["Not now", false], ["Open session", true]]);
+ expect(controls(await row("No sessionId, no buttons"))).toEqual([["Open session", true]]);
+ // The Retry of a card without its sessionId is valid once the id is taken from the card's own id, and it leads.
+ expect(controls(await row("No sessionId, retry and dismiss"))[0]).toEqual(["Retry", true]);
+ // Nothing to open at all: the dismissal stays quiet, never primary.
+ expect(controls(await row("Nothing to open"))).toEqual([["Not now", false]]);
+ expect(withFailureSession({ cardId: "plan:" + a, kind: "plan" } as never).sessionId).toBeUndefined();
  f.close();
 });
 
