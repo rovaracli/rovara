@@ -209,6 +209,8 @@ describe("the Enterprise edition's network", () => {
 });
 
 describe("every other edition's network is unchanged", () => {
+  // One deliberate difference from that commit (0.5.15, DEFAULT-ALLOW-LIST-EXFIL): the hosted cloud's DNS allow-list no longer carries *.amazonaws.com, *.aws, *.github.com or *.githubusercontent.com,
+  // and names the install's own AWS hosts instead (tests/contract/agent-dns-firewall.test.ts pins the list). The fixture's cloud allow-list domains are the new list; nothing else changed.
   it("is the template the base commit fd7cd3c35 produced, for a hosted-cloud install, a named install and the legacy deployment, with or without the edition set to public", () => {
     for (const [name, base] of [["cloud", { env: "staging", cloud: true }], ["named", { env: "staging" }], ["legacy", {}]] as const) {
       expect(foundation(base).toJSON(), name).toEqual(BASE_TEMPLATES[name]);

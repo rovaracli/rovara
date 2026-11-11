@@ -4,6 +4,72 @@ import { DEFAULT_AGENT_ALLOW_DOMAINS } from "@rovara-code/contracts";
 
 export { DEFAULT_AGENT_ALLOW_DOMAINS };
 
+/**
+ * Names that must never be on an install's default allow-list, whatever the pinned copy of Code's list says (DEFAULT-ALLOW-LIST-EXFIL, 0.5.15). The firewall is one resolver for the
+ * whole VPC, so a task sandbox resolves exactly what the worker beside it does: a name under which anyone can host an upload target (a bucket, an API, a repository, a gist) is an
+ * exit for an injected agent. Code's list drops these in its own lane; this filter keeps Cloud right at any pin, and the contract test pins that it removes them.
+ */
+export const BROAD_DEFAULT_ALLOW_ENTRIES: readonly string[] = ["*.amazonaws.com", "*.aws", "*.github.com", "*.githubusercontent.com"];
+
+/**
+ * What the broad entries were there for, as exact names: the worker's git (`github.com`: clone, fetch and push run on the same resolver as the sandboxes, so it stays, a known exit that
+ * only a per-task proxy closes) and the blobs of a ghcr.io image (the model proxy image; `pkg-containers.githubusercontent.com` is the one host they come from).
+ */
+export const NAMED_IN_PLACE_OF_BROAD_ENTRIES: readonly string[] = ["github.com", "pkg-containers.githubusercontent.com"];
+
+/** Code's default list without the broad entries, with their exact replacements (no change once the pin carries Code's narrowed list). */
+export function narrowedDefaultAllowDomains(base: readonly string[] = DEFAULT_AGENT_ALLOW_DOMAINS): string[] {
+  const kept = base.filter((entry) => !BROAD_DEFAULT_ALLOW_ENTRIES.includes(entry.toLowerCase()));
+  for (const name of NAMED_IN_PLACE_OF_BROAD_ENTRIES) if (!kept.includes(name)) kept.push(name);
+  return kept;
+}
+
+/**
+ * The AWS hosts a hosted (Public or Cloud) install's own machines resolve, in the install's region and nowhere else, each with the reason. These replace `*.amazonaws.com` and `*.aws`.
+ * The firewall is VPC-wide, so the callers are the worker host and its containers, the session Lambdas in the private subnets (steps, reaper, reconciler, dispatcher), the model
+ * proxy and its Aurora database, the model access function and the Slack orchestrator. Found by reading what each calls (the AWS clients the in-VPC handlers import, the boot scripts, the
+ * model proxy construct); not yet proved against a live install's query log, so the staging deploy checks it before production (the sandbox-egress-control follow-up design).
+ */
+export const HOSTED_AWS_HOSTS: ReadonlyArray<{ host: (region: string) => string; why: string }> = [
+  { host: (r) => `dynamodb.${r}.amazonaws.com`, why: "state tables (session Lambdas, Slack orchestrator)" },
+  { host: (r) => `sqs.${r}.amazonaws.com`, why: "queues (session Lambdas, Slack orchestrator)" },
+  { host: (r) => `s3.${r}.amazonaws.com`, why: "S3 regional endpoint" },
+  { host: (r) => `*.s3.${r}.amazonaws.com`, why: "the install's artifact and thread buckets (names are generated in another stack, so not pinned yet), the ECR layer bucket prod-<region>-starport-layer-bucket (image pulls). KNOWN RESIDUAL: a bucket of anyone's in this region; closed by an S3 gateway endpoint policy (the sandbox-egress-control follow-up design)" },
+  { host: (r) => `al2023-repos-${r}-de612dc2.s3.dualstack.${r}.amazonaws.com`, why: "Amazon Linux 2023 package repository: boot.sh runs `dnf install docker` on a worker (exact bucket host)" },
+  { host: (r) => `kms.${r}.amazonaws.com`, why: "session Lambdas sign and verify with the invoke key" },
+  { host: (r) => `ssm.${r}.amazonaws.com`, why: "settings parameters (session Lambdas); ECS parameter secrets for the model proxy" },
+  { host: (r) => `ec2.${r}.amazonaws.com`, why: "worker instances (reaper, reconciler)" },
+  { host: (r) => `states.${r}.amazonaws.com`, why: "Step Functions (provisioner, deleter, dispatcher)" },
+  { host: (r) => `lambda.${r}.amazonaws.com`, why: "Lambda API (dispatcher, reconciler)" },
+  { host: (r) => `email.${r}.amazonaws.com`, why: "SES v2 (reconciler's operator mail)" },
+  { host: (r) => `secretsmanager.${r}.amazonaws.com`, why: "model proxy and Slack orchestrator secrets (ECS injects them through the task's network)" },
+  { host: (r) => `scheduler.${r}.amazonaws.com`, why: "EventBridge Scheduler (reconciler)" },
+  { host: (r) => `sts.${r}.amazonaws.com`, why: "role sessions (reconciler, model access, org Bedrock roles)" },
+  { host: () => "sts.amazonaws.com", why: "the global STS name some SDKs and the AWS CLI still use" },
+  { host: (r) => `monitoring.${r}.amazonaws.com`, why: "CloudWatch metrics (reconciler)" },
+  { host: (r) => `logs.${r}.amazonaws.com`, why: "CloudWatch Logs: the worker's awslogs driver, ECS task logs, reconciler" },
+  { host: (r) => `api.ecr.${r}.amazonaws.com`, why: "ECR login token for worker image pulls (boot.sh) and ECS image pulls" },
+  { host: (r) => `*.dkr.ecr.${r}.amazonaws.com`, why: "ECR registry the worker, executor and sandbox images are pulled from" },
+  { host: (r) => `bedrock-runtime.${r}.amazonaws.com`, why: "model calls by the model proxy and model access function" },
+  { host: (r) => `bedrock.${r}.amazonaws.com`, why: "Bedrock model and profile discovery (model proxy, worker model check)" },
+  { host: (r) => `servicequotas.${r}.amazonaws.com`, why: "Bedrock quota read by the worker's model check" },
+  { host: (r) => `ecs.${r}.amazonaws.com`, why: "package-run MCP servers: the controller's RunTask and StopTask" },
+  { host: (r) => `*.execute-api.${r}.amazonaws.com`, why: "the control plane's API: the worker's callbacks and the Slack orchestrator (the id is generated in the control-plane stack, so not pinned yet; closed by pinning it, the sandbox-egress-control follow-up design)" },
+  { host: (r) => `*.${r}.elb.amazonaws.com`, why: "the model proxy's internal load balancer (a generated name)" },
+  { host: (r) => `*.${r}.rds.amazonaws.com`, why: "the model proxy's Aurora database endpoint (a generated name)" },
+];
+
+/** The exact AWS names of a hosted install in `region`. */
+export function hostedAwsAllowDomains(region: string): string[] {
+  if (!/^[a-z]{2}(-[a-z]+)+-\d$/u.test(region)) throw new Error(`hostedAwsAllowDomains needs an AWS region such as us-west-2, not ${JSON.stringify(region)}`);
+  return [...new Set(HOSTED_AWS_HOSTS.map((entry) => entry.host(region)))];
+}
+
+/** The base allow-list of a hosted (non-Enterprise) install: Code's default without the broad entries, plus the install's own AWS hosts. */
+export function hostedAgentAllowDomains(region: string): string[] {
+  return [...narrowedDefaultAllowDomains(), ...hostedAwsAllowDomains(region)];
+}
+
 /** The CDK context key holding extra allowed domains, comma separated (for example an internal package registry). */
 export const EGRESS_ALLOW_DOMAINS_CONTEXT_KEY = "agentxEgressAllowDomains";
 
@@ -21,7 +87,7 @@ const MAX_DOMAIN_LENGTH = 255;
 const DOMAIN_PATTERN = /^(\*\.)?([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]([a-z0-9-]{0,61}[a-z0-9])?$/i;
 
 /** The extra domains from a context value: trimmed, validated, without blanks or duplicates of `existing`. */
-export function parseExtraAllowDomains(value: unknown, existing: readonly string[] = DEFAULT_AGENT_ALLOW_DOMAINS): string[] {
+export function parseExtraAllowDomains(value: unknown, existing: readonly string[] = narrowedDefaultAllowDomains()): string[] {
   if (value === undefined || value === "") return [];
   if (typeof value !== "string") throw new Error(`${EGRESS_ALLOW_DOMAINS_CONTEXT_KEY} must be a comma-separated string of domain names`);
   const seen = new Set(existing.map((domain) => domain.toLowerCase()));
@@ -41,10 +107,10 @@ export interface AgentDnsFirewallProps {
   /** The install, for the query log group name /agentx/<env>/dns-firewall. */
   env: string;
   vpcId: string;
-  /** Allowed in addition to DEFAULT_AGENT_ALLOW_DOMAINS. */
+  /** Allowed in addition to the base list. */
   extraAllowDomains?: readonly string[];
   /**
-   * The base allow-list. Default: DEFAULT_AGENT_ALLOW_DOMAINS, the public package, image and OS-mirror hosts every hosted install uses. An Enterprise install
+   * The base allow-list. Default: the default list without its broad entries (`narrowedDefaultAllowDomains`); a hosted install passes `hostedAgentAllowDomains(region)`, which adds its own AWS hosts. An Enterprise install
    * passes its own short list (infra/lib/vpc-endpoints.ts) and the public defaults are not on it.
    */
   baseAllowDomains?: readonly string[];
@@ -83,7 +149,7 @@ export class AgentDnsFirewall extends Construct {
 
   constructor(scope: Construct, id: string, props: AgentDnsFirewallProps) {
     super(scope, id);
-    this.allowDomains = [...(props.baseAllowDomains ?? DEFAULT_AGENT_ALLOW_DOMAINS), ...(props.extraAllowDomains ?? [])];
+    this.allowDomains = [...(props.baseAllowDomains ?? narrowedDefaultAllowDomains()), ...(props.extraAllowDomains ?? [])];
 
     const allowList = new resolver.CfnFirewallDomainList(this, "AllowList", {
       name: `agentx-${props.env}-allow`,

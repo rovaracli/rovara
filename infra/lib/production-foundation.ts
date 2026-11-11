@@ -13,7 +13,7 @@ import {
 } from "aws-cdk-lib";
 import type { Construct } from "constructs";
 import type { Edition } from "@rovara-code/contracts";
-import { AgentDnsFirewall, EGRESS_ALLOW_DOMAINS_CONTEXT_KEY, parseExtraAllowDomains } from "./agent-dns-firewall.js";
+import { AgentDnsFirewall, EGRESS_ALLOW_DOMAINS_CONTEXT_KEY, hostedAgentAllowDomains, parseExtraAllowDomains } from "./agent-dns-firewall.js";
 import { EgressAlarms, alertsTopicFromName } from "./egress-alarms.js";
 import { Ec2WorkerFoundation } from "./ec2-workers.js";
 import { EnterpriseVpcEndpoints, endpointPolicyDocument, enterpriseAllowDomains, workerDockerRangeOf, type InternetEgress } from "./vpc-endpoints.js";
@@ -290,11 +290,12 @@ export class ProductionFoundationStack extends Stack {
         env: naming.env,
         vpcId: vpc.ref,
         // An Enterprise install starts from its own endpoint names; the public defaults are not on its list.
-        ...(enterprise ? { baseAllowDomains: enterpriseAllowDomains(props.deploymentRegion, { stdioMcp: props.stdioMcpAllowDomains !== undefined }) } : {}),
+        // A Public install starts from the default list without its broad entries plus its own regional AWS hosts (DEFAULT-ALLOW-LIST-EXFIL, 0.5.15).
+        baseAllowDomains: enterprise ? enterpriseAllowDomains(props.deploymentRegion, { stdioMcp: props.stdioMcpAllowDomains !== undefined }) : hostedAgentAllowDomains(props.deploymentRegion),
         extraAllowDomains: [
           // The names an install with package-run servers needs (the ECS name is already in its base list).
           ...(enterprise ? (props.stdioMcpAllowDomains ?? []).filter((name) => !enterpriseAllowDomains(props.deploymentRegion, { stdioMcp: true }).includes(name)) : []),
-          ...parseExtraAllowDomains(this.node.tryGetContext(EGRESS_ALLOW_DOMAINS_CONTEXT_KEY), enterprise ? enterpriseAllowDomains(props.deploymentRegion, { stdioMcp: props.stdioMcpAllowDomains !== undefined }) : undefined),
+          ...parseExtraAllowDomains(this.node.tryGetContext(EGRESS_ALLOW_DOMAINS_CONTEXT_KEY), enterprise ? enterpriseAllowDomains(props.deploymentRegion, { stdioMcp: props.stdioMcpAllowDomains !== undefined }) : hostedAgentAllowDomains(props.deploymentRegion)),
         ],
       });
       // The control plane's broker keeps this list equal to the approved egress domains (it takes the id as a parameter, like the VPC's).

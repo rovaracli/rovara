@@ -2,7 +2,9 @@ import { Stack } from "aws-cdk-lib";
 import { Template } from "aws-cdk-lib/assertions";
 import { describe, expect, it } from "vitest";
 import { buildAgentXApp } from "../../infra/lib/app.js";
-import { DEFAULT_AGENT_ALLOW_DOMAINS, DNS_FIREWALL_ASSOCIATION_PRIORITY } from "../../infra/lib/agent-dns-firewall.js";
+import {
+  BROAD_DEFAULT_ALLOW_ENTRIES, DEFAULT_AGENT_ALLOW_DOMAINS, DNS_FIREWALL_ASSOCIATION_PRIORITY, hostedAgentAllowDomains, hostedAwsAllowDomains, narrowedDefaultAllowDomains,
+} from "../../infra/lib/agent-dns-firewall.js";
 import { AGENTX_PRODUCTION_VPC_CIDR } from "../../infra/lib/production-foundation.js";
 import { brokerNamesIn } from "../support/broker-names-template.js";
 import { skipLambdaBundling } from "../support/skip-bundling.js";
@@ -48,13 +50,14 @@ describe("agent DNS firewall (cloud installs)", () => {
     const { allow, block, allowDomains, blockDomains } = ruleGroup(template);
     expect(allow).toMatchObject({ Action: "ALLOW", Priority: 100 });
     expect(block).toMatchObject({ Action: "BLOCK", BlockResponse: "NXDOMAIN", Priority: 200 });
-    expect(allowDomains).toStrictEqual([...DEFAULT_AGENT_ALLOW_DOMAINS]);
+    // The default list without its broad entries, plus this install's own AWS hosts (the template's region is us-east-1).
+    expect(allowDomains).toStrictEqual(hostedAgentAllowDomains("us-east-1"));
     expect(blockDomains).toStrictEqual(["*"]);
   });
 
   it("keeps the binding default list, including what the model proxy and the Slack orchestrator in the same VPC need", () => {
     for (const domain of [
-      "*.amazonaws.com", "*.aws", "github.com", "*.github.com", "*.githubusercontent.com", "ghcr.io", "*.ghcr.io",
+      "github.com", "ghcr.io", "*.ghcr.io", "pkg-containers.githubusercontent.com",
       "registry.npmjs.org", "registry.yarnpkg.com", "pypi.org", "files.pythonhosted.org", "crates.io", "*.crates.io",
       "proxy.golang.org", "sum.golang.org", "repo.maven.apache.org", "repo1.maven.org", "rubygems.org", "*.rubygems.org",
       "deb.debian.org", "security.debian.org", "archive.ubuntu.com", "ports.ubuntu.com", "security.ubuntu.com", "dl-cdn.alpinelinux.org",
@@ -63,7 +66,7 @@ describe("agent DNS firewall (cloud installs)", () => {
       "mcr.microsoft.com", "*.data.mcr.microsoft.com", "nodejs.org",
       "api.anthropic.com", "api.openai.com", "chatgpt.com", "auth.openai.com", "openrouter.ai",
       "slack.com", "*.slack.com", "api.linear.app", "mcp.linear.app", "*.atlassian.net", "app.asana.com",
-    ]) expect(DEFAULT_AGENT_ALLOW_DOMAINS).toContain(domain);
+    ]) expect(narrowedDefaultAllowDomains()).toContain(domain);
     expect(DEFAULT_AGENT_ALLOW_DOMAINS).toHaveLength(new Set(DEFAULT_AGENT_ALLOW_DOMAINS).size);
   });
 
@@ -78,7 +81,7 @@ describe("agent DNS firewall (cloud installs)", () => {
     // A public reverse zone would let a query for <data>.<attacker IP>.in-addr.arpa reach the attacker's name server.
     expect(DEFAULT_AGENT_ALLOW_DOMAINS).not.toContain("*.in-addr.arpa");
     expect(DEFAULT_AGENT_ALLOW_DOMAINS).not.toContain("*.arpa");
-    expect(DEFAULT_AGENT_ALLOW_DOMAINS).not.toContain("*.r2.cloudflarestorage.com");
+    expect(narrowedDefaultAllowDomains()).not.toContain("*.r2.cloudflarestorage.com");
     expect(AGENTX_PRODUCTION_VPC_CIDR).toBe("10.42.0.0/16");
   });
 
@@ -181,7 +184,7 @@ describe("agent DNS firewall (cloud installs)", () => {
   it("adds the domains of the agentxEgressAllowDomains context to the allow list", () => {
     const extended = foundation({ agentxEnv: "staging", agentxCloud: true, agentxEgressAllowDomains: "artifactory.acme.dev, *.pkg.acme.dev,,github.com" });
     const { allowDomains } = ruleGroup(extended);
-    expect(allowDomains).toStrictEqual([...DEFAULT_AGENT_ALLOW_DOMAINS, "artifactory.acme.dev", "*.pkg.acme.dev"]);
+    expect(allowDomains).toStrictEqual([...hostedAgentAllowDomains("us-east-1"), "artifactory.acme.dev", "*.pkg.acme.dev"]);
   });
 
   it("rejects an extra domain that is not a domain name", () => {
@@ -282,5 +285,68 @@ describe("the project allow list in the control plane (cloud installs)", () => {
       expect(resolverStatements(plain)).toStrictEqual([]);
       expect(resourcesOf(plain, "AWS::Scheduler::Schedule").map(([id]) => id).filter((id) => id.startsWith("EgressDomainsSync"))).toStrictEqual([]);
     }
+  });
+});
+
+// DEFAULT-ALLOW-LIST-EXFIL (0.5.15): the allow-list a hosted install's DNS firewall carries lets no one's upload target through by name.
+describe("the hosted install's allow-list does not carry an exit for an injected agent", () => {
+  const region = "us-west-2";
+  // Route 53 Resolver DNS Firewall reads a leading `*.` as any subdomain at any depth, and never the bare domain.
+  const allowed = (host: string, list: readonly string[]): boolean => list.some((entry) => (entry.startsWith("*.") ? host.endsWith(entry.slice(1)) && host.length > entry.length - 1 : host === entry));
+
+  it("pins the exact AWS hosts of an install in us-west-2", () => {
+    expect(hostedAwsAllowDomains(region)).toStrictEqual([
+      "dynamodb.us-west-2.amazonaws.com", "sqs.us-west-2.amazonaws.com", "s3.us-west-2.amazonaws.com", "*.s3.us-west-2.amazonaws.com",
+      "al2023-repos-us-west-2-de612dc2.s3.dualstack.us-west-2.amazonaws.com", "kms.us-west-2.amazonaws.com", "ssm.us-west-2.amazonaws.com", "ec2.us-west-2.amazonaws.com",
+      "states.us-west-2.amazonaws.com", "lambda.us-west-2.amazonaws.com", "email.us-west-2.amazonaws.com", "secretsmanager.us-west-2.amazonaws.com", "scheduler.us-west-2.amazonaws.com",
+      "sts.us-west-2.amazonaws.com", "sts.amazonaws.com", "monitoring.us-west-2.amazonaws.com", "logs.us-west-2.amazonaws.com", "api.ecr.us-west-2.amazonaws.com",
+      "*.dkr.ecr.us-west-2.amazonaws.com", "bedrock-runtime.us-west-2.amazonaws.com", "bedrock.us-west-2.amazonaws.com", "servicequotas.us-west-2.amazonaws.com", "ecs.us-west-2.amazonaws.com",
+      "*.execute-api.us-west-2.amazonaws.com", "*.us-west-2.elb.amazonaws.com", "*.us-west-2.rds.amazonaws.com",
+    ]);
+  });
+
+  it("has no AWS or GitHub wildcard, even when the pinned copy of Code's list still carries them", () => {
+    const old = ["*.amazonaws.com", "*.aws", "github.com", "*.github.com", "*.githubusercontent.com", "ghcr.io"];
+    expect(narrowedDefaultAllowDomains(old)).toStrictEqual(["github.com", "ghcr.io", "pkg-containers.githubusercontent.com"]);
+    // Code's narrowed list (the pin after Code's lane) passes through unchanged.
+    const narrowed = ["github.com", "ghcr.io", "*.ghcr.io", "pkg-containers.githubusercontent.com"];
+    expect(narrowedDefaultAllowDomains(narrowed)).toStrictEqual(narrowed);
+    expect(BROAD_DEFAULT_ALLOW_ENTRIES).toStrictEqual(["*.amazonaws.com", "*.aws", "*.github.com", "*.githubusercontent.com"]);
+    const list = hostedAgentAllowDomains(region);
+    for (const entry of BROAD_DEFAULT_ALLOW_ENTRIES) expect(list, entry).not.toContain(entry);
+    expect(list.filter((entry) => entry.includes("github"))).toStrictEqual(["github.com", "pkg-containers.githubusercontent.com"]);
+  });
+
+  it("does not resolve an attacker's bucket by the global name or in another region, nor GitHub's API, gist, raw or release hosts", () => {
+    const list = hostedAgentAllowDomains(region);
+    for (const host of [
+      "attacker-bucket.s3.amazonaws.com", "attacker-bucket.s3.eu-west-1.amazonaws.com", "s3.amazonaws.com", "s3.eu-west-1.amazonaws.com", "dynamodb.eu-west-1.amazonaws.com",
+      "x.execute-api.eu-west-1.amazonaws.com", "x.lambda-url.us-west-2.on.aws", "x.api.aws", "bedrock-runtime.eu-west-1.amazonaws.com",
+      "api.github.com", "gist.github.com", "uploads.github.com", "codeload.github.com", "raw.githubusercontent.com", "objects.githubusercontent.com", "gist.githubusercontent.com",
+    ]) expect(allowed(host, list), host).toBe(false);
+  });
+
+  it("still resolves what the machines need: git, image pulls, the regional AWS names, the install's own load balancer and database", () => {
+    const list = hostedAgentAllowDomains(region);
+    for (const host of [
+      "github.com", "ghcr.io", "pkg-containers.githubusercontent.com", "registry.npmjs.org", "bedrock-runtime.us-west-2.amazonaws.com", "dynamodb.us-west-2.amazonaws.com",
+      "123456789012.dkr.ecr.us-west-2.amazonaws.com", "prod-us-west-2-starport-layer-bucket.s3.us-west-2.amazonaws.com", "al2023-repos-us-west-2-de612dc2.s3.dualstack.us-west-2.amazonaws.com",
+      "abc123.execute-api.us-west-2.amazonaws.com", "internal-model-1.us-west-2.elb.amazonaws.com", "db.cluster-xyz.us-west-2.rds.amazonaws.com", "sts.amazonaws.com",
+    ]) expect(allowed(host, list), host).toBe(true);
+  });
+
+  it("refuses a region that is not a region name (the list is built from it)", () => {
+    for (const bad of ["", "us-west", "us-west-2.amazonaws.com", "*", "US-WEST-2"]) expect(() => hostedAwsAllowDomains(bad), bad).toThrow(/AWS region/);
+  });
+
+  it("writes the narrowed list into the template of a hosted install in another region", () => {
+    const { allowDomains } = ruleGroup(foundation({ agentxEnv: "staging", agentxCloud: true, agentxRegion: region }));
+    expect(allowDomains).toStrictEqual(hostedAgentAllowDomains(region));
+    expect(allowDomains).not.toContain("*.amazonaws.com");
+    expect(allowDomains).not.toContain("*.aws");
+    expect(allowDomains).not.toContain("*.github.com");
+    expect(allowDomains).not.toContain("*.githubusercontent.com");
+    expect(allowDomains).toContain("bedrock-runtime.us-west-2.amazonaws.com");
+    expect(allowDomains).not.toContain("bedrock-runtime.us-east-1.amazonaws.com");
   });
 });

@@ -106,9 +106,9 @@ export const HOST_RULES: readonly HostRule[] = [
     hosts: ["api.anthropic.com", "api.openai.com", "auth.openai.com", "chatgpt.com", "openrouter.ai"],
   },
   {
-    category: "agent-egress-default", why: "The default list of package, image and OS mirror hosts agent machines may resolve. (GitHub's, Docker Hub's token and API hosts are also the company image registry allowlist's, in the file named for it.)", files: [...DEFAULT_ALLOW, "packages/cloud-contracts/src/company-image-mirror.ts", "packages/broker/src/test-env/company-images.ts"],
+    category: "agent-egress-default", why: "The default list of package, image and OS mirror hosts agent machines may resolve, and the one GitHub host a ghcr.io image's blobs come from (pkg-containers.githubusercontent.com). The wildcard over GitHub's content hosts (*.githubusercontent.com) is named in infra/lib/agent-dns-firewall.ts only as an entry the install's list refuses (DEFAULT-ALLOW-LIST-EXFIL, 0.5.15). (GitHub's, Docker Hub's token and API hosts are also the company image registry allowlist's, in the file named for it.)", files: [...DEFAULT_ALLOW, "infra/lib/agent-dns-firewall.ts", "packages/cloud-contracts/src/company-image-mirror.ts", "packages/broker/src/test-env/company-images.ts"],
     hosts: [
-      "crates.io", "*.crates.io", "mcr.microsoft.com", "*.data.mcr.microsoft.com", "ghcr.io", "*.ghcr.io", "*.githubusercontent.com", "rubygems.org", "*.rubygems.org",
+      "crates.io", "*.crates.io", "mcr.microsoft.com", "*.data.mcr.microsoft.com", "ghcr.io", "*.ghcr.io", "*.githubusercontent.com", "pkg-containers.githubusercontent.com", "rubygems.org", "*.rubygems.org",
       "archive.ubuntu.com", "ports.ubuntu.com", "security.ubuntu.com", "deb.debian.org", "security.debian.org", "dl-cdn.alpinelinux.org", "auth.docker.io", "registry-1.docker.io",
       "production.cloudflare.docker.com", "production.cloudfront.docker.com", "docker-images-prod.6aa30f8b08e16409b46e0173d6de2f56.r2.cloudflarestorage.com",
       "files.pythonhosted.org", "pypi.org", "proxy.golang.org", "sum.golang.org", "registry.yarnpkg.com", "repo1.maven.org",
@@ -127,11 +127,11 @@ export const HOST_RULES: readonly HostRule[] = [
     hosts: ["registry.npmjs.org"],
   },
   {
-    category: "aws-endpoint", why: "Wildcard for AWS API hosts in the default allow-list; the CloudWatch connector's host; the domain-suffix checks in the CLI.",
+    category: "aws-endpoint", why: "The wildcard for AWS API hosts, which is no longer in the default allow-list (a hosted install lists its own regional hosts instead, in infra/lib/agent-dns-firewall.ts, and refuses the wildcard there; DEFAULT-ALLOW-LIST-EXFIL, 0.5.15); the CloudWatch connector's host; the domain-suffix checks in the CLI.",
     hosts: ["*.amazonaws.com", "monitoring.amazonaws.com", "amazonaws.com", "amazonaws.com.cn"],
   },
   {
-    category: "aws-endpoint", why: "The install's own regional endpoint names and the global STS name, in the Enterprise DNS allow-list; and, as the CloudTrail event source an alert rule matches (a pattern, not a call), in the operator-assumption alert; and, as the audience a GitHub Actions token must carry, in the release bundle-signing role's trust policy (a condition value, not a call; 2026-11-03: 0.5.2 batch).", files: ["infra/lib/vpc-endpoints.ts", "infra/lib/operator-access.ts", "infra/lib/bundle-signing.ts"],
+    category: "aws-endpoint", why: "The install's own regional endpoint names and the global STS name, in the Enterprise DNS allow-list and (the global STS name) in a hosted install's; and, as the CloudTrail event source an alert rule matches (a pattern, not a call), in the operator-assumption alert; and, as the audience a GitHub Actions token must carry, in the release bundle-signing role's trust policy (a condition value, not a call; 2026-11-03: 0.5.2 batch).", files: ["infra/lib/vpc-endpoints.ts", "infra/lib/agent-dns-firewall.ts", "infra/lib/operator-access.ts", "infra/lib/bundle-signing.ts"],
     hosts: ["sts.amazonaws.com"],
   },
   {
