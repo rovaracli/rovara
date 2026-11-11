@@ -173,8 +173,8 @@ describe("the Finished list for the Team and Company scopes", () => {
   it("reads about limit + 1 rows of each partition for a small limit, and the full page only when the limit is large", async () => {
     const s = scopedWorld();
     const limits: number[] = [];
-    const documentClient = { send: (command: { constructor: { name: string }; input?: { Limit?: number; KeyConditionExpression?: string } }) => { if (command.constructor.name === "QueryCommand" && command.input?.Limit !== undefined) limits.push(command.input.Limit); return s.deps.documentClient.send(command as never); } };
-    const deps: SessionReadDependencies = { ...s.deps, documentClient: documentClient as unknown as SessionReadDependencies["documentClient"] };
+    const documentClient = { send: (command: { constructor: { name: string }; input?: { Limit?: number; KeyConditionExpression?: string } }) => { if (command.constructor.name === "QueryCommand" && command.input?.Limit !== undefined) limits.push(command.input.Limit); return s.deps.documentClient.send(command); } };
+    const deps: SessionReadDependencies = { ...s.deps, documentClient };
     const small = await listFinishedScope(deps, s.w.caller(PRIYA), { scope: "company", status: "ended", limit: 2 });
     expect(small.sessions).toHaveLength(2);
     expect(limits.length).toBeGreaterThan(0);
