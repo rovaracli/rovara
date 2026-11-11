@@ -57,6 +57,7 @@ export function appRoutes(features: AppNav["features"], options: { newNav?: bool
  { path: "how-we-work/images", lazy: async () => ({ Component: (await import("./screens/admin/how-we-work/CompanyImagesScreen.js")).CompanyImagesScreen }) }, { path: "models/:section?", lazy: async () => ({ Component: (await import("./screens/admin/models/ModelsScreen.js")).ModelsScreen }) }, { path: "connections", lazy: async () => ({ Component: (await import("./screens/admin/connections/ConnectionsScreen.js")).ConnectionsScreen }) }, { path: "tracker-people", lazy: async () => ({ Component: (await import("./screens/admin/tracker-people/TrackerPeopleScreen.js")).TrackerPeopleScreen }) },
  // Lane C2: read-only company audit.
  { path: "second-review", lazy: async () => ({ Component: (await import("./screens/admin/second-review/SecondReviewScreen.js")).SecondReviewScreen }) },
+ { path: "approval-window", lazy: async () => ({ Component: (await import("./screens/admin/approval-window/ApprovalWindowScreen.js")).ApprovalWindowScreen }) },
  // Lane C2: read-only company audit.
  { path: "audit", lazy: async () => ({ Component: (await import("./screens/admin/audit/AuditScreen.js")).AuditScreen }) }, { path: "*", element: <NotFound /> }] });
  // Chains and triggers are hidden: an old link shows "This isn't available" with a link home, not an error. Their code and data stay.

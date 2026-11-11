@@ -8,13 +8,16 @@ import { Button } from "../../design/Button.js";
 import { PageHeader } from "../../design/PageHeader.js";
 import { Skeleton } from "../../design/Skeleton.js";
 import { SECOND_REVIEW_PATH } from "../../api/second-review.js";
+import { APPROVAL_WINDOW_PATH } from "../../api/approval-window.js";
 import { VisibleText } from "../../design/VisibleText.js";
 import { isBillingV2On } from "../../billing-flags.js";
 import { AdminNav } from "./AdminNav.js";
 import "./admin.css";
 /** Whether the second opinion page exists on this install, asked once per session and kept, and asked again when the scope (company, person, role) changes. */
 const secondReviewProbeKey = ["second-review-probe"] as const;
-interface AdminContext { orgId: string; company: string; developerId: string; role: "owner" | "admin" | "member"; checking: boolean }
+/** The same question for the recent sign-in window page: the server answers its read with 404 while it is not turned on, and the link is then not shown. */
+const approvalWindowProbeKey = ["approval-window-probe"] as const;
+interface AdminContext { orgId: string; company: string; developerId: string; role: "owner" | "admin" | "member"; checking: boolean; approvalWindowOff: boolean }
 export function useAdminContext() { return useOutletContext<AdminContext>(); }
 // UX3: company settings work on a phone. A narrow screen only changes how the menu and the tables are laid out; it never hides a setting.
 const narrowViewport = () => false;
@@ -41,14 +44,18 @@ export function AdminLayout() {
  const scopeNow = useRef(scope), scopeSeen = useRef(scope);
  useEffect(() => {
   scopeNow.current = scope;
-  if (scope !== undefined && scopeSeen.current !== undefined && scopeSeen.current !== scope) void query.resetQueries({ queryKey: secondReviewProbeKey });
+  if (scope !== undefined && scopeSeen.current !== undefined && scopeSeen.current !== scope) { void query.resetQueries({ queryKey: secondReviewProbeKey });void query.resetQueries({ queryKey: approvalWindowProbeKey }); }
   if (scope !== undefined) scopeSeen.current = scope;
  }, [scope, query]);
  const secondReview = useQuery({
   queryKey: secondReviewProbeKey, enabled: supported && identity.isSuccess && (identity.data?.developer.orgRole === "owner" || identity.data?.developer.orgRole === "admin"), staleTime: Infinity, gcTime: Infinity, refetchOnWindowFocus: false, retry: false,
   queryFn: async () => { const asked = scope; const response = await host.transport.request({ method: "GET", path: SECOND_REVIEW_PATH }); if (scopeNow.current !== asked) throw new Error("The scope changed."); return response.status !== 404; },
  });
- const secondReviewOff = secondReview.data === false;
+ const approvalWindow = useQuery({
+  queryKey: approvalWindowProbeKey, enabled: supported && identity.isSuccess && (identity.data?.developer.orgRole === "owner" || identity.data?.developer.orgRole === "admin"), staleTime: Infinity, gcTime: Infinity, refetchOnWindowFocus: false, retry: false,
+  queryFn: async () => { const asked = scope; const response = await host.transport.request({ method: "GET", path: APPROVAL_WINDOW_PATH }); if (scopeNow.current !== asked) throw new Error("The scope changed."); return response.status !== 404; },
+ });
+ const secondReviewOff = secondReview.data === false, approvalWindowOff = approvalWindow.data === false;
  const location = useLocation();
  const state = location.state as { roleChange?: { orgId?: string; developerId?: string; role?: string } } | null;
  const receipt = state?.roleChange;
@@ -64,5 +71,5 @@ export function AdminLayout() {
  }, [allowed, query]);
  if (supported && identity.isPending) return <section aria-label="Administration access" aria-busy="true"><Skeleton label="Checking administration access" /></section>;
  if (!allowed || identity.data === undefined) return <section><PageHeader focusOnMount title="Administration unavailable" /><p>Administration is available to company owners and admins in the web app.</p>{identity.isSuccess && role === "member" && <OwnRoleReceipt key={`${location.pathname}:${identity.data.org.orgId}:${identity.data.developer.id}`} initial={ownReceipt} />}<NavLink to="/app">Go to Home</NavLink>{supported && identity.isError && <><p role="alert">{identity.dataUpdatedAt > 0 ? "Couldn't re-check your administration access. Try again." : "Couldn't verify your administration access. Try again."}</p><Button onClick={() => { void identity.refetch(); }}>Try again</Button></>}</section>;
- return <div className="rv-admin" aria-busy={identity.isFetching}><p className="rv-admin-context">Company settings · <VisibleText text={identity.data.org.name} /></p><div className="rv-admin-content"><AdminNav role={role} secondReviewOff={secondReviewOff} companyAdmin={companyAdmin} compact={!largeScreen} billingOn={isBillingV2On(host)} /><div className="rv-admin-surface"><Outlet context={{ orgId: identity.data.org.orgId, company: identity.data.org.name, developerId: identity.data.developer.id, role, checking: identity.isFetching } satisfies AdminContext} /></div></div></div>;
+ return <div className="rv-admin" aria-busy={identity.isFetching}><p className="rv-admin-context">Company settings · <VisibleText text={identity.data.org.name} /></p><div className="rv-admin-content"><AdminNav role={role} secondReviewOff={secondReviewOff} companyAdmin={companyAdmin} compact={!largeScreen} billingOn={isBillingV2On(host)} approvalWindowOff={approvalWindowOff} /><div className="rv-admin-surface"><Outlet context={{ orgId: identity.data.org.orgId, company: identity.data.org.name, developerId: identity.data.developer.id, role, checking: identity.isFetching, approvalWindowOff } satisfies AdminContext} /></div></div></div>;
 }
