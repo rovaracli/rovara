@@ -38,6 +38,8 @@ export interface TaskPageState {
   canComment: boolean;
   canSuggest: boolean;
   canDecide: boolean;
+  /** Approval place (U4): the seat `canDecide` is from, "owner" or "maintainer" (a project maintainer, or a company owner or admin, deciding someone else's coding plan); absent when `canDecide` is false. No name: this poll carries none. */
+  decideAs?: "owner" | "maintainer";
   canAsk: boolean;
   canManagePeople: boolean;
   canTakeOwnership: boolean;
@@ -290,6 +292,7 @@ export function createTaskWebApi(deps: TaskWebApiDependencies): (request: Adapte
           revision: state.revision, waiting: state.waiting, stage: state.stage, documents: state.documents, commentSeq: state.commentSeq,
           ...(state.peopleRevision === undefined ? {} : { peopleRevision: state.peopleRevision }),
           canRead: state.canRead, canComment: state.canComment, canSuggest: state.canSuggest, canDecide: state.canDecide,
+          ...(state.canDecide && state.decideAs !== undefined ? { decideAs: state.decideAs } : {}),
           canAsk: state.canAsk, canManagePeople: state.canManagePeople, canTakeOwnership: state.canTakeOwnership, csrf,
           ...(state.canRemember === undefined || taskPage !== undefined ? {} : { canRemember: state.canRemember }),
           ...(state.e2ePresentation === undefined ? {} : { e2ePresentation: state.e2ePresentation }),

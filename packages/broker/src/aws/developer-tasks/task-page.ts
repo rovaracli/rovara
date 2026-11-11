@@ -3,7 +3,7 @@ import { GetCommand, QueryCommand } from "@aws-sdk/lib-dynamodb";
 import { workflowPullRequestUpdateDue, type DeveloperTaskView, type WorkflowSnapshot, WORKFLOW_BLOCK_REASONS, workflowReviseOffered, workflowKeepPullRequestsOffered } from "@agentx/cloud-contracts";
 import { agentXError, redactText, sharedTaskKey, type Operation, SessionIdSchema, type TaskComment, type TaskSuggestion, commentIdInAuthor, plannerReplyCommentId, commentRefInAuthor, workflowSelectedChecks, type WorkflowReviewFinding, WORKFLOW_PLAN_MAX_BYTES, isNoCodeChangedReason, noChangeFindingsFrom, noChangeHasThread, NO_CHANGE_CHOICES_NO_THREAD, NO_CHANGE_CHOICES_PAGE, WORKFLOW_APPLICATION_SELECTION_CHANGED_PREFIX, WORKFLOW_APPLICATION_ACCOUNTS_CHANGED_PREFIX, WORKFLOW_APPLICATION_RUNTIME_UNUSABLE_PREFIX, workflowApplicationRetryOffered, canonicalJson, type PlanClaim, type PlanDocument, type E2EScenarioResults, blockingFindings, workflowReviewRoles, isRunLimitBlockReason, isCiFixBlockReason, isBranchConflictAskReason, isBranchSyncGiveUpReason, isBranchSyncBlockReason } from "@rovara-code/contracts";
 import { isE2EPlanCorrectionBlockReason, ownerNameOfActor, taskKey, taskOwnerKey, tryEffectiveTaskOwner, type DeveloperTaskRecord } from "../../developer/task-records.js";
-import { nameResolverOf, replacementNames, shownNameOf, type NameReplacements } from "../../developer/name-resolver.js";
+import { nameResolverOf, replacementNames, resolveStoredName, shownNameOf, type NameReplacements } from "../../developer/name-resolver.js";
 import { planEvidencePointerKey, type PlanEvidencePointer } from "../../developer/plan-evidence-jobs.js";
 import { loadPlanEvidence, loadWorkflowDocument } from "../../developer/plan-artifacts.js";
 import type { DeveloperCaller } from "../developer-routes.js";
@@ -13,7 +13,7 @@ import type { PageCommentInput, PageDecisionInput, PageRetryInput, PageSuggestio
 import { pageCommentViews, type CommentViewContext, type PageCommentView } from "../plan-page/comments.js";
 import { loadPlanSelfCheck } from "../../developer/plan-self-check.js";
 import type { PlanAnchor } from "../plan-page/render-plan.js";
-import { can, pageAccess, projectWorkAllowed, requireProjectWorkRole, resolveTaskAccess, resolveTaskApprover, type TaskAccess } from "../../developer/task-access.js";
+import { can, ownerNameForReaders, pageAccess, projectWorkAllowed, requireProjectWorkRole, resolveTaskAccess, resolveTaskApprover, type TaskAccess } from "../../developer/task-access.js";
 import { designReviewEnabled } from "../../design-review/switch.js";
 import { getTaskPeoplePresentation } from "../../developer/task-people.js";
 import { getTaskPeopleCapabilities as readTaskPeopleCapabilities } from "../../developer/task-people.js";
@@ -69,6 +69,27 @@ async function maintainerMayDecidePlan(deps: DeveloperTaskRouteDependencies, cal
   if (workflow.path === "FULL" && (workflow.reviewPhase === "REQUIREMENTS" || workflow.reviewPhase === "DESIGN")) return false;
   return (await resolveTaskApprover(deps, caller, task.taskId)) !== undefined;
 }
+
+/** The seat a reader decides the waiting plan from, as a page's access summary says it; `ownerName` is set for a maintainer only, when the owner can be named. */
+export interface DecideSeat { as: "owner" | "maintainer"; ownerName?: string }
+
+/**
+ * Approval place (U4, owner decision Q7): which seat the reader decides from, for the read-only access summaries (the task state and the plan document): "owner" when the owner's own rule lets them decide
+ * (`ownerMayDecide`, from `pageAccess`), "maintainer" when `maintainerMayDecidePlan` does (live project role, the task's company, its People list, the cards switch, a coding plan waiting), else none. This only
+ * says what the page may offer; the decide route checks it all again and is the only authority. With `ownerName`, a maintainer's seat names the task's owner as other readers see them: "A former member" for an
+ * erased person, never an id, and left out when there is no name to give (the page then says "the task owner").
+ */
+export async function decideSeatOf(deps: DeveloperTaskRouteDependencies, caller: DeveloperCaller, task: DeveloperTaskRecord, ownerMayDecide: boolean, options: { ownerName?: boolean } = {}): Promise<DecideSeat | undefined> {
+  if (ownerMayDecide) return { as: "owner" };
+  if (!await maintainerMayDecidePlan(deps, caller, task)) return undefined;
+  if (options.ownerName !== true) return { as: "maintainer" };
+  const owner = tryEffectiveTaskOwner(task);
+  if (owner === undefined) return { as: "maintainer" };
+  // ERASE-NAME-1: the name stored with the task is replaced for an erased owner ("A former member") or a removed one; a lookup that fails reads "A member", never the stored copy.
+  const shown = ownerNameForReaders(await resolveStoredName(nameResolverOf(deps, task.orgId), owner.developerId, owner.name));
+  return { as: "maintainer", ...(shown === OWNER_FALLBACK_NAME ? {} : { ownerName: shown }) };
+}
+const OWNER_FALLBACK_NAME = "the task owner";
 
 /**
  * QA6-03: whether the task page replaces Approve with a link to the design's decision card: the reader may decide, the waiting document is a design, and the design is under review (the same condition as the guard in
@@ -259,14 +280,14 @@ export async function getTaskPageState(deps: DeveloperTaskRouteDependencies, cal
   });
   const counter = await deps.documentClient.send(new GetCommand({ TableName: deps.tableName, Key: commentCounterKey(taskId), ConsistentRead: true })) as { Item?: { seq?: unknown } };
   const permissions = pageAccess(access, await projectWorkAllowed(deps, task, caller));
-  const approver = permissions.canDecide ? false : await maintainerMayDecidePlan(deps, caller, task);
+  const seat = await decideSeatOf(deps, caller, task, permissions.canDecide);
   // v1.2 learning loop: only for a person with standing in the project; absent for everyone else, and when it can't be worked out in time.
   const flags = await commentLearningFlags(deps, { caller, access }, taskId, []);
   return {
     revision: workflow?.revision ?? 0, waiting: workflow?.stage === "PLAN_REVIEW" && workflow.state === "WAITING" && task.closedAt === undefined,
     stage: taskPageStep(workflow, task.closedAt !== undefined), documents, commentSeq: typeof counter.Item?.seq === "number" ? counter.Item.seq : 0,
     ...(capabilities.peopleRevision === undefined ? {} : { peopleRevision: capabilities.peopleRevision }), canRead: true,
-    canComment: permissions.canComment, canSuggest: permissions.canSuggest, canDecide: permissions.canDecide || approver, ...(approver ? { decideAs: "maintainer" as const } : permissions.canDecide ? { decideAs: "owner" as const } : {}),
+    canComment: permissions.canComment, canSuggest: permissions.canSuggest, canDecide: seat !== undefined, ...(seat === undefined ? {} : { decideAs: seat.as }),
     canAsk: permissions.canAsk && await commentAnswersAvailable(deps, task),
     canManagePeople: capabilities.canManagePeople, canTakeOwnership: capabilities.canTakeOwnership,
     ...(flags === undefined ? {} : { canRemember: flags.canRemember }),
@@ -543,7 +564,13 @@ async function replacedActorNames(deps: Pick<DeveloperTaskRouteDependencies, "do
  * everyone else, including a reader whose checks failed, gets the answer a missing task gets. Each document is read
  * through its recorded key and shown only when its digest matches; review findings are the current code's.
  */
-export async function getTaskDocumentView(deps: DeveloperTaskRouteDependencies, caller: DeveloperCaller, taskId: string): Promise<TaskDocumentView> {
+/**
+ * `decideSeat`: work out the reader's decide seat (`decideSeatOf`, with the owner's name for a maintainer) for the view's `decideSeat`. Only the plan panel's coding plan route asks (its access summary is the one reader of it);
+ * every other read (the design and requirements panels, the old page) leaves it off and makes no approver read.
+ */
+export interface DocumentViewOptions { decideSeat?: boolean }
+
+export async function getTaskDocumentView(deps: DeveloperTaskRouteDependencies, caller: DeveloperCaller, taskId: string, options: DocumentViewOptions = {}): Promise<TaskDocumentView> {
   const { access, capabilities } = await coherentPageAccess(deps, caller, taskId);
   const { task } = access;
   const owner = access.role === "owner";
@@ -789,6 +816,9 @@ export async function getTaskDocumentView(deps: DeveloperTaskRouteDependencies, 
     ? { ...(noChangeFound === undefined ? {} : { findings: noChangeFound }) } : undefined;
   const deciding = await pageDecidingView(deps, { task, caller, comments, suggestions: shownSuggestions, citations, claimIds });
   const permissions = pageAccess(access, await projectWorkAllowed(deps, task, caller));
+  // Approval place (U4): the seat the plan panel's access summary names (a maintainer's seat with the owner's name), worked out for the coding plan's read only; the old page reads only `access`, which stays the owner's rule.
+  // `decideSeatOf` looks up the owner's name only once the reader has the maintainer's seat.
+  const decideSeat = options.decideSeat === true ? await decideSeatOf(deps, caller, task, permissions.canDecide, { ownerName: true }) : undefined;
   // QA6-03: while a design is under review its approval is only on its decision card; the page points to the card instead of offering a button the server refuses.
   const designCardOnly = designCardOnlyApplies({ canDecide: permissions?.canDecide === true, waitingKind: deciding.waiting?.kind, workflow });
   const stage = taskPageStage(workflow, task.closedAt !== undefined, owner, await publicationAttempts(deps, task), removedReasonOf(task), await mergeViewForWords(deps, task), noChangeHasThread(task.share));
@@ -806,7 +836,7 @@ export async function getTaskDocumentView(deps: DeveloperTaskRouteDependencies, 
     ...(specHold === undefined ? {} : { specHold }),
     ...(autofixLines.length === 0 ? {} : { autofix: { lines: autofixLines } }),
     ...(noChangeView === undefined ? {} : { noChange: noChangeView }),
-    history, access: permissions, ...(capabilities.peopleRevision === undefined ? {} : { peopleRevision: capabilities.peopleRevision }), canManagePeople: capabilities.canManagePeople,
+    history, access: permissions, ...(decideSeat === undefined ? {} : { decideSeat }), ...(capabilities.peopleRevision === undefined ? {} : { peopleRevision: capabilities.peopleRevision }), canManagePeople: capabilities.canManagePeople,
     canTakeOwnership: capabilities.canTakeOwnership, comments, suggestions: shownSuggestions, askAvailable: await commentAnswersAvailable(deps, task),
     ...deciding,
     ...(designCardOnly ? { designCardOnly: { href: "/app" } } : {}),
