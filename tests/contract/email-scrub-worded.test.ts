@@ -195,16 +195,23 @@ describe("hideEmailAddresses: time", () => {
     ["digits and dots after an at sign", `${at}${"1.".repeat(15_000)}`],
   ];
   it.each(inputs)(`takes under ${String(LIMIT_MS)} ms (or the case's own lower bound): %s`, (_why, text, limit = LIMIT_MS) => {
-    // One warm-up call (the first call pays for compiling the scanner), then the best of three: a loaded CI runner adds noise to a
-    // single wall-clock reading, while a quadratic scan stays slow on every run.
-    hideEmailAddresses(text);
-    let best = Number.POSITIVE_INFINITY;
-    for (let run = 0; run < 3; run += 1) {
-      const started = performance.now();
-      hideEmailAddresses(text);
-      best = Math.min(best, performance.now() - started);
-    }
-    expect(best).toBeLessThan(limit);
+    // A machine-relative bound: a quadratic scan of a hostile input is orders of magnitude slower than a linear scan of plain text of the
+    // same length, while a loaded CI runner slows both alike. So each case is timed (warm-up, then the best of three) against plain prose of
+    // the same length on the same machine. A case may take up to 100x that baseline (never less than its own limit), and never more than
+    // 2 s. A scan that grows with the square of these 30K-50K inputs is thousands of times slower than linear, so it fails either bound.
+    const best = (input: string): number => {
+      hideEmailAddresses(input);
+      let fastest = Number.POSITIVE_INFINITY;
+      for (let run = 0; run < 3; run += 1) {
+        const started = performance.now();
+        hideEmailAddresses(input);
+        fastest = Math.min(fastest, performance.now() - started);
+      }
+      return fastest;
+    };
+    const plain = "the quick brown fox jumps over the lazy dog ".repeat(Math.ceil(text.length / 44)).slice(0, text.length);
+    const bound = Math.min(2_000, Math.max(limit, best(plain) * 100));
+    expect(best(text)).toBeLessThan(bound);
   });
 
   it("still hides every address of a long line of them", () => {

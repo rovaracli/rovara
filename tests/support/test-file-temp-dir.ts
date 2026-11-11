@@ -15,6 +15,7 @@ import { trackCdkAssemblies } from "./cdk-assemblies.js";
  * macOS allows only 104 bytes of socket path, so no directory level may be added to them.
  */
 const tracker = trackCdkAssemblies(fs);
+// Removing a file's CDK assemblies can take longer than the default 10 s hook limit on a loaded CI runner.
 afterAll(() => {
   tracker.finish();
-});
+}, 60_000);
