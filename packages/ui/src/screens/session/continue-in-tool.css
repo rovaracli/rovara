@@ -19,3 +19,13 @@
  .rv-continue-facts>div{grid-template-columns:minmax(0,1fr);gap:0}
  .rv-continue-copy-button{width:100%}
 }
+/* Continue loop (exp/continue-loop): the branch per repository, Publish working branch, the changed-outside state and Recheck. */
+.rv-continue-branches,.rv-continue-outside ul{margin:0;padding:0;list-style:none;display:grid;gap:var(--rv-space-3)}
+.rv-continue-branches li,.rv-continue-outside li{display:flex;flex-wrap:wrap;align-items:center;gap:var(--rv-space-2) var(--rv-space-3);min-width:0}
+.rv-continue-publish{display:inline-flex;flex-wrap:wrap;align-items:center;gap:var(--rv-space-2) var(--rv-space-3)}
+.rv-continue-action{min-height:44px;min-width:44px}
+.rv-continue-error{color:var(--rv-status-failed);overflow-wrap:anywhere}
+.rv-continue-note{color:var(--rv-text-muted)}
+.rv-continue-outside{display:grid;gap:var(--rv-space-3)}
+.rv-continue-outside .rv-chip{white-space:normal;overflow-wrap:anywhere}
+@media(max-width:480px){.rv-continue-action{width:100%}}

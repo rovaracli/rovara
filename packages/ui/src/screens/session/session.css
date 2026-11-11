@@ -39,3 +39,6 @@
 .rv-session-details{min-width:0}.rv-session-evidence{margin-top:var(--rv-space-4);min-width:0}.rv-session-evidence>summary{cursor:pointer;min-height:44px;padding:var(--rv-space-3) 0;font-weight:600}@media(max-width:480px){.rv-lead{padding:var(--rv-space-3)}.rv-lead-facts>div{grid-template-columns:minmax(0,1fr);gap:0}.rv-lead-title{font-size:inherit}.rv-lead-action .rv-button{width:100%;min-height:44px}.rv-session-details .rv-session-people{margin-top:var(--rv-space-4)}}
 /* "Continue in your own tool" (switch rovara.continue): groups the Conversation button with the new one. Matches no element while the switch is off. */
 .rv-session-work-actions{display:flex;flex-wrap:wrap;align-items:center;gap:var(--rv-space-3)}
+
+/* Continue loop: the changed-outside chip may wrap on a phone; its "Last pushed by" lines sit under it. */
+.rv-lead-state .rv-chip,.rv-lead-outside .rv-chip{white-space:normal;overflow-wrap:anywhere}.rv-lead-outside{display:grid;gap:var(--rv-space-2)}

@@ -1,5 +1,6 @@
 import { isClosedTask, sessionDisplay, type ReadSession } from "./SessionHeader.js";
 import { workspaceTask } from "./workspace-types.js";
+import { CHANGED_OUTSIDE, type ContinueLoop } from "./continue-outside.js";
 /**
  * What the "Continue in your own tool" panel says, as plain functions (no React, no reads). Everything here comes from what exists today: the CLI's `mcp install` command
  * (packages/cli/src/mcp/install.ts, docs/mcp-install.md), the MCP tools `agentx_get_task` and `agentx_get_plan`, and the task view's own fields.
@@ -17,14 +18,42 @@ export const installCommand = (tool: ToolKind): string => "npx " + CLI_PACKAGE +
 export const LOAD_TOOLS = ["agentx_get_task", "agentx_get_plan"] as const;
 export const LESSONS_TOOL = "rovara_lessons";
 export const NO_BRANCH_YET = "The branch appears once Rovara opens the pull request.";
+/** A repository with no branch yet, for a reader who may publish one. */
+export const NO_BRANCH_PUBLISH = "No branch yet. Rovara makes it at the commit it started from: no code is pushed and no pull request is opened.";
 export const PUSH_EXPLAINER = "When you push to the task's branch, your commits show up on its pull request. Rovara doesn't re-run its checks on pushes made outside it yet, so mention the change to your reviewer.";
+/** Where the server offers Recheck (`canRecheck`), the push explanation says what Rovara does instead. Until then PUSH_EXPLAINER stays: the page never promises a re-check the server cannot start. */
+export const PUSH_EXPLAINER_RECHECK = "When you push to the task's branch, your commits show up on its pull request. Rovara will mark the work '" + CHANGED_OUTSIDE + "'; press Recheck when you're ready.";
+export const pushExplainer = (loop: ContinueLoop | undefined): string => loop?.canRecheck === true ? PUSH_EXPLAINER_RECHECK : PUSH_EXPLAINER;
+/** What Recheck says when the server cannot start a re-check yet and gave no sentence of its own. */
+export const RECHECK_UNAVAILABLE = "Recheck isn't available yet";
 
 /** A branch name that is safe to put into a sentence and a prompt: plain git-ref characters only. Anything else is treated as unknown. */
 const BRANCH = /^[A-Za-z0-9][A-Za-z0-9._/-]{0,199}$/u;
 /** A task id as Rovara writes it (a UUID). Anything else never goes into the copied prompt. */
 const TASK_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/iu;
 
-export interface ContinueOffer { taskId: string; title: string; project: string | undefined; branch: string | undefined; pullRequests: readonly { repository: string; number: number; url: string }[] }
+/** A repository name that is safe to put into a sentence and a prompt. Anything else is left out of the prompt. */
+const REPOSITORY = /^[A-Za-z0-9][A-Za-z0-9._/-]{0,199}$/u;
+
+export type LoopBranch = ContinueLoop["branches"][number];
+export interface ContinueOffer {
+ sessionId: string; taskId: string; title: string; project: string | undefined;
+ /** The one branch the prompt names: the continue loop's branch when every repository has the same one, else an agent-step run's chosen branch. */
+ branch: string | undefined;
+ pullRequests: readonly { repository: string; number: number; url: string }[];
+ /** The task view's `continueLoop` (a server from 0.5.15 sends it), or undefined for an older one: then the panel reads as it did before it. */
+ loop: ContinueLoop | undefined;
+ /** The repositories the task has: those with a pull request or a branch, and those Rovara prepared (the task view's review base). They are the names Publish working branch is sent with. */
+ repositories: readonly string[];
+}
+
+/** The branch every given branch agrees on, or undefined for none or for different ones. */
+export function uniqueBranch(branches: readonly Pick<LoopBranch, "branch">[]): string | undefined {
+ const names = new Set(branches.map(entry => entry.branch));
+ const [only] = names;
+ return names.size === 1 && only !== undefined && BRANCH.test(only) ? only : undefined;
+}
+
 
 /**
  * The offer for this session, or undefined when the panel does not apply: not a task, or an ended one (Merged or Closed), or a reader who cannot work on it. "Can work on it" is the task's owner or a
@@ -42,12 +71,21 @@ export function continueOffer(session: ReadSession): ContinueOffer | undefined {
  const run = (task?.run as { branch?: unknown } | undefined)?.branch;
  const branch = typeof run === "string" && BRANCH.test(run) ? run : undefined;
  const pullRequests = (task?.pullRequests ?? []).map(pr => ({ repository: pr.repository, number: pr.number, url: pr.url }));
- return { taskId, title: session.title, project: session.project, branch, pullRequests };
+ const loop = task?.continueLoop;
+ // The new field is the branch before there is a pull request too; the run's own branch is the fallback for a server that does not send it.
+ const loopBranch = loop === undefined ? undefined : uniqueBranch(loop.branches);
+ const names = [...(loop?.branches ?? []).map(entry => entry.repository), ...pullRequests.map(pr => pr.repository), ...(task?.workflow?.reviewBase ?? []).map(entry => entry.repositoryId)];
+ const repositories = [...new Set(names)].slice(0, 32);
+ return { sessionId: session.sessionId, taskId, title: session.title, project: session.project, branch: loopBranch ?? branch, pullRequests, loop, repositories };
 }
 
 /** The short prompt to paste into the person's tool. */
-export function loadPrompt(offer: Pick<ContinueOffer, "taskId" | "branch">): string {
- return "Load Rovara task " + offer.taskId + " (call " + LOAD_TOOLS.join(", then ") + ") and continue it" + (offer.branch === undefined ? "." : " on branch " + offer.branch + ".");
+export function loadPrompt(offer: Pick<ContinueOffer, "taskId" | "branch"> & { branches?: readonly Pick<LoopBranch, "repository" | "branch">[] | undefined }): string {
+ const load = "Load Rovara task " + offer.taskId + " (call " + LOAD_TOOLS.join(", then ") + ") and continue it";
+ if (offer.branch !== undefined) return load + " on branch " + offer.branch + ".";
+ // Different branches in different repositories: name each one (a name that is not plain git-ref characters is left out, never put into the prompt).
+ const named = (offer.branches ?? []).filter(entry => REPOSITORY.test(entry.repository) && BRANCH.test(entry.branch));
+ return named.length < 2 ? load + "." : load + ", on these branches: " + named.map(entry => entry.repository + ": " + entry.branch).join(", ") + ".";
 }
 
 /** What the lessons switch says for this project, in one sentence for the tool's reader, or undefined when the data does not say. */

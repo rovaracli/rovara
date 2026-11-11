@@ -1,5 +1,6 @@
 import { useDecisions } from "../../api/decisions.js";
 import { Button } from "../../design/Button.js";
+import { Chip } from "../../design/Chip.js";
 import { VisibleText } from "../../design/VisibleText.js";
 import type { ReadSession } from "./SessionHeader.js";
 import { cardsFor, leadStatus, taskLead, type Lead } from "./task-plain-state.js";
@@ -19,7 +20,12 @@ export function goTo(targetId: string): void {
 export function TaskLeadView({ lead }: { lead: Lead }) {
  return <section className="rv-lead" aria-label="Where this task stands" data-tone={lead.state.tone}>
   {lead.approve !== undefined && <p className="rv-lead-approve"><VisibleText text={lead.approve} /></p>}
-  <p className="rv-lead-state"><span className="rv-lead-pill" data-tone={lead.state.tone}>{lead.state.label}</span></p>
+  {/* Continue loop: "Changed outside Rovara · checks needed" is the existing outside-change chip (info colour, laptop icon, words); any other state keeps its dot and words. */}
+  <p className="rv-lead-state">{lead.outside !== undefined && lead.state.label === lead.outside.label ? <Chip kind="outside-change">{lead.outside.label}</Chip> : <span className="rv-lead-pill" data-tone={lead.state.tone}>{lead.state.label}</span>}</p>
+  {lead.outside !== undefined && <div className="rv-lead-outside">
+   {lead.state.label !== lead.outside.label && <p><Chip kind="outside-change">{lead.outside.label}</Chip></p>}
+   {lead.outside.lines.map(line => <p key={line}><VisibleText text={line} /></p>)}
+  </div>}
   <div className="rv-lead-next">
    <p className="rv-lead-eyebrow">Next step</p>
    <p className="rv-lead-title"><VisibleText text={lead.next} /></p>
