@@ -18,8 +18,8 @@ export function HealthV2() {
 }
 function Scoped() {
  const { orgId, developerId, role, checking } = useAdminContext();
- const reads = useReadinessReads({ orgId, developerId, role, enabled: !checking, lessons: true });
- const readiness = buildReadiness(reads, reads.readAt), rows = sortRows(readiness.rows), { counts } = readiness;
+ const reads = useReadinessReads({ orgId, developerId, role, enabled: !checking });
+ const readiness = buildReadiness(reads, reads.now), rows = sortRows(readiness.rows), { counts } = readiness;
  const settled = !checking && readiness.checking === 0 && !reads.busy;
  return <section className="rv-health" aria-label="Health and readiness"><PageHeader focusOnMount title="Health" description="What has to work for Rovara to do its job, and what Rovara has actually seen." actions={<Button aria-disabled={reads.busy || checking} onClick={() => { if (!reads.busy && !checking) reads.refetch(); }}>Check again</Button>} /><SettingsNote area="health" />
   <div role="group" aria-label="Summary"><dl className="rv-health-counts">

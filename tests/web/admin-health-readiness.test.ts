@@ -11,7 +11,7 @@ import { ThemeProvider } from "../../packages/ui/src/theme.js";
 import type { Read, ReadinessReads } from "../../packages/ui/src/api/readiness.js";
 import { HEALTH_STORAGE_KEY, isHealthV2On } from "../../packages/ui/src/screens/admin/health/health-flags.js";
 import {
- buildNeedsAdmin, buildReadiness, chatRow, codeHostRow, connectionVerdict, featuresRow, lessonsRow, modelRow, projectRow, serviceRow, sortRows, stamp, teamRecordRow, trackerRow,
+ buildNeedsAdmin, buildReadiness, chatRow, codeHostRow, connectionVerdict, featuresRow, freshness, lessonsRow, modelRow, projectRow, serviceRow, sortRows, stamp, teamRecordRow, trackerRow,
 } from "../../packages/ui/src/screens/admin/health/readiness.js";
 import { fakeHost } from "./support/fake-host.js";
 import { renderUi } from "./support/render.js";
@@ -32,7 +32,7 @@ function reads(over: Partial<ReadinessReads> = {}): ReadinessReads {
   sources: ok({ sources: [{ sourceId: "src_a", kind: "anthropic", label: "Company Anthropic key", hasCredential: true, models: [{ catalog: { provider: "anthropic", modelId: "claude-secret-model-1" } }] }] }),
   projects: ok([project("payments", "ready", { checkedAt: "2026-11-10T09:00:00.000Z" })]), serviceStatus: ok(service as never), features: ok({ localAgents: false, usage: true, chains: false, notices: false, describe: true, scriptTokens: false, decisionCards: false }),
   lessons: [{ project: "payments", read: ok({ sources: [{ kind: "slack", scope: "#dev", enabled: true, retention: "30d", health: "ok", audience: "project", updatedAt: "2026-11-10T00:00:00Z", paused: false }], otherPaused: 0 } as never) }], lessonsSkipped: 0,
-  approvals: ok([]), spend: ok([]), preset: ok({ preset: "standard" } as never), designReview: ok({ allowed: false, unreadable: false }), busy: false, readAt: NOW, refetch() {}, ...over,
+  approvals: ok([]), spend: ok([]), preset: ok({ preset: "standard" } as never), designReview: ok({ allowed: false, unreadable: false }), busy: false, now: NOW, refetch() {}, ...over,
  };
 }
 
@@ -47,9 +47,10 @@ describe("the switch", () => {
 });
 
 describe("status mapping: green needs an observation", () => {
- it("code host: an active app is Healthy, a suspended or missing one needs action, an unread one is Unknown", () => {
-  const healthy = codeHostRow(reads());
-  expect(healthy.status).toBe("healthy");expect(healthy.checked).toBe("Check time not recorded");expect(healthy.source).toMatch(/GitHub/);expect(healthy.fix).toBeUndefined();
+ it("code host: an active app is Unknown (no check time), a suspended or missing one needs action, an unread one is Unknown", () => {
+  // The stored install status has no observation time, so an active app is Unknown, never Healthy.
+  const active = codeHostRow(reads());
+  expect(active.status).toBe("unknown");expect(active.checked).toBe("Check time not recorded");expect(active.source).toMatch(/GitHub/);expect(active.line).toMatch(/records no time/);expect(active.fix?.to).toBe("/app/admin/connections?open=github");
   const suspended = codeHostRow(reads({ github: ok([install("suspended")]) }));
   expect(suspended.status).toBe("action");expect(suspended.fix?.to).toBe("/app/admin/connections?open=github");expect(suspended.fix?.text).toMatch(/unsuspend/);
   expect(codeHostRow(reads({ github: ok([]) })).status).toBe("action");
@@ -63,13 +64,15 @@ describe("status mapping: green needs an observation", () => {
   expect(chatRow(reads({ slack: ok({ checkedAt: "2026-11-11T11:30:00.000Z", associationCount: 2, unavailableCount: 1 }) })).status).toBe("action");
   const none = chatRow(reads({ slack: ok({ checkedAt: "2026-11-11T11:30:00.000Z", associationCount: 0, unavailableCount: 0 }) }));
   expect(none.status).toBe("unknown");expect(none.line).toMatch(/isn't connected/);expect(none.fix?.to).toBe("/app/admin/connections?open=slack");
-  expect(chatRow(reads({ slack: refused })).line).toMatch(/owners and admins/);
+  expect(chatRow(reads({ slack: refused })).line).toBe("Rovara wouldn't show the Slack connection to your account, so it can't be checked.");
  });
  it("a saved connection is Healthy only when its own last check passed, recently; no check, an old check or no time is Unknown; a failed check, no key or read-only is action", () => {
   expect(connectionVerdict(connection(), NOW)).toEqual({ status: "healthy", line: "Its last check passed.", checkedAt: "2026-11-10T12:00:00Z" });
   expect(connectionVerdict(connection({ lastCheck: undefined }), NOW).status).toBe("unknown");
   expect(connectionVerdict(connection({ lastCheck: { ok: true, at: "2026-10-30T12:00:00Z" } }), NOW)).toMatchObject({ status: "unknown", line: "Its last check passed more than 7 days ago." });
   expect(connectionVerdict(connection({ lastCheck: { ok: true, at: "not a time" } }), NOW).status).toBe("unknown");
+  expect(connectionVerdict(connection({ lastCheck: { ok: true, at: "2026-11-11T13:00:00Z" } }), NOW)).toMatchObject({ status: "unknown", line: "Its last check is dated in the future, so it isn't believed." });
+  expect(connectionVerdict(connection({ lastCheck: { ok: true, at: "2026-11-11T12:03:00Z" } }), NOW).status).toBe("healthy");
   expect(connectionVerdict(connection({ lastCheck: { ok: false, at: "2026-11-10T12:00:00Z" } }), NOW).status).toBe("action");
   expect(connectionVerdict(connection({ hasCredential: false }), NOW).status).toBe("action");
   expect(connectionVerdict(connection({ ticketUpdates: "needs_write_access" }), NOW)).toMatchObject({ status: "action", line: "It passed its last check, but Rovara can't write ticket updates back: it is read only." });
@@ -77,8 +80,10 @@ describe("status mapping: green needs an observation", () => {
  });
  it("tracker row: worst connection wins, the oldest check is the time, none connected is Unknown with a connect action", () => {
   const row = trackerRow(reads({ connections: ok([connection(), connection({ connectionId: "c2", type: "jira", label: "Jira (ops)", lastCheck: { ok: false, at: "2026-11-09T12:00:00Z" } })]) }), NOW);
-  expect(row.status).toBe("action");expect(row.line).toBe("Jira (ops): Its last check failed.");expect(row.checked).toBe("Oldest check Nov 9, 2026, 12:00 PM UTC");expect(row.fix?.to).toBe("/app/admin/connections?open=linear");
+  expect(row.status).toBe("action");expect(row.line).toBe("Jira (ops): Its last check failed.");expect(row.checked).toBe("Oldest check Nov 9, 2026, 12:00 PM UTC");expect(row.fix?.to).toBe("/app/admin/connections?open=jira");
   expect(trackerRow(reads({ connections: ok([connection()]) }), NOW).status).toBe("healthy");
+  const jira = trackerRow(reads({ connections: ok([connection({ type: "jira", label: "Jira (ops)", lastCheck: { ok: false, at: "2026-11-10T12:00:00Z" } })]) }), NOW);
+  expect(jira.fix?.to).toBe("/app/admin/connections?open=jira");
   const none = trackerRow(reads({ connections: ok([connection({ type: "sentry" })]) }), NOW);
   expect(none.status).toBe("unknown");expect(none.fix?.label).toBe("Connect a tracker");
   expect(trackerRow(reads({ connections: failed }), NOW).status).toBe("unknown");
@@ -92,20 +97,26 @@ describe("status mapping: green needs an observation", () => {
   expect(modelRow(reads({ sources: refused })).status).toBe("unknown");
  });
  it("project environment: ready is Healthy with its time; failed needs action; never checked, outdated and running are Unknown", () => {
-  expect(projectRow(project("payments", "ready", { checkedAt: "2026-11-10T09:00:00.000Z" }))).toMatchObject({ status: "healthy", checked: "Last checked Nov 10, 2026, 9:00 AM UTC" });
-  expect(projectRow(project("payments", "ready"))).toMatchObject({ status: "healthy", checked: "Check time not recorded" });
-  const failedRow = projectRow(project("pay ments", "failed", { failedStep: "npm test" }));
+  expect(projectRow(project("payments", "ready", { checkedAt: "2026-11-10T09:00:00.000Z" }), NOW)).toMatchObject({ status: "healthy", checked: "Last checked Nov 10, 2026, 9:00 AM UTC" });
+  // A passed check with no time, a time in the future, or one older than the age limit is not an observation of today.
+  expect(projectRow(project("payments", "ready"), NOW)).toMatchObject({ status: "unknown", checked: "Check time not recorded", line: expect.stringContaining("recorded no time") as unknown });
+  expect(projectRow(project("payments", "ready", { checkedAt: "2026-11-01T09:00:00.000Z" }), NOW)).toMatchObject({ status: "unknown", fix: { label: "Check test setup" } });
+  expect(projectRow(project("payments", "ready", { checkedAt: "2026-11-12T09:00:00.000Z" }), NOW).status).toBe("unknown");
+  const failedRow = projectRow(project("pay ments", "failed", { failedStep: "npm test" }), NOW);
   expect(failedRow).toMatchObject({ status: "action", fix: { to: "/app/onboard?project=pay%20ments&step=setup" } });expect(failedRow.line).not.toMatch(/npm test/);expect(failedRow.details.join(" ")).toMatch(/npm test/);
-  expect(projectRow(project("p", "unchecked"))).toMatchObject({ status: "unknown", checked: "Never checked" });
-  expect(projectRow(project("p", "outdated")).status).toBe("unknown");
-  expect(projectRow(project("p", "checking")).status).toBe("unknown");
+  expect(projectRow(project("p", "unchecked"), NOW)).toMatchObject({ status: "unknown", checked: "Never checked" });
+  expect(projectRow(project("p", "outdated"), NOW).status).toBe("unknown");
+  expect(projectRow(project("p", "checking"), NOW).status).toBe("unknown");
  });
- it("team record and lessons: the stored check maps ok, warn and unknown; sources count only when every one is read and healthy", () => {
+ it("team record and lessons: the live delete check maps ok, warn and unknown; stored source health is never green, failing or paused is action", () => {
   expect(teamRecordRow(reads()).status).toBe("healthy");
   expect(teamRecordRow(reads({ serviceStatus: ok({ ...service, teamRecord: { status: "warn", detail: "x" } } as never) })).status).toBe("action");
   expect(teamRecordRow(reads({ serviceStatus: ok({ ...service, teamRecord: undefined } as never) })).status).toBe("unknown");
   expect(teamRecordRow(reads()).checked).toBe("Stored status read Nov 11, 2026, 11:00 AM UTC");
-  expect(lessonsRow(reads())?.status).toBe("healthy");
+  // A stored health word has no time: "ok" is never Healthy, only a failing or paused source is news.
+  expect(lessonsRow(reads())).toMatchObject({ status: "unknown", checked: "Check time not recorded" });
+  const allOff = lessonsRow(reads({ lessons: [{ project: "payments", read: ok({ sources: [{ kind: "slack", enabled: false, retention: "30d", health: "ok", audience: "project", updatedAt: "x", paused: false }], otherPaused: 0 } as never) }] }));
+  expect(allOff?.status).toBe("unknown");
   const failing = lessonsRow(reads({ lessons: [{ project: "payments", read: ok({ sources: [{ kind: "slack", scope: "#dev", enabled: true, retention: "30d", health: "failing", audience: "project", updatedAt: "x", paused: false }], otherPaused: 0 } as never) }] }));
   expect(failing).toMatchObject({ status: "action", fix: { to: "/app/projects/payments?tab=sources" } });
   const paused = lessonsRow(reads({ lessons: [{ project: "payments", read: ok({ sources: [{ kind: "slack", enabled: true, retention: "30d", health: "ok", audience: "project", updatedAt: "x", paused: true }], otherPaused: 0 } as never) }] }));
@@ -129,11 +140,12 @@ describe("status mapping: green needs an observation", () => {
   const readiness = buildReadiness(reads({ github: ok([install("suspended")]) }), NOW);
   expect(readiness.counts.healthy + readiness.counts.action + readiness.counts.unknown + readiness.checking).toBe(readiness.rows.length);
   expect(readiness.rows.map(row => row.id)).toEqual(["code-host", "chat", "tracker", "models", "project:payments", "team-record", "lessons", "features", "service"]);
-  expect(readiness.counts).toEqual({ healthy: 5, action: 1, unknown: 3 });
+  expect(readiness.counts).toEqual({ healthy: 4, action: 1, unknown: 4 });
   expect(sortRows(readiness.rows)[0]!.id).toBe("code-host");
   const nothing = buildReadiness(reads({ github: failed, connections: failed, slack: failed, sources: failed, projects: failed, serviceStatus: failed, features: failed, lessons: [] }), NOW);
   expect(nothing.counts.healthy).toBe(0);expect(nothing.rows.every(row => row.status === "unknown")).toBe(true);
   for (const row of readiness.rows) { expect(row.source).not.toBe("");expect(row.checked).not.toBe("");expect(row.line).not.toMatch(/undefined|NaN|\[object/); }
+  expect([freshness(undefined, NOW), freshness("x", NOW), freshness("2026-11-11T11:00:00Z", NOW), freshness("2026-11-04T11:00:00Z", NOW), freshness("2026-11-11T12:04:00Z", NOW), freshness("2026-11-11T12:06:00Z", NOW)]).toEqual(["none", "none", "fresh", "stale", "fresh", "future"]);
   expect(stamp("garbage")).toBeUndefined();expect(stamp(undefined)).toBeUndefined();expect(stamp("2026-11-11T12:00:00Z")).toBe("Nov 11, 2026, 12:00 PM UTC");
  });
 });
@@ -160,7 +172,25 @@ describe("What needs an admin", () => {
   const r = reads({ approvals: failed, spend: failed });
   const need = buildNeedsAdmin(r, buildReadiness(r, NOW));
   expect(need.items).toEqual([]);expect(need.unread).toEqual(["confirmations waiting for you", "spending requests"]);
-  expect(buildNeedsAdmin(reads({ approvals: refused }), buildReadiness(reads(), NOW)).unread).toEqual([]);
+ });
+ it("a refused or missing read is unread too: for an owner or admin it is an anomaly, never 'nothing'", () => {
+  for (const read of [refused, missing]) {
+   const r = reads({ approvals: read, spend: read, preset: read, designReview: read });
+   expect(buildNeedsAdmin(r, buildReadiness(r, NOW)).unread).toEqual(["confirmations waiting for you", "spending requests", "company lesson rules", "company design review rules"]);
+  }
+ });
+ it("every read the list depends on is named when it did not answer, the lessons reads included", () => {
+  const names: Array<[Partial<ReadinessReads>, string]> = [[{ github: failed }, "the GitHub connection"], [{ githubRequests: failed }, "GitHub installation requests"], [{ connections: refused }, "saved connections"], [{ slack: failed }, "the Slack connection"], [{ sources: failed }, "AI model sources"], [{ projects: failed, lessons: [] }, "project environment checks"], [{ serviceStatus: failed }, "Rovara's service status and team record check"], [{ features: failed }, "the turned-on features"], [{ lessons: [{ project: "payments", read: failed }] }, "team record sources"]];
+  for (const [over, words] of names) { const r = reads(over);expect(buildNeedsAdmin(r, buildReadiness(r, NOW)).unread, words).toEqual([words]); }
+  const all = reads();expect(buildNeedsAdmin(all, buildReadiness(all, NOW)).unread).toEqual([]);
+ });
+ it("a failing team record source reaches the list, with the project's Sources tab as its fix", () => {
+  const r = reads({ lessons: [{ project: "payments", read: ok({ sources: [{ kind: "slack", scope: "#dev", enabled: true, retention: "30d", health: "failing", audience: "project", updatedAt: "x", paused: false }], otherPaused: 0 } as never) }] });
+  expect(buildNeedsAdmin(r, buildReadiness(r, NOW)).items.map(item => [item.title, item.link.to])).toEqual([["Lessons and team record sources", "/app/projects/payments?tab=sources"]]);
+ });
+ it("only items still PENDING are listed", () => {
+  const r = reads({ approvals: ok([{ approvalId: "apr_a", kind: "k", status: "APPROVED", createdAt: "2026-11-10T10:00:00.000Z" }, { approvalId: "apr_b", kind: "k", status: "PENDING", createdAt: "2026-11-10T10:00:00.000Z" }]), spend: ok([{ spendRequestId: "spr_a", status: "EXPIRED", createdAt: "2026-11-10T11:00:00.000Z" }]) });
+  expect(buildNeedsAdmin(r, buildReadiness(r, NOW)).items.map(item => item.id)).toEqual(["approval:apr_b"]);
  });
 });
 
@@ -214,8 +244,8 @@ describe("the Health page", () => {
    await waitFor(() => expect(within(list).getByText("Test environment: payments")).toBeTruthy());
    await waitFor(() => expect(screen.getByRole("status").textContent).toMatch(/checks shown/));
    const rows = within(list).getAllByRole("listitem").filter(item => item.classList.contains("rv-health-row"));
-   // Action first, then Unknown, then Healthy: the payments check and the tracker need action; chat, models and features are Unknown; the rest was seen working.
-   expect(rows.map(row => row.getAttribute("data-status"))).toEqual(["action", "action", "unknown", "unknown", "unknown", "healthy", "healthy", "healthy", "healthy"]);
+   // Action first, then Unknown, then Healthy: the payments check and the tracker need action; GitHub (no check time), chat, models, lessons and features are Unknown; the team record and Rovara service are computed live.
+   expect(rows.map(row => row.getAttribute("data-status"))).toEqual(["action", "action", "unknown", "unknown", "unknown", "unknown", "unknown", "healthy", "healthy"]);
    const tracker = rows.find(row => within(row).queryByText("Tracker: Linear or Jira") !== null)!;
    expect(within(tracker).getByText("Action needed")).toBeTruthy();expect(tracker.textContent).toMatch(/Source: Each connection's own last "Check it works" result/);expect(tracker.textContent).toMatch(/Last checked Nov 10, 2026, 12:00 PM UTC/);
    expect(within(tracker).getByRole("link", { name: "Fix tracker connection" }).getAttribute("href")).toBe("/app/admin/connections?open=linear");
@@ -224,7 +254,7 @@ describe("the Health page", () => {
    const details = list.querySelectorAll("details");
    expect(details.length).toBeGreaterThan(0);for (const item of details) expect(item.hasAttribute("open")).toBe(false);
    const counts = screen.getByRole("group", { name: "Summary" }).textContent ?? "";
-   expect(counts).toBe("Healthy4Action needed2Unknown3");
+   expect(counts).toBe("Healthy2Action needed2Unknown5");
    expect(f.request.mock.calls.every(([r]) => r.method === "GET")).toBe(true);
    await expectNoAxeViolations(document.body);
   } finally { f.close(); }
@@ -266,7 +296,8 @@ describe("the admin overview", () => {
    expect(section.textContent).not.toMatch(/org_guardrail|PENDING/);
    const glance = (await screen.findByRole("heading", { name: "Health at a glance" })).closest("section")!;
    await waitFor(() => expect(within(glance).getByRole("link", { name: "All checks" }).getAttribute("href")).toBe("/app/admin/health"));
-   expect(called(f, "/v1/app/projects/payments/lessons/sources")).toBe(0);
+   // The overview reads the team record sources too, so its counts and list agree with the Health page.
+   await waitFor(() => expect(called(f, "/v1/app/projects/payments/lessons/sources")).toBe(1));
    expect(screen.getByRole("heading", { name: "People and access" })).toBeTruthy();
   } finally { f.close(); }
  });

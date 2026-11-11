@@ -50,12 +50,12 @@ for (const look of [{ name: "look-off", store: {} }, { name: "look-v2", store: {
    if (look.name === "look-v2") await expect(page.locator("html")).toHaveAttribute("data-look", "v2");
    const list = page.getByRole("list", { name: "Readiness checks" });
    const row = (title: string) => list.locator(".rv-health-row").filter({ has: page.getByRole("heading", { name: title, exact: true }) });
-   await expect(row("Code host: GitHub")).toContainText("Healthy");await expect(row("Code host: GitHub")).toContainText("Check time not recorded");
+   await expect(row("Code host: GitHub")).toContainText("Unknown");await expect(row("Code host: GitHub")).not.toContainText("Healthy");await expect(row("Code host: GitHub")).toContainText("Check time not recorded");
    await expect(row("Chat: Slack")).toContainText("Unknown");await expect(row("Chat: Slack")).not.toContainText("Healthy");await expect(row("Chat: Slack")).toContainText(/Stored associations read/);
    await expect(row("Tracker: Linear or Jira")).toContainText("Action needed");await expect(row("Tracker: Linear or Jira").getByRole("link", { name: "Fix tracker connection" })).toHaveAttribute("href", "/app/admin/connections?open=linear");
    await expect(row("AI models")).toContainText("Unknown");await expect(row("AI models")).not.toContainText("claude-fixture-model-1", { useInnerText: true });
    await expect(row("Test environment: payments")).toContainText("Action needed");await expect(row("Test environment: payments").getByRole("link", { name: "Fix test setup" })).toHaveAttribute("href", "/app/onboard?project=payments&step=setup");
-   await expect(row("Test environment: web")).toContainText("Healthy");await expect(row("Team record")).toContainText("Healthy");await expect(row("Lessons and team record sources")).toContainText("Healthy");
+   await expect(row("Test environment: web")).toContainText("Healthy");await expect(row("Team record")).toContainText("Healthy");await expect(row("Lessons and team record sources")).toContainText("Unknown");
    await expect(row("Turned-on features")).toContainText("Unknown");await expect(row("Rovara service")).toContainText("Healthy");
    await expect(list.locator(".rv-health-row").first()).toHaveAttribute("data-status", "action");
    // Raw facts are behind Details, closed by default.

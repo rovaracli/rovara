@@ -14,8 +14,8 @@ export function NeedsAdmin() {
 }
 function Scoped() {
  const { orgId, developerId, role, checking } = useAdminContext();
- const reads = useReadinessReads({ orgId, developerId, role, enabled: !checking, lessons: false });
- const readiness = buildReadiness(reads, reads.readAt), needs = buildNeedsAdmin(reads, readiness), { counts } = readiness;
+ const reads = useReadinessReads({ orgId, developerId, role, enabled: !checking });
+ const readiness = buildReadiness(reads, reads.now), needs = buildNeedsAdmin(reads, readiness), { counts } = readiness;
  const settled = !checking && !reads.busy && readiness.checking === 0;
  const shown = needs.items.slice(0, ADMIN_LIST_CAP), more = needs.items.length - shown.length;
  return <>

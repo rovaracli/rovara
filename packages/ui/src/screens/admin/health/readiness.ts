@@ -1,6 +1,7 @@
 // The Health and readiness rules (lane exp/health-readiness; switch `rovara.health` = "v2"). Pure functions: reads in, rows out. No React, no broker.
 // One rule runs through all of it: GREEN NEEDS AN OBSERVATION. A row is Healthy only when a read shows something was seen working (a passed check, a status the vendor reported).
-// A configured thing that nothing has checked is Unknown, a read that was refused or failed is Unknown, and a check older than CHECK_STALE_DAYS is Unknown ("check it again").
+// A configured thing that nothing has checked is Unknown, a read that was refused or failed is Unknown, and an observation with no recorded time, a time in the future, or a time older than
+// CHECK_STALE_DAYS (measured against the clock) is Unknown ("check it again"). Only the two rows the broker computes live at read time (service qualification, team record delete check) take the read time.
 import type { OrgServiceStatus } from "@agentx/contracts/web";
 import type { Read, ReadinessApproval, ReadinessConnection, ReadinessDesignReview, ReadinessFeatures, ReadinessProject, ReadinessReads, ReadinessSpendRequest } from "../../../api/readiness.js";
 import type { LessonCompanyPreset } from "../../../api/lessons.js";
@@ -14,6 +15,16 @@ export const STATUS_WORDS: Readonly<Record<RowStatus, string>> = { healthy: "Hea
 /** A manual check older than this no longer counts as an observation of today. */
 export const CHECK_STALE_DAYS = 7;
 const DAY = 86_400_000;
+/** How far ahead of the clock a recorded time may be (clock skew) before it is not believed. */
+export const FUTURE_SLACK_MS = 5 * 60_000;
+export type Freshness = "fresh" | "stale" | "future" | "none";
+/** Whether a recorded observation time still counts: it must exist, not be in the future, and be at most CHECK_STALE_DAYS old. */
+export function freshness(at: string | undefined, now: number): Freshness {
+ const time = at === undefined ? Number.NaN : Date.parse(at);
+ if (!Number.isFinite(time) || time <= 0) return "none";
+ if (time > now + FUTURE_SLACK_MS) return "future";
+ return now - time > CHECK_STALE_DAYS * DAY ? "stale" : "fresh";
+}
 
 export interface Fix { /** What to do, in a sentence. */ text: string; /** The link's own words. */ label: string; /** An existing page of the app. */ to: string }
 export interface ReadinessRow {
@@ -37,11 +48,11 @@ const checkedAt = (value: string | undefined, verb = "Last checked"): { checked:
 const worst = (a: Status, b: Status): Status => a === "action" || b === "action" ? "action" : a === "unknown" || b === "unknown" ? "unknown" : "healthy";
 
 /** What a row says when its read did not give an answer. Always Unknown. */
-function unread<T>(read: Read<T>, what: string, id: string, title: string, fix: Fix, restricted = "Only company owners and admins can see this."): ReadinessRow | undefined {
+function unread<T>(read: Read<T>, what: string, id: string, title: string, fix: Fix): ReadinessRow | undefined {
  switch (read.state) {
   case "ok": return undefined;
   case "loading": return { id, title, status: "checking", line: `Checking ${what}.`, source: "Waiting for the read", checked: "Not yet", details: [] };
-  case "refused": return { id, title, status: "unknown", line: restricted, source: "Rovara did not allow this read", checked: "Not checked", fix, details: ["The read was refused (not signed in, or not allowed)."] };
+  case "refused": return { id, title, status: "unknown", line: `Rovara wouldn't show ${what} to your account, so it can't be checked.`, source: "Rovara did not allow this read", checked: "Not checked", fix, details: ["The read was refused (not signed in, or not allowed)."] };
   case "missing": return { id, title, status: "unknown", line: `${what.charAt(0).toUpperCase()}${what.slice(1)} isn't available on this install.`, source: "This install does not answer this read", checked: "Not checked", details: ["The read answered not found."] };
   case "failed": return { id, title, status: "unknown", line: `Rovara couldn't read ${what} just now.`, source: "The read failed", checked: "Not checked", fix: { ...fix, text: "Check again in a moment." }, details: ["The read failed or was unreadable."] };
  }
@@ -58,9 +69,11 @@ export function codeHostRow(reads: Pick<ReadinessReads, "github" | "githubReques
  // The request list is optional detail: waiting for a GitHub admin only matters when nothing is installed.
  const requests = reads.githubRequests.state === "ok" ? reads.githubRequests.data : [];
  const summary = githubSummary(installs, requests);
- const status: Status = summary.state === "connected" ? "healthy" : "action";
+ // The stored install status has no observation time (connectedAt is when it was connected, not when it was checked), so an active app is Unknown, never Healthy.
+ const status: Status = summary.state === "connected" ? "unknown" : "action";
  const source = "The GitHub app's status as GitHub last reported it to Rovara";
- return { ...base, status, line: summary.why, source, checked: "Check time not recorded", ...(status === "action" ? { fix: { text: summary.fix ?? fix.text, label: summary.state === "not_connected" ? "Connect GitHub" : "Fix GitHub", to: fix.to } } : {}), details: installs.map(install => `${install.accountLogin}: ${install.status}`) };
+ const line = summary.state === "connected" ? `${summary.why} Rovara records no time for that status, so this can't be called healthy.` : summary.why;
+ return { ...base, status, line, source, checked: "Check time not recorded", ...(summary.state === "connected" ? { fix } : {}), ...(status === "action" ? { fix: { text: summary.fix ?? fix.text, label: summary.state === "not_connected" ? "Connect GitHub" : "Fix GitHub", to: fix.to } } : {}), details: installs.map(install => `${install.accountLogin}: ${install.status}`) };
 }
 
 // ---- chat
@@ -88,12 +101,14 @@ export function connectionVerdict(connection: ReadinessConnection, now: number):
  if (connection.type !== "cloudwatch" && !connection.hasCredential) return { status: "action", line: "No key is saved for it." };
  const check = connection.lastCheck;
  if (check === undefined) return { status: "unknown", line: "It has never been checked." };
- const at = Date.parse(check.at);
  if (!check.ok) return { status: "action", line: "Its last check failed.", checkedAt: check.at };
  if ((connection.type === "linear" || connection.type === "jira") && connection.ticketUpdates === "needs_write_access") return { status: "action", line: "It passed its last check, but Rovara can't write ticket updates back: it is read only.", checkedAt: check.at };
- if (!Number.isFinite(at)) return { status: "unknown", line: "Its last check has no readable time." };
- if (now - at > CHECK_STALE_DAYS * DAY) return { status: "unknown", line: `Its last check passed more than ${String(CHECK_STALE_DAYS)} days ago.`, checkedAt: check.at };
- return { status: "healthy", line: "Its last check passed.", checkedAt: check.at };
+ switch (freshness(check.at, now)) {
+  case "none": return { status: "unknown", line: "Its last check has no readable time." };
+  case "future": return { status: "unknown", line: "Its last check is dated in the future, so it isn't believed." };
+  case "stale": return { status: "unknown", line: `Its last check passed more than ${String(CHECK_STALE_DAYS)} days ago.`, checkedAt: check.at };
+  default: return { status: "healthy", line: "Its last check passed.", checkedAt: check.at };
+ }
 }
 const TRACKERS = new Set(["linear", "jira"]), MONITORING = new Set(["sentry", "datadog", "cloudwatch", "grafana", "vercel", "pagerduty"]);
 const TYPE_WORDS: Readonly<Record<string, string>> = { linear: "Linear", jira: "Jira", sentry: "Sentry", datadog: "Datadog", cloudwatch: "Amazon CloudWatch", grafana: "Grafana", vercel: "Vercel", pagerduty: "PagerDuty", mcp: "Tool" };
@@ -101,7 +116,7 @@ export const connectionTypeWords = (type: string): string => Object.hasOwn(TYPE_
 
 function groupRow(reads: Pick<ReadinessReads, "connections">, now: number, spec: { id: string; title: string; open: string; types: (type: string) => boolean; none: string; optional: boolean; connect: string; what: string }): ReadinessRow | undefined {
  const fix: Fix = { text: "Open the connection.", label: `Open ${spec.what}`, to: `${CONNECTIONS_PATH}?open=${spec.open}` };
- const missing = unread(reads.connections, "your saved connections", spec.id, spec.title, fix, "Saved connections can't be read by this account.");
+ const missing = unread(reads.connections, "your saved connections", spec.id, spec.title, fix);
  if (missing !== undefined) return missing;
  if (reads.connections.state !== "ok") return undefined;
  const mine = reads.connections.data.filter(connection => spec.types(connection.type));
@@ -112,7 +127,8 @@ function groupRow(reads: Pick<ReadinessReads, "connections">, now: number, spec:
  const first = verdicts.find(item => item.verdict.status === status && status !== "healthy") ?? verdicts[0]!;
  const line = status === "healthy" ? (mine.length === 1 ? `${first.connection.label} passed its last check.` : `All ${String(mine.length)} connections passed their last check.`) : `${first.connection.label}: ${first.verdict.line}`;
  const when = times[0] === undefined ? { checked: "Never checked" } : checkedAt(times[0], mine.length > 1 ? "Oldest check" : "Last checked");
- const fixFor: Fix = status === "healthy" ? fix : { text: status === "action" ? "Open it, fix what the check says, then press Check it works." : "Open it and press Check it works.", label: status === "action" ? `Fix ${spec.what}` : `Check ${spec.what}`, to: fix.to };
+ const open = spec.id === "tracker" && first.connection.type === "jira" ? "jira" : spec.open;
+ const fixFor: Fix = status === "healthy" ? fix : { text: status === "action" ? "Open it, fix what the check says, then press Check it works." : "Open it and press Check it works.", label: status === "action" ? `Fix ${spec.what}` : `Check ${spec.what}`, to: `${CONNECTIONS_PATH}?open=${open}` };
  return { id: spec.id, title: spec.title, status, line, source: "Each connection's own last \"Check it works\" result", ...when, ...(status === "healthy" ? {} : { fix: fixFor }), details: verdicts.map(item => `${connectionTypeWords(item.connection.type)}, ${item.connection.label}: ${item.verdict.line}`) };
 }
 export const trackerRow = (reads: Pick<ReadinessReads, "connections">, now: number) => groupRow(reads, now, { id: "tracker", title: "Tracker: Linear or Jira", open: "linear", types: type => TRACKERS.has(type), none: "No tracker is connected, so there is nothing to check.", optional: false, connect: "Connect a tracker", what: "tracker connection" })!;
@@ -139,20 +155,26 @@ export function modelRow(reads: Pick<ReadinessReads, "sources">): ReadinessRow {
 
 // ---- each project's environment check
 
-export function projectRows(reads: Pick<ReadinessReads, "projects">): ReadinessRow[] {
+export function projectRows(reads: Pick<ReadinessReads, "projects">, now: number): ReadinessRow[] {
  const fix: Fix = { text: "Open the project's connections page.", label: "Open projects", to: "/app/admin/projects" };
- const missing = unread(reads.projects, "the projects", "projects", "Project environments", fix, "Projects can't be read by this account.");
+ const missing = unread(reads.projects, "the projects", "projects", "Project environments", fix);
  if (missing !== undefined) return [missing];
  if (reads.projects.state !== "ok") return [];
- return reads.projects.data.filter(project => project.status === "active").map(projectRow);
+ return reads.projects.data.filter(project => project.status === "active").map(project => projectRow(project, now));
 }
-export function projectRow(project: ReadinessProject): ReadinessRow {
+export function projectRow(project: ReadinessProject, now: number): ReadinessRow {
  const id = `project:${project.name}`, title = `Test environment: ${project.name}`, source = "The project's last environment check (setup and tests on a clean machine)";
  const to = setupPath(project.name), setup = project.setup;
  const when = checkedAt(setup.checkedAt);
  const details = [`Check state: ${setup.status}`, ...(setup.failedStep === undefined ? [] : [`Failed step: ${setup.failedStep}`])];
  switch (setup.status) {
-  case "ready": return { id, title, status: "healthy", line: "Setup and tests ran on a clean machine and passed.", source, ...when, details };
+  case "ready": {
+   // A passed check counts only with a recorded time that is not in the future and not older than the age limit.
+   const age = freshness(setup.checkedAt, now);
+   if (age === "fresh") return { id, title, status: "healthy", line: "Setup and tests ran on a clean machine and passed.", source, ...when, details };
+   const why = age === "none" ? "but Rovara recorded no time for that check" : age === "future" ? "but its time is in the future, so it isn't believed" : `but that was more than ${String(CHECK_STALE_DAYS)} days ago`;
+   return { id, title, status: "unknown", line: `The last environment check passed, ${why}, so this can't be called healthy.`, source, ...when, fix: { text: "Run the check again.", label: "Check test setup", to }, details };
+  }
   case "failed": return { id, title, status: "action", line: "The last environment check failed, so Rovara can't be sure work here will run.", source, ...when, fix: { text: "Open the project's test setup, fix the step that failed, and run the check again.", label: "Fix test setup", to }, details };
   case "checking": return { id, title, status: "unknown", line: "A check is running now.", source, ...when, details };
   case "outdated": return { id, title, status: "unknown", line: "The project's settings changed after the last check, so that check no longer counts.", source, ...when, fix: { text: "Run the check again.", label: "Check test setup", to }, details };
@@ -184,26 +206,24 @@ export function lessonsRow(reads: Pick<ReadinessReads, "lessons" | "lessonsSkipp
  if (reads.lessons.some(item => item.read.state === "loading")) return { ...base, status: "checking", line: "Checking the team record sources.", source, checked: "Not yet", details: [] };
  const missing = reads.lessons.filter(item => item.read.state === "missing");
  if (missing.length === reads.lessons.length) return { ...base, status: "unknown", line: "The team record and lessons aren't set up on this install.", source, checked: "Not checked", details: ["Every project's sources read answered not found."] };
- let status: Status = "healthy", first: { project: string; why: string } | undefined, any = false;
+ let status: Status = "unknown", first: { project: string; why: string } | undefined;
  const details: string[] = [];
  for (const item of reads.lessons) {
   if (item.read.state !== "ok") { status = worst(status, "unknown");details.push(`${item.project}: could not be read`);first ??= item.read.state === "missing" ? undefined : { project: item.project, why: "its sources could not be read" };continue; }
   const rows = item.read.data.sources;
   if (rows.length === 0) { status = worst(status, "unknown");details.push(`${item.project}: no sources`);continue; }
   for (const row of rows) {
-   any = true;
    const words = `${Object.hasOwn(SOURCE_WORDS, row.kind) ? SOURCE_WORDS[row.kind] : row.kind}${row.scope === undefined ? "" : ` ${row.scope}`}`;
    details.push(`${item.project}: ${words}, health ${row.health}${row.paused ? ", paused" : ""}${row.enabled ? "" : ", off"}`);
    if (!row.enabled) continue;
-   const next: Status = row.health === "failing" || row.paused ? "action" : row.health === "ok" ? "healthy" : "unknown";
+   // A stored health word has no observation time (updatedAt is when the source was last edited), so "ok" is never Healthy; only a failing or paused source is news.
+   const next: Status = row.health === "failing" || row.paused ? "action" : "unknown";
    if (next === "action" && first === undefined) first = { project: item.project, why: row.paused ? "a source was paused because it spiked" : "a source is failing" };
-   status = worst(status, next);
+   if (next === "action") status = "action";
   }
  }
- if (!any && status === "healthy") status = "unknown";
  const rest = reads.lessonsSkipped > 0 ? ` ${String(reads.lessonsSkipped)} more project${reads.lessonsSkipped === 1 ? " was" : "s were"} not read.` : "";
- if (reads.lessonsSkipped > 0 && status === "healthy") status = "unknown";
- const line = status === "healthy" ? "Every enabled source reports healthy." + rest : status === "action" ? `In ${first?.project ?? "a project"}, ${first?.why ?? "a source needs attention"}.${rest}` : `Some sources have no health result, or couldn't be read.${rest}`;
+ const line = status === "action" ? `In ${first?.project ?? "a project"}, ${first?.why ?? "a source needs attention"}.${rest}` : `No source is failing or paused, but Rovara records no time for a source's health, and some may have no result or couldn't be read, so this can't be called healthy.${rest}`;
  return { ...base, status, line, source, checked: "Check time not recorded", ...(status === "action" && first !== undefined ? { fix: { text: "Open the project's Sources tab and resume or repair the source.", label: "Open Sources", to: projectSourcesPath(first.project) } } : status === "unknown" ? { fix: { text: "Open How we work.", label: "Open How we work", to: HOW_WE_WORK_PATH } } : {}), details };
 }
 
@@ -250,7 +270,7 @@ export interface Readiness { rows: ReadinessRow[]; counts: Record<Status, number
 export function buildReadiness(reads: ReadinessReads, now: number): Readiness {
  const rows: ReadinessRow[] = [codeHostRow(reads), chatRow(reads), trackerRow(reads, now)];
  for (const row of [monitoringRow(reads, now), toolsRow(reads, now)]) if (row !== undefined) rows.push(row);
- rows.push(modelRow(reads), ...projectRows(reads), teamRecordRow(reads));
+ rows.push(modelRow(reads), ...projectRows(reads, now), teamRecordRow(reads));
  const lessons = lessonsRow(reads);if (lessons !== undefined) rows.push(lessons);
  rows.push(featuresRow(reads), serviceRow(reads));
  const counts: Record<Status, number> = { healthy: 0, action: 0, unknown: 0 };
@@ -273,10 +293,10 @@ export const ADMIN_LIST_CAP = 8;
 
 const approvalWords = (kind: string): string => kind === "write" || kind.includes("write") ? "An agent's change waits for a second admin to confirm." : "A protected change waits for a second admin to confirm.";
 function approvalItems(list: readonly ReadinessApproval[]): AdminItem[] {
- return list.map(approval => ({ id: `approval:${approval.approvalId}`, kind: "confirm" as const, title: "Protected change to confirm", why: approvalWords(approval.kind), ...(stamp(approval.createdAt) === undefined ? {} : { when: `Asked ${stamp(approval.createdAt)!}` }), link: { label: "Open the waiting list", to: WAITING_PATH }, details: [`Kind: ${approval.kind}`] }));
+ return list.filter(approval => approval.status === "PENDING").map(approval => ({ id: `approval:${approval.approvalId}`, kind: "confirm" as const, title: "Protected change to confirm", why: approvalWords(approval.kind), ...(stamp(approval.createdAt) === undefined ? {} : { when: `Asked ${stamp(approval.createdAt)!}` }), link: { label: "Open the waiting list", to: WAITING_PATH }, details: [`Kind: ${approval.kind}`] }));
 }
 function spendItems(list: readonly ReadinessSpendRequest[]): AdminItem[] {
- return list.map(request => ({ id: `spend:${request.spendRequestId}`, kind: "spend" as const, title: `Spending request: ${requestKindWords(request.kind)}`, why: request.amountUsd === undefined ? "A spending request is waiting for a decision." : `A spending request for $${request.amountUsd.toFixed(2)} is waiting for a decision.`, ...(stamp(request.createdAt) === undefined ? {} : { when: `Asked ${stamp(request.createdAt)!}` }), link: { label: "Open the waiting list", to: WAITING_PATH }, details: [`Kind: ${request.kind ?? "not given"}`, ...(request.approverRole === undefined ? [] : [`Approver role: ${request.approverRole}`])] }));
+ return list.filter(request => request.status === "PENDING").map(request => ({ id: `spend:${request.spendRequestId}`, kind: "spend" as const, title: `Spending request: ${requestKindWords(request.kind)}`, why: request.amountUsd === undefined ? "A spending request is waiting for a decision." : `A spending request for $${request.amountUsd.toFixed(2)} is waiting for a decision.`, ...(stamp(request.createdAt) === undefined ? {} : { when: `Asked ${stamp(request.createdAt)!}` }), link: { label: "Open the waiting list", to: WAITING_PATH }, details: [`Kind: ${request.kind ?? "not given"}`, ...(request.approverRole === undefined ? [] : [`Approver role: ${request.approverRole}`])] }));
 }
 function ruleItems(design: ReadinessDesignReview | undefined, preset: LessonCompanyPreset | undefined): AdminItem[] {
  const items: AdminItem[] = [];
@@ -290,7 +310,8 @@ function ruleItems(design: ReadinessDesignReview | undefined, preset: LessonComp
  }
  return items;
 }
-const READ_WORDS: ReadonlyArray<readonly [keyof Pick<ReadinessReads, "approvals" | "spend" | "preset" | "designReview" | "github" | "connections" | "projects" | "sources">, string]> = [["approvals", "confirmations waiting for you"], ["spend", "spending requests"], ["preset", "company lesson rules"], ["designReview", "company design review rules"], ["github", "the GitHub connection"], ["connections", "saved connections"], ["projects", "project environment checks"], ["sources", "AI model sources"]];
+/** What each read is called when it did not answer. Every read the list or the health counts depend on is here. */
+const READ_WORDS = [["approvals", "confirmations waiting for you"], ["spend", "spending requests"], ["preset", "company lesson rules"], ["designReview", "company design review rules"], ["github", "the GitHub connection"], ["githubRequests", "GitHub installation requests"], ["connections", "saved connections"], ["slack", "the Slack connection"], ["sources", "AI model sources"], ["projects", "project environment checks"], ["serviceStatus", "Rovara's service status and team record check"], ["features", "the turned-on features"]] as const satisfies ReadonlyArray<readonly [keyof ReadinessReads, string]>;
 
 export function buildNeedsAdmin(reads: ReadinessReads, readiness: Readiness): NeedsAdmin {
  const items: AdminItem[] = [];
@@ -303,7 +324,8 @@ export function buildNeedsAdmin(reads: ReadinessReads, readiness: Readiness): Ne
  }
  // What waits for this admin comes before what waits for someone else.
  const ordered = [...items.filter(item => item.others !== true), ...items.filter(item => item.others === true)];
- // A refused read is expected for a member and is not "couldn't read"; a read that failed (or answered not found for a company-wide read) is.
- const unanswered = READ_WORDS.filter(([key]) => { const state = reads[key].state;return state === "failed" || state === "loading"; }).map(([, words]) => words);
+ // Any read that did not answer (refused, missing, failed or still going) is named: "nothing needs an admin" is never said over a read that gave no answer. Members never reach this list.
+ const unanswered: string[] = READ_WORDS.filter(([key]) => (reads[key] as Read<unknown>).state !== "ok").map(([, words]) => words);
+ if (reads.lessons.some(item => item.read.state !== "ok")) unanswered.push("team record sources");
  return { items: ordered, unread: unanswered };
 }
