@@ -13,7 +13,6 @@ import { createApiClient } from "./api/client.js";
 import { createQueryClient } from "./api/query.js";
 import { appRoutes } from "./routes.js";
 import { isNewNavOn } from "./nav-flags.js";
-import { syncUiFlags } from "./ui-flags.js";
 import "./shell/shell.css";
 import "./look-v2.css";
 type Router = ComponentProps<typeof RouterProvider>["router"];
@@ -34,7 +33,5 @@ function Startup({ createRouter }: { createRouter: AppRouterFactory }) {
 export function App({ host, createRouter }: { host: AppHost; createRouter: AppRouterFactory }) {
  const [query] = useState(createQueryClient);
  useEffect(() => () => query.clear(), [query]);
- // Lane U5: the company's runtime UI flags ride the navigation answer; keep the host's flag store equal to the newest one.
- useEffect(() => syncUiFlags(query.getQueryCache(), host), [query, host]);
  return <AppHostProvider host={host}><QueryClientProvider client={query}><ThemeProvider host={host}><Announcer><ErrorBoundary reload={() => host.navigate(host.currentPath())}><Startup createRouter={createRouter} /></ErrorBoundary></Announcer></ThemeProvider></QueryClientProvider></AppHostProvider>;
 }

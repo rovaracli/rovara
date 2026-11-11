@@ -1,16 +1,15 @@
 import { LOOK_DENSITY, type Density } from "@agentx/design-tokens";
-import { uiFlagOn } from "./ui-flags.js";
 /**
  * The v2 look switch and the density preference. This file is the ONLY place that decides whether the new look is on.
  * Today the switch is a per-device storage key (`rovara.look` = "v2"), the cheapest existing switch: no contract change, no broker change.
- * Runtime per-company flags (lane U5): `uiFlagOn` reads the server flag `look` first (ui-flags.ts); this device's key is then only a preview where the company allows previews.
+ * When per-company runtime flags exist, change `isNewLookOn` to read the flag (from the nav answer or a host field) and nothing else moves:
  * ThemeProvider only calls this function, and nothing under `design/` or the screens knows which look is on.
  */
 export interface LookStorageHost { storage: { get(key: string): string | undefined; set(key: string, value: string): void } }
 export const LOOK_STORAGE_KEY = "rovara.look";
 export const DENSITY_STORAGE_KEY = "rovara.density";
 export function isNewLookOn(host: LookStorageHost): boolean {
- return uiFlagOn(host, "look", LOOK_STORAGE_KEY);
+ try { return host.storage.get(LOOK_STORAGE_KEY) === "v2"; } catch { return false; }
 }
 export const DEFAULT_DENSITY: Density = "comfortable";
 export function readDensity(host: LookStorageHost): Density {
