@@ -1,4 +1,4 @@
-// Fixtures for the trial and billing screens, built from the API doc (briefs/trial-billing-api.md, section 10). Shared by the jsdom tests and the Chromium journeys (which feed them through page.route).
+// Fixtures for the trial and billing screens, in the shapes the real server sends (packages/contracts/src/app-billing.ts, built by srv/trial-reads; design doc briefs/trial-billing-api.md, section 10). Shared by the jsdom tests and the Chromium journeys (which feed them through page.route).
 export const ADMIN_ID = "a".repeat(64), MAYA_ID = "b".repeat(64), SAM_ID = "c".repeat(64);
 type Json = Record<string, unknown>;
 
@@ -11,18 +11,22 @@ export function options(over: { stop?: Json; autoBill?: Json; ownKey?: Json } = 
   { id: "own_key", available: true, unavailableReason: null, summary: "Connect your company's own AI provider key.", next: { href: "/app/admin/models" }, ...over.ownKey },
  ];
 }
+/** `you` as the server sends it: `notice` is null unless the caller's personal limit is used up. */
+export const you = (over: Json = {}): Json => ({ member: null, hitLimit: false, notice: null, canChoose: false, ...over });
+export const PERSONAL_NOTICE = { kind: "personal_limit_used_up", text: "Your personal limit is used up for this month." };
+export const admins = (): Json[] => [{ id: ADMIN_ID, name: "Priya" }, { id: MAYA_ID, name: "Maya" }];
 export function trial(over: Json = {}): Json {
- return { phase: "active", plan: "trial", allowances: [models(), machine()], you: { member: { limitUsd: 29, spentUsd: 3.1, committedUsd: 4 }, hitLimit: false, canChoose: false }, ends: { when: "monthly_refresh", text: "Rovara pays for models until the allowance is renewed next month." }, choices: null, ...over };
+ return { phase: "active", plan: "trial", allowances: [models(), machine()], you: you({ member: { limitUsd: 29, spentUsd: 3.1, committedUsd: 4 } }), admins: [], ends: { when: "monthly_refresh", text: "Rovara pays for models until the allowance is renewed next month." }, choices: null, ...over };
 }
 const oneTime = { refresh: "never", period: null };
 /** Fixture 1: active, models ok (40% used). */
 export const active = (): Json => trial();
 /** Fixture 2: models low (85% used), the choices shown to an admin. */
-export const nearEnd = (): Json => trial({ allowances: [models({ ...oneTime, used: 42.5, granted: 50, left: 7.5, state: "low" }), machine({ ...oneTime, used: 2, granted: 10, left: 8 })], ends: { when: "allowance_used", text: "Rovara pays for models until the allowance is used up." }, you: { member: null, hitLimit: false, canChoose: true }, choices: { audience: "admins", decided: null, options: options() } });
+export const nearEnd = (): Json => trial({ allowances: [models({ ...oneTime, used: 42.5, granted: 50, left: 7.5, state: "low" }), machine({ ...oneTime, used: 2, granted: 10, left: 8 })], ends: { when: "allowance_used", text: "Rovara pays for models until the allowance is used up." }, you: you({ canChoose: true }), choices: { audience: "admins", decided: null, options: options() } });
 /** Fixture 3: used up on an active company, a member who hit the limit. */
-export const usedUp = (): Json => trial({ allowances: [models({ used: 500, left: 0, state: "used_up" }), machine()], you: { member: { limitUsd: 29, spentUsd: 29, committedUsd: 29 }, hitLimit: true, canChoose: false }, choices: { audience: "you", decided: null, options: options() } });
+export const usedUp = (): Json => trial({ allowances: [models({ used: 500, left: 0, state: "used_up" }), machine()], you: you({ member: { limitUsd: 29, spentUsd: 29, committedUsd: 29 }, hitLimit: true }), admins: admins(), choices: { audience: "you", decided: null, options: options() } });
 /** Fixture 4: ended (target), one-time allowance. `canChoose` picks owner vs member. */
-export const ended = (canChoose: boolean, over: { options?: Json[]; decided?: Json | null } = {}): Json => trial({ phase: "ended", allowances: [models({ ...oneTime, used: 50, granted: 50, left: 0, state: "used_up" }), machine({ ...oneTime, used: 10, granted: 10, left: 0, state: "used_up" })], ends: { when: "allowance_used", text: "The trial allowance is used up." }, you: { member: null, hitLimit: !canChoose, canChoose }, choices: { audience: canChoose ? "admins" : "you", decided: over.decided ?? null, options: over.options ?? options() } });
+export const ended = (canChoose: boolean, over: { options?: Json[]; decided?: Json | null } = {}): Json => trial({ phase: "ended", allowances: [models({ ...oneTime, used: 50, granted: 50, left: 0, state: "used_up" }), machine({ ...oneTime, used: 10, granted: 10, left: 0, state: "used_up" })], ends: { when: "allowance_used", text: "The trial allowance is used up." }, you: you({ hitLimit: !canChoose, canChoose }), admins: canChoose ? [] : admins(), choices: { audience: canChoose ? "admins" : "you", decided: over.decided ?? null, options: over.options ?? options() } });
 export const stopped = (canChoose: boolean): Json => trial({ ...(ended(canChoose)), phase: "stopped", choices: { audience: canChoose ? "admins" : "you", decided: { choice: "stop", by: { id: ADMIN_ID, name: "Priya" }, at: "2026-11-10T10:00:00.000Z" }, options: options() } });
 
 export function invoice(n: number, over: Json = {}): Json {
