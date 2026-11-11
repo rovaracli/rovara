@@ -118,15 +118,52 @@ export const JIRA_CONFIRM_SKEW_MS = 5 * 60_000;
 /** The most change-log pages (100 entries each) read to find the event's change. */
 export const JIRA_CHANGELOG_PAGES_MAX = 10;
 
+/** How many issues' histories are read at the same time. */
+export const HISTORY_READ_WIDTH = 4;
+/** What reading the further pages of histories may cost in one poll, apart from the search itself: calls and time (the whole read is held to `INTAKE_SEARCH_TIMEOUT_MS`, 10 s). */
+export const HISTORY_CALLS_PER_POLL = 100;
+export const HISTORY_TIME_PER_POLL_MS = 6_000;
+/** An issue's turn comes round: the first issue read moves on by one every poll interval, so the same issues are not the ones left out each time. */
+const HISTORY_ROTATION_MS = 120_000;
+
+/** The calls and the time one poll has left for reading histories; `take` is false once either is spent. */
+class HistoryBudget {
+  private calls: number;
+  private readonly until: number;
+  constructor(private readonly now: () => number, calls: number, ms: number) { this.calls = calls; this.until = now() + ms; }
+  take(): boolean {
+    if (this.calls <= 0 || this.now() >= this.until) return false;
+    this.calls -= 1;
+    return true;
+  }
+}
+
+/** The error a read raises when the poll's history budget is spent: it is not the tracker's, so the history it was reading is simply not whole (nobody is credited, and the next poll tries again). */
+class HistoryBudgetSpent extends Error {}
+
+/** Runs `work` on every item, `width` at a time, starting from the item at `start` (and wrapping round), and stops taking new items once `signal` aborts. */
+async function eachBounded<Item>(items: readonly Item[], width: number, start: number, signal: AbortSignal, work: (item: Item, index: number) => Promise<void>): Promise<void> {
+  let next = 0;
+  const worker = async (): Promise<void> => {
+    while (next < items.length && !signal.aborted) {
+      const index = (start + next) % items.length;
+      next += 1;
+      await work(items[index]!, index);
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(width, items.length) }, worker));
+}
+
 /**
- * The issue's whole change log, or undefined when it cannot be shown to be whole. The log that came with the search is used only when it says how many changes there are (`total`), starts at the first and holds
- * that many; any other answer is read again, a page at a time, from the change log's own address, until its last page (at most `JIRA_CHANGELOG_PAGES_MAX`). A refused key or a rate limit is the search's own
+ * The issue's whole change log, or undefined when it cannot be shown to be whole. The log that came with the search is used only when it starts at the first change, is not a full page (`maxResults`) and holds
+ * what its `total` says; any other answer is read again, a page at a time, from the change log's own address, until its last page (at most `JIRA_CHANGELOG_PAGES_MAX`). A refused key or a rate limit is the search's own
  * failure and is thrown; any other failed read, or a log longer than the pages allow, is undefined (nobody is credited).
  */
 export async function jiraFullHistory(issue: Record<string, unknown>, key: string, get: (path: string) => Promise<unknown>): Promise<unknown[] | undefined> {
   const embedded = rec(issue["changelog"]);
   const histories = arr(embedded["histories"]);
-  if (typeof embedded["total"] === "number" && embedded["startAt"] === 0 && histories.length >= embedded["total"]) return histories;
+  // Whole only if it starts at the first change, is not a full page (Jira documents `total` as the number on the page, so a cut-short page would agree with itself), and no `total` says more.
+  if (embedded["startAt"] === 0 && typeof embedded["maxResults"] === "number" && histories.length < embedded["maxResults"] && typeof embedded["total"] === "number" && histories.length >= embedded["total"]) return histories;
   const all: unknown[] = [];
   for (let page = 0, startAt = 0; page < JIRA_CHANGELOG_PAGES_MAX; page += 1) {
     let body: Record<string, unknown>;
@@ -202,8 +239,9 @@ export function jiraActorConfirmer(input: { deps: OrgConnectionDeps | undefined;
 }
 
 /** The Jira search: open issues with the label (or assigned to the connection's own account), with the change log that says who did it. */
-export function jiraIntakeSearch(input: { deps: OrgConnectionDeps; fetch?: typeof fetch }): IntakeSearch {
+export function jiraIntakeSearch(input: { deps: OrgConnectionDeps; fetch?: typeof fetch; now?: () => number; historyCalls?: number; historyMs?: number }): IntakeSearch {
   const fetchImpl = input.fetch ?? fetch;
+  const now = input.now ?? Date.now;
   return async ({ orgId, source, signal, limit }) => {
     const connection = await connectionForSource(input.deps, orgId, "jira", source.ref.connection);
     const site = (connection as { siteUrl?: string }).siteUrl;
@@ -225,16 +263,23 @@ export function jiraIntakeSearch(input: { deps: OrgConnectionDeps; fetch?: typeo
     const jql = `(${clauses.join(" OR ")}) AND statusCategory != Done ORDER BY updated DESC`;
     const query = new URLSearchParams({ jql, maxResults: String(Math.min(limit, 50)), fields: "summary,description,labels,assignee,reporter", expand: "changelog" });
     const answer = rec(await get(`/rest/api/3/search/jql?${query.toString()}`));
+    // The issues, then each one's whole change log: a few at a time, inside the poll's own budget of calls and time. An issue the budget did not reach has no actor this poll (nobody is credited) and is read
+    // again by the next one; the first issue read moves on every poll, so the same ones are not always left out.
+    const issues = arr(answer["issues"]).slice(0, limit).map(rec).filter((issue) => { const key = str(issue["key"]); return key !== undefined && /^[A-Z][A-Z0-9_]{0,30}-[1-9][0-9]{0,9}$/u.test(key); });
+    const budget = new HistoryBudget(now, input.historyCalls ?? HISTORY_CALLS_PER_POLL, input.historyMs ?? HISTORY_TIME_PER_POLL_MS);
+    const counted = async (path: string): Promise<unknown> => { if (!budget.take()) throw new HistoryBudgetSpent(); return get(path); };
+    const found: Array<{ actor?: IntakeSearchItem["actor"]; changeId?: string }> = issues.map(() => ({}));
+    await eachBounded(issues, HISTORY_READ_WIDTH, Math.floor(now() / HISTORY_ROTATION_MS), signal, async (issue, index) => {
+      const histories = await jiraFullHistory(issue, str(issue["key"])!, counted);
+      if (histories !== undefined) found[index] = jiraActOf(histories, label === undefined ? undefined : { kind: "label", value: label }, me);
+    });
+    // A read the poll's own time limit stopped is the poll's failure, said so; it is not "no actor".
+    if (signal.aborted) throw new IntakeSearchError("SEARCH_FAILED");
     const items: IntakeSearchItem[] = [];
-    for (const raw of arr(answer["issues"]).slice(0, limit)) {
-      const issue = rec(raw);
-      const key = str(issue["key"]);
+    issues.forEach((issue, index) => {
+      const key = str(issue["key"])!;
       const fields = rec(issue["fields"]);
-      if (key === undefined || !/^[A-Z][A-Z0-9_]{0,30}-[1-9][0-9]{0,9}$/u.test(key)) continue;
-      // Who did it: the change that LAST touched the label (or the assignment to Rovara's own account), from the whole change log; credited only when it is an add.
-      const histories = await jiraFullHistory(issue, key, get);
-      const found = histories === undefined ? {} : jiraActOf(histories, label === undefined ? undefined : { kind: "label", value: label }, me);
-      const actor = found.actor;
+      const { actor, changeId } = found[index]!;
       items.push({
         externalRef: { system: "jira", id: key, url: `${site}/browse/${key}` },
         title: cut(str(fields["summary"]) ?? key, INTAKE_TITLE_MAX),
@@ -242,10 +287,10 @@ export function jiraIntakeSearch(input: { deps: OrgConnectionDeps; fetch?: typeo
         reporter: { display: str(rec(fields["reporter"])["displayName"]) },
         ...(actor === undefined ? {} : { actor }),
         // The change that made the label-add, as Jira's own change log says: claimed once per company by the engine, so a project watching the same label does not start it a second time as the person.
-        ...(label === undefined || found.changeId === undefined ? {} : { change: { id: found.changeId, act: { kind: "label" as const, value: label } } }),
+        ...(label === undefined || changeId === undefined ? {} : { change: { id: changeId, act: { kind: "label" as const, value: label } } }),
         ...(str(issue["id"]) === undefined ? {} : { alternateIds: [str(issue["id"])!] }),
       });
-    }
+    });
     return items;
   };
 }
@@ -289,8 +334,9 @@ export function linearActOf(entries: readonly unknown[], hasMore: boolean, act: 
 }
 
 /** The Linear search: open issues with the label (or assigned to the connection's own account), with the history that says who did it. */
-export function linearIntakeSearch(input: { deps: OrgConnectionDeps; fetch?: typeof fetch }): IntakeSearch {
+export function linearIntakeSearch(input: { deps: OrgConnectionDeps; fetch?: typeof fetch; now?: () => number; historyCalls?: number; historyMs?: number }): IntakeSearch {
   const fetchImpl = input.fetch ?? fetch;
+  const now = input.now ?? Date.now;
   return async ({ orgId, source, signal, limit }) => {
     const connection = await connectionForSource(input.deps, orgId, "linear", source.ref.connection);
     const secret = await readConnectionSecret(input.deps, orgId, connection).catch(() => undefined);
@@ -310,18 +356,22 @@ export function linearIntakeSearch(input: { deps: OrgConnectionDeps; fetch?: typ
     };
     const data = await call(LINEAR_QUERY, { first: Math.min(limit, 50), filter: { ...open, or: asks } });
     const viewer = str(rec(data["viewer"])["id"]);
-    const items: IntakeSearchItem[] = [];
-    for (const raw of arr(rec(data["issues"])["nodes"]).slice(0, limit)) {
-      const issue = rec(raw);
+    const issues = arr(rec(data["issues"])["nodes"]).slice(0, limit).map(rec).flatMap((issue) => {
       const identifier = str(issue["identifier"]);
       const url = str(issue["url"]);
-      if (identifier === undefined || url === undefined || !/^[A-Za-z][A-Za-z0-9]{0,9}-[1-9][0-9]{0,8}$/u.test(identifier)) continue;
+      return identifier === undefined || url === undefined || !/^[A-Za-z][A-Za-z0-9]{0,9}-[1-9][0-9]{0,8}$/u.test(identifier) ? [] : [{ issue, identifier, url }];
+    });
+    const budget = new HistoryBudget(now, input.historyCalls ?? HISTORY_CALLS_PER_POLL, input.historyMs ?? HISTORY_TIME_PER_POLL_MS);
+    const actors: Array<IntakeSearchItem["actor"]> = issues.map(() => undefined);
+    // Each issue's whole history, a few issues at a time, inside the poll's own budget of calls and time. An issue the budget stopped part way has a history that is not whole, so nobody is credited for it
+    // this poll; the next poll reads it again, and the first issue read moves on every poll.
+    await eachBounded(issues, HISTORY_READ_WIDTH, Math.floor(now() / HISTORY_ROTATION_MS), signal, async ({ issue, identifier }, index) => {
       const labelIds = new Set(arr(rec(issue["labels"])["nodes"]).filter((node) => label !== undefined && str(rec(node)["name"])?.toLowerCase() === label.toLowerCase()).flatMap((node) => str(rec(node)["id"]) ?? []));
       // Who did it: the entry that LAST changed the label (or the assignment), from the issue's whole history (further pages are read, up to a cap). A history cut short, a newer removal or a tie credits nobody.
       let entries = arr(rec(issue["history"])["nodes"]);
       let more = rec(rec(issue["history"])["pageInfo"])["hasNextPage"] !== false;
       let after = str(rec(rec(issue["history"])["pageInfo"])["endCursor"]);
-      for (let page = 0; more && page < LINEAR_HISTORY_PAGES_MAX; page += 1) {
+      for (let page = 0; more && page < LINEAR_HISTORY_PAGES_MAX && budget.take(); page += 1) {
         let history: Record<string, unknown>;
         try { history = rec(rec((await call(LINEAR_HISTORY_PAGE_QUERY, { id: str(issue["id"]) ?? identifier, after: after ?? null }))["issue"])["history"]); } catch (error) {
           if (error instanceof IntakeSearchError && (error.code === "CONNECTION_REFUSED" || error.code === "RATE_LIMITED")) throw error;
@@ -334,15 +384,20 @@ export function linearIntakeSearch(input: { deps: OrgConnectionDeps; fetch?: typ
         after = str(rec(history["pageInfo"])["endCursor"]);
       }
       const found = linearActOf(entries, more, { labelIds, ...(source.ref.when.assignedToRovara === true && viewer !== undefined ? { assignedTo: viewer } : {}) });
-      const actor: IntakeSearchItem["actor"] = found === undefined ? undefined : found.kind === "bot" ? { kind: "bot" } : { kind: found.accountId === viewer ? "rovara" : "person", accountId: found.accountId };
-      items.push({
+      actors[index] = found === undefined ? undefined : found.kind === "bot" ? { kind: "bot" } : { kind: found.accountId === viewer ? "rovara" : "person", accountId: found.accountId };
+    });
+    // A read the poll's own time limit stopped is the poll's failure, said so; it is not "no actor".
+    if (signal.aborted) throw new IntakeSearchError("SEARCH_FAILED");
+    const items: IntakeSearchItem[] = issues.map(({ issue, identifier, url }, index) => {
+      const actor = actors[index];
+      return {
         externalRef: { system: "linear", id: identifier, url },
         title: cut(str(issue["title"]) ?? identifier, INTAKE_TITLE_MAX),
         body: cut(str(issue["description"]) ?? "", BODY_MAX_CHARS),
         reporter: { display: str(rec(issue["creator"])["displayName"]) },
         ...(actor === undefined ? {} : { actor }),
-      });
-    }
+      };
+    });
     return items;
   };
 }

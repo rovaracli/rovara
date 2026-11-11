@@ -4,7 +4,7 @@ import { describe, expect, it, vi } from "vitest";
 import type { OrgId } from "@agentx/contracts";
 import { OrgConnectionStore } from "../../packages/broker/src/connections/store.js";
 import { OrgSecrets } from "../../packages/broker/src/connections/org-secrets.js";
-import { JIRA_CHANGELOG_PAGES_MAX, LINEAR_HISTORY_PAGES_MAX, adfText, intakeSearchesOf, jiraActOf, jiraActorConfirmer, jiraActorOf, jiraIntakeSearch, linearActOf, linearIntakeSearch } from "../../packages/broker/src/triggers/intake-searches.js";
+import { HISTORY_CALLS_PER_POLL, HISTORY_READ_WIDTH, JIRA_CHANGELOG_PAGES_MAX, LINEAR_HISTORY_PAGES_MAX, adfText, intakeSearchesOf, jiraActOf, jiraActorConfirmer, jiraActorOf, jiraIntakeSearch, linearActOf, linearIntakeSearch } from "../../packages/broker/src/triggers/intake-searches.js";
 import { pollIntakeSource } from "../../packages/broker/src/triggers/poll-intake.js";
 import { listIntakeSources, replaceIntakeSources } from "../../packages/broker/src/intake/sources.js";
 import type { IntakePorts } from "../../packages/broker/src/intake/engine.js";
@@ -40,9 +40,9 @@ describe("the Jira search", () => {
       urls.push(url);
       return new Response(JSON.stringify({ issues: [
         { id: "10001", key: "PAY-12", fields: { summary: "Refunds fail", description: { type: "doc", content: [{ type: "paragraph", content: [{ type: "text", text: "Steps" }] }] }, reporter: { displayName: "Dana" } },
-          changelog: { total: 2, startAt: 0, histories: [{ created: "2026-11-07T09:00:00.000+0000", author: { accountId: "acct-eve", accountType: "atlassian" }, items: [{ field: "status", fromString: "a", toString: "b" }] }, { created: "2026-11-07T09:05:00.000+0000", author: { accountId: "acct-dana", accountType: "atlassian" }, items: [{ field: "labels", fromString: "bug", toString: "bug rovara" }] }] } },
-        { id: "10002", key: "PAY-13", fields: { summary: "No history" }, changelog: { total: 0, startAt: 0, histories: [] } },
-        { id: "10003", key: "PAY-14", fields: { summary: "By an app" }, changelog: { total: 1, startAt: 0, histories: [{ created: "2026-11-07T09:01:00.000+0000", author: { accountId: "app-1", accountType: "app" }, items: [{ field: "labels", fromString: "", toString: "rovara" }] }] } },
+          changelog: { total: 2, startAt: 0, maxResults: 100, histories: [{ created: "2026-11-07T09:00:00.000+0000", author: { accountId: "acct-eve", accountType: "atlassian" }, items: [{ field: "status", fromString: "a", toString: "b" }] }, { created: "2026-11-07T09:05:00.000+0000", author: { accountId: "acct-dana", accountType: "atlassian" }, items: [{ field: "labels", fromString: "bug", toString: "bug rovara" }] }] } },
+        { id: "10002", key: "PAY-13", fields: { summary: "No history" }, changelog: { total: 0, startAt: 0, maxResults: 100, histories: [] } },
+        { id: "10003", key: "PAY-14", fields: { summary: "By an app" }, changelog: { total: 1, startAt: 0, maxResults: 100, histories: [{ created: "2026-11-07T09:01:00.000+0000", author: { accountId: "app-1", accountType: "app" }, items: [{ field: "labels", fromString: "", toString: "rovara" }] }] } },
         { id: "x", key: "not a key", fields: {} },
       ] }), { status: 200 });
     });
@@ -202,6 +202,13 @@ describe("who made the act fails closed when the history is not the whole story 
       for (const order of [log, [...log].reverse()]) expect(jiraActOf(order, LABEL)).toEqual({});
     });
 
+    it("credits nobody for a tie whichever way round the answer lists it: a removal then an add, or two adds by different people at the same moment", () => {
+      const at = "2026-11-07T09:00:00.000+0000";
+      expect(jiraActOf([remove(at, "acct-b"), add(at, "acct-a")], LABEL)).toEqual({});
+      expect(jiraActOf([add(at, "acct-a"), add(at, "acct-b")], LABEL)).toEqual({});
+      expect(jiraActOf([add(at, "acct-b"), add(at, "acct-a")], LABEL)).toEqual({});
+    });
+
     it("credits nobody for a tie between an add and a removal, or when any touching change has a time that cannot be read", () => {
       expect(jiraActOf([add("2026-11-07T09:00:00.000+0000", "acct-a"), remove("2026-11-07T09:00:00.000+0000", "acct-b")], LABEL)).toEqual({});
       expect(jiraActOf([add("2026-11-07T09:00:00.000+0000", "acct-a"), add(undefined, "acct-b")], LABEL)).toEqual({});
@@ -259,6 +266,21 @@ describe("who made the act fails closed when the history is not the whole story 
       expect((await run({ total: 5, startAt: 0, histories: [old] }, [{ values: [] }])).actor).toBeUndefined();
     });
 
+    it("credits nobody when a later page is empty and does not say it is the last", async () => {
+      const result = await run({ total: 150, startAt: 0, maxResults: 100, histories: [old] }, [{ values: [old], isLast: false }, { values: [] }]);
+      expect(result.actor).toBeUndefined();
+      expect(result.urls).toHaveLength(2);
+    });
+
+    it("pages when the embedded log is a full page (it agrees with its own total even when cut short) or says nothing of its page size", async () => {
+      const full = await run({ total: 1, startAt: 0, maxResults: 1, histories: [old] }, [{ values: [old, remove("2026-11-05T09:00:00.000+0000", "acct-x")], isLast: true }]);
+      expect(full.actor).toBeUndefined();
+      expect(full.urls).toHaveLength(1);
+      const unsized = await run({ total: 1, startAt: 0, histories: [old] }, [{ values: [old], isLast: true }]);
+      expect(unsized.urls).toHaveLength(1);
+      expect(unsized.actor).toEqual({ kind: "person", accountId: "acct-old" });
+    });
+
     it("credits nobody when the log is longer than the page cap, and reads at most that many pages", async () => {
       const pages = Array.from({ length: 12 }, (_, n) => ({ values: [add(`2026-11-0${String((n % 9) + 1)}T09:00:00.000+0000`, `acct-${String(n)}`)], isLast: false }));
       const result = await run({ total: 5000, startAt: 0, histories: [old] }, pages);
@@ -267,7 +289,7 @@ describe("who made the act fails closed when the history is not the whole story 
     });
 
     it("uses the embedded log without another read when it says it is whole", async () => {
-      const result = await run({ total: 1, startAt: 0, histories: [old] }, []);
+      const result = await run({ total: 1, startAt: 0, maxResults: 100, histories: [old] }, []);
       expect(result.actor).toEqual({ kind: "person", accountId: "acct-old" });
       expect(result.urls).toEqual([]);
     });
@@ -349,8 +371,95 @@ describe("who made the act fails closed when the history is not the whole story 
       expect(result.pageCalls).toHaveLength(LINEAR_HISTORY_PAGES_MAX);
     });
 
+    it("credits nobody when a later page carries no page info, whatever its entries", async () => {
+      const result = await run({ pageInfo: { hasNextPage: true, endCursor: "c1" }, nodes: [added("2026-11-01T09:00:00.000Z", "lin-old")] }, [{ nodes: [] }]);
+      expect(result.actor).toBeUndefined();
+      expect(result.pageCalls).toHaveLength(1);
+    });
+
     it("a rate limit while paging is the search's own failure", async () => {
       await expect(run({ pageInfo: { hasNextPage: true, endCursor: "c1" }, nodes: [] }, [429])).rejects.toMatchObject({ code: "RATE_LIMITED" });
     });
+  });
+});
+
+describe("reading histories inside the poll's budget (50 labelled issues, a slow tracker)", () => {
+  const old = (n: number) => ({ id: String(n), created: "2026-11-01T09:00:00.000+0000", author: { accountId: `acct-${String(n)}`, accountType: "atlassian" }, items: [{ field: "labels", fromString: "", toString: "rovara" }] });
+  /** Fifty Jira issues whose embedded log is only a first page, so each needs one call to its change log, which takes `delay` ms. */
+  async function jiraRun(options: { delay: number; historyCalls?: number; historyMs?: number; now?: () => number; signal?: AbortSignal }) {
+    const { deps } = await connections([{ id: "con_jira0000000000000001", type: "jira" }]);
+    let inFlight = 0; let widest = 0; const paged: string[] = [];
+    const fetch = vi.fn(async (url: string) => {
+      if (url.includes("/search/jql")) return Response.json({ issues: Array.from({ length: 50 }, (_, n) => ({ id: String(20000 + n), key: `PAY-${String(n + 1)}`, fields: { summary: "S" }, changelog: { total: 300, startAt: 0, maxResults: 100, histories: [] } })) });
+      inFlight += 1; widest = Math.max(widest, inFlight); paged.push(url);
+      await new Promise((resolve) => setTimeout(resolve, options.delay));
+      inFlight -= 1;
+      const n = Number(/issue\/PAY-(\d+)\/changelog/u.exec(url)![1]);
+      return Response.json({ values: [old(n)], isLast: true });
+    });
+    const started = Date.now();
+    const items = await jiraIntakeSearch({ deps, fetch: fetch as never, ...(options.now === undefined ? {} : { now: options.now }), ...(options.historyCalls === undefined ? {} : { historyCalls: options.historyCalls }), ...(options.historyMs === undefined ? {} : { historyMs: options.historyMs }) })(
+      { orgId: ORG, project: "web", source: source({ channel: "jira", when: { label: "rovara" }, poll: {} }), signal: options.signal ?? signal, limit: 50 });
+    return { items, widest, calls: paged.length, elapsed: Date.now() - started, credited: items.filter((item) => item.actor !== undefined).length };
+  }
+
+  it("reads the histories a few at a time: 50 slow issues finish well inside the 10 second read, never more than 4 calls at once, and every issue has its actor", async () => {
+    const result = await jiraRun({ delay: 120 });
+    expect(result.items).toHaveLength(50);
+    expect(result.credited).toBe(50);
+    expect(result.calls).toBe(50);
+    expect(result.widest).toBeGreaterThan(1);
+    expect(result.widest).toBeLessThanOrEqual(HISTORY_READ_WIDTH);
+    // one after another this is 50 x 120 ms = 6 s; four at a time it is about a quarter of that
+    expect(result.elapsed).toBeLessThan(50 * 120 * 0.6);
+  });
+
+  it("holds the poll's history reads to its own budget: past it, issues keep their place in the list with no actor (nobody is credited, the next poll reads them), and the search does not fail", async () => {
+    const result = await jiraRun({ delay: 1, historyCalls: 20 });
+    expect(result.items).toHaveLength(50);
+    expect(result.calls).toBe(20);
+    expect(result.credited).toBe(20);
+    expect((await jiraRun({ delay: 1, historyMs: 0 })).calls).toBe(0);
+    expect(HISTORY_CALLS_PER_POLL).toBeLessThanOrEqual(100);
+  });
+
+  it("leaves out different issues each poll interval, so the same issues are not always the ones the budget does not reach", async () => {
+    const credited = async (now: number) => (await jiraRun({ delay: 1, historyCalls: 10, now: () => now })).items.filter((item) => item.actor !== undefined).map((item) => item.externalRef.id);
+    const first = await credited(0);
+    const second = await credited(120_000);
+    const third = await credited(240_000);
+    expect(new Set([first.join(), second.join(), third.join()]).size).toBe(3);
+    expect(first).toHaveLength(10);
+  });
+
+  it("is the poll's failure, said so, when the read is stopped part way (never a list of issues quietly without actors)", async () => {
+    const controller = new AbortController();
+    setTimeout(() => controller.abort(), 60);
+    await expect(jiraRun({ delay: 40, signal: controller.signal })).rejects.toBeDefined();
+  });
+
+  it("Linear: 50 slow histories are read a few at a time inside the same budget", async () => {
+    const { deps } = await connections([{ id: "con_lin00000000000000001", type: "linear" }]);
+    let inFlight = 0; let widest = 0; let pages = 0;
+    const makeFetch = () => vi.fn(async (_url: string, init: RequestInit) => {
+      const body = JSON.parse(init.body as string) as { query: string; variables: { id?: string } };
+      if (body.query.includes("viewer")) return Response.json({ data: { viewer: { id: "rovara-user" }, issues: { nodes: Array.from({ length: 50 }, (_, n) => ({ id: `u${String(n)}`, identifier: `ENG-${String(n + 1)}`, title: "T", url: `https://linear.app/acme/issue/ENG-${String(n + 1)}/t`, labels: { nodes: [{ id: "lab-1", name: "rovara" }] }, history: { pageInfo: { hasNextPage: true, endCursor: "c1" }, nodes: [] } })) } } });
+      inFlight += 1; widest = Math.max(widest, inFlight); pages += 1;
+      await new Promise((resolve) => setTimeout(resolve, 120));
+      inFlight -= 1;
+      return Response.json({ data: { issue: { history: { pageInfo: { hasNextPage: false, endCursor: null }, nodes: [{ createdAt: "2026-11-07T09:00:00.000Z", actor: { id: `lin-${String(body.variables.id)}` }, addedLabelIds: ["lab-1"] }] } } } });
+    });
+    const run = (extra: { historyCalls?: number }) => linearIntakeSearch({ deps, fetch: makeFetch() as never, ...extra })({ orgId: ORG, project: "web", source: source({ channel: "tracker", system: "linear", when: { label: "rovara" } }), signal, limit: 50 });
+    const started = Date.now();
+    const all = await run({});
+    expect(Date.now() - started).toBeLessThan(50 * 120 * 0.6);
+    expect(all.filter((item) => item.actor !== undefined)).toHaveLength(50);
+    expect(widest).toBeLessThanOrEqual(HISTORY_READ_WIDTH);
+    expect(widest).toBeGreaterThan(1);
+    pages = 0;
+    const capped = await run({ historyCalls: 15 });
+    expect(pages).toBe(15);
+    expect(capped).toHaveLength(50);
+    expect(capped.filter((item) => item.actor !== undefined)).toHaveLength(15);
   });
 });
