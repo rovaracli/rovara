@@ -88,14 +88,14 @@ for (const colorScheme of ["light", "dark"] as const) {
 test("turning a screen on sends one revision-fenced change; a conflict and a stale sign-in are shown, not repeated", async ({ page, context, request, baseURL }) => {
  const put: unknown[] = [];
  await enter(page, context, request, baseURL, 390);await adminRoutes(page, put);await page.goto("/app/admin/new-screens");
- await page.getByRole("button", { name: "Turn on New Home for the company" }).click();
+ await page.getByRole("button", { name: "Turn on New Home for everyone" }).click();
  await expect(page.getByText(/Saved\. Takes effect when people next open or reload the app\./)).toBeVisible();
  expect(put).toEqual([{ expectedRevision: 3, flags: { home: true } }]);
- await expect(page.getByRole("button", { name: "Turn off New Home for the company" })).toBeVisible();
+ await expect(page.getByRole("button", { name: "Turn off New Home for everyone" })).toBeVisible();
  await evidenceShot(page, { path: `${shots}/new-screens-saved-390.png`, fullPage: true });
  for (const fail of [{ status: 409, code: "CHANGE_STALE", message: "Someone else changed this. Reload and try again.", shows: "Someone else changed this; reload.", button: "Reload" }, { status: 403, code: "REAUTH_REQUIRED", message: "Sign in again to change company screens.", shows: "Sign in again to change company screens.", button: "Sign in again" }]) {
   const next = await context.newPage();const calls: unknown[] = [];await mockRealtime(next);await next.setViewportSize({ width: 390, height: 900 });await adminRoutes(next, calls, fail);await next.goto("/app/admin/new-screens");
-  await next.getByRole("button", { name: "Turn on Work list for the company" }).click();
+  await next.getByRole("button", { name: "Turn on Work list for everyone" }).click();
   await expect(next.getByRole("alert")).toContainText(fail.shows);await expect(next.getByRole("button", { name: fail.button })).toBeVisible();
   expect(calls).toHaveLength(1);await checkA11y(next, { theme: "light" });
   await evidenceShot(next, { path: `${shots}/new-screens-${fail.code.toLowerCase()}-390.png`, fullPage: true });
