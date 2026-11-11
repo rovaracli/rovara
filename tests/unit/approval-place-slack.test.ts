@@ -6,11 +6,11 @@ import type { DecisionCard } from "@rovara-code/contracts";
 import { DecisionDismissBodySchema, DecisionDismissedSchema } from "@agentx/cloud-contracts";
 import { DecisionCardsViewSchema } from "@rovara-code/contracts";
 import { cardOfItem, decisionCardPath, projectDecisionCards, type DecisionItem, type ItemBase } from "../../packages/broker/src/decisions/project.js";
-import { DECISION_SLACK_APPROVE_ACTION, DECISION_SLACK_OPEN_ACTION, DECISION_SLACK_REJECT_ACTION, slackCardMessage } from "../../packages/broker/src/decisions/slack-card.js";
+import { DECISION_SLACK_APPROVE_ACTION, DECISION_SLACK_OPEN_ACTION, DECISION_SLACK_REJECT_ACTION, DECISION_SLACK_REJECT_PLAN_ACTION, slackCardMessage } from "../../packages/broker/src/decisions/slack-card.js";
 import { DECISION_SLACK_TEXT, decisionSlackHandler, pressToRequest, refusalText } from "../../packages/broker/src/decisions/slack-actions.js";
 import { routeDecisionCards, type DecisionCaller, type DecisionRequest, type PerformOutcome } from "../../packages/broker/src/decisions/routes.js";
 import { inMemoryDecisionStore } from "../../packages/broker/src/decisions/store.js";
-import { linkAccountWords, notAnApproverWords, signInAgainWords } from "../../packages/broker/src/approval-place/words.js";
+import { linkAccountWords, notAnApproverWords, rejectInAppWords, signInAgainToRejectWords, signInAgainWords } from "../../packages/broker/src/approval-place/words.js";
 
 const base = (id: string, extra: Partial<ItemBase> = {}): ItemBase => ({ subjectId: id, project: "payments", title: "Retry failed payments", createdAt: "2026-10-30T10:00:00.000Z", contentVersion: "v1", openPath: `/app/sessions/ses_${"a".repeat(20)}`, ...extra });
 const planItem = (id: string, untestedClaims: number): DecisionItem => ({ ...base(id), kind: "approve_plan", path: "quick", files: ["src/retry.ts"], claims: 3, untestedClaims });
@@ -35,8 +35,23 @@ describe("the Slack card", () => {
     expect(elementsOf(mediumPlan).find((element) => element["action_id"] === DECISION_SLACK_APPROVE_ACTION)?.["value"]).toBe(`approve_plan:plan-med|${DIGEST}`);
     expect(labels(mediumOther)).not.toContain("Approve");
     expect(elementsOf(mediumOther)[0]).toMatchObject({ action_id: DECISION_SLACK_OPEN_ACTION, text: { text: "Show the evidence" } });
-    expect(labels(highPlan)).toEqual(["Open"]);
+    // A high card has no approve here (the app, under the fresh sign-in); owner decision 99: it still has Reject, which is judged like a medium approval.
+    expect(labels(highPlan)).toEqual(["Open", "Reject"]);
     expect(labels(lowPlan)).toContain("Approve");
+  });
+  it("Reject is on every coding plan's message (low, medium, high), asks Are you sure, carries the digest, and is never beside a Not now; any other kind has no Reject", () => {
+    for (const item of [lowPlan, mediumPlan, highPlan]) {
+      const reject = elementsOf(item).filter((element) => element["action_id"] === DECISION_SLACK_REJECT_PLAN_ACTION);
+      expect(reject, item.subjectId).toHaveLength(1);
+      expect(reject[0]).toMatchObject({ text: { text: "Reject" }, style: "danger", value: `approve_plan:${item.subjectId}|${DIGEST}`, confirm: { title: { text: "Reject this plan?" } } });
+      expect(labels(item)).not.toContain("Not now");
+    }
+    expect(labels(mediumOther)).not.toContain("Reject");
+    expect(elementsOf(mediumOther).some((element) => element["action_id"] === DECISION_SLACK_REJECT_PLAN_ACTION)).toBe(false);
+  });
+  it("a rejected plan's message says Rejected, not Not now", () => {
+    const rejected = { ...card(mediumPlan), status: "rejected" as const, actions: [] };
+    expect(JSON.stringify(slackCardMessage(rejected, { cardUrl: "https://app.example.com/s/x", digest: DIGEST }).blocks)).toContain("Rejected.");
   });
 });
 
@@ -49,9 +64,16 @@ describe("a press from a chat carries the chat surface; Not now goes to the dism
     }
     expect(pressToRequest({ actionId: DECISION_SLACK_REJECT_ACTION, value: `approve_plan:plan-med|${DIGEST}`, actionTs: "1" })?.pathname).toBe("/v1/app/decisions/approve_plan/plan-med/dismiss");
   });
+  it("Reject on a plan's message is the one press that reaches the reject route (owner decision 99), with the message's digest; the same request id for the same press", () => {
+    const press = { actionId: DECISION_SLACK_REJECT_PLAN_ACTION, value: `approve_plan:plan-med|${DIGEST}`, actionTs: "1" };
+    const request = pressToRequest(press);
+    expect(request).toMatchObject({ surface: "chat", method: "POST", pathname: "/v1/app/decisions/approve_plan/plan-med/reject", body: { reason: "other", shownDigest: DIGEST } });
+    expect(pressToRequest(press)).toEqual(request);
+    expect(pressToRequest({ ...press, value: `approve_plan:plan-med|${DIGEST}|5` })).toBeUndefined();
+  });
   it("says what Slack says for each outcome, and the refusals that tell the way forward as they are (and only those)", () => {
     expect(DECISION_SLACK_TEXT.dismissed).toBe("Noted. It stays waiting for you.");
-    for (const words of [signInAgainWords("https://app.example.com/s/x"), signInAgainWords(undefined), linkAccountWords("https://app.example.com/s/x"), notAnApproverWords]) {
+    for (const words of [signInAgainWords("https://app.example.com/s/x"), signInAgainWords(undefined), signInAgainToRejectWords("https://app.example.com/s/x"), signInAgainToRejectWords(undefined), rejectInAppWords("https://app.example.com/s/x"), linkAccountWords("https://app.example.com/s/x"), notAnApproverWords]) {
       expect(refusalText({ code: "FORBIDDEN", message: words })).toBe(words.replace(/&/gu, "&amp;"));
     }
     expect(refusalText({ code: "FORBIDDEN", message: "This plan is medium risk, so it is approved on its card in Rovara: https://app.example.com/s/x" })).toContain("approved on its card");
@@ -158,6 +180,47 @@ describe("the routes", () => {
     const refused = await t.call(ME, { pathname: path(cardId, "approve"), body: { requestId: t.REQ(1), shownDigest: await t.shown(cardId), surface: "chat" } }).catch((error: { code: string }) => error.code);
     expect(refused).toBe("CONFIG_INVALID");
     expect(t.performer.approve).not.toHaveBeenCalled();
+  });
+
+  it("a chat Reject of a coding plan (any risk) reaches the performer's reject once, with the digest checked; a missing or stale digest is refused and nothing is performed", async () => {
+    for (const [item, cardId] of [[lowPlan, "approve_plan:plan-low"], [mediumPlan, "approve_plan:plan-med"], [highPlan, "approve_plan:plan-high"]] as const) {
+      const t = setup([item]);
+      const digest = await t.shown(cardId);
+      const body = (n: number, extra: Record<string, unknown> = {}) => ({ requestId: t.REQ(n), reason: "other", ...extra });
+      expect(await t.call(ME, { pathname: path(cardId, "reject"), surface: "chat", body: body(1) }).catch((error: { code: string }) => error.code), "no digest").toBe("CHANGE_STALE");
+      expect(await t.call(ME, { pathname: path(cardId, "reject"), surface: "chat", body: body(2, { shownDigest: "cd".repeat(32) }) }).catch((error: { code: string }) => error.code), "stale digest").toBe("CHANGE_STALE");
+      expect(t.performer.reject).not.toHaveBeenCalled();
+      const done = await t.call(ME, { pathname: path(cardId, "reject"), surface: "chat", body: body(3, { shownDigest: digest }) });
+      expect(done).toMatchObject({ statusCode: 200, body: { outcome: "rejected" } });
+      expect(t.performer.reject).toHaveBeenCalledTimes(1);
+      expect(t.performer.reject).toHaveBeenCalledWith(ME, expect.objectContaining({ requestId: t.REQ(3), reason: "other" }));
+    }
+  });
+  it("a chat press never rejects any other kind of card (it is a dismissal there), and a body that is not exactly the reject fields plus the digest is refused", async () => {
+    const t = setup([mediumOther, mediumPlan]);
+    const other = await t.call(ME, { pathname: path("approve_dependency:dep1", "reject"), surface: "chat", body: { requestId: t.REQ(1), reason: "not_now", shownDigest: await t.shown("approve_dependency:dep1") } }).catch((error: { code: string }) => error.code);
+    expect(other).toBe("NOT_FOUND");
+    const extra = await t.call(ME, { pathname: path("approve_plan:plan-med", "reject"), surface: "chat", body: { requestId: t.REQ(2), reason: "other", shownDigest: await t.shown("approve_plan:plan-med"), note: "x" } }).catch((error: { code: string }) => error.code);
+    expect(extra).toBe("CONFIG_INVALID");
+    // A plan has no "not now" reason: that is a dismissal, which decides nothing.
+    const notNow = await t.call(ME, { pathname: path("approve_plan:plan-med", "reject"), surface: "chat", body: { requestId: t.REQ(3), reason: "not_now", shownDigest: await t.shown("approve_plan:plan-med") } }).catch((error: { code: string }) => error.code);
+    expect(notNow).toBe("NOT_FOUND");
+    expect(t.performer.reject).not.toHaveBeenCalled();
+  });
+  it("the web's reject of a plan (no chat surface) needs no digest, as before, and a client body cannot add one of Slack's fields", async () => {
+    const t = setup([mediumPlan]);
+    const cardId = "approve_plan:plan-med";
+    expect(await t.call(ME, { pathname: path(cardId, "reject"), body: { requestId: t.REQ(1), reason: "wrong_approach", shownDigest: DIGEST } }).catch((error: { code: string }) => error.code)).toBe("CONFIG_INVALID");
+    expect(await t.call(ME, { pathname: path(cardId, "reject"), body: { requestId: t.REQ(2), reason: "wrong_approach" } })).toMatchObject({ statusCode: 200, body: { outcome: "rejected" } });
+  });
+
+  it("the Slack handler says Rejected for a plan's Reject, and the dismissal words for Not now", async () => {
+    const t = setup([mediumPlan]);
+    const said: string[] = [];
+    const handler = decisionSlackHandler({ resolveCaller: async () => ME, route: (caller, request) => routeDecisionCards({ sources: { list: async () => [mediumPlan], locks: async () => ({}) }, performer: t.performer, store: t.store, now: () => NOW }, caller, request), respondEphemeral: async (_url, text) => { said.push(text); } });
+    await handler.handle({ actionId: DECISION_SLACK_REJECT_PLAN_ACTION, value: `approve_plan:plan-med|${await t.shown("approve_plan:plan-med")}`, userId: "U1", actionTs: "2.1", messageTs: "1.0", responseUrl: "https://hooks.example/x", userTeamId: "T1", workspaceTeamId: "T1", enterpriseId: "", userEnterpriseId: "" });
+    expect(said).toEqual([DECISION_SLACK_TEXT.planRejected]);
+    expect(t.performer.reject).toHaveBeenCalledTimes(1);
   });
 
   it("the Slack handler answers a Not now with the dismissal words, and the performer's reject is never called", async () => {

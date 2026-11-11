@@ -937,7 +937,9 @@ describe("approving the plan", () => {
       expect(shown!.card.id).toBe(`approve_plan:${taskId}`);
       expect(shown!.card.runLimit).toEqual({ proposedUsd: before.runEstimate.runLimitUsd, ...(before.budgetUsd === undefined ? {} : { currentUsd: before.budgetUsd }) });
       expect(shown!.card.actions.map((action) => [action.kind, action.label])).toEqual(expect.arrayContaining([["approve", "Approve"], ["request_changes", "Request changes"]]));
-      expect(shown!.card.actions.some((action) => action.kind === "reject"), "no Not now on a document").toBe(false);
+      // Owner decision 99: a coding plan carries a real Reject (it ends the task), labelled so, with no "not now" reason (a dismissal decides nothing).
+      expect(shown!.card.actions.filter((action) => action.kind === "reject").map((action) => action.label)).toEqual(["Reject"]);
+      expect(shown!.card.rejectReasons).not.toContain("not_now");
       const path = (action: string) => `/v1/app/decisions/approve_plan/${taskId}/${action}`;
       const evidence = async () => { if (shown!.card.risk === "medium") expect((await web(MAYA, "POST", path("evidence-opened"), { requestId: randomUUID(), shownDigest: shown!.digest })).status).toBe(200); };
       await evidence();
@@ -976,6 +978,29 @@ describe("approving the plan", () => {
       expect(t.meta(taskId)).toMatchObject({ workflow: { stage: "IMPLEMENT" } });
       // The tick belongs to a coding plan's card only.
       expect((await web(MAYA, "POST", `/v1/app/decisions/approve_plan/${taskId}/approve`, { requestId: randomUUID(), shownDigest: digest, acknowledgedRunLimitUsd: 1 })).status).not.toBe(200);
+    } finally { delete process.env.DECISION_CARDS_ENABLED; }
+  });
+
+
+  it("owner decision 99: the plan card rejects through the one workflow decision (the task ends, recorded as the owner's), and a 'not now' reason is not a plan's", async () => {
+    process.env.DECISION_CARDS_ENABLED = "1";
+    try {
+      const t = await world();
+      const web = browserRequests(t.h);
+      seedCosts(t.h.db, "QUICK", [10, 10, 10, 10, 10]);
+      const { taskId } = await t.planned("QUICK");
+      const list = await web(MAYA, "GET", "/v1/app/decisions");
+      const card = ((list.body.cards ?? []) as Array<{ id: string; rejectReasons: string[] }>).find((candidate) => candidate.id === `approve_plan:${taskId}`)!;
+      expect(card.rejectReasons).not.toContain("not_now");
+      const reject = `/v1/app/decisions/approve_plan/${taskId}/reject`;
+      expect((await web(MAYA, "POST", reject, { requestId: randomUUID(), reason: "not_now" })).status, "a plan's not-now is a dismissal, not a rejection").not.toBe(200);
+      expect(t.meta(taskId)).toMatchObject({ workflow: { stage: "PLAN_REVIEW", state: "WAITING" } });
+      const rejected = await web(MAYA, "POST", reject, { requestId: randomUUID(), reason: "wrong_approach" });
+      expect(rejected.status, JSON.stringify(rejected.body)).toBe(200);
+      expect(rejected.body).toMatchObject({ cardId: `approve_plan:${taskId}`, outcome: "rejected" });
+      const workflow = (t.meta(taskId) as unknown as { workflow: { stage: string; state: string; decisions: Array<{ decision: string; actorRole: string }> } }).workflow;
+      expect(workflow).toMatchObject({ stage: "CLOSED", state: "COMPLETE" });
+      expect(workflow.decisions.at(-1)).toMatchObject({ decision: "REJECT", actorRole: "TASK_OWNER" });
     } finally { delete process.env.DECISION_CARDS_ENABLED; }
   });
 

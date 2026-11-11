@@ -84,7 +84,7 @@ function Chips({ chips }: { chips: ReadDecision["card"]["evidence"] }) {
  * Nothing here approves several cards: a card has one approve button (one per tab on a Full pair, each a separate approval).
  */
 export function DecisionCard({ decision, actions, focused = false, seat }: { decision: ReadDecision; actions: DecisionCardActions; /** The link that brought the person here named this card: it scrolls into view and is marked. */ focused?: boolean;
- /** Approval place: the seat the viewer decides from. A maintainer (deciding someone else's plan) is offered no Reject, no run-limit tick and no Approve that would raise the limit, and sends no acknowledged limit; absent or the owner: as always. */ seat?: DecideSeat | undefined }) {
+ /** Approval place: the seat the viewer decides from. A maintainer (deciding someone else's plan) may approve, ask for changes or reject, but is offered no run-limit tick and no Approve that would raise the limit, and sends no acknowledged limit; absent or the owner: as always. */ seat?: DecideSeat | undefined }) {
  const { card, tabs, details, digest } = decision, host = useAppHost(), location = useLocation();
  const [busy, setBusy] = useState(false), [error, setError] = useState<string>(), [opened, setOpened] = useState<Record<string, string>>({}), [tab, setTab] = useState<DecisionTabId>("requirements");
  const [note, setNote] = useState<ReactNode>(null), [confirming, setConfirming] = useState<Confirming>(), [reason, setReason] = useState("");
@@ -102,8 +102,9 @@ export function DecisionCard({ decision, actions, focused = false, seat }: { dec
  const eligibility = useQuery({ queryKey: ["design-approval", card.id, digest], queryFn: () => actions.highRisk!.read(), enabled: inline, retry: false, refetchOnWindowFocus: false });
  const target = decisionOpenTarget(card, host.origin);
  const canApprove = mayApproveHere(card) && !ownerDecidesLimit;
- // A maintainer is never offered Reject, nor "Not now" (which rejects from the web), nor Decline of an outside approval: the server refuses them.
- const canReject = card.actions.some(action => action.kind === "reject") && card.risk !== "high" && !maintainer;
+ // Owner decision 99: a maintainer deciding someone else's plan is offered Reject like the owner (the server judges it like a medium approval and tells the owner); only the run-limit control stays the owner's.
+ const rejectAction = card.actions.find(action => action.kind === "reject");
+ const canReject = rejectAction !== undefined && card.risk !== "high";
  // An outside approval's evidence is opened first where it is decided (security review: what its kind records as its page having been read), as a medium card's is.
  // A HIGH design cost card is decided on its task page (its choices behind the evidence, each under the decide-grade sign-in); elsewhere (Home) it is "Open".
  const highSpendHere = card.kind === "approve_spend" && card.risk === "high" && actions.onChoose !== undefined && target?.kind === "internal" && decisionTaskSessionOf(target.to) !== undefined && decisionTaskSessionOf(target.to) === sessionOfPage(location.pathname);
@@ -224,7 +225,7 @@ export function DecisionCard({ decision, actions, focused = false, seat }: { dec
  /** What decides the card: in the card, or pinned at the foot of its open document (never both, so every control has one id). */
  const actionsBlock = <>{maintainer && seat !== undefined && <p className="rv-decision-seat"><VisibleText text={maintainerNote(seat)} /></p>}{card.risk === "high" && <p className="rv-decision-high">{inline ? HIGH_RISK_NOTE : confirmPage ? "This decision is made on its own page, after you sign in again." : "This decision is made on its own page."}</p>}
   <div className="rv-decision-actions">
-   {card.risk === "high" ? <>{inline ? inlineActions : highSpendHere ? choiceButtons : link}{designBox}</> : openOnly ? <><p className="rv-muted">Decided on its card in the task, after a look at the evidence.</p>{link}</> : <>{approveButton(activeTab)}{choiceButtons}{designBox}{canReject && <details className="rv-decision-reject"><summary>{DECISION_LABELS.notNow}</summary><ul>{DECISION_REJECT_REASONS.filter(reason => card.rejectReasons.includes(reason)).map(reason => <li key={reason}><Button variant="quiet" busy={busy} onClick={() => { void run(async () => { settle(await actions.onReject(reason)); }); }}>{REASON_WORDS[reason]}</Button></li>)}</ul></details>}{needsEvidence ? null : link}</>}
+   {card.risk === "high" ? <>{inline ? inlineActions : highSpendHere ? choiceButtons : link}{designBox}</> : openOnly ? <><p className="rv-muted">Decided on its card in the task, after a look at the evidence.</p>{link}</> : <>{approveButton(activeTab)}{choiceButtons}{designBox}{canReject && <details className="rv-decision-reject"><summary>{rejectAction?.label ?? DECISION_LABELS.notNow}</summary><ul>{DECISION_REJECT_REASONS.filter(reason => card.rejectReasons.includes(reason)).map(reason => <li key={reason}><Button variant="quiet" busy={busy} onClick={() => { void run(async () => { settle(await actions.onReject(reason)); }); }}>{REASON_WORDS[reason]}</Button></li>)}</ul></details>}{needsEvidence ? null : link}</>}
    {!openOnly && changesBox}
   </div>
   {confirming && <div role="group" aria-label="Confirm merge" className="rv-decision-confirm"><p><VisibleText text={mergeQuestion(confirming.merging)} /></p>

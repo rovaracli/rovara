@@ -248,7 +248,13 @@ export async function decideTaskWorkflow(
   }
   // Decision journey slice 2 (review fix), for every caller (the card, the task page, Slack, MCP, a token): who may approve a coding plan from where.
   let placed: (PlaceAnswer & PlaceFacts) | undefined;
-  if (prior === undefined && documentType === "plan" && options.designApproval === undefined && (request.decision === "APPROVE" || seat === "maintainer")) placed = await requirePlanApprovalPlace(deps, caller, task, loaded, request, options, seat);
+  // Owner decision 99: a rejection is judged like a medium approval. A maintainer's every answer is judged; the owner's approval is; and the owner's rejection from an OUTSIDE place (Slack, a comment) is, like a medium approval (a linked person
+  // with a recent sign-in), while their rejection from the app, a tool or the CLI is unchanged (not gated by place). A rejection loads no document, so the risk the audit records is read best effort for a maintainer's.
+  const outsideCaller = options.place !== undefined || isChatCaller(caller);
+  if (prior === undefined && documentType === "plan" && options.designApproval === undefined && (request.decision === "APPROVE" || seat === "maintainer" || (request.decision === "REJECT" && outsideCaller))) {
+    const forRisk = loaded ?? (request.decision === "REJECT" && decided !== undefined ? await loadWorkflowDocument(read, decided, {}).catch(() => undefined) : undefined);
+    placed = await requirePlanApprovalPlace(deps, caller, task, forRisk, request, options, seat);
+  }
   const correction = task.e2ePlanCorrection;
   if (request.decision === "APPROVE" && documentType === "plan" && correction !== undefined) {
     if (workflow.candidate?.digest !== correction.candidateDigest) {
@@ -378,7 +384,10 @@ export async function decideTaskWorkflow(
     // A rejected plan ends the task: it gives back its slot and its workspace now.
     await releaseFinishedTaskQuietly(deps, taskId);
     const fresh = await freshTaskOf(true);
-    return { task: await taskView(deps, fresh, { events: 0, details: false }) };
+    const ended = await taskView(deps, fresh, { events: 0, details: false });
+    // Owner decision 99: a rejection by a maintainer (or taken from Slack) writes the audit record, and tells the owner when someone else decided, as every other judged answer does.
+    if (placed !== undefined) await recordPlaceDecision(deps, task, caller, request.requestId, placed);
+    return { task: ended };
   }
   // S2 (any path): from here a run starts: approving a plan starts coding and asking for changes restarts planning, so the send-back's project access rule and the archive check apply (a decision that ends the task, above, starts nothing).
   await requireProjectSendBackRole(deps, task, caller);
@@ -600,11 +609,12 @@ function planApprovalLink(deps: DeveloperTaskRouteDependencies, task: DeveloperT
 interface PlaceFacts { place: string; risk: string; answer: "approve" | "request_changes" | "reject"; role: "owner" | "maintainer"; notifyOwner: boolean }
 
 /**
- * Who may approve a coding plan from where. The rule is ONE pure function (`approvalPlaceDecision`, contracts/approval-place.ts, U4) and `approval-place/evaluate.ts` feeds it; nothing here decides a rule. In short, with the decision cards on:
+ * Who may decide a coding plan from where. The rule is ONE pure function (`approvalPlaceDecision`, contracts/approval-place.ts, U4) and `approval-place/evaluate.ts` feeds it; nothing here decides a rule. In short, with the decision cards on:
  *   - low risk: anywhere, by a linked person (a signed-in browser, a tool or token, Slack by a linked Slack user);
  *   - medium: a signed-in browser; or Slack, a tracker or a pull request comment by a linked person whose last interactive Rovara sign-in is inside the company's window (default 24 hours, at most 7 days); a tool or token gets the card's link;
- *   - high: the card in a signed-in browser, under the decide-grade sign-in (`decideGrade`), and nothing else;
- *   - the owner and co-owners decide their own task; a project maintainer may decide a plan that is not theirs (owner notified, decision recorded as the maintainer's).
+ *   - high: approving needs the card in a signed-in browser, under the decide-grade sign-in (`decideGrade`), and nothing else;
+ *   - rejecting (owner decision 99), at every risk, is judged like a medium approval and needs no fresh sign-in: the browser; or Slack or a comment by a linked person with a recent interactive sign-in; a tool or token gets the card's link;
+ *   - the owner and co-owners decide their own task; a project maintainer may approve, ask for changes or reject a plan that is not theirs (owner notified, decision recorded as the maintainer's).
  * (0.5.11, QA6-12b: Slack, the tools and the API carry the run limit's amount too; `settleRunLimit` requires it on every raise.) This replaces slice 2's "medium or high is a signed-in browser only", and holds while the decision cards are on.
  * Returns what the audit and the owner's notice need, or undefined when the rule does not apply (cards off, or an answer the owner path never gated).
  */
@@ -634,7 +644,7 @@ async function requirePlanApprovalPlace(
   if (verdict.allowed) return { ...answered, place, risk, answer, role: seat, notifyOwner: verdict.notifyOwner };
   const { link, place: where } = planApprovalLink(deps, task);
   // A role that may not decide reads as no task for someone who could not see the task at all (unchanged); here the person may see it (a maintainer), so they are told who can.
-  const fixed = placeWordsFor(verdict.reason, link);
+  const fixed = placeWordsFor(verdict.reason, link, answer);
   if (fixed !== undefined) throw agentXError("FORBIDDEN", fixed);
   // High risk (or a high-risk step) and medium risk by a tool: the plan's own card, as before.
   const shown = risk === "low" ? "medium" : risk;

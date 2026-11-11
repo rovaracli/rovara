@@ -2,7 +2,7 @@
 import { describe, expect, it, vi } from "vitest";
 import type { DecisionCard } from "@rovara-code/contracts";
 import { cardOfItem, projectDecisionCards, type DecisionItem, type ItemBase } from "../../packages/broker/src/decisions/project.js";
-import { slackCardMessage, DECISION_SLACK_APPROVE_ACTION, DECISION_SLACK_OPEN_ACTION, DECISION_SLACK_REJECT_ACTION } from "../../packages/broker/src/decisions/slack-card.js";
+import { slackCardMessage, DECISION_SLACK_APPROVE_ACTION, DECISION_SLACK_OPEN_ACTION, DECISION_SLACK_REJECT_ACTION, DECISION_SLACK_REJECT_PLAN_ACTION } from "../../packages/broker/src/decisions/slack-card.js";
 import { DECISION_SLACK_TEXT, decisionSlackHandler, pressRequestId, pressToRequest, refusalText, resolveSlackDecisionCaller, type SlackPersonLookups } from "../../packages/broker/src/decisions/slack-actions.js";
 import { routeDecisionCards, type DecisionCaller, type PerformOutcome } from "../../packages/broker/src/decisions/routes.js";
 import { inMemoryDecisionStore } from "../../packages/broker/src/decisions/store.js";
@@ -17,10 +17,10 @@ const URL_ = "https://app.example.com/s/ses_aaaaaaaaaaaaaaaaaaaa";
 const elementsOf = (message: ReturnType<typeof slackCardMessage>) => (message.blocks.find((block) => block["type"] === "actions") as { elements: Array<Record<string, unknown>> } | undefined)?.elements ?? [];
 
 describe("the Slack card follows the card's friction", () => {
-  it("low: Approve in one tap and an Open link; a document is sent back on its card (Request changes needs a reason), so Slack has no Not now for it", () => {
+  it("low: Approve in one tap and an Open link; a document is sent back on its card (Request changes needs a reason), so Slack has no Not now for it, but a coding plan has Reject (owner decision 99)", () => {
     const elements = elementsOf(slackCardMessage(card(lowItem), { cardUrl: URL_, digest: DIGEST }));
     expect(elements.map((element) => [element["action_id"], (element["text"] as { text: string }).text, element["url"]])).toEqual([
-      [DECISION_SLACK_APPROVE_ACTION, "Approve", undefined], [DECISION_SLACK_OPEN_ACTION, "Open", URL_],
+      [DECISION_SLACK_APPROVE_ACTION, "Approve", undefined], [DECISION_SLACK_REJECT_PLAN_ACTION, "Reject", undefined], [DECISION_SLACK_OPEN_ACTION, "Open", URL_],
     ]);
     // A kind that can be put off keeps Not now.
     const feedback: DecisionItem = { ...base("fb1"), kind: "review_feedback", comments: 2, touchesSensitivePaths: false };

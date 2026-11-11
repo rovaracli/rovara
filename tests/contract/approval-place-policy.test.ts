@@ -132,19 +132,42 @@ describe("high risk stays in the browser, under the fresh sign-in", () => {
   });
 });
 
-describe("rejecting needs a signed-in session under the fresh sign-in, at every risk", () => {
-  it("is never taken from a chat, a comment or a tool", () => {
+describe("rejecting is judged like a medium approval, at every risk (decision 99)", () => {
+  it.each(["chat", "tracker-comment", "code-host-comment"] as const)("%s: a linked person who signed in 23 hours ago may reject; at 25 hours they are sent to Rovara; with no fresh step", (place) => {
     for (const risk of APPROVAL_PLACE_RISKS) {
-      for (const place of ["chat", "tracker-comment", "code-host-comment", "tool"] as const) {
-        expect(decide({ answer: "reject", risk, place, freshSignIn: true, decider: { authTime: iso(1) } })).toMatchObject({ allowed: false, reason: "reject_browser_only", needs: ["open_in_rovara"] });
-      }
+      expect(decide({ answer: "reject", risk, place, freshSignIn: false, decider: { authTime: iso(23 * HOUR) } })).toEqual({ allowed: true, reason: "ok", needs: [], effect: "decision", notifyOwner: false });
+      expect(decide({ answer: "reject", risk, place, freshSignIn: true, decider: { authTime: iso(25 * HOUR) } })).toEqual({ allowed: false, reason: "sign_in_too_old", needs: ["sign_in_recently"], effect: "refused", notifyOwner: false });
+      expect(decide({ answer: "reject", risk, place, decider: { authTime: undefined } })).toMatchObject({ allowed: false, reason: "no_sign_in_time", needs: ["sign_in_recently"] });
     }
   });
-  it("the browser needs the fresh sign-in", () => {
+  it("the window's edge is exact, the company's own window decides, and an unreadable window refuses", () => {
+    const window = 4 * HOUR;
+    const settings = { recentSignIn: { seconds: window / 1000 } };
+    expect(decide({ answer: "reject", risk: "high", settings, decider: { authTime: iso(window) } }).allowed).toBe(true);
+    expect(decide({ answer: "reject", risk: "high", settings, decider: { authTime: iso(window + 1) } })).toMatchObject({ allowed: false, reason: "sign_in_too_old" });
+    expect(decide({ answer: "reject", settings: { recentSignIn: { seconds: 5 } } })).toMatchObject({ allowed: false, reason: "invalid_setting" });
+    expect(decide({ answer: "reject", decider: { authTime: new Date(NOW + (RECENT_SIGN_IN_SKEW_SECONDS + 1) * 1000).toISOString() } })).toMatchObject({ allowed: false, reason: "sign_in_in_future" });
+  });
+  it("an unlinked person from an outside place is told to link", () => {
+    for (const place of ["chat", "tracker-comment", "code-host-comment"] as const) expect(decide({ answer: "reject", place, decider: { linked: false } })).toMatchObject({ allowed: false, reason: "not_linked", needs: ["link_account"] });
+  });
+  it("the browser needs no sign-in age and no fresh sign-in, at every risk", () => {
     for (const risk of APPROVAL_PLACE_RISKS) {
-      expect(decide({ answer: "reject", risk, place: "browser", freshSignIn: false })).toMatchObject({ allowed: false, reason: "fresh_sign_in_required" });
-      expect(decide({ answer: "reject", risk, place: "browser", freshSignIn: true })).toMatchObject({ allowed: true });
+      expect(decide({ answer: "reject", risk, place: "browser", freshSignIn: false, decider: { authTime: undefined } })).toEqual({ allowed: true, reason: "ok", needs: [], effect: "decision", notifyOwner: false });
     }
+  });
+  it("an AI tool, the CLI or an API token never rejects: it gets a link", () => {
+    for (const risk of APPROVAL_PLACE_RISKS) expect(decide({ answer: "reject", risk, place: "tool", freshSignIn: true, decider: { authTime: iso(1) } })).toEqual({ allowed: false, reason: "reject_tool_needs_app", needs: ["open_in_rovara"], effect: "refused", notifyOwner: false });
+  });
+  it("a maintainer may reject someone else's plan from Slack inside the window, and the owner is told; outside it they are refused", () => {
+    expect(decide({ answer: "reject", place: "chat", decider: { role: "maintainer", authTime: iso(HOUR) } })).toEqual({ allowed: true, reason: "ok", needs: [], effect: "decision", notifyOwner: true });
+    expect(decide({ answer: "reject", place: "chat", decider: { role: "maintainer", authTime: iso(30 * HOUR) } })).toMatchObject({ allowed: false, reason: "sign_in_too_old", notifyOwner: false });
+    expect(decide({ answer: "reject", place: "browser", decider: { role: "maintainer" } })).toMatchObject({ allowed: true, notifyOwner: true });
+  });
+  it("only an approval of HIGH-risk work still needs the browser and the fresh sign-in", () => {
+    expect(decide({ answer: "approve", risk: "high", place: "chat", freshSignIn: true, decider: { authTime: iso(1) } })).toMatchObject({ allowed: false, reason: "high_risk_browser_only" });
+    expect(decide({ answer: "approve", risk: "high", place: "browser", freshSignIn: false })).toMatchObject({ allowed: false, reason: "fresh_sign_in_required" });
+    expect(decide({ answer: "reject", risk: "high", place: "browser", freshSignIn: false })).toMatchObject({ allowed: true });
   });
 });
 
@@ -173,7 +196,8 @@ describe("\"Not now\" is a dismissal, never a decision (A-49)", () => {
   });
   it("is not a rejection: it needs no fresh sign-in and is not refused for lacking one", () => {
     expect(decide({ answer: "not_now", place: "chat", risk: "high", freshSignIn: false })).toMatchObject({ effect: "dismissal" });
-    expect(decide({ answer: "reject", place: "chat", risk: "low" }).effect).toBe("refused");
+    expect(decide({ answer: "reject", place: "chat", risk: "low", decider: { authTime: undefined } }).effect).toBe("refused");
+    expect(decide({ answer: "not_now", place: "chat", risk: "low", decider: { authTime: undefined } }).effect).toBe("dismissal");
   });
 });
 
@@ -294,12 +318,13 @@ describe("every combination keeps the invariants (a new place, risk or role fail
       if (i.decider.role === "collaborator") { expect(i.kind, where).toBe("product"); expect(i.risk, where).toBe("low"); expect(i.settings.collaboratorApprovals, where).toBe(true); }
       // Outside places always need a linked person.
       if (isOutsideApprovalPlace(i.place)) expect(i.decider.linked, where).toBe(true);
-      // High risk and rejection: the browser and the fresh sign-in, nothing less.
-      if ((i.answer === "approve" && i.risk === "high") || i.answer === "reject") { expect(i.place, where).toBe("browser"); expect(i.freshSignIn, where).toBe(true); }
-      // Medium from an outside place: a recent sign-in.
-      if (i.answer === "approve" && i.risk === "medium" && isOutsideApprovalPlace(i.place)) expect(i.decider.authTime, where).toBe(iso(HOUR));
-      // A tool approves low only.
+      // High-risk approval: the browser and the fresh sign-in, nothing less. A rejection needs no fresh sign-in (decision 99).
+      if (i.answer === "approve" && i.risk === "high") { expect(i.place, where).toBe("browser"); expect(i.freshSignIn, where).toBe(true); }
+      // Medium approval, or any rejection, from an outside place: a recent sign-in.
+      if (((i.answer === "approve" && i.risk === "medium") || i.answer === "reject") && isOutsideApprovalPlace(i.place)) expect(i.decider.authTime, where).toBe(iso(HOUR));
+      // A tool approves low only, and never rejects.
       if (i.place === "tool" && i.answer === "approve") expect(i.risk, where).toBe("low");
+      if (i.place === "tool") expect(i.answer, where).not.toBe("reject");
     }
     expect(count).toBe(APPROVAL_DECISION_KINDS.length * APPROVAL_PLACE_RISKS.length * APPROVAL_PLACE_ANSWERS.length * APPROVAL_PLACES.length * APPROVAL_DECIDER_ROLES.length * 2 * 3 * 2 * 2);
     expect(allowedCount).toBeGreaterThan(0);

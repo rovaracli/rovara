@@ -117,8 +117,10 @@ describe("friction on the card", () => {
     const card = cardOf(ITEMS.approve_plan);
     expect(card.actions[0]).toEqual({ kind: "approve", label: "Approve", href: `${decisionCardPath("approve_plan:plan1")}/approve`, method: "POST" });
     expect(card.recommended.action).toBe("approve");
-    // A document is sent back with Request changes (slice 2), so its card has no reject and no reject reasons; a kind that can be put off keeps them.
-    expect(card.rejectReasons).toEqual([]);
+    // A document is sent back with Request changes (slice 2). A coding plan can also be REJECTED (owner decision 99), which ends the task, so it has no "not now" reason; a kind that can be put off keeps all of them.
+    expect(card.actions.map((action) => action.kind)).toEqual(["approve", "request_changes", "reject", "open"]);
+    expect(card.rejectReasons).toEqual(["wrong_problem", "wrong_approach", "too_big", "missing_test", "other"]);
+    expect(cardOf(ITEMS.approve_requirements).actions.some((action) => action.kind === "reject")).toBe(false);
     expect(cardOf(ITEMS.approve_dependency).rejectReasons.length).toBeGreaterThan(0);
   });
   it("medium keeps the evidence-first flag and still offers approve (the server enforces the open)", () => {
@@ -247,7 +249,7 @@ describe("Full path: requirements and design are one card with two tabs", () => 
   });
   it("uses the one vocabulary on every action: Approve, Request changes, Merge, Answer, Open, Not now", () => {
     const labels = (kind: DecisionKind) => projectDecisionCards([ITEMS[kind]], { pairFullCards: false }).cards[0]!.actions.map((action) => action.label);
-    expect(labels("approve_plan")).toEqual(["Approve", "Request changes", "Open"]);
+    expect(labels("approve_plan")).toEqual(["Approve", "Request changes", "Reject", "Open"]);
     expect(labels("approve_dependency")).toEqual(["Approve", "Not now", "Open"]);
     expect(labels("merge")).toEqual(["Merge", "Not now", "Open"]);
     expect(labels("answer_question")).toEqual(["Answer"]);
