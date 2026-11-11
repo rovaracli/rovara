@@ -13,10 +13,10 @@ import { useNav } from "../../api/nav.js";
 import { useStageModels } from "../../api/stage-models.js";
 import { Chip } from "../../design/Chip.js";
 import { Skeleton } from "../../design/Skeleton.js";
-import { VisibleText } from "../../design/VisibleText.js";
+import { VisibleText, visibleText } from "../../design/VisibleText.js";
 import { canOpenCompanySettings } from "../../shell/destinations.js";
 import { NEEDS_BROKER, ORIGIN_LABEL, SOURCE_NAMES, T, type MissingKey, type SourceId } from "./agreement-text.js";
-import { companyRulesRows, designReviewRows, isLocked, knownFailingRows, layerRows, learningRows, lessonsRows, modelRows, taskRows, type AgreementRow, type StepRows, type TaskFacts } from "./agreement-rows.js";
+import { companyRulesRows, designReviewModeLock, designReviewRows, isLocked, knownFailingRows, layerRows, learningRows, lessonsRows, modelRows, taskRows, type AgreementRow, type StepRows, type TaskFacts } from "./agreement-rows.js";
 
 /** One source's state. "missing": the broker has no such read for this person or install (404, 403). "failed": any other failure. */
 type Source = { id: SourceId; state: "loading" } | { id: SourceId; state: "missing" } | { id: SourceId; state: "failed"; retry: () => void } | { id: SourceId; state: "ready" };
@@ -28,6 +28,7 @@ function sourceOf<T>(id: SourceId, read: UseQueryResult<T>): Source {
 
 function WhyLink({ row, admin }: { row: AgreementRow; admin: boolean }) {
  if (row.origin === "rovara-fixed") return <p>{T.WHY_ROVARA}</p>;
+ if (row.origin === "locked") return <p>{T.WHY_UNKNOWN}</p>;
  const rules = row.manage === "company-rules";
  return <p>{T.WHY_COMPANY} {admin ? <>{T.WHY_COMPANY_ADMIN} <Link to={rules ? T.COMPANY_SETTINGS_RULES : T.COMPANY_SETTINGS_HOW}>{rules ? T.LINK_RULES : T.LINK_HOW}</Link>.</> : T.WHY_COMPANY_ASK}</p>;
 }
@@ -35,10 +36,10 @@ function RowItem({ row, admin }: { row: AgreementRow; admin: boolean }) {
  return <li className="rv-agree-row" data-origin={row.origin}>
   <div className="rv-agree-text"><span className="rv-agree-title"><VisibleText text={row.title} /></span><span className="rv-agree-value"><VisibleText text={row.value} /></span>{row.id === "company-rules" && admin && <Link className="rv-agree-link" to={T.COMPANY_SETTINGS_RULES}>{T.LINK_RULES}</Link>}</div>
   <div className="rv-agree-meta">
-   <Chip kind={row.origin === "company-lock" ? "company-lock" : "neutral"}>{ORIGIN_LABEL[row.origin]}</Chip>
+   {row.origin !== "none" && <Chip kind={row.origin === "company-lock" || row.origin === "locked" ? "company-lock" : "neutral"}>{ORIGIN_LABEL[row.origin]}</Chip>}
    {row.version !== undefined && <span className="rv-agree-version">{T.VERSION(row.version)}</span>}
-   {row.pending === true && <span className="rv-agree-pending">{T.PENDING}</span>}
-   {isLocked(row) && <details className="rv-agree-why"><summary>{T.WHY}</summary><WhyLink row={row} admin={admin} /></details>}
+   {row.pending === true && <span className="rv-agree-pending">{row.soleOwner === true ? T.PENDING_OWNER : T.PENDING}</span>}
+   {isLocked(row) && <details className="rv-agree-why"><summary aria-label={T.WHY_LABEL(visibleText(row.title))}>{T.WHY}</summary><WhyLink row={row} admin={admin} /></details>}
   </div>
  </li>;
 }
@@ -53,13 +54,15 @@ export function WorkingAgreementPanel({ project, variant, task }: { project: str
  const full = variant === "project", nav = useNav(), admin = nav.data !== undefined && canOpenCompanySettings(nav.data);
  const design = useDesignReviewApi();
  const layers = useHowWeWork(project), playbook = useQuery({ queryKey: designReviewKey(project), queryFn: () => design.playbook(project) }), models = useStageModels(project, undefined, full);
- const lessons = useLessons(project), learning = useLearning(project), policy = useKnownFailingPolicy(), rules = useCompanyRulesSummary();
+ const lessons = useLessons(project), learning = useLearning(project), policy = useKnownFailingPolicy(), companyRulesOn = nav.data?.features.companyRules === true, rules = useCompanyRulesSummary(companyRulesOn, admin);
  const layer = layers.data === undefined ? undefined : layerRows(layers.data), designRows = playbook.data === undefined ? undefined : designReviewRows(playbook.data);
  // The broker answers 200 with no design review setting where the stage does not exist for this install: nothing to show, so it counts as not available.
  const designSource: Source = playbook.data !== undefined && designRows === undefined ? { id: "design-review", state: "missing" } : sourceOf("design-review", playbook);
- const sources: Source[] = [sourceOf("layers", layers), designSource, ...(full ? [sourceOf("models", models)] : []), sourceOf("lessons", lessons), sourceOf("learning", learning), sourceOf("known-failing", policy), sourceOf("company-rules", rules)];
+ // Company rules are read only where the nav answer says they are on. Until the nav answer is in it is loading; without the flag (or without the nav answer) the source is not available.
+ const companyRulesSource: Source = nav.isPending ? { id: "company-rules", state: "loading" } : companyRulesOn ? sourceOf("company-rules", rules) : { id: "company-rules", state: "missing" };
+ const sources: Source[] = [sourceOf("layers", layers), designSource, ...(full ? [sourceOf("models", models)] : []), sourceOf("lessons", lessons), sourceOf("learning", learning), sourceOf("known-failing", policy), companyRulesSource];
  const whole: AgreementRow[] = [...(layer?.project ?? []), ...(designRows ?? []), ...(lessons.data === undefined ? [] : lessonsRows(lessons.data)), ...(learning.data === undefined ? [] : learningRows(learning.data)), ...(policy.data === undefined ? [] : knownFailingRows(policy.data)), ...(rules.data === undefined ? [] : companyRulesRows(rules.data))];
- const mine = task === undefined ? [] : taskRows(task), modelList = models.data === undefined ? [] : modelRows(models.data), steps: StepRows[] = full ? layer?.steps ?? [] : [];
+ const mine = task === undefined ? [] : taskRows(task, playbook.data === undefined ? "unread" : designReviewModeLock(playbook.data)), modelList = models.data === undefined ? [] : modelRows(models.data), steps: StepRows[] = full ? layer?.steps ?? [] : [];
  const loading = sources.filter(source => source.state === "loading"), notShown = sources.filter(source => source.state === "missing" || source.state === "failed");
  const missing: MissingKey[] = full ? ["merge", "approvals"] : ["merge", "approvals", "taskSnapshot"];
  return <section className={"rv-agree rv-agree-" + variant} aria-labelledby={"agree-" + variant + "-title"} aria-busy={loading.length > 0}>
@@ -67,7 +70,7 @@ export function WorkingAgreementPanel({ project, variant, task }: { project: str
   {mine.length > 0 && <Block title={T.SECTION_TASK}><List label={T.SECTION_TASK} rows={mine} admin={admin} /></Block>}
   {whole.length > 0 && <Block title={T.SECTION_PROJECT}><List label={T.SECTION_PROJECT} rows={whole} admin={admin} /></Block>}
   {modelList.length > 0 && <Block title={T.SECTION_MODELS}><List label={T.SECTION_MODELS} rows={modelList} admin={admin} /></Block>}
-  {steps.length > 0 && <Block title={T.SECTION_STEPS}>{steps.map(step => <details className="rv-agree-step" key={step.id}><summary><VisibleText text={step.name} /> <span className="rv-muted">({step.rows.length === 1 ? "1 rule" : String(step.rows.length) + " rules"})</span></summary>{step.rows.length === 0 ? <p className="rv-muted">{T.NO_STEP_ROWS}</p> : <List label={step.name} rows={step.rows} admin={admin} />}</details>)}</Block>}
+  {steps.length > 0 && <Block title={T.SECTION_STEPS}>{steps.map(step => <details className="rv-agree-step" key={step.id}><summary><VisibleText text={step.name} /> <span className="rv-muted">({step.rows.length === 1 ? "1 rule" : String(step.rows.length) + " rules"})</span></summary>{step.rows.length === 0 ? <p className="rv-muted">{T.NO_STEP_ROWS}</p> : <List label={visibleText(step.name)} rows={step.rows} admin={admin} />}</details>)}</Block>}
   {loading.length > 0 && (whole.length === 0 ? <Skeleton label={T.LOADING} /> : <p className="rv-muted" role="status">{T.LOADING}</p>)}
   {(notShown.length > 0 || loading.length === 0) && <Block title={T.SECTION_MISSING}><ul className="rv-agree-list rv-agree-missing" aria-label={T.SECTION_MISSING}>
    {notShown.map(source => <li key={source.id}><span>{SOURCE_NAMES[source.id]}</span><span className="rv-muted">{source.state === "failed" ? <>{T.FAILED} <button type="button" className="rv-agree-link" onClick={source.retry}>{T.RETRY}</button></> : T.MISSING}</span></li>)}

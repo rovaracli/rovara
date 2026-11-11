@@ -21,13 +21,15 @@ export const SESSION_TABS = [
 ] as const;
 /** UX2 slice 2: links from Slack name a part of the task (`#findings`, `#evidence`): each opens the tab that holds it. */
 const TAB_ALIASES: Record<string, string> = { findings: "pipeline", evidence: "tests" };
-export const Workspace = memo(function Workspace({ session, onComment, section, designRetryAbove }: { session: ReadSession; onComment?: CommentOnPart | undefined; section?: number;
+export const Workspace = memo(function Workspace({ session, onComment, section, designRetryAbove, agreement }: { session: ReadSession; onComment?: CommentOnPart | undefined; section?: number;
+ /** The Working agreement switch is on (read by the session page): the Pipeline tab then shows its compact section. */
+ agreement?: boolean | undefined;
  /** The page already shows "Retry review" above the work (the task's design review strip): the Design tab then does not show a second one. */
  designRetryAbove?: boolean }) {
  const location = useLocation(), navigate = useNavigate(), task = useMemo(() => workspaceTask(session), [session]), view = { session, task };
  const prefix = section === undefined ? "" : "step-" + section + "-";
  const tabs = SESSION_TABS.filter(tab => tab.available(view)), asked = location.hash.startsWith("#" + prefix) ? location.hash.slice(1 + prefix.length) : "", requested = TAB_ALIASES[asked] ?? asked, selected = tabs.find(tab => tab.value === requested)?.value ?? "pipeline";
- const items = tabs.map(tab => ({ ...tab, content: tab.value === "pipeline" ? <PipelineTab session={session} task={task} onComment={onComment} /> : task === undefined ? null : tab.value === "plan" ? <PlanTab session={session} task={task} onComment={onComment} /> : tab.value === "design" ? <DesignTab task={task} sessionKey={["session", session.sessionId]} retryShown={designRetryAbove !== true} /> : tab.value === "tests" ? <EvidenceTab task={task} sessionId={session.sessionId} /> : tab.value === "changes" ? <ChangesTab session={session} task={task} onComment={onComment} /> : <PullRequestTab task={task} /> }));
+ const items = tabs.map(tab => ({ ...tab, content: tab.value === "pipeline" ? <PipelineTab session={session} task={task} onComment={onComment} agreement={agreement} /> : task === undefined ? null : tab.value === "plan" ? <PlanTab session={session} task={task} onComment={onComment} /> : tab.value === "design" ? <DesignTab task={task} sessionKey={["session", session.sessionId]} retryShown={designRetryAbove !== true} /> : tab.value === "tests" ? <EvidenceTab task={task} sessionId={session.sessionId} /> : tab.value === "changes" ? <ChangesTab session={session} task={task} onComment={onComment} /> : <PullRequestTab task={task} /> }));
  const merge = section === undefined && task?.merge !== undefined ? <MergeSection session={session} task={{ ...task, merge: task.merge }} /> : null;
  return <>{merge}<Tabs label={section === undefined ? "Session workspace" : "Evidence for step " + section} value={selected} onValueChange={value => { if (tabs.some(tab => tab.value === value)) void navigate({ pathname: location.pathname, search: location.search, hash: "#" + prefix + value }, { replace: true, preventScrollReset: true }); }} items={items} /></>;
 });

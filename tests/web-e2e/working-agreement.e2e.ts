@@ -15,7 +15,9 @@ async function enter(page: Page, context: BrowserContext, request: Parameters<Pa
  // The reads this panel adds that the mock cell does not answer itself (the project's design review setting, the known failing policy, the company rules count).
  await page.route("**/v1/web/projects/payments/playbook", route => options.missing === true ? route.fulfill({ status: 404, json: { error: { code: "NOT_FOUND", message: "Not found." } } }) : route.fulfill({ json: playbook() }));
  await page.route("**/v1/web/org/known-failing-policy", route => route.fulfill({ json: policy({ pendingLoosening: true }) }));
- await page.route("**/v1/web/org/company-rules", route => options.missing === true ? route.fulfill({ status: 404, json: { error: { code: "NOT_FOUND", message: "Not found." } } }) : route.fulfill({ json: rules(2, 1) }));
+ // The nav answer says company rules are on (`features.companyRules`) unless this install is the "missing" one; the count is read from the member route or the admin route, whichever this person's role uses.
+ await page.route("**/v1/web/nav", async route => { const answer = await route.fetch(), body = await answer.json() as { features: Record<string, unknown> };await route.fulfill({ response: answer, json: options.missing === true ? body : { ...body, features: { ...body.features, companyRules: true } } }); });
+ await page.route(/\/v1\/web\/org\/company-rules(\/current)?$/u, route => options.missing === true ? route.fulfill({ status: 404, json: { error: { code: "NOT_FOUND", message: "Not found." } } }) : route.fulfill({ json: rules(2, 1) }));
  await mockRealtime(page);await page.setViewportSize({ width, height: 900 });
 }
 const noSidewaysScroll = (page: Page) => page.evaluate(() => document.documentElement.scrollWidth <= innerWidth && document.body.scrollWidth <= innerWidth);
@@ -46,10 +48,15 @@ for (const look of [{ name: "look-off", store: {} }, { name: "look-v2", store: {
    await expect(panel.getByText("Waiting for a second admin")).toBeVisible();
    // Every row names its origin, and a lock is the accent chip with a lock icon.
    const rows = panel.locator(".rv-agree-row");expect(await rows.count()).toBeGreaterThan(6);
-   expect(await panel.locator(".rv-agree-row:not(:has(.rv-chip))").count()).toBe(0);
+   // The reads that give a value only (lessons, learning, known failing tests, company rules) have no chip; no row says "Origin unknown" in this cell.
+   expect(await panel.locator(".rv-agree-row:not(:has(.rv-chip))").count()).toBe(await panel.locator('.rv-agree-row[data-origin="none"]').count());
+   await expect(panel.getByText("Origin unknown")).toHaveCount(0);
    await expect(panel.locator(".rv-chip-company-lock svg").first()).toBeVisible();
    // "Why?" explains the lock.
    const skip = panel.locator(".rv-agree-row", { hasText: "Design review: skipping" });
+   // The disclosure keeps a marker (the sheet draws an arrow before the word), and its accessible name says which rule it is for.
+   expect(await skip.locator("summary").evaluate(node => getComputedStyle(node, "::before").content)).not.toBe("none");
+   await expect(skip.getByLabel("Why is Design review: skipping locked?")).toBeVisible();
    await skip.getByText("Why?").click();await expect(skip.getByText("Your company set this, and a project can't change it.")).toBeVisible();
    // The order on the page: the panel is above the existing stage cards.
    const tops = await page.evaluate(() => [document.querySelector(".rv-agree")!, document.querySelector(".rv-hww-cards")!].map(node => node.getBoundingClientRect().top));expect(tops[0]!).toBeLessThan(tops[1]!);

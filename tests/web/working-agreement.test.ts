@@ -5,10 +5,10 @@ import { describe, expect, it } from "vitest";
 import { fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { MemoryRouter, Route, Routes } from "react-router";
 import { QueryClientProvider } from "@tanstack/react-query";
-import { DESIGN_REVIEW_DEFAULT_SETTING, ProjectPlaybookResponseSchema } from "@agentx/contracts/web";
+import { DESIGN_REVIEW_DEFAULT_SETTING, ProjectPlaybookResponseSchema, StageModelsResponseSchema } from "@agentx/contracts/web";
 import { AGREEMENT_STORAGE_KEY, isWorkingAgreementOn } from "../../packages/ui/src/screens/agreement/agreement-flags.js";
 import { ORIGIN_LABEL, T, type Origin } from "../../packages/ui/src/screens/agreement/agreement-text.js";
-import { brief, companyRulesRows, designReviewRows, isLocked, knownFailingRows, layerRows, learningRows, lessonsRows, modelRows, originOfMark, taskRows, type AgreementRow } from "../../packages/ui/src/screens/agreement/agreement-rows.js";
+import { brief, companyRulesRows, designReviewModeLock, designReviewRows, isLocked, knownFailingRows, layerRows, learningRows, lessonsRows, modelRows, originOfMark, taskRows, type AgreementRow } from "../../packages/ui/src/screens/agreement/agreement-rows.js";
 import { CompanyRulesSummaryReader } from "../../packages/ui/src/api/agreement.js";
 import { WorkingAgreementPanel } from "../../packages/ui/src/screens/agreement/WorkingAgreementPanel.js";
 import { ProjectScreen } from "../../packages/ui/src/screens/project/ProjectScreen.js";
@@ -23,8 +23,10 @@ import { h } from "./support/h.js";
 import { howWeWorkHost } from "./support/how-we-work-fixture.js";
 import { howWeWorkView } from "./support/how-we-work-view.js";
 import { designReviewFixture, designTaskSession } from "./support/design-review-fixture.js";
-import { agreementBody, agreementHost, learning, models, playbook, policy, rules, type AgreementWorld, type Part } from "./support/agreement-fixture.js";
+import { agreementBody, agreementHost, agreementNav, learning, models, playbook, policy, rules, type AgreementWorld, type Part } from "./support/agreement-fixture.js";
 import { view as lessonsView } from "./support/lessons-fixture.js";
+import { effective, mid, stageEntry, stageModelsRaw, SONNET, OPUS } from "./support/stage-models-raw.js";
+import { Workspace } from "../../packages/ui/src/screens/session/Workspace.js";
 
 // jsdom has no ResizeObserver, which the checkbox on the How we work tab measures with.
 globalThis.ResizeObserver ??= class { observe(): void { /* none */ } unobserve(): void { /* none */ } disconnect(): void { /* none */ } };
@@ -50,13 +52,21 @@ describe("origin mapping", () => {
   expect(originOfMark({ source: "company", locked: false })).toBe("company-default");
   expect(originOfMark({ source: "project", locked: false })).toBe("project-choice");
   expect(originOfMark({ source: "rovara", locked: false })).toBe("rovara-default");
-  // A lock the broker did not attribute falls back to the source rather than inventing a locker.
-  expect(originOfMark({ source: "company", locked: true })).toBe("company-default");
+  // A lock the broker did not attribute is still a lock: no locker is invented, and the source does not turn it into an unlocked row.
+  expect(originOfMark({ source: "company", locked: true })).toBe("locked");
+  expect(originOfMark({ source: "project", locked: true, lockedBy: "unknown" })).toBe("locked");
+  expect(originOfMark({ source: "unknown", locked: true, lockedBy: "someone-new" })).toBe("locked");
  });
- it("every origin has words, and only the two locks are locked", () => {
-  const all: Origin[] = ["company-lock", "company-default", "project-choice", "task-choice", "rovara-default", "rovara-fixed"];
-  expect(all.map(origin => ORIGIN_LABEL[origin])).toEqual(["Company lock", "Company default", "Project choice", "Task choice", "Rovara default", "Built into Rovara"]);
-  expect(all.filter(origin => isLocked({ origin }))).toEqual(["company-lock", "rovara-fixed"]);
+ it("a source word this version does not know is Origin unknown, never a default", () => {
+  expect(originOfMark({ source: "unknown", locked: false })).toBe("unknown");
+  expect(originOfMark({ source: "a-future-source", locked: false })).toBe("unknown");
+  expect(originOfMark({ source: "", locked: false })).toBe("unknown");
+  expect(isLocked({ origin: "unknown" })).toBe(false);
+ });
+ it("every origin has words, and only the locks are locked", () => {
+  const all: Origin[] = ["company-lock", "company-default", "project-choice", "task-choice", "rovara-default", "rovara-fixed", "locked", "unknown", "none"];
+  expect(all.map(origin => ORIGIN_LABEL[origin])).toEqual(["Company lock", "Company default", "Project choice", "Task choice", "Rovara default", "Built into Rovara", "Locked", "Origin unknown", ""]);
+  expect(all.filter(origin => isLocked({ origin }))).toEqual(["company-lock", "rovara-fixed", "locked"]);
  });
  it("brief folds white space and cuts a long rule at 160 characters", () => {
   expect(brief("a\n  b\tc")).toBe("a b c");
@@ -107,6 +117,11 @@ describe("design review rows", () => {
   const rows = designReviewRows(read(playbook({ designReviewLocked: [] }, { ...DESIGN_REVIEW_DEFAULT_SETTING, highRiskApprover: { kind: "maintainers" } })))!;
   expect(new Set(rows.map(row => row.origin))).toEqual(new Set(["rovara-default"]));
  });
+ it("a company that has not allowed design review locks the mode; any other lock leaves the mode as it was", () => {
+  expect(designReviewModeLock(read(playbook()))).toBeUndefined();
+  expect(designReviewModeLock(read(playbook({ designReviewLocked: ["designReview.allowSkip"] })))).toBeUndefined();
+  expect(designReviewModeLock(read({ playbook: { revision: 1, defaultProcess: { kind: "builtin" } }, designReviewAllowed: false }))).toBe("company-lock");
+ });
  it("a company that has not allowed design review is one company lock; a stage that does not exist gives no rows; an unreadable setting says so", () => {
   expect(designReviewRows(read({ playbook: { revision: 1, defaultProcess: { kind: "builtin" } }, designReviewAllowed: false }))).toEqual([{ id: "design-review", title: "Design review", value: "Not turned on by your company", origin: "company-lock", source: "design-review" }]);
   expect(designReviewRows(read({ playbook: { revision: 1, defaultProcess: { kind: "builtin" } } }))).toBeUndefined();
@@ -122,37 +137,66 @@ describe("model, lessons, learning, known failing and company rule rows", () => 
   expect(rows.map(row => row.value).join(" ")).not.toMatch(/claude-|gpt-|\//u);
   expect(byId(rows, "model:build")?.title).toBe("Model for build");
  });
- it("lessons: a company preset is a lock, a waiting change is pending, the default mode is Rovara's, another mode is the project's", () => {
+ it("a model row: a reason that names no origin is Origin unknown, and any lock shows as locked", () => {
+  const raw = (stages: Record<string, unknown>) => stageModelsRaw(stages as never);
+  const rowsOf = (stage: string, entry: Record<string, unknown>, result: Record<string, unknown>) => modelRows(StageModelsResponseSchema.parse(raw({ [stage]: stageEntry(stage, { ...entry, effective: effective(SONNET, result) }) })));
+  const one = (rows: AgreementRow[], stage: string) => byId(rows, "model:" + stage)!;
+  for (const reason of ["PERSONAL_PLAN_DEFAULT", "RECIPE_DEFAULT", "APPROVED_SAME_MODEL", "DEFAULT_DIFFERENT_COMPANY"]) expect(one(rowsOf("build", {}, { reason, decidedBy: "rovara" }), "build").origin).toBe("unknown");
+  expect(one(rowsOf("build", {}, { reason: "BUILTIN_DEFAULT", decidedBy: "rovara" }), "build").origin).toBe("rovara-default");
+  // A word a newer server added (the forward reader would give "unknown") is not read as a default either.
+  const future = StageModelsResponseSchema.parse(raw({ build: stageEntry("build", { effective: effective(SONNET, {}) }) }));
+  (future.stages.find(entry => entry.stage === "build") as unknown as { effective: { reason: string } }).effective.reason = "unknown";
+  expect(one(modelRows(future), "build").origin).toBe("unknown");
+  // A lock the company did not decide (a project or Rovara one, or one the step itself carries) is locked.
+  expect(one(rowsOf("build", {}, { reason: "PROJECT_CHOICE", decidedBy: "project", locked: true }), "build").origin).toBe("locked");
+  expect(one(rowsOf("build", {}, { reason: "BUILTIN_DEFAULT", decidedBy: "rovara", locked: true }), "build").origin).toBe("rovara-fixed");
+  expect(one(rowsOf("build", { locked: true }, { reason: "PROJECT_CHOICE", decidedBy: "project", locked: false }), "build").origin).toBe("locked");
+  expect(one(rowsOf("build", {}, { reason: "COMPANY_LOCK", decidedBy: "company", locked: true }), "build").origin).toBe("company-lock");
+  expect(mid(OPUS).provider).toBe("anthropic");
+ });
+ it("lessons: a company preset is a lock, a waiting change is pending, an unlocked row has no origin chip (the read cannot tell chosen from unset)", () => {
   const locked = lessonsRows(lessonsView({ preset: "regulated", presetLockedByCompany: true, lockedByCompany: true, mode: "On" }));
   expect(origins(locked)).toEqual({ "lessons:mode": "company-lock", "lessons:preset": "company-lock" });
   const own = lessonsRows(lessonsView({ preset: "regulated", mode: "Collect", presetProposal: { changeId: "chg_1", to: "standard", mine: false, soleOwner: false, expiresAt: 1 } }));
-  expect(origins(own)).toEqual({ "lessons:mode": "project-choice", "lessons:preset": "project-choice" });
+  expect(origins(own)).toEqual({ "lessons:mode": "none", "lessons:preset": "none" });
   expect(byId(own, "lessons:preset")?.pending).toBe(true);
+  expect(byId(own, "lessons:preset")?.soleOwner).toBeUndefined();
   expect(byId(own, "lessons:mode")?.pending).toBeUndefined();
   const plain = lessonsRows(lessonsView({ preset: "standard", mode: "Suggest" }));
-  expect(origins(plain)).toEqual({ "lessons:mode": "rovara-default", "lessons:preset": "rovara-default" });
+  expect(origins(plain)).toEqual({ "lessons:mode": "none", "lessons:preset": "none" });
+  expect(origins(lessonsRows(lessonsView({ preset: "standard", mode: "On" })))).toEqual({ "lessons:mode": "none", "lessons:preset": "none" });
+ });
+ it("a change waiting for the one owner says so and is not called a second admin's", () => {
+  const sole = lessonsRows(lessonsView({ preset: "regulated", presetProposal: { changeId: "chg_1", to: "standard", mine: true, soleOwner: true, expiresAt: 1 } }));
+  expect(byId(sole, "lessons:preset")).toMatchObject({ pending: true, soleOwner: true });
  });
  it("a value a newer server sent that this version cannot read gets no row, and no origin is claimed for it", () => {
   const unknown = lessonsRows({ ...lessonsView({}), mode: "unknown", preset: "unknown" } as never);
   expect(unknown).toEqual([]);
   expect(taskRows({ agent: { version: "unknown", builtin: false } })[0]).not.toHaveProperty("version");
  });
- it("learning from review comments: locked is the company's, on is the project's, off is the default, a proposal is pending", () => {
+ it("learning from review comments: a lock is shown, on and off have no origin chip, a proposal is pending", () => {
   expect(learningRows(learning({ prComments: "off", locked: true, lockedBy: "company" }))[0]).toMatchObject({ origin: "company-lock", value: "Off" });
-  expect(learningRows(learning({ prComments: "on" }))[0]).toMatchObject({ origin: "project-choice", value: "On" });
-  expect(learningRows(learning({ prComments: "off" }))[0]!.origin).toBe("rovara-default");
+  expect(learningRows(learning({ prComments: "off", locked: true }))[0]).toMatchObject({ origin: "locked" });
+  expect(learningRows(learning({ prComments: "on" }))[0]).toMatchObject({ origin: "none", value: "On" });
+  expect(learningRows(learning({ prComments: "off" }))[0]).toMatchObject({ origin: "none", value: "Off" });
   expect(learningRows(learning({ prComments: "off", pendingProposal: { id: "prop_1" } }))[0]!.pending).toBe(true);
  });
- it("known failing tests: always two people is a lock, off is the default, a request to turn it off is pending", () => {
+ it("known failing tests: always two people is a lock, off has no origin chip, a request to turn it off is pending", () => {
   expect(knownFailingRows(policy())[0]).toMatchObject({ origin: "company-lock", value: "Two people must agree" });
-  expect(knownFailingRows(policy({ alwaysTwoPeople: false }))[0]).toMatchObject({ origin: "rovara-default" });
+  expect(knownFailingRows(policy({ alwaysTwoPeople: false }))[0]).toMatchObject({ origin: "none" });
   expect(knownFailingRows(policy({ pendingLoosening: true }))[0]!.pending).toBe(true);
   expect(knownFailingRows(policy({ pendingLoosening: false }))[0]!.pending).toBeUndefined();
  });
- it("company rules: the count in words, a lock while any rule is required, the version and a waiting proposal", () => {
-  expect(companyRulesRows({ required: 2, preferred: 1, version: 3, pending: true })[0]).toMatchObject({ value: "3 company rules apply (2 required, 1 preferred)", origin: "company-lock", version: 3, pending: true, manage: "company-rules" });
-  expect(companyRulesRows({ required: 0, preferred: 1, pending: false })[0]).toMatchObject({ value: "1 company rule applies (0 required, 1 preferred)", origin: "company-default" });
-  expect(companyRulesRows({ required: 0, preferred: 0, pending: false })[0]).toMatchObject({ value: "No company rules yet", origin: "company-default" });
+ it("company rules: the count in words, no origin chip (a required rule is not a lock), the version and a waiting proposal", () => {
+  expect(companyRulesRows({ required: 2, preferred: 1, version: 3, pending: true })[0]).toMatchObject({ value: "3 company rules apply (2 required, 1 preferred)", origin: "none", version: 3, pending: true, manage: "company-rules" });
+  expect(companyRulesRows({ required: 0, preferred: 1, pending: false })[0]).toMatchObject({ value: "1 company rule applies (0 required, 1 preferred)", origin: "none" });
+  expect(companyRulesRows({ required: 0, preferred: 0, pending: false })[0]).toMatchObject({ value: "No company rules yet", origin: "none" });
+  expect(isLocked(companyRulesRows({ required: 5, preferred: 0, pending: false })[0]!)).toBe(false);
+ });
+ it("the company rules reader takes the member answer (no proposal) as well as the admin one", () => {
+  const member = { enabled: true, limits: { maxRules: 30, maxRuleCharacters: 600, maxTotalCharacters: 12000 }, current: rules(1, 1).current };
+  expect(CompanyRulesSummaryReader.parse(member)).toEqual({ required: 1, preferred: 1, pending: false, version: 3 });
  });
  it("the company rules reader takes counts only, and refuses anything it cannot read", () => {
   expect(CompanyRulesSummaryReader.parse(rules(2, 1))).toEqual({ required: 2, preferred: 1, pending: false, version: 3 });
@@ -165,6 +209,12 @@ describe("model, lessons, learning, known failing and company rule rows", () => 
   expect(taskRows({ designReview: { decidedBy: "auto" } })[0]!.origin).toBe("rovara-default");
   expect(taskRows({ designReview: { decidedBy: "always" } })[0]!.origin).toBe("project-choice");
   expect(taskRows({ designReview: { decidedBy: "never" } })).toEqual([]);
+  // A lock on the mode wins over the project's choice and over the default; a playbook that could not be read is not guessed.
+  expect(taskRows({ designReview: { decidedBy: "always" } }, "company-lock")[0]).toMatchObject({ origin: "company-lock" });
+  expect(taskRows({ designReview: { decidedBy: "auto" } }, "company-lock")[0]).toMatchObject({ origin: "company-lock" });
+  expect(taskRows({ designReview: { decidedBy: "person" } }, "company-lock")[0]).toMatchObject({ origin: "task-choice" });
+  expect(taskRows({ designReview: { decidedBy: "always" } }, undefined)[0]).toMatchObject({ origin: "project-choice" });
+  expect(taskRows({ designReview: { decidedBy: "always" } }, "unread")[0]).toMatchObject({ origin: "unknown" });
   expect(taskRows({ agent: { version: 4, builtin: false } })[0]).toMatchObject({ origin: "project-choice", version: 4 });
   expect(taskRows({ agent: { version: "draft", builtin: true } })[0]).toMatchObject({ origin: "rovara-default" });
   expect(taskRows({ agent: { version: "draft", builtin: true } })[0]).not.toHaveProperty("version");
@@ -306,6 +356,7 @@ describe("where it is placed", () => {
   const calls: string[] = [];
   const cell = howWeWorkHost({ handle: async (request, url) => {
    calls.push(url.pathname);
+   if (url.pathname === "/v1/app/nav") return { status: 200, body: agreementNav() };
    const part = ({ "/v1/app/projects/payments/playbook": "playbook", "/v1/app/projects/payments/lessons": "lessons", "/v1/app/org/known-failing-policy": "policy", "/v1/app/org/company-rules": "rules" } as Record<string, Part>)[url.pathname];
    if (request.method === "GET" && part !== undefined) return agreementBody({}, part);
    return undefined;
@@ -333,7 +384,7 @@ describe("where it is placed", () => {
  function task(on: boolean, review = designReviewFixture({ decidedBy: "person" })) {
   const f = agreementHost({}), query = createQueryClient(), session = designTaskSession(review);
   if (on) f.storage.set(AGREEMENT_STORAGE_KEY, "v2");
-  const ui = renderUi(h(AppHostProvider, { host: f.host, children: h(QueryClientProvider, { client: query, children: h(MemoryRouter, { children: h(Announcer, { children: h(PipelineTab, { session, task: (session.body as unknown as { task: never }).task }) }) }) }) }));
+  const ui = renderUi(h(AppHostProvider, { host: f.host, children: h(QueryClientProvider, { client: query, children: h(MemoryRouter, { children: h(Announcer, { children: h(PipelineTab, { session, task: (session.body as unknown as { task: never }).task, agreement: on }) }) }) }) }));
   return { ...f, ...ui };
  }
  it("the task page: off shows no section and reads nothing; on shows one closed section that reads only when opened", async () => {
@@ -348,5 +399,119 @@ describe("where it is placed", () => {
   expect(await screen.findByRole("heading", { name: "Working agreement", level: 3 })).toBeTruthy();
   await waitFor(() => expect(within(rowOf("Design review for this task")).getByText("Task choice")).toBeTruthy());
   expect(on.calls().filter(call => call.includes("company-rules"))).toHaveLength(1);
+ });
+});
+
+// ---- review fixes: the origin is never guessed ----
+describe("origin honesty in the panel", () => {
+ const withRules = (rulesList: unknown[]) => ({ ...howWeWorkView(), rules: rulesList });
+ it("a source word the page does not know shows Origin unknown, with no lock chip and no Why?", async () => {
+  panel({ view: withRules([{ value: "Rule from the future", source: "a-future-source", locked: false }]) });await settled();
+  const own = screen.getByText("Rule from the future").closest("li") as HTMLElement;
+  expect(within(own).getByText("Origin unknown")).toBeTruthy();
+  expect(own.querySelector(".rv-chip-company-lock")).toBeNull();
+  expect(within(own).queryByText("Why?")).toBeNull();
+  expect(within(own).queryByText("Rovara default")).toBeNull();
+ });
+ it("every locked:true row shows locked, even when who locked it is not known, and Why? says so", async () => {
+  panel({ view: withRules([{ value: "Locked by someone new", source: "project", locked: true, lockedBy: "a-future-locker" }, { value: "Locked with no word", source: "company", locked: true }]) });await settled();
+  for (const text of ["Locked by someone new", "Locked with no word"]) {
+   const row = screen.getByText(text).closest("li") as HTMLElement;
+   expect(within(row).getByText("Locked")).toBeTruthy();
+   expect(row.querySelector(".rv-chip-company-lock svg")).toBeTruthy();
+   expect(within(row).queryByText("Company lock")).toBeNull();
+   fireEvent.click(within(row).getByText("Why?"));
+   expect(within(row).getByText(T.WHY_UNKNOWN)).toBeTruthy();
+   expect(within(row).queryByRole("link")).toBeNull();
+  }
+ });
+ it("a locked model that the company did not decide shows locked", async () => {
+  const locked = StageModelsResponseSchema.parse(stageModelsRaw({ build: stageEntry("build", { effective: effective(SONNET, { decidedBy: "project", reason: "PROJECT_CHOICE", locked: true }) }), plan: stageEntry("plan", { effective: effective(SONNET, { decidedBy: "rovara", reason: "PERSONAL_PLAN_DEFAULT" }) }) }));
+  panel({ models: locked });await settled();
+  const build = rowOf("Model for build");
+  expect(within(build).getByText("Locked")).toBeTruthy();expect(within(build).getByText("Why?")).toBeTruthy();
+  const plan = rowOf("Model for plan");
+  expect(within(plan).getByText("Origin unknown")).toBeTruthy();expect(within(plan).queryByText("Why?")).toBeNull();expect(plan.querySelector(".rv-chip-company-lock")).toBeNull();
+ });
+ it("company rules, lessons, learning and known failing tests show no origin chip when nothing is locked", async () => {
+  panel({ lessons: lessonsView({ preset: "standard", mode: "Suggest" }), policy: policy({ alwaysTwoPeople: false }), learning: learning() });await settled();
+  for (const title of ["Company rules", "Learning from work", "Who approves lessons", "Learn from pull request review comments", "Marking a failing test as known"]) {
+   const row = rowOf(title);
+   expect(row.querySelector(".rv-chip"), title).toBeNull();
+   expect(within(row).queryByText("Why?"), title).toBeNull();
+   expect(row.getAttribute("data-origin")).toBe("none");
+  }
+  expect(within(rowOf("Company rules")).getByText("3 company rules apply (2 required, 1 preferred)")).toBeTruthy();
+ });
+ it("a lock flag the server sent still shows on those rows", async () => {
+  panel({ lessons: lessonsView({ preset: "regulated", presetLockedByCompany: true, lockedByCompany: true }), policy: policy(), learning: learning({ locked: true, lockedBy: "company" }) });await settled();
+  for (const title of ["Learning from work", "Who approves lessons", "Learn from pull request review comments", "Marking a failing test as known"]) expect(within(rowOf(title)).getByText("Company lock"), title).toBeTruthy();
+  expect(rowOf("Company rules").querySelector(".rv-chip")).toBeNull();
+ });
+ it("says Waiting for the owner when the waiting change is a sole owner's", async () => {
+  panel({ lessons: lessonsView({ preset: "regulated", presetProposal: { changeId: "chg_1", to: "standard", mine: true, soleOwner: true, expiresAt: 1 } }) });await settled();
+  const row = rowOf("Who approves lessons");
+  expect(within(row).getByText(T.PENDING_OWNER)).toBeTruthy();expect(within(row).queryByText(T.PENDING)).toBeNull();
+ });
+ it("every Why? has the rule in its accessible name, and keeps its own marker class for the disclosure arrow", async () => {
+  panel();await settled();
+  const why = screen.getByLabelText("Why is Design review: skipping locked?");
+  expect(why.tagName).toBe("SUMMARY");expect(why.textContent).toBe("Why?");
+  for (const summary of document.querySelectorAll(".rv-agree-why summary")) expect(summary.getAttribute("aria-label")).toMatch(/^Why is .+ locked\?$/u);
+  await expectNoAxeViolations(document.body);
+ });
+ it("a step's rule list is named with its step name as plain text", async () => {
+  const view = howWeWorkView();
+  const stages = (view.stages as Array<Record<string, unknown>>).map(stage => stage.id === "build" ? { ...stage, name: "Build‮evil" } : stage);
+  panel({ view: { ...view, stages } });await settled();
+  expect(screen.getByRole("list", { name: "Build[U+202E]evil" })).toBeTruthy();
+ });
+});
+
+describe("company rules are asked for only where they are on", () => {
+ it("no company rules read is made when the nav answer has no features.companyRules, and the source is Not available yet", async () => {
+  const f = panel({ companyRulesFeature: false });await settled();
+  expect(f.calls().filter(call => call.includes("company-rules"))).toEqual([]);
+  expect(within(within(screen.getByRole("list", { name: T.SECTION_MISSING })).getByText("Company rules").closest("li") as HTMLElement).getByText(T.MISSING)).toBeTruthy();
+  expect(screen.queryByText("Company rules", { selector: ".rv-agree-title" })).toBeNull();
+ });
+ it("an owner or admin reads the full route (it says whether a change waits); a member reads the current version only", async () => {
+  const admin = panel();await settled();
+  expect(admin.calls().filter(call => call.includes("company-rules"))).toEqual(["GET /v1/app/org/company-rules"]);
+  admin.unmount();
+  const member = panel({ admin: false });await settled();
+  expect(member.calls().filter(call => call.includes("company-rules"))).toEqual(["GET /v1/app/org/company-rules/current"]);
+  expect(within(rowOf("Company rules")).getByText("3 company rules apply (2 required, 1 preferred)")).toBeTruthy();
+ });
+});
+
+describe("the task page: a lock wins over the project's choice", () => {
+ it("a company lock on design review shows as locked on the task, whatever the run's mode", async () => {
+  panel({ playbook: playbook({ designReviewAllowed: false }) }, "task", { designReview: { decidedBy: "always" } });await settled();
+  const row = rowOf("Design review for this task");
+  expect(within(row).getByText("Company lock")).toBeTruthy();expect(within(row).getByText("Why?")).toBeTruthy();expect(within(row).queryByText("Project choice")).toBeNull();
+ });
+ it("an unlocked Always run is still the project's choice, and a playbook that could not be read is not guessed", async () => {
+  panel({}, "task", { designReview: { decidedBy: "always" } });await settled();
+  expect(within(rowOf("Design review for this task")).getByText("Project choice")).toBeTruthy();
+  document.body.innerHTML = "";
+  panel({ off: ["playbook"] }, "task", { designReview: { decidedBy: "always" } });await settled();
+  expect(within(rowOf("Design review for this task")).getByText("Origin unknown")).toBeTruthy();
+ });
+});
+
+describe("the task tab with the switch off", () => {
+ it("needs no app host and no extra hook: the Pipeline tab renders with no host at all while off", () => {
+  const session = designTaskSession(undefined);
+  expect(() => renderUi(h(MemoryRouter, { children: h(PipelineTab, { session }) }))).not.toThrow();
+  expect(screen.queryByText("Working agreement")).toBeNull();
+ });
+ it("the switch reaches the tab through the workspace: on shows the section, off does not", async () => {
+  for (const on of [false, true]) {
+   const f = agreementHost({}), session = designTaskSession(designReviewFixture({ decidedBy: "person" }));
+   const ui = renderUi(h(AppHostProvider, { host: f.host, children: h(QueryClientProvider, { client: createQueryClient(), children: h(MemoryRouter, { children: h(Announcer, { children: h(Workspace, { session, agreement: on }) }) }) }) }));
+   if (on) expect(await screen.findByText("Working agreement", { selector: "summary" })).toBeTruthy(); else expect(screen.queryByText("Working agreement")).toBeNull();
+   ui.unmount();
+  }
  });
 });

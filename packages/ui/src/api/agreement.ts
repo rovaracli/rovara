@@ -1,12 +1,14 @@
-// The one read the Working agreement panel needs that no other screen makes yet: how many company rules (standing instructions) apply. It is the company rules read of the `si` switch (`GET /v1/app/org/company-rules`).
-// Read loosely and for counts only: the panel never shows a rule's text. An install without the route answers 404, which the panel says as "Not available yet". When Settings > Company rules lands in this build,
-// swap this reader for its contract reader; nothing else changes.
+// The one read the Working agreement panel needs that no other screen makes yet: how many company rules (standing instructions) apply. It is the company rules read of the `si` switch.
+// Asked only where the nav answer says `features.companyRules` is true. A member reads `GET /v1/app/org/company-rules/current` (the version in force only); an owner or admin reads `GET /v1/app/org/company-rules`
+// (which also says whether a proposal waits). Read loosely and for counts only: the panel never shows a rule's text. A refusal (404, 403) is said as "Not available yet". When Settings > Company rules lands in this
+// build, swap this reader for its contract reader (`CompanyRulesCurrentReaderSchema`, `COMPANY_RULES_CURRENT_PATH`); nothing else changes.
 import { useMemo } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { useAppHost, type AppHost } from "../host.js";
 import { createApiClient, type Reader } from "./client.js";
 
 export const COMPANY_RULES_READ_PATH = "/v1/app/org/company-rules";
+export const COMPANY_RULES_CURRENT_READ_PATH = COMPANY_RULES_READ_PATH + "/current";
 export interface CompanyRulesSummary { required: number; preferred: number; version?: number; pending: boolean }
 const record = (value: unknown): Record<string, unknown> | undefined => typeof value === "object" && value !== null && !Array.isArray(value) ? value as Record<string, unknown> : undefined;
 export const CompanyRulesSummaryReader: Reader<CompanyRulesSummary> = { parse(value: unknown): CompanyRulesSummary {
@@ -26,10 +28,11 @@ export const CompanyRulesSummaryReader: Reader<CompanyRulesSummary> = { parse(va
 } };
 export function createAgreementApi(host: AppHost) {
  const api = createApiClient(host);
- return { companyRules: () => api.get(COMPANY_RULES_READ_PATH, CompanyRulesSummaryReader) };
+ return { companyRules: (admin: boolean) => api.get(admin ? COMPANY_RULES_READ_PATH : COMPANY_RULES_CURRENT_READ_PATH, CompanyRulesSummaryReader) };
 }
 export const agreementKey = ["agreement"] as const;
-export function useCompanyRulesSummary() {
+/** `enabled`: the nav answer says company rules are on (`features.companyRules`). Off, nothing is requested. */
+export function useCompanyRulesSummary(enabled: boolean, admin: boolean) {
  const host = useAppHost(), api = useMemo(() => createAgreementApi(host), [host]);
- return useQuery({ queryKey: [...agreementKey, "company-rules"], queryFn: () => api.companyRules(), retry: false, refetchOnWindowFocus: false });
+ return useQuery({ queryKey: [...agreementKey, "company-rules", admin ? "admin" : "member"], enabled, queryFn: () => api.companyRules(admin), retry: false, refetchOnWindowFocus: false });
 }

@@ -17,6 +17,8 @@ export interface AgreementWorld {
  broken?: readonly Part[];
  view?: unknown; playbook?: unknown; models?: unknown; lessons?: unknown; learning?: unknown; policy?: unknown; rules?: unknown;
  admin?: boolean;
+ /** The nav answer's `features.companyRules` (default true). Off, it is absent from the answer, as on an install without the Standing instructions switch. */
+ companyRulesFeature?: boolean;
 }
 export const NOT_FOUND: ApiResponse = { status: 404, body: { error: { code: "NOT_FOUND", message: "Not found." } } };
 export const playbook = (over: Record<string, unknown> = {}, setting: Record<string, unknown> = {}) => ({
@@ -46,7 +48,7 @@ const ROUTES: ReadonlyArray<[Part, (path: string) => boolean]> = [
  ["lessons", path => path === "/v1/app/projects/payments/lessons"],
  ["learning", path => path === "/v1/app/projects/payments/learning"],
  ["policy", path => path === "/v1/app/org/known-failing-policy"],
- ["rules", path => path === "/v1/app/org/company-rules"],
+ ["rules", path => path === "/v1/app/org/company-rules" || path === "/v1/app/org/company-rules/current"],
 ];
 /** The body each part answers, for a mock cell that has its own routing. `undefined` where the part is left out. */
 export function agreementBody(world: AgreementWorld, part: Part): { status: number; body: unknown } {
@@ -54,10 +56,15 @@ export function agreementBody(world: AgreementWorld, part: Part): { status: numb
  if (world.broken?.includes(part) === true) return { status: 400, body: { error: { code: "CONFIG_INVALID", message: "Broken." } } };
  return { status: 200, body: BODIES[part](world) };
 }
+/** The nav answer. `features.companyRules` is not in this base's strict nav schema (the company rules lane adds it), so it is added after the parse. */
+export function agreementNav(world: AgreementWorld = {}) {
+ const nav = navFixture({ me: { developerId: "a".repeat(64), name: "Priya", orgRole: world.admin === false ? "member" : "admin" }, features: { localAgents: false, usage: true, admin: true, chains: false, notices: false, describe: false } });
+ return { ...nav, features: { ...nav.features, ...(world.companyRulesFeature === false ? {} : { companyRules: true }) } };
+}
 export function agreementHost(world: AgreementWorld = {}) {
  const fake = fakeHost(async (request: ApiRequest) => {
   const path = request.path.split("?")[0]!;
-  if (path === "/v1/app/nav") return { status: 200, body: navFixture({ me: { developerId: "a".repeat(64), name: "Priya", orgRole: world.admin === false ? "member" : "admin" }, features: { localAgents: false, usage: true, admin: true, chains: false, notices: false, describe: false } }) };
+  if (path === "/v1/app/nav") return { status: 200, body: agreementNav(world) };
   const route = ROUTES.find(([, matches]) => matches(path));
   if (route !== undefined) return agreementBody(world, route[0]);
   return NOT_FOUND;
