@@ -13,8 +13,10 @@ export type HealthCheckFeature = "model_source" | "slack" | "github";
 const CHECK_ITEM: Record<HealthCheckFeature, OrgSettingName> = { model_source: "HEALTH_MODEL_SOURCE_CHECK", slack: "HEALTH_SLACK_PROBE", github: "HEALTH_GITHUB_CHECK" };
 /** How often a main-model run may rewrite its item: every model-governed step would otherwise write one. */
 const MAIN_WRITE_EVERY_MS = 60_000;
+/** The longest a health write may hold up the task start, the terminal result or the check it describes. */
+export const HEALTH_WRITE_TIMEOUT_MS = 1_500;
 
-export interface HealthObservationWriter { documentClient: { send(command: unknown): Promise<unknown> }; tableName: string; now?: () => number }
+export interface HealthObservationWriter { documentClient: { send(command: unknown): Promise<unknown> }; tableName: string; now?: () => number; /** For tests: the write's time limit. Default `HEALTH_WRITE_TIMEOUT_MS`. */ timeoutMs?: number }
 export type HealthModelUse = { kind: "main" } | { kind: "fallback"; reason: ModelFallback["reasonCode"] };
 /** What a committed step says about the model that ran it: the company and which model. */
 export interface ModelUseObservation { orgId: OrgId; use: HealthModelUse }
@@ -24,35 +26,55 @@ function logFailure(what: string, error: unknown): void {
   console.log(JSON.stringify({ component: "broker", event: "health_observation.write_failed", what, errorName: error instanceof Error ? error.name : "unknown" }));
 }
 
-/** Records that a check of `feature` for `orgId` completed now with `result`. Best effort: never throws. */
-export async function recordHealthCheck(deps: HealthObservationWriter, orgId: OrgId, feature: HealthCheckFeature, result: HealthCheckResult): Promise<void> {
+/** Runs one health write for at most its time limit, and never throws: a slow, hung or failing table costs the caller at most the limit and a log line. */
+async function bounded(deps: HealthObservationWriter, what: string, write: () => Promise<unknown>): Promise<void> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
   try {
-    const checkedAt = new Date((deps.now ?? Date.now)()).toISOString();
-    await deps.documentClient.send(new PutCommand({ TableName: deps.tableName, Item: { ...orgSettingsKey(orgId, CHECK_ITEM[feature]), entityType: "HEALTH_OBSERVATION", orgId, feature, checkedAt, result } }));
+    await Promise.race([write(), new Promise<never>((_, reject) => { timer = setTimeout(() => reject(Object.assign(new Error("health write timed out"), { name: "HealthWriteTimeout" })), deps.timeoutMs ?? HEALTH_WRITE_TIMEOUT_MS); })]);
   } catch (error) {
-    logFailure(feature, error);
+    logFailure(what, error);
+  } finally {
+    clearTimeout(timer);
   }
 }
 
-/** Records that a step of `orgId` ran on its main model, or on a fallback, now. Best effort: never throws. A main-model run writes at most once a minute. */
+/** When this process last tried a main-model write for a company, by client: a hot path writes nothing at all inside the minute. */
+const lastMainWrite = new WeakMap<object, Map<string, number>>();
+const isConditionFailure = (error: unknown) => error instanceof Error && error.name === "ConditionalCheckFailedException";
+
+/** Records that a check of `feature` for `orgId` completed now with `result`. Best effort, bounded: never throws. */
+export async function recordHealthCheck(deps: HealthObservationWriter, orgId: OrgId, feature: HealthCheckFeature, result: HealthCheckResult): Promise<void> {
+  await bounded(deps, feature, async () => {
+    const checkedAt = new Date((deps.now ?? Date.now)()).toISOString();
+    await deps.documentClient.send(new PutCommand({ TableName: deps.tableName, Item: { ...orgSettingsKey(orgId, CHECK_ITEM[feature]), entityType: "HEALTH_OBSERVATION", orgId, feature, checkedAt, result } }));
+  });
+}
+
+/**
+ * Records that a step of `orgId` ran on its main model, or on a fallback, now. Best effort, bounded: never throws. A main-model run writes at most once a minute per
+ * process (the guard skips the call) and per company (the condition); a fallback only ever moves its time forward.
+ */
 export async function recordModelUse(deps: HealthObservationWriter, orgId: OrgId, use: HealthModelUse): Promise<void> {
-  try {
-    const now = (deps.now ?? Date.now)();
-    const at = new Date(now).toISOString();
-    const base = { TableName: deps.tableName, Key: orgSettingsKey(orgId, "HEALTH_MODEL_USE") };
-    if (use.kind === "fallback") {
-      await deps.documentClient.send(new UpdateCommand({ ...base, UpdateExpression: "SET entityType = :type, orgId = :org, lastFallbackAt = :at, lastFallbackReason = :reason", ExpressionAttributeValues: { ":type": "HEALTH_OBSERVATION", ":org": orgId, ":at": at, ":reason": use.reason } }));
-      return;
-    }
-    try {
-      await deps.documentClient.send(new UpdateCommand({ ...base, UpdateExpression: "SET entityType = :type, orgId = :org, lastMainAt = :at", ConditionExpression: "attribute_not_exists(lastMainAt) OR lastMainAt < :before", ExpressionAttributeValues: { ":type": "HEALTH_OBSERVATION", ":org": orgId, ":at": at, ":before": new Date(now - MAIN_WRITE_EVERY_MS).toISOString() } }));
-    } catch (error) {
-      // Written less than a minute ago: the item already says so.
-      if (!(error instanceof Error && error.name === "ConditionalCheckFailedException")) throw error;
-    }
-  } catch (error) {
-    logFailure("model_use", error);
+  const now = (deps.now ?? Date.now)();
+  const at = new Date(now).toISOString();
+  const base = { TableName: deps.tableName, Key: orgSettingsKey(orgId, "HEALTH_MODEL_USE") };
+  if (use.kind === "main") {
+    const seen = lastMainWrite.get(deps.documentClient) ?? new Map<string, number>();
+    lastMainWrite.set(deps.documentClient, seen);
+    const before = seen.get(orgId);
+    if (before !== undefined && now >= before && now - before < MAIN_WRITE_EVERY_MS) return;
+    seen.set(orgId, now);
   }
+  await bounded(deps, "model_use", async () => {
+    try {
+      await deps.documentClient.send(new UpdateCommand(use.kind === "fallback"
+        ? { ...base, UpdateExpression: "SET entityType = :type, orgId = :org, lastFallbackAt = :at, lastFallbackReason = :reason", ConditionExpression: "attribute_not_exists(lastFallbackAt) OR lastFallbackAt < :at", ExpressionAttributeValues: { ":type": "HEALTH_OBSERVATION", ":org": orgId, ":at": at, ":reason": use.reason } }
+        : { ...base, UpdateExpression: "SET entityType = :type, orgId = :org, lastMainAt = :at", ConditionExpression: "attribute_not_exists(lastMainAt) OR lastMainAt < :before", ExpressionAttributeValues: { ":type": "HEALTH_OBSERVATION", ":org": orgId, ":at": at, ":before": new Date(now - MAIN_WRITE_EVERY_MS).toISOString() } }));
+    } catch (error) {
+      // A newer time is already there (or, for main, one written less than a minute ago): the item already says so.
+      if (!isConditionFailure(error)) throw error;
+    }
+  });
 }
 
 type Row = Record<string, unknown> | undefined;

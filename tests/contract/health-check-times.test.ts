@@ -5,7 +5,7 @@ import { beforeAll, describe, expect, it, vi } from "vitest";
 import { randomUUID } from "node:crypto";
 import { orgScoped, type OrgId } from "@rovara-code/contracts";
 import { developerOrgKey, orgMemberKey, orgMetaKey, orgSettingsKey, OrgHealthObservationsResponseSchema, OrgHealthObservationsReaderSchema } from "@agentx/cloud-contracts";
-import { readOrgHealthObservations, recordHealthCheck, recordModelUse } from "../../packages/broker/src/org/health-observations.js";
+import { HEALTH_WRITE_TIMEOUT_MS, readOrgHealthObservations, recordHealthCheck, recordModelUse } from "../../packages/broker/src/org/health-observations.js";
 import { FakeDynamoDb } from "../support/fake-dynamodb.js";
 import { createAdminBroker } from "../support/admin-broker.js";
 import { createAdminReadBroker } from "../support/admin-read-broker.js";
@@ -13,6 +13,7 @@ import { seedMembership, createDeveloperTaskBroker, type Developer } from "../su
 import { fakeModelAccess } from "../support/fake-model-access.js";
 import { createAuditedSlackBroker, ensureWorkspace, loadSlackBroker, markReady, registerSlackProject, serviceCall, call as slackCall, SLACK_CHANNEL, SLACK_TEAM } from "../support/slack-broker.js";
 import { TEST_ORG } from "../support/orgs.js";
+import { webRouteAllowed } from "../../packages/broker/src/aws/web-auth.js";
 
 const A = TEST_ORG, B = "org_bbbbbbbbbbbbbbbbbbbb" as OrgId;
 const NOW = Date.parse("2026-11-11T12:00:00Z"), minutesAgo = (n: number) => new Date(NOW - n * 60_000).toISOString();
@@ -335,5 +336,122 @@ describe("the model that ran a step leaves its time", () => {
     const response = await slackCall(f.handler, { method: "POST", path, headers: { "x-agentx-callback-capability": invocation.callbackCapability }, body });
     expect(response.status, JSON.stringify(response.body)).toBe(200);
     expect(useRow(f.db)).toMatchObject({ lastFallbackAt: expect.any(String) as unknown, lastFallbackReason: "MODEL_CALL_REFUSED" });
+  });
+});
+
+// ---- bounded and cheap (review M1, L3, L4)
+
+/** Makes every health write (by its sort key) hang forever, or throw, on a table; every other command goes through. */
+function breakHealthWrites(db: FakeDynamoDb, mode: "hang" | "throw") {
+  const send = db.send.bind(db) as (command: unknown) => Promise<unknown>;
+  let attempts = 0;
+  (db as unknown as { send: (command: unknown) => Promise<unknown> }).send = (command: unknown) => {
+    const input = (command as { input: { Key?: { sk?: string }; Item?: { sk?: string } } }).input;
+    if (String(input.Key?.sk ?? input.Item?.sk ?? "").startsWith("HEALTH_")) {
+      attempts += 1;
+      return mode === "hang" ? new Promise(() => undefined) : Promise.reject(Object.assign(new Error("table detail"), { name: "InternalServerError" }));
+    }
+    return send(command);
+  };
+  return { attempts: () => attempts };
+}
+
+describe("a health write is bounded and cheap", () => {
+  it("gives up on a hung table after its time limit, and never throws", async () => {
+    const hung = { documentClient: { send: () => new Promise(() => undefined) }, tableName: "state", timeoutMs: 50 };
+    const log = vi.spyOn(console, "log").mockImplementation(() => undefined);
+    const started = Date.now();
+    await recordHealthCheck(hung, A, "slack", "ok");
+    await recordModelUse(hung, A, { kind: "fallback", reason: "MODEL_CALL_REFUSED" });
+    await recordModelUse(hung, A, { kind: "main" });
+    expect(Date.now() - started).toBeLessThan(1000);
+    expect(log.mock.calls.map((entry) => String(entry[0])).join("\n")).toContain("HealthWriteTimeout");
+    log.mockRestore();
+  });
+
+  it("makes no table call at all for a main-model run less than a minute after this process's last one, per company", async () => {
+    const t = table();
+    let now = NOW, sends = 0;
+    const counted = { send: (command: unknown) => { sends += 1; return t.db.send(command as never); } };
+    const w = { documentClient: counted, tableName: "state", now: () => now };
+    await recordModelUse(w, A, { kind: "main" });
+    await recordModelUse(w, A, { kind: "main" });
+    now += 59_000; await recordModelUse(w, A, { kind: "main" });
+    expect(sends).toBe(1);
+    await recordModelUse(w, B, { kind: "main" });
+    expect(sends).toBe(2);
+    now += 2_000; await recordModelUse(w, A, { kind: "main" });
+    expect(sends).toBe(3);
+  });
+
+  it("only moves a fallback's time forward", async () => {
+    const t = table();
+    await recordModelUse({ ...t.writer, now: () => NOW }, A, { kind: "fallback", reason: "MODEL_CALL_REFUSED" });
+    await recordModelUse({ ...t.writer, now: () => NOW - 3600_000 }, A, { kind: "fallback", reason: "CONFIGURED_FALLBACK" });
+    expect(useRow(t.db)).toMatchObject({ lastFallbackAt: new Date(NOW).toISOString(), lastFallbackReason: "MODEL_CALL_REFUSED" });
+    await recordModelUse({ ...t.writer, now: () => NOW + 1000 }, A, { kind: "fallback", reason: "CONFIGURED_FALLBACK" });
+    expect(useRow(t.db)).toMatchObject({ lastFallbackReason: "CONFIGURED_FALLBACK" });
+  });
+
+  it("does not delay a task start beyond the time limit when the table hangs on health writes", async () => {
+    const f = await turnFixture();
+    const broken = breakHealthWrites(f.db, "hang");
+    const started = Date.now();
+    const result = await f.start();
+    const elapsed = Date.now() - started;
+    expect(result.status, JSON.stringify(result.body)).toBe(202);
+    expect(broken.attempts()).toBeGreaterThan(0);
+    expect(elapsed).toBeLessThan(HEALTH_WRITE_TIMEOUT_MS + 3500);
+    expect(useRow(f.db)).toBeUndefined();
+  }, 20_000);
+
+  it("does not change a task start's answer when a health write fails", async () => {
+    const f = await turnFixture({ unavailable: true });
+    const log = vi.spyOn(console, "log").mockImplementation(() => undefined);
+    const broken = breakHealthWrites(f.db, "throw");
+    const result = await f.start();
+    expect(result.status, JSON.stringify(result.body)).toBe(202);
+    expect(result.body.operation).toMatchObject({ modelFallbacks: [{ reasonCode: "DEFAULT_MODEL_UNAVAILABLE" }] });
+    expect(broken.attempts()).toBeGreaterThan(0);
+    expect(log.mock.calls.map((entry) => String(entry[0])).join("\n")).not.toContain("table detail");
+    log.mockRestore();
+  });
+
+  for (const mode of ["throw", "hang"] as const) it(`does not change the health route's answer when its health writes ${mode}`, async () => {
+    const { db, admin } = await createAdminReadBroker({ brokerExtra: { adminReads: { health: { slackAuthCheck: async () => ({ ok: true as const, teamId: "T0BSHLLUGBD" }), githubInstallations: async () => 1 } } } });
+    const broken = breakHealthWrites(db, mode);
+    const started = Date.now();
+    const answer = await admin("GET", "/v1/admin/health");
+    expect(answer.status).toBe(200);
+    expect(answer.body).toMatchObject({ slack: { status: "ok" }, github: { status: "ok", detail: "installed on 1 account" } });
+    expect(broken.attempts()).toBe(2);
+    expect(Date.now() - started).toBeLessThan(HEALTH_WRITE_TIMEOUT_MS + 3500);
+  }, 20_000);
+
+  for (const mode of ["throw", "hang"] as const) it(`does not change a model source check's answer when its health write ${mode}s`, async () => {
+    const access = fakeModelAccess();
+    const h = await createDeveloperTaskBroker({ register: false, brokerExtra: { agents: { modelSources: { launch: { kinds: ["anthropic"] } } }, modelAccess: { access, proxyUrl: "https://proxy.example.com" } } });
+    h.db.set({ pk: `SESSION#${DANA.sessionId}`, sk: "META", sessionId: DANA.sessionId, developerId: DANA.developerId, amr: DANA.provider, startedAt: new Date(Date.now() - 60_000).toISOString(), endsAt: Math.floor(Date.now() / 1000) + 604_800 });
+    h.db.set({ pk: `DEVELOPER#${DANA.developerId}`, sk: "META", developerId: DANA.developerId, provider: DANA.provider, displayName: DANA.name, firstSignInAt: "x", lastSignInAt: "x", revoked: false });
+    await h.orgOf(DANA);
+    seedMembership(h.db, DANA.developerId, { orgId: A, role: "admin" });
+    const added = await h.dev(DANA, "POST", "/v1/app/org/model-sources", { requestId: randomUUID(), source: { kind: "anthropic", label: "Company Anthropic", models: [{ catalog: { provider: "anthropic", modelId: "claude-sonnet-4-5" } }] }, apiKey: "sk-ant-" + "x".repeat(30) });
+    const broken = breakHealthWrites(h.db, mode);
+    const started = Date.now();
+    const check = await h.dev(DANA, "POST", `/v1/app/org/model-sources/${added.body.sourceId as string}/check`);
+    expect(check.status).toBe(200);
+    expect(check.body).toMatchObject({ ok: true });
+    expect(broken.attempts()).toBe(1);
+    expect(Date.now() - started).toBeLessThan(HEALTH_WRITE_TIMEOUT_MS + 3500);
+  }, 20_000);
+});
+
+describe("the browser may make this one read and nothing else under org/health-observations", () => {
+  it("allows exactly GET", () => {
+    expect(webRouteAllowed("GET", "/v1/web/org/health-observations")).toBe(true);
+    for (const method of ["POST", "PUT", "DELETE", "PATCH"]) expect(webRouteAllowed(method, "/v1/web/org/health-observations"), method).toBe(false);
+    for (const path of ["org/health-observations/x", "org/health-observations/", "org/health-observations/slack"]) {
+      expect(webRouteAllowed("GET", `/v1/web/${path}`), path).toBe(false);
+    }
   });
 });

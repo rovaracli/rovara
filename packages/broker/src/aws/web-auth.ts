@@ -10,6 +10,8 @@ export function webRouteAllowed(method: string, pathname: string): boolean {
  const relative = pathname.slice("/v1/web/".length), family = relative.split("/")[0]!;
  const read = method === "GET" || method === "HEAD";
  if (relative === "org/service-status" || relative.startsWith("org/service-status/")) return read && relative === "org/service-status";
+ // 0.5.15: when each health check last ran: this one read, owner or admin, and nothing under it.
+ if (relative === "org/health-observations" || relative.startsWith("org/health-observations/")) return read && relative === "org/health-observations";
  // L3b / K1: the task page also reads what the agent loaded (the records and one rule file's text) and the lessons it loaded and marks one "Helpful" / "Wrong here" (exact shapes only; nothing else under tasks/ is reachable from a browser).
  // OWNER DECISION 7: what the old review page did on a task (Retry the checks, Revise the plan, a held spec's choices, People, a comment's Remember and Forget); the routes re-check who may.
  if (family === "tasks" && method === "POST" && /^tasks\/[0-9a-f-]{36}\/(?:workflow\/(?:checks-retry|revise-plan)|spec\/(?:retry|continue|keep|replan)|people\/(?:role|take-ownership)|comments\/[0-9a-f-]{36}\/(?:remember|forget))$/i.test(relative)) return true;
