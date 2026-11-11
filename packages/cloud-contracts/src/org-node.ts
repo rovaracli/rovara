@@ -17,7 +17,7 @@ export interface OrgRecord {
   nameIsDefault?: boolean;
   /** The GitHub account whose connection unlocked the trial; it can unlock no other org. */
   trialGithubUserId?: string;
-  /** When the org was closed (its sole owner left, or the race org of a duplicate sign-in was retired); a closed org takes no new members. */
+  /** When the org was closed (its sole owner left; before 0.5.15 also a duplicate sign-in's race org, which no merge closes any more); a closed org takes no new members. */
   closedAt?: string;
   /** Set while the sole owner's leave closes the org: from then on no invite is accepted into it. A stopped close is run again by the owner. */
   closingAt?: string;

@@ -6,7 +6,7 @@ import { ownerKeyForSubject } from "../../packages/broker/src/aws/lambda.js";
 import { developerIdentityConfigFromEnvironment, singleOrgIdFor } from "../../packages/broker/src/aws/developer-identity.js";
 import { oidcSignInProvider } from "../../packages/broker/src/developer/providers.js";
 import { membershipOrgResolver, orgResolverFromEnvironment } from "../../packages/broker/src/org/resolve.js";
-import { resolveOrgOnSignIn } from "../../packages/broker/src/org/sign-in.js";
+import { ALREADY_SIGNED_UP_MESSAGE, resolveOrgOnSignIn } from "../../packages/broker/src/org/sign-in.js";
 import { inviteTokenHash } from "../../packages/broker/src/org/invite-url.js";
 import { OrgStore } from "../../packages/broker/src/org/store.js";
 import { adminCall, adminIssuer, createAdminBroker } from "../support/admin-broker.js";
@@ -46,6 +46,19 @@ describe("a cloud sign-in creates an org on first sign-in", () => {
     const second = claimsOf((await exchangedAfterSignIn(h, "cloud", maya.sub)).access_token);
     expect(second.org).toBe(first.org);
     expect(orgMetas(h.state)).toHaveLength(1);
+  });
+
+  it("tells the loser of a first sign-in race (another route holds the email, its company not yet visible) to sign in that way; no second company", async () => {
+    const h = identityHarness({ cloud: {}, oidcUsers: [maya] });
+    const other = "f".repeat(64);
+    // The other route's create wrote the email pointer; this sign-in finds no company for it, so rule 2 does not link and rule 3 hits the pointer.
+    h.state.set({ ...orgEmailKey("maya@example.com"), entityType: "ORG_EMAIL", developerId: other, orgId: "org_otherroute000000000" });
+    const refused = await h.signIn("cloud", maya.sub);
+    expect(refused.searchParams.get("code")).toBeNull();
+    expect(refused.searchParams.get("error")).toBe("access_denied");
+    expect(refused.searchParams.get("error_description")).toBe(ALREADY_SIGNED_UP_MESSAGE);
+    expect(orgMetas(h.state)).toHaveLength(0);
+    expect(h.state.get(developerOrgKey(mayaId))).toBeUndefined();
   });
 
   it("lists the method in the configuration document", async () => {
@@ -128,20 +141,34 @@ describe("resolveOrgOnSignIn", () => {
     expect(slack.orgId).not.toBe(single);
   });
 
-  it("rule 3: the loser of a two-route first sign-in race ends with its own second org, the email pointer kept by the first, and a log line to heal it by", async () => {
+  it("rule 3: the loser of a two-route first sign-in race is refused (CHANGE_STALE, plain words), left with no company, the email pointer kept by the first, and a log line", async () => {
     const { state, orgs } = setup();
     const first = await orgs.createOrgWithOwner({ name: "A", developerId: dev("a"), email: "maya@example.com" });
     const logs: Array<Record<string, unknown>> = [];
-    const result = await resolveOrgOnSignIn({ orgs, log: (entry) => logs.push(entry) }, cloudInput(dev("c"), { email: "maya@example.com" }));
-    expect(result.role).toBe("owner");
-    expect(result.orgId).not.toBe(first);
-    expect(await orgs.orgForDeveloper(dev("c"))).toEqual(result);
+    await expect(resolveOrgOnSignIn({ orgs, log: (entry) => logs.push(entry) }, cloudInput(dev("c"), { email: "maya@example.com" })))
+      .rejects.toMatchObject({ code: "CHANGE_STALE", message: expect.stringContaining(ALREADY_SIGNED_UP_MESSAGE) as string });
+    expect(await orgs.orgForDeveloper(dev("c"))).toBeUndefined();
+    expect(orgMetas(state)).toHaveLength(1);
     expect(state.get(orgEmailKey("maya@example.com"))).toMatchObject({ developerId: dev("a"), orgId: first });
-    expect(logs).toEqual([{ event: "signin.email_pointer_conflict", developerId: dev("c") }]);
-    // The next sign-in is an ordinary existing member: no retry, no log.
-    logs.length = 0;
-    expect(await resolveOrgOnSignIn({ orgs, log: (entry) => logs.push(entry) }, cloudInput(dev("c"), { email: "maya@example.com" }))).toEqual(result);
-    expect(logs).toEqual([]);
+    expect(logs).toEqual([{ event: "signin.email_pointer_conflict", developerId: dev("c"), refused: true }]);
+  });
+
+  it("rule 3: two concurrent first sign-ins with the same email make one company; the loser is refused and holds no company", async () => {
+    const { state, orgs } = setup();
+    const logs: Array<Record<string, unknown>> = [];
+    const results = await Promise.allSettled([dev("a"), dev("c")].map((developerId) =>
+      resolveOrgOnSignIn({ orgs, log: (entry) => logs.push(entry) }, cloudInput(developerId, { email: "maya@example.com" }))));
+    const won = results.flatMap((result) => result.status === "fulfilled" ? [result.value] : []);
+    const lost = results.flatMap((result) => result.status === "rejected" ? [result.reason as { code?: string; message?: string }] : []);
+    expect(won).toHaveLength(1);
+    expect(lost).toEqual([expect.objectContaining({ code: "CHANGE_STALE", message: expect.stringContaining(ALREADY_SIGNED_UP_MESSAGE) as string })]);
+    expect(orgMetas(state)).toHaveLength(1);
+    const pointer = state.get(orgEmailKey("maya@example.com"));
+    expect(pointer).toMatchObject({ orgId: won[0]!.orgId });
+    const loser = pointer?.developerId === dev("a") ? dev("c") : dev("a");
+    expect(await orgs.orgForDeveloper(loser)).toBeUndefined();
+    expect(state.get(developerOrgKey(loser))).toBeUndefined();
+    expect(logs).toEqual([{ event: "signin.email_pointer_conflict", developerId: loser, refused: true }]);
   });
 
   it("rule 2: an invite written for kate@provider.dev is not satisfied by a verified address that only folds to it (U+212A KELVIN SIGN)", async () => {

@@ -18,7 +18,7 @@ import { SESSION_MAX_AGE_SECONDS } from "../aws/web-session.js";
 import { INVITE_TOKEN_PATTERN, inviteTokenHash } from "../org/invite-url.js";
 import type { OrgStore } from "../org/store.js";
 import { MERGED_AWAY_MESSAGE } from "../org/store.js";
-import { INVITATION_ONLY_MESSAGE, NO_ORG_ON_INSTALL_MESSAGE, resolveOrgOnSignIn, sameEmail, type ResolveOrgOnSignInDependencies, type SignInNoOrg, type SignInOrg } from "../org/sign-in.js";
+import { ALREADY_SIGNED_UP_MESSAGE, INVITATION_ONLY_MESSAGE, NO_ORG_ON_INSTALL_MESSAGE, resolveOrgOnSignIn, sameEmail, type ResolveOrgOnSignInDependencies, type SignInNoOrg, type SignInOrg } from "../org/sign-in.js";
 import { resolveSignInDeveloper, type ResolveSignInDeveloperDependencies } from "./identities.js";
 import {
   expiredInvitePage, joinDonePage, joinExpiredPage, maskEmail, openInvitePage, otherBrowserPage, unknownInvitePage, usedInvitePage, type PageSpec,
@@ -913,6 +913,13 @@ function createIssuerHandler(deps: DeveloperIdentityDependencies) {
         deps.log({ event: "signin.refused", method, reason: "linked_elsewhere", developerId });
         if (request.browserReturnTo !== undefined) return browserReturn(request.browserReturnTo, false, undefined, "ended");
         return client({ error: "access_denied", error_description: `${MERGED_AWAY_MESSAGE}; run agentx login again` });
+      }
+      // IDENTITY-HEALING-CROSS-ORG: another sign-in route of this person holds the email and its company was made a moment ago (two first sign-ins at once).
+      // No second company is made; the person signs in the other way and adds this method in Settings. The browser shows the generic "refused" page for now.
+      if (isCode(error, "CHANGE_STALE") && refusalWords(error) === ALREADY_SIGNED_UP_MESSAGE) {
+        deps.log({ event: "signin.refused", method, reason: "already_signed_up", developerId });
+        if (request.browserReturnTo !== undefined) return browserReturn(request.browserReturnTo, false, undefined, "refused");
+        return client({ error: "access_denied", error_description: ALREADY_SIGNED_UP_MESSAGE });
       }
       // A removed member (single-org ban) is told so, not shown an internal error.
       if ((error as { code?: unknown } | null)?.code !== "REMOVED_FROM_ORG") throw error;
