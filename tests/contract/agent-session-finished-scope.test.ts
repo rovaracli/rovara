@@ -157,6 +157,45 @@ describe("the Finished list for the Team and Company scopes", () => {
     expect(refused?.message).not.toContain(first.next!.slice(0, 20));
   });
 
+  it("asks for the share role (an admin's extra read of the project as a plain member) only for the team scope, not for the company scope", async () => {
+    const s = scopedWorld();
+    // OLA is an admin with no grant: the team rule's share role is the one read that asks `roleOf` as a plain member.
+    const asked: string[] = [];
+    const deps: SessionReadDependencies = { ...s.deps, projectMembers: { projectsOf: s.w.members.projectsOf, roleOf: (orgId, project, who) => { if (who.orgRole === "member") asked.push(project); return s.w.members.roleOf(orgId, project, who); } } };
+    const as = (scope: string) => listFinishedScope(deps, s.w.caller(OLA), { scope, status: "ended" });
+    await as("team");
+    expect(asked.length, "the team scope asks for the share role").toBeGreaterThan(0);
+    asked.length = 0;
+    expect(s.ofIds(await as("company"))).toEqual([s.ids.h, s.ids.c, s.ids.b, s.ids.a]);
+    expect(asked, "the company scope never uses it").toEqual([]);
+  });
+
+  it("reads about limit + 1 rows of each partition for a small limit, and the full page only when the limit is large", async () => {
+    const s = scopedWorld();
+    const limits: number[] = [];
+    const documentClient = { send: (command: { constructor: { name: string }; input?: { Limit?: number; KeyConditionExpression?: string } }) => { if (command.constructor.name === "QueryCommand" && command.input?.Limit !== undefined) limits.push(command.input.Limit); return (s.deps.documentClient as unknown as { send(c: unknown): Promise<unknown> }).send(command); } };
+    const deps = { ...s.deps, documentClient } as unknown as SessionReadDependencies;
+    const small = await listFinishedScope(deps, s.w.caller(PRIYA), { scope: "company", status: "ended", limit: 2 });
+    expect(small.sessions).toHaveLength(2);
+    expect(limits.length).toBeGreaterThan(0);
+    expect(Math.max(...limits)).toBe(3);
+    limits.length = 0;
+    await listFinishedScope(deps, s.w.caller(PRIYA), { scope: "company", status: "ended", limit: 100 });
+    expect(Math.max(...limits)).toBe(50);
+  });
+
+  it("says projectsCut when the caller reaches more projects than one answer reads, and not otherwise", async () => {
+    const s = scopedWorld();
+    expect((await s.list(OLA, "company")).projectsCut).toBeUndefined();
+    for (let n = 0; n < 101; n += 1) s.w.members.addProject(ORG_A, `extra-${String(n).padStart(3, "0")}`);
+    const cut = await s.list(OLA, "company");
+    expect(cut.projectsCut).toBe(true);
+    expect(SessionListSchema.parse(cut)).toEqual(cut);
+    expect(SessionListReaderSchema.safeParse(cut).success).toBe(true);
+    // Someone who reaches only a few projects is not cut.
+    expect((await s.list(PRIYA, "company")).projectsCut).toBeUndefined();
+  });
+
   it("refuses what it does not list: no status, open, another selector, an unknown scope, a bad limit", async () => {
     const s = scopedWorld();
     expect(await code(listFinishedScope(s.deps, s.w.caller(PRIYA), { scope: "company" }))).toMatchObject({ code: "CONFIG_INVALID" });

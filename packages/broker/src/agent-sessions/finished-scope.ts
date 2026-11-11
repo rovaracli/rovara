@@ -20,6 +20,7 @@ type Scope = (typeof FINISHED_SCOPES)[number];
 
 /** The most project partitions one request reads; a person on more says so in the log, and the rest are left to their project's own list. */
 export const FINISHED_PROJECTS_MAX = 100;
+/** The most rows one partition read asks for (a small `limit` asks for `limit + 1`: one more than the page needs, so a lane holding the whole page is read once). */
 const LANE_PAGE = 50;
 const LANES_AT_ONCE = 8;
 const DEFAULT_PAGE = 50;
@@ -61,7 +62,8 @@ async function readFinished(deps: SessionReadDependencies, caller: SessionReadCa
   if (projectsOf === undefined) throw agentXError("RUNTIME_UNAVAILABLE", "Finished work can't be listed right now.");
   const reached = (await projectsOf).map((entry) => entry.project);
   const projects = [...new Set(reached)].sort();
-  if (projects.length > FINISHED_PROJECTS_MAX) (deps.log ?? ((line: Record<string, unknown>) => console.log(JSON.stringify({ component: "broker", ...line }))))({ event: "agent_session.finished_projects_truncated", orgId });
+  const projectsCut = projects.length > FINISHED_PROJECTS_MAX;
+  if (projectsCut) (deps.log ?? ((line: Record<string, unknown>) => console.log(JSON.stringify({ component: "broker", ...line }))))({ event: "agent_session.finished_projects_truncated", orgId });
   const pks = [
     ...projects.slice(0, FINISHED_PROJECTS_MAX).map((project) => projectSessionsKey(orgId, project, PROBE_AT, PROBE_ID).pk),
     ...(scope === "company" ? [mySessionsKey(orgId, caller.developerId, PROBE_AT, PROBE_ID).pk] : []),
@@ -71,7 +73,7 @@ async function readFinished(deps: SessionReadDependencies, caller: SessionReadCa
     const start = lane.started ? lane.next : after === undefined ? undefined : { pk: lane.pk, sk: after };
     lane.started = true;
     const page = await deps.documentClient.send(new QueryCommand({
-      TableName: deps.tableName, KeyConditionExpression: "pk = :pk", ExpressionAttributeValues: { ":pk": lane.pk }, ConsistentRead: true, ScanIndexForward: false, Limit: LANE_PAGE,
+      TableName: deps.tableName, KeyConditionExpression: "pk = :pk", ExpressionAttributeValues: { ":pk": lane.pk }, ConsistentRead: true, ScanIndexForward: false, Limit: Math.min(LANE_PAGE, limit + 1),
       ...(start === undefined ? {} : { ExclusiveStartKey: start }),
     })) as { Items?: Item[]; LastEvaluatedKey?: Record<string, unknown> };
     lane.rows = page.Items ?? [];
@@ -95,7 +97,7 @@ async function readFinished(deps: SessionReadDependencies, caller: SessionReadCa
       if (lane.rows.length > 0 && (best === undefined || sk(lane.rows[0]!) > sk(best.rows[0]!))) best = lane;
     }
     if (best === undefined) break;
-    if (found.length >= limit || scanned >= LIVE_INDEX_SCAN_MAX) return finish(deps, asker, found, lastSk === undefined ? undefined : sealCursor(deps, caller, label, lastSk));
+    if (found.length >= limit || scanned >= LIVE_INDEX_SCAN_MAX) return finish(deps, asker, found, lastSk === undefined ? undefined : sealCursor(deps, caller, label, lastSk), projectsCut);
     const row = best.rows.shift()!;
     scanned += 1;
     lastSk = sk(row);
@@ -105,7 +107,7 @@ async function readFinished(deps: SessionReadDependencies, caller: SessionReadCa
     const session = await store.get(orgId, id.data);
     if (session === undefined || session.endedAt === undefined) continue;
     try {
-      const { access, shareRole } = await sessionAccessFor(deps, asker, orgRole.data, session, { memo, wantShareRole: true });
+      const { access, shareRole } = await sessionAccessFor(deps, asker, orgRole.data, session, { memo, ...(scope === "team" ? { wantShareRole: true as const } : {}) });
       if (access === undefined || access.level === "none") continue;
       requireLevelOf(access, "view", "view it");
       // The Live wall's `team` rule: a project's session when the caller has a role there; a Mac session only when it is not theirs.
@@ -117,12 +119,12 @@ async function readFinished(deps: SessionReadDependencies, caller: SessionReadCa
       throw error;
     }
   }
-  return finish(deps, asker, found, undefined);
+  return finish(deps, asker, found, undefined, projectsCut);
 }
 
-async function finish(deps: SessionReadDependencies, caller: SessionReadCaller, found: SessionTile[], next: string | undefined): Promise<SessionList> {
+async function finish(deps: SessionReadDependencies, caller: SessionReadCaller, found: SessionTile[], next: string | undefined, projectsCut: boolean): Promise<SessionList> {
   // The owners' chosen names, one BatchGetItem for the page (as `listSessions` does).
   const overlay = await ownerNameOverlay(deps, found.map((tile) => tile.owner.developerId), caller.orgId);
   const sessions = found.map((tile) => ({ ...tile, owner: ownerNamedAt(tile.owner, overlay, tile.createdAt) }));
-  return { sessions, ...(next === undefined ? {} : { next }) };
+  return { sessions, ...(next === undefined ? {} : { next }), ...(projectsCut ? { projectsCut: true as const } : {}) };
 }

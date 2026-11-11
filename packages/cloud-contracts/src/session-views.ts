@@ -140,7 +140,11 @@ export type SessionTile = z.infer<typeof SessionTileSchema>;
 export const SessionTileReaderSchema = forwardReader(SessionTileSchema);
 
 /** `GET /v1/app/sessions`: one page of sessions, newest first; `next` is opaque, passed back as `cursor`. */
-export const SessionListSchema = z.object({ sessions: z.array(SessionTileSchema).max(LIVE_PAGE_MAX), next: z.string().min(1).max(200).optional() }).strict();
+export const SessionListSchema = z.object({
+  sessions: z.array(SessionTileSchema).max(LIVE_PAGE_MAX), next: z.string().min(1).max(200).optional(),
+  /** Only on the Finished list for Team or Company, when the caller reaches more projects than one answer reads (the rest are left to their own project's list). */
+  projectsCut: z.literal(true).optional(),
+}).strict();
 
 export type SessionList = z.infer<typeof SessionListSchema>;
 
