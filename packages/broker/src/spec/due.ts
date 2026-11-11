@@ -1,5 +1,5 @@
 // K1 lane D, D2: whether a task's spec is due, and what the target is.
-import type { SpecKind, SpecTarget } from "@agentx/contracts";
+import type { SpecKind, SpecTarget } from "@rovara-code/contracts";
 
 /** The project's spec target, or undefined when it names none (no spec is written). */
 export function specTargetOf(definition: { specTarget?: SpecTarget | undefined }): SpecTarget | undefined {

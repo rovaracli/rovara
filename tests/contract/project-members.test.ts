@@ -3,10 +3,8 @@
 // role, remove), the viewer's refusal to start a task, `ProjectMembers` (what Plan 3 imports) and every cross-org case.
 import { randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
-import {
-  ProjectMemberChangeResponseSchema, ProjectMembersResponseSchema, orgMemberKey, orgMetaKey, orgProjectCatalogKey, projectMemberKey, projectMetaKey, projectRevisionKey,
-  type OrgId, type OrgRole, type ProjectRole,
-} from "../../packages/contracts/src/index.js";
+import { ProjectMemberChangeResponseSchema, ProjectMembersResponseSchema, orgProjectCatalogKey, projectMemberKey, projectMetaKey, projectRevisionKey, type OrgId, type ProjectRole } from "@rovara-code/contracts";
+import { orgMemberKey, orgMetaKey, type OrgRole } from "@agentx/cloud-contracts";
 import { developerIdForSlackUser } from "../../packages/broker/src/aws/admin-actions.js";
 import { ownerKeyForSubject } from "../../packages/broker/src/aws/lambda.js";
 import { projectMembersOf, type DeveloperRouteDependencies } from "../../packages/broker/src/aws/developer-routes.js";

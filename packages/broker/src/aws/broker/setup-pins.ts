@@ -2,7 +2,7 @@
 // meta repository's `knowledgeCommit` uses), and sends the commits as `pins`. The worker resolves the heads itself and refuses the preparation if any differs (a branch that moved between the two reads is a retry, not
 // a run on a head nobody pinned). The broker keeps the pins on the prepare operation, and the task's `preparedBase` only when the worker's report equals them (`rovara-code/setup-agent.ts` `keepSetupPreparedBase`).
 // A head that cannot be read refuses the start (RUNTIME_UNAVAILABLE), never a run without a pin.
-import { agentXError, workerProjectDefinition, type OrgId, type PreparePins } from "@agentx/contracts";
+import { agentXError, workerProjectDefinition, type OrgId, type PreparePins } from "@rovara-code/contracts";
 import type { AwsBrokerDependencies } from "./definitions.js";
 import type { RegisteredProjectRecord } from "./definitions.js";
 import { canReadBaseBranchHead, hostOfRepository } from "./repository-hosts.js";

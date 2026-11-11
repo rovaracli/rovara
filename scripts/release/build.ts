@@ -1,7 +1,8 @@
 import { copyFile, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { CATALOG_BUILD_FLAVOR, ENVIRONMENT_PLACEHOLDER, STACK_PARTS, environmentStackName } from "@agentx/contracts";
+import { CATALOG_BUILD_FLAVOR } from "@agentx/cloud-contracts";
+import { ENVIRONMENT_PLACEHOLDER, STACK_PARTS, environmentStackName } from "@rovara-code/contracts";
 import { CONTEXT_ENV, CONTEXT_OVERFLOW_LOCATION_ENV } from "aws-cdk-lib/cx-api";
 import { buildAgentXApp } from "../../infra/lib/app.js";
 import { SUPPORTED_REGIONS } from "../../infra/lib/production-foundation.js";

@@ -3,14 +3,14 @@
 import { readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { PrepareSavedEnvSchema, savedEnvRepositoryName, type SavedEnvManifest } from "../../packages/contracts/src/index.js";
+import { PrepareSavedEnvSchema, savedEnvRepositoryName, type SavedEnvManifest } from "@rovara-code/contracts";
 import {
   ARCHIVE_POLICY, SAVED_ENV_FAILURE_BACKOFF_MS, SAVED_ENV_JOB_LEASE_MS, authorizeLease, checkRebuild, imageForTask, leaseForDispatch, lightSetup, markStale, mintPushForJob, savedEnvForPrepare, savedEnvPullLogin, sweepDeleted, SAVED_ENV_TASK_CHECK_MS, SAVED_ENV_RESET_COOLDOWN_MS, onProjectRegistered, onProjectArchived, onProjectDeleted, rebuildReason, recordBuild, reportFailure, requestReset, walk,
   type RegistryImage, type RegistryPort, type SavedEnvDeps, type SavedEnvImageRecord, type SavedEnvState,
 } from "../../packages/broker/src/test-env/saved-env.js";
 import { expectedRepositoryPolicy, type RepositoryDescription, type SavedEnvSessionConfig, type SavedEnvSessionPorts } from "../../packages/broker/src/test-env/saved-env-session.js";
 import { panelView, resetFromPanel, savedEnvPanel } from "../../packages/broker/src/test-env/saved-env-panel.js";
-import { SavedEnvPanelSchema } from "@agentx/contracts";
+import { SavedEnvPanelSchema } from "@rovara-code/contracts";
 import { installSavedEnv } from "../../packages/broker/src/aws/broker/saved-env-prepare.js";
 import { heldPreparationDispatch, newWorkspacePreparation } from "../../packages/broker/src/aws/broker/workspace-preparation.js";
 import { memorySavedEnvStore } from "../support/memory-saved-env-store.js";

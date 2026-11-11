@@ -6,7 +6,7 @@ import { useState } from "react";
 import { screen, fireEvent, waitFor, act } from "@testing-library/react";
 import { createMemoryRouter, RouterProvider } from "react-router";
 import { QueryClientProvider } from "@tanstack/react-query";
-import { DIAGNOSIS_ANSWER_LABEL, DIAGNOSIS_NO_PROVIDER_MESSAGE, ASK_ANSWER_LABEL, SessionViewReaderSchema } from "@agentx/contracts/web";
+import { DIAGNOSIS_ANSWER_LABEL, DIAGNOSIS_NO_PROVIDER_MESSAGE, ASK_ANSWER_LABEL, SessionViewReaderSchema } from "@agentx/cloud-contracts/web";
 import { workspaceFixture as fixture } from "./support/workspace-fixture.js";
 import { Workspace } from "../../packages/ui/src/screens/session/Workspace.js";
 import { SessionControls } from "../../packages/ui/src/screens/session/SessionControls.js";

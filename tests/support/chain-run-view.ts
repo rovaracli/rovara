@@ -1,5 +1,5 @@
 // A run view that meets Plan 4's contract (`ChainRunViewSchema`), for the tests of Plan 5 that stand in for Plan 4's reads.
-import type { ChainRunView } from "../../packages/contracts/src/chain-session.js";
+import type { ChainRunView } from "@rovara-code/contracts";
 
 const AT = "2026-10-22T09:00:00.000Z";
 const HEX = "a".repeat(64);

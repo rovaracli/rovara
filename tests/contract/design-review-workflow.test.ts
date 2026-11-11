@@ -1,15 +1,11 @@
 // Design review stage, DR6 (designs-2026-10-30/design-review-stage.md 3.2, 3.7, 3.13): the workflow's transitions. Bounds, settled findings, oscillation stop, cap stop, not-run paths,
 // and the guarantee that with design review OFF nothing changed (the plan check's own tests live in rovara-code-critic.test.ts and stay green).
 import { describe, expect, it } from "vitest";
-import {
-  DESIGN_LOST_FINDING_ID_PREFIX, DESIGN_REVIEW_ROUNDS_MAX, DESIGN_REVIEW_EARLIER_MAX, DESIGN_REVIEW_EARLIER_MAX_BYTES, DESIGN_REVIEW_REARMS_MAX, WorkflowSnapshotSchema, blockWorkflow, closeParkedDesignReview, designReviewCapRoom,
-  lowerDesignReviewTier, parkDesignReview, skipDesignReview, raiseDesignReviewCap, rearmedDesignReview, resumeBlockedDesignReview, resumeParkedDesignReview, retryDesignReviewNotRun, designReviewRetryOffer, answerDesignQuestions, askDesignQuestions, closeDesignReview, closePlanCritique, createWorkflowSnapshot, decideWorkflow, designFindingFingerprint,
-  designReviewDisagreements, designReviewRevisionsUsed, enableDesignReview, holdDesignReviewForCost, resolveDesignReview, retryDesignReview, startDesignReview, submitDesignReview, submitPlanCritique,
-  submitWorkflowArtifact, workflowIsDesignReviewing, type WorkflowProgram, type WorkflowSnapshot,
-} from "../../packages/contracts/src/index.js";
+import { DESIGN_LOST_FINDING_ID_PREFIX, DESIGN_REVIEW_ROUNDS_MAX, DESIGN_REVIEW_EARLIER_MAX, DESIGN_REVIEW_EARLIER_MAX_BYTES, DESIGN_REVIEW_REARMS_MAX, designReviewCapRoom, rearmedDesignReview, designFindingFingerprint, designReviewDisagreements, designReviewRevisionsUsed, workflowIsDesignReviewing, type WorkflowProgram } from "@rovara-code/contracts";
+import { WorkflowSnapshotSchema, blockWorkflow, closeParkedDesignReview, lowerDesignReviewTier, parkDesignReview, skipDesignReview, raiseDesignReviewCap, resumeBlockedDesignReview, resumeParkedDesignReview, retryDesignReviewNotRun, designReviewRetryOffer, answerDesignQuestions, askDesignQuestions, closeDesignReview, closePlanCritique, createWorkflowSnapshot, decideWorkflow, enableDesignReview, holdDesignReviewForCost, resolveDesignReview, retryDesignReview, startDesignReview, submitDesignReview, submitPlanCritique, submitWorkflowArtifact, type WorkflowSnapshot } from "@agentx/cloud-contracts";
 import { gateDesignReviewCost, type DesignReviewEstimate } from "../../packages/broker/src/design-review/estimate.js";
 import { applyDesignSpendChoice } from "../../packages/broker/src/design-review/spend-choice.js";
-import * as web from "../../packages/contracts/src/web.js";
+import * as web from "@agentx/cloud-contracts/web";
 import { taskViewForClient } from "../../packages/broker/src/rovara-code/task-view-compat.js";
 
 const NOW = "2026-11-03T12:00:00.000Z";

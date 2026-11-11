@@ -1,10 +1,5 @@
 import {ProcessModelRefusal,processModelRefusalBody} from "./model-selection/process-refusal.js";
-import {
-  AgentXError,
-  OperationRequestSchema,
-  ProjectDefinitionSchema,
-  agentXError,
-} from "@agentx/contracts";
+import { AgentXError, OperationRequestSchema, ProjectDefinitionSchema, agentXError } from "@rovara-code/contracts";
 import type { JwtAuthenticator } from "./auth.js";
 import {
   assertNoUntrustedRoutingFields,

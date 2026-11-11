@@ -10,26 +10,7 @@
 import { createHash } from "node:crypto";
 import { CreateScheduleCommand, DeleteScheduleCommand, FlexibleTimeWindowMode, ScheduleState, UpdateScheduleCommand } from "@aws-sdk/client-scheduler";
 import { DeleteCommand, GetCommand, PutCommand } from "@aws-sdk/lib-dynamodb";
-import {
-  CoverageMapSchema,
-  INDEX_EXPIRY_ATTRIBUTE,
-  NIGHTLY_FAILED_MAX,
-  NIGHTLY_FLAKY_MAX,
-  NIGHTLY_SOURCE,
-  NightlyBaselineSchema,
-  NightlyFireSchema,
-  NightlyResultSchema,
-  StoredNightlyHealthSchema,
-  agentXError,
-  canonicalJson,
-  projectPk,
-  type CoverageMapData,
-  type NightlyBaseline,
-  type NightlyResult,
-  type NightlySkipReason,
-  type OrgId,
-  type StoredNightlyHealth,
-} from "@agentx/contracts";
+import { CoverageMapSchema, INDEX_EXPIRY_ATTRIBUTE, NIGHTLY_FAILED_MAX, NIGHTLY_FLAKY_MAX, NIGHTLY_SOURCE, NightlyBaselineSchema, NightlyFireSchema, NightlyResultSchema, StoredNightlyHealthSchema, agentXError, canonicalJson, projectPk, type CoverageMapData, type NightlyBaseline, type NightlyResult, type NightlySkipReason, type OrgId, type StoredNightlyHealth } from "@rovara-code/contracts";
 import { readApprovedTestEnvironment, type TestEnvDeps } from "../org/test-environment.js";
 import type { ScheduleSettings, SchedulerPort } from "../triggers/schedules.js";
 import { classifyNightlyHealth } from "./nightly-health.js";

@@ -5,7 +5,8 @@
 // Every read fails closed: a stored value that cannot be read never turns into a looser setting. An unreadable mode is `off`, an unreadable choice is a choice that holds nothing (nothing runs, and it is flagged;
 // it never falls back to the default), an unreadable verdict or replay run is absent (so `on` is never reached on bad evidence).
 import { GetCommand, QueryCommand } from "@aws-sdk/lib-dynamodb";
-import { orgMetaKey, SecondReviewContextSchema, SecondReviewModeSchema, SecondReviewModelListSchema, SecondReviewReplayRunSchema, SecondReviewVerdictSchema, type SecondReviewContext, type SecondReviewMode, type SecondReviewModelRef, type SecondReviewReplayRun, type SecondReviewVerdict } from "@agentx/contracts";
+import { orgMetaKey } from "@agentx/cloud-contracts";
+import { SecondReviewContextSchema, SecondReviewModeSchema, SecondReviewModelListSchema, SecondReviewReplayRunSchema, SecondReviewVerdictSchema, type SecondReviewContext, type SecondReviewMode, type SecondReviewModelRef, type SecondReviewReplayRun, type SecondReviewVerdict } from "@rovara-code/contracts";
 
 export interface SettingsTable { documentClient: { send(command: unknown): Promise<unknown> }; tableName: string }
 type Item = Record<string, unknown>;

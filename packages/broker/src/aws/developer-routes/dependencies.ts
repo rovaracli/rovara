@@ -5,21 +5,8 @@ import { designActionsFor } from "./design-review.js";
 import { taskPageActionsFor } from "../developer-tasks/task-page.js";
 import { randomUUID } from "node:crypto";
 import { GetCommand } from "@aws-sdk/lib-dynamodb";
-import {
-  AgentXError,
-  agentXError,
-  forbiddenModelMatcher,
-  isSystemOwnerId,
-  MEMBER_GRANT_SK_PREFIX,
-  memberGrantsPk,
-  orgMemberKey,
-  type AgentId,
-  type DeveloperTaskView,
-  type RunInput,
-  StartDeveloperTaskRequestSchema,
-  workflowAnswer,
-  type MergeTrackingItem,
-} from "@agentx/contracts";
+import { AgentXError, agentXError, forbiddenModelMatcher, isSystemOwnerId, MEMBER_GRANT_SK_PREFIX, memberGrantsPk, type AgentId, type RunInput, StartDeveloperTaskRequestSchema } from "@rovara-code/contracts";
+import { orgMemberKey, type DeveloperTaskView, workflowAnswer, type MergeTrackingItem } from "@agentx/cloud-contracts";
 import { chooseDiagnosisRoute } from "../../model-sources/diagnosis-provider.js";
 import { latestRevision } from "../../org/project-settings.js";
 import { cutText } from "../developer-tasks/common.js";

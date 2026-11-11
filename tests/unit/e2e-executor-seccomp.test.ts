@@ -3,7 +3,7 @@ import { chmod, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promis
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, describe, expect, it } from "vitest";
-import { E2E_EXECUTOR_SECCOMP_PROFILE_SHA256, canonicalJson } from "../../packages/contracts/src/index.js";
+import { E2E_EXECUTOR_SECCOMP_PROFILE_SHA256, canonicalJson } from "@rovara-code/contracts";
 import { installedExecutorSeccompProfilePath, verifyExecutorSeccompProfile } from "../../packages/verifier/src/host/executor-seccomp.js";
 
 const dirs: string[] = [];

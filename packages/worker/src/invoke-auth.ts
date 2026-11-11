@@ -1,12 +1,6 @@
 import { createPublicKey, verify, type KeyObject } from "node:crypto";
-import {
-  WORKER_INVOKE_AUTHORIZATION_SCHEME,
-  WorkerInvokeTokenClaimsSchema,
-  type WorkerInvocation,
-  type WorkerInvokeTokenClaims,
-  workflowPublicationContext,
-  workflowPublicationContextDigest,
-} from "@agentx/contracts";
+import { WORKER_INVOKE_AUTHORIZATION_SCHEME, WorkerInvokeTokenClaimsSchema, type WorkerInvokeTokenClaims, workflowPublicationContextDigest } from "@rovara-code/contracts";
+import { type WorkerInvocation, workflowPublicationContext } from "@agentx/cloud-contracts";
 
 const MAX_TOKEN_LENGTH = 2_048;
 const BASE64URL = /^[A-Za-z0-9_-]+$/;

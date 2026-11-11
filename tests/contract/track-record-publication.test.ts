@@ -1,7 +1,8 @@
 // Track record (v1.2 slice 1): publication records the claims about its candidate, and closing the task settles the open ones.
 import { createHash, randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
-import { createCandidateManifest, type WorkflowSnapshot } from "@agentx/contracts";
+import { createCandidateManifest } from "@rovara-code/contracts";
+import { type WorkflowSnapshot } from "@agentx/cloud-contracts";
 import { TEST_ORG } from "../support/orgs.js";
 import { finishTaskClose, startTaskWorkflowPublicationFromSystem, taskPageUrl } from "../../packages/broker/src/aws/developer-tasks.js";
 import { DEV_ISSUER, MAYA, createSingleAnswerPlanBroker } from "../support/developer-task-broker.js";

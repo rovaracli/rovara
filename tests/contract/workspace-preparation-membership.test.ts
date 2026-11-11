@@ -1,8 +1,9 @@
 import { fakeModelAccess } from "../support/fake-model-access.js";
-import { orgSettingsKey } from "@agentx/contracts";
+import { orgSettingsKey } from "@agentx/cloud-contracts";
 import { createHash, randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
-import { projectMemberKey, orgMetaKey } from "@agentx/contracts";
+import { projectMemberKey } from "@rovara-code/contracts";
+import { orgMetaKey } from "@agentx/cloud-contracts";
 import { createDeveloperTaskBroker } from "../support/developer-task-broker.js";
 import { TEST_ORG } from "../support/orgs.js";
 import { SLACK_CHANNEL, SLACK_TEAM, call, ensureWorkspace, issuer, lazyEnsureWorkspace } from "../support/slack-broker.js";

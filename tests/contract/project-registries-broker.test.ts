@@ -1,6 +1,6 @@
 // N9 (INTG2): the broker's half. Tokens are built at run time. Each case names the rule it holds; the mutation notes are in .superpowers/sdd/ent-registries/report.md.
 import { describe, expect, it, vi } from "vitest";
-import { REGISTRY_PROBLEM_MESSAGES, REGISTRY_TOKEN_SECONDS, type ProjectRegistry } from "../../packages/contracts/src/index.js";
+import { REGISTRY_PROBLEM_MESSAGES, REGISTRY_TOKEN_SECONDS, type ProjectRegistry } from "@rovara-code/contracts";
 import { REGISTRY_UNAVAILABLE_MESSAGE, mintRegistryCredential } from "../../packages/broker/src/project-registries/mint.js";
 import { REGISTRIES_OFF_MESSAGE, exchangeRegistryCredentialCore, type RegistryExchangeContext } from "../../packages/broker/src/project-registries/exchange.js";
 import { REGISTRY_FEATURE_MISSING, registriesPrepareFor } from "../../packages/broker/src/project-registries/prepare.js";

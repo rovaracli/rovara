@@ -6,7 +6,7 @@
 import { UNUSED_WORDS, readTestEnvPin, usableTestEnvironment } from "./usable.js";
 import { testEnvironmentEnabled } from "./switch.js";
 import type { TestEnvDeps } from "../org/test-environment.js";
-import type { EvidenceEnvironment, EvidenceNotTested, OrgId, TestEnvProdDeny } from "@agentx/contracts";
+import type { EvidenceEnvironment, EvidenceNotTested, OrgId, TestEnvProdDeny } from "@rovara-code/contracts";
 import type { PinnedDependency } from "../rovara-code/dependency-evidence.js";
 
 export interface EvidenceEnvironmentChoice {

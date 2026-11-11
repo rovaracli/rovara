@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { SLACK_OIDC_ISSUER, type TaskPersonProofRequest, type TaskPersonProofResponse } from "@agentx/contracts";
+import { SLACK_OIDC_ISSUER, type TaskPersonProofRequest, type TaskPersonProofResponse } from "@rovara-code/contracts";
 import { developerIdForSlackUser } from "../../packages/broker/src/aws/admin-actions.js";
 import { ownerKeyForSubject } from "../../packages/broker/src/aws/lambda.js";
 import * as taskPersonIdentity from "../../packages/broker/src/developer/task-person-identity.js";

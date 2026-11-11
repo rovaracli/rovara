@@ -1,14 +1,14 @@
-import { slackBindingPk } from "../../packages/contracts/src/org-scoped-keys.js";
+import { slackBindingPk } from "@rovara-code/contracts";
 import { randomUUID } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
 import { describe, expect, it, vi } from "vitest";
-import type { TaskPersonInviteExecutionReceipt } from "../../packages/contracts/src/developer.js";
+import type { TaskPersonInviteExecutionReceipt } from "@rovara-code/contracts";
 import { createTaskPersonInviteHandler, type TaskPersonInviteHandlerPorts } from "../../packages/broker/src/aws/task-person-invite-handler.js";
 import { taskPersonInviteStateConditions, type TaskPersonProjectAuthorityWitness } from "../../packages/broker/src/aws/task-person-invite-authority-fence.js";
 import { taskPersonInviteClaimDigest } from "../../packages/broker/src/developer/task-people-effects.js";
 import type { TaskPersonCheck } from "../../packages/broker/src/developer/task-people.js";
 import { TEST_ORG } from "../support/orgs.js";
-import { projectMemberKey, projectRevisionKey } from "../../packages/contracts/src/org-scoped-keys.js";
+import { projectMemberKey, projectRevisionKey } from "@rovara-code/contracts";
 
 const taskId = "11111111-1111-4111-8111-111111111111";
 const requestId = "22222222-2222-4222-8222-222222222222";

@@ -1,10 +1,11 @@
-import { slackLimitPk } from "../../packages/contracts/src/org-scoped-keys.js";
+import { slackLimitPk } from "@rovara-code/contracts";
 import { beforeAll, describe, expect, it, vi } from "vitest";
 import { FakeDynamoDb } from "../support/fake-dynamodb.js";
 import { chargeConflict, chargeItems, developerCharge, limitReached, readWorkspaceLimits, releaseConflict, releaseItems } from "../../packages/broker/src/developer/limits.js";
 import { SLACK_CHANNEL, SLACK_TEAM, createBroker, ensureWorkspace, loadSlackBroker, registerSlackProject } from "../support/slack-broker.js";
 import { TEST_ORG } from "../support/orgs.js";
-import { orgLimitKey, orgSettingsKey } from "../../packages/contracts/src/org-scoped-keys.js";
+import { orgLimitKey } from "@rovara-code/contracts";
+import { orgSettingsKey } from "../../packages/cloud-contracts/src/org-scoped-keys.js";
 
 const fallback = { member: 3, organization: 20 };
 const thread = (n: number) => `${SLACK_TEAM}/${SLACK_CHANNEL}/1695500000.00000${n}`;

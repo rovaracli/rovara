@@ -1,6 +1,6 @@
 import { useMemo, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { DECISION_LABELS, skipRefusalText, type DesignActionsView } from "@agentx/contracts/web";
+import { DECISION_LABELS, skipRefusalText, type DesignActionsView } from "@agentx/cloud-contracts/web";
 import { useAppHost } from "../../host.js";
 import { createDesignReviewApi } from "../../api/design-review.js";
 import { ApiError } from "../../api/errors.js";

@@ -3,10 +3,11 @@
 // unchecked, checking, ready, failed (with the failing step) or outdated (a newer revision exists). It passes the admissions a task start passes
 // except the model budget, and it is replayable by request id in the same transaction that starts it.
 import { fakeModelAccess } from "../support/fake-model-access.js";
-import { orgSettingsKey } from "@agentx/contracts";
+import { orgSettingsKey } from "@agentx/cloud-contracts";
 import { randomUUID } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
-import { AppProjectDetailSchema, machineTimeMonthKey, orgMetaKey, projectMemberKey, projectMetaKey, projectRevisionKey, type OrgId, type OrgRole, type ProjectRole } from "../../packages/contracts/src/index.js";
+import { AppProjectDetailSchema, projectMemberKey, projectMetaKey, projectRevisionKey, type OrgId, type ProjectRole } from "@rovara-code/contracts";
+import { machineTimeMonthKey, orgMetaKey, type OrgRole } from "@agentx/cloud-contracts";
 import { sweepStuckSetupChecks } from "../../packages/broker/src/aws/setup-check-close.js";
 import { setupCheckRecordKey, setupCheckWatchKey } from "../../packages/broker/src/org/project-setup-check.js";
 import { MAYA, OMAR, createDeveloperTaskBroker, registerRevision, seedMembership, type Developer } from "../support/developer-task-broker.js";

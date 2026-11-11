@@ -1,6 +1,6 @@
 // Setup and test health SH28: the project's health from the nightly run and from blocked tasks, the Fix setup card (a port until SH17 is wired), the start banner, the proposed fix task, and the `nh` switch.
 import { describe, expect, it } from "vitest";
-import { NightlyBaselineSchema, projectMetaKey, type NightlyBaseline, type OrgId, type StoredNightlyHealth, type TestingBlockedReason, TESTING_BLOCKED_REASONS } from "@agentx/contracts";
+import { NightlyBaselineSchema, projectMetaKey, type NightlyBaseline, type OrgId, type StoredNightlyHealth, type TestingBlockedReason, TESTING_BLOCKED_REASONS } from "@rovara-code/contracts";
 import {
   BLOCKED_REASON_POINTS_AT_SETUP, BLOCKED_TASKS_FOR_REPAIR, BLOCKED_WINDOW_MS, TESTING_MAY_BE_BLOCKED_TEXT, PROJECT_HEALTH_STATES, applyNightlyRecorded, failingSetKey, nightlyHealthListener, noteBlockedTask, noteSetupProved,
   readProjectHealth, readProposeFixTask, setProposeFixTask, taskStartNotice, type HealthPorts, type ProjectHealthState,

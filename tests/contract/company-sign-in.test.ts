@@ -1,6 +1,6 @@
 import { decodeJwt } from "jose";
 import { describe, expect, it, vi } from "vitest";
-import { BREAK_GLASS_NOT_FRESH_MESSAGE, BREAK_GLASS_NOT_RECORDED_MESSAGE, ENTERPRISE_SESSION_MAX_SECONDS, GROUP_MAPPING_MESSAGES, editionPolicy, orgMetaKey } from "@agentx/contracts";
+import { BREAK_GLASS_NOT_FRESH_MESSAGE, BREAK_GLASS_NOT_RECORDED_MESSAGE, ENTERPRISE_SESSION_MAX_SECONDS, GROUP_MAPPING_MESSAGES, editionPolicy, orgMetaKey } from "@agentx/cloud-contracts";
 import { ownerKeyForSubject } from "../../packages/broker/src/aws/lambda.js";
 import { inviteTokenHash } from "../../packages/broker/src/org/invite-url.js";
 import { REMOVED_FROM_ORG_MESSAGE } from "../../packages/broker/src/org/sign-in.js";

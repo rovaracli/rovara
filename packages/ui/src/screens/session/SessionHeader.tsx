@@ -1,5 +1,5 @@
 import type { ReactNode } from "react";
-import { STATUS_WORDS, TaskStatusReaderSchema, taskStatusFromSession, taskStatusText, type SessionViewReaderSchema } from "@agentx/contracts/web";
+import { STATUS_WORDS, TaskStatusReaderSchema, taskStatusFromSession, taskStatusText, type SessionViewReaderSchema } from "@agentx/cloud-contracts/web";
 import { AvatarStack } from "../../design/AvatarStack.js";
 import { Button } from "../../design/Button.js";
 import { Money } from "../../design/Money.js";

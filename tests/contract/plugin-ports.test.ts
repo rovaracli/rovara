@@ -1,9 +1,5 @@
 import { describe, expect, it } from "vitest";
-import {
-  ActingIdentityPolicySchema, AttributionSchema, ChangeRequestFeedbackSchema, ChangeRequestInputSchema, ChangeRequestStatusSchema, ChangeRequestUpdateSchema, CheckSchema,
-  CheckStartRequestSchema, CheckTargetSchema, DELEGATED_GRANT_MAX_LIFETIME_MS, GIT_CREDENTIAL_HELPERS, GIT_CREDENTIAL_MAX_LIFETIME_MS, workerGitCredentialUsable, CodeHostCapabilitiesSchema, CodeHostEventSchema, CODE_HOST_EVENT_TYPES, DelegatedGrantSchema, GitCredentialSchema,
-  HostScopeSchema, MergeResultSchema, PluginKindSchema, TrackerEventSchema, TrackerItemSchema, actingIdentityModeAllowed, delegatedUseAllowed,
-} from "../../packages/contracts/src/plugins/index.js";
+import { ActingIdentityPolicySchema, AttributionSchema, ChangeRequestFeedbackSchema, ChangeRequestInputSchema, ChangeRequestStatusSchema, ChangeRequestUpdateSchema, CheckSchema, CheckStartRequestSchema, CheckTargetSchema, DELEGATED_GRANT_MAX_LIFETIME_MS, GIT_CREDENTIAL_HELPERS, GIT_CREDENTIAL_MAX_LIFETIME_MS, workerGitCredentialUsable, CodeHostCapabilitiesSchema, CodeHostEventSchema, CODE_HOST_EVENT_TYPES, DelegatedGrantSchema, GitCredentialSchema, HostScopeSchema, MergeResultSchema, PluginKindSchema, TrackerEventSchema, TrackerItemSchema, actingIdentityModeAllowed, delegatedUseAllowed } from "@rovara-code/contracts";
 
 const ref = { repository: { url: "https://git.example.test/acme/app" }, id: "7", url: "https://git.example.test/acme/app/pull/7" };
 const sha = "a".repeat(40);

@@ -1,7 +1,6 @@
 import { createHash } from "node:crypto";
 import { describe, expect, it } from "vitest";
-import { E2ERunBindingSchema, WEB_API_CHALLENGE_LIFETIME_MS, WEB_API_NETWORK_POLICY, WEB_API_NETWORK_POLICY_DIGEST, WEB_API_PROBE_PROPOSAL_MAX_BYTES, WEB_API_REQUIRED_PROBES,
-  WebApiProbeEvidenceSchema, canonicalJson, runtimeInstallChallengeDigest, webApiProbeRunId } from "../../packages/contracts/src/index.js";
+import { E2ERunBindingSchema, WEB_API_CHALLENGE_LIFETIME_MS, WEB_API_NETWORK_POLICY, WEB_API_NETWORK_POLICY_DIGEST, WEB_API_PROBE_PROPOSAL_MAX_BYTES, WEB_API_REQUIRED_PROBES, WebApiProbeEvidenceSchema, canonicalJson, runtimeInstallChallengeDigest, webApiProbeRunId } from "@rovara-code/contracts";
 import { webApiChallenge } from "../support/web-api-qualification.js";
 
 const now = Date.parse("2026-10-19T12:00:00.000Z");

@@ -1,7 +1,7 @@
 import { Link, useSearchParams } from "react-router";
 import { SettingsNote } from "../SettingsNote.js";
 import { z } from "zod";
-import { AgentDirectoryResponseReaderSchema, AutonomySchema } from "@agentx/contracts/web";
+import { AgentDirectoryResponseReaderSchema, AutonomySchema } from "@agentx/cloud-contracts/web";
 import { DataTable } from "../../../design/DataTable.js";
 import { PageHeader } from "../../../design/PageHeader.js";
 import { VisibleText } from "../../../design/VisibleText.js";

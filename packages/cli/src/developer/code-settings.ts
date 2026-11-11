@@ -3,7 +3,7 @@
 // once except self-approval turned on, which answers `202 NEEDS_CONFIRMATION`: the command prints the link where an organization owner or admin confirms it and exits 0. Nothing here
 // decides anything (R66): the CLI never decides an approval.
 import { randomUUID } from "node:crypto";
-import { CLI_PACKAGE_NAME, CODE_REVIEWERS_MAX, CodeSettingsResponseReaderSchema, NeedsConfirmationReaderSchema, agentXError, type CodeSettingsResponseRead } from "@agentx/contracts";
+import { CLI_PACKAGE_NAME, CODE_REVIEWERS_MAX, CodeSettingsResponseReaderSchema, NeedsConfirmationReaderSchema, agentXError, type CodeSettingsResponseRead } from "@rovara-code/contracts";
 import { appRequest, clean, result, seg, type AppResult } from "./agents.js";
 import { safeUrl } from "./sessions.js";
 import type { DeveloperSessionDeps } from "./session.js";

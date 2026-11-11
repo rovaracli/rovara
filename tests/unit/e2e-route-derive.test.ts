@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
-import { canonicalJson } from "../../packages/contracts/src/canonical-json.js";
-import { e2eModelRouteRevision } from "../../packages/contracts/src/e2e-model-channel.js";
+import { canonicalJson } from "@rovara-code/contracts";
+import { e2eModelRouteRevision } from "@rovara-code/contracts";
 import { deriveE2EAgentRoute, e2eAgentInstallationFromEnvironment, resolveE2EAgentRouteForAdmission, scriptedE2ERouteDefinition } from "../../packages/model-runtime/src/e2e-route-derive.js";
 import { deriveE2EAgentRoute as brokerDerive, e2eAgentInstallationFromParameters } from "../../packages/broker/src/e2e/model-route-registry.js";
 import { deriveE2EAgentRoute as installedDerive } from "@agentx/model-runtime/e2e-route-derive";

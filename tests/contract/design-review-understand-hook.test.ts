@@ -2,9 +2,9 @@
 // Understand's reading decide, in code, whether the task's design is reviewed, and a reviewed task is forced onto the Full path. With the switch OFF the setting is never read and the task is exactly what it was.
 import { randomUUID } from "node:crypto";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { UNDERSTAND_ARTIFACT_NAME, projectPlaybookKey, type IntentAssessment } from "../../packages/contracts/src/index.js";
+import { UNDERSTAND_ARTIFACT_NAME, projectPlaybookKey, type IntentAssessment } from "@rovara-code/contracts";
 import { AgentStore } from "../../packages/broker/src/agents/store.js";
-import { builtinSettingsKey } from "../../packages/contracts/src/org-scoped-keys.js";
+import { builtinSettingsKey } from "@rovara-code/contracts";
 import { MAYA, createSingleAnswerPlanBroker } from "../support/developer-task-broker.js";
 import { fakeModelAccess } from "../support/fake-model-access.js";
 import { TEST_ORG } from "../support/orgs.js";

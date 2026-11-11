@@ -16,7 +16,7 @@ import { S3Client } from "@aws-sdk/client-s3";
 import { SecretsManagerClient } from "@aws-sdk/client-secrets-manager";
 import { SQSClient } from "@aws-sdk/client-sqs";
 import { DynamoDBDocumentClient } from "@aws-sdk/lib-dynamodb";
-import { EDITION_ENV_VAR } from "@agentx/contracts";
+import { EDITION_ENV_VAR } from "@agentx/cloud-contracts";
 import type { AuditRuntime } from "../audit/outbox.js";
 import { createCodeBuildGateway } from "../codebuild.js";
 import { deadlineGuardedClient } from "../lessons/deadline-guard.js";

@@ -3,7 +3,7 @@
 // The one best command tied to tests becomes the test check (the others are listed as alternatives); with none, the question stays. Brazil report paths are not public, so none is ever built in: a report or
 // coverage path comes from the team's own words near the command (cited) or from the language tool's own detector, which keeps running inside a Brazil package (Brazil wraps the language tool, so the proposal can
 // show both and the Prove run decides). Everything here is a PROPOSAL; nothing is run.
-import { formatCommandLine, redactText, remoteCodeReason } from "@agentx/contracts";
+import { formatCommandLine, redactText, remoteCodeReason } from "@rovara-code/contracts";
 import type { DetectedCheck, DetectedSource, Detector } from "./types.js";
 
 const MAX_DOCS = 30;

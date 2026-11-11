@@ -3,10 +3,8 @@
 // `admitTrial` then `admitMachineTime`, before the proxy is asked anything and before anything is charged); machine
 // time is recorded when compute stops (`recordMachineTime`, called by the session manager at every stop).
 import { DeleteCommand, GetCommand, PutCommand, QueryCommand, TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
-import {
-  SESSION_MAX_LIFETIME_MS, agentXError, machineTimeMonthKey, machineTimeOnceKey, openComputeKey, openComputePk, orgMetaKey, trialGithubKey, workspaceSessionKey,
-  type OrgId,
-} from "@agentx/contracts";
+import { SESSION_MAX_LIFETIME_MS, agentXError, workspaceSessionKey, type OrgId } from "@rovara-code/contracts";
+import { machineTimeMonthKey, machineTimeOnceKey, openComputeKey, openComputePk, orgMetaKey, trialGithubKey } from "@agentx/cloud-contracts";
 
 /** Placeholder allowances, in hours of compute per UTC month, until orgs can buy more. */
 export const TRIAL_MACHINE_HOURS_PER_MONTH = 20;

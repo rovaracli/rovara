@@ -1,9 +1,7 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
-import {
-  E2E_AGENT_BEDROCK_QUOTA_CODES, E2E_AGENT_ELIGIBLE_MODELS, E2E_AGENT_RECOMMENDED_MODELS, e2eAgentModelsFor, e2eAgentScopeSentence, eligibleE2EAgentModel,
-} from "../../packages/contracts/src/e2e-agent-models.js";
-import { MODEL_PROVIDERS } from "../../packages/contracts/src/model-providers.js";
+import { E2E_AGENT_BEDROCK_QUOTA_CODES, E2E_AGENT_ELIGIBLE_MODELS, E2E_AGENT_RECOMMENDED_MODELS, e2eAgentModelsFor, e2eAgentScopeSentence, eligibleE2EAgentModel } from "@rovara-code/contracts";
+import { MODEL_PROVIDERS } from "@rovara-code/contracts";
 import { catalogEligibilityRows, eligibilityRow, renderEligibleModelsSource } from "../../scripts/generate-e2e-agent-models.js";
 
 // M1.4 Task 4.10A, tests 3 to 5: which models the AI navigation route accepts, and the shape of the request each one gets, come from the pinned pi catalog.

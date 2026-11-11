@@ -9,22 +9,8 @@
 // in the lane report). Nothing here names a company or a code host beyond GitHub, the only host the repository checks support today.
 import { createHash } from "node:crypto";
 import { GetCommand } from "@aws-sdk/lib-dynamodb";
-import {
-  AgentXError,
-  CreateProjectFromMetaBodySchema,
-  DEFAULT_ORCHESTRATOR_INSTRUCTIONS,
-  ProjectDefinitionSchema,
-  agentXError,
-  canonicalJson,
-  githubNotConnectedMessage,
-  projectCreateRequestKey,
-  projectRevisionKey,
-  type CreateProjectFromMetaBody,
-  type Ec2RuntimeBinding,
-  type OrgId,
-  type OrgRole,
-  type ProjectDefinition,
-} from "@agentx/contracts";
+import { AgentXError, CreateProjectFromMetaBodySchema, DEFAULT_ORCHESTRATOR_INSTRUCTIONS, ProjectDefinitionSchema, agentXError, canonicalJson, githubNotConnectedMessage, projectRevisionKey, type CreateProjectFromMetaBody, type Ec2RuntimeBinding, type OrgId, type ProjectDefinition } from "@rovara-code/contracts";
+import { projectCreateRequestKey, type OrgRole } from "@agentx/cloud-contracts";
 import type { TransactItem } from "../audit/outbox.js";
 import { cloudRepositoryEntry } from "./cloud-projects.js";
 import { readRequestRecord, requestRecordPut, requireSameRequest } from "./request-records.js";

@@ -3,7 +3,7 @@
 import { execFile } from "node:child_process";
 import { lstat } from "node:fs/promises";
 import { join } from "node:path";
-import { LOCAL_LESSONS_REPO_FILE, withoutCredentials } from "@agentx/contracts";
+import { LOCAL_LESSONS_REPO_FILE, withoutCredentials } from "@agentx/cloud-contracts";
 
 export interface Checkout {
   /** The `origin` remote, without credentials. Absent outside a checkout or with no `origin`. */

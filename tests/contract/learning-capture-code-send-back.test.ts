@@ -2,7 +2,8 @@
 // The one hook is in `sendTaskWorkflowBackToCoding`, which the task page, the developer API, Slack and MCP all reach. The decider's standing is read live, never taken from the task role.
 import { createHash, randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
-import { BUILTIN_AGENTS, EMPTY_RECIPE, agentXError, createCandidateManifest, type ResolvedRecipe, type WorkflowSnapshot } from "@agentx/contracts";
+import { BUILTIN_AGENTS, EMPTY_RECIPE, agentXError, createCandidateManifest, type ResolvedRecipe } from "@rovara-code/contracts";
+import { type WorkflowSnapshot } from "@agentx/cloud-contracts";
 import { resolveTaskWorkflowFindings, sendTaskWorkflowBackToCoding, type DeveloperTaskRouteDependencies } from "../../packages/broker/src/aws/developer-tasks.js";
 import type { DeveloperCaller } from "../../packages/broker/src/aws/developer-routes.js";
 import { sendBackNoAccessMessage } from "../../packages/broker/src/developer/task-access.js";
@@ -13,9 +14,9 @@ import { SEND_BACK_CAPTURE_BUDGET_MS, captureSendBack, captureSendBackQuietly, s
 import { learningSalt } from "../../packages/broker/src/learning/standing.js";
 import { signatureOf } from "../../packages/broker/src/learning/similarity.js";
 import { captureCorrection, readLearningState } from "../../packages/broker/src/learning/store.js";
-import { openReviewFindings } from "../../packages/contracts/src/task-workflow-node.js";
-import { projectMemberKey } from "../../packages/contracts/src/org-scoped-keys.js";
-import { LEARNING_PROJECT_WIDE, LearningCorrectionSchema, type LearningCorrection } from "../../packages/contracts/src/project-learning.js";
+import { openReviewFindings } from "../../packages/cloud-contracts/src/task-workflow-node.js";
+import { projectMemberKey } from "@rovara-code/contracts";
+import { LEARNING_PROJECT_WIDE, LearningCorrectionSchema, type LearningCorrection } from "@rovara-code/contracts";
 import { MAYA, OMAR, createSingleAnswerPlanBroker, type Developer } from "../support/developer-task-broker.js";
 import { finishPlanningWithMarkdown } from "../support/plan-documents.js";
 import { SLACK_CHANNEL, SLACK_TEAM } from "../support/slack-broker.js";

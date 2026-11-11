@@ -12,7 +12,7 @@ import { expectNoAxeViolations } from "./support/axe.js";
 import { h } from "./support/h.js";
 import { howWeWorkView } from "./support/how-we-work-view.js";
 import { LAYER, draftBody, howWeWorkHost, type Handler } from "./support/how-we-work-fixture.js";
-import { StepThinkingLevelSchema } from "@agentx/contracts/web";
+import { StepThinkingLevelSchema } from "@agentx/cloud-contracts/web";
 import { OPUS, SONNET, candidates, effective, keyOf, mid, stageEntry, stageModelsBody } from "./support/stage-models-fixture.js";
 
 const PATH = "/v1/app/projects/payments/stage-models";

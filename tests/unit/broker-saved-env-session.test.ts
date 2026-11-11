@@ -1,6 +1,6 @@
 // SH22: the broker's registry sessions for saved environment images. A session is minted only for an APPROVED, PROVED environment, names ONE repository in its policy, and fails with a fixed word.
 import { describe, expect, it } from "vitest";
-import { SAVED_ENV_PULL_SESSION_SECONDS, SAVED_ENV_PUSH_SESSION_SECONDS, savedEnvRepositoryName } from "../../packages/contracts/src/index.js";
+import { SAVED_ENV_PULL_SESSION_SECONDS, SAVED_ENV_PUSH_SESSION_SECONDS, savedEnvRepositoryName } from "@rovara-code/contracts";
 import { expectedRepositoryPolicy, mintManageSession, mintPullSession, mintPushSession, mintScanSession, verifyRepository, type RepositoryDescription, type SavedEnvSessionConfig, type SavedEnvSessionPorts } from "../../packages/broker/src/test-env/saved-env-session.js";
 
 const SCOPE = { partition: "aws", region: "us-west-2", account: "111122223333" };

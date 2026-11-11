@@ -2,7 +2,7 @@ import { planLegacyDomainNarrowing, domainRequestHash } from "./legacy-domain-na
 import { createHash } from "node:crypto";
 import { GetCommand, TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
 import { z } from "zod";
-import { AgentXNameSchema, WorkingBranchNameSchema, StoredProjectDefinitionSchema, AllowedDomainSchema, DEFAULT_AGENT_ALLOW_DOMAINS, EgressDomainsItemSchema, egressDomainsKey, INDEX_EXPIRY_ATTRIBUTE, ProjectDefinitionSchema, agentXError, canonicalJson, orgProjectCatalogKey, projectMetaKey, projectPk, projectRevisionKey, type OrgId } from "@agentx/contracts";
+import { AgentXNameSchema, WorkingBranchNameSchema, StoredProjectDefinitionSchema, AllowedDomainSchema, DEFAULT_AGENT_ALLOW_DOMAINS, EgressDomainsItemSchema, egressDomainsKey, INDEX_EXPIRY_ATTRIBUTE, ProjectDefinitionSchema, agentXError, canonicalJson, orgProjectCatalogKey, projectMetaKey, projectPk, projectRevisionKey, type OrgId } from "@rovara-code/contracts";
 import { auditPending, type AuditRuntime, type TransactItem } from "../audit/outbox.js";
 import { flushAuditEvents } from "../audit/flush.js";
 import { auditOccurrence } from "../audit/events.js";

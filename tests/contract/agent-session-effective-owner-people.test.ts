@@ -3,8 +3,8 @@
 // claim it), dispatch asks for a witness for the taker first, and with no Slack proof for them it rests on their project authority.
 import { randomUUID } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
-import { projectMemberKey, projectRevisionKey, slackBindingKey } from "../../packages/contracts/src/org-scoped-keys.js";
-import { orgMemberKey, orgRemovedKey } from "../../packages/contracts/src/org-node.js";
+import { projectMemberKey, projectRevisionKey, slackBindingKey } from "@rovara-code/contracts";
+import { orgMemberKey, orgRemovedKey } from "../../packages/cloud-contracts/src/org-node.js";
 import type { DeveloperCaller } from "../../packages/broker/src/aws/developer-routes.js";
 import type { Ec2OutboxRecord } from "../../packages/broker/src/aws/lambda.js";
 import { createTaskAuthorityAdmission } from "../../packages/broker/src/aws/task-authority-admission.js";

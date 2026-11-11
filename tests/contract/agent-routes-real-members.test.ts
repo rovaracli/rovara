@@ -1,7 +1,7 @@
 // PF6: Plan 3's agent routes on Plan 2 Task 21's real `ProjectMembers`. The broker is built with `agents: {}` (as the deployed handler is), so
 // it builds `createProjectMembers` itself over the table, and the people are real items: org members, a project's revision, and grants. One
 // block per route family (agents, skills, roster, AI settings, approvals), each checking a role that comes from a grant and one from the org role.
-import { StoredProjectDefinitionSchema } from "../../packages/contracts/src/project-node.js";
+import { StoredProjectDefinitionSchema } from "@rovara-code/contracts";
 import { randomUUID } from "node:crypto";
 import { beforeAll, describe, expect, it } from "vitest";
 import { AgentStore } from "../../packages/broker/src/agents/store.js";
@@ -10,10 +10,11 @@ import type { ApprovalDependencies } from "../../packages/broker/src/agents/appr
 import { DeveloperSignInStore } from "../../packages/broker/src/developer/store.js";
 import type { OrgResolver } from "../../packages/broker/src/org/resolve.js";
 import { createProjectMembers } from "../../packages/broker/src/org/project-members.js";
-import type { AgentId } from "../../packages/contracts/src/agent-node.js";
-import type { OrgId, OrgRole } from "../../packages/contracts/src/org-node.js";
-import type { ProjectRole } from "../../packages/contracts/src/app-projects.js";
-import { orgProjectCatalogKey, projectMemberKey, projectMetaKey, projectRevisionKey } from "../../packages/contracts/src/org-scoped-keys.js";
+import type { AgentId } from "@rovara-code/contracts";
+import type { OrgId } from "@rovara-code/contracts";
+import type { OrgRole } from "../../packages/cloud-contracts/src/org-node.js";
+import type { ProjectRole } from "@rovara-code/contracts";
+import { orgProjectCatalogKey, projectMemberKey, projectMetaKey, projectRevisionKey } from "@rovara-code/contracts";
 import { OMAR, createDeveloperTaskBroker, seedMembership, type Developer } from "../support/developer-task-broker.js";
 import { TEST_ORG } from "../support/orgs.js";
 import { loadSlackBroker } from "../support/slack-broker.js";

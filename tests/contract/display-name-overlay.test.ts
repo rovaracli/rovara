@@ -3,7 +3,7 @@
 import { randomUUID } from "node:crypto";
 import { BatchGetCommand, GetCommand } from "@aws-sdk/lib-dynamodb";
 import { describe, expect, it } from "vitest";
-import { agentSessionKey, mySessionsKey } from "../../packages/contracts/src/index.js";
+import { agentSessionKey, mySessionsKey } from "@rovara-code/contracts";
 import { chosenNameKey } from "../../packages/broker/src/developer/chosen-name.js";
 import { placeholderDisplayName } from "../../packages/broker/src/developer/person-name.js";
 import { listSessions, sessionView, type SessionReadDependencies } from "../../packages/broker/src/agent-sessions/read.js";

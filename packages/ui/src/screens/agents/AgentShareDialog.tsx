@@ -1,6 +1,6 @@
 import { useRef, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { AgentPrincipalSchema, type AgentSharesResponseReaderSchema, AgentShareInputSchema, LEVEL_WORDS, principalKey } from "@agentx/contracts/web";
+import { AgentPrincipalSchema, type AgentSharesResponseReaderSchema, AgentShareInputSchema, LEVEL_WORDS, principalKey } from "@agentx/cloud-contracts/web";
 import { useAgentApi, type ReadAgent } from "../../api/agents.js";
 import type { SendResult } from "../../api/client.js";
 import { ConfirmInBrowser } from "../../confirm/ConfirmInBrowser.js";

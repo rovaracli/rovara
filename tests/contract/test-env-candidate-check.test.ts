@@ -3,7 +3,7 @@
 // commands into the settings. These tests go through the whole broker (routes, stores, the real preparation) with the worker's report played by the test.
 import { randomUUID } from "node:crypto";
 import { afterEach, describe, expect, it } from "vitest";
-import { projectMetaKey, projectPk, testEnvDigest, type TestEnvDraft, type TestEnvironmentBody } from "../../packages/contracts/src/index.js";
+import { projectMetaKey, projectPk, testEnvDigest, type TestEnvDraft, type TestEnvironmentBody } from "@rovara-code/contracts";
 import { MAYA, OMAR } from "../support/developer-task-broker.js";
 import { approveTestEnvironment, proposeTestEnvironment, readProposalSources } from "../../packages/broker/src/org/test-environment.js";
 import { ENV, NAME, command, draftBody, draftOf, errorOf, setupWizardBench, withSwitch, type Bench } from "../support/setup-wizard-testenv.js";

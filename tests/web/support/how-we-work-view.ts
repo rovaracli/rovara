@@ -1,4 +1,4 @@
-import { HOW_WE_WORK_REVIEWER_NOTE, HowWeWorkViewSchema } from "@agentx/contracts/web";
+import { HOW_WE_WORK_REVIEWER_NOTE, HowWeWorkViewSchema } from "@agentx/cloud-contracts/web";
 export const LAYER = "agt_cccccccccccccccccccc";
 type Mark = { source: "rovara" | "company" | "project"; locked: boolean; lockedBy?: "company" | "rovara" };
 const inherited: Mark = { source: "rovara", locked: false }, project: Mark = { source: "project", locked: false }, company: Mark = { source: "company", locked: true, lockedBy: "company" }, rovaraLock: Mark = { source: "rovara", locked: true, lockedBy: "rovara" };

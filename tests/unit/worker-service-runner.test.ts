@@ -3,8 +3,8 @@
 // the lazy once-per-process worker-start sweep (L5), and Prove's ports filled from a runner (inert when Prove has no dependencies).
 import { readFileSync } from "node:fs";
 import { beforeEach, describe, expect, it } from "vitest";
-import { ServiceCatalogSchema, type CatalogEntry } from "../../packages/contracts/src/service-catalog.js";
-import { TestEnvironmentBodySchema, testEnvDigest, type TestEnvironmentBody } from "@agentx/contracts";
+import { ServiceCatalogSchema, type CatalogEntry } from "@rovara-code/contracts";
+import { TestEnvironmentBodySchema, testEnvDigest, type TestEnvironmentBody } from "@rovara-code/contracts";
 import { proveEnvironment, type ProvePorts } from "../../packages/worker/src/prove.js";
 import { HelperStartError, type HelperFiles, type HelperRequest } from "../../packages/worker/src/service-helpers.js";
 import {

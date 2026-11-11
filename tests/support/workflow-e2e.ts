@@ -10,34 +10,8 @@ import { isAbsolute, join, relative, sep } from "node:path";
 import { promisify } from "node:util";
 import { fauxAssistantMessage, fauxText } from "@earendil-works/pi-ai";
 import { onTestFinished, vi } from "vitest";
-import {
-  SharedTaskRecordSchema,
-  WORKER_INVOCATION_FEATURES,
-  agentXError,
-  SlackChannelBindingSchema,
-  SlackRequestMessageSchema,
-  TaskPeopleViewSchema,
-  WorkerInvocationSchema,
-  WorkflowSnapshotSchema,
-  sharedTaskKey,
-  slackBindingPk,
-  slackThreadSubject,
-  type ChannelMembersRequest,
-  type ChannelMembersResponse,
-  type ProjectCommand,
-  type SlackRequestMessage,
-  type SlackThread,
-  type TaskQuestionRoute,
-  type TaskPeopleDisplayReadRequest,
-  type TaskPeopleDisplayReadResponse,
-  type TaskPersonProofRequest,
-  type TaskPersonProofResponse,
-  type TaskPersonInviteClaimRequest,
-  type TaskPersonInviteOutcome,
-  type WorkerInvocation,
-  type WorkflowOptionalCheck,
-  type WorkflowSnapshot,
-} from "@agentx/contracts";
+import { SharedTaskRecordSchema, WORKER_INVOCATION_FEATURES, agentXError, SlackChannelBindingSchema, SlackRequestMessageSchema, TaskPeopleViewSchema, sharedTaskKey, slackBindingPk, slackThreadSubject, type ChannelMembersRequest, type ChannelMembersResponse, type ProjectCommand, type SlackRequestMessage, type SlackThread, type TaskQuestionRoute, type TaskPeopleDisplayReadRequest, type TaskPeopleDisplayReadResponse, type TaskPersonProofRequest, type TaskPersonProofResponse, type TaskPersonInviteClaimRequest, type TaskPersonInviteOutcome, type WorkflowOptionalCheck } from "@rovara-code/contracts";
+import { WorkerInvocationSchema, WorkflowSnapshotSchema, type WorkerInvocation, type WorkflowSnapshot } from "@agentx/cloud-contracts";
 import type { AttributeValue } from "@aws-sdk/client-dynamodb";
 import type { InvokeCommand } from "@aws-sdk/client-lambda";
 import { marshall, unmarshall } from "@aws-sdk/util-dynamodb";
@@ -186,7 +160,7 @@ function wireFeedbackReader(github: FakeGitHub): (repositoryUrl: string, number:
   const provider = new GitHubAppCredentialProvider({ credentialRef: "github-app", appId: "123", getPrivateKey: async () => key, fetchImplementation: github.fetch });
   return async (repositoryUrl, number) => {
     github.fault("getPullRequestFeedback");
-    return github.atOneMoment(() => provider.getPullRequestFeedback(repositoryUrl, number, { system: "private-install" }));
+    return github.atOneMoment(() => provider.getPullRequestFeedback(repositoryUrl, number, { system: "install" }));
   };
 }
 
@@ -208,7 +182,7 @@ function mergeObservationReader(
       const observed = await provider.getPullRequestMergeObservation(repositoryUrl, number, {
         ...budget,
         beforeRequest: () => { requestLedger.push("github"); budget.beforeRequest(); },
-      }, { system: "private-install" });
+      }, { system: "install" });
       await controls.afterRead?.();
       return observed;
     };

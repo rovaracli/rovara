@@ -1,6 +1,7 @@
 // Plan 4 Task 10: the broker's side of `ChainViewPorts`: what the chain-run view reads of a step's task from Plan 3 (its view, its settled spend, the approvals it waits on).
 // The pieces are handed in, so this file holds only how they are put together.
-import type { DeveloperTaskView, OrgId } from "@agentx/contracts";
+import type { DeveloperTaskView } from "@agentx/cloud-contracts";
+import type { OrgId } from "@rovara-code/contracts";
 import { agentRunView } from "../agents/run-engine.js";
 import type { ApprovalDependencies } from "../agents/approvals.js";
 import { taskKey, type DeveloperTaskRecord } from "../developer/task-records.js";

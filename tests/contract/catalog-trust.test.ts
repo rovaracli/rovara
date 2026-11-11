@@ -5,11 +5,9 @@ import { join } from "node:path";
 import { generateKeyPairSync } from "node:crypto";
 import { pathToFileURL } from "node:url";
 import { describe, expect, it } from "vitest";
-import {
-  CATALOG_BUILD_FLAVOR, CATALOG_STAGING_ACCOUNT_ID, CATALOG_STAGING_ONLY_SIGNING_KEYS, CATALOG_TRUSTED_SIGNING_KEYS, CATALOG_SIGNATURE_ALGORITHM, accountIdOfArn, catalogSigningMessage, catalogTrustedKeyPems,
-  loadSignedCatalog, parseBundlePublicKey, sha256HexOf, type CatalogSigningKey,
-} from "@agentx/contracts";
-import { loadSignedCatalogWithKeys, trustedKeyPemsFor } from "@agentx/contracts/testing";
+import { CATALOG_BUILD_FLAVOR, CATALOG_STAGING_ACCOUNT_ID, CATALOG_STAGING_ONLY_SIGNING_KEYS, catalogTrustedKeyPems, loadSignedCatalog } from "@agentx/cloud-contracts";
+import { CATALOG_TRUSTED_SIGNING_KEYS, CATALOG_SIGNATURE_ALGORITHM, accountIdOfArn, catalogSigningMessage, parseBundlePublicKey, sha256HexOf, type CatalogSigningKey } from "@rovara-code/contracts";
+import { loadSignedCatalogWithKeys, trustedKeyPemsFor } from "@agentx/cloud-contracts/testing";
 import { FLAVOR_FILE, STAGING_KEYS_FILE, STAGING_KEY_DATA_FILE, setCatalogFlavor, withFlavor, withStagingKeys } from "../../packages/contracts/tools/catalog-flavor.js";
 import { pinnedCatalog, testSigner } from "../support/catalog-pinning.js";
 

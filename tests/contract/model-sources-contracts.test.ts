@@ -1,24 +1,7 @@
 // Plan 3 Task 24a: company AI source contracts. The kinds stay off until each one's real-key checklist passes.
 import { describe, expect, it } from "vitest";
-import { canonicalModelName } from "../../packages/contracts/src/models-node.js";
-import {
-  BEDROCK_ROLE_ARN_PATTERN,
-  MAX_CUSTOM_SOURCES_PER_ORG,
-  MAX_MODELS_PER_SOURCE,
-  ModelSourceInputSchema,
-  ModelSourceKindSchema,
-  ModelSourceSchema,
-  OrgModelSourcesSchema,
-  SOURCE_KINDS_AT_LAUNCH,
-  TRANSPORTS_AT_LAUNCH,
-  bedrockExternalId,
-  customSourceLimitProblem,
-  defaultModelSourceOrder,
-  modelSourceOrgProblem,
-  modelSourceInputSchema,
-  sourceAlias,
-  sourceKindProblem,
-} from "../../packages/contracts/src/model-sources.js";
+import { canonicalModelName } from "@rovara-code/contracts";
+import { BEDROCK_ROLE_ARN_PATTERN, MAX_CUSTOM_SOURCES_PER_ORG, MAX_MODELS_PER_SOURCE, ModelSourceInputSchema, ModelSourceKindSchema, ModelSourceSchema, OrgModelSourcesSchema, SOURCE_KINDS_AT_LAUNCH, TRANSPORTS_AT_LAUNCH, bedrockExternalId, customSourceLimitProblem, defaultModelSourceOrder, modelSourceOrgProblem, modelSourceInputSchema, sourceAlias, sourceKindProblem } from "@rovara-code/contracts";
 
 const ORG = "org_abcdefghij0123456789";
 const SRC = "src_abcdefghij0123456789";

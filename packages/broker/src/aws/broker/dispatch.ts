@@ -2,7 +2,8 @@
 
 import { nightlyHeadDependencies } from "./nightly-head.js";
 import { DeleteCommand, GetCommand, PutCommand, QueryCommand, TransactWriteCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
-import { AgentXError, WorkflowTransitionError, stopWorkflowStepNotRun, isSystemOwnerId, BUDGET_EXHAUSTED_FAILURE_MESSAGE, type IntentAssessment, UNDERSTAND_ARTIFACT_MAX_BYTES, UNDERSTAND_ARTIFACT_NAME, endStuckUnderstand, readIntentArtifact, agentXError, type WorkflowSnapshot, E2E_MODEL_ROUTE_DEFAULT_BUDGETS, TERMINAL_OPERATION_STATUSES, INDEX_EXPIRY_ATTRIBUTE } from "@agentx/contracts";
+import { AgentXError, WorkflowTransitionError, isSystemOwnerId, BUDGET_EXHAUSTED_FAILURE_MESSAGE, type IntentAssessment, UNDERSTAND_ARTIFACT_MAX_BYTES, UNDERSTAND_ARTIFACT_NAME, readIntentArtifact, agentXError, E2E_MODEL_ROUTE_DEFAULT_BUDGETS, TERMINAL_OPERATION_STATUSES, INDEX_EXPIRY_ATTRIBUTE } from "@rovara-code/contracts";
+import { stopWorkflowStepNotRun, endStuckUnderstand, type WorkflowSnapshot } from "@agentx/cloud-contracts";
 import { withDesignReviewPorts } from "../../design-review/wiring.js";
 import { designResolveDue } from "../../design-review/resolve-run.js";
 import { StoredBaselineSourceSchema } from "../baseline-source.js";

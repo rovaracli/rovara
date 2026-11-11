@@ -1,7 +1,7 @@
 // Rovara Code (Plan 6 Task 13): the files a task's workspace diff names, read the way the risk rules and the pull request description need them. The shared `diffStat` (the task view's list) drops a file whose
 // header Git printed in quotes, records only the new name of a rename, and counts a file it cannot count as 0 lines. A risk judged on that list could miss a sensitive file or call a big change small, so this
 // reader keeps the real names (unquoted, both names of a rename) and leaves a count out when the diff has none to give (a new unstaged file, a binary patch, a change of mode or name only): unknown is not 0.
-import { redactText } from "@agentx/contracts";
+import { redactText } from "@rovara-code/contracts";
 import { isTestPath, type ChangedFileEntry } from "./verification-report.js";
 
 /** The most files read; a diff that names this many may name more. */

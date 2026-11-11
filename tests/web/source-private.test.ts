@@ -4,7 +4,7 @@
 // "different workspace" answers have their own fixed sentences.
 import { afterEach, describe, expect, it } from "vitest";
 import { cleanup, screen, fireEvent, waitFor, within } from "@testing-library/react";
-import { SourceOptionsViewSchema } from "@agentx/contracts/web";
+import { SourceOptionsViewSchema } from "@agentx/cloud-contracts/web";
 import { adminView, flat } from "./support/sources-fixture.js";
 import { ok } from "./support/lessons-fixture.js";
 import { openSources } from "./support/sources-render.js";

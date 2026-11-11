@@ -1,10 +1,7 @@
 // tests/contract/agent-checks.test.ts
 import { createHash } from "node:crypto";
 import { describe, expect, it } from "vitest";
-import {
-  AGENTX_PREAMBLE, AGENTX_PREAMBLE_VERSION, AGENTX_WORKER_PROMPT, STANDING_INSTRUCTIONS_WORDING, agentxPreambleSha256, CheckReportSchema, isPipedTestCommand,
-  classifyCheck, matchTestCommand, parseAgentClaim, reportStatus, scanTestCommands, taskResultChecks, withoutOutputTail,
-} from "@agentx/contracts";
+import { AGENTX_PREAMBLE, AGENTX_PREAMBLE_VERSION, AGENTX_WORKER_PROMPT, STANDING_INSTRUCTIONS_WORDING, agentxPreambleSha256, CheckReportSchema, isPipedTestCommand, classifyCheck, matchTestCommand, parseAgentClaim, reportStatus, scanTestCommands, taskResultChecks, withoutOutputTail } from "@rovara-code/contracts";
 
 describe("the AgentX preamble (spec 051 FR-001)", () => {
   it("is versioned and hashed together with the worker prompt", () => {

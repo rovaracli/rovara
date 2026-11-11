@@ -3,7 +3,8 @@
 import { randomUUID } from "node:crypto";
 import { TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
 import { describe, expect, it, vi } from "vitest";
-import { ASK_RATE, askLinearScrubKey, askCountKey, askRequestKey, askErasedAliasPk, orgBanKey, orgMemberKey, projectArchivedMessage, projectMetaKey, sessionRateKey, sessionAskKey } from "../../packages/contracts/src/index.js";
+import { ASK_RATE, askLinearScrubKey, askCountKey, askRequestKey, askErasedAliasPk, projectArchivedMessage, projectMetaKey, sessionRateKey, sessionAskKey } from "@rovara-code/contracts";
+import { orgBanKey, orgMemberKey } from "@agentx/cloud-contracts";
 
 const mint = vi.hoisted(() => vi.fn((...args: unknown[]) => { void args; return Promise.resolve({ baseUrl: "https://proxy.example.invalid", apiKey: "fake-key-not-a-secret", expiresAt: 1 }); }));
 vi.mock("../../packages/broker/src/aws/broker/model-access.js", async (importOriginal) => ({ ...(await importOriginal<Record<string, unknown>>()), mintChatTurnKey: mint }));

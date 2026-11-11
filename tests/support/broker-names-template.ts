@@ -1,4 +1,4 @@
-import { BROKER_NAMES, BROKER_NAMES_VARIABLE, BROKER_SETTINGS, BROKER_SETTINGS_VARIABLE, type BrokerNameKey, type BrokerSettingKey } from "@agentx/contracts";
+import { BROKER_NAMES, BROKER_NAMES_VARIABLE, BROKER_SETTINGS, BROKER_SETTINGS_VARIABLE, type BrokerNameKey, type BrokerSettingKey } from "@agentx/cloud-contracts";
 
 /**
  * The broker's one variable of names (AGENTX_NAMES, packages/contracts/src/broker-names.ts), read out of a synthesized template. The control

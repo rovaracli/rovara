@@ -1,6 +1,6 @@
 import { useEffect, useMemo } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { AppMeResponseReaderSchema, AppOrgMembersResponseReaderSchema, AppProjectsResponseSchema } from "@agentx/contracts/web";
+import { AppMeResponseReaderSchema, AppOrgMembersResponseReaderSchema, AppProjectsResponseSchema } from "@agentx/cloud-contracts/web";
 import { useAppHost } from "../../host.js";
 import { ApiError } from "../../api/errors.js";
 import { createApiClient } from "../../api/client.js";

@@ -1,7 +1,8 @@
 // Plan 3 Task 28: a month's top-up. An admin adds dollars to one scope's limit for one UTC month (`TOPUP#<month>`); next month the
 // limit is its base again. A top-up never gives a limit to a scope that has none (R47): no limit stays no limit.
 import { GetCommand } from "@aws-sdk/lib-dynamodb";
-import { topUpKey, type BudgetScope, type OrgId } from "@agentx/contracts";
+import { topUpKey, type BudgetScope } from "@agentx/cloud-contracts";
+import { type OrgId } from "@rovara-code/contracts";
 
 export interface TopUpDependencies {
   documentClient: { send(command: unknown): Promise<unknown> };

@@ -7,11 +7,11 @@ import { Template } from "aws-cdk-lib/assertions";
 import { beforeAll, describe, expect, it } from "vitest";
 import { buildAgentXApp } from "../../infra/lib/app.js";
 import { testAccountSecretsPolicyStatements, testAccountSecretsTrustPolicy } from "../../infra/lib/test-account-secrets-policy.js";
-import { defaultBoundaryStatements, fixedNameEnvironmentRoleNames, testAccountSecretsRoleName } from "../../packages/contracts/src/access-policies.js";
-import * as accessPolicies from "../../packages/contracts/src/access-policies.js";
-import * as savedEnvImage from "../../packages/contracts/src/saved-env-image.js";
+import { defaultBoundaryStatements, fixedNameEnvironmentRoleNames, testAccountSecretsRoleName } from "../../packages/cloud-contracts/src/access-policies.js";
+import * as accessPolicies from "../../packages/cloud-contracts/src/access-policies.js";
+import * as savedEnvImage from "@rovara-code/contracts";
 import { resolveSessionPolicy } from "../../packages/broker/src/test-env/test-account-secrets.js";
-import { testAccountSecretName, testAccountSecretTags } from "../../packages/contracts/src/test-account.js";
+import { testAccountSecretName, testAccountSecretTags } from "@rovara-code/contracts";
 import { FAKE_BROKER_ROLE_ARN, FakeOrgSecrets, type FakeSecretsClient } from "../support/fake-org-secrets.js";
 import { skipLambdaBundling } from "../support/skip-bundling.js";
 

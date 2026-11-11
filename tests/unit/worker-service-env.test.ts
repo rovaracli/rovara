@@ -5,7 +5,7 @@ import { mkdtemp, mkdir, rm, stat, symlink, writeFile, readFile } from "node:fs/
 import { tmpdir } from "node:os";
 import { join, relative } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { projectCommandEnvProblems } from "../../packages/contracts/src/project-node.js";
+import { projectCommandEnvProblems } from "@rovara-code/contracts";
 import { assertE2EEnvironmentCannotRedirect } from "../../packages/model-runtime/src/e2e-environment-guard.js";
 import {
   AWS_FAKE_ACCESS_KEY_ID, AWS_FAKE_SECRET_ACCESS_KEY, SERVICE_ENV_EXEMPT_VALUES, ServiceEnvError, awsEndpointVariableName, buildServiceEnvironment, createRunDirectoryFiles, createServiceRedactor, helperSecretValues, removeRunDirectory, withServiceEnvFile,

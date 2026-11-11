@@ -3,7 +3,7 @@
 // stop, a lost run, a stale sweep and a close all see one ordinary REVIEW operation.
 //
 // With the switch off, or the configured mode `off`, it returns nothing, and the dispatch is exactly today's.
-import { AgentXError, configuredSecondReviewMode, secondReviewModelKey, type InvocationModelRoute, type ModelIdentifier, type ModelSelection, type SecondOpinionUnavailableReason, type SecondReviewerPayload } from "@agentx/contracts";
+import { AgentXError, configuredSecondReviewMode, secondReviewModelKey, type InvocationModelRoute, type ModelIdentifier, type ModelSelection, type SecondOpinionUnavailableReason, type SecondReviewerPayload } from "@rovara-code/contracts";
 import { listPricesPerMillion } from "@agentx/model-runtime/catalog";
 import { queryAllItems } from "../aws/admin-reads.js";
 import { ADMISSION_REFUSALS } from "../aws/developer-tasks.js";

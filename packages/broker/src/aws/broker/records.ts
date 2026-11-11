@@ -1,11 +1,12 @@
 // Part of the broker (split out of ../broker.ts): reading artifacts, workspaces, projects, pull requests and memberships.
 
-import { ModelIdentifierSchema } from "@agentx/contracts";
+import { ModelIdentifierSchema } from "@rovara-code/contracts";
 import { writeProjectModelSelection } from "../../model-selection/selection-write.js";
 import { survivorOf } from "../../org/project-members.js";
 import { GetCommand, PutCommand, QueryCommand } from "@aws-sdk/lib-dynamodb";
 import { GetObjectCommand } from "@aws-sdk/client-s3";
-import { ProjectModelOptionsSchema, ProjectModelSelectionRequestSchema, WorkspaceInstanceSchema, agentXError, workspaceRecordFields, type Operation, type ProjectDefinition, type WorkspaceInstance, modelKey, type ModelRef, type ModelSelection, type ProjectModelOptions, OrgRoleSchema, isWriterOrgRole, type OrgRole, PROJECT_REVISION_SK_PREFIX, orgMemberKey, projectMemberKey, defaultWorkspaceKey, projectPk, projectSelectionKey, type OrgId } from "@agentx/contracts";
+import { ProjectModelOptionsSchema, ProjectModelSelectionRequestSchema, WorkspaceInstanceSchema, agentXError, workspaceRecordFields, type Operation, type ProjectDefinition, type WorkspaceInstance, modelKey, type ModelRef, type ModelSelection, type ProjectModelOptions, PROJECT_REVISION_SK_PREFIX, projectMemberKey, defaultWorkspaceKey, projectPk, projectSelectionKey, type OrgId } from "@rovara-code/contracts";
+import { OrgRoleSchema, isWriterOrgRole, type OrgRole, orgMemberKey } from "@agentx/cloud-contracts";
 import type { AuthenticatedIdentity } from "../../auth.js";
 import { authorizeWorkspace } from "../../authorization.js";
 import type { GitHubAppCredentialProvider } from "../../github-app.js";

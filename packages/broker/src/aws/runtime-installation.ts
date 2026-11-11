@@ -2,13 +2,7 @@ import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { GetCommand, PutCommand, TransactWriteCommand, type DynamoDBDocumentClient } from "@aws-sdk/lib-dynamodb";
 import { GetObjectCommand, PutObjectCommand, type S3Client } from "@aws-sdk/client-s3";
 import { z } from "zod";
-import {
-  canonicalJson, RuntimeInstallChallengeSchema, RuntimeInstallationProposalSchema, runtimeInstallChallengeDigest,
-  runtimeInstallationProposalSha256, type RuntimeInstallChallenge, type RuntimeInstallationProposal,
-  ProjectSetupRunnerEnvironmentSchema, ProjectSetupRunnerToolchainSchema,
-  WEB_API_CHALLENGE_LIFETIME_MS, WEB_API_PROBE_PROPOSAL_MAX_BYTES, WEB_API_RUNTIME_PROFILE_ID, WebApiRuntimeInstallProposalSchema, webApiRuntimeInstallProposalSha256, type WebApiRuntimeInstallProposal,
-  agentXError, REQUALIFIER_ISSUER,
-} from "@agentx/contracts";
+import { canonicalJson, RuntimeInstallChallengeSchema, RuntimeInstallationProposalSchema, runtimeInstallChallengeDigest, runtimeInstallationProposalSha256, type RuntimeInstallChallenge, type RuntimeInstallationProposal, ProjectSetupRunnerEnvironmentSchema, ProjectSetupRunnerToolchainSchema, WEB_API_CHALLENGE_LIFETIME_MS, WEB_API_PROBE_PROPOSAL_MAX_BYTES, WEB_API_RUNTIME_PROFILE_ID, WebApiRuntimeInstallProposalSchema, webApiRuntimeInstallProposalSha256, type WebApiRuntimeInstallProposal, agentXError, REQUALIFIER_ISSUER } from "@rovara-code/contracts";
 import { parseE2EReport, verifyWebApiProbeRecord } from "@agentx/verifier";
 import type { AuthenticatedIdentity } from "../auth.js";
 import type { TransactItems } from "./developer-task-actions.js";

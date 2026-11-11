@@ -8,9 +8,7 @@
 // dev container file the proposal names is already there. The broker reads the proposal again and re-reads every citation from GitHub; the worker's copy is never trusted.
 import { lstat } from "node:fs/promises";
 import { join } from "node:path";
-import {
-  DEVCONTAINER_PATH_PATTERN, SETUP_COMMANDS_MAX, SETUP_PROPOSAL_INFO_STRING, SETUP_SECRETS_MAX, sanitizeSetupProposal, setupProposalAnswerOf, type SetupProposal,
-} from "@agentx/contracts";
+import { DEVCONTAINER_PATH_PATTERN, SETUP_COMMANDS_MAX, SETUP_PROPOSAL_INFO_STRING, SETUP_SECRETS_MAX, sanitizeSetupProposal, setupProposalAnswerOf, type SetupProposal } from "@rovara-code/contracts";
 import { scanRepositories, type SetupScan } from "./setup-scan.js";
 import { dropUntrackedCitations, isTracked, trackedScanOf, type TrackedPaths } from "./setup-citations.js";
 

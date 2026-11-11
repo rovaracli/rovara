@@ -4,7 +4,7 @@
 //
 // Who asked: the tracker's own history says who put the label on (or assigned the ticket to Rovara's account). That account id is the act's actor; the intake engine then decides, through the
 // company's links, whether it is a member who may start. A ticket whose history does not say is handed over with no actor, so it waits (fail closed). Nothing else from the ticket is trusted.
-import { INTAKE_TITLE_MAX, type OrgId } from "@agentx/contracts";
+import { INTAKE_TITLE_MAX, type OrgId } from "@rovara-code/contracts";
 import { LINEAR_GRAPHQL, OrgConnectionStore, readConnection, readConnectionSecret, type OrgConnectionDeps, type OrgConnectionRecord } from "../connections/store.js";
 import type { IntakeCandidate } from "../intake/engine.js";
 import { outsideEventWindow } from "./ingress.js";

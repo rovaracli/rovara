@@ -6,7 +6,7 @@
 // A connector type's label list is a `LabelLister` registered in `deps.labelListers`: GitHub's is here (`githubLabelLister`); Linear's, Jira's and an
 // MCP tool's `labelListTool` are read through the connector call path (Tasks 19 and 20b) and register themselves the same way. The list is kept for the
 // run (`deps.runCache`), so each run reads it once and the next run reads it again.
-import type { OrgId } from "@agentx/contracts";
+import type { OrgId } from "@rovara-code/contracts";
 import type { AgentGitHubScope, AgentRepositoryLabel } from "../github-app.js";
 import { cacheNameOf, type RunCache } from "./run-cache.js";
 

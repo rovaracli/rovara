@@ -1,6 +1,6 @@
 // Test services, slice 1 T2: which dependencies a task's plan starts (pinned from the signed catalog), when an approved environment with dependencies may be used by a task, and what happens when it cannot be planned.
 import { describe, expect, it, vi } from "vitest";
-import { TestEnvironmentBodySchema, TestEnvTaskPlanSchema, projectMetaKey, projectRevisionKey, testEnvDigest, type OrgId, type ProjectCommand, type TestEnvironment, type TestEnvironmentBody, type VerifiedCatalog } from "@agentx/contracts";
+import { TestEnvironmentBodySchema, TestEnvTaskPlanSchema, projectMetaKey, projectRevisionKey, testEnvDigest, type OrgId, type ProjectCommand, type TestEnvironment, type TestEnvironmentBody, type VerifiedCatalog } from "@rovara-code/contracts";
 import { approveTestEnvironment, proposeTestEnvironment, recordTestEnvProveReport, type TestEnvDeps } from "../../packages/broker/src/org/test-environment.js";
 import { DEPENDENCY_PLAN_REFUSAL_WORDS, TEST_SERVICES_MIN_CATALOG_REVISION, dependenciesStartableNow, serviceCatalogSourceOf, taskDependencyPlansOf } from "../../packages/broker/src/test-env/dependency-plan.js";
 import { DEPENDENCIES_WITH_DEVCONTAINER_WORDS } from "../../packages/broker/src/test-env/devcontainer-check.js";
@@ -9,7 +9,7 @@ import { UNUSED_WORDS, environmentUnusedReason, testEnvironmentForStart } from "
 import { capturingAuditDeps, AUDIT_CAPTURE_TABLE } from "../support/audit-capture.js";
 import { loaderTrusting, pinnedCatalog, testSigner, unpinnedCatalog, verifiedCatalog, digestOfId } from "../support/catalog-pinning.js";
 import { FakeDynamoDb } from "../support/fake-dynamodb.js";
-import { CATALOG_SIGNATURE_ALGORITHM, catalogSigningMessage, parseBundlePublicKey, sha256HexOf } from "@agentx/contracts";
+import { CATALOG_SIGNATURE_ALGORITHM, catalogSigningMessage, parseBundlePublicKey, sha256HexOf } from "@rovara-code/contracts";
 
 const ORG = "org_aaaaaaaaaaaaaaaaaaaa" as OrgId;
 const PROJECT = "service";

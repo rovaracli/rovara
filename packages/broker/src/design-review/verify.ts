@@ -14,7 +14,7 @@
 //   - the model proxy's record of that key's FIRST call reads the input the packet predicts, within 10%. This is the only check the worker cannot fake, because the proxy counts the tokens.
 //     It needs a reader of the proxy's per-call usage. When the install has none, the result says `inputProof: "digest_only"`; `runVerdictOf` carries it into `ReviewerRun.inputProof`,
 //     and the card shows `inputProofSentence(...)`, which never claims the proxy checked anything.
-import { READ_ONLY_TOOLS, type InputProof, type REVIEWER_VERIFY_FAILURES } from "@agentx/contracts";
+import { READ_ONLY_TOOLS, type InputProof, type REVIEWER_VERIFY_FAILURES } from "@rovara-code/contracts";
 import { z } from "zod";
 
 export type ReviewerVerifyFailure = (typeof REVIEWER_VERIFY_FAILURES)[number];

@@ -4,18 +4,15 @@
 // open and ended work entries, presence, devices and change feeds, shortens the rest to 30 days, and touches no other org.
 import { randomUUID } from "node:crypto";
 import { afterEach, describe, expect, it } from "vitest";
-import {
-  agentSessionKey, changesKey, deviceCommandKey, deviceKey, endedSessionWorkKey, livePresenceKey, liveSessionKey, memberDevicesKey, memberMergeQueueKey, memberRemovalQueueKey,
-  mySessionsKey, openAgentSessionKey, orgMemberKey, orgRemovedKey, projectMetaKey, projectMonthStatsKey, projectSessionsKey, sharedSessionsKey, sessionBindingKey, sessionSurfaceKey,
-  type OrgId,
-} from "@agentx/contracts";
+import { agentSessionKey, changesKey, endedSessionWorkKey, livePresenceKey, liveSessionKey, mySessionsKey, openAgentSessionKey, projectMetaKey, projectMonthStatsKey, projectSessionsKey, sharedSessionsKey, sessionBindingKey, sessionSurfaceKey, type OrgId } from "@rovara-code/contracts";
+import { deviceCommandKey, deviceKey, memberDevicesKey, memberMergeQueueKey, memberRemovalQueueKey, orgMemberKey, orgRemovedKey } from "@agentx/cloud-contracts";
 import { AgentStore } from "../../packages/broker/src/agents/store.js";
 import { drainMemberMerges, drainMemberRemovals, onMemberRemoved, onMembersMerged, resolveMember, type LifecycleDeps } from "../../packages/broker/src/agents/lifecycle.js";
 import { clearOrgSessions, closeOrgSessions, closeStopRequestId, onSessionMemberRemoved, onSessionMembersMerged, stopOrgSessions } from "../../packages/broker/src/agent-sessions/lifecycle.js";
 import "../../packages/broker/src/agent-sessions/index.js";
 import { writeAsk } from "../../packages/broker/src/agent-sessions/ask-store.js";
 import { personLabel } from "../../packages/broker/src/aws/developer-tasks/thread-notes.js";
-import { askByPersonKey, sessionAskKey } from "../../packages/contracts/src/index.js";
+import { askByPersonKey, sessionAskKey } from "@rovara-code/contracts";
 import { sessionLevelOf } from "../../packages/broker/src/agent-sessions/access.js";
 import { AgentSessionStore } from "../../packages/broker/src/agent-sessions/store.js";
 import { liveSessions } from "../../packages/broker/src/agent-sessions/live.js";

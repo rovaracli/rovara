@@ -5,7 +5,7 @@
 // Slack bindings). The Enterprise edition keeps the second and refuses the first, so the rule is a closed list of what an install's own operator may call:
 // a route on the list is served, and every other `/v1/admin/*` route (staff turns, the staff path into any company's audit log, Rovara's own evaluation runs, and any
 // route added later and not yet classified) is refused with the edition's fixed sentence until someone decides it belongs on the list.
-import { requireFeature, type EditionPolicy } from "@agentx/contracts";
+import { requireFeature, type EditionPolicy } from "@agentx/cloud-contracts";
 
 const UUID = "[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}";
 

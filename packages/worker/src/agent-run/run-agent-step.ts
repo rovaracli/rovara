@@ -6,10 +6,7 @@
 // elsewhere goes through Rovara's broker, where it runs at once or waits for a person.
 import { defineTool, type ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
-import {
-  AGENT_STEP_PREAMBLE, READ_ONLY_TOOLS, SHORTENED_MARKER, agentXError, redactText, createTaskUsageTelemetry,
-  type AgentStepGrounding, type AgentStepPayload, type ConnectorCatalog, type ResultContract,
-} from "@agentx/contracts";
+import { AGENT_STEP_PREAMBLE, READ_ONLY_TOOLS, SHORTENED_MARKER, agentXError, redactText, createTaskUsageTelemetry, type AgentStepGrounding, type AgentStepPayload, type ConnectorCatalog, type ResultContract } from "@rovara-code/contracts";
 import type { ArtifactSink } from "../artifacts.js";
 import { WorkerOperationCancelledError, type WorkerCancellationController } from "../cancel.js";
 import { EventBatcher, redactCredentials, type EventBatchSink } from "../events.js";

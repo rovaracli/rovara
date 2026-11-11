@@ -1,6 +1,6 @@
 // Test services, slice 1 T1: the usage record a worker reports (design test-services.md 4.0, 8.1; TS-SEAL-1).
 import { describe, expect, it } from "vitest";
-import { TestServicesUsageRecordSchema, testServicesUnhealthy, testServicesUnknownCallCount } from "../../packages/contracts/src/test-services-usage.js";
+import { TestServicesUsageRecordSchema, testServicesUnhealthy, testServicesUnknownCallCount } from "@rovara-code/contracts";
 
 const dependency = (over: Record<string, unknown> = {}) => ({ id: "postgres", started: true, healthy: true, startMs: 840, resetCount: 2, ...over });
 const record = (over: Record<string, unknown> = {}) => ({ schemaVersion: 1, dependencies: [dependency()], unknownCalls: { domains: [], otherCount: 0 }, ...over });

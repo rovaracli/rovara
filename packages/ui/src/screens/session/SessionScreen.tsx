@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useParams } from "react-router";
 import { useQueryClient } from "@tanstack/react-query";
-import type { ReadAppNav, SessionAnchorRef } from "@agentx/contracts/web";
+import type { ReadAppNav, SessionAnchorRef } from "@agentx/cloud-contracts/web";
 import { createSessionApi, useSession, useSessionTimeline } from "../../api/sessions.js";
 import { ApiError } from "../../api/errors.js";
 import { useAppHost } from "../../host.js";

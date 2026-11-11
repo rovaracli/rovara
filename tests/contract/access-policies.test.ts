@@ -3,7 +3,7 @@ import {
   BOUNDARY_INSTANCE_PROFILE_ACTIONS, BOUNDARY_NAMED_READS, BOUNDARY_SERVICES, CLOUDFRONT_BOUNDARY_ACTIONS, MANAGED_POLICY_ACTIONS, SERVICE_LINKED_ROLE_SERVICES, SERVICE_ROLE_SERVICES, defaultBoundaryArn, defaultBoundaryName, defaultBoundaryStatements, operatorRoleStatements, serviceRoleStatements, withoutSids, type PolicyScope,
 } from "../../infra/lib/access-policies.js";
 import { readFileSync } from "node:fs";
-import { brokerRoleName, modelAccessProbeRoleName, modelProxyTaskRoleName } from "@agentx/contracts";
+import { brokerRoleName, modelAccessProbeRoleName, modelProxyTaskRoleName } from "@agentx/cloud-contracts";
 
 const iamActions = JSON.parse(readFileSync(new URL("../fixtures/iam-actions-2026-11-03.json", import.meta.url), "utf8")) as { actions: string[] };
 /** An IAM action pattern as a case-insensitive RegExp: `*` is any run of characters and `?` one. */

@@ -2,7 +2,7 @@
 // budget and caps), one slot starts at most one run however often it arrives, a backlog after an outage starts one run, and a trigger that is off, ownerless or gone is never started
 // and its schedule goes. Layer 1 drives the expression and the scheduler calls, Layer 2 the handler over the trigger world, Layer 3 the dead letters and the repair sweep.
 import { afterEach, describe, expect, it } from "vitest";
-import { agentXError, chainRunKey, orgAutonomousKey, pendingTriggerScheduleKey, triggerKey, triggerRateKey } from "@agentx/contracts";
+import { agentXError, chainRunKey, orgAutonomousKey, pendingTriggerScheduleKey, triggerKey, triggerRateKey } from "@rovara-code/contracts";
 import { taskEndKey } from "../../packages/broker/src/agents/task-end.js";
 import { deleteOrgTriggers } from "../../packages/broker/src/triggers/lifecycle.js";
 import { fixtureActor } from "../support/money-authority.js";
@@ -10,9 +10,9 @@ import {
   CHAIN_SCHEDULE_SOURCE, createChainScheduler, createDeadLetters, handleChainSchedule, putSchedule, scheduleExpression, scheduleSettingsFromEnvironment, sweepSchedules, type ScheduleSettings,
 } from "../../packages/broker/src/triggers/schedules.js";
 import type { TriggerDispatchDependencies } from "../../packages/broker/src/triggers/dispatch.js";
-import type { ChainDefinitionInput } from "../../packages/contracts/src/chains.js";
-import { ScheduleTriggerSpecSchema } from "../../packages/contracts/src/trigger-specs.js";
-import { type ScheduleSpec } from "../../packages/contracts/src/trigger-specs.js";
+import type { ChainDefinitionInput } from "@rovara-code/contracts";
+import { ScheduleTriggerSpecSchema } from "@rovara-code/contracts";
+import { type ScheduleSpec } from "@rovara-code/contracts";
 import { FakeDeadLetterQueue, FakeSchedulerClient } from "../support/fake-scheduler.js";
 import { DANA, ORG_A, ORG_B, PRIYA, disposeGateWorlds, setupTriggerWorld, type TriggerWorld } from "../support/trigger-world.js";
 

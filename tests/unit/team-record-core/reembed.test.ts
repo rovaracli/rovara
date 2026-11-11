@@ -1,7 +1,7 @@
 // The re-embed job (review H1 and M3): rows that should have a vector and do not get one from their kept text; rows whose text is gone stay keyword-only; nothing runs unbounded; a vector never
 // outlives its row because of the job. Plus what ingest records on a row it embeds (the spec, a cut).
 import { describe, expect, it } from "vitest";
-import { TEAM_RECORD_EMBEDDER } from "@agentx/contracts";
+import { TEAM_RECORD_EMBEDDER } from "@agentx/cloud-contracts";
 import { EMBED_TIMEOUTS_BEFORE_SKIP, LONG_TEXT_CHARS, REEMBED_IDLE_MS, TOO_LONG_RETRY_EPOCH, REEMBED_SWEEP_CURSOR_KEY, REEMBED_SWEEP_MAX_CHECKS, readReembedStates, reembedRows, reembedRun, sweepReembedState, sweepReembedStateRun, type ReembedBudget, type ReembedRun } from "../../../packages/broker/src/team-record/reembed.js";
 import { EmbedUnavailableError } from "../../../packages/broker/src/team-record/embed.js";
 import { eventFromItem } from "../../../packages/broker/src/team-record/store.js";

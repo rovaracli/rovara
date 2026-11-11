@@ -1,5 +1,5 @@
 // Design review (DR11): the small rules a decision card follows for a design under review. Pure.
-import { DECISION_APPROVE_REASON_MAX } from "@agentx/contracts/web";
+import { DECISION_APPROVE_REASON_MAX } from "@agentx/cloud-contracts/web";
 
 /** The approve card's open blockers, read from the card's own "Open blockers" evidence chip (the broker's count, never a model's). Zero when the card has no such chip. */
 export function openBlockersOnCard(chips: ReadonlyArray<{ label: string; value: string }>): number {

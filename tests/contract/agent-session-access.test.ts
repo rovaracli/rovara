@@ -1,7 +1,7 @@
 // Plan 5 Task 4: what a person may do on a session. The level is the highest of ownership, the caller's own project grant and org role, shares and
 // Task People roles, capped by a project viewer's rule and a Task People `denied` entry; another org, and no level at all, answer NOT_FOUND.
 import { describe, expect, it } from "vitest";
-import type { SessionStatus } from "@agentx/contracts";
+import type { SessionStatus } from "@rovara-code/contracts";
 import { OFFER_HANDOFF, requireSessionLevel, resolveSessionAccess, sessionActionsFor, type SessionAccessDependencies } from "../../packages/broker/src/agent-sessions/access.js";
 import { ARJUN, BO, MAX, MIA, OLA, ORG_A, ORG_B, PRIYA, ZED, sessionWorld, type SessionWorld } from "../support/agent-session-world.js";
 

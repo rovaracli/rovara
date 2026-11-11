@@ -10,7 +10,7 @@
 //   AUTOMATIC_RUNS#STARTED#<hash>      one per run that started (job, when, its task), for the project page
 //   AUTOMATIC_RUNS#PAUSED#YYYY-MM      written once, with the pause's audit event, when the cap is first reached in the month
 import { GetCommand, TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
-import { DEFAULT_AUTOMATIC_RUNS_PER_MONTH, INDEX_EXPIRY_ATTRIBUTE, MAX_AUTOMATIC_RUNS_PER_MONTH, agentXError, projectAllows, projectPk, type AutomaticJob, type OrgId, type ProjectRole } from "@agentx/contracts";
+import { DEFAULT_AUTOMATIC_RUNS_PER_MONTH, INDEX_EXPIRY_ATTRIBUTE, MAX_AUTOMATIC_RUNS_PER_MONTH, agentXError, projectAllows, projectPk, type AutomaticJob, type OrgId, type ProjectRole } from "@rovara-code/contracts";
 import { auditAutomaticRunsPaused, auditOccurrence, auditProjectAutomaticRunsCapChanged } from "../audit/events.js";
 import { flushAuditEvents } from "../audit/flush.js";
 import { auditPending, tryAuditEvent } from "../audit/outbox.js";

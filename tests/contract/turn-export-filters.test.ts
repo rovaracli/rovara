@@ -2,7 +2,7 @@
 // Spec 025 A8: GET /v1/admin/turns filters by time, origin, project, thread and task.
 import { describe, expect, it, vi } from "vitest";
 import { FakeDynamoDb } from "../support/fake-dynamodb.js";
-import { EMPTY_TURN_OBSERVATION } from "../../packages/contracts/src/turns.js";
+import { EMPTY_TURN_OBSERVATION } from "@rovara-code/contracts";
 import { TurnRecordExport, dynamoTurnRecordSource, type TurnRecordSource } from "../../packages/broker/src/aws/turns.js";
 
 const now = Date.parse("2026-09-30T12:00:00.000Z");

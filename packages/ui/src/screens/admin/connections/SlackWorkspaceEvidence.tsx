@@ -1,6 +1,6 @@
 import { useEffect, useMemo } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { OrgSlackWorkspaceEvidenceResponseReaderSchema } from "@agentx/contracts/web";
+import { OrgSlackWorkspaceEvidenceResponseReaderSchema } from "@agentx/cloud-contracts/web";
 import { createApiClient } from "../../../api/client.js";
 import { ApiError } from "../../../api/errors.js";
 import { useAppHost } from "../../../host.js";

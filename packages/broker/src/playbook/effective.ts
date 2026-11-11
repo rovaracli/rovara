@@ -5,35 +5,7 @@
 //
 // Reviewing stages (the plan check, the review that runs the code and security reviewers, and the pull request feedback review) are not given the process layer's project-wide rules (`wholeAgentLayers`), so those rules are left out of
 // their instructions here too, and the stage carries a fixed note the page can show.
-import {
-  HOW_WE_WORK_INSTRUCTION_MAX,
-  HOW_WE_WORK_ITEMS_MAX,
-  HOW_WE_WORK_LAYERS_MAX,
-  HOW_WE_WORK_LINE_MAX,
-  HOW_WE_WORK_REVIEWER_NOTE,
-  HOW_WE_WORK_TOOLS_MAX,
-  HOW_WE_WORK_TOOL_MAX,
-  READ_ONLY_TOOLS,
-  ROVARA_CODE_AGENT_ID,
-  agentXError,
-  builtinDefaultPin,
-  builtinRecipe,
-  developerTaskPolicy,
-  redactText,
-  type AgentGuardrails,
-  type AgentId,
-  type CodeSettings,
-  type HowWeWorkSource,
-  type HowWeWorkStage,
-  type HowWeWorkView,
-  type InstructionLayer,
-  type Marked,
-  type OrgId,
-  type RecipeOverlay,
-  type ResolvedRecipe,
-  type ResolvedStep,
-  type StoredProjectDefinition,
-} from "@agentx/contracts";
+import { HOW_WE_WORK_INSTRUCTION_MAX, HOW_WE_WORK_ITEMS_MAX, HOW_WE_WORK_LAYERS_MAX, HOW_WE_WORK_LINE_MAX, HOW_WE_WORK_REVIEWER_NOTE, HOW_WE_WORK_TOOLS_MAX, HOW_WE_WORK_TOOL_MAX, READ_ONLY_TOOLS, ROVARA_CODE_AGENT_ID, agentXError, builtinDefaultPin, builtinRecipe, developerTaskPolicy, redactText, type AgentGuardrails, type AgentId, type CodeSettings, type HowWeWorkSource, type HowWeWorkStage, type HowWeWorkView, type InstructionLayer, type Marked, type OrgId, type RecipeOverlay, type ResolvedRecipe, type ResolvedStep, type StoredProjectDefinition } from "@rovara-code/contracts";
 import { crossCompanyTargets } from "../agents/dispatch.js";
 import { readGuardrails } from "../agents/guardrails.js";
 import { resolveAgent, type AgentStore } from "../agents/store.js";

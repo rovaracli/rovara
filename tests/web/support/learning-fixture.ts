@@ -1,5 +1,5 @@
 // The learning view of a project (GET /v1/app/projects/{p}/learning) and a cell that answers it, for the Suggested rules tests. Every body is parsed by the contract's own strict schema.
-import { LearningViewAnswerSchema } from "@agentx/contracts/web";
+import { LearningViewAnswerSchema } from "@agentx/cloud-contracts/web";
 import type { ApiRequest, ApiResponse } from "../../../packages/ui/src/host.js";
 import { howWeWorkHost, type Handler } from "./how-we-work-fixture.js";
 export const LEARNING_PATH = "/v1/app/projects/payments/learning";

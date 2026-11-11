@@ -1,7 +1,7 @@
 import { Aws, CfnCondition, Duration, Fn, aws_iam as iam, aws_lambda as lambda, aws_lambda_nodejs as lambdaNodejs } from "aws-cdk-lib";
 import type { CfnParameter, aws_dynamodb as dynamodb, aws_secretsmanager as secretsmanager } from "aws-cdk-lib";
 import { resolve } from "node:path";
-import { taskPersonProofRoleName } from "@agentx/contracts";
+import { taskPersonProofRoleName } from "@agentx/cloud-contracts";
 import { Construct } from "constructs";
 import type { AgentXNaming } from "./naming.js";
 

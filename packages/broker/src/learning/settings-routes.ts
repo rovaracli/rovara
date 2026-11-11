@@ -1,8 +1,8 @@
 // v1.2 learning loop: `GET` and `PUT /v1/app/org/learning-settings`, the company's master "suggestions" switch (suggestions-switch.ts). A live browser session only (developer-routes.ts refuses
 // anything else before it gets here, with the normal CSRF and origin checks of the web boundary). Any company member reads; only the company's owner or an admin changes it, at once and with
 // no second person (both directions are safe: `on` only shows cards a maintainer still has to Accept). Bodies are strict; the caller's role is the live one from this request's session.
-import { LearningCompanySettingsBodySchema, agentXError, type LearningCompanySettingsAnswer } from "@agentx/contracts";
-import { orgScoped } from "@agentx/contracts";
+import { LearningCompanySettingsBodySchema, agentXError, type LearningCompanySettingsAnswer } from "@rovara-code/contracts";
+import { orgScoped } from "@rovara-code/contracts";
 import type { DeveloperCaller } from "../aws/developer-routes.js";
 import { takeRateAt } from "../developer/page-comments.js";
 import { memberActor } from "./audit.js";

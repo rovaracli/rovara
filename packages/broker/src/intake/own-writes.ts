@@ -11,7 +11,7 @@
 // What a tool call writes is read by an extractor per connector type (`registerOwnWriteExtractor`): the built-in ones know GitHub, Jira and Linear, and a tracker plug-in registers its own.
 // The call path (`callConnector`) asks `recordOwnWriteOfCall`; a note that cannot be written stops the call (fail closed).
 import { DeleteCommand, GetCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
-import { INDEX_EXPIRY_ATTRIBUTE, agentXError, intakeItemIdOf, intakeOwnWriteKey, type IntakeOwnWriteKind, type OrgId } from "@agentx/contracts";
+import { INDEX_EXPIRY_ATTRIBUTE, agentXError, intakeItemIdOf, intakeOwnWriteKey, type IntakeOwnWriteKind, type OrgId } from "@rovara-code/contracts";
 import type { IntakeTable } from "./store.js";
 
 /** An event may carry a time a little before the write that caused it (the vendor's clock, not ours). */

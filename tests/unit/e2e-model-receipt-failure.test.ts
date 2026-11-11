@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { createHash } from "node:crypto";
-import { E2EModelReceiptSchema, E2E_MODEL_FAILURE_CLASSES, canonicalJson, type E2EModelReceipt } from "../../packages/contracts/src/index.js";
+import { E2EModelReceiptSchema, E2E_MODEL_FAILURE_CLASSES, canonicalJson, type E2EModelReceipt } from "@rovara-code/contracts";
 
 // M1.4 Task 4.10B, test 20: the receipt's optional `failure`.
 const sha = (text: string) => createHash("sha256").update(text, "utf8").digest("hex");

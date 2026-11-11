@@ -11,7 +11,7 @@
 //   onQueued         starts the job the registry queued (saved-env-triggers.ts).
 import { awsPartitionOf } from "../broker-environment.js";
 import { readWorkerSettings } from "../worker-settings-read.js";
-import { imageDigestOfReference, testEnvDigest, testEnvIsProved, type TestEnvironmentBody, workerProjectDefinition, SAVED_ENV_KEEP_DEFAULT, SAVED_ENV_LIGHT_AFTER_IDLE_DAYS_DEFAULT, type OrgId } from "@agentx/contracts";
+import { imageDigestOfReference, testEnvDigest, testEnvIsProved, type TestEnvironmentBody, workerProjectDefinition, SAVED_ENV_KEEP_DEFAULT, SAVED_ENV_LIGHT_AFTER_IDLE_DAYS_DEFAULT, type OrgId } from "@rovara-code/contracts";
 import { readApprovedTestEnvironment, readTestEnvProveReport, type TestEnvDeps } from "../../org/test-environment.js";
 import type { SavedEnvDeps } from "../../test-env/saved-env.js";
 import { dynamoSavedEnvStore } from "../../test-env/saved-env-store.js";

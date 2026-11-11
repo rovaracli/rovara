@@ -16,21 +16,8 @@
 //
 // Nothing here calls AWS. A variable that is already set is never replaced, and an environment without AGENTX_NAMES or AGENTX_SETTINGS (the legacy
 // install, which passes everything whole, and every test that sets the variables itself) is left as it is.
-import {
-  BROKER_NAMES,
-  BROKER_NAMES_VARIABLE,
-  BROKER_SETTINGS,
-  BROKER_SETTINGS_VARIABLE,
-  BROKER_SETTING_VALUE,
-  DERIVED_BROKER_VARIABLES,
-  MODEL_PROXY_INFERENCE_PORT,
-  decodeBrokerList,
-  environmentRolePath,
-  lessonsReflectDeadLetterName,
-  teamRecordOpsDeadLetterName,
-  type BrokerNameSpec,
-  type BrokerSettingSpec,
-} from "@agentx/contracts";
+import { BROKER_NAMES, BROKER_NAMES_VARIABLE, BROKER_SETTINGS, BROKER_SETTINGS_VARIABLE, BROKER_SETTING_VALUE, DERIVED_BROKER_VARIABLES, MODEL_PROXY_INFERENCE_PORT, decodeBrokerList, lessonsReflectDeadLetterName, teamRecordOpsDeadLetterName, type BrokerNameSpec, type BrokerSettingSpec } from "@agentx/cloud-contracts";
+import { environmentRolePath } from "@rovara-code/contracts";
 
 export type MutableEnvironment = Record<string, string | undefined>;
 

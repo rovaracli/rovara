@@ -5,14 +5,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { deflateSync } from "node:zlib";
 import { describe, expect, it } from "vitest";
-import {
-  createCandidateManifest,
-  WORKFLOW_BLOCK_REASONS,
-  WORKFLOW_RULE_FILES_UNVERIFIED_MESSAGE,
-  WorkflowFeedbackBundleSchema,
-  type WorkflowFeedbackBundle,
-  type WorkflowFeedbackBundleRef,
-} from "../../packages/contracts/src/index.js";
+import { createCandidateManifest, WORKFLOW_RULE_FILES_UNVERIFIED_MESSAGE, WorkflowFeedbackBundleSchema, type WorkflowFeedbackBundle, type WorkflowFeedbackBundleRef } from "@rovara-code/contracts";
+import { WORKFLOW_BLOCK_REASONS } from "@agentx/cloud-contracts";
 import type { PiSessionAdapter, PiSessionInput } from "../../packages/worker/src/pi-session.js";
 import { runTaskInvocation } from "../../packages/worker/src/run-task.js";
 import { readCandidateRepositories } from "../../packages/worker/src/verification/candidate.js";

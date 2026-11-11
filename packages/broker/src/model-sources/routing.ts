@@ -3,20 +3,8 @@
 // limits and usage the run reports. A source is skipped, never guessed at, when it cannot be shown to be usable now: a kind or transport that is not at
 // launch, a Bedrock source that has not passed its probe, an endpoint whose host is not approved in that source's own egress entry, a source that has
 // been removed. A record that cannot be read refuses with a retryable error; it never falls back to Rovara's AI.
-import {
-  agentXError,
-  canonicalModelName,
-  endpointForbiddenModelProblem,
-  modelCompany,
-  sourceAlias,
-  sourceKindProblem,
-  type InvocationModelRoute,
-  type ModelIdentifier,
-  type EditionPolicy,
-  type ModelSource,
-  type OrgId,
-  type SourceLaunch,
-} from "@agentx/contracts";
+import { agentXError, canonicalModelName, endpointForbiddenModelProblem, modelCompany, sourceAlias, sourceKindProblem, type InvocationModelRoute, type ModelIdentifier, type ModelSource, type OrgId, type SourceLaunch } from "@rovara-code/contracts";
+import { type EditionPolicy } from "@agentx/cloud-contracts";
 import { bedrockClaudeModelIds, proxyGeographyOfModelId, type ProxyGeography } from "@agentx/model-runtime/catalog";
 import { chatGptConnectionUsable } from "../chatgpt/task-model.js";
 import type { ChatGptConnections } from "../chatgpt/connections.js";

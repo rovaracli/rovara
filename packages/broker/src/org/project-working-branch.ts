@@ -1,6 +1,6 @@
 // Exact working-branch review core. No save or task admission decision.
 import { z } from "zod";
-import { AgentXError, AgentXNameSchema, GitBranchNameSchema, OrgIdSchema, agentXError, canonicalJson, type StoredProjectDefinition } from "@agentx/contracts";
+import { AgentXError, AgentXNameSchema, GitBranchNameSchema, OrgIdSchema, agentXError, canonicalJson, type StoredProjectDefinition } from "@rovara-code/contracts";
 import type { DeveloperCaller, DeveloperRouteDependencies } from "../aws/developer-routes.js";
 import { parseGitHubRepository } from "../github-app.js";
 import { githubPinsOf } from "./project-working-branch-host.js";

@@ -1,4 +1,4 @@
-import { ChangesFeedPageReaderSchema, RealtimeNoticeReaderSchema, RealtimeTokenResponseReaderSchema, parseRealtimeChannel, sessionChannel, SessionIdSchema, type RealtimeNotice, type OrgId } from "@agentx/contracts/web";
+import { ChangesFeedPageReaderSchema, RealtimeNoticeReaderSchema, RealtimeTokenResponseReaderSchema, parseRealtimeChannel, sessionChannel, SessionIdSchema, type RealtimeNotice, type OrgId } from "@agentx/cloud-contracts/web";
 import { REALTIME_BACKOFF_MS, REALTIME_REFRESH_BEFORE_SECONDS } from "../constants.js";
 import type { AppHost, RealtimeSocket } from "../host.js";
 export function createRealtimeClient(host: AppHost, options: { onNotice: (notice: RealtimeNotice) => void; onStatus: (status: string) => void; onReset?: () => void }) {

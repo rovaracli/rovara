@@ -2,7 +2,7 @@
 // what each means; this file only sends and reads. Every write is sent once from the browser session (`retry: "never"`); a 202 (a lowering waits for a different admin) is an answer of its own, read with `sendAnswer`.
 import { useMemo } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { SecondReviewAnswerReaderSchema, SecondReviewBodySchema, SecondReviewStateReaderSchema, type SecondReviewBody } from "@agentx/contracts/web";
+import { SecondReviewAnswerReaderSchema, SecondReviewBodySchema, SecondReviewStateReaderSchema, type SecondReviewBody } from "@agentx/cloud-contracts/web";
 import { useAppHost, type AppHost } from "../host.js";
 import { createApiClient } from "./client.js";
 

@@ -3,14 +3,12 @@
 // each slot's key and uploads `design-review.json`; the broker verifies, assembles and records the round. The reviewers' and the merge step's answers are plain strings the test writes, so a hostile model is
 // one string.
 import { createHash, randomUUID } from "node:crypto";
-import {
-  DesignReviewBindingSchema, PacketDeliverySchema, WorkflowSnapshotSchema, createWorkflowSnapshot, decideWorkflow, enableDesignReview, packetDigestOf, submitWorkflowArtifact,
-  type DesignReviewBinding, type DesignReviewTier, type ReviewerRole, type WorkflowArtifact, type WorkflowProgram, type WorkflowSnapshot,
-} from "../../packages/contracts/src/index.js";
+import { DesignReviewBindingSchema, PacketDeliverySchema, packetDigestOf, type DesignReviewBinding, type DesignReviewTier, type ReviewerRole, type WorkflowArtifact, type WorkflowProgram } from "@rovara-code/contracts";
+import { WorkflowSnapshotSchema, createWorkflowSnapshot, decideWorkflow, enableDesignReview, submitWorkflowArtifact, type WorkflowSnapshot } from "@agentx/cloud-contracts";
 import { WORKFLOW_NO_CANDIDATE_DIGEST, workflowDispatchItem } from "../../packages/broker/src/aws/broker-shared.js";
 import { keyIdOf } from "../../packages/broker/src/org/budget.js";
 import { AgentStore } from "../../packages/broker/src/agents/store.js";
-import { builtinSettingsKey } from "../../packages/contracts/src/org-scoped-keys.js";
+import { builtinSettingsKey } from "@rovara-code/contracts";
 import { MAYA, createSingleAnswerPlanBroker } from "./developer-task-broker.js";
 import { fakeModelAccess } from "./fake-model-access.js";
 import { TEST_ORG } from "./orgs.js";

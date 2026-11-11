@@ -2,19 +2,8 @@
 // 200, idempotent, the owner follows without an item); a follower hears of the session's notable changes through Task 8's sink; a heartbeat puts a `PRESENCE#` item
 // that is trusted for 90 seconds and told to the session's channel only when the person wasn't there already.
 import { afterEach, describe, expect, it } from "vitest";
-import {
-  PRESENCE_HEARTBEAT_SECONDS,
-  PRESENCE_TTL_SECONDS,
-  RealtimeNoticeSchema,
-  SESSION_FOLLOWERS_MAX,
-  SessionFollowResponseSchema,
-  SessionPresenceResponseSchema,
-  agentSessionKey,
-  changesKey,
-  orgMemberKey,
-  sessionChannel,
-  type AgentSessionRecord,
-} from "../../packages/contracts/src/index.js";
+import { PRESENCE_HEARTBEAT_SECONDS, PRESENCE_TTL_SECONDS, SESSION_FOLLOWERS_MAX, SessionFollowResponseSchema, SessionPresenceResponseSchema, agentSessionKey, changesKey, type AgentSessionRecord } from "@rovara-code/contracts";
+import { RealtimeNoticeSchema, orgMemberKey, sessionChannel } from "@agentx/cloud-contracts";
 import { registerSessionNoticeSink } from "../../packages/broker/src/agent-sessions/notice-sink.js";
 import { followSession, recordPresence, removeFollower, unfollowSession, viewingNow, type SessionFollowerDependencies } from "../../packages/broker/src/agent-sessions/followers.js";
 import { sessionView, type SessionReadDependencies } from "../../packages/broker/src/agent-sessions/read.js";

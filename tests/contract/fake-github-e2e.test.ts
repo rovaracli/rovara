@@ -147,7 +147,7 @@ describe("FakeGitHub v2", () => {
       const discussion = github.comment(number, "octocat", "Please trim.");
       const made = github.review(number, "hubot", { body: "Two notes.", state: "COMMENTED", comments: [{ body: "Here.", path: "greeting.ts", line: 2 }] });
       github.review(number, "hubot", { body: null, state: "APPROVED" });
-      const feedback = await provider(github).getPullRequestFeedback(REPO, number, { system: "private-install" });
+      const feedback = await provider(github).getPullRequestFeedback(REPO, number, { system: "install" });
       expect(feedback.pullRequest).toMatchObject({ number, headCommit: sha("a"), headTreeSha: sha("1"), state: "open", headBranch: BRANCH });
       expect(feedback.comments.map((comment) => comment.id).sort()).toEqual([discussion.id, made.review.id, made.comments[0]!.id].sort());
       expect(feedback.threads).toEqual([{ id: made.comments[0]!.threadId, resolved: false, commentIds: [made.comments[0]!.id] }]);
@@ -160,9 +160,9 @@ describe("FakeGitHub v2", () => {
       const github = new FakeGitHub();
       const { push, number } = await openPullRequest(github);
       github.push(push, BRANCH, sha("c"), sha("2"), [sha("a")]);
-      expect((await provider(github).getPullRequest(REPO, number, { system: "private-install" })).headCommit).toBe(sha("a"));
-      expect((await provider(github).getPullRequest(REPO, number, { system: "private-install" })).headCommit).toBe(sha("c"));
-      expect(await provider(github).getBranchHead(REPO, BRANCH, { system: "private-install" })).toBe(sha("c"));
+      expect((await provider(github).getPullRequest(REPO, number, { system: "install" })).headCommit).toBe(sha("a"));
+      expect((await provider(github).getPullRequest(REPO, number, { system: "install" })).headCommit).toBe(sha("c"));
+      expect(await provider(github).getBranchHead(REPO, BRANCH, { system: "install" })).toBe(sha("c"));
     });
   });
 });

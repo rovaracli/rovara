@@ -7,15 +7,8 @@
 //
 // The epoch helpers (`readEpoch`, `epochTimestampBound`) are shared with the export builder (export.ts).
 import { GetCommand, QueryCommand, type DynamoDBDocumentClient } from "@aws-sdk/lib-dynamodb";
-import {
-  AUDIT_ERROR_MESSAGES,
-  AUDIT_FILTER_SCAN_MAX,
-  OrgIdSchema,
-  agentXError,
-  type AuditRecordV1,
-  type EpochStatementV1,
-  type LockedObjectV1,
-} from "@agentx/contracts";
+import { AUDIT_ERROR_MESSAGES, AUDIT_FILTER_SCAN_MAX, type AuditRecordV1, type EpochStatementV1, type LockedObjectV1 } from "@agentx/cloud-contracts";
+import { OrgIdSchema, agentXError } from "@rovara-code/contracts";
 import { auditSeqSortKey } from "./appender.js";
 import type { AuditKeyring, OpenedDetail, SealedDetail } from "./keyring.js";
 

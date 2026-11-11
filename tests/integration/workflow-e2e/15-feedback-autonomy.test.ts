@@ -4,11 +4,12 @@
 import { randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import { fauxAssistantMessage, type FauxResponseStep } from "@earendil-works/pi-ai";
-import { AGENT_WORKER_OUTDATED, FEEDBACK_NOT_RUN_REASON, FEEDBACK_STOPPED_REASON, CI_OUTPUT_BLOCK_HEADER, EMPTY_RECIPE, FEEDBACK_AUTO_ROUNDS_MAX, WORKER_INVOCATION_FEATURES, WorkflowDecisionRequestSchema, WorkflowFeedbackFindingsDecisionRequestSchema, WorkflowSnapshotSchema, feedbackDecidedByText, feedbackFixedReply, type WorkflowProgram } from "@agentx/contracts";
+import { AGENT_WORKER_OUTDATED, FEEDBACK_NOT_RUN_REASON, FEEDBACK_STOPPED_REASON, CI_OUTPUT_BLOCK_HEADER, EMPTY_RECIPE, FEEDBACK_AUTO_ROUNDS_MAX, WORKER_INVOCATION_FEATURES, WorkflowDecisionRequestSchema, WorkflowFeedbackFindingsDecisionRequestSchema, feedbackDecidedByText, feedbackFixedReply, type WorkflowProgram } from "@rovara-code/contracts";
+import { WorkflowSnapshotSchema } from "@agentx/cloud-contracts";
 import { taskRecipeKey } from "../../../packages/broker/src/developer/task-records.js";
 import { TEST_ORG } from "../../support/orgs.js";
-import { agentGuardrailsKey } from "../../../packages/contracts/src/org-scoped-keys.js";
-import { DEFAULT_AGENT_GUARDRAILS } from "../../../packages/contracts/src/agent-guardrails.js";
+import { agentGuardrailsKey } from "@rovara-code/contracts";
+import { DEFAULT_AGENT_GUARDRAILS } from "@rovara-code/contracts";
 import { feedbackCriticReply, reviewerReply } from "../../support/faux-scripts.js";
 import { reviewerFindings } from "../../support/model-fixtures.js";
 import { visibleSlackText } from "../../support/strict-slack.js";

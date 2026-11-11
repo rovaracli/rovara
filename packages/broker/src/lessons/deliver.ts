@@ -2,7 +2,7 @@
 // just before it posts the stage to the worker and gets the `learnedContext` built from the lesson store as it is at that moment. A lesson erased (even one whose purge has not finished: its authors are fenced
 // first), retired, withdrawn, expired, edited since, no longer approved for use, or hidden from the task's reader since is left out; so is everything when the project's learning mode no longer loads. Any
 // failure (the store, the access records, the reader's identity) delivers no lessons: the stage runs as without memory. The rules are the loader's own (`load.ts`), asked again.
-import { EVAL_FILES_LESSONS_PATH, EvalFilesPayloadSchema, LearnedContextSchema, type EvalFilesPayload, type LearnedContext, type LearnedLesson, type LearnedRefs } from "@agentx/contracts";
+import { EVAL_FILES_LESSONS_PATH, EvalFilesPayloadSchema, LearnedContextSchema, type EvalFilesPayload, type LearnedContext, type LearnedLesson, type LearnedRefs } from "@rovara-code/contracts";
 import type { AccessCheckPort } from "../team-record/access-port.js";
 import { hasStaleCitation, approvedForUse, stageAllows, toLearned, LOAD_MAX_BYTES } from "./load.js";
 import { memberView, type MemberResolver } from "./members.js";

@@ -1,12 +1,12 @@
 import { randomUUID } from "node:crypto";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi, type MockInstance } from "vitest";
 import { githubConnectorType, type ConnectorType } from "../../packages/broker/src/aws/connector-types.js";
-import { ConnectorCatalogSchema } from "../../packages/contracts/src/connectors-node.js";
-import { SlackThreadWorkspaceResultSchema } from "../../packages/contracts/src/slack.js";
+import { ConnectorCatalogSchema } from "@rovara-code/contracts";
+import { SlackThreadWorkspaceResultSchema } from "@rovara-code/contracts";
 import type { FakeDynamoDb } from "../support/fake-dynamodb.js";
 import { call, createAuditedSlackBroker as createBroker, ensureWorkspace, loadSlackBroker, markReady, orchestratorPrincipal, type Handler } from "../support/slack-broker.js";
 import { TRACKER_ENDPOINT, trackerConnectorType } from "../support/tracker-connector.js";
-import { projectPk } from "../../packages/contracts/src/org-scoped-keys.js";
+import { projectPk } from "@rovara-code/contracts";
 import { TEST_ORG } from "../support/orgs.js";
 
 const team = "T0BSHLLUGBD";

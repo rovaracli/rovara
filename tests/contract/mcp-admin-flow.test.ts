@@ -9,7 +9,7 @@ import { MAYA, bearerFor, recordStream } from "../support/developer-task-broker.
 import { ADMIN_TOKEN, NON_ADMIN_TOKEN, REFRESH_TOKEN, adminSignedInClient } from "../support/mcp-broker-client.js";
 import { call } from "../support/slack-broker.js";
 import { TEST_ORG } from "../support/orgs.js";
-import { orgFailureIndexKey, orgUsageIndexKey } from "../../packages/contracts/src/org-scoped-keys.js";
+import { orgFailureIndexKey, orgUsageIndexKey } from "@rovara-code/contracts";
 
 const PLANTED = [`ghp_${"Q".repeat(36)}`, `xoxb-${"2".repeat(12)}-planted`, `agxr_${"z".repeat(43)}`];
 const ADMIN_TOOLS = ["agentx_admin_health", "agentx_admin_failed_tasks", "agentx_admin_turns", "agentx_admin_usage", "agentx_admin_list_projects", "agentx_admin_list_channels", "agentx_admin_list_credentials", "agentx_admin_list_workspaces"];

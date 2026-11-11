@@ -1,6 +1,6 @@
 // Proof and evidence E8 (contracts): the fixture set a mock serves, the request hash it is found by, the unmatched-request words, what a mock reports back, and the SDK endpoint variable.
 import { describe, expect, it } from "vitest";
-import * as mocks from "../../packages/contracts/src/service-mocks.js";
+import * as mocks from "@rovara-code/contracts";
 
 const hash = (body: string, over: Partial<Parameters<typeof mocks.serviceMockRequestHash>[0]> = {}) => mocks.serviceMockRequestHash({ service: "sagemaker_runtime", target: "partner-scorer", method: "POST", contentType: "application/json", body, ...over });
 const entry = (body = '{"partner":"p1"}', over: Record<string, unknown> = {}) => ({ requestHash: hash(body), request: { contentType: "application/json", body }, response: { status: 200, contentType: "application/json", body: '{"score":0.82}', latencyMs: 40 }, ...over });

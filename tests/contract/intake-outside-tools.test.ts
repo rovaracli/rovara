@@ -2,7 +2,7 @@
 // can say "Not this one"; the project's ticket updates settings; failing watched sources say why; and the waiting tickets and failing sources are Home cards for the right people only.
 import { PutCommand } from "@aws-sdk/lib-dynamodb";
 import { describe, expect, it } from "vitest";
-import { agentXError, intakeItemIdOf, intakeNoticeKey, intakeSourceKey, teamRecordPk, type OrgId, type ProjectRole } from "@agentx/contracts";
+import { agentXError, intakeItemIdOf, intakeNoticeKey, intakeSourceKey, teamRecordPk, type OrgId, type ProjectRole } from "@rovara-code/contracts";
 import { ingestIntake, type IntakeCandidate, type IntakePorts } from "../../packages/broker/src/intake/engine.js";
 import { jiraSiteOf } from "../../packages/broker/src/intake/identity.js";
 import { intakeSourceHomeSource, waitingTicketHomeSource } from "../../packages/broker/src/intake/home-source.js";

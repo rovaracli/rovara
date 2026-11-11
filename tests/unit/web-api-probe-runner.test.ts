@@ -2,7 +2,7 @@ import { cp, mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from "node
 import { realpathSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { WEB_API_AGENT_PROBE_IDS, WEB_API_AGENT_PROBE_ROUTE, WEB_API_REQUIRED_PROBES, WebApiProbeEvidenceSchema, WebApiProbeObservationSchema, canonicalJson, webApiProbeRunId } from "../../packages/contracts/src/index.js";
+import { WEB_API_AGENT_PROBE_IDS, WEB_API_AGENT_PROBE_ROUTE, WEB_API_REQUIRED_PROBES, WebApiProbeEvidenceSchema, WebApiProbeObservationSchema, canonicalJson, webApiProbeRunId } from "@rovara-code/contracts";
 import { MAX_BLOCKED_REQUESTS_BYTES, createWebApiProbeRunner, readBlockedRequests, readChromiumSandboxAttestation, type WebApiProbeModelChannelRequest } from "../../packages/verifier/src/host/web-api-probe-runner.js";
 import { webApiAgentProbeScript, webApiBuildProbeCommand } from "../../packages/verifier/src/host/web-api-probe-plan.js";
 import { loadWebApiQualificationProbeAssets } from "../../packages/verifier/src/application-runtime-probes.js";

@@ -12,7 +12,7 @@ import { unregisterAgentSessionTaskHandlers } from "../../packages/broker/src/ag
 import { uninstallTicketUpdates } from "../../packages/broker/src/aws/broker/ticket-updates-wiring.js";
 import { AgentStore, resolveAgent } from "../../packages/broker/src/agents/store.js";
 import { startAgentRun } from "../../packages/broker/src/agents/runs.js";
-import { currentBuiltinVersion } from "../../packages/contracts/src/agent-templates.js";
+import { currentBuiltinVersion } from "@rovara-code/contracts";
 import {
   advanceAgentRun, cancelAgentRun, driveAgentRun, giveUpAgentRun, onAgentStepFinished, onApprovalGaveUp, onTaskEnded, onWriteDecided, prepareSlackReport, registerTaskEndHandler,
   registerTaskPauseHandler, type TaskEndEvent, type TaskPauseEvent,
@@ -23,18 +23,18 @@ import {
 } from "../../packages/broker/src/agents/approvals.js";
 import { writeApproversFor } from "../../packages/broker/src/agents/write-gate.js";
 import { readGuardrailsWithRevision } from "../../packages/broker/src/agents/guardrails.js";
-import { BUDGET_EXHAUSTED_FAILURE_MESSAGE } from "../../packages/contracts/src/developer-tasks-node.js";
-import { DeveloperTaskRunViewSchema } from "../../packages/contracts/src/developer-tasks.js";
-import { AgentRunStateSchema, SHORTENED_MARKER, UNVERIFIED_END_PREFIX, renderRunInput, type RunInput } from "../../packages/contracts/src/agent-run-node.js";
-import { agentXError, orgScoped } from "@agentx/contracts";
-import { recipeDigest, type RecipeOverlay } from "../../packages/contracts/src/agent-recipe-node.js";
-import { AGENT_WORKER_OUTDATED, AgentStepPayloadSchema } from "../../packages/contracts/src/protocol.js";
+import { BUDGET_EXHAUSTED_FAILURE_MESSAGE } from "@rovara-code/contracts";
+import { DeveloperTaskRunViewSchema } from "@rovara-code/contracts";
+import { AgentRunStateSchema, SHORTENED_MARKER, UNVERIFIED_END_PREFIX, renderRunInput, type RunInput } from "@rovara-code/contracts";
+import { agentXError, orgScoped } from "@rovara-code/contracts";
+import { recipeDigest, type RecipeOverlay } from "@rovara-code/contracts";
+import { AGENT_WORKER_OUTDATED, AgentStepPayloadSchema } from "@rovara-code/contracts";
 import { createEc2Delivery, type Ec2DeliveryDependencies } from "../../packages/broker/src/aws/ec2-delivery.js";
 import { createDispatcherHandler } from "../../packages/broker/src/aws/dispatcher.js";
 import type { Ec2OutboxRecord } from "../../packages/broker/src/aws/lambda.js";
-import { approvalKey, approverIndexKey, projectAgentKey, slackBindingKey } from "../../packages/contracts/src/org-scoped-keys.js";
-import { orgMemberKey, orgRemovedKey } from "../../packages/contracts/src/org-node.js";
-import type { AgentId } from "../../packages/contracts/src/agent-node.js";
+import { approvalKey, approverIndexKey, projectAgentKey, slackBindingKey } from "@rovara-code/contracts";
+import { orgMemberKey, orgRemovedKey } from "../../packages/cloud-contracts/src/org-node.js";
+import type { AgentId } from "@rovara-code/contracts";
 import { DEV_ISSUER, MAYA, OMAR, bindChannel, createDeveloperTaskBroker, grantProject, recordStream, unbindChannel, type Developer } from "../support/developer-task-broker.js";
 import { agentRunDispatchItem, operationEndDispatchItem } from "../../packages/broker/src/aws/broker-shared.js";
 import { fakeModelAccess } from "../support/fake-model-access.js";
@@ -1494,8 +1494,8 @@ describe("the agent step's payload", () => {
 
   it("refuses instructions too long for the worker, and puts the step's own name in its operation", async () => {
     const { applyAgentStep } = await import("../../packages/broker/src/agents/dispatch.js");
-    const { EMPTY_RECIPE } = await import("../../packages/contracts/src/agent-recipe-node.js");
-    const { DEFAULT_AGENT_GUARDRAILS } = await import("../../packages/contracts/src/agent-guardrails.js");
+    const { EMPTY_RECIPE } = await import("@rovara-code/contracts");
+    const { DEFAULT_AGENT_GUARDRAILS } = await import("@rovara-code/contracts");
     const step = { id: "work", name: "Work", kind: "agent" as const, workspace: "none" as const, settings: { instructions: [{ agentName: "A", text: "y".repeat(70_000) }] } };
     const recipe = { ...structuredClone(EMPTY_RECIPE), chain: [{ agentId: "agt_aaaaaaaaaaaaaaaaaaaa" as AgentId, name: "A", version: 1, builtin: false }], steps: [step] };
     expect(() => applyAgentStep({ recipe, ref: { agentId: "agt_aaaaaaaaaaaaaaaaaaaa", name: "A", version: 1, builtin: false }, guardrails: { ...DEFAULT_AGENT_GUARDRAILS }, project: "payments", priorOperations: [], agentRun: { step, inputs: "Request:\nx" } })).toThrow(/too long to send to the worker/);

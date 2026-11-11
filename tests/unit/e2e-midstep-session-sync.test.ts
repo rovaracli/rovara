@@ -5,10 +5,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import {
-  E2E_MODEL_SESSION_SYNC_FEATURE, E2E_MODEL_SESSION_SYNC_MAX_TOTAL_BYTES, E2E_MODEL_SESSION_SYNC_MAX_TOTAL_VALUES, E2E_MODEL_SESSION_SYNC_MAX_VALUE_CHARS, E2E_MODEL_SESSION_SYNC_MAX_VALUES,
-  E2EModelChannelRequestSchema, E2EModelChannelStepMarkerSchema, E2EModelSessionSyncSchema, WORKER_INVOCATION_FEATURES, boundSessionValue,
-} from "../../packages/contracts/src/index.js";
+import { E2E_MODEL_SESSION_SYNC_FEATURE, E2E_MODEL_SESSION_SYNC_MAX_TOTAL_BYTES, E2E_MODEL_SESSION_SYNC_MAX_TOTAL_VALUES, E2E_MODEL_SESSION_SYNC_MAX_VALUE_CHARS, E2E_MODEL_SESSION_SYNC_MAX_VALUES, E2EModelChannelRequestSchema, E2EModelChannelStepMarkerSchema, E2EModelSessionSyncSchema, WORKER_INVOCATION_FEATURES, boundSessionValue } from "@rovara-code/contracts";
 import { createGovernedE2EModelRoute, createInMemoryE2EDayBudget, type E2EInvoke } from "../../packages/model-runtime/src/e2e-route.js";
 import { E2EModelChannelError, createE2EModelChannelClient } from "../../packages/verifier/src/executor/model-channel.js";
 import { E2E_SESSION_SYNC_PENDING_LIMIT_MS, createE2ESessionSyncSource, type E2ESessionStateReader } from "../../packages/verifier/src/executor/session-sync.js";
@@ -22,7 +19,7 @@ import { startE2EModelProxy, type E2EModelEvidenceSink, type E2EModelProxy, type
 import { createE2ESessionSyncLedger } from "../../packages/worker/src/e2e-model-session-sync.js";
 import { createApplicationChecksFeatureMonitor } from "../../packages/worker/src/workflow-e2e-application-runtime.js";
 import { OperationJournal, createWorkerServerState, handleWorkerRequest } from "../../packages/worker/src/index.js";
-import type { E2EModelReceipt } from "../../packages/contracts/src/e2e-model-channel.js";
+import type { E2EModelReceipt } from "@rovara-code/contracts";
 import { cleanRedirectingEnvironment } from "../support/e2e-clean-environment.js";
 import { CASE_ID, RUN_ID, bedrockRoute, call, channelRequest, tapAnswer } from "../support/e2e-model-fixtures.js";
 
@@ -747,7 +744,7 @@ describe("mixed fleets are refused cleanly, and nothing stored before this chang
   });
 
   it("writes receipts and transcripts a reader from before this change still parses (a refused sync is the existing `refused-protocol` outcome)", async () => {
-    const { E2EModelReceiptSchema } = await import("../../packages/contracts/src/e2e-model-channel.js");
+    const { E2EModelReceiptSchema } = await import("@rovara-code/contracts");
     const run = await startRun();
     await postJson("/v1/generate", callBody(0, undefined));
     await postJson("/v1/generate", callBody(1, await syncToken()));

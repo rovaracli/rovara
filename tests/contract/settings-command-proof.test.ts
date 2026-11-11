@@ -4,10 +4,8 @@
 //   An API key's change to commands or the dev container is HELD: it is written only when its own check passes at the revision it was made against.
 import { randomUUID } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
-import {
-  developerOrgKey, githubInstallationKey, orgGithubInstallationKey, orgMemberKey, orgProjectCatalogKey, projectMemberKey, projectMetaKey, projectRevisionKey,
-  type AppProjectDetail, type GithubInstallationRecord,
-} from "../../packages/contracts/src/index.js";
+import { developerOrgKey, githubInstallationKey, orgGithubInstallationKey, orgMemberKey, type GithubInstallationRecord } from "@agentx/cloud-contracts";
+import { orgProjectCatalogKey, projectMemberKey, projectMetaKey, projectRevisionKey, type AppProjectDetail } from "@rovara-code/contracts";
 import { createNotifierHandler, type NotifierDependencies } from "../../packages/broker/src/aws/developer-task-notifier.js";
 import { noticesOf, type Notice } from "../../packages/broker/src/developer/notifications.js";
 import { settingsProofKey } from "../../packages/broker/src/org/settings-proof.js";

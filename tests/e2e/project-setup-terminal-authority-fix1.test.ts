@@ -8,10 +8,8 @@ import type { GitHubRepositoryApi } from "../../packages/cli/src/setup/project-f
 import { addProject, ec2Binding } from "../../packages/cli/src/setup/project-add.js";
 import { fakeControlPlane, FOUNDATION_OUTPUTS } from "../../tests/support/setup-fakes.js";
 import { scriptedPrompter } from "../../tests/support/init-fakes.js";
-import {
-  canonicalJson, canonicalPlanJson, createCandidateManifest, ProjectSetupExecutionSchema, WorkerInvocationSchema, parsePlanDocument, readCanonicalPlan,
-  planDocumentMarkdown, type E2EPolicy, type E2ESourceSnapshot,
-} from "@agentx/contracts";
+import { canonicalJson, canonicalPlanJson, createCandidateManifest, ProjectSetupExecutionSchema, parsePlanDocument, readCanonicalPlan, planDocumentMarkdown, type E2EPolicy, type E2ESourceSnapshot } from "@rovara-code/contracts";
+import { WorkerInvocationSchema } from "@agentx/cloud-contracts";
 import { call, createBroker, issuer, loadSlackBroker } from "../../tests/support/slack-broker.js";
 import { ownerKeyForSubject } from "../../packages/broker/src/aws/lambda.js";
 import { beforeAll, vi } from "vitest";
@@ -31,11 +29,11 @@ import { deriveProjectSetupSourceSmoke } from "../../packages/broker/src/e2e/pro
 import { admitProjectSetupRuntime, projectSetupBindingDigest, projectSetupRuntimeKey, ProjectSetupRuntimeRecordSchema } from "../../packages/broker/src/aws/project-setup-runtime-catalog.js";
 import { issueProjectSetupCapability, type ProjectSetupCallbackClaims } from "../../packages/broker/src/aws/project-setup-capability.js";
 import { selectE2EExecutionPlan } from "../../packages/broker/src/e2e/execution-plan.js";
-import { taskGraphDigest } from "../../packages/contracts/src/workflow-dependencies-node.js";
+import { taskGraphDigest } from "@rovara-code/contracts";
 import { persistOriginalEvidencePrimary, persistOriginalMapPrimary } from "../support/p0-evidence-capture.js";
 import { observeInstalledRuntimeManifestForHost } from "@agentx/verifier";
 import { TEST_ORG } from "../support/orgs.js";
-import { projectMemberKey, projectRevisionKey } from "../../packages/contracts/src/org-scoped-keys.js";
+import { projectMemberKey, projectRevisionKey } from "@rovara-code/contracts";
 
 let installedRuntimeManifestDigest: string;
 beforeAll(async () => {
@@ -138,7 +136,7 @@ describe("P0 normal project onboarding journey", () => {
     const githubProvider = new GitHubAppCredentialProvider({
       credentialRef: "github-app", appId: "123", getPrivateKey: async () => privateKey, fetchImplementation: githubTransport,
     });
-    const sourcePort = { capture: vi.fn(({ repositoryUrl, ref }: { repositoryUrl: string; ref: string }) => githubProvider.captureE2ESourceSnapshot(repositoryUrl, ref, { system: "private-install" })) };
+    const sourcePort = { capture: vi.fn(({ repositoryUrl, ref }: { repositoryUrl: string; ref: string }) => githubProvider.captureE2ESourceSnapshot(repositoryUrl, ref, { system: "install" })) };
     const objects = new Map<string, Buffer>();
     const s3 = { send: async (command: never) => {
       const typed = command as unknown as { constructor: { name: string }; input: { Key: string; Body?: string | Uint8Array; Range?: string } };

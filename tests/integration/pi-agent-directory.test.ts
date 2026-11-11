@@ -7,7 +7,8 @@ import { chmod, mkdir, mkdtemp, realpath, rm, stat, writeFile } from "node:fs/pr
 import { tmpdir } from "node:os";
 import { dirname, join, relative } from "node:path";
 import { promisify } from "node:util";
-import { ProjectDefinitionSchema, type ProjectDefinition, type WorkerInvocation } from "@agentx/contracts";
+import { ProjectDefinitionSchema, type ProjectDefinition } from "@rovara-code/contracts";
+import { type WorkerInvocation } from "@agentx/cloud-contracts";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { DevcontainerCli } from "../../packages/worker/src/devcontainer.js";
 import { createWorkerResources, createWorkspacePiSession, type PiSessionAdapter, type PiSessionInput } from "../../packages/worker/src/pi-session.js";

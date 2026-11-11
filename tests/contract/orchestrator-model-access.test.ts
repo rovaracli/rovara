@@ -2,11 +2,11 @@
 import { randomUUID } from "node:crypto";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Context } from "@earendil-works/pi-ai";
-import { agentXError, type SlackRequestMessage } from "../../packages/contracts/src/index.js";
-import type { OrgId } from "../../packages/contracts/src/org-node.js";
+import { agentXError, type SlackRequestMessage } from "@rovara-code/contracts";
+import type { OrgId } from "@rovara-code/contracts";
 import type { MemberSpend, MintKeyInput, MintedKey, ModelAccess } from "../../packages/broker/src/model-proxy/access.js";
-import { slackBindingKey } from "../../packages/contracts/src/org-scoped-keys.js";
-import { orgBanKey, orgMemberKey, orgRemovedKey } from "../../packages/contracts/src/index.js";
+import { slackBindingKey } from "@rovara-code/contracts";
+import { orgBanKey, orgMemberKey, orgRemovedKey } from "@agentx/cloud-contracts";
 import { developerIdForSlackUser } from "../../packages/broker/src/aws/admin-actions.js";
 import { OrgStore } from "../../packages/broker/src/org/store.js";
 import { createModelClassifier } from "../../packages/orchestrator/src/action-classifier.js";

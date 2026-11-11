@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
-import type { Ec2RuntimeBinding } from "../../packages/contracts/src/session.js";
+import type { Ec2RuntimeBinding } from "@rovara-code/contracts";
 import { failActiveOperation } from "../../packages/broker/src/aws/outbox-failure.js";
 import { SessionManager } from "../../packages/broker/src/aws/sessions.js";
 import {

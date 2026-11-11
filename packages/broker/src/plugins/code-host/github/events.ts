@@ -16,10 +16,7 @@
 //   push to a branch (not a delete, not a tag)         -> revision.pushed
 // The event id is GitHub's delivery id: a redelivery is the same event, and the intake drops a repeat (plugins/events/intake.ts).
 import { z } from "zod";
-import {
-  agentXError, CodeHostEventSchema, HostScopeSchema, CHECK_CONCLUSIONS,
-  type CheckConclusion, type CodeHostEvent, type CodeHostEvents, type HostScope, type RawDelivery, type ReviewState,
-} from "@agentx/contracts";
+import { agentXError, CodeHostEventSchema, HostScopeSchema, CHECK_CONCLUSIONS, type CheckConclusion, type CodeHostEvent, type CodeHostEvents, type HostScope, type RawDelivery, type ReviewState } from "@rovara-code/contracts";
 import { verifyGithubWebhookSignature } from "./signature.js";
 
 export const GITHUB_WEBHOOK_MAX_BYTES = 1_048_576;

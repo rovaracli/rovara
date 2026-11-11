@@ -1,7 +1,7 @@
 // Sign in with ChatGPT's install settings (#343): an admin's switch (off until turned on) and the
 // model tasks prefer when a person's plan allows it. Changed only through the admin change path.
 import { GetCommand, PutCommand } from "@aws-sdk/lib-dynamodb";
-import { CHATGPT_DEFAULT_PREFERRED_MODEL, ChatGptModelIdSchema } from "@agentx/contracts";
+import { CHATGPT_DEFAULT_PREFERRED_MODEL, ChatGptModelIdSchema } from "@rovara-code/contracts";
 
 export const CHATGPT_SETTINGS_KEY = { pk: "SETTINGS", sk: "CHATGPT" } as const;
 

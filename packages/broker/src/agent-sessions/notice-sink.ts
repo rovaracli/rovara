@@ -1,6 +1,6 @@
 // Where a summary change goes after it commits (Plan 5 Task 7a). Task 8's sink (realtime/sink.ts) turns a change into realtime notices and feed entries; until one
 // is registered this is a no-op. A sink's failure is logged and never thrown: a notice is never a reason for a refresh to fail.
-import type { AgentSessionRecord, OrgId, SessionId, SessionSummary } from "@agentx/contracts";
+import type { AgentSessionRecord, OrgId, SessionId, SessionSummary } from "@rovara-code/contracts";
 import type { TableInput } from "../agents/table-writes.js";
 
 /** What changed in one committed refresh. */

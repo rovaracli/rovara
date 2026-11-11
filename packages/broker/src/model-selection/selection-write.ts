@@ -3,7 +3,8 @@ import {z} from "zod";
 import {commit,readRequest} from "../agents/table-writes.js";
 // Shared server-only project selection writer. HTTP adapters supply authenticated identities, never permission flags.
 import {GetCommand,TransactWriteCommand} from "@aws-sdk/lib-dynamodb";
-import {agentRequestKey,INDEX_EXPIRY_ATTRIBUTE,ModelIdentifierSchema,orgMemberKey,OrgRoleSchema,projectAllows,projectSelectionKey,projectRevisionKey,canonicalJson,agentXError,type OrgId, isWriterOrgRole } from "@agentx/contracts";
+import { agentRequestKey, INDEX_EXPIRY_ATTRIBUTE, ModelIdentifierSchema, projectAllows, projectSelectionKey, projectRevisionKey, canonicalJson, agentXError, type OrgId } from "@rovara-code/contracts";
+import { orgMemberKey, OrgRoleSchema, isWriterOrgRole } from "@agentx/cloud-contracts";
 import type {ApprovalDependencies} from "../agents/approvals.js";
 import {requireSafeProjectModelSelection} from "./read.js";
 import {loadStageModelSnapshot} from "./snapshot.js";

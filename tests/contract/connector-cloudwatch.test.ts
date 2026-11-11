@@ -4,8 +4,8 @@
 import { randomUUID } from "node:crypto";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { discoverTools, executeTool, type ConnectorDefinition, type Ledger } from "@agentx/gateway";
-import { ProjectDefinitionSchema, type GrantedTool, type OrgId } from "../../packages/contracts/src/index.js";
-import { AWS_REGIONS, cloudwatchExternalId } from "../../packages/contracts/src/connection-types-observability.js";
+import { ProjectDefinitionSchema, type GrantedTool, type OrgId } from "@rovara-code/contracts";
+import { AWS_REGIONS, cloudwatchExternalId } from "@rovara-code/contracts";
 import { BUILT_IN_CONNECTOR_TYPES, resolveConnectors, type ResolvedConnector } from "../../packages/broker/src/aws/connector-types.js";
 import { awsCloudWatchAccess, cloudwatchConnectionCheck, cloudwatchConnectorType } from "../../packages/broker/src/aws/cloudwatch-connector-type.js";
 import {

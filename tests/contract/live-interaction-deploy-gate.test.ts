@@ -3,7 +3,8 @@
 import { readFileSync, readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { BROKER_SETTINGS, LIVE_INTERACTION_DEPLOY_GATES, LIVE_INTERACTION_FLAGS } from "../../packages/contracts/src/index.js";
+import { BROKER_SETTINGS } from "@agentx/cloud-contracts";
+import { LIVE_INTERACTION_DEPLOY_GATES, LIVE_INTERACTION_FLAGS } from "@rovara-code/contracts";
 import { ERASE_STEPS, PERSON_FIELDS, REQUIRED_ERASE_STEPS } from "../../packages/broker/src/team-record/person-fields.js";
 
 const ROOT = process.cwd();

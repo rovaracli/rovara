@@ -1,6 +1,6 @@
 import { expect, it, vi } from "vitest";
 import { chainRunViewOf } from "../support/chain-run-view.js";
-import { DeveloperTaskViewSchema } from "@agentx/contracts";
+import { DeveloperTaskViewSchema } from "@agentx/cloud-contracts";
 import { sessionDiff, type SessionDiffDependencies } from "../../packages/broker/src/agent-sessions/diff.js";
 import { ARJUN, BO, CELL, ORG_A, ORG_B, PRIYA, sessionWorld } from "../support/agent-session-world.js";
 function setup() {
@@ -40,7 +40,7 @@ it("maps an unbound installation to the same invisible diff response", async () 
 it("mints exactly two read permissions only after the live org binding check", async () => {
  const { generateKeyPairSync } = await import("node:crypto");
  const { GitHubAppCredentialProvider } = await import("../../packages/broker/src/github-app.js");
- const { agentXError } = await import("@agentx/contracts");
+ const { agentXError } = await import("@rovara-code/contracts");
  const key = generateKeyPairSync("rsa", { modulusLength: 2048 }).privateKey.export({ type: "pkcs8", format: "pem" }).toString();
  for (const bound of [true, false]) {
  const calls: string[] = [], tokenBodies: unknown[] = [];
@@ -91,7 +91,7 @@ it("normalizes copied, changed and unchanged GitHub files without losing the pag
 it("reuses read-only diff tokens across pages but checks the org binding on every read", async () => {
  const { generateKeyPairSync } = await import("node:crypto");
  const { GitHubAppCredentialProvider } = await import("../../packages/broker/src/github-app.js");
- const { agentXError } = await import("@agentx/contracts");
+ const { agentXError } = await import("@rovara-code/contracts");
  const key = generateKeyPairSync("rsa", { modulusLength: 2048 }).privateKey.export({ type: "pkcs8", format: "pem" }).toString();
  let now = Date.parse("2026-10-24T12:00:00Z"), mints = 0, bindings = 0, bound = true;
  const provider = new GitHubAppCredentialProvider({ credentialRef: "test", appId: "123", getPrivateKey: async () => key, now: () => now,
@@ -144,7 +144,7 @@ it("refuses malformed or excessive chain sections before reading step tasks",asy
 for(const code of ["NOT_FOUND","FORBIDDEN","RUNTIME_UNAVAILABLE"] as const)it("handles an earlier chain step read refusal: "+code,async()=>{
  const f=chainDiffSetup(),run=await f.runView(),section=run.sections[0]!;
  f.runView.mockResolvedValue({...run,sections:[section,{...section,seq:2}]});
- const {agentXError}=await import("@agentx/contracts");f.stepTask.mockRejectedValueOnce(agentXError(code,"Step unavailable."));
+ const { agentXError } = await import("@rovara-code/contracts");f.stepTask.mockRejectedValueOnce(agentXError(code,"Step unavailable."));
  if(code==="RUNTIME_UNAVAILABLE"){await expect(sessionDiff(f.deps,f.w.caller(PRIYA),f.chain.sessionId,{repository:"app",number:42,page:1})).rejects.toMatchObject({code});expect(f.files).not.toHaveBeenCalled();}
  else{expect(await sessionDiff(f.deps,f.w.caller(PRIYA),f.chain.sessionId,{repository:"app",number:42,page:1})).toMatchObject({pullRequest:{number:42}});expect(f.stepTask).toHaveBeenLastCalledWith({kind:"session",developerId:PRIYA},f.chain.sessionId,2);}
 });

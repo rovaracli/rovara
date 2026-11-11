@@ -2,11 +2,11 @@ import { fixtureActor } from "../support/money-authority.js";
 // Plan 4 Task 18: the trigger routes. A chain's and an agent's triggers, a project's switch for the triggers the built-in agents suggest, turning one on only through a person on
 // the confirmation page, the checks a trigger must pass, and what archiving does. Each test starts its own world.
 import { afterEach, describe, expect, it } from "vitest";
-import { BUILTIN_AGENTS } from "../../packages/contracts/src/agent-templates.js";
-import { BUILTIN_AGENT_IDS } from "../../packages/contracts/src/agent.js";
-import { TriggerSpecSchema } from "../../packages/contracts/src/agent-recipe.js";
-import { MAX_TRIGGERS_PER_TARGET } from "../../packages/contracts/src/trigger-specs.js";
-import { triggerKey, targetTriggersKey, triggerMatchKey, triggerTargetKey } from "../../packages/contracts/src/org-scoped-keys.js";
+import { BUILTIN_AGENTS } from "@rovara-code/contracts";
+import { BUILTIN_AGENT_IDS } from "@rovara-code/contracts";
+import { TriggerSpecSchema } from "@rovara-code/contracts";
+import { MAX_TRIGGERS_PER_TARGET } from "@rovara-code/contracts";
+import { triggerKey, targetTriggersKey, triggerMatchKey, triggerTargetKey } from "@rovara-code/contracts";
 import { builtinTriggerIdFor } from "../../packages/broker/src/triggers/routes.js";
 import { DANA, HOOK_A, HOOK_A2, HOOK_B, MAX, ORG_A, ORG_B, PRIYA, CARL, VIV, ARJUN, disposeGateWorlds, rid, setupTriggerWorld, type TriggerWorld } from "../support/trigger-world.js";
 

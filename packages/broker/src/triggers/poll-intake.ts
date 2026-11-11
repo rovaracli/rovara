@@ -13,18 +13,7 @@
 //   - everything is bounded: the sources per tick, the time of one read (10 s), the items of one read (50) and the whole tick's time.
 // Nothing a tracker returns is trusted: a result that names another tracker than the source's is dropped, and the engine treats every string as an outsider's text.
 import { UpdateCommand } from "@aws-sdk/lib-dynamodb";
-import {
-  AgentXError,
-  agentXError,
-  INDEX_EXPIRY_ATTRIBUTE,
-  INTAKE_MAX_ITEMS_PER_POLL,
-  intakeCallsKey,
-  intakePollSettingsOf,
-  intakeSourceIsPolled,
-  intakeSourceKey,
-  intakeSystemOf,
-  type OrgId,
-} from "@agentx/contracts";
+import { AgentXError, agentXError, INDEX_EXPIRY_ATTRIBUTE, INTAKE_MAX_ITEMS_PER_POLL, intakeCallsKey, intakePollSettingsOf, intakeSourceIsPolled, intakeSourceKey, intakeSystemOf, type OrgId } from "@rovara-code/contracts";
 import { ingestIntakeBatchWithin, type IntakeActor, type IntakeCandidate, type IntakeOutcome, type IntakePorts } from "../intake/engine.js";
 import { listAllIntakeSources, type IntakeSourceRecord } from "../intake/sources.js";
 

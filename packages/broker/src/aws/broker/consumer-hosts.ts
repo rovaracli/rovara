@@ -5,7 +5,7 @@
 //
 // Production gives the registry's router (`dependencies.codeHost`). A harness that builds the broker without the registry gets a GitHub-only router over `githubPullRequests` instead: the
 // same adapter, with the one thing a partial provider lacks made explicit (a person's standing falls back to their permission; code owners are off unless the provider reads them).
-import type { CodeHost, CheckRunner, HostScope, OrgId, PluginKind } from "@agentx/contracts";
+import type { CodeHost, CheckRunner, HostScope, OrgId, PluginKind } from "@rovara-code/contracts";
 import { githubActionsCheckRunner, type GitHubActionsProvider } from "../../plugins/check-runner/github-actions/index.js";
 import { githubCodeHost, GITHUB_HOST_KIND, type GitHubCodeHostProvider } from "../../plugins/code-host/github/index.js";
 import { createPluginRegistry, type CodeHostRouter } from "../../plugins/registry.js";

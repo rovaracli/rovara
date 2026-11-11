@@ -1,7 +1,7 @@
 // "How we work" (H7): the rules a maintainer writes for a project's process layer reach models, so the server makes them inert when the draft is saved. Hidden characters (zero-width,
 // bidirectional controls, every other format character, controls except newline and tab, variation selectors) are removed, the text is trimmed, and one text is at most 4,000 characters.
 // This applies to a process layer only (`purpose: "process"`); ordinary agents keep what they write.
-import { agentXError, type RecipeOverlay } from "@agentx/contracts";
+import { agentXError, type RecipeOverlay } from "@rovara-code/contracts";
 
 /** The most characters one rule text (project-wide rules, or one stage's instructions) can have. */
 export const RULE_TEXT_MAX = 4000;

@@ -3,12 +3,12 @@ import { readFile } from "node:fs/promises";
 import path from "node:path";
 import ts from "typescript";
 import { describe, expect, it } from "vitest";
-import * as ids from "../../packages/contracts/src/browser-ids.js";
-import * as chains from "../../packages/contracts/src/chains.js";
-import * as org from "../../packages/contracts/src/org.js";
-import * as sessions from "../../packages/contracts/src/agent-sessions.js";
-import * as sessionsNode from "../../packages/contracts/src/agent-sessions-node.js";
-import * as slack from "../../packages/contracts/src/slack.js";
+import * as ids from "@rovara-code/contracts";
+import * as chains from "@rovara-code/contracts";
+import * as org from "@rovara-code/contracts";
+import * as sessions from "@rovara-code/contracts";
+import * as sessionsNode from "@rovara-code/contracts";
+import * as slack from "@rovara-code/contracts";
 
 const root = process.cwd();
 const NODE_BUILTINS = ["fs", "path", "crypto", "util", "os", "zlib", "stream", "buffer", "child_process", "url"];

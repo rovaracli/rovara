@@ -7,7 +7,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { AGENTX_WORKER_PROMPT, WORKER_INVOCATION_FEATURES } from "../../packages/contracts/src/index.js";
+import { AGENTX_WORKER_PROMPT, WORKER_INVOCATION_FEATURES } from "@rovara-code/contracts";
 import { agentStepTools, materializeSkills, pinnedSkills, skillsPromptSection, withStepTimeout, type AgentSkillFile } from "../../packages/worker/src/agent-step.js";
 import { readSkillTool } from "../../packages/worker/src/read-skill-tool.js";
 import { WORKER_IMPLEMENTED_FEATURES } from "../../packages/worker/src/implemented-features.js";

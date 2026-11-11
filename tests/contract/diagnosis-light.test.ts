@@ -2,7 +2,7 @@
 // and inert), the answer read again, and what a diagnosis may write. Everything runs on the fake table; the chat service is played by calling the broker's three service functions.
 import { randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
-import { DIAGNOSIS_FAILURE_WORDS, DIAGNOSIS_RATE, ErrorRefSchema, diagnosisKey, errorRefKey } from "../../packages/contracts/src/index.js";
+import { DIAGNOSIS_FAILURE_WORDS, DIAGNOSIS_RATE, ErrorRefSchema, diagnosisKey, errorRefKey } from "@rovara-code/contracts";
 import { DIAGNOSIS_TURN_INSTRUCTIONS, completeDiagnosis, diagnosisStatusFor, prepareDiagnosisTurn, startLightDiagnosis, waitingForKey } from "../../packages/broker/src/diagnosis/light.js";
 import { admitDiagnosis, eraseDiagnosisPerson, readDiagnosisRecord, readDiagnosisRequest } from "../../packages/broker/src/diagnosis/store.js";
 import { ARJUN, MAX, ORG_A, PRIYA, diagnosisWorld, type DiagnosisWorld } from "../support/diagnosis-world.js";

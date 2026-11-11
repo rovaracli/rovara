@@ -1,5 +1,5 @@
 // K1 lane D, D2: the broker's own reading of a SPEC_WRITE result. The worker's copy is never trusted: the draft is parsed again, must be for the approved plan, and is rendered here by the project's format.
-import { SPEC_FILE_MAX_BYTES, SPEC_REVIEW_REQUIREMENTS_MAX, SpecDraftSchema, type SpecFile } from "@agentx/contracts";
+import { SPEC_FILE_MAX_BYTES, SPEC_REVIEW_REQUIREMENTS_MAX, SpecDraftSchema, type SpecFile } from "@rovara-code/contracts";
 import { specRendererFor } from "./index.js";
 import { specDesignMarkdown, type SpecDesignState } from "./approved-design.js";
 import type { SpecFailureCode, SpecState } from "./state.js";

@@ -2,8 +2,8 @@
 // membership checks of one person into one action, deletes the GitHub link only when it was read (and checks it is still absent when not),
 // caps the email pointers, keeps the tombstone free of any expiry attribute and maps a refused action back to the reason it stands for.
 import { describe, expect, it } from "vitest";
-import { orgMemberKey, orgRemovedKey } from "@agentx/contracts";
-import { MEMBER_REMOVAL_EMAIL_CAP } from "../../packages/contracts/src/member-removal.js";
+import { orgMemberKey, orgRemovedKey } from "@agentx/cloud-contracts";
+import { MEMBER_REMOVAL_EMAIL_CAP } from "../../packages/cloud-contracts/src/member-removal.js";
 import { planMemberRemoval, removalRefusal, type RemovalPlanInput } from "../../packages/broker/src/org/member-removal/plan.js";
 
 const ORG = `org_${"a".repeat(20)}`;

@@ -1,7 +1,8 @@
 // Owner decision 2026-11-02: the one-time, per-company notice that reviews now use a model from a different company. Any member reads it; only an owner or admin dismisses it for the company; the dismissal is
 // stored once per company and audited in the same transaction.
 import { describe, expect, it } from "vitest";
-import { ReviewDefaultNoticeAnswerReaderSchema, ReviewDefaultNoticeAnswerSchema, orgSettingsKey, type OrgId } from "../../packages/contracts/src/index.js";
+import { ReviewDefaultNoticeAnswerReaderSchema, ReviewDefaultNoticeAnswerSchema, type OrgId } from "@rovara-code/contracts";
+import { orgSettingsKey } from "@agentx/cloud-contracts";
 import { dismissReviewDefaultNotice, readReviewDefaultNotice } from "../../packages/broker/src/model-selection/review-default-notice.js";
 import { capturingAuditDeps } from "../support/audit-capture.js";
 import { FakeDynamoDb } from "../support/fake-dynamodb.js";

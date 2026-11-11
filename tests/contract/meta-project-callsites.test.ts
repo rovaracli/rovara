@@ -10,7 +10,7 @@ import { dirname, join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { promisify } from "node:util";
 import { beforeAll, describe, expect, it, vi } from "vitest";
-import { StoredProjectDefinitionSchema, orgProjectCatalogKey, projectRevisionKey } from "../../packages/contracts/src/index.js";
+import { StoredProjectDefinitionSchema, orgProjectCatalogKey, projectRevisionKey } from "@rovara-code/contracts";
 import { completedWorkflowItems } from "../../packages/broker/src/aws/broker/workflow-items.js";
 import { metaConfigQueueFor, metaRepoRouteDependencies, metaRepositoryReaders } from "../../packages/broker/src/aws/broker/meta-repo-wiring.js";
 import { prepareWorkspace, type RepositoryMaterializer } from "../../packages/worker/src/prepare.js";

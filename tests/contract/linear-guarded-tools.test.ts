@@ -1,6 +1,6 @@
 // Issue #49: Linear's team check guards only the tools it knows. An approved tool outside that set
 // whose input names an item can reach another team, so registration's preflight warns about it.
-import { ProjectDefinitionSchema } from "@agentx/contracts";
+import { ProjectDefinitionSchema } from "@rovara-code/contracts";
 import { LINEAR_GUARDED_ITEM_TOOLS, issueInTeamGuard, linearConnector } from "@agentx/gateway";
 import { describe, expect, it, vi } from "vitest";
 import type { ConnectorType } from "../../packages/broker/src/aws/connector-types.js";

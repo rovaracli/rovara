@@ -13,37 +13,8 @@ import { replacementNames, shownNameOf } from "../developer/name-resolver.js";
 import { createHash } from "node:crypto";
 import { GetCommand, QueryCommand, TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
 import { z } from "zod";
-import {
-  COMMENT_RATE,
-  INDEX_EXPIRY_ATTRIBUTE,
-  SESSION_MESSAGES_MAX,
-  SESSION_MESSAGES_PAGE_MAX,
-  STEER_RATE,
-  SESSION_ENDED_MESSAGE,
-  SESSION_ANCHOR_EXCERPT_MAX,
-  SESSION_ANCHOR_TARGETS,
-  SESSION_MESSAGE_MAX_CHARS,
-  SESSION_RETENTION_DAYS,
-  SESSION_REVISION_CONFLICT_MESSAGE,
-  SessionAnchorInputSchema,
-  SessionAnchorSchema,
-  SessionMessageIdSchema,
-  SessionMessageSchema,
-  agentSessionKey,
-  agentXError,
-  cleanCommentText,
-  cleanSessionName,
-  sessionChannel,
-  sessionEventId,
-  sessionRateKey,
-  sessionRequestKey,
-  type AgentSessionRecord,
-  type OrgId,
-  type SessionAnchorInput,
-  type SessionAnchorRef,
-  type SessionMessage,
-  type SessionMessagePage,
-} from "@agentx/contracts";
+import { COMMENT_RATE, INDEX_EXPIRY_ATTRIBUTE, SESSION_MESSAGES_MAX, SESSION_MESSAGES_PAGE_MAX, STEER_RATE, SESSION_ENDED_MESSAGE, SESSION_ANCHOR_EXCERPT_MAX, SESSION_ANCHOR_TARGETS, SESSION_MESSAGE_MAX_CHARS, SESSION_RETENTION_DAYS, SESSION_REVISION_CONFLICT_MESSAGE, SessionAnchorInputSchema, SessionAnchorSchema, SessionMessageIdSchema, SessionMessageSchema, agentSessionKey, agentXError, cleanCommentText, cleanSessionName, sessionEventId, sessionRateKey, sessionRequestKey, type AgentSessionRecord, type OrgId, type SessionAnchorInput, type SessionAnchorRef, type SessionMessage, type SessionMessagePage } from "@rovara-code/contracts";
+import { sessionChannel } from "@agentx/cloud-contracts";
 import { failedIndexes, isTransactionConflict, type Item, type TransactItem } from "../agents/table-writes.js";
 import { listTaskComments } from "../developer/page-comments.js";
 import { sessionNoteItems } from "../aws/developer-tasks.js";

@@ -9,22 +9,9 @@ import { mcpEndpointGuard, type McpEndpointGuard, type RequestFunction } from ".
 import { OrgConnectionStore, connectionActorIds, readConnection, readConnectionSecret } from "../../packages/broker/src/connections/store.js";
 import { OrgSecrets, orgConnectorSecretName } from "../../packages/broker/src/connections/org-secrets.js";
 import { routeConnectionRequest } from "../../packages/broker/src/connections/routes.js";
-import {
-  ConnectionSecretSchema,
-  ConnectionSecretSchemas,
-  ConnectionTypeSchema,
-  OrgConnectionSchema,
-  connectionKey,
-  connectionSecretToken,
-  type OrgConnection,
-} from "../../packages/contracts/src/connections.js";
-import {
-  DATADOG_SITES,
-  ObservabilityConnectionTypeSchema,
-  cloudwatchExternalId,
-  readOnlyConnectionMessage,
-} from "../../packages/contracts/src/connection-types-observability.js";
-import type { OrgId } from "../../packages/contracts/src/org.js";
+import { ConnectionSecretSchema, ConnectionSecretSchemas, ConnectionTypeSchema, OrgConnectionSchema, connectionKey, connectionSecretToken, type OrgConnection } from "@rovara-code/contracts";
+import { DATADOG_SITES, ObservabilityConnectionTypeSchema, cloudwatchExternalId, readOnlyConnectionMessage } from "@rovara-code/contracts";
+import type { OrgId } from "@rovara-code/contracts";
 import { FakeDynamoDb } from "../support/fake-dynamodb.js";
 import { FAKE_CONNECTOR_ROLE_ARN, FakeOrgSecrets } from "../support/fake-org-secrets.js";
 

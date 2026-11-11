@@ -2,7 +2,7 @@
 // dependencies; the broker sends it only with `tx` on and only when the task's environment has dependencies; with `tx` off the coding payload is what it always was.
 import { randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
-import { WorkerInvocationSchema } from "../../packages/contracts/src/index.js";
+import { WorkerInvocationSchema } from "@agentx/cloud-contracts";
 
 const dependency = { id: "postgres", name: "Postgres", kind: "database", family: "postgres", backing: "local", catalogId: "postgres@16", repository: "svc/postgres", digest: "b".repeat(64), config: {}, aliases: ["postgres"], connect: [{ name: "DATABASE_URL", template: "postgres://{user}:{password}@{host}:{port}/{db}" }], seeds: [], reset: "fresh_per_round" };
 const plan = (dependencies?: unknown[]) => ({ revision: 1, digest: "d".repeat(64), roundBudgetMin: 30, selection: { method: "full", alwaysRun: [], fullSuiteOn: [] }, checks: [{ id: "unit", kind: "test" }], ...(dependencies === undefined ? {} : { dependencies }) });

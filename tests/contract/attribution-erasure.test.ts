@@ -1,7 +1,8 @@
 // Enterprise foundations I3 (wiring): erasing a person from the Team record also erases the attribution change requests carry. The step runs inside erasePerson, calls the port once with
 // the org and the developer, is resumed when it fails, and the broker's port rewrites the host's description, the broker's copies, and only then deletes the person's rows.
 import { describe, expect, it, vi } from "vitest";
-import { orgMemberKey, type OrgId } from "@agentx/contracts";
+import { orgMemberKey } from "@agentx/cloud-contracts";
+import { type OrgId } from "@rovara-code/contracts";
 import { erasePerson } from "../../packages/broker/src/team-record/erase.js";
 import { attributionErasureOf } from "../../packages/broker/src/aws/broker/attribution-erasure.js";
 import { attributionForPublication } from "../../packages/broker/src/wiring/enterprise-identity.js";

@@ -1,7 +1,8 @@
 // T8 AUTOFIX-WIRING, the unclear browser-and-API fault: each UNKNOWN scenario is settled by its OWN result on the original code (the baseline record of the approved plan). The system moves are
 // replaced by spies here, so this file shows what the runner decides and asks, not how the broker starts a coding run (workflow-autofix-flow.test.ts does that for real).
 import { describe, expect, it, vi } from "vitest";
-import { BASE_MERGED_NEEDS_YOU_MILESTONE, BASE_MERGED_RETRY_REASON, WORKFLOW_BLOCK_REASONS, agentXError, type WorkflowSnapshot } from "@agentx/contracts";
+import { BASE_MERGED_NEEDS_YOU_MILESTONE, BASE_MERGED_RETRY_REASON, WORKFLOW_BLOCK_REASONS, type WorkflowSnapshot } from "@agentx/cloud-contracts";
+import { agentXError } from "@rovara-code/contracts";
 
 const moves = vi.hoisted(() => ({ sendBack: vi.fn(async () => "STARTED" as const), retryChecks: vi.fn(async () => "STARTED" as const), retryReviews: vi.fn(async () => "STARTED" as const) }));
 vi.mock("../../packages/broker/src/aws/developer-tasks.js", () => ({

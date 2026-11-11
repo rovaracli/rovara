@@ -7,7 +7,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
-import { formatCommandLine, parseCommandLine, savedEnvRepositoryName, testEnvDigest, type ProjectDefinition, type TestEnvironmentBody } from "../../packages/contracts/src/index.js";
+import { formatCommandLine, parseCommandLine, savedEnvRepositoryName, testEnvDigest, type ProjectDefinition, type TestEnvironmentBody } from "@rovara-code/contracts";
 import { buildEnvironmentDraft } from "../../packages/worker/src/env-detect/propose.js";
 import { emptyDetection } from "../../packages/worker/src/env-detect/types.js";
 import { prepareWorkspace, type RepositoryMaterializer } from "../../packages/worker/src/prepare.js";

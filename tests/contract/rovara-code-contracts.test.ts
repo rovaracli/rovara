@@ -2,48 +2,19 @@
 import { readFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { describe, expect, it } from "vitest";
-import {
-  CODE_REVIEWERS_MAX,
-  CodeMilestoneSchema,
-  CodeSettingsSchema,
-  DEFAULT_CODE_SETTINGS,
-  FixSourceSchema,
-  INTENT_QUESTIONS_MAX,
-  IntentAssessmentSchema,
-  IntentQuestionSchema,
-  MergeTrackingItemSchema,
-  PlanCritiqueSchema,
-  RiskAssessmentSchema,
-  SECRET_FILE_PATTERNS,
-  SetupDraftSchema,
-  TASK_VIEW_HEADER,
-  TASK_VIEW_VERSION,
-  VerificationReportSchema,
-  WorkflowCritiqueSchema,
-  WorkflowFixRoundsSchema,
-  WorkflowIntentSchema,
-  formatMinutes,
-} from "../../packages/contracts/src/rovara-code.js";
-import { mergeTrackingDecisionDigest } from "../../packages/contracts/src/rovara-code-node.js";
-import { WorkflowSnapshotReaderSchema, WorkflowPathSchema, WorkflowStageSchema } from "../../packages/contracts/src/task-workflow.js";
-import { WorkflowSnapshotSchema, createWorkflowSnapshot } from "../../packages/contracts/src/task-workflow-node.js";
-import { DeveloperTaskViewSchema } from "../../packages/contracts/src/developer-tasks.js";
-import { DeveloperTaskResponseSchema } from "../../packages/contracts/src/developer-tasks-node.js";
-import { AgentXErrorCodeSchema, errorStatus } from "../../packages/contracts/src/errors.js";
-import { WORKER_INVOCATION_FEATURES, WorkerInvocationSchema } from "../../packages/contracts/src/protocol.js";
-import {
-  codeMilestoneKey,
-  codeSettingsKey,
-  durationHistoryKey,
-  githubMemberKey,
-  memberGithubKey,
-  mergeTrackingKey,
-  prHeadKey,
-  mergeCommitIndexKey,
-  setupDraftKey,
-  trashKey,
-} from "../../packages/contracts/src/org-scoped-keys.js";
-import { OrgIdSchema, type OrgId } from "../../packages/contracts/src/org.js";
+import { CODE_REVIEWERS_MAX, CodeMilestoneSchema, CodeSettingsSchema, DEFAULT_CODE_SETTINGS, FixSourceSchema, INTENT_QUESTIONS_MAX, IntentAssessmentSchema, IntentQuestionSchema, PlanCritiqueSchema, RiskAssessmentSchema, SECRET_FILE_PATTERNS, SetupDraftSchema, TASK_VIEW_HEADER, TASK_VIEW_VERSION, VerificationReportSchema, WorkflowCritiqueSchema, WorkflowFixRoundsSchema, WorkflowIntentSchema, formatMinutes } from "@rovara-code/contracts";
+import { MergeTrackingItemSchema } from "../../packages/cloud-contracts/src/rovara-code.js";
+import { mergeTrackingDecisionDigest } from "../../packages/cloud-contracts/src/rovara-code-node.js";
+import { WorkflowSnapshotReaderSchema } from "../../packages/cloud-contracts/src/task-workflow.js";
+import { WorkflowPathSchema, WorkflowStageSchema } from "@rovara-code/contracts";
+import { WorkflowSnapshotSchema, createWorkflowSnapshot } from "../../packages/cloud-contracts/src/task-workflow-node.js";
+import { DeveloperTaskViewSchema } from "../../packages/cloud-contracts/src/developer-tasks.js";
+import { DeveloperTaskResponseSchema } from "../../packages/cloud-contracts/src/developer-tasks-node.js";
+import { AgentXErrorCodeSchema, errorStatus } from "@rovara-code/contracts";
+import { WORKER_INVOCATION_FEATURES } from "@rovara-code/contracts";
+import { WorkerInvocationSchema } from "../../packages/cloud-contracts/src/protocol.js";
+import { codeMilestoneKey, codeSettingsKey, durationHistoryKey, githubMemberKey, memberGithubKey, mergeTrackingKey, prHeadKey, mergeCommitIndexKey, setupDraftKey, trashKey } from "@rovara-code/contracts";
+import { OrgIdSchema, type OrgId } from "@rovara-code/contracts";
 import { taskViewForClient, taskResponseForClient } from "../../packages/broker/src/rovara-code/task-view-compat.js";
 
 const taskId = "8b579b4b-eaa7-4bf2-87bc-6da86b97c9e6";

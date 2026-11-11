@@ -3,11 +3,12 @@
 // (without saying which) or not allowed (Slack Connect). Everything comes from the caller's session org; another company gets nothing. Same harness as `source-routes-slack-tickets.test.ts` (copied: not exported).
 import { randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
-import { developerOrgKey, orgMemberKey, orgMetaKey, projectMemberKey, projectMetaKey, slackTeamOrgKey, type OrgId } from "@agentx/contracts";
+import { developerOrgKey, orgMemberKey, orgMetaKey, slackTeamOrgKey } from "@agentx/cloud-contracts";
+import { projectMemberKey, projectMetaKey, type OrgId } from "@rovara-code/contracts";
 import { createTeamRecordRuntime, type TeamRecordRuntime } from "../../../packages/broker/src/team-record/runtime.js";
 import { deleteDeps } from "../../support/team-record-delete.js";
 import { eraseWorkspace } from "../../../packages/broker/src/team-record/erase.js";
-import { teamRecordPk } from "@agentx/contracts";
+import { teamRecordPk } from "@rovara-code/contracts";
 import { putScopeWork } from "../../../packages/broker/src/team-record/store.js";
 import { dynamoRateLimiter } from "../../../packages/broker/src/team-record/query.js";
 import { handleRecordRoute } from "../../../packages/broker/src/team-record/routes.js";

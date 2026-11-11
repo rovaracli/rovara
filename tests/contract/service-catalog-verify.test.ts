@@ -1,24 +1,7 @@
 // Test services TS19: the signature on the catalog file, an image's signed statement, and the company-registry digest check (owner Q9).
 import { describe, expect, it } from "vitest";
-import {
-  CATALOG_SIGNATURE_ALGORITHM,
-  MIRROR_MANIFEST_MAX_BYTES,
-  catalogSigningMessage,
-  checkCatalogMirror,
-  combinedSbomRef,
-  checkMirrorServesDigest,
-  imageStatementMessage,
-  parseBundlePublicKey,
-  sha256HexOf,
-  verifyCatalogSignature,
-  verifyImageStatement,
-  type CatalogSignature,
-  type ImageChildStatement,
-  type ImageStatement,
-  type RegistryManifestPort,
-  type SignedImageStatement,
-} from "@agentx/contracts";
-import { loadSignedCatalogWithKeys } from "@agentx/contracts/testing";
+import { CATALOG_SIGNATURE_ALGORITHM, MIRROR_MANIFEST_MAX_BYTES, catalogSigningMessage, checkCatalogMirror, combinedSbomRef, checkMirrorServesDigest, imageStatementMessage, parseBundlePublicKey, sha256HexOf, verifyCatalogSignature, verifyImageStatement, type CatalogSignature, type ImageChildStatement, type ImageStatement, type RegistryManifestPort, type SignedImageStatement } from "@rovara-code/contracts";
+import { loadSignedCatalogWithKeys } from "@agentx/cloud-contracts/testing";
 import { pinnedCatalog, sha, testSigner, unpinnedCatalog } from "../support/catalog-pinning.js";
 
 const bytesOf = (value: unknown): Buffer => Buffer.from(`${JSON.stringify(value, null, 2)}\n`, "utf8");

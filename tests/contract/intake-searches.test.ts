@@ -1,7 +1,7 @@
 // Slice 5 "Outside tools": the watched Jira and Linear sources are read through the company's own connection, the tracker's own history says who put the label on, and a source that cannot be
 // read fails with a fixed code the maintainer is shown (never silently, never with the tracker's words).
 import { describe, expect, it, vi } from "vitest";
-import type { OrgId } from "@agentx/contracts";
+import type { OrgId } from "@rovara-code/contracts";
 import { OrgConnectionStore } from "../../packages/broker/src/connections/store.js";
 import { OrgSecrets } from "../../packages/broker/src/connections/org-secrets.js";
 import { adfText, intakeSearchesOf, jiraActorConfirmer, jiraActorOf, jiraIntakeSearch, linearIntakeSearch } from "../../packages/broker/src/triggers/intake-searches.js";

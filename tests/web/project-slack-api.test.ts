@@ -1,6 +1,6 @@
 import { expect, it } from "vitest";
 import { createProjectSlackApi } from "../../packages/ui/src/api/project-slack.js";
-import { ProjectSlackInventorySchema, ProjectSlackReceiptReaderSchema } from "../../packages/contracts/src/app-project-slack.js";
+import { ProjectSlackInventorySchema, ProjectSlackReceiptReaderSchema } from "@rovara-code/contracts";
 import { fakeHost } from "./support/fake-host.js";
 const orgId = "org_aaaaaaaaaaaaaaaaaaaa", project = "payments", teamId = "T0123456789", channelId = "C0123456789", requestId = "11111111-1111-4111-8111-111111111111", expectedContextDigest = "a".repeat(64);
 const inventory = { orgId, project, workspaces: [teamId], bindings: [{ teamId, channelId, updatedAt: "2026-10-01T00:00:00Z" }], continuation: null, partial: false, limitReached: false, inspected: 1, botMembership: "not_verified" };

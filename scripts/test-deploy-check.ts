@@ -7,10 +7,10 @@
 // M1.4 adds the e2e agent's model route, which follows the installation's provider (amendment A1): Bedrock through the worker's
 // instance role, or Anthropic, OpenAI or OpenRouter through the provider key's Secrets Manager ARN. Nothing here calls a model, and
 // nothing reads a secret: a key's validity and a customer-managed KMS key are reported as unverifiable (owner decision O6).
-import { E2E_AGENT_BEDROCK_QUOTA_CODES, E2E_AGENT_RECOMMENDED_MODELS, eligibleE2EAgentModel } from "../packages/contracts/src/e2e-agent-models.js";
-import { E2E_RUNTIME_AUTO_RENEWAL_NOTE, E2E_RUNTIME_GENERIC_RENEW_COMMAND, e2eRuntimeExpiryNotice } from "../packages/contracts/src/e2e-runtime-expiry.js";
-import { KEYED_MODEL_PROVIDERS, SECRET_ARN_MAX_LENGTH, SECRET_ARN_PATTERN, isKeyedModelProvider, type KeyedModelProvider, type ModelProvider } from "../packages/contracts/src/model-providers.js";
-import { WORKER_INVOCATION_FEATURES } from "../packages/contracts/src/protocol.js";
+import { E2E_AGENT_BEDROCK_QUOTA_CODES, E2E_AGENT_RECOMMENDED_MODELS, eligibleE2EAgentModel } from "@rovara-code/contracts";
+import { E2E_RUNTIME_AUTO_RENEWAL_NOTE, E2E_RUNTIME_GENERIC_RENEW_COMMAND, e2eRuntimeExpiryNotice } from "@rovara-code/contracts";
+import { KEYED_MODEL_PROVIDERS, SECRET_ARN_MAX_LENGTH, SECRET_ARN_PATTERN, isKeyedModelProvider, type KeyedModelProvider, type ModelProvider } from "@rovara-code/contracts";
+import { WORKER_INVOCATION_FEATURES } from "@rovara-code/contracts";
 import { listPricesPerMillion } from "../packages/model-runtime/src/catalog.js";
 import { DEFAULT_E2E_AGENT_MODELS, requireKeyedModel } from "../packages/model-runtime/src/config.js";
 import { requalifyFindings, type RequalifyFacts } from "./test-deploy-requalify.js";

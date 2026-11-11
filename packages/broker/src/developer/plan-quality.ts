@@ -1,7 +1,4 @@
-import {
-  E2E_MODEL_ROUTE_DEFAULT_BUDGETS, PLAN_ONE_SCREEN_MAX_CHARS, PLAN_QUALITY_LINTS, builtinFileCheckOf, notChangingReference, planQualityFinding, planQualityTargetReason,
-  type PlanDocument, type PlanDocumentKind, type PlanQualityFinding, type PlanQualityLint, type WorkflowCheck,
-} from "@agentx/contracts";
+import { E2E_MODEL_ROUTE_DEFAULT_BUDGETS, PLAN_ONE_SCREEN_MAX_CHARS, PLAN_QUALITY_LINTS, builtinFileCheckOf, notChangingReference, planQualityFinding, planQualityTargetReason, type PlanDocument, type PlanDocumentKind, type PlanQualityFinding, type PlanQualityLint, type WorkflowCheck } from "@rovara-code/contracts";
 import { planFullCharacters } from "./plan-one-screen.js";
 
 /**

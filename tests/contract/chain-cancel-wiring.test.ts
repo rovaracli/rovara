@@ -8,7 +8,7 @@ import { registerTaskEndHandler, type TaskEndEvent } from "../../packages/broker
 import { chainRunPortsFor } from "../../packages/broker/src/chains/runner.js";
 import { MAYA, createDeveloperTaskBroker } from "../support/developer-task-broker.js";
 import { TEST_ORG } from "../support/orgs.js";
-import { openChainRunKey } from "../../packages/contracts/src/org-scoped-keys.js";
+import { openChainRunKey } from "@rovara-code/contracts";
 import { loadSlackBroker } from "../support/slack-broker.js";
 
 const PREPARED = { result: { preparedBase: [{ repositoryId: "demo", baseCommitSha: "e".repeat(40) }] } };

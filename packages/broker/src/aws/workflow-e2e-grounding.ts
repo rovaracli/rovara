@@ -1,5 +1,5 @@
 import { GetCommand, PutCommand, UpdateCommand, type DynamoDBDocumentClient } from "@aws-sdk/lib-dynamodb";
-import { E2EDisplayBaselineSchema, INDEX_EXPIRY_ATTRIBUTE, PlanQualityFindingSchema, WORKFLOW_APPLICATION_ACCOUNTS_CHANGED_PREFIX, WORKFLOW_APPLICATION_RUNTIME_UNUSABLE_PREFIX, indexExpiresAt, type E2EDisplayBaseline, type PlanQualityFinding } from "@agentx/contracts";
+import { E2EDisplayBaselineSchema, INDEX_EXPIRY_ATTRIBUTE, PlanQualityFindingSchema, WORKFLOW_APPLICATION_ACCOUNTS_CHANGED_PREFIX, WORKFLOW_APPLICATION_RUNTIME_UNUSABLE_PREFIX, indexExpiresAt, type E2EDisplayBaseline, type PlanQualityFinding } from "@rovara-code/contracts";
 import { z } from "zod";
 import type { DeveloperTaskRecord } from "../developer/task-records.js";
 import { groundingFindingsOf } from "../developer/plan-grounding-findings.js";

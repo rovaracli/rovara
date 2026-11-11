@@ -3,16 +3,7 @@
 //                    serves exactly the same bytes and the evidence can name it);
 //   from pre-prod:   recorded exactly as the base recorder does (inputs scanned before anything is sent, no 5xx recorded, answers scanned again).
 // A request the base set already answers is never added (the pinned recording wins). Everything is bounded by `SERVICE_MOCK_ADDITIONS_MAX`.
-import {
-  SERVICE_MOCK_ADDITIONS_MAX,
-  ServiceMockAdditionSetSchema,
-  serviceMockAdditionSetDigest,
-  serviceMockFixtureSetDigest,
-  type DataGuardReport,
-  type ServiceMockAdditionSet,
-  type ServiceMockFixtureSet,
-  type TestEnvProdDeny,
-} from "@agentx/contracts";
+import { SERVICE_MOCK_ADDITIONS_MAX, ServiceMockAdditionSetSchema, serviceMockAdditionSetDigest, serviceMockFixtureSetDigest, type DataGuardReport, type ServiceMockAdditionSet, type ServiceMockFixtureSet, type TestEnvProdDeny } from "@rovara-code/contracts";
 import { createSyntheticGenerator, guardInputs } from "../data-guard.js";
 import { FixtureSetRefused, hashOfRequest } from "./fixture-set.js";
 import { recordFixtureSet, type RecordInput, type RecordedResponse } from "./recorder.js";

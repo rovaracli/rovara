@@ -7,12 +7,8 @@ import { dirname, join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { promisify } from "node:util";
 import { describe, expect, it } from "vitest";
-import {
-  PrepareMetaSchema,
-  StoredProjectDefinitionSchema,
-  WorkerInvocationSchema,
-  type ProjectDefinition,
-} from "../../packages/contracts/src/index.js";
+import { PrepareMetaSchema, StoredProjectDefinitionSchema, type ProjectDefinition } from "@rovara-code/contracts";
+import { WorkerInvocationSchema } from "@agentx/cloud-contracts";
 import { META_CHECKOUT_MAX_FILES, listMaterialized, metaPathWanted, parseTreeListing } from "../../packages/worker/src/meta-checkout.js";
 import { WORKER_IMPLEMENTED_FEATURES } from "../../packages/worker/src/implemented-features.js";
 import { prepareWorkspace, preparedBaseResult, type RepositoryMaterializer } from "../../packages/worker/src/prepare.js";

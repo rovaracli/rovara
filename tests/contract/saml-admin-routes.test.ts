@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
-import { editionPolicy } from "@agentx/contracts";
+import { editionPolicy } from "@agentx/cloud-contracts";
 import { APP_CSRF_HEADER, appCsrfTokenFor } from "../../packages/broker/src/developer/app-csrf.js";
 import { SAML_ENTITY_ID_LOCKED_MESSAGE } from "../../packages/broker/src/aws/developer-routes/sso.js";
 import { dynamoSamlConfigStore } from "../../packages/broker/src/developer/saml.js";

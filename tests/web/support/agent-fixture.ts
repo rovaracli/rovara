@@ -1,4 +1,4 @@
-import { AgentProfileResponseSchema, AgentDirectoryResponseSchema, ResolvedRecipeSchema } from "@agentx/contracts/web";
+import { AgentProfileResponseSchema, AgentDirectoryResponseSchema, ResolvedRecipeSchema } from "@agentx/cloud-contracts/web";
 export const AGENT_FIXTURE_ID = "agt_aaaaaaaaaaaaaaaaaaaa";
 export const agentPerson = "a".repeat(64);
 export function agentRecipe() { return ResolvedRecipeSchema.parse({ schemaVersion: 1, chain: [{ agentId: "ticket-triage", name: "Issue triage", version: 1, builtin: true }, { agentId: AGENT_FIXTURE_ID, name: "Payments Expert", version: 3, builtin: false }], instructions: [{ agentName: "Issue triage", text: "Read the issue carefully." }, { agentName: "Payments Expert", text: "Check refund idempotency." }], steps: [{ id: "investigate", name: "Investigate", kind: "agent", workspace: "read", settings: { instructions: [], model: { provider: "openai", modelId: "gpt-5.4" } } }], tools: [{ connector: { type: "github" }, access: "read" }], approvals: { alwaysAsk: [] }, triggers: [{ kind: "person" }], skills: [], autonomy: "prepare", allowMentions: false }); }

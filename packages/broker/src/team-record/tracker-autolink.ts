@@ -7,7 +7,7 @@
 // Everyone else is listed for the admin to map by hand, with the first reason they were not linked (a fixed code, shown on the page). Turning the switch off stops new automatic links; links already made stay until
 // an admin unmaps them.
 import { GetCommand, PutCommand } from "@aws-sdk/lib-dynamodb";
-import { teamRecordPk, type OrgId } from "@agentx/contracts";
+import { teamRecordPk, type OrgId } from "@rovara-code/contracts";
 import { normalizeEmailDomain } from "../org/company-domains/normalize.js";
 import type { TeamRecordTable } from "./types.js";
 

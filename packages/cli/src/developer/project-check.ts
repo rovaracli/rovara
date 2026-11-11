@@ -2,7 +2,7 @@
 // starts the check (`POST /v1/app/projects/{name}/setup-check`), then the project is read every 10 seconds until the check is no longer running. The
 // control plane decides who may check and what it costs; this starts it, waits, and says how it ended.
 import { randomUUID } from "node:crypto";
-import { AppProjectDetailSchema, ProjectSetupCheckResponseSchema, agentXError, type AppProjectDetail } from "@agentx/contracts";
+import { AppProjectDetailSchema, ProjectSetupCheckResponseSchema, agentXError, type AppProjectDetail } from "@rovara-code/contracts";
 import { developerRequest } from "./commands.js";
 import type { DeveloperSessionDeps } from "./session.js";
 

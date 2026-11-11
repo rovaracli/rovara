@@ -2,7 +2,7 @@
 // T5: the Sources tab for a person who may edit sources: add, change and remove (T9: every change applies at once; nothing waits for a second person). The server decides every rule; these tests hold what the screen shows and sends.
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { act, cleanup, screen, fireEvent, waitFor, within } from "@testing-library/react";
-import { SourceWriteBodySchema } from "@agentx/contracts/web";
+import { SourceWriteBodySchema } from "@agentx/cloud-contracts/web";
 import { adminRow, adminView, flat, wrapped } from "./support/sources-fixture.js";
 import { openSources } from "./support/sources-render.js";
 import { expectNoAxeViolations } from "./support/axe.js";

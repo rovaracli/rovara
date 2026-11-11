@@ -1,6 +1,6 @@
 // Lazy owner flow: freshness first, then review, ready and explicit enable.
 import { useEffect, useMemo, useState } from "react";
-import { formatUsdMicrodollars, type TaskStopReview } from "@agentx/contracts/web";
+import { formatUsdMicrodollars, type TaskStopReview } from "@agentx/cloud-contracts/web";
 import { createTaskStopEnrollmentApi } from "../../api/task-stop-enrollment.js";
 import { ApiError } from "../../api/errors.js";
 import { useAppHost } from "../../host.js";

@@ -1,21 +1,7 @@
 // Test services, slice 1 T1 (contracts): the environment body, the draft, the task plan, the Prove steps and the usage record carry test-services dependencies.
 // The golden digest below was computed on the base BEFORE the `dependencies` field existed: a body without it must keep it, byte for byte (design test-services.md 2.3, "no data migration").
 import { describe, expect, it } from "vitest";
-import {
-  TEST_ENV_BASE_PROVE_STEPS,
-  TEST_ENV_DEPENDENCY_PROVE_STEPS,
-  TEST_ENV_PROVE_FAILURES,
-  TEST_ENV_PROVE_STEPS,
-  TEST_SERVICES_PLAN_FEATURE,
-  TaskDependencyPlanSchema,
-  TestEnvDependencyCandidateSchema,
-  TestEnvDraftSchema,
-  TestEnvTaskPlanSchema,
-  TestEnvironmentBodySchema,
-  TestEnvProveReportSchema,
-  WORKER_INVOCATION_FEATURES,
-  testEnvDigest,
-} from "../../packages/contracts/src/index.js";
+import { TEST_ENV_BASE_PROVE_STEPS, TEST_ENV_DEPENDENCY_PROVE_STEPS, TEST_ENV_PROVE_FAILURES, TEST_ENV_PROVE_STEPS, TEST_SERVICES_PLAN_FEATURE, TaskDependencyPlanSchema, TestEnvDependencyCandidateSchema, TestEnvDraftSchema, TestEnvTaskPlanSchema, TestEnvironmentBodySchema, TestEnvProveReportSchema, WORKER_INVOCATION_FEATURES, testEnvDigest } from "@rovara-code/contracts";
 
 const cmd = (executable: string, args: string[] = [], cwd = "service") => ({ cwd, executable, args, timeoutSeconds: 600 });
 const baseBody = (over: Record<string, unknown> = {}) => ({

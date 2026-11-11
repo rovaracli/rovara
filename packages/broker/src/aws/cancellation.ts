@@ -7,25 +7,8 @@ import { createHmac, randomUUID } from "node:crypto";
 import { GetCommand, TransactWriteCommand, type DynamoDBDocumentClient } from "@aws-sdk/lib-dynamodb";
 import type { StoredBaselineSource } from "./baseline-source.js";
 import type { StoredCandidateBuildSource } from "./candidate-build-source.js";
-import {
-  OperationSchema,
-  TaskModelPolicyBindingSchema,
-  agentXError,
-  unhandledDeploymentMode,
-  type CodeBuildGateDefinition,
-  type DesignReviewBinding,
-  type ModelIdentifier,
-  type TaskModelPolicyBinding,
-  type ModelSelection,
-  type Operation,
-  type OperationRequester,
-  type OrgId,
-  type OperationStatus,
-  type SpendingAdmissionReference,
-  type TestEnvProdDeny,
-  type WorkerInvocation,
-  type WorkspaceInstance,
-} from "@agentx/contracts";
+import { OperationSchema, TaskModelPolicyBindingSchema, agentXError, unhandledDeploymentMode, type CodeBuildGateDefinition, type DesignReviewBinding, type ModelIdentifier, type TaskModelPolicyBinding, type ModelSelection, type Operation, type OperationRequester, type OrgId, type OperationStatus, type SpendingAdmissionReference, type TestEnvProdDeny, type WorkspaceInstance } from "@rovara-code/contracts";
+import { type WorkerInvocation } from "@agentx/cloud-contracts";
 import { hashJson, isConditional } from "./broker-shared.js";
 import type { WorkflowE2EReadinessMarker } from "./broker-shared.js";
 import type { ExtraItems } from "./developer-task-actions.js";

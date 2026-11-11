@@ -1,6 +1,6 @@
 import { useRef, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
-import { type AgentOwnerPutBodySchema } from "@agentx/contracts/web";
+import { type AgentOwnerPutBodySchema } from "@agentx/cloud-contracts/web";
 import { useAgentApi, type ReadAgent, type ReadAgentProfile } from "../../api/agents.js";
 import type { SendResult } from "../../api/client.js";
 import { Dialog } from "../../design/Dialog.js";

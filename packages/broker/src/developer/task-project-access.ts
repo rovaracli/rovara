@@ -1,15 +1,5 @@
-import {
-  AgentXNameSchema,
-  SlackChannelBindingSchema,
-  developerTaskPolicy,
-  orgMemberKey,
-  projectMemberKey,
-  projectRevisionKey,
-  slackBindingKey,
-  type DeveloperTaskPolicy,
-  type OrgId,
-  type SlackChannelBinding,
-} from "@agentx/contracts";
+import { AgentXNameSchema, SlackChannelBindingSchema, developerTaskPolicy, projectMemberKey, projectRevisionKey, slackBindingKey, type DeveloperTaskPolicy, type OrgId, type SlackChannelBinding } from "@rovara-code/contracts";
+import { orgMemberKey } from "@agentx/cloud-contracts";
 import type { TaskAuthorityAdmission } from "../aws/task-authority-admission.js";
 
 export interface ProjectAuthorityRevision {

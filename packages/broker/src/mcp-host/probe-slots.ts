@@ -6,7 +6,7 @@
 // loses it when the lease ends. A slot is given back by a delete that only succeeds for the lease that took it.
 import { randomBytes } from "node:crypto";
 import { DeleteCommand, PutCommand } from "@aws-sdk/lib-dynamodb";
-import { orgScoped, type OrgId } from "@agentx/contracts";
+import { orgScoped, type OrgId } from "@rovara-code/contracts";
 import type { ProbeSlots } from "@agentx/gateway";
 
 type DocumentClient = { send(command: unknown): Promise<unknown> };

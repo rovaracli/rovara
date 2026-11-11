@@ -2,7 +2,7 @@
 // commit's tree the checked one, and (once opened) the pull request's own head must still be the checked commit, or it is closed again. This is that check run on a FakeCodeHost standing in as the
 // install's GitHub host (a workflow publication is recorded by GitHub-only code, so another host is refused before anything is opened: see the last describe). `assertCurrentWorkflowPublication` (the workflow's own authority check, which needs a whole task) is stood in for: it is not what is under test.
 import { describe, expect, it, vi } from "vitest";
-import { editionPolicy } from "../../packages/contracts/src/index.js";
+import { editionPolicy } from "@agentx/cloud-contracts";
 import { reconcilePullRequest } from "../../packages/broker/src/aws/broker/pull-request-reconcile.js";
 import { githubCodeHost } from "../../packages/broker/src/plugins/code-host/github/index.js";
 import { FakeCodeHost } from "../../packages/broker/src/plugins/fake/code-host.js";

@@ -2,7 +2,7 @@
 //
 // A renderer turns the approved-plan `SpecDraft` into the files of one format, and reads a format's files back into checkable requirements (so a review can walk a spec a person
 // has edited). Kiro is one renderer among several; a team's own format is a renderer registered under another id. Nothing here knows a customer or a tool by name.
-import { agentXError, SPEC_FILES_MAX, SPEC_FILE_MAX_BYTES, SPEC_REVIEW_REQUIREMENTS_MAX, nextFenceState, specFileNameProblem, unescapeMarkdown, specFolderProblem, specPathProblem, specSlug, type SpecDraft, type SpecFile, type SpecRequirementRef, type SpecTarget } from "@agentx/contracts";
+import { agentXError, SPEC_FILES_MAX, SPEC_FILE_MAX_BYTES, SPEC_REVIEW_REQUIREMENTS_MAX, nextFenceState, specFileNameProblem, unescapeMarkdown, specFolderProblem, specPathProblem, specSlug, type SpecDraft, type SpecFile, type SpecRequirementRef, type SpecTarget } from "@rovara-code/contracts";
 
 /** What a renderer is given. All of it is data the broker already trusts (the draft is cleaned by its schema); `template` is meta-repo text read at the task's `knowledgeCommit`. */
 export interface SpecRenderInput {

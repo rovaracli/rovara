@@ -1,6 +1,7 @@
 // The signing side of a bundle, kept small on purpose: it is all the signing job's program needs from the release build (nothing here builds, exports or checks anything).
 import { createHash } from "node:crypto";
-import { BundleSignatureSchema, parseBundlePublicKey, sha256OfBytes, verifyBundleSignature, type BundleSignature } from "@agentx/contracts";
+import { BundleSignatureSchema, sha256OfBytes, verifyBundleSignature, type BundleSignature } from "@agentx/cloud-contracts";
+import { parseBundlePublicKey } from "@rovara-code/contracts";
 
 /** Signs bundle.json. `publicKeyPem` is the PUBLIC half the pipeline publishes and installers pin; the private half never leaves the signer (KMS). */
 export interface BundleSigner {

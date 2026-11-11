@@ -2,7 +2,8 @@
 // The private key never leaves KMS; this file builds the JWS signing input and asks KMS to sign it.
 import { createHash, createPublicKey, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 import { GetPublicKeyCommand, SignCommand } from "@aws-sdk/client-kms";
-import { DEVELOPER_ACCESS_TOKEN_SECONDS, DEVELOPER_TOKEN_AUDIENCE, type DeveloperSignInMethod, type OrgId, type OrgRole } from "@agentx/contracts";
+import { DEVELOPER_ACCESS_TOKEN_SECONDS, DEVELOPER_TOKEN_AUDIENCE, type OrgId } from "@rovara-code/contracts";
+import { type DeveloperSignInMethod, type OrgRole } from "@agentx/cloud-contracts";
 
 export interface PublicSigningJwk { kty: "RSA"; n: string; e: string; kid: string; alg: "RS256"; use: "sig" }
 

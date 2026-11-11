@@ -2,14 +2,14 @@
 // confirmation page lets decide it, with its checks (a signed-in browser, a sign-in within the last 10 minutes, the decider's live authority), and the old confirmation link sends a browser to the card.
 import { randomUUID } from "node:crypto";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { DecisionCardsViewSchema } from "@agentx/contracts";
+import { DecisionCardsViewSchema } from "@rovara-code/contracts";
 import { routeDecidePage } from "../../packages/broker/src/aws/decide-web.js";
 import { DECIDE_COOKIE, DecideStore } from "../../packages/broker/src/developer/decide-session.js";
-import { orgMemberKey, orgRemovedKey } from "@agentx/contracts";
+import { orgMemberKey, orgRemovedKey } from "@agentx/cloud-contracts";
 import { MAYA } from "../support/developer-task-broker.js";
 import { BEN, PREPARED, setup, type World } from "../support/spend-world.js";
 import { browserRequests } from "../support/browser-session.js";
-import { runCostKey } from "../../packages/contracts/src/org-scoped-keys.js";
+import { runCostKey } from "@rovara-code/contracts";
 import { TEST_ORG } from "../support/orgs.js";
 import { planAnswer, planDocument } from "../support/plan-documents.js";
 import { runLimitAck } from "../support/run-limit-ack.js";

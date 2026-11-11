@@ -2,7 +2,7 @@
 // citation re-read from the code host (final) and a passing Prove on a NEW workspace the broker prepares (the project's setup check), never the agent's. The wizard's own approve refuses without that Prove.
 import { randomUUID } from "node:crypto";
 import { afterEach, describe, expect, it } from "vitest";
-import { sanitizeSetupProposal, testEnvDigest } from "../../packages/contracts/src/index.js";
+import { sanitizeSetupProposal, testEnvDigest } from "@rovara-code/contracts";
 import { environmentFromProposal } from "../../packages/broker/src/rovara-code/setup-confirm.js";
 import { OMAR } from "../support/developer-task-broker.js";
 import { ENV, NAME, errorOf, setupWizardBench, type Bench } from "../support/setup-wizard-testenv.js";

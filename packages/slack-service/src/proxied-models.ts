@@ -1,7 +1,7 @@
 // Task 13 and ruling R32: the model access of Slack requests when the model proxy is on. One access source is made per incoming
 // message (keyed by its event ID), so the router, the gate's classifier and the orchestrator's runtime of one message share a
 // single key request however many of them it uses, and a redelivery of the message reuses the key until it nears its end.
-import type { InvocationModelRoute, SlackRequestMessage } from "@agentx/contracts";
+import type { InvocationModelRoute, SlackRequestMessage } from "@rovara-code/contracts";
 import type { RequestRouter } from "@agentx/orchestrator/request-router";
 import type { ActionClassifier } from "@agentx/orchestrator/action-gate";
 import { ClassifierError } from "@agentx/orchestrator/action-classifier";

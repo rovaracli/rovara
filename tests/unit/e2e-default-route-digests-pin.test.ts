@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { e2eModelRouteRevision } from "../../packages/contracts/src/e2e-model-channel.js";
+import { e2eModelRouteRevision } from "@rovara-code/contracts";
 import { deriveE2EAgentRoute, e2eAgentRouteDefinitionDigest } from "../../packages/model-runtime/src/e2e-route-derive.js";
 import { SECRET_ARN } from "../support/e2e-model-fixtures.js";
 

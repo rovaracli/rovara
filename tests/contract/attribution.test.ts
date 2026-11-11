@@ -1,8 +1,6 @@
 // Enterprise foundations, task I3: the attribution text, built once for the commit and the change request. Every case fails when the rule it names is removed.
 import { describe, expect, it } from "vitest";
-import {
-  ActingAttributionSchema, AttributionPersonSchema, attributionBodyLines, attributionTrailers, commitSubject, rewriteAttributionBody, withAttributionTrailers, type ActingAttribution,
-} from "../../packages/contracts/src/index.js";
+import { ActingAttributionSchema, AttributionPersonSchema, attributionBodyLines, attributionTrailers, commitSubject, rewriteAttributionBody, withAttributionTrailers, type ActingAttribution } from "@rovara-code/contracts";
 
 const maya = { state: "named", name: "Maya Chen", ref: "0123456789abcdef" } as const;
 const priya = { state: "named", name: "Priya Raman", ref: "fedcba9876543210" } as const;

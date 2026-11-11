@@ -3,7 +3,7 @@
 // work. The hook routes sit under the project routes with the cell's address, and closing an org takes its hooks away.
 import { createHmac, randomUUID } from "node:crypto";
 import { beforeAll, describe, expect, it } from "vitest";
-import { hookKey, hookLookupKey } from "../../packages/contracts/src/event-hooks.js";
+import { hookKey, hookLookupKey } from "@rovara-code/contracts";
 import { HookStore } from "../../packages/broker/src/triggers/hooks.js";
 import { HookIngressMemory } from "../../packages/broker/src/triggers/ingress.js";
 import { DEV_ISSUER, MAYA, OMAR, createDeveloperTaskBroker, seedMembership } from "../support/developer-task-broker.js";
@@ -11,8 +11,8 @@ import { FakeProjectMembers } from "../support/fake-project-members.js";
 import { FakeHookSecrets, HOOK_1, LINEAR_TENANT, SECRET_1, SIGNATURE_HEADER, hmacProvider } from "../support/hook-fixtures.js";
 import { TEST_ORG } from "../support/orgs.js";
 import { loadSlackBroker } from "../support/slack-broker.js";
-import type { OrgId } from "../../packages/contracts/src/org.js";
-import type { TriggerEvent } from "../../packages/contracts/src/triggers.js";
+import type { OrgId } from "@rovara-code/contracts";
+import type { TriggerEvent } from "@rovara-code/contracts";
 
 beforeAll(async () => { await loadSlackBroker(); });
 

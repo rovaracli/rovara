@@ -1,5 +1,5 @@
 import { expect, it } from "vitest";
-import { calculateTaskStop } from "../../packages/contracts/src/task-stop.js";
+import { calculateTaskStop } from "@rovara-code/contracts";
 
 const M = 1_000_000;
 const inherit = { kind: "inherit" };

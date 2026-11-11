@@ -1,5 +1,5 @@
 // Plan 4: the worked example "investigate, then fix", as a chain design. Tasks 2, 6, 7, 8 and 10 use it as a fixture.
-import type { ChainDefinitionInput } from "../../packages/contracts/src/chains.js";
+import type { ChainDefinitionInput } from "@rovara-code/contracts";
 
 /**
  * A Root-cause analyst finds the cause and picks `fix` or `no_fix`; on `fix` a gate asks the starter or a maintainer; Rovara Code

@@ -5,7 +5,7 @@ import { applyTeamRecordRemoval, drainTeamRecordQueue, isTeamRecordRemovalEvent,
 import { deadLetterUrlOf, sqsDeadLetters, TEAM_RECORD_REMOVAL_SOURCE, type RemovalFallbackEvent } from "../../../packages/broker/src/team-record/ops-queue.js";
 import { DeveloperSignInStore, signInIdentityKey } from "../../../packages/broker/src/developer/store.js";
 import { ownerKeyForSubject } from "../../../packages/broker/src/aws/lambda.js";
-import { SLACK_OIDC_ISSUER } from "@agentx/contracts";
+import { SLACK_OIDC_ISSUER } from "@rovara-code/contracts";
 import { FakeDynamoDb } from "../../support/fake-dynamodb.js";
 import { ORG_A } from "../../support/team-record-core.js";
 

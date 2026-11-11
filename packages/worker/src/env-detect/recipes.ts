@@ -12,10 +12,7 @@
 //   - a recipe never changes the tier, the nightly run, services, accounts, data or capture: it adds commands and checks only;
 //   - fail closed: a cut file list (the repository has more files than are read), an offer that does not parse, a fingerprint that cannot be computed, or no fit, adds nothing.
 // Pure over a bounded reader: nothing is run, downloaded or written.
-import {
-  DEFAULT_AGENT_ALLOW_DOMAINS, ProjectCommandSchema, RecipeHostSchema, SETUP_FINGERPRINT_MAX_HOSTS, SETUP_RECIPE_OFFERS_MAX, SetupRecipeBodySchema, formatCommandLine, markerFilesOf, parseSetupRecipeSource, recipeFits, remoteCodeReason,
-  setupRecipeSource, type ProjectCommand, type RecipeCommand, type SetupRecipeBody, type SetupRecipeOffer,
-} from "@agentx/contracts";
+import { DEFAULT_AGENT_ALLOW_DOMAINS, ProjectCommandSchema, RecipeHostSchema, SETUP_FINGERPRINT_MAX_HOSTS, SETUP_RECIPE_OFFERS_MAX, SetupRecipeBodySchema, formatCommandLine, markerFilesOf, parseSetupRecipeSource, recipeFits, remoteCodeReason, setupRecipeSource, type ProjectCommand, type RecipeCommand, type SetupRecipeBody, type SetupRecipeOffer } from "@rovara-code/contracts";
 import { emptyDetection, type DetectedCheck, type DetectedSource, type Detection, type RepositoryReader } from "./types.js";
 
 /** One recipe the broker offered to the project: its id and revision (the value source) and its body. */

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { ProjectDefinitionSchema, githubConnectorOf } from "../../packages/contracts/src/index.js";
+import { ProjectDefinitionSchema, githubConnectorOf } from "@rovara-code/contracts";
 
 const repository = (name: string) => ({
   name, url: `https://github.com/example/${name}.git`, path: `repo/${name}`, defaultBranch: "main", credentialRef: "github-app",

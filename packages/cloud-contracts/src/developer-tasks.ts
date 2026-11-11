@@ -1,0 +1,160 @@
+import { z } from "zod";
+import { AgentIdSchema, CHANNEL_TURNS_MAX, ChannelTurnSchema, DesignActionsViewSchema, DEVELOPER_EVENTS_MAX, DEVELOPER_TASK_SUMMARY_MAX, DeveloperTaskEventSchema, DeveloperTaskFailureSchema, DeveloperTaskRunViewSchema, DeveloperTaskShareSchema, DeveloperTaskStatusSchema, E2ESharedViewSchema, EarlyRiskSignalReadSchema, ErrorRefSchema, EvidenceViewSchema, MergeViewSchema, ModelFallbacksSchema, PlanOneScreenSchema, ProofTableViewSchema, PullRequestSummarySchema, readsAsUnknown, RunEstimateSchema, SessionIdSchema, SpendRequestIdSchema, TaskStatusSchema, TestingViewSchema, VerificationReportSchema, WORKFLOW_PLAN_MAX_BYTES } from "@rovara-code/contracts";
+import { WorkflowSnapshotViewSchema, WorkflowSnapshotReaderShape, type WorkflowSnapshotReader } from "./task-workflow.js";
+import { MergeTrackingItemSchema } from "./rovara-code.js";
+
+export const DeveloperTaskViewSchema = z.object({
+  /** Actual audited fallback history; absent only on older servers. Current broker emits [] when none. */
+  modelFallbacks:ModelFallbacksSchema.optional(),
+  taskId: z.string().uuid(),
+  title: z.string(),
+  project: z.string(),
+  status: DeveloperTaskStatusSchema,
+  /** UX2 slice 2: where the task stands in the one status model (state, reason, next step), the words every surface shows instead of `status`. Absent from older servers. */
+  statusView: TaskStatusSchema.optional(),
+  /**
+   * UX2 slice 2 item 3: a blocked task's review findings and the two ways on that the task page offers (Resolve findings, Send back to coding), as Slack and the MCP tools offer them. The findings are the
+   * blocking ones of the current code not yet accepted (reviewer words, redacted and capped; plain text every reader escapes). The routes re-check who may. Absent unless the task is blocked with one to offer.
+   */
+  reviewFindings: z.object({
+    findings: z.array(z.object({ findingId: z.string().regex(/^[a-f0-9]{64}$/), role: z.enum(["CRITIC", "SECURITY"]), text: z.string().min(1).max(1000), file: z.string().max(500).optional(), line: z.number().int().positive().optional() }).strict()).max(50),
+    resolve: z.boolean(),
+    sendBack: z.boolean(),
+  }).strict().optional(),
+  workflow: WorkflowSnapshotViewSchema.extend({
+    planContent: z.string().max(WORKFLOW_PLAN_MAX_BYTES).optional(),
+    workBreakdownDigest: z.string().regex(/^[a-f0-9]{64}$/).optional(),
+  }).optional(),
+  e2ePresentation: z.object({ shared: E2ESharedViewSchema, slackBlocks: z.array(z.unknown()).max(16), pageHtml: z.string().max(65_536), mcp: z.object({ scope: z.string().max(2_000), view: E2ESharedViewSchema }).strict() }).strict().optional(),
+  failure: DeveloperTaskFailureSchema.optional(),
+  /** Live interaction F1: what the "Fix with agent" button is about, when the task shows an error (a blocked step or a failed run). Fixed codes and ids only, never text; absent when there is no error to fix. */
+  errorRef: ErrorRefSchema.optional(),
+  /** Ruling R60: set when the task's creator was removed from the org; the task has ended (status CANCELLED) and `outcomeReason` says why. */
+  outcome: z.literal("creator_removed").optional(),
+  outcomeReason: z.string().max(1000).optional(),
+  startingRevision: z.number().int().positive(),
+  client: z.string(),
+  shared: z.boolean(),
+  closing: z.boolean().optional(),
+  createdAt: z.string(),
+  updatedAt: z.string(),
+  events: z.array(DeveloperTaskEventSchema).max(DEVELOPER_EVENTS_MAX),
+  summary: z.string().max(DEVELOPER_TASK_SUMMARY_MAX).optional(),
+  changedFiles: z.array(z.object({ repository: z.string(), path: z.string(), added: z.number().int().nonnegative(), removed: z.number().int().nonnegative() })).optional(),
+  artifacts: z.array(z.object({ name: z.string(), size: z.number().int().nonnegative().optional() })).optional(),
+  pullRequests: z.array(PullRequestSummarySchema).optional(),
+  /** R22: what the latest close preflight found, when it refused to close. */
+  unpublished: z.array(z.object({ repository: z.string(), reasons: z.array(z.string()) })).optional(),
+  /** C1: how the task is shared; absent for a private task. */
+  share: DeveloperTaskShareSchema.optional(),
+  /** C15: the shared thread's channel turns on this task, newest first. */
+  channelTurns: z.array(ChannelTurnSchema).max(CHANNEL_TURNS_MAX).optional(),
+  /** Plan 3, Task 15: the agent and version the task runs; absent on a task from before agents. */
+  agent: z.object({ agentId: AgentIdSchema, name: z.string(), version: z.union([z.number().int().min(1), z.literal("draft")]), builtin: z.boolean() }).strict().optional(),
+  /** Plan 3, Task 22: an agent-step run's progress; absent on every other task. */
+  run: DeveloperTaskRunViewSchema.optional(),
+  /** Plan 3, Task 32: the task is waiting for money: the limit it reached (`PauseScope`) and, when one was made, the request that asks for more. */
+  paused: z.object({ reason: z.literal("budget"), spendRequestId: SpendRequestIdSchema.optional(), scope: z.record(z.string(), z.string()), message: z.string().max(300).optional() }).strict().optional(),
+  /** Plan 3, Task 32: what a planning run found before it reached its limit (its last answer), at most 4,096 characters. */
+  planningSoFar: z.string().max(4096).optional(),
+  /** Plan 3, Task 32: a test run that reached its cap may go on as a normal task (`POST /v1/app/tasks/{id}/continue-as-task`). */
+  testOffer: z.object({ capUsd: z.number().nonnegative() }).strict().optional(),
+  /** Plan 3, Task 34: what the coding plan under review is expected to cost and the run limit approving it accepts. */
+  runEstimate: RunEstimateSchema.optional(),
+  /**
+   * 0.5.11 (QA6-12b): while the coding plan waits for approval, what approving does to the run limit: the limit now, the one approving sets and whether that raises it. A raise is approved only with `proposedUsd`
+   * acknowledged (the tool's `acknowledged_run_limit_usd`, the API's `acknowledgedRunLimitUsd`). Absent unless the coding plan waits and the task carries an estimate.
+   */
+  planRunLimit: z.object({ currentUsd: z.number().nonnegative(), proposedUsd: z.number().nonnegative(), raises: z.boolean() }).strict().optional(),
+  /** Plan 5, Task 2: the task's session and its link (`<origin>/s/<sessionId>`); absent on a task with no session (before sessions, a chain step, an install without agents). */
+  sessionId: SessionIdSchema.optional(),
+  sessionUrl: z.string().url().optional(),
+  /**
+   * Setup and test health (SH28, switch `nh`): present on a task start and a task read ONLY while the project's setup needs repair. The task still starts and runs; this says its testing may be blocked.
+   * Fixed words from the broker. Absent with the switch off, and for every project that is not in that state.
+   */
+  testingNotice: z.object({ state: z.literal("needs_repair"), text: z.string().min(1).max(200) }).strict().optional(),
+  /**
+   * Plan 3, Task 35b: a plan blocked on its run limit: the limit it waits for, the request that asks for it while one is open, and whether its owner may ask
+   * again (`POST /v1/app/tasks/{id}/run-limit-request`, once the last request was denied or ran out, not while its start is pending, and at most once per ten
+   * minutes: `askAgainAfter` is when). Absent unless the plan is blocked on its run limit.
+   */
+  runLimit: z.object({ limitUsd: z.number().nonnegative(), spendRequestId: SpendRequestIdSchema.optional(), canAskAgain: z.boolean(), askAgainAfter: z.string().max(40).optional() }).strict().optional(),
+  /**
+   * Plan 6, Task 12 (Rovara Code version 2 only; the broker leaves it out of a version 1 task's view, and out of a client that does not send `x-agentx-task-view: 2`):
+   * what passed, what failed, what could not be checked and which tests the change added, for the code the checks ran on. Worker output, redacted and bounded; plain
+   * text that every reader escapes for its own markup.
+   */
+  verificationReport: VerificationReportSchema.optional(),
+  /** Playbook P3 (version 2 only, full reads only, like `verificationReport`): the proof table of the approved plan's requirements, as the pull request's Proof section has it. Absent when there is no approved plan with claims. */
+  proofTable: ProofTableViewSchema.optional(),
+  /** Proof and evidence P1 (version 2 only, full reads only, like `proofTable`): the evidence of the code now on the task, with every artifact as a link behind sign-in. Absent until the broker has built one for the current candidate. */
+  evidence: EvidenceViewSchema.optional(),
+  /** Setup and test health SH19 (version 2 only, full reads only, only while the four-results switch is on): one of Verified, Code failed, Partially verified or Blocked by environment for the code now on the task, with one row per check. Absent while the switch is off or the result is not decided yet. */
+  testing: TestingViewSchema.optional(),
+  /** Design review (DR11, version 2 only): the Design first and Skip buttons for the person reading, decided by the broker. Absent when design review is not offered for the task. */
+  designActions: DesignActionsViewSchema.optional().catch(undefined),
+  /**
+   * OWNER DECISION 7 (version 2 only, full reads only): what the old review page offered on a task that stopped, now on the task page: Retry the browser and API checks (a blocked round a retry can fix),
+   * Revise the plan (coding stopped for the owner's live message) and a held spec's choices. Each says whether THIS reader may press it; the routes check again. Fixed words from the broker only.
+   */
+  pageActions: z.object({
+    checksRetry: z.object({ canRetry: z.boolean() }).strict().optional(),
+    revisePlan: z.object({ canRevise: z.boolean() }).strict().optional(),
+    specHold: z.object({ title: z.string().min(1).max(120), message: z.string().min(1).max(600), choices: z.array(z.enum(["retry", "continue", "keep", "replan"])).max(4), canChoose: z.boolean() }).strict().optional(),
+  }).strict().optional().catch(undefined),
+  /** Decisions D5 (version 2 only): the coding plan under review on one screen (about 1,500 characters), derived from the plan document with no model call. Absent when there is no readable plan. */
+  planOneScreen: PlanOneScreenSchema.optional(),
+  /**
+   * Playbook P2 (version 2 only, like `verificationReport`): which model reviewed the code now on the task, and, when it was the build's own, the note that says so. These are the lines the pull request's Reviews section has
+   * (Trust fix A2's `reviewModelLines`), passed on word for word; absent before any review of the current code. Plain text that every reader escapes for its own markup.
+   */
+  reviewModelLines: z.array(z.string().min(1).max(300)).min(1).max(4).optional(),
+  /**
+   * SH34 (version 2 only, only while the install switch `cr` is on): the second review by another AI company, for the code now on the task. `lines` are plain text (an answer's findings, or "Second review did not run: <reason>");
+   * `needsAcknowledgement` is true for an `on` review that did not run until the task owner acknowledges it, and `acknowledged` says they have. Absent when there is nothing to show (shadow that did not run is silent).
+   */
+  secondReview: z.object({ lines: z.array(z.string().min(1).max(320)).min(1).max(7), needsAcknowledgement: z.boolean(), acknowledged: z.boolean(), /** True for the task's owner while an acknowledgement is asked for: the page offers "I've seen it". */ canAcknowledge: z.boolean().optional() }).strict().optional(),
+  /** Plan 6, Task 12 (version 2 only, like `verificationReport`): the review round whose problems are being fixed, with the sentence the thread says. */
+  reviewRound: z.object({ round: z.number().int().min(1).max(100), max: z.number().int().min(1).max(5), message: z.string().min(1).max(200) }).strict().optional(),
+  /**
+   * Plan 6, Task 14 (version 2 only, full reads only, and only for a client that sends `x-agentx-task-view: 2`): what GitHub says about each pull request of the task,
+   * as merge tracking last read it. The merge claim is the broker's own and is never part of the view.
+   */
+  mergeTracking: z.array(MergeTrackingItemSchema.omit({ mergeClaim: true })).max(32).optional(),
+  /**
+   * Plan 6, Task 19 (version 2 only, full reads only, and only for a client that sends `x-agentx-task-view: 2`): whether the viewer pressing Merge now would be allowed to, from what merge
+   * tracking last read. Advisory: the press re-reads GitHub.
+   */
+  merge: MergeViewSchema.optional(),
+  /**
+   * v1.2 track record (version 2 only, full reads only, like `mergeTracking`): how the pull requests this project rated low risk went in the last 30 days, for the task's own owner and only when this task's
+   * pull request was published with risk low. Private: it is left out for every other viewer, and it is never on the shared card, in a Slack thread or on the pull request.
+   */
+  earlyRiskSignal: EarlyRiskSignalReadSchema.optional(),
+});
+
+/**
+ * The task as a client that sends `x-agentx-task-view: 2` reads it: the same view, with the workflow read tolerantly (`WorkflowSnapshotReaderShape`), so a stage or
+ * outcome a newer control plane added reads as "unknown" instead of failing the whole answer. The type says what the reader does: `stage` and `outcome` may be
+ * "unknown", so a caller has to decide what to do with a stage it does not know.
+ */
+export type DeveloperTaskClientView = Omit<z.infer<typeof DeveloperTaskViewSchema>, "workflow"> & {
+  workflow?: (WorkflowSnapshotReader & { planContent?: string | undefined; workBreakdownDigest?: string | undefined }) | undefined;
+};
+export const DeveloperTaskClientViewSchema = DeveloperTaskViewSchema.extend({
+  workflow: z.looseObject({
+    ...WorkflowSnapshotReaderShape,
+    planContent: z.string().max(WORKFLOW_PLAN_MAX_BYTES).optional(),
+    workBreakdownDigest: z.string().regex(/^[a-f0-9]{64}$/).optional(),
+  }).optional(),
+}) as unknown as z.ZodType<DeveloperTaskClientView>;
+/**
+ * The task as the strict view, or undefined when the control plane named a stage, outcome or other value this build does not know (a newer server), which the
+ * reader gave as "unknown". The reader differs from the strict view only by those markers and by keeping fields it does not know, so a task with no marker
+ * is the strict view. Code that decides what to do from a stage reads the task through this, and tells the person when it is undefined. Only the places the
+ * reader can write the marker count (`readsAsUnknown` walks the strict schema), so free text that is the word "unknown" does not.
+ */
+export function knownTaskView(view: DeveloperTaskClientView): z.infer<typeof DeveloperTaskViewSchema> | undefined {
+  return readsAsUnknown(DeveloperTaskViewSchema.shape.workflow, view.workflow) ? undefined : (view as z.infer<typeof DeveloperTaskViewSchema>);
+}

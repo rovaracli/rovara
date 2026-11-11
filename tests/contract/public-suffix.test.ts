@@ -1,8 +1,8 @@
 // Plan 2, Task 17: the Public Suffix List the project network settings check domains against.
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
-import { createPublicSuffixMatcher, isPublicSuffix } from "../../packages/contracts/src/public-suffix.js";
-import { PUBLIC_SUFFIX_LIST_COMMIT, PUBLIC_SUFFIX_RULES, registrableDomain } from "../../packages/contracts/src/public-suffix.js";
+import { createPublicSuffixMatcher, isPublicSuffix } from "@rovara-code/contracts";
+import { PUBLIC_SUFFIX_LIST_COMMIT, PUBLIC_SUFFIX_RULES, registrableDomain } from "@rovara-code/contracts";
 
 describe("the generated rules", () => {
   it("name the source commit, hold both sections, and cannot be changed at runtime", () => {

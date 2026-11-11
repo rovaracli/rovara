@@ -5,9 +5,7 @@ import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import {
-  INTENT_BLOCK_INFO_STRING, UNDERSTAND_ARTIFACT_NAME, UNDERSTAND_TIMEOUT_MINUTES, UNDERSTAND_UNREADABLE_MESSAGE, WORKER_INVOCATION_FEATURES, type IntentAssessment,
-} from "../../packages/contracts/src/index.js";
+import { INTENT_BLOCK_INFO_STRING, UNDERSTAND_ARTIFACT_NAME, UNDERSTAND_TIMEOUT_MINUTES, UNDERSTAND_UNREADABLE_MESSAGE, WORKER_INVOCATION_FEATURES, type IntentAssessment } from "@rovara-code/contracts";
 import { agentStepTools } from "../../packages/worker/src/agent-step.js";
 import type { WorkerEvent } from "../../packages/worker/src/events.js";
 import type { PiSessionAdapter } from "../../packages/worker/src/pi-session.js";

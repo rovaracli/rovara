@@ -1,26 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import { PutCommand } from "@aws-sdk/lib-dynamodb";
-import {
-  startWorkflowPlanAfterUnderstand,
-  startWorkflowUnderstand,
-  AgentXError,
-  agentXError,
-  redactText,
-  type Operation,
-  type WorkflowSnapshot,
-  WorkflowSnapshotSchema,
-  workflowSelectedChecks,
-  workflowIsDesignReviewing,
-  WorkflowTransitionError,
-  workflowRequestId,
-  returnWorkflowToImplementationAutomatically,
-  workflowAutomaticRetryDecision,
-  workflowAutoActionRequestId,
-  type WorkflowAutoSpend,
-  type WorkflowDecision,
-  sendBackProblems,
-  type E2EWorkflowAdmissionRef,
-} from "@agentx/contracts";
+import { startWorkflowPlanAfterUnderstand, startWorkflowUnderstand, type WorkflowSnapshot, WorkflowSnapshotSchema, returnWorkflowToImplementationAutomatically, workflowAutomaticRetryDecision, sendBackProblems } from "@agentx/cloud-contracts";
+import { AgentXError, agentXError, redactText, type Operation, workflowSelectedChecks, workflowIsDesignReviewing, WorkflowTransitionError, workflowRequestId, workflowAutoActionRequestId, type WorkflowAutoSpend, type WorkflowDecision, type E2EWorkflowAdmissionRef } from "@rovara-code/contracts";
 import { PLAN_REVISION_REQUEST, planCriticBlock, planCritiquePrompt } from "../../rovara-code/critic.js";
 import { startDesignReviewRound } from "../../design-review/round-start.js";
 import { designResolveDue, startDesignResolveRun } from "../../design-review/resolve-run.js";

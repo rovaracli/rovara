@@ -23,10 +23,7 @@
 // every packet from an `rvi*` bridge to the host, so the worker cannot ask it itself. A start that fails, or health that does not arrive within the entry's `startTimeoutS` (and the run-wide 120 s), ends the start with one
 // fixed sentence; Docker's own words are never repeated. Everything started is removed.
 import { createHash, randomBytes } from "node:crypto";
-import {
-  CATALOG_FIXED_ARGS, CatalogEntrySchema, FIXTURE_SET_MAX_BYTES, TEST_ENV_RESERVED_ALIASES, TestEnvDependencyIdSchema, agentXError, catalogFixedArgv, catalogIdName,
-  type CatalogEntry,
-} from "@agentx/contracts";
+import { CATALOG_FIXED_ARGS, CatalogEntrySchema, FIXTURE_SET_MAX_BYTES, TEST_ENV_RESERVED_ALIASES, TestEnvDependencyIdSchema, agentXError, catalogFixedArgv, catalogIdName, type CatalogEntry } from "@rovara-code/contracts";
 import { DOCKER_CALL_TIMEOUT_MS } from "./setup-network.js";
 import { sweepServicesNetworks, type ServicesNetwork } from "./run-network.js";
 import type { DockerCli } from "./swebench/containers.js";

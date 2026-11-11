@@ -1,5 +1,5 @@
 import { Suspense, lazy } from "react";
-import { errorRefKey, type ErrorRef } from "@agentx/contracts/web";
+import { errorRefKey, type ErrorRef } from "@agentx/cloud-contracts/web";
 import { Button } from "../../design/Button.js";
 import { VisibleText, visibleText } from "../../design/VisibleText.js";
 import { isClosedTask, sessionDisplay, type ReadSession } from "./SessionHeader.js";

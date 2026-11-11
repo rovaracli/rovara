@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
-import type { ProjectDefinition, WorkerInvocation } from "@agentx/contracts";
+import type { ProjectDefinition } from "@rovara-code/contracts";
+import type { WorkerInvocation } from "@agentx/cloud-contracts";
 import { describe, expect, it, vi } from "vitest";
 import { createRepositoryCredentialProvider } from "../../packages/worker/src/repository-credentials.js";
 

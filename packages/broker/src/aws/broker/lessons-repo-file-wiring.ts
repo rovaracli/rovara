@@ -5,7 +5,7 @@
 // request was never recorded deletes the branch, which closes the pull request on GitHub but not on a host where a merge request outlives its branch. A second host needs a place from the host and a close-by-branch method on the port.
 // The store, settings and audit sink are the lessons runtime's own; the state is the Team record table's `LESSONSET#REPOFILE#` items. Nothing here calls a model.
 import { randomUUID } from "node:crypto";
-import { OrgIdSchema, RepositoryDefinitionSchema, codeRepositoriesOf, repositoryHostOf } from "@agentx/contracts";
+import { OrgIdSchema, RepositoryDefinitionSchema, codeRepositoriesOf, repositoryHostOf } from "@rovara-code/contracts";
 import { DeveloperSignInStore } from "../../developer/store.js";
 import { dynamoRepoFileStore } from "../../lessons/dynamo-repo-file.js";
 import type { LessonAuditSink } from "../../lessons/ports.js";

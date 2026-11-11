@@ -5,7 +5,7 @@ import type { AddressInfo } from "node:net";
 import { gunzipSync } from "node:zlib";
 import { describe, expect, it, vi } from "vitest";
 import { createSessionStepsHandler, pingWorker, type SessionStepsDependencies } from "../../packages/broker/src/aws/session-steps.js";
-import { ec2WorkerBootScript } from "../../packages/contracts/src/session.js";
+import { ec2WorkerBootScript } from "@rovara-code/contracts";
 
 const bootScript = readFileSync(new URL("../../packages/worker/ec2/boot.sh", import.meta.url), "utf8");
 // Task 10: the legacy deployment boots with today's single-file script; a named environment boots stage 1 and reads stage 2 from its worker image.

@@ -4,7 +4,8 @@
 import { randomUUID } from "node:crypto";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type * as AskService from "../../packages/broker/src/aws/broker/ask-service.js";
-import { ASK_RATE, orgBanKey, orgRemovedKey, projectArchivedMessage, projectMemberKey, projectMetaKey, sessionRateKey, slackTeamOrgKey } from "../../packages/contracts/src/index.js";
+import { ASK_RATE, projectArchivedMessage, projectMemberKey, projectMetaKey, sessionRateKey } from "@rovara-code/contracts";
+import { orgBanKey, orgRemovedKey, slackTeamOrgKey } from "@agentx/cloud-contracts";
 import { developerIdForSlackUser } from "../../packages/broker/src/aws/admin-actions.js";
 import { SLACK_ASK_NOT_ALLOWED_WORDS, slackAskRefusalContext } from "../../packages/broker/src/aws/broker/thread-workspaces.js";
 import { taskOwnsThread } from "../../packages/broker/src/aws/developer-tasks/task-answer-context.js";

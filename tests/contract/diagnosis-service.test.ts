@@ -3,7 +3,7 @@
 // Rovara-paid design): the key is asked for in the requester's name on the company's own AI provider; nothing in a request can ask for another payer.
 import { randomUUID } from "node:crypto";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { DIAGNOSIS_LIGHT_BUDGET_USD, DiagnosisModelAccessRequestSchema, canonicalModelName, SLACK_ROUTE_DIAGNOSIS, diagnosisRouteAttributes, isDiagnosisRoute } from "../../packages/contracts/src/index.js";
+import { DIAGNOSIS_LIGHT_BUDGET_USD, DiagnosisModelAccessRequestSchema, canonicalModelName, SLACK_ROUTE_DIAGNOSIS, diagnosisRouteAttributes, isDiagnosisRoute } from "@rovara-code/contracts";
 
 const mint = vi.hoisted(() => vi.fn((...args: unknown[]) => { void args; return Promise.resolve({ baseUrl: "https://proxy.example.invalid", apiKey: "fake-key-not-a-secret", expiresAt: 1 }); }));
 vi.mock("../../packages/broker/src/aws/broker/model-access.js", async (importOriginal) => ({ ...(await importOriginal<Record<string, unknown>>()), mintChatTurnKey: mint }));

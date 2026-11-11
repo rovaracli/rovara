@@ -3,7 +3,7 @@
 import { generateKeyPairSync } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { beforeAll, describe, expect, it, vi } from "vitest";
-import { agentXError, type OrgId } from "@agentx/contracts";
+import { agentXError, type OrgId } from "@rovara-code/contracts";
 import { GitHubAppCredentialProvider } from "../../packages/broker/src/github-app.js";
 import { TEST_ORG } from "../support/orgs.js";
 
@@ -122,7 +122,7 @@ describe("createAgentInstallationToken", () => {
 
   it.each<[string, unknown]>([
     ["a webhook system scope", { system: "webhook" }],
-    ["a private-install system scope", { system: "private-install" }],
+    ["an install system scope", { system: "install" }],
     ["both an org and a system scope", { orgId: TEST_ORG, system: "webhook" }],
     ["no scope", undefined],
     ["a scope with no org", {}],

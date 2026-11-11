@@ -3,7 +3,7 @@ import { nameResolverOf, replacementNames } from "./name-resolver.js";
 import { randomUUID } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
 import { GetCommand, QueryCommand, TransactWriteCommand, type TransactWriteCommandInput } from "@aws-sdk/lib-dynamodb";
-import { AgentXError, SlackThreadSchema, SlackUserIdSchema, agentXError, cleanDisplayName, emailSafeName, redactAndCap, slackThreadUrl } from "@agentx/contracts";
+import { AgentXError, SlackThreadSchema, SlackUserIdSchema, agentXError, cleanDisplayName, emailSafeName, redactAndCap, slackThreadUrl } from "@rovara-code/contracts";
 import type { DeveloperCaller } from "../aws/developer-routes.js";
 import type { ProjectAccessSubject, TaskPersonIdentity } from "./task-person-identity.js";
 import type { TaskPeopleDisplayAdmission } from "./task-people-display-budget.js";

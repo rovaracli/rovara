@@ -1,14 +1,7 @@
 import { isDeepStrictEqual } from "node:util";
 import { GetCommand } from "@aws-sdk/lib-dynamodb";
-import {
-  SlackTeamIdSchema,
-  agentXError,
-  orgMemberKey,
-  orgRemovedKey,
-  type OrgId,
-  type TaskPersonProofRequest,
-  type TaskPersonProofResponse,
-} from "@agentx/contracts";
+import { SlackTeamIdSchema, agentXError, type OrgId, type TaskPersonProofRequest, type TaskPersonProofResponse } from "@rovara-code/contracts";
+import { orgMemberKey, orgRemovedKey } from "@agentx/cloud-contracts";
 import {
   checkTaskPersonIdentity,
   type ProjectAccessSubject,

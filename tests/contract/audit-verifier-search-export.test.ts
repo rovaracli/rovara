@@ -9,7 +9,7 @@ import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import * as verifier from "../../packages/audit-verifier/src/index.js";
 import { runCli } from "../../packages/audit-verifier/src/cli.js";
 import { buildAuditFixture, TSA_LABEL } from "../support/audit-bundle-fixture.js";
-import { auditEventId, auditOperatorId, AuditEventInputSchema, AuditIndexedQuerySchema } from "@agentx/contracts";
+import { auditEventId, auditOperatorId, AuditEventInputSchema, AuditIndexedQuerySchema } from "@agentx/cloud-contracts";
 import { appendEvent } from "../../packages/broker/src/audit/appender.js";
 import { AuditKeyring } from "../../packages/broker/src/audit/keyring.js";
 import { auditIndexPostings } from "../../packages/broker/src/audit/search-index.js";

@@ -1,4 +1,4 @@
-import { retiredTeamRecordVectorIndexName, teamRecordVectorIndexName } from "@agentx/contracts";
+import { retiredTeamRecordVectorIndexName, teamRecordVectorIndexName } from "@agentx/cloud-contracts";
 import { describe, expect, it } from "vitest";
 import { S3VectorsIndex, type S3VectorsPort } from "../../../packages/broker/src/team-record/s3-vectors-index.js";
 import { WorkspaceVectorPorts, createAssume, createStsAssumePort, openWorkspaceIndex, workspaceVectorSessionPolicy, type SessionPolicyInput } from "../../../packages/broker/src/team-record/vector-access.js";

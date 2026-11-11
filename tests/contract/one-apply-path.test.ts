@@ -2,7 +2,7 @@
 // (shownProposal), its check runs, Prove passes, and only the approval writes the commands into the settings. Nothing is saved before that.
 import { randomUUID } from "node:crypto";
 import { afterEach, describe, expect, it } from "vitest";
-import { projectRevisionKey } from "@agentx/contracts";
+import { projectRevisionKey } from "@rovara-code/contracts";
 import { MAYA, OMAR } from "../support/developer-task-broker.js";
 import { TEST_ORG } from "../support/orgs.js";
 import { ENV, NAME, draftOf, setupWizardBench, withSwitch, type Bench } from "../support/setup-wizard-testenv.js";

@@ -7,7 +7,8 @@ import { Template } from "aws-cdk-lib/assertions";
 import { describe, expect, it } from "vitest";
 import { ControlPlaneStack } from "../../infra/lib/control-plane.js";
 import { environmentNaming } from "../../infra/lib/naming.js";
-import { HEALTH_ALARM_SUFFIXES, chainScheduleGroupName, chainScheduleQueueName, chainScheduleRoleName } from "@agentx/contracts";
+import { HEALTH_ALARM_SUFFIXES, chainScheduleQueueName, chainScheduleRoleName } from "@agentx/cloud-contracts";
+import { chainScheduleGroupName } from "@rovara-code/contracts";
 import { brokerNamesIn } from "../support/broker-names-template.js";
 import { skipLambdaBundling } from "../support/skip-bundling.js";
 

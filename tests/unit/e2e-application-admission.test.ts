@@ -1,9 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { afterEach, describe, expect, it } from "vitest";
-import { type E2EScenario, E2EApplicationPlanIntentSchema, E2E_APPLICATION_ADMISSION_SCHEMA_V1, E2E_APPLICATION_ADMISSION_SCHEMA_V2, E2E_HARD_LIMITS, E2E_MODEL_FREE_LIMITS, E2E_MODEL_FREE_LIMITS_BEFORE_RUN_1, E2E_MODEL_ROUTE_DEFAULT_BUDGETS,
-  WORKFLOW_APPLICATION_ACCOUNTS_CHANGED_PREFIX, WORKFLOW_APPLICATION_ROUND_REFUSED_PREFIX, WORKFLOW_APPLICATION_RUNTIME_UNUSABLE_PREFIX, canonicalJson,
-  deriveE2EApplicationRuntimeAccountRef, deriveE2ESyntheticRuntimeAccountRef, e2eAnonymousRuntimeAccountRef, e2eApplicationAccountDefinitionDigest, e2eRuntimeBindingKey, E2ESetupProposalSchema, createCandidateManifest, inspectE2ERepository, proposeE2ESetup, verifyE2ESetupProposal } from "@agentx/contracts";
+import { type E2EScenario, E2EApplicationPlanIntentSchema, E2E_APPLICATION_ADMISSION_SCHEMA_V1, E2E_APPLICATION_ADMISSION_SCHEMA_V2, E2E_HARD_LIMITS, E2E_MODEL_FREE_LIMITS, E2E_MODEL_FREE_LIMITS_BEFORE_RUN_1, E2E_MODEL_ROUTE_DEFAULT_BUDGETS, WORKFLOW_APPLICATION_ACCOUNTS_CHANGED_PREFIX, WORKFLOW_APPLICATION_ROUND_REFUSED_PREFIX, WORKFLOW_APPLICATION_RUNTIME_UNUSABLE_PREFIX, canonicalJson, deriveE2EApplicationRuntimeAccountRef, deriveE2ESyntheticRuntimeAccountRef, e2eAnonymousRuntimeAccountRef, e2eApplicationAccountDefinitionDigest, e2eRuntimeBindingKey, E2ESetupProposalSchema, createCandidateManifest, inspectE2ERepository, proposeE2ESetup, verifyE2ESetupProposal } from "@rovara-code/contracts";
 import { registryFor } from "../support/e2e-account-registry-fixtures.js";
 import { E2E_EXECUTOR_HOST_ENTRY_POINT_ID, E2E_EXECUTOR_HOST_PROFILE_ID, STALE_RUN_SWEEP_AGE_MS, decodeE2EApplicationExecutionAdmission, e2eApplicationGroupAgentSteps, e2eApplicationGroupUsesModel, e2eCompiledRuntime,
   validateE2EApplicationExecutionAdmission } from "@agentx/verifier";

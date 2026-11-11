@@ -3,7 +3,7 @@
 // Everything a source's server tells us (a tool's description, its schema's descriptions, its results) is text written by someone else. The model
 // reads it, so it is cleaned and bounded here, and the answer is framed as data, never as an instruction (design 3.6, injection safety 1).
 import { createHash } from "node:crypto";
-import { defuseFrameTags, stripHiddenCharacters, type ContextSource, type ContextSourceTool, type ContextToolPresentation } from "@agentx/contracts";
+import { defuseFrameTags, stripHiddenCharacters, type ContextSource, type ContextSourceTool, type ContextToolPresentation } from "@rovara-code/contracts";
 
 const NAME_LIMIT = 64;
 

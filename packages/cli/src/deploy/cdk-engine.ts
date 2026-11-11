@@ -12,7 +12,8 @@
 import { teamRecordContextArguments, type TeamRecordOptions } from "./team-record-switch.js";
 import { readFile, rm } from "node:fs/promises";
 import { join } from "node:path";
-import { EDITION_CONTEXT_KEY, NEW_INSTALL_CONTEXT_KEY, agentXError, type Edition } from "@agentx/contracts";
+import { EDITION_CONTEXT_KEY, NEW_INSTALL_CONTEXT_KEY } from "@agentx/cloud-contracts";
+import { agentXError, type Edition } from "@rovara-code/contracts";
 import type { ParameterStore } from "../environments/parameter-store.js";
 import type { DeployRequest, StackDeployer, StackOutputs } from "./deployer.js";
 import { SECRET_PARAMETERS, type DeployPart } from "./parameters.js";

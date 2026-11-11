@@ -2,9 +2,10 @@
 // that every change is repeatable (R18) and tenant-scoped, and that an MCP endpoint is checked.
 import { randomUUID } from "node:crypto";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
-import { agentRequestKey } from "../../packages/contracts/src/org-scoped-keys.js";
-import { connectionKey } from "../../packages/contracts/src/connections.js";
-import type { OrgId, OrgRole } from "../../packages/contracts/src/org-node.js";
+import { agentRequestKey } from "@rovara-code/contracts";
+import { connectionKey } from "@rovara-code/contracts";
+import type { OrgId } from "@rovara-code/contracts";
+import type { OrgRole } from "../../packages/cloud-contracts/src/org-node.js";
 import { checkEndpointUrl } from "../../packages/broker/src/connections/endpoint-check.js";
 import { mcpEndpointGuard } from "../../packages/broker/src/connections/pinned-endpoint.js";
 import { OrgConnectionStore } from "../../packages/broker/src/connections/store.js";

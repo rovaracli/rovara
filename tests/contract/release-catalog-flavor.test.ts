@@ -7,7 +7,7 @@ import { join } from "node:path";
 import { readFileSync } from "node:fs";
 import YAML from "yaml";
 import { afterEach, describe, expect, it } from "vitest";
-import { CATALOG_STAGING_ACCOUNT_ID, catalogTrustedKeyPems } from "@agentx/contracts";
+import { CATALOG_STAGING_ACCOUNT_ID, catalogTrustedKeyPems } from "@agentx/cloud-contracts";
 import { FLAVOR_FILE, STAGING_KEYS_FILE, STAGING_KEY_DATA_FILE, setCatalogFlavor } from "../../packages/contracts/tools/catalog-flavor.js";
 import { CATALOG_FLAVOR_TOOL, buildStagingArtifacts, restoreReleaseFlavor } from "../../scripts/test-deploy.js";
 import { skopeoLabelReader } from "../../scripts/release/image-flavor.js";

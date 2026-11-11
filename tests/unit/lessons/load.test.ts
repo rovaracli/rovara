@@ -1,6 +1,6 @@
 // L4 (broker side): the loader. Poisoning classes P9 and P10 (loader side), and the reviewer-independence control C11.
 import { describe, expect, it } from "vitest";
-import { LearnedContextSchema } from "../../../packages/contracts/src/index.js";
+import { LearnedContextSchema } from "@rovara-code/contracts";
 import { applyLoadReport } from "../../../packages/broker/src/lessons/counters.js";
 import { learnedContextForDispatch, loadLessonsForStage, scopeMatch, wilsonLower, type LoadDeps, type LoadRequest } from "../../../packages/broker/src/lessons/load.js";
 import { readVisible } from "../../../packages/broker/src/lessons/read-visible.js";

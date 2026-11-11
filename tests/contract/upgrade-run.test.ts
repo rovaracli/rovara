@@ -13,7 +13,7 @@ import { writeTeamRecordRecord } from "../../packages/cli/src/deploy/team-record
 import { writeSlackTeamId } from "../../packages/cli/src/signin/settings.js";
 import { executeCli } from "../../packages/cli/src/main.js";
 import { prepareDeployment } from "../../packages/cli/src/deploy/commands.js";
-import { agentXError } from "@agentx/contracts";
+import { agentXError } from "@rovara-code/contracts";
 import { writeCustomDomain } from "../../packages/cli/src/environments/custom-domain.js";
 import { accessChanged, runUpgrade, type UpgradeDependencies } from "../../packages/cli/src/upgrade/run.js";
 import { DECISION_CARDS_ON_LINE, forcedOperatorValues } from "../../packages/cli/src/upgrade/forced-values.js";

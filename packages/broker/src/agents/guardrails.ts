@@ -5,28 +5,7 @@ import { budgetActorRefused, type BudgetActor } from "./budget-authority.js";
 // published (`validateRecipeForOrg`) and decides whether a built-in agent is turned off. It does not import access.ts or changes.ts,
 // so both can use it.
 import { GetCommand } from "@aws-sdk/lib-dynamodb";
-import {
-  AgentGuardrailsSchema,
-  AgentGuardrailsWriteSchema,
-  AutonomySchema,
-  BUILTIN_AGENTS,
-  DEFAULT_AGENT_GUARDRAILS,
-  agentGuardrailsKey,
-  agentXError,
-  canonicalModelName,
-  forbiddenModelMatcher,
-  isBuiltinAgentId,
-  modelCompany,
-  recipeProblems,
-  type AgentGuardrails,
-  type AgentId,
-  type ModelCompany,
-  type ModelIdentifier,
-  type OrgId,
-  type RecipeProblem,
-  type ResolvedRecipe,
-  type ResolvedStep,
-} from "@agentx/contracts";
+import { AgentGuardrailsSchema, AgentGuardrailsWriteSchema, AutonomySchema, BUILTIN_AGENTS, DEFAULT_AGENT_GUARDRAILS, agentGuardrailsKey, agentXError, canonicalModelName, forbiddenModelMatcher, isBuiltinAgentId, modelCompany, recipeProblems, type AgentGuardrails, type AgentId, type ModelCompany, type ModelIdentifier, type OrgId, type RecipeProblem, type ResolvedRecipe, type ResolvedStep } from "@rovara-code/contracts";
 import { bedrockClaudeModelIds } from "@agentx/model-runtime/catalog";
 import { skillProblems } from "./skills.js";
 import type { AgentRecord, AgentStore, AgentVersion, RequestMark } from "./store.js";

@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
-import type { TaskPeopleChangeResult, TaskPeopleDisplayReadRequest, TaskPeopleProposal } from "@agentx/contracts";
+import type { TaskPeopleChangeResult, TaskPeopleDisplayReadRequest, TaskPeopleProposal } from "@rovara-code/contracts";
 import type { TaskPeopleView } from "../../packages/broker/src/developer/task-people.js";
 import type { DeveloperCaller } from "../../packages/broker/src/aws/developer-routes.js";
 import type { AdaptedHttpRequest } from "../../packages/broker/src/aws/lambda.js";

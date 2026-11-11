@@ -3,7 +3,8 @@
 // Starting an audit export needs a fresh sign-in (controller default, pending the owner's answer).
 import { decodeJwt } from "jose";
 import { describe, expect, it } from "vitest";
-import { AgentXError, GROUP_MAPPING_MESSAGES, editionPolicy, type EditionPolicy } from "@agentx/contracts";
+import { AgentXError } from "@rovara-code/contracts";
+import { GROUP_MAPPING_MESSAGES, editionPolicy, type EditionPolicy } from "@agentx/cloud-contracts";
 import { decideSignIn, dynamoGroupMappingStore, evaluateGroupMapping } from "../../packages/broker/src/developer/group-mapping.js";
 import { decideCompanySignIn } from "../../packages/broker/src/developer/sso-sign-in.js";
 import { AUDIT_EXPORT_FRESH_SIGN_IN_MESSAGE } from "../../packages/broker/src/aws/developer-routes/audit-export-fresh.js";

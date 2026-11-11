@@ -5,7 +5,7 @@
 //   - the same when the session is deleted, when it is past its retention (its record may outlive it by the table's TTL lag), when it is another org's, when it can't be read right now (fail closed), and when the
 //     stored origin does not parse.
 // The session is read through `resolveSessionAccess`, so the access rules are exactly the session's own (shares, the task's people, project roles, org admins).
-import { AgentOriginSchema, SESSION_RETENTION_DAYS, hideEmailAddresses, sessionLink, type AgentOrigin, type AgentOriginView, type OrgId } from "@agentx/contracts";
+import { AgentOriginSchema, SESSION_RETENTION_DAYS, hideEmailAddresses, sessionLink, type AgentOrigin, type AgentOriginView, type OrgId } from "@rovara-code/contracts";
 import { resolveSessionAccess, type SessionAccessDependencies } from "./access.js";
 
 const DAY_MS = 24 * 60 * 60 * 1000;

@@ -1,26 +1,7 @@
 // Meta repo lane A, task A1: the project model's contracts. The meta role on a repository, the config file, the origin of each setting, and the citation a
 // proposed item must carry. Every case below fails when the rule it names is removed; old stored records must still read exactly as before.
 import { describe, expect, it } from "vitest";
-import {
-  META_CONFIG_MAX_BYTES,
-  CreateProjectFromMetaBodySchema,
-  ProjectDefinitionSchema,
-  ProvenanceSchema,
-  StoredProjectDefinitionSchema,
-  canonicalJson,
-  codeRepositoriesOf,
-  fileManagedFields,
-  isCreateFromMetaBody,
-  metaConfigReferenceProblems,
-  metaRepositoryOf,
-  parseMetaProjectConfig,
-  parseMetaProjectConfigJson,
-  projectMetaShape,
-  proposedSchema,
-  settingOriginOf,
-  withSettingOrigins,
-  workerProjectDefinition,
-} from "../../packages/contracts/src/index.js";
+import { META_CONFIG_MAX_BYTES, CreateProjectFromMetaBodySchema, ProjectDefinitionSchema, ProvenanceSchema, StoredProjectDefinitionSchema, canonicalJson, codeRepositoriesOf, fileManagedFields, isCreateFromMetaBody, metaConfigReferenceProblems, metaRepositoryOf, parseMetaProjectConfig, parseMetaProjectConfigJson, projectMetaShape, proposedSchema, settingOriginOf, withSettingOrigins, workerProjectDefinition } from "@rovara-code/contracts";
 import { z } from "zod";
 
 const repo = (name: string, extra: Record<string, unknown> = {}) => ({

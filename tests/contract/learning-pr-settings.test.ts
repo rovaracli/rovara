@@ -1,5 +1,5 @@
 import {expect,it,vi} from "vitest";
-import {DEFAULT_AGENT_GUARDRAILS,agentGuardrailsKey,projectLearningKey} from "@agentx/contracts";
+import { DEFAULT_AGENT_GUARDRAILS, agentGuardrailsKey, projectLearningKey } from "@rovara-code/contracts";
 import {makeWorld,PROJECT_CREATED} from "../support/learning-world.js";
 it("B8 effective PR setting is off by default and company lock wins without deleting text",async()=>{
  const {prCaptureOff}=await import("../../packages/broker/src/learning/settings.js"),w=makeWorld();expect(await prCaptureOff(w.deps,w.scope)).toBe(true);
@@ -11,7 +11,7 @@ it("B8 a recreated project cannot inherit its previous learning setting",async()
  const {prCaptureOff}=await import("../../packages/broker/src/learning/settings.js"),w=makeWorld();w.db.set({...projectLearningKey(w.scope.orgId,w.scope.project,"SETTINGS"),projectCreatedAt:"2026-09-01T00:00:00.000Z",prComments:"on",revision:1});expect(await prCaptureOff(w.deps,w.scope)).toBe(true);
 });
 async function approvalFixture() {
- const {orgMetaKey,orgMemberKey,developerOrgKey,projectMetaKey}=await import("@agentx/contracts"),{capturingAuditDeps}=await import("../support/audit-capture.js"),w=makeWorld(),owner="a".repeat(64),admin="b".repeat(64),audit=capturingAuditDeps({db:w.db});audit.audit.documentClient=w.db as unknown as typeof audit.audit.documentClient;
+ const { orgMetaKey, orgMemberKey, developerOrgKey } = await import("@agentx/cloud-contracts"), { projectMetaKey } = await import("@rovara-code/contracts"),{capturingAuditDeps}=await import("../support/audit-capture.js"),w=makeWorld(),owner="a".repeat(64),admin="b".repeat(64),audit=capturingAuditDeps({db:w.db});audit.audit.documentClient=w.db as unknown as typeof audit.audit.documentClient;
  w.db.set({...orgMetaKey(w.scope.orgId),orgId:w.scope.orgId,createdAt:PROJECT_CREATED,approvalMembershipVersion:1,approvalTrackingSince:PROJECT_CREATED});
  w.db.set({...projectMetaKey(w.scope.orgId,w.scope.project),entityType:"PROJECT_META",name:w.scope.project,status:"active",createdAt:PROJECT_CREATED,createdBy:owner});
  for(const [id,role] of [[owner,"owner"],[admin,"admin"]] as const){w.db.set({...orgMemberKey(w.scope.orgId,id),orgId:w.scope.orgId,developerId:id,role,joinedAt:PROJECT_CREATED});w.db.set({...developerOrgKey(id),orgId:w.scope.orgId,role});w.db.set({pk:`DEVELOPER#${id}`,sk:"META",developerId:id,revoked:false});}
@@ -50,14 +50,14 @@ it("B8 learning page exposes the count-only skipped footer through the existing 
  const result=await routeLearning({task:f.deps as never,projectFor:async()=>({name:f.scope.project,role:"maintainer" as const})},f.caller as never,"GET",new URL(`https://cell.example/v1/app/projects/${f.scope.project}/learning`),()=>({}));expect(result).toMatchObject({skippedUnlinked:3});
 });
 for(const mode of ["expired","revoked","sole_cooloff","recreated"] as const)it(`B8 ${mode} cannot approve a pending enable`,async()=>{
- const {writeLearningSettings,decideLearningSettings}=await import("../../packages/broker/src/learning/settings.js"),{orgMemberKey,orgMetaKey,projectMetaKey}=await import("@agentx/contracts"),f=await approvalFixture();const p=await writeLearningSettings(f.deps,f.caller,f.scope.project,{expectedRevision:0,prComments:"on"});if(p.applied)throw Error("must propose");let by=f.admin;
+ const {writeLearningSettings,decideLearningSettings}=await import("../../packages/broker/src/learning/settings.js"),{ orgMemberKey, orgMetaKey } = await import("@agentx/cloud-contracts"), { projectMetaKey } = await import("@rovara-code/contracts"),f=await approvalFixture();const p=await writeLearningSettings(f.deps,f.caller,f.scope.project,{expectedRevision:0,prComments:"on"});if(p.applied)throw Error("must propose");let by=f.admin;
  if(mode==="expired")f.clock.ms+=86400001;if(mode==="revoked")f.db.set({pk:`DEVELOPER#${f.admin}`,sk:"META",developerId:f.admin,revoked:true});
  if(mode==="sole_cooloff"){f.db.delete(orgMemberKey(f.scope.orgId,f.admin));const key=orgMetaKey(f.scope.orgId);f.db.set({...f.db.get(key),...key,approvalLastCompanyEligibleLossAt:new Date(f.clock.ms-3600000).toISOString()});by=f.owner;}
  if(mode==="recreated"){const key=projectMetaKey(f.scope.orgId,f.scope.project);f.db.set({...f.db.get(key),...key,createdAt:new Date(f.clock.ms+1000).toISOString()});}
  const deciding=decideLearningSettings(f.deps,{...f.caller,developerId:by},f.scope.project,p.proposalId,{decision:"approve"});if(mode==="expired")await expect(deciding).resolves.toMatchObject({settings:{prComments:"off"}});else await expect(deciding).rejects.toBeDefined();expect(f.db.get(projectLearningKey(f.scope.orgId,f.scope.project,"SETTINGS"))?.prComments).toBe("off");
 });
 it("B8 sole-owner exception is explicit and audited using complete shared history",async()=>{
- const {writeLearningSettings,decideLearningSettings}=await import("../../packages/broker/src/learning/settings.js"),{orgMemberKey}=await import("@agentx/contracts"),f=await approvalFixture();f.db.delete(orgMemberKey(f.scope.orgId,f.admin));const p=await writeLearningSettings(f.deps,f.caller,f.scope.project,{expectedRevision:0,prComments:"on"});if(p.applied)throw Error("must propose");
+ const {writeLearningSettings,decideLearningSettings}=await import("../../packages/broker/src/learning/settings.js"),{ orgMemberKey } = await import("@agentx/cloud-contracts"),f=await approvalFixture();f.db.delete(orgMemberKey(f.scope.orgId,f.admin));const p=await writeLearningSettings(f.deps,f.caller,f.scope.project,{expectedRevision:0,prComments:"on"});if(p.applied)throw Error("must propose");
  expect((await decideLearningSettings(f.deps,f.caller,f.scope.project,p.proposalId,{decision:"approve",soleOwnerAcknowledged:true})).settings.prComments).toBe("on");expect(f.audit.recordedBy("project.learning_changed").at(-1)?.facts).toMatchObject({selfConfirmedSoleOwner:true,enabled:true});
 });
 it("B8 decline is terminal and retry does not duplicate the summary audit",async()=>{
@@ -84,7 +84,7 @@ for(const state of ["missing","expired"] as const)for(const next of ["on","off"]
 });
 
 for(const ack of [undefined,false])it(`B8 review M3 sole owner requires explicit acknowledgement ${String(ack)}`,async()=>{
- const {writeLearningSettings,decideLearningSettings}=await import("../../packages/broker/src/learning/settings.js"),{orgMemberKey}=await import("@agentx/contracts"),f=await approvalFixture();f.db.delete(orgMemberKey(f.scope.orgId,f.admin));const p=await writeLearningSettings(f.deps,f.caller,f.scope.project,{expectedRevision:0,prComments:"on"});if(p.applied)throw Error("must propose");
+ const {writeLearningSettings,decideLearningSettings}=await import("../../packages/broker/src/learning/settings.js"),{ orgMemberKey } = await import("@agentx/cloud-contracts"),f=await approvalFixture();f.db.delete(orgMemberKey(f.scope.orgId,f.admin));const p=await writeLearningSettings(f.deps,f.caller,f.scope.project,{expectedRevision:0,prComments:"on"});if(p.applied)throw Error("must propose");
  await expect(decideLearningSettings(f.deps,f.caller,f.scope.project,p.proposalId,{decision:"approve",...(ack===undefined?{}:{soleOwnerAcknowledged:ack})})).rejects.toMatchObject({code:"FORBIDDEN"});expect(f.db.get(projectLearningKey(f.scope.orgId,f.scope.project,"SETTINGS"))?.prComments).toBe("off");
 });
 it("B8 review M4 no ledger refuses both setting and approval writes",async()=>{

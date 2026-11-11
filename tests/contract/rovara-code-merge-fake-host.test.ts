@@ -2,7 +2,7 @@
 // the same claim; the host here is a fake change request on an in-memory repository, not a GitHub-shaped provider. What the GitHub-shaped world proves for the wrapper
 // (rovara-code-merge.test.ts, rovara-code-oneclick-merge.test.ts) this proves for a host that is not GitHub, on the paths that read the port: status, standing, code owners, changed files and merge.
 import { describe, expect, it } from "vitest";
-import { orgMemberKey, MERGE_NOT_READY_MESSAGES as M } from "../../packages/contracts/src/index.js";
+import { orgMemberKey, MERGE_NOT_READY_MESSAGES as M } from "@agentx/cloud-contracts";
 import { pressMerge } from "../../packages/broker/src/rovara-code/merge.js";
 import { approvalReviewsOf, changedPathsOf } from "../../packages/broker/src/rovara-code/host-port.js";
 import { FakeCodeHost } from "../../packages/broker/src/plugins/fake/code-host.js";

@@ -1,7 +1,7 @@
 // UX1: the one signed-out screen (the route's own copy is gone). Each fixed reason the sign-in server can give (SIGNED_OUT_REASONS) says what happened
 // and the next step; nothing from a provider or an error is shown.
 import { useSearchParams } from "react-router";
-import { isSignedOutReason, type SignedOutReason } from "@agentx/contracts/web";
+import { isSignedOutReason, type SignedOutReason } from "@agentx/cloud-contracts/web";
 import { useAppHost } from "../../host.js";
 import { Button } from "../../design/Button.js";
 export const SIGNED_OUT_COPY: Readonly<Record<SignedOutReason, { message: string; next: string }>> = {

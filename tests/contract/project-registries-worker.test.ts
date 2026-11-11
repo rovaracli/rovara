@@ -8,7 +8,7 @@ import { dirname, join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { promisify } from "node:util";
 import { describe, expect, it, vi } from "vitest";
-import { StoredProjectDefinitionSchema, e2eSecretSpellings, prepareRegistriesOf, type PrepareRegistry, type ProjectRegistry, type RegistryCredential } from "../../packages/contracts/src/index.js";
+import { StoredProjectDefinitionSchema, e2eSecretSpellings, prepareRegistriesOf, type PrepareRegistry, type ProjectRegistry, type RegistryCredential } from "@rovara-code/contracts";
 import { ISSUED_TOKENS_PATH, recordIssuedTokens } from "../../packages/worker/src/registry-guard.js";
 import { REGISTRY_CONFIG_PREFIX, openRegistrySession, removeLeftoverRegistryConfigs, renderMavenSettings, renderNpmrc, renderPipConf } from "../../packages/worker/src/registry-config.js";
 import { createRegistryCredentialProvider } from "../../packages/worker/src/registry-credentials.js";

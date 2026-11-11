@@ -7,7 +7,8 @@
 //   after 30 days parked     the task is closed as "not decided" (`closeParkedDesignReview`)
 //
 // NOTHING HERE APPROVES, ANSWERS OR SKIPS: the only outputs are a reminder, a park and a close, and the park and the close are the workflow's own moves that record no decision.
-import { DESIGN_REVIEW_CLOSE_AFTER_PARKED_MS, DESIGN_REVIEW_PARK_AFTER_MS, DESIGN_REVIEW_REMIND_AFTER_HOURS, designWaitOf, type DesignWait, type WorkflowSnapshot } from "@agentx/contracts";
+import { DESIGN_REVIEW_CLOSE_AFTER_PARKED_MS, DESIGN_REVIEW_PARK_AFTER_MS, DESIGN_REVIEW_REMIND_AFTER_HOURS, designWaitOf, type DesignWait } from "@rovara-code/contracts";
+import { type WorkflowSnapshot } from "@agentx/cloud-contracts";
 
 const HOUR_MS = 60 * 60 * 1000;
 

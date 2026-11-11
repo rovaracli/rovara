@@ -1,5 +1,5 @@
 import { vi } from "vitest";
-import { KEYED_MODEL_PROVIDERS } from "../../packages/contracts/src/model-providers.js";
+import { KEYED_MODEL_PROVIDERS } from "@rovara-code/contracts";
 import { E2E_REDIRECTING_ENVIRONMENT_VARIABLES } from "../../packages/model-runtime/src/e2e-environment-guard.js";
 
 /**

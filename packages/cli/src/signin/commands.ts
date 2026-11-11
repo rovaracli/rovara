@@ -1,6 +1,6 @@
 // agentx signin show|enable|disable|check (spec 025 FR-045, FR-046), under the operator role.
 import { describeCustomDomain, readCustomDomain } from "../environments/custom-domain.js";
-import { CLI_PACKAGE_NAME, agentXError } from "@agentx/contracts";
+import { CLI_PACKAGE_NAME, agentXError } from "@rovara-code/contracts";
 import type { CallerIdentity } from "../environments/adopt.js";
 import type { ParameterStore } from "../environments/parameter-store.js";
 import { readEnvironmentSettings, type EnvironmentSettings } from "../environments/settings.js";

@@ -1,7 +1,7 @@
 import { writeFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
-import { MODEL_PROVIDERS } from "../../packages/contracts/src/model-providers.js";
-import { WORKER_INVOCATION_FEATURES } from "../../packages/contracts/src/protocol.js";
+import { MODEL_PROVIDERS } from "@rovara-code/contracts";
+import { WORKER_INVOCATION_FEATURES } from "@rovara-code/contracts";
 import { DEFAULT_E2E_AGENT_MODELS } from "../../packages/model-runtime/src/config.js";
 import { deriveE2EAgentRoute, e2eAgentRouteDefinitionDigest } from "../../packages/model-runtime/src/e2e-route-derive.js";
 import {

@@ -1,6 +1,6 @@
 // Meta repo lane F (F1): the broker's wiring of the intake routes (`rovara-code`-style: one module, so the router needs two lines). `routeIntake` answers a reply for an intake path and
 // undefined for any other path. The engine's ports are built from the developer API's own dependencies, so the role check, the payer and the budget are the start's own.
-import { agentXError } from "@agentx/contracts";
+import { agentXError } from "@rovara-code/contracts";
 import { INTAKE_PATH, routeIntakeRequest, type IntakeRouteDependencies } from "../../intake/routes.js";
 import { intakePortsOf } from "../../intake/wiring.js";
 import type { StatusReply } from "../status-reply.js";

@@ -1,7 +1,7 @@
 // Lessons capture lane, integration with lane 2: a human fix-up commit rides the LessonsReflect queue as a sibling message (ids only), and the LessonsWorker reads and learns from it under the reflection's own lease,
 // deadline, single-attempt model client and `callStartedAt` rules. A human-edit extraction is a learning model call: it is never paid twice.
 import { describe, expect, it, vi } from "vitest";
-import { HostRateLimitError, LESSONS_REFLECT_MAX_ATTEMPTS } from "@agentx/contracts";
+import { HostRateLimitError, LESSONS_REFLECT_MAX_ATTEMPTS } from "@rovara-code/contracts";
 import { humanEditEnqueue } from "../../../packages/broker/src/aws/broker/lessons-wiring.js";
 import { createHumanEditExtractor, learnFromHumanEdit, type HumanEditExtractorDeps } from "../../../packages/broker/src/lessons/human-edit.js";
 import { currentLearningAttempt, withLearningAttempt } from "../../../packages/broker/src/lessons/learning-deadline.js";

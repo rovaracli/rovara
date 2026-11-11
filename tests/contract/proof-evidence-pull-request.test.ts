@@ -3,8 +3,9 @@
 import { GetObjectCommand, PutObjectCommand, type S3Client } from "@aws-sdk/client-s3";
 import { randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
-import type { PlanDocument } from "../../packages/contracts/src/index.js";
-import { WorkflowSnapshotSchema, createCandidateManifest, createWorkflowSnapshot, type WorkflowSnapshot } from "../../packages/contracts/src/task-workflow-node.js";
+import type { PlanDocument } from "@rovara-code/contracts";
+import { WorkflowSnapshotSchema, createWorkflowSnapshot, type WorkflowSnapshot } from "../../packages/cloud-contracts/src/task-workflow-node.js";
+import { createCandidateManifest } from "@rovara-code/contracts";
 import { createEvidencePort } from "../../packages/broker/src/aws/developer-tasks/evidence-port.js";
 import { proofContextOfTask } from "../../packages/broker/src/aws/developer-tasks/pull-request-body.js";
 import { keepEvidence } from "../../packages/broker/src/rovara-code/evidence-keep.js";
@@ -12,7 +13,7 @@ import { loadProofContext } from "../../packages/broker/src/rovara-code/proof-in
 import { proofSection } from "../../packages/broker/src/rovara-code/proof-section.js";
 import { rovaraPullRequestBody } from "../../packages/broker/src/rovara-code/pull-request-body.js";
 import { environmentLine, evidenceNotTestedLines } from "../../packages/broker/src/rovara-code/evidence-lines.js";
-import { EvidencePackSchema } from "../../packages/contracts/src/evidence.js";
+import { EvidencePackSchema } from "@rovara-code/contracts";
 
 const taskId = "8b579b4b-eaa7-4bf2-87bc-6da86b97c9e6";
 const now = "2026-11-04T12:00:00.000Z";

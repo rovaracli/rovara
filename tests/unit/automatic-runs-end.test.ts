@@ -1,7 +1,7 @@
 // Ending an automatic run Rovara stops itself, and the session sweep that ends one that outlives its time (owner decision 2026-11-02, Opus review M2): a system owner has no person to resume or stop its run, so a hung
 // run must not hold the project's only automatic slot for ever.
 import { describe, expect, it, vi } from "vitest";
-import { AUTOMATIC_RUN_MAX_MS, systemOwnerIdOf, systemOwnerName, type OrgId } from "@agentx/contracts";
+import { AUTOMATIC_RUN_MAX_MS, systemOwnerIdOf, systemOwnerName, type OrgId } from "@rovara-code/contracts";
 import { AUTOMATIC_RUN_SWEEP_SLICE_MS, AUTOMATIC_RUN_WATCH_PK, markAutomaticTaskEnded, putAutomaticRunWatch, sweepAutomaticRuns } from "../../packages/broker/src/automatic-runs/end.js";
 import { FINISHED_RELEASE_PK } from "../../packages/broker/src/aws/developer-tasks/release.js";
 import type { DeveloperTaskRecord } from "../../packages/broker/src/developer/task-records.js";
@@ -177,7 +177,7 @@ describe("the night's lock when its run is ended", () => {
 
   it("is released when it is this run's, so the next night does not wait for it", async () => {
     const b = bench();
-    const { projectPk } = await import("@agentx/contracts");
+    const { projectPk } = await import("@rovara-code/contracts");
     const key = { pk: projectPk(ORG, PROJECT), sk: lockKey.sk };
     await b.run(1, { nightlyRun: nightly });
     b.db.set({ ...key, entityType: "TEST_ENV_NIGHTLY_ACTIVE", slotId: slot, startedAtMs: T0 });
@@ -188,7 +188,7 @@ describe("the night's lock when its run is ended", () => {
 
   it("is left alone when it belongs to another night", async () => {
     const b = bench();
-    const { projectPk } = await import("@agentx/contracts");
+    const { projectPk } = await import("@rovara-code/contracts");
     const key = { pk: projectPk(ORG, PROJECT), sk: lockKey.sk };
     await b.run(1, { nightlyRun: nightly });
     b.db.set({ ...key, entityType: "TEST_ENV_NIGHTLY_ACTIVE", slotId: "e".repeat(64), startedAtMs: T0 });

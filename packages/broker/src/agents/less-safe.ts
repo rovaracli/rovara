@@ -2,7 +2,7 @@
 // (human decision 2026-10-20, R9-1, R9-2, R69). Every route that changes which recipe an agent runs (publish, rollback, adopting a
 // built-in's version) compares the recipe that would run with the one that runs now. The check is deliberately blunt: a change to a
 // pattern or a selector is reported without deciding whether it narrows (R9-2), because a wrong "safe" is worse than one more click.
-import { EMPTY_RECIPE, STEP_TOOLS, type ResolvedRecipe, type ResolvedStep, type ToolGrant } from "@agentx/contracts";
+import { EMPTY_RECIPE, STEP_TOOLS, type ResolvedRecipe, type ResolvedStep, type ToolGrant } from "@rovara-code/contracts";
 
 const AUTONOMY_ORDER = ["suggest", "prepare", "run"] as const;
 

@@ -1,7 +1,7 @@
 // Lessons in the repo, lane R2 (design rev 2 section 5): the weekly file pass inside the nightly job, so no new schedule and no infrastructure. Each night it looks, per project, at the repositories whose lessons file is switched on;
 // a repository is worked on at most once a week (`runRepoFilePass` keeps its own clock), so most nights this is one Dynamo query per project and nothing else.
 // Bounded in projects and time; a project that fails never stops the others. Makes no model call (decision 47). Returns counts only.
-import { OrgIdSchema } from "@agentx/contracts";
+import { OrgIdSchema } from "@rovara-code/contracts";
 import { rotated } from "./nightly-state.js";
 import type { RepoFileTarget } from "./repo-file-host.js";
 import { finishClosings, runRepoFilePass, runRetireRead, type RepoFileDeps } from "./repo-file-pass.js";

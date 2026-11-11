@@ -2,7 +2,7 @@
 // finish, through the real ingress, interactivity and broker handlers over the real connection store.
 import { createHmac } from "node:crypto";
 import { describe, expect, it } from "vitest";
-import { CHATGPT_CALLBACK_URL } from "@agentx/contracts";
+import { CHATGPT_CALLBACK_URL } from "@rovara-code/contracts";
 import { chatGptConnections, type ChatGptSealer } from "../../packages/broker/src/chatgpt/connections.js";
 import { CHATGPT_TOKEN_URL } from "../../packages/broker/src/chatgpt/oauth.js";
 import { developerIdForSlackUser } from "../../packages/broker/src/aws/admin-actions.js";

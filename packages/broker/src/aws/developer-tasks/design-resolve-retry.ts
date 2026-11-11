@@ -3,7 +3,8 @@
 // resolve run due again with its CRITIC_REPLAN row, in one transaction conditional on the revision the owner saw. Nothing here approves, answers or spends anything.
 import type { z } from "zod";
 import { DeleteCommand } from "@aws-sdk/lib-dynamodb";
-import { agentXError, resumeBlockedDesignReview, workflowIsDesignReviewing, type ContinueDeveloperTaskRequestSchema, type DeveloperTaskView, type WorkflowSnapshot } from "@agentx/contracts";
+import { agentXError, workflowIsDesignReviewing, type ContinueDeveloperTaskRequestSchema } from "@rovara-code/contracts";
+import { resumeBlockedDesignReview, type DeveloperTaskView, type WorkflowSnapshot } from "@agentx/cloud-contracts";
 import { taskKey } from "../../developer/task-records.js";
 import { WORKFLOW_DISPATCH_PK, WORKFLOW_NO_CANDIDATE_DIGEST, isConditional, workflowDispatchItem } from "../broker-shared.js";
 import type { DeveloperCaller } from "../developer-routes.js";

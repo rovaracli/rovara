@@ -1,7 +1,7 @@
 // Enterprise foundations P6 (register SY-3): the track record reads what a pull request merged as, and when, through the code host port, so a merged change request on ANY host gives its
 // samples a merge commit and a merge time. GitHub's reads are the same provider call as before.
 import { describe, expect, it, vi } from "vitest";
-import { hostRateLimitRetryAt } from "../../packages/contracts/src/index.js";
+import { hostRateLimitRetryAt } from "@rovara-code/contracts";
 import { endedPullRequestReader } from "../../packages/broker/src/aws/broker/terminal-and-github-events.js";
 import { status as githubStatus } from "../support/rovara-code-tracking.js";
 import { TASK, world } from "../support/p5-host-world.js";
@@ -81,7 +81,7 @@ describe("P6: the merge commit and time of a merged change request, from its own
     expect(url).toBe("https://github.com/acme/web.git");
     expect(number).toBe(7);
     expect(typeof budget.beforeRequest).toBe("function");
-    expect(scope).toEqual({ system: "private-install" });
+    expect(scope).toEqual({ system: "install" });
   });
 
   it("GitHub: a pull request that is not merged is not observed", async () => {

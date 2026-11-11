@@ -1,7 +1,7 @@
 // P6: where the poller keeps the change requests it follows, one item each, in one partition per host kind. A pass reads the partition (at most `MAX_POLL_TARGETS` items) and works
 // oldest-due first; saving a target moves its due time, and removing it ends the following. The item for a host's rate limit sits in the same partition.
 import { DeleteCommand, GetCommand, PutCommand, QueryCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
-import { ChangeRequestRefSchema, type ChangeRequestRef, type PluginKind } from "@agentx/contracts";
+import { ChangeRequestRefSchema, type ChangeRequestRef, type PluginKind } from "@rovara-code/contracts";
 import { isConditional } from "../../aws/broker-shared.js";
 import { MAX_POLL_TARGETS, type DuePoll, type PollCursor, type PollStore } from "./poller.js";
 import { codeHostRepositoryKey } from "./repository-key.js";

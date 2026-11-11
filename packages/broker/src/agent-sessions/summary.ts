@@ -8,47 +8,8 @@
 import { createHash } from "node:crypto";
 import { z } from "zod";
 import { GetCommand, PutCommand, QueryCommand, TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
-import {
-  NO_CODE_CHANGED_STEP,
-  isNoCodeChangedReason,
-  AgentSessionRecordSchema,
-  ENDED_SESSION_STATUSES,
-  INDEX_EXPIRY_ATTRIBUTE,
-  LOCAL_ABANDONED_HOURS,
-  LOCAL_ABANDONED_MESSAGE,
-  LIVE_ENDED_KEEP_HOURS,
-  LOCAL_OFFLINE_MINUTES,
-  SESSION_NEEDS_PEOPLE_MAX,
-  SESSION_PEEK_MAX_CHARS,
-  SESSION_RETENTION_DAYS,
-  SESSION_TITLE_MAX,
-  SessionStatusSchema,
-  SessionSummarySchema,
-  agentSessionKey,
-  canonicalJson,
-  endedSessionWorkKey,
-  isRunLimitBlockReason,
-  liveSessionKey,
-  openAgentSessionKey,
-  planRunLimitSubject,
-  redactText,
-  scopeKey,
-  sessionEventId,
-  spendRequestKey,
-  spendRequestSlotKey,
-  taskSpendKey,
-  type AgentSessionRecord,
-  type OrgId,
-  type OrgKey,
-  type SessionEvent,
-  type SessionId,
-  type SessionStatus,
-  type SessionSummary,
-  type TaskStatus,
-  failureCause,
-  sessionTaskStatus,
-  taskStatusText,
-} from "@agentx/contracts";
+import { NO_CODE_CHANGED_STEP, isNoCodeChangedReason, AgentSessionRecordSchema, ENDED_SESSION_STATUSES, INDEX_EXPIRY_ATTRIBUTE, LOCAL_ABANDONED_HOURS, LIVE_ENDED_KEEP_HOURS, LOCAL_OFFLINE_MINUTES, SESSION_NEEDS_PEOPLE_MAX, SESSION_PEEK_MAX_CHARS, SESSION_RETENTION_DAYS, SESSION_TITLE_MAX, SessionStatusSchema, SessionSummarySchema, agentSessionKey, canonicalJson, endedSessionWorkKey, isRunLimitBlockReason, liveSessionKey, openAgentSessionKey, planRunLimitSubject, redactText, sessionEventId, taskSpendKey, type AgentSessionRecord, type OrgId, type OrgKey, type SessionEvent, type SessionId, type SessionStatus, type SessionSummary, type TaskStatus, failureCause, sessionTaskStatus, taskStatusText } from "@rovara-code/contracts";
+import { LOCAL_ABANDONED_MESSAGE, scopeKey, spendRequestKey, spendRequestSlotKey } from "@agentx/cloud-contracts";
 import { getAnyApproval } from "../agents/approvals-store.js";
 import { agentRunView } from "../agents/run-engine.js";
 import { failedIndexes, type TableInput, type TransactItem } from "../agents/table-writes.js";

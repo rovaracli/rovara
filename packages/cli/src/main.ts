@@ -7,21 +7,8 @@ import { basename, dirname, extname, join, resolve } from "node:path";
 import { createInterface } from "node:readline";
 import { Writable as NodeWritable, type Readable, type Writable } from "node:stream";
 import { pathToFileURL } from "node:url";
-import {
-  CLI_COMMAND_NAME,
-  AgentXError,
-  AgentXNameSchema,
-  DEFAULT_ENVIRONMENT,
-  ENVIRONMENT_PLACEHOLDER,
-  EnvironmentNameSchema,
-  INTENT_QUESTIONS_MAX,
-  WorkspaceDeploymentModeSchema,
-  MODEL_PROVIDERS,
-  OrgRoleSchema,
-  agentXError,
-  type ProjectDefinition,
-  type ProjectRole,
-} from "@agentx/contracts";
+import { CLI_COMMAND_NAME, AgentXError, AgentXNameSchema, DEFAULT_ENVIRONMENT, ENVIRONMENT_PLACEHOLDER, EnvironmentNameSchema, INTENT_QUESTIONS_MAX, WorkspaceDeploymentModeSchema, MODEL_PROVIDERS, agentXError, type ProjectDefinition, type ProjectRole } from "@rovara-code/contracts";
+import { OrgRoleSchema } from "@agentx/cloud-contracts";
 import { DEFAULT_DIRECT_MODELS } from "@agentx/model-runtime/config";
 import { CloudFormationClient } from "@aws-sdk/client-cloudformation";
 import { SecretsManagerClient } from "@aws-sdk/client-secrets-manager";

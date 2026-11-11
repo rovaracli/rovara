@@ -1,7 +1,7 @@
 // R5: GitHub as the first code host. Turns a verified webhook delivery into host-neutral `CodeHostEvent`s (codehost.ts), and reads a
 // compare through any `getJson` that carries an installation token. A body is a hint only: the workspace and project of a repository come from
 // the installation (`resolveRepo`), never from the delivery.
-import { HostRateLimitError } from "@agentx/contracts";
+import { HostRateLimitError } from "@rovara-code/contracts";
 import { z } from "zod";
 import { isoOrUndefined } from "./common.js";
 import { createCodeHostTap, type CodeHostDiff, type CodeHostDiffReader, type CodeHostEvent, type CodeHostPerson, type CodeHostRepo, type CodeHostTapDependencies, type TapResult } from "./codehost.js";

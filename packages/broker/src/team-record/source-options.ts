@@ -16,7 +16,8 @@
 // is ever in an error; names appear only in the options, cut to 200 characters, and the screen shows them as plain text.
 import { randomUUID } from "node:crypto";
 import { PutCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
-import { AgentXError, INDEX_EXPIRY_ATTRIBUTE, SourceOptionsQuerySchema, SourceOptionsViewSchema, agentXError, teamRecordPk, type OrgId, type SourceOption, type SourcePickerKind } from "@agentx/contracts";
+import { AgentXError, INDEX_EXPIRY_ATTRIBUTE, agentXError, teamRecordPk, type OrgId } from "@rovara-code/contracts";
+import { SourceOptionsQuerySchema, SourceOptionsViewSchema, type SourceOption, type SourcePickerKind } from "@agentx/cloud-contracts";
 import { Aliases, NOT_EXISTS, errorName } from "../agents/table-writes.js";
 import { SOURCE_OPTIONS_SK_PREFIX } from "./source-store.js";
 import { personRateKey, pickerPersonHash, type RecordQueryDependencies } from "./query.js";

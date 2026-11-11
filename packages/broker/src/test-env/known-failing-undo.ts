@@ -8,7 +8,7 @@
 // Every removal is one transaction that holds only while the list is at the version it was read at, and carries its audit event. Nothing a worker, a model or a repository prints is read.
 import { createHash } from "node:crypto";
 import { TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
-import { NIGHTLY_FLAKY_MAX, agentXError, type NightlyBaseline, type OrgId } from "@agentx/contracts";
+import { NIGHTLY_FLAKY_MAX, agentXError, type NightlyBaseline, type OrgId } from "@rovara-code/contracts";
 import { auditOccurrence, auditProjectKnownFailingRemoved } from "../audit/events.js";
 import { flushAuditEvents } from "../audit/flush.js";
 import { auditPending, tryAuditEvent, type TransactItem } from "../audit/outbox.js";

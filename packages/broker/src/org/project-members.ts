@@ -11,10 +11,8 @@
 // people, are never reached.
 import { GetCommand, QueryCommand, TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
 import { randomUUID } from "node:crypto";
-import {
-  INDEX_EXPIRY_ATTRIBUTE, MEMBER_GRANT_SK_PREFIX, OrgRoleSchema, PROJECT_REVISION_SK_PREFIX, agentXError, memberGrantsPk, orgMemberKey, orgPk, orgProjectCatalogPk, projectMemberKey, projectMetaKey, projectPk,
-  type AuditEventInput, type OrgId, type OrgKey, type OrgRole, type ProjectRole,
-} from "@agentx/contracts";
+import { INDEX_EXPIRY_ATTRIBUTE, MEMBER_GRANT_SK_PREFIX, PROJECT_REVISION_SK_PREFIX, agentXError, memberGrantsPk, orgPk, orgProjectCatalogPk, projectMemberKey, projectMetaKey, projectPk, type OrgId, type OrgKey, type ProjectRole } from "@rovara-code/contracts";
+import { OrgRoleSchema, orgMemberKey, type AuditEventInput, type OrgRole } from "@agentx/cloud-contracts";
 import { auditOccurrence, auditProjectMemberChanged, auditProjectMemberRemoved } from "../audit/events.js";
 import { flushAuditEvents } from "../audit/flush.js";
 import { auditPending, tryAuditEvent, type AuditRuntime } from "../audit/outbox.js";

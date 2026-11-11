@@ -23,11 +23,11 @@ import { developerIdForSlackUser } from "../../packages/broker/src/aws/admin-act
 import { developerTaskRouteDependencies } from "../../packages/broker/src/aws/developer-routes.js";
 import { resolveTaskAccess } from "../../packages/broker/src/developer/task-access.js";
 import { resolveTaskDispatchPeople } from "../../packages/broker/src/developer/task-people.js";
-import { projectMemberKey } from "../../packages/contracts/src/index.js";
+import { projectMemberKey } from "@rovara-code/contracts";
 import { slackDirectory } from "../../packages/broker/src/developer/slack-directory.js";
 import { checkTaskPersonIdentity } from "../../packages/broker/src/developer/task-person-identity.js";
 import type { TaskPeopleDisplayAdmission } from "../../packages/broker/src/developer/task-people-display-budget.js";
-import type { TaskPeopleDisplayReadRequest, TaskPersonInviteClaimRequest, TaskPersonInviteOutcome } from "../../packages/contracts/src/developer.js";
+import type { TaskPeopleDisplayReadRequest, TaskPersonInviteClaimRequest, TaskPersonInviteOutcome } from "@rovara-code/contracts";
 import { TEST_ORG } from "../support/orgs.js";
 
 const TASK_ID = "11111111-1111-4111-8111-111111111111";

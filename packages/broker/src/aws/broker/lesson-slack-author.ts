@@ -7,7 +7,8 @@
 //   4. the linked developer is followed through merges to the person they are now, and that person's sign-in record must exist and not be revoked.
 // Whether that person is a MEMBER of the project is NOT decided here: the subject source reads their project role live (`standing`), exactly as for any other steerer.
 import { GetCommand } from "@aws-sdk/lib-dynamodb";
-import { SLACK_OIDC_ISSUER, SlackUserIdSchema, slackTeamOrgKey } from "@agentx/contracts";
+import { SLACK_OIDC_ISSUER, SlackUserIdSchema } from "@rovara-code/contracts";
+import { slackTeamOrgKey } from "@agentx/cloud-contracts";
 import { followMerges } from "../../agents/access.js";
 import type { DeveloperSignInStore } from "../../developer/store.js";
 import { ownerKeyForSubject } from "../lambda.js";

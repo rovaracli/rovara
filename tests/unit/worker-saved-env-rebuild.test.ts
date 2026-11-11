@@ -1,7 +1,8 @@
 // Saved project images (SV wiring): the worker's half of a rebuild job. The build is given exactly the job's commits and the worker's OWN view of what else runs here and what is secret; its commands go through the
 // sandbox target; the push login and the result use the job's lease and the preparation's grant; a result is always posted.
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { PrepareSavedEnvBuildSchema, TestEnvironmentBodySchema, savedEnvRepositoryName, testEnvDigest, type SavedEnvBuildResult, type WorkerInvocation } from "../../packages/contracts/src/index.js";
+import { PrepareSavedEnvBuildSchema, TestEnvironmentBodySchema, savedEnvRepositoryName, testEnvDigest, type SavedEnvBuildResult } from "@rovara-code/contracts";
+import { type WorkerInvocation } from "@agentx/cloud-contracts";
 import { forbiddenValuesOf, liveTaskSandboxes, rememberCredentials, runSavedEnvRebuild, workspaceBuildSandbox, type SavedEnvRebuildDependencies } from "../../packages/worker/src/saved-env/rebuild.js";
 import type { SavedEnvBuildInput, SavedEnvBuildPorts } from "../../packages/worker/src/saved-env/build.js";
 import type { DockerCli } from "../../packages/worker/src/swebench/containers.js";

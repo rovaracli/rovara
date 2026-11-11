@@ -1,5 +1,5 @@
 import { fixtureActor } from "../support/money-authority.js";
-import { projectMemberKey } from "../../packages/contracts/src/org-scoped-keys.js";
+import { projectMemberKey } from "@rovara-code/contracts";
 import { capturingAuditDeps } from "../support/audit-capture.js";
 import { decideSpendRequest } from "../../packages/broker/src/spend/requests.js";
 import { TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
@@ -14,14 +14,16 @@ import { isAgentRoute } from "../../packages/broker/src/agents/routes.js";
 import { approvalDecideKind } from "../../packages/broker/src/agents/approval-decide-kind.js";
 import { DeveloperSignInStore } from "../../packages/broker/src/developer/store.js";
 import type { OrgResolver } from "../../packages/broker/src/org/resolve.js";
-import type { AgentId, AgentOwner } from "../../packages/contracts/src/agent-node.js";
-import { DEFAULT_AGENT_GUARDRAILS } from "../../packages/contracts/src/agent-guardrails.js";
-import { BUILTIN_AGENTS, builtinDefaultPin } from "../../packages/contracts/src/agent-templates.js";
-import { recipeDigest, type RecipeOverlay, type ResolvedRecipe } from "../../packages/contracts/src/agent-recipe-node.js";
-import type { OrgId, OrgRole } from "../../packages/contracts/src/org.js";
-import { agentGuardrailsKey, approvalKey, orgProjectCatalogKey } from "../../packages/contracts/src/org-scoped-keys.js";
+import type { AgentId, AgentOwner } from "@rovara-code/contracts";
+import { DEFAULT_AGENT_GUARDRAILS } from "@rovara-code/contracts";
+import { BUILTIN_AGENTS, builtinDefaultPin } from "@rovara-code/contracts";
+import { recipeDigest, type RecipeOverlay, type ResolvedRecipe } from "@rovara-code/contracts";
+import type { OrgId } from "@rovara-code/contracts";
+import type { OrgRole } from "../../packages/cloud-contracts/src/org.js";
+import { agentGuardrailsKey, approvalKey, orgProjectCatalogKey } from "@rovara-code/contracts";
 // The broker runs on the built package, so an error a fake throws into it must come from there too.
-import { agentXError, orgMemberKey, developerOrgKey, builtinSettingsKey, orgMetaKey, agentKey, spendRequestKey, type SpendRequestRecord } from "@agentx/contracts";
+import { agentXError, builtinSettingsKey, agentKey } from "@rovara-code/contracts";
+import { orgMemberKey, developerOrgKey, orgMetaKey, spendRequestKey, type SpendRequestRecord } from "@agentx/cloud-contracts";
 import { MAYA, OMAR, createDeveloperTaskBroker, seedMembership, type Developer } from "../support/developer-task-broker.js";
 import { FakeProjectMembers } from "../support/fake-project-members.js";
 import { TEST_ORG } from "../support/orgs.js";
@@ -1291,7 +1293,7 @@ describe("a confirmed change applied before its record ended is done when its ha
 
 for (const issue of ["archived base", "missing version", "missing skill", "layer loop"] as const) it("keeps a draft readable and repairable with " + issue, async () => {
  const f=await setup(),base=await f.create(MAYA);await f.seed(base,SAFE);const child=await f.create(MAYA,SAFE,{extends:base});
- const {agentKey}=await import("@agentx/contracts"),key=agentKey(TEST_ORG,child,"DRAFT"),stored=f.db.get(key)!;
+ const { agentKey } = await import("@rovara-code/contracts"),key=agentKey(TEST_ORG,child,"DRAFT"),stored=f.db.get(key)!;
  if(issue==="archived base")await f.call(MAYA,"POST",`/v1/app/agents/${base}/archive`,{});
  if(issue==="missing version")f.db.set({...stored,extends:{agentId:base,version:999}});
  if(issue==="missing skill")f.db.set({...stored,overlay:{...SAFE,skills:{add:[{skillId:"skl_"+"z".repeat(20)}]}}});
@@ -1300,7 +1302,7 @@ for (const issue of ["archived base", "missing version", "missing skill", "layer
  const repaired=await f.call(MAYA,"PUT",`/v1/app/agents/${child}/draft`,{expectedRevision:stored.revision,overlay:SAFE,extends:"rovara-code"});expect(repaired.status).toBe(200);
 });
 it("preserves the store's budget error and the original finite-only body bounds",async()=>{
- const {AgentBudgetBodySchema}=await import("@agentx/contracts"),requestId=randomUUID();
+ const { AgentBudgetBodySchema } = await import("@agentx/cloud-contracts"),requestId=randomUUID();
  expect(AgentBudgetBodySchema.safeParse({requestId,monthlyUsd:1_000_001}).success).toBe(true);
  expect(AgentBudgetBodySchema.safeParse({requestId,monthlyUsd:-1}).success).toBe(true);
  expect(AgentBudgetBodySchema.safeParse({requestId,monthlyUsd:Infinity}).success).toBe(false);

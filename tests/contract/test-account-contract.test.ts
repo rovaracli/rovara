@@ -1,8 +1,8 @@
 // Test services TS4 (contract): the test-account record (a reference, never a value), the org-tagged secret name, the key-shape table that refuses live-shaped keys, and the production deny-list checks.
 // Every key-shaped string below is built at runtime from parts: the public repository's push protection refuses a key-shaped literal.
 import { describe, expect, it } from "vitest";
-import * as acc from "../../packages/contracts/src/test-account.js";
-import * as shared from "../../packages/contracts/src/test-services-shared.js";
+import * as acc from "@rovara-code/contracts";
+import * as shared from "@rovara-code/contracts";
 
 const ORG = `org_${"a1b2c3d4e5".repeat(2)}`;
 const OTHER_ORG = `org_${"z9y8x7w6v5".repeat(2)}`;

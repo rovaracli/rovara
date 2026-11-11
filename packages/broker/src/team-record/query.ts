@@ -8,32 +8,8 @@
 // nothing. A person who is not in the project is refused. Each call counts against a per-person (or per-task) hourly limit.
 import { createHash } from "node:crypto";
 import { UpdateCommand } from "@aws-sdk/lib-dynamodb";
-import {
-  PAST_WORK_LIMIT_MAX,
-  PAST_WORK_PLAN_SUMMARY_MAX,
-  AudienceSchema,
-  PastWorkResponseSchema,
-  RECORD_FACTS_LIMIT_MAX,
-  RECORD_SEARCH_LIMIT_MAX,
-  RECORD_SNIPPET_MAX,
-  RecordFactsResponseSchema,
-  RecordSearchResponseSchema,
-  STATS_TEMPLATES,
-  agentXError,
-  redactText,
-  teamRecordPk,
-  type Audience,
-  type OrgId,
-  type PastWorkItem,
-  type PastWorkResponse,
-  type RecordFact,
-  type RecordFactsResponse,
-  type RecordSearchHit,
-  type RecordSearchQuery,
-  type RecordSearchResponse,
-  type StatsTemplate,
-  type TrustClass,
-} from "@agentx/contracts";
+import { PAST_WORK_LIMIT_MAX, PAST_WORK_PLAN_SUMMARY_MAX, PastWorkResponseSchema, RECORD_FACTS_LIMIT_MAX, RECORD_SEARCH_LIMIT_MAX, RECORD_SNIPPET_MAX, RecordFactsResponseSchema, RecordSearchResponseSchema, STATS_TEMPLATES, type PastWorkItem, type PastWorkResponse, type RecordFact, type RecordFactsResponse, type RecordSearchHit, type RecordSearchQuery, type RecordSearchResponse, type StatsTemplate } from "@agentx/cloud-contracts";
+import { AudienceSchema, agentXError, redactText, teamRecordPk, type Audience, type OrgId, type TrustClass } from "@rovara-code/contracts";
 import { Aliases, errorName } from "../agents/table-writes.js";
 import { createAccessReader } from "./access.js";
 import { filterVisible, type FilterDependencies, type FilterResult, type LiveCheckCache } from "./acl.js";

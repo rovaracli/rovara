@@ -4,7 +4,7 @@
 // configured the invite stays copy-only and the app says so. Nothing here logs an address, a name or the link.
 import { createHash } from "node:crypto";
 import { SendEmailCommand } from "@aws-sdk/client-sesv2";
-import { orgScoped, type OrgId } from "@agentx/contracts";
+import { orgScoped, type OrgId } from "@rovara-code/contracts";
 import { takeRateAt } from "../developer/page-comments.js";
 import { NOTICE_SEND_TIMEOUT_MS, type IdentityNoticeDependencies } from "../developer/identity-notice.js";
 

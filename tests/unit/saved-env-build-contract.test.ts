@@ -1,6 +1,7 @@
 // Saved project images (SV wiring): the rebuild job on the wire. The payload field names what to build and holds no credential in its stored form; the worker lists the feature it needs.
 import { describe, expect, it } from "vitest";
-import { PREPARE_SAVED_ENV_BUILD_FEATURE, PrepareSavedEnvBuildSchema, SavedEnvFallbackBodySchema, SavedEnvLeaseBodySchema, SavedEnvResultBodySchema, WORKER_INVOCATION_FEATURES, WorkerInvocationSchema, savedEnvRepositoryName, testEnvDigest, TestEnvironmentBodySchema } from "../../packages/contracts/src/index.js";
+import { PREPARE_SAVED_ENV_BUILD_FEATURE, PrepareSavedEnvBuildSchema, SavedEnvFallbackBodySchema, SavedEnvLeaseBodySchema, SavedEnvResultBodySchema, WORKER_INVOCATION_FEATURES, savedEnvRepositoryName, testEnvDigest, TestEnvironmentBodySchema } from "@rovara-code/contracts";
+import { WorkerInvocationSchema } from "@agentx/cloud-contracts";
 import { WORKER_IMPLEMENTED_FEATURES } from "../../packages/worker/src/implemented-features.js";
 
 const cmd = { cwd: "svc", executable: "npm", args: ["ci"], timeoutSeconds: 60 };

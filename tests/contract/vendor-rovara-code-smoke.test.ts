@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import * as cloudContracts from "@agentx/contracts";
+import { allContracts as cloudContracts } from "../support/contracts-barrels.js";
 import { estimateRun, planRunLimit } from "@rovara-code/broker/core/cost";
 import { DEFAULT_RUN_ESTIMATE_USD, ESTIMATE_MIN_SAMPLES, ROVARA_CODE_AGENT_ID, formatRunLimitUsd, type RunEstimate } from "@rovara-code/contracts";
 import * as codeContracts from "@rovara-code/contracts";

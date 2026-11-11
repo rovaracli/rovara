@@ -1,7 +1,7 @@
 // SH25 with P1 (su-musts): a setup run's preparation carries `pins` (the heads the broker read) and never a saved image; a task's preparation carries `savedEnv` only with its approved-environment pin and never pins.
 // The two fields, the two operation markers and the two held-dispatch updates must not interfere.
 import { describe, expect, it, vi } from "vitest";
-import type { PrepareSavedEnv } from "@agentx/contracts";
+import type { PrepareSavedEnv } from "@rovara-code/contracts";
 import { heldPreparationDispatch, newWorkspacePreparation } from "../../packages/broker/src/aws/broker/workspace-preparation.js";
 
 const PINS = [{ repository: "svc", commit: "e".repeat(40) }];

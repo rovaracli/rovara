@@ -5,12 +5,7 @@ import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { promisify } from "node:util";
-import {
-  DEFAULT_DEVCONTAINER_CONFIG_PATH,
-  agentXError,
-  type ProjectCommand,
-  type StoredProjectDefinition,
-} from "@agentx/contracts";
+import { DEFAULT_DEVCONTAINER_CONFIG_PATH, agentXError, type ProjectCommand, type StoredProjectDefinition } from "@rovara-code/contracts";
 import type { BashOperations } from "@earendil-works/pi-coding-agent";
 import { runCollected, TIMEOUT_KILL_GRACE_MS } from "./collected-process.js";
 import {

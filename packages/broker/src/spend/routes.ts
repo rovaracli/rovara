@@ -7,10 +7,8 @@
 // Every key is built from the caller's checked org, so another org's counters and lines can't be reached by any id or cursor. Member and org figures are the
 // counters', which are advisory: LiteLLM's caps stay authoritative (R23). A month is `YYYY-MM` in UTC and defaults to the current one.
 import { GetCommand, QueryCommand } from "@aws-sdk/lib-dynamodb";
-import {
-  AgentIdSchema, SPEND_ORIGIN_KINDS, agentRunsKey, agentXError, budgetAlertKey, builtinSettingsKey, isBuiltinAgentId, ledgerKey, modelCounter, originCounter, personalCounter,
-  projectAllows, scopeKey, sourceCounter, spendCounterKey, type AgentId, type BudgetScope, type OrgId,
-} from "@agentx/contracts";
+import { AgentIdSchema, agentRunsKey, agentXError, builtinSettingsKey, isBuiltinAgentId, projectAllows, type AgentId, type OrgId } from "@rovara-code/contracts";
+import { SPEND_ORIGIN_KINDS, budgetAlertKey, ledgerKey, modelCounter, originCounter, personalCounter, scopeKey, sourceCounter, spendCounterKey, type BudgetScope } from "@agentx/cloud-contracts";
 import { requireAgentAccess, type AgentCaller } from "../agents/access.js";
 import { readGuardrails } from "../agents/guardrails.js";
 import type { AgentRouteDependencies } from "../agents/routes.js";

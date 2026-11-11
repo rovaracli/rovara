@@ -1,6 +1,6 @@
 import {expect,it} from "vitest";
 import {resolvePinnedTaskStage} from "../../packages/broker/src/model-selection/task-runtime.js";
-import {builtinRecipe,recipeDigest} from "../../packages/contracts/src/index.js";
+import { builtinRecipe, recipeDigest } from "@rovara-code/contracts";
 const orgId="org_aaaaaaaaaaaaaaaaaaaa",project="payments",agentId="rovara-code",registeredAt="2026-10-01T00:00:00.000Z";
 const model={provider:"anthropic",modelId:"claude-sonnet-4"},other={provider:"anthropic",modelId:"claude-opus-4"};
 const recipe=builtinRecipe(agentId,1),digest=recipeDigest(recipe);

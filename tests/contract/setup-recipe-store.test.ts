@@ -1,6 +1,6 @@
 // Company setup recipes (SH29 wiring): the DynamoDB adapter. Every write is one transaction with the row, the counters, the dedupe marker and the audit item. (The company locks are su-musts'.)
 import { describe, expect, it } from "vitest";
-import { orgPk, SetupRecipeBodySchema, setupFingerprint, setupRecipeDigest, type OrgId, type SetupRecipeBody } from "@agentx/contracts";
+import { orgPk, SetupRecipeBodySchema, setupFingerprint, setupRecipeDigest, type OrgId, type SetupRecipeBody } from "@rovara-code/contracts";
 import { dynamoSetupRecipeStore, recipeAuditEvent } from "../../packages/broker/src/org/setup-recipe-store.js";
 import { SETUP_RECIPES_MAX_PER_ORG, SETUP_RECIPES_MAX_PROPOSED, type RecipeAuditEntry, type StoredRecipe } from "../../packages/broker/src/org/setup-recipes.js";
 import { capturingAuditDeps } from "../support/audit-capture.js";

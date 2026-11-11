@@ -2,7 +2,7 @@ import { test,expect } from "./support/csp.js";
 import { checkA11y } from "./support/axe.js";
 import { mockRealtime } from "./support/realtime.js";
 import { navFixture } from "../web/support/fixtures.js";
-import { AppNavSchema } from "@agentx/contracts/web";
+import { AppNavSchema } from "@agentx/cloud-contracts/web";
 const sid="ses_aaaaaaaaaaaaaaaaaaaa",agentId="agt_aaaaaaaaaaaaaaaaaaaa",payload="<img src=x onerror=window.__pwned=1>";
 const flows=[
  {name:"Home",scenario:"home",path:"/app",heading:"Home",phone:true},

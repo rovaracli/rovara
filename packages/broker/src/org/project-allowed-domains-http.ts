@@ -1,6 +1,6 @@
 import { GetCommand } from "@aws-sdk/lib-dynamodb";
 import { z } from "zod";
-import { AgentXNameSchema, OrgIdSchema, ProjectDefinitionSchema, agentXError, orgScoped, projectPk, projectRevisionKey, type OrgId, type ProjectDefinition } from "@agentx/contracts";
+import { AgentXNameSchema, OrgIdSchema, ProjectDefinitionSchema, agentXError, orgScoped, projectPk, projectRevisionKey, type OrgId, type ProjectDefinition } from "@rovara-code/contracts";
 import { takeRateAt } from "../developer/page-comments.js";
 import { commitDirectProjectAllowedDomains, proposeProjectAllowedDomains, readProjectAllowedDomainsReview, readProjectAllowedDomainProposal, decideProjectAllowedDomainProposal, type AppliedDomainProposalProof, type AllowedDomainProposal } from "./project-allowed-domains.js";
 import { readAllowedDomainActorConditions } from "./second-person-evidence.js";

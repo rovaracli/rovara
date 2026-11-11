@@ -1,7 +1,7 @@
 // A real sign-in's DEVELOPER#<id>/META row has no `developerId` attribute: the id is the key (store.ts getDeveloper). Every check that reads the
 // raw row, or fences it at commit, must accept that row and still refuse one that names someone else (2026-11-01, after the admin health 403).
 import { TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
-import { SLACK_OIDC_ISSUER } from "@agentx/contracts";
+import { SLACK_OIDC_ISSUER } from "@rovara-code/contracts";
 import { describe, expect, it, vi } from "vitest";
 import { developerIdForSlackUser } from "../../packages/broker/src/aws/admin-actions.js";
 import { oidcTaskPersonIdentityCheck } from "../../packages/broker/src/aws/broker/model-access.js";
@@ -10,7 +10,7 @@ import { createTaskAuthorityAdmission } from "../../packages/broker/src/aws/task
 import { createTaskPersonRuntime, type TaskPersonRuntimePorts } from "../../packages/broker/src/aws/task-person-runtime.js";
 import { projectAiCallerCheck } from "../../packages/broker/src/spend/project-ai-identity.js";
 import type { DeveloperTaskRecord } from "../../packages/broker/src/developer/task-records.js";
-import { slackBindingPk, projectRevisionKey } from "../../packages/contracts/src/org-scoped-keys.js";
+import { slackBindingPk, projectRevisionKey } from "@rovara-code/contracts";
 import { FakeDynamoDb } from "../support/fake-dynamodb.js";
 import { TEST_ORG } from "../support/orgs.js";
 import { realIdentityRow } from "../support/real-identity-row.js";

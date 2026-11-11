@@ -1,9 +1,9 @@
 // tests/contract/admin-change-routes.test.ts
 // Spec 025 FR-039 to FR-041, FR-051, FR-052, SC-005 and SC-011 at the routes: a change is planned,
 // stored and audited, and applies at most once, only after a valid confirmation.
-import { slackBindingPk } from "../../packages/contracts/src/org-scoped-keys.js";
+import { slackBindingPk } from "@rovara-code/contracts";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { AdminChangePendingRecordSchema, type ChannelInfoRequest, type ChannelMembersRequest } from "@agentx/contracts";
+import { AdminChangePendingRecordSchema, type ChannelInfoRequest, type ChannelMembersRequest } from "@rovara-code/contracts";
 import { adminChangeOutcomeMessage } from "../../packages/broker/src/developer/change-messages.js";
 import { ADMIN_SLACK, ADMIN_TOKEN, TRACE, createAdminChangeBroker } from "../support/admin-change-broker.js";
 import { adminCall, createAdminBroker } from "../support/admin-broker.js";
@@ -11,7 +11,7 @@ import { bindChannel, unbindChannel } from "../support/developer-task-broker.js"
 import { LINEAR_CONNECTOR } from "../support/linear-broker.js";
 import { SLACK_CHANNEL, SLACK_TEAM } from "../support/slack-broker.js";
 import { TEST_ORG } from "../support/orgs.js";
-import { orgSettingsKey } from "../../packages/contracts/src/org-scoped-keys.js";
+import { orgSettingsKey } from "../../packages/cloud-contracts/src/org-scoped-keys.js";
 
 const UNBIND = { kind: "unbind_channel" as const, channel: "#ledger-dev" };
 const binding = (db: { get(pk: string, sk: string): unknown }) => db.get(slackBindingPk(TEST_ORG, SLACK_TEAM), "CHANNEL#C0LEDGER01") as { projectName?: string } | undefined;

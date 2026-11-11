@@ -3,7 +3,7 @@ import { access, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
-import type { OrgId, ProjectDefinition } from "@agentx/contracts";
+import type { OrgId, ProjectDefinition } from "@rovara-code/contracts";
 import {
   InMemoryProjectRegistry,
   InMemoryRegistry,

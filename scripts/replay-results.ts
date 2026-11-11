@@ -13,10 +13,8 @@ import { readdirSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { z } from "zod";
-import {
-  AUTO_FIX_CODE_CLASS, E2E_PROJECT_CHECK_ID, EvidencePackSchema, WorkflowSnapshotSchema, classifyBlockedWorkflow, wholeTaskSpendUsd,
-  type AutoFixBudget, type AutoFixFacts, type TestingResult, type WorkflowSnapshot,
-} from "@agentx/contracts";
+import { AUTO_FIX_CODE_CLASS, WorkflowSnapshotSchema, classifyBlockedWorkflow, type AutoFixBudget, type AutoFixFacts, type WorkflowSnapshot } from "@agentx/cloud-contracts";
+import { E2E_PROJECT_CHECK_ID, EvidencePackSchema, wholeTaskSpendUsd, type TestingResult } from "@rovara-code/contracts";
 import { testingViewOf } from "../packages/broker/src/rovara-code/testing-section.js";
 import type { KnownFailingEntry } from "../packages/broker/src/verification/result.js";
 

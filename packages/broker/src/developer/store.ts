@@ -3,20 +3,8 @@
 // SHA-256 hashes. Every expiry is checked here; the table's TTL only cleans up afterwards.
 import { randomUUID } from "node:crypto";
 import { GetCommand, PutCommand, QueryCommand, TransactWriteCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
-import {
-  agentXError,
-  developerOrgKey,
-  normalizeEmail,
-  DEVELOPER_AUTH_REQUEST_SECONDS,
-  DEVELOPER_CODE_SECONDS,
-  DEVELOPER_SESSION_SECONDS,
-  FRESH_SIGN_IN_SECONDS,
-  SetMyNameBodySchema,
-  type AuditEventInput,
-  type DeveloperSignInMethod,
-  type LinkedIdentity,
-  SLACK_OIDC_ISSUER,
-} from "@agentx/contracts";
+import { agentXError, normalizeEmail, DEVELOPER_AUTH_REQUEST_SECONDS, DEVELOPER_CODE_SECONDS, DEVELOPER_SESSION_SECONDS, FRESH_SIGN_IN_SECONDS, SetMyNameBodySchema, SLACK_OIDC_ISSUER } from "@rovara-code/contracts";
+import { developerOrgKey, type AuditEventInput, type DeveloperSignInMethod, type LinkedIdentity } from "@agentx/cloud-contracts";
 import { auditIdentityLinked, auditIdentityUnlinked, auditMemberRenamed, auditOccurrence } from "../audit/events.js";
 import { flushAuditEvents } from "../audit/flush.js";
 import { auditPending, tryAuditEvents, type AuditRuntime, type TransactItem } from "../audit/outbox.js";

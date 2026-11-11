@@ -1,12 +1,4 @@
-import {
-  AgentXErrorCodeSchema,
-  Ec2RuntimeBindingSchema,
-  ProjectDefinitionSchema,
-  WorkspaceDeploymentModeSchema,
-  agentXError,
-  type Ec2RuntimeBinding,
-  type ProjectDefinition,
-} from "@agentx/contracts";
+import { AgentXErrorCodeSchema, Ec2RuntimeBindingSchema, ProjectDefinitionSchema, WorkspaceDeploymentModeSchema, agentXError, type Ec2RuntimeBinding, type ProjectDefinition } from "@rovara-code/contracts";
 import { readJsonResponse, serverError } from "./http.js";
 
 export type ProjectRuntimeBinding = Ec2RuntimeBinding;

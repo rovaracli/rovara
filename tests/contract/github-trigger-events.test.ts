@@ -3,9 +3,10 @@
 // here starts work by itself: these tests read what dispatch did. The loop guard, the replay guard and the org boundaries are the points a reviewer looks at first.
 import { createHmac, randomUUID } from "node:crypto";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
-import type { TriggerEvent } from "@agentx/contracts";
-import { githubInstallationKey, githubRepoProjectKey, hookEventKey, orgGithubInstallationKey, orgProjectCatalogKey, projectRevisionKey } from "../../packages/contracts/src/index.js";
-import type { OrgId } from "../../packages/contracts/src/org.js";
+import type { TriggerEvent } from "@rovara-code/contracts";
+import { githubInstallationKey, githubRepoProjectKey, orgGithubInstallationKey } from "@agentx/cloud-contracts";
+import { hookEventKey, orgProjectCatalogKey, projectRevisionKey } from "@rovara-code/contracts";
+import type { OrgId } from "@rovara-code/contracts";
 import { GithubWebhookRetryableError, handleGithubWebhook } from "../../packages/broker/src/aws/github-webhooks.js";
 import { getApprovalSubjectHandler } from "../../packages/broker/src/agents/approvals.js";
 import { expireApprovals } from "../../packages/broker/src/agents/approvals-decide.js";
@@ -22,7 +23,7 @@ import { FakeHookSecrets } from "../support/hook-fixtures.js";
 import { TEST_ORG } from "../support/orgs.js";
 import { loadSlackBroker } from "../support/slack-broker.js";
 import { DANA, ORG_A, ORG_B, PRIYA, disposeGateWorlds, setupTriggerWorld, type TriggerWorld } from "../support/trigger-world.js";
-import type { ChainDefinitionInput } from "../../packages/contracts/src/chains.js";
+import type { ChainDefinitionInput } from "@rovara-code/contracts";
 
 beforeAll(async () => { await loadSlackBroker(); });
 afterEach(() => disposeGateWorlds());

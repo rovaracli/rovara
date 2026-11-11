@@ -3,7 +3,7 @@
 // target, so enqueueing the same thing twice is one entry. Every target is a hash or one of our own ids, never text.
 import { createHash } from "node:crypto";
 import { DeleteCommand, PutCommand } from "@aws-sdk/lib-dynamodb";
-import { teamRecordPk } from "@agentx/contracts";
+import { teamRecordPk } from "@rovara-code/contracts";
 import type { LakeDeleteQueue, LakeDeleteTarget, PendingLakeDelete } from "./lake-delete.js";
 import { queryPrefix } from "./store.js";
 import type { TeamRecordTable } from "./types.js";

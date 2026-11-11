@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useNavigate, useSearchParams } from "react-router";
 import { useOnboardingApi } from "../../api/onboarding.js";
-import { ProjectOverviewProjectSchema, type AppProjectDetail } from "@agentx/contracts/web";
+import { ProjectOverviewProjectSchema, type AppProjectDetail } from "@agentx/cloud-contracts/web";
 import { VisibleText } from "../../design/VisibleText.js";
 import { PageHeader } from "../../design/PageHeader.js";
 import { Skeleton } from "../../design/Skeleton.js";

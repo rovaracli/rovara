@@ -1,6 +1,6 @@
 // Saved project images (SV wiring): a preparation that fell back from its image tells the broker the step, with its own grant; it never holds the preparation up and never throws.
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { PrepareSavedEnvSchema, savedEnvRepositoryName } from "../../packages/contracts/src/index.js";
+import { PrepareSavedEnvSchema, savedEnvRepositoryName } from "@rovara-code/contracts";
 import { createSavedEnvFallbackReporter } from "../../packages/worker/src/saved-env/login.js";
 import { savedEnvOptionsOf } from "../../packages/worker/src/saved-env/use.js";
 

@@ -1,6 +1,6 @@
 import { writeCustomDomain } from "../../packages/cli/src/environments/custom-domain.js";
 import { describe, expect, it } from "vitest";
-import { environmentStackName, type ReleaseManifest } from "@agentx/contracts";
+import { environmentStackName, type ReleaseManifest } from "@rovara-code/contracts";
 import { adoptOrphanedEditionRecord, settleEditionRecord } from "../../packages/cli/src/deploy/edition.js";
 import { deployEnvironment, keptOperatorParameters, type DeployAnswers, type DeployEnvironmentInput } from "../../packages/cli/src/deploy/deploy-environment.js";
 import { CDK_CONSTRUCT_IDS, cdkAppArguments, cdkDeployer, type CommandRunner } from "../../packages/cli/src/deploy/cdk-engine.js";

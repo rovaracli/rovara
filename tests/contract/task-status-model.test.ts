@@ -1,12 +1,10 @@
 // UX2 slice 2 item 1: ONE status model. Every stage and block reason maps to one state with words a person reads (no raw codes), a reason sentence for "Needs you" and "Failed", and a next
 // step; a closed task reads Closed whatever its last run did; a budget pause says who can raise it.
 import { describe, expect, it } from "vitest";
-import { createWorkflowSnapshot, type WorkflowSnapshot } from "../../packages/contracts/src/task-workflow-node.js";
-import { NO_CODE_CHANGED_REASON } from "../../packages/contracts/src/no-change-findings.js";
-import { WORKFLOW_BLOCK_REASONS } from "../../packages/contracts/src/index.js";
-import {
-  TASK_STATUS_STATES, TaskStatusSchema, budgetPauseNext, budgetRaisers, sessionTaskStatus, taskStatusFromSession, taskStatusNext, taskStatusText,
-} from "../../packages/contracts/src/task-status.js";
+import { createWorkflowSnapshot, type WorkflowSnapshot } from "../../packages/cloud-contracts/src/task-workflow-node.js";
+import { NO_CODE_CHANGED_REASON } from "@rovara-code/contracts";
+import { WORKFLOW_BLOCK_REASONS } from "@agentx/cloud-contracts";
+import { TASK_STATUS_STATES, TaskStatusSchema, budgetPauseNext, budgetRaisers, sessionTaskStatus, taskStatusFromSession, taskStatusNext, taskStatusText } from "@rovara-code/contracts";
 import { taskStatusOf } from "../../packages/broker/src/agent-sessions/task-status.js";
 import { sessionActionsFor } from "../../packages/broker/src/agent-sessions/access.js";
 

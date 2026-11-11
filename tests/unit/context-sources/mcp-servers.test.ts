@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { PutCommand } from "@aws-sdk/lib-dynamodb";
-import { MCP_PROBE_FAILURES, orgScoped } from "@agentx/contracts";
+import { MCP_PROBE_FAILURES, orgScoped } from "@rovara-code/contracts";
 import { type McpServerSecrets, McpProbeError, STDIO_OFF_MESSAGE, stdioAvailable, allowedTargets, approveMcpServer, disableMcpServer, clearOrgMcpServers, dynamoMcpServerStore, listMcpServers, probeLimiter, proposeMcpServer, removeMcpServer, summariseProbe, type McpProber, type McpServerDependencies } from "../../../packages/broker/src/context-sources/mcp-servers.js";
 import { routeMcpServers } from "../../../packages/broker/src/context-sources/mcp-server-routes.js";
 import { StatusReply } from "../../../packages/broker/src/aws/status-reply.js";
@@ -372,7 +372,7 @@ describe("review I3: a stdio package is pinned by its tarball's integrity", () =
     expect((await approveMcpServer(deps, admin(), entry.serverId)).status).toBe("approved");
   });
   it("accepts an integrity the admin typed, and the stored entry always has one", async () => {
-    const { McpServerEntrySchema, McpStdioSpecSchema, McpStdioProposalSchema } = await import("@agentx/contracts");
+    const { McpServerEntrySchema, McpStdioSpecSchema, McpStdioProposalSchema } = await import("@rovara-code/contracts");
     const { deps, state } = world();
     const typed = { ...STDIO, spec: { ...STDIO.spec, integrity: state.integrity } };
     expect((await proposeMcpServer(deps, admin(), { label: "Wiki", transport: typed })).transport).toMatchObject(typed);

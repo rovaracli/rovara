@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { E2E_MODEL_CHECK_RESULT_SCHEMA, WEB_API_RUNTIME_PROFILE_ID } from "@agentx/contracts";
+import { E2E_MODEL_CHECK_RESULT_SCHEMA, WEB_API_RUNTIME_PROFILE_ID } from "@rovara-code/contracts";
 import { e2eRegisteredRuntimeKey } from "../../packages/broker/src/aws/e2e-runtime-readiness.js";
 import { e2eModelCheckRunnerKey } from "../../packages/broker/src/e2e/model-route-registry.js";
 import type { E2EAgentInstallation } from "../../packages/model-runtime/src/e2e-route-derive.js";

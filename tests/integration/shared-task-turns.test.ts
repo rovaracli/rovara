@@ -2,7 +2,7 @@
 // Spec 025 FR-054, C10, C12, C13: how the Slack service handles a shared task's thread.
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { UpdateCommand } from "@aws-sdk/lib-dynamodb";
-import { CLOSED_SHARED_NOTICE, VIEW_ONLY_NOTICE, sharedNoticeClaim, type SlackRequestMessage, type SlackThreadWorkspaceResult, type TurnRecord } from "../../packages/contracts/src/index.js";
+import { CLOSED_SHARED_NOTICE, VIEW_ONLY_NOTICE, sharedNoticeClaim, type SlackRequestMessage, type SlackThreadWorkspaceResult, type TurnRecord } from "@rovara-code/contracts";
 import { processSlackRequest, type ProcessorDependencies } from "../../packages/slack-service/src/processor.js";
 import { FakeDynamoDb } from "../support/fake-dynamodb.js";
 import { SHARED_CLOSE_REFUSED_MESSAGE, TASK_BUSY_WAIT_MESSAGE, TASK_STILL_BUSY_MESSAGE } from "../../packages/slack-service/src/shared-task.js";

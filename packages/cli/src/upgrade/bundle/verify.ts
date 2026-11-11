@@ -8,20 +8,8 @@ import { chmod, lstat, mkdir, mkdtemp, readFile, readdir, realpath, rm, writeFil
 import { tmpdir } from "node:os";
 import { dirname, join, sep } from "node:path";
 import { pipeline } from "node:stream/promises";
-import {
-  BUNDLE_MANIFEST_FILE,
-  BUNDLE_MANIFEST_MAX_BYTES,
-  BUNDLE_MAX_FILES,
-  BUNDLE_SIGNATURE_FILE,
-  BUNDLE_SIGNATURE_MAX_BYTES,
-  BundleManifestSchema,
-  BundleSignatureSchema,
-  ReleaseManifestSchema,
-  agentXError,
-  sha256OfBytes,
-  verifyBundleSignature,
-  type BundleManifest,
-} from "@agentx/contracts";
+import { BUNDLE_MANIFEST_FILE, BUNDLE_MANIFEST_MAX_BYTES, BUNDLE_MAX_FILES, BUNDLE_SIGNATURE_FILE, BUNDLE_SIGNATURE_MAX_BYTES, BundleManifestSchema, BundleSignatureSchema, sha256OfBytes, verifyBundleSignature, type BundleManifest } from "@agentx/cloud-contracts";
+import { ReleaseManifestSchema, agentXError } from "@rovara-code/contracts";
 import { loadRelease, type LoadedRelease } from "../../deploy/release.js";
 
 export interface VerifiedBundle {

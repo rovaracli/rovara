@@ -1,8 +1,8 @@
 // The project's monthly cap on automatic runs and the one function every automatic job starts a run with (owner decision 2026-11-02).
 import { describe, expect, it, vi } from "vitest";
-import { DEFAULT_AUTOMATIC_RUNS_PER_MONTH, MAX_AUTOMATIC_RUNS_PER_MONTH, agentXError, systemOwnerIdOf, type OrgId } from "@agentx/contracts";
+import { DEFAULT_AUTOMATIC_RUNS_PER_MONTH, MAX_AUTOMATIC_RUNS_PER_MONTH, agentXError, systemOwnerIdOf, type OrgId } from "@rovara-code/contracts";
 import { aiToolTurn } from "../../packages/broker/src/developer/task-records.js";
-import { runRequestKey } from "@agentx/contracts";
+import { runRequestKey } from "@rovara-code/contracts";
 import { claimAutomaticRun, readAutomaticRunsCap, readAutomaticRunsUse, releaseAutomaticRun, setAutomaticRunsCap } from "../../packages/broker/src/automatic-runs/cap.js";
 import { startAutomaticRun } from "../../packages/broker/src/automatic-runs/start.js";
 import type { AgentRunRequest } from "../../packages/broker/src/agents/runs.js";

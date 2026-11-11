@@ -7,7 +7,8 @@
 //   - the pinned digest is the environment's own digest (a pin written for other contents is not used);
 //   - the run's first commands are the environment's checks, in order (`taskWorkflowCheckPolicy` puts them first; a task whose policy was edited since reads as "not the environment's" and runs as it is).
 // A coverage map is not sent: no run produces one yet, and a map of any size would not fit a dispatch. Without it a selection by coverage map runs the whole check and says why.
-import { EDITION_ENV_VAR, agentXError, testEnvDigest, type OrgId, type ProjectCommand, type TestEnvTaskPlan } from "@agentx/contracts";
+import { EDITION_ENV_VAR } from "@agentx/cloud-contracts";
+import { agentXError, testEnvDigest, type OrgId, type ProjectCommand, type TestEnvTaskPlan } from "@rovara-code/contracts";
 import { DEPENDENCY_PLAN_REFUSAL_WORDS, taskDependencyPlansOf, type ServiceCatalogSource } from "./dependency-plan.js";
 import { lastNightlyFailures } from "./nightly.js";
 import { readApprovedSeedFiles, type TestEnvDeps } from "../org/test-environment.js";

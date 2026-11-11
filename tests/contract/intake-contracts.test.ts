@@ -1,25 +1,7 @@
 // Meta repo lane F (F1): the generic intake contracts. A ticket from any tracker is one `IntakeItem`; a tracker item is one `tracker_item` binding beside the Slack thread
 // and the Linear issue; a Jira, GitHub Issues or other-tracker intent names its ticket; a work origin exists for each new source.
 import { describe, expect, it } from "vitest";
-import {
-  CODE_INTENT_BINDING_OF_SOURCE,
-  CODE_INTENT_SOURCES,
-  CodeIntentRequestSchema,
-  IntakeChannelRefSchema,
-  IntakeItemSchema,
-  MetaProjectConfigSchema,
-  SessionBindingSchema,
-  WORK_ORIGINS,
-  intakePollSettingsOf,
-  intakeSystemOf,
-  sessionSurfaceKey,
-  sessionBindingKey,
-  intakeCallsKey,
-  intakeItemIdOf,
-  intakeItemKey,
-  intakeSourceKey,
-  type OrgId,
-} from "../../packages/contracts/src/index.js";
+import { CODE_INTENT_BINDING_OF_SOURCE, CODE_INTENT_SOURCES, CodeIntentRequestSchema, IntakeChannelRefSchema, IntakeItemSchema, MetaProjectConfigSchema, SessionBindingSchema, WORK_ORIGINS, intakePollSettingsOf, intakeSystemOf, sessionSurfaceKey, sessionBindingKey, intakeCallsKey, intakeItemIdOf, intakeItemKey, intakeSourceKey, type OrgId } from "@rovara-code/contracts";
 
 const ORG: OrgId = "org_aaaaaaaaaaaaaaaaaaaa";
 const MEMBER = "a".repeat(64);

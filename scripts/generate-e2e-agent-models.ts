@@ -10,8 +10,8 @@ import { amazonBedrockProvider } from "@earendil-works/pi-ai/providers/amazon-be
 import { anthropicProvider } from "@earendil-works/pi-ai/providers/anthropic";
 import { openaiProvider } from "@earendil-works/pi-ai/providers/openai";
 import { openrouterProvider } from "@earendil-works/pi-ai/providers/openrouter";
-import { bedrockProfileGeography, type EligibleE2EAgentModel } from "../packages/contracts/src/e2e-agent-models.js";
-import type { ModelProvider } from "../packages/contracts/src/model-providers.js";
+import { bedrockProfileGeography, type EligibleE2EAgentModel } from "@rovara-code/contracts";
+import type { ModelProvider } from "@rovara-code/contracts";
 
 /** The fields of a pi catalog entry that eligibility reads. */
 export interface CatalogEntry {

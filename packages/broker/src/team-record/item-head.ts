@@ -6,7 +6,8 @@
 // The head is one small item per source item in the workspace partition. It is written BEFORE the row, with a condition on the version time, so two racing versions
 // cannot both win; a crash between the two is repaired by the redelivery (same version = same row, and `supersedes` says the cleanup is still owed).
 import { DeleteCommand, GetCommand, PutCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
-import { TEAM_RECORD_GSI3, minTrust, recordItemHeadKey, recordScopeIndexValue, recordScopeMarkerKey, scopeAndAncestors, type OrgId, type TrustClass } from "@agentx/contracts";
+import { TEAM_RECORD_GSI3, recordItemHeadKey, recordScopeIndexValue, recordScopeMarkerKey, scopeAndAncestors } from "@agentx/cloud-contracts";
+import { minTrust, type OrgId, type TrustClass } from "@rovara-code/contracts";
 import { Aliases, errorName, type Item } from "../agents/table-writes.js";
 import type { TeamRecordTable } from "./types.js";
 

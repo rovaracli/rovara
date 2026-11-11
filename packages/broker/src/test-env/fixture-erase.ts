@@ -5,7 +5,7 @@
 //   - A person erase replaces the person's id in `submittedBy`, `decidedBy` and `withdrawnBy` with the 64-zero stand-in (as the Team record's erase does for `addedBy`). The set, its digest and its status stay: they are the
 //     company's. The row's `version` moves with the change, so a decision made from an older read of the row cannot put the id back.
 import { DeleteCommand, QueryCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
-import { OrgIdSchema, orgPk } from "@agentx/contracts";
+import { OrgIdSchema, orgPk } from "@rovara-code/contracts";
 
 /** The stand-in for an erased person (the same value the Team record's erase writes). */
 export const FIXTURE_ERASED_ACTOR = "0".repeat(64);

@@ -1,6 +1,6 @@
 import { createHash, createSign } from "node:crypto";
 import { commitFilesOn, deleteBranchOn, type CommitFilesRequest } from "./github-commit-files.js";
-import { GitBranchNameSchema, HostRateLimitError, LESSON_FILE_BRANCH_PATTERN, OrgIdSchema, PULL_REQUEST_BODY_MAX_CHARS, agentXError, createCandidateManifest, githubNotConnectedMessage, isSafeE2ESourcePath, redactText, type AgentXError, type E2ESourceSnapshot, type OrgId } from "@agentx/contracts";
+import { GitBranchNameSchema, HostRateLimitError, LESSON_FILE_BRANCH_PATTERN, OrgIdSchema, PULL_REQUEST_BODY_MAX_CHARS, agentXError, createCandidateManifest, githubNotConnectedMessage, isSafeE2ESourcePath, redactText, type AgentXError, type E2ESourceSnapshot, type OrgId } from "@rovara-code/contracts";
 import type { RepositoryAccess, RepositoryCredential } from "./repository-access.js";
 import type { GithubMergeReadBudget } from "./aws/workflow-merge-recovery.js";
 import { isAllowedLogAddress, logTail, readLogEnd } from "./github-job-log.js";
@@ -42,10 +42,10 @@ export interface GitHubInstallation {
 
 /**
  * Whose work a token is minted for (Plan 2, Task 15). An org's own work names the org: on a cloud install the installation must be bound to
- * that org, active, at the moment of every mint. `webhook` (a signed delivery GitHub sent) and `private-install` (the install's one org, which
+ * that org, active, at the moment of every mint. `webhook` (a signed delivery GitHub sent) and `install` (the install's one org, which
  * has no bindings) name no org and are never checked.
  */
-export type SystemTokenScope = { system: "webhook" | "private-install" };
+export type SystemTokenScope = { system: "webhook" | "install" };
 export type GitHubTokenScope = { orgId: OrgId } | SystemTokenScope;
 
 export interface GitHubAppCredentialProviderOptions {

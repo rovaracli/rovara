@@ -1,7 +1,7 @@
 // Org-scoped Slack thread records. Old rows are reachable only through their checked workspace.
 import { GetCommand } from "@aws-sdk/lib-dynamodb";
 import { installOrgIdFromEnvironment } from "../org/resolve.js";
-import { orgScoped, type OrgId } from "@agentx/contracts";
+import { orgScoped, type OrgId } from "@rovara-code/contracts";
 
 type Key = { pk: string; sk: string };
 type Table = { documentClient: { send(command: unknown): Promise<unknown> }; tableName: string };

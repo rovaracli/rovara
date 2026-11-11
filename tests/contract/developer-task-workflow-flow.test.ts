@@ -1,19 +1,22 @@
 import { commitReviewedProjectWorkingBranch } from "../../packages/broker/src/org/project-working-branch-save.js";
 import { capturingAuditDeps } from "../support/audit-capture.js";
-import { githubInstallationKey, orgMetaKey, orgMemberKey, developerOrgKey, orgProjectCatalogKey } from "@agentx/contracts";
+import { githubInstallationKey, orgMetaKey, orgMemberKey, developerOrgKey } from "@agentx/cloud-contracts";
+import { orgProjectCatalogKey } from "@rovara-code/contracts";
 import type { DeveloperCaller } from "../../packages/broker/src/aws/developer-routes.js";
 import { createHash, randomUUID } from "node:crypto";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { createCandidateManifest, workflowRequestId } from "../../packages/contracts/src/task-workflow-node.js";
-import { EvidencePackSchema } from "../../packages/contracts/src/evidence.js";
+import { createCandidateManifest, workflowRequestId } from "@rovara-code/contracts";
+import { EvidencePackSchema } from "@rovara-code/contracts";
 import { evidencePackKey } from "../../packages/broker/src/rovara-code/evidence-keep.js";
-import { taskGraphDigest } from "../../packages/contracts/src/workflow-dependencies-node.js";
+import { taskGraphDigest } from "@rovara-code/contracts";
 import { executeSerialWorkflowDependencies } from "../../packages/worker/src/workflow-dependencies.js";
-import { canonicalPlanJson, parsePlanDocument, planDocumentMarkdown, readCanonicalPlan, type PlanDocument, type TaskPersonProofRequest, type TaskPersonProofResponse, type WorkItemProgressV1 } from "@agentx/contracts";
-import { SlackThreadWorkspaceResultSchema } from "@agentx/contracts";
-import { WORKFLOW_AUTO_PUBLISH_FAILED_MESSAGE, WORKFLOW_AUTO_REVIEW_FAILED_MESSAGE, WORKFLOW_BLOCK_REASONS, WORKFLOW_HISTORY_REWRITTEN_MESSAGE, WORKFLOW_LEFTOVER_PROCESSES_MESSAGE, WORKFLOW_SETUP_CHANGED_FILES_MESSAGE, WORKFLOW_REVIEW_RESULT_INCOMPLETE_MESSAGE, WORKFLOW_RULE_FILES_UNVERIFIED_MESSAGE, collectWorkflowFeedbackBundles, createWorkflowSnapshot, sharedTaskKey, SharedTaskRecordSchema, WorkflowFeedbackBundleSchema, WorkflowSnapshotSchema, WorkflowThreadNoteSchema, type WorkflowCheckPolicyInput, type WorkflowSnapshot } from "@agentx/contracts";
-import * as workflowContracts from "../../packages/contracts/src/task-workflow-node.js";
-import { WORKFLOW_LIVE_STEER_REAPPROVAL_MESSAGE, liveSteerOperationId } from "../../packages/contracts/src/live-steer.js";
+import { canonicalPlanJson, parsePlanDocument, planDocumentMarkdown, readCanonicalPlan, type PlanDocument, type TaskPersonProofRequest, type TaskPersonProofResponse, type WorkItemProgressV1 } from "@rovara-code/contracts";
+import { SlackThreadWorkspaceResultSchema } from "@rovara-code/contracts";
+import { WORKFLOW_AUTO_PUBLISH_FAILED_MESSAGE, WORKFLOW_AUTO_REVIEW_FAILED_MESSAGE, WORKFLOW_HISTORY_REWRITTEN_MESSAGE, WORKFLOW_LEFTOVER_PROCESSES_MESSAGE, WORKFLOW_SETUP_CHANGED_FILES_MESSAGE, WORKFLOW_REVIEW_RESULT_INCOMPLETE_MESSAGE, WORKFLOW_RULE_FILES_UNVERIFIED_MESSAGE, sharedTaskKey, SharedTaskRecordSchema, WorkflowFeedbackBundleSchema, WorkflowThreadNoteSchema, type WorkflowCheckPolicyInput } from "@rovara-code/contracts";
+import { WORKFLOW_BLOCK_REASONS, collectWorkflowFeedbackBundles, createWorkflowSnapshot, WorkflowSnapshotSchema, type WorkflowSnapshot } from "@agentx/cloud-contracts";
+import * as workflowContracts from "../../packages/cloud-contracts/src/task-workflow-node.js";
+import * as workflowContractsCode from "@rovara-code/contracts";
+import { WORKFLOW_LIVE_STEER_REAPPROVAL_MESSAGE, liveSteerOperationId } from "@rovara-code/contracts";
 import { issueCapability } from "../../packages/broker/src/aws/cancellation.js";
 import { plainBlockReason, workflowMessage } from "../../packages/broker/src/developer/workflow-messages.js";
 import { developerTaskIdentity } from "../../packages/broker/src/developer/task-records.js";
@@ -39,7 +42,7 @@ import { fakeModelAccess } from "../support/fake-model-access.js";
 import { call, registerSlackProject } from "../support/slack-broker.js";
 import { SLACK_CHANNEL, SLACK_TEAM } from "../support/slack-broker.js";
 import { TEST_ORG } from "../support/orgs.js";
-import { projectMemberKey, projectPk, projectRevisionKey } from "../../packages/contracts/src/org-scoped-keys.js";
+import { projectMemberKey, projectPk, projectRevisionKey } from "@rovara-code/contracts";
 import { runLimitAck } from "../support/run-limit-ack.js";
 
 /** A prepare result as the worker sends it: where preparation checked out each repository. */
@@ -1225,8 +1228,8 @@ describe("native developer task workflow", () => {
     expect((await harness.dev(MAYA, "POST", `/v1/dev/tasks/${taskId}/pull-requests`, { requestId: randomUUID(), title: "manual" })).status).not.toBe(200);
     const p = publish!.publication as { repository: string; repositoryUrl: string; headBranch: string; baseBranch: string; title: string; body?: string };
     await harness.callback(workspaceId, publish!.id, "pull-request", { repository: p.repository, repositoryUrl: p.repositoryUrl, headBranch: p.headBranch, baseBranch: p.baseBranch, commit: "d".repeat(40), title: p.title, ...(p.body === undefined ? {} : { body: p.body }) });
-    expect(gh.getCommitTree).toHaveBeenCalledWith(p.repositoryUrl, "d".repeat(40), { system: "private-install" });
-    expect(gh.reconcilePullRequest).toHaveBeenCalledWith(expect.objectContaining({ draft: true, headBranch: p.headBranch }), { system: "private-install" });
+    expect(gh.getCommitTree).toHaveBeenCalledWith(p.repositoryUrl, "d".repeat(40), { system: "install" });
+    expect(gh.reconcilePullRequest).toHaveBeenCalledWith(expect.objectContaining({ draft: true, headBranch: p.headBranch }), { system: "install" });
     await harness.finish(workspaceId, publish!.id, "SUCCEEDED", { result: { repository: "demo", number: 42, url: "https://github.com/example/demo/pull/42", headBranch: p.headBranch, baseBranch: "main", commit: "d".repeat(40), checks: [], reconciled: false } });
     expect(taskWorkflow(harness, taskId)).toMatchObject({ stage: "WAIT_FOR_MERGE", state: "WAITING", pullRequests: [{ number: 42, headSha: "d".repeat(40) }] });
     expect(dispatchRows(harness)).toEqual([]);
@@ -1416,10 +1419,10 @@ describe("native developer task workflow", () => {
       const p = publish!.publication as { repository: string; repositoryUrl: string; headBranch: string; baseBranch: string; title: string; body?: string };
       await expect(harness.callback(workspaceId, publish!.id, "pull-request", { repository: p.repository, repositoryUrl: p.repositoryUrl, headBranch: p.headBranch, baseBranch: p.baseBranch, commit: "d".repeat(40), title: p.title, ...(p.body === undefined ? {} : { body: p.body }) }))
         .rejects.toThrow(/CALLBACK_FORBIDDEN/);
-      expect(gh.getBranchHead).toHaveBeenCalledWith(p.repositoryUrl, p.headBranch, { system: "private-install" });
+      expect(gh.getBranchHead).toHaveBeenCalledWith(p.repositoryUrl, p.headBranch, { system: "install" });
       if (opened) {
-        expect(gh.reconcilePullRequest).toHaveBeenCalledWith(expect.objectContaining({ draft: true }), { system: "private-install" });
-        expect(gh.updatePullRequest).toHaveBeenCalledWith(p.repositoryUrl, 42, { state: "closed" }, { system: "private-install" });
+        expect(gh.reconcilePullRequest).toHaveBeenCalledWith(expect.objectContaining({ draft: true }), { system: "install" });
+        expect(gh.updatePullRequest).toHaveBeenCalledWith(p.repositoryUrl, 42, { state: "closed" }, { system: "install" });
       } else {
         expect(gh.reconcilePullRequest).not.toHaveBeenCalled();
       }
@@ -2871,7 +2874,7 @@ describe("the draft pull request AgentX opens (final review)", () => {
     const p = publish.publication as { repository: string; repositoryUrl: string; headBranch: string; baseBranch: string; title: string; body?: string };
     await expect(harness.callback(workspaceId, publish.id, "pull-request", { repository: p.repository, repositoryUrl: p.repositoryUrl, headBranch: p.headBranch, baseBranch: p.baseBranch, commit: "d".repeat(40), title: p.title, ...(p.body === undefined ? {} : { body: p.body }) }))
       .rejects.toThrow(/CALLBACK_FORBIDDEN/);
-    expect(gh.getCommitParents).toHaveBeenCalledWith(p.repositoryUrl, "d".repeat(40), { system: "private-install" });
+    expect(gh.getCommitParents).toHaveBeenCalledWith(p.repositoryUrl, "d".repeat(40), { system: "install" });
     expect(gh.reconcilePullRequest).not.toHaveBeenCalled();
     expect(taskWorkflow(harness, taskId)).toMatchObject({ stage: "PULL_REQUEST", state: "BLOCKED" });
   });
@@ -2888,7 +2891,7 @@ describe("the draft pull request AgentX opens (final review)", () => {
     const p = publish.publication as { repository: string; repositoryUrl: string; headBranch: string; baseBranch: string; title: string; body?: string };
     await expect(harness.callback(workspaceId, publish.id, "pull-request", { repository: p.repository, repositoryUrl: p.repositoryUrl, headBranch: p.headBranch, baseBranch: p.baseBranch, commit: "d".repeat(40), title: p.title, ...(p.body === undefined ? {} : { body: p.body }) }))
       .rejects.toThrow(/CALLBACK_FORBIDDEN/);
-    expect(gh.updatePullRequest).toHaveBeenCalledWith(p.repositoryUrl, 42, { state: "closed" }, { system: "private-install" });
+    expect(gh.updatePullRequest).toHaveBeenCalledWith(p.repositoryUrl, 42, { state: "closed" }, { system: "install" });
   });
 
   it("after a failed publication, the page says so until the next try, and the owner's retry moves the step on", async () => {
@@ -4746,7 +4749,7 @@ describe("the real request in a plan's why", () => {
 describe("the owner resolves each blocking review finding (Task 5)", () => {
   const PARSER = { text: "The new parser drops the last line.", origin: "INTRODUCED", severity: "HIGH", file: "src/parse.ts", line: 40 };
   const TOKEN = { text: "The token is written to the log.", origin: "INTRODUCED", severity: "MEDIUM" };
-  const id = (role: "CRITIC" | "SECURITY", finding: { text: string; file?: string; line?: number }) => workflowContracts.workflowFindingFingerprint(role, finding);
+  const id = (role: "CRITIC" | "SECURITY", finding: { text: string; file?: string; line?: number }) => workflowContractsCode.workflowFindingFingerprint(role, finding);
   const reviews = (operationId: string, candidate: ReturnType<typeof createCandidateManifest>, critic: unknown[], security: unknown[], securityStatus: "PASS" | "FINDINGS" | "FAILED" = security.length > 0 ? "FINDINGS" : "PASS") => {
     const now = new Date().toISOString();
     const report = (role: string, status: string, findings: unknown[]) => ({ operationId, candidateDigest: candidate.digest, role, provider: "t", version: "1", status, findings, readOnly: true, recordedAt: now });
@@ -5610,7 +5613,7 @@ describe("pushing an approved PR feedback fix to the same pull request (item 7)"
     for (const [error, cause, text] of [
       ["STALE_FENCE: pull request head changed outside AgentX", "HEAD_MOVED", `I couldn't push the fix to <${PR_URL}|PR #42>: ${STOPPED_FOLLOWING}`],
       ["git push failed: remote rejected", "PUSH_REFUSED", `I couldn't push the fix to <${PR_URL}|PR #42>: GitHub refused the push. ${STILL_WATCHING}`],
-      [`RUNTIME_UNAVAILABLE: ${workflowContracts.WORKFLOW_PULL_REQUEST_UPDATE_WORKER_OUTDATED}`, "WORKER_OUTDATED", `I couldn't push the fix because this AgentX worker is out of date. Ask an admin to run agentx upgrade. ${STILL_WATCHING}`],
+      [`RUNTIME_UNAVAILABLE: ${workflowContractsCode.WORKFLOW_PULL_REQUEST_UPDATE_WORKER_OUTDATED}`, "WORKER_OUTDATED", `I couldn't push the fix because this AgentX worker is out of date. Ask an admin to run agentx upgrade. ${STILL_WATCHING}`],
     ] as const) {
       const { harness, taskId, workspaceId, first, pass } = await fixPassed();
       await pass();
@@ -5627,7 +5630,7 @@ describe("pushing an approved PR feedback fix to the same pull request (item 7)"
       await pass();
       const [maintain] = maintainOf(harness, workspaceId);
       const outbox = harness.db.find((item) => item.entityType === "OUTBOX" && item.operationId === maintain?.id)[0]!;
-      await failOutboxOperation(harness.db as never, "state", outbox as never, `RUNTIME_UNAVAILABLE: worker dispatch failed after 5 attempts: RUNTIME_UNAVAILABLE: ${workflowContracts.WORKFLOW_PULL_REQUEST_UPDATE_WORKER_OUTDATED}`);
+      await failOutboxOperation(harness.db as never, "state", outbox as never, `RUNTIME_UNAVAILABLE: worker dispatch failed after 5 attempts: RUNTIME_UNAVAILABLE: ${workflowContractsCode.WORKFLOW_PULL_REQUEST_UPDATE_WORKER_OUTDATED}`);
       expect(taskWorkflow(harness, taskId)).toMatchObject({ stage: "WAIT_FOR_MERGE", state: "BLOCKED", pullRequestUpdateFailure: { numbers: [42], cause: "WORKER_OUTDATED" } });
     }
   });

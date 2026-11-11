@@ -4,7 +4,8 @@
 import { createHash } from "node:crypto";
 import { TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
 import { z } from "zod";
-import { AgentXError, AgentXNameSchema, OrgIdSchema, StoredProjectDefinitionSchema, WorkingBranchNameSchema, agentXError, canonicalJson, githubInstallationKey, orgScoped, projectRevisionKey } from "@agentx/contracts";
+import { AgentXError, AgentXNameSchema, OrgIdSchema, StoredProjectDefinitionSchema, WorkingBranchNameSchema, agentXError, canonicalJson, orgScoped, projectRevisionKey } from "@rovara-code/contracts";
+import { githubInstallationKey } from "@agentx/cloud-contracts";
 import type { DeveloperCaller, DeveloperRouteDependencies } from "../aws/developer-routes.js";
 import { auditOccurrence, auditProjectWorkingBranchChanged } from "../audit/events.js";
 import { auditPending, type TransactItem } from "../audit/outbox.js";

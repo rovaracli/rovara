@@ -2,7 +2,8 @@
 // problem it can fix (or when the answer was unreadable), keeps the findings beside the plan, and never moves the digest the owner approves.
 import { createHash, randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
-import { PLAN_DRY_RUN_FEATURE, WORKFLOW_BLOCK_REASONS, planDryRunCommandSha256, planQualityFinding, type PlanDryRunClass, type WorkflowSnapshot } from "@agentx/contracts";
+import { PLAN_DRY_RUN_FEATURE, planDryRunCommandSha256, planQualityFinding, type PlanDryRunClass } from "@rovara-code/contracts";
+import { WORKFLOW_BLOCK_REASONS, type WorkflowSnapshot } from "@agentx/cloud-contracts";
 import { planDocumentInstructions, withoutPlanQualityText, asksForPlanQuality } from "../../packages/broker/src/aws/broker-shared.js";
 import {
   PLAN_AUTO_REVISIONS_MAX, PlanSelfCheckRecordSchema, autoRevisableFindings, planRevisionPrompt, planRevisionsUsed,

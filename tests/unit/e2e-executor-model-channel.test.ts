@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { E2EModelChannelResponseSchema, e2eModelRouteRevision } from "../../packages/contracts/src/e2e-model-channel.js";
+import { E2EModelChannelResponseSchema, e2eModelRouteRevision } from "@rovara-code/contracts";
 import { createInMemoryE2EDayBudget } from "../../packages/model-runtime/src/e2e-route.js";
 import { scriptedE2ERouteDefinition } from "../../packages/model-runtime/src/e2e-route-derive.js";
 import { REFUSING_DEFAULT_PROVIDER_MESSAGE, installRefusingE2EDefaultProvider } from "../../packages/verifier/src/executor/ai-default-provider.js";

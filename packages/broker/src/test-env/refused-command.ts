@@ -1,6 +1,6 @@
 // A command the broker will not carry in a draft, a proposal or a seed: it fetches code and runs it, or its text changes under the redactor (a secret-shaped value). A leaf module, so the places that need it (the
 // draft, the edit check, the approval's refusal of unsafe dependency seeds) can share it without importing each other.
-import { formatCommandLine, looksLikeSecretValue, redactText, remoteCodeReason, reservedDependencyEnvName, type ProjectCommand, type TestEnvDependency } from "@agentx/contracts";
+import { formatCommandLine, looksLikeSecretValue, redactText, remoteCodeReason, reservedDependencyEnvName, type ProjectCommand, type TestEnvDependency } from "@rovara-code/contracts";
 
 export function refusedCommand(command: ProjectCommand): boolean {
   const text = formatCommandLine(command);

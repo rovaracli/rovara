@@ -1,14 +1,9 @@
 import { createHash, randomUUID } from "node:crypto";
 import { mkdir } from "node:fs/promises";
 import { join, resolve } from "node:path";
-import {
-  E2EScenarioBundleSchema, E2EPolicySchema,
-  ProjectSetupRunnerEnvironmentSchema, ProjectSetupRunnerToolchainSchema,
-  canonicalJson, e2eScenarioBundleDigest, selectE2EExecutionPlan,
-  verifyE2ESourceSnapshot, E2ERunBindingSchema, E2ERoundSchema, type E2EPlanSelectionInput, type E2ESourceSnapshot,
-} from "@agentx/contracts";
+import { E2EScenarioBundleSchema, E2EPolicySchema, ProjectSetupRunnerEnvironmentSchema, ProjectSetupRunnerToolchainSchema, canonicalJson, e2eScenarioBundleDigest, selectE2EExecutionPlan, verifyE2ESourceSnapshot, E2ERunBindingSchema, E2ERoundSchema, type E2EPlanSelectionInput, type E2ESourceSnapshot } from "@rovara-code/contracts";
 import { compileE2EScenarios, runE2EActualCli, collectE2EActualCliRun, e2eSnapshotSourceDigest, observeInstalledRuntimeManifestForHost } from "@agentx/verifier";
-import type { WorkerInvocation } from "@agentx/contracts";
+import type { WorkerInvocation } from "@agentx/cloud-contracts";
 
 const sha = (value: string | Uint8Array): string => createHash("sha256").update(value).digest("hex");
 

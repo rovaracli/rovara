@@ -12,7 +12,7 @@
 //   fallback (POST .../operations/<id>/saved-env-fallback), which stays on the repository grant (a preparation falls back within minutes of its start):
 //     - the same switch and grant; the operation is this workspace's active prepare and was told to pull an image (`savedEnvDigest`): the digest is the one the BROKER recorded, never one the request names;
 //     - the step is one of the closed list (`markStale` ignores a step that says nothing about the image). It answers `{ ok: true }` whatever markStale decided: the worker learns nothing about the registry.
-import { SavedEnvFallbackBodySchema, SavedEnvLeaseBodySchema, SavedEnvResultBodySchema, SavedEnvRegistryAuthSchema, agentXError, type SavedEnvRegistryAuth } from "@agentx/contracts";
+import { SavedEnvFallbackBodySchema, SavedEnvLeaseBodySchema, SavedEnvResultBodySchema, SavedEnvRegistryAuthSchema, agentXError, type SavedEnvRegistryAuth } from "@rovara-code/contracts";
 import { markStale, mintPushForJob, recordBuild, type RecordRefusal, type SavedEnvDeps } from "./saved-env.js";
 
 /** A build asks for the push login once; a few more cover a retry of the request itself. */

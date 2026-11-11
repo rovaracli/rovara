@@ -1,7 +1,7 @@
 // v1.2 learning loop: learning writes (Remember, Forget, Accept, Dismiss, Reopen, Remove) are browser-only. A bearer-token call is refused by the real dispatcher before authentication or any
 // table read; reads stay as they are.
 import { describe, expect, it } from "vitest";
-import { projectLearningKey, type OrgId } from "../../packages/contracts/src/index.js";
+import { projectLearningKey, type OrgId } from "@rovara-code/contracts";
 import { FakeDynamoDb } from "../support/fake-dynamodb.js";
 
 const WRITES: Array<[string, string]> = [

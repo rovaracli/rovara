@@ -2,18 +2,8 @@
 // through Plan 9 and Task 25) calls `startCodeIntent`, which starts the work through the same run start every task uses (`startAgentRun`, then `startTask`). Nothing here decides
 // access or money: the project role and `requireNewWorkAllowed` are `startTask`'s, the payer is `resolvePayer`'s (a person named as the payer must still be allowed to start work
 // on the project), and the budget floor and the planning limit are `admitWork`'s and `startingLimitUsd`'s. This file only says what kind of start it is.
-import {
-  AgentXError,
-  CodeIntentRequestSchema,
-  PROCESS_START_REFUSED_MESSAGE,
-  SessionIdSchema,
-  agentXError,
-  sessionLink,
-  type CodeIntentRequest,
-  type CodeIntentResult,
-  type DeveloperTaskView,
-  type OrgId,
-} from "@agentx/contracts";
+import { AgentXError, CodeIntentRequestSchema, PROCESS_START_REFUSED_MESSAGE, SessionIdSchema, agentXError, sessionLink, type CodeIntentRequest, type CodeIntentResult, type OrgId } from "@rovara-code/contracts";
+import { type DeveloperTaskView } from "@agentx/cloud-contracts";
 import { startAgentRun, type AgentRunRequest, type AgentRunStarter } from "../agents/runs.js";
 import { SLACK_WORKFLOW_SESSION_ID } from "../developer/task-records.js";
 import type { DeveloperCaller } from "../aws/developer-routes.js";

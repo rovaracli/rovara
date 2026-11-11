@@ -2,9 +2,8 @@
 // its capability), the worker's one callback action, the end (result, cost estimates untouched), and that with the `su` switch off none of it exists. The worker's half is tested in the worker's tests.
 import { randomUUID } from "node:crypto";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import {
-  SETUP_AGENT_LIMITS_DEFAULT, SETUP_AGENT_FEATURE, WorkerInvocationSchema, sanitizeSetupProposal, setupDraftKey,
-} from "../../packages/contracts/src/index.js";
+import { SETUP_AGENT_LIMITS_DEFAULT, SETUP_AGENT_FEATURE, sanitizeSetupProposal, setupDraftKey } from "@rovara-code/contracts";
+import { WorkerInvocationSchema } from "@agentx/cloud-contracts";
 import * as runs from "../../packages/broker/src/agents/runs.js";
 import { runGivesAgentTools, setupRunStepOf } from "../../packages/broker/src/aws/broker/task-operations.js";
 import { heldPreparationOptions } from "../../packages/broker/src/aws/developer-tasks/continue.js";

@@ -1,6 +1,6 @@
 import { useMemo, useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { ASK_ANSWER_LABEL, ASK_QUESTION_MAX_CHARS } from "@agentx/contracts/web";
+import { ASK_ANSWER_LABEL, ASK_QUESTION_MAX_CHARS } from "@agentx/cloud-contracts/web";
 import { useAppHost } from "../../host.js";
 import { createSessionAskApi } from "../../api/session-ask.js";
 import { ApiError } from "../../api/errors.js";

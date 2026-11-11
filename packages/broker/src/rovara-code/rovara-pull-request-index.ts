@@ -1,7 +1,7 @@
 // The production `RovaraPullRequestIndexPort` of the Team record's code host tap: finds Rovara's own pull requests. Moved out of `team-record/runtime.ts` (SRL-3) so the lookup by merge
 // commit sits beside the index it reads (`merge-commit-index.ts`) and outside the Team record's storage modules; the task records and the reverse links are the state table's, not the record's.
 import { GetCommand } from "@aws-sdk/lib-dynamodb";
-import { OrgIdSchema } from "@agentx/contracts";
+import { OrgIdSchema } from "@rovara-code/contracts";
 import type { RovaraPullRequest, RovaraPullRequestIndexPort } from "../team-record/sources/ports.js";
 import { taskKey, type DeveloperTaskRecord } from "../developer/task-records.js";
 import { findLinkedChangeRequest } from "./linked-change-requests.js";

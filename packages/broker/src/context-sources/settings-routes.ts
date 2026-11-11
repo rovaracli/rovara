@@ -5,7 +5,7 @@
 //   POST /v1/app/projects/{p}/context-sources/changes/{id}/confirm|reject
 // A body is never echoed back in an error, and a request that carries an operation capability instead of a person's token never gets this far.
 import { z } from "zod";
-import { ContextSourceServerSchema, agentXError, projectArchivedMessage } from "@agentx/contracts";
+import { ContextSourceServerSchema, agentXError, projectArchivedMessage } from "@rovara-code/contracts";
 import type { AgentCaller } from "../agents/access.js";
 import type { AdaptedHttpRequest } from "../aws/lambda.js";
 import { StatusReply } from "../aws/status-reply.js";

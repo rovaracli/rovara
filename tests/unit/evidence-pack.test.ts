@@ -1,8 +1,8 @@
 // Proof and evidence P5: the broker builds the evidence pack from the worker's raw parts and its own check report. The raw file is untrusted: bound to the candidate digest, checked against the broker's
 // check outcomes and the artifact store, redacted again; whatever fails is dropped and named, and a drop never makes a check look better.
 import { describe, expect, it } from "vitest";
-import { EVIDENCE_ARTIFACT_RETENTION, consoleErrorsWords, EvidencePackSchema, EvidenceViewSchema, type ArtifactRef, type EvidenceArtifactKind, type EvidenceEnvironment } from "../../packages/contracts/src/evidence.js";
-import type { CheckEntry } from "../../packages/contracts/src/checks.js";
+import { EVIDENCE_ARTIFACT_RETENTION, consoleErrorsWords, EvidencePackSchema, EvidenceViewSchema, type ArtifactRef, type EvidenceArtifactKind, type EvidenceEnvironment } from "@rovara-code/contracts";
+import type { CheckEntry } from "@rovara-code/contracts";
 import { buildEvidencePack, evidenceHref, evidenceViewOf, type EvidenceBuildInput, type StoredArtifact } from "../../packages/broker/src/rovara-code/evidence-pack.js";
 
 const sha = (letter: string) => letter.repeat(64);

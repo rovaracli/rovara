@@ -5,7 +5,8 @@
 // The vector bucket and the lake are the storage lane's constructs (`team-record-storage.ts`); the stack that wires them also instantiates this one.
 import { RemovalPolicy, aws_dynamodb as dynamodb, aws_iam as iam, aws_kms as kms } from "aws-cdk-lib";
 import { Construct } from "constructs";
-import { INDEX_EXPIRY_ATTRIBUTE, TEAM_RECORD_GSI1, TEAM_RECORD_GSI2, TEAM_RECORD_GSI3, TEAM_RECORD_GSI3_ATTRIBUTES, TEAM_RECORD_GSI4, TEAM_RECORD_GSI5 } from "@agentx/contracts";
+import { INDEX_EXPIRY_ATTRIBUTE } from "@rovara-code/contracts";
+import { TEAM_RECORD_GSI1, TEAM_RECORD_GSI2, TEAM_RECORD_GSI3, TEAM_RECORD_GSI3_ATTRIBUTES, TEAM_RECORD_GSI4, TEAM_RECORD_GSI5 } from "@agentx/cloud-contracts";
 
 const TABLE_NAME = /^[A-Za-z0-9_.-]{3,255}$/;
 

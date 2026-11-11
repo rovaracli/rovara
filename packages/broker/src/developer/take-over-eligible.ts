@@ -2,7 +2,8 @@
 // every project) or a direct project grant whose role may start tasks (a viewer may not). Task take-over needs the session level `edit` for a co-owner, a project role that may start tasks, and a writer
 // company role (agent-sessions/access.ts); a person whose project access is only through a Slack channel cannot be confirmed here and is left out (nobody is told something that may not be true).
 import { GetCommand } from "@aws-sdk/lib-dynamodb";
-import { AgentXError, orgMemberKey, projectAllows, projectMemberKey, type OrgId, type Payer } from "@agentx/contracts";
+import { AgentXError, projectAllows, projectMemberKey, type OrgId, type Payer } from "@rovara-code/contracts";
+import { orgMemberKey } from "@agentx/cloud-contracts";
 import { isRovaraCodeAgent } from "../agents/rovara-code-task.js";
 import type { TaskAgentRef } from "../agents/roster.js";
 import { grantRoleOf } from "./project-roles.js";

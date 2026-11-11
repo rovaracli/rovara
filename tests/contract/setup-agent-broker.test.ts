@@ -4,9 +4,7 @@
 import { TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
 import { randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
-import {
-  BUDGET_EXHAUSTED_FAILURE_MESSAGE, SETUP_AGENT_LIMITS_DEFAULT, SetupAgentWireSchema, SETUP_AGENT_LIMITS_MAX, StoredProjectDefinitionSchema, runRequestKey, sanitizeSetupProposal, type Payer, type SetupProposal,
-} from "@agentx/contracts";
+import { BUDGET_EXHAUSTED_FAILURE_MESSAGE, SETUP_AGENT_LIMITS_DEFAULT, SetupAgentWireSchema, SETUP_AGENT_LIMITS_MAX, StoredProjectDefinitionSchema, runRequestKey, sanitizeSetupProposal, type Payer, type SetupProposal } from "@rovara-code/contracts";
 import {
   SETUP_AGENT_BUSY, SETUP_AGENT_FAILURES, SETUP_AGENT_WORKFLOW_MODE, keepSetupPreparedBase, keepStoppedSetupProposal, SETUP_STOP_KEEP_MS, setupAgentEndItems, setupAgentKey, setupAgentWireOf, setupAgentPointerItem, setupAgentState, startSetupAgent, stopSetupAgent, getSetupAgent,
   type SetupAgentDependencies, type SetupAgentRunRequest, type SetupAgentStarter,

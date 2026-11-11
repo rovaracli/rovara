@@ -14,10 +14,7 @@
 // Removing and moving Asks (erasure, merges, the sweep) is in `ask-erase.ts`.
 import { createHmac } from "node:crypto";
 import { GetCommand, TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
-import {
-  ASK_RETENTION_DAYS, AskRecordSchema, INDEX_EXPIRY_ATTRIBUTE, askByPersonKey, askExpiryPk, askMentionKey, askStoresText, redactText, replaceEmailAddresses, sessionAskKey,
-  type AskAudience, type AskRecord, type OrgId, type SessionId,
-} from "@agentx/contracts";
+import { ASK_RETENTION_DAYS, AskRecordSchema, INDEX_EXPIRY_ATTRIBUTE, askByPersonKey, askExpiryPk, askMentionKey, askStoresText, redactText, replaceEmailAddresses, sessionAskKey, type AskAudience, type AskRecord, type OrgId, type SessionId } from "@rovara-code/contracts";
 import { neutralizeSlackMentions } from "./slack-mentions.js";
 import { scrubNames, type NamedPerson } from "./ask-names.js";
 import { FORMER_MEMBER_MENTION, askPersonTag, askRecordFromItem, eraseAskPerson, expiryDayOf, type AskItem, type AskStoreTable } from "./ask-erase.js";

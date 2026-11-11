@@ -8,31 +8,8 @@ import { afterProjectBootstrap } from "../support/transaction-audit.js";
 import { createHash, createHmac, randomUUID } from "node:crypto";
 import { setImmediate as nextMacrotask, setTimeout as realDelay } from "node:timers/promises";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
-import {
-  AUDIT_FLUSH_DEADLINE_MS,
-  EGRESS_DOMAINS_PK,
-  auditEventId,
-  auditOperatorId,
-  egressDomainsKey,
-  developerOrgKey,
-  githubConnectStateKey,
-  githubInstallRequestKey,
-  githubInstallRequestQueueKey,
-  githubInstallationKey,
-  orgGithubInstallRequestKey,
-  orgGithubInstallationKey,
-  orgInviteKey,
-  orgMemberKey,
-  orgMetaKey,
-  orgProjectCatalogKey,
-  projectMemberKey,
-  projectRevisionKey,
-  trialGithubKey,
-  type AuditEventInput,
-  type EgressDomainsItem,
-  type EgressOwner,
-  type OrgId,
-} from "../../packages/contracts/src/index.js";
+import { AUDIT_FLUSH_DEADLINE_MS, auditEventId, auditOperatorId, developerOrgKey, githubConnectStateKey, githubInstallRequestKey, githubInstallRequestQueueKey, githubInstallationKey, orgGithubInstallRequestKey, orgGithubInstallationKey, orgInviteKey, orgMemberKey, orgMetaKey, trialGithubKey, type AuditEventInput } from "@agentx/cloud-contracts";
+import { EGRESS_DOMAINS_PK, egressDomainsKey, orgProjectCatalogKey, projectMemberKey, projectRevisionKey, type EgressDomainsItem, type EgressOwner, type OrgId } from "@rovara-code/contracts";
 import { auditOccurrence } from "../../packages/broker/src/audit/events.js";
 import { ownerKeyForSubject } from "../../packages/broker/src/aws/lambda.js";
 import { decideEgressDomain, putEgressDomains, type EgressDomainsDependencies } from "../../packages/broker/src/org/egress-domains.js";

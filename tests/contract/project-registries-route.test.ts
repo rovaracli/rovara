@@ -1,7 +1,7 @@
 // N9 (INTG2): the route's glue: the exchange reads the operation, the workspace and the project revision the workspace is pinned to from the State table, and decides from those alone.
 import { GetCommand } from "@aws-sdk/lib-dynamodb";
 import { describe, expect, it } from "vitest";
-import { agentXError, projectRevisionKey, type OrgId } from "../../packages/contracts/src/index.js";
+import { agentXError, projectRevisionKey, type OrgId } from "@rovara-code/contracts";
 import { exchangeRegistryCredential, registriesPrepareOf } from "../../packages/broker/src/aws/broker/registry-credentials.js";
 import { RepositoryGrantService } from "../../packages/broker/src/repository-access.js";
 import type { AwsBrokerDependencies } from "../../packages/broker/src/aws/broker/definitions.js";

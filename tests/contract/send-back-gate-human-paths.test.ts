@@ -3,7 +3,8 @@
 // coding step after every finding is accepted. Each is refused the way a send-back is: the same code and words for no access, a viewer and an archived project; another org reads as no task.
 import { randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
-import { orgMemberKey, orgRemovedKey, projectMetaKey, type WorkflowSnapshot } from "@agentx/contracts";
+import { orgMemberKey, orgRemovedKey, type WorkflowSnapshot } from "@agentx/cloud-contracts";
+import { projectMetaKey } from "@rovara-code/contracts";
 import { submitWorkflowFeedbackDecision, type DeveloperTaskRouteDependencies } from "../../packages/broker/src/aws/developer-tasks.js";
 import type { DeveloperCaller } from "../../packages/broker/src/aws/developer-routes.js";
 import { sendBackNoAccessMessage } from "../../packages/broker/src/developer/task-access.js";
@@ -12,7 +13,7 @@ import { MAYA } from "../support/developer-task-broker.js";
 import { seedReview } from "../support/rovara-code-feedback.js";
 import { createDeveloperTaskBroker } from "../support/developer-task-broker.js";
 import { TEST_ORG } from "../support/orgs.js";
-import { agentXError } from "@agentx/contracts";
+import { agentXError } from "@rovara-code/contracts";
 
 type CheckAccess = DeveloperTaskRouteDependencies["checkAccess"];
 const grantedAs = (role: "maintainer" | "contributor" | "viewer"): CheckAccess => async () => ({ revision: 1, policy: {} as never, access: "granted", channelIds: [], role });

@@ -10,10 +10,7 @@ import { join } from "node:path";
 import { promisify } from "node:util";
 import { fauxAssistantMessage, fauxToolCall, getCurrentSystemPrompt, getCurrentTools, type FauxResponseStep, type TranscriptContext } from "@earendil-works/pi-ai";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import {
-  AGENT_STEP_PREAMBLE, AGENTX_PREAMBLE, AGENTX_WORKER_PROMPT, WORKER_INVOCATION_FEATURES, renderRunInput,
-  type ConnectorCallRequest, type ConnectorCatalog, type RunInput,
-} from "../../packages/contracts/src/index.js";
+import { AGENT_STEP_PREAMBLE, AGENTX_PREAMBLE, AGENTX_WORKER_PROMPT, WORKER_INVOCATION_FEATURES, renderRunInput, type ConnectorCallRequest, type ConnectorCatalog, type RunInput } from "@rovara-code/contracts";
 import { createConnectorTools } from "../../packages/orchestrator/src/connector-tools.js";
 import { AGENT_STEP_REPORT_MAX_BYTES, agentStepSystemPrompt, runAgentStep, type AgentRunStepPayload, type AgentStepResult, type RunAgentStepInput } from "../../packages/worker/src/agent-run/run-agent-step.js";
 import { agentToolCatalogsSource, brokerToolCall, createConnectorBridgeTools } from "../../packages/worker/src/agent-run/connector-bridge.js";

@@ -3,7 +3,7 @@
 // tool can only reach the project its scope names. The Sentry API is faked; no test reaches a network.
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { discoverTools, executeTool, type ConnectorDefinition, type Ledger } from "@agentx/gateway";
-import { ProjectDefinitionSchema, type GrantedTool, type OrgId } from "../../packages/contracts/src/index.js";
+import { ProjectDefinitionSchema, type GrantedTool, type OrgId } from "@rovara-code/contracts";
 import { classifyWrite } from "../../packages/broker/src/agents/write-class.js";
 import { BUILT_IN_CONNECTOR_TYPES, resolveConnectors, type ResolvedConnector } from "../../packages/broker/src/aws/connector-types.js";
 import { sentryConnectionCheck, sentryConnectorType } from "../../packages/broker/src/aws/sentry-connector-type.js";

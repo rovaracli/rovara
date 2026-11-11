@@ -10,30 +10,8 @@
 // written. Plain Stop keeps its own rule. Fails closed everywhere: a task state this route does not know, a worker that cannot be asked, a rate counter that does not read, all refuse and write nothing.
 import { TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
 import { z } from "zod";
-import {
-  INDEX_EXPIRY_ATTRIBUTE,
-  OWNER_REDIRECT_FEATURE,
-  REDIRECT_BUDGET_PAUSE_MESSAGE,
-  REDIRECT_RATE,
-  REDIRECT_REFUSAL_MESSAGES,
-  REDIRECT_SLACK_STATUS_LINE,
-  RedirectBodySchema,
-  SESSION_ENDED_MESSAGE,
-  SESSION_MESSAGES_MAX,
-  SESSION_RETENTION_DAYS,
-  STEER_RATE,
-  SessionMessageSchema,
-  redactText,
-  agentXError,
-  cleanSessionName,
-  sessionEventId,
-  type AgentSessionRecord,
-  type RedirectMode,
-  type RedirectRecord,
-  type RedirectRefusal,
-  type RedirectState,
-  type SessionView,
-} from "@agentx/contracts";
+import { INDEX_EXPIRY_ATTRIBUTE, OWNER_REDIRECT_FEATURE, REDIRECT_BUDGET_PAUSE_MESSAGE, REDIRECT_RATE, REDIRECT_REFUSAL_MESSAGES, REDIRECT_SLACK_STATUS_LINE, RedirectBodySchema, SESSION_ENDED_MESSAGE, SESSION_MESSAGES_MAX, SESSION_RETENTION_DAYS, STEER_RATE, SessionMessageSchema, redactText, agentXError, cleanSessionName, sessionEventId, type AgentSessionRecord, type RedirectMode, type RedirectRecord, type RedirectRefusal, type RedirectState } from "@rovara-code/contracts";
+import { type SessionView } from "@agentx/cloud-contracts";
 import { failedIndexes, isTransactionConflict, type TransactItem } from "../agents/table-writes.js";
 import { auditSessionRedirected, auditSessionStopped } from "../audit/events.js";
 import { flushAuditEvents } from "../audit/flush.js";

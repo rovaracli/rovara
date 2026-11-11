@@ -1,6 +1,6 @@
 // v1.2 learning loop, B6: the rule text of a process layer's overlay. A rule is appended as its own paragraph of a stage's instructions (or of the project-wide `instructions` for stage `*`)
 // and removed again only as a whole paragraph that equals it exactly.
-import { agentXError, type RecipeOverlay } from "@agentx/contracts";
+import { agentXError, type RecipeOverlay } from "@rovara-code/contracts";
 import { RULE_TEXT_MAX } from "../playbook/inert-rule-text.js";
 
 const RULES_FULL = "This stage's rules are full. Make room in How we work first.";

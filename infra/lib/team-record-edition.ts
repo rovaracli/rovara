@@ -1,7 +1,7 @@
 // E1: the install parameters of the Team-record storage (design learning-v2-team-record.md 4.9.2), read from CDK context and checked at synth.
 // Pure functions with no CDK imports, so a test can feed them any value. W6's edition switch is not built yet: `edition` is a context value
 // (`agentxTeamRecordEdition`), and Public is the default.
-import { VECTOR_DIMENSION_DEFAULT } from "@agentx/contracts";
+import { VECTOR_DIMENSION_DEFAULT } from "@agentx/cloud-contracts";
 
 export type TeamRecordEditionName = "enterprise" | "public";
 

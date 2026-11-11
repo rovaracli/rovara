@@ -2,7 +2,7 @@ import {projectAiLifecycleChecks} from "../spend/project-ai-authority.js";
 import type {TransactItem} from "../agents/table-writes.js";
 // Server-only bounded reads for one frozen task stage. No provider probes or writes.
 import {QueryCommand} from "@aws-sdk/lib-dynamodb";
-import {PROJECT_REVISION_SK_PREFIX,StoredProjectDefinitionSchema,projectPk,projectRevisionKey,modelSourcesKey,agentGuardrailsKey,agentXError,type ModelIdentifier} from "@agentx/contracts";
+import { PROJECT_REVISION_SK_PREFIX, StoredProjectDefinitionSchema, projectPk, projectRevisionKey, modelSourcesKey, agentGuardrailsKey, agentXError, type ModelIdentifier } from "@rovara-code/contracts";
 import {bedrockClaudeModelIds} from "@agentx/model-runtime/catalog";
 import {readGuardrailsWithRevision} from "../agents/guardrails.js";
 import {defaultWorkerModel} from "../agents/dispatch.js";

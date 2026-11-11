@@ -7,12 +7,8 @@ import { fileURLToPath } from "node:url";
 import { Stack } from "aws-cdk-lib";
 import { Template } from "aws-cdk-lib/assertions";
 import { beforeAll, describe, expect, it } from "vitest";
-import {
-  defaultBoundaryArn,
-  environmentCloudFormationRoleName,
-  environmentOperatorRoleName,
-  type ReleaseManifest,
-} from "@agentx/contracts";
+import { defaultBoundaryArn } from "@agentx/cloud-contracts";
+import { environmentCloudFormationRoleName, environmentOperatorRoleName, type ReleaseManifest } from "@rovara-code/contracts";
 import { buildAgentXApp } from "../../infra/lib/app.js";
 import type { DeployAnswers } from "../../packages/cli/src/deploy/deploy-environment.js";
 import { readBundleAnswers, writeExportBundle } from "../../packages/cli/src/deploy/export-bundle.js";

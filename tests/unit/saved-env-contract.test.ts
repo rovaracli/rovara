@@ -1,8 +1,6 @@
 // Setup and test health SH3: the saved environment contract and the environment key (pure hash over given file hashes and inputs).
 import { describe, expect, it } from "vitest";
-import {
-  SAVED_ENV_MAX_KEY_FILES, SavedEnvManifestSchema, computeEnvironmentKey, EnvironmentKeyInputSchema, type EnvironmentKeyInput,
-} from "@agentx/contracts";
+import { SAVED_ENV_MAX_KEY_FILES, SavedEnvManifestSchema, computeEnvironmentKey, EnvironmentKeyInputSchema, type EnvironmentKeyInput } from "@rovara-code/contracts";
 
 const H1 = "1".repeat(64);
 const H2 = "2".repeat(64);

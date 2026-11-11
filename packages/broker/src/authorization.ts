@@ -1,4 +1,4 @@
-import { agentXError, type OrgId } from "@agentx/contracts";
+import { agentXError, type OrgId } from "@rovara-code/contracts";
 import type { AuthenticatedIdentity } from "./auth.js";
 
 export interface ProjectMembership {

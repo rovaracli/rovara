@@ -7,7 +7,7 @@ import { type CfnTag, Duration, RemovalPolicy, Stack, aws_iam as iam, aws_kms as
 import { CfnWorkGroup } from "aws-cdk-lib/aws-athena";
 import { CfnNamespace, CfnTable, CfnTableBucket } from "aws-cdk-lib/aws-s3tables";
 import { Construct } from "constructs";
-import { LAKE_NAMESPACE, LAKE_TABLES } from "@agentx/contracts";
+import { LAKE_NAMESPACE, LAKE_TABLES } from "@agentx/cloud-contracts";
 
 const TABLE_BUCKET_NAME = /^[a-z0-9][a-z0-9-]{1,61}[a-z0-9]$/;
 /**

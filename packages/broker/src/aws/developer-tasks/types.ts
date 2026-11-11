@@ -1,15 +1,5 @@
-import type {
-  DesignActionsView,
-  OrgId,
-  DeveloperTaskPolicy,
-  DeveloperTaskView,
-  E2EApplicationPlanIntent,
-  E2EApplicationSelectionRecord,
-  E2EScenarioResults,
-  TaskPersonInviteClaimRequest,
-  TaskPersonInviteOutcome,
-  ProjectRole,
-} from "@agentx/contracts";
+import type { DesignActionsView, OrgId, DeveloperTaskPolicy, E2EApplicationPlanIntent, E2EApplicationSelectionRecord, E2EScenarioResults, TaskPersonInviteClaimRequest, TaskPersonInviteOutcome, ProjectRole } from "@rovara-code/contracts";
+import type { DeveloperTaskView } from "@agentx/cloud-contracts";
 import type { NightlyHeadReader } from "../../test-env/nightly-usable.js";
 import type { EvidencePort } from "./evidence-port.js";
 import type { BoundChannel } from "../../developer/share.js";
@@ -26,7 +16,8 @@ import type { TaskPeopleDisplayAdmission } from "../../developer/task-people-dis
 import type { AgentRunDependencies } from "../../agents/runs.js";
 import type { SessionAccessDependencies } from "../../agent-sessions/access.js";
 import type { AgentRunEngineDependencies } from "../../agents/run-engine.js";
-import type { MergeTrackingItem, MergeView } from "@agentx/contracts";
+import type { MergeTrackingItem } from "@agentx/cloud-contracts";
+import type { MergeView } from "@rovara-code/contracts";
 import type { CodeHostRouter } from "../../plugins/registry.js";
 import { type AuditRuntime } from "../../audit/outbox.js";
 import type { DesignReviewRoundPorts } from "../../design-review/round-ports.js";

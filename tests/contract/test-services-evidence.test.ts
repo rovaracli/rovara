@@ -1,8 +1,8 @@
 // Test services, TS5 (design test-services.md, 2.4 and 9.3): the honesty labels, the evidence fields that carry them, and the pull request lines built from them. Pure: nothing is wired.
 import { describe, expect, it } from "vitest";
-import * as evidence from "../../packages/contracts/src/evidence.js";
+import * as evidence from "@rovara-code/contracts";
 import { dependencyLines, dependencyLineIsInert, packDependencyLines, DEPENDENCY_LEVEL_LAST } from "../../packages/broker/src/rovara-code/dependency-lines.js";
-import { TEST_ENV_BACKING_KINDS, TEST_ENV_NONE_REASONS } from "../../packages/contracts/src/test-env-dependency.js";
+import { TEST_ENV_BACKING_KINDS, TEST_ENV_NONE_REASONS } from "@rovara-code/contracts";
 import { environmentLine } from "../../packages/broker/src/rovara-code/evidence-lines.js";
 
 type Dep = evidence.EvidenceDependency;

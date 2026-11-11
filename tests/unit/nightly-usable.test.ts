@@ -1,7 +1,7 @@
 // Setup and test health SH17 (Opus re-check M4): the nightly baseline is "what already fails" only while it is recent (7 days), from the branch the tasks are based on, whole and readable. Otherwise it excuses nothing and
 // no mark is offered from it. Also: with no usable baseline, a check that failed before has only unconfirmed failing tests, so a mark is never offered and the result is Code failed (owner decision M2).
 import { describe, expect, it } from "vitest";
-import { EvidencePackSchema, NightlyBaselineSchema, projectPk, projectRevisionKey } from "@agentx/contracts";
+import { EvidencePackSchema, NightlyBaselineSchema, projectPk, projectRevisionKey } from "@rovara-code/contracts";
 import { NIGHTLY_BASELINE_MAX_AGE_MS, projectBaseBranch, taskBaseBranches, usableNightlyFailing } from "../../packages/broker/src/test-env/nightly-usable.js";
 import { alreadyFailingForResults, knownFailingKey } from "../../packages/broker/src/test-env/known-failing.js";
 import { failingOnOriginalTests } from "../../packages/broker/src/test-env/fix-setup.js";

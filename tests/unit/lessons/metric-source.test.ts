@@ -1,6 +1,6 @@
 // L7: the metric's reader of the v1.2 corrections and its text-free matcher (lessons/metric-source.ts). Read-only; a signature-less correction is unjudged, not guessed.
 import { describe, expect, it } from "vitest";
-import { projectLearningKey } from "../../../packages/contracts/src/org-scoped-keys.js";
+import { projectLearningKey } from "@rovara-code/contracts";
 import { signatureOf } from "../../../packages/broker/src/learning/similarity.js";
 import { learningSalt } from "../../../packages/broker/src/learning/standing.js";
 import { sameMistakeTwice } from "../../../packages/broker/src/lessons/metric.js";

@@ -1,6 +1,6 @@
 // What the providers share when they read a vendor's body (Plan 4 Tasks 22 and 23). Everything a person typed into a ticket is treated as hostile text: it is cleaned
 // before it can be a title or a filter value, and a link is believed only when it is a plain https link on the vendor's own host. Nothing here logs.
-import { RUN_START_TITLE_MAX } from "@agentx/contracts";
+import { RUN_START_TITLE_MAX } from "@rovara-code/contracts";
 
 const FIELD_VALUES_MAX = 50;
 const FIELD_VALUE_CHARS_MAX = 200;

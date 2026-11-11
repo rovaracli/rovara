@@ -1,7 +1,7 @@
 import { useQuery } from "@tanstack/react-query";
 import { useAgentApi } from "../../api/agents.js";
 import { useState } from "react";
-import { ProjectRoleSchema, projectAllows } from "@agentx/contracts/web";
+import { ProjectRoleSchema, projectAllows } from "@agentx/cloud-contracts/web";
 import type { ReadAgent } from "../../api/agents.js";
 import { Button } from "../../design/Button.js";
 import { Dialog } from "../../design/Dialog.js";

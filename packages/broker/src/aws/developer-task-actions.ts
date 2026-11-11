@@ -3,8 +3,9 @@
 // reach into broker.ts internals.
 import type { DesignReviewDispatch } from "../design-review/round-ports.js";
 import type { TransactWriteCommandInput } from "@aws-sdk/lib-dynamodb";
-import type { OwnerRedirectInvocation, OrgId, PreparePins, RunCheckout, ChannelTurn, E2EWorkflowAdmissionRef, Operation, OperationRequest, ProjectCommand, PullRequestLifecycleRequest, PullRequestRequest, WorkflowDependencyInvocation, WorkflowFeedbackApprovalBinding, WorkflowFixPayload, WorkflowReviewBase, WorkflowReviewChecks, WorkflowReviewFeedback, WorkflowReviewNote, WorkflowReviewPlan, WorkspaceInstance } from "@agentx/contracts";
-import type { SpecReviewInput, SpecWriteBinding, TaskDependencyPlan, TestEnvProdDeny } from "@agentx/contracts";
+import type { OwnerRedirectInvocation, OrgId, PreparePins, RunCheckout, ChannelTurn, E2EWorkflowAdmissionRef, Operation, OperationRequest, ProjectCommand, PullRequestLifecycleRequest, PullRequestRequest, WorkflowDependencyInvocation, WorkflowFeedbackApprovalBinding, WorkflowReviewBase, WorkflowReviewChecks, WorkflowReviewFeedback, WorkflowReviewNote, WorkflowReviewPlan, WorkspaceInstance } from "@rovara-code/contracts";
+import type { WorkflowFixPayload } from "@agentx/cloud-contracts";
+import type { SpecReviewInput, SpecWriteBinding, TaskDependencyPlan, TestEnvProdDeny } from "@rovara-code/contracts";
 import type { ResolvedAttribution } from "../attribution/resolve.js";
 import type { AuthenticatedIdentity } from "../auth.js";
 import type { DeveloperTaskRecord, StoredEvent } from "../developer/task-records.js";

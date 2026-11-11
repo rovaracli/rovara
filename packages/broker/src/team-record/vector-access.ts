@@ -3,7 +3,7 @@
 // delete another workspace's vectors. The AWS adapter (STS AssumeRole with `Policy`) is pending; this file is the policy and the cache.
 import { createHash } from "node:crypto";
 import { AssumeRoleCommand, type STSClient } from "@aws-sdk/client-sts";
-import { retiredTeamRecordVectorIndexName, teamRecordVectorIndexName } from "@agentx/contracts";
+import { retiredTeamRecordVectorIndexName, teamRecordVectorIndexName } from "@agentx/cloud-contracts";
 import { S3VectorsIndex, type S3VectorsPort } from "./s3-vectors-index.js";
 
 export interface SessionPolicyInput {

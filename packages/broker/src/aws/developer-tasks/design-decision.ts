@@ -6,7 +6,8 @@
 // The commit is conditional on the design digest the person was shown: the latest design must be exactly that document, and the decision names it. A task that moved, a design that changed or a fence that no longer
 // holds is "stale". The workflow engine knows one decider, the task's owner; an approver who is not the owner (a maintainer, the high-risk approver) is authorised by the handler's own checks and decides for the owner's
 // seat, but the decision the engine records, the approval record and the audit all name the person who really pressed (ON-4), and the owner's seat is built from the OWNER's own record, never from the approver's role or session.
-import { agentXError, auditEventId, orgMetaKey, type AuditEventInput } from "@agentx/contracts";
+import { agentXError } from "@rovara-code/contracts";
+import { auditEventId, orgMetaKey, type AuditEventInput } from "@agentx/cloud-contracts";
 import { flushAuditEvents } from "../../audit/flush.js";
 import { auditPending } from "../../audit/outbox.js";
 import { effectiveTaskOwner, taskKey, type DeveloperTaskRecord } from "../../developer/task-records.js";

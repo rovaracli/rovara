@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState, type ReactElement } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { AppOrgMembersResponseReaderSchema, OrgMemberLookupBodySchema, OrgMemberLookupResponseReaderSchema, AppProjectsResponseSchema, LEVEL_WORDS, principalKey, AgentPrincipalSchema, type SessionSharesResponseReaderSchema } from "@agentx/contracts/web";
+import { AppOrgMembersResponseReaderSchema, OrgMemberLookupBodySchema, OrgMemberLookupResponseReaderSchema, AppProjectsResponseSchema, LEVEL_WORDS, principalKey, AgentPrincipalSchema, type SessionSharesResponseReaderSchema } from "@agentx/cloud-contracts/web";
 import { createApiClient, type SendResult } from "../../api/client.js";
 import { ApiError } from "../../api/errors.js";
 import { createSessionApi } from "../../api/sessions.js";

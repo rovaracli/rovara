@@ -1,4 +1,4 @@
-import type { LoadedKnowledgeItem, LoadedKnowledgeManifest } from "@agentx/contracts/web";
+import type { LoadedKnowledgeItem, LoadedKnowledgeManifest } from "@agentx/cloud-contracts/web";
 
 export const STAGE_TITLES: Record<LoadedKnowledgeManifest["stage"], string> = { understand: "Understand", plan: "Plan", plan_check: "Plan check", build: "Build", review: "Review" };
 

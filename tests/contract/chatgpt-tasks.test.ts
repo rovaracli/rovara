@@ -3,7 +3,7 @@ import {TEST_ORG} from "../support/orgs.js";
 // the model and grants the token callback; the worker asks for the token and never sees the refresh token.
 import { randomUUID } from "node:crypto";
 import { beforeAll, describe, expect, it, vi } from "vitest";
-import type { ChatGptConnectionView } from "../../packages/contracts/src/index.js";
+import type { ChatGptConnectionView } from "@rovara-code/contracts";
 import { developerIdForSlackUser } from "../../packages/broker/src/aws/admin-actions.js";
 import type { ChatGptConnections } from "../../packages/broker/src/chatgpt/connections.js";
 import { chatGptOwner, chatGptTaskModel } from "../../packages/broker/src/chatgpt/task-model.js";

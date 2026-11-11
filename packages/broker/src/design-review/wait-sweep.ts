@@ -7,7 +7,8 @@
 // again in an hour). The one exception is the cost hold, parked or not, which is ended the way every other step of a switched-off review is (B2-m3): not run, `switched_off`, and the design goes to the person's card. A wait for answers cannot be
 // ended by anyone but the person (`closeDesignReview` refuses it); their answer reaches the planner's step, which ends the review as `switched_off` itself. A design card already waits for the person.
 import { QueryCommand, TransactWriteCommand, UpdateCommand, GetCommand, PutCommand } from "@aws-sdk/lib-dynamodb";
-import { WORKFLOW_DISPATCH_DUE_INDEX, WorkflowSnapshotSchema, closeDesignReview, closeParkedDesignReview, parkDesignReview, type EditionPolicy, type OrgId, type WorkflowSnapshot } from "@agentx/contracts";
+import { WORKFLOW_DISPATCH_DUE_INDEX, type OrgId } from "@rovara-code/contracts";
+import { WorkflowSnapshotSchema, closeDesignReview, closeParkedDesignReview, parkDesignReview, type EditionPolicy, type WorkflowSnapshot } from "@agentx/cloud-contracts";
 import { finishedReleaseMarkItem } from "../aws/developer-tasks/release.js";
 import { effectiveTaskOwner, taskKey, type DeveloperTaskRecord } from "../developer/task-records.js";
 import type { DesignApproverDirectory } from "./approval.js";

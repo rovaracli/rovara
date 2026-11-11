@@ -4,21 +4,7 @@
 import { App, Stack, aws_iam as iam } from "aws-cdk-lib";
 import { Template } from "aws-cdk-lib/assertions";
 import { describe, expect, it } from "vitest";
-import {
-  SAVED_ENV_PULL_ACTIONS,
-  SAVED_ENV_PUSH_ACTIONS,
-  savedEnvManageSessionPolicy,
-  savedEnvPullRoleName,
-  savedEnvPullSessionPolicy,
-  savedEnvPushRoleName,
-  savedEnvPushSessionPolicy,
-  savedEnvRepositoryName,
-  savedEnvRepositoryPolicy,
-  savedEnvManageRoleName,
-  savedEnvCreateRoleName,
-  savedEnvScanSessionPolicy,
-  SAVED_ENV_PUSH_SESSION_SECONDS,
-} from "@agentx/contracts";
+import { SAVED_ENV_PULL_ACTIONS, SAVED_ENV_PUSH_ACTIONS, savedEnvManageSessionPolicy, savedEnvPullRoleName, savedEnvPullSessionPolicy, savedEnvPushRoleName, savedEnvPushSessionPolicy, savedEnvRepositoryName, savedEnvRepositoryPolicy, savedEnvManageRoleName, savedEnvCreateRoleName, savedEnvScanSessionPolicy, SAVED_ENV_PUSH_SESSION_SECONDS } from "@rovara-code/contracts";
 import { SavedEnvImages } from "../../infra/lib/saved-env-images.js";
 import { buildAgentXApp } from "../../infra/lib/app.js";
 import { skipLambdaBundling } from "../support/skip-bundling.js";

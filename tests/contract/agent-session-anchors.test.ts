@@ -4,18 +4,8 @@
 // Old comments with no anchor parse, list and read as they did.
 import { randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
-import {
-  SESSION_ANCHORS_MAX,
-  SESSION_ANCHOR_EXCERPT_MAX,
-  SESSION_ANCHOR_TARGETS,
-  SESSION_MESSAGES_PAGE_MAX,
-  SessionAnchorSchema,
-  SessionMessagePageSchema,
-  SessionMessageSchema,
-  SessionViewSchema,
-  agentSessionKey,
-  type AgentSessionRecord,
-} from "../../packages/contracts/src/index.js";
+import { SESSION_ANCHORS_MAX, SESSION_ANCHOR_EXCERPT_MAX, SESSION_ANCHOR_TARGETS, SESSION_MESSAGES_PAGE_MAX, SessionAnchorSchema, SessionMessagePageSchema, SessionMessageSchema, agentSessionKey, type AgentSessionRecord } from "@rovara-code/contracts";
+import { SessionViewSchema } from "@agentx/cloud-contracts";
 import { editSessionMessage, deleteSessionMessage, listSessionMessages, sendSessionMessage, type SessionMessageDependencies } from "../../packages/broker/src/agent-sessions/messages.js";
 import { anchorTargetsOf } from "../../packages/broker/src/agent-sessions/anchors.js";
 import { routeAgentSessionRequest } from "../../packages/broker/src/agent-sessions/routes.js";

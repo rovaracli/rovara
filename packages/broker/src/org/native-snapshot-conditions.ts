@@ -1,4 +1,4 @@
-import { agentXError } from "@agentx/contracts";
+import { agentXError } from "@rovara-code/contracts";
 import type { TransactItem } from "../agents/table-writes.js";
 /** Conditions for an already validated native snapshot, including meaningful
  * absence. This supplies no authority and performs no reads or writes. */

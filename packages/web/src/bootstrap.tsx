@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { createBrowserRouter } from "react-router";
 import { setNonce } from "get-nonce";
-import { configureZodForCsp } from "@agentx/contracts/web";
+import { configureZodForCsp } from "@agentx/cloud-contracts/web";
 import { App, PageError, ThemeProvider, type AppRouterFactory } from "@agentx/ui";
 import { createBrowserHost } from "./browser-host.js";
 type WebWindow = Window & Pick<typeof globalThis, "URL" | "WebSocket">;

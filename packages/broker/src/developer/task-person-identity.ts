@@ -1,17 +1,5 @@
 import { GetCommand, TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
-import {
-  SLACK_OIDC_ISSUER,
-  SlackChannelIdSchema,
-  SlackUserIdSchema,
-  TaskPersonProofRequestSchema,
-  TaskPersonProofResponseSchema,
-  agentXError,
-  cleanDisplayName,
-  emailSafeName,
-  redactAndCap,
-  type TaskPersonProofRequest,
-  type TaskPersonProofResponse,
-} from "@agentx/contracts";
+import { SLACK_OIDC_ISSUER, SlackChannelIdSchema, SlackUserIdSchema, TaskPersonProofRequestSchema, TaskPersonProofResponseSchema, agentXError, cleanDisplayName, emailSafeName, redactAndCap, type TaskPersonProofRequest, type TaskPersonProofResponse } from "@rovara-code/contracts";
 import { developerIdForSlackUser } from "../aws/admin-actions.js";
 import { ownerKeyForSubject } from "../aws/lambda.js";
 import type { DeveloperCaller } from "../aws/developer-routes.js";

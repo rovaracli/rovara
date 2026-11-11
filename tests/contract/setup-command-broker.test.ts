@@ -2,7 +2,7 @@
 // authenticated run only, and the journal the worker's results are kept in. Driven against the in-memory table; the route and the worker callback are wired in SH14.
 import { randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
-import { SETUP_AGENT_LIMITS_DEFAULT, SETUP_JOURNAL_MAX_ENTRIES, projectRevisionKey, setupDraftKey, type ProjectRole, type SetupJournalEntry } from "../../packages/contracts/src/index.js";
+import { SETUP_AGENT_LIMITS_DEFAULT, SETUP_JOURNAL_MAX_ENTRIES, projectRevisionKey, setupDraftKey, type ProjectRole, type SetupJournalEntry } from "@rovara-code/contracts";
 import {
   SETUP_COMMAND_TAKEN_STALE_MS, SETUP_COMMAND_TEXT_MAX, SETUP_COMMAND_WORDS, SETUP_PERSON_COMMANDS_MAX, checkPersonCommand, finishSetupCommand, queueSetupCommand, runSetupCommand, takeSetupCommand,
 } from "../../packages/broker/src/rovara-code/setup-command.js";

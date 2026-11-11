@@ -1,12 +1,12 @@
 import { takeRateAt } from "../developer/page-comments.js";
-import { orgScoped } from "@agentx/contracts";
+import { orgScoped } from "@rovara-code/contracts";
 import { writeLearningSettings, decideLearningSettings, skippedPrCommentCount, type LearningSettingsDeps } from "./settings.js";
 // v1.2 learning loop: the React routes under `/v1/app/projects/{p}/learning` (design 6.2). B3 owns Remember and Forget; B6 and B8 add the rest to `routeLearning`, which answers
 // `undefined` for a path or method it does not own, so the caller falls through to its own "not found".
 //
 // Bodies are strict: standing, author and stage are never read from a request (I3). The person is the signed-in caller. The project is found through `projectFor`, so another company's
 // project and one the caller cannot see answer the same way.
-import { LearningForgetBodySchema, LearningReopenBodySchema, LearningRememberBodySchema, agentXError, type LearningViewAnswer, type ProjectRole } from "@agentx/contracts";
+import { LearningForgetBodySchema, LearningReopenBodySchema, LearningRememberBodySchema, agentXError, type LearningViewAnswer, type ProjectRole } from "@rovara-code/contracts";
 import type { ZodType } from "zod";
 import type { DeveloperCaller } from "../aws/developer-routes.js";
 import { StatusReply } from "../aws/status-reply.js";

@@ -2,7 +2,8 @@
 import { createHash } from "node:crypto";
 import { GetCommand, TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
 import { z } from "zod";
-import { AgentXError, OrgIdSchema, OrgModelSourcesSchema, ModelSourceIdSchema, agentXError, canonicalJson, developerOrgKey, modelSourcesKey, orgMemberKey, orgMetaKey, orgScoped } from "@agentx/contracts";
+import { AgentXError, OrgIdSchema, OrgModelSourcesSchema, ModelSourceIdSchema, agentXError, canonicalJson, modelSourcesKey, orgScoped } from "@rovara-code/contracts";
+import { developerOrgKey, orgMemberKey, orgMetaKey } from "@agentx/cloud-contracts";
 import type { RequestMark } from "../agents/table-writes.js";
 import { auditModelSourceOrderChanged, auditOccurrence } from "../audit/events.js";
 import { auditPending, type TransactItem } from "../audit/outbox.js";

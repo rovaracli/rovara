@@ -2,7 +2,8 @@
 // for a diagnosis. Rovara's METERED built-in AI source counts as the company's provider (owner, 2026-11-03: "bill it to them"), but only through the ordinary admitted, budget-capped chat-turn key billed to the
 // company or project. With no usable provider the diagnosis is not offered, in one fixed sentence. These tests use the real routing over a real source store; only the proxy mint and the budget admission are stubbed.
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { canonicalModelName, DIAGNOSIS_LIGHT_BUDGET_USD, DIAGNOSIS_NO_PROVIDER_MESSAGE, DIAGNOSIS_REFUSALS, ModelSourceSchema, editionPolicy, sourceAlias, type Edition, type ModelIdentifier, type ModelSource } from "../../packages/contracts/src/index.js";
+import { canonicalModelName, DIAGNOSIS_LIGHT_BUDGET_USD, DIAGNOSIS_NO_PROVIDER_MESSAGE, DIAGNOSIS_REFUSALS, ModelSourceSchema, sourceAlias, type Edition, type ModelIdentifier, type ModelSource } from "@rovara-code/contracts";
+import { editionPolicy } from "@agentx/cloud-contracts";
 import { ModelSourceStore } from "../../packages/broker/src/model-sources/store.js";
 import type { RoutingDependencies } from "../../packages/broker/src/model-sources/routing.js";
 import { chooseDiagnosisRoute, customerProviderRouting } from "../../packages/broker/src/model-sources/diagnosis-provider.js";
@@ -144,7 +145,7 @@ describe("a diagnosis turn's key", () => {
   });
 
   it("a spent budget is the company's to know about: the refusal passes through, and nothing is claimed or minted", async () => {
-    const { agentXError } = await import("@agentx/contracts");
+    const { agentXError } = await import("@rovara-code/contracts");
     admit.mockRejectedValueOnce(agentXError("TRIAL_LOCKED", "The trial has ended."));
     const claimKey = vi.fn(async () => true);
     await expect(mint(claimKey)).rejects.toMatchObject({ code: "TRIAL_LOCKED" });
@@ -223,7 +224,7 @@ describe("a diagnosis turn's key", () => {
 
   it("there is no way for Rovara to be the payer: a spent company budget refuses the metered source too, and nothing is claimed or minted", async () => {
     await t.order(["rovara"]);
-    const { agentXError } = await import("@agentx/contracts");
+    const { agentXError } = await import("@rovara-code/contracts");
     admit.mockRejectedValueOnce(agentXError("BUDGET_EXCEEDED", "The budget is spent."));
     const claimKey = vi.fn(async () => true);
     await expect(mint(claimKey)).rejects.toMatchObject({ code: "BUDGET_EXCEEDED" });

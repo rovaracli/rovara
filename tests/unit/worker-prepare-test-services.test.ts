@@ -6,7 +6,7 @@ import { mkdtemp, readdir, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
-import { ProjectDefinitionSchema, TEST_SERVICES_USAGE_RESULT_KEY, TaskDependencyPlanSchema, type ProjectCommand, type ServiceCatalog, type TestServicesUsageRecord } from "@agentx/contracts";
+import { ProjectDefinitionSchema, TEST_SERVICES_USAGE_RESULT_KEY, TaskDependencyPlanSchema, type ProjectCommand, type ServiceCatalog, type TestServicesUsageRecord } from "@rovara-code/contracts";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { prepareWorkspace } from "../../packages/worker/src/prepare.js";
 import { forgetWorkerStartSweeps } from "../../packages/worker/src/service-runner.js";

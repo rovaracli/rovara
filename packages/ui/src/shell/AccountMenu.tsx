@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { Link } from "react-router";
-import { LeaveOrganizationResponseReaderSchema, isPlaceholderDisplayName, type ReadAppNav } from "@agentx/contracts/web";
+import { LeaveOrganizationResponseReaderSchema, isPlaceholderDisplayName, type ReadAppNav } from "@agentx/cloud-contracts/web";
 import { useAppHost } from "../host.js";
 import { useTheme, type ThemePreference } from "../theme.js";
 import { Button } from "../design/Button.js";

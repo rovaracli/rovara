@@ -1,7 +1,8 @@
 // Spec 061 slice 2: who may do what on a task page. Every check goes through resolveTaskAccess and the one role-to-action
 // table below, so roles (slice 3) change only these two places; callers never decide roles themselves.
 import { GetCommand } from "@aws-sdk/lib-dynamodb";
-import { AgentXError, agentXError, emailSafeName, projectAllows, projectMemberKey, type OrgId, type OrgRole, type ProjectRole } from "@agentx/contracts";
+import { AgentXError, agentXError, emailSafeName, projectAllows, projectMemberKey, type OrgId, type ProjectRole } from "@rovara-code/contracts";
+import { type OrgRole } from "@agentx/cloud-contracts";
 import { effectiveProjectRole, requireNewWorkAllowed, viewerCannotStartTasksMessage } from "./project-roles.js";
 import type { DeveloperCaller } from "../aws/developer-routes.js";
 import type { DeveloperTaskRouteDependencies } from "../aws/developer-tasks.js";

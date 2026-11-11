@@ -1,4 +1,4 @@
-import { McpConnectorSchema, type CredentialType, type McpConnectorConfig } from "@agentx/contracts";
+import { McpConnectorSchema, type CredentialType, type McpConnectorConfig } from "@rovara-code/contracts";
 import { connectMcp, genericScopes, mcpConnector, type ConnectorDefinition, type CredentialProvider, type GenericScope, type PresentationApproval, type ToolApproval } from "@agentx/gateway";
 import type { z } from "zod";
 import { connectorLedgerKeys } from "./connector-ledger.js";

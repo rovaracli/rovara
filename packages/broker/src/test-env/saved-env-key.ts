@@ -7,7 +7,8 @@
 //   - the listing is cached by repository and commit (a commit's tree never changes), a few at a time;
 //   - FAIL CLOSED: a listing that is truncated, missing or unreadable, a key file that is a link or a submodule, a dev container file that cannot be read, or more key files than a key can hold gives NO key (the
 //     registry then queues nothing, `no_key`), never a key over fewer files.
-import { blobKeyHash, environmentKeyFromRepositories, isRegularBlobMode, type KeyRepository } from "@agentx/contracts";
+import { blobKeyHash, isRegularBlobMode, type KeyRepository } from "@rovara-code/contracts";
+import { environmentKeyFromRepositories } from "@agentx/cloud-contracts";
 
 export interface TreeEntryListing { path: string; mode: string; type: string; sha: string }
 

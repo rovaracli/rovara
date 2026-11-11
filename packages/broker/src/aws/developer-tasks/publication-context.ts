@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { CandidateManifestSchema, canonicalJson, repositoryHostOf } from "@agentx/contracts";
+import { CandidateManifestSchema, canonicalJson, repositoryHostOf } from "@rovara-code/contracts";
 import { z } from "zod";
 import type { DeveloperCaller } from "../developer-routes.js";
 import type { DeveloperTaskRouteDependencies } from "./types.js";

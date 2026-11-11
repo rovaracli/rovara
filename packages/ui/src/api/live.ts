@@ -1,6 +1,6 @@
 import { useMemo } from "react";
 import { useInfiniteQuery, useQueryClient, type InfiniteData } from "@tanstack/react-query";
-import { LiveResponseReaderSchema, type LiveFilterSchema, type LiveTileReaderSchema } from "@agentx/contracts/web";
+import { LiveResponseReaderSchema, type LiveFilterSchema, type LiveTileReaderSchema } from "@agentx/cloud-contracts/web";
 import { useAppHost } from "../host.js";
 import { createApiClient } from "./client.js";
 export type ReadLivePage = ReturnType<typeof LiveResponseReaderSchema.parse>;

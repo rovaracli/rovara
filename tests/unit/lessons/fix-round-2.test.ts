@@ -1,7 +1,7 @@
 // Fix round 2 (Opus re-check): C3 positive tier-0 shape, I4 self-citation, N1 structured measured outcomes, N2 independent sources, N3 project-wide alert and
 // input-wide source counting, and owner decision M8 (company locks only stricter).
 import { describe, expect, it } from "vitest";
-import { foldForMatching } from "../../../packages/contracts/src/index.js";
+import { foldForMatching } from "@rovara-code/contracts";
 import { hasCommandOrUrl, touchesRiskyPath } from "../../../packages/broker/src/lessons/guards.js";
 import { DEFAULT_APPROVAL_POLICY, resolveLearning, stricterMode } from "../../../packages/broker/src/lessons/policy.js";
 import { processDraft, type ProcessDeps } from "../../../packages/broker/src/lessons/process.js";

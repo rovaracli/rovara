@@ -2,7 +2,8 @@
 import { randomUUID } from "node:crypto";
 import { TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
 import { expect, it } from "vitest";
-import { projectAiKey, projectMetaKey, projectRevisionKey, orgProjectCatalogKey, orgMemberKey, developerOrgKey, projectMemberKey } from "@agentx/contracts";
+import { projectAiKey, orgMemberKey, developerOrgKey } from "@agentx/cloud-contracts";
+import { projectMetaKey, projectRevisionKey, orgProjectCatalogKey, projectMemberKey } from "@rovara-code/contracts";
 import { writeProjectAi } from "../../packages/broker/src/spend/settings.js";
 import { capturingAuditDeps } from "../support/audit-capture.js";
 import { BEN, DEB, setup } from "../support/spend-world.js";

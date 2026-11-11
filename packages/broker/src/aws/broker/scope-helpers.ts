@@ -1,7 +1,8 @@
 // Part of the broker (split out of ../broker.ts): environment, organisation and GitHub scope helpers, egress decisions, connection stores.
 
 import { liveWriterRole } from "../../org/live-role.js";
-import { AgentXError, agentXError, EgressApproveBodySchema, EgressRejectBodySchema, OrgIdSchema, singleOrgIdForEnv, type EgressDecisionResponse, type EgressOwner, type EgressPendingResponse, type OrgId, auditOperatorId, cloudwatchRoleAccount } from "@agentx/contracts";
+import { AgentXError, agentXError, EgressApproveBodySchema, EgressRejectBodySchema, OrgIdSchema, singleOrgIdForEnv, type EgressDecisionResponse, type EgressOwner, type EgressPendingResponse, type OrgId, cloudwatchRoleAccount } from "@rovara-code/contracts";
+import { auditOperatorId } from "@agentx/cloud-contracts";
 import type { AuthenticatedIdentity } from "../../auth.js";
 import type { z } from "zod";
 import { resolveSlackThreadKey as resolveSlackThreadKeyForInstall } from "../slack-thread-key.js";
@@ -82,24 +83,24 @@ export async function orgOfRecord(
 
 /**
  * Plan 2, Task 15: whose work a GitHub token is minted for. A cloud install's work belongs to an org, whose GitHub connection must hold the
- * installation at the moment of the mint (the provider checks it); anywhere else the token is the install's own (`private-install`), which has
+ * installation at the moment of the mint (the provider checks it); anywhere else the token is the install's own (`install`), which has
  * no bindings. A cloud caller whose org is unknown mints nothing.
  */
 export function githubScope(dependencies: Pick<AwsBrokerDependencies, "cloud">, orgId: OrgId | undefined): GitHubTokenScope {
-  if (dependencies.cloud !== true) return { system: "private-install" };
+  if (dependencies.cloud !== true) return { system: "install" };
   if (orgId === undefined) throw agentXError("GITHUB_NOT_CONNECTED", "Rovara can't tell which organization this GitHub access is for; sign in again and retry");
   return { orgId };
 }
 
 /** `githubScope` for a record that names its org, or an owner or developer who resolves to one (a task, a workspace). */
 export async function githubScopeOf(dependencies: AwsBrokerDependencies, record: { orgId?: unknown; ownerKey?: unknown; developerId?: unknown }): Promise<GitHubTokenScope> {
-  if (dependencies.cloud !== true) return { system: "private-install" };
+  if (dependencies.cloud !== true) return { system: "install" };
   return { orgId: await orgOfRecord(dependencies, record) };
 }
 
 /** `githubScope` for the workspace an operation runs in. */
 export async function githubScopeOfWorkspace(dependencies: AwsBrokerDependencies, workspaceId: string): Promise<GitHubTokenScope> {
-  if (dependencies.cloud !== true) return { system: "private-install" };
+  if (dependencies.cloud !== true) return { system: "install" };
   const item = await getItem<Record<string, unknown>>(dependencies, workspaceKey(workspaceId));
   if (item === undefined) throw agentXError("NOT_FOUND", "workspace not found");
   return githubScopeOf(dependencies, item);

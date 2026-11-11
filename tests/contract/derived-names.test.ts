@@ -6,7 +6,7 @@
 import { Stack } from "aws-cdk-lib";
 import { Template } from "aws-cdk-lib/assertions";
 import { describe, expect, it } from "vitest";
-import { DERIVED_BROKER_VARIABLES, auditIntakeQueueName, BROKER_NAMES_VARIABLE, BROKER_SETTINGS_VARIABLE } from "@agentx/contracts";
+import { DERIVED_BROKER_VARIABLES, auditIntakeQueueName, BROKER_NAMES_VARIABLE, BROKER_SETTINGS_VARIABLE } from "@agentx/cloud-contracts";
 import { buildAgentXApp } from "../../infra/lib/app.js";
 import { hydrateBrokerEnvironment, type MutableEnvironment } from "../../packages/broker/src/aws/broker-environment.js";
 import { skipLambdaBundling } from "../support/skip-bundling.js";

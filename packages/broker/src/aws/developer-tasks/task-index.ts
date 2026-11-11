@@ -1,5 +1,6 @@
 import { UpdateCommand } from "@aws-sdk/lib-dynamodb";
-import { PER_TASK_BUDGET_USD, type DeveloperTaskStatus } from "@agentx/contracts";
+import { PER_TASK_BUDGET_USD } from "@agentx/cloud-contracts";
+import { type DeveloperTaskStatus } from "@rovara-code/contracts";
 import { taskIndexKey, tryEffectiveTaskOwner, type DeveloperTaskRecord } from "../../developer/task-records.js";
 import { isConditional } from "../broker-shared.js";
 import type { AgentRunResult } from "../../agents/runs.js";

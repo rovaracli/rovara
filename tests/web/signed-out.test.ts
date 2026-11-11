@@ -3,7 +3,7 @@
 import { expect, it, vi } from "vitest";
 import { screen } from "@testing-library/react";
 import { userEvent } from "@testing-library/user-event";
-import { SIGNED_OUT_REASONS } from "@agentx/contracts/web";
+import { SIGNED_OUT_REASONS } from "@agentx/cloud-contracts/web";
 import { SIGNED_OUT_COPY, SignedOutScreen } from "../../packages/ui/src/screens/signed-out/SignedOutScreen.js";
 import { h } from "./support/h.js";
 import { renderUi } from "./support/render.js";

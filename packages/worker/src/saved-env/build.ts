@@ -35,27 +35,7 @@ import { createHash, randomBytes } from "node:crypto";
 import { cp, lstat, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import {
-  ImageDigestSchema,
-  SAVED_ENV_IMAGE_MANIFEST_PATH,
-  SAVED_ENV_IMAGE_SEED_PATH,
-  SAVED_ENV_LABEL_KEY,
-  SAVED_ENV_LABEL_PROVE,
-  SAVED_ENV_LABEL_REVISION,
-  SavedEnvImageManifestSchema,
-  SavedEnvManifestSchema,
-  SavedEnvRegistryAuthSchema,
-  TestEnvironmentBodySchema,
-  canonicalJson,
-  isSavedEnvRepositoryName,
-  testEnvDigest,
-  testEnvIsProved,
-  type SavedEnvBuildFailure,
-  type SavedEnvBuildResult,
-  type SavedEnvImageManifest,
-  type SavedEnvRegistryAuth,
-  type TestEnvironmentBody,
-} from "@agentx/contracts";
+import { ImageDigestSchema, SAVED_ENV_IMAGE_MANIFEST_PATH, SAVED_ENV_IMAGE_SEED_PATH, SAVED_ENV_LABEL_KEY, SAVED_ENV_LABEL_PROVE, SAVED_ENV_LABEL_REVISION, SavedEnvImageManifestSchema, SavedEnvManifestSchema, SavedEnvRegistryAuthSchema, TestEnvironmentBodySchema, canonicalJson, isSavedEnvRepositoryName, testEnvDigest, testEnvIsProved, type SavedEnvBuildFailure, type SavedEnvBuildResult, type SavedEnvImageManifest, type SavedEnvRegistryAuth, type TestEnvironmentBody } from "@rovara-code/contracts";
 import { proveEnvironment } from "../prove.js";
 import { defaultRealPath, sharesWorkspace, type FreshSandbox } from "../setup-agent-prove.js";
 import { runIsolatedGit } from "../isolated-repository.js";

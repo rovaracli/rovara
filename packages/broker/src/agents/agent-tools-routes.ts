@@ -14,25 +14,7 @@
 // approvals gets: it runs reads and safe writes and refuses every other write with a clear message, so nothing that needs a person can run by accident.
 import { randomUUID } from "node:crypto";
 import { z } from "zod";
-import {
-  AgentXErrorCodeSchema,
-  ConnectorCallRequestSchema,
-  ConnectorNameSchema,
-  agentXError,
-  repositoryHostOf,
-  type AgentXErrorCode,
-  type ApprovalRules,
-  type Autonomy,
-  type ConnectorCatalog,
-  type ConnectorResult,
-  type GrantedTool,
-  type OrgId,
-  type PresentedTool,
-  type ProjectDefinition,
-  type RepositoryDefinition,
-  type ResolvedRecipe,
-  type WorkspaceInstance,
-} from "@agentx/contracts";
+import { AgentXErrorCodeSchema, ConnectorCallRequestSchema, ConnectorNameSchema, agentXError, repositoryHostOf, type AgentXErrorCode, type ApprovalRules, type Autonomy, type ConnectorCatalog, type ConnectorResult, type GrantedTool, type OrgId, type PresentedTool, type ProjectDefinition, type RepositoryDefinition, type ResolvedRecipe, type WorkspaceInstance } from "@rovara-code/contracts";
 import { agentGitHubGuard, githubConnector, requestFingerprint, type CatalogCache, type Invocation, type Ledger } from "@agentx/gateway";
 import { callConnector, discoverConnector, type ConnectorContextBase, type ScopeDiscovery } from "../aws/connector-routes.js";
 import type { ResolvedConnector } from "../aws/connector-types.js";

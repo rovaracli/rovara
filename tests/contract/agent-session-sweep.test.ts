@@ -3,23 +3,7 @@
 import { App, Stack } from "aws-cdk-lib";
 import { Template } from "aws-cdk-lib/assertions";
 import { describe, expect, it, vi } from "vitest";
-import {
-  SESSION_RETENTION_DAYS,
-  SESSION_SWEEP_BUDGET_MS,
-  SESSION_SWEEP_CURSOR_KEY,
-  SESSION_SWEEP_PAGE,
-  agentSessionKey,
-  endedSessionWorkKey,
-  liveSessionKey,
-  mySessionsKey,
-  openAgentSessionKey,
-  projectSessionsKey,
-  sessionLegSk,
-  sharedSessionsKey,
-  sessionBindingKey,
-  sessionSurfaceKey,
-  type OrgId,
-} from "../../packages/contracts/src/index.js";
+import { SESSION_RETENTION_DAYS, SESSION_SWEEP_BUDGET_MS, SESSION_SWEEP_CURSOR_KEY, SESSION_SWEEP_PAGE, agentSessionKey, endedSessionWorkKey, liveSessionKey, mySessionsKey, openAgentSessionKey, projectSessionsKey, sessionLegSk, sharedSessionsKey, sessionBindingKey, sessionSurfaceKey, type OrgId } from "@rovara-code/contracts";
 import { ENDED_DRAIN_CURSOR_KEY, DRAIN_BUDGET_MS, drainEndedSessions, sweepAgentSessions } from "../../packages/broker/src/agent-sessions/sweep.js";
 import { buildAgentXApp } from "../../infra/lib/app.js";
 import { ControlPlaneStack } from "../../infra/lib/control-plane.js";

@@ -1,4 +1,4 @@
-import { LiveTileSchema } from "@agentx/contracts/web";
+import { LiveTileSchema } from "@agentx/cloud-contracts/web";
 import { sessionPerson, SESSION_FIXTURE_ID } from "./session-fixture.js";
 type LiveTile = ReturnType<typeof LiveTileSchema.parse>;
 export function liveFixture(overrides: Partial<LiveTile> = {}): LiveTile {

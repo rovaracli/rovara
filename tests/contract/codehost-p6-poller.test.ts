@@ -3,7 +3,7 @@
 // (same ids), which the intake drops.
 import { TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
 import { describe, expect, it, vi } from "vitest";
-import { hostRateLimitRetryAt, type ChangeRequestRef, type ChangeRequestStatus, type CodeHost, type CodeHostEvent, type ReadBudget } from "../../packages/contracts/src/index.js";
+import { hostRateLimitRetryAt, type ChangeRequestRef, type ChangeRequestStatus, type CodeHost, type CodeHostEvent, type ReadBudget } from "@rovara-code/contracts";
 import { runCodeHostPollPasses } from "../../packages/broker/src/aws/broker/code-host-poll.js";
 import { dynamoPollStore, pollTargetId } from "../../packages/broker/src/plugins/events/poll-store.js";
 import { CLOSED_POLL_INTERVAL_MS, DEFAULT_POLL_INTERVAL_MS, MAX_POLL_TARGETS, MAX_SEEN_FACTS, POLL_RETRY_MAX_MS, pollChanges, runPollPass, type PollTarget } from "../../packages/broker/src/plugins/events/poller.js";
@@ -15,14 +15,14 @@ import { createPluginRegistry } from "../../packages/broker/src/plugins/registry
 import { githubCodeHost } from "../../packages/broker/src/plugins/code-host/github/index.js";
 import { trackingRecoveryItem } from "../../packages/broker/src/aws/workflow-merge-recovery.js";
 import { linkedChangeRequestItem } from "../../packages/broker/src/rovara-code/linked-change-requests.js";
-import { editionPolicy } from "../../packages/contracts/src/index.js";
-import { TRACKING_HEARTBEAT_MINUTES } from "../../packages/contracts/src/rovara-code.js";
+import { editionPolicy } from "@agentx/cloud-contracts";
+import { TRACKING_HEARTBEAT_MINUTES } from "@rovara-code/contracts";
 import { FakeDynamoDb } from "../support/fake-dynamodb.js";
 import { TEST_ORG } from "../support/orgs.js";
 import { NOW, TABLE, TASK_ID, world as trackingWorld } from "../support/rovara-code-tracking.js";
 
 const URL = "https://git.example.test/acme/api";
-const SCOPE = { system: "private-install" } as const;
+const SCOPE = { system: "install" } as const;
 const KIND = "fake";
 
 /** A fake host that polls: it spends `requestsPerRead` reads of the allowance each time it is asked for a status. */

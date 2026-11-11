@@ -1,7 +1,7 @@
 // Reconciliation of the record core with the landed storage and ingest lanes (cloud/next): the real Slack tap, the real core sink, the real storage distiller and the
 // real storage lake/archiver types, wired together. Each test fails without the reconciling code.
 import { describe, expect, it } from "vitest";
-import { recordActorSourceHash, recordScopeHash, teamRecordSourceHash, type AuditEventInput } from "@agentx/contracts";
+import { recordActorSourceHash, recordScopeHash, teamRecordSourceHash, type AuditEventInput } from "@agentx/cloud-contracts";
 import { createSlackRecordTap, type SlackRecordTapDependencies } from "../../../packages/broker/src/team-record/sources/slack.js";
 import type { CaptureModePort, RecordSinkPort, SourceConfigPort, TransientDistillerPort, RecordDraft as IngestDraft } from "../../../packages/broker/src/team-record/sources/ports.js";
 import { createRovaraEmitter } from "../../../packages/broker/src/team-record/sources/rovara.js";

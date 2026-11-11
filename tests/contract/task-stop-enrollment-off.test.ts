@@ -1,5 +1,5 @@
 import { expect, it } from "vitest";
-import { projectAiKey } from "@agentx/contracts";
+import { projectAiKey } from "@agentx/cloud-contracts";
 import { createDeveloperTaskBroker } from "../support/developer-task-broker.js";
 import { capturingAuditDeps } from "../support/audit-capture.js";
 import { TEST_ORG } from "../support/orgs.js";
@@ -10,7 +10,7 @@ it("unenrolled project registration preserves absent AI settings and emits no M4
 });
 
 it("ready registration seeds inheritance and fences the company snapshot", async () => {
- const { orgSettingsKey } = await import("@agentx/contracts"), { registerSlackProject } = await import("../support/slack-broker.js");
+ const { orgSettingsKey } = await import("@agentx/cloud-contracts"), { registerSlackProject } = await import("../support/slack-broker.js");
  const h = await createDeveloperTaskBroker({ register: false }), key = orgSettingsKey(TEST_ORG, "TASK_STOP_POLICY");
  h.db.set({ ...key, orgId: TEST_ORG, entityType: "ORG_TASK_STOP_POLICY", revision: 2, policy: { schemaVersion: 2, defaultPolicy: { kind: "limited", stopMicrousd: 1 } }, enrollment: { version: 1, state: "ready" }, enrollmentReview: { reviewId: "r", digest: "d".repeat(64), sourceDigest: "e".repeat(64), by: "a".repeat(64), at: new Date().toISOString(), tasksReviewed: 0 } });
  const before = h.db.transactions().length;await registerSlackProject(h.handler, { bind: false });
@@ -20,7 +20,7 @@ it("ready registration seeds inheritance and fences the company snapshot", async
  expect(transactions.flat().some(item => (item.Put as { Item?: { entityType?: string } } | undefined)?.Item?.entityType === "PROJECT_AI")).toBe(true);
  // The newly registered project needs no manual Spending repair to cancel/review/enable.
  const { randomUUID } = await import("node:crypto"), { MAYA } = await import("../support/developer-task-broker.js");
- const { BUILTIN_AGENT_IDS, builtinSettingsKey, orgMemberKey, developerOrgKey, orgMetaKey, agentGuardrailsKey, DEFAULT_AGENT_GUARDRAILS, orgScoped } = await import("@agentx/contracts");
+ const { BUILTIN_AGENT_IDS, builtinSettingsKey, agentGuardrailsKey, DEFAULT_AGENT_GUARDRAILS, orgScoped } = await import("@rovara-code/contracts"), { orgMemberKey, developerOrgKey, orgMetaKey } = await import("@agentx/cloud-contracts");
  const { reviewTaskStopEnrollment, writeTaskStopEnrollment } = await import("../../packages/broker/src/org/task-stop-enrollment.js");
  const now = Date.now(), audit = capturingAuditDeps({ db: h.db });audit.audit.documentClient = h.db as never;
  h.db.set({ ...orgMemberKey(TEST_ORG, MAYA.developerId), orgId: TEST_ORG, developerId: MAYA.developerId, role: "owner" });
@@ -40,7 +40,7 @@ it("ready registration seeds inheritance and fences the company snapshot", async
 
 });
 it("registration racing ready-to-enabled refuses then retry seeds inheritance", async () => {
- const { orgSettingsKey } = await import("@agentx/contracts"), { registerSlackProject } = await import("../support/slack-broker.js"), { TransactWriteCommand } = await import("@aws-sdk/lib-dynamodb");
+ const { orgSettingsKey } = await import("@agentx/cloud-contracts"), { registerSlackProject } = await import("../support/slack-broker.js"), { TransactWriteCommand } = await import("@aws-sdk/lib-dynamodb");
  const h = await createDeveloperTaskBroker({ register: false }), key = orgSettingsKey(TEST_ORG, "TASK_STOP_POLICY");
  h.db.set({ ...key, orgId: TEST_ORG, entityType: "ORG_TASK_STOP_POLICY", revision: 2, policy: { schemaVersion: 2, defaultPolicy: { kind: "limited", stopMicrousd: 1 } }, enrollment: { version: 1, state: "ready" } });
  const send = h.db.send.bind(h.db);let raced = false;
@@ -54,7 +54,7 @@ it("registration racing ready-to-enabled refuses then retry seeds inheritance", 
 });
 
 it("disabled registration is unaffected by an unrelated company policy edit", async () => {
- const { orgSettingsKey } = await import("@agentx/contracts"), { registerSlackProject } = await import("../support/slack-broker.js"), { TransactWriteCommand } = await import("@aws-sdk/lib-dynamodb");
+ const { orgSettingsKey } = await import("@agentx/cloud-contracts"), { registerSlackProject } = await import("../support/slack-broker.js"), { TransactWriteCommand } = await import("@aws-sdk/lib-dynamodb");
  const h = await createDeveloperTaskBroker({ register: false }), key = orgSettingsKey(TEST_ORG, "TASK_STOP_POLICY");
  h.db.set({ ...key, orgId: TEST_ORG, entityType: "ORG_TASK_STOP_POLICY", revision: 1, policy: { schemaVersion: 2, defaultPolicy: { kind: "limited", stopMicrousd: 1 } }, enrollment: { version: 1, state: "disabled" } });
  const send = h.db.send.bind(h.db);let edited = false;

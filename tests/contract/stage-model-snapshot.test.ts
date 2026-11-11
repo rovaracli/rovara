@@ -1,6 +1,6 @@
 import { expect,it } from "vitest";
 import { loadStageModelSnapshot } from "../../packages/broker/src/model-selection/snapshot.js";
-import { projectRevisionKey,ROVARA_CODE_AGENT_ID } from "../../packages/contracts/src/index.js";
+import { projectRevisionKey, ROVARA_CODE_AGENT_ID } from "@rovara-code/contracts";
 import { mergeWorld } from "../support/rovara-code-merge-world.js";
 import { ORG_A,MAX } from "../support/agent-session-world.js";
 function fixture(){
@@ -58,7 +58,7 @@ it("honors recipe null clears without relaxing a company lock",async()=>{
 });
 
 it("validates the exact server-supplied publication recipe rather than the active process",async()=>{
- const {w,deps}=fixture();const {builtinRecipe}=await import("../../packages/contracts/src/index.js");
+ const {w,deps}=fixture();const { builtinRecipe } = await import("@rovara-code/contracts");
  const layer=await w.store.create({orgId:ORG_A,name:"web proposed",owner:{kind:"project",project:"web"},accountable:{developerId:MAX},extends:ROVARA_CODE_AGENT_ID,overlay:{steps:{plan:{thinkingLevel:"low"}}},purpose:"process",createdBy:MAX});
  const recipe=builtinRecipe(ROVARA_CODE_AGENT_ID,1);recipe.steps.find(step=>step.kind==="plan")!.settings.thinkingLevel="low";
  const snap=await loadStageModelSnapshot(deps,{orgId:ORG_A,developerId:MAX},"web",undefined,{record:layer,recipe,overlay:{steps:{plan:{thinkingLevel:"low"}}}});
@@ -70,7 +70,7 @@ it("retains the exact guardrail revision used by the source snapshot",async()=>{
  const {w,deps}=fixture();
  const initial=await loadStageModelSnapshot(deps,{orgId:ORG_A,developerId:MAX},"web");
  expect(initial.guardrailsRevision).toBe(0);
- const {agentGuardrailsKey,DEFAULT_AGENT_GUARDRAILS}=await import("../../packages/contracts/src/index.js");
+ const { agentGuardrailsKey, DEFAULT_AGENT_GUARDRAILS } = await import("@rovara-code/contracts");
  w.db.set({...agentGuardrailsKey(ORG_A),revision:1,guardrails:{...DEFAULT_AGENT_GUARDRAILS,requireCrossCompanyReview:true}});
  const changed=await loadStageModelSnapshot(deps,{orgId:ORG_A,developerId:MAX},"web");
  expect(changed.guardrailsRevision).toBe(1);
@@ -82,7 +82,7 @@ it("retains absent and stored playbook and selection inputs without another read
  const first=await loadStageModelSnapshot(deps,{orgId:ORG_A,developerId:MAX},"web");
  expect(first.selectionSnapshot).toEqual({exists:false});
  expect(first.playbookSnapshot).toEqual({exists:false,revision:0,defaultProcess:{kind:"builtin"}});
- const {projectPlaybookKey,projectSelectionKey}=await import("../../packages/contracts/src/index.js");
+ const { projectPlaybookKey, projectSelectionKey } = await import("@rovara-code/contracts");
  const model={provider:"amazon-bedrock",modelId:"us.anthropic.claude-sonnet-4-v1:0"};
  w.db.set({...projectSelectionKey(ORG_A,"web"),model});
  w.db.set({...projectPlaybookKey(ORG_A,"web"),revision:4,defaultProcess:{kind:"builtin"}});

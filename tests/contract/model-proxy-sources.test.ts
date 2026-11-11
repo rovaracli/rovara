@@ -1,6 +1,6 @@
 // Plan 3 Task 25: company sources in the model proxy. A fake LiteLLM keeps models, credentials and teams the way the real one does
 // (docs/learnings/model-sources-spike.md), and a fake STS evaluates a role's trust policy, so the Bedrock probe tests prove something.
-import { INFERENCE_PATHS, ModelSourceSchema, agentXError, sourceAlias, type AgentXError, type ModelSource } from "@agentx/contracts";
+import { INFERENCE_PATHS, ModelSourceSchema, agentXError, sourceAlias, type AgentXError, type ModelSource } from "@rovara-code/contracts";
 import type * as NodeCrypto from "node:crypto";
 import { createHash, randomInt } from "node:crypto";
 import { describe, expect, it, vi, type Mock } from "vitest";

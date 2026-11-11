@@ -1,10 +1,11 @@
 import { randomUUID } from "node:crypto";
 import { expect, it, vi } from "vitest";
-import { AgentXError, agentXError, StoredProjectDefinitionSchema, developerOrgKey, orgMemberKey, orgMetaKey, orgProjectCatalogKey, projectRevisionKey, projectMetaKey, projectMemberKey, orgScoped } from "@agentx/contracts";
+import { AgentXError, agentXError, StoredProjectDefinitionSchema, orgProjectCatalogKey, projectRevisionKey, projectMetaKey, projectMemberKey, orgScoped } from "@rovara-code/contracts";
+import { developerOrgKey, orgMemberKey, orgMetaKey } from "@agentx/cloud-contracts";
 import type { DeveloperCaller, DeveloperRouteDependencies } from "../../packages/broker/src/aws/developer-routes.js";
 import * as commands from "../../packages/broker/src/org/project-archive.js";
 import { requireNewWorkAllowed } from "../../packages/broker/src/developer/project-roles.js";
-import * as web from "../../packages/contracts/src/web.js";
+import * as web from "@agentx/cloud-contracts/web";
 import { putEgressDomains, setEgressOwnerActive, readEgressDomains, approvedUnion } from "../../packages/broker/src/org/egress-domains.js";
 import { FakeDynamoDb } from "../support/fake-dynamodb.js";
 import { capturingAuditDeps } from "../support/audit-capture.js";

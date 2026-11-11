@@ -4,7 +4,8 @@
 //  3. Rovara's caller is scoped to the task's org with the plain member role, and acts as the task's effective owner.
 import { createHash, randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
-import { WORKFLOW_BLOCK_REASONS, createCandidateManifest, wholeTaskSpendUsd, type WorkflowSnapshot } from "@agentx/contracts";
+import { WORKFLOW_BLOCK_REASONS, type WorkflowSnapshot } from "@agentx/cloud-contracts";
+import { createCandidateManifest, wholeTaskSpendUsd } from "@rovara-code/contracts";
 import { AutoFixAskSchema } from "../../packages/broker/src/developer/autofix-messages.js";
 import { automaticCaller, autoRetryChecksFromSystem, autoSendBackToCodingFromSystem } from "../../packages/broker/src/aws/developer-tasks.js";
 import { developerTaskRouteDependencies } from "../../packages/broker/src/aws/developer-routes.js";

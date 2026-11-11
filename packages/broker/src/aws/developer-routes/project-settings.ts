@@ -1,5 +1,5 @@
 import { readAllowedDomainActorConditions } from "../../org/second-person-evidence.js";
-import { AgentXNameSchema, agentXError, type AppProjectDetail } from "@agentx/contracts";
+import { AgentXNameSchema, agentXError, type AppProjectDetail } from "@rovara-code/contracts";
 import { updateProjectSettings, type UpdateProjectSettingsOptions } from "../../org/project-settings.js";
 import { routeMetaConfig } from "../../meta-repo/config-import.js";
 import { StatusReply } from "../status-reply.js";

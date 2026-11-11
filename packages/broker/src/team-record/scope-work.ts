@@ -4,16 +4,8 @@
 // everyone until the delete worker (D1) finishes it: a removed member never keeps access because a job ran out of time.
 import { randomUUID } from "node:crypto";
 import { GetCommand, PutCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
-import {
-  ACL_PRINCIPALS_MAX,
-  AudienceSchema,
-  OrgIdSchema,
-  TEAM_RECORD_GSI1,
-  recordDeletedMarkerKey,
-  recordFactKey,
-  type Audience,
-  type OrgId,
-} from "@agentx/contracts";
+import { ACL_PRINCIPALS_MAX, AudienceSchema, OrgIdSchema, type Audience, type OrgId } from "@rovara-code/contracts";
+import { TEAM_RECORD_GSI1, recordDeletedMarkerKey, recordFactKey } from "@agentx/cloud-contracts";
 import { Aliases, errorName, type Item } from "../agents/table-writes.js";
 import { bySource, putScopeWork, queryIndex, scopePage, tombstoneItem, type ScopeCursor, type ScopeWork } from "./store.js";
 import { clearSupersedes } from "./item-head.js";

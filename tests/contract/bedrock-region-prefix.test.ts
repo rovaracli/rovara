@@ -2,14 +2,11 @@
 // price all see one model whichever geography serves it; an id with a prefix nobody listed reads as unrecognised and fails closed (forbidden when anything is forbidden, never independent).
 import { amazonBedrockProvider } from "@earendil-works/pi-ai/providers/amazon-bedrock";
 import { describe, expect, it } from "vitest";
-import {
-  BEDROCK_REGION_PREFIXES, BEDROCK_VENDOR_PREFIXES, ModelSourceSchema, canonicalModelName, forbiddenModelMatcher, isUnrecognisedBedrockModel, legacyAliasModelName, modelCompany, sameModelOrUnrecognised, sourceAlias,
-  type ModelIdentifier,
-} from "@agentx/contracts";
+import { BEDROCK_REGION_PREFIXES, BEDROCK_VENDOR_PREFIXES, ModelSourceSchema, canonicalModelName, forbiddenModelMatcher, isUnrecognisedBedrockModel, legacyAliasModelName, modelCompany, sameModelOrUnrecognised, sourceAlias, type ModelIdentifier } from "@rovara-code/contracts";
 import { anthropicProvider } from "@earendil-works/pi-ai/providers/anthropic";
 import { openaiProvider } from "@earendil-works/pi-ai/providers/openai";
 import { openrouterProvider } from "@earendil-works/pi-ai/providers/openrouter";
-import { E2E_AGENT_ELIGIBLE_MODELS } from "../../packages/contracts/src/e2e-agent-models.generated.js";
+import { E2E_AGENT_ELIGIBLE_MODELS } from "@rovara-code/contracts";
 import { listPricesPerMillion } from "../../packages/model-runtime/src/catalog.js";
 import { resolveStageModel, type StageModelInput } from "../../packages/broker/src/model-selection/resolver.js";
 import { candidatesOf, recommendCriticModel } from "../../packages/broker/src/rovara-code/critic.js";

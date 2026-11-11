@@ -6,7 +6,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { cancelCallbackForbidden, verifyCancelCallbackCapability } from "../cancel-callback-capability.js";
 import { PutCommand, TransactWriteCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
 import { DeleteObjectCommand, PutObjectCommand } from "@aws-sdk/client-s3";
-import { CandidateManifestSchema, verifyE2ESourceSnapshot, canonicalJson, createCandidateManifest, agentXError, E2E_APPLICATION_BUILD_SOURCE_MANIFEST_MAX_BYTES } from "@agentx/contracts";
+import { CandidateManifestSchema, verifyE2ESourceSnapshot, canonicalJson, createCandidateManifest, agentXError, E2E_APPLICATION_BUILD_SOURCE_MANIFEST_MAX_BYTES } from "@rovara-code/contracts";
 import { BaselineSourceBodySchema, BaselineSourceWireSchema, StoredBaselineSourceSchema, assessBaselineSource, type StoredBaselineSource } from "../baseline-source.js";
 import { readWorkflowE2EBaselineRecord } from "../workflow-e2e-baseline.js";
 import { readWorkflowE2EReplayRecord } from "../workflow-e2e-replay.js";

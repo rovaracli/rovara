@@ -3,7 +3,7 @@
 // then a closing line. Rovara's own prompt, preamble and in-message rules always win; the repository's files, skills and lessons rank below the block.
 // Text written by members (layers, extras, agent names) is made inert, escaped and quoted line by line, so it cannot forge a section, the header or the closing line, or close Pi's <addendum> tag (review F2).
 import { createHash } from "node:crypto";
-import { STANDING_INSTRUCTIONS_WORDING, redactText, type CompanyInstructionsSnapshot, type CompanyRule, type StandingInstructionsPayload } from "@agentx/contracts";
+import { STANDING_INSTRUCTIONS_WORDING, redactText, type CompanyInstructionsSnapshot, type CompanyRule, type StandingInstructionsPayload } from "@rovara-code/contracts";
 import { inertRuleText } from "../playbook/inert-rule-text.js";
 
 const { header, company: companyTitle, required: requiredTitle, preferred: preferredTitle, checking, howWeWork: howWeWorkTitle, extras: extrasTitle, closingStart, closingEnd } = STANDING_INSTRUCTIONS_WORDING;

@@ -2,7 +2,8 @@
 // and that with the switches off none of it runs. The worker's half is tested in the worker's tests.
 import { randomUUID } from "node:crypto";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { AGENT_WORKER_OUTDATED, NIGHTLY_RUN_FEATURE, NIGHTLY_SOURCE, NightlyResultSchema, TestEnvironmentBodySchema, WORKER_INVOCATION_FEATURES, WorkerInvocationSchema, projectPk, systemOwnerIdOf, testEnvDigest, type NightlyResult } from "../../packages/contracts/src/index.js";
+import { AGENT_WORKER_OUTDATED, NIGHTLY_RUN_FEATURE, NIGHTLY_SOURCE, NightlyResultSchema, TestEnvironmentBodySchema, WORKER_INVOCATION_FEATURES, projectPk, systemOwnerIdOf, testEnvDigest, type NightlyResult } from "@rovara-code/contracts";
+import { WorkerInvocationSchema } from "@agentx/cloud-contracts";
 import { createEc2Delivery } from "../../packages/broker/src/aws/ec2-delivery.js";
 import { WORKER_IMPLEMENTED_FEATURES } from "../../packages/worker/src/implemented-features.js";
 import { nightlySlotId, coverageMapDigest } from "../../packages/broker/src/test-env/nightly.js";

@@ -1,7 +1,7 @@
 // Design review stage (DR8 fix round, M3): a design review setting that has been HELD TO THE COMPANY'S LOCK is a different type from one read off a playbook. Mode resolution, the cost gate, approval and
 // skip take the first and never the second, so no caller can run a task on a project's stored (possibly looser) value by passing the raw playbook setting. The brand is a hidden symbol set only by
 // `markEffective`, which `effectiveDesignReviewSetting` (lock.ts) and nothing else calls; at run time a setting without it is read as the strictest posture, never as itself.
-import { DESIGN_REVIEW_DEFAULT_SETTING, type DesignReviewSetting } from "@agentx/contracts";
+import { DESIGN_REVIEW_DEFAULT_SETTING, type DesignReviewSetting } from "@rovara-code/contracts";
 
 const EFFECTIVE = Symbol("designReviewEffectiveSetting");
 

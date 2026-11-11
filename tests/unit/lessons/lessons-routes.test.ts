@@ -2,7 +2,7 @@
 // version, a lesson from a source the viewer cannot see, and text that never reaches a viewer.
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
-import { AgentXError, agentXError, LESSON_TIER_REASONS, LESSON_VIEW_STATUSES, LessonCompanyPresetReaderSchema, LessonsViewReaderSchema, type OrgId } from "@agentx/contracts";
+import { AgentXError, agentXError, LESSON_TIER_REASONS, LESSON_VIEW_STATUSES, LessonCompanyPresetReaderSchema, LessonsViewReaderSchema, type OrgId } from "@rovara-code/contracts";
 import { LESSON_STATUSES } from "../../../packages/broker/src/lessons/types.js";
 import { routeLessons, type LessonRouteDependencies } from "../../../packages/broker/src/lessons/routes.js";
 import { setLearnedLessonsGate } from "../../../packages/broker/src/lessons/policy.js";

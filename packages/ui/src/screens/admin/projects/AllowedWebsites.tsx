@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { AppMeResponseReaderSchema } from "@agentx/contracts/web";
+import { AppMeResponseReaderSchema } from "@agentx/cloud-contracts/web";
 import { useAppHost } from "../../../host.js";
 import { AllowedWebsitesEditor } from "./AllowedWebsitesEditor.js";
 

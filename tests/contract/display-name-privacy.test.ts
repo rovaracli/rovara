@@ -4,7 +4,8 @@
 // emails, join dates and sign-in methods are for owners and admins (owner decision, option A).
 import { createHash, randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
-import { SLACK_OIDC_ISSUER, agentSessionKey, orgMetaKey, auditEventId, cleanSessionName, containsEmailAddress, emailSafeName, SetMyNameBodySchema, sessionEventId, withoutEmailAddresses } from "../../packages/contracts/src/index.js";
+import { SLACK_OIDC_ISSUER, agentSessionKey, cleanSessionName, containsEmailAddress, emailSafeName, SetMyNameBodySchema, sessionEventId, withoutEmailAddresses } from "@rovara-code/contracts";
+import { orgMetaKey, auditEventId } from "@agentx/cloud-contracts";
 import { auditOccurrence } from "../../packages/broker/src/audit/events.js";
 import { placeholderDisplayName, readableDeveloper, safeDisplayName } from "../../packages/broker/src/developer/person-name.js";
 import { personNameForText } from "../../packages/broker/src/developer/requester-text.js";

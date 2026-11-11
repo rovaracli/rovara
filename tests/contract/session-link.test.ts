@@ -1,5 +1,5 @@
 import { expect, it } from "vitest";
-import { sessionLink } from "@agentx/contracts";
+import { sessionLink } from "@rovara-code/contracts";
 import { createTaskWeb, type TaskDocumentView } from "../../packages/broker/src/aws/task-web.js";
 import { createDeveloperTaskBroker } from "../support/developer-task-broker.js";
 import { sessionWorld, PRIYA } from "../support/agent-session-world.js";

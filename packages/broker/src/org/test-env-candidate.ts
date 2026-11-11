@@ -3,7 +3,7 @@
 // project's own setup check is) and the exact command lists the check ran. Nothing else reads a candidate: the Prove derives its report from it, and the approval writes into the settings only what it ran.
 import { GetCommand } from "@aws-sdk/lib-dynamodb";
 import { QueryCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
-import { INDEX_EXPIRY_ATTRIBUTE, PreparePinsSchema, TEST_SERVICES_USAGE_RESULT_KEY, ProjectCommandSchema, TestServicesUsageRecordSchema, projectPk, type OrgId, type OrgKey, type PreparePins, type ProjectCommand, type TestServicesUsageRecord } from "@agentx/contracts";
+import { INDEX_EXPIRY_ATTRIBUTE, PreparePinsSchema, TEST_SERVICES_USAGE_RESULT_KEY, ProjectCommandSchema, TestServicesUsageRecordSchema, projectPk, type OrgId, type OrgKey, type PreparePins, type ProjectCommand, type TestServicesUsageRecord } from "@rovara-code/contracts";
 import { z } from "zod";
 import { TEST_ENV_PROPOSAL_TTL_MS } from "./test-environment.js";
 import { testServicesEnabled } from "../test-env/test-services-switch.js";

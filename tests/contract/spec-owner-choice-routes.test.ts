@@ -11,7 +11,7 @@ import { reviewPagePost } from "../support/card-decision.js";
 import { TEST_ORG } from "../support/orgs.js";
 import { dynamoSpecStore } from "../../packages/broker/src/spec/store.js";
 import { newSpecState, type SpecState } from "../../packages/broker/src/spec/state.js";
-import { SpecTargetSchema, projectMemberKey } from "@agentx/contracts";
+import { SpecTargetSchema, projectMemberKey } from "@rovara-code/contracts";
 
 const NOW = "2026-10-31T10:00:00.000Z";
 

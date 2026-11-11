@@ -1,10 +1,7 @@
 // Test services, slice 3 (s3-fakes-run, T1): the contracts a fake server in a round needs. A plan dependency may be a fake (a pinned fixture set digest, no image digest), the usage record has a row for every fake, the
 // fixture-set callback has its two shapes, and the catalog marks the three helpers that run from the worker's own image.
 import { describe, expect, it } from "vitest";
-import {
-  FixtureSetCallbackReplySchema, FixtureSetCallbackRequestSchema, ServiceCatalogSchema, TEST_SERVICES_FAKE_PLAN_FEATURE, TEST_SERVICES_PLAN_FEATURE, TaskDependencyPlanSchema, TestServicesUsageRecordSchema, WORKER_INVOCATION_FEATURES,
-  testServicesFakeUsageVerdict, type TestServicesUsageRecord,
-} from "@agentx/contracts";
+import { FixtureSetCallbackReplySchema, FixtureSetCallbackRequestSchema, ServiceCatalogSchema, TEST_SERVICES_FAKE_PLAN_FEATURE, TEST_SERVICES_PLAN_FEATURE, TaskDependencyPlanSchema, TestServicesUsageRecordSchema, WORKER_INVOCATION_FEATURES, testServicesFakeUsageVerdict, type TestServicesUsageRecord } from "@rovara-code/contracts";
 import { pinnedCatalog, unpinnedCatalog } from "../support/catalog-pinning.js";
 
 const FIXTURE = "a".repeat(64);

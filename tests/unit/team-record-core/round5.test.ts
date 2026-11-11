@@ -1,6 +1,6 @@
 // Fix round 5 (Opus recheck-4): N-8 a crash mid tombstone never lets rows go before every child's lake target, N-10 big places finish audience changes, N-9 lowered row trust under a quote.
 import { describe, expect, it } from "vitest";
-import { recordScopeHash } from "@agentx/contracts";
+import { recordScopeHash } from "@agentx/cloud-contracts";
 import { runDeleteWorker } from "../../../packages/broker/src/team-record/delete-worker.js";
 import { recordSearch } from "../../../packages/broker/src/team-record/query.js";
 import { createRecordSink } from "../../../packages/broker/src/team-record/sink.js";

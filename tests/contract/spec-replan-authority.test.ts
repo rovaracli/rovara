@@ -7,7 +7,7 @@ import { developerTaskRouteDependencies } from "../../packages/broker/src/aws/de
 import { taskOwnerKey } from "../../packages/broker/src/developer/task-records.js";
 import { MAYA, OMAR } from "../support/developer-task-broker.js";
 import { TEST_ORG } from "../support/orgs.js";
-import { projectMemberKey } from "../../packages/contracts/src/org-scoped-keys.js";
+import { projectMemberKey } from "@rovara-code/contracts";
 import { editedSpecTask } from "../support/spec-replan-world.js";
 
 const stand: { who?: "commenter" | "co-owner" | undefined } = {};

@@ -1,82 +1,16 @@
 // Plan 5 Task 1: the agent session contracts: ids, limits, records, events, views, keys and error codes.
 import { TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
 import { describe, expect, it } from "vitest";
-import { atLeast, newPrefixedId } from "../../packages/contracts/src/agent-node.js";
-import {
-  AGENT_SESSION_CONTRACT_VERSION,
-  AgentSessionRecordSchema,
-  DEVICE_LABEL_MAX,
-  DeviceIdSchema,
-  ENDED_SESSION_STATUSES,
-  LEVEL_WORDS,
-  LOCAL_TOOLS,
-  SESSION_EVENT_TEXT_MAX,
-  SESSION_KINDS,
-  SESSION_LEGS_MAX,
-  SESSION_MODES,
-  SESSION_PEEK_MAX_CHARS,
-  SESSION_STATUSES,
-  STATUS_WORDS,
-  SessionBindingSchema,
-  SessionOwnerSchema,
-  cleanSessionName,
-  SessionEventSchema,
-  SessionIdSchema,
-  SessionLegSchema,
-  SessionMessageIdSchema,
-  SessionMessageSchema,
-  SessionSubjectSchema,
-  SessionSummarySchema,
-  SessionWhereSchema,
-  localAgentsNotAllowedOnProjectMessage,
-  localToolNotAllowedMessage,
-  sessionEventId,
-  sessionLevelRequiredMessage,
-  sessionLink,
-  sessionOnMacMessage,
-  sessionViewerOnlyMessage,
-  SESSION_ENDED_MESSAGE,
-  SESSION_REVISION_CONFLICT_MESSAGE,
-} from "../../packages/contracts/src/agent-sessions-node.js";
-import { AgentXErrorCodeSchema, agentXError, errorStatus } from "../../packages/contracts/src/errors.js";
-import {
-  SESSION_SWEEP_CURSOR_KEY,
-  agentSessionKey,
-  changesKey,
-  deviceCommandKey,
-  deviceKey,
-  endedSessionWorkKey,
-  liveSessionKey,
-  memberDevicesKey,
-  mySessionsKey,
-  openAgentSessionKey,
-  sessionQueuedSteersKey,
-  orgSettingsKey,
-  projectMonthStatsKey,
-  projectSessionsKey,
-  sessionEventSk,
-  sessionRateKey,
-  sessionRequestKey,
-  sessionBindingKey,
-  sessionSurfaceKey,
-  sharedSessionsKey,
-  taskSpendKey,
-} from "../../packages/contracts/src/org-scoped-keys.js";
-import { HomeCardReaderSchema, HomeCardSchema, HomeResponseReaderSchema, HomeResponseSchema } from "../../packages/contracts/src/home.js";
-import { OrgIdSchema } from "../../packages/contracts/src/org-node.js";
-import {
-  NeedsConfirmationSchema,
-  ProjectOverviewReaderSchema,
-  ProjectOverviewSchema,
-  SessionEventPageReaderSchema,
-  SessionEventPageSchema,
-  SessionEventReaderSchema,
-  SessionTileReaderSchema,
-  SessionTileSchema,
-  SessionViewReaderSchema,
-  SessionViewSchema,
-} from "../../packages/contracts/src/session-views.js";
-import * as contracts from "../../packages/contracts/src/index.js";
+import { atLeast, newPrefixedId } from "@rovara-code/contracts";
+import { AGENT_SESSION_CONTRACT_VERSION, AgentSessionRecordSchema, DEVICE_LABEL_MAX, DeviceIdSchema, ENDED_SESSION_STATUSES, LEVEL_WORDS, LOCAL_TOOLS, SESSION_EVENT_TEXT_MAX, SESSION_KINDS, SESSION_LEGS_MAX, SESSION_MODES, SESSION_PEEK_MAX_CHARS, SESSION_STATUSES, STATUS_WORDS, SessionBindingSchema, SessionOwnerSchema, cleanSessionName, SessionEventSchema, SessionIdSchema, SessionLegSchema, SessionMessageIdSchema, SessionMessageSchema, SessionSubjectSchema, SessionSummarySchema, SessionWhereSchema, localAgentsNotAllowedOnProjectMessage, localToolNotAllowedMessage, sessionEventId, sessionLevelRequiredMessage, sessionLink, sessionOnMacMessage, sessionViewerOnlyMessage, SESSION_ENDED_MESSAGE, SESSION_REVISION_CONFLICT_MESSAGE } from "@rovara-code/contracts";
+import { AgentXErrorCodeSchema, agentXError, errorStatus } from "@rovara-code/contracts";
+import { SESSION_SWEEP_CURSOR_KEY, agentSessionKey, changesKey, endedSessionWorkKey, liveSessionKey, mySessionsKey, openAgentSessionKey, sessionQueuedSteersKey, projectMonthStatsKey, projectSessionsKey, sessionEventSk, sessionRateKey, sessionRequestKey, sessionBindingKey, sessionSurfaceKey, sharedSessionsKey, taskSpendKey } from "@rovara-code/contracts";
+import { deviceCommandKey, deviceKey, memberDevicesKey, orgSettingsKey } from "../../packages/cloud-contracts/src/org-scoped-keys.js";
+import { HomeCardReaderSchema, HomeCardSchema, HomeResponseReaderSchema, HomeResponseSchema } from "../../packages/cloud-contracts/src/home.js";
+import { OrgIdSchema } from "@rovara-code/contracts";
+import { NeedsConfirmationSchema, ProjectOverviewReaderSchema, ProjectOverviewSchema, SessionEventPageReaderSchema, SessionEventPageSchema, SessionEventReaderSchema, SessionTileReaderSchema, SessionTileSchema } from "@rovara-code/contracts";
+import { SessionViewReaderSchema, SessionViewSchema } from "../../packages/cloud-contracts/src/session-views.js";
+import * as contracts from "@rovara-code/contracts";
 import { FakeDynamoDb } from "../support/fake-dynamodb.js";
 
 const ORG_A = OrgIdSchema.parse("org_aaaaaaaaaaaaaaaaaaaa");
@@ -212,7 +146,7 @@ describe("the fixed words and limits", () => {
   });
 
   it("pins the limits the plan names", async () => {
-    const limits = await import("../../packages/contracts/src/agent-sessions-node.js");
+    const limits = await import("@rovara-code/contracts");
     expect({
       SESSION_TITLE_MAX: limits.SESSION_TITLE_MAX,
       SESSION_PEEK_MAX_CHARS: limits.SESSION_PEEK_MAX_CHARS,

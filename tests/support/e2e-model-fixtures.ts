@@ -1,11 +1,5 @@
-import { KEYED_MODEL_PROVIDERS, isKeyedModelProvider } from "../../packages/contracts/src/model-providers.js";
-import {
-  E2E_MODEL_ROUTE_DEFAULT_BUDGETS,
-  E2EModelRouteDefinitionSchema,
-  type E2EModelChannelRequest,
-  type E2EModelRouteBudgets,
-  type E2EModelRouteDefinition,
-} from "../../packages/contracts/src/e2e-model-channel.js";
+import { KEYED_MODEL_PROVIDERS, isKeyedModelProvider } from "@rovara-code/contracts";
+import { E2E_MODEL_ROUTE_DEFAULT_BUDGETS, E2EModelRouteDefinitionSchema, type E2EModelChannelRequest, type E2EModelRouteBudgets, type E2EModelRouteDefinition } from "@rovara-code/contracts";
 
 /** Fixtures shared by the Task 4.1 tests: a pinned route, a channel request and a fake provider answer. */
 

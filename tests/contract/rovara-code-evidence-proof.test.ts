@@ -2,9 +2,10 @@
 // repository-written word inert, nothing shown for other code, and the Environment, not-run and not-tested lines never dropped by the shrink levels.
 import { randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
-import { EvidencePackSchema, resolveEvidenceMode, type EvidencePack } from "../../packages/contracts/src/evidence.js";
-import type { PlanDocument } from "../../packages/contracts/src/index.js";
-import { WorkflowSnapshotSchema, createCandidateManifest, createWorkflowSnapshot, type WorkflowSnapshot } from "../../packages/contracts/src/task-workflow-node.js";
+import { EvidencePackSchema, resolveEvidenceMode, type EvidencePack } from "@rovara-code/contracts";
+import type { PlanDocument } from "@rovara-code/contracts";
+import { WorkflowSnapshotSchema, createWorkflowSnapshot, type WorkflowSnapshot } from "../../packages/cloud-contracts/src/task-workflow-node.js";
+import { createCandidateManifest } from "@rovara-code/contracts";
 import { evidenceLines, evidenceLinkLine, EVIDENCE_NOT_TESTED_LISTED, type ProofEvidenceContext } from "../../packages/broker/src/rovara-code/evidence-lines.js";
 import { PULL_REQUEST_BODY_MAX_BYTES, rovaraPullRequestBody } from "../../packages/broker/src/rovara-code/pull-request-body.js";
 import { PROOF_LEVEL_LAST, proofSection } from "../../packages/broker/src/rovara-code/proof-section.js";

@@ -4,7 +4,8 @@
 // request asks for health; building the probes calls nothing and parses nothing.
 import { DescribeAlarmsCommand, type DescribeAlarmsCommandOutput } from "@aws-sdk/client-cloudwatch";
 import { GetQueueAttributesCommand, type GetQueueAttributesCommandOutput } from "@aws-sdk/client-sqs";
-import { HEALTH_ALARM_CONDITIONAL_SUFFIXES, HEALTH_ALARM_SUFFIXES, HEALTH_ALARM_TEAM_RECORD_SUFFIXES, MISSING_ALARM_STATE, type SlackAuthCheckResponse } from "@agentx/contracts";
+import { HEALTH_ALARM_CONDITIONAL_SUFFIXES, HEALTH_ALARM_SUFFIXES, HEALTH_ALARM_TEAM_RECORD_SUFFIXES } from "@agentx/cloud-contracts";
+import { MISSING_ALARM_STATE, type SlackAuthCheckResponse } from "@rovara-code/contracts";
 import type { AdminHealthProbes } from "./admin-health.js";
 
 export interface HealthProbeInput {

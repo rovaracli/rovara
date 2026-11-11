@@ -1,5 +1,5 @@
 // Standing instructions (lanes I1, I2): what the dispatch of one operation hands `applyAgentStep` for the block: the company's newest rules (read now) and whether the switch moves "How we work" into it.
-import type { CompanyInstructionsSnapshot, StandingInstructionsPayload } from "@agentx/contracts";
+import type { CompanyInstructionsSnapshot, StandingInstructionsPayload } from "@rovara-code/contracts";
 import type { DispatchMode } from "../agents/dispatch.js";
 import { buildStandingInstructions } from "./standing-block.js";
 import { readCompanyInstructions, type CompanyInstructionsSource } from "./company-source.js";

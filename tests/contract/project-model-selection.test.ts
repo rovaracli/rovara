@@ -1,7 +1,7 @@
 import {modelSelectionSlackWorld,SELECTION_MODELS} from "../support/model-selection-slack-world.js";
 import { randomUUID } from "node:crypto";
 import { beforeAll, describe, expect, it } from "vitest";
-import { ProjectDefinitionSchema } from "../../packages/contracts/src/project-node.js";
+import { ProjectDefinitionSchema } from "@rovara-code/contracts";
 import { ensureWorkspace, loadSlackBroker, markReady, registerSlackProject, serviceCall, SLACK_CHANNEL, SLACK_TEAM } from "../support/slack-broker.js";
 
 const thread = `${SLACK_TEAM}/${SLACK_CHANNEL}/1695500000.000001`;
@@ -127,7 +127,7 @@ describe("project worker model selection", () => {
 
 it("requires Slack edit_settings even when a contributor may start work",async()=>{
  const {handler,db,developerId}=await modelSelectionSlackWorld();await registerSlackProject(handler,{models});
- const {projectMemberKey}=await import("../../packages/contracts/src/index.js");const {TEST_ORG}=await import("../support/orgs.js");
+ const { projectMemberKey } = await import("@rovara-code/contracts");const {TEST_ORG}=await import("../support/orgs.js");
  const key=projectMemberKey(TEST_ORG,developerId,"payments");db.set({...db.get(key)!,projectRole:"contributor"});
  const result=await serviceCall(handler,thread,user,"PUT","/v1/service/project/model",{provider:models.approved[1]!.provider,modelId:models.approved[1]!.modelId});
  expect(result.status).toBe(403);expect(db.find(item=>item.entityType==="PROJECT_MODEL_SELECTION")).toHaveLength(0);
@@ -148,7 +148,7 @@ it("without a company lock refuses a stale explicit selection after a later revi
  const {TEST_ORG}=await import("../support/orgs.js"),h=await modelSelectionSlackWorld();
  h.db.delete({pk:`ORG#${TEST_ORG}#SETTINGS`,sk:"MODEL_SELECTION_POLICY"});
  await registerSlackProject(h.handler,{models});
- const {projectSelectionKey}=await import("@agentx/contracts");h.db.set({...projectSelectionKey(TEST_ORG,"payments"),model:{provider:models.approved[1]!.provider,modelId:models.approved[1]!.modelId}});
+ const { projectSelectionKey } = await import("@rovara-code/contracts");h.db.set({...projectSelectionKey(TEST_ORG,"payments"),model:{provider:models.approved[1]!.provider,modelId:models.approved[1]!.modelId}});
  await registerSlackProject(h.handler,{revision:2,models:{default:models.default,approved:[models.default]}});
  const workspace=await ensureWorkspace(h.handler,otherThread,user),workspaceId=String(workspace.body.workspaceId);markReady(h.db,workspaceId);
  const conversation=await serviceCall(h.handler,otherThread,user,"POST",`/v1/service/workspaces/${workspaceId}/conversations`,{}),conversationId=(conversation.body.conversation as {id:string}).id;
@@ -160,7 +160,7 @@ it("without a company lock carries approved thinkingLevel low into the worker",a
  h.db.delete({pk:`ORG#${TEST_ORG}#SETTINGS`,sk:"MODEL_SELECTION_POLICY"});
  const leveled={default:models.default,approved:[models.approved[0]!,{...models.approved[1]!,thinkingLevel:"low" as const}]};
  await registerSlackProject(h.handler,{models:leveled});
- const {projectSelectionKey}=await import("@agentx/contracts");h.db.set({...projectSelectionKey(TEST_ORG,"payments"),model:{provider:models.approved[1]!.provider,modelId:models.approved[1]!.modelId}});
+ const { projectSelectionKey } = await import("@rovara-code/contracts");h.db.set({...projectSelectionKey(TEST_ORG,"payments"),model:{provider:models.approved[1]!.provider,modelId:models.approved[1]!.modelId}});
  const workspace=await ensureWorkspace(h.handler,otherThread,user),workspaceId=String(workspace.body.workspaceId);markReady(h.db,workspaceId);
  const conversation=await serviceCall(h.handler,otherThread,user,"POST",`/v1/service/workspaces/${workspaceId}/conversations`,{}),conversationId=(conversation.body.conversation as {id:string}).id;
  const result=await serviceCall(h.handler,otherThread,user,"POST",`/v1/service/workspaces/${workspaceId}/tasks`,{requestId:randomUUID(),conversationId,prompt:"Fix"});expect(result.status).toBe(202);

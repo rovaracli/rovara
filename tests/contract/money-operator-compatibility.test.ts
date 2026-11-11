@@ -1,12 +1,13 @@
 // Controller M30: existing operator credentials stay authoritative; no org membership is fabricated.
 import { randomUUID } from "node:crypto";
 import { beforeAll, expect, it } from "vitest";
-import { orgSettingsKey, orgMemberKey, singleOrgIdForEnv } from "@agentx/contracts";
+import { orgSettingsKey, orgMemberKey } from "@agentx/cloud-contracts";
+import { singleOrgIdForEnv } from "@rovara-code/contracts";
 import { setOrgBudget } from "../../packages/cli/src/admin/budget.js";
 import { writeBudgets } from "../../packages/broker/src/org/budget.js";
 import { UpdateCommand } from "@aws-sdk/lib-dynamodb";
 import { OrgStore } from "../../packages/broker/src/org/store.js";
-import { DEFAULT_AGENT_GUARDRAILS } from "@agentx/contracts";
+import { DEFAULT_AGENT_GUARDRAILS } from "@rovara-code/contracts";
 import { adminCall, createAdminBroker } from "../support/admin-broker.js";
 import { capturingAuditDeps } from "../support/audit-capture.js";
 import { fakeModelAccess } from "../support/fake-model-access.js";

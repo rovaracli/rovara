@@ -4,26 +4,7 @@
 // page; it is bound to the spec the person was shown, and it turns on exactly that spec or nothing. Turning one off, narrowing it and lowering its rate apply at once.
 import { createHash } from "node:crypto";
 import { z } from "zod";
-import {
-  AgentIdSchema,
-  BUILTIN_AGENT_IDS,
-  BUILTIN_TRIGGER_SUGGESTIONS,
-  ChainIdSchema,
-  TRIGGER_DEFAULT_MAX_RUNS_PER_HOUR,
-  TRIGGER_MAX_RUNS_PER_HOUR,
-  TriggerIdSchema,
-  TriggerSpecSchema,
-  agentXError,
-  atLeast,
-  canonicalJson,
-  isBuiltinAgentId,
-  newPrefixedId,
-  projectAllows,
-  triggerSpecWidens,
-  type AgentId,
-  type OrgId,
-  type TriggerTarget,
-} from "@agentx/contracts";
+import { AgentIdSchema, BUILTIN_AGENT_IDS, BUILTIN_TRIGGER_SUGGESTIONS, ChainIdSchema, TRIGGER_DEFAULT_MAX_RUNS_PER_HOUR, TRIGGER_MAX_RUNS_PER_HOUR, TriggerIdSchema, TriggerSpecSchema, agentXError, atLeast, canonicalJson, isBuiltinAgentId, newPrefixedId, projectAllows, triggerSpecWidens, type AgentId, type OrgId, type TriggerTarget } from "@rovara-code/contracts";
 import { type AdaptedHttpRequest } from "../aws/lambda.js";
 import { StatusReply } from "../aws/status-reply.js";
 import { agentAccess, orgRoleOf, requireAgentAccess, resolveSurvivor, type AgentCaller } from "../agents/access.js";

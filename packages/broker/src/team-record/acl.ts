@@ -2,8 +2,9 @@
 // the row is not tombstoned, and (for a restricted `on_read` source) the source still says yes. Everything here fails closed: an unmapped identity, an empty
 // snapshot, a missing or failing live check and a row that does not parse all read as "not visible". The check runs in the broker on every hit; a vector or
 // query filter upstream is only a coarse cut.
-import { MAINTAINERS_GROUP, agentXError, type AclSnapshot, type Audience, type RecordTombstone } from "@agentx/contracts";
-import { scopeAndAncestors, teamRecordSourceHash } from "@agentx/contracts";
+import { MAINTAINERS_GROUP, agentXError, type AclSnapshot, type Audience } from "@rovara-code/contracts";
+import { type RecordTombstone } from "@agentx/cloud-contracts";
+import { scopeAndAncestors, teamRecordSourceHash } from "@agentx/cloud-contracts";
 import { accessScopesOf, judgeAccess, viewerOfCaller, type AccessReader, type AccessVerdict } from "./access.js";
 import { rovaraTaskRefsOf, type LiveAudienceReader } from "./live-audience.js";
 import type { LiveAclCheck, PendingHides, ReadAudience, RecordCaller } from "./types.js";

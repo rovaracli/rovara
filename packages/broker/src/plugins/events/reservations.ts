@@ -2,7 +2,7 @@
 // content is a conflict (never silently merged); an event whose earlier attempt did not finish is offered again. The row expires, as an index row does.
 import { createHash } from "node:crypto";
 import { GetCommand, PutCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
-import { INDEX_EXPIRY_ATTRIBUTE, type CodeHostEvent } from "@agentx/contracts";
+import { INDEX_EXPIRY_ATTRIBUTE, type CodeHostEvent } from "@rovara-code/contracts";
 import { isConditional } from "../../aws/broker-shared.js";
 
 export type Reservation = "reserved" | "retry" | "duplicate" | "conflict";

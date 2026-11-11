@@ -1,7 +1,8 @@
 import { z } from "zod";
 import { generateKeyPairSync, randomUUID, sign } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
-import { WORKER_INVOCATION_FEATURES, WorkerInvocationSchema, agentXError, savedEnvRepositoryName, taskGraphDigest, workflowPublicationContext, workflowPublicationContextDigest, workspaceSessionKey, type Ec2RuntimeBinding, type WorkerInvocation } from "../../packages/contracts/src/index.js";
+import { WORKER_INVOCATION_FEATURES, agentXError, savedEnvRepositoryName, taskGraphDigest, workflowPublicationContextDigest, workspaceSessionKey, type Ec2RuntimeBinding } from "@rovara-code/contracts";
+import { WorkerInvocationSchema, workflowPublicationContext, type WorkerInvocation } from "@agentx/cloud-contracts";
 import { createDispatcherHandler, createWorkflowE2EReadinessCompleter, createWorkflowE2EReadinessValidator, workerPingFeatures } from "../../packages/broker/src/aws/dispatcher.js";
 import { guardTaskDispatch as coreGuardTaskDispatch } from "../../packages/broker/src/aws/task-dispatch-access.js";
 import { STARTING_COMPUTE_MESSAGE, createEc2Delivery, type Ec2Delivery, type Ec2DeliveryDependencies } from "../../packages/broker/src/aws/ec2-delivery.js";
@@ -13,7 +14,7 @@ import { SessionManager, workspaceBinding } from "../../packages/broker/src/aws/
 import { verifyInvokeAuthorization, invocationMatchesClaims } from "../../packages/worker/src/invoke-auth.js";
 import { FakeDynamoDb } from "../support/fake-dynamodb.js";
 import { TEST_ORG } from "../support/orgs.js";
-import { projectRevisionKey } from "../../packages/contracts/src/org-scoped-keys.js";
+import { projectRevisionKey } from "@rovara-code/contracts";
 
 const NOW = Date.parse("2026-09-27T12:00:00.000Z");
 const keys = generateKeyPairSync("ec", { namedCurve: "prime256v1" });

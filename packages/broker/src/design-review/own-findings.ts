@@ -2,7 +2,7 @@
 //   - A blocker for every approved requirement id that appears in no §3 subsection ("Each requirement id must appear in at least one §3 subsection").
 //   - A major "too long: split the work" for a design over 24 KB.
 // They carry `origin: "rovara"`: they name no reviewer and no raw finding, and cite the design section they are about. Pure and bounded.
-import { DESIGN_FINDING_TEXT_MAX_CHARS, DESIGN_LOST_FINDING_ID_PREFIX, DESIGN_SECTIONS, DESIGN_TEXT_MAX_BYTES, DESIGN_REVIEW_FINDINGS_MAX, designFindingFingerprint, type DesignFinding, type DroppedFinding } from "@agentx/contracts";
+import { DESIGN_FINDING_TEXT_MAX_CHARS, DESIGN_LOST_FINDING_ID_PREFIX, DESIGN_SECTIONS, DESIGN_TEXT_MAX_BYTES, DESIGN_REVIEW_FINDINGS_MAX, designFindingFingerprint, type DesignFinding, type DroppedFinding } from "@rovara-code/contracts";
 
 /** At most this many requirements get a finding each; any more are listed in one finding, so a design that covers nothing cannot fill the card. */
 export const OWN_FINDINGS_PER_REQUIREMENT_MAX = 12;

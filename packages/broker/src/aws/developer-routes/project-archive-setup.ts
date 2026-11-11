@@ -2,23 +2,11 @@ import { closeProjectRovaraPrs } from "../../lessons/repo-file-routes.js";
 import { candidateDependencyPlan } from "../../test-env/candidate-plan.js";
 import { testEnvironmentEnabled } from "../../test-env/switch.js";
 import { proposalReplacesLists, readApprovedSeedFiles, readApprovedTestEnvironment } from "../../org/test-environment.js";
-import { WorkingBranchNameSchema } from "@agentx/contracts";
+import { WorkingBranchNameSchema } from "@rovara-code/contracts";
 import { logDeveloperEvent } from "../../developer/log.js";
 import { randomUUID } from "node:crypto";
 import { z } from "zod";
-import {
-  AgentXNameSchema,
-  DEFAULT_AGENT_ALLOW_DOMAINS,
-  DEFAULT_DEVCONTAINER_CONFIG_PATH,
-  agentXError,
-  formatCommandLine,
-  projectAllows,
-  type AppProjectDetail,
-  type WorkspaceInstance,
-  type TestEnvironmentBody,
-  ProjectSetupCheckBodySchema,
-  workerProjectDefinition,
-} from "@agentx/contracts";
+import { AgentXNameSchema, DEFAULT_AGENT_ALLOW_DOMAINS, DEFAULT_DEVCONTAINER_CONFIG_PATH, agentXError, formatCommandLine, projectAllows, type AppProjectDetail, type WorkspaceInstance, type TestEnvironmentBody, ProjectSetupCheckBodySchema, workerProjectDefinition } from "@rovara-code/contracts";
 import { readEgressDomains, type EgressDomainsDependencies } from "../../org/egress-domains.js";
 import { applyArchiveRequest, type ProjectArchiveDependencies } from "../../org/project-archive.js";
 import { readProjectMeta, requireNewWorkAllowed } from "../../developer/project-roles.js";
@@ -37,7 +25,7 @@ import type { DeveloperCaller, DeveloperRouteDependencies } from "./types.js";
 import { PROJECT_NOT_FOUND_IN_APP, bodyError, signInStoreOf } from "./common.js";
 import { appProjectSummary, latestProjectRecord, repositoryFullName, setupCheckDepsOf, visibleProjectRoles } from "./project-list.js";
 import { projectRoleForRoute } from "./project-members.js";
-import { type OrgId, type ProjectCommand } from "@agentx/contracts";
+import { type OrgId, type ProjectCommand } from "@rovara-code/contracts";
 import { clearArchivedProjectLearning as clearArchivedProject } from "../../learning/cleanup.js";
 import { requirePricedTaskStopAdmission } from "../../org/task-stop-unpriced.js";
 

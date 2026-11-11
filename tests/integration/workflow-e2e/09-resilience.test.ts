@@ -9,16 +9,14 @@ const { DISPATCH_QUEUE_ARN } = vi.hoisted(() => {
   process.env.DISPATCH_QUEUE_ARN = arn;
   return { DISPATCH_QUEUE_ARN: arn };
 });
-import { slackBindingPk } from "../../../packages/contracts/src/org-scoped-keys.js";
+import { slackBindingPk } from "@rovara-code/contracts";
 import { describe, expect, it, vi } from "vitest";
 import { DynamoDBDocumentClient } from "@aws-sdk/lib-dynamodb";
 import { KMSClient } from "@aws-sdk/client-kms";
 import { GetSecretValueCommand, SecretsManagerClient } from "@aws-sdk/client-secrets-manager";
 import type { InvokeCommand } from "@aws-sdk/client-lambda";
-import { PLAN_CLAIMS_MAX, TaskDispatchProofRequestSchema, TaskDispatchProofResponseSchema, TaskPersonProofResponseSchema, WORKER_INVOKE_AUTHORIZATION_SCHEME,
-  WORKER_INVOCATION_FEATURES, WORKER_PING_FEATURES_FIELD, WORKFLOW_PLAN_MAX_BYTES, WorkerInvocationSchema, WorkflowSnapshotSchema,
-  type TaskPersonProofRequest,
-  type Ec2RuntimeBinding, type WorkerInvocation } from "@agentx/contracts";
+import { PLAN_CLAIMS_MAX, TaskDispatchProofRequestSchema, TaskDispatchProofResponseSchema, TaskPersonProofResponseSchema, WORKER_INVOKE_AUTHORIZATION_SCHEME, WORKER_INVOCATION_FEATURES, WORKER_PING_FEATURES_FIELD, WORKFLOW_PLAN_MAX_BYTES, type TaskPersonProofRequest, type Ec2RuntimeBinding } from "@rovara-code/contracts";
+import { WorkerInvocationSchema, WorkflowSnapshotSchema, type WorkerInvocation } from "@agentx/cloud-contracts";
 import { createEc2Delivery } from "../../../packages/broker/src/aws/ec2-delivery.js";
 import type { DurableOutboxRecord, Ec2OutboxRecord } from "../../../packages/broker/src/aws/lambda.js";
 import { LOST_COMPUTE_ERROR, SLACK_MAYA, createWorkflowE2E, type WorkflowE2E } from "../../support/workflow-e2e.js";
@@ -32,12 +30,12 @@ import { EDITS, MERGED, OPENED_PR, PLAN, PUSHED_FIX, actionIds, atPlanReview, ed
 import { loadRollback0212Parser } from "../../support/rollback-0212-parser.js";
 import { handler as productionDispatcher, taskPersonProofLambdaClient } from "../../../packages/broker/src/aws/dispatcher.js";
 import { handler as taskPersonProofRuntime } from "../../../packages/broker/src/aws/task-person-proof-runtime.js";
-import { singleOrgIdForEnv } from "../../../packages/contracts/src/org-node.js";
+import { singleOrgIdForEnv } from "@rovara-code/contracts";
 
 // The production dispatcher reads AGENTX_ENV (stubbed below), so the install these tests build is that named environment.
 const LIVE_ENV = "agentxlivetest123";
 const TEST_ORG = singleOrgIdForEnv(LIVE_ENV);
-import { projectMemberKey, projectRevisionKey } from "../../../packages/contracts/src/org-scoped-keys.js";
+import { projectMemberKey, projectRevisionKey } from "@rovara-code/contracts";
 
 /** Feature list exported by the source commit pinned in rollback-0.2.12/provenance.json. */
 const ROLLBACK_0212_WORKER_FEATURES = ["model.thinkingLevel", "task.readiness", "task.workflowMode", "task.workflowReview", "task.workflowChecks",

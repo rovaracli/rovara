@@ -1,7 +1,8 @@
 // Enterprise foundations P5a-c: the consumers reach a repository's code host by the repository's RECORD (task P7), never by its address and never by a default. A record that names a host the
 // install has not registered is refused with the fixed sentence; one that names none is GitHub; the check runner and the team lookup follow the host.
 import { describe, expect, it, vi } from "vitest";
-import { editionPolicy, projectRevisionKey } from "../../packages/contracts/src/index.js";
+import { editionPolicy } from "@agentx/cloud-contracts";
+import { projectRevisionKey } from "@rovara-code/contracts";
 import { consumerRepositoryResolver, githubRepositoryOver } from "../../packages/broker/src/aws/broker/consumer-hosts.js";
 import { FakeCheckRunner } from "../../packages/broker/src/plugins/fake/check-runner.js";
 import { FakeCodeHost } from "../../packages/broker/src/plugins/fake/code-host.js";

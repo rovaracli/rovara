@@ -3,7 +3,8 @@
 import { createHash } from "node:crypto";
 import { PutCommand, TransactWriteCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
 import { GetObjectCommand } from "@aws-sdk/client-s3";
-import { AgentXError, agentXError, type CodeBuildCheckResult, type CodeBuildGateDefinition, type WorkflowFeedbackApprovalBinding, type WorkflowSnapshot, WorkflowFeedbackBundleRefSchema, WorkflowFeedbackTaskChecksSchema, type WorkflowFeedbackTaskChecks, WorkflowFeedbackBundleSchema, WorkflowFeedbackApprovalBindingSchema, workflowFeedbackApprovalMatchesReview, type OrgId } from "@agentx/contracts";
+import { AgentXError, agentXError, type CodeBuildCheckResult, type CodeBuildGateDefinition, type WorkflowFeedbackApprovalBinding, WorkflowFeedbackBundleRefSchema, WorkflowFeedbackTaskChecksSchema, type WorkflowFeedbackTaskChecks, WorkflowFeedbackBundleSchema, WorkflowFeedbackApprovalBindingSchema, workflowFeedbackApprovalMatchesReview, type OrgId } from "@rovara-code/contracts";
+import { type WorkflowSnapshot } from "@agentx/cloud-contracts";
 import { verifyTaskPullRequestFeedbackCurrent } from "../github-webhooks.js";
 import { ownerAnswersFor } from "../../developer/owner-answers.js";
 import { loadWorkflowDocument, shortenMarkdown } from "../../developer/plan-artifacts.js";
@@ -164,7 +165,7 @@ function autonomyStillHoldsFor(dependencies: AwsBrokerDependencies, task: Develo
   return autonomyStillHolds({
     autonomy: () => orgId === undefined ? Promise.resolve({ autonomy: "suggest" as const }) : taskAutonomyBinding(() => readTaskRecipe(dependencies, task.taskId, orgId), undefined, () => companyAutonomyLimit(dependencies, orgId)),
     repository: async (repositoryId) => orgId === undefined || repository === undefined ? undefined : repository(task.project, task.startingRevision, repositoryId, orgId),
-    scope: orgId === undefined ? { system: "private-install" } : githubScope(dependencies, orgId),
+    scope: orgId === undefined ? { system: "install" } : githubScope(dependencies, orgId),
   }, task, binding);
 }
 

@@ -2,10 +2,7 @@
 // model (the recipe's `plan_critic` step, through an overlay); otherwise Rovara recommends one of the models the project may use, by default a different model from the one that wrote the
 // plan, possibly from the same company (owner decision 10, 2026-10-22). There is no "different AI company" requirement. What the critic writes is untrusted advice: it reaches a
 // planner only inside a labelled block, bounded and redacted, and it can never approve a plan.
-import {
-  AgentXError, PLAN_CRITIC_BLOCK_HEADER, PLAN_CRITIQUE_INFO_STRING, agentXError, canonicalModelName, errorStatus, forbiddenModelMatcher, modelCompany, redactText, sameModelOrUnrecognised,
-  type AgentGuardrails, type ModelIdentifier, type ModelSelection, type PlanCritique,
-} from "@agentx/contracts";
+import { AgentXError, PLAN_CRITIC_BLOCK_HEADER, PLAN_CRITIQUE_INFO_STRING, agentXError, canonicalModelName, errorStatus, forbiddenModelMatcher, modelCompany, redactText, sameModelOrUnrecognised, type AgentGuardrails, type ModelIdentifier, type ModelSelection, type PlanCritique } from "@rovara-code/contracts";
 import { listPricesPerMillion } from "@agentx/model-runtime/catalog";
 import { isBatchVariant } from "../model-sources/model-variants.js";
 import { modelNotAllowedText } from "../model-sources/routing.js";

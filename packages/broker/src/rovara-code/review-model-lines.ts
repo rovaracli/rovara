@@ -1,7 +1,8 @@
 // Trust fix A2: what a person reads about the model that reviewed the code, in the task's message and the pull request's Reviews section. The model is the one the review report records (the
 // worker names the model its reviewer sessions ran on); the note says so when review used the build's own model. A model name is a report's text, so each line passes through the caller's
 // inert helper before it is shown.
-import { redactText, type WorkflowSnapshot } from "@agentx/contracts";
+import { redactText } from "@rovara-code/contracts";
+import { type WorkflowSnapshot } from "@agentx/cloud-contracts";
 
 /**
  * Whether the reviews of the workflow's current code ran on the build's own model. The broker keeps this on the task record beside the workflow (`reviewSameModel`, naming the code it is about), never in the

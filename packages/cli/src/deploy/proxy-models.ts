@@ -1,7 +1,7 @@
 // Ruling R52 (with R21): every named environment calls its models through the model proxy, which serves the Claude models Amazon
 // Bedrock offers through the region's inference profiles and nothing else. A worker, orchestrator or classifier on any other
 // provider, or on a model the proxy does not serve, could only fail at its first request, so it fails here instead, before anything deploys.
-import { agentXError } from "@agentx/contracts";
+import { agentXError } from "@rovara-code/contracts";
 import { bedrockClaudeModelIds, proxyGeographyForRegion } from "@agentx/model-runtime/catalog";
 import type { ModelsAnswers } from "./answer-schemas.js";
 

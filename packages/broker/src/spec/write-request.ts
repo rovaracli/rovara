@@ -1,5 +1,5 @@
 // K1 lane D, D2: what the SPEC_WRITE run is given. The approved plan is the only source: it goes in as data, in a fenced block the model is told is not instructions, and the run has no tool that writes.
-import { agentXError, type SpecKind, type SpecWriteBinding } from "@agentx/contracts";
+import { agentXError, type SpecKind, type SpecWriteBinding } from "@rovara-code/contracts";
 
 export const SPEC_PLAN_MAX_CHARS = 48_000;
 const OPEN = "<<<APPROVED-PLAN";

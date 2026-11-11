@@ -1,7 +1,7 @@
 import { createHash, createHmac } from "node:crypto";
 import { UpdateCommand } from "@aws-sdk/lib-dynamodb";
 import { describe, expect, it } from "vitest";
-import { CLOSED_SHARED_NOTICE, SlackRequestMessageSchema, VIEW_ONLY_NOTICE, sharedNoticeClaim, sharedNoticeKey, taskQuestionAttributes, taskQuestionOf, type SlackRequestMessage, type TaskQuestionRoute } from "../../packages/contracts/src/index.js";
+import { CLOSED_SHARED_NOTICE, SlackRequestMessageSchema, VIEW_ONLY_NOTICE, sharedNoticeClaim, sharedNoticeKey, taskQuestionAttributes, taskQuestionOf, type SlackRequestMessage, type TaskQuestionRoute } from "@rovara-code/contracts";
 import {
   captureFeedbackNoteThroughBroker,
   createSlackIngressHandler,

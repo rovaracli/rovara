@@ -1,7 +1,8 @@
 // Numeric capture is not a project authorization lease. These native source
 // conditions accompany the accepted work transaction without pinning money.
 import { GetCommand } from "@aws-sdk/lib-dynamodb";
-import { isWriterOrgRole, projectMetaKey, projectMemberKey, type OrgId, type OrgRole } from "@agentx/contracts";
+import { isWriterOrgRole, type OrgRole } from "@agentx/cloud-contracts";
+import { projectMetaKey, projectMemberKey, type OrgId } from "@rovara-code/contracts";
 import { Aliases, type TableInput, type TransactItem } from "../agents/table-writes.js";
 import { budgetActorRefused } from "../agents/budget-authority.js";
 export async function taskStartProjectAuthorityChecks(deps: Pick<TableInput, "documentClient" | "tableName">,

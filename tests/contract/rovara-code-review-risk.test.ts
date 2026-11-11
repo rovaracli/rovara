@@ -7,10 +7,9 @@ import { join } from "node:path";
 import { promisify } from "node:util";
 import { randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
-import {
-  WORKER_INVOCATION_FEATURES, WorkflowReviewReportSchema, parseWorkflowReviewerResponse, reviewJsonShape,
-} from "../../packages/contracts/src/index.js";
-import { WorkflowSnapshotSchema, createCandidateManifest, createWorkflowSnapshot, submitWorkflowReview } from "../../packages/contracts/src/task-workflow-node.js";
+import { WORKER_INVOCATION_FEATURES, WorkflowReviewReportSchema, parseWorkflowReviewerResponse, reviewJsonShape } from "@rovara-code/contracts";
+import { WorkflowSnapshotSchema, createWorkflowSnapshot, submitWorkflowReview } from "../../packages/cloud-contracts/src/task-workflow-node.js";
+import { createCandidateManifest } from "@rovara-code/contracts";
 import { runWorkflowReviews } from "../../packages/worker/src/verification/review.js";
 import { WORKER_IMPLEMENTED_FEATURES } from "../../packages/worker/src/implemented-features.js";
 import type { PiSessionAdapter } from "../../packages/worker/src/pi-session.js";

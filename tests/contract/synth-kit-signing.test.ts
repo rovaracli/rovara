@@ -6,7 +6,7 @@ import { existsSync, utimesSync } from "node:fs";
 import { mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { SynthKitManifestSchema, sha256OfBytes } from "@agentx/contracts";
+import { SynthKitManifestSchema, sha256OfBytes } from "@agentx/cloud-contracts";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { buildBundle } from "../../scripts/release/bundle.js";
 import { assertBuildIsClean, assertSourceIsRelease, gitSourceState, isExpectedIgnoredPath, releaseCommitOfCleanTree, type SourceState } from "../../scripts/release/source-state.js";

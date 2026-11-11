@@ -1,12 +1,6 @@
 import { readFile, realpath, stat } from "node:fs/promises";
 import { isAbsolute, relative, resolve, sep } from "node:path";
-import {
-  WorkspaceClosePreflightResultSchema,
-  AgentXError,
-  agentXError,
-  type WorkspaceClosePreflightResult,
-  type WorkspaceCloseReason,
-} from "@agentx/contracts";
+import { WorkspaceClosePreflightResultSchema, AgentXError, agentXError, type WorkspaceClosePreflightResult, type WorkspaceCloseReason } from "@rovara-code/contracts";
 import { runIsolatedGit } from "./isolated-repository.js";
 import type { PreparationManifest } from "./prepare.js";
 import { storedCommandOutput } from "./command-failure.js";

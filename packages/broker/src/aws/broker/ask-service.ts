@@ -11,7 +11,7 @@ import { sessionPageUrl } from "../../decisions/open-path.js";
 import { LambdaClient } from "@aws-sdk/client-lambda";
 import { GetCommand, PutCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
 import { createHmac } from "node:crypto";
-import { AskModelAccessRequestSchema, AskRefSchema, agentXError, askRequestKey, isSystemOwnerId, liveInteractionFlagOn, type HookRecord, type OrgId } from "@agentx/contracts";
+import { AskModelAccessRequestSchema, AskRefSchema, agentXError, askRequestKey, isSystemOwnerId, liveInteractionFlagOn, type HookRecord, type OrgId } from "@rovara-code/contracts";
 import { handleLinearComment, type LinearCommentDependencies } from "../../rovara-code/linear-comments.js";
 import { settleLinearScrubs } from "../../agent-sessions/ask-linear-scrub.js";
 import { connectionWorkspaceKeys } from "../../connections/store.js";

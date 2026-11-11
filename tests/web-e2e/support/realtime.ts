@@ -1,5 +1,5 @@
 import type { Page } from "@playwright/test";
-import type { RealtimeNotice } from "@agentx/contracts/web";
+import type { RealtimeNotice } from "@agentx/cloud-contracts/web";
 export async function mockRealtime(page: Page) {
  await page.addInitScript(() => {
  const state = { sockets: [] as Array<{ close(): void; notice(value: unknown): void }>, connections: 0 };

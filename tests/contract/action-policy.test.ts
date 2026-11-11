@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { IN_HOUSE_TOOL_NAMES, type ActionPolicy } from "../../packages/contracts/src/index.js";
+import { IN_HOUSE_TOOL_NAMES, type ActionPolicy } from "@rovara-code/contracts";
 import {
   BULK_ITEM_LIMIT, LIFECYCLE_KEYS, baseClass, destructiveSignal, evaluatePolicy, itemCount, itemReference, nameWords, type ToolFacts,
 } from "../../packages/orchestrator/src/action-policy.js";

@@ -3,7 +3,7 @@
 //
 // At launch this is deliberately simple. Later (owner, 2026-10-22) it should also weigh how often each file changes, how far a change reaches, each project's own sensitive-path settings
 // and what past reverts of Rovara's merged pull requests teach.
-import { RISK_LARGE_CHANGE_LINES, RiskAssessmentSchema, type RiskAssessment, type VerificationReport } from "@agentx/contracts";
+import { RISK_LARGE_CHANGE_LINES, RiskAssessmentSchema, type RiskAssessment, type VerificationReport } from "@rovara-code/contracts";
 import type { EvidenceRiskSignal } from "./evidence-risk.js";
 import { inertLine } from "./inert-text.js";
 

@@ -1,26 +1,15 @@
 // Plan 4 Task 1: chain designs, step results, run statuses, the ids and limits, the error codes and the org-scoped keys.
 /* eslint-disable @typescript-eslint/no-explicit-any, @typescript-eslint/no-unsafe-member-access, @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-return -- the tests break a plain JSON design at a path, which a typed design would not allow */
 import { describe, expect, it } from "vitest";
-import { newPrefixedId } from "../../packages/contracts/src/agent-node.js";
-import { ChainIdSchema, ChainRunIdSchema, ChainRunStatusSchema, StepAttemptStatusSchema, TriggerIdSchema } from "../../packages/contracts/src/chains.js";
-import { ApproverRuleSchema, BranchIdSchema, CHAIN_MAX_BRANCHES, CHAIN_MAX_STEPS, CHAIN_MAX_TRAVERSALS, ChainDefinitionSchema, ChainRunStartedBySchema, ChainStepIdSchema, EdgeSchema, GATE_MAX_TIMEOUT_HOURS, HANDOFF_MAX_ITEMS, NextSchema, PinnedChainDefinitionSchema, REPORT_MAX_BYTES, STEP_INSTRUCTIONS_MAX_BYTES, STEP_LINKS_MAX, StepResultSchema, StepTargetSchema } from "../../packages/contracts/src/chains.js";
-import { AgentXErrorCodeSchema, agentXError, errorStatus } from "../../packages/contracts/src/errors.js";
-import { CHAIN_REVISION_CONFLICT_MESSAGE, CHAIN_RUN_CLOSED_MESSAGE, chainArchivedMessage, chainBudgetExceededMessage, chainBudgetRequiredMessage, chainStepUnavailableMessage } from "../../packages/contracts/src/errors.js";
-import * as contracts from "../../packages/contracts/src/index.js";
-import { type OrgId } from "../../packages/contracts/src/org.js";
-import { orgScoped } from "../../packages/contracts/src/org-node.js";
-import {
-  chainDirectoryKey,
-  chainKey,
-  chainNameKey,
-  chainRunKey,
-  chainRunsByChainKey,
-  chainRunsByProjectKey,
-  chainVersionSk,
-  openChainRunKey,
-  runEventSk,
-  stepSk,
-} from "../../packages/contracts/src/org-scoped-keys.js";
+import { newPrefixedId } from "@rovara-code/contracts";
+import { ChainIdSchema, ChainRunIdSchema, ChainRunStatusSchema, StepAttemptStatusSchema, TriggerIdSchema } from "@rovara-code/contracts";
+import { ApproverRuleSchema, BranchIdSchema, CHAIN_MAX_BRANCHES, CHAIN_MAX_STEPS, CHAIN_MAX_TRAVERSALS, ChainDefinitionSchema, ChainRunStartedBySchema, ChainStepIdSchema, EdgeSchema, GATE_MAX_TIMEOUT_HOURS, HANDOFF_MAX_ITEMS, NextSchema, PinnedChainDefinitionSchema, REPORT_MAX_BYTES, STEP_INSTRUCTIONS_MAX_BYTES, STEP_LINKS_MAX, StepResultSchema, StepTargetSchema } from "@rovara-code/contracts";
+import { AgentXErrorCodeSchema, agentXError, errorStatus } from "@rovara-code/contracts";
+import { CHAIN_REVISION_CONFLICT_MESSAGE, CHAIN_RUN_CLOSED_MESSAGE, chainArchivedMessage, chainBudgetExceededMessage, chainBudgetRequiredMessage, chainStepUnavailableMessage } from "@rovara-code/contracts";
+import * as contracts from "@rovara-code/contracts";
+import { type OrgId } from "@rovara-code/contracts";
+import { orgScoped } from "@rovara-code/contracts";
+import { chainDirectoryKey, chainKey, chainNameKey, chainRunKey, chainRunsByChainKey, chainRunsByProjectKey, chainVersionSk, openChainRunKey, runEventSk, stepSk } from "@rovara-code/contracts";
 import { INVESTIGATE_THEN_FIX } from "../support/chain-examples.js";
 
 const ORG_A = "org_aaaaaaaaaaaaaaaaaaaa" as OrgId;

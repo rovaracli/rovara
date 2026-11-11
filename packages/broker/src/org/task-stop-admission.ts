@@ -8,12 +8,8 @@ import { failedIndexes } from "../agents/table-writes.js";
 import { createHash } from "node:crypto";
 import { TransactGetCommand, TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
 import { z } from "zod";
-import {
-  AgentXError, AuditEventInputSchema, auditEventId, AgentGuardrailsSchema, AgentIdSchema, OrgIdSchema, OrgRoleSchema, TaskStopAdmissionInputSchema,
-  agentGuardrailsKey, agentKey, agentXError, builtinSettingsKey, calculateTaskStop, developerOrgKey,
-  isBuiltinAgentId, orgMemberKey, orgMetaKey, orgScoped, orgProjectCatalogKey, orgSettingsKey, projectAiKey,
-  type TaskStopAdmissionInput, type TaskStopBindingScope,
-} from "@agentx/contracts";
+import { AgentXError, AgentGuardrailsSchema, AgentIdSchema, OrgIdSchema, TaskStopAdmissionInputSchema, agentGuardrailsKey, agentKey, agentXError, builtinSettingsKey, calculateTaskStop, isBuiltinAgentId, orgScoped, orgProjectCatalogKey, type TaskStopAdmissionInput, type TaskStopBindingScope } from "@rovara-code/contracts";
+import { AuditEventInputSchema, auditEventId, OrgRoleSchema, developerOrgKey, orgMemberKey, orgMetaKey, orgSettingsKey, projectAiKey } from "@agentx/cloud-contracts";
 import { usdToWholeMicrodollars } from "./budget-amount.js";
 
 const CaptureIdentity = z.object({

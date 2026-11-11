@@ -5,7 +5,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { promisify } from "node:util";
 import { build, type Metafile, type Plugin } from "esbuild";
 import { NODE_ENGINE_RANGE } from "../../packages/cli/src/node-version.js";
-import { DEFAULT_CLI_PACKAGE_NAME } from "../../packages/contracts/src/cli-distribution.js";
+import { DEFAULT_CLI_PACKAGE_NAME } from "@rovara-code/contracts";
 
 const execFileAsync = promisify(execFile);
 

@@ -1,6 +1,7 @@
 // Setup and test health SH29: company setup recipes and company locks (admin only with a fresh sign-in; locks stricter only; no repository names stored).
 import { describe, expect, it } from "vitest";
-import { AgentXError, orgMemberKey, orgMetaKey, TestEnvironmentBodySchema, setupFingerprint, type OrgId, type SetupRecipeBody, SetupRecipeBodySchema } from "@agentx/contracts";
+import { AgentXError, TestEnvironmentBodySchema, setupFingerprint, type OrgId, type SetupRecipeBody, SetupRecipeBodySchema } from "@rovara-code/contracts";
+import { orgMemberKey, orgMetaKey } from "@agentx/cloud-contracts";
 import {
   LOCKS_PENDING_TTL_MS, SETUP_LIMIT_MAXIMA, SETUP_RECIPES_MAX_PER_ORG, SETUP_RECIPES_MAX_PROPOSED, applyCompanyLocks, approveRecipe, companyApprovedHosts, createRecipeAsAdmin, offeredRecipes, proposeRecipe, readCompanyLocks,
   recipeBodyFromProjectSetup, revokeRecipe, setCompanyLocks, approveLocksChange, isLoosening, setRecipeScope, type CompanySetupLocks, type ProjectSetupSettings, type RecipeCaller, type SetupLocksDeps, type SetupRecipeDeps,

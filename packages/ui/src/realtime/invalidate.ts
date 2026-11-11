@@ -1,6 +1,6 @@
 import { LIVE_REFETCH_DEBOUNCE_MS, NAV_REFETCH_MIN_INTERVAL_MS } from "../constants.js";
 import type { QueryClient } from "@tanstack/react-query";
-import type { RealtimeNotice } from "@agentx/contracts/web";
+import type { RealtimeNotice } from "@agentx/cloud-contracts/web";
 export function queryKeysFor(notice: RealtimeNotice): unknown[][] {
  switch (notice.type) {
  // UX2 slice 2: a session that changed may have moved on Home's one "needs you" list (a decision card, a blocked or paused card), so Home and the cards are read again too.

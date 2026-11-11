@@ -4,22 +4,8 @@
 import { randomUUID } from "node:crypto";
 import { PutCommand, TransactWriteCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
 import { describe, expect, it } from "vitest";
-import {
-  SESSION_LEGS_MAX,
-  agentSessionKey,
-  agentXError,
-  deviceKey,
-  deviceSessionKey,
-  liveSessionKey,
-  orgSettingsKey,
-  userChannel,
-  INDEX_EXPIRY_ATTRIBUTE,
-  SESSION_RETENTION_DAYS,
-  projectMetaKey,
-  sessionEventId,
-  type OrgId,
-  type OrgRole,
-} from "../../packages/contracts/src/index.js";
+import { SESSION_LEGS_MAX, agentSessionKey, agentXError, liveSessionKey, INDEX_EXPIRY_ATTRIBUTE, SESSION_RETENTION_DAYS, projectMetaKey, sessionEventId, type OrgId } from "@rovara-code/contracts";
+import { deviceKey, deviceSessionKey, orgSettingsKey, userChannel, type OrgRole } from "@agentx/cloud-contracts";
 import { registerDevice } from "../../packages/broker/src/devices/store.js";
 import { recordLocalUpdate, registerLocalSession, listDeviceCommands } from "../../packages/broker/src/devices/local-sessions.js";
 import { routeDeviceRequest } from "../../packages/broker/src/devices/routes.js";

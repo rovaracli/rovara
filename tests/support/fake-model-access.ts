@@ -3,7 +3,7 @@
 // limit a spend reports is the last one upserted; what was spent is whatever the test sets. Every method is a vi.fn.
 import { vi, type Mock } from "vitest";
 // The package the broker imports, not its source: an error must be an instance of the class the broker tests for.
-import { agentXError, type OrgId } from "@agentx/contracts";
+import { agentXError, type OrgId } from "@rovara-code/contracts";
 import type { KeyAudit, MemberSpend, MintKeyInput, MintedKey, ModelAccess, SourceCheck, SpendFigures, UpsertSourceInput } from "../../packages/broker/src/model-proxy/access.js";
 import { keyIdOf } from "../../packages/broker/src/org/budget.js";
 

@@ -3,8 +3,9 @@
 // inert, and it is bounded: under size pressure the evidence text shrinks first, then the proven and passed rows, and a failed requirement or a not-tested item is never dropped.
 import { randomUUID } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
-import type { PlanDocument, TestProof } from "../../packages/contracts/src/index.js";
-import { WorkflowSnapshotSchema, createCandidateManifest, createWorkflowSnapshot, type WorkflowSnapshot } from "../../packages/contracts/src/task-workflow-node.js";
+import type { PlanDocument, TestProof } from "@rovara-code/contracts";
+import { WorkflowSnapshotSchema, createWorkflowSnapshot, type WorkflowSnapshot } from "../../packages/cloud-contracts/src/task-workflow-node.js";
+import { createCandidateManifest } from "@rovara-code/contracts";
 import { REVIEW_SAME_MODEL_NOTE } from "../../packages/broker/src/rovara-code/review-model-lines.js";
 import { PULL_REQUEST_BODY_MAX_BYTES } from "../../packages/broker/src/rovara-code/pull-request-body.js";
 import { buildProofTable, checkIdOfProofItem, type ProofCheckResult, type ProofScenarioRow } from "../../packages/broker/src/rovara-code/proof-table.js";

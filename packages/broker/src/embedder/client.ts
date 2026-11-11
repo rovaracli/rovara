@@ -2,7 +2,7 @@
 // (Qwen3-Embedding-0.6B, 1,024 dimensions) and the lessons' (bge-small, 384). This file is the port: it checks the request against the same limits the
 // function enforces, sends it through `invoke`, and checks the answer before any vector is used or stored. The AWS call itself is `lambdaEmbedderInvoke`
 // (team-record/aws-adapters.ts). Nothing here logs or keeps text from an error: every failure is one of the fixed codes below.
-import type { EmbedderModelSpec } from "@agentx/contracts";
+import type { EmbedderModelSpec } from "@agentx/cloud-contracts";
 
 /** The function's limits (environments/embedder/app/embedder_core.py; tests/unit/embedder/spec.test.ts pins both sides to the same numbers). */
 export const EMBEDDER_LIMITS = { maxTexts: 16, maxTextChars: 24_000, maxTotalChars: 96_000 } as const;

@@ -2,7 +2,8 @@
 // re-encoding), so the signed manifest's hash is the hash the task runs. The registry credential comes from ECR and is kept out of the displayed
 // command and out of any error text. Each image is checked in the registry by digest afterwards.
 import { BatchGetImageCommand, GetAuthorizationTokenCommand } from "@aws-sdk/client-ecr";
-import { BUNDLE_IMAGE_REPOSITORY_PREFIX, agentXError } from "@agentx/contracts";
+import { BUNDLE_IMAGE_REPOSITORY_PREFIX } from "@agentx/cloud-contracts";
+import { agentXError } from "@rovara-code/contracts";
 import type { CommandRunner } from "../../deploy/cdk-engine.js";
 import type { VerifiedBundle } from "./verify.js";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";

@@ -4,7 +4,7 @@
 //   s3CoverageMapStore    the coverage map store: the install's artifact bucket under its own prefix, one object per digest, per company and project
 import { createHash } from "node:crypto";
 import { GetObjectCommand, PutObjectCommand } from "@aws-sdk/client-s3";
-import { ROVARA_CODE_AGENT_ID, canonicalJson } from "@agentx/contracts";
+import { ROVARA_CODE_AGENT_ID, canonicalJson } from "@rovara-code/contracts";
 import { admitWork } from "../../spend/admission.js";
 import type { AgentRouteDependencies } from "../../agents/routes.js";
 import { startAgentRun } from "../../agents/runs.js";

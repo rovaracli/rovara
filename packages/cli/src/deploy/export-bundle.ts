@@ -11,20 +11,8 @@
 import { chmod, mkdir, mkdtemp, readdir, readFile, rename, rm, rmdir, writeFile } from "node:fs/promises";
 import { basename, dirname, join, resolve } from "node:path";
 import { z } from "zod";
-import {
-  agentXError,
-  defaultBoundaryArn,
-  defaultBoundaryStatements,
-  environmentCloudFormationRoleName,
-  environmentOperatorRoleName,
-  environmentPullThroughPrefix,
-  environmentStackName,
-  EnvironmentNameSchema,
-  operatorRoleStatements,
-  serviceRoleStatements,
-  type PolicyScope,
-  type PolicyStatementJson,
-} from "@agentx/contracts";
+import { agentXError, environmentCloudFormationRoleName, environmentOperatorRoleName, environmentPullThroughPrefix, environmentStackName, EnvironmentNameSchema } from "@rovara-code/contracts";
+import { defaultBoundaryArn, defaultBoundaryStatements, operatorRoleStatements, serviceRoleStatements, type PolicyScope, type PolicyStatementJson } from "@agentx/cloud-contracts";
 import type { InitAnswers } from "../init/install-state.js";
 import { ACCOUNT_PATTERN, IdentityAnswersSchema, ModelsAnswersSchema, REGION_PATTERN } from "./answer-schemas.js";
 import type { DeployAnswers } from "./deploy-environment.js";

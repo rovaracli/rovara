@@ -3,7 +3,7 @@
 // The label is the broker's: it comes from the approved backing (`evidenceDependencyLabelFor`), never from the worker. The worker's usage record only says whether a dependency really ran
 // and for how long. A dependency the record does not show started and healthy is NOT shown as running ("not available", fell back: did not start): a missing or broken record never makes a result look better.
 // The names the sealed tests asked for that no dependency answers are counted as registrable domain + count in one "Blocked by environment" line, never with a path, a query or a value.
-import { TEST_SERVICES_AWS_USAGE_WORDS, TEST_SERVICES_FAKE_USAGE_WORDS, evidenceDependencyLabelFor, testServicesAwsUsageVerdict, testServicesFakeUsageVerdict, testServicesUnknownCallCount, type EvidenceDependency, type EvidenceNotTested, type EvidenceRaw } from "@agentx/contracts";
+import { TEST_SERVICES_AWS_USAGE_WORDS, TEST_SERVICES_FAKE_USAGE_WORDS, evidenceDependencyLabelFor, testServicesAwsUsageVerdict, testServicesFakeUsageVerdict, testServicesUnknownCallCount, type EvidenceDependency, type EvidenceNotTested, type EvidenceRaw } from "@rovara-code/contracts";
 import { inertLine } from "./inert-text.js";
 
 /** A dependency as the broker pinned it for the run (from the approved environment's backing, not from the worker). */

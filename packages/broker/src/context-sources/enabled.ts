@@ -1,6 +1,6 @@
 // E2: whether a stage of a project has any context source, read when the operation is built so that the capability is issued only then. A stage without
 // sources gets no capability, so the worker neither asks nor shows a tool.
-import { isContextSourceStage, type OrgId } from "@agentx/contracts";
+import { isContextSourceStage, type OrgId } from "@rovara-code/contracts";
 import { dynamoContextSourceStore } from "./store.js";
 
 export async function stageHasContextSources(

@@ -1,7 +1,8 @@
 import { checkedTaskMaxPerRun } from "../org/task-stop-window.js";
 import { createHash } from "node:crypto";
 import { z } from "zod";
-import { TaskStopAdmissionInputSchema, RunCheckoutSchema, PER_TASK_BUDGET_USD, spendRequestKey, agentXError, type SpendRequestRecord } from "@agentx/contracts";
+import { TaskStopAdmissionInputSchema, RunCheckoutSchema, agentXError } from "@rovara-code/contracts";
+import { PER_TASK_BUDGET_USD, spendRequestKey, type SpendRequestRecord } from "@agentx/cloud-contracts";
 import { taskKey, tryEffectiveTaskOwner, type DeveloperTaskRecord } from "../developer/task-records.js";
 import type { CapturedTaskStop } from "../org/task-stop-admission.js";
 import { usdToWholeMicrodollars } from "../org/budget-amount.js";

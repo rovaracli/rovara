@@ -15,10 +15,8 @@
 // removal entry for the reader is newer than that snapshot. After seeding the record is authoritative.
 import { createHash } from "node:crypto";
 import { BatchGetCommand, DeleteCommand, GetCommand, PutCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
-import {
-  MAINTAINERS_GROUP, recordAccessErasedKey, recordAccessKey, recordAccessMemberKey, recordAccessMemberPrefix, recordAccessPersonKey, recordAccessPersonPrefix, scopeAndAncestors,
-  type AclSnapshot, type Audience, type OrgId,
-} from "@agentx/contracts";
+import { MAINTAINERS_GROUP, type AclSnapshot, type Audience, type OrgId } from "@rovara-code/contracts";
+import { recordAccessErasedKey, recordAccessKey, recordAccessMemberKey, recordAccessMemberPrefix, recordAccessPersonKey, recordAccessPersonPrefix, scopeAndAncestors } from "@agentx/cloud-contracts";
 import { Aliases, errorName, type Item } from "../agents/table-writes.js";
 import { queryPrefix } from "./store.js";
 import type { RecordCaller, TeamRecordTable } from "./types.js";

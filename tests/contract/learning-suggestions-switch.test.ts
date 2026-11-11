@@ -2,10 +2,7 @@
 // company's own record, else the install default (deployment config, off). The test environment's install default is ON (tests/support/vitest-shared-config.ts), so a test that wants the
 // production default passes an empty environment or stubs it.
 import { afterEach, describe, expect, it, vi } from "vitest";
-import {
-  LearningCompanySettingsAnswerReaderSchema, LearningCompanySettingsAnswerSchema, LearningCorrectionSchema, LearningSuggestionSchema, orgLearningSettingsKey, projectLearningKey,
-  type LearningCompanySettingsAnswer, type OrgId,
-} from "../../packages/contracts/src/index.js";
+import { LearningCompanySettingsAnswerReaderSchema, LearningCompanySettingsAnswerSchema, LearningCorrectionSchema, LearningSuggestionSchema, orgLearningSettingsKey, projectLearningKey, type LearningCompanySettingsAnswer, type OrgId } from "@rovara-code/contracts";
 import { groupCorrections } from "../../packages/broker/src/learning/grouping.js";
 import { metricMonth, readMetric } from "../../packages/broker/src/learning/metric.js";
 import { signatureOf } from "../../packages/broker/src/learning/similarity.js";
@@ -69,7 +66,7 @@ describe("the value in force", () => {
 
 describe("the install default is deployment config", () => {
   it("is a packed broker setting: AGENTX_SETTINGS code lg hydrates LEARNING_SUGGESTIONS_DEFAULT, which the switch reads (off unless exactly on)", async () => {
-    const { BROKER_SETTINGS } = await import("../../packages/contracts/src/index.js");
+    const { BROKER_SETTINGS } = await import("@agentx/cloud-contracts");
     const { hydrateBrokerEnvironment } = await import("../../packages/broker/src/aws/broker-environment.js");
     expect(BROKER_SETTINGS.learningSuggestionsDefault).toEqual({ code: "lg", variable: "LEARNING_SUGGESTIONS_DEFAULT" });
     for (const [packed, expected] of [["lg=on", "on"], ["lg=off", "off"], ["", "off"]] as const) {
@@ -126,7 +123,7 @@ describe("GET and PUT /v1/app/org/learning-settings", () => {
     expect(await failure(s.put(callerOf(ADMIN, "admin"), { expectedRevision: 0, suggestions: "off" }))).toMatchObject({ code: "LEARNING_SETTINGS_CHANGED" });
     expect(await failure(s.put(callerOf(ADMIN, "admin"), { expectedRevision: 5, suggestions: "off" }))).toMatchObject({ code: "LEARNING_SETTINGS_CHANGED" });
     expect(s.db.get(orgLearningSettingsKey(ORG))).toMatchObject({ suggestions: "on", revision: 1 });
-    const { errorStatus } = await import("../../packages/contracts/src/index.js");
+    const { errorStatus } = await import("@rovara-code/contracts");
     expect(errorStatus("LEARNING_SETTINGS_CHANGED")).toBe(409);
     expect(errorStatus("LEARNING_SUGGESTIONS_OFF")).toBe(409);
   });
@@ -359,7 +356,7 @@ describe("stored items tolerate what a newer writer adds (v2 extensibility)", ()
   });
 
   it("keeps the request side strict: a source ref with an unknown field is still refused in a body", async () => {
-    const { LearningSourceRefSchema } = await import("../../packages/contracts/src/index.js");
+    const { LearningSourceRefSchema } = await import("@rovara-code/contracts");
     expect(LearningSourceRefSchema.safeParse({ taskId: "t1", futureField: "x" }).success).toBe(false);
   });
 

@@ -1,7 +1,7 @@
 // Test services, slice 1 T2: dependencies and a dev container do not combine yet. The sealed check runners (`docker exec --env-file` in the check sandbox, test-services.md 4.0) cannot be used with a project's dev container
 // (the worker throws), so an environment that lists dependencies for a project that uses one is "not available yet": at approval, at the task's start and at dispatch. Today's behaviour for a project WITHOUT dependencies is
 // not touched: this is asked only when the environment has dependencies.
-import { agentXError, type OrgId, type TestEnvironmentBody } from "@agentx/contracts";
+import { agentXError, type OrgId, type TestEnvironmentBody } from "@rovara-code/contracts";
 import { latestRevision } from "../org/project-settings.js";
 
 /** What a person reads. Fixed words. */

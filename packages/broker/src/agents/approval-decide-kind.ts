@@ -6,7 +6,8 @@
 // member's role on the run's project), plus the member's LIVE org membership. The candidates stored on the record are never consulted (R68).
 // `decide` is `decideApproval` as that member, with the session's proof, under a request id derived from the session so a retry replays.
 import { createHash } from "node:crypto";
-import { ApprovalIdSchema, LEVEL_WORDS, ROVARA_CODE_AGENT_ID, agentXError, decisionTaskSessionOf, isBuiltinAgentId, stepOfLessSafeReason, trackRecordLines, type AuditProof, type OrgId } from "@agentx/contracts";
+import { ApprovalIdSchema, LEVEL_WORDS, ROVARA_CODE_AGENT_ID, agentXError, decisionTaskSessionOf, isBuiltinAgentId, stepOfLessSafeReason, trackRecordLines, type OrgId } from "@rovara-code/contracts";
+import { type AuditProof } from "@agentx/cloud-contracts";
 import { AgentSessionStore } from "../agent-sessions/store.js";
 import { takeOverFacts } from "../agent-sessions/take-over.js";
 import type { ConfirmView, DecideInspection, DecideKind, DecideOutcome, DecideTarget } from "../developer/decide-kinds.js";

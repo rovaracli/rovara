@@ -1,11 +1,8 @@
 // Owner-only, receipt-backed enrollment edges. No task is stopped or mutated here.
 import { randomUUID } from "node:crypto";
 import { z } from "zod";
-import {
- AuditEventInputSchema, INDEX_EXPIRY_ATTRIBUTE, TaskStopEnrollmentBodySchema, TaskStopEnrollmentReadSchema,
- TaskStopEnrollmentResultSchema, TaskStopReviewBodySchema, TaskStopReviewSchema, agentXError, auditEventId,
- canonicalJson, taskStopReviewKey, type TaskStopReview,
-} from "@agentx/contracts";
+import { AuditEventInputSchema, TaskStopEnrollmentBodySchema, TaskStopEnrollmentReadSchema, TaskStopEnrollmentResultSchema, TaskStopReviewBodySchema, TaskStopReviewSchema, auditEventId, taskStopReviewKey, type TaskStopReview } from "@agentx/cloud-contracts";
+import { INDEX_EXPIRY_ATTRIBUTE, agentXError, canonicalJson } from "@rovara-code/contracts";
 import type { DeveloperCaller } from "../aws/developer-routes.js";
 import { commit, isTransactionConflict, readRequest, type TransactItem } from "../agents/table-writes.js";
 import { auditPending } from "../audit/outbox.js";

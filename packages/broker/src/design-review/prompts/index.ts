@@ -1,5 +1,5 @@
 // The design review prompts: the registry, and the digest computed in code. A reviewer run records the prompt's id, version and digest (ReviewerRunSchema), so the card shows exactly which text a reviewer was given.
-import { promptDigest, type DesignReviewTier, type ReviewerRole } from "@agentx/contracts";
+import { promptDigest, type DesignReviewTier, type ReviewerRole } from "@rovara-code/contracts";
 import type { ReviewPrompt } from "./common.js";
 import { CODEBASE_PROMPT } from "./codebase.js";
 import { COMPREHENSION_PROMPT } from "./comprehension.js";

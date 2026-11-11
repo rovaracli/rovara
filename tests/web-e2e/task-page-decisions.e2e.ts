@@ -2,7 +2,7 @@
 // Retry the checks, Revise the plan and spec choices. The mock cell answers the ordinary views; each test adds what the broker would send (the card view, the task view's `pageActions`).
 import { mkdirSync } from "node:fs";
 import type { APIRequestContext, BrowserContext, Page } from "@playwright/test";
-import { DecisionCardsViewSchema } from "@agentx/contracts/web";
+import { DecisionCardsViewSchema } from "@agentx/cloud-contracts/web";
 import { test, expect } from "./support/csp.js";
 import { mockRealtime } from "./support/realtime.js";
 import { checkA11y } from "./support/axe.js";

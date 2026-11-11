@@ -8,7 +8,7 @@
 // Every sort key starts with `LESSONSET`, which the project erase and the workspace erase already wipe. The item holds a code from the allow-list, a time and nothing else: no model name, no amount, no
 // provider or proxy text, no person (checklist section 3). A store that cannot be reached never blocks learning and never throws into it: the pause is bookkeeping, not a gate.
 import { DeleteCommand, GetCommand, PutCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
-import { LESSONS_PAUSE_CODES, teamRecordPk, type LessonsPauseCode } from "@agentx/contracts";
+import { LESSONS_PAUSE_CODES, teamRecordPk, type LessonsPauseCode } from "@rovara-code/contracts";
 import type { TeamRecordTable } from "../team-record/types.js";
 import type { LearningSpend } from "./ports.js";
 

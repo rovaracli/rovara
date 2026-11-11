@@ -1,30 +1,8 @@
 import { logDeveloperEvent } from "../../developer/log.js";
 import type { z } from "zod";
 import { QueryCommand } from "@aws-sdk/lib-dynamodb";
-import {
-  CHANNEL_MEMBERS_MAX_CHANNELS,
-  StoredProjectDefinitionSchema,
-  MEMBER_GRANT_SK_PREFIX,
-  PROJECT_REVISION_SK_PREFIX,
-  SLACK_BINDING_SK_PREFIX,
-  developerTaskPolicy,
-  memberGrantsPk,
-  orgProjectCatalogPk,
-  projectPk,
-  slackBindingPk,
-  type AppProjectSummary,
-  setupCheckErrorRef,
-  type AppProjectsResponse,
-  type ProjectRole,
-  type ChannelInfoResponse,
-  type ChannelMembersRequest,
-  type ChannelMembersResponse,
-  type DeveloperProjectsResponse,
-  type DeveloperTaskPolicy,
-  type OrgId,
-  type SlackChannelBinding,
-  SESSION_PROJECT_BINDINGS_MAX,
-} from "@agentx/contracts";
+import { CHANNEL_MEMBERS_MAX_CHANNELS, StoredProjectDefinitionSchema, MEMBER_GRANT_SK_PREFIX, PROJECT_REVISION_SK_PREFIX, SLACK_BINDING_SK_PREFIX, developerTaskPolicy, memberGrantsPk, orgProjectCatalogPk, projectPk, slackBindingPk, type AppProjectSummary, setupCheckErrorRef, type AppProjectsResponse, type ProjectRole, type ChannelInfoResponse, type ChannelMembersRequest, type ChannelMembersResponse, type DeveloperTaskPolicy, type OrgId, type SlackChannelBinding, SESSION_PROJECT_BINDINGS_MAX } from "@rovara-code/contracts";
+import { type DeveloperProjectsResponse } from "@agentx/cloud-contracts";
 import { resolveDeveloperAccess } from "../../developer/access.js";
 import { effectiveProjectRole, grantRoleOf, grantedByOf, readProjectMeta, type ProjectMetaItem } from "../../developer/project-roles.js";
 import { createProjectMembers, survivorOf, type ProjectMembers, type ProjectMembersDependencies } from "../../org/project-members.js";

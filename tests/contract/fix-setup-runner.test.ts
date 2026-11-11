@@ -1,8 +1,7 @@
 // Setup and test health SH17: the auto-fix runner records a Fix setup card when it ASKS about a fault of the test environment, and only then. With the port absent (vx off) the ask is exactly what it was.
 import { describe, expect, it, vi } from "vitest";
-import {
-  WORKFLOW_AGENTX_ACTOR_ID, WORKFLOW_BLOCK_REASONS, WorkflowDecisionRecordSchema, WorkflowSnapshotSchema, createCandidateManifest, createWorkflowSnapshot, type WorkflowDecision, type WorkflowSnapshot,
-} from "@agentx/contracts";
+import { WORKFLOW_AGENTX_ACTOR_ID, WorkflowDecisionRecordSchema, createCandidateManifest, type WorkflowDecision } from "@rovara-code/contracts";
+import { WORKFLOW_BLOCK_REASONS, WorkflowSnapshotSchema, createWorkflowSnapshot, type WorkflowSnapshot } from "@agentx/cloud-contracts";
 
 vi.mock("../../packages/broker/src/aws/developer-tasks.js", () => ({
   autoSendBackToCodingFromSystem: vi.fn(async () => "STARTED" as const), autoRetryChecksFromSystem: vi.fn(async () => "STARTED" as const), autoRetryReviewsFromSystem: vi.fn(async () => "STARTED" as const),

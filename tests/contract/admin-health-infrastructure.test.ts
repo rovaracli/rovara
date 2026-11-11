@@ -5,7 +5,7 @@ import { readFileSync } from "node:fs";
 import { App, Stack } from "aws-cdk-lib";
 import { Template } from "aws-cdk-lib/assertions";
 import { Alarm, AlarmRule, AlarmState, CompositeAlarm, Metric } from "aws-cdk-lib/aws-cloudwatch";
-import { HEALTH_ALARM_SUFFIXES } from "@agentx/contracts";
+import { HEALTH_ALARM_SUFFIXES } from "@agentx/cloud-contracts";
 import { buildAgentXApp } from "../../infra/lib/app.js";
 import { describe, expect, it } from "vitest";
 import { ControlPlaneStack } from "../../infra/lib/control-plane.js";

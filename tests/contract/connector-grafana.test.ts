@@ -4,7 +4,7 @@
 import { PassThrough } from "node:stream";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ConnectorNotConnected, discoverTools, executeTool, type ConnectorDefinition, type Ledger } from "@agentx/gateway";
-import { ProjectDefinitionSchema, type GrantedTool, type OrgId } from "../../packages/contracts/src/index.js";
+import { ProjectDefinitionSchema, type GrantedTool, type OrgId } from "@rovara-code/contracts";
 import { classifyWrite } from "../../packages/broker/src/agents/write-class.js";
 import { BUILT_IN_CONNECTOR_TYPES, resolveConnectors, type ConnectorTypeContext, type ResolvedConnector } from "../../packages/broker/src/aws/connector-types.js";
 import { grafanaConnectionCheck, grafanaConnectorType } from "../../packages/broker/src/aws/grafana-connector-type.js";

@@ -1,7 +1,7 @@
 // Issue #213, part one: a workspace whose preparation failed stops counting toward the per-person
 // and organization workspace limits at once, a new message in its Slack thread starts fresh, and a
 // later close never gives the slot back a second time.
-import { slackLimitPk } from "../../packages/contracts/src/org-scoped-keys.js";
+import { slackLimitPk } from "@rovara-code/contracts";
 import { TEST_ORG } from "../support/orgs.js";
 import { randomUUID } from "node:crypto";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";

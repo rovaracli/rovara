@@ -11,13 +11,8 @@ import { StartExecutionCommand, type SFNClient } from "@aws-sdk/client-sfn";
 import { GetParameterCommand, GetParametersCommand, PutParameterCommand, type SSMClient } from "@aws-sdk/client-ssm";
 import { DeleteCommand, GetCommand, PutCommand } from "@aws-sdk/lib-dynamodb";
 import { z } from "zod";
-import {
-  BOOT_STAGE2_SHA256_PARAMETER, E2E_QUALIFICATION_INSTANCE_ID_PATTERN, E2E_QUALIFICATION_PROFILE_ID, E2E_QUALIFICATION_ROLE_ID_PATTERN, QUALIFICATION_POLL_TIMEOUT_MS, QUALIFICATION_READY_TIMEOUT_MS,
-  QUALIFICATION_VOLUME_DEVICE, QUALIFIED_AMI_SETTING_NAME, REQUALIFY_PROFILE_ID, REQUALIFY_REFUSAL_PREFIX, REQUALIFY_STEP_REASON_CODES, REQUALIFY_TAGS, WORKER_SETTING_PARAMETERS,
-  WebApiRuntimeInstallProposalSchema, agentXError, buildRunInstancesInput, canonicalJson, e2eQualificationPrefix, getParametersInBatches, launchTemplateShapeProblem, qualificationVolumeTags,
-  renderQualificationUserData, requalifyHoldKey, requalifyRunKey, webApiRuntimeInstallProposalSha256,
-  type QualificationFacts, type QualificationSettings, type RequalifyReasonCode, type RequalifyRunRecord,
-} from "@agentx/contracts";
+import { BOOT_STAGE2_SHA256_PARAMETER, E2E_QUALIFICATION_INSTANCE_ID_PATTERN, E2E_QUALIFICATION_PROFILE_ID, E2E_QUALIFICATION_ROLE_ID_PATTERN, QUALIFICATION_POLL_TIMEOUT_MS, QUALIFICATION_READY_TIMEOUT_MS, QUALIFICATION_VOLUME_DEVICE, QUALIFIED_AMI_SETTING_NAME, REQUALIFY_PROFILE_ID, REQUALIFY_REFUSAL_PREFIX, REQUALIFY_STEP_REASON_CODES, REQUALIFY_TAGS, WORKER_SETTING_PARAMETERS, WebApiRuntimeInstallProposalSchema, agentXError, canonicalJson, e2eQualificationPrefix, getParametersInBatches, launchTemplateShapeProblem, qualificationVolumeTags, requalifyHoldKey, requalifyRunKey, webApiRuntimeInstallProposalSha256, type RequalifyReasonCode, type RequalifyRunRecord } from "@rovara-code/contracts";
+import { buildRunInstancesInput, renderQualificationUserData, type QualificationFacts, type QualificationSettings } from "@agentx/cloud-contracts";
 import { e2eModelCheckRunnerKey } from "../e2e/model-route-registry.js";
 import { e2eRegisteredRuntimeKey } from "./e2e-runtime-readiness.js";
 import { assertRunStateIsCurrent, bootIdentityOf } from "./runtime-requalify-state.js";

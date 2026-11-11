@@ -4,15 +4,8 @@
 // what each function is allowed to do is pinned in audit-ledger-infrastructure.test.ts.
 import { TransactWriteCommand, type DynamoDBDocumentClient } from "@aws-sdk/lib-dynamodb";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import {
-  AUDIT_FLUSH_DEADLINE_MS,
-  AUDIT_PENDING_SHARDS,
-  AUDIT_PENDING_TTL_DAYS,
-  AuditEventInputSchema,
-  auditOperatorId,
-  INDEX_EXPIRY_ATTRIBUTE,
-  type AuditEventInput,
-} from "@agentx/contracts";
+import { AUDIT_FLUSH_DEADLINE_MS, AUDIT_PENDING_SHARDS, AUDIT_PENDING_TTL_DAYS, AuditEventInputSchema, auditOperatorId, type AuditEventInput } from "@agentx/cloud-contracts";
+import { INDEX_EXPIRY_ATTRIBUTE } from "@rovara-code/contracts";
 import { AUDIT_DRAIN_PAGE_SIZE, drainAuditPending, runAuditDrain } from "../../packages/broker/src/audit/drain.js";
 import * as builders from "../../packages/broker/src/audit/events.js";
 import { auditOccurrence } from "../../packages/broker/src/audit/events.js";

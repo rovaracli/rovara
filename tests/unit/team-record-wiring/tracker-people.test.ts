@@ -5,7 +5,8 @@
 //  3. THE ADMIN'S MAPPING: list, map to a member of the same org (with an audit event), unmap (the link and future rows go; the automatic linker leaves them alone; the person's erase still takes their rows).
 //  4. THE READERS: Linear's and Jira's real readers (a fake fetch) read guests and company control (Linear: SAML enforced; Jira: unavailable), skip bots and deactivated people, and call only their own addresses.
 import { describe, expect, it, vi } from "vitest";
-import { developerOrgKey, orgEmailKey, orgMetaKey, orgProjectCatalogKey, teamRecordPk, TEAM_RECORD_EMBEDDER, type OrgId } from "@agentx/contracts";
+import { developerOrgKey, orgEmailKey, orgMetaKey, TEAM_RECORD_EMBEDDER } from "@agentx/cloud-contracts";
+import { orgProjectCatalogKey, teamRecordPk, type OrgId } from "@rovara-code/contracts";
 import { OrgConnectionStore, LINEAR_GRAPHQL } from "../../../packages/broker/src/connections/store.js";
 import { OrgSecrets } from "../../../packages/broker/src/connections/org-secrets.js";
 import { createTeamRecordRuntime, type TeamRecordRuntime } from "../../../packages/broker/src/team-record/runtime.js";

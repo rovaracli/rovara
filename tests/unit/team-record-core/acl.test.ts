@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { MAINTAINERS_GROUP, type Audience } from "@agentx/contracts";
+import { MAINTAINERS_GROUP, type Audience } from "@rovara-code/contracts";
 import { LIVE_CHECK_CACHE_MS, createLiveCheckCache, satisfiesAcl, visibleWithoutLiveCheck, type Visible } from "../../../packages/broker/src/team-record/acl.js";
 import type { ReadAudience } from "../../../packages/broker/src/team-record/types.js";
 import { ORG_A, caller, filterRows as filterVisible } from "../../support/team-record-core.js";

@@ -1,7 +1,7 @@
 // What Slack says a channel IS, for the Team record's source rows (source-row lane, task 7): the DeveloperIdentity function (the only holder of the bot token) answers `channel-class` fresh, and the broker
 // reaches it through the same Lambda invoke it already uses for channel names. No new token, secret, environment variable or permission.
 import { describe, expect, it, vi } from "vitest";
-import { ChannelClassRequestSchema } from "@agentx/contracts";
+import { ChannelClassRequestSchema } from "@rovara-code/contracts";
 import { slackDirectory } from "../../packages/broker/src/developer/slack-directory.js";
 import { channelClassThroughLambda } from "../../packages/broker/src/aws/developer-routes/identity-lambda.js";
 import { BOT_TOKEN, T0, TEAM, fakeSlack, identityHarness, routeFetch } from "../support/developer-fakes.js";

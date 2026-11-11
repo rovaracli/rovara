@@ -2,7 +2,7 @@
 // CONFIG_INVALID ("Sign in with Rovara on this install ..."). The sign-in server told the CLI only "sign-in failed on the AgentX server"
 // and logged only the error's name ("AgentXError"). It must say what the person can do, and the log must carry the error's code.
 import { describe, expect, it } from "vitest";
-import { agentXError } from "@agentx/contracts";
+import { agentXError } from "@rovara-code/contracts";
 import { identityHarness, type FakeSlackUser } from "../support/developer-fakes.js";
 
 const maya: FakeSlackUser = { userId: "U0MAYA001", name: "Maya Chen", email: "maya@example.com" };

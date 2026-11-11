@@ -3,7 +3,7 @@
 import { expect, it } from "vitest";
 import { render, screen, within } from "@testing-library/react";
 import { createElement as h } from "react";
-import { designReviewDisagreements, inputProofSentence, FILES_READ_LABEL, CODE_CITATION_UNCHECKED } from "@agentx/contracts/web";
+import { designReviewDisagreements, inputProofSentence, FILES_READ_LABEL, CODE_CITATION_UNCHECKED } from "@agentx/cloud-contracts/web";
 import { DesignTab, DesignTabView } from "../../packages/ui/src/screens/session/DesignTab.js";
 import { classificationLine, citationLine, designTabModel, readDesignActions, readDesignReview, reviewerLine, usdWords } from "../../packages/ui/src/screens/session/design-review-view.js";
 import { cleanApproveReason, openBlockersOnCard } from "../../packages/ui/src/design/design-review-card.js";

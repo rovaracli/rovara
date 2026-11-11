@@ -1,5 +1,5 @@
 // K1 lane D: the title of the spec pull request, and the folders a spec never goes into. (The spec is published by the broker itself: see publish.ts.)
-import { META_KNOWLEDGE_DEFAULTS } from "@agentx/contracts";
+import { META_KNOWLEDGE_DEFAULTS } from "@rovara-code/contracts";
 
 /**
  * The project's own knowledge folders (steering, skills, runbooks, key docs), which a spec is never written into: checked when the spec is laid out and again when it is published. The project's definition holds no

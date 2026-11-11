@@ -3,7 +3,7 @@
 // person who did not do it can remove it at once. Sent through Amazon SES from the cloud sign-in's sender (ses:SendEmail on that
 // sender's identity). Nothing here reads or logs a token; the logs carry the provider only, never an address or a login.
 import { SendEmailCommand, type SESv2Client } from "@aws-sdk/client-sesv2";
-import type { DeveloperSignInMethod } from "@agentx/contracts";
+import type { DeveloperSignInMethod } from "@agentx/cloud-contracts";
 import type { GithubConnectedNotice, GithubRequestReminder } from "../org/github-connect-support.js";
 
 export const IDENTITY_NOTICE_SUBJECT = "A new way to sign in to your Rovara account";

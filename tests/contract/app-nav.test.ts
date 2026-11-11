@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { AppNavSchema, AppNavReaderSchema } from "../../packages/contracts/src/app-nav.js";
+import { AppNavSchema, AppNavReaderSchema } from "../../packages/cloud-contracts/src/app-nav.js";
 import { appNav, type AppNavDependencies, type NavCaller } from "../../packages/broker/src/app-nav/nav.js";
 const A = "agt_aaaaaaaaaaaaaaaaaaaa", S = "ses_aaaaaaaaaaaaaaaaaaaa";
 const priya: NavCaller = { orgId: "org_aaaaaaaaaaaaaaaaaaaa", developerId: "a".repeat(64), name: "Priya", orgRole: "member" };

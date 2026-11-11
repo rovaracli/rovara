@@ -2,7 +2,8 @@
 // (the publish, immediate or confirmed), its own audit events, and keeping process layers out of every list of agents a person chooses from.
 import { randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
-import { ROVARA_CODE_AGENT_ID, agentKey, agentXError, projectPlaybookKey, recipeDigest, type AgentId, type OrgRole } from "../../packages/contracts/src/index.js";
+import { ROVARA_CODE_AGENT_ID, agentKey, agentXError, projectPlaybookKey, recipeDigest, type AgentId } from "@rovara-code/contracts";
+import { type OrgRole } from "@agentx/cloud-contracts";
 import { getApproval, getApprovalSubjectHandler, type ApprovalRecord } from "../../packages/broker/src/agents/approvals.js";
 import { listVisibleAgents, saveShares } from "../../packages/broker/src/agents/access.js";
 import { publishDraft, resolveRecipe, rollbackAgent } from "../../packages/broker/src/agents/changes.js";
@@ -12,7 +13,7 @@ import { postProjectProcess } from "../../packages/broker/src/playbook/process-l
 import type { ProjectPlaybookDependencies } from "../../packages/broker/src/playbook/routes.js";
 import { AgentStore } from "../../packages/broker/src/agents/store.js";
 import { MAYA, createDeveloperTaskBroker } from "../support/developer-task-broker.js";
-import { projectMemberKey } from "../../packages/contracts/src/org-scoped-keys.js";
+import { projectMemberKey } from "@rovara-code/contracts";
 import { TEST_ORG } from "../support/orgs.js";
 import { ARJUN, MAX, OLA, ORG_A, PRIYA, ZED } from "../support/agent-session-world.js";
 import { mergeWorld as baseWorld, type MergeWorld } from "../support/rovara-code-merge-world.js";

@@ -3,21 +3,7 @@
 // ingress and the interactivity handler.
 import { randomUUID } from "node:crypto";
 import { DeleteCommand, GetCommand, PutCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
-import {
-  REQUEST_ROUTE_KINDS,
-  SlackMessageTimestampSchema,
-  SlackThreadSchema,
-  SlackUserIdSchema,
-  routeChoiceLabel,
-  suggestionCardMessage,
-  suggestionCardText,
-  workflowChoiceKey,
-  workflowChoicePut,
-  workflowChoiceQuestionUpdate,
-  workflowRequestId,
-  type RequestSuggestion,
-  type SlackThread,
-} from "@agentx/contracts";
+import { REQUEST_ROUTE_KINDS, SlackMessageTimestampSchema, SlackThreadSchema, SlackUserIdSchema, routeChoiceLabel, suggestionCardMessage, suggestionCardText, workflowChoiceKey, workflowChoicePut, workflowChoiceQuestionUpdate, workflowRequestId, type RequestSuggestion, type SlackThread } from "@rovara-code/contracts";
 import { PROJECT_TASKS_DISABLED_TEXT, WORKFLOW_PATH_ANSWER_ACTION, WORKFLOW_PATH_FULL_ACTION, WORKFLOW_PATH_QUICK_ACTION } from "../developer/workflow-actions.js";
 import { answeredWorkflowCard } from "../developer/workflow-messages.js";
 

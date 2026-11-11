@@ -1,6 +1,7 @@
 // UX-4b: lessons waiting for a person are a Home card for the people who decide that project's lessons (`lessons/home-source.ts`).
 import { afterEach, describe, expect, it } from "vitest";
-import { HomeCardSchema, type OrgId } from "@agentx/contracts";
+import { HomeCardSchema } from "@agentx/cloud-contracts";
+import { type OrgId } from "@rovara-code/contracts";
 import { lessonsHomeSource, setLessonsHomeReader, LESSON_HOME_PROJECTS_MAX } from "../../../packages/broker/src/lessons/home-source.js";
 
 const ORG = "org_aaaaaaaaaaaaaaaaaaaa" as OrgId;

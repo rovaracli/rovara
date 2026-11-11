@@ -4,7 +4,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { ProjectSetupCheckBodySchema, ProjectSetupCheckResponseSchema } from "../../packages/contracts/src/index.js";
+import { ProjectSetupCheckBodySchema, ProjectSetupCheckResponseSchema } from "@rovara-code/contracts";
 import { developerTokenKey, saveDeveloperEnvironment } from "../../packages/cli/src/developer/config.js";
 import { executeCli } from "../../packages/cli/src/main.js";
 import { InMemoryTokenStore } from "../../packages/cli/src/token-store.js";

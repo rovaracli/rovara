@@ -1,7 +1,8 @@
 // Lessons in the repo, lane R2 (design LESSONS-REPO-FILE-DESIGN.md rev 2 sections 5 and 9): the words of the weekly pull request and of the status lines (the Lessons tab in Cloud, `lessons repo status` in Code).
 // Pure. Every sentence is fixed wording chosen by a code; the only free text is a lesson title (an eligible lesson's, or a removed block's own first words), always inside a code span so a mention or a link in it does nothing.
 // The removals come FIRST, each with its reason, then edits, then new lessons.
-import { LESSON_FILE_PROBLEM_TEXT, type LessonsRepoFileRow } from "@agentx/contracts";
+import { LESSON_FILE_PROBLEM_TEXT } from "@rovara-code/contracts";
+import { type LessonsRepoFileRow } from "@agentx/cloud-contracts";
 import { REMOVAL_REASON_TEXT, type RepoFilePlan } from "./repo-file-plan.js";
 import { READ_BACK_HOLD_MS, additionsPaused, type RepoFileState } from "./repo-file-state.js";
 

@@ -10,31 +10,8 @@
 import { createHash } from "node:crypto";
 import { DeleteCommand, GetCommand, PutCommand } from "@aws-sdk/lib-dynamodb";
 import { z } from "zod";
-import {
-  AgentXError,
-  AgentXNameSchema,
-  META_CONFIG_MAX_BYTES,
-  MetaProjectConfigSchema,
-  ProjectDefinitionSchema,
-  agentXError,
-  agentxRepositoryName,
-  canonicalJson,
-  codeRepositoriesOf,
-  fileManagedFields,
-  metaRepositoryOf,
-  projectAllows,
-  projectArchivedMessage,
-  projectPk,
-  withSettingOrigins,
-  type MetaConfigProblem,
-  type MetaProjectConfig,
-  type OrgId,
-  type OrgKey,
-  type OrgRole,
-  type ProjectOriginField,
-  type ProjectRole,
-  type StoredProjectDefinition,
-} from "@agentx/contracts";
+import { AgentXError, AgentXNameSchema, META_CONFIG_MAX_BYTES, MetaProjectConfigSchema, ProjectDefinitionSchema, agentXError, agentxRepositoryName, canonicalJson, codeRepositoriesOf, fileManagedFields, metaRepositoryOf, projectAllows, projectArchivedMessage, projectPk, withSettingOrigins, type MetaConfigProblem, type MetaProjectConfig, type OrgId, type OrgKey, type ProjectOriginField, type ProjectRole, type StoredProjectDefinition } from "@rovara-code/contracts";
+import { type OrgRole } from "@agentx/cloud-contracts";
 import type { TransactItem } from "../audit/outbox.js";
 import { readProjectMeta } from "../developer/project-roles.js";
 import { cloudRepositoryEntry } from "../org/cloud-projects.js";

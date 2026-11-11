@@ -1,8 +1,6 @@
 // Spec 055: the generic `mcp` connector's configuration, and the credential host it is pinned to.
 import { describe, expect, it } from "vitest";
-import {
-  ConnectorsSchema, CredentialRegistrationSchema, McpAuthSchema, ProjectDefinitionSchema, mcpEndpointProblem,
-} from "../../packages/contracts/src/index.js";
+import { ConnectorsSchema, CredentialRegistrationSchema, McpAuthSchema, ProjectDefinitionSchema, mcpEndpointProblem } from "@rovara-code/contracts";
 
 const ownership = {
   mode: "ownership", itemNoun: "issue",

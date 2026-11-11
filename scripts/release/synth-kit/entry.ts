@@ -6,7 +6,8 @@
 import { copyFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { BUILT_PARTS, SYNTH_OUTPUT_FILE, SynthOutputSchema, environmentStackName, type BuiltPart } from "@agentx/contracts";
+import { BUILT_PARTS, SYNTH_OUTPUT_FILE, SynthOutputSchema, type BuiltPart } from "@agentx/cloud-contracts";
+import { environmentStackName } from "@rovara-code/contracts";
 import { buildAgentXApp } from "../../../infra/lib/app.js";
 import { accumulateAsset, type PackageAccumulator } from "../assets.js";
 import { CodeMapSchema, KIT_CODE_MAP_FILE, kitCodeFile } from "./code-map.js";

@@ -4,17 +4,8 @@
 // shape. It never starts compute (an Ask is not a reason to wake a stopped worker), writes nothing, and repeats no worker text: every refusal is a fixed word, and the caller falls back to the
 // pull request's diff.
 import { GetCommand } from "@aws-sdk/lib-dynamodb";
-import {
-  DispatcherPeekReplySchema,
-  PEEK_FEATURE,
-  PeekAnswerSchema,
-  WORKER_INVOKE_AUTHORIZATION_SCHEME,
-  WorkerInvocationSchema,
-  workerInvokeToken,
-  workerInvokeTokenPayload,
-  workspaceSessionKey,
-  type DispatcherPeekReply,
-} from "@agentx/contracts";
+import { DispatcherPeekReplySchema, PEEK_FEATURE, PeekAnswerSchema, WORKER_INVOKE_AUTHORIZATION_SCHEME, workerInvokeToken, workerInvokeTokenPayload, workspaceSessionKey, type DispatcherPeekReply } from "@rovara-code/contracts";
+import { WorkerInvocationSchema } from "@agentx/cloud-contracts";
 
 const WORKER_PORT = 8080;
 const TOKEN_LIFETIME_SECONDS = 60;

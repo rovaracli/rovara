@@ -1,5 +1,5 @@
-import { PER_TASK_BUDGET_USD } from "@agentx/contracts";
-import { AuditEventInputSchema } from "@agentx/contracts";
+import { PER_TASK_BUDGET_USD } from "@agentx/cloud-contracts";
+import { AuditEventInputSchema } from "@agentx/cloud-contracts";
 import { auditTaskStopDecision, auditOccurrence } from "../audit/events.js";
 import { auditPendingItem } from "../audit/outbox.js";
 import { createHash } from "node:crypto";
@@ -16,7 +16,8 @@ import { ownerFenceOf, taskKey, type DeveloperTaskRecord } from "../developer/ta
 // permission to start paid work. The caller commits it with work and authority.
 import { GetCommand } from "@aws-sdk/lib-dynamodb";
 import { z } from "zod";
-import { orgMetaKey, orgMemberKey, projectMetaKey, SpendingAdmissionReferenceSchema, RunCheckoutSchema, WORK_ORIGINS, type WorkOrigin, SpendRequestIdSchema, OrgRoleSchema, type SpendingAdmissionReference, PayerSchema, PlaceSchema, AgentIdSchema, OrgIdSchema, TaskStopAdmissionInputSchema, TaskStopMicrousdSchema, agentXError, calculateTaskStop, orgScoped, type OrgId } from "@agentx/contracts";
+import { orgMetaKey, orgMemberKey, OrgRoleSchema } from "@agentx/cloud-contracts";
+import { projectMetaKey, SpendingAdmissionReferenceSchema, RunCheckoutSchema, WORK_ORIGINS, type WorkOrigin, SpendRequestIdSchema, type SpendingAdmissionReference, PayerSchema, PlaceSchema, AgentIdSchema, OrgIdSchema, TaskStopAdmissionInputSchema, TaskStopMicrousdSchema, agentXError, calculateTaskStop, orgScoped, type OrgId } from "@rovara-code/contracts";
 import type { CapturedTaskStop } from "./task-stop-admission.js";
 import type { TableInput, TransactItem } from "../agents/table-writes.js";
 const sha = z.string().regex(/^[a-f0-9]{64}$/), revision = z.number().int().positive().max(Number.MAX_SAFE_INTEGER);

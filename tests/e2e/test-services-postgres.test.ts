@@ -11,10 +11,7 @@ import { mkdir, mkdtemp, readdir, realpath, rm, writeFile } from "node:fs/promis
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import {
-  CATALOG_SIGNATURE_ALGORITHM, EvidencePackSchema, TestEnvDraftSchema, TestServicesUsageRecordSchema, catalogSigningMessage, parseBundlePublicKey, projectMetaKey, projectRevisionKey, sha256HexOf, testEnvDigest,
-  type OrgId, type ProjectCommand, type TaskDependencyPlan, type TestEnvDraft, type TestEnvTaskPlan, type TestEnvironmentBody, type TestServicesUsageRecord,
-} from "@agentx/contracts";
+import { CATALOG_SIGNATURE_ALGORITHM, EvidencePackSchema, TestEnvDraftSchema, TestServicesUsageRecordSchema, catalogSigningMessage, parseBundlePublicKey, projectMetaKey, projectRevisionKey, sha256HexOf, testEnvDigest, type OrgId, type ProjectCommand, type TaskDependencyPlan, type TestEnvDraft, type TestEnvTaskPlan, type TestEnvironmentBody, type TestServicesUsageRecord } from "@rovara-code/contracts";
 import { approveTestEnvironment, proposeTestEnvironment, recordTestEnvProveReport, type TestEnvDeps } from "../../packages/broker/src/org/test-environment.js";
 import { buildEvidencePack } from "../../packages/broker/src/rovara-code/evidence-pack.js";
 import { evidenceLines } from "../../packages/broker/src/rovara-code/evidence-lines.js";

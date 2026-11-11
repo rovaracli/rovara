@@ -1,7 +1,7 @@
 // Java reports J2: the JaCoCo XML reader (`target/site/jacoco/jacoco.xml`, `build/reports/jacoco/test/jacocoTestReport.xml`) into the same per-file line coverage the Go reader gives, and its use in the
 // format-neutral changed-line intersection. Fail closed: a report it cannot read completely is "not measured"; a file it cannot place in exactly one source root is listed, not guessed.
 import { describe, expect, it } from "vitest";
-import { EvidenceCoverageSchema } from "../../packages/contracts/src/evidence.js";
+import { EvidenceCoverageSchema } from "@rovara-code/contracts";
 import { changedLineCoverage, javaSourceRoots, looksLikeJacocoXml, parseJacocoXml, parseLineCoverage, JACOCO_XML_MAX_BYTES } from "../../packages/worker/src/verification/changed-coverage.js";
 
 const DOCTYPE = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><!DOCTYPE report PUBLIC "-//JACOCO//DTD Report 1.1//EN" "report.dtd">';

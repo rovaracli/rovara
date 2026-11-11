@@ -3,10 +3,10 @@ import path from "node:path";
 import { createHash } from "node:crypto";
 import { brotliDecompressSync, gunzipSync } from "node:zlib";
 import { posix } from "node:path";
-import { CandidateManifestSchema as BrowserCandidate, workflowFindingFingerprint as browserFingerprint } from "../../packages/contracts/src/task-workflow.js";
-import { RelativeWorkspacePathSchema as BrowserPath } from "../../packages/contracts/src/project.js";
-import { CandidateManifestSchema as NodeCandidate, workflowFindingFingerprint as nodeFingerprint, RelativeWorkspacePathSchema as NodePath } from "@agentx/contracts";
-import { sha256Hex } from "../../packages/contracts/src/web-hash.js";
+import { CandidateManifestSchema as BrowserCandidate, workflowFindingFingerprint as browserFingerprint } from "@rovara-code/contracts";
+import { RelativeWorkspacePathSchema as BrowserPath } from "@rovara-code/contracts";
+import { CandidateManifestSchema as NodeCandidate, workflowFindingFingerprint as nodeFingerprint, RelativeWorkspacePathSchema as NodePath } from "@rovara-code/contracts";
+import { sha256Hex } from "../../packages/cloud-contracts/src/web-hash.js";
 import ts from "typescript";
 import { ESLint } from "eslint";
 import { describe, expect, it } from "vitest";
@@ -78,7 +78,7 @@ describe("browser contracts entry", () => {
     expect(nodeFingerprint("CRITIC", finding)).toBe(expected);
   });
   it("configures Zod without runtime code generation", async () => {
-    const { configureZodForCsp, SessionIdSchema } = await import("../../packages/contracts/src/web.js");
+    const { configureZodForCsp, SessionIdSchema } = await import("@agentx/cloud-contracts/web");
     const { z } = await import("zod");
     configureZodForCsp();
     expect(z.config().jitless).toBe(true);

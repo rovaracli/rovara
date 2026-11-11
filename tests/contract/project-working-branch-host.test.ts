@@ -1,7 +1,8 @@
 // Enterprise foundations P5c: the working-branch review is bound to the GitHub installation and repository id a project pinned. It reads those pins from the repository's HOST record (task P7;
 // the old top-level fields read as before), and a repository whose record names another code host is refused, never read through GitHub by its address.
 import { describe, expect, it, vi } from "vitest";
-import { AgentXError, StoredProjectDefinitionSchema, developerOrgKey, orgMemberKey, orgMetaKey, orgProjectCatalogKey, projectMetaKey, projectRevisionKey } from "@agentx/contracts";
+import { AgentXError, StoredProjectDefinitionSchema, orgProjectCatalogKey, projectMetaKey, projectRevisionKey } from "@rovara-code/contracts";
+import { developerOrgKey, orgMemberKey, orgMetaKey } from "@agentx/cloud-contracts";
 import type { DeveloperCaller } from "../../packages/broker/src/aws/developer-routes.js";
 import { githubPinsOf, tryGithubPinsOf } from "../../packages/broker/src/org/project-working-branch-host.js";
 import { readProjectWorkingBranchContext } from "../../packages/broker/src/org/project-working-branch-context.js";

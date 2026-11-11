@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import type { TaskPeopleDisplayReadRequest, TaskPeopleDisplayReadResponse } from "../../packages/contracts/src/developer.js";
+import type { TaskPeopleDisplayReadRequest, TaskPeopleDisplayReadResponse } from "@rovara-code/contracts";
 import { developerIdForSlackUser } from "../../packages/broker/src/aws/admin-actions.js";
 import { slackDirectory } from "../../packages/broker/src/developer/slack-directory.js";
 import { taskPeopleDisplayAdmission } from "../../packages/broker/src/developer/task-people-display-budget.js";

@@ -3,7 +3,7 @@
 import { UpdateCommand } from "@aws-sdk/lib-dynamodb";
 import { taskKey } from "../developer/task-records.js";
 import { parseDesignFirstPrefix } from "../rovara-code/explicit-path.js";
-import { agentXError, DESIGN_FIRST_UNAVAILABLE_MESSAGE, type OrgId } from "@agentx/contracts";
+import { agentXError, DESIGN_FIRST_UNAVAILABLE_MESSAGE, type OrgId } from "@rovara-code/contracts";
 import type { ProjectPlaybookReader } from "../playbook/project-playbook-store.js";
 import { designReviewAvailableFor } from "./switch.js";
 

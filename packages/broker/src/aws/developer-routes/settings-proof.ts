@@ -9,10 +9,7 @@
 import { nameResolverOf, resolveStoredName } from "../../developer/name-resolver.js";
 import { randomUUID } from "node:crypto";
 import { GetCommand } from "@aws-sdk/lib-dynamodb";
-import {
-  AgentXError, AgentXNameSchema, StoredProjectDefinitionSchema, projectRevisionKey, type StoredProjectDefinition, ProjectDefinitionSchema, ProjectSettingsBodySchema, ProjectSettingsUndoBodySchema, agentXError, canonicalJson, projectAllows, settingOriginOf, withSettingOrigins,
-  formatCommandLine, type AppProjectDetail, type OrgId, type ProjectCommand, type ProjectOriginField, type ProjectRole, type ProjectSettingsBody, type SettingsHeld, type SettingsProof,
-} from "@agentx/contracts";
+import { AgentXError, AgentXNameSchema, StoredProjectDefinitionSchema, projectRevisionKey, type StoredProjectDefinition, ProjectDefinitionSchema, ProjectSettingsBodySchema, ProjectSettingsUndoBodySchema, agentXError, canonicalJson, projectAllows, settingOriginOf, withSettingOrigins, formatCommandLine, type AppProjectDetail, type OrgId, type ProjectCommand, type ProjectOriginField, type ProjectRole, type ProjectSettingsBody, type SettingsHeld, type SettingsProof } from "@rovara-code/contracts";
 import { auditedWrite } from "../../playbook/project-settings-audit.js";
 import type { TransactItem } from "../../audit/outbox.js";
 import { flushAuditEvents } from "../../audit/flush.js";

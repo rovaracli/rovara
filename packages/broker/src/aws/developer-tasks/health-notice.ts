@@ -1,7 +1,7 @@
 // Setup and test health SH28 (owner decision 7): "Setup needs repair" does not pause a task start. The task starts and runs as always; its view only gets a notice that testing may be blocked. This module is the one
 // place a task view picks that up (task start and task read), so the view builder stays as it is. With the `nh` switch (or the test environment) off the view is returned untouched; a health that cannot be read,
 // or is slow to read, shows nothing: the read has a short deadline, and a start or a read is never delayed by more than that.
-import type { DeveloperTaskView } from "@agentx/contracts";
+import type { DeveloperTaskView } from "@agentx/cloud-contracts";
 import type { DeveloperTaskRecord } from "../../developer/task-records.js";
 import { taskStartNotice } from "../../test-env/health.js";
 import type { DeveloperTaskRouteDependencies } from "./types.js";

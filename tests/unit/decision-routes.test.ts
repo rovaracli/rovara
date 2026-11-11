@@ -2,8 +2,8 @@
 // nothing is bulk, and the routes decide nothing themselves: they call the existing endpoint through the performer and report what it really answered.
 /* eslint-disable @typescript-eslint/no-unsafe-assignment -- vitest's expect.* matchers are typed any */
 import { describe, expect, it, vi } from "vitest";
-import type { DecisionAnswered } from "@agentx/contracts";
-import { DecisionCardsViewSchema, DecisionNeedsConfirmationSchema } from "@agentx/contracts";
+import type { DecisionAnswered } from "@rovara-code/contracts";
+import { DecisionCardsViewSchema, DecisionNeedsConfirmationSchema } from "@rovara-code/contracts";
 import { routeDecisionCards, type DecisionCaller, type DecisionPerformer, type DecisionRequest, type DecisionSources, type PerformOutcome } from "../../packages/broker/src/decisions/routes.js";
 import { decisionCardPath, type DecisionItem, type ItemBase } from "../../packages/broker/src/decisions/project.js";
 import { inMemoryDecisionStore } from "../../packages/broker/src/decisions/store.js";

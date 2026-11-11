@@ -2,7 +2,8 @@ import { createInviteAdminApi } from "../../packages/ui/src/api/invite-admin.js"
 import { capturingAuditDeps } from "../support/audit-capture.js";
 import { createHash, randomUUID } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
-import { developerOrgKey, orgMemberKey, orgRemovedKey, orgBanKey, orgEmailKey, orgProjectCatalogKey, projectAiKey, projectMemberKey, projectRevisionKey, projectMetaKey, StoredProjectDefinitionSchema, githubInstallationKey, orgGithubInstallationKey, type GithubInstallationRecord } from "@agentx/contracts";
+import { developerOrgKey, orgMemberKey, orgRemovedKey, orgBanKey, orgEmailKey, projectAiKey, githubInstallationKey, orgGithubInstallationKey, type GithubInstallationRecord } from "@agentx/cloud-contracts";
+import { orgProjectCatalogKey, projectMemberKey, projectRevisionKey, projectMetaKey, StoredProjectDefinitionSchema } from "@rovara-code/contracts";
 import { APP_CSRF_HEADER, appCsrfTokenFor } from "../../packages/broker/src/developer/app-csrf.js";
 import { BROWSER_RETURN_TO } from "../../packages/broker/src/developer/server.js";
 import { createTaskWebApi } from "../../packages/broker/src/aws/task-web-api.js";
@@ -13,7 +14,7 @@ import { bench } from "../support/audit-routes-bench.js";
 import { createOnboardingApi } from "../../packages/ui/src/api/onboarding.js";
 import { fakeHost } from "../web/support/fake-host.js";
 import { fakeModelAccess } from "../support/fake-model-access.js";
-import { modelSourcesKey } from "@agentx/contracts";
+import { modelSourcesKey } from "@rovara-code/contracts";
 import { TEST_ORG } from "../support/orgs.js";
 const CELL = "https://cell.example", SID = "11111111-1111-4111-8111-111111111111", WHO = "a".repeat(64);
 const COOKIE = `__Host-agentx_review_session=${SID}`;
@@ -396,7 +397,7 @@ it("refuses cookie deletes uniformly for unknown and foreign-company source IDs"
  expect(h.db.get(modelSourcesKey(otherOrg))).toEqual(foreign);expect(h.db.get(modelSourcesKey(TEST_ORG))).toBeUndefined();expect(h.db.commandNames().slice(before).filter(name => /Put|Update|Delete|TransactWrite/.test(name))).toEqual([]);
 });
 it("requires an expected company before a reviewed cookie order can affect a moved session's company", async () => {
- const { orgMetaKey } = await import("@agentx/contracts"), audit = capturingAuditDeps(), h = await broker({ audit: audit.audit, agents: {}, modelAccess: { access: fakeModelAccess(), proxyUrl: "https://proxy.example.test" } }), otherOrg = "org_bbbbbbbbbbbbbbbbbbbb";audit.attach(h.db);
+ const { orgMetaKey } = await import("@agentx/cloud-contracts"), audit = capturingAuditDeps(), h = await broker({ audit: audit.audit, agents: {}, modelAccess: { access: fakeModelAccess(), proxyUrl: "https://proxy.example.test" } }), otherOrg = "org_bbbbbbbbbbbbbbbbbbbb";audit.attach(h.db);
  const original = { ...modelSourcesKey(TEST_ORG), entityType: "ORG_MODEL_SOURCES", revision: 1, sources: [], order: ["personal-chatgpt", "rovara"], credentials: [], removing: [], updatedBy: WHO, updatedAt: "2026-10-27T12:00:00Z" }, foreign = { ...original, ...modelSourcesKey(otherOrg) };h.db.set(original);h.db.set(foreign);h.db.set({ ...orgMetaKey(otherOrg), orgId: otherOrg, name: "Other company", plan: "team" });seedMembership(h.db, WHO, { orgId: otherOrg, role: "owner" });
  const before = h.db.transactions().length, headers = { cookie: COOKIE, origin: CELL, [APP_CSRF_HEADER]: appCsrfTokenFor(SID) }, body = { requestId: randomUUID(), expectedDeveloperId: WHO, expectedRevision: 1, order: ["rovara"] };
  const omitted = await h.call("PUT", "/v1/web/org/model-sources-order", headers, body);expect(h.db.get(modelSourcesKey(otherOrg))).toEqual(foreign);expect(omitted.status).toBe(400);
@@ -441,7 +442,7 @@ async function reviewedArchiveBroker(extra:Record<string,unknown>={}){const audi
 const reviewedArchiveHeaders={cookie:COOKIE,origin:CELL,[APP_CSRF_HEADER]:appCsrfTokenFor(SID)};
 const reviewedArchiveBody=()=>({requestId:randomUUID(),expectedRevision:0,expectedProjectRevision:1,acknowledgeNewWorkStops:true});
 it("reviewed archive clears the project's learning data: one bounded page inline, the rest left to the scheduled run", async () => {
-  const { projectLearningKey } = await import("@agentx/contracts");
+  const { projectLearningKey } = await import("@rovara-code/contracts");
   const { resumeOpenLearningWalks, ARCHIVE_INLINE_WRITES } = await import("../../packages/broker/src/learning/cleanup.js");
   const h = await reviewedArchiveBroker();
   const pk = projectLearningKey(TEST_ORG, "payments", "STATE").pk;

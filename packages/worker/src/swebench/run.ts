@@ -1,16 +1,6 @@
 import { mkdir, readFile, rm } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
-import {
-  SWEBENCH_DATASETS,
-  agentxPreambleSha256,
-  createTaskUsageTelemetry,
-  swebenchAgentLimits,
-  swebenchFamily,
-  type SwebenchRunResult,
-  type SwebenchRunnerConfig,
-  type TaskUsageOutcome,
-  type TaskUsageTelemetry,
-} from "@agentx/contracts";
+import { SWEBENCH_DATASETS, agentxPreambleSha256, createTaskUsageTelemetry, swebenchAgentLimits, swebenchFamily, type SwebenchRunResult, type SwebenchRunnerConfig, type TaskUsageOutcome, type TaskUsageTelemetry } from "@rovara-code/contracts";
 import { containerBashOperations } from "../devcontainer.js";
 import { redactCredentials } from "../events.js";
 import { compactCheckReport } from "../verification/extension.js";

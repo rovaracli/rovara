@@ -3,7 +3,7 @@ import {expect,it} from "vitest";
 import {loadPinnedTaskStage,loadPinnedTaskStageContext} from "../../packages/broker/src/model-selection/task-live.js";
 import {createDeveloperTaskBroker} from "../support/developer-task-broker.js";
 import {TEST_ORG} from "../support/orgs.js";
-import {builtinRecipe,recipeDigest,projectRevisionKey} from "../../packages/contracts/src/index.js";
+import { builtinRecipe, recipeDigest, projectRevisionKey } from "@rovara-code/contracts";
 import {prepareTaskModelPolicyPin} from "../../packages/broker/src/model-selection/task-pin.js";
 async function fixture(){
  const h=await createDeveloperTaskBroker(),recipe=builtinRecipe("rovara-code",1),digest=recipeDigest(recipe);
@@ -49,7 +49,7 @@ it("returns commit fences so a guardrail change cannot race fallback authorizati
  const {h,deps,input}=await fixture(),context=await loadPinnedTaskStageContext(deps,input);
  expect(context.decision.kind).toBe("resolved");expect(context.sourcesRevision).toBe(0);expect(context.guardrailsRevision).toBe(0);
  expect(context.checks.length).toBeGreaterThanOrEqual(5);
- const {agentGuardrailsKey,DEFAULT_AGENT_GUARDRAILS}=await import("../../packages/contracts/src/index.js");
+ const { agentGuardrailsKey, DEFAULT_AGENT_GUARDRAILS } = await import("@rovara-code/contracts");
  h.db.set({...agentGuardrailsKey(TEST_ORG),revision:1,guardrails:DEFAULT_AGENT_GUARDRAILS});
  await expect(h.db.send(new TransactWriteCommand({TransactItems:[...context.checks,{Put:{TableName:"state",Item:{pk:"C53_AUTH_TEST",sk:"META"}}}]}))).rejects.toThrow();
  expect(h.db.get("C53_AUTH_TEST","META")).toBeUndefined();
@@ -57,7 +57,7 @@ it("returns commit fences so a guardrail change cannot race fallback authorizati
 
 for(const change of ["sources","registration"] as const)it(`refuses a ${change} change after the authorization snapshot`,async()=>{
  const {h,deps,input}=await fixture(),context=await loadPinnedTaskStageContext(deps,input);
- const {modelSourcesKey}=await import("../../packages/contracts/src/index.js");
+ const { modelSourcesKey } = await import("@rovara-code/contracts");
  if(change==="sources")h.db.set({...modelSourcesKey(TEST_ORG),revision:1,sources:[],order:["rovara"],credentials:[],removing:[]});
  else {const key=projectRevisionKey(TEST_ORG,"payments",1),row=h.db.get(key)!;h.db.set({...row,registeredAt:"2026-10-29T00:00:00.000Z"});}
  await expect(h.db.send(new TransactWriteCommand({TransactItems:[...context.checks,{Put:{TableName:"state",Item:{pk:"C53_AUTH_TEST",sk:"META"}}}]}))).rejects.toThrow();expect(h.db.get("C53_AUTH_TEST","META")).toBeUndefined();

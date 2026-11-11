@@ -1,4 +1,4 @@
-import { AgentIdSchema, ProjectOverviewProjectSchema, ROVARA_CODE_AGENT_ID, TaskResponseReaderSchema } from "@agentx/contracts/web";
+import { AgentIdSchema, ProjectOverviewProjectSchema, ROVARA_CODE_AGENT_ID, TaskResponseReaderSchema } from "@agentx/cloud-contracts/web";
 import type { AppHost } from "../host.js";
 import { createApiClient } from "./client.js";
 import { createCodeApi } from "./code.js";

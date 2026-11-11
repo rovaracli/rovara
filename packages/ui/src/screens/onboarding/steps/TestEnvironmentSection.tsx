@@ -1,6 +1,6 @@
 import { Suspense, lazy, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import type { TestEnvApplyAnswer, TestEnvironmentState } from "@agentx/contracts/web";
+import type { TestEnvApplyAnswer, TestEnvironmentState } from "@agentx/cloud-contracts/web";
 import { useTestEnvironmentApi } from "../../../api/test-environment.js";
 import { useOnboardingApi } from "../../../api/onboarding.js";
 import { ApiError } from "../../../api/errors.js";

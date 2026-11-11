@@ -3,7 +3,7 @@
 // SSM value; the workspace limits are the control plane's setting (spec 025 FR-053). list and get
 // never print the alert address, which can be a webhook secret: only whether it is set.
 import { randomUUID } from "node:crypto";
-import { AgentXError, SECRET_CONFIG_ERROR_MESSAGE, SECRET_CONFIG_KEYS, agentXError, environmentStackName, type AdminChangeInput, type ConfigChangeOutcomeRequest } from "@agentx/contracts";
+import { AgentXError, SECRET_CONFIG_ERROR_MESSAGE, SECRET_CONFIG_KEYS, agentXError, environmentStackName, type AdminChangeInput, type ConfigChangeOutcomeRequest } from "@rovara-code/contracts";
 import { recordConfigChange, recordConfigOutcome, runCliChange } from "../admin/changes.js";
 import type { CallerIdentity, StackReader } from "../environments/adopt.js";
 import { withEnvironmentLock } from "../environments/lock.js";
@@ -24,7 +24,7 @@ import { TEAM_RECORD_PARAMETER, parseTeamRecordOptions, readTeamRecordRecord, wr
 import { resolveDeployEdition } from "../deploy/edition.js";
 import { NEW_RESOURCE_RUNBOOK, teamRecordPreflight, type TeamRecordProbe } from "../deploy/team-record-preflight.js";
 import { CONFIG_KEYS, configKey, embedderImageHome, whereText, type ConfigKey, type ModelRole } from "./keys.js";
-import { KEYED_MODEL_PROVIDERS, MODEL_FALLBACK_NONE, eligibleE2EAgentModel, isKeyedModelProvider, type ModelProvider } from "@agentx/contracts";
+import { KEYED_MODEL_PROVIDERS, MODEL_FALLBACK_NONE, eligibleE2EAgentModel, isKeyedModelProvider, type ModelProvider } from "@rovara-code/contracts";
 
 export interface ConfigServices {
   store: ParameterStore;

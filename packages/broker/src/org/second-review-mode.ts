@@ -15,10 +15,8 @@
 //     without its event and an event never names a change that was not made. A refusal by the fence alone leaves the proposal open ("membership_changed_retry").
 import { randomUUID } from "node:crypto";
 import { GetCommand, QueryCommand, TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
-import {
-  configuredSecondReviewMode, orgMetaKey, secondReviewModeLoweringNeedsSecondPerson, stricterSecondReviewMode, SecondReviewModeSchema,
-  type AuditEventInput, type SecondReviewMode,
-} from "@agentx/contracts";
+import { configuredSecondReviewMode, secondReviewModeLoweringNeedsSecondPerson, stricterSecondReviewMode, SecondReviewModeSchema, type SecondReviewMode } from "@rovara-code/contracts";
+import { orgMetaKey, type AuditEventInput } from "@agentx/cloud-contracts";
 import type { TransactItem } from "../audit/outbox.js";
 import { trySecondPersonTimed } from "../lessons/approve.js";
 import { secondPersonTier0Authority } from "../lessons/tier0-authority.js";

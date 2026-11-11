@@ -2,8 +2,8 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { assertReleaseFlavorImage, skopeoLabelReader, type ImageLabelReader } from "./release/image-flavor.js";
-import { AGENTX_PROTOCOL_VERSION } from "../packages/contracts/src/protocol.js";
-import { CONTROL_PLANE_FOUNDATION_PARAMETERS } from "../packages/contracts/src/session.js";
+import { AGENTX_PROTOCOL_VERSION } from "@rovara-code/contracts";
+import { CONTROL_PLANE_FOUNDATION_PARAMETERS } from "@rovara-code/contracts";
 import {
   Runner,
   assertDigestImage,

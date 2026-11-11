@@ -1,6 +1,6 @@
 // Owner decision 2026-11-03: a call that Amazon Bedrock refused as "not available for this account" (the worker names it `key-rejected ModelNotEnabled`) teaches the broker that the account cannot use that model, so the next default
 // choice, for any task, leaves it out for a while (`UsableModels.markUnusable`). Only Rovara's own catalog route is learned from: a company's own Bedrock source is another account.
-import { MODEL_NOT_ENABLED_CODE, ModelSelectionSchema, modelFailureCodeOf, type ModelIdentifier } from "@agentx/contracts";
+import { MODEL_NOT_ENABLED_CODE, ModelSelectionSchema, modelFailureCodeOf, type ModelIdentifier } from "@rovara-code/contracts";
 import type { UsableModels } from "./usable-models.js";
 
 /**

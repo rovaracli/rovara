@@ -8,13 +8,7 @@ import {
   type StoredConnectorConfig,
 } from "../../packages/broker/src/aws/connector-types.js";
 import type { ConnectorPolicy } from "../../packages/gateway/src/index.js";
-import {
-  ConnectorNameSchema,
-  JiraConnectorSchema,
-  StoredProjectDefinitionSchema,
-  type ActionPolicy,
-  type ProjectDefinition,
-} from "../../packages/contracts/src/index.js";
+import { ConnectorNameSchema, JiraConnectorSchema, StoredProjectDefinitionSchema, type ActionPolicy, type ProjectDefinition } from "@rovara-code/contracts";
 
 export const EVAL_ROOT = fileURLToPath(new URL(".", import.meta.url)).replace(/\/$/, "");
 

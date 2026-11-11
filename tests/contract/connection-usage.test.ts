@@ -2,10 +2,12 @@
 // page's "used by" is exact. Only the projects the caller may see are named, another company's projects never are, and a project that can't be read makes the answer incomplete.
 import { randomUUID } from "node:crypto";
 import { describe, expect, it, beforeAll, vi } from "vitest";
-import { orgScoped } from "../../packages/contracts/src/org-node.js";
+import { orgScoped } from "@rovara-code/contracts";
 import { CONNECTION_USAGE_MAX_PROJECTS } from "../../packages/broker/src/aws/developer-routes/connection-usage.js";
-import { intakeSourceKey, orgProjectCatalogKey, projectAiKey, projectRevisionKey, projectMetaKey, projectMemberKey } from "../../packages/contracts/src/org-scoped-keys.js";
-import type { OrgId, OrgRole } from "../../packages/contracts/src/org-node.js";
+import { intakeSourceKey, orgProjectCatalogKey, projectRevisionKey, projectMetaKey, projectMemberKey } from "@rovara-code/contracts";
+import { projectAiKey } from "../../packages/cloud-contracts/src/org-scoped-keys.js";
+import type { OrgId } from "@rovara-code/contracts";
+import type { OrgRole } from "../../packages/cloud-contracts/src/org-node.js";
 import { mcpEndpointGuard } from "../../packages/broker/src/connections/pinned-endpoint.js";
 import { OrgSecrets } from "../../packages/broker/src/connections/org-secrets.js";
 import { MAYA, OMAR, createDeveloperTaskBroker, seedMembership, type Developer } from "../support/developer-task-broker.js";

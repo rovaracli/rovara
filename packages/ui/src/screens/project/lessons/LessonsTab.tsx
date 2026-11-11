@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
-import { lessonsPauseLine } from "@agentx/contracts/web";
+import { lessonsPauseLine } from "@agentx/cloud-contracts/web";
 import { ApiError } from "../../../api/errors.js";
 import { lessonsKey, useLessons } from "../../../api/lessons.js";
 import { Banner } from "../../../design/Banner.js";

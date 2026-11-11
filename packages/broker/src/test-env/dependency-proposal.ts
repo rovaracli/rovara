@@ -4,7 +4,7 @@
 // from the signed catalog (slice 1), or Rovara local AWS for S3, SQS and DynamoDB (slice 2), becomes a dependency of the proposal. Everything in a proposed dependency is made from the catalog entry the chooser picked, the candidate's family and kind, and the
 // files and lines the detector cited; no text from the repository is copied (a name is a fixed word for a known family, a variable name comes from the catalog's own templates). What cannot be backed yet is counted in one
 // fixed note, never described. A person still approves the proposal on a card; nothing here approves anything.
-import { RelativeWorkspacePathSchema, TestEnvDependenciesSchema, TestEnvDependencySchema, type TestEnvDependency, type TestEnvDependencyCandidate, type VerifiedCatalog } from "@agentx/contracts";
+import { RelativeWorkspacePathSchema, TestEnvDependenciesSchema, TestEnvDependencySchema, type TestEnvDependency, type TestEnvDependencyCandidate, type VerifiedCatalog } from "@rovara-code/contracts";
 import { chooseBacking, effectiveAllowedBackings } from "./backing-choice.js";
 import { EMULATED_TASK_SERVICES } from "./dependency-plan.js";
 

@@ -10,25 +10,7 @@
 //   approve                           a project maintainer; a less-safe or high-risk change also needs the approver's own fresh browser sign-in (read from their session here, never from the request)
 //                                     and, when less safe, a second person's confirmation card (`org/test-env-approval.ts`) whose proof and live authority `approveTestEnvironment` checks again
 // A browser session is the only thing that can show a fresh sign-in: a token (a CLI, an assistant holding one) never counts.
-import {
-  TEST_ENV_SEED_COMMANDS_MAX,
-  TestEnvironmentBodySchema,
-  agentXError,
-  formatCommandLine,
-  parseCommandLine,
-  projectAllows,
-  settingOriginOf,
-  type ProjectOrigins,
-  testEnvDigest,
-  type OrgId,
-  type ProjectCommand,
-  type ProjectRole,
-  type TestEnvApplyAnswer,
-  type TestEnvironmentState,
-  type TestEnvDependency,
-  type TestEnvRuns,
-  type TestEnvironmentBody,
-} from "@agentx/contracts";
+import { TEST_ENV_SEED_COMMANDS_MAX, TestEnvironmentBodySchema, agentXError, formatCommandLine, parseCommandLine, projectAllows, settingOriginOf, type ProjectOrigins, testEnvDigest, type OrgId, type ProjectCommand, type ProjectRole, type TestEnvApplyAnswer, type TestEnvironmentState, type TestEnvDependency, type TestEnvRuns, type TestEnvironmentBody } from "@rovara-code/contracts";
 import { isFreshSignIn, type SessionRecord } from "../../developer/store.js";
 import type { TestEnvDeps } from "../../org/test-environment.js";
 import { proposalReplacesLists, setEditedProposal, proposeTestEnvironment, readApprovedTestEnvironment } from "../../org/test-environment.js";

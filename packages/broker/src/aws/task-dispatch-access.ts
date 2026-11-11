@@ -1,5 +1,6 @@
 import { GetCommand, QueryCommand, TransactWriteCommand, type TransactWriteCommandInput } from "@aws-sdk/lib-dynamodb";
-import { OrgIdSchema, OrgRoleSchema, agentXError, isSystemOwnerId, orgMemberKey, orgOfProjectPk, projectMemberKey, projectRevisionKey, slackBindingPk, SLACK_BINDING_SK_PREFIX, type OrgId, isWriterOrgRole } from "@agentx/contracts";
+import { OrgIdSchema, agentXError, isSystemOwnerId, orgOfProjectPk, projectMemberKey, projectRevisionKey, slackBindingPk, SLACK_BINDING_SK_PREFIX, type OrgId } from "@rovara-code/contracts";
+import { OrgRoleSchema, orgMemberKey, isWriterOrgRole } from "@agentx/cloud-contracts";
 import type { DurableOutboxRecord } from "./lambda.js";
 import { REMOVE_STORED_LESSONS } from "./outbox-lessons.js";
 import { taskOpen } from "../developer/task-access.js";

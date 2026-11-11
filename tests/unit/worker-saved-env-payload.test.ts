@@ -1,6 +1,7 @@
 // SH25: the prepare invocation's saved environment field: its schema, the feature a worker lists for it, and the options the worker builds from it.
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { PREPARE_SAVED_ENV_FEATURE, PrepareSavedEnvSchema, WORKER_INVOCATION_FEATURES, WorkerInvocationSchema, savedEnvRepositoryName } from "../../packages/contracts/src/index.js";
+import { PREPARE_SAVED_ENV_FEATURE, PrepareSavedEnvSchema, WORKER_INVOCATION_FEATURES, savedEnvRepositoryName } from "@rovara-code/contracts";
+import { WorkerInvocationSchema } from "@agentx/cloud-contracts";
 import { WORKER_IMPLEMENTED_FEATURES } from "../../packages/worker/src/implemented-features.js";
 import { createSavedEnvLoginProvider } from "../../packages/worker/src/saved-env/login.js";
 import { savedEnvOptionsOf } from "../../packages/worker/src/saved-env/use.js";

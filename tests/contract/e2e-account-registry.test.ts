@@ -1,12 +1,9 @@
 import { createHash } from "node:crypto";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { projectSetupApprovalKey } from "@agentx/contracts";
+import { projectSetupApprovalKey } from "@rovara-code/contracts";
 import { TEST_ORG, testProjectPk } from "../support/orgs.js";
-import {
-  E2EApplicationAccountDefinitionSchema, E2EApplicationPlanIntentSchema, E2EApplicationSelectionRecordSchema, WORKFLOW_APPLICATION_ACCOUNTS_CHANGED_PREFIX,
-  canonicalJson, createE2ESyntheticAccountDefinition, deriveE2EApplicationRuntimeAccountRef, deriveE2ESyntheticRuntimeAccountRef, e2eApplicationAccountDefinitionDigest,
-  e2eSyntheticAccountContractDigest, resolveE2ELatestAccountRef, workflowApplicationRetryOffered, WorkflowSnapshotSchema,
-} from "@agentx/contracts";
+import { E2EApplicationAccountDefinitionSchema, E2EApplicationPlanIntentSchema, E2EApplicationSelectionRecordSchema, WORKFLOW_APPLICATION_ACCOUNTS_CHANGED_PREFIX, canonicalJson, createE2ESyntheticAccountDefinition, deriveE2EApplicationRuntimeAccountRef, deriveE2ESyntheticRuntimeAccountRef, e2eApplicationAccountDefinitionDigest, e2eSyntheticAccountContractDigest, resolveE2ELatestAccountRef, workflowApplicationRetryOffered } from "@rovara-code/contracts";
+import { WorkflowSnapshotSchema } from "@agentx/cloud-contracts";
 import {
   E2EAccountRegistryError, e2eAccountDefinitionKey, e2eAccountLatestKey, latestAccountRef, parseAccountEntry, pickAccountEntry, planSyntheticAccountWrites,
   type E2EAccountRegistryEntry,

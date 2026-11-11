@@ -2,8 +2,9 @@
 // rows it was distilled from; an erase can finish between that read and this write, and the person would be written back with nothing left that points at them. So, like
 // a row's put (ingest 7a): the erased markers are read before the write (the list is cleaned), and once more after it (an id erased in between is taken out of the stored
 // fact, and the write fails closed if that cannot be done, so the queue redelivers).
-import { recordFactKey, type OrgId, type RecordFact } from "@agentx/contracts";
-import { agentXError } from "@agentx/contracts";
+import { recordFactKey, type RecordFact } from "@agentx/cloud-contracts";
+import { type OrgId } from "@rovara-code/contracts";
+import { agentXError } from "@rovara-code/contracts";
 import { erasedAccessIds, withoutErasedPrincipals } from "./access.js";
 import { removePrincipalsFromRow } from "./scope-work.js";
 import { putRecordFact, tombstoneItem } from "./store.js";

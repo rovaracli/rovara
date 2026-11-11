@@ -1,5 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
-import { agentXError, canonicalJson, type AuditActor, type AuditEventInput, type OrgId } from "@agentx/contracts";
+import { agentXError, canonicalJson, type OrgId } from "@rovara-code/contracts";
+import { type AuditActor } from "@agentx/cloud-contracts";
+import { type AuditEventInput } from "@agentx/cloud-contracts";
 import { auditPending, type AuditRuntime, type TransactItem } from "../audit/outbox.js";
 import { auditOccurrence } from "../audit/events.js";
 import { auditProjectAllowedDomains } from "../audit/allowed-domains.js";

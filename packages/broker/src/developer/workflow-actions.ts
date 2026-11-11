@@ -1,6 +1,6 @@
 // The Slack action IDs of a workflow task's buttons: shared by the messages that carry them and the router that answers them.
 
-import { WORKFLOW_PATH_ANSWER_ACTION, WORKFLOW_PATH_FULL_ACTION, WORKFLOW_PATH_QUICK_ACTION } from "@agentx/contracts";
+import { WORKFLOW_PATH_ANSWER_ACTION, WORKFLOW_PATH_FULL_ACTION, WORKFLOW_PATH_QUICK_ACTION } from "@rovara-code/contracts";
 
 /** The Quick or Full question's buttons, and (Task 21) Just answer; defined with the routed card the Slack service posts. */
 export { WORKFLOW_PATH_ANSWER_ACTION, WORKFLOW_PATH_FULL_ACTION, WORKFLOW_PATH_QUICK_ACTION };

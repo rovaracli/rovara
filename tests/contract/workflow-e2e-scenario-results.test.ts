@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import { afterEach, describe, expect, it } from "vitest";
-import { E2EScenarioResultsSchema } from "@agentx/contracts";
+import { E2EScenarioResultsSchema } from "@rovara-code/contracts";
 import { workflowE2ENotifierBlocks } from "../../packages/broker/src/aws/developer-task-notifier.js";
 import { developerTaskRouteDependencies } from "../../packages/broker/src/aws/developer-routes.js";
 import { getTaskDocumentView } from "../../packages/broker/src/aws/developer-tasks.js";

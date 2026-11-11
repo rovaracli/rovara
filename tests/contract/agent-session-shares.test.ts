@@ -3,7 +3,7 @@
 // narrows at once.
 import { createHash, randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
-import { agentXError, agentSessionKey, changesKey, sessionRequestKey, sharedSessionsKey, type OrgId } from "@agentx/contracts";
+import { agentXError, agentSessionKey, changesKey, sessionRequestKey, sharedSessionsKey, type OrgId } from "@rovara-code/contracts";
 import { approvalDecideKind } from "../../packages/broker/src/agents/approval-decide-kind.js";
 import { getAnyApproval, getApprovalSubjectHandler, type ApprovalDependencies } from "../../packages/broker/src/agents/approvals.js";
 import { AgentStore } from "../../packages/broker/src/agents/store.js";
@@ -12,7 +12,7 @@ import { deleteSessionShare, listSessionShares, putSessionShare, registerSession
 import { routeDecidePage } from "../../packages/broker/src/aws/decide-web.js";
 import type { DecideKinds } from "../../packages/broker/src/developer/decide-kinds.js";
 import { DECIDE_COOKIE, DecideStore, csrfTokenFor, mintConfirmUrl, requireDecideSession, type DecideRequestContext } from "../../packages/broker/src/developer/decide-session.js";
-import { NeedsConfirmationSchema, SessionEventSchema } from "../../packages/contracts/src/index.js";
+import { NeedsConfirmationSchema, SessionEventSchema } from "@rovara-code/contracts";
 import { ARJUN, BO, CELL, MAX, MIA, OLA, ORG_A, ORG_B, PRIYA, ZED, sessionWorld } from "../support/agent-session-world.js";
 
 const VIEWER_TEXT = "Viewers of web can only watch its sessions.";

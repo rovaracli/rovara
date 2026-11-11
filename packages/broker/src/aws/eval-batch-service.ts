@@ -5,30 +5,7 @@
 // batch is the caller's: in its channel (or thread) and of the project the channel serves.
 import { createHash } from "node:crypto";
 import { catalogModel } from "@agentx/model-runtime/catalog";
-import {
-  AgentXError,
-  EVAL_BATCH_COST_CAP_MAX_USD,
-  EVAL_BATCH_COST_CAP_MIN_USD,
-  EVAL_BATCH_SLACK_MAX_RUNS,
-  EvalBatchSlackStartRequestSchema,
-  EvalBatchSummarySchema,
-  EvalBatchThreadRequestSchema,
-  EvalBatchWatchDropRequestSchema,
-  EvalBatchWatchUpdateRequestSchema,
-  agentXError,
-  slackThreadSubject,
-  type EvalBatchEntry,
-  type EvalBatchModel,
-  type EvalBatchRecord,
-  type EvalBatchSlackStartRequest,
-  type EvalBatchSlackStartResult,
-  type EvalBatchSummary,
-  type EvalBatchWatched,
-  type EvalRunMeasure,
-  type ModelIdentifier,
-  type SlackThread,
-  type ThinkingLevel,
-} from "@agentx/contracts";
+import { AgentXError, EVAL_BATCH_COST_CAP_MAX_USD, EVAL_BATCH_COST_CAP_MIN_USD, EVAL_BATCH_SLACK_MAX_RUNS, EvalBatchSlackStartRequestSchema, EvalBatchSummarySchema, EvalBatchThreadRequestSchema, EvalBatchWatchDropRequestSchema, EvalBatchWatchUpdateRequestSchema, agentXError, slackThreadSubject, type EvalBatchEntry, type EvalBatchModel, type EvalBatchRecord, type EvalBatchSlackStartRequest, type EvalBatchSlackStartResult, type EvalBatchSummary, type EvalBatchWatched, type EvalRunMeasure, type ModelIdentifier, type SlackThread, type ThinkingLevel } from "@rovara-code/contracts";
 import { ZodError } from "zod";
 import {
   EVAL_BATCH_RESERVE_MARGIN,

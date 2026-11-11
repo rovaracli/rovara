@@ -3,11 +3,12 @@ import {ModelApplyRefusalSchema} from "../model-selection/process-refusal.js";
 // registries of rules and subject handlers, creating a change, a step and a write approval, listing, who may decide, and the transaction helpers the decision, the
 // sweep and the movers share. `approvals.ts` re-exports it.
 import { resolveStoredName } from "../developer/name-resolver.js";
-import {ModelSelectionPolicyPutSchema,type ModelSelectionPolicyPut} from "@agentx/contracts";
+import { ModelSelectionPolicyPutSchema, type ModelSelectionPolicyPut } from "@rovara-code/contracts";
 import { createHash } from "node:crypto";
 import { GetCommand, QueryCommand, TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
 import { z } from "zod";
-import { AgentGuardrailsSchema, AgentIdSchema, ChainIdSchema, TriggerIdSchema, AgentPrincipalSchema, ApprovalIdSchema, ConnectorConfigSchema, RunInputSchema, WORK_ORIGINS, APPROVAL_EXECUTING_RETRY_MINUTES, CHANGE_APPROVAL_TTL_DAYS, INDEX_EXPIRY_ATTRIBUTE, OrgIdSchema, SessionIdSchema, SessionLevelSchema, agentXError, approvalKey, approverIndexKey, canonicalInstant, canonicalJson, capText, newPrefixedId, openApprovalKey, hideEmailAddresses, orgScoped, projectAllows, redactText, type AgentGuardrails, type AgentId, type ApprovalId, type AuditProof, type ConnectorConfig, type OrgId, type RunInput, type WorkOrigin, type SessionId, type SessionLevel } from "@agentx/contracts";
+import { AgentGuardrailsSchema, AgentIdSchema, ChainIdSchema, TriggerIdSchema, AgentPrincipalSchema, ApprovalIdSchema, ConnectorConfigSchema, RunInputSchema, WORK_ORIGINS, INDEX_EXPIRY_ATTRIBUTE, OrgIdSchema, SessionIdSchema, SessionLevelSchema, agentXError, approvalKey, approverIndexKey, canonicalInstant, canonicalJson, capText, newPrefixedId, openApprovalKey, hideEmailAddresses, orgScoped, projectAllows, redactText, type AgentGuardrails, type AgentId, type ApprovalId, type ConnectorConfig, type OrgId, type RunInput, type WorkOrigin, type SessionId, type SessionLevel } from "@rovara-code/contracts";
+import { APPROVAL_EXECUTING_RETRY_MINUTES, CHANGE_APPROVAL_TTL_DAYS, type AuditProof } from "@agentx/cloud-contracts";
 import type { SessionTakeOverDependencies } from "../agent-sessions/take-over.js";
 import type { CodeMergeHost, PullRequestMergeSubject } from "../rovara-code/merge.js";
 import { isTaskTakenOver, tryEffectiveTaskOwner, type DeveloperTaskRecord } from "../developer/task-records.js";

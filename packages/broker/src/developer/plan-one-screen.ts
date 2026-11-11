@@ -1,9 +1,6 @@
 // The one-screen plan (Decisions D5, design proof-test-env 3.8): a pure function of a parsed plan document and the run estimate. No model call, no clock, no storage: the same plan
 // gives the same screen every time. Text that came from a plan is flattened to one line and cut at a word; nothing here is markup.
-import {
-  PLAN_ONE_SCREEN_APPROACH_MAX, PLAN_ONE_SCREEN_FILES_MAX, PLAN_ONE_SCREEN_MAX_CHARS, PLAN_ONE_SCREEN_RISKS_MAX, PLAN_PROOF_WORDS, PlanOneScreenSchema, formatMinutes,
-  type PlanClaim, type PlanDocument, type PlanOneScreen, type PlanOneScreenProofKind, type RunEstimate,
-} from "@agentx/contracts";
+import { PLAN_ONE_SCREEN_APPROACH_MAX, PLAN_ONE_SCREEN_FILES_MAX, PLAN_ONE_SCREEN_MAX_CHARS, PLAN_ONE_SCREEN_RISKS_MAX, PLAN_PROOF_WORDS, PlanOneScreenSchema, formatMinutes, type PlanClaim, type PlanDocument, type PlanOneScreen, type PlanOneScreenProofKind, type RunEstimate } from "@rovara-code/contracts";
 
 /** The characters the cost line may take, reserved when the plan is measured (the estimate is not part of the plan). */
 const COST_LINE_RESERVE = 70;

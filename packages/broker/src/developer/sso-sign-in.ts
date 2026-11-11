@@ -3,10 +3,8 @@
 // The server (developer/server.ts) calls `decideCompanySignIn` for every company (oidc) sign-in of an edition that has `sso`, before anything about the person is written
 // or looked up. The module reads the saved mapping and the break-glass list, applies the pure rules (`decideSignIn`), checks that a break-glass sign-in is a fresh one, caps
 // the session, and builds the audit event. It never echoes a claim: a refusal carries a fixed sentence and a fixed reason word.
-import {
-  BREAK_GLASS_NOT_FRESH_MESSAGE, BREAK_GLASS_NOT_FRESH_REASON, BREAK_GLASS_NOT_RECORDED_MESSAGE, BREAK_GLASS_NOT_RECORDED_REASON, ENTERPRISE_SESSION_MAX_SECONDS, GROUP_MAPPING_MESSAGES,
-  type AuditEventInput, type EditionPolicy, type OrgId, type OrgRole, type SignInDecision,
-} from "@agentx/contracts";
+import { BREAK_GLASS_NOT_FRESH_MESSAGE, BREAK_GLASS_NOT_FRESH_REASON, BREAK_GLASS_NOT_RECORDED_MESSAGE, BREAK_GLASS_NOT_RECORDED_REASON, ENTERPRISE_SESSION_MAX_SECONDS, GROUP_MAPPING_MESSAGES, type AuditEventInput, type EditionPolicy, type OrgRole, type SignInDecision } from "@agentx/cloud-contracts";
+import { type OrgId } from "@rovara-code/contracts";
 import type { AuditRuntime } from "../audit/outbox.js";
 import { REMOVED_FROM_ORG_MESSAGE } from "../org/sign-in.js";
 import { auditOccurrence, auditSsoBreakGlassUsed, auditSsoSignIn, auditSsoSignInRefused } from "../audit/events.js";

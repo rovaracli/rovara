@@ -1,5 +1,6 @@
 // What the planner is asked for: one agentx-plan block, and the document it is changing shown as data.
-import { PLAN_DOCUMENT_INFO_STRING, commentRefInAuthor, WORKER_INVOCATION_FEATURES, WorkerInvocationSchema, canonicalPlanJson, parsePlanDocument } from "@agentx/contracts";
+import { PLAN_DOCUMENT_INFO_STRING, commentRefInAuthor, WORKER_INVOCATION_FEATURES, canonicalPlanJson, parsePlanDocument } from "@rovara-code/contracts";
+import { WorkerInvocationSchema } from "@agentx/cloud-contracts";
 import { describe, expect, it } from "vitest";
 import { asksForApplicationPlan, asksForCodeAnchors, planChecksInstructions, planDocumentInstructions, withoutApplicationPlanText, withoutCodeAnchorText } from "../../packages/broker/src/aws/broker-shared.js";
 import { planDocument } from "../support/plan-documents.js";

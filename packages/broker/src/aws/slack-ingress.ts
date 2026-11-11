@@ -13,34 +13,7 @@ import {
 import { GetSecretValueCommand, SecretsManagerClient } from "@aws-sdk/client-secrets-manager";
 import { SendMessageCommand, SQSClient } from "@aws-sdk/client-sqs";
 import { InvokeCommand, LambdaClient } from "@aws-sdk/client-lambda";
-import {
-  AgentXError,
-  CLOSED_SHARED_NOTICE,
-  routeAttributes,
-  SharedTaskRecordSchema,
-  SlackChannelBindingSchema,
-  SlackChannelIdSchema,
-  SlackMessageTimestampSchema,
-  SlackRequestMessageSchema,
-  SlackTeamIdSchema,
-  SlackUserIdSchema,
-  TASK_NOTE_SAVED_TEXT,
-  VIEW_ONLY_NOTICE,
-  isStopCommand,
-  parseConfirmationReply,
-  queuedBehindAttributes,
-  sharedNoticeClaim,
-  sharedTaskKey,
-  slackBindingKey,
-  slackRequestText,
-  slackThreadSubject,
-  taskQuestionAttributes,
-  type OrgId,
-  type SlackChannelBinding,
-  type SlackRequestMessage,
-  type SlackThread,
-  type TaskQuestionRoute,
-} from "@agentx/contracts";
+import { AgentXError, CLOSED_SHARED_NOTICE, routeAttributes, SharedTaskRecordSchema, SlackChannelBindingSchema, SlackChannelIdSchema, SlackMessageTimestampSchema, SlackRequestMessageSchema, SlackTeamIdSchema, SlackUserIdSchema, TASK_NOTE_SAVED_TEXT, VIEW_ONLY_NOTICE, isStopCommand, parseConfirmationReply, queuedBehindAttributes, sharedNoticeClaim, sharedTaskKey, slackBindingKey, slackRequestText, slackThreadSubject, taskQuestionAttributes, type OrgId, type SlackChannelBinding, type SlackRequestMessage, type SlackThread, type TaskQuestionRoute } from "@rovara-code/contracts";
 import { resolveSlackOrg } from "../org/resolve.js";
 import { OrgStore } from "../org/store.js";
 import { requiredEnvironment, type HttpApiV2Event } from "./lambda.js";

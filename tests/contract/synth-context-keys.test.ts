@@ -3,7 +3,7 @@
 import { readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { SYNTH_CONTEXT_KEYS, SYNTH_EXCLUDED_KEYS, SYNTH_FIXED_KEYS } from "@agentx/contracts";
+import { SYNTH_CONTEXT_KEYS, SYNTH_EXCLUDED_KEYS, SYNTH_FIXED_KEYS } from "@agentx/cloud-contracts";
 
 const ROOT = join(import.meta.dirname, "..", "..");
 const filesIn = (directory: string): string[] => readdirSync(join(ROOT, directory)).filter((name) => name.endsWith(".ts")).map((name) => join(directory, name));

@@ -2,7 +2,8 @@
 import {createHash} from "node:crypto";
 import {z} from "zod";
 import {GetCommand} from "@aws-sdk/lib-dynamodb";
-import {ModelIdentifierSchema,ModelFallbackSchema,ModelFallbacksSchema,AuditEventIdSchema,agentXError,canonicalJson,type OrgId} from "@agentx/contracts";
+import { ModelIdentifierSchema, ModelFallbackSchema, ModelFallbacksSchema, agentXError, canonicalJson, type OrgId } from "@rovara-code/contracts";
+import { AuditEventIdSchema } from "@agentx/cloud-contracts";
 import {auditModelFallbackUsed} from "../audit/events.js";
 import {auditPending,type AuditRuntime,type TransactItem} from "../audit/outbox.js";
 import {taskKey} from "../developer/task-records.js";

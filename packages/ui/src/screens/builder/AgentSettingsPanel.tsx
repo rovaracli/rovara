@@ -1,4 +1,4 @@
-import { AutonomySchema, type SkillIdSchema, type ToolGrantSchema } from "@agentx/contracts/web";
+import { AutonomySchema, type SkillIdSchema, type ToolGrantSchema } from "@agentx/cloud-contracts/web";
 import { useState } from "react";
 import type { Overlay } from "./draft-state.js";
 import { TextArea } from "../../design/TextArea.js";

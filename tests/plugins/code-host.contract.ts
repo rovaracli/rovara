@@ -2,12 +2,9 @@
 // fixtures, and against a live sandbox where one exists). A caller branches on capabilities, never on the adapter's name, so each check that depends on
 // a capability says so with `needs`.
 import { expect } from "vitest";
-import {
-  ChangeRequestDetailsSchema, ChangeRequestFeedbackSchema, ChangeRequestStatusSchema, CodeHostCapabilitiesSchema, CodeHostEventSchema, GitCredentialSchema, hostRateLimitRetryAt, MergeObservationSchema,
-  type ChangeRequestRef, type CodeHost, type HostScope, type RawDelivery, type ReadBudget, type RepositoryRef,
-} from "../../packages/contracts/src/index.js";
+import { ChangeRequestDetailsSchema, ChangeRequestFeedbackSchema, ChangeRequestStatusSchema, CodeHostCapabilitiesSchema, CodeHostEventSchema, GitCredentialSchema, hostRateLimitRetryAt, MergeObservationSchema, type ChangeRequestRef, type CodeHost, type HostScope, type RawDelivery, type ReadBudget, type RepositoryRef } from "@rovara-code/contracts";
 import type { FakeHostModel } from "../../packages/broker/src/plugins/fake/model.js";
-import { workerGitCredentialUsable } from "../../packages/contracts/src/index.js";
+import { workerGitCredentialUsable } from "@rovara-code/contracts";
 import { rejection, SHA40, type ContractCheck } from "./contract-kit.js";
 
 export interface CodeHostWorld {

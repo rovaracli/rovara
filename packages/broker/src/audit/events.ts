@@ -4,8 +4,10 @@
 // the same facts gets a different one. Personal data (names, emails, logins, repository and project names, domains,
 // reasons) goes only in `details`, or in a name-keyed target `{ kind, name }`, which the appender pseudonymizes.
 import {createHash} from "node:crypto";
-import {ModelPolicyAuditFactsSchema,ModelFallbackAuditFactsSchema,type ModelIdentifier,type StageId,type ModelFallback} from "@agentx/contracts";
-import { auditEventId, type AuditAction, type AuditActor, type AuditDetailPart, type AuditEventInput, type AuditProof, type AuditTarget } from "@agentx/contracts";
+import { ModelPolicyAuditFactsSchema, ModelFallbackAuditFactsSchema } from "@agentx/cloud-contracts";
+import { type ModelIdentifier, type StageId, type ModelFallback } from "@rovara-code/contracts";
+import { auditEventId, type AuditAction, type AuditDetailPart, type AuditEventInput, type AuditProof, type AuditTarget } from "@agentx/cloud-contracts";
+import { type AuditActor } from "@agentx/cloud-contracts";
 
 export interface AuditBuilderBase {
   orgId: string;

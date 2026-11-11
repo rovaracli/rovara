@@ -14,7 +14,8 @@
 //
 // Lessons that are repo-file eligible live in the merged `.rovara/lessons.md` (decision 50a). A tool that reads that file asks with `skipRepoFile` and gets only the lessons NOT already merged into that repository's file;
 // without it the lessons in the file are returned and marked `inRepoFile`, so a tool that reads both can drop the duplicates. A failed read of the file's state leaves the lesson in (a repeat is harmless; a gap is not).
-import { LOCAL_LESSONS_NOTES_LINE, LOCAL_LESSONS_UNAVAILABLE_LINE, OrgIdSchema, cleanLessonText, type LearnedLesson, type LessonStage } from "@agentx/contracts";
+import { LOCAL_LESSONS_NOTES_LINE, LOCAL_LESSONS_UNAVAILABLE_LINE } from "@agentx/cloud-contracts";
+import { OrgIdSchema, cleanLessonText, type LearnedLesson, type LessonStage } from "@rovara-code/contracts";
 import { LOAD_MAX_BYTES, LOAD_MAX_LESSONS, hasStaleCitation, selectLessons, type LoadDeps } from "./load.js";
 import { learnedLessonsSwitchOn, modeAllows, resolveLearning, resolveLoadBudget, type LearningSettingsReader, type LoadBudget } from "./policy.js";
 import { mayNameInRepository, projectRepoScopesOf } from "./project-repo-audience.js";

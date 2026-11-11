@@ -1,17 +1,8 @@
 // Enterprise foundations, task P7: the repository record's `host` field, read beside the old top-level pins for one release, and the router that picks a
 // code host by `host.kind`. Every case fails when the rule it names is removed.
 import { describe, expect, it } from "vitest";
-import {
-  type CodeHost,
-  editionPolicy,
-  ProjectDefinitionSchema,
-  RepositoryHostSchema,
-  StoredProjectDefinitionSchema,
-  canonicalJson,
-  repositoryHostOf,
-  withRepositoryHost,
-  workerProjectDefinition,
-} from "../../packages/contracts/src/index.js";
+import { type CodeHost, ProjectDefinitionSchema, RepositoryHostSchema, StoredProjectDefinitionSchema, canonicalJson, repositoryHostOf, withRepositoryHost, workerProjectDefinition } from "@rovara-code/contracts";
+import { editionPolicy } from "@agentx/cloud-contracts";
 import { assertRepositoryHostsKnown, createPluginRegistry, selectCodeHost } from "../../packages/broker/src/plugins/registry.js";
 import { FakeCodeHost } from "../../packages/broker/src/plugins/fake/code-host.js";
 import { newModel } from "../plugins/fake-worlds.js";

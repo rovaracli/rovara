@@ -1,8 +1,8 @@
 // Track record (v1.2 slice 1), the hooks: what is recorded when a pull request is published, and how its samples are scored when a person asks for changes, the pull request merges
 // or closes, and the task ends. Every hook is best effort: a failing write is counted and never reaches the caller.
 import { describe, expect, it } from "vitest";
-import type { WorkflowSnapshot } from "../../packages/contracts/src/index.js";
-import type { ChangeRequestStatus } from "../../packages/contracts/src/index.js";
+import type { WorkflowSnapshot } from "@agentx/cloud-contracts";
+import type { ChangeRequestStatus } from "@rovara-code/contracts";
 import type { OutcomeDependencies } from "../../packages/broker/src/rovara-code/outcomes.js";
 import {
   observeCandidateCode, outcomeRoundOf, recordPlanOutcome, recordPublicationOutcomes, scoreChangesRequested, scoreMergedCandidate, settleSuperseded, settleTaskOutcomes,
