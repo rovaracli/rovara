@@ -10,11 +10,12 @@
 import { AgentXError, agentXError, type OrgId } from "@agentx/contracts";
 import { InvoiceListSchema, INVOICES_MAX_PAGE } from "@agentx/contracts";
 import { orgTrial } from "../../app-nav/nav.js";
+import { listOrganizationMembers } from "../../org/directory.js";
 import { billingEnabled } from "../../org/billing-switch.js";
 import { requireLiveCompanyAdmin } from "../../org/company-authority.js";
 import { readOrgAndMemberFigures } from "../../spend/routes.js";
 import { trialAvailable } from "../../org/trial-availability.js";
-import { buildBillingState, buildTrialView, machineAllowance, modelsAllowance, type OrgTrialFacts } from "../../org/trial-view.js";
+import { asksAnAdmin, buildBillingState, buildTrialView, machineAllowance, modelsAllowance, type OrgTrialFacts } from "../../org/trial-view.js";
 import { readMachineAllowance } from "../../org/trial.js";
 import { StatusReply } from "../status-reply.js";
 import type { AdaptedHttpRequest } from "../lambda.js";
@@ -30,7 +31,8 @@ async function orgFacts(deps: DeveloperRouteDependencies, orgId: OrgId): Promise
   if (deps.orgs === undefined) throw agentXError("NOT_FOUND", "organizations are not set up in this deployment");
   const org = await deps.orgs.getOrg(orgId);
   if (org === undefined) throw agentXError("NOT_FOUND", "your organization was not found");
-  const trial = orgTrial(org);
+  // The trial lock and the machine-time allowance are enforced only on a cloud install (admission.ts); elsewhere there is no `locked` phase and no machine meter to show.
+  const trial = deps.cloud === true ? orgTrial(org) : undefined;
   return { plan: org.plan, trialState: trial?.state };
 }
 
@@ -43,9 +45,15 @@ async function getTrial(deps: DeveloperRouteDependencies, caller: DeveloperCalle
   const table = { documentClient: deps.documentClient, tableName: deps.tableName, now: () => now };
   const [figures, machine] = await Promise.all([
     readOrgAndMemberFigures({ documentClient: deps.documentClient, tableName: deps.tableName, ...(deps.cloud === true ? { cloud: true } : {}) }, { orgId: caller.orgId, developerId: caller.developerId }, month),
-    readMachineAllowance(table, caller.orgId),
+    deps.cloud === true ? readMachineAllowance(table, caller.orgId) : Promise.resolve(undefined),
   ]);
-  return new StatusReply(200, buildTrialView({ org, role: caller.orgRole, month, models: modelsAllowance(figures.org, month), machine: machineAllowance(machine), member: figures.member }));
+  const input = { org, role: caller.orgRole, month, models: modelsAllowance(figures.org, month), machine: machineAllowance(machine), member: figures.member };
+  const view = buildTrialView(input);
+  if (!asksAnAdmin(view)) return new StatusReply(200, view);
+  // The names to ask: the company's owners and admins, as the member list shows them to any member.
+  const { members } = await listOrganizationMembers(deps, caller);
+  const admins = members.filter((member) => member.role === "owner" || member.role === "admin").map((member) => ({ id: member.developerId, name: member.name }));
+  return new StatusReply(200, buildTrialView(input, admins));
 }
 
 async function requireBillingReader(deps: DeveloperRouteDependencies, caller: DeveloperCaller): Promise<void> {

@@ -5,6 +5,8 @@ import {
   AgentXError, BROKER_SETTINGS, BillingActionBodySchema, BillingAnswerReaderSchema, BillingStateReaderSchema, BillingStateSchema, InvoiceListReaderSchema, InvoiceSchema, TrialViewReaderSchema, TrialViewSchema, type BillingState, type TrialView,
   developerOrgKey, editionPolicy, errorStatus, machineTimeMonthKey, openComputeKey, orgMemberKey, orgMetaKey, orgSettingsKey, scopeKey, spendCounterKey, workspaceSessionKey,
 } from "@agentx/contracts";
+import { MINIMUM_REMAINING_USD } from "../../packages/broker/src/org/budget.js";
+import { TASK_START_FLOOR_USD } from "../../packages/broker/src/org/trial-view.js";
 import { routeDeveloperRequest, type DeveloperCaller, type DeveloperRouteDependencies } from "../../packages/broker/src/aws/developer-routes.js";
 import { webRouteAllowed } from "../../packages/broker/src/aws/web-auth.js";
 import { billingEnabled } from "../../packages/broker/src/org/billing-switch.js";
@@ -12,6 +14,7 @@ import { FakeDynamoDb } from "../support/fake-dynamodb.js";
 
 const A = "org_aaaaaaaaaaaaaaaaaaaa", B = "org_bbbbbbbbbbbbbbbbbbbb";
 const who = "a".repeat(64), other = "b".repeat(64), bPerson = "c".repeat(64);
+const NAMES: Record<string, string> = { [who]: "Wanda Writer", [other]: "Ada Admin", ["d".repeat(64)]: "Olive Owner", ["e".repeat(64)]: "Mo Member", [bPerson]: "Beta Boss" };
 const NOW = Date.parse("2026-11-11T12:00:00Z");
 const MONTH = "2026-11";
 
@@ -31,14 +34,17 @@ function fixture(options: Options = {}) {
   function member(orgId = A, person = who, current: string = role) {
     db.set({ ...orgMemberKey(orgId, person), orgId, developerId: person, role: current });
     db.set({ ...developerOrgKey(person), orgId, role: current });
-    db.set({ pk: `DEVELOPER#${person}`, sk: "META", developerId: person });
+    db.set({ pk: `DEVELOPER#${person}`, sk: "META", developerId: person, displayName: NAMES[person] ?? "Person " + person.slice(0, 4), provider: "cloud" });
   }
   member();
   member(B, bPerson, "owner");
   const deps = {
     documentClient: db, tableName: "state", cloud, now: () => now,
     ...(edition === undefined ? {} : { editionPolicy: editionPolicy(edition) }),
-    orgs: { getOrg: async (orgId: string) => { const row = db.get(orgMetaKey(orgId)); return row === undefined ? undefined : { orgId, name: row.name, plan: row.plan, createdBy: row.createdBy, trialUnlockedAt: row.trialUnlockedAt, trialGithubUsedAt: row.trialGithubUsedAt }; } },
+    orgs: {
+      listMembers: async (orgId: string) => db.find((row) => row.pk === orgMemberKey(orgId as never, who).pk && typeof row.developerId === "string").map((row) => ({ developerId: row.developerId as string, role: row.role as string, joinedAt: "2026-01-01T00:00:00Z" })),
+      getOrg: async (orgId: string) => { const row = db.get(orgMetaKey(orgId)); return row === undefined ? undefined : { orgId, name: row.name, plan: row.plan, createdBy: row.createdBy, trialUnlockedAt: row.trialUnlockedAt, trialGithubUsedAt: row.trialGithubUsedAt }; },
+    },
     developer: { issuer: "https://cell.example/v1/auth", env: "test", signInTableName: "signin", methods: { cloud: true, slack: false, oidc: false }, verifyAccessToken: async () => ({}), channelMembers: async () => ({ ok: true, memberOf: [] }) },
   } as unknown as DeveloperRouteDependencies;
   const caller = (orgRole: string = role, orgId = A, developerId = who): DeveloperCaller => ({ orgId, developerId, orgRole, name: "Person", amr: "cloud", sessionId: "fixture" } as unknown as DeveloperCaller);
@@ -81,7 +87,7 @@ describe("GET /v1/app/trial: the real figures", () => {
       { kind: "models", unit: "usd", refresh: "monthly", period: { month: MONTH }, granted: 500, used: 142.5, held: 12, left: 345.5, state: "ok", source: "rovara" },
       { kind: "machine", unit: "hours", refresh: "monthly", period: { month: MONTH }, granted: 20, used: 3, left: 17, state: "ok" },
     ]);
-    expect(tv(r).you).toEqual({ member: { limitUsd: 29, spentUsd: 3.1, committedUsd: 4 }, hitLimit: false, canChoose: true });
+    expect(tv(r).you).toEqual({ member: { limitUsd: 29, spentUsd: 3.1, committedUsd: 4 }, hitLimit: false, canChoose: true, notice: null });
     expect(tv(r).ends.when).toBe("monthly_refresh");
     expect(tv(r).ends.text).toContain("renews");
     expect(tv(r).choices).toBeNull();
@@ -427,5 +433,116 @@ describe("the contract schemas", () => {
     expect(read({ status: "done", state }).success).toBe(true);
     const teleport = read({ status: "done", state, action: { kind: "teleport" } });
     expect(teleport.success && teleport.data.action?.kind).toBe("unknown");
+  });
+});
+
+describe("used up means what admission refuses on (M1)", () => {
+  it("is used up when less than a task start needs is left: 499.80 of 500", async () => {
+    const f = fixture();
+    f.spend(A, "ORG", 499.8, 499.8);
+    const view = tv(await f.call(TRIAL));
+    expect(view.allowances[0]).toMatchObject({ granted: 500, used: 499.8, left: 0.2, state: "used_up" });
+    expect(view.you.hitLimit).toBe(true);
+    expect(view.choices).toMatchObject({ audience: "admins" });
+    // A member sees the prompt too, as the next start is refused.
+    const m = fixture({ role: "member" });
+    m.spend(A, "ORG", 499.8, 499.8);
+    expect(tv(await m.call(TRIAL))).toMatchObject({ you: { hitLimit: true }, choices: { audience: "you" } });
+  });
+
+  it("takes its floor from the shared admission constant, and is not used up at exactly the floor", async () => {
+    expect(TASK_START_FLOOR_USD).toBe(MINIMUM_REMAINING_USD.TASK);
+    const f = fixture();
+    f.spend(A, "ORG", 500 - MINIMUM_REMAINING_USD.TASK, 500 - MINIMUM_REMAINING_USD.TASK);
+    expect(tv(await f.call(TRIAL)).allowances[0]).toMatchObject({ state: "low" });
+    f.spend(A, "ORG", 500 - MINIMUM_REMAINING_USD.TASK + 0.01, 500 - MINIMUM_REMAINING_USD.TASK + 0.01);
+    expect(tv(await f.call(TRIAL)).allowances[0]).toMatchObject({ state: "used_up" });
+  });
+});
+
+describe("a person's own monthly limit (M2, decision 95)", () => {
+  const OWNER = "d".repeat(64), MEMBER2 = "e".repeat(64);
+  function withPeople(f: ReturnType<typeof fixture>) {
+    f.member(A, other, "admin");
+    f.member(A, OWNER, "owner");
+    f.member(A, MEMBER2, "member");
+    f.member(B, "f".repeat(64), "admin");
+    f.db.set({ pk: `DEVELOPER#${"f".repeat(64)}`, sk: "META", developerId: "f".repeat(64), displayName: "Other Company Admin", provider: "cloud" });
+  }
+
+  it("says the personal limit is used up while the company has room, offers Ask an admin, and names the admins", async () => {
+    const f = fixture({ role: "member" });
+    withPeople(f);
+    f.spend(A, "ORG", 20, 20);
+    f.spend(A, scopeKey({ kind: "member", developerId: who }), 28.8, 28.8);
+    const view = tv(await f.call(TRIAL));
+    expect(view.allowances[0]).toMatchObject({ state: "ok" });
+    expect(view.you).toMatchObject({ hitLimit: true, canChoose: false, notice: { kind: "personal_limit_used_up", text: "Your personal limit is used up for this month." } });
+    expect(view.choices).toMatchObject({ audience: "you" });
+    expect(view.admins.map((admin) => admin.name).sort()).toEqual(["Ada Admin", "Olive Owner"]);
+    expect(view.admins.every((admin) => /^[a-f0-9]{64}$/u.test(admin.id))).toBe(true);
+    // No member, no writer of another company, appears.
+    expect(JSON.stringify(view)).not.toMatch(/Mo Member|Other Company Admin|Wanda/);
+  });
+
+  it("says nothing while the person has room, and names no one", async () => {
+    const f = fixture({ role: "member" });
+    withPeople(f);
+    f.spend(A, scopeKey({ kind: "member", developerId: who }), 20, 20);
+    const view = tv(await f.call(TRIAL));
+    expect(view.you).toMatchObject({ hitLimit: false, notice: null });
+    expect(view.choices).toBeNull();
+    expect(view.admins).toEqual([]);
+  });
+
+  it("an admin whose own limit is used up sees the notice and the choices, and needs no names", async () => {
+    const f = fixture({ role: "admin" });
+    withPeople(f);
+    f.spend(A, scopeKey({ kind: "member", developerId: who }), 29, 29);
+    const view = tv(await f.call(TRIAL));
+    expect(view.you).toMatchObject({ hitLimit: true, canChoose: true, notice: { kind: "personal_limit_used_up" } });
+    expect(view.choices).toMatchObject({ audience: "admins" });
+    expect(view.admins).toEqual([]);
+  });
+
+  it("uses the same floor as admission: 28.60 of 29 is used up, 28.40 is not", async () => {
+    const f = fixture({ role: "member" });
+    f.spend(A, scopeKey({ kind: "member", developerId: who }), 28.4, 28.4);
+    expect(tv(await f.call(TRIAL)).you.hitLimit).toBe(false);
+    f.spend(A, scopeKey({ kind: "member", developerId: who }), 28.6, 28.6);
+    expect(tv(await f.call(TRIAL)).you.hitLimit).toBe(true);
+  });
+
+  it("reads only the caller's own member counter: another person's used-up limit is not the caller's", async () => {
+    const f = fixture({ role: "member" });
+    withPeople(f);
+    f.spend(A, scopeKey({ kind: "member", developerId: MEMBER2 }), 29, 29);
+    expect(tv(await f.call(TRIAL)).you).toMatchObject({ hitLimit: false, notice: null });
+  });
+
+  it("is in the contract: the admins list is strict and bounded", () => {
+    const base = { phase: "active", plan: "trial", allowances: [], you: { member: null, hitLimit: false, canChoose: false, notice: null }, ends: { when: "monthly_refresh", text: "x" }, choices: null };
+    expect(TrialViewSchema.safeParse({ ...base, admins: [{ id: "a".repeat(64), name: "Ada" }] }).success).toBe(true);
+    expect(TrialViewSchema.safeParse({ ...base, admins: [{ id: "a".repeat(64), name: "Ada", email: "a@b.c" }] }).success).toBe(false);
+    expect(TrialViewSchema.safeParse({ ...base, admins: Array.from({ length: 21 }, () => ({ id: "a".repeat(64), name: "Ada" })) }).success).toBe(false);
+    expect(TrialViewSchema.safeParse({ ...base }).success).toBe(false);
+  });
+});
+
+describe("a non-cloud install (L2)", () => {
+  it("shows no machine meter and no locked phase: admission enforces neither there", async () => {
+    const f = fixture({ cloud: false, trial: "locked" });
+    f.db.set({ ...orgSettingsKey(A, "BUDGET"), entityType: "ORG_BUDGET", memberOverrides: {}, orgMonthlyUsd: 50 });
+    f.machine(A, 99 * 3600);
+    const view = tv(await f.call(TRIAL));
+    expect(view.phase).toBe("active");
+    expect(view.allowances.map((meter) => meter.kind)).toEqual(["models"]);
+    // Positive control: the same company on a cloud install is locked and has the machine meter's input.
+    const cloud = fixture({ cloud: true, trial: "locked" });
+    expect(tv(await cloud.call(TRIAL)).phase).toBe("locked");
+    const unlocked = fixture({ cloud: true });
+    expect(tv(await unlocked.call(TRIAL)).allowances.map((meter) => meter.kind)).toEqual(["models", "machine"]);
+    withBilling();
+    expect(bs(await f.call(BILLING)).phase).toBe("active");
   });
 });

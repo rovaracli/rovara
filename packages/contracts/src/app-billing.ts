@@ -32,7 +32,7 @@ export const INVOICE_LINES_MAX = 200;
 
 const Amount = z.number().finite().min(0).max(1e12);
 const Iso = z.string().min(1).max(40);
-/** A person: the id is 64 hex characters; the name is what the member list shows. Reserved for the "Ask an admin" names; the reads in this lane carry none. */
+/** A person: the id is 64 hex characters; the name is what the member list shows. The "Ask an admin" names (`TrialView.admins`) and, later, who made a trial-end choice. */
 export const BillingPersonSchema = z.object({ id: z.string().regex(/^[a-f0-9]{64}$/u), name: z.string().max(200) }).strict();
 const Money = z.number().int().min(0).max(Number.MAX_SAFE_INTEGER);
 const Currency = z.string().regex(/^[A-Z]{3}$/u);
@@ -90,13 +90,17 @@ export const TrialViewSchema = z.object({
   you: z.object({
     /** The caller's own monthly figures; null when no limit applies to them. */
     member: orNull(z.object({ limitUsd: Amount, spentUsd: Amount, committedUsd: Amount }).strict()),
-    /** An allowance is used up, so the caller's next start would be refused for it. (No refusal is recorded; this is read from the figures.) */
+    /** A company allowance, or the caller's own monthly limit, is used up (less than a task start needs is left), so the caller's next start would be refused. (No refusal is recorded; this is read from the figures.) */
     hitLimit: z.boolean(),
+    /** Set when the caller's PERSONAL monthly limit is used up (the company may still have room): a fixed sentence from the server, with "Ask an admin" and `admins` below. */
+    notice: orNull(z.object({ kind: z.enum(["personal_limit_used_up"]), text: z.string().min(1).max(300) }).strict()),
     /** An owner or admin (the people who may choose at the end of a trial). */
     canChoose: z.boolean(),
   }).strict(),
   /** What happens at the end, as a fixed sentence from the server. */
   ends: z.object({ when: z.enum(["allowance_used", "monthly_refresh"]), text: z.string().min(1).max(500) }).strict(),
+  /** The owners and admins to ask (their display names), for a person who cannot choose and is told to ask; empty otherwise. The caller's company members may read the same list at `GET /v1/app/org/members`. */
+  admins: z.array(BillingPersonSchema).max(20),
   /** Present when an allowance is low or used up and this person is told (owners and admins; anyone else who hit the limit); null otherwise. */
   choices: orNull(ChoiceSetSchema),
 }).strict();

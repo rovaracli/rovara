@@ -7,6 +7,7 @@
 import {
   BUDGET_WARNING_RATIO, BillingStateSchema, TrialViewSchema, type Allowance, type BillingState, type OrgRole, type TrialPhase, type TrialView,
 } from "@agentx/contracts";
+import { MINIMUM_REMAINING_USD } from "./budget.js";
 
 const SECONDS_PER_HOUR = 3600;
 /** Dollars and hours are shown to the cent, so a figure like 0.1 + 0.2 never reaches the page as 0.30000000000000004. */
@@ -27,14 +28,23 @@ export function phaseOf(org: OrgTrialFacts): TrialPhase {
 
 const stateOf = (usedShare: number, left: number): Allowance["state"] => (left <= 0 ? "used_up" : usedShare >= BUDGET_WARNING_RATIO ? "low" : "ok");
 
-/** The models meter: US dollars, the month's counters and limit. Undefined for a company with no limit. `low` and `used_up` follow what admission refuses on: committed (spent plus held) against the limit. */
+/**
+ * What a task start needs left in US dollars: admission (`spend/admission.ts#admitWork`) refuses work when a level's room is below the path's minimum, and `TASK` is the smallest a person's
+ * own task start needs, so a models meter with less than this left is used up. It is the shared constant, not a copy. (Admission also holds the room to the model proxy's own figure; reading
+ * that figure would sync the proxy's limits, which a read must not do, so the view reads the ledger's room only. The proxy's figure can only make admission stricter, never looser.)
+ */
+export const TASK_START_FLOOR_USD = MINIMUM_REMAINING_USD.TASK;
+/** A limit's room (limit minus committed, never below 0), as admission reads the ledger, is too little to start a task. */
+const belowFloor = (limitUsd: number, committedUsd: number): boolean => Math.max(0, limitUsd - committedUsd) < TASK_START_FLOOR_USD;
+
+/** The models meter: US dollars, the month's counters and limit. Undefined for a company with no limit. `low` and `used_up` follow what admission refuses on: committed (spent plus held) against the limit, `used_up` once less than a task start needs is left. */
 export function modelsAllowance(figures: { spentUsd: number; committedUsd: number; limitUsd?: number }, month: string): Allowance | undefined {
   if (figures.limitUsd === undefined) return undefined;
   const left = Math.max(0, figures.limitUsd - figures.committedUsd);
   return {
     kind: "models", unit: "usd", refresh: "monthly", period: { month },
     granted: round(figures.limitUsd), used: round(figures.spentUsd), held: round(Math.max(0, figures.committedUsd - figures.spentUsd)), left: round(left),
-    state: stateOf(figures.limitUsd > 0 ? figures.committedUsd / figures.limitUsd : 1, left), source: "rovara",
+    state: belowFloor(figures.limitUsd, figures.committedUsd) ? "used_up" : stateOf(figures.limitUsd > 0 ? figures.committedUsd / figures.limitUsd : 1, left), source: "rovara",
   };
 }
 
@@ -77,6 +87,8 @@ function choiceSet(audience: "you" | "admins"): NonNullable<TrialView["choices"]
   };
 }
 
+const PERSONAL_LIMIT_TEXT = "Your personal limit is used up for this month.";
+
 export interface TrialViewInput {
   org: OrgTrialFacts;
   role: OrgRole;
@@ -88,15 +100,18 @@ export interface TrialViewInput {
 
 /**
  * GET /v1/app/trial. A locked trial, or one whose GitHub account another company used, has no allowance to show (no work can start), so `allowances` is empty and `choices` null.
- * `hitLimit` is read from the figures (an allowance is used up, so the next start would be refused): no refusal is recorded anywhere to read it from. The choices are told to owners and
+ * `hitLimit` is read from the figures (a company allowance or the caller's own monthly limit is used up, so the next start would be refused): no refusal is recorded anywhere to read it from.
+ * When only the caller's personal limit is used up (the company has room) `you.notice` says so and the choices carry the "Ask an admin" prompt; `admins` holds the names to ask. The choices are told to owners and
  * admins (`admins`) and to anyone else whose allowance is used up (`you`), whenever an allowance is low or used up; the maintainer of a project is an org member here and is told only if they hit the limit.
  */
-export function buildTrialView(input: TrialViewInput): TrialView {
+export function buildTrialView(input: TrialViewInput, admins: ReadonlyArray<{ id: string; name: string }> = []): TrialView {
   const phase = phaseOf(input.org);
   const open = phase === "active";
   const allowances = open ? [input.models, input.machine].filter((meter): meter is Allowance => meter !== undefined) : [];
-  const hitLimit = allowances.some((meter) => meter.state === "used_up");
-  const short = allowances.some((meter) => meter.state !== "ok");
+  // The caller's own monthly limit, read as admission reads a member's level (BUDGET_EXCEEDED): less than a task start needs left.
+  const personalUsedUp = open && input.member.limitUsd !== undefined && belowFloor(input.member.limitUsd, input.member.committedUsd);
+  const hitLimit = personalUsedUp || allowances.some((meter) => meter.state === "used_up");
+  const short = hitLimit || allowances.some((meter) => meter.state !== "ok");
   const canChoose = canChooseAtTrialEnd(input.role);
   const choices = short && (canChoose || hitLimit) ? choiceSet(canChoose ? "admins" : "you") : null;
   return TrialViewSchema.parse({
@@ -104,7 +119,10 @@ export function buildTrialView(input: TrialViewInput): TrialView {
     you: {
       member: input.member.limitUsd === undefined ? null : { limitUsd: round(input.member.limitUsd), spentUsd: round(input.member.spentUsd), committedUsd: round(input.member.committedUsd) },
       hitLimit, canChoose,
+      notice: personalUsedUp ? { kind: "personal_limit_used_up", text: PERSONAL_LIMIT_TEXT } : null,
     },
+    // The owners and admins to ask, only for a person who cannot choose and is being told to ask (a company member may read the member list anyway).
+    admins: !canChoose && (choices !== null || personalUsedUp) ? admins.slice(0, 20) : [],
     ends: { when: "monthly_refresh", text: ENDS_TEXT[phase === "locked" ? "locked" : phase === "github_used" ? "github_used" : "monthly"] },
     choices,
   });
@@ -122,3 +140,6 @@ export function buildBillingState(input: { org: OrgTrialFacts; monthlyLimitUsd: 
     invoices: { count: 0, latest: null }, portal: { available: false }, lastEventAt: null,
   });
 }
+
+/** Whether the view tells this person to ask an admin, so the route must name the admins. */
+export const asksAnAdmin = (view: TrialView): boolean => !view.you.canChoose && (view.choices !== null || view.you.notice !== null);
