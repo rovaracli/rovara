@@ -6,7 +6,8 @@ import { useAppHost } from "../../host.js";
 import { paths } from "../../paths.js";
 import { useAgents } from "../../api/agents.js";
 import { useDecisions, decisionOpenTarget, type ReadDecision } from "../../api/decisions.js";
-import { useHomeFinished, type ReadHomeCard } from "../../api/home.js";
+import type { ReadHomeCard } from "../../api/home.js";
+import { useHomeFinished } from "../../api/home-finished.js";
 import { mergeLiveTiles, useLive } from "../../api/live.js";
 import { ApiError } from "../../api/errors.js";
 import { Button } from "../../design/Button.js";
@@ -14,9 +15,9 @@ import { PageHeader } from "../../design/PageHeader.js";
 import { RelativeTime } from "../../design/RelativeTime.js";
 import { Skeleton } from "../../design/Skeleton.js";
 import { VisibleText } from "../../design/VisibleText.js";
-import { HomeCard } from "./HomeCard.js";
+import { HomeCardRow } from "./HomeCardRow.js";
 import { StatePill } from "./StatePill.js";
-import { continueRows, decisionState, finishedRows, needsYouSessions, pickAgents, type HomeRow } from "./home-rows.js";
+import { continueRows, decisionSession, decisionState, finishedRows, needsYouSessions, pickAgents, type HomeRow } from "./home-rows.js";
 // The start box is the existing one (outcome first); it loads after the first paint like on today's Home.
 const HomeStart = lazy(async () => ({ default: (await import("./HomeStart.js")).HomeStart }));
 
@@ -26,19 +27,20 @@ function Failed({ error, fallback, retry }: { error: unknown; fallback: string; 
  return <div className="rv-hv2-failed" role="alert"><p><VisibleText text={error instanceof ApiError ? error.message : fallback} /></p><Button onClick={retry}>Try again</Button></div>;
 }
 
-/** One decision as a row: its plain state, the question it asks, how long ago, and one primary action (its own Open). The decision itself is made on the card the link opens. */
+/** One decision as a row: its plain state, the question it asks, how long ago it was asked, and one primary action (its own Open). The decision itself is made on the card the link opens. */
 function DecisionRow({ decision }: { decision: ReadDecision }) {
- const host = useAppHost(), card = decision.card, target = decisionOpenTarget(card, host.origin), open = card.actions.find(action => action.kind === "open"), label = open?.label ?? "Open";
+ const host = useAppHost(), card = decision.card, target = decisionOpenTarget(card, host.origin), open = card.actions.find(action => action.kind === "open"), label = open?.label ?? "Open", name = label + ": " + card.title;
+ // A card whose own Open is not one this app can follow still gets a way in: its task page, else its own decision page.
+ const session = decisionSession(decision), fallback = target !== undefined ? undefined : session !== undefined ? paths.session(session) : "/app/decisions/" + card.id.replace(":", "/");
  return <li className="rv-hv2-row" data-card-kind={card.kind}>
-  <div className="rv-hv2-main"><p className="rv-hv2-top"><StatePill state={decisionState(card)} /><span className="rv-hv2-meta"><VisibleText text={card.project} /></span><RelativeTime at={card.createdAt} /></p><h3><VisibleText text={card.title} /></h3><p className="rv-hv2-line"><VisibleText text={card.question} /></p></div>
-  <div className="rv-hv2-actions">{target?.kind === "internal" && <Link className="rv-button rv-button-primary" to={target.to}><VisibleText text={label} /></Link>}{target?.kind === "external" && <Button variant="primary" onClick={() => { host.openExternal(target.href); }}><VisibleText text={label} /></Button>}</div>
+  <div className="rv-hv2-main"><p className="rv-hv2-top"><StatePill state={decisionState(card)} /><span className="rv-hv2-meta"><VisibleText text={card.project} /></span><span className="rv-hv2-age">Asked <RelativeTime at={card.createdAt} /></span></p><h3><VisibleText text={card.title} /></h3><p className="rv-hv2-line"><VisibleText text={card.question} /></p></div>
+  <div className="rv-hv2-actions">{target?.kind === "internal" && <Link className="rv-button rv-button-primary" to={target.to} aria-label={name}><VisibleText text={label} /></Link>}{target?.kind === "external" && <Button variant="primary" aria-label={name} onClick={() => { host.openExternal(target.href); }}><VisibleText text={label} /></Button>}{fallback !== undefined && <Link className="rv-button rv-button-primary" to={fallback} aria-label={"Open: " + card.title}>Open</Link>}</div>
  </li>;
 }
 
-function SessionRow({ row, sessionId, fallbackTime }: { row: HomeRow; sessionId: string; fallbackTime?: string }) {
- const at = row.at ?? fallbackTime;
+function SessionRow({ row, sessionId }: { row: HomeRow; sessionId: string }) {
  return <li className="rv-hv2-row rv-hv2-session">
-  <div className="rv-hv2-main"><p className="rv-hv2-top"><StatePill state={row.state} />{row.meta.map(item => <span key={item} className="rv-hv2-meta"><VisibleText text={item} /></span>)}{at !== undefined && <RelativeTime at={at} />}</p><h3><Link to={paths.session(sessionId)}><VisibleText text={row.title} /></Link></h3>{row.next !== undefined && <p className="rv-hv2-line">{row.next}</p>}</div>
+  <div className="rv-hv2-main"><p className="rv-hv2-top"><StatePill state={row.state} />{row.meta.map(item => <span key={item} className="rv-hv2-meta"><VisibleText text={item} /></span>)}{row.at !== undefined && <span className="rv-hv2-age">Updated <RelativeTime at={row.at} /></span>}</p><h3><Link to={paths.session(sessionId)}><VisibleText text={row.title} /></Link></h3>{row.next !== undefined && <p className="rv-hv2-line"><VisibleText text={row.next} /></p>}</div>
  </li>;
 }
 
@@ -81,8 +83,8 @@ export function HomeV2({ home, shown, total, needsYou, unavailable }: HomeV2Prop
    {needsLoading && <Skeleton label="Loading what needs you" />}
    {home.isError && <Failed error={home.error} fallback="Couldn't load what needs you. Try again." retry={() => { void home.refetch(); }} />}
    {decisions.isError && <Failed error={decisions.error} fallback="Couldn't load your decisions. Try again." retry={() => { void decisions.refetch(); }} />}
-   {unavailable && <div><p>Items are temporarily unavailable.</p><Button onClick={() => { void home.refetch(); }}>Try again</Button></div>}
-   {(pending.length > 0 || cards.length > 0) && <ol className="rv-hv2-list" aria-label="What needs you">{pending.map(decision => <DecisionRow key={decision.card.id} decision={decision} />)}{cards.map(card => <HomeCard key={card.cardId} card={card} compact />)}</ol>}
+   {unavailable && <div role="status"><p>Items are temporarily unavailable.</p><Button onClick={() => { void home.refetch(); }}>Try again</Button></div>}
+   {(pending.length > 0 || cards.length > 0) && <ol className="rv-hv2-list" aria-label="What needs you">{pending.map(decision => <DecisionRow key={decision.card.id} decision={decision} />)}{cards.map(card => <HomeCardRow key={card.cardId} card={card} />)}</ol>}
    {shown !== undefined && total > shown.length && shown.length > 0 && <p className="rv-muted">Showing {shown.length} of {total}</p>}
    {needsEmpty && <p className="rv-hv2-empty"><strong>Nothing needs you right now.</strong> <span className="rv-muted">Your team's work can keep moving.</span></p>}
   </Section>

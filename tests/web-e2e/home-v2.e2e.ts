@@ -21,10 +21,11 @@ const focusVisible = async (page: Page) => { await page.keyboard.press("Tab");aw
 const HEADINGS = ["Needs you", "Start something", "Or start with an agent", "Continue", "Finished recently"];
 for (const width of [1280, 390] as const) {
  test(`switch off at ${String(width)}: today's Home, none of the new sections`, async ({ page, context, request, baseURL }) => {
+  const chunks: string[] = [];page.on("request", asked => { if (/HomeV2|home-v2/u.test(asked.url())) chunks.push(asked.url()); });
   await enter(page, context, request, baseURL, width, {});await page.goto("/app");
   await expect(page.getByText("2 things need you")).toBeVisible();await expect(page.locator(".rv-attention-list")).toBeVisible();
   // The start box line (loaded after the first paint) is waited for, so a before/after picture never catches it half-loaded.
-  await expect(page.getByText("Project: payments")).toBeVisible();await expect(page.locator(".rv-home-v2")).toHaveCount(0);await expect(page.getByRole("heading", { name: "Continue", exact: true })).toHaveCount(0);
+  await expect(page.getByText("Project: payments")).toBeVisible();await expect(page.locator(".rv-home-v2")).toHaveCount(0);await page.waitForLoadState("networkidle");expect(chunks, "the new Home's chunk is not requested while the switch is off").toEqual([]);await expect(page.getByRole("heading", { name: "Continue", exact: true })).toHaveCount(0);
   expect(await noSidewaysScroll(page)).toBe(true);
   await evidenceShot(page, { path: `${shots}/off-${String(width)}.png`, fullPage: true });
  });

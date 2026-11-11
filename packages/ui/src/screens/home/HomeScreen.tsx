@@ -42,7 +42,7 @@ export function HomeScreen() {
  for (const card of previous.current ?? []) if (!cards.some(next => next.cardId === card.cardId)) announce(card.title + " no longer needs you");
  previous.current = cards;
  }, [cards, announce]);
- if (newHome) return <Suspense fallback={<section className="rv-home"><PageHeader title="Home" /></section>}><HomeV2 home={home} shown={shown} total={total} needsYou={needsYou} unavailable={cards !== undefined && cards.length === 0 && total > 0} /></Suspense>;
+ if (newHome) return <Suspense fallback={<section className="rv-home"><PageHeader title="Home" /><Skeleton label="Loading Home" /></section>}><HomeV2 home={home} shown={shown} total={total} needsYou={needsYou} unavailable={cards !== undefined && cards.length === 0 && total > 0} /></Suspense>;
  return <section className="rv-home"><PageHeader title="Home" {...(shown !== undefined && needsYou > 0 ? { description: `${needsYou} ${needsYou === 1 ? "thing needs" : "things need"} you` } : {})} />
  <Suspense fallback={null}><HomeStart /></Suspense>
  <Suspense fallback={null}><NeedsYou /></Suspense>

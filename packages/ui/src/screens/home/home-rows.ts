@@ -1,6 +1,7 @@
 import { TaskStatusReaderSchema, decisionTaskSessionOf, taskStatusFromSession } from "@agentx/contracts/web";
 import type { ReadDecision } from "../../api/decisions.js";
-import type { ReadFinishedSession, ReadHomeCard } from "../../api/home.js";
+import type { ReadHomeCard } from "../../api/home.js";
+import type { ReadFinishedSession } from "../../api/home-finished.js";
 import type { ReadLiveTile } from "../../api/live.js";
 import type { ReadAgent } from "../../api/agents.js";
 import { plainState, type LeadStatus, type PlainState } from "../session/task-plain-state.js";
@@ -29,10 +30,12 @@ export interface HomeRow {
 
 /** The status a home card's kind means, in the one status model. A kind this build does not know reads as a decision (the safe side: it asks the person). */
 const CARD_STATE: Readonly<Record<string, string>> = {
- approval: "needs_you", spend_request: "paused_budget", paused: "paused_budget", question: "needs_you", plan: "needs_you", pull_request: "ready_to_merge", failure: "failed", blocked: "needs_you",
+ approval: "needs_you", spend_request: "paused_budget", paused: "paused_budget", question: "needs_you", plan: "needs_you", failure: "failed", blocked: "needs_you",
  offer: "needs_you", rule_suggestion: "needs_you", waiting_ticket: "needs_you", intake_source: "needs_you", lesson_waiting: "needs_you",
 };
-export function homeCardState(kind: string): PlainState { return plainState({ state: CARD_STATE[kind] ?? "needs_you" }, undefined); }
+/** A pull request card says the change waits for a review (the broker's own words: "waiting for review", "ready for review"); it never says it can be merged. */
+const NEEDS_REVIEW: PlainState = { label: "Needs review", tone: "attention" };
+export function homeCardState(kind: string): PlainState { return kind === "pull_request" ? NEEDS_REVIEW : plainState({ state: CARD_STATE[kind] ?? "needs_you" }, undefined); }
 
 /** A decision card's plain state: a merge waits to be merged; every other card is a decision. */
 export function decisionState(card: { kind: string }): PlainState { return plainState({ state: card.kind === "merge" ? "ready_to_merge" : "needs_you" }, undefined); }
@@ -63,7 +66,7 @@ export function rowStatus(summary: { status: string; lastRunFailed?: true | unde
 
 /** Who acts next, only where the status says it: Rovara while it works on its own, or the status's own next-step words. Nothing otherwise. */
 export function nextLine(status: LeadStatus): string | undefined {
- if (AUTOMATIC.has(status.state)) return "Next: Rovara is working on it";
+ if (AUTOMATIC.has(status.state)) return "Rovara is on it";
  return status.next === undefined || status.next === "" ? undefined : sentence(status.next);
 }
 

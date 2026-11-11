@@ -105,7 +105,7 @@ it("Needs you comes first: decisions and older cards as rows with a plain state,
  expect(rows[2]!.textContent).toContain("The checks did not pass.");
  // Each row has exactly one primary action.
  for (const row of rows) expect(row.querySelectorAll(".rv-button-primary")).toHaveLength(1);
- expect(within(rows[2]!).getByRole("button", { name: "Retry" }).className).toContain("rv-button-primary");
+ expect(within(rows[2]!).getByRole("button", { name: /^Retry/u }).className).toContain("rv-button-primary");
  expect(f.container.textContent).not.toMatch(/approve_design|needs_you|failure\b/u);
  // The heading shows the one count (the server's: 3).
  expect(screen.getByRole("heading", { name: /Needs you\s*3/u })).toBeTruthy();
@@ -126,7 +126,7 @@ it("Continue lists my open work, never a session Needs you holds, at most five, 
  expect(titles).not.toContain("Open work 8"); // held by the plan card
  expect(titles).toEqual(["Open work 1", "Open work 2", "Open work 4", "Open work 5", "Open work 6"]);
  expect(rows[0]!.textContent).toContain("Building");
- expect(rows[0]!.textContent).toContain("Next: Rovara is working on it");
+ expect(rows[0]!.textContent).toContain("Rovara is on it");
  expect(rows[1]!.textContent).toContain("Failed");
  expect(rows[1]!.textContent).toContain("Retry it, or close the task");
  expect(within(rows[0]!).getByRole("link", { name: "Open work 1" }).getAttribute("href")).toBe("/app/sessions/" + homeSessionId(101));
@@ -165,14 +165,45 @@ it("a person with no projects is told there is nothing to start; a failed read s
  f.close();
 });
 
+it("each decision link names its decision, ages read as asked or updated, and a card whose Open cannot be followed still has a way in", async () => {
+ const view = decisionView([decisionItem]), broken = { ...view, cards: view.cards.map(card => ({ ...card, actions: card.actions.map(action => action.kind === "open" ? { ...action, method: "POST" } : action) })) };
+ const f = render({ on: true, cards: [planCard(1)], decisions: [decisionItem] });
+ const row = (await screen.findByRole("heading", { name: "Move refunds to the new ledger" })).closest("li")!;
+ expect(within(row).getByRole("link", { name: /^.+: Move refunds to the new ledger$/u })).toBeTruthy();
+ expect(row.textContent).toContain("Asked ");
+ expect(screen.getByRole("heading", { name: "Review plan 1" }).closest("li")!.textContent).toContain("Updated ");
+ expect(within(screen.getByRole("heading", { name: "Review plan 1" }).closest("li")!).getByRole("link", { name: "Review plan: Review plan 1" })).toBeTruthy();
+ f.close();
+ const g = fakeHost(async request => request.path === "/v1/app/home" ? { status: 200, body: { cards: [], total: 0, needsYou: 1 } } : request.path === "/v1/app/decisions" ? { status: 200, body: broken } : request.path.startsWith("/v1/app/live") ? { status: 200, body: { tiles: [] } } : request.path.startsWith("/v1/app/sessions") ? { status: 200, body: { sessions: [] } } : request.path.startsWith("/v1/app/agents") ? { status: 200, body: { agents: [] } } : { status: 200, body: { notices: [], next: "settled" } });
+ g.storage.set(HOME_STORAGE_KEY, "v2");
+ const query = createQueryClient();query.setQueryData(["nav"], navFixture({ projects: [] }));
+ const ui = renderUi(h(AppHostProvider, { host: g.host, children: h(QueryClientProvider, { client: query, children: h(MemoryRouter, { children: h(Announcer, { children: h(HomeScreen, {}) }) }) }) }));
+ const link = await screen.findByRole("link", { name: "Open: Move refunds to the new ledger" });
+ expect(link.getAttribute("href")).toBe("/app/decisions/approve_design/design1");
+ ui.unmount();query.clear();
+});
+
+it("a card's lead action is chosen by what it does and a dismissal never leads", async () => {
+ const buttons = [{ label: "Not now", action: "dismiss", method: "POST", href: origin + "/v1/app/home/cards/" + encodeURIComponent("failure:" + homeSessionId(300)) + "/dismiss?occurrence=1" }, { label: "Retry", action: "retry", method: "POST", href: origin + "/v1/app/sessions/" + homeSessionId(300) + "/retry" }];
+ const f = render({ on: true, cards: [{ cardId: "failure:" + homeSessionId(300), kind: "failure", title: "Verification failed", reason: "The checks did not pass.", sessionId: homeSessionId(300), at, buttons }, { cardId: "failure:" + homeSessionId(301), kind: "failure", title: "Only dismissable", reason: "Nothing else.", at, buttons: [buttons[0]] }] });
+ const first = (await screen.findByRole("heading", { name: "Verification failed" })).closest("li")!;
+ const controls = [...first.querySelectorAll(".rv-hv2-actions > *")].map(node => [node.textContent, node.className.includes("rv-button-primary")]);
+ expect(controls[0]).toEqual(["Retry", true]);
+ expect(controls.filter(control => control[1] === true)).toHaveLength(1);
+ expect(controls.find(control => control[0] === "Not now")?.[1]).toBe(false);
+ const second = screen.getByRole("heading", { name: "Only dismissable" }).closest("li")!;
+ expect(second.querySelectorAll(".rv-button-primary")).toHaveLength(0);
+ f.close();
+});
+
 it("the mapping: plain words only, a merge is ready to merge, an unknown kind asks the person", () => {
  expect(homeCardState("failure").label).toBe(PLAIN_STATE_LABELS["failed"]);
- expect(homeCardState("pull_request").label).toBe("Ready to merge");
+ expect(homeCardState("pull_request").label).toBe("Needs review");
  expect(homeCardState("paused").label).toBe("Paused: needs budget");
  expect(homeCardState("a_kind_from_a_newer_server").label).toBe("Needs a decision");
  expect(decisionState({ kind: "merge" }).label).toBe("Ready to merge");
  expect(decisionState({ kind: "approve_plan" }).label).toBe("Needs a decision");
- expect(nextLine({ state: "building" })).toBe("Next: Rovara is working on it");
+ expect(nextLine({ state: "building" })).toBe("Rovara is on it");
  expect(nextLine({ state: "merged" })).toBeUndefined();
  expect(rowStatus({ status: "paused" }).state).toBe("paused_budget");
 });
