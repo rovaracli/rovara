@@ -96,6 +96,7 @@ import { installLearningTaskEnd } from "./learning-wiring.js";
 import { designReviewPortsOf } from "../../design-review/wiring.js";
 import { answerSlackAdd, applyTeamRecordRemoval, drainTeamRecordQueue, installTeamRecordEmitter, isTeamRecordJobEvent, isTeamRecordQueueEvent, isTeamRecordRemovalEvent, isTeamRecordSlackAddEvent, isTeamRecordSlackEvent, recordSlackForward, runTeamRecordJob } from "./team-record-wiring.js";
 import { installLessons, recordAndLessonRouteDependencies } from "./lessons-wiring.js";
+import { companyRulesRouteDependencies, installCompanyRules, installCompanyRulesJob } from "./company-rules-wiring.js";
 import { requireSlackAllowedByEdition, removalDepsOf, slackTeamOrg, adminChangeDependencies, adminReadDependencies, agentRouteDependencies, brokerDependencies, chainRunnerDependenciesOf, developerDisplayName, developerTaskActions, eventDispatchOf, githubConnectRoute, githubConnectionOf, installChainRunner, installOwnWriteRecorder, intakePollDependenciesFrom, orgStoreOf, repositoriesGateRoute, repositoryGateOf, serviceStatusRouteDependencies, workingBranchPagesRoute, workingBranchPreviewRoute } from "./dependency-wiring.js";
 import { runWokenTrackingPass, trackingPassDependencies } from "./e2e-rounds.js";
 import { handleProjectSetupCallback, handleProjectSetupEvidenceChunk, handleProjectSetupEvidenceFinalize, handleProjectSetupEvidenceInit, handleProjectSetupExecutionRead } from "./evidence-and-setup.js";
@@ -138,6 +139,9 @@ export function createAwsBrokerHandler(input: AwsBrokerInput) {
   installOwnWriteRecorder(dependencies);
   installTicketUpdates(dependencies);
   installLessons(dependencies);
+  // Company rules (G-04): the Cloud source of the company's approved rules, only while the `si` switch is on.
+  installCompanyRules(dependencies);
+  installCompanyRulesJob(dependencies);
   // After installLessons, which builds `dependencies.learning`.
   installLearningTaskEnd(dependencies);
   installTeamRecordEmitter(dependencies);
@@ -176,6 +180,8 @@ export function createAwsBrokerHandler(input: AwsBrokerInput) {
           // Test services (slice 1): the signed service image catalog the setup draft's dependency candidates are proposed from (only with the switch `tx` on).
           ...(dependencies.serviceCatalog === undefined ? {} : { serviceCatalog: dependencies.serviceCatalog }),
           ...(dependencies.companyImageResolver === undefined ? {} : { companyImageResolver: dependencies.companyImageResolver }),
+          // Company rules (G-04): how the file sync reaches a repository.
+          ...companyRulesRouteDependencies(dependencies),
           // Test services, slice 3: the fixture store for the hand-written answer set routes (only with `tx` on and the install's fixture key).
           ...fixtureStoreForRoutes(dependencies),
           sessionDiffFiles: dependencies.githubPullRequests.listPullRequestFiles === undefined ? undefined : (url, number, options, scope) => dependencies.githubPullRequests.listPullRequestFiles!(url, number, options, githubScope(dependencies, scope.orgId)),

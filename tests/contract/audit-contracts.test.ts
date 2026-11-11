@@ -213,6 +213,8 @@ describe("the event catalog", () => {
       "script_token.created", "script_token.revoked", "script_token.used",
       // company-approved extra test-service images
       "company_image.proposed", "company_image.approved", "company_image.revoked",
+      // company rules (G-04)
+      "company_rules.proposed", "company_rules.adopted", "company_rules.approved", "company_rules.rejected", "company_rules.cancelled", "company_rules.expired", "company_rules.repo_proposed", "company_rules.written_back", "company_rules.sync_connected", "company_rules.sync_disconnected",
     ]);
     expect(new Set(AUDIT_ACTIONS).size).toBe(AUDIT_ACTIONS.length);
   });
