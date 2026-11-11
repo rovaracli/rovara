@@ -97,22 +97,23 @@ async function showPage(context: DecideRequestContext, request: DecideRequest, a
 }
 
 /**
- * The decline reason from the form: undefined when empty, `invalid` when longer than 300 characters (code points) or holding a control or format character other than a line
+ * The decline reason from the form: no reason when empty, not valid when longer than 300 characters (code points) or holding a control or format character other than a line
  * break or a tab (line breaks and tabs become spaces).
  */
-function reasonOf(raw: string | null): string | undefined | "invalid" {
-  if (raw === null) return undefined;
+function reasonOf(raw: string | null): { valid: true; reason?: string } | { valid: false } {
+  if (raw === null) return { valid: true };
   const folded = raw.replace(/\r\n|[\r\n\t]/gu, " ").trim();
-  if (folded === "") return undefined;
-  if ([...folded].length > AGENT_PUBLISH_NOTE_MAX || /[\p{Cc}\p{Cf}]/u.test(folded)) return "invalid";
-  return folded;
+  if (folded === "") return { valid: true };
+  if ([...folded].length > AGENT_PUBLISH_NOTE_MAX || /[\p{Cc}\p{Cf}]/u.test(folded)) return { valid: false };
+  return { valid: true, reason: folded };
 }
 
 async function decide(context: DecideRequestContext, request: DecideRequest, approvalId: string): Promise<PageResponse> {
   if (request.body === undefined || Buffer.byteLength(request.body, "utf8") > MAX_FORM_BYTES) return refusedPage(400, "Nothing was decided", "The form is missing or too large. Open the approval again.");
   const form = new URLSearchParams(request.body);
   const decision = form.get("decision");
-  const reason = reasonOf(form.get("reason"));
+  const given = reasonOf(form.get("reason"));
+  const reason = given.valid ? given.reason : undefined;
   let authority: Awaited<ReturnType<typeof requireDecideSession>>;
   try {
     authority = await requireDecideSession(context, request);
@@ -127,7 +128,7 @@ async function decide(context: DecideRequestContext, request: DecideRequest, app
   let end: DecisionEnd = "refused";
   try {
     if (decision !== "approve" && decision !== "decline") return refusedPage(400, "Nothing was decided", "Choose Approve or Decline. Open the approval again.");
-    if (reason === "invalid") return refusedPage(400, "Nothing was decided", `The reason can be at most ${String(AGENT_PUBLISH_NOTE_MAX)} characters of plain text. Go back, shorten it and decide again.`);
+    if (!given.valid) return refusedPage(400, "Nothing was decided", `The reason can be at most ${String(AGENT_PUBLISH_NOTE_MAX)} characters of plain text. Go back, shorten it and decide again.`);
     const target = { orgId: authority.orgId, developerId: authority.developerId, approvalId };
     const prefix = kindPrefixOf(approvalId);
     const kind: DecideKind | undefined = prefix === undefined ? undefined : context.kinds[prefix];
