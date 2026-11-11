@@ -323,6 +323,8 @@ describe("the health route's grants (A13)", () => {
       "packages/broker/src/lessons/reflect-claims.ts",
       // Lessons capture: a human-edit read's once-claim (a hash and an expiry), the push index (who pushed which range, as a canonical developer id, 30 days; erased with the person) and the merge index (task ids and shas only) are small working rows of the code-host tap; none holds free text or a diff, and only capture-indexes.ts writes them.
       "packages/broker/src/team-record/capture-indexes.ts",
+      // Lessons for local coding tools (decision 46b): the per-person, per-project, per-day counter row (LESSON_LOCAL_DAY; fixed numbers only, no text) expires after the index retention; none is a durable record, and only lessons-local.ts writes it.
+      "packages/broker/src/aws/developer-routes/lessons-local.ts",
     ]);
     const found = execFileSync("grep", ["-rl", "indexExpiresAt\\|INDEX_EXPIRY_ATTRIBUTE", "packages", "infra/lib", "--include=*.ts", "--exclude-dir=dist", "--exclude-dir=node_modules"], { encoding: "utf8" }).trim().split("\n").filter((file) => file !== "");
     expect(found.filter((file) => !allowed.has(file))).toEqual([]);
