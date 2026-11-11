@@ -37,11 +37,18 @@ const GitHubWebhookPayloadSchema = z.object({
 const PushPayloadSchema = z.object({
   ref: z.string().max(300),
   after: z.string().max(64),
+  before: z.string().max(64).optional(),
   deleted: z.boolean().optional(),
   installation: z.object({ id: z.number().int().positive() }).passthrough(),
-  repository: z.object({ id: z.number().int().positive(), full_name: z.string().regex(/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/).max(300) }).passthrough(),
+  /** `pushed_at`: when GitHub took the push (seconds since 1970 in a push delivery), set by GitHub itself, not by the pusher. */
+  repository: z.object({ id: z.number().int().positive(), full_name: z.string().regex(/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/).max(300), pushed_at: z.union([z.number(), z.string()]).optional() }).passthrough(),
   sender: z.object({ login: z.string().max(100) }).passthrough().optional(),
 }).passthrough();
+/** A time GitHub sent (an ISO string, or seconds since 1970), as ISO; undefined for anything else. */
+function isoTime(value: unknown): string | undefined {
+  const ms = typeof value === "number" && Number.isFinite(value) ? value * 1000 : typeof value === "string" ? Date.parse(value) : Number.NaN;
+  return Number.isFinite(ms) && ms > 0 && ms < 8.64e15 ? new Date(ms).toISOString() : undefined;
+}
 const WORKING_BRANCH_REF = /^refs\/heads\/(agentx\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/u;
 
 /** A `check_suite`, `check_run` or `status` delivery: it names a commit, not a pull request. Everything is read from GitHub again after it; the body only says which commit. */
@@ -111,6 +118,8 @@ export interface ReceiveGithubWebhookInput {
    */
   authorizeRepository(scope: { installationId: number; repositoryId: number; fullName: string; pullRequestNumber: number } | { installationId: number; repositoryId: number; fullName: string; headSha: string; branch?: string }): Promise<boolean>;
   reserveDelivery(delivery: { deliveryId: string; installationId: number; repositoryId: number; eventHash: string; event: ReceivedGithubWebhook["event"] }): Promise<"reserved" | "retry" | "duplicate" | "conflict">;
+  /** Whether a push to an `agentx/<uuid>` branch is to a task's own published working branch through that task's company's installation; asked before the delivery is stored. */
+  authorizeBranchPush?(event: BranchPushWebhookEvent): Promise<boolean>;
   /**
    * Called once the signature, the delivery id and the JSON have been checked, before the event is looked at: the one place a delivery's verified body is handed on. It is how
    * trigger events share this function's verification instead of repeating it. When it is given, an event type this function does not follow is not refused until it has run.
@@ -140,6 +149,10 @@ export interface BranchPushWebhookEvent {
   headSha: string;
   /** The pusher's GitHub login, when the host named one in a spelling GitHub allows. */
   pushedBy?: string;
+  /** When GitHub took the push (its own `pushed_at`), so a late delivery of an older push never overwrites a newer one. */
+  pushedAt?: string;
+  /** The branch was deleted: `headSha` is the head it had. What was kept about its pushes goes. */
+  deleted?: true;
 }
 
 export interface ReceivedGithubWebhook {
@@ -159,6 +172,8 @@ export interface PullRequestWebhookEvent {
     headSha?: string;
     /** A push to the pull request (synchronize): the login of whoever pushed, as the host's own event names it. Only said about `headSha`; never decides whose push it was. */
     pushedBy?: string;
+    /** A push to the pull request (synchronize): when GitHub says the pull request changed (its own `updated_at`), for ordering late deliveries. */
+    pushedAt?: string;
     comment?: { id: number; body: string; truncated: boolean; url: string; author: string; updatedAt?: string; path?: string; line?: number; diffHunk?: string; source: "review" | "review_comment" | "pr_discussion" };
 }
 
@@ -1162,6 +1177,7 @@ async function handleVerifiedGithubWebhook(input: {
   headers: Record<string, string | undefined>;
   secret: string;
   authorizeRepository: ReceiveGithubWebhookInput["authorizeRepository"];
+  authorizeBranchPush?: ReceiveGithubWebhookInput["authorizeBranchPush"];
   process(event: ReceivedGithubWebhook["event"], deliveryId: string): Promise<void>;
   /** Plan 2, Task 14: where an `installation.created` delivery goes, before anything else. Absent, the event is unsupported as before. */
   installationCreated?: (deliveryId: string, payload: InstallationCreatedPayload) => Promise<unknown>;
@@ -1196,6 +1212,7 @@ async function handleVerifiedGithubWebhook(input: {
       headers: input.headers,
       secret: input.secret,
       authorizeRepository: input.authorizeRepository,
+      ...(input.authorizeBranchPush === undefined ? {} : { authorizeBranchPush: input.authorizeBranchPush }),
       reserveDelivery: (delivery) => reserveGithubWebhookDelivery({
         documentClient: input.documentClient,
         tableName: input.tableName,
@@ -1299,6 +1316,7 @@ export async function receiveGithubWebhook(input: ReceiveGithubWebhookInput): Pr
     number,
     ...(eventName === "pull_request" && object.action === "synchronize" && /^[a-f0-9]{40}$/.test(object.pull_request?.head?.sha ?? "") ? { headSha: object.pull_request!.head!.sha } : {}),
     ...(eventName === "pull_request" && object.action === "synchronize" && GITHUB_LOGIN_PATTERN.test(object.sender?.login ?? "") ? { pushedBy: object.sender!.login } : {}),
+    ...(eventName === "pull_request" && object.action === "synchronize" && isoTime((object.pull_request as { updated_at?: unknown } | undefined)?.updated_at) !== undefined ? { pushedAt: isoTime((object.pull_request as { updated_at?: unknown }).updated_at)! } : {}),
     ...(comment === undefined ? {} : { comment }),
   };
   const reserved = await input.reserveDelivery({
@@ -1330,11 +1348,19 @@ async function receiveBranchPush(
   if (!parsed.success) return unsupported();
   const push = parsed.data;
   const ref = WORKING_BRANCH_REF.exec(push.ref);
-  if (ref === null || push.deleted === true || !/^[a-f0-9]{40}$/.test(push.after) || /^0{40}$/.test(push.after)) return unsupported();
+  if (ref === null) return unsupported();
+  // A deleted branch names the head it had (`before`); any other push the head it has now (`after`).
+  const deleted = push.deleted === true;
+  const head = deleted ? push.before ?? "" : push.after;
+  if (!/^[a-f0-9]{40}$/.test(head) || /^0{40}$/.test(head)) return unsupported();
+  const pushedAt = isoTime(push.repository.pushed_at);
   const event: BranchPushWebhookEvent = {
-    kind: "BRANCH_PUSH", installationId: push.installation.id, repositoryId: push.repository.id, fullName: push.repository.full_name.toLowerCase(), branch: ref[1]!, headSha: push.after,
+    kind: "BRANCH_PUSH", installationId: push.installation.id, repositoryId: push.repository.id, fullName: push.repository.full_name.toLowerCase(), branch: ref[1]!, headSha: head,
     ...(GITHUB_LOGIN_PATTERN.test(push.sender?.login ?? "") ? { pushedBy: push.sender!.login } : {}),
+    ...(pushedAt === undefined ? {} : { pushedAt }), ...(deleted ? { deleted: true as const } : {}),
   };
+  // Only a push to a task's own published branch, through that task's company's installation, is kept at all: anything else is not stored, not even as a delivery.
+  if (input.authorizeBranchPush !== undefined && !await input.authorizeBranchPush(event)) return unsupported();
   const reserved = await input.reserveDelivery({
     deliveryId: delivery.deliveryId, installationId: event.installationId, repositoryId: event.repositoryId,
     eventHash: createHash("sha256").update("push", "utf8").update("\0").update(delivery.rawBody, "utf8").digest("hex"), event,
