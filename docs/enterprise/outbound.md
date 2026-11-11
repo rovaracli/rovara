@@ -30,11 +30,11 @@ Enterprise: An Enterprise install calls the customer's own Bedrock through a VPC
 
 Enterprise: These names are in the default DNS firewall allow-list that agent machines use, which today is the same list on every install that runs the firewall. An Enterprise install should replace it with a list built from its own settings (registries, code host, build system); that is a follow-up (the list is not yet built from settings).
 
-- The default list of package, image and OS mirror hosts agent machines may resolve. (only in `packages/contracts/src/default-allow-domains.ts`)
+- The default list of package, image and OS mirror hosts agent machines may resolve. (only in `vendor/rovara-code/packages/contracts/src/default-allow-domains.ts`)
   `*.crates.io`, `*.data.mcr.microsoft.com`, `*.ghcr.io`, `*.githubusercontent.com`, `*.rubygems.org`, `archive.ubuntu.com`, `auth.docker.io`, `crates.io`, `deb.debian.org`, `dl-cdn.alpinelinux.org`, `docker-images-prod.6aa30f8b08e16409b46e0173d6de2f56.r2.cloudflarestorage.com`, `files.pythonhosted.org`, `ghcr.io`, `mcr.microsoft.com`, `ports.ubuntu.com`, `production.cloudflare.docker.com`, `production.cloudfront.docker.com`, `proxy.golang.org`, `pypi.org`, `registry-1.docker.io`, `registry.yarnpkg.com`, `repo1.maven.org`, `rubygems.org`, `security.debian.org`, `security.ubuntu.com`, `sum.golang.org`
-- Maven Central: in the default list, and the usual wrapper download host the environment detector compares a repository's wrapper properties with. (only in `packages/contracts/src/default-allow-domains.ts`, `packages/worker/src/env-detect/java.ts`)
+- Maven Central: in the default list, and the usual wrapper download host the environment detector compares a repository's wrapper properties with. (only in `vendor/rovara-code/packages/contracts/src/default-allow-domains.ts`, `packages/worker/src/env-detect/java.ts`)
   `repo.maven.apache.org`
-- The npm registry: in the default list, the setup draft's default allowed domain, and the registry an install uses for package-run MCP servers when it sets rovaraMcpPublicNpm and names none. (only in `packages/contracts/src/default-allow-domains.ts`, `packages/worker/src/setup-draft.ts`, `packages/contracts/src/e2e-native-recipes.ts`, `infra/lib/private-mcp.ts`)
+- The npm registry: in the default list, the setup draft's default allowed domain, and the registry an install uses for package-run MCP servers when it sets rovaraMcpPublicNpm and names none. (only in `vendor/rovara-code/packages/contracts/src/default-allow-domains.ts`, `packages/worker/src/setup-draft.ts`, `vendor/rovara-code/packages/contracts/src/e2e-native-recipes.ts`, `infra/lib/private-mcp.ts`)
   `registry.npmjs.org`
 
 ## AWS service principals in policies
@@ -43,7 +43,7 @@ Enterprise: Names that appear in IAM trust and resource policies. Nothing connec
 
 - Service principals named in IAM trust and resource policies and in the CDK stacks.
   `apigateway.amazonaws.com`, `cloudformation.amazonaws.com`, `codebuild.amazonaws.com`, `delivery.logs.amazonaws.com`, `ec2.amazonaws.com`, `ecs-tasks.amazonaws.com`, `ecs.amazonaws.com`, `elasticloadbalancing.amazonaws.com`, `email.cognito-idp.amazonaws.com`, `events.amazonaws.com`, `indexing.s3vectors.amazonaws.com`, `lambda.amazonaws.com`, `maintenance.s3tables.amazonaws.com`, `rds.amazonaws.com`, `route53resolver.amazonaws.com`, `s3.amazonaws.com`, `s3tables.amazonaws.com`, `s3vectors.amazonaws.com`, `scheduler.amazonaws.com`, `states.amazonaws.com`, `vpc-flow-logs.amazonaws.com`
-- The ECR service principal in the trust policy of the role ECR assumes to create a saved-environment repository from the creation template (an IAM principal, not a call); and, as the iam:AWSServiceName condition on the deploy role's one service-linked-role statement for ECR's creation-template role (a policy value, not a call). (only in `infra/lib/saved-env-images.ts`, `packages/contracts/src/access-policies.ts`)
+- The ECR service principal in the trust policy of the role ECR assumes to create a saved-environment repository from the creation template (an IAM principal, not a call); and, as the iam:AWSServiceName condition on the deploy role's one service-linked-role statement for ECR's creation-template role (a policy value, not a call). (only in `infra/lib/saved-env-images.ts`, `packages/cloud-contracts/src/access-policies.ts`)
   `ecr.amazonaws.com`
 - The CodeArtifact service name in the sts:AWSServiceName condition that scopes the broker role's registry token policy (a policy value, not a call). (only in `infra/lib/registry-access.ts`)
   `codeartifact.amazonaws.com`
@@ -61,7 +61,7 @@ Enterprise: Reached in the customer's own account. An Enterprise install reaches
 
 Enterprise: The audit anchor asks these two public timestamp authorities by default (agentxAuditTsa=public). An Enterprise install must choose its own (agentxAuditTsa=custom, with its URLs and roots) or switch it off (agentxAuditTsa=off, the last resort); it must not leave the default. A deploy-time refusal of the default for Enterprise is task E2.
 
-- The two public timestamp authorities the audit anchor asks by default. (only in `packages/contracts/src/audit.ts`, `packages/audit-verifier/src/trust-roots.ts`)
+- The two public timestamp authorities the audit anchor asks by default. (only in `packages/cloud-contracts/src/audit.ts`, `packages/audit-verifier/src/trust-roots.ts`)
   `timestamp.digicert.com`, `timestamp.sectigo.com`
 
 ## Hosts Rovara operates
@@ -75,7 +75,7 @@ Enterprise: Used only to build a link shown to a person, never called by the ins
 
 Enterprise: Reached by the release pipeline, the installer or the CLI at build or deploy time, not by a running install. The release bundle (task N2) carries every image the install runs, so a sealed install pulls nothing from these at run time.
 
-- Node for the CloudShell install, and the release pipeline's tools. (only in `infra/lib/release-pipeline.ts`, `packages/cli/src/node-version.ts`, `packages/contracts/src/default-allow-domains.ts`)
+- Node for the CloudShell install, and the release pipeline's tools. (only in `infra/lib/release-pipeline.ts`, `packages/cli/src/node-version.ts`, `vendor/rovara-code/packages/contracts/src/default-allow-domains.ts`)
   `awscli.amazonaws.com`, `nodejs.org`
 - GitHub Actions' OIDC issuer, named as the federated provider in the release bundle-signing role's trust policy (an issuer name in a condition key, not a call; 2026-11-03: 0.5.2 batch). (only in `infra/lib/bundle-signing.ts`)
   `token.actions.githubusercontent.com`
