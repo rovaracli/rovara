@@ -8,7 +8,8 @@ import type * as ServerModule from "../../packages/worker/src/server.js";
 import type * as PrepareModule from "../../packages/worker/src/prepare.js";
 import type * as InvokeAuthModule from "../../packages/worker/src/invoke-auth.js";
 import type * as ChecksRuntimeModule from "../../packages/worker/src/workflow-e2e-application-runtime.js";
-import { TaskDependencyPlanSchema, TestServicesUsageRecordSchema, type TestServicesUsageRecord } from "@agentx/contracts";
+import { TestServicesUsageRecordSchema, type TestServicesUsageRecord } from "@rovara-code/contracts";
+import { TaskDependencyPlanSchema } from "@agentx/cloud-contracts";
 
 const captured = vi.hoisted(() => ({ executor: undefined as undefined | { execute(invocation: unknown): Promise<unknown>; invocationFeatures?: readonly string[] }, options: undefined as undefined | Record<string, unknown>, report: undefined as TestServicesUsageRecord | undefined, cancellationSeen: false }));
 

@@ -1,6 +1,8 @@
 import { randomUUID } from "node:crypto";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
-import { ProjectDefinitionSchema, orgMetaKey, orgMemberKey, orgProjectCatalogKey, projectRevisionKey, projectMetaKey, projectMemberKey } from "../../packages/contracts/src/index.js";
+import { orgProjectCatalogKey, projectRevisionKey, projectMetaKey, projectMemberKey } from "@rovara-code/contracts";
+import { ProjectDefinitionSchema } from "@agentx/cloud-contracts";
+import { orgMetaKey, orgMemberKey } from "@agentx/cloud-contracts";
 import type { DeveloperApiConfiguration } from "../../packages/broker/src/aws/developer-routes.js";
 import { APP_CSRF_HEADER, appCsrfTokenFor } from "../../packages/broker/src/developer/app-csrf.js";
 import { createAdminBroker } from "../support/admin-broker.js";
@@ -50,7 +52,7 @@ for (const role of ["admin", "maintainer", "contributor", "viewer", "member", "r
 });
 
 it("real cookie status hides foreign-company receipts exactly like missing receipts", async () => {
- const f = await fixture(), requestId = randomUUID(), { projectPk } = await import("../../packages/contracts/src/index.js");
+ const f = await fixture(), requestId = randomUUID(), { projectPk } = await import("@rovara-code/contracts");
  f.db.set({ pk: projectPk(TEST_ORG, project), sk: `EGRESS_PROPOSAL#${requestId}`, orgId: "org_bbbbbbbbbbbbbbbbbbbb", project, by: WHO, entityType: "EGRESS_PROPOSAL", kind: "approval_receipt" });
  const outcomes = [];
  for (const id of [requestId, randomUUID()]) { const response = await f.call(`/requests/${id}?expectedOrgId=${TEST_ORG}`, "GET");expect(response.status).toBe(404);outcomes.push(response.body.error); }
@@ -77,7 +79,7 @@ it("real cookie root save narrows the reviewed list and preserves its business r
 });
 
 it("actual cookie responses satisfy the browser-safe review, proposal and receipt readers", async () => {
- const { ProjectAllowedWebsitesReviewReaderSchema, ProjectAllowedWebsitesResultReaderSchema } = await import("../../packages/contracts/src/app-allowed-websites.js");
+ const { ProjectAllowedWebsitesReviewReaderSchema, ProjectAllowedWebsitesResultReaderSchema } = await import("@rovara-code/contracts");
  const f = await fixture(), review = await f.call(`?expectedOrgId=${TEST_ORG}`, "GET");
  expect(ProjectAllowedWebsitesReviewReaderSchema.parse(review.body)).toMatchObject({ kind: "review", liveProposal: null });
  const created = await f.call();expect(ProjectAllowedWebsitesResultReaderSchema.parse(created.body)).toMatchObject({ kind: "proposal", proposalId: f.body.requestId });

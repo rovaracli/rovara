@@ -1,6 +1,6 @@
 // Running the redaction on its own output changes nothing: the findings (and any text that is stored, shown and shown again) pass through it several times, and each pass used to leave one more `]` behind.
 import { describe, expect, it } from "vitest";
-import { redactText } from "../../packages/contracts/src/redaction.js";
+import { redactText } from "@rovara-code/contracts";
 
 // Built at run time: no key-shaped literal is in this file.
 const token = (): string => ["ghp_", "Ab12".repeat(9)].join("");

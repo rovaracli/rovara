@@ -6,7 +6,7 @@
 //  - fact text is cleaned (hidden characters, tags, secrets, emails and phone numbers) before it is returned;
 //  - one attempt only: a bad answer yields no facts (no retry loop), and the pipeline carries on.
 // Retention A never reaches here. Retention B keeps notes only if they carry a permalink ("notes with links").
-import { redactText, replaceEmailAddresses } from "@agentx/contracts";
+import { redactText, replaceEmailAddresses } from "@rovara-code/contracts";
 import { z } from "zod";
 import type { Audience, RecordFactLike, RetentionMode, TrustClass } from "./shared-types.js";
 import { assertSafeId } from "./shared-types.js";

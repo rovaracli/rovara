@@ -2,7 +2,8 @@
 // the task ended and the request that asked. A worker (`reflect-worker.ts`) reads everything else fresh, so what it reflects on is what is true when it runs (an erased person, a deleted place and a changed
 // project setting are all seen).
 import { ChangeMessageVisibilityCommand, SendMessageCommand } from "@aws-sdk/client-sqs";
-import { OrgIdSchema, lessonsReflectQueueName } from "@agentx/contracts";
+import { OrgIdSchema } from "@rovara-code/contracts";
+import { lessonsReflectQueueName } from "@agentx/cloud-contracts";
 import { z } from "zod";
 import type { HumanEditJob } from "../team-record/sources/codehost.js";
 

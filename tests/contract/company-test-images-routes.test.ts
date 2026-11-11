@@ -3,7 +3,7 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { dynamoCompanyImageStore, readCompanyImages } from "../../packages/broker/src/org/company-test-image-store.js";
 import { companyImagesOf, serviceImageServed, type CompanyImage } from "../../packages/broker/src/test-env/company-images.js";
-import { TaskDependencyPlanSchema, companyImageRepositoryName, type CompanyImageMirrorJob } from "@agentx/contracts";
+import { TaskDependencyPlanSchema, companyImageRepositoryName, type CompanyImageMirrorJob } from "@agentx/cloud-contracts";
 import { taskDependencyPlansOf } from "../../packages/broker/src/test-env/dependency-plan.js";
 import { capturingAuditDeps } from "../support/audit-capture.js";
 import { MAYA, OMAR, type Developer } from "../support/developer-task-broker.js";

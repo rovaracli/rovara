@@ -1,5 +1,6 @@
 import { isDeepStrictEqual } from "node:util";
-import { orgMemberKey, orgOfProjectPk, projectMemberKey, projectRevisionKey, slackBindingPk, SLACK_BINDING_SK_PREFIX } from "@agentx/contracts";
+import { orgMemberKey } from "@agentx/cloud-contracts";
+import { orgOfProjectPk, projectMemberKey, projectRevisionKey, slackBindingPk, SLACK_BINDING_SK_PREFIX } from "@rovara-code/contracts";
 import type { ProjectAuthorityWitness } from "../developer/task-project-access.js";
 
 export type TaskPersonProjectAuthorityWitness = ProjectAuthorityWitness & {

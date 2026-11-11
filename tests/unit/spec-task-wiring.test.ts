@@ -3,8 +3,10 @@
 import { createHash, randomUUID } from "node:crypto";
 import { PutCommand } from "@aws-sdk/lib-dynamodb";
 import { describe, expect, it, vi } from "vitest";
-import type { SpecFile, SpecTarget, WorkflowSnapshot } from "@agentx/contracts";
-import { SpecTargetSchema, orgRemovedKey } from "@agentx/contracts";
+import type { SpecFile, SpecTarget } from "@rovara-code/contracts";
+import type { WorkflowSnapshot } from "@agentx/cloud-contracts";
+import { SpecTargetSchema } from "@rovara-code/contracts";
+import { orgRemovedKey } from "@agentx/cloud-contracts";
 import { specEndEnvironmentOf } from "../../packages/broker/src/aws/broker/spec-wiring.js";
 import { specAfterPlanApproval, specOwnerChoice, specPublicationGate, specReviewGate } from "../../packages/broker/src/aws/developer-tasks/spec-wiring.js";
 import type { DeveloperTaskRouteDependencies } from "../../packages/broker/src/aws/developer-tasks/types.js";

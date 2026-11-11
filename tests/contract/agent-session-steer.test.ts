@@ -5,20 +5,7 @@
 import { randomUUID } from "node:crypto";
 import { TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
 import { describe, expect, it } from "vitest";
-import {
-  AppNoteSchema,
-  SessionEventSchema,
-  SessionMessageSchema,
-  STEER_RATE,
-  WORKFLOW_THREAD_NOTES_MAX,
-  WorkflowThreadNoteSchema,
-  agentSessionKey,
-  sessionEventId,
-  endedSessionWorkKey,
-  sessionQueuedSteersKey,
-  sessionRateKey,
-  type AgentSessionRecord,
-} from "../../packages/contracts/src/index.js";
+import { AppNoteSchema, SessionEventSchema, SessionMessageSchema, STEER_RATE, WORKFLOW_THREAD_NOTES_MAX, WorkflowThreadNoteSchema, agentSessionKey, sessionEventId, endedSessionWorkKey, sessionQueuedSteersKey, sessionRateKey, type AgentSessionRecord } from "@rovara-code/contracts";
 import { sendSessionMessage, editSessionMessage, deleteSessionMessage, type SessionMessageDependencies } from "../../packages/broker/src/agent-sessions/messages.js";
 import { closeQueuedSteers, settleSteerDeliveries, settleSteerDeliveriesFor } from "../../packages/broker/src/agent-sessions/steer.js";
 import { projectSessions } from "../../packages/broker/src/agent-sessions/projector.js";
@@ -37,7 +24,7 @@ import type { createDeveloperTaskBroker} from "../support/developer-task-broker.
 import { MAYA, OMAR, createSingleAnswerPlanBroker } from "../support/developer-task-broker.js";
 import { ARJUN, MAX, MIA, ORG_A, ORG_B, PRIYA, T0, ZED, sessionWorld } from "../support/agent-session-world.js";
 import { TEST_ORG } from "../support/orgs.js";
-import { orgMemberKey } from "../../packages/contracts/src/index.js";
+import { orgMemberKey } from "@agentx/cloud-contracts";
 
 type Item = Record<string, unknown>;
 const code = (promise: Promise<unknown>) => promise.then(() => undefined, (error: { code?: string; message: string }) => ({ code: error.code, message: error.message.replace(`${String(error.code)}: `, "") }));

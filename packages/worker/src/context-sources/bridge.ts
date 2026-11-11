@@ -4,15 +4,7 @@
 import { createHash } from "node:crypto";
 import { defineTool, type ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
-import {
-  ContextToolCallResponseSchema,
-  ContextToolCatalogSchema,
-  SEARCH_TEAM_KNOWLEDGE_TOOL,
-  agentXError,
-  type ContextToolCallRequest,
-  type ContextToolCallResponse,
-  type ContextToolCatalog,
-} from "@agentx/contracts";
+import { ContextToolCallResponseSchema, ContextToolCatalogSchema, SEARCH_TEAM_KNOWLEDGE_TOOL, agentXError, type ContextToolCallRequest, type ContextToolCallResponse, type ContextToolCatalog } from "@rovara-code/contracts";
 import { frameForModel } from "./frame.js";
 
 const CAPABILITY_HEADER = "x-agentx-callback-capability";

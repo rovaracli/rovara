@@ -4,16 +4,7 @@
 import { randomUUID } from "node:crypto";
 import { TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
 import { describe, expect, it } from "vitest";
-import {
-  SESSION_EVENTS_PAGE_MAX,
-  SESSION_EVENT_TEXT_MAX,
-  SessionEventPageReaderSchema,
-  SessionEventPageSchema,
-  agentSessionKey,
-  sessionEventId,
-  sessionEventSk,
-  type SessionEvent,
-} from "../../packages/contracts/src/index.js";
+import { SESSION_EVENTS_PAGE_MAX, SESSION_EVENT_TEXT_MAX, SessionEventPageReaderSchema, SessionEventPageSchema, agentSessionKey, sessionEventId, sessionEventSk, type SessionEvent } from "@rovara-code/contracts";
 import { ensureTaskSession } from "../../packages/broker/src/agent-sessions/create.js";
 import { DeveloperSignInStore } from "../../packages/broker/src/developer/store.js";
 import { FakeDynamoDb } from "../support/fake-dynamodb.js";

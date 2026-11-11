@@ -3,14 +3,14 @@
 // ends FAILED. Compute is never started for a message, no operation record is touched, and the text is never in a log or an error.
 import { generateKeyPairSync, sign } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
-import { AppNoteSchema, LIVE_STEER_REAPPROVAL_REASON, WORKFLOW_LIVE_STEER_REAPPROVAL_MESSAGE, workspaceSessionKey } from "../../packages/contracts/src/index.js";
+import { AppNoteSchema, LIVE_STEER_REAPPROVAL_REASON, WORKFLOW_LIVE_STEER_REAPPROVAL_MESSAGE, workspaceSessionKey } from "@rovara-code/contracts";
 import { createDispatcherHandler } from "../../packages/broker/src/aws/dispatcher.js";
 import { createLiveSteerDispatch } from "../../packages/broker/src/agent-sessions/live-steer-dispatch.js";
 import { clearLiveDeliveredSince, deliverSteerLive } from "../../packages/broker/src/agent-sessions/steer.js";
 import { reapprovalMessageIds, settleLiveSteerReapproval } from "../../packages/broker/src/agent-sessions/live-steer-reapproval.js";
 import { threadNotesPromptSection } from "../../packages/broker/src/aws/developer-tasks.js";
 import { verifyInvokeAuthorization, invocationMatchesClaims } from "../../packages/worker/src/invoke-auth.js";
-import { agentSessionKey } from "../../packages/contracts/src/index.js";
+import { agentSessionKey } from "@rovara-code/contracts";
 import { ORG_A, PRIYA } from "../support/agent-session-world.js";
 import { liveSteerWorld, type Item } from "../support/live-steer-world.js";
 

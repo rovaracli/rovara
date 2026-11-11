@@ -2,7 +2,7 @@
 // approve their own cards) has approved the card, a maintainer applies it from the setup page and the proposal becomes ONE intake source of the project (`intake/sources.ts`). Nothing starts by itself:
 // who a ticket's label came from still decides whether work starts (`intake/engine.ts`). A channel that is started another way (Slack, Linear) or a proposal with no label is refused in fixed words.
 // The intake UI (waiting list, Start, sources editor, Home notice) is a later lane's.
-import { IntakeChannelRefSchema, agentXError, type IntakeChannelRef, type SetupIntakeValue } from "@agentx/contracts";
+import { IntakeChannelRefSchema, agentXError, type IntakeChannelRef, type SetupIntakeValue } from "@rovara-code/contracts";
 import { registerSetupItemApplier, type SetupItemApplier } from "../rovara-code/setup-items.js";
 
 /** Fixed words for what cannot be set up from a card. */

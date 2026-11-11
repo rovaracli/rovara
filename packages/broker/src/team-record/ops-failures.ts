@@ -4,7 +4,7 @@
 // the latest value counts while it is fresh, so an intent seen every hour is not counted every hour and a mended one clears at the next run. Items expire after two days; a company close removes them (`erase.ts`, WORKSPACE_PREFIXES). Writing is best effort and never
 // fails the work that reported the failure.
 import { UpdateCommand } from "@aws-sdk/lib-dynamodb";
-import { teamRecordPk, type OrgId } from "@agentx/contracts";
+import { teamRecordPk, type OrgId } from "@rovara-code/contracts";
 import { Aliases } from "../agents/table-writes.js";
 import { queryPrefix } from "./store.js";
 import type { TeamRecordTable } from "./types.js";

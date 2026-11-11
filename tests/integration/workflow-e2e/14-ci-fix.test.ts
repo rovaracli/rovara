@@ -2,11 +2,12 @@
 // the exact block (a token redacted, nothing in the log able to change what the run may do), the fix is checked, reviewed and pushed to the open pull request, and the task waits for
 // the merge again. A round that changes nothing stops with its text, and Rovara never merges or re-runs CI.
 import { describe, expect, it } from "vitest";
-import { BUDGET_EXHAUSTED_FAILURE_MESSAGE, CI_OUTPUT_BLOCK_HEADER, EMPTY_RECIPE, WorkflowSnapshotSchema, ciFixAskMessage, ciFixStopMessage, type WorkflowProgram } from "@agentx/contracts";
+import { BUDGET_EXHAUSTED_FAILURE_MESSAGE, CI_OUTPUT_BLOCK_HEADER, EMPTY_RECIPE, ciFixAskMessage, ciFixStopMessage, type WorkflowProgram } from "@rovara-code/contracts";
+import { WorkflowSnapshotSchema } from "@agentx/cloud-contracts";
 import { taskRecipeKey } from "../../../packages/broker/src/developer/task-records.js";
-import { projectMetaKey } from "@agentx/contracts";
+import { projectMetaKey } from "@rovara-code/contracts";
 import { TEST_ORG } from "../../support/orgs.js";
-import { mergeTrackingKey } from "../../../packages/contracts/src/org-scoped-keys.js";
+import { mergeTrackingKey } from "@rovara-code/contracts";
 import { ciEvidenceKey } from "../../../packages/broker/src/rovara-code/ci-fix.js";
 import { createWorkflowE2E, type WorkflowE2E } from "../../support/workflow-e2e.js";
 import { EDITS, FIXED, PLAN, PUSHED_FIX_TRACKED, TASK_LINK_RETRY, atPlanReview, journeySuite, said } from "../../support/workflow-e2e-journeys.js";

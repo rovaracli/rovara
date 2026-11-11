@@ -1,9 +1,9 @@
 // G3: one choice function. Callers supply server-read policy and source evidence, never browser attestations.
-import { StageModelChoiceSchema, canonicalModelName, forbiddenModelMatcher, modelCompany, sameModelOrUnrecognised, type ModelSelection, type ModelIdentifier, type StageId, type StageModelChoice, type StageModelRefusalCode, type ModelFallback, type ThinkingLevel } from "@agentx/contracts";
+import { StageModelChoiceSchema, canonicalModelName, forbiddenModelMatcher, modelCompany, sameModelOrUnrecognised, type ModelSelection, type ModelIdentifier, type StageId, type StageModelChoice, type StageModelRefusalCode, type ModelFallback, type ThinkingLevel } from "@rovara-code/contracts";
 import { reviewerModelFor } from "../rovara-code/reviewer-model.js";
 import { meetsReviewDefaultFloor } from "./review-default-pool.js";
 
-export { STAGE_OPERATION_MAPPING, STAGE_EDIT_GROUPS, STAGE_EDIT_RULES } from "@agentx/contracts";
+export { STAGE_OPERATION_MAPPING, STAGE_EDIT_GROUPS, STAGE_EDIT_RULES } from "@rovara-code/contracts";
 export interface SourceModelEvidence {
   orgId: string;
   sourcesRevision: number;

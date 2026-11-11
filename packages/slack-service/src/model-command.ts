@@ -1,4 +1,4 @@
-import { modelCheckClassSentence, type ModelRef, type ProjectModelOptions } from "@agentx/contracts";
+import { modelCheckClassSentence, type ModelRef, type ProjectModelOptions } from "@rovara-code/contracts";
 import { escapeText } from "./slack-format.js";
 
 export type ModelCommand = { kind: "list" } | { kind: "use"; selector: string };

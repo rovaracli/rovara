@@ -1,7 +1,8 @@
 // Design review stage, DR7 slice B: the plan check's other ends, answered for a design review. The plan check closes with `closePlanCritique` when it cannot start, or its run was lost, or its run was stopped, and the
 // plan check's moves REFUSE a workflow that is reviewing a design (`runningPlanCheck`). Each of those places calls one of these instead: for a plan check they return exactly what the call they replace returned; for a
 // design review they make the design review's own move (`closeDesignReview`), with what the round's keys already cost, and release the round (stored packets removed). Pure for a plan check; the design form reads the table.
-import { DesignReviewBindingSchema, closeDesignReview, closePlanCritique, resumeBlockedDesignReview, workflowIsDesignReviewing, type WorkflowSnapshot } from "@agentx/contracts";
+import { DesignReviewBindingSchema, workflowIsDesignReviewing } from "@rovara-code/contracts";
+import { closeDesignReview, closePlanCritique, resumeBlockedDesignReview, type WorkflowSnapshot } from "@agentx/cloud-contracts";
 import { queryAllItems } from "../aws/admin-reads.js";
 import type { StateTable } from "../aws/cancellation.js";
 import { releaseDesignReviewRound } from "./round-record.js";

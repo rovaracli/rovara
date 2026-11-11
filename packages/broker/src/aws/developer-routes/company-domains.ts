@@ -7,7 +7,8 @@
 //
 // Only an owner: a domain decides whose email counts as the company's, which later decides who may be linked to a tracker account. There is no edition gate: Public, Cloud and Enterprise all have it.
 // Nothing here repeats what the owner typed: refusals are fixed sentences.
-import { AUDIT_ERROR_MESSAGES, COMPANY_DOMAIN_LOST_AFTER_DAYS, COMPANY_DOMAIN_MAX_PER_ORG, CompanyDomainBodySchema, agentXError, orgScoped } from "@agentx/contracts";
+import { AUDIT_ERROR_MESSAGES, COMPANY_DOMAIN_LOST_AFTER_DAYS, COMPANY_DOMAIN_MAX_PER_ORG, CompanyDomainBodySchema } from "@agentx/cloud-contracts";
+import { agentXError, orgScoped } from "@rovara-code/contracts";
 import { takeRateAt } from "../../developer/page-comments.js";
 import { isFreshSignIn, type SessionRecord } from "../../developer/store.js";
 import { normalizeCompanyDomain, type DomainRefusal } from "../../org/company-domains/normalize.js";

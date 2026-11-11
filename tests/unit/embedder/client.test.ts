@@ -1,6 +1,6 @@
 // The broker's port to the self-hosted embedder: limits, batching, retries, error mapping, and the answer checks that keep a different model's vectors out of the record.
 import { describe, expect, it } from "vitest";
-import { LESSON_EMBEDDER, TEAM_RECORD_EMBEDDER } from "@agentx/contracts";
+import { LESSON_EMBEDDER, TEAM_RECORD_EMBEDDER } from "@agentx/cloud-contracts";
 import { EMBEDDER_BLANK_CODE_POINTS, EMBEDDER_ERROR_CODES, EMBEDDER_LIMITS, EmbedderError, checkEmbedderReply, createEmbedderClient, embedderBatches, trimEmbedderText, type EmbedderInvoke, type EmbedderRequest } from "../../../packages/broker/src/embedder/client.js";
 import { EMBEDDER_INGEST_WAIT_MS, EMBEDDER_JOB_WAIT_MS, EMBEDDER_SEARCH_COOLDOWN_MS, EMBEDDER_SEARCH_WAIT_MS, lessonEmbedderFrom, lessonEmbedderOver, recordEmbedderClientFrom, recordJobEmbedderClientFrom, recordSearchEmbedderClientFrom } from "../../../packages/broker/src/embedder/wiring.js";
 import { lambdaEmbedderInvoke } from "../../../packages/broker/src/team-record/aws-adapters.js";

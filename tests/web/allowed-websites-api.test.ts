@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { afterEach, expect, it, vi } from "vitest";
-import { ProjectAllowedWebsitesReviewReaderSchema, ProjectAllowedWebsitesResultReaderSchema } from "../../packages/contracts/src/app-allowed-websites.js";
+import { ProjectAllowedWebsitesReviewReaderSchema, ProjectAllowedWebsitesResultReaderSchema } from "@rovara-code/contracts";
 import { createAllowedWebsitesApi } from "../../packages/ui/src/api/allowed-websites.js";
 import type { ApiResponse } from "../../packages/ui/src/host.js";
 import { fakeHost } from "./support/fake-host.js";

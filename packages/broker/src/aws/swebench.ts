@@ -1,5 +1,5 @@
 import { auditPendingItem } from "../audit/outbox.js";
-import { AuditEventInputSchema, auditEventId } from "@agentx/contracts";
+import { AuditEventInputSchema, auditEventId } from "@agentx/cloud-contracts";
 import type { TransactItem } from "../agents/table-writes.js";
 import { captureTaskStopEvalAdmission } from "../org/task-stop-admission.js";
 import { usdToWholeMicrodollars } from "../org/budget-amount.js";
@@ -13,32 +13,8 @@ import { requireNativeProjectWorkRole } from "../developer/task-access.js";
 import { createHash, createHmac, timingSafeEqual } from "node:crypto";
 import { DeleteCommand, GetCommand, PutCommand, QueryCommand, TransactWriteCommand, UpdateCommand, type DynamoDBDocumentClient } from "@aws-sdk/lib-dynamodb";
 import { PutObjectCommand, type S3Client } from "@aws-sdk/client-s3";
-import {
-  OrgIdSchema, OrgRoleSchema, isWriterOrgRole, orgMemberKey, projectMetaKey, calculateTaskStop,
-  SWEBENCH_COST_CEILING_DEFAULT_USD,
-  SWEBENCH_RUN_TIME_LIMIT_SECONDS,
-  SWEBENCH_TERMINAL_STATUSES,
-  SwebenchCapabilityClaimsSchema,
-  SwebenchChannelRequestSchema,
-  SwebenchChannelSchema,
-  SwebenchLaunchSchema,
-  SwebenchRunResultSchema,
-  SwebenchRunSchema,
-  SwebenchStartRequestSchema,
-  agentXError,
-  modelSelectionFor,
-  slackThreadSubject,
-  type ModelIdentifier,
-  type ModelSelection,
-  type SlackRequester,
-  type SlackThread,
-  type SwebenchChannel,
-  type SwebenchLaunch,
-  type SwebenchRun,
-  type SwebenchRunResult,
-  type SwebenchSettings,
-  type SwebenchStartResult,
-} from "@agentx/contracts";
+import { OrgIdSchema, projectMetaKey, calculateTaskStop, SWEBENCH_COST_CEILING_DEFAULT_USD, SWEBENCH_RUN_TIME_LIMIT_SECONDS, SWEBENCH_TERMINAL_STATUSES, SwebenchCapabilityClaimsSchema, SwebenchChannelRequestSchema, SwebenchChannelSchema, SwebenchLaunchSchema, SwebenchRunResultSchema, SwebenchRunSchema, SwebenchStartRequestSchema, agentXError, modelSelectionFor, slackThreadSubject, type ModelIdentifier, type ModelSelection, type SlackRequester, type SlackThread, type SwebenchChannel, type SwebenchLaunch, type SwebenchRun, type SwebenchRunResult, type SwebenchSettings, type SwebenchStartResult } from "@rovara-code/contracts";
+import { OrgRoleSchema, isWriterOrgRole, orgMemberKey } from "@agentx/cloud-contracts";
 
 /** What a run needs from the deployment; undefined when the eval stack or runner image is not installed. */
 export interface SwebenchDeployment {

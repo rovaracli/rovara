@@ -1,4 +1,4 @@
-import { AgentXError } from "@agentx/contracts";
+import { AgentXError } from "@rovara-code/contracts";
 import { describe, expect, it } from "vitest";
 import { ModelProxyClient } from "../../packages/broker/src/model-proxy/client.js";
 import { ModelAccessRequestSchema } from "../../packages/broker/src/model-proxy/protocol.js";

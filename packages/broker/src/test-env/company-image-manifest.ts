@@ -1,7 +1,7 @@
 // Reading registry manifests for company-approved images (pure: bytes in, facts out). The pin is the digest of the image's linux/arm64 manifest (contracts company-image-mirror.ts); this file finds it in an index,
 // and checks that an image manifest is one the mirror can copy: a plain image manifest (Docker v2 or OCI), layers that are ordinary blobs with a digest and a size, and nothing foreign.
 import { createHash } from "node:crypto";
-import { COMPANY_IMAGE_PLATFORM } from "@agentx/contracts";
+import { COMPANY_IMAGE_PLATFORM } from "@agentx/cloud-contracts";
 import { z } from "zod";
 
 export const sha256Of = (bytes: Uint8Array): string => createHash("sha256").update(bytes).digest("hex");

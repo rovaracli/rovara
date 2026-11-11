@@ -6,7 +6,7 @@ import { EmulatorControlError, emulatorControlCall, type EmulatorControlTarget }
 import { EmulatorLedgerError, LEDGER_LIMITS, emulatorLedgerPort, parseLedgerSummary } from "../../packages/worker/src/emulator-ledger.js";
 import { EmulatorSeedError, buildAwsSeedDocument, seedEmulator, seedReportCovers } from "../../packages/worker/src/service-seed-aws.js";
 import { newLocalAwsCredentials, type HelperFiles } from "../../packages/worker/src/service-helpers.js";
-import type { TaskAwsResource } from "../../packages/contracts/src/test-services-aws-resources.js";
+import type { TaskAwsResource } from "@rovara-code/contracts";
 import type { DockerCli } from "../../packages/worker/src/swebench/containers.js";
 
 const RUN = "11111111-1111-4111-8111-111111111111";

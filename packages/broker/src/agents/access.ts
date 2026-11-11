@@ -4,29 +4,8 @@
 // as the survivor (Plan 2 Task 3) wherever an owner or a share names them.
 import { GetCommand } from "@aws-sdk/lib-dynamodb";
 import { z } from "zod";
-import {
-  AGENT_ACCESS_LEVELS,
-  AgentPrincipalSchema,
-  BUILTIN_AGENT_IDS,
-  TRIAL_LIMITS_R49,
-  agentXError,
-  atLeast,
-  isBuiltinAgentId,
-  OrgRoleSchema,
-  orgMemberKey,
-  orgProjectCatalogKey,
-  principalKey,
-  projectAllows,
-  type AgentAccessLevel,
-  type AuditProof,
-  type AgentId,
-  type AgentOwner,
-  type AgentPrincipal,
-  type BuiltinAgentId,
-  type OrgId,
-  type OrgRole,
-  type ProjectRole,
-} from "@agentx/contracts";
+import { AGENT_ACCESS_LEVELS, AgentPrincipalSchema, BUILTIN_AGENT_IDS, agentXError, atLeast, isBuiltinAgentId, orgProjectCatalogKey, principalKey, projectAllows, type AgentAccessLevel, type AgentId, type AgentOwner, type AgentPrincipal, type BuiltinAgentId, type OrgId, type ProjectRole } from "@rovara-code/contracts";
+import { TRIAL_LIMITS_R49, OrgRoleSchema, orgMemberKey, type AuditProof, type OrgRole } from "@agentx/cloud-contracts";
 import type { AuditRuntime } from "../audit/outbox.js";
 import type { DeveloperSignInStore } from "../developer/store.js";
 import { readGuardrails } from "./guardrails.js";

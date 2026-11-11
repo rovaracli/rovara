@@ -1,4 +1,5 @@
-import { AppNavSchema, agentXError, type AppNav, type OrgId, type OrgRole, type OrgRecord } from "@agentx/contracts";
+import { AppNavSchema, type AppNav, type OrgRole, type OrgRecord } from "@agentx/cloud-contracts";
+import { agentXError, type OrgId } from "@rovara-code/contracts";
 import { safeDisplayName } from "../developer/person-name.js";
 import { scriptTokensEnabled } from "../script-tokens/switch.js";
 import { standingInstructionsEnabled } from "../instructions/switch.js";

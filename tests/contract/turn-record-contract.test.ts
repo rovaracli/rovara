@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { redactSecrets, redactText as redactOnce } from "../../packages/contracts/src/redaction.js";
+import { redactSecrets, redactText as redactOnce } from "@rovara-code/contracts";
 
 /** Every input this file redacts is also checked to be left as it is when redacted again. */
 const redactText = (text: string): string => {
@@ -7,17 +7,9 @@ const redactText = (text: string): string => {
   expect(redactOnce(once), `redacting the output again: ${text}`).toBe(once);
   return once;
 };
-import {
-  EMPTY_TURN_OBSERVATION,
-  TURN_TEXT_LIMIT,
-  TurnRecordSchema,
-  capText,
-  redactAndCap,
-  turnRecordKeys,
-  type TurnRecord,
-} from "../../packages/contracts/src/turns.js";
-import { TURN_ARGUMENT_LIMIT, redactArguments } from "../../packages/contracts/src/turns.js";
-import { AiToolTurnRecordSchema, aiToolTurnRecordKeys, isSlackTurnRecord, type AiToolTurnRecord } from "../../packages/contracts/src/turns.js";
+import { EMPTY_TURN_OBSERVATION, TURN_TEXT_LIMIT, TurnRecordSchema, capText, redactAndCap, turnRecordKeys, type TurnRecord } from "@rovara-code/contracts";
+import { TURN_ARGUMENT_LIMIT, redactArguments } from "@rovara-code/contracts";
+import { AiToolTurnRecordSchema, aiToolTurnRecordKeys, isSlackTurnRecord, type AiToolTurnRecord } from "@rovara-code/contracts";
 
 const record: TurnRecord = {
   ...EMPTY_TURN_OBSERVATION,

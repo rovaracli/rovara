@@ -9,10 +9,7 @@
 //   - An "on" arm reads a frozen snapshot of its pipeline for the task's day, never live memory (`memoryInputForArm`). A file or MCP arm (DECISIONS 50.5) needs a built delivery adapter; the stubs refuse.
 //   - The grader's identity is in the plan and in every graded row; a grader that differs from the plan's is refused. The grader's request holds no arm.
 //   - A mistake the grader flags must name a historical correction from BEFORE the task; any other flag makes the run ungraded.
-import {
-  GraderMismatchError, REPLAY_REPEATS, REPLAY_TASKS_MAX, REPLAY_TASKS_MIN, ReplayRunRowSchema, canonicalArm, memoryInputForArm, parseArm,
-  type ArmLearningCost, type ArmLessonSet, type LearningCallsNote, type MemoryInput, type ReplayGradedBy, type ReplayGrader, type ReplayRunRow,
-} from "@agentx/contracts";
+import { GraderMismatchError, REPLAY_REPEATS, REPLAY_TASKS_MAX, REPLAY_TASKS_MIN, ReplayRunRowSchema, canonicalArm, memoryInputForArm, parseArm, type ArmLearningCost, type ArmLessonSet, type LearningCallsNote, type MemoryInput, type ReplayGradedBy, type ReplayGrader, type ReplayRunRow } from "@rovara-code/contracts";
 import { REPLAY_EXPORT_RULE, exportViolations } from "./replay-export.js";
 import { lessonContentKey, summarizeLessonSet } from "./replay-lessonset.js";
 import { evalSnapshotIdOf } from "./replay-snapshot-store.js";

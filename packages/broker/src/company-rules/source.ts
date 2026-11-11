@@ -1,7 +1,7 @@
 // Company rules (G-04): the Cloud adapter of the `CompanyInstructionsSource` port (`instructions/company-source.ts`). It answers the company's NEWEST APPROVED version at every call (decision 57.5: a running task uses the newest approved
 // version at its next step), read consistently from the company's partition. A company with no version answers `undefined` (no rules). A head that names a version whose row cannot be read is an error, never "no rules": the port's
 // reader then refuses the step (fail closed) instead of running it without rules that exist. The `company` key is the organisation id; anything else answers `undefined` (it names no company).
-import { OrgIdSchema, agentXError, type CompanyInstructionsSnapshot } from "@agentx/contracts";
+import { OrgIdSchema, agentXError, type CompanyInstructionsSnapshot } from "@rovara-code/contracts";
 import type { CompanyInstructionsSource } from "../instructions/company-source.js";
 import { dynamoCompanyRulesStore, type CompanyRulesStore, type CompanyRulesTable } from "./store.js";
 

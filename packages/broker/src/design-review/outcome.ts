@@ -9,10 +9,8 @@
 //
 // Every end releases the round: the stored packets are removed and each slot key is blocked and finalized, so nothing a worker still holds can spend or be served. A late result for a workflow that is no longer running this
 // round changes nothing.
-import {
-  BUDGET_EXHAUSTED_FAILURE_MESSAGE, WORKFLOW_BLOCK_REASONS, WORKFLOW_LEFTOVER_PROCESSES_MESSAGE, WORKFLOW_RULE_FILES_UNVERIFIED_MESSAGE, blockWorkflow, closeDesignReview, retryDesignReview,
-  WorkflowSnapshotSchema, addDesignUsd, type OperationStatus, type WorkflowSnapshot,
-} from "@agentx/contracts";
+import { BUDGET_EXHAUSTED_FAILURE_MESSAGE, WORKFLOW_LEFTOVER_PROCESSES_MESSAGE, WORKFLOW_RULE_FILES_UNVERIFIED_MESSAGE, addDesignUsd, type OperationStatus } from "@rovara-code/contracts";
+import { WORKFLOW_BLOCK_REASONS, blockWorkflow, closeDesignReview, retryDesignReview, WorkflowSnapshotSchema, type WorkflowSnapshot } from "@agentx/cloud-contracts";
 import { queryAllItems, type AdminReadDependencies } from "../aws/admin-reads.js";
 import type { OperationRecord } from "../aws/cancellation.js";
 import type { AwsBrokerDependencies } from "../aws/broker/definitions.js";

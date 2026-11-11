@@ -4,7 +4,8 @@
 // Team record's switch on and off, and each with a positive control (the name shows before the erase).
 import { GetCommand } from "@aws-sdk/lib-dynamodb";
 import { describe, expect, it } from "vitest";
-import { agentSessionKey, erasedPersonKey, mySessionsKey, orgMemberKey, sessionEventId } from "../../packages/contracts/src/index.js";
+import { agentSessionKey, mySessionsKey, sessionEventId } from "@rovara-code/contracts";
+import { erasedPersonKey, orgMemberKey } from "@agentx/cloud-contracts";
 import { sessionView, type SessionReadDependencies } from "../../packages/broker/src/agent-sessions/read.js";
 import { appendSessionEvent, readSessionEvents } from "../../packages/broker/src/agent-sessions/events.js";
 import { onMemberRemoved } from "../../packages/broker/src/agents/lifecycle.js";

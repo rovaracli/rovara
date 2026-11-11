@@ -4,7 +4,7 @@
 // that cannot say what it is merging is not shown (it fails closed).
 import { createHash } from "node:crypto";
 import { QueryCommand } from "@aws-sdk/lib-dynamodb";
-import { workflowFindingAccepted, type MergeTrackingItem, type WorkflowSnapshot } from "@agentx/contracts";
+import { workflowFindingAccepted, type MergeTrackingItem, type WorkflowSnapshot } from "@agentx/cloud-contracts";
 import { tryEffectiveTaskOwner, type DeveloperTaskRecord } from "../developer/task-records.js";
 import { riskOfTask } from "../rovara-code/merge.js";
 import { proofCheckResults } from "../rovara-code/proof-section.js";

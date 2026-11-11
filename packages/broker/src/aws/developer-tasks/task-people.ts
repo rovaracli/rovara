@@ -1,4 +1,4 @@
-import { agentXError, type TaskPeopleRoleRequestSchema, type TaskPeopleTakeOwnershipRequestSchema } from "@agentx/contracts";
+import { agentXError, type TaskPeopleRoleRequestSchema, type TaskPeopleTakeOwnershipRequestSchema } from "@rovara-code/contracts";
 import { nameResolverOf, resolveStoredName } from "../../developer/name-resolver.js";
 import type { z } from "zod";
 import { taskKey, type DeveloperTaskRecord } from "../../developer/task-records.js";

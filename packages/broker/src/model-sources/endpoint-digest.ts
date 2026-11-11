@@ -1,7 +1,7 @@
 // N8: what "qualified" means for a company's own model endpoint, kept in its own small file because the model access function (inside the VPC) imports it too.
 // See endpoint-qualification.ts for the rest of the rules an endpoint passes before it is used.
 import { createHash } from "node:crypto";
-import { canonicalJson, type ModelSource } from "@agentx/contracts";
+import { canonicalJson, type ModelSource } from "@rovara-code/contracts";
 
 export type EndpointSource = Extract<ModelSource, { kind: "endpoint" }>;
 

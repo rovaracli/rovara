@@ -3,7 +3,7 @@
 // read-only by construction (annotations readOnlyHint true, destructiveHint false), so catalog, approvals, tool grants, the write gate and the ledger run
 // unchanged. Routing values (the Sentry organization, the project) are arguments the engine binds from the connection and the scope and removes from what the
 // model sees; a tool receives them as its scope and can reach nothing else. Every call is validated against the tool's schema first.
-import { agentXError, connectionSecretToken, type ConnectionSecret, type ConnectionType, type ObservabilityConnectionType, type OrgConnection, type SecretConnectionType } from "@agentx/contracts";
+import { agentXError, connectionSecretToken, type ConnectionSecret, type ConnectionType, type ObservabilityConnectionType, type OrgConnection, type SecretConnectionType } from "@rovara-code/contracts";
 import { CredentialUnavailable, ToolRefusal, type Binder, type ConnectorDefinition, type CredentialProvider, type IssuedCredential, type McpConnection, type McpToolResult, type ToolApproval, type connectMcp } from "@agentx/gateway";
 import type { z } from "zod";
 import { connectorLedgerKeys } from "../../aws/connector-ledger.js";

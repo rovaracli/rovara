@@ -2,10 +2,10 @@
 // Spec 025 phase 25e: the admin read broker with admin changes on, a clock the changes read, a
 // linked Slack user for the admin, and the ingress's press event.
 import { capturingAuditDeps } from "./audit-capture.js";
-import { slackBindingKey } from "../../packages/contracts/src/index.js";
+import { slackBindingKey } from "@rovara-code/contracts";
 import { TEST_ORG } from "./orgs.js";
 import { randomUUID } from "node:crypto";
-import type { AdminChangeInput, EndDeveloperSessionsRequest, ChannelInfoRequest, ChannelInfoResponse, ChannelMembersRequest, ChannelMembersResponse } from "@agentx/contracts";
+import type { AdminChangeInput, EndDeveloperSessionsRequest, ChannelInfoRequest, ChannelInfoResponse, ChannelMembersRequest, ChannelMembersResponse } from "@rovara-code/contracts";
 import { createAdminReadBroker } from "./admin-read-broker.js";
 import { SLACK_TEAM, issuer } from "./slack-broker.js";
 

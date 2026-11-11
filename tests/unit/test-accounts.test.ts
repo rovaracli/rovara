@@ -1,7 +1,7 @@
 // Test services TS26: the lifecycle of a customer test account, against the real Secrets Manager role policy (the fake evaluates it), an in-memory store and the real second-person rule.
 import { GetSecretValueCommand } from "@aws-sdk/client-secrets-manager";
 import { describe, expect, it } from "vitest";
-import { isTestAccountUsableAt, testAccountApprovalDigest, testAccountSecretName, type TestAccount } from "@agentx/contracts";
+import { isTestAccountUsableAt, testAccountApprovalDigest, testAccountSecretName, type TestAccount } from "@rovara-code/contracts";
 import {
   TEST_ACCOUNTS_MAX_PER_ORG, addTestAccount, approveTestAccount, deleteTestAccount, expireDueAccounts, mintRoundGrants, reenableTestAccount, recordTestAccountUse, remindersDue, resolveAccountsForRound,
   rotateTestAccountSecret, suspendTestAccount, updateTestAccount, type RoundInput, type StoredTestAccount,

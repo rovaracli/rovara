@@ -11,10 +11,9 @@ import { usdToWholeMicrodollars } from "./budget-amount.js";
 import { createHash } from "node:crypto";
 import { DeleteCommand, GetCommand, PutCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
 import { z } from "zod";
-import {
-  DEFAULT_MEMBER_MONTHLY_BUDGET_USD, DEFAULT_ORG_MONTHLY_BUDGET_USD,
-  AgentXError, agentXError, sameJsonContent, budgetSyncedKey, orgSettingsKey, type AuditActor, type AuditEventInput, type BudgetScope, type OrgId, type OrgKey,
-} from "@agentx/contracts";
+import { DEFAULT_MEMBER_MONTHLY_BUDGET_USD, DEFAULT_ORG_MONTHLY_BUDGET_USD, budgetSyncedKey, orgSettingsKey, type AuditEventInput, type BudgetScope } from "@agentx/cloud-contracts";
+import { AgentXError, agentXError, sameJsonContent, type OrgId, type OrgKey } from "@rovara-code/contracts";
+import { type AuditActor } from "@agentx/cloud-contracts";
 import { auditBudgetChanged, auditOccurrence } from "../audit/events.js";
 import { flushAuditEvents } from "../audit/flush.js";
 import { auditPending, tryAuditEvents, type AuditRuntime } from "../audit/outbox.js";

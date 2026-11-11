@@ -3,7 +3,7 @@
 // that is down and a repository that is not the one connected change nothing; and Rovara writes only to a company-rules branch and a plain Markdown path.
 import { randomUUID } from "node:crypto";
 import { afterEach, describe, expect, it } from "vitest";
-import { COMPANY_RULES_PATH, CompanyRulesAnswerReaderSchema, CompanyRulesHistoryReaderSchema, CompanyRulesStateReaderSchema, CompanyRulesSyncReaderSchema, type CompanyRulesState } from "@agentx/contracts";
+import { COMPANY_RULES_PATH, CompanyRulesAnswerReaderSchema, CompanyRulesHistoryReaderSchema, CompanyRulesStateReaderSchema, CompanyRulesSyncReaderSchema, type CompanyRulesState } from "@agentx/cloud-contracts";
 import { commitFilesOn } from "../../packages/broker/src/github-commit-files.js";
 import { installCompanyRulesJob } from "../../packages/broker/src/aws/broker/company-rules-wiring.js";
 import { readRulesFile, renderRulesFile, normalizeRules } from "../../packages/broker/src/company-rules/rules.js";

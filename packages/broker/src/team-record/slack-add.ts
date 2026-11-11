@@ -21,10 +21,8 @@
 //
 // Everything here is fixed sentences. No client text (a project name, a retention word) is ever echoed. The ingress and interactivity sides are small adapters at the bottom of the file; the logic is the service.
 import { createHash, randomUUID } from "node:crypto";
-import {
-  AgentXError, SlackChannelIdSchema, SlackTeamIdSchema, SlackUserIdSchema, isWriterOrgRole,
-  type OrgId, type ProjectRole,
-} from "@agentx/contracts";
+import { AgentXError, SlackChannelIdSchema, SlackTeamIdSchema, SlackUserIdSchema, type OrgId, type ProjectRole } from "@rovara-code/contracts";
+import { isWriterOrgRole } from "@agentx/cloud-contracts";
 import { readProjectMeta } from "../developer/project-roles.js";
 import { readProjectRole } from "../learning/standing.js";
 import { OrgStore } from "../org/store.js";

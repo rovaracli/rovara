@@ -2,7 +2,7 @@
 // answer). Public: only a daily count per project: each Ask adds one to that project's counter for the day, and once the day is over `flushDailyAskCounts` writes ONE event per project and day from
 // the counter. The event ids come from the Ask (Enterprise) or the project and day (Public), so a repeat of either writes nothing new.
 import { UpdateCommand, QueryCommand, TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
-import { INDEX_EXPIRY_ATTRIBUTE, askCountKey, askCountPk, askAuditMode, type AskAudience, type OrgId } from "@agentx/contracts";
+import { INDEX_EXPIRY_ATTRIBUTE, askCountKey, askCountPk, askAuditMode, type AskAudience, type OrgId } from "@rovara-code/contracts";
 import { auditOccurrence, auditTaskAsked } from "../audit/events.js";
 import { flushAuditEvents } from "../audit/flush.js";
 import { auditPending, tryAuditEvents, type AuditDeps } from "../audit/outbox.js";

@@ -5,7 +5,7 @@
 // and a task role that may comment (not a session level). `learning` per comment comes from one BatchGet of the comments' SOURCE items (at most 100 keys a call), under a time limit. A read
 // that fails, times out, or leaves keys unprocessed leaves `learning` absent: the page is served, and an unknown answer is never shown as "not remembered".
 import { BatchGetCommand } from "@aws-sdk/lib-dynamodb";
-import { projectLearningKey, type TaskCommentLearning } from "@agentx/contracts";
+import { projectLearningKey, type TaskCommentLearning } from "@rovara-code/contracts";
 import type { DeveloperCaller } from "../aws/developer-routes.js";
 import { can, type TaskAccess } from "../developer/task-access.js";
 import { commentSourceKey } from "./capture-comment.js";

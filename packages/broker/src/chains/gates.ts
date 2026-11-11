@@ -15,7 +15,7 @@
 // Nothing a step reports, a branch, an event or a trigger says can reach an approval record. Plan 4 makes no decide ticket and calls nothing that does (M12), and no event text carries a link
 // to the confirmation page (the log is read by people who may not decide: review I-1); whoever decides finds it from their own approvals.
 import { z } from "zod";
-import { ChainRunIdSchema, GATE_DEFAULT_TIMEOUT_HOURS, agentXError, projectAllows, type ApproverRule, type OrgId } from "@agentx/contracts";
+import { ChainRunIdSchema, GATE_DEFAULT_TIMEOUT_HOURS, agentXError, projectAllows, type ApproverRule, type OrgId } from "@rovara-code/contracts";
 import { orgRoleOf } from "../agents/access.js";
 import { safeDisplayName } from "../developer/person-name.js";
 import {

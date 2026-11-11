@@ -1,5 +1,5 @@
 // Stand-ins for the shared Team-record contracts (design learning-v2-team-record.md section 4.2).
-// The record lane (task R1) owns packages/contracts/src/team-record.ts. Until it lands, the storage lane codes against
+// The record lane (task R1) owns packages/cloud-contracts/src/team-record.ts. Until it lands, the storage lane codes against
 // these structural copies. They use the design's names and shapes on purpose, so switching to the contract is an
 // import change only. Nothing here is the source of truth: when R1 lands, delete this file and import from contracts.
 

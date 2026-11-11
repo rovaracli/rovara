@@ -1,6 +1,8 @@
 import { randomUUID } from "node:crypto";
 import { TransactGetCommand, TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
-import { AuditEventInputSchema, OrgIdSchema, TaskStopCompanyPolicySchema, agentXError, auditEventId, orgMetaKey, orgSettingsKey, orgScoped, type AuditActor } from "@agentx/contracts";
+import { AuditEventInputSchema, TaskStopCompanyPolicySchema, auditEventId, orgMetaKey, orgSettingsKey } from "@agentx/cloud-contracts";
+import { OrgIdSchema, agentXError, orgScoped } from "@rovara-code/contracts";
+import { type AuditActor } from "@agentx/cloud-contracts";
 import { auditPendingItem } from "../audit/outbox.js";
 import { nativeSnapshotConditions } from "./native-snapshot-conditions.js";
 import { failedIndexes } from "../agents/table-writes.js";

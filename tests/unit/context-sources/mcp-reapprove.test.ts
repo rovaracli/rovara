@@ -2,7 +2,7 @@
 // with the pinned install unchanged. What is promised: the diff is exact; only an admin can re-approve, and a second admin when the install asks for one; the tools approved are the ones the
 // admin was shown (otherwise nothing is approved); the install is never touched; a paused server stays paused unless somebody re-approves it; the controller serves it again at once.
 import { describe, expect, it } from "vitest";
-import type { McpServerProbe } from "@agentx/contracts";
+import type { McpServerProbe } from "@rovara-code/contracts";
 import { mcpServerAudit } from "../../../packages/broker/src/context-sources/audit.js";
 import { approveMcpServer, diffTools, dynamoMcpServerStore, legacyToolsHash, proposeMcpServer, reapprovePausedMcpServer, reviewPausedMcpServer, sameTools, summariseProbe, type McpServerDependencies, type McpServerSecrets } from "../../../packages/broker/src/context-sources/mcp-servers.js";
 import { routeMcpServers } from "../../../packages/broker/src/context-sources/mcp-server-routes.js";

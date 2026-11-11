@@ -3,7 +3,7 @@
 import { randomUUID } from "node:crypto";
 import { TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { DIAGNOSIS_DEEP_TITLE, DIAGNOSIS_RATE, ROVARA_CODE_AGENT_ID, diagnosisKey, agentXError } from "../../packages/contracts/src/index.js";
+import { DIAGNOSIS_DEEP_TITLE, DIAGNOSIS_RATE, ROVARA_CODE_AGENT_ID, diagnosisKey, agentXError } from "@rovara-code/contracts";
 
 const started = vi.hoisted(() => ({ calls: [] as Array<Record<string, unknown>>, failWith: undefined as Error | undefined }));
 vi.mock("../../packages/broker/src/agents/runs.js", async (importOriginal) => ({

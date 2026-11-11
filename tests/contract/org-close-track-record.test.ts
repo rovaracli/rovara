@@ -1,7 +1,8 @@
 // Track record: closing a company erases its outcome samples, their scored copies and its run costs (the 180 and 365 day expiries are only the backstop).
 // Key prefixes are written out here on purpose: the test pins what is stored, not the helper that builds it.
 import { expect, it } from "vitest";
-import { agentDirectoryKey, orgMemberKey, orgMetaKey, orgProjectCatalogKey } from "../../packages/contracts/src/index.js";
+import { agentDirectoryKey, orgProjectCatalogKey } from "@rovara-code/contracts";
+import { orgMemberKey, orgMetaKey } from "@agentx/cloud-contracts";
 import { OrgStore } from "../../packages/broker/src/org/store.js";
 import { FakeDynamoDb } from "../support/fake-dynamodb.js";
 

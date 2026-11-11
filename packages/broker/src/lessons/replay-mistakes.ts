@@ -2,8 +2,8 @@
 // grader's word: for each replayed task it builds the run's mistakes as corrections at the task's time, naming the historical correction as the one repeated (`repeatOf`), and asks `sameMistakeTwice` over the arm's
 // FROZEN lessons. The metric believes a repeat only if the named correction exists, is a member's, is on an EARLIER task and is earlier in time, and it splits each repeat into: a lesson covering it was loaded
 // into the run / a lesson existed but was not loaded / there was no lesson. It writes nothing, charges nothing and reads only the sources it is handed (never the live store).
-import type { ArmSameMistakeCheck, ReplayRunRow } from "@agentx/contracts";
-import { canonicalArm } from "@agentx/contracts";
+import type { ArmSameMistakeCheck, ReplayRunRow } from "@rovara-code/contracts";
+import { canonicalArm } from "@rovara-code/contracts";
 import { sameMistakeTwice, type CorrectionRecord, type CorrectionSource, type MatcherSource, type MetricStore } from "./metric.js";
 import { lessonContentKey } from "./replay-lessonset.js";
 import type { ReplayCandidate } from "./replay-select.js";

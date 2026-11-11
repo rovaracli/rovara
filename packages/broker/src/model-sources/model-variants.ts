@@ -1,5 +1,5 @@
 // Variants of an OpenRouter model that are not ordinary chat models. Here (model-sources), not in rovara-code, so the lessons and the model code that must avoid them do not import the code agent.
-import type { ModelIdentifier } from "@agentx/contracts";
+import type { ModelIdentifier } from "@rovara-code/contracts";
 
 /** A free variant of an OpenRouter model: the provider may train on what it is sent. */
 export const isFreeVariant = (model: ModelIdentifier): boolean => model.provider.toLowerCase() === "openrouter" && /:free$/iu.test(model.modelId);

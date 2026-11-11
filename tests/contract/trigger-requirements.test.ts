@@ -2,9 +2,9 @@
 // away what a trigger needs turns the trigger off, tells its owners and leaves the change itself made; a change that takes nothing away leaves every trigger as it was.
 import { afterEach, describe, expect, it, vi } from "vitest";
 // The package the broker imports, not its source: the test changes the very table the broker reads.
-import { BUILTIN_TRIGGER_SUGGESTIONS } from "@agentx/contracts";
-import { TriggerSpecSchema } from "../../packages/contracts/src/agent-recipe.js";
-import type { ChainDefinitionInput } from "../../packages/contracts/src/chains.js";
+import { BUILTIN_TRIGGER_SUGGESTIONS } from "@rovara-code/contracts";
+import { TriggerSpecSchema } from "@rovara-code/contracts";
+import type { ChainDefinitionInput } from "@rovara-code/contracts";
 import { recheckTriggersForTarget } from "../../packages/broker/src/triggers/lifecycle.js";
 import { triggerProblems } from "../../packages/broker/src/triggers/requirements.js";
 import { INVESTIGATE_THEN_FIX } from "../support/chain-examples.js";

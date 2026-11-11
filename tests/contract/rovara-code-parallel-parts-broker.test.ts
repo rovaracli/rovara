@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { PARALLEL_PARTS_MAX, orgPk, type OrgId, type TaskGraphV1, type WorkItemProgressV1 } from "@agentx/contracts";
+import { PARALLEL_PARTS_MAX, orgPk, type OrgId, type TaskGraphV1, type WorkItemProgressV1 } from "@rovara-code/contracts";
 import { parallelPartsDecision, parallelPartsForTask, parallelStartTrees, serialWorkerCanResume, workflowDependenciesAllowed } from "../../packages/broker/src/rovara-code/parallel-parts.js";
 import { developerCharge, workspaceLimitsKey } from "../../packages/broker/src/developer/limits.js";
 

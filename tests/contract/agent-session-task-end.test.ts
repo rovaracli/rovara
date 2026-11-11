@@ -6,7 +6,8 @@
 // UX2 slice 2: the timeline says the one status model's words (`taskStatusFromSession`): a run that succeeded and ended reads "Closed", a budget pause "Paused: needs more budget".
 import { DeleteCommand } from "@aws-sdk/lib-dynamodb";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { agentSessionKey, openAgentSessionKey, type PauseScope } from "../../packages/contracts/src/index.js";
+import { agentSessionKey, openAgentSessionKey } from "@rovara-code/contracts";
+import { type PauseScope } from "@agentx/cloud-contracts";
 import { registerAgentSessionTaskHandlers, sessionTaskEndHandler, sessionTaskPauseHandler } from "../../packages/broker/src/agent-sessions/index.js";
 import { sweepAgentSessions } from "../../packages/broker/src/agent-sessions/sweep.js";
 import { hasTaskEndHandlers, onTaskEnded, onTaskPaused, registerTaskEndHandler, type TaskEndOutcome } from "../../packages/broker/src/agents/task-end.js";

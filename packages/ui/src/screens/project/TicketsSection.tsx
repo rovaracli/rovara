@@ -2,10 +2,7 @@
 // Start or Not this one. Maintainers set the watched sources (each failing one says why) and what Rovara writes back to the ticket that started a task. Ticket words are shown as text only.
 import { useMemo, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import {
-  DEFAULT_TICKET_STATUSES, INTAKE_SOURCE_ERROR_WORDS, INTAKE_WAIT_REASON_WORDS, TICKET_UPDATE_MOMENTS, TICKET_WRITE_ACCESS_WORDS, SessionIdSchema,
-  type IntakeChannelRef, type IntakeSourceView, type TicketUpdatesSettings, type TicketUpdateMoment,
-} from "@agentx/contracts/web";
+import { DEFAULT_TICKET_STATUSES, INTAKE_SOURCE_ERROR_WORDS, INTAKE_WAIT_REASON_WORDS, TICKET_UPDATE_MOMENTS, TICKET_WRITE_ACCESS_WORDS, SessionIdSchema, type IntakeChannelRef, type IntakeSourceView, type TicketUpdatesSettings, type TicketUpdateMoment } from "@agentx/cloud-contracts/web";
 import { useAppHost } from "../../host.js";
 import { paths } from "../../paths.js";
 import { createIntakeApi } from "../../api/intake.js";

@@ -4,7 +4,7 @@
 // is the same with a queue that never answers. The developer task broker harness takes either.
 import { TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
-import { AUDIT_FLUSH_DEADLINE_MS, AuditEventInputSchema, type AuditEventInput } from "@agentx/contracts";
+import { AUDIT_FLUSH_DEADLINE_MS, AuditEventInputSchema, type AuditEventInput } from "@agentx/cloud-contracts";
 import { auditBudgetChanged, auditPullRequestOpened } from "../../packages/broker/src/audit/events.js";
 import { flushAuditEvents } from "../../packages/broker/src/audit/flush.js";
 import { auditPending } from "../../packages/broker/src/audit/outbox.js";

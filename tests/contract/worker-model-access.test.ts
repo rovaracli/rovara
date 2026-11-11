@@ -1,9 +1,10 @@
 // Task 12: a worker calls models through the proxy with a per-task key, never with provider secrets.
-import { developerOrgKey, orgMemberKey, orgRemovedKey } from "@agentx/contracts";
+import { developerOrgKey, orgMemberKey, orgRemovedKey } from "@agentx/cloud-contracts";
 import { randomUUID } from "node:crypto";
 import { beforeAll, describe, expect, it, vi } from "vitest";
 import type { Context } from "@earendil-works/pi-ai";
-import { PER_TASK_BUDGET_USD, agentXError } from "../../packages/contracts/src/index.js";
+import { PER_TASK_BUDGET_USD } from "@agentx/cloud-contracts";
+import { agentXError } from "@rovara-code/contracts";
 import { bedrockClaudeModelIds } from "../../packages/model-runtime/src/catalog.js";
 import { ModelBudgetExhaustedError, ModelNotAllowedError, createConfiguredModelRuntime } from "../../packages/model-runtime/src/index.js";
 import { MODEL_ACCESS_MARGIN_MS, lazyModelProxy, modelAccessSource } from "../../packages/worker/src/model-access.js";

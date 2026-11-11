@@ -1,10 +1,8 @@
 // Setup wizard (E4) test bench: the whole broker with a project, an owner (Omar), a second admin (Maya), a setup draft that proposes a sandbox environment, and a browser session with a sign-in time the test controls.
 import { randomUUID } from "node:crypto";
 import { vi } from "vitest";
-import {
-  TestEnvironmentBodySchema, projectPk, githubInstallationKey, orgGithubInstallationKey, orgProjectCatalogKey, orgMetaKey, projectMemberKey, projectMetaKey, projectRevisionKey, TEST_ENV_DRAFT_RESULT_KEY, testEnvDigest,
-  type GithubInstallationRecord, type TestEnvDraft, type TestEnvironmentBody,
-} from "../../packages/contracts/src/index.js";
+import { TestEnvironmentBodySchema, projectPk, orgProjectCatalogKey, projectMemberKey, projectMetaKey, projectRevisionKey, TEST_ENV_DRAFT_RESULT_KEY, testEnvDigest, type TestEnvDraft, type TestEnvironmentBody } from "@rovara-code/contracts";
+import { githubInstallationKey, orgGithubInstallationKey, orgMetaKey, type GithubInstallationRecord } from "@agentx/cloud-contracts";
 import { FakeDynamoDb } from "./fake-dynamodb.js";
 import { APP_CSRF_HEADER, appCsrfTokenFor } from "../../packages/broker/src/developer/app-csrf.js";
 import { DEV_ISSUER, MAYA, OMAR, createDeveloperTaskBroker, seedMembership, type Developer } from "./developer-task-broker.js";

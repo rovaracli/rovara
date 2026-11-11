@@ -5,7 +5,7 @@ import { Stack } from "aws-cdk-lib";
 import { Template } from "aws-cdk-lib/assertions";
 import { beforeAll, describe, expect, it } from "vitest";
 import { buildAgentXApp } from "../../infra/lib/app.js";
-import { defaultBoundaryStatements } from "../../packages/contracts/src/access-policies.js";
+import { defaultBoundaryStatements } from "../../packages/cloud-contracts/src/access-policies.js";
 import { hydrateBrokerEnvironment, type MutableEnvironment } from "../../packages/broker/src/aws/broker-environment.js";
 import { boundaryWithSids } from "../support/deployed-boundary.js";
 import { skipLambdaBundling } from "../support/skip-bundling.js";

@@ -8,7 +8,7 @@
 //     customer's provider like any other, billed to the company or project, never to Rovara) and from the task and project budgets. Its own budget is the CEILING allocated to the slot at dispatch
 //     (`allocateSlotBudgets`, one conditional write whose sum is held under the review's room and the task's remaining run limit); a slot with no allocation gets no key;
 //   - it is ONE-SHOT: a slot's key is minted once, with a life past the whole stage, and a second request for the slot is refused (the slot fails closed). No key secret is stored anywhere.
-import { AgentXError, DesignReviewBindingSchema, agentXError, designReviewActive, canonicalModelName, forbiddenModelMatcher, type ModelIdentifier, type OrgId } from "@agentx/contracts";
+import { AgentXError, DesignReviewBindingSchema, agentXError, designReviewActive, canonicalModelName, forbiddenModelMatcher, type ModelIdentifier, type OrgId } from "@rovara-code/contracts";
 import { listPricesPerMillion } from "@agentx/model-runtime/catalog";
 import { readGuardrails } from "../../agents/guardrails.js";
 import { finalizeKey } from "../../spend/ledger.js";

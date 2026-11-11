@@ -1,4 +1,5 @@
-import {modelSourcesKey,orgSettingsKey} from "../../packages/contracts/src/index.js";
+import { modelSourcesKey } from "@rovara-code/contracts";
+import { orgSettingsKey } from "@agentx/cloud-contracts";
 import {expect,it} from "vitest";
 import {randomUUID} from "node:crypto";
 import {createDeveloperTaskBroker,MAYA} from "../support/developer-task-broker.js";
@@ -16,7 +17,7 @@ it("pins company policy with the frozen recipe at admission and keeps it after a
 });
 
 it("prepares an immutable policy pin and validates its stored recipe binding independently of admission capacity",async()=>{
- const {prepareTaskModelPolicyPin}=await import("../../packages/broker/src/model-selection/task-pin.js");const {builtinRecipe,recipeDigest}=await import("../../packages/contracts/src/index.js");
+ const {prepareTaskModelPolicyPin}=await import("../../packages/broker/src/model-selection/task-pin.js");const { builtinRecipe, recipeDigest } = await import("@rovara-code/contracts");
  const h=await createDeveloperTaskBroker({brokerExtra:{agents:{}}});const recipe=builtinRecipe("rovara-code",1),digest=recipeDigest(recipe);
  const key={pk:`ORG#${TEST_ORG}#SETTINGS`,sk:"MODEL_SELECTION_POLICY"};const policy={...key,orgId:TEST_ORG,entityType:"MODEL_SELECTION_POLICY",version:1,revision:1,rankingVersion:"g3-v1",stepOverrides:{}};h.db.set(policy);
  const pin=await prepareTaskModelPolicyPin({documentClient:h.db,tableName:"state"},{orgId:TEST_ORG,project:"payments",agentId:"rovara-code",recipe,digest});

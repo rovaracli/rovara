@@ -1,43 +1,6 @@
 import { logDeveloperEvent } from "../../developer/log.js";
-import {
-  TaskPersonProofResponseSchema,
-  TaskChannelPeopleResponseSchema,
-  TaskPeopleDisplayReadResponseSchema,
-  agentXError,
-  type ChannelByNameRequest,
-  type ChannelByNameResponse,
-  type ChannelClassRequest,
-  type ChannelClassResponse,
-  type ChannelListEntry,
-  type ChannelListRequest,
-  type MemberChannelsRequest,
-  type ChannelListResponse,
-  type ChannelInfoRequest,
-  type ChannelInfoResponse,
-  type ChannelMembersRequest,
-  type ChannelMembersResponse,
-  type EndDeveloperSessionsRequest,
-  type EraseDeveloperNameRequest,
-  type EraseDeveloperNameResponse,
-  type EndDeveloperSessionsResponse,
-  type RealtimeTokenAnswer,
-  type RealtimeTokenRequest,
-  type UnlinkIdentityRequest,
-  type UnlinkIdentityResponse,
-  type StartIdentityLinkRequest,
-  type StartIdentityLinkResponse,
-  StartIdentityLinkAppResponseSchema,
-  type SlackAuthCheckRequest,
-  type SlackAuthCheckResponse,
-  type SlackUserByEmailRequest,
-  type SlackUserByEmailResponse,
-  type TaskPersonProofRequest,
-  type TaskPersonProofResponse,
-  type TaskChannelPeopleRequest,
-  type TaskChannelPeopleResponse,
-  type TaskPeopleDisplayReadRequest,
-  type TaskPeopleDisplayReadResponse,
-} from "@agentx/contracts";
+import { TaskPersonProofResponseSchema, TaskChannelPeopleResponseSchema, TaskPeopleDisplayReadResponseSchema, agentXError, type ChannelByNameRequest, type ChannelByNameResponse, type ChannelClassRequest, type ChannelClassResponse, type ChannelListEntry, type ChannelListRequest, type MemberChannelsRequest, type ChannelListResponse, type ChannelInfoRequest, type ChannelInfoResponse, type ChannelMembersRequest, type ChannelMembersResponse, type EndDeveloperSessionsRequest, type EraseDeveloperNameRequest, type EraseDeveloperNameResponse, type EndDeveloperSessionsResponse, type UnlinkIdentityRequest, type UnlinkIdentityResponse, type StartIdentityLinkRequest, type StartIdentityLinkResponse, StartIdentityLinkAppResponseSchema, type SlackAuthCheckRequest, type SlackAuthCheckResponse, type SlackUserByEmailRequest, type SlackUserByEmailResponse, type TaskPersonProofRequest, type TaskPersonProofResponse, type TaskChannelPeopleRequest, type TaskChannelPeopleResponse, type TaskPeopleDisplayReadRequest, type TaskPeopleDisplayReadResponse } from "@rovara-code/contracts";
+import { type RealtimeTokenAnswer, type RealtimeTokenRequest } from "@agentx/cloud-contracts";
 import { methodSince } from "../../developer/store.js";
 import type { ChannelMembersInvokeResult } from "./types.js";
 

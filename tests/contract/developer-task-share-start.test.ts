@@ -1,7 +1,7 @@
 // Spec 025 FR-031, D5, D6, C3, C4: sharing decided at POST /v1/dev/tasks.
 import { randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
-import { AgentXError, DEFAULT_DEVELOPER_TASK_POLICY, type ChannelInfoRequest, type ChannelInfoResponse } from "@agentx/contracts";
+import { AgentXError, DEFAULT_DEVELOPER_TASK_POLICY, type ChannelInfoRequest, type ChannelInfoResponse } from "@rovara-code/contracts";
 import type { DeveloperCaller } from "../../packages/broker/src/aws/developer-routes.js";
 import { routeDeveloperTaskRequest } from "../../packages/broker/src/aws/developer-tasks.js";
 import { slackWorkflowCaller } from "../../packages/broker/src/aws/slack-workflow-caller.js";

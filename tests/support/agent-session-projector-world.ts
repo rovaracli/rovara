@@ -1,7 +1,7 @@
 // Plan 5 Task 7a: a small company with open task sessions whose source records (task, workspace, operations, counter) the tests move around.
 import { randomUUID } from "node:crypto";
 import { marshall } from "@aws-sdk/util-dynamodb";
-import { agentSessionKey, liveSessionKey, openAgentSessionKey, taskSpendKey, type AgentSessionRecord } from "../../packages/contracts/src/index.js";
+import { agentSessionKey, liveSessionKey, openAgentSessionKey, taskSpendKey, type AgentSessionRecord } from "@rovara-code/contracts";
 import { projectSessions } from "../../packages/broker/src/agent-sessions/projector.js";
 import { refreshSessionSummary } from "../../packages/broker/src/agent-sessions/summary.js";
 import { taskKey, taskPointerKey } from "../../packages/broker/src/developer/task-records.js";

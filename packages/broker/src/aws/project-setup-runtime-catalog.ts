@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { canonicalJson, Ec2RuntimeBindingSchema, ProjectSetupRunnerEnvironmentSchema, ProjectSetupRunnerToolchainSchema, type Ec2RuntimeBinding } from "@agentx/contracts";
+import { canonicalJson, Ec2RuntimeBindingSchema, ProjectSetupRunnerEnvironmentSchema, ProjectSetupRunnerToolchainSchema, type Ec2RuntimeBinding } from "@rovara-code/contracts";
 import { z } from "zod";
 
 const digest = z.string().regex(/^[a-f0-9]{64}$/);

@@ -1,10 +1,12 @@
 // Revise the plan with a live change: the pure workflow move. Coding stopped for the owner's live message (a change outside the approved plan); the owner (and only the owner) sends the work back to
 // PLANNING with that change, which the existing plan approval then decides. Nothing here can approve anything, and no message text is in the workflow.
 import { describe, expect, it } from "vitest";
-import { WORKFLOW_BLOCK_REASONS } from "../../packages/contracts/src/task-workflow.js";
-import { WorkflowSnapshotSchema, createWorkflowSnapshot, WorkflowTransitionError, type WorkflowSnapshot } from "../../packages/contracts/src/task-workflow-node.js";
-import { liveSteerCodingBlockReason, revisePlanWithLiveChange, workflowReviseOffered, workflowRedirectReviseOffered, WORKFLOW_CODING_STOPPED_REASONS, WORKFLOW_REVISE_PLAN_DECISION_REASON } from "../../packages/contracts/src/task-workflow-revise.js";
-import { WORKFLOW_REDIRECT_PLAN_DECISION_REASON } from "../../packages/contracts/src/live-interaction.js";
+import { WORKFLOW_BLOCK_REASONS } from "../../packages/cloud-contracts/src/task-workflow.js";
+import { WorkflowSnapshotSchema, createWorkflowSnapshot, type WorkflowSnapshot } from "../../packages/cloud-contracts/src/task-workflow-node.js";
+import { WorkflowTransitionError } from "@rovara-code/contracts";
+import { liveSteerCodingBlockReason, revisePlanWithLiveChange, workflowReviseOffered, workflowRedirectReviseOffered } from "../../packages/cloud-contracts/src/task-workflow-revise.js";
+import { WORKFLOW_CODING_STOPPED_REASONS, WORKFLOW_REVISE_PLAN_DECISION_REASON } from "@rovara-code/contracts";
+import { WORKFLOW_REDIRECT_PLAN_DECISION_REASON } from "@rovara-code/contracts";
 
 const taskId = "11111111-1111-4111-8111-111111111111";
 const owner = "a".repeat(64);

@@ -7,8 +7,8 @@ import {
 import { metricMonth, readMetric } from "../../packages/broker/src/learning/metric.js";
 import { compareSignatures, signatureOf } from "../../packages/broker/src/learning/similarity.js";
 import { captureCorrection, closeSuggestion, openSuggestion, readLearningState, sourceSk } from "../../packages/broker/src/learning/store.js";
-import { LEARNING_OPEN_SUGGESTIONS_MAX, LearningCorrectionSchema, LearningSuggestionSchema } from "../../packages/contracts/src/project-learning.js";
-import { projectLearningKey } from "../../packages/contracts/src/org-scoped-keys.js";
+import { LEARNING_OPEN_SUGGESTIONS_MAX, LearningCorrectionSchema, LearningSuggestionSchema } from "@rovara-code/contracts";
+import { projectLearningKey } from "@rovara-code/contracts";
 import { DAY_MS, NOW_MS, PROJECT_CREATED, makeWorld, seedItem, type World } from "../support/learning-world.js";
 
 const SALT = "project-salt-one";

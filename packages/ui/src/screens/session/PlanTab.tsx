@@ -3,7 +3,7 @@ import { useAppHost } from "../../host.js";
 import { IconButton } from "../../design/IconButton.js";
 import { Button } from "../../design/Button.js";
 import { Money } from "../../design/Money.js";
-import { CRITIC_NOT_CHECKED_LINE, PLAN_PROOF_WORDS, formatMinutes } from "@agentx/contracts/web";
+import { CRITIC_NOT_CHECKED_LINE, PLAN_PROOF_WORDS, formatMinutes } from "@agentx/cloud-contracts/web";
 import type { MarkdownComment } from "../../design/SafeMarkdown.js";
 import { planParts } from "./plan-parts.js";
 import { usePanelDocument } from "./plan-panel-host.js";

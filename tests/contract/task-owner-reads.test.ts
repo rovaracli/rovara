@@ -298,13 +298,13 @@ const ROWS: readonly Row[] = [
 
 const PACKAGES = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../packages");
 const SRC = path.join(PACKAGES, "broker/src");
-const CONTRACTS = path.join(PACKAGES, "contracts/src");
+const CONTRACTS = path.join(PACKAGES, "cloud-contracts/src");
 /** The owner functions themselves read the creator's fields: that is what they are for. */
 const OWNER_FUNCTION_ROWS = new Set(["effectiveTaskOwner", "ownerActorIdOf", "ownerNameOfActor", "ownerFenceOf", "tryEffectiveTaskOwner"]);
 
 function scan(): { hits: Hit[]; program: ts.Program } {
   const program = programOf(path.join(PACKAGES, "broker/tsconfig.json"));
-  const contracts = programOf(path.join(PACKAGES, "contracts/tsconfig.json"));
+  const contracts = programOf(path.join(PACKAGES, "cloud-contracts/tsconfig.json"));
   const [broker, contractsRoot] = guardedRoots(PACKAGES) as [Root, Root];
   const hits = [
     ...scanProgram(program, [broker]).filter((hit) => hit.file !== "developer/task-records.ts" || !OWNER_FUNCTION_ROWS.has(hit.fn)),

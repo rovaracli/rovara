@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
-import { ReviewedProjectArchivePreviewReaderSchema, ReviewedProjectArchiveOutcomeReaderSchema, type ReviewedProjectArchivePreview, type ReviewedProjectArchiveOutcome } from "@agentx/contracts/web";
+import { ReviewedProjectArchivePreviewReaderSchema, ReviewedProjectArchiveOutcomeReaderSchema, type ReviewedProjectArchivePreview, type ReviewedProjectArchiveOutcome } from "@agentx/cloud-contracts/web";
 import { createApiClient } from "../../../api/client.js";
 import { ApiError } from "../../../api/errors.js";
 import { useAppHost } from "../../../host.js";

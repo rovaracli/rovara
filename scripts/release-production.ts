@@ -2,8 +2,8 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { assertReleaseFlavorImage, skopeoLabelReader, type ImageLabelReader } from "./release/image-flavor.js";
-import { AGENTX_PROTOCOL_VERSION } from "../packages/contracts/src/protocol.js";
-import { CONTROL_PLANE_FOUNDATION_PARAMETERS } from "../packages/contracts/src/session.js";
+import { AGENTX_PROTOCOL_VERSION } from "@rovara-code/contracts";
+import { CONTROL_PLANE_FOUNDATION_PARAMETERS } from "@rovara-code/contracts";
 import {
   Runner,
   assertDigestImage,
@@ -41,7 +41,11 @@ export const WORKER_IMAGE_INPUTS = [
   "package-lock.json",
   "tsconfig.json",
   "tsconfig.base.json",
-  "packages/contracts",
+  "packages/cloud-contracts",
+  // Rovara Code's contracts, the pinned copy and the shims over it (convergence W0-3); the Dockerfile builds and ships them with the worker.
+  "vendor/rovara-code/packages/contracts",
+  "vendor/rovara-code/tsconfig.base.json",
+  "vendor/rovara-code-shims",
   "packages/model-runtime",
   "packages/verifier",
   "packages/audit-verifier",
@@ -70,7 +74,10 @@ export const SLACK_ORCHESTRATOR_IMAGE_INPUTS = [
   "package-lock.json",
   "tsconfig.json",
   "tsconfig.base.json",
-  "packages/contracts",
+  "packages/cloud-contracts/package.json",
+  "vendor/rovara-code/packages/contracts",
+  "vendor/rovara-code/tsconfig.base.json",
+  "vendor/rovara-code-shims",
   "packages/model-runtime",
   "packages/verifier/package.json",
   "packages/audit-verifier",

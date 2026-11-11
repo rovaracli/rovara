@@ -3,7 +3,8 @@ import { describe, expect, it, vi } from "vitest";
 import { createFeedbackReviewWeb, type FeedbackReviewWebDependencies } from "../../packages/broker/src/aws/feedback-review-web.js";
 import { getWorkflowFeedbackReview, submitWorkflowFeedbackDecision } from "../../packages/broker/src/aws/developer-tasks.js";
 import { authenticateDeveloperSessionId } from "../../packages/broker/src/aws/developer-routes.js";
-import { canonicalPlanJson, createCandidateManifest, createWorkflowSnapshot, observeWorkflowPullRequest, requestWorkflowFeedbackReview, taskGraphDigest, WorkflowFeedbackBundleCommentsSchema, WorkflowFeedbackBundleSchema, WorkflowFeedbackReviewReportSchema, type TaskPersonProofRequest, type TaskPersonProofResponse, type WorkflowCheckPolicyInput, type WorkflowSnapshot } from "@agentx/contracts";
+import { canonicalPlanJson, createCandidateManifest, taskGraphDigest, WorkflowFeedbackBundleCommentsSchema, WorkflowFeedbackBundleSchema, WorkflowFeedbackReviewReportSchema, type TaskPersonProofRequest, type TaskPersonProofResponse, type WorkflowCheckPolicyInput } from "@rovara-code/contracts";
+import { createWorkflowSnapshot, observeWorkflowPullRequest, requestWorkflowFeedbackReview, type WorkflowSnapshot } from "@agentx/cloud-contracts";
 import { createDeveloperTaskBroker, MAYA, OMAR } from "../support/developer-task-broker.js";
 import { githubWorkflowPullRequestKey, taskOwnerKey, type DeveloperTaskRecord } from "../../packages/broker/src/developer/task-records.js";
 import { feedbackReviewNoticeId } from "../../packages/broker/src/developer/notifications.js";
@@ -1007,7 +1008,7 @@ describe("broker-backed feedback review data", () => {
     fixture.harness.db.set({ ...task, workflow: { ...task.workflow, revision: Number(task.workflow.revision) + 1 } });
     await expect(fixture.harness.callback(task.workspaceId, String(operation.id), "feedback-approval", invocation.payload?.workflowFeedbackApproval))
       .rejects.toThrow(/feedback approval|GitHub PR feedback changed|no longer current/i);
-    expect(fixture.githubRead).toHaveBeenCalledWith("https://github.com/example/demo.git", 42, { system: "private-install" });
+    expect(fixture.githubRead).toHaveBeenCalledWith("https://github.com/example/demo.git", 42, { system: "install" });
   });
 
   it("authorizes the exact freshly eligible co-owner at worker start while retaining the creator-bound approval", async () => {

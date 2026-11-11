@@ -2,7 +2,7 @@
 // The actor always comes from the session, and a reader who may not see the task cannot tell it exists.
 import { randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
-import type { TaskComment } from "@agentx/contracts";
+import type { TaskComment } from "@rovara-code/contracts";
 import type { DeveloperCaller } from "../../packages/broker/src/aws/developer-routes.js";
 import type { AdaptedHttpRequest } from "../../packages/broker/src/aws/lambda.js";
 import { TASK_PAGE_API, createTaskWebApi, type TaskWebApiDependencies } from "../../packages/broker/src/aws/task-web-api.js";

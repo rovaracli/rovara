@@ -1,16 +1,14 @@
-// Test services slice 1: the catalog's trusted keys (packages/contracts/src/catalog-trust.ts). The staging-only key counts only in the staging account AND in a staging build, and a release build does not contain it.
+// Test services slice 1: the catalog's trusted keys (packages/cloud-contracts/src/catalog-trust.ts). The staging-only key counts only in the staging account AND in a staging build, and a release build does not contain it.
 import { cp, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { generateKeyPairSync } from "node:crypto";
 import { pathToFileURL } from "node:url";
 import { describe, expect, it } from "vitest";
-import {
-  CATALOG_BUILD_FLAVOR, CATALOG_STAGING_ACCOUNT_ID, CATALOG_STAGING_ONLY_SIGNING_KEYS, CATALOG_TRUSTED_SIGNING_KEYS, CATALOG_SIGNATURE_ALGORITHM, accountIdOfArn, catalogSigningMessage, catalogTrustedKeyPems,
-  loadSignedCatalog, parseBundlePublicKey, sha256HexOf, type CatalogSigningKey,
-} from "@agentx/contracts";
-import { loadSignedCatalogWithKeys, trustedKeyPemsFor } from "@agentx/contracts/testing";
-import { FLAVOR_FILE, STAGING_KEYS_FILE, STAGING_KEY_DATA_FILE, setCatalogFlavor, withFlavor, withStagingKeys } from "../../packages/contracts/tools/catalog-flavor.js";
+import { CATALOG_BUILD_FLAVOR, CATALOG_STAGING_ACCOUNT_ID, CATALOG_STAGING_ONLY_SIGNING_KEYS, catalogTrustedKeyPems, loadSignedCatalog } from "@agentx/cloud-contracts";
+import { CATALOG_TRUSTED_SIGNING_KEYS, CATALOG_SIGNATURE_ALGORITHM, accountIdOfArn, catalogSigningMessage, parseBundlePublicKey, sha256HexOf, type CatalogSigningKey } from "@rovara-code/contracts";
+import { loadSignedCatalogWithKeys, trustedKeyPemsFor } from "@agentx/cloud-contracts/testing";
+import { FLAVOR_FILE, STAGING_KEYS_FILE, STAGING_KEY_DATA_FILE, setCatalogFlavor, withFlavor, withStagingKeys } from "../../packages/cloud-contracts/tools/catalog-flavor.js";
 import { pinnedCatalog, testSigner } from "../support/catalog-pinning.js";
 
 // A test-only key: made now, kept nowhere.

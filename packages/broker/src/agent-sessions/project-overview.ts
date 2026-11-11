@@ -3,10 +3,8 @@
 // project's spend (a maintainer), so no one else learns what the project spends or merges; the agents are the roster's, as the reader may see them; and `running` is the Live wall's `team`
 // filter for this project, so each session in it passed the reader's own access check. Reads are bounded: one page of tiles, the roster capped, and four single-item reads.
 import { GetCommand } from "@aws-sdk/lib-dynamodb";
-import {
-  AgentXNameSchema, LIVE_PAGE_MAX, OrgRoleSchema, PROJECT_OVERVIEW_AGENTS_MAX, PROJECT_ROSTER_LIST_MAX, ProjectOverviewSchema, agentXError, orgMemberKey, projectAllows, projectMetaKey, projectMonthStatsKey, scopeKey, spendCounterKey,
-  type BudgetScope, type ProjectOverview, type ProjectRole,
-} from "@agentx/contracts";
+import { AgentXNameSchema, LIVE_PAGE_MAX, PROJECT_OVERVIEW_AGENTS_MAX, PROJECT_ROSTER_LIST_MAX, ProjectOverviewSchema, agentXError, projectAllows, projectMetaKey, projectMonthStatsKey, type ProjectOverview, type ProjectRole } from "@rovara-code/contracts";
+import { OrgRoleSchema, orgMemberKey, scopeKey, spendCounterKey, type BudgetScope } from "@agentx/cloud-contracts";
 import type { ApprovalDependencies } from "../agents/approvals.js";
 import type { AgentRouteDependencies } from "../agents/routes.js";
 import { listRoster } from "../agents/roster.js";

@@ -3,7 +3,7 @@
 // the settlement job when a new month brings room back, with no person to press anything (event and schedule runs).
 import { randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
-import { RUN_LIMIT_ASK_COOLDOWN_MS, scopeKey, spendCounterKey, type BudgetScope } from "@agentx/contracts";
+import { RUN_LIMIT_ASK_COOLDOWN_MS, scopeKey, spendCounterKey, type BudgetScope } from "@agentx/cloud-contracts";
 import { startAgentRun } from "../../packages/broker/src/agents/runs.js";
 import { escalateOwnerRequests } from "../../packages/broker/src/spend/requests.js";
 import { MAYA } from "../support/developer-task-broker.js";

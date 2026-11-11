@@ -3,8 +3,8 @@
 // is asked, read, written, shown or mounted.
 import { createHash, randomUUID } from "node:crypto";
 import { afterEach, describe, expect, it } from "vitest";
-import { EvidenceViewSchema, createCandidateManifest, type EvidenceView } from "../../packages/contracts/src/index.js";
-import { WorkflowSnapshotSchema } from "../../packages/contracts/src/task-workflow-node.js";
+import { EvidenceViewSchema, createCandidateManifest, type EvidenceView } from "@rovara-code/contracts";
+import { WorkflowSnapshotSchema } from "../../packages/cloud-contracts/src/task-workflow-node.js";
 import { MAYA, OMAR, createSingleAnswerPlanBroker } from "../support/developer-task-broker.js";
 import { planAnswer, testedPlanDocument } from "../support/plan-documents.js";
 import { evidencePackKey } from "../../packages/broker/src/rovara-code/evidence-keep.js";

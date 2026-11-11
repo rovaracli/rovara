@@ -251,8 +251,8 @@ describe("the MCP connector type", () => {
   it("the broker hands every connector type its endpoint guard", async () => {
     const { connectorTypeContext } = await import("../../packages/broker/src/aws/broker.js");
     const guard = vi.fn();
-    const context = connectorTypeContext({ mcpEndpointGuard: guard }, undefined, async () => ({ system: "private-install" }));
+    const context = connectorTypeContext({ mcpEndpointGuard: guard }, undefined, async () => ({ system: "install" }));
     expect(context.endpointGuard).toBe(guard);
-    expect(connectorTypeContext({}, undefined, async () => ({ system: "private-install" })).endpointGuard).toBeUndefined();
+    expect(connectorTypeContext({}, undefined, async () => ({ system: "install" })).endpointGuard).toBeUndefined();
   });
 });

@@ -6,7 +6,7 @@
 // event. Only `deployment.succeeded` and `deployment.error` become events; others (created, canceled, project events) are ignored. A body is believed only for the hook's own team and
 // project when the hook names them. The event's subject is the project (see `normalize`). Rovara's Vercel connection is read-only, so there is no actor to guard against.
 import { z } from "zod";
-import type { HookRecord, TriggerEvent } from "@agentx/contracts";
+import type { HookRecord, TriggerEvent } from "@rovara-code/contracts";
 import { hmacHexEquals, type HookHeaders, type HookProvider, type Normalized } from "./types.js";
 import { headerOf, httpsLinkOn, isoOfInstant, titleOf, valuesOf } from "./shared.js";
 

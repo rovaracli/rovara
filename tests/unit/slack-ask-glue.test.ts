@@ -3,7 +3,7 @@
 // only while its turn runs (also when it throws); two Asks at once do not mix.
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
-import type { AskRef, AskTurnResult } from "../../packages/contracts/src/index.js";
+import type { AskRef, AskTurnResult } from "@rovara-code/contracts";
 import { createAskGlue } from "../../packages/slack-service/src/ask-glue.js";
 import type { TurnInput } from "../../packages/slack-service/src/processor.js";
 

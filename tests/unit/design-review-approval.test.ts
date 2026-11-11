@@ -2,9 +2,8 @@
 // the tier table, the requester refused on high (sole-owner exception only), the high-risk approver and a fresh sign-in, a blocker needing a reason, the skip rule, a group refused in Public,
 // and the extraction of the shared rule with no change for lessons.
 import { describe, expect, it } from "vitest";
-import {
-  DESIGN_REASONS, DESIGN_REVIEW_DEFAULT_SETTING, DESIGN_REVIEW_HIGH_RISK_REASONS, DecisionCardSchema, designReviewDisagreements, editionPolicy, type DesignCitation, type DesignQuestion, type DesignReason, type DesignReviewSetting, type WorkflowDesignReview,
-} from "@agentx/contracts";
+import { DESIGN_REASONS, DESIGN_REVIEW_DEFAULT_SETTING, DESIGN_REVIEW_HIGH_RISK_REASONS, DecisionCardSchema, designReviewDisagreements, type DesignCitation, type DesignQuestion, type DesignReason, type DesignReviewSetting, type WorkflowDesignReview } from "@rovara-code/contracts";
+import { editionPolicy } from "@agentx/cloud-contracts";
 import { cardOfItem, detailsOfItem, projectDecisionCards, type DecisionItem } from "../../packages/broker/src/decisions/project.js";
 import { riskTierOf } from "../../packages/broker/src/decisions/risk-tier.js";
 import { BLOCKER_REASON_MAX, blockerReasonLine, decideDesignApproval, designQuestionAudience, highRiskApprovers, maySkipDesignReview, type DesignApproverDirectory } from "../../packages/broker/src/design-review/approval.js";

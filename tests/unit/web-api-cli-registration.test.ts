@@ -2,7 +2,7 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { canonicalJson, webApiRuntimeInstallProposalSha256 } from "../../packages/contracts/src/index.js";
+import { canonicalJson, webApiRuntimeInstallProposalSha256 } from "@rovara-code/contracts";
 import { submitRuntimeInstallProposal } from "../../packages/cli/src/admin/runtime-installation.js";
 import { qualifyInstalledWebApiRuntime } from "../../packages/verifier/src/install-qualification.js";
 import { fakeLinuxEnvironment, fakeProbeRunner, privateEvidenceRoot, webApiChallenge, WEB_API_FIXTURE_NOW } from "../support/web-api-qualification.js";

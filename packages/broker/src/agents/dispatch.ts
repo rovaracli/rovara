@@ -3,30 +3,7 @@
 // step's settings into the model the operation runs on, the instruction section of its prompt and the `agentStep` the worker is sent. Nothing
 // here reads or writes a table: the broker (`taskOperationParts`) reads the snapshot, the guardrails and the earlier operations and passes
 // them in, so every rule below is a plain function of its input.
-import {
-  AGENT_STEP_INSTRUCTIONS_MAX_BYTES,
-  STEP_TOOLS,
-  agentXError,
-  forbiddenModelMatcher,
-  modelCompany,
-  modelKey,
-  type AgentGuardrails,
-  type AgentStepPayload,
-  type CompanyInstructionsSnapshot,
-  type CodingStepKind,
-  type InvocationModelRoute,
-  type ModelIdentifier,
-  type InstructionLayer,
-  type ModelSelection,
-  type OrgId,
-  type PiToolName,
-  type ResolvedRecipe,
-  type ResolvedStep,
-  type ResultContract,
-  type RunCheckout,
-  type StandingInstructionsPayload,
-  type StepSettings,
-} from "@agentx/contracts";
+import { AGENT_STEP_INSTRUCTIONS_MAX_BYTES, STEP_TOOLS, agentXError, forbiddenModelMatcher, modelCompany, modelKey, type AgentGuardrails, type AgentStepPayload, type CompanyInstructionsSnapshot, type CodingStepKind, type InvocationModelRoute, type ModelIdentifier, type InstructionLayer, type ModelSelection, type OrgId, type PiToolName, type ResolvedRecipe, type ResolvedStep, type ResultContract, type RunCheckout, type StandingInstructionsPayload, type StepSettings } from "@rovara-code/contracts";
 import type { ProxyGeography } from "@agentx/model-runtime/catalog";
 import { DEFAULT_BEDROCK_MODELS } from "@agentx/model-runtime/config";
 import { routeModel, routeOnWire, servingRoutes, type ModelRoute, type RoutingDependencies } from "../model-sources/routing.js";

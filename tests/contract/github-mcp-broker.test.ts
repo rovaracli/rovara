@@ -1,12 +1,12 @@
-import { slackTeamOrgKey } from "../../packages/contracts/src/org-node.js";
-import { slackBindingPk } from "../../packages/contracts/src/org-scoped-keys.js";
+import { slackTeamOrgKey } from "../../packages/cloud-contracts/src/org-node.js";
+import { slackBindingPk } from "@rovara-code/contracts";
 import { randomUUID } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
 import { ownerKeyForSubject } from "../../packages/broker/src/aws/lambda.js";
 import { RepositoryGrantService } from "../../packages/broker/src/repository-access.js";
-import { GitHubMcpCatalogSchema } from "../../packages/contracts/src/github-mcp.js";
+import { GitHubMcpCatalogSchema } from "@rovara-code/contracts";
 import { TEST_ENV, TEST_ORG } from "../support/orgs.js";
-import { projectMemberKey, projectPk } from "../../packages/contracts/src/org-scoped-keys.js";
+import { projectMemberKey, projectPk } from "@rovara-code/contracts";
 
 describe("thread-authenticated GitHub MCP routes", () => {
   it("enforces owner, membership, revision policy and repository before discovery, and durably deduplicates writes", async () => {
@@ -137,7 +137,7 @@ describe("thread-authenticated GitHub MCP routes", () => {
     expect((await request("POST", thread, { ...input, arguments: { ...input.arguments, owner: "another" } })).statusCode).toBe(403);
     expect((await request("POST", thread, { ...input, token: "caller-controlled" })).statusCode).toBe(400);
     expect(call).toHaveBeenCalledExactlyOnceWith("issue_write", { method: "create", title: "Native tool", owner: "example", repo: "demo" });
-    expect(credentials).toHaveBeenLastCalledWith(repository, "write", { system: "private-install" });
+    expect(credentials).toHaveBeenLastCalledWith(repository, "write", { system: "install" });
     expect(resolveCredential).not.toHaveBeenCalled();
     // The invocation records the revision whose policy authorized it, not the workspace's.
     expect(records.get(key(`WORKSPACE#${workspaceId}`, `GITHUB_MCP#${input.requestId}`))).toMatchObject({

@@ -2,7 +2,7 @@
 // reads it exactly as the synced publication hook does (`loadTestProofLines` in developer/test-proof-lines.ts): the newest 10 task operations, the artifact named TEST_PROOF_ARTIFACT, only an object under the task's
 // own key prefix, only a proof that parses and is bound to the current candidate digest. It returns the proof itself (the hook returns only the lines), because the table needs the per-check verdicts to mark a row
 // "proven". Informational: any fault gives no proof, and the pull request is published without it.
-import { TEST_PROOF_ARTIFACT, TestProofSchema, type TestProof } from "@agentx/contracts";
+import { TEST_PROOF_ARTIFACT, TestProofSchema, type TestProof } from "@rovara-code/contracts";
 import type { TestProofActions } from "../developer/test-proof-lines.js";
 import { byCreated, type OperationFacts } from "../developer/task-records.js";
 

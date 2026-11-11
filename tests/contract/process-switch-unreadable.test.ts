@@ -2,7 +2,7 @@
 // can't be archived. A missing document is as before.
 import { randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
-import { ROVARA_CODE_AGENT_ID, projectPlaybookKey, projectRevisionKey } from "../../packages/contracts/src/index.js";
+import { ROVARA_CODE_AGENT_ID, projectPlaybookKey, projectRevisionKey } from "@rovara-code/contracts";
 import { getAnyApproval } from "../../packages/broker/src/agents/approvals.js";
 import { postProjectProcess } from "../../packages/broker/src/playbook/process-layer.js";
 import { requireNotCurrentProcess } from "../../packages/broker/src/playbook/process-in-use.js";

@@ -2,7 +2,7 @@
 // address on a host GitHub is known to serve logs from is followed, with no credentials, and the body is read as a stream that keeps only its end, so a log of any size costs
 // bounded memory and time. What comes back is untrusted text: the caller redacts it and labels it before it reaches a model.
 import type { ReadableStreamDefaultReader } from "node:stream/web";
-import { CI_LOG_BYTES_MAX, CI_LOG_TAIL_LINES, agentXError } from "@agentx/contracts";
+import { CI_LOG_BYTES_MAX, CI_LOG_TAIL_LINES, agentXError } from "@rovara-code/contracts";
 
 /** The hosts a job log is served from: GitHub's Actions hosts, and the numbered storage accounts of its results service. */
 const LOG_HOSTS: readonly RegExp[] = [

@@ -5,7 +5,7 @@
 // a plain reason; the route is rate limited; the day's counter holds numbers only and no log, row or audit event holds lesson, task, file or repository text.
 import { randomUUID } from "node:crypto";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { projectMemberKey, projectRevisionKey, teamRecordPk, type OrgId } from "@agentx/contracts";
+import { projectMemberKey, projectRevisionKey, teamRecordPk, type OrgId } from "@rovara-code/contracts";
 import { appCsrfTokenFor } from "../../packages/broker/src/developer/app-csrf.js";
 import { installLessons } from "../../packages/broker/src/aws/broker/lessons-wiring.js";
 import { scriptTokenRoute } from "../../packages/broker/src/script-tokens/authenticate.js";

@@ -2,7 +2,7 @@
 // Secrets Manager secret (key webhookSecret): an existing valid one is reused, never rotated, and
 // it is never printed, logged or put in an error.
 import { randomBytes } from "node:crypto";
-import { agentXError } from "@agentx/contracts";
+import { agentXError } from "@rovara-code/contracts";
 import type { InitSecrets } from "../init/context.js";
 import { appSettingsUrl, GITHUB_WEBHOOK_EVENTS, type GitHubApi } from "../init/github-app.js";
 

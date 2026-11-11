@@ -1,6 +1,6 @@
 import { GetCommand } from "@aws-sdk/lib-dynamodb";
 import { z } from "zod";
-import { agentXError, projectPk, type OrgId } from "@agentx/contracts";
+import { agentXError, projectPk, type OrgId } from "@rovara-code/contracts";
 import type { TransactItem } from "../audit/outbox.js";
 interface Dependencies { documentClient: { send(command: unknown): Promise<unknown> }; tableName: string }
 const unavailable = () => agentXError("RUNTIME_UNAVAILABLE", "Pending website state could not be checked.");

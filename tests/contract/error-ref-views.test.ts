@@ -1,10 +1,9 @@
 // Live interaction F1: ErrorRef on the task view, the session view and the health rows. Fixed codes and ids only; a view that shows no error has no reference (so no "Fix with agent" button).
 import { randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
-import {
-  ERROR_REF_KINDS, ErrorRefSchema, OrgServiceStatusSchema, SessionViewSchema, WORKFLOW_BLOCK_REASONS, connectorHealthErrorRef, modelAccessErrorRef, setupCheckErrorRef, taskFailureErrorRef,
-  workflowBlockCode, workflowBlockErrorRef, type DeveloperTaskView,
-} from "../../packages/contracts/src/index.js";
+import { ERROR_REF_KINDS, ErrorRefSchema, OrgServiceStatusSchema, connectorHealthErrorRef, modelAccessErrorRef, setupCheckErrorRef, taskFailureErrorRef } from "@rovara-code/contracts";
+import { SessionViewSchema } from "@agentx/cloud-contracts";
+import { WORKFLOW_BLOCK_REASONS, workflowBlockCode, workflowBlockErrorRef, type DeveloperTaskView } from "@agentx/cloud-contracts";
 import { taskViewErrorRef } from "../../packages/broker/src/aws/developer-tasks/error-ref.js";
 import { withServiceErrorRefs, type ServiceObservation } from "../../packages/broker/src/org/service-status.js";
 import { sessionView } from "../../packages/broker/src/agent-sessions/read.js";

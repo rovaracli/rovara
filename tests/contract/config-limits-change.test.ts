@@ -17,7 +17,7 @@ import { configServicesFor } from "../support/config-services.js";
 import { MemoryParameterStore } from "../support/memory-parameter-store.js";
 import { STAGING_SETTINGS } from "../support/setup-fakes.js";
 import { TEST_ORG } from "../support/orgs.js";
-import { orgSettingsKey } from "../../packages/contracts/src/org-scoped-keys.js";
+import { orgSettingsKey } from "../../packages/cloud-contracts/src/org-scoped-keys.js";
 
 /** The CLI's fetch, into the broker in process, with the admin sign-in's claims (API Gateway's JWT authorizer). */
 function brokerFetch(harness: Awaited<ReturnType<typeof createAdminChangeBroker>>): typeof fetch {

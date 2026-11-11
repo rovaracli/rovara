@@ -3,11 +3,8 @@
 import { randomUUID } from "node:crypto";
 import { TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
 import { expect, it } from "vitest";
-import {
- AgentXError, agentRequestKey, BUILTIN_AGENT_IDS, INDEX_EXPIRY_ATTRIBUTE, builtinSettingsKey, modelSourcesKey, taskSpendKey, DEFAULT_AGENT_GUARDRAILS, agentGuardrailsKey, agentKey, createWorkflowSnapshot,
- developerOrgKey, errorStatus, orgMemberKey, orgMetaKey, orgProjectCatalogKey, orgScoped,
- orgSettingsKey, projectAiKey, projectMemberKey, projectMetaKey, workspaceProjectIndexValue,
-} from "@agentx/contracts";
+import { AgentXError, agentRequestKey, BUILTIN_AGENT_IDS, INDEX_EXPIRY_ATTRIBUTE, builtinSettingsKey, modelSourcesKey, taskSpendKey, DEFAULT_AGENT_GUARDRAILS, agentGuardrailsKey, agentKey, errorStatus, orgProjectCatalogKey, orgScoped, projectMemberKey, projectMetaKey, workspaceProjectIndexValue } from "@rovara-code/contracts";
+import { createWorkflowSnapshot, developerOrgKey, orgMemberKey, orgMetaKey, orgSettingsKey, projectAiKey } from "@agentx/cloud-contracts";
 import { routeDeveloperRequest, type DeveloperCaller, type DeveloperRouteDependencies } from "../../packages/broker/src/aws/developer-routes.js";
 import * as company from "../../packages/broker/src/org/task-stop-company.js";
 import { captureTaskStopAdmission, captureTaskStopCutoverReview } from "../../packages/broker/src/org/task-stop-admission.js";

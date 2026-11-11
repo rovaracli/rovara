@@ -1,7 +1,7 @@
 // The routes the rich project setup reads and writes, for the `onboarding` scenario, once a journey asks (POST /__mock/project-setup { checks: ["failed", "ready"], agent?: true }): three repositories, the create route for
 // a meta project, a setup check that answers from the list in order (the last answer repeats), the project overview, the setup agent (off unless asked), the test environment (off) and the start route. Not asked, nothing
 // here answers, so the existing onboarding journeys see the cell exactly as before. The ask belongs to one scenario object: the next /__mock/scenario starts clean.
-import { AppProjectDetailSchema, CloudProjectCreatedResponseSchema, CreateProjectFromMetaBodySchema, GithubRepositoriesResponseSchema } from "@agentx/contracts/web";
+import { AppProjectDetailSchema, CloudProjectCreatedResponseSchema, CreateProjectFromMetaBodySchema, GithubRepositoriesResponseSchema } from "@agentx/cloud-contracts/web";
 import { projectFixture } from "../../web/support/project-fixture.js";
 import { taskFixture } from "../../web/support/session-fixture.js";
 import { mockCellOrigin } from "./port.js";

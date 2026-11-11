@@ -2,7 +2,7 @@
 // Test services, slice 1 T4: the Evidence tab's Environment section lists each dependency with the honesty label's words, and nothing for a pack without any.
 import { describe, expect, it } from "vitest";
 import { screen } from "@testing-library/react";
-import { EvidenceViewSchema, type CheckEntry } from "@agentx/contracts";
+import { EvidenceViewSchema, type CheckEntry } from "@rovara-code/contracts";
 import { buildEvidencePack, evidenceViewOf } from "../../packages/broker/src/rovara-code/evidence-pack.js";
 import { EvidenceTab } from "../../packages/ui/src/screens/session/EvidenceTab.js";
 import { AppHostProvider } from "../../packages/ui/src/host.js";

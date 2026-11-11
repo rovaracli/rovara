@@ -2,7 +2,7 @@
 // write, the history is kept, the Cloud source answers the newest approved version, and every change is audited with ids, counts and digests only. Behind `si`: off, every path is not found.
 import { randomUUID } from "node:crypto";
 import { afterEach, describe, expect, it } from "vitest";
-import { COMPANY_RULES_CURRENT_PATH, COMPANY_RULES_PATH, CompanyRulesAnswerReaderSchema, CompanyRulesCurrentReaderSchema, CompanyRulesHistoryReaderSchema, CompanyRulesStateReaderSchema, type CompanyRulesState } from "@agentx/contracts";
+import { COMPANY_RULES_CURRENT_PATH, COMPANY_RULES_PATH, CompanyRulesAnswerReaderSchema, CompanyRulesCurrentReaderSchema, CompanyRulesHistoryReaderSchema, CompanyRulesStateReaderSchema, type CompanyRulesState } from "@agentx/cloud-contracts";
 import { companyRulesSourceOver } from "../../packages/broker/src/company-rules/source.js";
 import { readCompanyInstructions } from "../../packages/broker/src/instructions/company-source.js";
 import { dynamoCompanyRulesStore, type CompanyRulesStore } from "../../packages/broker/src/company-rules/store.js";

@@ -1,7 +1,7 @@
 // Spec 055: the generic binder, the declarative ownership guard, the endpoint address check and the
 // configurable auth header. Linear's guard is an ownership rule too; gateway-linear.test.ts covers it.
 import { describe, expect, it, vi } from "vitest";
-import { McpConnectorSchema, type McpConnectorConfig, type OwnershipRule } from "../../packages/contracts/src/index.js";
+import { McpConnectorSchema, type McpConnectorConfig, type OwnershipRule } from "@rovara-code/contracts";
 import {
   CredentialUnavailable, EndpointRefused, GuardRejection, checkEndpointAddresses, connectMcp, executeTool, genericBinder,
   isPublicAddress, mcpConnector, ownershipGuard, ownershipGuardedTools, reviewTools, type Invocation, type Ledger, type McpToolResult,

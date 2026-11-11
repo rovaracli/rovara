@@ -1,21 +1,7 @@
 import { readFile, realpath, stat } from "node:fs/promises";
 import { isAbsolute, relative, resolve, sep } from "node:path";
-import {
-  PullRequestResultSchema,
-  PullRequestLifecycleResultSchema,
-  AgentXError,
-  WORKFLOW_PUBLISH_CANDIDATE_CHANGED_MESSAGE,
-  agentXError,
-  commitSubject,
-  withAttributionTrailers,
-  type ActingAttribution,
-  type CheckEntry,
-  type ProjectCommand,
-  type PublicationCheckResult,
-  type PullRequestResult,
-  type PullRequestLifecycleResult,
-  type WorkerInvocation,
-} from "@agentx/contracts";
+import { PullRequestResultSchema, PullRequestLifecycleResultSchema, AgentXError, WORKFLOW_PUBLISH_CANDIDATE_CHANGED_MESSAGE, agentXError, commitSubject, withAttributionTrailers, type ActingAttribution, type CheckEntry, type ProjectCommand, type PublicationCheckResult, type PullRequestResult, type PullRequestLifecycleResult } from "@rovara-code/contracts";
+import { type WorkerInvocation } from "@agentx/cloud-contracts";
 import { AGENTX_GIT_EMAIL, AGENTX_GIT_NAME } from "./git.js";
 import { assertCredentialFreeRemote, pushCommitFromIsolatedRepository, type CredentialedGitRunner } from "./git-auth.js";
 import { CANDIDATE_EXCLUDE_PYTHON_USER_SITE_PATHSPEC, candidateLayout, snapshotTree, withIsolatedGit } from "./isolated-git.js";

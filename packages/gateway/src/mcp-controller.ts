@@ -15,7 +15,7 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
-import { McpStdioProposalSchema, type McpStdioProposal, type McpStdioSpec } from "@agentx/contracts";
+import { McpStdioProposalSchema, type McpStdioProposal, type McpStdioSpec } from "@rovara-code/contracts";
 import { BUNDLE_LIMITS } from "./mcp-runner/bundle.js";
 import type { BundleStore } from "./mcp-runner/bundle-store.js";
 import { parseInstallOutcome, type InstallOutcome } from "./mcp-runner/install-result.js";

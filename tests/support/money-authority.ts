@@ -1,6 +1,7 @@
 // Explicit membership setup for older low-level writer fixtures. Actor-loss tests seed membership explicitly; this helper prepares unrelated setup/competing writes.
 import { createHash } from "node:crypto";
-import { OrgRoleSchema, developerOrgKey, orgMemberKey, orgMetaKey, projectMemberKey, type OrgId } from "@agentx/contracts";
+import { OrgRoleSchema, developerOrgKey, orgMemberKey, orgMetaKey } from "@agentx/cloud-contracts";
+import { projectMemberKey, type OrgId } from "@rovara-code/contracts";
 import type { BudgetActor } from "../../packages/broker/src/agents/budget-authority.js";
 import type { FakeDynamoDb } from "./fake-dynamodb.js";
 import { seedMembership } from "./developer-task-broker.js";

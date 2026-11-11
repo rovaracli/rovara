@@ -11,10 +11,7 @@
 // that is a PR comment while PR capture is off does not count). A suggestion with fewer than 2 sources from 2 tasks left is withdrawn and refused.
 import { createHash } from "node:crypto";
 import { TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
-import {
-  LearningAcceptBodySchema, LearningDismissBodySchema, LearningRuleRemoveBodySchema, LearningRuleSchema, LEARNING_SUGGESTION_SOURCES_MIN, agentXError, canonicalJson, projectAllows, projectLearningKey,
-  type LearningRule, type LearningSuggestion, type RecipeOverlay,
-} from "@agentx/contracts";
+import { LearningAcceptBodySchema, LearningDismissBodySchema, LearningRuleRemoveBodySchema, LearningRuleSchema, LEARNING_SUGGESTION_SOURCES_MIN, agentXError, canonicalJson, projectAllows, projectLearningKey, type LearningRule, type LearningSuggestion, type RecipeOverlay } from "@rovara-code/contracts";
 import type { ZodType } from "zod";
 import { approvalIdFor } from "../agents/approvals-store.js";
 import { publishDraft, type ChangeResult } from "../agents/changes.js";

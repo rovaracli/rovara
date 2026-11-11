@@ -6,7 +6,7 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { ServiceCatalogSchema, sha256HexOf, verifyImageStatement, type SignedImageStatement } from "@agentx/contracts";
+import { ServiceCatalogSchema, sha256HexOf, verifyImageStatement, type SignedImageStatement } from "@rovara-code/contracts";
 import {
   BuiltSourceSchema,
   CatalogBuildError,

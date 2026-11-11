@@ -8,7 +8,7 @@ import {FakeKms} from "../support/fake-kms.js";
 import type {DynamoDBDocumentClient} from "@aws-sdk/lib-dynamodb";
 import {capturingAuditDeps} from "../support/audit-capture.js";
 import {fakeModelAccess} from "../support/fake-model-access.js";
-import {modelSourcesKey} from "../../packages/contracts/src/index.js";
+import { modelSourcesKey } from "@rovara-code/contracts";
 import { fixtureActor } from "../support/money-authority.js";
 // Plan 3 Task 16: the settings of a recipe step at dispatch. A task freezes its agent's recipe at its start (RECIPE, Task 15); every coding
 // operation the broker builds afterwards reads that snapshot, finds the step the operation is, and applies the step's model, instructions,
@@ -24,15 +24,16 @@ import { createDispatcherHandler } from "../../packages/broker/src/aws/dispatche
 import { createEc2Delivery, type Ec2DeliveryDependencies } from "../../packages/broker/src/aws/ec2-delivery.js";
 import type { Ec2OutboxRecord } from "../../packages/broker/src/aws/lambda.js";
 import { developerTaskIdentity, type DeveloperTaskRecord } from "../../packages/broker/src/developer/task-records.js";
-import { EMPTY_RECIPE, recipeDigest, type RecipeOverlay, type ResolvedRecipe, type ResolvedStep } from "../../packages/contracts/src/agent-recipe-node.js";
-import { DEFAULT_AGENT_GUARDRAILS, type AgentGuardrails } from "../../packages/contracts/src/agent-guardrails.js";
-import type { AgentId } from "../../packages/contracts/src/agent-node.js";
-import { projectAgentKey } from "../../packages/contracts/src/org-scoped-keys.js";
-import type { ModelSelection } from "../../packages/contracts/src/models-node.js";
-import { AGENT_WORKER_OUTDATED, AgentStepPayloadSchema, type WorkerInvocation } from "../../packages/contracts/src/protocol.js";
-import type { ChatGptConnectionView } from "../../packages/contracts/src/index.js";
+import { EMPTY_RECIPE, recipeDigest, type RecipeOverlay, type ResolvedRecipe, type ResolvedStep } from "@rovara-code/contracts";
+import { DEFAULT_AGENT_GUARDRAILS, type AgentGuardrails } from "@rovara-code/contracts";
+import type { AgentId } from "@rovara-code/contracts";
+import { projectAgentKey } from "@rovara-code/contracts";
+import type { ModelSelection } from "@rovara-code/contracts";
+import { AGENT_WORKER_OUTDATED, AgentStepPayloadSchema } from "@rovara-code/contracts";
+import { type WorkerInvocation } from "../../packages/cloud-contracts/src/protocol.js";
+import type { ChatGptConnectionView } from "@rovara-code/contracts";
 import type { ChatGptConnections } from "../../packages/broker/src/chatgpt/connections.js";
-import { createCandidateManifest } from "../../packages/contracts/src/task-workflow-node.js";
+import { createCandidateManifest } from "@rovara-code/contracts";
 import { finishPlanningWithMarkdown } from "../support/plan-documents.js";
 import { MAYA, OMAR, createSingleAnswerPlanBroker } from "../support/developer-task-broker.js";
 import { TEST_ORG } from "../support/orgs.js";
@@ -896,7 +897,7 @@ it("C53 dispatches the first coding operation on its pinned company Plan model",
  const claims=JSON.parse(Buffer.from(run.planInvocation.callbackCapability.split(".")[0]!,"base64url").toString()) as {actions:string[];modelPolicy:unknown};
  expect(claims.modelPolicy).toEqual(policy);expect(claims.actions).toContain("model-fallback");
  // A later lower-precedence live selection cannot repin this task or turn CHECKS into a model operation.
- const {projectSelectionKey}=await import("../../packages/contracts/src/index.js");
+ const { projectSelectionKey } = await import("@rovara-code/contracts");
  t.db.set({...projectSelectionKey(TEST_ORG,"payments"),model:{provider:"openai",modelId:"unavailable-selection"}});
  const continued=await run.accept("IMPLEMENT","build");
  expect(continued.invocation.payload.modelPolicy).toMatchObject({stage:"build",companyRevision:1});

@@ -1,5 +1,5 @@
 import { installOrgIdFromEnvironment } from "../org/resolve.js";
-import { OrgIdSchema } from "@agentx/contracts";
+import { OrgIdSchema } from "@rovara-code/contracts";
 import { resolveSlackThreadKey } from "./slack-thread-key.js";
 // Issue 173: the reconciler backstop. Issue 167 cancels a Slack worker task when its turn gives up
 // for good, but a task can still run with nobody waiting on it when the Slack service crashes
@@ -27,7 +27,7 @@ import { resolveSlackThreadKey } from "./slack-thread-key.js";
 // Never touched: tasks started from an AI tool (MCP developer tasks run with no waiter by design),
 // operations already asked to cancel or finished, other operation kinds, and anything waited on.
 import { GetCommand } from "@aws-sdk/lib-dynamodb";
-import { WorkspaceInstanceSchema, workspaceRecordFields } from "@agentx/contracts";
+import { WorkspaceInstanceSchema, workspaceRecordFields } from "@rovara-code/contracts";
 import { taskPointerKey } from "../developer/task-records.js";
 import { requestCancellation } from "./cancellation.js";
 import { parseSlackSecrets } from "./slack-ingress.js";

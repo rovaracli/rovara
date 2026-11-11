@@ -1,5 +1,5 @@
 import { useMemo, useState } from "react";
-import { JiraOrgAdminMutationBodySchema, JiraOrgAdminResultReaderSchema, type JiraOrgAdminMutationBody } from "@agentx/contracts/web";
+import { JiraOrgAdminMutationBodySchema, JiraOrgAdminResultReaderSchema, type JiraOrgAdminMutationBody } from "@agentx/cloud-contracts/web";
 import { Button } from "../../../design/Button.js";
 import { TextField } from "../../../design/TextField.js";
 import { VisibleText, visibleText } from "../../../design/VisibleText.js";

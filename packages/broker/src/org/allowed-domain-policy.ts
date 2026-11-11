@@ -1,4 +1,4 @@
-import { agentXError } from "@agentx/contracts";
+import { agentXError } from "@rovara-code/contracts";
 
 /** Conservative policy: every newly listed rule is a widening, including a
  * replacement that might be semantically narrower under wildcard matching. */

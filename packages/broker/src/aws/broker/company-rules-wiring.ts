@@ -3,7 +3,7 @@
 //     gave its own. With the switch off nothing is installed: no company rules reach a step and no company rules row is read.
 //   - `companyRulesRouteDependencies`: how the file sync reaches a repository: the company's own GitHub connection (`requireRepositoryConnected`, which also pins the repository's id) and the code host the repository's record names
 //     (GitHub today; `hostOfRepository`). Nothing is added where the install has no repository gate (no GitHub connection to ask), and the routes then answer that connecting a repository is not set up.
-import { agentXError, type OrgId } from "@agentx/contracts";
+import { agentXError, type OrgId } from "@rovara-code/contracts";
 import { cloudCompanyInstructionsSource } from "../../company-rules/source.js";
 import { dynamoCompanyRulesStore } from "../../company-rules/store.js";
 import { runSyncPass, type CompanyRulesRepositories } from "../../company-rules/sync.js";

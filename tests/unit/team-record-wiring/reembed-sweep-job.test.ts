@@ -1,7 +1,7 @@
 // EMB-7 M1: the hourly job's clean-up of REEMBED# state runs AFTER every company's work and BEFORE the GitHub repository pass, so it must never use the time the pass needs. It gets a small share of what is left
 // of the run (and none when under the GitHub pass's own two seconds would remain), a cap on the workspaces it looks at, and what it could not reach waits for the next hour.
 import { describe, expect, it } from "vitest";
-import type { OrgId } from "@agentx/contracts";
+import type { OrgId } from "@rovara-code/contracts";
 import { createTeamRecordRuntime } from "../../../packages/broker/src/team-record/runtime.js";
 import { readReembedStates } from "../../../packages/broker/src/team-record/reembed.js";
 import { FakeDynamoDb } from "../../support/fake-dynamodb.js";

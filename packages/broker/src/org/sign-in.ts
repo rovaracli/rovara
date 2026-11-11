@@ -5,7 +5,8 @@
 // as a member. A person's second sign-in route is never a second member: identities.ts links it to the
 // first route's developer before this runs, so that developer already has its org. A GitHub sign-in
 // (Task 22) is a cloud sign-in route for all of this: it accepts invites and creates an org like `cloud`.
-import { agentXError, normalizeEmail, type DeveloperSignInMethod, type OrgId, type OrgRole } from "@agentx/contracts";
+import { agentXError, normalizeEmail, type OrgId } from "@rovara-code/contracts";
+import { type DeveloperSignInMethod, type OrgRole } from "@agentx/cloud-contracts";
 import type { OrgStore } from "./store.js";
 import { defaultTeamName } from "../developer/person-name.js";
 

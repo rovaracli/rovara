@@ -1,6 +1,6 @@
 // Fix round 11 (Opus final check): erasure walks the inventory, never code paths that happen to know. Each probe of the final review is a test, and the last one is the invariant:
 // an erase that reports complete leaves no trace of the id, hot or in the lake, and no lesson derived from the person.
-import { recordDeveloperHash } from "@agentx/contracts";
+import { recordDeveloperHash } from "@agentx/cloud-contracts";
 import { describe, expect, it } from "vitest";
 import { createAccessCheckPort } from "../../../packages/broker/src/team-record/access-port.js";
 import { applyMemberEvents } from "../../../packages/broker/src/team-record/access.js";

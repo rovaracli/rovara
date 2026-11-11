@@ -13,16 +13,7 @@ import { DeleteObjectCommand, GetObjectCommand, PutObjectCommand, S3Client } fro
 import { describe, expect, it } from "vitest";
 import { parseBundle, verifyBundle, type AuditBundleV1, type AuditRecordV1 } from "@rovara/audit-verifier";
 import { runCli } from "../../packages/audit-verifier/src/cli.js";
-import {
-  AUDIT_EXPORT_AVAILABLE_DAYS,
-  AUDIT_EXPORT_FILE_LIFECYCLE_DAYS,
-  AUDIT_EXPORT_MAX_RECORDS,
-  AUDIT_EXPORT_URL_SECONDS,
-  AUDIT_FILTER_SCAN_MAX,
-  AuditEventInputSchema,
-  auditEventId,
-  type AuditEventInput,
-} from "@agentx/contracts";
+import { AUDIT_EXPORT_AVAILABLE_DAYS, AUDIT_EXPORT_FILE_LIFECYCLE_DAYS, AUDIT_EXPORT_MAX_RECORDS, AUDIT_EXPORT_URL_SECONDS, AUDIT_FILTER_SCAN_MAX, AuditEventInputSchema, auditEventId, type AuditEventInput } from "@agentx/cloud-contracts";
 import { appendEvent, type AppenderDeps } from "../../packages/broker/src/audit/appender.js";
 import {
   AUDIT_EXPORT_SOURCE,
@@ -50,7 +41,7 @@ import { FakeKms } from "../support/fake-kms.js";
 import { makePki } from "../support/fake-tsa.js";
 import { fakeTsaHost, type FakeTsaHost } from "../support/fake-tsa-server.js";
 import { routeFetch } from "../support/developer-fakes.js";
-import { AUDIT_TSA_ENDPOINTS, AUDIT_TSA_SPACING_MS } from "@agentx/contracts";
+import { AUDIT_TSA_ENDPOINTS, AUDIT_TSA_SPACING_MS } from "@agentx/cloud-contracts";
 import type { TsaSettings } from "../../packages/broker/src/audit/tsa-client.js";
 import {
   A, B, BUCKET, E0, E1, LEDGER, SEALS, at, harness, iso, pad12, run, metaOf,

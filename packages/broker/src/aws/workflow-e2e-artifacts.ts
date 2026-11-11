@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { GetObjectCommand, PutObjectCommand, type S3Client } from "@aws-sdk/client-s3";
-import { E2E_ARTIFACT_RETENTION_TAG, E2E_DISPLAY_SCREENSHOT_MAX_BYTES, type E2EDisplayBaseline, type E2EScenarioResults } from "@agentx/contracts";
+import { E2E_ARTIFACT_RETENTION_TAG, E2E_DISPLAY_SCREENSHOT_MAX_BYTES, type E2EDisplayBaseline, type E2EScenarioResults } from "@rovara-code/contracts";
 import type { DeveloperTaskRecord } from "../developer/task-records.js";
 import { readWorkflowE2ENotifierProjection, workflowE2EArtifactKey } from "./workflow-e2e-notifier-projection.js";
 

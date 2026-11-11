@@ -10,7 +10,8 @@
 //   - `chainSteerReadsFor(deps)`: what a run is doing now (a gate, a step's task, nothing), for a message to the chain.
 //   - `chainControlFor(deps)`: stop (`cancelChainRun`) and retry (`startChainRun`) with the session actor, for the org the session is in.
 //   - `chainOwnerMoverFor(deps)`: the transaction items that move a run's owner (and, for a member's budget, its payer) to the person who took the session over.
-import { ChainRunIdSchema, OrgIdSchema, agentXError, type ChainRunStatus, type DeveloperTaskView, type OrgId, type Payer } from "@agentx/contracts";
+import { ChainRunIdSchema, OrgIdSchema, agentXError, type ChainRunStatus, type OrgId, type Payer } from "@rovara-code/contracts";
+import { type DeveloperTaskView } from "@agentx/cloud-contracts";
 import { orgRoleOf } from "../agents/access.js";
 import { shownText } from "../agents/approvals.js";
 import type { TransactItem } from "../agents/table-writes.js";

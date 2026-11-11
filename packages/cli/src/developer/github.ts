@@ -1,7 +1,8 @@
 // `agentx github connect | list | disconnect` (Plan 2, Tasks 13 to 15): connect your organization's GitHub account to Rovara. One signed-in POST asks the control plane
 // for an install link that only this person can complete; the browser opens it (or the link is printed); then this waits, polling the
 // organization's connected GitHub accounts, until a new one appears. The control plane decides who may connect and what GitHub says.
-import { agentXError, githubAdminMessage, githubInstallRequestCopy, type GithubInstallRequestShownStatus } from "@agentx/contracts";
+import { agentXError } from "@rovara-code/contracts";
+import { githubAdminMessage, githubInstallRequestCopy, type GithubInstallRequestShownStatus } from "@agentx/cloud-contracts";
 import { z } from "zod";
 import { sanitizeServerText } from "../auth.js";
 import { developerRequest } from "./commands.js";

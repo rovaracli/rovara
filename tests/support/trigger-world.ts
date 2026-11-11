@@ -3,7 +3,7 @@ import { fixtureActor } from "./money-authority.js";
 // page) with the trigger store, a hook reader, a scheduler that records what it was asked and the trigger code's own hooks wired onto the world's dependencies, as the
 // broker wires them. Nothing here is Plan 4's code: the tests call the routes and the lifecycle functions and read what they left.
 import { randomUUID } from "node:crypto";
-import { AgentXError } from "@agentx/contracts";
+import { AgentXError } from "@rovara-code/contracts";
 import { addToRoster } from "../../packages/broker/src/agents/roster.js";
 import { StatusReply } from "../../packages/broker/src/aws/status-reply.js";
 import { routeAgentRequest, type AgentRouteDependencies } from "../../packages/broker/src/agents/routes.js";
@@ -11,11 +11,11 @@ import { routeChainRequest, type ChainRouteDependencies } from "../../packages/b
 import { chainTriggerHooksFor, triggerHooksFor } from "../../packages/broker/src/triggers/lifecycle.js";
 import type { ScheduledTrigger, TriggerHook, TriggerHookReader, TriggerScheduler } from "../../packages/broker/src/triggers/ports.js";
 import { TriggerStore, type TriggerRecord } from "../../packages/broker/src/triggers/store.js";
-import type { RecipeOverlay } from "../../packages/contracts/src/agent-recipe-node.js";
-import type { ChainDefinitionInput } from "../../packages/contracts/src/chains.js";
-import type { OrgId } from "../../packages/contracts/src/org.js";
-import { connectionKey, connectionsKey } from "../../packages/contracts/src/connections.js";
-import { orgMemberKey } from "../../packages/contracts/src/org-node.js";
+import type { RecipeOverlay } from "@rovara-code/contracts";
+import type { ChainDefinitionInput } from "@rovara-code/contracts";
+import type { OrgId } from "@rovara-code/contracts";
+import { connectionKey, connectionsKey } from "@rovara-code/contracts";
+import { orgMemberKey } from "../../packages/cloud-contracts/src/org-node.js";
 import { INVESTIGATE_THEN_FIX } from "./chain-examples.js";
 import { ARJUN, CARL, DANA, MAX, ORG_A, ORG_B, PRIYA, STRANGER, VIV, callerOf, disposeGateWorlds, setupGateWorld, type GateWorld } from "./chain-gate-world.js";
 import type { WorldOptions } from "./chain-run-world.js";

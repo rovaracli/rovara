@@ -2,7 +2,7 @@
 // summary. Kept apart from the writer so the summary (which the writer calls) can read it without the two importing each other. Everything read is checked: the item must
 // be this session's, in this org, and name the session's own device, or it is read as "nothing to say" and the summary stays as it was.
 import { GetCommand } from "@aws-sdk/lib-dynamodb";
-import { ENDED_SESSION_STATUSES, SessionStatusSchema, agentSessionKey, type AgentSessionRecord } from "@agentx/contracts";
+import { ENDED_SESSION_STATUSES, SessionStatusSchema, agentSessionKey, type AgentSessionRecord } from "@rovara-code/contracts";
 import type { Item, TableInput } from "../agents/table-writes.js";
 import type { LocalFacts, LocalSessionSource } from "../agent-sessions/summary.js";
 import { readDevice, type DeviceDependencies } from "./store.js";

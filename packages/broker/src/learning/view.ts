@@ -17,10 +17,7 @@ import { withdrawPrDependentSuggestions } from "./grouping.js";
 //
 // Bounded: each list is read with a cap (one or two small queries), the answer is cut at its own limits and says which list was cut (`truncated`), and the whole read gives up after
 // `LEARNING_VIEW_MILLIS` with one plain error. Nothing is written: rules still waiting on an approval are settled by the deciding routes and Home, not by a read.
-import {
-  LEARNING_OPEN_SUGGESTIONS_MAX, LearningDismissKindSchema, LearningRuleSchema, LearningSettingsSchema, LearningStageSchema, LearningSuggestionSchema, LearningViewAnswerSchema, agentXError, isTerminalSuggestionStatus, orgScoped, projectAllows,
-  type LearningCorrection, type LearningSuggestion, type LearningViewAnswer,
-} from "@agentx/contracts";
+import { LEARNING_OPEN_SUGGESTIONS_MAX, LearningDismissKindSchema, LearningRuleSchema, LearningSettingsSchema, LearningStageSchema, LearningSuggestionSchema, LearningViewAnswerSchema, agentXError, isTerminalSuggestionStatus, orgScoped, projectAllows, type LearningCorrection, type LearningSuggestion, type LearningViewAnswer } from "@rovara-code/contracts";
 import { readGuardrails } from "../agents/guardrails.js";
 import { takeRateAt } from "../developer/page-comments.js";
 import type { DeveloperCaller } from "../aws/developer-routes.js";

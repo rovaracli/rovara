@@ -1,7 +1,7 @@
 // Slice 2, s2-emulator-run review fix (HIGH): the broker judges the emulator's AWS usage. With Rovara local AWS in the plan, `dependency_usage` and the task evidence are NOT clean when the ledger facts are missing,
 // unreadable or flooded, when the code called a service outside the plan, or when it called an operation the emulator does not offer. "Could not be checked" is never a pass.
 import { describe, expect, it } from "vitest";
-import { EvidencePackSchema, TEST_SERVICES_AWS_USAGE_WORDS, TestEnvironmentBodySchema, TestServicesAwsUsageSchema, testServicesAwsUsageVerdict, type TestServicesUsageRecord } from "@agentx/contracts";
+import { EvidencePackSchema, TEST_SERVICES_AWS_USAGE_WORDS, TestEnvironmentBodySchema, TestServicesAwsUsageSchema, testServicesAwsUsageVerdict, type TestServicesUsageRecord } from "@rovara-code/contracts";
 import { AWS_USAGE_ITEM_ID, dependencyEvidenceOf } from "../../packages/broker/src/rovara-code/dependency-evidence.js";
 import { dependencyStepsOf } from "../../packages/broker/src/test-env/prove-from-setup-check.js";
 

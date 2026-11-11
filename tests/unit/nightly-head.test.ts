@@ -1,7 +1,7 @@
 // Setup and test health SH17 (quiet repository): the production reader of a project's default-branch head, and what it does to a nightly baseline older than 7 days. It exists only while `vx` is on, asks the code host
 // the repository's record names through `baseBranchHead`, answers only for a one-repository project, and any failure is "unknown" (the stale baseline is then refused, as without the reader).
 import { describe, expect, it } from "vitest";
-import { NightlyBaselineSchema, projectPk, projectRevisionKey } from "@agentx/contracts";
+import { NightlyBaselineSchema, projectPk, projectRevisionKey } from "@rovara-code/contracts";
 import { nightlyHeadDependencies, nightlyHeadReaderOf } from "../../packages/broker/src/aws/broker/nightly-head.js";
 import { fixSetupDependencies } from "../../packages/broker/src/aws/broker/fix-setup-wiring.js";
 import { alreadyFailingForResults } from "../../packages/broker/src/test-env/known-failing.js";
@@ -84,7 +84,7 @@ describe("with the reader wired, a baseline older than 7 days on an unchanged he
   });
 
   it("reaches the Fix setup wiring: the check's failing test is confirmed by a stale baseline on the unchanged head, and not once the branch moved", async () => {
-    const pack = (await import("@agentx/contracts")).EvidencePackSchema.parse({
+    const pack = (await import("@rovara-code/contracts")).EvidencePackSchema.parse({
       schemaVersion: 1, candidateDigest: "d".repeat(64), environment: { tier: "sandbox", envRevision: 1, services: [], data: "synthetic", accounts: [] },
       checks: [{ checkId: "unit", kind: "test", label: "unit", before: "failed", after: "failed", class: "already_failing", durationMs: 5, tests: { total: 10, passed: 9, failed: 1, skipped: 0, errored: 0, newTests: [], names: [{ name: "Y", status: "failed" }] } }],
       selection: { method: "full", selected: 10, total: 10 }, api: [], browser: [], notTested: [],

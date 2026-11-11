@@ -3,9 +3,9 @@
 // in setup-host-cards.test.ts.
 import { randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
-import {
-  DEFAULT_AGENT_ALLOW_DOMAINS, ProjectDefinitionSchema, developerOrgKey, egressDomainsKey, orgMemberKey, orgMetaKey, orgProjectCatalogKey, orgScoped, projectMetaKey, projectPk, projectRevisionKey, type OrgId,
-} from "../../packages/contracts/src/index.js";
+import { DEFAULT_AGENT_ALLOW_DOMAINS, egressDomainsKey, orgProjectCatalogKey, orgScoped, projectMetaKey, projectPk, projectRevisionKey, type OrgId } from "@rovara-code/contracts";
+import { ProjectDefinitionSchema } from "@agentx/cloud-contracts";
+import { developerOrgKey, orgMemberKey, orgMetaKey } from "@agentx/cloud-contracts";
 import {
   SETUP_HOST_JOIN_MAX, SETUP_HOST_OPEN_MAX, SETUP_HOST_REFUSED_MS, SETUP_HOST_REQUESTER_GONE, approveHostAsk, hostAlreadyAllowed, hostAskItem, hostAskItemsFor, hostAskState, hostAskSubjectId, hostProposalId,
   isInternationalName, listHostAsks, refusedCountsOf, refuseHostAsk, refuseSetupHost, requestHostAsk, setupHostHandler, setupRunStarterOf, type HostAskInput, type HostDecisionDeps,

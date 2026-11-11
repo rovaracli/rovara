@@ -18,40 +18,8 @@
 import { createHash } from "node:crypto";
 import { z } from "zod";
 import { catalogModel } from "@agentx/model-runtime/catalog";
-import {
-  AgentXError,
-  BEDROCK_NOT_TESTED_NOTE,
-  CUSTOM_SOURCE_KINDS,
-  TRANSPORTS_AT_LAUNCH,
-  type CustomSourceKind,
-  EGRESS_SYNC_KEY,
-  EgressSyncMarkerSchema,
-  MODEL_SOURCES_NEED_PROXY,
-  MODEL_SOURCE_STILL_APPLYING,
-  ModelSourceIdSchema,
-  ModelSourceKindSchema,
-  agentXError,
-  bedrockExternalId,
-  bedrockTrustPolicy,
-  canonicalJson,
-  customSourceLimitProblem,
-  egressPendingWarning,
-  egressRejectedWarning,
-  endpointForbiddenModelProblem,
-  endpointSecretRefProblem,
-  featureEnabled,
-  isAllowedDomain,
-  modelSourceInputSchema,
-  requireFeature,
-  sourceKindProblem,
-  type EditionPolicy,
-  type EgressDomainsItem,
-  type ModelIdentifier,
-  type ModelSource,
-  type ModelSourceInput,
-  type OrgId,
-  type SourceLaunch,
-} from "@agentx/contracts";
+import { AgentXError, BEDROCK_NOT_TESTED_NOTE, CUSTOM_SOURCE_KINDS, TRANSPORTS_AT_LAUNCH, type CustomSourceKind, EGRESS_SYNC_KEY, EgressSyncMarkerSchema, MODEL_SOURCES_NEED_PROXY, MODEL_SOURCE_STILL_APPLYING, ModelSourceIdSchema, ModelSourceKindSchema, agentXError, bedrockExternalId, bedrockTrustPolicy, canonicalJson, customSourceLimitProblem, egressPendingWarning, egressRejectedWarning, endpointForbiddenModelProblem, endpointSecretRefProblem, isAllowedDomain, modelSourceInputSchema, sourceKindProblem, type EgressDomainsItem, type ModelIdentifier, type ModelSource, type ModelSourceInput, type OrgId, type SourceLaunch } from "@rovara-code/contracts";
+import { featureEnabled, requireFeature, type EditionPolicy } from "@agentx/cloud-contracts";
 import { GetCommand } from "@aws-sdk/lib-dynamodb";
 import type { AgentCaller } from "../agents/access.js";
 import type { AgentRouteDependencies } from "../agents/routes.js";

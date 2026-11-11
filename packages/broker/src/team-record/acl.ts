@@ -2,8 +2,10 @@
 // the row is not tombstoned, and (for a restricted `on_read` source) the source still says yes. Everything here fails closed: an unmapped identity, an empty
 // snapshot, a missing or failing live check and a row that does not parse all read as "not visible". The check runs in the broker on every hit; a vector or
 // query filter upstream is only a coarse cut.
-import { MAINTAINERS_GROUP, agentXError, type AclSnapshot, type Audience, type RecordTombstone } from "@agentx/contracts";
-import { scopeAndAncestors, teamRecordSourceHash } from "@agentx/contracts";
+import { MAINTAINERS_GROUP, agentXError } from "@rovara-code/contracts";
+import { type AclSnapshot, type Audience } from "@agentx/cloud-contracts";
+import { type RecordTombstone } from "@agentx/cloud-contracts";
+import { scopeAndAncestors, teamRecordSourceHash } from "@agentx/cloud-contracts";
 import { accessScopesOf, judgeAccess, viewerOfCaller, type AccessReader, type AccessVerdict } from "./access.js";
 import { rovaraTaskRefsOf, type LiveAudienceReader } from "./live-audience.js";
 import type { LiveAclCheck, PendingHides, ReadAudience, RecordCaller } from "./types.js";
@@ -29,14 +31,19 @@ export interface Visible {
   structured?: Readonly<Record<string, string | number | boolean>> | undefined;
 }
 
+/** A caller's list for one source, by the record's OWN keys only: a source named `constructor` or `__proto__` has none, instead of the `Object` function every plain record inherits. */
+export function ownList(record: Readonly<Record<string, readonly string[]>>, source: string): readonly string[] {
+  return Object.hasOwn(record, source) ? record[source] ?? [] : [];
+}
+
 /** Whether a caller's identities satisfy a snapshot. No principals and no groups is an empty snapshot: nobody. */
 export function satisfiesAcl(caller: RecordCaller, acl: AclSnapshot): boolean {
   const principals = acl.principals ?? [];
   const groups = acl.groups ?? [];
   if (principals.length === 0 && groups.length === 0) return false;
-  const ids = caller.identities.ids[acl.source] ?? [];
+  const ids = ownList(caller.identities.ids, acl.source);
   if (principals.length > 0 && ids.some((id) => principals.includes(id))) return true;
-  const callerGroups = caller.identities.groups[acl.source] ?? [];
+  const callerGroups = ownList(caller.identities.groups, acl.source);
   for (const group of groups) {
     if (group === MAINTAINERS_GROUP) {
       if (caller.projectRole === "maintainer") return true;

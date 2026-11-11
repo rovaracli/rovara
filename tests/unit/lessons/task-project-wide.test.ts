@@ -1,7 +1,7 @@
 // Lessons connect fix 1 (M4, owner decision 32): `sharedTask` means "visible to the whole project with no People denial", read live and strict. An ordinary task nobody shared counts; a denial, another company's task, a task
 // with no task session and anything unreadable do not (the last one throws, which the caller reads as unknown). The Team record's own resolver (`task-visibility.ts`) is not touched.
 import { describe, expect, it } from "vitest";
-import { agentSessionKey } from "@agentx/contracts";
+import { agentSessionKey } from "@rovara-code/contracts";
 import { taskKey } from "../../../packages/broker/src/developer/task-records.js";
 import { resolveTaskProjectWide } from "../../../packages/broker/src/lessons/task-project-wide.js";
 import { resolveTaskVisibility } from "../../../packages/broker/src/lessons/task-visibility.js";

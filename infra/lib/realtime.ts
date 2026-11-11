@@ -4,7 +4,7 @@
 import type { aws_dynamodb as dynamodb} from "aws-cdk-lib";
 import { Duration, Fn, aws_appsync as appsync, aws_iam as iam, type aws_kms as kms, type aws_lambda_nodejs as lambdaNodejs } from "aws-cdk-lib";
 import { Construct } from "constructs";
-import { REALTIME_NAMESPACE } from "@agentx/contracts";
+import { REALTIME_NAMESPACE } from "@agentx/cloud-contracts";
 import { packagedFunction } from "./control-plane.js";
 
 export interface RealtimeEventsProps {

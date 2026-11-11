@@ -1,6 +1,6 @@
 import { TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
 import { describe, expect, it } from "vitest";
-import { indexExpiresAt, type E2EDisplayBaseline } from "@agentx/contracts";
+import { indexExpiresAt, type E2EDisplayBaseline } from "@rovara-code/contracts";
 import { FakeDynamoDb } from "../support/fake-dynamodb.js";
 import {
   E2E_BASELINE_ATTEMPT, E2E_BASELINE_RUN_GRACE_MS, baselineStartItem, markWorkflowE2EBaselineUnavailable, readWorkflowE2EBaseline, readWorkflowE2EBaselineRecord,

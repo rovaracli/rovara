@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
-import type { ProjectModelOptions, SlackRequestMessage } from "../../packages/contracts/src/index.js";
-import { ProjectModelOptionsSchema } from "../../packages/contracts/src/index.js";
+import type { ProjectModelOptions, SlackRequestMessage } from "@rovara-code/contracts";
+import { ProjectModelOptionsSchema } from "@rovara-code/contracts";
 import { modelOptionsMessage } from "../../packages/slack-service/src/model-command.js";
 import { processSlackRequest, type ProcessorDependencies } from "../../packages/slack-service/src/processor.js";
 

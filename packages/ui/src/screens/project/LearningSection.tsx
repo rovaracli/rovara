@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { Link } from "react-router";
 import { useQueryClient } from "@tanstack/react-query";
-import { LEARNING_PROJECT_WIDE, LEARNING_TEXT_MAX } from "@agentx/contracts/web";
+import { LEARNING_PROJECT_WIDE, LEARNING_TEXT_MAX } from "@agentx/cloud-contracts/web";
 import { ApiError } from "../../api/errors.js";
 import { learningKey, useLearning, useLearningApi, type Decision, type DismissedView, type RuleView, type SuggestionView } from "../../api/learning.js";
 import { howWeWorkKey, useHowWeWork } from "../../api/how-we-work.js";

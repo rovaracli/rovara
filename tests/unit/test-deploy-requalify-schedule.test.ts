@@ -1,7 +1,7 @@
 // ARGUARD: the deploy tooling's side of "the weekly renewal cannot be switched off silently". --check turns a schedule that is off after it was once on into an error, and a head
 // synth carries the schedule's state forward so a control-plane update made from it does not switch it off.
 import { describe, expect, it } from "vitest";
-import { REQUALIFY_PROFILE_ID, requalifyScheduleEnabledKey } from "../../packages/contracts/src/index.js";
+import { REQUALIFY_PROFILE_ID, requalifyScheduleEnabledKey } from "@rovara-code/contracts";
 import { evaluateTestDeployCheck } from "../../scripts/test-deploy-check.js";
 import { planTestDeploy, type DeployStep } from "../../scripts/test-deploy.js";
 import { REQUALIFY_INFRA, readScheduleFact, requalifyFindings, requalifyHeadContext, type RequalifyFacts } from "../../scripts/test-deploy-requalify.js";

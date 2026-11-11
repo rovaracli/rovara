@@ -5,7 +5,7 @@ import { Stack } from "aws-cdk-lib";
 import { Template } from "aws-cdk-lib/assertions";
 import { beforeAll, describe, expect, it } from "vitest";
 import { buildAgentXApp } from "../../infra/lib/app.js";
-import { INFERENCE_PATHS } from "@agentx/contracts";
+import { INFERENCE_PATHS } from "@rovara-code/contracts";
 import { litellmConfig } from "../../packages/model-proxy/src/litellm-config.js";
 import { ROVARA_GUARD_PY } from "../../packages/model-proxy/src/rovara-guard.js";
 import { ROVARA_GUARD_PACKED, ROVARA_GUARD_SHA256 } from "../../packages/model-proxy/src/rovara-guard-packed.js";

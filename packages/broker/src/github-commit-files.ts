@@ -11,7 +11,7 @@
 //  - a symbolic link at a target path is refused (M2): writing to it would replace the link with a file and break a team's single-source setup; a directory, a submodule or a file too big to read at the path is a refused write, never "absent";
 //  - each file is read on the branch first and written only when its text differs, so the same call twice changes nothing (the second answers `changed: false`);
 //  - every path is a plain repository path (no empty, dot or dot-dot segment, no backslash, no control character), and every request is bounded in time and follows no redirect.
-import { COMMIT_CONFLICT_MESSAGE, COMMIT_SYMLINK_MESSAGE, GitBranchNameSchema, LESSON_FILE_BRANCH_PATTERN, LESSON_FILE_WRITE_PATHS, agentXError } from "@agentx/contracts";
+import { COMMIT_CONFLICT_MESSAGE, COMMIT_SYMLINK_MESSAGE, GitBranchNameSchema, LESSON_FILE_BRANCH_PATTERN, LESSON_FILE_WRITE_PATHS, agentXError } from "@rovara-code/contracts";
 import { COMPANY_RULES_BRANCH_PATTERN, companyRulesPathProblem } from "./company-rules/path.js";
 
 const ALLOWED_PATHS: ReadonlySet<string> = new Set(LESSON_FILE_WRITE_PATHS);

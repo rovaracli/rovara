@@ -6,20 +6,8 @@
 import { randomUUID } from "node:crypto";
 import { marshall } from "@aws-sdk/util-dynamodb";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import {
-  LIVE_ENDED_KEEP_HOURS,
-  SESSION_RETENTION_DAYS,
-  agentSessionKey,
-  endedSessionWorkKey,
-  liveSessionKey,
-  openAgentSessionKey,
-  sessionEventId,
-  spendRequestKey,
-  spendRequestSlotKey,
-  planRunLimitSubject,
-  taskSpendKey,
-  PROJECTOR_CONCURRENCY,
-} from "../../packages/contracts/src/index.js";
+import { LIVE_ENDED_KEEP_HOURS, SESSION_RETENTION_DAYS, agentSessionKey, endedSessionWorkKey, liveSessionKey, openAgentSessionKey, sessionEventId, planRunLimitSubject, taskSpendKey, PROJECTOR_CONCURRENCY } from "@rovara-code/contracts";
+import { spendRequestKey, spendRequestSlotKey } from "@agentx/cloud-contracts";
 import { registerSessionNoticeSink, type SessionChange } from "../../packages/broker/src/agent-sessions/notice-sink.js";
 import { projectSessions } from "../../packages/broker/src/agent-sessions/projector.js";
 import { computeSessionSummary, sessionSummaryDigest } from "../../packages/broker/src/agent-sessions/summary.js";

@@ -1,6 +1,6 @@
 import {expect,it} from "vitest";
 import {TransactWriteCommand} from "@aws-sdk/lib-dynamodb";
-import {projectPlaybookKey,projectSelectionKey} from "../../packages/contracts/src/index.js";
+import { projectPlaybookKey, projectSelectionKey } from "@rovara-code/contracts";
 import {projectSelectionWriteCondition,projectSelectionPlaybookCheck,projectSelectionProcessCheck,projectSelectionAncestorChecks} from "../../packages/broker/src/model-selection/selection-inputs.js";
 import {mergeWorld} from "../support/rovara-code-merge-world.js";
 import {ORG_A} from "../support/agent-session-world.js";
@@ -20,7 +20,7 @@ for(const existing of [false,true])for(const race of ["none","selection","playbo
 });
 
 it("fences the selected active process version and native project identity",async()=>{
- const {agentKey}=await import("../../packages/contracts/src/index.js");
+ const { agentKey } = await import("@rovara-code/contracts");
  const id="agt_aaaaaaaaaaaaaaaaaaaa",process={agentId:id,version:2,digest:"a".repeat(64)};
  for(const race of ["none","version","archive","owner"] as const){
   const w=mergeWorld(),key=agentKey(ORG_A,id,"META");
@@ -35,7 +35,7 @@ it("fences the selected active process version and native project identity",asyn
  }
 });
 it("fences a built-in pin and refuses unpublished process input",async()=>{
- const {builtinSettingsKey,builtinDefaultPin}=await import("../../packages/contracts/src/index.js");
+ const { builtinSettingsKey, builtinDefaultPin } = await import("@rovara-code/contracts");
  const version=builtinDefaultPin("rovara-code");
  for(const race of [false,true]){
   const w=mergeWorld();const check=projectSelectionProcessCheck("state",ORG_A,"web",{agentId:"rovara-code",version,digest:"a".repeat(64)});
@@ -48,7 +48,7 @@ it("fences a built-in pin and refuses unpublished process input",async()=>{
 });
 
 it("requires an explicit stored pin when validation used a nondefault built-in version",async()=>{
- const {builtinSettingsKey,builtinDefaultPin}=await import("../../packages/contracts/src/index.js");
+ const { builtinSettingsKey, builtinDefaultPin } = await import("@rovara-code/contracts");
  const version=builtinDefaultPin("rovara-code")+1;
  for(const stored of [false,true]){
   const w=mergeWorld();
@@ -61,7 +61,7 @@ it("requires an explicit stored pin when validation used a nondefault built-in v
 });
 
 it("rejects an archived inherited layer without following its newer current version",async()=>{
- const {agentKey}=await import("../../packages/contracts/src/index.js");
+ const { agentKey } = await import("@rovara-code/contracts");
  const parent="agt_bbbbbbbbbbbbbbbbbbbb",root="agt_aaaaaaaaaaaaaaaaaaaa";
  const chain=[{agentId:"rovara-code",name:"Code",version:1,builtin:true},{agentId:parent,name:"Base",version:2,builtin:false},{agentId:root,name:"Process",version:1,builtin:false}];
  for(const archived of [false,true]){

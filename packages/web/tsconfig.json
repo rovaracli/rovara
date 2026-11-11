@@ -19,9 +19,7 @@
     "src/**/*.tsx"
   ],
   "references": [
-    {
-      "path": "../contracts"
-    },
+    { "path": "../cloud-contracts" },
     {
       "path": "../ui"
     }

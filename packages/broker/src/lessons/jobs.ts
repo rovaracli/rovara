@@ -7,7 +7,7 @@
 //     Before that it moves lessons past their expiry (and pending ones nobody decided in time) to `expired` (`lessonsExpireJob`), so an expired lesson is never promoted or published.
 // Both are bounded (projects, tasks, time) and a failure of one project never stops the others.
 import { createHash } from "node:crypto";
-import { OrgIdSchema, type OrgId } from "@agentx/contracts";
+import { OrgIdSchema, type OrgId } from "@rovara-code/contracts";
 import { modeAllows, resolveLearning, type LearningSettingsReader } from "./policy.js";
 import { settleHelpful, type CounterDeps } from "./counters.js";
 import { PENDING_GRACE_MS, projectHash, rotated, tableNightlyState, type NightlyPass, type NightlyPassState, type NightlyStateStore } from "./nightly-state.js";

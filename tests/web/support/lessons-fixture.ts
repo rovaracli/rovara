@@ -1,5 +1,5 @@
 // The Lessons tab's view (GET /v1/app/projects/{p}/lessons) and a cell that answers it and its writes. Every body is parsed by the contract's own strict schema.
-import { LessonHistorySchema, LessonSourcesSchema, LessonViewSchema, LessonsDigestSchema, LessonsViewSchema, LoadedLessonsSchema } from "@agentx/contracts/web";
+import { LessonHistorySchema, LessonSourcesSchema, LessonViewSchema, LessonsDigestSchema, LessonsViewSchema, LoadedLessonsSchema } from "@agentx/cloud-contracts/web";
 import type { ApiRequest, ApiResponse } from "../../../packages/ui/src/host.js";
 import { howWeWorkHost, type Handler } from "./how-we-work-fixture.js";
 

@@ -1,14 +1,7 @@
 // Knowledge resolver (K1, C5a): the "what the agent loaded" record, built from the resolver's records.
 // References only: no rule text, no skill text. Loaded items come first; skipped and available ones follow until the record is full, and the
 // counts of what was left out are kept so the panel can say so.
-import {
-  LOADED_KNOWLEDGE_EVENT_FIELD,
-  LoadedKnowledgeManifestSchema,
-  MAX_LOADED_KNOWLEDGE_BYTES,
-  MAX_LOADED_KNOWLEDGE_ITEMS,
-  type LoadedKnowledgeItem,
-  type LoadedKnowledgeManifest,
-} from "@agentx/contracts";
+import { LOADED_KNOWLEDGE_EVENT_FIELD, LoadedKnowledgeManifestSchema, MAX_LOADED_KNOWLEDGE_BYTES, MAX_LOADED_KNOWLEDGE_ITEMS, type LoadedKnowledgeItem, type LoadedKnowledgeManifest } from "@rovara-code/contracts";
 import { inertContextText } from "../context-text.js";
 import type { KnowledgeStage } from "./model.js";
 import type { KnowledgeRecord, ResolvedKnowledge } from "./resolve.js";

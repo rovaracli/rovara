@@ -1,14 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import { TransactWriteCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
-import {
-  SPEND_RESUME_INSTRUCTIONS,
-  ContinueDeveloperTaskRequestSchema,
-  DEVELOPER_EVENTS_DEFAULT,
-  type OrgId,
-  agentXError,
-  type DeveloperTaskView,
-  WORKFLOW_BLOCK_REASONS,
-} from "@agentx/contracts";
+import { SPEND_RESUME_INSTRUCTIONS, type DeveloperTaskView, WORKFLOW_BLOCK_REASONS } from "@agentx/cloud-contracts";
+import { ContinueDeveloperTaskRequestSchema, DEVELOPER_EVENTS_DEFAULT, type OrgId, agentXError } from "@rovara-code/contracts";
 import { z } from "zod";
 import { taskSpendBaseline } from "../../org/budget.js";
 import { chargeItems, developerCharge, readWorkspaceLimits } from "../../developer/limits.js";
@@ -39,7 +32,8 @@ import {
 } from "./task-window.js";
 import { retryTaskWorkflow } from "./workflow-retry.js";
 import { resumeAfterRunLimitApproval } from "./workflow-coding.js";
-import { AgentRunStateSchema, AgentXError, PER_TASK_BUDGET_USD, ROVARA_CODE_AGENT_ID, type SpendingAdmissionReference, canonicalJson, projectAiKey, recipeRunner } from "@agentx/contracts";
+import { AgentRunStateSchema, AgentXError, ROVARA_CODE_AGENT_ID, type SpendingAdmissionReference, canonicalJson, recipeRunner } from "@rovara-code/contracts";
+import { PER_TASK_BUDGET_USD, projectAiKey } from "@agentx/cloud-contracts";
 import { readTestEnvPin } from "../../test-env/usable.js";
 import { pinOfStoredPin } from "../../test-env/saved-env-pin.js";
 import { Aliases, type TransactItem, failedIndexes } from "../../agents/table-writes.js";

@@ -5,7 +5,7 @@ import { describe, expect, it } from "vitest";
 import { buildAgentXApp } from "../../infra/lib/app.js";
 import { ControlPlaneStack } from "../../infra/lib/control-plane.js";
 import { environmentNaming } from "../../infra/lib/naming.js";
-import { TASK_PERSON_DEVELOPER_RECORD_PROJECTION } from "../../packages/contracts/src/index.js";
+import { TASK_PERSON_DEVELOPER_RECORD_PROJECTION } from "@agentx/cloud-contracts";
 import { TASK_PERSON_DEVELOPER_RECORD_ATTRIBUTES } from "../../packages/broker/src/aws/task-person-runtime.js";
 import { hydrateBrokerEnvironment, type MutableEnvironment } from "../../packages/broker/src/aws/broker-environment.js";
 import { brokerNamesIn, brokerSettingsIn, takeBrokerNames, takeBrokerSettings } from "../support/broker-names-template.js";

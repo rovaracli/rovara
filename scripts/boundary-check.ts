@@ -62,6 +62,7 @@ export const EXPECTED_PUBLIC_ADAPTERS: readonly string[] = ["dynamodb", "s3", "s
 export const GRANDFATHERED_PUBLISH_CLOSURE: Readonly<Record<string, string>> = {
   "@preplabsai/rovara-code -> @rovara/audit-verifier": "the Cloud CLI's audit export; publish runs only from the public repository (PUBLIC_REPO_GUARD), whose CLI has no such dependency",
   "@preplabsai/rovara-code -> @agentx/design-tokens": "the Cloud broker's server-rendered pages use the design tokens; publish runs only from the public repository (PUBLIC_REPO_GUARD), whose CLI has no such dependency",
+  "@preplabsai/rovara-code -> @agentx/cloud-contracts": "the Cloud CLI's own contracts (W0-3: what its deploy, upgrade and bundle commands read of Cloud's contracts, formerly the one @agentx/contracts); publish runs only from the public repository (PUBLIC_REPO_GUARD), whose CLI imports Rovara Code's contracts alone",
 };
 
 // ---------------------------------------------------------------------------------------------------------------------------------

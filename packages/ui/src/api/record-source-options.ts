@@ -3,7 +3,7 @@
 // `code` (the screen has its own words); the server's text is never shown. Imported only by the lazy editing screen.
 import { useMemo } from "react";
 import { useInfiniteQuery, type InfiniteData } from "@tanstack/react-query";
-import { SourceOptionsViewReaderSchema, type SourcePickerKind } from "@agentx/contracts/web";
+import { SourceOptionsViewReaderSchema, type SourcePickerKind } from "@agentx/cloud-contracts/web";
 import { useAppHost, type AppHost } from "../host.js";
 import { ApiError } from "./errors.js";
 import { lessonsKey } from "./lessons.js";

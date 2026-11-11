@@ -4,14 +4,13 @@
 // with a fake Linear MCP server behind the Linear connector type and a fake Secrets Manager behind the org's connections.
 import { randomUUID } from "node:crypto";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-import type { AuditProof, OrgId, OrgRole } from "../../packages/contracts/src/index.js";
-import {
-  AgentConnectorTypeSchema, ConnectorConfigSchema, ConnectorsSchema, RegistrationPreflightSchema, SlackThreadWorkspaceResultSchema, StoredConnectorsSchema,
-  toolGrantProblems,
-} from "../../packages/contracts/src/index.js";
-import { orgMemberKey, orgProjectCatalogKey, projectMemberKey, projectMetaKey, projectRevisionKey } from "../../packages/contracts/src/index.js";
+import type { AuditProof, OrgRole } from "@agentx/cloud-contracts";
+import type { OrgId } from "@rovara-code/contracts";
+import { AgentConnectorTypeSchema, ConnectorConfigSchema, ConnectorsSchema, RegistrationPreflightSchema, SlackThreadWorkspaceResultSchema, StoredConnectorsSchema, toolGrantProblems } from "@rovara-code/contracts";
+import { orgMemberKey } from "@agentx/cloud-contracts";
+import { orgProjectCatalogKey, projectMemberKey, projectMetaKey, projectRevisionKey } from "@rovara-code/contracts";
 import { AgentStore } from "../../packages/broker/src/agents/store.js";
-import { approvalKey } from "../../packages/contracts/src/index.js";
+import { approvalKey } from "@rovara-code/contracts";
 import { getApproval, getApprovalSubjectHandler, getApproverRule, type ApprovalDependencies, type ApprovalRecord, type ConnectorWidenSubject } from "../../packages/broker/src/agents/approvals.js";
 import { checkEndpointUrl } from "../../packages/broker/src/connections/endpoint-check.js";
 import { OrgConnectionStore } from "../../packages/broker/src/connections/store.js";

@@ -1,5 +1,5 @@
 import {expect,it} from "vitest";
-import {orgMetaKey} from "@agentx/contracts";
+import { orgMetaKey } from "@agentx/cloud-contracts";
 import {bedrockClaudeModelIds} from "@agentx/model-runtime/catalog";
 import {createAdminBroker} from "../support/admin-broker.js";
 import {seedMembership} from "../support/developer-task-broker.js";

@@ -2,7 +2,7 @@
 // only when it equalled the heads the broker pinned). The candidate check of that proposal prepares at THOSE commits, and a Prove is accepted only from a check made at them, so main moving on can never mix a newer
 // checkout into an approval. With no complete record (no marker for this proposal, a task that kept no base, or a repository the base does not cover) the proposal cannot be checked or proved: a re-run is asked for, never a pin read now.
 import { GetCommand } from "@aws-sdk/lib-dynamodb";
-import { PreparePinsSchema, type OrgId, type PreparePins } from "@agentx/contracts";
+import { PreparePinsSchema, type OrgId, type PreparePins } from "@rovara-code/contracts";
 import { readSetupRunProposal } from "../rovara-code/setup-run-proposal.js";
 import { taskKey } from "../developer/task-records.js";
 

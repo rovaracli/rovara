@@ -8,7 +8,7 @@
 // Nothing is logged but fixed words, ids and a digest.
 import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
 import { DynamoDBDocumentClient } from "@aws-sdk/lib-dynamodb";
-import { CompanyImageMirrorJobSchema, companyImageRepositoryName, type CompanyImageMirrorFailure, type CompanyImageMirrorJob } from "@agentx/contracts";
+import { CompanyImageMirrorJobSchema, companyImageRepositoryName, type CompanyImageMirrorFailure, type CompanyImageMirrorJob } from "@agentx/cloud-contracts";
 import { copyApprovedImage, type CopyPorts } from "../test-env/company-image-mirror.js";
 import { claimMirror, deleteMirrorState, finishMirror, readMirrorState, type MirrorTable } from "../test-env/company-image-mirror-state.js";
 import { createRegistryClient, globalRegistryFetch } from "../test-env/company-image-registry-client.js";

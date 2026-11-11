@@ -3,7 +3,8 @@
 // the record runtime, the lesson ports and the rule-text reads only where the record is on.
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
-import { AgentXError, developerOrgKey, errorStatus, orgMemberKey, orgMetaKey, projectMetaKey, projectRevisionKey, type OrgId } from "@agentx/contracts";
+import { AgentXError, errorStatus, projectMetaKey, projectRevisionKey, type OrgId } from "@rovara-code/contracts";
+import { developerOrgKey, orgMemberKey, orgMetaKey } from "@agentx/cloud-contracts";
 import { routeDeveloperRequest, type DeveloperCaller, type DeveloperRouteDependencies } from "../../packages/broker/src/aws/developer-routes.js";
 import { installLessons, lessonsRuntimeFor, recordAndLessonRouteDependencies } from "../../packages/broker/src/aws/broker/lessons-wiring.js";
 import { OrgStore } from "../../packages/broker/src/org/store.js";

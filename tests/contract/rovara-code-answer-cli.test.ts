@@ -9,7 +9,7 @@ import { afterEach, beforeAll, describe, expect, it } from "vitest";
 import { developerTokenKey, saveDeveloperEnvironment } from "../../packages/cli/src/developer/config.js";
 import { executeCli } from "../../packages/cli/src/main.js";
 import { InMemoryTokenStore } from "../../packages/cli/src/token-store.js";
-import { INTENT_NOT_WAITING_MESSAGE, ANSWER_EVERY_QUESTION_MESSAGE } from "../../packages/contracts/src/index.js";
+import { INTENT_NOT_WAITING_MESSAGE, ANSWER_EVERY_QUESTION_MESSAGE } from "@rovara-code/contracts";
 import { CELL, DEV_ISSUER, MAYA, questionsBroker, type QuestionsBroker } from "../support/rovara-code-questions-broker.js";
 import { loadSlackBroker } from "../support/slack-broker.js";
 import type { Developer } from "../support/developer-task-broker.js";

@@ -3,7 +3,7 @@
 // only when it names exactly that member as its target AND was made at exactly the time the grant was written (`insightsGrantedAt`), so a later or earlier grant of the same person never lends its
 // granter to another. Anything the ledger cannot answer (a page fails, the index is behind, the range holds more than the pages read) leaves the member out of the answer: the list then shows the
 // date without a name. Never guessed.
-import { AuditIndexedQuerySchema } from "@agentx/contracts";
+import { AuditIndexedQuerySchema } from "@agentx/cloud-contracts";
 import { readIndexedAudit } from "../audit/indexed-reader.js";
 import type { AuditExportClientDeps } from "../audit/export.js";
 import type { InsightsCaller } from "./scope.js";

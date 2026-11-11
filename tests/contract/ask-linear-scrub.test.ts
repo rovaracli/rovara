@@ -2,7 +2,7 @@
 // words, by the Ask upkeep, through the comment id the Ask recorded. Held here: the waiting item holds ids only; Public (no stored words) leaves nothing to rewrite; a comment that is gone is done; a
 // failure waits and is tried again; it is given up on (loudly) after a bounded number of tries; and another org's items are never touched.
 import { describe, expect, it } from "vitest";
-import { askLinearKeptPk, askLinearScrubKey, askLinearScrubPk, sessionAskKey, type OrgId, type SessionId } from "../../packages/contracts/src/index.js";
+import { askLinearKeptPk, askLinearScrubKey, askLinearScrubPk, sessionAskKey, type OrgId, type SessionId } from "@rovara-code/contracts";
 import { FORMER_MEMBER_MENTION, askPersonTag, eraseAskPerson, writeAsk, type AskWriteInput } from "../../packages/broker/src/agent-sessions/ask-store.js";
 import { LINEAR_SCRUB_ATTEMPTS, settleLinearScrubs, type LinearScrubPort } from "../../packages/broker/src/agent-sessions/ask-linear-scrub.js";
 import { linearAnswerText } from "../../packages/broker/src/agent-sessions/ask.js";

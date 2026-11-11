@@ -14,7 +14,8 @@
 import { withDecideIsolation } from "./confirm-page.js";
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import { AdminCreateUserCommand, AdminGetUserCommand } from "@aws-sdk/client-cognito-identity-provider";
-import { normalizeEmail, type DeveloperSignInMethod } from "@agentx/contracts";
+import { normalizeEmail } from "@rovara-code/contracts";
+import { type DeveloperSignInMethod } from "@agentx/cloud-contracts";
 import { ownerKeyForSubject } from "../aws/lambda.js";
 import type { OrgStore } from "../org/store.js";
 import { mayDecide, type DecideInspection, type DecideKinds } from "./decide-kinds.js";

@@ -1,6 +1,6 @@
 // Design review stage, DR7 slice B: what the round's dispatch needs of the rest of the broker, as one small port. The broker builds it from its own dependencies (`design-review/wiring.ts`); a test builds it from fakes. Everything the
 // round reads from outside the task record comes through here, so the orchestration (round-start.ts) reads no store and calls no host by itself.
-import type { ContextSource, DesignReviewBinding, InvocationModelRoute, ModelSelection, OrgId } from "@agentx/contracts";
+import type { ContextSource, DesignReviewBinding, InvocationModelRoute, ModelSelection, OrgId } from "@rovara-code/contracts";
 import type { StateTable } from "../aws/cancellation.js";
 import type { DeveloperTaskRecord } from "../developer/task-records.js";
 import type { PriceLookup } from "./estimate.js";

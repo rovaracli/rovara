@@ -1,9 +1,9 @@
 // tests/integration/hosted-lazy-workspace.test.ts
 // The Slack processor, its real control-plane client and real tools against the real broker.
-import { slackLimitPk } from "../../packages/contracts/src/org-scoped-keys.js";
+import { slackLimitPk } from "@rovara-code/contracts";
 import { TEST_ORG } from "../support/orgs.js";
 import { beforeAll, describe, expect, it } from "vitest";
-import type { SlackRequestMessage } from "../../packages/contracts/src/index.js";
+import type { SlackRequestMessage } from "@rovara-code/contracts";
 import { ControlPlaneApi } from "../../packages/orchestrator/src/control-plane-api.js";
 import type { OrchestrationApi } from "../../packages/orchestrator/src/orchestration-tools.js";
 import { LIMIT_REFUSAL, unavailableRefusal } from "../../packages/slack-service/src/lazy-worker.js";

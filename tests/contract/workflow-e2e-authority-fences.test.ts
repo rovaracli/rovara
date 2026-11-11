@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { afterEach, describe, expect, it } from "vitest";
-import { canonicalPlanJson } from "@agentx/contracts";
+import { canonicalPlanJson } from "@rovara-code/contracts";
 import { disposeRealCandidates } from "../support/e2e-application-candidate.js";
 import { planDocument } from "../support/plan-documents.js";
 import { sha, startApplicationRound, type ApplicationRound } from "../support/e2e-application-round-harness.js";

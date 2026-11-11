@@ -1,9 +1,9 @@
 // Lessons capture lane: the read the human-edit compare is made through. It mints a `contents: read` token for the one repository, reads one compare path, and refuses every other path.
 import { generateKeyPairSync } from "node:crypto";
 import { describe, expect, it } from "vitest";
-import { hostRateLimitRetryAt } from "@agentx/contracts";
+import { hostRateLimitRetryAt } from "@rovara-code/contracts";
 import { GitHubAppCredentialProvider } from "../../packages/broker/src/github-app.js";
-import { agentXError } from "@agentx/contracts";
+import { agentXError } from "@rovara-code/contracts";
 
 const ORG = "org_aaaaaaaaaaaaaaaaaaaa" as never;
 const A = "a".repeat(40);

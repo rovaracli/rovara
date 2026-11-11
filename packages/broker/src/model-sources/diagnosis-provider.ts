@@ -6,7 +6,7 @@
 //     chat-turn key in the requester's name (model-access.ts); there is no Rovara-paid key and no support team any more, so no path makes Rovara the payer.
 // A person's ChatGPT plan is never used: a diagnosis turn has no person's plan behind it and a route without an alias cannot carry a key.
 // With no such source the answer is "none", and the diagnosis is not offered (`DIAGNOSIS_NO_PROVIDER_MESSAGE`). Nothing here falls back to anything else.
-import { canonicalModelName, type ModelIdentifier, type OrgId } from "@agentx/contracts";
+import { canonicalModelName, type ModelIdentifier, type OrgId } from "@rovara-code/contracts";
 import { catalogModel, listPricesPerMillion } from "@agentx/model-runtime/catalog";
 import { isBatchVariant, isFreeVariant } from "./model-variants.js";
 import { effectiveSources, servableModels, servingRoutes, type ModelRoute, type RoutingDependencies } from "./routing.js";

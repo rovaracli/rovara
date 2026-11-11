@@ -5,7 +5,7 @@
 import { lookup } from "node:dns/promises";
 import { isIP } from "node:net";
 import { isPublicAddress } from "@agentx/gateway";
-import { agentXError, isAllowedDomain } from "@agentx/contracts";
+import { agentXError, isAllowedDomain } from "@rovara-code/contracts";
 
 /** Every address a host name resolves to. It throws when the lookup itself fails. */
 export type ResolveHost = (host: string) => Promise<readonly string[]>;

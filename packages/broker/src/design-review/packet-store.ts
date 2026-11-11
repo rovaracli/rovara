@@ -11,7 +11,7 @@
 import { createHash } from "node:crypto";
 import { gunzipSync, gzipSync } from "node:zlib";
 import { GetCommand, TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
-import { INDEX_EXPIRY_ATTRIBUTE, PACKET_DELIVERY_BYTES_MAX, PacketDeliverySchema, agentXError, type OrgId } from "@agentx/contracts";
+import { INDEX_EXPIRY_ATTRIBUTE, PACKET_DELIVERY_BYTES_MAX, PacketDeliverySchema, agentXError, type OrgId } from "@rovara-code/contracts";
 import { queryAllItems } from "../aws/admin-reads.js";
 import type { StateTable } from "../aws/cancellation.js";
 import { failedIndexes } from "../agents/table-writes.js";

@@ -4,7 +4,7 @@
 //   (A3, the playbook, is pinned in design-review-playbook.test.ts.)
 import { randomUUID } from "node:crypto";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { OrgId } from "@agentx/contracts";
+import type { OrgId } from "@rovara-code/contracts";
 import type * as IntentModule from "../../packages/broker/src/rovara-code/intent.js";
 import { intakePortsOf, type IntakeWiring } from "../../packages/broker/src/intake/wiring.js";
 import { specEndEnvironmentOf } from "../../packages/broker/src/aws/broker/spec-wiring.js";

@@ -1,6 +1,6 @@
 // agentx signin cloud --email-from / --no-email-from (Task 7): sign-in codes from a branded Amazon SES sender.
 // SES is a fake client; nothing here reaches AWS.
-import { environmentStackName, type ReleaseManifest } from "@agentx/contracts";
+import { environmentStackName, type ReleaseManifest } from "@rovara-code/contracts";
 import { describe, expect, it } from "vitest";
 import { CloudSignInAnswersSchema } from "../../packages/cli/src/deploy/answer-schemas.js";
 import { stackParameters } from "../../packages/cli/src/deploy/parameters.js";

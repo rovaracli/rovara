@@ -1,4 +1,4 @@
-import { TaskStatusReaderSchema, decisionTaskSessionOf, taskStatusFromSession } from "@agentx/contracts/web";
+import { TaskStatusReaderSchema, decisionTaskSessionOf, taskStatusFromSession } from "@agentx/cloud-contracts/web";
 import type { ReadDecision } from "../../api/decisions.js";
 import type { ReadHomeCard } from "../../api/home.js";
 import type { ReadFinishedSession } from "../../api/home-finished.js";

@@ -1,8 +1,5 @@
 import { GetCommand, QueryCommand, type DynamoDBDocumentClient } from "@aws-sdk/lib-dynamodb";
-import {
-  ADMIN_LIST_MAX, ADMIN_TURN_FILTER_PAGES, AgentXNameSchema, AiToolTurnRecordSchema, TURN_EXPORT_PAGE, TURN_EXPORT_PARTITION, TurnRecordSchema,
-  agentXError, parseSlackThreadSubject, type ExportedTurnRecord,
-} from "@agentx/contracts";
+import { ADMIN_LIST_MAX, ADMIN_TURN_FILTER_PAGES, AgentXNameSchema, AiToolTurnRecordSchema, TURN_EXPORT_PAGE, TURN_EXPORT_PARTITION, TurnRecordSchema, agentXError, parseSlackThreadSubject, type ExportedTurnRecord } from "@rovara-code/contracts";
 
 export interface TurnRecordStartKey { pk: string; sk: string; exportPk: string; exportSk: string }
 

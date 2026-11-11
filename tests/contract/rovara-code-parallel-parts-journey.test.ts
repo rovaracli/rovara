@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { AGENT_WORKER_OUTDATED, PARALLEL_PARTS_MAX, WORKER_INVOCATION_FEATURES, taskGraphDigest } from "@agentx/contracts";
+import { AGENT_WORKER_OUTDATED, PARALLEL_PARTS_MAX, taskGraphDigest } from "@rovara-code/contracts";
+import { WORKER_INVOCATION_FEATURES } from "@agentx/cloud-contracts";
 import { planAnswer, planDocument } from "../support/plan-documents.js";
 import { createWorkflowE2E, type WorkflowE2E } from "../support/workflow-e2e.js";
 import { workspaceLimitsKey } from "../../packages/broker/src/developer/limits.js";

@@ -2,7 +2,8 @@
 // agent is judged as before.
 import { randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
-import { ROVARA_CODE_AGENT_ID, type AgentId, type OrgRole } from "../../packages/contracts/src/index.js";
+import { ROVARA_CODE_AGENT_ID, type AgentId } from "@rovara-code/contracts";
+import { type OrgRole } from "@agentx/cloud-contracts";
 import { decideApproval } from "../../packages/broker/src/agents/approvals.js";
 import { publishDraft } from "../../packages/broker/src/agents/changes.js";
 import { AgentStore } from "../../packages/broker/src/agents/store.js";
@@ -10,7 +11,7 @@ import { postProjectProcess } from "../../packages/broker/src/playbook/process-l
 import type { ProjectPlaybookDependencies } from "../../packages/broker/src/playbook/routes.js";
 import { MAX, OLA, ORG_A } from "../support/agent-session-world.js";
 import { mergeWorld as baseWorld, type MergeWorld } from "../support/rovara-code-merge-world.js";
-import { agentXError } from "../../packages/contracts/src/index.js";
+import { agentXError } from "@rovara-code/contracts";
 
 const ROLES: Record<string, OrgRole> = { [OLA]: "admin" };
 const callerOf = (w: MergeWorld, who: string) => ({ ...w.caller(who), orgRole: ROLES[who] ?? "member" });

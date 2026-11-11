@@ -6,7 +6,7 @@ import { describe, expect, it } from "vitest";
 import { buildAgentXApp } from "../../infra/lib/app.js";
 import { ControlPlaneStack } from "../../infra/lib/control-plane.js";
 import { McpHost } from "../../infra/lib/mcp-host.js";
-import { editionPolicy, featureEnabled, SYNTH_CONTEXT_KEYS, SYNTH_EXCLUDED_KEYS } from "@agentx/contracts";
+import { editionPolicy, featureEnabled, SYNTH_CONTEXT_KEYS, SYNTH_EXCLUDED_KEYS } from "@agentx/cloud-contracts";
 import { stdioAvailable } from "../../packages/broker/src/context-sources/mcp-servers.js";
 import {
   BROKER_ENVIRONMENT_KEYS, PRIVATE_MCP_CONTEXT_KEYS, STDIO_BROKER_ENVIRONMENT_KEYS, STDIO_MCP_HOST_STACK_BUILT, STDIO_MCP_RELEASED, assertStdioHostStackBuilt, checkedBrokerEnvironment, mcpHostPropsFromInstall, parsePrivateMcpContext, privateMcpBrokerEnvironment,

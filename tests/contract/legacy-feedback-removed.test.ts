@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import * as contracts from "../../packages/contracts/src/index.js";
+import { allContracts as contracts } from "../support/contracts-barrels.js";
 import { noticesOf } from "../../packages/broker/src/developer/notifications.js";
 
 describe("the unreachable single-comment PR feedback path is gone", () => {

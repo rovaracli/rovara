@@ -1,6 +1,6 @@
 // The device and local-agent-rule routes (Plan 5 Task 17): `GET` and `POST /v1/app/devices`, `DELETE /v1/app/devices/{id}`, and `GET` and `PUT /v1/app/org/local-agents`.
 // Task 18 adds the device's command poll (`GET /v1/app/devices/{id}/commands`) here, and ends a removed device's sessions in the removal. Any other path or method under these prefixes is `NOT_FOUND`.
-import { agentXError } from "@agentx/contracts";
+import { agentXError } from "@rovara-code/contracts";
 import type { AdaptedHttpRequest } from "../aws/lambda.js";
 import { StatusReply } from "../aws/status-reply.js";
 import { endSessionsOfDevice, listDeviceCommands } from "./local-sessions.js";

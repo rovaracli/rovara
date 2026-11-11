@@ -6,7 +6,7 @@
 //  3. The host's normaliser verifies the delivery (signature, repository) and maps it to neutral events. It throws on a delivery it cannot verify, and nothing is consumed from one.
 //  4. Every event must name the host it came through (an adapter cannot speak for another host) and parse as a neutral event.
 //  5. Each event is reserved once by (kind, event id) before it is consumed; a repeat is dropped, and an id reused with other content is refused.
-import { agentXError, CodeHostEventSchema, PluginKindSchema, type CodeHostEvent, type HostScope, type PluginKind, type RawDelivery } from "@agentx/contracts";
+import { agentXError, CodeHostEventSchema, PluginKindSchema, type CodeHostEvent, type HostScope, type PluginKind, type RawDelivery } from "@rovara-code/contracts";
 import { NO_HOST_MESSAGE, type CodeHostRouter } from "../registry.js";
 import { codeHostEventHash, type EventReservations } from "./reservations.js";
 

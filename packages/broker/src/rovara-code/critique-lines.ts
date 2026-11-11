@@ -1,5 +1,5 @@
 // Plan 6 Task 8: what a person reads about the plan check, under the plan. Kept apart from the critic's model choice so the message wording can use it without the model routing.
-import { CRITIC_NOT_CHECKED_LINE, CRITIC_STOPPED_AT_LIMIT_LINE, CRITIC_STOPPED_AT_SPENDING_LIMIT_LINE, redactText, type WorkflowCritique } from "@agentx/contracts";
+import { CRITIC_NOT_CHECKED_LINE, CRITIC_STOPPED_AT_LIMIT_LINE, CRITIC_STOPPED_AT_SPENDING_LIMIT_LINE, redactText, type WorkflowCritique } from "@rovara-code/contracts";
 
 export { CRITIC_NOT_CHECKED_LINE, CRITIC_STOPPED_AT_LIMIT_LINE, CRITIC_STOPPED_AT_SPENDING_LIMIT_LINE };
 

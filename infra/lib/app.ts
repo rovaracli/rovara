@@ -11,7 +11,7 @@ import { namingFromContext } from "./naming.js";
 import { applyPermissionsBoundaryParameter } from "./permissions-boundary.js";
 import { AGENTX_PRODUCTION_VPC_CIDR, ProductionFoundationStack } from "./production-foundation.js";
 import { ENTERPRISE_ALLOW_PUBLIC_RANGES_CONTEXT_KEY, ENTERPRISE_EGRESS_CIDRS_CONTEXT_KEY, ENTERPRISE_INTERNET_EGRESS_CONTEXT_KEY, parseEditionContext, parseEnterpriseEgressCidrs, parseInternetEgress } from "./vpc-endpoints.js";
-import { EDITION_CONTEXT_KEY, NEW_INSTALL_CONTEXT_KEY, editionAtSynth } from "@agentx/contracts";
+import { EDITION_CONTEXT_KEY, NEW_INSTALL_CONTEXT_KEY, editionAtSynth } from "@agentx/cloud-contracts";
 import { EditionEnvironment } from "./edition-env.js";
 import { BUNDLE_EMBEDDER_IMAGE_NAME, BUNDLE_IMAGE_NAMES, bundleImageRepository } from "./bundle-images.js";
 import { parseOperatorAccessContext } from "./operator-access.js";

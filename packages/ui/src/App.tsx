@@ -3,7 +3,7 @@ import "./design/design.css";
 import { useEffect, useMemo, useState, type ComponentProps } from "react";
 import { RouterProvider, type RouteObject } from "react-router";
 import { QueryClientProvider, useQuery } from "@tanstack/react-query";
-import { AppNavReaderSchema, type AppNav } from "@agentx/contracts/web";
+import { AppNavReaderSchema, type AppNav } from "@agentx/cloud-contracts/web";
 import { AppHostProvider, useAppHost, type AppHost } from "./host.js";
 import { ThemeProvider } from "./theme.js";
 import { Announcer } from "./design/Announcer.js";

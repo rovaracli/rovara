@@ -4,7 +4,7 @@
 // a CLI or MCP token gets REAUTH_REQUIRED with the page link from it, a browser needs a fresh sign-in on the confirmation page. Without the guard wired
 // the decide route does not exist. `POST /v1/app/approvals/{id}/confirm-link` mints the ticketed link for a person who may decide it; a plain read never mints.
 import { z } from "zod";
-import { AgentXError, ApprovalIdSchema, agentXError } from "@agentx/contracts";
+import { AgentXError, ApprovalIdSchema, agentXError } from "@rovara-code/contracts";
 import type { AdaptedHttpRequest } from "../aws/lambda.js";
 import { orgRoleOf, type AgentCaller } from "./access.js";
 import {

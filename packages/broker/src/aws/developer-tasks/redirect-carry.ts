@@ -5,7 +5,8 @@
 // that restart leaves it at, after the restart; and no decision has been made since the restart except the restart's own send-back (an approval, a send-back or an automatic retry starts a new attempt, for
 // which the instruction was not meant). The text is read from the owner's own steer message, only if it is still theirs and still there, as the restart reads it.
 import { GetCommand } from "@aws-sdk/lib-dynamodb";
-import { REDIRECT_TEXT_MAX_CHARS, orgMemberKey, redactText, type OwnerRedirectInvocation, type RedirectRecord } from "@agentx/contracts";
+import { REDIRECT_TEXT_MAX_CHARS, redactText, type OwnerRedirectInvocation, type RedirectRecord } from "@rovara-code/contracts";
+import { orgMemberKey } from "@agentx/cloud-contracts";
 import { mayRedirectTask } from "../../agent-sessions/redirect.js";
 import { livePersonLabel } from "../../agent-sessions/live-steer.js";
 import { listTaskRedirects } from "../../agent-sessions/redirect-state.js";

@@ -11,26 +11,7 @@ import type { TransactWriteCommandInput } from "@aws-sdk/lib-dynamodb";
 import { PutObjectCommand } from "@aws-sdk/client-s3";
 import { listPricesPerMillion } from "@agentx/model-runtime/catalog";
 import { thinkingLevelRefusal, thinkingLevelSupport } from "@agentx/model-runtime/thinking-levels";
-import {
-  EvalBatchFileSchema,
-  EvalBatchRecordSchema,
-  EvalBatchSummarySchema,
-  EvalRunMeasureSchema,
-  SWEBENCH_TERMINAL_STATUSES,
-  agentXError,
-  slackThreadSubject,
-  summarize,
-  type EvalBatchEntry,
-  type EvalBatchRecord,
-  type EvalBatchWatchChange,
-  type EvalBatchWatchState,
-  type EvalRunMeasure,
-  type ModelIdentifier,
-  type ModelSelection,
-  type SlackRequester,
-  type SlackThread,
-  type SwebenchRun,
-} from "@agentx/contracts";
+import { EvalBatchFileSchema, EvalBatchRecordSchema, EvalBatchSummarySchema, EvalRunMeasureSchema, SWEBENCH_TERMINAL_STATUSES, agentXError, slackThreadSubject, summarize, type EvalBatchEntry, type EvalBatchRecord, type EvalBatchWatchChange, type EvalBatchWatchState, type EvalRunMeasure, type ModelIdentifier, type ModelSelection, type SlackRequester, type SlackThread, type SwebenchRun } from "@rovara-code/contracts";
 import {
   batchSlotLimit,
   getSwebenchChannel,

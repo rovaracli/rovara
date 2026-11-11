@@ -1,9 +1,6 @@
 // Lane 7 (0.5.12, DECISIONS 49): what the replay report says, and what it refuses to say. Pure functions over run rows: no AWS, no model.
 import { describe, expect, it } from "vitest";
-import {
-  GraderMismatchError, LOADED_DIFFERENCE_NEARLY_SAME, REPLAY_REPEATS, blindSheet, buildMeasureReport, importMarks, loadedLessonDifference, readReplayRunRows, renderMeasureReport, wilsonInterval,
-  type ReplayRunRow,
-} from "@agentx/contracts";
+import { GraderMismatchError, LOADED_DIFFERENCE_NEARLY_SAME, REPLAY_REPEATS, blindSheet, buildMeasureReport, importMarks, loadedLessonDifference, readReplayRunRows, renderMeasureReport, wilsonInterval, type ReplayRunRow } from "@rovara-code/contracts";
 
 const GRADER = { model: "grader-model", version: "2026-11-01" };
 let n = 0;

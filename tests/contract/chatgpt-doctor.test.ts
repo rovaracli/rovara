@@ -1,7 +1,7 @@
 // `rovara doctor`'s Sign in with ChatGPT checks (#343): the control plane's GET /v1/admin/chatgpt,
 // the connection index it counts, and the checks doctor prints from it.
 import { describe, expect, it, vi } from "vitest";
-import type { ChatGptHealth } from "../../packages/contracts/src/index.js";
+import type { ChatGptHealth } from "@rovara-code/contracts";
 import { chatGptConnections, type ChatGptSealer } from "../../packages/broker/src/chatgpt/connections.js";
 import { CHATGPT_TOKEN_URL } from "../../packages/broker/src/chatgpt/oauth.js";
 import { chatGptChecks, readChatGptHealth, type ChatGptHealthRead } from "../../packages/cli/src/doctor/chatgpt.js";

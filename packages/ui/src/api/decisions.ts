@@ -1,9 +1,6 @@
 import { useMemo } from "react";
 import { useQuery } from "@tanstack/react-query";
-import {
- DecisionCardsViewReaderSchema, DecisionDetailGroupsSchema, DecisionDigestSchema, DecisionEvidenceOpenedAnswerSchema, DecisionOutcomeReaderSchema, DecisionPlanChoicesSchema, DecisionTabsSchema,
- type DecisionDetailGroup, type DecisionPlanChoices, type DecisionRejectReason, type DecisionTab, type DecisionTabId,
-} from "@agentx/contracts/web";
+import { DecisionCardsViewReaderSchema, DecisionDetailGroupsSchema, DecisionDigestSchema, DecisionEvidenceOpenedAnswerSchema, DecisionOutcomeReaderSchema, DecisionPlanChoicesSchema, DecisionTabsSchema, type DecisionDetailGroup, type DecisionPlanChoices, type DecisionRejectReason, type DecisionTab, type DecisionTabId } from "@agentx/cloud-contracts/web";
 import { useAppHost, type AppHost } from "../host.js";
 import { createApiClient } from "./client.js";
 import { ApiError } from "./errors.js";

@@ -3,13 +3,11 @@
 // monthly total (R65) under one cap, held to the effective total (base plus this month's top-ups, as Plan 3's round 1 ruled).
 import { randomUUID } from "node:crypto";
 import { beforeAll, describe, expect, it } from "vitest";
-import {
-  DEFAULT_PERSON_CHAIN_RUN_LIMIT_USD, ownerBudgetKey, scopeKey, spendCounterKey, topUpKey, chainKey, agentGuardrailsKey, ledgerKey,
-  type BudgetScope, type Payer, type SpendRequestRecord,
-} from "@agentx/contracts";
-import { PayerSchema } from "../../packages/contracts/src/agent-run-node.js";
+import { DEFAULT_PERSON_CHAIN_RUN_LIMIT_USD, chainKey, agentGuardrailsKey, type Payer } from "@rovara-code/contracts";
+import { ownerBudgetKey, scopeKey, spendCounterKey, topUpKey, ledgerKey, type BudgetScope, type SpendRequestRecord } from "@agentx/cloud-contracts";
+import { PayerSchema } from "@rovara-code/contracts";
 import { ModelAccessRequestSchema } from "../../packages/broker/src/model-proxy/protocol.js";
-import { DEFAULT_AGENT_GUARDRAILS } from "../../packages/contracts/src/agent-guardrails.js";
+import { DEFAULT_AGENT_GUARDRAILS } from "@rovara-code/contracts";
 import { taskKey } from "../../packages/broker/src/developer/task-records.js";
 import { SCOPE_ERRORS, admitWork, mintOperationKey, type MintOperationKeyInput } from "../../packages/broker/src/spend/admission.js";
 import { agentUsageCounter, budgetScopesFor, keyMember, mintTagsFor, payerIdOf, resolvePayer, type ResolvePayerInput } from "../../packages/broker/src/spend/payer.js";

@@ -2,7 +2,7 @@
 // sends and reads, with the contract's schemas. Every write is sent once from the browser session (`retry: "never"`); a proposal answers 202 `needs_approval`, which is an answer of its own, read with `sendAnswer`.
 import { useMemo } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { COMPANY_RULES_CURRENT_PATH, COMPANY_RULES_PATH, CompanyRulesAnswerReaderSchema, CompanyRulesCurrentReaderSchema, CompanyRulesBodySchema, CompanyRulesHistoryReaderSchema, CompanyRulesStateReaderSchema, CompanyRulesSyncReaderSchema, CompanyRulesVersionReaderSchema, type CompanyRulesBody, type CompanyRuleView } from "@agentx/contracts/web";
+import { COMPANY_RULES_CURRENT_PATH, COMPANY_RULES_PATH, CompanyRulesAnswerReaderSchema, CompanyRulesCurrentReaderSchema, CompanyRulesBodySchema, CompanyRulesHistoryReaderSchema, CompanyRulesStateReaderSchema, CompanyRulesSyncReaderSchema, CompanyRulesVersionReaderSchema, type CompanyRulesBody, type CompanyRuleView } from "@agentx/cloud-contracts/web";
 import { useAppHost, type AppHost } from "../host.js";
 import { createApiClient } from "./client.js";
 

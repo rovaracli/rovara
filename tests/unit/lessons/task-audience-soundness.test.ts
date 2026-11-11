@@ -9,7 +9,7 @@
 // and the same three, end to end through the live reader (one reader shared by every viewer of a setup) against the real State-table port. A task whose People list cannot be read is unknown, and every lesson that
 // names it is withheld in all three modes.
 import { describe, expect, it } from "vitest";
-import { projectRevisionKey } from "@agentx/contracts";
+import { projectRevisionKey } from "@rovara-code/contracts";
 import { sessionLevelOf } from "../../../packages/broker/src/agent-sessions/access.js";
 import { createProjectMembers, listProjectMembers } from "../../../packages/broker/src/org/project-members.js";
 import { createLessonLiveReader } from "../../../packages/broker/src/lessons/live-visibility.js";

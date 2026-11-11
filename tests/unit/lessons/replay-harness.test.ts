@@ -1,6 +1,6 @@
 // Lane 7: the replay harness with fakes. No AWS, no model: the executor, the grader and the pipelines' snapshot builders are ports.
 import { describe, expect, it } from "vitest";
-import { GraderMismatchError, REPLAY_REPEATS, buildMeasureReport, type ReplayRunRow } from "@agentx/contracts";
+import { GraderMismatchError, REPLAY_REPEATS, buildMeasureReport, type ReplayRunRow } from "@rovara-code/contracts";
 import {
   ArmNotBuiltError, EvalMarkError, GraderModelChangedError, ReplayLearningCallError, ReplayLimitError, ReplayRunFailed, buildReplayPlan, copyWorstCaseUsd, buildSnapshots, dayOf, runReplay,
   type ExecutedRun, type GradeRequest, type ReplayExecutor, type ReplayGraderPort, type RunSink, type SnapshotBuilder,

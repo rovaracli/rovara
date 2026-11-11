@@ -4,7 +4,7 @@
 // person prints the confirmation page's link. Nothing here decides an approval (R66): `approvals open` only fetches the page's link.
 import { randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
-import { AgentXErrorCodeSchema, CLI_PACKAGE_NAME, TaskStatusSchema, agentXError, taskStatusText } from "@agentx/contracts";
+import { AgentXErrorCodeSchema, CLI_PACKAGE_NAME, TaskStatusSchema, agentXError, taskStatusText } from "@rovara-code/contracts";
 import { ReportedFailure, exitCodeForError } from "../output.js";
 import { jsonSafe, terminalSafe } from "./audit.js";
 import { resolveOrgMember } from "./org.js";

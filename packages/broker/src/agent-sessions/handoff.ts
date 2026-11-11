@@ -18,54 +18,9 @@ import { resolveStoredName } from "../developer/name-resolver.js";
 import { createHash } from "node:crypto";
 import { PutCommand, QueryCommand, TransactWriteCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
 import { z } from "zod";
-import {
-  HANDOFF_ALREADY_CLOUD_MESSAGE,
-  HANDOFF_ALREADY_MAC_MESSAGE,
-  HANDOFF_AGENT_RUN_MESSAGE,
-  HANDOFF_BAD_ANSWER_MESSAGE,
-  HANDOFF_BUDGET_NOT_CHECKED_MESSAGE,
-  HANDOFF_BUDGET_UNAVAILABLE_MESSAGE,
-  HANDOFF_BUSY_MESSAGE,
-  HANDOFF_CHAIN_MESSAGE,
-  HANDOFF_MOVING_MESSAGE,
-  HANDOFF_NOT_READY_MESSAGE,
-  HANDOFF_NO_PROJECT_MESSAGE,
-  HANDOFF_SUMMARY_MAX_BYTES,
-  HANDOFF_TOO_MANY_LEGS_MESSAGE,
-  HandoffBodySchema,
-  HandoffShaSchema,
-  HandoffToMacAnswerSchema,
-  INDEX_EXPIRY_ATTRIBUTE,
-  LOCAL_OPEN_MAX_MESSAGE,
-  LOCAL_OPEN_PER_DEVICE_MAX,
-  SESSION_ENDED_MESSAGE,
-  SESSION_LEGS_MAX,
-  SESSION_RETENTION_DAYS,
-  sessionTaskStatus, taskStatusText,
-  agentSessionKey,
-  agentXError,
-  canonicalJson,
-  deviceSessionKey,
-  handoffOwnerOnlyMessage,
-  handoffRepositoryMessage,
-  handoffRoleLostMessage,
-  handoffStartWorkMessage,
-  liveSessionKey,
-  projectAllows,
-  projectArchivedMessage,
-  redactText,
-  sessionEventId,
-  GitBranchNameSchema,
-  type AgentSessionRecord,
-  type HandoffBody,
-  type HandoffToCloudBody,
-  type HandoffToMacAnswer,
-  type HandoffToMacBody,
-  type LocalTool,
-  type OrgId,
-  type RunInput,
-  type SessionView,
-} from "@agentx/contracts";
+import { HANDOFF_ALREADY_CLOUD_MESSAGE, HANDOFF_ALREADY_MAC_MESSAGE, HANDOFF_AGENT_RUN_MESSAGE, HANDOFF_BAD_ANSWER_MESSAGE, HANDOFF_BUDGET_NOT_CHECKED_MESSAGE, HANDOFF_BUDGET_UNAVAILABLE_MESSAGE, HANDOFF_BUSY_MESSAGE, HANDOFF_CHAIN_MESSAGE, HANDOFF_MOVING_MESSAGE, HANDOFF_NOT_READY_MESSAGE, HANDOFF_NO_PROJECT_MESSAGE, HANDOFF_TOO_MANY_LEGS_MESSAGE, HandoffBodySchema, HandoffShaSchema, HandoffToMacAnswerSchema, LOCAL_OPEN_MAX_MESSAGE, LOCAL_OPEN_PER_DEVICE_MAX, deviceSessionKey, handoffOwnerOnlyMessage, handoffRepositoryMessage, handoffRoleLostMessage, handoffStartWorkMessage, type HandoffBody, type HandoffToCloudBody, type HandoffToMacAnswer, type HandoffToMacBody } from "@agentx/cloud-contracts";
+import { HANDOFF_SUMMARY_MAX_BYTES, INDEX_EXPIRY_ATTRIBUTE, SESSION_ENDED_MESSAGE, SESSION_LEGS_MAX, SESSION_RETENTION_DAYS, sessionTaskStatus, taskStatusText, agentSessionKey, agentXError, canonicalJson, liveSessionKey, projectAllows, projectArchivedMessage, redactText, sessionEventId, GitBranchNameSchema, type AgentSessionRecord, type LocalTool, type OrgId, type RunInput } from "@rovara-code/contracts";
+import { type SessionView } from "@agentx/cloud-contracts";
 import { projectRepository } from "../agents/comment-trigger-optouts.js";
 import { isRovaraCodeTask } from "../agents/rovara-code-task.js";
 import { errorName, failedIndexes, isTransactionConflict, NOT_EXISTS, type Item, type TransactItem } from "../agents/table-writes.js";

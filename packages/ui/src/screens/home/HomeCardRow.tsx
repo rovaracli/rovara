@@ -1,5 +1,5 @@
 import { Link } from "react-router";
-import { SessionIdSchema } from "@agentx/contracts/web";
+import { SessionIdSchema } from "@agentx/cloud-contracts/web";
 import { paths } from "../../paths.js";
 import type { HomeAction, ReadHomeCard } from "../../api/home.js";
 import { Button } from "../../design/Button.js";

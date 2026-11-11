@@ -2,9 +2,8 @@
 // cancels only the hand-offs). The grants go by the exact `grantId` S0 recorded, so a grant given after a rejoin (a new id) survives; the leftover email pointers go
 // only while they are older than the removal; the monthly limit override goes only while it is still the value S0 saw. Every step is conditional and repeatable.
 import { DeleteCommand, GetCommand, TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
-import {
-  budgetSyncedKey, memberGrantsPk, MEMBER_GRANT_SK_PREFIX, orgSettingsKey, type OrgId, type RemovedGrant,
-} from "@agentx/contracts";
+import { budgetSyncedKey, orgSettingsKey, type RemovedGrant } from "@agentx/cloud-contracts";
+import { memberGrantsPk, MEMBER_GRANT_SK_PREFIX, type OrgId } from "@rovara-code/contracts";
 import { auditOccurrence } from "../../audit/events.js";
 import { flushAuditEvents } from "../../audit/flush.js";
 import { auditTransact, tryAuditEvents, type AuditDeps, type AuditRuntime } from "../../audit/outbox.js";

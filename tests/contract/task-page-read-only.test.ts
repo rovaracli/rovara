@@ -4,7 +4,7 @@
 // is the People request's confirmation page that Slack's People flow links to.
 import vm from "node:vm";
 import { describe, expect, it } from "vitest";
-import type { PlanDocument } from "@agentx/contracts";
+import type { PlanDocument } from "@rovara-code/contracts";
 import { createTaskWeb, type TaskDocumentEntry, type TaskDocumentView } from "../../packages/broker/src/aws/task-web.js";
 import { TASK_PAGE_DECIDING_COPY, TASK_PAGE_DECIDING_SCRIPT } from "../../packages/broker/src/aws/task-page-assets.js";
 import { renderTaskPeopleConfirmation, renderTaskPeoplePanel } from "../../packages/broker/src/aws/task-people-page-view.js";

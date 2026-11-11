@@ -2,7 +2,7 @@
 // lesson (possible duplicate, refinement, too many people); (R5-2) a merge into a PENDING lesson clears the approvals given before its evidence, authors and audience changed; (R5-3) the person's merge is audited
 // BEFORE it commits (no audit, no merge) and the retired duplicate has its own `lesson.retired` record.
 import { beforeEach, describe, expect, it } from "vitest";
-import { AgentXError, type OrgId } from "@agentx/contracts";
+import { AgentXError, type OrgId } from "@rovara-code/contracts";
 import { curateDraft, type CurateDeps } from "../../../packages/broker/src/lessons/curate.js";
 import { routeLessons, type LessonRouteDependencies } from "../../../packages/broker/src/lessons/routes.js";
 import { InMemoryLessonStore } from "../../../packages/broker/src/lessons/store.js";

@@ -1,6 +1,6 @@
 // Adapted from the Elephant-Goldfish Model (github.com/google/elephant-goldfish-model, commit 464db031e), `agents/*.md` (the shared "Core Mandates" and output rules), Copyright 2026 Google LLC, Apache License 2.0.
 // Modified by Rovara (PrepLabsAI): the interactive gates are removed (the review is asynchronous), findings are one strict JSON block with required citations and at most 15 entries, and all material is treated as untrusted data. See NOTICE.
-import { PACKET_FRAME_TAGS } from "@agentx/contracts";
+import { PACKET_FRAME_TAGS } from "@rovara-code/contracts";
 
 /** A review prompt. The digest is computed in code (`promptDigest`), never typed here: a change to the text without a new version is caught by the digest test. */
 export interface ReviewPrompt {

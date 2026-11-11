@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import ts from "typescript";
 import { afterEach, describe, expect, it } from "vitest";
-import type { ProjectCommand } from "../../packages/contracts/src/index.js";
+import type { ProjectCommand } from "@rovara-code/contracts";
 import {
   NO_RUNNER_CONFIGURED, SANDBOX_TARGET, executionFor, formatExecutionTarget, parseExecutionTarget, proveCommandPort,
 } from "../../packages/worker/src/execution-target.js";

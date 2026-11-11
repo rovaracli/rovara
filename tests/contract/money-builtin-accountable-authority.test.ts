@@ -2,7 +2,8 @@
 import { randomUUID } from "node:crypto";
 import { DeleteCommand, TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
 import { expect, it } from "vitest";
-import { agentKey, builtinSettingsKey, agentRequestKey, ownerBudgetKey, developerOrgKey, orgMemberKey, orgMetaKey, OrgIdSchema } from "@agentx/contracts";
+import { agentKey, builtinSettingsKey, agentRequestKey, OrgIdSchema } from "@rovara-code/contracts";
+import { ownerBudgetKey, developerOrgKey, orgMemberKey, orgMetaKey } from "@agentx/cloud-contracts";
 import { markRequest } from "../../packages/broker/src/agents/routes.js";
 import { requestOwnerCap } from "../../packages/broker/src/spend/requests.js";
 import { capturingAuditDeps } from "../support/audit-capture.js";

@@ -1,10 +1,10 @@
 // Plan 3 Task 12b: what the routes need of the connection store beyond 12a - the request item (R18) written with the change,
 // writes conditional on what they read, the endpoint check at save, and clearing an org's connections when it closes.
 import { describe, expect, it, vi } from "vitest";
-import { agentRequestKey } from "../../packages/contracts/src/org-scoped-keys.js";
-import { connectionKey } from "../../packages/contracts/src/connections.js";
-import type { OrgConnection } from "../../packages/contracts/src/connections.js";
-import type { OrgId } from "../../packages/contracts/src/org-node.js";
+import { agentRequestKey } from "@rovara-code/contracts";
+import { connectionKey } from "@rovara-code/contracts";
+import type { OrgConnection } from "@rovara-code/contracts";
+import type { OrgId } from "@rovara-code/contracts";
 import { checkEndpointUrl } from "../../packages/broker/src/connections/endpoint-check.js";
 import { mcpEndpointGuard } from "../../packages/broker/src/connections/pinned-endpoint.js";
 import { BEING_REMOVED_MESSAGE, OrgSecrets, orgConnectorSecretName, orgHookSecretName } from "../../packages/broker/src/connections/org-secrets.js";

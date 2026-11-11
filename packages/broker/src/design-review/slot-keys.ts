@@ -11,7 +11,7 @@
 // A slot's money is a fixed ceiling, allocated for the whole round in ONE conditional write at dispatch (`allocateSlotBudgets`); a slot's key can never be given more than its ceiling.
 import { GetCommand, PutCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
 import { createHash } from "node:crypto";
-import { INDEX_EXPIRY_ATTRIBUTE, agentXError, type DesignReviewBinding, type ModelSelection, type OrgId } from "@agentx/contracts";
+import { INDEX_EXPIRY_ATTRIBUTE, agentXError, type DesignReviewBinding, type ModelSelection, type OrgId } from "@rovara-code/contracts";
 import { queryAllItems } from "../aws/admin-reads.js";
 import type { OperationRecord, StateTable } from "../aws/cancellation.js";
 import { designReviewKeyBudgets } from "./estimate.js";

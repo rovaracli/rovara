@@ -1,14 +1,14 @@
-import { slackLimitPk } from "../../packages/contracts/src/org-scoped-keys.js";
+import { slackLimitPk } from "@rovara-code/contracts";
 import { randomUUID } from "node:crypto";
 import { beforeAll, describe, expect, it } from "vitest";
-import { ConnectorCatalogSchema } from "../../packages/contracts/src/connectors-node.js";
-import { SlackThreadPrepareResultSchema, SlackThreadWorkspaceResultSchema } from "../../packages/contracts/src/slack.js";
+import { ConnectorCatalogSchema } from "@rovara-code/contracts";
+import { SlackThreadPrepareResultSchema, SlackThreadWorkspaceResultSchema } from "@rovara-code/contracts";
 import {
   GITHUB_LIST_ISSUES, SLACK_CHANNEL, SLACK_TEAM, createBroker, ensureWorkspace, fakeGitHubMcp, finishOperation, lazyEnsureWorkspace,
   account, call, loadSlackBroker, markReady, orchestratorPrincipal, prepareThread, registerSlackProject, serviceCall,
 } from "../support/slack-broker.js";
 import { TEST_ORG } from "../support/orgs.js";
-import { projectRevisionKey } from "../../packages/contracts/src/org-scoped-keys.js";
+import { projectRevisionKey } from "@rovara-code/contracts";
 
 const threadOne = `${SLACK_TEAM}/${SLACK_CHANNEL}/1695500000.000001`;
 const threadTwo = `${SLACK_TEAM}/${SLACK_CHANNEL}/1695500000.000002`;

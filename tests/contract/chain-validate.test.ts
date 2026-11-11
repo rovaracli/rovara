@@ -10,15 +10,16 @@ import {
   formatChainProblem,
   validateChainForPublish,
 } from "../../packages/broker/src/chains/validate.js";
-import { DEFAULT_AGENT_GUARDRAILS } from "../../packages/contracts/src/agent-guardrails.js";
-import { BUILTIN_AGENTS, builtinDefaultPin, builtinRecipe, currentBuiltinVersion } from "../../packages/contracts/src/agent-templates.js";
-import type { AgentId } from "../../packages/contracts/src/agent.js";
-import type { RecipeOverlay } from "../../packages/contracts/src/agent-recipe-node.js";
-import { PinnedChainDefinitionSchema, type ApproverRule, type ChainDefinition, type ChainDefinitionInput, type PinnedChainDefinition } from "../../packages/contracts/src/chains.js";
-import { ChainDefinitionSchema } from "../../packages/contracts/src/chains.js";
-import type { OrgId, OrgRole } from "../../packages/contracts/src/org.js";
-import { orgMemberKey } from "../../packages/contracts/src/org-node.js";
-import { builtinSettingsKey } from "../../packages/contracts/src/org-scoped-keys.js";
+import { DEFAULT_AGENT_GUARDRAILS } from "@rovara-code/contracts";
+import { BUILTIN_AGENTS, builtinDefaultPin, builtinRecipe, currentBuiltinVersion } from "@rovara-code/contracts";
+import type { AgentId } from "@rovara-code/contracts";
+import type { RecipeOverlay } from "@rovara-code/contracts";
+import { PinnedChainDefinitionSchema, type ApproverRule, type ChainDefinition, type ChainDefinitionInput, type PinnedChainDefinition } from "@rovara-code/contracts";
+import { ChainDefinitionSchema } from "@rovara-code/contracts";
+import type { OrgId } from "@rovara-code/contracts";
+import type { OrgRole } from "../../packages/cloud-contracts/src/org.js";
+import { orgMemberKey } from "../../packages/cloud-contracts/src/org-node.js";
+import { builtinSettingsKey } from "@rovara-code/contracts";
 import { FakeDynamoDb } from "../support/fake-dynamodb.js";
 import { FakeProjectMembers } from "../support/fake-project-members.js";
 import { INVESTIGATE_THEN_FIX } from "../support/chain-examples.js";

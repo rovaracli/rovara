@@ -7,10 +7,7 @@
 // mistake is refused here as well as by IAM.
 import { CreateSecretCommand, DeleteSecretCommand, DescribeSecretCommand, PutSecretValueCommand, UpdateSecretVersionStageCommand } from "@aws-sdk/client-secrets-manager";
 import { AssumeRoleCommand, type AssumeRoleCommandOutput } from "@aws-sdk/client-sts";
-import {
-  OrgIdSchema, TEST_ACCOUNT_GRANT_SECONDS, TEST_ACCOUNT_SECRET_PENDING_STAGE, TEST_ACCOUNT_SECRET_TAG_KEYS, TEST_ACCOUNT_SECRET_USE, TEST_ACCOUNT_SECRET_VERSION_STAGE, TestAccountIdSchema, agentXError, testAccountSecretName, testAccountSecretTags,
-  type OrgId,
-} from "@agentx/contracts";
+import { OrgIdSchema, TEST_ACCOUNT_GRANT_SECONDS, TEST_ACCOUNT_SECRET_PENDING_STAGE, TEST_ACCOUNT_SECRET_TAG_KEYS, TEST_ACCOUNT_SECRET_USE, TEST_ACCOUNT_SECRET_VERSION_STAGE, TestAccountIdSchema, agentXError, testAccountSecretName, testAccountSecretTags, type OrgId } from "@rovara-code/contracts";
 
 const SESSION_SECONDS = 900;
 const REFRESH_MARGIN_MS = 60_000;

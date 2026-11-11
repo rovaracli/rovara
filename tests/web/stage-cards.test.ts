@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
-import { STAGE_EDIT_GROUPS, STAGE_EDIT_RULES, STAGE_IDS, STAGE_REFERENCE, STAGE_MODEL_THINKING_LEVELS, ModelSelectionPolicyPutSchema, StepThinkingLevelSchema, type StageId } from "@agentx/contracts/web";
+import { STAGE_EDIT_GROUPS, STAGE_EDIT_RULES, STAGE_IDS, STAGE_REFERENCE, STAGE_MODEL_THINKING_LEVELS, ModelSelectionPolicyPutSchema, StepThinkingLevelSchema, type StageId } from "@agentx/cloud-contracts/web";
 import { COMPANY_ROWS, cardStages, cardTitle, editBaseStage, referenceKind } from "../../packages/ui/src/api/stage-cards.js";
 import { EFFORT_LABELS, EFFORT_OPTIONS, effortLabel } from "../../packages/ui/src/screens/project/stage-model-text.js";
 

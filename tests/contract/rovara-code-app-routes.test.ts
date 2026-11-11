@@ -10,7 +10,7 @@ import { routeSpendRequests } from "../../packages/broker/src/spend/requests.js"
 import { createDeveloperPublicationJoinTransport } from "../../packages/cli/src/loop/enrollment-cli.js";
 import { developerTokenKey, saveDeveloperEnvironment } from "../../packages/cli/src/developer/config.js";
 import { InMemoryTokenStore } from "../../packages/cli/src/token-store.js";
-import { createWorkflowSnapshot } from "../../packages/contracts/src/task-workflow-node.js";
+import { createWorkflowSnapshot } from "../../packages/cloud-contracts/src/task-workflow-node.js";
 import { sessionResponseForClient } from "../../packages/broker/src/rovara-code/task-view-compat.js";
 import { CELL, ORG_A, PRIYA, sessionWorld } from "../support/agent-session-world.js";
 

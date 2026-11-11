@@ -8,7 +8,8 @@
 //
 // The only difference between callers is how the sign-in table is read. The broker reads it itself (links included). The dispatcher may read only a developer's own row, projected, so it
 // gives a reader that answers `DEVELOPER#<id>` rows from that port and finds no link row: a person who is linked to a member with no merge is, there, not a member (fail closed).
-import { type OrgId, type OrgRole, type WriterOrgRole } from "@agentx/contracts";
+import { type OrgRole, type WriterOrgRole } from "@agentx/cloud-contracts";
+import { type OrgId } from "@rovara-code/contracts";
 import { personWalk, survivorStanding } from "./live-role.js";
 
 export type SignInReader = (key: { pk: string; sk: string }) => Promise<Record<string, unknown> | undefined>;

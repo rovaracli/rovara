@@ -55,9 +55,10 @@ class Repo {
     git(this.dir, "init", "-q", "-b", "main");
     cpSync(BOUNDARY_FILE, join(this.dir, BOUNDARY_FILE), { recursive: true });
     this.json("package.json", { name: "root", private: true, workspaces: ["packages/*"] });
-    this.json("packages/cli/package.json", { name: "@agentx/cli", private: true, dependencies: { "@agentx/contracts": "0.1.0", "@rovara/audit-verifier": "0.1.0", "@agentx/design-tokens": "0.1.0" } });
+    this.json("packages/cli/package.json", { name: "@agentx/cli", private: true, dependencies: { "@agentx/contracts": "0.1.0", "@agentx/cloud-contracts": "0.1.0", "@rovara/audit-verifier": "0.1.0", "@agentx/design-tokens": "0.1.0" } });
     this.json("packages/design-tokens/package.json", { name: "@agentx/design-tokens", private: true });
     this.json("packages/contracts/package.json", { name: "@agentx/contracts", private: true });
+    this.json("packages/cloud-contracts/package.json", { name: "@agentx/cloud-contracts", private: true });
     this.json("packages/audit-verifier/package.json", { name: "@rovara/audit-verifier", private: true });
     this.json("packages/ui/package.json", { name: "@agentx/ui", private: true });
     this.json("packages/model-proxy/package.json", { name: "@agentx/model-proxy", private: true });
@@ -112,7 +113,7 @@ describe("this repository", () => {
   });
 
   it("names every Cloud-only workspace package as private and publishes only the packed CLI", () => {
-    expect(Object.keys(GRANDFATHERED_PUBLISH_CLOSURE)).toEqual(["@preplabsai/rovara-code -> @rovara/audit-verifier", "@preplabsai/rovara-code -> @agentx/design-tokens"]);
+    expect(Object.keys(GRANDFATHERED_PUBLISH_CLOSURE)).toEqual(["@preplabsai/rovara-code -> @rovara/audit-verifier", "@preplabsai/rovara-code -> @agentx/design-tokens", "@preplabsai/rovara-code -> @agentx/cloud-contracts"]);
     for (const file of ["packages/ui/package.json", "packages/web/package.json", "packages/audit-verifier/package.json"]) {
       expect((JSON.parse(readFileSync(file, "utf8")) as { private?: boolean }).private, file).toBe(true);
     }
@@ -468,7 +469,7 @@ describe("published-packages: nothing Cloud-only is published", () => {
   describe("what the published CLI really bundles (its imports, not only its package.json)", () => {
     it("reads imports: an undeclared import of a Cloud-only package, a relative path into one, and an import through another package", () => {
       const repo = new Repo();
-      repo.json("packages/cli/package.json", { name: "@agentx/cli", private: true, dependencies: { "@agentx/contracts": "0.1.0", "@rovara/audit-verifier": "0.1.0", "@agentx/design-tokens": "0.1.0" } });
+      repo.json("packages/cli/package.json", { name: "@agentx/cli", private: true, dependencies: { "@agentx/contracts": "0.1.0", "@agentx/cloud-contracts": "0.1.0", "@rovara/audit-verifier": "0.1.0", "@agentx/design-tokens": "0.1.0" } });
       repo.write("packages/cli/src/a.ts", 'import { m } from "@agentx/model-proxy";\nexport const a = m;\n');
       let text = messages(checkPublishedPackages(repo.dir)).join("\n");
       expect(text).toContain("@preplabsai/rovara-code -> @agentx/model-proxy");

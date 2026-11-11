@@ -1,9 +1,9 @@
 // Spec 025 A9: usage per project, requester, origin or day, from worker usage items and Slack turn records.
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { EMPTY_TURN_OBSERVATION } from "../../packages/contracts/src/index.js";
+import { EMPTY_TURN_OBSERVATION } from "@rovara-code/contracts";
 import { createAdminReadBroker } from "../support/admin-read-broker.js";
 import { TEST_ORG } from "../support/orgs.js";
-import { orgUsageIndexKey } from "../../packages/contracts/src/org-scoped-keys.js";
+import { orgUsageIndexKey } from "@rovara-code/contracts";
 
 const WORKSPACE = "22222222-2222-4222-8222-222222222222";
 const usage = (at: string, n: number, extra: Record<string, unknown> = {}) => {

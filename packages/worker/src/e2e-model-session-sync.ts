@@ -1,11 +1,5 @@
 import { randomBytes } from "node:crypto";
-import {
-  E2E_MODEL_SESSION_SYNC_CALL_REFUSALS,
-  E2E_MODEL_SESSION_SYNC_MAX_TOTAL_BYTES,
-  E2E_MODEL_SESSION_SYNC_MAX_TOTAL_VALUES,
-  E2EModelSessionSyncSchema,
-  type E2EModelSessionSyncRefusalCode,
-} from "@agentx/contracts";
+import { E2E_MODEL_SESSION_SYNC_CALL_REFUSALS, E2E_MODEL_SESSION_SYNC_MAX_TOTAL_BYTES, E2E_MODEL_SESSION_SYNC_MAX_TOTAL_VALUES, E2EModelSessionSyncSchema, type E2EModelSessionSyncRefusalCode } from "@rovara-code/contracts";
 import { e2eSecretSpellingsDetailed } from "./e2e-secret-spellings.js";
 
 /**

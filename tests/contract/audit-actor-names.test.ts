@@ -1,6 +1,6 @@
 // QA6-09: the Audit page's member names. Display names only (never an email), only for this org's people, "A former member" for an erased person, and a failure leaves a person unnamed.
 import { describe, expect, it } from "vitest";
-import { orgMemberKey } from "@agentx/contracts";
+import { orgMemberKey } from "@agentx/cloud-contracts";
 import { FORMER_MEMBER, auditActorNamesFor, cutName, auditActorNamesOf } from "../../packages/broker/src/audit/actor-names.js";
 import type { AttributionReader } from "../../packages/broker/src/attribution/resolve.js";
 import { FakeDynamoDb } from "../support/fake-dynamodb.js";

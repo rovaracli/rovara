@@ -1,7 +1,8 @@
 // Text hygiene for every record row (design 4.4.1, step 3): hidden and control characters removed, secrets redacted, personal details scrubbed, fenced code
 // replaced by a marker (code is referenced by link, not copied; a human edit keeps its hunks), then cut to 8 KB by bytes. Applied before anything is stored and
 // before any model sees the text. The taps clean too; the pipeline cleans again, because it is the last step before storage.
-import { RECORD_TEXT_MAX_BYTES, redactText, replaceEmailAddresses } from "@agentx/contracts";
+import { RECORD_TEXT_MAX_BYTES } from "@agentx/cloud-contracts";
+import { redactText, replaceEmailAddresses } from "@rovara-code/contracts";
 
 // Control, format (zero-width, bidi, tag characters) and private-use characters. Line breaks and tabs survive as plain whitespace.
 const HIDDEN = /[\p{Cc}\p{Cf}\p{Co}\p{Cn}\u2028\u2029]/gu;

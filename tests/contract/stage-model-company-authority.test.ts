@@ -1,6 +1,7 @@
 import {expect,it} from "vitest";
 import {TransactWriteCommand} from "@aws-sdk/lib-dynamodb";
-import {developerOrgKey,orgMemberKey,orgMetaKey,type OrgId} from "../../packages/contracts/src/index.js";
+import { developerOrgKey, orgMemberKey, orgMetaKey } from "@agentx/cloud-contracts";
+import { type OrgId } from "@rovara-code/contracts";
 import {requireCompanyModelPolicyAuthority} from "../../packages/broker/src/model-selection/company-read.js";
 import {mergeWorld} from "../support/rovara-code-merge-world.js";
 const orgId="org_aaaaaaaaaaaaaaaaaaaa" as OrgId,developerId="a".repeat(64);

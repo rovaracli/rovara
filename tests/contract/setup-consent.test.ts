@@ -2,7 +2,7 @@
 // and the source, intake and secret lanes'), so its rules are tested on their own: the first use wins, a second use by another request is refused, a repeat of the same request
 // may continue, a failed application gives the consent back (only the request that used it can), and an old or untimed approval has expired.
 import { describe, expect, it } from "vitest";
-import { AgentXError } from "@agentx/contracts";
+import { AgentXError } from "@rovara-code/contracts";
 import {
   SETUP_CONSENT_MAX_AGE_MS, SETUP_CONSENT_USED, consentHasExpired, consentIsUsed, giveBackConsent, useConsent,
 } from "../../packages/broker/src/rovara-code/setup-consent.js";

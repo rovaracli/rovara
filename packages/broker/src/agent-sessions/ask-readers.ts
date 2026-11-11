@@ -6,7 +6,7 @@
 //   outsider  Slack thread replies by people who are not the task's owner, as untrusted data. (Team record rows and pull request comments are not wired yet: see the lane report.)
 //   diff      a peek of the working tree, else the pull request's diff (`ask-diff.ts`).
 import { GetCommand, QueryCommand } from "@aws-sdk/lib-dynamodb";
-import { LatestChecksSchema, SessionEventSchema, agentSessionKey, checkOutputTail, redactText, workflowSelectedChecks, type OrgId } from "@agentx/contracts";
+import { LatestChecksSchema, SessionEventSchema, agentSessionKey, checkOutputTail, redactText, workflowSelectedChecks, type OrgId } from "@rovara-code/contracts";
 import { effectiveTaskOwner, taskEvent, type DeveloperTaskRecord } from "../developer/task-records.js";
 import { personLabel, readWorkflowThreadNotes } from "../aws/developer-tasks/thread-notes.js";
 import type { AskContextReaders } from "./ask-context.js";

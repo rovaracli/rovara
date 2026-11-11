@@ -1,9 +1,9 @@
 // Spec 025 Task 12: closing a developer task (FR-016, FR-030, R6, R15, R22, owner decisions 5 and 6).
-import { slackLimitPk } from "../../packages/contracts/src/org-scoped-keys.js";
+import { slackLimitPk } from "@rovara-code/contracts";
 import { TEST_ORG } from "../support/orgs.js";
 import { randomUUID } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
-import { agentXError } from "@agentx/contracts";
+import { agentXError } from "@rovara-code/contracts";
 import { finishTaskClose } from "../../packages/broker/src/aws/developer-tasks.js";
 import type { DeveloperTaskRecord } from "../../packages/broker/src/developer/task-records.js";
 import { MAYA, createDeveloperTaskBroker } from "../support/developer-task-broker.js";

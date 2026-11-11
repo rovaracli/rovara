@@ -11,7 +11,7 @@ import { EMBED_TIMEOUT_MS, closeEnoughForSame, docOf, docOfText, matchesRejected
 import type { LessonDraft } from "../../../packages/broker/src/lessons/reflect.js";
 import { EMBEDDER_LESSON_COOLDOWN_MS, EMBEDDER_LESSON_WAIT_MS, lessonEmbedderFrom, lessonEmbedderOver } from "../../../packages/broker/src/embedder/wiring.js";
 import { createEmbedderClient, type EmbedderInvoke } from "../../../packages/broker/src/embedder/client.js";
-import { LESSON_EMBEDDER } from "@agentx/contracts";
+import { LESSON_EMBEDDER } from "@agentx/cloud-contracts";
 import { Alerts, Audit, Clock, KEY, MemoryVectors, ScriptedModel, Spend, closeEmbedder, draft, embedder, facts, lessonRecord, seed, settings, verifier } from "./lesson-helpers.js";
 
 const answer = (...verdicts: string[]): string => JSON.stringify({ verdicts: verdicts.map((verdict, i) => ({ n: i + 1, verdict })) });

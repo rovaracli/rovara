@@ -1,7 +1,7 @@
 // TRW-4 (owner, 2026-11-02): a Team record row is stored only when its author is linked to a Rovara person, because only then can a person erase reach it. A row whose author is not linked is
 // skipped, and the skip is COUNTED per project and source (`SKIPPED#`, in the org's own partition: counts only, no words, no ids) so that a maintainer can see what the record is leaving out and why.
 import { UpdateCommand } from "@aws-sdk/lib-dynamodb";
-import { teamRecordPk, type OrgId } from "@agentx/contracts";
+import { teamRecordPk, type OrgId } from "@rovara-code/contracts";
 import { queryPrefix } from "./store.js";
 import type { TeamRecordTable } from "./types.js";
 

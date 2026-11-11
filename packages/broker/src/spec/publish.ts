@@ -3,7 +3,7 @@
 // each added, each with the blob hash the broker computed from its own content. Only then is the pull request opened, and its head is checked to be that commit.
 import { createHash } from "node:crypto";
 import { GitHubSpecError } from "./github-git-client.js";
-import { AgentXError, SPEC_FILES_MAX, SPEC_FILE_MAX_BYTES, specFileNameProblem, specFolderProblem, specPathProblem, type SpecFile } from "@agentx/contracts";
+import { AgentXError, SPEC_FILES_MAX, SPEC_FILE_MAX_BYTES, specFileNameProblem, specFolderProblem, specPathProblem, type SpecFile } from "@rovara-code/contracts";
 
 export const SPEC_TOTAL_MAX_BYTES = 256 * 1024;
 

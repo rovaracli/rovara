@@ -1,5 +1,6 @@
 // Transactional current-org actor fence for the existing user budget write paths.
-import { OrgIdSchema, OrgRoleSchema, agentXError, orgMemberKey, developerOrgKey, orgMetaKey, projectMemberKey, type AgentOwner, type OrgId, type OrgRole } from "@agentx/contracts";
+import { OrgIdSchema, agentXError, projectMemberKey, type AgentOwner, type OrgId } from "@rovara-code/contracts";
+import { OrgRoleSchema, orgMemberKey, developerOrgKey, orgMetaKey, type OrgRole } from "@agentx/cloud-contracts";
 import type { TransactItem } from "./table-writes.js";
 export interface BudgetIdentity { developerId: string; role: OrgRole }
 export interface BudgetActor extends BudgetIdentity { signedIn?: BudgetIdentity }

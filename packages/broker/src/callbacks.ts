@@ -1,5 +1,5 @@
 import { createHmac, timingSafeEqual } from "node:crypto";
-import { agentXError } from "@agentx/contracts";
+import { agentXError } from "@rovara-code/contracts";
 import type { OperationStore } from "./operations.js";
 import type { InMemoryRegistry } from "./registry.js";
 

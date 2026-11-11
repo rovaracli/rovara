@@ -1,5 +1,5 @@
 // Rovara Code (Plan 6 Task 14): the index from (org, repository, commit) and from the Rovara branch to the task, written wherever Rovara records a pull request's head.
-import { INDEX_EXPIRY_ATTRIBUTE, prHeadKey, type OrgId } from "@agentx/contracts";
+import { INDEX_EXPIRY_ATTRIBUTE, prHeadKey, type OrgId } from "@rovara-code/contracts";
 import type { TransactItem } from "../agents/table-writes.js";
 
 /** How long a head's index item lives after it was written (the table's expiry): a task's pull request does not outlive it. */

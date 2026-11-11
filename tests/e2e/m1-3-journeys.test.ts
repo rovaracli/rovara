@@ -8,10 +8,8 @@ import { afterAll, describe, expect, it } from "vitest";
 import { UpdateCommand } from "@aws-sdk/lib-dynamodb";
 import { marshall } from "@aws-sdk/util-dynamodb";
 import { fauxAssistantMessage, fauxToolCall } from "@earendil-works/pi-ai";
-import {
-  E2EApplicationPlanIntentSchema, E2EPolicySchema, WorkerInvocationSchema, createCandidateManifest, canonicalJson, e2eAnonymousRuntimeAccountRef, e2eApiSchemaComponentId, isSafeE2ESourcePath,
-  readE2EApplicationProjectContract, workflowSendBackOffered, workspaceSessionKey, type E2EScenario, type E2ESourceSnapshot, type WorkerInvocation,
-} from "@agentx/contracts";
+import { E2EApplicationPlanIntentSchema, E2EPolicySchema, createCandidateManifest, canonicalJson, e2eAnonymousRuntimeAccountRef, e2eApiSchemaComponentId, isSafeE2ESourcePath, readE2EApplicationProjectContract, workspaceSessionKey, type E2EScenario, type E2ESourceSnapshot } from "@rovara-code/contracts";
+import { WorkerInvocationSchema, workflowSendBackOffered, type WorkerInvocation } from "@agentx/cloud-contracts";
 import { buildFeatureE2EPlanningContext } from "../../packages/broker/src/e2e/feature-plan-planning-context.js";
 import { accountRegistryEntriesFromRows, latestAccountRef } from "../../packages/broker/src/e2e/application-account-registry.js";
 import { e2eRegisteredRuntimeKey } from "../../packages/broker/src/aws/e2e-runtime-readiness.js";

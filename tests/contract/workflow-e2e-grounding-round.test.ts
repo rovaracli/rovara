@@ -1,7 +1,8 @@
 import { createHash, randomUUID } from "node:crypto";
 import { TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { E2E_MODEL_ROUTE_DEFAULT_BUDGETS, PlanQualityFindingSchema, planQualityFinding, workflowSendBackOffered, type E2EDisplayBaseline, type E2EScenario } from "@agentx/contracts";
+import { E2E_MODEL_ROUTE_DEFAULT_BUDGETS, PlanQualityFindingSchema, planQualityFinding, type E2EDisplayBaseline, type E2EScenario } from "@rovara-code/contracts";
+import { workflowSendBackOffered } from "@agentx/cloud-contracts";
 import { decodeE2EApplicationExecutionAdmission } from "@agentx/verifier";
 import { FakeDynamoDb, assumeDrivingTestsPassed } from "../support/fake-dynamodb.js";
 import { disposeRealCandidates, createRealCandidate } from "../support/e2e-application-candidate.js";

@@ -1,5 +1,5 @@
 import { useLayoutEffect, useRef, useState } from "react";
-import type { SessionEventReaderSchema, SessionMessageReaderSchema } from "@agentx/contracts/web";
+import type { SessionEventReaderSchema, SessionMessageReaderSchema } from "@agentx/cloud-contracts/web";
 import { ApiError } from "../../api/errors.js";
 import { Button } from "../../design/Button.js";
 import { TextArea } from "../../design/TextArea.js";

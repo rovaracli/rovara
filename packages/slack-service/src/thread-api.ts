@@ -1,33 +1,4 @@
-import {
-  AskAnsweredRequestSchema,
-  DiagnosisAnsweredRequestSchema,
-  DiagnosisRefSchema,
-  DiagnosisTurnResultSchema,
-  AskTurnRequestSchema,
-  AskTurnResultSchema,
-  EvalBatchSlackStartRequestSchema,
-  EvalBatchSlackStartResultSchema,
-  EvalBatchThreadResultSchema,
-  EvalBatchWatchDropRequestSchema,
-  EvalBatchWatchDropResultSchema,
-  EvalBatchWatchListSchema,
-  EvalBatchWatchUpdateRequestSchema,
-  EvalBatchWatchUpdateResultSchema,
-  type SlackThread,
-  SlackCommentAnsweredRequestSchema,
-  SlackThreadNoteAnsweredRequestSchema,
-  SlackThreadNoteAnsweredResultSchema,
-  SlackThreadPrepareResultSchema,
-  SlackThreadWorkspaceResultSchema,
-  SlackWorkspaceCloseCompleteResultSchema,
-  SlackWorkspaceCloseStartResultSchema,
-  ProjectModelOptionsSchema,
-  ProjectModelSelectionRequestSchema,
-  SwebenchRunSchema,
-  SwebenchStartRequestSchema,
-  SwebenchStartResultSchema,
-  taskResultChecks,
-} from "@agentx/contracts";
+import { AskAnsweredRequestSchema, DiagnosisAnsweredRequestSchema, DiagnosisRefSchema, DiagnosisTurnResultSchema, AskTurnRequestSchema, AskTurnResultSchema, EvalBatchSlackStartRequestSchema, EvalBatchSlackStartResultSchema, EvalBatchThreadResultSchema, EvalBatchWatchDropRequestSchema, EvalBatchWatchDropResultSchema, EvalBatchWatchListSchema, EvalBatchWatchUpdateRequestSchema, EvalBatchWatchUpdateResultSchema, type SlackThread, SlackCommentAnsweredRequestSchema, SlackThreadNoteAnsweredRequestSchema, SlackThreadNoteAnsweredResultSchema, SlackThreadPrepareResultSchema, SlackThreadWorkspaceResultSchema, SlackWorkspaceCloseCompleteResultSchema, SlackWorkspaceCloseStartResultSchema, ProjectModelOptionsSchema, ProjectModelSelectionRequestSchema, SwebenchRunSchema, SwebenchStartRequestSchema, SwebenchStartResultSchema, taskResultChecks } from "@rovara-code/contracts";
 import { ControlPlaneApi } from "@agentx/orchestrator/control-plane-api";
 import { pollOperation } from "@agentx/orchestrator/event-client";
 import type { ThreadServiceApi } from "./processor.js";

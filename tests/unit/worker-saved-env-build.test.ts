@@ -7,10 +7,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import {
-  SAVED_ENV_BUILD_FAILURES, SavedEnvBuildResultSchema, SavedEnvImageManifestSchema, formatCommandLine, parseCommandLine, savedEnvRepositoryName, testEnvDigest,
-  type ProjectCommand, type SavedEnvRegistryAuth, type TestEnvironmentBody,
-} from "../../packages/contracts/src/index.js";
+import { SAVED_ENV_BUILD_FAILURES, SavedEnvBuildResultSchema, SavedEnvImageManifestSchema, formatCommandLine, parseCommandLine, savedEnvRepositoryName, testEnvDigest, type ProjectCommand, type TestEnvironmentBody } from "@rovara-code/contracts";
+import { type SavedEnvRegistryAuth } from "@agentx/cloud-contracts";
 import { buildEnvironmentDraft } from "../../packages/worker/src/env-detect/propose.js";
 import { emptyDetection } from "../../packages/worker/src/env-detect/types.js";
 import type { ProveCommandResult } from "../../packages/worker/src/prove.js";
@@ -444,6 +442,12 @@ describe("what stops a build", () => {
   it("no push login, a login for another repository, or one about to expire: no push", async () => {
     const other = await world({ session: async () => ({ registry: REGISTRY, repository: OTHER_REPOSITORY, username: "AWS", password: PASSWORD, expiresAt: new Date(NOW + 900_000).toISOString() }) });
     expect(await proveAndBuildSavedImage(other.input, other.ports)).toEqual({ ok: false, reason: "no_push_session" });
+    // a registry on the worker's own machine (W0-3 review H1): Cloud's hosted schema refuses it, so nothing is pushed (the cast: the type is the hosted login's, the value is the one it must refuse)
+    for (const [registry, username] of [["127.0.0.1:5000", "rovara-local"], ["localhost:5001", "rovara-local"]] as const) {
+      const loopback = await world({ session: async () => ({ registry, repository: REPOSITORY, username: username as unknown as "AWS", password: PASSWORD, expiresAt: new Date(NOW + 900_000).toISOString() }) });
+      expect(await proveAndBuildSavedImage(loopback.input, loopback.ports)).toEqual({ ok: false, reason: "no_push_session" });
+      expect(loopback.rec.calls.some((call) => call.includes("push"))).toBe(false);
+    }
     const none = await world({ session: async () => undefined });
     expect(await proveAndBuildSavedImage(none.input, none.ports)).toEqual({ ok: false, reason: "no_push_session" });
     const late = await world({ session: async () => ({ registry: REGISTRY, repository: REPOSITORY, username: "AWS", password: PASSWORD, expiresAt: new Date(NOW + 30_000).toISOString() }) });

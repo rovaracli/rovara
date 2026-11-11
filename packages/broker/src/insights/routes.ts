@@ -8,11 +8,8 @@
 //   POST /v1/app/org/insights-access             an owner or admin, from a live browser session only: grant or revoke
 // While the switch is off every path but the overview is not found (the route answers `undefined`, as any unknown path). Reads are readable by a token or the CLI as well as the browser, by the
 // same role rule. Every read is scoped from the caller's session and the member record NOW, never from the request; a project asked for must be inside the caller's scope.
-import {
-  INSIGHTS_FLOW_DAYS, INSIGHTS_FLOW_MIN_SAMPLES, INSIGHTS_RETENTION_MONTHS, INSIGHTS_SHIPPED_WEEKS_MAX, INSIGHTS_STUCK_LIMIT_DEFAULT, INSIGHTS_STUCK_LIMIT_MAX, InsightsAccessBodySchema, AGENTX_NAME_PATTERN,
-  agentXError, orgProjectCatalogKey,
-  type InsightsFlow, type InsightsOverview, type InsightsShipped,
-} from "@agentx/contracts";
+import { INSIGHTS_FLOW_DAYS, INSIGHTS_FLOW_MIN_SAMPLES, INSIGHTS_RETENTION_MONTHS, INSIGHTS_SHIPPED_WEEKS_MAX, INSIGHTS_STUCK_LIMIT_DEFAULT, INSIGHTS_STUCK_LIMIT_MAX, InsightsAccessBodySchema, type InsightsFlow, type InsightsOverview, type InsightsShipped } from "@agentx/cloud-contracts";
+import { AGENTX_NAME_PATTERN, agentXError, orgProjectCatalogKey } from "@rovara-code/contracts";
 import { GetCommand } from "@aws-sdk/lib-dynamodb";
 import { StatusReply } from "../aws/status-reply.js";
 import type { AdaptedHttpRequest } from "../aws/lambda.js";

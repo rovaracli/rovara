@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
-import { canonicalJson, canonicalPlanJson, createCandidateManifest, createWorkflowSnapshot, DeveloperTaskViewSchema, E2ESharedViewSchema, portableOperationId, taskGraphDigest, workspaceSessionKey, workflowRequestId, WorkflowSnapshotSchema } from "@agentx/contracts";
+import { canonicalJson, canonicalPlanJson, createCandidateManifest, E2ESharedViewSchema, portableOperationId, taskGraphDigest, workspaceSessionKey, workflowRequestId } from "@rovara-code/contracts";
+import { createWorkflowSnapshot, DeveloperTaskViewSchema, WorkflowSnapshotSchema } from "@agentx/cloud-contracts";
 import { getTaskDocumentView, startTaskWorkflowPublicationFromSystem } from "../../packages/broker/src/aws/developer-tasks.js";
 import { workflowDispatchItem } from "../../packages/broker/src/aws/broker-shared.js";
 import { e2eFeatureVerifierKey, E2E_FEATURE_PROCESS_RESPONSE_SCOPE } from "../../packages/broker/src/aws/e2e-feature-verifier-catalog.js";

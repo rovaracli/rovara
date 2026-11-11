@@ -1,6 +1,6 @@
 // Test services TS24: the fixture store (org-scoped, behind tx, reviewed before it is delivered), its review card and its 15-minute delivery.
 import { describe, expect, it } from "vitest";
-import { FixtureSetSchema, canonicalJson, fixtureEntry, fixtureSetDigest, type FixtureSet, type TestEnvProdDeny } from "@agentx/contracts";
+import { FixtureSetSchema, canonicalJson, fixtureEntry, fixtureSetDigest, type FixtureSet, type TestEnvProdDeny } from "@rovara-code/contracts";
 import { projectDecisionCards } from "../../packages/broker/src/decisions/project.js";
 import {
   FIXTURE_READ_URL_SECONDS, FIXTURE_TEXT_MAX_DEPTH, createFixtureStore, fixtureSetFindings, fixtureTexts, verifiedFixtureDecision, createMemoryFixturePorts, fixtureObjectKey, fixtureSetCardItem, fixtureStoreId, parseFixtureStoreId,

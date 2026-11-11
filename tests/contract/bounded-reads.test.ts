@@ -5,8 +5,8 @@ import { MAYA, createDeveloperTaskBroker, type Developer } from "../support/deve
 import { FakeProjectMembers } from "../support/fake-project-members.js";
 import { TEST_ORG } from "../support/orgs.js";
 import { SLACK_TEAM, loadSlackBroker } from "../support/slack-broker.js";
-import { orgProjectCatalogKey, projectAgentKey, slackBindingKey } from "../../packages/contracts/src/org-scoped-keys.js";
-import { SESSION_PROJECT_BINDINGS_MAX, PROJECT_ROSTER_LIST_MAX } from "../../packages/contracts/src/agent-sessions-node.js";
+import { orgProjectCatalogKey, projectAgentKey, slackBindingKey } from "@rovara-code/contracts";
+import { SESSION_PROJECT_BINDINGS_MAX, PROJECT_ROSTER_LIST_MAX } from "@rovara-code/contracts";
 
 beforeAll(async () => { await loadSlackBroker(); });
 afterEach(() => { vi.restoreAllMocks(); });

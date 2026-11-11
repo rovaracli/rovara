@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { agentXError } from "@agentx/contracts";
+import { agentXError } from "@rovara-code/contracts";
 
 export const TASK_AUTHORITY_MAX_MS = 6_000;
 export const TASK_AUTHORITY_CONTEXT_RESERVE_MS = 2_000;

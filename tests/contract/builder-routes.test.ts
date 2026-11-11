@@ -1,13 +1,13 @@
 import { resolveAgent } from "../../packages/broker/src/agents/store.js";
 import type { AwsBrokerInput } from "../../packages/broker/src/aws/broker.js";
 import { getModels } from "../../packages/broker/src/agents/models-route.js";
-import { ModelSourceSchema, DEFAULT_AGENT_GUARDRAILS,agentGuardrailsKey,canonicalModelName,modelNotEnabledSentence } from "@agentx/contracts";
+import { ModelSourceSchema, DEFAULT_AGENT_GUARDRAILS, agentGuardrailsKey, canonicalModelName, modelNotEnabledSentence } from "@rovara-code/contracts";
 import { bedrockClaudeModelIds } from "@agentx/model-runtime/catalog";
 import { randomUUID } from "node:crypto";
 import { expect, it } from "vitest";
 import { createDeveloperTaskBroker, MAYA, OMAR } from "../support/developer-task-broker.js";
 import { FakeProjectMembers } from "../support/fake-project-members.js";
-import { AgentWriteResponseReaderSchema } from "@agentx/contracts/web";
+import { AgentWriteResponseReaderSchema } from "@agentx/cloud-contracts/web";
 it("dispatches the member model picker route outside the agent pattern and includes actual sources", async () => {
  const h = await createDeveloperTaskBroker({register:false,brokerExtra:{agents:{projectMembers:new FakeProjectMembers()}}});const result = await h.dev(MAYA,"GET","/v1/app/models");expect(result.status).toBe(200);expect(result.body.models).toEqual(expect.arrayContaining([expect.objectContaining({provider:"amazon-bedrock",company:"anthropic",sources:["rovara"]})]));
 });

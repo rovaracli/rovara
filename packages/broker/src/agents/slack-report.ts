@@ -5,7 +5,7 @@
 //   - and if what is left reads as a command to a bot or a chat-ops tool (a slash command, `!deploy`, `deploy api to production`, `rollback`,
 //     `restart`, an org's own command word), nothing of the report is posted: only a link to the task, where the whole report stays.
 // A pure function of its input.
-import { cleanText, commentLines, commentSignal, hideEmailAddresses, stripMentions, type OrgId } from "@agentx/contracts";
+import { cleanText, commentLines, commentSignal, hideEmailAddresses, stripMentions, type OrgId } from "@rovara-code/contracts";
 
 /**
  * Chat-ops commands that a channel's bots and automations act on, matched case-insensitively against each LINE of the normalized report

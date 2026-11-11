@@ -37,7 +37,7 @@
 //  - symlinked directories on the path to a script, which the API may report as absent (a script written as a path then fails closed as missing).
 import { createHash } from "node:crypto";
 import { parseDocument } from "yaml";
-import { CommentTriggerRepositorySchema, COMMENT_TRIGGER_FILES_MAX, COMMENT_TRIGGER_FILE_NAME_MAX, COMMENT_TRIGGER_HINTS as HINTS, agentXError, type OrgId } from "@agentx/contracts";
+import { CommentTriggerRepositorySchema, COMMENT_TRIGGER_FILES_MAX, COMMENT_TRIGGER_FILE_NAME_MAX, COMMENT_TRIGGER_HINTS as HINTS, agentXError, type OrgId } from "@rovara-code/contracts";
 import type { AgentRepositoryReader } from "../github-app.js";
 import { cacheNameOf, type RunCache } from "./run-cache.js";
 

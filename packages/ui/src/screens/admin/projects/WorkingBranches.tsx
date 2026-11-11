@@ -1,7 +1,7 @@
 import { SaveWorkingBranch } from "./SaveWorkingBranch.js";
 import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
 import { useQuery, useQueryClient, type QueryKey } from "@tanstack/react-query";
-import { ProjectWorkingBranchContextReaderSchema, ProjectWorkingBranchPageReaderSchema, ProjectWorkingBranchPreviewReaderSchema, type ProjectWorkingBranchContext } from "@agentx/contracts/web";
+import { ProjectWorkingBranchContextReaderSchema, ProjectWorkingBranchPageReaderSchema, ProjectWorkingBranchPreviewReaderSchema, type ProjectWorkingBranchContext } from "@agentx/cloud-contracts/web";
 import { useAppHost } from "../../../host.js";
 import { createApiClient, type Reader } from "../../../api/client.js";
 import { ApiError } from "../../../api/errors.js";

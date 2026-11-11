@@ -1,4 +1,4 @@
-import { AUTO_FIX_BLOCK_CAUSES, type AutoFixBlockCause, type WorkflowSnapshot } from "@agentx/contracts";
+import { AUTO_FIX_BLOCK_CAUSES, type AutoFixBlockCause, type WorkflowSnapshot } from "@agentx/cloud-contracts";
 import { workflowDispatchItem, type WorkflowDispatchRecord } from "./broker-shared.js";
 
 /**

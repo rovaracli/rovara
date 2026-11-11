@@ -1,6 +1,7 @@
 // Proof and test environment E1: the project's test environment as a stored setting (propose, record a Prove run, approve as a new revision), and the production deny list.
 import { describe, expect, it } from "vitest";
-import { TestEnvironmentBodySchema, cronRunsPerWeek, developerOrgKey, hostOfUrl, orgMemberKey, orgMetaKey, projectMetaKey, projectPk, prodDenyMatchesArn, prodDenyMatchesHost, testEnvDigest, testEnvLessSafeChanges, testEnvProdDenyViolations, type TestEnvironmentBody } from "@agentx/contracts";
+import { TestEnvironmentBodySchema, cronRunsPerWeek, hostOfUrl, projectMetaKey, projectPk, prodDenyMatchesArn, prodDenyMatchesHost, testEnvDigest, testEnvLessSafeChanges, testEnvProdDenyViolations, type TestEnvironmentBody } from "@rovara-code/contracts";
+import { developerOrgKey, orgMemberKey, orgMetaKey } from "@agentx/cloud-contracts";
 import { TEST_ENV_FRESH_SIGN_IN_MS, TEST_ENV_PROPOSAL_TTL_MS, approveTestEnvironment, proposeTestEnvironment, readApprovedTestEnvironment, recordTestEnvProveReport, secondPersonFromRecords, testEnvRequestId, type TestEnvDeps, type SecondPersonPort } from "../../packages/broker/src/org/test-environment.js";
 import { capturingAuditDeps, AUDIT_CAPTURE_TABLE } from "../support/audit-capture.js";
 import { FakeDynamoDb } from "../support/fake-dynamodb.js";

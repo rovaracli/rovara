@@ -1,7 +1,8 @@
 // Design review stage, DR-FU4 L4 (owner decision 2026-11-05: "in worst case scenarios default should be off"): a project's stored design review setting that is there but cannot be read reads as OFF at every reader,
 // never as Always or Auto, with a flag and ONE fixed log line. And the writes that make such a value are refused. Before this, an unreadable stored setting read as Always (DESIGN_REVIEW_FAIL_CLOSED_SETTING) once the company allowed design review.
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { DESIGN_REVIEW_DEFAULT_SETTING, ProjectPlaybookResponseSchema, agentXError, editionPolicy, orgMetaKey, projectPlaybookKey, type DesignReviewSetting, type OrgRole } from "../../packages/contracts/src/index.js";
+import { DESIGN_REVIEW_DEFAULT_SETTING, ProjectPlaybookResponseSchema, agentXError, projectPlaybookKey, type DesignReviewSetting } from "@rovara-code/contracts";
+import { editionPolicy, orgMetaKey, type OrgRole } from "@agentx/cloud-contracts";
 import { getProjectPlaybook, putProjectPlaybook, type ProjectPlaybookDependencies } from "../../packages/broker/src/playbook/routes.js";
 import { readProjectPlaybook, readProjectPlaybookDetail, readProjectPlaybookState, writeProjectPlaybook } from "../../packages/broker/src/playbook/project-playbook-store.js";
 import { DESIGN_REVIEW_LOCK_SK } from "../../packages/broker/src/design-review/lock.js";

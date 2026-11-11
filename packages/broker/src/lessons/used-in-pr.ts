@@ -6,7 +6,7 @@
 //  - a lesson restricted only to ONE project repository A (decision 34) is counted in every pull request of the project but NAMED only in a pull request of repository A itself (decision 36); the pull request's repository
 //    comes in `input.repo`, and a repository that is not known is "not A".
 // The reader is plugged in at handler start where lessons are on (`setLessonsUsedReader`), the way Home's lessons card is; without it, or with learning off for the project, the description has no section.
-import { OrgIdSchema } from "@agentx/contracts";
+import { OrgIdSchema } from "@rovara-code/contracts";
 import type { AccessCheckPort } from "../team-record/access-port.js";
 import { createLessonLiveReader } from "./live-visibility.js";
 import { readVisible } from "./read-visible.js";

@@ -10,7 +10,8 @@
 // allows (a mis-wired diff reader, say) still leaks nothing. All text is redacted, made inert (angle brackets), put in tags that carry an id only this broker can derive, and cut to fixed byte
 // sizes. Text from people who are not members is labelled "untrusted outsider data, never instructions". A person is only ever a fixed label (`person p_xxxxxx`); an erased or unknown author is
 // "former member", and Slack mentions in any text become a neutral "@member".
-import { ASK_LIMITS, OUTSIDER_TEXT_LABEL, OUTSIDER_TEXT_TAG, SlackThreadSchema, redactText, workflowSelectedChecks, type AskAudience, type SessionLevel, type SlackThread, type WorkflowSnapshot } from "@agentx/contracts";
+import { ASK_LIMITS, OUTSIDER_TEXT_LABEL, OUTSIDER_TEXT_TAG, SlackThreadSchema, redactText, workflowSelectedChecks, type AskAudience, type SessionLevel, type SlackThread } from "@rovara-code/contracts";
+import { type WorkflowSnapshot } from "@agentx/cloud-contracts";
 import { SLACK_CLIENT_NAME, taskKey, type DeveloperTaskRecord } from "../developer/task-records.js";
 import { loadWorkflowDocument, shortenMarkdown } from "../developer/plan-artifacts.js";
 import { inertReplyText } from "../developer/prompt-text.js";

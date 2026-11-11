@@ -15,10 +15,8 @@
 // deciders of approvals and spend requests use.
 import { deleteChosenNameOfRemoved } from "../developer/chosen-name.js";
 import { DeleteCommand, GetCommand, QueryCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
-import {
-  BUILTIN_AGENT_IDS, MEMBER_MERGE_QUEUE_PK, MEMBER_REMOVAL_QUEUE_PK, MEMBER_REMOVAL_SUCCESSOR_HOPS, memberRemovalRecordKey, orgMemberKey, orgPk, orgRemovedKey, projectAgentKey, projectAllows,
-  type AgentId, type AgentPrincipal, type EndDeveloperSessionsRequest, type EndDeveloperSessionsResponse, type MemberRemovalRecord, type OrgId, type OrgKey,
-} from "@agentx/contracts";
+import { BUILTIN_AGENT_IDS, orgPk, projectAgentKey, projectAllows, type AgentId, type AgentPrincipal, type EndDeveloperSessionsRequest, type EndDeveloperSessionsResponse, type OrgId, type OrgKey } from "@rovara-code/contracts";
+import { MEMBER_MERGE_QUEUE_PK, MEMBER_REMOVAL_QUEUE_PK, MEMBER_REMOVAL_SUCCESSOR_HOPS, memberRemovalRecordKey, orgMemberKey, orgRemovedKey, type MemberRemovalRecord } from "@agentx/cloud-contracts";
 import { runAccessStep, type AccessStepResult } from "../org/member-removal/access.js";
 import { finishRemoval } from "../org/member-removal/finish.js";
 import type { MemberRemovalHook } from "../org/store.js";

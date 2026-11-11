@@ -1,12 +1,12 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { randomUUID } from "node:crypto";
-import { workflowSendBackOffered, type WorkflowSnapshot } from "@agentx/contracts";
+import { workflowSendBackOffered, type WorkflowSnapshot } from "@agentx/cloud-contracts";
 import { workflowMessage } from "../../packages/broker/src/developer/workflow-messages.js";
 import { disposeRealCandidates } from "../support/e2e-application-candidate.js";
 import type { ObservedApiOutcome } from "../support/e2e-application-evidence-fixture.js";
 import { MAYA } from "../support/developer-task-broker.js";
 import { TEST_ORG, testProjectPk } from "../support/orgs.js";
-import { orgProjectCatalogKey, slackBindingPk } from "../../packages/contracts/src/org-scoped-keys.js";
+import { orgProjectCatalogKey, slackBindingPk } from "@rovara-code/contracts";
 import { apiRowKey, startApplicationRound, type ApplicationRound } from "../support/e2e-application-round-harness.js";
 
 // JOURNEY46 (M1.4 Task 4.4a review, m6), Docker-free. The agent journeys (agent-renamed-export, agent-wrong-action) end in two broker decisions that their own asserts never checked:

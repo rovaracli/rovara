@@ -2,7 +2,8 @@
 // approval page, GitHub reviews, task paths). The dispatcher holds an Auditor to a short allow-list; these surfaces ask here instead, and a person who is not a writer
 // (the Auditor, or a role this release does not know) is refused. A person with no member record has no role: the caller decides what that means for its surface.
 import { GetCommand } from "@aws-sdk/lib-dynamodb";
-import { OrgRoleSchema, agentXError, isWriterOrgRole, orgMemberKey, type OrgId, type OrgRole, type WriterOrgRole } from "@agentx/contracts";
+import { OrgRoleSchema, isWriterOrgRole, orgMemberKey, type OrgRole, type WriterOrgRole } from "@agentx/cloud-contracts";
+import { agentXError, type OrgId } from "@rovara-code/contracts";
 
 type DocumentClient = { send(command: unknown): Promise<unknown> };
 

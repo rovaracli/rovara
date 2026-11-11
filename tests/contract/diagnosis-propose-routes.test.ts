@@ -2,9 +2,8 @@
 // is the project settings save. A stale `from`, a citation that does not hold, a person who is not a maintainer and the switch off each leave the settings exactly as they were.
 import { randomUUID } from "node:crypto";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import {
-  ErrorRefSchema, githubInstallationKey, orgGithubInstallationKey, orgProjectCatalogKey, projectMemberKey, projectMetaKey, projectRevisionKey, type DiagnosisProposal, type DiagnosisRecord, type GithubInstallationRecord,
-} from "../../packages/contracts/src/index.js";
+import { ErrorRefSchema, orgProjectCatalogKey, projectMemberKey, projectMetaKey, projectRevisionKey, type DiagnosisProposal, type DiagnosisRecord } from "@rovara-code/contracts";
+import { githubInstallationKey, orgGithubInstallationKey, type GithubInstallationRecord } from "@agentx/cloud-contracts";
 import { admitDiagnosis, settleDiagnosis } from "../../packages/broker/src/diagnosis/store.js";
 import { OMAR, createDeveloperTaskBroker, seedMembership, type Developer } from "../support/developer-task-broker.js";
 import type { FakeDynamoDb } from "../support/fake-dynamodb.js";

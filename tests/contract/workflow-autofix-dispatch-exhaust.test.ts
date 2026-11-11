@@ -3,10 +3,8 @@
 // row with the block. The two infrastructure faults get ONE automatic retry after a delay (never a send back to coding), then an ask; the owner's stop is explained and never retried.
 import { createHash, randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
-import {
-  WORKFLOW_AGENTX_ACTOR_ID, WORKFLOW_AUTO_REVIEW_FAILED_MESSAGE, WORKFLOW_BLOCK_REASONS, autoFixDecision, classifyBlockedWorkflow, createCandidateManifest, WorkflowDecisionRecordSchema, WorkflowSnapshotSchema, createWorkflowSnapshot, wholeTaskSpendUsd, workflowAutoActionRequestId, workflowAutomaticRetryDecision,
-  type AutoFixBudget, type AutoFixFacts, type WorkflowSnapshot,
-} from "@agentx/contracts";
+import { WORKFLOW_AGENTX_ACTOR_ID, WORKFLOW_AUTO_REVIEW_FAILED_MESSAGE, createCandidateManifest, WorkflowDecisionRecordSchema, wholeTaskSpendUsd, workflowAutoActionRequestId } from "@rovara-code/contracts";
+import { WORKFLOW_BLOCK_REASONS, autoFixDecision, classifyBlockedWorkflow, WorkflowSnapshotSchema, createWorkflowSnapshot, workflowAutomaticRetryDecision, type AutoFixBudget, type AutoFixFacts, type WorkflowSnapshot } from "@agentx/cloud-contracts";
 import { AUTOFIX_ROUND_ESTIMATE_USD, autofixConfigFromEnvironment } from "../../packages/broker/src/aws/workflow-autofix-runner.js";
 import {
   DISPATCH_EXHAUST_RETRY_DELAY_MS, autofixBlockCauseOf, autofixBlockRows, autofixRowHeld, autofixSwitchOn, dispatchExhaustRows, endedRunRows, ownerStopRows,

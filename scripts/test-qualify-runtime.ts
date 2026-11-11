@@ -36,30 +36,12 @@ import { acquireRequalifyLock, releaseRequalifyLock } from "../packages/broker/s
 import { recordRenewalSuccess } from "../packages/broker/src/aws/runtime-requalify-heartbeat.js";
 import { e2eModelCheckRunnerKey } from "../packages/broker/src/e2e/model-route-registry.js";
 import { ec2Binding } from "../packages/cli/src/setup/project-add.js";
-import { environmentSettingsPrefix, environmentStackName } from "../packages/contracts/src/environments.js";
-import { getParametersInBatches } from "../packages/contracts/src/ssm-parameters.js";
-import {
-  QUALIFICATION_INSTANCE_TYPE,
-  QUALIFICATION_POLL_TIMEOUT_MS,
-  QUALIFICATION_READY_TIMEOUT_MS,
-  QUALIFICATION_VOLUME_DEVICE,
-  buildRunInstancesInput,
-  launchTemplateShapeProblem,
-  qualificationVolumeTags,
-  renderQualificationUserData,
-  type QualificationFacts,
-  type QualificationSettings,
-} from "../packages/contracts/src/qualification-launch.js";
-import {
-  BOOT_STAGE2_SHA256_PARAMETER,
-  E2E_QUALIFICATION_PROFILE_ID,
-  Ec2RuntimeBindingSchema,
-  WORKER_SETTING_PARAMETERS,
-  E2E_QUALIFICATION_ROLE_ID_PATTERN,
-  e2eQualificationPrefix,
-  type Ec2RuntimeBinding,
-} from "../packages/contracts/src/session.js";
-import { WEB_API_RUNTIME_PROFILE_ID } from "../packages/contracts/src/e2e-web-api-qualification.js";
+import { environmentSettingsPrefix, environmentStackName } from "@rovara-code/contracts";
+import { getParametersInBatches } from "@rovara-code/contracts";
+import { QUALIFICATION_INSTANCE_TYPE, QUALIFICATION_POLL_TIMEOUT_MS, QUALIFICATION_READY_TIMEOUT_MS, QUALIFICATION_VOLUME_DEVICE, launchTemplateShapeProblem, qualificationVolumeTags } from "@rovara-code/contracts";
+import { buildRunInstancesInput, renderQualificationUserData, type QualificationFacts, type QualificationSettings } from "../packages/cloud-contracts/src/qualification-launch.js";
+import { BOOT_STAGE2_SHA256_PARAMETER, E2E_QUALIFICATION_PROFILE_ID, Ec2RuntimeBindingSchema, WORKER_SETTING_PARAMETERS, E2E_QUALIFICATION_ROLE_ID_PATTERN, e2eQualificationPrefix, type Ec2RuntimeBinding } from "@rovara-code/contracts";
+import { WEB_API_RUNTIME_PROFILE_ID } from "@rovara-code/contracts";
 import { Runner, type ReleaseOptions } from "./release-common.js";
 import { loadAllowlist, parseOptions } from "./test-deploy.js";
 

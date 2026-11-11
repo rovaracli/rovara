@@ -1,7 +1,7 @@
 import { useCallback, useState } from "react";
 import { useQuery,useQueryClient } from "@tanstack/react-query";
 import { Link, useParams,useSearchParams } from "react-router";
-import { AgentDraftViewSchema, RecipeOverlaySchema, ResolvedRecipeSchema, StepSpecSchema, StepSettingsSchema } from "@agentx/contracts/web";
+import { AgentDraftViewSchema, RecipeOverlaySchema, ResolvedRecipeSchema, StepSpecSchema, StepSettingsSchema } from "@agentx/cloud-contracts/web";
 import { useAgent,type ReadAgentProfile } from "../../api/agents.js";
 import { useBuilderApi,useDraft } from "../../api/builder.js";
 import { ApiError } from "../../api/errors.js";

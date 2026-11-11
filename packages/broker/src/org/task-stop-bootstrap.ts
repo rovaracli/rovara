@@ -5,7 +5,8 @@ import { usdToWholeMicrodollars } from "./budget-amount.js";
 import { nativeSnapshotConditions } from "./native-snapshot-conditions.js";
 // These items join the native organization creation transaction. No post-create
 // ensure, runtime numeric default, independent ceiling, or enrollment side effect.
-import { AuditEventInputSchema, BUILTIN_AGENT_IDS, AgentGuardrailsSchema, AgentIdSchema, agentKey, builtinSettingsKey, builtinRecipe, projectAiKey, orgProjectCatalogKey, isBuiltinAgentId, OrgIdSchema, agentXError, orgMetaKey, DEFAULT_AGENT_GUARDRAILS, agentGuardrailsKey, orgScoped, orgSettingsKey, type OrgId } from "@agentx/contracts";
+import { AuditEventInputSchema, projectAiKey, orgMetaKey, orgSettingsKey } from "@agentx/cloud-contracts";
+import { BUILTIN_AGENT_IDS, AgentGuardrailsSchema, AgentIdSchema, agentKey, builtinSettingsKey, builtinRecipe, orgProjectCatalogKey, isBuiltinAgentId, OrgIdSchema, agentXError, DEFAULT_AGENT_GUARDRAILS, agentGuardrailsKey, orgScoped, type OrgId } from "@rovara-code/contracts";
 import { auditTaskStopPolicySeeded } from "../audit/events.js";
 import { auditPendingItem, type TransactItem } from "../audit/outbox.js";
 

@@ -3,7 +3,8 @@
 import { randomUUID } from "node:crypto";
 import { z } from "zod";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { parseCommentAnswers, plainPageRefs, plannerReplyCommentId, type PlanDocument, type TaskComment, type WorkflowSnapshot } from "@agentx/contracts";
+import { parseCommentAnswers, plainPageRefs, plannerReplyCommentId, type PlanDocument, type TaskComment } from "@rovara-code/contracts";
+import { type WorkflowSnapshot } from "@agentx/cloud-contracts";
 import { decideTaskWorkflow, listPageComments, type DeveloperTaskRouteDependencies } from "../../packages/broker/src/aws/developer-tasks.js";
 import type { DeveloperCaller } from "../../packages/broker/src/aws/developer-routes.js";
 import { APPROVED_COMMENT_ANSWERS_INSTRUCTION, COMMENT_ANSWERS_INSTRUCTION, readDecisionDetail } from "../../packages/broker/src/developer/owner-answers.js";

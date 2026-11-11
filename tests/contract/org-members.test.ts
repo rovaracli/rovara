@@ -3,12 +3,9 @@
 import { createHash, randomUUID } from "node:crypto";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
-import {
-  developerOrgKey, githubInstallationKey, orgBanKey, orgEmailKey, orgGithubInstallationKey, orgMemberKey, orgMetaKey, orgRemovedKey, orgSettingsKey, orgSlackTeamKey,
-  slackTeamOrgKey, trialGithubKey, type OrgRole,
-} from "@agentx/contracts";
-import { createCandidateManifest } from "../../packages/contracts/src/task-workflow-node.js";
-import { projectMemberKey } from "../../packages/contracts/src/org-scoped-keys.js";
+import { developerOrgKey, githubInstallationKey, orgBanKey, orgEmailKey, orgGithubInstallationKey, orgMemberKey, orgMetaKey, orgRemovedKey, orgSettingsKey, orgSlackTeamKey, slackTeamOrgKey, trialGithubKey, type OrgRole } from "@agentx/cloud-contracts";
+import { createCandidateManifest } from "@rovara-code/contracts";
+import { projectMemberKey } from "@rovara-code/contracts";
 import { ownerKeyForSubject } from "../../packages/broker/src/aws/lambda.js";
 import { routeDeveloperTaskRequest, startTaskWorkflowPublicationFromSystem, startTaskWorkflowReviewFromSystem } from "../../packages/broker/src/aws/developer-tasks.js";
 import { requireCreatorStillMember, requireWorkspaceCreatorStillMember } from "../../packages/broker/src/developer/creator-member.js";

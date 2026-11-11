@@ -8,7 +8,8 @@
 // `alarm` is true when a row is more than a day late or any row is blocked: the scheduler must alarm on it. Removed text lives on in point-in-time recovery for up to
 // 35 more days (a DPA note).
 import { QueryCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
-import { RECORD_RAW_TEXT_DAYS_C, TEAM_RECORD_GSI5, recordTextDueIndexValue, type OrgId } from "@agentx/contracts";
+import { RECORD_RAW_TEXT_DAYS_C, TEAM_RECORD_GSI5, recordTextDueIndexValue } from "@agentx/cloud-contracts";
+import { type OrgId } from "@rovara-code/contracts";
 import { Aliases, errorName, type Item } from "../agents/table-writes.js";
 import { eventVectorKey } from "./ingest.js";
 import type { RecordLog, RecordVectorPort, TeamRecordTable } from "./types.js";

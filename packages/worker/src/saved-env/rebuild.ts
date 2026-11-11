@@ -12,10 +12,10 @@
 // The result is posted whatever it is (a failure is a fixed word), and the sandbox, the workspace's checkouts and everything the build made are removed. Nothing about the lease token leaves this file: it is not logged.
 import { rm } from "node:fs/promises";
 import path from "node:path";
-import {
-  SAVED_ENV_PUSH_LOGIN_PATH, SAVED_ENV_RESULT_PATH, SavedEnvRegistryAuthSchema, agentXError, imageDigestOfReference,
-  type SavedEnvBuildResult, type SavedEnvRegistryAuth, type WorkerInvocation,
-} from "@agentx/contracts";
+import { SAVED_ENV_PUSH_LOGIN_PATH, SAVED_ENV_RESULT_PATH, agentXError, imageDigestOfReference, type SavedEnvBuildResult } from "@rovara-code/contracts";
+import { SavedEnvRegistryAuthSchema } from "@agentx/cloud-contracts";
+import { type SavedEnvRegistryAuth } from "@agentx/cloud-contracts";
+import { type WorkerInvocation } from "@agentx/cloud-contracts";
 import { SANDBOX_TARGET, executionFor, proveCommandPort } from "../execution-target.js";
 import type { PreparationManifest } from "../prepare.js";
 import type { RepositoryCredentialProvider } from "../repository-credentials.js";

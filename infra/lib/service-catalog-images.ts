@@ -26,7 +26,7 @@
 //     policy expires UNTAGGED images after one day, and an image pushed by digest alone would vanish.
 import { Aws, RemovalPolicy, Stack, Token, aws_ecr as ecr, aws_iam as iam, aws_kms as kms } from "aws-cdk-lib";
 import { Construct } from "constructs";
-import { catalogRepositoryName } from "@agentx/contracts";
+import { catalogRepositoryName } from "@rovara-code/contracts";
 
 /** The metadata `retention.ts` reads: the resource stays plain `Retain` where the aspect would make it `RetainExceptOnCreate`. */
 const KEEP_ON_ROLLBACK_METADATA = "agentx:retain-on-create-rollback";

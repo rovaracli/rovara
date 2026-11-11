@@ -14,12 +14,7 @@
 //   - It applies the citation check and the merge checks, with a code-only merge as the fallback, for early feedback. The broker reads the uploaded answers again and decides for itself.
 // The model sessions are behind a port (`DesignReviewPorts`), so the real pi sessions (design-review-sessions.ts) and the tests use the same orchestration.
 import { createHash } from "node:crypto";
-import {
-  DESIGN_REVIEW_ANSWER_MAX_BYTES, DESIGN_REVIEW_REVIEWER_TIMEOUT_MS, DESIGN_REVIEW_STAGE_TIMEOUT_MS, DESIGN_REVIEW_INFO_STRING, MODEL_NOT_ENABLED_CODE, PacketDeliverySchema, READ_ONLY_TOOLS,
-  filterReviewerCitations, itemOf, lightCriticWritesParaphrase, mergeDesignFindings, modelFailureCodeOf, packetDigestOf, readDesignReview, reviewerMessagesOf,
-  type DesignReviewBinding, type DesignReviewRunFailure, type DesignReviewWorkerResult, type DesignReviewerOutcome, type InvocationModelRoute, type ModelSelection,
-  type DroppedFinding, type PacketDelivery, type RawDesignFinding, type ReviewerRole,
-} from "@agentx/contracts";
+import { DESIGN_REVIEW_ANSWER_MAX_BYTES, DESIGN_REVIEW_REVIEWER_TIMEOUT_MS, DESIGN_REVIEW_STAGE_TIMEOUT_MS, DESIGN_REVIEW_INFO_STRING, MODEL_NOT_ENABLED_CODE, PacketDeliverySchema, READ_ONLY_TOOLS, filterReviewerCitations, itemOf, lightCriticWritesParaphrase, mergeDesignFindings, modelFailureCodeOf, packetDigestOf, readDesignReview, reviewerMessagesOf, type DesignReviewBinding, type DesignReviewRunFailure, type DesignReviewWorkerResult, type DesignReviewerOutcome, type InvocationModelRoute, type ModelSelection, type DroppedFinding, type PacketDelivery, type RawDesignFinding, type ReviewerRole } from "@rovara-code/contracts";
 import { ModelBudgetExhaustedError, ModelNotAllowedError } from "@agentx/model-runtime";
 
 /** A reviewer or merge session, as the orchestration sees it. */

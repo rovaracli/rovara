@@ -1,5 +1,5 @@
 import { fixtureProject } from "../support/project-ai-source.js";
-import { projectMemberKey } from "@agentx/contracts";
+import { projectMemberKey } from "@rovara-code/contracts";
 import { fixtureActor } from "../support/money-authority.js";
 // Plan 3 Task 28: budget settings. The keys and scopes the spend engine reads, what a scope's limit is once the month's top-up and the
 // guardrails are counted (`effectiveLimits`), the project AI settings, the agent budget and spend-policy routes, and the one monthly
@@ -16,18 +16,15 @@ import { OrgStore } from "../../packages/broker/src/org/store.js";
 import {
   budgetOwnerOf, checkOwnerBudget, effectiveLimits, effectiveMaxPerRun, planningLimit, readProjectAi, readSpendPolicy, readSpendPolicyWithRevision, writeSpendPolicy,
 } from "../../packages/broker/src/spend/settings.js";
-import {
-  DEFAULT_MAX_AGENT_MONTHLY_USD, DEFAULT_OWNER_AGENT_BUDGET_CAP_USD, DEFAULT_PLANNING_LIMIT_USD, PER_TEST_CAP_USD, RUN_LIMIT_MULTIPLIER, TESTING_ALLOWANCE_USD,
-  TRIAL_LIMITS_R49, defaultSpendPolicy, scopeKey, type BudgetScope,
-} from "../../packages/contracts/src/spend.js";
-import { DEFAULT_AGENT_GUARDRAILS } from "../../packages/contracts/src/agent-guardrails.js";
-import type { AgentId } from "../../packages/contracts/src/agent-node.js";
-import { orgMetaKey, type OrgId, type OrgRole } from "../../packages/contracts/src/org-node.js";
-import {
-  agentRequestKey, budgetAlertKey, modelKeyKey, openSpendRequestsKey, orgProjectCatalogKey, ownerBudgetKey, pausedTasksKey,
-  projectAiKey, runCostKey, spendCounterKey, spendRequestKey, topUpKey,
-} from "../../packages/contracts/src/org-scoped-keys.js";
-import { DEFAULT_MEMBER_MONTHLY_BUDGET_USD, DEFAULT_ORG_MONTHLY_BUDGET_USD } from "../../packages/contracts/src/org-budget-node.js";
+import { DEFAULT_MAX_AGENT_MONTHLY_USD, DEFAULT_OWNER_AGENT_BUDGET_CAP_USD, PER_TEST_CAP_USD, TESTING_ALLOWANCE_USD, TRIAL_LIMITS_R49, defaultSpendPolicy, scopeKey, type BudgetScope } from "../../packages/cloud-contracts/src/spend.js";
+import { DEFAULT_PLANNING_LIMIT_USD, RUN_LIMIT_MULTIPLIER } from "@rovara-code/contracts";
+import { DEFAULT_AGENT_GUARDRAILS } from "@rovara-code/contracts";
+import type { AgentId } from "@rovara-code/contracts";
+import { orgMetaKey, type OrgRole } from "../../packages/cloud-contracts/src/org-node.js";
+import { type OrgId } from "@rovara-code/contracts";
+import { agentRequestKey, orgProjectCatalogKey, runCostKey } from "@rovara-code/contracts";
+import { budgetAlertKey, modelKeyKey, openSpendRequestsKey, ownerBudgetKey, pausedTasksKey, projectAiKey, spendCounterKey, spendRequestKey, topUpKey } from "../../packages/cloud-contracts/src/org-scoped-keys.js";
+import { DEFAULT_MEMBER_MONTHLY_BUDGET_USD, DEFAULT_ORG_MONTHLY_BUDGET_USD } from "../../packages/cloud-contracts/src/org-budget-node.js";
 import { addToCounter } from "../../packages/broker/src/agents/table-writes.js";
 import { OMAR, createDeveloperTaskBroker, seedMembership, type Developer } from "../support/developer-task-broker.js";
 import { FakeDynamoDb } from "../support/fake-dynamodb.js";

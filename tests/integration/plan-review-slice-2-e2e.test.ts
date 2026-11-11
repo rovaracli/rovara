@@ -4,7 +4,7 @@
 // sees, and that no code is written until the owner presses Approve.
 import { afterEach, beforeEach, describe, expect, it, vi, type MockInstance } from "vitest";
 import { fauxAssistantMessage, fauxText } from "@earendil-works/pi-ai";
-import { SlackPageCommentMessageSchema, SlackRequestMessageSchema, slackThreadSubject, type ChannelMembersRequest, type ChannelMembersResponse } from "@agentx/contracts";
+import { SlackPageCommentMessageSchema, SlackRequestMessageSchema, slackThreadSubject, type ChannelMembersRequest, type ChannelMembersResponse } from "@rovara-code/contracts";
 import { createWorkflowE2E, type WorkflowE2E } from "../support/workflow-e2e.js";
 import { MAYA, bearerFor } from "../support/developer-task-broker.js";
 import { SLACK_CHANNEL, call, orchestratorPrincipal } from "../support/slack-broker.js";

@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
-import { closesHeldText, lessonFileWaitingText, strayBranchesText, unreachableRepoText, type LessonsRepoFileBody } from "@agentx/contracts/web";
+import { closesHeldText, lessonFileWaitingText, strayBranchesText, unreachableRepoText, type LessonsRepoFileBody } from "@agentx/cloud-contracts/web";
 import { ApiError } from "../../../api/errors.js";
 import { lessonsRepoFileKey, useLessonsRepoFile, useLessonsRepoFileApi, type LessonsRepoFileStatus } from "../../../api/lessons-repo-file.js";
 import { Button } from "../../../design/Button.js";

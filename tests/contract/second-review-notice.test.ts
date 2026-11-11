@@ -1,6 +1,7 @@
 // Lane cr-settings: the notice to company admins when the model that gives the second opinion stops qualifying: once per change, as a decision card and a banner on the settings page, put away by "I've seen it".
 import { afterEach, describe, expect, it } from "vitest";
-import { DecisionCardsViewSchema, orgMetaKey, secondReviewModelKey, type ModelIdentifier } from "../../packages/contracts/src/index.js";
+import { DecisionCardsViewSchema, secondReviewModelKey, type ModelIdentifier } from "@rovara-code/contracts";
+import { orgMetaKey } from "@agentx/cloud-contracts";
 import { capturingAuditDeps } from "../support/audit-capture.js";
 import { FakeDynamoDb } from "../support/fake-dynamodb.js";
 import { MAYA, OMAR } from "../support/developer-task-broker.js";

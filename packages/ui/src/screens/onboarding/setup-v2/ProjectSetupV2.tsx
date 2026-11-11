@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { Link, useSearchParams } from "react-router";
-import type { AppProjectDetail } from "@agentx/contracts/web";
+import type { AppProjectDetail } from "@agentx/cloud-contracts/web";
 import { PageHeader } from "../../../design/PageHeader.js";
 import { Button } from "../../../design/Button.js";
 import { Skeleton } from "../../../design/Skeleton.js";

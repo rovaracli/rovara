@@ -1,5 +1,5 @@
 import { BatchGetCommand, GetCommand, QueryCommand } from "@aws-sdk/lib-dynamodb";
-import { agentXError, canonicalJson } from "@agentx/contracts";
+import { agentXError, canonicalJson } from "@rovara-code/contracts";
 import type { AgentStore } from "../agents/store.js";
 const STORE_READS = new Set(["get", "list", "listShares", "pinnedBuiltinVersion"]);
 const MAX_READS = 4096;

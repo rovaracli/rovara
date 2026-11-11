@@ -1,11 +1,8 @@
 // Design review stage, DR10 (3.7, owner Q5): reminders at 24 h and 72 h, park at 7 days, close at 30 days parked, resume from a card, the approver who left, and the guarantee that nothing is ever approved, answered or skipped
 // by a clock. The workflow's moves (contracts), the clock (pure), the sweep over a fake table, the stream's arming, the notice's words and the notifier's delivery.
 import { describe, expect, it, vi } from "vitest";
-import {
-  DESIGN_REVIEW_DEFAULT_SETTING, WorkflowSnapshotSchema, answerDesignQuestions, askDesignQuestions, closeDesignReview, closeParkedDesignReview, createWorkflowSnapshot, decideWorkflow, designWaitOf, enableDesignReview,
-  holdDesignReviewForCost, parkDesignReview, resumeParkedDesignReview, startDesignReview, submitDesignReview, submitWorkflowArtifact,
-  type DesignReviewSetting, type WorkflowProgram, type WorkflowSnapshot,
-} from "../../packages/contracts/src/index.js";
+import { DESIGN_REVIEW_DEFAULT_SETTING, designWaitOf, type DesignReviewSetting, type WorkflowProgram } from "@rovara-code/contracts";
+import { WorkflowSnapshotSchema, answerDesignQuestions, askDesignQuestions, closeDesignReview, closeParkedDesignReview, createWorkflowSnapshot, decideWorkflow, enableDesignReview, holdDesignReviewForCost, parkDesignReview, resumeParkedDesignReview, startDesignReview, submitDesignReview, submitWorkflowArtifact, type WorkflowSnapshot } from "@agentx/cloud-contracts";
 import { markEffective } from "../../packages/broker/src/design-review/effective-setting.js";
 import { designWaitStep, nextDesignWaitDueAt } from "../../packages/broker/src/design-review/wait-clock.js";
 import { waitAudienceOf, waitRecipients } from "../../packages/broker/src/design-review/wait-audience.js";

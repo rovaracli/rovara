@@ -1,8 +1,8 @@
 // Rovara Code (Plan 6 Task 19): "Approved by <login>. Ready to merge: <session link>". Merge tracking says it once for each approval that counts: from a person with write access who
 // is a member of the org and not a requester (unless the org allows self-approval), on the head.
 import { afterEach, describe, expect, it } from "vitest";
-import { codeSettingsKey } from "../../packages/contracts/src/org-scoped-keys.js";
-import { orgMemberKey } from "../../packages/contracts/src/index.js";
+import { codeSettingsKey } from "@rovara-code/contracts";
+import { orgMemberKey } from "@agentx/cloud-contracts";
 import { trackPullRequest } from "../../packages/broker/src/rovara-code/merge-tracking.js";
 import { registerCodeMilestoneHandler } from "../../packages/broker/src/rovara-code/milestones.js";
 import { linkGithubMember } from "../../packages/broker/src/rovara-code/github-members.js";

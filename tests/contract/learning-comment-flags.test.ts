@@ -2,7 +2,7 @@
 // project, from the same standing the Remember route uses; for anyone else, and when the read fails, they are absent.
 import { randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
-import { INDEX_EXPIRY_ATTRIBUTE, TaskCommentLearningSchema } from "../../packages/contracts/src/index.js";
+import { INDEX_EXPIRY_ATTRIBUTE, TaskCommentLearningSchema } from "@rovara-code/contracts";
 import { getTaskPageState, listPageComments } from "../../packages/broker/src/aws/developer-tasks.js";
 import { createTaskWebApi, type TaskWebApiDependencies } from "../../packages/broker/src/aws/task-web-api.js";
 import type { DeveloperCaller } from "../../packages/broker/src/aws/developer-routes.js";

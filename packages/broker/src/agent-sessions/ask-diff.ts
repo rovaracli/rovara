@@ -1,7 +1,8 @@
 // Live interaction A2: the diff an Ask is given. While the task's worker is up, a peek (peek-client.ts) shows the working tree as it is now; when there is no peek (no worker, an older worker, a
 // timeout, the task is over) the pull request's own diff is used, as the session diff route reads it. Either way the reader only hands over data: which of it an audience may see, and its
 // redaction and size, are decided again in `buildAskContext` (a Slack tier never receives patch text whatever this returns). A reader that fails gives nothing; the Ask is built without a diff.
-import type { DeveloperTaskView, OrgId, PeekAnswer } from "@agentx/contracts";
+import type { DeveloperTaskView } from "@agentx/cloud-contracts";
+import type { OrgId, PeekAnswer } from "@rovara-code/contracts";
 import type { DeveloperTaskRecord } from "../developer/task-records.js";
 import type { AskContextData, AskContextReaders } from "./ask-context.js";
 import type { PeekClient } from "./peek-client.js";

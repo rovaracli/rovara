@@ -4,7 +4,8 @@
 //   blockedByEnvironmentHook       a task whose auto-fix gave up on environment faults (the end of "Blocked by environment")
 //   setupProvedHook                an approved, proved environment revision
 //   healthPortsOf                  the card (SH17's records, versioned; none while `vx` is off) and proposed-task ports
-import type { AutoFixCode, OrgId, TestingBlockedReason } from "@agentx/contracts";
+import type { AutoFixCode } from "@agentx/cloud-contracts";
+import type { OrgId, TestingBlockedReason } from "@rovara-code/contracts";
 import { RESULT_RULES } from "../verification/result.js";
 import type { TestEnvDeps } from "../org/test-environment.js";
 import { healthFixSetupCards } from "./fix-setup-health.js";

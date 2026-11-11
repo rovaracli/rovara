@@ -1,4 +1,6 @@
-import { SshCredentialMaterialSchema, WORKER_CREDENTIAL_KINDS_HEADER, agentXError, type GitCredentialKind, type ProjectDefinition, type WorkerInvocation } from "@agentx/contracts";
+import { SshCredentialMaterialSchema, WORKER_CREDENTIAL_KINDS_HEADER, agentXError, type GitCredentialKind } from "@rovara-code/contracts";
+import { type ProjectDefinition } from "@agentx/cloud-contracts";
+import { type WorkerInvocation } from "@agentx/cloud-contracts";
 
 /**
  * The credential kinds this worker takes beyond a token and a password (P8), listed by hand: the broker is told in a header and sends only these. `helper` is not here: no worker runs a

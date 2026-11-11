@@ -1,6 +1,6 @@
 // Test services, slice 1 T3: a setup draft's dependency candidates become PROPOSED dependencies (through the backing chooser, real catalog software only), the merge keeps what a person set, and the approve card says it plainly.
 import { describe, expect, it } from "vitest";
-import { TEST_ENV_DRAFT_RESULT_KEY, TestEnvironmentBodySchema, projectMetaKey, projectRevisionKey, testEnvDigest, type OrgId, type TestEnvDraft, type TestEnvironmentBody } from "@agentx/contracts";
+import { TEST_ENV_DRAFT_RESULT_KEY, TestEnvironmentBodySchema, projectMetaKey, projectRevisionKey, testEnvDigest, type OrgId, type TestEnvDraft, type TestEnvironmentBody } from "@rovara-code/contracts";
 import { DEPENDENCIES_LEFT_OUT_NOTE, DEPENDENCIES_NO_CATALOG_NOTE, DEPENDENCIES_NOT_PROPOSED_NOTE } from "../../packages/broker/src/test-env/dependency-proposal.js";
 import { dependencyCardLines } from "../../packages/broker/src/test-env/dependency-card-lines.js";
 import { sanitizeTestEnvDraft, testEnvDraftEndItems } from "../../packages/broker/src/test-env/draft.js";

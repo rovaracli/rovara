@@ -1,7 +1,8 @@
 // The broker's side of the company image mirror when it plans a run: which approved images have a finished copy in the install's registry (and so may be put in a plan), and starting the copier for those that do not.
 // The plan names the install's own repository and the approved digest; an image with no finished copy is "still being copied" (`image_copying`), never pulled from its source.
 import { InvokeCommand, LambdaClient } from "@aws-sdk/client-lambda";
-import { CompanyImageMirrorJobSchema, companyImageRepositoryName, type CompanyImageMirrorJob, type CompanyImageMirrorRef, type OrgId } from "@agentx/contracts";
+import { CompanyImageMirrorJobSchema, companyImageRepositoryName, type CompanyImageMirrorJob, type CompanyImageMirrorRef } from "@agentx/cloud-contracts";
+import { type OrgId } from "@rovara-code/contracts";
 import type { CompanyImage } from "./company-images.js";
 import { mirrorNeedsStart, readMirrorState, type MirrorTable } from "./company-image-mirror-state.js";
 

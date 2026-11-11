@@ -10,7 +10,7 @@
 // consent back, so the person can try again under the same card. Every applier that the registry holds (the built-in ones and the ones the source, intake and secret lanes
 // register) goes through `applySetupDraft`, which calls these, so no applier has to remember to.
 import { DeleteCommand, GetCommand, PutCommand } from "@aws-sdk/lib-dynamodb";
-import { INDEX_EXPIRY_ATTRIBUTE, agentXError, setupDraftKey, type OrgId } from "@agentx/contracts";
+import { INDEX_EXPIRY_ATTRIBUTE, agentXError, setupDraftKey, type OrgId } from "@rovara-code/contracts";
 
 type Client = { send(command: unknown): Promise<unknown> };
 

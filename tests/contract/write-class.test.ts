@@ -3,7 +3,7 @@
 // resolves its async inputs (the repository rule, label names, the run's own items) and fails closed on any lookup that breaks; `recordOwnItems` keeps
 // what a create made so a later change to it is `safe`.
 import { describe, expect, it, vi } from "vitest";
-import type { ActionPolicy, AgentConnectorType, GrantedTool, OrgId, ToolFacts } from "@agentx/contracts";
+import type { ActionPolicy, AgentConnectorType, GrantedTool, OrgId, ToolFacts } from "@rovara-code/contracts";
 import {
   READ_NAME_EXCEPTIONS,
   WRITE_CLASS_OVERRIDES,

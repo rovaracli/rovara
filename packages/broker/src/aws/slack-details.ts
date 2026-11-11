@@ -1,14 +1,5 @@
 import { GetCommand, type DynamoDBDocumentClient } from "@aws-sdk/lib-dynamodb";
-import {
-  DETAILS_ACTION,
-  TURN_DETAILS_ATTRIBUTES,
-  TURN_RETENTION_DAYS,
-  detailsExpireAt,
-  parseDetailsButtonValue,
-  slackThreadSubject,
-  turnDetailsFromItem,
-  turnDetailsKey,
-} from "@agentx/contracts";
+import { DETAILS_ACTION, TURN_DETAILS_ATTRIBUTES, TURN_RETENTION_DAYS, detailsExpireAt, parseDetailsButtonValue, slackThreadSubject, turnDetailsFromItem, turnDetailsKey } from "@rovara-code/contracts";
 import { detailsMessageView, turnDetailsView, type SlackModalView } from "./slack-details-view.js";
 import type { SlackIngressLog } from "./slack-ingress.js";
 import type { SlackActionHandler, SlackBlockAction } from "./slack-interactivity.js";

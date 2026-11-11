@@ -1,7 +1,7 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { E2E_DEFAULT_MODEL_ROUTE_ID, e2eModelRouteRevision } from "@agentx/contracts";
+import { E2E_DEFAULT_MODEL_ROUTE_ID, e2eModelRouteRevision } from "@rovara-code/contracts";
 import { GetCommand, type DynamoDBDocumentClient } from "@aws-sdk/lib-dynamodb";
 import { approveE2EAgentRoute, planE2EAgentRoute } from "../../packages/broker/src/e2e/model-route-registry.js";
 import { modelRouteForAdmission as modelRouteForAdmissionWith } from "../../packages/broker/src/e2e/application-evidence.js";

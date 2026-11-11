@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it, vi } from "vitest";
-import { editionPolicy } from "@agentx/contracts";
+import { editionPolicy } from "@agentx/cloud-contracts";
 import { createBrokerPlugins } from "../../packages/broker/src/aws/broker/plugin-wiring.js";
 import { FakeCheckRunner } from "../../packages/broker/src/plugins/fake/check-runner.js";
 import { FakeCodeHost } from "../../packages/broker/src/plugins/fake/code-host.js";

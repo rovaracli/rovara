@@ -1,7 +1,7 @@
 // Design review stage, fix round 2 (security M5): the merge step's prompt comes from the broker's registry ONLY. The binding the worker is sent carries the prompt text (the worker cannot import the
 // broker's registry), but the text is never a free input: it is looked up by id and version here, and a binding whose text is anything else is refused. DR7 builds `merge` with `mergeBindingFor` and
 // checks a stored binding with `bindingMergeProblem` before it dispatches or records the merge step. The prompt's digest is `promptDigest` of the registry entry (recorded with the run).
-import { promptDigest, type DesignReviewBinding } from "@agentx/contracts";
+import { promptDigest, type DesignReviewBinding } from "@rovara-code/contracts";
 import { MERGE_PROMPT, type ReviewPrompt } from "./prompts/index.js";
 
 /** The merge prompts the registry holds, by id and version. Today one. Another version is added here, never taken from a caller. */

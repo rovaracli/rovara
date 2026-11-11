@@ -4,7 +4,7 @@ import { createHash, generateKeyPairSync, sign } from "node:crypto";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { ReleaseManifestSchema, STACK_PARTS } from "@agentx/contracts";
+import { ReleaseManifestSchema, STACK_PARTS } from "@rovara-code/contracts";
 import { LITELLM_SOURCE_IMAGE } from "../../infra/lib/bundle-images.js";
 import { buildBundle, type BundleSigner, type ImageExporter } from "../../scripts/release/bundle.js";
 import type { ImageLabelReader } from "../../scripts/release/image-flavor.js";

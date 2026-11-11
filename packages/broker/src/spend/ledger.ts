@@ -10,11 +10,8 @@
 // Finalizing is two-phase. When an operation ends its keys are blocked at the proxy (`blockOperationKeys`) and given a `finalizeAfter`; the sweep settles
 // open keys and finalizes those past `finalizeAfter`, or ten minutes after they expired when nobody blocked them. Finalized keys keep settling for a day.
 import { DeleteCommand, GetCommand, PutCommand, QueryCommand, TransactWriteCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
-import {
-  BUDGET_ALERT_LEVELS, FINALIZE_DELAY_MS, FINALIZED_SETTLE_WINDOW_MS, KEY_EXPIRY_GRACE_MS, OrgIdSchema,
-  agentRunsKey, agentXError, budgetAlertKey, ledgerKey, modelCounter, modelKeyKey, openModelKeysKey, originCounter, scopeKey, sourceCounter, taskSpendKey,
-  spendCounterKey, spendOriginKind, type BudgetScope, type OrgId,
-} from "@agentx/contracts";
+import { BUDGET_ALERT_LEVELS, FINALIZE_DELAY_MS, FINALIZED_SETTLE_WINDOW_MS, KEY_EXPIRY_GRACE_MS, budgetAlertKey, ledgerKey, modelCounter, modelKeyKey, openModelKeysKey, originCounter, scopeKey, sourceCounter, spendCounterKey, spendOriginKind, type BudgetScope } from "@agentx/cloud-contracts";
+import { OrgIdSchema, agentRunsKey, agentXError, taskSpendKey, type OrgId } from "@rovara-code/contracts";
 import type { MintTags, ModelAccess } from "../model-proxy/access.js";
 import { Aliases, NOT_EXISTS, errorName, failedIndexes, isTransactionConflict, withoutUndefined, type Item, type TransactItem } from "../agents/table-writes.js";
 import { effectiveLimits, type SpendSettingsDependencies } from "./settings.js";

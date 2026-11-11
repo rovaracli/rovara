@@ -1,9 +1,6 @@
 // Meta repo lane B, task B1: the setup agent's proposal contract and the reader that turns a model's answer into one (the worker and the broker both run it).
 import { describe, expect, it } from "vitest";
-import {
-  REMOTE_CODE_REASON, SETUP_ITEM_KINDS, SETUP_PROPOSAL_INFO_STRING, SetupApplyBodySchema, SetupDraftResponseSchema, SetupDraftSchema, SetupProposalSchema, sanitizeSetupProposal,
-  setupItemHandling, setupItemRisk, setupItemsOf, setupProposalAnswerOf, type SetupProposal, type SetupProposalContext,
-} from "../../packages/contracts/src/index.js";
+import { REMOTE_CODE_REASON, SETUP_ITEM_KINDS, SETUP_PROPOSAL_INFO_STRING, SetupApplyBodySchema, SetupDraftResponseSchema, SetupDraftSchema, SetupProposalSchema, sanitizeSetupProposal, setupItemHandling, setupItemRisk, setupItemsOf, setupProposalAnswerOf, type SetupProposal, type SetupProposalContext } from "@rovara-code/contracts";
 
 const COMMIT_WEB = "a".repeat(40);
 const COMMIT_API = "b".repeat(40);

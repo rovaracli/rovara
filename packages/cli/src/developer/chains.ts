@@ -3,7 +3,7 @@
 // printed as the broker wrote it (a revision conflict exits 1). A change that waits for a person prints the confirmation page's link; nothing here
 // decides an approval (R66).
 import { randomUUID } from "node:crypto";
-import { agentXError } from "@agentx/contracts";
+import { agentXError } from "@rovara-code/contracts";
 import { appRequest, clean, developerRef, list, positive, pretty, readJsonFile, result, seg, str, waitingText, type AppResult } from "./agents.js";
 import type { DeveloperSessionDeps } from "./session.js";
 

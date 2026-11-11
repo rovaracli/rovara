@@ -7,7 +7,9 @@
 //   - the image is the digest the broker recorded WITH THE OPERATION when it built the invocation (`savedEnvDigest`), never one the request names; an operation that was told no image gets no login;
 //   - the org and project come from the workspace, never from the request. The login is for that one repository, short lived, and is not logged: the line names the workspace, the operation, the digest, the repository and the expiry; the login itself is never in it.
 //   - a preparation asks at most `SAVED_ENV_LOGIN_MAX_PER_OPERATION` times (the worker asks once): a counter on the operation, added to with a condition, refuses the rest with FORBIDDEN.
-import { SavedEnvRegistryAuthSchema, agentXError, type SavedEnvRegistryAuth } from "@agentx/contracts";
+import { agentXError } from "@rovara-code/contracts";
+import { SavedEnvRegistryAuthSchema } from "@agentx/cloud-contracts";
+import { type SavedEnvRegistryAuth } from "@agentx/cloud-contracts";
 
 export interface SavedEnvLoginContext {
   /** The `sv` switch on and the registry installed. */

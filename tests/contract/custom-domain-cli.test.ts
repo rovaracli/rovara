@@ -1,5 +1,5 @@
 // 0.5.7: the custom domain, from the command line's side: how it is set (agentx signin cloud), what the deploy sends for it, and which address the CLI records and uses.
-import type { ReleaseManifest } from "@agentx/contracts";
+import type { ReleaseManifest } from "@rovara-code/contracts";
 import { describe, expect, it } from "vitest";
 import { CloudSignInAnswersSchema } from "../../packages/cli/src/deploy/answer-schemas.js";
 import { publicAddress } from "../../packages/cli/src/deploy/deploy-environment.js";

@@ -15,7 +15,7 @@ import "../agents/table-writes.js";
 import "../org/task-stop-funding.js";
 import "../developer/requester-text.js";
 import "../developer/workflow-actions.js";
-import "@agentx/contracts";
+import "@agentx/cloud-contracts";
 import "../developer/share.js";
 import "../developer/pull-request-feedback-section.js";
 import "../org/budget.js";
@@ -86,14 +86,8 @@ import "../rovara-code/proof-view.js";
 import "../rovara-code/linear-close.js";
 import "../rovara-code/outcome-hooks.js";
 import "../developer/test-proof-lines.js";
-import {
-  agentXError,
-  type DeveloperTaskView,
-  WorkflowFeedbackFindingsDecisionRequestSchema,
-  WorkflowFeedbackReviewRetryRequestSchema,
-  TaskPeopleRoleRequestSchema,
-  TaskPeopleTakeOwnershipRequestSchema,
-} from "@agentx/contracts";
+import { agentXError, WorkflowFeedbackFindingsDecisionRequestSchema, WorkflowFeedbackReviewRetryRequestSchema, TaskPeopleRoleRequestSchema, TaskPeopleTakeOwnershipRequestSchema } from "@rovara-code/contracts";
+import { type DeveloperTaskView } from "@agentx/cloud-contracts";
 import type { DeveloperCaller } from "./developer-routes.js";
 import type { AdaptedHttpRequest } from "./lambda.js";
 import { proposeTaskOwnership, proposeTaskPeopleRole } from "../developer/task-people-effects.js";

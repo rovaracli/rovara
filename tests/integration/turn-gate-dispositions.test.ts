@@ -1,17 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import {
-  CONFIRMATION_TTL_MS,
-  TURN_ARGUMENT_LIMIT,
-  TURN_CALL_LIMIT,
-  TURN_GATE_REASON_LIMIT,
-  TURN_TEXT_LIMIT,
-  TurnRecordSchema,
-  EMPTY_TURN_OBSERVATION,
-  isSlackTurnRecord,
-  type SlackRequestMessage,
-  type SlackThreadWorkspaceResult,
-  type TurnRecord,
-} from "../../packages/contracts/src/index.js";
+import { CONFIRMATION_TTL_MS, TURN_ARGUMENT_LIMIT, TURN_CALL_LIMIT, TURN_GATE_REASON_LIMIT, TURN_TEXT_LIMIT, TurnRecordSchema, EMPTY_TURN_OBSERVATION, isSlackTurnRecord, type SlackRequestMessage, type SlackThreadWorkspaceResult, type TurnRecord } from "@rovara-code/contracts";
 import { TurnRecordExport } from "../../packages/broker/src/aws/turns.js";
 import { createDynamoConfirmationStore } from "../../packages/slack-service/src/confirmation-store.js";
 import { processSlackRequest, type ProcessorDependencies, type TurnInput } from "../../packages/slack-service/src/processor.js";

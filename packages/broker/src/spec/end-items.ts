@@ -1,6 +1,6 @@
 // K1 lane D, D2: what the end of a SPEC_WRITE operation writes. The run's result becomes rendered files (the broker's own rendering, checked against the approved plan's digest), and the code step that waited for
 // the spec is queued again. (The spec's publication is not an operation: the broker does it itself, see publish.ts.)
-import type { SpecFile } from "@agentx/contracts";
+import type { SpecFile } from "@rovara-code/contracts";
 import { acceptSpecWrite } from "./accept-draft.js";
 import type { SpecDesignState } from "./approved-design.js";
 import { specStateItem, type SpecStore, type TransactItem } from "./hooks.js";

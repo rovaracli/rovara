@@ -1,11 +1,5 @@
 import { randomUUID } from "node:crypto";
-import {
-  E2E_MODEL_BUDGET_MAX_CALL_TOKENS,
-  E2E_MODEL_BUDGET_SCHEMA_VERSION,
-  E2EModelDayBudgetResponseSchema,
-  type E2EModelDayBudgetRequest,
-  type E2EModelDayBudgetResponse,
-} from "@agentx/contracts";
+import { E2E_MODEL_BUDGET_MAX_CALL_TOKENS, E2E_MODEL_BUDGET_SCHEMA_VERSION, E2EModelDayBudgetResponseSchema, type E2EModelDayBudgetRequest, type E2EModelDayBudgetResponse } from "@rovara-code/contracts";
 import type { E2EDayLimits } from "@agentx/model-runtime";
 
 /**

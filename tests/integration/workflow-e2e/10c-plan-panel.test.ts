@@ -4,7 +4,7 @@
 // old links forward to the task page with the document's panel open; with them off the old pages are unchanged (10-page-auth.test.ts still passes).
 import { randomUUID } from "node:crypto";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import type { ChannelMembersRequest, ChannelMembersResponse } from "@agentx/contracts";
+import type { ChannelMembersRequest, ChannelMembersResponse } from "@rovara-code/contracts";
 import { createWorkflowE2E, SLACK_MAYA, type WorkflowE2E } from "../../support/workflow-e2e.js";
 import { MAYA, OMAR, type Developer } from "../../support/developer-task-broker.js";
 import { SLACK_CHANNEL } from "../../support/slack-broker.js";

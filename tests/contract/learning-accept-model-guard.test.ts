@@ -3,7 +3,8 @@
 import { randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import { bedrockClaudeModelIds } from "@agentx/model-runtime/catalog";
-import { agentXError, canonicalModelName, orgMetaKey, projectLearningKey, projectRevisionKey, type AgentId } from "../../packages/contracts/src/index.js";
+import { agentXError, canonicalModelName, projectLearningKey, projectRevisionKey, type AgentId } from "@rovara-code/contracts";
+import { orgMetaKey } from "@agentx/cloud-contracts";
 import { publishDraft } from "../../packages/broker/src/agents/changes.js";
 import { AgentStore } from "../../packages/broker/src/agents/store.js";
 import { acceptSuggestion } from "../../packages/broker/src/learning/decide.js";

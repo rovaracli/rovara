@@ -10,10 +10,8 @@ import { auditPendingItem } from "../audit/outbox.js";
 //
 // The levels are the scopes of `budgetScopesFor` (the org and the project always; the member who pays, or the starter's testing allowance for a test run, or the
 // agent that pays). An org or a member is also held to the proxy's own figure, which stays authoritative (R22, R23); every other level is counted by the ledger.
-import {
-  AuditEventInputSchema, PER_TASK_BUDGET_USD, TASK_BUDGET_EXCEEDED_PREFIX, agentXError, chainBudgetExceededMessage, chainBudgetRequiredMessage, scopeKey,
-  type AgentId, type AgentXError, type AgentXErrorCode, type BudgetScope, type OrgId, type Payer, type PauseScope,
-} from "@agentx/contracts";
+import { AuditEventInputSchema, PER_TASK_BUDGET_USD, scopeKey, type BudgetScope, type PauseScope } from "@agentx/cloud-contracts";
+import { TASK_BUDGET_EXCEEDED_PREFIX, agentXError, chainBudgetExceededMessage, chainBudgetRequiredMessage, type AgentId, type AgentXError, type AgentXErrorCode, type OrgId, type Payer } from "@rovara-code/contracts";
 import { GetCommand, TransactWriteCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
 import { type TransactItem, failedIndexes } from "../agents/table-writes.js";
 import type { MintTags, MintedKey } from "../model-proxy/access.js";

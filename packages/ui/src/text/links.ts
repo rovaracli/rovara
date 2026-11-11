@@ -1,4 +1,4 @@
-import { TICKET_PATTERN } from "@agentx/contracts/web";
+import { TICKET_PATTERN } from "@agentx/cloud-contracts/web";
 const UNSAFE_TEXT = /[\p{Cc}\p{Cf}\\]/u;
 export function safeExternalUrl(value: string): string | undefined {
  if (UNSAFE_TEXT.test(value) || value.trim() !== value) return undefined;

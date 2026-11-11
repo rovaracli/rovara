@@ -1,7 +1,7 @@
 // E2/E7: the two interfaces this lane has with the Team record (design 3.8). The lane emits what it saw and asks the record to search; it never keeps
 // source text itself. Until the Team record's own build lands, `TeamRecordSearch` answers nothing and `TeamRecordSink` drops events, so this lane ships
 // without waiting for it. The interfaces are the design's, unchanged: switching to the real ones is an import change only.
-import type { CitationStanding } from "@agentx/contracts";
+import type { CitationStanding } from "@rovara-code/contracts";
 
 /** What the broker emits after each context call, one per item (design 3.8). */
 export interface ContextItemSeen {

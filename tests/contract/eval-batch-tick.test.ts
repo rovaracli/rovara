@@ -3,7 +3,7 @@
 // writes results.csv and summary.json. Offline: FakeDynamoDb, a vi.fn state machine and S3.
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { DynamoDBDocumentClient } from "@aws-sdk/lib-dynamodb";
-import { EvalBatchSummarySchema, SWEBENCH_RUN_TIME_LIMIT_SECONDS, summarize } from "@agentx/contracts";
+import { EvalBatchSummarySchema, SWEBENCH_RUN_TIME_LIMIT_SECONDS, summarize } from "@rovara-code/contracts";
 import {
   EVAL_BATCH_RESULTS_COLUMNS,
   createBatch,

@@ -1,26 +1,9 @@
 // N9 (INTG2): a project's private package registries, the contract half. A fake token is built at run time (never a literal that looks like a key).
 import { describe, expect, it } from "vitest";
-import {
-  PREPARE_REGISTRIES_FEATURE,
-  PrepareRegistriesSchema,
-  ProjectDefinitionSchema,
-  ProjectRegistriesSchema,
-  REGISTRY_TOKEN_SECONDS,
-  RegistryCredentialSchema,
-  StoredProjectDefinitionSchema,
-  WORKER_INVOCATION_FEATURES,
-  WorkerInvocationSchema,
-  formatBoundRegistryDomains,
-  hostMatchesDomain,
-  parseBoundRegistryDomains,
-  prepareRegistriesOf,
-  registryHostOf,
-  registryProblems,
-  registryUrlOf,
-  scrubRegistrySecrets,
-  workerProjectDefinition,
-  type ProjectRegistry,
-} from "../../packages/contracts/src/index.js";
+import { PREPARE_REGISTRIES_FEATURE, PrepareRegistriesSchema, ProjectRegistriesSchema, REGISTRY_TOKEN_SECONDS, RegistryCredentialSchema, formatBoundRegistryDomains, hostMatchesDomain, parseBoundRegistryDomains, prepareRegistriesOf, registryHostOf, registryProblems, registryUrlOf, scrubRegistrySecrets, type ProjectRegistry } from "@rovara-code/contracts";
+import { WORKER_INVOCATION_FEATURES } from "@agentx/cloud-contracts";
+import { ProjectDefinitionSchema, StoredProjectDefinitionSchema, workerProjectDefinition } from "@agentx/cloud-contracts";
+import { WorkerInvocationSchema } from "@agentx/cloud-contracts";
 
 const fakeToken = (seed = "a"): string => `eyJ${Buffer.from(`${seed}-token-material-${seed.repeat(24)}`).toString("base64url")}.${Buffer.from(seed.repeat(30)).toString("base64url")}`;
 const CA: ProjectRegistry = { kind: "codeartifact", name: "internal-npm", format: "npm", domain: "acme", domainOwner: "123456789012", repository: "shared", region: "us-west-2" };

@@ -1,7 +1,7 @@
 // A small stand-in for the Company rules routes, for the browser journeys: one company, two admins, one waiting proposal at a time, and the rule that a person cannot approve their own proposal. It answers what the contract's schemas accept;
 // the real routes, their audit and their limits are the broker's (and tested there). State lives for one test.
 import type { Page, Route } from "@playwright/test";
-import { CompanyRulesBodySchema, type CompanyRuleView } from "@agentx/contracts/web";
+import { CompanyRulesBodySchema, type CompanyRuleView } from "@agentx/cloud-contracts/web";
 import { ADA, REPO, currentFor, DIGEST, DIGEST2, OMAR, PROPOSAL_ID, RULES_14, currentVersion, diffOf, historyFor, memberState, proposalFor, stateFor, syncFor, syncSummary, versionViewFor } from "../../web/support/company-rules-fixture.js";
 
 export type Viewer = "omar" | "ada";

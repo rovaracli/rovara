@@ -2,7 +2,7 @@
 // org, validated, once), and Prove derives its two dependency steps from it. With tx off nothing of this exists (golden).
 import { randomUUID } from "node:crypto";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { testEnvDigest, type TestEnvironmentBody, type TestServicesUsageRecord } from "../../packages/contracts/src/index.js";
+import { testEnvDigest, type TestEnvironmentBody, type TestServicesUsageRecord } from "@rovara-code/contracts";
 import { keepCandidateUsage } from "../../packages/broker/src/org/test-env-candidate.js";
 import { proposeTestEnvironment } from "../../packages/broker/src/org/test-environment.js";
 import { OMAR } from "../support/developer-task-broker.js";

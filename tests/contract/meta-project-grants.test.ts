@@ -3,7 +3,8 @@
 import { randomUUID } from "node:crypto";
 import { beforeAll, describe, expect, it, vi } from "vitest";
 import { RepositoryGrantService } from "../../packages/broker/src/repository-access.js";
-import { codeRepositoriesOf, StoredProjectDefinitionSchema } from "../../packages/contracts/src/index.js";
+import { codeRepositoriesOf } from "@rovara-code/contracts";
+import { StoredProjectDefinitionSchema } from "@agentx/cloud-contracts";
 import { issueRepositoryGrant } from "../../packages/broker/src/aws/broker/admin-and-helpers.js";
 import { createBroker, ensureWorkspace, loadSlackBroker, markReady, registerSlackProject, serviceCall } from "../support/slack-broker.js";
 import { SLACK_CHANNEL, SLACK_TEAM } from "../support/slack-broker.js";
@@ -28,7 +29,7 @@ describe("a project with a separate meta repository", () => {
     const workspace = await ensureWorkspace(h.handler, thread, user);
     expect(workspace.status, JSON.stringify(workspace.body)).toBe(200);
     const operationId = workspace.body.operationId as string;
-    expect(h.getDefaultBranchHead).toHaveBeenCalledWith("https://github.com/example/service-meta.git", "main", { system: "private-install" });
+    expect(h.getDefaultBranchHead).toHaveBeenCalledWith("https://github.com/example/service-meta.git", "main", { system: "install" });
     const outbox = h.db.find((item) => item.entityType === "OUTBOX" && item.operationId === operationId)[0]!.invocation as { payload: { meta?: { commit: string; repository: { name: string } }; project: { repositories: Array<{ name: string }> } } };
     expect(outbox.payload.meta).toMatchObject({ commit: HEAD, repository: { name: "service-meta" } });
     // The worker's project does not list the meta repository as code.

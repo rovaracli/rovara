@@ -2,7 +2,7 @@
 // `attribution`) calls `attributionErasureOf(dependencies).erase(orgId, developerId)`; that cuts the person's reference rows, rewrites every description that names them to
 // "a former member" (on the host, then in the broker's own copies of it), and only then deletes the person's rows (`eraseAttributionOfPerson`: order and retry rules there).
 import { UpdateCommand } from "@aws-sdk/lib-dynamodb";
-import { rewriteAttributionBody, type OrgId } from "@agentx/contracts";
+import { rewriteAttributionBody, type OrgId } from "@rovara-code/contracts";
 import { dynamoAttributionLinkStore } from "../../attribution/links.js";
 import { eraseAttributionOfPerson } from "../../wiring/enterprise-identity.js";
 import { queryAllItems } from "../admin-reads.js";

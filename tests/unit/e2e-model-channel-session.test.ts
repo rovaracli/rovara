@@ -3,7 +3,7 @@ import { mkdtemp, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { e2eModelRouteRevision } from "../../packages/contracts/src/e2e-model-channel.js";
+import { e2eModelRouteRevision } from "@rovara-code/contracts";
 import { createInMemoryE2EDayBudget, type E2EInvoke } from "../../packages/model-runtime/src/e2e-route.js";
 import { deriveE2EAgentRoute, e2eAgentInstallationFromEnvironment, scriptedE2ERouteDefinition } from "../../packages/model-runtime/src/e2e-route-derive.js";
 import {

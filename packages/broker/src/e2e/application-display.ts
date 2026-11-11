@@ -1,6 +1,5 @@
 import { createHash } from "node:crypto";
-import { E2E_ANONYMOUS_ACCOUNT_PROFILE_ID, E2EScenarioResultsSchema, E2E_DISPLAY_SCREENSHOT_MAX_BYTES, canonicalJson, redactText, replaceEmailAddresses,
-  type E2E_DISPLAY_ASSERTION_KINDS, type E2EAssertion, type E2EDisplayAgentNavigation, type E2EDisplayBaseline, type E2EDisplayScenario, type E2EScenarioResults } from "@agentx/contracts";
+import { E2E_ANONYMOUS_ACCOUNT_PROFILE_ID, E2EScenarioResultsSchema, E2E_DISPLAY_SCREENSHOT_MAX_BYTES, canonicalJson, redactText, replaceEmailAddresses, type E2E_DISPLAY_ASSERTION_KINDS, type E2EAssertion, type E2EDisplayAgentNavigation, type E2EDisplayBaseline, type E2EDisplayScenario, type E2EScenarioResults } from "@rovara-code/contracts";
 import { E2E_OWNER_SENTENCES, type ModelSentenceContext } from "./owner-sentences.js";
 
 /**

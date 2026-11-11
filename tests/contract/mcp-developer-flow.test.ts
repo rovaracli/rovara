@@ -1,16 +1,17 @@
 // Spec 025 Testing section: the MCP SDK's client drives `agentx mcp`'s server against the broker in
 // process, through User Stories 1 and 2. The client lists the tools first, as real AI tools do, so
 // every error result is also checked against SDK 1.30.1's output-schema validation (ruling F3).
-import { slackLimitPk } from "../../packages/contracts/src/org-scoped-keys.js";
+import { slackLimitPk } from "@rovara-code/contracts";
 import { TEST_ORG } from "../support/orgs.js";
 import { createHash, randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
-import { DeveloperTaskResponseSchema, WORKFLOW_BLOCK_REASONS, WorkflowSnapshotSchema, canonicalPlanJson, planDocumentMarkdown, readCanonicalPlan, type WorkflowSnapshot } from "@agentx/contracts";
+import { DeveloperTaskResponseSchema, WORKFLOW_BLOCK_REASONS, WorkflowSnapshotSchema, type WorkflowSnapshot } from "@agentx/cloud-contracts";
+import { canonicalPlanJson, planDocumentMarkdown, readCanonicalPlan } from "@rovara-code/contracts";
 import { MAYA, OMAR, createSingleAnswerPlanBroker } from "../support/developer-task-broker.js";
 import { finishPlanningWithMarkdown, planAnswer, planDocument } from "../support/plan-documents.js";
 import { URL_BASE, signedInClient } from "../support/mcp-broker-client.js";
 import { AgentStore } from "../../packages/broker/src/agents/store.js";
-import { builtinSettingsKey } from "../../packages/contracts/src/org-scoped-keys.js";
+import { builtinSettingsKey } from "@rovara-code/contracts";
 import { fakeModelAccess } from "../support/fake-model-access.js";
 
 type Harness = Awaited<ReturnType<typeof createSingleAnswerPlanBroker>>;

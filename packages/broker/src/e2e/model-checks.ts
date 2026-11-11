@@ -1,10 +1,6 @@
 import { GetCommand, PutCommand, QueryCommand, TransactWriteCommand, UpdateCommand, type DynamoDBDocumentClient } from "@aws-sdk/lib-dynamodb";
 import { createHash, randomUUID } from "node:crypto";
-import {
-  DRIVING_TEST_BUDGET, DRIVING_TEST_FIRST_CALL_CASE_ID, E2EModelCheckResultSchema, E2EModelFailureSchema, E2E_AGENT_ELIGIBLE_MODELS, E2E_AGENT_RECOMMENDED_MODELS, E2E_MODEL_CHECK_REQUEST_SCHEMA,
-  E2E_MODEL_DRIVING_TEST_MARKER, INDEX_EXPIRY_ATTRIBUTE, ModelDiscoveryReportSchema, e2eAgentModelsFor, e2eModelRouteRevision, e2eQualificationPrefix, indexExpiresAt,
-  type E2EDrivingTestFinding, type E2EModelFailureClass, type E2EModelRouteDefinition, type ModelProvider,
-} from "@agentx/contracts";
+import { DRIVING_TEST_BUDGET, DRIVING_TEST_FIRST_CALL_CASE_ID, E2EModelCheckResultSchema, E2EModelFailureSchema, E2E_AGENT_ELIGIBLE_MODELS, E2E_AGENT_RECOMMENDED_MODELS, E2E_MODEL_CHECK_REQUEST_SCHEMA, E2E_MODEL_DRIVING_TEST_MARKER, INDEX_EXPIRY_ATTRIBUTE, ModelDiscoveryReportSchema, e2eAgentModelsFor, e2eModelRouteRevision, e2eQualificationPrefix, indexExpiresAt, type E2EDrivingTestFinding, type E2EModelFailureClass, type E2EModelRouteDefinition, type ModelProvider } from "@rovara-code/contracts";
 import { E2E_FAILURE_CLASS_AGENT_CODE } from "@agentx/verifier";
 import { deriveE2EAgentRouteForModel, e2eAgentRouteDefinitionDigest, type E2EAgentInstallation } from "@agentx/model-runtime/e2e-route-derive";
 import { rankModels, type ModelDiscoveryReport, type ModelTestRecord, type NotUsableReason, type RankedModels, type Tiered } from "@agentx/model-runtime/model-discovery";

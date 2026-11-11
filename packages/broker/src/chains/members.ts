@@ -2,7 +2,7 @@
 // `owner_changed` event each, the chain's budget counting against the new owner's total, R65, which an `owner_cap` request asks an admin to confirm when it leaves them over
 // the cap), an `accountable` id moves to another grant maintainer of that project, else the first org owner, and their shares are dropped. A merge rewrites `owner`,
 // `accountable` and the shares of the duplicate to the survivor. Both are repeatable: they run again after a run that stopped half-way.
-import type { AgentPrincipal, OrgId } from "@agentx/contracts";
+import type { AgentPrincipal, OrgId } from "@rovara-code/contracts";
 import { checkTime, registerMemberMover, type LifecycleDeps } from "../agents/lifecycle.js";
 import type { MoveCause } from "../agents/store.js";
 import type { ChainStore } from "./store.js";

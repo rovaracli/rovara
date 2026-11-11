@@ -14,7 +14,8 @@
 import { createHash } from "node:crypto";
 import { GetCommand, PutCommand, QueryCommand, TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
 import { z } from "zod";
-import { AUTO_FIX_ENVIRONMENT_CODES, agentXError, projectPk, type AutoFixCode, type EvidencePack, type OrgId } from "@agentx/contracts";
+import { AUTO_FIX_ENVIRONMENT_CODES, type AutoFixCode } from "@agentx/cloud-contracts";
+import { agentXError, projectPk, type EvidencePack, type OrgId } from "@rovara-code/contracts";
 import { autoFixCodeSentence } from "../developer/autofix-messages.js";
 import { tryEffectiveTaskOwner, type DeveloperTaskRecord } from "../developer/task-records.js";
 import { auditOccurrence, auditProjectKnownFailingMarked } from "../audit/events.js";

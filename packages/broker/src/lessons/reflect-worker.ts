@@ -10,7 +10,7 @@
 // 1800 s; the queue sends it to its dead-letter queue (which alarms) after five receives. Five receives fit three attempts in the normal case (about two waits for the first attempt's key, one for each later one); an `exhausted` answer writes
 // no final state and uses one or two more receives before the dead-letter queue, on purpose: the alarm on that queue is the signal. A sweep that cannot read a key's spend leaves the lease at `retry` and can run the
 // receives out; the message is then in the dead-letter queue and can be redriven. The metric is the `lessons_worker.result` line, one per message, with a fixed class and a fixed kind (`reflection` or `human_edit`).
-import { LESSONS_REFLECT_MAX_ATTEMPTS, LESSONS_REFLECT_RETRY_BACKOFF_SECONDS } from "@agentx/contracts";
+import { LESSONS_REFLECT_MAX_ATTEMPTS, LESSONS_REFLECT_RETRY_BACKOFF_SECONDS } from "@rovara-code/contracts";
 import { withLearningAttempt, type LearningAttempt } from "./learning-deadline.js";
 import { logRef } from "./log-ref.js";
 import type { HumanEditJob } from "../team-record/sources/codehost.js";

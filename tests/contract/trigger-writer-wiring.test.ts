@@ -4,7 +4,7 @@
 // (a) reads the trigger's creator now: after a trigger moves, the new creator decides and the old one does not. Nothing here uses the chain-gate world.
 import { createHash, randomUUID } from "node:crypto";
 import { beforeAll, describe, expect, it } from "vitest";
-import { approvalKey, chainRunKey, orgProjectCatalogKey, projectMetaKey, projectRevisionKey, type ConnectorResult, type GrantedTool, type ToolFacts } from "@agentx/contracts";
+import { approvalKey, chainRunKey, orgProjectCatalogKey, projectMetaKey, projectRevisionKey, type ConnectorResult, type GrantedTool, type ToolFacts } from "@rovara-code/contracts";
 import { registerAgentApprovals } from "../../packages/broker/src/agents/changes.js";
 import { memoryRunCache } from "../../packages/broker/src/agents/run-cache.js";
 import { AgentStore } from "../../packages/broker/src/agents/store.js";

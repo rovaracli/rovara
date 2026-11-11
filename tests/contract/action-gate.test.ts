@@ -1,6 +1,6 @@
 // tests/contract/action-gate.test.ts
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { ActionPolicy, ConnectorCatalog } from "../../packages/contracts/src/index.js";
+import type { ActionPolicy, ConnectorCatalog } from "@rovara-code/contracts";
 import { ClassifierError, type ActionClassifier } from "../../packages/orchestrator/src/action-classifier.js";
 import {
   ActionGate,

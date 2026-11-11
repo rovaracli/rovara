@@ -7,7 +7,8 @@
 // `deletedNeedingPurge` reads the sparse due index the other cross-company sweeps use (`WORKFLOW_DISPATCH_DUE_INDEX`, partition `SAVED_ENV_PURGE`): a deleted row carries a due time until its registry deletion is final
 // (finished after `deletedAt` plus a job lease), then the attributes are dropped in the write that records the purge. No new index, no new table.
 import { GetCommand, QueryCommand, TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
-import { ImageDigestSchema, OrgIdSchema, SavedEnvManifestSchema, WORKFLOW_DISPATCH_DUE_INDEX, agentXError, orgPk, type AuditEventInput } from "@agentx/contracts";
+import { ImageDigestSchema, OrgIdSchema, SavedEnvManifestSchema, WORKFLOW_DISPATCH_DUE_INDEX, agentXError, orgPk } from "@rovara-code/contracts";
+import { type AuditEventInput } from "@agentx/cloud-contracts";
 import { z } from "zod";
 import { auditOccurrence, auditSavedEnvChanged, auditSavedEnvSettingChanged } from "../audit/events.js";
 import { flushAuditEvents } from "../audit/flush.js";

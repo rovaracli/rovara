@@ -1,6 +1,6 @@
 import { createHmac, timingSafeEqual } from "node:crypto";
 import { z } from "zod";
-import { agentXError, deriveCancelCallbackKey } from "@agentx/contracts";
+import { agentXError, deriveCancelCallbackKey } from "@rovara-code/contracts";
 
 const CancelCallbackClaimsSchema = z.object({
   version: z.literal(1),

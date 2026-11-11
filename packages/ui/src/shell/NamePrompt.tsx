@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { isPlaceholderDisplayName, type ReadAppNav } from "@agentx/contracts/web";
+import { isPlaceholderDisplayName, type ReadAppNav } from "@agentx/cloud-contracts/web";
 import { useAppHost } from "../host.js";
 import { Button } from "../design/Button.js";
 import { NameForm } from "./NameForm.js";

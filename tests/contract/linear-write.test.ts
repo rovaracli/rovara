@@ -6,7 +6,7 @@ import { describe, expect, it } from "vitest";
 import { OrgConnectionStore, LINEAR_GRAPHQL, connectionActorIds, connectionWorkspaceKeys } from "../../packages/broker/src/connections/store.js";
 import { OrgSecrets } from "../../packages/broker/src/connections/org-secrets.js";
 import { linearCommentIdFor, linearWriteOf, LINEAR_COMMENT_MAX_CHARS, LINEAR_RATE_ATTEMPTS, LINEAR_RATE_WAIT_MAX_MS, LINEAR_RATE_WAIT_TOTAL_MS } from "../../packages/broker/src/rovara-code/linear-write.js";
-import type { OrgId } from "../../packages/contracts/src/org-node.js";
+import type { OrgId } from "@rovara-code/contracts";
 import { FakeDynamoDb } from "../support/fake-dynamodb.js";
 import { FAKE_CONNECTOR_ROLE_ARN, FakeOrgSecrets } from "../support/fake-org-secrets.js";
 

@@ -2,7 +2,7 @@
 // and the person is told Rovara is invitation-only. An invite, an existing member, the Slack/company rules and an install with the setting off are unchanged. With the cloud
 // pool admin-create-only, opening an invite makes the invitee's pool user (AdminCreateUser, no email sent), so an invite still works for a person with no account.
 import { describe, expect, it, vi } from "vitest";
-import { developerOrgKey, orgInviteKey } from "@agentx/contracts";
+import { developerOrgKey, orgInviteKey } from "@agentx/cloud-contracts";
 import { ownerKeyForSubject, type HttpApiV2Event } from "../../packages/broker/src/aws/lambda.js";
 import { createDeveloperIdentityHandler, type HttpResult } from "../../packages/broker/src/developer/server.js";
 import { sha256Hex } from "../../packages/broker/src/developer/tokens.js";

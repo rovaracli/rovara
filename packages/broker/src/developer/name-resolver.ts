@@ -11,7 +11,7 @@
 // after the hashes are kept.) A read that FAILS shows `UNAVAILABLE_NAME` ("A member") for the people it could not settle, never the stored copy: for an erased person that copy is the name to hide. The failure is logged (a count and
 // the error's name, never a name).
 import { GetCommand } from "@aws-sdk/lib-dynamodb";
-import { orgMemberKey } from "@agentx/contracts";
+import { orgMemberKey } from "@agentx/cloud-contracts";
 import { FORMER_MEMBER_NAME, readNameItems, rejoinedOf, type ChosenNameClient, type ChosenNameItem } from "./chosen-name.js";
 import { isPlaceholderDisplayName, placeholderDisplayName, safeDisplayName } from "./person-name.js";
 

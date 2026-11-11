@@ -1,7 +1,7 @@
 import { useMemo } from "react";
 import { useSearchParams } from "react-router";
 import { useQueryClient } from "@tanstack/react-query";
-import { DECISION_FOCUS_PARAM } from "@agentx/contracts/web";
+import { DECISION_FOCUS_PARAM } from "@agentx/cloud-contracts/web";
 import { useAppHost } from "../../host.js";
 import { HIGH_ON_CARD_KINDS, createDecisionsApi, isUnreviewedDesign, useDecisions, type PlanDecisionFields, type ReadDecision } from "../../api/decisions.js";
 import { DecisionCard, type DecisionCardActions } from "../../design/DecisionCard.js";

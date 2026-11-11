@@ -2,7 +2,7 @@
 // slack-workflow-e2e.test.ts. Here: a real failure sent back, a broken project check, project checks in every round, a
 // timeout, the check runner failing, and an old broker that sends no checks.
 import { randomUUID } from "node:crypto";
-import { projectMetaKey } from "@agentx/contracts";
+import { projectMetaKey } from "@rovara-code/contracts";
 import { bearerFor } from "../../support/developer-task-broker.js";
 import { SLACK_MAYA } from "../../support/workflow-e2e.js";
 import { TEST_ORG } from "../../support/orgs.js";
@@ -11,7 +11,8 @@ import { SLACK_PROJECT_ARCHIVED } from "../../../packages/broker/src/aws/slack-r
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { WORKFLOW_BLOCK_REASONS, type ProjectCommand } from "@agentx/contracts";
+import { WORKFLOW_BLOCK_REASONS } from "@agentx/cloud-contracts";
+import { type ProjectCommand } from "@rovara-code/contracts";
 import { E2E_CHECK, createWorkflowE2E, type WorkflowE2E } from "../../support/workflow-e2e.js";
 import { EDITS, LINT, PLAN, SELECT_LINT, actionIds, atPlanReview, expectNoJargon, journeySuite, markInputs, modelInputs, runs, said } from "../../support/workflow-e2e-journeys.js";
 

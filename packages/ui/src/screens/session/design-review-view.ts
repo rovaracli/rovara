@@ -2,12 +2,7 @@
 // Every string that came from a model (a finding, a note, a paraphrase, a question) is carried unchanged and shown through `VisibleText`: it is text and nothing else. A hidden or bidirectional
 // control character shows as [U+XXXX]; markdown, HTML and links in it stay literal. The only link on the tab is `codeLink`, built from the encoded `codeCitationLinkPath` and a base the broker's own
 // record of the task's repositories gave (never from model text).
-import {
-  CODE_CITATION_UNCHECKED, DESIGN_SECTIONS, DESIGN_SOURCE_ONLY_LABEL, designFindingIsSourceOnly, FILES_READ_LABEL, codeCitationInPacket, codeCitationLinkPath, designFindingRaisedBefore, designReasonPhrase, designReviewDisagreements, inputProofSentence, resolutionOf,
-  type CitablePacketItem, type DesignCitation, type DesignDisagreementKind, type DesignFinding, type DesignQuestion, type DesignReason, type DesignReviewRound, type DesignReviewTier, type DesignReviewView,
-  type FindingResolution, type ReviewerRole, type ReviewerRun,
-  DesignActionsViewSchema, WorkflowDesignReviewSchema, type DesignActionsView,
-} from "@agentx/contracts/web";
+import { CODE_CITATION_UNCHECKED, DESIGN_SECTIONS, DESIGN_SOURCE_ONLY_LABEL, designFindingIsSourceOnly, FILES_READ_LABEL, codeCitationInPacket, codeCitationLinkPath, designFindingRaisedBefore, designReasonPhrase, designReviewDisagreements, inputProofSentence, resolutionOf, type CitablePacketItem, type DesignCitation, type DesignDisagreementKind, type DesignFinding, type DesignQuestion, type DesignReason, type DesignReviewRound, type DesignReviewTier, type DesignReviewView, type FindingResolution, type ReviewerRole, type ReviewerRun, DesignActionsViewSchema, WorkflowDesignReviewSchema, type DesignActionsView } from "@agentx/cloud-contracts/web";
 
 export const ROLE_WORDS: Readonly<Record<ReviewerRole, string>> = {
   comprehension: "Comprehension reviewer", critic: "Critic", codebase: "Codebase reviewer", zoom_out: "Zoom-out reviewer", critic_b: "Second critic",

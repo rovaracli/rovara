@@ -1,4 +1,4 @@
-import { E2EApplicationPlanIntentSchema, type E2EScenario } from "@agentx/contracts";
+import { E2EApplicationPlanIntentSchema, type E2EScenario } from "@rovara-code/contracts";
 import type { buildFeatureE2EPlanningContext } from "../../packages/broker/src/e2e/feature-plan-planning-context.js";
 
 /** What the planner is shown of a repository whose setup was approved (`buildFeatureE2EPlanningContext`), when it is available. */

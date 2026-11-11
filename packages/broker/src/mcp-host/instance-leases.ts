@@ -2,7 +2,7 @@
 // instance stops a task of an instance only when that item is missing or its lease has run out. During a deploy, when the old and new instances run together, neither stops the other's
 // tasks. The infrastructure still runs ONE instance (minimumHealthyPercent 0, maximumPercent 100): a runner's calls would otherwise reach the instance that does not hold its token.
 import { GetCommand, PutCommand } from "@aws-sdk/lib-dynamodb";
-import { orgScoped, type OrgId } from "@agentx/contracts";
+import { orgScoped, type OrgId } from "@rovara-code/contracts";
 import type { InstanceLeases } from "@agentx/gateway";
 
 type DocumentClient = { send(command: unknown): Promise<unknown> };

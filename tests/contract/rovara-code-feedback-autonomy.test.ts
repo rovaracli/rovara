@@ -3,12 +3,8 @@
 // a writer's actionable comment starts a counted round decided as Rovara's own; every other case leaves the round to the owner, and nothing a comment says can change that.
 import { createHash } from "node:crypto";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import {
-  CI_OUTPUT_BLOCK_HEADER, FEEDBACK_AUTONOMY_ACTOR_ID, FEEDBACK_AUTO_ROUNDS_MAX, FEEDBACK_CI_CHECKS_MAX, WorkflowFeedbackApprovalBindingSchema, WorkflowFeedbackDecisionSchema, WorkflowSnapshotSchema, WorkflowTransitionError,
-  createCandidateManifest, createWorkflowSnapshot, decideWorkflowFeedbackFindings, feedbackCardCiFailures, feedbackCiFailuresDigest, feedbackDecidedByText, feedbackFixedReply,
-  recordWorkflowFeedbackCiFailures, recordWorkflowPullRequestUpdate, requestWorkflowFeedbackReview, startWorkflowFix, workflowFixRoundsLeft,
-  type WorkflowFeedbackActor, type WorkflowProgram, type WorkflowSnapshot,
-} from "@agentx/contracts";
+import { CI_OUTPUT_BLOCK_HEADER, FEEDBACK_AUTONOMY_ACTOR_ID, FEEDBACK_AUTO_ROUNDS_MAX, FEEDBACK_CI_CHECKS_MAX, WorkflowFeedbackApprovalBindingSchema, WorkflowFeedbackDecisionSchema, WorkflowTransitionError, createCandidateManifest, feedbackCiFailuresDigest, feedbackDecidedByText, feedbackFixedReply, type WorkflowFeedbackActor, type WorkflowProgram } from "@rovara-code/contracts";
+import { WorkflowSnapshotSchema, createWorkflowSnapshot, decideWorkflowFeedbackFindings, feedbackCardCiFailures, recordWorkflowFeedbackCiFailures, recordWorkflowPullRequestUpdate, requestWorkflowFeedbackReview, startWorkflowFix, workflowFixRoundsLeft, type WorkflowSnapshot } from "@agentx/cloud-contracts";
 import { GithubMergeRateLimitError } from "../../packages/broker/src/github-app.js";
 import { PERMISSION_LOOKUPS_MAX, TrackingRequestCapError, trackPullRequest } from "../../packages/broker/src/rovara-code/merge-tracking.js";
 import { readCiEvidence, taskAutonomy, taskAutonomyBinding, uninstallCiFixDecider, installCiFixDecider } from "../../packages/broker/src/rovara-code/ci-fix.js";

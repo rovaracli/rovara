@@ -1,8 +1,6 @@
 // Slice 2, s2-emulator-run: the AWS resources the worker reads from the project's infrastructure code for Rovara local AWS (contracts/src/test-services-aws-resources.ts), and the `aws` facts of the usage record. Names and attribute types only, strict forms.
 import { describe, expect, it } from "vitest";
-import {
-  TASK_AWS_RESOURCES_MAX, TaskAwsResourceSchema, TaskAwsResourcesSchema, TestServicesAwsUsageSchema, TestServicesUsageRecordSchema,
-} from "../../packages/contracts/src/index.js";
+import { TASK_AWS_RESOURCES_MAX, TaskAwsResourceSchema, TaskAwsResourcesSchema, TestServicesAwsUsageSchema, TestServicesUsageRecordSchema } from "@rovara-code/contracts";
 
 const table = { kind: "table", name: "orders", keySchema: { partitionKey: { name: "orderId", type: "S" }, sortKey: { name: "createdAt", type: "N" } } };
 

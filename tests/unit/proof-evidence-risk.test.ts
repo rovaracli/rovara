@@ -2,7 +2,7 @@
 // design's rule). The signal comes only from a pack for exactly this code, only from checks of kind security, and can only raise the level. With no port (the proof switch off) there is no signal and nothing is read.
 import { GetObjectCommand, PutObjectCommand, type S3Client } from "@aws-sdk/client-s3";
 import { describe, expect, it } from "vitest";
-import { createCandidateManifest, type CheckEntry, type EvidencePack, type EvidenceRaw, type VerificationReport } from "../../packages/contracts/src/index.js";
+import { createCandidateManifest, type CheckEntry, type EvidencePack, type EvidenceRaw, type VerificationReport } from "@rovara-code/contracts";
 import { evidenceLines } from "../../packages/broker/src/rovara-code/evidence-lines.js";
 import { keepEvidence, loadEvidencePack, type KeepEvidenceDeps } from "../../packages/broker/src/rovara-code/evidence-keep.js";
 import { guardPack } from "../../packages/broker/src/rovara-code/evidence-guard.js";
@@ -234,7 +234,7 @@ describe("the risk rule", () => {
   });
 
   it("recomputeRisk gives the recorded level of the code with the signal, and is the same object-for-object without it", async () => {
-    const { createWorkflowSnapshot } = await import("../../packages/contracts/src/task-workflow-node.js");
+    const { createWorkflowSnapshot } = await import("../../packages/cloud-contracts/src/task-workflow-node.js");
     const workflow = { ...createWorkflowSnapshot({ taskId: "8b579b4b-eaa7-4bf2-87bc-6da86b97c9e6", ownerId: "a".repeat(64), now: "2026-11-04T12:00:00.000Z", definitionVersion: "1.1.0" }), candidate: code };
     const files = { files: [{ repository: "payments", path: "src/retry.ts", added: 3, removed: 1 }], complete: true };
     const without = recomputeRisk(workflow, files, {});

@@ -1,8 +1,8 @@
-import { slackBindingPk } from "../../packages/contracts/src/org-scoped-keys.js";
+import { slackBindingPk } from "@rovara-code/contracts";
 import { realIdentityRow } from "../support/real-identity-row.js";
 import { ownerKeyForSubject } from "../../packages/broker/src/aws/lambda.js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { AgentXError, type ChannelInfoRequest, type ChannelMembersRequest, type ChannelMembersResponse, type TaskPersonProofRequest } from "@agentx/contracts";
+import { AgentXError, type ChannelInfoRequest, type ChannelMembersRequest, type ChannelMembersResponse, type TaskPersonProofRequest } from "@rovara-code/contracts";
 import { channelInfoThroughLambda, channelMembersThroughLambda, checkProjectAccess, developerKeysThroughLambda, developerSinceFromEnvironment, developerTaskRouteDependencies, taskPeopleDisplayReadThroughLambda, taskPersonProofThroughLambda, type DeveloperApiConfiguration, type DeveloperCaller } from "../../packages/broker/src/aws/developer-routes.js";
 import { developerIdForSlackUser } from "../../packages/broker/src/aws/admin-actions.js";
 import type { DeveloperTaskRecord } from "../../packages/broker/src/developer/task-records.js";
@@ -14,7 +14,7 @@ import { identityHarness, localSigner } from "../support/developer-fakes.js";
 import { seedMembership } from "../support/developer-task-broker.js";
 import type { FakeDynamoDb } from "../support/fake-dynamodb.js";
 import { TEST_ORG } from "../support/orgs.js";
-import { projectMemberKey, projectRevisionKey } from "../../packages/contracts/src/org-scoped-keys.js";
+import { projectMemberKey, projectRevisionKey } from "@rovara-code/contracts";
 
 const ISSUER = "https://abc123.execute-api.us-east-1.amazonaws.com/v1/auth";
 const developerId = "d".repeat(64);

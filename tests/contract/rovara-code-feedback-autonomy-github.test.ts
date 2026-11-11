@@ -6,7 +6,7 @@ import { GitHubAppCredentialProvider } from "../../packages/broker/src/github-ap
 
 const NOW = Date.parse("2026-10-26T12:00:00.000Z");
 const REPO = "https://github.com/acme/payments.git";
-const SCOPE = { system: "private-install" } as const;
+const SCOPE = { system: "install" } as const;
 
 function harness(options: { permission?: { status: number; body: unknown }; reply?: { status: number } } = {}) {
   const { privateKey } = generateKeyPairSync("rsa", { modulusLength: 2048 });

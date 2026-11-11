@@ -2,7 +2,7 @@
 // One rule runs through all of it: GREEN NEEDS AN OBSERVATION. A row is Healthy only when a read shows something was seen working (a passed check, a status the vendor reported).
 // A configured thing that nothing has checked is Unknown, a read that was refused or failed is Unknown, and an observation with no recorded time, a time in the future, or a time older than
 // CHECK_STALE_DAYS (measured against the clock) is Unknown ("check it again"). Only the two rows the broker computes live at read time (service qualification, team record delete check) take the read time.
-import type { OrgServiceStatus } from "@agentx/contracts/web";
+import type { OrgServiceStatus } from "@agentx/cloud-contracts/web";
 import type { Read, ReadinessApproval, ReadinessConnection, ReadinessDesignReview, ReadinessFeatures, ReadinessProject, ReadinessReads, ReadinessSpendRequest } from "../../../api/readiness.js";
 import type { LessonCompanyPreset } from "../../../api/lessons.js";
 import { githubSummary } from "../connections/connection-state.js";

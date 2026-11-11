@@ -3,7 +3,7 @@
 import { createHash } from "node:crypto";
 import { DeleteCommand } from "@aws-sdk/lib-dynamodb";
 import { describe, expect, it } from "vitest";
-import { teamRecordPk } from "@agentx/contracts";
+import { teamRecordPk } from "@rovara-code/contracts";
 import { erasePerson } from "../../../packages/broker/src/team-record/erase.js";
 import { dynamoRateLimiter } from "../../../packages/broker/src/team-record/query.js";
 import { PERSON_FIELDS } from "../../../packages/broker/src/team-record/person-fields.js";

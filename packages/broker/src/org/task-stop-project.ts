@@ -2,7 +2,8 @@
 import { createHash } from "node:crypto";
 import { GetCommand } from "@aws-sdk/lib-dynamodb";
 import { z } from "zod";
-import { AgentXError, agentXError, AGENTX_NAME_PATTERN, orgProjectCatalogKey, projectAiKey, TaskStopProjectReadSchema, type TaskStopProjectRead } from "@agentx/contracts";
+import { AgentXError, agentXError, AGENTX_NAME_PATTERN, orgProjectCatalogKey } from "@rovara-code/contracts";
+import { projectAiKey, TaskStopProjectReadSchema, type TaskStopProjectRead } from "@agentx/cloud-contracts";
 import type { DeveloperCaller, DeveloperRouteDependencies } from "../aws/developer-routes.js";
 import { parseProjectAiWithRevision } from "../spend/settings.js";
 import { getTaskStopCompany } from "./task-stop-company.js";

@@ -10,7 +10,8 @@ import { createWorkingBranchPageProvider, createWorkingBranchProvider } from "..
 import { createHmac, randomUUID } from "node:crypto";
 import { GetCommand, QueryCommand, TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
 import { GetObjectCommand } from "@aws-sdk/client-s3";
-import { AgentXError, CHANNEL_TURN_REQUEST_MAX, type DeveloperTaskView, type CodeIntentResult, CONNECTOR_SECRET_PREFIX, ChannelTurnSchema, approvedToolCount, toolBudget, agentXError, type OperationStatus, type ChannelTurn, type ProjectDefinition, type TriggerEvent, redactAndCap, projectRevisionKey, type OrgId, type OrgRole, type ChannelMembersRequest, type Payer, featureEnabled, orgBanKey, orgMemberKey, orgRemovedKey, type WriterOrgRole } from "@agentx/contracts";
+import { type DeveloperTaskView, type ProjectDefinition, type OrgRole, featureEnabled, orgBanKey, orgMemberKey, orgRemovedKey, type WriterOrgRole } from "@agentx/cloud-contracts";
+import { AgentXError, CHANNEL_TURN_REQUEST_MAX, type CodeIntentResult, CONNECTOR_SECRET_PREFIX, ChannelTurnSchema, approvedToolCount, toolBudget, agentXError, type OperationStatus, type ChannelTurn, type TriggerEvent, redactAndCap, projectRevisionKey, type OrgId, type ChannelMembersRequest, type Payer } from "@rovara-code/contracts";
 import { liveStoredRole, personWalk } from "../../org/live-role.js";
 import { requireWriterCaller, type WriterCaller } from "../../org/auditor.js";
 import { slackMemberRule, warnImplicitSlackMember } from "../../org/slack-explicit-members.js";

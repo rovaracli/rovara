@@ -1,31 +1,5 @@
-import {
-  CLOSED_SHARED_NOTICE,
-  VIEW_ONLY_NOTICE,
-  checksReplyPrefix,
-  detailsButtonValue,
-  detailsReplyBlocks,
-  slackThreadSubject,
-  splitSlackMessage,
-  WorkspaceClosePreflightResultSchema,
-  type SlackRequestMessage,
-  type SlackThread,
-  type SlackCommentAnsweredRequest, type SlackThreadNoteAnsweredRequest,
-  type SlackThreadPrepareResult,
-  type SlackThreadWorkspaceResult,
-  type SlackWorkspaceCloseCompleteResult,
-  type SlackWorkspaceCloseStartResult,
-  type ThreadConnector,
-  type ActionPolicy,
-  type PendingConfirmation,
-  type TurnObservation,
-  type CheckReport,
-  type TurnRecord,
-  type ModelIdentifier,
-  type ProjectModelOptions,
-  parseEvalBatchCommand,
-  parseSwebenchCommand,
-  SLACK_NOT_A_MEMBER_NOTICE,
-} from "@agentx/contracts";
+import { SLACK_NOT_A_MEMBER_NOTICE } from "@agentx/cloud-contracts";
+import { CLOSED_SHARED_NOTICE, VIEW_ONLY_NOTICE, checksReplyPrefix, detailsButtonValue, detailsReplyBlocks, slackThreadSubject, splitSlackMessage, WorkspaceClosePreflightResultSchema, type SlackRequestMessage, type SlackThread, type SlackCommentAnsweredRequest, type SlackThreadNoteAnsweredRequest, type SlackThreadPrepareResult, type SlackThreadWorkspaceResult, type SlackWorkspaceCloseCompleteResult, type SlackWorkspaceCloseStartResult, type ThreadConnector, type ActionPolicy, type PendingConfirmation, type TurnObservation, type CheckReport, type TurnRecord, type ModelIdentifier, type ProjectModelOptions, parseEvalBatchCommand, parseSwebenchCommand } from "@rovara-code/contracts";
 import type { WorkerAccess } from "@agentx/orchestrator";
 import type { GateSession } from "@agentx/orchestrator/action-gate";
 import { EXPIRED_TEXT, checkConfirmation, settleConfirmations, type ConfirmationCheck, type ConfirmationStore } from "./confirmations.js";
@@ -1116,7 +1090,7 @@ function closeBlockedMessage(result: ReturnType<typeof WorkspaceClosePreflightRe
   ].join("\n");
 }
 
-export { slackThreadUrl } from "@agentx/contracts";
+export { slackThreadUrl } from "@rovara-code/contracts";
 
 /** At most three Slack-escaped summaries of at most 80 characters each, then how many more. */
 function shortList(summaries: readonly string[]): string {

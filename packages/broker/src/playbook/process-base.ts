@@ -2,7 +2,7 @@
 // (another custom agent, a built-in that is not Rovara Code, or none) would let one person drop the plan check or put project-wide rules in front of the reviewers with no second person.
 // The base is checked wherever it can be set or used: create, saving the draft, publishing (immediate and confirmed), updating the base, rolling back, and reading the layer as the
 // project's process. Ordinary agents may build on what they like.
-import { ROVARA_CODE_AGENT_ID, agentXError, type AgentId } from "@agentx/contracts";
+import { ROVARA_CODE_AGENT_ID, agentXError, type AgentId } from "@rovara-code/contracts";
 
 export const PROCESS_BASE_MESSAGE = "How we work must build on Rovara Code.";
 

@@ -1,6 +1,7 @@
 import { generateKeyPairSync } from "node:crypto";
 import { expect, it, vi } from "vitest";
-import { AgentXError, githubInstallationKey, type OrgId } from "@agentx/contracts";
+import { AgentXError, type OrgId } from "@rovara-code/contracts";
+import { githubInstallationKey } from "@agentx/cloud-contracts";
 import { GitHubAppCredentialProvider } from "../../packages/broker/src/github-app.js";
 import { installationBindingCheck } from "../../packages/broker/src/org/github-connection.js";
 import * as commands from "../../packages/broker/src/org/project-settings.js";
@@ -27,7 +28,7 @@ for(const count of [0,1,99,100])it(`reports conservative pagination for ${count}
 it("filters unsupported names without erasing the raw-page continuation hint",async()=>{const f=fixture();f.rows(Array.from({length:100},(_,i)=>row(`refs/heads/branch-${i}`)));expect((await f.call()).value).toEqual({branches:[],page:1,mayHaveMore:true,omittedUnsupported:true});});
 for(const name of ["HEAD","refs/heads/main","refs/tags/v1","a b","a..b","x;id","$(id)","a/.hidden"])it(`omits unsupported chooser branch ${name} explicitly`,async()=>{const f=fixture();f.rows([row("main"),row(name)]);expect((await f.call()).value).toEqual({branches:["main"],page:1,mayHaveMore:false,omittedUnsupported:true});});
 for(const page of [0,-1,1.5,1001,Infinity,NaN,"2","https://foreign.invalid/",null,{},[]])it(`refuses invalid page ${JSON.stringify(page)} before any I/O`,async()=>{const f=fixture();expect((await f.call(page)).code).toBe("CONFIG_INVALID");expect(f.requests).toEqual([]);});
-for(const scope of [{system:"private-install"},{system:"webhook"},{orgId:A,system:"webhook"},{orgId:"bad"},{}])it(`refuses non-org listing scope ${JSON.stringify(scope)}`,async()=>{const f=fixture();expect((await f.call(1,pin,scope)).code).toBe("CONFIG_INVALID");expect(f.requests).toEqual([]);});
+for(const scope of [{system:"install"},{system:"webhook"},{orgId:A,system:"webhook"},{orgId:"bad"},{}])it(`refuses non-org listing scope ${JSON.stringify(scope)}`,async()=>{const f=fixture();expect((await f.call(1,pin,scope)).code).toBe("CONFIG_INVALID");expect(f.requests).toEqual([]);});
 for(const expected of [{},{installationId:11},{repositoryId:22},{installationId:0,repositoryId:22},{installationId:11,repositoryId:0}])it(`requires registered immutable pins ${JSON.stringify(expected)}`,async()=>{const f=fixture();expect((await f.call(1,expected)).code).toBe("CONFIG_INVALID");expect(f.requests).toEqual([]);});
 for(const state of ["foreign","suspended","removed"] as const)it(`refuses ${state} persisted binding before mint/list`,async()=>{const f=fixture();if(state==="removed")f.db.delete(githubInstallationKey(11));else f.db.set({...githubInstallationKey(11),orgId:state==="foreign"?B:A,status:state==="suspended"?"suspended":"active"});expect((await f.call()).code).toBe("GITHUB_NOT_CONNECTED");expect(f.minted()).toEqual([]);expect(f.requests.some(r=>r.path.includes("/branches"))).toBe(false);});
 it("refuses an explicit foreign company without using the active owner's binding",async()=>{const f=fixture();expect((await f.call(1,pin,{orgId:B})).code).toBe("GITHUB_NOT_CONNECTED");expect(f.minted()).toEqual([]);});

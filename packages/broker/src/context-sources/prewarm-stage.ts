@@ -1,7 +1,7 @@
 // Review M9 (stdio MCP host redesign, section 6, "Prewarm"): when an operation is built for a stage that reads sources, the package-run servers among them are started, so the first tool call does
 // not wait for a cold start. The stage's sources are read here the same way `stageHasContextSources` reads them; the host call is `ContextSourcesRuntime.prewarm`, which starts only approved
 // package-run servers. This never throws and never waits for a task to come up, only for the host to accept the requests (bounded; review N3).
-import { isContextSourceStage, type OrgId } from "@agentx/contracts";
+import { isContextSourceStage, type OrgId } from "@rovara-code/contracts";
 import { dynamoContextSourceStore } from "./store.js";
 
 const MAX_SERVERS = 16;

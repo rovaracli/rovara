@@ -4,11 +4,8 @@
 // secrets fake is not called. A control of the same call by A's own people shows the object is there, so no refusal is only a bad fixture.
 import { randomUUID } from "node:crypto";
 import { beforeAll, describe, expect, it, vi } from "vitest";
-import {
-  DEFAULT_AGENT_GUARDRAILS, agentGuardrailsKey, agentRunsKey, approvalKey, builtinSettingsKey, defaultSpendPolicy, ledgerKey, openApprovalKey, openSpendRequestDueKey,
-  orgProjectCatalogKey, projectAgentKey, projectMemberKey, projectMetaKey, projectRevisionKey, sourceAlias, spendCounterKey,
-  type OrgId,
-} from "@agentx/contracts";
+import { DEFAULT_AGENT_GUARDRAILS, agentGuardrailsKey, agentRunsKey, approvalKey, builtinSettingsKey, openApprovalKey, orgProjectCatalogKey, projectAgentKey, projectMemberKey, projectMetaKey, projectRevisionKey, sourceAlias, type OrgId } from "@rovara-code/contracts";
+import { defaultSpendPolicy, ledgerKey, openSpendRequestDueKey, spendCounterKey } from "@agentx/cloud-contracts";
 import { decideSpendRequest, escalateOwnerRequests } from "../../packages/broker/src/spend/requests.js";
 import { approvalTaskEventKey, createStepApproval, createWriteApprovalRecord, decideApproval, getAnyApproval, runApprovalSweep, type ApprovalDependencies, type WriteApprovalRecord } from "../../packages/broker/src/agents/approvals.js";
 import { decideWriteApproval } from "../../packages/broker/src/agents/write-gate.js";
@@ -21,7 +18,7 @@ import { githubConnectorType } from "../../packages/broker/src/aws/connector-typ
 import { DECIDE_COOKIE, DecideStore, csrfTokenFor, decideProofOf } from "../../packages/broker/src/developer/decide-session.js";
 import type { OrgResolver } from "../../packages/broker/src/org/resolve.js";
 import { resolveAgent } from "../../packages/broker/src/agents/store.js";
-import { recipeDigest } from "../../packages/contracts/src/agent-recipe-node.js";
+import { recipeDigest } from "@rovara-code/contracts";
 import { MAYA, OMAR, bearerFor, seedMembership, type Developer } from "../support/developer-task-broker.js";
 import { FAKE_CONNECTOR_ROLE_ARN, FakeOrgSecrets } from "../support/fake-org-secrets.js";
 import { CHARTERARC_TEAM_ID, linearViaFake, startFakeLinearMcp } from "../support/fake-linear-mcp.js";

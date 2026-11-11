@@ -2,7 +2,7 @@
 // often carries no email, so the issuer's userinfo endpoint is asked, with the admin's own token.
 // Only a verified email counts. The token is never logged, and only a hash of it is kept as a key.
 import { createHash } from "node:crypto";
-import { redactAndCap, type AdminMeResponse, type SlackUserByEmailRequest, type SlackUserByEmailResponse } from "@agentx/contracts";
+import { redactAndCap, type AdminMeResponse, type SlackUserByEmailRequest, type SlackUserByEmailResponse } from "@rovara-code/contracts";
 import type { AuthenticatedIdentity } from "../auth.js";
 
 export interface AdminMeDependencies {

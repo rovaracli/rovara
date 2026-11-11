@@ -4,10 +4,7 @@
 // Slack form, and the control plane finishes the connection (#338). `chatgpt status` and
 // `disconnect chatgpt` answer the same way. The Slack user is their Slack-derived developer, as for
 // a task started in Slack.
-import {
-  AgentXError, CHATGPT_CALLBACK_URL, CHATGPT_CONNECT_STATE_SECONDS, ChatGptConnectionViewSchema, SlackMessageTimestampSchema,
-  SlackChannelIdSchema, SlackTeamIdSchema, SlackUserIdSchema, agentXError, type ChatGptConnectionView,
-} from "@agentx/contracts";
+import { AgentXError, CHATGPT_CALLBACK_URL, CHATGPT_CONNECT_STATE_SECONDS, ChatGptConnectionViewSchema, SlackMessageTimestampSchema, SlackChannelIdSchema, SlackTeamIdSchema, SlackUserIdSchema, agentXError, type ChatGptConnectionView } from "@rovara-code/contracts";
 import type { ChatGptConnections } from "../chatgpt/connections.js";
 import { parseChatGptCallback } from "../chatgpt/oauth.js";
 import { developerIdForSlackUser } from "./admin-actions.js";

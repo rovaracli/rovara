@@ -11,10 +11,7 @@
 //
 // Not wired: no route, no table, no switch (`sp`, SH36). The store is an interface (`SetupRecipeStore`); the DynamoDB adapter and the routes are wiring (see the lane report). Everything is keyed by the company id the caller
 // proves; nothing is read across companies. Nothing here touches the egress list: a recipe's `approvedHosts` are RECORDS of what the admin approved; making them company allow-list entries goes through the egress change plan.
-import {
-  OrgIdSchema, RelativeWorkspacePathSchema, SetupRecipeBodySchema, canonicalJson, redactSecrets, SetupRecipeIdSchema, agentXError, recipeFits, recipeNamesRepository, setupFingerprint, setupRecipeDigest,
-  type OrgId, type ProjectCommand, type SetupFingerprintInput, type SetupRecipeBody, type TestEnvironmentBody,
-} from "@agentx/contracts";
+import { OrgIdSchema, RelativeWorkspacePathSchema, SetupRecipeBodySchema, canonicalJson, redactSecrets, SetupRecipeIdSchema, agentXError, recipeFits, recipeNamesRepository, setupFingerprint, setupRecipeDigest, type OrgId, type ProjectCommand, type SetupFingerprintInput, type SetupRecipeBody, type TestEnvironmentBody } from "@rovara-code/contracts";
 import { createHash } from "node:crypto";
 import { isFreshSignIn, type SessionRecord } from "../developer/store.js";
 import type { TransactItem } from "../audit/outbox.js";

@@ -11,10 +11,8 @@
 //     again finds them and records the same round.
 //
 // The worker's own `findings`, `droppedCitations`, `mergeSource` and `omitted` are display-only early feedback. They are read by the schema and never stored or believed.
-import {
-  DesignReviewBindingSchema, DesignReviewWorkerResultSchema, PacketDeliverySchema, ReviewerRunSchema, WorkflowTransitionError, closeDesignReview, itemOf, promptDigest, submitDesignReview,
-  type CitablePacketItem, type DesignReviewBinding, type DesignReviewWorkerResult, type OrgId, type ReviewerPacketItem, type ReviewerRole, type ReviewerRun, type WorkflowSnapshot,
-} from "@agentx/contracts";
+import { DesignReviewBindingSchema, DesignReviewWorkerResultSchema, PacketDeliverySchema, ReviewerRunSchema, WorkflowTransitionError, itemOf, promptDigest, type CitablePacketItem, type DesignReviewBinding, type DesignReviewWorkerResult, type OrgId, type ReviewerPacketItem, type ReviewerRole, type ReviewerRun } from "@rovara-code/contracts";
+import { closeDesignReview, submitDesignReview, type WorkflowSnapshot } from "@agentx/cloud-contracts";
 import type { OperationRecord, StateTable } from "../aws/cancellation.js";
 import { recordedReviewerCost } from "./estimate.js";
 import { bindingMergeProblem } from "./merge-binding.js";

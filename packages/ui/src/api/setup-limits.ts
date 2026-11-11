@@ -3,7 +3,7 @@
 // reads fixed shapes (zod here, not in the browser contract entry: nothing else in the app reads them). Every write is sent once from the browser session.
 import { useMemo } from "react";
 import { z } from "zod";
-import { ProjectOverviewProjectSchema } from "@agentx/contracts/web";
+import { ProjectOverviewProjectSchema } from "@agentx/cloud-contracts/web";
 import { useAppHost, type AppHost } from "../host.js";
 import { createApiClient } from "./client.js";
 

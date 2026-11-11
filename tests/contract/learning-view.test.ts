@@ -2,10 +2,8 @@
 // suggestions carry no correction text, expired items are absent, the reads are bounded and the whole answer has a time limit.
 import { randomUUID } from "node:crypto";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import {
-  DEFAULT_AGENT_GUARDRAILS, LearningViewAnswerReaderSchema, LearningViewAnswerSchema, agentGuardrailsKey, agentXError, projectLearningKey,
-} from "../../packages/contracts/src/index.js";
-import { orgLearningSettingsKey } from "../../packages/contracts/src/index.js";
+import { DEFAULT_AGENT_GUARDRAILS, LearningViewAnswerReaderSchema, LearningViewAnswerSchema, agentGuardrailsKey, agentXError, projectLearningKey } from "@rovara-code/contracts";
+import { orgLearningSettingsKey } from "@rovara-code/contracts";
 import { routeLearning } from "../../packages/broker/src/learning/routes.js";
 import { dismissSuggestion } from "../../packages/broker/src/learning/decide.js";
 import { viewLearning } from "../../packages/broker/src/learning/view.js";
@@ -17,7 +15,7 @@ import { captureCorrection } from "../../packages/broker/src/learning/store.js";
 import { AgentStore } from "../../packages/broker/src/agents/store.js";
 import { ARJUN, MAX, MIA, OLA, ORG_A, ORG_B, PRIYA, ZED } from "../support/agent-session-world.js";
 import { eraseLearningSubject } from "../../packages/broker/src/learning/cleanup.js";
-import { orgMemberKey, orgMetaKey } from "../../packages/contracts/src/index.js";
+import { orgMemberKey, orgMetaKey } from "@agentx/cloud-contracts";
 import { mergeWorld as baseWorld, type MergeWorld } from "../support/rovara-code-merge-world.js";
 
 afterEach(() => { vi.unstubAllEnvs(); });

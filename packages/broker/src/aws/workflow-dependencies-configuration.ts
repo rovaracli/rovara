@@ -2,7 +2,7 @@ import { developerIssuers } from "../developer/custom-domain.js";
 import type { DeveloperApiConfiguration } from "./developer-routes.js";
 import { developerSinceFromEnvironment } from "./developer-routes.js";
 import { webOriginFromEnvironment } from "../org/invite-url.js";
-import { SLACK_OIDC_ISSUER } from "@agentx/contracts";
+import { SLACK_OIDC_ISSUER } from "@rovara-code/contracts";
 import { GITHUB_ISSUER } from "../developer/providers.js";
 
 export function workflowDependenciesConfigurationFromEnvironment(environment: Record<string, string | undefined>): {

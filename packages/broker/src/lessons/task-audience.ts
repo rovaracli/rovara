@@ -9,7 +9,8 @@
 // The audience is held as the few things that DIFFER between tasks (denials, named people, wider shares) plus a one-person roster check: the project's roster is never listed, because within one project it cancels out.
 // Anything that cannot be read is "unknown" and the lesson is withheld. This is for lessons ONLY: the Team record's own resolver (`task-visibility.ts`, "an unshared task is the owner's alone") is unchanged, and so is every caller of it.
 import { GetCommand } from "@aws-sdk/lib-dynamodb";
-import { OrgRoleSchema, orgMemberKey, projectMemberKey, type OrgId } from "@agentx/contracts";
+import { OrgRoleSchema, orgMemberKey } from "@agentx/cloud-contracts";
+import { projectMemberKey, type OrgId } from "@rovara-code/contracts";
 import { readSessionShares, readTaskPeople } from "../agent-sessions/access.js";
 import { AgentSessionStore } from "../agent-sessions/store.js";
 import { effectiveTaskOwner, isTaskTakenOver, taskKey, type DeveloperTaskRecord } from "../developer/task-records.js";

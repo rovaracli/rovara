@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { AgentDraftPutBodySchema } from "@agentx/contracts/web";
+import { AgentDraftPutBodySchema } from "@agentx/cloud-contracts/web";
 import { expect,it } from "vitest";
 import { fireEvent,screen,waitFor } from "@testing-library/react";
 import { renderBuilder } from "./support/builder-render.js";

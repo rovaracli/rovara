@@ -4,25 +4,8 @@
 // live: the list row only says where to look, and a device counts and shows only when its record is this org's, this member's, well formed and not revoked.
 import { createHash } from "node:crypto";
 import { GetCommand, QueryCommand, TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
-import {
-  DEVICES_LIMIT_MESSAGE,
-  DEVICES_PER_MEMBER_MAX,
-  DeviceIdSchema,
-  DeviceRecordSchema,
-  DeviceViewSchema,
-  INDEX_EXPIRY_ATTRIBUTE,
-  RegisterDeviceBodySchema,
-  agentRequestKey,
-  agentXError,
-  canonicalJson,
-  deviceKey,
-  memberDevicesKey,
-  newPrefixedId,
-  type DeviceRecord,
-  type DeviceView,
-  type OrgId,
-  type OrgRole,
-} from "@agentx/contracts";
+import { DEVICES_LIMIT_MESSAGE, DeviceRecordSchema, DeviceViewSchema, RegisterDeviceBodySchema, deviceKey, memberDevicesKey, type DeviceRecord, type DeviceView, type OrgRole } from "@agentx/cloud-contracts";
+import { DEVICES_PER_MEMBER_MAX, DeviceIdSchema, INDEX_EXPIRY_ATTRIBUTE, agentRequestKey, agentXError, canonicalJson, newPrefixedId, type OrgId } from "@rovara-code/contracts";
 import type { AuditDeps } from "../audit/outbox.js";
 import { commit, errorName, failedIndexes, readRequest, type Item, type RequestMark, type TableInput, type TransactItem } from "../agents/table-writes.js";
 

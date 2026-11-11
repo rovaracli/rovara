@@ -2,7 +2,7 @@
 // as that person. The claim is written only after Jira confirmed the change, so a made-up change id cannot use up a real one.
 import { GetCommand } from "@aws-sdk/lib-dynamodb";
 import { describe, expect, it } from "vitest";
-import { intakeChangeKey, intakeItemIdOf, type CodeIntentRequest, type OrgId } from "@agentx/contracts";
+import { intakeChangeKey, intakeItemIdOf, type CodeIntentRequest, type OrgId } from "@rovara-code/contracts";
 import { ingestIntake, type IntakeCandidate, type IntakePorts } from "../../packages/broker/src/intake/engine.js";
 import { claimIntakeChange, listWaitingIntakeItems } from "../../packages/broker/src/intake/store.js";
 import { jiraActOf } from "../../packages/broker/src/triggers/intake-searches.js";

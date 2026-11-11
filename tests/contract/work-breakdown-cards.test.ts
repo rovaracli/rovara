@@ -2,7 +2,7 @@
 // from and hands it to the one decision path Slack and MCP use, which checks that it binds the exact ordered plan; a caller that sends a digest (the AI tool) is checked the same way. A refusal says why.
 import { randomUUID } from "node:crypto";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { taskGraphDigest } from "../../packages/contracts/src/workflow-dependencies-node.js";
+import { taskGraphDigest } from "@rovara-code/contracts";
 import type { DeveloperCaller } from "../../packages/broker/src/aws/developer-routes.js";
 import type { AdaptedHttpRequest } from "../../packages/broker/src/aws/lambda.js";
 import { createTaskWebApi, type TaskWebApiDependencies } from "../../packages/broker/src/aws/task-web-api.js";

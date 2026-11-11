@@ -10,9 +10,8 @@
 // A task with no `designReview` answers as a missing task answers, so with the feature off none of these exists.
 import { GetCommand, QueryCommand } from "@aws-sdk/lib-dynamodb";
 import { z } from "zod";
-import {
-  ModelSelectionSchema, WORKSPACE_PROJECT_INDEX, WorkflowTransitionError, isHighRiskDesign, workspaceProjectIndexValue, agentXError, enableDesignReview, retryDesignReviewNotRun, designReviewRetryOffer, DESIGN_ACTIONS_NAME_MAX, plainOneLine, type DesignActionsView, type DesignReason, type ModelIdentifier, type OrgId, type WorkflowSnapshot,
-} from "@agentx/contracts";
+import { ModelSelectionSchema, WORKSPACE_PROJECT_INDEX, WorkflowTransitionError, isHighRiskDesign, workspaceProjectIndexValue, agentXError, DESIGN_ACTIONS_NAME_MAX, plainOneLine, type DesignActionsView, type DesignReason, type ModelIdentifier, type OrgId } from "@rovara-code/contracts";
+import { enableDesignReview, retryDesignReviewNotRun, designReviewRetryOffer, type WorkflowSnapshot } from "@agentx/cloud-contracts";
 import { StatusReply } from "../status-reply.js";
 import { effectiveTaskOwner, taskKey, taskOwnerKey, taskPointerKey, tryEffectiveTaskOwner, type DeveloperTaskRecord } from "../../developer/task-records.js";
 import { listProjectMembers } from "../../org/project-members.js";
@@ -27,7 +26,7 @@ import { designAnswersCommitItems, designAnswersHandler, type DesignAnswersPorts
 import { decideDesignApproval, designQuestionAudience, highRiskApprovers, maySkipDesignReview } from "../../design-review/approval.js";
 import { designApproveHandler, type DesignApprovePorts } from "../../design-review/approve-handler.js";
 import { designApproveItem, designCardFactsOf, designQuestionsItem } from "../../design-review/card-source.js";
-import { readDesignMeta } from "@agentx/contracts";
+import { readDesignMeta } from "@rovara-code/contracts";
 import { readEffectiveDesignReview } from "../../design-review/setting.js";
 import { designSpendChoiceHandler, mayChooseDesignSpend, skipRefusalWords, designSpendGateFor, designSpendItemFor, type DesignSpendChoiceName, type DesignSpendContext, type DesignSpendPorts } from "../../design-review/spend-choice.js";
 import { designSpendCommitItems } from "../../design-review/spend-follow.js";

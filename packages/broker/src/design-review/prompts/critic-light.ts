@@ -1,6 +1,6 @@
 // Adapted from the Elephant-Goldfish Model (github.com/google/elephant-goldfish-model, commit 464db031e), `agents/design_critic.md` and `agents/zoom_out.md`, Copyright 2026 Google LLC, Apache License 2.0.
 // Modified by Rovara (PrepLabsAI): the two roles are one critic with two lenses (failure modes, then over-building and reuse), REVIEW mode only, the target standard is the fixed design template, and findings are strict JSON with citations.
-import { LIGHT_CRITIC_PROMPT_ID } from "@agentx/contracts";
+import { LIGHT_CRITIC_PROMPT_ID } from "@rovara-code/contracts";
 import { COMMON_RULES, CITATION_TEXT, DESIGN_TEMPLATE_TEXT, SEVERITY_TEXT, assemblePrompt, reviewerOutputText, type ReviewPrompt } from "./common.js";
 import { CRITIC_ROLE_TEXT, CRITIC_STEPS_TEXT } from "./critic.js";
 

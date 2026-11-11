@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { DESIGN_REVIEW_APPROVERS_MAX, designReviewSettingOf } from "@agentx/contracts/web";
+import { DESIGN_REVIEW_APPROVERS_MAX, designReviewSettingOf } from "@agentx/cloud-contracts/web";
 import { designReviewKey, useDesignReviewApi } from "../../api/design-review.js";
 import { howWeWorkKey } from "../../api/how-we-work.js";
 import { useOnboardingApi } from "../../api/onboarding.js";

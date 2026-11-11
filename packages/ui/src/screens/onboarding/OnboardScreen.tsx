@@ -4,7 +4,7 @@ import { useNavigate, useSearchParams } from "react-router";
 import { useOnboardingApi } from "../../api/onboarding.js";
 import { useAppHost } from "../../host.js";
 import { isProjectSetupV2On } from "./project-setup-flags.js";
-import { ProjectOverviewProjectSchema, type AppProjectDetail } from "@agentx/contracts/web";
+import { ProjectOverviewProjectSchema, type AppProjectDetail } from "@agentx/cloud-contracts/web";
 import { VisibleText } from "../../design/VisibleText.js";
 import { PageHeader } from "../../design/PageHeader.js";
 import { Skeleton } from "../../design/Skeleton.js";

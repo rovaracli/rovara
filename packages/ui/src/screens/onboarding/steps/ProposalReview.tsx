@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { Link } from "react-router";
-import { setupItemsOf, type SetupApplyResponse, type SetupApplyResultItem, type SetupDraftResponse, type SetupItem, type SetupReviewEntry } from "@agentx/contracts/web";
+import { setupItemsOf, type SetupApplyResponse, type SetupApplyResultItem, type SetupDraftResponse, type SetupItem, type SetupReviewEntry } from "@agentx/cloud-contracts/web";
 import { useAppHost } from "../../../host.js";
 import { isConfirmUrl } from "../../../text/links.js";
 import { Button } from "../../../design/Button.js";

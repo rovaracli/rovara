@@ -5,7 +5,8 @@
 import { randomUUID } from "node:crypto";
 import { UpdateCommand } from "@aws-sdk/lib-dynamodb";
 import { describe, expect, it } from "vitest";
-import { developerOrgKey, githubInstallationKey, githubMemberKey, githubRepoProjectKey, projectRevisionKey, recordSourceKey, type OrgId } from "@agentx/contracts";
+import { developerOrgKey, githubInstallationKey, githubRepoProjectKey, recordSourceKey } from "@agentx/cloud-contracts";
+import { githubMemberKey, projectRevisionKey, type OrgId } from "@rovara-code/contracts";
 import { createTeamRecordRuntime, type TeamRecordRuntime } from "../../../packages/broker/src/team-record/runtime.js";
 import { needsLinkedAuthor } from "../../../packages/broker/src/team-record/unlinked.js";
 import { markSourceFailing, sourceConfigFromItem } from "../../../packages/broker/src/team-record/store.js";

@@ -1,7 +1,7 @@
 // Test services slice 2 (s2-catalog, task 2): the `local-aws` catalog entry. Its memory limit comes from the emulator's native-image gate on the first arm64 Linux build (owner decision 2026-11-03: the gate counts the run's own,
 // private memory; total RSS is information). The numbers are in DECISIONS.md (2026-11-03, "Emulator memory gate") and the fork's perf/RESULTS.md.
 import { describe, expect, it } from "vitest";
-import { catalogPrepullList } from "@agentx/contracts";
+import { catalogPrepullList } from "@rovara-code/contracts";
 import { pinnedCatalog, unpinnedCatalog } from "../support/catalog-pinning.js";
 
 // Measured on the arm64 build, 54-call matrix: private (RssAnon) 11 MiB idle and 39 MiB peak; TOTAL resident 93 MiB idle and 125.6-129.0 MiB peak (the extra is the 126 MB binary's file-backed pages, which are shared and reclaimable).

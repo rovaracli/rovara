@@ -1,7 +1,9 @@
 // Part of the broker (split out of ../broker.ts): write gate, model access (web and Slack), turn routing and budgets.
 
 import { sessionPageUrl } from "../../decisions/open-path.js";
-import { AgentXError, agentXError, type OperationRequester, type ProjectDefinition, SlackModelAccessRequestSchema, recipeDigest, type InvocationModelRoute, type ModelIdentifier, slackBindingPk, SLACK_BINDING_SK_PREFIX, type OrgId, PER_TASK_BUDGET_USD, chainRunKey, ROVARA_CODE_AGENT_ID, type AgentId, type Payer, type Place, DIAGNOSIS_LIGHT_BUDGET_USD, DIAGNOSIS_NO_PROVIDER_MESSAGE } from "@agentx/contracts";
+import { AgentXError, agentXError, type OperationRequester, SlackModelAccessRequestSchema, recipeDigest, type InvocationModelRoute, type ModelIdentifier, slackBindingPk, SLACK_BINDING_SK_PREFIX, type OrgId, chainRunKey, ROVARA_CODE_AGENT_ID, type AgentId, type Payer, type Place, DIAGNOSIS_LIGHT_BUDGET_USD, DIAGNOSIS_NO_PROVIDER_MESSAGE } from "@rovara-code/contracts";
+import { type ProjectDefinition } from "@agentx/cloud-contracts";
+import { PER_TASK_BUDGET_USD } from "@agentx/cloud-contracts";
 import { queryAllItems } from "../admin-reads.js";
 import { DynamoConnectorLedger, GITHUB_LEDGER, connectorLedgerKeys } from "../connector-ledger.js";
 import { callConnector } from "../connector-routes.js";
@@ -33,7 +35,7 @@ import { developerTaskRouteDependencies, type DeveloperCaller } from "../develop
 import { readCompanyStagePolicy } from "../../model-selection/policy-store.js";
 import { parseTurnModelPin } from "../../model-selection/turn-policy.js";
 import { ProcessModelRefusal } from "../../model-selection/process-refusal.js";
-import { canonicalModelName, forbiddenModelMatcher } from "@agentx/contracts";
+import { canonicalModelName, forbiddenModelMatcher } from "@rovara-code/contracts";
 import { readGuardrails } from "../../agents/guardrails.js";
 import type { DeveloperTaskActions, TransactItems } from "../developer-task-actions.js";
 import { ADMISSION_REFUSALS, agentStepNotes, systemTaskDispatchAccessFence, taskPageUrl } from "../developer-tasks.js";
@@ -52,7 +54,8 @@ import { releaseIfFinished } from "./terminal-and-github-events.js";
 import { askForPausedTask, blockEndedOperationKeys } from "./terminal-result.js";
 import { getSlackBinding, parseSlackHeaders, requireSlackServiceRole, sharedThread, sharedThreadOpen, slackRequesterProjectAccess } from "./workspace-preparation.js";
 import { viewerCannotStartTasksMessage } from "../../developer/project-roles.js";
-import { AuditEventInputSchema, addDesignUsd, auditEventId, canonicalJson } from "@agentx/contracts";
+import { AuditEventInputSchema, auditEventId } from "@agentx/cloud-contracts";
+import { addDesignUsd, canonicalJson } from "@rovara-code/contracts";
 import { TaskFundingProofSchema, actualCompanyFunding, fundingAuditItems, fundingRevisionCheck } from "../../org/task-stop-funding.js";
 import { type TransactItem, failedIndexes, isTransactionConflict } from "../../agents/table-writes.js";
 import { TransactWriteCommand } from "@aws-sdk/lib-dynamodb";

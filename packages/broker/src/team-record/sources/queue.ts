@@ -8,7 +8,7 @@
 //    queue holds a message for 15 minutes at most, is encrypted, and has NO dead-letter queue: after three tries the consumer drops the message and logs a
 //    fixed code. (CDK for both queues belongs with the storage lane's `infra/lib/team-record.ts`; the properties are in the lane report.)
 import { SendMessageCommand } from "@aws-sdk/client-sqs";
-import { TEAM_RECORD_OPS_MAX_RECEIVES, TEAM_RECORD_QUEUED_PUT_MAX_AGE_MS } from "@agentx/contracts";
+import { TEAM_RECORD_OPS_MAX_RECEIVES, TEAM_RECORD_QUEUED_PUT_MAX_AGE_MS } from "@agentx/cloud-contracts";
 
 /** The delivery at which a queued put is dropped: two before the queue would dead-letter it. */
 export const TEAM_RECORD_PUT_DROP_AT = TEAM_RECORD_OPS_MAX_RECEIVES - 2;

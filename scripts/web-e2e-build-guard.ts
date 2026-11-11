@@ -5,7 +5,7 @@ import { existsSync, readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
 
 /** What the archive must hold: every package that is built by `tsc -b` (it has a tsconfig.json) has a non-empty dist, and the web build holds the app the mock cell serves. */
-export const WEB_E2E_BUILD_FILES = ["packages/web/dist/app/index.html", "packages/contracts/dist/index.js"] as const;
+export const WEB_E2E_BUILD_FILES = ["packages/web/dist/app/index.html", "packages/cloud-contracts/dist/index.js"] as const;
 
 function hasFiles(directory: string): boolean {
   try {
