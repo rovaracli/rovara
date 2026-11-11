@@ -1,4 +1,4 @@
-import type { Page } from "@playwright/test";
+import type { APIRequestContext, BrowserContext, Page } from "@playwright/test";
 import { test, expect } from "./support/csp.js";
 import { mockRealtime } from "./support/realtime.js";
 import { checkA11y } from "./support/axe.js";
@@ -7,7 +7,7 @@ import { evidenceShot } from "./support/screenshot.js";
 // The builder and the new-agent page stay desktop-first. Pictures go to .test-build/web-e2e/agents-phone/ (ROVARA_AGENTS_PHONE_SHOTS changes the folder, for before/after comparisons).
 const shots = process.env.ROVARA_AGENTS_PHONE_SHOTS ?? ".test-build/web-e2e/agents-phone";
 const agentId = "agt_aaaaaaaaaaaaaaaaaaaa", sessionId = "ses_aaaaaaaaaaaaaaaaaaaa", cookie = "11111111-1111-4111-8111-111111111111";
-async function enter(page: Page, context: import("@playwright/test").BrowserContext, request: import("@playwright/test").APIRequestContext, baseURL: string | undefined, width: number) {
+async function enter(page: Page, context: BrowserContext, request: APIRequestContext, baseURL: string | undefined, width: number) {
  await request.post("/__mock/scenario", { data: { name: "agents" } });
  await context.addCookies([{ name: "__Host-agentx_review_session", value: cookie, url: baseURL!, secure: true, httpOnly: true, sameSite: "Strict" }]);
  await page.emulateMedia({ reducedMotion: "reduce" });await mockRealtime(page);await page.setViewportSize({ width, height: 900 });
@@ -21,7 +21,7 @@ async function focusVisible(page: Page) {
 }
 for (const width of [360, 390, 1280] as const) {
  const phone = width < 768;
- test(`the agent directory at ${String(width)}: one column, no sideways scroll${phone ? ", 44px targets" : ""}, visible focus`, async ({ page, context, request, baseURL }) => {
+ test(`the agent directory at ${String(width)}: ${phone ? "one column, " : ""}no sideways scroll${phone ? ", 44px targets" : ""}, visible focus`, async ({ page, context, request, baseURL }) => {
   await enter(page, context, request, baseURL, width);await page.goto("/app/agents");
   await expect(page.getByRole("heading", { name: "Agent directory", exact: true })).toBeVisible();await expect(page.getByRole("link", { name: "Payments Expert", exact: true })).toBeVisible();
   expect(await noSidewaysScroll(page)).toBe(true);
@@ -32,14 +32,16 @@ for (const width of [360, 390, 1280] as const) {
    const rows = await page.locator(".rv-agent-list > li").evaluateAll(nodes => nodes.map(node => { const box = node.getBoundingClientRect();return [Math.round(box.left), Math.round(box.right)]; }));expect(new Set(rows.map(row => row[0])).size).toBe(1);
    await page.getByRole("textbox", { name: "Find in these workflows" }).fill("zzzz");await expect(page.getByText("No loaded workflows match your search.")).toBeVisible();await page.getByRole("textbox", { name: "Find in these workflows" }).fill("");
   }
-  expect(await focusVisible(page)).not.toBe("hidden");
-  await checkA11y(page, { theme: "light" });await checkA11y(page, { theme: "dark" });
   await evidenceShot(page, { path: `${shots}/directory-${String(width)}.png`, fullPage: true });
+  // Axe before focus moves: with the skip link focused it sits over the header buttons, which axe counts as overlapping targets.
+  await checkA11y(page, { theme: "light" });await checkA11y(page, { theme: "dark" });
+  expect(await focusVisible(page)).not.toBe("hidden");
  });
  test(`the agent profile at ${String(width)}: reads, no sideways scroll${phone ? ", 44px targets, dialogs fit" : ""}`, async ({ page, context, request, baseURL }) => {
   await enter(page, context, request, baseURL, width);await page.goto("/app/agents/" + agentId);
   await expect(page.getByRole("heading", { name: "Payments Expert", level: 1 })).toBeFocused();await expect(page.getByText("Check refund idempotency.", { exact: true })).toBeVisible();
   expect(await noSidewaysScroll(page)).toBe(true);await expect(page.getByRole("heading", { name: "Open on a larger screen" })).toBeHidden();
+  if (!phone) await evidenceShot(page, { path: `${shots}/profile-${String(width)}.png`, fullPage: true });
   for (const summary of ["How it runs", "Sharing and versions", "Working on now", "Spend this month"]) await page.getByText(summary, { exact: true }).click();
   await expect(page.getByRole("link", { name: "Version 3" })).toBeVisible();await expect(page.getByText("Started by people", { exact: true })).toBeVisible();
   expect(await noSidewaysScroll(page)).toBe(true);
@@ -47,7 +49,7 @@ for (const width of [360, 390, 1280] as const) {
    expect(await smallTargets(page)).toEqual([]);await expect(page.getByRole("link", { name: "All agents", exact: true })).toBeVisible();await expect(page.getByText("Building agents works best on a larger screen.")).toBeVisible();
    await expect(page.getByRole("link", { name: "Edit", exact: true })).toBeVisible();
   }
-  await evidenceShot(page, { path: `${shots}/profile-${String(width)}.png`, fullPage: true });
+  if (phone) await evidenceShot(page, { path: `${shots}/profile-${String(width)}.png`, fullPage: true });
   for (const name of ["Share", "Change owner"]) {
    await page.getByRole("button", { name, exact: true }).click();const dialog = page.getByRole("dialog").last();await expect(dialog).toBeVisible();await expect.poll(() => dialog.evaluate(node => getComputedStyle(node).opacity)).toBe("1");
    const box = (await dialog.boundingBox())!;expect(box.x).toBeGreaterThanOrEqual(0);expect(box.x + box.width).toBeLessThanOrEqual(width);expect(await dialog.evaluate(node => node.scrollWidth <= node.clientWidth)).toBe(true);

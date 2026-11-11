@@ -19,7 +19,8 @@
 .rv-agent-profile-tray .rv-dialog-heading { position: sticky; top: 0; z-index: 1; background: var(--rv-bg-raised); padding-block: var(--rv-space-2); }
 /* Phone (UX, exp/agents-phone): the directory and profile are single-column pages at 360-390px. Everything here sits under the shell's own phone line (767px), so a large screen is unchanged. */
 @media (max-width: 767px) {
- .rv-agent-desktop-note { margin-top: calc(-1 * var(--rv-space-4)); margin-bottom: var(--rv-space-4); font-size: var(--rv-font-sm); }
+ .rv-agent-desktop-note { margin-block: var(--rv-space-2); font-size: var(--rv-font-sm); }
+ .rv-agent-directory > .rv-agent-desktop-note { margin-top: calc(-1 * var(--rv-space-4)); margin-bottom: var(--rv-space-4); }
  .rv-agent-directory { min-width: 0; }
  .rv-agent-directory .rv-page-header .rv-actions > a { width: 100%; }
  .rv-agent-list > li { flex-direction: column; gap: var(--rv-space-2); padding: var(--rv-space-4) 0; }
