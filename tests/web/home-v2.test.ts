@@ -68,6 +68,16 @@ it("with the switch off, Home is today's Home: the start box above the old cards
  f.close();
 });
 
+it("with the new navigation on (and the new Home off), the empty state points to Work; navigation off it says Live", async () => {
+ for (const nav of [true, false]) {
+  const f = render({});if (nav) f.storage.set("rovara.nav", "v2");
+  expect(await screen.findByText("Nothing needs you right now")).toBeTruthy();
+  expect(f.container.textContent).toContain("Find ongoing sessions in " + (nav ? "Work" : "Live") + ".");expect(f.container.textContent).not.toContain("in " + (nav ? "Live" : "Work") + ".");
+  expect(screen.getByRole("link", { name: "See work in progress" }).getAttribute("href")).toBe(nav ? "/app/work" : "/app/live");
+  f.close();
+ }
+});
+
 it("with the switch off and cards present, the old attention list shows and none of the new rows", async () => {
  const f = render({ cards: [planCard(1)] });
  expect(await screen.findByRole("heading", { name: "Review plan 1" })).toBeTruthy();
