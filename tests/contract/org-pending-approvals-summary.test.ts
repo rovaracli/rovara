@@ -87,7 +87,7 @@ describe("the company's pending approvals, at a glance", () => {
       expect(summary.approvals.map((entry) => [entry.kind, entry.title])).toEqual([
         ["step", STEP_APPROVAL_TITLE], ["write", WRITE_APPROVAL_TITLE], ["change", changeTitleOf("code_settings")],
       ]);
-      expect(summary.approvals[2]).toMatchObject({ subjectKind: "code_settings", proposedBy: "Carl Contributor", createdAt: first.createdAt, confirmUrl: expect.stringMatching(new RegExp(`/v1/app/approve/${first.approvalId}$`)) });
+      expect(summary.approvals[2]).toMatchObject({ subjectKind: "code_settings", proposedBy: "Carl Contributor", createdAt: first.createdAt, confirmUrl: expect.stringMatching(new RegExp(`/v1/app/approve/${first.approvalId}$`)) as string });
       expect(summary.approvals[1]).toMatchObject({ proposedBy: "Ben Maintainer", createdAt: second.createdAt });
       expect(summary.approvals[0]).toMatchObject({ proposedBy: "Ben Maintainer" });
       expect(summary.approvals[0]).not.toHaveProperty("subjectKind");
@@ -191,7 +191,7 @@ describe("the company's pending approvals, at a glance", () => {
     const live = await t.change();
     const decided = await t.write();
     const expired = await t.change(TEST_ORG, CARL.developerId, "web");
-    const record = (id: string) => t.db.get(approvalKey(TEST_ORG, id as never))!;
+    const record = (id: string) => t.db.get(approvalKey(TEST_ORG, id))!;
     t.db.set({ ...record(decided.approvalId), status: "DECLINED" });
     t.db.set({ ...record(expired.approvalId), expiresAt: new Date(Date.now() - 1000).toISOString() });
     const summary = OrgPendingApprovalsSummarySchema.parse(bodyOf(await t.get(ADA)));

@@ -45,7 +45,7 @@ interface Lane { pk: string; rows: Item[]; next: Record<string, unknown> | undef
  * One page of the caller's finished sessions in `scope`, newest first. The query must say `status=ended` and no other list selector (`owner`, `project`, `shared`).
  */
 export async function listFinishedScope(deps: SessionReadDependencies, caller: SessionReadCaller, query: SessionListQuery): Promise<SessionList> {
-  const scope = query.scope as string | undefined;
+  const { scope } = query;
   if (scope !== "team" && scope !== "company") throw invalid("scope: must be team or company");
   if (query.owner !== undefined || query.project !== undefined || query.shared !== undefined) throw invalid("Choose one of owner, project, shared or scope.");
   if (query.status !== "ended") throw invalid("scope: lists finished sessions only; add status=ended");

@@ -3,7 +3,7 @@
 //   GET /v1/app/projects/{p}/code-settings anyone who can see the project (any project role, or an org owner or admin): the merge rules, with no secret in them
 // Company is the caller's own (the session's), never the request's. A caller with no role in the project reads the same 404 as a project that is not there.
 import { describe, expect, it } from "vitest";
-import { codeSettingsKey, personalCounter, projectMemberKey, projectRevisionKey, scopeKey, spendCounterKey, type OrgId } from "@agentx/contracts";
+import { codeSettingsKey, personalCounter, projectMemberKey, projectRevisionKey, scopeKey, spendCounterKey } from "@agentx/contracts";
 import { fakeModelAccess } from "../support/fake-model-access.js";
 import { MAYA, OMAR, createDeveloperTaskBroker, seedMembership } from "../support/developer-task-broker.js";
 import { TEST_ORG } from "../support/orgs.js";
@@ -98,9 +98,9 @@ describe("a project's spend, for the people who may see it", () => {
     // The same table read as the admin of another company: that company has no such project, and the company comes from the session.
     const elsewhere = await createDeveloperTaskBroker({
       brokerExtra: { agents: {}, modelAccess: { access: fakeModelAccess(), proxyUrl: "http://internal-proxy.example.test:4000" }, cloud: true },
-      orgResolver: async () => OTHER as OrgId,
+      orgResolver: async () => OTHER,
     });
-    seedMembership(elsewhere.db, OMAR.developerId, { orgId: OTHER as OrgId, role: "admin" });
+    seedMembership(elsewhere.db, OMAR.developerId, { orgId: OTHER, role: "admin" });
     for (const item of t.db.find((candidate) => String(candidate.pk).startsWith(`ORG#${TEST_ORG}#`))) elsewhere.db.set(item);
     // That company has no such counters: whatever it answers holds none of ours (the figures come from the session's company, never from the request).
     const foreign = await elsewhere.dev(OMAR, "GET", `/v1/app/projects/payments/spend?month=${MONTH}`);
@@ -159,9 +159,9 @@ describe("a project's merge rules, for the people who may see the project", () =
     expect((await t.settings(MAYA, "secret")).status).toBe(404);
     const elsewhere = await createDeveloperTaskBroker({
       brokerExtra: { agents: {}, modelAccess: { access: fakeModelAccess(), proxyUrl: "http://internal-proxy.example.test:4000" }, cloud: true },
-      orgResolver: async () => OTHER as OrgId,
+      orgResolver: async () => OTHER,
     });
-    seedMembership(elsewhere.db, OMAR.developerId, { orgId: OTHER as OrgId, role: "admin" });
+    seedMembership(elsewhere.db, OMAR.developerId, { orgId: OTHER, role: "admin" });
     for (const item of t.db.find((candidate) => String(candidate.pk).startsWith(`ORG#${TEST_ORG}#`))) elsewhere.db.set(item);
     // The other company's admin reads the settings of THEIR company's project of that name (the defaults there), never ours.
     const foreign = await elsewhere.dev(OMAR, "GET", "/v1/app/projects/secret/code-settings");
