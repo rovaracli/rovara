@@ -196,6 +196,7 @@ import { KNOWN_FAILING_MARKS_BROWSER_MESSAGE, KNOWN_FAILING_MARKS_PATH, routeKno
 import { verifyResultsEnabled } from "../verification/switch.js";
 import { DESIGN_REVIEW_COMPANY_BROWSER_MESSAGE, DESIGN_REVIEW_COMPANY_PATH, routeDesignReviewCompany } from "./developer-routes/design-review-company.js";
 import { APPROVAL_WINDOW_BROWSER_MESSAGE, APPROVAL_WINDOW_PATH, routeApprovalWindow } from "./developer-routes/approval-window.js";
+import { REVIEW_GROUPS_BROWSER_MESSAGE, isReviewGroupsWrite, routeReviewGroups } from "../review-groups/routes.js";
 import { KNOWN_FAILING_POLICY_BROWSER_MESSAGE, KNOWN_FAILING_POLICY_PATH, routeKnownFailingPolicy } from "./developer-routes/known-failing-policy.js";
 import { SECOND_REVIEW_ACK_BROWSER_MESSAGE, acknowledgeSecondReview } from "./developer-tasks/second-review-ack.js";
 import { routeLearningModel } from "./developer-routes/learning-model.js";
@@ -350,6 +351,8 @@ export async function routeDeveloperRequest(deps: DeveloperRouteDependencies, re
   }
   // Runtime UI flags (lane U5): browser-only for both methods, refused before any read.
   if (url.pathname === UI_FLAGS_PATH && authenticated?.caller.browserSession !== true) throw agentXError("FORBIDDEN", UI_FLAGS_BROWSER_MESSAGE);
+  // Review groups (owner decision 9): changing a project's groups, and claiming, releasing or reassigning a review, are browser-only; refused before any read.
+  if (isReviewGroupsWrite(request.method, url.pathname) && authenticated?.caller.browserSession !== true) throw agentXError("FORBIDDEN", REVIEW_GROUPS_BROWSER_MESSAGE);
   // The one-time review-default notice (reading it and dismissing it) is browser-only, like the other company settings.
   if (url.pathname === REVIEW_DEFAULT_NOTICE_PATH && authenticated?.caller.browserSession !== true) {
     throw agentXError("FORBIDDEN", "Use a live browser session for this notice.");
@@ -607,6 +610,8 @@ export async function routeDeveloperRequest(deps: DeveloperRouteDependencies, re
   if (testEnvReply !== undefined) return testEnvReply;
   const testHealthReply = await routeTestHealth(deps, caller, request, url);
   if (testHealthReply !== undefined) return testHealthReply;
+  const reviewGroupsReply = await routeReviewGroups(deps, caller, request, url);
+  if (reviewGroupsReply !== undefined) return reviewGroupsReply;
   const approvalWindowReply = await routeApprovalWindow(deps, caller, request, url);
   if (approvalWindowReply !== undefined) return approvalWindowReply;
   const designReviewCompanyReply = await routeDesignReviewCompany(deps, caller, request, url);

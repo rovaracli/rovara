@@ -70,6 +70,18 @@ export function projectAiKey(orgId: OrgId, project: string): OrgKey {
   return { pk: orgScoped(orgId, `PROJECT_AI#${project}`), sk: "SETTINGS" };
 }
 
+/** Review groups (owner decision 9): a project's named groups of reviewers, one document per project (`review-groups/groups.ts`). */
+export function reviewGroupsKey(orgId: OrgId, project: string): OrgKey {
+  if (project === "" || project.includes("#") || /[\p{Cc}\p{Cf}]/u.test(project)) throw new RangeError("a project name can't be part of a key");
+  return { pk: orgScoped(orgId, `REVIEW_GROUPS#${project}`), sk: "META" };
+}
+
+/** Who claimed a task's waiting review (`review-groups/claims.ts`): one item per task, kept with its revision so a stale claim, release or reassign is refused. */
+export function reviewClaimKey(orgId: OrgId, taskId: string): OrgKey {
+  if (!/^[0-9a-f-]{36}$/u.test(taskId)) throw new RangeError("a task id can't be part of a key");
+  return { pk: orgScoped(orgId, `REVIEW_CLAIM#${taskId}`), sk: "META" };
+}
+
 /** What an admin added to one scope's limit for one UTC month (`month` is `YYYY-MM`): an item holding `amountUsd`, changed with ADD. */
 export function topUpKey(orgId: OrgId, month: string, scope: BudgetScope): OrgKey {
   return { pk: orgScoped(orgId, `TOPUP#${month}`), sk: scopeKey(scope) };

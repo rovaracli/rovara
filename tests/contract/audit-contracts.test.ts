@@ -179,6 +179,8 @@ describe("the event catalog", () => {
       // company rules (G-04)
       "company_rules.proposed", "company_rules.adopted", "company_rules.approved", "company_rules.rejected", "company_rules.cancelled", "company_rules.expired", "company_rules.repo_proposed", "company_rules.written_back", "company_rules.sync_connected", "company_rules.sync_disconnected",
       "agent_publication.requested", "agent_publication.approved", "agent_publication.declined", "agent_publication.withdrawn",
+      // review groups (owner decision 9)
+      "review_groups.changed", "review.claim_changed",
     ]);
     expect(new Set(AUDIT_ACTIONS).size).toBe(AUDIT_ACTIONS.length);
   });
@@ -270,6 +272,9 @@ describe("the event catalog", () => {
     "company_domain.verified": { target: { kind: "org", id: "org_aaaaaaaaaaaaaaaaaaaa" }, keys: ["wasState", "tookOver"], sample: { wasState: "pending", tookOver: false } },
     "company_domain.lost": { target: { kind: "org", id: "org_aaaaaaaaaaaaaaaaaaaa" }, keys: ["missingDays"], sample: { missingDays: 3 } },
     "company_domain.removed": { target: { kind: "org", id: "org_aaaaaaaaaaaaaaaaaaaa" }, keys: ["wasState"], sample: { wasState: "verified" } },
+    // Review groups (owner decision 9): counts, a group id and fixed words; never who is in a group or holds a review.
+    "review_groups.changed": { target: { kind: "project", name: "web" }, keys: ["revision", "groups", "members", "added", "removed"], sample: { revision: 2, groups: 1, members: 3, added: 1, removed: 0 } },
+    "review.claim_changed": { target: { kind: "task", id: "11111111-1111-4111-8111-111111111111" }, keys: ["change", "revision", "groupId", "pullRequests", "hostSync"], sample: { change: "claimed", revision: 1, groupId: "rgp_0123456789abcdef", pullRequests: 1, hostSync: "pending" } },
   } as const;
 
   // I10: the learning events hold no text.

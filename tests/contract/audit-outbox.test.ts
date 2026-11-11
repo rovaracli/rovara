@@ -874,6 +874,9 @@ describe("I4: the builders", () => {
     ["auditScriptTokenUsed", (occurrence) => builders.auditScriptTokenUsed({ ...base, occurrence, details, tokenId: "stk_" + "1".repeat(20), day: "2026-11-07", permission: "read" })],
     // Agent publication (srv/agent-publish): the approval id, version and target kind only; the target project's name is never a fact
     ["auditAgentPublication", (occurrence) => builders.auditAgentPublication({ ...base, occurrence, details, action: "agent_publication.requested", agentId: "agt_1", facts: { approvalId: "apr_1", targetKind: "project", version: 2 } })],
+    // Review groups (srv/review-groups): counts, a group id and fixed words; the project is a name-keyed target and the holder is in details only
+    ["auditReviewGroupsChanged", (occurrence) => builders.auditReviewGroupsChanged({ ...base, occurrence, details, projectName: "Secret Project", revision: 2, groups: 1, members: 3, added: 1, removed: 0 })],
+    ["auditReviewClaimChanged", (occurrence) => builders.auditReviewClaimChanged({ ...base, occurrence, details, taskId: "11111111-1111-4111-8111-111111111111", change: "claimed", revision: 1, groupId: "rgp_0123456789abcdef", pullRequests: 1, hostSync: "pending", holder: "b".repeat(64) })],
   ];
 
   it("covers every builder the module exports (a new builder needs a case here)", () => {
