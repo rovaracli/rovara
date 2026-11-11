@@ -3,11 +3,12 @@
 //   GET /v1/app/projects/{p}/code-settings anyone who can see the project (any project role, or an org owner or admin): the merge rules, with no secret in them
 // Company is the caller's own (the session's), never the request's. A caller with no role in the project reads the same 404 as a project that is not there.
 import { describe, expect, it } from "vitest";
-import { codeSettingsKey, personalCounter, projectMemberKey, projectRevisionKey, scopeKey, spendCounterKey } from "@agentx/contracts";
+import { personalCounter, scopeKey, spendCounterKey } from "@agentx/cloud-contracts";
+import { codeSettingsKey, projectMemberKey, projectRevisionKey } from "@rovara-code/contracts";
 import { fakeModelAccess } from "../support/fake-model-access.js";
 import { MAYA, OMAR, createDeveloperTaskBroker, seedMembership } from "../support/developer-task-broker.js";
 import { TEST_ORG } from "../support/orgs.js";
-import { singleOrgIdForEnv } from "../../packages/contracts/src/org-node.js";
+import { singleOrgIdForEnv } from "@rovara-code/contracts";
 
 const MONTH = "2026-10";
 const OTHER = singleOrgIdForEnv("another-company");

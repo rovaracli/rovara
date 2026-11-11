@@ -1,9 +1,8 @@
 // srv/needs-broker-ui-2, items 5 and 6: the Finished list for the Team and Company scopes (`GET /v1/app/sessions?scope=team|company&status=ended`), and how a finished session ended
 // (`finishedAs`, mapped from the summary's stored status model only). The scoped list reads only the indexes that already exist and shows only sessions the caller can open now.
 import { describe, expect, it } from "vitest";
-import {
-  FINISHED_AS, SessionListReaderSchema, SessionListSchema, TASK_STATUS_ANSWERED_REASON, agentSessionKey, mySessionsKey, projectMemberKey, projectSessionsKey, orgMemberKey, type OrgId,
-} from "../../packages/contracts/src/index.js";
+import { FINISHED_AS, SessionListReaderSchema, SessionListSchema, TASK_STATUS_ANSWERED_REASON, orgMemberKey } from "@agentx/cloud-contracts";
+import { agentSessionKey, mySessionsKey, projectMemberKey, projectSessionsKey, type OrgId } from "@rovara-code/contracts";
 import { finishedAsOf } from "../../packages/broker/src/agent-sessions/finished-as.js";
 import { listFinishedScope } from "../../packages/broker/src/agent-sessions/finished-scope.js";
 import { listSessions, type SessionReadDependencies } from "../../packages/broker/src/agent-sessions/read.js";

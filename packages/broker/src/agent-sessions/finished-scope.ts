@@ -7,18 +7,8 @@
 // never in the answer, whatever its index row says; the org is the caller's own (checked member), never the request's. The partitions are merged newest first under one sealed cursor bound to
 // the org, the person and the scope. A project the caller reaches only through a Slack channel is listed too (`projectsOf` knows channels); a session shared with them alone is in "Shared with me".
 import { GetCommand, QueryCommand } from "@aws-sdk/lib-dynamodb";
-import {
-  LIVE_INDEX_SCAN_MAX,
-  LIVE_PAGE_MAX,
-  OrgRoleSchema,
-  SessionIdSchema,
-  agentXError,
-  mySessionsKey,
-  orgMemberKey,
-  projectSessionsKey,
-  type SessionList,
-  type SessionTile,
-} from "@agentx/contracts";
+import { OrgRoleSchema, orgMemberKey, type SessionList, type SessionTile } from "@agentx/cloud-contracts";
+import { LIVE_INDEX_SCAN_MAX, LIVE_PAGE_MAX, SessionIdSchema, agentXError, mySessionsKey, projectSessionsKey } from "@rovara-code/contracts";
 import type { Item } from "../agents/table-writes.js";
 import { newSessionRoleMemo, requireLevelOf, sessionAccessFor } from "./access.js";
 import { ownerNameOverlay, ownerNamedAt } from "./owner-names.js";

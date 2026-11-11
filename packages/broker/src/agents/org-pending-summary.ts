@@ -9,7 +9,8 @@
 // What each row says is what the approval's confirmation page says: its title (`confirmTitleOf`), the people it names by display name, the time it was asked and the page's bare link. Never a
 // subject, arguments, a digest or a diff.
 import { QueryCommand } from "@aws-sdk/lib-dynamodb";
-import { ORG_PENDING_APPROVALS_MAX, OrgPendingApprovalsSummarySchema, agentXError, type OrgPendingApprovalItem, type OrgPendingApprovalsSummary } from "@agentx/contracts";
+import { ORG_PENDING_APPROVALS_MAX, OrgPendingApprovalsSummarySchema, type OrgPendingApprovalItem, type OrgPendingApprovalsSummary } from "@agentx/cloud-contracts";
+import { agentXError } from "@rovara-code/contracts";
 import { orgRoleOf, type AgentCaller } from "./access.js";
 import { confirmTitleOf } from "./approval-decide-kind.js";
 import { withChosenOwners } from "./approval-routes.js";

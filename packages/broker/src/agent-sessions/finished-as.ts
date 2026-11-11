@@ -4,7 +4,8 @@
 //   finished_no_code  the stored state is Closed with the status model's "Answered: no code change was needed" reason (a question that needed no code change)
 //   closed            the stored state is Closed with no reason (its owner closed it, or its plan was rejected) and it is not a run that can still be retried
 //   finished          everything else: a run that ended, one that failed, a Closed that carries another reason, an older summary with no `display`, a state this build does not know
-import { TASK_STATUS_ANSWERED_REASON, TaskStatusSchema, type AgentSessionRecord, type FinishedAs } from "@agentx/contracts";
+import { TASK_STATUS_ANSWERED_REASON, type FinishedAs } from "@agentx/cloud-contracts";
+import { TaskStatusSchema, type AgentSessionRecord } from "@rovara-code/contracts";
 
 export function finishedAsOf(session: Pick<AgentSessionRecord, "summary">): FinishedAs {
   const stored = TaskStatusSchema.safeParse(session.summary.display);

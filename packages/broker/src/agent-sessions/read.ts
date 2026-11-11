@@ -3,7 +3,8 @@
 // a step's task without a project role) is left out, never shown as an error.
 import { GetCommand, QueryCommand } from "@aws-sdk/lib-dynamodb";
 import { createCipheriv, createDecipheriv, createHash, randomBytes } from "node:crypto";
-import { AGENT_SESSION_CONTRACT_VERSION, AGENTX_NAME_PATTERN, ChainRunViewSchema, LIVE_INDEX_SCAN_MAX, LIVE_PAGE_MAX, SessionBindingSchema, SessionIdSchema, agentSessionKey, agentXError, cleanSessionName, hideEmailAddresses, mySessionsKey, projectAllows, projectSessionsKey, sessionLink, sessionBindingKey, sharedSessionsKey, type AgentSessionRecord, type SessionBinding, type SessionLevel, type SessionList, type SessionStatus, type SessionTile, budgetPauseNext, budgetScopeName, sessionTaskStatus, taskStatusNext, type TaskStatus } from "@rovara-code/contracts";
+import { AGENT_SESSION_CONTRACT_VERSION, AGENTX_NAME_PATTERN, ChainRunViewSchema, LIVE_INDEX_SCAN_MAX, LIVE_PAGE_MAX, SessionBindingSchema, SessionIdSchema, agentSessionKey, agentXError, cleanSessionName, hideEmailAddresses, mySessionsKey, projectAllows, projectSessionsKey, sessionLink, sessionBindingKey, sharedSessionsKey, type AgentSessionRecord, type SessionBinding, type SessionLevel, type SessionStatus, budgetPauseNext, budgetScopeName, sessionTaskStatus, taskStatusNext, type TaskStatus } from "@rovara-code/contracts";
+import { type SessionList, type SessionTile } from "@agentx/cloud-contracts";
 import { type SessionView } from "@agentx/cloud-contracts";
 import { type DeveloperTaskView, type OrgRole } from "@agentx/cloud-contracts";
 import { taskKey, type DeveloperTaskRecord } from "../developer/task-records.js";

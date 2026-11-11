@@ -3,9 +3,8 @@
 // company on the install, so these tests hold two companies in it.
 import { randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
-import {
-  ORG_PENDING_APPROVALS_MAX, OrgPendingApprovalsSummaryReaderSchema, OrgPendingApprovalsSummarySchema, approvalKey, orgMemberKey, type OrgId,
-} from "../../packages/contracts/src/index.js";
+import { ORG_PENDING_APPROVALS_MAX, OrgPendingApprovalsSummaryReaderSchema, OrgPendingApprovalsSummarySchema, orgMemberKey } from "@agentx/cloud-contracts";
+import { approvalKey, type OrgId } from "@rovara-code/contracts";
 import {
   approvalTaskEventKey, createPendingChange, createStepApproval, createWriteApprovalRecord, getAnyApproval, type ApprovalDependencies, type WriteApprovalRecord,
 } from "../../packages/broker/src/agents/approvals.js";

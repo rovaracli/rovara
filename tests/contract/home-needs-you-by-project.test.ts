@@ -2,7 +2,7 @@
 // cards Home shows, so it respects Home's dedupe and the caller's dismissals: a task whose plan card is replaced by an approve_plan decision card counts once, not twice; a dismissed card is
 // not counted in its project (and comes back when it is a new occurrence); a dismissal is the dismisser's alone.
 import { afterEach, describe, expect, it } from "vitest";
-import { AppNavSchema, orgMetaKey } from "@agentx/contracts";
+import { AppNavSchema, orgMetaKey } from "@agentx/cloud-contracts";
 import { dismissHomeCard, homeCards, homeNeedsYou, registerHomeCardSource, type HomeCardSource, type HomeDependencies, type PendingDecisionRef } from "../../packages/broker/src/agent-sessions/home.js";
 import { MAYA, OMAR, createDeveloperTaskBroker } from "../support/developer-task-broker.js";
 import { TEST_ORG } from "../support/orgs.js";
