@@ -14,6 +14,8 @@ export interface ParameterUpdateInput {
   stackName: string; roleArn: string; changes: Record<string, string>;
   confirm: (event: { stackName: string; parameters: ParameterChange[]; changes: ChangeSetChange[] }) => Promise<boolean>;
   write: (line: string) => void; now?: () => number; sleep?: (ms: number) => Promise<void>; pollMs?: number; timeoutMs?: number;
+  /** Print the change (through `show`) and stop: the change set is deleted, nothing is executed, and `confirm` is never asked. */
+  preview?: { show: (event: { stackName: string; parameters: ParameterChange[]; changes: ChangeSetChange[] }) => void };
   /** Which command is changing the stack: names the change set and the messages. Default "sign-in". */
   label?: "sign-in" | "config";
 }
@@ -32,7 +34,7 @@ function isChangeSetNotFound(error: unknown): boolean {
   return error instanceof Error && (error.name === "ChangeSetNotFoundException" || error.name === "ChangeSetNotFound");
 }
 
-export async function updateStackParameters(input: ParameterUpdateInput): Promise<{ changed: boolean }> {
+export async function updateStackParameters(input: ParameterUpdateInput): Promise<{ changed: boolean; previewed?: true }> {
   const label = input.label ?? "sign-in";
   const now = input.now ?? Date.now;
   const sleep = input.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
@@ -100,6 +102,11 @@ export async function updateStackParameters(input: ParameterUpdateInput): Promis
     action: change.ResourceChange?.Action ?? "", logicalId: change.ResourceChange?.LogicalResourceId ?? "",
     type: change.ResourceChange?.ResourceType ?? "", replacement: change.ResourceChange?.Replacement ?? "",
   }));
+  if (input.preview !== undefined) {
+    input.preview.show({ stackName, parameters, changes });
+    await deleteChangeSet();
+    return { changed: false, previewed: true };
+  }
   if (!(await input.confirm({ stackName, parameters, changes }))) {
     await deleteChangeSet();
     throw agentXError("CONFIG_INVALID", `the ${label} change to ${stackName} was not applied; nothing changed`);
