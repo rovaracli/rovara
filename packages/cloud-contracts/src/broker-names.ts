@@ -98,8 +98,6 @@ export const BROKER_NAMES = {
   slackThreadsTable: { code: "sl", variable: "SLACK_THREADS_TABLE_NAME", kind: "name" },
   turnRecordsTable: { code: "tr", variable: "TURN_RECORDS_TABLE_NAME", kind: "name" },
   planEvidenceFunction: { code: "pe", variable: "PLAN_EVIDENCE_FUNCTION_NAME", kind: "name" },
-  // Company-approved images (0.5.15, `pj`): the mirror function the broker starts when an admin approves an image and when a plan finds an approved image with no finished copy. The broker holds lambda:InvokeFunction on this one function.
-  companyImageMirrorFunction: { code: "cm", variable: "COMPANY_IMAGE_MIRROR_FUNCTION_NAME", kind: "name" },
   // Live interaction A2 (peek): the dispatcher the broker invokes to read a running task's working tree for an Ask. The broker holds lambda:InvokeFunction on this one function and nothing else (control-plane.ts).
   dispatcherFunction: { code: "dp", variable: "DISPATCHER_FUNCTION_ARN", kind: "lambdaFunctionArn" },
   modelAccessFunction: { code: "ma", variable: "MODEL_ACCESS_FUNCTION_NAME", kind: "name" },

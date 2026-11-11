@@ -538,13 +538,13 @@ const FIXED_NAME_ROLE_LOOKUP_ACTIONS = [
 
 /**
  * `forBoundary`: the boundary (a ceiling, 6,144 characters with no room left) names the ConnectorSecretsRole and the TestAccountSecretsRole, whose names share a prefix, with the one ARN
- * `...connector-secrets*`, and the saved environment image roles (`agentx-<env>-img-push|pull|manage|mirror`) with the one ARN `...img-*`. The service role's own statement, which is what actually allows the lookups, still names each role exactly.
+ * `...connector-secrets*`. Every other fixed-name role, the saved environment image roles (`img-push|pull|manage|create`) and the company image mirror role (`img-mirror`) among them, is named exactly here: no
+ * wildcard may admit a role that is not named (a `img-*` ARN would let the boundary permit DeleteRole on any role of that prefix). The service role's own statement, which is what actually allows the lookups, names each role exactly too.
  */
 function fixedNameRoleLookupStatement(scope: Pick<PolicyScope, "env" | "partition" | "account">, forBoundary = false): PolicyStatementJson {
   const shared = connectorSecretsRoleName(scope.env);
   const names = fixedNameEnvironmentRoleNames(scope.env);
-  const images = savedEnvRolePrefix(scope.env);
-  const listed = forBoundary ? [...names.filter((name) => !name.startsWith(shared) && !name.startsWith(images)), `${shared}*`, `${images}*`] : names;
+  const listed = forBoundary ? [...names.filter((name) => !name.startsWith(shared)), `${shared}*`] : names;
   return {
     Sid: "IamFixedNameRolesNotYetCreated",
     Effect: "Allow",
